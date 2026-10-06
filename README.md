@@ -86,6 +86,7 @@ resource "aws_cloudwatch_log_group" "agent_audit" {
 Pulumi TypeScript:
 
 ```ts
+import * as pulumi from "@pulumi/pulumi";
 import * as aws from "@pulumi/aws";
 
 export function createAuditLogGroup(kmsKeyArn: pulumi.Input<string>) {
