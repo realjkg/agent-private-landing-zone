@@ -1,4 +1,11 @@
-import { resolve } from "node:path";
+import {
+  relative,
+  resolve,
+  sep,
+} from "node:path";
+import {
+  runAllowlistedProcess,
+} from "./process.js";
 
 import { getIaCAdapter } from "../iac/index.js";
 import type {
@@ -14,6 +21,17 @@ const SAFE_TOOLS = new Set([
   "terraform_plan",
   "pulumi_version",
   "pulumi_preview",
+  "aws_version",
+  "aws_sts_identity",
+  "aws_org_describe",
+  "aws_controltower_list_landing_zones",
+  "aws_org_list_scps",
+  "aws_config_recorders",
+  "aws_cloudtrail_trails",
+  "azure_version",
+  "azure_account_show",
+  "azure_management_groups",
+  "azure_policy_assignments",
   "query_environment",
   "show_evidence",
 ]);
@@ -58,9 +76,14 @@ export function executeTool(
   );
   const root = resolve(context.cwd);
 
+  const workspaceRelation =
+    relative(root, workspace);
+
   if (
-    workspace !== root &&
-    !workspace.startsWith(root + "/")
+    workspaceRelation === ".." ||
+    workspaceRelation.startsWith(
+      ".." + sep,
+    )
   ) {
     return blocked(
       request,
@@ -68,14 +91,144 @@ export function executeTool(
     );
   }
 
+  const providerReadTool =
+    (request.tool.startsWith("aws_") &&
+      request.tool !== "aws_version") ||
+    (request.tool.startsWith("azure_") &&
+      request.tool !== "azure_version");
+
   if (
     (request.tool === "terraform_plan" ||
-      request.tool === "pulumi_preview") &&
+      request.tool === "pulumi_preview" ||
+      providerReadTool) &&
     !context.allowCloudRead
   ) {
     return blocked(
       request,
       "Preview requires explicit read-only cloud access.",
+    );
+  }
+
+  if (request.tool.startsWith("aws_")) {
+    const argsByTool: Partial<
+      Record<
+        ToolRequest["tool"],
+        string[]
+      >
+    > = {
+      aws_version: ["--version"],
+      aws_sts_identity: [
+        "sts",
+        "get-caller-identity",
+        "--output",
+        "json",
+      ],
+      aws_org_describe: [
+        "organizations",
+        "describe-organization",
+        "--output",
+        "json",
+      ],
+      aws_controltower_list_landing_zones: [
+        "controltower",
+        "list-landing-zones",
+        "--output",
+        "json",
+      ],
+      aws_org_list_scps: [
+        "organizations",
+        "list-policies",
+        "--filter",
+        "SERVICE_CONTROL_POLICY",
+        "--output",
+        "json",
+      ],
+      aws_config_recorders: [
+        "configservice",
+        "describe-configuration-recorders",
+        "--output",
+        "json",
+      ],
+      aws_cloudtrail_trails: [
+        "cloudtrail",
+        "describe-trails",
+        "--include-shadow-trails",
+        "--output",
+        "json",
+      ],
+    };
+
+    const args =
+      argsByTool[request.tool];
+
+    if (!args) {
+      return blocked(
+        request,
+        "Unsupported AWS read tool.",
+      );
+    }
+
+    return runAllowlistedProcess(
+      request.tool,
+      "aws",
+      args,
+      workspace,
+    );
+  }
+
+  if (
+    request.tool.startsWith(
+      "azure_",
+    )
+  ) {
+    const argsByTool: Partial<
+      Record<
+        ToolRequest["tool"],
+        string[]
+      >
+    > = {
+      azure_version: [
+        "version",
+        "--output",
+        "json",
+      ],
+      azure_account_show: [
+        "account",
+        "show",
+        "--output",
+        "json",
+      ],
+      azure_management_groups: [
+        "account",
+        "management-group",
+        "list",
+        "--output",
+        "json",
+      ],
+      azure_policy_assignments: [
+        "policy",
+        "assignment",
+        "list",
+        "--output",
+        "json",
+      ],
+    };
+
+    const args =
+      argsByTool[request.tool];
+
+    if (!args) {
+      return blocked(
+        request,
+        "Unsupported Azure read tool.",
+      );
+    }
+
+    return runAllowlistedProcess(
+      request.tool,
+      "az",
+      args,
+      workspace,
     );
   }
 
