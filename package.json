@@ -29,7 +29,8 @@
     "session": "tsx src/cli/session.ts --provider aws --engine terraform --mock brownfield",
     "session:fixture": "tsx src/cli/session.ts --provider aws --engine terraform --mock brownfield --fixture",
     "session:pulumi": "tsx src/cli/session.ts --provider aws --engine pulumi --mock brownfield --fixture",
-    "toolbox:check": "tsx src/cli/toolbox.ts"
+    "toolbox:check": "tsx src/cli/toolbox.ts",
+    "deps:review": "npm install-scripts ls"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
@@ -41,5 +42,10 @@
     "@langchain/langgraph": "1.4.18",
     "@langchain/langgraph-checkpoint-sqlite": "1.0.4",
     "zod": "4.6.5"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true,
+    "better-sqlite3@12.11.1": true,
+    "fsevents": false
   }
 }
