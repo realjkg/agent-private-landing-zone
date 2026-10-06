@@ -118,7 +118,7 @@ function help(): void {
     "  ./alz inspect [aws|azure]",
   );
   console.log(
-    "  ./alz session [aws|azure] [terraform|pulumi]",
+    "  ./alz session [aws|azure] [terraform|pulumi|opentofu]",
   );
   console.log("  ./alz doctor");
   console.log("  ./alz verify");
@@ -366,7 +366,7 @@ try {
     );
     const e = choice(
       second,
-      ["terraform", "pulumi"],
+      ["terraform", "pulumi", "opentofu"],
       "terraform",
     );
 
