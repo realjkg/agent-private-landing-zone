@@ -119,6 +119,12 @@ console.log("Thread    " + threadId);
 console.log("Provider  " + provider);
 console.log("IaC       " + engine);
 console.log(
+  "Discovery " +
+    (fixture
+      ? "deterministic fixture"
+      : "LIVE READ-ONLY"),
+);
+console.log(
   "Reasoner  " +
     (fixture
       ? "deterministic fixture (no model intelligence)"
@@ -126,13 +132,15 @@ console.log(
 );
 console.log();
 console.log(
-  "Talk to me normally. I can inspect the environment, explain risk,",
+  "Talk to me normally. I can inspect inventory, assess security/SBOM/resiliency,",
 );
 console.log(
-  "build preview-only Terraform or Pulumi candidates, compare them,",
+  "explain ownership and brownfield deltas, show evidence, and identify what",
 );
 console.log(
-  "show evidence, and tell you what is safe to do next.",
+  fixture
+    ? "a preview-only Terraform/Pulumi build would do. ACT remains disabled."
+    : "must be designed next. Real Build stops at the Design boundary; ACT remains disabled.",
 );
 console.log();
 console.log(
