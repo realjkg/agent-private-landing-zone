@@ -172,10 +172,14 @@ export async function runAgentKernel(
       state.environment?.safeBuildMode !== "READ_ONLY" &&
       state.environment?.safeBuildMode !== "BLOCKED";
 
+    const realDesignBoundary =
+      state.mock === undefined;
+
     const buildPermitted =
       buildRequested &&
       assessmentReady &&
-      environmentBuildable;
+      environmentBuildable &&
+      !realDesignBoundary;
 
     if (buildRequested && !buildPermitted) {
       progress(
@@ -189,7 +193,11 @@ export async function runAgentKernel(
           detail:
             !assessmentReady
               ? "A successful assessment is required before Build."
-              : "Environment policy does not permit Build.",
+              : !environmentBuildable
+                ? "Environment policy does not permit Build."
+                : realDesignBoundary
+                  ? "Real Build is intentionally stopped at the Design boundary until an approved DesignSpec is implemented."
+                  : "Build prerequisites are not satisfied.",
         }),
         phase: "BLOCKED",
       };
