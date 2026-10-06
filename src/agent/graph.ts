@@ -2,6 +2,9 @@ import { randomUUID } from "node:crypto";
 
 import { runBuildLoop } from "../build/loop.js";
 import { createDesignSpec } from "../design/create.js";
+import {
+  hasIaCAdapter,
+} from "../iac/index.js";
 import { act } from "./act.js";
 import { classifyIntent } from "./intent.js";
 import {
@@ -228,9 +231,9 @@ export async function runAgentKernel(
       state.design !== undefined &&
       state.design.status !== "BLOCKED" &&
       state.design.plugin.buildEligible &&
-      (state.design.plugin.plugin === "TERRAFORM" ||
-        state.design.plugin.plugin === "PULUMI" ||
-        state.design.plugin.plugin === "OPENTOFU");
+      hasIaCAdapter(
+        state.design.plugin.plugin,
+      );
 
     const buildPermitted =
       buildRequested &&
@@ -276,7 +279,8 @@ export async function runAgentKernel(
 
       const build = await runBuildLoop({
         provider: state.provider,
-        engine: state.engine,
+        engine:
+          state.design.plugin.plugin,
         mock: state.mock,
         approve: options.approveBuild,
         design: state.design,
