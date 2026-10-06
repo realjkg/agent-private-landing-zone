@@ -13,6 +13,8 @@ const context = {
 const checks: ToolName[] = [
   "terraform_version",
   "opentofu_version",
+  "bicep_version",
+  "cloudformation_version",
   "pulumi_version",
   "aws_version",
   "azure_version",
@@ -23,6 +25,9 @@ const labels: Partial<
 > = {
   terraform_version: "Terraform",
   opentofu_version: "OpenTofu",
+  bicep_version: "Bicep",
+  cloudformation_version:
+    "CloudFormation",
   pulumi_version: "Pulumi",
   aws_version: "AWS CLI",
   azure_version: "Azure CLI",
@@ -79,6 +84,12 @@ for (const tool of checks) {
 console.log();
 console.log(
   "Cloud read     DISABLED",
+);
+console.log(
+  "Preview write  DISABLED",
+);
+console.log(
+  "Project code   DISABLED",
 );
 console.log(
   "Cloud mutation DISABLED",
