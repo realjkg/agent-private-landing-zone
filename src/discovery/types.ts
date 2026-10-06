@@ -158,9 +158,18 @@ export type MockScenario =
   | "greenfield"
   | "unknown";
 
+export type DiscoveryEvidenceBundle = {
+  resources?: DiscoveredResource[];
+  scannerObservations?: ScannerObservation[];
+  sbomComponents?: SbomComponentObservation[];
+  sbomComplete?: boolean;
+  resiliencyObservations?: ResiliencyObservation[];
+};
+
 export type DiscoveryOptions = {
   provider: Provider;
   mock?: MockScenario;
+  evidenceBundle?: DiscoveryEvidenceBundle;
 };
 
 export type DiscoveryEvent =
