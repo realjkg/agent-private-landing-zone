@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { normalizePulumiPreview } from "../src/iac/pulumi-preview.js";
-import { normalizeTerraformPlan } from "../src/iac/terraform-plan.js";
+import {
+  normalizeOpenTofuPlan,
+  normalizeTerraformPlan,
+} from "../src/iac/terraform-plan.js";
 
 test("Terraform plan normalizes create update delete and replacement", () => {
   const result = normalizeTerraformPlan(
@@ -98,6 +101,39 @@ test("normalized change sets do not retain raw plan values", () => {
     }),
   );
 
+  assert.equal(
+    JSON.stringify(result).includes(secret),
+    false,
+  );
+});
+
+
+test("OpenTofu reuses Terraform-compatible plan normalization without retaining values", () => {
+  const secret =
+    "DO_NOT_PERSIST_OPENTOFU_SECRET";
+
+  const result = normalizeOpenTofuPlan(
+    JSON.stringify({
+      resource_changes: [
+        {
+          address: "aws_kms_key.audit",
+          type: "aws_kms_key",
+          change: {
+            actions: ["create"],
+            after: {
+              description: secret,
+            },
+          },
+        },
+      ],
+    }),
+  );
+
+  assert.equal(
+    result.engine,
+    "OPENTOFU",
+  );
+  assert.equal(result.creates, 1);
   assert.equal(
     JSON.stringify(result).includes(secret),
     false,
