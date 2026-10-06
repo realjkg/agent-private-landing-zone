@@ -6,7 +6,7 @@ export function promptGuide(): string {
   return [
     "Agentic Landing Zone · Prompt Guide",
     "",
-    "You can talk to the operator normally. Good requests describe the infrastructure outcome rather than a raw command.",
+    "Talk to me normally. Good requests describe the infrastructure outcome rather than a raw command.",
     "",
     "Prompts that work:",
     '  “Inspect this AWS environment and summarize the inventory.”',
