@@ -88,6 +88,6 @@ test("empty conversational state returns a valid natural-language starter", () =
 
   assert.match(
     answer,
-    /Inspect this environment and tell me the biggest risk/,
+    /Inspect this environment and assess its security and resiliency posture/,
   );
 });
