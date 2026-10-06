@@ -27,6 +27,7 @@ This installs the locked runtime dependencies. After bootstrap, use `./alz` for 
 ./alz session aws terraform
 ./alz session azure pulumi
 ./alz plugins
+./alz prompts
 ./alz sbom
 ./alz scan
 ./alz verify
@@ -74,6 +75,22 @@ Starts the secured conversational operator session with local model reasoning:
 ./alz session aws terraform
 ./alz session azure pulumi
 ```
+
+### prompts
+
+Shows the built-in prompt guide for unfamiliar operators:
+
+```bash
+./alz prompts
+```
+
+The same guide is available conversationally by typing `help` or `prompt guide`.
+
+Requests are checked before local-model routing. The operator is redirected when a prompt asks to reveal credentials/secrets, move private evidence outside the trust boundary, bypass approvals/policy/audit/security controls, invoke arbitrary shell execution, or perform clearly unrelated work outside the Landing Zone scope.
+
+A denied request includes a plain-language reason and a safe alternative. For example, instead of asking for a secret value, ask for its owner, scope, age, reference, or rotation posture without revealing the value. Instead of asking to bypass an approval, ask which control is blocking progress and what evidence or authorized change would satisfy it.
+
+After a denial, `why was that blocked?` explains the recorded boundary, while `prompt guide` shows working examples.
 
 ### doctor
 
