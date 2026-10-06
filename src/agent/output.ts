@@ -23,13 +23,18 @@ export async function writeAgentRun(
     .replace("Z", "");
 
   const filename =
-    \`\${timestamp}-\${sanitize(state.provider)}-\${sanitize(state.intent)}.json\`;
+    timestamp +
+    "-" +
+    sanitize(state.provider) +
+    "-" +
+    sanitize(state.intent) +
+    ".json";
 
   const path = join(directory, filename);
 
   await writeFile(
     path,
-    JSON.stringify(state, null, 2) + "\\n",
+    JSON.stringify(state, null, 2) + "\n",
     "utf8",
   );
 
