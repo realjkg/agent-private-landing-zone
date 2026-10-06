@@ -1,6 +1,7 @@
 import { classifyEnvironment, deriveSafeBuildMode } from "./classify.js";
 import { summarizeOwnership } from "./ownership.js";
 import type {
+  DiscoveryConflict,
   DiscoveryOptions,
   DiscoveryReporter,
   EnvironmentState,
@@ -35,7 +36,7 @@ export async function discoverEnvironment(
 
     report("ENVIRONMENT_CLASSIFIED", classification);
 
-    const conflicts = [];
+    const conflicts: DiscoveryConflict[] = [];
     const ownershipSummary = summarizeOwnership(
       providerResult.resources,
     );
@@ -61,7 +62,10 @@ export async function discoverEnvironment(
     return state;
   } catch (error) {
     const message =
-      error instanceof Error ? error.message : "unknown discovery failure";
+      error instanceof Error
+        ? error.message
+        : "unknown discovery failure";
+
     report("DISCOVERY_FAILED", message);
     throw error;
   }
