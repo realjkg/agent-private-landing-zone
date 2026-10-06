@@ -4,7 +4,9 @@ import {
   phaseDurations,
   writeAgentRun,
 } from "../agent/output.js";
-import type { IaCEngine } from "../build/types.js";
+import {
+  parseBuildEngine,
+} from "../build/engine.js";
 import type {
   MockScenario,
   Provider,
@@ -22,27 +24,6 @@ function parseProvider(value?: string): Provider {
 
   throw new Error(
     "Use --provider aws or --provider azure.",
-  );
-}
-
-function parseEngine(value?: string): IaCEngine {
-  if (value?.toLowerCase() === "terraform") {
-    return "TERRAFORM";
-  }
-
-  if (value?.toLowerCase() === "pulumi") {
-    return "PULUMI";
-  }
-
-  if (
-    value?.toLowerCase() === "opentofu" ||
-    value?.toLowerCase() === "tofu"
-  ) {
-    return "OPENTOFU";
-  }
-
-  throw new Error(
-    "Use --engine terraform, pulumi, or opentofu.",
   );
 }
 
@@ -77,7 +58,7 @@ console.log();
 const state = await runAgentKernel({
   request,
   provider: parseProvider(readArg("--provider")),
-  engine: parseEngine(readArg("--engine")),
+  engine: parseBuildEngine(readArg("--engine")),
   mock: parseMock(readArg("--mock")),
   thinker: fixture ? fixtureThinker : undefined,
   approveBuild: args.includes("--approve"),
