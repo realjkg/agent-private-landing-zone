@@ -30,6 +30,7 @@ export type BuildLoopOptions = {
   engine: IaCEngine;
   mock: MockScenario;
   approve?: boolean;
+  repositoryEvidence?: RepositoryEvidence;
 };
 
 export type BuildLoopResult = {
@@ -48,7 +49,9 @@ export async function runBuildLoop(
     mock: options.mock,
   });
 
-  const repository = collectRepositoryEvidence();
+  const repository =
+    options.repositoryEvidence ??
+    collectRepositoryEvidence();
 
   const generated = generateMockArtifact(
     options.provider,
