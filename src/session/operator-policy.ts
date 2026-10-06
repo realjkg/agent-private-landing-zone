@@ -25,7 +25,17 @@ export function evaluateOperatorRequest(
 ): OperatorPolicyDecision {
   const value = request.trim().toLowerCase();
 
+  const safeSecretMetadataRequest =
+    /(credential|secret|token|key).{0,50}(metadata|age|rotation|scope|owner|reference|posture)|(?:metadata|age|rotation|scope|owner|reference|posture).{0,50}(credential|secret|token|key)/i.test(
+      value,
+    ) &&
+    /without (revealing|showing|returning|displaying).{0,30}(secret|value|credential|token|key)/i.test(
+      value,
+    );
+
   if (
+    !safeSecretMetadataRequest &&
+
     /(show|print|dump|reveal|give me|display|return).{0,40}(password|secret|token|api key|access key|private key|credential)/i.test(
       value,
     ) ||
@@ -65,6 +75,9 @@ export function evaluateOperatorRequest(
     /(disable|bypass|ignore|turn off|circumvent|skip).{0,50}(guardrail|policy|approval|audit|logging|evidence|security|scanner|scan|sbom|identity|authentication|authorization|control)/i.test(
       value,
     ) ||
+    /ignore .{0,30}(system|previous|operator).{0,20}instruction|override .{0,30}system prompt|reveal .{0,30}system prompt/i.test(
+      value,
+    ) ||
     /(hide|erase|remove).{0,40}(audit|evidence|log|trace)/i.test(
       value,
     )
@@ -101,10 +114,25 @@ export function evaluateOperatorRequest(
   }
 
   if (
+    /crypto(?:currency)? mining|mine cryptocurrency|reverse shell|credential harvesting|keylogger|persistence mechanism/i.test(
+      value,
+    )
+  ) {
+    return {
+      allowed: false,
+      boundary: "OUT_OF_SCOPE",
+      reason:
+        "The requested activity is outside the governed infrastructure lifecycle supported by this Landing Zone.",
+      safeAlternative:
+        "Describe the legitimate infrastructure, security, recovery, or configuration outcome you need and the agent can map it to an approved workflow.",
+    };
+  }
+
+  if (
     !hasSessionContext &&
     value.length > 0 &&
     !IN_SCOPE.test(value) &&
-    !/help|what can you do|how do i|prompt|status|why|explain/i.test(
+    !/help|what can you do|how do i|prompt|status|environment|evidence|what did you find|next|compare|why|explain/i.test(
       value,
     )
   ) {
