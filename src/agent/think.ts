@@ -1,6 +1,7 @@
 import type {
   AgentResult,
   EngineeringAssessment,
+  StatusReporter,
 } from "../loop.js";
 import { runAgentLoop } from "../loop.js";
 import {
@@ -14,10 +15,12 @@ import type {
 export const localModelThinker: Thinker = (
   request,
   evidence,
+  report = () => {},
 ) =>
   runAgentLoop(
     request,
     evidence,
+    report,
   );
 
 function selectEngineeringAssessment(
@@ -29,12 +32,14 @@ function selectEngineeringAssessment(
 export async function think(
   state: AgentState,
   thinker: Thinker = localModelThinker,
+  report: StatusReporter = () => {},
 ): Promise<AgentState> {
   const evidence = understandingEvidence(state);
 
   const assessment = await thinker(
     state.request,
     evidence,
+    report,
   );
 
   return {
