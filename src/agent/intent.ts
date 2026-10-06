@@ -30,7 +30,7 @@ export function classifyIntent(
   }
 
   if (
-    /discover|inventory|what exists|list resources|show resources|enumerate resources/.test(
+    /discover|inspect|inventory|what exists|list resources|show resources|enumerate resources|scan environment|scan landing zone/.test(
       value,
     )
   ) {
