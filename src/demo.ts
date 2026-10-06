@@ -36,12 +36,41 @@ function provider(
     : "AWS";
 }
 
-function engine(
+const pluginNames: Record<string, string> = {
+  terraform: "Terraform",
+  pulumi: "Pulumi",
+  opentofu: "OpenTofu",
+  tofu: "OpenTofu",
+  bicep: "Bicep",
+  cloudformation: "CloudFormation",
+  cdk: "AWS CDK",
+  crossplane: "Crossplane",
+  ansible: "Ansible",
+};
+
+function buildSelection(
   value?: string,
-): IaCEngine {
-  return value?.toLowerCase() === "pulumi"
-    ? "PULUMI"
-    : "TERRAFORM";
+): {
+  plugin: string;
+  engine: IaCEngine;
+} {
+  const key =
+    (value ?? "terraform").toLowerCase();
+  const plugin = pluginNames[key];
+
+  if (!plugin) {
+    throw new Error(
+      "Use terraform, pulumi, opentofu, bicep, cloudformation, cdk, crossplane, or ansible.",
+    );
+  }
+
+  return {
+    plugin,
+    engine:
+      key === "pulumi"
+        ? "PULUMI"
+        : "TERRAFORM",
+  };
 }
 
 function scenario(
@@ -59,14 +88,18 @@ function scenario(
 
 const selectedProvider =
   provider(valueAfter("--provider"));
+const selection =
+  buildSelection(
+    valueAfter("--engine"),
+  );
 const selectedEngine =
-  engine(valueAfter("--engine"));
+  selection.engine;
 const selectedScenario =
   scenario(valueAfter("--scenario"));
 const request =
   valueAfter("--request") ??
   "Design the safest additive landing-zone delta using " +
-  selectedEngine +
+  selection.plugin +
   ".";
 
 console.log();
@@ -80,7 +113,14 @@ console.log(
     " / " +
     selectedScenario.toUpperCase(),
 );
-console.log("IaC       " + selectedEngine);
+console.log(
+  "Build path " + selection.plugin,
+);
+console.log(
+  "Runtime   " +
+    selectedEngine +
+    " fallback adapter",
+);
 console.log(
   "Mode      deterministic fixture; no cloud mutation",
 );
