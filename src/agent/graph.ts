@@ -22,6 +22,8 @@ export async function runAgentKernel(
 ): Promise<AgentState> {
   const startedMs = Date.now();
   const startedAt = new Date().toISOString();
+  const progress =
+    options.progress ?? (() => {});
 
   let state: AgentState = {
     requestId: randomUUID(),
@@ -42,12 +44,16 @@ export async function runAgentKernel(
   };
 
   try {
+    progress("Sensing environment…");
+
     state = await timedStep(
       state,
       "SENSING",
       "SENSE_COMPLETE",
       sense,
     );
+
+    progress("Understanding environment and safety boundaries…");
 
     state = await timedStep(
       state,
@@ -62,13 +68,64 @@ export async function runAgentKernel(
       state.intent === "CHANGE";
 
     if (reasoningRequired) {
+      progress("Reasoning about the request…");
+
+      const reportReasoning = (
+        status: string,
+        detail?: string,
+      ): void => {
+        if (status === "ROUTING") {
+          progress(
+            "Routing with local supervisor" +
+              (detail ? " (" + detail + ")" : "") +
+              "…",
+          );
+        } else if (status === "POLICY") {
+          progress(
+            "Applying deterministic policy controls…",
+          );
+        } else if (status === "PRIMARY") {
+          progress(
+            "Reasoning with primary local model" +
+              (detail ? " (" + detail + ")" : "") +
+              "…",
+          );
+        } else if (status === "VALIDATING") {
+          progress(
+            "Validating with independent local model" +
+              (detail ? " (" + detail + ")" : "") +
+              "…",
+          );
+        } else if (status === "ADJUDICATING") {
+          progress(
+            "Reconciling independent assessments…",
+          );
+        } else if (status === "DATA_REQUIRED") {
+          progress(
+            "Additional environment evidence is required.",
+          );
+        } else if (status === "ABSTAIN") {
+          progress(
+            "Independent assessments disagree; stopping safely.",
+          );
+        } else if (status === "COMPLETE") {
+          progress("Reasoning complete.");
+        } else if (status === "ERROR") {
+          progress("Reasoning failed safely.");
+        }
+      };
+
       if (options.thinker) {
         state = await timedStep(
           state,
           "THINKING",
           "THINK_COMPLETE",
           (current) =>
-            think(current, options.thinker),
+            think(
+              current,
+              options.thinker,
+              reportReasoning,
+            ),
         );
       } else if (
         process.env.AGENT_SKIP_LOCAL_MODEL !== "1"
@@ -77,7 +134,12 @@ export async function runAgentKernel(
           state,
           "THINKING",
           "THINK_COMPLETE",
-          think,
+          (current) =>
+            think(
+              current,
+              undefined,
+              reportReasoning,
+            ),
         );
       } else {
         state = appendEvent(state, {
@@ -88,6 +150,8 @@ export async function runAgentKernel(
         });
       }
     }
+
+    progress("Planning safe next steps…");
 
     state = await timedStep(
       state,
@@ -114,6 +178,10 @@ export async function runAgentKernel(
       environmentBuildable;
 
     if (buildRequested && !buildPermitted) {
+      progress(
+        "Build request blocked by safety prerequisites.",
+      );
+
       state = {
         ...appendEvent(state, {
           phase: "BLOCKED",
@@ -128,6 +196,10 @@ export async function runAgentKernel(
     }
 
     if (buildPermitted) {
+      progress(
+        "Preparing preview-only infrastructure candidate…",
+      );
+
       const buildStarted = Date.now();
 
       const build = await runBuildLoop({
@@ -170,6 +242,10 @@ export async function runAgentKernel(
       });
     }
 
+    progress(
+      "Checking approval and action boundary…",
+    );
+
     state = await timedStep(
       state,
       state.phase === "AWAITING_APPROVAL"
@@ -179,6 +255,10 @@ export async function runAgentKernel(
           : "ACTING",
       "ACT_EVALUATED",
       (current) => act(current),
+    );
+
+    progress(
+      "Observing execution state and verifying no mutation…",
     );
 
     state = await timedStep(
@@ -196,6 +276,8 @@ export async function runAgentKernel(
       durationMs: Date.now() - startedMs,
     };
   } catch (error) {
+    progress("Stopped safely due to an execution error.");
+
     const completedAt = new Date().toISOString();
 
     return appendEvent(
