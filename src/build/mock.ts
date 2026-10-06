@@ -35,6 +35,35 @@ export function generateMockArtifact(
     };
   }
 
+  if (engine === "BICEP") {
+    return {
+      path: "generated/main.bicep",
+      content: [
+        "// PREVIEW-ONLY FIXTURE",
+        `// Provider: ${provider}`,
+        "targetScope = 'resourceGroup'",
+        "",
+      ].join("\n"),
+    };
+  }
+
+  if (engine === "CLOUDFORMATION") {
+    return {
+      path: "generated/template.json",
+      content: JSON.stringify(
+        {
+          AWSTemplateFormatVersion:
+            "2010-09-09",
+          Description:
+            "PREVIEW-ONLY FIXTURE",
+          Resources: {},
+        },
+        null,
+        2,
+      ),
+    };
+  }
+
   return {
     path: "generated/index.ts",
     content: [
