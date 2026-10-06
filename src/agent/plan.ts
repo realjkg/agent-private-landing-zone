@@ -19,6 +19,7 @@ export function plan(
 
   if (
     state.intent === "ASSESS" ||
+    state.intent === "DESIGN" ||
     state.intent === "BUILD" ||
     state.intent === "CHANGE"
   ) {
@@ -26,11 +27,18 @@ export function plan(
   }
 
   if (
+    state.intent === "DESIGN" ||
+    state.intent === "BUILD" ||
+    state.intent === "CHANGE"
+  ) {
+    steps.push("DESIGN");
+  }
+
+  if (
     state.intent === "BUILD" ||
     state.intent === "CHANGE"
   ) {
     steps.push(
-      "DESIGN",
       "BUILD",
       "VALIDATE",
       "APPROVE",
