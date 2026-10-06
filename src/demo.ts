@@ -1,189 +1,131 @@
 import {
-  runAgentLoop,
-  type AgentStatus,
-} from "./loop.js";
+  fixtureThinker,
+} from "./agent/fixture.js";
+import {
+  runAgentKernel,
+} from "./agent/graph.js";
+import type {
+  MockScenario,
+  Provider,
+} from "./discovery/types.js";
+import type {
+  IaCEngine,
+} from "./build/types.js";
+import {
+  formatAgentResponse,
+} from "./session/query.js";
+import {
+  implementedPlugins,
+} from "./plugins/validate.js";
 
-const args = process.argv.slice(2);
-const verbose = args.includes("--verbose");
+function valueAfter(
+  name: string,
+): string | undefined {
+  const args = process.argv.slice(2);
+  const index = args.indexOf(name);
+  return index >= 0
+    ? args[index + 1]
+    : undefined;
+}
 
-const requestArgs = args.filter(
-  (arg) => arg !== "--verbose",
-);
+function provider(
+  value?: string,
+): Provider {
+  return value?.toLowerCase() === "azure"
+    ? "AZURE"
+    : "AWS";
+}
 
+function engine(
+  value?: string,
+): IaCEngine {
+  return value?.toLowerCase() === "pulumi"
+    ? "PULUMI"
+    : "TERRAFORM";
+}
+
+function scenario(
+  value?: string,
+): MockScenario {
+  if (
+    value === "greenfield" ||
+    value === "unknown"
+  ) {
+    return value;
+  }
+
+  return "brownfield";
+}
+
+const selectedProvider =
+  provider(valueAfter("--provider"));
+const selectedEngine =
+  engine(valueAfter("--engine"));
+const selectedScenario =
+  scenario(valueAfter("--scenario"));
 const request =
-  requestArgs.join(" ") ||
-  "Review this architecture decision and identify the strongest operational risk.";
-
-const evidence = process.env.DEMO_EVIDENCE;
-
-const startedAt = Date.now();
-
-function elapsed(): string {
-  return `${((Date.now() - startedAt) / 1000).toFixed(1)}s`;
-}
-
-function symbol(status: AgentStatus): string {
-  switch (status) {
-    case "COMPLETE":
-      return "✓";
-    case "ABSTAIN":
-    case "DATA_REQUIRED":
-      return "!";
-    case "ERROR":
-      return "✗";
-    default:
-      return "›";
-  }
-}
-
-function label(status: AgentStatus): string {
-  switch (status) {
-    case "ROUTING":
-      return "Route";
-    case "POLICY":
-      return "Policy";
-    case "PRIMARY":
-      return "Primary";
-    case "VALIDATING":
-      return "Validator";
-    case "ADJUDICATING":
-      return "Adjudication";
-    case "DATA_REQUIRED":
-      return "Evidence";
-    case "ABSTAIN":
-      return "Decision";
-    case "COMPLETE":
-      return "Complete";
-    case "ERROR":
-      return "Error";
-  }
-}
+  valueAfter("--request") ??
+  "Assess this landing zone, identify the strongest risk, and tell me what should be designed next.";
 
 console.log();
 console.log("Agentic Landing Zone");
 console.log("────────────────────────────────");
+console.log("GOVERNED OPERATOR DEMO");
+console.log("────────────────────────────────");
+console.log(
+  "Scenario  " +
+    selectedProvider +
+    " / " +
+    selectedScenario.toUpperCase(),
+);
+console.log("IaC       " + selectedEngine);
+console.log(
+  "Mode      deterministic fixture; no cloud mutation",
+);
 console.log();
-console.log(`Request  ${request}`);
+
+const state = await runAgentKernel({
+  request,
+  provider: selectedProvider,
+  engine: selectedEngine,
+  mock: selectedScenario,
+  thinker: fixtureThinker,
+  progress: (message) => {
+    console.log("› " + message);
+  },
+});
+
 console.log();
+console.log(formatAgentResponse(state));
 
-try {
-  const result = await runAgentLoop(
-    request,
-    evidence,
-    (status, detail) => {
-      console.log(
-        `${symbol(status)} ${label(status).padEnd(12)} ${detail ?? ""}  [${elapsed()}]`,
-      );
-    },
-  );
-
+if (state.deltaAssessment) {
   console.log();
-  console.log("────────────────────────────────");
-  console.log();
-
-  if (result.status === "DATA_REQUIRED") {
-    console.log("RESULT  DATA REQUIRED");
-    console.log();
+  console.log("Delta decisions");
+  for (
+    const decision of
+    state.deltaAssessment.decisions
+  ) {
     console.log(
-      "This request depends on current or environment-specific information.",
-    );
-    console.log(
-      "Supply a validated evidence snapshot and run the request again.",
+      "  " +
+        decision.action.padEnd(10) +
+        decision.resourceType +
+        " · " +
+        decision.reason,
     );
   }
-
-  if (result.status === "ABSTAIN") {
-    console.log("RESULT  ABSTAIN");
-    console.log();
-
-    if (result.primary) {
-      console.log("Primary risk");
-      console.log(`  ${result.primary.topRisk}`);
-      console.log();
-    }
-
-    if (result.validator) {
-      console.log("Validator risk");
-      console.log(`  ${result.validator.topRisk}`);
-      console.log();
-    }
-
-    if (result.adjudication) {
-      console.log("Why");
-      console.log(`  ${result.adjudication}`);
-      console.log();
-    }
-
-    console.log("Next action");
-    console.log(
-      "  Supply environment evidence or request a broader risk assessment.",
-    );
-  }
-
-  if (result.status === "OK" && result.primary) {
-    console.log("RESULT  VERIFIED");
-    console.log();
-
-    console.log("Top risk");
-    console.log(`  ${result.primary.topRisk}`);
-    console.log();
-
-    console.log("Why it matters");
-    console.log(`  ${result.primary.whyItMatters}`);
-    console.log();
-
-    if (result.primary.recommendedActions.length > 0) {
-      console.log("Recommended actions");
-
-      for (const action of result.primary.recommendedActions) {
-        console.log(`  • ${action}`);
-      }
-
-      console.log();
-    }
-
-    console.log(
-      `Confidence  ${result.primary.confidence}`,
-    );
-
-    if (result.adjudication) {
-      console.log(
-        `Validation  ${result.adjudication}`,
-      );
-    }
-  }
-
-  console.log();
-  console.log(
-    `Completed in ${(result.durationMs / 1000).toFixed(1)}s`,
-  );
-
-  console.log(
-    `Request ID   ${result.requestId}`,
-  );
-
-  if (verbose) {
-    console.log();
-    console.log("────────────────────────────────");
-    console.log("Verbose execution record");
-    console.log();
-    console.log(JSON.stringify(result, null, 2));
-  }
-
-  if (result.status !== "OK") {
-    process.exitCode = 2;
-  }
-} catch (error) {
-  console.log();
-  console.log("────────────────────────────────");
-  console.log();
-  console.log("RESULT  FAILED");
-
-  if (error instanceof Error) {
-    console.log(`Reason  ${error.message}`);
-  } else {
-    console.log("Reason  Unknown execution error");
-  }
-
-  process.exitCode = 1;
 }
+
+console.log();
+console.log(
+  "Implemented build adapters  " +
+    implementedPlugins()
+      .map((plugin) => plugin.id)
+      .join(", "),
+);
+console.log(
+  "Next boundary               DESIGN",
+);
+console.log(
+  "ACT                         DISABLED",
+);
+console.log();
