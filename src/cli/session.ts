@@ -175,6 +175,9 @@ try {
       break;
     }
 
+    console.log();
+    console.log("agent> Thinking…");
+
     const result = await graph.invoke(
       {
         request,
@@ -197,6 +200,10 @@ try {
         .replace(/[:.]/g, "-") +
       "-" +
       threadId;
+
+    console.log(
+      "agent> Recording encrypted evidence…",
+    );
 
     await writeEncryptedEvidence(
       "session",
