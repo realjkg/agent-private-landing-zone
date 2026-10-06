@@ -59,7 +59,7 @@ export const PLUGIN_CATALOG: PluginDefinition[] = [
       "SECURITY_SCAN",
     ],
     executable: "terraform",
-    testedVersion: "1.16.x",
+    testedVersion: "1.16.4",
     versionSource:
       "https://github.com/hashicorp/terraform/releases",
     lastReviewed: "2026-10-06",
@@ -85,7 +85,7 @@ export const PLUGIN_CATALOG: PluginDefinition[] = [
       "SECURITY_SCAN",
     ],
     executable: "pulumi",
-    testedVersion: "3.267.x",
+    testedVersion: "3.267.0",
     versionSource:
       "https://github.com/pulumi/pulumi/releases",
     lastReviewed: "2026-10-06",
@@ -106,7 +106,7 @@ export const PLUGIN_CATALOG: PluginDefinition[] = [
       "SECURITY_SCAN",
     ],
     executable: "tofu",
-    testedVersion: "1.13.x",
+    testedVersion: "1.13.1",
     versionSource:
       "https://github.com/opentofu/opentofu/releases",
     lastReviewed: "2026-10-06",
