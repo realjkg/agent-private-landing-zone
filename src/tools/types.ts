@@ -48,5 +48,7 @@ export type ToolResult = {
 export type ToolContext = {
   cwd: string;
   allowCloudRead: boolean;
+  allowProjectCodeExecution?: boolean;
+  allowPreviewWrite?: boolean;
   allowMutation: false;
 };
