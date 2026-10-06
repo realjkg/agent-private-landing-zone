@@ -1,7 +1,5 @@
-import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
-
 import type { AgentState } from "./types.js";
+import { writeEncryptedEvidence } from "../evidence/vault.js";
 
 function sanitize(value: string): string {
   return value
@@ -13,9 +11,6 @@ function sanitize(value: string): string {
 export async function writeAgentRun(
   state: AgentState,
 ): Promise<string> {
-  const directory = join(".runs", "agent");
-  await mkdir(directory, { recursive: true });
-
   const timestamp = new Date()
     .toISOString()
     .replace(/[:.]/g, "-")
@@ -27,18 +22,13 @@ export async function writeAgentRun(
     "-" +
     sanitize(state.provider) +
     "-" +
-    sanitize(state.intent) +
-    ".json";
+    sanitize(state.intent);
 
-  const path = join(directory, filename);
-
-  await writeFile(
-    path,
-    JSON.stringify(state, null, 2) + "\n",
-    "utf8",
+  return writeEncryptedEvidence(
+    "agent",
+    filename,
+    state,
   );
-
-  return path;
 }
 
 export function phaseDurations(
