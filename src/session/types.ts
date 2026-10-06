@@ -15,6 +15,8 @@ export type SessionCommand =
   | "COMPARE_IAC"
   | "USE_TERRAFORM"
   | "USE_PULUMI"
+  | "PROMPT_GUIDE"
+  | "GUARDRAIL"
   | "HELP";
 
 export type SessionTurn = {
