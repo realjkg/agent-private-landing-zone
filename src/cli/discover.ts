@@ -1,5 +1,15 @@
 import { discoverEnvironment } from "../discovery/discover.js";
 import {
+  assessEnvironment,
+} from "../assessment/posture.js";
+import {
+  formatAssessmentSummary,
+  writeAssessmentRun,
+} from "../assessment/output.js";
+import {
+  writeConfigurationRecoverySnapshot,
+} from "../assessment/recovery.js";
+import {
   formatResourceRows,
   writeDiscoveryRun,
 } from "../discovery/output.js";
@@ -65,7 +75,20 @@ try {
     },
   );
 
-  const runRecord = await writeDiscoveryRun(result);
+  const assessment =
+    assessEnvironment(result);
+
+  const [
+    runRecord,
+    assessmentRecord,
+    recoveryRecord,
+  ] = await Promise.all([
+    writeDiscoveryRun(result),
+    writeAssessmentRun(assessment),
+    writeConfigurationRecoverySnapshot(
+      assessment.recoverySnapshot,
+    ),
+  ]);
 
   console.log(`✓ Provider        ${result.provider}`);
   console.log(`✓ Classification  ${result.classification}`);
@@ -81,6 +104,24 @@ try {
   console.log(`  ${result.safeBuildMode}`);
   console.log();
 
+  for (const line of formatAssessmentSummary(assessment)) {
+    console.log(line);
+  }
+  console.log();
+
+  if (assessment.findings.length > 0) {
+    console.log("Posture findings");
+    for (const finding of assessment.findings) {
+      console.log(
+        "  " +
+          finding.severity.padEnd(8) +
+          finding.domain.padEnd(14) +
+          finding.title,
+      );
+    }
+    console.log();
+  }
+
   if (showResources) {
     console.log("Resources");
     for (const line of formatResourceRows(result.resources)) {
@@ -94,7 +135,9 @@ try {
   }
 
   console.log("No changes were made.");
-  console.log(`Run record  ${runRecord}`);
+  console.log(`Discovery record  ${runRecord}`);
+  console.log(`Assessment record ${assessmentRecord}`);
+  console.log(`Recovery snapshot ${recoveryRecord}`);
 
   if (verbose) {
     console.log();
