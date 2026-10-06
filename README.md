@@ -47,25 +47,25 @@ Design now produces an evidence-linked, hashable `DesignSpec` with the selected 
 
 ### Build
 
-Terraform and Pulumi are both supported as IaC adapters.
+Verified preview adapters currently include Terraform, Pulumi, OpenTofu, Azure Bicep, and AWS CloudFormation.
 
-| Capability | Terraform | Pulumi |
-| --- | --- | --- |
-| Version check | `terraform version -json` | `pulumi version` |
-| Static validation | `terraform fmt -check -recursive`, `terraform validate -json` | runtime/version validation today |
-| Preview | `terraform plan ...` | `pulumi preview --non-interactive --diff` |
-| Apply / Up | **Not exposed** | **Not exposed** |
-| Destroy | **Not exposed** | **Not exposed** |
+| Adapter | Validation | Governed preview | Mutation |
+| --- | --- | --- | --- |
+| Terraform | fmt + validate | plan | apply/destroy not exposed |
+| Pulumi | runtime/version today | preview | up/destroy not exposed |
+| OpenTofu | fmt + validate | plan | apply/destroy not exposed |
+| Bicep | lint + build with no automatic restore | Azure what-if with ResourceIdOnly | deployment not exposed |
+| CloudFormation | validate-template | existing-stack UPDATE Change Set | execute-change-set not exposed |
 
-Both engines feed the same normalized ChangeSet, ownership, policy, evidence and approval gates.
+All implemented adapters feed the same normalized ChangeSet, ownership, policy, evidence and approval gates. CloudFormation CREATE previews remain Design-only because AWS creates a `REVIEW_IN_PROGRESS` stack shell before execution.
 
 ### Build plug-in direction
 
 The foundation is intended to support additional declarative/cloud-native build adapters without changing the governance plane:
 
-- OpenTofu
-- Azure Bicep
-- AWS CloudFormation
+- OpenTofu — implemented
+- Azure Bicep — implemented
+- AWS CloudFormation — implemented for existing-stack UPDATE previews
 - AWS CDK through CloudFormation synthesis/change evidence
 - Crossplane for Kubernetes/private/edge control planes
 - Ansible under BUILD/CONFIGURE/MANAGE for brownfield operating-system, network, appliance and secure-edge configuration
@@ -197,7 +197,7 @@ Azure:
 ./alz session azure pulumi
 ```
 
-Inside a session, the operator can request a different design path naturally, for example `Design this using AWS CDK`, `Design this using Bicep`, or `Build the attached edge configuration using Ansible`. Planned adapters remain design-only until implemented and verified.
+Inside a session, the operator can request a different path naturally. Terraform, Pulumi, OpenTofu, Bicep, and existing-stack CloudFormation UPDATE previews have verified adapters. CDK, Ansible, and Crossplane remain Design-only until their executable-project/controller isolation is implemented and verified.
 
 The secure session attests that:
 
@@ -290,4 +290,4 @@ ACT = DISABLED
 
 The repository currently exposes no Terraform apply/destroy, Pulumi up/destroy, CloudFormation execute-change-set, CDK deploy, Bicep deployment, OpenTofu apply, Crossplane mutation, or Ansible non-check execution through the broker.
 
-Terraform and Pulumi remain the implemented preview adapters. OpenTofu, Bicep, CloudFormation, CDK, Crossplane and Ansible are visible to Design through the plug-in contract but cannot execute until their adapters are implemented, scanned and verified.
+Implemented preview adapters are Terraform, Pulumi, OpenTofu, Bicep, and existing-stack CloudFormation UPDATE Change Sets. CDK, Crossplane, and Ansible remain visible to Design but cannot execute until their stronger runtime isolation/preview contracts are implemented, scanned, and verified.
