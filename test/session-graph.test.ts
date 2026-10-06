@@ -30,10 +30,14 @@ test("LangGraph session persists state by thread id", async () => {
     first.agentState?.environment?.classification,
     "BROWNFIELD",
   );
+  assert.match(
+    first.response ?? "",
+    /strongest operational risk/i,
+  );
 
   const second = await graph.invoke(
     {
-      request: ":environment",
+      request: "what did you find?",
       provider: "AWS",
       engine: "TERRAFORM",
       mock: "brownfield",
@@ -49,5 +53,37 @@ test("LangGraph session persists state by thread id", async () => {
   );
   assert.ok(
     (second.history?.length ?? 0) >= 2,
+  );
+});
+
+test("session can switch IaC engine conversationally", async () => {
+  const { graph } =
+    createSessionGraph(":memory:");
+
+  const config = {
+    configurable: {
+      thread_id: "switch-thread",
+    },
+  };
+
+  const result = await graph.invoke(
+    {
+      request: "use Pulumi instead",
+      provider: "AWS",
+      engine: "TERRAFORM",
+      mock: "brownfield",
+      approveBuild: false,
+      fixture: true,
+    },
+    config,
+  );
+
+  assert.equal(
+    result.engine,
+    "PULUMI",
+  );
+  assert.match(
+    result.response ?? "",
+    /switched.*PULUMI/i,
   );
 });
