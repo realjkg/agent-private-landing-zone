@@ -106,7 +106,7 @@ function help(): void {
   console.log("Operator commands");
   console.log();
   console.log(
-    "  ./alz demo [aws|azure] [terraform|pulumi] [brownfield|greenfield|unknown]",
+    "  ./alz demo [aws|azure] [terraform|pulumi|opentofu|bicep|cloudformation|cdk|crossplane|ansible] [brownfield|greenfield|unknown]",
   );
   console.log(
     "  ./alz inspect [aws|azure]",
@@ -300,7 +300,16 @@ try {
     );
     const e = choice(
       second,
-      ["terraform", "pulumi"],
+      [
+        "terraform",
+        "pulumi",
+        "opentofu",
+        "bicep",
+        "cloudformation",
+        "cdk",
+        "crossplane",
+        "ansible",
+      ],
       "terraform",
     );
     const s = choice(
