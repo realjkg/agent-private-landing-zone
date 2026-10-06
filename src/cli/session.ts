@@ -37,15 +37,24 @@ function parseEngine(value?: string): IaCEngine {
     : "TERRAFORM";
 }
 
-function parseMock(value?: string): MockScenario {
+function parseMock(
+  value?: string,
+): MockScenario | undefined {
+  if (!value) {
+    return undefined;
+  }
+
   if (
+    value === "brownfield" ||
     value === "greenfield" ||
     value === "unknown"
   ) {
     return value;
   }
 
-  return "brownfield";
+  throw new Error(
+    "Use --mock brownfield, greenfield, or unknown.",
+  );
 }
 
 const args = process.argv.slice(2);
