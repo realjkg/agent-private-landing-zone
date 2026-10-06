@@ -117,6 +117,20 @@ export async function runBuildLoop(
     true,
   );
 
+  if (!repository.clean) {
+    gate.allowed = false;
+    gate.reasons.push(
+      "Repository worktree is dirty; build evidence is not clean.",
+    );
+  }
+
+  if (!repository.packageLockHash) {
+    gate.allowed = false;
+    gate.reasons.push(
+      "package-lock.json evidence is missing.",
+    );
+  }
+
   return {
     candidate,
     repository,
