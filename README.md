@@ -1,152 +1,244 @@
-# Adapt Cloud Agentic Landing Zone
+# Agentic Landing Zone
 
-Portable accelerator for governed agentic workloads that can run locally, in private cloud, sovereign-connected environments, or disconnected environments.
+Portable, private and sovereign accelerator for governed agentic infrastructure workflows across AWS, Azure and private/edge environments.
 
-## Initial capability
+The current implementation is intentionally conservative: it can discover, assess, reason, design toward a delta, generate preview-only fixture candidates, validate evidence and enforce policy boundaries. **ACT remains disabled.**
 
-This first cut implements a local agentic execution loop with:
-
-- Qwen3 1.7B as the supervisory/router model
-- Qwen3 4B as the primary reasoning model
-- Mistral Nemo as an independent validator
-- localhost Ollama as the inference runtime
-- deterministic evidence gating and abstention behavior
-- a CLI demo that can be run without public model APIs
-
-The F1 prediction workload discussed during development is intentionally **not embedded into the core**. It belongs under an examples or capabilities layer so the accelerator remains reusable for Presidio and other customer environments.
-
-## Architecture
+## Five-pillar methodology
 
 ```text
-Request
-  |
-  v
-Router / Supervisor
-(qwen3:1.7b)
-  |
-  v
-Policy + Evidence Gate
-  |
-  +--> DATA_REQUIRED / ABSTAIN
-  |
-  v
-Primary Analysis
-(qwen3:4b)
-  |
-  +------------------+
-  |                  |
-  v                  v
-Independent      Validator
-evidence         (mistral-nemo)
-  |                  |
-  +--------+---------+
-           |
-           v
-      Adjudication
-           |
-           v
-        Response
+DISCOVER → DESIGN → BUILD → GOVERN → MANAGE
+    ▲         ▲        ▲        ▲        ▲
+    └──────── ASSESS / REASON / VERIFY ────────┘
 ```
 
-The validator does not receive the primary model's answer until the adjudication step.
+Assess is embedded across the pillars rather than exposed as a sixth pillar.
 
-## Local demo
+### Discover
 
-Prerequisites:
+Discovery builds a normalized view of:
 
-- Node.js 20+
-- Ollama running locally
-- the following models pulled:
+- AWS or Azure control-plane resources
+- ownership and source of truth
+- attached physical or virtual assets
+- scanner observations
+- CycloneDX or SPDX SBOM evidence
+- resiliency and recovery evidence
+
+Unknown evidence remains unknown. Discovery never grants delete authority or automatic adoption.
+
+### Design
+
+Brownfield design is delta-oriented:
+
+```text
+Observed state
+    +
+Declared state
+    +
+Desired outcome
+    ↓
+Delta assessment
+    ↓
+REUSE / INTEGRATE / CONFIGURE / ADD / ADOPT / NO_TOUCH / BLOCKED
+```
+
+Real environments currently stop at the Design boundary before generative infrastructure changes.
+
+### Build
+
+Terraform and Pulumi are both supported as IaC adapters.
+
+| Capability | Terraform | Pulumi |
+| --- | --- | --- |
+| Version check | `terraform version -json` | `pulumi version` |
+| Static validation | `terraform fmt -check -recursive`, `terraform validate -json` | runtime/version validation today |
+| Preview | `terraform plan ...` | `pulumi preview --non-interactive --diff` |
+| Apply / Up | **Not exposed** | **Not exposed** |
+| Destroy | **Not exposed** | **Not exposed** |
+
+Both engines feed the same normalized ChangeSet, ownership, policy, evidence and approval gates.
+
+## Terraform and Pulumi examples
+
+Where an approved design calls for an additive resource, the two engines should express the same intent rather than different architectures.
+
+For example, an approved AWS delta may call for an encrypted audit log group that reuses an existing customer KMS key.
+
+Terraform:
+
+```hcl
+variable "kms_key_arn" {
+  type = string
+}
+
+resource "aws_cloudwatch_log_group" "agent_audit" {
+  name              = "/agentic-landing-zone/audit"
+  retention_in_days = 30
+  kms_key_id        = var.kms_key_arn
+
+  tags = {
+    ManagedBy = "agentic-landing-zone"
+  }
+}
+```
+
+Pulumi TypeScript:
+
+```ts
+import * as aws from "@pulumi/aws";
+
+export function createAuditLogGroup(kmsKeyArn: pulumi.Input<string>) {
+  return new aws.cloudwatch.LogGroup("agent-audit", {
+    name: "/agentic-landing-zone/audit",
+    retentionInDays: 30,
+    kmsKeyId: kmsKeyArn,
+    tags: {
+      ManagedBy: "agentic-landing-zone",
+    },
+  });
+}
+```
+
+These snippets are **illustrative design-to-IaC examples**. The live runtime does not currently apply them. Existing customer resources remain authoritative unless explicit ownership/update authority exists.
+
+More examples and the adapter contract are in [docs/iac-examples.md](docs/iac-examples.md).
+
+## Govern
+
+Governance is enforced throughout the workflow:
+
+- identity and session security
+- ownership boundaries
+- deterministic policy decisions
+- scanner and SBOM evidence
+- encrypted evidence records
+- hash-bound approval
+- no arbitrary shell
+- no mutation tools in the current capability vocabulary
+
+## Manage
+
+Manage is intended to continuously evaluate:
+
+- drift
+- configuration backup
+- restore readiness
+- vulnerability changes
+- SBOM changes
+- policy drift
+- component health
+- evidence lifecycle
+
+The current resiliency implementation can capture an encrypted configuration recovery manifest. A manifest is not treated as proof of recoverability unless restore evidence exists.
+
+## Secure session
+
+The default conversational session uses live read-only provider discovery and local Qwen/Mistral reasoning:
+
+```bash
+npm run session
+```
+
+Azure:
+
+```bash
+npm run session:azure
+```
+
+The deterministic fixture session remains available for tests:
+
+```bash
+npm run session:fixture
+```
+
+The secure session attests that:
+
+- evidence is encrypted at rest
+- live checkpoint state is memory-only
+- arbitrary shell is unavailable
+- cloud read is explicit
+- mutation is unavailable
+- legacy plaintext evidence has been migrated
+
+## Discovery and posture assessment
+
+AWS live read-only discovery:
+
+```bash
+npm run discover:aws:live
+```
+
+Azure live read-only discovery:
+
+```bash
+npm run discover:azure:live
+```
+
+Optional evidence can be attached to discovery:
+
+```bash
+npm run discover -- \
+  --provider aws \
+  --sbom ./evidence/bom.cdx.json \
+  --inventory-evidence ./evidence/inventory.json \
+  --posture-evidence ./evidence/posture.json \
+  --resources
+```
+
+Evidence files must remain inside the current workspace. Imported inventory evidence is read-only and cannot grant update/delete authority.
+
+## Local reasoning runtime
+
+Default local models:
+
+- Qwen3 1.7B — supervisor/router
+- Qwen3 4B — primary engineering reasoning
+- Mistral Nemo — independent validator
+- Ollama — local inference runtime
+
+Example setup:
 
 ```bash
 ollama pull qwen3:1.7b
 ollama pull qwen3:4b
 ollama pull mistral-nemo
-```
 
-Install and run:
-
-```bash
-cd agentic-landing-zone
 npm install
-npm run check
-npm run demo -- "Summarize the strongest operational risk in a private agentic landing zone."
+npm run verify
 ```
 
-For a request that requires current evidence, supply a demo evidence snapshot:
+## Deployment posture
 
-```bash
-DEMO_EVIDENCE="Validated snapshot: service health green; local inference latency 420ms." \
-  npm run demo -- "Assess the current deployment risk."
-```
+Sovereign Edge describes the trust and deployment posture, not a particular device.
 
-The default inference endpoint is:
+The runtime can target a Raspberry Pi, secure edge appliance, industrial compute node, rack server, private-cloud VM or other customer-controlled host.
 
 ```text
-http://127.0.0.1:11434
+Operator identity
+      +
+Device identity
+      ↓
+Secured sovereign session
+      ↓
+Agent runtime
+  ├── local models
+  ├── policy
+  ├── encrypted evidence
+  ├── delta assessment
+  └── typed tool broker
+      ↓
+AWS / Azure / private infrastructure
 ```
 
-No hosted inference provider is required for the demo.
+Sovereignty means customer control over execution, models, data, keys, identity, evidence, network paths and software supply-chain artifacts without requiring a SaaS control plane.
 
-## Configuration
-
-Copy `.env.example` values into your environment as needed:
+## Current safety boundary
 
 ```text
-OLLAMA_BASE_URL=http://127.0.0.1:11434
-ROUTER_MODEL=qwen3:1.7b
-PRIMARY_MODEL=qwen3:4b
-VALIDATOR_MODEL=mistral-nemo:latest
+ACT = DISABLED
 ```
 
-## Accelerator direction
+The repository currently exposes no Terraform apply/destroy or Pulumi up/destroy operation through the broker.
 
-The repository is intended to grow along these boundaries:
-
-```text
-agentic-landing-zone/
-├── core/
-│   ├── orchestration/
-│   ├── policy/
-│   ├── evidence/
-│   ├── inference-gateway/
-│   └── observability/
-├── providers/
-│   ├── aws/
-│   ├── azure/
-│   ├── azure-local/
-│   └── on-prem/
-├── runtimes/
-│   ├── ollama/
-│   ├── vllm/
-│   └── foundry-local/
-├── profiles/
-│   ├── private/
-│   ├── sovereign-connected/
-│   └── sovereign-disconnected/
-└── examples/
-```
-
-## Presidio use
-
-The goal is a cloneable reference implementation that can be bound to approved infrastructure and models without rewriting the governance plane.
-
-Typical flow:
-
-```text
-clone accelerator
-  -> select deployment profile
-  -> bind approved inference runtime
-  -> attach customer capability
-  -> observe / evaluate
-  -> promote through production controls
-```
-
-## Next increments
-
-- LangGraph state-machine implementation
-- LangSmith self-hosted/BYOC tracing and eval hooks
-- provider adapters for Azure Local / Foundry Local and AWS private inference
-- immutable evidence snapshots and audit metadata
-- capability plug-in contract
-- CI regression tests for routing, abstention, disagreement, and privacy boundaries
+Real Build remains stopped at the Design boundary until an approved DesignSpec-to-IaC implementation is complete.
