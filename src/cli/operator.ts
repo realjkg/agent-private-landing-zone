@@ -109,6 +109,9 @@ function help(): void {
     "  ./alz demo [aws|azure] [terraform|pulumi|opentofu|bicep|cloudformation|cdk|crossplane|ansible] [brownfield|greenfield|unknown]",
   );
   console.log(
+    "  ./alz design [aws|azure] [terraform|pulumi|opentofu|bicep|cloudformation|cdk|crossplane|ansible] [brownfield|greenfield|unknown]",
+  );
+  console.log(
     "  ./alz inspect [aws|azure]",
   );
   console.log(
@@ -292,7 +295,10 @@ try {
     command === "-h"
   ) {
     help();
-  } else if (command === "demo") {
+  } else if (
+    command === "demo" ||
+    command === "design"
+  ) {
     const p = choice(
       first,
       ["aws", "azure"],
