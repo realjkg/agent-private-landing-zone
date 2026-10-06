@@ -21,6 +21,15 @@ test("explicit discovery requests remain DISCOVER", () => {
   );
 });
 
+test("inspect requests enter discovery", () => {
+  assert.equal(
+    classifyIntent(
+      "Inspect this AWS environment.",
+    ),
+    "DISCOVER",
+  );
+});
+
 test("build requests remain BUILD", () => {
   assert.equal(
     classifyIntent(
