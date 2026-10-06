@@ -160,7 +160,7 @@ export function createSessionGraph(
   )
     .addNode(
       "session",
-      (state) =>
+      (state: LangGraphSessionState) =>
         sessionNode(state, progress),
     )
     .addEdge(START, "session")
