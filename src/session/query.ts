@@ -207,7 +207,7 @@ export function answerStateQuery(
   if (!state) {
     return [
       "I don't have an environment assessment in this session yet.",
-      "You can start naturally, for example: "Inspect this environment and tell me the biggest risk."",
+      'You can start naturally, for example: "Inspect this environment and tell me the biggest risk."',
     ].join("\n");
   }
 
