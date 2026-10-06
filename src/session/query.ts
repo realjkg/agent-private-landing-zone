@@ -15,6 +15,7 @@ export function classifySessionCommand(
 
   if (
     value === ":status" ||
+    value === "status" ||
     /current status|where are we|what is the status/.test(value)
   ) {
     return "STATUS";
@@ -22,6 +23,7 @@ export function classifySessionCommand(
 
   if (
     value === ":environment" ||
+    value === "environment" ||
     /what did you find|show environment|what resources|environment state/.test(
       value,
     )
@@ -31,6 +33,7 @@ export function classifySessionCommand(
 
   if (
     value === ":evidence" ||
+    value === "evidence" ||
     /show evidence|what evidence|why was .*blocked|why did .*block/.test(
       value,
     )
