@@ -12,6 +12,10 @@ test("session recognizes conversational state queries", () => {
     "STATUS",
   );
   assert.equal(
+    classifySessionCommand("what else can you do?"),
+    "HELP",
+  );
+  assert.equal(
     classifySessionCommand(
       "what did you find?",
     ),
