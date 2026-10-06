@@ -139,6 +139,30 @@ if (state.deltaAssessment) {
   console.log();
 }
 
+if (state.design) {
+  console.log("Design");
+  console.log(
+    "  Status     " +
+      state.design.status,
+  );
+  console.log(
+    "  Plug-in    " +
+      state.design.plugin.plugin +
+      " / " +
+      state.design.plugin.status,
+  );
+  console.log(
+    "  Evidence   " +
+      state.design.plugin.evidencePath,
+  );
+  console.log(
+    "  SHA-256    " +
+      state.design.designHash.slice(0, 16) +
+      "…",
+  );
+  console.log();
+}
+
 if (state.plan) {
   console.log("Plan");
   console.log(
