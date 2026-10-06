@@ -10,6 +10,11 @@ export type SessionCommand =
   | "STATUS"
   | "ENVIRONMENT"
   | "EVIDENCE"
+  | "EXPLAIN"
+  | "NEXT"
+  | "COMPARE_IAC"
+  | "USE_TERRAFORM"
+  | "USE_PULUMI"
   | "HELP";
 
 export type SessionTurn = {
