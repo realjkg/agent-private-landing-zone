@@ -16,25 +16,28 @@ export function observe(
 
   if (state.assessment) {
     evidence.push(
-      \`Assessment status: \${state.assessment.status}\`,
+      "Assessment status: " + state.assessment.status,
     );
   }
 
   if (state.build) {
     evidence.push(
-      \`Build artifact hash: \${state.build.candidate.artifact.contentHash}\`,
+      "Build artifact hash: " +
+        state.build.candidate.artifact.contentHash,
     );
     evidence.push(
-      \`Preview hash: \${state.build.candidate.evidence.planHash ?? "missing"}\`,
+      "Preview hash: " +
+        (state.build.candidate.evidence.planHash ?? "missing"),
     );
     evidence.push(
-      \`Build gate: \${state.build.gate.allowed ? "PASSED" : "STOPPED"}\`,
+      "Build gate: " +
+        (state.build.gate.allowed ? "PASSED" : "STOPPED"),
     );
   }
 
   if (state.action) {
     evidence.push(
-      \`Action status: \${state.action.status}\`,
+      "Action status: " + state.action.status,
     );
   }
 
