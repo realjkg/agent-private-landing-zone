@@ -54,6 +54,22 @@ test("brownfield review senses, understands, thinks, plans, and does not act", a
     "Fixture risk",
   );
   assert.equal(
+    state.postureAssessment?.securityStatus,
+    "INSECURE",
+  );
+  assert.equal(
+    state.postureAssessment?.sbom.status,
+    "PARTIAL",
+  );
+  assert.equal(
+    state.postureAssessment?.resiliency.restoreEvidence,
+    "UNVERIFIED",
+  );
+  assert.equal(
+    state.deltaAssessment?.designRequired,
+    true,
+  );
+  assert.equal(
     state.action?.executed,
     false,
   );
