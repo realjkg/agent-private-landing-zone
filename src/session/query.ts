@@ -266,7 +266,7 @@ export function formatAgentResponse(
     if (state.build) {
       lines.push(
         "I prepared a " +
-          state.engine +
+          state.build.candidate.artifact.engine +
           " candidate. The build gate is " +
           (state.build.gate.allowed
             ? "passing"
