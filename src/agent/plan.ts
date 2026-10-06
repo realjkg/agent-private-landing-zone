@@ -30,6 +30,7 @@ export function plan(
     state.intent === "CHANGE"
   ) {
     steps.push(
+      "DESIGN",
       "BUILD",
       "VALIDATE",
       "APPROVE",
