@@ -56,7 +56,7 @@ Runs the same governed deterministic path with Design as the explicit operator g
 ./alz design azure bicep brownfield
 ```
 
-Terraform and Pulumi are currently implemented preview adapters. CDK, Bicep, OpenTofu, CloudFormation, Crossplane and Ansible can be selected and reviewed in Design but remain blocked from Build execution until their adapters are implemented and verified.
+Implemented preview adapters are Terraform, Pulumi, OpenTofu, Bicep, and CloudFormation UPDATE Change Sets for existing AWS stacks. CDK, Crossplane, and Ansible can be selected and reviewed in Design but remain blocked from executable Build until their stronger isolation/preview contracts are verified.
 
 ### inspect
 
@@ -123,10 +123,10 @@ Runs the package dependency audit. If Trivy is installed locally it also scans t
 
 | Scenario | Discover | Assess | Delta | Design | Build | ACT |
 | --- | --- | --- | --- | --- | --- | --- |
-| AWS brownfield | live read-only + fixture | supported | supported | DesignSpec | Terraform/Pulumi fixture preview; other adapters planned | disabled |
-| AWS greenfield | fixture | supported | supported | DesignSpec | Terraform/Pulumi fixture preview; other adapters planned | disabled |
-| Azure brownfield | live read-only + fixture | supported | supported | DesignSpec | Terraform/Pulumi fixture preview; Bicep planned | disabled |
-| Azure greenfield | fixture | supported | supported | DesignSpec | Terraform/Pulumi fixture preview; Bicep planned | disabled |
+| AWS brownfield | live read-only + fixture | supported | supported | DesignSpec | Terraform/Pulumi/OpenTofu + CloudFormation UPDATE preview | disabled |
+| AWS greenfield | fixture | supported | supported | DesignSpec | Terraform/Pulumi/OpenTofu; CloudFormation CREATE remains Design-only | disabled |
+| Azure brownfield | live read-only + fixture | supported | supported | DesignSpec | Terraform/Pulumi/OpenTofu/Bicep preview | disabled |
+| Azure greenfield | fixture | supported | supported | DesignSpec | Terraform/Pulumi/OpenTofu/Bicep preview | disabled |
 | Private/edge attached assets | evidence ingestion | supported | supported | DesignSpec | Ansible/Crossplane/private adapters planned | disabled |
 | Sovereign/disconnected | evidence ingestion | supported | supported | DesignSpec | signed/offline adapter bundle planned | disabled |
 
