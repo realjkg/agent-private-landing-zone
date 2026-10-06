@@ -105,6 +105,34 @@ export async function discoverAws(
         assetKind: "CLOUD",
       },
     },
+    {
+      resourceId: "edge:appliance:secure-node-01",
+      provider: "AWS" as const,
+      resourceType: "EDGE::PhysicalAppliance",
+      name: "secure-edge-node-01",
+      ownership: "EXTERNAL" as const,
+      mutationPolicy: "READ_ONLY" as const,
+      sourceOfTruth: "MANUAL" as const,
+      metadata: {
+        mock: true,
+        assetKind: "PHYSICAL",
+        attachedToLandingZone: true,
+      },
+    },
+    {
+      resourceId: "edge:virtual:security-gateway-01",
+      provider: "AWS" as const,
+      resourceType: "EDGE::VirtualAppliance",
+      name: "security-gateway-01",
+      ownership: "MANAGED_BY_CUSTOMER" as const,
+      mutationPolicy: "READ_ONLY" as const,
+      sourceOfTruth: "MANUAL" as const,
+      metadata: {
+        mock: true,
+        assetKind: "VIRTUAL",
+        attachedToLandingZone: true,
+      },
+    },
   ].map(enforceOwnershipPolicy);
 
   return {
@@ -141,6 +169,20 @@ export async function discoverAws(
           "aws:controltower:landing-zone",
       },
       {
+        id: "edge-secure-boot-evidence",
+        scanner: "fixture-edge-posture",
+        source: "mock",
+        status: "UNKNOWN",
+        domain: "PLATFORM",
+        severity: "MEDIUM",
+        title:
+          "Physical edge appliance boot integrity is not evidenced",
+        detail:
+          "The attached appliance is visible in inventory, but secure-boot or device-attestation evidence was not supplied.",
+        resourceId:
+          "edge:appliance:secure-node-01",
+      },
+      {
         id: "aws-agent-role-boundary",
         scanner: "fixture-cloud-posture",
         source: "mock",
@@ -173,6 +215,15 @@ export async function discoverAws(
         vulnerabilities: 0,
         evidenceRefs: [
           "mock:model-manifest",
+        ],
+      },
+      {
+        name: "secure-edge-node-firmware",
+        componentType: "FIRMWARE",
+        format: "UNKNOWN",
+        vulnerabilities: 1,
+        evidenceRefs: [
+          "mock:edge-firmware-inventory",
         ],
       },
     ],
