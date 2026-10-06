@@ -51,6 +51,8 @@ export function formatAssessmentSummary(
       assessment.resiliency.configurationBackup,
     "  Restore proof  " +
       assessment.resiliency.restoreEvidence,
+    "  Recovery scope " +
+      assessment.recoverySnapshot.coverage,
     "  Recovery hash  " +
       assessment.recoverySnapshot.configurationHash.slice(
         0,
