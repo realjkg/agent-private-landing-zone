@@ -34,6 +34,10 @@ test("tool broker exposes no apply or destroy operations", () => {
     "terraform_fmt_check",
     "terraform_validate",
     "terraform_plan",
+    "opentofu_version",
+    "opentofu_fmt_check",
+    "opentofu_validate",
+    "opentofu_plan",
     "pulumi_version",
     "pulumi_preview",
     "aws_version",
@@ -65,6 +69,14 @@ test("tool broker exposes no apply or destroy operations", () => {
   );
   assert.equal(
     allowed.includes("pulumi_destroy"),
+    false,
+  );
+  assert.equal(
+    allowed.includes("opentofu_apply"),
+    false,
+  );
+  assert.equal(
+    allowed.includes("opentofu_destroy"),
     false,
   );
 });
@@ -106,5 +118,28 @@ test("provider discovery reads require explicit cloud-read capability", () => {
         /read-only cloud access/i,
       );
     }
+  }
+});
+
+
+test("OpenTofu preview requires explicit cloud-read capability", () => {
+  const result = executeTool(
+    {
+      tool: "opentofu_plan",
+    },
+    context,
+  );
+
+  assert.equal(
+    Array.isArray(result),
+    false,
+  );
+
+  if (!Array.isArray(result)) {
+    assert.equal(result.blocked, true);
+    assert.match(
+      result.reason ?? "",
+      /read-only cloud access/i,
+    );
   }
 });
