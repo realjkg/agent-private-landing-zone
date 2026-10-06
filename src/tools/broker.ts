@@ -298,6 +298,16 @@ export function executeTool(
   if (
     request.tool.startsWith("pulumi_")
   ) {
+    if (
+      request.tool === "pulumi_preview" &&
+      context.allowProjectCodeExecution !== true
+    ) {
+      return blocked(
+        request,
+        "Pulumi preview executes project code; explicit project-code execution capability is required.",
+      );
+    }
+
     const adapter =
       getIaCAdapter("PULUMI");
 
@@ -326,6 +336,8 @@ export function getToolSecurityPosture(): {
   mutationTools: string[];
   arbitraryShell: boolean;
   cloudReadDefault: boolean;
+  projectCodeExecutionDefault: boolean;
+  previewWriteDefault: boolean;
 } {
   const allowedTools = [...SAFE_TOOLS].sort();
   const mutationTokens = new Set([
@@ -360,5 +372,7 @@ export function getToolSecurityPosture(): {
     mutationTools,
     arbitraryShell: false,
     cloudReadDefault: false,
+    projectCodeExecutionDefault: false,
+    previewWriteDefault: false,
   };
 }
