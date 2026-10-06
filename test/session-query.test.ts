@@ -45,6 +45,12 @@ test("session recognizes conversational state queries", () => {
     ),
     "COMPARE_IAC",
   );
+  assert.equal(
+    classifySessionCommand(
+      "prompt guide",
+    ),
+    "PROMPT_GUIDE",
+  );
 });
 
 test("session recognizes conversational engine switching", () => {
@@ -89,5 +95,29 @@ test("empty conversational state returns a valid natural-language starter", () =
   assert.match(
     answer,
     /Inspect this environment and assess its security and resiliency posture/,
+  );
+});
+
+
+test("prompt guide teaches allowed, blocked, and self-help patterns", () => {
+  const answer = answerStateQuery(
+    "PROMPT_GUIDE",
+  );
+
+  assert.match(
+    answer,
+    /Prompts that work/,
+  );
+  assert.match(
+    answer,
+    /Prompts that are blocked/,
+  );
+  assert.match(
+    answer,
+    /\.\/alz prompts/,
+  );
+  assert.match(
+    answer,
+    /without revealing secret values/i,
   );
 });
