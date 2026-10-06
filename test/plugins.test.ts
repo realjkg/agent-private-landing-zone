@@ -26,7 +26,13 @@ test("implemented preview engines include OpenTofu", () => {
 
   assert.deepEqual(
     implemented,
-    ["TERRAFORM", "PULUMI", "OPENTOFU"],
+    [
+      "TERRAFORM",
+      "PULUMI",
+      "OPENTOFU",
+      "BICEP",
+      "CLOUDFORMATION",
+    ],
   );
 });
 
