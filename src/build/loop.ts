@@ -28,7 +28,7 @@ import type {
 export type BuildLoopOptions = {
   provider: Provider;
   engine: IaCEngine;
-  mock: MockScenario;
+  mock?: MockScenario;
   approve?: boolean;
   repositoryEvidence?: RepositoryEvidence;
 };
