@@ -7,6 +7,13 @@ import type {
   SbomComponentObservation,
   ScannerObservation,
 } from "../../discovery/types.js";
+import {
+  executeTool,
+} from "../../tools/broker.js";
+import type {
+  ToolName,
+  ToolResult,
+} from "../../tools/types.js";
 
 export type AwsDiscoveryResult = {
   resources: DiscoveredResource[];
@@ -25,18 +32,466 @@ const emptyPosture = {
   resiliencyObservations: [] as ResiliencyObservation[],
 };
 
-export async function discoverAws(
-  mock?: MockScenario,
-): Promise<AwsDiscoveryResult> {
-  if (!mock) {
+function runRead(
+  tool: ToolName,
+): ToolResult {
+  const result = executeTool(
+    { tool },
+    {
+      cwd: process.cwd(),
+      allowCloudRead: true,
+      allowMutation: false,
+    },
+  );
+
+  return Array.isArray(result)
+    ? result[0]
+    : result;
+}
+
+function parseJson<T>(
+  result: ToolResult,
+): T | undefined {
+  if (!result.ok) {
+    return undefined;
+  }
+
+  try {
+    return JSON.parse(
+      result.stdout,
+    ) as T;
+  } catch {
+    return undefined;
+  }
+}
+
+function readWarning(
+  tool: ToolName,
+  result: ToolResult,
+): string | undefined {
+  if (result.ok) {
+    return undefined;
+  }
+
+  return (
+    "DISCOVERY_PARTIAL: " +
+    tool +
+    " was unavailable or not permitted."
+  );
+}
+
+async function discoverAwsLive(): Promise<AwsDiscoveryResult> {
+  const identityResult =
+    runRead("aws_sts_identity");
+
+  const identity =
+    parseJson<{
+      Account?: string;
+      Arn?: string;
+      UserId?: string;
+    }>(identityResult);
+
+  if (!identity?.Account) {
     return {
       resources: [],
       evidence: [],
       ...emptyPosture,
       warnings: [
-        "CREDENTIALS_MISSING: real AWS discovery is not enabled yet.",
+        "AWS_IDENTITY_UNAVAILABLE: no authenticated read-only AWS identity could be established.",
       ],
     };
+  }
+
+  const [
+    organizationResult,
+    controlTowerResult,
+    scpResult,
+    configResult,
+    cloudTrailResult,
+  ] = [
+    runRead("aws_org_describe"),
+    runRead(
+      "aws_controltower_list_landing_zones",
+    ),
+    runRead("aws_org_list_scps"),
+    runRead("aws_config_recorders"),
+    runRead("aws_cloudtrail_trails"),
+  ];
+
+  const organization =
+    parseJson<{
+      Organization?: {
+        Id?: string;
+        Arn?: string;
+        MasterAccountId?: string;
+        ManagementAccountId?: string;
+      };
+    }>(organizationResult);
+
+  const controlTower =
+    parseJson<{
+      landingZones?: Array<{
+        arn?: string;
+        status?: string;
+      }>;
+    }>(controlTowerResult);
+
+  const scps =
+    parseJson<{
+      Policies?: Array<{
+        Id?: string;
+        Name?: string;
+        Type?: string;
+      }>;
+    }>(scpResult);
+
+  const config =
+    parseJson<{
+      ConfigurationRecorders?: Array<{
+        name?: string;
+        roleARN?: string;
+      }>;
+    }>(configResult);
+
+  const cloudTrail =
+    parseJson<{
+      trailList?: Array<{
+        TrailARN?: string;
+        Name?: string;
+        HomeRegion?: string;
+        IsOrganizationTrail?: boolean;
+        KmsKeyId?: string;
+      }>;
+    }>(cloudTrailResult);
+
+  const resources: DiscoveredResource[] = [
+    {
+      resourceId:
+        "aws:account:" +
+        identity.Account,
+      provider: "AWS",
+      resourceType:
+        "AWS::Organizations::Account",
+      name:
+        "account-" +
+        identity.Account,
+      ownership:
+        "MANAGED_BY_CUSTOMER",
+      mutationPolicy: "READ_ONLY",
+      sourceOfTruth: "MANUAL",
+      metadata: {
+        assetKind: "CLOUD",
+        callerArn: identity.Arn,
+      },
+    },
+  ];
+
+  const evidence: DiscoveryEvidence[] = [
+    {
+      key: "aws.identity",
+      value: "authenticated",
+      source: "aws-cli",
+    },
+  ];
+
+  if (
+    organization?.Organization?.Id
+  ) {
+    resources.push({
+      resourceId:
+        "aws:organizations:" +
+        organization.Organization.Id,
+      provider: "AWS",
+      resourceType:
+        "AWS::Organizations::Organization",
+      name:
+        organization.Organization.Id,
+      ownership:
+        "MANAGED_BY_CUSTOMER",
+      mutationPolicy: "READ_ONLY",
+      sourceOfTruth: "MANUAL",
+      metadata: {
+        assetKind: "CLOUD",
+      },
+    });
+
+    evidence.push({
+      key: "aws.organizations",
+      value: "present",
+      source: "aws-cli",
+    });
+  }
+
+  for (
+    const [index, landingZone] of
+    (controlTower?.landingZones ?? []).entries()
+  ) {
+    resources.push({
+      resourceId:
+        landingZone.arn ??
+        "aws:controltower:landing-zone:" +
+          index,
+      provider: "AWS",
+      resourceType:
+        "AWS::ControlTower::LandingZone",
+      name:
+        landingZone.arn ??
+        "landing-zone-" + index,
+      ownership:
+        "MANAGED_BY_CUSTOMER",
+      mutationPolicy: "READ_ONLY",
+      sourceOfTruth:
+        "CONTROL_TOWER",
+      metadata: {
+        assetKind: "CLOUD",
+        status: landingZone.status,
+      },
+    });
+  }
+
+  if (
+    (controlTower?.landingZones
+      ?.length ?? 0) > 0
+  ) {
+    evidence.push({
+      key: "aws.control_tower",
+      value: "present",
+      source: "aws-cli",
+    });
+  }
+
+  for (
+    const policy of
+    scps?.Policies ?? []
+  ) {
+    if (!policy.Id) {
+      continue;
+    }
+
+    resources.push({
+      resourceId:
+        "aws:organizations:scp:" +
+        policy.Id,
+      provider: "AWS",
+      resourceType:
+        "AWS::Organizations::Policy",
+      name:
+        policy.Name ??
+        policy.Id,
+      ownership:
+        "MANAGED_BY_CUSTOMER",
+      mutationPolicy: "READ_ONLY",
+      sourceOfTruth: "MANUAL",
+      metadata: {
+        assetKind: "CLOUD",
+        policyType: policy.Type,
+      },
+    });
+  }
+
+  if (
+    (scps?.Policies?.length ?? 0) >
+    0
+  ) {
+    evidence.push({
+      key: "aws.scp",
+      value: "present",
+      source: "aws-cli",
+    });
+  }
+
+  for (
+    const recorder of
+    config?.ConfigurationRecorders ??
+    []
+  ) {
+    resources.push({
+      resourceId:
+        "aws:config:recorder:" +
+        (recorder.name ??
+          "default"),
+      provider: "AWS",
+      resourceType:
+        "AWS::Config::ConfigurationRecorder",
+      name:
+        recorder.name ??
+        "config-recorder",
+      ownership:
+        "MANAGED_BY_CUSTOMER",
+      mutationPolicy: "READ_ONLY",
+      sourceOfTruth: "MANUAL",
+      metadata: {
+        assetKind: "CLOUD",
+      },
+    });
+  }
+
+  for (
+    const [index, trail] of
+    (cloudTrail?.trailList ?? []).entries()
+  ) {
+    resources.push({
+      resourceId:
+        trail.TrailARN ??
+        "aws:cloudtrail:trail:" +
+          index,
+      provider: "AWS",
+      resourceType:
+        "AWS::CloudTrail::Trail",
+      name:
+        trail.Name ??
+        "trail-" + index,
+      region:
+        trail.HomeRegion,
+      ownership:
+        "MANAGED_BY_CUSTOMER",
+      mutationPolicy: "READ_ONLY",
+      sourceOfTruth: "MANUAL",
+      metadata: {
+        assetKind: "CLOUD",
+        organizationTrail:
+          trail.IsOrganizationTrail ??
+          false,
+        kmsKeyObserved:
+          Boolean(trail.KmsKeyId),
+      },
+    });
+  }
+
+  const scannerObservations:
+    ScannerObservation[] = [];
+
+  if (configResult.ok) {
+    const count =
+      config?.ConfigurationRecorders
+        ?.length ?? 0;
+
+    scannerObservations.push({
+      id: "aws-config-recorder",
+      scanner:
+        "aws-readonly-posture",
+      source: "aws-cli",
+      status:
+        count > 0 ? "PASS" : "FAIL",
+      domain: "CONFIGURATION",
+      severity:
+        count > 0
+          ? "INFO"
+          : "MEDIUM",
+      title:
+        count > 0
+          ? "AWS Config recorder observed"
+          : "No AWS Config recorder observed",
+      detail:
+        count > 0
+          ? "At least one configuration recorder is visible in the accessible account scope."
+          : "The accessible account scope returned no AWS Config configuration recorder.",
+    });
+  } else {
+    scannerObservations.push({
+      id:
+        "aws-config-recorder-evidence",
+      scanner:
+        "aws-readonly-posture",
+      source: "aws-cli",
+      status: "UNKNOWN",
+      domain: "CONFIGURATION",
+      severity: "MEDIUM",
+      title:
+        "AWS Config posture is not evidenced",
+      detail:
+        "The read-only discovery identity could not establish AWS Config recorder posture.",
+    });
+  }
+
+  if (cloudTrailResult.ok) {
+    const count =
+      cloudTrail?.trailList
+        ?.length ?? 0;
+
+    scannerObservations.push({
+      id: "aws-cloudtrail",
+      scanner:
+        "aws-readonly-posture",
+      source: "aws-cli",
+      status:
+        count > 0 ? "PASS" : "FAIL",
+      domain: "LOGGING",
+      severity:
+        count > 0
+          ? "INFO"
+          : "HIGH",
+      title:
+        count > 0
+          ? "CloudTrail trail observed"
+          : "No CloudTrail trail observed",
+      detail:
+        count > 0
+          ? "At least one CloudTrail trail is visible, including shadow trails where the CLI returned them."
+          : "The accessible account scope returned no CloudTrail trails.",
+    });
+  } else {
+    scannerObservations.push({
+      id:
+        "aws-cloudtrail-evidence",
+      scanner:
+        "aws-readonly-posture",
+      source: "aws-cli",
+      status: "UNKNOWN",
+      domain: "LOGGING",
+      severity: "MEDIUM",
+      title:
+        "CloudTrail posture is not evidenced",
+      detail:
+        "The read-only discovery identity could not establish CloudTrail posture.",
+    });
+  }
+
+  const warnings = [
+    organizationResult,
+    controlTowerResult,
+    scpResult,
+    configResult,
+    cloudTrailResult,
+  ]
+    .map((result) =>
+      readWarning(
+        result.tool,
+        result,
+      ),
+    )
+    .filter(
+      (warning):
+        warning is string =>
+          Boolean(warning),
+    );
+
+  warnings.push(
+    "SBOM_UNKNOWN: attach a CycloneDX/SPDX SBOM or scanner evidence to assess software and attached component supply-chain posture.",
+  );
+  warnings.push(
+    "RESILIENCY_UNKNOWN: provider-native configuration backup and restore proof are not yet established by read-only discovery.",
+  );
+
+  return {
+    resources:
+      resources.map(
+        enforceOwnershipPolicy,
+      ),
+    evidence,
+    scannerObservations,
+    sbomComponents: [],
+    sbomComplete: false,
+    resiliencyObservations: [],
+    warnings,
+  };
+}
+
+export async function discoverAws(
+  mock?: MockScenario,
+): Promise<AwsDiscoveryResult> {
+  if (!mock) {
+    return discoverAwsLive();
   }
 
   if (mock === "unknown") {
