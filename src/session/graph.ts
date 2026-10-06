@@ -4,6 +4,7 @@ import { dirname } from "node:path";
 import {
   Annotation,
   END,
+  MemorySaver,
   START,
   StateGraph,
 } from "@langchain/langgraph";
@@ -135,15 +136,20 @@ async function sessionNode(
 }
 
 export function createSessionGraph(
-  dbPath = ".runs/state/agent-checkpoints.sqlite",
+  dbPath?: string,
 ) {
-  mkdirSync(
-    dirname(dbPath),
-    { recursive: true },
-  );
+  const checkpointer = dbPath
+    ? (() => {
+        mkdirSync(
+          dirname(dbPath),
+          { recursive: true },
+        );
 
-  const checkpointer =
-    SqliteSaver.fromConnString(dbPath);
+        return SqliteSaver.fromConnString(
+          dbPath,
+        );
+      })()
+    : new MemorySaver();
 
   const graph = new StateGraph(
     SessionAnnotation,
