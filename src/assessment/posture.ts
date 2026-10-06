@@ -68,6 +68,30 @@ function securityFindings(
     });
   }
 
+  for (const component of
+    environment.sbomComponents) {
+    if (
+      component.vulnerabilities > 0
+    ) {
+      findings.push({
+        id:
+          "sbom-vulnerability-" +
+          component.name,
+        domain: "SUPPLY_CHAIN",
+        severity: "MEDIUM",
+        title:
+          "SBOM component has reported vulnerabilities",
+        detail:
+          component.name +
+          " has " +
+          component.vulnerabilities +
+          " reported vulnerability reference(s); severity must be resolved from vulnerability evidence before acceptance.",
+        evidenceRefs:
+          component.evidenceRefs,
+      });
+    }
+  }
+
   for (const resource of
     environment.resources) {
     if (
@@ -107,12 +131,12 @@ function deriveSecurityStatus(
     return "INSECURE";
   }
 
-  if (!scannerCoverageKnown) {
-    return "UNKNOWN";
-  }
-
   if (findings.length > 0) {
     return "PARTIAL";
+  }
+
+  if (!scannerCoverageKnown) {
+    return "UNKNOWN";
   }
 
   return "SECURE";
@@ -191,7 +215,10 @@ export function assessEnvironment(
 
   const resiliencyStatus: PostureStatus =
     restoreEvidence === "verified" &&
-    configBackup === "present"
+    configBackup === "present" &&
+    redundantControlPlane === "present" &&
+    rpoKnown &&
+    rtoKnown
       ? "SECURE"
       : resiliencyEvidence.length === 0
         ? "UNKNOWN"
@@ -199,7 +226,8 @@ export function assessEnvironment(
 
   const scannerCoverageKnown =
     environment.scannerObservations.length >
-    0;
+      0 &&
+    environment.sbomComplete;
 
   const evidenceRefs = [
     ...environment.evidence.map(
