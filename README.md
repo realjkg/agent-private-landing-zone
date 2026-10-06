@@ -43,7 +43,7 @@ Delta assessment
 REUSE / INTEGRATE / CONFIGURE / ADD / ADOPT / NO_TOUCH / BLOCKED
 ```
 
-Real environments currently stop at the Design boundary before generative infrastructure changes.
+Design now produces an evidence-linked, hashable `DesignSpec` with the selected build plug-in, reuse/add/no-touch boundaries, security and resiliency controls, assumptions and evidence references. Real environments still stop before generative Build until the selected adapter is implemented and the DesignSpec has completed review/approval.
 
 ### Build
 
@@ -68,7 +68,7 @@ The foundation is intended to support additional declarative/cloud-native build 
 - AWS CloudFormation
 - AWS CDK through CloudFormation synthesis/change evidence
 - Crossplane for Kubernetes/private/edge control planes
-- Ansible under CONFIGURE/MANAGE for brownfield operating-system, network and appliance configuration
+- Ansible under BUILD/CONFIGURE/MANAGE for brownfield operating-system, network, appliance and secure-edge configuration
 
 **ARM JSON templates and PowerShell are not first-class build engines in this architecture.** For Azure, Bicep is the preferred declarative Azure-native authoring path. CLI tools may be invoked behind the typed broker as controlled transports, but CLI/scripting interfaces do not define the infrastructure model.
 
@@ -154,6 +154,10 @@ Day-to-day use is exposed through a small operator launcher rather than npm scri
 ./alz bootstrap
 ./alz doctor
 ./alz demo
+./alz design aws terraform brownfield
+./alz design aws cdk brownfield
+./alz design aws ansible brownfield
+./alz design azure bicep brownfield
 ./alz inspect aws
 ./alz session aws terraform
 ./alz plugins
@@ -169,20 +173,16 @@ The source checkout still uses Node tooling internally, but the operator does no
 The default conversational session uses live read-only provider discovery and local Qwen/Mistral reasoning:
 
 ```bash
-npm run session
+./alz session aws terraform
 ```
 
 Azure:
 
 ```bash
-npm run session:azure
+./alz session azure pulumi
 ```
 
-The deterministic fixture session remains available for tests:
-
-```bash
-npm run session:fixture
-```
+Inside a session, the operator can request a different design path naturally, for example `Design this using AWS CDK`, `Design this using Bicep`, or `Build the attached edge configuration using Ansible`. Planned adapters remain design-only until implemented and verified.
 
 The secure session attests that:
 
@@ -198,13 +198,13 @@ The secure session attests that:
 AWS live read-only discovery:
 
 ```bash
-npm run discover:aws:live
+./alz inspect aws
 ```
 
 Azure live read-only discovery:
 
 ```bash
-npm run discover:azure:live
+./alz inspect azure
 ```
 
 Optional evidence can be attached to discovery:
@@ -236,9 +236,11 @@ ollama pull qwen3:1.7b
 ollama pull qwen3:4b
 ollama pull mistral-nemo
 
-npm install
-npm run verify
+./alz bootstrap
+./alz verify
 ```
+
+The source implementation uses Node/npm internally for dependency locking and SBOM generation, but operators use the `./alz` surface.
 
 ## Deployment posture
 
@@ -271,6 +273,6 @@ Sovereignty means customer control over execution, models, data, keys, identity,
 ACT = DISABLED
 ```
 
-The repository currently exposes no Terraform apply/destroy or Pulumi up/destroy operation through the broker.
+The repository currently exposes no Terraform apply/destroy, Pulumi up/destroy, CloudFormation execute-change-set, CDK deploy, Bicep deployment, OpenTofu apply, Crossplane mutation, or Ansible non-check execution through the broker.
 
-Real Build remains stopped at the Design boundary until an approved DesignSpec-to-IaC implementation is complete.
+Terraform and Pulumi remain the implemented preview adapters. OpenTofu, Bicep, CloudFormation, CDK, Crossplane and Ansible are visible to Design through the plug-in contract but cannot execute until their adapters are implemented, scanned and verified.
