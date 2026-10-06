@@ -199,7 +199,7 @@ export const PLUGIN_CATALOG: PluginDefinition[] = [
   },
   {
     id: "ANSIBLE",
-    stage: ["CONFIGURE", "MANAGE"],
+    stage: ["BUILD", "CONFIGURE", "MANAGE"],
     status: "PLANNED",
     providers: [
       "AWS",
@@ -212,6 +212,7 @@ export const PLUGIN_CATALOG: PluginDefinition[] = [
       "VERSION",
       "VALIDATE",
       "PREVIEW",
+      "NORMALIZE",
       "SBOM",
       "SECURITY_SCAN",
     ],
@@ -220,6 +221,6 @@ export const PLUGIN_CATALOG: PluginDefinition[] = [
       "https://github.com/ansible/ansible/releases",
     lastReviewed: "2026-10-06",
     notes:
-      "Used for bounded brownfield configuration; PowerShell is not a first-class plug-in.",
+      "Build/configure/manage adapter for brownfield private, edge, OS, network and appliance scenarios. Preview must use check/diff semantics; PowerShell is not a first-class plug-in.",
   },
 ];
