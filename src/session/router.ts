@@ -105,7 +105,7 @@ export async function routeSessionRequest(
             "including discovery, assessment, architecture analysis, build, or change requests.",
             "Use state-query commands only when the user is asking about the",
             "existing session state or a follow-up to a previous result.",
-            "USE_TERRAFORM and USE_PULUMI only change the selected preview engine.",
+            "USE_TERRAFORM, USE_PULUMI, and USE_OPENTOFU only change the selected preview engine.",
             "Never classify anything as apply, deploy, destroy, shell, or arbitrary execution.",
             "ACT is not an available capability.",
           ].join("\n"),
