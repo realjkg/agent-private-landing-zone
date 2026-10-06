@@ -18,6 +18,7 @@ const ALLOWED: SessionCommand[] = [
   "COMPARE_IAC",
   "USE_TERRAFORM",
   "USE_PULUMI",
+  "PROMPT_GUIDE",
   "HELP",
 ];
 
@@ -97,7 +98,7 @@ export async function routeSessionRequest(
             "Classify the user's latest turn; do not answer it.",
             "",
             "Return JSON only:",
-            '{"command":"RUN|STATUS|ENVIRONMENT|EVIDENCE|EXPLAIN|NEXT|COMPARE_IAC|USE_TERRAFORM|USE_PULUMI|HELP"}',
+            '{"command":"RUN|STATUS|ENVIRONMENT|EVIDENCE|EXPLAIN|NEXT|COMPARE_IAC|USE_TERRAFORM|USE_PULUMI|PROMPT_GUIDE|HELP"}',
             "",
             "Use RUN for a new task that should enter the governed Agent Kernel,",
             "including discovery, assessment, architecture analysis, build, or change requests.",
