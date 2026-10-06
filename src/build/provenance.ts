@@ -37,6 +37,7 @@ export function evidenceComplete(evidence: BuildEvidence): boolean {
       evidence.designHash &&
       evidence.policyBundleId &&
       evidence.policyBundleHash &&
+      evidence.planHash &&
       evidence.scannerResults.length > 0,
   );
 }
@@ -48,6 +49,8 @@ export function approvalMatchesArtifact(
   return Boolean(
     evidence.approvalId &&
       evidence.approvedArtifactHash &&
-      evidence.approvedArtifactHash === artifact.contentHash,
+      evidence.approvedDesignHash &&
+      evidence.approvedArtifactHash === artifact.contentHash &&
+      evidence.approvedDesignHash === evidence.designHash,
   );
 }
