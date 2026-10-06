@@ -59,6 +59,19 @@ Terraform and Pulumi are both supported as IaC adapters.
 
 Both engines feed the same normalized ChangeSet, ownership, policy, evidence and approval gates.
 
+### Build plug-in direction
+
+The foundation is intended to support additional declarative/cloud-native build adapters without changing the governance plane:
+
+- OpenTofu
+- Azure Bicep
+- AWS CloudFormation
+- AWS CDK through CloudFormation synthesis/change evidence
+- Crossplane for Kubernetes/private/edge control planes
+- Ansible under CONFIGURE/MANAGE for brownfield operating-system, network and appliance configuration
+
+**ARM JSON templates and PowerShell are not first-class build engines in this architecture.** For Azure, Bicep is the preferred declarative Azure-native authoring path. CLI tools may be invoked behind the typed broker as controlled transports, but CLI/scripting interfaces do not define the infrastructure model.
+
 ## Terraform and Pulumi examples
 
 Where an approved design calls for an additive resource, the two engines should express the same intent rather than different architectures.
