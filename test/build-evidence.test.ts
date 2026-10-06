@@ -58,6 +58,7 @@ test("brownfield build remains blocked without exact human approval", async () =
           findings: [],
         },
       ],
+      planHash: "plan-hash-1",
     },
     repairAttempt: 0,
     maxRepairAttempts: 3,
@@ -101,8 +102,10 @@ test("exact approved artifact can pass deterministic gate", async () => {
           findings: [],
         },
       ],
+      planHash: "plan-hash-2",
       approvalId: "approval-1",
       approvedArtifactHash: artifact.contentHash,
+      approvedDesignHash: "design-hash-2",
     },
     repairAttempt: 0,
     maxRepairAttempts: 3,
@@ -154,8 +157,10 @@ test("high severity findings block build", async () => {
           ],
         },
       ],
+      planHash: "plan-hash-3",
       approvalId: "approval-2",
       approvedArtifactHash: artifact.contentHash,
+      approvedDesignHash: "design-hash-3",
     },
     repairAttempt: 0,
     maxRepairAttempts: 3,
@@ -164,4 +169,55 @@ test("high severity findings block build", async () => {
   const decision = evaluateBuildGate(candidate);
   assert.equal(decision.allowed, false);
   assert.match(decision.reasons.join(" "), /Blocking findings/);
+});
+
+
+test("approval is invalid when the approved DesignSpec hash does not match", async () => {
+  const environment = await discoverEnvironment({
+    provider: "AWS",
+    mock: "greenfield",
+  });
+
+  const artifact = createBuildArtifact({
+    engine: "TERRAFORM",
+    provider: "AWS",
+    path: "main.tf",
+    content: "terraform {}",
+    generatedBy: "local-model",
+  });
+
+  const candidate: BuildCandidate = {
+    id: "candidate-design-mismatch",
+    status: "APPROVED",
+    environment,
+    artifact,
+    evidence: {
+      discoverySnapshotHash: "discovery-hash",
+      assessmentId: "assessment-design-mismatch",
+      designId: "design-mismatch",
+      designHash: "current-design-hash",
+      policyBundleId: "policy-v1",
+      policyBundleHash: "policy-hash",
+      scannerResults: [
+        {
+          scanner: "mock-static-scan",
+          passed: true,
+          findings: [],
+        },
+      ],
+      planHash: "plan-hash",
+      approvalId: "approval-design-mismatch",
+      approvedArtifactHash: artifact.contentHash,
+      approvedDesignHash: "different-design-hash",
+    },
+    repairAttempt: 0,
+    maxRepairAttempts: 3,
+  };
+
+  const decision = evaluateBuildGate(candidate);
+  assert.equal(decision.allowed, false);
+  assert.match(
+    decision.reasons.join(" "),
+    /approval/i,
+  );
 });
