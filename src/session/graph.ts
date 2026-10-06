@@ -1,0 +1,133 @@
+import { mkdirSync } from "node:fs";
+import { dirname } from "node:path";
+
+import {
+  Annotation,
+  END,
+  START,
+  StateGraph,
+} from "@langchain/langgraph";
+import { SqliteSaver } from "@langchain/langgraph-checkpoint-sqlite";
+
+import { fixtureThinker } from "../agent/fixture.js";
+import { runAgentKernel } from "../agent/graph.js";
+import type { AgentState } from "../agent/types.js";
+import type { IaCEngine } from "../build/types.js";
+import type {
+  MockScenario,
+  Provider,
+} from "../discovery/types.js";
+import {
+  answerStateQuery,
+  classifySessionCommand,
+} from "./query.js";
+import type { SessionTurn } from "./types.js";
+
+const SessionAnnotation = Annotation.Root({
+  request: Annotation<string>,
+  provider: Annotation<Provider>,
+  engine: Annotation<IaCEngine>,
+  mock: Annotation<MockScenario>,
+  approveBuild: Annotation<boolean>,
+  fixture: Annotation<boolean>,
+  agentState: Annotation<AgentState | undefined>,
+  response: Annotation<string | undefined>,
+  history: Annotation<SessionTurn[]>({
+    reducer: (current, update) => [
+      ...(current ?? []),
+      ...(update ?? []),
+    ],
+    default: () => [],
+  }),
+});
+
+export type LangGraphSessionState =
+  typeof SessionAnnotation.State;
+
+async function sessionNode(
+  state: LangGraphSessionState,
+): Promise<Partial<LangGraphSessionState>> {
+  const command = classifySessionCommand(
+    state.request,
+  );
+
+  if (command !== "RUN") {
+    const response = answerStateQuery(
+      command,
+      state.agentState,
+    );
+
+    return {
+      response,
+      history: [
+        {
+          at: new Date().toISOString(),
+          request: state.request,
+          command,
+          response,
+        },
+      ],
+    };
+  }
+
+  const agentState = await runAgentKernel({
+    request: state.request,
+    provider: state.provider,
+    engine: state.engine,
+    mock: state.mock,
+    thinker:
+      state.fixture
+        ? fixtureThinker
+        : undefined,
+    approveBuild: state.approveBuild,
+  });
+
+  const response = [
+    "Intent: " + agentState.intent,
+    "Phase: " + agentState.phase,
+    "Environment: " +
+      (agentState.environment?.classification ?? "UNKNOWN"),
+    "Safe build mode: " +
+      (agentState.environment?.safeBuildMode ?? "UNKNOWN"),
+    "Act: " +
+      (agentState.action?.status ?? "NOT_REQUIRED"),
+  ].join("\n");
+
+  return {
+    agentState,
+    response,
+    history: [
+      {
+        at: new Date().toISOString(),
+        request: state.request,
+        command,
+        response,
+      },
+    ],
+  };
+}
+
+export function createSessionGraph(
+  dbPath = ".runs/state/agent-checkpoints.sqlite",
+) {
+  mkdirSync(
+    dirname(dbPath),
+    { recursive: true },
+  );
+
+  const checkpointer =
+    SqliteSaver.fromConnString(dbPath);
+
+  const graph = new StateGraph(
+    SessionAnnotation,
+  )
+    .addNode("session", sessionNode)
+    .addEdge(START, "session")
+    .addEdge("session", END)
+    .compile({ checkpointer });
+
+  return {
+    graph,
+    checkpointer,
+  };
+}
