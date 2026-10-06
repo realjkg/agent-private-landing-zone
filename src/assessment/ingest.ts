@@ -1,6 +1,8 @@
 import { z } from "zod";
 
 import type {
+  DiscoveredResource,
+  Provider,
   ResiliencyObservation,
   ScannerObservation,
 } from "../discovery/types.js";
@@ -134,8 +136,8 @@ const inventoryEvidenceSchema =
 
 export function parseInventoryEvidenceBundle(
   raw: string,
-  provider: import("../discovery/types.js").Provider,
-): import("../discovery/types.js").DiscoveredResource[] {
+  provider: Provider,
+): DiscoveredResource[] {
   const value =
     inventoryEvidenceSchema.parse(
       JSON.parse(raw),
