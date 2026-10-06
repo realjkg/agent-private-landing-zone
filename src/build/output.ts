@@ -1,8 +1,6 @@
-import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
-
 import type { BuildCandidate } from "./types.js";
 import type { RepositoryEvidence } from "./repository.js";
+import { writeEncryptedEvidence } from "../evidence/vault.js";
 
 export type BuildRunRecord = {
   candidate: BuildCandidate;
@@ -18,9 +16,6 @@ export type BuildRunRecord = {
 export async function writeBuildRun(
   record: BuildRunRecord,
 ): Promise<string> {
-  const directory = join(".runs", "build");
-  await mkdir(directory, { recursive: true });
-
   const timestamp = new Date()
     .toISOString()
     .replace(/[:.]/g, "-")
@@ -28,15 +23,15 @@ export async function writeBuildRun(
     .replace("Z", "");
 
   const filename =
-    `${timestamp}-${record.candidate.environment.provider.toLowerCase()}-${record.candidate.artifact.engine.toLowerCase()}.json`;
+    timestamp +
+    "-" +
+    record.candidate.environment.provider.toLowerCase() +
+    "-" +
+    record.candidate.artifact.engine.toLowerCase();
 
-  const path = join(directory, filename);
-
-  await writeFile(
-    path,
-    JSON.stringify(record, null, 2) + "\n",
-    "utf8",
+  return writeEncryptedEvidence(
+    "build",
+    filename,
+    record,
   );
-
-  return path;
 }
