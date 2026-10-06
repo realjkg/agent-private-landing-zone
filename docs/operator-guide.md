@@ -18,6 +18,10 @@ This installs the locked runtime dependencies. After bootstrap, use `./alz` for 
 ./alz help
 ./alz doctor
 ./alz demo
+./alz design aws terraform brownfield
+./alz design aws cdk brownfield
+./alz design aws ansible brownfield
+./alz design azure bicep brownfield
 ./alz inspect aws
 ./alz inspect azure
 ./alz session aws terraform
@@ -37,7 +41,21 @@ Runs a deterministic, non-mutating scenario through the governed kernel:
 ./alz demo azure pulumi greenfield
 ```
 
-The demo exercises discovery, posture assessment, brownfield delta decisions, planning and the Design boundary. It does not modify infrastructure.
+The demo exercises discovery, posture assessment, brownfield delta decisions, an evidence-linked DesignSpec, plug-in selection and the Build boundary. It does not modify infrastructure.
+
+### design
+
+Runs the same governed deterministic path with Design as the explicit operator goal:
+
+```bash
+./alz design aws terraform brownfield
+./alz design aws pulumi brownfield
+./alz design aws cdk brownfield
+./alz design aws ansible brownfield
+./alz design azure bicep brownfield
+```
+
+Terraform and Pulumi are currently implemented preview adapters. CDK, Bicep, OpenTofu, CloudFormation, Crossplane and Ansible can be selected and reviewed in Design but remain blocked from Build execution until their adapters are implemented and verified.
 
 ### inspect
 
@@ -88,14 +106,14 @@ Runs the package dependency audit. If Trivy is installed locally it also scans t
 
 | Scenario | Discover | Assess | Delta | Design | Build | ACT |
 | --- | --- | --- | --- | --- | --- | --- |
-| AWS brownfield | live read-only + fixture | supported | supported | boundary | fixture preview | disabled |
-| AWS greenfield | fixture | supported | supported | boundary | fixture preview | disabled |
-| Azure brownfield | live read-only + fixture | supported | supported | boundary | fixture preview | disabled |
-| Azure greenfield | fixture | supported | supported | boundary | fixture preview | disabled |
-| Private/edge attached assets | evidence ingestion | supported | supported | boundary | planned adapters | disabled |
-| Sovereign/disconnected | evidence ingestion | supported | supported | boundary | planned offline bundle | disabled |
+| AWS brownfield | live read-only + fixture | supported | supported | DesignSpec | Terraform/Pulumi fixture preview; other adapters planned | disabled |
+| AWS greenfield | fixture | supported | supported | DesignSpec | Terraform/Pulumi fixture preview; other adapters planned | disabled |
+| Azure brownfield | live read-only + fixture | supported | supported | DesignSpec | Terraform/Pulumi fixture preview; Bicep planned | disabled |
+| Azure greenfield | fixture | supported | supported | DesignSpec | Terraform/Pulumi fixture preview; Bicep planned | disabled |
+| Private/edge attached assets | evidence ingestion | supported | supported | DesignSpec | Ansible/Crossplane/private adapters planned | disabled |
+| Sovereign/disconnected | evidence ingestion | supported | supported | DesignSpec | signed/offline adapter bundle planned | disabled |
 
-Private/edge is intentionally not labeled end-to-end Build support yet. Physical and virtual assets can already participate in inventory, scanner, SBOM, resiliency and delta assessment; dedicated private-infrastructure Build/Configure adapters are the next expansion.
+Private/edge is intentionally not labeled executable Build support yet. Physical and virtual assets already participate in inventory, scanner, SBOM, resiliency, delta assessment and DesignSpec generation. Ansible is now part of the Build/Configure/Manage plug-in contract for those scenarios, but its execution adapter remains planned.
 
 ## Maintenance
 
