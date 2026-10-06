@@ -33,7 +33,9 @@
     "deps:review": "npm install-scripts ls",
     "evidence:migrate": "tsx src/cli/evidence-migrate.ts",
     "security:check": "tsx src/cli/security.ts",
-    "session:azure": "tsx src/cli/session.ts --provider azure --engine terraform"
+    "session:azure": "tsx src/cli/session.ts --provider azure --engine terraform",
+    "discover:aws:live": "tsx src/cli/discover.ts --provider aws --resources",
+    "discover:azure:live": "tsx src/cli/discover.ts --provider azure --resources"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
