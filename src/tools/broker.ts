@@ -23,6 +23,13 @@ const SAFE_TOOLS = new Set([
   "opentofu_fmt_check",
   "opentofu_validate",
   "opentofu_plan",
+  "bicep_version",
+  "bicep_lint",
+  "bicep_build",
+  "bicep_what_if",
+  "cloudformation_version",
+  "cloudformation_validate",
+  "cloudformation_preview",
   "pulumi_version",
   "pulumi_preview",
   "aws_version",
@@ -105,12 +112,25 @@ export function executeTool(
     (request.tool === "terraform_plan" ||
       request.tool === "opentofu_plan" ||
       request.tool === "pulumi_preview" ||
+      request.tool === "bicep_what_if" ||
+      request.tool === "cloudformation_validate" ||
+      request.tool === "cloudformation_preview" ||
       providerReadTool) &&
     !context.allowCloudRead
   ) {
     return blocked(
       request,
       "Preview requires explicit read-only cloud access.",
+    );
+  }
+
+  if (
+    request.tool === "cloudformation_preview" &&
+    context.allowPreviewWrite !== true
+  ) {
+    return blocked(
+      request,
+      "CloudFormation preview requires explicit preview-write capability.",
     );
   }
 
@@ -264,6 +284,77 @@ export function executeTool(
       ...context,
       cwd: workspace,
     });
+  }
+
+  if (
+    request.tool.startsWith("bicep_")
+  ) {
+    const adapter =
+      getIaCAdapter("BICEP");
+
+    if (request.tool === "bicep_version") {
+      return adapter.version({
+        ...context,
+        cwd: workspace,
+      });
+    }
+
+    if (
+      request.tool === "bicep_lint" ||
+      request.tool === "bicep_build"
+    ) {
+      return adapter.validate(
+        {
+          ...context,
+          cwd: workspace,
+        },
+        request.input,
+      );
+    }
+
+    return adapter.preview(
+      {
+        ...context,
+        cwd: workspace,
+      },
+      request.input,
+    );
+  }
+
+  if (
+    request.tool.startsWith("cloudformation_")
+  ) {
+    const adapter =
+      getIaCAdapter("CLOUDFORMATION");
+
+    if (
+      request.tool === "cloudformation_version"
+    ) {
+      return adapter.version({
+        ...context,
+        cwd: workspace,
+      });
+    }
+
+    if (
+      request.tool === "cloudformation_validate"
+    ) {
+      return adapter.validate(
+        {
+          ...context,
+          cwd: workspace,
+        },
+        request.input,
+      );
+    }
+
+    return adapter.preview(
+      {
+        ...context,
+        cwd: workspace,
+      },
+      request.input,
+    );
   }
 
   if (
