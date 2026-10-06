@@ -147,7 +147,9 @@ function postureSummary(
       "; restore evidence " +
       posture.resiliency.restoreEvidence +
       ".",
-    "Recovery configuration hash: " +
+    "Recovery snapshot: " +
+      posture.recoverySnapshot.coverage +
+      "; configuration hash " +
       posture.recoverySnapshot.configurationHash.slice(
         0,
         16,
@@ -414,6 +416,10 @@ export function answerStateQuery(
     evidence.push(
       "Posture assessment: " +
         state.postureAssessment.assessmentId,
+    );
+    evidence.push(
+      "Recovery coverage: " +
+        state.postureAssessment.recoverySnapshot.coverage,
     );
     evidence.push(
       "Recovery configuration SHA-256: " +
