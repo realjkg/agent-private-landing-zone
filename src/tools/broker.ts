@@ -56,15 +56,26 @@ export function executeTool(
     context.cwd,
     request.workspace ?? ".",
   );
+  const root = resolve(context.cwd);
 
   if (
-    !workspace.startsWith(
-      resolve(context.cwd),
-    )
+    workspace !== root &&
+    !workspace.startsWith(root + "/")
   ) {
     return blocked(
       request,
       "Workspace escapes the allowed root.",
+    );
+  }
+
+  if (
+    (request.tool === "terraform_plan" ||
+      request.tool === "pulumi_preview") &&
+    !context.allowCloudRead
+  ) {
+    return blocked(
+      request,
+      "Preview requires explicit read-only cloud access.",
     );
   }
 
