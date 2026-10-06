@@ -257,3 +257,36 @@ test("planned Ansible build is designed but blocked before preview", async () =>
     false,
   );
 });
+
+
+test("OpenTofu build intent produces a preview-only candidate", async () => {
+  const state = await runAgentKernel({
+    request:
+      "Build additive infrastructure using OpenTofu.",
+    provider: "AWS",
+    engine: "OPENTOFU",
+    mock: "brownfield",
+    thinker: mockThinker,
+  });
+
+  assert.equal(
+    state.design?.plugin.plugin,
+    "OPENTOFU",
+  );
+  assert.equal(
+    state.design?.plugin.status,
+    "READY",
+  );
+  assert.equal(
+    state.build?.candidate.artifact.engine,
+    "OPENTOFU",
+  );
+  assert.equal(
+    state.build?.executionMode,
+    "PREVIEW_ONLY",
+  );
+  assert.equal(
+    state.action?.executed,
+    false,
+  );
+});
