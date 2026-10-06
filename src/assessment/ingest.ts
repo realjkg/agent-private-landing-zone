@@ -82,3 +82,86 @@ export function parsePostureEvidenceBundle(
       value.resiliencyObservations,
   };
 }
+
+
+const inventoryAssetSchema =
+  z.object({
+    resourceId: z.string().min(1),
+    resourceType: z.string().min(1),
+    name: z.string().min(1),
+    assetKind: z.enum([
+      "PHYSICAL",
+      "VIRTUAL",
+      "CLOUD",
+    ]),
+    ownership: z
+      .enum([
+        "EXTERNAL",
+        "MANAGED_BY_CUSTOMER",
+        "MANAGED_BY_OTHER_IAC",
+        "UNKNOWN",
+      ])
+      .default("UNKNOWN"),
+    sourceOfTruth: z
+      .enum([
+        "TERRAFORM",
+        "BICEP",
+        "CLOUDFORMATION",
+        "CDK",
+        "CONTROL_TOWER",
+        "AFT",
+        "AZURE_POLICY",
+        "MANUAL",
+        "UNKNOWN",
+      ])
+      .default("MANUAL"),
+    scope: z.string().optional(),
+    region: z.string().optional(),
+    tags:
+      z.record(
+        z.string(),
+        z.string(),
+      ).optional(),
+  });
+
+const inventoryEvidenceSchema =
+  z.object({
+    assets:
+      z.array(
+        inventoryAssetSchema,
+      ),
+  });
+
+export function parseInventoryEvidenceBundle(
+  raw: string,
+  provider: import("../discovery/types.js").Provider,
+): import("../discovery/types.js").DiscoveredResource[] {
+  const value =
+    inventoryEvidenceSchema.parse(
+      JSON.parse(raw),
+    );
+
+  return value.assets.map(
+    (asset) => ({
+      resourceId: asset.resourceId,
+      provider,
+      resourceType:
+        asset.resourceType,
+      name: asset.name,
+      scope: asset.scope,
+      region: asset.region,
+      ownership:
+        asset.ownership,
+      mutationPolicy:
+        "READ_ONLY" as const,
+      sourceOfTruth:
+        asset.sourceOfTruth,
+      tags: asset.tags,
+      metadata: {
+        assetKind:
+          asset.assetKind,
+        importedEvidence: true,
+      },
+    }),
+  );
+}
