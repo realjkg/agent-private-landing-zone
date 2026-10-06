@@ -221,13 +221,49 @@ export function formatAgentResponse(
     );
   }
 
+  if (state.design) {
+    lines.push("");
+    lines.push(
+      "DesignSpec: " +
+        state.design.status +
+        "; plug-in " +
+        state.design.plugin.plugin +
+        " (" +
+        state.design.plugin.status +
+        "); evidence path " +
+        state.design.plugin.evidencePath +
+        "; hash " +
+        state.design.designHash.slice(0, 16) +
+        "…",
+    );
+  }
+
   if (
     state.intent === "BUILD" ||
     state.intent === "CHANGE"
   ) {
     lines.push("");
 
-    if (state.build) {
+    if (state.design) {
+    evidence.push(
+      "Design ID: " +
+        state.design.designId,
+    );
+    evidence.push(
+      "Design SHA-256: " +
+        state.design.designHash,
+    );
+    evidence.push(
+      "Design plug-in: " +
+        state.design.plugin.plugin +
+        " / " +
+        state.design.plugin.status +
+        " / " +
+        state.design.plugin.evidencePath,
+    );
+  }
+
+  if (state.build) {
       lines.push(
         "I prepared a " +
           state.engine +
@@ -287,6 +323,9 @@ export function answerStateQuery(
       '  "What configuration is backed up?"',
       '  "Show me the brownfield delta."',
       '  "What should we design next?"',
+      '  "Design this using AWS CDK."',
+      '  "Design this using Bicep."',
+      '  "Build the attached edge configuration using Ansible."',
       '  "Use Pulumi instead."',
       '  "Show me the evidence."',
       "",
@@ -388,19 +427,31 @@ export function answerStateQuery(
       return "The next step is to complete security, SBOM, ownership, and resiliency assessment of the discovered estate.";
     }
 
-    if (
-      state.deltaAssessment?.designRequired
-    ) {
-      return "The next step is Design: turn the observed environment, posture findings, ownership boundaries, and desired outcome into an explicit delta design before generating IaC.";
+    if (!state.design) {
+      return "The next step is Design: turn the observed environment, posture findings, ownership boundaries, and desired outcome into an explicit DesignSpec before generating infrastructure code.";
     }
 
-    return "The current discovery and assessment evidence is ready for design review. ACT remains disabled.";
+    if (state.design.status === "BLOCKED") {
+      return "The DesignSpec is blocked. Resolve its evidence, ownership, or plug-in compatibility blockers before Build.";
+    }
+
+    if (!state.design.plugin.buildEligible) {
+      return (
+        "The DesignSpec selected " +
+        state.design.plugin.plugin +
+        ", but that adapter is currently " +
+        state.design.plugin.status +
+        ". The next engineering step is to implement and verify that plug-in adapter before Build."
+      );
+    }
+
+    return "The DesignSpec is ready for governed Build preview once its review/approval requirements are satisfied. ACT remains disabled.";
   }
 
   if (command === "COMPARE_IAC") {
     return [
-      "Both engines use the same discovery, ownership, security, SBOM, resiliency, evidence, and approval gates.",
-      "Terraform is evaluated through validate/plan and normalized plan data; Pulumi is evaluated through preview and normalized preview data.",
+      "All Build plug-ins use the same discovery, ownership, security, SBOM, resiliency, DesignSpec, evidence, and approval gates.",
+      "Terraform uses validate/plan; Pulumi uses preview; CDK synthesizes to CloudFormation Change Sets; Bicep uses what-if; Ansible uses check/diff semantics before normalization.",
       "For brownfield resources, the existing source of truth remains authoritative. The IaC engine should implement only the approved delta rather than infer a migration.",
       "Current session engine: " +
         (engine ?? state.engine) +
