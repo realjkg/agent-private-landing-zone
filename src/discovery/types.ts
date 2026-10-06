@@ -76,6 +76,66 @@ export type DiscoveryEvidence = {
   source: string;
 };
 
+export type ScannerObservation = {
+  id: string;
+  scanner: string;
+  source: string;
+  status:
+    | "PASS"
+    | "FAIL"
+    | "UNKNOWN";
+  domain:
+    | "IDENTITY"
+    | "NETWORK"
+    | "ENCRYPTION"
+    | "LOGGING"
+    | "SUPPLY_CHAIN"
+    | "CONFIGURATION"
+    | "RESILIENCY"
+    | "OWNERSHIP"
+    | "PLATFORM";
+  severity:
+    | "INFO"
+    | "LOW"
+    | "MEDIUM"
+    | "HIGH"
+    | "CRITICAL";
+  title: string;
+  detail: string;
+  resourceId?: string;
+};
+
+export type SbomComponentObservation = {
+  name: string;
+  version?: string;
+  componentType:
+    | "PACKAGE"
+    | "CONTAINER"
+    | "FIRMWARE"
+    | "MODEL"
+    | "OPERATING_SYSTEM"
+    | "DEVICE"
+    | "OTHER";
+  format:
+    | "CYCLONEDX"
+    | "SPDX"
+    | "NATIVE"
+    | "UNKNOWN";
+  vulnerabilities: number;
+  evidenceRefs: string[];
+};
+
+export type ResiliencyObservation = {
+  key:
+    | "configuration_backup"
+    | "restore_test"
+    | "redundant_control_plane"
+    | "rpo"
+    | "rto";
+  value: string;
+  source: string;
+};
+
 export type EnvironmentState = {
   provider: Provider;
   classification: EnvironmentClassification;
@@ -86,10 +146,17 @@ export type EnvironmentState = {
   safeBuildMode: SafeBuildMode;
   discoveredAt: string;
   evidence: DiscoveryEvidence[];
+  scannerObservations: ScannerObservation[];
+  sbomComponents: SbomComponentObservation[];
+  sbomComplete: boolean;
+  resiliencyObservations: ResiliencyObservation[];
   warnings: string[];
 };
 
-export type MockScenario = "brownfield" | "greenfield" | "unknown";
+export type MockScenario =
+  | "brownfield"
+  | "greenfield"
+  | "unknown";
 
 export type DiscoveryOptions = {
   provider: Provider;
@@ -101,6 +168,9 @@ export type DiscoveryEvent =
   | "PROVIDER_DETECTED"
   | "RESOURCE_DISCOVERED"
   | "OWNERSHIP_CLASSIFIED"
+  | "SCANNER_OBSERVED"
+  | "SBOM_OBSERVED"
+  | "RESILIENCY_OBSERVED"
   | "ENVIRONMENT_CLASSIFIED"
   | "DISCOVERY_COMPLETE"
   | "DISCOVERY_FAILED";
