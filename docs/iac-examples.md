@@ -203,3 +203,40 @@ Examples:
 - Build examples should show both only when the same DesignSpec can reasonably be implemented by either engine.
 
 That keeps the methodology consistent without pretending the tools are identical.
+
+
+## Plug-in eligibility
+
+A build plug-in should fit the same foundation contract:
+
+```text
+Approved DesignSpec
+      ↓
+declarative engine adapter
+      ↓
+validate / synthesize
+      ↓
+preview / change evidence
+      ↓
+Normalized ChangeSet
+      ↓
+governance gates
+```
+
+Preferred candidates:
+
+- OpenTofu
+- Bicep
+- CloudFormation
+- AWS CDK
+- Crossplane
+
+Ansible belongs under CONFIGURE/MANAGE rather than the primary declarative Build family.
+
+### Explicit exclusions
+
+ARM JSON templates are not planned as a first-class authoring plug-in. Azure-native declarative design should target Bicep instead.
+
+PowerShell is not a first-class infrastructure language in this architecture. Where a provider CLI or script is unavoidable, it may run only as an allowlisted broker tool with typed inputs, bounded outputs and no arbitrary shell access.
+
+This distinction keeps the architecture centered on portable declarative intent rather than CLI-centric automation.
