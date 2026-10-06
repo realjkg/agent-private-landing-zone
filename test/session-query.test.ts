@@ -66,6 +66,12 @@ test("session recognizes conversational engine switching", () => {
     ),
     "USE_TERRAFORM",
   );
+  assert.equal(
+    classifySessionCommand(
+      "use OpenTofu instead",
+    ),
+    "USE_OPENTOFU",
+  );
 });
 
 test("session help teaches natural language instead of requiring commands", () => {
