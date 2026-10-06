@@ -36,8 +36,9 @@ function mapTerraformActions(
   return "UNKNOWN";
 }
 
-export function normalizeTerraformPlan(
+function normalizeTerraformLikePlan(
   json: string,
+  engine: "TERRAFORM" | "OPENTOFU",
 ): ChangeSet {
   const plan = JSON.parse(json) as TerraformPlan;
   const resources: ResourceChange[] = [];
@@ -48,7 +49,7 @@ export function normalizeTerraformPlan(
   ) {
     const address =
       resource.address ??
-      "terraform:unknown:" + index;
+      engine.toLowerCase() + ":unknown:" + index;
 
     resources.push({
       address,
@@ -60,7 +61,25 @@ export function normalizeTerraformPlan(
   }
 
   return createChangeSet(
-    "TERRAFORM",
+    engine,
     resources,
+  );
+}
+
+export function normalizeTerraformPlan(
+  json: string,
+): ChangeSet {
+  return normalizeTerraformLikePlan(
+    json,
+    "TERRAFORM",
+  );
+}
+
+export function normalizeOpenTofuPlan(
+  json: string,
+): ChangeSet {
+  return normalizeTerraformLikePlan(
+    json,
+    "OPENTOFU",
   );
 }
