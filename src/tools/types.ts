@@ -1,5 +1,6 @@
 import type { IaCEngine } from "../build/types.js";
 import type { Provider } from "../discovery/types.js";
+import type { AdapterInput } from "../iac/input.js";
 
 export type ToolName =
   | "terraform_version"
@@ -31,6 +32,7 @@ export type ToolRequest = {
   provider?: Provider;
   engine?: IaCEngine;
   workspace?: string;
+  input?: AdapterInput;
 };
 
 export type ToolResult = {
