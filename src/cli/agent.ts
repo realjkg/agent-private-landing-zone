@@ -1,4 +1,9 @@
+import { fixtureThinker } from "../agent/fixture.js";
 import { runAgentKernel } from "../agent/graph.js";
+import {
+  phaseDurations,
+  writeAgentRun,
+} from "../agent/output.js";
 import type { IaCEngine } from "../build/types.js";
 import type {
   MockScenario,
@@ -14,6 +19,7 @@ function readArg(name: string): string | undefined {
 function parseProvider(value?: string): Provider {
   if (value?.toLowerCase() === "aws") return "AWS";
   if (value?.toLowerCase() === "azure") return "AZURE";
+
   throw new Error(
     "Use --provider aws or --provider azure.",
   );
@@ -47,9 +53,12 @@ function parseMock(value?: string): MockScenario {
   );
 }
 
+const args = process.argv.slice(2);
 const request =
   readArg("--request") ??
   "Review this environment and assess the strongest operational risk.";
+const fixture = args.includes("--fixture");
+const verbose = args.includes("--verbose");
 
 console.log();
 console.log("Agentic Landing Zone");
@@ -63,28 +72,30 @@ const state = await runAgentKernel({
   provider: parseProvider(readArg("--provider")),
   engine: parseEngine(readArg("--engine")),
   mock: parseMock(readArg("--mock")),
-  approveBuild:
-    process.argv.includes("--approve"),
+  thinker: fixture ? fixtureThinker : undefined,
+  approveBuild: args.includes("--approve"),
 });
 
-console.log(`Intent          ${state.intent}`);
-console.log(`Phase           ${state.phase}`);
+const runRecord = await writeAgentRun(state);
+
+console.log(\`Intent          \${state.intent}\`);
+console.log(\`Phase           \${state.phase}\`);
 console.log(
-  `Environment     ${state.environment?.classification ?? "UNKNOWN"}`,
+  \`Environment     \${state.environment?.classification ?? "UNKNOWN"}\`,
 );
 console.log(
-  `Safe build mode ${state.environment?.safeBuildMode ?? "UNKNOWN"}`,
+  \`Safe build mode \${state.environment?.safeBuildMode ?? "UNKNOWN"}\`,
 );
 console.log();
 
 if (state.plan) {
   console.log("Plan");
   console.log(
-    `  ${state.plan.steps.join(" → ")}`,
+    \`  \${state.plan.steps.join(" → ")}\`,
   );
 
   for (const reason of state.plan.reasons) {
-    console.log(`  • ${reason}`);
+    console.log(\`  • \${reason}\`);
   }
 
   console.log();
@@ -93,7 +104,7 @@ if (state.plan) {
 if (state.engineeringAssessment) {
   console.log("Engineering view");
   console.log(
-    `  ${state.engineeringAssessment.topRisk}`,
+    \`  \${state.engineeringAssessment.topRisk}\`,
   );
   console.log();
 }
@@ -101,29 +112,69 @@ if (state.engineeringAssessment) {
 if (state.build) {
   console.log("Build");
   console.log(
-    `  ${state.build.candidate.artifact.engine} / ${state.build.gate.allowed ? "GATE PASSED" : "GATE STOPPED"}`,
+    \`  \${state.build.candidate.artifact.engine} · \${state.build.gate.allowed ? "GATE PASSED" : "GATE STOPPED"}\`,
+  );
+  console.log(
+    \`  Artifact \${state.build.candidate.artifact.contentHash.slice(0, 16)}…\`,
   );
   console.log();
 }
 
 console.log("Act");
 console.log(
-  `  ${state.action?.status ?? "NOT_REQUIRED"}`,
+  \`  \${state.action?.status ?? "NOT_REQUIRED"}\`,
 );
 console.log(
-  `  ${state.action?.reason ?? "No action result."}`,
+  \`  \${state.action?.reason ?? "No action result."}\`,
 );
 console.log();
 
 console.log("Observe");
 console.log(
-  `  mutationObserved=${state.observation?.mutationObserved ?? false}`,
+  \`  mutationObserved=\${state.observation?.mutationObserved ?? false}\`,
 );
 console.log(
-  `  verified=${state.observation?.verified ?? false}`,
+  \`  verified=\${state.observation?.verified ?? false}\`,
 );
+console.log();
+
+console.log("Observability");
+for (const timing of phaseDurations(state)) {
+  console.log(
+    \`  \${timing.phase.padEnd(18)} \${timing.durationMs} ms\`,
+  );
+}
+console.log(
+  \`  TOTAL              \${state.durationMs ?? 0} ms\`,
+);
+console.log();
+
+console.log(\`Request ID  \${state.requestId}\`);
+console.log(\`Run record  \${runRecord}\`);
 
 if (state.error) {
   console.log();
-  console.log(`Error  ${state.error}`);
+  console.log(\`Error       \${state.error}\`);
+}
+
+if (verbose) {
+  console.log();
+  console.log("────────────────────────────────");
+  console.log("Execution trace");
+  console.log();
+
+  for (const event of state.events) {
+    const duration =
+      typeof event.durationMs === "number"
+        ? \` · \${event.durationMs} ms\`
+        : "";
+
+    console.log(
+      \`\${event.at}  \${event.phase.padEnd(18)} \${event.event}\${duration}\`,
+    );
+
+    if (event.detail) {
+      console.log(\`  \${event.detail}\`);
+    }
+  }
 }
