@@ -1,0 +1,75 @@
+name: Agent Private Landing Zone Supply Chain
+
+on:
+  pull_request:
+  push:
+  schedule:
+    - cron: "23 8 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  supply-chain:
+    name: Verify, SBOM and security scan
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: package-lock.json
+          package-manager-cache: false
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Type and regression checks
+        run: |
+          npm run check
+          npm test
+          npm run plugins:check
+
+      - name: Operator design scenarios
+        run: |
+          ./alz design aws terraform brownfield
+          ./alz design azure pulumi greenfield
+          ./alz design aws opentofu brownfield
+          ./alz design azure bicep brownfield
+          ./alz design aws cloudformation brownfield
+          ./alz design aws cdk brownfield
+          ./alz design aws crossplane brownfield
+          ./alz design aws ansible brownfield
+
+      - name: Dependency audit
+        run: npm audit --audit-level=high
+
+      - name: Generate CycloneDX SBOM
+        run: npm sbom --sbom-format=cyclonedx --package-lock-only > sbom.cdx.json
+
+      - name: Scan vulnerabilities and IaC configuration
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,misconfig
+          severity: HIGH,CRITICAL
+          format: json
+          output: trivy-results.json
+          exit-code: "1"
+
+      - name: Upload scan evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: agent-private-landing-zone-supply-chain
+          path: |
+            sbom.cdx.json
+            trivy-results.json
+          retention-days: 30
