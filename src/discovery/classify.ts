@@ -12,6 +12,8 @@ const BROWNFIELD_EVIDENCE = new Set([
   "aws.scp",
   "aws.aft",
   "aws.existing_iac",
+  "aws.config",
+  "aws.cloudtrail",
   "azure.management_groups",
   "azure.policy",
   "azure.existing_iac",
