@@ -33,6 +33,8 @@ export function evidenceComplete(evidence: BuildEvidence): boolean {
   return Boolean(
     evidence.discoverySnapshotHash &&
       evidence.assessmentId &&
+      evidence.designId &&
+      evidence.designHash &&
       evidence.policyBundleId &&
       evidence.policyBundleHash &&
       evidence.scannerResults.length > 0,
