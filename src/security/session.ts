@@ -80,6 +80,20 @@ export async function assessSessionSecurity(): Promise<SessionSecurityPosture> {
         "disabled by default; explicit broker grant required",
     },
     {
+      name: "project-code",
+      passed:
+        toolPosture.projectCodeExecutionDefault === false,
+      detail:
+        "disabled by default; executable IaC requires explicit sandbox/authorization",
+    },
+    {
+      name: "preview-write",
+      passed:
+        toolPosture.previewWriteDefault === false,
+      detail:
+        "disabled by default; control-plane preview writes require explicit grant",
+    },
+    {
       name: "checkpointing",
       passed: true,
       detail:
