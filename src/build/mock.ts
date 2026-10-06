@@ -14,7 +14,10 @@ export function generateMockArtifact(
   provider: Provider,
   engine: IaCEngine,
 ): MockGeneratedArtifact {
-  if (engine === "TERRAFORM") {
+  if (
+    engine === "TERRAFORM" ||
+    engine === "OPENTOFU"
+  ) {
     return {
       path: "generated/main.tf",
       content: [
@@ -23,7 +26,9 @@ export function generateMockArtifact(
         "# No cloud resources are created by this fixture.",
         "",
         "terraform {",
-        '  required_version = ">= 1.6.0"',
+        engine === "OPENTOFU"
+          ? '  required_version = ">= 1.10.0"'
+          : '  required_version = ">= 1.6.0"',
         "}",
         "",
       ].join("\n"),
