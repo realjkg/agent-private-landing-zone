@@ -94,12 +94,15 @@ async function sessionNode(
 
   if (
     command === "USE_TERRAFORM" ||
-    command === "USE_PULUMI"
+    command === "USE_PULUMI" ||
+    command === "USE_OPENTOFU"
   ) {
     const engine: IaCEngine =
       command === "USE_TERRAFORM"
         ? "TERRAFORM"
-        : "PULUMI";
+        : command === "USE_OPENTOFU"
+          ? "OPENTOFU"
+          : "PULUMI";
 
     const response = [
       "Okay — I switched this session to " +
