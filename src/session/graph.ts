@@ -124,6 +124,12 @@ async function sessionNode(
   }
 
   if (command !== "RUN") {
+    if (command === "GUARDRAIL") {
+      throw new Error(
+        "SESSION_ROUTER_ERROR: GUARDRAIL is emitted only by the pre-router operator policy.",
+      );
+    }
+
     const lastGuardrail =
       [...(state.history ?? [])]
         .reverse()
