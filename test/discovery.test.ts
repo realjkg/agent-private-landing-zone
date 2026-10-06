@@ -105,3 +105,34 @@ test("Azure greenfield mock requires positive greenfield evidence", async () => 
   assert.equal(state.classification, "GREENFIELD");
   assert.equal(state.safeBuildMode, "GREENFIELD_BASELINE");
 });
+
+
+test("existing AWS Config evidence is sufficient to classify brownfield", () => {
+  const result = classifyEnvironment([
+    {
+      key: "aws.config",
+      value: "present",
+      source: "test",
+    },
+  ]);
+
+  assert.equal(
+    result.classification,
+    "BROWNFIELD",
+  );
+});
+
+test("existing CloudTrail evidence is sufficient to classify brownfield", () => {
+  const result = classifyEnvironment([
+    {
+      key: "aws.cloudtrail",
+      value: "present",
+      source: "test",
+    },
+  ]);
+
+  assert.equal(
+    result.classification,
+    "BROWNFIELD",
+  );
+});
