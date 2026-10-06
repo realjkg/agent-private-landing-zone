@@ -161,12 +161,27 @@ Day-to-day use is exposed through a small operator launcher rather than npm scri
 ./alz inspect aws
 ./alz session aws terraform
 ./alz plugins
+./alz prompts
 ./alz sbom
 ./alz scan
 ./alz verify
 ```
 
-The source checkout still uses Node tooling internally, but the operator does not need to know the underlying npm script graph. See [docs/operator-guide.md](docs/operator-guide.md).
+The source checkout still uses Node tooling internally, but the operator does not need to know the underlying npm script graph. `./alz prompts` and conversational `help` / `prompt guide` provide built-in self-help for unfamiliar operators. See [docs/operator-guide.md](docs/operator-guide.md).
+
+## Operator prompt safety
+
+Every conversational request passes a deterministic operator boundary before local-model routing. The boundary refuses secret disclosure, private-data exfiltration, governance/audit bypass, arbitrary shell execution, and clearly out-of-scope first-turn activity.
+
+Blocked requests are educational rather than opaque: the operator sees the boundary category, why it is disallowed, and the nearest safe reframe. Safe metadata questions remain available—for example, credential age/rotation posture without revealing secret values.
+
+Use:
+
+```bash
+./alz prompts
+```
+
+or type `help`, `prompt guide`, or `why was that blocked?` in a session.
 
 ## Secure session
 
