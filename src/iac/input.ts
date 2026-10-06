@@ -15,6 +15,7 @@ export type AzureDeploymentScope =
 
 export type AdapterInput = {
   templatePath?: string;
+  parametersPath?: string;
   stackName?: string;
   changeSetName?: string;
   changeSetType?: ChangeSetType;
