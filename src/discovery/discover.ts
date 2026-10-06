@@ -45,6 +45,28 @@ export async function discoverEnvironment(
       conflicts,
     );
 
+    for (const observation of providerResult.scannerObservations) {
+      report(
+        "SCANNER_OBSERVED",
+        observation.id + " => " + observation.status,
+      );
+    }
+
+    for (const component of providerResult.sbomComponents) {
+      report(
+        "SBOM_OBSERVED",
+        component.name +
+          (component.version ? "@" + component.version : ""),
+      );
+    }
+
+    for (const observation of providerResult.resiliencyObservations) {
+      report(
+        "RESILIENCY_OBSERVED",
+        observation.key + " => " + observation.value,
+      );
+    }
+
     const state: EnvironmentState = {
       provider: options.provider,
       classification,
@@ -55,6 +77,10 @@ export async function discoverEnvironment(
       safeBuildMode,
       discoveredAt: new Date().toISOString(),
       evidence: providerResult.evidence,
+      scannerObservations: providerResult.scannerObservations,
+      sbomComponents: providerResult.sbomComponents,
+      sbomComplete: providerResult.sbomComplete,
+      resiliencyObservations: providerResult.resiliencyObservations,
       warnings: providerResult.warnings,
     };
 
