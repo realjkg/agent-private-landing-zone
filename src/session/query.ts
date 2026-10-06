@@ -1,11 +1,22 @@
 import type { AgentState } from "../agent/types.js";
 import type { IaCEngine } from "../build/types.js";
+import { promptGuide } from "./help.js";
 import type { SessionCommand } from "./types.js";
 
 export function classifySessionCommand(
   request: string,
 ): SessionCommand {
   const value = request.trim().toLowerCase();
+
+  if (
+    value === ":prompts" ||
+    value === "prompts" ||
+    value === "prompt guide" ||
+    value === ":prompt-guide" ||
+    /show .*prompt.*guide|which prompts work|what prompts work|prompt examples/.test(value)
+  ) {
+    return "PROMPT_GUIDE";
+  }
 
   if (
     value === ":help" ||
@@ -287,31 +298,16 @@ export function formatAgentResponse(
 export function answerStateQuery(
   command: Exclude<
     SessionCommand,
-    "RUN" | "USE_TERRAFORM" | "USE_PULUMI"
+    "RUN" | "USE_TERRAFORM" | "USE_PULUMI" | "GUARDRAIL"
   >,
   state?: AgentState,
   engine?: IaCEngine,
 ): string {
-  if (command === "HELP") {
-    return [
-      "Talk to me normally. For example:",
-      "",
-      '  "Inspect this AWS environment."',
-      '  "What did you find?"',
-      '  "Which components look insecure?"',
-      '  "What is our SBOM coverage?"',
-      '  "Is the landing zone recoverable?"',
-      '  "What configuration is backed up?"',
-      '  "Show me the brownfield delta."',
-      '  "What should we design next?"',
-      '  "Design this using AWS CDK."',
-      '  "Design this using Bicep."',
-      '  "Build the attached edge configuration using Ansible."',
-      '  "Use Pulumi instead."',
-      '  "Show me the evidence."',
-      "",
-      "I will infer the operation and keep the same session state. ACT remains disabled.",
-    ].join("\n");
+  if (
+    command === "HELP" ||
+    command === "PROMPT_GUIDE"
+  ) {
+    return promptGuide();
   }
 
   if (!state) {
