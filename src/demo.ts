@@ -69,7 +69,10 @@ function buildSelection(
     engine:
       key === "pulumi"
         ? "PULUMI"
-        : "TERRAFORM",
+        : key === "opentofu" ||
+            key === "tofu"
+          ? "OPENTOFU"
+          : "TERRAFORM",
   };
 }
 
@@ -119,7 +122,7 @@ console.log(
 console.log(
   "Runtime   " +
     selectedEngine +
-    " fallback adapter",
+    " adapter",
 );
 console.log(
   "Mode      deterministic fixture; no cloud mutation",
