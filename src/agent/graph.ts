@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import { runBuildLoop } from "../build/loop.js";
+import { createDesignSpec } from "../design/create.js";
 import { act } from "./act.js";
 import { classifyIntent } from "./intent.js";
 import {
@@ -64,6 +65,7 @@ export async function runAgentKernel(
 
     const reasoningRequired =
       state.intent === "ASSESS" ||
+      state.intent === "DESIGN" ||
       state.intent === "BUILD" ||
       state.intent === "CHANGE";
 
@@ -160,6 +162,53 @@ export async function runAgentKernel(
       (current) => plan(current),
     );
 
+    const designRequested =
+      state.intent === "DESIGN" ||
+      state.intent === "BUILD" ||
+      state.intent === "CHANGE";
+
+    if (designRequested) {
+      if (
+        !state.environment ||
+        !state.postureAssessment ||
+        !state.deltaAssessment ||
+        !state.understanding
+      ) {
+        throw new Error(
+          "DESIGN_STATE_ERROR: discovery, posture, delta, and understanding are required.",
+        );
+      }
+
+      progress("Creating evidence-linked DesignSpec…");
+
+      const design = createDesignSpec({
+        environment: state.environment,
+        assessment: state.postureAssessment,
+        delta: state.deltaAssessment,
+        objective: state.request,
+        constraints: state.understanding.constraints,
+        engine: state.engine,
+      });
+
+      state = appendEvent(
+        {
+          ...state,
+          phase: "DESIGNING",
+          design,
+        },
+        {
+          phase: "DESIGNING",
+          event: "DESIGN_CREATED",
+          detail:
+            design.plugin.plugin +
+            "/" +
+            design.status +
+            "/" +
+            design.designHash.slice(0, 12),
+        },
+      );
+    }
+
     const buildRequested =
       state.intent === "BUILD" ||
       state.intent === "CHANGE";
@@ -175,10 +224,18 @@ export async function runAgentKernel(
     const realDesignBoundary =
       state.mock === undefined;
 
+    const designBuildable =
+      state.design !== undefined &&
+      state.design.status !== "BLOCKED" &&
+      state.design.plugin.buildEligible &&
+      (state.design.plugin.plugin === "TERRAFORM" ||
+        state.design.plugin.plugin === "PULUMI");
+
     const buildPermitted =
       buildRequested &&
       assessmentReady &&
       environmentBuildable &&
+      designBuildable &&
       !realDesignBoundary;
 
     if (buildRequested && !buildPermitted) {
@@ -195,7 +252,13 @@ export async function runAgentKernel(
               ? "A successful assessment is required before Build."
               : !environmentBuildable
                 ? "Environment policy does not permit Build."
-                : realDesignBoundary
+                : !state.design
+                  ? "Build requires an evidence-linked DesignSpec."
+                  : state.design.status === "BLOCKED"
+                    ? "DesignSpec is BLOCKED."
+                    : !state.design.plugin.buildEligible
+                      ? "Selected plug-in " + state.design.plugin.plugin + " is design-visible but its Build adapter is not implemented yet."
+                      : realDesignBoundary
                   ? "Real Build is intentionally stopped at the Design boundary until an approved DesignSpec is implemented."
                   : "Build prerequisites are not satisfied.",
         }),
@@ -215,6 +278,7 @@ export async function runAgentKernel(
         engine: state.engine,
         mock: state.mock,
         approve: options.approveBuild,
+        design: state.design,
       });
 
       const approvalPending =
