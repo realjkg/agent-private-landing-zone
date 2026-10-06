@@ -244,26 +244,7 @@ export function formatAgentResponse(
   ) {
     lines.push("");
 
-    if (state.design) {
-    evidence.push(
-      "Design ID: " +
-        state.design.designId,
-    );
-    evidence.push(
-      "Design SHA-256: " +
-        state.design.designHash,
-    );
-    evidence.push(
-      "Design plug-in: " +
-        state.design.plugin.plugin +
-        " / " +
-        state.design.plugin.status +
-        " / " +
-        state.design.plugin.evidencePath,
-    );
-  }
-
-  if (state.build) {
+    if (state.build) {
       lines.push(
         "I prepared a " +
           state.engine +
@@ -462,6 +443,25 @@ export function answerStateQuery(
   const evidence = [
     ...(state.observation?.evidence ?? []),
   ];
+
+  if (state.design) {
+    evidence.push(
+      "Design ID: " +
+        state.design.designId,
+    );
+    evidence.push(
+      "Design SHA-256: " +
+        state.design.designHash,
+    );
+    evidence.push(
+      "Design plug-in: " +
+        state.design.plugin.plugin +
+        " / " +
+        state.design.plugin.status +
+        " / " +
+        state.design.plugin.evidencePath,
+    );
+  }
 
   if (state.postureAssessment) {
     evidence.push(
