@@ -87,3 +87,61 @@ test("session can switch IaC engine conversationally", async () => {
     /switched.*PULUMI/i,
   );
 });
+
+
+test("conversational session emits safe progress telemetry", async () => {
+  const progress: string[] = [];
+  const { graph } =
+    createSessionGraph(
+      ":memory:",
+      (message) => {
+        progress.push(message);
+      },
+    );
+
+  const config = {
+    configurable: {
+      thread_id:
+        "progress-thread",
+    },
+  };
+
+  await graph.invoke(
+    {
+      request:
+        "Assess this environment.",
+      provider: "AWS",
+      engine: "TERRAFORM",
+      mock: "brownfield",
+      approveBuild: false,
+      fixture: true,
+    },
+    config,
+  );
+
+  assert.ok(
+    progress.some(
+      (message) =>
+        /Sensing environment/.test(
+          message,
+        ),
+    ),
+  );
+  assert.ok(
+    progress.some(
+      (message) =>
+        /Reasoning about the request/.test(
+          message,
+        ),
+    ),
+  );
+  assert.equal(
+    progress.some(
+      (message) =>
+        /chain-of-thought/i.test(
+          message,
+        ),
+    ),
+    false,
+  );
+});
