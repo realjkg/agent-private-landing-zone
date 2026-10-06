@@ -149,7 +149,7 @@ export function createDesignSpec(input: {
       .restoreEvidence !== "VERIFIED" ||
     additions.length === 0;
 
-  const status = blocked
+  const status: DesignSpec["status"] = blocked
     ? "BLOCKED"
     : reviewRequired
       ? "REVIEW_REQUIRED"
