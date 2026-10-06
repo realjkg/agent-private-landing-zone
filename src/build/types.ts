@@ -3,10 +3,17 @@ import type {
   Provider,
 } from "../discovery/types.js";
 
-export type IaCEngine =
+export type BuildEngine =
   | "TERRAFORM"
   | "PULUMI"
-  | "OPENTOFU";
+  | "OPENTOFU"
+  | "BICEP"
+  | "CLOUDFORMATION"
+  | "AWS_CDK"
+  | "CROSSPLANE"
+  | "ANSIBLE";
+
+export type IaCEngine = BuildEngine;
 
 export type BuildStatus =
   | "DRAFT"
