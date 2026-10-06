@@ -19,9 +19,9 @@ import type {
 } from "../discovery/types.js";
 import {
   answerStateQuery,
-  classifySessionCommand,
   formatAgentResponse,
 } from "./query.js";
+import { routeSessionRequest } from "./router.js";
 import type { SessionTurn } from "./types.js";
 
 const SessionAnnotation = Annotation.Root({
@@ -48,8 +48,10 @@ export type LangGraphSessionState =
 async function sessionNode(
   state: LangGraphSessionState,
 ): Promise<Partial<LangGraphSessionState>> {
-  const command = classifySessionCommand(
+  const command = await routeSessionRequest(
     state.request,
+    state.history ?? [],
+    state.fixture,
   );
 
   if (
