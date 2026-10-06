@@ -16,14 +16,9 @@ export const pulumiAdapter: IaCAdapter = {
   validate(context) {
     return [
       runAllowlistedProcess(
-        "pulumi_preview",
+        "pulumi_version",
         "pulumi",
-        [
-          "preview",
-          "--non-interactive",
-          "--diff",
-          "--expect-no-changes",
-        ],
+        ["version"],
         context.cwd,
       ),
     ];
