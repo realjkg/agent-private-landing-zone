@@ -48,11 +48,13 @@ export type LangGraphSessionState =
 
 async function sessionNode(
   state: LangGraphSessionState,
+  progress: (message: string) => void,
 ): Promise<Partial<LangGraphSessionState>> {
   const command = await routeSessionRequest(
     state.request,
     state.history ?? [],
     state.fixture,
+    progress,
   );
 
   if (
@@ -116,6 +118,7 @@ async function sessionNode(
         ? fixtureThinker
         : undefined,
     approveBuild: state.approveBuild,
+    progress,
   });
 
   const response =
@@ -137,6 +140,7 @@ async function sessionNode(
 
 export function createSessionGraph(
   dbPath?: string,
+  progress: (message: string) => void = () => {},
 ) {
   const checkpointer = dbPath
     ? (() => {
@@ -154,7 +158,11 @@ export function createSessionGraph(
   const graph = new StateGraph(
     SessionAnnotation,
   )
-    .addNode("session", sessionNode)
+    .addNode(
+      "session",
+      (state) =>
+        sessionNode(state, progress),
+    )
     .addEdge(START, "session")
     .addEdge("session", END)
     .compile({ checkpointer });
