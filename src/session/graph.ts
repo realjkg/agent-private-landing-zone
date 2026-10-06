@@ -29,7 +29,7 @@ const SessionAnnotation = Annotation.Root({
   request: Annotation<string>,
   provider: Annotation<Provider>,
   engine: Annotation<IaCEngine>,
-  mock: Annotation<MockScenario>,
+  mock: Annotation<MockScenario | undefined>,
   approveBuild: Annotation<boolean>,
   fixture: Annotation<boolean>,
   agentState: Annotation<AgentState | undefined>,
