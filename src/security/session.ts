@@ -5,6 +5,9 @@ import {
   ensureEvidenceKey,
 } from "../evidence/vault.js";
 import {
+  findLegacyPlaintextEvidence,
+} from "../evidence/migrate.js";
+import {
   getToolSecurityPosture,
 } from "../tools/broker.js";
 
@@ -27,6 +30,8 @@ export async function assessSessionSecurity(): Promise<SessionSecurityPosture> {
     getToolSecurityPosture();
   const evidence =
     await ensureEvidenceKey();
+  const legacyPlaintext =
+    await findLegacyPlaintextEvidence();
 
   const controls: SessionSecurityControl[] = [
     {
@@ -79,6 +84,16 @@ export async function assessSessionSecurity(): Promise<SessionSecurityPosture> {
       passed: true,
       detail:
         "live session state is memory-only; durable records encrypted",
+    },
+    {
+      name: "legacy-data",
+      passed:
+        legacyPlaintext.length === 0,
+      detail:
+        legacyPlaintext.length === 0
+          ? "no plaintext legacy evidence found"
+          : legacyPlaintext.length +
+            " plaintext legacy record(s) remain",
     },
   ];
 
