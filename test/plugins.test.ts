@@ -42,3 +42,52 @@ test("all plug-ins participate in supply-chain scanning", () => {
     );
   }
 });
+
+
+test("Ansible participates in governed Build as well as Configure and Manage", () => {
+  const ansible =
+    PLUGIN_CATALOG.find(
+      (plugin) =>
+        plugin.id === "ANSIBLE",
+    );
+
+  assert.ok(ansible);
+  assert.deepEqual(
+    ansible.stage,
+    ["BUILD", "CONFIGURE", "MANAGE"],
+  );
+  assert.ok(
+    ansible.capabilities.includes(
+      "PREVIEW",
+    ),
+  );
+  assert.ok(
+    ansible.capabilities.includes(
+      "NORMALIZE",
+    ),
+  );
+});
+
+test("AWS CDK retains synthesis and normalized change evidence requirements", () => {
+  const cdk =
+    PLUGIN_CATALOG.find(
+      (plugin) =>
+        plugin.id === "AWS_CDK",
+    );
+
+  assert.ok(cdk);
+  assert.deepEqual(
+    cdk.providers,
+    ["AWS"],
+  );
+  assert.ok(
+    cdk.capabilities.includes(
+      "SYNTHESIZE",
+    ),
+  );
+  assert.ok(
+    cdk.capabilities.includes(
+      "NORMALIZE",
+    ),
+  );
+});
