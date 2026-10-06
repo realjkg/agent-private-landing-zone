@@ -30,6 +30,29 @@ export async function discoverEnvironment(
       );
     }
 
+    const bundle =
+      options.evidenceBundle ?? {};
+
+    const resources = [
+      ...providerResult.resources,
+      ...(bundle.resources ?? []),
+    ];
+
+    const scannerObservations = [
+      ...providerResult.scannerObservations,
+      ...(bundle.scannerObservations ?? []),
+    ];
+
+    const sbomComponents = [
+      ...providerResult.sbomComponents,
+      ...(bundle.sbomComponents ?? []),
+    ];
+
+    const resiliencyObservations = [
+      ...providerResult.resiliencyObservations,
+      ...(bundle.resiliencyObservations ?? []),
+    ];
+
     const { classification, controlPlane } = classifyEnvironment(
       providerResult.evidence,
     );
@@ -38,21 +61,21 @@ export async function discoverEnvironment(
 
     const conflicts: DiscoveryConflict[] = [];
     const ownershipSummary = summarizeOwnership(
-      providerResult.resources,
+      resources,
     );
     const safeBuildMode = deriveSafeBuildMode(
       classification,
       conflicts,
     );
 
-    for (const observation of providerResult.scannerObservations) {
+    for (const observation of scannerObservations) {
       report(
         "SCANNER_OBSERVED",
         observation.id + " => " + observation.status,
       );
     }
 
-    for (const component of providerResult.sbomComponents) {
+    for (const component of sbomComponents) {
       report(
         "SBOM_OBSERVED",
         component.name +
@@ -60,7 +83,7 @@ export async function discoverEnvironment(
       );
     }
 
-    for (const observation of providerResult.resiliencyObservations) {
+    for (const observation of resiliencyObservations) {
       report(
         "RESILIENCY_OBSERVED",
         observation.key + " => " + observation.value,
@@ -71,16 +94,18 @@ export async function discoverEnvironment(
       provider: options.provider,
       classification,
       controlPlane,
-      resources: providerResult.resources,
+      resources,
       ownershipSummary,
       conflicts,
       safeBuildMode,
       discoveredAt: new Date().toISOString(),
       evidence: providerResult.evidence,
-      scannerObservations: providerResult.scannerObservations,
-      sbomComponents: providerResult.sbomComponents,
-      sbomComplete: providerResult.sbomComplete,
-      resiliencyObservations: providerResult.resiliencyObservations,
+      scannerObservations,
+      sbomComponents,
+      sbomComplete:
+        bundle.sbomComplete ??
+        providerResult.sbomComplete,
+      resiliencyObservations,
       warnings: providerResult.warnings,
     };
 
