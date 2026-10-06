@@ -10,6 +10,7 @@ import type { IaCEngine } from "../build/types.js";
 import type {
   AgentResult,
   EngineeringAssessment,
+  StatusReporter,
 } from "../loop.js";
 
 export type AgentIntent =
@@ -118,7 +119,12 @@ export type AgentEvent = {
 export type Thinker = (
   request: string,
   evidence: string,
+  report?: StatusReporter,
 ) => Promise<AgentResult>;
+
+export type AgentProgressReporter = (
+  message: string,
+) => void;
 
 export type AgentKernelOptions = {
   request: string;
@@ -127,6 +133,7 @@ export type AgentKernelOptions = {
   mock: MockScenario;
   thinker?: Thinker;
   approveBuild?: boolean;
+  progress?: AgentProgressReporter;
 };
 
 export type LocalThinker = (
