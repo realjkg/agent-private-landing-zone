@@ -76,3 +76,14 @@ test("session help teaches natural language instead of requiring commands", () =
     /Use Pulumi instead/,
   );
 });
+
+test("empty conversational state returns a valid natural-language starter", () => {
+  const answer = answerStateQuery(
+    "STATUS",
+  );
+
+  assert.match(
+    answer,
+    /Inspect this environment and tell me the biggest risk/,
+  );
+});
