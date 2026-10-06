@@ -116,7 +116,7 @@ export const PLUGIN_CATALOG: PluginDefinition[] = [
   {
     id: "BICEP",
     stage: ["BUILD"],
-    status: "PLANNED",
+    status: "IMPLEMENTED",
     providers: ["AZURE"],
     capabilities: [
       "VERSION",
@@ -128,29 +128,34 @@ export const PLUGIN_CATALOG: PluginDefinition[] = [
       "SECURITY_SCAN",
     ],
     executable: "bicep",
+    testedVersion: "0.47.16",
     versionSource:
       "https://github.com/Azure/bicep/releases",
     lastReviewed: "2026-10-06",
     notes:
-      "Preferred Azure-native declarative authoring path; ARM JSON is not a first-class plug-in.",
+      "Azure-native preview adapter: lint/build with no automatic module restore, then ResourceIdOnly what-if. ARM JSON is not a first-class authoring plug-in.",
   },
   {
     id: "CLOUDFORMATION",
     stage: ["BUILD"],
-    status: "PLANNED",
+    status: "IMPLEMENTED",
     providers: ["AWS"],
     capabilities: [
+      "VERSION",
       "VALIDATE",
       "PREVIEW",
       "NORMALIZE",
       "SBOM",
       "SECURITY_SCAN",
     ],
+    executable: "aws",
+    testedVersion:
+      "CloudFormation API 2010-05-15 via AWS CLI v2",
     versionSource:
-      "https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/Welcome.html",
+      "https://docs.aws.amazon.com/AWSCloudFormation/latest/APIReference/Welcome.html",
     lastReviewed: "2026-10-06",
     notes:
-      "Change Sets provide the preview/change-evidence boundary.",
+      "Existing-stack UPDATE Change Set preview only. CREATE previews remain Design-only because CloudFormation creates a REVIEW_IN_PROGRESS stack shell; execute-change-set is never exposed.",
   },
   {
     id: "AWS_CDK",
