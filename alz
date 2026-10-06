@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+TSX="$ROOT/node_modules/.bin/tsx"
+
+if [[ "${1:-}" == "bootstrap" ]]; then
+  cd "$ROOT"
+  echo "Bootstrapping Agentic Landing Zone from the locked dependency graph..."
+  npm ci
+  echo
+  echo "Ready. Run ./alz doctor"
+  exit 0
+fi
+
+if [[ ! -x "$TSX" ]]; then
+  echo "Agentic Landing Zone is not bootstrapped."
+  echo "Run: ./alz bootstrap"
+  exit 2
+fi
+
+cd "$ROOT"
+exec "$TSX" "$ROOT/src/cli/operator.ts" "$@"
