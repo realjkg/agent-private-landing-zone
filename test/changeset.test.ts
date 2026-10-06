@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { normalizeBicepWhatIf } from "../src/iac/bicep-whatif.js";
+import { normalizeCloudFormationChangeSet } from "../src/iac/cloudformation-changeset.js";
 import { normalizePulumiPreview } from "../src/iac/pulumi-preview.js";
 import {
   normalizeOpenTofuPlan,
@@ -138,4 +140,118 @@ test("OpenTofu reuses Terraform-compatible plan normalization without retaining 
     JSON.stringify(result).includes(secret),
     false,
   );
+});
+
+
+test("CloudFormation change sets normalize replacement conservatively", () => {
+  const result =
+    normalizeCloudFormationChangeSet(
+      JSON.stringify({
+        Changes: [
+          {
+            ResourceChange: {
+              Action: "Add",
+              LogicalResourceId: "NewBucket",
+              ResourceType:
+                "AWS::S3::Bucket",
+              Replacement: "False",
+            },
+          },
+          {
+            ResourceChange: {
+              Action: "Modify",
+              LogicalResourceId:
+                "ExistingRole",
+              ResourceType:
+                "AWS::IAM::Role",
+              Replacement:
+                "Conditional",
+            },
+          },
+          {
+            ResourceChange: {
+              Action: "Remove",
+              LogicalResourceId:
+                "OldTopic",
+              ResourceType:
+                "AWS::SNS::Topic",
+              Replacement: "False",
+            },
+          },
+        ],
+      }),
+    );
+
+  assert.equal(
+    result.engine,
+    "CLOUDFORMATION",
+  );
+  assert.equal(result.creates, 1);
+  assert.equal(
+    result.replacements,
+    1,
+  );
+  assert.equal(result.deletes, 1);
+  assert.equal(
+    result.destructive,
+    true,
+  );
+});
+
+test("CloudFormation import semantics fail closed as unknown", () => {
+  const result =
+    normalizeCloudFormationChangeSet(
+      JSON.stringify({
+        Changes: [
+          {
+            ResourceChange: {
+              Action: "Import",
+              LogicalResourceId:
+                "ExistingTable",
+              ResourceType:
+                "AWS::DynamoDB::Table",
+            },
+          },
+        ],
+      }),
+    );
+
+  assert.equal(result.unknown, 1);
+});
+
+test("Bicep ResourceIdOnly what-if normalizes without property payloads", () => {
+  const result =
+    normalizeBicepWhatIf(
+      JSON.stringify({
+        changes: [
+          {
+            resourceId:
+              "/subscriptions/example/resourceGroups/rg/providers/Microsoft.Storage/storageAccounts/new",
+            changeType: "Create",
+          },
+          {
+            resourceId:
+              "/subscriptions/example/resourceGroups/rg/providers/Microsoft.Network/virtualNetworks/vnet",
+            changeType: "Modify",
+          },
+          {
+            resourceId:
+              "/subscriptions/example/resourceGroups/rg/providers/Microsoft.KeyVault/vaults/old",
+            changeType: "Delete",
+          },
+          {
+            resourceId:
+              "/subscriptions/example/resourceGroups/rg/providers/Microsoft.Insights/components/unknown",
+            changeType:
+              "Unsupported",
+          },
+        ],
+      }),
+    );
+
+  assert.equal(result.engine, "BICEP");
+  assert.equal(result.creates, 1);
+  assert.equal(result.updates, 1);
+  assert.equal(result.deletes, 1);
+  assert.equal(result.unknown, 1);
 });
