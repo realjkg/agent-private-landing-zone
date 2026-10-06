@@ -13,7 +13,18 @@ const context = {
 const checks: ToolName[] = [
   "terraform_version",
   "pulumi_version",
+  "aws_version",
+  "azure_version",
 ];
+
+const labels: Partial<
+  Record<ToolName, string>
+> = {
+  terraform_version: "Terraform",
+  pulumi_version: "Pulumi",
+  aws_version: "AWS CLI",
+  azure_version: "Azure CLI",
+};
 
 console.log();
 console.log("Agentic Landing Zone");
@@ -37,13 +48,15 @@ for (const tool of checks) {
     rows[0] as ToolResult;
 
   const label =
-    tool === "terraform_version"
-      ? "Terraform"
-      : "Pulumi";
+    labels[tool] ?? tool;
 
   if (primary.ok) {
+    const versionText =
+      primary.stdout.trim() ||
+      primary.stderr.trim();
+
     const value =
-      primary.stdout.trim()
+      versionText
         .split("\n")[0] ||
       "available";
 
