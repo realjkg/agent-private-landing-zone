@@ -25,6 +25,12 @@ import {
   answerStateQuery,
   formatAgentResponse,
 } from "./query.js";
+import {
+  blockedPromptHelp,
+} from "./help.js";
+import {
+  evaluateOperatorRequest,
+} from "./operator-policy.js";
 import { routeSessionRequest } from "./router.js";
 import type { SessionTurn } from "./types.js";
 
@@ -53,6 +59,32 @@ async function sessionNode(
   state: LangGraphSessionState,
   progress: AgentProgressReporter,
 ): Promise<Partial<LangGraphSessionState>> {
+  const policy = evaluateOperatorRequest(
+    state.request,
+    (state.history?.length ?? 0) > 0,
+  );
+
+  if (!policy.allowed) {
+    progress(
+      "Request stopped by operator safety boundary.",
+    );
+
+    const response =
+      blockedPromptHelp(policy);
+
+    return {
+      response,
+      history: [
+        {
+          at: new Date().toISOString(),
+          request: state.request,
+          command: "GUARDRAIL",
+          response,
+        },
+      ],
+    };
+  }
+
   const command = await routeSessionRequest(
     state.request,
     state.history ?? [],
