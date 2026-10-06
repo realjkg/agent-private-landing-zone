@@ -51,7 +51,7 @@ const options: BuildLoopOptions = {
 };
 
 console.log();
-console.log("Agentic Landing Zone");
+console.log("Agent Private Landing Zone");
 console.log("────────────────────────────────");
 console.log();
 console.log("BUILD LOOP · PREVIEW ONLY");

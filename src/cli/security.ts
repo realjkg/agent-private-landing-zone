@@ -6,7 +6,7 @@ const posture =
   await assessSessionSecurity();
 
 console.log();
-console.log("Agentic Landing Zone");
+console.log("Agent Private Landing Zone");
 console.log("────────────────────────────────");
 console.log("SECURITY PREFLIGHT");
 console.log();

@@ -9,7 +9,7 @@ import {
 const errors = validatePluginCatalog();
 
 console.log();
-console.log("Agentic Landing Zone");
+console.log("Agent Private Landing Zone");
 console.log("────────────────────────────────");
 console.log("PLUG-IN COMPATIBILITY");
 console.log();

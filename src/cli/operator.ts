@@ -104,7 +104,7 @@ function choice(
 
 function help(): void {
   console.log();
-  console.log("Agentic Landing Zone");
+  console.log("Agent Private Landing Zone");
   console.log("────────────────────────────────");
   console.log("Operator commands");
   console.log();

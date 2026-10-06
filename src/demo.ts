@@ -104,7 +104,7 @@ const request =
   ".";
 
 console.log();
-console.log("Agentic Landing Zone");
+console.log("Agent Private Landing Zone");
 console.log("────────────────────────────────");
 console.log("GOVERNED OPERATOR DEMO");
 console.log("────────────────────────────────");

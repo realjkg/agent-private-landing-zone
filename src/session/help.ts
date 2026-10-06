@@ -4,7 +4,7 @@ import type {
 
 export function promptGuide(): string {
   return [
-    "Agentic Landing Zone · Prompt Guide",
+    "Agent Private Landing Zone · Prompt Guide",
     "",
     "Talk to me normally. Good requests describe the infrastructure outcome rather than a raw command.",
     "",

@@ -1,6 +1,6 @@
 # Operator guide
 
-The Agentic Landing Zone has an operator-facing command surface so normal use does not require remembering npm scripts.
+The Agent Private Landing Zone has an operator-facing command surface so normal use does not require remembering npm scripts.
 
 ## First-time source checkout
 

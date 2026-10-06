@@ -1,8 +1,8 @@
 {
-  "name": "@agentic/landing-zone",
+  "name": "agent-private-landing-zone",
   "version": "0.1.0",
   "private": true,
-  "description": "Portable private and sovereign agentic landing zone accelerator",
+  "description": "Private landing zone accelerator with local model support and governed infrastructure workflows",
   "type": "module",
   "scripts": {
     "demo": "tsx src/demo.ts",

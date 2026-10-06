@@ -102,7 +102,7 @@ async function readWorkspaceEvidence(
 }
 
 console.log();
-console.log("Agentic Landing Zone");
+console.log("Agent Private Landing Zone");
 console.log("────────────────────────────────");
 console.log();
 console.log(`Discovering ${provider} environment...`);

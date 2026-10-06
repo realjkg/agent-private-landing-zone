@@ -34,7 +34,7 @@ const labels: Partial<
 };
 
 console.log();
-console.log("Agentic Landing Zone");
+console.log("Agent Private Landing Zone");
 console.log("────────────────────────────────");
 console.log("TOOLBOX SELF-CHECK");
 console.log();

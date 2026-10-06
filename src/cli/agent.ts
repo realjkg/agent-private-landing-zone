@@ -49,7 +49,7 @@ const fixture = args.includes("--fixture");
 const verbose = args.includes("--verbose");
 
 console.log();
-console.log("Agentic Landing Zone");
+console.log("Agent Private Landing Zone");
 console.log("────────────────────────────────");
 console.log();
 console.log("AGENT KERNEL · ACT DISABLED");
