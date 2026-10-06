@@ -15,6 +15,7 @@ export type SessionCommand =
   | "COMPARE_IAC"
   | "USE_TERRAFORM"
   | "USE_PULUMI"
+  | "USE_OPENTOFU"
   | "PROMPT_GUIDE"
   | "GUARDRAIL"
   | "HELP";
