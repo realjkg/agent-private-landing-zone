@@ -5,6 +5,9 @@ import type {
   MockScenario,
   Provider,
 } from "../discovery/types.js";
+import type {
+  DesignSpec,
+} from "../design/types.js";
 import { evaluateBuildGate } from "./gate.js";
 import {
   createMockPreview,
@@ -30,6 +33,7 @@ export type BuildLoopOptions = {
   engine: IaCEngine;
   mock?: MockScenario;
   approve?: boolean;
+  design?: DesignSpec;
   repositoryEvidence?: RepositoryEvidence;
 };
 
@@ -44,6 +48,12 @@ export type BuildLoopResult = {
 export async function runBuildLoop(
   options: BuildLoopOptions,
 ): Promise<BuildLoopResult> {
+  if (!options.mock && !options.design) {
+    throw new Error(
+      "DESIGN_REQUIRED: non-fixture Build requires an evidence-linked DesignSpec.",
+    );
+  }
+
   const environment = await discoverEnvironment({
     provider: options.provider,
     mock: options.mock,
@@ -88,6 +98,20 @@ export async function runBuildLoop(
     }),
   );
 
+  const designId =
+    options.design?.designId ??
+    "design-fixture-v1";
+  const designHash =
+    options.design?.designHash ??
+    sha256(
+      JSON.stringify({
+        mode: "fixture-design",
+        provider: options.provider,
+        engine: options.engine,
+        mock: options.mock,
+      }),
+    );
+
   const approvalId = options.approve
     ? `approval-${randomUUID()}`
     : undefined;
@@ -102,6 +126,8 @@ export async function runBuildLoop(
     evidence: {
       discoverySnapshotHash,
       assessmentId: "assessment-fixture-v1",
+      designId,
+      designHash,
       policyBundleId: "policy-fixture-v1",
       policyBundleHash,
       scannerResults,
