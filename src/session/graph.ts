@@ -124,11 +124,28 @@ async function sessionNode(
   }
 
   if (command !== "RUN") {
-    const response = answerStateQuery(
-      command,
-      state.agentState,
-      state.engine,
-    );
+    const lastGuardrail =
+      [...(state.history ?? [])]
+        .reverse()
+        .find(
+          (turn) =>
+            turn.command === "GUARDRAIL",
+        );
+
+    const response =
+      command === "EXPLAIN" &&
+      !state.agentState &&
+      lastGuardrail
+        ? [
+            "The previous request was stopped by the operator safety boundary.",
+            "",
+            lastGuardrail.response,
+          ].join("\n")
+        : answerStateQuery(
+            command,
+            state.agentState,
+            state.engine,
+          );
 
     return {
       response,
