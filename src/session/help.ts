@@ -14,6 +14,7 @@ export function promptGuide(): string {
     '  “What is our SBOM and recovery coverage?”',
     '  “Design the safest additive delta using AWS CDK.”',
     '  “Show the Ansible check-mode path for the attached edge nodes.”',
+    '  “Use Pulumi instead.”',
     '  “Why is this build blocked, and what evidence is missing?”',
     '  “Show credential rotation posture without revealing secret values.”',
     "",
