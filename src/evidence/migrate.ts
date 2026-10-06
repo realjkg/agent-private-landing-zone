@@ -97,13 +97,27 @@ export async function migrateLegacyEvidence(): Promise<EvidenceMigrationResult> 
     );
   }
 
-  const legacySqlite = join(
-    ".runs",
-    "state",
-    "agent-checkpoints.sqlite",
-  );
+  for (const legacySqlite of [
+    join(
+      ".runs",
+      "state",
+      "agent-checkpoints.sqlite",
+    ),
+    join(
+      ".runs",
+      "state",
+      "agent-checkpoints.sqlite-wal",
+    ),
+    join(
+      ".runs",
+      "state",
+      "agent-checkpoints.sqlite-shm",
+    ),
+  ]) {
+    if (!existsSync(legacySqlite)) {
+      continue;
+    }
 
-  if (existsSync(legacySqlite)) {
     const raw =
       await readFile(legacySqlite);
 
@@ -162,14 +176,26 @@ export async function findLegacyPlaintextEvidence(): Promise<string[]> {
     }
   }
 
-  const legacySqlite = join(
-    ".runs",
-    "state",
-    "agent-checkpoints.sqlite",
-  );
-
-  if (existsSync(legacySqlite)) {
-    found.push(legacySqlite);
+  for (const legacySqlite of [
+    join(
+      ".runs",
+      "state",
+      "agent-checkpoints.sqlite",
+    ),
+    join(
+      ".runs",
+      "state",
+      "agent-checkpoints.sqlite-wal",
+    ),
+    join(
+      ".runs",
+      "state",
+      "agent-checkpoints.sqlite-shm",
+    ),
+  ]) {
+    if (existsSync(legacySqlite)) {
+      found.push(legacySqlite);
+    }
   }
 
   return found;
