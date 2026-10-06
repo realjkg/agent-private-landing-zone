@@ -62,6 +62,10 @@ export function createConfigurationRecoverySnapshot(
     );
   }
 
+  blockers.push(
+    "Provider-native configuration export is not captured yet; this snapshot is a normalized recovery manifest.",
+  );
+
   if (
     !environment.evidence.some(
       (item) =>
@@ -96,6 +100,7 @@ export function createConfigurationRecoverySnapshot(
     evidenceRefs,
     configurationHash:
       sha256(JSON.stringify(normalized)),
+    coverage: "MANIFEST_ONLY",
     restoreStatus:
       blockers.length === 0
         ? "VERIFIED"
