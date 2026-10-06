@@ -14,18 +14,27 @@ export function observe(
     "Agent plan recorded.",
   ];
 
+  if (state.assessment) {
+    evidence.push(
+      \`Assessment status: \${state.assessment.status}\`,
+    );
+  }
+
   if (state.build) {
     evidence.push(
-      `Build artifact hash: ${state.build.candidate.artifact.contentHash}`,
+      \`Build artifact hash: \${state.build.candidate.artifact.contentHash}\`,
     );
     evidence.push(
-      `Preview hash: ${state.build.candidate.evidence.planHash ?? "missing"}`,
+      \`Preview hash: \${state.build.candidate.evidence.planHash ?? "missing"}\`,
+    );
+    evidence.push(
+      \`Build gate: \${state.build.gate.allowed ? "PASSED" : "STOPPED"}\`,
     );
   }
 
   if (state.action) {
     evidence.push(
-      `Action status: ${state.action.status}`,
+      \`Action status: \${state.action.status}\`,
     );
   }
 
@@ -35,12 +44,16 @@ export function observe(
     evidence,
   };
 
+  const phase =
+    state.phase === "BLOCKED"
+      ? "BLOCKED"
+      : state.phase === "AWAITING_APPROVAL"
+        ? "AWAITING_APPROVAL"
+        : "COMPLETE";
+
   return {
     ...state,
-    phase:
-      state.phase === "BLOCKED"
-        ? "BLOCKED"
-        : "COMPLETE",
+    phase,
     observation,
     events: [
       ...state.events,
