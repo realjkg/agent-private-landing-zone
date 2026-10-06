@@ -67,6 +67,10 @@ test("brownfield assessment covers cloud virtual physical SBOM and resiliency po
     64,
   );
   assert.equal(
+    assessment.recoverySnapshot.coverage,
+    "MANIFEST_ONLY",
+  );
+  assert.equal(
     assessment.recoverySnapshot.restoreStatus,
     "UNVERIFIED",
   );
