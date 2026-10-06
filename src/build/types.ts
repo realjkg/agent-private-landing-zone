@@ -3,7 +3,10 @@ import type {
   Provider,
 } from "../discovery/types.js";
 
-export type IaCEngine = "TERRAFORM" | "PULUMI";
+export type IaCEngine =
+  | "TERRAFORM"
+  | "PULUMI"
+  | "OPENTOFU";
 
 export type BuildStatus =
   | "DRAFT"
