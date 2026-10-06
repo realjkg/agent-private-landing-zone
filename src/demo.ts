@@ -8,6 +8,9 @@ import type {
   MockScenario,
   Provider,
 } from "./discovery/types.js";
+import {
+  parseBuildEngine,
+} from "./build/engine.js";
 import type {
   IaCEngine,
 } from "./build/types.js";
@@ -67,12 +70,7 @@ function buildSelection(
   return {
     plugin,
     engine:
-      key === "pulumi"
-        ? "PULUMI"
-        : key === "opentofu" ||
-            key === "tofu"
-          ? "OPENTOFU"
-          : "TERRAFORM",
+      parseBuildEngine(key),
   };
 }
 
