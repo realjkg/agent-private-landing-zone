@@ -31,3 +31,15 @@ test("fixture session routes conversational follow-ups without invoking a model"
     "RUN",
   );
 });
+
+
+test("first-turn inspect request enters the governed agent kernel", async () => {
+  assert.equal(
+    await routeSessionRequest(
+      "Inspect this AWS environment.",
+      [],
+      false,
+    ),
+    "RUN",
+  );
+});
