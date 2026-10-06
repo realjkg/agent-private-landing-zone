@@ -271,6 +271,14 @@ export async function runAgentKernel(
     }
 
     if (buildPermitted) {
+      const design = state.design;
+
+      if (!design) {
+        throw new Error(
+          "DESIGN_REQUIRED: Build cannot proceed without DesignSpec.",
+        );
+      }
+
       progress(
         "Preparing preview-only infrastructure candidate…",
       );
@@ -280,10 +288,10 @@ export async function runAgentKernel(
       const build = await runBuildLoop({
         provider: state.provider,
         engine:
-          state.design.plugin.plugin,
+          design.plugin.plugin,
         mock: state.mock,
         approve: options.approveBuild,
-        design: state.design,
+        design,
       });
 
       const approvalPending =
