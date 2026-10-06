@@ -3,7 +3,9 @@ import {
   type BuildLoopOptions,
 } from "../build/loop.js";
 import { writeBuildRun } from "../build/output.js";
-import type { IaCEngine } from "../build/types.js";
+import {
+  parseBuildEngine,
+} from "../build/engine.js";
 import type {
   MockScenario,
   Provider,
@@ -27,27 +29,6 @@ function parseProvider(value?: string): Provider {
   );
 }
 
-function parseEngine(value?: string): IaCEngine {
-  if (value?.toLowerCase() === "terraform") {
-    return "TERRAFORM";
-  }
-
-  if (value?.toLowerCase() === "pulumi") {
-    return "PULUMI";
-  }
-
-  if (
-    value?.toLowerCase() === "opentofu" ||
-    value?.toLowerCase() === "tofu"
-  ) {
-    return "OPENTOFU";
-  }
-
-  throw new Error(
-    "Use --engine terraform, pulumi, or opentofu.",
-  );
-}
-
 function parseMock(value?: string): MockScenario {
   if (
     value === "brownfield" ||
@@ -64,7 +45,7 @@ function parseMock(value?: string): MockScenario {
 
 const options: BuildLoopOptions = {
   provider: parseProvider(readArg("--provider")),
-  engine: parseEngine(readArg("--engine")),
+  engine: parseBuildEngine(readArg("--engine")),
   mock: parseMock(readArg("--mock")),
   approve: hasFlag("--approve"),
 };
