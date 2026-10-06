@@ -300,6 +300,17 @@ async function discoverAwsLive(): Promise<AwsDiscoveryResult> {
     });
   }
 
+  if (
+    (config?.ConfigurationRecorders
+      ?.length ?? 0) > 0
+  ) {
+    evidence.push({
+      key: "aws.config",
+      value: "present",
+      source: "aws-cli",
+    });
+  }
+
   for (
     const recorder of
     config?.ConfigurationRecorders ??
@@ -323,6 +334,17 @@ async function discoverAwsLive(): Promise<AwsDiscoveryResult> {
       metadata: {
         assetKind: "CLOUD",
       },
+    });
+  }
+
+  if (
+    (cloudTrail?.trailList?.length ??
+      0) > 0
+  ) {
+    evidence.push({
+      key: "aws.cloudtrail",
+      value: "present",
+      source: "aws-cli",
     });
   }
 
