@@ -147,3 +147,45 @@ test("unknown environment blocks build before candidate creation", async () => {
     false,
   );
 });
+
+
+test("agent reports safe phase progress without exposing chain of thought", async () => {
+  const progress: string[] = [];
+
+  await runAgentKernel({
+    request:
+      "Assess this environment.",
+    provider: "AWS",
+    engine: "TERRAFORM",
+    mock: "brownfield",
+    thinker: mockThinker,
+    progress: (message) => {
+      progress.push(message);
+    },
+  });
+
+  assert.ok(
+    progress.some(
+      (message) =>
+        message.includes(
+          "Sensing environment",
+        ),
+    ),
+  );
+  assert.ok(
+    progress.some(
+      (message) =>
+        message.includes(
+          "Reasoning about the request",
+        ),
+    ),
+  );
+  assert.ok(
+    progress.some(
+      (message) =>
+        message.includes(
+          "Planning safe next steps",
+        ),
+    ),
+  );
+});
