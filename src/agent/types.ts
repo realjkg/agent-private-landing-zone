@@ -10,6 +10,9 @@ import type {
   DeltaAssessment,
 } from "../delta/types.js";
 import type {
+  DesignSpec,
+} from "../design/types.js";
+import type {
   BuildLoopResult,
 } from "../build/loop.js";
 import type { IaCEngine } from "../build/types.js";
@@ -23,6 +26,7 @@ export type AgentIntent =
   | "ANSWER"
   | "DISCOVER"
   | "ASSESS"
+  | "DESIGN"
   | "BUILD"
   | "CHANGE";
 
@@ -32,6 +36,7 @@ export type AgentPhase =
   | "UNDERSTANDING"
   | "THINKING"
   | "PLANNING"
+  | "DESIGNING"
   | "BUILDING"
   | "AWAITING_APPROVAL"
   | "ACTING"
@@ -106,6 +111,7 @@ export type AgentState = {
   environment?: EnvironmentState;
   postureAssessment?: DiscoveryAssessment;
   deltaAssessment?: DeltaAssessment;
+  design?: DesignSpec;
   understanding?: AgentUnderstanding;
   assessment?: AgentResult;
   engineeringAssessment?: EngineeringAssessment;
