@@ -90,6 +90,55 @@ console.log(
 );
 console.log();
 
+if (state.postureAssessment) {
+  console.log("Posture");
+  console.log(
+    "  Security   " +
+      state.postureAssessment.securityStatus,
+  );
+  console.log(
+    "  SBOM       " +
+      state.postureAssessment.sbom.status +
+      " / " +
+      state.postureAssessment.sbom.componentCount +
+      " components",
+  );
+  console.log(
+    "  Resiliency " +
+      state.postureAssessment.resiliency.status +
+      " / restore " +
+      state.postureAssessment.resiliency.restoreEvidence,
+  );
+  console.log(
+    "  Recovery   " +
+      state.postureAssessment.recoverySnapshot.configurationHash.slice(
+        0,
+        16,
+      ) +
+      "…",
+  );
+  console.log();
+}
+
+if (state.deltaAssessment) {
+  console.log("Delta");
+  console.log(
+    "  Decisions  " +
+      state.deltaAssessment.decisions.length,
+  );
+  console.log(
+    "  Blockers   " +
+      state.deltaAssessment.blockers.length,
+  );
+  console.log(
+    "  Design     " +
+      (state.deltaAssessment.designRequired
+        ? "REQUIRED"
+        : "NOT_REQUIRED"),
+  );
+  console.log();
+}
+
 if (state.plan) {
   console.log("Plan");
   console.log(
