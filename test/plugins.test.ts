@@ -17,7 +17,7 @@ test("plug-in catalog is complete and current", () => {
   );
 });
 
-test("implemented engines remain Terraform and Pulumi until adapters are enabled", () => {
+test("implemented preview engines include OpenTofu", () => {
   const implemented =
     PLUGIN_CATALOG.filter(
       (plugin) =>
@@ -26,7 +26,7 @@ test("implemented engines remain Terraform and Pulumi until adapters are enabled
 
   assert.deepEqual(
     implemented,
-    ["TERRAFORM", "PULUMI"],
+    ["TERRAFORM", "PULUMI", "OPENTOFU"],
   );
 });
 
