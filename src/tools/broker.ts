@@ -132,3 +132,38 @@ export function executeTool(
     "State/evidence query tools are handled by the session layer.",
   );
 }
+
+
+export function getToolSecurityPosture(): {
+  allowedTools: string[];
+  mutationTools: string[];
+  arbitraryShell: boolean;
+  cloudReadDefault: boolean;
+} {
+  const allowedTools = [...SAFE_TOOLS].sort();
+  const mutationPatterns = [
+    "apply",
+    "destroy",
+    "pulumi_up",
+    "up",
+    "delete",
+    "exec",
+    "shell",
+    "bash",
+  ];
+
+  const mutationTools = allowedTools.filter(
+    (tool) =>
+      mutationPatterns.some(
+        (pattern) =>
+          tool.toLowerCase().includes(pattern),
+      ),
+  );
+
+  return {
+    allowedTools,
+    mutationTools,
+    arbitraryShell: false,
+    cloudReadDefault: false,
+  };
+}
