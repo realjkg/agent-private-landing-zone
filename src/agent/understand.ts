@@ -1,6 +1,9 @@
 import {
   intentRequestsMutation,
 } from "./intent.js";
+import {
+  assessDelta,
+} from "../delta/assess.js";
 import type {
   AgentState,
   AgentUnderstanding,
@@ -20,6 +23,12 @@ export function understand(
   );
 
   const constraints: string[] = [];
+
+  const deltaAssessment =
+    assessDelta(
+      state.environment,
+      state.request,
+    );
 
   if (state.environment.classification === "UNKNOWN") {
     constraints.push(
@@ -51,6 +60,35 @@ export function understand(
     "Delete authority is never granted by discovery.",
   );
 
+  if (
+    state.postureAssessment?.securityStatus ===
+    "INSECURE"
+  ) {
+    constraints.push(
+      "Security posture contains high or critical findings; Design must address or explicitly accept them before Build.",
+    );
+  }
+
+  if (
+    state.postureAssessment?.sbom.status ===
+      "UNKNOWN" ||
+    state.postureAssessment?.sbom.status ===
+      "MISSING"
+  ) {
+    constraints.push(
+      "SBOM coverage is insufficient; software supply-chain posture is not established.",
+    );
+  }
+
+  if (
+    state.postureAssessment?.resiliency.restoreEvidence !==
+    "VERIFIED"
+  ) {
+    constraints.push(
+      "Restore capability is not verified; configuration backup alone must not be treated as proven recoverability.",
+    );
+  }
+
   const understanding: AgentUnderstanding = {
     environmentKnown:
       state.environment.classification !== "UNKNOWN",
@@ -69,6 +107,7 @@ export function understand(
     ...state,
     phase: "UNDERSTANDING",
     understanding,
+    deltaAssessment,
     events: [
       ...state.events,
       {
@@ -106,6 +145,28 @@ export function understandingEvidence(
         state.environment.conflicts,
       warnings:
         state.environment.warnings,
+      posture: state.postureAssessment
+        ? {
+            securityStatus:
+              state.postureAssessment.securityStatus,
+            findings:
+              state.postureAssessment.findings,
+            sbom:
+              state.postureAssessment.sbom,
+            resiliency:
+              state.postureAssessment.resiliency,
+            recoverySnapshot: {
+              configurationHash:
+                state.postureAssessment.recoverySnapshot.configurationHash,
+              restoreStatus:
+                state.postureAssessment.recoverySnapshot.restoreStatus,
+              blockers:
+                state.postureAssessment.recoverySnapshot.blockers,
+            },
+          }
+        : undefined,
+      deltaAssessment:
+        state.deltaAssessment,
       constraints:
         state.understanding.constraints,
     },
