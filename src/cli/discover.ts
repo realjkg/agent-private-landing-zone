@@ -19,8 +19,12 @@ import {
   parseSbomDocument,
 } from "../assessment/sbom.js";
 import {
+  parseInventoryEvidenceBundle,
   parsePostureEvidenceBundle,
 } from "../assessment/ingest.js";
+import {
+  summarizeOwnership,
+} from "../discovery/ownership.js";
 import {
   formatResourceRows,
   writeDiscoveryRun,
@@ -72,6 +76,8 @@ const showResources = hasFlag("--resources") || verbose;
 const sbomPath = readArg("--sbom");
 const postureEvidencePath =
   readArg("--posture-evidence");
+const inventoryEvidencePath =
+  readArg("--inventory-evidence");
 
 async function readWorkspaceEvidence(
   path: string,
@@ -111,6 +117,34 @@ try {
       }
     },
   );
+
+  if (inventoryEvidencePath) {
+    const importedAssets =
+      parseInventoryEvidenceBundle(
+        await readWorkspaceEvidence(
+          inventoryEvidencePath,
+        ),
+        provider,
+      );
+
+    const resources = [
+      ...result.resources,
+      ...importedAssets,
+    ];
+
+    result = {
+      ...result,
+      resources,
+      ownershipSummary:
+        summarizeOwnership(
+          resources,
+        ),
+      warnings: [
+        ...result.warnings,
+        "IMPORTED_INVENTORY_READ_ONLY: attached asset evidence cannot grant update/delete authority.",
+      ],
+    };
+  }
 
   if (sbomPath) {
     const parsedSbom =
