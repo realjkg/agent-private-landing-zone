@@ -38,6 +38,13 @@ test("tool broker exposes no apply or destroy operations", () => {
     "opentofu_fmt_check",
     "opentofu_validate",
     "opentofu_plan",
+    "bicep_version",
+    "bicep_lint",
+    "bicep_build",
+    "bicep_what_if",
+    "cloudformation_version",
+    "cloudformation_validate",
+    "cloudformation_preview",
     "pulumi_version",
     "pulumi_preview",
     "aws_version",
@@ -126,6 +133,80 @@ test("OpenTofu preview requires explicit cloud-read capability", () => {
   const result = executeTool(
     {
       tool: "opentofu_plan",
+    },
+    context,
+  );
+
+  assert.equal(
+    Array.isArray(result),
+    false,
+  );
+
+  if (!Array.isArray(result)) {
+    assert.equal(result.blocked, true);
+    assert.match(
+      result.reason ?? "",
+      /read-only cloud access/i,
+    );
+  }
+});
+
+
+test("CloudFormation preview requires cloud-read and preview-write capabilities", () => {
+  const noCloudRead = executeTool(
+    {
+      tool: "cloudformation_preview",
+    },
+    context,
+  );
+
+  assert.equal(
+    Array.isArray(noCloudRead),
+    false,
+  );
+
+  if (!Array.isArray(noCloudRead)) {
+    assert.equal(
+      noCloudRead.blocked,
+      true,
+    );
+    assert.match(
+      noCloudRead.reason ?? "",
+      /read-only cloud access/i,
+    );
+  }
+
+  const noPreviewWrite = executeTool(
+    {
+      tool: "cloudformation_preview",
+    },
+    {
+      ...context,
+      allowCloudRead: true,
+    },
+  );
+
+  assert.equal(
+    Array.isArray(noPreviewWrite),
+    false,
+  );
+
+  if (!Array.isArray(noPreviewWrite)) {
+    assert.equal(
+      noPreviewWrite.blocked,
+      true,
+    );
+    assert.match(
+      noPreviewWrite.reason ?? "",
+      /preview-write/i,
+    );
+  }
+});
+
+test("Bicep what-if requires explicit Azure read capability", () => {
+  const result = executeTool(
+    {
+      tool: "bicep_what_if",
     },
     context,
   );
