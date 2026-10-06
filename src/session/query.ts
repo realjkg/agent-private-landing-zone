@@ -87,6 +87,14 @@ export function classifySessionCommand(
   }
 
   if (
+    /use opentofu|switch to opentofu|try opentofu|use tofu|tofu instead|opentofu instead/.test(
+      value,
+    )
+  ) {
+    return "USE_OPENTOFU";
+  }
+
+  if (
     /use terraform|switch to terraform|try terraform|with terraform instead|terraform instead/.test(
       value,
     )
@@ -298,7 +306,7 @@ export function formatAgentResponse(
 export function answerStateQuery(
   command: Exclude<
     SessionCommand,
-    "RUN" | "USE_TERRAFORM" | "USE_PULUMI" | "GUARDRAIL"
+    "RUN" | "USE_TERRAFORM" | "USE_PULUMI" | "USE_OPENTOFU" | "GUARDRAIL"
   >,
   state?: AgentState,
   engine?: IaCEngine,
