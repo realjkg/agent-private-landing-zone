@@ -1,3 +1,9 @@
+import { readFile } from "node:fs/promises";
+import {
+  isAbsolute,
+  relative,
+  resolve,
+} from "node:path";
 import { discoverEnvironment } from "../discovery/discover.js";
 import {
   assessEnvironment,
@@ -9,6 +15,12 @@ import {
 import {
   writeConfigurationRecoverySnapshot,
 } from "../assessment/recovery.js";
+import {
+  parseSbomDocument,
+} from "../assessment/sbom.js";
+import {
+  parsePostureEvidenceBundle,
+} from "../assessment/ingest.js";
 import {
   formatResourceRows,
   writeDiscoveryRun,
@@ -57,6 +69,31 @@ const provider = parseProvider(readArg("--provider"));
 const mock = parseMock(readArg("--mock"));
 const verbose = hasFlag("--verbose");
 const showResources = hasFlag("--resources") || verbose;
+const sbomPath = readArg("--sbom");
+const postureEvidencePath =
+  readArg("--posture-evidence");
+
+async function readWorkspaceEvidence(
+  path: string,
+): Promise<string> {
+  const root = resolve(process.cwd());
+  const target = resolve(root, path);
+  const relation = relative(
+    root,
+    target,
+  );
+
+  if (
+    relation.startsWith("..") ||
+    isAbsolute(relation)
+  ) {
+    throw new Error(
+      "EVIDENCE_PATH_BLOCKED: evidence files must be inside the current workspace.",
+    );
+  }
+
+  return readFile(target, "utf8");
+}
 
 console.log();
 console.log("Agentic Landing Zone");
@@ -66,7 +103,7 @@ console.log(`Discovering ${provider} environment...`);
 console.log();
 
 try {
-  const result = await discoverEnvironment(
+  let result = await discoverEnvironment(
     { provider, mock },
     (event, detail) => {
       if (verbose) {
@@ -74,6 +111,46 @@ try {
       }
     },
   );
+
+  if (sbomPath) {
+    const parsedSbom =
+      parseSbomDocument(
+        await readWorkspaceEvidence(
+          sbomPath,
+        ),
+        "file:" + sbomPath,
+      );
+
+    result = {
+      ...result,
+      sbomComponents: [
+        ...result.sbomComponents,
+        ...parsedSbom.components,
+      ],
+      sbomComplete: true,
+    };
+  }
+
+  if (postureEvidencePath) {
+    const bundle =
+      parsePostureEvidenceBundle(
+        await readWorkspaceEvidence(
+          postureEvidencePath,
+        ),
+      );
+
+    result = {
+      ...result,
+      scannerObservations: [
+        ...result.scannerObservations,
+        ...bundle.scannerObservations,
+      ],
+      resiliencyObservations: [
+        ...result.resiliencyObservations,
+        ...bundle.resiliencyObservations,
+      ],
+    };
+  }
 
   const assessment =
     assessEnvironment(result);
