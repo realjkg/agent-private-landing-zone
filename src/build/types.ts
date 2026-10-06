@@ -49,6 +49,7 @@ export type BuildEvidence = {
   planHash?: string;
   approvalId?: string;
   approvedArtifactHash?: string;
+  approvedDesignHash?: string;
 };
 
 export type BuildCandidate = {
