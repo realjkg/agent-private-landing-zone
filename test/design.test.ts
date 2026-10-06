@@ -143,3 +143,30 @@ test("unknown environments produce blocked designs", async () => {
     "BLOCKED",
   );
 });
+
+
+test("Ansible is a governed Build plug-in for brownfield configuration scenarios", () => {
+  const selected =
+    selectDesignPlugin(
+      "AWS",
+      "Build and configure the attached edge nodes using Ansible.",
+      "TERRAFORM",
+    );
+
+  assert.equal(
+    selected.plugin,
+    "ANSIBLE",
+  );
+  assert.equal(
+    selected.evidencePath,
+    "CHECK_MODE",
+  );
+  assert.equal(
+    selected.status,
+    "PLANNED",
+  );
+  assert.equal(
+    selected.buildEligible,
+    false,
+  );
+});
