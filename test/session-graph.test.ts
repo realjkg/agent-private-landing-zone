@@ -234,3 +234,35 @@ test("operator can ask why a prior guardrail request was blocked", async () => {
     /ARBITRARY_EXECUTION/,
   );
 });
+
+
+test("session can switch to OpenTofu conversationally", async () => {
+  const { graph } =
+    createSessionGraph(":memory:");
+
+  const result = await graph.invoke(
+    {
+      request: "use OpenTofu instead",
+      provider: "AWS",
+      engine: "TERRAFORM",
+      mock: "brownfield",
+      approveBuild: false,
+      fixture: true,
+    },
+    {
+      configurable: {
+        thread_id:
+          "switch-opentofu-thread",
+      },
+    },
+  );
+
+  assert.equal(
+    result.engine,
+    "OPENTOFU",
+  );
+  assert.match(
+    result.response ?? "",
+    /switched.*OPENTOFU/i,
+  );
+});
