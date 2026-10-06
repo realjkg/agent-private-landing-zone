@@ -51,7 +51,7 @@ export type LangGraphSessionState =
 
 async function sessionNode(
   state: LangGraphSessionState,
-  progress: (message: string) => void,
+  progress: AgentProgressReporter,
 ): Promise<Partial<LangGraphSessionState>> {
   const command = await routeSessionRequest(
     state.request,
@@ -143,7 +143,7 @@ async function sessionNode(
 
 export function createSessionGraph(
   dbPath?: string,
-  progress: (message: string) => void = () => {},
+  progress: AgentProgressReporter = () => {},
 ) {
   const checkpointer = dbPath
     ? (() => {
