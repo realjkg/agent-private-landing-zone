@@ -3,12 +3,26 @@ import type {
   DiscoveredResource,
   DiscoveryEvidence,
   MockScenario,
+  ResiliencyObservation,
+  SbomComponentObservation,
+  ScannerObservation,
 } from "../../discovery/types.js";
 
 export type AzureDiscoveryResult = {
   resources: DiscoveredResource[];
   evidence: DiscoveryEvidence[];
+  scannerObservations: ScannerObservation[];
+  sbomComponents: SbomComponentObservation[];
+  sbomComplete: boolean;
+  resiliencyObservations: ResiliencyObservation[];
   warnings: string[];
+};
+
+const emptyPosture = {
+  scannerObservations: [] as ScannerObservation[],
+  sbomComponents: [] as SbomComponentObservation[],
+  sbomComplete: false,
+  resiliencyObservations: [] as ResiliencyObservation[],
 };
 
 export async function discoverAzure(
@@ -18,6 +32,7 @@ export async function discoverAzure(
     return {
       resources: [],
       evidence: [],
+      ...emptyPosture,
       warnings: [
         "CREDENTIALS_MISSING: real Azure discovery is not enabled yet.",
       ],
@@ -28,6 +43,7 @@ export async function discoverAzure(
     return {
       resources: [],
       evidence: [],
+      ...emptyPosture,
       warnings: [
         "DISCOVERY_PARTIAL: insufficient evidence to classify the environment.",
       ],
@@ -44,7 +60,10 @@ export async function discoverAzure(
           source: "mock",
         },
       ],
-      warnings: [],
+      ...emptyPosture,
+      warnings: [
+        "POSTURE_UNKNOWN: no existing platform components were discovered to assess.",
+      ],
     };
   }
 
@@ -57,7 +76,10 @@ export async function discoverAzure(
       ownership: "MANAGED_BY_CUSTOMER" as const,
       mutationPolicy: "READ_ONLY" as const,
       sourceOfTruth: "AZURE_POLICY" as const,
-      metadata: { mock: true },
+      metadata: {
+        mock: true,
+        assetKind: "CLOUD",
+      },
     },
     {
       resourceId: "/providers/Microsoft.Authorization/policyAssignments/baseline",
@@ -67,7 +89,10 @@ export async function discoverAzure(
       ownership: "MANAGED_BY_CUSTOMER" as const,
       mutationPolicy: "READ_ONLY" as const,
       sourceOfTruth: "AZURE_POLICY" as const,
-      metadata: { mock: true },
+      metadata: {
+        mock: true,
+        assetKind: "CLOUD",
+      },
     },
     {
       resourceId: "/subscriptions/dev/resourceGroups/agentic-lz",
@@ -77,7 +102,10 @@ export async function discoverAzure(
       ownership: "MANAGED_BY_ACCELERATOR" as const,
       mutationPolicy: "ADDITIVE_ONLY" as const,
       sourceOfTruth: "UNKNOWN" as const,
-      metadata: { mock: true },
+      metadata: {
+        mock: true,
+        assetKind: "CLOUD",
+      },
     },
   ].map(enforceOwnershipPolicy);
 
@@ -95,6 +123,43 @@ export async function discoverAzure(
         source: "mock",
       },
     ],
-    warnings: [],
+    scannerObservations: [
+      {
+        id: "azure-policy-baseline",
+        scanner: "fixture-cloud-posture",
+        source: "mock",
+        status: "PASS",
+        domain: "PLATFORM",
+        severity: "INFO",
+        title: "Azure Policy baseline observed",
+        detail:
+          "The fixture contains an existing policy assignment in the management hierarchy.",
+        resourceId:
+          "/providers/Microsoft.Authorization/policyAssignments/baseline",
+      },
+    ],
+    sbomComponents: [],
+    sbomComplete: false,
+    resiliencyObservations: [
+      {
+        key: "configuration_backup",
+        value: "unknown",
+        source: "mock",
+      },
+      {
+        key: "restore_test",
+        value: "unknown",
+        source: "mock",
+      },
+      {
+        key: "redundant_control_plane",
+        value: "unknown",
+        source: "mock",
+      },
+    ],
+    warnings: [
+      "SBOM_UNKNOWN: component inventory is not yet available.",
+      "RESILIENCY_UNKNOWN: backup and restore posture has not been evidenced.",
+    ],
   };
 }
