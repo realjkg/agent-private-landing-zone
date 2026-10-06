@@ -14,7 +14,15 @@ export function classifyIntent(
   }
 
   if (
-    /build|generate|terraform|pulumi|iac|infrastructure as code/.test(
+    /\bdesign\b|target architecture|propose architecture/.test(
+      value,
+    )
+  ) {
+    return "DESIGN";
+  }
+
+  if (
+    /build|generate|terraform|pulumi|opentofu|\btofu\b|\bbicep\b|cloudformation|\bcdk\b|crossplane|ansible|iac|infrastructure as code/.test(
       value,
     )
   ) {
