@@ -4,6 +4,12 @@ import type {
   Provider,
 } from "../discovery/types.js";
 import type {
+  DiscoveryAssessment,
+} from "../assessment/types.js";
+import type {
+  DeltaAssessment,
+} from "../delta/types.js";
+import type {
   BuildLoopResult,
 } from "../build/loop.js";
 import type { IaCEngine } from "../build/types.js";
@@ -56,6 +62,7 @@ export type AgentPlan = {
   steps: Array<
     | "DISCOVER"
     | "ASSESS"
+    | "DESIGN"
     | "BUILD"
     | "VALIDATE"
     | "APPROVE"
@@ -97,6 +104,8 @@ export type AgentState = {
   engine: IaCEngine;
   mock: MockScenario;
   environment?: EnvironmentState;
+  postureAssessment?: DiscoveryAssessment;
+  deltaAssessment?: DeltaAssessment;
   understanding?: AgentUnderstanding;
   assessment?: AgentResult;
   engineeringAssessment?: EngineeringAssessment;
