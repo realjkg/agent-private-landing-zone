@@ -43,7 +43,7 @@ test("AWS CDK design routes synthesized evidence through CloudFormation", () => 
   );
 });
 
-test("Bicep is Azure-only and planned until its adapter is implemented", () => {
+test("Bicep is Azure-only and ready with its verified adapter", () => {
   const azure =
     selectDesignPlugin(
       "AZURE",
@@ -58,7 +58,11 @@ test("Bicep is Azure-only and planned until its adapter is implemented", () => {
     );
 
   assert.equal(azure.plugin, "BICEP");
-  assert.equal(azure.status, "PLANNED");
+  assert.equal(azure.status, "READY");
+  assert.equal(
+    azure.buildEligible,
+    true,
+  );
   assert.equal(
     aws.status,
     "INCOMPATIBLE",
