@@ -8,6 +8,17 @@ export type ToolName =
   | "terraform_plan"
   | "pulumi_version"
   | "pulumi_preview"
+  | "aws_version"
+  | "aws_sts_identity"
+  | "aws_org_describe"
+  | "aws_controltower_list_landing_zones"
+  | "aws_org_list_scps"
+  | "aws_config_recorders"
+  | "aws_cloudtrail_trails"
+  | "azure_version"
+  | "azure_account_show"
+  | "azure_management_groups"
+  | "azure_policy_assignments"
   | "query_environment"
   | "show_evidence";
 
