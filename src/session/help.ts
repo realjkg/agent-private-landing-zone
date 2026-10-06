@@ -15,6 +15,7 @@ export function promptGuide(): string {
     '  “Design the safest additive delta using AWS CDK.”',
     '  “Show the Ansible check-mode path for the attached edge nodes.”',
     '  “Use Pulumi instead.”',
+    '  “Use OpenTofu instead.”',
     '  “Why is this build blocked, and what evidence is missing?”',
     '  “Show credential rotation posture without revealing secret values.”',
     "",
