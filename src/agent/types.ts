@@ -102,7 +102,7 @@ export type AgentState = {
   intent: AgentIntent;
   provider: Provider;
   engine: IaCEngine;
-  mock: MockScenario;
+  mock?: MockScenario;
   environment?: EnvironmentState;
   postureAssessment?: DiscoveryAssessment;
   deltaAssessment?: DeltaAssessment;
@@ -139,7 +139,7 @@ export type AgentKernelOptions = {
   request: string;
   provider: Provider;
   engine: IaCEngine;
-  mock: MockScenario;
+  mock?: MockScenario;
   thinker?: Thinker;
   approveBuild?: boolean;
   progress?: AgentProgressReporter;
