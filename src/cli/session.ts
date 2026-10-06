@@ -11,6 +11,9 @@ import { createSessionGraph } from "../session/graph.js";
 import { writeEncryptedEvidence } from "../evidence/vault.js";
 import { migrateLegacyEvidence } from "../evidence/migrate.js";
 import { assertSecureSession } from "../security/session.js";
+import {
+  parseBuildEngine,
+} from "../build/engine.js";
 import type { IaCEngine } from "../build/types.js";
 import type {
   MockScenario,
@@ -29,28 +32,6 @@ function parseProvider(value?: string): Provider {
   return value?.toLowerCase() === "azure"
     ? "AZURE"
     : "AWS";
-}
-
-function parseEngine(value?: string): IaCEngine {
-  const engine =
-    (value ?? "terraform").toLowerCase();
-
-  if (engine === "terraform") {
-    return "TERRAFORM";
-  }
-  if (engine === "pulumi") {
-    return "PULUMI";
-  }
-  if (
-    engine === "opentofu" ||
-    engine === "tofu"
-  ) {
-    return "OPENTOFU";
-  }
-
-  throw new Error(
-    "Use --engine terraform, pulumi, or opentofu.",
-  );
 }
 
 function parseMock(
@@ -77,7 +58,7 @@ const args = process.argv.slice(2);
 const provider = parseProvider(
   readArg("--provider"),
 );
-let engine = parseEngine(
+let engine = parseBuildEngine(
   readArg("--engine"),
 );
 const mock = parseMock(
@@ -155,7 +136,7 @@ console.log(
 );
 console.log(
   fixture
-    ? "a preview-only Terraform/Pulumi/OpenTofu build would do. ACT remains disabled."
+    ? "a preview-only governed Build path would do. ACT remains disabled."
     : "must be designed next. Real Build stops at the Design boundary; ACT remains disabled.",
 );
 console.log();
