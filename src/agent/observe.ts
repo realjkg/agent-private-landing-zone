@@ -48,6 +48,23 @@ export function observe(
     );
   }
 
+  if (state.design) {
+    evidence.push(
+      "Design ID: " +
+        state.design.designId,
+    );
+    evidence.push(
+      "Design hash: " +
+        state.design.designHash,
+    );
+    evidence.push(
+      "Design plug-in: " +
+        state.design.plugin.plugin +
+        " / " +
+        state.design.plugin.status,
+    );
+  }
+
   if (state.assessment) {
     evidence.push(
       "Reasoning assessment status: " +
