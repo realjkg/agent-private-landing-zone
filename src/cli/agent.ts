@@ -34,8 +34,15 @@ function parseEngine(value?: string): IaCEngine {
     return "PULUMI";
   }
 
+  if (
+    value?.toLowerCase() === "opentofu" ||
+    value?.toLowerCase() === "tofu"
+  ) {
+    return "OPENTOFU";
+  }
+
   throw new Error(
-    "Use --engine terraform or --engine pulumi.",
+    "Use --engine terraform, pulumi, or opentofu.",
   );
 }
 
