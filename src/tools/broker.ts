@@ -294,23 +294,31 @@ export function getToolSecurityPosture(): {
   cloudReadDefault: boolean;
 } {
   const allowedTools = [...SAFE_TOOLS].sort();
-  const mutationPatterns = [
+  const mutationTokens = new Set([
     "apply",
     "destroy",
-    "pulumi_up",
-    "up",
     "delete",
+    "remove",
+    "create",
+    "update",
+    "modify",
+    "up",
     "exec",
     "shell",
     "bash",
-  ];
+    "provision",
+    "deploy",
+  ]);
 
   const mutationTools = allowedTools.filter(
     (tool) =>
-      mutationPatterns.some(
-        (pattern) =>
-          tool.toLowerCase().includes(pattern),
-      ),
+      tool
+        .toLowerCase()
+        .split("_")
+        .some(
+          (token) =>
+            mutationTokens.has(token),
+        ),
   );
 
   return {
