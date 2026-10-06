@@ -9,6 +9,7 @@ import {
 
 import { createSessionGraph } from "../session/graph.js";
 import { writeEncryptedEvidence } from "../evidence/vault.js";
+import { migrateLegacyEvidence } from "../evidence/migrate.js";
 import { assertSecureSession } from "../security/session.js";
 import type { IaCEngine } from "../build/types.js";
 import type {
@@ -64,6 +65,9 @@ const threadId =
   readArg("--thread") ??
   "lab-" + randomUUID().slice(0, 8);
 
+const migration =
+  await migrateLegacyEvidence();
+
 const security =
   await assertSecureSession();
 
@@ -88,6 +92,11 @@ console.log("Shell      unavailable");
 console.log("Cloud read disabled by default");
 console.log("Mutation   unavailable");
 console.log("Commit     " + security.commitSha.slice(0, 12));
+console.log(
+  "Migration  " +
+    migration.migrated +
+    " legacy plaintext record(s) secured",
+);
 console.log();
 console.log("Thread    " + threadId);
 console.log("Provider  " + provider);
