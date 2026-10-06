@@ -97,6 +97,10 @@ export type ConfigurationRecoverySnapshot = {
   sourceOfTruthCounts: Partial<Record<SourceOfTruth, number>>;
   evidenceRefs: string[];
   configurationHash: string;
+  coverage:
+    | "MANIFEST_ONLY"
+    | "CONFIGURATION_EXPORT"
+    | "FULL";
   restoreStatus:
     | "VERIFIED"
     | "UNVERIFIED"
