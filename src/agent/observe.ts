@@ -14,9 +14,44 @@ export function observe(
     "Agent plan recorded.",
   ];
 
+  if (state.postureAssessment) {
+    evidence.push(
+      "Posture assessment ID: " +
+        state.postureAssessment.assessmentId,
+    );
+    evidence.push(
+      "Security posture: " +
+        state.postureAssessment.securityStatus,
+    );
+    evidence.push(
+      "SBOM posture: " +
+        state.postureAssessment.sbom.status,
+    );
+    evidence.push(
+      "Resiliency posture: " +
+        state.postureAssessment.resiliency.status,
+    );
+    evidence.push(
+      "Recovery configuration hash: " +
+        state.postureAssessment.recoverySnapshot.configurationHash,
+    );
+  }
+
+  if (state.deltaAssessment) {
+    evidence.push(
+      "Delta decisions: " +
+        state.deltaAssessment.decisions.length,
+    );
+    evidence.push(
+      "Delta blockers: " +
+        state.deltaAssessment.blockers.length,
+    );
+  }
+
   if (state.assessment) {
     evidence.push(
-      "Assessment status: " + state.assessment.status,
+      "Reasoning assessment status: " +
+        state.assessment.status,
     );
   }
 
