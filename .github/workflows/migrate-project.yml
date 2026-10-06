@@ -1,0 +1,149 @@
+name: Move project history
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    if: github.event.head_commit.message == 'Add one-time migration workflow'
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout destination
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.MIGRATION_TOKEN }}
+
+      - name: Verify migration token
+        env:
+          MIGRATION_TOKEN: ${{ secrets.MIGRATION_TOKEN }}
+        run: |
+          if [ -z "$MIGRATION_TOKEN" ]; then
+            echo "Set MIGRATION_TOKEN to a fine-grained token with contents:write and workflows:write access."
+            exit 1
+          fi
+
+      - name: Split and move project history
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cp LICENSE /tmp/agent-private-landing-zone-LICENSE
+
+          git config user.name "Adapt Cloud Migration"
+          git config user.email "noreply@adaptcloud.io"
+
+          git remote add source https://github.com/realjkg/adaptcloud.git
+          git fetch --no-tags source feat/agentic-landing-zone-initial
+
+          git subtree split \
+            --prefix=agentic-landing-zone \
+            source/feat/agentic-landing-zone-initial \
+            -b migrated
+
+          git checkout migrated
+
+          cp /tmp/agent-private-landing-zone-LICENSE LICENSE
+
+          mkdir -p .github/workflows
+          git show source/feat/agentic-landing-zone-initial:.github/workflows/agentic-landing-zone-supply-chain.yml \
+            > .github/workflows/supply-chain.yml
+          git show source/feat/agentic-landing-zone-initial:.github/dependabot.yml \
+            > .github/dependabot.yml
+
+          python3 <<'PY'
+          import json
+          from pathlib import Path
+
+          for path in [Path("README.md"), *Path("docs").glob("*.md")]:
+              text = path.read_text()
+              text = text.replace("Agentic Landing Zone", "Agent Private Landing Zone")
+              path.write_text(text)
+
+          for path in Path("src").rglob("*.ts"):
+              text = path.read_text()
+              text = text.replace("Agentic Landing Zone", "Agent Private Landing Zone")
+              path.write_text(text)
+
+          workflow = Path(".github/workflows/supply-chain.yml")
+          text = workflow.read_text()
+          text = text.replace(
+              "name: Agentic Landing Zone Supply Chain",
+              "name: Agent Private Landing Zone Supply Chain",
+          )
+          text = text.replace(
+              '"agentic-landing-zone/**"',
+              '"**"',
+          )
+          text = text.replace(
+              "agentic-landing-zone-supply-chain.yml",
+              "supply-chain.yml",
+          )
+          text = text.replace(
+              "working-directory: agentic-landing-zone",
+              "working-directory: .",
+          )
+          text = text.replace(
+              "agentic-landing-zone/package-lock.json",
+              "package-lock.json",
+          )
+          text = text.replace(
+              "scan-ref: agentic-landing-zone",
+              "scan-ref: .",
+          )
+          text = text.replace(
+              "agentic-landing-zone/sbom.cdx.json",
+              "sbom.cdx.json",
+          )
+          text = text.replace(
+              "agentic-landing-zone/trivy-results.json",
+              "trivy-results.json",
+          )
+          workflow.write_text(text)
+
+          dependabot = Path(".github/dependabot.yml")
+          text = dependabot.read_text().replace(
+              "directory: /agentic-landing-zone",
+              "directory: /",
+          )
+          dependabot.write_text(text)
+
+          package = Path("package.json")
+          data = json.loads(package.read_text())
+          data["name"] = "agent-private-landing-zone"
+          data["description"] = (
+              "Private landing zone accelerator with local model support "
+              "and governed infrastructure workflows"
+          )
+          package.write_text(json.dumps(data, indent=2) + "\n")
+
+          lock = Path("package-lock.json")
+          data = json.loads(lock.read_text())
+          data["name"] = "agent-private-landing-zone"
+          if "" in data.get("packages", {}):
+              data["packages"][""]["name"] = "agent-private-landing-zone"
+          lock.write_text(json.dumps(data, indent=2) + "\n")
+          PY
+
+          cat > MIGRATION.md <<'EOF'
+          # Migration record
+
+          This repository is the canonical home for Agent Private Landing Zone.
+
+          Source repository: realjkg/adaptcloud  
+          Source branch: feat/agentic-landing-zone-initial  
+          Source path: agentic-landing-zone/  
+          Source commit: 65b1684e49254c0554bdf63620e7675ee78bb758
+
+          The project history was split from the source path and moved to this repository. The source repository keeps its Git history for audit and traceability.
+          EOF
+
+          git add -A
+          git commit -m "Move project to agent-private-landing-zone"
+          git push origin migrated:main --force
