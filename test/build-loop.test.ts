@@ -62,3 +62,47 @@ test("unknown environment remains blocked", async () => {
     /UNKNOWN|READ_ONLY/,
   );
 });
+
+
+test("Build rejects a DesignSpec that selects a different engine", async () => {
+  await assert.rejects(
+    () =>
+      runBuildLoop({
+        provider: "AWS",
+        engine: "PULUMI",
+        mock: "brownfield",
+        design: {
+          designId: "design-engine-mismatch",
+          designHash:
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          provider: "AWS",
+          environment: "BROWNFIELD",
+          objective:
+            "Use Terraform for the approved delta.",
+          status: "REVIEW_REQUIRED",
+          plugin: {
+            plugin: "TERRAFORM",
+            status: "READY",
+            buildEligible: true,
+            evidencePath: "PLAN",
+            rationale:
+              "Terraform selected.",
+          },
+          entries: [],
+          constraints: [],
+          reuse: [],
+          additions: [],
+          forbiddenChanges: [],
+          securityControls: [],
+          resiliencyControls: [],
+          assumptions: [],
+          evidenceRefs: [],
+          generatedAt:
+            "2026-10-06T00:00:00.000Z",
+        },
+        repositoryEvidence:
+          cleanRepository,
+      }),
+    /DESIGN_ENGINE_MISMATCH/,
+  );
+});
