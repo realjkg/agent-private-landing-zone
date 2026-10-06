@@ -12,7 +12,7 @@
     "test": "tsx --test test/*.test.ts",
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
-    "verify": "npm run check && npm test && npm audit && npm run evidence:migrate && npm run security:check && npm run toolbox:check && npm run discover:aws && npm run discover:azure && npm run discover:unknown && npm run agent:assess && npm run build:aws:terraform && npm run build:unknown && npm run agent:build && npm run agent:change",
+    "verify": "npm run check && npm test && npm audit && npm run evidence:migrate && npm run security:check && npm run plugins:check && npm run toolbox:check && npm run discover:aws && npm run discover:azure && npm run discover:unknown && npm run agent:assess && npm run build:aws:terraform && npm run build:unknown && npm run agent:build && npm run agent:change",
     "discover:unknown": "tsx src/cli/discover.ts --provider aws --mock unknown",
     "discover:verbose": "tsx src/cli/discover.ts --provider aws --mock brownfield --verbose",
     "build:loop": "tsx src/cli/build-loop.ts",
@@ -35,7 +35,9 @@
     "security:check": "tsx src/cli/security.ts",
     "session:azure": "tsx src/cli/session.ts --provider azure --engine terraform",
     "discover:aws:live": "tsx src/cli/discover.ts --provider aws --resources",
-    "discover:azure:live": "tsx src/cli/discover.ts --provider azure --resources"
+    "discover:azure:live": "tsx src/cli/discover.ts --provider azure --resources",
+    "plugins:check": "tsx src/cli/plugins.ts",
+    "operator": "tsx src/cli/operator.ts"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
