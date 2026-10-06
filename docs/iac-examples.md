@@ -1,8 +1,8 @@
-# Terraform and Pulumi examples
+# Build plug-in examples
 
-Terraform and Pulumi are peer IaC engines in the Agentic Landing Zone. They are not separate product paths.
+Terraform and Pulumi are the currently implemented preview adapters. OpenTofu, Bicep, CloudFormation, AWS CDK, Crossplane and Ansible participate in the same DesignSpec contract and are enabled for execution only after their adapters are implemented and verified.
 
-Both should consume the same approved design and produce evidence that can be normalized into the same ChangeSet and governance gates.
+Every Build plug-in consumes the same reviewed DesignSpec and must produce change evidence that can be normalized into the same governance gates.
 
 ## Adapter behavior today
 
@@ -154,11 +154,11 @@ Again, these examples illustrate equivalent design intent. They do not imply tha
 The target workflow is:
 
 ```text
-Approved DesignSpec
+Reviewed DesignSpec
       ↓
-Terraform or Pulumi
+selected Build plug-in
       ↓
-plan / preview
+plan / preview / what-if / change-set / check-diff
       ↓
 Normalized ChangeSet
       ↓
@@ -223,15 +223,20 @@ Normalized ChangeSet
 governance gates
 ```
 
-Preferred candidates:
+Registered Build paths:
 
-- OpenTofu
-- Bicep
-- CloudFormation
-- AWS CDK
-- Crossplane
+| Plug-in | Primary scope | Governed preview/change evidence |
+| --- | --- | --- |
+| Terraform | AWS, Azure, private | plan |
+| Pulumi | AWS, Azure, private, Kubernetes | preview |
+| OpenTofu | AWS, Azure, private | plan |
+| Bicep | Azure | what-if |
+| CloudFormation | AWS | Change Set |
+| AWS CDK | AWS | synth → CloudFormation Change Set |
+| Crossplane | Kubernetes/private/edge | controller/composition preview contract |
+| Ansible | private/edge/OS/network/appliance plus bounded cloud configuration | check + diff |
 
-Ansible belongs under CONFIGURE/MANAGE rather than the primary declarative Build family.
+Ansible participates in BUILD/CONFIGURE/MANAGE. Its Build role is appropriate when the desired delta is configuration/reconciliation of an existing estate rather than creation of a new cloud control plane.
 
 ### Explicit exclusions
 
@@ -240,3 +245,60 @@ ARM JSON templates are not planned as a first-class authoring plug-in. Azure-nat
 PowerShell is not a first-class infrastructure language in this architecture. Where a provider CLI or script is unavoidable, it may run only as an allowlisted broker tool with typed inputs, bounded outputs and no arbitrary shell access.
 
 This distinction keeps the architecture centered on portable declarative intent rather than CLI-centric automation.
+
+
+## AWS CDK design path
+
+CDK remains a first-class AWS authoring choice without creating a second AWS governance model:
+
+```text
+DesignSpec
+   ↓
+CDK source + dependency SBOM
+   ↓
+cdk synth
+   ↓
+CloudFormation template security scan
+   ↓
+CloudFormation Change Set
+   ↓
+Normalized ChangeSet
+```
+
+Automatic import/adoption of existing resources is not permitted. Existing resources remain REUSE/INTEGRATE unless the DesignSpec contains explicit adoption authority.
+
+## Ansible design path
+
+Ansible is used when Design concludes that an existing host, appliance, network service or edge node should be configured rather than replaced.
+
+Illustrative playbook:
+
+```yaml
+- name: Configure governed edge logging
+  hosts: edge_nodes
+  become: true
+  tasks:
+    - name: Ensure audit service is enabled
+      ansible.builtin.service:
+        name: auditd
+        enabled: true
+        state: started
+```
+
+The governed preview path is:
+
+```text
+DesignSpec
+   ↓
+inventory + role/collection SBOM
+   ↓
+syntax/lint/security scan
+   ↓
+ansible-playbook --check --diff
+   ↓
+Normalized ChangeSet
+   ↓
+ownership + policy + approval gates
+```
+
+A module that cannot provide meaningful check-mode behavior must be marked unsupported or require an explicit higher-assurance review; the agent must not treat an optimistic check result as proof that a future run is safe.
