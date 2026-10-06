@@ -32,9 +32,25 @@ function parseProvider(value?: string): Provider {
 }
 
 function parseEngine(value?: string): IaCEngine {
-  return value?.toLowerCase() === "pulumi"
-    ? "PULUMI"
-    : "TERRAFORM";
+  const engine =
+    (value ?? "terraform").toLowerCase();
+
+  if (engine === "terraform") {
+    return "TERRAFORM";
+  }
+  if (engine === "pulumi") {
+    return "PULUMI";
+  }
+  if (
+    engine === "opentofu" ||
+    engine === "tofu"
+  ) {
+    return "OPENTOFU";
+  }
+
+  throw new Error(
+    "Use --engine terraform, pulumi, or opentofu.",
+  );
 }
 
 function parseMock(
@@ -139,7 +155,7 @@ console.log(
 );
 console.log(
   fixture
-    ? "a preview-only Terraform/Pulumi build would do. ACT remains disabled."
+    ? "a preview-only Terraform/Pulumi/OpenTofu build would do. ACT remains disabled."
     : "must be designed next. Real Build stops at the Design boundary; ACT remains disabled.",
 );
 console.log();
