@@ -43,8 +43,6 @@ export type BuildEvidence = {
   assessmentId: string;
   designId: string;
   designHash: string;
-  designId: string;
-  designHash: string;
   policyBundleId: string;
   policyBundleHash: string;
   scannerResults: ScannerResult[];
