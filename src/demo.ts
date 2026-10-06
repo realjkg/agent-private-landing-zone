@@ -65,7 +65,9 @@ const selectedScenario =
   scenario(valueAfter("--scenario"));
 const request =
   valueAfter("--request") ??
-  "Assess this landing zone, identify the strongest risk, and tell me what should be designed next.";
+  "Design the safest additive landing-zone delta using " +
+  selectedEngine +
+  ".";
 
 console.log();
 console.log("Agentic Landing Zone");
@@ -98,6 +100,29 @@ const state = await runAgentKernel({
 console.log();
 console.log(formatAgentResponse(state));
 
+if (state.design) {
+  console.log();
+  console.log("DesignSpec");
+  console.log(
+    "  Status     " +
+      state.design.status,
+  );
+  console.log(
+    "  Plug-in    " +
+      state.design.plugin.plugin +
+      " / " +
+      state.design.plugin.status,
+  );
+  console.log(
+    "  Evidence   " +
+      state.design.plugin.evidencePath,
+  );
+  console.log(
+    "  SHA-256    " +
+      state.design.designHash,
+  );
+}
+
 if (state.deltaAssessment) {
   console.log();
   console.log("Delta decisions");
@@ -123,7 +148,10 @@ console.log(
       .join(", "),
 );
 console.log(
-  "Next boundary               DESIGN",
+  "Next boundary               " +
+    (state.design?.plugin.buildEligible
+      ? "BUILD PREVIEW"
+      : "PLUGIN ADAPTER / DESIGN REVIEW"),
 );
 console.log(
   "ACT                         DISABLED",
