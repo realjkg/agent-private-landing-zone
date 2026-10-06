@@ -35,12 +35,13 @@ export function evaluateOperatorRequest(
 
   if (
     !safeSecretMetadataRequest &&
-
-    /(show|print|dump|reveal|give me|display|return).{0,40}(password|secret|token|api key|access key|private key|credential)/i.test(
-      value,
-    ) ||
-    /(password|secret|token|api key|access key|private key|credential).{0,40}(value|contents|plaintext|plain text)/i.test(
-      value,
+    (
+      /(show|print|dump|reveal|give me|display|return).{0,40}(password|secret|token|api key|access key|private key|credential)/i.test(
+        value,
+      ) ||
+      /(password|secret|token|api key|access key|private key|credential).{0,40}(value|contents|plaintext|plain text)/i.test(
+        value,
+      )
     )
   ) {
     return {
