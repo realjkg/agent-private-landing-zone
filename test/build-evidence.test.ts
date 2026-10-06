@@ -47,6 +47,8 @@ test("brownfield build remains blocked without exact human approval", async () =
     evidence: {
       discoverySnapshotHash: "discovery-hash",
       assessmentId: "assessment-1",
+      designId: "design-1",
+      designHash: "design-hash-1",
       policyBundleId: "policy-v1",
       policyBundleHash: "policy-hash",
       scannerResults: [
@@ -88,6 +90,8 @@ test("exact approved artifact can pass deterministic gate", async () => {
     evidence: {
       discoverySnapshotHash: "discovery-hash",
       assessmentId: "assessment-2",
+      designId: "design-2",
+      designHash: "design-hash-2",
       policyBundleId: "policy-v1",
       policyBundleHash: "policy-hash",
       scannerResults: [
@@ -133,6 +137,8 @@ test("high severity findings block build", async () => {
     evidence: {
       discoverySnapshotHash: "discovery-hash",
       assessmentId: "assessment-3",
+      designId: "design-3",
+      designHash: "design-hash-3",
       policyBundleId: "policy-v1",
       policyBundleHash: "policy-hash",
       scannerResults: [
