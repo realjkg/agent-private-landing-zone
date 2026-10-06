@@ -49,7 +49,7 @@ const args = process.argv.slice(2);
 const provider = parseProvider(
   readArg("--provider"),
 );
-const engine = parseEngine(
+let engine = parseEngine(
   readArg("--engine"),
 );
 const mock = parseMock(
@@ -74,7 +74,7 @@ const config = {
 console.log();
 console.log("Agentic Landing Zone");
 console.log("────────────────────────────────");
-console.log("INTERACTIVE SESSION · ACT DISABLED");
+console.log("CONVERSATIONAL DEVOPS SESSION · ACT DISABLED");
 console.log();
 console.log("Thread    " + threadId);
 console.log("Provider  " + provider);
@@ -87,7 +87,17 @@ console.log(
 );
 console.log();
 console.log(
-  "Use :status, :environment, :evidence, :help, :quit",
+  "Talk to me normally. I can inspect the environment, explain risk,",
+);
+console.log(
+  "build preview-only Terraform or Pulumi candidates, compare them,",
+);
+console.log(
+  "show evidence, and tell you what is safe to do next.",
+);
+console.log();
+console.log(
+  'Try: "Inspect this environment and tell me the biggest risk."',
 );
 console.log();
 
@@ -99,7 +109,7 @@ const rl = createInterface({
 try {
   while (true) {
     const request =
-      (await rl.question("> ")).trim();
+      (await rl.question("you> ")).trim();
 
     if (!request) {
       continue;
@@ -108,8 +118,13 @@ try {
     if (
       request === ":quit" ||
       request === "exit" ||
-      request === "quit"
+      request === "quit" ||
+      request === "goodbye"
     ) {
+      console.log();
+      console.log(
+        "Session closed. No cloud changes were made.",
+      );
       break;
     }
 
@@ -125,10 +140,15 @@ try {
       config,
     );
 
+    if (result.engine) {
+      engine = result.engine;
+    }
+
     console.log();
     console.log(
-      result.response ??
-        "No response was produced.",
+      "agent> " +
+        (result.response ??
+          "I don't have a response for that yet."),
     );
     console.log();
   }
