@@ -12,6 +12,9 @@ import {
 import {
   fileURLToPath,
 } from "node:url";
+import {
+  promptGuide,
+} from "../session/help.js";
 
 const root = resolve(
   fileURLToPath(
@@ -120,6 +123,7 @@ function help(): void {
   console.log("  ./alz doctor");
   console.log("  ./alz verify");
   console.log("  ./alz plugins");
+  console.log("  ./alz prompts");
   console.log("  ./alz sbom");
   console.log("  ./alz scan");
   console.log();
@@ -383,6 +387,12 @@ try {
     verify();
   } else if (command === "plugins") {
     runTs("src/cli/plugins.ts");
+  } else if (
+    command === "prompts" ||
+    command === "prompt-guide"
+  ) {
+    console.log();
+    console.log(promptGuide());
   } else if (command === "sbom") {
     sbom();
   } else if (command === "scan") {
