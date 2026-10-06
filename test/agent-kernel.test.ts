@@ -290,3 +290,64 @@ test("OpenTofu build intent produces a preview-only candidate", async () => {
     false,
   );
 });
+
+
+test("Bicep DesignSpec drives the fixture build even when session fallback is Terraform", async () => {
+  const state = await runAgentKernel({
+    request:
+      "Build the approved Azure delta using Bicep.",
+    provider: "AZURE",
+    engine: "TERRAFORM",
+    mock: "greenfield",
+    thinker: mockThinker,
+  });
+
+  assert.equal(
+    state.design?.plugin.plugin,
+    "BICEP",
+  );
+  assert.equal(
+    state.design?.plugin.status,
+    "READY",
+  );
+  assert.equal(
+    state.build?.candidate.artifact.engine,
+    "BICEP",
+  );
+  assert.equal(
+    state.build?.executionMode,
+    "PREVIEW_ONLY",
+  );
+  assert.equal(
+    state.action?.executed,
+    false,
+  );
+});
+
+test("CloudFormation DesignSpec drives an existing-stack preview fixture", async () => {
+  const state = await runAgentKernel({
+    request:
+      "Build the existing AWS stack update using CloudFormation.",
+    provider: "AWS",
+    engine: "PULUMI",
+    mock: "brownfield",
+    thinker: mockThinker,
+  });
+
+  assert.equal(
+    state.design?.plugin.plugin,
+    "CLOUDFORMATION",
+  );
+  assert.equal(
+    state.design?.plugin.status,
+    "READY",
+  );
+  assert.equal(
+    state.build?.candidate.artifact.engine,
+    "CLOUDFORMATION",
+  );
+  assert.equal(
+    state.action?.executed,
+    false,
+  );
+});
