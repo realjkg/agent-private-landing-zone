@@ -131,3 +131,46 @@ export async function migrateLegacyEvidence(): Promise<EvidenceMigrationResult> 
 
   return result;
 }
+
+
+export async function findLegacyPlaintextEvidence(): Promise<string[]> {
+  const found: string[] = [];
+
+  for (const directory of [
+    join(".runs", "agent"),
+    join(".runs", "build"),
+    join(".runs", "discovery"),
+  ]) {
+    if (!existsSync(directory)) {
+      continue;
+    }
+
+    const entries =
+      await readdir(directory, {
+        withFileTypes: true,
+      });
+
+    for (const entry of entries) {
+      if (
+        entry.isFile() &&
+        entry.name.endsWith(".json")
+      ) {
+        found.push(
+          join(directory, entry.name),
+        );
+      }
+    }
+  }
+
+  const legacySqlite = join(
+    ".runs",
+    "state",
+    "agent-checkpoints.sqlite",
+  );
+
+  if (existsSync(legacySqlite)) {
+    found.push(legacySqlite);
+  }
+
+  return found;
+}
