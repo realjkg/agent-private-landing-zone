@@ -28,7 +28,7 @@ export type SessionInput = {
   request: string;
   provider: Provider;
   engine: IaCEngine;
-  mock: MockScenario;
+  mock?: MockScenario;
   approveBuild: boolean;
   fixture: boolean;
 };
