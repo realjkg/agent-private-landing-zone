@@ -72,7 +72,15 @@ const security =
   await assertSecureSession();
 
 const { graph } =
-  createSessionGraph();
+  createSessionGraph(
+    undefined,
+    (message) => {
+      console.log();
+      console.log(
+        "agent> " + message,
+      );
+    },
+  );
 
 const config = {
   configurable: {
