@@ -229,7 +229,8 @@ export async function runAgentKernel(
       state.design.status !== "BLOCKED" &&
       state.design.plugin.buildEligible &&
       (state.design.plugin.plugin === "TERRAFORM" ||
-        state.design.plugin.plugin === "PULUMI");
+        state.design.plugin.plugin === "PULUMI" ||
+        state.design.plugin.plugin === "OPENTOFU");
 
     const buildPermitted =
       buildRequested &&
