@@ -52,6 +52,7 @@ export async function routeSessionRequest(
   request: string,
   history: SessionTurn[],
   fixture: boolean,
+  progress: (message: string) => void = () => {},
 ): Promise<SessionCommand> {
   const deterministic =
     classifySessionCommand(request);
@@ -62,6 +63,17 @@ export async function routeSessionRequest(
   ) {
     return deterministic;
   }
+
+  if (
+    history.length === 0 &&
+    /inspect|discover|inventory|scan|assess|review|evaluate|design|build|generate|terraform|pulumi|landing zone/i.test(
+      request,
+    )
+  ) {
+    return "RUN";
+  }
+
+  progress("Understanding your request…");
 
   const cfg = loadConfig();
 
@@ -112,6 +124,7 @@ export async function routeSessionRequest(
     if (
       validCommand(parsed.command)
     ) {
+      progress("Request routing complete.");
       return parsed.command;
     }
   } catch {
