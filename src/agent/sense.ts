@@ -1,4 +1,7 @@
 import { discoverEnvironment } from "../discovery/discover.js";
+import {
+  assessEnvironment,
+} from "../assessment/posture.js";
 import type { AgentState } from "./types.js";
 
 export async function sense(
@@ -9,10 +12,14 @@ export async function sense(
     mock: state.mock,
   });
 
+  const postureAssessment =
+    assessEnvironment(environment);
+
   return {
     ...state,
     phase: "SENSING",
     environment,
+    postureAssessment,
     events: [
       ...state.events,
       {
@@ -20,7 +27,7 @@ export async function sense(
         phase: "SENSING",
         event: "ENVIRONMENT_SENSED",
         detail:
-          `${environment.provider}/${environment.classification}/${environment.safeBuildMode}`,
+          `${environment.provider}/${environment.classification}/${environment.safeBuildMode}/security=${postureAssessment.securityStatus}/resiliency=${postureAssessment.resiliency.status}`,
       },
     ],
   };
