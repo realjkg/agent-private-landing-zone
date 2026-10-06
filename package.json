@@ -26,13 +26,14 @@
     "agent:change": "tsx src/cli/agent.ts --provider azure --engine pulumi --mock greenfield --fixture --approve --request \"Deploy an additive platform resource.\"",
     "agent:unknown": "tsx src/cli/agent.ts --provider aws --engine terraform --mock unknown --fixture --request \"Build additive infrastructure using Terraform.\"",
     "agent:verbose": "tsx src/cli/agent.ts --provider aws --engine terraform --mock brownfield --fixture --verbose --request \"Build additive infrastructure using Terraform.\"",
-    "session": "tsx src/cli/session.ts --provider aws --engine terraform --mock brownfield",
+    "session": "tsx src/cli/session.ts --provider aws --engine terraform",
     "session:fixture": "tsx src/cli/session.ts --provider aws --engine terraform --mock brownfield --fixture",
     "session:pulumi": "tsx src/cli/session.ts --provider aws --engine pulumi --mock brownfield --fixture",
     "toolbox:check": "tsx src/cli/toolbox.ts",
     "deps:review": "npm install-scripts ls",
     "evidence:migrate": "tsx src/cli/evidence-migrate.ts",
-    "security:check": "tsx src/cli/security.ts"
+    "security:check": "tsx src/cli/security.ts",
+    "session:azure": "tsx src/cli/session.ts --provider azure --engine terraform"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
