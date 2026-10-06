@@ -8,9 +8,6 @@ import type {
 import type {
   DesignSpec,
 } from "../design/types.js";
-import type {
-  DesignSpec,
-} from "../design/types.js";
 import { evaluateBuildGate } from "./gate.js";
 import {
   createMockPreview,
@@ -100,20 +97,6 @@ export async function runBuildLoop(
       deleteAllowed: false,
     }),
   );
-
-  const designId =
-    options.design?.designId ??
-    "design-fixture-v1";
-  const designHash =
-    options.design?.designHash ??
-    sha256(
-      JSON.stringify({
-        mode: "fixture-design",
-        provider: options.provider,
-        engine: options.engine,
-        mock: options.mock,
-      }),
-    );
 
   const designId =
     options.design?.designId ??
