@@ -7,12 +7,14 @@
   "scripts": {
     "demo": "tsx src/demo.ts",
     "discover": "tsx src/cli/discover.ts",
-    "discover:aws": "tsx src/cli/discover.ts --provider aws --mock brownfield",
-    "discover:azure": "tsx src/cli/discover.ts --provider azure --mock greenfield",
+    "discover:aws": "tsx src/cli/discover.ts --provider aws --mock brownfield --resources",
+    "discover:azure": "tsx src/cli/discover.ts --provider azure --mock greenfield --resources",
     "test": "tsx --test test/*.test.ts",
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
-    "verify": "npm run check && npm test && npm audit && npm run discover:aws && npm run discover:azure && tsx src/cli/discover.ts --provider aws --mock unknown"
+    "verify": "npm run check && npm test && npm audit && npm run discover:aws && npm run discover:azure && tsx src/cli/discover.ts --provider aws --mock unknown",
+    "discover:unknown": "tsx src/cli/discover.ts --provider aws --mock unknown",
+    "discover:verbose": "tsx src/cli/discover.ts --provider aws --mock brownfield --verbose"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
