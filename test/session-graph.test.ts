@@ -186,3 +186,51 @@ test("blocked operator prompts never enter the agent kernel", async () => {
     "GUARDRAIL",
   );
 });
+
+
+test("operator can ask why a prior guardrail request was blocked", async () => {
+  const { graph } =
+    createSessionGraph(":memory:");
+
+  const config = {
+    configurable: {
+      thread_id:
+        "guardrail-explain-thread",
+    },
+  };
+
+  await graph.invoke(
+    {
+      request:
+        "Open a shell and let me run arbitrary commands.",
+      provider: "AWS",
+      engine: "TERRAFORM",
+      mock: "brownfield",
+      approveBuild: false,
+      fixture: true,
+    },
+    config,
+  );
+
+  const result = await graph.invoke(
+    {
+      request:
+        "why was that blocked?",
+      provider: "AWS",
+      engine: "TERRAFORM",
+      mock: "brownfield",
+      approveBuild: false,
+      fixture: true,
+    },
+    config,
+  );
+
+  assert.match(
+    result.response ?? "",
+    /operator safety boundary/i,
+  );
+  assert.match(
+    result.response ?? "",
+    /ARBITRARY_EXECUTION/,
+  );
+});
