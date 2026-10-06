@@ -12,6 +12,18 @@ test("session recognizes deterministic state queries", () => {
     "STATUS",
   );
   assert.equal(
+    classifySessionCommand("status"),
+    "STATUS",
+  );
+  assert.equal(
+    classifySessionCommand("environment"),
+    "ENVIRONMENT",
+  );
+  assert.equal(
+    classifySessionCommand("evidence"),
+    "EVIDENCE",
+  );
+  assert.equal(
     classifySessionCommand(
       "what did you find?",
     ),
