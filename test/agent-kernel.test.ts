@@ -90,6 +90,14 @@ test("build intent creates preview candidate but does not act", async () => {
   });
 
   assert.equal(state.intent, "BUILD");
+  assert.equal(
+    state.design?.plugin.plugin,
+    "TERRAFORM",
+  );
+  assert.equal(
+    state.build?.candidate.evidence.designHash,
+    state.design?.designHash,
+  );
   assert.ok(state.build);
   assert.equal(
     state.build?.executionMode,
@@ -187,5 +195,65 @@ test("agent reports safe phase progress without exposing chain of thought", asyn
           "Planning safe next steps",
         ),
     ),
+  );
+});
+
+
+test("design intent creates DesignSpec without a build candidate", async () => {
+  const state = await runAgentKernel({
+    request:
+      "Design this landing zone using AWS CDK.",
+    provider: "AWS",
+    engine: "TERRAFORM",
+    mock: "brownfield",
+    thinker: mockThinker,
+  });
+
+  assert.equal(state.intent, "DESIGN");
+  assert.equal(
+    state.design?.plugin.plugin,
+    "AWS_CDK",
+  );
+  assert.equal(
+    state.design?.plugin.evidencePath,
+    "CDK_SYNTH_CHANGE_SET",
+  );
+  assert.equal(state.build, undefined);
+  assert.equal(
+    state.action?.executed,
+    false,
+  );
+});
+
+test("planned Ansible build is designed but blocked before preview", async () => {
+  const state = await runAgentKernel({
+    request:
+      "Build the attached edge configuration using Ansible.",
+    provider: "AWS",
+    engine: "TERRAFORM",
+    mock: "brownfield",
+    thinker: mockThinker,
+  });
+
+  assert.equal(state.intent, "BUILD");
+  assert.equal(
+    state.design?.plugin.plugin,
+    "ANSIBLE",
+  );
+  assert.equal(
+    state.design?.plugin.evidencePath,
+    "CHECK_MODE",
+  );
+  assert.equal(state.build, undefined);
+  assert.ok(
+    state.events.some(
+      (event) =>
+        event.event === "BUILD_BLOCKED" &&
+        event.detail?.includes("ANSIBLE"),
+    ),
+  );
+  assert.equal(
+    state.action?.executed,
+    false,
   );
 });
