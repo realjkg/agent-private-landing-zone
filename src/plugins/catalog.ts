@@ -95,7 +95,7 @@ export const PLUGIN_CATALOG: PluginDefinition[] = [
   {
     id: "OPENTOFU",
     stage: ["BUILD"],
-    status: "PLANNED",
+    status: "IMPLEMENTED",
     providers: ["AWS", "AZURE", "PRIVATE"],
     capabilities: [
       "VERSION",
@@ -110,6 +110,8 @@ export const PLUGIN_CATALOG: PluginDefinition[] = [
     versionSource:
       "https://github.com/opentofu/opentofu/releases",
     lastReviewed: "2026-10-06",
+    notes:
+      "Preview-only adapter; apply/destroy are not exposed. Terraform-compatible plan normalization is reused.",
   },
   {
     id: "BICEP",
