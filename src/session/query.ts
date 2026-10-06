@@ -44,7 +44,7 @@ export function classifySessionCommand(
   }
 
   if (
-    /why is .*blocked|why was .*blocked|why did .*block|why can't|why can'?t|explain that|explain why|why?$/.test(
+    /why is .*blocked|why was .*blocked|why did .*block|why can't|why can'?t|explain that|explain why|why\?$/.test(
       value,
     )
   ) {
@@ -108,72 +108,159 @@ function environmentSummary(
   ].join(" ");
 }
 
+function postureSummary(
+  state: AgentState,
+): string[] {
+  const posture =
+    state.postureAssessment;
+
+  if (!posture) {
+    return [
+      "Security, SBOM, and resiliency posture have not been assessed yet.",
+    ];
+  }
+
+  const highOrCritical =
+    posture.findings.filter(
+      (finding) =>
+        finding.severity === "HIGH" ||
+        finding.severity === "CRITICAL",
+    ).length;
+
+  return [
+    "Security posture: " +
+      posture.securityStatus +
+      " (" +
+      posture.findings.length +
+      " findings, " +
+      highOrCritical +
+      " high/critical).",
+    "SBOM posture: " +
+      posture.sbom.status +
+      " with " +
+      posture.sbom.componentCount +
+      " observed components.",
+    "Resiliency posture: " +
+      posture.resiliency.status +
+      "; configuration backup " +
+      posture.resiliency.configurationBackup +
+      "; restore evidence " +
+      posture.resiliency.restoreEvidence +
+      ".",
+    "Recovery configuration hash: " +
+      posture.recoverySnapshot.configurationHash.slice(
+        0,
+        16,
+      ) +
+      "…",
+  ];
+}
+
 export function formatAgentResponse(
   state: AgentState,
 ): string {
-  const lines: string[] = [];
+  const lines: string[] = [
+    environmentSummary(state),
+    "",
+    ...postureSummary(state),
+  ];
 
-  if (state.intent === "DISCOVER") {
-    lines.push(environmentSummary(state));
-  } else if (state.intent === "ASSESS") {
-    lines.push(environmentSummary(state));
+  if (
+    state.intent === "ASSESS" &&
+    state.engineeringAssessment
+  ) {
+    lines.push("");
+    lines.push(
+      "The strongest operational risk I see is: " +
+        state.engineeringAssessment.topRisk,
+    );
+    lines.push(
+      state.engineeringAssessment.whyItMatters,
+    );
+  }
 
-    if (state.engineeringAssessment) {
-      lines.push("");
-      lines.push(
-        "The strongest operational risk I see is: " +
-          state.engineeringAssessment.topRisk,
-      );
-      lines.push(
-        state.engineeringAssessment.whyItMatters,
-      );
-    }
-  } else if (
+  if (
+    state.deltaAssessment &&
+    state.environment?.classification ===
+      "BROWNFIELD"
+  ) {
+    const reuse =
+      state.deltaAssessment.decisions.filter(
+        (decision) =>
+          decision.action === "REUSE",
+      ).length;
+    const integrate =
+      state.deltaAssessment.decisions.filter(
+        (decision) =>
+          decision.action === "INTEGRATE",
+      ).length;
+    const configure =
+      state.deltaAssessment.decisions.filter(
+        (decision) =>
+          decision.action === "CONFIGURE",
+      ).length;
+    const blocked =
+      state.deltaAssessment.decisions.filter(
+        (decision) =>
+          decision.action === "BLOCKED",
+      ).length;
+
+    lines.push("");
+    lines.push(
+      "Brownfield delta posture: " +
+        reuse +
+        " reuse / " +
+        integrate +
+        " integrate / " +
+        configure +
+        " configure / " +
+        blocked +
+        " blocked.",
+    );
+  }
+
+  if (
     state.intent === "BUILD" ||
     state.intent === "CHANGE"
   ) {
-    lines.push(environmentSummary(state));
+    lines.push("");
 
     if (state.build) {
-      lines.push("");
       lines.push(
         "I prepared a " +
           state.engine +
           " candidate. The build gate is " +
-          (state.build.gate.allowed ? "passing" : "stopped") +
+          (state.build.gate.allowed
+            ? "passing"
+            : "stopped") +
           ".",
       );
 
-      if (state.build.gate.reasons.length > 0) {
+      if (
+        state.build.gate.reasons.length >
+        0
+      ) {
         lines.push(
           "Reason: " +
-            state.build.gate.reasons.join(" "),
+            state.build.gate.reasons.join(
+              " ",
+            ),
         );
       }
     } else {
-      lines.push("");
       lines.push(
         "I did not create a build candidate because the current safety or assessment gates do not permit it.",
       );
     }
-  } else {
-    lines.push(environmentSummary(state));
   }
 
   lines.push("");
   lines.push(
     "No cloud changes were made. ACT is disabled.",
   );
-
-  if (state.build) {
-    lines.push(
-      "You can ask me to show the evidence, explain why the gate stopped, or compare this approach with the other IaC engine.",
-    );
-  } else {
-    lines.push(
-      "You can ask what I found, why it matters, what I recommend next, or ask me to assess/build something.",
-    );
-  }
+  lines.push(
+    "You can ask about inventory, security findings, SBOM coverage, resiliency, recovery, the brownfield delta, or what should be designed next.",
+  );
 
   return lines.join("\n");
 }
@@ -192,13 +279,14 @@ export function answerStateQuery(
       "",
       '  "Inspect this AWS environment."',
       '  "What did you find?"',
-      '  "What is the biggest operational risk?"',
-      '  "Build a safe Terraform proposal."',
+      '  "Which components look insecure?"',
+      '  "What is our SBOM coverage?"',
+      '  "Is the landing zone recoverable?"',
+      '  "What configuration is backed up?"',
+      '  "Show me the brownfield delta."',
+      '  "What should we design next?"',
       '  "Use Pulumi instead."',
-      '  "Why is this blocked?"',
       '  "Show me the evidence."',
-      '  "Compare Terraform with Pulumi."',
-      '  "What should we do next?"',
       "",
       "I will infer the operation and keep the same session state. ACT remains disabled.",
     ].join("\n");
@@ -207,7 +295,7 @@ export function answerStateQuery(
   if (!state) {
     return [
       "I don't have an environment assessment in this session yet.",
-      'You can start naturally, for example: "Inspect this environment and tell me the biggest risk."',
+      'Start naturally, for example: "Inspect this environment and assess its security and resiliency posture."',
     ].join("\n");
   }
 
@@ -222,6 +310,10 @@ export function answerStateQuery(
         " environment.",
       "Safe build mode is " +
         (state.environment?.safeBuildMode ?? "UNKNOWN") +
+        ". Security posture is " +
+        (state.postureAssessment?.securityStatus ?? "UNKNOWN") +
+        ". Resiliency is " +
+        (state.postureAssessment?.resiliency.status ?? "UNKNOWN") +
         ". The selected IaC engine is " +
         (engine ?? state.engine) +
         ".",
@@ -230,7 +322,10 @@ export function answerStateQuery(
   }
 
   if (command === "ENVIRONMENT") {
-    return environmentSummary(state);
+    return [
+      environmentSummary(state),
+      ...postureSummary(state),
+    ].join("\n");
   }
 
   if (command === "EXPLAIN") {
@@ -248,6 +343,25 @@ export function answerStateQuery(
       ].join("\n");
     }
 
+    if (
+      state.postureAssessment &&
+      state.postureAssessment.findings.length >
+        0
+    ) {
+      return [
+        "The current posture findings are:",
+        ...state.postureAssessment.findings.map(
+          (finding) =>
+            "  • " +
+            finding.severity +
+            " " +
+            finding.domain +
+            ": " +
+            finding.title,
+        ),
+      ].join("\n");
+    }
+
     if (state.engineeringAssessment) {
       return [
         "The main concern is " +
@@ -257,40 +371,35 @@ export function answerStateQuery(
       ].join(" ");
     }
 
-    return "There is no recorded blocking decision to explain in the current session.";
+    return "There is no recorded blocking or posture decision to explain in the current session.";
   }
 
   if (command === "NEXT") {
     if (
-      state.environment?.classification === "UNKNOWN"
+      state.environment?.classification ===
+      "UNKNOWN"
     ) {
-      return "The next safe step is better read-only discovery. I would not build against an UNKNOWN environment.";
+      return "The next safe step is better read-only discovery. I would not design or build against an UNKNOWN environment.";
     }
 
-    if (!state.assessment) {
-      return "The next step is to assess the discovered environment before generating infrastructure.";
+    if (!state.postureAssessment) {
+      return "The next step is to complete security, SBOM, ownership, and resiliency assessment of the discovered estate.";
     }
 
-    if (!state.build) {
-      return (
-        "The next step is to generate a preview-only " +
-        (engine ?? state.engine) +
-        " candidate and evaluate it against ownership and policy gates."
-      );
+    if (
+      state.deltaAssessment?.designRequired
+    ) {
+      return "The next step is Design: turn the observed environment, posture findings, ownership boundaries, and desired outcome into an explicit delta design before generating IaC.";
     }
 
-    if (!state.build.gate.allowed) {
-      return "The next step is to resolve the build-gate reasons, then regenerate and revalidate the exact candidate. No apply operation is available.";
-    }
-
-    return "The candidate has passed the current build gate. The MVP stops at evidence and approval because ACT is disabled.";
+    return "The current discovery and assessment evidence is ready for design review. ACT remains disabled.";
   }
 
   if (command === "COMPARE_IAC") {
     return [
-      "Both engines use the same discovery, ownership, policy, evidence, and approval gates.",
+      "Both engines use the same discovery, ownership, security, SBOM, resiliency, evidence, and approval gates.",
       "Terraform is evaluated through validate/plan and normalized plan data; Pulumi is evaluated through preview and normalized preview data.",
-      "For this environment, I would preserve whichever engine already owns the target resources. If ownership is not established, I would keep the comparison preview-only rather than infer a migration.",
+      "For brownfield resources, the existing source of truth remains authoritative. The IaC engine should implement only the approved delta rather than infer a migration.",
       "Current session engine: " +
         (engine ?? state.engine) +
         ".",
@@ -300,6 +409,25 @@ export function answerStateQuery(
   const evidence = [
     ...(state.observation?.evidence ?? []),
   ];
+
+  if (state.postureAssessment) {
+    evidence.push(
+      "Posture assessment: " +
+        state.postureAssessment.assessmentId,
+    );
+    evidence.push(
+      "Recovery configuration SHA-256: " +
+        state.postureAssessment.recoverySnapshot.configurationHash,
+    );
+    evidence.push(
+      "SBOM status: " +
+        state.postureAssessment.sbom.status,
+    );
+    evidence.push(
+      "Restore evidence: " +
+        state.postureAssessment.resiliency.restoreEvidence,
+    );
+  }
 
   if (state.build) {
     evidence.push(
@@ -311,8 +439,11 @@ export function answerStateQuery(
         (state.build.candidate.evidence.planHash ?? "missing"),
     );
 
-    for (const reason of state.build.gate.reasons) {
-      evidence.push("Gate: " + reason);
+    for (const reason of
+      state.build.gate.reasons) {
+      evidence.push(
+        "Gate: " + reason,
+      );
     }
   }
 
@@ -324,6 +455,8 @@ export function answerStateQuery(
 
   return [
     "Here is the evidence currently attached to this session:",
-    ...evidence.map((item) => "  • " + item),
+    ...evidence.map(
+      (item) => "  • " + item,
+    ),
   ].join("\n");
 }
