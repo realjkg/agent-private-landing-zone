@@ -41,6 +41,8 @@ export type BuildArtifact = {
 export type BuildEvidence = {
   discoverySnapshotHash: string;
   assessmentId: string;
+  designId: string;
+  designHash: string;
   policyBundleId: string;
   policyBundleHash: string;
   scannerResults: ScannerResult[];
