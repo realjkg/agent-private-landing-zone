@@ -12,7 +12,10 @@ import { SqliteSaver } from "@langchain/langgraph-checkpoint-sqlite";
 
 import { fixtureThinker } from "../agent/fixture.js";
 import { runAgentKernel } from "../agent/graph.js";
-import type { AgentState } from "../agent/types.js";
+import type {
+  AgentProgressReporter,
+  AgentState,
+} from "../agent/types.js";
 import type { IaCEngine } from "../build/types.js";
 import type {
   MockScenario,
