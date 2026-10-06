@@ -1,5 +1,5 @@
 {
-  "name": "@adaptcloud/agentic-landing-zone",
+  "name": "@agentic/landing-zone",
   "version": "0.1.0",
   "private": true,
   "description": "Portable private and sovereign agentic landing zone accelerator",
