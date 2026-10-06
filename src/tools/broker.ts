@@ -19,6 +19,10 @@ const SAFE_TOOLS = new Set([
   "terraform_fmt_check",
   "terraform_validate",
   "terraform_plan",
+  "opentofu_version",
+  "opentofu_fmt_check",
+  "opentofu_validate",
+  "opentofu_plan",
   "pulumi_version",
   "pulumi_preview",
   "aws_version",
@@ -99,6 +103,7 @@ export function executeTool(
 
   if (
     (request.tool === "terraform_plan" ||
+      request.tool === "opentofu_plan" ||
       request.tool === "pulumi_preview" ||
       providerReadTool) &&
     !context.allowCloudRead
@@ -248,6 +253,35 @@ export function executeTool(
     if (
       request.tool === "terraform_fmt_check" ||
       request.tool === "terraform_validate"
+    ) {
+      return adapter.validate({
+        ...context,
+        cwd: workspace,
+      });
+    }
+
+    return adapter.preview({
+      ...context,
+      cwd: workspace,
+    });
+  }
+
+  if (
+    request.tool.startsWith("opentofu_")
+  ) {
+    const adapter =
+      getIaCAdapter("OPENTOFU");
+
+    if (request.tool === "opentofu_version") {
+      return adapter.version({
+        ...context,
+        cwd: workspace,
+      });
+    }
+
+    if (
+      request.tool === "opentofu_fmt_check" ||
+      request.tool === "opentofu_validate"
     ) {
       return adapter.validate({
         ...context,
