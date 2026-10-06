@@ -70,7 +70,11 @@ export type AgentPlan = {
 export type ActionResult = {
   attempted: boolean;
   executed: boolean;
-  status: "DISABLED" | "BLOCKED" | "NOT_REQUIRED";
+  status:
+    | "DISABLED"
+    | "BLOCKED"
+    | "AWAITING_APPROVAL"
+    | "NOT_REQUIRED";
   reason: string;
 };
 
@@ -83,6 +87,9 @@ export type ObservationResult = {
 export type AgentState = {
   requestId: string;
   request: string;
+  startedAt: string;
+  completedAt?: string;
+  durationMs?: number;
   phase: AgentPhase;
   intent: AgentIntent;
   provider: Provider;
@@ -105,6 +112,7 @@ export type AgentEvent = {
   phase: AgentPhase;
   event: string;
   detail?: string;
+  durationMs?: number;
 };
 
 export type Thinker = (
