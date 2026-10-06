@@ -46,7 +46,7 @@
   },
   "dependencies": {
     "@langchain/core": "1.2.16",
-    "@langchain/langgraph": "1.4.18",
+    "@langchain/langgraph": "1.4.19",
     "@langchain/langgraph-checkpoint-sqlite": "1.0.4",
     "zod": "4.6.5"
   },
