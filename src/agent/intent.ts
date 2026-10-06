@@ -22,19 +22,19 @@ export function classifyIntent(
   }
 
   if (
-    /discover|inventory|what exists|resources|environment/.test(
-      value,
-    )
-  ) {
-    return "DISCOVER";
-  }
-
-  if (
     /assess|review|risk|architecture|evaluate|recommend/.test(
       value,
     )
   ) {
     return "ASSESS";
+  }
+
+  if (
+    /discover|inventory|what exists|list resources|show resources|enumerate resources/.test(
+      value,
+    )
+  ) {
+    return "DISCOVER";
   }
 
   return "ANSWER";
