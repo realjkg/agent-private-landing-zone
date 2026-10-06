@@ -1,4 +1,8 @@
 import { discoverEnvironment } from "../discovery/discover.js";
+import {
+  formatResourceRows,
+  writeDiscoveryRun,
+} from "../discovery/output.js";
 import type {
   MockScenario,
   Provider,
@@ -17,11 +21,15 @@ function hasFlag(name: string): boolean {
 function parseProvider(value?: string): Provider {
   if (value?.toLowerCase() === "aws") return "AWS";
   if (value?.toLowerCase() === "azure") return "AZURE";
-  throw new Error("PROVIDER_UNAVAILABLE: use --provider aws or --provider azure");
+
+  throw new Error(
+    "PROVIDER_UNAVAILABLE: use --provider aws or --provider azure",
+  );
 }
 
 function parseMock(value?: string): MockScenario | undefined {
   if (!value) return undefined;
+
   if (
     value === "brownfield" ||
     value === "greenfield" ||
@@ -38,6 +46,7 @@ function parseMock(value?: string): MockScenario | undefined {
 const provider = parseProvider(readArg("--provider"));
 const mock = parseMock(readArg("--mock"));
 const verbose = hasFlag("--verbose");
+const showResources = hasFlag("--resources") || verbose;
 
 console.log();
 console.log("Agentic Landing Zone");
@@ -56,6 +65,8 @@ try {
     },
   );
 
+  const runRecord = await writeDiscoveryRun(result);
+
   console.log(`✓ Provider        ${result.provider}`);
   console.log(`✓ Classification  ${result.classification}`);
   console.log(`✓ Control plane   ${result.controlPlane}`);
@@ -65,26 +76,41 @@ try {
   );
   console.log(`✓ Conflicts       ${result.conflicts.length}`);
   console.log();
+
   console.log("Safe build mode");
   console.log(`  ${result.safeBuildMode}`);
   console.log();
+
+  if (showResources) {
+    console.log("Resources");
+    for (const line of formatResourceRows(result.resources)) {
+      console.log(line);
+    }
+    console.log();
+  }
 
   for (const warning of result.warnings) {
     console.log(`! ${warning}`);
   }
 
   console.log("No changes were made.");
+  console.log(`Run record  ${runRecord}`);
 
   if (verbose) {
     console.log();
     console.log("────────────────────────────────");
+    console.log("Normalized environment record");
+    console.log();
     console.log(JSON.stringify(result, null, 2));
   }
 } catch (error) {
   console.error();
   console.error("DISCOVERY FAILED");
   console.error(
-    error instanceof Error ? error.message : "Unknown discovery error",
+    error instanceof Error
+      ? error.message
+      : "Unknown discovery error",
   );
+
   process.exitCode = 1;
 }
