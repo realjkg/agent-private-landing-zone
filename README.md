@@ -146,6 +146,24 @@ Manage is intended to continuously evaluate:
 
 The current resiliency implementation can capture an encrypted configuration recovery manifest. A manifest is not treated as proof of recoverability unless restore evidence exists.
 
+## Operator experience
+
+Day-to-day use is exposed through a small operator launcher rather than npm scripts:
+
+```bash
+./alz bootstrap
+./alz doctor
+./alz demo
+./alz inspect aws
+./alz session aws terraform
+./alz plugins
+./alz sbom
+./alz scan
+./alz verify
+```
+
+The source checkout still uses Node tooling internally, but the operator does not need to know the underlying npm script graph. See [docs/operator-guide.md](docs/operator-guide.md).
+
 ## Secure session
 
 The default conversational session uses live read-only provider discovery and local Qwen/Mistral reasoning:
