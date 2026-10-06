@@ -54,6 +54,19 @@ export async function runBuildLoop(
     );
   }
 
+  if (
+    options.design &&
+    options.design.plugin.plugin !== options.engine
+  ) {
+    throw new Error(
+      "DESIGN_ENGINE_MISMATCH: DesignSpec selected " +
+        options.design.plugin.plugin +
+        " but Build requested " +
+        options.engine +
+        ".",
+    );
+  }
+
   const environment = await discoverEnvironment({
     provider: options.provider,
     mock: options.mock,
@@ -90,14 +103,6 @@ export async function runBuildLoop(
     JSON.stringify(environment),
   );
 
-  const policyBundleHash = sha256(
-    JSON.stringify({
-      mode: "preview-only",
-      ownership: environment.safeBuildMode,
-      deleteAllowed: false,
-    }),
-  );
-
   const designId =
     options.design?.designId ??
     "design-fixture-v1";
@@ -111,6 +116,15 @@ export async function runBuildLoop(
         mock: options.mock,
       }),
     );
+
+  const policyBundleHash = sha256(
+    JSON.stringify({
+      mode: "preview-only",
+      ownership: environment.safeBuildMode,
+      deleteAllowed: false,
+      designHash,
+    }),
+  );
 
   const approvalId = options.approve
     ? `approval-${randomUUID()}`
@@ -135,6 +149,9 @@ export async function runBuildLoop(
       approvalId,
       approvedArtifactHash: options.approve
         ? artifact.contentHash
+        : undefined,
+      approvedDesignHash: options.approve
+        ? designHash
         : undefined,
     },
     repairAttempt: 0,
