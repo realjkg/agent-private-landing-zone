@@ -10,7 +10,7 @@ export function classifySessionCommand(
   if (
     value === ":help" ||
     value === "help" ||
-    /what can you do|how can you help|what can i ask/.test(value)
+    /what (else )?can you do|how can you help|what can i ask|what are you capable of/.test(value)
   ) {
     return "HELP";
   }
