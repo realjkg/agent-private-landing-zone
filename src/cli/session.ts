@@ -8,6 +8,8 @@ import {
 } from "node:process";
 
 import { createSessionGraph } from "../session/graph.js";
+import { writeEncryptedEvidence } from "../evidence/vault.js";
+import { assertSecureSession } from "../security/session.js";
 import type { IaCEngine } from "../build/types.js";
 import type {
   MockScenario,
@@ -62,6 +64,9 @@ const threadId =
   readArg("--thread") ??
   "lab-" + randomUUID().slice(0, 8);
 
+const security =
+  await assertSecureSession();
+
 const { graph } =
   createSessionGraph();
 
@@ -74,7 +79,15 @@ const config = {
 console.log();
 console.log("Agentic Landing Zone");
 console.log("────────────────────────────────");
-console.log("CONVERSATIONAL DEVOPS SESSION · ACT DISABLED");
+console.log("SECURED CONVERSATIONAL DEVOPS SESSION");
+console.log("────────────────────────────────");
+console.log("Security   ATTESTED");
+console.log("Evidence   AES-256-GCM encrypted");
+console.log("Checkpoint memory-only");
+console.log("Shell      unavailable");
+console.log("Cloud read disabled by default");
+console.log("Mutation   unavailable");
+console.log("Commit     " + security.commitSha.slice(0, 12));
 console.log();
 console.log("Thread    " + threadId);
 console.log("Provider  " + provider);
@@ -82,8 +95,8 @@ console.log("IaC       " + engine);
 console.log(
   "Reasoner  " +
     (fixture
-      ? "deterministic fixture"
-      : "local Qwen/Mistral"),
+      ? "deterministic fixture (no model intelligence)"
+      : "local Qwen/Mistral intelligence"),
 );
 console.log();
 console.log(
@@ -143,6 +156,31 @@ try {
     if (result.engine) {
       engine = result.engine;
     }
+
+    const evidenceName =
+      new Date()
+        .toISOString()
+        .replace(/[:.]/g, "-") +
+      "-" +
+      threadId;
+
+    await writeEncryptedEvidence(
+      "session",
+      evidenceName,
+      {
+        threadId,
+        provider,
+        engine,
+        request,
+        response: result.response,
+        agentState: result.agentState,
+        history: result.history,
+        security: {
+          secured: security.secured,
+          commitSha: security.commitSha,
+        },
+      },
+    );
 
     console.log();
     console.log(
