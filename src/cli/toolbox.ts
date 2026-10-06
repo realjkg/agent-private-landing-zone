@@ -12,6 +12,7 @@ const context = {
 
 const checks: ToolName[] = [
   "terraform_version",
+  "opentofu_version",
   "pulumi_version",
   "aws_version",
   "azure_version",
@@ -21,6 +22,7 @@ const labels: Partial<
   Record<ToolName, string>
 > = {
   terraform_version: "Terraform",
+  opentofu_version: "OpenTofu",
   pulumi_version: "Pulumi",
   aws_version: "AWS CLI",
   azure_version: "Azure CLI",
