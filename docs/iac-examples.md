@@ -1,6 +1,6 @@
 # Build plug-in examples
 
-Terraform and Pulumi are the currently implemented preview adapters. OpenTofu, Bicep, CloudFormation, AWS CDK, Crossplane and Ansible participate in the same DesignSpec contract and are enabled for execution only after their adapters are implemented and verified.
+Implemented preview adapters are Terraform, Pulumi, OpenTofu, Azure Bicep, and AWS CloudFormation for existing-stack UPDATE Change Sets. AWS CDK, Crossplane, and Ansible participate in the same DesignSpec contract but remain Design-only until their executable-project/controller isolation is verified.
 
 Every Build plug-in consumes the same reviewed DesignSpec and must produce change evidence that can be normalized into the same governance gates.
 
@@ -18,6 +18,18 @@ terraform plan -input=false -lock=false -refresh=false -out=.agentic-preview.tfp
 ```
 
 There is no allowlisted `terraform apply` or `terraform destroy`.
+
+### OpenTofu
+
+The OpenTofu adapter mirrors Terraform's safe preview path with `tofu fmt`, `tofu validate -json`, and `tofu plan`. Raw plan values are not retained in durable evidence.
+
+### Bicep
+
+The Bicep adapter performs local `lint --no-restore` and `build --no-restore`, then Azure CLI what-if using `ResourceIdOnly` and `ProviderNoRbac`. ARM JSON is only a compiled transport artifact, not a first-class authoring plug-in.
+
+### CloudFormation
+
+The CloudFormation adapter validates the template and, for existing stacks only, creates a uniquely named UPDATE Change Set, waits for it, describes only action/logical-ID/type/replacement fields, normalizes the result, and deletes the preview Change Set. CREATE previews remain Design-only because CloudFormation creates a `REVIEW_IN_PROGRESS` stack shell.
 
 ### Pulumi
 
@@ -171,7 +183,7 @@ The normalized ChangeSet intentionally retains only the minimum change metadata 
 
 ```ts
 {
-  engine: "TERRAFORM" | "PULUMI",
+  engine: "TERRAFORM" | "PULUMI" | "OPENTOFU" | "BICEP" | "CLOUDFORMATION",
   resources: [
     {
       address: "...",
