@@ -78,24 +78,26 @@ const state = await runAgentKernel({
 
 const runRecord = await writeAgentRun(state);
 
-console.log(\`Intent          \${state.intent}\`);
-console.log(\`Phase           \${state.phase}\`);
+console.log("Intent          " + state.intent);
+console.log("Phase           " + state.phase);
 console.log(
-  \`Environment     \${state.environment?.classification ?? "UNKNOWN"}\`,
+  "Environment     " +
+    (state.environment?.classification ?? "UNKNOWN"),
 );
 console.log(
-  \`Safe build mode \${state.environment?.safeBuildMode ?? "UNKNOWN"}\`,
+  "Safe build mode " +
+    (state.environment?.safeBuildMode ?? "UNKNOWN"),
 );
 console.log();
 
 if (state.plan) {
   console.log("Plan");
   console.log(
-    \`  \${state.plan.steps.join(" → ")}\`,
+    "  " + state.plan.steps.join(" → "),
   );
 
   for (const reason of state.plan.reasons) {
-    console.log(\`  • \${reason}\`);
+    console.log("  • " + reason);
   }
 
   console.log();
@@ -104,7 +106,7 @@ if (state.plan) {
 if (state.engineeringAssessment) {
   console.log("Engineering view");
   console.log(
-    \`  \${state.engineeringAssessment.topRisk}\`,
+    "  " + state.engineeringAssessment.topRisk,
   );
   console.log();
 }
@@ -112,49 +114,65 @@ if (state.engineeringAssessment) {
 if (state.build) {
   console.log("Build");
   console.log(
-    \`  \${state.build.candidate.artifact.engine} · \${state.build.gate.allowed ? "GATE PASSED" : "GATE STOPPED"}\`,
+    "  " +
+      state.build.candidate.artifact.engine +
+      " · " +
+      (state.build.gate.allowed
+        ? "GATE PASSED"
+        : "GATE STOPPED"),
   );
   console.log(
-    \`  Artifact \${state.build.candidate.artifact.contentHash.slice(0, 16)}…\`,
+    "  Artifact " +
+      state.build.candidate.artifact.contentHash.slice(0, 16) +
+      "…",
   );
   console.log();
 }
 
 console.log("Act");
 console.log(
-  \`  \${state.action?.status ?? "NOT_REQUIRED"}\`,
+  "  " + (state.action?.status ?? "NOT_REQUIRED"),
 );
 console.log(
-  \`  \${state.action?.reason ?? "No action result."}\`,
+  "  " +
+    (state.action?.reason ?? "No action result."),
 );
 console.log();
 
 console.log("Observe");
 console.log(
-  \`  mutationObserved=\${state.observation?.mutationObserved ?? false}\`,
+  "  mutationObserved=" +
+    (state.observation?.mutationObserved ?? false),
 );
 console.log(
-  \`  verified=\${state.observation?.verified ?? false}\`,
+  "  verified=" +
+    (state.observation?.verified ?? false),
 );
 console.log();
 
 console.log("Observability");
 for (const timing of phaseDurations(state)) {
   console.log(
-    \`  \${timing.phase.padEnd(18)} \${timing.durationMs} ms\`,
+    "  " +
+      timing.phase.padEnd(18) +
+      " " +
+      timing.durationMs +
+      " ms",
   );
 }
 console.log(
-  \`  TOTAL              \${state.durationMs ?? 0} ms\`,
+  "  TOTAL              " +
+    (state.durationMs ?? 0) +
+    " ms",
 );
 console.log();
 
-console.log(\`Request ID  \${state.requestId}\`);
-console.log(\`Run record  \${runRecord}\`);
+console.log("Request ID  " + state.requestId);
+console.log("Run record  " + runRecord);
 
 if (state.error) {
   console.log();
-  console.log(\`Error       \${state.error}\`);
+  console.log("Error       " + state.error);
 }
 
 if (verbose) {
@@ -166,15 +184,20 @@ if (verbose) {
   for (const event of state.events) {
     const duration =
       typeof event.durationMs === "number"
-        ? \` · \${event.durationMs} ms\`
+        ? " · " + event.durationMs + " ms"
         : "";
 
     console.log(
-      \`\${event.at}  \${event.phase.padEnd(18)} \${event.event}\${duration}\`,
+      event.at +
+        "  " +
+        event.phase.padEnd(18) +
+        " " +
+        event.event +
+        duration,
     );
 
     if (event.detail) {
-      console.log(\`  \${event.detail}\`);
+      console.log("  " + event.detail);
     }
   }
 }
