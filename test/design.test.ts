@@ -170,3 +170,42 @@ test("Ansible is a governed Build plug-in for brownfield configuration scenarios
     false,
   );
 });
+
+
+test("registered build plug-ins expose deterministic design evidence paths", () => {
+  const cases = [
+    ["AWS", "Terraform", "TERRAFORM", "PLAN"],
+    ["AWS", "Pulumi", "PULUMI", "PREVIEW"],
+    ["AWS", "OpenTofu", "OPENTOFU", "PLAN"],
+    ["AZURE", "Bicep", "BICEP", "WHAT_IF"],
+    ["AWS", "CloudFormation", "CLOUDFORMATION", "CHANGE_SET"],
+    ["AWS", "AWS CDK", "AWS_CDK", "CDK_SYNTH_CHANGE_SET"],
+    ["AWS", "Crossplane", "CROSSPLANE", "CONTROLLER_PREVIEW"],
+    ["AWS", "Ansible", "ANSIBLE", "CHECK_MODE"],
+  ] as const;
+
+  for (
+    const [
+      provider,
+      requestName,
+      plugin,
+      evidencePath,
+    ] of cases
+  ) {
+    const selected =
+      selectDesignPlugin(
+        provider,
+        "Design using " + requestName + ".",
+        "TERRAFORM",
+      );
+
+    assert.equal(
+      selected.plugin,
+      plugin,
+    );
+    assert.equal(
+      selected.evidencePath,
+      evidencePath,
+    );
+  }
+});
