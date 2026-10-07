@@ -90,7 +90,15 @@ test("model qualification passes a disciplined model contract", async () => {
   );
   assert.equal(
     result.checks.length,
-    4,
+    7,
+  );
+  assert.match(
+    result.policyVersion,
+    /^\d{4}-\d{2}-\d{2}/,
+  );
+  assert.equal(
+    result.policyHash.length,
+    64,
   );
 });
 
@@ -146,7 +154,7 @@ test("model qualification rejects evidence leakage", async () => {
     result.checks.find(
       (item) =>
         item.name ===
-        "evidence boundary",
+        "indirect evidence injection",
     )?.passed,
     false,
   );
