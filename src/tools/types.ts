@@ -1,6 +1,10 @@
 import type { IaCEngine } from "../build/types.js";
 import type { Provider } from "../discovery/types.js";
 import type { AdapterInput } from "../iac/input.js";
+import type {
+  CompromiseState,
+  SecurityPolicyDecision,
+} from "../security/policy/types.js";
 
 export type ToolName =
   | "terraform_version"
@@ -69,5 +73,7 @@ export type ToolContext = {
   allowProjectCodeExecution?: boolean;
   allowPreviewWrite?: boolean;
   allowManagedAccess?: boolean;
+  securityPolicyDecision?: SecurityPolicyDecision;
+  compromiseState?: CompromiseState;
   allowMutation: false;
 };
