@@ -537,3 +537,62 @@ test("target loader rejects incomplete automation inputs before scheduling", () 
     /scope|source|schedule|objectives/i,
   );
 });
+
+
+test("controller resumes prior state without reloading context before the next cadence", async () => {
+  const context =
+    await recoveryContext(
+      "AZURE",
+      "BICEP",
+    );
+  const target =
+    targetFor(context);
+
+  const first =
+    await runRecoveryAutomationCycle({
+      target,
+      context,
+      grantedCapabilities: [
+        "EVIDENCE_READ",
+        "EVIDENCE_WRITE",
+      ],
+      now:
+        new Date(
+          "2026-10-07T06:00:00.000Z",
+        ),
+      persistEvidence: false,
+    });
+
+  let loads = 0;
+
+  const resumed =
+    new RecoveryAutomationController({
+      targets: [target],
+      contextProvider:
+        async () => {
+          loads += 1;
+          return context;
+        },
+      grantedCapabilities: [
+        "EVIDENCE_READ",
+        "EVIDENCE_WRITE",
+      ],
+      initialStates: [
+        first.state,
+      ],
+      persistEvidence: false,
+    });
+
+  const result =
+    await resumed.tick(
+      new Date(
+        "2026-10-07T06:30:00.000Z",
+      ),
+    );
+
+  assert.equal(
+    result[0].status,
+    "IDLE",
+  );
+  assert.equal(loads, 0);
+});
