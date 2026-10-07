@@ -1,4 +1,5 @@
 import {
+  createHash,
   randomUUID,
 } from "node:crypto";
 import {
@@ -8,6 +9,7 @@ import {
   arch,
   cpus,
   freemem,
+  hostname,
   platform,
   release,
   totalmem,
@@ -28,6 +30,9 @@ export const PRODUCTION_OLLAMA_VERSION =
 
 export type ProductionHostProfile = {
   targetHardwareId: string;
+  runnerName: string;
+  hostname: string;
+  hostIdentityHash: string;
   platform: string;
   release: string;
   arch: string;
@@ -117,6 +122,43 @@ export function collectProductionQualificationContext(
     process.env,
 ): ProductionQualificationContext {
   const processors = cpus();
+  const actualHostname =
+    hostname();
+  const runnerName =
+    env.RUNNER_NAME ??
+    "LOCAL";
+  const platformName =
+    platform();
+  const releaseName =
+    release();
+  const architecture =
+    arch();
+  const cpuModel =
+    processors[0]?.model ??
+    "UNKNOWN";
+  const cpuCount =
+    processors.length;
+  const totalMemoryBytes =
+    totalmem();
+  const hostIdentityHash =
+    createHash("sha256")
+      .update(
+        JSON.stringify({
+          runnerName,
+          hostname:
+            actualHostname,
+          platform:
+            platformName,
+          release:
+            releaseName,
+          arch:
+            architecture,
+          cpuModel,
+          cpuCount,
+          totalMemoryBytes,
+        }),
+      )
+      .digest("hex");
 
   return {
     sourceCommit:
@@ -143,16 +185,19 @@ export function collectProductionQualificationContext(
       targetHardwareId:
         env.ALZ_TARGET_HARDWARE_ID ??
         "UNKNOWN",
-      platform: platform(),
-      release: release(),
-      arch: arch(),
-      cpuModel:
-        processors[0]?.model ??
-        "UNKNOWN",
-      cpuCount:
-        processors.length,
-      totalMemoryBytes:
-        totalmem(),
+      runnerName,
+      hostname:
+        actualHostname,
+      hostIdentityHash,
+      platform:
+        platformName,
+      release:
+        releaseName,
+      arch:
+        architecture,
+      cpuModel,
+      cpuCount,
+      totalMemoryBytes,
       nodeVersion:
         process.version,
       accelerator:
@@ -324,6 +369,25 @@ export async function qualifyProductionModelRuntime(
           .targetHardwareId !==
           "UNKNOWN",
       "production qualification requires an explicit target hardware identifier",
+    ),
+  );
+
+  checks.push(
+    check(
+      "actual host fingerprint",
+      /^[0-9a-f]{64}$/i.test(
+        context.host
+          .hostIdentityHash,
+      ) &&
+        Boolean(
+          context.host.hostname
+            .trim(),
+        ) &&
+        Boolean(
+          context.host.runnerName
+            .trim(),
+        ),
+      "production evidence must include the actual runner/host fingerprint",
     ),
   );
 
