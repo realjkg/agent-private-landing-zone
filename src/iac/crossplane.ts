@@ -35,6 +35,7 @@ function renderArgs(
 ): string[] {
   return [
     "composition",
+    "composition",
     "render",
     workspaceFile(
       cwd,
