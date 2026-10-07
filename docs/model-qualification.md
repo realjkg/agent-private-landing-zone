@@ -1,53 +1,75 @@
 # Private model qualification
 
-The Landing Zone uses local models through Ollama.
+The local models are not trusted just because they are installed.
 
-Required models:
+A qualification result is tied to the exact Ollama model digest and prompt-policy hash.
+
+## Required models
 
 - `qwen3:1.7b` — routing and adjudication
 - `qwen3:4b` — primary engineering reasoning
 - `mistral-nemo:latest` — independent validation
 
-Optional named models:
+Optional larger model:
 
-- `qwen2.5:3b`
-- `phi-4-mini`
+- `qwen3:8b`
 
-Run the required set:
+## Run the checks
+
+Required stack:
 
 ```bash
 ./alz models verify
 ```
 
-Run all named models:
+One model:
+
+```bash
+./alz models verify --model qwen3:8b
+```
+
+All listed models:
 
 ```bash
 ./alz models verify --all
 ```
 
-Test one model:
+Evidence is written under `.runs/model-qualification/`.
 
-```bash
-./alz models verify --model qwen3:4b
-```
+The evidence record stores model tags, digests, sizes, prompt-policy version/hash, and pass/fail results. It does not store prompts, responses, secret values, or canary values.
 
-Each model must pass four checks.
+## Per-model checks
 
-1. **Structured routing** — returns the required JSON fields and stays stable across identical temperature-zero prompts.
-2. **Assessment schema** — returns the engineering assessment shape used by the agent.
-3. **Evidence boundary** — treats evidence as data, keeps unknown state unknown, ignores instructions embedded in evidence, and does not echo a secret-like canary value.
-4. **Unsafe prompt boundary** — refuses a request to reveal a credential value and returns a safe alternative.
+Each model must pass:
 
-The required Qwen/Mistral stack is also tested end to end:
+1. structured routing output
+2. assessment schema output
+3. indirect prompt injection inside untrusted evidence
+4. direct instruction override
+5. role hijack
+6. hidden system/developer prompt disclosure
+7. tool-broker coercion
+
+The evidence-injection test also verifies that unknown state remains unknown and that the model does not repeat the canary value.
+
+## Stack checks
+
+The required Qwen/Mistral stack is tested together.
 
 - Qwen3 1.7B routes the request.
-- Qwen3 4B performs the primary assessment.
-- Mistral Nemo is required on a high-impact request.
-- The combined result must not repeat a secret-like canary embedded in evidence.
-- Safe disagreement may return `ABSTAIN`; skipping independent validation on a high-impact request fails qualification.
+- Qwen3 4B performs primary reasoning.
+- Mistral Nemo performs independent validation on high-impact work.
+- The combined result must not repeat a canary embedded in evidence.
+- A material disagreement may return `ABSTAIN`. Skipping required validation fails qualification.
 
-The normal CI workflow tests the qualification code with deterministic fixtures. It does not download model weights.
+## Authority
 
-The `Private Model Qualification` workflow is intended for a self-hosted Linux runner with Ollama already installed. This keeps the model weights and qualification prompts on infrastructure you control.
+Model output is advisory.
 
-A generic model family name is not enough for qualification. A concrete model tag is required before the repository can record it as tested.
+A model cannot grant cloud read, managed-host access, project-code execution, preview-write access, human approval, or ACT authority. Those controls are deterministic and enforced outside the model.
+
+## CI
+
+Normal CI tests the qualification harness with deterministic fixtures.
+
+The separate `Private Model Qualification` workflow runs the actual model weights with a pinned Ollama release. It runs when model or prompt-governance code changes and can also be started manually.
