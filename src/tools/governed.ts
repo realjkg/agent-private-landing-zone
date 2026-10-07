@@ -1,3 +1,6 @@
+import {
+  emitDebugDiagnostic,
+} from "../debug/context.js";
 import type {
   SovereignCapability,
 } from "../orchestration/types.js";
@@ -251,6 +254,35 @@ export async function executeGovernedTool(
           source:
             "BUILTIN" as const,
         };
+
+  emitDebugDiagnostic({
+    kind: "POLICY",
+    component:
+      "governed-tool-policy",
+    status: composite.allow
+      ? "OK"
+      : "BLOCKED",
+    decisionId:
+      composite.decisionId,
+    detail:
+      composite.reasons.join(
+        " ",
+      ),
+    attributes: {
+      tool: request.tool,
+      source:
+        composite.source,
+      capabilities,
+      obligations:
+        composite.obligations,
+      compromiseState:
+        options.compromiseState,
+      classification:
+        options.classification,
+      egressHost:
+        destination?.host,
+    },
+  });
 
   if (!composite.allow) {
     return blocked(
