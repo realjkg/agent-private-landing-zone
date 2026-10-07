@@ -113,12 +113,6 @@ export function validateRecoveryTarget(
     );
   }
 
-  if (!target.enabled) {
-    blockers.push(
-      "Target is disabled.",
-    );
-  }
-
   if (!target.owner.trim()) {
     blockers.push(
       "Recovery target owner is required.",
