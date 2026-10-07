@@ -64,7 +64,7 @@ export const crossplaneAdapter: IaCAdapter = {
     return runAllowlistedProcess(
       "crossplane_version",
       "crossplane",
-      ["version"],
+      ["version", "--client"],
       context.cwd,
     );
   },
