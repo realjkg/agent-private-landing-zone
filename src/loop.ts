@@ -60,7 +60,7 @@ export type AgentResult = {
   primary?: EngineeringAssessment;
   validator?: EngineeringAssessment;
   adjudication?: string;
-  modelInvocations: ModelInvocationDiagnostic[];
+  modelInvocations?: ModelInvocationDiagnostic[];
   durationMs: number;
 };
 
