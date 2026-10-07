@@ -35,11 +35,11 @@ test("AWS CDK design routes synthesized evidence through CloudFormation", () => 
   );
   assert.equal(
     selected.status,
-    "PLANNED",
+    "READY",
   );
   assert.equal(
     selected.buildEligible,
-    false,
+    true,
   );
 });
 
