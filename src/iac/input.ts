@@ -29,5 +29,10 @@ export type AdapterInput = {
   deploymentName?: string;
   playbookPath?: string;
   inventoryPath?: string;
+  limit?: string;
   manifestPath?: string;
+  extensionsPath?: string;
+  xrPath?: string;
+  compositionPath?: string;
+  functionsPath?: string;
 };

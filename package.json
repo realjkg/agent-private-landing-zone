@@ -37,7 +37,9 @@
     "discover:aws:live": "tsx src/cli/discover.ts --provider aws --resources",
     "discover:azure:live": "tsx src/cli/discover.ts --provider azure --resources",
     "plugins:check": "tsx src/cli/plugins.ts",
-    "operator": "tsx src/cli/operator.ts"
+    "operator": "tsx src/cli/operator.ts",
+    "models": "tsx src/cli/models.ts",
+    "models:verify": "tsx src/cli/models.ts verify"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

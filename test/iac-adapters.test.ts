@@ -5,38 +5,20 @@ import {
   getIaCAdapter,
 } from "../src/iac/index.js";
 
-test("implemented adapters resolve explicitly", () => {
-  assert.equal(
-    getIaCAdapter("TERRAFORM").engine,
-    "TERRAFORM",
-  );
-  assert.equal(
-    getIaCAdapter("PULUMI").engine,
-    "PULUMI",
-  );
-  assert.equal(
-    getIaCAdapter("OPENTOFU").engine,
-    "OPENTOFU",
-  );
-  assert.equal(
-    getIaCAdapter("BICEP").engine,
-    "BICEP",
-  );
-  assert.equal(
-    getIaCAdapter("CLOUDFORMATION").engine,
-    "CLOUDFORMATION",
-  );
-});
-
-test("unimplemented executable-code adapters fail closed", () => {
+test("all registered build adapters resolve explicitly", () => {
   for (const engine of [
+    "TERRAFORM",
+    "PULUMI",
+    "OPENTOFU",
+    "BICEP",
+    "CLOUDFORMATION",
     "AWS_CDK",
     "ANSIBLE",
     "CROSSPLANE",
   ] as const) {
-    assert.throws(
-      () => getIaCAdapter(engine),
-      /IAC_ADAPTER_NOT_IMPLEMENTED/,
+    assert.equal(
+      getIaCAdapter(engine).engine,
+      engine,
     );
   }
 });

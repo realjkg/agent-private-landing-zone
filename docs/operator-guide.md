@@ -4,7 +4,7 @@ The Agent Private Landing Zone has an operator-facing command surface so normal 
 
 ## First-time source checkout
 
-From the `agentic-landing-zone` directory:
+From the repository root:
 
 ```bash
 ./alz bootstrap
@@ -28,6 +28,8 @@ This installs the locked runtime dependencies. After bootstrap, use `./alz` for 
 ./alz session azure pulumi
 ./alz plugins
 ./alz prompts
+./alz models list
+./alz models verify
 ./alz sbom
 ./alz scan
 ./alz verify
@@ -56,7 +58,7 @@ Runs the same governed deterministic path with Design as the explicit operator g
 ./alz design azure bicep brownfield
 ```
 
-Implemented preview adapters are Terraform, Pulumi, OpenTofu, Bicep, and CloudFormation UPDATE Change Sets for existing AWS stacks. CDK, Crossplane, and Ansible can be selected and reviewed in Design but remain blocked from executable Build until their stronger isolation/preview contracts are verified.
+All eight build adapters are implemented. CDK reuses the CloudFormation Change Set path. Ansible uses check/diff with explicit managed-host access. Crossplane uses local render and keeps changes UNKNOWN until controller reconciliation is observed.
 
 ### inspect
 
@@ -92,6 +94,18 @@ A denied request includes a plain-language reason and a safe alternative. For ex
 
 After a denial, `why was that blocked?` explains the recorded boundary, while `prompt guide` shows working examples.
 
+### models
+
+Lists or qualifies the local private models:
+
+```bash
+./alz models list
+./alz models verify
+./alz models verify --all
+```
+
+The default qualification set is Qwen3 1.7B, Qwen3 4B, and Mistral Nemo. The optional set also includes Qwen2.5 3B and Phi-4 Mini. The checks cover JSON structure, repeatability, evidence isolation, and refusal to echo secret-like values.
+
 ### doctor
 
 Checks the local security preflight, plug-in compatibility catalog and toolbox availability.
@@ -110,6 +124,7 @@ Runs the operator regression suite without requiring the operator to know indivi
 - Azure greenfield discovery fixture
 - unknown-environment fail-closed behavior
 - dependency security audit
+- private-model qualification harness tests
 
 ### sbom
 
@@ -123,14 +138,14 @@ Runs the package dependency audit. If Trivy is installed locally it also scans t
 
 | Scenario | Discover | Assess | Delta | Design | Build | ACT |
 | --- | --- | --- | --- | --- | --- | --- |
-| AWS brownfield | live read-only + fixture | supported | supported | DesignSpec | Terraform/Pulumi/OpenTofu + CloudFormation UPDATE preview | disabled |
-| AWS greenfield | fixture | supported | supported | DesignSpec | Terraform/Pulumi/OpenTofu; CloudFormation CREATE remains Design-only | disabled |
-| Azure brownfield | live read-only + fixture | supported | supported | DesignSpec | Terraform/Pulumi/OpenTofu/Bicep preview | disabled |
-| Azure greenfield | fixture | supported | supported | DesignSpec | Terraform/Pulumi/OpenTofu/Bicep preview | disabled |
-| Private/edge attached assets | evidence ingestion | supported | supported | DesignSpec | Ansible/Crossplane/private adapters planned | disabled |
-| Sovereign/disconnected | evidence ingestion | supported | supported | DesignSpec | signed/offline adapter bundle planned | disabled |
+| AWS brownfield | live read-only + fixture | supported | supported | DesignSpec | Terraform, Pulumi, OpenTofu, CloudFormation UPDATE, CDK, Ansible, Crossplane | disabled |
+| AWS greenfield | fixture | supported | supported | DesignSpec | Terraform, Pulumi, OpenTofu, CDK synthesis; CloudFormation CREATE remains Design-only | disabled |
+| Azure brownfield | live read-only + fixture | supported | supported | DesignSpec | Terraform, Pulumi, OpenTofu, Bicep, Ansible, Crossplane | disabled |
+| Azure greenfield | fixture | supported | supported | DesignSpec | Terraform, Pulumi, OpenTofu, Bicep, Crossplane | disabled |
+| Private/edge attached assets | evidence ingestion | supported | supported | DesignSpec | Ansible and Crossplane preview paths | disabled |
+| Sovereign/disconnected | evidence ingestion | supported | supported | DesignSpec | local/offline preview where adapter dependencies are present | disabled |
 
-Private/edge is intentionally not labeled executable Build support yet. Physical and virtual assets already participate in inventory, scanner, SBOM, resiliency, delta assessment and DesignSpec generation. Ansible is now part of the Build/Configure/Manage plug-in contract for those scenarios, but its execution adapter remains planned.
+Preview support does not mean deployment authority. ACT remains disabled.
 
 ## Maintenance
 

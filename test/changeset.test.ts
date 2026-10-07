@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { normalizeAnsibleCheck } from "../src/iac/ansible-check.js";
 import { normalizeBicepWhatIf } from "../src/iac/bicep-whatif.js";
 import { normalizeCloudFormationChangeSet } from "../src/iac/cloudformation-changeset.js";
+import { normalizeCrossplaneRender } from "../src/iac/crossplane-render.js";
 import { normalizePulumiPreview } from "../src/iac/pulumi-preview.js";
 import {
   normalizeOpenTofuPlan,
@@ -254,4 +256,59 @@ test("Bicep ResourceIdOnly what-if normalizes without property payloads", () => 
   assert.equal(result.updates, 1);
   assert.equal(result.deletes, 1);
   assert.equal(result.unknown, 1);
+});
+
+
+test("Ansible check mode normalizes host-level change evidence", () => {
+  const result =
+    normalizeAnsibleCheck(
+      [
+        "PLAY RECAP ****",
+        "edge-01 : ok=4 changed=2 unreachable=0 failed=0 skipped=1 rescued=0 ignored=0",
+        "edge-02 : ok=4 changed=0 unreachable=0 failed=0 skipped=1 rescued=0 ignored=0",
+      ].join("\n"),
+    );
+
+  assert.equal(
+    result.engine,
+    "ANSIBLE",
+  );
+  assert.equal(result.updates, 1);
+  assert.equal(result.unchanged, 1);
+  assert.equal(result.unknown, 0);
+});
+
+test("Ansible check mode fails closed when recap is missing", () => {
+  const result =
+    normalizeAnsibleCheck(
+      "module output without recap",
+    );
+
+  assert.equal(result.unknown, 1);
+});
+
+test("Crossplane render normalizes resources as unknown until reconciliation is observed", () => {
+  const result =
+    normalizeCrossplaneRender(
+      [
+        "apiVersion: s3.aws.upbound.io/v1beta1",
+        "kind: Bucket",
+        "metadata:",
+        "  name: audit-bucket",
+        "---",
+        "apiVersion: iam.aws.upbound.io/v1beta1",
+        "kind: Role",
+        "metadata:",
+        "  name: audit-role",
+      ].join("\n"),
+    );
+
+  assert.equal(
+    result.engine,
+    "CROSSPLANE",
+  );
+  assert.equal(result.unknown, 2);
+  assert.equal(result.creates, 0);
+  assert.equal(result.updates, 0);
+  assert.equal(result.destructive, false);
 });

@@ -15,6 +15,9 @@ const checks: ToolName[] = [
   "opentofu_version",
   "bicep_version",
   "cloudformation_version",
+  "cdk_version",
+  "ansible_version",
+  "crossplane_version",
   "pulumi_version",
   "aws_version",
   "azure_version",
@@ -28,6 +31,9 @@ const labels: Partial<
   bicep_version: "Bicep",
   cloudformation_version:
     "CloudFormation",
+  cdk_version: "AWS CDK",
+  ansible_version: "Ansible",
+  crossplane_version: "Crossplane",
   pulumi_version: "Pulumi",
   aws_version: "AWS CLI",
   azure_version: "Azure CLI",
@@ -90,6 +96,9 @@ console.log(
 );
 console.log(
   "Project code   DISABLED",
+);
+console.log(
+  "Managed access DISABLED",
 );
 console.log(
   "Cloud mutation DISABLED",

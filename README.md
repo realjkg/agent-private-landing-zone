@@ -47,28 +47,26 @@ Design now produces an evidence-linked, hashable `DesignSpec` with the selected 
 
 ### Build
 
-Verified preview adapters currently include Terraform, Pulumi, OpenTofu, Azure Bicep, and AWS CloudFormation.
+Implemented preview adapters cover all eight registered build paths.
 
-| Adapter | Validation | Governed preview | Mutation |
+| Adapter | Validation | Governed preview | Important limit |
 | --- | --- | --- | --- |
-| Terraform | fmt + validate | plan | apply/destroy not exposed |
-| Pulumi | runtime/version today | preview | up/destroy not exposed |
-| OpenTofu | fmt + validate | plan | apply/destroy not exposed |
-| Bicep | lint + build with no automatic restore | Azure what-if with ResourceIdOnly | deployment not exposed |
-| CloudFormation | validate-template | existing-stack UPDATE Change Set | execute-change-set not exposed |
+| Terraform | fmt + validate | plan | apply/destroy are not exposed |
+| Pulumi | runtime/version | preview | project-code execution must be granted |
+| OpenTofu | fmt + validate | plan | apply/destroy are not exposed |
+| Bicep | lint + build | Azure what-if | deployment is not exposed |
+| CloudFormation | validate-template | existing-stack UPDATE Change Set | CREATE preview remains Design-only |
+| AWS CDK | synth + CloudFormation validation | temporary CloudFormation Change Set | project-code, cloud-read, and preview-write grants are required |
+| Ansible | syntax check | check + diff | managed-host and project-code grants are required; check mode is not proof of runtime behavior |
+| Crossplane | validate | local render | rendered resources remain UNKNOWN until controller reconciliation is observed |
 
-All implemented adapters feed the same normalized ChangeSet, ownership, policy, evidence and approval gates. CloudFormation CREATE previews remain Design-only because AWS creates a `REVIEW_IN_PROGRESS` stack shell before execution.
+All adapters feed the same normalized ChangeSet, ownership, policy, evidence, and approval gates.
 
-### Build plug-in direction
+### Build plug-ins
 
-The foundation is intended to support additional declarative/cloud-native build adapters without changing the governance plane:
+The current build plug-ins are Terraform, Pulumi, OpenTofu, Bicep, CloudFormation, AWS CDK, Crossplane, and Ansible.
 
-- OpenTofu — implemented
-- Azure Bicep — implemented
-- AWS CloudFormation — implemented for existing-stack UPDATE previews
-- AWS CDK through CloudFormation synthesis/change evidence
-- Crossplane for Kubernetes/private/edge control planes
-- Ansible under BUILD/CONFIGURE/MANAGE for brownfield operating-system, network, appliance and secure-edge configuration
+CDK reuses the CloudFormation evidence path rather than creating a second AWS change model. Ansible is used for bounded configuration work on existing systems. Crossplane render output is treated conservatively until a controller has reconciled it.
 
 **ARM JSON templates and PowerShell are not first-class build engines in this architecture.** For Azure, Bicep is the preferred declarative Azure-native authoring path. CLI tools may be invoked behind the typed broker as controlled transports, but CLI/scripting interfaces do not define the infrastructure model.
 
@@ -86,12 +84,12 @@ variable "kms_key_arn" {
 }
 
 resource "aws_cloudwatch_log_group" "agent_audit" {
-  name              = "/agentic-landing-zone/audit"
+  name              = "/agent-private-landing-zone/audit"
   retention_in_days = 30
   kms_key_id        = var.kms_key_arn
 
   tags = {
-    ManagedBy = "agentic-landing-zone"
+    ManagedBy = "agent-private-landing-zone"
   }
 }
 ```
@@ -104,11 +102,11 @@ import * as aws from "@pulumi/aws";
 
 export function createAuditLogGroup(kmsKeyArn: pulumi.Input<string>) {
   return new aws.cloudwatch.LogGroup("agent-audit", {
-    name: "/agentic-landing-zone/audit",
+    name: "/agent-private-landing-zone/audit",
     retentionInDays: 30,
     kmsKeyId: kmsKeyArn,
     tags: {
-      ManagedBy: "agentic-landing-zone",
+      ManagedBy: "agent-private-landing-zone",
     },
   });
 }
@@ -162,6 +160,8 @@ Day-to-day use is exposed through a small operator launcher rather than npm scri
 ./alz session aws terraform
 ./alz plugins
 ./alz prompts
+./alz models list
+./alz models verify
 ./alz sbom
 ./alz scan
 ./alz verify
@@ -197,7 +197,7 @@ Azure:
 ./alz session azure pulumi
 ```
 
-Inside a session, the operator can request a different path naturally. Terraform, Pulumi, OpenTofu, Bicep, and existing-stack CloudFormation UPDATE previews have verified adapters. CDK, Ansible, and Crossplane remain Design-only until their executable-project/controller isolation is implemented and verified.
+Inside a session, the operator can request any registered build path. All eight adapters are implemented. Their capability gates still apply. No adapter can mutate infrastructure.
 
 The secure session attests that:
 
@@ -253,9 +253,12 @@ ollama pull mistral-nemo
 
 ./alz bootstrap
 ./alz verify
+./alz models verify
 ```
 
-The source implementation uses Node/npm internally for dependency locking and SBOM generation, but operators use the `./alz` surface.
+`./alz verify` tests the model qualification harness with deterministic fixtures. `./alz models verify` tests the installed Qwen and Mistral weights against the local Ollama endpoint. Use `./alz models verify --all` to include the optional named models.
+
+See [docs/model-qualification.md](docs/model-qualification.md) for the exact checks.
 
 ## Deployment posture
 
@@ -290,4 +293,4 @@ ACT = DISABLED
 
 The repository currently exposes no Terraform apply/destroy, Pulumi up/destroy, CloudFormation execute-change-set, CDK deploy, Bicep deployment, OpenTofu apply, Crossplane mutation, or Ansible non-check execution through the broker.
 
-Implemented preview adapters are Terraform, Pulumi, OpenTofu, Bicep, and existing-stack CloudFormation UPDATE Change Sets. CDK, Crossplane, and Ansible remain visible to Design but cannot execute until their stronger runtime isolation/preview contracts are implemented, scanned, and verified.
+All eight preview adapters are implemented. ACT remains disabled. Adapter-specific capability grants control what can be previewed, and none of those grants enable deployment or mutation.

@@ -225,7 +225,7 @@ test("design intent creates DesignSpec without a build candidate", async () => {
   );
 });
 
-test("planned Ansible build is designed but blocked before preview", async () => {
+test("Ansible build intent produces a preview-only candidate", async () => {
   const state = await runAgentKernel({
     request:
       "Build the attached edge configuration using Ansible.",
@@ -244,13 +244,17 @@ test("planned Ansible build is designed but blocked before preview", async () =>
     state.design?.plugin.evidencePath,
     "CHECK_MODE",
   );
-  assert.equal(state.build, undefined);
-  assert.ok(
-    state.events.some(
-      (event) =>
-        event.event === "BUILD_BLOCKED" &&
-        event.detail?.includes("ANSIBLE"),
-    ),
+  assert.equal(
+    state.design?.plugin.status,
+    "READY",
+  );
+  assert.equal(
+    state.build?.candidate.artifact.engine,
+    "ANSIBLE",
+  );
+  assert.equal(
+    state.build?.executionMode,
+    "PREVIEW_ONLY",
   );
   assert.equal(
     state.action?.executed,
@@ -345,6 +349,39 @@ test("CloudFormation DesignSpec drives an existing-stack preview fixture", async
   assert.equal(
     state.build?.candidate.artifact.engine,
     "CLOUDFORMATION",
+  );
+  assert.equal(
+    state.action?.executed,
+    false,
+  );
+});
+
+
+test("Crossplane build intent produces conservative preview evidence", async () => {
+  const state = await runAgentKernel({
+    request:
+      "Build the approved platform composition using Crossplane.",
+    provider: "AWS",
+    engine: "TERRAFORM",
+    mock: "brownfield",
+    thinker: mockThinker,
+  });
+
+  assert.equal(
+    state.design?.plugin.plugin,
+    "CROSSPLANE",
+  );
+  assert.equal(
+    state.design?.plugin.status,
+    "READY",
+  );
+  assert.equal(
+    state.build?.candidate.artifact.engine,
+    "CROSSPLANE",
+  );
+  assert.equal(
+    state.build?.executionMode,
+    "PREVIEW_ONLY",
   );
   assert.equal(
     state.action?.executed,

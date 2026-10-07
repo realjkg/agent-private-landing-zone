@@ -45,6 +45,15 @@ test("tool broker exposes no apply or destroy operations", () => {
     "cloudformation_version",
     "cloudformation_validate",
     "cloudformation_preview",
+    "cdk_version",
+    "cdk_synth",
+    "cdk_preview",
+    "ansible_version",
+    "ansible_syntax_check",
+    "ansible_preview",
+    "crossplane_version",
+    "crossplane_validate",
+    "crossplane_preview",
     "pulumi_version",
     "pulumi_preview",
     "aws_version",
@@ -221,6 +230,161 @@ test("Bicep what-if requires explicit Azure read capability", () => {
     assert.match(
       result.reason ?? "",
       /read-only cloud access/i,
+    );
+  }
+});
+
+
+test("CDK preview requires cloud read preview write and project-code execution", () => {
+  const noCloudRead = executeTool(
+    {
+      tool: "cdk_preview",
+    },
+    context,
+  );
+
+  assert.equal(
+    Array.isArray(noCloudRead),
+    false,
+  );
+
+  if (!Array.isArray(noCloudRead)) {
+    assert.equal(
+      noCloudRead.blocked,
+      true,
+    );
+    assert.match(
+      noCloudRead.reason ?? "",
+      /read-only cloud access/i,
+    );
+  }
+
+  const noPreviewWrite = executeTool(
+    {
+      tool: "cdk_preview",
+    },
+    {
+      ...context,
+      allowCloudRead: true,
+    },
+  );
+
+  assert.equal(
+    Array.isArray(noPreviewWrite),
+    false,
+  );
+
+  if (!Array.isArray(noPreviewWrite)) {
+    assert.equal(
+      noPreviewWrite.blocked,
+      true,
+    );
+    assert.match(
+      noPreviewWrite.reason ?? "",
+      /preview-write/i,
+    );
+  }
+
+  const noProjectCode = executeTool(
+    {
+      tool: "cdk_preview",
+    },
+    {
+      ...context,
+      allowCloudRead: true,
+      allowPreviewWrite: true,
+    },
+  );
+
+  assert.equal(
+    Array.isArray(noProjectCode),
+    false,
+  );
+
+  if (!Array.isArray(noProjectCode)) {
+    assert.equal(
+      noProjectCode.blocked,
+      true,
+    );
+    assert.match(
+      noProjectCode.reason ?? "",
+      /project-code/i,
+    );
+  }
+});
+
+test("Ansible preview requires project-code and managed-host grants", () => {
+  const noProjectCode = executeTool(
+    {
+      tool: "ansible_preview",
+    },
+    context,
+  );
+
+  assert.equal(
+    Array.isArray(noProjectCode),
+    false,
+  );
+
+  if (!Array.isArray(noProjectCode)) {
+    assert.equal(
+      noProjectCode.blocked,
+      true,
+    );
+    assert.match(
+      noProjectCode.reason ?? "",
+      /project-code/i,
+    );
+  }
+
+  const noManagedAccess = executeTool(
+    {
+      tool: "ansible_preview",
+    },
+    {
+      ...context,
+      allowProjectCodeExecution: true,
+    },
+  );
+
+  assert.equal(
+    Array.isArray(noManagedAccess),
+    false,
+  );
+
+  if (!Array.isArray(noManagedAccess)) {
+    assert.equal(
+      noManagedAccess.blocked,
+      true,
+    );
+    assert.match(
+      noManagedAccess.reason ?? "",
+      /managed-host/i,
+    );
+  }
+});
+
+test("Crossplane render requires project-code execution capability", () => {
+  const result = executeTool(
+    {
+      tool: "crossplane_preview",
+    },
+    context,
+  );
+
+  assert.equal(
+    Array.isArray(result),
+    false,
+  );
+
+  if (!Array.isArray(result)) {
+    assert.equal(
+      result.blocked,
+      true,
+    );
+    assert.match(
+      result.reason ?? "",
+      /project-code/i,
     );
   }
 });

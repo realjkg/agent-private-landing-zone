@@ -94,6 +94,13 @@ export async function assessSessionSecurity(): Promise<SessionSecurityPosture> {
         "disabled by default; control-plane preview writes require explicit grant",
     },
     {
+      name: "managed-access",
+      passed:
+        toolPosture.managedAccessDefault === false,
+      detail:
+        "disabled by default; managed-host access requires explicit grant",
+    },
+    {
       name: "checkpointing",
       passed: true,
       detail:
