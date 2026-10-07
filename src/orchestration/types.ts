@@ -23,6 +23,7 @@ export type SpecialistRole =
 
 export type SovereignCapability =
   | "EVIDENCE_READ"
+  | "EVIDENCE_WRITE"
   | "CLOUD_READ"
   | "PROJECT_CODE_EXECUTION"
   | "PREVIEW_WRITE"
