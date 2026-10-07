@@ -150,18 +150,6 @@ function hashableRecoveryPoint(
   );
 }
 
-function explicitConfigurationExport(
-  environment: EnvironmentState,
-): string[] {
-  return matchingEvidenceRefs(
-    environment,
-    [
-      "configuration_export",
-      "config_export",
-    ],
-  );
-}
-
 function explicitIaCState(
   environment: EnvironmentState,
 ): string[] {
