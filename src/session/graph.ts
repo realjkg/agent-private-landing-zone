@@ -21,6 +21,11 @@ import type {
   MockScenario,
   Provider,
 } from "../discovery/types.js";
+import {
+  formatRecoveryAutomationInspection,
+  inspectConfiguredRecoveryAutomation,
+  type RecoveryAutomationInspection,
+} from "../recovery/inspection.js";
 import type {
   RecoveryDriftComparison,
   RecoveryPoint,
@@ -76,9 +81,16 @@ const SessionAnnotation = Annotation.Root({
 export type LangGraphSessionState =
   typeof SessionAnnotation.State;
 
+export type RecoveryAutomationInspectionProvider =
+  () => Promise<
+    RecoveryAutomationInspection[]
+  >;
+
 async function sessionNode(
   state: LangGraphSessionState,
   progress: AgentProgressReporter,
+  recoveryInspectionProvider:
+    RecoveryAutomationInspectionProvider,
 ): Promise<Partial<LangGraphSessionState>> {
   const policy = evaluateOperatorRequest(
     state.request,
@@ -152,7 +164,7 @@ async function sessionNode(
       "Evaluating recovery evidence and simulated operations…",
     );
 
-    const recovery =
+    let recovery =
       runRecoveryCommand({
         command,
         state: state.agentState,
@@ -169,6 +181,29 @@ async function sessionNode(
             state.recoveryDrift,
         },
       });
+
+    if (
+      command ===
+      "RECOVERY_STATUS"
+    ) {
+      const inspection =
+        await recoveryInspectionProvider();
+      const automated =
+        formatRecoveryAutomationInspection(
+          inspection,
+        );
+
+      if (automated) {
+        recovery = {
+          ...recovery,
+          response: [
+            recovery.response,
+            "",
+            automated,
+          ].join("\n"),
+        };
+      }
+    }
 
     return {
       ...recovery,
@@ -260,6 +295,9 @@ async function sessionNode(
 export function createSessionGraph(
   dbPath?: string,
   progress: AgentProgressReporter = () => {},
+  recoveryInspectionProvider:
+    RecoveryAutomationInspectionProvider =
+      inspectConfiguredRecoveryAutomation,
 ) {
   const checkpointer = dbPath
     ? (() => {
@@ -280,7 +318,11 @@ export function createSessionGraph(
     .addNode(
       "session",
       (state: LangGraphSessionState) =>
-        sessionNode(state, progress),
+        sessionNode(
+          state,
+          progress,
+          recoveryInspectionProvider,
+        ),
     )
     .addEdge(START, "session")
     .addEdge("session", END)
