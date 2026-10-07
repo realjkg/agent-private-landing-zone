@@ -1,3 +1,7 @@
+import {
+  screenOperatorPrompt,
+} from "../security/prompt-governance.js";
+
 export type OperatorBoundary =
   | "SECRET_DISCLOSURE"
   | "EXFILTRATION"
@@ -24,6 +28,21 @@ export function evaluateOperatorRequest(
   hasSessionContext: boolean,
 ): OperatorPolicyDecision {
   const value = request.trim().toLowerCase();
+
+  const promptScreen =
+    screenOperatorPrompt(request);
+
+  if (!promptScreen.allowed) {
+    return {
+      allowed: false,
+      boundary: "CONTROL_BYPASS",
+      reason:
+        promptScreen.reason ??
+        "The request attempts to change or bypass the governed prompt boundary.",
+      safeAlternative:
+        "State the infrastructure outcome you need without asking the agent to ignore instructions, change roles, reveal hidden prompts, or bypass the tool broker.",
+    };
+  }
 
   const safeSecretMetadataRequest =
     /(credential|secret|token|key).{0,50}(metadata|age|rotation|scope|owner|reference|posture)|(?:metadata|age|rotation|scope|owner|reference|posture).{0,50}(credential|secret|token|key)/i.test(
