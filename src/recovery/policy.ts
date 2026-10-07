@@ -12,7 +12,10 @@ import type {
 
 export type RecoveryPolicyOverrides = {
   retentionDays?: number;
+  rpo?: string;
+  rto?: string;
   owner?: string;
+  requiredArtifacts?: RecoveryArtifactKind[];
   immutability?:
     | "REQUIRED"
     | "OPTIONAL";
@@ -115,14 +118,18 @@ export function createRecoveryPolicy(input: {
     retentionDays:
       input.overrides?.retentionDays ??
       ("UNKNOWN" as const),
-    rpo: resiliencyValue(
-      input.environment,
-      "rpo",
-    ),
-    rto: resiliencyValue(
-      input.environment,
-      "rto",
-    ),
+    rpo:
+      input.overrides?.rpo ??
+      resiliencyValue(
+        input.environment,
+        "rpo",
+      ),
+    rto:
+      input.overrides?.rto ??
+      resiliencyValue(
+        input.environment,
+        "rto",
+      ),
     owner:
       input.overrides?.owner ??
       ("UNKNOWN" as const),
@@ -134,6 +141,8 @@ export function createRecoveryPolicy(input: {
       input.overrides?.offlineCopy ??
       ("UNKNOWN" as const),
     requiredArtifacts:
+      input.overrides
+        ?.requiredArtifacts ??
       requiredArtifacts(
         input.design,
       ),
