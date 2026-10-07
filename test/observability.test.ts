@@ -173,3 +173,40 @@ test("readiness requires all production checks and keeps ACT disabled", () => {
     false,
   );
 });
+
+
+test("structured operational event detail uses the shared secret redaction boundary", () => {
+  const serialized =
+    serializeOperationalEvent(
+      createOperationalEvent({
+        signal:
+          "adapter-failures",
+        status: "FAILED",
+        component:
+          "terraform",
+        detail:
+          "token=abc123 Bearer very.secret.value",
+        attributes: {
+          harmless:
+            "visible",
+        },
+      }),
+    );
+
+  assert.equal(
+    serialized.includes(
+      "abc123",
+    ),
+    false,
+  );
+  assert.equal(
+    serialized.includes(
+      "very.secret.value",
+    ),
+    false,
+  );
+  assert.match(
+    serialized,
+    /REDACTED/,
+  );
+});
