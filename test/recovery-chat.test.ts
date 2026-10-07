@@ -253,3 +253,65 @@ test("preparing a new recovery point invalidates stale verification and drill ev
     undefined,
   );
 });
+
+
+test("recovery status can inspect unattended target state without changing infrastructure", async () => {
+  const { graph } =
+    createSessionGraph(
+      ":memory:",
+      () => {},
+      async () => [
+        {
+          targetId:
+            "aws-platform-prod",
+          enabled: true,
+          recoveryPointCoverage:
+            "FULL",
+          verificationStatus:
+            "VERIFIED",
+          drillStatus:
+            "READY_FOR_REVIEW",
+          driftStatus:
+            "MATCHED",
+          lastCaptureAt:
+            "2026-10-07T10:00:00.000Z",
+        },
+      ],
+    );
+
+  const result =
+    await graph.invoke(
+      {
+        ...input,
+        request:
+          "What is protected?",
+      },
+      {
+        configurable: {
+          thread_id:
+            "automated-recovery-status",
+        },
+      },
+    );
+
+  assert.match(
+    result.response ?? "",
+    /Unattended recovery targets/,
+  );
+  assert.match(
+    result.response ?? "",
+    /aws-platform-prod/,
+  );
+  assert.match(
+    result.response ?? "",
+    /coverage=FULL/,
+  );
+  assert.match(
+    result.response ?? "",
+    /verify=VERIFIED/,
+  );
+  assert.match(
+    result.response ?? "",
+    /No cloud changes were made|ACT is disabled/i,
+  );
+});
