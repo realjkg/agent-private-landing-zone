@@ -244,7 +244,8 @@ export async function executeGovernedTool(
     );
   }
 
-  const composite =
+  const composite:
+    SecurityPolicyDecision =
     decisions.length > 0
       ? combine(decisions)
       : {
