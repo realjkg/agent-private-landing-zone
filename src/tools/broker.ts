@@ -1,4 +1,7 @@
 import {
+  emitDebugDiagnostic,
+} from "../debug/context.js";
+import {
   relative,
   resolve,
   sep,
@@ -65,6 +68,20 @@ function blocked(
   request: ToolRequest,
   reason: string,
 ): ToolResult {
+  emitDebugDiagnostic({
+    kind: "TOOL",
+    component: "tool-broker",
+    status: "BLOCKED",
+    detail: reason,
+    attributes: {
+      tool: request.tool,
+      provider:
+        request.provider,
+      engine:
+        request.engine,
+    },
+  });
+
   return {
     tool: request.tool,
     ok: false,

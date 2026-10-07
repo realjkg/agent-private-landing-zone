@@ -2,11 +2,20 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  runAgentKernel,
+} from "../src/agent/graph.js";
+import {
   redactDebugText,
 } from "../src/debug/report.js";
 import {
+  withDebugDiagnosticContext,
+} from "../src/debug/context.js";
+import {
   runDebugDiagnostic,
 } from "../src/debug/run.js";
+import {
+  runRecoveryCommand,
+} from "../src/session/recovery.js";
 
 const fixtureModels = [
   {
@@ -57,6 +66,10 @@ test("debug mode cannot bypass operator prompt governance", async () => {
   assert.equal(
     report.policy.allowed,
     false,
+  );
+  assert.equal(
+    report.knowledge.state,
+    "POLICY_BLOCKED",
   );
   assert.equal(
     report.actEnabled,
@@ -139,5 +152,139 @@ test("debug redaction removes common secret assignments and bearer values", () =
   assert.match(
     value,
     /REDACTED/,
+  );
+});
+
+
+test("debug fixture proves SQLite checkpoint continuation with one correlation ID", async () => {
+  const report =
+    await runDebugDiagnostic({
+      request:
+        "Review this AWS landing zone security posture.",
+      provider: "AWS",
+      engine: "TERRAFORM",
+      mock: "brownfield",
+      fixture: true,
+      models:
+        fixtureModels,
+    });
+
+  assert.equal(
+    report.checkpoint.status,
+    "OK",
+  );
+  assert.equal(
+    report.checkpoint
+      .continued,
+    true,
+  );
+  assert.equal(
+    report.checkpoint
+      .threadId,
+    report.runId,
+  );
+  assert.equal(
+    report.diagnostics.every(
+      (event) =>
+        event.runId ===
+        report.runId,
+    ),
+    true,
+  );
+  assert.equal(
+    report.diagnostics.some(
+      (event) =>
+        event.kind ===
+          "CHECKPOINT" &&
+        event.status ===
+          "OK",
+    ),
+    true,
+  );
+});
+
+test("debug reports structured-output failure as zero-retry fail-closed behavior", async () => {
+  const report =
+    await runDebugDiagnostic({
+      request:
+        "Review this AWS landing zone security posture.",
+      provider: "AWS",
+      engine: "TERRAFORM",
+      mock: "brownfield",
+      fixture: true,
+      models:
+        fixtureModels,
+      runKernel: async (
+        options,
+      ) =>
+        runAgentKernel({
+          ...options,
+          thinker: async () => {
+            throw new Error(
+              "INVALID_MODEL_OUTPUT: topRisk",
+            );
+          },
+        }),
+    });
+
+  assert.equal(
+    report.phase,
+    "FAILED",
+  );
+  assert.equal(
+    report.reasoning.schema
+      .status,
+    "FAILED",
+  );
+  assert.equal(
+    report.reasoning.schema
+      .retryCount,
+    0,
+  );
+  assert.equal(
+    report.reasoning.schema
+      .fallback,
+    "FAIL_CLOSED",
+  );
+  assert.equal(
+    report.action.executed,
+    false,
+  );
+  assert.equal(
+    report.action
+      .mutationObserved,
+    false,
+  );
+});
+
+
+test("recovery commands inherit the active debug correlation ID", async () => {
+  const captured =
+    await withDebugDiagnosticContext(
+      "debug-recovery-correlation",
+      async () =>
+        runRecoveryCommand({
+          command:
+            "RECOVERY_STATUS",
+          artifacts: {},
+        }),
+    );
+
+  assert.match(
+    captured.value.response,
+    /ACT is disabled/i,
+  );
+  assert.equal(
+    captured.events.some(
+      (event) =>
+        event.kind ===
+          "RECOVERY" &&
+        event.runId ===
+          "debug-recovery-correlation" &&
+        event.attributes
+          .command ===
+          "RECOVERY_STATUS",
+    ),
+    true,
   );
 });

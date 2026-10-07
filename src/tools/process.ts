@@ -1,5 +1,8 @@
 import { spawnSync } from "node:child_process";
 
+import {
+  emitDebugDiagnostic,
+} from "../debug/context.js";
 import type { ToolResult } from "./types.js";
 
 export function runAllowlistedProcess(
@@ -26,7 +29,7 @@ export function runAllowlistedProcess(
     },
   );
 
-  return {
+  const output: ToolResult = {
     tool,
     ok:
       result.status === 0 &&
@@ -42,4 +45,45 @@ export function runAllowlistedProcess(
       Date.now() - startedAt,
     command: [executable, ...args],
   };
+
+  emitDebugDiagnostic({
+    kind: "ADAPTER",
+    component:
+      "allowlisted-process",
+    status: output.ok
+      ? "OK"
+      : "FAILED",
+    durationMs:
+      output.durationMs,
+    detail: output.ok
+      ? undefined
+      : output.stderr,
+    attributes: {
+      tool,
+      commandClass:
+        executable,
+      exitCode:
+        output.exitCode,
+      stdoutBytes:
+        Buffer.byteLength(
+          output.stdout,
+        ),
+      stderrBytes:
+        Buffer.byteLength(
+          output.stderr,
+        ),
+      stdoutExcerpt:
+        output.stdout.slice(
+          0,
+          160,
+        ),
+      stderrExcerpt:
+        output.stderr.slice(
+          0,
+          160,
+        ),
+    },
+  });
+
+  return output;
 }

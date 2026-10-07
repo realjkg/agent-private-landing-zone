@@ -2,6 +2,9 @@ import type {
   AgentState,
 } from "../agent/types.js";
 import {
+  emitDebugDiagnostic,
+} from "../debug/context.js";
+import {
   compareRecoveryDrift,
   createSimulatedRecoveryPoint,
   runSimulatedRestoreDrill,
@@ -33,6 +36,48 @@ export type RecoveryCommandResult =
   RecoverySessionArtifacts & {
     response: string;
   };
+
+function observedRecovery(
+  command: SessionCommand,
+  result: RecoveryCommandResult,
+): RecoveryCommandResult {
+  emitDebugDiagnostic({
+    kind: "RECOVERY",
+    component:
+      "session-recovery",
+    status: "OK",
+    attributes: {
+      command,
+      hasPolicy:
+        Boolean(
+          result.recoveryPolicy,
+        ),
+      hasPoint:
+        Boolean(
+          result.recoveryPoint,
+        ),
+      hasVerification:
+        Boolean(
+          result
+            .recoveryVerification,
+        ),
+      hasDrill:
+        Boolean(
+          result.recoveryDrill,
+        ),
+      hasDrift:
+        Boolean(
+          result.recoveryDrift,
+        ),
+      responseBytes:
+        Buffer.byteLength(
+          result.response,
+        ),
+    },
+  });
+
+  return result;
+}
 
 export function isRecoveryCommand(
   command: SessionCommand,
@@ -575,44 +620,80 @@ export function runRecoveryCommand(input: {
   artifacts: RecoverySessionArtifacts;
 }): RecoveryCommandResult {
   if (!input.state) {
-    return missingAssessment();
+    return observedRecovery(
+      input.command,
+      missingAssessment(),
+    );
   }
 
   switch (input.command) {
     case "RECOVERY_STATUS":
-      return statusResponse(
-        input.state,
-        input.artifacts,
+      return observedRecovery(
+        input.command,
+        statusResponse(
+          input.state,
+          input.artifacts,
+        ),
       );
     case "RECOVERY_PREPARE":
-      return prepareResponse(
-        input.state,
+      return observedRecovery(
+        input.command,
+        prepareResponse(
+          input.state,
+        ),
       );
     case "RECOVERY_VERIFY":
-      return verifyResponse(
-        input.artifacts,
+      return observedRecovery(
+        input.command,
+        verifyResponse(
+          input.artifacts,
+        ),
       );
     case "RECOVERY_DRILL":
-      return drillResponse(
-        input.state,
-        input.artifacts,
+      return observedRecovery(
+        input.command,
+        drillResponse(
+          input.state,
+          input.artifacts,
+        ),
       );
     case "RECOVERY_BLOCKERS":
-      return blockersResponse(
-        input.state,
-        input.artifacts,
+      return observedRecovery(
+        input.command,
+        blockersResponse(
+          input.state,
+          input.artifacts,
+        ),
       );
     case "RECOVERY_DRIFT":
-      return driftResponse(
-        input.state,
-        input.artifacts,
+      return observedRecovery(
+        input.command,
+        driftResponse(
+          input.state,
+          input.artifacts,
+        ),
       );
     case "RECOVERY_NEXT":
-      return nextResponse(
-        input.state,
-        input.artifacts,
+      return observedRecovery(
+        input.command,
+        nextResponse(
+          input.state,
+          input.artifacts,
+        ),
       );
     default:
+      emitDebugDiagnostic({
+        kind: "RECOVERY",
+        component:
+          "session-recovery",
+        status: "FAILED",
+        detail:
+          "unsupported recovery command",
+        attributes: {
+          command:
+            input.command,
+        },
+      });
       throw new Error(
         "RECOVERY_COMMAND_ERROR: unsupported recovery command.",
       );

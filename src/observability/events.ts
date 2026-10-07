@@ -1,3 +1,8 @@
+import {
+  redactDiagnosticValue,
+  sanitizeDiagnosticText,
+} from "./redaction.js";
+
 export type ProductionSignal =
   | "model-latency"
   | "model-restarts"
@@ -25,52 +30,6 @@ export type OperationalEvent = {
     unknown
   >;
 };
-
-const SENSITIVE_KEY =
-  /(secret|password|token|authorization|api[_-]?key|access[_-]?key|private[_-]?key|credential)/i;
-
-function redactValue(
-  value: unknown,
-  key = "",
-): unknown {
-  if (
-    key &&
-    SENSITIVE_KEY.test(key)
-  ) {
-    return "[REDACTED]";
-  }
-
-  if (Array.isArray(value)) {
-    return value.map(
-      (item) =>
-        redactValue(item),
-    );
-  }
-
-  if (
-    value &&
-    typeof value === "object"
-  ) {
-    return Object.fromEntries(
-      Object.entries(
-        value as Record<
-          string,
-          unknown
-        >,
-      ).map(
-        ([childKey, child]) => [
-          childKey,
-          redactValue(
-            child,
-            childKey,
-          ),
-        ],
-      ),
-    );
-  }
-
-  return value;
-}
 
 export function createOperationalEvent(input: {
   signal: ProductionSignal;
@@ -104,15 +63,13 @@ export function createOperationalEvent(input: {
     ...(input.detail
       ? {
           detail:
-            String(
-              redactValue(
-                input.detail,
-              ),
+            sanitizeDiagnosticText(
+              input.detail,
             ),
         }
       : {}),
     attributes:
-      redactValue(
+      redactDiagnosticValue(
         input.attributes ?? {},
       ) as Record<
         string,

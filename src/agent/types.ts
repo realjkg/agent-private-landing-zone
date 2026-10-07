@@ -141,6 +141,7 @@ export type AgentProgressReporter = (
 ) => void;
 
 export type AgentKernelOptions = {
+  requestId?: string;
   request: string;
   provider: Provider;
   engine: IaCEngine;
