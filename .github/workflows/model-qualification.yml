@@ -241,7 +241,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: production-private-model-qualification-${{ inputs.target_hardware_id }}
-          path: .runs/model-qualification/**
+          path: .runs/model-qualification/*.json
           if-no-files-found: warn
           retention-days: 30
 
