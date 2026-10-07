@@ -9,6 +9,9 @@ import type {
 import type {
   RecoveryArtifactKind,
 } from "./types.js";
+import type {
+  RecoveryMetadata,
+} from "./profile/types.js";
 
 export type RecoveryScopeType =
   | "AWS_ORGANIZATION"
@@ -65,6 +68,7 @@ export type RecoveryTargetSpec = {
     offlineCopy: "REQUIRED" | "OPTIONAL";
   };
   capabilityRequests: SovereignCapability[];
+  recoveryMetadata?: RecoveryMetadata;
 };
 
 export type RecoveryTargetValidation = {
