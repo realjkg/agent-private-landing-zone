@@ -328,7 +328,10 @@ function knowledge(
         policy.boundary,
         policy.reason,
       ].map(
-        sanitizeDiagnosticText,
+        (reason) =>
+          sanitizeDiagnosticText(
+            reason,
+          ),
       ),
     };
   }
