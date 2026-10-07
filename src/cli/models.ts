@@ -1,4 +1,12 @@
 import {
+  mkdirSync,
+  writeFileSync,
+} from "node:fs";
+import {
+  resolve,
+} from "node:path";
+
+import {
   loadConfig,
 } from "../config.js";
 import {
@@ -11,6 +19,13 @@ import {
 import {
   qualifyDefaultModelStack,
 } from "../models/stack-qualification.js";
+import {
+  getLocalModelMetadata,
+} from "../ollama.js";
+import {
+  PROMPT_POLICY_VERSION,
+  promptPolicyHash,
+} from "../security/prompt-governance.js";
 
 const args =
   process.argv.slice(2);
@@ -85,45 +100,115 @@ if (command === "list") {
     "Ollama " +
       cfg.ollamaBaseUrl,
   );
+  console.log(
+    "Prompt policy " +
+      PROMPT_POLICY_VERSION +
+      " " +
+      promptPolicyHash().slice(
+        0,
+        16,
+      ) +
+      "…",
+  );
   console.log();
 
   let failed = false;
+  const records: unknown[] = [];
 
   for (
     const target of targets
   ) {
-    const result =
-      await qualifyModel(
-        cfg.ollamaBaseUrl,
-        target.model,
-      );
+    try {
+      const metadata =
+        await getLocalModelMetadata(
+          cfg.ollamaBaseUrl,
+          target.model,
+        );
+      const result =
+        await qualifyModel(
+          cfg.ollamaBaseUrl,
+          target.model,
+        );
 
-    console.log(
-      (result.passed
-        ? "PASS "
-        : "FAIL ") +
-        target.model,
-    );
-
-    for (
-      const item of
-      result.checks
-    ) {
       console.log(
-        "  " +
-          (item.passed
-            ? "✓ "
-            : "✗ ") +
-          item.name +
-          (item.passed
-            ? ""
-            : " — " +
-              item.detail),
+        (result.passed
+          ? "PASS "
+          : "FAIL ") +
+          target.model +
+          " " +
+          metadata.digest.slice(
+            0,
+            12,
+          ),
       );
-    }
 
-    if (!result.passed) {
+      for (
+        const item of
+        result.checks
+      ) {
+        console.log(
+          "  " +
+            (item.passed
+              ? "✓ "
+              : "✗ ") +
+            item.name +
+            (item.passed
+              ? ""
+              : " — " +
+                item.detail),
+        );
+      }
+
+      records.push({
+        model: target.model,
+        role: target.role,
+        required:
+          target.required,
+        digest:
+          metadata.digest,
+        size:
+          metadata.size,
+        modifiedAt:
+          metadata.modifiedAt,
+        policyVersion:
+          result.policyVersion,
+        policyHash:
+          result.policyHash,
+        passed:
+          result.passed,
+        checks:
+          result.checks,
+      });
+
+      if (!result.passed) {
+        failed = true;
+      }
+    } catch (error) {
       failed = true;
+      const detail =
+        error instanceof Error
+          ? error.message
+          : "qualification failed";
+
+      console.log(
+        "FAIL " +
+          target.model +
+          " — " +
+          detail,
+      );
+
+      records.push({
+        model: target.model,
+        role: target.role,
+        required:
+          target.required,
+        policyVersion:
+          PROMPT_POLICY_VERSION,
+        policyHash:
+          promptPolicyHash(),
+        passed: false,
+        error: detail,
+      });
     }
   }
 
@@ -143,13 +228,20 @@ if (command === "list") {
         targetNames.has(model),
     );
 
+  let stackChecks:
+    Awaited<
+      ReturnType<
+        typeof qualifyDefaultModelStack
+      >
+    > = [];
+
   if (hasDefaultStack) {
     console.log();
     console.log(
       "Default stack integration",
     );
 
-    const stackChecks =
+    stackChecks =
       await qualifyDefaultModelStack();
 
     for (
@@ -173,6 +265,61 @@ if (command === "list") {
       }
     }
   }
+
+  const evidence = {
+    generatedAt:
+      new Date().toISOString(),
+    ollamaBaseUrl:
+      cfg.ollamaBaseUrl,
+    policyVersion:
+      PROMPT_POLICY_VERSION,
+    policyHash:
+      promptPolicyHash(),
+    records,
+    stackChecks,
+    passed: !failed,
+  };
+
+  const directory = resolve(
+    ".runs",
+    "model-qualification",
+  );
+  mkdirSync(
+    directory,
+    {
+      recursive: true,
+      mode: 0o700,
+    },
+  );
+
+  const filename =
+    new Date()
+      .toISOString()
+      .replace(/[:.]/g, "-") +
+    ".json";
+  const output =
+    resolve(
+      directory,
+      filename,
+    );
+
+  writeFileSync(
+    output,
+    JSON.stringify(
+      evidence,
+      null,
+      2,
+    ) + "\n",
+    {
+      encoding: "utf8",
+      mode: 0o600,
+    },
+  );
+
+  console.log();
+  console.log(
+    "Evidence " + output,
+  );
 
   if (failed) {
     process.exitCode = 1;
