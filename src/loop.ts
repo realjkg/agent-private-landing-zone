@@ -325,43 +325,42 @@ export async function runAgentLoop(
     }
 
     report("PRIMARY", cfg.primaryModel);
+
+    const rawPrimary = await invokeLocalModel(
+      cfg.ollamaBaseUrl,
+      cfg.primaryModel,
+      primaryMessages,
+      STRUCTURED_MODEL_OPTIONS,
+    );
+
     report("VALIDATING", cfg.validatorModel);
 
-    const [rawPrimary, rawValidator] = await Promise.all([
-      invokeLocalModel(
-        cfg.ollamaBaseUrl,
-        cfg.primaryModel,
-        primaryMessages,
-        STRUCTURED_MODEL_OPTIONS,
-      ),
-
-      invokeLocalModel(
-        cfg.ollamaBaseUrl,
-        cfg.validatorModel,
-        [
-          {
-            role: "system",
-            content: assessmentPrompt(
-              [
-                "You are an independent platform reliability validator.",
-                "Reason independently from SRE, platform engineering,",
-                "security, resilience, and cloud architecture principles.",
-                "Do not attempt to predict or match another engineer's answer.",
-              ].join(" "),
-            ),
-          },
-          {
-            role: "user",
-            content:
-              governedRequest,
-          },
-          ...(evidenceMessage
-            ? [evidenceMessage]
-            : []),
-        ],
-        STRUCTURED_MODEL_OPTIONS,
-      ),
-    ]);
+    const rawValidator = await invokeLocalModel(
+      cfg.ollamaBaseUrl,
+      cfg.validatorModel,
+      [
+        {
+          role: "system",
+          content: assessmentPrompt(
+            [
+              "You are an independent platform reliability validator.",
+              "Reason independently from SRE, platform engineering,",
+              "security, resilience, and cloud architecture principles.",
+              "Do not attempt to predict or match another engineer's answer.",
+            ].join(" "),
+          ),
+        },
+        {
+          role: "user",
+          content:
+            governedRequest,
+        },
+        ...(evidenceMessage
+          ? [evidenceMessage]
+          : []),
+      ],
+      STRUCTURED_MODEL_OPTIONS,
+    );
 
     const primary = validateAssessment(
       extractJson<EngineeringAssessment>(rawPrimary),
