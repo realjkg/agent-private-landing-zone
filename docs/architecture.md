@@ -34,6 +34,24 @@ Models may explain, compare, summarize and recommend. Models are never the sourc
 
 ACT = DISABLED remains a repository invariant.
 
+## Deterministic execution sequence
+
+Repository and orchestration work follows one sequence:
+
+~~~text
+PLAN
+  ↓
+parallel DO lanes with non-overlapping ownership
+  ↓
+CONVERGE / VERIFY
+  ↓
+single ACT boundary
+~~~
+
+PLAN is serialized and authoritative for an iteration. Independent DO lanes may execute in parallel only inside their assigned scopes. CONVERGE/VERIFY is serialized and evidence-driven. A bounded lane failure returns to that DO lane; a changed architecture, policy intent, ownership boundary, or source assumption requires a new PLAN.
+
+ACT is a single authority boundary. For repository engineering it is the controlled integration/merge decision. For infrastructure runtime, ACT remains disabled.
+
 ## What stays deliberately small
 
 The accelerator does not introduce a database, queue, distributed scheduler, mandatory daemon, mandatory container, policy SaaS, OPA SDK, second policy engine, SOC/SIEM, malware product, vault product or network controller.

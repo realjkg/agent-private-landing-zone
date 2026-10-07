@@ -26,6 +26,11 @@ This installs the locked runtime dependencies. After bootstrap, use `./alz` for 
 ./alz inspect azure
 ./alz session aws terraform
 ./alz session azure pulumi
+./alz target init <target-id> <owner> <aws|azure> <scope-id> <startup|enterprise> <development|production> <non-critical|business|critical>
+./alz target check <intent-file>
+./alz target explain <intent-file>
+./alz recovery status [target-file]
+./alz recovery test [target-file]
 ./alz plugins
 ./alz prompts
 ./alz models list
@@ -77,6 +82,27 @@ Starts the secured conversational operator session with local model reasoning:
 ./alz session aws terraform
 ./alz session azure pulumi
 ```
+
+### target
+
+Creates, validates, or explains a small customer recovery intent. Basic initialization uses seven meaningful answers; compiled hashes, leases, policy metadata, and evidence lineage remain internal.
+
+```bash
+./alz target init platform-prod platform-operations aws 123456789012 startup production critical
+./alz target check config/recovery-intents/platform-prod.json
+./alz target explain config/recovery-intents/platform-prod.json
+```
+
+### recovery
+
+Inspects configured recovery targets or performs the non-mutating recovery-test readiness preflight.
+
+```bash
+./alz recovery status config/recovery-targets.json
+./alz recovery test config/recovery-targets.json
+```
+
+A blocked recovery test returns a failing process status for automation. It does not restore or mutate infrastructure.
 
 ### prompts
 
@@ -136,7 +162,9 @@ Runs the package dependency audit. If Trivy is installed locally it also scans t
 
 ## Agent-assisted build sequence
 
-The simulated landing-zone build program is exercised through chat as well as direct adapter invocation.
+The simulated landing-zone build program has been qualified through chat and direct kernel invocation across all eight registered adapters.
+
+The underlying engineering sequence is deterministic: **PLAN → parallel non-overlapping DO → CONVERGE/VERIFY → single ACT boundary**. Infrastructure ACT remains disabled.
 
 A normal guided sequence is:
 
@@ -166,7 +194,7 @@ For simulated adapter qualification, compare the direct adapter result with the 
 | Private/edge attached assets | evidence ingestion | supported | supported | DesignSpec | Ansible and Crossplane preview paths | disabled |
 | Sovereign/disconnected | evidence ingestion | supported | supported | DesignSpec | local/offline preview where adapter dependencies are present | disabled |
 
-Preview support does not mean deployment authority. ACT remains disabled.
+Preview support does not mean deployment authority. Phase E confirmed direct and LangGraph paths materially converge across the eight adapter scenarios while ACT remains disabled.
 
 ## Maintenance
 

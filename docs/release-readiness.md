@@ -1,6 +1,6 @@
 # Release-candidate readiness
 
-This document is the operator handoff for the current release candidate and the next simulated landing-zone build phase.
+This document is the operator handoff for the current release candidate after recovery-foundation, operator-path, and simulated adapter qualification.
 
 ## Current release posture
 
@@ -57,7 +57,7 @@ This keeps parallel workstreams from colliding at code level.
 
 ## Agent-assisted simulated landing-zone builds
 
-After release-candidate readiness closes, the next phase exercises the adapters in parallel using both direct adapter invocation and conversational guidance.
+Phase E is complete. The adapters were exercised as eight parallel logical DO lanes using both direct kernel invocation and LangGraph conversational guidance, followed by one deterministic convergence check.
 
 Each lane follows the same chat sequence:
 
@@ -144,7 +144,7 @@ Every sequence ends with the same authority statement:
 
 ## Adapter lanes
 
-The queued simulated build program covers:
+The completed simulated build program covered:
 
 - Terraform
 - Pulumi
@@ -155,7 +155,7 @@ The queued simulated build program covers:
 - Ansible
 - Crossplane
 
-Each lane gets its own branch and adapter-specific ownership. Shared runtime, policy, catalog, workflow, package, or common ChangeSet files require explicit integration ownership before editing.
+Because the adapter implementations were already merged, qualification used one integration harness with eight non-overlapping logical lanes rather than eight no-op code branches. Shared runtime and authority boundaries were not changed.
 
 ## Comparison requirement
 
@@ -185,5 +185,21 @@ The current phase already produced:
 - fast deterministic PR validation
 - no-collision agent coordination rules
 - manual-only heavyweight release workflows
+- deterministic recovery target/profile compiler and unattended recovery automation
+- explicit AWS/Azure provider-recovery evidence classification
+- operator RC smoke coverage for target/recovery flows
+- completed eight-adapter direct-versus-LangGraph convergence qualification
+- deterministic PLAN → parallel DO → CONVERGE/VERIFY → ACT sequencing
 
 Do not regenerate those artifacts unless the runtime or release decision actually requires fresh evidence.
+
+
+## Current release truth
+
+The current source tree has no open implementation phase after Phase E. Required Qwen/Mistral live qualification evidence remains reusable because the model runtime and prompt-governance contract were not changed by the recovery, operator-smoke, or Phase E qualification work.
+
+Alternative private models remain candidates until they complete the same live model-plus-policy qualification on suitable hardware.
+
+Provider-native backup is never inferred from inventory. It is represented only when explicit provider-recovery evidence is present.
+
+ACT remains disabled.

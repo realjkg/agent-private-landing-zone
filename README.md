@@ -2,7 +2,7 @@
 
 Portable, private and sovereign accelerator for governed agentic infrastructure workflows across AWS, Azure and private/edge environments.
 
-The current implementation is intentionally conservative: it can discover, assess, reason, design toward a delta, generate preview-only fixture candidates, validate evidence and enforce policy boundaries. **ACT remains disabled.**
+The current implementation is intentionally conservative: it can discover, assess, reason, compile governed recovery intent, design toward a delta, generate preview-only candidates across all eight registered adapters, automate recovery evidence/verification workflows, and enforce policy boundaries. **ACT remains disabled.**
 
 ## Five-pillar methodology
 
@@ -13,6 +13,14 @@ DISCOVER → DESIGN → BUILD → GOVERN → MANAGE
 ```
 
 Assess is embedded across the pillars rather than exposed as a sixth pillar.
+
+Engineering and orchestration use one deterministic sequence:
+
+```text
+PLAN → parallel DO → CONVERGE / VERIFY → single ACT boundary
+```
+
+Parallel work is limited to non-overlapping DO scopes. Infrastructure ACT remains disabled.
 
 ### Discover
 
@@ -142,7 +150,7 @@ Manage is intended to continuously evaluate:
 - component health
 - evidence lifecycle
 
-The current resiliency implementation can capture an encrypted configuration recovery manifest. A manifest is not treated as proof of recoverability unless restore evidence exists.
+The resiliency implementation now supports compiled recovery targets, unattended capture/verify/drill/drift cycles, explicit AWS/Azure provider-recovery evidence classification, encrypted evidence, and read-only conversational inspection of automated target state. A manifest is still not treated as a backup, and provider-native recovery is only claimed when explicit provider evidence exists.
 
 ## Operator experience
 
@@ -158,6 +166,11 @@ Day-to-day use is exposed through a small operator launcher rather than npm scri
 ./alz design azure bicep brownfield
 ./alz inspect aws
 ./alz session aws terraform
+./alz target init <target-id> <owner> <aws|azure> <scope-id> <startup|enterprise> <development|production> <non-critical|business|critical>
+./alz target check <intent-file>
+./alz target explain <intent-file>
+./alz recovery status [target-file]
+./alz recovery test [target-file]
 ./alz plugins
 ./alz prompts
 ./alz models list
@@ -258,7 +271,7 @@ ollama pull mistral-nemo
 
 `./alz verify` tests the model qualification harness with deterministic fixtures. `./alz models verify` tests the installed Qwen and Mistral weights against the local Ollama endpoint. Use `./alz models verify --all` to include the optional named models.
 
-See [docs/model-qualification.md](docs/model-qualification.md) for the exact checks.
+See [docs/model-qualification.md](docs/model-qualification.md) for the exact checks. Additional private-model candidates are tracked separately for architecture fit; they are not part of the active runtime until they complete the same qualification contract.
 
 ## Deployment posture
 
@@ -293,4 +306,4 @@ ACT = DISABLED
 
 The repository currently exposes no Terraform apply/destroy, Pulumi up/destroy, CloudFormation execute-change-set, CDK deploy, Bicep deployment, OpenTofu apply, Crossplane mutation, or Ansible non-check execution through the broker.
 
-All eight preview adapters are implemented. ACT remains disabled. Adapter-specific capability grants control what can be previewed, and none of those grants enable deployment or mutation.
+All eight preview adapters are implemented and have completed the Phase E direct-versus-LangGraph simulated convergence qualification. ACT remains disabled. Adapter-specific capability grants control what can be previewed, and none of those grants enable deployment or mutation.
