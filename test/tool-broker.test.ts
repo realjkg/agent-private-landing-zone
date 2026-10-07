@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import {
+  withDebugDiagnosticContext,
+} from "../src/debug/context.js";
 import { executeTool } from "../src/tools/broker.js";
+import {
+  runAllowlistedProcess,
+} from "../src/tools/process.js";
 
 const context = {
   cwd: process.cwd(),
@@ -464,4 +470,84 @@ test("tool broker reduces cloud capability during suspected compromise even with
       /compromise state/i,
     );
   }
+});
+
+
+test("debug context captures tool-broker denial without widening capability", async () => {
+  const captured =
+    await withDebugDiagnosticContext(
+      "debug-tool-denial",
+      async () =>
+        executeTool(
+          {
+            tool:
+              "aws_sts_identity",
+          },
+          context,
+        ),
+    );
+
+  assert.equal(
+    Array.isArray(
+      captured.value,
+    ),
+    false,
+  );
+  assert.equal(
+    captured.events.some(
+      (event) =>
+        event.kind ===
+          "TOOL" &&
+        event.status ===
+          "BLOCKED" &&
+        event.attributes.tool ===
+          "aws_sts_identity",
+    ),
+    true,
+  );
+});
+
+test("debug context captures adapter process exit and sanitized output metadata", async () => {
+  const captured =
+    await withDebugDiagnosticContext(
+      "debug-adapter-process",
+      async () =>
+        runAllowlistedProcess(
+          "terraform_version",
+          process.execPath,
+          ["--version"],
+          process.cwd(),
+        ),
+    );
+
+  assert.equal(
+    captured.value.ok,
+    true,
+  );
+
+  const event =
+    captured.events.find(
+      (candidate) =>
+        candidate.kind ===
+        "ADAPTER",
+    );
+
+  assert.ok(event);
+  assert.equal(
+    event?.status,
+    "OK",
+  );
+  assert.equal(
+    event?.attributes.tool,
+    "terraform_version",
+  );
+  assert.equal(
+    event?.attributes.exitCode,
+    0,
+  );
+  assert.equal(
+    typeof event
+      ?.attributes.stdoutBytes,
+    "number",
+  );
 });
