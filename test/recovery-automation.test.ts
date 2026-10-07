@@ -596,3 +596,57 @@ test("controller resumes prior state without reloading context before the next c
   );
   assert.equal(loads, 0);
 });
+
+
+test("suspected compromise suspends scheduled recovery before context collection", async () => {
+  const context =
+    await recoveryContext(
+      "AWS",
+      "TERRAFORM",
+    );
+  const target =
+    targetFor(context);
+
+  let loads = 0;
+
+  const controller =
+    new RecoveryAutomationController({
+      targets: [target],
+      contextProvider:
+        async () => {
+          loads += 1;
+          return context;
+        },
+      grantedCapabilities: [
+        "EVIDENCE_READ",
+        "EVIDENCE_WRITE",
+      ],
+      compromiseState:
+        "SUSPECTED",
+      persistEvidence: false,
+    });
+
+  const result =
+    await controller.tick(
+      new Date(
+        "2026-10-07T07:00:00.000Z",
+      ),
+    );
+
+  assert.equal(
+    result[0].status,
+    "BLOCKED",
+  );
+  assert.equal(loads, 0);
+  assert.match(
+    result[0].blockers.join(" "),
+    /suspended/i,
+  );
+  assert.ok(
+    result[0].steps.every(
+      (step) =>
+        step.status ===
+        "BLOCKED",
+    ),
+  );
+});
