@@ -103,6 +103,18 @@ test("brownfield DesignSpec preserves read-only ownership and is hashable", asyn
     design.designHash.length,
     64,
   );
+  assert.equal(
+    design.policies.bundleHash.length,
+    64,
+  );
+  assert.equal(
+    design.policies.cost.pillar,
+    "COST",
+  );
+  assert.equal(
+    design.policies.performance.status,
+    "UNKNOWN",
+  );
   assert.ok(
     design.reuse.includes(
       "aws:organizations:o-example",

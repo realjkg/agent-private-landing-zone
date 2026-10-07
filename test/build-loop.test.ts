@@ -3,11 +3,47 @@ import test from "node:test";
 
 import { runBuildLoop } from "../src/build/loop.js";
 import type { RepositoryEvidence } from "../src/build/repository.js";
+import type {
+  PillarName,
+  PillarPolicy,
+  PillarPolicyBundle,
+} from "../src/policy/pillars/types.js";
 
 const cleanRepository: RepositoryEvidence = {
   commitSha: "test-commit",
   clean: true,
   packageLockHash: "test-lock-hash",
+};
+
+function emptyPillar(
+  pillar: PillarName,
+): PillarPolicy {
+  return {
+    pillar,
+    status: "UNKNOWN",
+    requirements: [],
+    controls: [],
+    evidenceRefs: [],
+    unknowns: [],
+  };
+}
+
+const fixturePolicies: PillarPolicyBundle = {
+  version: "1",
+  bundleId: "policy-test",
+  bundleHash:
+    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  security:
+    emptyPillar("SECURITY"),
+  cost: emptyPillar("COST"),
+  resiliency:
+    emptyPillar("RESILIENCY"),
+  reliability:
+    emptyPillar("RELIABILITY"),
+  performance:
+    emptyPillar("PERFORMANCE"),
+  sustainability:
+    emptyPillar("SUSTAINABILITY"),
 };
 
 test("brownfield Terraform build stops before approval", async () => {
@@ -93,6 +129,7 @@ test("Build rejects a DesignSpec that selects a different engine", async () => {
           reuse: [],
           additions: [],
           forbiddenChanges: [],
+          policies: fixturePolicies,
           securityControls: [],
           resiliencyControls: [],
           assumptions: [],

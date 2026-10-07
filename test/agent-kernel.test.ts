@@ -70,6 +70,16 @@ test("brownfield review senses, understands, thinks, plans, and does not act", a
     true,
   );
   assert.equal(
+    state.orchestration?.actEnabled,
+    false,
+  );
+  assert.ok(
+    state.orchestration?.assignments.some(
+      (assignment) =>
+        assignment.role === "COST",
+    ),
+  );
+  assert.equal(
     state.action?.executed,
     false,
   );
@@ -97,6 +107,11 @@ test("build intent creates preview candidate but does not act", async () => {
   assert.equal(
     state.build?.candidate.evidence.designHash,
     state.design?.designHash,
+  );
+  assert.equal(
+    state.build?.candidate.evidence
+      .policyBundleHash,
+    state.design?.policies.bundleHash,
   );
   assert.ok(state.build);
   assert.equal(

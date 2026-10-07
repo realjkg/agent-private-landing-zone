@@ -17,18 +17,16 @@ import type {
 } from "../build/loop.js";
 import type { IaCEngine } from "../build/types.js";
 import type {
+  OrchestrationIntent,
+  OrchestrationPlan,
+} from "../orchestration/types.js";
+import type {
   AgentResult,
   EngineeringAssessment,
   StatusReporter,
 } from "../loop.js";
 
-export type AgentIntent =
-  | "ANSWER"
-  | "DISCOVER"
-  | "ASSESS"
-  | "DESIGN"
-  | "BUILD"
-  | "CHANGE";
+export type AgentIntent = OrchestrationIntent;
 
 export type AgentPhase =
   | "RECEIVED"
@@ -107,6 +105,7 @@ export type AgentState = {
   intent: AgentIntent;
   provider: Provider;
   engine: IaCEngine;
+  orchestration?: OrchestrationPlan;
   mock?: MockScenario;
   environment?: EnvironmentState;
   postureAssessment?: DiscoveryAssessment;

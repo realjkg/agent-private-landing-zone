@@ -18,6 +18,9 @@ import type {
   DiscoveryAssessment,
 } from "../assessment/types.js";
 import {
+  createPillarPolicyBundle,
+} from "../policy/pillars/baseline.js";
+import {
   selectDesignPlugin,
 } from "./select-plugin.js";
 import type {
@@ -37,6 +40,12 @@ export function createDesignSpec(input: {
     input.objective,
     input.engine,
   );
+
+  const policies =
+    createPillarPolicyBundle({
+      environment: input.environment,
+      assessment: input.assessment,
+    });
 
   const entries =
     input.delta.decisions.map(
@@ -135,6 +144,8 @@ export function createDesignSpec(input: {
     "recovery:" +
       input.assessment.recoverySnapshot
         .configurationHash,
+    "policy:" +
+      policies.bundleHash,
   ];
 
   const blocked =
@@ -168,6 +179,7 @@ export function createDesignSpec(input: {
     additions,
     forbiddenChanges:
       [...forbiddenChanges].sort(),
+    policies,
     securityControls,
     resiliencyControls,
     assumptions,

@@ -3,6 +3,9 @@ import { randomUUID } from "node:crypto";
 import { runBuildLoop } from "../build/loop.js";
 import { createDesignSpec } from "../design/create.js";
 import {
+  createOrchestrationPlan,
+} from "../orchestration/plan.js";
+import {
   hasIaCAdapter,
 } from "../iac/index.js";
 import { act } from "./act.js";
@@ -29,20 +32,48 @@ export async function runAgentKernel(
   const progress =
     options.progress ?? (() => {});
 
+  const requestId = randomUUID();
+  const intent =
+    classifyIntent(options.request);
+  const orchestration =
+    createOrchestrationPlan({
+      taskId: "task:" + requestId,
+      requestId,
+      request: options.request,
+      intent,
+      provider: options.provider,
+      engine: options.engine,
+      evidenceRefs: [],
+    });
+
   let state: AgentState = {
-    requestId: randomUUID(),
+    requestId,
     request: options.request,
     startedAt,
     phase: "RECEIVED",
-    intent: classifyIntent(options.request),
+    intent,
     provider: options.provider,
     engine: options.engine,
+    orchestration,
     mock: options.mock,
     events: [
       {
         at: startedAt,
         phase: "RECEIVED",
         event: "REQUEST_RECEIVED",
+      },
+      {
+        at: startedAt,
+        phase: "RECEIVED",
+        event: "ORCHESTRATION_PLANNED",
+        detail:
+          orchestration.assignments
+            .map(
+              (assignment) =>
+                assignment.role,
+            )
+            .join(" → ") ||
+          "No specialist routing required.",
       },
     ],
   };
