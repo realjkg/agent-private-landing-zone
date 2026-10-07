@@ -183,8 +183,8 @@ function statusResponse(
   );
 
   return {
-    recoveryPolicy: policy,
     ...artifacts,
+    recoveryPolicy: policy,
     response: lines.join("\n"),
   };
 }
@@ -250,6 +250,9 @@ function prepareResponse(
   return {
     recoveryPolicy: policy,
     recoveryPoint: point,
+    recoveryVerification: undefined,
+    recoveryDrill: undefined,
+    recoveryDrift: undefined,
     response: lines.join("\n"),
   };
 }
@@ -401,8 +404,8 @@ function blockersResponse(
   ];
 
   return {
-    recoveryPolicy: policy,
     ...artifacts,
+    recoveryPolicy: policy,
     response: [
       "Recovery readiness is constrained by deterministic evidence gaps.",
       ...listLines(
