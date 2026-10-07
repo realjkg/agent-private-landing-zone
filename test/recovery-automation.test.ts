@@ -20,6 +20,9 @@ import {
   type RecoveryAutomationContext,
 } from "../src/recovery/automation.js";
 import {
+  parseRecoveryTargets,
+} from "../src/recovery/target-loader.js";
+import {
   validateRecoveryTarget,
   type RecoveryTargetSpec,
 } from "../src/recovery/target.js";
@@ -516,5 +519,21 @@ test("automation blocks rather than self-granting missing target capabilities", 
   assert.equal(
     result.steps.length,
     0,
+  );
+});
+
+
+test("target loader rejects incomplete automation inputs before scheduling", () => {
+  assert.throws(
+    () =>
+      parseRecoveryTargets([
+        {
+          targetId: "bad-target",
+          enabled: true,
+          owner: "ops",
+          provider: "AWS"
+        },
+      ]),
+    /scope|source|schedule|objectives/i,
   );
 });
