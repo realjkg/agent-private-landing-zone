@@ -153,6 +153,7 @@ function collectInstalledReleaseEvidence():
         sha256(
           readFileSync(
             target,
+            "utf8",
           ),
         );
 
