@@ -1,0 +1,119 @@
+apiVersion: alz.io/production-qualification/v1
+kind: ProductionDeploymentContract
+
+metadata:
+  id: ALZ-PRODUCTION-PREVIEW-OPERATE
+  version: 1.0.0
+  phase: PRODUCTION_QUALIFICATION
+
+spec:
+  operatingMode: PREVIEW_OPERATE
+  infrastructureMutation: DISABLED
+
+  supportedHosts:
+    classes:
+      - LINUX_AMD64
+      - LINUX_ARM64
+      - PRIVATE_CLOUD_VM
+      - SOVEREIGN_EDGE
+    requiredCapabilities:
+      - encrypted-local-storage
+      - process-isolation
+      - outbound-allowlisting
+      - local-model-runtime
+
+  identity:
+    longLivedCloudCredentials: PROHIBITED
+    aws:
+      modes:
+        - WORKLOAD_IDENTITY
+        - FEDERATED_IDENTITY
+        - ASSUME_ROLE
+    azure:
+      modes:
+        - MANAGED_IDENTITY
+        - WORKLOAD_IDENTITY
+        - FEDERATED_IDENTITY
+    secretMaterial:
+      modelVisibility: PROHIBITED
+      opaqueReferencesRequired: true
+
+  securityPolicy:
+    defaultEvaluator: BUILTIN
+    optionalEvaluator: LOCAL_OPA
+    remoteOpaEndpointAllowed: false
+    failClosedWhenOpaEnabled: true
+    builtinOpaParityRequired: true
+    pinnedOpaVersionRequiredForQualification: true
+
+  evidence:
+    encrypted: true
+    location: CUSTOMER_CONTROLLED
+    hashLinked: true
+    retentionFromRecoveryPolicy: true
+    centralControlCanDecryptCustomerRecoveryData: false
+
+  providers:
+    aws:
+      realEnvironmentQualification: required
+      operatingModes:
+        - READ_ONLY_DISCOVERY
+        - GOVERNED_PREVIEW
+    azure:
+      realEnvironmentQualification: required
+      operatingModes:
+        - READ_ONLY_DISCOVERY
+        - GOVERNED_PREVIEW
+    private:
+      operatingModes:
+        - LOCAL_DISCOVERY
+        - GOVERNED_PREVIEW
+
+  models:
+    runtime: LOCAL
+    qualificationOnTargetHardware: required
+    requirements:
+      - structured-output
+      - restart-recovery
+      - memory-pressure-handling
+      - long-running-graph-execution
+      - validator-independence
+      - no-cloud-inference-dependency
+
+  recovery:
+    infrastructureRecovery: required
+    controlPlaneRecovery: required
+    isolatedRestoreVerification: required
+    objectivesFromTargetProfile: true
+
+  packaging:
+    versionedArtifact: required
+    cleanInstall: required
+    upgrade: required
+    rollback: required
+    uninstall: required
+    configurationMigration: required
+    sbom: required
+    provenance: required
+    integrityVerification: required
+
+  observability:
+    structuredLogs: required
+    healthEndpoint: required
+    readinessEndpoint: required
+    signals:
+      - model-latency
+      - model-restarts
+      - adapter-failures
+      - policy-denials
+      - provider-discovery-health
+      - recovery-state
+      - recovery-objective-status
+      - evidence-lifecycle
+    secretRedaction: required
+
+  release:
+    qualificationRequired: true
+    actEnabled: false
+    genericCloudWriteCredentials: prohibited
+    genericIacApply: prohibited
