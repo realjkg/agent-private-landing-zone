@@ -1,5 +1,6 @@
 import {
   mkdirSync,
+  readFileSync,
   readdirSync,
   writeFileSync,
 } from "node:fs";
@@ -8,6 +9,7 @@ import {
 } from "node:child_process";
 import {
   resolve,
+  sep,
 } from "node:path";
 import {
   fileURLToPath,
@@ -15,12 +17,49 @@ import {
 import {
   promptGuide,
 } from "../session/help.js";
+import {
+  parseRecoveryTargets,
+} from "../recovery/target-loader.js";
+import {
+  explainRecoveryIntent,
+  parseRecoveryTargetIntent,
+  recoveryIntentFromAnswers,
+  recoveryTargetStatus,
+  recoveryTestReadiness,
+} from "../recovery/profile/operator.js";
 
 const root = resolve(
   fileURLToPath(
     new URL("../..", import.meta.url),
   ),
 );
+
+function workspacePath(
+  value: string,
+): string {
+  const path = resolve(
+    root,
+    value,
+  );
+
+  if (
+    path !== root &&
+    !path.startsWith(
+      root + sep,
+    )
+  ) {
+    throw new Error(
+      [
+        "Problem: path escapes the accelerator workspace.",
+        "Recommended fix: use a file path inside the repository.",
+        "Safe alternative: copy the target file into config/ and retry.",
+        "No infrastructure changes were made.",
+      ].join("\n"),
+    );
+  }
+
+  return path;
+}
 
 function localBin(
   name: string,
@@ -119,6 +158,21 @@ function help(): void {
   );
   console.log(
     "  ./alz session [aws|azure] [terraform|pulumi|opentofu|bicep|cloudformation|cdk|crossplane|ansible]",
+  );
+  console.log(
+    "  ./alz target init <target-id> <owner> <aws|azure> <scope-id> <startup|enterprise> <development|production> <non-critical|business|critical> [--compliance=PACK@1,...]",
+  );
+  console.log(
+    "  ./alz target check <intent-file>",
+  );
+  console.log(
+    "  ./alz target explain <intent-file>",
+  );
+  console.log(
+    "  ./alz recovery status [target-file]",
+  );
+  console.log(
+    "  ./alz recovery test [target-file]",
   );
   console.log("  ./alz doctor");
   console.log("  ./alz verify");
@@ -287,12 +341,15 @@ function scan(): void {
   );
 }
 
+const argv =
+  process.argv.slice(2);
+
 const [
   command = "help",
   first,
   second,
   third,
-] = process.argv.slice(2);
+] = argv;
 
 try {
   if (
@@ -390,6 +447,187 @@ try {
         e,
       ],
     );
+  } else if (command === "target") {
+    if (first === "init") {
+      const answers =
+        argv.slice(2, 9);
+      const complianceFlag =
+        argv
+          .slice(9)
+          .find((value) =>
+            value.startsWith(
+              "--compliance=",
+            ),
+          );
+      const compliancePacks =
+        complianceFlag
+          ? complianceFlag
+              .slice(
+                "--compliance=".length,
+              )
+              .split(",")
+              .filter(Boolean)
+          : [];
+
+      const intent =
+        recoveryIntentFromAnswers(
+          answers,
+          compliancePacks,
+        );
+      const directory =
+        resolve(
+          root,
+          "config",
+          "recovery-intents",
+        );
+
+      mkdirSync(
+        directory,
+        {
+          recursive: true,
+          mode: 0o700,
+        },
+      );
+
+      const path =
+        resolve(
+          directory,
+          intent.targetId +
+            ".json",
+        );
+
+      writeFileSync(
+        path,
+        JSON.stringify(
+          intent,
+          null,
+          2,
+        ) + "\n",
+        {
+          encoding: "utf8",
+          mode: 0o600,
+        },
+      );
+
+      console.log(
+        "Target intent saved: " +
+          path,
+      );
+      console.log(
+        "No infrastructure changes were made.",
+      );
+    } else if (
+      first === "check" ||
+      first === "explain"
+    ) {
+      if (!second) {
+        throw new Error(
+          [
+            "Problem: an intent file is required.",
+            "Recommended fix: provide a JSON file created by ./alz target init.",
+            "Safe alternative: run ./alz target init to create one.",
+            "No infrastructure changes were made.",
+          ].join("\n"),
+        );
+      }
+
+      const path =
+        workspacePath(second);
+      const intent =
+        parseRecoveryTargetIntent(
+          JSON.parse(
+            readFileSync(
+              path,
+              "utf8",
+            ),
+          ) as unknown,
+        );
+
+      if (first === "check") {
+        console.log(
+          "Target intent is valid.",
+        );
+        console.log(
+          "Ready for deterministic compilation when approved design and provider-edge destination evidence are available.",
+        );
+        console.log(
+          "No infrastructure changes were made.",
+        );
+      } else {
+        console.log();
+        console.log(
+          explainRecoveryIntent(
+            intent,
+          ),
+        );
+        console.log();
+        console.log(
+          "No infrastructure changes were made.",
+        );
+      }
+    } else {
+      throw new Error(
+        [
+          "Problem: unknown target command.",
+          "Recommended fix: use target init, target check, or target explain.",
+          "Safe alternative: run ./alz help.",
+          "No infrastructure changes were made.",
+        ].join("\n"),
+      );
+    }
+  } else if (
+    command === "recovery"
+  ) {
+    if (
+      first !== "status" &&
+      first !== "test"
+    ) {
+      throw new Error(
+        [
+          "Problem: unknown recovery command.",
+          "Recommended fix: use recovery status or recovery test.",
+          "Safe alternative: use the conversational recovery workflow for explanation.",
+          "No infrastructure changes were made.",
+        ].join("\n"),
+      );
+    }
+
+    const targetFile =
+      workspacePath(
+        second ??
+          process.env
+            .AGENTIC_RECOVERY_TARGETS_FILE ??
+          "config/recovery-targets.json",
+      );
+
+    const targets =
+      parseRecoveryTargets(
+        JSON.parse(
+          readFileSync(
+            targetFile,
+            "utf8",
+          ),
+        ) as unknown,
+      );
+
+    for (const target of
+      targets) {
+      const result =
+        first === "status"
+          ? recoveryTargetStatus(
+              target,
+            )
+          : recoveryTestReadiness(
+              target,
+            );
+
+      console.log();
+      console.log(
+        result.lines.join(
+          "\n",
+        ),
+      );
+    }
   } else if (command === "doctor") {
     runTs("src/cli/security.ts");
     runTs("src/cli/plugins.ts");
