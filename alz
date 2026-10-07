@@ -2,22 +2,29 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
+DIST="$ROOT/dist/cli/operator.js"
 TSX="$ROOT/node_modules/.bin/tsx"
 
 if [[ "${1:-}" == "bootstrap" ]]; then
   cd "$ROOT"
   echo "Bootstrapping Agent Private Landing Zone from the locked dependency graph..."
   npm ci
+  npm run build
   echo
   echo "Ready. Run ./alz doctor"
   exit 0
 fi
 
-if [[ ! -x "$TSX" ]]; then
-  echo "Agent Private Landing Zone is not bootstrapped."
-  echo "Run: ./alz bootstrap"
-  exit 2
+cd "$ROOT"
+
+if [[ -f "$DIST" ]]; then
+  exec node "$DIST" "$@"
 fi
 
-cd "$ROOT"
-exec "$TSX" "$ROOT/src/cli/operator.ts" "$@"
+if [[ -x "$TSX" ]]; then
+  exec "$TSX" "$ROOT/src/cli/operator.ts" "$@"
+fi
+
+echo "Agent Private Landing Zone is not bootstrapped."
+echo "Run: ./alz bootstrap"
+exit 2
