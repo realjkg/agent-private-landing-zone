@@ -34,6 +34,7 @@ function renderArgs(
   input?: AdapterInput,
 ): string[] {
   return [
+    "composition",
     "render",
     workspaceFile(
       cwd,
@@ -66,27 +67,30 @@ export const crossplaneAdapter: IaCAdapter = {
   },
 
   validate(context, input) {
+    const extensions =
+      workspaceFile(
+        context.cwd,
+        input?.extensionsPath,
+        "extensionsPath",
+      );
     const manifest =
-      input?.manifestPath
-        ? workspaceFile(
-            context.cwd,
-            input.manifestPath,
-            "manifestPath",
-          )
-        : workspaceFile(
-            context.cwd,
-            input?.compositionPath,
-            "compositionPath",
-          );
+      workspaceFile(
+        context.cwd,
+        input?.manifestPath,
+        "manifestPath",
+      );
 
     return [
       runAllowlistedProcess(
         "crossplane_validate",
         "crossplane",
         [
-          "beta",
+          "resource",
           "validate",
+          extensions,
           manifest,
+          "--output",
+          "json",
         ],
         context.cwd,
       ),
