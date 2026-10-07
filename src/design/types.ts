@@ -8,6 +8,9 @@ import type {
 import type {
   PluginDefinition,
 } from "../plugins/catalog.js";
+import type {
+  PillarPolicyBundle,
+} from "../policy/pillars/types.js";
 
 export type DesignStatus =
   | "PROPOSED"
@@ -55,6 +58,7 @@ export type DesignSpec = {
   reuse: string[];
   additions: string[];
   forbiddenChanges: string[];
+  policies: PillarPolicyBundle;
   securityControls: string[];
   resiliencyControls: string[];
   assumptions: string[];
