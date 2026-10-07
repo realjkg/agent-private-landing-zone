@@ -145,11 +145,37 @@ export function compileRecoveryTarget(
     );
   }
 
+  const selectedPacks =
+    intent.compliancePacks ?? [];
+
+  const complianceOverlays =
+    selectedPacks.map(
+      (pack) => {
+        const overlay =
+          context
+            .complianceOverlays?.[
+              pack
+            ];
+
+        if (!overlay) {
+          throw new Error(
+            "RECOVERY_PROFILE_BLOCKED: compliance pack " +
+              pack +
+              " has no installed overlay.",
+          );
+        }
+
+        return overlay;
+      },
+    );
+
   const continuity =
     composeContinuityProfile(
       intent.organization,
       intent.environment,
       intent.criticality,
+      complianceOverlays,
+      context.authorizedOverrides,
     );
 
   const selection = {
@@ -160,7 +186,7 @@ export function compileRecoveryTarget(
     criticality:
       intent.criticality,
     compliancePacks:
-      intent.compliancePacks ?? [],
+      selectedPacks,
   };
 
   const policyIntent = {
@@ -226,6 +252,11 @@ export function compileRecoveryTarget(
         true as const,
       failClosedOnHashMismatch:
         true as const,
+    },
+    dataBoundary: {
+      productionDataAllowed:
+        intent.environment ===
+        "PRODUCTION",
     },
     policy: {
       evaluator:
@@ -297,10 +328,10 @@ export function compileRecoveryTarget(
       ),
     evidenceDestination: {
       kind:
-        "EXTERNAL_ENCRYPTED_STORE" as const,
-      locationRef:
-        context
-          .destinationTargetRef,
+        "LOCAL_ENCRYPTED_VAULT" as const,
+      namespace:
+        "recovery-" +
+        intent.targetId,
     },
     schedule: {
       captureEveryMinutes:
