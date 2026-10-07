@@ -42,7 +42,7 @@
     "models:verify": "tsx src/cli/models.ts verify"
   },
   "devDependencies": {
-    "@types/node": "^24.0.0",
+    "@types/node": "^26.6.4",
     "tsx": "^4.20.0",
     "typescript": "^5.9.0"
   },
