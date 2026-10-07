@@ -139,6 +139,8 @@ export type DebugReport = {
       | "AVAILABLE_EVIDENCE";
     assumptionCount: number;
     evidenceRefs: string[];
+    conflictCount: number;
+    knownEvidenceConflict: boolean;
     unsupportedClaimRisk:
       | "NONE_OBSERVED"
       | "REVIEW_REQUIRED";
@@ -228,6 +230,53 @@ function evidenceRefs(
     );
   }
 
+  for (
+    const item of
+    state.environment
+      ?.evidence ?? []
+  ) {
+    refs.add(
+      redactDebugText(
+        "environment:" +
+          item.source +
+          ":" +
+          item.key,
+      ),
+    );
+  }
+
+  for (
+    const item of
+    state.environment
+      ?.scannerObservations ??
+    []
+  ) {
+    refs.add(
+      redactDebugText(
+        "scanner:" +
+          item.scanner +
+          ":" +
+          item.id,
+      ),
+    );
+  }
+
+  for (
+    const item of
+    state.environment
+      ?.resiliencyObservations ??
+    []
+  ) {
+    refs.add(
+      redactDebugText(
+        "resiliency:" +
+          item.source +
+          ":" +
+          item.key,
+      ),
+    );
+  }
+
   return [...refs].slice(0, 50);
 }
 
@@ -237,6 +286,11 @@ function grounding(
 ): DebugReport["grounding"] {
   const assessment =
     state.assessment;
+  const conflictCount =
+    state.environment
+      ?.conflicts.length ?? 0;
+  const knownEvidenceConflict =
+    conflictCount > 0;
 
   if (!assessment) {
     return {
@@ -244,8 +298,12 @@ function grounding(
         "NOT_EVALUATED",
       assumptionCount: 0,
       evidenceRefs: refs,
+      conflictCount,
+      knownEvidenceConflict,
       unsupportedClaimRisk:
-        "NONE_OBSERVED",
+        knownEvidenceConflict
+          ? "REVIEW_REQUIRED"
+          : "NONE_OBSERVED",
     };
   }
 
@@ -268,6 +326,8 @@ function grounding(
         "EVIDENCE_REQUIRED",
       assumptionCount,
       evidenceRefs: refs,
+      conflictCount,
+      knownEvidenceConflict,
       unsupportedClaimRisk:
         "REVIEW_REQUIRED",
     };
@@ -283,6 +343,8 @@ function grounding(
         "ENVIRONMENT_UNKNOWN",
       assumptionCount,
       evidenceRefs: refs,
+      conflictCount,
+      knownEvidenceConflict,
       unsupportedClaimRisk:
         "REVIEW_REQUIRED",
     };
@@ -299,6 +361,8 @@ function grounding(
         "ASSUMPTIONS_PRESENT",
       assumptionCount,
       evidenceRefs: refs,
+      conflictCount,
+      knownEvidenceConflict,
       unsupportedClaimRisk:
         "REVIEW_REQUIRED",
     };
@@ -309,8 +373,12 @@ function grounding(
       "AVAILABLE_EVIDENCE",
     assumptionCount: 0,
     evidenceRefs: refs,
+    conflictCount,
+    knownEvidenceConflict,
     unsupportedClaimRisk:
-      "NONE_OBSERVED",
+      knownEvidenceConflict
+        ? "REVIEW_REQUIRED"
+        : "NONE_OBSERVED",
   };
 }
 
@@ -369,7 +437,10 @@ function knowledge(
       assumptions.length > 0 ||
       assessment.status ===
         "ABSTAIN" ||
-      refs.length === 0
+      refs.length === 0 ||
+      (state.environment
+        ?.conflicts.length ??
+        0) > 0
     )
   ) {
     return {
@@ -390,6 +461,13 @@ function knowledge(
         ...(refs.length === 0
           ? [
               "no explicit evidence references are attached to the model-backed assessment",
+            ]
+          : []),
+        ...((state.environment
+          ?.conflicts.length ??
+          0) > 0
+          ? [
+              "discovery evidence contains unresolved conflicts",
             ]
           : []),
       ],
