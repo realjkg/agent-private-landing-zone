@@ -11,6 +11,7 @@ import {
   RecoveryAutomationController,
   createDiscoveryRecoveryContextProvider,
   loadRecoveryAutomationState,
+  type RecoveryAutomationState,
   type RecoveryDesignResolver,
 } from "./automation.js";
 import {
@@ -79,9 +80,8 @@ export async function createRecoveryAutomationService(
     ).filter(
       (
         state,
-      ): state is NonNullable<
-        typeof state
-      > => Boolean(state),
+      ): state is RecoveryAutomationState =>
+        Boolean(state),
     );
 
   return new RecoveryAutomationController({
