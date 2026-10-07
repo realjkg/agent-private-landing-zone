@@ -8,8 +8,28 @@ on:
         required: true
         default: "release-candidate"
         type: string
+      production_target:
+        description: "Run the final gate on a repository self-hosted target"
+        required: false
+        default: false
+        type: boolean
+      target_hardware_id:
+        description: "Stable non-secret identifier for the target hardware profile"
+        required: false
+        default: ""
+        type: string
+      target_accelerator:
+        description: "Accelerator description for evidence, or UNKNOWN"
+        required: false
+        default: "UNKNOWN"
+        type: string
+      long_run_turns:
+        description: "Bounded multi-turn LangGraph workload (minimum 4)"
+        required: false
+        default: "4"
+        type: string
       include_optional:
-        description: "Also qualify optional qwen3:8b"
+        description: "Also qualify optional qwen3:8b on the hosted baseline"
         required: false
         default: false
         type: boolean
@@ -22,16 +42,19 @@ permissions:
   contents: read
 
 env:
-  OLLAMA_HOST: 127.0.0.1:11434
   OLLAMA_NUM_PARALLEL: "1"
   OLLAMA_MAX_LOADED_MODELS: "1"
   OLLAMA_KEEP_ALIVE: "10m"
 
 jobs:
   default-stack:
-    name: Qwen + Mistral default stack
+    name: Qwen + Mistral hosted baseline
+    if: ${{ inputs.production_target != true }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    env:
+      OLLAMA_HOST: 127.0.0.1:11434
+      OLLAMA_BASE_URL: http://127.0.0.1:11434
 
     steps:
       - name: Checkout
@@ -101,11 +124,143 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
+  production-target:
+    name: Qwen + Mistral production target
+    if: ${{ inputs.production_target == true }}
+    runs-on: self-hosted
+    timeout-minutes: 120
+    env:
+      OLLAMA_HOST: 127.0.0.1:11435
+      OLLAMA_BASE_URL: http://127.0.0.1:11435
+      ALZ_TARGET_HARDWARE_ID: ${{ inputs.target_hardware_id }}
+      ALZ_TARGET_ACCELERATOR: ${{ inputs.target_accelerator }}
+      ALZ_MODEL_LONG_RUN_TURNS: ${{ inputs.long_run_turns }}
+
+    steps:
+      - name: Validate target selection
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${ALZ_TARGET_HARDWARE_ID}"
+          test "${ALZ_TARGET_HARDWARE_ID}" != "UNKNOWN"
+
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: package-lock.json
+          package-manager-cache: false
+
+      - name: Record target capacity
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "target=${ALZ_TARGET_HARDWARE_ID}"
+          echo "accelerator=${ALZ_TARGET_ACCELERATOR}"
+          echo "CPUs=$(nproc)"
+          free -h
+          uname -a
+          lscpu | grep -E '^Model name:|^CPU\(s\):|^Thread\(s\) per core:|^Core\(s\) per socket:|^Socket\(s\):' || true
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Verify pinned local Ollama
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v ollama
+          version="$(ollama --version 2>&1)"
+          echo "${version}"
+          case "${version}" in
+            *0.40.0*) ;;
+            *)
+              echo "Expected Ollama 0.40.0 on the production target."
+              exit 1
+              ;;
+          esac
+          echo "ALZ_OLLAMA_VERSION=${version}" >> "${GITHUB_ENV}"
+
+      - name: Start isolated Ollama qualification process
+        shell: bash
+        run: |
+          set -euo pipefail
+          ollama serve > /tmp/alz-ollama-production.log 2>&1 &
+          echo "$!" > /tmp/alz-ollama-production.pid
+          for attempt in {1..30}; do
+            if curl -fsS http://127.0.0.1:11435/api/tags >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/alz-ollama-production.log
+          exit 1
+
+      - name: Verify required weights are pre-staged
+        shell: bash
+        run: |
+          set -euo pipefail
+          for model in qwen3:1.7b qwen3:4b mistral-nemo:latest; do
+            if ! ollama show "${model}" >/dev/null 2>&1; then
+              echo "Required local model is not pre-staged: ${model}"
+              exit 1
+            fi
+          done
+
+      - name: Pre-restart local model smoke
+        run: ./alz models verify --model qwen3:1.7b
+
+      - name: Restart isolated Ollama process
+        shell: bash
+        run: |
+          set -euo pipefail
+          pid="$(cat /tmp/alz-ollama-production.pid)"
+          kill "${pid}"
+          wait "${pid}" || true
+          ollama serve > /tmp/alz-ollama-production-restarted.log 2>&1 &
+          echo "$!" > /tmp/alz-ollama-production.pid
+          for attempt in {1..30}; do
+            if curl -fsS http://127.0.0.1:11435/api/tags >/dev/null; then
+              echo "ALZ_MODEL_RESTART_VERIFIED=1" >> "${GITHUB_ENV}"
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/alz-ollama-production-restarted.log
+          exit 1
+
+      - name: Qualify production target
+        run: ./alz models verify --production
+
+      - name: Upload production qualification evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: production-private-model-qualification-${{ inputs.target_hardware_id }}
+          path: .runs/model-qualification/*.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Stop isolated Ollama qualification process
+        if: always()
+        shell: bash
+        run: |
+          if [ -f /tmp/alz-ollama-production.pid ]; then
+            kill "$(cat /tmp/alz-ollama-production.pid)" 2>/dev/null || true
+          fi
+
   qwen3-8b:
     name: Qwen3 8B alternate
-    if: ${{ inputs.include_optional == true }}
+    if: ${{ inputs.include_optional == true && inputs.production_target != true }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    env:
+      OLLAMA_HOST: 127.0.0.1:11434
+      OLLAMA_BASE_URL: http://127.0.0.1:11434
 
     steps:
       - name: Checkout
