@@ -17,7 +17,7 @@ test("plug-in catalog is complete and current", () => {
   );
 });
 
-test("implemented preview engines include OpenTofu", () => {
+test("all eight build paths are implemented", () => {
   const implemented =
     PLUGIN_CATALOG.filter(
       (plugin) =>
@@ -32,6 +32,9 @@ test("implemented preview engines include OpenTofu", () => {
       "OPENTOFU",
       "BICEP",
       "CLOUDFORMATION",
+      "AWS_CDK",
+      "CROSSPLANE",
+      "ANSIBLE",
     ],
   );
 });
@@ -49,8 +52,7 @@ test("all plug-ins participate in supply-chain scanning", () => {
   }
 });
 
-
-test("Ansible participates in governed Build as well as Configure and Manage", () => {
+test("Ansible participates in Build Configure and Manage", () => {
   const ansible =
     PLUGIN_CATALOG.find(
       (plugin) =>
@@ -61,6 +63,10 @@ test("Ansible participates in governed Build as well as Configure and Manage", (
   assert.deepEqual(
     ansible.stage,
     ["BUILD", "CONFIGURE", "MANAGE"],
+  );
+  assert.equal(
+    ansible.status,
+    "IMPLEMENTED",
   );
   assert.ok(
     ansible.capabilities.includes(
@@ -74,7 +80,7 @@ test("Ansible participates in governed Build as well as Configure and Manage", (
   );
 });
 
-test("AWS CDK retains synthesis and normalized change evidence requirements", () => {
+test("AWS CDK keeps synthesis and normalized CloudFormation evidence", () => {
   const cdk =
     PLUGIN_CATALOG.find(
       (plugin) =>
@@ -86,6 +92,10 @@ test("AWS CDK retains synthesis and normalized change evidence requirements", ()
     cdk.providers,
     ["AWS"],
   );
+  assert.equal(
+    cdk.status,
+    "IMPLEMENTED",
+  );
   assert.ok(
     cdk.capabilities.includes(
       "SYNTHESIZE",
@@ -95,5 +105,23 @@ test("AWS CDK retains synthesis and normalized change evidence requirements", ()
     cdk.capabilities.includes(
       "NORMALIZE",
     ),
+  );
+});
+
+test("Crossplane is implemented with Build and Manage scope", () => {
+  const crossplane =
+    PLUGIN_CATALOG.find(
+      (plugin) =>
+        plugin.id === "CROSSPLANE",
+    );
+
+  assert.ok(crossplane);
+  assert.equal(
+    crossplane.status,
+    "IMPLEMENTED",
+  );
+  assert.deepEqual(
+    crossplane.stage,
+    ["BUILD", "MANAGE"],
   );
 });
