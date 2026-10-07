@@ -55,6 +55,62 @@ export function classifySessionCommand(
   }
 
   if (
+    /prepare .*simulated .*recovery point|prepare .*recovery point|create .*simulated .*recovery point/.test(
+      value,
+    )
+  ) {
+    return "RECOVERY_PREPARE";
+  }
+
+  if (
+    /verify .*recovery point|verify this recovery point|check .*recovery point/.test(
+      value,
+    )
+  ) {
+    return "RECOVERY_VERIFY";
+  }
+
+  if (
+    /run .*simulated .*restore drill|simulated restore drill|run .*restore drill/.test(
+      value,
+    )
+  ) {
+    return "RECOVERY_DRILL";
+  }
+
+  if (
+    /what changed since .*recovery point|recovery drift|compare .*recovery point.*current|compare current.*recovery point/.test(
+      value,
+    )
+  ) {
+    return "RECOVERY_DRIFT";
+  }
+
+  if (
+    /what (would )?block recovery|recovery blockers|what is not protected|what isn't protected|what is still unknown.*recovery|what.*recovery.*unknown/.test(
+      value,
+    )
+  ) {
+    return "RECOVERY_BLOCKERS";
+  }
+
+  if (
+    /what is protected|what's protected|recovery status|recovery posture|rpo.*rto|rto.*rpo|what is our rpo|what is our rto/.test(
+      value,
+    )
+  ) {
+    return "RECOVERY_STATUS";
+  }
+
+  if (
+    /what should .*fix before .*release|recovery next step|what next for recovery|what should .*fix.*recovery/.test(
+      value,
+    )
+  ) {
+    return "RECOVERY_NEXT";
+  }
+
+  if (
     /why is .*blocked|why was .*blocked|why did .*block|why can't|why can'?t|explain that|explain why|why\?$/.test(
       value,
     )

@@ -12,6 +12,13 @@ export function promptGuide(): string {
     '  “Inspect this AWS environment and summarize the inventory.”',
     '  “Which components have insecure or unknown posture?”',
     '  “What is our SBOM and recovery coverage?”',
+    '  “What is protected, and what is still UNKNOWN?”',
+    '  “What is our RPO/RTO evidence?”',
+    '  “Prepare a simulated recovery point.”',
+    '  “Verify this recovery point.”',
+    '  “Run a simulated restore drill.”',
+    '  “What changed since the recovery point?”',
+    '  “What should we fix before this is release-ready?”',
     '  “Design the safest additive delta using AWS CDK.”',
     '  “Show the Ansible check-mode path for the attached edge nodes.”',
     '  “Use Pulumi instead.”',
@@ -32,6 +39,7 @@ export function promptGuide(): string {
     "  run ./alz prompts from the operator shell",
     "  read docs/operator-guide.md for scenarios and supported plug-ins",
     "",
+    "Recovery operations are evidence-only simulations; a manifest is not treated as a backup, and restore drills do not mutate infrastructure.",
     "ACT remains disabled. The agent can explain the nearest safe alternative when a request is not allowed.",
   ].join("\n");
 }

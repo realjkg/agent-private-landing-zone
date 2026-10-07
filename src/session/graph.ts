@@ -21,6 +21,13 @@ import type {
   MockScenario,
   Provider,
 } from "../discovery/types.js";
+import type {
+  RecoveryDriftComparison,
+  RecoveryPoint,
+  RecoveryPolicy,
+  RecoveryVerification,
+  SimulatedRestoreDrill,
+} from "../recovery/types.js";
 import {
   answerStateQuery,
   formatAgentResponse,
@@ -32,6 +39,10 @@ import {
   evaluateOperatorRequest,
 } from "./operator-policy.js";
 import { routeSessionRequest } from "./router.js";
+import {
+  isRecoveryCommand,
+  runRecoveryCommand,
+} from "./recovery.js";
 import type { SessionTurn } from "./types.js";
 
 const SessionAnnotation = Annotation.Root({
@@ -42,6 +53,16 @@ const SessionAnnotation = Annotation.Root({
   approveBuild: Annotation<boolean>,
   fixture: Annotation<boolean>,
   agentState: Annotation<AgentState | undefined>,
+  recoveryPolicy:
+    Annotation<RecoveryPolicy | undefined>,
+  recoveryPoint:
+    Annotation<RecoveryPoint | undefined>,
+  recoveryVerification:
+    Annotation<RecoveryVerification | undefined>,
+  recoveryDrill:
+    Annotation<SimulatedRestoreDrill | undefined>,
+  recoveryDrift:
+    Annotation<RecoveryDriftComparison | undefined>,
   response: Annotation<string | undefined>,
   history: Annotation<SessionTurn[]>({
     reducer: (current, update) => [
@@ -121,6 +142,43 @@ async function sessionNode(
           request: state.request,
           command,
           response,
+        },
+      ],
+    };
+  }
+
+  if (isRecoveryCommand(command)) {
+    progress(
+      "Evaluating recovery evidence and simulated operations…",
+    );
+
+    const recovery =
+      runRecoveryCommand({
+        command,
+        state: state.agentState,
+        artifacts: {
+          recoveryPolicy:
+            state.recoveryPolicy,
+          recoveryPoint:
+            state.recoveryPoint,
+          recoveryVerification:
+            state.recoveryVerification,
+          recoveryDrill:
+            state.recoveryDrill,
+          recoveryDrift:
+            state.recoveryDrift,
+        },
+      });
+
+    return {
+      ...recovery,
+      history: [
+        {
+          at: new Date().toISOString(),
+          request: state.request,
+          command,
+          response:
+            recovery.response,
         },
       ],
     };

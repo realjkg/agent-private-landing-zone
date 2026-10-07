@@ -30,6 +30,24 @@ test("fixture session routes conversational follow-ups without invoking a model"
     ),
     "RUN",
   );
+
+  assert.equal(
+    await routeSessionRequest(
+      "prepare a simulated recovery point",
+      [],
+      true,
+    ),
+    "RECOVERY_PREPARE",
+  );
+
+  assert.equal(
+    await routeSessionRequest(
+      "run a simulated restore drill",
+      [],
+      true,
+    ),
+    "RECOVERY_DRILL",
+  );
 });
 
 
