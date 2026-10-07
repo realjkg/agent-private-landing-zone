@@ -7,7 +7,9 @@ import {
   runAllowlistedProcess,
 } from "./process.js";
 
-import { getIaCAdapter } from "../iac/index.js";
+import {
+  getIaCAdapter,
+} from "../iac/index.js";
 import type {
   ToolContext,
   ToolRequest,
@@ -30,6 +32,15 @@ const SAFE_TOOLS = new Set([
   "cloudformation_version",
   "cloudformation_validate",
   "cloudformation_preview",
+  "cdk_version",
+  "cdk_synth",
+  "cdk_preview",
+  "ansible_version",
+  "ansible_syntax_check",
+  "ansible_preview",
+  "crossplane_version",
+  "crossplane_validate",
+  "crossplane_preview",
   "pulumi_version",
   "pulumi_preview",
   "aws_version",
@@ -63,6 +74,16 @@ function blocked(
   };
 }
 
+function adapterContext(
+  context: ToolContext,
+  cwd: string,
+): ToolContext {
+  return {
+    ...context,
+    cwd,
+  };
+}
+
 export function executeTool(
   request: ToolRequest,
   context: ToolContext,
@@ -77,7 +98,7 @@ export function executeTool(
   if (context.allowMutation !== false) {
     return blocked(
       request,
-      "Mutation capability is prohibited in MVP.",
+      "Mutation capability is prohibited.",
     );
   }
 
@@ -86,13 +107,12 @@ export function executeTool(
     request.workspace ?? ".",
   );
   const root = resolve(context.cwd);
-
-  const workspaceRelation =
+  const relation =
     relative(root, workspace);
 
   if (
-    workspaceRelation === ".." ||
-    workspaceRelation.startsWith(
+    relation === ".." ||
+    relation.startsWith(
       ".." + sep,
     )
   ) {
@@ -108,13 +128,20 @@ export function executeTool(
     (request.tool.startsWith("azure_") &&
       request.tool !== "azure_version");
 
+  const cloudReadTools = new Set([
+    "terraform_plan",
+    "opentofu_plan",
+    "pulumi_preview",
+    "bicep_what_if",
+    "cloudformation_validate",
+    "cloudformation_preview",
+    "cdk_preview",
+  ]);
+
   if (
-    (request.tool === "terraform_plan" ||
-      request.tool === "opentofu_plan" ||
-      request.tool === "pulumi_preview" ||
-      request.tool === "bicep_what_if" ||
-      request.tool === "cloudformation_validate" ||
-      request.tool === "cloudformation_preview" ||
+    (cloudReadTools.has(
+      request.tool,
+    ) ||
       providerReadTool) &&
     !context.allowCloudRead
   ) {
@@ -125,16 +152,52 @@ export function executeTool(
   }
 
   if (
-    request.tool === "cloudformation_preview" &&
+    (request.tool ===
+      "cloudformation_preview" ||
+      request.tool ===
+        "cdk_preview") &&
     context.allowPreviewWrite !== true
   ) {
     return blocked(
       request,
-      "CloudFormation preview requires explicit preview-write capability.",
+      "This preview uses a temporary control-plane object and requires explicit preview-write capability.",
     );
   }
 
-  if (request.tool.startsWith("aws_")) {
+  if (
+    [
+      "pulumi_preview",
+      "cdk_synth",
+      "cdk_preview",
+      "ansible_syntax_check",
+      "ansible_preview",
+      "crossplane_preview",
+    ].includes(request.tool) &&
+    context.allowProjectCodeExecution !==
+      true
+  ) {
+    return blocked(
+      request,
+      "This tool loads project code or plug-ins. Explicit project-code execution capability is required.",
+    );
+  }
+
+  if (
+    request.tool ===
+      "ansible_preview" &&
+    context.allowManagedAccess !== true
+  ) {
+    return blocked(
+      request,
+      "Ansible preview may connect to managed hosts. Explicit managed-host access is required.",
+    );
+  }
+
+  if (
+    request.tool.startsWith(
+      "aws_",
+    )
+  ) {
     const argsByTool: Partial<
       Record<
         ToolRequest["tool"],
@@ -257,162 +320,262 @@ export function executeTool(
     );
   }
 
+  const ctx =
+    adapterContext(
+      context,
+      workspace,
+    );
+
   if (
-    request.tool.startsWith("terraform_")
+    request.tool.startsWith(
+      "terraform_",
+    )
   ) {
     const adapter =
-      getIaCAdapter("TERRAFORM");
+      getIaCAdapter(
+        "TERRAFORM",
+      );
 
-    if (request.tool === "terraform_version") {
-      return adapter.version({
-        ...context,
-        cwd: workspace,
-      });
+    if (
+      request.tool ===
+      "terraform_version"
+    ) {
+      return adapter.version(ctx);
     }
 
     if (
-      request.tool === "terraform_fmt_check" ||
-      request.tool === "terraform_validate"
+      request.tool ===
+        "terraform_fmt_check" ||
+      request.tool ===
+        "terraform_validate"
     ) {
-      return adapter.validate({
-        ...context,
-        cwd: workspace,
-      });
+      return adapter.validate(
+        ctx,
+        request.input,
+      );
     }
 
-    return adapter.preview({
-      ...context,
-      cwd: workspace,
-    });
+    return adapter.preview(
+      ctx,
+      request.input,
+    );
   }
 
   if (
-    request.tool.startsWith("bicep_")
+    request.tool.startsWith(
+      "opentofu_",
+    )
+  ) {
+    const adapter =
+      getIaCAdapter(
+        "OPENTOFU",
+      );
+
+    if (
+      request.tool ===
+      "opentofu_version"
+    ) {
+      return adapter.version(ctx);
+    }
+
+    if (
+      request.tool ===
+        "opentofu_fmt_check" ||
+      request.tool ===
+        "opentofu_validate"
+    ) {
+      return adapter.validate(
+        ctx,
+        request.input,
+      );
+    }
+
+    return adapter.preview(
+      ctx,
+      request.input,
+    );
+  }
+
+  if (
+    request.tool.startsWith(
+      "bicep_",
+    )
   ) {
     const adapter =
       getIaCAdapter("BICEP");
 
-    if (request.tool === "bicep_version") {
-      return adapter.version({
-        ...context,
-        cwd: workspace,
-      });
+    if (
+      request.tool ===
+      "bicep_version"
+    ) {
+      return adapter.version(ctx);
     }
 
     if (
-      request.tool === "bicep_lint" ||
-      request.tool === "bicep_build"
+      request.tool ===
+        "bicep_lint" ||
+      request.tool ===
+        "bicep_build"
     ) {
       return adapter.validate(
-        {
-          ...context,
-          cwd: workspace,
-        },
+        ctx,
         request.input,
       );
     }
 
     return adapter.preview(
-      {
-        ...context,
-        cwd: workspace,
-      },
+      ctx,
       request.input,
     );
   }
 
   if (
-    request.tool.startsWith("cloudformation_")
+    request.tool.startsWith(
+      "cloudformation_",
+    )
   ) {
     const adapter =
-      getIaCAdapter("CLOUDFORMATION");
+      getIaCAdapter(
+        "CLOUDFORMATION",
+      );
 
     if (
-      request.tool === "cloudformation_version"
+      request.tool ===
+      "cloudformation_version"
     ) {
-      return adapter.version({
-        ...context,
-        cwd: workspace,
-      });
+      return adapter.version(ctx);
     }
 
     if (
-      request.tool === "cloudformation_validate"
+      request.tool ===
+      "cloudformation_validate"
     ) {
       return adapter.validate(
-        {
-          ...context,
-          cwd: workspace,
-        },
+        ctx,
         request.input,
       );
     }
 
     return adapter.preview(
-      {
-        ...context,
-        cwd: workspace,
-      },
+      ctx,
       request.input,
     );
   }
 
   if (
-    request.tool.startsWith("opentofu_")
+    request.tool.startsWith(
+      "cdk_",
+    )
   ) {
     const adapter =
-      getIaCAdapter("OPENTOFU");
+      getIaCAdapter("AWS_CDK");
 
-    if (request.tool === "opentofu_version") {
-      return adapter.version({
-        ...context,
-        cwd: workspace,
-      });
+    if (
+      request.tool ===
+      "cdk_version"
+    ) {
+      return adapter.version(ctx);
     }
 
     if (
-      request.tool === "opentofu_fmt_check" ||
-      request.tool === "opentofu_validate"
+      request.tool ===
+      "cdk_synth"
     ) {
-      return adapter.validate({
-        ...context,
-        cwd: workspace,
-      });
-    }
-
-    return adapter.preview({
-      ...context,
-      cwd: workspace,
-    });
-  }
-
-  if (
-    request.tool.startsWith("pulumi_")
-  ) {
-    if (
-      request.tool === "pulumi_preview" &&
-      context.allowProjectCodeExecution !== true
-    ) {
-      return blocked(
-        request,
-        "Pulumi preview executes project code; explicit project-code execution capability is required.",
+      return adapter.validate(
+        ctx,
+        request.input,
       );
     }
 
+    return adapter.preview(
+      ctx,
+      request.input,
+    );
+  }
+
+  if (
+    request.tool.startsWith(
+      "ansible_",
+    )
+  ) {
+    const adapter =
+      getIaCAdapter("ANSIBLE");
+
+    if (
+      request.tool ===
+      "ansible_version"
+    ) {
+      return adapter.version(ctx);
+    }
+
+    if (
+      request.tool ===
+      "ansible_syntax_check"
+    ) {
+      return adapter.validate(
+        ctx,
+        request.input,
+      );
+    }
+
+    return adapter.preview(
+      ctx,
+      request.input,
+    );
+  }
+
+  if (
+    request.tool.startsWith(
+      "crossplane_",
+    )
+  ) {
+    const adapter =
+      getIaCAdapter(
+        "CROSSPLANE",
+      );
+
+    if (
+      request.tool ===
+      "crossplane_version"
+    ) {
+      return adapter.version(ctx);
+    }
+
+    if (
+      request.tool ===
+      "crossplane_validate"
+    ) {
+      return adapter.validate(
+        ctx,
+        request.input,
+      );
+    }
+
+    return adapter.preview(
+      ctx,
+      request.input,
+    );
+  }
+
+  if (
+    request.tool.startsWith(
+      "pulumi_",
+    )
+  ) {
     const adapter =
       getIaCAdapter("PULUMI");
 
-    if (request.tool === "pulumi_version") {
-      return adapter.version({
-        ...context,
-        cwd: workspace,
-      });
+    if (
+      request.tool ===
+      "pulumi_version"
+    ) {
+      return adapter.version(ctx);
     }
 
-    return adapter.preview({
-      ...context,
-      cwd: workspace,
-    });
+    return adapter.preview(
+      ctx,
+      request.input,
+    );
   }
 
   return blocked(
@@ -421,7 +584,6 @@ export function executeTool(
   );
 }
 
-
 export function getToolSecurityPosture(): {
   allowedTools: string[];
   mutationTools: string[];
@@ -429,41 +591,49 @@ export function getToolSecurityPosture(): {
   cloudReadDefault: boolean;
   projectCodeExecutionDefault: boolean;
   previewWriteDefault: boolean;
+  managedAccessDefault: boolean;
 } {
-  const allowedTools = [...SAFE_TOOLS].sort();
-  const mutationTokens = new Set([
-    "apply",
-    "destroy",
-    "delete",
-    "remove",
-    "create",
-    "update",
-    "modify",
-    "up",
-    "exec",
-    "shell",
-    "bash",
-    "provision",
-    "deploy",
-  ]);
+  const allowedTools =
+    [...SAFE_TOOLS].sort();
+  const mutationTokens =
+    new Set([
+      "apply",
+      "destroy",
+      "delete",
+      "remove",
+      "create",
+      "update",
+      "modify",
+      "up",
+      "exec",
+      "shell",
+      "bash",
+      "provision",
+      "deploy",
+    ]);
 
-  const mutationTools = allowedTools.filter(
-    (tool) =>
-      tool
-        .toLowerCase()
-        .split("_")
-        .some(
-          (token) =>
-            mutationTokens.has(token),
-        ),
-  );
+  const mutationTools =
+    allowedTools.filter(
+      (tool) =>
+        tool
+          .toLowerCase()
+          .split("_")
+          .some(
+            (token) =>
+              mutationTokens.has(
+                token,
+              ),
+          ),
+    );
 
   return {
     allowedTools,
     mutationTools,
     arbitraryShell: false,
     cloudReadDefault: false,
-    projectCodeExecutionDefault: false,
+    projectCodeExecutionDefault:
+      false,
     previewWriteDefault: false,
+    managedAccessDefault: false,
   };
 }
