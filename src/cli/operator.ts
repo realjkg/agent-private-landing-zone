@@ -124,6 +124,8 @@ function help(): void {
   console.log("  ./alz verify");
   console.log("  ./alz plugins");
   console.log("  ./alz prompts");
+  console.log("  ./alz models list");
+  console.log("  ./alz models verify [--all]");
   console.log("  ./alz sbom");
   console.log("  ./alz scan");
   console.log();
@@ -230,7 +232,7 @@ function sbom(): void {
 
   const path = resolve(
     directory,
-    "agentic-landing-zone.cdx.json",
+    "agent-private-landing-zone.cdx.json",
   );
 
   writeFileSync(
@@ -402,6 +404,14 @@ try {
   ) {
     console.log();
     console.log(promptGuide());
+  } else if (command === "models") {
+    runTs(
+      "src/cli/models.ts",
+      [first, second, third].filter(
+        (value): value is string =>
+          Boolean(value),
+      ),
+    );
   } else if (command === "sbom") {
     sbom();
   } else if (command === "scan") {
