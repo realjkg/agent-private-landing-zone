@@ -31,6 +31,7 @@ export type AdapterInput = {
   inventoryPath?: string;
   limit?: string;
   manifestPath?: string;
+  extensionsPath?: string;
   xrPath?: string;
   compositionPath?: string;
   functionsPath?: string;
