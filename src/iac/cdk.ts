@@ -223,6 +223,12 @@ export const cdkAdapter: IaCAdapter = {
       return [built.result];
     }
 
+    if (
+      context.allowCloudRead !== true
+    ) {
+      return [built.result];
+    }
+
     const templatePath =
       built.template
         ? workspaceFile(
@@ -287,6 +293,25 @@ export const cdkAdapter: IaCAdapter = {
       return blocked(
         "CDK synthesis did not produce a CloudFormation template.",
       );
+    }
+
+    const validation =
+      cloudformationAdapter.validate(
+        context,
+        {
+          ...input,
+          templatePath:
+            built.template,
+        },
+      );
+
+    const failed =
+      validation.find(
+        (result) => !result.ok,
+      );
+
+    if (failed) {
+      return failed;
     }
 
     return cloudformationAdapter.preview(
