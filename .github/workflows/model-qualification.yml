@@ -1,0 +1,45 @@
+name: Private Model Qualification
+
+on:
+  workflow_dispatch:
+    inputs:
+      include_optional:
+        description: "Also test qwen2.5:3b and phi-4-mini"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  qualify:
+    name: Qualify local models
+    runs-on: [self-hosted, linux]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: package-lock.json
+          package-manager-cache: false
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Check Ollama
+        run: |
+          command -v ollama
+          ollama list
+
+      - name: Qualify required private models
+        run: ./alz models verify
+
+      - name: Qualify optional named models
+        if: inputs.include_optional
+        run: ./alz models verify --all
