@@ -156,7 +156,7 @@ export function evaluateOperatorRequest(
     !hasSessionContext &&
     value.length > 0 &&
     !IN_SCOPE.test(value) &&
-    !/help|what can you do|how do i|prompt|status|environment|evidence|what did you find|next|compare|why|explain/i.test(
+    !/help|what can you do|how do i|prompt|status|environment|evidence|what did you find|what is protected|what's protected|protected|protection|next|compare|why|explain/i.test(
       value,
     )
   ) {
