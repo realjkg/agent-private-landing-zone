@@ -130,11 +130,11 @@ decision := {
   input.classification != "RESTRICTED"
 }
 
-allowed_capability(capability) if {
+allowed_capability(_) if {
   input.compromiseState == "NORMAL"
 }
 
-allowed_capability(capability) if {
+allowed_capability(_) if {
   input.compromiseState == "VERIFIED"
 }
 
