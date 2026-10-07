@@ -17,22 +17,89 @@ import test from "node:test";
 
 import {
   encryptEvidence,
+  type EvidenceEnvelope,
 } from "../src/evidence/vault.js";
 import {
-  captureControlPlaneRecovery,
+  readControlPlaneRecovery,
   restoreControlPlaneRecovery,
-  verifyControlPlaneRecoverySnapshot,
-} from "../src/recovery/control-plane/index.js";
+  validateControlPlaneRecoveryBundle,
+  writeControlPlaneRecovery,
+} from "../src/recovery/control-plane/bundle.js";
 import {
   createReleaseManifest,
   sha256Buffer,
 } from "../src/release/manifest.js";
 
+type Fixture = {
+  key: Buffer;
+  originalEvidenceKey:
+    string | undefined;
+};
+
+function setEvidenceKey():
+  Fixture {
+  const originalEvidenceKey =
+    process.env
+      .AGENTIC_EVIDENCE_KEY;
+  const key =
+    Buffer.alloc(
+      32,
+      7,
+    );
+
+  process.env
+    .AGENTIC_EVIDENCE_KEY =
+    key.toString("base64");
+
+  return {
+    key,
+    originalEvidenceKey,
+  };
+}
+
+function restoreEvidenceKey(
+  value:
+    string | undefined,
+): void {
+  if (value === undefined) {
+    delete process.env
+      .AGENTIC_EVIDENCE_KEY;
+  } else {
+    process.env
+      .AGENTIC_EVIDENCE_KEY =
+      value;
+  }
+}
+
+async function writePath(
+  root: string,
+  path: string,
+  value:
+    string | Buffer,
+): Promise<void> {
+  const target =
+    join(root, path);
+
+  await mkdir(
+    join(
+      target,
+      "..",
+    ),
+    {
+      recursive: true,
+    },
+  );
+
+  await writeFile(
+    target,
+    value,
+  );
+}
+
 async function releaseFixture(
   root: string,
-): Promise<{
-  evidenceKey: Buffer;
-}> {
+  key: Buffer,
+): Promise<void> {
   const contents:
     Record<string, string> = {
       "dist/cli/operator.js":
@@ -53,32 +120,19 @@ async function releaseFixture(
 
   for (const [
     path,
-    content,
+    value,
   ] of Object.entries(
     contents,
   )) {
-    const target =
-      join(root, path);
-    await mkdir(
-      join(
-        target,
-        "..",
-      ),
-      {
-        recursive: true,
-      },
-    );
-    await writeFile(
-      target,
-      content,
+    await writePath(
+      root,
+      path,
+      value,
     );
   }
 
   await chmod(
-    join(
-      root,
-      "alz",
-    ),
+    join(root, "alz"),
     0o755,
   );
 
@@ -94,12 +148,12 @@ async function releaseFixture(
         ).map(
           ([
             path,
-            content,
+            value,
           ]) => ({
             path,
             sha256:
               sha256Buffer(
-                content,
+                value,
               ),
           }),
         ),
@@ -113,11 +167,9 @@ async function releaseFixture(
         ),
     });
 
-  await writeFile(
-    join(
-      root,
-      "release-manifest.json",
-    ),
+  await writePath(
+    root,
+    "release-manifest.json",
     JSON.stringify(
       manifest,
       null,
@@ -125,89 +177,62 @@ async function releaseFixture(
     ) + "\n",
   );
 
-  await mkdir(
-    join(
-      root,
-      "config",
-    ),
-    {
-      recursive: true,
-    },
-  );
-  await writeFile(
-    join(
-      root,
-      "config",
-      "recovery-targets.json",
-    ),
+  await writePath(
+    root,
+    "config/recovery-targets.json",
     "{\"targets\":[]}\n",
   );
 
-  const evidenceKey =
-    Buffer.alloc(
-      32,
-      7,
-    );
-  const envelope =
+  const sessionEnvelope =
     encryptEvidence(
       "session",
       {
         threadId:
           "control-plane-test",
+        actEnabled: false,
       },
-      evidenceKey,
+      key,
     );
 
-  await mkdir(
-    join(
-      root,
-      ".runs",
-      "evidence",
-      "session",
-    ),
-    {
-      recursive: true,
-    },
-  );
-  await writeFile(
-    join(
-      root,
-      ".runs",
-      "evidence",
-      "session",
-      "turn.evidence",
-    ),
+  await writePath(
+    root,
+    ".runs/evidence/session/turn.evidence",
     JSON.stringify(
-      envelope,
+      sessionEnvelope,
     ) + "\n",
   );
 
-  await mkdir(
-    join(
-      root,
-      ".runs",
-      "checkpoints",
-    ),
-    {
-      recursive: true,
-    },
-  );
-  await writeFile(
-    join(
-      root,
-      ".runs",
-      "checkpoints",
-      "session.sqlite",
-    ),
-    "quiesced-checkpoint\n",
+  const recoveryEnvelope =
+    encryptEvidence(
+      "recovery-automation",
+      {
+        targetId:
+          "control-plane-test",
+        status: "HEALTHY",
+        actEnabled: false,
+      },
+      key,
+    );
+
+  await writePath(
+    root,
+    ".runs/evidence/recovery-automation/state.evidence",
+    JSON.stringify(
+      recoveryEnvelope,
+    ) + "\n",
   );
 
-  return {
-    evidenceKey,
-  };
+  await writePath(
+    root,
+    ".runs/checkpoints/session.sqlite",
+    Buffer.from(
+      "quiesced-checkpoint\n",
+      "utf8",
+    ),
+  );
 }
 
-test("control-plane recovery captures release config policy encrypted evidence and checkpoint without the evidence key", async () => {
+test("control-plane recovery is encrypted, excludes the evidence key, and restores release plus state", async () => {
   const base =
     await mkdtemp(
       join(
@@ -220,115 +245,165 @@ test("control-plane recovery captures release config policy encrypted evidence a
       base,
       "release",
     );
-  const snapshot =
+  const evidence =
     join(
       base,
-      "snapshot",
+      "control-plane.evidence",
     );
   const restored =
     join(
       base,
       "restored",
     );
+  const fixture =
+    setEvidenceKey();
 
   try {
     await mkdir(root);
-    const {
-      evidenceKey,
-    } =
-      await releaseFixture(
+    await releaseFixture(
+      root,
+      fixture.key,
+    );
+
+    const captured =
+      await writeControlPlaneRecovery(
         root,
+        evidence,
       );
 
-    const manifest =
-      await captureControlPlaneRecovery({
-        root,
-        destination:
-          snapshot,
-        checkpointPaths: [
-          ".runs/checkpoints/session.sqlite",
-        ],
-      });
-
     assert.equal(
-      manifest.restore
+      captured.bundle
         .actEnabled,
       false,
     );
     assert.equal(
-      manifest.restore
-        .cloudMutationAllowed,
+      captured.bundle
+        .mutationAttempted,
       false,
     );
     assert.equal(
-      manifest.externalEvidenceKey
-        .included,
+      captured.bundle
+        .keyReference
+        .secretIncluded,
       false,
     );
-    assert.equal(
-      manifest.externalEvidenceKey
-        .required,
-      true,
-    );
-    assert.equal(
-      manifest.checkpointMode,
-      "QUIESCED_FILE_COPY",
-    );
-    assert.ok(
-      manifest.files.some(
-        (file) =>
-          file.category ===
-            "ENCRYPTED_EVIDENCE",
-      ),
-    );
-    assert.ok(
-      manifest.files.some(
-        (file) =>
-          file.category ===
-            "CHECKPOINT",
-      ),
-    );
-    assert.ok(
-      !manifest.files.some(
-        (file) =>
-          file.path.endsWith(
-            "evidence.key",
-          ),
-      ),
-    );
-
     assert.deepEqual(
-      await verifyControlPlaneRecoverySnapshot(
-        snapshot,
+      captured.bundle.state,
+      {
+        encryptedEvidencePresent:
+          true,
+        recoveryAutomationStatePresent:
+          true,
+        checkpointStatePresent:
+          true,
+      },
+    );
+    assert.deepEqual(
+      validateControlPlaneRecoveryBundle(
+        captured.bundle,
       ),
       [],
     );
 
+    assert.ok(
+      captured.bundle.files.some(
+        (file) =>
+          file.path ===
+            "config/recovery-targets.json" &&
+          file.kind ===
+            "CONFIGURATION",
+      ),
+    );
+    assert.ok(
+      captured.bundle.files.some(
+        (file) =>
+          file.kind ===
+          "RECOVERY_AUTOMATION_STATE",
+      ),
+    );
+    assert.ok(
+      captured.bundle.files.some(
+        (file) =>
+          file.kind ===
+          "CHECKPOINT_STATE",
+      ),
+    );
+    assert.ok(
+      !captured.bundle.files.some(
+        (file) =>
+          /evidence\.key/i.test(
+            file.path,
+          ),
+      ),
+    );
+
+    const raw =
+      await readFile(
+        evidence,
+        "utf8",
+      );
+    const envelope =
+      JSON.parse(
+        raw,
+      ) as EvidenceEnvelope;
+
+    assert.equal(
+      envelope.algorithm,
+      "aes-256-gcm",
+    );
+    assert.equal(
+      raw.includes(
+        "recovery-targets.json",
+      ),
+      false,
+    );
+    assert.equal(
+      raw.includes(
+        fixture.key.toString(
+          "base64",
+        ),
+      ),
+      false,
+    );
+
+    const verified =
+      await readControlPlaneRecovery(
+        evidence,
+      );
+
+    assert.equal(
+      verified.bundleHash,
+      captured.bundle
+        .bundleHash,
+    );
+
     const result =
       await restoreControlPlaneRecovery({
-        snapshot,
-        target:
+        evidencePath:
+          evidence,
+        restoreRoot:
           restored,
-        verifyEncryptedEvidence:
-          true,
-        evidenceKey,
       });
 
     assert.equal(
-      result.ready,
+      result.verified,
       true,
     );
     assert.equal(
-      result.releaseVerified,
-      true,
-    );
-    assert.equal(
-      result.evidenceVerified,
+      result.releaseIntegrity,
       true,
     );
     assert.equal(
       result.actEnabled,
       false,
+    );
+    assert.equal(
+      result.mutationAttempted,
+      false,
+    );
+    assert.deepEqual(
+      result.state,
+      captured.bundle.state,
     );
 
     assert.equal(
@@ -355,6 +430,10 @@ test("control-plane recovery captures release config policy encrypted evidence a
       "quiesced-checkpoint\n",
     );
   } finally {
+    restoreEvidenceKey(
+      fixture
+        .originalEvidenceKey,
+    );
     await rm(
       base,
       {
@@ -365,66 +444,7 @@ test("control-plane recovery captures release config policy encrypted evidence a
   }
 });
 
-test("control-plane recovery detects tampered payload before restore", async () => {
-  const base =
-    await mkdtemp(
-      join(
-        tmpdir(),
-        "alz-control-plane-tamper-",
-      ),
-    );
-  const root =
-    join(
-      base,
-      "release",
-    );
-  const snapshot =
-    join(
-      base,
-      "snapshot",
-    );
-
-  try {
-    await mkdir(root);
-    await releaseFixture(
-      root,
-    );
-    await captureControlPlaneRecovery({
-      root,
-      destination:
-        snapshot,
-    });
-
-    await writeFile(
-      join(
-        snapshot,
-        "payload",
-        "config",
-        "base.json",
-      ),
-      "tampered\n",
-    );
-
-    assert.match(
-      (
-        await verifyControlPlaneRecoverySnapshot(
-          snapshot,
-        )
-      ).join(" "),
-      /integrity mismatch/i,
-    );
-  } finally {
-    await rm(
-      base,
-      {
-        recursive: true,
-        force: true,
-      },
-    );
-  }
-});
-
-test("control-plane restore refuses encrypted evidence verification with the wrong external key", async () => {
+test("control-plane recovery fails closed with the wrong customer evidence key", async () => {
   const base =
     await mkdtemp(
       join(
@@ -437,57 +457,45 @@ test("control-plane restore refuses encrypted evidence verification with the wro
       base,
       "release",
     );
-  const snapshot =
+  const evidence =
     join(
       base,
-      "snapshot",
+      "control-plane.evidence",
     );
-  const restored =
-    join(
-      base,
-      "restored",
-    );
+  const fixture =
+    setEvidenceKey();
 
   try {
     await mkdir(root);
     await releaseFixture(
       root,
+      fixture.key,
     );
-    await captureControlPlaneRecovery({
+    await writeControlPlaneRecovery(
       root,
-      destination:
-        snapshot,
-    });
-
-    const result =
-      await restoreControlPlaneRecovery({
-        snapshot,
-        target:
-          restored,
-        verifyEncryptedEvidence:
-          true,
-        evidenceKey:
-          Buffer.alloc(
-            32,
-            9,
-          ),
-      });
-
-    assert.equal(
-      result.ready,
-      false,
+      evidence,
     );
-    assert.equal(
-      result.evidenceVerified,
-      false,
-    );
-    assert.match(
-      result.blockers.join(
-        " ",
-      ),
-      /failed authentication/i,
+
+    process.env
+      .AGENTIC_EVIDENCE_KEY =
+      Buffer.alloc(
+        32,
+        9,
+      ).toString(
+        "base64",
+      );
+
+    await assert.rejects(
+      () =>
+        readControlPlaneRecovery(
+          evidence,
+        ),
     );
   } finally {
+    restoreEvidenceKey(
+      fixture
+        .originalEvidenceKey,
+    );
     await rm(
       base,
       {
@@ -498,12 +506,12 @@ test("control-plane restore refuses encrypted evidence verification with the wro
   }
 });
 
-test("control-plane capture refuses a destination inside the source release", async () => {
+test("control-plane recovery detects tampered encrypted bundle", async () => {
   const base =
     await mkdtemp(
       join(
         tmpdir(),
-        "alz-control-plane-path-",
+        "alz-control-plane-tamper-",
       ),
     );
   const root =
@@ -511,26 +519,178 @@ test("control-plane capture refuses a destination inside the source release", as
       base,
       "release",
     );
+  const evidence =
+    join(
+      base,
+      "control-plane.evidence",
+    );
+  const fixture =
+    setEvidenceKey();
 
   try {
     await mkdir(root);
     await releaseFixture(
       root,
+      fixture.key,
+    );
+    await writeControlPlaneRecovery(
+      root,
+      evidence,
+    );
+
+    const envelope =
+      JSON.parse(
+        await readFile(
+          evidence,
+          "utf8",
+        ),
+      ) as EvidenceEnvelope;
+
+    const first =
+      envelope.ciphertext
+        .slice(0, 1);
+    envelope.ciphertext =
+      (first === "A"
+        ? "B"
+        : "A") +
+      envelope.ciphertext
+        .slice(1);
+
+    await writeFile(
+      evidence,
+      JSON.stringify(
+        envelope,
+      ) + "\n",
     );
 
     await assert.rejects(
       () =>
-        captureControlPlaneRecovery({
-          root,
-          destination:
-            join(
-              root,
-              "snapshot",
-            ),
-        }),
-      /DESTINATION_INSIDE_SOURCE/,
+        readControlPlaneRecovery(
+          evidence,
+        ),
     );
   } finally {
+    restoreEvidenceKey(
+      fixture
+        .originalEvidenceKey,
+    );
+    await rm(
+      base,
+      {
+        recursive: true,
+        force: true,
+      },
+    );
+  }
+});
+
+test("control-plane capture blocks a tampered release before recovery evidence is created", async () => {
+  const base =
+    await mkdtemp(
+      join(
+        tmpdir(),
+        "alz-control-plane-release-",
+      ),
+    );
+  const root =
+    join(
+      base,
+      "release",
+    );
+  const evidence =
+    join(
+      base,
+      "control-plane.evidence",
+    );
+  const fixture =
+    setEvidenceKey();
+
+  try {
+    await mkdir(root);
+    await releaseFixture(
+      root,
+      fixture.key,
+    );
+
+    await writeFile(
+      join(
+        root,
+        "config",
+        "base.json",
+      ),
+      "tampered\n",
+    );
+
+    await assert.rejects(
+      () =>
+        writeControlPlaneRecovery(
+          root,
+          evidence,
+        ),
+      /RELEASE_INTEGRITY_BLOCKED/,
+    );
+  } finally {
+    restoreEvidenceKey(
+      fixture
+        .originalEvidenceKey,
+    );
+    await rm(
+      base,
+      {
+        recursive: true,
+        force: true,
+      },
+    );
+  }
+});
+
+test("control-plane restore refuses a non-isolated target", async () => {
+  const base =
+    await mkdtemp(
+      join(
+        tmpdir(),
+        "alz-control-plane-isolation-",
+      ),
+    );
+  const root =
+    join(
+      base,
+      "release",
+    );
+  const evidence =
+    join(
+      base,
+      "control-plane.evidence",
+    );
+  const fixture =
+    setEvidenceKey();
+
+  try {
+    await mkdir(root);
+    await releaseFixture(
+      root,
+      fixture.key,
+    );
+    await writeControlPlaneRecovery(
+      root,
+      evidence,
+    );
+
+    await assert.rejects(
+      () =>
+        restoreControlPlaneRecovery({
+          evidencePath:
+            evidence,
+          restoreRoot:
+            process.cwd(),
+        }),
+      /RESTORE_ROOT_UNSAFE/,
+    );
+  } finally {
+    restoreEvidenceKey(
+      fixture
+        .originalEvidenceKey,
+    );
     await rm(
       base,
       {
