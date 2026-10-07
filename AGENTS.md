@@ -14,6 +14,21 @@ Use a lean loop:
 
 Do not turn CI into the development loop.
 
+## Deterministic execution sequence
+
+Every workstream uses one execution order:
+
+1. **PLAN** — establish one authoritative task plan, scope, ownership, evidence inputs, and acceptance gate before implementation.
+2. **DO** — execute independent, non-overlapping lanes in parallel when useful. A lane may retry inside its assigned scope, but it may not change the parent plan, another lane's ownership, or its own authority.
+3. **CONVERGE / VERIFY** — bring typed artifacts and evidence back to one serialized validation point. Resolve collisions, compare against the approved plan/design, and run the smallest deterministic checks required.
+4. **ACT** — cross one controlled integration boundary only after verification. For repository work this means the merge/release decision; it never enables infrastructure mutation.
+
+A bounded implementation or validation failure returns only to the affected **DO** lane. If architecture, policy intent, ownership, or source assumptions changed, stop that iteration and create a new **PLAN** rather than silently mutating the current one.
+
+Do not run multiple independent PLAN or ACT authorities for the same workstream. Parallelism belongs inside **DO**; convergence and ACT are serialized.
+
+The product runtime invariant remains unchanged: **ACT = DISABLED** for infrastructure mutation.
+
 ## No-collision check-in
 
 Issue #12 is the coordination ledger.

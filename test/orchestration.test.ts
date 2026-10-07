@@ -4,8 +4,10 @@ import test from "node:test";
 import {
   createEvidenceHandoff,
   createOrchestrationPlan,
+  assertOrchestrationTransition,
   findOwnershipCollision,
   issueCapabilityLease,
+  orchestrationTransitionAllowed,
 } from "../src/orchestration/plan.js";
 import {
   getAgentForRole,
@@ -265,4 +267,109 @@ test("resiliency specialist can receive revocable encrypted evidence-write capab
     lease.revocable,
     true,
   );
+});
+
+
+test("orchestration uses one PLAN, parallel bounded DO, serialized convergence, and single ACT boundary", () => {
+  const plan =
+    createOrchestrationPlan({
+      taskId:
+        "sequence-task",
+      requestId:
+        "sequence-request",
+      request:
+        "Build a governed landing zone.",
+      intent: "BUILD",
+      provider: "AWS",
+      engine: "TERRAFORM",
+      evidenceRefs: [],
+    });
+
+  assert.deepEqual(
+    plan.execution.phaseOrder,
+    [
+      "PLAN",
+      "DO",
+      "CONVERGE_VERIFY",
+      "ACT",
+    ],
+  );
+  assert.equal(
+    plan.execution.doMode,
+    "PARALLEL_NON_OVERLAPPING",
+  );
+  assert.equal(
+    plan.execution
+      .convergeRequired,
+    true,
+  );
+  assert.equal(
+    plan.execution.actBoundary,
+    "SINGLE",
+  );
+  assert.equal(
+    plan.actEnabled,
+    false,
+  );
+});
+
+test("orchestration rejects phase skipping while allowing bounded DO retry after verification", () => {
+  assert.equal(
+    orchestrationTransitionAllowed(
+      "PLAN",
+      "DO",
+    ),
+    true,
+  );
+  assert.equal(
+    orchestrationTransitionAllowed(
+      "DO",
+      "CONVERGE_VERIFY",
+    ),
+    true,
+  );
+  assert.equal(
+    orchestrationTransitionAllowed(
+      "CONVERGE_VERIFY",
+      "DO",
+    ),
+    true,
+  );
+  assert.equal(
+    orchestrationTransitionAllowed(
+      "CONVERGE_VERIFY",
+      "ACT",
+    ),
+    true,
+  );
+
+  for (const [
+    current,
+    next,
+  ] of [
+    ["PLAN", "ACT"],
+    [
+      "PLAN",
+      "CONVERGE_VERIFY",
+    ],
+    ["DO", "ACT"],
+    ["ACT", "DO"],
+  ] as const) {
+    assert.equal(
+      orchestrationTransitionAllowed(
+        current,
+        next,
+      ),
+      false,
+    );
+
+    assert.throws(
+      () =>
+        assertOrchestrationTransition(
+          current,
+          next,
+        ),
+      /ORCHESTRATION_SEQUENCE_INVALID/,
+    );
+  }
 });

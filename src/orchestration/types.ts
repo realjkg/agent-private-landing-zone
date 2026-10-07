@@ -1,6 +1,25 @@
 import type { IaCEngine } from "../build/types.js";
 import type { Provider } from "../discovery/types.js";
 
+export type OrchestrationPhase =
+  | "PLAN"
+  | "DO"
+  | "CONVERGE_VERIFY"
+  | "ACT";
+
+export type OrchestrationExecutionContract = {
+  phaseOrder: [
+    "PLAN",
+    "DO",
+    "CONVERGE_VERIFY",
+    "ACT",
+  ];
+  doMode:
+    "PARALLEL_NON_OVERLAPPING";
+  convergeRequired: true;
+  actBoundary: "SINGLE";
+};
+
 export type OrchestrationIntent =
   | "ANSWER"
   | "DISCOVER"
@@ -90,6 +109,7 @@ export type EvidenceHandoff = {
 
 export type OrchestrationPlan = {
   task: TaskEnvelope;
+  execution: OrchestrationExecutionContract;
   assignments: OrchestrationAssignment[];
   ownershipClaims: OwnershipClaim[];
   validatorRequired: boolean;
