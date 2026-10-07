@@ -74,10 +74,20 @@ A model cannot grant cloud read, managed-host access, project-code execution, pr
 
 The core agent loop also enforces the prompt screen directly so callers that bypass the conversational session layer cannot bypass prompt governance.
 
-## CI
+## Release qualification
 
-Normal CI tests the qualification harness with deterministic fixtures.
+Normal PR validation tests the qualification harness with deterministic fixtures.
 
-The separate `Private Model Qualification` workflow runs the actual model weights with a pinned Ollama release. It runs when model or prompt-governance code changes and can also be started manually.
+The separate `Private Model Qualification` workflow is an explicit manual release gate. It runs the actual model weights with a pinned Ollama release only when fresh live-model evidence is required.
 
-The workflow records runner CPU/memory information. If an optional or required model still exceeds the existing latency budget after structured-output and no-thinking optimization, classify that weight as unsupported on the standard GitHub-hosted CPU runner and move its live qualification to suitable accelerated/self-hosted hardware rather than weakening the timeout.
+The default manual gate qualifies the required stack:
+- Qwen3 1.7B
+- Qwen3 4B
+- Mistral Nemo
+- integrated Qwen → Qwen → Mistral behavior
+
+Qwen3 8B is optional and should be selected only when that model, shared inference behavior, or the release decision requires fresh 8B evidence.
+
+Do not rerun the live-model gate for documentation, coordination, or unrelated code changes when the qualified runtime is unchanged.
+
+The workflow records runner CPU/memory information. If an optional or required model exceeds the existing latency budget after structured-output and no-thinking optimization, classify that weight as unsupported on the standard GitHub-hosted CPU runner and move its live qualification to suitable accelerated/self-hosted hardware rather than weakening the timeout.
