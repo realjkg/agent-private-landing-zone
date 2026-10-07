@@ -1,0 +1,169 @@
+export type ProductionSignal =
+  | "model-latency"
+  | "model-restarts"
+  | "adapter-failures"
+  | "policy-denials"
+  | "provider-discovery-health"
+  | "recovery-state"
+  | "recovery-objective-status"
+  | "evidence-lifecycle";
+
+export type OperationalEvent = {
+  schemaVersion: 1;
+  at: string;
+  signal: ProductionSignal;
+  status:
+    | "OK"
+    | "DEGRADED"
+    | "BLOCKED"
+    | "FAILED";
+  component: string;
+  durationMs?: number;
+  detail?: string;
+  attributes: Record<
+    string,
+    unknown
+  >;
+};
+
+const SENSITIVE_KEY =
+  /(secret|password|token|authorization|api[_-]?key|access[_-]?key|private[_-]?key|credential)/i;
+
+function redactValue(
+  value: unknown,
+  key = "",
+): unknown {
+  if (
+    key &&
+    SENSITIVE_KEY.test(key)
+  ) {
+    return "[REDACTED]";
+  }
+
+  if (Array.isArray(value)) {
+    return value.map(
+      (item) =>
+        redactValue(item),
+    );
+  }
+
+  if (
+    value &&
+    typeof value === "object"
+  ) {
+    return Object.fromEntries(
+      Object.entries(
+        value as Record<
+          string,
+          unknown
+        >,
+      ).map(
+        ([childKey, child]) => [
+          childKey,
+          redactValue(
+            child,
+            childKey,
+          ),
+        ],
+      ),
+    );
+  }
+
+  return value;
+}
+
+export function createOperationalEvent(input: {
+  signal: ProductionSignal;
+  status:
+    OperationalEvent["status"];
+  component: string;
+  durationMs?: number;
+  detail?: string;
+  attributes?: Record<
+    string,
+    unknown
+  >;
+  at?: string;
+}): OperationalEvent {
+  return {
+    schemaVersion: 1,
+    at:
+      input.at ??
+      new Date().toISOString(),
+    signal: input.signal,
+    status: input.status,
+    component:
+      input.component,
+    ...(input.durationMs !==
+    undefined
+      ? {
+          durationMs:
+            input.durationMs,
+        }
+      : {}),
+    ...(input.detail
+      ? {
+          detail:
+            String(
+              redactValue(
+                input.detail,
+              ),
+            ),
+        }
+      : {}),
+    attributes:
+      redactValue(
+        input.attributes ?? {},
+      ) as Record<
+        string,
+        unknown
+      >,
+  };
+}
+
+export function serializeOperationalEvent(
+  event: OperationalEvent,
+): string {
+  return JSON.stringify(
+    createOperationalEvent({
+      signal:
+        event.signal,
+      status:
+        event.status,
+      component:
+        event.component,
+      durationMs:
+        event.durationMs,
+      detail:
+        event.detail,
+      attributes:
+        event.attributes,
+      at: event.at,
+    }),
+  );
+}
+
+export type OperationalEventWriter = (
+  line: string,
+) => void;
+
+export class JsonLineEventSink {
+  constructor(
+    private readonly writer:
+      OperationalEventWriter =
+        (line) =>
+          process.stdout.write(
+            line + "\n",
+          ),
+  ) {}
+
+  emit(
+    event: OperationalEvent,
+  ): void {
+    this.writer(
+      serializeOperationalEvent(
+        event,
+      ),
+    );
+  }
+}
