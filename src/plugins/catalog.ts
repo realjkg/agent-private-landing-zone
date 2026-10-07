@@ -200,12 +200,12 @@ export const PLUGIN_CATALOG: PluginDefinition[] = [
       "SECURITY_SCAN",
     ],
     executable: "crossplane",
-    testedVersion: "2.4.2",
+    testedVersion: "2.5.0",
     versionSource:
-      "https://github.com/crossplane/crossplane/releases",
+      "https://github.com/crossplane/cli/releases",
     lastReviewed: "2026-10-06",
     notes:
-      "Local render and validation adapter. Rendered resources normalize as UNKNOWN because offline composition output is not proof of controller reconciliation.",
+      "Crossplane CLI 2.5.0 adapter. Resource validation requires explicit schemas/extensions. Composition render output normalizes as UNKNOWN until controller reconciliation is observed. Control-plane compatibility target: Crossplane 2.4.2.",
   },
   {
     id: "ANSIBLE",
