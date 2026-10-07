@@ -1,235 +1,114 @@
 # Sovereign LZ positioning corpus
 
-This document is the stable source for future Sovereign LZ one-pagers, slide decks, website copy, and executive narratives.
-
-It should evolve slowly. Product claims must remain tied to implemented and qualified behavior.
+This document is the stable source for future Sovereign LZ one-pagers, slide decks, website copy, and executive narratives. It should evolve slowly, and every product claim should remain tied to implemented and qualified behavior.
 
 ## Core problem
 
-Most infrastructure AI is optimized to generate.
+Infrastructure teams are adopting AI faster than they are developing the governance, evidence, and operating controls required to use it safely in production.
 
-Production teams need AI they can control, verify, and trust.
+Generating Terraform, Bicep, Pulumi, policy, and remediation suggestions is increasingly accessible. Production engineering still depends on a harder set of decisions: understanding the current environment, determining the safest change, balancing architectural tradeoffs, proving policy alignment, validating recoverability, and deciding whether the available evidence is strong enough to proceed.
 
-Generating Terraform, Bicep, Pulumi, policy, or remediation suggestions is not the hard problem. The hard problem is deciding:
-
-- what is actually true about the environment
-- what should change
-- what must not change
-- which tradeoffs are acceptable
-- which authority is required
-- whether a proposed change satisfies policy
-- whether the result is recoverable
-- whether the evidence is strong enough to proceed
-
-Sovereign LZ addresses that decision and verification problem.
+Sovereign LZ addresses this decision, governance, and verification problem.
 
 ## Problem set and known challenges
 
-The market problem is broader than code generation. Production infrastructure teams already deal with a familiar set of problems that become more acute when AI is introduced.
+Production infrastructure teams already face a consistent set of operational challenges. AI increases the speed and scale of those challenges while introducing new sources of uncertainty.
 
 ### 1. Brownfield uncertainty
 
-Most real environments are not clean-sheet builds.
+Most production environments contain inherited resources, unclear ownership, incomplete tagging, undocumented dependencies, manual changes, multiple sources of truth, configuration drift, and legacy controls.
 
-They contain:
-
-- inherited resources
-- unclear ownership
-- incomplete tagging
-- undocumented dependencies
-- manual changes
-- multiple sources of truth
-- configuration drift
-- legacy controls that cannot simply be replaced
-
-The challenge is not generating a new target architecture. It is determining the minimum safe change while preserving what must remain.
+Teams need a reliable way to establish current state, preserve important dependencies, and determine the minimum safe change.
 
 ### 2. Fragmented infrastructure tooling
 
-Platform teams operate across multiple providers, IaC engines, configuration systems, identity systems, policy tools, and operational consoles.
+Platform teams operate across multiple providers, IaC engines, configuration systems, identity platforms, policy systems, and operational consoles. The same infrastructure intent may be implemented through Terraform, OpenTofu, Pulumi, Bicep, CloudFormation, CDK, Ansible, Crossplane, or provider-native controls.
 
-The same intent can be expressed through Terraform, OpenTofu, Pulumi, Bicep, CloudFormation, CDK, Ansible, Crossplane, and provider-native controls.
+Architecture, policy, evidence, and outcomes need to remain consistent across those tools.
 
-The challenge is keeping architecture, policy, evidence, and outcomes consistent across tools rather than creating a separate intelligence layer for each one.
+### 3. Authority boundaries
 
-### 3. Generation without authority boundaries
+AI systems can produce infrastructure recommendations and implementation candidates faster than organizations can safely authorize them. Risks include broad credentials, standing access, direct tool execution, self-expanded permissions, policy bypass, and accidental production mutation.
 
-AI systems can propose infrastructure changes faster than organizations can safely authorize them.
-
-Common risks include:
-
-- overly broad credentials
-- standing access
-- direct tool execution
-- self-expanded permissions
-- policy bypass
-- accidental production mutation
-- weak separation between recommendation and execution
-
-The challenge is allowing useful agentic behavior without making the model the authority.
+Production use requires clear separation between model reasoning, deterministic authority, and execution.
 
 ### 4. Model nondeterminism and disagreement
 
-Different models can produce different architectures, remediation plans, or implementation choices from the same evidence.
+Different models can produce different architectures, remediation plans, and implementation choices from the same evidence. Individual models can also fail through unsupported assumptions, inconsistent structured output, prompt injection, tool-selection mistakes, hallucinated environment state, long-running task degradation, and memory or resource pressure.
 
-Even the same model can fail through:
-
-- unsupported assumptions
-- inconsistent structured output
-- prompt injection
-- tool-selection mistakes
-- hallucinated environment state
-- long-running task degradation
-- resource or memory pressure
-
-The challenge is making model reasoning useful while keeping deterministic policy and independent verification authoritative.
+Production workflows need deterministic policy, independent validation, and measurable model-role qualification.
 
 ### 5. Incomplete evidence and false certainty
 
-Infrastructure automation frequently operates on partial state.
+Infrastructure workflows frequently operate with partial or stale state. Backup posture, identity evidence, inventory, dependency mapping, and recovery status may all be incomplete.
 
-Unknown backup posture, missing identity evidence, stale inventory, incomplete dependency mapping, or unverified recovery state can easily be converted into false confidence by an AI system.
-
-The challenge is preserving `UNKNOWN`, `BLOCKED`, and `ABSTAIN` as valid production outcomes rather than forcing every workflow to produce an answer.
+Sovereign LZ treats `UNKNOWN`, `BLOCKED`, and `ABSTAIN` as valid production states so incomplete evidence remains visible and actionable.
 
 ### 6. Policy inconsistency
 
-Organizations often express controls in multiple places:
+Organizations express controls through architecture standards, cloud policy, IaC rules, security tooling, compliance mappings, runbooks, and approval processes. Those controls can conflict, duplicate one another, or drift over time.
 
-- architecture standards
-- cloud policy
-- IaC rules
-- security tooling
-- compliance mappings
-- operational runbooks
-- approval processes
-
-These can conflict or drift.
-
-The challenge is maintaining one deterministic decision boundary while allowing different frameworks and evaluators to contribute evidence and constraints.
+Production governance needs a deterministic decision boundary that can incorporate multiple sources of evidence and policy intent.
 
 ### 7. Identity and secret sprawl
 
-Cloud automation often depends on credentials that are long-lived, duplicated, locally stored, or visible to tools that do not need them.
+Cloud automation often relies on credentials that are long-lived, duplicated, locally stored, or visible to tools with broader access than they require. AI introduces another potential exposure surface.
 
-AI adds another potential exposure surface.
+Production design should favor workload and federated identity, opaque secret references, scoped capabilities, and customer-controlled secret material.
 
-The challenge is moving toward workload/federated identity, opaque secret references, scoped capability grants, and no model-visible secret material.
+### 8. Production readiness beyond preview
 
-### 8. Preview is not production readiness
+A technically valid infrastructure preview is one part of production readiness. Teams also need confidence in packaging, identity, policy, observability, recovery, model behavior, evidence integrity, upgrade and rollback procedures, release provenance, and operating practices.
 
-A successful Terraform plan, CloudFormation change set, Bicep preview, or equivalent does not prove that a product is ready for production.
+Sovereign LZ treats qualification as a release discipline rather than a single infrastructure check.
 
-Teams still need confidence in:
+### 9. Recovery confidence
 
-- packaging
-- identity
-- policy
-- observability
-- recovery
-- model behavior
-- evidence integrity
-- upgrade and rollback
-- release provenance
-- operating procedures
+Backups, snapshots, configuration exports, inventories, and recovery points provide different levels of assurance. Recovery confidence depends on current evidence, alignment with the approved design, isolated restore verification, and realistic recovery objectives.
 
-The challenge is turning a technically valid preview into a qualified operational release.
-
-### 9. Recovery claims without restore evidence
-
-Backups, configuration exports, inventories, and snapshots are often treated as equivalent to recoverability.
-
-They are not.
-
-The challenge is proving:
-
-- what is protected
-- whether evidence is current
-- whether the recovery point matches the approved design
-- whether restore can be performed safely
-- whether RPO/RTO objectives can actually be supported
+Sovereign LZ makes recovery evidence, RPO/RTO objectives, drift, and restore verification part of the operating model.
 
 ### 10. Cost, performance, and model-fit tradeoffs
 
-Larger models are not always the best operational choice.
+Model selection affects latency, memory footprint, inference cost, reasoning quality, context length, validator independence, task throughput, and hardware requirements.
 
-Teams must balance:
-
-- latency
-- memory footprint
-- inference cost
-- reasoning quality
-- context length
-- validator independence
-- task complexity
-- hardware constraints
-
-The challenge is assigning the smallest capable model to the right role and measuring outcomes rather than equating size with quality.
+The production objective is to assign the smallest capable model to each role and evaluate it against measured outcomes.
 
 ### 11. Operational visibility
 
-Agent-assisted infrastructure workflows can become opaque if decisions, failures, retries, policy denials, and evidence transitions are not observable.
+Agent-assisted infrastructure workflows need clear visibility into decisions, failures, retries, policy denials, evidence transitions, model behavior, and recovery state.
 
-The challenge is giving operators clear answers to:
+Operators should be able to determine what happened, why it happened, which evidence was used, which conditions blocked progress, what remains unknown, and what the next safe action is.
 
-- what happened
-- why it happened
-- what evidence was used
-- what was blocked
-- what remains unknown
-- what the next safe action is
+### 12. Compliance evidence
 
-### 12. Compliance evidence versus compliance claims
+Framework mappings can help organize controls and evidence. Production teams still need traceable technical proof for the controls they claim, with clear separation between internal evidence, external attestation, and formal certification.
 
-Framework mappings can help organize controls, but selecting a framework or running a policy check does not make an environment compliant.
+Sovereign LZ supports evidence collection and policy traceability while keeping compliance claims bounded to what can be demonstrated.
 
-The challenge is collecting traceable technical evidence without overstating certification, attestation, or compliance status.
+### 13. Cross-pillar architectural tradeoffs
 
-### 13. Cross-cloud Well-Architected tradeoffs
+Operational Excellence, Security, Reliability and Resiliency, Performance Efficiency, Cost Optimization, and Sustainability influence one another.
 
-Security, reliability, operational excellence, performance, cost, and sustainability frequently compete with one another.
+Recovery depth can increase storage cost. Additional validation can increase latency. Higher model capacity can increase compute requirements. Redundancy can improve resilience while increasing operational complexity. Stronger controls can affect change velocity.
 
-Examples include:
+Sovereign LZ makes these tradeoffs visible so architecture decisions can be evaluated across the full operating model.
 
-- stronger recovery increasing storage cost
-- additional validation increasing latency
-- higher model capacity increasing compute use
-- redundancy improving resilience while increasing operational complexity
-- stricter controls slowing change velocity
+### 14. Progressive actuation
 
-The challenge is making these tradeoffs explicit and evidence-backed rather than optimizing one pillar in isolation.
+Organizations want increasing automation while maintaining control over blast radius and authority.
 
-### 14. Safe progression from assistance to actuation
+Sovereign LZ supports a progression from observation and assessment through design, preview, verification, release, and individually governed actions. Milestone 1 ends with Production Preview/Operate. Milestone 2 introduces narrow, explicitly authorized mutations without creating a global infrastructure actuation mode.
 
-Organizations want increasing automation, but broad mutation authority creates a large blast radius.
-
-The challenge is moving progressively from:
-
-```text
-observe
-→ assess
-→ design
-→ preview
-→ verify
-→ release
-→ individually governed action
-```
-
-without ever requiring a global autonomous `ACT=true`.
-
-These problems are well known individually. Sovereign LZ treats them as one connected production-governance problem.
+These challenges form one connected production-governance problem.
 
 ## Product thesis
 
 Sovereign LZ is a governed infrastructure intelligence layer for private and sovereign environments.
 
-Models can reason, plan, compare, design, and build previews.
+Private models support reasoning, planning, comparison, architecture, implementation previews, and independent validation. Deterministic policy, capability boundaries, identity, data controls, typed adapters, evidence, and release qualification determine what can proceed.
 
-They do not become the control plane.
-
-Deterministic policy, capability boundaries, identity, data controls, typed adapters, evidence, and release qualification determine what can proceed.
-
-The current product posture is:
+The operating flow is:
 
 ```text
 customer intent
@@ -251,23 +130,21 @@ recovery / drift evidence
 production qualification
 ```
 
-Infrastructure ACT remains disabled in Milestone 1.
+Infrastructure ACT remains disabled throughout Milestone 1.
 
 ## Positioning statement
 
-**Infrastructure AI knows how to generate. It does not yet know when it is safe to proceed.**
+**Infrastructure AI can generate quickly. Production infrastructure still requires governed judgment, verified evidence, and controlled authority.**
 
-Sovereign LZ makes private AI part of the infrastructure engineering stack by combining model reasoning with deterministic policy, evidence, recovery, and production qualification.
+Sovereign LZ brings private AI into the infrastructure engineering stack through deterministic governance, typed infrastructure workflows, evidence, recovery, and production qualification.
 
-The value is not prompt-to-IaC generation.
-
-The value is governed judgment around what should be built, what should be blocked, and what can be proven.
+The product value comes from improving the quality and traceability of infrastructure decisions across the complete lifecycle.
 
 ## Proprietary intelligence opportunity
 
 ### Sovereign Infrastructure Execution Corpus
 
-Every governed run can create a structured record of the relationship between:
+Every governed run can create a structured record that connects:
 
 ```text
 intent
@@ -285,42 +162,31 @@ intent
 → qualification outcome
 ```
 
-The useful corpus is not a collection of customer credentials, raw inventories, source code, or confidential topology.
+The corpus centers on decision trails, operating conditions, verification evidence, and outcomes. Customer credentials, secret values, confidential topology, and raw sensitive environment data remain within the customer's approved boundary.
 
-The useful corpus is the **decision trail and verified outcome**.
+Over time, this corpus can improve answers to questions such as:
 
-Over time, this can answer increasingly valuable questions:
-
-- Which architecture decisions tend to succeed under which constraints?
-- Which risks should block or change a design?
-- Which adapter is the best fit for a particular environment and source of truth?
-- Which private model is best at routing, architecture, coding, or independent validation?
-- Where do models disagree, and which answer survives deterministic verification?
-- Which preview failures predict production-readiness problems?
+- Which architecture decisions perform well under specific constraints?
+- Which risks should change or block a design?
+- Which adapter performs best for a given environment and source of truth?
+- Which private model performs best for routing, architecture, coding, and validation?
+- Where do model disagreements occur, and which outcomes survive deterministic verification?
+- Which preview failures correlate with production-readiness problems?
 - Which recovery evidence is sufficient, stale, incomplete, or misleading?
-- Which design tradeoffs improve cost, reliability, performance, security, or operational quality?
-- When should the system abstain rather than continue?
+- Which design tradeoffs improve security, reliability, performance, cost, operational quality, and sustainability?
+- Which conditions should lead the system to abstain or escalate?
 
-Failure evidence is part of the corpus.
-
-`BLOCKED`, `ABSTAIN`, `UNKNOWN`, failed previews, policy denials, model disagreement, stale evidence, failed recovery drills, and corrected designs are high-value examples because they teach the system when **not** to proceed.
+Failure evidence is part of the corpus. `BLOCKED`, `ABSTAIN`, `UNKNOWN`, failed previews, policy denials, model disagreement, stale evidence, failed recovery drills, and corrected designs all contribute to better qualification and safer decision-making.
 
 ## Data sovereignty
 
-The corpus model must preserve the product's sovereignty thesis.
+The corpus model preserves the sovereignty of each deployment.
 
-By default:
+Customer credentials remain customer-controlled. Secret values remain outside model training and qualification data. Customer-specific resource identifiers and topology remain local unless the customer explicitly authorizes a different treatment. Raw environment evidence stays within the customer's approved boundary. Local model learning can remain local to the deployment.
 
-- customer credentials remain customer-controlled
-- secret values never become training material
-- customer-specific resource identifiers and topology remain local
-- raw environment evidence remains within the customer's approved boundary
-- local model learning can remain local to the deployment
-- no cross-customer learning is implied by product use
+Reusable or cross-customer learning requires explicit governance, customer permission, and normalization that removes sensitive customer context.
 
-Any reusable or cross-customer corpus must be based on explicitly governed, non-sensitive, normalized evidence and must have an appropriate customer permission model.
-
-A reusable example should look more like:
+A reusable normalized record may include:
 
 ```text
 provider = AWS
@@ -335,23 +201,11 @@ recovery_evidence = COMPLETE
 qualification = PASS
 ```
 
-and not like:
-
-```text
-customer account IDs
-customer resource names
-credentials
-secret values
-internal hostnames
-private source code
-raw confidential topology
-```
+Sensitive customer data remains outside the reusable corpus, including account identifiers, resource names, credentials, secret values, internal hostnames, private source code, and confidential topology.
 
 ## Well-Architected intelligence
 
-Sovereign LZ should present its assessment model in language recognizable across major cloud Well-Architected frameworks.
-
-The cross-cloud presentation set is:
+Sovereign LZ evaluates infrastructure decisions across six operating pillars:
 
 1. Operational Excellence
 2. Security
@@ -360,144 +214,47 @@ The cross-cloud presentation set is:
 5. Cost Optimization
 6. Sustainability
 
-AWS defines six core Well-Architected pillars: Operational Excellence, Security, Reliability, Performance Efficiency, Cost Optimization, and Sustainability.
-
-Azure defines five core pillars: Reliability, Security, Cost Optimization, Operational Excellence, and Performance Efficiency. Sustainability can be treated as an additional responsible-engineering lens for cross-cloud positioning.
-
-Sovereign LZ keeps **resiliency** explicit inside the reliability domain because recovery, RPO/RTO, restore evidence, failure domains, and drift are first-class product concerns.
+These pillars provide a consistent cross-cloud decision model for architecture, qualification, evidence, and continuous improvement.
 
 ### Operational Excellence
 
-Sovereign LZ contributes:
+Sovereign LZ supports deterministic qualification lifecycles, structured operational evidence, health and readiness, observable policy denials, adapter failures, drift awareness, recovery operations, explicit `UNKNOWN` and `BLOCKED` states, and continuous improvement from verified outcomes.
 
-- deterministic PLAN → DO → CONVERGE → VERIFY → RELEASE lifecycle
-- structured operational evidence
-- health and readiness
-- observable policy denials and adapter failures
-- repeatable qualification
-- drift awareness
-- controlled recovery operations
-- operator-visible UNKNOWN and BLOCKED states
-- continuous improvement from verified outcomes
-
-Corpus value:
-
-- which operating procedures reduce failure
-- which signals predict readiness issues
-- which failure modes recur
-- which remediation sequences resolve them
+The corpus can capture which operating procedures reduce failure, which signals predict readiness problems, which failure modes recur, and which remediation sequences resolve them.
 
 ### Security
 
-Sovereign LZ contributes:
+Sovereign LZ supports private model execution, deterministic policy authority, opaque secret references, prompt governance, default-deny egress, workload and federated identity, capability leases, data minimization, independent validation, compromise-state containment, and customer-controlled evidence.
 
-- private/local model runtime
-- deterministic policy authority
-- opaque secret references
-- prompt-governance boundaries
-- default-deny egress posture
-- workload/federated identity
-- capability leases
-- data minimization
-- independent validation
-- compromise-state containment
-- customer-controlled evidence
-- no model self-authorization
-
-Corpus value:
-
-- policy decisions and reasons
-- denied versus permitted capabilities
-- model-security failures
-- identity patterns by environment
-- evidence of successful containment and recovery
+The corpus can capture policy decisions, denied and permitted capabilities, model-security failures, identity patterns, containment outcomes, and recovery evidence.
 
 ### Reliability and Resiliency
 
-Sovereign LZ contributes:
+Sovereign LZ supports explicit RPO/RTO objectives, recovery target compilation, recovery-point verification, isolated restore testing, immutable recovery intent, drift comparison, control-plane recovery qualification, failure-domain awareness, and explicit uncertainty when evidence is incomplete.
 
-- explicit RPO/RTO objectives
-- recovery target compilation
-- recovery-point verification
-- isolated restore testing
-- immutable/provider-edge recovery intent
-- drift comparison
-- control-plane recovery qualification
-- failure-domain awareness
-- UNKNOWN preserved when evidence is absent
-
-Corpus value:
-
-- which recovery designs actually verify
-- which evidence becomes stale
-- common drift patterns
-- restore blockers
-- reliability tradeoffs by workload criticality
+The corpus can capture which recovery designs verify successfully, which evidence becomes stale, which drift patterns recur, which blockers prevent recovery, and which tradeoffs are appropriate for different workload criticalities.
 
 ### Performance Efficiency
 
-Sovereign LZ contributes:
+Sovereign LZ supports model-role selection, lightweight routing, latency and restart observation, memory-pressure qualification, long-running graph qualification, adapter selection by task, and targeted qualification based on change impact.
 
-- model-role selection rather than one-model-for-everything
-- routing lightweight work to smaller private models
-- latency and restart observation
-- memory-pressure qualification
-- long-running graph qualification
-- adapter/runtime selection by task
-- targeted qualification instead of unnecessary full reruns
-
-Corpus value:
-
-- best model by task and hardware profile
-- latency versus reasoning-quality tradeoffs
-- memory/runtime limits
-- which adapter paths are fastest and most deterministic
-- where larger models materially improve outcomes
+The corpus can capture model performance by task and hardware profile, latency and reasoning-quality tradeoffs, memory limits, adapter performance, and the situations where larger models materially improve outcomes.
 
 ### Cost Optimization
 
-Sovereign LZ contributes:
+Sovereign LZ supports architecture tradeoff assessment, cost policy within the DesignSpec, right-sized model selection, reuse of valid qualification evidence, prevention of unnecessary infrastructure changes, provider and adapter selection informed by operating economics, and cost-aware recovery objectives.
 
-- architecture tradeoff assessment
-- cost policy as part of DesignSpec
-- right-sized model selection
-- evidence reuse instead of redundant qualification
-- prevention of unnecessary infrastructure changes
-- provider/adapter choice informed by operating economics
-- cost-aware recovery objectives and retention
-
-Corpus value:
-
-- cost consequences of architecture choices
-- cost versus resilience tradeoffs
-- model inference economics
-- patterns that create waste
-- changes that generate little operational value
+The corpus can capture cost consequences of architecture choices, resilience tradeoffs, model inference economics, recurring waste patterns, and changes that generate limited operational value.
 
 ### Sustainability
 
-Sovereign LZ contributes:
+Sovereign LZ supports efficient model sizing, reuse of valid qualification evidence, reduction of unnecessary inference and CI runs, resource lifecycle awareness, controlled retention, and measured infrastructure efficiency.
 
-- efficient model sizing
-- reuse of valid qualification evidence
-- avoidance of unnecessary inference and CI runs
-- resource lifecycle awareness
-- avoiding needless duplication
-- retention/copy policies informed by business need
-- measured efficiency rather than invented carbon claims
-
-Corpus value:
-
-- compute consumed per qualified outcome
-- unnecessary rerun patterns
-- model efficiency by task
-- infrastructure lifecycle efficiency
-
-Sovereign LZ should not claim carbon reduction without measured evidence.
+The corpus can capture compute consumed per qualified outcome, unnecessary rerun patterns, model efficiency by task, and infrastructure lifecycle efficiency. Sustainability claims should remain tied to measured evidence.
 
 ## Why the corpus can become defensible
 
-The long-term advantage is the feedback loop:
+The long-term advantage comes from a compounding operational feedback loop:
 
 ```text
 more governed infrastructure work
@@ -506,72 +263,67 @@ more verified decision evidence
         ↓
 better execution corpus
         ↓
-better model / task routing
+better model and task routing
         ↓
 better architecture recommendations
         ↓
 fewer failed previews
         ↓
-stronger abstention and validation
+stronger qualification and validation
         ↓
-more trustworthy autonomy
+more trustworthy bounded autonomy
         ↓
 more governed infrastructure work
 ```
 
-This is different from training a model to write more infrastructure code.
-
-The goal is to improve private intelligence around **how production infrastructure decisions are made, challenged, verified, recovered, and released**.
+The corpus improves private infrastructure intelligence by connecting real engineering decisions to verified outcomes across architecture, policy, implementation, recovery, and release.
 
 ## Role of private models
 
-The corpus can support increasingly specialized private model roles:
+The corpus can support specialized private model roles across the operating lifecycle:
 
 - Router
 - Sovereign Architect
 - Security Reviewer
-- Reliability / Recovery Analyst
+- Reliability and Recovery Analyst
 - Cost Analyst
 - Performance Analyst
 - Build Engineer
 - Independent Validator
 
-Model quality is evaluated against verified outcomes, not against stylistic similarity to an answer.
-
-A model can be replaced without replacing the Sovereign LZ control plane.
+Model quality is evaluated against verified outcomes, structured evidence, and role-specific qualification. The Sovereign LZ control plane remains independent from any single model family.
 
 ## One-pager narrative
 
-The one-pager should normally tell this story in five moves:
+The one-pager should normally follow six moves:
 
-1. **Problem** — infrastructure AI can generate, but production operators need control and proof.
+1. **Problem** — production infrastructure requires governed decisions, evidence, and controlled authority.
 2. **Known challenges** — brownfield uncertainty, fragmented tooling, identity sprawl, incomplete evidence, policy inconsistency, recovery uncertainty, model nondeterminism, and cross-pillar tradeoffs.
 3. **Product** — Sovereign LZ combines private model reasoning with deterministic governance and typed infrastructure workflows.
-4. **Well-Architected outcomes** — decisions are evaluated across Operational Excellence, Security, Reliability/Resiliency, Performance Efficiency, Cost Optimization, and Sustainability.
-5. **Compounding intelligence** — each governed run creates evidence about which decisions, models, policies, and designs actually work.
-6. **Boundary** — customer environments remain sovereign; AI assists engineering judgment but does not own authority.
+4. **Well-Architected outcomes** — decisions are evaluated across Operational Excellence, Security, Reliability and Resiliency, Performance Efficiency, Cost Optimization, and Sustainability.
+5. **Compounding intelligence** — governed runs create evidence about which decisions, models, policies, architectures, and implementation paths perform best.
+6. **Sovereignty boundary** — customer environments remain customer-controlled, and the authority model remains deterministic and explicit.
 
 ## Slide-deck narrative
 
 A standard executive deck can use this sequence:
 
-1. The problem: generation is not production governance
-2. The known problem set: brownfield, fragmentation, authority, evidence, recovery, model and operating risk
-3. Why current infrastructure AI is insufficient
-4. Sovereign LZ: governed private infrastructure intelligence
-5. Architecture: model reasoning inside deterministic authority
-6. Well-Architected assessment across the six cross-cloud lenses
-7. Preview/Operate workflow and evidence
-8. Recovery and production qualification
-9. Sovereign Infrastructure Execution Corpus
-10. Compounding model and architecture intelligence
-11. Milestone 1: Production Preview/Operate
-12. Milestone 2: individually governed actuation
-13. Why this becomes a durable operating layer
+1. Production infrastructure problem
+2. Known operational and governance challenges
+3. Sovereign LZ product thesis
+4. Architecture and authority model
+5. Six-pillar Well-Architected assessment
+6. Preview/Operate workflow
+7. Evidence, recovery, and production qualification
+8. Sovereign Infrastructure Execution Corpus
+9. Compounding model and architecture intelligence
+10. Milestone 1: Production Preview/Operate
+11. Milestone 2: Governed Actuation
+12. Long-term operating layer and defensibility
 
 ## Language guardrails
 
-Prefer:
+Preferred language includes:
 
 - governed
 - evidence-backed
@@ -584,18 +336,10 @@ Prefer:
 - bounded autonomy
 - verified outcome
 
-Avoid unsupported claims such as:
-
-- fully autonomous cloud operations
-- self-governing AI
-- guaranteed compliance
-- universal backup
-- automatic remediation
-- zero-risk deployment
-- proprietary training data unless the data rights and collection mechanism actually exist
+Product language should remain within implemented and qualified behavior. Claims around autonomy, compliance, recovery, remediation, deployment risk, and proprietary training data should remain tied to evidence, explicit data rights, and actual product capabilities.
 
 ## Durable takeaway
 
-**Sovereign LZ is not trying to teach AI how to generate more infrastructure.**
+**Sovereign LZ provides a governed infrastructure intelligence layer that connects private model reasoning with deterministic authority, verified evidence, Well-Architected decision-making, recovery, and production qualification.**
 
-It is building the governed execution layer—and eventually the verified corpus—that teaches private intelligence how good infrastructure decisions are made, when they should be challenged, and when they are safe enough to proceed.
+Its long-term advantage comes from building a verified execution corpus that improves how infrastructure decisions are designed, challenged, qualified, and released while preserving customer sovereignty.
