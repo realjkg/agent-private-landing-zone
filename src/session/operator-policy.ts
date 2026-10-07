@@ -35,7 +35,11 @@ export function evaluateOperatorRequest(
   if (!promptScreen.allowed) {
     return {
       allowed: false,
-      boundary: "CONTROL_BYPASS",
+      boundary:
+        promptScreen.risk ===
+        "TOOL_COERCION"
+          ? "ARBITRARY_EXECUTION"
+          : "CONTROL_BYPASS",
       reason:
         promptScreen.reason ??
         "The request attempts to change or bypass the governed prompt boundary.",
