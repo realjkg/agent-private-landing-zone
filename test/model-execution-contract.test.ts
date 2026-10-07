@@ -92,6 +92,17 @@ test("24GB laptop primary candidates exclude oversized server models", () => {
       "QWEN3_CODER_30B_A3B",
     ),
   );
+
+  const qwen =
+    primary.find(
+      (candidate) =>
+        candidate.id ===
+        "QWEN3_CODER_30B_A3B",
+    );
+  assert.equal(
+    qwen?.laptop24Fit,
+    "TIGHT",
+  );
   assert.equal(
     ids.includes(
       "QWEN3_CODER_NEXT",
@@ -132,7 +143,7 @@ test("Phi reasoning remains a validator/specialist rather than an autonomous too
   );
 });
 
-test("Nemotron 3.5 Lightning is treated as tight rather than a safe 24GB default", () => {
+test("Nemotron 3.5 Lightning is excluded as a safe 24GB default", () => {
   const nemotron =
     CANDIDATE_MODELS.find(
       (candidate) =>
@@ -143,6 +154,31 @@ test("Nemotron 3.5 Lightning is treated as tight rather than a safe 24GB default
   assert.ok(nemotron);
   assert.equal(
     nemotron.laptop24Fit,
-    "TIGHT",
+    "NO",
+  );
+});
+
+
+test("Phi-4 Mini is a compact tool-capable router/specialist candidate", () => {
+  const phi =
+    CANDIDATE_MODELS.find(
+      (candidate) =>
+        candidate.id ===
+        "PHI_4_MINI_INSTRUCT",
+    );
+
+  assert.ok(phi);
+  assert.equal(
+    phi.nativeToolUse,
+    true,
+  );
+  assert.equal(
+    phi.approximateLocalWeightGb,
+    2.5,
+  );
+  assert.ok(
+    phi.roles.includes(
+      "ROUTER",
+    ),
   );
 });
