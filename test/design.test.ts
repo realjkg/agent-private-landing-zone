@@ -167,11 +167,11 @@ test("Ansible is a governed Build plug-in for brownfield configuration scenarios
   );
   assert.equal(
     selected.status,
-    "PLANNED",
+    "READY",
   );
   assert.equal(
     selected.buildEligible,
-    false,
+    true,
   );
 });
 
