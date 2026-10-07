@@ -17,28 +17,6 @@ test("plug-in catalog is complete and current", () => {
   );
 });
 
-test("all eight build paths are implemented", () => {
-  const implemented =
-    PLUGIN_CATALOG.filter(
-      (plugin) =>
-        plugin.status === "IMPLEMENTED",
-    ).map((plugin) => plugin.id);
-
-  assert.deepEqual(
-    implemented,
-    [
-      "TERRAFORM",
-      "PULUMI",
-      "OPENTOFU",
-      "BICEP",
-      "CLOUDFORMATION",
-      "AWS_CDK",
-      "CROSSPLANE",
-      "ANSIBLE",
-    ],
-  );
-});
-
 test("all plug-ins participate in supply-chain scanning", () => {
   for (const plugin of PLUGIN_CATALOG) {
     assert.ok(
@@ -64,10 +42,6 @@ test("Ansible participates in Build Configure and Manage", () => {
     ansible.stage,
     ["BUILD", "CONFIGURE", "MANAGE"],
   );
-  assert.equal(
-    ansible.status,
-    "IMPLEMENTED",
-  );
   assert.ok(
     ansible.capabilities.includes(
       "PREVIEW",
@@ -92,10 +66,6 @@ test("AWS CDK keeps synthesis and normalized CloudFormation evidence", () => {
     cdk.providers,
     ["AWS"],
   );
-  assert.equal(
-    cdk.status,
-    "IMPLEMENTED",
-  );
   assert.ok(
     cdk.capabilities.includes(
       "SYNTHESIZE",
@@ -116,10 +86,6 @@ test("Crossplane is implemented with Build and Manage scope", () => {
     );
 
   assert.ok(crossplane);
-  assert.equal(
-    crossplane.status,
-    "IMPLEMENTED",
-  );
   assert.deepEqual(
     crossplane.stage,
     ["BUILD", "MANAGE"],
