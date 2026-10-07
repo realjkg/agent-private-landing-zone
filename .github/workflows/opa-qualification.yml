@@ -1,0 +1,67 @@
+name: OPA Production Qualification
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/opa-qualification.yml"
+      - "policy/opa/**"
+      - "src/security/policy/**"
+      - "src/qualification/opa-parity.ts"
+      - "src/cli/opa-qualification.ts"
+      - "test/opa-parity.test.ts"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  opa-qualification:
+    name: Pinned local OPA parity
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: package-lock.json
+          package-manager-cache: false
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Type-check and targeted policy tests
+        run: |
+          npm run check
+          ./node_modules/.bin/tsx --test test/security-policy.test.ts test/opa-parity.test.ts
+
+      - name: Build qualification CLI
+        run: npm run build
+
+      - name: Download pinned OPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          OPA_VERSION="1.21.1"
+          OPA_SHA256="23c654cdb52fc80c3f30e85c0c884a15f78a10173d0a5a060aa25eac15f48fbb"
+          curl --fail --location --silent --show-error             -o ./opa             "https://github.com/open-policy-agent/opa/releases/download/v${OPA_VERSION}/opa_linux_amd64"
+          echo "${OPA_SHA256}  opa" | sha256sum -c -
+          chmod +x ./opa
+          ./opa version
+
+      - name: Strict BUILTIN and OPA parity
+        run: |
+          node dist/cli/opa-qualification.js             --opa ./opa             --policy policy/opa/security.rego             --output .runs/qualification/opa-parity.json
+
+      - name: Upload OPA qualification evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: agent-private-landing-zone-opa-qualification
+          path: .runs/qualification/opa-parity.json
+          if-no-files-found: warn
+          retention-days: 30
