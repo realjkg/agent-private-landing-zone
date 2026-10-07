@@ -191,6 +191,9 @@ function artifactKind(
   if (
     path.startsWith(
       ".runs/state/",
+    ) ||
+    path.startsWith(
+      ".runs/checkpoints/",
     )
   ) {
     return "CHECKPOINT_STATE";
@@ -456,6 +459,25 @@ export function validateControlPlaneRecoveryBundle(
     );
   }
 
+  for (const kind of [
+    "RELEASE_MANIFEST",
+    "CONFIGURATION",
+    "POLICY",
+  ] as const) {
+    if (
+      !bundle.files.some(
+        (file) =>
+          file.kind === kind,
+      )
+    ) {
+      blockers.push(
+        "Control-plane recovery bundle is missing required " +
+          kind +
+          " state.",
+      );
+    }
+  }
+
   for (const file of
     bundle.files) {
     if (
@@ -643,7 +665,15 @@ export async function createControlPlaneRecoveryBundle(
     "release-manifest.json",
   ];
 
-  const statePaths = [
+  const additionalPaths = [
+    ...(await walkFiles(
+      root,
+      "config",
+    )),
+    ...(await walkFiles(
+      root,
+      "policy",
+    )),
     ...(await walkFiles(
       root,
       ".runs/evidence",
@@ -652,12 +682,16 @@ export async function createControlPlaneRecoveryBundle(
       root,
       ".runs/state",
     )),
+    ...(await walkFiles(
+      root,
+      ".runs/checkpoints",
+    )),
   ];
 
   const paths = [
     ...new Set([
       ...releasePaths,
-      ...statePaths,
+      ...additionalPaths,
     ]),
   ].sort();
 
