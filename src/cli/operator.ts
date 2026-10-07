@@ -1,4 +1,5 @@
 import {
+  existsSync,
   mkdirSync,
   readFileSync,
   readdirSync,
@@ -169,6 +170,25 @@ function runTs(
   script: string,
   args: string[] = [],
 ): void {
+  const compiled =
+    resolve(
+      root,
+      script
+        .replace(/^src\//, "dist/")
+        .replace(/\.ts$/, ".js"),
+    );
+
+  if (existsSync(compiled)) {
+    run(
+      process.execPath,
+      [
+        compiled,
+        ...args,
+      ],
+    );
+    return;
+  }
+
   run(
     localBin("tsx"),
     [
@@ -259,26 +279,39 @@ function verify(): void {
     "Verifying code, policy boundaries, compatibility, and core scenarios...",
   );
 
-  run(
-    localBin("tsc"),
-    ["-p", "tsconfig.json", "--noEmit"],
-  );
-
-  const tests = readdirSync(
-    resolve(root, "test"),
-  )
-    .filter((name) =>
-      name.endsWith(".test.ts"),
-    )
-    .sort()
-    .map((name) =>
-      resolve(root, "test", name),
+  const sourceQualification =
+    existsSync(localBin("tsx")) &&
+    existsSync(localBin("tsc")) &&
+    existsSync(
+      resolve(root, "test"),
     );
 
-  run(
-    localBin("tsx"),
-    ["--test", ...tests],
-  );
+  if (sourceQualification) {
+    run(
+      localBin("tsc"),
+      ["-p", "tsconfig.json", "--noEmit"],
+    );
+
+    const tests = readdirSync(
+      resolve(root, "test"),
+    )
+      .filter((name) =>
+        name.endsWith(".test.ts"),
+      )
+      .sort()
+      .map((name) =>
+        resolve(root, "test", name),
+      );
+
+    run(
+      localBin("tsx"),
+      ["--test", ...tests],
+    );
+  } else {
+    console.log(
+      "Packaged runtime detected; source type-check and test-suite qualification were completed at release build time.",
+    );
+  }
 
   runTs("src/cli/security.ts");
   runTs("src/cli/plugins.ts");
@@ -318,7 +351,11 @@ function verify(): void {
 
   run(
     "npm",
-    ["audit", "--audit-level=high"],
+    [
+      "audit",
+      "--omit=dev",
+      "--audit-level=high",
+    ],
   );
 
   console.log();

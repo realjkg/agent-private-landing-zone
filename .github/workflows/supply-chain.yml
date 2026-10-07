@@ -1,6 +1,16 @@
 name: Agent Private Landing Zone Supply Chain
 
 on:
+  pull_request:
+    paths:
+      - ".github/workflows/supply-chain.yml"
+      - "src/release/**"
+      - "src/cli/release-package.ts"
+      - "src/cli/operator.ts"
+      - "src/build/repository.ts"
+      - "alz"
+      - "package.json"
+      - "package-lock.json"
   workflow_dispatch:
     inputs:
       release_phase:
@@ -14,7 +24,7 @@ permissions:
 
 jobs:
   supply-chain:
-    name: Verify, SBOM and security scan
+    name: Verify, package, reproduce and scan
     runs-on: ubuntu-24.04
 
     steps:
@@ -38,7 +48,10 @@ jobs:
           npm test
           npm run plugins:check
 
-      - name: Operator design scenarios
+      - name: Build compiled runtime
+        run: npm run build
+
+      - name: Compiled operator design scenarios
         run: |
           ./alz design aws terraform brownfield
           ./alz design azure pulumi greenfield
@@ -55,6 +68,48 @@ jobs:
       - name: Generate CycloneDX SBOM
         run: npm sbom --sbom-format=cyclonedx --package-lock-only > sbom.cdx.json
 
+      - name: Stage Preview Operate artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          STAGE=".runs/release/stage"
+          rm -rf ".runs/release"
+          mkdir -p "$STAGE"
+          cp -R dist "$STAGE/dist"
+          cp -R policy "$STAGE/policy"
+          cp -R config "$STAGE/config"
+          cp package.json package-lock.json alz sbom.cdx.json "$STAGE/"
+          chmod +x "$STAGE/alz"
+          VERSION="$(node -p "require('./package.json').version")"
+          node dist/cli/release-package.js             --root "$STAGE"             --source-commit "$GITHUB_SHA"             --version "$VERSION"
+          node dist/cli/release-package.js             --root "$STAGE"             --verify
+
+      - name: Prove deterministic archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          STAGE=".runs/release/stage"
+          A=".runs/release/agent-private-landing-zone-a.tar.gz"
+          B=".runs/release/agent-private-landing-zone-b.tar.gz"
+          tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner -C "$STAGE" -cf - . | gzip -n > "$A"
+          tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner -C "$STAGE" -cf - . | gzip -n > "$B"
+          cmp "$A" "$B"
+          cp "$A" ".runs/release/agent-private-landing-zone.tar.gz"
+          sha256sum ".runs/release/agent-private-landing-zone.tar.gz" > ".runs/release/agent-private-landing-zone.tar.gz.sha256"
+
+      - name: Clean production install smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          INSTALL="$(mktemp -d)"
+          trap 'rm -rf "$INSTALL"' EXIT
+          tar -xzf ".runs/release/agent-private-landing-zone.tar.gz" -C "$INSTALL"
+          cd "$INSTALL"
+          npm ci --omit=dev
+          ./alz help
+          node dist/cli/release-package.js --root . --verify
+          ./alz doctor
+
       - name: Scan vulnerabilities and IaC configuration
         uses: aquasecurity/trivy-action@v0.36.0
         with:
@@ -66,7 +121,7 @@ jobs:
           output: trivy-results.json
           exit-code: "1"
 
-      - name: Upload scan evidence
+      - name: Upload release and qualification evidence
         if: always()
         uses: actions/upload-artifact@v7
         with:
@@ -74,4 +129,8 @@ jobs:
           path: |
             sbom.cdx.json
             trivy-results.json
+            .runs/release/stage/release-manifest.json
+            .runs/release/agent-private-landing-zone.tar.gz
+            .runs/release/agent-private-landing-zone.tar.gz.sha256
+          if-no-files-found: warn
           retention-days: 30

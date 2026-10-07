@@ -1,10 +1,23 @@
 import assert from "node:assert/strict";
+import {
+  mkdtemp,
+  mkdir,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import {
+  tmpdir,
+} from "node:os";
+import {
+  join,
+} from "node:path";
 import test from "node:test";
 
 import {
   createReleaseManifest,
   sha256Buffer,
   validateReleaseManifest,
+  verifyReleaseArtifact,
 } from "../src/release/manifest.js";
 import {
   planReleaseLifecycle,
@@ -203,4 +216,152 @@ test("active version cannot be selected for uninstall", () => {
       }),
     /RELEASE_UNINSTALL_CURRENT_DENIED/,
   );
+});
+
+
+test("release artifact verification detects missing or tampered staged files", async () => {
+  const root =
+    await mkdtemp(
+      join(
+        tmpdir(),
+        "alz-release-",
+      ),
+    );
+
+  try {
+    await mkdir(
+      join(
+        root,
+        "dist",
+        "cli",
+      ),
+      {
+        recursive: true,
+      },
+    );
+
+    const operator =
+      "console.log('preview operate');\n";
+    const sbom =
+      "{\"bomFormat\":\"CycloneDX\"}\n";
+    const lock =
+      "{\"lockfileVersion\":3}\n";
+
+    await writeFile(
+      join(
+        root,
+        "dist",
+        "cli",
+        "operator.js",
+      ),
+      operator,
+    );
+    await writeFile(
+      join(
+        root,
+        "sbom.cdx.json",
+      ),
+      sbom,
+    );
+    await writeFile(
+      join(
+        root,
+        "package-lock.json",
+      ),
+      lock,
+    );
+
+    const manifest =
+      createReleaseManifest({
+        productVersion:
+          "1.0.0",
+        sourceCommit:
+          "a".repeat(40),
+        files: [
+          {
+            path:
+              "dist/cli/operator.js",
+            sha256:
+              sha256Buffer(
+                operator,
+              ),
+          },
+          {
+            path:
+              "package-lock.json",
+            sha256:
+              sha256Buffer(
+                lock,
+              ),
+          },
+          {
+            path:
+              "sbom.cdx.json",
+            sha256:
+              sha256Buffer(
+                sbom,
+              ),
+          },
+        ],
+        sbomPath:
+          "sbom.cdx.json",
+        sbomSha256:
+          sha256Buffer(
+            sbom,
+          ),
+      });
+
+    assert.deepEqual(
+      await verifyReleaseArtifact(
+        root,
+        manifest,
+      ),
+      [],
+    );
+
+    await writeFile(
+      join(
+        root,
+        "dist",
+        "cli",
+        "operator.js",
+      ),
+      "tampered\n",
+    );
+
+    assert.match(
+      (
+        await verifyReleaseArtifact(
+          root,
+          manifest,
+        )
+      ).join(" "),
+      /integrity mismatch/i,
+    );
+
+    await rm(
+      join(
+        root,
+        "package-lock.json",
+      ),
+    );
+
+    assert.match(
+      (
+        await verifyReleaseArtifact(
+          root,
+          manifest,
+        )
+      ).join(" "),
+      /missing or unreadable/i,
+    );
+  } finally {
+    await rm(
+      root,
+      {
+        recursive: true,
+        force: true,
+      },
+    );
+  }
 });
