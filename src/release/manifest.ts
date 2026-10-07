@@ -4,6 +4,11 @@ import {
 import {
   readFile,
 } from "node:fs/promises";
+import {
+  isAbsolute,
+  relative,
+  resolve,
+} from "node:path";
 
 import {
   PRODUCTION_DEPLOYMENT_CONTRACT,
@@ -82,6 +87,35 @@ function validHash(
   return /^[0-9a-f]{64}$/.test(
     value,
   );
+}
+
+function safeRelativePath(
+  root: string,
+  path: string,
+): string | undefined {
+  if (
+    !path ||
+    isAbsolute(path) ||
+    path.includes("\0")
+  ) {
+    return undefined;
+  }
+
+  const target =
+    resolve(root, path);
+  const relation =
+    relative(root, target);
+
+  if (
+    relation === "" ||
+    relation === "." ||
+    relation.startsWith("..") ||
+    isAbsolute(relation)
+  ) {
+    return undefined;
+  }
+
+  return target;
 }
 
 export function createReleaseManifest(input: {
@@ -184,6 +218,16 @@ export function validateReleaseManifest(
   const blockers: string[] = [];
 
   if (
+    value.schemaVersion !== 1 ||
+    value.product !==
+      "agent-private-landing-zone"
+  ) {
+    blockers.push(
+      "Release manifest schema or product identity is invalid.",
+    );
+  }
+
+  if (
     value.contract.id !==
     PRODUCTION_DEPLOYMENT_CONTRACT
       .metadata.id ||
@@ -229,6 +273,27 @@ export function validateReleaseManifest(
     );
   }
 
+  const paths =
+    value.files.map(
+      (file) => file.path,
+    );
+
+  if (
+    new Set(paths).size !==
+      paths.length ||
+    paths.some(
+      (path) =>
+        path.startsWith("/") ||
+        path.includes(".."),
+    ) ||
+    value.sbom.path.startsWith("/") ||
+    value.sbom.path.includes("..")
+  ) {
+    blockers.push(
+      "Release manifest contains unsafe or duplicate file paths.",
+    );
+  }
+
   if (
     !value.lifecycle.cleanInstall ||
     !value.lifecycle.upgrade ||
@@ -243,4 +308,94 @@ export function validateReleaseManifest(
   }
 
   return blockers;
+}
+
+export async function verifyReleaseArtifact(
+  root: string,
+  manifest:
+    PreviewOperateReleaseManifest,
+): Promise<string[]> {
+  const blockers =
+    validateReleaseManifest(
+      manifest,
+    );
+
+  const resolvedRoot =
+    resolve(root);
+
+  for (const file of
+    manifest.files) {
+    const target =
+      safeRelativePath(
+        resolvedRoot,
+        file.path,
+      );
+
+    if (!target) {
+      blockers.push(
+        "Release file path is outside the artifact root: " +
+          file.path,
+      );
+      continue;
+    }
+
+    try {
+      const actual =
+        await sha256File(
+          target,
+        );
+
+      if (
+        actual !== file.sha256
+      ) {
+        blockers.push(
+          "Release file integrity mismatch: " +
+            file.path,
+        );
+      }
+    } catch {
+      blockers.push(
+        "Release file is missing or unreadable: " +
+          file.path,
+      );
+    }
+  }
+
+  const sbomTarget =
+    safeRelativePath(
+      resolvedRoot,
+      manifest.sbom.path,
+    );
+
+  if (!sbomTarget) {
+    blockers.push(
+      "SBOM path is outside the artifact root.",
+    );
+  } else {
+    try {
+      const actual =
+        await sha256File(
+          sbomTarget,
+        );
+
+      if (
+        actual !==
+          manifest.sbom.sha256
+      ) {
+        blockers.push(
+          "SBOM integrity mismatch.",
+        );
+      }
+    } catch {
+      blockers.push(
+        "SBOM is missing or unreadable.",
+      );
+    }
+  }
+
+  return [
+    ...new Set(
+      blockers,
+    ),
+  ];
 }
