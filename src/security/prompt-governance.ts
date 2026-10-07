@@ -44,7 +44,7 @@ const EDUCATIONAL =
   /explain|describe|teach|why|example|examples|detect|test|simulate|review|analy[sz]e|what is/i;
 
 const DIRECT_OVERRIDE =
-  /ignore (all |any )?(previous|prior|system|developer|operator) (instructions?|rules?|prompts?)|disregard (all |any )?(previous|prior|system|developer|operator) (instructions?|rules?|prompts?)|override (the )?(system|developer|operator) (prompt|instructions?|rules?)/i;
+  /ignore (all |any )?(previous|prior)( (system|developer|operator))? (instructions?|rules?|prompts?)|ignore (the )?(system|developer|operator) (instructions?|rules?|prompts?)|disregard (all |any )?(previous|prior)( (system|developer|operator))? (instructions?|rules?|prompts?)|override (the )?(system|developer|operator) (prompt|instructions?|rules?)/i;
 
 const ROLE_HIJACK =
   /you are now|act as (the )?(system|developer|root|administrator)|switch roles?|new role|pretend (you are|to be) (the )?(system|developer|root)/i;
