@@ -43,7 +43,13 @@ function walk(
           ? path + "." + key
           : key;
 
-      if (SENSITIVE_KEY.test(key)) {
+      if (
+        SENSITIVE_KEY.test(key) &&
+        (
+          item === null ||
+          typeof item !== "object"
+        )
+      ) {
         output[key] =
           "[REDACTED]";
         redacted.push(
