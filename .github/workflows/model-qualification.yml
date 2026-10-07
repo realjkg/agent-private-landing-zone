@@ -4,13 +4,18 @@ on:
   push:
     branches:
       - main
-      - feat/governed-adapters-models
     paths:
       - "src/models/**"
       - "src/security/prompt-governance.ts"
       - "src/ollama.ts"
       - ".github/workflows/model-qualification.yml"
+  schedule:
+    - cron: "45 15 * * 3"
   workflow_dispatch:
+
+concurrency:
+  group: private-model-qualification-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
