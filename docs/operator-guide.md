@@ -26,6 +26,8 @@ This installs the locked runtime dependencies. After bootstrap, use `./alz` for 
 ./alz inspect azure
 ./alz session aws terraform
 ./alz session azure pulumi
+./alz debug aws terraform brownfield --fixture --request "Review this environment for the strongest operational risk."
+./alz debug aws terraform brownfield --request "Review this environment for the strongest operational risk."
 ./alz target init <target-id> <owner> <aws|azure> <scope-id> <startup|enterprise> <development|production> <non-critical|business|critical>
 ./alz target check <intent-file>
 ./alz target explain <intent-file>
@@ -82,6 +84,25 @@ Starts the secured conversational operator session with local model reasoning:
 ./alz session aws terraform
 ./alz session azure pulumi
 ```
+
+### debug
+
+Runs the governed kernel with a developer-focused diagnostic view:
+
+```bash
+./alz debug aws terraform brownfield --fixture --request "Review this environment for the strongest operational risk."
+./alz debug aws terraform brownfield --request "Review this environment for the strongest operational risk."
+```
+
+Use `--fixture` when debugging TypeScript, orchestration, policy, build-gate, or trace behavior without invoking local models. Omit it when diagnosing the configured private Qwen/Mistral stack.
+
+DEBUG changes visibility only. It uses the same deterministic operator policy and kernel boundary as normal operation, keeps ACT disabled, never grants cloud or mutation authority, and never enables arbitrary shell execution.
+
+The console and JSONL trace expose run correlation, phase transitions and timing, model role/tag/digest metadata, structured-output validity, validator participation, evidence/UNKNOWN state, build/action boundaries, and sanitized failure classification. The trace fingerprints the operator request instead of storing it and does not persist full prompts, full model responses, credentials, secret values, or chain-of-thought.
+
+A `REVIEW_REQUIRED` grounding result is a diagnostic signal, not a claim that a model hallucinated. Investigate missing evidence, explicit assumptions, UNKNOWN environment state, schema/model failures, and independent-validator disagreement before attributing the result to model behavior.
+
+Traces are written locally under `.runs/debug/<run-id>.jsonl` with restrictive file permissions.
 
 ### target
 

@@ -41,6 +41,18 @@ export type StatusReporter = (
   detail?: string,
 ) => void;
 
+export type ModelInvocationDiagnostic = {
+  role:
+    | "ROUTER"
+    | "PRIMARY"
+    | "VALIDATOR"
+    | "ADJUDICATOR";
+  model: string;
+  durationMs: number;
+  structuredOutput: true;
+  schemaValid: true;
+};
+
 export type AgentResult = {
   requestId: string;
   plan: TaskPlan;
@@ -48,6 +60,7 @@ export type AgentResult = {
   primary?: EngineeringAssessment;
   validator?: EngineeringAssessment;
   adjudication?: string;
+  modelInvocations?: ModelInvocationDiagnostic[];
   durationMs: number;
 };
 
@@ -115,51 +128,89 @@ function isConceptualRequest(request: string): boolean {
   return patterns.some((pattern) => pattern.test(request));
 }
 
+async function timedStructuredCall(
+  role: ModelInvocationDiagnostic["role"],
+  model: string,
+  messages: Parameters<typeof invokeLocalModel>[2],
+): Promise<{
+  raw: string;
+  diagnostic: Omit<
+    ModelInvocationDiagnostic,
+    "schemaValid"
+  >;
+}> {
+  const cfg = loadConfig();
+  const startedAt = Date.now();
+  const raw = await invokeLocalModel(
+    cfg.ollamaBaseUrl,
+    model,
+    messages,
+    STRUCTURED_MODEL_OPTIONS,
+  );
+
+  return {
+    raw,
+    diagnostic: {
+      role,
+      model,
+      durationMs:
+        Date.now() - startedAt,
+      structuredOutput: true,
+    },
+  };
+}
+
 async function classify(
   request: string,
   report: StatusReporter,
-): Promise<TaskPlan> {
+): Promise<{
+  plan: TaskPlan;
+  diagnostic: ModelInvocationDiagnostic;
+}> {
   const cfg = loadConfig();
 
   report("ROUTING", cfg.routerModel);
 
-  const raw = await invokeLocalModel(
-    cfg.ollamaBaseUrl,
-    cfg.routerModel,
-    [
-      {
-        role: "system",
-        content: [
-          "You are the supervisory router for a private agentic landing zone.",
-          "Classify the request. Do not answer it.",
-          "",
-          "Return JSON only:",
-          "{",
-          '  "complexity": "LOW" | "HIGH",',
-          '  "freshDataRequired": boolean,',
-          '  "impact": "LOW" | "HIGH",',
-          '  "verificationRequired": boolean',
-          "}",
-          "",
-          "freshDataRequired=true only when current, customer-specific,",
-          "environment-specific, live telemetry, deployment state, or other",
-          "changing external evidence is actually required.",
-          "",
-          "Architecture reviews, conceptual risk analysis, DevOps guidance,",
-          "security architecture, SRE reasoning, and hypothetical scenarios",
-          "do not require fresh data by default.",
-        ].join("\n"),
-      },
-      {
-        role: "user",
-        content:
-          governedUserRequest(request),
-      },
-    ],
-    STRUCTURED_MODEL_OPTIONS,
-  );
+  const routed =
+    await timedStructuredCall(
+      "ROUTER",
+      cfg.routerModel,
+      [
+        {
+          role: "system",
+          content: [
+            "You are the supervisory router for a private agentic landing zone.",
+            "Classify the request. Do not answer it.",
+            "",
+            "Return JSON only:",
+            "{",
+            '  "complexity": "LOW" | "HIGH",',
+            '  "freshDataRequired": boolean,',
+            '  "impact": "LOW" | "HIGH",',
+            '  "verificationRequired": boolean',
+            "}",
+            "",
+            "freshDataRequired=true only when current, customer-specific,",
+            "environment-specific, live telemetry, deployment state, or other",
+            "changing external evidence is actually required.",
+            "",
+            "Architecture reviews, conceptual risk analysis, DevOps guidance,",
+            "security architecture, SRE reasoning, and hypothetical scenarios",
+            "do not require fresh data by default.",
+          ].join("\n"),
+        },
+        {
+          role: "user",
+          content:
+            governedUserRequest(request),
+        },
+      ],
+    );
 
-  const proposed = extractJson<TaskPlan>(raw);
+  const proposed =
+    extractJson<TaskPlan>(
+      routed.raw,
+    );
 
   if (!["LOW", "HIGH"].includes(proposed.complexity)) {
     throw new Error("INVALID_ROUTER_OUTPUT: complexity");
@@ -185,7 +236,13 @@ async function classify(
     enforced.freshDataRequired = false;
   }
 
-  return enforced;
+  return {
+    plan: enforced,
+    diagnostic: {
+      ...routed.diagnostic,
+      schemaValid: true,
+    },
+  };
 }
 
 export function evidenceSufficient(
@@ -252,7 +309,16 @@ export async function runAgentLoop(
     }
 
     const cfg = loadConfig();
-    const plan = await classify(request, report);
+    const routed =
+      await classify(
+        request,
+        report,
+      );
+    const plan = routed.plan;
+    const modelInvocations:
+      ModelInvocationDiagnostic[] = [
+        routed.diagnostic,
+      ];
 
     if (!evidenceSufficient(plan, evidence)) {
       report("DATA_REQUIRED", "environment evidence required");
@@ -261,6 +327,7 @@ export async function runAgentLoop(
         requestId,
         plan,
         status: "DATA_REQUIRED",
+        modelInvocations,
         durationMs: Date.now() - startedAt,
       };
     }
@@ -302,16 +369,23 @@ export async function runAgentLoop(
     if (!plan.verificationRequired) {
       report("PRIMARY", cfg.primaryModel);
 
-      const rawPrimary = await invokeLocalModel(
-        cfg.ollamaBaseUrl,
-        cfg.primaryModel,
-        primaryMessages,
-        STRUCTURED_MODEL_OPTIONS,
-      );
+      const primaryCall =
+        await timedStructuredCall(
+          "PRIMARY",
+          cfg.primaryModel,
+          primaryMessages,
+        );
 
-      const primary = validateAssessment(
-        extractJson<EngineeringAssessment>(rawPrimary),
-      );
+      const primary =
+        validateAssessment(
+          extractJson<EngineeringAssessment>(
+            primaryCall.raw,
+          ),
+        );
+      modelInvocations.push({
+        ...primaryCall.diagnostic,
+        schemaValid: true,
+      });
 
       report("COMPLETE", "analysis complete");
 
@@ -320,6 +394,7 @@ export async function runAgentLoop(
         plan,
         status: "OK",
         primary,
+        modelInvocations,
         durationMs: Date.now() - startedAt,
       };
     }
@@ -327,16 +402,17 @@ export async function runAgentLoop(
     report("PRIMARY", cfg.primaryModel);
     report("VALIDATING", cfg.validatorModel);
 
-    const [rawPrimary, rawValidator] = await Promise.all([
-      invokeLocalModel(
-        cfg.ollamaBaseUrl,
+    const [
+      primaryCall,
+      validatorCall,
+    ] = await Promise.all([
+      timedStructuredCall(
+        "PRIMARY",
         cfg.primaryModel,
         primaryMessages,
-        STRUCTURED_MODEL_OPTIONS,
       ),
-
-      invokeLocalModel(
-        cfg.ollamaBaseUrl,
+      timedStructuredCall(
+        "VALIDATOR",
         cfg.validatorModel,
         [
           {
@@ -359,56 +435,78 @@ export async function runAgentLoop(
             ? [evidenceMessage]
             : []),
         ],
-        STRUCTURED_MODEL_OPTIONS,
       ),
     ]);
 
-    const primary = validateAssessment(
-      extractJson<EngineeringAssessment>(rawPrimary),
-    );
+    const primary =
+      validateAssessment(
+        extractJson<EngineeringAssessment>(
+          primaryCall.raw,
+        ),
+      );
 
-    const validator = validateAssessment(
-      extractJson<EngineeringAssessment>(rawValidator),
+    const validator =
+      validateAssessment(
+        extractJson<EngineeringAssessment>(
+          validatorCall.raw,
+        ),
+      );
+
+    modelInvocations.push(
+      {
+        ...primaryCall.diagnostic,
+        schemaValid: true,
+      },
+      {
+        ...validatorCall.diagnostic,
+        schemaValid: true,
+      },
     );
 
     report("ADJUDICATING", cfg.routerModel);
 
-    const adjudicationRaw = await invokeLocalModel(
-      cfg.ollamaBaseUrl,
-      cfg.routerModel,
-      [
-        {
-          role: "system",
-          content: [
-            "Compare two independent engineering risk assessments.",
-            "",
-            "Return JSON only:",
-            '{"agree": boolean, "reason": string}',
-            "",
-            "agree=true when the assessments are materially compatible,",
-            "even if they use different wording.",
-            "",
-            "agree=false when they identify materially different top risks",
-            "or materially incompatible operational priorities.",
-            "",
-            "Keep reason to one concise sentence.",
-          ].join("\n"),
-        },
-        {
-          role: "user",
-          content: JSON.stringify({
-            primary,
-            validator,
-          }),
-        },
-      ],
-      STRUCTURED_MODEL_OPTIONS,
-    );
+    const adjudicationCall =
+      await timedStructuredCall(
+        "ADJUDICATOR",
+        cfg.routerModel,
+        [
+          {
+            role: "system",
+            content: [
+              "Compare two independent engineering risk assessments.",
+              "",
+              "Return JSON only:",
+              '{"agree": boolean, "reason": string}',
+              "",
+              "agree=true when the assessments are materially compatible,",
+              "even if they use different wording.",
+              "",
+              "agree=false when they identify materially different top risks",
+              "or materially incompatible operational priorities.",
+              "",
+              "Keep reason to one concise sentence.",
+            ].join("\n"),
+          },
+          {
+            role: "user",
+            content: JSON.stringify({
+              primary,
+              validator,
+            }),
+          },
+        ],
+      );
 
     const decision = extractJson<{
       agree: boolean;
       reason: string;
-    }>(adjudicationRaw);
+    }>(
+      adjudicationCall.raw,
+    );
+    modelInvocations.push({
+      ...adjudicationCall.diagnostic,
+      schemaValid: true,
+    });
 
     if (!decision.agree) {
       report("ABSTAIN", "independent assessments disagree");
@@ -420,6 +518,7 @@ export async function runAgentLoop(
         primary,
         validator,
         adjudication: decision.reason,
+        modelInvocations,
         durationMs: Date.now() - startedAt,
       };
     }
@@ -433,6 +532,7 @@ export async function runAgentLoop(
       primary,
       validator,
       adjudication: decision.reason,
+      modelInvocations,
       durationMs: Date.now() - startedAt,
     };
   } catch (error) {

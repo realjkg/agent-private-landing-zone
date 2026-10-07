@@ -243,6 +243,9 @@ function help(): void {
     "  ./alz session [aws|azure] [terraform|pulumi|opentofu|bicep|cloudformation|cdk|crossplane|ansible]",
   );
   console.log(
+    "  ./alz debug [aws|azure] [terraform|pulumi|opentofu|bicep|cloudformation|cdk|crossplane|ansible] [brownfield|greenfield|unknown] [--fixture] [--request \"...\"]",
+  );
+  console.log(
     "  ./alz target init <target-id> <owner> <aws|azure> <scope-id> <startup|enterprise> <development|production> <non-critical|business|critical> [--compliance=PACK@1,...]",
   );
   console.log(
@@ -559,6 +562,48 @@ try {
         p,
         "--engine",
         e,
+      ],
+    );
+  } else if (command === "debug") {
+    const p = choice(
+      first,
+      ["aws", "azure"],
+      "aws",
+    );
+    const e = choice(
+      second,
+      [
+        "terraform",
+        "pulumi",
+        "opentofu",
+        "bicep",
+        "cloudformation",
+        "cdk",
+        "crossplane",
+        "ansible",
+      ],
+      "terraform",
+    );
+    const s = choice(
+      third,
+      [
+        "brownfield",
+        "greenfield",
+        "unknown",
+      ],
+      "brownfield",
+    );
+
+    runTs(
+      "src/cli/debug.ts",
+      [
+        "--provider",
+        p,
+        "--engine",
+        e,
+        "--mock",
+        s,
+        ...argv.slice(4),
       ],
     );
   } else if (command === "target") {
