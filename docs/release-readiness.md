@@ -4,9 +4,9 @@ This document is the operator handoff for the current release candidate after re
 
 ## Current release posture
 
-Private-model hardening is complete.
+Private-model security hardening and the earlier hosted-runner qualification baseline are complete. Milestone 1 production qualification remains open.
 
-Existing qualification evidence demonstrates that the standard GitHub-hosted runner can qualify:
+Historical qualification evidence demonstrates that the standard GitHub-hosted runner can qualify:
 
 - Qwen3 1.7B
 - Qwen3 4B
@@ -14,7 +14,7 @@ Existing qualification evidence demonstrates that the standard GitHub-hosted run
 - the integrated required Qwen/Mistral stack
 - optional Qwen3 8B
 
-The successful live qualification used a standard hosted runner with 4 CPUs and 15 GiB of memory. The security timeout was not relaxed to obtain the passing result.
+The successful historical live qualification used a standard hosted runner with 4 CPUs and 15 GiB of memory. The security timeout was not relaxed to obtain the passing result. This evidence remains useful as a baseline, but it does not satisfy the Milestone 1 target-hardware, restart/recovery, memory-pressure, and long-running LangGraph production contract.
 
 The release retains these boundaries:
 
@@ -43,7 +43,7 @@ The required Qwen/Mistral stack is the default private-model release gate. Qwen3
 
 ## Agent coordination
 
-All coding agents follow the root `AGENTS.md` protocol and use Issue #12 as the ownership ledger.
+All coding agents follow the root `AGENTS.md` protocol. Issue #39 is the active Milestone 1 ownership and release-closeout ledger.
 
 Before editing:
 
@@ -196,7 +196,9 @@ Do not regenerate those artifacts unless the runtime or release decision actuall
 
 ## Current release truth
 
-The current source tree has no open implementation phase after Phase E. Required Qwen/Mistral live qualification evidence remains reusable because the model runtime and prompt-governance contract were not changed by the recovery, operator-smoke, or Phase E qualification work.
+Phase E is complete, but Milestone 1 Production Qualification remains open. The remaining release lanes are tracked in Issue #39 and include final prompt/security reconciliation, target-hardware private-model production qualification, real AWS/Azure provider qualification, repository release controls, convergence, consolidated VERIFY, RELEASE, and the MANAGE handoff.
+
+Earlier Qwen/Mistral evidence is historical baseline evidence. It may be reused only for behavior that remains qualification-equivalent. A prompt-policy, model/runtime, target-hardware, restart/recovery, or long-running execution change requires fresh evidence under the current Milestone 1 contract.
 
 Alternative private models remain candidates until they complete the same live model-plus-policy qualification on suitable hardware.
 

@@ -43,7 +43,7 @@ Documentation, coordination, formatting, and release-management-only changes do 
 
 ## Agent collision control
 
-All coding agents follow the repository `AGENTS.md` protocol and use Issue #12 as the active ownership ledger.
+All coding agents follow the repository `AGENTS.md` protocol. During Milestone 1, Issue #39 is the active ownership ledger; a later milestone may explicitly name its successor.
 
 Before editing or handing off code, agents check ACTIVE claims and open PR changed files. Overlapping paths are sequenced under a single active owner rather than edited concurrently.
 
