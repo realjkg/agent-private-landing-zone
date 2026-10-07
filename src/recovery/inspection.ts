@@ -10,16 +10,16 @@ import {
 import type {
   RecoveryTargetSpec,
 } from "./target.js";
+import type {
+  RecoveryCoverage,
+} from "./types.js";
 
 export type RecoveryAutomationInspection = {
   targetId: string;
   enabled: boolean;
   recoveryPointCoverage:
-    | RecoveryAutomationState[
-        "recoveryPoint"
-      ] extends infer _T
-      ? string
-      : never;
+    | RecoveryCoverage
+    | "NOT_RUN";
   verificationStatus: string;
   drillStatus: string;
   driftStatus: string;
