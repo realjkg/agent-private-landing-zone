@@ -1,4 +1,10 @@
 import { getAgentForRole } from "./registry.js";
+import {
+  capabilitiesForCompromiseState,
+} from "../security/policy/builtin.js";
+import type {
+  CompromiseState,
+} from "../security/policy/types.js";
 import type {
   AgentDefinition,
   CapabilityGrantor,
@@ -156,6 +162,7 @@ export function issueCapabilityLease(input: {
   scope: string;
   requested: CapabilityRequest[];
   grantor: CapabilityGrantor | "AGENT";
+  compromiseState?: CompromiseState;
 }): CapabilityLease {
   if (input.grantor === "AGENT") {
     throw new Error(
@@ -171,6 +178,29 @@ export function issueCapabilityLease(input: {
 
   const capabilities =
     input.requested as SovereignCapability[];
+
+  const stateAllowed =
+    new Set(
+      capabilitiesForCompromiseState(
+        input.compromiseState ??
+        "NORMAL",
+      ),
+    );
+
+  const stateDenied =
+    capabilities.filter(
+      (capability) =>
+        !stateAllowed.has(
+          capability,
+        ),
+    );
+
+  if (stateDenied.length > 0) {
+    throw new Error(
+      "CAPABILITY_GRANT_DENIED: compromise state denies capability: " +
+        stateDenied.join(", "),
+    );
+  }
 
   const excessive = capabilities.filter(
     (capability) =>
