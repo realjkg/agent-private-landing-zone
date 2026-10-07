@@ -289,9 +289,17 @@ export function compileRecoveryTarget(
     },
   };
 
+  const metadataContract = {
+    apiVersion:
+      "alz.io/recovery/v1" as const,
+    ...policyIntent,
+  };
+
   const compiledPolicyHash =
     sha256(
-      stableRecoveryJson(policyIntent),
+      stableRecoveryJson(
+        metadataContract,
+      ),
     );
 
   const baseTarget = {
@@ -378,9 +386,7 @@ export function compileRecoveryTarget(
   return {
     ...baseTarget,
     recoveryMetadata: {
-      apiVersion:
-        "alz.io/recovery/v1",
-      ...policyIntent,
+      ...metadataContract,
       provenance: {
         targetSchemaVersion:
           1,
