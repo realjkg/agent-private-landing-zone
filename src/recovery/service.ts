@@ -7,6 +7,10 @@ import {
 import type {
   SovereignCapability,
 } from "../orchestration/types.js";
+import type {
+  CompromiseState,
+  SecurityPolicyEvaluator,
+} from "../security/policy/types.js";
 import {
   RecoveryAutomationController,
   createDiscoveryRecoveryContextProvider,
@@ -24,6 +28,8 @@ export type RecoveryAutomationServiceOptions = {
     SovereignCapability[];
   pollIntervalMs?: number;
   persistEvidence?: boolean;
+  securityPolicyEvaluator?: SecurityPolicyEvaluator;
+  compromiseState?: CompromiseState;
   resolveDesign?: RecoveryDesignResolver;
 };
 
@@ -93,6 +99,10 @@ export async function createRecoveryAutomationService(
       ),
     grantedCapabilities:
       options.grantedCapabilities,
+    securityPolicyEvaluator:
+      options.securityPolicyEvaluator,
+    compromiseState:
+      options.compromiseState,
     pollIntervalMs:
       options.pollIntervalMs,
     persistEvidence:

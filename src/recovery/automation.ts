@@ -21,6 +21,13 @@ import type {
   SovereignCapability,
 } from "../orchestration/types.js";
 import {
+  evaluateBuiltinSecurityPolicy,
+} from "../security/policy/builtin.js";
+import type {
+  CompromiseState,
+  SecurityPolicyEvaluator,
+} from "../security/policy/types.js";
+import {
   compareRecoveryDrift,
   createSimulatedRecoveryPoint,
   runSimulatedRestoreDrill,
@@ -107,6 +114,8 @@ export type RecoveryAutomationControllerOptions = {
   grantedCapabilities:
     SovereignCapability[];
   initialStates?: RecoveryAutomationState[];
+  securityPolicyEvaluator?: SecurityPolicyEvaluator;
+  compromiseState?: CompromiseState;
   pollIntervalMs?: number;
   persistEvidence?: boolean;
 };
@@ -916,6 +925,96 @@ export class RecoveryAutomationController {
             target,
             steps: [],
             blockers: [],
+            state: {
+              targetId:
+                target.targetId,
+              ...previous,
+            },
+            actEnabled: false,
+          });
+          continue;
+        }
+
+        const operationFor = (
+          action: RecoveryAutomationAction,
+        ):
+          | "RECOVERY_CAPTURE"
+          | "RECOVERY_VERIFY"
+          | "RECOVERY_DRILL"
+          | "RECOVERY_DRIFT" => {
+          switch (action) {
+            case "CAPTURE":
+              return "RECOVERY_CAPTURE";
+            case "VERIFY":
+              return "RECOVERY_VERIFY";
+            case "DRILL":
+              return "RECOVERY_DRILL";
+            case "DRIFT":
+              return "RECOVERY_DRIFT";
+          }
+        };
+
+        const compromiseState =
+          this.options
+            .compromiseState ??
+          "NORMAL";
+
+        const securityDenials:
+          string[] = [];
+
+        for (const action of
+          dueActions) {
+          const input = {
+            kind: "AUTOMATION" as const,
+            compromiseState,
+            operation:
+              operationFor(action),
+          };
+
+          const securityDecision =
+            this.options
+              .securityPolicyEvaluator
+              ? await this.options
+                  .securityPolicyEvaluator
+                  .evaluate(input)
+              : evaluateBuiltinSecurityPolicy(
+                  input,
+                );
+
+          if (!securityDecision.allow) {
+            securityDenials.push(
+              ...securityDecision.reasons,
+            );
+          }
+        }
+
+        if (
+          securityDenials.length > 0
+        ) {
+          results.push({
+            targetId:
+              target.targetId,
+            status: "BLOCKED",
+            startedAt:
+              now.toISOString(),
+            completedAt:
+              now.toISOString(),
+            target,
+            steps:
+              dueActions.map(
+                (action) => ({
+                  action,
+                  status:
+                    "BLOCKED" as const,
+                  detail:
+                    "Security policy suspended scheduled recovery work.",
+                }),
+              ),
+            blockers: [
+              ...new Set(
+                securityDenials,
+              ),
+            ],
             state: {
               targetId:
                 target.targetId,

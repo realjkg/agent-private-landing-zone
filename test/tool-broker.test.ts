@@ -388,3 +388,80 @@ test("Crossplane render requires project-code execution capability", () => {
     );
   }
 });
+
+
+test("tool broker fails closed when OPA mode is enabled without a policy decision", () => {
+  const previous =
+    process.env.AGENTIC_SECURITY_POLICY_MODE;
+
+  process.env.AGENTIC_SECURITY_POLICY_MODE =
+    "OPA";
+
+  try {
+    const result =
+      executeTool(
+        {
+          tool:
+            "terraform_version",
+        },
+        context,
+      );
+
+    assert.equal(
+      Array.isArray(result),
+      false,
+    );
+
+    if (!Array.isArray(result)) {
+      assert.equal(
+        result.blocked,
+        true,
+      );
+      assert.match(
+        result.reason ?? "",
+        /OPA policy.*decision/i,
+      );
+    }
+  } finally {
+    if (previous === undefined) {
+      delete process.env
+        .AGENTIC_SECURITY_POLICY_MODE;
+    } else {
+      process.env
+        .AGENTIC_SECURITY_POLICY_MODE =
+        previous;
+    }
+  }
+});
+
+test("tool broker reduces cloud capability during suspected compromise even without OPA", () => {
+  const result =
+    executeTool(
+      {
+        tool:
+          "aws_sts_identity",
+      },
+      {
+        ...context,
+        allowCloudRead: true,
+        compromiseState:
+          "SUSPECTED",
+      },
+    );
+
+  assert.equal(
+    Array.isArray(result),
+    false,
+  );
+
+  if (!Array.isArray(result)) {
+    assert.equal(
+      result.blocked,
+      true,
+    );
+    assert.match(
+      result.reason ?? "",
+      /compromise state/i,
+    );
+  }
+});
