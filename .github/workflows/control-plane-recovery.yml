@@ -1,0 +1,161 @@
+name: Sovereign LZ Control Plane Recovery Qualification
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/control-plane-recovery.yml"
+      - "src/recovery/control-plane/**"
+      - "src/cli/control-plane-recovery.ts"
+      - "src/cli/operator.ts"
+      - "src/release/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  control-plane-recovery:
+    name: Isolated control-plane restore
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: package-lock.json
+          package-manager-cache: false
+
+      - name: Qualify source
+        run: |
+          npm ci
+          npm run check
+          npm test
+          npm run build
+
+      - name: Stage versioned Preview Operate release
+        shell: bash
+        run: |
+          set -euo pipefail
+          STAGE=".runs/control-plane/stage"
+          rm -rf ".runs/control-plane"
+          mkdir -p "$STAGE"
+          npm sbom --sbom-format=cyclonedx --package-lock-only > sbom.cdx.json
+          cp -R dist "$STAGE/dist"
+          cp -R policy "$STAGE/policy"
+          cp -R config "$STAGE/config"
+          cp package.json package-lock.json alz sbom.cdx.json "$STAGE/"
+          chmod +x "$STAGE/alz"
+          VERSION="$(node -p "require('./package.json').version")"
+          node dist/cli/release-package.js             --root "$STAGE"             --source-commit "$GITHUB_SHA"             --version "$VERSION"
+          cd "$STAGE"
+          npm ci --omit=dev
+
+      - name: Create encrypted state and quiesced LangGraph checkpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          STAGE=".runs/control-plane/stage"
+          export AGENTIC_EVIDENCE_KEY="$(openssl rand -base64 32 | tr -d '\n')"
+          echo "::add-mask::$AGENTIC_EVIDENCE_KEY"
+          echo "AGENTIC_EVIDENCE_KEY=$AGENTIC_EVIDENCE_KEY" >> "$GITHUB_ENV"
+
+          cd "$STAGE"
+          node --input-type=module <<'NODE'
+          import { writeEncryptedEvidence } from "./dist/evidence/vault.js";
+          import { createSessionGraph } from "./dist/session/graph.js";
+
+          await writeEncryptedEvidence(
+            "session",
+            "control-plane-qualification",
+            {
+              kind: "control-plane-qualification",
+              actEnabled: false,
+            },
+          );
+
+          const { graph } = createSessionGraph(
+            ".runs/checkpoints/session.sqlite",
+          );
+
+          await graph.invoke(
+            {
+              request: "What is the current state?",
+              provider: "AWS",
+              engine: "TERRAFORM",
+              fixture: true,
+              approveBuild: false,
+            },
+            {
+              configurable: {
+                thread_id: "control-plane-qualification",
+              },
+            },
+          );
+          NODE
+
+      - name: Capture verify and isolate restore
+        shell: bash
+        run: |
+          set -euo pipefail
+          STAGE="$GITHUB_WORKSPACE/.runs/control-plane/stage"
+          SNAPSHOT="$RUNNER_TEMP/alz-control-plane-snapshot"
+          RESTORED="$RUNNER_TEMP/alz-control-plane-restored"
+          REPORTS="$GITHUB_WORKSPACE/.runs/control-plane/reports"
+          mkdir -p "$REPORTS"
+
+          cd "$STAGE"
+
+          node dist/cli/control-plane-recovery.js capture             --root .             --destination "$SNAPSHOT"             --checkpoint .runs/checkpoints/session.sqlite             --output "$REPORTS/capture.json"
+
+          node dist/cli/control-plane-recovery.js verify             --snapshot "$SNAPSHOT"             --output "$REPORTS/verify.json"
+
+          node dist/cli/control-plane-recovery.js drill             --snapshot "$SNAPSHOT"             --verify-evidence             --output "$REPORTS/drill.json"
+
+          node dist/cli/control-plane-recovery.js restore             --snapshot "$SNAPSHOT"             --target "$RESTORED"             --verify-evidence             --output "$REPORTS/restore.json"
+
+          cd "$RESTORED"
+          npm ci --omit=dev
+          ./alz help
+          ./alz doctor
+
+          node --input-type=module <<'NODE'
+          import { createSessionGraph } from "./dist/session/graph.js";
+
+          const { graph } = createSessionGraph(
+            ".runs/checkpoints/session.sqlite",
+          );
+
+          const result = await graph.invoke(
+            {
+              request: "What is the current state?",
+              provider: "AWS",
+              engine: "TERRAFORM",
+              fixture: true,
+              approveBuild: false,
+            },
+            {
+              configurable: {
+                thread_id: "control-plane-qualification",
+              },
+            },
+          );
+
+          if (!Array.isArray(result.history) || result.history.length < 1) {
+            throw new Error("Restored checkpoint did not reopen.");
+          }
+          NODE
+
+      - name: Upload recovery qualification evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: sovereign-lz-control-plane-recovery
+          path: |
+            .runs/control-plane/reports/*.json
+          if-no-files-found: warn
+          retention-days: 30
