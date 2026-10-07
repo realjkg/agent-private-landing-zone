@@ -1,4 +1,8 @@
 import {
+  readFileSync,
+} from "node:fs";
+
+import {
   runAllowlistedProcess,
 } from "../tools/process.js";
 import type {
@@ -106,6 +110,28 @@ export const ansibleAdapter: IaCAdapter = {
     ) {
       return blocked(
         "Ansible preview may connect to managed hosts. Explicit managed-host access is required.",
+      );
+    }
+
+    const playbook =
+      workspaceFile(
+        context.cwd,
+        input?.playbookPath,
+        "playbookPath",
+      );
+    const source =
+      readFileSync(
+        playbook,
+        "utf8",
+      );
+
+    if (
+      /^\s*check_mode:\s*(false|no|off|0)\s*$/im.test(
+        source,
+      )
+    ) {
+      return blocked(
+        "The playbook explicitly disables check mode. Preview is refused because tasks could execute normally.",
       );
     }
 
