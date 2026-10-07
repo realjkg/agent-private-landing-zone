@@ -379,6 +379,9 @@ async function persistCycle(
       capabilityRequests:
         result.target
           .capabilityRequests,
+      recoveryMetadata:
+        result.target
+          .recoveryMetadata,
       status: result.status,
       steps: result.steps,
       blockers: result.blockers,

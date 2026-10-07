@@ -6,6 +6,139 @@ import type {
   RecoveryTargetSpec,
 } from "./target.js";
 
+const recoveryMetadataSchema = z.object({
+  apiVersion: z.literal(
+    "alz.io/recovery/v1",
+  ),
+  selection: z.object({
+    organization: z.enum([
+      "STARTUP",
+      "ENTERPRISE",
+    ]),
+    environment: z.enum([
+      "DEVELOPMENT",
+      "PRODUCTION",
+    ]),
+    criticality: z.enum([
+      "NON_CRITICAL",
+      "BUSINESS",
+      "CRITICAL",
+    ]),
+    compliancePacks: z
+      .array(z.string()),
+  }),
+  objectives: z.object({
+    rpoMinutes: z.number().int().positive(),
+    rtoMinutes: z.number().int().positive(),
+    retentionDays: z.number().int().positive(),
+    maximumRestoreEvidenceAgeDays:
+      z.number().int().positive(),
+  }),
+  destination: z.object({
+    placement: z.literal(
+      "PROVIDER_EDGE",
+    ),
+    targetRef: z.string().min(1),
+    encryption: z.literal(
+      "CUSTOMER_MANAGED",
+    ),
+    immutable: z.boolean(),
+    minimumHealthyCopies:
+      z.number().int().positive(),
+    minimumFailureDomains:
+      z.number().int().positive(),
+    centralControlCanDecrypt:
+      z.literal(false),
+  }),
+  automation: z.object({
+    captureEveryMinutes:
+      z.number().int().positive(),
+    verifyEveryMinutes:
+      z.number().int().positive(),
+    drillEveryMinutes:
+      z.number().int().positive(),
+    driftEveryMinutes:
+      z.number().int().positive(),
+    restoreMode: z.literal(
+      "ISOLATED_PREVIEW",
+    ),
+    productionMutation:
+      z.literal(false),
+  }),
+  securityBaseline: z.object({
+    documentId: z.literal(
+      "ALZ-SECURITY-BASELINE",
+    ),
+    documentVersion:
+      z.string().min(1),
+    documentRef:
+      z.string().min(1),
+    expectedSha256:
+      z.string().length(64),
+    failClosedOnMissing:
+      z.literal(true),
+    failClosedOnHashMismatch:
+      z.literal(true),
+  }),
+  dataBoundary: z.object({
+    productionDataAllowed:
+      z.boolean(),
+  }),
+  policy: z.object({
+    evaluator: z.literal(
+      "INHERIT",
+    ),
+    decisions: z.object({
+      capture: z.literal(
+        "recovery/capture",
+      ),
+      verify: z.literal(
+        "recovery/verify",
+      ),
+      drill: z.literal(
+        "recovery/drill",
+      ),
+      drift: z.literal(
+        "recovery/drift",
+      ),
+      restore: z.literal(
+        "recovery/restore",
+      ),
+    }),
+    compromiseBehavior:
+      z.object({
+        NORMAL:
+          z.literal("EVALUATE"),
+        SUSPECTED:
+          z.literal("SUSPEND"),
+        CONTAINED:
+          z.literal("SUSPEND"),
+        RECOVERY:
+          z.literal(
+            "ISOLATED_ONLY",
+          ),
+        VERIFIED:
+          z.literal("EVALUATE"),
+      }),
+  }),
+  provenance: z.object({
+    targetSchemaVersion:
+      z.literal(1),
+    profileCatalogVersion:
+      z.literal(1),
+    compilerVersion:
+      z.literal("1"),
+    baselineDocumentHash:
+      z.string().length(64),
+    compiledTargetHash:
+      z.string().length(64),
+    compiledPolicyHash:
+      z.string().length(64),
+    sourceCommit:
+      z.string().min(1).optional(),
+  }),
+});
+
 const capabilitySchema = z.enum([
   "EVIDENCE_READ",
   "EVIDENCE_WRITE",
@@ -148,6 +281,8 @@ const targetSchema = z.object({
   capabilityRequests: z
     .array(capabilitySchema)
     .min(1),
+  recoveryMetadata:
+    recoveryMetadataSchema.optional(),
 });
 
 export function parseRecoveryTargets(

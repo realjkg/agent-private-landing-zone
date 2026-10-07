@@ -266,3 +266,47 @@ test("session can switch to OpenTofu conversationally", async () => {
     /switched.*OPENTOFU/i,
   );
 });
+
+
+test("LangGraph build path reaches preview-only execution with ACT disabled", async () => {
+  const { graph } =
+    createSessionGraph(":memory:");
+
+  const result = await graph.invoke(
+    {
+      request:
+        "Build additive infrastructure using Terraform.",
+      provider: "AWS",
+      engine: "TERRAFORM",
+      mock: "brownfield",
+      approveBuild: false,
+      fixture: true,
+    },
+    {
+      configurable: {
+        thread_id:
+          "recovery-profile-build-thread",
+      },
+    },
+  );
+
+  assert.equal(
+    result.agentState?.intent,
+    "BUILD",
+  );
+  assert.equal(
+    result.agentState?.build
+      ?.executionMode,
+    "PREVIEW_ONLY",
+  );
+  assert.equal(
+    result.agentState?.orchestration
+      ?.actEnabled,
+    false,
+  );
+  assert.equal(
+    result.agentState?.action
+      ?.executed,
+    false,
+  );
+});
