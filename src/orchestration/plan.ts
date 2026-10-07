@@ -12,12 +12,73 @@ import type {
   CapabilityRequest,
   EvidenceHandoff,
   OrchestrationAssignment,
+  OrchestrationPhase,
   OrchestrationPlan,
   OwnershipClaim,
   SovereignCapability,
   SpecialistRole,
   TaskEnvelope,
 } from "./types.js";
+
+export const ORCHESTRATION_PHASE_ORDER = [
+  "PLAN",
+  "DO",
+  "CONVERGE_VERIFY",
+  "ACT",
+] as const;
+
+export function orchestrationTransitionAllowed(
+  current: OrchestrationPhase,
+  next: OrchestrationPhase,
+): boolean {
+  if (
+    current === "PLAN"
+  ) {
+    return next === "DO";
+  }
+
+  if (
+    current === "DO"
+  ) {
+    return (
+      next === "DO" ||
+      next ===
+        "CONVERGE_VERIFY"
+    );
+  }
+
+  if (
+    current ===
+      "CONVERGE_VERIFY"
+  ) {
+    return (
+      next === "DO" ||
+      next === "ACT"
+    );
+  }
+
+  return false;
+}
+
+export function assertOrchestrationTransition(
+  current: OrchestrationPhase,
+  next: OrchestrationPhase,
+): void {
+  if (
+    !orchestrationTransitionAllowed(
+      current,
+      next,
+    )
+  ) {
+    throw new Error(
+      "ORCHESTRATION_SEQUENCE_INVALID: " +
+        current +
+        " cannot transition to " +
+        next +
+        ".",
+    );
+  }
+}
 
 const PILLAR_ROLES: SpecialistRole[] = [
   "SECURITY",
@@ -142,6 +203,15 @@ export function createOrchestrationPlan(
 
   return {
     task,
+    execution: {
+      phaseOrder: [
+        ...ORCHESTRATION_PHASE_ORDER,
+      ],
+      doMode:
+        "PARALLEL_NON_OVERLAPPING",
+      convergeRequired: true,
+      actBoundary: "SINGLE",
+    },
     assignments,
     ownershipClaims: assignments.map(
       (assignment) => ({
