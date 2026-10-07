@@ -39,7 +39,8 @@
     "plugins:check": "tsx src/cli/plugins.ts",
     "operator": "tsx src/cli/operator.ts",
     "models": "tsx src/cli/models.ts",
-    "models:verify": "tsx src/cli/models.ts verify"
+    "models:verify": "tsx src/cli/models.ts verify",
+    "ci:actions-pinned": "node scripts/check-workflow-pins.mjs"
   },
   "devDependencies": {
     "@types/node": "^26.6.4",
