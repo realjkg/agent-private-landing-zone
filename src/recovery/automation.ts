@@ -14,6 +14,7 @@ import type {
   EnvironmentState,
 } from "../discovery/types.js";
 import {
+  readEncryptedEvidence,
   writeEncryptedEvidence,
 } from "../evidence/vault.js";
 import type {
@@ -105,6 +106,7 @@ export type RecoveryAutomationControllerOptions = {
   contextProvider: RecoveryTargetContextProvider;
   grantedCapabilities:
     SovereignCapability[];
+  initialStates?: RecoveryAutomationState[];
   pollIntervalMs?: number;
   persistEvidence?: boolean;
 };
@@ -329,9 +331,20 @@ async function persistCycle(
     result.completedAt
       .replace(/[:.]/g, "-");
 
+  const namespace =
+    result.target
+      .evidenceDestination.kind ===
+      "LOCAL_ENCRYPTED_VAULT"
+      ? result.target
+          .evidenceDestination
+          .namespace
+      : "external";
+
   return writeEncryptedEvidence(
     "recovery-automation",
-    result.target.targetId +
+    namespace +
+      "-" +
+      result.target.targetId +
       "-" +
       timestamp,
     {
@@ -363,6 +376,46 @@ async function persistCycle(
       state: result.state,
       actEnabled: false,
     },
+  );
+}
+
+export async function loadRecoveryAutomationState(
+  targetId: string,
+): Promise<
+  RecoveryAutomationState | undefined
+> {
+  const path =
+    ".runs/evidence/recovery-automation-state/" +
+    targetId +
+    ".evidence";
+
+  try {
+    return await readEncryptedEvidence<RecoveryAutomationState>(
+      path,
+    );
+  } catch (error) {
+    const code =
+      error &&
+      typeof error === "object" &&
+      "code" in error
+        ? String(error.code)
+        : "";
+
+    if (code === "ENOENT") {
+      return undefined;
+    }
+
+    throw error;
+  }
+}
+
+async function persistAutomationState(
+  state: RecoveryAutomationState,
+): Promise<void> {
+  await writeEncryptedEvidence(
+    "recovery-automation-state",
+    state.targetId,
+    state,
   );
 }
 
@@ -473,6 +526,9 @@ export async function runRecoveryAutomationCycle(input: {
     ) {
       result.evidencePath =
         await persistCycle(result);
+      await persistAutomationState(
+        result.state,
+      );
     }
 
     return result;
@@ -686,6 +742,9 @@ export async function runRecoveryAutomationCycle(input: {
   ) {
     result.evidencePath =
       await persistCycle(result);
+    await persistAutomationState(
+      result.state,
+    );
   }
 
   return result;
@@ -737,7 +796,15 @@ export class RecoveryAutomationController {
   constructor(
     private readonly options:
       RecoveryAutomationControllerOptions,
-  ) {}
+  ) {
+    for (const state of
+      options.initialStates ?? []) {
+      this.states.set(
+        state.targetId,
+        state,
+      );
+    }
+  }
 
   getState(
     targetId: string,
