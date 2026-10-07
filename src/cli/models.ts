@@ -23,6 +23,10 @@ import {
   getLocalModelMetadata,
 } from "../ollama.js";
 import {
+  collectProductionQualificationContext,
+  qualifyProductionModelRuntime,
+} from "../qualification/model-production.js";
+import {
   PROMPT_POLICY_VERSION,
   promptPolicyHash,
 } from "../security/prompt-governance.js";
@@ -33,6 +37,8 @@ const command =
   args[0] ?? "list";
 const includeAll =
   args.includes("--all");
+const production =
+  args.includes("--production");
 const modelIndex =
   args.indexOf("--model");
 const selectedModel =
@@ -92,9 +98,36 @@ if (command === "list") {
     );
   }
 
+  const targetNames =
+    new Set(
+      targets.map(
+        (target) => target.model,
+      ),
+    );
+  const requiredNames =
+    requiredModels().map(
+      (target) => target.model,
+    );
+  const hasDefaultStack =
+    requiredNames.every(
+      (model) =>
+        targetNames.has(model),
+    );
+
+  if (
+    production &&
+    !hasDefaultStack
+  ) {
+    throw new Error(
+      "--production requires the complete default Qwen/Mistral stack.",
+    );
+  }
+
   console.log();
   console.log(
-    "Private model qualification",
+    production
+      ? "Private model PRODUCTION qualification"
+      : "Private model qualification",
   );
   console.log(
     "Ollama " +
@@ -212,22 +245,6 @@ if (command === "list") {
     }
   }
 
-  const targetNames =
-    new Set(
-      targets.map(
-        (target) => target.model,
-      ),
-    );
-  const requiredNames =
-    requiredModels().map(
-      (target) => target.model,
-    );
-  const hasDefaultStack =
-    requiredNames.every(
-      (model) =>
-        targetNames.has(model),
-    );
-
   let stackChecks:
     Awaited<
       ReturnType<
@@ -266,6 +283,83 @@ if (command === "list") {
     }
   }
 
+  let productionQualification:
+    Awaited<
+      ReturnType<
+        typeof qualifyProductionModelRuntime
+      >
+    > | undefined;
+
+  if (production) {
+    console.log();
+    console.log(
+      "Production target behavior",
+    );
+
+    productionQualification =
+      await qualifyProductionModelRuntime(
+        collectProductionQualificationContext(
+          cfg.ollamaBaseUrl,
+        ),
+      );
+
+    console.log(
+      "  target " +
+        productionQualification
+          .context.host
+          .targetHardwareId,
+    );
+    console.log(
+      "  host   " +
+        productionQualification
+          .context.host
+          .platform +
+        "/" +
+        productionQualification
+          .context.host.arch +
+        " · " +
+        productionQualification
+          .context.host
+          .cpuCount +
+        " CPU · " +
+        Math.round(
+          productionQualification
+            .context.host
+            .totalMemoryBytes /
+            1024 ** 3,
+        ) +
+        " GiB",
+    );
+    console.log(
+      "  source " +
+        productionQualification
+          .context.sourceCommit,
+    );
+
+    for (
+      const item of
+      productionQualification.checks
+    ) {
+      console.log(
+        "  " +
+          (item.passed
+            ? "✓ "
+            : "✗ ") +
+          item.name +
+          (item.passed
+            ? ""
+            : " — " +
+              item.detail),
+      );
+    }
+
+    if (
+      !productionQualification.passed
+    ) {
+      failed = true;
+    }
+  }
+
   const evidence = {
     generatedAt:
       new Date().toISOString(),
@@ -277,6 +371,8 @@ if (command === "list") {
       promptPolicyHash(),
     records,
     stackChecks,
+    production:
+      productionQualification,
     passed: !failed,
   };
 
@@ -326,6 +422,6 @@ if (command === "list") {
   }
 } else {
   throw new Error(
-    "Use ./alz models list or ./alz models verify [--all] [--model MODEL].",
+    "Use ./alz models list or ./alz models verify [--production] [--all] [--model MODEL].",
   );
 }
