@@ -18,6 +18,15 @@ export type ToolName =
   | "cloudformation_version"
   | "cloudformation_validate"
   | "cloudformation_preview"
+  | "cdk_version"
+  | "cdk_synth"
+  | "cdk_preview"
+  | "ansible_version"
+  | "ansible_syntax_check"
+  | "ansible_preview"
+  | "crossplane_version"
+  | "crossplane_validate"
+  | "crossplane_preview"
   | "pulumi_version"
   | "pulumi_preview"
   | "aws_version"
@@ -59,5 +68,6 @@ export type ToolContext = {
   allowCloudRead: boolean;
   allowProjectCodeExecution?: boolean;
   allowPreviewWrite?: boolean;
+  allowManagedAccess?: boolean;
   allowMutation: false;
 };
