@@ -1,21 +1,23 @@
 import {
-  readFile,
+  mkdir,
+  mkdtemp,
+  rm,
   writeFile,
 } from "node:fs/promises";
 import {
+  tmpdir,
+} from "node:os";
+import {
   dirname,
+  join,
   resolve,
 } from "node:path";
-import {
-  mkdir,
-} from "node:fs/promises";
 
 import {
-  captureControlPlaneRecovery,
-  drillControlPlaneRecovery,
+  readControlPlaneRecovery,
   restoreControlPlaneRecovery,
-  verifyControlPlaneRecoverySnapshot,
-} from "../recovery/control-plane/index.js";
+  writeControlPlaneRecovery,
+} from "../recovery/control-plane/bundle.js";
 
 function valueAfter(
   name: string,
@@ -28,41 +30,6 @@ function valueAfter(
   return index >= 0
     ? args[index + 1]
     : undefined;
-}
-
-function valuesAfter(
-  name: string,
-): string[] {
-  const args =
-    process.argv.slice(2);
-  const values:
-    string[] = [];
-
-  for (
-    let index = 0;
-    index < args.length;
-    index += 1
-  ) {
-    if (
-      args[index] === name &&
-      args[index + 1]
-    ) {
-      values.push(
-        args[index + 1],
-      );
-      index += 1;
-    }
-  }
-
-  return values;
-}
-
-function hasFlag(
-  name: string,
-): boolean {
-  return process.argv
-    .slice(2)
-    .includes(name);
 }
 
 function required(
@@ -81,70 +48,19 @@ function required(
   return value;
 }
 
-async function explicitEvidenceKey():
-  Promise<
-    Buffer | undefined
-  > {
-  const inline =
-    process.env
-      .AGENTIC_EVIDENCE_KEY;
-
-  if (inline) {
-    const key =
-      Buffer.from(
-        inline.trim(),
-        "base64",
-      );
-    if (key.length !== 32) {
-      throw new Error(
-        "CONTROL_PLANE_EVIDENCE_KEY_INVALID",
-      );
-    }
-    return key;
-  }
-
-  const file =
-    process.env
-      .AGENTIC_EVIDENCE_KEY_FILE;
-
-  if (!file) {
-    return undefined;
-  }
-
-  const key =
-    Buffer.from(
-      (
-        await readFile(
-          file,
-          "utf8",
-        )
-      ).trim(),
-      "base64",
-    );
-
-  if (key.length !== 32) {
-    throw new Error(
-      "CONTROL_PLANE_EVIDENCE_KEY_INVALID",
-    );
-  }
-
-  return key;
-}
-
 async function writeReport(
   value: unknown,
 ): Promise<void> {
-  const output =
-    valueAfter(
-      "--output",
-    );
+  const report =
+    valueAfter("--report");
 
-  if (!output) {
+  if (!report) {
     return;
   }
 
   const target =
-    resolve(output);
+    resolve(report);
+
   await mkdir(
     dirname(target),
     {
@@ -152,6 +68,7 @@ async function writeReport(
       mode: 0o700,
     },
   );
+
   await writeFile(
     target,
     JSON.stringify(
@@ -166,6 +83,65 @@ async function writeReport(
   );
 }
 
+function bundleSummary(
+  bundle:
+    Awaited<
+      ReturnType<
+        typeof readControlPlaneRecovery
+      >
+    >,
+) {
+  return {
+    ready: true,
+    release:
+      bundle.release,
+    state:
+      bundle.state,
+    files:
+      bundle.files.length,
+    bundleHash:
+      bundle.bundleHash,
+    keyReference:
+      bundle.keyReference,
+    mutationAttempted:
+      false,
+    actEnabled: false,
+  };
+}
+
+async function drill(
+  evidencePath: string,
+) {
+  const directory =
+    await mkdtemp(
+      join(
+        tmpdir(),
+        "alz-control-plane-drill-",
+      ),
+    );
+  const target =
+    join(
+      directory,
+      "restored",
+    );
+
+  try {
+    return await restoreControlPlaneRecovery({
+      evidencePath,
+      restoreRoot:
+        target,
+    });
+  } finally {
+    await rm(
+      directory,
+      {
+        recursive: true,
+        force: true,
+      },
+    );
+  }
+}
+
 const [
   command = "help",
 ] =
@@ -175,32 +151,38 @@ try {
   if (
     command === "capture"
   ) {
-    const manifest =
-      await captureControlPlaneRecovery({
-        root:
-          valueAfter(
-            "--root",
-          ) ?? ".",
-        destination:
-          required(
-            "--destination",
-          ),
-        checkpointPaths:
-          valuesAfter(
-            "--checkpoint",
-          ),
-      });
+    const root =
+      resolve(
+        required("--root"),
+      );
+    const evidence =
+      resolve(
+        required(
+          "--evidence",
+        ),
+      );
+    const result =
+      await writeControlPlaneRecovery(
+        root,
+        evidence,
+      );
+    const summary =
+      bundleSummary(
+        result.bundle,
+      );
 
     await writeReport(
-      manifest,
+      summary,
     );
 
     console.log(
-      "Control-plane recovery point captured.",
+      "Control-plane recovery evidence: " +
+        result.path,
     );
     console.log(
-      "Files: " +
-        manifest.files.length,
+      "Files protected: " +
+        result.bundle.files
+          .length,
     );
     console.log(
       "Evidence key included: NO",
@@ -211,73 +193,60 @@ try {
   } else if (
     command === "verify"
   ) {
-    const blockers =
-      await verifyControlPlaneRecoverySnapshot(
+    const evidence =
+      resolve(
         required(
-          "--snapshot",
+          "--evidence",
         ),
       );
-    const result = {
-      ready:
-        blockers.length === 0,
-      blockers,
-      actEnabled: false,
-    };
+    const bundle =
+      await readControlPlaneRecovery(
+        evidence,
+      );
+    const summary =
+      bundleSummary(bundle);
 
     await writeReport(
-      result,
+      summary,
     );
 
     console.log(
-      result.ready
-        ? "Control-plane recovery snapshot verified."
-        : "Control-plane recovery snapshot blocked.",
+      "✓ encrypted control-plane recovery bundle verified",
     );
-
-    if (!result.ready) {
-      for (const blocker of
-        blockers) {
-        console.error(
-          "! " + blocker,
-        );
-      }
-      process.exitCode = 1;
-    }
+    console.log(
+      "✓ release identity " +
+        bundle.release
+          .productVersion +
+        " / " +
+        bundle.release
+          .sourceCommit.slice(
+            0,
+            12,
+          ),
+    );
+    console.log(
+      "✓ evidence key material excluded",
+    );
+    console.log(
+      "✓ ACT remains disabled",
+    );
   } else if (
     command === "drill"
   ) {
-    const verifyEvidence =
-      hasFlag(
-        "--verify-evidence",
+    const evidence =
+      resolve(
+        required(
+          "--evidence",
+        ),
       );
     const result =
-      await drillControlPlaneRecovery({
-        snapshot:
-          required(
-            "--snapshot",
-          ),
-        verifyEncryptedEvidence:
-          verifyEvidence,
-        evidenceKey:
-          verifyEvidence
-            ? await explicitEvidenceKey()
-            : undefined,
-      });
+      await drill(evidence);
 
     await writeReport(
       result,
     );
 
-    console.log(
-      result.ready
-        ? "Control-plane isolated restore drill verified."
-        : "Control-plane isolated restore drill blocked.",
-    );
-    console.log(
-      "ACT: DISABLED",
-    );
-
-    if (!result.ready) {
+    if (!result.verified) {
       for (const blocker of
         result.blockers) {
         console.error(
@@ -285,46 +254,44 @@ try {
         );
       }
       process.exitCode = 1;
+    } else {
+      console.log(
+        "✓ isolated control-plane restore drill verified",
+      );
+      console.log(
+        "✓ restored release integrity verified",
+      );
+      console.log(
+        "✓ ACT remains disabled",
+      );
     }
   } else if (
     command === "restore"
   ) {
-    const verifyEvidence =
-      hasFlag(
-        "--verify-evidence",
+    const evidence =
+      resolve(
+        required(
+          "--evidence",
+        ),
+      );
+    const restoreRoot =
+      resolve(
+        required(
+          "--restore-root",
+        ),
       );
     const result =
       await restoreControlPlaneRecovery({
-        snapshot:
-          required(
-            "--snapshot",
-          ),
-        target:
-          required(
-            "--target",
-          ),
-        verifyEncryptedEvidence:
-          verifyEvidence,
-        evidenceKey:
-          verifyEvidence
-            ? await explicitEvidenceKey()
-            : undefined,
+        evidencePath:
+          evidence,
+        restoreRoot,
       });
 
     await writeReport(
       result,
     );
 
-    console.log(
-      result.ready
-        ? "Control plane restored and verified."
-        : "Control-plane restore blocked.",
-    );
-    console.log(
-      "ACT: DISABLED",
-    );
-
-    if (!result.ready) {
+    if (!result.verified) {
       for (const blocker of
         result.blockers) {
         console.error(
@@ -332,12 +299,49 @@ try {
         );
       }
       process.exitCode = 1;
+    } else {
+      console.log(
+        "✓ control plane restored and verified",
+      );
+      console.log(
+        "✓ release artifact integrity verified",
+      );
+      console.log(
+        "✓ restored files " +
+          result
+            .restoredFiles,
+      );
+      console.log(
+        "✓ ACT remains disabled",
+      );
     }
   } else {
     console.log(
       "Use capture, verify, drill, or restore.",
     );
-    process.exitCode = 2;
+    console.log(
+      "capture --root <release-root> --evidence <encrypted-bundle>",
+    );
+    console.log(
+      "verify --evidence <encrypted-bundle>",
+    );
+    console.log(
+      "drill --evidence <encrypted-bundle>",
+    );
+    console.log(
+      "restore --evidence <encrypted-bundle> --restore-root <empty-directory>",
+    );
+    console.log(
+      "ACT remains disabled.",
+    );
+
+    if (
+      command !== "help" &&
+      command !== "--help" &&
+      command !== "-h"
+    ) {
+      process.exitCode = 2;
+    }
   }
 } catch (error) {
   console.error(
