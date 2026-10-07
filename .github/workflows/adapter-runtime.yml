@@ -1,0 +1,198 @@
+name: Adapter Runtime Qualification
+
+on:
+  push:
+    branches:
+      - main
+      - feat/governed-adapters-models
+    paths:
+      - "src/iac/**"
+      - "src/tools/**"
+      - "src/plugins/catalog.ts"
+      - ".github/workflows/adapter-runtime.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  runtime:
+    name: CDK, Ansible and Crossplane
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+
+      - name: Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.0"
+
+      - name: Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install project dependencies
+        run: npm ci
+
+      - name: CDK local synthesis
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .runs/adapter-runtime/cdk
+          cd .runs/adapter-runtime/cdk
+
+          cat > package.json <<'JSON'
+          {
+            "private": true,
+            "type": "commonjs",
+            "dependencies": {
+              "aws-cdk-lib": "2.272.0",
+              "constructs": "10.8.1"
+            }
+          }
+          JSON
+
+          npm install --ignore-scripts --no-audit --no-fund
+
+          cat > app.js <<'JS'
+          const cdk = require("aws-cdk-lib");
+          const app = new cdk.App();
+          new cdk.Stack(app, "FixtureStack");
+          JS
+
+          cat > cdk.json <<'JSON'
+          {
+            "app": "node app.js"
+          }
+          JSON
+
+          npm exec --yes --package=aws-cdk@2.1144.0 -- cdk --version
+          npm exec --yes --package=aws-cdk@2.1144.0 -- cdk synth FixtureStack             --quiet             --no-lookups             --path-metadata false             --asset-metadata false             --version-reporting false             --output cdk.out
+
+          test -f cdk.out/FixtureStack.template.json
+          node -e 'JSON.parse(require("fs").readFileSync("cdk.out/FixtureStack.template.json","utf8"))'
+
+      - name: Ansible local check mode
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m venv .runs/adapter-runtime/ansible-venv
+          . .runs/adapter-runtime/ansible-venv/bin/activate
+          python -m pip install --disable-pip-version-check ansible-core==2.21.5
+
+          mkdir -p .runs/adapter-runtime/ansible
+          cat > .runs/adapter-runtime/ansible/inventory.ini <<'EOF'
+          localhost ansible_connection=local
+          EOF
+
+          cat > .runs/adapter-runtime/ansible/playbook.yml <<'EOF'
+          - name: Local preview fixture
+            hosts: all
+            gather_facts: false
+            tasks:
+              - name: Report preview fixture
+                ansible.builtin.debug:
+                  msg: preview-only
+          EOF
+
+          ansible-playbook --version
+          ansible-playbook             .runs/adapter-runtime/ansible/playbook.yml             --inventory .runs/adapter-runtime/ansible/inventory.ini             --syntax-check
+          ansible-playbook             .runs/adapter-runtime/ansible/playbook.yml             --inventory .runs/adapter-runtime/ansible/inventory.ini             --check             --diff
+
+      - name: Install Crossplane CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          go install github.com/crossplane/cli/v2/cmd/crossplane@v2.5.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          "$(go env GOPATH)/bin/crossplane" version
+
+      - name: Crossplane local validation and render
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$(go env GOPATH)/bin:$PATH"
+          mkdir -p .runs/adapter-runtime/crossplane
+
+          cat > .runs/adapter-runtime/crossplane/schema.yaml <<'EOF'
+          apiVersion: apiextensions.k8s.io/v1
+          kind: CustomResourceDefinition
+          metadata:
+            name: widgets.example.org
+          spec:
+            group: example.org
+            scope: Namespaced
+            names:
+              plural: widgets
+              singular: widget
+              kind: Widget
+            versions:
+              - name: v1
+                served: true
+                storage: true
+                schema:
+                  openAPIV3Schema:
+                    type: object
+                    properties:
+                      spec:
+                        type: object
+                        properties:
+                          size:
+                            type: integer
+          EOF
+
+          cat > .runs/adapter-runtime/crossplane/resource.yaml <<'EOF'
+          apiVersion: example.org/v1
+          kind: Widget
+          metadata:
+            name: sample
+            namespace: default
+          spec:
+            size: 1
+          EOF
+
+          crossplane resource validate             .runs/adapter-runtime/crossplane/schema.yaml             .runs/adapter-runtime/crossplane/resource.yaml             --output json             --cache-dir .runs/adapter-runtime/crossplane/cache
+
+          cat > .runs/adapter-runtime/crossplane/xr.yaml <<'EOF'
+          apiVersion: example.org/v1alpha1
+          kind: XWidget
+          metadata:
+            name: sample
+          EOF
+
+          cat > .runs/adapter-runtime/crossplane/composition.yaml <<'EOF'
+          apiVersion: apiextensions.crossplane.io/v1
+          kind: Composition
+          metadata:
+            name: xwidgets.example.org
+          spec:
+            compositeTypeRef:
+              apiVersion: example.org/v1alpha1
+              kind: XWidget
+            mode: Pipeline
+            pipeline: []
+          EOF
+
+          : > .runs/adapter-runtime/crossplane/functions.yaml
+
+          crossplane composition render             .runs/adapter-runtime/crossplane/xr.yaml             .runs/adapter-runtime/crossplane/composition.yaml             .runs/adapter-runtime/crossplane/functions.yaml             --include-full-xr             > .runs/adapter-runtime/crossplane/rendered.yaml
+
+          test -s .runs/adapter-runtime/crossplane/rendered.yaml
+
+      - name: Upload runtime evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: adapter-runtime-qualification
+          path: .runs/adapter-runtime/
+          if-no-files-found: warn
+          retention-days: 30
