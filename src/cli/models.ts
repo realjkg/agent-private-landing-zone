@@ -331,6 +331,24 @@ if (command === "list") {
         " GiB",
     );
     console.log(
+      "  runner " +
+        productionQualification
+          .context.host
+          .runnerName +
+        " / " +
+        productionQualification
+          .context.host
+          .hostname,
+    );
+    console.log(
+      "  hostid " +
+        productionQualification
+          .context.host
+          .hostIdentityHash
+          .slice(0, 16) +
+        "…",
+    );
+    console.log(
       "  source " +
         productionQualification
           .context.sourceCommit,
