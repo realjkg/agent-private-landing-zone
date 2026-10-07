@@ -51,6 +51,54 @@ test("session recognizes conversational state queries", () => {
     ),
     "PROMPT_GUIDE",
   );
+  assert.equal(
+    classifySessionCommand(
+      "what is protected?",
+    ),
+    "RECOVERY_STATUS",
+  );
+  assert.equal(
+    classifySessionCommand(
+      "what is our RPO/RTO evidence?",
+    ),
+    "RECOVERY_STATUS",
+  );
+  assert.equal(
+    classifySessionCommand(
+      "prepare a simulated recovery point",
+    ),
+    "RECOVERY_PREPARE",
+  );
+  assert.equal(
+    classifySessionCommand(
+      "verify this recovery point",
+    ),
+    "RECOVERY_VERIFY",
+  );
+  assert.equal(
+    classifySessionCommand(
+      "run a simulated restore drill",
+    ),
+    "RECOVERY_DRILL",
+  );
+  assert.equal(
+    classifySessionCommand(
+      "what would block recovery?",
+    ),
+    "RECOVERY_BLOCKERS",
+  );
+  assert.equal(
+    classifySessionCommand(
+      "what changed since the recovery point?",
+    ),
+    "RECOVERY_DRIFT",
+  );
+  assert.equal(
+    classifySessionCommand(
+      "what should we fix before this is release-ready?",
+    ),
+    "RECOVERY_NEXT",
+  );
 });
 
 test("session recognizes conversational engine switching", () => {
