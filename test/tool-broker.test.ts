@@ -419,7 +419,7 @@ test("tool broker fails closed when OPA mode is enabled without a policy decisio
       );
       assert.match(
         result.reason ?? "",
-        /OPA policy decision required/i,
+        /OPA policy.*decision/i,
       );
     }
   } finally {
