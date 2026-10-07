@@ -1,6 +1,16 @@
 name: Agent Private Landing Zone Supply Chain
 
 on:
+  pull_request:
+    paths:
+      - ".github/workflows/supply-chain.yml"
+      - "src/release/**"
+      - "src/cli/release-package.ts"
+      - "src/cli/operator.ts"
+      - "src/build/repository.ts"
+      - "alz"
+      - "package.json"
+      - "package-lock.json"
   workflow_dispatch:
     inputs:
       release_phase:
