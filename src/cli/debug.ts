@@ -1,17 +1,4 @@
 import {
-  randomUUID,
-} from "node:crypto";
-
-import {
-  fixtureThinker,
-} from "../agent/fixture.js";
-import {
-  runAgentKernel,
-} from "../agent/graph.js";
-import type {
-  AgentState,
-} from "../agent/types.js";
-import {
   parseBuildEngine,
 } from "../build/engine.js";
 import {
@@ -22,23 +9,16 @@ import type {
   Provider,
 } from "../discovery/types.js";
 import {
-  buildDebugReport,
   modelInventoryEntry,
   writeDebugTrace,
   type DebugModelInventory,
 } from "../debug/report.js";
 import {
-  classifyIntent,
-} from "../agent/intent.js";
-import {
-  createOrchestrationPlan,
-} from "../orchestration/plan.js";
+  runDebugDiagnostic,
+} from "../debug/run.js";
 import {
   getLocalModelMetadata,
 } from "../ollama.js";
-import {
-  evaluateOperatorRequest,
-} from "../session/operator-policy.js";
 
 function readArg(
   name: string,
@@ -56,14 +36,10 @@ function readArg(
 function provider(
   value?: string,
 ): Provider {
-  if (
-    value?.toLowerCase() ===
+  return value?.toLowerCase() ===
     "azure"
-  ) {
-    return "AZURE";
-  }
-
-  return "AWS";
+    ? "AZURE"
+    : "AWS";
 }
 
 function scenario(
@@ -161,76 +137,6 @@ async function inventory(
   );
 }
 
-function blockedState(input: {
-  request: string;
-  provider: Provider;
-  engine:
-    ReturnType<
-      typeof parseBuildEngine
-    >;
-  mock: MockScenario;
-  reason: string;
-}): AgentState {
-  const requestId =
-    randomUUID();
-  const startedAt =
-    new Date().toISOString();
-  const intent =
-    classifyIntent(
-      input.request,
-    );
-  const orchestration =
-    createOrchestrationPlan({
-      taskId:
-        "task:" + requestId,
-      requestId,
-      request:
-        input.request,
-      intent,
-      provider:
-        input.provider,
-      engine: input.engine,
-      evidenceRefs: [],
-    });
-
-  return {
-    requestId,
-    request:
-      input.request,
-    startedAt,
-    completedAt:
-      startedAt,
-    durationMs: 0,
-    phase: "BLOCKED",
-    intent,
-    provider:
-      input.provider,
-    engine: input.engine,
-    orchestration,
-    mock: input.mock,
-    events: [
-      {
-        at: startedAt,
-        phase: "BLOCKED",
-        event:
-          "DEBUG_POLICY_BLOCKED",
-        detail: input.reason,
-      },
-    ],
-    action: {
-      attempted: false,
-      executed: false,
-      status: "BLOCKED",
-      reason: input.reason,
-    },
-    observation: {
-      verified: true,
-      mutationObserved: false,
-      evidence: [],
-    },
-  };
-}
-
 const args =
   process.argv.slice(2);
 const selectedProvider =
@@ -251,19 +157,10 @@ const fixture =
 const request =
   readArg("--request") ??
   "Review this simulated landing zone for the strongest operational risk.";
-
-const policy =
-  evaluateOperatorRequest(
-    request,
-    false,
-  );
 const models =
   await inventory(fixture);
-
-let state: AgentState;
-
-if (!policy.allowed) {
-  state = blockedState({
+const report =
+  await runDebugDiagnostic({
     request,
     provider:
       selectedProvider,
@@ -271,31 +168,7 @@ if (!policy.allowed) {
       selectedEngine,
     mock:
       selectedScenario,
-    reason:
-      policy.reason,
-  });
-} else {
-  state =
-    await runAgentKernel({
-      request,
-      provider:
-        selectedProvider,
-      engine:
-        selectedEngine,
-      mock:
-        selectedScenario,
-      thinker:
-        fixture
-          ? fixtureThinker
-          : undefined,
-      approveBuild: false,
-    });
-}
-
-const report =
-  buildDebugReport({
-    state,
-    policy,
+    fixture,
     models,
   });
 const path =
@@ -379,10 +252,7 @@ if (
         call.model +
         " · " +
         call.durationMs +
-        " ms · schema " +
-        (call.schemaValid
-          ? "PASS"
-          : "FAIL") +
+        " ms · schema PASS" +
         (model?.digest
           ? " · " +
             model.digest.slice(
@@ -436,6 +306,6 @@ console.log(
   "No prompts, full model responses, credentials, or chain-of-thought are stored in the debug trace.",
 );
 
-if (!policy.allowed) {
+if (!report.policy.allowed) {
   process.exitCode = 1;
 }
