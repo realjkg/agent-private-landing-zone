@@ -6,7 +6,7 @@ TSX="$ROOT/node_modules/.bin/tsx"
 
 if [[ "${1:-}" == "bootstrap" ]]; then
   cd "$ROOT"
-  echo "Bootstrapping Agentic Landing Zone from the locked dependency graph..."
+  echo "Bootstrapping Agent Private Landing Zone from the locked dependency graph..."
   npm ci
   echo
   echo "Ready. Run ./alz doctor"
@@ -14,7 +14,7 @@ if [[ "${1:-}" == "bootstrap" ]]; then
 fi
 
 if [[ ! -x "$TSX" ]]; then
-  echo "Agentic Landing Zone is not bootstrapped."
+  echo "Agent Private Landing Zone is not bootstrapped."
   echo "Run: ./alz bootstrap"
   exit 2
 fi
