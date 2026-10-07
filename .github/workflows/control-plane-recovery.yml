@@ -61,6 +61,7 @@ jobs:
           STAGE="$GITHUB_WORKSPACE/.runs/control-plane/stage"
           EVIDENCE_KEY="$(openssl rand -base64 32 | tr -d '\n')"
           echo "::add-mask::$EVIDENCE_KEY"
+          export AGENTIC_EVIDENCE_KEY="$EVIDENCE_KEY"
           echo "AGENTIC_EVIDENCE_KEY=$EVIDENCE_KEY" >> "$GITHUB_ENV"
 
           cd "$STAGE"
