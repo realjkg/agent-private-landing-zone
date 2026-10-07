@@ -257,6 +257,18 @@ function help(): void {
   console.log(
     "  ./alz recovery test [target-file]",
   );
+  console.log(
+    "  ./alz control-plane capture --destination <path> [--root <installed-root>] [--checkpoint <quiesced-file> ...]",
+  );
+  console.log(
+    "  ./alz control-plane verify --snapshot <path>",
+  );
+  console.log(
+    "  ./alz control-plane drill --snapshot <path> [--verify-evidence]",
+  );
+  console.log(
+    "  ./alz control-plane restore --snapshot <path> --target <isolated-path> [--verify-evidence]",
+  );
   console.log("  ./alz doctor");
   console.log("  ./alz verify");
   console.log("  ./alz plugins");
@@ -733,6 +745,13 @@ try {
     if (blockedTest) {
       process.exitCode = 1;
     }
+  } else if (
+    command === "control-plane"
+  ) {
+    runTs(
+      "src/cli/control-plane-recovery.ts",
+      argv.slice(1),
+    );
   } else if (command === "doctor") {
     runTs("src/cli/security.ts");
     runTs("src/cli/plugins.ts");
