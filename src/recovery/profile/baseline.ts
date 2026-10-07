@@ -35,6 +35,8 @@ const baselineSchema = z.object({
     z.literal(true),
   providerEdgeRecovery:
     z.literal(true),
+  immutableRecovery:
+    z.literal(true),
   centralControlCanDecrypt:
     z.literal(false),
   isolatedPreviewRestore:
