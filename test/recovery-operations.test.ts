@@ -146,6 +146,11 @@ test("fully evidenced simulated recovery point verifies without enabling ACT", a
         source: "test",
       },
       {
+        key: "recovery_encryption",
+        value: "present",
+        source: "test",
+      },
+      {
         key: "aws.organizations",
         value: "present",
         source: "test",
@@ -235,6 +240,21 @@ test("fully evidenced simulated recovery point verifies without enabling ACT", a
   assert.equal(
     point.blockers.length,
     0,
+  );
+  assert.ok(
+    point.artifacts
+      .filter(
+        (artifact) =>
+          artifact.kind ===
+            "CONFIGURATION_EXPORT" ||
+          artifact.kind ===
+            "IAC_STATE",
+      )
+      .every(
+        (artifact) =>
+          artifact.protection ===
+          "ENCRYPTED_EVIDENCE",
+      ),
   );
 
   const verification =
