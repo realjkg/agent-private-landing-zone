@@ -23,6 +23,12 @@ function context(
     host: {
       targetHardwareId:
         "fixture-edge-01",
+      runnerName:
+        "fixture-runner",
+      hostname:
+        "fixture-host",
+      hostIdentityHash:
+        "a".repeat(64),
       platform: "linux",
       release: "fixture",
       arch: "x64",
@@ -218,6 +224,37 @@ test("production qualification fails when memory reserve is exhausted", async ()
       (item) =>
         item.name ===
         "memory reserve",
+    )?.passed,
+    false,
+  );
+});
+
+
+test("production qualification rejects missing actual host fingerprint", async () => {
+  const result =
+    await qualifyProductionModelRuntime(
+      context({
+        host: {
+          ...context().host,
+          runnerName: "",
+          hostname: "",
+          hostIdentityHash:
+            "not-a-hash",
+        },
+      }),
+      async () => ({
+        historyBeforeRestart: 2,
+        historyAfterRestart: 4,
+        mutationObserved: false,
+      }),
+      memory,
+    );
+
+  assert.equal(
+    result.checks.find(
+      (item) =>
+        item.name ===
+        "actual host fingerprint",
     )?.passed,
     false,
   );
