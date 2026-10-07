@@ -5,7 +5,15 @@ export type OllamaMessage = {
 
 export type ModelInvocationOptions = {
   timeoutMs?: number;
+  format?: "json" | Record<string, unknown>;
+  think?: boolean | string;
 };
+
+export const STRUCTURED_MODEL_OPTIONS =
+  Object.freeze({
+    format: "json" as const,
+    think: false,
+  });
 
 export async function invokeLocalModel(
   baseUrl: string,
@@ -28,6 +36,16 @@ export async function invokeLocalModel(
         model,
         messages,
         stream: false,
+        ...(options.format !== undefined
+          ? {
+              format: options.format,
+            }
+          : {}),
+        ...(options.think !== undefined
+          ? {
+              think: options.think,
+            }
+          : {}),
         options: {
           temperature: 0,
         },
@@ -68,7 +86,6 @@ export async function invokeLocalModel(
     clearTimeout(timeout);
   }
 }
-
 
 export type LocalModelMetadata = {
   model: string;

@@ -1,8 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { loadConfig } from "./config.js";
-import { invokeLocalModel } from "./ollama.js";
+import {
+  invokeLocalModel,
+  STRUCTURED_MODEL_OPTIONS,
+} from "./ollama.js";
 import {
   governedUserRequest,
+  screenOperatorPrompt,
   wrapUntrustedEvidence,
 } from "./security/prompt-governance.js";
 
@@ -152,6 +156,7 @@ async function classify(
           governedUserRequest(request),
       },
     ],
+    STRUCTURED_MODEL_OPTIONS,
   );
 
   const proposed = extractJson<TaskPlan>(raw);
@@ -225,11 +230,28 @@ export async function runAgentLoop(
   evidence?: string,
   report: StatusReporter = () => {},
 ): Promise<AgentResult> {
-  const cfg = loadConfig();
   const requestId = randomUUID();
   const startedAt = Date.now();
 
   try {
+    const promptScreen =
+      screenOperatorPrompt(request);
+
+    if (!promptScreen.allowed) {
+      report(
+        "POLICY",
+        promptScreen.risk,
+      );
+      throw new Error(
+        "PROMPT_POLICY_BLOCKED: " +
+          promptScreen.risk +
+          ": " +
+          (promptScreen.reason ??
+            "operator request violated the deterministic prompt boundary"),
+      );
+    }
+
+    const cfg = loadConfig();
     const plan = await classify(request, report);
 
     if (!evidenceSufficient(plan, evidence)) {
@@ -284,6 +306,7 @@ export async function runAgentLoop(
         cfg.ollamaBaseUrl,
         cfg.primaryModel,
         primaryMessages,
+        STRUCTURED_MODEL_OPTIONS,
       );
 
       const primary = validateAssessment(
@@ -309,6 +332,7 @@ export async function runAgentLoop(
         cfg.ollamaBaseUrl,
         cfg.primaryModel,
         primaryMessages,
+        STRUCTURED_MODEL_OPTIONS,
       ),
 
       invokeLocalModel(
@@ -335,6 +359,7 @@ export async function runAgentLoop(
             ? [evidenceMessage]
             : []),
         ],
+        STRUCTURED_MODEL_OPTIONS,
       ),
     ]);
 
@@ -377,6 +402,7 @@ export async function runAgentLoop(
           }),
         },
       ],
+      STRUCTURED_MODEL_OPTIONS,
     );
 
     const decision = extractJson<{

@@ -1,5 +1,8 @@
 import { loadConfig } from "../config.js";
-import { invokeLocalModel } from "../ollama.js";
+import {
+  invokeLocalModel,
+  STRUCTURED_MODEL_OPTIONS,
+} from "../ollama.js";
 import {
   governedUserRequest,
   wrapUntrustedTranscript,
@@ -128,6 +131,7 @@ export async function routeSessionRequest(
           ].join("\n\n"),
         },
       ],
+      STRUCTURED_MODEL_OPTIONS,
     );
 
     const parsed =

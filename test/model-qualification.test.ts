@@ -77,11 +77,35 @@ const goodInvoker:
   };
 
 test("model qualification passes a disciplined model contract", async () => {
+  const invocationOptions:
+    Array<
+      Parameters<ModelInvoker>[3]
+    > = [];
+
+  const countedInvoker:
+    ModelInvoker = async (
+      baseUrl,
+      model,
+      messages,
+      options,
+    ) => {
+      invocationOptions.push(
+        options,
+      );
+
+      return goodInvoker(
+        baseUrl,
+        model,
+        messages,
+        options,
+      );
+    };
+
   const result =
     await qualifyModel(
       "http://localhost",
       "fixture",
-      goodInvoker,
+      countedInvoker,
     );
 
   assert.equal(
@@ -92,6 +116,30 @@ test("model qualification passes a disciplined model contract", async () => {
     result.checks.length,
     7,
   );
+  assert.equal(
+    invocationOptions.length,
+    4,
+    "direct operator attacks must be blocked before model invocation",
+  );
+
+  for (
+    const options of
+    invocationOptions
+  ) {
+    assert.equal(
+      options?.format,
+      "json",
+    );
+    assert.equal(
+      options?.think,
+      false,
+    );
+    assert.equal(
+      options?.timeoutMs,
+      90_000,
+    );
+  }
+
   assert.match(
     result.policyVersion,
     /^\d{4}-\d{2}-\d{2}/,
