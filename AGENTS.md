@@ -31,9 +31,9 @@ The product runtime invariant remains unchanged: **ACT = DISABLED** for infrastr
 
 ## No-collision check-in
 
-Issue #12 is the coordination ledger.
+Issue #39 is the active Milestone 1 coordination ledger. If a later milestone explicitly names a successor ledger, that milestone ledger supersedes this number.
 
-Before editing code, post an `AGENT CHECK-IN` comment there with:
+Before editing code, post an `AGENT CHECK-IN` comment in the active coordination ledger with:
 
 - release phase
 - workstream
@@ -45,7 +45,7 @@ Before editing code, post an `AGENT CHECK-IN` comment there with:
 
 Then inspect:
 
-- ACTIVE claims in Issue #12
+- ACTIVE claims in the active coordination ledger
 - changed files in open PRs
 - current base/main head
 
@@ -60,7 +60,7 @@ Before the first push and again before PR handoff:
 - verify no claimed path changed underneath the workstream
 - never use a force push to overwrite another agent's work
 
-When work is merged, abandoned, or handed off, post an `AGENT CHECK-OUT` comment in Issue #12 with `status: RELEASED`.
+When work is merged, abandoned, or handed off, post an `AGENT CHECK-OUT` comment in the active coordination ledger with `status: RELEASED`.
 
 ## GitHub Actions efficiency
 
