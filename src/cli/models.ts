@@ -8,6 +8,9 @@ import {
 import {
   qualifyModel,
 } from "../models/qualification.js";
+import {
+  qualifyDefaultModelStack,
+} from "../models/stack-qualification.js";
 
 const args =
   process.argv.slice(2);
@@ -121,6 +124,53 @@ if (command === "list") {
 
     if (!result.passed) {
       failed = true;
+    }
+  }
+
+  const targetNames =
+    new Set(
+      targets.map(
+        (target) => target.model,
+      ),
+    );
+  const requiredNames =
+    requiredModels().map(
+      (target) => target.model,
+    );
+  const hasDefaultStack =
+    requiredNames.every(
+      (model) =>
+        targetNames.has(model),
+    );
+
+  if (hasDefaultStack) {
+    console.log();
+    console.log(
+      "Default stack integration",
+    );
+
+    const stackChecks =
+      await qualifyDefaultModelStack();
+
+    for (
+      const item of
+      stackChecks
+    ) {
+      console.log(
+        "  " +
+          (item.passed
+            ? "✓ "
+            : "✗ ") +
+          item.name +
+          (item.passed
+            ? ""
+            : " — " +
+              item.detail),
+      );
+
+      if (!item.passed) {
+        failed = true;
+      }
     }
   }
 
