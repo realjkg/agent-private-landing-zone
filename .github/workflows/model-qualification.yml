@@ -1,18 +1,18 @@
 name: Private Model Qualification
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - "src/models/**"
-      - "src/security/prompt-governance.ts"
-      - "src/ollama.ts"
-      - "src/loop.ts"
-      - ".github/workflows/model-qualification.yml"
-  schedule:
-    - cron: "45 15 * * 3"
   workflow_dispatch:
+    inputs:
+      release_phase:
+        description: "Release phase or reason for qualification"
+        required: true
+        default: "release-candidate"
+        type: string
+      include_optional:
+        description: "Also qualify optional qwen3:8b"
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: private-model-qualification-${{ github.ref }}
@@ -103,6 +103,7 @@ jobs:
 
   qwen3-8b:
     name: Qwen3 8B alternate
+    if: ${{ inputs.include_optional == true }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
 

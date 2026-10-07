@@ -24,14 +24,18 @@ A pull request is **not** a reason to run the full release gate. Live private-mo
 
 ## Release gate
 
-Run heavyweight qualification once the release candidate actually needs it, not after every implementation refinement.
+Run heavyweight qualification once the release candidate actually needs it, not after every implementation refinement or merge.
+
+The heavyweight workflows are manual release gates. Merging to `main` does not automatically start them.
 
 Examples include:
 
 - required Qwen/Mistral live-model qualification
-- optional-model qualification when that model or shared inference behavior changed
+- optional-model qualification only when that model or shared inference behavior changed
 - full supply-chain/security qualification
 - release-wide end-to-end scenarios
+
+For private-model qualification, the required stack is the default manual gate. The optional Qwen3 8B job is opt-in.
 
 Reuse valid qualification evidence when the runtime under release has not changed.
 
@@ -47,7 +51,7 @@ This collision check is procedural and does not add another GitHub Actions workf
 
 ## Supply-chain checks
 
-Supply-chain checks remain available for the release gate, scheduled assurance, or explicit manual use:
+Supply-chain checks remain available as an explicit manual release gate:
 
 - dependency audit
 - CycloneDX SBOM
