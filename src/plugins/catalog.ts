@@ -160,7 +160,7 @@ export const PLUGIN_CATALOG: PluginDefinition[] = [
   {
     id: "AWS_CDK",
     stage: ["BUILD"],
-    status: "PLANNED",
+    status: "IMPLEMENTED",
     providers: ["AWS"],
     capabilities: [
       "VERSION",
@@ -172,16 +172,17 @@ export const PLUGIN_CATALOG: PluginDefinition[] = [
       "SECURITY_SCAN",
     ],
     executable: "cdk",
+    testedVersion: "2.272.0",
     versionSource:
       "https://github.com/aws/aws-cdk/releases",
     lastReviewed: "2026-10-06",
     notes:
-      "Synthesizes to CloudFormation; normalized change evidence should reuse the CloudFormation path.",
+      "Synthesizes locally, then reuses CloudFormation validation and existing-stack UPDATE Change Set preview. Project-code execution and preview-write grants are required.",
   },
   {
     id: "CROSSPLANE",
     stage: ["BUILD", "MANAGE"],
-    status: "PLANNED",
+    status: "IMPLEMENTED",
     providers: [
       "AWS",
       "AZURE",
@@ -198,16 +199,18 @@ export const PLUGIN_CATALOG: PluginDefinition[] = [
       "SBOM",
       "SECURITY_SCAN",
     ],
+    executable: "crossplane",
+    testedVersion: "2.4.2",
     versionSource:
       "https://github.com/crossplane/crossplane/releases",
     lastReviewed: "2026-10-06",
     notes:
-      "Controller/reconciliation semantics require a dedicated preview and rollback model.",
+      "Local render and validation adapter. Rendered resources normalize as UNKNOWN because offline composition output is not proof of controller reconciliation.",
   },
   {
     id: "ANSIBLE",
     stage: ["BUILD", "CONFIGURE", "MANAGE"],
-    status: "PLANNED",
+    status: "IMPLEMENTED",
     providers: [
       "AWS",
       "AZURE",
@@ -224,10 +227,11 @@ export const PLUGIN_CATALOG: PluginDefinition[] = [
       "SECURITY_SCAN",
     ],
     executable: "ansible-playbook",
+    testedVersion: "2.21.5",
     versionSource:
       "https://github.com/ansible/ansible/releases",
     lastReviewed: "2026-10-06",
     notes:
-      "Build/configure/manage adapter for brownfield private, edge, OS, network and appliance scenarios. Preview must use check/diff semantics; PowerShell is not a first-class plug-in.",
+      "Build/configure/manage adapter for brownfield private, edge, OS, network and appliance scenarios. Preview uses check/diff and normalizes host-level change evidence. Modules without reliable check-mode behavior remain review-required.",
   },
 ];
