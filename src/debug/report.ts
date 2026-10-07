@@ -3,6 +3,9 @@ import {
 } from "node:crypto";
 import {
   mkdirSync,
+  readdirSync,
+  statSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import {
@@ -560,6 +563,62 @@ export function buildDebugReport(input: {
   return report;
 }
 
+function pruneDebugTraces(
+  directory: string,
+): void {
+  const maxFiles = 50;
+  const maxAgeMs =
+    7 * 24 * 60 * 60 * 1000;
+  const now = Date.now();
+  const files =
+    readdirSync(
+      directory,
+    )
+      .filter(
+        (name) =>
+          name.endsWith(
+            ".jsonl",
+          ),
+      )
+      .map((name) => {
+        const path =
+          resolve(
+            directory,
+            name,
+          );
+        return {
+          path,
+          mtimeMs:
+            statSync(path)
+              .mtimeMs,
+        };
+      })
+      .sort(
+        (a, b) =>
+          b.mtimeMs -
+          a.mtimeMs,
+      );
+
+  for (
+    let index = 0;
+    index < files.length;
+    index += 1
+  ) {
+    const file =
+      files[index];
+
+    if (
+      index >= maxFiles ||
+      now - file.mtimeMs >
+        maxAgeMs
+    ) {
+      unlinkSync(
+        file.path,
+      );
+    }
+  }
+}
+
 export function writeDebugTrace(
   report: DebugReport,
 ): string {
@@ -604,6 +663,10 @@ export function writeDebugTrace(
       encoding: "utf8",
       mode: 0o600,
     },
+  );
+
+  pruneDebugTraces(
+    directory,
   );
 
   return path;
