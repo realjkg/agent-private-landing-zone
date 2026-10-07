@@ -104,7 +104,7 @@ Lists or qualifies the local private models:
 ./alz models verify --all
 ```
 
-The default qualification set is Qwen3 1.7B, Qwen3 4B, and Mistral Nemo. The optional set also includes Qwen2.5 3B and Phi-4 Mini. The checks cover JSON structure, repeatability, evidence isolation, and refusal to echo secret-like values.
+The required set is Qwen3 1.7B, Qwen3 4B, and Mistral Nemo. Qwen3 8B is the optional larger model. Qualification checks structured output, repeatability, evidence isolation, prompt-injection resistance, hidden-prompt refusal, tool-coercion refusal, and secret-canary leakage.
 
 ### doctor
 

@@ -35,6 +35,7 @@ function renderArgs(
 ): string[] {
   return [
     "composition",
+    "composition",
     "render",
     workspaceFile(
       cwd,
@@ -63,7 +64,7 @@ export const crossplaneAdapter: IaCAdapter = {
     return runAllowlistedProcess(
       "crossplane_version",
       "crossplane",
-      ["version"],
+      ["version", "--client"],
       context.cwd,
     );
   },

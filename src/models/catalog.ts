@@ -34,18 +34,11 @@ export const MODEL_CATALOG: ModelDefinition[] = [
       "Default independent engineering validator.",
   },
   {
-    model: "qwen2.5:3b",
+    model: "qwen3:8b",
     role: "ALTERNATE",
     required: false,
     notes:
-      "Previously named local Qwen option.",
-  },
-  {
-    model: "phi-4-mini",
-    role: "ALTERNATE",
-    required: false,
-    notes:
-      "Previously named local Azure-aligned option.",
+      "Larger Qwen3 option for higher-capacity private reasoning tests.",
   },
 ];
 

@@ -68,3 +68,64 @@ export async function invokeLocalModel(
     clearTimeout(timeout);
   }
 }
+
+
+export type LocalModelMetadata = {
+  model: string;
+  digest: string;
+  size: number;
+  modifiedAt?: string;
+};
+
+export async function getLocalModelMetadata(
+  baseUrl: string,
+  model: string,
+): Promise<LocalModelMetadata> {
+  const response = await fetch(
+    `${baseUrl}/api/tags`,
+  );
+
+  if (!response.ok) {
+    throw new Error(
+      `Ollama model inventory failed: ${response.status} ${await response.text()}`,
+    );
+  }
+
+  const body = (await response.json()) as {
+    models?: Array<{
+      name?: string;
+      model?: string;
+      digest?: string;
+      size?: number;
+      modified_at?: string;
+    }>;
+  };
+
+  const entry = (body.models ?? []).find(
+    (candidate) =>
+      candidate.name === model ||
+      candidate.model === model ||
+      candidate.name === model + ":latest" ||
+      candidate.model === model + ":latest",
+  );
+
+  if (
+    !entry?.digest ||
+    typeof entry.size !== "number"
+  ) {
+    throw new Error(
+      "MODEL_NOT_INSTALLED: " + model,
+    );
+  }
+
+  return {
+    model:
+      entry.model ??
+      entry.name ??
+      model,
+    digest: entry.digest,
+    size: entry.size,
+    modifiedAt:
+      entry.modified_at,
+  };
+}

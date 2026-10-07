@@ -172,12 +172,13 @@ export const PLUGIN_CATALOG: PluginDefinition[] = [
       "SECURITY_SCAN",
     ],
     executable: "cdk",
-    testedVersion: "2.272.0",
+    testedVersion:
+      "AWS CDK CLI 2.1144.0; aws-cdk-lib 2.272.0",
     versionSource:
-      "https://github.com/aws/aws-cdk/releases",
+      "https://www.npmjs.com/package/aws-cdk",
     lastReviewed: "2026-10-06",
     notes:
-      "Synthesizes locally, then reuses CloudFormation validation and existing-stack UPDATE Change Set preview. Project-code execution and preview-write grants are required.",
+      "Synthesizes locally, then reuses the existing-stack CloudFormation UPDATE Change Set preview. Local synthesis requires project-code execution. Cloud preview additionally requires cloud-read and preview-write grants.",
   },
   {
     id: "CROSSPLANE",

@@ -229,25 +229,64 @@ export const cdkAdapter: IaCAdapter = {
       return [built.result];
     }
 
-    const templatePath =
-      built.template
-        ? workspaceFile(
-            context.cwd,
-            built.template,
-            "CDK synthesized template",
-          )
-        : undefined;
-
-    return [
-      built.result,
-      ...cloudformationAdapter.validate(
-        context,
+    if (!built.template) {
+      return [
         {
-          ...input,
-          templatePath,
+          ...built.result,
+          ok: false,
+          stderr:
+            built.result.stderr +
+            "\nCDK synthesized template is missing.",
         },
-      ),
-    ];
+      ];
+    }
+
+    try {
+      const templatePath =
+        workspaceFile(
+          context.cwd,
+          built.template,
+          "CDK synthesized template",
+        );
+      JSON.parse(
+        readFileSync(
+          templatePath,
+          "utf8",
+        ),
+      );
+
+      return [
+        built.result,
+        {
+          tool: "cdk_synth",
+          ok: true,
+          exitCode: 0,
+          stdout:
+            "Synthesized CloudFormation template parsed successfully.",
+          stderr: "",
+          durationMs: 0,
+          command: [
+            "local",
+            "parse-synthesized-template",
+          ],
+        },
+      ];
+    } catch (error) {
+      return [
+        built.result,
+        {
+          tool: "cdk_synth",
+          ok: false,
+          exitCode: null,
+          stdout: "",
+          stderr:
+            error instanceof Error
+              ? error.message
+              : "Synthesized template could not be parsed.",
+          durationMs: 0,
+        },
+      ];
+    }
   },
 
   preview(context, input) {

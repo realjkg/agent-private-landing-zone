@@ -2,6 +2,9 @@ import {
   PLUGIN_CATALOG,
   type PluginDefinition,
 } from "./catalog.js";
+import {
+  hasIaCAdapter,
+} from "../iac/index.js";
 
 const MAX_REVIEW_AGE_DAYS = 90;
 const DAY_MS = 86_400_000;
@@ -28,6 +31,31 @@ export function validatePluginCatalog(
         plugin.id +
           " is implemented but has no testedVersion.",
       );
+    }
+
+    if (plugin.stage.includes("BUILD")) {
+      const adapterExists =
+        hasIaCAdapter(plugin.id);
+
+      if (
+        plugin.status === "IMPLEMENTED" &&
+        !adapterExists
+      ) {
+        errors.push(
+          plugin.id +
+            " is IMPLEMENTED in the catalog but has no runtime adapter.",
+        );
+      }
+
+      if (
+        plugin.status === "PLANNED" &&
+        adapterExists
+      ) {
+        errors.push(
+          plugin.id +
+            " has a runtime adapter but is still PLANNED in the catalog.",
+        );
+      }
     }
 
     if (

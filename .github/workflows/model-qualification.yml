@@ -1,21 +1,36 @@
 name: Private Model Qualification
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - "src/models/**"
+      - "src/security/prompt-governance.ts"
+      - "src/ollama.ts"
+      - ".github/workflows/model-qualification.yml"
+  schedule:
+    - cron: "45 15 * * 3"
   workflow_dispatch:
-    inputs:
-      include_optional:
-        description: "Also test qwen2.5:3b and phi-4-mini"
-        required: false
-        default: false
-        type: boolean
+
+concurrency:
+  group: private-model-qualification-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
+env:
+  OLLAMA_HOST: 127.0.0.1:11434
+  OLLAMA_NUM_PARALLEL: "1"
+  OLLAMA_MAX_LOADED_MODELS: "1"
+  OLLAMA_KEEP_ALIVE: "0"
+
 jobs:
-  qualify:
-    name: Qualify local models
-    runs-on: [self-hosted, linux]
+  default-stack:
+    name: Qwen + Mistral default stack
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
 
     steps:
       - name: Checkout
@@ -32,14 +47,111 @@ jobs:
       - name: Install locked dependencies
         run: npm ci
 
-      - name: Check Ollama
+      - name: Install pinned Ollama
+        shell: bash
         run: |
-          command -v ollama
-          ollama list
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y zstd
+          curl -fL \
+            https://github.com/ollama/ollama/releases/download/v0.40.0/ollama-linux-amd64.tar.zst \
+            -o /tmp/ollama-linux-amd64.tar.zst
+          echo "c94aa4156b3d13e64ebc2efe5ea53f015384c882be776e6695cfb37fb180d5ad  /tmp/ollama-linux-amd64.tar.zst" \
+            | sha256sum -c -
+          sudo tar --zstd -xf /tmp/ollama-linux-amd64.tar.zst -C /usr
+          ollama --version
 
-      - name: Qualify required private models
+      - name: Start Ollama
+        shell: bash
+        run: |
+          set -euo pipefail
+          ollama serve > /tmp/ollama.log 2>&1 &
+          for attempt in {1..30}; do
+            if curl -fsS http://127.0.0.1:11434/api/tags >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/ollama.log
+          exit 1
+
+      - name: Pull required models
+        run: |
+          ollama pull qwen3:1.7b
+          ollama pull qwen3:4b
+          ollama pull mistral-nemo:latest
+
+      - name: Qualify required models and stack
         run: ./alz models verify
 
-      - name: Qualify optional named models
-        if: inputs.include_optional
-        run: ./alz models verify --all
+      - name: Upload qualification evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: default-private-model-qualification
+          path: .runs/model-qualification/*.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  qwen3-8b:
+    name: Qwen3 8B alternate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: package-lock.json
+          package-manager-cache: false
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Install pinned Ollama
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y zstd
+          curl -fL \
+            https://github.com/ollama/ollama/releases/download/v0.40.0/ollama-linux-amd64.tar.zst \
+            -o /tmp/ollama-linux-amd64.tar.zst
+          echo "c94aa4156b3d13e64ebc2efe5ea53f015384c882be776e6695cfb37fb180d5ad  /tmp/ollama-linux-amd64.tar.zst" \
+            | sha256sum -c -
+          sudo tar --zstd -xf /tmp/ollama-linux-amd64.tar.zst -C /usr
+          ollama --version
+
+      - name: Start Ollama
+        shell: bash
+        run: |
+          set -euo pipefail
+          ollama serve > /tmp/ollama.log 2>&1 &
+          for attempt in {1..30}; do
+            if curl -fsS http://127.0.0.1:11434/api/tags >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/ollama.log
+          exit 1
+
+      - name: Pull alternate model
+        run: ollama pull qwen3:8b
+
+      - name: Qualify Qwen3 8B
+        run: ./alz models verify --model qwen3:8b
+
+      - name: Upload qualification evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: qwen3-8b-qualification
+          path: .runs/model-qualification/*.json
+          if-no-files-found: warn
+          retention-days: 30
