@@ -14,7 +14,7 @@
     "source": {
       "engine": "TERRAFORM",
       "approvedDesignHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "designRef": "designs/aws-platform-primary.json",
+      "designRef": ".runs/evidence/design/aws-platform-primary.evidence",
       "sourceOfTruthRef": "git:platform/aws"
     },
     "protectedArtifacts": [
@@ -65,7 +65,7 @@
     "source": {
       "engine": "BICEP",
       "approvedDesignHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-      "designRef": "designs/azure-platform-primary.json",
+      "designRef": ".runs/evidence/design/azure-platform-primary.evidence",
       "sourceOfTruthRef": "git:platform/azure"
     },
     "protectedArtifacts": [
