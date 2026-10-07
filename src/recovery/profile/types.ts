@@ -67,6 +67,7 @@ export type RecoverySecurityBaseline = {
   defaultDenyEgress: true;
   customerManagedEncryption: true;
   providerEdgeRecovery: true;
+  immutableRecovery: true;
   centralControlCanDecrypt: false;
   isolatedPreviewRestore: true;
   tamperEvidentEvidence: true;
@@ -83,6 +84,11 @@ export type RecoveryCompileContext = {
   sourceOfTruthRef: string;
   destinationTargetRef: string;
   sourceCommit?: string;
+  complianceOverlays?: Record<
+    string,
+    Partial<RecoveryContinuityProfile>
+  >;
+  authorizedOverrides?: Partial<RecoveryContinuityProfile>;
 };
 
 export type RecoveryMetadata = {
@@ -118,6 +124,9 @@ export type RecoveryMetadata = {
     expectedSha256: string;
     failClosedOnMissing: true;
     failClosedOnHashMismatch: true;
+  };
+  dataBoundary: {
+    productionDataAllowed: boolean;
   };
   policy: {
     evaluator: "INHERIT";
