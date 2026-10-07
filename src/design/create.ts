@@ -144,6 +144,8 @@ export function createDesignSpec(input: {
     "recovery:" +
       input.assessment.recoverySnapshot
         .configurationHash,
+    "policy:" +
+      policies.bundleHash,
   ];
 
   const blocked =
