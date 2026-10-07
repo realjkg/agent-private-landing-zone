@@ -84,12 +84,43 @@ const CRITICALITY_DEFAULTS:
     },
   };
 
+function validateProfile(
+  profile: RecoveryContinuityProfile,
+): RecoveryContinuityProfile {
+  for (const [
+    key,
+    value,
+  ] of Object.entries(profile)) {
+    if (
+      key !== "immutable" &&
+      (
+        !Number.isInteger(value) ||
+        Number(value) <= 0
+      )
+    ) {
+      throw new Error(
+        "RECOVERY_PROFILE_INVALID: " +
+          key +
+          " must be a positive integer.",
+      );
+    }
+  }
+
+  return profile;
+}
+
 export function composeContinuityProfile(
   organization: RecoveryOrganization,
   environment: RecoveryEnvironment,
   criticality: RecoveryCriticality,
+  complianceOverlays:
+    Array<
+      Partial<RecoveryContinuityProfile>
+    > = [],
+  authorizedOverrides:
+    Partial<RecoveryContinuityProfile> = {},
 ): RecoveryContinuityProfile {
-  return {
+  const profile = {
     ...BASE,
     ...ORGANIZATION_DEFAULTS[
       organization
@@ -100,5 +131,20 @@ export function composeContinuityProfile(
     ...CRITICALITY_DEFAULTS[
       criticality
     ],
+    ...Object.assign(
+      {},
+      ...complianceOverlays,
+    ),
+    ...authorizedOverrides,
   };
+
+  if (!profile.immutable) {
+    throw new Error(
+      "RECOVERY_PROFILE_INVALID: immutable recovery is locked by the security baseline.",
+    );
+  }
+
+  return validateProfile(
+    profile,
+  );
 }
