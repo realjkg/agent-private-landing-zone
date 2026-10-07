@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { loadConfig } from "./config.js";
 import { invokeLocalModel } from "./ollama.js";
+import {
+  governedUserRequest,
+  wrapUntrustedEvidence,
+} from "./security/prompt-governance.js";
 
 export type TaskPlan = {
   complexity: "LOW" | "HIGH";
@@ -144,7 +148,8 @@ async function classify(
       },
       {
         role: "user",
-        content: request,
+        content:
+          governedUserRequest(request),
       },
     ],
   );
@@ -238,9 +243,18 @@ export async function runAgentLoop(
       };
     }
 
-    const evidenceBlock = evidence?.trim()
-      ? `\n\nEVIDENCE SNAPSHOT:\n${evidence.trim()}`
-      : "";
+    const governedRequest =
+      governedUserRequest(request);
+    const evidenceMessage =
+      evidence?.trim()
+        ? {
+            role: "user" as const,
+            content:
+              wrapUntrustedEvidence(
+                evidence,
+              ),
+          }
+        : undefined;
 
     const primaryMessages = [
       {
@@ -256,8 +270,11 @@ export async function runAgentLoop(
       },
       {
         role: "user" as const,
-        content: request + evidenceBlock,
+        content: governedRequest,
       },
+      ...(evidenceMessage
+        ? [evidenceMessage]
+        : []),
     ];
 
     if (!plan.verificationRequired) {
@@ -311,8 +328,12 @@ export async function runAgentLoop(
           },
           {
             role: "user",
-            content: request + evidenceBlock,
+            content:
+              governedRequest,
           },
+          ...(evidenceMessage
+            ? [evidenceMessage]
+            : []),
         ],
       ),
     ]);
