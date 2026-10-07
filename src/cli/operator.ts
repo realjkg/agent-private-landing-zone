@@ -258,16 +258,16 @@ function help(): void {
     "  ./alz recovery test [target-file]",
   );
   console.log(
-    "  ./alz control-plane capture --destination <path> [--root <installed-root>] [--checkpoint <quiesced-file> ...]",
+    "  ./alz control-plane capture --root <release-root> --evidence <encrypted-bundle>",
   );
   console.log(
-    "  ./alz control-plane verify --snapshot <path>",
+    "  ./alz control-plane verify --evidence <encrypted-bundle>",
   );
   console.log(
-    "  ./alz control-plane drill --snapshot <path> [--verify-evidence]",
+    "  ./alz control-plane drill --evidence <encrypted-bundle>",
   );
   console.log(
-    "  ./alz control-plane restore --snapshot <path> --target <isolated-path> [--verify-evidence]",
+    "  ./alz control-plane restore --evidence <encrypted-bundle> --restore-root <empty-isolated-path>",
   );
   console.log("  ./alz doctor");
   console.log("  ./alz verify");
