@@ -250,6 +250,56 @@ function statusFromState(
   return "ATTENTION";
 }
 
+export function planRecoveryAutomationActions(
+  target: RecoveryTargetSpec,
+  state: RecoveryAutomationState | undefined,
+  now: Date = new Date(),
+): RecoveryAutomationAction[] {
+  const actions: RecoveryAutomationAction[] = [];
+
+  if (
+    due(
+      state?.lastCaptureAt,
+      target.schedule.captureEveryMinutes,
+      now,
+    )
+  ) {
+    actions.push("CAPTURE");
+  }
+
+  if (
+    due(
+      state?.lastVerifyAt,
+      target.schedule.verifyEveryMinutes,
+      now,
+    )
+  ) {
+    actions.push("VERIFY");
+  }
+
+  if (
+    due(
+      state?.lastDrillAt,
+      target.schedule.drillEveryMinutes,
+      now,
+    )
+  ) {
+    actions.push("DRILL");
+  }
+
+  if (
+    due(
+      state?.lastDriftAt,
+      target.schedule.driftEveryMinutes,
+      now,
+    )
+  ) {
+    actions.push("DRIFT");
+  }
+
+  return actions;
+}
+
 function actionBlocked(
   steps: RecoveryAutomationStep[],
   action: RecoveryAutomationAction,
@@ -434,13 +484,17 @@ export async function runRecoveryAutomationCycle(input: {
       input.context,
     );
 
+  const dueActions =
+    new Set(
+      planRecoveryAutomationActions(
+        input.target,
+        state,
+        now,
+      ),
+    );
+
   if (
-    due(
-      state.lastCaptureAt,
-      input.target.schedule
-        .captureEveryMinutes,
-      now,
-    )
+    dueActions.has("CAPTURE")
   ) {
     const recoveryPoint =
       createSimulatedRecoveryPoint({
@@ -477,12 +531,7 @@ export async function runRecoveryAutomationCycle(input: {
   }
 
   if (
-    due(
-      state.lastVerifyAt,
-      input.target.schedule
-        .verifyEveryMinutes,
-      now,
-    )
+    dueActions.has("VERIFY")
   ) {
     if (!state.recoveryPoint) {
       actionBlocked(
@@ -522,12 +571,7 @@ export async function runRecoveryAutomationCycle(input: {
   }
 
   if (
-    due(
-      state.lastDrillAt,
-      input.target.schedule
-        .drillEveryMinutes,
-      now,
-    )
+    dueActions.has("DRILL")
   ) {
     if (
       !state.recoveryPoint ||
@@ -571,12 +615,7 @@ export async function runRecoveryAutomationCycle(input: {
   }
 
   if (
-    due(
-      state.lastDriftAt,
-      input.target.schedule
-        .driftEveryMinutes,
-      now,
-    )
+    dueActions.has("DRIFT")
   ) {
     if (!state.recoveryPoint) {
       actionBlocked(
@@ -785,33 +824,91 @@ export class RecoveryAutomationController {
           continue;
         }
 
-        const context =
-          await this.options
-            .contextProvider(target);
-
-        const result =
-          await runRecoveryAutomationCycle({
+        const previous =
+          this.states.get(
+            target.targetId,
+          );
+        const dueActions =
+          planRecoveryAutomationActions(
             target,
-            context,
-            previous:
-              this.states.get(
-                target.targetId,
-              ),
-            grantedCapabilities:
-              this.options
-                .grantedCapabilities,
+            previous,
             now,
-            persistEvidence:
-              this.options
-                .persistEvidence,
+          );
+
+        if (
+          dueActions.length === 0
+        ) {
+          results.push({
+            targetId:
+              target.targetId,
+            status: "IDLE",
+            startedAt:
+              now.toISOString(),
+            completedAt:
+              now.toISOString(),
+            target,
+            steps: [],
+            blockers: [],
+            state: {
+              targetId:
+                target.targetId,
+              ...previous,
+            },
+            actEnabled: false,
           });
+          continue;
+        }
 
-        this.states.set(
-          target.targetId,
-          result.state,
-        );
+        try {
+          const context =
+            await this.options
+              .contextProvider(target);
 
-        results.push(result);
+          const result =
+            await runRecoveryAutomationCycle({
+              target,
+              context,
+              previous,
+              grantedCapabilities:
+                this.options
+                  .grantedCapabilities,
+              now,
+              persistEvidence:
+                this.options
+                  .persistEvidence,
+            });
+
+          this.states.set(
+            target.targetId,
+            result.state,
+          );
+
+          results.push(result);
+        } catch (error) {
+          results.push({
+            targetId:
+              target.targetId,
+            status: "BLOCKED",
+            startedAt:
+              now.toISOString(),
+            completedAt:
+              now.toISOString(),
+            target,
+            steps: [],
+            blockers: [
+              "Recovery automation context collection failed: " +
+                (error instanceof Error
+                  ? error.message
+                  : "unknown error"),
+            ],
+            state: {
+              targetId:
+                target.targetId,
+              ...previous,
+            },
+            actEnabled: false,
+          });
+        }
       }
 
       return results;
