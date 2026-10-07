@@ -10,6 +10,9 @@ import {
 import {
   getIaCAdapter,
 } from "../iac/index.js";
+import {
+  evaluateBuiltinSecurityPolicy,
+} from "../security/policy/builtin.js";
 import type {
   ToolContext,
   ToolRequest,
@@ -92,6 +95,66 @@ export function executeTool(
     return blocked(
       request,
       "Tool is not on the allowlist.",
+    );
+  }
+
+  if (
+    process.env
+      .AGENTIC_SECURITY_POLICY_MODE ===
+      "OPA" &&
+    !context.securityPolicyDecision
+  ) {
+    return blocked(
+      request,
+      "OPA policy mode requires a precomputed local policy decision.",
+    );
+  }
+
+  if (
+    context.securityPolicyDecision &&
+    !context.securityPolicyDecision.allow
+  ) {
+    return blocked(
+      request,
+      context.securityPolicyDecision
+        .reasons.join(" ") ||
+        "Security policy denied tool execution.",
+    );
+  }
+
+  const requestedCapabilities = [
+    ...(context.allowCloudRead
+      ? ["CLOUD_READ" as const]
+      : []),
+    ...(context.allowProjectCodeExecution
+      ? [
+          "PROJECT_CODE_EXECUTION" as const,
+        ]
+      : []),
+    ...(context.allowPreviewWrite
+      ? ["PREVIEW_WRITE" as const]
+      : []),
+    ...(context.allowManagedAccess
+      ? ["MANAGED_ACCESS" as const]
+      : []),
+  ];
+
+  const compromiseDecision =
+    evaluateBuiltinSecurityPolicy({
+      kind: "CAPABILITY",
+      compromiseState:
+        context.compromiseState ??
+        "NORMAL",
+      requested:
+        requestedCapabilities,
+    });
+
+  if (!compromiseDecision.allow) {
+    return blocked(
+      request,
+      compromiseDecision.reasons.join(
+        " ",
+      ),
     );
   }
 
