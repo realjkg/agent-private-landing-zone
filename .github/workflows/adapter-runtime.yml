@@ -119,7 +119,7 @@ jobs:
           set -euo pipefail
           go install github.com/crossplane/cli/v2/cmd/crossplane@v2.5.0
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-          "$(go env GOPATH)/bin/crossplane" version
+          "$(go env GOPATH)/bin/crossplane" version --client
 
       - name: Crossplane local validation and render
         shell: bash
@@ -198,6 +198,10 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: adapter-runtime-qualification
-          path: .runs/adapter-runtime/
+          path: |
+            .runs/adapter-runtime/cdk/cdk.out/
+            .runs/adapter-runtime/ansible/inventory.ini
+            .runs/adapter-runtime/ansible/playbook.yml
+            .runs/adapter-runtime/crossplane/
           if-no-files-found: warn
           retention-days: 30
