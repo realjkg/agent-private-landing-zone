@@ -98,11 +98,19 @@ Use `--fixture` when debugging TypeScript, orchestration, policy, build-gate, or
 
 DEBUG changes visibility only. It uses the same deterministic operator policy and kernel boundary as normal operation, keeps ACT disabled, never grants cloud or mutation authority, and never enables arbitrary shell execution.
 
-The console and JSONL trace expose run correlation, phase transitions and timing, model role/tag/digest metadata, structured-output validity, validator participation, evidence/UNKNOWN state, build/action boundaries, and sanitized failure classification. The trace fingerprints the operator request instead of storing it and does not persist full prompts, full model responses, credentials, secret values, or chain-of-thought.
+The console and JSONL trace expose one correlation ID across the agent, policy, model, tool/adapter, checkpoint and recovery diagnostic context; deterministic phase timing; model role/tag/digest metadata; structured-output validity; validator participation; evidence/UNKNOWN state; build/action boundaries; and sanitized failure classification. Tool and adapter diagnostics record command class, decision/result status, duration, exit status, byte counts and short redacted stdout/stderr excerpts rather than raw command transcripts.
 
-A `REVIEW_REQUIRED` grounding result is a diagnostic signal, not a claim that a model hallucinated. Investigate missing evidence, explicit assumptions, UNKNOWN environment state, schema/model failures, and independent-validator disagreement before attributing the result to model behavior.
+DEBUG also runs a bounded SQLite checkpoint probe under the same run/thread ID. It creates a local checkpoint, reopens the LangGraph session and verifies that history continues after the graph is recreated. The result and local checkpoint path are included in the report so checkpoint/restart defects are distinguishable from model or TypeScript failures.
 
-Traces are written locally under `.runs/debug/<run-id>.jsonl` with restrictive file permissions.
+A `REVIEW_REQUIRED` grounding result is a diagnostic signal, not a claim that a model hallucinated. Investigate missing evidence references, explicit assumptions, unresolved discovery conflicts, UNKNOWN environment state, schema/model failures, and independent-validator disagreement before attributing the result to model behavior. The report explicitly distinguishes `KNOWN`, `UNKNOWN`, `INFERRED_ADVISORY` and `POLICY_BLOCKED` states.
+
+Structured-output failures report a zero-retry, `FAIL_CLOSED` fallback in the current production contract. DEBUG does not silently retry a malformed model result or widen a timeout to obtain green output.
+
+The same redaction/minimization helper is used by DEBUG and production structured observability. Secret-like fields, inline secret assignments, bearer values and private-key blocks are redacted. The trace fingerprints the operator request instead of storing it and does not persist full prompts, full model responses, credentials, secret values, or chain-of-thought.
+
+Traces are written locally under `.runs/debug/<run-id>.jsonl` with restrictive file permissions. Checkpoint probes are written under `.runs/debug/checkpoints/`; both are bounded to a seven-day/50-file local retention window.
+
+In a source checkout, `./alz debug` intentionally prefers the TypeScript source path and enables source-map support. Only this opt-in local DEBUG path may print a short sanitized stack. Packaged/default operation remains on compiled code and does not enable developer stack output by default.
 
 ### target
 
