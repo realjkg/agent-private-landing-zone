@@ -9,6 +9,7 @@ on:
       - "src/models/**"
       - "src/security/prompt-governance.ts"
       - "src/ollama.ts"
+      - "src/loop.ts"
       - ".github/workflows/model-qualification.yml"
   schedule:
     - cron: "45 15 * * 3"
