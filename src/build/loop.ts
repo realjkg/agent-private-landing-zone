@@ -117,7 +117,7 @@ export async function runBuildLoop(
       }),
     );
 
-  const policyBundleHash = sha256(
+  const fixturePolicyBundleHash = sha256(
     JSON.stringify({
       mode: "preview-only",
       ownership: environment.safeBuildMode,
@@ -125,6 +125,13 @@ export async function runBuildLoop(
       designHash,
     }),
   );
+
+  const policyBundleId =
+    options.design?.policies.bundleId ??
+    "policy-fixture-v1";
+  const policyBundleHash =
+    options.design?.policies.bundleHash ??
+    fixturePolicyBundleHash;
 
   const approvalId = options.approve
     ? `approval-${randomUUID()}`
@@ -142,7 +149,7 @@ export async function runBuildLoop(
       assessmentId: "assessment-fixture-v1",
       designId,
       designHash,
-      policyBundleId: "policy-fixture-v1",
+      policyBundleId,
       policyBundleHash,
       scannerResults,
       planHash: preview.hash,
