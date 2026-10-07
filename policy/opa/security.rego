@@ -6,35 +6,17 @@ default decision := {
   "obligations": [],
 }
 
-decision := {
-  "allow": true,
-  "reasons": [],
-  "obligations": ["Preserve classification and provenance metadata."],
-} if {
-  input.kind == "DATA_HANDLING"
-  not input.containsSecretMaterial
+data_destination_allowed if {
   input.destination != "EXTERNAL_MODEL"
   input.destination != "EXTERNAL_STORAGE"
 }
 
-decision := {
-  "allow": true,
-  "reasons": [],
-  "obligations": ["Preserve classification and provenance metadata."],
-} if {
-  input.kind == "DATA_HANDLING"
-  not input.containsSecretMaterial
+data_destination_allowed if {
   input.destination == "EXTERNAL_MODEL"
   input.handling.externalModelAllowed == true
 }
 
-decision := {
-  "allow": true,
-  "reasons": [],
-  "obligations": ["Preserve classification and provenance metadata."],
-} if {
-  input.kind == "DATA_HANDLING"
-  not input.containsSecretMaterial
+data_destination_allowed if {
   input.destination == "EXTERNAL_STORAGE"
   input.handling.externalStorageAllowed == true
 }
@@ -48,20 +30,63 @@ decision := {
   input.containsSecretMaterial == true
 }
 
-loopback_host if {
-  input.destination.host == "localhost"
+decision := {
+  "allow": false,
+  "reasons": ["Data classification policy does not permit external-model processing."],
+  "obligations": [],
+} if {
+  input.kind == "DATA_HANDLING"
+  input.containsSecretMaterial == false
+  input.destination == "EXTERNAL_MODEL"
+  input.handling.externalModelAllowed == false
 }
 
-loopback_host if {
-  input.destination.host == "127.0.0.1"
+decision := {
+  "allow": false,
+  "reasons": ["Data classification policy does not permit external storage."],
+  "obligations": [],
+} if {
+  input.kind == "DATA_HANDLING"
+  input.containsSecretMaterial == false
+  input.destination == "EXTERNAL_STORAGE"
+  input.handling.externalStorageAllowed == false
 }
 
-loopback_host if {
-  input.destination.host == "::1"
+decision := {
+  "allow": true,
+  "reasons": [],
+  "obligations": ["Preserve classification and provenance metadata."],
+} if {
+  input.kind == "DATA_HANDLING"
+  input.containsSecretMaterial == false
+  data_destination_allowed
+}
+
+normalized_host := lower(trim_space(input.destination.host)) if {
+  input.kind == "EGRESS"
+}
+
+loopback_destination if {
+  input.kind == "EGRESS"
+  input.destination.scheme == "local"
+}
+
+loopback_destination if {
+  normalized_host == "localhost"
+}
+
+loopback_destination if {
+  normalized_host == "127.0.0.1"
+}
+
+loopback_destination if {
+  normalized_host == "::1"
 }
 
 allowed_host if {
-  input.destination.host == input.allowedHosts[_]
+  input.kind == "EGRESS"
+  some candidate in input.allowedHosts
+  lower(trim_space(candidate)) == normalized_host
 }
 
 decision := {
@@ -70,17 +95,17 @@ decision := {
   "obligations": [],
 } if {
   input.kind == "EGRESS"
-  loopback_host
+  loopback_destination
 }
 
 decision := {
-  "allow": true,
-  "reasons": [],
+  "allow": false,
+  "reasons": ["Destination is not on the explicit egress allowlist."],
   "obligations": [],
 } if {
   input.kind == "EGRESS"
-  input.classification != "RESTRICTED"
-  allowed_host
+  not loopback_destination
+  not allowed_host
 }
 
 decision := {
@@ -89,85 +114,80 @@ decision := {
   "obligations": [],
 } if {
   input.kind == "EGRESS"
+  not loopback_destination
+  allowed_host
   input.classification == "RESTRICTED"
-  not loopback_host
 }
 
-normal_or_verified if {
+decision := {
+  "allow": true,
+  "reasons": [],
+  "obligations": [],
+} if {
+  input.kind == "EGRESS"
+  not loopback_destination
+  allowed_host
+  input.classification != "RESTRICTED"
+}
+
+allowed_capability(capability) if {
   input.compromiseState == "NORMAL"
 }
 
-normal_or_verified if {
+allowed_capability(capability) if {
   input.compromiseState == "VERIFIED"
 }
 
-decision := {
-  "allow": true,
-  "reasons": [],
-  "obligations": [],
-} if {
-  input.kind == "CAPABILITY"
-  normal_or_verified
-}
-
-safe_suspected_capability(capability) if {
-  capability == "EVIDENCE_READ"
-}
-
-safe_suspected_capability(capability) if {
-  capability == "EVIDENCE_WRITE"
-}
-
-safe_suspected_capability(capability) if {
-  capability == "VALIDATE"
-}
-
-decision := {
-  "allow": true,
-  "reasons": [],
-  "obligations": [],
-} if {
-  input.kind == "CAPABILITY"
+allowed_capability(capability) if {
   input.compromiseState == "SUSPECTED"
-  every capability in input.requested {
-    safe_suspected_capability(capability)
-  }
-}
-
-safe_contained_capability(capability) if {
   capability == "EVIDENCE_READ"
 }
 
-safe_contained_capability(capability) if {
-  capability == "VALIDATE"
-}
-
-decision := {
-  "allow": true,
-  "reasons": [],
-  "obligations": [],
-} if {
-  input.kind == "CAPABILITY"
-  input.compromiseState == "CONTAINED"
-  every capability in input.requested {
-    safe_contained_capability(capability)
-  }
-}
-
-safe_recovery_capability(capability) if {
-  capability == "EVIDENCE_READ"
-}
-
-safe_recovery_capability(capability) if {
+allowed_capability(capability) if {
+  input.compromiseState == "SUSPECTED"
   capability == "EVIDENCE_WRITE"
 }
 
-safe_recovery_capability(capability) if {
+allowed_capability(capability) if {
+  input.compromiseState == "SUSPECTED"
+  capability == "VALIDATE"
+}
+
+allowed_capability(capability) if {
+  input.compromiseState == "CONTAINED"
+  capability == "EVIDENCE_READ"
+}
+
+allowed_capability(capability) if {
+  input.compromiseState == "CONTAINED"
+  capability == "VALIDATE"
+}
+
+allowed_capability(capability) if {
+  input.compromiseState == "RECOVERY"
+  capability == "EVIDENCE_READ"
+}
+
+allowed_capability(capability) if {
+  input.compromiseState == "RECOVERY"
+  capability == "EVIDENCE_WRITE"
+}
+
+allowed_capability(capability) if {
+  input.compromiseState == "RECOVERY"
   capability == "CLOUD_READ"
 }
 
-safe_recovery_capability(capability) if {
+allowed_capability(capability) if {
+  input.compromiseState == "RECOVERY"
   capability == "VALIDATE"
+}
+
+denied_capabilities := [capability |
+  some capability in input.requested
+  not allowed_capability(capability)
+] if {
+  input.kind == "CAPABILITY"
 }
 
 decision := {
@@ -176,10 +196,16 @@ decision := {
   "obligations": [],
 } if {
   input.kind == "CAPABILITY"
-  input.compromiseState == "RECOVERY"
-  every capability in input.requested {
-    safe_recovery_capability(capability)
-  }
+  count(denied_capabilities) == 0
+}
+
+decision := {
+  "allow": false,
+  "reasons": [sprintf("Compromise state denies capabilities: %s.", [concat(", ", denied_capabilities)])],
+  "obligations": ["Re-establish a VERIFIED state before restoring denied capabilities."],
+} if {
+  input.kind == "CAPABILITY"
+  count(denied_capabilities) > 0
 }
 
 decision := {
