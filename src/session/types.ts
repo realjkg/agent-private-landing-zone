@@ -4,6 +4,13 @@ import type {
   MockScenario,
   Provider,
 } from "../discovery/types.js";
+import type {
+  RecoveryDriftComparison,
+  RecoveryPoint,
+  RecoveryPolicy,
+  RecoveryVerification,
+  SimulatedRestoreDrill,
+} from "../recovery/types.js";
 
 export type SessionCommand =
   | "RUN"
@@ -13,6 +20,13 @@ export type SessionCommand =
   | "EXPLAIN"
   | "NEXT"
   | "COMPARE_IAC"
+  | "RECOVERY_STATUS"
+  | "RECOVERY_PREPARE"
+  | "RECOVERY_VERIFY"
+  | "RECOVERY_DRILL"
+  | "RECOVERY_BLOCKERS"
+  | "RECOVERY_DRIFT"
+  | "RECOVERY_NEXT"
   | "USE_TERRAFORM"
   | "USE_PULUMI"
   | "USE_OPENTOFU"
@@ -38,6 +52,11 @@ export type SessionInput = {
 
 export type SessionState = SessionInput & {
   agentState?: AgentState;
+  recoveryPolicy?: RecoveryPolicy;
+  recoveryPoint?: RecoveryPoint;
+  recoveryVerification?: RecoveryVerification;
+  recoveryDrill?: SimulatedRestoreDrill;
+  recoveryDrift?: RecoveryDriftComparison;
   response?: string;
   history: SessionTurn[];
 };
