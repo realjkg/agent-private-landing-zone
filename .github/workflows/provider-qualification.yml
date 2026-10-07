@@ -1,0 +1,142 @@
+name: Sovereign LZ Provider Production Qualification
+
+on:
+  workflow_dispatch:
+    inputs:
+      provider:
+        description: "Provider qualification lane to run"
+        required: true
+        default: "both"
+        type: choice
+        options:
+          - both
+          - aws
+          - azure
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  aws:
+    if: ${{ inputs.provider == 'both' || inputs.provider == 'aws' }}
+    name: AWS live discovery and preview
+    runs-on: ubuntu-24.04
+    environment: provider-qualification-aws
+    env:
+      AWS_QUALIFICATION_ROLE_ARN: ${{ vars.AWS_QUALIFICATION_ROLE_ARN }}
+      AWS_QUALIFICATION_REGION: ${{ vars.AWS_QUALIFICATION_REGION }}
+      AWS_QUALIFICATION_STACK_NAME: ${{ vars.AWS_QUALIFICATION_STACK_NAME }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: package-lock.json
+          package-manager-cache: false
+
+      - name: Install and build
+        run: |
+          npm ci
+          npm run check
+          npm test
+          npm run build
+
+      - name: AWS OIDC qualification
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${AWS_QUALIFICATION_ROLE_ARN:?AWS qualification role ARN is required}"
+          : "${AWS_QUALIFICATION_REGION:?AWS qualification region is required}"
+          : "${AWS_QUALIFICATION_STACK_NAME:?AWS qualification stack name is required}"
+
+          OIDC_TOKEN="$(curl --fail --silent --show-error             -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}"             "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com"             | jq -r '.value')"
+
+          read -r AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN <<< "$(
+            aws sts assume-role-with-web-identity               --role-arn "${AWS_QUALIFICATION_ROLE_ARN}"               --role-session-name "alz-provider-${GITHUB_RUN_ID}"               --web-identity-token "${OIDC_TOKEN}"               --duration-seconds 900               --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]'               --output text
+          )"
+
+          export AWS_ACCESS_KEY_ID
+          export AWS_SECRET_ACCESS_KEY
+          export AWS_SESSION_TOKEN
+          export AWS_REGION="${AWS_QUALIFICATION_REGION}"
+          export AWS_DEFAULT_REGION="${AWS_QUALIFICATION_REGION}"
+
+          node dist/cli/provider-qualification.js             --provider AWS             --source-commit "${GITHUB_SHA}"             --aws-stack "${AWS_QUALIFICATION_STACK_NAME}"             --aws-template qualification/provider/aws-noop-stack.yaml             --output .runs/qualification/provider-aws.json
+
+      - name: Upload AWS qualification evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: sovereign-lz-provider-aws
+          path: .runs/qualification/provider-aws.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  azure:
+    if: ${{ inputs.provider == 'both' || inputs.provider == 'azure' }}
+    name: Azure live discovery and preview
+    runs-on: ubuntu-24.04
+    environment: provider-qualification-azure
+    env:
+      AZURE_QUALIFICATION_CLIENT_ID: ${{ vars.AZURE_QUALIFICATION_CLIENT_ID }}
+      AZURE_QUALIFICATION_TENANT_ID: ${{ vars.AZURE_QUALIFICATION_TENANT_ID }}
+      AZURE_QUALIFICATION_SUBSCRIPTION_ID: ${{ vars.AZURE_QUALIFICATION_SUBSCRIPTION_ID }}
+      AZURE_QUALIFICATION_LOCATION: ${{ vars.AZURE_QUALIFICATION_LOCATION }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: package-lock.json
+          package-manager-cache: false
+
+      - name: Install and build
+        run: |
+          npm ci
+          npm run check
+          npm test
+          npm run build
+
+      - name: Azure OIDC qualification
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${AZURE_QUALIFICATION_CLIENT_ID:?Azure qualification client ID is required}"
+          : "${AZURE_QUALIFICATION_TENANT_ID:?Azure qualification tenant ID is required}"
+          : "${AZURE_QUALIFICATION_SUBSCRIPTION_ID:?Azure qualification subscription ID is required}"
+          : "${AZURE_QUALIFICATION_LOCATION:?Azure qualification location is required}"
+
+          TOKEN_FILE="${RUNNER_TEMP}/alz-azure-oidc-token"
+          trap 'rm -f "${TOKEN_FILE}"' EXIT
+
+          curl --fail --silent --show-error             -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}"             "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://AzureADTokenExchange"             | jq -r '.value' > "${TOKEN_FILE}"
+          chmod 600 "${TOKEN_FILE}"
+
+          OIDC_TOKEN="$(cat "${TOKEN_FILE}")"
+
+          az login             --service-principal             --username "${AZURE_QUALIFICATION_CLIENT_ID}"             --tenant "${AZURE_QUALIFICATION_TENANT_ID}"             --federated-token "${OIDC_TOKEN}"             --output none
+          az account set             --subscription "${AZURE_QUALIFICATION_SUBSCRIPTION_ID}"
+
+          export AZURE_FEDERATED_TOKEN_FILE="${TOKEN_FILE}"
+
+          node dist/cli/provider-qualification.js             --provider AZURE             --source-commit "${GITHUB_SHA}"             --azure-bicep qualification/provider/azure-noop.bicep             --azure-scope subscription             --azure-location "${AZURE_QUALIFICATION_LOCATION}"             --output .runs/qualification/provider-azure.json
+
+      - name: Upload Azure qualification evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: sovereign-lz-provider-azure
+          path: .runs/qualification/provider-azure.json
+          if-no-files-found: warn
+          retention-days: 30
