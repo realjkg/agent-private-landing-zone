@@ -51,6 +51,8 @@ function renderArgs(
       input?.functionsPath,
       "functionsPath",
     ),
+    "-a",
+    "render.crossplane.io/runtime-docker-pull-policy=Never",
   ];
 }
 
