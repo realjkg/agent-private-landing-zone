@@ -61,6 +61,61 @@ function workspacePath(
   return path;
 }
 
+function operatorError(
+  problem: string,
+  recommendedFix: string,
+  safeAlternative: string,
+): Error {
+  return new Error(
+    [
+      "Problem: " + problem,
+      "Recommended fix: " +
+        recommendedFix,
+      "Safe alternative: " +
+        safeAlternative,
+      "No infrastructure changes were made.",
+    ].join("\n"),
+  );
+}
+
+function readWorkspaceJson(
+  value: string,
+): unknown {
+  const path =
+    workspacePath(value);
+
+  let raw: string;
+
+  try {
+    raw =
+      readFileSync(
+        path,
+        "utf8",
+      );
+  } catch {
+    throw operatorError(
+      "Could not read " +
+        value +
+        ".",
+      "Use an existing JSON file inside the repository workspace.",
+      "Run ./alz help to review the supported target and recovery commands.",
+    );
+  }
+
+  try {
+    return JSON.parse(
+      raw,
+    ) as unknown;
+  } catch {
+    throw operatorError(
+      value +
+        " is not valid JSON.",
+      "Correct the JSON syntax and retry.",
+      "Regenerate the file with ./alz target init when working with recovery intent.",
+    );
+  }
+}
+
 function localBin(
   name: string,
 ): string {
@@ -132,9 +187,14 @@ function choice(
     (value ?? fallback).toLowerCase();
 
   if (!allowed.includes(selected)) {
-    throw new Error(
-      "Expected one of: " +
-        allowed.join(", "),
+    throw operatorError(
+      "Unsupported option " +
+        selected +
+        ".",
+      "Use one of: " +
+        allowed.join(", ") +
+        ".",
+      "Run ./alz help to review the command syntax.",
     );
   }
 
@@ -147,6 +207,9 @@ function help(): void {
   console.log("────────────────────────────────");
   console.log("Operator commands");
   console.log();
+  console.log(
+    "  ./alz bootstrap",
+  );
   console.log(
     "  ./alz demo [aws|azure] [terraform|pulumi|opentofu|bicep|cloudformation|cdk|crossplane|ansible] [brownfield|greenfield|unknown]",
   );
@@ -179,7 +242,9 @@ function help(): void {
   console.log("  ./alz plugins");
   console.log("  ./alz prompts");
   console.log("  ./alz models list");
-  console.log("  ./alz models verify [--all]");
+  console.log(
+    "  ./alz models verify [--all] [--model MODEL]",
+  );
   console.log("  ./alz sbom");
   console.log("  ./alz scan");
   console.log();
@@ -531,16 +596,11 @@ try {
         );
       }
 
-      const path =
-        workspacePath(second);
       const intent =
         parseRecoveryTargetIntent(
-          JSON.parse(
-            readFileSync(
-              path,
-              "utf8",
-            ),
-          ) as unknown,
+          readWorkspaceJson(
+            second,
+          ),
         );
 
       if (first === "check") {
@@ -593,22 +653,19 @@ try {
     }
 
     const targetFile =
-      workspacePath(
-        second ??
-          process.env
-            .AGENTIC_RECOVERY_TARGETS_FILE ??
-          "config/recovery-targets.json",
-      );
+      second ??
+      process.env
+        .AGENTIC_RECOVERY_TARGETS_FILE ??
+      "config/recovery-targets.json";
 
     const targets =
       parseRecoveryTargets(
-        JSON.parse(
-          readFileSync(
-            targetFile,
-            "utf8",
-          ),
-        ) as unknown,
+        readWorkspaceJson(
+          targetFile,
+        ),
       );
+
+    let blockedTest = false;
 
     for (const target of
       targets) {
@@ -627,6 +684,17 @@ try {
           "\n",
         ),
       );
+
+      if (
+        first === "test" &&
+        !result.ready
+      ) {
+        blockedTest = true;
+      }
+    }
+
+    if (blockedTest) {
+      process.exitCode = 1;
     }
   } else if (command === "doctor") {
     runTs("src/cli/security.ts");
