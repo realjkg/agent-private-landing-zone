@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   control-plane-recovery:
-    name: Isolated control-plane restore
+    name: Encrypted isolated control-plane restore
     runs-on: ubuntu-24.04
 
     steps:
@@ -52,17 +52,15 @@ jobs:
           chmod +x "$STAGE/alz"
           VERSION="$(node -p "require('./package.json').version")"
           node dist/cli/release-package.js             --root "$STAGE"             --source-commit "$GITHUB_SHA"             --version "$VERSION"
-          cd "$STAGE"
-          npm ci --omit=dev
 
-      - name: Create encrypted state and quiesced LangGraph checkpoint
+      - name: Create customer-key encrypted state and persistent checkpoint
         shell: bash
         run: |
           set -euo pipefail
-          STAGE=".runs/control-plane/stage"
-          export AGENTIC_EVIDENCE_KEY="$(openssl rand -base64 32 | tr -d '\n')"
-          echo "::add-mask::$AGENTIC_EVIDENCE_KEY"
-          echo "AGENTIC_EVIDENCE_KEY=$AGENTIC_EVIDENCE_KEY" >> "$GITHUB_ENV"
+          STAGE="$GITHUB_WORKSPACE/.runs/control-plane/stage"
+          EVIDENCE_KEY="$(openssl rand -base64 32 | tr -d '\n')"
+          echo "::add-mask::$EVIDENCE_KEY"
+          echo "AGENTIC_EVIDENCE_KEY=$EVIDENCE_KEY" >> "$GITHUB_ENV"
 
           cd "$STAGE"
           node --input-type=module <<'NODE'
@@ -74,6 +72,16 @@ jobs:
             "control-plane-qualification",
             {
               kind: "control-plane-qualification",
+              actEnabled: false,
+            },
+          );
+
+          await writeEncryptedEvidence(
+            "recovery-automation",
+            "control-plane-qualification",
+            {
+              targetId: "control-plane-qualification",
+              status: "HEALTHY",
               actEnabled: false,
             },
           );
@@ -98,33 +106,53 @@ jobs:
           );
           NODE
 
-      - name: Capture verify and isolate restore
+      - name: Capture verify drill and restore encrypted control plane
         shell: bash
         run: |
           set -euo pipefail
           STAGE="$GITHUB_WORKSPACE/.runs/control-plane/stage"
-          SNAPSHOT="$RUNNER_TEMP/alz-control-plane-snapshot"
+          EVIDENCE="$RUNNER_TEMP/alz-control-plane-recovery.evidence"
           RESTORED="$RUNNER_TEMP/alz-control-plane-restored"
           REPORTS="$GITHUB_WORKSPACE/.runs/control-plane/reports"
           mkdir -p "$REPORTS"
 
-          cd "$STAGE"
+          node "$STAGE/dist/cli/control-plane-recovery.js" capture             --root "$STAGE"             --evidence "$EVIDENCE"             --report "$REPORTS/capture.json"
 
-          node dist/cli/control-plane-recovery.js capture             --root .             --destination "$SNAPSHOT"             --checkpoint .runs/checkpoints/session.sqlite             --output "$REPORTS/capture.json"
+          node "$STAGE/dist/cli/control-plane-recovery.js" verify             --evidence "$EVIDENCE"             --report "$REPORTS/verify.json"
 
-          node dist/cli/control-plane-recovery.js verify             --snapshot "$SNAPSHOT"             --output "$REPORTS/verify.json"
+          node "$STAGE/dist/cli/control-plane-recovery.js" drill             --evidence "$EVIDENCE"             --report "$REPORTS/drill.json"
 
-          node dist/cli/control-plane-recovery.js drill             --snapshot "$SNAPSHOT"             --verify-evidence             --output "$REPORTS/drill.json"
+          node "$STAGE/dist/cli/control-plane-recovery.js" restore             --evidence "$EVIDENCE"             --restore-root "$RESTORED"             --report "$REPORTS/restore.json"
 
-          node dist/cli/control-plane-recovery.js restore             --snapshot "$SNAPSHOT"             --target "$RESTORED"             --verify-evidence             --output "$REPORTS/restore.json"
+          sha256sum "$EVIDENCE" > "$REPORTS/control-plane-recovery.evidence.sha256"
 
           cd "$RESTORED"
           npm ci --omit=dev
+          node dist/cli/release-package.js --root . --verify
           ./alz help
           ./alz doctor
 
+      - name: Verify restored encrypted evidence and checkpoint continuity
+        shell: bash
+        run: |
+          set -euo pipefail
+          RESTORED="$RUNNER_TEMP/alz-control-plane-restored"
+          cd "$RESTORED"
+
           node --input-type=module <<'NODE'
+          import { readEncryptedEvidence } from "./dist/evidence/vault.js";
           import { createSessionGraph } from "./dist/session/graph.js";
+
+          const session = await readEncryptedEvidence(
+            ".runs/evidence/session/control-plane-qualification.evidence",
+          );
+          const recovery = await readEncryptedEvidence(
+            ".runs/evidence/recovery-automation/control-plane-qualification.evidence",
+          );
+
+          if (session.actEnabled !== false || recovery.actEnabled !== false) {
+            throw new Error("Restored evidence violated the Preview/Operate boundary.");
+          }
 
           const { graph } = createSessionGraph(
             ".runs/checkpoints/session.sqlite",
@@ -132,7 +160,7 @@ jobs:
 
           const result = await graph.invoke(
             {
-              request: "What is the current state?",
+              request: "Summarize the current state.",
               provider: "AWS",
               engine: "TERRAFORM",
               fixture: true,
@@ -145,8 +173,8 @@ jobs:
             },
           );
 
-          if (!Array.isArray(result.history) || result.history.length < 1) {
-            throw new Error("Restored checkpoint did not reopen.");
+          if (!Array.isArray(result.history) || result.history.length < 2) {
+            throw new Error("Restored checkpoint did not preserve prior session state.");
           }
           NODE
 
@@ -157,5 +185,6 @@ jobs:
           name: sovereign-lz-control-plane-recovery
           path: |
             .runs/control-plane/reports/*.json
+            .runs/control-plane/reports/*.sha256
           if-no-files-found: warn
           retention-days: 30
