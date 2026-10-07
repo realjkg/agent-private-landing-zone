@@ -25,7 +25,7 @@ const STATEFUL_ENGINES =
     "PULUMI",
   ]);
 
-function stable(
+export function stableRecoveryJson(
   value: unknown,
 ): string {
   if (
@@ -39,7 +39,7 @@ function stable(
     return (
       "[" +
       value
-        .map(stable)
+        .map(stableRecoveryJson)
         .join(",") +
       "]"
     );
@@ -59,7 +59,7 @@ function stable(
         (key) =>
           JSON.stringify(key) +
           ":" +
-          stable(record[key]),
+          stableRecoveryJson(record[key]),
       )
       .join(",") +
     "}"
@@ -134,19 +134,20 @@ export function compileRecoveryTarget(
   }
 
   if (
-    baseline.actEnabled !==
-      false ||
-    baseline
-      .centralControlCanDecrypt !==
-      false
+    baseline.actEnabled !== false ||
+    baseline.centralControlCanDecrypt !== false ||
+    baseline.customerManagedEncryption !== true ||
+    baseline.providerEdgeRecovery !== true ||
+    baseline.immutableRecovery !== true
   ) {
     throw new Error(
       "RECOVERY_BASELINE_INVALID: locked authority controls cannot be weakened.",
     );
   }
 
-  const selectedPacks =
-    intent.compliancePacks ?? [];
+  const selectedPacks = [
+    ...(intent.compliancePacks ?? []),
+  ].sort();
 
   const complianceOverlays =
     selectedPacks.map(
@@ -290,7 +291,7 @@ export function compileRecoveryTarget(
 
   const compiledPolicyHash =
     sha256(
-      stable(policyIntent),
+      stableRecoveryJson(policyIntent),
     );
 
   const baseTarget = {
@@ -371,7 +372,7 @@ export function compileRecoveryTarget(
 
   const compiledTargetHash =
     sha256(
-      stable(baseTarget),
+      stableRecoveryJson(baseTarget),
     );
 
   return {
@@ -400,4 +401,37 @@ export function compileRecoveryTarget(
       },
     },
   };
+}
+
+
+export function hashRecoveryTargetContract(
+  target: {
+    recoveryMetadata?: unknown;
+    [key: string]: unknown;
+  },
+): string {
+  const {
+    recoveryMetadata: _metadata,
+    ...contract
+  } = target;
+
+  return sha256(
+    stableRecoveryJson(contract),
+  );
+}
+
+export function hashRecoveryPolicyMetadata(
+  metadata: {
+    provenance?: unknown;
+    [key: string]: unknown;
+  },
+): string {
+  const {
+    provenance: _provenance,
+    ...policy
+  } = metadata;
+
+  return sha256(
+    stableRecoveryJson(policy),
+  );
 }
