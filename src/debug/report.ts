@@ -815,6 +815,7 @@ export function writeDebugTrace(
       type: "summary",
       ...report,
       execution: undefined,
+      diagnostics: undefined,
     }),
     ...report.execution.map(
       (event) =>
