@@ -33,7 +33,10 @@ const REGISTRY: AgentDefinition[] = [
     role: "RESILIENCY",
     description:
       "Evaluates recoverability, RPO/RTO, and recovery evidence.",
-    maxCapabilities: ["EVIDENCE_READ"],
+    maxCapabilities: [
+      "EVIDENCE_READ",
+      "EVIDENCE_WRITE",
+    ],
   },
   {
     id: "local.reliability",

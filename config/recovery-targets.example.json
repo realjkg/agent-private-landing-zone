@@ -1,0 +1,103 @@
+[
+  {
+    "targetId": "aws-platform-primary",
+    "enabled": true,
+    "owner": "platform-operations",
+    "provider": "AWS",
+    "scope": {
+      "type": "AWS_ORGANIZATION",
+      "id": "o-example"
+    },
+    "environment": {
+      "mode": "LIVE_READ_ONLY"
+    },
+    "source": {
+      "engine": "TERRAFORM",
+      "approvedDesignHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "designRef": ".runs/evidence/design/aws-platform-primary.evidence",
+      "sourceOfTruthRef": "git:platform/aws"
+    },
+    "protectedArtifacts": [
+      "INVENTORY_MANIFEST",
+      "CONFIGURATION_EXPORT",
+      "IAC_SOURCE",
+      "IAC_STATE",
+      "POLICY_CONFIGURATION"
+    ],
+    "evidenceDestination": {
+      "kind": "LOCAL_ENCRYPTED_VAULT",
+      "namespace": "aws-platform-primary"
+    },
+    "schedule": {
+      "captureEveryMinutes": 60,
+      "verifyEveryMinutes": 60,
+      "drillEveryMinutes": 1440,
+      "driftEveryMinutes": 60
+    },
+    "objectives": {
+      "retentionDays": 30,
+      "rpoMinutes": 60,
+      "rtoMinutes": 240
+    },
+    "protection": {
+      "encryptionRequired": true,
+      "immutability": "REQUIRED",
+      "offlineCopy": "OPTIONAL"
+    },
+    "capabilityRequests": [
+      "EVIDENCE_READ",
+      "EVIDENCE_WRITE",
+      "CLOUD_READ"
+    ]
+  },
+  {
+    "targetId": "azure-platform-primary",
+    "enabled": true,
+    "owner": "platform-operations",
+    "provider": "AZURE",
+    "scope": {
+      "type": "AZURE_MANAGEMENT_GROUP",
+      "id": "platform"
+    },
+    "environment": {
+      "mode": "LIVE_READ_ONLY"
+    },
+    "source": {
+      "engine": "BICEP",
+      "approvedDesignHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "designRef": ".runs/evidence/design/azure-platform-primary.evidence",
+      "sourceOfTruthRef": "git:platform/azure"
+    },
+    "protectedArtifacts": [
+      "INVENTORY_MANIFEST",
+      "CONFIGURATION_EXPORT",
+      "IAC_SOURCE",
+      "POLICY_CONFIGURATION"
+    ],
+    "evidenceDestination": {
+      "kind": "LOCAL_ENCRYPTED_VAULT",
+      "namespace": "azure-platform-primary"
+    },
+    "schedule": {
+      "captureEveryMinutes": 60,
+      "verifyEveryMinutes": 60,
+      "drillEveryMinutes": 1440,
+      "driftEveryMinutes": 60
+    },
+    "objectives": {
+      "retentionDays": 30,
+      "rpoMinutes": 60,
+      "rtoMinutes": 240
+    },
+    "protection": {
+      "encryptionRequired": true,
+      "immutability": "REQUIRED",
+      "offlineCopy": "OPTIONAL"
+    },
+    "capabilityRequests": [
+      "EVIDENCE_READ",
+      "EVIDENCE_WRITE",
+      "CLOUD_READ"
+    ]
+  }
+]
