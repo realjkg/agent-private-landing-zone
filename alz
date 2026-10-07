@@ -17,6 +17,12 @@ fi
 
 cd "$ROOT"
 
+if [[ "${1:-}" == "debug" && -x "$TSX" ]]; then
+  export ALZ_DEBUG_SOURCE=1
+  export NODE_OPTIONS="${NODE_OPTIONS:-} --enable-source-maps"
+  exec "$TSX" "$ROOT/src/cli/operator.ts" "$@"
+fi
+
 if [[ -f "$DIST" ]]; then
   exec node "$DIST" "$@"
 fi
