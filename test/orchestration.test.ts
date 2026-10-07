@@ -235,3 +235,34 @@ test("registry exposes one bounded definition for each specialist role", () => {
     false,
   );
 });
+
+
+test("resiliency specialist can receive revocable encrypted evidence-write capability without mutation", () => {
+  const resiliency =
+    getAgentForRole("RESILIENCY");
+
+  const lease =
+    issueCapabilityLease({
+      agent: resiliency,
+      taskId: "recovery-task",
+      scope: "recovery:target",
+      requested: [
+        "EVIDENCE_READ",
+        "EVIDENCE_WRITE",
+      ],
+      grantor:
+        "DETERMINISTIC_POLICY",
+    });
+
+  assert.deepEqual(
+    lease.capabilities,
+    [
+      "EVIDENCE_READ",
+      "EVIDENCE_WRITE",
+    ],
+  );
+  assert.equal(
+    lease.revocable,
+    true,
+  );
+});
