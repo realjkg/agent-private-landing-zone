@@ -104,7 +104,7 @@ Lists or qualifies the local private models:
 ./alz models verify --all
 ```
 
-The required set is Qwen3 1.7B, Qwen3 4B, and Mistral Nemo. Qwen3 8B is the optional larger model. Qualification checks structured output, repeatability, evidence isolation, prompt-injection resistance, hidden-prompt refusal, tool-coercion refusal, and secret-canary leakage.
+The required set is Qwen3 1.7B, Qwen3 4B, and Mistral Nemo. Qwen3 8B is the optional larger model. Qualification checks structured output, repeatability, evidence isolation, indirect prompt injection inside untrusted evidence, and secret-canary leakage. Direct override, role hijack, hidden-prompt disclosure, and tool-coercion attempts are rejected by the deterministic operator boundary before model invocation.
 
 ### doctor
 
@@ -132,7 +132,28 @@ Generates a CycloneDX SBOM from the locked dependency graph and writes it under 
 
 ### scan
 
-Runs the package dependency audit. If Trivy is installed locally it also scans the accelerator filesystem for HIGH/CRITICAL vulnerabilities and infrastructure misconfigurations. CI always runs the full Trivy scan.
+Runs the package dependency audit. If Trivy is installed locally it also scans the accelerator filesystem for HIGH/CRITICAL vulnerabilities and infrastructure misconfigurations. The full Trivy/SBOM supply-chain workflow is an explicit release gate rather than an automatic per-PR or per-merge job.
+
+## Agent-assisted build sequence
+
+The simulated landing-zone build program is exercised through chat as well as direct adapter invocation.
+
+A normal guided sequence is:
+
+1. **Intent** — describe the platform outcome in natural language.
+2. **Discover** — inspect or load the simulated estate and identify known vs UNKNOWN evidence.
+3. **Assess** — review security, resiliency, ownership, and operational constraints.
+4. **Design** — explain the delta using REUSE / INTEGRATE / CONFIGURE / ADD / NO_TOUCH / BLOCKED decisions.
+5. **Adapter selection** — choose or compare the preview adapter for the scenario.
+6. **Build preview** — generate the governed, non-mutating adapter preview.
+7. **Evidence review** — review the normalized ChangeSet, hashes, assumptions, grants, and safety blocks.
+8. **Next step** — explain what would be required to proceed while keeping ACT disabled.
+
+The operator can ask follow-ups such as `status`, `what should we do next?`, `why was that blocked?`, `compare IaC`, or request a different supported preview engine.
+
+This is **agent-assisted**, not autonomous deployment. The conversational agent guides the build process, but deterministic policy and capability gates remain authoritative.
+
+For simulated adapter qualification, compare the direct adapter result with the chat-guided result. They should converge on materially consistent design intent and normalized ChangeSet semantics.
 
 ## Scenario coverage
 
@@ -149,16 +170,17 @@ Preview support does not mean deployment authority. ACT remains disabled.
 
 ## Maintenance
 
-Every relevant pull request and push runs the supply-chain workflow:
+Routine pull requests use the fast deterministic gate:
 
 1. locked dependency install
-2. compile and regression tests
-3. plug-in compatibility validation
-4. dependency audit
-5. CycloneDX SBOM generation
-6. Trivy vulnerability/misconfiguration scan
-7. evidence artifact upload
+2. TypeScript type-check
+3. unit/integration tests
+4. plug-in catalog/runtime consistency
 
-A weekly scheduled run catches newly disclosed vulnerabilities even when source code has not changed.
+Heavyweight qualification is reserved for actual release needs.
+
+The private-model workflow and the full supply-chain workflow are manual release gates. They are not automatically started by every pull request or merge to `main`.
+
+Use existing qualification evidence when the runtime under release has not changed. Run the required Qwen/Mistral model gate, optional Qwen3 8B gate, SBOM/Trivy scan, or broader release scenarios only when the release phase materially requires fresh evidence.
 
 Dependabot separately opens update PRs for npm dependencies and GitHub Actions. The plug-in catalog tracks tested versions and review freshness for infrastructure engines.
