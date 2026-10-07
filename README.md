@@ -1,4 +1,4 @@
-# Agent Private Landing Zone
+# Sovereign Agent Private Landing Zone
 
 Portable, private and sovereign accelerator for governed agentic infrastructure workflows across AWS, Azure and private/edge environments.
 
