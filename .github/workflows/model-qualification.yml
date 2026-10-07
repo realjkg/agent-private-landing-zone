@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - fix/private-model-qualification-10
     paths:
       - "src/models/**"
       - "src/security/prompt-governance.ts"
