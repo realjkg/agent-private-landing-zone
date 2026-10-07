@@ -23,6 +23,202 @@ Generating Terraform, Bicep, Pulumi, policy, or remediation suggestions is not t
 
 Sovereign LZ addresses that decision and verification problem.
 
+## Problem set and known challenges
+
+The market problem is broader than code generation. Production infrastructure teams already deal with a familiar set of problems that become more acute when AI is introduced.
+
+### 1. Brownfield uncertainty
+
+Most real environments are not clean-sheet builds.
+
+They contain:
+
+- inherited resources
+- unclear ownership
+- incomplete tagging
+- undocumented dependencies
+- manual changes
+- multiple sources of truth
+- configuration drift
+- legacy controls that cannot simply be replaced
+
+The challenge is not generating a new target architecture. It is determining the minimum safe change while preserving what must remain.
+
+### 2. Fragmented infrastructure tooling
+
+Platform teams operate across multiple providers, IaC engines, configuration systems, identity systems, policy tools, and operational consoles.
+
+The same intent can be expressed through Terraform, OpenTofu, Pulumi, Bicep, CloudFormation, CDK, Ansible, Crossplane, and provider-native controls.
+
+The challenge is keeping architecture, policy, evidence, and outcomes consistent across tools rather than creating a separate intelligence layer for each one.
+
+### 3. Generation without authority boundaries
+
+AI systems can propose infrastructure changes faster than organizations can safely authorize them.
+
+Common risks include:
+
+- overly broad credentials
+- standing access
+- direct tool execution
+- self-expanded permissions
+- policy bypass
+- accidental production mutation
+- weak separation between recommendation and execution
+
+The challenge is allowing useful agentic behavior without making the model the authority.
+
+### 4. Model nondeterminism and disagreement
+
+Different models can produce different architectures, remediation plans, or implementation choices from the same evidence.
+
+Even the same model can fail through:
+
+- unsupported assumptions
+- inconsistent structured output
+- prompt injection
+- tool-selection mistakes
+- hallucinated environment state
+- long-running task degradation
+- resource or memory pressure
+
+The challenge is making model reasoning useful while keeping deterministic policy and independent verification authoritative.
+
+### 5. Incomplete evidence and false certainty
+
+Infrastructure automation frequently operates on partial state.
+
+Unknown backup posture, missing identity evidence, stale inventory, incomplete dependency mapping, or unverified recovery state can easily be converted into false confidence by an AI system.
+
+The challenge is preserving `UNKNOWN`, `BLOCKED`, and `ABSTAIN` as valid production outcomes rather than forcing every workflow to produce an answer.
+
+### 6. Policy inconsistency
+
+Organizations often express controls in multiple places:
+
+- architecture standards
+- cloud policy
+- IaC rules
+- security tooling
+- compliance mappings
+- operational runbooks
+- approval processes
+
+These can conflict or drift.
+
+The challenge is maintaining one deterministic decision boundary while allowing different frameworks and evaluators to contribute evidence and constraints.
+
+### 7. Identity and secret sprawl
+
+Cloud automation often depends on credentials that are long-lived, duplicated, locally stored, or visible to tools that do not need them.
+
+AI adds another potential exposure surface.
+
+The challenge is moving toward workload/federated identity, opaque secret references, scoped capability grants, and no model-visible secret material.
+
+### 8. Preview is not production readiness
+
+A successful Terraform plan, CloudFormation change set, Bicep preview, or equivalent does not prove that a product is ready for production.
+
+Teams still need confidence in:
+
+- packaging
+- identity
+- policy
+- observability
+- recovery
+- model behavior
+- evidence integrity
+- upgrade and rollback
+- release provenance
+- operating procedures
+
+The challenge is turning a technically valid preview into a qualified operational release.
+
+### 9. Recovery claims without restore evidence
+
+Backups, configuration exports, inventories, and snapshots are often treated as equivalent to recoverability.
+
+They are not.
+
+The challenge is proving:
+
+- what is protected
+- whether evidence is current
+- whether the recovery point matches the approved design
+- whether restore can be performed safely
+- whether RPO/RTO objectives can actually be supported
+
+### 10. Cost, performance, and model-fit tradeoffs
+
+Larger models are not always the best operational choice.
+
+Teams must balance:
+
+- latency
+- memory footprint
+- inference cost
+- reasoning quality
+- context length
+- validator independence
+- task complexity
+- hardware constraints
+
+The challenge is assigning the smallest capable model to the right role and measuring outcomes rather than equating size with quality.
+
+### 11. Operational visibility
+
+Agent-assisted infrastructure workflows can become opaque if decisions, failures, retries, policy denials, and evidence transitions are not observable.
+
+The challenge is giving operators clear answers to:
+
+- what happened
+- why it happened
+- what evidence was used
+- what was blocked
+- what remains unknown
+- what the next safe action is
+
+### 12. Compliance evidence versus compliance claims
+
+Framework mappings can help organize controls, but selecting a framework or running a policy check does not make an environment compliant.
+
+The challenge is collecting traceable technical evidence without overstating certification, attestation, or compliance status.
+
+### 13. Cross-cloud Well-Architected tradeoffs
+
+Security, reliability, operational excellence, performance, cost, and sustainability frequently compete with one another.
+
+Examples include:
+
+- stronger recovery increasing storage cost
+- additional validation increasing latency
+- higher model capacity increasing compute use
+- redundancy improving resilience while increasing operational complexity
+- stricter controls slowing change velocity
+
+The challenge is making these tradeoffs explicit and evidence-backed rather than optimizing one pillar in isolation.
+
+### 14. Safe progression from assistance to actuation
+
+Organizations want increasing automation, but broad mutation authority creates a large blast radius.
+
+The challenge is moving progressively from:
+
+```text
+observe
+→ assess
+→ design
+→ preview
+→ verify
+→ release
+→ individually governed action
+```
+
+without ever requiring a global autonomous `ACT=true`.
+
+These problems are well known individually. Sovereign LZ treats them as one connected production-governance problem.
+
 ## Product thesis
 
 Sovereign LZ is a governed infrastructure intelligence layer for private and sovereign environments.
@@ -349,27 +545,29 @@ A model can be replaced without replacing the Sovereign LZ control plane.
 The one-pager should normally tell this story in five moves:
 
 1. **Problem** — infrastructure AI can generate, but production operators need control and proof.
-2. **Product** — Sovereign LZ combines private model reasoning with deterministic governance and typed infrastructure workflows.
-3. **Well-Architected outcomes** — decisions are evaluated across Operational Excellence, Security, Reliability/Resiliency, Performance Efficiency, Cost Optimization, and Sustainability.
-4. **Compounding intelligence** — each governed run creates evidence about which decisions, models, policies, and designs actually work.
-5. **Boundary** — customer environments remain sovereign; AI assists engineering judgment but does not own authority.
+2. **Known challenges** — brownfield uncertainty, fragmented tooling, identity sprawl, incomplete evidence, policy inconsistency, recovery uncertainty, model nondeterminism, and cross-pillar tradeoffs.
+3. **Product** — Sovereign LZ combines private model reasoning with deterministic governance and typed infrastructure workflows.
+4. **Well-Architected outcomes** — decisions are evaluated across Operational Excellence, Security, Reliability/Resiliency, Performance Efficiency, Cost Optimization, and Sustainability.
+5. **Compounding intelligence** — each governed run creates evidence about which decisions, models, policies, and designs actually work.
+6. **Boundary** — customer environments remain sovereign; AI assists engineering judgment but does not own authority.
 
 ## Slide-deck narrative
 
 A standard executive deck can use this sequence:
 
 1. The problem: generation is not production governance
-2. Why current infrastructure AI is insufficient
-3. Sovereign LZ: governed private infrastructure intelligence
-4. Architecture: model reasoning inside deterministic authority
-5. Well-Architected assessment across the six cross-cloud lenses
-6. Preview/Operate workflow and evidence
-7. Recovery and production qualification
-8. Sovereign Infrastructure Execution Corpus
-9. Compounding model and architecture intelligence
-10. Milestone 1: Production Preview/Operate
-11. Milestone 2: individually governed actuation
-12. Why this becomes a durable operating layer
+2. The known problem set: brownfield, fragmentation, authority, evidence, recovery, model and operating risk
+3. Why current infrastructure AI is insufficient
+4. Sovereign LZ: governed private infrastructure intelligence
+5. Architecture: model reasoning inside deterministic authority
+6. Well-Architected assessment across the six cross-cloud lenses
+7. Preview/Operate workflow and evidence
+8. Recovery and production qualification
+9. Sovereign Infrastructure Execution Corpus
+10. Compounding model and architecture intelligence
+11. Milestone 1: Production Preview/Operate
+12. Milestone 2: individually governed actuation
+13. Why this becomes a durable operating layer
 
 ## Language guardrails
 
