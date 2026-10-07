@@ -15,6 +15,12 @@ import {
 import type {
   AgentState,
 } from "../agent/types.js";
+import {
+  sanitizeDiagnosticText,
+} from "../observability/redaction.js";
+import type {
+  DebugDiagnosticEvent,
+} from "./context.js";
 import type {
   LocalModelMetadata,
 } from "../ollama.js";
@@ -37,6 +43,22 @@ export type DebugModelInventory = {
   inventoryError?: string;
 };
 
+export type DebugCheckpointDiagnostic = {
+  status:
+    | "OK"
+    | "FAILED"
+    | "NOT_RUN";
+  backend:
+    | "SQLITE"
+    | "NONE";
+  threadId?: string;
+  relativePath?: string;
+  historyBefore: number;
+  historyAfter: number;
+  continued: boolean;
+  detail?: string;
+};
+
 export type DebugReport = {
   schemaVersion: 1;
   generatedAt: string;
@@ -56,6 +78,18 @@ export type DebugReport = {
     boundary?: string;
     reason?: string;
   };
+  knowledge: {
+    state:
+      | "KNOWN"
+      | "UNKNOWN"
+      | "INFERRED_ADVISORY"
+      | "POLICY_BLOCKED";
+    reasons: string[];
+  };
+  checkpoint:
+    DebugCheckpointDiagnostic;
+  diagnostics:
+    DebugDiagnosticEvent[];
   orchestration: {
     phaseOrder: string[];
     roles: string[];
@@ -79,6 +113,15 @@ export type DebugReport = {
       | "PARTICIPATED"
       | "DISAGREE_ABSTAIN"
       | "MISSING";
+    schema: {
+      status:
+        | "PASS"
+        | "FAILED"
+        | "NOT_EVALUATED";
+      retryCount: 0;
+      fallback: "FAIL_CLOSED";
+      detail?: string;
+    };
     modelInvocations: Array<{
       role: string;
       model: string;
@@ -139,35 +182,8 @@ export type DebugReport = {
   };
 };
 
-const SENSITIVE_ASSIGNMENT =
-  /\b(secret|password|token|authorization|api[_-]?key|access[_-]?key|private[_-]?key|credential)\b\s*[:=]\s*[^\s,;]+/gi;
-const BEARER =
-  /\bBearer\s+[A-Za-z0-9._~+\/-]+=*/gi;
-
-export function redactDebugText(
-  value: string,
-): string {
-  return value
-    .replace(
-      SENSITIVE_ASSIGNMENT,
-      (match) => {
-        const key =
-          match.split(
-            /\s*[:=]\s*/,
-          )[0] ??
-          "sensitive";
-        return (
-          key +
-          "=[REDACTED]"
-        );
-      },
-    )
-    .replace(
-      BEARER,
-      "Bearer [REDACTED]",
-    )
-    .slice(0, 512);
-}
+export const redactDebugText =
+  sanitizeDiagnosticText;
 
 function fingerprint(
   value: string,
@@ -236,6 +252,12 @@ function grounding(
   const assumptions =
     assessment.primary
       ?.assumptions.length ?? 0;
+  const validatorAssumptions =
+    assessment.validator
+      ?.assumptions.length ?? 0;
+  const assumptionCount =
+    assumptions +
+    validatorAssumptions;
 
   if (
     assessment.status ===
@@ -244,8 +266,7 @@ function grounding(
     return {
       status:
         "EVIDENCE_REQUIRED",
-      assumptionCount:
-        assumptions,
+      assumptionCount,
       evidenceRefs: refs,
       unsupportedClaimRisk:
         "REVIEW_REQUIRED",
@@ -260,20 +281,23 @@ function grounding(
     return {
       status:
         "ENVIRONMENT_UNKNOWN",
-      assumptionCount:
-        assumptions,
+      assumptionCount,
       evidenceRefs: refs,
       unsupportedClaimRisk:
         "REVIEW_REQUIRED",
     };
   }
 
-  if (assumptions > 0) {
+  if (
+    assumptionCount > 0 ||
+    assessment.status ===
+      "ABSTAIN" ||
+    refs.length === 0
+  ) {
     return {
       status:
         "ASSUMPTIONS_PRESENT",
-      assumptionCount:
-        assumptions,
+      assumptionCount,
       evidenceRefs: refs,
       unsupportedClaimRisk:
         "REVIEW_REQUIRED",
@@ -287,6 +311,130 @@ function grounding(
     evidenceRefs: refs,
     unsupportedClaimRisk:
       "NONE_OBSERVED",
+  };
+}
+
+function knowledge(
+  state: AgentState,
+  policy:
+    OperatorPolicyDecision,
+  refs: string[],
+): DebugReport["knowledge"] {
+  if (!policy.allowed) {
+    return {
+      state:
+        "POLICY_BLOCKED",
+      reasons: [
+        policy.boundary,
+        policy.reason,
+      ].map(
+        sanitizeDiagnosticText,
+      ),
+    };
+  }
+
+  const assessment =
+    state.assessment;
+  const assumptions = [
+    ...(assessment?.primary
+      ?.assumptions ?? []),
+    ...(assessment?.validator
+      ?.assumptions ?? []),
+  ];
+
+  if (
+    assessment?.status ===
+      "DATA_REQUIRED" ||
+    state.environment
+      ?.classification ===
+      "UNKNOWN"
+  ) {
+    return {
+      state: "UNKNOWN",
+      reasons: [
+        assessment?.status ===
+        "DATA_REQUIRED"
+          ? "required evidence is missing"
+          : "environment classification is UNKNOWN",
+      ],
+    };
+  }
+
+  if (
+    assessment &&
+    (
+      assumptions.length > 0 ||
+      assessment.status ===
+        "ABSTAIN" ||
+      refs.length === 0
+    )
+  ) {
+    return {
+      state:
+        "INFERRED_ADVISORY",
+      reasons: [
+        ...(assumptions.length > 0
+          ? [
+              "model assessment contains explicit assumptions",
+            ]
+          : []),
+        ...(assessment.status ===
+        "ABSTAIN"
+          ? [
+              "independent validator disagreement caused abstention",
+            ]
+          : []),
+        ...(refs.length === 0
+          ? [
+              "no explicit evidence references are attached to the model-backed assessment",
+            ]
+          : []),
+      ],
+    };
+  }
+
+  return {
+    state: "KNOWN",
+    reasons: [],
+  };
+}
+
+function schemaState(
+  state: AgentState,
+): DebugReport["reasoning"]["schema"] {
+  if (
+    /INVALID_MODEL_OUTPUT|INVALID_ROUTER_OUTPUT|SCHEMA|JSON/i.test(
+      state.error ?? "",
+    )
+  ) {
+    return {
+      status: "FAILED",
+      retryCount: 0,
+      fallback:
+        "FAIL_CLOSED",
+      detail:
+        sanitizeDiagnosticText(
+          state.error ??
+            "structured output validation failed",
+        ),
+    };
+  }
+
+  if (state.assessment) {
+    return {
+      status: "PASS",
+      retryCount: 0,
+      fallback:
+        "FAIL_CLOSED",
+    };
+  }
+
+  return {
+    status:
+      "NOT_EVALUATED",
+    retryCount: 0,
+    fallback:
+      "FAIL_CLOSED",
   };
 }
 
@@ -358,6 +506,10 @@ export function buildDebugReport(input: {
   state: AgentState;
   policy: OperatorPolicyDecision;
   models: DebugModelInventory[];
+  checkpoint?:
+    DebugCheckpointDiagnostic;
+  diagnostics?:
+    DebugDiagnosticEvent[];
 }): DebugReport {
   const { state } = input;
   const refs =
@@ -431,6 +583,23 @@ export function buildDebugReport(input: {
           }
         : {}),
     },
+    knowledge:
+      knowledge(
+        state,
+        input.policy,
+        refs,
+      ),
+    checkpoint:
+      input.checkpoint ?? {
+        status:
+          "NOT_RUN",
+        backend: "NONE",
+        historyBefore: 0,
+        historyAfter: 0,
+        continued: false,
+      },
+    diagnostics:
+      input.diagnostics ?? [],
     orchestration: {
       phaseOrder:
         state.orchestration
@@ -461,6 +630,8 @@ export function buildDebugReport(input: {
       verificationRequired,
       validator,
       adjudication,
+      schema:
+        schemaState(state),
       modelInvocations:
         assessment
           ?.modelInvocations ??
@@ -650,6 +821,14 @@ export function writeDebugTrace(
         JSON.stringify({
           type: "event",
           runId: report.runId,
+          ...event,
+        }),
+    ),
+    ...report.diagnostics.map(
+      (event) =>
+        JSON.stringify({
+          type:
+            "diagnostic",
           ...event,
         }),
     ),
