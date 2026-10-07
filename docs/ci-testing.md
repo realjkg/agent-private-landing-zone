@@ -17,6 +17,7 @@ Pull requests use the fast deterministic gate needed to protect code quality:
 2. TypeScript type-check
 3. unit/integration test suite
 4. plug-in catalog/runtime consistency check
+5. immutable GitHub Actions reference check
 
 New commits cancel older in-progress runs for the same pull request.
 
@@ -48,6 +49,14 @@ All coding agents follow the repository `AGENTS.md` protocol. During Milestone 1
 Before editing or handing off code, agents check ACTIVE claims and open PR changed files. Overlapping paths are sequenced under a single active owner rather than edited concurrently.
 
 This collision check is procedural and does not add another GitHub Actions workflow.
+
+## Workflow supply-chain policy
+
+External GitHub Actions used by repository workflows must be pinned to immutable 40-character commit SHAs. Keep the human-readable release tag in an adjacent comment when useful for review. The deterministic PR gate runs `npm run ci:actions-pinned` so moving tags such as `@v7` cannot be reintroduced unnoticed.
+
+Workflow permissions remain explicit and least-privilege. Normal PR, model, OPA, adapter, recovery and supply-chain workflows use `contents: read`. Provider qualification is the only workflow that requires `id-token: write`, solely for short-lived federated AWS/Azure qualification identity.
+
+Repository branch/ruleset controls are separate GitHub administration settings and must be verified before release; they are not inferred from workflow YAML.
 
 ## Supply-chain checks
 
