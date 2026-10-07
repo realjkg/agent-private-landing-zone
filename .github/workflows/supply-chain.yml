@@ -1,12 +1,13 @@
 name: Agent Private Landing Zone Supply Chain
 
 on:
-  push:
-    branches:
-      - main
-  schedule:
-    - cron: "23 8 * * 1"
   workflow_dispatch:
+    inputs:
+      release_phase:
+        description: "Release phase or reason for full supply-chain qualification"
+        required: true
+        default: "release-candidate"
+        type: string
 
 permissions:
   contents: read
