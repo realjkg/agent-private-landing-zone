@@ -10,6 +10,10 @@ import {
 import {
   getToolSecurityPosture,
 } from "../tools/broker.js";
+import {
+  PROMPT_POLICY_VERSION,
+  promptPolicyHash,
+} from "./prompt-governance.js";
 
 export type SessionSecurityControl = {
   name: string;
@@ -99,6 +103,16 @@ export async function assessSessionSecurity(): Promise<SessionSecurityPosture> {
         toolPosture.managedAccessDefault === false,
       detail:
         "disabled by default; managed-host access requires explicit grant",
+    },
+    {
+      name: "prompt-governance",
+      passed: true,
+      detail:
+        "policy " +
+        PROMPT_POLICY_VERSION +
+        "; sha256 " +
+        promptPolicyHash().slice(0, 16) +
+        "…",
     },
     {
       name: "checkpointing",
