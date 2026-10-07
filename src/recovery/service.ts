@@ -10,6 +10,7 @@ import type {
 import {
   RecoveryAutomationController,
   createDiscoveryRecoveryContextProvider,
+  loadRecoveryAutomationState,
   type RecoveryDesignResolver,
 } from "./automation.js";
 import {
@@ -65,8 +66,27 @@ export async function createRecoveryAutomationService(
     options.resolveDesign ??
     resolveEncryptedDesign;
 
+  const initialStates =
+    (
+      await Promise.all(
+        targets.map(
+          (target) =>
+            loadRecoveryAutomationState(
+              target.targetId,
+            ),
+        ),
+      )
+    ).filter(
+      (
+        state,
+      ): state is NonNullable<
+        typeof state
+      > => Boolean(state),
+    );
+
   return new RecoveryAutomationController({
     targets,
+    initialStates,
     contextProvider:
       createDiscoveryRecoveryContextProvider(
         resolveDesign,
