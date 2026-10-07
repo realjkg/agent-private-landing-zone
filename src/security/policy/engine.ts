@@ -29,5 +29,14 @@ export function createSecurityPolicyEvaluator(
     );
   }
 
-  return new BuiltinSecurityPolicyEvaluator();
+  if (
+    mode === undefined ||
+    mode === "BUILTIN"
+  ) {
+    return new BuiltinSecurityPolicyEvaluator();
+  }
+
+  throw new Error(
+    "SECURITY_POLICY_MODE_INVALID: use BUILTIN or OPA.",
+  );
 }
