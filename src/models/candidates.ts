@@ -40,7 +40,7 @@ export const CANDIDATE_MODELS:
       ],
       approximateLocalWeightGb:
         19,
-      laptop24Fit: "FIT",
+      laptop24Fit: "TIGHT",
       nativeToolUse: true,
       structuredOutput: true,
       longHorizonAgentic: true,
@@ -110,12 +110,12 @@ export const CANDIDATE_MODELS:
       ],
       approximateLocalWeightGb:
         25,
-      laptop24Fit: "TIGHT",
+      laptop24Fit: "NO",
       nativeToolUse: true,
       structuredOutput: true,
       longHorizonAgentic: true,
       notes:
-        "Always-on agent candidate; default Q4 exceeds practical 24GB headroom. MLX/NVFP4 variants are near the limit.",
+        "Always-on agent candidate; 23-25GB local builds leave insufficient headroom for a 24GB sovereign workstation.",
     },
     {
       id:
@@ -130,12 +130,14 @@ export const CANDIDATE_MODELS:
         "OLLAMA_LOCAL",
         "BASETEN_SELF_HOSTED",
       ],
+      approximateLocalWeightGb:
+        2.5,
       laptop24Fit: "FIT",
-      nativeToolUse: false,
+      nativeToolUse: true,
       structuredOutput: true,
       longHorizonAgentic: false,
       notes:
-        "Compact instruction/specialist candidate; keep tool selection deterministic outside the model.",
+        "Compact router/specialist candidate with function calling; authority still remains outside the model.",
     },
     {
       id:
@@ -150,6 +152,8 @@ export const CANDIDATE_MODELS:
         "OLLAMA_LOCAL",
         "BASETEN_SELF_HOSTED",
       ],
+      approximateLocalWeightGb:
+        11,
       laptop24Fit: "FIT",
       nativeToolUse: false,
       structuredOutput: false,
