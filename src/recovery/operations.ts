@@ -173,6 +173,20 @@ function explicitIaCState(
   );
 }
 
+function encryptionEvidence(
+  environment: EnvironmentState,
+): string[] {
+  return matchingEvidenceRefs(
+    environment,
+    [
+      "recovery_encryption",
+      "backup_encryption",
+      "state_encryption",
+      "evidence_encryption",
+    ],
+  );
+}
+
 function policyUnknowns(
   policy: RecoveryPolicy,
 ): string[] {
@@ -265,6 +279,10 @@ export function createSimulatedRecoveryPoint(input: {
     explicitConfigurationExport(
       input.environment,
     );
+  const encryptionRefs =
+    encryptionEvidence(
+      input.environment,
+    );
 
   if (exportRefs.length > 0) {
     artifacts.push(
@@ -277,7 +295,10 @@ export function createSimulatedRecoveryPoint(input: {
           "provider-configuration-export",
         resourceIds:
           providerCapture.resourceIds,
-        evidenceRefs: exportRefs,
+        evidenceRefs: [
+          ...exportRefs,
+          ...encryptionRefs,
+        ],
         contentHash:
           sha256(
             JSON.stringify({
@@ -287,7 +308,10 @@ export function createSimulatedRecoveryPoint(input: {
                   .resourceIds,
             }),
           ),
-        protection: "HASHED",
+        protection:
+          encryptionRefs.length > 0
+            ? "ENCRYPTED_EVIDENCE"
+            : "HASHED",
       }),
     );
   }
@@ -383,7 +407,10 @@ export function createSimulatedRecoveryPoint(input: {
             (entry) =>
               entry.resourceId,
           ),
-        evidenceRefs: stateRefs,
+        evidenceRefs: [
+          ...stateRefs,
+          ...encryptionRefs,
+        ],
         contentHash:
           sha256(
             JSON.stringify({
@@ -392,7 +419,10 @@ export function createSimulatedRecoveryPoint(input: {
                 input.design.designHash,
             }),
           ),
-        protection: "HASHED",
+        protection:
+          encryptionRefs.length > 0
+            ? "ENCRYPTED_EVIDENCE"
+            : "HASHED",
       }),
     );
   }
@@ -571,6 +601,28 @@ export function verifyRecoveryPoint(input: {
           : "FAIL" as const,
       detail:
         "Recovery artifact hashes were checked.",
+    },
+    {
+      name:
+        "sensitive-artifact-encryption",
+      status:
+        input.point.artifacts
+          .filter(
+            (artifact) =>
+              artifact.kind ===
+                "CONFIGURATION_EXPORT" ||
+              artifact.kind ===
+                "IAC_STATE",
+          )
+          .every(
+            (artifact) =>
+              artifact.protection ===
+              "ENCRYPTED_EVIDENCE",
+          )
+          ? "PASS" as const
+          : "FAIL" as const,
+      detail:
+        "Configuration export and IaC state require explicit encryption evidence.",
     },
     {
       name:
