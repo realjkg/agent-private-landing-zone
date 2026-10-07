@@ -24,7 +24,7 @@ env:
   OLLAMA_HOST: 127.0.0.1:11434
   OLLAMA_NUM_PARALLEL: "1"
   OLLAMA_MAX_LOADED_MODELS: "1"
-  OLLAMA_KEEP_ALIVE: "0"
+  OLLAMA_KEEP_ALIVE: "10m"
 
 jobs:
   default-stack:
@@ -43,6 +43,13 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
           package-manager-cache: false
+
+      - name: Record runner capacity
+        shell: bash
+        run: |
+          echo "CPUs=$(nproc)"
+          free -h
+          lscpu | grep -E '^Model name:|^CPU\(s\):|^Thread\(s\) per core:|^Core\(s\) per socket:|^Socket\(s\):'
 
       - name: Install locked dependencies
         run: npm ci
@@ -109,6 +116,13 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
           package-manager-cache: false
+
+      - name: Record runner capacity
+        shell: bash
+        run: |
+          echo "CPUs=$(nproc)"
+          free -h
+          lscpu | grep -E '^Model name:|^CPU\(s\):|^Thread\(s\) per core:|^Core\(s\) per socket:|^Socket\(s\):'
 
       - name: Install locked dependencies
         run: npm ci
