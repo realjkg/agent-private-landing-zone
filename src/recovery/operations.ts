@@ -13,6 +13,9 @@ import type {
 import {
   captureProviderConfiguration,
 } from "./providers.js";
+import {
+  captureProviderRecoveryEvidence,
+} from "./native-evidence.js";
 import type {
   PlatformConfigurationCapture,
   RecoveryArtifact,
@@ -147,18 +150,6 @@ function hashableRecoveryPoint(
   );
 }
 
-function explicitConfigurationExport(
-  environment: EnvironmentState,
-): string[] {
-  return matchingEvidenceRefs(
-    environment,
-    [
-      "configuration_export",
-      "config_export",
-    ],
-  );
-}
-
 function explicitIaCState(
   environment: EnvironmentState,
 ): string[] {
@@ -275,14 +266,21 @@ export function createSimulatedRecoveryPoint(input: {
     }),
   );
 
+  const nativeEvidence =
+    captureProviderRecoveryEvidence(
+      input.environment,
+    );
   const exportRefs =
-    explicitConfigurationExport(
-      input.environment,
-    );
+    nativeEvidence
+      .configurationExportRefs;
   const encryptionRefs =
-    encryptionEvidence(
-      input.environment,
-    );
+    nativeEvidence
+      .encryptionEvidenceRefs.length > 0
+      ? nativeEvidence
+          .encryptionEvidenceRefs
+      : encryptionEvidence(
+          input.environment,
+        );
 
   if (exportRefs.length > 0) {
     artifacts.push(
@@ -292,17 +290,25 @@ export function createSimulatedRecoveryPoint(input: {
         provider:
           input.environment.provider,
         source:
-          "provider-configuration-export",
+          input.environment.provider === "AWS"
+            ? "aws-provider-recovery-evidence"
+            : "azure-provider-recovery-evidence",
         resourceIds:
           providerCapture.resourceIds,
         evidenceRefs: [
           ...exportRefs,
+          ...nativeEvidence
+            .storageEvidenceRefs,
           ...encryptionRefs,
         ],
         contentHash:
           sha256(
             JSON.stringify({
-              refs: exportRefs,
+              refs: [
+                ...exportRefs,
+                ...nativeEvidence
+                  .storageEvidenceRefs,
+              ],
               resources:
                 providerCapture
                   .resourceIds,
