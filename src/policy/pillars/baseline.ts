@@ -168,14 +168,21 @@ function costPolicy(
     "environment",
   ];
 
+  const governedResources =
+    environment.resources.filter(
+      (resource) =>
+        resource.ownership ===
+        "MANAGED_BY_ACCELERATOR",
+    );
+
   const resourceTagEvidence =
-    environment.resources.map(
+    governedResources.map(
       (resource) =>
         "resource:" + resource.resourceId,
     );
 
   const taggedResources =
-    environment.resources.filter(
+    governedResources.filter(
       (resource) => {
         const tags = Object.fromEntries(
           Object.entries(
@@ -194,10 +201,10 @@ function costPolicy(
     ).length;
 
   const taggingStatus: PillarStatus =
-    environment.resources.length === 0
+    governedResources.length === 0
       ? "UNKNOWN"
       : taggedResources ===
-          environment.resources.length
+          governedResources.length
         ? "SATISFIED"
         : "PARTIAL";
 
