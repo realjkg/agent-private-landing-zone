@@ -32,7 +32,9 @@ export async function runAgentKernel(
   const progress =
     options.progress ?? (() => {});
 
-  const requestId = randomUUID();
+  const requestId =
+    options.requestId ??
+    randomUUID();
   const intent =
     classifyIntent(options.request);
   const orchestration =
