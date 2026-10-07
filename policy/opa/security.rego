@@ -134,6 +134,54 @@ decision := {
   }
 }
 
+safe_contained_capability(capability) if {
+  capability == "EVIDENCE_READ"
+}
+
+safe_contained_capability(capability) if {
+  capability == "VALIDATE"
+}
+
+decision := {
+  "allow": true,
+  "reasons": [],
+  "obligations": [],
+} if {
+  input.kind == "CAPABILITY"
+  input.compromiseState == "CONTAINED"
+  every capability in input.requested {
+    safe_contained_capability(capability)
+  }
+}
+
+safe_recovery_capability(capability) if {
+  capability == "EVIDENCE_READ"
+}
+
+safe_recovery_capability(capability) if {
+  capability == "EVIDENCE_WRITE"
+}
+
+safe_recovery_capability(capability) if {
+  capability == "CLOUD_READ"
+}
+
+safe_recovery_capability(capability) if {
+  capability == "VALIDATE"
+}
+
+decision := {
+  "allow": true,
+  "reasons": [],
+  "obligations": [],
+} if {
+  input.kind == "CAPABILITY"
+  input.compromiseState == "RECOVERY"
+  every capability in input.requested {
+    safe_recovery_capability(capability)
+  }
+}
+
 decision := {
   "allow": false,
   "reasons": ["Scheduled automation is suspended while compromise is suspected or contained."],
