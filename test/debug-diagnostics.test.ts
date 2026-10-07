@@ -8,8 +8,14 @@ import {
   redactDebugText,
 } from "../src/debug/report.js";
 import {
+  withDebugDiagnosticContext,
+} from "../src/debug/context.js";
+import {
   runDebugDiagnostic,
 } from "../src/debug/run.js";
+import {
+  runRecoveryCommand,
+} from "../src/session/recovery.js";
 
 const fixtureModels = [
   {
@@ -248,5 +254,37 @@ test("debug reports structured-output failure as zero-retry fail-closed behavior
     report.action
       .mutationObserved,
     false,
+  );
+});
+
+
+test("recovery commands inherit the active debug correlation ID", async () => {
+  const captured =
+    await withDebugDiagnosticContext(
+      "debug-recovery-correlation",
+      async () =>
+        runRecoveryCommand({
+          command:
+            "RECOVERY_STATUS",
+          artifacts: {},
+        }),
+    );
+
+  assert.match(
+    captured.value.response,
+    /ACT is disabled/i,
+  );
+  assert.equal(
+    captured.events.some(
+      (event) =>
+        event.kind ===
+          "RECOVERY" &&
+        event.runId ===
+          "debug-recovery-correlation" &&
+        event.attributes
+          .command ===
+          "RECOVERY_STATUS",
+    ),
+    true,
   );
 });
