@@ -5,6 +5,7 @@ requiredDataClassification: INTERNAL
 defaultDenyEgress: true
 customerManagedEncryption: true
 providerEdgeRecovery: true
+immutableRecovery: true
 centralControlCanDecrypt: false
 isolatedPreviewRestore: true
 tamperEvidentEvidence: true
@@ -17,6 +18,7 @@ lockedControls:
   - DEFAULT_DENY_EGRESS
   - CUSTOMER_MANAGED_ENCRYPTION
   - PROVIDER_EDGE_RECOVERY
+  - IMMUTABLE_RECOVERY
   - NO_CENTRAL_DECRYPTION
   - ISOLATED_PREVIEW_RESTORE
   - TAMPER_EVIDENT_EVIDENCE
