@@ -87,6 +87,36 @@ export const KNOWLEDGE_SOURCES:
     },
     {
       id:
+        "PULUMI_CORE",
+      sourceClass:
+        "SOURCE_CODE_REPOSITORY",
+      canonicalUri:
+        "https://github.com/pulumi/pulumi",
+      trust:
+        "PRIMARY_VENDOR",
+      dynamic: true,
+      runtimeInternetRequired:
+        false,
+      mirrorRequiredForPrivateSovereign:
+        true,
+      ingestIncludes: [
+        "engine",
+        "backend",
+        "deployment state",
+        "plugin host",
+        "resource monitor",
+        "language hosts",
+        "provider protocol",
+        "checkpointing",
+        "secrets handling",
+        "CLI behavior",
+        "SDKs",
+      ],
+      notes:
+        "Primary Pulumi source repository. Source snapshots are pinned to commit SHA and complement Registry package/schema ingestion.",
+    },
+    {
+      id:
         "PYTHON_STDLIB",
       sourceClass:
         "LANGUAGE_REFERENCE",
@@ -138,6 +168,61 @@ export const KNOWLEDGE_SOURCES:
       ],
       notes:
         "Microsoft/Azure curated AVM catalog. Available, proposed, orphaned and deprecated lifecycle states must remain distinct; only accepted lifecycle states are eligible for production selection.",
+    },
+    {
+      id:
+        "AZURE_BICEP_REGISTRY_MODULES",
+      sourceClass:
+        "SOURCE_CODE_REPOSITORY",
+      canonicalUri:
+        "https://github.com/Azure/bicep-registry-modules",
+      trust:
+        "PRIMARY_VENDOR",
+      dynamic: true,
+      runtimeInternetRequired:
+        false,
+      mirrorRequiredForPrivateSovereign:
+        true,
+      ingestIncludes: [
+        "Azure Verified Module source",
+        "Bicep module implementations",
+        "resource modules",
+        "pattern modules",
+        "module tests",
+        "module metadata",
+        "telemetry controls",
+        "module lifecycle information",
+      ],
+      notes:
+        "Primary source repository for current Azure Verified Modules published to the public Bicep Registry. Snapshots are pinned to commit SHA.",
+    },
+    {
+      id:
+        "AWS_CDK",
+      sourceClass:
+        "SOURCE_CODE_REPOSITORY",
+      canonicalUri:
+        "https://github.com/aws/aws-cdk",
+      trust:
+        "PRIMARY_VENDOR",
+      dynamic: true,
+      runtimeInternetRequired:
+        false,
+      mirrorRequiredForPrivateSovereign:
+        true,
+      ingestIncludes: [
+        "AWS Construct Library",
+        "construct stability",
+        "synthesis",
+        "diff behavior",
+        "CloudFormation integration",
+        "service constructs",
+        "CLI/runtime behavior",
+        "language bindings",
+        "telemetry behavior",
+      ],
+      notes:
+        "Primary AWS CDK source repository. Snapshots are pinned to commit SHA and used to qualify CDK synth/preview semantics without granting deploy authority.",
     },
     {
       id:
