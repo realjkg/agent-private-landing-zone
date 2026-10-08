@@ -32,6 +32,7 @@ RUN npm ci --omit=dev && npm cache clean --force
 
 COPY --from=build /app/dist ./dist
 COPY config/ ./config/
+COPY policy/ ./policy/
 
 ARG SOURCE_COMMIT
 
