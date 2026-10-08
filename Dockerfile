@@ -14,6 +14,7 @@ FROM build AS test
 
 COPY test/ ./test/
 COPY config/ ./config/
+COPY policy/ ./policy/
 COPY alz ./alz
 
 RUN chmod +x ./alz
