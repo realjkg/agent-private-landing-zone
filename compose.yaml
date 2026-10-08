@@ -1,0 +1,28 @@
+services:
+  alz:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+      args:
+        SOURCE_COMMIT: ${ALZ_SOURCE_COMMIT:-}
+    image: agent-private-landing-zone:local
+    environment:
+      NODE_ENV: production
+      AGENTIC_EVIDENCE_KEY_FILE: /run/alz-keys/evidence.key
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      - alz-runtime-data:/app/.runs
+      - alz-evidence-keys:/run/alz-keys
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  alz-runtime-data:
+    external: true
+  alz-evidence-keys:
+    external: true

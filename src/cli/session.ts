@@ -77,9 +77,12 @@ const migration =
 const security =
   await assertSecureSession();
 
+const checkpointPath =
+  process.env.ALZ_CHECKPOINT_DB;
+
 const { graph } =
   createSessionGraph(
-    undefined,
+    checkpointPath,
     (message) => {
       console.log();
       console.log(
@@ -101,7 +104,11 @@ console.log("SECURED CONVERSATIONAL DEVOPS SESSION");
 console.log("────────────────────────────────");
 console.log("Security   ATTESTED");
 console.log("Evidence   AES-256-GCM encrypted");
-console.log("Checkpoint memory-only");
+console.log(
+  checkpointPath
+    ? "Checkpoint SQLite persistent"
+    : "Checkpoint memory-only",
+);
 console.log("Shell      unavailable");
 console.log("Cloud read disabled by default");
 console.log("Mutation   unavailable");
