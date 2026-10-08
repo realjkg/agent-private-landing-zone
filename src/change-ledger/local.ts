@@ -104,9 +104,32 @@ function verifyRecords(records: SovereignChangeRecord[]): LedgerVerification {
     if (!r.changeRecordId || !SAFE.test(r.changeRecordId)) fail("RECORD_ID_INVALID");
     const prior = latest.get(r.changeRecordId);
     if (prior) {
-      if (r.phase !== "RECONCILED" || r.mode !== "RECONCILED" || r.revision !== prior.revision + 1 ||
-        r.supersedesRecordHash !== prior.recordHash || r.execution.status !== prior.execution.status ||
-        r.authorityClass !== prior.authorityClass) fail("REVISION_LINEAGE_INVALID");
+      if (r.revision !== prior.revision + 1 || r.supersedesRecordHash !== prior.recordHash) fail("REVISION_LINEAGE_INVALID");
+      const fixed: (keyof ChangeRequest)[] = [
+        "changeRecordId", "actionId", "actionType", "authorityClass",
+        "environmentId", "substrate", "resourceIds", "initiatingRef", "requestorId",
+        "agentActorId", "approval", "playbook", "preconditions", "maxTargets", "relatedChangeRecordIds",
+      ];
+      if (fixed.some((key) => JSON.stringify(r[key]) !== JSON.stringify(prior[key]))) fail("IMMUTABLE_LINEAGE_CHANGED");
+      if (r.phase === "RECONCILED") {
+        if (!["REQUESTED", "RECONCILED"].includes(prior.phase) || r.mode !== "RECONCILED" ||
+          !["DISCONNECTED", "RECONCILED"].includes(prior.mode) ||
+          r.execution.status !== prior.execution.status || r.verification !== prior.verification ||
+          r.recovery !== prior.recovery) fail("REVISION_LINEAGE_INVALID");
+      } else if (r.phase === "STARTED") {
+        if (!["REQUESTED", "RECONCILED"].includes(prior.phase) || r.mode !== prior.mode ||
+          r.execution.status !== "NOT_EXECUTED" || !r.execution.startedAt ||
+          r.verification !== "NOT_RUN" || !r.capabilityLeaseId || !r.policyDecisionId) fail("REVISION_LINEAGE_INVALID");
+      } else if (r.phase === "OUTCOME") {
+        if (prior.phase !== "STARTED" || r.mode !== prior.mode ||
+          !["SUCCEEDED", "FAILED"].includes(r.execution.status) ||
+          !r.execution.finishedAt || r.execution.startedAt !== prior.execution.startedAt ||
+          r.capabilityLeaseId !== prior.capabilityLeaseId ||
+          r.policyDecisionId !== prior.policyDecisionId ||
+          (r.execution.status === "SUCCEEDED" && r.verification !== "PASS")) fail("REVISION_LINEAGE_INVALID");
+      } else {
+        fail("REVISION_LINEAGE_INVALID");
+      }
     } else if (r.revision !== 1 || r.phase !== "REQUESTED" || r.mode === "RECONCILED" || r.supersedesRecordHash !== null) {
       fail("INITIAL_LINEAGE_INVALID");
     }
@@ -188,6 +211,56 @@ export class LocalSovereignChangeLedger {
         at, sequence: history.length + 1, externalRefs: distinct,
         previousRecordHash: history.at(-1)?.recordHash ?? null,
         supersedesRecordHash: previous.recordHash, recordHash: "", actAuthorizedByLedger: false,
+      };
+      record.recordHash = expectedHash(record);
+      return record;
+    });
+  }
+  markStarted(changeRecordId: string, leaseId: string, decisionId: string, at: string, expectedSourceHash?: string): SovereignChangeRecord {
+    validId(changeRecordId, "START_ID_INVALID");
+    validId(leaseId, "START_LEASE_INVALID");
+    validId(decisionId, "START_POLICY_INVALID");
+    validTime(at, "START_TIMESTAMP_INVALID");
+    return this.commit((history) => {
+      const latest = [...history].reverse().find((r) => r.changeRecordId === changeRecordId);
+      if (!latest || !["REQUESTED", "RECONCILED"].includes(latest.phase) ||
+        (expectedSourceHash && latest.recordHash !== expectedSourceHash)) fail("START_STATE_INVALID");
+      const record: SovereignChangeRecord = {
+        ...latest, phase: "STARTED", revision: latest.revision + 1, at, sequence: history.length + 1,
+        capabilityLeaseId: leaseId, policyDecisionId: decisionId,
+        execution: { status: "NOT_EXECUTED", startedAt: at },
+        previousRecordHash: history.at(-1)?.recordHash ?? null,
+        supersedesRecordHash: latest.recordHash,
+        recordHash: "", actAuthorizedByLedger: false,
+      };
+      record.recordHash = expectedHash(record);
+      return record;
+    });
+  }
+  recordOutcome(changeRecordId: string, outcome: {
+    status: "SUCCEEDED" | "FAILED";
+    verification: "NOT_RUN" | "PASS" | "FAIL";
+    recovery: ChangeRequest["recovery"];
+    evidenceRefs: string[];
+  }, at: string): SovereignChangeRecord {
+    validId(changeRecordId, "OUTCOME_ID_INVALID");
+    validTime(at, "OUTCOME_TIMESTAMP_INVALID");
+    if (!["SUCCEEDED", "FAILED"].includes(outcome.status) ||
+      !["NOT_RUN", "PASS", "FAIL"].includes(outcome.verification) ||
+      !["NOT_REQUIRED", "NOT_RUN", "SUCCEEDED", "FAILED"].includes(outcome.recovery) ||
+      (outcome.status === "SUCCEEDED" && outcome.verification !== "PASS")) fail("OUTCOME_INVALID");
+    const refs = outcome.evidenceRefs.map(validEvidence);
+    return this.commit((history) => {
+      const latest = [...history].reverse().find((r) => r.changeRecordId === changeRecordId);
+      if (!latest || latest.phase !== "STARTED") fail("OUTCOME_STATE_INVALID");
+      const record: SovereignChangeRecord = {
+        ...latest, phase: "OUTCOME", revision: latest.revision + 1, at,
+        sequence: history.length + 1,
+        execution: { status: outcome.status, startedAt: latest.execution.startedAt, finishedAt: at },
+        verification: outcome.verification, recovery: outcome.recovery,
+        evidenceRefs: [...new Set([...latest.evidenceRefs, ...refs])],
+        previousRecordHash: history.at(-1)?.recordHash ?? null,
+        supersedesRecordHash: latest.recordHash, recordHash: "", actAuthorizedByLedger: false,
       };
       record.recordHash = expectedHash(record);
       return record;

@@ -285,3 +285,12 @@ Jira, ServiceNow, CMDB, GitHub, GitLab, Jenkins and CircleCI are optional typed 
 Leases are in-process and expire within ten minutes, allow at most five executions, bind the exact task/environment/resource/agent/harness/operation, and can be revoked. Restart or process loss invalidates unpersisted leases; no lease is copied to another harness, agent, or A2A destination. Production integration must supply an independently authenticated human identity verifier and RBAC/policy services; mocked verifiers in CI do **not** constitute customer identity-provider qualification.
 
 This contract provides no credentials or MFA challenge bytes to LLMs. Read-only and named managed operations are typed; Terraform apply, Pulumi up, CDK deploy, arbitrary shell and global ACT are not supported. Issuing a lease does not independently execute or authorize any action without the future bounded operations gate.
+
+
+## Bounded managed operations
+
+`src/managed-operations/operations.ts` implements typed playbook integrity, read-only diagnosis/validation/preview/recovery tests and individually gated named operational ACT through an injected `ManagedOperationsProvider`. Milestone 1 action types are restricted to `RESTART_SERVICE`, `RECONCILE_SERVICE` and `RESTORE_SERVICE`; maximum blast radius is one named target for this initial qualification contract. The executor has no generic command, Terraform apply, Pulumi up, CDK deploy, or global ACT route.
+
+Operating a playbook requires an **existing** canonical local change record before issuance of the sponsored agent lease. The record must reference the exact approved playbook hash, target, initiator, approval reference and state, preconditions and permitted blast radius. The executor then evaluates preconditions, issues and consumes a fresh human-sponsored capability lease, rechecks preconditions, appends a hash-linked STARTED record and invokes the typed adapter. It verifies postcondition outcomes; failed verification invokes recovery when required, and appends a hash-linked outcome with evidence references.
+
+All mutation-capable providers must be installed and qualified at the customer site, using least-privilege credentials and abort-aware actions. CI injects synthetic adapters; no live operating action or production mutation is claimed. Timeouts and cancellation are requirements of each provider implementation; network disconnection/crash can leave STARTED records needing reconciliation. No automatic replay occurs.
