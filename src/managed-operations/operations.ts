@@ -99,7 +99,7 @@ function validChange(record: SovereignChangeRecord, p: OperationalPlaybook, req:
     record.playbook.id !== p.playbookId || record.playbook.version !== p.version ||
     record.playbook.sha256 !== p.artifactSha256 ||
     JSON.stringify([...record.preconditions].sort()) !== JSON.stringify(p.preconditions) ||
-    record.agentActorId !== req.agent.agentId || record.requestorId !== "human-1" && !SAFE.test(record.requestorId) ||
+    record.agentActorId !== req.agent.agentId ||
     req.taskId !== record.actionId || req.environmentId !== p.environmentId ||
     req.resourceId !== p.targetResourceId || req.operation !== p.operation) {
       fail("CHANGE_APPROVAL_SCOPE_DENIED");
@@ -108,12 +108,20 @@ function validChange(record: SovereignChangeRecord, p: OperationalPlaybook, req:
 }
 async function limited<T>(work: (signal: AbortSignal) => Promise<T>, timeoutMs: number): Promise<T> {
   const controller = new AbortController();
-  const handle = setTimeout(() => controller.abort(), timeoutMs);
+  let handle: ReturnType<typeof setTimeout> | undefined;
   try {
-    const result = await work(controller.signal);
-    if (controller.signal.aborted) fail("PROVIDER_TIMEOUT");
-    return result;
-  } finally { clearTimeout(handle); }
+    return await Promise.race([
+      work(controller.signal),
+      new Promise<T>((_, reject) => {
+        handle = setTimeout(() => {
+          controller.abort();
+          reject(new Error("MANAGED_OPERATIONS_PROVIDER_TIMEOUT"));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (handle) clearTimeout(handle);
+  }
 }
 export class ManagedOperationsCoordinator {
   constructor(
@@ -135,6 +143,7 @@ export class ManagedOperationsCoordinator {
       const result = await this.provider.recoveryTest({ targetResourceId });
       return { possible: result.ready, evidenceRefs: refs(result.evidenceRefs) };
     }
+    if (action !== "PREVIEW") fail("DIAGNOSTIC_ACTION_UNSUPPORTED");
     // Preview may list named actions, but cannot mutate.
     const result = await this.provider.preview({ operation: "RESTART_SERVICE", targetResourceId });
     return { possible: result.possible, evidenceRefs: refs(result.evidenceRefs) };
@@ -163,7 +172,7 @@ export class ManagedOperationsCoordinator {
     if (!second.satisfied) fail("PRECONDITIONS_DENIED");
     const startedAt = input.at ?? new Date().toISOString();
     // Start revision is fsynced before calling a mutating provider; concurrent execution attempts cannot reuse this record.
-    this.ledger.markStarted(input.changeRecordId, consumed.leaseId, consumed.policyDecisionId, startedAt);
+    this.ledger.markStarted(input.changeRecordId, consumed.leaseId, consumed.policyDecisionId, startedAt, record.recordHash);
     let status: ManagedOperationResult["status"] = "FAILED";
     let verification: ManagedOperationResult["verification"] = "NOT_RUN";
     let recovery: ManagedOperationResult["recovery"] = "NOT_REQUIRED";
