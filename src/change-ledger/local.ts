@@ -216,14 +216,15 @@ export class LocalSovereignChangeLedger {
       return record;
     });
   }
-  markStarted(changeRecordId: string, leaseId: string, decisionId: string, at: string): SovereignChangeRecord {
+  markStarted(changeRecordId: string, leaseId: string, decisionId: string, at: string, expectedSourceHash?: string): SovereignChangeRecord {
     validId(changeRecordId, "START_ID_INVALID");
     validId(leaseId, "START_LEASE_INVALID");
     validId(decisionId, "START_POLICY_INVALID");
     validTime(at, "START_TIMESTAMP_INVALID");
     return this.commit((history) => {
       const latest = [...history].reverse().find((r) => r.changeRecordId === changeRecordId);
-      if (!latest || !["REQUESTED", "RECONCILED"].includes(latest.phase)) fail("START_STATE_INVALID");
+      if (!latest || !["REQUESTED", "RECONCILED"].includes(latest.phase) ||
+        (expectedSourceHash && latest.recordHash !== expectedSourceHash)) fail("START_STATE_INVALID");
       const record: SovereignChangeRecord = {
         ...latest, phase: "STARTED", revision: latest.revision + 1, at, sequence: history.length + 1,
         capabilityLeaseId: leaseId, policyDecisionId: decisionId,
