@@ -3,6 +3,8 @@ import {
 } from "node:child_process";
 import {
   readFileSync,
+  lstatSync,
+  readdirSync,
 } from "node:fs";
 import {
   isAbsolute,
@@ -13,19 +15,16 @@ import {
 import {
   sha256,
 } from "./provenance.js";
+import {
+  validateReleaseManifest,
+  sha256Buffer,
+  type PreviewOperateReleaseManifest,
+} from "../release/manifest.js";
 
 export type RepositoryEvidence = {
   commitSha: string;
   clean: boolean;
   packageLockHash?: string;
-};
-
-type InstalledReleaseManifest = {
-  sourceCommit?: string;
-  files?: Array<{
-    path?: string;
-    sha256?: string;
-  }>;
 };
 
 function runGit(
@@ -92,105 +91,59 @@ function safeArtifactPath(
 function collectInstalledReleaseEvidence():
   | RepositoryEvidence
   | undefined {
-  let manifest:
-    InstalledReleaseManifest;
-
   try {
-    manifest =
-      JSON.parse(
-        readFileSync(
-          "release-manifest.json",
-          "utf8",
-        ),
-      ) as InstalledReleaseManifest;
+    const manifest = JSON.parse(
+      readFileSync("release-manifest.json", "utf8"),
+    ) as PreviewOperateReleaseManifest;
+    if (validateReleaseManifest(manifest).length > 0) return undefined;
+
+    const root = resolve(process.cwd());
+    const recorded = new Map(manifest.files.map(file => [file.path, file.sha256]));
+    let intact = true;
+    for (const file of manifest.files) {
+      const target = safeArtifactPath(root, file.path);
+      if (!target) { intact = false; continue; }
+      // Symlinks (including parent directories) are not immutable artifacts.
+      let cursor = root;
+      for (const part of file.path.split("/")) {
+        cursor = resolve(cursor, part);
+        if (lstatSync(cursor).isSymbolicLink()) return undefined;
+      }
+      if (!lstatSync(target).isFile() ||
+          sha256Buffer(readFileSync(target)) !== file.sha256) intact = false;
+    }
+
+    // Missing manifest entries must not make tampered executable code invisible.
+    const requireCovered = (directory: string): void => {
+      const metadata = lstatSync(resolve(root, directory));
+      if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+        intact = false;
+        return;
+      }
+      for (const entry of readdirSync(resolve(root, directory), { withFileTypes: true })) {
+        const path = directory + "/" + entry.name;
+        if (entry.isDirectory()) requireCovered(path);
+        else if (!entry.isFile() || !recorded.has(path)) intact = false;
+      }
+    };
+    requireCovered("dist");
+    requireCovered("config");
+    for (const path of ["package.json", "package-lock.json", "dist/cli/operator.js", manifest.sbom.path]) {
+      if (!recorded.has(path)) intact = false;
+    }
+    const packageLockHash = readLockHash();
+    if (!packageLockHash || recorded.get("package-lock.json") !== packageLockHash ||
+        recorded.get(manifest.sbom.path) !== manifest.sbom.sha256) intact = false;
+    const pkg = JSON.parse(readFileSync("package.json", "utf8"));
+    if (pkg.name !== manifest.product || pkg.version !== manifest.productVersion) intact = false;
+    const sbom = JSON.parse(readFileSync(manifest.sbom.path, "utf8"));
+    if (sbom.bomFormat !== "CycloneDX" || !Array.isArray(sbom.components) ||
+        typeof sbom.specVersion !== "string") intact = false;
+
+    return { commitSha: manifest.sourceCommit, clean: intact, packageLockHash };
   } catch {
     return undefined;
   }
-
-  if (
-    !manifest.sourceCommit ||
-    !/^[0-9a-f]{40}$/.test(
-      manifest.sourceCommit,
-    ) ||
-    !Array.isArray(
-      manifest.files,
-    )
-  ) {
-    return undefined;
-  }
-
-  const root =
-    resolve(
-      process.cwd(),
-    );
-  let intact = true;
-
-  for (const file of
-    manifest.files) {
-    if (
-      typeof file.path !==
-        "string" ||
-      typeof file.sha256 !==
-        "string"
-    ) {
-      intact = false;
-      continue;
-    }
-
-    const target =
-      safeArtifactPath(
-        root,
-        file.path,
-      );
-
-    if (!target) {
-      intact = false;
-      continue;
-    }
-
-    try {
-      const actual =
-        sha256(
-          readFileSync(
-            target,
-            "utf8",
-          ),
-        );
-
-      if (
-        actual !==
-          file.sha256
-      ) {
-        intact = false;
-      }
-    } catch {
-      intact = false;
-    }
-  }
-
-  const packageLockHash =
-    readLockHash();
-  const expectedLock =
-    manifest.files.find(
-      (file) =>
-        file.path ===
-        "package-lock.json",
-    )?.sha256;
-
-  if (
-    !packageLockHash ||
-    expectedLock !==
-      packageLockHash
-  ) {
-    intact = false;
-  }
-
-  return {
-    commitSha:
-      manifest.sourceCommit,
-    clean: intact,
-    packageLockHash,
-  };
 }
 
 export function collectRepositoryEvidence():

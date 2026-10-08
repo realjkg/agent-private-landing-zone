@@ -1,6 +1,3 @@
-import { mkdirSync } from "node:fs";
-import { dirname } from "node:path";
-
 import {
   Annotation,
   END,
@@ -299,17 +296,11 @@ export function createSessionGraph(
     RecoveryAutomationInspectionProvider =
       inspectConfiguredRecoveryAutomation,
 ) {
+  if (dbPath && dbPath !== ":memory:") {
+    throw new Error("UNENCRYPTED_PERSISTENT_CHECKPOINTS_DISABLED");
+  }
   const checkpointer = dbPath
-    ? (() => {
-        mkdirSync(
-          dirname(dbPath),
-          { recursive: true },
-        );
-
-        return SqliteSaver.fromConnString(
-          dbPath,
-        );
-      })()
+    ? SqliteSaver.fromConnString(":memory:")
     : new MemorySaver();
 
   const graph = new StateGraph(

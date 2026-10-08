@@ -70,6 +70,10 @@ async function collectFiles(
         entry.name,
       );
 
+    if (entry.isSymbolicLink()) {
+      throw new Error("RELEASE_SYMBOLIC_PATH_UNSUPPORTED: " + entry.name);
+    }
+
     if (entry.isDirectory()) {
       output.push(
         ...(await collectFiles(

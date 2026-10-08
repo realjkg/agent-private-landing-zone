@@ -3,6 +3,7 @@ import {
 } from "node:crypto";
 import {
   readFile,
+  lstat,
 } from "node:fs/promises";
 import {
   isAbsolute,
@@ -217,8 +218,24 @@ export function validateReleaseManifest(
 ): string[] {
   const blockers: string[] = [];
 
+  // Manifests cross an untrusted JSON boundary. Reject malformed structures
+  // before inspecting nested properties so preflight always fails closed.
+  if (!value || typeof value !== "object" ||
+      typeof value.productVersion !== "string" ||
+      typeof value.sourceCommit !== "string" ||
+      !value.contract || typeof value.contract !== "object" ||
+      !value.sbom || typeof value.sbom !== "object" ||
+      typeof value.sbom.path !== "string" ||
+      typeof value.sbom.sha256 !== "string" ||
+      !value.lifecycle || typeof value.lifecycle !== "object" ||
+      !Array.isArray(value.files) || value.files.length === 0 ||
+      value.files.some(file => !file || typeof file !== "object" ||
+        typeof file.path !== "string" || typeof file.sha256 !== "string")) {
+    return ["Release manifest structure is invalid."];
+  }
+
   if (
-    value.schemaVersion !== 1 ||
+    value.schemaVersion !== 1 || value.configSchemaVersion !== 1 ||
     value.product !==
       "agent-private-landing-zone"
   ) {
@@ -258,7 +275,7 @@ export function validateReleaseManifest(
   }
 
   if (
-    !validHash(
+    value.sbom.format !== "CycloneDX" || !validHash(
       value.sbom.sha256,
     ) ||
     value.files.some(
@@ -283,10 +300,10 @@ export function validateReleaseManifest(
       paths.length ||
     paths.some(
       (path) =>
-        path.startsWith("/") ||
+        !path || path.includes("\0") || path.startsWith("/") ||
         path.includes(".."),
     ) ||
-    value.sbom.path.startsWith("/") ||
+    !value.sbom.path || value.sbom.path.includes("\0") || value.sbom.path.startsWith("/") ||
     value.sbom.path.includes("..")
   ) {
     blockers.push(
@@ -295,12 +312,11 @@ export function validateReleaseManifest(
   }
 
   if (
-    !value.lifecycle.cleanInstall ||
-    !value.lifecycle.upgrade ||
-    !value.lifecycle.rollback ||
-    !value.lifecycle.uninstall ||
-    !value.lifecycle
-      .configurationMigration
+    value.lifecycle.cleanInstall !== true ||
+    value.lifecycle.upgrade !== true ||
+    value.lifecycle.rollback !== true ||
+    value.lifecycle.uninstall !== true ||
+    value.lifecycle.configurationMigration !== true
   ) {
     blockers.push(
       "Release lifecycle contract is incomplete.",
@@ -319,6 +335,7 @@ export async function verifyReleaseArtifact(
     validateReleaseManifest(
       manifest,
     );
+  if (blockers.length > 0) return blockers;
 
   const resolvedRoot =
     resolve(root);
@@ -340,6 +357,14 @@ export async function verifyReleaseArtifact(
     }
 
     try {
+      let cursor = resolvedRoot;
+      for (const part of file.path.split("/")) {
+        cursor = resolve(cursor, part);
+        if ((await lstat(cursor)).isSymbolicLink()) {
+          throw new Error("Symbolic release paths are not immutable artifacts.");
+        }
+      }
+      if (!(await lstat(target)).isFile()) throw new Error("Not a regular artifact file.");
       const actual =
         await sha256File(
           target,

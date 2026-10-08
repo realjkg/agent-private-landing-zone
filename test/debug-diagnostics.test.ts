@@ -156,7 +156,7 @@ test("debug redaction removes common secret assignments and bearer values", () =
 });
 
 
-test("debug fixture proves SQLite checkpoint continuation with one correlation ID", async () => {
+test("debug fixture refuses unencrypted SQLite checkpoints with one correlation ID", async () => {
   const report =
     await runDebugDiagnostic({
       request:
@@ -171,13 +171,14 @@ test("debug fixture proves SQLite checkpoint continuation with one correlation I
 
   assert.equal(
     report.checkpoint.status,
-    "OK",
+    "FAILED",
   );
   assert.equal(
     report.checkpoint
       .continued,
-    true,
+    false,
   );
+  assert.match(report.checkpoint.detail ?? "", /UNENCRYPTED_PERSISTENT_CHECKPOINTS_DISABLED/);
   assert.equal(
     report.checkpoint
       .threadId,
@@ -197,7 +198,7 @@ test("debug fixture proves SQLite checkpoint continuation with one correlation I
         event.kind ===
           "CHECKPOINT" &&
         event.status ===
-          "OK",
+          "FAILED",
     ),
     true,
   );
