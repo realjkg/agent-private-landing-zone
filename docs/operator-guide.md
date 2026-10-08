@@ -265,3 +265,14 @@ API providers use published GET inventory paths through an injected transport, w
 OpenShift ClusterVersion and VMware SDDC Manager APIs are separate from Kubernetes and vCenter. Kubernetes pagination and bounded response sizes are enforced; inability to observe a source makes inventory incomplete, never a healthy empty inventory. vCenter inventory and VCF domain visibility are not treated as proof of service health. Offline edge inventory must be signed by Ed25519 against an operator-pinned public key; its health is an attested observation, not a live probe.
 
 These contracts run against synthetic HTTP responses in CI. Customer endpoint reachability, RBAC scope, CA trust, infrastructure versions, API pagination at estate scale, and source integrity require qualification in that customer's sandbox before production promotion. Only GET is supported; there is no playbook execution or generic infrastructure ACT.
+
+
+## Sovereign local change ledger
+
+The implemented metadata ledger in `src/change-ledger/local.ts` stores immutable revisions in a customer-controlled directory (`sovereign-changes.ndjson`). Initial records are written *before* any prospective operational execution. Each entry binds the human requestor, optional distinct agent actor, target and resource scope, approved playbook hash, preconditions, blast radius, approval state, policy/lease references, execution/verification state, evidence references, and prior hash.
+
+A verified append obtains a local exclusive writer lock, refuses invalid existing hash chains, then fsyncs an append-only entry. The filesystem requires customer encryption and restricted OS access; ordinary hash chaining alone cannot stop an adversary who controls the host and rewrites the entire ledger. Export can be signed with an operator-controlled Ed25519 key, and the export verifier checks the signature, chain, head and evidence manifest independently. Private keys remain external to model prompts, manifests and repo code.
+
+`DISCONNECTED` mode requires no Jira, ServiceNow or CMDB. `CONNECTED` records must carry an external ITSM identity. `RECONCILED` appends a new version containing external references while preserving the original local canonical ID and all prior signed history. The referenced encrypted evidence bytes are maintained by the existing customer evidence vault; the ledger/export retains their immutable reference manifest rather than duplicating sensitive payloads.
+
+Jira, ServiceNow, CMDB, GitHub, GitLab, Jenkins and CircleCI are optional typed contracts only until a deployment explicitly binds an adapter. A ticket, an approval flag, or a CMDB identity is never a deterministic policy grant. The ledger cannot authorize ACT; bounded operational execution requires a later signed playbook, human-sponsored capability lease, policy decision, and pre/post verification. No generic infrastructure ACT is exposed.
