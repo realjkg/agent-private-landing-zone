@@ -53,8 +53,8 @@ function normalizeAssets(environmentId: string, kind: string, rows: unknown[]): 
     const id = rawIdentifier(r, kind, index);
     const name = safe(metadata.name ?? r.name, id);
     const namespace = typeof metadata.namespace === "string" && NAME.test(metadata.namespace) ? metadata.namespace : undefined;
-    const parent = r.cluster ?? r.clusterId ?? r.domainId;
-    const parentKind = r.domainId ? "DOMAIN" : "CLUSTER";
+    const parent = kind === "CLUSTER" ? r.domainId : kind === "HOST" ? (r.cluster ?? r.clusterId) : kind === "VM" ? r.host : undefined;
+    const parentKind = kind === "CLUSTER" ? "DOMAIN" : kind === "VM" ? "HOST" : "CLUSTER";
     const parentId = kind === "DEPLOYMENT" || kind === "SERVICE"
       ? (namespace ? environmentId + ":NAMESPACE:" + namespace : undefined)
       : (typeof parent === "string" && NAME.test(parent) ? environmentId + ":" + parentKind + ":" + parent : undefined);
@@ -71,7 +71,7 @@ function topologyFor(inventory: EnvironmentAsset[]): EnvironmentLink[] {
     if (!asset.parentId) continue;
     // Namespace UID may differ from namespace name. Link to exact observed namespace only.
     const parent = known.has(asset.parentId) ? asset.parentId : inventory.find((x) => x.kind === "NAMESPACE" && x.name === asset.namespace)?.id;
-    if (parent && known.has(parent)) {
+    if (parent && parent !== asset.id && known.has(parent)) {
       const key = parent + "/" + asset.id;
       if (!index.has(key)) { index.add(key); links.push({ from: parent, to: asset.id, relation: "CONTAINS" }); }
     }
@@ -137,6 +137,10 @@ export function createApiEnvironmentProvider(binding: EnvironmentBinding, transp
         if (!result.parsed) { partial = true; warnings.push("ENVIRONMENT_EVIDENCE_UNAVAILABLE: " + path); break; }
         const rows = itemsFor(result.parsed);
         if (!rows) { partial = true; warnings.push("ENVIRONMENT_SCHEMA_UNKNOWN: " + path); break; }
+        if (binding.provider === "VCENTER" && path === "/api/vcenter/vm" && rows.length >= 4000) {
+          partial = true;
+          warnings.push("VCENTER_VM_RESULT_LIMIT: scope discovery by datacenter/cluster for complete estate inventory.");
+        }
         const remain = Math.max(0, 5000 - inventory.length);
         if (rows.length > remain) { partial = true; warnings.push("ENVIRONMENT_INVENTORY_LIMIT"); }
         inventory.push(...normalizeAssets(binding.environmentId, kindFor[path]!, rows.slice(0, remain)));
