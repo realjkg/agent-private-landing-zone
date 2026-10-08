@@ -3,7 +3,7 @@ export type AuthorityClass = "ADVISE" | "OPERATE";
 export type ApprovalMode = "ADVISORY" | "LOCAL" | "STANDARD_PREAPPROVED" | "NORMAL" | "EMERGENCY";
 export type ApprovalState = "NOT_REQUIRED" | "PENDING" | "APPROVED" | "DENIED";
 export type ExternalSystem = "JIRA" | "SERVICENOW" | "CMDB" | "GITHUB" | "GITLAB" | "JENKINS" | "CIRCLECI";
-export type ChangePhase = "REQUESTED" | "RECONCILED";
+export type ChangePhase = "REQUESTED" | "RECONCILED" | "STARTED" | "OUTCOME";
 export type ChangeReference = { system: ExternalSystem; recordId: string };
 
 export type ChangeRequest = {
