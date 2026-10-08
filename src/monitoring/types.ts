@@ -5,11 +5,27 @@ import type {
   RuntimeProfileId,
 } from "../runtime-profile/types.js";
 
+export type LandingZoneScope =
+  | "PLATFORM_LZ"
+  | "APPLICATION_LZ"
+  | "BOTH";
+
+export type MonitoringIntegrationClass =
+  | "FOUNDATION"
+  | "CLOUD_NATIVE"
+  | "ENTERPRISE"
+  | "PRIVATE_INFRASTRUCTURE"
+  | "OPTIONAL_BACKEND";
+
 export type MonitoringProviderId =
   | "OTEL_COLLECTOR"
   | "SPLUNK_HEC"
   | "PROMETHEUS"
   | "GRAFANA"
+  | "AWS_CLOUDWATCH"
+  | "AZURE_MONITOR_LOG_ANALYTICS"
+  | "SYSLOG"
+  | "SNMP"
   | "GRAFANA_LOKI"
   | "GRAFANA_TEMPO"
   | "GRAFANA_MIMIR"
@@ -26,7 +42,8 @@ export type MonitoringRole =
   | "VISUALIZATION"
   | "ALERTING"
   | "SEARCH"
-  | "INFRASTRUCTURE";
+  | "INFRASTRUCTURE"
+  | "APM";
 
 export type MonitoringDeployment =
   | "LOCAL"
@@ -35,8 +52,11 @@ export type MonitoringDeployment =
 
 export type MonitoringProviderDefinition = {
   id: MonitoringProviderId;
+  scope: LandingZoneScope;
+  integrationClass:
+    MonitoringIntegrationClass;
   roles: MonitoringRole[];
-  privateCapable: true;
+  privateCapable: boolean;
   supportsDisconnected: boolean;
   directEventExport: boolean;
   notes: string;
