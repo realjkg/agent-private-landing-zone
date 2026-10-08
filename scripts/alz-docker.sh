@@ -9,10 +9,10 @@ usage() {
   cat <<'HELP'
 Sovereign Landing Zone — local Docker operator
 
-  ./scripts/alz-docker.sh setup    Prepare image and protected local storage
-  ./scripts/alz-docker.sh doctor   Inspect runtime security readiness
-  ./scripts/alz-docker.sh demo     Run a synthetic, non-mutating walkthrough
-  ./scripts/alz-docker.sh help     Show this guide
+  bash scripts/alz-docker.sh setup    Prepare image and protected local storage
+  bash scripts/alz-docker.sh doctor   Inspect runtime security readiness
+  bash scripts/alz-docker.sh demo     Run a synthetic, non-mutating walkthrough
+  bash scripts/alz-docker.sh help     Show this guide
 
 No Node, npm, or cloud credentials are required on the host.
 Live private models and live cloud discovery are NOT configured by setup.
@@ -67,12 +67,12 @@ case "${1:-help}" in
     volume_access alz-runtime-data
     volume_access alz-evidence-keys
     printf '\nStorage and image prepared. No cloud resources were changed.\n'
-    printf 'Next: ./scripts/alz-docker.sh doctor\n'
+    printf 'Next: bash scripts/alz-docker.sh doctor\n'
     ;;
   doctor|demo)
     require_docker
     if ! docker image inspect agent-private-landing-zone:local >/dev/null 2>&1; then
-      problem "Local image is missing. Run ./scripts/alz-docker.sh setup first."
+      problem "Local image is missing. Run bash scripts/alz-docker.sh setup first."
     fi
     # No build, npm, model download, or filesystem changes here beyond application evidence.
     if test "$1" = doctor; then
