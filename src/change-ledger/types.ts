@@ -28,7 +28,7 @@ export type ChangeRequest = {
   recovery: "NOT_REQUIRED" | "NOT_RUN" | "SUCCEEDED" | "FAILED";
   evidenceRefs: string[];
   relatedChangeRecordIds: string[];
-  mode: Exclude<TraceMode, "RECONCILED">;
+  mode: TraceMode;
   externalRefs: ChangeReference[];
 };
 export type SovereignChangeRecord = ChangeRequest & {
