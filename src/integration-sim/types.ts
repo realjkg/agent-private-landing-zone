@@ -73,6 +73,7 @@ export type SovereignChangeRecord = {
     "PASS";
   externalReferences:
     ExternalReference[];
+  parentChangeRecordIds: string[];
   previousRecordHash?: string;
   recordHash: string;
 };
