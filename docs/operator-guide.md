@@ -241,3 +241,16 @@ The private-model workflow and the full supply-chain workflow are manual release
 Use existing qualification evidence when the runtime under release has not changed. Run the required Qwen/Mistral model gate, optional Qwen3 8B gate, SBOM/Trivy scan, or broader release scenarios only when the release phase materially requires fresh evidence.
 
 Dependabot separately opens update PRs for npm dependencies and GitHub Actions. The plug-in catalog tracks tested versions and review freshness for infrastructure engines.
+
+
+## Operating Economics (D8)
+
+Run a read-only report from an evidence-backed USD-cent allocation file:
+
+`./alz economics report config/economics.example.json`
+
+For machine-readable output, append `--json`. The example is **synthetic qualification data**, not a real AWS, Azure or private cloud invoice. Cost collectors must normalize source invoices or approved allocation schedules into the v1 input contract (`src/economics/report.ts`). No live provider pricing, arbitrary rate card or AI benefit is assumed.
+
+Each input records provider (private substrate, AWS or Azure), Platform/Application LZ scope, platform/governance/observability/resilience category, base or incremental AI Operations cost, observed/estimated status, and an evidence reference. Monthly totals show the AI Operations premium and share **within total expense**; this is not an additional surcharge to add again. Closed-month forecasting requires two consecutive observed-only history months and reports a trailing average, not a machine-learning estimate. Open or estimated months cannot generate anomaly comparisons. A budget warning can still fire against observed spend for an open month.
+
+Budget, forecast and anomaly events enter the existing redacted operational-event contract. Optional local OTEL and Splunk HEC can export them through sovereign monitoring validation; the bounded Prometheus renderer emits no identifying attributes. External telemetry and generic cloud ACT remain disallowed by the selected runtime profile. No economic signal may execute provisioning, deprovisioning, scaling, scheduling, cost changes or generic shell commands. Actionable recommendations require separate future policy-authorized work.

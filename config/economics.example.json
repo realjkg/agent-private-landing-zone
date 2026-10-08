@@ -1,0 +1,79 @@
+{
+  "schemaVersion": 1,
+  "currency": "USD",
+  "reportMonth": "2026-09",
+  "asOf": "2026-10-07T22:00:00.000Z",
+  "correlationId": "economics-demo-2026-09",
+  "closedMonths": [
+    "2026-07",
+    "2026-08",
+    "2026-09"
+  ],
+  "entries": [
+    {
+      "id": "private-jul",
+      "month": "2026-07",
+      "provider": "PRIVATE_SUBSTRATE",
+      "scope": "PLATFORM_LZ",
+      "dimension": "PLATFORM",
+      "costClass": "BASE",
+      "confidence": "OBSERVED",
+      "amountCents": 100000,
+      "evidenceRef": "evidence://sample/jul-private"
+    },
+    {
+      "id": "private-aug",
+      "month": "2026-08",
+      "provider": "PRIVATE_SUBSTRATE",
+      "scope": "PLATFORM_LZ",
+      "dimension": "PLATFORM",
+      "costClass": "BASE",
+      "confidence": "OBSERVED",
+      "amountCents": 120000,
+      "evidenceRef": "evidence://sample/aug-private"
+    },
+    {
+      "id": "private-sep",
+      "month": "2026-09",
+      "provider": "PRIVATE_SUBSTRATE",
+      "scope": "PLATFORM_LZ",
+      "dimension": "PLATFORM",
+      "costClass": "BASE",
+      "confidence": "OBSERVED",
+      "amountCents": 100000,
+      "evidenceRef": "evidence://sample/sep-private"
+    },
+    {
+      "id": "azure-sep",
+      "month": "2026-09",
+      "provider": "AZURE",
+      "scope": "APPLICATION_LZ",
+      "dimension": "GOVERNANCE",
+      "costClass": "BASE",
+      "confidence": "OBSERVED",
+      "amountCents": 35000,
+      "evidenceRef": "evidence://sample/sep-azure"
+    },
+    {
+      "id": "aws-sep",
+      "month": "2026-09",
+      "provider": "AWS",
+      "scope": "APPLICATION_LZ",
+      "dimension": "OBSERVABILITY",
+      "costClass": "AI_OPERATIONS",
+      "confidence": "OBSERVED",
+      "amountCents": 25000,
+      "evidenceRef": "evidence://sample/sep-aws"
+    }
+  ],
+  "budgets": [
+    {
+      "month": "2026-09",
+      "amountCents": 150000
+    }
+  ],
+  "anomaly": {
+    "thresholdBps": 2500,
+    "minDeltaCents": 10000
+  }
+}
