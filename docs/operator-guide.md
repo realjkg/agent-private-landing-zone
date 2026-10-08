@@ -276,3 +276,12 @@ A verified append obtains a local exclusive writer lock, refuses invalid existin
 `DISCONNECTED` mode requires no Jira, ServiceNow or CMDB. `CONNECTED` records must carry an external ITSM identity. `RECONCILED` appends a new version containing external references while preserving the original local canonical ID and all prior signed history. The referenced encrypted evidence bytes are maintained by the existing customer evidence vault; the ledger/export retains their immutable reference manifest rather than duplicating sensitive payloads.
 
 Jira, ServiceNow, CMDB, GitHub, GitLab, Jenkins and CircleCI are optional typed contracts only until a deployment explicitly binds an adapter. A ticket, an approval flag, or a CMDB identity is never a deterministic policy grant. The ledger cannot authorize ACT; bounded operational execution requires a later signed playbook, human-sponsored capability lease, policy decision, and pre/post verification. No generic infrastructure ACT is exposed.
+
+
+## Human-sponsored delegated agent authority
+
+`src/delegation/identity.ts` implements separate human and agent actors with verified MFA assurance, provider-supplied RBAC entitlements, deterministic policy checks and narrow task-specific capability leases. The issuer independently verifies the human's session and MFA (AAL2 for read-only, AAL3 for bounded remediation), matching exact target and action through authoritative RBAC and the existing compromise-state policy. Provider/policy unavailability denies. The same checks run immediately before each use.
+
+Leases are in-process and expire within ten minutes, allow at most five executions, bind the exact task/environment/resource/agent/harness/operation, and can be revoked. Restart or process loss invalidates unpersisted leases; no lease is copied to another harness, agent, or A2A destination. Production integration must supply an independently authenticated human identity verifier and RBAC/policy services; mocked verifiers in CI do **not** constitute customer identity-provider qualification.
+
+This contract provides no credentials or MFA challenge bytes to LLMs. Read-only and named managed operations are typed; Terraform apply, Pulumi up, CDK deploy, arbitrary shell and global ACT are not supported. Issuing a lease does not independently execute or authorize any action without the future bounded operations gate.
