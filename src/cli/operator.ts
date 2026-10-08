@@ -272,6 +272,7 @@ function help(): void {
   console.log(
     "  ./alz control-plane restore --evidence <encrypted-bundle> --restore-root <empty-isolated-path>",
   );
+  console.log("  ./alz economics report <input.json> [--json]");
   console.log("  ./alz doctor");
   console.log("  ./alz verify");
   console.log("  ./alz plugins");
@@ -797,6 +798,8 @@ try {
       "src/cli/control-plane-recovery.ts",
       argv.slice(1),
     );
+  } else if (command === "economics") {
+    runTs("src/cli/economics.ts", argv.slice(1));
   } else if (command === "doctor") {
     runTs("src/cli/security.ts");
     runTs("src/cli/plugins.ts");

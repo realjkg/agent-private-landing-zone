@@ -255,3 +255,15 @@ test("recovery status is inspectable while blocked recovery test returns a faili
     /No infrastructure changes were made/i,
   );
 });
+
+
+test("operator exposes a bounded read-only economics report", () => {
+  const help = run(["help"]);
+  assert.match(help.stdout, /alz economics report/);
+  const result = run(["economics", "report", "config/economics.example.json", "--json"]);
+  assert.equal(result.status, 0, result.stderr);
+  const parsed = JSON.parse(result.stdout) as { advisoryOnly: boolean; months: { totalCents: number }[]; alerts: unknown[] };
+  assert.equal(parsed.advisoryOnly, true);
+  assert.equal(parsed.months.at(-1)?.totalCents, 160000);
+  assert.equal(parsed.alerts.length, 2);
+});

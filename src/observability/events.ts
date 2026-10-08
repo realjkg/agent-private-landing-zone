@@ -11,7 +11,10 @@ export type ProductionSignal =
   | "provider-discovery-health"
   | "recovery-state"
   | "recovery-objective-status"
-  | "evidence-lifecycle";
+  | "evidence-lifecycle"
+  | "economics-budget"
+  | "economics-anomaly"
+  | "economics-forecast";
 
 export type OperationalEvent = {
   schemaVersion: 1;
