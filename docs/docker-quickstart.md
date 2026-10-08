@@ -12,10 +12,11 @@ From a **clean, reviewed Git checkout** containing the Docker runtime, start the
 bash scripts/alz-docker.sh
 ```
 
-It provides choices for preparation, a clearly identified synthetic demonstration, security readiness, and built-in help. Use the following commands directly when automating the same workflow:
+It provides choices for preparation, a clearly identified synthetic demonstration, security readiness, installation status, and built-in help. If a step fails, the menu remains open so you can review the message and choose another step. Use the following commands directly when automating the same workflow:
 
 ```sh
 bash scripts/alz-docker.sh setup
+bash scripts/alz-docker.sh status
 bash scripts/alz-docker.sh doctor
 bash scripts/alz-docker.sh demo
 ```
@@ -24,7 +25,7 @@ The operator launcher provides understandable setup failures, checks Docker avai
 
 **Setup needs network access for image and npm dependency retrieval at build time.** Normal application operation does not require hosted inference. The launcher does not automatically install or configure Ollama.
 
-The **doctor** command checks security controls. If repository attestation or another control fails, do not bypass it; the runtime is not yet qualified. The **demo** command uses deterministic synthetic AWS brownfield information rather than production data.
+The **status** command reports whether the Docker image and required named volumes exist. It does not claim that security scans, manifest integrity, or release qualification passed. The **doctor** command checks security controls. If repository attestation or another control fails, do not bypass it; the runtime is not yet qualified. The **demo** command uses deterministic synthetic AWS brownfield information rather than production data.
 
 ## Current limits
 
@@ -41,5 +42,6 @@ The **doctor** command checks security controls. If repository attestation or an
 - **Checkout dirty:** Use a clean, reviewed commit for build provenance.
 - **Image build failed:** Review the printed error; do not override the manifest validator.
 - **Volume permissions denied:** Re-run `setup`; it repairs ownership without deleting data.
+- **Status says image or storage is missing:** Run `bash scripts/alz-docker.sh setup`. Do not delete existing evidence-key volumes.
 - **Doctor refused:** Inspect its named failed security control. Do not bypass security.
 - **Missing private models:** Use `demo` for synthetic exploration. Live model qualification is a separate deployment step.
