@@ -4,6 +4,15 @@ on:
   pull_request:
     paths:
       - ".github/workflows/supply-chain.yml"
+      - "Dockerfile"
+      - ".dockerignore"
+      - "compose.yaml"
+      - "docs/docker-runtime.md"
+      - "test/docker-runtime*.test.ts"
+      - "test/repository*.test.ts"
+      - "test/release-package*.test.ts"
+      - "src/cli/session.ts"
+      - "src/session/graph.ts"
       - "src/release/**"
       - "src/cli/release-package.ts"
       - "src/cli/operator.ts"
@@ -132,5 +141,52 @@ jobs:
             .runs/release/stage/release-manifest.json
             .runs/release/agent-private-landing-zone.tar.gz
             .runs/release/agent-private-landing-zone.tar.gz.sha256
+          if-no-files-found: warn
+          retention-days: 30
+
+  docker-arm64-security:
+    name: Build, test and scan Linux ARM64 Docker image
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Build Linux ARM64 test image
+        run: docker build --platform linux/arm64 --target test -t agent-private-landing-zone:test .
+
+      - name: Run Linux ARM64 deterministic tests
+        run: docker run --rm --network none agent-private-landing-zone:test
+
+      - name: Build Linux ARM64 release image with provenance
+        run: |
+          docker build --platform linux/arm64 --target runtime \
+            --build-arg SOURCE_COMMIT="${GITHUB_SHA}" \
+            -t agent-private-landing-zone:ci-arm64 .
+
+      - name: Verify native Linux ARM64 image
+        run: |
+          test "$(docker image inspect agent-private-landing-zone:ci-arm64 --format '{{.Os}}/{{.Architecture}}')" = "linux/arm64"
+          docker run --rm --network none --entrypoint node agent-private-landing-zone:ci-arm64 \
+            dist/cli/release-package.js --root /app --verify
+
+      - name: Scan final runtime image for vulnerabilities and misconfigurations
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: agent-private-landing-zone:ci-arm64
+          scanners: vuln,misconfig
+          severity: HIGH,CRITICAL
+          format: json
+          output: trivy-image-results.json
+          exit-code: "1"
+
+      - name: Upload Docker security evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: agent-private-landing-zone-docker-arm64-security
+          path: trivy-image-results.json
           if-no-files-found: warn
           retention-days: 30
