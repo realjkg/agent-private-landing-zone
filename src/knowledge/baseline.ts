@@ -48,6 +48,12 @@ export const BASELINE_KNOWLEDGE_SNAPSHOTS:
               "module",
               "policy",
             ],
+            providerTiers: [
+              "Official",
+              "Partner",
+              "Partner Premier",
+              "Community",
+            ],
             requiredChecks: [
               "publisher",
               "version",
@@ -60,6 +66,66 @@ export const BASELINE_KNOWLEDGE_SNAPSHOTS:
               false,
           },
         ),
+        {
+          recordId:
+            "terraform-provider:hashicorp/aws",
+          kind: "PROVIDER",
+          title:
+            "hashicorp/aws",
+          version: "6.66.0",
+          publisher:
+            "HashiCorp",
+          classification:
+            "OFFICIAL",
+          sourceRef:
+            "registry.terraform.io/providers/hashicorp/aws",
+          metadata: {
+            category:
+              "Public Cloud",
+            sourceRepository:
+              "hashicorp/aws",
+          },
+        },
+        {
+          recordId:
+            "terraform-provider:hashicorp/azurerm",
+          kind: "PROVIDER",
+          title:
+            "hashicorp/azurerm",
+          version: "5.7.0",
+          publisher:
+            "HashiCorp",
+          classification:
+            "OFFICIAL",
+          sourceRef:
+            "registry.terraform.io/providers/hashicorp/azurerm",
+          metadata: {
+            category:
+              "Public Cloud",
+            sourceRepository:
+              "hashicorp/azurerm",
+          },
+        },
+        {
+          recordId:
+            "terraform-provider:hashicorp/kubernetes",
+          kind: "PROVIDER",
+          title:
+            "hashicorp/kubernetes",
+          version: "3.2.1",
+          publisher:
+            "HashiCorp",
+          classification:
+            "OFFICIAL",
+          sourceRef:
+            "registry.terraform.io/providers/hashicorp/kubernetes",
+          metadata: {
+            category:
+              "Container Orchestration",
+            sourceRepository:
+              "hashicorp/kubernetes",
+          },
+        },
       ],
     }),
     buildKnowledgeSnapshot({
@@ -85,6 +151,21 @@ export const BASELINE_KNOWLEDGE_SNAPSHOTS:
               "provider",
               "component",
             ],
+            featuredPackages: [
+              "AWS",
+              "Azure Native",
+              "Google Cloud",
+              "Kubernetes",
+            ],
+            interoperability: [
+              "Any Terraform Provider",
+              "Any HCL Module",
+            ],
+            landingZoneRelevantPackages: [
+              "AWS Control Tower",
+              "AWS IAM",
+              "Argo CD",
+            ],
             schemaIncludes: [
               "resources",
               "functions",
@@ -107,11 +188,11 @@ export const BASELINE_KNOWLEDGE_SNAPSHOTS:
         "https://docs.python.org/3/library/index.html",
       retrievedAt:
         RETRIEVED_AT,
-      sourceVersion: "3",
+      sourceVersion: "3.14.8",
       contentType:
         "application/json",
       localMirrorRef:
-        "mirror://python-stdlib/3",
+        "mirror://python-stdlib/3.14.8",
       records: [
         ...[
           "subprocess",
