@@ -6,7 +6,13 @@ This is a **preview-only**, local Docker experience. It is not production qualif
 
 Docker Desktop with Compose and Git. No host Node.js/npm installation, cloud credentials, or model weights are required for the synthetic demo.
 
-From a **clean, reviewed Git checkout** containing the Docker runtime:
+From a **clean, reviewed Git checkout** containing the Docker runtime, start the guided menu:
+
+```sh
+bash scripts/alz-docker.sh
+```
+
+It provides choices for preparation, a clearly identified synthetic demonstration, security readiness, and built-in help. Use the following commands directly when automating the same workflow:
 
 ```sh
 bash scripts/alz-docker.sh setup
