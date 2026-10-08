@@ -63,6 +63,7 @@ export type MonitoringRequest = {
     string,
     string
   >;
+  authRef?: string;
   body: string;
   event: OperationalEvent;
   runtimeProfile:
