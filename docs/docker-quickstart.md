@@ -9,9 +9,9 @@ Docker Desktop with Compose and Git. No host Node.js/npm installation, cloud cre
 From a **clean, reviewed Git checkout** containing the Docker runtime:
 
 ```sh
-./scripts/alz-docker.sh setup
-./scripts/alz-docker.sh doctor
-./scripts/alz-docker.sh demo
+bash scripts/alz-docker.sh setup
+bash scripts/alz-docker.sh doctor
+bash scripts/alz-docker.sh demo
 ```
 
 The operator launcher provides understandable setup failures, checks Docker availability, builds a release-manifest-protected image for the exact committed revision, and prepares two named Docker volumes. Setup never deletes existing volumes or displays encryption keys. A short-lived root helper changes ownership on the two named Docker volumes only; the application itself remains UID 1000, read-only, without Linux capabilities or privilege escalation.
