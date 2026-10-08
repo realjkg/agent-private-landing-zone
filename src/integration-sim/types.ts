@@ -9,6 +9,7 @@ export type AuthorityClass =
 
 export type ConnectorStatus =
   | "IMPLEMENTED"
+  | "PROJECT_CONNECTED"
   | "TEST_DOUBLE";
 
 export type TargetConnectorId =
@@ -19,10 +20,14 @@ export type TargetConnectorId =
   | "VCF"
   | "OPENSHIFT";
 
-export type TraceabilityConnectorId =
+export type EvidenceConnectorId =
   | "JIRA"
   | "SERVICENOW"
-  | "CMDB";
+  | "CMDB"
+  | "GITHUB"
+  | "GITLAB"
+  | "CIRCLECI"
+  | "JENKINS";
 
 export type TargetConnector = {
   id: TargetConnectorId;
@@ -34,17 +39,18 @@ export type TargetConnector = {
   notes: string;
 };
 
-export type TraceabilityConnector = {
-  id: TraceabilityConnectorId;
+export type EvidenceConnector = {
+  id: EvidenceConnectorId;
   family:
     | "ITSM"
-    | "CMDB";
+    | "CMDB"
+    | "DEVOPS";
   status: ConnectorStatus;
   notes: string;
 };
 
 export type ExternalReference = {
-  provider: TraceabilityConnectorId;
+  provider: EvidenceConnectorId;
   recordId: string;
 };
 
@@ -73,6 +79,7 @@ export type SovereignChangeRecord = {
 
 export type ConnectionSimulationResult = {
   target: TargetConnector;
+  evidenceConnector?: EvidenceConnector;
   mode: TraceabilityMode;
   records: SovereignChangeRecord[];
   canonicalChangeRecordId: string;
