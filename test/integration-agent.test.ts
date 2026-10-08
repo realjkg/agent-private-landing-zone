@@ -60,11 +60,11 @@ test("synthetic catalog distinguishes implemented, project-connected, and test-d
   );
   assert.equal(
     targetStatus.VCF,
-    "TEST_DOUBLE",
+    "IMPLEMENTED",
   );
   assert.equal(
     targetStatus.OPENSHIFT,
-    "TEST_DOUBLE",
+    "IMPLEMENTED",
   );
 
   const evidenceStatus =

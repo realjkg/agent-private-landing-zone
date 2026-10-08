@@ -47,15 +47,15 @@ export const TARGET_CONNECTORS: TargetConnector[] = [
   {
     id: "VCF",
     family: "ENVIRONMENT",
-    status: "TEST_DOUBLE",
+    status: "IMPLEMENTED",
     substrates: ["vcf", "private"],
     notes:
-      "Architecture-target synthetic connector only; not a shipped production adapter.",
+      "Read-only VCF SDDC Manager provider contract; customer live qualification remains separate.",
   },
   {
     id: "OPENSHIFT",
     family: "ENVIRONMENT",
-    status: "TEST_DOUBLE",
+    status: "IMPLEMENTED",
     substrates: [
       "openshift",
       "kubernetes",
@@ -63,7 +63,7 @@ export const TARGET_CONNECTORS: TargetConnector[] = [
       "edge",
     ],
     notes:
-      "Architecture-target synthetic connector only; not a shipped production adapter.",
+      "Read-only OpenShift REST provider contract; customer live qualification remains separate.",
   },
 ];
 
