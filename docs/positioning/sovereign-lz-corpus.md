@@ -252,6 +252,28 @@ Sovereign LZ supports efficient model sizing, reuse of valid qualification evide
 
 The corpus can capture compute consumed per qualified outcome, unnecessary rerun patterns, model efficiency by task, and infrastructure lifecycle efficiency. Sustainability claims should remain tied to measured evidence.
 
+## External engineering knowledge ingestion
+
+The execution corpus is complemented by a versioned engineering knowledge estate. External registries, language references, vendor source repositories, and governance/security references are ingested as structured snapshots with source identity, version or commit provenance, retrieval time, content hash, and local mirror reference where required.
+
+Current engineering sources include:
+
+- Terraform Registry
+- Pulumi Registry
+- Pulumi core source repository
+- Python Standard Library
+- Azure Verified Modules / Azure Bicep Registry Modules source
+- AWS CDK source repository
+- NIST AI Risk Management Framework
+- NIST Zero Trust Architecture
+- OWASP agent security guidance
+
+Dynamic registries are not treated as uniformly trusted. Provider/package/module admission remains subject to publisher, version, lifecycle, provenance, maintenance, previewability, and sovereignty checks.
+
+Source repositories are pinned to exact commits when they are used as qualification evidence. Private-sovereign and disconnected profiles consume approved local snapshots or mirrors; the running agent does not require internet access to these public sources.
+
+A registered source is not equivalent to a complete mirror. The baseline corpus contains structured, provenance-bound records required by the accelerator, while broader estate refreshes can populate local mirrors without changing the source contract.
+
 ## Why the corpus can become defensible
 
 The long-term advantage comes from a compounding operational feedback loop:
