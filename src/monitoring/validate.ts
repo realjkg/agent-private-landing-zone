@@ -35,6 +35,17 @@ export function validateMonitoringBinding(
   const reasons: string[] = [];
 
   if (
+    profile.sovereignty ===
+      "PRIVATE_SOVEREIGN" &&
+    !provider.privateCapable
+  ) {
+    reasons.push(
+      binding.provider +
+        " is not valid inside a strict private-sovereign runtime profile.",
+    );
+  }
+
+  if (
     profile.connectivity ===
       "DISCONNECTED" &&
     binding.deployment !== "LOCAL"
