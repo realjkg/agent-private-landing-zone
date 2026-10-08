@@ -111,6 +111,36 @@ export const KNOWLEDGE_SOURCES:
     },
     {
       id:
+        "AZURE_VERIFIED_MODULES",
+      sourceClass:
+        "VERIFIED_MODULE_CATALOG",
+      canonicalUri:
+        "https://azure.github.io/Azure-Verified-Modules/module-indexes/v1/modules.json",
+      trust:
+        "PRIMARY_VENDOR",
+      dynamic: true,
+      runtimeInternetRequired:
+        false,
+      mirrorRequiredForPrivateSovereign:
+        true,
+      ingestIncludes: [
+        "Bicep resource modules",
+        "Terraform AVM modules",
+        "module lifecycle state",
+        "module type",
+        "owners",
+        "canonical resource type",
+        "registry reference",
+        "current version",
+        "repository metadata",
+        "telemetry identifiers",
+        "module specifications",
+      ],
+      notes:
+        "Microsoft/Azure curated AVM catalog. Available, proposed, orphaned and deprecated lifecycle states must remain distinct; only accepted lifecycle states are eligible for production selection.",
+    },
+    {
+      id:
         "NIST_AI_RMF",
       sourceClass:
         "GOVERNANCE_STANDARD",
