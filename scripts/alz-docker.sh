@@ -9,6 +9,7 @@ usage() {
   cat <<'HELP'
 Sovereign Landing Zone — local Docker operator
 
+  bash scripts/alz-docker.sh          Guided menu for first-time operators
   bash scripts/alz-docker.sh setup    Prepare image and protected local storage
   bash scripts/alz-docker.sh doctor   Inspect runtime security readiness
   bash scripts/alz-docker.sh demo     Run a synthetic, non-mutating walkthrough
@@ -47,7 +48,38 @@ volume_access() {
     problem "The application user cannot access storage volume $1."
 }
 
-case "${1:-help}" in
+guided_menu() {
+  if ! test -t 0; then
+    usage
+    problem "The guided menu needs an interactive terminal. Use setup, doctor, or demo explicitly."
+  fi
+  while true; do
+    printf '\nSovereign Landing Zone — choose your next step\n'
+    printf '  1) Prepare my environment\n'
+    printf '  2) Explore a safe demonstration\n'
+    printf '  3) Review security readiness\n'
+    printf '  4) Learn what the system can do\n'
+    printf '  0) Exit\n'
+    printf 'Selection: '
+    if ! IFS= read -r selection; then
+      printf '\nSession closed. No infrastructure changes were made.\n'
+      return
+    fi
+    case "$selection" in
+      1) bash "$ROOT/scripts/alz-docker.sh" setup ;;
+      2) bash "$ROOT/scripts/alz-docker.sh" demo ;;
+      3) bash "$ROOT/scripts/alz-docker.sh" doctor ;;
+      4) usage ;;
+      0) printf 'No infrastructure changes were made.\n'; return ;;
+      *) printf 'Choose 0, 1, 2, 3 or 4.\n' ;;
+    esac
+  done
+}
+
+case "${1:-menu}" in
+  menu)
+    guided_menu
+    ;;
   help|-h|--help)
     usage
     ;;
