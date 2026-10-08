@@ -1,6 +1,6 @@
 import type {
+  EvidenceConnector,
   TargetConnector,
-  TraceabilityConnector,
 } from "./types.js";
 
 export const TARGET_CONNECTORS: TargetConnector[] = [
@@ -67,27 +67,55 @@ export const TARGET_CONNECTORS: TargetConnector[] = [
   },
 ];
 
-export const TRACEABILITY_CONNECTORS:
-  TraceabilityConnector[] = [
+export const EVIDENCE_CONNECTORS:
+  EvidenceConnector[] = [
     {
       id: "JIRA",
       family: "ITSM",
       status: "TEST_DOUBLE",
       notes:
-        "Architecture-target synthetic ITSM connector; no live Jira call is made.",
+        "Synthetic Jira ITSM connector; no live ticket is created.",
     },
     {
       id: "SERVICENOW",
       family: "ITSM",
       status: "TEST_DOUBLE",
       notes:
-        "Architecture-target synthetic ITSM connector; no live ServiceNow call is made.",
+        "Synthetic ServiceNow ITSM connector; no live change or incident is created.",
     },
     {
       id: "CMDB",
       family: "CMDB",
       status: "TEST_DOUBLE",
       notes:
-        "Architecture-target synthetic CMDB connector; CMDB is enrichment, not an authority source.",
+        "Synthetic CMDB connector; configuration data is enrichment, never authority.",
+    },
+    {
+      id: "GITHUB",
+      family: "DEVOPS",
+      status: "PROJECT_CONNECTED",
+      notes:
+        "GitHub is connected for this project; the synthetic suite does not invoke live writes.",
+    },
+    {
+      id: "GITLAB",
+      family: "DEVOPS",
+      status: "TEST_DOUBLE",
+      notes:
+        "Synthetic GitLab change-evidence connector until a runtime adapter is connected.",
+    },
+    {
+      id: "CIRCLECI",
+      family: "DEVOPS",
+      status: "TEST_DOUBLE",
+      notes:
+        "Synthetic CircleCI pipeline-evidence connector until a runtime adapter is connected.",
+    },
+    {
+      id: "JENKINS",
+      family: "DEVOPS",
+      status: "TEST_DOUBLE",
+      notes:
+        "Synthetic Jenkins build/deployment-evidence connector until a runtime adapter is connected.",
     },
   ];
