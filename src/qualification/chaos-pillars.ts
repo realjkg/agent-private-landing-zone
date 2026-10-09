@@ -69,20 +69,21 @@ export function runChaosPillarQualification(input: {
     state.orchestration?.actEnabled !== false) {
     throw new Error("CHAOS_REQUIRES_SAFE_ASSESSED_DESIGN");
   }
+  const design = state.design;
   const policy = createRecoveryPolicy({
     environment: state.environment,
-    design: state.design,
+    design,
   });
   const point = createSimulatedRecoveryPoint({
     environment: state.environment,
     assessment: state.postureAssessment,
-    design: state.design,
+    design,
     policy,
     capturedAt: "2026-10-08T00:00:00.000Z",
   });
   const verified = verifyRecoveryPoint({ point, policy });
   const baselineDrill = runSimulatedRestoreDrill({
-    point, verification: verified, design: state.design,
+    point, verification: verified, design,
   });
   const pillars = createPillarPolicyBundle({
     environment: state.environment, assessment: state.postureAssessment,
@@ -122,7 +123,7 @@ export function runChaosPillarQualification(input: {
     } else if (id === "STALE_DESIGN") {
       const drifted = { ...point, designHash: "f".repeat(64) };
       const drill = runSimulatedRestoreDrill({
-        point: drifted, verification: verified, design: state.design,
+        point: drifted, verification: verified, design,
       });
       detected = !drill.designHashMatches && drill.status === "BLOCKED";
       observed = "Design hash drift: " + drill.status;
