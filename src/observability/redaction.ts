@@ -20,6 +20,10 @@ export function sanitizeDiagnosticText(
       "[REDACTED PRIVATE KEY]",
     )
     .replace(
+      BEARER,
+      "Bearer [REDACTED]",
+    )
+    .replace(
       SENSITIVE_ASSIGNMENT,
       (match) => {
         const key =
@@ -32,10 +36,6 @@ export function sanitizeDiagnosticText(
           "=[REDACTED]"
         );
       },
-    )
-    .replace(
-      BEARER,
-      "Bearer [REDACTED]",
     )
     .slice(0, maxLength);
 }

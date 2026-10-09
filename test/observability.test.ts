@@ -210,3 +210,39 @@ test("structured operational event detail uses the shared secret redaction bound
     /REDACTED/,
   );
 });
+
+test("bearer tokens are redacted even inside sensitive-key assignments", () => {
+  // Regression: SENSITIVE_ASSIGNMENT used to consume "Authorization: Bearer"
+  // before the BEARER pattern ran, leaving the token value as a bare word.
+  const serialized =
+    serializeOperationalEvent(
+      createOperationalEvent({
+        signal:
+          "model-latency",
+        status: "DEGRADED",
+        component:
+          "model-runtime",
+        detail:
+          "Authorization: Bearer abc.def.ghi",
+        attributes: {
+          harmless:
+            "visible",
+        },
+      }),
+    );
+
+  assert.equal(
+    serialized.includes(
+      "abc.def.ghi",
+    ),
+    false,
+  );
+  assert.match(
+    serialized,
+    /REDACTED/,
+  );
+  assert.match(
+    serialized,
+    /visible/,
+  );
+});
