@@ -6,7 +6,7 @@
 
 The product claims `PREVIEW_OPERATE` support for private Qwen/Mistral reasoning, non-mutating AWS/Azure discovery and governed previews using eight registered IaC adapters. The known Trivy HIGH/CRITICAL image findings remain an **unresolved production security blocker**. No production tag/release should be published without a documented disposition and the independent release approval.
 
-The release evidence gate registry lives in `src/release/admission.ts`. Run from an exact clean **source commit**:
+The release evidence gate registry lives in `src/qualification/release-admission.ts`. Run from an exact clean **source commit**:
 
 ```sh
 npm ci
