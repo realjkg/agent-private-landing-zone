@@ -16,6 +16,10 @@ import {
 } from "node:path";
 import { homedir } from "node:os";
 
+import type {
+  Emitter,
+} from "../observability/bus.js";
+
 const VERSION = "evidence-v1" as const;
 const ALGORITHM = "aes-256-gcm" as const;
 
@@ -226,49 +230,75 @@ export async function writeEncryptedEvidence(
   purpose: string,
   filename: string,
   value: unknown,
+  emitter?: Emitter,
 ): Promise<string> {
-  const { key, info } =
-    await ensureEvidenceKey();
+  try {
+    const { key, info } =
+      await ensureEvidenceKey();
 
-  if (!info.securePermissions) {
-    throw new Error(
-      "EVIDENCE_KEY_PERMISSIONS_INSECURE",
-    );
-  }
+    if (!info.securePermissions) {
+      throw new Error(
+        "EVIDENCE_KEY_PERMISSIONS_INSECURE",
+      );
+    }
 
-  const directory = join(
-    ".runs",
-    "evidence",
-    purpose,
-  );
-
-  await mkdir(directory, {
-    recursive: true,
-    mode: 0o700,
-  });
-
-  const path = join(
-    directory,
-    filename + ".evidence",
-  );
-
-  const envelope =
-    encryptEvidence(
+    const directory = join(
+      ".runs",
+      "evidence",
       purpose,
-      value,
-      key,
     );
 
-  await writeFile(
-    path,
-    JSON.stringify(envelope) + "\n",
-    {
-      encoding: "utf8",
-      mode: 0o600,
-    },
-  );
+    await mkdir(directory, {
+      recursive: true,
+      mode: 0o700,
+    });
 
-  return path;
+    const path = join(
+      directory,
+      filename + ".evidence",
+    );
+
+    const envelope =
+      encryptEvidence(
+        purpose,
+        value,
+        key,
+      );
+
+    await writeFile(
+      path,
+      JSON.stringify(envelope) + "\n",
+      {
+        encoding: "utf8",
+        mode: 0o600,
+      },
+    );
+
+    emitter?.emit({
+      signal: "evidence-lifecycle",
+      status: "OK",
+      component: "evidence-vault",
+      attributes: {
+        purpose,
+        filename,
+      },
+    });
+
+    return path;
+  } catch (error) {
+    // Every vault write failure is a real evidence-lifecycle occurrence.
+    emitter?.emit({
+      signal: "evidence-lifecycle",
+      status: "FAILED",
+      component: "evidence-vault",
+      detail:
+        error instanceof Error
+          ? error.message
+          : "evidence write failed",
+      attributes: { purpose },
+    });
+    throw error;
+  }
 }
 
 export async function readEncryptedEvidence<T>(

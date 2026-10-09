@@ -13,6 +13,10 @@ import {
   writeEncryptedEvidence,
 } from "./vault.js";
 
+import type {
+  Emitter,
+} from "../observability/bus.js";
+
 export type EvidenceMigrationResult = {
   migrated: number;
   sources: string[];
@@ -21,6 +25,7 @@ export type EvidenceMigrationResult = {
 async function migrateJsonDirectory(
   directory: string,
   result: EvidenceMigrationResult,
+  emitter?: Emitter,
 ): Promise<void> {
   if (!existsSync(directory)) {
     return;
@@ -72,6 +77,7 @@ async function migrateJsonDirectory(
           new Date().toISOString(),
         value,
       },
+      emitter,
     );
 
     await unlink(path);
@@ -80,22 +86,26 @@ async function migrateJsonDirectory(
   }
 }
 
-export async function migrateLegacyEvidence(): Promise<EvidenceMigrationResult> {
+export async function migrateLegacyEvidence(
+  emitter?: Emitter,
+): Promise<EvidenceMigrationResult> {
   const result: EvidenceMigrationResult = {
     migrated: 0,
     sources: [],
   };
 
-  for (const directory of [
-    join(".runs", "agent"),
-    join(".runs", "build"),
-    join(".runs", "discovery"),
-  ]) {
-    await migrateJsonDirectory(
-      directory,
-      result,
-    );
-  }
+  try {
+    for (const directory of [
+      join(".runs", "agent"),
+      join(".runs", "build"),
+      join(".runs", "discovery"),
+    ]) {
+      await migrateJsonDirectory(
+        directory,
+        result,
+        emitter,
+      );
+    }
 
   for (const legacySqlite of [
     join(
@@ -134,6 +144,7 @@ export async function migrateLegacyEvidence(): Promise<EvidenceMigrationResult> 
         encoding: "base64",
         value: raw.toString("base64"),
       },
+      emitter,
     );
 
     await unlink(legacySqlite);
@@ -143,7 +154,31 @@ export async function migrateLegacyEvidence(): Promise<EvidenceMigrationResult> 
     );
   }
 
+  emitter?.emit({
+    signal: "evidence-lifecycle",
+    status: "OK",
+    component: "evidence-migration",
+    attributes: {
+      migrated: result.migrated,
+    },
+  });
+
   return result;
+  } catch (error) {
+    emitter?.emit({
+      signal: "evidence-lifecycle",
+      status: "FAILED",
+      component: "evidence-migration",
+      detail:
+        error instanceof Error
+          ? error.message
+          : "evidence migration failed",
+      attributes: {
+        migrated: result.migrated,
+      },
+    });
+    throw error;
+  }
 }
 
 

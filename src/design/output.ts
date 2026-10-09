@@ -1,4 +1,7 @@
 import type {
+  Emitter,
+} from "../observability/bus.js";
+import type {
   DesignSpec,
 } from "./types.js";
 import {
@@ -7,6 +10,7 @@ import {
 
 export async function writeDesignSpec(
   design: DesignSpec,
+  emitter?: Emitter,
 ): Promise<string> {
   const filename =
     design.generatedAt
@@ -20,5 +24,6 @@ export async function writeDesignSpec(
     "design",
     filename,
     design,
+    emitter,
   );
 }

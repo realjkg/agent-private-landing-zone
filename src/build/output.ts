@@ -1,6 +1,9 @@
 import type { BuildCandidate } from "./types.js";
 import type { RepositoryEvidence } from "./repository.js";
 import { writeEncryptedEvidence } from "../evidence/vault.js";
+import type {
+  Emitter,
+} from "../observability/bus.js";
 
 export type BuildRunRecord = {
   candidate: BuildCandidate;
@@ -15,6 +18,7 @@ export type BuildRunRecord = {
 
 export async function writeBuildRun(
   record: BuildRunRecord,
+  emitter?: Emitter,
 ): Promise<string> {
   const timestamp = new Date()
     .toISOString()
@@ -33,5 +37,6 @@ export async function writeBuildRun(
     "build",
     filename,
     record,
+    emitter,
   );
 }

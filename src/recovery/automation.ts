@@ -330,6 +330,7 @@ function actionBlocked(
 
 async function persistCycle(
   result: RecoveryAutomationCycleResult,
+  emitter?: Emitter,
 ): Promise<string> {
   if (
     result.target
@@ -393,6 +394,7 @@ async function persistCycle(
       state: result.state,
       actEnabled: false,
     },
+    emitter,
   );
 }
 
@@ -428,11 +430,13 @@ export async function loadRecoveryAutomationState(
 
 async function persistAutomationState(
   state: RecoveryAutomationState,
+  emitter?: Emitter,
 ): Promise<void> {
   await writeEncryptedEvidence(
     "recovery-automation-state",
     state.targetId,
     state,
+    emitter,
   );
 }
 
@@ -444,6 +448,7 @@ export async function runRecoveryAutomationCycle(input: {
     SovereignCapability[];
   now?: Date;
   persistEvidence?: boolean;
+  emitter?: Emitter;
 }): Promise<RecoveryAutomationCycleResult> {
   const now =
     input.now ??
@@ -542,9 +547,10 @@ export async function runRecoveryAutomationCycle(input: {
         "LOCAL_ENCRYPTED_VAULT"
     ) {
       result.evidencePath =
-        await persistCycle(result);
+        await persistCycle(result, input.emitter);
       await persistAutomationState(
         result.state,
+        input.emitter,
       );
     }
 
@@ -758,9 +764,10 @@ export async function runRecoveryAutomationCycle(input: {
     input.persistEvidence !== false
   ) {
     result.evidencePath =
-      await persistCycle(result);
+      await persistCycle(result, input.emitter);
     await persistAutomationState(
       result.state,
+      input.emitter,
     );
   }
 
@@ -1070,6 +1077,8 @@ export class RecoveryAutomationController {
               persistEvidence:
                 this.options
                   .persistEvidence,
+              emitter:
+                this.options.emitter,
             });
 
           this.states.set(

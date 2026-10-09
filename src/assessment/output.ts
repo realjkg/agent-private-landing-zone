@@ -1,4 +1,7 @@
 import type {
+  Emitter,
+} from "../observability/bus.js";
+import type {
   DiscoveryAssessment,
 } from "./types.js";
 import {
@@ -7,6 +10,7 @@ import {
 
 export async function writeAssessmentRun(
   assessment: DiscoveryAssessment,
+  emitter?: Emitter,
 ): Promise<string> {
   const filename =
     assessment.assessedAt
@@ -18,6 +22,7 @@ export async function writeAssessmentRun(
     "assessment",
     filename,
     assessment,
+    emitter,
   );
 }
 
