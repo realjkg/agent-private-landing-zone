@@ -12,7 +12,7 @@ import type {
   RuntimeProfileId,
 } from "../runtime-profile/types.js";
 
-function opaqueSecretRef(
+export function opaqueSecretRef(
   value: string,
 ): boolean {
   return (
