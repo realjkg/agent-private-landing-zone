@@ -27,16 +27,23 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 
+# Apply available Debian 12 security fixes before packaging the final image.
+# Trivy's HIGH/CRITICAL release gate remains authoritative.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends --only-upgrade perl-base \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 
 COPY --from=build /app/dist ./dist
 COPY config/ ./config/
+COPY policy/ ./policy/
 
 ARG SOURCE_COMMIT
 
 # Inventory production dependencies in CycloneDX format.
-RUN npm sbom --omit=dev --sbom-format cyclonedx > sbom.cdx.json
+RUN npm sbom --package-lock-only --omit=dev --sbom-format=cyclonedx > sbom.cdx.json
 
 # Generate and verify the installed release manifest.
 RUN node dist/cli/release-package.js \
