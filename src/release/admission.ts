@@ -85,9 +85,9 @@ function isObject(value: unknown): value is Json {
 function digest(value: Buffer | string): string {
   return createHash("sha256").update(value).digest("hex");
 }
-function observedLivePayload(value: unknown, gate: ReleaseGate, commit: string): boolean {
-  if (!isObject(value) || value.sourceCommit !== commit) return false;
-  if (value.actEnabled !== false || value.mutationObserved === true ||
+function observedLivePayload(value: unknown, gate: ReleaseGate, record: ReleaseGateSubmission, commit: string): boolean {
+  if (!isObject(value)) return false;
+  if (value.mutationObserved === true ||
       value.mock === true || value.fixture === true ||
       value.simulation === true || value.mode === "OFFLINE_FIXTURE_ONLY" ||
       value.mode === "LIVE_LOCAL_MODELS_WITH_SYNTHETIC_AWS_EVIDENCE") return false;
@@ -97,8 +97,12 @@ function observedLivePayload(value: unknown, gate: ReleaseGate, commit: string):
     const stack = value.stackChecks;
     if (!isObject(production) || production.passed !== true ||
         !isObject(production.context) || !isObject(production.context.host) ||
-        typeof production.context.host.targetHardwareId !== "string" ||
-        production.context.host.targetHardwareId === "UNKNOWN" ||
+        production.context.sourceCommit !== commit ||
+        production.context.host.targetHardwareId !== record.targetHardwareId ||
+        !isObject(production.session) ||
+        production.session.mutationObserved !== false ||
+        !Array.isArray(production.checks) || production.checks.length === 0 ||
+        !production.checks.every((x) => isObject(x) && x.passed === true) ||
         !Array.isArray(records) || records.length < 3 ||
         !Array.isArray(stack) || stack.length === 0 ||
         !stack.every((x) => isObject(x) && x.passed === true)) return false;
@@ -113,7 +117,8 @@ function observedLivePayload(value: unknown, gate: ReleaseGate, commit: string):
       ["qwen3:1.7b", "qwen3:4b", "mistral-nemo:latest"].every((m) => models.has(m));
   }
   if (gate.mode === "LIVE_PROVIDER") {
-    if (value.ready !== true || value.blockers === undefined ||
+    if (value.sourceCommit !== commit || value.actEnabled !== false ||
+        value.ready !== true || value.blockers === undefined ||
         !Array.isArray(value.blockers) || value.blockers.length !== 0 ||
         !isObject(value.discovery) || !isObject(value.validation) ||
         !isObject(value.preview)) return false;
@@ -130,7 +135,9 @@ function observedLivePayload(value: unknown, gate: ReleaseGate, commit: string):
   // These statements must be produced by real target/CI tools. The checker
   // validates provenance and content, not the honesty of an external machine.
   const report = value as Json;
-  if (report.schemaVersion !== 1 || report.gateId !== gate.id ||
+  if (report.sourceCommit !== commit || report.actEnabled !== false ||
+      report.targetHardwareId !== record.targetHardwareId ||
+      report.schemaVersion !== 1 || report.gateId !== gate.id ||
       report.executionMode !== gate.mode || report.passed !== true ||
       report.targetHardwareId === "UNKNOWN" ||
       typeof report.targetHardwareId !== "string" ||
@@ -227,7 +234,7 @@ export async function reviewProductionRelease(input: {
           reasons.push("EVIDENCE_DIGEST_MISMATCH");
         } else {
           const value = JSON.parse(bytes.toString("utf8")) as unknown;
-          if (!observedLivePayload(value, gate, expectedCommit)) {
+          if (!observedLivePayload(value, gate, record, expectedCommit)) {
             reasons.push("EVIDENCE_GATE_CONTRACT_FAILED");
           }
         }
