@@ -37,7 +37,7 @@ COPY policy/ ./policy/
 ARG SOURCE_COMMIT
 
 # Inventory production dependencies in CycloneDX format.
-RUN npm sbom --omit=dev --sbom-format cyclonedx > sbom.cdx.json
+RUN npm sbom --package-lock-only --omit=dev --sbom-format=cyclonedx > sbom.cdx.json
 
 # Generate and verify the installed release manifest.
 RUN node dist/cli/release-package.js \
