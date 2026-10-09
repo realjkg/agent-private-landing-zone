@@ -35,7 +35,7 @@ export const CHAOS_FAULTS: Array<{ id: ChaosFault; pillar: ChaosPillar }> = [
 export type ChaosOutcome = {
   fault: ChaosFault;
   pillar: ChaosPillar;
-  outcome: "CONTAINED" | "UNDETECTED";
+  outcome: "CONTAINED" | "UNDETECTED" | "NOT_APPLICABLE";
   observed: string;
   evidenceHash: string;
   mutationAttempted: false;
@@ -50,6 +50,8 @@ export type ChaosReport = {
   pillarPosture: Record<string, PillarStatus | "UNKNOWN">;
   faults: ChaosOutcome[];
   passed: boolean;
+  applicableFaults: number;
+  notApplicableFaults: number;
   status: "SIMULATION_ONLY";
   actEnabled: false;
   evidenceHash: string;
@@ -99,10 +101,19 @@ export function runChaosPillarQualification(input: {
   };
   const outcomes = CHAOS_FAULTS.map(({ id, pillar }): ChaosOutcome => {
     let detected = false;
+    let applicable = true;
     let observed = "";
     if (id === "MISSING_BACKUP") {
-      detected = point.coverage !== "FULL" && verified.status !== "VERIFIED";
-      observed = "Backup coverage " + point.coverage + "; verification " + verified.status;
+      // Inject missing recoverable artifacts even if baseline coverage was complete.
+      const inventoryOnly = {
+        ...point,
+        artifacts: point.artifacts.filter((artifact) =>
+          artifact.kind === "INVENTORY_MANIFEST"),
+      };
+      const check = verifyRecoveryPoint({ point: inventoryOnly, policy });
+      detected = check.checks.some((item) =>
+        item.name === "required-artifacts" && item.status === "FAIL");
+      observed = "Injected manifest-only recovery point: " + check.status;
     } else if (id === "CORRUPTED_MANIFEST") {
       const tampered = {
         ...point,
@@ -117,9 +128,12 @@ export function runChaosPillarQualification(input: {
         ...point, artifacts: point.artifacts.filter((a) => a.kind !== "IAC_STATE"),
       };
       const check = verifyRecoveryPoint({ point: missing, policy });
-      detected = policy.requiredArtifacts.includes("IAC_STATE") &&
-        check.checks.some((c) => c.name === "required-artifacts" && c.status === "FAIL");
-      observed = "Missing IaC state: " + check.status;
+      applicable = policy.requiredArtifacts.includes("IAC_STATE");
+      detected = applicable && check.checks.some((c) =>
+        c.name === "required-artifacts" && c.status === "FAIL");
+      observed = applicable
+        ? "Required IaC state removed: " + check.status
+        : "IaC state not required by this existing adapter recovery policy";
     } else if (id === "STALE_DESIGN") {
       const drifted = { ...point, designHash: "f".repeat(64) };
       const drill = runSimulatedRestoreDrill({
@@ -128,10 +142,14 @@ export function runChaosPillarQualification(input: {
       detected = !drill.designHashMatches && drill.status === "BLOCKED";
       observed = "Design hash drift: " + drill.status;
     } else if (id === "RESTORE_WITH_UNKNOWN_RPO_RTO") {
-      detected = (policy.rpo === "UNKNOWN" || policy.rto === "UNKNOWN") &&
-        verified.status !== "VERIFIED";
-      observed = "RPO=" + policy.rpo + ", RTO=" + policy.rto +
-        "; drill=" + baselineDrill.status + ", verified=" + verified.status;
+      const unknownTargets = { ...policy, rpo: "UNKNOWN" as const,
+        rto: "UNKNOWN" as const };
+      const check = verifyRecoveryPoint({ point, policy: unknownTargets });
+      detected = check.status !== "VERIFIED" &&
+        check.checks.some((item) =>
+          item.name === "rpo-rto" && item.status === "UNKNOWN");
+      observed = "Injected UNKNOWN RPO/RTO: " + check.status +
+        "; baseline simulated drill=" + baselineDrill.status;
     } else if (id === "OBSERVABILITY_OUTAGE") {
       // Explicit synthetic signal loss: a missing heartbeat cannot be a healthy state.
       const synthetic = { heartbeatPresent: false, runbookAvailable: false, onCallKnown: false };
@@ -159,7 +177,9 @@ export function runChaosPillarQualification(input: {
       detected = synthetic.observedZones < synthetic.requiredZones;
       observed = "Synthetic single-zone exposure; actual production redundancy UNKNOWN";
     }
-    const normalized = { fault: id, pillar, outcome: detected ? "CONTAINED" as const : "UNDETECTED" as const,
+    const outcome = !applicable ? "NOT_APPLICABLE" as const :
+      detected ? "CONTAINED" as const : "UNDETECTED" as const;
+    const normalized = { fault: id, pillar, outcome,
       observed, mutationAttempted: false as const, restoreExecuted: false as const,
       evidenceMode: "SYNTHETIC_FAULT_INJECTION" as const };
     return { ...normalized, evidenceHash: sha256(JSON.stringify(normalized)) };
@@ -171,7 +191,9 @@ export function runChaosPillarQualification(input: {
     recoveryVerification: verified.status,
     pillarPosture,
     faults: outcomes,
-    passed: outcomes.every((o) => o.outcome === "CONTAINED"),
+    passed: outcomes.every((o) => o.outcome !== "UNDETECTED"),
+    applicableFaults: outcomes.filter((o) => o.outcome !== "NOT_APPLICABLE").length,
+    notApplicableFaults: outcomes.filter((o) => o.outcome === "NOT_APPLICABLE").length,
     status: "SIMULATION_ONLY" as const,
     actEnabled: false as const,
   };
