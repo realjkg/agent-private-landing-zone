@@ -5,6 +5,7 @@ import { createServer, type Server } from "node:http";
 import { resolve } from "node:path";
 
 import { PHASE_E_SCENARIOS } from "../qualification/phase-e.js";
+import { sanitizeDiagnosticText } from "../observability/redaction.js";
 
 export type OperatorMode = "matrix-offline" | "matrix-live" | "aws-review" | "chaos";
 export type OperatorJob = {
@@ -178,8 +179,8 @@ export function createLocalOperatorServer(options: {
     evidenceBasis: "NOT_RUN", output: "No scenario executed yet.",
   };
   const server = createServer(async (req, res) => {
-    const port = (server.address() && typeof server.address() === "object")
-      ? server.address()!.port : 8788;
+    const address = server.address();
+    const port = address && typeof address === "object" ? address.port : 8788;
     const expectedHost = "127.0.0.1:" + port;
     const host = req.headers.host ?? "";
     const origin = req.headers.origin;
@@ -237,12 +238,12 @@ export function createLocalOperatorServer(options: {
       evidenceBasis: job.evidenceBasis, output: "Preparing governed workflow..." };
     send(202, "application/json", '{"status":"STARTED"}');
     void runner(job, options.root).then((output) => {
-      state = { ...state, status: "PASS", output: output.slice(-15000) };
+      state = { ...state, status: "PASS", output: sanitizeDiagnosticText(output.slice(-15000), 15000) };
     }).catch((error) => {
       // Emit class/status only; no raw secrets, model transcripts, or cloud credentials.
       const message = error instanceof Error ? error.message : "UNKNOWN_FAILURE";
       state = { ...state, status: "BLOCKED",
-        output: message.slice(0, 15000) };
+        output: sanitizeDiagnosticText(message.slice(0, 15000), 15000) };
     });
   });
   return { server, getState: () => ({ ...state }) };
