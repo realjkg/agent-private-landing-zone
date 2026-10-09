@@ -191,7 +191,8 @@ export async function runOfflineCoverage(input: {
         const expectsState = ["TERRAFORM", "OPENTOFU", "PULUMI"].includes(c.engine);
         const expected = f.id === "MISSING_IAC_STATE" && !expectsState
           ? "NOT_APPLICABLE" as const : "CONTAINED" as const;
-        const outcome = observed?.outcome ?? "FAILED";
+        const outcome = observed?.outcome === "UNDETECTED"
+          ? "FAILED" as const : (observed?.outcome ?? "FAILED");
         if (expected === "NOT_APPLICABLE" && outcome === "NOT_APPLICABLE") {
           faultNotApplicable++;
           // This is an inspected recovery policy applicability result, not
