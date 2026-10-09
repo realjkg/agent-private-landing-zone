@@ -66,7 +66,8 @@ export function buildPulumiTraceMatrix(input: {
     const status: PulumiTraceRow["status"] = draft.phase === "PLAN_REQUIRED"
       ? "PLAN_REQUIRED"
       : draft.phase === "LIVE_NOT_RUN" ? "UNVERIFIED"
-      : draft.expected === draft.observed ? "VERIFIED_OFFLINE" : "FAILED";
+      : draft.expected === draft.observed && Boolean(draft.observationHash)
+        ? "VERIFIED_OFFLINE" : "FAILED";
     const row = { ...draft, id, status };
     result.push({ ...row, rowHash: sha256(JSON.stringify(row)) });
   };
@@ -90,7 +91,8 @@ export function buildPulumiTraceMatrix(input: {
       ] as const) {
         add({ ...shared, dimension: "UNKNOWN_ESTATE", gate,
           phase: "OFFLINE_EXECUTED", expected: "BLOCKED",
-          observed: observed === "BLOCKED" ? "BLOCKED" : "FAILED",
+          observed: observed === "BLOCKED" && item.disposition === "BLOCKED"
+            ? "BLOCKED" : "FAILED",
           evidenceMode: "SYNTHETIC_FIXTURE",
           observationHash: item.evidenceHash,
           reason: "No Build artifact; no ACT or mutation" });
@@ -120,8 +122,9 @@ export function buildPulumiTraceMatrix(input: {
       observationHash: item.evidenceHash,
       reason: "Infrastructure ACT disabled" });
     for (const fault of item.chaosFaults) {
-      const expected = fault.outcome === "NOT_APPLICABLE"
-        ? "NOT_APPLICABLE" as const : "CONTAINED" as const;
+      // Pulumi recovery policy requires IaC state. Derive the expectation from
+      // that contract, never from the observed fault result itself.
+      const expected = "CONTAINED" as const;
       add({ ...shared, dimension: fault.fault, gate: "CHAOS_INJECTION",
         phase: "OFFLINE_EXECUTED", expected,
         observed: fault.outcome === "UNDETECTED" ? "FAILED" : fault.outcome,
