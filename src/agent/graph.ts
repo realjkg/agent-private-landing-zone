@@ -1,3 +1,4 @@
+import { sha256 } from "../build/provenance.js";
 import { randomUUID } from "node:crypto";
 
 import { runBuildLoop } from "../build/loop.js";
@@ -258,7 +259,7 @@ export async function runAgentKernel(
       state.environment?.safeBuildMode !== "BLOCKED";
 
     const realDesignBoundary =
-      state.mock === undefined;
+      state.mock === undefined && !options.realPrivateBuild;
 
     const designBuildable =
       state.design !== undefined &&
@@ -318,14 +319,36 @@ export async function runAgentKernel(
 
       const buildStarted = Date.now();
 
-      const build = await runBuildLoop({
-        provider: state.provider,
-        engine:
-          design.plugin.plugin,
-        mock: state.mock,
-        approve: options.approveBuild,
-        design,
-      });
+      const build = !state.mock && options.realPrivateBuild
+        ? await options.realPrivateBuild(state)
+        : await runBuildLoop({
+            provider: state.provider,
+            engine: design.plugin.plugin,
+            mock: state.mock,
+            approve: options.approveBuild,
+            design,
+          });
+
+      // A real-mode callback must not launder fixture output or claim a plan
+      // without matching live environment/DesignSpec/policy lineage.
+      if (!state.mock && (
+        build.candidate.artifact.generatedBy !==
+          "local-qwen-mistral-reviewed-template" ||
+        build.candidate.artifact.engine !== design.plugin.plugin ||
+        build.candidate.artifact.provider !== state.provider ||
+        build.candidate.evidence.discoverySnapshotHash !==
+          sha256(JSON.stringify(state.environment)) ||
+        build.candidate.evidence.designHash !== design.designHash ||
+        build.candidate.evidence.policyBundleHash !== design.policies.bundleHash ||
+        build.candidate.evidence.scannerResults.some((scanner) =>
+          scanner.scanner.startsWith("fixture-")) ||
+        build.candidate.evidence.scannerResults.length === 0 ||
+        build.candidate.status !== "READY_FOR_APPROVAL" ||
+        build.gate.allowed ||
+        build.executionMode !== "PREVIEW_ONLY"
+      )) {
+        throw new Error("PRIVATE_BUILD_EVIDENCE_OR_TRUST_BOUNDARY_INVALID");
+      }
 
       const approvalPending =
         !build.candidate.evidence.approvalId &&

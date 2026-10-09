@@ -148,6 +148,8 @@ export type AgentKernelOptions = {
   mock?: MockScenario;
   thinker?: Thinker;
   approveBuild?: boolean;
+  /** Injected by the trusted host only; no model or chat-supplied authority. */
+  realPrivateBuild?: (state: AgentState) => Promise<BuildLoopResult>;
   progress?: AgentProgressReporter;
 };
 
