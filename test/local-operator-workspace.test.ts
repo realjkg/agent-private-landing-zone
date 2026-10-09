@@ -42,7 +42,7 @@ test("localhost workspace rejects foreign hosts and origin, and needs CSRF to ru
     const html = await page.text();
     assert.match(html, /Private Agent Workspace/);
     assert.match(html, /LOCAL/);
-    assert.match(html, /SYNTHETIC/);
+    assert.match(html, /synthetic/i);
     const token = html.match(/name="token" value="([0-9a-f]{48})"/)?.[1];
     assert.ok(token, "CSRF token must be present");
     const payload = (tokenValue: string) => new URLSearchParams({
