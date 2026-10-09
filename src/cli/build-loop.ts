@@ -43,11 +43,17 @@ function parseMock(value?: string): MockScenario {
   );
 }
 
+import { createConfiguredBus } from "../observability/bus.js";
+import { loadObservabilityConfig } from "../config.js";
+
+const bus = createConfiguredBus(loadObservabilityConfig());
+
 const options: BuildLoopOptions = {
   provider: parseProvider(readArg("--provider")),
   engine: parseBuildEngine(readArg("--engine")),
   mock: parseMock(readArg("--mock")),
   approve: hasFlag("--approve"),
+  emitter: bus,
 };
 
 console.log();
@@ -60,7 +66,7 @@ console.log();
 try {
   const result = await runBuildLoop(options);
 
-  const runRecord = await writeBuildRun(result);
+  const runRecord = await writeBuildRun(result, bus);
 
   console.log(
     `✓ Environment    ${result.candidate.environment.classification}`,

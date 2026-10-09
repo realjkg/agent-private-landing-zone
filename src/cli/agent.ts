@@ -55,6 +55,11 @@ console.log();
 console.log("AGENT KERNEL · ACT DISABLED");
 console.log();
 
+import { createConfiguredBus } from "../observability/bus.js";
+import { loadObservabilityConfig } from "../config.js";
+
+const bus = createConfiguredBus(loadObservabilityConfig());
+
 const state = await runAgentKernel({
   request,
   provider: parseProvider(readArg("--provider")),
@@ -62,9 +67,10 @@ const state = await runAgentKernel({
   mock: parseMock(readArg("--mock")),
   thinker: fixture ? fixtureThinker : undefined,
   approveBuild: args.includes("--approve"),
+  emitter: bus,
 });
 
-const runRecord = await writeAgentRun(state);
+const runRecord = await writeAgentRun(state, bus);
 
 console.log("Intent          " + state.intent);
 console.log("Phase           " + state.phase);
