@@ -7,9 +7,11 @@ import {
 } from "../src/qualification/pulumi-permutations.js";
 import { buildPulumiTraceMatrix } from "../src/qualification/pulumi-traceability.js";
 
-const sourceCommit = execFileSync("git", ["rev-parse", "--verify", "HEAD"], {
-  encoding: "utf8",
-}).trim();
+const sourceCommit = process.env.ALZ_SOURCE_COMMIT ||
+  execFileSync("git", ["rev-parse", "--verify", "HEAD"], {
+    encoding: "utf8",
+  }).trim();
+if (!/^[a-f0-9]{40}$/.test(sourceCommit)) throw new Error("TEST_SOURCE_COMMIT_INVALID");
 
 test("Pulumi advertised-provider x estate matrix yields traceable, evidence-backed rows", async () => {
   const report = await runPulumiPermutations({ sourceCommit });
