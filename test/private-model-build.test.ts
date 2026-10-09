@@ -74,12 +74,12 @@ test("reviewed AWS build produces nonfixture Terraform source and real-tool evid
   assert.match(built.candidate.artifact.contentHash, /^[a-f0-9]{64}$/);
   assert.match(built.previewSummary, /EXTERNAL_APPROVAL_REQUIRED/);
 });
-test("model disagreement stops before execution of IaC preview driver", async () => {
+test("independent validator schema deviation stops before any IaC driver", async () => {
   let called = false;
   const fake = deps({ agree: false });
   fake.validate = async () => { called = true; throw new Error("MUST_NOT_RUN"); };
   await assert.rejects(runRealPrivateModelBuild(await reviewedState(), fake),
-    /MODEL_PROPOSALS_DISAGREE/);
+    /MODEL_PROPOSAL_RETENTION_MISMATCH/);
   assert.equal(called, false);
 });
 test("a driver cannot present an unverified or unsafe plan as qualified", async () => {
