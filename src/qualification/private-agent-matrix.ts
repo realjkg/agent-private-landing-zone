@@ -80,6 +80,7 @@ function evidence(
   execution: "DIRECT" | "CONVERSATIONAL",
   state: AgentState | undefined,
   mode: MatrixMode,
+  tags: { routerModel: string; primaryModel: string; validatorModel: string },
 ): MatrixEvidence {
   const base = {
     scenario: scenario.id,
@@ -90,15 +91,15 @@ function evidence(
     buildArtifactOrigin: state?.build ? "FIXTURE_GENERATOR" : "NONE",
     modelRoles: state?.assessment?.modelInvocations?.map((x) => x.role) ?? [],
     modelNames: state?.assessment?.modelInvocations?.map((x) => x.model) ?? [],
-    actEnabled: state?.orchestration?.actEnabled ?? "UNKNOWN",
-    mutationObserved: state?.observation?.mutationObserved ?? "UNKNOWN",
-    actionExecuted: state?.action?.executed ?? "UNKNOWN",
+    actEnabled: (state?.orchestration?.actEnabled ?? "UNKNOWN") as boolean | "UNKNOWN",
+    mutationObserved: (state?.observation?.mutationObserved ?? "UNKNOWN") as boolean | "UNKNOWN",
+    actionExecuted: (state?.action?.executed ?? "UNKNOWN") as boolean | "UNKNOWN",
   };
   const live = mode === "LIVE_PRIVATE_MODELS";
   const roles = ["ROUTER", "PRIMARY", "VALIDATOR", "ADJUDICATOR"];
   const modelsValid = !live || roles.every((role) => {
-    const expectedModel = role === "PRIMARY" ? cfg.primaryModel :
-      role === "VALIDATOR" ? cfg.validatorModel : cfg.routerModel;
+    const expectedModel = role === "PRIMARY" ? tags.primaryModel :
+      role === "VALIDATOR" ? tags.validatorModel : tags.routerModel;
     return state?.assessment?.modelInvocations?.some((invocation) =>
       invocation.role === role && invocation.model === expectedModel &&
       invocation.schemaValid);
@@ -218,9 +219,9 @@ export async function runPrivateAgentMatrix(
     } catch {
       conversationalState = undefined;
     }
-    const direct = evidence(scenario, "DIRECT", directState, input.mode);
+    const direct = evidence(scenario, "DIRECT", directState, input.mode, cfg);
     const conversational = evidence(
-      scenario, "CONVERSATIONAL", conversationalState, input.mode);
+      scenario, "CONVERSATIONAL", conversationalState, input.mode, cfg);
     results.push({
       id: scenario.id,
       direct,
