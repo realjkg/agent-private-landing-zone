@@ -5,12 +5,16 @@ import {
 import {
   hasIaCAdapter,
 } from "../iac/index.js";
+import type {
+  Emitter,
+} from "../observability/bus.js";
 
 const MAX_REVIEW_AGE_DAYS = 90;
 const DAY_MS = 86_400_000;
 
 export function validatePluginCatalog(
   now = new Date(),
+  emitter?: Emitter,
 ): string[] {
   const errors: string[] = [];
   const ids = new Set<string>();
@@ -128,6 +132,17 @@ export function validatePluginCatalog(
           " is not an allowed first-class plug-in.",
       );
     }
+  }
+
+  // Registry validation failures are real adapter-failures occurrences:
+  // one FAILED event per error, with the validator's own message.
+  for (const error of errors) {
+    emitter?.emit({
+      signal: "adapter-failures",
+      status: "FAILED",
+      component: "plugin-catalog",
+      detail: error,
+    });
   }
 
   return errors;

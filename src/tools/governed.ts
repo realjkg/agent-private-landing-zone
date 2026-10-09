@@ -312,14 +312,62 @@ export async function executeGovernedTool(
     );
   }
 
-  return executeTool(
-    request,
-    {
-      ...context,
-      securityPolicyDecision:
-        composite,
-      compromiseState:
-        options.compromiseState,
-    },
-  );
+  try {
+    const results =
+      await executeTool(
+        request,
+        {
+          ...context,
+          securityPolicyDecision:
+            composite,
+          compromiseState:
+            options.compromiseState,
+        },
+      );
+
+    // Real adapter failures: commands that ran and failed. Policy refusals
+    // (blocked: true) are policy-denials, not adapter failures, and are
+    // excluded here; thrown errors keep the rethrow path below.
+    const failures = Array.isArray(results)
+      ? results.filter(
+          (item) => !item.ok && !item.blocked,
+        )
+      : !results.ok && !results.blocked
+        ? [results]
+        : [];
+
+    for (const failure of failures) {
+      options.emitter?.emit({
+        signal: "adapter-failures",
+        status: "FAILED",
+        component: "governed-tool",
+        detail:
+          failure.reason ??
+          failure.stderr.slice(0, 200) ??
+          "adapter command failed",
+        attributes: {
+          tool: failure.tool,
+          exitCode: failure.exitCode,
+        },
+      });
+    }
+
+    return results;
+  } catch (error) {
+    // Real adapter/tool failure on the governed path: report it, then
+    // rethrow unchanged — the governed command still fails as before.
+    options.emitter?.emit({
+      signal: "adapter-failures",
+      status: "FAILED",
+      component: "governed-tool",
+      detail:
+        error instanceof Error
+          ? error.message
+          : "unknown tool failure",
+      attributes: {
+        tool: request.tool,
+      },
+    });
+    throw error;
+  }
 }
