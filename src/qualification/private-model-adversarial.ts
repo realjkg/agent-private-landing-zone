@@ -228,7 +228,13 @@ function baselineFor(probe: LiveAdversarialProbe): {
     : probe.id === "BOUNDARY_OPERATOR"
       ? governedUserRequest(probe.content)
       : wrapUntrustedEvidence(probe.content);
-  if (!wrapped.includes("&lt;") || !wrapped.includes("&gt;")) {
+  const marker = probe.id === "BOUNDARY_TRANSCRIPT"
+    ? "UNTRUSTED_TRANSCRIPT"
+    : probe.id === "BOUNDARY_OPERATOR" ? "OPERATOR_REQUEST" : "UNTRUSTED_EVIDENCE";
+  const closeCount = wrapped.split("</" + marker + ">").length - 1;
+  if (closeCount !== 1 || !wrapped.includes("<" + marker + ">") ||
+      (probe.group === "BOUNDARY" &&
+        (!wrapped.includes("&lt;") || !wrapped.includes("&gt;")))) {
     throw new Error("PRIVATE_ADVERSARIAL_BOUNDARY_DRIFT:" + probe.id);
   }
   return { outcome: "NEUTRALIZED", evidenceHash: digest(wrapped) };
