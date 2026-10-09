@@ -52,7 +52,6 @@ export type GovernedActionRequest = {
   recoveryPointId: string;
   idempotencyKey: string;
   compromiseState: CompromiseState;
-  opaRequired: boolean;
 };
 export type ActionPolicy = {
   evaluate(request: GovernedActionRequest): Promise<SecurityPolicyDecision>;
@@ -80,6 +79,7 @@ export type ActionRegistryDeps = {
   externalPublicKeyPem: string;
   ledger: ReplayLedger;
   handlers: AuthorizedHandlers;
+  policyMode: "BUILTIN" | "LOCAL_OPA";
   localOpa?: ActionPolicy;
   nowSeconds?: () => number;
 };
@@ -95,7 +95,7 @@ function validName(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= 256 &&
     !/[\r\n\0]/.test(value);
 }
-function leasePayload(lease: ExternalActionLease): string {
+export function canonicalActionLease(lease: ExternalActionLease): string {
   // Explicit ordering prevents accidental permission extension by extra keys.
   return JSON.stringify({
     version: lease.version, issuer: lease.issuer, leaseId: lease.leaseId,
@@ -130,6 +130,11 @@ export async function executeGovernedAction(
   if (!lease || !allowed.has(request.operation) ||
       !allowed.has(lease.operation) || request.operation !== lease.operation ||
       lease.version !== 1 || lease.operationLimit !== 1) deny("OPERATION_NOT_ALLOWLISTED");
+  if (Object.keys(lease).sort().join(",") !== [
+    "version", "issuer", "leaseId", "operation", "operationLimit", "target",
+    "policyHash", "designHash", "changeSetHash", "payloadHash",
+    "recoveryPointId", "idempotencyKey", "notBefore", "expiresAt",
+  ].sort().join(",")) deny("LEASE_UNKNOWN_FIELDS");
   if (lease.issuer !== deps.issuer || !validName(lease.issuer) ||
       !validName(lease.leaseId) || !validName(lease.target) ||
       !validName(lease.idempotencyKey) || !validName(lease.recoveryPointId) ||
@@ -159,7 +164,7 @@ export async function executeGovernedAction(
   try {
     const publicKey = createPublicKey(deps.externalPublicKeyPem);
     if (publicKey.asymmetricKeyType !== "ed25519" ||
-        !verifySignature(null, Buffer.from(leasePayload(lease)),
+        !verifySignature(null, Buffer.from(canonicalActionLease(lease)),
           publicKey, Buffer.from(signed.signature, "base64url"))) {
       deny("INVALID_EXTERNAL_SIGNATURE");
     }
@@ -171,14 +176,15 @@ export async function executeGovernedAction(
     requested: ["EVIDENCE_READ", "EVIDENCE_WRITE"],
   });
   if (!builtin.allow || builtin.source !== "BUILTIN") deny("BUILTIN_POLICY_DENIED");
-  if (request.opaRequired) {
+  if (deps.policyMode === "LOCAL_OPA") {
     if (!deps.localOpa) deny("LOCAL_OPA_REQUIRED");
     const local = await deps.localOpa.evaluate(request);
     if (!local.allow || local.source !== "OPA") deny("LOCAL_OPA_DENIED");
   }
+  if (deps.policyMode !== "BUILTIN" && deps.policyMode !== "LOCAL_OPA") deny("POLICY_MODE_INVALID");
   if (deps.ledger.mode !== "DURABLE_EXTERNAL") deny("DURABLE_REPLAY_LEDGER_REQUIRED");
   const requestHash = digest(JSON.stringify({
-    lease: leasePayload(lease), operation: request.operation, target: request.target,
+    lease: canonicalActionLease(lease), operation: request.operation, target: request.target,
   }));
   const claimed = await deps.ledger.claimOnce({
     leaseId: lease.leaseId, idempotencyKey: lease.idempotencyKey,
