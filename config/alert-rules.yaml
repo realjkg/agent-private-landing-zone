@@ -1,0 +1,91 @@
+# Alert rules for operational events (spec: "Turning On Observability Controls" §5).
+#
+# Provider-neutral posture config: rules map operational event statuses to
+# alert postures. A rule fires when `threshold` occurrences of `signal`
+# events with status `forStatus` are seen within `window`. Prometheus/
+# Alertmanager or Grafana equivalents can be derived mechanically.
+#
+# The schema's status-posture contract:
+#   OK       metric only (heartbeat) — no alert rule
+#   DEGRADED warning over a sustained window
+#   BLOCKED  warning per occurrence, critical on rate
+#   FAILED   critical at first occurrence
+#
+# Validated by src/monitoring/alert-rules.ts against the signal union in
+# src/observability/events.ts (PRODUCTION_SIGNALS). Every production signal
+# must keep at least one rule; test/monitoring-alert-rules.test.ts enforces it.
+apiVersion: alz.io/alert-rules/v1
+kind: AlertRules
+rules:
+  - id: adapter-failure
+    signal: adapter-failures
+    forStatus: FAILED
+    threshold: 1
+    window: 5m
+    severity: critical
+  - id: model-restart-flap
+    signal: model-restarts
+    forStatus: DEGRADED
+    threshold: 2
+    window: 15m
+    severity: warning
+  - id: policy-denial-rate
+    signal: policy-denials
+    forStatus: BLOCKED
+    threshold: 5
+    window: 15m
+    severity: warning
+  - id: recovery-objective-miss
+    signal: recovery-objective-status
+    forStatus: DEGRADED
+    threshold: 1
+    window: 5m
+    severity: warning
+  - id: model-latency-degraded
+    signal: model-latency
+    forStatus: DEGRADED
+    threshold: 3
+    window: 15m
+    severity: warning
+  - id: provider-discovery-probe-failure
+    signal: provider-discovery-health
+    forStatus: FAILED
+    threshold: 1
+    window: 5m
+    severity: critical
+  - id: provider-discovery-degraded
+    signal: provider-discovery-health
+    forStatus: DEGRADED
+    threshold: 2
+    window: 15m
+    severity: warning
+  - id: recovery-state-failure
+    signal: recovery-state
+    forStatus: FAILED
+    threshold: 1
+    window: 5m
+    severity: critical
+  - id: evidence-lifecycle-failure
+    signal: evidence-lifecycle
+    forStatus: FAILED
+    threshold: 1
+    window: 5m
+    severity: critical
+  - id: economics-budget-failure
+    signal: economics-budget
+    forStatus: FAILED
+    threshold: 1
+    window: 5m
+    severity: critical
+  - id: economics-anomaly-warning
+    signal: economics-anomaly
+    forStatus: DEGRADED
+    threshold: 1
+    window: 5m
+    severity: warning
+  - id: economics-forecast-failure
+    signal: economics-forecast
+    forStatus: FAILED
+    threshold: 1
+    window: 5m
+    severity: critical
