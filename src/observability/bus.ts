@@ -172,6 +172,16 @@ export class ObservabilityBus {
       return;
     }
 
+    this.deliver(event);
+  }
+
+  /**
+   * Delivers an already-constructed schema-v1 event (redaction already
+   * applied by createOperationalEvent) to the sinks, registry, and
+   * exporters — for callers that build events outside emit(), such as
+   * the economics report.
+   */
+  deliver(event: OperationalEvent): void {
     for (const sink of this.sinks) {
       try {
         sink.emit(event);

@@ -2,6 +2,8 @@ import { readFileSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { analyzeOperatingEconomics } from "../economics/report.js";
+import { createConfiguredBus } from "../observability/bus.js";
+import { loadObservabilityConfig } from "../config.js";
 
 const root = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const [command, file, format] = process.argv.slice(2);
@@ -15,6 +17,14 @@ try {
     throw new Error("Economics input must be inside the accelerator workspace.");
   }
   const report = analyzeOperatingEconomics(JSON.parse(readFileSync(path, "utf8")) as unknown);
+
+  // Economics events ride the same bus as every other contract signal:
+  // delivered to the configured sinks (stdout JSON lines by default),
+  // best-effort, before the human/JSON report is printed.
+  const bus = createConfiguredBus(loadObservabilityConfig());
+  for (const event of report.events) {
+    bus.deliver(event);
+  }
   if (format === "--json") {
     console.log(JSON.stringify(report, null, 2));
   } else {
