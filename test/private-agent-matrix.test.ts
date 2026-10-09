@@ -16,7 +16,7 @@ test("all eight existing ALZ scenarios converge through direct and conversationa
   });
   assert.equal(report.scenarioCount, 8);
   assert.equal(new Set(report.results.map((r) => r.id)).size, 8);
-  assert.equal(report.passed, true);
+  assert.equal(report.passed, true, JSON.stringify(report.results.map((r) => ({id:r.id,d:r.direct.status,c:r.conversational.status,dh:r.direct.designHash,ch:r.conversational.designHash,reason:r.direct.errorCode ?? r.conversational.errorCode}))));
   assert.equal(report.agentAuthoredIacQualified, false);
   assert.equal(report.infrastructureAct, "DISABLED");
   assert.match(report.evidenceHash, /^[0-9a-f]{64}$/);
