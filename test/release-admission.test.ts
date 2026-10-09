@@ -10,7 +10,7 @@ import {
   reviewProductionRelease,
   type ReleaseAdmissionInput,
   type ReleaseGateSubmission,
-} from "../src/release/admission.js";
+} from "../src/qualification/release-admission.js";
 
 const commit = "a".repeat(40);
 const target = "private-lab-host-01";
