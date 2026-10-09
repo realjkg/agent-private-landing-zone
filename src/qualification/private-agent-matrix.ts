@@ -19,6 +19,7 @@ export type MatrixEvidence = {
   assessment: "FIXTURE" | "ACTUAL_PRIVATE_MODELS" | "NOT_VERIFIED";
   buildArtifactOrigin: "FIXTURE_GENERATOR" | "NONE";
   designHash?: string;
+  designContentHash?: string;
   policyHash?: string;
   artifactHash?: string;
   planHash?: string;
@@ -109,8 +110,19 @@ function evidence(
     state?.assessment?.status === "OK" &&
     safe && modelsValid,
   );
+  const d = state?.design;
+  const designContentHash = d ? sha256(JSON.stringify({
+    provider: d.provider, environment: d.environment,
+    objective: d.objective, status: d.status, plugin: d.plugin,
+    entries: d.entries, constraints: d.constraints, reuse: d.reuse,
+    additions: d.additions, forbiddenChanges: d.forbiddenChanges,
+    policyHash: d.policies.bundleHash, securityControls: d.securityControls,
+    resiliencyControls: d.resiliencyControls, assumptions: d.assumptions,
+    evidenceRefs: d.evidenceRefs.filter((ref) => !ref.startsWith("assessment:")).sort(),
+  })) : undefined;
   return {
     ...base,
+    designContentHash,
     buildArtifactOrigin: base.buildArtifactOrigin as "FIXTURE_GENERATOR" | "NONE",
     status: complete ? "PASS" : "BLOCKED",
     assessment: state?.assessment?.status === "OK"
@@ -127,7 +139,7 @@ function evidence(
 
 function matched(a: MatrixEvidence, b: MatrixEvidence): boolean {
   return a.status === "PASS" && b.status === "PASS" &&
-    a.designHash === b.designHash &&
+    Boolean(a.designContentHash) && a.designContentHash === b.designContentHash &&
     a.policyHash === b.policyHash &&
     a.artifactHash === b.artifactHash &&
     a.planHash === b.planHash;
