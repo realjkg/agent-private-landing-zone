@@ -143,7 +143,7 @@ export async function runRealPrivateModelBuild(
     environment: env, artifact,
     evidence: {
       discoverySnapshotHash: sha256(JSON.stringify(env)),
-      assessmentId: state.assessment.primary?.role ?? "independent-model-assessment",
+      assessmentId: state.assessment.requestId,
       designId: design.designId, designHash: design.designHash,
       policyBundleId: design.policies.bundleId,
       policyBundleHash: design.policies.bundleHash,
