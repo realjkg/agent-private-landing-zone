@@ -26,3 +26,13 @@ This command **only validates metadata/connectivity**; it does not run an infere
 If the dedicated runner does not exist or is offline, the production-target job must remain QUEUED/NOT_RUN. A passing hosted baseline is insufficient to qualify the target hardware. Do not publish a production release in that state.
 
 The AWS/Azure provider production workflows remain separate, use explicit authorized OIDC identities, and must produce real cloud evidence. Real model-assisted BUILD and all approved IaC preview scenarios remain independent release blockers until exercised on the target, not solely with fixtures. Production security findings remain a separate gate; no scanner thresholds are changed here.
+
+## Live private-agent functional execution (after the target preflight)
+
+After actual production model runtime qualification succeeds on the dedicated host, the same manual workflow executes the first **AWS brownfield Terraform private-agent** scenario with live local Qwen3 router/primary and Mistral Nemo independent validation. It compiles the runtime, requires a preinstalled Terraform executable, produces a source-bound model-reviewed additive HCL candidate, and runs **actual local Terraform init/fmt/validate**. AWS discovery remains synthetic and this stage does not run an actual cloud Terraform plan or authorize deployment.
+
+The workflow's `live_scenario_scope` input defaults to `first` to avoid spending hours on the full matrix before the first scenario passes. Selecting `all` runs the eight original Phase E direct and conversational live private-model reasoning paths after the first scenario passes. Their IaC previews remain fixture-generated; the evidence files explicitly say so. Actual Azure/AWS provider/IaC previews and real source generation remain separate production gate rows.
+
+Artifacts include `.runs/qualification/aws-brownfield-terraform-private-agents-v1-*/qualification.json`, candidate `main.tf`, and `.runs/qualification/private-agent-matrix/*.json` when selected. Do not equate this with cloud read/preview or model-authored IaC for every engine.
+
+The GitHub integration available in this chat does not expose workflow_dispatch or private runner controls; a repository operator must use **Actions → Private Model Qualification → Run workflow**, select `production_target=true`, provide the actual `target_hardware_id`, and choose `first` or `all`. If the labeled runner is unregistered, the job stays queued and no live inference/qualification can be claimed.
