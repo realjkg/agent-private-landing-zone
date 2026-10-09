@@ -60,7 +60,7 @@ const defaultDeps: MatrixRunnerDeps = {
   direct: runAgentKernel,
   metadata: getLocalModelMetadata,
   conversation: async (scenario, fixture) => {
-    const { graph } = createSessionGraph();
+    const { graph } = createSessionGraph(":memory:");
     const result = await graph.invoke({
       request: scenario.request,
       provider: scenario.provider,
