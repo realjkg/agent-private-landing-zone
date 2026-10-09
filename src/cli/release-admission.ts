@@ -6,7 +6,7 @@ import { dirname, resolve } from "node:path";
 import {
   reviewProductionRelease,
   type ReleaseAdmissionInput,
-} from "../release/admission.js";
+} from "../qualification/release-admission.js";
 
 function argument(name: string): string | undefined {
   const args = process.argv.slice(2);
