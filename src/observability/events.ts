@@ -2,29 +2,38 @@ import {
   redactDiagnosticValue,
   sanitizeDiagnosticText,
 } from "./redaction.js";
+export const PRODUCTION_SIGNALS = [
+  "model-latency",
+  "model-restarts",
+  "adapter-failures",
+  "policy-denials",
+  "provider-discovery-health",
+  "recovery-state",
+  "recovery-objective-status",
+  "evidence-lifecycle",
+  "economics-budget",
+  "economics-anomaly",
+  "economics-forecast",
+] as const;
 
 export type ProductionSignal =
-  | "model-latency"
-  | "model-restarts"
-  | "adapter-failures"
-  | "policy-denials"
-  | "provider-discovery-health"
-  | "recovery-state"
-  | "recovery-objective-status"
-  | "evidence-lifecycle"
-  | "economics-budget"
-  | "economics-anomaly"
-  | "economics-forecast";
+  (typeof PRODUCTION_SIGNALS)[number];
+
+export const OPERATIONAL_EVENT_STATUSES = [
+  "OK",
+  "DEGRADED",
+  "BLOCKED",
+  "FAILED",
+] as const;
+
+export type OperationalEventStatus =
+  (typeof OPERATIONAL_EVENT_STATUSES)[number];
 
 export type OperationalEvent = {
   schemaVersion: 1;
   at: string;
   signal: ProductionSignal;
-  status:
-    | "OK"
-    | "DEGRADED"
-    | "BLOCKED"
-    | "FAILED";
+  status: OperationalEventStatus;
   component: string;
   durationMs?: number;
   detail?: string;
