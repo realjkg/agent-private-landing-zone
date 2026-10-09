@@ -1009,6 +1009,16 @@ export class RecoveryAutomationController {
             },
           });
 
+          this.options.emitter?.emit({
+            signal: "recovery-state",
+            status: "BLOCKED",
+            component: "recovery-automation",
+            detail: "recovery automation suspended by security policy",
+            attributes: {
+              targetId: target.targetId,
+            },
+          });
+
           results.push({
             targetId:
               target.targetId,
@@ -1067,8 +1077,41 @@ export class RecoveryAutomationController {
             result.state,
           );
 
+          // Real recovery-state transition: HEALTHY is OK, ATTENTION is a
+          // soft miss (DEGRADED), BLOCKED is a refusal. IDLE and DISABLED
+          // targets did no recovery work, so there is no occurrence.
+          if (
+            result.status !== "IDLE" &&
+            result.status !== "DISABLED"
+          ) {
+            this.options.emitter?.emit({
+              signal: "recovery-state",
+              status:
+                result.status === "HEALTHY"
+                  ? "OK"
+                  : result.status === "ATTENTION"
+                    ? "DEGRADED"
+                    : "BLOCKED",
+              component: "recovery-automation",
+              detail: "recovery cycle " + result.status.toLowerCase(),
+              attributes: {
+                targetId: target.targetId,
+              },
+            });
+          }
+
           results.push(result);
         } catch (error) {
+          this.options.emitter?.emit({
+            signal: "recovery-state",
+            status: "BLOCKED",
+            component: "recovery-automation",
+            detail: "recovery automation context collection failed",
+            attributes: {
+              targetId: target.targetId,
+            },
+          });
+
           results.push({
             targetId:
               target.targetId,
