@@ -171,6 +171,15 @@ jobs:
           docker run --rm --network none --entrypoint node agent-private-landing-zone:ci-arm64 \
             dist/cli/release-package.js --root /app --verify
 
+      - name: Smoke final ARM64 runtime with native SQLite and operator
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --network none --entrypoint node \
+            agent-private-landing-zone:ci-arm64 \
+            -e "const Database = require('better-sqlite3'); const db = new Database(':memory:'); try { if (db.prepare('select 1 as value').get().value !== 1) process.exit(2); } finally { db.close(); }"
+          docker run --rm --network none agent-private-landing-zone:ci-arm64 help
+
       - name: Scan final runtime image for vulnerabilities and misconfigurations
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
