@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
+import { request as httpRequest } from "node:http";
 import test from "node:test";
 
 import {
@@ -60,10 +61,17 @@ test("localhost workspace rejects foreign hosts and origin, and needs CSRF to ru
       body: payload(token),
     });
     assert.equal(foreign.status, 403);
-    const foreignHost = await fetch(url + "/state", {
-      headers: { host: "untrusted.example" },
+    const foreignHostStatus = await new Promise<number>((resolve, reject) => {
+      const request = httpRequest(url + "/state", {
+        headers: { Host: "untrusted.example" },
+      }, (response) => {
+        response.resume();
+        response.on("end", () => resolve(response.statusCode ?? 0));
+      });
+      request.on("error", reject);
+      request.end();
     });
-    assert.equal(foreignHost.status, 403);
+    assert.equal(foreignHostStatus, 403);
     assert.equal(calls, 0);
     const start = await fetch(url + "/run", {
       method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" },
