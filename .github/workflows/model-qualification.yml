@@ -41,6 +41,14 @@ on:
         options:
           - first
           - all
+      adversarial_scope:
+        description: "Local Qwen/Mistral adversarial tests: first smoke or full shared corpus"
+        required: false
+        default: first
+        type: choice
+        options:
+          - first
+          - all
 
 concurrency:
   group: private-model-qualification-${{ github.ref }}
@@ -262,6 +270,13 @@ jobs:
       - name: Compile source-bound agent runtime
         run: npm run build
 
+      - name: Adversarial smoke on all three private models
+        run: node dist/cli/private-model-adversarial.js --scope first
+
+      - name: Full adversarial shared corpus with Qwen/Mistral
+        if: ${{ inputs.adversarial_scope == 'all' }}
+        run: node dist/cli/private-model-adversarial.js --scope all
+
       - name: Verify local Terraform toolchain
         shell: bash
         run: |
@@ -289,6 +304,8 @@ jobs:
             .runs/qualification/aws-brownfield-terraform-private-agents-v1-*/qualification.json
             .runs/qualification/aws-brownfield-terraform-private-agents-v1-*/main.tf
             .runs/qualification/private-agent-matrix/*.json
+            .runs/qualification/private-model-adversarial/*.json
+            .runs/qualification/private-model-adversarial/*.csv
           if-no-files-found: warn
           retention-days: 30
 
