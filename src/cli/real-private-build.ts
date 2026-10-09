@@ -1,7 +1,9 @@
 import { spawnSync, execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync, readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { resolve } from "node:path";
+import { getLocalModelMetadata, invokeLocalModel } from "../ollama.js";
+import { collectRepositoryEvidence } from "../build/repository.js";
 
 import { runAgentKernel } from "../agent/graph.js";
 import { runRealPrivateModelBuild, type ActualPrivateBuildValidation } from "../build/private-model.js";
@@ -89,10 +91,10 @@ async function main(): Promise<void> {
     engine: "TERRAFORM",
     realPrivateBuild: (assessed) =>
       runRealPrivateModelBuild(assessed, {
-        metadata: (await import("../ollama.js")).getLocalModelMetadata,
-        model: (await import("../ollama.js")).invokeLocalModel,
+        metadata: getLocalModelMetadata,
+        model: invokeLocalModel,
         validate,
-        repositoryEvidence: (await import("../build/repository.js")).collectRepositoryEvidence,
+        repositoryEvidence: collectRepositoryEvidence,
       }),
   });
   if (!state.build || state.build.candidate.artifact.generatedBy !==
