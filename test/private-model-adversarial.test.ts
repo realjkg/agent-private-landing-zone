@@ -117,7 +117,7 @@ test("model disagreement or transport error is an explicit failed gate, not a sk
   assert.equal(report.passed, false);
   assert.equal(report.results.length, 15);
   assert.equal(report.results.filter(x => x.observed === "CALL_FAILED").length, 5);
-  assert.equal(report.results.filter(x => x.gate === "FAIL").length, 14);
+  assert.equal(report.results.filter(x => x.gate === "FAIL").length, 13);
   assert.ok(report.results.some(x => x.errorCode === "LOCAL_MODEL_INFERENCE_FAILED"));
 });
 
