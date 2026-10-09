@@ -28,7 +28,7 @@ function registry() {
   const deps: ActionRegistryDeps = {
     issuer: "external-owner",
     externalPublicKeyPem: publicKey.export({ type: "spki", format: "pem" }).toString(),
-    policyMode: "BUILTIN", nowSeconds: () => now,
+    policyMode: "BUILTIN", trustedCompromiseState: "VERIFIED", nowSeconds: () => now,
     ledger: {
       mode: "DURABLE_EXTERNAL",
       claimOnce: async () => {
