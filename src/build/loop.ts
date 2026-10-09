@@ -9,6 +9,7 @@ import type {
   DesignSpec,
 } from "../design/types.js";
 import { evaluateBuildGate } from "./gate.js";
+import { DISABLED_EMITTER, type Emitter } from "../observability/bus.js";
 import {
   createMockPreview,
   generateMockArtifact,
@@ -35,6 +36,8 @@ export type BuildLoopOptions = {
   approve?: boolean;
   design?: DesignSpec;
   repositoryEvidence?: RepositoryEvidence;
+  /** Process observability bus; defaults to disabled (no emission). */
+  emitter?: Emitter;
 };
 
 export type BuildLoopResult = {
@@ -70,6 +73,7 @@ export async function runBuildLoop(
   const environment = await discoverEnvironment({
     provider: options.provider,
     mock: options.mock,
+    emitter: options.emitter,
   });
 
   const repository =
@@ -182,6 +186,21 @@ export async function runBuildLoop(
     gate.reasons.push(
       "package-lock.json evidence is missing.",
     );
+  }
+
+  // Deterministic build-gate refusal: every accumulated reason is a real
+  // policy denial on this path, reported once with the final decision.
+  if (!gate.allowed) {
+    (options.emitter ?? DISABLED_EMITTER).emit({
+      signal: "policy-denials",
+      status: "BLOCKED",
+      component: "build-gate",
+      detail: gate.reasons.join("; "),
+      attributes: {
+        provider: options.provider,
+        engine: options.engine,
+      },
+    });
   }
 
   return {

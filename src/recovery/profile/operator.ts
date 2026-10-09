@@ -162,8 +162,13 @@ export function explainRecoveryIntent(
   ].join("\n");
 }
 
+import type {
+  Emitter,
+} from "../../observability/bus.js";
+
 export function recoveryTargetStatus(
   target: RecoveryTargetSpec,
+  emitter?: Emitter,
 ): {
   ready: boolean;
   lines: string[];
@@ -180,6 +185,17 @@ export function recoveryTargetStatus(
   ];
 
   if (blockers.length > 0) {
+    // Recovery objective not met: the target is BLOCKED for recovery.
+    emitter?.emit({
+      signal: "recovery-objective-status",
+      status: "DEGRADED",
+      component: "recovery-profile-operator",
+      detail: "recovery target blocked: " + blockers.join("; "),
+      attributes: {
+        targetId: target.targetId,
+      },
+    });
+
     return {
       ready: false,
       lines: [
@@ -194,6 +210,15 @@ export function recoveryTargetStatus(
       ],
     };
   }
+
+  emitter?.emit({
+    signal: "recovery-objective-status",
+    status: "OK",
+    component: "recovery-profile-operator",
+    attributes: {
+      targetId: target.targetId,
+    },
+  });
 
   return {
     ready: true,
@@ -211,18 +236,31 @@ export function recoveryTargetStatus(
 
 export function recoveryTestReadiness(
   target: RecoveryTargetSpec,
+  emitter?: Emitter,
 ): {
   ready: boolean;
   lines: string[];
 } {
   const status =
-    recoveryTargetStatus(target);
+    recoveryTargetStatus(target, emitter);
 
   if (!status.ready) {
     return status;
   }
 
   if (!target.recoveryMetadata) {
+    // Readiness objective not met: the target needs compiled metadata
+    // before an isolated restore test.
+    emitter?.emit({
+      signal: "recovery-objective-status",
+      status: "DEGRADED",
+      component: "recovery-profile-operator",
+      detail: "recovery test requires compiled recovery profile metadata",
+      attributes: {
+        targetId: target.targetId,
+      },
+    });
+
     return {
       ready: false,
       lines: [

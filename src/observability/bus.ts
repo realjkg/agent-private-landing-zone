@@ -17,6 +17,9 @@ import {
 import type {
   RuntimeProfileId,
 } from "../runtime-profile/types.js";
+import type {
+  ObservabilityConfig,
+} from "../config.js";
 
 /**
  * Best-effort event delivery contract: a sink failure is never allowed to
@@ -37,6 +40,21 @@ export type EmitInput = {
   durationMs?: number;
   detail?: string;
   attributes?: Record<string, unknown>;
+  /** Observation time; defaults to now. Preserved when re-emitting built events (e.g. economics reports). */
+  at?: string;
+};
+
+/**
+ * Structural emission seam for modules that own a signal but must not depend
+ * on the concrete bus: entrypoints pass the process bus down; everything
+ * defaults to this no-op so unwired paths stay silent instead of crashing.
+ */
+export type Emitter = {
+  emit(input: EmitInput): void;
+};
+
+export const DISABLED_EMITTER: Emitter = {
+  emit: () => {},
 };
 
 /**
@@ -144,7 +162,9 @@ export class ObservabilityBus {
     // (sink, registry, exporter) sees the event.
     let event: OperationalEvent;
     try {
-      event = createOperationalEvent(input);
+      event = createOperationalEvent({
+        ...input,
+      });
     } catch (error) {
       this.warn(
         "[warn] OBSERVABILITY_EVENT_DROPPED: " + describeError(error),
@@ -152,6 +172,16 @@ export class ObservabilityBus {
       return;
     }
 
+    this.deliver(event);
+  }
+
+  /**
+   * Delivers an already-constructed schema-v1 event (redaction already
+   * applied by createOperationalEvent) to the sinks, registry, and
+   * exporters — for callers that build events outside emit(), such as
+   * the economics report.
+   */
+  deliver(event: OperationalEvent): void {
     for (const sink of this.sinks) {
       try {
         sink.emit(event);
@@ -329,4 +359,20 @@ export function monitoringExporter(input: {
         input.transport,
       ).then(() => undefined),
   };
+}
+
+/**
+ * The one bus constructor entrypoints use: structured events default on
+ * (stdout JSON lines) and `ALZ_OBSERVABILITY_EVENTS=false` disables the sink
+ * while keeping the bus callable, so emission sites never need null checks.
+ * Export wiring stays out: exporters are opt-in and gate-validated.
+ */
+export function createConfiguredBus(
+  config: ObservabilityConfig,
+): ObservabilityBus {
+  return new ObservabilityBus({
+    sinks: config.eventsEnabled
+      ? [new JsonLineEventSink()]
+      : [],
+  });
 }

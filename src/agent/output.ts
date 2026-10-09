@@ -1,5 +1,8 @@
 import type { AgentState } from "./types.js";
 import { writeEncryptedEvidence } from "../evidence/vault.js";
+import type {
+  Emitter,
+} from "../observability/bus.js";
 
 function sanitize(value: string): string {
   return value
@@ -10,6 +13,7 @@ function sanitize(value: string): string {
 
 export async function writeAgentRun(
   state: AgentState,
+  emitter?: Emitter,
 ): Promise<string> {
   const timestamp = new Date()
     .toISOString()
@@ -28,6 +32,7 @@ export async function writeAgentRun(
     "agent",
     filename,
     state,
+    emitter,
   );
 }
 

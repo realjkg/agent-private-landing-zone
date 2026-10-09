@@ -3,10 +3,21 @@ export type OllamaMessage = {
   content: string;
 };
 
+import { DISABLED_EMITTER, type Emitter } from "./observability/bus.js";
+
+/**
+ * Soft latency threshold for a local chat completion. Below it a call is OK;
+ * at or above it the model-latency signal reports DEGRADED (warning alert
+ * posture per config/alert-rules.yaml). Timeout still fails the call.
+ */
+export const MODEL_LATENCY_DEGRADED_MS = 30_000;
+
 export type ModelInvocationOptions = {
   timeoutMs?: number;
   format?: "json" | Record<string, unknown>;
   think?: boolean | string;
+  /** Overrides MODEL_LATENCY_DEGRADED_MS for tests. */
+  latencyDegradedMs?: number;
 };
 
 export const STRUCTURED_MODEL_OPTIONS =
@@ -20,10 +31,12 @@ export async function invokeLocalModel(
   model: string,
   messages: OllamaMessage[],
   options: ModelInvocationOptions = {},
+  emitter: Emitter = DISABLED_EMITTER,
 ): Promise<string> {
   const timeoutMs = options.timeoutMs ?? 120_000;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const startedAt = Date.now();
 
   try {
     const response = await fetch(`${baseUrl}/api/chat`, {
@@ -70,8 +83,34 @@ export async function invokeLocalModel(
       throw new Error(`Ollama returned an empty response for ${model}`);
     }
 
+    const durationMs = Date.now() - startedAt;
+    emitter.emit({
+      signal: "model-latency",
+      status:
+        durationMs >=
+        (options.latencyDegradedMs ??
+          MODEL_LATENCY_DEGRADED_MS)
+          ? "DEGRADED"
+          : "OK",
+      component: "model-invocation",
+      durationMs,
+      attributes: { model },
+    });
+
     return content;
   } catch (error) {
+    emitter.emit({
+      signal: "model-latency",
+      status: "FAILED",
+      component: "model-invocation",
+      durationMs: Date.now() - startedAt,
+      detail:
+        error instanceof Error
+          ? error.message
+          : "unknown model failure",
+      attributes: { model },
+    });
+
     if (
       error instanceof DOMException &&
       error.name === "AbortError"

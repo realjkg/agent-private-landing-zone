@@ -5,6 +5,8 @@ import {
   resolve,
 } from "node:path";
 import { discoverEnvironment } from "../discovery/discover.js";
+import { createConfiguredBus } from "../observability/bus.js";
+import { loadObservabilityConfig } from "../config.js";
 import {
   assessEnvironment,
 } from "../assessment/posture.js";
@@ -108,9 +110,11 @@ console.log();
 console.log(`Discovering ${provider} environment...`);
 console.log();
 
+const bus = createConfiguredBus(loadObservabilityConfig());
+
 try {
   let result = await discoverEnvironment(
-    { provider, mock },
+    { provider, mock, emitter: bus },
     (event, detail) => {
       if (verbose) {
         console.log(`› ${event.padEnd(24)} ${detail ?? ""}`);
@@ -194,10 +198,11 @@ try {
     assessmentRecord,
     recoveryRecord,
   ] = await Promise.all([
-    writeDiscoveryRun(result),
-    writeAssessmentRun(assessment),
+    writeDiscoveryRun(result, bus),
+    writeAssessmentRun(assessment, bus),
     writeConfigurationRecoverySnapshot(
       assessment.recoverySnapshot,
+      bus,
     ),
   ]);
 

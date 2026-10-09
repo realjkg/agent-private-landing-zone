@@ -288,24 +288,37 @@ export async function runAgentKernel(
         "Build request blocked by safety prerequisites.",
       );
 
+      const blockedDetail =
+        !assessmentReady
+          ? "A successful assessment is required before Build."
+          : !environmentBuildable
+            ? "Environment policy does not permit Build."
+            : !state.design
+              ? "Build requires an evidence-linked DesignSpec."
+              : state.design.status === "BLOCKED"
+                ? "DesignSpec is BLOCKED."
+                : !state.design.plugin.buildEligible
+                  ? "Selected plug-in " + state.design.plugin.plugin + " is design-visible but its Build adapter is not implemented yet."
+                  : realDesignBoundary
+                  ? "Real Build is intentionally stopped at the Design boundary until an approved DesignSpec is implemented."
+                  : "Build prerequisites are not satisfied.";
+
+      options.emitter?.emit({
+        signal: "policy-denials",
+        status: "BLOCKED",
+        component: "agent-kernel",
+        detail: blockedDetail,
+        attributes: {
+          provider: state.provider,
+          engine: state.engine,
+        },
+      });
+
       state = {
         ...appendEvent(state, {
           phase: "BLOCKED",
           event: "BUILD_BLOCKED",
-          detail:
-            !assessmentReady
-              ? "A successful assessment is required before Build."
-              : !environmentBuildable
-                ? "Environment policy does not permit Build."
-                : !state.design
-                  ? "Build requires an evidence-linked DesignSpec."
-                  : state.design.status === "BLOCKED"
-                    ? "DesignSpec is BLOCKED."
-                    : !state.design.plugin.buildEligible
-                      ? "Selected plug-in " + state.design.plugin.plugin + " is design-visible but its Build adapter is not implemented yet."
-                      : realDesignBoundary
-                  ? "Real Build is intentionally stopped at the Design boundary until an approved DesignSpec is implemented."
-                  : "Build prerequisites are not satisfied.",
+          detail: blockedDetail,
         }),
         phase: "BLOCKED",
       };
@@ -360,6 +373,7 @@ export async function runAgentKernel(
             mock: state.mock,
             approve: options.approveBuild,
             design,
+            emitter: options.emitter,
           });
 
       // A real-mode callback must not launder fixture output or claim a plan

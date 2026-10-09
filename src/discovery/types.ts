@@ -1,3 +1,5 @@
+import type { Emitter } from "../observability/bus.js";
+
 export type Provider = "AWS" | "AZURE";
 
 export type EnvironmentClassification =
@@ -170,6 +172,8 @@ export type DiscoveryOptions = {
   provider: Provider;
   mock?: MockScenario;
   evidenceBundle?: DiscoveryEvidenceBundle;
+  /** Process observability bus; defaults to disabled (no emission). */
+  emitter?: Emitter;
 };
 
 export type DiscoveryEvent =

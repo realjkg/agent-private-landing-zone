@@ -3,6 +3,10 @@ import {
   randomUUID,
 } from "node:crypto";
 import {
+  DISABLED_EMITTER,
+  type Emitter,
+} from "../observability/bus.js";
+import {
   mkdirSync,
 } from "node:fs";
 import {
@@ -75,6 +79,7 @@ export type ProductionModelQualification = {
 
 export type ProductionSessionProbeRunner = (
   turns: number,
+  emitter?: Emitter,
 ) => Promise<ProductionSessionProbe>;
 
 function check(
@@ -209,6 +214,7 @@ export function collectProductionQualificationContext(
 
 async function runSessionProbe(
   turns: number,
+  emitter: Emitter = DISABLED_EMITTER,
 ): Promise<ProductionSessionProbe> {
   const directory = resolve(
     ".runs",
@@ -304,35 +310,62 @@ async function runSessionProbe(
       async () => [],
     ).graph;
 
-  for (
-    let index = split;
-    index < turns;
-    index += 1
-  ) {
-    result =
-      await restarted.invoke(
-        {
-          request:
-            requests[
-              index %
-                requests.length
-            ],
-          provider: "AWS",
-          engine: "TERRAFORM",
-          mock: "brownfield",
-          approveBuild: false,
-          fixture: false,
-        },
-        config,
-      );
+  // The probe intentionally restarts the model runtime from its SQLite
+  // checkpoint: that restart is a real model-restarts occurrence.
+  emitter.emit({
+    signal: "model-restarts",
+    status: "DEGRADED",
+    component: "model-supervision",
+    detail: "model runtime restarted from checkpoint",
+    attributes: {
+      threadId,
+      historyBeforeRestart,
+    },
+  });
 
-    mutationObserved =
-      mutationObserved ||
-      Boolean(
-        result.agentState
-          ?.observation
-          ?.mutationObserved,
-      );
+  try {
+    for (
+      let index = split;
+      index < turns;
+      index += 1
+    ) {
+      result =
+        await restarted.invoke(
+          {
+            request:
+              requests[
+                index %
+                  requests.length
+              ],
+            provider: "AWS",
+            engine: "TERRAFORM",
+            mock: "brownfield",
+            approveBuild: false,
+            fixture: false,
+          },
+          config,
+        );
+
+      mutationObserved =
+        mutationObserved ||
+        Boolean(
+          result.agentState
+            ?.observation
+            ?.mutationObserved,
+        );
+    }
+  } catch (error) {
+    emitter.emit({
+      signal: "model-restarts",
+      status: "FAILED",
+      component: "model-supervision",
+      detail:
+        error instanceof Error
+          ? error.message
+          : "restart recovery failed",
+      attributes: { threadId },
+    });
+    throw error;
   }
 
   return {
@@ -351,6 +384,7 @@ export async function qualifyProductionModelRuntime(
   readMemory:
     () => MemorySnapshot =
       memorySnapshot,
+  emitter: Emitter = DISABLED_EMITTER,
 ): Promise<ProductionModelQualification> {
   const checks:
     QualificationCheck[] = [];
@@ -442,6 +476,7 @@ export async function qualifyProductionModelRuntime(
     session =
       await probe(
         context.longRunTurns,
+        emitter,
       );
 
     checks.push(

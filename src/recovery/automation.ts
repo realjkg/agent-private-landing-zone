@@ -18,6 +18,9 @@ import {
   writeEncryptedEvidence,
 } from "../evidence/vault.js";
 import type {
+  Emitter,
+} from "../observability/bus.js";
+import type {
   SovereignCapability,
 } from "../orchestration/types.js";
 import {
@@ -118,6 +121,8 @@ export type RecoveryAutomationControllerOptions = {
   compromiseState?: CompromiseState;
   pollIntervalMs?: number;
   persistEvidence?: boolean;
+  /** Process observability bus; defaults to disabled (no emission). */
+  emitter?: Emitter;
 };
 
 function elapsedMinutes(
@@ -325,6 +330,7 @@ function actionBlocked(
 
 async function persistCycle(
   result: RecoveryAutomationCycleResult,
+  emitter?: Emitter,
 ): Promise<string> {
   if (
     result.target
@@ -388,6 +394,7 @@ async function persistCycle(
       state: result.state,
       actEnabled: false,
     },
+    emitter,
   );
 }
 
@@ -423,11 +430,13 @@ export async function loadRecoveryAutomationState(
 
 async function persistAutomationState(
   state: RecoveryAutomationState,
+  emitter?: Emitter,
 ): Promise<void> {
   await writeEncryptedEvidence(
     "recovery-automation-state",
     state.targetId,
     state,
+    emitter,
   );
 }
 
@@ -439,6 +448,7 @@ export async function runRecoveryAutomationCycle(input: {
     SovereignCapability[];
   now?: Date;
   persistEvidence?: boolean;
+  emitter?: Emitter;
 }): Promise<RecoveryAutomationCycleResult> {
   const now =
     input.now ??
@@ -537,9 +547,10 @@ export async function runRecoveryAutomationCycle(input: {
         "LOCAL_ENCRYPTED_VAULT"
     ) {
       result.evidencePath =
-        await persistCycle(result);
+        await persistCycle(result, input.emitter);
       await persistAutomationState(
         result.state,
+        input.emitter,
       );
     }
 
@@ -753,9 +764,10 @@ export async function runRecoveryAutomationCycle(input: {
     input.persistEvidence !== false
   ) {
     result.evidencePath =
-      await persistCycle(result);
+      await persistCycle(result, input.emitter);
     await persistAutomationState(
       result.state,
+      input.emitter,
     );
   }
 
@@ -994,6 +1006,26 @@ export class RecoveryAutomationController {
         if (
           securityDenials.length > 0
         ) {
+          this.options.emitter?.emit({
+            signal: "policy-denials",
+            status: "BLOCKED",
+            component: "recovery-automation",
+            detail: securityDenials.join("; "),
+            attributes: {
+              targetId: target.targetId,
+            },
+          });
+
+          this.options.emitter?.emit({
+            signal: "recovery-state",
+            status: "BLOCKED",
+            component: "recovery-automation",
+            detail: "recovery automation suspended by security policy",
+            attributes: {
+              targetId: target.targetId,
+            },
+          });
+
           results.push({
             targetId:
               target.targetId,
@@ -1045,6 +1077,8 @@ export class RecoveryAutomationController {
               persistEvidence:
                 this.options
                   .persistEvidence,
+              emitter:
+                this.options.emitter,
             });
 
           this.states.set(
@@ -1052,8 +1086,41 @@ export class RecoveryAutomationController {
             result.state,
           );
 
+          // Real recovery-state transition: HEALTHY is OK, ATTENTION is a
+          // soft miss (DEGRADED), BLOCKED is a refusal. IDLE and DISABLED
+          // targets did no recovery work, so there is no occurrence.
+          if (
+            result.status !== "IDLE" &&
+            result.status !== "DISABLED"
+          ) {
+            this.options.emitter?.emit({
+              signal: "recovery-state",
+              status:
+                result.status === "HEALTHY"
+                  ? "OK"
+                  : result.status === "ATTENTION"
+                    ? "DEGRADED"
+                    : "BLOCKED",
+              component: "recovery-automation",
+              detail: "recovery cycle " + result.status.toLowerCase(),
+              attributes: {
+                targetId: target.targetId,
+              },
+            });
+          }
+
           results.push(result);
         } catch (error) {
+          this.options.emitter?.emit({
+            signal: "recovery-state",
+            status: "BLOCKED",
+            component: "recovery-automation",
+            detail: "recovery automation context collection failed",
+            attributes: {
+              targetId: target.targetId,
+            },
+          });
+
           results.push({
             targetId:
               target.targetId,

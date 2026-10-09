@@ -9,6 +9,7 @@ import {
   screenOperatorPrompt,
   wrapUntrustedEvidence,
 } from "./security/prompt-governance.js";
+import { DISABLED_EMITTER, type Emitter } from "./observability/bus.js";
 
 export type TaskPlan = {
   complexity: "LOW" | "HIGH";
@@ -286,6 +287,7 @@ export async function runAgentLoop(
   request: string,
   evidence?: string,
   report: StatusReporter = () => {},
+  emitter: Emitter = DISABLED_EMITTER,
 ): Promise<AgentResult> {
   const requestId = randomUUID();
   const startedAt = Date.now();
@@ -299,6 +301,20 @@ export async function runAgentLoop(
         "POLICY",
         promptScreen.risk,
       );
+      emitter.emit({
+        signal: "policy-denials",
+        status: "BLOCKED",
+        component: "prompt-governance",
+        detail:
+          "PROMPT_POLICY_BLOCKED: " +
+          promptScreen.risk +
+          ": " +
+          (promptScreen.reason ??
+            "operator request violated the deterministic prompt boundary"),
+        attributes: {
+          risk: promptScreen.risk,
+        },
+      });
       throw new Error(
         "PROMPT_POLICY_BLOCKED: " +
           promptScreen.risk +

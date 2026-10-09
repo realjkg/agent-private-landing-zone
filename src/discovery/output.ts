@@ -3,6 +3,9 @@ import type {
   EnvironmentState,
 } from "./types.js";
 import { writeEncryptedEvidence } from "../evidence/vault.js";
+import type {
+  Emitter,
+} from "../observability/bus.js";
 
 function sanitize(value: string): string {
   return value
@@ -13,6 +16,7 @@ function sanitize(value: string): string {
 
 export async function writeDiscoveryRun(
   state: EnvironmentState,
+  emitter?: Emitter,
 ): Promise<string> {
   const timestamp = state.discoveredAt
     .replace(/[:.]/g, "-")
@@ -30,6 +34,7 @@ export async function writeDiscoveryRun(
     "discovery",
     filename,
     state,
+    emitter,
   );
 }
 

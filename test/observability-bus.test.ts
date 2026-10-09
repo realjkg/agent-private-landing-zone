@@ -444,3 +444,39 @@ test("monitoringExporter bridges to exportOperationalEvent with an injectable tr
     /MONITORING_EXPORT_FAILED/,
   );
 });
+
+test("deliver() routes pre-built events to sinks, registry, and exporters", async () => {
+  const lines: string[] = [];
+  const exported: OperationalEvent[] = [];
+
+  const bus = new ObservabilityBus({
+    sinks: [capturingSink(lines)],
+    exporters: [countingExporter(exported)],
+    exportGate: VALID_GATE,
+  });
+
+  const event: OperationalEvent = {
+    schemaVersion: 1,
+    at: "2026-10-09T00:00:00.000Z",
+    signal: "economics-budget",
+    status: "DEGRADED",
+    component: "lz-operating-economics",
+    detail: "BUDGET_EXCEEDED",
+    attributes: { correlationId: "corr-1" },
+  };
+
+  bus.deliver(event);
+
+  assert.equal(lines.length, 1);
+  assert.equal(
+    JSON.parse(lines[0]).signal,
+    "economics-budget",
+  );
+  assert.equal(exported.length, 1);
+
+  const metrics = bus.metrics();
+  assert.match(
+    metrics,
+    /alz_operational_event_total\{.*economics-budget/,
+  );
+});

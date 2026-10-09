@@ -2,6 +2,9 @@ import {
   emitDebugDiagnostic,
 } from "../debug/context.js";
 import type {
+  Emitter,
+} from "../observability/bus.js";
+import type {
   SovereignCapability,
 } from "../orchestration/types.js";
 import type {
@@ -194,6 +197,8 @@ export async function executeGovernedTool(
     classification:
       DataClassification;
     allowedEgressHosts: string[];
+    /** Process observability bus; defaults to disabled (no emission). */
+    emitter?: Emitter;
   },
 ): Promise<
   ToolResult | ToolResult[]
@@ -286,6 +291,18 @@ export async function executeGovernedTool(
   });
 
   if (!composite.allow) {
+    options.emitter?.emit({
+      signal: "policy-denials",
+      status: "BLOCKED",
+      component: "governed-tool",
+      detail:
+        composite.reasons.join(" ") ||
+        "Security policy denied tool execution.",
+      attributes: {
+        tool: request.tool,
+        source: composite.source,
+      },
+    });
     return blocked(
       request,
       composite.reasons.join(
@@ -295,14 +312,62 @@ export async function executeGovernedTool(
     );
   }
 
-  return executeTool(
-    request,
-    {
-      ...context,
-      securityPolicyDecision:
-        composite,
-      compromiseState:
-        options.compromiseState,
-    },
-  );
+  try {
+    const results =
+      await executeTool(
+        request,
+        {
+          ...context,
+          securityPolicyDecision:
+            composite,
+          compromiseState:
+            options.compromiseState,
+        },
+      );
+
+    // Real adapter failures: commands that ran and failed. Policy refusals
+    // (blocked: true) are policy-denials, not adapter failures, and are
+    // excluded here; thrown errors keep the rethrow path below.
+    const failures = Array.isArray(results)
+      ? results.filter(
+          (item) => !item.ok && !item.blocked,
+        )
+      : !results.ok && !results.blocked
+        ? [results]
+        : [];
+
+    for (const failure of failures) {
+      options.emitter?.emit({
+        signal: "adapter-failures",
+        status: "FAILED",
+        component: "governed-tool",
+        detail:
+          failure.reason ??
+          failure.stderr.slice(0, 200) ??
+          "adapter command failed",
+        attributes: {
+          tool: failure.tool,
+          exitCode: failure.exitCode,
+        },
+      });
+    }
+
+    return results;
+  } catch (error) {
+    // Real adapter/tool failure on the governed path: report it, then
+    // rethrow unchanged — the governed command still fails as before.
+    options.emitter?.emit({
+      signal: "adapter-failures",
+      status: "FAILED",
+      component: "governed-tool",
+      detail:
+        error instanceof Error
+          ? error.message
+          : "unknown tool failure",
+      attributes: {
+        tool: request.tool,
+      },
+    });
+    throw error;
+  }
 }

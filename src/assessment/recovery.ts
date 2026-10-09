@@ -1,3 +1,6 @@
+import type {
+  Emitter,
+} from "../observability/bus.js";
 import { randomUUID } from "node:crypto";
 
 import { sha256 } from "../build/provenance.js";
@@ -114,6 +117,7 @@ export function createConfigurationRecoverySnapshot(
 
 export async function writeConfigurationRecoverySnapshot(
   snapshot: ConfigurationRecoverySnapshot,
+  emitter?: Emitter,
 ): Promise<string> {
   const filename =
     snapshot.capturedAt
@@ -127,5 +131,6 @@ export async function writeConfigurationRecoverySnapshot(
     "recovery",
     filename,
     snapshot,
+    emitter,
   );
 }
