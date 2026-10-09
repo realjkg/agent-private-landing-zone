@@ -262,7 +262,24 @@ test("operator exposes a bounded read-only economics report", () => {
   assert.match(help.stdout, /alz economics report/);
   const result = run(["economics", "report", "config/economics.example.json", "--json"]);
   assert.equal(result.status, 0, result.stderr);
-  const parsed = JSON.parse(result.stdout) as { advisoryOnly: boolean; months: { totalCents: number }[]; alerts: unknown[] };
+
+  // The economics command now also emits schema-v1 operational events on
+  // stdout (compact single-line JSON each) before the pretty-printed report
+  // document. Parse the event stream, then the report that follows it.
+  const lines = result.stdout.split("\n");
+  const eventLines = lines
+    .filter((line) => line.startsWith('{"schemaVersion"'))
+    .map((line) => JSON.parse(line) as { schemaVersion: number; signal: string; status: string });
+  assert.ok(eventLines.length > 0, "expected operational event lines on stdout");
+  for (const event of eventLines) {
+    assert.equal(event.schemaVersion, 1);
+    assert.equal(typeof event.signal, "string");
+    assert.equal(typeof event.status, "string");
+  }
+
+  const reportStart = lines.findIndex((line) => line === "{");
+  assert.ok(reportStart !== -1, "expected a pretty-printed report document");
+  const parsed = JSON.parse(lines.slice(reportStart).join("\n")) as { advisoryOnly: boolean; months: { totalCents: number }[]; alerts: unknown[] };
   assert.equal(parsed.advisoryOnly, true);
   assert.equal(parsed.months.at(-1)?.totalCents, 160000);
   assert.equal(parsed.alerts.length, 2);
