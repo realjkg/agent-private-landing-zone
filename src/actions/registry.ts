@@ -79,6 +79,8 @@ export type ActionRegistryDeps = {
   externalPublicKeyPem: string;
   ledger: ReplayLedger;
   handlers: AuthorizedHandlers;
+  /** Trusted host state: never delegated to models, prompts or request payloads. */
+  trustedCompromiseState: CompromiseState;
   policyMode: "BUILTIN" | "LOCAL_OPA";
   localOpa?: ActionPolicy;
   nowSeconds?: () => number;
@@ -156,8 +158,13 @@ export async function executeGovernedAction(
       lease.expiresAt <= lease.notBefore ||
       lease.expiresAt - lease.notBefore > 300 ||
       now < lease.notBefore || now >= lease.expiresAt) deny("LEASE_NOT_CURRENT");
-  if (request.compromiseState !== "NORMAL" &&
-      request.compromiseState !== "VERIFIED") deny("COMPROMISE_LIFECYCLE_BLOCKS_ACTION");
+  // The request must not self-assert VERIFIED while the trusted runtime is
+  // SUSPECTED, CONTAINED or RECOVERY. Authority is host-owned, not agent-owned.
+  if (request.compromiseState !== deps.trustedCompromiseState) {
+    deny("UNTRUSTED_COMPROMISE_STATE");
+  }
+  if (deps.trustedCompromiseState !== "NORMAL" &&
+      deps.trustedCompromiseState !== "VERIFIED") deny("COMPROMISE_LIFECYCLE_BLOCKS_ACTION");
   if (!deps.externalPublicKeyPem || typeof signed.signature !== "string") {
     deny("EXTERNAL_SIGNATURE_REQUIRED");
   }
@@ -172,7 +179,7 @@ export async function executeGovernedAction(
     deny("INVALID_EXTERNAL_SIGNATURE");
   }
   const builtin = evaluateBuiltinSecurityPolicy({
-    kind: "CAPABILITY", compromiseState: request.compromiseState,
+    kind: "CAPABILITY", compromiseState: deps.trustedCompromiseState,
     requested: ["EVIDENCE_READ", "EVIDENCE_WRITE"],
   });
   if (!builtin.allow || builtin.source !== "BUILTIN") deny("BUILTIN_POLICY_DENIED");
