@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 
 import { runBuildLoop } from "../build/loop.js";
 import { createDesignSpec } from "../design/create.js";
+import { evaluateDesignBuildHandoff } from "../design/handoff.js";
 import {
   createOrchestrationPlan,
 } from "../orchestration/plan.js";
@@ -324,6 +325,26 @@ export async function runAgentKernel(
       );
 
       const buildStarted = Date.now();
+
+      if (!state.mock) {
+        const handoff = evaluateDesignBuildHandoff({
+          environment: state.environment!,
+          design,
+          provider: state.provider,
+          engine: state.engine,
+        });
+        if (handoff.status !== "READY_FOR_PREVIEW" ||
+            handoff.discoveryMode !== "REAL_DISCOVERY") {
+          throw new Error("DESIGN_BUILD_HANDOFF_BLOCKED:" +
+            [...handoff.blockers, ...handoff.reviewRequired,
+              ...(handoff.discoveryMode !== "REAL_DISCOVERY" ?
+                ["REAL_DISCOVERY_EVIDENCE_REQUIRED"] : [])].join(","));
+        }
+        state = appendEvent(state, {
+          phase: "DESIGNING", event: "DESIGN_BUILD_HANDOFF_VERIFIED",
+          detail: handoff.handoffHash,
+        });
+      }
 
       const build = !state.mock && options.realPrivateBuild
         ? await options.realPrivateBuild(state)
