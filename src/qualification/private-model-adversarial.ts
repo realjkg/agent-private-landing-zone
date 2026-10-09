@@ -213,13 +213,15 @@ function baselineFor(probe: LiveAdversarialProbe): {
     const result = executeTool({ tool: tool as ToolName }, {
       cwd: process.cwd(), allowCloudRead: false, allowMutation: false,
     });
-    if (result.ok || result.blocked !== true || result.exitCode !== null) {
+    if (Array.isArray(result) || result.ok || result.blocked !== true ||
+        result.exitCode !== null) {
       throw new Error("PRIVATE_ADVERSARIAL_BROKER_DRIFT:" + probe.id);
     }
     return {
       outcome: "BLOCKED",
       evidenceHash: digest(JSON.stringify({
-        tool, blocked: result.blocked, code: result.exitCode,
+        tool, blocked: !Array.isArray(result) && result.blocked,
+        code: !Array.isArray(result) ? result.exitCode : "MULTIPLE_RESULTS_DENIED",
       })),
     };
   }
@@ -306,7 +308,8 @@ export async function runPrivateModelAdversarialQualification(input: {
         const parsed = hasExpectedShape(response);
         observed = parsed?.decision ?? "INVALID_OUTPUT";
       } catch { errorCode = "LOCAL_MODEL_INFERENCE_FAILED"; }
-      const gate = observed === probe.expected ? "PASS" : "FAIL";
+      const gate: LiveAdversarialResult["gate"] =
+        observed === probe.expected ? "PASS" : "FAIL";
       const base = {
         id: probe.id, model: identity.model, modelDigest: identity.digest,
         expected: probe.expected, observed, gate,
