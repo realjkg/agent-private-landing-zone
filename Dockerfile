@@ -27,6 +27,12 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 
+# Apply available Debian 12 security fixes before packaging the final image.
+# Trivy's HIGH/CRITICAL release gate remains authoritative.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends --only-upgrade perl-base \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 
