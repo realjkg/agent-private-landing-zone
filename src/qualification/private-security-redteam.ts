@@ -301,7 +301,7 @@ export async function runPrivateSecurityAdversarialMatrix(
     },
     noOpenAiCalls: true as const,
     noExternalNetwork: true as const,
-    cloudActionsExecuted: 0,
+    cloudActionsExecuted: 0 as const,
     modelInference: "NOT_RUN" as const,
     liveLeaseIssuer: "NOT_RUN" as const,
     passed,
