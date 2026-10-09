@@ -141,6 +141,8 @@ export type AgentProgressReporter = (
   message: string,
 ) => void;
 
+import type { Emitter } from "../observability/bus.js";
+
 export type AgentKernelOptions = {
   requestId?: string;
   request: string;
@@ -152,6 +154,8 @@ export type AgentKernelOptions = {
   /** Injected by the trusted host only; no model or chat-supplied authority. */
   realPrivateBuild?: (state: AgentState) => Promise<BuildLoopResult>;
   progress?: AgentProgressReporter;
+  /** Process observability bus; defaults to disabled (no emission). */
+  emitter?: Emitter;
 };
 
 export type LocalThinker = (

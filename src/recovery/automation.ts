@@ -18,6 +18,9 @@ import {
   writeEncryptedEvidence,
 } from "../evidence/vault.js";
 import type {
+  Emitter,
+} from "../observability/bus.js";
+import type {
   SovereignCapability,
 } from "../orchestration/types.js";
 import {
@@ -118,6 +121,8 @@ export type RecoveryAutomationControllerOptions = {
   compromiseState?: CompromiseState;
   pollIntervalMs?: number;
   persistEvidence?: boolean;
+  /** Process observability bus; defaults to disabled (no emission). */
+  emitter?: Emitter;
 };
 
 function elapsedMinutes(
@@ -994,6 +999,16 @@ export class RecoveryAutomationController {
         if (
           securityDenials.length > 0
         ) {
+          this.options.emitter?.emit({
+            signal: "policy-denials",
+            status: "BLOCKED",
+            component: "recovery-automation",
+            detail: securityDenials.join("; "),
+            attributes: {
+              targetId: target.targetId,
+            },
+          });
+
           results.push({
             targetId:
               target.targetId,

@@ -2,6 +2,9 @@ import {
   emitDebugDiagnostic,
 } from "../debug/context.js";
 import type {
+  Emitter,
+} from "../observability/bus.js";
+import type {
   SovereignCapability,
 } from "../orchestration/types.js";
 import type {
@@ -194,6 +197,8 @@ export async function executeGovernedTool(
     classification:
       DataClassification;
     allowedEgressHosts: string[];
+    /** Process observability bus; defaults to disabled (no emission). */
+    emitter?: Emitter;
   },
 ): Promise<
   ToolResult | ToolResult[]
@@ -286,6 +291,18 @@ export async function executeGovernedTool(
   });
 
   if (!composite.allow) {
+    options.emitter?.emit({
+      signal: "policy-denials",
+      status: "BLOCKED",
+      component: "governed-tool",
+      detail:
+        composite.reasons.join(" ") ||
+        "Security policy denied tool execution.",
+      attributes: {
+        tool: request.tool,
+        source: composite.source,
+      },
+    });
     return blocked(
       request,
       composite.reasons.join(
