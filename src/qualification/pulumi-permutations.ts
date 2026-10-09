@@ -85,7 +85,7 @@ function scenarioFor(provider: Provider, estate: "greenfield" | "brownfield"): P
     mock: estate,
     engine: "PULUMI",
     request: "Build a governed " + provider + " " + estate +
-      " landing-zone design with Pulumi. Preserve customer ownership and generate a preview only.",
+      " landing zone using Pulumi. Preserve customer ownership; preview only.",
     requiredCapabilities: ["EVIDENCE_READ", "BUILD_PREVIEW"],
   };
 }
