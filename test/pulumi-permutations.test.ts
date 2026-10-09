@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import test from "node:test";
 
 import {
@@ -6,7 +7,9 @@ import {
 } from "../src/qualification/pulumi-permutations.js";
 import { buildPulumiTraceMatrix } from "../src/qualification/pulumi-traceability.js";
 
-const sourceCommit = "a".repeat(40);
+const sourceCommit = execFileSync("git", ["rev-parse", "--verify", "HEAD"], {
+  encoding: "utf8",
+}).trim();
 
 test("Pulumi advertised-provider x estate matrix yields traceable, evidence-backed rows", async () => {
   const report = await runPulumiPermutations({ sourceCommit });
