@@ -51,9 +51,12 @@ export type AwsTerraformAgentResult = {
   artifactPath: string;
   evidencePath: string;
   status: "REVIEW_REQUIRED";
-  terraformValidation: "NOT_RUN" | "PASSED";
-  terraformPlan: "NOT_RUN" | "PASSED";
+  terraformValidation: "NOT_RUN" | "PASSED" | "FAILED";
+  terraformPlan: "NOT_RUN" | "PASSED" | "FAILED";
   planEvidenceHash?: string;
+  providerLockHash?: string;
+  terraformVersion?: string;
+  failedGate?: string;
   approval: "NOT_GRANTED";
   infrastructureAct: "DISABLED";
   mutationObserved: false;
