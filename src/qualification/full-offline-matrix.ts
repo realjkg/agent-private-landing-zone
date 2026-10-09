@@ -118,7 +118,9 @@ export async function runOfflineCoverage(input: {
   ) => {
     const status: OfflineGateRow["status"] =
       expected === "NOT_APPLICABLE" && observed === "NOT_APPLICABLE" &&
-        evidenceMode === "NOT_EXECUTED" ? "NOT_APPLICABLE" :
+        (evidenceMode === "NOT_EXECUTED" ||
+          (evidenceMode === "SYNTHETIC_FAULT" && Boolean(evidenceHash)))
+          ? "NOT_APPLICABLE" :
       expected === "PLAN_REQUIRED" && observed === "PLAN_REQUIRED" &&
         evidenceMode === "OUTSIDE_PROVIDER_CONTRACT" ? "PLAN_REQUIRED" :
       expected === "NOT_RUN" && observed === "NOT_RUN" &&
