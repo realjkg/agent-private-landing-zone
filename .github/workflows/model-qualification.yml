@@ -33,6 +33,14 @@ on:
         required: false
         default: false
         type: boolean
+      live_scenario_scope:
+        description: "Dedicated private target: run first AWS Terraform live-agent scenario, optionally all eight"
+        required: false
+        default: first
+        type: choice
+        options:
+          - first
+          - all
 
 concurrency:
   group: private-model-qualification-${{ github.ref }}
@@ -251,6 +259,25 @@ jobs:
       - name: Qualify production target
         run: ./alz models verify --production
 
+      - name: Compile source-bound agent runtime
+        run: npm run build
+
+      - name: Verify local Terraform toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v terraform
+          terraform version
+
+      - name: Qualify first Qwen/Mistral AWS Terraform agent loop
+        run: |
+          node dist/cli/qualify-aws-terraform-agent.js --live-models --terraform-validate
+
+      - name: Qualify eight live private-model scenario reasoning paths
+        if: ${{ inputs.live_scenario_scope == 'all' }}
+        run: |
+          node dist/cli/private-agent-matrix.js --live-models
+
       - name: Upload production qualification evidence
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
@@ -259,6 +286,9 @@ jobs:
           path: |
             .runs/model-qualification/*.json
             .runs/qualification/production-target-preflight.json
+            .runs/qualification/aws-brownfield-terraform-private-agents-v1-*/qualification.json
+            .runs/qualification/aws-brownfield-terraform-private-agents-v1-*/main.tf
+            .runs/qualification/private-agent-matrix/*.json
           if-no-files-found: warn
           retention-days: 30
 
