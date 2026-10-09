@@ -1,6 +1,7 @@
 import { createHash, verify } from "node:crypto";
 import { runtimeProfile } from "../runtime-profile/catalog.js";
 import type { RuntimeProfileId } from "../runtime-profile/types.js";
+import { DISABLED_EMITTER, type Emitter } from "../observability/bus.js";
 import type {
   EnvironmentAsset, EnvironmentBinding, EnvironmentEvidence, EnvironmentHealth,
   EnvironmentLink, EnvironmentProvider, EnvironmentProviderId, EnvironmentReadResponse,
@@ -96,18 +97,31 @@ function emptyCapabilities(): EnvironmentProvider["capabilities"] extends () => 
   return { discover: true, health: true, inventory: true, topology: true, evidence: true, mutation: false };
 }
 
-export function createApiEnvironmentProvider(binding: EnvironmentBinding, transport: EnvironmentReadTransport): EnvironmentProvider {
+export function createApiEnvironmentProvider(binding: EnvironmentBinding, transport: EnvironmentReadTransport, emitter: Emitter = DISABLED_EMITTER): EnvironmentProvider {
   deniedBinding(binding);
   let cached: EnvironmentSnapshot | undefined;
   async function probe(path: string): Promise<{ response?: EnvironmentReadResponse; evidence: EnvironmentEvidence; parsed?: unknown }> {
     try {
       const result = await transport({ method: "GET", origin: binding.origin, path, authRef: binding.authRef, timeoutMs: 8000, maxResponseBytes: 2_000_000 });
       const evidence: EnvironmentEvidence = { path, status: result.status >= 200 && result.status < 300 ? "OBSERVED" : "UNAVAILABLE", httpStatus: result.status };
-      if (evidence.status !== "OBSERVED") return { evidence };
+      if (evidence.status !== "OBSERVED") {
+        // Real probe failure: soft-degraded discovery health, one event per unavailable path.
+        emitter.emit({
+          signal: "provider-discovery-health", status: "DEGRADED", component: "environment-read-only",
+          detail: "path " + path + " returned HTTP " + result.status,
+          attributes: { provider: binding.provider, environmentId: binding.environmentId },
+        });
+        return { evidence };
+      }
       evidence.responseSha256 = digest(result.body);
       try { return { response: result, evidence, parsed: JSON.parse(result.body) as unknown }; }
       catch { return { response: result, evidence }; }
     } catch {
+      emitter.emit({
+        signal: "provider-discovery-health", status: "DEGRADED", component: "environment-read-only",
+        detail: "path " + path + " transport failed",
+        attributes: { provider: binding.provider, environmentId: binding.environmentId },
+      });
       return { evidence: { path, status: "UNAVAILABLE" } };
     }
   }

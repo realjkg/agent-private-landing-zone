@@ -8,6 +8,54 @@ import type {
 } from "./types.js";
 import { discoverAws } from "../providers/aws/discover.js";
 import { discoverAzure } from "../providers/azure/discover.js";
+import { DISABLED_EMITTER, type Emitter } from "../observability/bus.js";
+
+/**
+ * Emits the provider-discovery-health contract signal around the real probe:
+ * one OK event per successful provider discovery (with observed resource
+ * count), one FAILED event per failure — rethrown unchanged.
+ */
+async function discoverWithHealthSignal<
+  T extends { resources: unknown[] },
+>(
+  options: DiscoveryOptions,
+  discover: () => Promise<T>,
+): Promise<T> {
+  const emitter: Emitter = options.emitter ?? DISABLED_EMITTER;
+  const startedAt = Date.now();
+  const attributes = {
+    provider: options.provider,
+    ...(options.mock !== undefined ? { mock: options.mock } : {}),
+  };
+
+  try {
+    const result = await discover();
+    emitter.emit({
+      signal: "provider-discovery-health",
+      status: "OK",
+      component: "discovery",
+      durationMs: Date.now() - startedAt,
+      attributes: {
+        ...attributes,
+        resources: result.resources.length,
+      },
+    });
+    return result;
+  } catch (error) {
+    emitter.emit({
+      signal: "provider-discovery-health",
+      status: "FAILED",
+      component: "discovery",
+      durationMs: Date.now() - startedAt,
+      detail:
+        error instanceof Error
+          ? error.message
+          : "unknown discovery failure",
+      attributes,
+    });
+    throw error;
+  }
+}
 
 export async function discoverEnvironment(
   options: DiscoveryOptions,
@@ -17,10 +65,13 @@ export async function discoverEnvironment(
   report("PROVIDER_DETECTED", options.provider);
 
   try {
-    const providerResult =
-      options.provider === "AWS"
-        ? await discoverAws(options.mock)
-        : await discoverAzure(options.mock);
+    const providerResult = await discoverWithHealthSignal(
+      options,
+      () =>
+        options.provider === "AWS"
+          ? discoverAws(options.mock)
+          : discoverAzure(options.mock),
+    );
 
     for (const resource of providerResult.resources) {
       report("RESOURCE_DISCOVERED", resource.resourceId);
