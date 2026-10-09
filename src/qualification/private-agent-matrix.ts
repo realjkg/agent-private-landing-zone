@@ -25,8 +25,9 @@ export type MatrixEvidence = {
   planHash?: string;
   modelRoles: string[];
   modelNames: string[];
-  actEnabled: false;
-  mutationObserved: false;
+  actEnabled: boolean | "UNKNOWN";
+  mutationObserved: boolean | "UNKNOWN";
+  actionExecuted: boolean | "UNKNOWN";
   errorCode?: string;
 };
 export type MatrixScenarioResult = {
@@ -89,14 +90,19 @@ function evidence(
     buildArtifactOrigin: state?.build ? "FIXTURE_GENERATOR" : "NONE",
     modelRoles: state?.assessment?.modelInvocations?.map((x) => x.role) ?? [],
     modelNames: state?.assessment?.modelInvocations?.map((x) => x.model) ?? [],
-    actEnabled: false as const,
-    mutationObserved: false as const,
+    actEnabled: state?.orchestration?.actEnabled ?? "UNKNOWN",
+    mutationObserved: state?.observation?.mutationObserved ?? "UNKNOWN",
+    actionExecuted: state?.action?.executed ?? "UNKNOWN",
   };
   const live = mode === "LIVE_PRIVATE_MODELS";
   const roles = ["ROUTER", "PRIMARY", "VALIDATOR", "ADJUDICATOR"];
-  const modelsValid = !live || roles.every((role) =>
-    state?.assessment?.modelInvocations?.some((x) =>
-      x.role === role && x.schemaValid));
+  const modelsValid = !live || roles.every((role) => {
+    const expectedModel = role === "PRIMARY" ? cfg.primaryModel :
+      role === "VALIDATOR" ? cfg.validatorModel : cfg.routerModel;
+    return state?.assessment?.modelInvocations?.some((invocation) =>
+      invocation.role === role && invocation.model === expectedModel &&
+      invocation.schemaValid);
+  });
   const safe = state?.action?.executed === false &&
     state?.observation?.mutationObserved === false &&
     state?.orchestration?.actEnabled === false;
@@ -125,15 +131,16 @@ function evidence(
     designContentHash,
     buildArtifactOrigin: base.buildArtifactOrigin as "FIXTURE_GENERATOR" | "NONE",
     status: complete ? "PASS" : "BLOCKED",
-    assessment: state?.assessment?.status === "OK"
+    assessment: state?.assessment?.status === "OK" && modelsValid
       ? live ? "ACTUAL_PRIVATE_MODELS" : "FIXTURE"
       : "NOT_VERIFIED",
     designHash: state?.design?.designHash,
     policyHash: state?.design?.policies.bundleHash,
     artifactHash: state?.build?.candidate.artifact.contentHash,
     planHash: state?.build?.candidate.evidence.planHash,
-    errorCode: complete ? undefined :
-      (state?.error?.slice(0, 120) ?? "INCOMPLETE_EVIDENCE_OR_AGENT_REVIEW"),
+    errorCode: complete ? undefined : !modelsValid
+      ? "MODEL_ROLE_OR_DIGEST_NOT_ATTESTED"
+      : (state?.error?.slice(0, 120) ?? "INCOMPLETE_EVIDENCE_OR_AGENT_REVIEW"),
   };
 }
 
@@ -214,19 +221,6 @@ export async function runPrivateAgentMatrix(
     const direct = evidence(scenario, "DIRECT", directState, input.mode);
     const conversational = evidence(
       scenario, "CONVERSATIONAL", conversationalState, input.mode);
-    // Live execution also has to prove model tags, not merely role strings.
-    if (!fixture) {
-      for (const item of [direct, conversational]) {
-        if (item.status === "PASS" && (
-          !item.modelNames.includes(cfg.routerModel) ||
-          !item.modelNames.includes(cfg.primaryModel) ||
-          !item.modelNames.includes(cfg.validatorModel)
-        )) {
-          item.status = "BLOCKED";
-          item.errorCode = "MODEL_IDENTITY_UNVERIFIED";
-        }
-      }
-    }
     results.push({
       id: scenario.id,
       direct,
