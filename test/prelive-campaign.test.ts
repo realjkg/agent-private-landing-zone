@@ -42,8 +42,9 @@ test("pre-live campaign runs every existing scenario and all applicable faults",
   assert.equal(campaign.results.length, 8);
   assert.equal(new Set(campaign.results.map((r) => r.id)).size, 8);
   assert.equal(campaign.alternativeProviderChecks, 8);
-  assert.equal(campaign.incompatibleProviderChecks, 3);
-  assert.equal(campaign.expectedNonApplicablePairs, 5);
+  assert.equal(campaign.incompatibleProviderChecks, 0);
+  assert.equal(campaign.excludedIncompatiblePairs, 3);
+  assert.equal(campaign.expectedNonApplicablePairs, 8);
   assert.equal(campaign.totalChaosFaults, 8 * 11);
   assert.equal(campaign.applicableChaosFaults + campaign.notApplicableChaosFaults, 88);
   assert.equal(campaign.notApplicableChaosFaults, 5);
@@ -80,7 +81,7 @@ test("pre-live campaign runs every existing scenario and all applicable faults",
   assert.ok(infrastructureAsCodeState.every((item) =>
     item.faultResults.find((f) => f.fault === "MISSING_IAC_STATE")?.outcome === "CONTAINED"));
   assert.equal(campaign.results.filter((item) =>
-    item.alternateProvider.result === "BLOCKED").length, 3);
+    item.alternateProvider.result === "NOT_APPLICABLE").length, 8);
 });
 
 test("unsafe simulated mutation must be observed and cannot be called clean", async () => {
