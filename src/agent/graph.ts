@@ -261,7 +261,13 @@ export async function runAgentKernel(
     const realDesignBoundary =
       state.mock === undefined && !options.realPrivateBuild;
 
+    const existingStackGreenfield =
+      state.provider === "AWS" &&
+      state.environment?.classification === "GREENFIELD" &&
+      (state.engine === "CLOUDFORMATION" || state.engine === "AWS_CDK");
+
     const designBuildable =
+      !existingStackGreenfield &&
       state.design !== undefined &&
       state.design.status !== "BLOCKED" &&
       state.design.plugin.buildEligible &&
