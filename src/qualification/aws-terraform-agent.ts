@@ -233,6 +233,23 @@ export async function qualifyAwsTerraformAgents(
     approveBuild: false,
   });
   assertAgentState(state);
+  const observedCalls = state.assessment.modelInvocations ?? [];
+  for (const expected of models) {
+    requireCondition(
+      observedCalls.some((call) =>
+        call.role === expected.role &&
+        call.model === expected.tag &&
+        call.schemaValid),
+      "MODEL_ROLE_OR_TAG_NOT_ATTESTED:" + expected.role,
+    );
+  }
+  requireCondition(
+    observedCalls.some((call) =>
+      call.role === "ADJUDICATOR" &&
+      call.model === cfg.routerModel &&
+      call.schemaValid),
+    "ADJUDICATOR_NOT_ATTESTED",
+  );
   const evidenceKeys = state.environment.evidence.map((e) => e.key);
   const evidence = {
     classification: state.environment.classification,
