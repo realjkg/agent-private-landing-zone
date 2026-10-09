@@ -1,5 +1,6 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
+import { sha256 } from "../build/provenance.js";
 import { dirname } from "node:path";
 
 import { getIaCAdapter } from "../iac/index.js";
@@ -20,7 +21,7 @@ function checked(command: string, args: string[], cwd: string): string {
   if (result.error || result.status !== 0) {
     throw new Error("TOOL_FAILED:" + command + " " + args.join(" ") +
       " (exit=" + result.status + "): " +
-      (result.stderr ?? "").slice(0, 400));
+      " (details withheld; inspect sanitized local tooling logs)");
   }
   return result.stdout ?? "";
 }
@@ -75,42 +76,62 @@ async function main(): Promise<void> {
   }
 
   const cwd = dirname(result.artifactPath);
-  checked("terraform", ["init", "-backend=false", "-input=false", "-no-color"], cwd);
   const adapter = getIaCAdapter("TERRAFORM");
   const context = { cwd, allowCloudRead: false, allowMutation: false as const };
-  const version = adapter.version(context);
-  const checks = adapter.validate(context);
-  if (!version.ok || !checks.every((check) => check.ok)) {
-    throw new Error("TERRAFORM_FMT_OR_VALIDATE_FAILED");
+  try {
+    checked("terraform", ["init", "-backend=false", "-input=false", "-no-color"], cwd);
+    result.providerLockHash = sha256(
+      readFileSync(cwd + "/.terraform.lock.hcl", "utf8"));
+    const version = adapter.version(context);
+    if (!version.ok) throw new Error("TERRAFORM_VERSION_FAILED");
+    result.terraformVersion = version.stdout.slice(0, 500);
+    const checks = adapter.validate(context);
+    if (!checks.every((check) => check.ok)) {
+      throw new Error("TERRAFORM_FMT_OR_VALIDATE_FAILED");
+    }
+    const validation = checks.find((check) => check.tool === "terraform_validate");
+    if (!validation) throw new Error("TERRAFORM_VALIDATE_RESULT_MISSING");
+    const parsed = JSON.parse(validation.stdout) as { valid?: boolean; error_count?: number };
+    if (parsed.valid !== true || parsed.error_count !== 0) {
+      throw new Error("TERRAFORM_VALIDATE_NOT_VALID");
+    }
+    result.terraformValidation = "PASSED";
+    save(result);
+    console.log("Terraform fmt/validate: PASSED (actual local CLI; not a cloud plan)");
+  } catch (error) {
+    result.terraformValidation = "FAILED";
+    result.failedGate = error instanceof Error ? error.message.slice(0, 160) : "TERRAFORM_UNKNOWN";
+    save(result);
+    throw error;
   }
-  const validation = checks.find((check) => check.tool === "terraform_validate");
-  if (!validation) throw new Error("TERRAFORM_VALIDATE_RESULT_MISSING");
-  const parsed = JSON.parse(validation.stdout) as { valid?: boolean; error_count?: number };
-  if (parsed.valid !== true || parsed.error_count !== 0) {
-    throw new Error("TERRAFORM_VALIDATE_NOT_VALID");
-  }
-  result.terraformValidation = "PASSED";
-  save(result);
-  console.log("Terraform fmt/validate: PASSED (real local CLI, not a cloud plan)");
 
   if (plan) {
-    // Explicit operator opt-in; adapter executes terraform plan only (never apply).
-    const planned = adapter.preview({
-      ...context, allowCloudRead: true,
-    });
-    if (!planned.ok) throw new Error("TERRAFORM_PREVIEW_PLAN_FAILED");
-    const raw = checked("terraform", ["show", "-json", ".agentic-preview.tfplan"], cwd);
-    const normalized = normalizeTerraformPlan(raw);
-    const operations = normalized.resources;
-    if (operations.length !== 1 ||
-        operations[0]?.operation !== "CREATE" ||
-        operations[0]?.address !== "aws_cloudwatch_log_group.alz_audit") {
-      throw new Error("TERRAFORM_PLAN_NOT_EXACT_SINGLE_ADDITION");
+    try {
+      if (!process.env.TF_VAR_aws_region) {
+        throw new Error("TF_VAR_aws_region_REQUIRED_FOR_PLAN");
+      }
+      // Explicit operator opt-in; adapter executes terraform plan only (never apply).
+      const planned = adapter.preview({ ...context, allowCloudRead: true });
+      if (!planned.ok) throw new Error("TERRAFORM_PREVIEW_PLAN_FAILED");
+      const raw = checked("terraform", ["show", "-json", ".agentic-preview.tfplan"], cwd);
+      const normalized = normalizeTerraformPlan(raw);
+      const operations = normalized.resources;
+      if (operations.length !== 1 ||
+          operations[0]?.operation !== "CREATE" ||
+          operations[0]?.address !== "aws_cloudwatch_log_group.alz_audit") {
+        throw new Error("TERRAFORM_PLAN_NOT_EXACT_SINGLE_ADDITION");
+      }
+      result.planEvidenceHash = normalized.evidenceHash;
+      result.terraformPlan = "PASSED";
+      save(result);
+      console.log("Actual Terraform plan: one CREATE, no update/delete.");
+      console.log("NOTE: discovery remains synthetic; live brownfield ownership is NOT established.");
+    } catch (error) {
+      result.terraformPlan = "FAILED";
+      result.failedGate = error instanceof Error ? error.message.slice(0, 160) : "PLAN_UNKNOWN";
+      save(result);
+      throw error;
     }
-    result.terraformPlan = "PASSED";
-    save(result);
-    console.log("Terraform real plan: exactly one CREATE; no update/delete.");
-    console.log("NOTE: discovery was synthetic; this does not establish live brownfield ownership.");
   }
   console.log("Evidence: " + result.evidencePath);
 }
