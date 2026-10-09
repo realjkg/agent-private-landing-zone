@@ -73,7 +73,8 @@ export async function runRealPrivateModelBuild(
     design.provider === "AWS" &&
     design.forbiddenChanges.every((value) =>
       value !== AWS_TERRAFORM_SCENARIO.resourceId) &&
-    design.additions.includes(AWS_TERRAFORM_SCENARIO.resourceId) &&
+    design.additions.every((value) =>
+      value === AWS_TERRAFORM_SCENARIO.resourceId) &&
     state.action === undefined, "LIVE_DESIGN_OR_OWNERSHIP_NOT_APPROVED");
   const cfg = loadConfig(), url = new URL(cfg.ollamaBaseUrl);
   requireBuild(url.protocol === "http:" && ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname) &&
@@ -168,6 +169,8 @@ export async function runRealPrivateModelBuild(
       provider: "AWS", engine: "TERRAFORM",
       operation: "CREATE", count: 1, updates: 0, deletes: 0,
       normalizedChangeSetHash: actual.normalizedChangeSetHash,
+      designAmendment: design.additions.includes(AWS_TERRAFORM_SCENARIO.resourceId)
+        ? "ALREADY_PROPOSED" : "EXTERNAL_APPROVAL_REQUIRED",
       validationOutputHash: actual.validationOutputHash,
       modelDigestHashes: tagged.map((x) => x.digest),
     }),
