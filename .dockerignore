@@ -1,5 +1,8 @@
 .git
-.github
+.github/*
+!.github/workflows/
+.github/workflows/*
+!.github/workflows/model-qualification.yml
 node_modules
 dist
 coverage
