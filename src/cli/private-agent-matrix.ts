@@ -5,10 +5,11 @@ import { randomUUID } from "node:crypto";
 
 import { PHASE_E_SCENARIOS } from "../qualification/phase-e.js";
 import { runPrivateAgentMatrix } from "../qualification/private-agent-matrix.js";
+import { parseMatrixCliArgs } from "../qualification/matrix-arguments.js";
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
-  if (args.includes("--help") || (!args.includes("--live-models") && !args.includes("--offline-fixture"))) {
+  if (args.length === 0 || (args.length === 1 && args[0] === "--help")) {
     console.log([
       "Sovereign ALZ — existing 8-scenario functional matrix",
       "Run: ./alz matrix --offline-fixture (tests deterministic workflows; no models)",
@@ -21,19 +22,12 @@ async function main(): Promise<void> {
     if (!args.includes("--help")) process.exitCode = 2;
     return;
   }
-  if (args.includes("--offline-fixture") && args.includes("--live-models")) {
-    throw new Error("SELECT_ONE_MATRIX_MODE");
-  }
-  const index = args.indexOf("--scenario");
-  const scenarioId = index >= 0 ? args[index + 1] : undefined;
-  const normalized = args.filter((x, i) => i !== index && i !== index + 1);
-  if (normalized.some((x) => !["--offline-fixture", "--live-models"].includes(x))) {
-    throw new Error("UNKNOWN_MATRIX_ARGUMENT");
-  }
-  const selected = scenarioId
-    ? PHASE_E_SCENARIOS.filter((x) => x.id === scenarioId)
+  const selection = parseMatrixCliArgs(
+    args, PHASE_E_SCENARIOS.map((scenario) => scenario.id),
+  );
+  const selected = selection.scenarioId
+    ? PHASE_E_SCENARIOS.filter((scenario) => scenario.id === selection.scenarioId)
     : PHASE_E_SCENARIOS;
-  if (selected.length === 0) throw new Error("UNKNOWN_MATRIX_SCENARIO");
   const sha = execFileSync("git", ["rev-parse", "--verify", "HEAD"], {
     encoding: "utf8",
   }).trim();
@@ -41,7 +35,7 @@ async function main(): Promise<void> {
     encoding: "utf8",
   }).trim();
   if (dirty) throw new Error("SOURCE_WORKTREE_DIRTY");
-  const mode = args.includes("--live-models") ? "LIVE_PRIVATE_MODELS" : "OFFLINE_FIXTURE";
+  const mode = selection.mode;
   const result = await runPrivateAgentMatrix({
     sourceCommit: sha,
     mode,
