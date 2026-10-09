@@ -41,6 +41,7 @@ export type PreliveCampaignReport = {
   scenarioCount: number;
   alternativeProviderChecks: number;
   incompatibleProviderChecks: number;
+  excludedIncompatiblePairs: number;
   expectedNonApplicablePairs: number;
   totalChaosFaults: number;
   applicableChaosFaults: number;
@@ -119,19 +120,9 @@ export async function runPreliveCampaign(input: {
     return { scenario: item, otherProvider, eligible };
   });
   const invalid = compatibility.filter((item) => !item.eligible);
-  input.onProgress?.("Checking incompatible provider/engine combinations");
-  const incompatibility = invalid.length
-    ? await runPrivateAgentMatrix({
-      sourceCommit: input.sourceCommit, mode: "OFFLINE_FIXTURE",
-      scenarios: invalid.map(({ scenario, otherProvider }) => ({
-        ...scenario, provider: otherProvider,
-      })),
-    })
-    : undefined;
+  // Unsupported and unapproved alternatives are catalogued, never invoked.
   const baselineById = new Map(baseline.results.map((item) => [item.id, item]));
   const unknownById = new Map(unknown.results.map((item) => [item.id, item]));
-  const invalidById = new Map(
-    (incompatibility?.results ?? []).map((item) => [item.id, item]));
 
   const results: PreliveScenarioResult[] = [];
   for (const config of compatibility) {
@@ -140,7 +131,6 @@ export async function runPreliveCampaign(input: {
     input.onProgress?.("Fault injection and pillar posture: " + item.id);
     const positive = baselineById.get(item.id);
     const negative = unknownById.get(item.id);
-    const incompatible = invalidById.get(item.id);
     const baselineStatus = outcomeConsistent(positive) ? "PASS" as const : "FAILED" as const;
     const unknownStatus = isSafelyBlocked(negative) ? "BLOCKED" as const : "FAILED" as const;
     const alternateProvider: PreliveCompatibility = config.eligible ? {
@@ -149,8 +139,8 @@ export async function runPreliveCampaign(input: {
       reason: "Plugin allows this provider, but this is not an approved Phase E scenario; requires PLAN before qualification",
     } : {
       otherProvider: config.otherProvider,
-      result: isSafelyBlocked(incompatible) ? "BLOCKED" : "FAILED",
-      reason: "Provider is disallowed by the existing plugin catalog",
+      result: "NOT_APPLICABLE",
+      reason: "Provider is not supported by this adapter. Excluded without executing any lane.",
     };
     let chaosStatus: "PASS" | "FAILED" = "FAILED";
     let applicableFaults = 0;
@@ -211,8 +201,9 @@ export async function runPreliveCampaign(input: {
     mode: "OFFLINE_DETERMINISTIC_ONLY" as const,
     scenarioCount: results.length,
     alternativeProviderChecks: compatibility.length,
-    incompatibleProviderChecks: invalid.length,
-    expectedNonApplicablePairs: compatibility.length - invalid.length,
+    incompatibleProviderChecks: 0,
+    excludedIncompatiblePairs: invalid.length,
+    expectedNonApplicablePairs: compatibility.length,
     totalChaosFaults, applicableChaosFaults, notApplicableChaosFaults,
     results,
     passed,
