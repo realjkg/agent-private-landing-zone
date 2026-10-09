@@ -12,10 +12,14 @@ RUN npm run check && npm run build
 
 FROM build AS test
 
+ARG SOURCE_COMMIT
+ENV ALZ_SOURCE_COMMIT=$SOURCE_COMMIT
+
 COPY test/ ./test/
 COPY config/ ./config/
 COPY policy/ ./policy/
 COPY alz ./alz
+COPY .github/workflows/model-qualification.yml ./.github/workflows/model-qualification.yml
 
 RUN chmod +x ./alz
 

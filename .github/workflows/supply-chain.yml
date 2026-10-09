@@ -154,7 +154,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Build Linux ARM64 test image
-        run: docker build --platform linux/arm64 --target test -t agent-private-landing-zone:test .
+        run: docker build --platform linux/arm64 --target test --build-arg SOURCE_COMMIT="${GITHUB_SHA}" -t agent-private-landing-zone:test .
 
       - name: Run Linux ARM64 deterministic tests
         run: docker run --rm --network none agent-private-landing-zone:test
