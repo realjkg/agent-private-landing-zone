@@ -85,7 +85,8 @@ export type ActionResult = {
     | "DISABLED"
     | "BLOCKED"
     | "AWAITING_APPROVAL"
-    | "NOT_REQUIRED";
+    | "NOT_REQUIRED"
+    | "EXECUTED";
   reason: string;
 };
 
