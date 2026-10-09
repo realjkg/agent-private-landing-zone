@@ -51,6 +51,7 @@ function fixtures(): { deps: ActionRegistryDeps; receipts: ActionReceipt[]; clai
   return {
     deps: {
       issuer: "external-owner", externalPublicKeyPem: pem,
+      trustedCompromiseState: "VERIFIED",
       policyMode: "BUILTIN",
       handlers, nowSeconds: () => now,
       ledger: {
@@ -103,6 +104,7 @@ test("compromise lifecycle and local OPA are enforceable externally, never reque
   for (const compromiseState of ["SUSPECTED", "CONTAINED", "RECOVERY"] as const) {
     const request = { ...base("ROTATE_APPROVED_EVIDENCE"), compromiseState };
     const f = fixtures();
+    f.deps.trustedCompromiseState = compromiseState;
     await assert.rejects(executeGovernedAction(request, signed(request), f.deps),
       /COMPROMISE_LIFECYCLE_BLOCKS_ACTION/);
     assert.equal(f.claims.length, 0);
