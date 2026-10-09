@@ -8,6 +8,7 @@ import { PLUGIN_CATALOG } from "../plugins/catalog.js";
 import { runChaosPillarQualification } from "./chaos-pillars.js";
 import { PHASE_E_SCENARIOS, type PhaseEScenario } from "./phase-e.js";
 import { runPrivateAgentMatrix, type MatrixScenarioResult } from "./private-agent-matrix.js";
+import { buildPulumiTraceMatrix, type PulumiTraceRow } from "./pulumi-traceability.js";
 
 export const PULUMI_CLOUD_PROVIDERS = ["AWS", "AZURE"] as const;
 export const PULUMI_ESTATE_MODES = ["greenfield", "brownfield", "unknown"] as const;
@@ -16,7 +17,7 @@ export const PULUMI_OUT_OF_SCOPE_PROVIDERS = ["PRIVATE", "KUBERNETES"] as const;
 type Estate = (typeof PULUMI_ESTATE_MODES)[number];
 type PulumiProvider = (typeof PULUMI_CLOUD_PROVIDERS)[number] |
   (typeof PULUMI_OUT_OF_SCOPE_PROVIDERS)[number];
-type ScenarioDisposition = "PASS" | "BLOCKED" | "NOT_APPLICABLE" | "FAILED";
+type ScenarioDisposition = "PASS" | "BLOCKED" | "PLAN_REQUIRED" | "FAILED";
 
 export type PulumiCase = {
   id: string;
@@ -35,6 +36,8 @@ export type PulumiCase = {
   buildOrigin: "FIXTURE_GENERATOR" | "NONE";
   chaos: "CONTAINED" | "FAILED" | "NOT_RUN";
   faultCount: number;
+  chaosFaults: Array<{ fault: string; outcome: "CONTAINED" | "UNDETECTED" | "NOT_APPLICABLE"; evidenceHash: string }>;
+  pillarPosture: Record<string, string>;
   applicableFaultCount: number;
   notApplicableFaultCount: number;
   costEvidence: "SYNTHETIC_ONLY" | "NOT_RUN";
@@ -51,12 +54,18 @@ export type PulumiPermutationReport = {
   mode: "OFFLINE_FIXTURE_ONLY";
   supportedProviderEstatePairs: number;
   unknownOwnershipPairs: number;
-  notApplicableProviderEstatePairs: number;
+  planRequiredProviderEstatePairs: number;
   directAndConversationalLanes: number;
   chaosFaultCases: number;
   applicableChaosFaultCases: number;
   notApplicableChaosFaultCases: number;
   cases: PulumiCase[];
+  traceRows: PulumiTraceRow[];
+  traceRowCount: number;
+  tracePassed: number;
+  traceFailed: number;
+  traceUnverified: number;
+  tracePlanRequired: number;
   passed: boolean;
   elapsedMs: number;
   localModelInference: "NOT_RUN";
@@ -85,8 +94,8 @@ function safeBlocked(result: MatrixScenarioResult | undefined): boolean {
   if (!result) return false;
   return [result.direct, result.conversational].every((lane) =>
     lane.status === "BLOCKED" && lane.buildArtifactOrigin === "NONE" &&
-    lane.actionExecuted !== true && lane.mutationObserved !== true &&
-    lane.actEnabled !== true);
+    lane.actionExecuted === false && lane.mutationObserved === false &&
+    lane.actEnabled === false);
 }
 
 function affirmative(result: MatrixScenarioResult | undefined): boolean {
@@ -126,12 +135,15 @@ export async function runPulumiPermutations(input: {
     scenario.provider === "AZURE" && scenario.engine === "PULUMI" &&
     scenario.mock === "greenfield");
   if (!prior) throw new Error("PULUMI_ESTABLISHED_BASELINE_MISSING");
+  const originalIndex = validScenarios.findIndex((scenario) => scenario.id === prior.id);
+  if (originalIndex < 0) throw new Error("PULUMI_BASELINE_NOT_ENUMERATED");
+  validScenarios[originalIndex] = prior;
   input.onProgress?.("Running four existing-provider Pulumi fixture workflows");
   const positives = await runPrivateAgentMatrix({
     sourceCommit: input.sourceCommit, mode: "OFFLINE_FIXTURE",
     scenarios: validScenarios,
   });
-  const unknowns = validScenarios.filter((scenario, index) => index % 2 === 0);
+  const unknowns = validScenarios.filter((scenario) => scenario.mock === "greenfield");
   // Exactly one UNKNOWN per currently supported provider, no duplicate UNKNOWN testing.
   const negative = await runPrivateAgentMatrix({
     sourceCommit: input.sourceCommit, mode: "OFFLINE_FIXTURE",
@@ -150,6 +162,8 @@ export async function runPulumiPermutations(input: {
     let faultCount = 0;
     let applicableFaultCount = 0;
     let notApplicableFaultCount = 0;
+    let chaosFaults: PulumiCase["chaosFaults"] = [];
+    let pillarPosture: Record<string, string> = {};
     try {
       const state = await runAgentKernel({
         request: scenario.request,
@@ -166,12 +180,21 @@ export async function runPulumiPermutations(input: {
       faultCount = faultReport.faults.length;
       applicableFaultCount = faultReport.applicableFaults;
       notApplicableFaultCount = faultReport.notApplicableFaults;
+      chaosFaults = faultReport.faults.map((fault) => ({
+        fault: fault.fault, outcome: fault.outcome, evidenceHash: fault.evidenceHash,
+      }));
+      pillarPosture = faultReport.pillarPosture;
     } catch {
       chaos = "FAILED";
     }
     const verified = affirmative(result) && chaos === "CONTAINED" &&
       faultCount === 11 &&
-      applicableFaultCount + notApplicableFaultCount === faultCount;
+      applicableFaultCount + notApplicableFaultCount === faultCount &&
+      notApplicableFaultCount === 0 &&
+      chaosFaults.every((fault) => fault.outcome === "CONTAINED") &&
+      ["COST", "SECURITY", "PERFORMANCE", "SUSTAINABILITY",
+        "RELIABILITY", "RECOVERY", "OPERATIONAL_EXCELLENCE"].every(
+          (pillar) => pillar in pillarPosture);
     cases.push(hashedCase({
       id: scenario.id,
       provider: scenario.provider,
@@ -190,6 +213,7 @@ export async function runPulumiPermutations(input: {
       previewHash: result?.direct.planHash,
       buildOrigin: result?.direct.buildArtifactOrigin ?? "NONE",
       chaos, faultCount, applicableFaultCount, notApplicableFaultCount,
+      chaosFaults, pillarPosture,
       costEvidence: "SYNTHETIC_ONLY",
       performanceEvidence: "SYNTHETIC_ONLY",
       sustainabilityEvidence: "SYNTHETIC_ONLY",
@@ -218,7 +242,8 @@ export async function runPulumiPermutations(input: {
       policyHash: result?.direct.policyHash,
       buildOrigin: result?.direct.buildArtifactOrigin ?? "NONE",
       chaos: "NOT_RUN", faultCount: 0, applicableFaultCount: 0,
-      notApplicableFaultCount: 0, costEvidence: "NOT_RUN",
+      notApplicableFaultCount: 0, chaosFaults: [], pillarPosture: {},
+      costEvidence: "NOT_RUN",
       performanceEvidence: "NOT_RUN", sustainabilityEvidence: "NOT_RUN",
       operationalExcellence: "NOT_RUN",
       mutationObserved: denied ? false : "UNKNOWN",
@@ -230,12 +255,12 @@ export async function runPulumiPermutations(input: {
       cases.push(hashedCase({
         id: "pulumi-" + provider.toLowerCase() + "-" + estate,
         provider, estate,
-        disposition: "NOT_APPLICABLE",
+        disposition: "PLAN_REQUIRED",
         reason: "Pulumi plugin advertises this target but ALZ kernel/discovery Provider contract is AWS|AZURE only. PLAN approval required.",
         direct: "NOT_RUN", conversational: "NOT_RUN",
         buildOrigin: "NONE", chaos: "NOT_RUN",
         faultCount: 0, applicableFaultCount: 0, notApplicableFaultCount: 0,
-        costEvidence: "NOT_RUN", performanceEvidence: "NOT_RUN",
+        chaosFaults: [], pillarPosture: {}, costEvidence: "NOT_RUN", performanceEvidence: "NOT_RUN",
         sustainabilityEvidence: "NOT_RUN", operationalExcellence: "NOT_RUN",
         mutationObserved: "UNKNOWN", infrastructureAct: "DISABLED",
       }));
@@ -246,8 +271,8 @@ export async function runPulumiPermutations(input: {
     item.disposition === "PASS").length;
   const unknownOwnershipPairs = cases.filter((item) =>
     item.disposition === "BLOCKED").length;
-  const notApplicableProviderEstatePairs = cases.filter((item) =>
-    item.disposition === "NOT_APPLICABLE").length;
+  const planRequiredProviderEstatePairs = cases.filter((item) =>
+    item.disposition === "PLAN_REQUIRED").length;
   const chaosFaultCases = cases.reduce((sum, item) => sum + item.faultCount, 0);
   const applicableChaosFaultCases =
     cases.reduce((sum, item) => sum + item.applicableFaultCount, 0);
@@ -256,19 +281,28 @@ export async function runPulumiPermutations(input: {
   const passed = cases.length === 12 &&
     supportedProviderEstatePairs === 4 &&
     unknownOwnershipPairs === 2 &&
-    notApplicableProviderEstatePairs === 6 &&
+    planRequiredProviderEstatePairs === 6 &&
     chaosFaultCases === 44 &&
     cases.every((item) => item.disposition !== "FAILED");
+  const traceRows = buildPulumiTraceMatrix({ sourceCommit: input.sourceCommit, cases });
+  const tracePassed = traceRows.filter((row) => row.status === "VERIFIED_OFFLINE").length;
+  const traceFailed = traceRows.filter((row) => row.status === "FAILED").length;
+  const traceUnverified = traceRows.filter((row) => row.status === "UNVERIFIED").length;
+  const tracePlanRequired = traceRows.filter((row) => row.status === "PLAN_REQUIRED").length;
+  const allGood = passed && traceFailed === 0 && traceUnverified === 32 &&
+    tracePlanRequired === 6;
   const body = {
     sourceCommit: input.sourceCommit,
     mode: "OFFLINE_FIXTURE_ONLY" as const,
     supportedProviderEstatePairs,
     unknownOwnershipPairs,
-    notApplicableProviderEstatePairs,
+    planRequiredProviderEstatePairs,
     directAndConversationalLanes: (supportedProviderEstatePairs +
       unknownOwnershipPairs) * 2,
     chaosFaultCases, applicableChaosFaultCases, notApplicableChaosFaultCases,
-    cases, passed, elapsedMs: Math.round((performance.now()-start)*100)/100,
+    cases, traceRows, traceRowCount: traceRows.length,
+    tracePassed, traceFailed, traceUnverified, tracePlanRequired,
+    passed: allGood, elapsedMs: Math.round((performance.now()-start)*100)/100,
     localModelInference: "NOT_RUN" as const,
     actualPulumiCliValidation: "NOT_RUN" as const,
     actualPulumiPreview: "NOT_RUN" as const,
