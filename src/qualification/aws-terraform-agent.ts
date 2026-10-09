@@ -1,4 +1,5 @@
 import { mkdirSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 
 import { runAgentKernel } from "../agent/graph.js";
@@ -14,7 +15,7 @@ import { governedUserRequest, wrapUntrustedEvidence } from "../security/prompt-g
 
 export const AWS_TERRAFORM_SCENARIO = {
   id: "aws-brownfield-terraform-private-agents-v1",
-  request: "Build an additive AWS brownfield Terraform preview for a new isolated ALZ audit CloudWatch log group with 30-day retention. Preserve existing Control Tower, AWS Organizations, and customer-owned resources. Do not apply or adopt anything.",
+  request: "Build an additive AWS brownfield Terraform preview for a new isolated ALZ audit CloudWatch log group with 30-day retention. Preserve existing Control Tower, AWS Organizations, and customer-owned resources. Produce a reviewed preview candidate only.",
   resourceId: "aws:logs:group:/alz/preview/brownfield-audit",
   logGroupName: "/alz/preview/brownfield-audit",
   retentionDays: 30,
@@ -50,8 +51,9 @@ export type AwsTerraformAgentResult = {
   artifactPath: string;
   evidencePath: string;
   status: "REVIEW_REQUIRED";
-  terraformValidation: "NOT_RUN";
-  terraformPlan: "NOT_RUN";
+  terraformValidation: "NOT_RUN" | "PASSED";
+  terraformPlan: "NOT_RUN" | "PASSED";
+  planEvidenceHash?: string;
   approval: "NOT_GRANTED";
   infrastructureAct: "DISABLED";
   mutationObserved: false;
@@ -271,7 +273,7 @@ export async function qualifyAwsTerraformAgents(
   ]);
   const proposal = reviewAwsTerraformProposals(primaryRaw, validatorRaw, evidenceKeys);
   const terraform = renderAwsTerraformCandidate(proposal);
-  const directory = resolve(input.outputRoot, AWS_TERRAFORM_SCENARIO.id);
+  const directory = resolve(input.outputRoot, AWS_TERRAFORM_SCENARIO.id + "-" + randomUUID());
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   const artifactPath = resolve(directory, "main.tf");
   const evidencePath = resolve(directory, "qualification.json");
