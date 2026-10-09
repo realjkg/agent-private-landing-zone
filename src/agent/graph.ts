@@ -333,7 +333,13 @@ export async function runAgentKernel(
           provider: state.provider,
           engine: state.engine,
         });
-        if (handoff.status !== "READY_FOR_PREVIEW" ||
+        // Owner review of incomplete recovery/cost posture must not invent
+        // authority, but a bounded preview may help finish that review.
+        // Missing ADD intent or existing-resource grants never proceeds.
+        if (handoff.status === "BLOCKED" ||
+            handoff.reviewRequired.includes("EXPLICIT_ADD_RESOURCE_DESIGN_REQUIRED") ||
+            handoff.reviewRequired.includes(
+              "EXPLICIT_EXISTING_RESOURCE_AUTHORIZATION_REQUIRED") ||
             handoff.discoveryMode !== "REAL_DISCOVERY") {
           throw new Error("DESIGN_BUILD_HANDOFF_BLOCKED:" +
             [...handoff.blockers, ...handoff.reviewRequired,
