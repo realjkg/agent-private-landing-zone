@@ -5,6 +5,8 @@ import {
 
 import {
   assertProductionDeploymentContract,
+  evaluateObservabilityContract,
+  type ObservabilityRuntimeEvidence,
 } from "../qualification/production-contract.js";
 
 export type ReadinessCheck = {
@@ -42,17 +44,38 @@ export function healthSnapshot():
 
 export function readinessSnapshot(
   checks: ReadinessCheck[],
+  observability?: ObservabilityRuntimeEvidence,
 ): ReadinessSnapshot {
   assertProductionDeploymentContract();
 
+  const allChecks: ReadinessCheck[] = [
+    ...checks,
+  ];
+
+  if (observability) {
+    const verdict =
+      evaluateObservabilityContract(
+        observability,
+      );
+
+    allChecks.push({
+      name: "production-contract-observability",
+      ready: verdict.satisfied,
+      detail: verdict.satisfied
+        ? "observability contract verified against runtime behavior"
+        : "observability contract unmet: " +
+          verdict.failures.join("; "),
+    });
+  }
+
   return {
     ready:
-      checks.length > 0 &&
-      checks.every(
+      allChecks.length > 0 &&
+      allChecks.every(
         (check) =>
           check.ready,
       ),
-    checks: [...checks],
+    checks: allChecks,
     actEnabled: false,
   };
 }
@@ -80,6 +103,7 @@ export async function startHealthServer(input: {
       | Promise<
           ReadinessSnapshot
         >;
+  metrics: () => string;
   host?: string;
   port?: number;
 }): Promise<HealthServer> {
@@ -152,6 +176,24 @@ export async function startHealthServer(input: {
             JSON.stringify(
               snapshot,
             ),
+          );
+          return;
+        }
+
+        if (
+          request.url ===
+          "/metrics"
+        ) {
+          // Prometheus text exposition format; the registry is the single
+          // rendering path so a scrape can never diverge from aggregation.
+          response.setHeader(
+            "content-type",
+            "text/plain; version=0.0.4; charset=utf-8",
+          );
+          response.statusCode =
+            200;
+          response.end(
+            input.metrics(),
           );
           return;
         }

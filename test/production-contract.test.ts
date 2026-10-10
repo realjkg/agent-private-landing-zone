@@ -3,10 +3,15 @@ import test from "node:test";
 
 import {
   assertProductionDeploymentContract,
+  evaluateObservabilityContract,
   PRODUCTION_DEPLOYMENT_CONTRACT,
   PRODUCTION_QUALIFICATION_PHASES,
   productionQualificationTransitionAllowed,
+  type ObservabilityRuntimeEvidence,
 } from "../src/qualification/production-contract.js";
+import {
+  PRODUCTION_SIGNALS,
+} from "../src/observability/events.js";
 
 test("production qualification lifecycle is PLAN DO CONVERGE VERIFY RELEASE", () => {
   assert.deepEqual(
@@ -212,4 +217,115 @@ test("production contract requires real AWS Azure qualification and control-plan
     spec.recovery.isolatedRestoreVerification,
     "required",
   );
+});
+
+const fullRuntimeEvidence: ObservabilityRuntimeEvidence = {
+  busWired: true,
+  structuredLogsActive: true,
+  secretRedactionActive: true,
+  signals: PRODUCTION_SIGNALS,
+  healthEndpointServing: true,
+  readinessEndpointServing: true,
+  metricsEndpointServing: true,
+};
+
+test("the contract's observability block is satisfied by full runtime evidence", () => {
+  const verdict =
+    evaluateObservabilityContract(
+      fullRuntimeEvidence,
+    );
+
+  assert.equal(verdict.satisfied, true);
+  assert.deepEqual(verdict.failures, []);
+
+  assert.doesNotThrow(() =>
+    assertProductionDeploymentContract(
+      PRODUCTION_DEPLOYMENT_CONTRACT,
+      fullRuntimeEvidence,
+    ),
+  );
+});
+
+test("every unmet observability claim is named in the verdict and throws", () => {
+  const cases: readonly [
+    ObservabilityRuntimeEvidence,
+    RegExp,
+  ][] = [
+    [
+      { ...fullRuntimeEvidence, busWired: false },
+      /event bus is not wired/,
+    ],
+    [
+      { ...fullRuntimeEvidence, structuredLogsActive: false },
+      /structured event sink is not active/,
+    ],
+    [
+      { ...fullRuntimeEvidence, secretRedactionActive: false },
+      /secret redaction is not active/,
+    ],
+    [
+      { ...fullRuntimeEvidence, healthEndpointServing: false },
+      /health endpoint is not serving/,
+    ],
+    [
+      { ...fullRuntimeEvidence, readinessEndpointServing: false },
+      /readiness endpoint is not serving/,
+    ],
+    [
+      { ...fullRuntimeEvidence, metricsEndpointServing: false },
+      /metrics endpoint is not serving/,
+    ],
+    [
+      { ...fullRuntimeEvidence, signals: [] },
+      /required signals not covered by this runtime: model-latency/,
+    ],
+  ];
+
+  for (const [evidence, pattern] of cases) {
+    const verdict =
+      evaluateObservabilityContract(evidence);
+
+    assert.equal(verdict.satisfied, false);
+    assert.match(
+      verdict.failures.join("; "),
+      pattern,
+    );
+
+    assert.throws(
+      () =>
+        assertProductionDeploymentContract(
+          PRODUCTION_DEPLOYMENT_CONTRACT,
+          evidence,
+        ),
+      /PRODUCTION_CONTRACT_OBSERVABILITY_UNMET/,
+    );
+  }
+});
+
+test("one-shot processes do not fail the contract for not serving endpoints", () => {
+  // A one-shot command serves no endpoints; the fields stay undefined and
+  // are "not evaluated", never treated as failing.
+  const verdict =
+    evaluateObservabilityContract({
+      busWired: true,
+      structuredLogsActive: true,
+      secretRedactionActive: true,
+      signals: PRODUCTION_SIGNALS,
+    });
+
+  assert.equal(verdict.satisfied, true);
+});
+
+test("every contract signal is covered by the runtime signal catalog", () => {
+  // A renamed signal must fail here loudly instead of orphaning the
+  // contract requirement (and any alert rules keyed to it) silently.
+  const catalog = new Set<string>(PRODUCTION_SIGNALS);
+
+  for (const signal of PRODUCTION_DEPLOYMENT_CONTRACT.spec.observability.signals) {
+    assert.equal(
+      catalog.has(signal),
+      true,
+      "contract signal missing from the catalog: " + signal,
+    );
+  }
 });

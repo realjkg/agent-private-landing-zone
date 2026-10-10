@@ -209,9 +209,75 @@ export const PRODUCTION_DEPLOYMENT_CONTRACT = {
 export type ProductionDeploymentContract =
   typeof PRODUCTION_DEPLOYMENT_CONTRACT;
 
+/**
+ * Runtime evidence for the contract's observability block. Each claim
+ * describes observed process behavior — a wired bus, an active sink, serving
+ * endpoints — not configuration presence. The endpoint fields are optional
+ * because a one-shot process does not serve them: `undefined` means "not
+ * evaluated for this process type" and is never treated as failing.
+ */
+export type ObservabilityRuntimeEvidence = {
+  busWired: boolean;
+  structuredLogsActive: boolean;
+  secretRedactionActive: boolean;
+  signals: readonly string[];
+  healthEndpointServing?: boolean;
+  readinessEndpointServing?: boolean;
+  metricsEndpointServing?: boolean;
+};
+
+export type ObservabilityContractVerdict = {
+  satisfied: boolean;
+  failures: readonly string[];
+};
+
+/**
+ * Checks the contract's observability block against runtime evidence.
+ * Pure so both assertProductionDeploymentContract (throwing) and
+ * readinessSnapshot (check-folding) enforce the same verdict.
+ */
+export function evaluateObservabilityContract(
+  evidence: ObservabilityRuntimeEvidence,
+  contract: ProductionDeploymentContract = PRODUCTION_DEPLOYMENT_CONTRACT,
+): ObservabilityContractVerdict {
+  const failures: string[] = [];
+
+  if (!evidence.busWired) {
+    failures.push("event bus is not wired");
+  }
+  if (!evidence.structuredLogsActive) {
+    failures.push("structured event sink is not active");
+  }
+  if (!evidence.secretRedactionActive) {
+    failures.push("secret redaction is not active on emitted events");
+  }
+  if (evidence.healthEndpointServing === false) {
+    failures.push("health endpoint is not serving");
+  }
+  if (evidence.readinessEndpointServing === false) {
+    failures.push("readiness endpoint is not serving");
+  }
+  if (evidence.metricsEndpointServing === false) {
+    failures.push("metrics endpoint is not serving");
+  }
+
+  const known = new Set(evidence.signals);
+  const missing = contract.spec.observability.signals.filter(
+    (signal) => !known.has(signal),
+  );
+  if (missing.length > 0) {
+    failures.push(
+      "required signals not covered by this runtime: " + missing.join(", "),
+    );
+  }
+
+  return { satisfied: failures.length === 0, failures };
+}
+
 export function assertProductionDeploymentContract(
   contract: ProductionDeploymentContract =
     PRODUCTION_DEPLOYMENT_CONTRACT,
+  observability?: ObservabilityRuntimeEvidence,
 ): void {
   if (
     contract.spec.infrastructureMutation !==
@@ -261,5 +327,19 @@ export function assertProductionDeploymentContract(
     throw new Error(
       "PRODUCTION_CONTRACT_MODEL_RUNTIME_INVALID",
     );
+  }
+
+  if (observability) {
+    const verdict = evaluateObservabilityContract(
+      observability,
+      contract,
+    );
+
+    if (!verdict.satisfied) {
+      throw new Error(
+        "PRODUCTION_CONTRACT_OBSERVABILITY_UNMET: " +
+          verdict.failures.join("; "),
+      );
+    }
   }
 }

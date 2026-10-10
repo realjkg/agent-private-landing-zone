@@ -134,6 +134,7 @@ function run(
   command: string,
   args: string[],
   capture = false,
+  allowNonzeroExit = false,
 ): string {
   const result = spawnSync(
     command,
@@ -151,7 +152,7 @@ function run(
 
   if (
     result.error ||
-    result.status !== 0
+    (result.status !== 0 && !allowNonzeroExit)
   ) {
     throw new Error(
       "Operator command failed: " +
@@ -159,6 +160,12 @@ function run(
         " " +
         args.join(" "),
     );
+  }
+
+  if (result.status !== 0) {
+    // A nonzero exit is a diagnosis the child already reported (e.g. `alz
+    // health` finding the contract unmet): propagate it, don't wrap it.
+    process.exitCode = result.status ?? 1;
   }
 
   return capture
@@ -169,6 +176,7 @@ function run(
 function runTs(
   script: string,
   args: string[] = [],
+  allowNonzeroExit = false,
 ): void {
   const compiled =
     resolve(
@@ -185,6 +193,8 @@ function runTs(
         compiled,
         ...args,
       ],
+      false,
+      allowNonzeroExit,
     );
     return;
   }
@@ -195,6 +205,8 @@ function runTs(
       resolve(root, script),
       ...args,
     ],
+    false,
+    allowNonzeroExit,
   );
 }
 
@@ -273,6 +285,7 @@ function help(): void {
     "  ./alz control-plane restore --evidence <encrypted-bundle> --restore-root <empty-isolated-path>",
   );
   console.log("  ./alz economics report <input.json> [--json]");
+  console.log("  ./alz health [--serve]");
   console.log("  ./alz doctor");
   console.log("  ./alz verify");
   console.log("  ./alz plugins");
@@ -806,6 +819,8 @@ try {
     );
   } else if (command === "economics") {
     runTs("src/cli/economics.ts", argv.slice(1));
+  } else if (command === "health") {
+    runTs("src/cli/health.ts", argv.slice(1), true);
   } else if (command === "doctor") {
     runTs("src/cli/security.ts");
     runTs("src/cli/plugins.ts");

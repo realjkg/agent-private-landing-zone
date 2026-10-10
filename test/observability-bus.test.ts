@@ -480,3 +480,25 @@ test("deliver() routes pre-built events to sinks, registry, and exporters", asyn
     /alz_operational_event_total\{.*economics-budget/,
   );
 });
+
+test("metrics() is a pure read: repeated scrapes return identical text", () => {
+  const bus = new ObservabilityBus({ sinks: [], warn: () => {} });
+
+  bus.emit({
+    signal: "model-latency",
+    status: "OK",
+    component: "model-runtime",
+  });
+  bus.emit({
+    signal: "evidence-lifecycle",
+    status: "FAILED",
+    component: "evidence-vault",
+  });
+
+  const first = bus.metrics();
+  const second = bus.metrics();
+
+  // A scrape must never mutate the registry or shift the aggregation —
+  // this is the property the /metrics serving endpoint depends on.
+  assert.equal(first, second);
+});

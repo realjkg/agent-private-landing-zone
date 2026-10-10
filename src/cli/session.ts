@@ -1,3 +1,5 @@
+import { startObservabilityRuntime } from "../observability/runtime.js";
+
 import { randomUUID } from "node:crypto";
 import {
   createInterface,
@@ -77,6 +79,14 @@ const migration =
 const security =
   await assertSecureSession();
 
+// Long-running runtime: the loopback health/readiness/metrics doors come up
+// with the session. A taken ALZ_HEALTH_PORT degrades to one warn line — the
+// session keeps running.
+const observability =
+  await startObservabilityRuntime({
+    serve: true,
+  });
+
 const { graph } =
   createSessionGraph(
     undefined,
@@ -110,6 +120,11 @@ console.log(
   "Migration  " +
     migration.migrated +
     " legacy plaintext record(s) secured",
+);
+console.log(
+  "Health     " +
+    (observability.healthAddress ??
+      "unavailable (see diagnostics)"),
 );
 console.log();
 console.log("Thread    " + threadId);
