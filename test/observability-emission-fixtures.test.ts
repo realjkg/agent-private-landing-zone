@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { mkdtempSync } from "node:fs";
 import test from "node:test";
 import { resolve } from "node:path";
+import { tmpdir } from "node:os";
 
 import {
   OPERATIONAL_EVENT_STATUSES,
@@ -17,6 +19,18 @@ function runFixture(args: string[]): string[] {
     cwd: root,
     encoding: "utf8",
     shell: false,
+    // Fresh CI runners race parallel test files to create the shared vault
+    // key at ~/.config/agentic-landing-zone/evidence.key; ensureEvidenceKey
+    // creates it with flag "wx", so the loser of the ENOENT→create window
+    // dies with EEXIST and the fixture CLI fails. Point every fixture run's
+    // key at its own temp path so no two processes contend for one file.
+    env: {
+      ...process.env,
+      AGENTIC_EVIDENCE_KEY_FILE: resolve(
+        mkdtempSync(resolve(tmpdir(), "alz-fixture-")),
+        "evidence.key",
+      ),
+    },
   });
 
   assert.equal(
