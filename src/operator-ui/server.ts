@@ -7,6 +7,7 @@ import { extname, resolve, sep } from "node:path";
 
 import { PHASE_E_SCENARIOS } from "../qualification/phase-e.js";
 import { sanitizeDiagnosticText } from "../observability/redaction.js";
+import { probeLocalModels, type ModelAvailability } from "./model-availability.js";
 
 export type OperatorMode = "matrix-offline" | "matrix-live" | "aws-review" | "chaos";
 export type OperatorJob = {
@@ -15,13 +16,28 @@ export type OperatorJob = {
   args: string[];
   title: string;
   evidenceBasis: string;
+  /** The workflow prints a "Recovery verification: <status>" line. */
+  reportsRecoveryVerification?: boolean;
 };
+export type RecoveryVerificationStatus = "VERIFIED" | "PARTIAL" | "BLOCKED" | "NOT_REPORTED";
 export type JobState = {
   status: "IDLE" | "RUNNING" | "PASS" | "BLOCKED";
   title: string;
   evidenceBasis: string;
   output: string;
+  /**
+   * Resilience runs only: the run's own recovery verification result. A
+   * resilience PASS means every applicable simulated fault was contained; it
+   * never means recovery was verified, so the console reports both.
+   */
+  recoveryVerification?: RecoveryVerificationStatus;
 };
+
+/** Read the workflow's literal recovery verification line; absent means NOT_REPORTED. */
+export function readRecoveryVerification(output: string): RecoveryVerificationStatus {
+  const match = /^Recovery verification: (VERIFIED|PARTIAL|BLOCKED)$/m.exec(output);
+  return match ? (match[1] as RecoveryVerificationStatus) : "NOT_REPORTED";
+}
 
 const modes = new Set<OperatorMode>(["matrix-offline", "matrix-live", "aws-review", "chaos"]);
 const supported = new Set(PHASE_E_SCENARIOS.map((scenario) => scenario.id));
@@ -35,7 +51,8 @@ export function chooseOperatorJob(modeValue: string, scenarioValue: string): Ope
     assertAllowed(!scenarioValue || scenarioValue === "all", "SCENARIO_NOT_APPLICABLE");
     return { mode, script: "cli/chaos-pillars.js", args: [],
       title: "Chaos and Well-Architected pillars",
-      evidenceBasis: "SYNTHETIC FAULT INJECTION — no real restore or cloud mutation" };
+      evidenceBasis: "SYNTHETIC FAULT INJECTION — no real restore or cloud mutation",
+      reportsRecoveryVerification: true };
   }
   if (mode === "aws-review") {
     assertAllowed(!scenarioValue || scenarioValue === "all", "SCENARIO_NOT_APPLICABLE");
@@ -135,9 +152,11 @@ export async function runOperatorJob(job: OperatorJob, root: string): Promise<st
 export function createLocalOperatorServer(options: {
   root: string;
   runner?: (job: OperatorJob, root: string) => Promise<string>;
+  modelProbe?: () => Promise<ModelAvailability>;
 }): { server: Server; getState: () => JobState } {
   const token = randomBytes(24).toString("hex");
   const runner = options.runner ?? runOperatorJob;
+  const modelProbe = options.modelProbe ?? (() => probeLocalModels());
   const uiRoot = resolve(options.root, "dist", "operator-ui", "app");
   let state: JobState = {
     status: "IDLE", title: "No workflow",
@@ -184,6 +203,17 @@ export function createLocalOperatorServer(options: {
     if (req.method === "GET" && req.url === "/state") {
       send(200, "application/json", JSON.stringify(state));return;
     }
+    if (req.method === "GET" && req.url === "/models") {
+      // Advisory, read-only availability for the private-model workflows;
+      // it grants nothing and POST /run validation does not consult it.
+      let availability: ModelAvailability;
+      try {
+        availability = await modelProbe();
+      } catch {
+        send(503, "application/json", '{"error":"MODEL_PROBE_FAILED"}');return;
+      }
+      send(200, "application/json", JSON.stringify(availability));return;
+    }
     if (req.method === "GET") {
       const asset = await readConsoleAsset(uiRoot, req.url ?? "");
       if (asset) {
@@ -224,12 +254,15 @@ export function createLocalOperatorServer(options: {
     state = { status: "RUNNING", title: job.title,
       evidenceBasis: job.evidenceBasis, output: "Preparing governed workflow..." };
     send(202, "application/json", '{"status":"STARTED"}');
+    const recovery = (text: string) => job.reportsRecoveryVerification
+      ? { recoveryVerification: readRecoveryVerification(text) } : {};
     void runner(job, options.root).then((output) => {
-      state = { ...state, status: "PASS", output: sanitizeDiagnosticText(output.slice(-15000), 15000) };
+      state = { ...state, status: "PASS", ...recovery(output),
+        output: sanitizeDiagnosticText(output.slice(-15000), 15000) };
     }).catch((error) => {
       // Emit class/status only; no raw secrets, model transcripts, or cloud credentials.
       const message = error instanceof Error ? error.message : "UNKNOWN_FAILURE";
-      state = { ...state, status: "BLOCKED",
+      state = { ...state, status: "BLOCKED", ...recovery(message),
         output: sanitizeDiagnosticText(message.slice(0, 15000), 15000) };
     });
   });

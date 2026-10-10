@@ -25,6 +25,21 @@ const EMPTY_STATE_PRODUCE = [
   "Results land in this panel only: a sanitized output summary on this screen, records kept locally.",
 ] as const;
 
+/**
+ * The literal result clause of the summary line. A resilience run reports two
+ * separate facts and never merges them: its PASS means every applicable
+ * simulated fault was contained, while recovery verification is its own
+ * result — and no real restore runs from this workspace either way.
+ */
+function runResult(jobState: JobState): string {
+  const recovery = jobState.recoveryVerification;
+  if (recovery === undefined) return "verification " + jobState.status;
+  const faults = jobState.status === "PASS"
+    ? "all applicable simulated faults contained"
+    : "verification " + jobState.status;
+  return faults + " · recovery verification " + recovery + " · no real restore run";
+}
+
 export interface EvidencePanelProps {
   jobState: JobState | null;
   formError: string | null;
@@ -50,7 +65,7 @@ export const EvidencePanel = forwardRef<HTMLElement, EvidencePanelProps>(
         <h2>Execution and evidence</h2>
         {jobState && (jobState.status === "PASS" || jobState.status === "BLOCKED") && (
           <p className="run-summary" data-testid="run-summary" role="status" aria-live="polite">
-            Completed — {jobState.title} · verification {jobState.status}
+            Completed — {jobState.title} · {runResult(jobState)}
             {props.runScenario && props.runScenario !== "all"
               ? ` · scenario ${props.runScenario}`
               : ""}

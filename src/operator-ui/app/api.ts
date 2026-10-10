@@ -7,11 +7,29 @@
 
 export type OperatorMode = "matrix-offline" | "matrix-live" | "aws-review" | "chaos";
 
+export type RecoveryVerificationStatus = "VERIFIED" | "PARTIAL" | "BLOCKED" | "NOT_REPORTED";
+
 export type JobState = {
   status: "IDLE" | "RUNNING" | "PASS" | "BLOCKED";
   title: string;
   evidenceBasis: string;
   output: string;
+  /** Resilience runs only (see server.ts): the run's own recovery verification. */
+  recoveryVerification?: RecoveryVerificationStatus;
+};
+
+/** Mirrors src/operator-ui/model-availability.ts. */
+export type ModelAvailability = {
+  status: "AVAILABLE" | "UNAVAILABLE";
+  reason:
+    | "READY"
+    | "LIVE_MODELS_DISABLED"
+    | "MODEL_ENDPOINT_NOT_LOOPBACK"
+    | "NO_LOCAL_MODEL_SERVER"
+    | "MODEL_INVENTORY_UNAVAILABLE"
+    | "MODELS_NOT_INSTALLED";
+  required: string[];
+  missing: string[];
 };
 
 export type RunRequest = {
@@ -31,6 +49,30 @@ export async function fetchJobState(): Promise<JobState | null> {
     const response = await fetch("/state", { cache: "no-store" });
     if (!response.ok) return null;
     return (await response.json()) as JobState;
+  } catch {
+    return null;
+  }
+}
+
+const isStringList = (value: unknown): value is string[] =>
+  Array.isArray(value) && value.every((item) => typeof item === "string");
+
+/**
+ * Ask the local operator whether the private-model workflows can run here.
+ * Null means unknown (unreachable or unrecognized answer): the console then
+ * leaves those workflows offered, exactly as before this check existed.
+ */
+export async function fetchModelAvailability(): Promise<ModelAvailability | null> {
+  try {
+    const response = await fetch("/models", { cache: "no-store" });
+    if (!response.ok) return null;
+    const body = (await response.json()) as Partial<ModelAvailability>;
+    if ((body.status !== "AVAILABLE" && body.status !== "UNAVAILABLE") ||
+      typeof body.reason !== "string" || !isStringList(body.required) ||
+      !isStringList(body.missing)) {
+      return null;
+    }
+    return body as ModelAvailability;
   } catch {
     return null;
   }

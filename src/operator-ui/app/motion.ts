@@ -32,9 +32,19 @@ export function prefersReducedMotion(): boolean {
  * Scroll an element into view, degraded safely: engines without
  * scrollIntoView (some test DOMs) skip silently — run feedback chrome must
  * never gate the run itself.
+ *
+ * The scroll starts on the next animation frame, not inside the caller's
+ * task. Observed in Chromium: a smooth scroll requested synchronously from
+ * the activating click of "Run selected workflow" never moved the page,
+ * while the same request one frame later did. Reduced-motion ("auto") jumps
+ * were unaffected either way.
  */
 export function scrollIntoViewSafe(element: HTMLElement | null, behavior: ScrollMotion): void {
-  if (element && typeof element.scrollIntoView === "function") {
-    element.scrollIntoView({ behavior, block: "start" });
+  if (!element || typeof element.scrollIntoView !== "function") return;
+  const scroll = () => element.scrollIntoView({ behavior, block: "start" });
+  if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
+    window.requestAnimationFrame(scroll);
+  } else {
+    scroll();
   }
 }

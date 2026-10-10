@@ -517,3 +517,27 @@ code {
   }
 }
 
+
+/* Private-model availability note under the workflow select: amber because
+   it is a gap on this machine, not a failure. The re-check control is a plain
+   text link, not an arcade button (class selectors outrank the global
+   button rules in retro.css). */
+.model-note {
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  border: 1px solid var(--amber, #ffb000);
+  color: var(--amber, #ffb000);
+  font-size: 13px;
+}
+
+.model-note .link-button {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  box-shadow: none;
+  color: inherit;
+  font-size: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
