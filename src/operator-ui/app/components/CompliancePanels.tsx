@@ -8,6 +8,7 @@ import {
   type LocalMechanismId,
   type PackRequirement,
 } from "../../../compliance/schema.js";
+import { StatusCountLeds } from "./SummaryStrip";
 import { PACK_LABELS, STATUS_LABELS } from "../compliance-labels.js";
 
 function MechanismReference(props: { id: LocalMechanismId }) {
@@ -25,6 +26,14 @@ function MechanismReference(props: { id: LocalMechanismId }) {
   );
 }
 
+/**
+ * One requirement, expandable in place (UX depth pass): the header row —
+ * literal status badge, title, requirement id — is always visible; the
+ * mapping and mechanism detail collapse beneath it. Native
+ * details/summary keeps the collapsed content in the DOM (findable,
+ * copyable, test-assertable) with zero script. Expert defaults to open so
+ * the full mapping stays first-class at that depth.
+ */
 function RequirementRow(props: { pack: CompliancePack; requirement: PackRequirement; expert: boolean }) {
   const { requirement } = props;
   const hasEvidence = requirement.mechanismIds.length > 0 || requirement.evidencePath !== undefined;
@@ -34,36 +43,38 @@ function RequirementRow(props: { pack: CompliancePack; requirement: PackRequirem
       data-requirement-id={requirement.requirementId}
       data-status={requirement.status}
     >
-      <div className="req-head">
-        <span className="status-badge req-status" data-status={requirement.status}>
-          {STATUS_LABELS[requirement.status]}
-        </span>
-        <span className="req-title">{requirement.title}</span>
-        <code>{requirement.requirementId}</code>
-      </div>
-      {props.expert && (
-        <p className="req-mapping">
-          <code>
-            {props.pack.id}@{props.pack.version} → {requirement.requirementId} ←{" "}
-            {requirement.mechanismIds.length > 0
-              ? requirement.mechanismIds.join(" + ")
-              : "no local mechanism mapped"}{" "}
-            ({STATUS_LABELS[requirement.status]})
-          </code>
-        </p>
-      )}
-      {hasEvidence && (
-        <ul className="req-mechanisms">
-          {requirement.mechanismIds.map((id) => (
-            <MechanismReference key={id} id={id} />
-          ))}
-          {requirement.evidencePath && (
-            <li>
-              <code>{requirement.evidencePath}</code> <small>local evidence path</small>
-            </li>
-          )}
-        </ul>
-      )}
+      <details className="req-details" open={props.expert}>
+        <summary className="req-head">
+          <span className="status-badge req-status" data-status={requirement.status}>
+            {STATUS_LABELS[requirement.status]}
+          </span>
+          <span className="req-title">{requirement.title}</span>
+          <code>{requirement.requirementId}</code>
+        </summary>
+        {props.expert && (
+          <p className="req-mapping">
+            <code>
+              {props.pack.id}@{props.pack.version} → {requirement.requirementId} ←{" "}
+              {requirement.mechanismIds.length > 0
+                ? requirement.mechanismIds.join(" + ")
+                : "no local mechanism mapped"}{" "}
+              ({STATUS_LABELS[requirement.status]})
+            </code>
+          </p>
+        )}
+        {hasEvidence && (
+          <ul className="req-mechanisms">
+            {requirement.mechanismIds.map((id) => (
+              <MechanismReference key={id} id={id} />
+            ))}
+            {requirement.evidencePath && (
+              <li>
+                <code>{requirement.evidencePath}</code> <small>local evidence path</small>
+              </li>
+            )}
+          </ul>
+        )}
+      </details>
     </li>
   );
 }
@@ -71,8 +82,10 @@ function RequirementRow(props: { pack: CompliancePack; requirement: PackRequirem
 /**
  * Compliance packs surface (Advanced and Expert — spec mode matrix, D3
  * row). Per-framework panels with per-requirement status rows; the
- * disclaimer is rendered inline, zero interactions away. Expert adds the
- * pack version and the explicit requirement-to-control mapping line.
+ * disclaimer is rendered inline, zero interactions away. Each framework
+ * header carries its own ALIGNED/GAP/UNKNOWN count strip (counts only,
+ * never scores); Expert adds the pack version and the explicit
+ * requirement-to-control mapping line.
  * Status labels come from STATUS_LABELS keyed by the requirement's own
  * status — an UNKNOWN requirement cannot render an Aligned label.
  */
@@ -90,6 +103,9 @@ export function CompliancePanels(props: { level: ExperienceLevel }) {
             {PACK_LABELS[pack.id]}
             {expert ? <code> @{pack.version}</code> : ""}
           </h3>
+          <p className="pack-counts" data-pack-header-counts={pack.id}>
+            <StatusCountLeds requirements={pack.requirements} />
+          </p>
           <ul className="pack-requirements">
             {pack.requirements.map((requirement) => (
               <RequirementRow

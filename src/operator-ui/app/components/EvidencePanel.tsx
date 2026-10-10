@@ -10,11 +10,21 @@ import { StatusLed } from "./StatusLed";
  * output — exactly what GET /state provides.
  *
  * The completed-run summary line sits at the top of the panel: what ran plus
- * the literal verification result. The workflow title comes from the server's
- * JobState; the scenario id is client knowledge only (the server response
- * never carries it), so it renders only when the console actually knows it —
- * absent after a reload, never guessed.
+ * the literal verification result. The scenario id is client knowledge only
+ * (GET /state never carries it), so it renders only when the console actually
+ * knows it — absent after a reload, never guessed.
+ *
+ * Before any run, the guided empty state (below) replaces the bare
+ * "IDLE / NOT_RUN / No scenario executed yet." display: it says what a run
+ * produces and where results land, in plain words. Honest by construction —
+ * it promises only what this panel actually shows, nothing more.
  */
+const EMPTY_STATE_PRODUCE = [
+  "The workflow executes on this machine and reports its progress here.",
+  "Every run states its evidence basis — what produced the result and what it never touched.",
+  "Results land in this panel only: a sanitized output summary on this screen, records kept locally.",
+] as const;
+
 export interface EvidencePanelProps {
   jobState: JobState | null;
   formError: string | null;
@@ -30,7 +40,11 @@ export const EvidencePanel = forwardRef<HTMLElement, EvidencePanelProps>(
     const basis = jobState
       ? jobState.evidenceBasis
       : "Choose a workflow to view its evidence classification.";
-    const output = props.formError ?? jobState?.output ?? "No scenario executed yet.";
+    const output = props.formError ?? jobState?.output ?? "";
+    // Guided empty state: nothing has run, nothing failed, and the session
+    // is healthy. Any real signal (error, unavailable session, a run) takes
+    // the literal display instead.
+    const empty = !props.sessionUnavailable && !props.formError && status === "IDLE";
     return (
       <section className="panel advanced-only" id="evidence" ref={ref}>
         <h2>Execution and evidence</h2>
@@ -42,14 +56,27 @@ export const EvidencePanel = forwardRef<HTMLElement, EvidencePanelProps>(
               : ""}
           </p>
         )}
-        <StatusLed status={props.sessionUnavailable ? "UNAVAILABLE" : status} />
-        <p className="evidence-basis" aria-live="polite">
-          {basis}
-        </p>
-        <div className="line" />
-        <div className="output" aria-live="polite">
-          {output}
-        </div>
+        {empty ? (
+          <div className="empty-state" data-testid="evidence-empty">
+            <p className="empty-title">No run yet — here is what one produces.</p>
+            <ul className="empty-steps">
+              {EMPTY_STATE_PRODUCE.map((line) => (
+                <li key={line}>{line}</li>
+              ))}
+            </ul>
+          </div>
+        ) : (
+          <>
+            <StatusLed status={props.sessionUnavailable ? "UNAVAILABLE" : status} />
+            <p className="evidence-basis" aria-live="polite">
+              {basis}
+            </p>
+            <div className="line" />
+            <div className="output" aria-live="polite">
+              {output || "No output recorded."}
+            </div>
+          </>
+        )}
       </section>
     );
   },

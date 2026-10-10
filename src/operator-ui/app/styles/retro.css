@@ -272,6 +272,20 @@ button[data-running="true"] {
   font-size: 8px;
 }
 
+/* One-time protection card — the dismiss control stays quiet, arcade
+   chrome but not a call to action. */
+.protection-dismiss {
+  background: transparent;
+  border: 1px solid var(--phosphor-dim);
+  box-shadow: 2px 2px 0 rgba(0, 0, 0, 0.65);
+  color: #8fd8ab;
+}
+
+.protection-dismiss:hover {
+  border-color: var(--phosphor);
+  color: var(--phosphor);
+}
+
 .card {
   border: 2px solid var(--phosphor-dim);
   box-shadow: 3px 3px 0 rgba(0, 0, 0, 0.65);

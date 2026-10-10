@@ -5,19 +5,36 @@ import { PACK_LABELS, STATUS_LABELS } from "../compliance-labels.js";
 
 const STATUS_ORDER: ReadonlyArray<ControlStatus> = ["ALIGNED", "GAP", "UNKNOWN"];
 
-function countByStatus(requirements: ReadonlyArray<{ status: ControlStatus }>, status: ControlStatus): number {
+function countByStatus(
+  requirements: ReadonlyArray<{ status: ControlStatus }>,
+  status: ControlStatus,
+): number {
   return requirements.filter((requirement) => requirement.status === status).length;
 }
 
 /**
- * At-a-glance counts (UX depth pass): connector counts by family and
- * per-framework requirement counts by status, rendered as LED readouts.
- *
- * Counts only, never scores: each chip is the literal count of requirements
- * holding that exact status, labeled with the same literal vocabulary the
- * requirement rows use (STATUS_LABELS). No aggregate, rank, or progress
- * number is computed anywhere, and nothing here decorates an outcome.
+ * Per-status count LEDs shared by the summary strip and the compliance pack
+ * headers (UX depth pass). Counts only, never scores: each chip is the
+ * literal count of requirements holding that exact status, labeled with the
+ * same literal vocabulary the requirement rows use (STATUS_LABELS). No
+ * aggregate, rank, or progress number is computed, and nothing here
+ * decorates an outcome.
  */
+export function StatusCountLeds(props: {
+  requirements: ReadonlyArray<{ status: ControlStatus }>;
+}) {
+  return (
+    <>
+      {STATUS_ORDER.map((status) => (
+        <span className="strip-led" data-status={status} key={status}>
+          <b>{countByStatus(props.requirements, status)}</b> {STATUS_LABELS[status]}
+        </span>
+      ))}
+    </>
+  );
+}
+
+/** At-a-glance counts: connectors by family, requirements per framework. */
 export function SummaryStrip() {
   const agentBuilders = TARGET_CONNECTORS.filter(
     (connector) => connector.family === "AGENT_BUILDER",
@@ -37,11 +54,7 @@ export function SummaryStrip() {
       {COMPLIANCE_PACKS.map((pack) => (
         <p className="strip-group" key={pack.id} data-pack-counts={pack.id}>
           <span className="strip-label">{PACK_LABELS[pack.id]}</span>
-          {STATUS_ORDER.map((status) => (
-            <span className="strip-led" data-status={status} key={status}>
-              <b>{countByStatus(pack.requirements, status)}</b> {STATUS_LABELS[status]}
-            </span>
-          ))}
+          <StatusCountLeds requirements={pack.requirements} />
         </p>
       ))}
     </div>

@@ -11,6 +11,7 @@ import { ConnectorNotice } from "./components/ConnectorNotice";
 import { EvidencePanel } from "./components/EvidencePanel";
 import { ExpertReference } from "./components/ExpertReference";
 import { LevelSwitcher } from "./components/LevelSwitcher";
+import { ProtectionCard } from "./components/ProtectionCard";
 import { SectionNav } from "./components/SectionNav";
 import { WorkflowForm } from "./components/WorkflowForm";
 import { readStoredLevel, storeLevel } from "./level-storage";
@@ -125,6 +126,7 @@ export function OperatorApp(props: OperatorAppProps) {
             onLaunch={launch}
           />
         )}
+        {level === "BEGINNER" && <ProtectionCard />}
         {level === "BEGINNER" && <ConnectorNotice />}
         {level === "BEGINNER" && <CompliancePosture />}
         {level !== "BEGINNER" && (
