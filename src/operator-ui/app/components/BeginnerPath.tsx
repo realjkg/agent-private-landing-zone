@@ -20,6 +20,7 @@ const BEGINNER_STATUS_LINES: Record<JobState["status"], string> = {
 export function BeginnerPath(props: {
   jobState: JobState | null;
   busy: boolean;
+  sessionUnavailable: boolean;
   onLaunch: (mode: OperatorMode) => void;
 }) {
   const statusLine = props.jobState
@@ -33,7 +34,9 @@ export function BeginnerPath(props: {
     <section className="panel beginner-only" aria-label="Recommended next steps">
       <h2>What would you like to do?</h2>
       <p className="beginner-status" role="status" aria-live="polite">
-        {statusLine}
+        {props.sessionUnavailable
+          ? "This console lost its local session — close it and start it again."
+          : statusLine}
       </p>
       <div className="beginner-cards">
         <button
@@ -59,6 +62,13 @@ export function BeginnerPath(props: {
       </div>
       <p className="beginner-proof" role="status" aria-live="polite">
         {proofLine}
+      </p>
+      <p>
+        <small>
+          Live-model choices require installed models on this machine. AWS evidence is
+          synthetic. Terraform plans and infrastructure ACT are not available from this
+          workspace.
+        </small>
       </p>
       <p>
         <small>

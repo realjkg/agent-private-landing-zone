@@ -16,6 +16,8 @@ export type OperatorAppProps = {
   scenarioIds: readonly string[];
   /** Test seam: initial job state. Production runs always start null. */
   initialJobState?: JobState | null;
+  /** Test seam: initial level. Production reads localStorage (default BEGINNER). */
+  initialLevel?: ExperienceLevel;
 };
 
 /**
@@ -24,7 +26,9 @@ export type OperatorAppProps = {
  * run posts exactly mode, scenario and the CSRF token.
  */
 export function OperatorApp(props: OperatorAppProps) {
-  const [level, setLevel] = useState<ExperienceLevel>(readStoredLevel);
+  const [level, setLevel] = useState<ExperienceLevel>(
+    props.initialLevel ? parseExperienceLevel(props.initialLevel) : readStoredLevel,
+  );
   const [jobState, setJobState] = useState<JobState | null>(props.initialJobState ?? null);
   const [mode, setMode] = useState<OperatorMode>("matrix-offline");
   const [scenario, setScenario] = useState("all");
@@ -94,26 +98,38 @@ export function OperatorApp(props: OperatorAppProps) {
           Explore governed landing-zone assessments, review private-model findings, and verify safe
           infrastructure previews. No deployments, cloud changes or automatic approvals.
         </p>
-        <BeginnerPath jobState={jobState} busy={running} onLaunch={launch} />
-        <section className="panel advanced-only">
-          <h2>Choose a workflow</h2>
-          <WorkflowForm
-            mode={mode}
-            scenario={scenario}
-            scenarioIds={props.scenarioIds}
-            running={running}
-            onModeChange={setMode}
-            onScenarioChange={setScenario}
-            onSubmit={() => void launch(mode, scenario)}
+        {/* Conditional rendering (not CSS hiding) keeps the D1 ceiling literal:
+            at Beginner the advanced/expert markup does not exist in the tree. */}
+        {level === "BEGINNER" && (
+          <BeginnerPath
+            jobState={jobState}
+            busy={running}
+            sessionUnavailable={sessionUnavailable}
+            onLaunch={launch}
           />
-        </section>
-        <ExpertReference scenarioIds={props.scenarioIds} />
-        <EvidencePanel
-          level={level}
-          jobState={jobState}
-          formError={formError}
-          sessionUnavailable={sessionUnavailable}
-        />
+        )}
+        {level !== "BEGINNER" && (
+          <section className="panel advanced-only">
+            <h2>Choose a workflow</h2>
+            <WorkflowForm
+              mode={mode}
+              scenario={scenario}
+              scenarioIds={props.scenarioIds}
+              running={running}
+              onModeChange={setMode}
+              onScenarioChange={setScenario}
+              onSubmit={() => void launch(mode, scenario)}
+            />
+          </section>
+        )}
+        {level === "EXPERT" && <ExpertReference scenarioIds={props.scenarioIds} />}
+        {level !== "BEGINNER" && (
+          <EvidencePanel
+            jobState={jobState}
+            formError={formError}
+            sessionUnavailable={sessionUnavailable}
+          />
+        )}
         <p className="footer">
           Localhost-only session • One run at a time • ACT permanently disabled in this accelerator
           release. Offline results cannot qualify live models, live-cloud discovery or a real
