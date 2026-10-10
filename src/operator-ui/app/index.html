@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Sovereign ALZ — Local Operator</title>
+  </head>
+  <body>
+    <!-- Scenario ids are frozen at build time by scripts/prerender-ui.tsx;
+         the browser reads them before mounting (see main.tsx). -->
+    <div id="root" data-scenario-ids=""></div>
+    <!-- CSRF carrier: the local server replaces __ALZ_CSRF_TOKEN__ with the
+         per-session token at serve time. Lives outside #root so the React
+         mount never removes it; the app reads it for POST /run. -->
+    <input type="hidden" name="token" value="__ALZ_CSRF_TOKEN__" data-operator-csrf />
+    <script type="module" src="/main.tsx"></script>
+  </body>
+</html>

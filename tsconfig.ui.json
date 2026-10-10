@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "useDefineForClassFields": true,
+    "types": ["node", "vite/client"]
+  },
+  "include": [
+    "src/operator-ui/app/**/*.ts",
+    "src/operator-ui/app/**/*.tsx",
+    "scripts/prerender-ui.tsx",
+    "vite.config.ts",
+    "vitest.config.ts",
+    "test/*.test.tsx"
+  ]
+}
