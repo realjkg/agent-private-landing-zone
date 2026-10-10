@@ -1,0 +1,83 @@
+{
+  "schemaVersion": 1,
+  "rule": "Every file under test/fixtures/live (except this manifest and README.md) must be listed here with the exact tool, version and command that produced it. Captures must be sanitized (see README.md); test/teardown-live-fixtures.test.ts enforces both.",
+  "captures": [
+    {
+      "file": "terraform/aws-log-group.default.main.tf",
+      "engine": "TERRAFORM",
+      "tool": "terraform 1.16.5 linux_amd64",
+      "command": "renderAwsTerraformCandidate(reviewed) -> terraform init -backend=false; terraform fmt -check; terraform validate",
+      "capturedAt": "2026-10-10",
+      "mode": "REAL_TOOL_OFFLINE",
+      "verified": "terraform fmt -check and validate both passed on exactly this file"
+    },
+    {
+      "file": "terraform/aws-log-group.tagged.main.tf",
+      "engine": "TERRAFORM",
+      "tool": "terraform 1.16.5 linux_amd64",
+      "command": "renderAwsTerraformCandidate(reviewed, provenanceTags(buildId, stateRef, expires 2026-12-31)) -> terraform init -backend=false; terraform fmt -check; terraform validate",
+      "capturedAt": "2026-10-10",
+      "mode": "REAL_TOOL_OFFLINE",
+      "verified": "terraform fmt -check and validate both passed on exactly this file"
+    },
+    {
+      "file": "terraform/aws-log-group.default.create.plan.json",
+      "engine": "TERRAFORM",
+      "tool": "terraform 1.16.5 linux_amd64 + hashicorp/aws 6.68.0",
+      "command": "terraform plan -input=false -refresh=false -lock=false -out=P; terraform show -json P  (config: aws-log-group.default.main.tf)",
+      "capturedAt": "2026-10-10",
+      "mode": "REAL_TOOL_OFFLINE",
+      "credentials": "dummy static keys, provider skip_* flags via an override file; no AWS API was contacted",
+      "provenance": "provider zip and terraform zip downloaded from releases.hashicorp.com and verified against the published SHA256SUMS (signature not verified)"
+    },
+    {
+      "file": "terraform/aws-log-group.tagged.create.plan.json",
+      "engine": "TERRAFORM",
+      "tool": "terraform 1.16.5 linux_amd64 + hashicorp/aws 6.68.0",
+      "command": "same as above (config: aws-log-group.tagged.main.tf)",
+      "capturedAt": "2026-10-10",
+      "mode": "REAL_TOOL_OFFLINE",
+      "credentials": "dummy static keys, provider skip_* flags via an override file; no AWS API was contacted"
+    },
+    {
+      "file": "terraform/aws-log-group.tagged-default-tags.create.plan.json",
+      "engine": "TERRAFORM",
+      "tool": "terraform 1.16.5 linux_amd64 + hashicorp/aws 6.68.0",
+      "command": "same as above, plus provider default_tags { Org = example-org } in the override file",
+      "capturedAt": "2026-10-10",
+      "mode": "REAL_TOOL_OFFLINE",
+      "credentials": "dummy static keys, provider skip_* flags via an override file; no AWS API was contacted"
+    },
+    {
+      "file": "terraform/lifecycle.create.plan.json",
+      "engine": "TERRAFORM",
+      "tool": "terraform 1.16.5 linux_amd64 (built-in terraform_data; no provider)",
+      "command": "terraform plan -out=P; terraform show -json P  (3 terraform_data resources, empty state)",
+      "capturedAt": "2026-10-10",
+      "mode": "REAL_TOOL_OFFLINE"
+    },
+    {
+      "file": "terraform/lifecycle.mixed.plan.json",
+      "engine": "TERRAFORM",
+      "tool": "terraform 1.16.5 linux_amd64 (built-in terraform_data; no provider)",
+      "command": "after a local apply of lifecycle.create: change one input (update), a triggers_replace (replace), add one resource (create), leave one alone (no-op); terraform plan; show -json",
+      "capturedAt": "2026-10-10",
+      "mode": "REAL_TOOL_OFFLINE"
+    },
+    {
+      "file": "terraform/lifecycle.destroy.plan.json",
+      "engine": "TERRAFORM",
+      "tool": "terraform 1.16.5 linux_amd64 (built-in terraform_data; no provider)",
+      "command": "terraform plan -destroy -out=P; terraform show -json P  (state from the local apply above)",
+      "capturedAt": "2026-10-10",
+      "mode": "REAL_TOOL_OFFLINE"
+    }
+  ],
+  "stillNeeded": [
+    "pulumi/*.preview.json: real `pulumi preview --json` (create, and --destroy) — Pulumi CLI could not be installed in the build sandbox",
+    "aws/*.change-set.json: real `aws cloudformation describe-change-set` created WITH --include-property-values, and one WITHOUT",
+    "aws/*.tagging-get-resources.json: real `aws resourcegroupstaggingapi get-resources`, including a paginated page with a PaginationToken",
+    "azure/*.what-if.json: real `az deployment group what-if --no-pretty-print`",
+    "azure/*.resource-list.json: real `az resource list`, including a resource whose tags are null"
+  ]
+}

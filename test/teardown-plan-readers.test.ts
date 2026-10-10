@@ -231,6 +231,10 @@ test("inventories: AWS and Azure listings become tag-only, never-authoritative r
     ownership: "UNKNOWN", mutationPolicy: "READ_ONLY", sourceOfTruth: "UNKNOWN",
   });
   assert.equal(parseAwsTaggedResources(awsList([], "next-page")).complete, false);
+  // `aws ... --max-items N` truncates with a CLI-level NextToken, not the service's PaginationToken.
+  assert.equal(parseAwsTaggedResources(JSON.stringify({
+    ResourceTagMappingList: [], PaginationToken: "", NextToken: "eyJNYXJrZXIiOm51bGx9",
+  })).complete, false);
   assert.throws(() => parseAwsTaggedResources("{}"), /TAGGED_INVENTORY_INVALID/);
 
   const azure = parseAzureTaggedResources(JSON.stringify([

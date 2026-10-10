@@ -189,6 +189,7 @@ export function parseAwsTaggedResources(json: string): TaggedInventory {
   const body = JSON.parse(json) as {
     ResourceTagMappingList?: unknown;
     PaginationToken?: unknown;
+    NextToken?: unknown;
   };
   if (!Array.isArray(body.ResourceTagMappingList)) {
     throw new Error("TAGGED_INVENTORY_INVALID: ResourceTagMappingList missing");
@@ -216,10 +217,11 @@ export function parseAwsTaggedResources(json: string): TaggedInventory {
       ...inventoried,
     });
   }
-  return {
-    resources,
-    complete: typeof body.PaginationToken !== "string" || body.PaginationToken === "",
-  };
+  // Two different truncation markers: the service's own PaginationToken, and
+  // the AWS CLI's top-level NextToken that `--max-items` adds. Either one
+  // means pages are missing, so the listing cannot prove there are no orphans.
+  const more = (token: unknown) => typeof token === "string" && token !== "";
+  return { resources, complete: !more(body.PaginationToken) && !more(body.NextToken) };
 }
 
 /** `az resource list` output (optionally `--tag alz-managed-by=alz`). */

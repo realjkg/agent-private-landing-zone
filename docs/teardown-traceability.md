@@ -95,6 +95,8 @@ Before this decision, nothing ALZ generated recorded what it created:
 | CloudFormation | `aws cloudformation describe-change-set ...` for a change set created with `--include-property-values` | no native stack-deletion preview; supply a Remove-only change set if you can produce one |
 | Bicep | `az deployment <scope> what-if --no-pretty-print` | supply a Delete-only what-if if you can produce one |
 
+Reader behavior is checked against **real captured output** in `test/fixtures/live/` (Terraform so far; Pulumi, CloudFormation and Azure captures are still needed and are smoke-tested automatically when added). What is verified and what is still an assumption is listed in `docs/teardown-cli-quirks.md`.
+
 How each preview shows tags decides what a reader can prove:
 
 - **Terraform/OpenTofu** plans list every attribute, so a missing `tags` is a real signal.
