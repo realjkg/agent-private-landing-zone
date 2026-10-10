@@ -102,7 +102,13 @@ test("credentials arrive only through an explicit, named identity and only if th
   assert.equal(fingerprint(parent, "AWS_ACCESS_KEY_ID", "STATE"), sha("AKIASTATE0000000001"));
   assert.equal(fingerprint(parent, "AWS_ACCESS_KEY_ID"), sha("AKIADISCOVERY000001"));
   assert.equal(fingerprint({ ALZ_STATE_AWS_ACCESS_KEY_ID: "AKIASTATE0000000001" }, "AWS_ACCESS_KEY_ID"), "absent");
-  assert.throws(() => childEnv(parent, { identity: "bad-name" }), /CHILD_IDENTITY_INVALID/);
+  // Only DISCOVERY and STATE exist; anything else is refused before a process starts.
+  for (const identity of ["bad-name", "DEPLOY", "OPERATOR"]) {
+    const refused = run(PRINT_ENV, parent, { identity });
+    assert.equal(refused.blocked, true, identity);
+    assert.match(refused.reason ?? "", /Unknown execution identity/);
+    assert.equal(refused.stdout, "");
+  }
 });
 
 test("a profile can never make PATH, HOME, loader or interpreter variables injectable", () => {

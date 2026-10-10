@@ -53,13 +53,13 @@ export ALZ_TOOL_DIRS=/opt/tools/bin
 
 A refused variable is reported by name in the tool result (`refusedEnvironment`), never by value, so a denial says what to fix.
 
-The identity name is `[A-Z][A-Z0-9]{1,15}`. `DISCOVERY` is the only one existing consumers use. `STATE` is reserved for the state-reader identity (build step 2); the separation between them is already enforced: a variable set for one identity is never delivered under another.
+The identity name is `[A-Z][A-Z0-9]{1,15}`. `DISCOVERY` is the only one existing consumers use. `STATE` is the state-reader identity. Only these two names are accepted, and a variable set for one is never delivered under the other. See `docs/identity-and-execution-contracts.md`.
 
 ## What this does not do
 
 Be exact about the limits.
 
-- **Environment minimization is not isolation.** A tool that runs project code (a Terraform provider or `external` data source, a Pulumi program, CDK synth, Ansible, Crossplane functions) runs with that tool's own privileges and whatever identity it was given. This change removes ambient authority from the child; it does not sandbox what the child does with its authority. The execution-permission gate for executable plans is build step 2.
+- **Environment minimization is not isolation.** A tool that runs project code (a Terraform provider or `external` data source, a Pulumi program, CDK synth, Ansible, Crossplane functions) runs with that tool's own privileges and whatever identity it was given. This change removes ambient authority from the child; it does not sandbox what the child does with its authority. The execution-permission gate for executable plans is in `docs/identity-and-execution-contracts.md`.
 - **Network confinement.** The runner can refuse an unapproved endpoint *override*, but a child can still open connections to anywhere the host allows. Real confinement needs the container or egress layer.
 - **Process count, memory and CPU.** Node's `spawnSync` cannot cap how many processes a child starts or how much it uses. The Docker runtime (`compose.yaml`) already sets `read_only`, a `tmpfs` for `/tmp`, `cap_drop: ALL` and `no-new-privileges`, but it sets **no** `pids_limit`, memory, CPU or network limit. Adding those is a deployment decision with real numbers; it is recommended and not done here.
 - **Executables are trusted once found.** Resolution only controls *where* a binary comes from. It does not verify the binary's identity or version; version pinning belongs to qualification.

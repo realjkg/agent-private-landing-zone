@@ -7,6 +7,10 @@ import {
   sep,
 } from "node:path";
 import {
+  PROJECT_CODE_TOOLS,
+  projectCodeDenial,
+} from "./execution-permission.js";
+import {
   runAllowlistedProcess,
 } from "./process.js";
 
@@ -245,20 +249,13 @@ export function executeTool(
   }
 
   if (
-    [
-      "pulumi_preview",
-      "cdk_synth",
-      "cdk_preview",
-      "ansible_syntax_check",
-      "ansible_preview",
-      "crossplane_preview",
-    ].includes(request.tool) &&
+    PROJECT_CODE_TOOLS.has(request.tool) &&
     context.allowProjectCodeExecution !==
       true
   ) {
     return blocked(
       request,
-      "This tool loads project code or plug-ins. Explicit project-code execution capability is required.",
+      projectCodeDenial(request.tool),
     );
   }
 

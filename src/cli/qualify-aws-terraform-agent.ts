@@ -110,8 +110,9 @@ async function main(): Promise<void> {
       if (!process.env.TF_VAR_aws_region) {
         throw new Error("TF_VAR_aws_region_REQUIRED_FOR_PLAN");
       }
-      // Explicit operator opt-in; adapter executes terraform plan only (never apply).
-      const planned = adapter.preview({ ...context, allowCloudRead: true });
+      // Explicit operator opt-in (--plan): a plan runs provider code, so this grants
+      // PROJECT_CODE_EXECUTION for this call only. It never grants apply or destroy.
+      const planned = adapter.preview({ ...context, allowCloudRead: true, allowProjectCodeExecution: true });
       if (!planned.ok) throw new Error("TERRAFORM_PREVIEW_PLAN_FAILED");
       const raw = checked("terraform", ["show", "-json", ".agentic-preview.tfplan"], cwd);
       const normalized = normalizeTerraformPlan(raw);
