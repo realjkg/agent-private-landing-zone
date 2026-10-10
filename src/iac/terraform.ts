@@ -1,4 +1,5 @@
 import type { IaCAdapter } from "./types.js";
+import { planBlocked } from "../tools/execution-permission.js";
 import { runAllowlistedProcess } from "../tools/process.js";
 
 export const terraformAdapter: IaCAdapter = {
@@ -31,13 +32,15 @@ export const terraformAdapter: IaCAdapter = {
   },
 
   preview(context) {
+    if (context.allowProjectCodeExecution !== true) {
+      return planBlocked("terraform_plan");
+    }
     return runAllowlistedProcess(
       "terraform_plan",
       "terraform",
       [
         "plan",
         "-input=false",
-        "-lock=false",
         "-refresh=false",
         "-out=.agentic-preview.tfplan",
       ],

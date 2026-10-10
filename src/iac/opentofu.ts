@@ -1,4 +1,5 @@
 import type { IaCAdapter } from "./types.js";
+import { planBlocked } from "../tools/execution-permission.js";
 import { runAllowlistedProcess } from "../tools/process.js";
 
 export const opentofuAdapter: IaCAdapter = {
@@ -31,13 +32,15 @@ export const opentofuAdapter: IaCAdapter = {
   },
 
   preview(context) {
+    if (context.allowProjectCodeExecution !== true) {
+      return planBlocked("opentofu_plan");
+    }
     return runAllowlistedProcess(
       "opentofu_plan",
       "tofu",
       [
         "plan",
         "-input=false",
-        "-lock=false",
         "-refresh=false",
         "-out=.agentic-preview.tfplan",
       ],

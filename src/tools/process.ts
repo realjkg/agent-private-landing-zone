@@ -12,6 +12,7 @@ import {
   redactSecrets,
   resolveExecutable,
 } from "./child-env.js";
+import { type ExecutionIdentity, isExecutionIdentity } from "./identity.js";
 import { createChildSandbox } from "./private-workdir.js";
 import { PROFILES, type ProcessProfile } from "./profiles.js";
 import type { ToolResult } from "./types.js";
@@ -80,6 +81,12 @@ export function runBoundedProcess(
   if (!/^[A-Za-z0-9._-]+$/.test(executable) || args.some((arg) => typeof arg !== "string" || arg.includes("\0"))) {
     return failure(tool, command, "Executable or arguments rejected.", {
       blocked: true, reason: "Executable must be a bare name and arguments plain strings.",
+    });
+  }
+
+  if (options.identity !== undefined && !isExecutionIdentity(options.identity)) {
+    return failure(tool, command, "Unknown execution identity.", {
+      blocked: true, reason: "Unknown execution identity. Only DISCOVERY and STATE exist.",
     });
   }
 
@@ -176,6 +183,7 @@ export function runAllowlistedProcess(
   executable: string,
   args: string[],
   cwd: string,
+  identity?: ExecutionIdentity,
 ): ToolResult {
   const profile = PROFILES[executable];
   if (profile === undefined) {
@@ -183,5 +191,5 @@ export function runAllowlistedProcess(
       blocked: true, reason: "Executable has no process profile.",
     });
   }
-  return runBoundedProcess(tool, executable, args, cwd, { profile });
+  return runBoundedProcess(tool, executable, args, cwd, { profile, identity });
 }

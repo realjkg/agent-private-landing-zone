@@ -35,7 +35,7 @@ test("the qualification guard sees destroy-mode and auto-approve flags, not just
     assert.equal(dangerousPreviewCommand(command(...flagged)), true, flagged.join(" "));
   }
   for (const benign of [
-    ["terraform", "plan", "-input=false", "-lock=false", "-refresh=false", "-out=.agentic-preview.tfplan"],
+    ["terraform", "plan", "-input=false", "-refresh=false", "-out=.agentic-preview.tfplan"],
     ["pulumi", "preview", "--non-interactive", "--diff"],
     ["aws", "sts", "get-caller-identity", "--output", "json"],
     ["az", "deployment", "group", "what-if", "--no-pretty-print"],
@@ -50,19 +50,21 @@ test("adapter previews pass exactly these arguments: no destroy, apply, target o
   process.env.PATH = ""; // hermetic: no tool can run, and the attempted command is still recorded
   const cwd = mkdtempSync(join(tmpdir(), "alz-argv-"));
   try {
-    const context = { cwd, allowCloudRead: true, allowMutation: false as const };
+    const context = { cwd, allowCloudRead: true, allowProjectCodeExecution: true, allowMutation: false as const };
     const argv = (engine: "TERRAFORM" | "OPENTOFU" | "PULUMI") => {
       const result = getIaCAdapter(engine).preview(context);
       assert.ok(result.command, engine + " recorded no command");
       return result.command;
     };
     assert.deepEqual(argv("TERRAFORM"),
-      ["terraform", "plan", "-input=false", "-lock=false", "-refresh=false", "-out=.agentic-preview.tfplan"], REVIEW);
+      ["terraform", "plan", "-input=false", "-refresh=false", "-out=.agentic-preview.tfplan"], REVIEW);
     assert.deepEqual(argv("OPENTOFU"),
-      ["tofu", "plan", "-input=false", "-lock=false", "-refresh=false", "-out=.agentic-preview.tfplan"], REVIEW);
+      ["tofu", "plan", "-input=false", "-refresh=false", "-out=.agentic-preview.tfplan"], REVIEW);
     assert.deepEqual(argv("PULUMI"), ["pulumi", "preview", "--non-interactive", "--diff"], REVIEW);
     for (const engine of ["TERRAFORM", "OPENTOFU", "PULUMI"] as const) {
       assert.equal(dangerousPreviewCommand(command(...argv(engine))), false, engine);
+      // Locking stays on: no preview may switch it off to look "read-only".
+      assert.ok(!argv(engine).some((arg) => /^-lock(=|$)/.test(arg)), engine + " must not pass -lock");
     }
   } finally {
     process.env.PATH = original;
