@@ -182,6 +182,8 @@ Day-to-day use is exposed through a small operator launcher rather than npm scri
 
 The source checkout still uses Node tooling internally, but the operator does not need to know the underlying npm script graph. `./alz prompts` and conversational `help` / `prompt guide` provide built-in self-help for unfamiliar operators. See [docs/operator-guide.md](docs/operator-guide.md).
 
+For the operational event stream, the `/healthz` `/readyz` `/metrics` endpoints, `./alz health`, alert rules, and monitoring export, see [docs/observability.md](docs/observability.md).
+
 ## Operator prompt safety
 
 Every conversational request passes a deterministic operator boundary before local-model routing. The boundary refuses secret disclosure, private-data exfiltration, governance/audit bypass, arbitrary shell execution, and clearly out-of-scope first-turn activity.
