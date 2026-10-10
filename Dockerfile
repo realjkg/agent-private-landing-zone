@@ -19,6 +19,7 @@ COPY test/ ./test/
 COPY config/ ./config/
 COPY policy/ ./policy/
 COPY compose.yaml ./compose.yaml
+COPY docs/ ./docs/
 COPY alz ./alz
 COPY .github/workflows/model-qualification.yml ./.github/workflows/model-qualification.yml
 
