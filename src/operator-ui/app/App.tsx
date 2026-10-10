@@ -129,6 +129,7 @@ export function OperatorApp(props: OperatorAppProps) {
         {level === "BEGINNER" && <ProtectionCard />}
         {level === "BEGINNER" && <ConnectorNotice />}
         {level === "BEGINNER" && <CompliancePosture />}
+        {level !== "BEGINNER" && <SectionNav />}
         {level !== "BEGINNER" && (
           <section className="panel advanced-only" id="workflow">
             <h2>Choose a workflow</h2>
