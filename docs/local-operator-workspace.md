@@ -12,6 +12,13 @@ From a source checkout that has completed the standard one-time `./alz bootstrap
 
 Open the displayed `http://127.0.0.1:8788` address **on the same machine**. Alternative local port: `ALZ_OPERATOR_PORT=8790 ./alz workspace`. No public listener, remote interface, password or internet portal is enabled.
 
+Bootstrap builds both the runtime and the console UI. At startup the workspace says what would block every run:
+
+- `SETUP INCOMPLETE — missing build output: …` — run `./alz bootstrap` (or `npm run build && npm run build:ui`), then restart.
+- `NOTE — this checkout has uncommitted changes` — every workflow refuses to run until changes are committed or stashed, so each evidence record names an exact commit. The console explains this when a run is blocked; it never relaxes it.
+
+The private-model workflows are switched off in the console when no local Ollama answers on the configured loopback address or the configured Qwen/Mistral models are not installed; the note under the workflow select names what is missing and offers **Check again**.
+
 ## Available guided tasks
 
 - **Explore scenarios (offline):** eight existing direct vs conversational ALZ workflows with deterministic fixture reasoning. No real models or provider plans.
