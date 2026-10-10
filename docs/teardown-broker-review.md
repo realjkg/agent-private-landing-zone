@@ -110,7 +110,7 @@ Made by the operator on 2026-10-10. They answer the six questions this review as
 
 **Build order:** (1) runner hardening; (2) identity and execution-permission contracts; (3) artifact binding and immutable-input handling; (4) the human-invoked driver and three engine adapters; (5) engine-specific qualification and denial-path tests. Each is its own change.
 
-**Progress:** steps 1 (`docs/runner-hardening.md`) and 2 (`docs/identity-and-execution-contracts.md`) are implemented.
+**Progress:** steps 1 (`docs/runner-hardening.md`), 2 (`docs/identity-and-execution-contracts.md`) and 3 (`docs/artifact-binding.md`) are implemented.
 
 The governing boundary: the operator authorizes the preview, the driver enforces the contract, and no preview capability grants authority to change infrastructure.
 
