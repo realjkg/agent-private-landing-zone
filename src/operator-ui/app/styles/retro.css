@@ -163,6 +163,19 @@ button:disabled {
   opacity: 1;
 }
 
+/* Run feedback: the submit button announces an in-flight run — amber LED,
+   steady under reduced motion. The label itself switches to "Running…". */
+button[data-running="true"] {
+  background: var(--amber);
+  border-color: var(--amber);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  button[data-running="true"] {
+    animation: led-pulse 1s steps(2) infinite;
+  }
+}
+
 /* LED readout: dot glows per status. The label is the literal job status. */
 .led {
   display: flex;
@@ -204,6 +217,72 @@ button:disabled {
 
 .led-label {
   font-size: 11px;
+  color: var(--phosphor);
+}
+
+/* Completed-run summary — the first line of the evidence panel. Literal
+   workflow title and verification status, no decoration. */
+.run-summary {
+  border-left: 3px solid var(--phosphor);
+  padding: 6px 0 6px 12px;
+}
+
+/* Sticky section nav — arcade anchor tabs. Sticks under the CRT overlay
+   (z-index 9); opaque background so page content never bleeds through. */
+.section-nav {
+  position: sticky;
+  top: 0;
+  z-index: 8;
+  background: var(--screen);
+  border-bottom: 1px solid var(--phosphor-dim);
+}
+
+.section-tab {
+  font-family: "Press Start 2P", ui-monospace, monospace;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #8fd8ab;
+  background: var(--cabinet);
+  border: 2px solid var(--phosphor-dim);
+  box-shadow: 3px 3px 0 rgba(0, 0, 0, 0.65);
+  padding: 8px 10px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.section-tab:hover,
+.section-tab:focus-visible {
+  border-color: var(--phosphor);
+  color: var(--phosphor);
+}
+
+/* LED readouts on the summary strip — same glow language as the status
+   badges, literal count labels. Counts only; no score is computed. */
+.strip-led::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  background: currentColor;
+  box-shadow: 0 0 6px currentColor;
+}
+
+.strip-label {
+  font-family: "Press Start 2P", ui-monospace, monospace;
+  font-size: 8px;
+}
+
+/* One-time protection card — the dismiss control stays quiet, arcade
+   chrome but not a call to action. */
+.protection-dismiss {
+  background: transparent;
+  border: 1px solid var(--phosphor-dim);
+  box-shadow: 2px 2px 0 rgba(0, 0, 0, 0.65);
+  color: #8fd8ab;
+}
+
+.protection-dismiss:hover {
+  border-color: var(--phosphor);
   color: var(--phosphor);
 }
 

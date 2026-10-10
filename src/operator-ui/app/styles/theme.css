@@ -218,14 +218,29 @@ code {
 .connector-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-  gap: 12px;
-  margin-top: 14px;
+  gap: 8px;
+  margin-top: 12px;
 }
 
 .connector-card {
   background: var(--bg);
   border: 1px solid var(--edge);
-  padding: 14px;
+  padding: 10px 12px;
+}
+
+/* Compact card header (density pass): id and badges on one scanning row,
+   before the body text. */
+.connector-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px 10px;
+  margin-bottom: 6px;
+}
+
+.connector-head h3 {
+  margin: 0;
 }
 
 .connector-card h3,
@@ -306,6 +321,37 @@ code {
   margin-top: 20px;
 }
 
+/* Pack header count strip (density pass): the framework's own
+   ALIGNED/GAP/UNKNOWN counts beside its name. Counts only. */
+.pack-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  margin: 2px 0 8px;
+}
+
+/* Expand-in-place requirement rows (density pass): native details/summary,
+   collapsed body at Advanced, open by default at Expert. */
+.req-details {
+  display: grid;
+  gap: 6px;
+}
+
+.req-head {
+  align-items: baseline;
+  cursor: pointer;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  list-style: none;
+}
+
+.req-head::-webkit-details-marker,
+.req-head::marker {
+  display: none;
+  content: "";
+}
+
 .pack-requirements {
   list-style: none;
   margin: 8px 0 0;
@@ -314,9 +360,8 @@ code {
 
 .requirement-row {
   border-top: 1px solid var(--edge);
-  display: grid;
   gap: 6px;
-  padding: 10px 0;
+  padding: 6px 0;
 }
 
 .req-head {
@@ -343,5 +388,132 @@ code {
   border: 1px solid var(--edge);
   margin: 12px 0 0;
   padding: 10px 12px;
+}
+
+/* Section nav + summary strip (UX depth pass). The tabs stick to the top of
+   the viewport on the long Advanced/Expert page; the strip is a sibling,
+   directly beneath. Anchored sections offset by the stuck-nav height. */
+.section-nav-region {
+  margin-top: 18px;
+}
+
+.section-nav {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 8px 0;
+}
+
+.summary-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  margin: 4px 0 0;
+}
+
+.strip-group {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  margin: 0;
+}
+
+.strip-label {
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.strip-led {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--edge);
+  font-size: 12px;
+  padding: 3px 9px;
+}
+
+.strip-led b {
+  color: inherit;
+  font-weight: 700;
+}
+
+/* Same honest color language as the status badges: green = proven locally,
+   amber = gap or simulation, dim = unknown. The label stays the literal
+   status word beside the count. */
+.strip-led[data-status="ALIGNED"] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.strip-led[data-status="GAP"] {
+  border-color: var(--amber, #ffb000);
+  color: var(--amber, #ffb000);
+}
+
+.strip-led[data-status="UNKNOWN"] {
+  border-color: var(--muted);
+  color: var(--muted);
+}
+
+/* Guided empty state (UX depth pass): what a run produces, where results
+   land. Rendered before any run, instead of the bare IDLE/NOT_RUN display. */
+.empty-state {
+  border: 1px dashed var(--edge);
+  padding: 16px 18px;
+}
+
+.empty-title {
+  font-weight: 650;
+  margin: 0 0 8px;
+}
+
+.empty-steps {
+  display: grid;
+  gap: 6px;
+  list-style: square;
+  margin: 0;
+  padding-left: 22px;
+}
+
+/* One-time beginner protection card (UX depth pass). */
+.protection-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.protection-head h2 {
+  margin: 0;
+}
+
+.protection-dismiss {
+  margin: 0;
+  font-size: 12px;
+  padding: 6px 10px;
+}
+
+.protection-points {
+  display: grid;
+  gap: 6px;
+  list-style: square;
+  margin: 10px 0 0;
+  padding-left: 22px;
+}
+
+#workflow,
+#evidence,
+#connectors,
+#compliance {
+  scroll-margin-top: 64px;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  html {
+    scroll-behavior: smooth;
+  }
 }
 

@@ -82,8 +82,14 @@ export function WorkflowForm(props: {
           Terraform plans and infrastructure ACT are not available from this workspace.
         </small>
       </p>
-      <button type="submit" id="start" disabled={props.running}>
-        Run selected workflow
+      <button
+        type="submit"
+        id="start"
+        disabled={props.running}
+        aria-busy={props.running}
+        data-running={props.running ? "true" : undefined}
+      >
+        {props.running ? "Running…" : "Run selected workflow"}
       </button>
     </form>
   );

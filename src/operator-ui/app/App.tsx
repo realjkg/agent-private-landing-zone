@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { parseExperienceLevel, type ExperienceLevel } from "../experience-level.js";
+import { prefersReducedMotion, scrollBehaviorFor, scrollIntoViewSafe } from "./motion";
 import { fetchJobState, requestRun, type JobState, type OperatorMode } from "./api";
 import { BeginnerPath } from "./components/BeginnerPath";
 import { CompliancePanels } from "./components/CompliancePanels";
@@ -10,6 +11,8 @@ import { ConnectorNotice } from "./components/ConnectorNotice";
 import { EvidencePanel } from "./components/EvidencePanel";
 import { ExpertReference } from "./components/ExpertReference";
 import { LevelSwitcher } from "./components/LevelSwitcher";
+import { ProtectionCard } from "./components/ProtectionCard";
+import { SectionNav } from "./components/SectionNav";
 import { WorkflowForm } from "./components/WorkflowForm";
 import { readStoredLevel, storeLevel } from "./level-storage";
 
@@ -39,6 +42,12 @@ export function OperatorApp(props: OperatorAppProps) {
   const [launching, setLaunching] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [sessionUnavailable, setSessionUnavailable] = useState(false);
+  // Scenario of the last accepted run, for the completed-run summary line.
+  // The server's JobState carries the workflow title but not the scenario id,
+  // so the client supplies the one fact only it knows — or none, after a
+  // reload, rather than guessing.
+  const [lastRunScenario, setLastRunScenario] = useState<string | null>(null);
+  const evidenceRef = useRef<HTMLElement | null>(null);
 
   const refresh = useCallback(async () => {
     const next = await fetchJobState();
@@ -77,12 +86,17 @@ export function OperatorApp(props: OperatorAppProps) {
       setFormError(null);
       const scenarioAvailable = nextMode === "matrix-offline" || nextMode === "matrix-live";
       const effectiveScenario = nextScenario ?? (scenarioAvailable ? scenario : "all");
+      // Run feedback at the point of action: bring the execution panel into
+      // view the moment a run starts (Advanced/Expert only — the panel does
+      // not exist at Beginner, where the beginner status line narrates).
+      scrollIntoViewSafe(evidenceRef.current, scrollBehaviorFor(prefersReducedMotion()));
       const outcome = await requestRun({
         mode: nextMode,
         scenario: effectiveScenario,
         token: props.csrfToken,
       });
       if (!outcome.accepted) setFormError(outcome.error ?? "Request denied");
+      else setLastRunScenario(effectiveScenario);
       await refresh();
       setLaunching(false);
     },
@@ -112,10 +126,12 @@ export function OperatorApp(props: OperatorAppProps) {
             onLaunch={launch}
           />
         )}
+        {level === "BEGINNER" && <ProtectionCard />}
         {level === "BEGINNER" && <ConnectorNotice />}
         {level === "BEGINNER" && <CompliancePosture />}
+        {level !== "BEGINNER" && <SectionNav />}
         {level !== "BEGINNER" && (
-          <section className="panel advanced-only">
+          <section className="panel advanced-only" id="workflow">
             <h2>Choose a workflow</h2>
             <WorkflowForm
               mode={mode}
@@ -134,6 +150,8 @@ export function OperatorApp(props: OperatorAppProps) {
             jobState={jobState}
             formError={formError}
             sessionUnavailable={sessionUnavailable}
+            runScenario={lastRunScenario}
+            ref={evidenceRef}
           />
         )}
         {level !== "BEGINNER" && <ConnectorGallery level={level} />}

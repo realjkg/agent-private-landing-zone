@@ -33,17 +33,21 @@ function ConnectorCard(props: { connector: TargetConnector; expert: boolean }) {
   const simulated = connector.family === "AGENT_BUILDER";
   return (
     <article className="connector-card" data-connector-id={connector.id} data-family={connector.family}>
-      <h3>{connector.id}</h3>
-      <p className="status-row">
-        <span className="status-badge" data-status={connector.status}>
-          {connector.status}
-        </span>
-        {simulated && (
-          <span className="status-badge" data-status="SIMULATED">
-            Simulated — synthetic evidence
+      {/* Compact header row: id and status badges scan before the body —
+          no reading required to see what the connector is and is not. */}
+      <header className="connector-head">
+        <h3>{connector.id}</h3>
+        <p className="status-row">
+          <span className="status-badge" data-status={connector.status}>
+            {connector.status}
           </span>
-        )}
-      </p>
+          {simulated && (
+            <span className="status-badge" data-status="SIMULATED">
+              Simulated — synthetic evidence
+            </span>
+          )}
+        </p>
+      </header>
       {props.expert && (
         <p className="connector-manifest">
           <small>
@@ -72,7 +76,7 @@ export function ConnectorGallery(props: { level: ExperienceLevel }) {
   const agentBuilders = TARGET_CONNECTORS.filter((connector) => connector.family === "AGENT_BUILDER");
   const environment = TARGET_CONNECTORS.filter((connector) => connector.family !== "AGENT_BUILDER");
   return (
-    <section className="panel advanced-only" aria-label="Connector gallery">
+    <section className="panel advanced-only" id="connectors" aria-label="Connector gallery">
       <h2>Connector gallery</h2>
       <p>
         <small>
