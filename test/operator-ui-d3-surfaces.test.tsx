@@ -12,6 +12,7 @@ import {
 import { ConnectorNotice } from "../src/operator-ui/app/components/ConnectorNotice";
 import { TARGET_CONNECTORS } from "../src/integration-sim/catalog";
 import { simulateConnection } from "../src/integration-sim/agent";
+import { COMPLIANCE_PACKS } from "../src/compliance/packs/index.js";
 
 // D3 UI — connector gallery surfaces. Component-level renders avoid the
 // app shell's /state polling; App-level tests stub fetch like
@@ -162,6 +163,44 @@ describe("compliance panels (advanced/expert)", () => {
       );
       expect(screen.getAllByText(/does not establish compliance/).length).toBeGreaterThan(0);
       view.unmount();
+    }
+  });
+});
+
+describe("unknown-status render assertion (D3 speech rule)", () => {
+  test("every UNKNOWN requirement in every pack renders Unknown and never Aligned", () => {
+    const { container } = render(<CompliancePanels level="ADVANCED" />);
+    let unknownRows = 0;
+    for (const pack of COMPLIANCE_PACKS) {
+      for (const requirement of pack.requirements) {
+        const row = container.querySelector(`[data-requirement-id="${requirement.requirementId}"]`);
+        expect(row).toBeTruthy();
+        expect(row?.getAttribute("data-status")).toBe(requirement.status);
+        const rowText = row?.textContent ?? "";
+        if (requirement.status === "UNKNOWN") {
+          unknownRows += 1;
+          expect(rowText).toContain("Unknown");
+          expect(/aligned/i.test(rowText)).toBe(false);
+        } else if (requirement.status === "ALIGNED") {
+          expect(rowText).toContain("Aligned");
+        } else {
+          expect(rowText).toContain("Gap");
+        }
+      }
+    }
+    // The sweep is only meaningful if it actually exercised UNKNOWN rows.
+    expect(unknownRows).toBeGreaterThan(0);
+  });
+
+  test("expert mapping lines keep the same rule: UNKNOWN renders Unknown", () => {
+    const { container } = render(<CompliancePanels level="EXPERT" />);
+    const unknownRows = Array.from(
+      container.querySelectorAll('.requirement-row[data-status="UNKNOWN"]'),
+    );
+    expect(unknownRows.length).toBeGreaterThan(0);
+    for (const row of unknownRows) {
+      expect(/aligned/i.test(row.textContent ?? "")).toBe(false);
+      expect(row.textContent).toContain("(Unknown)");
     }
   });
 });
