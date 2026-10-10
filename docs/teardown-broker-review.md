@@ -1,6 +1,6 @@
 # Tool-broker review: a destroy-preview runner
 
-**Status:** review for a decision. Nothing in this change adds authority. It tightens one guard, pins the current boundary with tests, and sets out what a destroy-preview runner would have to satisfy if you decide to build one. ACT remains DISABLED, and `DELETE_ALLOWED` remains forbidden.
+**Status:** decisions recorded (see [Decisions](#decisions-recorded)); where they differ from the analysis below, **the decisions govern**. Nothing in this change adds authority. It tightens one guard, pins the current boundary with tests, and sets out what a destroy-preview runner would have to satisfy if you decide to build one. ACT remains DISABLED, and `DELETE_ALLOWED` remains forbidden.
 
 Context: `docs/teardown-traceability.md`. Phase 1 can already *evaluate* a destroy plan against a recorded deletion unit (`./alz teardown destroy-preview`), but the plan must be produced by the operator's own engine run. This review asks whether ALZ should ever produce that plan itself, and under what controls.
 
@@ -30,8 +30,8 @@ Verified by reading the code (references are to `main` at the time of writing).
 | G3 | `runAllowlistedProcess` passes the **entire** process environment to the child (`...process.env`) and emits 160-character stdout excerpts to debug diagnostics (`process.ts`, `stdoutExcerpt`). | Open. Safe for today's tools; wrong for a runner whose output contains state values. See control 6. |
 | G4 | **`terraform show -json` of a destroy plan contains sensitive values in plaintext**, in `change.before` and in `prior_state`; `before_sensitive` only flags them. The saved plan file contains them too. The human-readable plan masks them as `(sensitive value)`. | **Verified empirically** with Terraform 1.16.5 (`test/fixtures/live/terraform/destroy-sensitive-values.plan.json`, a fake secret). The normalized change set keeps none of it (tested). |
 | G5 | The existing trusted driver `src/cli/real-private-build.ts` writes `.agentic-preview.tfplan` into its run folder (mode `0700`) and leaves it. For a create plan that is low risk; for a destroy plan it would hold the account's state. | Open. See control 5. |
-| G6 | `terraform_plan` is gated by `CLOUD_READ` only, not `PROJECT_CODE_EXECUTION`. Terraform plans load provider plugins and evaluate configuration, and the `external` data source runs a program at plan time. | Open, **pre-existing** and not specific to destroy. Behavior is from Terraform's documentation; I did not test it here. Reclassifying would change existing flows and needs its own decision. |
-| G7 | `-lock=false` (used today) tells Terraform not to take the state lock. On a remote backend, taking the lock writes to the backend, so omitting it is the right choice for a preview. I only saw that no lock file was left on a **local** backend, which is weak evidence; a remote backend was not tested. | The right choice for a preview, with a cost: the preview is a **point in time** and can be stale by authorization. See control 8. |
+| G6 | `terraform_plan` is gated by `CLOUD_READ` only, not `PROJECT_CODE_EXECUTION`. Terraform plans load provider plugins and evaluate configuration, and the `external` data source runs a program at plan time. | **Decided (Decision 5): the executable path will require `PROJECT_CODE_EXECUTION`.** Behavior is from Terraform's documentation; I did not test it here. |
+| G7 | `-lock=false` (used today) tells Terraform not to take the state lock. **Superseded by Decision 3: a governed destroy preview keeps locking on**, with the lock permission scoped separately from state read. Consequence to plan for: taking the lock is a write to the backend, so a preview can block on, or fail against, a running apply, and a stuck lock needs a defined timeout and operator path. I only saw that no lock file was left on a **local** backend with `-lock=false`; a remote backend was not tested. | The right choice for a preview, with a cost: the preview is a **point in time** and can be stale by authorization. See control 8. |
 
 ## What a destroy preview is, and is not
 
@@ -56,12 +56,12 @@ Each is testable. A future PR should carry a test for each, and the review of th
 
 1. **Fixed argument list, from constants.** Terraform/OpenTofu: `plan -destroy -input=false -lock=false -refresh=false -out=<fresh private path>`, then `show -json <that path>`. No caller-supplied arguments, no `-target`, `-replace`, `-var` or `-var-file` pass-through (`-target` would narrow a destroy and make a "READY" verdict misleading). Never the subcommands `destroy` or `apply`. Pin the exact list by test, as `test/destroy-preview-boundary.test.ts` now does for the existing previews.
 2. **Bound to a recorded, verified deletion unit.** The input is a `DeletionUnit` that passes `verifyDeletionUnit`, not free-form paths. The driver must prove the directory it plans is the unit's state container: workspace equals `stateRef.workspace` and the initialized backend matches `stateRef.location`. A mismatch is BLOCKED, never "previewed anyway".
-3. **Same code as the build.** The configuration hash must equal the build artifact's content hash, or the preview describes different code from what created the resources.
+3. **Artifact manifest.** *Superseded by Decision 6:* a manifest of the actual execution inputs, validated before execution, run from an immutable snapshot, failing closed on any mismatch.
 4. **Opt-in and gated like the existing driver.** Explicit environment opt-ins (a pair like `ALZ_ALLOW_REAL_PRIVATE_BUILD` / `ALZ_ALLOW_TERRAFORM_PLAN`), a clean commit, and the compromise-state policy evaluated for `CLOUD_READ` **and** `PROJECT_CODE_EXECUTION` (G6). Refused in any non-NORMAL compromise state.
 5. **Secret handling for the artifacts.** Run in a fresh `0700` directory; write the plan file only there; **delete the plan file and the raw JSON after normalization**; keep only the normalized change set, its hash and tool versions. Never print or log raw `show -json` (G4, G5).
 6. **Minimal environment and no output excerpts.** Build the child environment from an explicit allowlist (`PATH`, `HOME`, the provider's credential variables, `TF_*`), as the operator console already does for its jobs, instead of inheriting everything (G3). Do not route the child's stdout through the debug excerpt path. Pass any text that is logged through `sanitizeDiagnosticText`.
-7. **Read-only credentials.** A dedicated identity that can read the state backend and the provider configuration reads, and nothing else. A preview that needs write access is a sign something is wrong.
-8. **Point-in-time, and re-verified before any use.** The evidence records the unit hash, the destroy change-set hash, the tool version and the time. Because there is no lock (G7), a later authorization step must re-check, not trust, an old preview.
+7. **Dedicated identities.** *Superseded by Decision 3:* a short-lived state-reader identity and a separate provider-discovery identity, neither inheriting the operator's credentials or falling back to the deployment identity.
+8. **Point-in-time, and re-verified before any use.** The evidence records the unit hash, the destroy change-set hash, the tool version, the **state version at preview time** and the time. A later authorization step must re-check, not trust, an old preview. *(Decision 3: locking stays on.)*
 9. **Recorded.** One ledger entry per preview (`authorityClass: ADVISE`, `actionType: DESTROY_PREVIEW`), plus an observability event. Note the ledger's `maxTargets` limit of 100 (`src/change-ledger/local.ts:67`): units with more resources need a reference or batching.
 10. **Verdict only through the existing gate.** The driver emits a normalized change set and `evaluateDestroyPreview` decides. The result stays `executionMode: PREVIEW_ONLY`, `infrastructureAct: DISABLED`.
 
@@ -88,14 +88,29 @@ Each is testable. A future PR should carry a test for each, and the review of th
 - Suppressing stdout excerpts for specific tools.
 - Adding `terraform_plan` to the `PROJECT_CODE_EXECUTION` set (G6).
 
-## Decisions I need from you
+## Decisions (recorded)
 
-1. Is option B (a human-invoked trusted-host driver) the direction, or should destroy previews stay with the operator (option A)?
-2. If B: Terraform/OpenTofu only first, or Pulumi too?
-3. Which identity and credentials should the state-read use, and is a dedicated read-only role available?
-4. May I take on the environment-minimization hardening for `runAllowlistedProcess` as a separate change?
-5. Should `terraform_plan` require `PROJECT_CODE_EXECUTION` (G6)? It changes existing behavior.
-6. Should a destroy preview refuse unless the configuration hash equals the build artifact hash (control 3)?
+Made by the operator on 2026-10-10. They answer the six questions this review asked and set the build order.
+
+1. **A human-invoked, preview-only driver; the operator keeps authority.** The operator selects the target and explicitly requests the operation; the driver validates permissions, runs the bounded preview and captures evidence. Destroy previews are not left as an unstructured manual procedure, and no agent may initiate one autonomously. The driver must resolve the exact account/subscription, backend, workspace or stack and artifact; enforce policy before executing; return a redacted preview and evidence record; and never expose apply, actual destroy or arbitrary shell commands. Destroy preview is a separate operation from ordinary preview.
+2. **Terraform, OpenTofu and Pulumi are in the first design; Pulumi starts with TypeScript.** One adapter contract, `preview(request) -> PreviewEvidence` and `destroyPreview(request) -> PreviewEvidence`, with engine-specific execution and evidence handling behind each adapter. **Activation is qualification-based:** an engine is enabled only after its adapter passes the required tests, and a qualified engine is not held back by an incomplete one. For Pulumi, use a pinned, qualified preview-specific path (the decision cites `destroy --preview-only`, and `--run-program` for whether the program runs); never call a real destroy and rely on a prompt or cancellation. *The flag names are the decision's; they could not be checked here (no Pulumi CLI), so the adapter's qualification must confirm them on the pinned version.*
+3. **Dedicated, short-lived identities.** State reads use a short-lived identity scoped to the selected backend and state object; live discovery uses a separate, narrowly scoped identity. Neither inherits the operator's credentials or falls back to the deployment identity.
+
+   | Capability | Permission boundary |
+   | --- | --- |
+   | State access | Read selected state; decrypt only where necessary |
+   | Backend coordination | Acquire and release the applicable lock, separately scoped |
+   | Provider discovery | Read the approved target resources |
+   | Infrastructure mutation | Denied |
+
+   Where a backend cannot separate these cleanly, the exception is documented and qualified before the engine is enabled. **Locking is not disabled** to make an identity look read-only. State is sensitive material, not ordinary diagnostic output.
+4. **Runner hardening is a separate change and a dependency for enabling the driver.** Scope: an allowlisted child-process environment; explicit credential injection; controlled executable paths and working directories; no generic shell command construction; approved network destinations; time, output and child-process limits; redacted logs and protected temporary artifacts; and tests showing unrelated credentials are not inherited. It applies to existing runner consumers too, with regression tests. Environment minimization alone is not isolation for executable project code.
+5. **Executable plans require explicit project-execution permission.** `terraform_plan` (and any engine-backed plan or preview that runs project-selected providers, helpers or the program) requires `PROJECT_CODE_EXECUTION`; it is not a harmless read. A genuinely static inspection path is preserved and needs no execution permission. An absent permission returns an actionable denial. This is a security-related compatibility change and is documented as one; there is no silent ungated path. Permission to run project code does not grant mutation.
+6. **A governed destroy preview fails closed on artifact mismatch.** The request is bound to a manifest of the actual inputs used: configuration or program content (when used); resolved modules and language dependencies; engine and provider versions (for Terraform, including the dependency lock file); variable and configuration input identities; backend, workspace or stack and target identity; and the applicable policy version. It is validated before execution and run from an immutable snapshot. The **current state version is recorded separately**; live state is not required to match a historical build-time hash. For a state-derived Pulumi destroy preview that does not run the project, bind the approved state-derived execution manifest rather than implying a project hash proves what ran. On mismatch a newly reviewed artifact is required: **no force-preview bypass**. An inventory-only assessment may stay available but is never labeled an artifact-validated destroy preview.
+
+**Build order:** (1) runner hardening; (2) identity and execution-permission contracts; (3) artifact binding and immutable-input handling; (4) the human-invoked driver and three engine adapters; (5) engine-specific qualification and denial-path tests. Each is its own change.
+
+The governing boundary: the operator authorizes the preview, the driver enforces the contract, and no preview capability grants authority to change infrastructure.
 
 ## Not proposed
 
