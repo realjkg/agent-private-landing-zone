@@ -1,6 +1,6 @@
 import type { ChangeSet } from "../iac/changeset.js";
 import type { DiscoveredResource } from "../discovery/types.js";
-import { ALZ_TAG_KEYS, verifyDeletionUnit } from "./unit.js";
+import { ALZ_TAG_KEYS, enginesCompatible, verifyDeletionUnit } from "./unit.js";
 import type {
   CreateTraceabilityReport,
   DeletionUnit,
@@ -69,7 +69,7 @@ export function checkCreateTraceability(
 ): CreateTraceabilityReport {
   const unit = verifyDeletionUnit(unitInput);
   const reasons: string[] = [];
-  if (createPlan.engine !== unit.engine) {
+  if (!enginesCompatible(unit.engine, createPlan.engine)) {
     reasons.push("ENGINE_MISMATCH: plan " + createPlan.engine + " vs unit " + unit.engine);
   }
   if ((unit.stateRef.engine === "TERRAFORM" || unit.stateRef.engine === "OPENTOFU") &&
@@ -140,7 +140,7 @@ export function evaluateDestroyPreview(
 ): DestroyPreview {
   const unit = verifyDeletionUnit(unitInput);
   const reasons: string[] = [];
-  if (destroyPlan.engine !== unit.engine) {
+  if (!enginesCompatible(unit.engine, destroyPlan.engine)) {
     reasons.push("ENGINE_MISMATCH: plan " + destroyPlan.engine + " vs unit " + unit.engine);
   }
   const recorded = new Set(unit.plannedCreates);

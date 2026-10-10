@@ -81,10 +81,27 @@ Before this decision, nothing ALZ generated recorded what it created:
   - The unit is carried on `BuildLoopResult` / `BuildRunRecord` and in the preview summary (`deletionUnitId`, `deletionUnitHash`).
   - The opt-in tagged candidate is a different artifact from the qualified one, so it needs the model qualification gate before it is used in a release. This slice runs no heavyweight qualification.
   - The preview itself still runs with `init -backend=false`. The unit declares where an authorized apply would write state; a `local` backend is refused.
-- **Slice 3 (next):**
-  - tag readers for Pulumi, CloudFormation and Bicep previews;
-  - discovery reads `alz-*` tags into the orphan report;
-  - a governed runner for the destroy *preview* (`plan -destroy`, `pulumi preview --destroy`). That runner needs an explicit tool-broker review, because the broker classifies `destroy` as a mutation token by design, and that control is not to be worked around.
+- **Slice 3 (implemented for files you produce; live wiring deferred):**
+  - per-resource tag readers for **Pulumi** (`preview --json`), **CloudFormation** (`describe-change-set`) and **Bicep** (`what-if`), so the create gate and destroy preview work for every engine that has a plan; `./alz teardown --engine` selects one;
+  - orphan inventory from `aws resourcegroupstaggingapi get-resources` and `az resource list` output (`orphans --aws-tagged` / `--azure-tagged`). Inventoried resources stay `UNKNOWN` / `READ_ONLY`: a tag never grants ownership or delete authority. A paginated AWS listing is reported incomplete and never exits clean.
+  - **Deferred, on purpose:** a governed runner for the destroy *preview* (`plan -destroy`, `pulumi preview --destroy`) and a *live* tag-inventory read inside discovery. Both mean new entries in the tool broker's allowlist, and the broker classifies `destroy` as a mutation token by design, so they need an explicit broker review rather than a workaround. AWS CDK now uses the CloudFormation reader (a CDK unit is checked against CloudFormation change sets); Crossplane (render only; no plan) has no reader.
+
+### Producing the inputs (you run these; ALZ only reads the files)
+
+| Engine | Create plan (`check-plan`, `record`) | Destroy preview (`destroy-preview`) |
+| --- | --- | --- |
+| Terraform / OpenTofu | `terraform show -json PLAN` | `terraform plan -destroy -out=P` then `show -json P` |
+| Pulumi | `pulumi preview --json` | `pulumi preview --destroy --json` |
+| CloudFormation | `aws cloudformation describe-change-set ...` for a change set created with `--include-property-values` | no native stack-deletion preview; supply a Remove-only change set if you can produce one |
+| Bicep | `az deployment <scope> what-if --no-pretty-print` | supply a Delete-only what-if if you can produce one |
+
+Reader behavior is checked against **real captured output** in `test/fixtures/live/` (Terraform so far; Pulumi, CloudFormation and Azure captures are still needed and are smoke-tested automatically when added). What is verified and what is still an assumption is listed in `docs/teardown-cli-quirks.md`.
+
+How each preview shows tags decides what a reader can prove:
+
+- **Terraform/OpenTofu** plans list every attribute, so a missing `tags` is a real signal.
+- **Pulumi, CloudFormation and Bicep** previews show only what the template set. A create that **omits tags is read as an empty tag set and BLOCKED** as untagged, not guessed as fine. Types that genuinely have no tags (IAM attachments, role assignments) go in a reviewed `--untaggable-types` allowlist, so they are listed as *state-only* instead.
+- A CloudFormation change set created **without** property values has no `AfterContext`, so tags are *not reported* and the gate blocks. Tags computed only at apply time (Pulumi unknown marker, unresolved intrinsics) block too.
 
 **Phase 2 (requires explicit authorization; not approved): governed destroy execution.** A narrow ACT exception for destroy only:
 - a single-use external lease bound to the destroy preview's ChangeSet hash and unit hash;

@@ -1,0 +1,140 @@
+{
+  "schemaVersion": 1,
+  "rule": "Every file under test/fixtures/live (except this manifest and README.md) must be listed here with the exact tool, version and command that produced it. Captures must be sanitized (see README.md); test/teardown-live-fixtures.test.ts enforces both.",
+  "captures": [
+    {
+      "file": "terraform/aws-log-group.default.main.tf",
+      "engine": "TERRAFORM",
+      "tool": "terraform 1.16.5 linux_amd64",
+      "command": "renderAwsTerraformCandidate(reviewed) -> terraform init -backend=false; terraform fmt -check; terraform validate",
+      "capturedAt": "2026-10-10",
+      "mode": "REAL_TOOL_OFFLINE",
+      "verified": "terraform fmt -check and validate both passed on exactly this file"
+    },
+    {
+      "file": "terraform/aws-log-group.tagged.main.tf",
+      "engine": "TERRAFORM",
+      "tool": "terraform 1.16.5 linux_amd64",
+      "command": "renderAwsTerraformCandidate(reviewed, provenanceTags(buildId, stateRef, expires 2026-12-31)) -> terraform init -backend=false; terraform fmt -check; terraform validate",
+      "capturedAt": "2026-10-10",
+      "mode": "REAL_TOOL_OFFLINE",
+      "verified": "terraform fmt -check and validate both passed on exactly this file"
+    },
+    {
+      "file": "terraform/aws-log-group.default.create.plan.json",
+      "engine": "TERRAFORM",
+      "tool": "terraform 1.16.5 linux_amd64 + hashicorp/aws 6.68.0",
+      "command": "terraform plan -input=false -refresh=false -lock=false -out=P; terraform show -json P  (config: aws-log-group.default.main.tf)",
+      "capturedAt": "2026-10-10",
+      "mode": "REAL_TOOL_OFFLINE",
+      "credentials": "dummy static keys, provider skip_* flags via an override file; no AWS API was contacted",
+      "provenance": "provider zip and terraform zip downloaded from releases.hashicorp.com and verified against the published SHA256SUMS (signature not verified)"
+    },
+    {
+      "file": "terraform/aws-log-group.tagged.create.plan.json",
+      "engine": "TERRAFORM",
+      "tool": "terraform 1.16.5 linux_amd64 + hashicorp/aws 6.68.0",
+      "command": "same as above (config: aws-log-group.tagged.main.tf)",
+      "capturedAt": "2026-10-10",
+      "mode": "REAL_TOOL_OFFLINE",
+      "credentials": "dummy static keys, provider skip_* flags via an override file; no AWS API was contacted"
+    },
+    {
+      "file": "terraform/aws-log-group.tagged-default-tags.create.plan.json",
+      "engine": "TERRAFORM",
+      "tool": "terraform 1.16.5 linux_amd64 + hashicorp/aws 6.68.0",
+      "command": "same as above, plus provider default_tags { Org = example-org } in the override file",
+      "capturedAt": "2026-10-10",
+      "mode": "REAL_TOOL_OFFLINE",
+      "credentials": "dummy static keys, provider skip_* flags via an override file; no AWS API was contacted"
+    },
+    {
+      "file": "terraform/lifecycle.create.plan.json",
+      "engine": "TERRAFORM",
+      "tool": "terraform 1.16.5 linux_amd64 (built-in terraform_data; no provider)",
+      "command": "terraform plan -out=P; terraform show -json P  (3 terraform_data resources, empty state)",
+      "capturedAt": "2026-10-10",
+      "mode": "REAL_TOOL_OFFLINE"
+    },
+    {
+      "file": "terraform/lifecycle.mixed.plan.json",
+      "engine": "TERRAFORM",
+      "tool": "terraform 1.16.5 linux_amd64 (built-in terraform_data; no provider)",
+      "command": "after a local apply of lifecycle.create: change one input (update), a triggers_replace (replace), add one resource (create), leave one alone (no-op); terraform plan; show -json",
+      "capturedAt": "2026-10-10",
+      "mode": "REAL_TOOL_OFFLINE"
+    },
+    {
+      "file": "terraform/lifecycle.destroy.plan.json",
+      "engine": "TERRAFORM",
+      "tool": "terraform 1.16.5 linux_amd64 (built-in terraform_data; no provider)",
+      "command": "terraform plan -destroy -out=P; terraform show -json P  (state from the local apply above)",
+      "capturedAt": "2026-10-10",
+      "mode": "REAL_TOOL_OFFLINE"
+    },
+    {
+      "file": "terraform/audit-modules-foreach.plan.json",
+      "engine": "TERRAFORM",
+      "tool": "terraform 1.16.5 linux_amd64 + hashicorp/aws 6.68.0",
+      "command": "terraform plan -input=false -refresh=false -lock=false -out=P; terraform show -json P  (nested module with a tags variable defaulting to {}, a module given no tags, tags = null, for_each, provider default_tags, and a deferred data read)",
+      "capturedAt": "2026-10-10",
+      "mode": "REAL_TOOL_OFFLINE",
+      "credentials": "dummy static keys, provider skip_* flags set in the configuration; no AWS API was contacted"
+    },
+    {
+      "file": "terraform/lifecycle.create-before-destroy.plan.json",
+      "engine": "TERRAFORM",
+      "tool": "terraform 1.16.5 linux_amd64 (built-in terraform_data; no provider)",
+      "command": "terraform plan ... on the lifecycle config with create_before_destroy = true and a changed triggers_replace; show -json",
+      "capturedAt": "2026-10-10",
+      "mode": "REAL_TOOL_OFFLINE"
+    },
+    {
+      "file": "aws/cdk/AlzTagged.template.json",
+      "engine": "AWS_CDK",
+      "tool": "aws-cdk-lib 2.273.0 + aws-cdk CLI 2.1145.0",
+      "command": "cdk synth --app 'node app.js.txt-as-js' -o cli.out (stack AlzTagged; Tags.of(stack).add for alz-managed-by, alz-unit, alz-build)",
+      "capturedAt": "2026-10-10",
+      "mode": "REAL_TOOL_OFFLINE",
+      "kind": "CLOUDFORMATION_TEMPLATE_NOT_CHANGE_SET",
+      "credentials": "none needed: environment-agnostic stacks, cdk synth makes no AWS call"
+    },
+    {
+      "file": "aws/cdk/AlzUntagged.template.json",
+      "engine": "AWS_CDK",
+      "tool": "aws-cdk-lib 2.273.0 + aws-cdk CLI 2.1145.0",
+      "command": "cdk synth (stack AlzUntagged: same resources, no tags)",
+      "capturedAt": "2026-10-10",
+      "mode": "REAL_TOOL_OFFLINE",
+      "kind": "CLOUDFORMATION_TEMPLATE_NOT_CHANGE_SET",
+      "credentials": "none needed: environment-agnostic stacks, cdk synth makes no AWS call"
+    },
+    {
+      "file": "aws/cdk/AlzTagged.cdk-manifest.json",
+      "engine": "AWS_CDK",
+      "tool": "aws-cdk-lib 2.273.0 + aws-cdk CLI 2.1145.0",
+      "command": "cdk.out/manifest.json from the same synth (shows stack-level tags next to the per-resource tags)",
+      "capturedAt": "2026-10-10",
+      "mode": "REAL_TOOL_OFFLINE",
+      "kind": "CLOUDFORMATION_TEMPLATE_NOT_CHANGE_SET",
+      "credentials": "none needed: environment-agnostic stacks, cdk synth makes no AWS call"
+    },
+    {
+      "file": "aws/cdk/app.js.txt",
+      "engine": "AWS_CDK",
+      "tool": "aws-cdk-lib 2.273.0",
+      "command": "the CDK app that produced these templates (saved as .txt; run as app.js with UNIT_ID and CDK_OUTDIR set)",
+      "capturedAt": "2026-10-10",
+      "mode": "REAL_TOOL_OFFLINE",
+      "kind": "SOURCE"
+    }
+  ],
+  "stillNeeded": [
+    "pulumi/*.preview.json: real `pulumi preview --json` (create, and --destroy) \u2014 Pulumi CLI could not be installed in the build sandbox",
+    "aws/*.change-set.json from a CDK deploy path: the CDK captures here are synthesized TEMPLATES; a real describe-change-set (the shape the reader consumes) is still needed",
+    "aws/*.change-set.json: real `aws cloudformation describe-change-set` created WITH --include-property-values, and one WITHOUT",
+    "aws/*.tagging-get-resources.json: real `aws resourcegroupstaggingapi get-resources`, including a paginated page with a PaginationToken",
+    "azure/*.what-if.json: real `az deployment group what-if --no-pretty-print`",
+    "azure/*.resource-list.json: real `az resource list`, including a resource whose tags are null"
+  ]
+}

@@ -1,0 +1,26 @@
+const { App, Stack, Tags, RemovalPolicy, Duration } = require("aws-cdk-lib");
+const logs = require("aws-cdk-lib/aws-logs");
+const s3 = require("aws-cdk-lib/aws-s3");
+const ssm = require("aws-cdk-lib/aws-ssm");
+const iam = require("aws-cdk-lib/aws-iam");
+const sqs = require("aws-cdk-lib/aws-sqs");
+
+const outdir = process.env.CDK_OUTDIR;
+const app = new App(outdir ? { outdir } : {});
+
+function build(id) {
+  const stack = new Stack(app, id);              // environment-agnostic: no account or region
+  new logs.LogGroup(stack, "Audit", { logGroupName: "/alz/preview/brownfield-audit", retention: logs.RetentionDays.ONE_MONTH, removalPolicy: RemovalPolicy.DESTROY });
+  new s3.Bucket(stack, "Evidence", { removalPolicy: RemovalPolicy.DESTROY });
+  new ssm.StringParameter(stack, "Marker", { stringValue: "alz" });
+  new sqs.Queue(stack, "Events", { visibilityTimeout: Duration.seconds(30) });
+  const role = new iam.Role(stack, "Writer", { assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com") });
+  role.addToPolicy(new iam.PolicyStatement({ actions: ["logs:PutLogEvents"], resources: ["*"] }));
+  return stack;
+}
+const tagged = build("AlzTagged");
+const untagged = build("AlzUntagged");
+Tags.of(tagged).add("alz-managed-by", "alz");
+Tags.of(tagged).add("alz-unit", process.env.UNIT_ID);
+Tags.of(tagged).add("alz-build", "build-00000000-0000-4000-8000-000000000001");
+app.synth();
