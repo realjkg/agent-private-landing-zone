@@ -64,6 +64,15 @@ export function provenanceTags(input: {
   } as ProvenanceTags;
 }
 
+/**
+ * An AWS CDK build deploys through CloudFormation, so its plan is a
+ * CloudFormation change set. Everything else must match exactly.
+ */
+export function enginesCompatible(unitEngine: IaCEngine, planEngine: IaCEngine): boolean {
+  return unitEngine === planEngine ||
+    (unitEngine === "AWS_CDK" && planEngine === "CLOUDFORMATION");
+}
+
 function validateStateRef(engine: IaCEngine, ref: DeletionUnitStateRef): void {
   requireUnit(ref.engine === engine, "STATE_REF_ENGINE_MISMATCH");
   const nonEmpty = (value: unknown) => typeof value === "string" && value.trim().length > 0;
@@ -107,9 +116,12 @@ export function recordDeletionUnit(input: {
   expires?: string;
   recordedAt?: string;
 }): DeletionUnit {
-  const engine = input.createPlan.engine;
+  const planEngine = input.createPlan.engine;
   // Ansible configures existing hosts; it creates no state container to undo.
-  requireUnit(engine !== "ANSIBLE", "ANSIBLE_HAS_NO_DELETION_UNIT");
+  requireUnit(planEngine !== "ANSIBLE", "ANSIBLE_HAS_NO_DELETION_UNIT");
+  // The state reference names the unit's engine; the plan must be a plan for it.
+  const engine = input.stateRef.engine;
+  requireUnit(enginesCompatible(engine, planEngine), "STATE_REF_ENGINE_MISMATCH");
   validateStateRef(engine, input.stateRef);
   requireUnit(HASH.test(input.designHash), "DESIGN_HASH");
   requireUnit(HASH.test(input.createPlan.evidenceHash), "CHANGESET_HASH");

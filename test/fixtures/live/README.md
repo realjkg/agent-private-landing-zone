@@ -14,6 +14,7 @@ Fixtures here are **real output from real tools**, not hand-written JSON. The te
 | `pulumi/<name>.preview.json` | `pulumi preview --json` (and a second capture with `--destroy`) |
 | `aws/<name>.change-set.json` | `aws cloudformation describe-change-set --change-set-name N --stack-name S`, for a change set created **with** `--include-property-values`. Capture one created **without** it too (name it `...-no-values.change-set.json`) |
 | `aws/<name>.tagging-get-resources.json` | `aws resourcegroupstaggingapi get-resources --tag-filters Key=alz-managed-by,Values=alz`. Also capture a truncated run (`--max-items 1`) to see the CLI's `NextToken` |
+| `aws/cdk/<name>.template.json` | `cdk synth` output for a stack (a CloudFormation template; parsed through a change-set wrapper by the test) |
 | `azure/<name>.what-if.json` | `az deployment group what-if -g RG -f main.bicep --no-pretty-print` |
 | `azure/<name>.resource-list.json` | `az resource list --tag alz-managed-by=alz`, including a resource with `"tags": null` |
 | `terraform/<name>.plan.json` | `terraform show -json PLANFILE` (already captured; see the manifest) |

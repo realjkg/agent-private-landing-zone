@@ -313,3 +313,32 @@ test("./alz teardown CLI: pulumi unit, untaggable allowlist, and an incomplete l
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("known untaggable CloudFormation types are never read as untagged, with or without AfterContext", () => {
+  const tags = readCloudFormationChangeSetTags(cfn([
+    cfnChange("CDKMetadata", "AWS::CDK::Metadata"),
+    cfnChange("Policy", "AWS::IAM::Policy", cfnContext({ PolicyName: "p" })),
+    cfnChange("Role", "AWS::IAM::Role", cfnContext({})),
+  ]));
+  assert.deepEqual(tags.get("CDKMetadata"), { kind: "UNTAGGABLE" });
+  assert.deepEqual(tags.get("Policy"), { kind: "UNTAGGABLE" });
+  // A taggable type that omits tags is still an empty tag set (blocked), not exempted.
+  assert.deepEqual(tags.get("Role"), { kind: "TAGGED", tags: {} });
+});
+
+test("an AWS CDK unit is checked against a CloudFormation change set; other engine pairs still must match", () => {
+  const plan = normalizeCloudFormationChangeSet(cfn([cfnChange("Bucket", "AWS::S3::Bucket", cfnContext({}))]));
+  const cdk: DeletionUnitStateRef = { engine: "AWS_CDK", region: "eu-west-1", stackName: "alz-build-1" };
+  const unit = recordDeletionUnit({ buildId: BUILD_ID, provider: "AWS", stateRef: cdk, designHash: DESIGN_HASH, createPlan: plan });
+  assert.equal(unit.engine, "AWS_CDK");
+  const json = cfn([cfnChange("Bucket", "AWS::S3::Bucket", cfnContext({ Tags: cfnTags(unit.tags) }))]);
+  const ok = checkCreateTraceability(unit, normalizeCloudFormationChangeSet(json), readCloudFormationChangeSetTags(json));
+  assert.equal(ok.verdict, "TRACEABLE", ok.reasons.join("; "));
+  assert.equal(evaluateDestroyPreview(unit, normalizeCloudFormationChangeSet(cfn([
+    cfnChange("Bucket", "AWS::S3::Bucket", undefined, "Remove")]))).verdict, "READY_FOR_AUTHORIZATION");
+  // Not symmetric and not general: CDK may use CloudFormation plans, nothing else crosses engines.
+  assert.throws(() => recordDeletionUnit({ buildId: BUILD_ID, provider: "AWS", stateRef: cdk, designHash: DESIGN_HASH,
+    createPlan: normalizePulumiPreview(pulumiCreatePlan()) }), /STATE_REF_ENGINE_MISMATCH/);
+  assert.throws(() => recordDeletionUnit({ buildId: BUILD_ID, provider: "AWS", stateRef: CFN_STATE, designHash: DESIGN_HASH,
+    createPlan: normalizePulumiPreview(pulumiCreatePlan()) }), /STATE_REF_ENGINE_MISMATCH/);
+});

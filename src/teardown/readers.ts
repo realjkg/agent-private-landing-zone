@@ -21,6 +21,18 @@ export type TagReaderOptions = {
   untaggableTypes?: ReadonlySet<string>;
 };
 
+/**
+ * CloudFormation types verified from real `cdk synth` output to have no tags
+ * at all, even when their stack is tagged: `AWS::CDK::Metadata` (the
+ * `CDKMetadata` resource the CDK CLI adds to every stack, region-conditional,
+ * properties are only `Analytics`) and `AWS::IAM::Policy`. Kept deliberately
+ * minimal; add reviewed types per call with `untaggableTypes`.
+ */
+export const KNOWN_UNTAGGABLE_CLOUDFORMATION_TYPES: ReadonlySet<string> = new Set([
+  "AWS::CDK::Metadata",
+  "AWS::IAM::Policy",
+]);
+
 /** Pulumi's marker for a value only known at apply time. */
 const PULUMI_UNKNOWN = "04da6b54-80e4-46f7-96ec-b56ff0331ba9";
 
@@ -108,7 +120,8 @@ export function readCloudFormationChangeSetTags(
     const resource = change.ResourceChange;
     if (resource?.Action !== "Add" || !resource.LogicalResourceId) continue;
     const address = resource.LogicalResourceId;
-    if (resource.ResourceType && options.untaggableTypes?.has(resource.ResourceType)) {
+    if (resource.ResourceType && (options.untaggableTypes?.has(resource.ResourceType) ||
+      KNOWN_UNTAGGABLE_CLOUDFORMATION_TYPES.has(resource.ResourceType))) {
       result.set(address, { kind: "UNTAGGABLE" });
       continue;
     }

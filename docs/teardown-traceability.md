@@ -84,7 +84,7 @@ Before this decision, nothing ALZ generated recorded what it created:
 - **Slice 3 (implemented for files you produce; live wiring deferred):**
   - per-resource tag readers for **Pulumi** (`preview --json`), **CloudFormation** (`describe-change-set`) and **Bicep** (`what-if`), so the create gate and destroy preview work for every engine that has a plan; `./alz teardown --engine` selects one;
   - orphan inventory from `aws resourcegroupstaggingapi get-resources` and `az resource list` output (`orphans --aws-tagged` / `--azure-tagged`). Inventoried resources stay `UNKNOWN` / `READ_ONLY`: a tag never grants ownership or delete authority. A paginated AWS listing is reported incomplete and never exits clean.
-  - **Deferred, on purpose:** a governed runner for the destroy *preview* (`plan -destroy`, `pulumi preview --destroy`) and a *live* tag-inventory read inside discovery. Both mean new entries in the tool broker's allowlist, and the broker classifies `destroy` as a mutation token by design, so they need an explicit broker review rather than a workaround. AWS CDK (needs the CloudFormation path under a CDK unit) and Crossplane (render only; no plan) have no reader yet.
+  - **Deferred, on purpose:** a governed runner for the destroy *preview* (`plan -destroy`, `pulumi preview --destroy`) and a *live* tag-inventory read inside discovery. Both mean new entries in the tool broker's allowlist, and the broker classifies `destroy` as a mutation token by design, so they need an explicit broker review rather than a workaround. AWS CDK now uses the CloudFormation reader (a CDK unit is checked against CloudFormation change sets); Crossplane (render only; no plan) has no reader.
 
 ### Producing the inputs (you run these; ALZ only reads the files)
 

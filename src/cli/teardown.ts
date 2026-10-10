@@ -39,10 +39,10 @@ const USAGE = [
   "  ./alz teardown orphans --units A.json[,B.json]",
   "      (--resources RESOURCES.json | --aws-tagged GET_RESOURCES.json | --azure-tagged RESOURCE_LIST.json)",
   "                                             ALZ-tagged resources no unit accounts for",
-  "ENGINE: TERRAFORM (default) | OPENTOFU | PULUMI | CLOUDFORMATION | BICEP. Plans are:",
+  "ENGINE: TERRAFORM (default) | OPENTOFU | PULUMI | CLOUDFORMATION | AWS_CDK | BICEP. Plans are:",
   "  Terraform/OpenTofu: `terraform|tofu show -json PLAN`",
   "  Pulumi:             `pulumi preview --json` (destroy: `--destroy --json`)",
-  "  CloudFormation:     `aws cloudformation describe-change-set` of a change set created with",
+  "  CloudFormation/CDK: `aws cloudformation describe-change-set` of a change set created with",
   "                      --include-property-values (without it tags are NOT REPORTED, so BLOCKED)",
   "  Bicep:              `az deployment <scope> what-if --no-pretty-print`",
   "--untaggable-types is a reviewed allowlist of resource types with no tags (Pulumi type token,",
@@ -76,16 +76,17 @@ function planFor(engine: string, json: string) {
   if (engine === "TERRAFORM") return normalizeTerraformPlan(json);
   if (engine === "OPENTOFU") return normalizeOpenTofuPlan(json);
   if (engine === "PULUMI") return normalizePulumiPreview(json);
-  if (engine === "CLOUDFORMATION") return normalizeCloudFormationChangeSet(json);
+  // CDK deploys through CloudFormation: its plan is a CloudFormation change set.
+  if (engine === "CLOUDFORMATION" || engine === "AWS_CDK") return normalizeCloudFormationChangeSet(json);
   if (engine === "BICEP") return normalizeBicepWhatIf(json);
   throw new Error("TEARDOWN_PLAN_ENGINE_UNSUPPORTED: " + engine +
-    " (AWS_CDK, Crossplane and Ansible have no plan reader here)");
+    " (Crossplane and Ansible have no plan reader here)");
 }
 
 function tagsFor(engine: string, json: string, options: TagReaderOptions): Map<string, PlannedTags> {
   if (engine === "TERRAFORM" || engine === "OPENTOFU") return readTerraformPlanTags(json);
   if (engine === "PULUMI") return readPulumiPreviewTags(json, options);
-  if (engine === "CLOUDFORMATION") return readCloudFormationChangeSetTags(json, options);
+  if (engine === "CLOUDFORMATION" || engine === "AWS_CDK") return readCloudFormationChangeSetTags(json, options);
   if (engine === "BICEP") return readBicepWhatIfTags(json, options);
   throw new Error("TEARDOWN_PLAN_ENGINE_UNSUPPORTED: " + engine);
 }
