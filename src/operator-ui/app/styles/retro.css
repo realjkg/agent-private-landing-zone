@@ -1,0 +1,237 @@
+/* Retro arcade / CRT chrome (D4). Presentation only: this layer changes how
+   the console looks, never what it says or does. Compliance vocabulary
+   (ALIGNED / GAP / UNKNOWN), evidence text, and the disclaimer stay literal —
+   no scores, XP, or celebratory states exist anywhere in this file or the
+   components it dresses. All assets are first-party (vendored font). */
+
+@font-face {
+  font-family: "Press Start 2P";
+  src: url("/fonts/PressStart2P-Regular.woff2") format("woff2");
+  font-display: swap;
+}
+
+:root {
+  --phosphor: #39ff7a;
+  --phosphor-dim: #1d7a41;
+  --amber: #ffb000;
+  --alert: #ff4b4b;
+  --screen: #04070a;
+  --cabinet: #0a120c;
+  --grid-line: rgba(57, 255, 122, 0.08);
+}
+
+body {
+  background:
+    radial-gradient(ellipse at 50% 0%, #0a1a10 0%, var(--screen) 62%),
+    var(--screen);
+  color: #baf5cf;
+  font: 15px/1.65 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* Scanline overlay. Static under reduced motion (no flicker, no sweep). */
+.crt::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9;
+  background:
+    repeating-linear-gradient(
+      to bottom,
+      transparent 0 2px,
+      rgba(0, 0, 0, 0.16) 2px 4px
+    ),
+    linear-gradient(to bottom, rgba(57, 255, 122, 0.04), transparent 18%);
+  mix-blend-mode: multiply;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .crt::before {
+    animation: crt-flicker 4s steps(60) infinite;
+  }
+  @keyframes crt-flicker {
+    0%, 100% { opacity: 0.92; }
+    50% { opacity: 1; }
+  }
+}
+
+.brand,
+h1,
+.levels button,
+.led-label,
+.badge,
+.card strong {
+  font-family: "Press Start 2P", ui-monospace, monospace;
+  letter-spacing: 0.04em;
+}
+
+.brand,
+h1 {
+  color: var(--phosphor);
+  text-shadow: 0 0 6px rgba(57, 255, 122, 0.55), 0 0 24px rgba(57, 255, 122, 0.22);
+}
+
+h1 {
+  font-size: 21px;
+  line-height: 1.5;
+}
+
+h2 {
+  font-size: 15px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--phosphor);
+}
+
+.panel {
+  border: 1px solid var(--phosphor-dim);
+  box-shadow:
+    inset 0 0 22px rgba(57, 255, 122, 0.05),
+    0 0 0 1px rgba(0, 0, 0, 0.6);
+  background:
+    linear-gradient(var(--grid-line) 1px, transparent 1px) 0 0 / 100% 26px,
+    var(--cabinet);
+}
+
+.tag {
+  border: 1px solid var(--amber);
+  color: var(--amber);
+  background: rgba(255, 176, 0, 0.07);
+}
+
+/* The banner dot blinks only when motion is allowed; the words stay put. */
+.tag::after {
+  content: "▮";
+  margin-left: 8px;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .tag::after {
+    animation: tag-blink 1.4s steps(1) infinite;
+  }
+  @keyframes tag-blink {
+    50% { opacity: 0; }
+  }
+}
+
+/* Arcade difficulty select — chunky bordered slots, active slot filled. */
+.levels button {
+  border: 2px solid var(--phosphor-dim);
+  background: transparent;
+  color: #8fd8ab;
+  font-size: 10px;
+  padding: 10px 12px;
+  text-transform: uppercase;
+  box-shadow: 3px 3px 0 rgba(0, 0, 0, 0.65);
+}
+
+.levels button[aria-pressed="true"] {
+  background: var(--phosphor);
+  border-color: var(--phosphor);
+  color: #04140a;
+  text-shadow: none;
+  box-shadow: 0 0 14px rgba(57, 255, 122, 0.4), 3px 3px 0 rgba(0, 0, 0, 0.65);
+}
+
+.levels button:hover:not([aria-pressed="true"]),
+.card:hover:not(:disabled) {
+  border-color: var(--phosphor);
+  color: var(--phosphor);
+}
+
+select,
+button,
+.card {
+  border-radius: 0;
+}
+
+button,
+select {
+  font-family: inherit;
+}
+
+button {
+  border: 2px solid var(--phosphor);
+  background: var(--phosphor);
+  color: #04140a;
+  box-shadow: 3px 3px 0 rgba(0, 0, 0, 0.65);
+}
+
+button:disabled {
+  background: var(--phosphor-dim);
+  border-color: var(--phosphor-dim);
+  opacity: 1;
+}
+
+/* LED readout: dot glows per status. The label is the literal job status. */
+.led {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 14px 0;
+}
+
+.led-dot {
+  width: 12px;
+  height: 12px;
+  background: var(--phosphor);
+  box-shadow: 0 0 8px rgba(57, 255, 122, 0.7);
+}
+
+.led[data-status="RUNNING"] .led-dot {
+  background: var(--amber);
+  box-shadow: 0 0 8px rgba(255, 176, 0, 0.7);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .led[data-status="RUNNING"] .led-dot {
+    animation: led-pulse 1s steps(2) infinite;
+  }
+  @keyframes led-pulse {
+    50% { opacity: 0.35; }
+  }
+}
+
+.led[data-status="BLOCKED"] .led-dot {
+  background: var(--alert);
+  box-shadow: 0 0 8px rgba(255, 75, 75, 0.7);
+}
+
+.led[data-status="UNAVAILABLE"] .led-dot {
+  background: #5a6b5f;
+  box-shadow: none;
+}
+
+.led-label {
+  font-size: 11px;
+  color: var(--phosphor);
+}
+
+.card {
+  border: 2px solid var(--phosphor-dim);
+  box-shadow: 3px 3px 0 rgba(0, 0, 0, 0.65);
+}
+
+.card.primary {
+  border-color: var(--phosphor);
+  box-shadow: 0 0 14px rgba(57, 255, 122, 0.25), 3px 3px 0 rgba(0, 0, 0, 0.65);
+}
+
+.badge {
+  border: 1px solid var(--amber);
+  color: var(--amber);
+  background: rgba(255, 176, 0, 0.07);
+  font-size: 8px;
+  padding: 3px 8px 2px;
+  vertical-align: middle;
+}
+
+.output {
+  border: 1px solid var(--phosphor-dim);
+  text-shadow: 0 0 4px rgba(57, 255, 122, 0.28);
+  color: #a9f2c3;
+}
+
+code {
+  color: var(--phosphor);
+}
