@@ -127,6 +127,15 @@
       "capturedAt": "2026-10-10",
       "mode": "REAL_TOOL_OFFLINE",
       "kind": "SOURCE"
+    },
+    {
+      "file": "terraform/destroy-sensitive-values.plan.json",
+      "engine": "TERRAFORM",
+      "tool": "terraform 1.16.5 linux_amd64 (built-in terraform_data; no provider)",
+      "command": "terraform apply (local, built-in resource); terraform plan -destroy -input=false -lock=false -refresh=false -out=P; terraform show -json P  (input = sensitive(\"hunter2-secret-value\"), a FAKE value)",
+      "capturedAt": "2026-10-10",
+      "mode": "REAL_TOOL_OFFLINE",
+      "note": "Deliberately contains a fake secret in plaintext: it documents that `show -json` of a destroy plan exposes sensitive values (before_sensitive only flags them). See docs/teardown-broker-review.md."
     }
   ],
   "stillNeeded": [
