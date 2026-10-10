@@ -16,7 +16,12 @@ export type JobState = {
   output: string;
   /** Resilience runs only (see server.ts): the run's own recovery verification. */
   recoveryVerification?: RecoveryVerificationStatus;
+  /** Blocked runs only, when the cause is a known local setup state. */
+  blockReason?: BlockReason;
 };
+
+/** Mirrors BlockReason in src/operator-ui/server.ts. */
+export type BlockReason = "SOURCE_WORKTREE_DIRTY" | "WORKSPACE_NEEDS_BUILD";
 
 /** Mirrors src/operator-ui/model-availability.ts. */
 export type ModelAvailability = {

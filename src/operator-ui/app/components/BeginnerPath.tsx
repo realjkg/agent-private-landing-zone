@@ -1,5 +1,6 @@
 import { beginnerEvidenceLine } from "../../experience-level.js";
 import type { JobState, OperatorMode } from "../api";
+import { BLOCK_REASON_NEXT_STEPS } from "../block-reasons";
 
 /**
  * Plain-language status lines for the Beginner surface. Translates, never
@@ -31,11 +32,14 @@ export function BeginnerPath(props: {
   sessionUnavailable: boolean;
   onLaunch: (mode: OperatorMode) => void;
 }) {
-  const statusLine = !props.jobState
+  const job = props.jobState;
+  const statusLine = !job
     ? BEGINNER_STATUS_LINES.IDLE
-    : props.jobState.status === "PASS" && props.jobState.recoveryVerification !== undefined
+    : job.status === "PASS" && job.recoveryVerification !== undefined
       ? RESILIENCE_PASS_LINE
-      : BEGINNER_STATUS_LINES[props.jobState.status];
+      : job.status === "BLOCKED" && job.blockReason
+        ? "This check could not run. " + BLOCK_REASON_NEXT_STEPS[job.blockReason]
+        : BEGINNER_STATUS_LINES[job.status];
   // NOT_RUN renders the shared beginner translation as the initial proof line.
   const proofLine = props.jobState
     ? beginnerEvidenceLine(props.jobState.evidenceBasis)
