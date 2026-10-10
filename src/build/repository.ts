@@ -11,8 +11,8 @@ import {
 } from "node:path";
 
 import {
-  sha256,
-} from "./provenance.js";
+  sha256Buffer,
+} from "../release/manifest.js";
 
 export type RepositoryEvidence = {
   commitSha: string;
@@ -49,10 +49,13 @@ function readLockHash():
   | string
   | undefined {
   try {
-    return sha256(
+    // Binary-safe and identical to the digest the release manifest
+    // records: hashing the utf8 *string* diverges from sha256File for
+    // non-text artifacts (e.g. the vendored pixel font), which made the
+    // doctor's repository control report a clean install as dirty.
+    return sha256Buffer(
       readFileSync(
         "package-lock.json",
-        "utf8",
       ),
     );
   } catch {
@@ -149,11 +152,13 @@ function collectInstalledReleaseEvidence():
     }
 
     try {
+      // Must agree with the manifest's sha256File: hash the raw bytes,
+      // never a utf8-decoded string (binary artifacts in the release
+      // tree — fonts, images — do not round-trip through utf8).
       const actual =
-        sha256(
+        sha256Buffer(
           readFileSync(
             target,
-            "utf8",
           ),
         );
 
