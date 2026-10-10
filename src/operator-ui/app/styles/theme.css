@@ -211,3 +211,137 @@ code {
 [data-level="BEGINNER"] .expert-only {
   display: none;
 }
+
+/* Connector gallery + compliance surfaces (D3 UI). Status colors carry the
+   honest vocabulary: green = proven locally, amber = gap or simulation,
+   dim = unknown. The status text itself stays the literal classification. */
+.connector-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.connector-card {
+  background: var(--bg);
+  border: 1px solid var(--edge);
+  padding: 14px;
+}
+
+.connector-card h3,
+.pack h3,
+.record-contract h3 {
+  margin: 0 0 8px;
+  font-size: 14px;
+  color: var(--ink);
+}
+
+.status-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 8px;
+}
+
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--edge);
+  padding: 3px 9px;
+  font-size: 11px;
+}
+
+/* LED dot per badge; the label beside it stays the literal status. */
+.status-badge::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  background: currentColor;
+  box-shadow: 0 0 6px currentColor;
+}
+
+.status-badge[data-status="IMPLEMENTED"],
+.status-badge[data-status="PROJECT_CONNECTED"],
+.status-badge[data-status="ALIGNED"] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.status-badge[data-status="TEST_DOUBLE"],
+.status-badge[data-status="SIMULATED"],
+.status-badge[data-status="GAP"] {
+  border-color: var(--amber, #ffb000);
+  color: var(--amber, #ffb000);
+}
+
+.status-badge[data-status="UNKNOWN"] {
+  border-color: var(--muted);
+  color: var(--muted);
+}
+
+.connector-manifest {
+  margin: 0 0 8px;
+}
+
+.record-contract {
+  border-top: 1px solid var(--edge);
+  margin-top: 18px;
+  padding-top: 14px;
+}
+
+.record-contract dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 16px;
+  margin: 10px 0;
+}
+
+.record-contract dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.pack h3 {
+  margin-top: 20px;
+}
+
+.pack-requirements {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+}
+
+.requirement-row {
+  border-top: 1px solid var(--edge);
+  display: grid;
+  gap: 6px;
+  padding: 10px 0;
+}
+
+.req-head {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.req-mapping {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.req-mechanisms {
+  display: grid;
+  gap: 4px;
+  list-style: square;
+  margin: 0;
+  padding-left: 22px;
+}
+
+.disclaimer {
+  border: 1px solid var(--edge);
+  margin: 12px 0 0;
+  padding: 10px 12px;
+}
+

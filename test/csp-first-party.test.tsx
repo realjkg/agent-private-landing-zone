@@ -15,8 +15,15 @@ import { createLocalOperatorServer } from "../src/operator-ui/server";
 // React's SVG namespace string is data, not a network origin. reactjs.org
 // appears only inside React's production error-decoder string literals —
 // never fetched — so the scanner allowlists it explicitly.
+//
+// Zod is in the bundle because compliance packs zod-parse at module load
+// (fail-fast if shipped data is invalid). Its shipped string constants are
+// validation data, never fetched origins: the $ZodIPv6 normalization
+// builds its example URL from a template literal `http://[${e}]`, and
+// $toJSONSchema emits JSON Schema dialect IDENTIFIERS on json-schema.org
+// (the namespace's own vocabulary for naming dialects). Both allowlisted.
 const SAFE_URL =
-  /^(https?:\/\/(127\.0\.0\.1|localhost|www\.w3\.org|reactjs\.org)|data:|mailto:|#|\/)/;
+  /^(https?:\/\/(127\.0\.0\.1|localhost|www\.w3\.org|reactjs\.org|json-schema\.org|\[\$\{)|data:|mailto:|#|\/)/;
 
 function assertFirstPartyOnly(text: string, label: string) {
   const urls = text.match(/https?:\/\/[^"'\s)<>]+/g) ?? [];

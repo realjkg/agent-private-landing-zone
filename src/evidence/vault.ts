@@ -70,30 +70,14 @@ function decodeKey(value: string): Buffer {
   return key;
 }
 
-export async function ensureEvidenceKey(): Promise<{
+// Loads the key file at `path`, or null when it does not exist yet.
+// Any other read failure (including invalid contents) propagates.
+async function loadExistingKey(
+  path: string,
+): Promise<{
   key: Buffer;
   info: EvidenceKeyInfo;
-}> {
-  const fromEnv =
-    process.env.AGENTIC_EVIDENCE_KEY;
-
-  if (fromEnv) {
-    return {
-      key: decodeKey(fromEnv),
-      info: {
-        source: "ENV",
-        securePermissions: true,
-      },
-    };
-  }
-
-  const path = defaultKeyPath();
-
-  await mkdir(dirname(path), {
-    recursive: true,
-    mode: 0o700,
-  });
-
+} | null> {
   try {
     const existing =
       await readFile(path, "utf8");
@@ -121,17 +105,76 @@ export async function ensureEvidenceKey(): Promise<{
     }
   }
 
+  return null;
+}
+
+export async function ensureEvidenceKey(): Promise<{
+  key: Buffer;
+  info: EvidenceKeyInfo;
+}> {
+  const fromEnv =
+    process.env.AGENTIC_EVIDENCE_KEY;
+
+  if (fromEnv) {
+    return {
+      key: decodeKey(fromEnv),
+      info: {
+        source: "ENV",
+        securePermissions: true,
+      },
+    };
+  }
+
+  const path = defaultKeyPath();
+
+  await mkdir(dirname(path), {
+    recursive: true,
+    mode: 0o700,
+  });
+
+  const loaded = await loadExistingKey(path);
+
+  if (loaded) {
+    return loaded;
+  }
+
   const key = randomBytes(32);
 
-  await writeFile(
-    path,
-    key.toString("base64") + "\n",
-    {
-      encoding: "utf8",
-      mode: 0o600,
-      flag: "wx",
-    },
-  );
+  try {
+    await writeFile(
+      path,
+      key.toString("base64") + "\n",
+      {
+        encoding: "utf8",
+        mode: 0o600,
+        flag: "wx",
+      },
+    );
+  } catch (error) {
+    const code =
+      error &&
+      typeof error === "object" &&
+      "code" in error
+        ? String(error.code)
+        : "";
+
+    // A concurrent caller created the key between our ENOENT read and
+    // this create-exclusive write — two evidence flows in one run, or
+    // two CLI invocations on a fresh machine. Their key is the one on
+    // disk now: load it through the same validated path instead of
+    // failing a legitimate first run.
+    if (code !== "EEXIST") {
+      throw error;
+    }
+
+    const winner = await loadExistingKey(path);
+
+    if (!winner) {
+      throw error;
+    }
+
+    return winner;
+  }
 
   return {
     key,
