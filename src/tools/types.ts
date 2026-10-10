@@ -65,6 +65,10 @@ export type ToolResult = {
   command?: string[];
   blocked?: boolean;
   reason?: string;
+  /** Output hit the size limit: the child was stopped and what is here is a prefix. */
+  truncated?: boolean;
+  /** Names (never values) of injected environment variables the runner refused. */
+  refusedEnvironment?: string[];
 };
 
 export type ToolContext = {
