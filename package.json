@@ -40,6 +40,7 @@
     "operator": "tsx src/cli/operator.ts",
     "models": "tsx src/cli/models.ts",
     "models:verify": "tsx src/cli/models.ts verify",
+    "matrix:agent-builder": "tsx src/cli/agent-builder-sim.ts",
     "ci:actions-pinned": "node scripts/check-workflow-pins.mjs"
   },
   "devDependencies": {
