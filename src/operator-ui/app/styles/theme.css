@@ -192,19 +192,22 @@ code {
   overflow-wrap: anywhere;
 }
 
-/* Disclosure levels — the D1 contract, applied to the React tree. */
-body [data-level="BEGINNER"] .advanced-only {
+/* Disclosure levels — the D1 contract, applied to the React tree. The
+   data-level attribute lives on the .crt root element (App.tsx), not body. */
+[data-level="BEGINNER"] .advanced-only {
   display: none;
 }
 
-body [data-level="BEGINNER"] .expert-only {
+[data-level="BEGINNER"] .expert-only {
   display: none;
 }
 
-body:not([data-level="BEGINNER"]) .beginner-only {
+[data-level="ADVANCED"] .beginner-only,
+[data-level="EXPERT"] .beginner-only {
   display: none;
 }
 
-body:not([data-level="EXPERT"]) .expert-only {
+[data-level="ADVANCED"] .expert-only,
+[data-level="BEGINNER"] .expert-only {
   display: none;
 }
