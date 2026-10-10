@@ -1,0 +1,107 @@
+import type { ExperienceLevel } from "../../experience-level.js";
+import { COMPLIANCE_PACKS } from "../../../compliance/packs/index.js";
+import {
+  COMPLIANCE_PACK_DISCLAIMER,
+  EVIDENCE_MECHANISMS,
+  type CompliancePack,
+  type EvidenceMechanismId,
+  type LocalMechanismId,
+  type PackRequirement,
+} from "../../../compliance/schema.js";
+import { PACK_LABELS, STATUS_LABELS } from "../compliance-labels.js";
+
+function MechanismReference(props: { id: LocalMechanismId }) {
+  const mechanism =
+    props.id in EVIDENCE_MECHANISMS ? EVIDENCE_MECHANISMS[props.id as EvidenceMechanismId] : undefined;
+  return (
+    <li>
+      <code>{props.id}</code>{" "}
+      <small>
+        {mechanism
+          ? mechanism.description
+          : "locked baseline control — config/security-baseline.md"}
+      </small>
+    </li>
+  );
+}
+
+function RequirementRow(props: { pack: CompliancePack; requirement: PackRequirement; expert: boolean }) {
+  const { requirement } = props;
+  const hasEvidence = requirement.mechanismIds.length > 0 || requirement.evidencePath !== undefined;
+  return (
+    <li
+      className="requirement-row"
+      data-requirement-id={requirement.requirementId}
+      data-status={requirement.status}
+    >
+      <div className="req-head">
+        <span className="status-badge req-status" data-status={requirement.status}>
+          {STATUS_LABELS[requirement.status]}
+        </span>
+        <span className="req-title">{requirement.title}</span>
+        <code>{requirement.requirementId}</code>
+      </div>
+      {props.expert && (
+        <p className="req-mapping">
+          <code>
+            {props.pack.id}@{props.pack.version} → {requirement.requirementId} ←{" "}
+            {requirement.mechanismIds.length > 0
+              ? requirement.mechanismIds.join(" + ")
+              : "no local mechanism mapped"}{" "}
+            ({STATUS_LABELS[requirement.status]})
+          </code>
+        </p>
+      )}
+      {hasEvidence && (
+        <ul className="req-mechanisms">
+          {requirement.mechanismIds.map((id) => (
+            <MechanismReference key={id} id={id} />
+          ))}
+          {requirement.evidencePath && (
+            <li>
+              <code>{requirement.evidencePath}</code> <small>local evidence path</small>
+            </li>
+          )}
+        </ul>
+      )}
+    </li>
+  );
+}
+
+/**
+ * Compliance packs surface (Advanced and Expert — spec mode matrix, D3
+ * row). Per-framework panels with per-requirement status rows; the
+ * disclaimer is rendered inline, zero interactions away. Expert adds the
+ * pack version and the explicit requirement-to-control mapping line.
+ * Status labels come from STATUS_LABELS keyed by the requirement's own
+ * status — an UNKNOWN requirement cannot render an Aligned label.
+ */
+export function CompliancePanels(props: { level: ExperienceLevel }) {
+  const expert = props.level === "EXPERT";
+  return (
+    <section className="panel advanced-only" aria-label="Compliance packs">
+      <h2>Compliance packs</h2>
+      <p className="disclaimer">
+        <small>{COMPLIANCE_PACK_DISCLAIMER}</small>
+      </p>
+      {COMPLIANCE_PACKS.map((pack) => (
+        <div className="pack" key={pack.id} data-pack-id={pack.id}>
+          <h3>
+            {PACK_LABELS[pack.id]}
+            {expert ? <code> @{pack.version}</code> : ""}
+          </h3>
+          <ul className="pack-requirements">
+            {pack.requirements.map((requirement) => (
+              <RequirementRow
+                key={requirement.requirementId}
+                pack={pack}
+                requirement={requirement}
+                expert={expert}
+              />
+            ))}
+          </ul>
+        </div>
+      ))}
+    </section>
+  );
+}

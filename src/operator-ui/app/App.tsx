@@ -3,6 +3,8 @@ import { useCallback, useEffect, useState } from "react";
 import { parseExperienceLevel, type ExperienceLevel } from "../experience-level.js";
 import { fetchJobState, requestRun, type JobState, type OperatorMode } from "./api";
 import { BeginnerPath } from "./components/BeginnerPath";
+import { CompliancePanels } from "./components/CompliancePanels";
+import { CompliancePosture } from "./components/CompliancePosture";
 import { ConnectorGallery } from "./components/ConnectorGallery";
 import { ConnectorNotice } from "./components/ConnectorNotice";
 import { EvidencePanel } from "./components/EvidencePanel";
@@ -111,6 +113,7 @@ export function OperatorApp(props: OperatorAppProps) {
           />
         )}
         {level === "BEGINNER" && <ConnectorNotice />}
+        {level === "BEGINNER" && <CompliancePosture />}
         {level !== "BEGINNER" && (
           <section className="panel advanced-only">
             <h2>Choose a workflow</h2>
@@ -134,6 +137,7 @@ export function OperatorApp(props: OperatorAppProps) {
           />
         )}
         {level !== "BEGINNER" && <ConnectorGallery level={level} />}
+        {level !== "BEGINNER" && <CompliancePanels level={level} />}
         <p className="footer">
           Localhost-only session • One run at a time • ACT permanently disabled in this accelerator
           release. Offline results cannot qualify live models, live-cloud discovery or a real

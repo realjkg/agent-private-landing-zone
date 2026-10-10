@@ -3,6 +3,8 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import { OperatorApp } from "../src/operator-ui/app/App";
+import { CompliancePanels } from "../src/operator-ui/app/components/CompliancePanels";
+import { CompliancePosture } from "../src/operator-ui/app/components/CompliancePosture";
 import {
   ConnectorGallery,
   RECORD_CONTRACT_FIELDS,
@@ -101,6 +103,65 @@ describe("connector gallery (advanced/expert)", () => {
       } else {
         expect(card?.textContent ?? "").toContain("no declared simulation endpoint");
       }
+    }
+  });
+});
+
+describe("compliance posture (beginner)", () => {
+  test("beginner renders the plain-language posture line naming every framework", () => {
+    renderApp("BEGINNER");
+    const posture = screen.getByText(/This workspace maps its safeguards to/);
+    for (const framework of ["HIPAA", "PCI-DSS", "SOC 2 Type 2", "ISO 27001", "AIUC-1"]) {
+      expect(posture.textContent).toContain(framework);
+    }
+  });
+
+  test("beginner posture renders the disclaimer and no requirement rows", () => {
+    const { container } = renderApp("BEGINNER");
+    expect(screen.getAllByText(/does not establish compliance/).length).toBeGreaterThan(0);
+    expect(container.querySelector("[data-requirement-id]")).toBeNull();
+  });
+});
+
+describe("compliance panels (advanced/expert)", () => {
+  test("advanced renders all five per-framework panels with requirement rows", () => {
+    render(<CompliancePanels level="ADVANCED" />);
+    for (const packId of ["HIPAA", "PCI_DSS", "SOC2_TYPE2", "ISO27001", "AIUC1"]) {
+      expect(document.querySelector(`[data-pack-id="${packId}"]`)).toBeTruthy();
+    }
+    expect(document.querySelectorAll("[data-requirement-id]").length).toBeGreaterThan(0);
+  });
+
+  test("expert adds pack versions and requirement-to-control mapping lines", () => {
+    render(<CompliancePanels level="EXPERT" />);
+    const hipaaRow = document.querySelector('[data-requirement-id="HIPAA-SR-164.312(a)(1)"]');
+    expect(hipaaRow?.textContent ?? "").toContain("HIPAA@1 → HIPAA-SR-164.312(a)(1)");
+    expect(hipaaRow?.textContent ?? "").toContain("LEAST_PRIVILEGE");
+    const encryptionRow = document.querySelector(
+      '[data-requirement-id="HIPAA-SR-164.312(a)(2)(iv)"]',
+    );
+    expect(encryptionRow?.textContent ?? "").toContain("CUSTOMER_MANAGED_ENCRYPTION");
+    expect(document.querySelector(".pack h3 code")?.textContent ?? "").toContain("@");
+  });
+
+  test("UNKNOWN requirements with no mechanisms render no fabricated evidence", () => {
+    const { container } = render(<CompliancePanels level="EXPERT" />);
+    const unknownRow = container.querySelector(
+      '[data-requirement-id="HIPAA-SR-164.308(a)(1)"]',
+    );
+    expect(unknownRow?.getAttribute("data-status")).toBe("UNKNOWN");
+    expect(unknownRow?.textContent ?? "").toContain("no local mechanism mapped");
+  });
+
+  test("the disclaimer stays zero interactions away at every level", () => {
+    for (const level of ["BEGINNER", "ADVANCED", "EXPERT"] as const) {
+      const view = render(
+        level === "BEGINNER"
+          ? <CompliancePosture />
+          : <CompliancePanels level={level} />,
+      );
+      expect(screen.getAllByText(/does not establish compliance/).length).toBeGreaterThan(0);
+      view.unmount();
     }
   });
 });
