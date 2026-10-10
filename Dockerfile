@@ -5,8 +5,10 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 
-COPY tsconfig.json ./
+COPY tsconfig.json tsconfig.ui.json ./
 COPY src/ ./src/
+COPY vite.config.ts ./
+COPY scripts/prerender-ui.tsx ./scripts/prerender-ui.tsx
 
 RUN npm run check && npm run build
 
