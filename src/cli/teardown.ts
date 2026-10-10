@@ -25,7 +25,9 @@ import { recordDeletionUnit } from "../teardown/unit.js";
 
 // Read-only teardown traceability (docs/teardown-traceability.md). Every
 // subcommand reads JSON files and prints a verdict: nothing here runs an
-// engine, calls a cloud, or deletes anything. ACT stays DISABLED.
+// engine, calls a cloud, or deletes anything, except destroy-preview-run and
+// preview-run, which are the human-invoked, preview-only entry to the driver
+// (docs/destroy-preview-driver.md). ACT stays DISABLED.
 
 const USAGE = [
   "ALZ traceable teardown (read-only; plans are produced by your own engine run)",
@@ -39,6 +41,12 @@ const USAGE = [
   "  ./alz teardown orphans --units A.json[,B.json]",
   "      (--resources RESOURCES.json | --aws-tagged GET_RESOURCES.json | --azure-tagged RESOURCE_LIST.json)",
   "                                             ALZ-tagged resources no unit accounts for",
+  "  ./alz teardown destroy-preview-run|preview-run --request REQUEST.json --manifest MANIFEST.json",
+  "      --unit UNIT.json --qualifications QUALIFICATIONS.json",
+  "                                             human-invoked preview driver: needs a terminal, you type the",
+  "                                             target, identities come from ALZ_DISCOVERY_* / ALZ_STATE_*;",
+  "                                             prints redacted evidence. Exit 0 PASS, 2 BLOCKED, 1 error.",
+  "                                             No flag forces, skips or pre-answers anything.",
   "ENGINE: TERRAFORM (default) | OPENTOFU | PULUMI | CLOUDFORMATION | AWS_CDK | BICEP. Plans are:",
   "  Terraform/OpenTofu: `terraform|tofu show -json PLAN`",
   "  Pulumi:             `pulumi preview --json` (destroy: `--destroy --json`)",
@@ -156,10 +164,21 @@ function main(argv: string[]): number {
   throw new Error("TEARDOWN_COMMAND_UNKNOWN: " + command);
 }
 
-try {
-  process.exitCode = main(process.argv.slice(2));
-} catch (error) {
-  console.error(error instanceof Error ? error.message : String(error));
-  console.error("Run ./alz teardown --help for usage.");
-  process.exitCode = 1;
+const argv = process.argv.slice(2);
+if (argv[0] === "destroy-preview-run" || argv[0] === "preview-run") {
+  // The one subcommand that runs an engine, and only for a person at a terminal (src/cli/teardown-driver.ts).
+  import("./teardown-driver.js")
+    .then((driver) => driver.runDriverCommand(argv[0] as "destroy-preview-run" | "preview-run", argv.slice(1)))
+    .then((code) => { process.exitCode = code; }, () => {
+      console.error("TEARDOWN_UNEXPECTED_ERROR");
+      process.exitCode = 1;
+    });
+} else {
+  try {
+    process.exitCode = main(argv);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    console.error("Run ./alz teardown --help for usage.");
+    process.exitCode = 1;
+  }
 }
