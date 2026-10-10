@@ -83,24 +83,36 @@ function mockObserved(
   );
 }
 
-function dangerousPreviewCommand(
+/**
+ * Words that mean a command mutates, or is a destroy-mode run, not a preview.
+ * Matched against each argument with leading dashes and any `=value` removed,
+ * so the flag forms count too: `terraform plan -destroy` and
+ * `pulumi preview --destroy` pass `-destroy` / `--destroy`, which an exact
+ * match on the word `destroy` never saw. `auto-approve` and `yes` are the
+ * flags that skip the confirmation a mutating command would otherwise stop at.
+ */
+const PROHIBITED_PREVIEW_WORDS: ReadonlySet<string> = new Set([
+  "apply",
+  "destroy",
+  "up",
+  "deploy",
+  "execute-change-set",
+  "create-stack",
+  "update-stack",
+  "delete-stack",
+  "auto-approve",
+  "yes",
+]);
+
+export function dangerousPreviewCommand(
   result: ToolResult,
 ): boolean {
-  const prohibited = new Set([
-    "apply",
-    "destroy",
-    "up",
-    "deploy",
-    "execute-change-set",
-    "create-stack",
-    "update-stack",
-    "delete-stack",
-  ]);
-
   return (
     result.command?.some((part) =>
-      prohibited.has(
-        part.toLowerCase(),
+      PROHIBITED_PREVIEW_WORDS.has(
+        part.toLowerCase()
+          .replace(/^-+/, "")
+          .split("=")[0],
       ),
     ) ?? false
   );
