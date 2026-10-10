@@ -5,8 +5,10 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 
-COPY tsconfig.json ./
+COPY tsconfig.json tsconfig.ui.json ./
 COPY src/ ./src/
+COPY vite.config.ts ./
+COPY scripts/prerender-ui.tsx ./scripts/prerender-ui.tsx
 
 RUN npm run check && npm run build
 
@@ -18,6 +20,8 @@ ENV ALZ_SOURCE_COMMIT=$SOURCE_COMMIT
 COPY test/ ./test/
 COPY config/ ./config/
 COPY policy/ ./policy/
+COPY compose.yaml ./compose.yaml
+COPY docs/ ./docs/
 COPY alz ./alz
 COPY .github/workflows/model-qualification.yml ./.github/workflows/model-qualification.yml
 

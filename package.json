@@ -9,9 +9,12 @@
     "discover": "tsx src/cli/discover.ts",
     "discover:aws": "tsx src/cli/discover.ts --provider aws --mock brownfield --resources",
     "discover:azure": "tsx src/cli/discover.ts --provider azure --mock greenfield --resources",
-    "test": "tsx --test test/*.test.ts",
+    "test": "npm run build:ui && npm run test:node && npm run test:ui",
+    "test:node": "tsx --test test/*.test.ts",
+    "test:ui": "vitest run --passWithNoTests",
     "build": "tsc -p tsconfig.json",
-    "check": "tsc -p tsconfig.json --noEmit",
+    "build:ui": "vite build && tsx --tsconfig tsconfig.ui.json scripts/prerender-ui.tsx",
+    "check": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.ui.json --noEmit && npm run build:ui",
     "verify": "npm run check && npm test && npm audit && npm run evidence:migrate && npm run security:check && npm run plugins:check && npm run toolbox:check && npm run discover:aws && npm run discover:azure && npm run discover:unknown && npm run agent:assess && npm run build:aws:terraform && npm run build:unknown && npm run agent:build && npm run agent:change",
     "discover:unknown": "tsx src/cli/discover.ts --provider aws --mock unknown",
     "discover:verbose": "tsx src/cli/discover.ts --provider aws --mock brownfield --verbose",
@@ -40,12 +43,21 @@
     "operator": "tsx src/cli/operator.ts",
     "models": "tsx src/cli/models.ts",
     "models:verify": "tsx src/cli/models.ts verify",
+    "matrix:agent-builder": "tsx src/cli/agent-builder-sim.ts",
     "ci:actions-pinned": "node scripts/check-workflow-pins.mjs"
   },
   "devDependencies": {
+    "@testing-library/react": "^16.3.3",
     "@types/node": "^26.6.4",
+    "@types/react": "^18.3.31",
+    "@types/react-dom": "^18.3.7",
+    "happy-dom": "^20.14.6",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
     "tsx": "^4.20.0",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "vite": "^8.3.4",
+    "vitest": "^4.1.11"
   },
   "dependencies": {
     "@langchain/core": "1.2.16",

@@ -18,7 +18,15 @@ export type TargetConnectorId =
   | "ANSIBLE_PRIVATE_EDGE"
   | "CROSSPLANE_KUBERNETES_EDGE"
   | "VCF"
-  | "OPENSHIFT";
+  | "OPENSHIFT"
+  | "AZURE_LOCAL_AI_FOUNDRY"
+  | "AWS_OUTPOSTS_SAGEMAKER"
+  | "VMWARE_PRIVATE_AI"
+  | "NUTANIX_AI"
+  | "REDHAT_OPENSHIFT_AI"
+  | "LANGCHAIN_PRIVATE"
+  | "AUTOGEN_PRIVATE"
+  | "CREWAI_PRIVATE";
 
 export type EvidenceConnectorId =
   | "JIRA"
@@ -33,9 +41,16 @@ export type TargetConnector = {
   id: TargetConnectorId;
   family:
     | "ENVIRONMENT"
-    | "MANAGED_OPERATIONS";
+    | "MANAGED_OPERATIONS"
+    | "AGENT_BUILDER";
   status: ConnectorStatus;
   substrates: string[];
+  /**
+   * Loopback-only simulation endpoint (e.g. "http://127.0.0.1").
+   * Declared by TEST_DOUBLE connectors so the no-egress claim is
+   * machine-checkable; never a reachable external host.
+   */
+  endpoint?: string;
   notes: string;
 };
 

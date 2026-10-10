@@ -1,8 +1,9 @@
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
-import { resolve } from "node:path";
+import { extname, resolve, sep } from "node:path";
 
 import { PHASE_E_SCENARIOS } from "../qualification/phase-e.js";
 import { sanitizeDiagnosticText } from "../observability/redaction.js";
@@ -53,87 +54,50 @@ export function chooseOperatorJob(modeValue: string, scenarioValue: string): Ope
       : "DETERMINISTIC FIXTURE — NO LOCAL MODEL INFERENCE OR LIVE CLOUD" };
 }
 
-function escapeHtml(value: string): string {
-  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+// --- Console shell (React build output) ----------------------------------
+//
+// The console front end is built by vite (src/operator-ui/app) and served
+// from dist/operator-ui/app as first-party static assets. The server injects
+// only the per-session CSRF token into the built shell; everything else the
+// browser renders is frozen at build time, so the same page ships to every
+// operator and disclosure happens client-side (D1 contract).
+
+const CONSOLE_CSP =
+  "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; " +
+  "connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
+
+const CONSOLE_CSRF_PLACEHOLDER = "__ALZ_CSRF_TOKEN__";
+
+const CONSOLE_ASSET_CONTENT_TYPES: Readonly<Record<string, string>> = {
+  ".css": "text/css; charset=utf-8",
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".woff2": "font/woff2",
+};
+
+// First-party asset routes only: a single path segment under assets/ or
+// fonts/, no URL decoding, and a resolve + containment check so a crafted
+// name can never leave the build output directory.
+const CONSOLE_ASSET_ROUTE = /^\/(assets|fonts)\/([A-Za-z0-9._-]+)$/;
+
+async function readConsolePage(uiRoot: string): Promise<string> {
+  const shell = await readFile(resolve(uiRoot, "index.html"), "utf8");
+  assertAllowed(shell.includes(CONSOLE_CSRF_PLACEHOLDER), "CONSOLE_SHELL_INVALID");
+  return shell;
 }
-function page(token: string): string {
-  const options = PHASE_E_SCENARIOS.map((scenario) =>
-    '<option value="' + escapeHtml(scenario.id) + '">' +
-    escapeHtml(scenario.id.replaceAll("-", " ")) + "</option>").join("");
-  return `<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Sovereign ALZ — Local Operator</title>
-<style>
-:root{color-scheme:light;--bg:#f5f5f0;--ink:#172a27;--muted:#52645e;--edge:#d5dfd7;--accent:#285848}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 system-ui,-apple-system,sans-serif}
-main{max-width:930px;margin:0 auto;padding:34px 20px 70px}header{display:flex;justify-content:space-between;align-items:center;gap:20px}
-small{color:var(--muted)}h1{font-size:30px;line-height:1.2;letter-spacing:-.03em;margin:12px 0}p{max-width:720px}
-.panel{background:white;border:1px solid var(--edge);padding:26px;border-radius:14px;margin-top:22px}
-label{font-weight:650;display:block;margin:18px 0 6px}select,button{font:inherit;border-radius:9px;padding:12px 15px}
-select{width:100%;border:1px solid #a6b8ab;background:#fff;color:var(--ink)}
-button{background:var(--accent);color:#fff;border:0;font-weight:650;cursor:pointer;margin-top:20px}
-button:disabled{opacity:.5;cursor:default}
-#output{white-space:pre-wrap;overflow-wrap:anywhere;max-height:350px;overflow:auto;background:#f7f9f7;padding:18px;border-radius:8px;font:13px/1.5 ui-monospace,monospace}
-.line{border-top:1px solid var(--edge);margin:18px 0}
-#state{font-weight:650}.tag{background:#e5ede7;padding:7px 11px;border-radius:40px;font-size:12px}
-.footer{color:var(--muted);font-size:13px}
-</style></head><body><main>
-<header><strong>SOVEREIGN ALZ</strong><span class="tag">LOCAL • PREVIEW ONLY</span></header>
-<h1>Private Agent Workspace</h1><p>Explore governed landing-zone assessments, review private-model findings,
-and verify safe infrastructure previews. No deployments, cloud changes or automatic approvals.</p>
-<section class="panel">
-<h2>Choose a workflow</h2>
-<form id="run" method="post" action="/run">
-<input type="hidden" name="token" value="${escapeHtml(token)}">
-<label for="mode">What would you like to do?</label>
-<select name="mode" id="mode">
-<option value="matrix-offline">Explore all existing landing-zone scenarios (offline)</option>
-<option value="matrix-live">Analyze scenarios with private Qwen / Mistral models</option>
-<option value="aws-review">Review the AWS brownfield Terraform proposal with private models</option>
-<option value="chaos">Check backup, recovery and Well-Architected fault handling</option>
-</select>
-<label for="scenario">Environment and infrastructure approach</label>
-<select name="scenario" id="scenario"><option value="all">All supported scenarios</option>${options}</select>
-<p><small>Live-model choices require installed models on this machine. AWS evidence is synthetic.
-Terraform plans and infrastructure ACT are not available from this workspace.</small></p>
-<button type="submit" id="start">Run selected workflow</button></form>
-</section>
-<section class="panel"><h2>Execution and evidence</h2>
-<p id="state" role="status" aria-live="polite">IDLE</p>
-<p id="basis">Choose a workflow to view its evidence classification.</p>
-<div class="line"></div><div id="output" aria-live="polite">No scenario executed yet.</div>
-</section><p class="footer">Localhost-only session • One run at a time • ACT permanently disabled in this accelerator release.
-Offline results cannot qualify live models, live-cloud discovery or a real recovery test.</p>
-</main>
-<script nonce="${escapeHtml(token)}">
-const form=document.querySelector('#run'),mode=document.querySelector('#mode'),scenario=document.querySelector('#scenario');
-const state=document.querySelector('#state'),basis=document.querySelector('#basis'),output=document.querySelector('#output'),start=document.querySelector('#start');
-function update(){
-  const available=mode.value==='matrix-offline'||mode.value==='matrix-live';
-  scenario.disabled=!available; if(!available)scenario.value='all';
-}
-mode.addEventListener('change',update);update();
-async function refresh(){
-  try {
-    const res=await fetch('/state',{cache:'no-store'});if(!res.ok)return;
-    const data=await res.json();
-    state.textContent=data.status;basis.textContent=data.evidenceBasis;
-    output.textContent=data.output||'No output yet.';
-    start.disabled=data.status==='RUNNING';
-  } catch {state.textContent='Local session unavailable';}
-}
-form.addEventListener('submit',async (event)=>{
-  event.preventDefault();start.disabled=true;
-  try {
-    const response=await fetch('/run',{method:'POST',body:new URLSearchParams(new FormData(form))});
-    if(!response.ok){const item=await response.json();output.textContent=item.error||'Request denied';}
-  } catch {output.textContent='Cannot reach local operator';}
-  await refresh();
-});
-setInterval(refresh,1000);refresh();
-</script></body></html>`;
+
+async function readConsoleAsset(
+  uiRoot: string,
+  url: string,
+): Promise<{ body: Buffer; contentType: string } | null> {
+  const match = CONSOLE_ASSET_ROUTE.exec(url);
+  if (!match) return null;
+  const directory = resolve(uiRoot, match[1]);
+  const filePath = resolve(directory, match[2]);
+  if (!filePath.startsWith(directory + sep)) return null;
+  const contentType = CONSOLE_ASSET_CONTENT_TYPES[extname(filePath).toLowerCase()];
+  if (!contentType || !existsSync(filePath)) return null;
+  return { body: await readFile(filePath), contentType };
 }
 
 const minimumEnv = (source: NodeJS.ProcessEnv): NodeJS.ProcessEnv => {
@@ -174,6 +138,7 @@ export function createLocalOperatorServer(options: {
 }): { server: Server; getState: () => JobState } {
   const token = randomBytes(24).toString("hex");
   const runner = options.runner ?? runOperatorJob;
+  const uiRoot = resolve(options.root, "dist", "operator-ui", "app");
   let state: JobState = {
     status: "IDLE", title: "No workflow",
     evidenceBasis: "NOT_RUN", output: "No scenario executed yet.",
@@ -197,14 +162,36 @@ export function createLocalOperatorServer(options: {
       send(403, "application/json", '{"error":"LOCAL_HOST_ONLY"}');return;
     }
     if (req.method === "GET" && req.url === "/") {
+      let shell: string;
+      try {
+        shell = await readConsolePage(uiRoot);
+      } catch (error) {
+        // Missing build output is a fixable setup state, not a crash; anything
+        // else (including an invalid shell) is a server-side defect.
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+          send(503, "application/json",
+            '{"error":"CONSOLE_BUILD_MISSING","hint":"npm run build:ui"}');
+        } else {
+          send(500, "application/json", '{"error":"CONSOLE_SHELL_INVALID"}');
+        }
+        return;
+      }
       res.writeHead(200, { ...headers, "Content-Type": "text/html; charset=utf-8",
-        "Content-Security-Policy":
-        "default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-" + token +
-        "'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'" });
-      res.end(page(token));return;
+        "Content-Security-Policy": CONSOLE_CSP });
+      res.end(shell.split(CONSOLE_CSRF_PLACEHOLDER).join(token));
+      return;
     }
     if (req.method === "GET" && req.url === "/state") {
       send(200, "application/json", JSON.stringify(state));return;
+    }
+    if (req.method === "GET") {
+      const asset = await readConsoleAsset(uiRoot, req.url ?? "");
+      if (asset) {
+        res.writeHead(200, { ...headers, "Content-Type": asset.contentType,
+          "Content-Length": asset.body.byteLength });
+        res.end(asset.body);
+        return;
+      }
     }
     if (req.method !== "POST" || req.url !== "/run") {
       send(404, "application/json", '{"error":"NOT_FOUND"}');return;

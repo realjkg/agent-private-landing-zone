@@ -11,13 +11,13 @@ import {
   verifyRecordHash,
 } from "../src/integration-sim/agent.js";
 
-test("synthetic integration matrix covers 90 connection scenarios", () => {
+test("synthetic integration matrix covers 210 connection scenarios", () => {
   const results =
     syntheticQualificationMatrix();
 
   assert.equal(
     TARGET_CONNECTORS.length,
-    6,
+    14,
   );
   assert.equal(
     EVIDENCE_CONNECTORS.length,
@@ -25,7 +25,7 @@ test("synthetic integration matrix covers 90 connection scenarios", () => {
   );
   assert.equal(
     results.length,
-    90,
+    210,
   );
 });
 
