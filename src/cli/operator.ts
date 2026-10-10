@@ -285,6 +285,7 @@ function help(): void {
     "  ./alz control-plane restore --evidence <encrypted-bundle> --restore-root <empty-isolated-path>",
   );
   console.log("  ./alz economics report <input.json> [--json]");
+  console.log("  ./alz teardown record|check-plan|destroy-preview|orphans (read-only)");
   console.log("  ./alz health [--serve]");
   console.log("  ./alz doctor");
   console.log("  ./alz verify");
@@ -539,6 +540,9 @@ try {
     runTs("src/cli/private-agent-matrix.ts", argv.slice(1));
   } else if (command === "chaos") {
     runTs("src/cli/chaos-pillars.ts", argv.slice(1));
+  } else if (command === "teardown") {
+    // Read-only verdicts; exit 2 (BLOCKED / orphans) is a diagnosis to propagate.
+    runTs("src/cli/teardown.ts", argv.slice(1), true);
   } else if (command === "inspect") {
     const p = choice(
       first,
