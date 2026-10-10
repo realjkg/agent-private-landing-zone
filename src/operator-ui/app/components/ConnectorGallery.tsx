@@ -72,7 +72,7 @@ export function ConnectorGallery(props: { level: ExperienceLevel }) {
   const agentBuilders = TARGET_CONNECTORS.filter((connector) => connector.family === "AGENT_BUILDER");
   const environment = TARGET_CONNECTORS.filter((connector) => connector.family !== "AGENT_BUILDER");
   return (
-    <section className="panel advanced-only" aria-label="Connector gallery">
+    <section className="panel advanced-only" id="connectors" aria-label="Connector gallery">
       <h2>Connector gallery</h2>
       <p>
         <small>

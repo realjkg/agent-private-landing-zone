@@ -345,3 +345,84 @@ code {
   padding: 10px 12px;
 }
 
+/* Section nav + summary strip (UX depth pass). The tabs stick to the top of
+   the viewport on the long Advanced/Expert page; the strip is a sibling,
+   directly beneath. Anchored sections offset by the stuck-nav height. */
+.section-nav-region {
+  margin-top: 18px;
+}
+
+.section-nav {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 8px 0;
+}
+
+.summary-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  margin: 4px 0 0;
+}
+
+.strip-group {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  margin: 0;
+}
+
+.strip-label {
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.strip-led {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--edge);
+  font-size: 12px;
+  padding: 3px 9px;
+}
+
+.strip-led b {
+  color: inherit;
+  font-weight: 700;
+}
+
+/* Same honest color language as the status badges: green = proven locally,
+   amber = gap or simulation, dim = unknown. The label stays the literal
+   status word beside the count. */
+.strip-led[data-status="ALIGNED"] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.strip-led[data-status="GAP"] {
+  border-color: var(--amber, #ffb000);
+  color: var(--amber, #ffb000);
+}
+
+.strip-led[data-status="UNKNOWN"] {
+  border-color: var(--muted);
+  color: var(--muted);
+}
+
+#workflow,
+#evidence,
+#connectors,
+#compliance {
+  scroll-margin-top: 64px;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  html {
+    scroll-behavior: smooth;
+  }
+}
+

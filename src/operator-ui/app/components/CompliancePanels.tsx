@@ -79,7 +79,7 @@ function RequirementRow(props: { pack: CompliancePack; requirement: PackRequirem
 export function CompliancePanels(props: { level: ExperienceLevel }) {
   const expert = props.level === "EXPERT";
   return (
-    <section className="panel advanced-only" aria-label="Compliance packs">
+    <section className="panel advanced-only" id="compliance" aria-label="Compliance packs">
       <h2>Compliance packs</h2>
       <p className="disclaimer">
         <small>{COMPLIANCE_PACK_DISCLAIMER}</small>

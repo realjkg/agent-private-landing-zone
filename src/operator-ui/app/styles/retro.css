@@ -227,6 +227,51 @@ button[data-running="true"] {
   padding: 6px 0 6px 12px;
 }
 
+/* Sticky section nav — arcade anchor tabs. Sticks under the CRT overlay
+   (z-index 9); opaque background so page content never bleeds through. */
+.section-nav {
+  position: sticky;
+  top: 0;
+  z-index: 8;
+  background: var(--screen);
+  border-bottom: 1px solid var(--phosphor-dim);
+}
+
+.section-tab {
+  font-family: "Press Start 2P", ui-monospace, monospace;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #8fd8ab;
+  background: var(--cabinet);
+  border: 2px solid var(--phosphor-dim);
+  box-shadow: 3px 3px 0 rgba(0, 0, 0, 0.65);
+  padding: 8px 10px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.section-tab:hover,
+.section-tab:focus-visible {
+  border-color: var(--phosphor);
+  color: var(--phosphor);
+}
+
+/* LED readouts on the summary strip — same glow language as the status
+   badges, literal count labels. Counts only; no score is computed. */
+.strip-led::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  background: currentColor;
+  box-shadow: 0 0 6px currentColor;
+}
+
+.strip-label {
+  font-family: "Press Start 2P", ui-monospace, monospace;
+  font-size: 8px;
+}
+
 .card {
   border: 2px solid var(--phosphor-dim);
   box-shadow: 3px 3px 0 rgba(0, 0, 0, 0.65);

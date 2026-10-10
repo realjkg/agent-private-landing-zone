@@ -11,6 +11,7 @@ import { ConnectorNotice } from "./components/ConnectorNotice";
 import { EvidencePanel } from "./components/EvidencePanel";
 import { ExpertReference } from "./components/ExpertReference";
 import { LevelSwitcher } from "./components/LevelSwitcher";
+import { SectionNav } from "./components/SectionNav";
 import { WorkflowForm } from "./components/WorkflowForm";
 import { readStoredLevel, storeLevel } from "./level-storage";
 
@@ -127,7 +128,7 @@ export function OperatorApp(props: OperatorAppProps) {
         {level === "BEGINNER" && <ConnectorNotice />}
         {level === "BEGINNER" && <CompliancePosture />}
         {level !== "BEGINNER" && (
-          <section className="panel advanced-only">
+          <section className="panel advanced-only" id="workflow">
             <h2>Choose a workflow</h2>
             <WorkflowForm
               mode={mode}
