@@ -31,7 +31,28 @@ export type JobState = {
    * never means recovery was verified, so the console reports both.
    */
   recoveryVerification?: RecoveryVerificationStatus;
+  /** Blocked runs only, when the cause is a known local setup state. */
+  blockReason?: BlockReason;
 };
+
+/**
+ * Setup states an operator can fix on their own machine. Only these get a
+ * plain-language next step in the console; anything else stays the literal
+ * diagnostic. Explaining a block never relaxes it.
+ */
+export type BlockReason = "SOURCE_WORKTREE_DIRTY" | "WORKSPACE_NEEDS_BUILD";
+
+export function readBlockReason(message: string): BlockReason | undefined {
+  const match = /\b(SOURCE_WORKTREE_DIRTY|WORKSPACE_NEEDS_BUILD)\b/.exec(message);
+  return match ? (match[1] as BlockReason) : undefined;
+}
+
+/** Build output the workspace needs: the console UI and every job script. */
+export function missingWorkspaceBuild(root: string): string[] {
+  const scripts = [...modes].map((mode) => "dist/" + chooseOperatorJob(mode, "all").script);
+  const required = ["dist/operator-ui/app/index.html", ...new Set(scripts)];
+  return required.filter((path) => !existsSync(resolve(root, path)));
+}
 
 /** Read the workflow's literal recovery verification line; absent means NOT_REPORTED. */
 export function readRecoveryVerification(output: string): RecoveryVerificationStatus {
@@ -262,7 +283,9 @@ export function createLocalOperatorServer(options: {
     }).catch((error) => {
       // Emit class/status only; no raw secrets, model transcripts, or cloud credentials.
       const message = error instanceof Error ? error.message : "UNKNOWN_FAILURE";
+      const blockReason = readBlockReason(message);
       state = { ...state, status: "BLOCKED", ...recovery(message),
+        ...(blockReason ? { blockReason } : {}),
         output: sanitizeDiagnosticText(message.slice(0, 15000), 15000) };
     });
   });

@@ -13,7 +13,7 @@ export function CompliancePosture() {
   return (
     <section className="panel beginner-only" aria-label="Compliance posture">
       <h2>Compliance posture</h2>
-      <p className="beginner-proof" role="status" aria-live="polite">
+      <p className="beginner-proof">
         This workspace maps its safeguards to {COMPLIANCE_PACKS.length} frameworks — {frameworks} — and
         shows where coverage is proven, incomplete, or unknown.
       </p>

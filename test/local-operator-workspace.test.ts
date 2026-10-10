@@ -2,10 +2,15 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import { request as httpRequest } from "node:http";
 import test from "node:test";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 
 import {
   chooseOperatorJob,
   createLocalOperatorServer,
+  missingWorkspaceBuild,
+  readBlockReason,
   readRecoveryVerification,
 } from "../src/operator-ui/server.js";
 import { probeLocalModels } from "../src/operator-ui/model-availability.js";
@@ -255,4 +260,56 @@ test("a failing model probe answers 503 instead of hanging the console", async (
       assert.equal(response.status, 503);
       assert.deepEqual(await response.json(), { error: "MODEL_PROBE_FAILED" });
     });
+});
+
+test("only known local setup states become a block reason", () => {
+  assert.equal(readBlockReason("WORKFLOW_BLOCKED_EXIT_1\nMATRIX_BLOCKED: SOURCE_WORKTREE_DIRTY"),
+    "SOURCE_WORKTREE_DIRTY");
+  assert.equal(readBlockReason("SOURCE_WORKTREE_DIRTY: qualify from a clean commit"),
+    "SOURCE_WORKTREE_DIRTY");
+  assert.equal(readBlockReason("WORKSPACE_NEEDS_BUILD"), "WORKSPACE_NEEDS_BUILD");
+  assert.equal(readBlockReason("QUALIFICATION_BLOCKED: fetch failed"), undefined);
+  assert.equal(readBlockReason("NOT_SOURCE_WORKTREE_DIRTYISH"), undefined);
+});
+
+test("a blocked run carries its setup reason; other failures carry none", async () => {
+  let failure = "WORKFLOW_BLOCKED_EXIT_1\nMATRIX_BLOCKED: SOURCE_WORKTREE_DIRTY";
+  await withServer({ runner: async () => { throw new Error(failure); } }, async (url, token) => {
+    assert.equal((await startRun(url, token, "matrix-offline")).status, 202);
+    const dirty = await (await fetch(url + "/state")).json() as Record<string, unknown>;
+    assert.equal(dirty.status, "BLOCKED");
+    assert.equal(dirty.blockReason, "SOURCE_WORKTREE_DIRTY");
+    failure = "QUALIFICATION_BLOCKED: fetch failed";
+    assert.equal((await startRun(url, token, "aws-review")).status, 202);
+    const other = await (await fetch(url + "/state")).json() as Record<string, unknown>;
+    assert.equal(other.status, "BLOCKED");
+    assert.equal("blockReason" in other, false);
+  });
+});
+
+test("workspace readiness names the console build and every job script", () => {
+  const root = mkdtempSync(join(tmpdir(), "alz-readiness-"));
+  try {
+    const missing = missingWorkspaceBuild(root);
+    assert.deepEqual(missing, [
+      "dist/operator-ui/app/index.html",
+      "dist/cli/private-agent-matrix.js",
+      "dist/cli/qualify-aws-terraform-agent.js",
+      "dist/cli/chaos-pillars.js",
+    ]);
+    for (const path of missing) {
+      mkdirSync(dirname(join(root, path)), { recursive: true });
+      writeFileSync(join(root, path), "");
+    }
+    assert.deepEqual(missingWorkspaceBuild(root), []);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("bootstrap builds the console UI as well as the runtime", () => {
+  const launcher = readFileSync("alz", "utf8");
+  const bootstrap = launcher.slice(launcher.indexOf('"bootstrap"'), launcher.indexOf("exit 0"));
+  assert.match(bootstrap, /npm run build\n/);
+  assert.match(bootstrap, /npm run build:ui\n/);
 });

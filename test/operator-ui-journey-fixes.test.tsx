@@ -218,3 +218,76 @@ describe("run auto-scroll", () => {
     expect(() => scrollIntoViewSafe(null, "auto")).not.toThrow();
   });
 });
+
+const dirtyBlocked: JobState = {
+  status: "BLOCKED",
+  title: "ALZ eight-adapter scenario matrix",
+  evidenceBasis: "DETERMINISTIC FIXTURE — NO LOCAL MODEL INFERENCE OR LIVE CLOUD",
+  output: "WORKFLOW_BLOCKED_EXIT_1\nMATRIX_BLOCKED: SOURCE_WORKTREE_DIRTY",
+  blockReason: "SOURCE_WORKTREE_DIRTY",
+};
+
+describe("blocked runs explain local setup states", () => {
+  test("beginner hears why and what to do, without switching level", () => {
+    stub(dirtyBlocked, null);
+    renderApp("BEGINNER", dirtyBlocked);
+    const status = document.querySelector(".beginner-status")?.textContent ?? "";
+    expect(status).toContain("This check could not run.");
+    expect(status).toContain("uncommitted changes");
+    expect(status).toContain("commit or stash");
+    expect(status).not.toContain("switch to Advanced");
+  });
+
+  test("advanced keeps the literal diagnostic and adds the next step", () => {
+    stub(dirtyBlocked, null);
+    renderApp("ADVANCED", dirtyBlocked);
+    expect(screen.getByTestId("run-summary").textContent).toContain("verification BLOCKED");
+    expect(screen.getByText(/MATRIX_BLOCKED: SOURCE_WORKTREE_DIRTY/)).toBeTruthy();
+    expect(screen.getByTestId("run-next-step").textContent).toContain("commit or stash");
+  });
+
+  test("a missing build points at bootstrap", () => {
+    const needsBuild: JobState = { ...dirtyBlocked, output: "WORKSPACE_NEEDS_BUILD",
+      blockReason: "WORKSPACE_NEEDS_BUILD" };
+    stub(needsBuild, null);
+    renderApp("ADVANCED", needsBuild);
+    expect(screen.getByTestId("run-next-step").textContent).toContain("./alz bootstrap");
+  });
+
+  test("unknown blocks keep the existing wording and get no invented advice", () => {
+    const unknown: JobState = { ...dirtyBlocked, output: "QUALIFICATION_BLOCKED: fetch failed" };
+    delete unknown.blockReason;
+    stub(unknown, null);
+    const { unmount } = renderApp("BEGINNER", unknown);
+    expect(document.querySelector(".beginner-status")?.textContent).toBe(
+      "This check could not run — switch to Advanced for the technical reason",
+    );
+    unmount();
+    renderApp("ADVANCED", unknown);
+    expect(screen.queryByTestId("run-next-step")).toBeNull();
+  });
+});
+
+describe("live regions announce changes only", () => {
+  test("static beginner text is not a live region; the run status still is", () => {
+    stub(idleState, null);
+    renderApp("BEGINNER");
+    for (const label of ["Cloud connectors", "Compliance posture"]) {
+      const section = screen.getByRole("region", { name: label });
+      expect(section.querySelector("[aria-live], [role=status]")).toBeNull();
+    }
+    const status = document.querySelector(".beginner-status");
+    expect(status?.getAttribute("role")).toBe("status");
+    expect(status?.getAttribute("aria-live")).toBe("polite");
+  });
+
+  test("the streaming output log is not re-announced on every poll", () => {
+    stub(matrixPass, null);
+    renderApp("ADVANCED", matrixPass);
+    const output = document.querySelector("#evidence .output");
+    expect(output).toBeTruthy();
+    expect(output?.hasAttribute("aria-live")).toBe(false);
+    // Outcomes are still announced by the summary line.
+    expect(screen.getByTestId("run-summary").getAttribute("aria-live")).toBe("polite");
+  });
+});
