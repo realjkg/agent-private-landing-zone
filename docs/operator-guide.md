@@ -17,6 +17,7 @@ This installs the locked runtime dependencies. After bootstrap, use `./alz` for 
 ```bash
 ./alz help
 ./alz doctor
+./alz health [--serve]
 ./alz demo
 ./alz design aws terraform brownfield
 ./alz design aws cdk brownfield
@@ -164,6 +165,26 @@ The required set is Qwen3 1.7B, Qwen3 4B, and Mistral Nemo. Qwen3 8B is the opti
 ### doctor
 
 Checks the local security preflight, plug-in compatibility catalog and toolbox availability.
+
+### health
+
+One-shot health and readiness report, optionally serving the loopback endpoints:
+
+```bash
+./alz health
+./alz health --serve
+```
+
+Run it when something feels off: the report shows the health line (operating mode `PREVIEW_OPERATE`, ACT `DISABLED`), a `readiness: READY` / `NOT READY` verdict with one line per check — including the production-contract observability verdict — and the effective configuration echo (structured events, health server, monitoring export). Exit status is `0` when ready, `1` when not, so it works in scripts.
+
+What to check first, in order:
+
+- **A command misbehaved** — the stdout JSON event lines tell you which signals fired (`policy-denials`, `adapter-failures`, `model-restarts`, ...), with redacted detail. `[warn] ...` lines on stderr are diagnostics (config refusals, disabled export, failed sinks), not event output.
+- **The runtime feels slow or wedged** — `./alz health` for readiness, or probe `/healthz` (liveness) and `/readyz` (readiness with the contract verdict) on a serving runtime (`./alz session` or `./alz operator-web` print the loopback address at startup).
+- **You want totals over time** — `/metrics` exposes Prometheus-format counters (`alz_operational_event_total`) aggregated by signal/status/component; point any local Prometheus-compatible scraper at a serving runtime.
+- **You suspect secrets leaked into logs** — events are redacted at construction (bearer tokens, private keys, secret-like keys); the alert-rule and event schemas live as versioned config checked in CI.
+
+The full surface — event schema and signal catalog, environment variables, endpoint contracts, alert-rule semantics, and how to point an OTLP collector or Splunk HEC at the export doors — is documented in [docs/observability.md](observability.md).
 
 ### verify
 
