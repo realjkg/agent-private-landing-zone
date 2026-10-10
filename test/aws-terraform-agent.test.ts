@@ -150,3 +150,19 @@ test("scenario identity and source binding fail closed", async () => {
     sourceCommit: "UNKNOWN", outputRoot: tmpdir(),
   }, deps), /RELEASE_SOURCE_COMMIT_REQUIRED/);
 });
+
+test("provenance tags are re-validated before they can reach the HCL text", () => {
+  const reviewed = reviewAwsTerraformProposals(
+    JSON.stringify(proposal), JSON.stringify(proposal),
+    ["aws.organizations", "aws.control_tower"],
+  );
+  const tags = (unit: string, build: string) => ({
+    "alz-managed-by": "alz" as const, "alz-unit": unit, "alz-build": build,
+  });
+  const ok = renderAwsTerraformCandidate(reviewed, tags("alzu-abc123", "build-1"));
+  assert.match(ok, /"alz-unit" += "alzu-abc123"/);
+  for (const hostile of ['x" }\n resource "aws_iam_user" "bad" {', "Build_UPPER", "a b", "${var.x}"]) {
+    assert.throws(() => renderAwsTerraformCandidate(reviewed, tags("alzu-abc123", hostile)),
+      /DELETION_UNIT_INVALID/, hostile);
+  }
+});

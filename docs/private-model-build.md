@@ -27,3 +27,18 @@ node dist/cli/real-private-build.js --live-aws-read-only
 This generates private evidence in `.runs/qualification/real-private-build/<run-id>/` only if every actual target gate passes. The `terraform plan` path can contact approved provider APIs and download providers at init: run inside the authorized isolated target/mirror with egress controls. No general credentials, mutation or deployment are enabled.
 
 **Status:** deterministic tests with injected providers prove the control interface only, not real AWS/GPU execution. The full eight-adapter model-authored IaC path is still NOT_RUN/UNQUALIFIED; unsupported provider/adapter combinations remain blocked until PLAN. A true production release requires this exact candidate's six signed release gates and independent approval, including final ARM64 scan and actual recovery. Do not represent CI injection fakes as live-model or cloud results.
+
+## Optional: traceable teardown
+
+To make the build undoable exactly (see `docs/teardown-traceability.md`), name the state container it would create into:
+
+```sh
+cat > state-ref.json <<'JSON'
+{ "engine": "TERRAFORM", "backend": "s3",
+  "location": "s3://<state-bucket>/builds/<build>/terraform.tfstate", "workspace": "default" }
+JSON
+ALZ_DELETION_UNIT_STATE=state-ref.json ALZ_DELETION_UNIT_EXPIRES=2026-12-31 \
+  node dist/cli/real-private-build.js --live-aws-read-only
+```
+
+The candidate then carries `alz-managed-by`, `alz-unit` and `alz-build` tags (plus `alz-expires` if set), the real plan's tags must prove it, and `qualification.json` records the deletion unit. Without these variables nothing changes. A `local` backend is refused, and this still never applies or destroys anything.

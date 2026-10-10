@@ -18,6 +18,7 @@ import {
   ALZ_TAG_KEYS,
   deletionUnitId,
   provenanceTags,
+  recordAttestedDeletionUnit,
   recordDeletionUnit,
   verifyDeletionUnit,
 } from "../src/teardown/unit.js";
@@ -344,4 +345,18 @@ test("./alz teardown CLI: record, check, preview and orphans over files, read-on
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("an attested unit binds the real plan's hash and stays additive-only", () => {
+  const attested = (creates: Array<{ address: string; type: string }>, hash = "e".repeat(64)) =>
+    recordAttestedDeletionUnit({
+      buildId: BUILD_ID, provider: "AWS", stateRef: S3_STATE, designHash: DESIGN_HASH,
+      engine: "TERRAFORM", creates, attestedChangeSetHash: hash,
+    });
+  const unit = attested([{ address: "aws_cloudwatch_log_group.alz_audit", type: "aws_cloudwatch_log_group" }]);
+  assert.equal(unit.createChangeSetHash, "e".repeat(64));
+  assert.deepEqual(unit.plannedCreates, ["aws_cloudwatch_log_group.alz_audit"]);
+  verifyDeletionUnit(unit);
+  assert.throws(() => attested([]), /NO_PLANNED_CREATES/);
+  assert.throws(() => attested([{ address: "a.b", type: "a" }], "not-a-hash"), /CHANGESET_HASH/);
 });

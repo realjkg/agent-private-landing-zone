@@ -1,3 +1,4 @@
+import type { DeletionUnit } from "../teardown/types.js";
 import { randomUUID } from "node:crypto";
 
 import { discoverEnvironment } from "../discovery/discover.js";
@@ -46,6 +47,8 @@ export type BuildLoopResult = {
   previewSummary: string;
   gate: BuildGateDecision;
   executionMode: "PREVIEW_ONLY";
+  /** Present when the build opted in to traceable teardown (docs/teardown-traceability.md). */
+  deletionUnit?: DeletionUnit;
 };
 
 export async function runBuildLoop(

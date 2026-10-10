@@ -14,6 +14,14 @@ import {
   reviewAwsTerraformProposals,
 } from "../qualification/aws-terraform-agent.js";
 import { governedUserRequest, wrapUntrustedEvidence } from "../security/prompt-governance.js";
+import { checkCreateTraceability } from "../teardown/gates.js";
+import type { DeletionUnit, DeletionUnitStateRef, PlannedTags } from "../teardown/types.js";
+import {
+  attestedCreatePlan,
+  deletionUnitId,
+  provenanceTags,
+  recordAttestedDeletionUnit,
+} from "../teardown/unit.js";
 
 export type ActualPrivateBuildValidation = {
   terraformVersion: string;
@@ -23,6 +31,12 @@ export type ActualPrivateBuildValidation = {
   normalizedChangeSetHash: string;
   singleCreateOnly: boolean;
   resourceAddress: "aws_cloudwatch_log_group.alz_audit";
+  /**
+   * Per-create tags read from the real plan (`readTerraformPlanTags`).
+   * Required when the build opts in to a deletion unit; a driver that cannot
+   * report them fails the build closed rather than leaving tags unproven.
+   */
+  plannedTags?: Array<{ address: string; tags: PlannedTags }>;
   mode: "REAL_TERRAFORM_FMT_VALIDATE_PLAN";
   infrastructureApplied: false;
 };
@@ -32,6 +46,15 @@ export type RealPrivateBuildDeps = {
   /** Trusted host only: actual sandboxed Terraform fmt, validate, plan and show-json. */
   validate: (hcl: string) => Promise<ActualPrivateBuildValidation>;
   repositoryEvidence: () => RepositoryEvidence;
+  /**
+   * Opt in to traceable teardown: the trusted host names the engine state
+   * container this build will create into. The unit's provenance tags are
+   * stamped into the candidate and the unit is recorded on the result. Unset
+   * leaves the candidate, its hash and the result exactly as before.
+   */
+  deletionUnitState?: DeletionUnitStateRef;
+  /** Optional YYYY-MM-DD expiry tag for short-lived builds (reported, never enforced). */
+  deletionUnitExpires?: string;
 };
 export const defaultPrivateBuildDeps: RealPrivateBuildDeps = {
   metadata: getLocalModelMetadata,
@@ -76,6 +99,9 @@ export async function runRealPrivateModelBuild(
     design.additions.every((value) =>
       value === AWS_TERRAFORM_SCENARIO.resourceId) &&
     state.action === undefined, "LIVE_DESIGN_OR_OWNERSHIP_NOT_APPROVED");
+  // Cheap and before any model call: a wrong state reference must not cost inference.
+  requireBuild(deps.deletionUnitState === undefined ||
+    deps.deletionUnitState.engine === "TERRAFORM", "TEARDOWN_STATE_REF_ENGINE");
   const cfg = loadConfig(), url = new URL(cfg.ollamaBaseUrl);
   requireBuild(url.protocol === "http:" && ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname) &&
     cfg.routerModel.startsWith("qwen3:") &&
@@ -120,7 +146,15 @@ export async function runRealPrivateModelBuild(
       STRUCTURED_MODEL_OPTIONS),
   ]);
   const reviewed = reviewAwsTerraformProposals(primary, validator, keys);
-  const hcl = renderAwsTerraformCandidate(reviewed);
+  const buildId = "build-" + randomUUID();
+  const expectedTags = deps.deletionUnitState
+    ? provenanceTags({
+      unitId: deletionUnitId(buildId, deps.deletionUnitState),
+      buildId,
+      expires: deps.deletionUnitExpires,
+    })
+    : undefined;
+  const hcl = renderAwsTerraformCandidate(reviewed, expectedTags);
   const artifact = createBuildArtifact({
     engine: "TERRAFORM", provider: "AWS", path: "generated/main.tf",
     content: hcl, generatedBy: "local-qwen-mistral-reviewed-template",
@@ -134,12 +168,32 @@ export async function runRealPrivateModelBuild(
     [actual.validationOutputHash, actual.realPlanEvidenceHash,
       actual.normalizedChangeSetHash].every((value) => hash.test(value)),
     "ACTUAL_TERRAFORM_PREVIEW_UNVERIFIED");
+  let deletionUnit: DeletionUnit | undefined;
+  if (deps.deletionUnitState) {
+    requireBuild(actual.plannedTags !== undefined, "TEARDOWN_PLAN_TAGS_NOT_REPORTED");
+    const creates = [{ address: actual.resourceAddress, type: "aws_cloudwatch_log_group" }];
+    deletionUnit = recordAttestedDeletionUnit({
+      buildId, provider: "AWS", stateRef: deps.deletionUnitState,
+      designHash: design.designHash, engine: "TERRAFORM", creates,
+      attestedChangeSetHash: actual.normalizedChangeSetHash,
+      expires: deps.deletionUnitExpires,
+    });
+    requireBuild(JSON.stringify(deletionUnit.tags) === JSON.stringify(expectedTags),
+      "TEARDOWN_UNIT_TAGS_DIVERGED");
+    const traceability = checkCreateTraceability(deletionUnit,
+      attestedCreatePlan("TERRAFORM", creates, actual.normalizedChangeSetHash),
+      new Map(actual.plannedTags!.map((item) => [item.address, item.tags] as const)));
+    requireBuild(traceability.verdict === "TRACEABLE" &&
+      traceability.tagCoverage === "VERIFIED" &&
+      traceability.tagged.includes(actual.resourceAddress),
+    "TEARDOWN_TRACEABILITY:" + traceability.reasons.join(";").slice(0, 300));
+  }
   const scannerResults: ScannerResult[] = [{
     scanner: "terraform-real-fmt-validate-plan", passed: true,
     findings: [], evidenceHash: actual.validationOutputHash,
   }];
   const candidate = {
-    id: "build-" + randomUUID(), status: "READY_FOR_APPROVAL" as const,
+    id: buildId, status: "READY_FOR_APPROVAL" as const,
     environment: env, artifact,
     evidence: {
       discoverySnapshotHash: sha256(JSON.stringify(env)),
@@ -173,7 +227,11 @@ export async function runRealPrivateModelBuild(
         ? "ALREADY_PROPOSED" : "EXTERNAL_APPROVAL_REQUIRED",
       validationOutputHash: actual.validationOutputHash,
       modelDigestHashes: tagged.map((x) => x.digest),
+      ...(deletionUnit
+        ? { deletionUnitId: deletionUnit.unitId, deletionUnitHash: deletionUnit.unitHash }
+        : {}),
     }),
     executionMode: "PREVIEW_ONLY",
+    ...(deletionUnit ? { deletionUnit } : {}),
   };
 }

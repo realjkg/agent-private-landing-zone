@@ -9,6 +9,8 @@ import { runAgentKernel } from "../agent/graph.js";
 import { runRealPrivateModelBuild, type ActualPrivateBuildValidation } from "../build/private-model.js";
 import { sha256 } from "../build/provenance.js";
 import { normalizeTerraformPlan } from "../iac/terraform-plan.js";
+import { readTerraformPlanTags } from "../teardown/gates.js";
+import type { DeletionUnitStateRef } from "../teardown/types.js";
 import { AWS_TERRAFORM_SCENARIO } from "../qualification/aws-terraform-agent.js";
 
 function tool(command: "terraform", args: string[], cwd: string): string {
@@ -41,6 +43,13 @@ async function main(): Promise<void> {
   if (execFileSync("git", ["status", "--porcelain"], {
     encoding: "utf8",
   }).trim()) throw new Error("SOURCE_WORKTREE_DIRTY");
+  // Opt-in traceable teardown (docs/teardown-traceability.md): a JSON state
+  // reference naming the container this build would create into. Unset keeps
+  // the qualified candidate unchanged.
+  const unitStatePath = process.env.ALZ_DELETION_UNIT_STATE;
+  const deletionUnitState = unitStatePath
+    ? JSON.parse(readFileSync(unitStatePath, "utf8")) as DeletionUnitStateRef
+    : undefined;
   const folder = resolve(".runs", "qualification", "real-private-build", randomUUID());
   mkdirSync(folder, { recursive: true, mode: 0o700 });
   const validate = async (hcl: string): Promise<ActualPrivateBuildValidation> => {
@@ -84,6 +93,8 @@ async function main(): Promise<void> {
       normalizedChangeSetHash: normalized.evidenceHash,
       singleCreateOnly: true,
       resourceAddress: "aws_cloudwatch_log_group.alz_audit",
+      plannedTags: [...readTerraformPlanTags(rawPlan)]
+        .map(([address, tags]) => ({ address, tags })),
     };
   };
   const state = await runAgentKernel({
@@ -95,6 +106,8 @@ async function main(): Promise<void> {
         model: invokeLocalModel,
         validate,
         repositoryEvidence: collectRepositoryEvidence,
+        deletionUnitState,
+        deletionUnitExpires: process.env.ALZ_DELETION_UNIT_EXPIRES,
       }),
   });
   if (!state.build || state.build.candidate.artifact.generatedBy !==
@@ -110,6 +123,7 @@ async function main(): Promise<void> {
     buildEvidence: state.build.candidate.evidence,
     artifact: state.build.candidate.artifact,
     previewSummary: state.build.previewSummary,
+    deletionUnit: state.build.deletionUnit,
     review: "EXTERNAL_APPROVAL_REQUIRED",
     infrastructureAct: "DISABLED",
   };
