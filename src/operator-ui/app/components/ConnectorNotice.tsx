@@ -8,7 +8,7 @@ export function ConnectorNotice() {
   return (
     <section className="panel beginner-only" aria-label="Cloud connectors">
       <h2>Cloud connectors</h2>
-      <p className="beginner-proof" role="status" aria-live="polite">
+      <p className="beginner-proof">
         Cloud connectors in this preview are simulated; no external connection is made.
       </p>
     </section>

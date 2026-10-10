@@ -10,6 +10,7 @@ if [[ "${1:-}" == "bootstrap" ]]; then
   echo "Bootstrapping Agent Private Landing Zone from the locked dependency graph..."
   npm ci
   npm run build
+  npm run build:ui
   echo
   echo "Ready. Run ./alz doctor"
   exit 0

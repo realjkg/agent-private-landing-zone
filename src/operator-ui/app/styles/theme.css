@@ -521,8 +521,10 @@ code {
 /* Private-model availability note under the workflow select: amber because
    it is a gap on this machine, not a failure. The re-check control is a plain
    text link, not an arcade button (class selectors outrank the global
-   button rules in retro.css). */
-.model-note {
+   button rules in retro.css). The blocked-run next step shares the look:
+   it is something to fix on this machine, not a failure of the workflow. */
+.model-note,
+.run-next-step {
   margin: 10px 0 0;
   padding: 10px 12px;
   border: 1px solid var(--amber, #ffb000);

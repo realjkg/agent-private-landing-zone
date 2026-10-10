@@ -1,6 +1,7 @@
 import { forwardRef } from "react";
 
 import type { JobState } from "../api";
+import { BLOCK_REASON_NEXT_STEPS } from "../block-reasons";
 import { StatusLed } from "./StatusLed";
 
 /**
@@ -71,6 +72,11 @@ export const EvidencePanel = forwardRef<HTMLElement, EvidencePanelProps>(
               : ""}
           </p>
         )}
+        {jobState?.status === "BLOCKED" && jobState.blockReason && (
+          <p className="run-next-step" data-testid="run-next-step">
+            Next step: {BLOCK_REASON_NEXT_STEPS[jobState.blockReason]}
+          </p>
+        )}
         {empty ? (
           <div className="empty-state" data-testid="evidence-empty">
             <p className="empty-title">No run yet — here is what one produces.</p>
@@ -87,7 +93,10 @@ export const EvidencePanel = forwardRef<HTMLElement, EvidencePanelProps>(
               {basis}
             </p>
             <div className="line" />
-            <div className="output" aria-live="polite">
+            {/* Not a live region: the log is re-polled every second while a
+                run is in flight, and a screen reader would re-read it each
+                time. The summary line and status LED announce outcomes. */}
+            <div className="output">
               {output || "No output recorded."}
             </div>
           </>
