@@ -6,8 +6,10 @@ import {
 } from "../src/debug/context.js";
 import { executeTool } from "../src/tools/broker.js";
 import {
-  runAllowlistedProcess,
+  runBoundedProcess,
 } from "../src/tools/process.js";
+import { PROFILES } from "../src/tools/profiles.js";
+import { basename, dirname } from "node:path";
 
 const context = {
   cwd: process.cwd(),
@@ -512,11 +514,18 @@ test("debug context captures adapter process exit and sanitized output metadata"
     await withDebugDiagnosticContext(
       "debug-adapter-process",
       async () =>
-        runAllowlistedProcess(
+        // The governed runner refuses absolute paths and unprofiled
+        // executables (docs/runner-hardening.md), so this harmless binary goes
+        // through its test seam: a bare name, in an explicit directory.
+        runBoundedProcess(
           "terraform_version",
-          process.execPath,
+          basename(process.execPath),
           ["--version"],
           process.cwd(),
+          {
+            profile: PROFILES.aws,
+            toolDirs: [dirname(process.execPath)],
+          },
         ),
     );
 
