@@ -1,7 +1,7 @@
 import { sha256 } from "../build/provenance.js";
 import type { IaCEngine } from "../build/types.js";
 import type { Provider } from "../discovery/types.js";
-import type { ChangeSet } from "../iac/changeset.js";
+import { createChangeSet, type ChangeSet } from "../iac/changeset.js";
 import type { DeletionUnit, DeletionUnitStateRef, ProvenanceTags } from "./types.js";
 
 /**
@@ -137,6 +137,46 @@ export function recordDeletionUnit(input: {
     recordedAt: input.recordedAt ?? new Date().toISOString(),
   };
   return { ...body, unitHash: sha256(canonical(body)) };
+}
+
+/**
+ * The unit for a build whose create plan was attested by a trusted driver
+ * that reports only the plan's hash and its single approved create (the real
+ * private-model build). The create set comes from the driver's verified
+ * attestation, the ChangeSet hash is the real plan's own, and the unit is
+ * still refused unless the resulting record is additive.
+ */
+export function attestedCreatePlan(
+  engine: Exclude<IaCEngine, "ANSIBLE">,
+  creates: Array<{ address: string; type: string }>,
+  attestedChangeSetHash: string,
+): ChangeSet {
+  const plan = createChangeSet(engine, creates.map((create) => ({
+    address: create.address, type: create.type, operation: "CREATE" as const,
+  })));
+  return { ...plan, evidenceHash: attestedChangeSetHash };
+}
+
+export function recordAttestedDeletionUnit(input: {
+  buildId: string;
+  provider: Provider;
+  stateRef: DeletionUnitStateRef;
+  designHash: string;
+  engine: Exclude<IaCEngine, "ANSIBLE">;
+  creates: Array<{ address: string; type: string }>;
+  attestedChangeSetHash: string;
+  expires?: string;
+  recordedAt?: string;
+}): DeletionUnit {
+  return recordDeletionUnit({
+    buildId: input.buildId,
+    provider: input.provider,
+    stateRef: input.stateRef,
+    designHash: input.designHash,
+    createPlan: attestedCreatePlan(input.engine, input.creates, input.attestedChangeSetHash),
+    expires: input.expires,
+    recordedAt: input.recordedAt,
+  });
 }
 
 /** Recompute the unit hash and re-validate the record; throws when tampered. */

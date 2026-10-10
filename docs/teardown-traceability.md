@@ -75,8 +75,13 @@ Before this decision, nothing ALZ generated recorded what it created:
 - **Slice 1 (this change):**
   - `src/teardown/`: tag contract, `DeletionUnit` record and verification, create gate with a Terraform/OpenTofu plan tag reader, destroy-preview evaluator, orphan report;
   - `./alz teardown record | check-plan | destroy-preview | orphans`, read-only over plan and resource JSON your own engine run produced.
-- **Slice 2:** stamp the unit's tags into generated IaC (for example AWS provider `default_tags`) and record the unit with every build run. This changes the qualified private-model Terraform candidate, so it is qualification-sensitive and runs the model qualification gate before release.
-- **Slice 3:**
+- **Slice 2 (implemented, opt-in):** the private-model Terraform build stamps the unit's tags into the generated candidate and returns the recorded unit with the build run.
+  - Opt in by supplying the engine state reference (`deps.deletionUnitState`; for the real-build CLI, `ALZ_DELETION_UNIT_STATE=<state-ref.json>` and optionally `ALZ_DELETION_UNIT_EXPIRES=YYYY-MM-DD`). Without it, the candidate, its content hash and the result are byte-for-byte unchanged, so existing model-qualification evidence stays valid.
+  - The create gate runs on the **real plan's** tags (`plannedTags`, read from `show -json`). A driver that cannot report them fails the build closed.
+  - The unit is carried on `BuildLoopResult` / `BuildRunRecord` and in the preview summary (`deletionUnitId`, `deletionUnitHash`).
+  - The opt-in tagged candidate is a different artifact from the qualified one, so it needs the model qualification gate before it is used in a release. This slice runs no heavyweight qualification.
+  - The preview itself still runs with `init -backend=false`. The unit declares where an authorized apply would write state; a `local` backend is refused.
+- **Slice 3 (next):**
   - tag readers for Pulumi, CloudFormation and Bicep previews;
   - discovery reads `alz-*` tags into the orphan report;
   - a governed runner for the destroy *preview* (`plan -destroy`, `pulumi preview --destroy`). That runner needs an explicit tool-broker review, because the broker classifies `destroy` as a mutation token by design, and that control is not to be worked around.

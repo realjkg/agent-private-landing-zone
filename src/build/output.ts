@@ -1,5 +1,6 @@
 import type { BuildCandidate } from "./types.js";
 import type { RepositoryEvidence } from "./repository.js";
+import type { DeletionUnit } from "../teardown/types.js";
 import { writeEncryptedEvidence } from "../evidence/vault.js";
 import type {
   Emitter,
@@ -14,6 +15,7 @@ export type BuildRunRecord = {
     reasons: string[];
   };
   executionMode: "PREVIEW_ONLY";
+  deletionUnit?: DeletionUnit;
 };
 
 export async function writeBuildRun(

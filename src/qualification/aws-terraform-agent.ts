@@ -12,6 +12,8 @@ import {
   STRUCTURED_MODEL_OPTIONS,
 } from "../ollama.js";
 import { governedUserRequest, wrapUntrustedEvidence } from "../security/prompt-governance.js";
+import type { ProvenanceTags } from "../teardown/types.js";
+import { provenanceTags } from "../teardown/unit.js";
 
 export const AWS_TERRAFORM_SCENARIO = {
   id: "aws-brownfield-terraform-private-agents-v1",
@@ -122,7 +124,38 @@ export function reviewAwsTerraformProposals(
   };
 }
 
-export function renderAwsTerraformCandidate(proposal: RestrictedProposal): string {
+/**
+ * `terraform fmt` aligns the `=` of consecutive attributes in a map, and the
+ * real driver runs `fmt -check`, so the tag block is padded to the longest
+ * key. Provenance keys are quoted (they contain hyphens); `ManagedBy` stays
+ * bare, exactly as before provenance existed.
+ */
+function renderTagBlock(provenance?: ProvenanceTags): string[] {
+  const entries: Array<[string, string]> = [["ManagedBy", '"ALZ-preview-candidate"']];
+  if (provenance) {
+    // Re-validate: nothing but tag-safe values may reach the HCL text.
+    const checked = provenanceTags({
+      unitId: provenance["alz-unit"],
+      buildId: provenance["alz-build"],
+      expires: provenance["alz-expires"],
+    });
+    for (const [key, value] of Object.entries(checked)) {
+      entries.push(['"' + key + '"', '"' + value + '"']);
+    }
+  }
+  const width = Math.max(...entries.map(([key]) => key.length));
+  return entries.map(([key, value]) => "    " + key.padEnd(width) + " = " + value);
+}
+
+/**
+ * With `provenance`, the unit's alz-* tags are stamped next to `ManagedBy`.
+ * Without it the output — and therefore its content hash and any model
+ * qualification evidence keyed to that hash — is byte-for-byte unchanged.
+ */
+export function renderAwsTerraformCandidate(
+  proposal: RestrictedProposal,
+  provenance?: ProvenanceTags,
+): string {
   // Re-validate the caller's value: no untrusted interpolation or arbitrary HCL.
   reviewAwsTerraformProposals(JSON.stringify(proposal), JSON.stringify(proposal),
     proposal.evidenceRefs);
@@ -152,7 +185,7 @@ export function renderAwsTerraformCandidate(proposal: RestrictedProposal): strin
     `  retention_in_days = ${AWS_TERRAFORM_SCENARIO.retentionDays}`,
     '',
     '  tags = {',
-    '    ManagedBy = "ALZ-preview-candidate"',
+    ...renderTagBlock(provenance),
     '  }',
     '}',
     '',
