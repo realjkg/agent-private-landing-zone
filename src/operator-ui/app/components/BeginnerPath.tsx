@@ -13,6 +13,14 @@ const BEGINNER_STATUS_LINES: Record<JobState["status"], string> = {
 };
 
 /**
+ * A resilience PASS means the simulated faults were caught — not that backups
+ * can really be restored, which this workspace never tests. The beginner line
+ * says both, so "passed" is never read as "recovery proven".
+ */
+const RESILIENCE_PASS_LINE =
+  "Finished — every simulated fault was caught. Real backup recovery was not tested.";
+
+/**
  * The single recommended path a first-time operator sees: two plain-language
  * actions and a proof line. Raw classifications and terminal output never
  * render here — evidence is shown through its beginner translation only.
@@ -23,9 +31,11 @@ export function BeginnerPath(props: {
   sessionUnavailable: boolean;
   onLaunch: (mode: OperatorMode) => void;
 }) {
-  const statusLine = props.jobState
-    ? BEGINNER_STATUS_LINES[props.jobState.status]
-    : BEGINNER_STATUS_LINES.IDLE;
+  const statusLine = !props.jobState
+    ? BEGINNER_STATUS_LINES.IDLE
+    : props.jobState.status === "PASS" && props.jobState.recoveryVerification !== undefined
+      ? RESILIENCE_PASS_LINE
+      : BEGINNER_STATUS_LINES[props.jobState.status];
   // NOT_RUN renders the shared beginner translation as the initial proof line.
   const proofLine = props.jobState
     ? beginnerEvidenceLine(props.jobState.evidenceBasis)

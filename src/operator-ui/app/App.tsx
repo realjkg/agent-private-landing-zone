@@ -2,7 +2,14 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { parseExperienceLevel, type ExperienceLevel } from "../experience-level.js";
 import { prefersReducedMotion, scrollBehaviorFor, scrollIntoViewSafe } from "./motion";
-import { fetchJobState, requestRun, type JobState, type OperatorMode } from "./api";
+import {
+  fetchJobState,
+  fetchModelAvailability,
+  requestRun,
+  type JobState,
+  type ModelAvailability,
+  type OperatorMode,
+} from "./api";
 import { BeginnerPath } from "./components/BeginnerPath";
 import { CompliancePanels } from "./components/CompliancePanels";
 import { CompliancePosture } from "./components/CompliancePosture";
@@ -13,7 +20,7 @@ import { ExpertReference } from "./components/ExpertReference";
 import { LevelSwitcher } from "./components/LevelSwitcher";
 import { ProtectionCard } from "./components/ProtectionCard";
 import { SectionNav } from "./components/SectionNav";
-import { WorkflowForm } from "./components/WorkflowForm";
+import { PRIVATE_MODEL_MODES, WorkflowForm } from "./components/WorkflowForm";
 import { readStoredLevel, storeLevel } from "./level-storage";
 
 export type OperatorAppProps = {
@@ -48,6 +55,22 @@ export function OperatorApp(props: OperatorAppProps) {
   // reload, rather than guessing.
   const [lastRunScenario, setLastRunScenario] = useState<string | null>(null);
   const evidenceRef = useRef<HTMLElement | null>(null);
+  // Advisory only: explains up front whether the private-model workflows can
+  // run on this machine. The server never consults it when validating a run.
+  const [modelAvailability, setModelAvailability] = useState<ModelAvailability | null>(null);
+
+  const checkModels = useCallback(async () => {
+    const next = await fetchModelAvailability();
+    setModelAvailability(next);
+    // A selection the form now disables falls back to the offline default.
+    if (next?.status === "UNAVAILABLE") {
+      setMode((current) => (PRIVATE_MODEL_MODES.has(current) ? "matrix-offline" : current));
+    }
+  }, []);
+
+  useEffect(() => {
+    void checkModels();
+  }, [checkModels]);
 
   const refresh = useCallback(async () => {
     const next = await fetchJobState();
@@ -138,6 +161,8 @@ export function OperatorApp(props: OperatorAppProps) {
               scenario={scenario}
               scenarioIds={props.scenarioIds}
               running={running}
+              modelAvailability={modelAvailability}
+              onRecheckModels={() => void checkModels()}
               onModeChange={setMode}
               onScenarioChange={setScenario}
               onSubmit={() => void launch(mode, scenario)}
