@@ -15,7 +15,7 @@ type TerraformPlan = {
   }>;
 };
 
-function mapTerraformActions(
+export function mapTerraformActions(
   actions: string[],
 ): ChangeOperation {
   const values = new Set(actions);

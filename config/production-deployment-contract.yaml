@@ -117,3 +117,13 @@ spec:
     actEnabled: false
     genericCloudWriteCredentials: prohibited
     genericIacApply: prohibited
+    # ACT is disabled globally. The one exception is the internal pilot: a
+    # human-initiated apply of a sealed plan, only while the pilot contract
+    # file has enabled: true (docs/act-pilot-plan.md).
+    actPilot:
+      provider: AZURE
+      engine: TERRAFORM
+      contract: config/act-pilot-contract.json
+      requiresEnabledPilotContract: true
+      mutation: TERRAFORM_APPLY_OF_SEALED_PLAN
+      initiatedBy: HUMAN_OPERATOR

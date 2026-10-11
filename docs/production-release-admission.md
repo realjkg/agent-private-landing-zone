@@ -60,3 +60,7 @@ Even when all rows have evidence, the report is `readyForIndependentReleaseRevie
 ## Workflow economy
 
 Do **not** repeat expensive CI, model downloads or live cloud qualifications on every source edit. Finish DO, freeze the source revision, run one consolidated candidate validation, then collect real target evidence. If a source change occurs, rebind and requalify the affected release candidate. Infrastructure ACT and generic IaC apply stay disabled.
+
+## Pilot-scoped ACT
+
+`infrastructureAct` is `DISABLED`, or `PILOT` for the internal Azure and Terraform pilot (`docs/act-pilot-apply.md`). `PILOT` requires an `actPilot` block, `{ "provider": "AZURE", "engine": "TERRAFORM", "contractSha256": "<sha256 of the canonical pilot contract>" }`, and a valid pilot contract with `enabled: true` at `config/act-pilot-contract.json`. Admission rejects `PILOT` without that contract or with a scope that does not match it, and rejects an enabled contract beside a release that does not declare `PILOT`. Any other value is rejected as before. The report still says `infrastructureAct: "DISABLED"` and `productionReleaseApproved: false`; it adds `actPilot` (the scope, or `null`). Every release gate still needs its own evidence.

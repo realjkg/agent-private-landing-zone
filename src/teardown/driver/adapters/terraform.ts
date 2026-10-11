@@ -137,7 +137,7 @@ function assertProjectMatchesManifest(work: string, manifest: ArtifactManifest):
  * only module sources accepted are directories inside the project, whose files
  * the manifest does hash.
  */
-function assertModulesAreLocal(work: string): void {
+export function assertModulesAreLocal(work: string): void {
   let raw: string;
   try { raw = readFileSync(join(work, ".terraform", "modules", "modules.json"), "utf8"); } catch { return; }
   let modules: unknown;

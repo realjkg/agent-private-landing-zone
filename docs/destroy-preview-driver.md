@@ -288,3 +288,7 @@ A `READY_FOR_AUTHORIZATION` verdict authorizes nothing. ACT stays DISABLED, and 
 
 - The real terminal prompt (`processTerminal`, `readline` on a TTY) was not exercised by a test, because the test environment has no TTY. Tests cover the TTY refusal with a real piped child process and the prompt logic through the injected terminal. Run the command once at a real terminal before relying on it.
 - The shipped adapters were not run end to end through this command, as no Terraform, OpenTofu or Pulumi binary exists in the sandbox; the command's tests use a fake adapter.
+
+## Related: the pilot apply path
+
+`./alz apply` (`docs/act-pilot-apply.md`) reuses this driver's pieces: the immutable snapshot, the manifest, the bounded runner, the qualification gate and the human prompt. Its own qualification is vault evidence written by `./alz apply qualify`, not a file an operator names. It adds an apply step for one pilot (Azure with Terraform) under a separate contract, with four identities (`STATE_WRITE` and `APPLY` in addition to the two here), signed approvals and sealed plans. Nothing in this document changes: this driver still previews only, and a `READY_FOR_AUTHORIZATION` verdict authorizes nothing.

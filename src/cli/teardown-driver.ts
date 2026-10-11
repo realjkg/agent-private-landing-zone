@@ -21,6 +21,7 @@ import {
 import { createPulumiAdapter } from "../teardown/driver/adapters/pulumi.js";
 import { createTerraformAdapter } from "../teardown/driver/adapters/terraform.js";
 import type { DeletionUnit } from "../teardown/types.js";
+import { stopSignalsIntercepted } from "../tools/process.js";
 
 // The human entry to the destroy-preview driver (docs/destroy-preview-driver.md).
 // The operator authorizes the preview, the driver enforces the contract, and no
@@ -93,18 +94,27 @@ const CONTROL = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
 // Capabilities are granted by what the person confirms at the prompts, never by a field in a file.
 const SUPPLIED_BY_CLI = ["invocation", "manifest", "unit", "capabilities"];
 const CODE_PHRASE = "RUN PROJECT CODE";
-const SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
-const SIGNAL_NUMBER: Readonly<Record<typeof SIGNALS[number], number>> = { SIGHUP: 1, SIGINT: 2, SIGTERM: 15 };
+const SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT"] as const;
+const SIGNAL_NUMBER: Readonly<Record<typeof SIGNALS[number], number>> = { SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGTERM: 15 };
 
 /**
  * Plan files, the work copy and the snapshot are removed from the signal
  * handlers too, since a `finally` block does not run on a signal. The engine
  * runs under a blocking spawnSync, so a signal sent to this process alone is
  * handled when the current engine step ends (docs/destroy-preview-driver.md, Limits).
+ *
+ * While a run has intercepted the stop signals (an apply's stoppable engine),
+ * this handler leaves the process alone: that run stops its engine, waits out
+ * the grace period, escalates, finalizes its evidence and ledger, removes its
+ * own scratch and returns normally. Exiting here would orphan the engine.
  */
 export function installSignalCleanup(): () => void {
   const handlers = SIGNALS.map((signal) => {
-    const handler = () => { runCleanups(); process.exit(128 + SIGNAL_NUMBER[signal]); };
+    const handler = () => {
+      if (stopSignalsIntercepted()) return;
+      runCleanups();
+      process.exit(128 + SIGNAL_NUMBER[signal]);
+    };
     process.on(signal, handler);
     return [signal, handler] as const;
   });

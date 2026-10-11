@@ -1,5 +1,5 @@
 import { createPrivateDirectory } from "../../tools/private-workdir.js";
-import { collapsedIdentityVariables, forbiddenIdentityVariables } from "../../tools/identity.js";
+import { collapsedIdentityVariables, forbiddenIdentityVariables, mutationIdentityVariables } from "../../tools/identity.js";
 import {
   bindPreview,
   validateManifestForRequest,
@@ -9,6 +9,7 @@ import { captureProjectFiles, createImmutableSnapshot, type ImmutableSnapshot } 
 import { evaluateDestroyPreview } from "../gates.js";
 import { verifyDeletionUnit } from "../unit.js";
 import { registerCleanup, removeTree } from "./cleanup.js";
+import { checkHumanInvocation, isRecord } from "./human.js";
 import { checkAdapterEvidence, finalizeEvidence } from "./evidence.js";
 import { engineActivation, type QualificationRecord } from "./qualification.js";
 import {
@@ -47,32 +48,6 @@ export type DriverDeps = {
 const refuse = (code: DriverRefusalCode, message: string, fields?: string[]): DriverResult =>
   ({ ok: false, code, message, ...(fields ? { fields } : {}) });
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  !!value && typeof value === "object" && !Array.isArray(value);
-
-const SAFE_OPERATOR = /^[A-Za-z0-9._@+-]{1,128}$/;
-const TARGET_KEYS = ["account", "backend", "workspace"] as const;
-
-/** Step 1: a person at an interactive session named this exact target. */
-function checkHumanInvocation(request: PreviewRequest): DriverResult | undefined {
-  const invocation = isRecord(request) ? request.invocation as unknown : undefined;
-  if (!isRecord(invocation) || typeof invocation.operatorId !== "string" ||
-    !SAFE_OPERATOR.test(invocation.operatorId) || invocation.interactiveSession !== true ||
-    typeof invocation.confirmedAt !== "string" || Number.isNaN(Date.parse(invocation.confirmedAt))) {
-    return refuse("HUMAN_INVOCATION_REQUIRED",
-      "A destroy preview is run by a person: the request needs an invocation record with an operator id, " +
-      "an interactive session and the time the target was confirmed. An agent cannot start one.");
-  }
-  const confirmed = invocation.confirmedTarget;
-  const target = request.target as unknown;
-  if (!isRecord(confirmed) || !isRecord(target) ||
-    TARGET_KEYS.some((key) => typeof confirmed[key] !== "string" || confirmed[key] !== target[key])) {
-    return refuse("HUMAN_CONFIRMATION_MISMATCH",
-      "The target the operator typed is not the exact target of this request (account, backend, workspace or stack).");
-  }
-  return undefined;
-}
-
 /** Step 2: the request carries only known fields, at every level. There is nothing to turn a check off. */
 function checkKnownFields(request: PreviewRequest): DriverResult | undefined {
   const unknown = Object.keys(request).filter((key) => !REQUEST_KEYS.includes(key)).map((key) => key);
@@ -105,7 +80,7 @@ function checkIdentities(env: NodeJS.ProcessEnv): DriverResult | undefined {
       "The STATE and DISCOVERY identities carry the same secret for " + collapsed.join(", ") +
       ". They must be separate principals with separate credentials.");
   }
-  const forbidden = forbiddenIdentityVariables(env);
+  const forbidden = [...forbiddenIdentityVariables(env), ...mutationIdentityVariables(env)];
   if (forbidden.length > 0) {
     return refuse("IDENTITY_FORBIDDEN",
       "Variables for an identity this system never reads are set (" + forbidden.join(", ") +
@@ -138,7 +113,7 @@ function run(operation: PreviewOperation, request: PreviewRequest, deps: DriverD
   const env = deps.env ?? process.env;
 
   // 1. A person invoked it. 2. Nothing outside the known set is present.
-  const human = checkHumanInvocation(request);
+  const human = checkHumanInvocation(request, "A destroy preview");
   if (human) return human;
   const known = checkKnownFields(request);
   if (known) return known;

@@ -202,6 +202,24 @@ export const PRODUCTION_DEPLOYMENT_CONTRACT = {
         "prohibited",
       genericIacApply:
         "prohibited",
+      /**
+       * ACT is disabled globally (actEnabled above). The one exception is the
+       * internal pilot: a human-initiated apply of a sealed plan, allowed only
+       * while a valid pilot contract file has enabled === true
+       * (docs/act-pilot-plan.md). Nothing here enables it.
+       */
+      actPilot: {
+        provider: "AZURE",
+        engine: "TERRAFORM",
+        contract:
+          "config/act-pilot-contract.json",
+        requiresEnabledPilotContract:
+          true,
+        mutation:
+          "TERRAFORM_APPLY_OF_SEALED_PLAN",
+        initiatedBy:
+          "HUMAN_OPERATOR",
+      },
     },
   },
 } as const;
@@ -274,6 +292,28 @@ export function evaluateObservabilityContract(
   return { satisfied: failures.length === 0, failures };
 }
 
+/** The pilot exception is exactly this and nothing wider. */
+function pilotScopePinned(
+  actPilot: unknown,
+): boolean {
+  const pinned: Record<string, unknown> =
+    PRODUCTION_DEPLOYMENT_CONTRACT.spec.release.actPilot;
+  if (
+    !actPilot ||
+    typeof actPilot !== "object" ||
+    Object.keys(actPilot).length !==
+      Object.keys(pinned).length
+  ) {
+    return false;
+  }
+
+  return Object.entries(pinned).every(
+    ([key, value]) =>
+      (actPilot as Record<string, unknown>)[key] ===
+        value,
+  );
+}
+
 export function assertProductionDeploymentContract(
   contract: ProductionDeploymentContract =
     PRODUCTION_DEPLOYMENT_CONTRACT,
@@ -287,7 +327,10 @@ export function assertProductionDeploymentContract(
     contract.spec.release.genericCloudWriteCredentials !==
       "prohibited" ||
     contract.spec.release.genericIacApply !==
-      "prohibited"
+      "prohibited" ||
+    !pilotScopePinned(
+      contract.spec.release.actPilot,
+    )
   ) {
     throw new Error(
       "PRODUCTION_CONTRACT_AUTHORITY_INVALID",

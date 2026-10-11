@@ -134,6 +134,7 @@ async function help(): Promise<void> {
     "  ./alz economics report <input.json> [--json]",
     "  ./alz teardown record|check-plan|destroy-preview|orphans (read-only)",
     "  ./alz teardown destroy-preview-run|preview-run (interactive terminal only; the console shows the command and never runs it)",
+    "  ./alz apply <qualify|seal|approve|apply|status> [flags] (pilot apply of a sealed plan; interactive terminal only, the console shows the command and never runs it)",
     "  ./alz health [--serve]",
     "  ./alz doctor",
     "  ./alz verify",
@@ -301,6 +302,9 @@ try {
   } else if (command === "teardown") {
     // Read-only verdicts; exit 2 (BLOCKED / orphans) is a diagnosis to propagate.
     runTs("src/cli/teardown.ts", argv.slice(1), true);
+  } else if (command === "apply") {
+    // Human-invoked pilot apply (docs/act-pilot-apply.md). It needs a terminal, which a child inherits; exit 2 is BLOCKED.
+    runTs("src/cli/apply.ts", argv.slice(1), true);
   } else if (command === "inspect") {
     runTs("src/cli/discover.ts", ["--provider", choice(first, PROVIDERS, "aws"), "--resources"]);
   } else if (command === "session") {

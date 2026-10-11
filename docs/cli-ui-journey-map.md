@@ -29,6 +29,7 @@ alz recovery | test/operator-cli.test.ts
 alz control-plane | test/control-plane-recovery.test.ts
 alz economics | test/operator-cli.test.ts
 alz teardown | test/teardown-traceability.test.ts
+alz apply | test/apply-cli.test.ts, test/apply-boundary.test.ts
 alz health | test/observability-health-server.test.ts
 alz doctor | test/operator-cli.test.ts
 alz verify | test/operator-cli.test.ts
@@ -54,3 +55,7 @@ console aws-review | test/local-operator-workspace.test.ts, test/aws-terraform-a
 
 - A covered command has tests for its behavior, not necessarily an end-to-end operator journey (install, run, read the result, act on it).
 - The console journeys are covered with component tests and a server test against a fake runner. No committed real-browser journey check exists; adding one needs a decision on a browser-automation dependency.
+
+## What this means for the pilot apply
+
+`./alz apply qualify | seal | approve | apply | status` is the human-invoked entry to the pilot apply driver (`docs/act-pilot-apply.md`). The console shows it as one guided handoff (the command, why it needs a terminal, the identity variable names) and never runs it: `test/apply-boundary.test.ts` pins that nothing the broker, agents, orchestration, the console or the catalog can reach imports `src/apply` or `src/cli/apply.ts`, that only the CLI calls the driver, and that the catalog validator refuses a job whose script is `cli/apply.js`.

@@ -68,7 +68,7 @@ test("the family is well formed: runnable entries are read-only or local-model, 
     for (const args of sampleArgvs(spec)) assert.doesNotThrow(() => assertSafeArgv(args));
   }
   const handoffs = catalog.filter((spec) => spec.safety === "HANDOFF").map((spec) => spec.id).sort();
-  assert.deepEqual(handoffs, ["control-plane-capture", "control-plane-drill", "control-plane-restore", "control-plane-verify",
+  assert.deepEqual(handoffs, ["act-pilot-apply", "control-plane-capture", "control-plane-drill", "control-plane-restore", "control-plane-verify",
     "doctor", "evidence-migrate", "operator-verify", "sbom", "scan", "security-check", "target-init", "target-preflight"]);
 });
 
