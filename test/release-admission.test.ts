@@ -233,15 +233,15 @@ test.after(() => rmSync(pilotRoot, { recursive: true, force: true }));
 const contractPath = join(pilotRoot, "act-pilot-contract.json");
 const pinPath = join(pilotRoot, "act-pilot-contract.sha256");
 const publicKey = () => generateKeyPairSync("ed25519").publicKey.export({ type: "spki", format: "pem" }).toString();
-const approvers = [1, 2].map((n) => ({ id: "approver-" + n, publicKeyPem: publicKey(), environments: ["DEV", "PROD"] }));
+const approvers = [1, 2].map((n) => ({ id: "approver-" + n, publicKeyPem: publicKey(), environments: ["DEV", "QA", "PROD"] }));
 const loadPinned = (path: string = contractPath) => loadPilotContract(path, pinPath);
 const pilotTarget = (n: string, store: string) => ({ tenantId: "11111111-1111-4111-8111-111111111111",
   subscriptionId: n.repeat(8) + "-" + n.repeat(4) + "-4" + n.repeat(3) + "-8" + n.repeat(3) + "-" + n.repeat(12),
   backend: store + "/tfstate/x.tfstate", workspace: "default" });
 const contractJson = (enabled: boolean, age = 60) => ({
   schemaVersion: 1, enabled, provider: "AZURE", engine: "TERRAFORM",
-  targets: { DEV: pilotTarget("2", "fixturedevstore"), PROD: pilotTarget("3", "fixtureprodstore") },
-  requiredApprovals: { DEV: 1, PROD: 2 }, maxApprovalAgeMinutes: age, approvers, killSwitchPath: join(pilotRoot, "KILL"),
+  targets: { DEV: pilotTarget("2", "fixturedevstore"), QA: pilotTarget("4", "fixtureqastore"), PROD: pilotTarget("3", "fixtureprodstore") },
+  requiredApprovals: { DEV: 1, QA: 1, PROD: 2 }, maxApprovalAgeMinutes: age, approvers, killSwitchPath: join(pilotRoot, "KILL"),
 });
 /** Writes the contract and, like a reviewed commit, its pin. */
 const writeContract = (enabled: boolean, age = 60) => {

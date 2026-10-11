@@ -32,8 +32,8 @@ Every subcommand refuses before reading any file unless it has a terminal on std
 | --- | --- | --- |
 | Qualify | `./alz apply qualify --request REQUEST.json --manifest MANIFEST.json` | Operator, once per adapter or engine version, DEV only. See "Qualifying against a real engine". |
 | Seal | `./alz apply seal --request REQUEST.json --manifest MANIFEST.json` | Operator. Types the target, then `RUN PROJECT CODE`. Prints the artifact hash, the sealed plan path, the review bundle path and the redacted change list (address, type, action). |
-| Approve | `./alz apply approve --bundle REVIEW_BUNDLE.json --key APPROVER_KEY.pem --approver ID` | Each approver, separately, with no evidence key. Reviews the changes, types `APPROVE <DEV or PROD> <first 12 characters of the artifact hash>`. Prints a signed approval; no secret. |
-| Apply | `./alz apply apply --request REQUEST.json --manifest MANIFEST.json --sealed SEALED_PLAN --approval A.json [--approval B.json]` | Operator, with the evidence key (it loads the sealed plan from the vault). Types one line: `APPLY <DEV or PROD> <first 12 characters of the artifact hash> <account> \| <backend> \| <workspace>`. Prints redacted evidence. |
+| Approve | `./alz apply approve --bundle REVIEW_BUNDLE.json --key APPROVER_KEY.pem --approver ID` | Each approver, separately, with no evidence key. Reviews the changes, types `APPROVE <DEV, QA or PROD> <first 12 characters of the artifact hash>`. Prints a signed approval; no secret. |
+| Apply | `./alz apply apply --request REQUEST.json --manifest MANIFEST.json --sealed SEALED_PLAN --approval A.json [--approval B.json]` | Operator, with the evidence key (it loads the sealed plan from the vault). Types one line: `APPLY <DEV, QA or PROD> <first 12 characters of the artifact hash> <account> \| <backend> \| <workspace>`. Prints redacted evidence. |
 | Status | `./alz apply status [--sealed SEALED_PLAN]` | Anyone at a terminal. Read-only: contract state, kill switch, and whether an artifact was applied. |
 
 There is no `--allowlist` and no `--qualifications` file. The approver allowlist is part of the pinned contract, and qualification records are read from the encrypted evidence vault (`.runs/apply/qualification`), where a record exists only if valid, decryptable evidence does.
@@ -63,7 +63,7 @@ One list, derived in one place from `terraform show -json` and bound by `changes
 
 ## The contract and its pin
 
-The contract (`config/act-pilot-contract.json`, shape in `config/act-pilot-contract.example.json`) names the tenant, subscription and backend for DEV and PROD, the required approvals, the approval lifetime, the kill switch path, and the approver allowlist (id, Ed25519 public key, environments). It loads only if its canonical SHA-256 equals the hash in `config/act-pilot-contract.sha256`. An empty or absent pin means ACT is disabled, which is how the repository ships. A pin that does not match is `CONTRACT_INVALID`. Release admission checks the same pin.
+The contract (`config/act-pilot-contract.json`, shape in `config/act-pilot-contract.example.json`) names the tenant, subscription and backend for DEV, QA and PROD (different pairwise in subscription and backend, compared case-insensitively), the required approvals (DEV at least 1, QA at least 1, PROD at least 2), the approval lifetime, the kill switch path, and the approver allowlist (id, Ed25519 public key, environments). It loads only if its canonical SHA-256 equals the hash in `config/act-pilot-contract.sha256`. An empty or absent pin means ACT is disabled, which is how the repository ships. A pin that does not match is `CONTRACT_INVALID`. Release admission checks the same pin.
 
 To enable the pilot, or to change a target or an approver:
 
@@ -73,6 +73,10 @@ To enable the pilot, or to change a target or an approver:
 4. Commit both in one reviewed change. Reviewers check the targets and each approver's key against what the owner supplied.
 
 Paths are anchored to the repository root found from the module, never to the working directory. The pin makes a change reviewable; it does not stop the operator described above.
+
+## Promotion: DEV, then QA, then PROD
+
+Each stage has its own sealed plan, artifact hash and approvals, and an approval signed for one environment is `APPROVAL_MISBOUND` for another. DEV needs no earlier evidence. QA needs a successful, encrypted DEV apply record for the same release identity. PROD needs a successful QA apply record for the same release identity, and DEV evidence alone is refused (`PROMOTION_EVIDENCE_MISSING`). Identity checks are per environment: the DEV, QA and PROD credentials must differ and each must match its own contract target. `qualify` runs only against the DEV target; QA and PROD are not qualified separately and are refused.
 
 ## Identities
 
@@ -129,7 +133,7 @@ Known, not changed: Terraform contacts the HashiCorp checkpoint service on every
 
 The contract's `backend` (`<storage-account>/<container>/<key>`), `tenantId` and `subscriptionId` are checked against what the project itself configures, because a project can name any backend or provider:
 
-- **Backend.** After `init` as STATE_WRITE (`apply` and `qualify`), the driver reads `.terraform/terraform.tfstate` in the work directory and requires its backend to be `azurerm` with `storage_account_name`, `container_name` and `key` equal to the contract's DEV or PROD target. Anything else, including a value that is not a string, is `TARGET_NOT_IN_CONTRACT` before the approvals are consumed. A file that cannot be read is `APPLY_FAILED` ("no approval was consumed"), not a pass.
+- **Backend.** After `init` as STATE_WRITE (`apply` and `qualify`), the driver reads `.terraform/terraform.tfstate` in the work directory and requires its backend to be `azurerm` with `storage_account_name`, `container_name` and `key` equal to the contract's DEV, QA or PROD target. Anything else, including a value that is not a string, is `TARGET_NOT_IN_CONTRACT` before the approvals are consumed. A file that cannot be read is `APPLY_FAILED` ("no approval was consumed"), not a pass.
 - **Provider.** From the plan's `terraform show -json` `configuration` (at `seal`, and again at `apply` when the list is re-derived), any azurerm provider block, in any module or alias, whose `subscription_id` or `tenant_id` is a **constant** must equal the contract's for that environment (`PROVIDER_SUBSCRIPTION_NOT_IN_CONTRACT`, `PROVIDER_TENANT_NOT_IN_CONTRACT`). **Limit:** a value that is an expression (a variable, a data source, a local) is *not checkable* from the plan and is not judged, not silently accepted as safe. For those, the only controls are the identity checks (each credential must name the contract's tenant and subscription, and the provider runs as APPLY only) and the cloud-side role assignments. Owners should keep the provider's subscription out of expressions in the pilot project.
 
 ## Kill switch
@@ -175,4 +179,4 @@ Actual destroy is out of scope. The named cleanup owner removes pilot resources 
 
 ## What the owner supplies
 
-Tenant and DEV and PROD subscription IDs, the state storage accounts, the approver public keys (and the second production approver), the execution host, the pilot scope, the cleanup owner, and a person to run `./alz apply qualify` and attest from the Azure logs. Their absence blocks live apply only; tests use explicit fixtures.
+Tenant and DEV, QA and PROD subscription IDs, the Azure region, tags, retention, budget and least-privilege scope, the provisioned state storage accounts (one per environment) and the federated identities, the approver public keys (and the second production approver), the execution host, the pilot scope, the cleanup owner, and a person to run `./alz apply qualify` and attest from the Azure logs. Their absence blocks live apply only; tests use explicit fixtures.

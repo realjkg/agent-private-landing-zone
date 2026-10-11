@@ -38,13 +38,14 @@ const fixtureContract = (): PilotContract => ({
   engine: "TERRAFORM",
   targets: {
     DEV: { tenantId: "11111111-1111-4111-8111-111111111111", subscriptionId: "22222222-2222-4222-8222-222222222222", backend: "fixturedevstore/tfstate/dev.tfstate", workspace: "default" },
+    QA: { tenantId: "11111111-1111-4111-8111-111111111111", subscriptionId: "44444444-4444-4444-8444-444444444444", backend: "fixtureqastore/tfstate/qa.tfstate", workspace: "default" },
     PROD: { tenantId: "11111111-1111-4111-8111-111111111111", subscriptionId: "33333333-3333-4333-8333-333333333333", backend: "fixtureprodstore/tfstate/prod.tfstate", workspace: "default" },
   },
-  requiredApprovals: { DEV: 1, PROD: 2 },
+  requiredApprovals: { DEV: 1, QA: 1, PROD: 2 },
   maxApprovalAgeMinutes: 60,
   approvers: [
-    { id: "alice", publicKeyPem: KEYS.alice, environments: ["DEV", "PROD"] },
-    { id: "bob", publicKeyPem: KEYS.bob, environments: ["DEV", "PROD"] },
+    { id: "alice", publicKeyPem: KEYS.alice, environments: ["DEV", "QA", "PROD"] },
+    { id: "bob", publicKeyPem: KEYS.bob, environments: ["DEV", "QA", "PROD"] },
   ],
   killSwitchPath: KILL,
 });
@@ -85,7 +86,9 @@ test("contract fails closed: missing, unparseable, not an object, disabled, unkn
   disabled(mutate((c) => { delete c.enabled; }), undefined, "CONTRACT_INVALID");
   disabled(mutate((c) => { c.extra = 1; }), /extra/);
   disabled(mutate((c) => { c.targets.DEV.extra = 1; }), /extra/);
-  disabled(mutate((c) => { c.requiredApprovals.QA = 1; }), /QA/);
+  disabled(mutate((c) => { c.requiredApprovals.STAGING = 1; }), /STAGING/);
+  disabled(mutate((c) => { delete c.requiredApprovals.QA; }), /QA/);
+  disabled(mutate((c) => { delete c.targets.QA; }), /QA/);
   disabled(mutate((c) => { c.targets.STAGING = c.targets.DEV; }), /STAGING/);
   disabled(mutate((c) => { delete c.targets.PROD; }));
   disabled(mutate((c) => { delete c.approvers; }), /approvers/);
@@ -113,11 +116,25 @@ test("contract refuses invalid identifiers, approval counts and ages", () => {
   disabled(mutate((c) => { c.requiredApprovals.PROD = 0; }), /PROD/);
   disabled(mutate((c) => { c.requiredApprovals.PROD = 2.5; }), /PROD/);
   disabled(mutate((c) => { c.requiredApprovals.DEV = 0; }), /DEV/);
+  disabled(mutate((c) => { c.requiredApprovals.QA = 0; }), /QA/);
+  disabled(mutate((c) => { c.requiredApprovals.QA = -1; }), /QA/);
+  disabled(mutate((c) => { c.requiredApprovals.QA = 1.5; }), /QA/);
+  disabled(mutate((c) => { c.targets.QA.subscriptionId = "not-a-guid"; }), /QA.*subscriptionId/);
   disabled(mutate((c) => { c.maxApprovalAgeMinutes = 0; }), /maxApprovalAgeMinutes/);
   disabled(mutate((c) => { c.maxApprovalAgeMinutes = -5; }), /maxApprovalAgeMinutes/);
   disabled(mutate((c) => { c.maxApprovalAgeMinutes = 99999; }), /maxApprovalAgeMinutes/);
   disabled(mutate((c) => { c.killSwitchPath = ""; }), /killSwitchPath/);
   disabled(mutate((c) => { c.killSwitchPath = 7; }), /killSwitchPath/);
+});
+
+test("DEV, QA and PROD must pairwise differ in subscription and backend", () => {
+  const pairs = [["DEV", "QA"], ["QA", "PROD"], ["DEV", "PROD"]] as const;
+  for (const [a, b] of pairs) {
+    disabled(mutate((c) => { c.targets[b].subscriptionId = c.targets[a].subscriptionId; }), new RegExp(a + " and " + b + " share a subscription"));
+    disabled(mutate((c) => { c.targets[b].subscriptionId = c.targets[a].subscriptionId.toUpperCase(); }), /subscription/i);
+    disabled(mutate((c) => { c.targets[b].backend = c.targets[a].backend; }), new RegExp(a + " and " + b + " share a backend"));
+    disabled(mutate((c) => { c.targets[b].backend = c.targets[a].backend.toUpperCase().replace(/^FIXTURE/, "fixture"); }), /backend/i);
+  }
 });
 
 test("dev and prod must not share a subscription or a backend", () => {
@@ -150,7 +167,9 @@ test("approvers: a malformed, empty, duplicated or non-Ed25519 allowlist disable
   disabled(mutate((c) => { one(c).id = ""; }), /id/);
   disabled(mutate((c) => { one(c).id = "has space"; }), /id/);
   disabled(mutate((c) => { one(c).environments = []; }), /environments/);
-  disabled(mutate((c) => { one(c).environments = ["QA"]; }), /environments/);
+  disabled(mutate((c) => { one(c).environments = ["STAGING"]; }), /environments/);
+  disabled(mutate((c) => { one(c).environments = ["QA", "QA"]; }), /environments/);
+  assert.equal(load(mutate((c) => { one(c).environments = ["QA"]; })).enabled, true, "QA is a valid approver environment");
   disabled(mutate((c) => { one(c).environments = ["DEV", "DEV"]; }), /environments/);
   disabled(mutate((c) => { one(c).publicKeyPem = "garbage"; }), /publicKeyPem/);
   disabled(mutate((c) => { one(c).publicKeyPem = rsa; }), /publicKeyPem/);
@@ -266,7 +285,7 @@ test("kill switch: active when the file exists, inactive otherwise, active when 
 
 test("targetForEnvironment returns the contract target only on an exact match", () => {
   const contract = fixtureContract();
-  for (const env of ["DEV", "PROD"] as const) {
+  for (const env of ["DEV", "QA", "PROD"] as const) {
     const t = contract.targets[env];
     const requested = { account: t.subscriptionId, backend: t.backend, workspace: t.workspace };
     const result = targetForEnvironment(contract, env, requested);
@@ -281,7 +300,9 @@ test("targetForEnvironment returns the contract target only on an exact match", 
     targetForEnvironment(contract, "DEV", { ...base, workspace: "other" }),
     targetForEnvironment(contract, "DEV", { ...base, account: base.account + " " }),
     targetForEnvironment(contract, "DEV", { ...base, account: "" }),
-    targetForEnvironment(contract, "QA" as never, base),
+    targetForEnvironment(contract, "STAGING" as never, base),
+    targetForEnvironment(contract, "QA", base), // dev target presented as qa
+    targetForEnvironment(contract, "PROD", { ...base, account: contract.targets.QA.subscriptionId, backend: contract.targets.QA.backend }), // qa target presented as prod
   ];
   for (const r of refused) assert.ok(!r.ok && r.code === "TARGET_NOT_IN_CONTRACT");
 });
@@ -337,7 +358,7 @@ test("apply evidence: extra and raw fields, missing fields and bad values are re
   assert.ok(applyEvidenceProblems(missing).some((p) => /releaseIdentity.*missing/.test(p)));
   for (const doc of [null, undefined, "x", [], 7]) assert.ok(applyEvidenceProblems(doc).length > 0);
   assert.ok(applyEvidenceProblems(evidenceFor({ schemaVersion: 2 as never })).length > 0);
-  assert.ok(applyEvidenceProblems(evidenceFor({ environment: "QA" as never })).length > 0);
+  assert.ok(applyEvidenceProblems(evidenceFor({ environment: "STAGING" as never })).length > 0);
   assert.ok(applyEvidenceProblems(evidenceFor({ outcome: "DONE" as never })).length > 0);
   assert.ok(applyEvidenceProblems(evidenceFor({ artifactSha256: "short" })).length > 0);
   assert.ok(applyEvidenceProblems(evidenceFor({ startedAt: "yesterday" })).length > 0);
@@ -384,36 +405,63 @@ test("evidence that fails validation is refused and nothing is written", async (
   assert.ok(!check.ok && check.code === "ARTIFACT_INVALID");
 });
 
-test("promotion: DEV needs none; PROD needs a successful DEV apply of the same release identity", async () => {
+test("promotion: DEV needs none; QA needs a successful DEV apply of the same release; PROD needs a successful QA apply, never DEV alone", async () => {
   const dir = dirFor();
   assert.deepEqual(await requirePromotionEvidence("DEV", RELEASE, dir), { ok: true });
 
-  const missing = async (release: string, d: string) => {
-    const r = await requirePromotionEvidence("PROD", release, d);
+  const missing = async (env: "QA" | "PROD", release: string, d: string, from = env === "QA" ? "DEV" : "QA") => {
+    const r = await requirePromotionEvidence(env, release, d);
     assert.ok(!r.ok && r.code === "PROMOTION_EVIDENCE_MISSING");
+    assert.match(r.ok ? "" : r.message, new RegExp("successful " + from + " apply"));
   };
-  await missing(RELEASE, join(scratch, "no-such-dir"));
-  await missing(RELEASE, dir);
+  await missing("QA", RELEASE, join(scratch, "no-such-dir"));
+  await missing("PROD", RELEASE, join(scratch, "no-such-dir"));
+  await missing("QA", RELEASE, dir);
+  await missing("PROD", RELEASE, dir);
 
   // Failed, partial and killed dev applies do not qualify a release.
   await recordApplied(evidenceFor({ artifactSha256: "1".repeat(64), outcome: "FAILED_NO_CHANGE", exitCode: 1 }), dir);
   await recordApplied(evidenceFor({ artifactSha256: "2".repeat(64), outcome: "PARTIAL_REQUIRES_REVIEW", exitCode: 1 }), dir);
   await recordApplied(evidenceFor({ artifactSha256: "3".repeat(64), outcome: "KILLED", exitCode: null }), dir);
-  await missing(RELEASE, dir);
+  await missing("QA", RELEASE, dir);
+  await missing("PROD", RELEASE, dir);
 
   // A successful dev apply of a different release does not qualify this one.
   await recordApplied(evidenceFor({ artifactSha256: "4".repeat(64), releaseIdentity: "f".repeat(64) }), dir);
-  await missing(RELEASE, dir);
+  await missing("QA", RELEASE, dir);
 
-  // A successful PROD apply is not dev evidence.
+  // A successful PROD apply is neither DEV nor QA evidence.
   await recordApplied(evidenceFor({ artifactSha256: "5".repeat(64), environment: "PROD" }), dir);
-  await missing(RELEASE, dir);
+  await missing("QA", RELEASE, dir);
+  await missing("PROD", RELEASE, dir);
 
   // An empty release identity never matches.
-  await missing("", dir);
+  await missing("QA", "", dir);
+  await missing("PROD", "", dir);
 
+  // A successful DEV apply of this release qualifies QA and nothing else: PROD must not accept DEV alone.
   await recordApplied(evidenceFor({ artifactSha256: "6".repeat(64) }), dir);
+  assert.deepEqual(await requirePromotionEvidence("QA", RELEASE, dir), { ok: true });
+  await missing("PROD", RELEASE, dir);
+  await missing("QA", "f".repeat(63) + "0", dir);
+
+  // A failed or other-release QA apply does not qualify PROD.
+  await recordApplied(evidenceFor({ artifactSha256: "a1".repeat(32), environment: "QA", outcome: "FAILED_NO_CHANGE", exitCode: 1 }), dir);
+  await recordApplied(evidenceFor({ artifactSha256: "a2".repeat(32), environment: "QA", releaseIdentity: "f".repeat(64) }), dir);
+  await missing("PROD", RELEASE, dir);
+
+  // A successful QA apply of this release qualifies PROD; it does not need to qualify QA again.
+  await recordApplied(evidenceFor({ artifactSha256: "a3".repeat(32), environment: "QA" }), dir);
   assert.deepEqual(await requirePromotionEvidence("PROD", RELEASE, dir), { ok: true });
+
+  // QA evidence alone, without any DEV apply, qualifies PROD only as far as the PROD gate looks (the QA gate is enforced when QA is applied).
+  const qaOnly = dirFor();
+  await recordApplied(evidenceFor({ artifactSha256: "a4".repeat(32), environment: "QA" }), qaOnly);
+  await missing("QA", RELEASE, qaOnly);
+  assert.deepEqual(await requirePromotionEvidence("PROD", RELEASE, qaOnly), { ok: true });
+
+  // An unknown environment never passes.
+  assert.equal((await requirePromotionEvidence("STAGING" as never, RELEASE, dir)).ok, false);
 });
 
 test("promotion ignores unreadable, foreign-key, renamed and invalid evidence files", async () => {
@@ -436,8 +484,10 @@ test("promotion ignores unreadable, foreign-key, renamed and invalid evidence fi
   await recordApplied(evidenceFor({ artifactSha256: "9".repeat(64) }), sourceDir);
   writeFileSync(join(dir, "0".repeat(64) + ".apply.evidence"), readFileSync(join(sourceDir, readdirSync(sourceDir)[0])));
 
-  const r = await requirePromotionEvidence("PROD", RELEASE, dir);
-  assert.ok(!r.ok && r.code === "PROMOTION_EVIDENCE_MISSING");
+  for (const env of ["QA", "PROD"] as const) {
+    const r = await requirePromotionEvidence(env, RELEASE, dir);
+    assert.ok(!r.ok && r.code === "PROMOTION_EVIDENCE_MISSING");
+  }
 });
 
 // --- qualification evidence: a record counts only if the vault holds matching evidence -------------------------

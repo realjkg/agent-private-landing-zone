@@ -74,7 +74,7 @@ export function verifyApprovalSet(input: VerifyApprovalsInput): ApprovalVerdict 
   const { approvals, artifactSha256, environment, target, contract, now, nonces } = input;
   const allowlist: ApproverEntry[] = contract.approvers;
   const maxAgeMinutes = contract.maxApprovalAgeMinutes;
-  // Contract validation is the one place that enforces the minimums (DEV 1, PROD 2).
+  // Contract validation is the one place that enforces the minimums (DEV 1, QA 1, PROD 2).
   const required = contract.requiredApprovals[environment];
   const refuse = (code: ApprovalCode, message: string): ApprovalVerdict => ({ ok: false, code, message });
   const nowMs = now.getTime();

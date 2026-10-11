@@ -1,28 +1,34 @@
 {
-  "EXAMPLE": "NOT A REAL CONTRACT. Copy to config/act-pilot-contract.json, replace every REPLACE-WITH value with an owner-supplied value, and set enabled to true only when the owner authorizes the pilot. Then commit the contract's canonical sha256 to config/act-pilot-contract.sha256 (an empty or absent pin keeps ACT disabled). These placeholders are deliberately invalid, so this file can never enable ACT.",
+  "EXAMPLE": "NOT A REAL CONTRACT. Copy to config/act-pilot-contract.json, replace every fake target value and every REPLACE-WITH value with an owner-supplied value, and set enabled to true only when the owner authorizes the pilot. Then commit the contract's canonical sha256 to config/act-pilot-contract.sha256 (an empty or absent pin keeps ACT disabled). Promotion runs DEV, then QA, then PROD, and the three must differ in subscription and in backend. The target ids here are obviously fake, and the approver placeholders are deliberately invalid, so this file can never enable ACT.",
   "schemaVersion": 1,
   "enabled": false,
   "provider": "AZURE",
   "engine": "TERRAFORM",
   "targets": {
     "DEV": {
-      "tenantId": "REPLACE-WITH-TENANT-GUID",
-      "subscriptionId": "REPLACE-WITH-DEV-SUBSCRIPTION-GUID",
-      "backend": "REPLACE-WITH-DEV-STORAGE-ACCOUNT/REPLACE-WITH-CONTAINER/REPLACE-WITH-KEY",
+      "tenantId": "aaaabbbb-0000-cccc-1111-dddd2222eeee",
+      "subscriptionId": "00001111-aaaa-2222-bbbb-3333cccc4444",
+      "backend": "examplefakedevstate/tfstate/dev.tfstate",
+      "workspace": "default"
+    },
+    "QA": {
+      "tenantId": "aaaabbbb-0000-cccc-1111-dddd2222eeee",
+      "subscriptionId": "11112222-bbbb-3333-cccc-4444dddd5555",
+      "backend": "examplefakeqastate/tfstate/qa.tfstate",
       "workspace": "default"
     },
     "PROD": {
-      "tenantId": "REPLACE-WITH-TENANT-GUID",
-      "subscriptionId": "REPLACE-WITH-PROD-SUBSCRIPTION-GUID",
-      "backend": "REPLACE-WITH-PROD-STORAGE-ACCOUNT/REPLACE-WITH-CONTAINER/REPLACE-WITH-KEY",
+      "tenantId": "aaaabbbb-0000-cccc-1111-dddd2222eeee",
+      "subscriptionId": "22223333-cccc-4444-dddd-5555eeee6666",
+      "backend": "examplefakeprodstate/tfstate/prod.tfstate",
       "workspace": "default"
     }
   },
-  "requiredApprovals": { "DEV": 1, "PROD": 2 },
+  "requiredApprovals": { "DEV": 1, "QA": 1, "PROD": 2 },
   "maxApprovalAgeMinutes": 60,
   "approvers": [
-    { "id": "REPLACE-WITH-APPROVER-ID-1", "publicKeyPem": "REPLACE-WITH-ED25519-PUBLIC-KEY-PEM", "environments": ["DEV", "PROD"] },
-    { "id": "REPLACE-WITH-APPROVER-ID-2", "publicKeyPem": "REPLACE-WITH-ED25519-PUBLIC-KEY-PEM", "environments": ["DEV", "PROD"] }
+    { "id": "REPLACE-WITH-APPROVER-ID-1", "publicKeyPem": "REPLACE-WITH-ED25519-PUBLIC-KEY-PEM", "environments": ["DEV", "QA", "PROD"] },
+    { "id": "REPLACE-WITH-APPROVER-ID-2", "publicKeyPem": "REPLACE-WITH-ED25519-PUBLIC-KEY-PEM", "environments": ["DEV", "QA", "PROD"] }
   ],
   "killSwitchPath": ".runs/apply/KILL"
 }

@@ -29,8 +29,9 @@ export const H = (char: string): string => char.repeat(64);
 export const LOCK = '# lock\nprovider "registry.terraform.io/hashicorp/azurerm" {\n  version = "4.10.0"\n}\n';
 export const TENANT = "11111111-1111-4111-8111-111111111111";
 export const DEV_TARGET: ResolvedTarget = { account: "22222222-2222-4222-8222-222222222222", backend: "fixturedevstore/tfstate/dev.tfstate", workspace: "default" };
+export const QA_TARGET: ResolvedTarget = { account: "44444444-4444-4444-8444-444444444444", backend: "fixtureqastore/tfstate/qa.tfstate", workspace: "default" };
 export const PROD_TARGET: ResolvedTarget = { account: "33333333-3333-4333-8333-333333333333", backend: "fixtureprodstore/tfstate/prod.tfstate", workspace: "default" };
-export const targetOf = (environment: ApplyEnvironment): ResolvedTarget => (environment === "DEV" ? DEV_TARGET : PROD_TARGET);
+export const targetOf = (environment: ApplyEnvironment): ResolvedTarget => ({ DEV: DEV_TARGET, QA: QA_TARGET, PROD: PROD_TARGET })[environment];
 export const NOW = new Date("2026-10-11T12:00:00.000Z");
 export const POLICY = "2026-10-11.1";
 export const OPERATOR = "operator.fixture";
@@ -82,7 +83,7 @@ if (cmd === "version") { log({}); process.stdout.write(JSON.stringify({ terrafor
 else if (cmd === "init") {
   fs.mkdirSync(".terraform", { recursive: true });
   if (b.savedBackend !== null) {
-    const def = (${JSON.stringify({ [DEV_TARGET.account]: DEV_TARGET.backend, [PROD_TARGET.account]: PROD_TARGET.backend })})[process.env.ARM_SUBSCRIPTION_ID];
+    const def = (${JSON.stringify({ [DEV_TARGET.account]: DEV_TARGET.backend, [QA_TARGET.account]: QA_TARGET.backend, [PROD_TARGET.account]: PROD_TARGET.backend })})[process.env.ARM_SUBSCRIPTION_ID];
     const [account, container, ...key] = (def || "").split("/");
     const backend = b.savedBackend || { type: "azurerm", config: { storage_account_name: account, container_name: container, key: key.join("/") } };
     fs.writeFileSync(path.join(".terraform", "terraform.tfstate"), JSON.stringify({ version: 3, backend }));
@@ -181,8 +182,8 @@ const newKey = () => {
 };
 export const keys = { alice: newKey(), bob: newKey(), carol: newKey(), mallory: newKey() };
 export const approvers = [
-  { id: "alice", publicKeyPem: keys.alice.pub, environments: ["DEV", "PROD"] },
-  { id: "bob", publicKeyPem: keys.bob.pub, environments: ["DEV", "PROD"] },
+  { id: "alice", publicKeyPem: keys.alice.pub, environments: ["DEV", "QA", "PROD"] },
+  { id: "bob", publicKeyPem: keys.bob.pub, environments: ["DEV", "QA", "PROD"] },
   { id: "carol", publicKeyPem: keys.carol.pub, environments: ["DEV"] },
 ];
 
@@ -190,9 +191,10 @@ export const contractJson = (killPath: string, over: Record<string, unknown> = {
   schemaVersion: 1, enabled: true, provider: "AZURE", engine: "TERRAFORM",
   targets: {
     DEV: { tenantId: TENANT, subscriptionId: DEV_TARGET.account, backend: DEV_TARGET.backend, workspace: "default" },
+    QA: { tenantId: TENANT, subscriptionId: QA_TARGET.account, backend: QA_TARGET.backend, workspace: "default" },
     PROD: { tenantId: TENANT, subscriptionId: PROD_TARGET.account, backend: PROD_TARGET.backend, workspace: "default" },
   },
-  requiredApprovals: { DEV: 1, PROD: 2 }, maxApprovalAgeMinutes: 60, approvers, killSwitchPath: killPath, ...over,
+  requiredApprovals: { DEV: 1, QA: 1, PROD: 2 }, maxApprovalAgeMinutes: 60, approvers, killSwitchPath: killPath, ...over,
 });
 
 /** The committed pin the contract is loaded against: its canonical sha256, in `<path>.sha256`. */

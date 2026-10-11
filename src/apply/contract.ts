@@ -10,7 +10,7 @@ import type { ResolvedTarget } from "../teardown/driver/types.js";
 import { canonicalJson } from "../teardown/manifest.js";
 import { sha256 } from "../util/sha256.js";
 import { approvedToolDirs, resolveExecutable } from "../tools/child-env.js";
-import { GUID, HASH } from "./constants.js";
+import { ENVIRONMENTS, GUID, HASH } from "./constants.js";
 import { applyEvidenceProblems, qualificationEvidenceProblems, type QualificationEvidence } from "./evidence.js";
 import type { ApplyEnvironment, ApplyEvidence, ApplyRefusalCode, ApplyResult, ApproverEntry, PilotContract, PilotTarget } from "./types.js";
 
@@ -61,7 +61,6 @@ const WORKSPACE = /^[A-Za-z0-9_-]{1,90}$/;
 const STORAGE_ACCOUNT = /^[a-z0-9]{3,24}$/;
 const CONTAINER = /^(?!.*--)[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/;
 const KEY_SEGMENT = /^(?!\.\.?$)[A-Za-z0-9._-]+$/;
-const ENVIRONMENTS: readonly ApplyEnvironment[] = ["DEV", "PROD"];
 
 function object(value: unknown, path: string, keys: readonly string[]): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return bad(path + ": expected an object");
@@ -113,7 +112,7 @@ function approvers(value: unknown, path: string): ApproverEntry[] {
     const environments = r.environments;
     if (!Array.isArray(environments) || environments.length === 0 || new Set(environments).size !== environments.length ||
       environments.some((e) => !ENVIRONMENTS.includes(e as ApplyEnvironment))) {
-      bad(p + ".environments: expected distinct DEV and PROD values");
+      bad(p + ".environments: expected distinct DEV, QA and PROD values");
     }
     if (ids.has(id.toLowerCase())) bad(p + ".id: duplicate approver id");
     ids.add(id.toLowerCase());
@@ -136,18 +135,22 @@ function validate(raw: unknown): PilotContract {
     enabled: true,
     provider: "AZURE",
     engine: "TERRAFORM",
-    targets: { DEV: target(targets.DEV, "targets.DEV"), PROD: target(targets.PROD, "targets.PROD") },
+    targets: { DEV: target(targets.DEV, "targets.DEV"), QA: target(targets.QA, "targets.QA"), PROD: target(targets.PROD, "targets.PROD") },
     requiredApprovals: {
       DEV: integer(approvals.DEV, "requiredApprovals.DEV", 1, 10),
+      QA: integer(approvals.QA, "requiredApprovals.QA", 1, 10),
       PROD: integer(approvals.PROD, "requiredApprovals.PROD", 2, 10),
     },
     maxApprovalAgeMinutes: integer(r.maxApprovalAgeMinutes, "maxApprovalAgeMinutes", 1, 1440),
     approvers: approvers(r.approvers, "approvers"),
     killSwitchPath: text(r.killSwitchPath, "killSwitchPath", (v) => v.length > 0 && v.length <= 1024 && !v.includes("\0")),
   };
-  const { DEV, PROD } = contract.targets;
-  if (DEV.subscriptionId.toLowerCase() === PROD.subscriptionId.toLowerCase()) bad("targets: DEV and PROD share a subscription");
-  if (DEV.backend.toLowerCase() === PROD.backend.toLowerCase()) bad("targets: DEV and PROD share a backend");
+  ENVIRONMENTS.forEach((a, index) => {
+    for (const b of ENVIRONMENTS.slice(index + 1)) {
+      if (contract.targets[a].subscriptionId.toLowerCase() === contract.targets[b].subscriptionId.toLowerCase()) bad("targets: " + a + " and " + b + " share a subscription");
+      if (contract.targets[a].backend.toLowerCase() === contract.targets[b].backend.toLowerCase()) bad("targets: " + a + " and " + b + " share a backend");
+    }
+  });
   return contract;
 }
 
@@ -237,9 +240,13 @@ export function requireNotApplied(artifactSha256: string, evidenceDir: string = 
     : { ok: true };
 }
 
+/** The stage whose successful apply a stage promotes from. DEV promotes from nothing. */
+const PROMOTES_FROM: Partial<Record<ApplyEnvironment, ApplyEnvironment>> = { QA: "DEV", PROD: "QA" };
+
 /**
- * Production promotes a qualified release: it needs a successful DEV apply
- * recorded for the same target-independent releaseIdentity. A record that
+ * Promotion runs DEV, then QA, then PROD. QA needs a successful DEV apply and PROD
+ * a successful QA apply (never DEV alone), each recorded for the same
+ * target-independent releaseIdentity. DEV needs none. A record that
  * cannot be decrypted, fails validation or sits under another artifact's name
  * is not evidence.
  */
@@ -248,8 +255,9 @@ export async function requirePromotionEvidence(
   releaseIdentity: string,
   evidenceDir: string = DEFAULT_EVIDENCE_DIR,
 ): Promise<Check> {
-  if (env === "DEV") return { ok: true };
-  const missing = refuse("PROMOTION_EVIDENCE_MISSING", "no successful DEV apply is recorded for this release identity");
+  const from = PROMOTES_FROM[env];
+  if (from === undefined) return env === "DEV" ? { ok: true } : refuse("PROMOTION_EVIDENCE_MISSING", "unknown environment");
+  const missing = refuse("PROMOTION_EVIDENCE_MISSING", "no successful " + from + " apply is recorded for this release identity");
   if (typeof releaseIdentity !== "string" || releaseIdentity.length === 0) return missing;
   let names: string[];
   try { names = await readdir(evidenceDir); } catch { return missing; }
@@ -257,7 +265,7 @@ export async function requirePromotionEvidence(
     try {
       const record = await readEncryptedEvidence<ApplyEvidence>(join(evidenceDir, name));
       if (applyEvidenceProblems(record).length === 0 && name === record.artifactSha256 + SUFFIX
-        && record.environment === "DEV" && record.outcome === "SUCCEEDED" && record.releaseIdentity === releaseIdentity) {
+        && record.environment === from && record.outcome === "SUCCEEDED" && record.releaseIdentity === releaseIdentity) {
         return { ok: true };
       }
     } catch { /* unreadable evidence is not evidence */ }

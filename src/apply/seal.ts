@@ -8,7 +8,7 @@ import { removeTree } from "../teardown/driver/cleanup.js";
 import { INIT_ARGV, PREVIEW_PLAN_ARGV, SHOW_ARGV, isAllowedArgv } from "../teardown/driver/adapters/terraform.js";
 import type { ResolvedTarget } from "../teardown/driver/types.js";
 import { MUTATION_IDENTITY_VARIABLE } from "../tools/identity.js";
-import { HASH } from "./constants.js";
+import { ENVIRONMENTS, HASH } from "./constants.js";
 import { TERRAFORM_APPLY_PROFILE } from "../tools/profiles.js";
 import { sha256 } from "../util/sha256.js";
 import { codeOf, openSession, prepareWorkspace, stop, type EngineSession } from "./engine.js";
@@ -274,7 +274,7 @@ const wellFormedChange = (c: unknown): boolean => {
 export function verifySealedPlan(value: unknown): LoadedSeal {
   const { sealed: s, planBytes } = (value && typeof value === "object" ? value : {}) as Partial<LoadedPlan>;
   if (!s || typeof s !== "object" || !Buffer.isBuffer(planBytes) || s.schemaVersion !== 1 ||
-    (s.environment !== "DEV" && s.environment !== "PROD") || !s.target || typeof s.target !== "object" ||
+    !ENVIRONMENTS.includes(s.environment) || !s.target || typeof s.target !== "object" ||
     !Array.isArray(s.changes) || !s.changes.every(wellFormedChange) ||
     ![s.artifactSha256, s.planSha256, s.manifestHash, s.releaseIdentity].every((h) => typeof h === "string" && HASH.test(h))) {
     return invalid("The sealed plan record is malformed.");
@@ -289,7 +289,7 @@ export function verifySealedPlan(value: unknown): LoadedSeal {
 export function verifyReviewBundle(value: unknown): { ok: true; bundle: ReviewBundle } | SealFault {
   const b = (value && typeof value === "object" && !Array.isArray(value) ? value : {}) as Partial<ReviewBundle>;
   const t = (b.target ?? {}) as Partial<ResolvedTarget>;
-  if (Object.keys(b).sort().join() !== BUNDLE_KEYS.join() || (b.environment !== "DEV" && b.environment !== "PROD") ||
+  if (Object.keys(b).sort().join() !== BUNDLE_KEYS.join() || !ENVIRONMENTS.includes(b.environment as ApplyEnvironment) ||
     !["account", "backend", "workspace"].every((key) => text((t as Record<string, unknown>)[key])) ||
     !Array.isArray(b.changes) || !b.changes.every(wellFormedChange) || !text(b.engineVersion) || !text(b.policyVersion) || !text(b.createdAt) ||
     ![b.artifactSha256, b.planSha256, b.manifestHash, b.releaseIdentity, b.changesSha256].every((h) => typeof h === "string" && HASH.test(h))) {
