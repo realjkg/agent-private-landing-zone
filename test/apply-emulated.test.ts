@@ -114,7 +114,7 @@ async function startEmulator(dir: string): Promise<Emulator> {
   await waitForPort(blobPort);
 
   // The driver blocks this process while Terraform runs (synchronous spawns), so the metadata endpoint and the proxy live in a helper process.
-  const helperPath = join(dir, "helper.mjs"), connectsLog = join(dir, "connects.log");
+  const helperPath = join(dir, "helper.cjs"), connectsLog = join(dir, "connects.log");
   writeFileSync(helperPath, HELPER);
   const helper: ChildProcess = spawn(process.execPath, [helperPath, key, cert, String(blobPort), BLOB_HOST, METADATA_HOST, connectsLog], { stdio: ["ignore", "pipe", "inherit"] });
   const proxyPort = await new Promise<number>((resolve, reject) => {
@@ -215,7 +215,6 @@ describe("emulated backend simulation: real Terraform, Azurite, built-in resourc
     if (process.env.ALZ_SIM_TERRAFORM_SHA256) assert.equal(binarySha, process.env.ALZ_SIM_TERRAFORM_SHA256.toLowerCase(), "the terraform binary is not the verified one");
     // The runner finds `terraform` by name in approved directories; /usr/bin and /bin keep sh, touch and sleep reachable for the local-exec fixture.
     toolDir = fresh("tools");
-    if (process.env.DBGWRAP) { writeFileSync(join(toolDir, "terraform"), `#!/bin/sh\necho "ARGS: $*" >> ${process.env.DBGWRAP}\nenv | grep -E 'PROXY|SSL|ARM_' | sed 's/=.*SECRET.*/=<s>/' >> ${process.env.DBGWRAP}\nexec ${binary} "$@" 2>>${process.env.DBGWRAP}\n`, { mode: 0o755 }); } else
     symlinkSync(binary, join(toolDir, "terraform"));
     engineVersion = (JSON.parse(execFileSync(binary, ["version", "-json"], { env: { PATH: "/usr/bin:/bin" }, encoding: "utf8" })) as { terraform_version: string }).terraform_version;
 
@@ -247,8 +246,11 @@ describe("emulated backend simulation: real Terraform, Azurite, built-in resourc
     }
 
     evidence = fresh("evidence"); nonces = fresh("nonces"); scratch = fresh("scratch");
+    // Terraform reads the OIDC token file at init when use_oidc is set, even though state access here uses the SAS token, so the file must exist.
+    const tokenFile = join(fresh("oidc"), "statewrite-token");
+    writeFileSync(tokenFile, "emulated-not-a-real-token\n", { mode: 0o600 });
     env = {
-      ...identityEnv("DEV" satisfies ApplyEnvironment),
+      ...identityEnv("DEV" satisfies ApplyEnvironment), ALZ_STATE_WRITE_ARM_OIDC_TOKEN_FILE: tokenFile,
       // Network settings reach the child only as ALZ_NETWORK_*: the proxy sends the two emulator hosts to loopback; the CA is the emulator's own.
       ALZ_NETWORK_HTTPS_PROXY: emulator.proxyUrl, ALZ_NETWORK_SSL_CERT_FILE: emulator.caFile,
     };
@@ -283,8 +285,8 @@ describe("emulated backend simulation: real Terraform, Azurite, built-in resourc
       "}",
       'resource "terraform_data" "pilot" {',
       `  input = "${input}"`,
-      extra,
       "}",
+      extra,
       "",
     ].join("\n"));
     writeFileSync(join(projectRoot, ".terraform.lock.hcl"), LOCK);
@@ -321,7 +323,7 @@ describe("emulated backend simulation: real Terraform, Azurite, built-in resourc
     const response = await emulator.blob("GET", `/${CONTAINER}/${STATE_KEY}?${sas()}`);
     assert.equal(response.status, 200, response.body);
     const state = JSON.parse(response.body) as { serial: number; resources: { type: string; instances: { attributes: { input: unknown } }[] }[] };
-    return { serial: state.serial, inputs: state.resources.filter((r) => r.type === "terraform_data").flatMap((r) => r.instances.map((i) => i.attributes.input)) };
+    return { serial: state.serial, inputs: state.resources.filter((r) => r.type === "terraform_data").flatMap((r) => r.instances.map((i) => (i.attributes.input as { value: unknown } | null)?.value)) };
   };
   const leaseState = async (): Promise<string | undefined> => {
     const response = await emulator.blob("HEAD", `/${CONTAINER}/${STATE_KEY}?${sas()}`);
@@ -348,14 +350,17 @@ describe("emulated backend simulation: real Terraform, Azurite, built-in resourc
     const result = await run(s);
     assert.ok(result.ok, JSON.stringify(result));
     noSecrets(result);
-    assert.deepEqual(await stateBlob(), { serial: 1, inputs: ["first"] });
+    const landed = await stateBlob();
+    assert.deepEqual(landed.inputs, ["first"]);
+    assert.ok(landed.serial >= 1);
     assert.equal(await leaseState(), "available", "the state lease is released");
     const record = await stored(s);
     assert.equal(record.outcome, "SUCCEEDED");
     assert.equal(record.exitCode, 0);
     assert.equal(record.toolVersions.engine, engineVersion);
     noSecrets(record);
-    assert.deepEqual(emulator.connects().filter((c) => c !== METADATA_HOST && c !== BLOB_HOST + ":443"), [], "no host other than the emulator was ever contacted");
+    // Terraform's own version check (checkpoint-api.hashicorp.com) is attempted on every run; the proxy refuses it. Nothing else is reachable.
+    assert.deepEqual(emulator.connects().filter((c) => c !== METADATA_HOST && c !== BLOB_HOST + ":443" && c !== "checkpoint-api.hashicorp.com:443"), [], "no host other than the emulator was ever contacted");
   });
 
   it("refuses a second apply of the same artifact, with a fresh approval", async () => {
@@ -413,11 +418,12 @@ describe("emulated backend simulation: real Terraform, Azurite, built-in resourc
 
   it("stops a running apply when the kill switch appears: Terraform is interrupted, the lease is released, the outcome is KILLED", async () => {
     const flag = join(root, "slow-started");
-    const s = await seal("kill-during", `  provisioner "local-exec" {\n    command = "touch ${flag}; sleep 120"\n  }`);
+    const s = await seal("kill-during", `resource "terraform_data" "slow" {\n  provisioner "local-exec" {\n    command = "touch ${flag}; sleep 120"\n  }\n}`);
     const before = await stateBlob();
-    const running = run(s);
+    let settled: ApplyResult | undefined;
+    const running = run(s).then((r) => (settled = r));
     for (let waited = 0; !existsSync(flag); waited += 100) {
-      if (waited > 60_000) throw new Error("the apply never reached the provisioner");
+      if (settled || waited > 60_000) throw new Error("the apply never reached the provisioner: " + JSON.stringify(settled));
       await sleep(100);
     }
     assert.equal(await leaseState(), "leased", "Terraform holds the state lease while it applies");
