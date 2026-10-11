@@ -1,6 +1,4 @@
-import {
-  createHash,
-} from "node:crypto";
+import { sha256 } from "../util/sha256.js";
 import {
   mkdirSync,
   readdirSync,
@@ -187,13 +185,7 @@ export type DebugReport = {
 export const redactDebugText =
   sanitizeDiagnosticText;
 
-function fingerprint(
-  value: string,
-): string {
-  return createHash("sha256")
-    .update(value)
-    .digest("hex");
-}
+const fingerprint = sha256;
 
 function evidenceRefs(
   state: AgentState,

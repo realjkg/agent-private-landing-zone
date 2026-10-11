@@ -1,7 +1,8 @@
-import { sha256 } from "../build/provenance.js";
+import { sha256 } from "../util/sha256.js";
 import type { IaCEngine } from "../build/types.js";
 import type { Provider } from "../discovery/types.js";
 import { createChangeSet, type ChangeSet } from "../iac/changeset.js";
+import { canonicalJson } from "./manifest.js";
 import type { DeletionUnit, DeletionUnitStateRef, ProvenanceTags } from "./types.js";
 
 /**
@@ -27,22 +28,9 @@ function requireUnit(ok: unknown, code: string): asserts ok {
   if (!ok) throw new Error("DELETION_UNIT_INVALID:" + code);
 }
 
-/** Canonical JSON: sorted keys at every level, so equal records hash equally. */
-function canonical(value: unknown): string {
-  if (Array.isArray(value)) return "[" + value.map(canonical).join(",") + "]";
-  if (value && typeof value === "object") {
-    return "{" + Object.keys(value).sort()
-      .filter((key) => (value as Record<string, unknown>)[key] !== undefined)
-      .map((key) => JSON.stringify(key) + ":" +
-        canonical((value as Record<string, unknown>)[key]))
-      .join(",") + "}";
-  }
-  return JSON.stringify(value);
-}
-
 /** Deterministic unit id: one build into one state container is one unit. */
 export function deletionUnitId(buildId: string, stateRef: DeletionUnitStateRef): string {
-  return "alzu-" + sha256(buildId + "\n" + canonical(stateRef)).slice(0, 20);
+  return "alzu-" + sha256(buildId + "\n" + canonicalJson(stateRef)).slice(0, 20);
 }
 
 export function provenanceTags(input: {
@@ -148,7 +136,7 @@ export function recordDeletionUnit(input: {
     tags: provenanceTags({ unitId, buildId: input.buildId, expires: input.expires }),
     recordedAt: input.recordedAt ?? new Date().toISOString(),
   };
-  return { ...body, unitHash: sha256(canonical(body)) };
+  return { ...body, unitHash: sha256(canonicalJson(body)) };
 }
 
 /**
@@ -195,13 +183,13 @@ export function recordAttestedDeletionUnit(input: {
 export function verifyDeletionUnit(unit: DeletionUnit): DeletionUnit {
   requireUnit(unit && unit.schemaVersion === 1, "SCHEMA_VERSION");
   const { unitHash, ...body } = unit;
-  requireUnit(HASH.test(unitHash) && sha256(canonical(body)) === unitHash, "UNIT_HASH_MISMATCH");
+  requireUnit(HASH.test(unitHash) && sha256(canonicalJson(body)) === unitHash, "UNIT_HASH_MISMATCH");
   requireUnit(unit.unitId === deletionUnitId(unit.buildId, unit.stateRef), "UNIT_ID_MISMATCH");
   validateStateRef(unit.engine, unit.stateRef);
   const expected = provenanceTags({
     unitId: unit.unitId, buildId: unit.buildId, expires: unit.tags[ALZ_TAG_KEYS.expires],
   });
-  requireUnit(canonical(expected) === canonical(unit.tags), "TAGS_MISMATCH");
+  requireUnit(canonicalJson(expected) === canonicalJson(unit.tags), "TAGS_MISMATCH");
   requireUnit(Array.isArray(unit.plannedCreates) && unit.plannedCreates.length > 0 &&
     unit.plannedCreates.every((address, index, list) =>
       // Same ordering as Array.prototype.sort() in recordDeletionUnit.

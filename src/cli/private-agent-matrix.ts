@@ -1,11 +1,10 @@
-import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 
 import { PHASE_E_SCENARIOS } from "../qualification/phase-e.js";
 import { runPrivateAgentMatrix } from "../qualification/private-agent-matrix.js";
 import { parseMatrixCliArgs } from "../qualification/matrix-arguments.js";
+import { assertCleanSource, evidenceDir, headCommit, writeJsonOnce } from "../util/cli-support.js";
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
@@ -28,13 +27,8 @@ async function main(): Promise<void> {
   const selected = selection.scenarioId
     ? PHASE_E_SCENARIOS.filter((scenario) => scenario.id === selection.scenarioId)
     : PHASE_E_SCENARIOS;
-  const sha = execFileSync("git", ["rev-parse", "--verify", "HEAD"], {
-    encoding: "utf8",
-  }).trim();
-  const dirty = execFileSync("git", ["status", "--porcelain"], {
-    encoding: "utf8",
-  }).trim();
-  if (dirty) throw new Error("SOURCE_WORKTREE_DIRTY");
+  const sha = headCommit();
+  assertCleanSource();
   const mode = selection.mode;
   const result = await runPrivateAgentMatrix({
     sourceCommit: sha,
@@ -42,12 +36,8 @@ async function main(): Promise<void> {
     scenarios: selected,
     onProgress: (message) => console.log(message),
   });
-  const dir = resolve(".runs", "qualification", "private-agent-matrix");
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const path = resolve(dir, "matrix-" + randomUUID() + ".json");
-  writeFileSync(path, JSON.stringify(result, null, 2) + "\n", {
-    mode: 0o600, flag: "wx",
-  });
+  const path = resolve(evidenceDir("qualification", "private-agent-matrix"), "matrix-" + randomUUID() + ".json");
+  writeJsonOnce(path, result);
   for (const lane of result.results) {
     console.log(lane.id + ": " +
       (lane.converged ? "PARITY PASS" : "BLOCKED / DIVERGED") +

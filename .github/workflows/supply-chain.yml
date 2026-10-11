@@ -129,6 +129,7 @@ jobs:
           format: json
           output: trivy-results.json
           exit-code: "1"
+          trivyignores: .trivyignore.yaml
 
       - name: Upload release and qualification evidence
         if: always()

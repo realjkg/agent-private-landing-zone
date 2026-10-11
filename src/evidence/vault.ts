@@ -1,7 +1,6 @@
 import {
   createCipheriv,
   createDecipheriv,
-  createHash,
   randomBytes,
 } from "node:crypto";
 import {
@@ -15,6 +14,7 @@ import {
   join,
 } from "node:path";
 import { homedir } from "node:os";
+import { sha256 } from "../util/sha256.js";
 
 import type {
   Emitter,
@@ -39,12 +39,6 @@ export type EvidenceKeyInfo = {
   path?: string;
   securePermissions: boolean;
 };
-
-function sha256(value: Buffer): string {
-  return createHash("sha256")
-    .update(value)
-    .digest("hex");
-}
 
 function defaultKeyPath(): string {
   return (

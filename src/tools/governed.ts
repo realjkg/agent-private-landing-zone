@@ -1,12 +1,21 @@
 import {
   emitDebugDiagnostic,
 } from "../debug/context.js";
+import {
+  createSecurityPolicyEvaluator,
+} from "../security/policy/engine.js";
 import type {
   Emitter,
 } from "../observability/bus.js";
 import type {
   SovereignCapability,
 } from "../orchestration/types.js";
+import type {
+  OpaPolicyOptions,
+} from "../security/policy/opa.js";
+import type {
+  SecurityPolicyMode,
+} from "../security/policy/engine.js";
 import type {
   CompromiseState,
   DataClassification,
@@ -197,6 +206,11 @@ export async function executeGovernedTool(
     classification:
       DataClassification;
     allowedEgressHosts: string[];
+    /**
+     * Consult the evaluator even when the request needs no capability or
+     * egress check, so an external decision point is never bypassed.
+     */
+    requireDecision?: boolean;
     /** Process observability bus; defaults to disabled (no emission). */
     emitter?: Emitter;
   },
@@ -244,6 +258,23 @@ export async function executeGovernedTool(
           allowedHosts:
             options
               .allowedEgressHosts,
+        },
+      ),
+    );
+  }
+
+  if (
+    decisions.length === 0 &&
+    options.requireDecision
+  ) {
+    decisions.push(
+      await options.evaluator.evaluate(
+        {
+          kind: "CAPABILITY",
+          compromiseState:
+            options
+              .compromiseState,
+          requested: [],
         },
       ),
     );
@@ -370,4 +401,95 @@ export async function executeGovernedTool(
     });
     throw error;
   }
+}
+
+const OPA_UNAVAILABLE_HINT =
+  " AGENTIC_SECURITY_POLICY_MODE=OPA requires a reachable local OPA server with the policy bundle loaded (default http://127.0.0.1:8181, see policy/opa); start it, or unset the variable to use the BUILTIN policy.";
+
+// The control-plane labels egressDestination() can produce; OPA still
+// decides whether each one is allowed.
+const CONTROL_PLANE_HOSTS = [
+  "aws-control-plane",
+  "azure-control-plane",
+];
+
+/**
+ * The single production entry to the tool broker. BUILTIN (the default)
+ * leaves the broker call untouched because the broker already applies the
+ * built-in policy. OPA mode computes the decision locally through the
+ * governed path and fails closed on a bad mode, an unavailable or invalid
+ * decision point, or a denial.
+ */
+export async function runGovernedTool(
+  request: ToolRequest,
+  context: ToolContext,
+  options: {
+    opa?: OpaPolicyOptions;
+    emitter?: Emitter;
+  } = {},
+): Promise<ToolResult | ToolResult[]> {
+  let evaluator: SecurityPolicyEvaluator;
+  let mode: string | undefined;
+
+  try {
+    mode =
+      process.env
+        .AGENTIC_SECURITY_POLICY_MODE;
+    evaluator =
+      createSecurityPolicyEvaluator(
+        mode as SecurityPolicyMode | undefined,
+        options.opa,
+      );
+  } catch (error) {
+    return blocked(
+      request,
+      error instanceof Error
+        ? error.message
+        : "SECURITY_POLICY_MODE_INVALID: AGENTIC_SECURITY_POLICY_MODE must be BUILTIN or OPA.",
+    );
+  }
+
+  if (mode !== "OPA") {
+    return executeTool(request, context);
+  }
+
+  const opa = evaluator;
+  const actionable: SecurityPolicyEvaluator = {
+    async evaluate(input) {
+      const decision =
+        await opa.evaluate(input);
+
+      return !decision.allow &&
+        decision.reasons.some(
+          (reason) =>
+            reason.startsWith(
+              "OPA decision",
+            ),
+        )
+        ? {
+            ...decision,
+            reasons: [
+              ...decision.reasons,
+              OPA_UNAVAILABLE_HINT.trim(),
+            ],
+          }
+        : decision;
+    },
+  };
+
+  return executeGovernedTool(
+    request,
+    context,
+    {
+      evaluator: actionable,
+      compromiseState:
+        context.compromiseState ??
+        "NORMAL",
+      classification: "INTERNAL",
+      allowedEgressHosts:
+        CONTROL_PLANE_HOSTS,
+      requireDecision: true,
+      emitter: options.emitter,
+    },
+  );
 }

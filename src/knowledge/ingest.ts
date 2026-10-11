@@ -1,6 +1,4 @@
-import {
-  createHash,
-} from "node:crypto";
+import { sha256 } from "../util/sha256.js";
 
 import {
   knowledgeSource,
@@ -63,12 +61,7 @@ export function buildKnowledgeSnapshot(
   return {
     schemaVersion: 1,
     ...normalized,
-    sha256:
-      createHash("sha256")
-        .update(
-          payload(normalized),
-        )
-        .digest("hex"),
+    sha256: sha256(payload(normalized)),
   };
 }
 

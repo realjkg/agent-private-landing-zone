@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import { OperatorApp } from "../src/operator-ui/app/App";
@@ -58,6 +58,7 @@ function stubState(state: JobState): ReturnType<typeof vi.fn> {
 
 beforeEach(() => {
   window.localStorage.clear();
+  window.location.hash = "";
 });
 
 afterEach(() => {
@@ -140,32 +141,60 @@ describe("run feedback at the point of action", () => {
   });
 });
 
-describe("section nav and summary strips", () => {
-  test("advanced and expert render anchor tabs that target real sections", () => {
+// Open one of the console's areas the way an operator does: follow its tab.
+async function openArea(name: string) {
+  fireEvent.click(within(document.querySelector("nav.view-nav") as HTMLElement).getByRole("link", { name }));
+  await waitFor(() => expect(document.querySelector("nav.view-nav [aria-current=page]")?.textContent).toBe(name));
+}
+
+describe("area navigation and summary strips", () => {
+  test("advanced and expert offer three areas; the open one is marked current", async () => {
     for (const level of ["ADVANCED", "EXPERT"] as const) {
       stubState(idleState);
+      window.location.hash = "";
       const { unmount } = renderApp({ level });
-      const nav = document.querySelector("nav.section-nav");
-      expect(nav).toBeTruthy();
-      for (const id of ["workflow", "evidence", "connectors", "compliance"]) {
-        expect(nav?.textContent.toLowerCase()).toContain(id);
-        expect(document.getElementById(id)).toBeTruthy();
-      }
+      const nav = document.querySelector("nav.view-nav") as HTMLElement;
+      expect(within(nav).getAllByRole("link").map((link) => link.textContent)).toEqual([
+        "Home", "Operations", "Reference",
+      ]);
+      expect(nav.querySelector("[aria-current=page]")?.textContent).toBe("Home");
+      for (const id of ["workflow", "evidence"]) expect(document.getElementById(id)).toBeTruthy();
+      await openArea("Reference");
+      await waitFor(() => expect(document.getElementById("connectors")).toBeTruthy());
+      expect(document.getElementById("compliance")).toBeTruthy();
+      // Only the open area is mounted.
+      expect(document.getElementById("workflow")).toBeNull();
       unmount();
     }
   });
 
-  test("beginner renders no section nav and no summary strip", () => {
+  test("beginner offers Home and Operations only, with no summary strip", () => {
     stubState(idleState);
     renderApp({ level: "BEGINNER" });
-    expect(document.querySelector("nav.section-nav")).toBeNull();
+    const nav = document.querySelector("nav.view-nav") as HTMLElement;
+    expect(within(nav).getAllByRole("link").map((link) => link.textContent)).toEqual([
+      "Home", "Operations",
+    ]);
     expect(document.querySelector(".summary-strip")).toBeNull();
   });
 
-  test("the strip counts connectors by family and requirements by status — counts only", () => {
+  test("a stale reference link at beginner shows Home, never the reference detail", () => {
+    stubState(idleState);
+    window.location.hash = "#compliance";
+    renderApp({ level: "BEGINNER" });
+    expect(document.querySelector("nav.view-nav [aria-current=page]")?.textContent).toBe("Home");
+    expect(document.querySelector("[data-pack-id]")).toBeNull();
+  });
+
+  test("the strip counts connectors by family and requirements by status — counts only", async () => {
     stubState(idleState);
     renderApp({ level: "ADVANCED" });
-    const strip = document.querySelector(".summary-strip");
+    await openArea("Reference");
+    const strip = await waitFor(() => {
+      const found = document.querySelector(".summary-strip");
+      expect(found).toBeTruthy();
+      return found;
+    });
     expect(strip?.textContent).toContain("Connectors");
 
     const agentBuilders = TARGET_CONNECTORS.filter((c) => c.family === "AGENT_BUILDER").length;
@@ -193,9 +222,11 @@ describe("section nav and summary strips", () => {
     }
   });
 
-  test("compliance pack headers carry the same counts as the strip", () => {
+  test("compliance pack headers carry the same counts as the strip", async () => {
     stubState(idleState);
     renderApp({ level: "ADVANCED" });
+    await openArea("Reference");
+    await waitFor(() => expect(document.querySelector("[data-pack-header-counts]")).toBeTruthy());
     for (const pack of COMPLIANCE_PACKS) {
       const header = document.querySelector(`[data-pack-header-counts="${pack.id}"]`);
       expect(header).toBeTruthy();

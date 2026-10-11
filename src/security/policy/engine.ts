@@ -37,6 +37,8 @@ export function createSecurityPolicyEvaluator(
   }
 
   throw new Error(
-    "SECURITY_POLICY_MODE_INVALID: use BUILTIN or OPA.",
+    "SECURITY_POLICY_MODE_INVALID: AGENTIC_SECURITY_POLICY_MODE must be BUILTIN or OPA (received " +
+      JSON.stringify(String(mode).slice(0, 32)) +
+      "); correct or unset the variable.",
   );
 }

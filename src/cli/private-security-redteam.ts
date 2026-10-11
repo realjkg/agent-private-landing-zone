@@ -1,9 +1,8 @@
-import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { runPrivateSecurityAdversarialMatrix } from "../qualification/private-security-redteam.js";
+import { assertCleanSource, blockedHandler, csvText, evidenceDir, headCommit, writeJsonOnce, writeTextOnce } from "../util/cli-support.js";
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
@@ -14,31 +13,17 @@ async function main(): Promise<void> {
     return;
   }
   if (args.length) throw new Error("SECURITY_REDTEAM_NO_ARGUMENTS_ALLOWED");
-  const sha = execFileSync("git", ["rev-parse", "--verify", "HEAD"], {
-    encoding: "utf8",
-  }).trim();
-  const dirty = execFileSync("git", ["status", "--porcelain"], {
-    encoding: "utf8",
-  }).trim();
-  if (dirty) throw new Error("SECURITY_REDTEAM_CLEAN_SOURCE_REQUIRED");
+  const sha = headCommit();
+  assertCleanSource("SECURITY_REDTEAM_CLEAN_SOURCE_REQUIRED");
   const report = await runPrivateSecurityAdversarialMatrix(sha);
-  const directory = resolve(".runs", "qualification", "private-security");
-  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const directory = evidenceDir("qualification", "private-security");
   const name = randomUUID();
   const json = resolve(directory, "redteam-" + name + ".json");
   const csv = resolve(directory, "redteam-" + name + ".csv");
   const columns = ["id", "category", "expected", "observed", "result",
     "sourceCommit", "evidenceHash"] as const;
-  const quote = (value: string) => '"' + value.replaceAll('"', '""') + '"';
-  const csvData = [
-    columns.join(","),
-    ...report.cases.map((item) => columns.map((column) =>
-      quote(String(item[column]))).join(",")),
-  ].join("\n") + "\n";
-  writeFileSync(json, JSON.stringify(report, null, 2) + "\n",
-    { encoding: "utf8", mode: 0o600, flag: "wx" });
-  writeFileSync(csv, csvData,
-    { encoding: "utf8", mode: 0o600, flag: "wx" });
+  writeJsonOnce(json, report);
+  writeTextOnce(csv, csvText(columns, report.cases));
   for (const item of report.cases) {
     console.log(item.result + " " + item.id + " / " + item.observed);
   }
@@ -50,8 +35,4 @@ async function main(): Promise<void> {
   console.log("External calls=0; real model/cloud/lease issuer: NOT_RUN");
   if (!report.passed) process.exitCode = 1;
 }
-main().catch((error) => {
-  console.error("SECURITY_REDTEAM_BLOCKED: " +
-    (error instanceof Error ? error.message.slice(0, 150) : "UNKNOWN"));
-  process.exitCode = 1;
-});
+main().catch(blockedHandler("SECURITY_REDTEAM_BLOCKED: ", 150));

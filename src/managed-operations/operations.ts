@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { sha256 } from "../util/sha256.js";
 import type { ChangeRequest, SovereignChangeRecord } from "../change-ledger/types.js";
 import { LocalSovereignChangeLedger } from "../change-ledger/local.js";
 import {
@@ -78,7 +78,7 @@ export function sealOperationalPlaybook(input: OperationalPlaybookInput): Operat
   const normalized = normalize(input);
   return {
     ...normalized,
-    artifactSha256: createHash("sha256").update(JSON.stringify(normalized)).digest("hex"),
+    artifactSha256: sha256(JSON.stringify(normalized)),
   };
 }
 function verifyPlaybook(playbook: OperationalPlaybook): void {

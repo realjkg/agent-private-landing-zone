@@ -1,9 +1,8 @@
-import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { runPreliveCampaign } from "../qualification/prelive-campaign.js";
+import { assertCleanSource, blockedHandler, evidenceDir, headCommit, writeJsonOnce } from "../util/cli-support.js";
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
@@ -19,20 +18,13 @@ async function main(): Promise<void> {
     return;
   }
   if (args.length) throw new Error("PRELIVE_ACCEPTS_NO_ADDITIONAL_ARGUMENTS");
-  const sourceCommit = execFileSync("git", ["rev-parse", "--verify", "HEAD"],
-    { encoding: "utf8" }).trim();
-  if (execFileSync("git", ["status", "--porcelain"],
-    { encoding: "utf8" }).trim()) {
-    throw new Error("SOURCE_WORKTREE_DIRTY");
-  }
+  const sourceCommit = headCommit();
+  assertCleanSource();
   const report = await runPreliveCampaign({
     sourceCommit, onProgress: (msg) => console.log(msg),
   });
-  const folder = resolve(".runs", "qualification", "prelive-campaign");
-  mkdirSync(folder, { recursive: true, mode: 0o700 });
-  const file = resolve(folder, "prelive-" + randomUUID() + ".json");
-  writeFileSync(file, JSON.stringify(report, null, 2) + "\n",
-    { mode: 0o600, flag: "wx" });
+  const file = resolve(evidenceDir("qualification", "prelive-campaign"), "prelive-" + randomUUID() + ".json");
+  writeJsonOnce(file, report);
   for (const item of report.results) {
     console.log(
       item.id + ": baseline=" + item.baseline +
@@ -51,9 +43,5 @@ async function main(): Promise<void> {
   if (!report.passed) process.exitCode = 1;
 }
 
-main().catch((error) => {
-  const code = error instanceof Error ? error.message : "UNKNOWN";
-  console.error("PRELIVE_BLOCKED: " + code.slice(0, 180));
-  console.error("No cloud changes or model inference were attempted.");
-  process.exitCode = 1;
-});
+main().catch(blockedHandler("PRELIVE_BLOCKED: ", 180,
+  "No cloud changes or model inference were attempted."));

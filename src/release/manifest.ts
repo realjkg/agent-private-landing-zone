@@ -1,6 +1,4 @@
-import {
-  createHash,
-} from "node:crypto";
+import { sha256 } from "../util/sha256.js";
 import {
   readFile,
 } from "node:fs/promises";
@@ -49,13 +47,7 @@ export type PreviewOperateReleaseManifest = {
   };
 };
 
-export function sha256Buffer(
-  value: Buffer | string,
-): string {
-  return createHash("sha256")
-    .update(value)
-    .digest("hex");
-}
+export const sha256Buffer = sha256;
 
 export async function sha256File(
   path: string,

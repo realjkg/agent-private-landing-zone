@@ -150,7 +150,7 @@ Manage is intended to continuously evaluate:
 - component health
 - evidence lifecycle
 
-The resiliency implementation now supports compiled recovery targets, unattended capture/verify/drill/drift cycles, explicit AWS/Azure provider-recovery evidence classification, encrypted evidence, and read-only conversational inspection of automated target state. A manifest is still not treated as a backup, and provider-native recovery is only claimed when explicit provider evidence exists.
+The resiliency implementation now supports compiled recovery targets, a recovery automation controller for capture/verify/drill/drift cycles (library only; no service entry point), explicit AWS/Azure provider-recovery evidence classification, encrypted evidence, and read-only conversational inspection of automated target state. A manifest is still not treated as a backup, and provider-native recovery is only claimed when explicit provider evidence exists.
 
 ## Operator experience
 

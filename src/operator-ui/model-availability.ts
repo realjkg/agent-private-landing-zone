@@ -33,6 +33,16 @@ export type ModelAvailability = {
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 const PROBE_TIMEOUT_MS = 1500;
 
+/** True only for a credential-free http address on this machine (localhost, 127.0.0.1 or [::1]). */
+export function isLoopbackModelEndpoint(baseUrl: string): boolean {
+  try {
+    const url = new URL(baseUrl);
+    return url.protocol === "http:" && LOOPBACK_HOSTS.has(url.hostname) && !url.username && !url.password;
+  } catch {
+    return false;
+  }
+}
+
 export async function probeLocalModels(options: {
   env?: NodeJS.ProcessEnv;
   fetcher?: typeof fetch;
@@ -50,17 +60,9 @@ export async function probeLocalModels(options: {
     missing: string[] = []): ModelAvailability => ({ status, reason, required, missing });
 
   if (env.AGENT_SKIP_LOCAL_MODEL === "1") return result("UNAVAILABLE", "LIVE_MODELS_DISABLED");
-  let url: URL;
-  try {
-    url = new URL(baseUrl);
-  } catch {
-    return result("UNAVAILABLE", "MODEL_ENDPOINT_NOT_LOOPBACK");
-  }
+  if (!isLoopbackModelEndpoint(baseUrl)) return result("UNAVAILABLE", "MODEL_ENDPOINT_NOT_LOOPBACK");
   // Never probe anything but a credential-free HTTP loopback endpoint.
-  if (url.protocol !== "http:" || !LOOPBACK_HOSTS.has(url.hostname) ||
-    url.username || url.password) {
-    return result("UNAVAILABLE", "MODEL_ENDPOINT_NOT_LOOPBACK");
-  }
+  const url = new URL(baseUrl);
 
   let response: Response;
   try {

@@ -1,9 +1,8 @@
-import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { runOfflineCoverage } from "../qualification/full-offline-matrix.js";
+import { assertCleanSource, blockedHandler, csvText, evidenceDir, headCommit, writeJsonOnce, writeTextOnce } from "../util/cli-support.js";
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
@@ -16,18 +15,13 @@ async function main(): Promise<void> {
     return;
   }
   if (args.length !== 0) throw new Error("OFFLINE_MATRIX_ARGUMENTS_NOT_ALLOWED");
-  const sha = execFileSync("git", ["rev-parse", "--verify", "HEAD"], {
-    encoding: "utf8",
-  }).trim();
-  if (execFileSync("git", ["status", "--porcelain"], {
-    encoding: "utf8",
-  }).trim()) throw new Error("SOURCE_WORKTREE_DIRTY");
+  const sha = headCommit();
+  assertCleanSource();
   const report = await runOfflineCoverage({
     sourceCommit: sha,
     onProgress: (id) => console.log("SCENARIO " + id),
   });
-  const folder = resolve(".runs", "qualification", "full-offline-matrix");
-  mkdirSync(folder, { recursive: true, mode: 0o700 });
+  const folder = evidenceDir("qualification", "full-offline-matrix");
   const suffix = randomUUID();
   const json = resolve(folder, "matrix-" + suffix + ".json");
   const csv = resolve(folder, "matrix-" + suffix + ".csv");
@@ -35,17 +29,8 @@ async function main(): Promise<void> {
     "id", "caseId", "gate", "expected", "observed", "status",
     "evidenceMode", "sourceCommit", "evidenceHash", "pillarPosture", "rowHash",
   ] as const;
-  const escape = (value: string) =>
-    '"' + value.replaceAll('"', '""') + '"';
-  const csvRows = [
-    columns.join(","),
-    ...report.rows.map((row) => columns.map((column) =>
-      escape(String(row[column] ?? ""))).join(",")),
-  ];
-  writeFileSync(json, JSON.stringify(report, null, 2) + "\n",
-    { mode: 0o600, flag: "wx" });
-  writeFileSync(csv, csvRows.join("\n") + "\n",
-    { mode: 0o600, flag: "wx" });
+  writeJsonOnce(json, report);
+  writeTextOnce(csv, csvText(columns, report.rows));
   console.log("Cases=" + report.count.cases +
     " | offline passes=" + report.count.offlineVerified +
     " | failed=" + report.count.failed +
@@ -59,8 +44,4 @@ async function main(): Promise<void> {
   if (!report.passed) process.exitCode = 1;
 }
 
-main().catch((error) => {
-  console.error("OFFLINE_MATRIX_BLOCKED:" +
-    (error instanceof Error ? error.message.slice(0, 180) : "UNKNOWN"));
-  process.exitCode = 1;
-});
+main().catch(blockedHandler("OFFLINE_MATRIX_BLOCKED:", 180));

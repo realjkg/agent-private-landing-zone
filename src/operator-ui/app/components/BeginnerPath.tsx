@@ -1,25 +1,6 @@
 import { beginnerEvidenceLine } from "../../experience-level.js";
 import type { JobState, OperatorMode } from "../api";
-import { BLOCK_REASON_NEXT_STEPS } from "../block-reasons";
-
-/**
- * Plain-language status lines for the Beginner surface. Translates, never
- * hides: every status has an honest sentence, matching D1's speech rules.
- */
-const BEGINNER_STATUS_LINES: Record<JobState["status"], string> = {
-  IDLE: "Ready",
-  RUNNING: "Running — this may take a few minutes",
-  PASS: "Finished — this check passed safely",
-  BLOCKED: "This check could not run — switch to Advanced for the technical reason",
-};
-
-/**
- * A resilience PASS means the simulated faults were caught — not that backups
- * can really be restored, which this workspace never tests. The beginner line
- * says both, so "passed" is never read as "recovery proven".
- */
-const RESILIENCE_PASS_LINE =
-  "Finished — every simulated fault was caught. Real backup recovery was not tested.";
+import { beginnerStatusLine } from "../beginner-status";
 
 /**
  * The single recommended path a first-time operator sees: two plain-language
@@ -33,20 +14,14 @@ export function BeginnerPath(props: {
   onLaunch: (mode: OperatorMode) => void;
 }) {
   const job = props.jobState;
-  const statusLine = !job
-    ? BEGINNER_STATUS_LINES.IDLE
-    : job.status === "PASS" && job.recoveryVerification !== undefined
-      ? RESILIENCE_PASS_LINE
-      : job.status === "BLOCKED" && job.blockReason
-        ? "This check could not run. " + BLOCK_REASON_NEXT_STEPS[job.blockReason]
-        : BEGINNER_STATUS_LINES[job.status];
+  const statusLine = beginnerStatusLine(job);
   // NOT_RUN renders the shared beginner translation as the initial proof line.
   const proofLine = props.jobState
     ? beginnerEvidenceLine(props.jobState.evidenceBasis)
     : beginnerEvidenceLine("NOT_RUN");
   return (
     <section className="panel beginner-only" aria-label="Recommended next steps">
-      <h2>What would you like to do?</h2>
+      <h2 id="home-title" tabIndex={-1}>What would you like to do?</h2>
       <p className="beginner-status" role="status" aria-live="polite">
         {props.sessionUnavailable
           ? "This console lost its local session — close it and start it again."
@@ -88,6 +63,10 @@ export function BeginnerPath(props: {
         <small>
           Deeper analysis with private models on this machine is available at the Advanced level.
         </small>
+      </p>
+      <p>
+        <a href="#operations">Browse all operations</a>
+        <small> — every other check this workspace can run or explain, grouped by topic.</small>
       </p>
     </section>
   );

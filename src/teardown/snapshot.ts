@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { sha256 as digest } from "../util/sha256.js";
 import { chmodSync, lstatSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 
@@ -19,9 +19,6 @@ const MAX_TOTAL_BYTES = 64 * 1024 * 1024;
 /** Directories and files that are never inputs: state, plans, caches, VCS data. */
 const EXCLUDED_DIRECTORIES = new Set([".git", ".terraform", ".pulumi", "node_modules", ".agentic-private"]);
 const EXCLUDED_FILE = /(^|\/)(\.agentic-preview\.tfplan|[^/]*\.tfstate(\.backup)?|[^/]*\.tfplan|crash\.log)$/;
-
-/** Standard SHA-256 of the file bytes, so a reviewer can reproduce it with `sha256sum`. */
-const digest = (bytes: Buffer): string => createHash("sha256").update(bytes).digest("hex");
 
 export type SnapshotProblem =
   | { code: "SYMLINK" | "NOT_A_REGULAR_FILE" | "TOO_LARGE" | "STATE_OR_PLAN_FILE" | "ESCAPES_ROOT"; path: string }

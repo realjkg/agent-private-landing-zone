@@ -8,8 +8,8 @@ import type {
   ScannerObservation,
 } from "../../discovery/types.js";
 import {
-  executeTool,
-} from "../../tools/broker.js";
+  runGovernedTool,
+} from "../../tools/governed.js";
 import type {
   ToolName,
   ToolResult,
@@ -32,10 +32,10 @@ const emptyPosture = {
   resiliencyObservations: [] as ResiliencyObservation[],
 };
 
-function runRead(
+async function runRead(
   tool: ToolName,
-): ToolResult {
-  const result = executeTool(
+): Promise<ToolResult> {
+  const result = await runGovernedTool(
     { tool },
     {
       cwd: process.cwd(),
@@ -82,7 +82,7 @@ function readWarning(
 
 async function discoverAzureLive(): Promise<AzureDiscoveryResult> {
   const accountResult =
-    runRead("azure_account_show");
+    await runRead("azure_account_show");
 
   const account =
     parseJson<{
@@ -104,11 +104,11 @@ async function discoverAzureLive(): Promise<AzureDiscoveryResult> {
   }
 
   const managementGroupsResult =
-    runRead(
+    await runRead(
       "azure_management_groups",
     );
   const policyAssignmentsResult =
-    runRead(
+    await runRead(
       "azure_policy_assignments",
     );
 

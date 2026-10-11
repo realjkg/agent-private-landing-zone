@@ -16,7 +16,6 @@ import { assertSecureSession } from "../security/session.js";
 import {
   parseBuildEngine,
 } from "../build/engine.js";
-import type { IaCEngine } from "../build/types.js";
 import type {
   MockScenario,
   Provider,

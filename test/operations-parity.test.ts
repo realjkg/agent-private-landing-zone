@@ -1,0 +1,210 @@
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import test from "node:test";
+
+import { OPERATIONS } from "../src/operations/registry.js";
+import { assertSafeArgv, sampleArgvs } from "../src/operations/schema.js";
+import type { OperationSpec } from "../src/operations/types.js";
+import { getToolSecurityPosture } from "../src/tools/broker.js";
+
+// The parity guard: everything an operator can call from the command line has
+// exactly one catalog entry, so the console cannot fall behind the CLI. Adding
+// a ./alz command, a package.json script or a src/cli entry point without a
+// catalog entry makes this test fail, naming what is missing.
+
+const EXEMPT_COMMANDS: Readonly<Record<string, string>> = {
+  bootstrap: "handled by the ./alz shell wrapper (npm ci and builds) before the CLI starts",
+  workspace: "starts the console itself",
+  help: "prints the command list",
+  "--help": "prints the command list", "-h": "prints the command list",
+  "prompt-guide": "alias of ./alz prompts",
+};
+const EXEMPT_SCRIPTS: Readonly<Record<string, string>> = {
+  operator: "alias of the ./alz dispatcher",
+  test: "developer test run", "test:node": "developer test run", "test:ui": "developer test run",
+  build: "developer build", "build:ui": "developer build", check: "developer type-check and build",
+  verify: "release-wide developer gate (the ./alz verify entry covers operator verification)",
+  "ci:actions-pinned": "CI workflow pin check", "deps:review": "developer install-script listing",
+  "docs:ops": "developer generator for the operations table in docs/operator-console.md",
+};
+const EXEMPT_ENTRY_POINTS: Readonly<Record<string, string>> = {
+  "operator.ts": "the ./alz dispatcher itself",
+  "operator-web.ts": "hosts the console (./alz workspace)",
+};
+
+/** Command words of a help or catalog line, cut at the first placeholder or option; `a|b` expands to several keys. */
+export function commandKeys(line: string): string[] {
+  const words: string[] = [];
+  for (const token of line.trim().replace(/^(\.\/alz|npm run|npx tsx)\s+/, "").split(/\s+/)) {
+    // A flag is part of the key only right after a single command word (./alz matrix --live-models).
+    if (/^[[<("]/.test(token) || (token.startsWith("-") && words.length !== 1)) break;
+    words.push(token);
+  }
+  return words.reduce<string[]>((keys, word) =>
+    word.includes("|") ? word.split("|").flatMap((alt) => keys.map((key) => (key + " " + alt).trim()))
+      : keys.map((key) => (key + " " + word).trim()), [""]);
+}
+
+type Inputs = {
+  helpLines: string[];
+  scripts: string[];
+  entryPoints: string[];
+  catalog: readonly OperationSpec[];
+  fileExists: (path: string) => boolean;
+  /** Every `command === "x"` literal in src/cli/operator.ts (the dispatcher's real branches). */
+  operatorCommands?: string[];
+};
+
+export function findProblems(input: Inputs): string[] {
+  const problems: string[] = [];
+  const helpEntries = input.helpLines.filter((line) => line.startsWith("  ./alz "));
+  const groupLines = helpEntries.filter((line) => /\[list\|<subcommand>\]/.test(line));
+  const helpKeys = helpEntries.filter((line) => !groupLines.includes(line))
+    .flatMap((line) => commandKeys(line.replace(/\s*\([^)]*\)\s*$/, "")));
+  const groups = new Set(groupLines.map((line) => commandKeys(line)[0]));
+  const alzKey = (spec: OperationSpec) => spec.cli.startsWith("./alz ") ? commandKeys(spec.cli)[0] : undefined;
+
+  for (const key of helpKeys) {
+    if (EXEMPT_COMMANDS[key]) continue;
+    const owners = input.catalog.filter((spec) => alzKey(spec) === key);
+    if (owners.length !== 1) problems.push(`help command "${key}" maps to ${owners.length} catalog entries (need exactly 1)`);
+  }
+  for (const word of input.operatorCommands ?? []) {
+    const known = helpKeys.some((key) => key.split(" ")[0] === word) || groups.has(word) ||
+      input.catalog.some((spec) => alzKey(spec)?.split(" ")[0] === word);
+    if (!known && !EXEMPT_COMMANDS[word]) problems.push(`operator.ts dispatches "${word}", which has no help line, catalog entry or exemption`);
+  }
+  for (const group of groups) {
+    if (!input.catalog.some((spec) => spec.command?.group === group)) problems.push(`help group "${group}" has no catalog entry`);
+  }
+  for (const spec of input.catalog) {
+    const at = (message: string) => problems.push(`${spec.id}: ${message}`);
+    const key = alzKey(spec);
+    // A fixed flag on a cli form (./alz debug --fixture) must be one the help line for that command documents.
+    const [word, ...flagWords] = (key ?? "").split(" ");
+    const flagDocumented = flagWords.length > 0 && helpKeys.includes(word) &&
+      flagWords.every((flag) => helpEntries.some((line) => line.startsWith("  ./alz " + word + " ") && line.includes(flag)));
+    if (key !== undefined && !helpKeys.includes(key) && !flagDocumented && !(spec.command && groups.has(spec.command.group))) {
+      at(`cli "${spec.cli}" is not in the ./alz help text`);
+    }
+    for (const script of spec.npm ?? []) if (!input.scripts.includes(script)) at(`npm "${script}" is not a package.json script`);
+    if (spec.cli.startsWith("npm run ") && !input.scripts.includes(spec.cli.split(/\s+/)[2])) at(`cli "${spec.cli}" is not a package.json script`);
+    if (spec.cli.startsWith("npx tsx ") && !input.fileExists(spec.cli.split(/\s+/)[2])) at(`cli "${spec.cli}" names a missing file`);
+    if (spec.command) {
+      if (helpKeys.some((helpKey) => helpKey.split(" ")[0] === spec.command!.group)) at(`group "${spec.command.group}" shadows a legacy command`);
+      if (!groups.has(spec.command.group)) at(`group "${spec.command.group}" is not listed in ./alz help`);
+    }
+    if (spec.job) {
+      const source = "src/" + spec.job.script.replace(/\.js$/, ".ts");
+      if (!input.fileExists(source)) at(`job script ${spec.job.script} has no ${source}`);
+    }
+    if (spec.safety === "HANDOFF" && (!spec.handoff?.reason.trim() || !spec.handoff.command.trim())) at("a handoff needs a reason and a command template");
+    if (spec.safety === "HANDOFF" && spec.job) at("a handoff must not have a job");
+    try {
+      for (const args of sampleArgvs(spec)) assertSafeArgv(args);
+    } catch {
+      at("job argv can contain destroy, preview-only, apply or auto-approve");
+    }
+  }
+  for (const script of input.scripts) {
+    if (EXEMPT_SCRIPTS[script]) continue;
+    const owners = input.catalog.filter((spec) => spec.npm?.includes(script) || spec.cli === "npm run " + script ||
+      spec.cli.startsWith("npm run " + script + " "));
+    if (owners.length !== 1) problems.push(`package.json script "${script}" maps to ${owners.length} catalog entries (need exactly 1)`);
+  }
+  for (const file of input.entryPoints) {
+    if (EXEMPT_ENTRY_POINTS[file]) continue;
+    const covered = input.catalog.some((spec) => spec.cliScript === "src/cli/" + file ||
+      spec.job?.script === "cli/" + file.replace(/\.ts$/, ".js") || spec.cli.includes("src/cli/" + file));
+    if (!covered) problems.push(`src/cli/${file} has no catalog entry`);
+  }
+  return problems;
+}
+
+const helpText = spawnSync(process.execPath, ["--import", "tsx", "src/cli/operator.ts", "help"], { encoding: "utf8" }).stdout;
+const packageScripts = Object.keys((JSON.parse(readFileSync("package.json", "utf8")) as { scripts: object }).scripts);
+const realInputs = (): Inputs => ({
+  helpLines: helpText.split("\n"),
+  scripts: packageScripts,
+  entryPoints: readdirSync("src/cli").filter((file) => file.endsWith(".ts")),
+  operatorCommands: [...readFileSync("src/cli/operator.ts", "utf8").matchAll(/command\s*===\s*"([^"]+)"/g)].map((match) => match[1]),
+  catalog: OPERATIONS,
+  fileExists: existsSync,
+});
+
+test("every ./alz command, operator script and src/cli entry point has exactly one catalog entry", () => {
+  assert.match(helpText, /Operator commands/, "could not read the ./alz help text");
+  assert.deepEqual(findProblems(realInputs()), []);
+});
+
+test("command keys cut at placeholders and expand alternatives", () => {
+  assert.deepEqual(commandKeys("./alz inspect [aws|azure]"), ["inspect"]);
+  assert.deepEqual(commandKeys("./alz target init <target-id> <owner>"), ["target init"]);
+  assert.deepEqual(commandKeys("./alz teardown record|check-plan|orphans"), ["teardown record", "teardown check-plan", "teardown orphans"]);
+  assert.deepEqual(commandKeys("./alz matrix --live-models [--scenario ID]"), ["matrix --live-models"]);
+  assert.deepEqual(commandKeys("./alz health [--serve]"), ["health"]);
+});
+
+const spec = (overrides: Partial<OperationSpec>): OperationSpec => ({
+  id: "probe", title: "Probe", summary: "A probe.", family: "evidence", cli: "./alz probe", safety: "READ_ONLY",
+  inputs: [], evidenceBasis: "FIXTURE", job: { script: "cli/health.js", args: () => [] }, ...overrides,
+});
+const synthetic = (overrides: Partial<Inputs>): Inputs => ({
+  helpLines: ["  ./alz probe"], scripts: ["probe:run"], entryPoints: ["probe.ts"], fileExists: () => true,
+  catalog: [spec({ npm: ["probe:run"], cliScript: "src/cli/probe.ts" })], ...overrides,
+});
+
+test("the guard fails when a command, script or entry point is added without a catalog entry", () => {
+  assert.deepEqual(findProblems(synthetic({})), []);
+  assert.match(findProblems(synthetic({ helpLines: ["  ./alz probe", "  ./alz newcmd [x]"] })).join(), /"newcmd" maps to 0/);
+  assert.match(findProblems(synthetic({ scripts: ["probe:run", "new:script"] })).join(), /"new:script" maps to 0/);
+  assert.match(findProblems(synthetic({ entryPoints: ["probe.ts", "new-entry.ts"] })).join(), /new-entry\.ts has no catalog entry/);
+  assert.match(findProblems(synthetic({ helpLines: ["  ./alz probe", "  ./alz probe --again"] })).join(), /"probe" maps to 2|"probe --again" maps to 0/);
+});
+
+test("the guard fails on an undocumented dispatcher branch or an npm script that does not exist", () => {
+  assert.deepEqual(findProblems(synthetic({ operatorCommands: ["probe", "help"] })), []);
+  assert.match(findProblems(synthetic({ operatorCommands: ["probe", "sneaky"] })).join(), /dispatches "sneaky"/);
+  const ghost = synthetic({ catalog: [spec({ npm: ["probe:run", "ghost:script"], cliScript: "src/cli/probe.ts" })] });
+  assert.match(findProblems(ghost).join(), /npm "ghost:script" is not a package.json script/);
+  // The real dispatcher is scanned: the literal pattern must find real branches.
+  assert.ok((realInputs().operatorCommands ?? []).includes("teardown"));
+});
+
+test("the guard checks a fixed flag in a cli form against the help line", () => {
+  const withFlag = (cli: string, help: string[]) => findProblems(synthetic({
+    helpLines: help, catalog: [spec({ npm: ["probe:run"], cliScript: "src/cli/probe.ts" }),
+      spec({ id: "probe-flagged", cli, cliScript: "src/cli/probe.ts" })] })).join();
+  assert.equal(withFlag("./alz probe --fixture", ["  ./alz probe [aws|azure] [--fixture]"]), "");
+  assert.match(withFlag("./alz probe --bogus", ["  ./alz probe [aws|azure] [--fixture]"]), /not in the .\/alz help text/);
+});
+
+test("the guard fails on an invented cli form, a missing source, a bad handoff or a dangerous argv", () => {
+  const withSpec = (overrides: Partial<OperationSpec>) => findProblems(synthetic({
+    catalog: [spec({ npm: ["probe:run"], cliScript: "src/cli/probe.ts", ...overrides })] })).join();
+  assert.match(withSpec({ cli: "./alz ghost" }), /not in the .\/alz help text/);
+  assert.match(withSpec({ cli: "npm run ghost" }), /not a package.json script/);
+  assert.match(synthetic({ fileExists: () => false }).catalog.length ? findProblems(synthetic({ fileExists: () => false })).join() : "", /has no src\/cli\/health\.ts/);
+  assert.match(withSpec({ safety: "HANDOFF", job: undefined, handoff: { reason: "", command: "" } }), /needs a reason and a command/);
+  assert.match(withSpec({ job: { script: "cli/health.js", args: () => ["--destroy"] } }), /destroy, preview-only/);
+  assert.match(withSpec({ job: { script: "cli/health.js", args: () => ["--preview-only"] } }), /destroy, preview-only/);
+  assert.match(withSpec({ job: { script: "cli/health.js", args: () => ["apply"] } }), /destroy, preview-only/);
+  assert.match(withSpec({ job: { script: "cli/health.js", args: () => ["--auto-approve"] } }), /destroy, preview-only/);
+  assert.match(withSpec({ command: { group: "probe", sub: "x" } }), /shadows a legacy command|not listed/);
+});
+
+test("the broker allowlist and the driver exclusion hold", () => {
+  const posture = getToolSecurityPosture();
+  assert.equal(posture.allowedTools.length, 39);
+  assert.deepEqual(posture.mutationTools, []);
+  assert.equal(posture.arbitraryShell, false);
+  // No console-side or broker module imports the destroy-preview driver.
+  for (const directory of ["src/tools", "src/operator-ui", "src/operations"]) {
+    const walk = (path: string): string[] => readdirSync(path, { withFileTypes: true }).flatMap((entry) =>
+      entry.isDirectory() ? walk(path + "/" + entry.name) : [path + "/" + entry.name]);
+    for (const file of walk(directory).filter((name) => /\.tsx?$/.test(name))) {
+      assert.doesNotMatch(readFileSync(file, "utf8"), /from\s+["'][^"']*teardown\/driver|from\s+["'][^"']*teardown-driver/, file);
+    }
+  }
+});

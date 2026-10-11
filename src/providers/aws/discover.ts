@@ -8,8 +8,8 @@ import type {
   ScannerObservation,
 } from "../../discovery/types.js";
 import {
-  executeTool,
-} from "../../tools/broker.js";
+  runGovernedTool,
+} from "../../tools/governed.js";
 import type {
   ToolName,
   ToolResult,
@@ -32,10 +32,10 @@ const emptyPosture = {
   resiliencyObservations: [] as ResiliencyObservation[],
 };
 
-function runRead(
+async function runRead(
   tool: ToolName,
-): ToolResult {
-  const result = executeTool(
+): Promise<ToolResult> {
+  const result = await runGovernedTool(
     { tool },
     {
       cwd: process.cwd(),
@@ -82,7 +82,7 @@ function readWarning(
 
 async function discoverAwsLive(): Promise<AwsDiscoveryResult> {
   const identityResult =
-    runRead("aws_sts_identity");
+    await runRead("aws_sts_identity");
 
   const identity =
     parseJson<{
@@ -108,7 +108,7 @@ async function discoverAwsLive(): Promise<AwsDiscoveryResult> {
     scpResult,
     configResult,
     cloudTrailResult,
-  ] = [
+  ] = await Promise.all([
     runRead("aws_org_describe"),
     runRead(
       "aws_controltower_list_landing_zones",
@@ -116,7 +116,7 @@ async function discoverAwsLive(): Promise<AwsDiscoveryResult> {
     runRead("aws_org_list_scps"),
     runRead("aws_config_recorders"),
     runRead("aws_cloudtrail_trails"),
-  ];
+  ]);
 
   const organization =
     parseJson<{

@@ -1,4 +1,4 @@
-import { forwardRef } from "react";
+import { forwardRef, memo } from "react";
 
 import type { JobState } from "../api";
 import { BLOCK_REASON_NEXT_STEPS } from "../block-reasons";
@@ -41,6 +41,13 @@ function runResult(jobState: JobState): string {
   return faults + " · recovery verification " + recovery + " · no real restore run";
 }
 
+/**
+ * The server already keeps output to its last 15,000 characters. The panel
+ * enforces the same bound itself so a misbehaving response can never grow the
+ * page, and says so when it shortens anything.
+ */
+export const OUTPUT_DISPLAY_LIMIT = 15000;
+
 export interface EvidencePanelProps {
   jobState: JobState | null;
   formError: string | null;
@@ -49,21 +56,25 @@ export interface EvidencePanelProps {
   runScenario?: string | null;
 }
 
-export const EvidencePanel = forwardRef<HTMLElement, EvidencePanelProps>(
+// Memoized: the console re-polls often, and only a changed run should repaint this panel.
+export const EvidencePanel = memo(forwardRef<HTMLElement, EvidencePanelProps>(
   function EvidencePanel(props, ref) {
     const jobState = props.jobState;
     const status: JobState["status"] = jobState?.status ?? "IDLE";
     const basis = jobState
       ? jobState.evidenceBasis
       : "Choose a workflow to view its evidence classification.";
-    const output = props.formError ?? jobState?.output ?? "";
+    const fullOutput = props.formError ?? jobState?.output ?? "";
+    const output = fullOutput.length > OUTPUT_DISPLAY_LIMIT
+      ? fullOutput.slice(-OUTPUT_DISPLAY_LIMIT)
+      : fullOutput;
     // Guided empty state: nothing has run, nothing failed, and the session
     // is healthy. Any real signal (error, unavailable session, a run) takes
     // the literal display instead.
     const empty = !props.sessionUnavailable && !props.formError && status === "IDLE";
     return (
-      <section className="panel advanced-only" id="evidence" ref={ref}>
-        <h2>Execution and evidence</h2>
+      <section className="panel advanced-only" id="evidence" ref={ref} aria-labelledby="evidence-title">
+        <h2 id="evidence-title">Execution and evidence</h2>
         {jobState && (jobState.status === "PASS" || jobState.status === "BLOCKED") && (
           <p className="run-summary" data-testid="run-summary" role="status" aria-live="polite">
             Completed — {jobState.title} · {runResult(jobState)}
@@ -96,7 +107,12 @@ export const EvidencePanel = forwardRef<HTMLElement, EvidencePanelProps>(
             {/* Not a live region: the log is re-polled every second while a
                 run is in flight, and a screen reader would re-read it each
                 time. The summary line and status LED announce outcomes. */}
-            <div className="output">
+            {output.length < fullOutput.length && (
+              <p><small>Showing the last {OUTPUT_DISPLAY_LIMIT.toLocaleString("en-US")} of {fullOutput.length.toLocaleString("en-US")} characters.</small></p>
+            )}
+            {/* Focusable so the keyboard can scroll the log; a refusal is an alert. */}
+            <div className="output" tabIndex={0} role={props.formError ? "alert" : "region"}
+              aria-label="Run output">
               {output || "No output recorded."}
             </div>
           </>
@@ -104,4 +120,4 @@ export const EvidencePanel = forwardRef<HTMLElement, EvidencePanelProps>(
       </section>
     );
   },
-);
+));

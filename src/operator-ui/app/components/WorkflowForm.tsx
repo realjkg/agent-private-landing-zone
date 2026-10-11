@@ -1,3 +1,5 @@
+import { memo } from "react";
+
 import type { ModelAvailability, OperatorMode } from "../api";
 
 const WORKFLOW_OPTIONS: ReadonlyArray<{ value: OperatorMode; label: string }> = [
@@ -27,7 +29,7 @@ export const PRIVATE_MODEL_MODES: ReadonlySet<OperatorMode> = new Set(["matrix-l
  * step. Only the server's literal reason drives the sentence; model names
  * come from the server's configured list, never guessed here.
  */
-function unavailableNote(availability: ModelAvailability): string {
+export function unavailableNote(availability: ModelAvailability): string {
   const models = availability.required.join(", ");
   switch (availability.reason) {
     case "NO_LOCAL_MODEL_SERVER":
@@ -57,7 +59,7 @@ function unavailableNote(availability: ModelAvailability): string {
  * experience level is deliberately absent — validation is identical at every
  * level.
  */
-export function WorkflowForm(props: {
+export const WorkflowForm = memo(function WorkflowForm(props: {
   mode: OperatorMode;
   scenario: string;
   scenarioIds: readonly string[];
@@ -140,5 +142,4 @@ export function WorkflowForm(props: {
         {props.running ? "Running…" : "Run selected workflow"}
       </button>
     </form>
-  );
-}
+  );});

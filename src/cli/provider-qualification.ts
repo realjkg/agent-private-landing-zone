@@ -22,8 +22,8 @@ import {
   qualifyProviderProduction,
 } from "../qualification/provider-production.js";
 import {
-  executeTool,
-} from "../tools/broker.js";
+  runGovernedTool,
+} from "../tools/governed.js";
 import type {
   ToolContext,
   ToolResult,
@@ -216,7 +216,7 @@ if (
 
   validationResults =
     rows(
-      executeTool(
+      await runGovernedTool(
         {
           tool:
             "cloudformation_validate",
@@ -228,7 +228,7 @@ if (
 
   preview =
     rows(
-      executeTool(
+      await runGovernedTool(
         {
           tool:
             "cloudformation_preview",
@@ -243,7 +243,7 @@ if (
 } else {
   const accountResult =
     rows(
-      executeTool(
+      await runGovernedTool(
         {
           tool:
             "azure_account_show",
@@ -373,7 +373,7 @@ if (
 
   validationResults =
     rows(
-      executeTool(
+      await runGovernedTool(
         {
           tool:
             "bicep_lint",
@@ -391,7 +391,7 @@ if (
 
   preview =
     rows(
-      executeTool(
+      await runGovernedTool(
         {
           tool:
             "bicep_what_if",

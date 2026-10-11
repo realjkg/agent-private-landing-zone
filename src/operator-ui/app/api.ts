@@ -5,12 +5,18 @@
 // node:http and the whole runtime into the browser bundle. The existing node
 // suites assert the server side of these contracts.
 
+import type { OperationDescriptor } from "../../operations/types.js";
+
+export type { OperationDescriptor };
+
 export type OperatorMode = "matrix-offline" | "matrix-live" | "aws-review" | "chaos";
 
 export type RecoveryVerificationStatus = "VERIFIED" | "PARTIAL" | "BLOCKED" | "NOT_REPORTED";
 
 export type JobState = {
   status: "IDLE" | "RUNNING" | "PASS" | "BLOCKED";
+  /** Id of the operation that produced this state (see server.ts). */
+  operation?: string;
   title: string;
   evidenceBasis: string;
   output: string;
@@ -36,6 +42,15 @@ export type ModelAvailability = {
   required: string[];
   missing: string[];
 };
+
+/** True when a poll brought nothing new, so the console can skip a re-render. */
+export function sameJobState(a: JobState | null, b: JobState | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return a.status === b.status && a.operation === b.operation && a.title === b.title &&
+    a.evidenceBasis === b.evidenceBasis && a.output === b.output &&
+    a.recoveryVerification === b.recoveryVerification && a.blockReason === b.blockReason;
+}
 
 export type RunRequest = {
   mode: OperatorMode;
@@ -83,25 +98,51 @@ export async function fetchModelAvailability(): Promise<ModelAvailability | null
   }
 }
 
-/**
- * POST a governed workflow run. The body carries exactly mode, scenario and
- * the CSRF token — the experience level never leaves the browser, so server
- * validation is identical at every disclosure depth.
- */
-export async function requestRun(request: RunRequest): Promise<RunOutcome> {
+async function postRun(body: URLSearchParams): Promise<RunOutcome> {
   try {
-    const response = await fetch("/run", {
-      method: "POST",
-      body: new URLSearchParams({
-        mode: request.mode,
-        scenario: request.scenario,
-        token: request.token,
-      }),
-    });
+    const response = await fetch("/run", { method: "POST", body });
     if (response.ok) return { accepted: true };
     const item = (await response.json().catch(() => null)) as { error?: string } | null;
     return { accepted: false, error: item?.error ?? "Request denied" };
   } catch {
     return { accepted: false, error: "Cannot reach local operator" };
+  }
+}
+
+/**
+ * POST a governed workflow run. The body carries exactly mode, scenario and
+ * the CSRF token — the experience level never leaves the browser, so server
+ * validation is identical at every disclosure depth.
+ */
+export function requestRun(request: RunRequest): Promise<RunOutcome> {
+  return postRun(new URLSearchParams({
+    mode: request.mode,
+    scenario: request.scenario,
+    token: request.token,
+  }));
+}
+
+/** POST a catalog operation: its id, its inputs as JSON text, and the CSRF token. */
+export function requestOperationRun(request: {
+  operation: string;
+  inputs: Record<string, string | boolean>;
+  token: string;
+}): Promise<RunOutcome> {
+  return postRun(new URLSearchParams({
+    operation: request.operation,
+    inputs: JSON.stringify(request.inputs),
+    token: request.token,
+  }));
+}
+
+/** The catalog's public descriptors. Null means unreachable or unrecognized. */
+export async function fetchOperations(): Promise<OperationDescriptor[] | null> {
+  try {
+    const response = await fetch("/operations", { cache: "no-store" });
+    if (!response.ok) return null;
+    const body = (await response.json()) as unknown;
+    return Array.isArray(body) ? (body as OperationDescriptor[]) : null;
+  } catch {
+    return null;
   }
 }

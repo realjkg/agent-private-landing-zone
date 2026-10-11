@@ -1,4 +1,5 @@
-import { createHash, verify } from "node:crypto";
+import { verify } from "node:crypto";
+import { sha256 as digest } from "../util/sha256.js";
 import { runtimeProfile } from "../runtime-profile/catalog.js";
 import type { RuntimeProfileId } from "../runtime-profile/types.js";
 import { DISABLED_EMITTER, type Emitter } from "../observability/bus.js";
@@ -24,7 +25,6 @@ const kindFor: Record<string, string> = {
   "/api/vcenter/cluster": "CLUSTER", "/api/vcenter/host": "HOST",
   "/api/vcenter/vm": "VM", "/api/vcenter/datastore": "DATASTORE",
 };
-function digest(body: string): string { return createHash("sha256").update(body).digest("hex"); }
 function safe(value: unknown, fallback: string): string {
   return typeof value === "string" && NAME.test(value) ? value : fallback;
 }
