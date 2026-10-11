@@ -75,13 +75,6 @@ export async function withDebugDiagnosticContext<T>(
   };
 }
 
-export function currentDebugRunId():
-  | string
-  | undefined {
-  return storage.getStore()
-    ?.runId;
-}
-
 export function emitDebugDiagnostic(
   input: Omit<
     DebugDiagnosticEvent,

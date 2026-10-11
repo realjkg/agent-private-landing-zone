@@ -1,4 +1,5 @@
-import { createHash, sign, verify, type KeyLike } from "node:crypto";
+import { sign, verify, type KeyLike } from "node:crypto";
+import { sha256 } from "../util/sha256.js";
 import {
   closeSync, constants, existsSync, fsyncSync, lstatSync, mkdirSync,
   openSync, readFileSync, unlinkSync, writeSync,
@@ -40,7 +41,6 @@ function stringIds(value: unknown, field: string, max: number): string[] {
   if (!Array.isArray(value) || value.length > max) return fail(field);
   return value.map((v) => validId(v, field));
 }
-function sha256(value: string): string { return createHash("sha256").update(value).digest("hex"); }
 function expectedHash(record: SovereignChangeRecord): string {
   const { recordHash: ignored, ...unsigned } = record;
   void ignored;

@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { sha256 as digest } from "../../../util/sha256.js";
 import { lstatSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -17,7 +17,6 @@ import { captureProjectFiles } from "../../snapshot.js";
  */
 export const LOCK_FILE = ".terraform.lock.hcl";
 
-const digest = (bytes: Buffer): string => createHash("sha256").update(bytes).digest("hex");
 
 /** Copies regular files and directories; anything else (a link, a device) is a code, not a skip. */
 export function copyTree(from: string, to: string): string | undefined {

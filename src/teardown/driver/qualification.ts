@@ -1,4 +1,4 @@
-import { sha256 } from "../../build/provenance.js";
+import { sha256 } from "../../util/sha256.js";
 import { canonicalJson } from "../manifest.js";
 import { DRIVER_ENGINES, type DriverEngine, type EngineAdapter } from "./types.js";
 

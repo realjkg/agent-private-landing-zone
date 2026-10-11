@@ -2,7 +2,7 @@ import type {
   DiscoveryAssessment,
   PostureStatus,
 } from "../../assessment/types.js";
-import { sha256 } from "../../build/provenance.js";
+import { sha256 } from "../../util/sha256.js";
 import type {
   EnvironmentState,
 } from "../../discovery/types.js";

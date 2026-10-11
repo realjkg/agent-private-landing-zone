@@ -3,7 +3,7 @@ import type {
 } from "../observability/bus.js";
 import { randomUUID } from "node:crypto";
 
-import { sha256 } from "../build/provenance.js";
+import { sha256 } from "../util/sha256.js";
 import type { EnvironmentState } from "../discovery/types.js";
 import type {
   ConfigurationRecoverySnapshot,

@@ -1,10 +1,9 @@
-import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fixtureThinker } from "../agent/fixture.js";
 import { runAgentKernel } from "../agent/graph.js";
 import { runChaosPillarQualification } from "../qualification/chaos-pillars.js";
+import { assertCleanSource, blockedHandler, evidenceDir, headCommit, writeJsonOnce } from "../util/cli-support.js";
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
@@ -17,22 +16,16 @@ async function main(): Promise<void> {
     console.log("Never restarts cloud services, alters backups, or performs real restore.");
     return;
   }
-  const sourceCommit = execFileSync("git", ["rev-parse", "--verify", "HEAD"],
-    { encoding: "utf8" }).trim();
-  const dirty = execFileSync("git", ["status", "--porcelain"],
-    { encoding: "utf8" }).trim();
-  if (dirty) throw new Error("SOURCE_WORKTREE_DIRTY");
+  const sourceCommit = headCommit();
+  assertCleanSource();
   const state = await runAgentKernel({
     request: "Build a governed AWS brownfield landing zone using Terraform.",
     provider: "AWS", engine: "TERRAFORM", mock: "brownfield",
     thinker: fixtureThinker, approveBuild: false,
   });
   const report = runChaosPillarQualification({ state, sourceCommit });
-  const dir = resolve(".runs", "qualification", "chaos-pillars");
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const out = resolve(dir, "chaos-" + randomUUID() + ".json");
-  writeFileSync(out, JSON.stringify(report, null, 2) + "\n",
-    { mode: 0o600, flag: "wx" });
+  const out = resolve(evidenceDir("qualification", "chaos-pillars"), "chaos-" + randomUUID() + ".json");
+  writeJsonOnce(out, report);
   console.log("Safe ALZ chaos/pillars (synthetic fault injection)");
   for (const item of report.faults) {
     console.log(item.pillar + " / " + item.fault + ": " + item.outcome);
@@ -43,8 +36,4 @@ async function main(): Promise<void> {
   console.log("Restore: NOT RUN; cloud changes: NONE; ACT: DISABLED");
   if (!report.passed) process.exitCode = 1;
 }
-main().catch((error) => {
-  console.error("CHAOS_BLOCKED: " +
-    (error instanceof Error ? error.message.slice(0, 180) : "UNKNOWN"));
-  process.exitCode = 1;
-});
+main().catch(blockedHandler("CHAOS_BLOCKED: ", 180));

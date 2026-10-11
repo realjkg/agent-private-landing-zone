@@ -1,7 +1,4 @@
-import {
-  createHash,
-} from "node:crypto";
-
+import { sha256 } from "../build/provenance.js";
 import type {
   EnvironmentState,
   Provider,
@@ -42,14 +39,6 @@ export type ProviderProductionQualification = {
   actEnabled: false;
   blockers: string[];
 };
-
-function sha256(
-  value: string,
-): string {
-  return createHash("sha256")
-    .update(value)
-    .digest("hex");
-}
 
 function validCommit(
   value: string,

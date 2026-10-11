@@ -1,7 +1,7 @@
 import { mkdirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
-import { sha256 } from "../../../build/provenance.js";
+import { sha256 } from "../../../util/sha256.js";
 import { normalizePulumiPreview } from "../../../iac/pulumi-preview.js";
 import { runBoundedProcess } from "../../../tools/process.js";
 import { PROFILES, type ProcessProfile } from "../../../tools/profiles.js";

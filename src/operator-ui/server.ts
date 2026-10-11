@@ -305,9 +305,7 @@ export function createLocalOperatorServer(options: {
       if (form.has("operation")) {
         assertAllowed(!form.has("mode") && !form.has("scenario"), "AMBIGUOUS_REQUEST");
         const plan = planOperation(form.get("operation") ?? "", form.get("inputs"), catalog);
-        ({ id, title, evidenceBasis } = { id: plan.spec.id, title: plan.spec.title,
-          evidenceBasis: plan.spec.evidenceBasis });
-        safety = plan.spec.safety;
+        ({ id, title, evidenceBasis, safety } = plan.spec);
         reportsRecovery = plan.spec.job?.reportsRecoveryVerification === true;
         execute = () => runPlanned(plan, options.root, runner);
       } else {

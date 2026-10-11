@@ -1,4 +1,4 @@
-import { sha256 } from "../build/provenance.js";
+import { sha256 } from "../util/sha256.js";
 import type { IaCEngine } from "../build/types.js";
 
 /**

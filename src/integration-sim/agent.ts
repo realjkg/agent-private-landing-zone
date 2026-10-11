@@ -1,6 +1,4 @@
-import {
-  createHash,
-} from "node:crypto";
+import { sha256 } from "../util/sha256.js";
 
 import {
   EVIDENCE_CONNECTORS,
@@ -24,11 +22,7 @@ type RecordWithoutHash =
 function hashRecord(
   record: RecordWithoutHash,
 ): string {
-  return createHash("sha256")
-    .update(
-      JSON.stringify(record),
-    )
-    .digest("hex");
+  return sha256(JSON.stringify(record));
 }
 
 function canonicalId(

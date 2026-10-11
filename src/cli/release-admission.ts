@@ -1,12 +1,12 @@
-import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 import {
   reviewProductionRelease,
   type ReleaseAdmissionInput,
 } from "../qualification/release-admission.js";
+import { assertCleanSource, blockedHandler, evidenceDir, headCommit, writeJsonOnce } from "../util/cli-support.js";
 
 function argument(name: string): string | undefined {
   const args = process.argv.slice(2);
@@ -26,24 +26,15 @@ async function main(): Promise<void> {
       !argument("--manifest") || argument("--manifest")!.startsWith("-")) {
     throw new Error("RELEASE_ADMISSION_REQUIRES_MANIFEST");
   }
-  const sourceCommit = execFileSync("git", ["rev-parse", "--verify", "HEAD"], {
-    encoding: "utf8",
-  }).trim();
-  if (execFileSync("git", ["status", "--porcelain"], {
-    encoding: "utf8",
-  }).trim()) {
-    throw new Error("RELEASE_ADMISSION_SOURCE_WORKTREE_DIRTY");
-  }
+  const sourceCommit = headCommit();
+  assertCleanSource("RELEASE_ADMISSION_SOURCE_WORKTREE_DIRTY");
   const file = resolve(argument("--manifest")!);
   const manifest = JSON.parse(readFileSync(file, "utf8")) as ReleaseAdmissionInput;
   const result = await reviewProductionRelease({
     manifest, expectedCommit: sourceCommit, root: process.cwd(),
   });
-  const out = resolve(".runs", "release", "admission-" + randomUUID() + ".json");
-  mkdirSync(dirname(out), { recursive: true, mode: 0o700 });
-  writeFileSync(out, JSON.stringify(result, null, 2) + "\n", {
-    encoding: "utf8", mode: 0o600, flag: "wx",
-  });
+  const out = resolve(evidenceDir("release"), "admission-" + randomUUID() + ".json");
+  writeJsonOnce(out, result);
   console.log("Production evidence admission — PREVIEW_OPERATE / ACT DISABLED");
   for (const gate of result.gates) {
     console.log((gate.status === "EVIDENCE_PRESENT" ? "EVIDENCE " : "BLOCKED  ") +
@@ -61,8 +52,4 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error) => {
-  console.error("RELEASE_ADMISSION_BLOCKED: " +
-    (error instanceof Error ? error.message.slice(0, 160) : "UNKNOWN"));
-  process.exitCode = 1;
-});
+main().catch(blockedHandler("RELEASE_ADMISSION_BLOCKED: ", 160));

@@ -1,5 +1,4 @@
-import { createHash } from "node:crypto";
-
+import { sha256 } from "../util/sha256.js";
 import type {
   BuildArtifact,
   BuildEvidence,
@@ -7,9 +6,7 @@ import type {
 } from "./types.js";
 import type { Provider } from "../discovery/types.js";
 
-export function sha256(value: string): string {
-  return createHash("sha256").update(value, "utf8").digest("hex");
-}
+export { sha256 };
 
 export function createBuildArtifact(input: {
   engine: IaCEngine;

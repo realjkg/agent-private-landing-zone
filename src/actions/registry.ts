@@ -1,4 +1,5 @@
-import { createPublicKey, createHash, verify as verifySignature } from "node:crypto";
+import { createPublicKey, verify as verifySignature } from "node:crypto";
+import { sha256 as digest } from "../util/sha256.js";
 
 import { evaluateBuiltinSecurityPolicy } from "../security/policy/builtin.js";
 import type { CompromiseState, SecurityPolicyDecision } from "../security/policy/types.js";
@@ -86,7 +87,6 @@ export type ActionRegistryDeps = {
   nowSeconds?: () => number;
 };
 
-const digest = (input: string) => createHash("sha256").update(input).digest("hex");
 const sha = /^[a-f0-9]{64}$/;
 const allowed = new Set<string>(GOVERNED_ACTIONS);
 function deny(code: string): never { throw new Error("GOVERNED_ACTION_DENIED:" + code); }

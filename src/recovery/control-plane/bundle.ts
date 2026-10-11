@@ -1,6 +1,4 @@
-import {
-  createHash,
-} from "node:crypto";
+import { sha256 } from "../../util/sha256.js";
 import {
   lstat,
   mkdir,
@@ -100,14 +98,6 @@ export type ControlPlaneRestoreResult = {
   mutationAttempted: false;
   actEnabled: false;
 };
-
-function sha256(
-  value: Buffer | string,
-): string {
-  return createHash("sha256")
-    .update(value)
-    .digest("hex");
-}
 
 function normalizedPath(
   value: string,

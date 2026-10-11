@@ -1,6 +1,4 @@
-import {
-  createHash,
-} from "node:crypto";
+import { sha256 } from "../util/sha256.js";
 
 export const PROMPT_POLICY_VERSION =
   "2026-10-07.1";
@@ -15,16 +13,7 @@ export const PROMPT_POLICY_RULES = [
 ] as const;
 
 export function promptPolicyHash(): string {
-  return createHash("sha256")
-    .update(
-      JSON.stringify({
-        version:
-          PROMPT_POLICY_VERSION,
-        rules:
-          PROMPT_POLICY_RULES,
-      }),
-    )
-    .digest("hex");
+  return sha256(JSON.stringify({ version: PROMPT_POLICY_VERSION, rules: PROMPT_POLICY_RULES }));
 }
 
 export type PromptRisk =

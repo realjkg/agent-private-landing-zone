@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
 
+import { sha256 } from "../build/provenance.js";
 import {
   getLocalModelMetadata, invokeLocalModel, STRUCTURED_MODEL_OPTIONS,
   type OllamaMessage,
@@ -14,8 +14,7 @@ import {
   PRIVATE_PROMPT_ATTACKS, PRIVATE_BROKER_FORBIDDEN_COMMANDS,
 } from "./private-security-redteam.js";
 
-const digest = (value: string) =>
-  createHash("sha256").update(value).digest("hex");
+const digest = sha256;
 const sha = /^[a-f0-9]{64}$/i;
 const sourceSha = /^[a-f0-9]{40}$/i;
 export const QUALIFIED_MODEL_TAGS = [
