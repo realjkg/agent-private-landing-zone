@@ -21,13 +21,13 @@ Every workstream uses one execution order:
 1. **PLAN** — establish one authoritative task plan, scope, ownership, evidence inputs, and acceptance gate before implementation.
 2. **DO** — execute independent, non-overlapping lanes in parallel when useful. A lane may retry inside its assigned scope, but it may not change the parent plan, another lane's ownership, or its own authority.
 3. **CONVERGE / VERIFY** — bring typed artifacts and evidence back to one serialized validation point. Resolve collisions, compare against the approved plan/design, and run the smallest deterministic checks required.
-4. **ACT** — cross one controlled integration boundary only after verification. For repository work this means the merge/release decision; it never enables infrastructure mutation.
+4. **ACT** — cross one controlled integration boundary only after verification. For repository work this means the merge/release decision. It does not enable infrastructure mutation; that is governed only by the approved pilot PLAN below.
 
 A bounded implementation or validation failure returns only to the affected **DO** lane. If architecture, policy intent, ownership, or source assumptions changed, stop that iteration and create a new **PLAN** rather than silently mutating the current one.
 
 Do not run multiple independent PLAN or ACT authorities for the same workstream. Parallelism belongs inside **DO**; convergence and ACT are serialized.
 
-The product runtime invariant remains unchanged: **ACT = DISABLED** for infrastructure mutation.
+The product runtime default remains **ACT = DISABLED** for infrastructure mutation. The repository owner approved one exception on 2026-10-11: the internal reference build (customer zero) may enable ACT for a dev-to-production pilot, only under `docs/act-pilot-plan.md`, its release contract, and its gates. No other change, flag, environment variable, or agent decision may enable ACT, and agents never initiate an apply.
 
 ## No-collision check-in
 
@@ -96,7 +96,7 @@ Do not:
 - relax security assertions just to pass
 - increase timeouts merely to hide an inference problem
 - broaden model, tool, or approval authority
-- enable ACT or mutation capability as part of release progression
+- enable ACT or mutation capability except through the approved pilot PLAN, its contract, and its gates
 
 The deterministic policy boundary remains authoritative.
 
