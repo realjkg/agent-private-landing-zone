@@ -68,7 +68,7 @@ The contract (`config/act-pilot-contract.json`, shape in `config/act-pilot-contr
 To enable the pilot, or to change a target or an approver:
 
 1. Edit `config/act-pilot-contract.json`.
-2. Compute its hash: `npx tsx -e 'import {readFileSync} from "node:fs"; import {pilotContractSha256} from "./src/apply/contract.ts"; console.log(pilotContractSha256(JSON.parse(readFileSync("config/act-pilot-contract.json","utf8"))))'`
+2. Compute its hash with `./alz apply pin`. It prints the SHA-256 and whether the contract is valid, and writes nothing.
 3. Write that hash to `config/act-pilot-contract.sha256`.
 4. Commit both in one reviewed change. Reviewers check the targets and each approver's key against what the owner supplied.
 

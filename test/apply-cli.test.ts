@@ -140,6 +140,7 @@ test("every subcommand needs a terminal on stdin and stdout, and refuses before 
     ["approve", "--sealed", "/nonexistent/a", "--key", "/nonexistent/k", "--approver", "alice"],
     ["apply", "--request", "/nonexistent/a", "--manifest", "/nonexistent/b", "--sealed", "/nonexistent/s", "--approval", "/nonexistent/p"],
     ["status"],
+    ["pin"],
   ]) {
     for (const [stdinIsTTY, stdoutIsTTY] of [[false, false], [true, false], [false, true]]) {
       const io = outputs();
@@ -152,6 +153,19 @@ test("every subcommand needs a terminal on stdin and stdout, and refuses before 
       assert.deepEqual(base.asked, []);
     }
   }
+  assert.deepEqual(engineCalls(), []);
+});
+
+test("pin prints the contract hash and whether the contract is valid, and writes nothing", async () => {
+  const w = await world(contractJson(KILL));
+  const run = await cli(w, ["pin"], []);
+  assert.equal(run.code, 0);
+  const report = JSON.parse(run.stdout) as { sha256: string; valid: boolean };
+  assert.match(report.sha256, /^[0-9a-f]{64}$/);
+  assert.equal(report.valid, true);
+  const unchanged = readFileSync(w.contractPath, "utf8");
+  await cli(w, ["pin"], []);
+  assert.equal(readFileSync(w.contractPath, "utf8"), unchanged);
   assert.deepEqual(engineCalls(), []);
 });
 

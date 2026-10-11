@@ -1,12 +1,12 @@
 import { createPrivateKey, randomBytes } from "node:crypto";
-import { existsSync, lstatSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { signApproval } from "../apply/approval.js";
 import {
-  contractRefusal, isKillSwitchActive, loadPilotContract, repoPaths, requireNotApplied, targetForEnvironment, writeQualificationEvidence, type Refusal,
+  contractRefusal, isKillSwitchActive, loadPilotContract, pilotContractSha256, repoPaths, requireNotApplied, targetForEnvironment, writeQualificationEvidence, type Refusal,
 } from "../apply/contract.js";
 import { qualifyApply, runApply, sealPreview, type ApplyDeps, type SealRequest } from "../apply/driver.js";
 import { assertApplyEvidence } from "../apply/evidence.js";
@@ -14,7 +14,7 @@ import { attestedClientId } from "../apply/identities.js";
 import { holdsReservation } from "../apply/ledger.js";
 import { INVISIBLE, loadSealedPlan, reviewBundleOf, verifyReviewBundle, type LoadedPlan } from "../apply/seal.js";
 import { RECOVERY_FILES } from "../apply/terraform.js";
-import type { ApplyEnvironment, SealedPlan, SignedApproval } from "../apply/types.js";
+import type { ApplyEnvironment, PilotContract, SealedPlan, SignedApproval } from "../apply/types.js";
 import { isRecord, SAFE_OPERATOR } from "../teardown/driver/human.js";
 import { sweepStale } from "../teardown/driver/cleanup.js";
 import { verifyManifest, type ArtifactManifest } from "../teardown/manifest.js";
@@ -36,6 +36,7 @@ const APPLY_USAGE = [
   "  ./alz apply approve --bundle REVIEW_BUNDLE.json --key APPROVER_KEY.pem --approver ID",
   "  ./alz apply apply --request REQUEST.json --manifest MANIFEST.json --sealed SEALED_PLAN --approval APPROVAL.json [--approval APPROVAL.json ...]",
   "  ./alz apply status [--sealed SEALED_PLAN]",
+  "  ./alz apply pin",
   "      Interactive terminal only. Identities come from ALZ_DISCOVERY_*, ALZ_STATE_*, ALZ_STATE_WRITE_* and ALZ_APPLY_*.",
   "      Exit 0 done, 1 error (nothing spent), 2 BLOCKED (refused before any action), 3 SPENT (approvals consumed or an apply started; read the message before any retry).",
   "      No flag forces, skips, ignores, overrides or pre-answers anything.",
@@ -66,6 +67,7 @@ const SUBCOMMANDS: Readonly<Record<string, Flags>> = {
   approve: { single: ["bundle", "key", "approver"] },
   apply: { single: ["request", "manifest", "sealed"], repeated: ["approval"] },
   status: { single: [], optional: ["sealed"] },
+  pin: { single: [] },
 };
 const MAX_INPUT_BYTES = 8 * 1024 * 1024;
 const CONTROL = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
@@ -398,8 +400,28 @@ const statusCommand: Command = async (flags, _terminal, deps, out) => {
   return EXIT.PASS;
 };
 
+// --- pin -----------------------------------------------------------------------------------------------------
+
+/**
+ * Read-only: the SHA-256 an operator writes to config/act-pilot-contract.sha256 to pin the contract file, and whether
+ * that contract is valid. It writes nothing, so pinning stays a reviewed change (docs/act-pilot-apply.md).
+ */
+const pinCommand: Command = async (_flags, _terminal, deps, out) => {
+  const path = deps.contractPath ?? repoPaths().contract;
+  const raw = readInput(path, "the pilot contract") as PilotContract;
+  const sha256 = pilotContractSha256(raw);
+  const scratch = mkdtempSync(join(tmpdir(), "alz-pin-"));
+  try {
+    const pin = join(scratch, "pin");
+    writeFileSync(pin, sha256 + "\n", { mode: 0o600 });
+    const loaded = loadPilotContract(path, pin);
+    out.say(JSON.stringify("reason" in loaded ? { sha256, valid: false, reason: loaded.reason } : { sha256, valid: true }, null, 2) + "\n");
+    return EXIT.PASS;
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+};
+
 const COMMANDS: Readonly<Record<string, Command>> = {
-  qualify: qualifyCommand, seal: sealCommand, approve: approveCommand, apply: applyCommand, status: statusCommand,
+  qualify: qualifyCommand, seal: sealCommand, approve: approveCommand, apply: applyCommand, status: statusCommand, pin: pinCommand,
 };
 
 /** Where `alz-preview-*` directories live and what a crashed apply leaves in them. */
@@ -417,7 +439,7 @@ function scratchHoldsRecovery(parent: string): boolean {
  * them first (docs/act-pilot-apply.md).
  */
 async function sweepUnlessHeld(sub: string, deps: ApplyCliDeps, out: Out): Promise<void> {
-  if (sub === "status" || sub === "approve") return;
+  if (sub === "status" || sub === "approve" || sub === "pin") return;
   const parent = deps.scratchParent ?? tmpdir();
   const held = scratchHoldsRecovery(parent) ? "a scratch directory holds errored.tfstate or crash.log"
     : await holdsReservation(deps.evidenceDir ?? repoPaths().evidence) ? "the apply ledger holds a reservation" : undefined;
