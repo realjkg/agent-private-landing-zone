@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import {
@@ -11,6 +11,10 @@ import { ANY_IDENTITY_VARIABLE } from "../tools/identity.js";
 import { refusedVariables, runBoundedProcess, runStoppableProcess, type StoppableProcessOptions, type StoppableResult } from "../tools/process.js";
 import type { ProcessProfile } from "../tools/profiles.js";
 import type { ToolResult } from "../tools/types.js";
+import { assertBackendBlock, type BackendBlockRule } from "./backend-block.js";
+import type { ProviderSpec } from "./provider.js";
+import { isRecord } from "./providers/shared.js";
+import type { PilotTarget } from "./types.js";
 
 /**
  * The one way the pilot reaches the engine, for sealing and for applying: an
@@ -102,6 +106,8 @@ type WorkspaceInput = {
   initArgv: readonly string[];
   /** The identity that owns the backend: STATE to read for a preview, STATE_WRITE to write for an apply. */
   stateIdentity: "STATE" | "STATE_WRITE";
+  /** The provider's rule for the project's own backend block, judged before init reads it (`ProviderSpec.backendBlock`). */
+  backendBlock?: BackendBlockRule;
   /** Runs between the version check and init (the apply writes its backend configuration here). */
   beforeInit?: () => void;
   afterInit?: () => void;
@@ -127,9 +133,22 @@ export function prepareWorkspace(session: EngineSession, input: WorkspaceInput):
   }
   if (reported !== input.engineVersion) stop("ENGINE_VERSION_MISMATCH");
 
+  if (input.backendBlock) assertBackendBlock(session.work, input.backendBlock);
   input.beforeInit?.();
   try { session.step(input.initArgv, input.stateIdentity); } finally { input.afterInit?.(); }
   session.assertBound();
   if (input.target.workspace !== "default") session.step(workspaceSelectArgv(input.target.workspace), input.stateIdentity);
   if (session.step(WORKSPACE_SHOW_ARGV, input.stateIdentity).trim() !== input.target.workspace) stop("WORKSPACE_MISMATCH");
+}
+
+/** The backend binding: the backend init saved must be the contract's, so the project's own backend block cannot aim state somewhere else. */
+export function assertBackendInContract(work: string, pinned: PilotTarget, spec: ProviderSpec): void {
+  let saved: unknown;
+  try {
+    const file = join(work, ".terraform", "terraform.tfstate");
+    if (!lstatSync(file).isFile() || lstatSync(file).size > 1_048_576) return stop("BACKEND_UNREADABLE");
+    saved = JSON.parse(readFileSync(file, "utf8"));
+  } catch { return stop("BACKEND_UNREADABLE"); }
+  const backend = (saved as { backend?: unknown } | null)?.backend;
+  if (!spec.savedBackendMatches(isRecord(backend) ? backend : {}, pinned)) stop("BACKEND_NOT_IN_CONTRACT");
 }

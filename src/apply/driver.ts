@@ -8,22 +8,22 @@ import { engineActivation } from "../teardown/driver/qualification.js";
 import type { AdapterDescriptor, EngineAdapter, HumanInvocation, ResolvedInputs, ResolvedTarget } from "../teardown/driver/types.js";
 import { canonicalJson, validateManifestForRequest, verifyManifest, type ArtifactManifest } from "../teardown/manifest.js";
 import { captureProjectFiles, createImmutableSnapshot, type ImmutableSnapshot } from "../teardown/snapshot.js";
-import { forbiddenIdentityVariables, identityVariables } from "../tools/identity.js";
-import { GUID, SAFE_VALUE } from "./constants.js";
+import { forbiddenIdentityVariables } from "../tools/identity.js";
 import { writeEncryptedEvidence } from "../evidence/vault.js";
 import { interceptStopSignals } from "../tools/process.js";
 import { createPrivateDirectory } from "../tools/private-workdir.js";
 import { TERRAFORM_APPLY_PROFILE } from "../tools/profiles.js";
 import { consumeApprovals, verifyApprovalSet } from "./approval.js";
 import {
-  DEFAULT_EVIDENCE_DIR, contractRefusal, isKillSwitchActive, loadPilotContract, loadQualificationRecords, repoPaths, requireNotApplied, requirePromotionEvidence,
+  DEFAULT_EVIDENCE_DIR, contractRefusal, isKillSwitchActive, loadPilotContract, loadQualificationRecords, pilotContractSha256, repoPaths, requireNotApplied, requirePromotionEvidence,
   targetForEnvironment, terraformBinarySha256, verifyApplyQualification, type Refusal,
 } from "./contract.js";
-import { codeOf, openSession, prepareWorkspace, stop, type EngineSession } from "./engine.js";
+import { assertBackendInContract, codeOf, openSession, prepareWorkspace, stop, type EngineSession } from "./engine.js";
 import { APPLY_AUTHORITY } from "./evidence.js";
 import { attestedClientId, checkApplyIdentities, verifyIdentityTargets } from "./identities.js";
 import { finalizeArtifact, releaseReservation, reserveArtifact } from "./ledger.js";
 import { openNonceStore, type NonceStore } from "./nonces.js";
+import { specOf, type ProviderSpec } from "./provider.js";
 import { SEAL_PLAN_FILE, planWithoutStoring, releaseIdentityOf, rederiveChanges, sealPlan, verifySealedPlan, type LoadedPlan, type SealResult, type ThrowawayPlan } from "./seal.js";
 import { APPLY_ADAPTER, APPLY_ARGV, APPLY_BACKEND_CONFIG_FILE, APPLY_INIT_ARGV, RECOVERY_FILES, classifyApply, isAllowedApplyArgv, parseStateSerial } from "./terraform.js";
 import { sha256 } from "../util/sha256.js";
@@ -87,7 +87,7 @@ const sameTarget = (a: ResolvedTarget, b: ResolvedTarget): boolean =>
 
 /** Contract enabled, kill switch off, a human, and the contract's own target: the first four gates, shared by sealing and applying. */
 function admit(deps: Pick<ApplyDeps, "contractPath" | "contractPinPath">, request: { invocation: unknown; environment: ApplyEnvironment; target: ResolvedTarget }):
-  { ok: true; contract: PilotContract } | Refusal {
+  { ok: true; contract: PilotContract; spec: ProviderSpec } | Refusal {
   const contract = loadPilotContract(deps.contractPath, deps.contractPinPath);
   if ("reason" in contract) return contractRefusal(contract);
   if (isKillSwitchActive(contract)) {
@@ -96,46 +96,47 @@ function admit(deps: Pick<ApplyDeps, "contractPath" | "contractPinPath">, reques
   const human = checkHumanInvocation(request, "A pilot apply, seal or qualification run");
   if (human) return refuse("HUMAN_INVOCATION_REQUIRED", human.message);
   const pinned = targetForEnvironment(contract, request.environment, request.target);
-  return pinned.ok ? { ok: true, contract } : pinned;
+  return pinned.ok ? { ok: true, contract, spec: specOf(contract) } : pinned;
 }
 
 /**
  * The engine qualification and the identity checks, in the order sealing and
  * applying share. This is the one place identities are judged: all four
  * configured and separate, none for an identity this system never reads, and
- * every credential naming the contract's tenant and subscription. For an
+ * every credential naming the contract's account. For an
  * apply, the adapter's qualification record must also be backed by real-engine
  * evidence in the vault. `engineActivation` reads only an adapter's engine,
  * version and argv digest, which a descriptor carries.
  */
 async function checkEngineAndIdentities(
   adapter: AdapterDescriptor, deps: SealDeps, engineVersion: string,
-  contract: PilotContract, environment: ApplyEnvironment, kind: "seal" | "apply" | "qualify",
+  contract: PilotContract, spec: ProviderSpec, environment: ApplyEnvironment, kind: "seal" | "apply" | "qualify",
 ): Promise<Refusal | undefined> {
   // Qualifying is how a record comes to exist, so it is the one run that needs none. Identities and targets are judged the same.
   if (kind !== "qualify") {
     const vault = deps.qualificationDir ?? repoPaths().qualifications;
-    const activation = engineActivation("TERRAFORM", await loadQualificationRecords(vault), [adapter as unknown as EngineAdapter], engineVersion);
+    const activation = engineActivation("TERRAFORM", await loadQualificationRecords(spec, vault), [adapter as unknown as EngineAdapter], engineVersion);
     if (!activation.enabled) return refuse("ENGINE_NOT_QUALIFIED", activation.reason);
     if (kind === "apply") {
       const attested = await verifyApplyQualification(activation.record, vault,
         { adapterVersion: adapter.adapterVersion, argvDigest: adapter.argvDigest, engineVersion },
         {
           dev: contract.targets.DEV, now: (deps.now ?? (() => new Date()))(), terraformSha256: terraformBinarySha256(deps.toolDirs, deps.env ?? process.env),
-          stateWriteClientId: attestedClientId(deps.env ?? process.env, "STATE_WRITE"), applyClientId: attestedClientId(deps.env ?? process.env, "APPLY"),
-        });
+          stateWriteClientId: attestedClientId(deps.env ?? process.env, "STATE_WRITE", spec), applyClientId: attestedClientId(deps.env ?? process.env, "APPLY", spec),
+          principalsPerEnvironment: spec.principalPerEnvironment && environment !== "DEV",
+        }, spec);
       if (!attested.ok) return attested;
     }
   }
   const env = deps.env ?? process.env;
-  const identities = checkApplyIdentities(env);
+  const identities = checkApplyIdentities(env, spec);
   if (!identities.ok) return refuse(identities.code, identities.message);
   const forbidden = forbiddenIdentityVariables(env);
   if (forbidden.length > 0) {
     return refuse("IDENTITY_NOT_CONFIGURED", "Variables for an identity this system never reads are set (" + forbidden.join(", ") +
       "). Remove them; nothing will use them, and the four identities are the only credentials a run accepts.");
   }
-  const targets = verifyIdentityTargets(contract, environment, env);
+  const targets = verifyIdentityTargets(contract, environment, env, spec);
   return targets.ok ? undefined : refuse(targets.code, targets.message);
 }
 
@@ -172,7 +173,7 @@ async function planAgainstTarget(request: SealRequest, deps: SealDeps, kind: "se
     return refuse("ARTIFACT_INVALID", "The project cannot be bound to the manifest.");
   }
 
-  const gate = await checkEngineAndIdentities(createTerraformAdapter("TERRAFORM"), deps, manifest.engineVersion, admitted.contract, request.environment, kind);
+  const gate = await checkEngineAndIdentities(createTerraformAdapter("TERRAFORM"), deps, manifest.engineVersion, admitted.contract, admitted.spec, request.environment, kind);
   if (gate) return gate;
 
   // The directory prefix is the one the stale-directory sweep knows.
@@ -186,7 +187,7 @@ async function planAgainstTarget(request: SealRequest, deps: SealDeps, kind: "se
     const input = {
       environment: request.environment, target: { ...request.target }, manifest, snapshotPath: snapshot.path, scratchDir: scratch.path,
       env: deps.env ?? process.env, policyVersion: request.policyVersion, engineVersion: manifest.engineVersion,
-      pinned: admitted.contract.targets[request.environment], toolDirs: deps.toolDirs, now: deps.now,
+      pinned: admitted.contract.targets[request.environment], spec: admitted.spec, contractSha256: pilotContractSha256(admitted.contract), toolDirs: deps.toolDirs, now: deps.now,
     };
     const sealed = kind === "seal" ? await sealPlan(input) : planWithoutStoring(input);
     if (kind === "seal" || !sealed.ok) return sealed;
@@ -198,7 +199,7 @@ async function planAgainstTarget(request: SealRequest, deps: SealDeps, kind: "se
     const backendConfigPath = join(scratch.path, APPLY_BACKEND_CONFIG_FILE);
     const unregisterSecrets = registerCleanup(() => rmSync(backendConfigPath, { force: true }));
     try {
-      prepareApplyEngine(session, snapshot.path, manifest.engineVersion, request.target, admitted.contract.targets[request.environment], deps.env ?? process.env, backendConfigPath);
+      prepareApplyEngine(session, snapshot.path, manifest.engineVersion, request.target, admitted.contract.targets[request.environment], admitted.spec, deps.env ?? process.env, backendConfigPath);
     } finally {
       unregisterSecrets();
       rmSync(backendConfigPath, { force: true });
@@ -233,20 +234,6 @@ export async function qualifyApply(request: SealRequest, deps: SealDeps):
   return { ok: true, engineVersion: request.resolved.engineVersion, terraformSha256, adapters: [createTerraformAdapter("TERRAFORM"), APPLY_ADAPTER] };
 }
 
-/** The backend binding: the storage account, container and key init saved must be the contract's `<storage-account>/<container>/<key>`, so the project's own backend block cannot aim state somewhere else. */
-function assertBackendInContract(work: string, pinned: PilotTarget): void {
-  let saved: unknown;
-  try {
-    const file = join(work, ".terraform", "terraform.tfstate");
-    if (!lstatSync(file).isFile() || lstatSync(file).size > 1_048_576) return stop("BACKEND_UNREADABLE");
-    saved = JSON.parse(readFileSync(file, "utf8"));
-  } catch { return stop("BACKEND_UNREADABLE"); }
-  const backend = isRecord(saved) && isRecord(saved.backend) ? saved.backend : {};
-  const config = isRecord(backend.config) ? backend.config : {};
-  const parts = [config.storage_account_name, config.container_name, config.key];
-  if (backend.type !== "azurerm" || !parts.every((part) => typeof part === "string") || parts.join("/") !== pinned.backend) stop("BACKEND_NOT_IN_CONTRACT");
-}
-
 /**
  * The apply's workspace: init as STATE_WRITE with the partial backend
  * configuration (written 0600, removed as soon as init ends), the target's
@@ -255,14 +242,14 @@ function assertBackendInContract(work: string, pinned: PilotTarget): void {
  * identity, because an apply cannot be undone.
  */
 function prepareApplyEngine(
-  session: EngineSession, snapshotPath: string, engineVersion: string, target: ResolvedTarget, pinned: PilotTarget, env: NodeJS.ProcessEnv, backendConfigPath: string,
+  session: EngineSession, snapshotPath: string, engineVersion: string, target: ResolvedTarget, pinned: PilotTarget, spec: ProviderSpec, env: NodeJS.ProcessEnv, backendConfigPath: string,
 ): string {
   prepareWorkspace(session, {
-    snapshotPath, engineVersion, target, initArgv: APPLY_INIT_ARGV, stateIdentity: "STATE_WRITE",
-    beforeInit: () => writeFileSync(backendConfigPath, backendConfig(env), { mode: 0o600, flag: "wx" }),
+    snapshotPath, engineVersion, target, initArgv: APPLY_INIT_ARGV, stateIdentity: "STATE_WRITE", backendBlock: spec.backendBlock,
+    beforeInit: () => writeFileSync(backendConfigPath, spec.backendConfig(env, pinned), { mode: 0o600, flag: "wx" }),
     afterInit: () => rmSync(backendConfigPath, { force: true }),
   });
-  assertBackendInContract(session.work, pinned);
+  assertBackendInContract(session.work, pinned, spec);
   const serial = parseStateSerial(session.step(STATE_PULL_ARGV, "STATE", true)) ?? stop("STATE_SERIAL_UNREADABLE");
   if (session.refused("APPLY", APPLY_PROFILE).length > 0) stop("ENVIRONMENT_REFUSED");
   return serial;
@@ -319,30 +306,6 @@ const MESSAGES: Record<Exclude<ApplyOutcome, "SUCCEEDED">, string> = {
     "cloud resources by hand before any new preview. This sealed plan and its approvals are spent.",
 };
 
-const TOKEN_FILE = /^\/[A-Za-z0-9._/-]{1,512}$/;
-
-/**
- * The partial backend configuration init saves: the STATE_WRITE principal's
- * client id, tenant, subscription and token file path. Never a secret value, and
- * every value is checked against a strict pattern before it is written into
- * HCL. The apply process then needs only the APPLY identity for the provider.
- */
-function backendConfig(env: NodeJS.ProcessEnv): string {
-  const variables = identityVariables(env, "STATE_WRITE");
-  const pick = (name: string, ok: RegExp): string => {
-    const value = variables.get(name);
-    return value !== undefined && ok.test(value) ? value : stop("STATE_WRITE_BACKEND_CONFIG_INVALID");
-  };
-  return [
-    "use_oidc = true",
-    `client_id = "${pick("ARM_CLIENT_ID", SAFE_VALUE)}"`,
-    `tenant_id = "${pick("ARM_TENANT_ID", GUID)}"`,
-    `subscription_id = "${pick("ARM_SUBSCRIPTION_ID", GUID)}"`,
-    `oidc_token_file_path = "${pick("ARM_OIDC_TOKEN_FILE", TOKEN_FILE)}"`,
-    "",
-  ].join("\n");
-}
-
 /**
  * Applies a sealed plan, exactly as approved. In order and fail closed: the
  * pilot contract enables ACT, the kill switch is off, a person invoked it, the
@@ -350,7 +313,7 @@ function backendConfig(env: NodeJS.ProcessEnv): string {
  * before, production was promoted from a successful DEV apply of the same
  * release, the approvals verify, the apply adapter is qualified by real-engine
  * evidence, the four identities are configured, separate and aimed at the
- * contract's tenant and subscription, the artifact is reserved in the ledger,
+ * contract's account, the artifact is reserved in the ledger,
  * the kill switch is checked once more, the approvals are consumed, and only
  * then `terraform apply <planfile>`, which is watched and stoppable while it
  * runs.
@@ -364,14 +327,14 @@ export async function runApply(request: ApplyRequest, deps: ApplyDeps): Promise<
   if (!isRecord(request)) return refuse("HUMAN_INVOCATION_REQUIRED", "An apply is run by a person.");
   const admitted = admit(deps, request);
   if (!admitted.ok) return admitted;
-  const { contract } = admitted;
+  const { contract, spec } = admitted;
 
   // 5. The sealed plan hashes to its artifact, and is the plan for this environment, target and manifest.
   const loaded = verifySealedPlan(request.sealedPlan);
   if (!loaded.ok) return loaded;
   const { sealed, planBytes } = loaded;
-  if (sealed.environment !== request.environment || !sameTarget(sealed.target, request.target)) {
-    return refuse("ARTIFACT_INVALID", "The sealed plan was sealed for another environment or target.");
+  if (sealed.environment !== request.environment || !sameTarget(sealed.target, request.target) || sealed.contractSha256 !== pilotContractSha256(contract)) {
+    return refuse("ARTIFACT_INVALID", "The sealed plan was sealed for another environment or target, or under another pilot contract.");
   }
   let manifest: ArtifactManifest;
   try { manifest = verifyManifest(request.manifest); } catch { return refuse("ARTIFACT_INVALID", "The manifest is not valid or not sealed."); }
@@ -396,7 +359,7 @@ export async function runApply(request: ApplyRequest, deps: ApplyDeps): Promise<
   if (!verdict.ok) return refuse(verdict.code, verdict.message);
 
   // 9-10. The apply adapter is qualified by real-engine evidence; four separate identities aimed at this target.
-  const gate = await checkEngineAndIdentities(APPLY_ADAPTER, deps, sealed.engineVersion, contract, sealed.environment, "apply");
+  const gate = await checkEngineAndIdentities(APPLY_ADAPTER, deps, sealed.engineVersion, contract, spec, sealed.environment, "apply");
   if (gate) return gate;
 
   let holding = false;
@@ -440,9 +403,9 @@ export async function runApply(request: ApplyRequest, deps: ApplyDeps): Promise<
     let serialBefore: string;
     let derived: SealedPlan["changes"];
     try {
-      serialBefore = prepareApplyEngine(session, snapshot.path, sealed.engineVersion, sealed.target, contract.targets[sealed.environment], env, backendConfigPath);
+      serialBefore = prepareApplyEngine(session, snapshot.path, sealed.engineVersion, sealed.target, contract.targets[sealed.environment], spec, env, backendConfigPath);
       // The change list the approvers read must describe this plan: derive it again from the decrypted bytes, as sealing did.
-      derived = rederiveChanges({ scratchDir: scratch.path, env, toolDirs: deps.toolDirs, manifest, planBytes, pinned: contract.targets[sealed.environment] });
+      derived = rederiveChanges({ scratchDir: scratch.path, env, toolDirs: deps.toolDirs, manifest, planBytes, pinned: contract.targets[sealed.environment], spec });
     } catch (error) {
       const code = codeOf(error);
       if (/_NOT_IN_CONTRACT$/.test(code)) {
@@ -508,7 +471,7 @@ export async function runApply(request: ApplyRequest, deps: ApplyDeps): Promise<
     // 15. Evidence replaces the reservation, whatever the outcome.
     const evidence: ApplyEvidence = {
       schemaVersion: 1, environment: sealed.environment, target: { ...sealed.target }, artifactSha256: sealed.artifactSha256,
-      manifestHash: sealed.manifestHash, releaseIdentity: sealed.releaseIdentity, approvals: confirmed.approvers,
+      manifestHash: sealed.manifestHash, releaseIdentity: sealed.releaseIdentity, contractSha256: sealed.contractSha256, approvals: confirmed.approvers,
       adapter: { adapterVersion: APPLY_ADAPTER.adapterVersion, argvDigest: APPLY_ADAPTER.argvDigest },
       toolVersions: { engine: sealed.engineVersion }, outcome, exitCode: applied.exitCode, startedAt, finishedAt: now().toISOString(),
       authority: APPLY_AUTHORITY, ...(kept.recovery ? { recovery: kept.recovery } : {}),

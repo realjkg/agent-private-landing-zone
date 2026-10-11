@@ -146,6 +146,7 @@ export function buildChildEnvironment(input: ChildEnvironmentInput): ChildEnviro
   inject("ALZ_NETWORK_", (name) => NETWORK_VARIABLES.includes(name), NETWORK_URL_VARIABLES);
 
   // Set last: nothing injected can override these.
+  Object.assign(env, input.profile.fixedEnvironment);
   env.PATH = input.toolDirs.join(":");
   env.HOME = input.home;
   env.TMPDIR = input.tmp;

@@ -3,6 +3,7 @@ import { chmodSync, existsSync, readFileSync, rmSync, writeFileSync } from "node
 import { join } from "node:path";
 
 import { signApproval } from "../../src/apply/approval.js";
+import { providerSpec } from "../../src/apply/provider.js";
 import { writeQualificationEvidence } from "../../src/apply/contract.js";
 import { finalizeArtifact, releaseReservation, reserveArtifact } from "../../src/apply/ledger.js";
 import type { SealRequest } from "../../src/apply/driver.js";
@@ -32,6 +33,15 @@ export const DEV_TARGET: ResolvedTarget = { account: "22222222-2222-4222-8222-22
 export const QA_TARGET: ResolvedTarget = { account: "44444444-4444-4444-8444-444444444444", backend: "fixtureqastore/tfstate/qa.tfstate", workspace: "default" };
 export const PROD_TARGET: ResolvedTarget = { account: "33333333-3333-4333-8333-333333333333", backend: "fixtureprodstore/tfstate/prod.tfstate", workspace: "default" };
 export const targetOf = (environment: ApplyEnvironment): ResolvedTarget => ({ DEV: DEV_TARGET, QA: QA_TARGET, PROD: PROD_TARGET })[environment];
+// AWS: obviously fake account ids, buckets and role ARNs. No real account, bucket or role.
+export const AWS_REGION = "us-east-1";
+export const AWS_DEV_TARGET: ResolvedTarget = { account: "111111111111", backend: "examplefake-dev-state/pilot/dev.tfstate", workspace: "default" };
+export const AWS_QA_TARGET: ResolvedTarget = { account: "222222222222", backend: "examplefake-qa-state/pilot/qa.tfstate", workspace: "default" };
+export const AWS_PROD_TARGET: ResolvedTarget = { account: "333333333333", backend: "examplefake-prod-state/pilot/prod.tfstate", workspace: "default" };
+export const awsTargetOf = (environment: ApplyEnvironment): ResolvedTarget => ({ DEV: AWS_DEV_TARGET, QA: AWS_QA_TARGET, PROD: AWS_PROD_TARGET })[environment];
+const AWS_ROLES = { DISCOVERY: "alz-discovery", STATE: "alz-state", STATE_WRITE: "alz-state-write", APPLY: "alz-apply" } as const;
+export const awsRoleArn = (identity: keyof typeof AWS_ROLES, environment: ApplyEnvironment): string =>
+  "arn:aws:iam::" + awsTargetOf(environment).account + ":role/" + AWS_ROLES[identity] + "-" + environment.toLowerCase();
 export const NOW = new Date("2026-10-11T12:00:00.000Z");
 export const POLICY = "2026-10-11.1";
 export const OPERATOR = "operator.fixture";
@@ -62,7 +72,7 @@ export type Behavior = {
   showResources?: unknown[];
   showOutputChanges?: Record<string, unknown>;
   showProviderConfig?: Record<string, unknown>;
-  /** What `init` saves in .terraform/terraform.tfstate. Default: the azurerm backend of the target whose subscription init runs under; null saves none. */
+  /** What `init` saves in .terraform/terraform.tfstate. Default: the azurerm (or, under an AWS role, the s3) backend of the target whose subscription or account init runs under; null saves none. */
   savedBackend?: unknown;
 };
 
@@ -85,7 +95,11 @@ else if (cmd === "init") {
   if (b.savedBackend !== null) {
     const def = (${JSON.stringify({ [DEV_TARGET.account]: DEV_TARGET.backend, [QA_TARGET.account]: QA_TARGET.backend, [PROD_TARGET.account]: PROD_TARGET.backend })})[process.env.ARM_SUBSCRIPTION_ID];
     const [account, container, ...key] = (def || "").split("/");
-    const backend = b.savedBackend || { type: "azurerm", config: { storage_account_name: account, container_name: container, key: key.join("/") } };
+    // The S3 backend of the account the role ARN names, with the region and native locking the partial configuration sets.
+    const [bucket, ...s3key] = ((${JSON.stringify(Object.fromEntries([AWS_DEV_TARGET, AWS_QA_TARGET, AWS_PROD_TARGET].map((t) => [t.account, t.backend])))})[(process.env.AWS_ROLE_ARN || "").split(":")[4]] || "").split("/");
+    const backend = b.savedBackend || (process.env.AWS_ROLE_ARN
+      ? { type: "s3", config: { bucket, key: s3key.join("/"), region: process.env.AWS_REGION, use_lockfile: true } }
+      : { type: "azurerm", config: { storage_account_name: account, container_name: container, key: key.join("/") } });
     fs.writeFileSync(path.join(".terraform", "terraform.tfstate"), JSON.stringify({ version: 3, backend }));
   }
   for (const w of b.initWrites || []) { fs.mkdirSync(path.dirname(w.path), { recursive: true }); fs.writeFileSync(w.path, w.content); }
@@ -174,6 +188,17 @@ export const identityEnv = (environment: ApplyEnvironment): NodeJS.ProcessEnv =>
 };
 export const ENV = identityEnv("DEV");
 
+/** The four AWS identities for one environment (each its own role and token file, no static key), plus the operator's own ambient keys (never to reach a child). */
+export const awsIdentityEnv = (environment: ApplyEnvironment): NodeJS.ProcessEnv => {
+  const env: NodeJS.ProcessEnv = { HOME: "/home/operator", AWS_ACCESS_KEY_ID: "AKIAFAKEOPERATORKEY00", AWS_SECRET_ACCESS_KEY: "operator-ambient-aws-secret" };
+  for (const identity of ["DISCOVERY", "STATE", "STATE_WRITE", "APPLY"] as const) {
+    env["ALZ_" + identity + "_AWS_ROLE_ARN"] = awsRoleArn(identity, environment);
+    env["ALZ_" + identity + "_AWS_WEB_IDENTITY_TOKEN_FILE"] = "/run/fixture/" + identity.toLowerCase() + "-" + environment.toLowerCase() + "-token";
+    env["ALZ_" + identity + "_AWS_REGION"] = AWS_REGION;
+  }
+  return env;
+};
+
 // --- approvers and the pinned contract ----------------------------------------------------------
 
 const newKey = () => {
@@ -204,6 +229,12 @@ export function writePinnedContract(contractPath: string, contract: unknown): vo
   writeFileSync(pinPathOf(contractPath), sha(canonicalJson(contract as never)) + "\n");
 }
 
+export const awsContractJson = (killPath: string, over: Record<string, unknown> = {}) => ({
+  ...contractJson(killPath), provider: "AWS",
+  targets: Object.fromEntries((["DEV", "QA", "PROD"] as const).map((e) => [e, { accountId: awsTargetOf(e).account, region: AWS_REGION, backend: awsTargetOf(e).backend, workspace: "default" }])),
+  ...over,
+});
+
 // --- qualification -------------------------------------------------------------------------------
 
 /** The shape of an apply qualification record. `evidenceHash` is a bare hash unless the caller wrote evidence for it. */
@@ -212,11 +243,14 @@ export const applyRecordOf = (over: Partial<QualificationRecord> = {}): Qualific
   qualifiedAt: "2026-10-11T00:00:00.000Z", evidenceHash: H("e"), ...over,
 });
 
-const forgedEvidenceForTests = (adapterVersion: string, argvDigest: string) => ({
+const forgedEvidenceForTests = (adapterVersion: string, argvDigest: string, provider: "AZURE" | "AWS") => ({
   schemaVersion: 1 as const, engine: "TERRAFORM" as const, realEngine: true as const, backendIdentitySeparated: true as const,
-  tenantId: TENANT, subscriptionId: DEV_TARGET.account, backend: DEV_TARGET.backend, workspace: "default",
-  stateWriteClientId: "statewrite-client-3", applyClientId: "apply-client-4", terraformSha256: sha(FAKE),
-  adapterVersion, argvDigest, engineVersion: ENGINE_VERSION,
+  ...(provider === "AWS"
+    ? { accountId: AWS_DEV_TARGET.account, region: AWS_REGION, backend: AWS_DEV_TARGET.backend, workspace: "default",
+      stateWriteClientId: awsRoleArn("STATE_WRITE", "DEV"), applyClientId: awsRoleArn("APPLY", "DEV") }
+    : { tenantId: TENANT, subscriptionId: DEV_TARGET.account, backend: DEV_TARGET.backend, workspace: "default",
+      stateWriteClientId: "statewrite-client-3", applyClientId: "apply-client-4" }),
+  terraformSha256: sha(FAKE), adapterVersion, argvDigest, engineVersion: ENGINE_VERSION,
   qualifiedAt: "2026-10-11T00:00:00.000Z",
 });
 
@@ -227,11 +261,11 @@ const forgedEvidenceForTests = (adapterVersion: string, argvDigest: string) => (
  * Writes into `vaultDir`, where the driver reads its records from: the apply adapter's, the preview adapter's, or both.
  * A vault holding only one shows the other adapter is not qualified.
  */
-export async function testFixtureForgeQualificationEvidence(vaultDir: string, only?: "apply" | "preview"): Promise<{ applyRecord: QualificationRecord; previewRecord: QualificationRecord }> {
+export async function testFixtureForgeQualificationEvidence(vaultDir: string, only?: "apply" | "preview", provider: "AZURE" | "AWS" = "AZURE"): Promise<{ applyRecord: QualificationRecord; previewRecord: QualificationRecord }> {
   const write = async (adapterVersion: string, argvDigest: string, skip: boolean): Promise<string> => {
-    const evidence = forgedEvidenceForTests(adapterVersion, argvDigest);
+    const evidence = forgedEvidenceForTests(adapterVersion, argvDigest, provider);
     if (skip) return sha(canonicalJson(evidence as never));
-    const written = await writeQualificationEvidence(evidence, vaultDir);
+    const written = await writeQualificationEvidence(evidence, providerSpec(provider)!, vaultDir);
     if (!written.ok) throw new Error("fixture qualification evidence rejected");
     return written.evidenceHash;
   };

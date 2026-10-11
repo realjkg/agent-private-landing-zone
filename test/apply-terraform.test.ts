@@ -159,12 +159,19 @@ test("a stale plan is PLAN_STALE only when state did not move, and the classific
   assert.deepEqual(classifyApply({ exitCode: 1, stderr: "some other failure", serialBefore: "7", serialAfter: "7" }), { outcome: "PARTIAL_REQUIRES_REVIEW" });
 });
 
-test("the apply profile drops provider-installation overrides and AZURE_* (az CLI / SDK fallback) and nothing else; the preview profile is untouched", () => {
+test("the apply profile drops provider-installation overrides, AZURE_* (az CLI / SDK fallback) static AWS credentials, the AWS endpoint, CA bundle and default region and nothing else; the preview profile is untouched", () => {
   const removed = PROFILES.terraform.injectable.filter((name) => !TERRAFORM_APPLY_PROFILE.injectable.includes(name)).sort();
-  assert.deepEqual(removed.filter((name) => !name.startsWith("AZURE_")), ["TF_CLI_CONFIG_FILE", "TF_PLUGIN_CACHE_DIR"]);
+  assert.deepEqual(removed.filter((name) => !name.startsWith("AZURE_")), [
+    "AWS_ACCESS_KEY_ID", "AWS_CA_BUNDLE", "AWS_CONFIG_FILE", "AWS_DEFAULT_REGION", "AWS_EC2_METADATA_DISABLED", "AWS_ENDPOINT_URL", "AWS_PROFILE", "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN", "AWS_SHARED_CREDENTIALS_FILE",
+    "TF_CLI_CONFIG_FILE", "TF_PLUGIN_CACHE_DIR",
+  ]);
   assert.ok(removed.includes("AZURE_CONFIG_DIR") && TERRAFORM_APPLY_PROFILE.injectable.every((name) => !name.startsWith("AZURE_")));
   assert.ok(TERRAFORM_APPLY_PROFILE.injectable.includes("ARM_OIDC_TOKEN_FILE"));
-  assert.deepEqual({ ...TERRAFORM_APPLY_PROFILE, injectable: [] }, { ...PROFILES.terraform, injectable: [] });
+  for (const name of ["AWS_ROLE_ARN", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_REGION"]) assert.ok(TERRAFORM_APPLY_PROFILE.injectable.includes(name), name);
+  assert.deepEqual(TERRAFORM_APPLY_PROFILE.fixedEnvironment, { AWS_EC2_METADATA_DISABLED: "true" }, "the instance metadata fallback is off for every apply child");
+  assert.equal(PROFILES.terraform.fixedEnvironment, undefined);
+  assert.deepEqual({ ...TERRAFORM_APPLY_PROFILE, injectable: [], fixedEnvironment: undefined }, { ...PROFILES.terraform, injectable: [], fixedEnvironment: undefined });
   assert.ok(PROFILES.terraform.injectable.includes("TF_CLI_CONFIG_FILE"), "the preview adapter keeps its reviewed profile");
 });
 

@@ -25,7 +25,7 @@ export const APPLY_ARGV: readonly string[] = ["apply", "-input=false", "-no-colo
 
 /**
  * Init for apply carries the STATE_WRITE principal in a partial backend
- * configuration (client id, tenant, subscription and token file path, never a
+ * configuration (the provider's client and account settings, never a
  * secret value), so the backend settings Terraform saves name the state writer
  * and the apply itself needs only the APPLY identity. The file sits beside the
  * plan, is written 0600 and is deleted as soon as init ends. Whether Terraform

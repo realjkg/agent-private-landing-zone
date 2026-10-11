@@ -1,0 +1,168 @@
+import { iamRoleIdentity, identityVariables } from "../../tools/identity.js";
+import { TOKEN_FILE } from "../constants.js";
+import { stop } from "../engine.js";
+import type { ProviderBlock, ProviderSpec } from "../provider.js";
+import { APPLY_IDENTITIES } from "../types.js";
+import { KEY_SEGMENT, ambientRefusal, isRecord, pickIdentityValue } from "./shared.js";
+
+/**
+ * Everything the pilot knows about AWS with the S3 backend (docs/act-pilot-apply.md,
+ * "Providers"). Nothing outside this file names an AWS field, variable or backend type.
+ *
+ * UNVERIFIED: the AWS formats below are from memory. The AWS documentation hosts were unreachable when this
+ * was written, so none was checked against them. Account id: 12 digits. Region: like us-east-1. S3 bucket
+ * name: 3 to 63 characters, lowercase letters, digits, hyphens and dots, starting and ending with a letter or
+ * digit (no ".." is this file's own extra caution). IAM role ARN: arn:aws:iam::<12 digits>:role/<name>,
+ * standard "aws" partition only. The attribute names in `backendBlock` and `DENIED_ATTRIBUTE`, the S3 backend settings
+ * `use_lockfile` (native locking, Terraform 1.10 and later) and `assume_role_with_web_identity` are likewise from
+ * memory, and no real Terraform ran them. A wrong validator refuses a good value (fails closed). A wrong or missing name
+ * in `DENIED_ATTRIBUTE` would miss a bad one, so that list is checked against the provider's documentation before live use.
+ */
+
+/** One environment's target. `account` in a `ResolvedTarget` is the account id. */
+export type AwsTarget = {
+  accountId: string;
+  region: string;
+  /** The S3 backend, written as `<bucket>/<key>`. State locking is the backend's native lock file (`use_lockfile`); no DynamoDB table. */
+  backend: string;
+  workspace: string;
+};
+
+const ACCOUNT_ID = /^[0-9]{12}$/;
+const REGION = /^[a-z]{2}(-[a-z]+)+-[0-9]$/;
+const BUCKET = /^(?!.*\.\.)[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/;
+const ROLE_SEGMENT = "[A-Za-z0-9+=,.@_-]+";
+const ROLE_ARN = new RegExp("^arn:aws:iam::([0-9]{12}):role/" + ROLE_SEGMENT + "(?:/" + ROLE_SEGMENT + ")*$");
+const accountOfRole = (arn: string): string | undefined => arn.length <= 2048 ? ROLE_ARN.exec(arn)?.[1] : undefined;
+
+function backendOk(value: string): boolean {
+  const [bucket, ...key] = value.split("/");
+  return BUCKET.test(bucket) && key.length > 0 && key.every((s) => KEY_SEGMENT.test(s));
+}
+
+/**
+ * Anything that lets a child reach AWS other than through its own web-identity role: static keys, a session
+ * token, a shared profile or config file, container credentials, or the instance metadata service (which the
+ * runner also switches off for every apply child).
+ */
+const FALLBACK_VARIABLE = /^(AWS_(ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN|SECURITY_TOKEN|PROFILE|DEFAULT_PROFILE|SHARED_CREDENTIALS_FILE|CONFIG_FILE|CONTAINER_.*|EC2_METADATA.*)|ARM_.*|AZURE_.*)$/;
+
+/** The shared refusals, and a token file that is not an absolute path: a relative one means the runner's directory to the check and the work directory to the child. */
+function ambient(env: NodeJS.ProcessEnv) {
+  const refusal = ambientRefusal(env, {
+    fallback: FALLBACK_VARIABLE, ambient: /^AWS_/, fallbackTo: "static, ambient or another cloud's credentials",
+    advice: "The apply identities use AWS_ROLE_ARN with AWS_WEB_IDENTITY_TOKEN_FILE only.",
+  });
+  if (refusal) return refusal;
+  const relative = APPLY_IDENTITIES.filter((identity) => {
+    const path = identityVariables(env, identity).get("AWS_WEB_IDENTITY_TOKEN_FILE");
+    return path !== undefined && !TOKEN_FILE.test(path);
+  }).map((identity) => "ALZ_" + identity + "_AWS_WEB_IDENTITY_TOKEN_FILE");
+  return relative.length === 0 ? undefined : {
+    ok: false as const, code: "IDENTITY_NOT_CONFIGURED" as const, message: "These token file paths are not absolute paths of plain characters: " + relative.join(", ") + ".",
+  };
+}
+
+/**
+ * The partial backend configuration init saves: the contract's bucket, key and region, native locking, and the
+ * STATE_WRITE role's web-identity settings (role ARN and token file path, neither a secret). Every value is
+ * checked against a strict pattern before it is written into HCL.
+ */
+function backendConfig(env: NodeJS.ProcessEnv, target: AwsTarget): string {
+  const pick = (name: string, ok: RegExp): string => pickIdentityValue(env, "STATE_WRITE", name, ok);
+  const [bucket, ...key] = target.backend.split("/");
+  return [
+    `bucket = "${bucket}"`,
+    `key = "${key.join("/")}"`,
+    `region = "${target.region}"`,
+    "use_lockfile = true",
+    "assume_role_with_web_identity = {",
+    `  role_arn = "${pick("AWS_ROLE_ARN", ROLE_ARN)}"`,
+    `  web_identity_token_file = "${pick("AWS_WEB_IDENTITY_TOKEN_FILE", TOKEN_FILE)}"`,
+    "}",
+    "",
+  ].join("\n");
+}
+
+/** The bucket, key and region init saved must be the contract's, and native locking must be on: the plan embeds what the seal-time init saved. */
+function savedBackendMatches(backend: Record<string, unknown>, target: AwsTarget): boolean {
+  const config = isRecord(backend.config) ? backend.config : {};
+  const parts = [config.bucket, config.key];
+  return backend.type === "s3" && parts.every((part) => typeof part === "string") && parts.join("/") === target.backend &&
+    config.region === target.region && config.use_lockfile === true;
+}
+
+const constantOf = (expression: unknown): unknown => isRecord(expression) && expression.constant_value !== null ? expression.constant_value : undefined;
+const listOf = (value: unknown): string[] => (Array.isArray(value) ? value : [value]).map(String);
+/** A nested block in `show -json` is a list of objects of expressions (one object is read the same way). */
+const blocksOf = (expression: unknown): Record<string, unknown>[] => (Array.isArray(expression) ? expression : [expression]).filter(isRecord);
+
+const isSet = (expression: unknown): boolean => !(isRecord(expression) && expression.constant_value === null);
+
+const HASHICORP = "registry.terraform.io/hashicorp/";
+const AWS_PROVIDER = HASHICORP + "aws";
+/** The providers a project may use besides aws: ones that reach no cloud. Any other (azurerm, a second cloud, a lookalike namespace) is refused. */
+const ALLOWED_PROVIDERS: readonly string[] = [AWS_PROVIDER, ...["random", "null", "time", "tls"].map((name) => HASHICORP + name)];
+/**
+ * What the aws provider takes from the APPLY identity's environment and nowhere else: static or shared credentials and
+ * config files, endpoints, proxies, a trust store, the metadata service, and the `skip_*` switches that turn off the account
+ * check. Refused whether constant or an expression, because an expression resolves to the same thing.
+ */
+const DENIED_ATTRIBUTE = /^(access_key|secret_key|token|profile|shared_credentials_files?|shared_config_files?|endpoints|http_proxy|https_proxy|no_proxy|custom_ca_bundle|ec2_metadata_service_endpoint(_mode)?|insecure|skip_.*)$/;
+/** A token (file) names another identity's credential. The role is the APPLY identity's, whose token comes from its own environment. */
+const DENIED_ROLE_ATTRIBUTE = /^web_identity_token(_file)?$/;
+
+/**
+ * The provider half of the contract binding. Only the allowed providers may appear (`ALLOWED_PROVIDERS`). In an aws
+ * provider block no attribute of `DENIED_ATTRIBUTE` is set; a constant `allowed_account_ids` must include the contract's
+ * account, a constant `forbidden_account_ids` must not; and a constant `role_arn` in `assume_role` or
+ * `assume_role_with_web_identity` must be the APPLY identity's own role (any role in another account is refused as such),
+ * with no token of its own. An expression for an account or a role (a variable, a data source) is not checkable from the
+ * plan and is not judged; the runbook says so. A block's `region` is not judged: a second region is ordinary, and the
+ * account is what the credentials bound.
+ */
+function assertProviderConfig(blocks: readonly ProviderBlock[], target: AwsTarget, env: NodeJS.ProcessEnv): void {
+  const applyRole = iamRoleIdentity(identityVariables(env, "APPLY").get("AWS_ROLE_ARN") ?? "");
+  for (const provider of blocks) {
+    const id = provider?.full_name ?? HASHICORP + provider?.name;
+    if (!ALLOWED_PROVIDERS.includes(id)) stop("PROVIDER_CONFIG_NOT_IN_CONTRACT");
+    if (id !== AWS_PROVIDER) continue;
+    const expressions = provider.expressions ?? {};
+    if (Object.entries(expressions).some(([name, expression]) => DENIED_ATTRIBUTE.test(name) && isSet(expression))) stop("PROVIDER_CONFIG_NOT_IN_CONTRACT");
+    const allowed = constantOf(expressions.allowed_account_ids);
+    if (allowed !== undefined && listOf(allowed).length > 0 && !listOf(allowed).includes(target.accountId)) stop("PROVIDER_ACCOUNT_NOT_IN_CONTRACT");
+    const forbidden = constantOf(expressions.forbidden_account_ids);
+    if (forbidden !== undefined && listOf(forbidden).includes(target.accountId)) stop("PROVIDER_ACCOUNT_NOT_IN_CONTRACT");
+    for (const block of [expressions.assume_role, expressions.assume_role_with_web_identity].flatMap(blocksOf)) {
+      if (Object.entries(block).some(([name, expression]) => DENIED_ROLE_ATTRIBUTE.test(name) && isSet(expression))) stop("PROVIDER_CONFIG_NOT_IN_CONTRACT");
+      const role = constantOf(block.role_arn);
+      if (role === undefined) continue;
+      if (accountOfRole(String(role)) !== target.accountId) stop("PROVIDER_ACCOUNT_NOT_IN_CONTRACT");
+      if (applyRole === undefined || iamRoleIdentity(String(role)) !== applyRole) stop("PROVIDER_CONFIG_NOT_IN_CONTRACT");
+    }
+  }
+}
+
+export const AWS: ProviderSpec = {
+  id: "AWS",
+  accountFields: { accountId: (v) => ACCOUNT_ID.test(v), region: (v) => REGION.test(v) },
+  backendOk,
+  account: (target) => (target as AwsTarget).accountId,
+  accountNoun: "account",
+  targetNoun: "account and region",
+  clientIdVariable: "AWS_ROLE_ARN",
+  clientIdOk: (v) => accountOfRole(v) !== undefined && v === v.toLowerCase(),
+  principalPerEnvironment: true,
+  logSource: "AWS CloudTrail logs (STS role assumptions and S3 data events)",
+  identityTargetVariables: {
+    AWS_ROLE_ARN: (v, t) => accountOfRole(v) === (t as AwsTarget).accountId,
+    AWS_REGION: (v, t) => v.toLowerCase() === (t as AwsTarget).region,
+  },
+  ambientRefusal: ambient,
+  backendConfig: (env, target) => backendConfig(env, target as AwsTarget),
+  savedBackendMatches: (saved, target) => savedBackendMatches(saved, target as AwsTarget),
+  // The plan embeds what the seal-time init saved from the project's backend block: nothing but the contract's settings may be set there. The apply process fills the rest (docs/act-pilot-simulation.md, Azure; assumed the same here).
+  backendBlock: { type: "s3", attributes: ["bucket", "key", "region", "use_lockfile"] },
+  filledAtApply: ["assume_role_with_web_identity"],
+  assertProviderConfig: (blocks, target, env) => assertProviderConfig(blocks, target as AwsTarget, env),
+};

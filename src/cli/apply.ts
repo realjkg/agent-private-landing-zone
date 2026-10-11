@@ -13,6 +13,7 @@ import { qualifyApply, runApply, sealPreview, type ApplyDeps, type SealRequest }
 import { assertApplyEvidence } from "../apply/evidence.js";
 import { attestedClientId } from "../apply/identities.js";
 import { holdsReservation } from "../apply/ledger.js";
+import { accountFieldsOf, specOf } from "../apply/provider.js";
 import { INVISIBLE, loadSealedPlan, reviewBundleOf, verifyReviewBundle, type LoadedPlan } from "../apply/seal.js";
 import { RECOVERY_FILES } from "../apply/terraform.js";
 import type { ApplyEnvironment, PilotContract, SealedPlan, SignedApproval } from "../apply/types.js";
@@ -249,7 +250,7 @@ const driverPaths = (deps: ApplyCliDeps) => ({
 /**
  * The real-engine qualification (docs/act-pilot-apply.md, G2). Run once by a
  * person against the DEV target with the real Terraform: it applies nothing and
- * stores no plan. The code cannot see which principal Azure authenticated for
+ * stores no plan. The code cannot see which principal the cloud authenticated for
  * state and which for resources, so the person attests it from the cloud's own
  * logs, typing the two client ids; only then is the evidence written. The
  * attestation is an operator control, not machine proof.
@@ -264,27 +265,29 @@ const qualifyCommand: Command = async (flags, terminal, deps, out) => {
   const ran = await qualifyApply(gate.request, { env, now, ...driverPaths(deps) });
   if (!ran.ok) return blocked(ran, out.complain);
 
-  const clientOf = (identity: "STATE_WRITE" | "APPLY") => identityVariables(env, identity).get("ARM_CLIENT_ID") ?? "";
+  const contract = contractFor(deps);
+  if ("reason" in contract) return blocked(contractRefusal(contract), out.complain);
+  const spec = specOf(contract);
+  const clientOf = (identity: "STATE_WRITE" | "APPLY") => identityVariables(env, identity).get(spec.clientIdVariable) ?? "";
   const phrase = "SEPARATED " + clientOf("STATE_WRITE") + " " + clientOf("APPLY");
   terminal.write([
-    "", "The run finished. Before evidence is written, check the Azure sign-in and storage logs for this run (not this program's output):",
+    "", "The run finished. Before evidence is written, check the " + spec.logSource + " for this run (not this program's output):",
     "  state and backend access was by   STATE_WRITE  " + clientOf("STATE_WRITE"),
     "  provider (resource) access is by  APPLY        " + clientOf("APPLY"),
+    "  the plan leaves these backend settings to the apply process (APPLY's environment): " + spec.filledAtApply.join(", "),
     "Only if the logs show that, and the APPLY client never touched the state, type (anything else writes nothing):", "  " + phrase, "",
   ].join("\n"));
   await confirm(terminal, phrase, "attest> ", "QUALIFICATION_ATTESTATION_MISMATCH");
 
-  const contract = contractFor(deps);
-  if ("reason" in contract) return blocked(contractRefusal(contract), out.complain);
-  const { tenantId, subscriptionId, backend, workspace } = contract.targets.DEV;
+  const { backend, workspace } = contract.targets.DEV;
   const qualified: { adapterVersion: string; argvDigest: string; engineVersion: string; evidenceHash: string }[] = [];
   for (const adapter of ran.adapters) {
     const evidence = {
       schemaVersion: 1 as const, engine: "TERRAFORM" as const, realEngine: true as const, backendIdentitySeparated: true as const,
-      tenantId, subscriptionId, backend, workspace, stateWriteClientId: attestedClientId(env, "STATE_WRITE"), applyClientId: attestedClientId(env, "APPLY"),
+      ...accountFieldsOf(spec, contract.targets.DEV), backend, workspace, stateWriteClientId: attestedClientId(env, "STATE_WRITE", spec), applyClientId: attestedClientId(env, "APPLY", spec),
       terraformSha256: ran.terraformSha256, adapterVersion: adapter.adapterVersion, argvDigest: adapter.argvDigest, engineVersion: ran.engineVersion, qualifiedAt: now().toISOString(),
     };
-    const written = await writeQualificationEvidence(evidence, deps.qualificationDir);
+    const written = await writeQualificationEvidence(evidence, spec, deps.qualificationDir);
     if (!written.ok) return blocked(written, out.complain);
     qualified.push({ adapterVersion: adapter.adapterVersion, argvDigest: adapter.argvDigest, engineVersion: ran.engineVersion, evidenceHash: written.evidenceHash });
   }

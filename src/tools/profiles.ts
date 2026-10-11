@@ -16,6 +16,8 @@ export type ProcessProfile = {
   urlVariables: readonly string[];
   /** Hosts those URLs may name: an exact name or `*.suffix`. Loopback is always approved. */
   approvedHosts: readonly string[];
+  /** Set in the child after everything injected, so nothing can override them: a reviewed constant, never a credential. */
+  fixedEnvironment?: Readonly<Record<string, string>>;
   timeoutMs: number;
   /** Stdout/stderr beyond this is cut off, the child is stopped and the result is marked truncated. */
   maxOutputBytes: number;
@@ -115,8 +117,20 @@ export const PROFILES: Readonly<Record<string, ProcessProfile>> = {
  * `ALZ_APPLY_` variable naming either is refused, which fails the step closed.
  */
 const PROVIDER_INSTALLATION_OVERRIDES: readonly string[] = ["TF_CLI_CONFIG_FILE", "TF_PLUGIN_CACHE_DIR"];
-/** The apply identities use `ARM_*` with OIDC only: no az CLI configuration or `AZURE_*` SDK credentials reach an apply child. */
+/**
+ * The apply identities use `ARM_*` with OIDC, or `AWS_ROLE_ARN` with a web identity token file and `AWS_REGION`, only: no az CLI
+ * configuration, `AZURE_*` SDK credentials, static AWS keys, session token, shared profile or config file reach an
+ * apply child; no service endpoint (the web identity token goes wherever one points, and a host allowlist cannot tell
+ * an attacker's API Gateway or load balancer from AWS), trust store or second default region either; and the AWS
+ * instance metadata service is switched off so it cannot be a fallback. An apply child sees only what its identity injects.
+ */
+const AWS_OUTSIDE_THE_IDENTITY: readonly string[] = [
+  "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_PROFILE", "AWS_SHARED_CREDENTIALS_FILE", "AWS_CONFIG_FILE", "AWS_EC2_METADATA_DISABLED",
+  "AWS_ENDPOINT_URL", "AWS_CA_BUNDLE", "AWS_DEFAULT_REGION",
+];
 export const TERRAFORM_APPLY_PROFILE: ProcessProfile = {
   ...PROFILES.terraform,
-  injectable: PROFILES.terraform.injectable.filter((name) => !PROVIDER_INSTALLATION_OVERRIDES.includes(name) && !name.startsWith("AZURE_")),
+  injectable: PROFILES.terraform.injectable.filter((name) =>
+    !PROVIDER_INSTALLATION_OVERRIDES.includes(name) && !name.startsWith("AZURE_") && !AWS_OUTSIDE_THE_IDENTITY.includes(name)),
+  fixedEnvironment: { AWS_EC2_METADATA_DISABLED: "true" },
 };
