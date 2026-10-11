@@ -22,6 +22,7 @@ import { APPLY_AUTHORITY, applyEvidenceProblems, assertApplyEvidence, qualificat
 import type { ApplyEvidence, PilotContract } from "../src/apply/types.js";
 import { canonicalJson } from "../src/teardown/manifest.js";
 import { recordApplied } from "./helpers/apply-fixtures.js";
+import { AZURE } from "../src/apply/providers/azure.js";
 
 // Explicit fixtures only: no real tenant, subscription or backend values.
 const scratch = mkdtempSync(join(tmpdir(), "apply-contract-"));
@@ -317,6 +318,7 @@ const evidenceFor = (over: Partial<ApplyEvidence> = {}): ApplyEvidence => ({
   artifactSha256: HASH_A,
   manifestHash: "d".repeat(64),
   releaseIdentity: RELEASE,
+  contractSha256: "c".repeat(64),
   approvals: [{ approverId: "alice", issuedAt: "2026-10-11T12:00:00.000Z" }],
   adapter: { adapterVersion: "terraform-apply-1", argvDigest: "e".repeat(64) },
   toolVersions: { engine: "1.9.8" },
@@ -507,28 +509,28 @@ const qualificationFor = (over: Partial<QualificationEvidence> = {}): Qualificat
 });
 const recordFor = (evidenceHash: string) => ({ engine: "TERRAFORM" as const, ...ADAPTER, qualifiedAt: "2026-10-11T12:00:00.000Z", evidenceHash });
 const denied = async (record: ReturnType<typeof recordFor>, dir: string, expected = ADAPTER, bound: typeof BOUND = BOUND) => {
-  const r = await verifyApplyQualification(record, dir, expected, bound);
+  const r = await verifyApplyQualification(record, dir, expected, bound, AZURE);
   assert.ok(!r.ok && r.code === "ENGINE_NOT_QUALIFIED", JSON.stringify(r));
 };
 
 test("qualification evidence shape: closed, validated, real engine and separated backend identity only", () => {
-  assert.deepEqual(qualificationEvidenceProblems(qualificationFor()), []);
+  assert.deepEqual(qualificationEvidenceProblems(qualificationFor(), AZURE), []);
   for (const bad of [
     qualificationFor({ realEngine: false as never }), qualificationFor({ backendIdentitySeparated: false as never }),
     qualificationFor({ engine: "PULUMI" as never }), qualificationFor({ argvDigest: "short" }), qualificationFor({ adapterVersion: "" }),
     qualificationFor({ qualifiedAt: "yesterday" }), qualificationFor({ tenantId: "not-a-guid" }), qualificationFor({ subscriptionId: "" }), { ...qualificationFor(), stdout: "x" }, { ...qualificationFor(), extra: 1 }, null, "x", [],
-  ]) assert.ok(qualificationEvidenceProblems(bad).length > 0, JSON.stringify(bad));
+  ]) assert.ok(qualificationEvidenceProblems(bad, AZURE).length > 0, JSON.stringify(bad));
   const { realEngine: _omit, ...missing } = qualificationFor();
-  assert.ok(qualificationEvidenceProblems(missing).some((p) => /realEngine.*missing/.test(p)));
+  assert.ok(qualificationEvidenceProblems(missing, AZURE).some((p) => /realEngine.*missing/.test(p)));
 });
 
 test("verifyApplyQualification: only a matching encrypted vault file qualifies, never a bare hash", async () => {
   const dir = dirFor();
-  const written = await writeQualificationEvidence(qualificationFor(), dir);
+  const written = await writeQualificationEvidence(qualificationFor(), AZURE, dir);
   assert.ok(written.ok);
   const hash = written.ok ? written.evidenceHash : "";
   assert.match(hash, /^[0-9a-f]{64}$/);
-  assert.deepEqual(await verifyApplyQualification(recordFor(hash), dir, ADAPTER, BOUND), { ok: true });
+  assert.deepEqual(await verifyApplyQualification(recordFor(hash), dir, ADAPTER, BOUND, AZURE), { ok: true });
   assert.equal(readFileSync(join(dir, readdirSync(dir)[0]), "utf8").includes("realEngine"), false, "encrypted at rest");
   // A bare hex string, an unknown hash, no vault, a malformed hash and a traversal attempt never pass.
   await denied(recordFor("a".repeat(64)), dir);
@@ -544,12 +546,12 @@ test("verifyApplyQualification: only a matching encrypted vault file qualifies, 
 test("verifyApplyQualification: evidence is bound to the contract's DEV tenant and subscription and must be fresh", async () => {
   const dir = dirFor();
   const put = async (over: Partial<QualificationEvidence>) => {
-    const written = await writeQualificationEvidence(qualificationFor(over), dir);
+    const written = await writeQualificationEvidence(qualificationFor(over), AZURE, dir);
     assert.ok(written.ok);
     return recordFor(written.ok ? written.evidenceHash : "");
   };
   const fresh = await put({});
-  assert.deepEqual(await verifyApplyQualification(fresh, dir, ADAPTER, BOUND), { ok: true });
+  assert.deepEqual(await verifyApplyQualification(fresh, dir, ADAPTER, BOUND, AZURE), { ok: true });
   // Another tenant or subscription than the contract's DEV target.
   await denied(fresh, dir, ADAPTER, { ...BOUND, dev: { ...DEV, tenantId: "99999999-9999-4999-8999-999999999999" } });
   await denied(fresh, dir, ADAPTER, { ...BOUND, dev: { ...DEV, subscriptionId: "88888888-8888-4888-8888-888888888888" } });
@@ -559,21 +561,21 @@ test("verifyApplyQualification: evidence is bound to the contract's DEV tenant a
   const at = (days: number) => new Date(QNOW.getTime() - days * 86_400_000).toISOString();
   await denied(await put({ qualifiedAt: at(31) }), dir);
   const edge = await put({ qualifiedAt: at(30) });
-  assert.deepEqual(await verifyApplyQualification(edge, dir, ADAPTER, BOUND), { ok: true });
+  assert.deepEqual(await verifyApplyQualification(edge, dir, ADAPTER, BOUND, AZURE), { ok: true });
   await denied(await put({ qualifiedAt: at(-1) }), dir);
   // The record's own qualifiedAt is not what is judged: the evidence is.
-  assert.deepEqual(await verifyApplyQualification({ ...fresh, qualifiedAt: at(400) }, dir, ADAPTER, BOUND), { ok: true });
+  assert.deepEqual(await verifyApplyQualification({ ...fresh, qualifiedAt: at(400) }, dir, ADAPTER, BOUND, AZURE), { ok: true });
 });
 
 test("verifyApplyQualification: evidence is bound to the DEV backend and workspace, the attested client ids and the terraform binary", async () => {
   const dir = dirFor();
   const put = async (over: Partial<QualificationEvidence>) => {
-    const written = await writeQualificationEvidence(qualificationFor(over), dir);
+    const written = await writeQualificationEvidence(qualificationFor(over), AZURE, dir);
     assert.ok(written.ok);
     return recordFor(written.ok ? written.evidenceHash : "");
   };
   const fresh = await put({});
-  assert.deepEqual(await verifyApplyQualification(fresh, dir, ADAPTER, BOUND), { ok: true });
+  assert.deepEqual(await verifyApplyQualification(fresh, dir, ADAPTER, BOUND, AZURE), { ok: true });
   // Another backend or workspace than the contract's, on either side.
   await denied(fresh, dir, ADAPTER, { ...BOUND, dev: { ...DEV, backend: "other/tfstate/dev.tfstate" } });
   await denied(fresh, dir, ADAPTER, { ...BOUND, dev: { ...DEV, workspace: "feature" } });
@@ -593,10 +595,10 @@ test("verifyApplyQualification: evidence is bound to the DEV backend and workspa
   for (const bad of [
     qualificationFor({ terraformSha256: "short" }), qualificationFor({ stateWriteClientId: "Writer-Client" }), qualificationFor({ applyClientId: "" }),
     qualificationFor({ applyClientId: "writer-client" }), qualificationFor({ backend: "" }), qualificationFor({ workspace: "" }),
-  ]) assert.ok(qualificationEvidenceProblems(bad).length > 0, JSON.stringify(bad));
+  ]) assert.ok(qualificationEvidenceProblems(bad, AZURE).length > 0, JSON.stringify(bad));
   for (const key of ["backend", "workspace", "stateWriteClientId", "applyClientId", "terraformSha256"] as const) {
     const { [key]: _omit, ...missing } = qualificationFor();
-    assert.ok(qualificationEvidenceProblems(missing).some((p) => p.includes(key + ": missing")), key);
+    assert.ok(qualificationEvidenceProblems(missing, AZURE).some((p) => p.includes(key + ": missing")), key);
   }
 });
 
@@ -617,10 +619,10 @@ test("verifyApplyQualification: evidence that is not real-engine, unseparated, m
   await denied(recordFor(await put({ engineVersion: "0.0.1" })), dir);
   await denied(recordFor(await put({ extra: 1 } as never)), dir);
   // A valid file renamed to another hash is not evidence for that hash.
-  const good = await writeQualificationEvidence(qualificationFor(), dirFor());
+  const good = await writeQualificationEvidence(qualificationFor(), AZURE, dirFor());
   assert.ok(good.ok);
   const source = dirFor();
-  const real = await writeQualificationEvidence(qualificationFor({ qualifiedAt: "2026-10-12T12:00:00.000Z" }), source);
+  const real = await writeQualificationEvidence(qualificationFor({ qualifiedAt: "2026-10-12T12:00:00.000Z" }), AZURE, source);
   assert.ok(real.ok);
   const other = "9".repeat(64);
   writeFileSync(join(dir, other + ".qualification.evidence"), readFileSync(join(source, readdirSync(source)[0])));
@@ -632,17 +634,17 @@ test("verifyApplyQualification: evidence that is not real-engine, unseparated, m
 
 test("loadQualificationRecords: records come only from valid vault evidence, never from a file the operator supplies", async () => {
   const dir = dirFor();
-  assert.deepEqual(await loadQualificationRecords(join(scratch, "no-such-vault")), []);
-  const a = await writeQualificationEvidence(qualificationFor(), dir);
-  const b = await writeQualificationEvidence(qualificationFor({ adapterVersion: "other-adapter" }), dir);
+  assert.deepEqual(await loadQualificationRecords(AZURE, join(scratch, "no-such-vault")), []);
+  const a = await writeQualificationEvidence(qualificationFor(), AZURE, dir);
+  const b = await writeQualificationEvidence(qualificationFor({ adapterVersion: "other-adapter" }), AZURE, dir);
   assert.ok(a.ok && b.ok);
   // Junk beside it: garbage, a renamed copy, unrelated names and a not-real-engine document are not records.
   writeFileSync(join(dir, "8".repeat(64) + ".qualification.evidence"), "not json");
   writeFileSync(join(dir, "9".repeat(64) + ".qualification.evidence"), readFileSync(join(dir, readdirSync(dir).find((n) => n.startsWith(a.ok ? a.evidenceHash : "")) as string)));
   writeFileSync(join(dir, "notes.txt"), "x");
-  const records = await loadQualificationRecords(dir);
+  const records = await loadQualificationRecords(AZURE, dir);
   assert.deepEqual(records.map((r) => r.evidenceHash).sort(), [a.ok ? a.evidenceHash : "", b.ok ? b.evidenceHash : ""].sort());
   assert.deepEqual(records.find((r) => r.evidenceHash === (a.ok ? a.evidenceHash : ""))!, recordFor(a.ok ? a.evidenceHash : ""));
   // Each record passes the apply gate it was derived for.
-  assert.deepEqual(await verifyApplyQualification(records.find((r) => r.adapterVersion === ADAPTER.adapterVersion)!, dir, ADAPTER, BOUND), { ok: true });
+  assert.deepEqual(await verifyApplyQualification(records.find((r) => r.adapterVersion === ADAPTER.adapterVersion)!, dir, ADAPTER, BOUND, AZURE), { ok: true });
 });

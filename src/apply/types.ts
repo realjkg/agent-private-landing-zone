@@ -1,4 +1,6 @@
 import type { ResolvedTarget } from "../teardown/driver/types.js";
+import type { AwsTarget } from "./providers/aws.js";
+import type { AzureTarget } from "./providers/azure.js";
 
 /**
  * The pilot apply contract (docs/act-pilot-plan.md).
@@ -15,20 +17,17 @@ export type ApplyEnvironment = "DEV" | "QA" | "PROD";
 export const APPLY_IDENTITIES = ["DISCOVERY", "STATE", "STATE_WRITE", "APPLY"] as const;
 export type ApplyIdentity = (typeof APPLY_IDENTITIES)[number];
 
-/** One environment's exact target. Real values come from the owner; tests use explicit fixtures. */
-export type PilotTarget = {
-  tenantId: string;
-  subscriptionId: string;
-  /** The azurerm backend container, written as `<storage-account>/<container>/<key>`. */
-  backend: string;
-  workspace: string;
-};
+/** The providers the pilot has a spec for (src/apply/provider.ts). The contract's `provider` selects one; anything else is not a contract. */
+export type ProviderId = "AZURE" | "AWS";
+
+/** One environment's exact target, in the shape the contract's provider defines. Real values come from the owner; tests use explicit fixtures. */
+export type PilotTarget = AzureTarget | AwsTarget;
 
 export type PilotContract = {
   schemaVersion: 1;
   /** ACT is off unless this is exactly true. A missing or malformed contract is off. */
   enabled: boolean;
-  provider: "AZURE";
+  provider: ProviderId;
   engine: "TERRAFORM";
   targets: Record<ApplyEnvironment, PilotTarget>;
   /** Distinct verified approvals required per environment. DEV and QA at least 1, PROD at least 2. */
@@ -73,6 +72,8 @@ export type SealedPlan = {
   target: ResolvedTarget;
   engineVersion: string;
   policyVersion: string;
+  /** The pinned pilot contract (its canonical sha256) the plan was sealed under: it fixes the provider and every account field, region and tenant included, and the approver allowlist. An apply under another contract is refused. */
+  contractSha256: string;
   createdAt: string;
   /** Normalized, redacted change summary: address, type, action, and what else an approver must see (an import, a move, a forget, an output change). Never plan values. */
   changes: PlanChange[];
@@ -124,6 +125,8 @@ export type ApplyEvidence = {
   artifactSha256: string;
   manifestHash: string;
   releaseIdentity: string;
+  /** The pinned contract the apply ran under, and so the provider, account, region or tenant it ran against. */
+  contractSha256: string;
   approvals: { approverId: string; issuedAt: string }[];
   adapter: { adapterVersion: string; argvDigest: string };
   toolVersions: { engine: string };

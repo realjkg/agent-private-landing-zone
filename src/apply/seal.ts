@@ -11,7 +11,8 @@ import { MUTATION_IDENTITY_VARIABLE } from "../tools/identity.js";
 import { ENVIRONMENTS, HASH } from "./constants.js";
 import { TERRAFORM_APPLY_PROFILE } from "../tools/profiles.js";
 import { sha256 } from "../util/sha256.js";
-import { codeOf, openSession, prepareWorkspace, stop, type EngineSession } from "./engine.js";
+import { assertBackendInContract, codeOf, openSession, prepareWorkspace, stop, type EngineSession } from "./engine.js";
+import type { ProviderBlock, ProviderSpec } from "./provider.js";
 import type { ApplyEnvironment, ApplyRefusalCode, PilotTarget, PlanChange, SealedPlan } from "./types.js";
 
 /**
@@ -29,7 +30,7 @@ const SEAL_PURPOSE = "sealed-plan";
 export const SEAL_PLAN_FILE = "alz-preview.tfplan";
 
 type ArtifactFields = Pick<SealedPlan,
-  "planSha256" | "manifestHash" | "releaseIdentity" | "environment" | "target" | "engineVersion" | "policyVersion" | "changes">;
+  "planSha256" | "manifestHash" | "releaseIdentity" | "environment" | "target" | "engineVersion" | "policyVersion" | "contractSha256" | "changes">;
 
 /**
  * The artifact hash an approver signs. The one definition; sealing and loading
@@ -41,7 +42,7 @@ export function computeArtifactSha256(fields: ArtifactFields): string {
   return sha256(canonicalJson({
     planSha256: fields.planSha256, manifestHash: fields.manifestHash, releaseIdentity: fields.releaseIdentity,
     environment: fields.environment, target: { account, backend, workspace },
-    engineVersion: fields.engineVersion, policyVersion: fields.policyVersion,
+    engineVersion: fields.engineVersion, policyVersion: fields.policyVersion, contractSha256: fields.contractSha256,
     changesSha256: sha256(canonicalJson(fields.changes)),
   }));
 }
@@ -72,8 +73,12 @@ export type SealInput = {
   policyVersion: string;
   /** The engine version the manifest was validated against. */
   engineVersion: string;
-  /** The contract's tenant and subscription for this environment: a constant in a provider block must equal them. */
-  pinned: Pick<PilotTarget, "tenantId" | "subscriptionId">;
+  /** The contract's target for this environment: the backend the seal-time init saves and a constant in a provider block must be its. */
+  pinned: PilotTarget;
+  /** The contract's provider. */
+  spec: ProviderSpec;
+  /** The pinned contract's canonical sha256: sealed, so the plan applies only under this contract. */
+  contractSha256: string;
   toolDirs?: readonly string[];
   now?: () => Date;
 };
@@ -97,23 +102,11 @@ type Shown = {
   format_version?: unknown; errored?: unknown;
   resource_changes?: { address?: string; type?: string; previous_address?: unknown; change?: { actions?: string[]; importing?: unknown } }[];
   output_changes?: Record<string, { actions?: string[] }>;
-  configuration?: { provider_config?: Record<string, { name?: string; full_name?: string; expressions?: Record<string, { constant_value?: unknown }> }> };
+  configuration?: { provider_config?: Record<string, ProviderBlock> };
 };
 
-/**
- * The provider half of the contract binding: a constant `subscription_id` or `tenant_id` in any azurerm provider block
- * must be the contract's. An expression (a variable, a data source) is not checkable from the plan and is not judged;
- * the runbook says so. The identity checks and the cloud-side role assignments still bound what the credentials reach.
- */
-function assertProvidersInContract(document: Shown, pinned: SealInput["pinned"]): void {
-  for (const provider of Object.values(document.configuration?.provider_config ?? {})) {
-    if (provider?.name !== "azurerm" && !/\/azurerm$/.test(provider?.full_name ?? "")) continue;
-    for (const [field, want, code] of [["subscription_id", pinned.subscriptionId, "PROVIDER_SUBSCRIPTION_NOT_IN_CONTRACT"], ["tenant_id", pinned.tenantId, "PROVIDER_TENANT_NOT_IN_CONTRACT"]] as const) {
-      const constant = provider.expressions?.[field]?.constant_value;
-      if (constant !== undefined && constant !== null && String(constant).toLowerCase() !== want.toLowerCase()) stop(code);
-    }
-  }
-}
+/** What the provider half of the contract binding is judged against: the contract's target and provider, and the environment that holds the APPLY role (sealing hides it from its children, not from this check). */
+type Judge = Pick<SealInput, "pinned" | "spec" | "env">;
 
 /**
  * The one extraction of the redacted change list (address, type, action, and
@@ -122,11 +115,11 @@ function assertProvidersInContract(document: Shown, pinned: SealInput["pinned"])
  * again from the decrypted plan to prove the record describes it. It also
  * enforces the provider half of the contract binding.
  */
-function changesOf(shown: string, pinned: SealInput["pinned"]): SealedPlan["changes"] {
+function changesOf(shown: string, judge: Judge): SealedPlan["changes"] {
   let document: Shown;
   try { document = JSON.parse(shown); } catch { return stop("PLAN_JSON_INVALID"); }
   if (typeof document?.format_version !== "string" || document.errored === true) return stop("PLAN_JSON_UNUSABLE");
-  assertProvidersInContract(document, pinned);
+  judge.spec.assertProviderConfig(Object.values(document.configuration?.provider_config ?? {}), judge.pinned, judge.env);
   const resources = (Array.isArray(document.resource_changes) ? document.resource_changes : []).map((found, index): PlanChange => {
     const actions = found?.change?.actions ?? [];
     const previous = found?.previous_address;
@@ -144,7 +137,8 @@ function changesOf(shown: string, pinned: SealInput["pinned"]): SealedPlan["chan
 }
 
 /** The pinned `show` of the plan file at `../alz-preview.tfplan`, in an initialized work directory, with no identity at all. */
-const readChanges = (session: EngineSession, pinned: SealInput["pinned"]): SealedPlan["changes"] => changesOf(session.step(SHOW_ARGV, null, true), pinned);
+const readChanges = (session: EngineSession, judge: Judge): SealedPlan["changes"] =>
+  changesOf(session.step(SHOW_ARGV, null, true), judge);
 
 /**
  * Derives the change list from the plan bytes themselves, for an apply that
@@ -152,12 +146,12 @@ const readChanges = (session: EngineSession, pinned: SealInput["pinned"]): Seale
  * with the same pinned argument list and the same restricted profile as
  * sealing (no identity in the environment), and removed. Throws a code.
  */
-export function rederiveChanges(input: Pick<SealInput, "scratchDir" | "env" | "toolDirs" | "manifest" | "pinned"> & { planBytes: Buffer }): SealedPlan["changes"] {
+export function rederiveChanges(input: Pick<SealInput, "scratchDir" | "env" | "toolDirs" | "manifest" | "pinned" | "spec"> & { planBytes: Buffer }): SealedPlan["changes"] {
   const session = sealSession(input);
   const planFile = join(input.scratchDir, SEAL_PLAN_FILE);
   writeFileSync(planFile, input.planBytes, { mode: 0o600, flag: "wx" });
   try {
-    return readChanges(session, input.pinned);
+    return readChanges(session, input);
   } finally {
     rmSync(planFile, { force: true });
   }
@@ -178,19 +172,21 @@ function runSeal(input: SealInput): { sealed: SealedPlan; planBytes: Buffer } {
   try {
     prepareWorkspace(session, {
       snapshotPath: input.snapshotPath, engineVersion: input.engineVersion, target: input.target,
-      initArgv: INIT_ARGV, stateIdentity: "STATE",
+      initArgv: INIT_ARGV, stateIdentity: "STATE", backendBlock: input.spec.backendBlock,
     });
+    // The plan embeds the backend this init saved (docs/act-pilot-simulation.md), so it is judged here as well as at apply.
+    assertBackendInContract(session.work, input.pinned, input.spec);
     session.assertBound();
     session.step(PREVIEW_PLAN_ARGV, "DISCOVERY");
     session.assertBound();
 
     const planBytes = readFileSync(planFile);
-    const changes = readChanges(session, input.pinned);
+    const changes = readChanges(session, input);
 
     const fields: ArtifactFields = {
       planSha256: sha256(planBytes), manifestHash: manifest.manifestHash, releaseIdentity: releaseIdentityOf(manifest),
       environment: input.environment, target: { ...input.target }, engineVersion: input.engineVersion,
-      policyVersion: input.policyVersion, changes,
+      policyVersion: input.policyVersion, contractSha256: input.contractSha256, changes,
     };
     const sealed: SealedPlan = {
       schemaVersion: 1, artifactSha256: computeArtifactSha256(fields), ...fields,
@@ -240,7 +236,7 @@ export type ReviewBundle = Omit<SealedPlan, "schemaVersion"> & { changesSha256: 
 export const reviewBundleOf = (s: SealedPlan): ReviewBundle => ({
   artifactSha256: s.artifactSha256, planSha256: s.planSha256, manifestHash: s.manifestHash, releaseIdentity: s.releaseIdentity,
   environment: s.environment, target: { ...s.target }, engineVersion: s.engineVersion, policyVersion: s.policyVersion,
-  createdAt: s.createdAt, changes: s.changes, changesSha256: sha256(canonicalJson(s.changes)),
+  contractSha256: s.contractSha256, createdAt: s.createdAt, changes: s.changes, changesSha256: sha256(canonicalJson(s.changes)),
 });
 
 const BUNDLE_KEYS = Object.keys(reviewBundleOf({ target: {}, changes: [] } as never)).sort();
@@ -276,7 +272,7 @@ export function verifySealedPlan(value: unknown): LoadedSeal {
   if (!s || typeof s !== "object" || !Buffer.isBuffer(planBytes) || s.schemaVersion !== 1 ||
     !ENVIRONMENTS.includes(s.environment) || !s.target || typeof s.target !== "object" ||
     !Array.isArray(s.changes) || !s.changes.every(wellFormedChange) ||
-    ![s.artifactSha256, s.planSha256, s.manifestHash, s.releaseIdentity].every((h) => typeof h === "string" && HASH.test(h))) {
+    ![s.artifactSha256, s.planSha256, s.manifestHash, s.releaseIdentity, s.contractSha256].every((h) => typeof h === "string" && HASH.test(h))) {
     return invalid("The sealed plan record is malformed.");
   }
   let recomputed: string;
@@ -292,7 +288,7 @@ export function verifyReviewBundle(value: unknown): { ok: true; bundle: ReviewBu
   if (Object.keys(b).sort().join() !== BUNDLE_KEYS.join() || !ENVIRONMENTS.includes(b.environment as ApplyEnvironment) ||
     !["account", "backend", "workspace"].every((key) => text((t as Record<string, unknown>)[key])) ||
     !Array.isArray(b.changes) || !b.changes.every(wellFormedChange) || !text(b.engineVersion) || !text(b.policyVersion) || !text(b.createdAt) ||
-    ![b.artifactSha256, b.planSha256, b.manifestHash, b.releaseIdentity, b.changesSha256].every((h) => typeof h === "string" && HASH.test(h))) {
+    ![b.artifactSha256, b.planSha256, b.manifestHash, b.releaseIdentity, b.contractSha256, b.changesSha256].every((h) => typeof h === "string" && HASH.test(h))) {
     return invalid("The review bundle is malformed.");
   }
   const bundle = b as ReviewBundle;

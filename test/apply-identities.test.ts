@@ -15,6 +15,7 @@ import {
   isExecutionIdentity,
 } from "../src/tools/identity.js";
 import { PROFILES } from "../src/tools/profiles.js";
+import { AZURE } from "../src/apply/providers/azure.js";
 
 // Explicit fixtures: none of these are real tenants, subscriptions or principals.
 const TENANT = "00000000-0000-4000-8000-000000000001";
@@ -50,31 +51,31 @@ test("APPLY is no longer a forbidden prefix, and every other forbidden prefix st
 });
 
 test("checkApplyIdentities accepts four configured, distinct identities", () => {
-  assert.deepEqual(checkApplyIdentities(fixture()), { ok: true });
+  assert.deepEqual(checkApplyIdentities(fixture(), AZURE), { ok: true });
 });
 
 test("each missing identity is IDENTITY_NOT_CONFIGURED, named, with no fallback", () => {
   for (const identity of APPLY_IDENTITIES) {
     const env = fixture();
     for (const key of Object.keys(env)) if (key.startsWith(`ALZ_${identity}_`) && !(identity === "STATE" && key.startsWith("ALZ_STATE_WRITE_"))) delete env[key];
-    const outcome = checkApplyIdentities(env);
+    const outcome = checkApplyIdentities(env, AZURE);
     assert.equal(outcome.ok, false, identity);
     if (outcome.ok) continue;
     assert.equal(outcome.code, "IDENTITY_NOT_CONFIGURED", identity);
     assert.match(outcome.message, new RegExp(identity), identity);
   }
-  assert.equal((checkApplyIdentities({}) as { code: string }).code, "IDENTITY_NOT_CONFIGURED");
+  assert.equal((checkApplyIdentities({}, AZURE) as { code: string }).code, "IDENTITY_NOT_CONFIGURED");
 });
 
 test("STATE_WRITE variables do not count as STATE configuration, and empty values do not count at all", () => {
   const env = fixture();
   for (const key of Object.keys(env)) if (key.startsWith("ALZ_STATE_") && !key.startsWith("ALZ_STATE_WRITE_")) delete env[key];
-  const outcome = checkApplyIdentities(env);
+  const outcome = checkApplyIdentities(env, AZURE);
   assert.equal(outcome.ok, false);
   assert.match((outcome as { message: string }).message, /\bSTATE\b/);
   const blank = fixture();
   for (const key of Object.keys(blank)) if (key.startsWith("ALZ_APPLY_")) blank[key] = "";
-  assert.equal((checkApplyIdentities(blank) as { code: string }).code, "IDENTITY_NOT_CONFIGURED");
+  assert.equal((checkApplyIdentities(blank, AZURE) as { code: string }).code, "IDENTITY_NOT_CONFIGURED");
 });
 
 test("any pair sharing a principal or secret is IDENTITY_COLLAPSED, for all six pairs", () => {
@@ -86,7 +87,7 @@ test("any pair sharing a principal or secret is IDENTITY_COLLAPSED, for all six 
       const secret = "shared-secret-value-0001";
       env[`ALZ_${a}_${name}`] = secret;
       env[`ALZ_${b}_${name}`] = secret;
-      const outcome = checkApplyIdentities(env);
+      const outcome = checkApplyIdentities(env, AZURE);
       assert.equal(outcome.ok, false, `${a}/${b}/${name}`);
       if (outcome.ok) continue;
       assert.equal(outcome.code, "IDENTITY_COLLAPSED", `${a}/${b}/${name}`);
@@ -96,8 +97,18 @@ test("any pair sharing a principal or secret is IDENTITY_COLLAPSED, for all six 
   }
 });
 
+test("AWS credentials on any identity are refused under an Azure contract", () => {
+  for (const identity of APPLY_IDENTITIES) {
+    for (const name of ["AWS_ACCESS_KEY_ID", "AWS_ROLE_ARN", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_PROFILE"]) {
+      const outcome = checkApplyIdentities({ ...fixture(), [`ALZ_${identity}_${name}`]: "fake-0001" }, AZURE);
+      assert.equal(outcome.ok, false, `${identity}/${name}`);
+      if (!outcome.ok) assert.equal(outcome.code, "IDENTITY_NOT_CONFIGURED");
+    }
+  }
+});
+
 test("sharing the tenant, subscription and OIDC flag is expected and is not a collapse", () => {
-  assert.deepEqual(checkApplyIdentities(fixture()), { ok: true });
+  assert.deepEqual(checkApplyIdentities(fixture(), AZURE), { ok: true });
 });
 
 test("a non-secret principal id shared by STATE and DISCOVERY is now reported by the existing check", () => {
@@ -113,7 +124,7 @@ test("STATE_WRITE is not mistaken for STATE by the STATE-versus-DISCOVERY check"
 test("principals are compared after normalizing: GUID case, padding, path spelling, and symlinks or hard links to one file", () => {
   const collapsedWith = (over: Record<string, string>): string => {
     const env = { ...fixture(), ...over };
-    const outcome = checkApplyIdentities(env);
+    const outcome = checkApplyIdentities(env, AZURE);
     return outcome.ok ? "ok" : outcome.code;
   };
   const GUID_A = "AAAAAAAA-1111-4111-8111-AAAAAAAAAAAA";
@@ -138,9 +149,9 @@ test("principals are compared after normalizing: GUID case, padding, path spelli
     assert.equal(pair(real, other), "ok", "a different file with the same content is a different file");
     // A configuration directory is a path too, and the operator's own AZURE_CONFIG_DIR is compared the same way.
     assert.equal(collapsedWith({ ALZ_APPLY_AZURE_CONFIG_DIR: dir, ALZ_STATE_WRITE_AZURE_CONFIG_DIR: join(dir, "dirlink") }), "IDENTITY_COLLAPSED" /* fallback variables are refused too */);
-    const ambient = checkApplyIdentities({ ...fixture(), AZURE_CLIENT_ID: GUID_A, ALZ_APPLY_ARM_CLIENT_ID: GUID_A.toLowerCase() });
+    const ambient = checkApplyIdentities({ ...fixture(), AZURE_CLIENT_ID: GUID_A, ALZ_APPLY_ARM_CLIENT_ID: GUID_A.toLowerCase() }, AZURE);
     assert.equal(ambient.ok === false && ambient.code, "IDENTITY_COLLAPSED", "operator AZURE_CLIENT_ID in another case");
-    const ambientFile = checkApplyIdentities({ ...fixture(), ARM_OIDC_TOKEN_FILE: join(dir, "symlink"), ALZ_APPLY_ARM_OIDC_TOKEN_FILE: real });
+    const ambientFile = checkApplyIdentities({ ...fixture(), ARM_OIDC_TOKEN_FILE: join(dir, "symlink"), ALZ_APPLY_ARM_OIDC_TOKEN_FILE: real }, AZURE);
     assert.equal(ambientFile.ok === false && ambientFile.code, "IDENTITY_COLLAPSED", "operator token file through a symlink");
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
@@ -148,7 +159,7 @@ test("principals are compared after normalizing: GUID case, padding, path spelli
 test("messages never contain a value", () => {
   const env = fixture();
   env.ALZ_APPLY_ARM_CLIENT_SECRET = env.ALZ_STATE_WRITE_ARM_CLIENT_SECRET = "very-secret-value-xyz";
-  const text = JSON.stringify(checkApplyIdentities(env));
+  const text = JSON.stringify(checkApplyIdentities(env, AZURE));
   for (const value of [TENANT, SUBSCRIPTION, "very-secret-value-xyz", "/run/fixtures"]) assert.equal(text.includes(value), false, value);
 });
 
@@ -222,23 +233,23 @@ const contract = {
 } as unknown as PilotContract;
 
 test("identity targets: matching tenant and subscription pass", () => {
-  assert.deepEqual(verifyIdentityTargets(contract, "DEV", fixture()), { ok: true });
+  assert.deepEqual(verifyIdentityTargets(contract, "DEV", fixture(), AZURE), { ok: true });
   const prod = fixture();
   for (const identity of APPLY_IDENTITIES) {
     prod[`ALZ_${identity}_ARM_TENANT_ID`] = contract.targets.PROD.tenantId.toUpperCase();
     prod[`ALZ_${identity}_ARM_SUBSCRIPTION_ID`] = contract.targets.PROD.subscriptionId;
   }
-  assert.deepEqual(verifyIdentityTargets(contract, "PROD", prod), { ok: true }, "case does not matter");
+  assert.deepEqual(verifyIdentityTargets(contract, "PROD", prod, AZURE), { ok: true }, "case does not matter");
   const qa = fixture();
   for (const identity of APPLY_IDENTITIES) {
     qa[`ALZ_${identity}_ARM_TENANT_ID`] = contract.targets.QA.tenantId;
     qa[`ALZ_${identity}_ARM_SUBSCRIPTION_ID`] = contract.targets.QA.subscriptionId.toUpperCase();
   }
-  assert.deepEqual(verifyIdentityTargets(contract, "QA", qa), { ok: true });
+  assert.deepEqual(verifyIdentityTargets(contract, "QA", qa, AZURE), { ok: true });
   // Each environment's credentials apply only there.
   for (const [good, other] of [["QA", "DEV"], ["QA", "PROD"], ["DEV", "QA"], ["PROD", "QA"]] as const) {
     const env = good === "QA" ? qa : good === "PROD" ? prod : fixture();
-    assert.equal(verifyIdentityTargets(contract, other, env).ok, false, good + " credentials for " + other);
+    assert.equal(verifyIdentityTargets(contract, other, env, AZURE).ok, false, good + " credentials for " + other);
   }
 });
 
@@ -247,7 +258,7 @@ test("identity targets: any identity pointing elsewhere is IDENTITY_TARGET_MISMA
     for (const variable of ["TENANT_ID", "SUBSCRIPTION_ID"]) {
       const env = fixture();
       env[`ALZ_${identity}_ARM_${variable}`] = OTHER;
-      const outcome = verifyIdentityTargets(contract, "DEV", env);
+      const outcome = verifyIdentityTargets(contract, "DEV", env, AZURE);
       assert.equal(outcome.ok, false, identity + variable);
       if (outcome.ok) continue;
       assert.equal(outcome.code, "IDENTITY_TARGET_MISMATCH");
@@ -256,7 +267,7 @@ test("identity targets: any identity pointing elsewhere is IDENTITY_TARGET_MISMA
     }
   }
   // DEV credentials presented for PROD (the same fixture) are a mismatch.
-  assert.equal(verifyIdentityTargets(contract, "PROD", fixture()).ok, false);
+  assert.equal(verifyIdentityTargets(contract, "PROD", fixture(), AZURE).ok, false);
 });
 
 test("identity targets: APPLY and STATE_WRITE must set both; the read identities may leave them unset", () => {
@@ -265,7 +276,7 @@ test("identity targets: APPLY and STATE_WRITE must set both; the read identities
       for (const blank of [undefined, ""]) {
         const env = fixture();
         if (blank === undefined) delete env[`ALZ_${identity}_ARM_${variable}`]; else env[`ALZ_${identity}_ARM_${variable}`] = blank;
-        const outcome = verifyIdentityTargets(contract, "DEV", env);
+        const outcome = verifyIdentityTargets(contract, "DEV", env, AZURE);
         assert.equal(outcome.ok, false, identity + variable);
         if (!outcome.ok) assert.ok(outcome.code === "IDENTITY_TARGET_MISMATCH" && outcome.message.includes(`ALZ_${identity}_ARM_${variable}`));
       }
@@ -275,15 +286,15 @@ test("identity targets: APPLY and STATE_WRITE must set both; the read identities
     const env = fixture();
     delete env[`ALZ_${identity}_ARM_TENANT_ID`];
     delete env[`ALZ_${identity}_ARM_SUBSCRIPTION_ID`];
-    assert.deepEqual(verifyIdentityTargets(contract, "DEV", env), { ok: true }, identity);
+    assert.deepEqual(verifyIdentityTargets(contract, "DEV", env, AZURE), { ok: true }, identity);
   }
-  assert.equal(verifyIdentityTargets(contract, "QA" as never, fixture()).ok, false, "an environment the contract lacks");
+  assert.equal(verifyIdentityTargets(contract, "QA" as never, fixture(), AZURE).ok, false, "an environment the contract lacks");
 });
 
 // --- separation and inheritance: no shared principal, no fallback, never the operator's own ------------------
 
 const refusedWith = (env: NodeJS.ProcessEnv, code: string, ...mentions: string[]): string => {
-  const outcome = checkApplyIdentities(env);
+  const outcome = checkApplyIdentities(env, AZURE);
   assert.equal(outcome.ok, false, mentions.join());
   if (outcome.ok) return "";
   assert.equal(outcome.code, code, mentions.join());
@@ -322,7 +333,7 @@ test("any variable that lets a child fall back to the az CLI, managed identity o
     }
   }
   // ARM_USE_OIDC and the token file are the allowed way in.
-  assert.deepEqual(checkApplyIdentities(fixture()), { ok: true });
+  assert.deepEqual(checkApplyIdentities(fixture(), AZURE), { ok: true });
 });
 
 test("an identity value equal to the operator's ambient AZURE_* or ARM_* variable is refused, never echoed", () => {
@@ -339,5 +350,5 @@ test("an identity value equal to the operator's ambient AZURE_* or ARM_* variabl
   shared.ARM_TENANT_ID = TENANT;
   shared.ARM_SUBSCRIPTION_ID = SUBSCRIPTION;
   shared.ARM_CLIENT_ID = "operator-own-client";
-  assert.deepEqual(checkApplyIdentities(shared), { ok: true });
+  assert.deepEqual(checkApplyIdentities(shared, AZURE), { ok: true });
 });

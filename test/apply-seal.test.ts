@@ -12,9 +12,10 @@ import { canonicalJson } from "../src/teardown/manifest.js";
 import { createImmutableSnapshot } from "../src/teardown/snapshot.js";
 import { createPrivateDirectory } from "../src/tools/private-workdir.js";
 import {
-  DEV_TARGET, ENGINE_VERSION, ENV, TENANT, H, PLAN_CANARY, POLICY, PROD_TARGET, QA_TARGET, VALUE_CANARY, behave as behaveIn, callsOf, installFakeTerraform, sha,
+  DEV_TARGET, ENGINE_VERSION, ENV, identityEnv, TENANT, H, PLAN_CANARY, POLICY, PROD_TARGET, QA_TARGET, VALUE_CANARY, behave as behaveIn, callsOf, installFakeTerraform, sha,
   writeProject, type Behavior,
 } from "./helpers/apply-fixtures.js";
+import { AZURE } from "../src/apply/providers/azure.js";
 
 // docs/act-pilot-plan.md, authority items 2 and 5. The engine is a fake
 // executable: these tests pin the sealing logic, not the real Terraform CLI.
@@ -53,8 +54,8 @@ function fixture(options: { target?: typeof DEV_TARGET; environment?: "DEV" | "Q
   const scratch = createPrivateDirectory("alz-seal-", parent);
   const input: SealInput = {
     environment: options.environment ?? "DEV", target, manifest, snapshotPath: snapshot.path, scratchDir: scratch.path,
-    env: options.env ?? ENV, policyVersion: POLICY, engineVersion: ENGINE_VERSION, toolDirs: [toolDir],
-    pinned: { tenantId: TENANT, subscriptionId: target.account },
+    env: options.env ?? identityEnv(options.environment ?? "DEV"), policyVersion: POLICY, engineVersion: ENGINE_VERSION, toolDirs: [toolDir],
+    pinned: { tenantId: TENANT, subscriptionId: target.account, backend: target.backend, workspace: target.workspace }, spec: AZURE, contractSha256: H("9"),
     now: () => new Date("2026-10-11T10:00:00.000Z"),
   };
   return { input, scratch, cleanup: () => { snapshot.remove(); scratch.remove(); } };
@@ -63,7 +64,7 @@ function fixture(options: { target?: typeof DEV_TARGET; environment?: "DEV" | "Q
 /** What `rederiveChanges` needs: the fixture's scratch directory with an (empty) work directory, as `prepareWorkspace` leaves it. */
 function fixtureSession(f: ReturnType<typeof fixture>) {
   mkdirSync(join(f.scratch.path, "work"), { recursive: true });
-  return { scratchDir: f.scratch.path, env: f.input.env, toolDirs: f.input.toolDirs, manifest: f.input.manifest, pinned: f.input.pinned };
+  return { scratchDir: f.scratch.path, env: f.input.env, toolDirs: f.input.toolDirs, manifest: f.input.manifest, pinned: f.input.pinned, spec: f.input.spec };
 }
 
 async function sealed(options: Parameters<typeof fixture>[0] = {}) {
@@ -100,7 +101,7 @@ test("sealing runs the pinned init/workspace/plan/show sequence, with STATE for 
   } finally { f.cleanup(); }
 });
 
-test("the sealed record binds plan, manifest, release identity, environment, target, engine and policy; the artifact hash recomputes from them", async () => {
+test("the sealed record binds plan, manifest, release identity, environment, target, engine, policy and pinned contract; the artifact hash recomputes from them", async () => {
   const { result } = await sealed();
   const { sealed: s } = result as Extract<typeof result, { ok: true }>;
   assert.equal(s.schemaVersion, 1);
@@ -113,15 +114,28 @@ test("the sealed record binds plan, manifest, release identity, environment, tar
   assert.match(s.releaseIdentity, /^[a-f0-9]{64}$/);
   assert.equal(s.artifactSha256, computeArtifactSha256(s));
   assert.equal(s.artifactSha256, sha(JSON.stringify({
-    changesSha256: sha(canonicalJson(s.changes)), engineVersion: s.engineVersion, environment: s.environment, manifestHash: s.manifestHash,
+    changesSha256: sha(canonicalJson(s.changes)), contractSha256: s.contractSha256, engineVersion: s.engineVersion, environment: s.environment, manifestHash: s.manifestHash,
     planSha256: s.planSha256, policyVersion: s.policyVersion, releaseIdentity: s.releaseIdentity,
     target: { account: s.target.account, backend: s.target.backend, workspace: s.target.workspace },
-  })), "canonical JSON of exactly these eight fields, the change list through its own hash");
+  })), "canonical JSON of exactly these nine fields, the change list through its own hash");
   assert.deepEqual(s.changes, [
     { address: "azurerm_log_analytics_workspace.pilot", type: "azurerm_log_analytics_workspace", action: "UPDATE" },
     { address: "azurerm_resource_group.pilot", type: "azurerm_resource_group", action: "CREATE" },
   ]);
   assert.ok(!JSON.stringify(s).includes(VALUE_CANARY) && !JSON.stringify(s).includes(PLAN_CANARY));
+});
+
+test("Azure too: the backend the seal-time init saved must be the contract's, because the plan embeds it", async () => {
+  for (const savedBackend of [
+    { type: "azurerm", config: { storage_account_name: "attackerstore", container_name: "tfstate", key: "dev.tfstate" } }, { type: "s3", config: {} }, null,
+  ]) {
+    const f = fixture();
+    try {
+      behave({ savedBackend });
+      const result = await sealPlan(f.input);
+      assert.ok(!result.ok && /BACKEND_(NOT_IN_CONTRACT|UNREADABLE)/.test(result.message), JSON.stringify(result));
+    } finally { f.cleanup(); }
+  }
 });
 
 test("any change to a bound field changes the artifact hash", async () => {
@@ -133,7 +147,7 @@ test("any change to a bound field changes the artifact hash", async () => {
     { target: { ...s.target, workspace: "other" } }, { target: { ...s.target, account: "sub-other" } },
     { target: { ...s.target, backend: "x/y/z" } }, { engineVersion: "1.9.6" }, { policyVersion: "2026-10-12.1" },
     { changes: [] }, { changes: s.changes.slice(1) }, { changes: s.changes.map((c) => ({ ...c, action: "DELETE" })) },
-    { changes: s.changes.map((c) => ({ ...c, address: c.address + "x" })) }, { changes: [...s.changes].reverse() },
+    { changes: s.changes.map((c) => ({ ...c, address: c.address + "x" })) }, { changes: [...s.changes].reverse() }, { contractSha256: H("8") },
   ];
   for (const change of variants) assert.notEqual(computeArtifactSha256({ ...s, ...change }), base, JSON.stringify(change));
 });

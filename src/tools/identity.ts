@@ -55,7 +55,7 @@ export function mutationIdentityVariables(env: NodeJS.ProcessEnv): string[] {
   return Object.keys(env).filter((key) => MUTATION_IDENTITY_VARIABLE.test(key)).sort();
 }
 
-export const PRINCIPAL_NAME = /(SECRET|TOKEN|PASSWORD|PASSPHRASE|ACCESS_KEY|SESSION|CLIENT_ID$|CLIENT_CERTIFICATE|CONFIG_DIR$)/i;
+export const PRINCIPAL_NAME = /(SECRET|TOKEN|PASSWORD|PASSPHRASE|ACCESS_KEY|SESSION|CLIENT_ID$|ROLE_ARN$|CLIENT_CERTIFICATE|CONFIG_DIR$)/i;
 
 /**
  * Does `key` (`ALZ_<IDENTITY>_<VAR>`) belong to `identity`? `STATE` is a prefix
@@ -77,12 +77,23 @@ export function identityVariables(env: NodeJS.ProcessEnv, identity: ExecutionIde
   return found;
 }
 
+const IAM_ROLE_ARN = /^arn:aws:iam::([0-9]{12}):role\/(?:[^/]+\/)*([^/]+)$/i;
+
+/**
+ * An IAM role as AWS tells roles apart: the account and the role name, lowercase. A role name is unique in its
+ * account whatever the ARN's path, so `role/name` and `role/team/name` are one role. Undefined for anything that is not a role ARN.
+ */
+export function iamRoleIdentity(value: string): string | undefined {
+  const match = IAM_ROLE_ARN.exec(value.trim());
+  return match ? match[1] + ":" + match[2].toLowerCase() : undefined;
+}
+
 const PATH_NAME = /(TOKEN_FILE(_PATH)?|CONFIG_DIR)$/i;
-const CLIENT_ID_NAME = /CLIENT_ID$/i;
+const CLIENT_ID_NAME = /(CLIENT_ID|ROLE_ARN)$/i;
 
 /**
  * The forms under which a principal value is compared: the trimmed text always;
- * a client id lowercased (GUIDs are case-insensitive); a token file or
+ * a client id or role ARN lowercased (GUIDs and IAM role names are case-insensitive), a role ARN also as its account and role name; a token file or
  * configuration directory as its resolved path and, where it exists, its real
  * path and device+inode, so a symlink or hard link to the same file is the same
  * principal. Two values collide when any form is shared, so this never compares
@@ -91,7 +102,11 @@ const CLIENT_ID_NAME = /CLIENT_ID$/i;
 export function comparableForms(name: string, value: string): string[] {
   const text = value.trim();
   const forms = ["raw:" + text];
-  if (CLIENT_ID_NAME.test(name)) forms.push("raw:" + text.toLowerCase());
+  if (CLIENT_ID_NAME.test(name)) {
+    forms.push("raw:" + text.toLowerCase());
+    const role = iamRoleIdentity(text);
+    if (role) forms.push("role:" + role);
+  }
   if (PATH_NAME.test(name) && text !== "") {
     const resolved = resolve(text);
     forms.push("path:" + resolved);

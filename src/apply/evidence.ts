@@ -1,4 +1,5 @@
-import { GUID, HASH, SAFE_VALUE } from "./constants.js";
+import { HASH } from "./constants.js";
+import type { ProviderSpec } from "./provider.js";
 import type { ApplyEvidence } from "./types.js";
 
 /**
@@ -20,9 +21,6 @@ const MAX_STRING = 256;
 const text: Check = (v) => typeof v === "string" && v.length > 0 && v.length <= MAX_STRING && !/^\s*[{[]/.test(v);
 const hash: Check = (v) => typeof v === "string" && HASH.test(v);
 const iso: Check = (v) => typeof v === "string" && /^\d{4}-\d\d-\d\dT[\d:.]+Z$/.test(v) && !Number.isNaN(Date.parse(v));
-const guid: Check = (v) => typeof v === "string" && GUID.test(v);
-/** A client id as attested: a safe value, already lowercase. */
-const clientId: Check = (v) => typeof v === "string" && SAFE_VALUE.test(v) && v === v.toLowerCase();
 const oneOf = (...allowed: unknown[]): Check => (v) => allowed.includes(v);
 const exitCode: Check = (v) => v === null || (typeof v === "number" && Number.isInteger(v));
 
@@ -38,6 +36,7 @@ const SHAPE: Shape = {
   artifactSha256: hash,
   manifestHash: hash,
   releaseIdentity: text,
+  contractSha256: hash,
   approvals: [{ approverId: text, issuedAt: iso }],
   adapter: { adapterVersion: text, argvDigest: hash },
   toolVersions: { engine: text },
@@ -98,20 +97,17 @@ export function assertApplyEvidence(evidence: unknown): ApplyEvidence {
  * independent of the machine (docs/act-pilot-apply.md). `realEngine` and
  * `backendIdentitySeparated` are the operator's attestations, not machine proof.
  */
-export type QualificationEvidence = {
+export type QualificationEvidence = { [accountField: string]: unknown } & {
   schemaVersion: 1;
   engine: "TERRAFORM";
   /** The real engine binary ran the adapter's exact argument lists, not a fake. */
   realEngine: true;
   /** Backend access ran as the separate state identities, never the provider-apply identity. */
   backendIdentitySeparated: true;
-  /** The DEV tenant and subscription the qualification ran against; apply refuses evidence for any other. */
-  tenantId: string;
-  subscriptionId: string;
-  /** The DEV backend (`<storage-account>/<container>/<key>`) and workspace the qualification ran against. */
+  /** Besides the provider's account fields (the DEV account the qualification ran against; apply refuses any other): the DEV backend and workspace it ran against. */
   backend: string;
   workspace: string;
-  /** The STATE_WRITE and APPLY client ids the operator attested from the cloud logs, trimmed and lowercase. */
+  /** The STATE_WRITE and APPLY principals (client ids, role ARNs) the operator attested from the cloud logs, trimmed and lowercase. */
   stateWriteClientId: string;
   applyClientId: string;
   /** SHA-256 of the terraform binary that qualified; a different binary needs a new qualification. */
@@ -122,28 +118,27 @@ export type QualificationEvidence = {
   qualifiedAt: string;
 };
 
-const QUALIFICATION_SHAPE: Shape = {
+const qualificationShape = (spec: ProviderSpec): Shape => ({
   schemaVersion: oneOf(1),
   engine: oneOf("TERRAFORM"),
   realEngine: oneOf(true),
   backendIdentitySeparated: oneOf(true),
-  tenantId: guid,
-  subscriptionId: guid,
+  ...Object.fromEntries(Object.entries(spec.accountFields).map(([field, ok]): [string, Check] => [field, (v) => typeof v === "string" && ok(v)])),
   backend: text,
   workspace: text,
-  stateWriteClientId: clientId,
-  applyClientId: clientId,
+  stateWriteClientId: (v) => typeof v === "string" && spec.clientIdOk(v),
+  applyClientId: (v) => typeof v === "string" && spec.clientIdOk(v),
   terraformSha256: hash,
   adapterVersion: text,
   argvDigest: hash,
   engineVersion: text,
   qualifiedAt: iso,
-};
+});
 
 /** Every reason this document is not qualification evidence. Empty means it is. */
-export function qualificationEvidenceProblems(evidence: unknown): string[] {
+export function qualificationEvidenceProblems(evidence: unknown, spec: ProviderSpec): string[] {
   const problems: string[] = [];
-  problemsOf(evidence, QUALIFICATION_SHAPE, "qualification", problems);
+  problemsOf(evidence, qualificationShape(spec), "qualification", problems);
   const record = evidence as Partial<QualificationEvidence> | null;
   if (problems.length === 0 && record?.stateWriteClientId === record?.applyClientId) problems.push("qualification.applyClientId: STATE_WRITE and APPLY are separate principals");
   return problems;

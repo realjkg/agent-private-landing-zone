@@ -10,8 +10,9 @@ import type { ResolvedTarget } from "../teardown/driver/types.js";
 import { canonicalJson } from "../teardown/manifest.js";
 import { sha256 } from "../util/sha256.js";
 import { approvedToolDirs, resolveExecutable } from "../tools/child-env.js";
-import { ENVIRONMENTS, GUID, HASH } from "./constants.js";
+import { ENVIRONMENTS, HASH } from "./constants.js";
 import { applyEvidenceProblems, qualificationEvidenceProblems, type QualificationEvidence } from "./evidence.js";
+import { accountFieldsOf, PROVIDER_IDS, providerSpec, specOf, type ProviderSpec } from "./provider.js";
 import type { ApplyEnvironment, ApplyEvidence, ApplyRefusalCode, ApplyResult, ApproverEntry, PilotContract, PilotTarget } from "./types.js";
 
 /**
@@ -58,9 +59,6 @@ class Invalid extends Error {}
 const bad = (message: string): never => { throw new Invalid(message); };
 
 const WORKSPACE = /^[A-Za-z0-9_-]{1,90}$/;
-const STORAGE_ACCOUNT = /^[a-z0-9]{3,24}$/;
-const CONTAINER = /^(?!.*--)[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/;
-const KEY_SEGMENT = /^(?!\.\.?$)[A-Za-z0-9._-]+$/;
 
 function object(value: unknown, path: string, keys: readonly string[]): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return bad(path + ": expected an object");
@@ -76,19 +74,15 @@ const text = (value: unknown, path: string, ok: (v: string) => boolean): string 
 const integer = (value: unknown, path: string, min: number, max: number): number =>
   typeof value === "number" && Number.isInteger(value) && value >= min && value <= max ? value : bad(path + ": expected an integer from " + min + " to " + max);
 
-function backendOk(value: string): boolean {
-  const [account, container, ...key] = value.split("/");
-  return STORAGE_ACCOUNT.test(account) && CONTAINER.test(container ?? "") && key.length > 0 && key.every((s) => KEY_SEGMENT.test(s));
-}
-
-function target(value: unknown, path: string): PilotTarget {
-  const r = object(value, path, ["tenantId", "subscriptionId", "backend", "workspace"]);
+/** A target in the contract's provider's shape: its account fields, then the backend and the workspace. */
+function target(value: unknown, path: string, spec: ProviderSpec): PilotTarget {
+  const fields = Object.entries(spec.accountFields);
+  const r = object(value, path, [...fields.map(([name]) => name), "backend", "workspace"]);
   return {
-    tenantId: text(r.tenantId, path + ".tenantId", (v) => GUID.test(v)),
-    subscriptionId: text(r.subscriptionId, path + ".subscriptionId", (v) => GUID.test(v)),
-    backend: text(r.backend, path + ".backend", backendOk),
+    ...Object.fromEntries(fields.map(([name, ok]) => [name, text(r[name], path + "." + name, ok)])),
+    backend: text(r.backend, path + ".backend", spec.backendOk),
     workspace: text(r.workspace, path + ".workspace", (v) => WORKSPACE.test(v)),
-  };
+  } as PilotTarget;
 }
 
 /** The key itself, not its PEM text: the same Ed25519 key written two ways is one key. Throws for anything else. */
@@ -126,16 +120,18 @@ function approvers(value: unknown, path: string): ApproverEntry[] {
 function validate(raw: unknown): PilotContract {
   const r = object(raw, "contract", ["schemaVersion", "enabled", "provider", "engine", "targets", "requiredApprovals", "maxApprovalAgeMinutes", "approvers", "killSwitchPath"]);
   if (r.schemaVersion !== 1) bad("schemaVersion: expected 1");
-  if (r.provider !== "AZURE" || r.engine !== "TERRAFORM") bad("provider and engine: the pilot is AZURE with TERRAFORM");
+  const unsupported = "provider and engine: the pilot supports " + PROVIDER_IDS.join(", ") + " with TERRAFORM";
+  const spec = providerSpec(r.provider) ?? bad(unsupported);
+  if (r.engine !== "TERRAFORM") bad(unsupported);
   const targets = object(r.targets, "targets", ENVIRONMENTS as string[]);
   const approvals = object(r.requiredApprovals, "requiredApprovals", ENVIRONMENTS as string[]);
   if (r.enabled !== true) bad("enabled: the contract does not enable ACT");
   const contract: PilotContract = {
     schemaVersion: 1,
     enabled: true,
-    provider: "AZURE",
+    provider: spec.id,
     engine: "TERRAFORM",
-    targets: { DEV: target(targets.DEV, "targets.DEV"), QA: target(targets.QA, "targets.QA"), PROD: target(targets.PROD, "targets.PROD") },
+    targets: { DEV: target(targets.DEV, "targets.DEV", spec), QA: target(targets.QA, "targets.QA", spec), PROD: target(targets.PROD, "targets.PROD", spec) },
     requiredApprovals: {
       DEV: integer(approvals.DEV, "requiredApprovals.DEV", 1, 10),
       QA: integer(approvals.QA, "requiredApprovals.QA", 1, 10),
@@ -147,7 +143,7 @@ function validate(raw: unknown): PilotContract {
   };
   ENVIRONMENTS.forEach((a, index) => {
     for (const b of ENVIRONMENTS.slice(index + 1)) {
-      if (contract.targets[a].subscriptionId.toLowerCase() === contract.targets[b].subscriptionId.toLowerCase()) bad("targets: " + a + " and " + b + " share a subscription");
+      if (spec.account(contract.targets[a]).toLowerCase() === spec.account(contract.targets[b]).toLowerCase()) bad("targets: " + a + " and " + b + " share " + (/^[aeiou]/.test(spec.accountNoun) ? "an " : "a ") + spec.accountNoun);
       if (contract.targets[a].backend.toLowerCase() === contract.targets[b].backend.toLowerCase()) bad("targets: " + a + " and " + b + " share a backend");
     }
   });
@@ -209,9 +205,10 @@ export function isKillSwitchActive(contract: Pick<PilotContract, "killSwitchPath
 
 /**
  * The contract's own target for `env`, only when the requested target matches it
- * exactly. `account` is the Azure subscription id, so an approval that binds the
- * target binds the subscription; the tenant is bound through this lookup, because
- * the contract (pinned) names one tenant per environment.
+ * exactly. `account` is the provider's account identifier (`ProviderSpec.account`),
+ * so an approval that binds the target binds the account; the rest of the account
+ * fields are bound through this lookup, because the contract (pinned) names them
+ * per environment.
  */
 export function targetForEnvironment(
   contract: PilotContract,
@@ -219,7 +216,7 @@ export function targetForEnvironment(
   requested: ResolvedTarget,
 ): { ok: true; target: PilotTarget } | Refusal {
   const pinned = Object.hasOwn(contract.targets, env) ? contract.targets[env] : undefined;
-  if (!pinned || pinned.subscriptionId !== requested?.account || pinned.backend !== requested.backend || pinned.workspace !== requested.workspace) {
+  if (!pinned || specOf(contract).account(pinned) !== requested?.account || pinned.backend !== requested.backend || pinned.workspace !== requested.workspace) {
     return refuse("TARGET_NOT_IN_CONTRACT", "the requested target is not the contract's " + env + " target");
   }
   return { ok: true, target: pinned };
@@ -283,9 +280,10 @@ const QUALIFICATION_SUFFIX = ".qualification.evidence";
 /** Validates, encrypts and stores qualification evidence. Returns the hash a QualificationRecord carries as `evidenceHash`. */
 export async function writeQualificationEvidence(
   evidence: QualificationEvidence,
+  spec: ProviderSpec,
   vaultDir: string = repoPaths().qualifications,
 ): Promise<{ ok: true; evidenceHash: string } | Refusal> {
-  const problems = qualificationEvidenceProblems(evidence);
+  const problems = qualificationEvidenceProblems(evidence, spec);
   if (problems.length > 0) return refuse("EVIDENCE_REJECTED", problems.slice(0, 8).join("; "));
   const { key, info } = await ensureEvidenceKey();
   if (!info.securePermissions) return refuse("EVIDENCE_REJECTED", "the evidence key permissions are insecure");
@@ -301,13 +299,13 @@ export async function writeQualificationEvidence(
 }
 
 /** The evidence a vault file holds, or undefined: the name must be the plaintext hash, and the content must be valid qualification evidence. */
-async function readQualification(vaultDir: string, hash: string): Promise<QualificationEvidence | undefined> {
+async function readQualification(vaultDir: string, hash: string, spec: ProviderSpec): Promise<QualificationEvidence | undefined> {
   const path = join(vaultDir, hash + QUALIFICATION_SUFFIX);
   try {
     const envelope = JSON.parse(await readFile(path, "utf8")) as { plaintextSha256?: unknown };
     if (envelope?.plaintextSha256 !== hash) return undefined;
     const content = await readEncryptedEvidence<unknown>(path);
-    return qualificationEvidenceProblems(content).length === 0 ? content as QualificationEvidence : undefined;
+    return qualificationEvidenceProblems(content, spec).length === 0 ? content as QualificationEvidence : undefined;
   } catch {
     return undefined;
   }
@@ -318,13 +316,13 @@ async function readQualification(vaultDir: string, hash: string): Promise<Qualif
  * records from here and never from a file an operator names, so a record exists
  * only where valid, decryptable evidence does.
  */
-export async function loadQualificationRecords(vaultDir: string = repoPaths().qualifications): Promise<QualificationRecord[]> {
+export async function loadQualificationRecords(spec: ProviderSpec, vaultDir: string = repoPaths().qualifications): Promise<QualificationRecord[]> {
   let names: string[];
   try { names = await readdir(vaultDir); } catch { return []; }
   const records: QualificationRecord[] = [];
   for (const name of names) {
     const hash = name.endsWith(QUALIFICATION_SUFFIX) ? name.slice(0, -QUALIFICATION_SUFFIX.length) : "";
-    const evidence = HASH.test(hash) ? await readQualification(vaultDir, hash) : undefined;
+    const evidence = HASH.test(hash) ? await readQualification(vaultDir, hash, spec) : undefined;
     if (evidence) {
       records.push({
         engine: evidence.engine, adapterVersion: evidence.adapterVersion, engineVersion: evidence.engineVersion,
@@ -340,7 +338,7 @@ export async function loadQualificationRecords(vaultDir: string = repoPaths().qu
  * existing encrypted file in the vault whose plaintext hash is that hash, and
  * whose content says the real engine ran with separated backend identities for
  * exactly the adapter version, argv digest and engine version being run,
- * against the contract's DEV tenant and subscription, within the last 30 days.
+ * against the contract's DEV account (the provider's account fields), within the last 30 days.
  */
 const QUALIFICATION_MAX_AGE_DAYS = 30;
 
@@ -360,28 +358,31 @@ export async function verifyApplyQualification(
   vaultDir: string,
   expected: { adapterVersion: string; argvDigest: string; engineVersion: string },
   /**
-   * The contract's DEV target (tenant, subscription, backend, workspace), the clock, and what this run would use: the
-   * terraform binary's hash and the normalized STATE_WRITE and APPLY client ids. Evidence is for exactly these, at most 30 days old.
+   * The contract's DEV target (account fields, backend, workspace), the clock, and what this run would use: the
+   * terraform binary's hash and the normalized STATE_WRITE and APPLY client ids (not compared for a QA or PROD run when each environment
+   * brings its own principals, `ProviderSpec.principalPerEnvironment`). Evidence is for exactly these, at most 30 days old.
    */
-  bound: { dev: PilotTarget; now: Date; terraformSha256: string | undefined; stateWriteClientId: string; applyClientId: string },
+  bound: { dev: PilotTarget; now: Date; terraformSha256: string | undefined; stateWriteClientId: string; applyClientId: string; principalsPerEnvironment?: boolean },
+  spec: ProviderSpec,
 ): Promise<Check> {
   const deny = (why: string): Refusal => refuse("ENGINE_NOT_QUALIFIED", "the qualification record is not backed by real-engine qualification evidence: " + why);
   const hash = record?.evidenceHash;
   if (typeof hash !== "string" || !HASH.test(hash)) return deny("its evidence hash is not a SHA-256 digest");
-  const evidence = await readQualification(vaultDir, hash);
+  const evidence = await readQualification(vaultDir, hash, spec);
   if (!evidence) return deny("no valid evidence file exists for that hash");
   for (const key of ["adapterVersion", "argvDigest", "engineVersion"] as const) {
     if (evidence[key] !== expected[key] || record[key] !== expected[key]) return deny("it was not produced for this " + key);
   }
-  if (evidence.tenantId.toLowerCase() !== bound.dev.tenantId.toLowerCase() || evidence.subscriptionId.toLowerCase() !== bound.dev.subscriptionId.toLowerCase()) {
-    return deny("it was not produced against the contract's DEV tenant and subscription");
+  const account: Record<string, string> = accountFieldsOf(spec, bound.dev);
+  if (Object.entries(account).some(([field, value]) => String((evidence as Record<string, unknown>)[field]).toLowerCase() !== String(value).toLowerCase())) {
+    return deny("it was not produced against the contract's DEV " + spec.targetNoun);
   }
   if (evidence.backend !== bound.dev.backend || evidence.workspace !== bound.dev.workspace) {
     return deny("it was not produced against the contract's DEV backend and workspace");
   }
   if (bound.terraformSha256 === undefined || evidence.terraformSha256 !== bound.terraformSha256) return deny("it was not produced with this terraform binary");
-  if (bound.stateWriteClientId === "" || evidence.stateWriteClientId !== bound.stateWriteClientId ||
-    bound.applyClientId === "" || evidence.applyClientId !== bound.applyClientId) {
+  if (!bound.principalsPerEnvironment && (bound.stateWriteClientId === "" || evidence.stateWriteClientId !== bound.stateWriteClientId ||
+    bound.applyClientId === "" || evidence.applyClientId !== bound.applyClientId)) {
     return deny("it was not produced with these STATE_WRITE and APPLY client ids");
   }
   const age = bound.now.getTime() - Date.parse(evidence.qualifiedAt);

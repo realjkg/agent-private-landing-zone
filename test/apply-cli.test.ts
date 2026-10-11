@@ -19,6 +19,7 @@ import {
   behave as behaveIn, callsOf, contractJson, identityEnv, installFakeTerraform, keys, pinPathOf, testFixtureForgeQualificationEvidence, writePinnedContract,
   writeProject, type Behavior, type Project,
 } from "./helpers/apply-fixtures.js";
+import { AZURE } from "../src/apply/providers/azure.js";
 
 // docs/act-pilot-apply.md. The CLI is the human gate: it needs a terminal, shows
 // what will happen, and passes the driver a request only after the person typed
@@ -258,7 +259,7 @@ test("qualify runs the engine steps against DEV without applying, asks for the s
   behave({ planSalt: "unique-to-this-qualify-run" }); // a plan nothing else sealed, so a stored copy would show as a new file
   const p = writeProject(fresh("project"), DEV_TARGET);
   const stored = sealedPlanFiles();
-  assert.deepEqual(await loadQualificationRecords(w.vault), []);
+  assert.deepEqual(await loadQualificationRecords(AZURE, w.vault), []);
   const run = await cli(w, qualifyArgs(p), [targetString(DEV_TARGET), PHRASE, attest()]);
   assert.equal(run.code, 0, run.stderr);
   assert.equal(applyCalls().length, 0, "qualify applies nothing");
@@ -269,7 +270,7 @@ test("qualify runs the engine steps against DEV without applying, asks for the s
   assert.ok(!shown.includes("secret") && !run.stdout.includes("secret"));
   const printed = JSON.parse(run.stdout) as { qualified: { adapterVersion: string; argvDigest: string; engineVersion: string; evidenceHash: string }[] };
   assert.ok(printed.qualified.some((q) => q.adapterVersion === APPLY_ADAPTER.adapterVersion && q.argvDigest === APPLY_ADAPTER.argvDigest && q.engineVersion === ENGINE_VERSION));
-  const records = await loadQualificationRecords(w.vault);
+  const records = await loadQualificationRecords(AZURE, w.vault);
   assert.deepEqual(records.map((r) => r.evidenceHash).sort(), printed.qualified.map((q) => q.evidenceHash).sort());
   // Unlocked: the full path now works with no record supplied by anyone.
   const s = await sealed(w, "DEV");
@@ -284,7 +285,7 @@ test("qualify stops without evidence on a wrong confirmation or attestation, out
     assert.equal(run.code, code, run.stderr);
     assert.match(run.stderr, pattern);
     assert.equal(run.stdout, "");
-    assert.deepEqual(await loadQualificationRecords(w.vault), [], "no evidence was written");
+    assert.deepEqual(await loadQualificationRecords(AZURE, w.vault), [], "no evidence was written");
   };
   await none(await cli(w, qualifyArgs(p), [targetString(PROD_TARGET), PHRASE, attest()]), 1, /HUMAN_CONFIRMATION_MISMATCH/);
   await none(await cli(w, qualifyArgs(p), [targetString(DEV_TARGET), "yes", attest()]), 1, /PROJECT_CODE_CONFIRMATION_MISMATCH/);
@@ -367,7 +368,7 @@ test("seal writes a non-secret review bundle: the artifact's own fields and the 
   const text = readFileSync(s.bundle, "utf8");
   const bundle = JSON.parse(text) as Record<string, unknown>;
   assert.deepEqual(Object.keys(bundle).sort(), [
-    "artifactSha256", "changes", "changesSha256", "createdAt", "engineVersion", "environment", "manifestHash", "planSha256", "policyVersion", "releaseIdentity", "target",
+    "artifactSha256", "changes", "changesSha256", "contractSha256", "createdAt", "engineVersion", "environment", "manifestHash", "planSha256", "policyVersion", "releaseIdentity", "target",
   ]);
   assert.equal(bundle.artifactSha256, s.artifactSha256);
   assert.equal(bundle.environment, "DEV");

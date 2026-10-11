@@ -3,7 +3,7 @@ import { readFile, realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 
 import { pilotContractPinned, pilotContractSha256 } from "../apply/contract.js";
-import type { PilotContract } from "../apply/types.js";
+import type { PilotContract, ProviderId } from "../apply/types.js";
 import { PHASE_E_SCENARIOS } from "./phase-e.js";
 import { PRODUCTION_DEPLOYMENT_CONTRACT } from "./production-contract.js";
 
@@ -64,7 +64,7 @@ export type ReleaseAdmissionInput = {
   actPilot?: ActPilotScope;
   records: ReleaseGateSubmission[];
 };
-export type ActPilotScope = { provider: "AZURE"; engine: "TERRAFORM"; contractSha256: string };
+export type ActPilotScope = { provider: ProviderId; engine: "TERRAFORM"; contractSha256: string };
 export type GateReview = {
   id: string;
   mode: ReleaseGateMode;

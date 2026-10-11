@@ -23,6 +23,7 @@ import { removeTree } from "../src/teardown/driver/cleanup.js";
 import {
   DEV_TARGET, NOW, POLICY, TENANT, approvalFor, contractJson, human, identityEnv, pinPathOf, sha, writePinnedContract,
 } from "./helpers/apply-fixtures.js";
+import { AZURE } from "../src/apply/providers/azure.js";
 
 /**
  * OPT-IN SIMULATION (docs/act-pilot-simulation.md). Skipped unless BOTH
@@ -241,7 +242,7 @@ describe("emulated backend simulation: real Terraform, Azurite, built-in resourc
       adapterVersion, argvDigest, engineVersion, qualifiedAt: "2026-10-11T00:00:00.000Z",
     });
     for (const [version, digest] of [[APPLY_ADAPTER.adapterVersion, APPLY_ADAPTER.argvDigest], [ADAPTER_VERSION, terraformArgvDigest("TERRAFORM")]]) {
-      const written = await writeQualificationEvidence(attested(version, digest), vault);
+      const written = await writeQualificationEvidence(attested(version, digest), AZURE, vault);
       assert.ok(written.ok, JSON.stringify(written));
     }
 

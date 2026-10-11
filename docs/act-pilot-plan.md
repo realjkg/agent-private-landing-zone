@@ -1,6 +1,6 @@
 # PLAN: ACT pilot for the internal reference build (customer zero)
 
-Status: approved by the repository owner on 2026-10-11 (amendment in `AGENTS.md`). The path is implemented and tested with a fake engine and with a real Terraform binary against an emulator (`docs/act-pilot-simulation.md`); no live run has happened and ACT is disabled until the pilot contract is pinned. Operations live in `docs/act-pilot-apply.md`. This is the single authoritative PLAN for the pilot; changing its scope or authority model requires a new PLAN.
+Status: approved by the repository owner on 2026-10-11 (amendment in `AGENTS.md`). The path is implemented and tested with a fake engine and, for Azure only, with a real Terraform binary against an emulator (`docs/act-pilot-simulation.md`); no live run has happened and ACT is disabled until the pilot contract is pinned. Operations live in `docs/act-pilot-apply.md`. This is the single authoritative PLAN for the pilot; changing its scope or authority model requires a new PLAN.
 
 ## Purpose
 
@@ -10,8 +10,8 @@ Prove the product can take a previewed change from dev through QA to production 
 
 1. The operator authorizes. An interactive human gate approves each apply. Agents, the console server, and automation never initiate one.
 2. An apply runs only the sealed plan that was previewed and approved: the plan hash, manifest hash, and target must match the approved artifact. Nothing is regenerated between approval and apply. QA promotes a release that succeeded in DEV, and production promotes a release that succeeded in QA, never a dev execution plan: it needs a separate production-target preview, sealed and approved on its own, and its release identity must equal the one a successful QA apply recorded, which in turn follows a successful dev apply.
-3. Approvals are authenticated, not recorded. An approval is an Ed25519 signature by a key on an allowlist, over a statement that binds the exact artifact hash, environment, target (tenant, subscription, backend, workspace), expiry, and a one-time nonce. A typed name is never proof. Production requires two distinct verified approvals, and the requester cannot be one of them. Replayed, expired, or mis-bound approvals are refused.
-4. Four separate identities, injected through the `ALZ_<IDENTITY>_<VAR>` path used by the runner: DISCOVERY (provider reads), STATE (state read and lease), STATE_WRITE (state blob write and lease, used only by apply), and APPLY (provider writes). None inherits operator credentials and none falls back to another; in particular APPLY is never used as a state fallback. The AzureRM backend must write state blobs and coordinate leases, so STATE stays read-only and STATE_WRITE is the only identity that can change state.
+3. Approvals are authenticated, not recorded. An approval is an Ed25519 signature by a key on an allowlist, over a statement that binds the exact artifact hash (which covers the plan, the target and the pinned contract's hash, so the provider, region and tenant), environment, target (account, backend, workspace), expiry, and a one-time nonce. A typed name is never proof. Production requires two distinct verified approvals, and the requester cannot be one of them. Replayed, expired, or mis-bound approvals are refused.
+4. Four separate identities, injected through the `ALZ_<IDENTITY>_<VAR>` path used by the runner: DISCOVERY (provider reads), STATE (state read and lock), STATE_WRITE (state write and lock, used only by apply), and APPLY (provider writes). None inherits operator credentials and none falls back to another; in particular APPLY is never used as a state fallback. The backend must write state and coordinate locking, so STATE stays read-only for state content and STATE_WRITE is the only identity that can change state.
 5. State locking stays on. State and plan files are sensitive material: the sealed plan is encrypted at rest and never written to evidence in the clear.
 6. A kill switch stops a pilot apply, and the driver's behavior on partial failure is defined before the first dev apply.
 7. Every apply writes encrypted evidence: who approved, what artifact, what ran, the result, and the redacted output.
@@ -29,7 +29,7 @@ Supplied by the owner and listed in `docs/act-pilot-apply.md` ("What the owner s
 
 ## Scope
 
-- One internal environment chain (dev, then QA, then production), one provider, one engine, chosen at Gate 0 from the engines that pass real-engine qualification.
+- One internal environment chain (dev, then QA, then production), one provider (the pinned contract's `provider`: Azure or AWS, each with its own spec), one engine, chosen at Gate 0 from the engines that pass real-engine qualification.
 - No customer environments, no multi-tenant console, no new feature that lacks existing wired code.
 
 ## Gates
@@ -46,7 +46,7 @@ Supplied by the owner and listed in `docs/act-pilot-apply.md` ("What the owner s
 
 ## Where it lives
 
-The apply driver and its pieces are in `src/apply/` (contract, approval, identities, sealed plan, driver, Terraform adapter), the human entry is `src/cli/apply.ts`, release admission checks the same contract pin in `src/qualification/release-admission.ts`, and the boundary tests are `test/apply-boundary.test.ts` and `test/teardown-driver-denials.test.ts`.
+The apply driver and its pieces are in `src/apply/` (contract, approval, identities, sealed plan, driver, Terraform adapter, and one provider spec per provider in `provider.ts` and `providers/`: Azure with the AzureRM backend and AWS with the S3 backend), the human entry is `src/cli/apply.ts`, release admission checks the same contract pin in `src/qualification/release-admission.ts`, and the boundary tests are `test/apply-boundary.test.ts` and `test/teardown-driver-denials.test.ts`.
 
 ## Out of scope
 
