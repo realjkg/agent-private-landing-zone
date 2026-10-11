@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { createHash, generateKeyPairSync } from "node:crypto";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import { loadPilotContract, pilotContractSha256 } from "../src/apply/contract.js";
+import type { PilotContract } from "../src/apply/types.js";
 import {
   PRODUCTION_RELEASE_GATES,
   reviewProductionRelease,
@@ -221,4 +223,135 @@ test("real recovery requires observed times and restore; scanner requires zero b
     assert.equal(report.gates.find((g) => g.id === recoveryId)?.status, "BLOCKED");
     assert.equal(report.gates.find((g) => g.id === scanId)?.status, "BLOCKED");
   } finally { h.cleanup(); }
+});
+
+// docs/act-pilot-plan.md, G3. A pilot-scoped ACT setting is representable, and
+// nothing else is: ACT stays DISABLED globally, and a release may declare PILOT
+// only together with a valid, enabled pilot contract that it names by hash.
+const pilotRoot = mkdtempSync(join(tmpdir(), "alz-release-pilot-"));
+test.after(() => rmSync(pilotRoot, { recursive: true, force: true }));
+const contractPath = join(pilotRoot, "act-pilot-contract.json");
+const pinPath = join(pilotRoot, "act-pilot-contract.sha256");
+const publicKey = () => generateKeyPairSync("ed25519").publicKey.export({ type: "spki", format: "pem" }).toString();
+const approvers = [1, 2].map((n) => ({ id: "approver-" + n, publicKeyPem: publicKey(), environments: ["DEV", "PROD"] }));
+const loadPinned = (path: string = contractPath) => loadPilotContract(path, pinPath);
+const pilotTarget = (n: string, store: string) => ({ tenantId: "11111111-1111-4111-8111-111111111111",
+  subscriptionId: n.repeat(8) + "-" + n.repeat(4) + "-4" + n.repeat(3) + "-8" + n.repeat(3) + "-" + n.repeat(12),
+  backend: store + "/tfstate/x.tfstate", workspace: "default" });
+const contractJson = (enabled: boolean, age = 60) => ({
+  schemaVersion: 1, enabled, provider: "AZURE", engine: "TERRAFORM",
+  targets: { DEV: pilotTarget("2", "fixturedevstore"), PROD: pilotTarget("3", "fixtureprodstore") },
+  requiredApprovals: { DEV: 1, PROD: 2 }, maxApprovalAgeMinutes: age, approvers, killSwitchPath: join(pilotRoot, "KILL"),
+});
+/** Writes the contract and, like a reviewed commit, its pin. */
+const writeContract = (enabled: boolean, age = 60) => {
+  writeFileSync(contractPath, JSON.stringify(contractJson(enabled, age)));
+  writeFileSync(pinPath, pilotContractSha256(contractJson(true, age) as unknown as PilotContract) + "\n");
+};
+const pilotInput = (actPilot: unknown, infrastructureAct: string = "PILOT") =>
+  ({ ...input([]), infrastructureAct, ...(actPilot === undefined ? {} : { actPilot }) }) as unknown as ReleaseAdmissionInput;
+const review = (manifest: ReleaseAdmissionInput, pilotContract?: ReturnType<typeof loadPilotContract>) =>
+  reviewProductionRelease({ manifest, expectedCommit: commit, root: pilotRoot, pilotContract, pilotPinPath: pinPath });
+const actBlockers = (r: { blockers: string[] }) => r.blockers.filter((b) => /^ACT_PILOT|^RELEASE_MANIFEST/.test(b));
+
+test("a PILOT release with no contract, or a disabled one, is rejected", async () => {
+  writeContract(true);
+  const enabled = loadPinned();
+  assert.equal(enabled.enabled, true);
+  const scope = { provider: "AZURE", engine: "TERRAFORM", contractSha256: pilotContractSha256(enabled as PilotContract) };
+  assert.deepEqual(actBlockers(await review(pilotInput(scope))), ["ACT_PILOT_CONTRACT_MISSING_OR_DISABLED"]);
+  writeContract(false);
+  const disabled = loadPinned();
+  assert.equal(disabled.enabled, false);
+  assert.deepEqual(actBlockers(await review(pilotInput(scope), disabled)), ["ACT_PILOT_CONTRACT_MISSING_OR_DISABLED"]);
+  assert.deepEqual(actBlockers(await review(pilotInput(scope), loadPinned(join(pilotRoot, "absent.json")))), ["ACT_PILOT_CONTRACT_MISSING_OR_DISABLED"]);
+});
+
+test("an enabled contract for a release that does not declare the pilot is rejected", async () => {
+  writeContract(true);
+  const enabled = loadPinned();
+  const result = await review(input([]), enabled);
+  assert.deepEqual(actBlockers(result), ["ACT_PILOT_CONTRACT_ENABLED_FOR_NON_PILOT_RELEASE"]);
+  assert.equal(result.readyForIndependentReleaseReview, false);
+  assert.equal(result.actPilot, null);
+  // Without a contract (or with a disabled one) the ordinary release is unchanged.
+  assert.deepEqual(actBlockers(await review(input([]))), []);
+});
+
+test("a PILOT release must name this contract, this provider and this engine, and nothing else", async () => {
+  writeContract(true);
+  const enabled = loadPinned() as PilotContract;
+  const good = { provider: "AZURE", engine: "TERRAFORM", contractSha256: pilotContractSha256(enabled) };
+  for (const scope of [
+    undefined, null, "AZURE", [], {}, { ...good, contractSha256: "0".repeat(64) }, { ...good, provider: "AWS" }, { ...good, engine: "PULUMI" },
+    { ...good, extra: true }, { provider: good.provider, engine: good.engine },
+  ]) {
+    const result = await review(pilotInput(scope), enabled);
+    assert.deepEqual(actBlockers(result), ["ACT_PILOT_SCOPE_MISMATCH"], JSON.stringify(scope));
+    assert.equal(result.actPilot, null);
+  }
+  // Editing the contract after the release named it breaks the binding.
+  writeContract(true, 61);
+  assert.deepEqual(actBlockers(await review(pilotInput(good), loadPinned())), ["ACT_PILOT_SCOPE_MISMATCH"]);
+});
+
+test("the release checks the same committed pin the loader does: a contract the pin does not name is rejected", async () => {
+  writeContract(true);
+  const enabled = loadPinned() as PilotContract;
+  const scope = { provider: "AZURE", engine: "TERRAFORM", contractSha256: pilotContractSha256(enabled) };
+  // A hand-built or stale contract object that was never loaded through the pin.
+  const edited = { ...enabled, maxApprovalAgeMinutes: 61 };
+  const editedScope = { ...scope, contractSha256: pilotContractSha256(edited) };
+  for (const [manifestScope, contract] of [[editedScope, edited], [scope, edited]] as const) {
+    const result = await review(pilotInput(manifestScope), contract);
+    assert.deepEqual(actBlockers(result), ["ACT_PILOT_CONTRACT_NOT_PINNED"]);
+    assert.equal(result.actPilot, null);
+  }
+  // An absent, empty or malformed pin pins nothing.
+  for (const pin of [null, "", "\n", "not a hash", "0".repeat(64)]) {
+    if (pin === null) rmSync(pinPath, { force: true }); else writeFileSync(pinPath, pin);
+    assert.deepEqual(actBlockers(await review(pilotInput(scope), enabled)), ["ACT_PILOT_CONTRACT_NOT_PINNED"], JSON.stringify(pin));
+  }
+  writeContract(true);
+  assert.deepEqual(actBlockers(await review(pilotInput(scope), enabled)), []);
+});
+
+test("an actPilot object on any release that is not PILOT is rejected, with or without a contract", async () => {
+  writeContract(true);
+  const enabled = loadPinned() as PilotContract;
+  const scope = { provider: "AZURE", engine: "TERRAFORM", contractSha256: pilotContractSha256(enabled) };
+  for (const stray of [scope, {}, null, "AZURE", []]) {
+    for (const contract of [undefined, enabled]) {
+      const result = await review(pilotInput(stray, "DISABLED"), contract);
+      assert.ok(actBlockers(result).includes("ACT_PILOT_SCOPE_ON_NON_PILOT_RELEASE"), JSON.stringify(stray));
+      assert.equal(result.readyForIndependentReleaseReview, false);
+      assert.equal(result.actPilot, null);
+    }
+  }
+});
+
+test("a valid pilot release is representable, still not ready without evidence, and production stays unapproved", async () => {
+  writeContract(true);
+  const enabled = loadPinned() as PilotContract;
+  const scope = { provider: "AZURE", engine: "TERRAFORM", contractSha256: pilotContractSha256(enabled) };
+  const result = await review(pilotInput(scope), enabled);
+  assert.deepEqual(actBlockers(result), []);
+  assert.deepEqual(result.actPilot, scope);
+  assert.equal(result.infrastructureAct, "DISABLED", "ACT is disabled globally; the pilot contract is its only exception");
+  assert.equal(result.productionReleaseApproved, false);
+  assert.equal(result.readyForIndependentReleaseReview, false, "every release gate still needs its own evidence");
+  assert.ok(result.gates.every((g) => g.status === "BLOCKED"));
+});
+
+test("any other infrastructureAct value is still rejected, with or without a contract", async () => {
+  writeContract(true);
+  const enabled = loadPinned() as PilotContract;
+  const scope = { provider: "AZURE", engine: "TERRAFORM", contractSha256: pilotContractSha256(enabled) };
+  for (const value of ["ENABLED", "pilot", "ACT", "", "DISABLED "]) {
+    for (const contract of [undefined, enabled]) {
+      const result = await review(pilotInput(scope, value), contract);
+      assert.ok(result.blockers.includes("RELEASE_MANIFEST_CONTRACT_OR_COMMIT_INVALID"), JSON.stringify(value));
+      assert.equal(result.readyForIndependentReleaseReview, false);
+    }
+  }
 });

@@ -11,6 +11,7 @@ import {
   collapsedIdentityVariables,
   EXECUTION_IDENTITIES,
   forbiddenIdentityVariables,
+  mutationIdentityVariables,
 } from "../src/tools/identity.js";
 import type { ToolContext, ToolName } from "../src/tools/types.js";
 
@@ -89,13 +90,21 @@ test("every project-code tool is blocked without the capability", () => {
   }
 });
 
-test("exactly two identities exist, and a deployment or operator identity is reported, never read", () => {
-  assert.deepEqual([...EXECUTION_IDENTITIES], ["DISCOVERY", "STATE"]);
+test("exactly four identities exist, and a deployment or operator identity is reported, never read", () => {
+  assert.deepEqual([...EXECUTION_IDENTITIES], ["DISCOVERY", "STATE", "STATE_WRITE", "APPLY"]);
   assert.deepEqual(
     forbiddenIdentityVariables({
       ALZ_DEPLOY_AWS_ACCESS_KEY_ID: "x", ALZ_OPERATOR_AWS_PROFILE: "x", ALZ_DISCOVERY_AWS_REGION: "x", ALZ_STATE_AWS_REGION: "x",
+      ALZ_STATE_WRITE_AWS_REGION: "x", ALZ_APPLY_AWS_REGION: "x", ALZ_DEPLOYMENT_X: "x", ALZ_ADMIN_X: "x", ALZ_DESTROY_X: "x",
     }),
-    ["ALZ_DEPLOY_AWS_ACCESS_KEY_ID", "ALZ_OPERATOR_AWS_PROFILE"],
+    ["ALZ_ADMIN_X", "ALZ_DEPLOYMENT_X", "ALZ_DEPLOY_AWS_ACCESS_KEY_ID", "ALZ_DESTROY_X", "ALZ_OPERATOR_AWS_PROFILE"],
+  );
+});
+
+test("the writing identities are reported to a read-only preview, so it never runs beside mutation credentials", () => {
+  assert.deepEqual(
+    mutationIdentityVariables({ ALZ_STATE_WRITE_ARM_CLIENT_ID: "x", ALZ_APPLY_ARM_CLIENT_ID: "x", ALZ_STATE_ARM_CLIENT_ID: "x", ALZ_DISCOVERY_ARM_CLIENT_ID: "x" }),
+    ["ALZ_APPLY_ARM_CLIENT_ID", "ALZ_STATE_WRITE_ARM_CLIENT_ID"],
   );
 });
 

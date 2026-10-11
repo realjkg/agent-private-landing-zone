@@ -27,9 +27,22 @@ const NO_CHANGE = "LOCAL READ-ONLY CHECK — no model, no cloud, no infrastructu
 const KEY = ["AGENTIC_EVIDENCE_KEY_FILE"] as const;
 const KEY_REASON = "It reads or writes an encrypted bundle on disk and needs the local evidence key, which the console never handles.";
 const KEY_CREATE_REASON = "On a fresh machine the security preflight creates the local evidence key in your home directory, which the console must not do.";
+const PILOT_ENV = ["DISCOVERY", "STATE", "STATE_WRITE", "APPLY"].flatMap((identity) =>
+  ["CLIENT_ID", "TENANT_ID", "SUBSCRIPTION_ID", "USE_OIDC", "OIDC_TOKEN_FILE"].map((name) => "ALZ_" + identity + "_ARM_" + name));
 const evidence = path("evidence", "Encrypted bundle path", ".runs/evidence/control-plane.bundle");
 
 export const governanceOperations: readonly OperationSpec[] = [
+  handoff({
+    id: "act-pilot-apply", cliScript: "src/cli/apply.ts", title: "Pilot apply (human-authorized)",
+    summary: "Qualifies the engine, seals a preview, signs an approval, applies the sealed plan or shows status, under the pilot contract only.",
+    cli: "./alz apply <qualify|seal|approve|apply|status>",
+    evidenceBasis: "HUMAN-AUTHORIZED APPLY OF A SEALED PLAN — PILOT CONTRACT ONLY, ACT DISABLED OTHERWISE — ENCRYPTED EVIDENCE",
+    inputs: [{ kind: "enum", name: "step", label: "Step", options: ["qualify", "seal", "approve", "apply", "status"],
+      help: "Each step takes its own flags; run ./alz apply with no step to see them." }],
+  }, "It needs a person at an interactive terminal: the person types the exact target, approvers sign with their own Ed25519 key files, " +
+    "and the apply driver enforces the pilot contract, the kill switch and the approvals. The console never holds a credential or runs an apply. " +
+    "Set four separate identities with the ALZ_DISCOVERY_, ALZ_STATE_, ALZ_STATE_WRITE_ and ALZ_APPLY_ prefixes; none falls back to another.",
+  "./alz apply {step}", [...PILOT_ENV, ...KEY]),
   handoff({
     id: "target-init", title: "Create a recovery target intent",
     summary: "Records seven plain answers as a recovery intent file in config/recovery-intents.",

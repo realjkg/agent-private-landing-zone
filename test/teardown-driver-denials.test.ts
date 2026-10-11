@@ -515,7 +515,7 @@ deny({
   setup: (fx) => { fx.env.ALZ_STATE_PULUMI_ACCESS_TOKEN = fx.env.ALZ_DISCOVERY_PULUMI_ACCESS_TOKEN; },
   code: "IDENTITY_COLLAPSED",
 });
-for (const prefix of ["ALZ_DEPLOY_", "ALZ_DEPLOYMENT_", "ALZ_OPERATOR_", "ALZ_ADMIN_", "ALZ_APPLY_", "ALZ_DESTROY_"]) {
+for (const prefix of ["ALZ_DEPLOY_", "ALZ_DEPLOYMENT_", "ALZ_OPERATOR_", "ALZ_ADMIN_", "ALZ_APPLY_", "ALZ_STATE_WRITE_", "ALZ_DESTROY_"]) {
   deny({
     name: prefix + "* variable present beside valid identities",
     setup: (fx) => { fx.env[prefix + "AWS_ACCESS_KEY_ID"] = "forbidden-identity-secret-0016"; },
@@ -1005,14 +1005,46 @@ test("no source under the driver contains apply, auto-approve, -lock=false, shel
   }
 });
 
-test("the driver is human-invoked only: no module under src/ other than the CLI imports it", () => {
+// The pilot apply path (docs/act-pilot-apply.md) reuses a few pieces of the preview driver. Each file below may import exactly
+// the listed driver modules, and driver.ts alone may name createTerraformAdapter. Anything else, in any file, fails the bans.
+const DRIVER_IMPORT = /(from\s+["'])((?:\.{1,2}\/)+(?:[a-z-]+\/)*teardown\/driver\/([^"']+))(["'])/g;
+const APPLY_MAY_IMPORT: Readonly<Record<string, { modules: string[]; names?: string[] }>> = {
+  "src/apply/driver.ts": {
+    modules: ["adapters/terraform.js", "cleanup.js", "human.js", "qualification.js", "types.js"], names: ["createTerraformAdapter"],
+  },
+  "src/apply/engine.ts": { modules: ["adapters/terraform.js", "adapters/project-copy.js", "types.js"] },
+  "src/apply/seal.ts": { modules: ["cleanup.js", "adapters/terraform.js", "types.js"] },
+  "src/apply/terraform.ts": { modules: ["adapters/terraform.js", "qualification.js", "types.js"] },
+  "src/apply/contract.ts": { modules: ["qualification.js", "types.js"] },
+  "src/apply/approval.ts": { modules: ["types.js"] },
+  "src/apply/types.ts": { modules: ["types.js"] },
+  "src/cli/apply.ts": { modules: ["human.js", "cleanup.js"] },
+};
+
+test("the driver is human-invoked only: no module under src/ other than the CLI imports it, and the apply path only the pieces listed", () => {
+  const seen = new Map<string, Set<string>>();
   for (const path of sourcesUnder(resolve("src"))) {
     const name = rel(path);
     if (name.startsWith("src/teardown/driver/") || /^src\/cli\/teardown[^/]*\.ts$/.test(name)) continue;
-    const code = codeOnly(readFileSync(path, "utf8"));
+    const allowed = APPLY_MAY_IMPORT[name] ?? { modules: [] };
+    const used = new Set<string>();
+    // Take out the listed imports; whatever is left must pass the original two bans.
+    const code = codeOnly(readFileSync(path, "utf8")).replace(DRIVER_IMPORT, (whole, _from: string, _full: string, module: string) => {
+      if (!allowed.modules.includes(module)) return whole;
+      used.add(module);
+      return "";
+    });
+    if (used.size > 0) seen.set(name, used);
     assert.doesNotMatch(code, /from\s+["'][^"']*teardown\/driver/, name);
-    assert.doesNotMatch(code, /\brunDestroyPreview\b|\bcreateTerraformAdapter\b|\bcreatePulumiAdapter\b/, name);
+    const names = ["runDestroyPreview", "createTerraformAdapter", "createPulumiAdapter"].filter((n) => !allowed.names?.includes(n));
+    assert.doesNotMatch(code, new RegExp("\\b(" + names.join("|") + ")\\b"), name);
+    if (allowed.names) for (const n of allowed.names) assert.match(codeOnly(readFileSync(path, "utf8")), new RegExp("\\b" + n + "\\b"), name + " no longer uses " + n);
   }
+  // The allowlist is exact: an entry nobody uses is removed, so it cannot quietly grow into permission.
+  for (const [name, allowed] of Object.entries(APPLY_MAY_IMPORT)) {
+    assert.deepEqual([...(seen.get(name) ?? [])].sort(), [...allowed.modules].sort(), name + " allowlist differs from its imports");
+  }
+  assert.ok(![...seen.values()].some((modules) => modules.has("driver.js") || modules.has("index.js")), "the preview entry points are never allowed");
 });
 
 // --- Mutation checks guard ---------------------------------------------------------------------

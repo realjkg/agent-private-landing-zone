@@ -47,6 +47,7 @@ const AWS = [
 const AZURE = [
   "AZURE_CONFIG_DIR", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET", "AZURE_TENANT_ID", "AZURE_SUBSCRIPTION_ID",
   "ARM_CLIENT_ID", "ARM_CLIENT_SECRET", "ARM_TENANT_ID", "ARM_SUBSCRIPTION_ID", "ARM_USE_OIDC",
+  "ARM_OIDC_TOKEN_FILE",
 ];
 
 const AWS_HOSTS = ["*.amazonaws.com", "*.amazonaws.com.cn"];
@@ -104,4 +105,18 @@ export const PROFILES: Readonly<Record<string, ProcessProfile>> = {
     injectable: ["KUBECONFIG"], injectablePrefixes: [], urlVariables: [],
     approvedHosts: [], suppressExcerpts: true, ...base,
   },
+};
+
+/**
+ * The pilot apply path's Terraform (src/apply). The state-writing and applying
+ * identities hold write access, so they may not redirect where providers are
+ * installed from: no CLI configuration file (provider mirrors, `provider_installation`
+ * and `credentials` blocks) and no shared plugin cache. An `ALZ_STATE_WRITE_` or
+ * `ALZ_APPLY_` variable naming either is refused, which fails the step closed.
+ */
+const PROVIDER_INSTALLATION_OVERRIDES: readonly string[] = ["TF_CLI_CONFIG_FILE", "TF_PLUGIN_CACHE_DIR"];
+/** The apply identities use `ARM_*` with OIDC only: no az CLI configuration or `AZURE_*` SDK credentials reach an apply child. */
+export const TERRAFORM_APPLY_PROFILE: ProcessProfile = {
+  ...PROFILES.terraform,
+  injectable: PROFILES.terraform.injectable.filter((name) => !PROVIDER_INSTALLATION_OVERRIDES.includes(name) && !name.startsWith("AZURE_")),
 };

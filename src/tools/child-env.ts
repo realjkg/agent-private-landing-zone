@@ -1,6 +1,7 @@
 import { accessSync, constants, statSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 
+import { type ExecutionIdentity, ownsIdentityVariable } from "./identity.js";
 import {
   NETWORK_URL_VARIABLES,
   NETWORK_VARIABLES,
@@ -14,13 +15,13 @@ import {
  */
 
 /** Standard install locations. Anything else is added deliberately with ALZ_TOOL_DIRS. */
-export const DEFAULT_TOOL_DIRS: readonly string[] = ["/usr/local/bin", "/usr/bin", "/bin", "/opt/homebrew/bin"];
+const DEFAULT_TOOL_DIRS: readonly string[] = ["/usr/local/bin", "/usr/bin", "/bin", "/opt/homebrew/bin"];
 
 /** Not secrets, and tools behave badly without them. Everything else must be injected. */
 const BASELINE_VARIABLES = ["LANG", "LC_ALL", "TZ"] as const;
 
 const SECRET_NAME = /(SECRET|TOKEN|PASSWORD|PASSPHRASE|CREDENTIAL|SESSION|PRIVATE|ACCESS_KEY)/i;
-const IDENTITY = /^[A-Z][A-Z0-9]{1,15}$/;
+const IDENTITY = /^[A-Z][A-Z0-9_]{1,15}$/;
 const MIN_SECRET_LENGTH = 8;
 
 /**
@@ -84,7 +85,7 @@ export type ChildEnvironment = {
   refused: string[];
 };
 
-export type ChildEnvironmentInput = {
+type ChildEnvironmentInput = {
   profile: ProcessProfile;
   /** The runner's own environment, read only for `ALZ_*` injection and the baseline. */
   base: NodeJS.ProcessEnv;
@@ -122,6 +123,8 @@ export function buildChildEnvironment(input: ChildEnvironmentInput): ChildEnviro
   const inject = (prefix: string, allowed: (name: string) => boolean, urlNames: readonly string[]) => {
     for (const [key, value] of Object.entries(input.base)) {
       if (!key.startsWith(prefix) || value === undefined) continue;
+      // STATE is a prefix of STATE_WRITE: the writer's variables are never STATE's candidates.
+      if (prefix === identityPrefix && !ownsIdentityVariable(key, identity as ExecutionIdentity)) continue;
       const name = key.slice(prefix.length);
       const permitted = name.length > 0 && !NEVER_INJECTABLE.test(name) && allowed(name) &&
         !/[\0\n\r]/.test(value) &&
@@ -135,7 +138,8 @@ export function buildChildEnvironment(input: ChildEnvironmentInput): ChildEnviro
     }
   };
 
-  inject("ALZ_" + identity + "_",
+  const identityPrefix = "ALZ_" + identity + "_";
+  inject(identityPrefix,
     (name) => input.profile.injectable.includes(name) ||
       input.profile.injectablePrefixes.some((prefix) => name.startsWith(prefix)),
     input.profile.urlVariables);

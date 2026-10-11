@@ -1,0 +1,28 @@
+{
+  "EXAMPLE": "NOT A REAL CONTRACT. Copy to config/act-pilot-contract.json, replace every REPLACE-WITH value with an owner-supplied value, and set enabled to true only when the owner authorizes the pilot. Then commit the contract's canonical sha256 to config/act-pilot-contract.sha256 (an empty or absent pin keeps ACT disabled). These placeholders are deliberately invalid, so this file can never enable ACT.",
+  "schemaVersion": 1,
+  "enabled": false,
+  "provider": "AZURE",
+  "engine": "TERRAFORM",
+  "targets": {
+    "DEV": {
+      "tenantId": "REPLACE-WITH-TENANT-GUID",
+      "subscriptionId": "REPLACE-WITH-DEV-SUBSCRIPTION-GUID",
+      "backend": "REPLACE-WITH-DEV-STORAGE-ACCOUNT/REPLACE-WITH-CONTAINER/REPLACE-WITH-KEY",
+      "workspace": "default"
+    },
+    "PROD": {
+      "tenantId": "REPLACE-WITH-TENANT-GUID",
+      "subscriptionId": "REPLACE-WITH-PROD-SUBSCRIPTION-GUID",
+      "backend": "REPLACE-WITH-PROD-STORAGE-ACCOUNT/REPLACE-WITH-CONTAINER/REPLACE-WITH-KEY",
+      "workspace": "default"
+    }
+  },
+  "requiredApprovals": { "DEV": 1, "PROD": 2 },
+  "maxApprovalAgeMinutes": 60,
+  "approvers": [
+    { "id": "REPLACE-WITH-APPROVER-ID-1", "publicKeyPem": "REPLACE-WITH-ED25519-PUBLIC-KEY-PEM", "environments": ["DEV", "PROD"] },
+    { "id": "REPLACE-WITH-APPROVER-ID-2", "publicKeyPem": "REPLACE-WITH-ED25519-PUBLIC-KEY-PEM", "environments": ["DEV", "PROD"] }
+  ],
+  "killSwitchPath": ".runs/apply/KILL"
+}

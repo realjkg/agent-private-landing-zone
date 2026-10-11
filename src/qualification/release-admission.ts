@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import { readFile, realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 
+import { pilotContractPinned, pilotContractSha256 } from "../apply/contract.js";
+import type { PilotContract } from "../apply/types.js";
 import { PHASE_E_SCENARIOS } from "./phase-e.js";
 import { PRODUCTION_DEPLOYMENT_CONTRACT } from "./production-contract.js";
 
@@ -56,9 +58,13 @@ export type ReleaseAdmissionInput = {
   schemaVersion: 1;
   sourceCommit: string;
   operatingMode: "PREVIEW_OPERATE";
-  infrastructureAct: "DISABLED";
+  /** DISABLED, or PILOT for a release admitted under an enabled pilot contract (see `actPilot`). Nothing else. */
+  infrastructureAct: "DISABLED" | "PILOT";
+  /** Required with PILOT, forbidden otherwise: the one pilot scope, bound to the contract by hash. */
+  actPilot?: ActPilotScope;
   records: ReleaseGateSubmission[];
 };
+export type ActPilotScope = { provider: "AZURE"; engine: "TERRAFORM"; contractSha256: string };
 export type GateReview = {
   id: string;
   mode: ReleaseGateMode;
@@ -70,7 +76,9 @@ export type ReleaseAdmissionReport = {
   sourceCommit: string;
   readyForIndependentReleaseReview: boolean;
   productionReleaseApproved: false;
+  /** ACT is disabled globally. The pilot contract is its only exception, reported in `actPilot`. */
   infrastructureAct: "DISABLED";
+  actPilot: ActPilotScope | null;
   gates: GateReview[];
   blockers: string[];
   candidateIdentityHash: string;
@@ -187,19 +195,51 @@ async function readEvidence(root: string, path: string): Promise<Buffer> {
   return readFile(candidate);
 }
 
+/**
+ * The pilot exception: a release declares PILOT only together with an enabled
+ * pilot contract that the committed pin names (the loader checks the same pin),
+ * and names it (and the one pilot scope) by hash. An enabled contract beside a
+ * release that does not declare the pilot is rejected, and so is a stray
+ * actPilot object on any release that is not PILOT, so neither the contract file
+ * nor the manifest can quietly enable ACT for an ordinary release.
+ */
+function reviewPilot(manifest: ReleaseAdmissionInput, contract: PilotContract | undefined, pinPath: string | undefined): { scope: ActPilotScope | null; blockers: string[] } {
+  if (manifest.infrastructureAct !== "PILOT") {
+    return {
+      scope: null,
+      blockers: [
+        ...(contract ? ["ACT_PILOT_CONTRACT_ENABLED_FOR_NON_PILOT_RELEASE"] : []),
+        ...(Object.hasOwn(manifest, "actPilot") ? ["ACT_PILOT_SCOPE_ON_NON_PILOT_RELEASE"] : []),
+      ],
+    };
+  }
+  if (!contract) return { scope: null, blockers: ["ACT_PILOT_CONTRACT_MISSING_OR_DISABLED"] };
+  if (!pilotContractPinned(contract, pinPath)) return { scope: null, blockers: ["ACT_PILOT_CONTRACT_NOT_PINNED"] };
+  const claimed = manifest.actPilot as unknown;
+  const bound = isObject(claimed) && Object.keys(claimed).length === 3 && claimed.provider === contract.provider &&
+    claimed.engine === contract.engine && claimed.contractSha256 === pilotContractSha256(contract);
+  return bound ? { scope: claimed as ActPilotScope, blockers: [] } : { scope: null, blockers: ["ACT_PILOT_SCOPE_MISMATCH"] };
+}
+
 export async function reviewProductionRelease(input: {
   manifest: ReleaseAdmissionInput;
   root: string;
   expectedCommit: string;
+  /** The loaded pilot contract (loadPilotContract). Absent, or not enabled, means there is no pilot. */
+  pilotContract?: PilotContract | { enabled: false };
+  /** The committed pin the contract must match. Defaults to config/act-pilot-contract.sha256 in the repository. */
+  pilotPinPath?: string;
 }): Promise<ReleaseAdmissionReport> {
   const { manifest, expectedCommit } = input;
   const blockers: string[] = [];
   if (!sha40.test(expectedCommit) || manifest.sourceCommit !== expectedCommit ||
       manifest.schemaVersion !== 1 || manifest.operatingMode !== "PREVIEW_OPERATE" ||
-      manifest.infrastructureAct !== "DISABLED" ||
+      (manifest.infrastructureAct !== "DISABLED" && manifest.infrastructureAct !== "PILOT") ||
       PRODUCTION_DEPLOYMENT_CONTRACT.spec.release.actEnabled !== false) {
     blockers.push("RELEASE_MANIFEST_CONTRACT_OR_COMMIT_INVALID");
   }
+  const pilot = reviewPilot(manifest, input.pilotContract?.enabled === true ? input.pilotContract : undefined, input.pilotPinPath);
+  blockers.push(...pilot.blockers);
   if (!Array.isArray(manifest.records)) {
     blockers.push("RELEASE_RECORDS_REQUIRED");
   }
@@ -259,6 +299,7 @@ export async function reviewProductionRelease(input: {
     readyForIndependentReleaseReview,
     productionReleaseApproved: false,
     infrastructureAct: "DISABLED",
+    actPilot: pilot.scope,
     gates,
     blockers: [...blockers, ...gates.filter((gate) =>
       gate.status === "BLOCKED").map((gate) =>

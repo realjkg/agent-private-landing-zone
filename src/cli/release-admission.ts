@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
+import { loadPilotContract } from "../apply/contract.js";
 import {
   reviewProductionRelease,
   type ReleaseAdmissionInput,
@@ -32,6 +33,8 @@ async function main(): Promise<void> {
   const manifest = JSON.parse(readFileSync(file, "utf8")) as ReleaseAdmissionInput;
   const result = await reviewProductionRelease({
     manifest, expectedCommit: sourceCommit, root: process.cwd(),
+    // ACT is off unless this release declares PILOT and config/act-pilot-contract.json is valid and enabled.
+    pilotContract: loadPilotContract(),
   });
   const out = resolve(evidenceDir("release"), "admission-" + randomUUID() + ".json");
   writeJsonOnce(out, result);
@@ -40,6 +43,7 @@ async function main(): Promise<void> {
     console.log((gate.status === "EVIDENCE_PRESENT" ? "EVIDENCE " : "BLOCKED  ") +
       gate.id + (gate.blockers.length ? " (" + gate.blockers.join(", ") + ")" : ""));
   }
+  if (result.actPilot) console.log("Pilot ACT (human-authorized, " + result.actPilot.provider + " " + result.actPilot.engine + ") under contract " + result.actPilot.contractSha256);
   console.log("Source: " + sourceCommit);
   console.log("Candidate identity: " + result.candidateIdentityHash);
   console.log("Admission report: " + out);
