@@ -63,12 +63,17 @@ function shapeProblems(value: unknown, shape: Shape, path: string, out: string[]
   }
   if (!value || typeof value !== "object" || Array.isArray(value)) { out.push(path + ": expected an object"); return; }
   const record = value as Record<string, unknown>;
+  // Own keys only: "constructor" or "toString" must not pass as part of the shape.
   for (const key of Object.keys(record)) {
-    if (!(key in shape)) {
+    if (!Object.hasOwn(shape, key)) {
       out.push(path + "." + key + (RAW_KEY.test(key) ? ": raw plan or state field" : ": not part of the evidence shape"));
     } else {
       shapeProblems(record[key], shape[key], path + "." + key, out);
     }
+  }
+  // The shape is closed and complete: a document that omits a field is not driver evidence.
+  for (const key of Object.keys(shape)) {
+    if (!Object.hasOwn(record, key)) out.push(path + "." + key + ": missing");
   }
 }
 
@@ -107,6 +112,24 @@ export function evidenceProblems(evidence: unknown, canaries: readonly string[] 
   for (const canary of canaries) {
     if (canary.length > 0 && serialized.includes(canary)) problems.push("a known secret value is present");
   }
+  return problems;
+}
+
+const OPERATIONS: readonly PreviewOperation[] = ["PREVIEW", "DESTROY_PREVIEW"];
+
+/**
+ * What a viewer must also require before it labels a document as driver
+ * evidence: a valid operation, schemaVersion 1 and an authority block equal to
+ * the driver's own AUTHORITY constant.
+ */
+export function evidenceAuthorityProblems(evidence: unknown): string[] {
+  const record = (evidence && typeof evidence === "object" && !Array.isArray(evidence) ? evidence : {}) as Record<string, unknown>;
+  const problems: string[] = [];
+  if (record.schemaVersion !== 1) problems.push("evidence.schemaVersion: expected 1");
+  if (typeof record.operation !== "string" || !OPERATIONS.includes(record.operation as PreviewOperation)) {
+    problems.push("evidence.operation: expected PREVIEW or DESTROY_PREVIEW");
+  }
+  if (!same(record.authority, AUTHORITY)) problems.push("evidence.authority: does not match the preview-only, ACT DISABLED statement");
   return problems;
 }
 

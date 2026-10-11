@@ -1,0 +1,42 @@
+/* Catalog operations. Loaded with the lazy chunk; reuses the console's tokens. */
+.op-families {
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.op-list {
+  display: grid;
+  gap: 14px;
+}
+
+.op-card {
+  padding: 14px 16px;
+  text-align: left;
+}
+
+.op-input {
+  display: block;
+  width: 100%;
+  margin: 6px 0;
+  padding: 8px;
+  font: inherit;
+  color: var(--ink);
+  background: var(--bg);
+  border: 2px solid var(--phosphor-dim);
+  border-radius: 0;
+}
+
+.op-input:focus-visible {
+  outline: 2px solid var(--phosphor);
+  outline-offset: 2px;
+}
+
+.op-command {
+  display: block;
+  margin-bottom: 8px;
+  overflow-wrap: anywhere;
+}
+
+.op-problem {
+  color: var(--amber);
+}

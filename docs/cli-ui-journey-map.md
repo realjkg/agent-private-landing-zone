@@ -1,57 +1,56 @@
-# CLI commands and their UI callers
+# CLI commands and their console equivalents
 
-Which `./alz` commands the browser console can start, which it cannot, and which tests cover each. The console is deliberately small: it launches four bounded, read-only or synthetic workflows and reports their result. Everything else is an operator CLI command with **no UI caller**. That is a decision recorded here, not an oversight, and a test (`test/cli-ui-journey-map.test.ts`) fails if a command or console workflow is added without an entry below.
+Which `./alz` commands the browser console covers, and which tests cover each. Every operator-callable capability has an entry in the operation catalog (`src/operations/`); the console runs the safe ones and shows a guided handoff for the rest. The generated table in [operator-console.md](operator-console.md) lists every entry with its safety class. `test/operations-parity.test.ts` fails when a command or script has no catalog entry, and `test/cli-ui-journey-map.test.ts` checks this map against the dispatcher and the catalog.
 
 ## How the console calls the CLI
 
-The console (`./alz workspace`) posts `mode`, `scenario` and a CSRF token to `POST /run`. `chooseOperatorJob` (`src/operator-ui/server.ts`) maps the mode to one fixed job script; the browser cannot supply a script, arguments or a command. `GET /models` reports whether local models are installed and never gates a run.
+The console (`./alz workspace`) posts either the legacy `mode`, `scenario` and a CSRF token, or `operation`, `inputs` and the token, to `POST /run`. `chooseOperatorJob` and the catalog (`src/operations/`) map the request to one fixed job script; the browser cannot supply a script, arguments, a path or a command. Pasted JSON is validated, written by the server to a private `0700` directory and deleted afterward. `GET /operations` lists the public descriptors and `GET /models` reports whether local models are installed; neither gates a run.
 
 | Console mode | Runs | CLI equivalent |
 | --- | --- | --- |
 | `matrix-offline` | `cli/private-agent-matrix.js --offline-fixture` | `./alz matrix --offline-fixture` |
 | `matrix-live` | `cli/private-agent-matrix.js --live-models` | `./alz matrix --live-models` |
-| `aws-review` | `cli/qualify-aws-terraform-agent.js --live-models` | `npm run`/`tsx src/cli/qualify-aws-terraform-agent.ts` (no `./alz` alias) |
+| `aws-review` | `cli/qualify-aws-terraform-agent.js --live-models` | `npx tsx src/cli/qualify-aws-terraform-agent.ts --live-models` (no `./alz` alias) |
 | `chaos` | `cli/chaos-pillars.js` | `./alz chaos` |
 
 ## The map
 
-`UI` = which console mode (or the console itself) calls it. `NONE` = operator-only. `Covered by` = the tests that exercise the command or its UI journey.
+One row per `./alz` command word or catalog command group. `Covered by` = the tests that exercise the command or its console journey. `bootstrap` (shell wrapper) and `workspace` (the console host) have no catalog entry by design. `enterprise` and `qualify` are catalog command groups for the enterprise libraries and the release qualification checks.
 
 ```journey-map
-alz bootstrap | NONE | test/local-operator-workspace.test.ts
-alz demo | NONE | test/operator-cli.test.ts
-alz design | NONE | test/operator-cli.test.ts
-alz inspect | NONE | test/operator-cli.test.ts
-alz session | NONE | test/operator-cli.test.ts
-alz debug | NONE | test/debug-diagnostics.test.ts
-alz target | NONE | test/operator-cli.test.ts
-alz recovery | NONE | test/operator-cli.test.ts
-alz control-plane | NONE | test/control-plane-recovery.test.ts
-alz economics | NONE | test/operator-cli.test.ts
-alz teardown | NONE | test/teardown-traceability.test.ts
-alz health | NONE | test/observability-health-server.test.ts
-alz doctor | NONE | test/operator-cli.test.ts
-alz verify | NONE | test/operator-cli.test.ts
-alz plugins | NONE | test/operator-cli.test.ts
-alz prompts | NONE | test/operator-cli.test.ts
-alz prompt-guide | NONE | test/operator-cli.test.ts
-alz models | UI:models-probe | test/operator-cli.test.ts, test/local-operator-workspace.test.ts, test/operator-ui-journey-fixes.test.tsx
-alz sbom | NONE | test/operator-cli.test.ts
-alz scan | NONE | test/operator-cli.test.ts
-alz workspace | UI:host | test/local-operator-workspace.test.ts, test/operator-ui-react.test.tsx
-alz matrix | UI:matrix-offline,matrix-live | test/local-operator-workspace.test.ts, test/operator-ui-react.test.tsx
-alz chaos | UI:chaos | test/local-operator-workspace.test.ts, test/operator-ui-journey-fixes.test.tsx
-console aws-review | UI:aws-review | test/local-operator-workspace.test.ts, test/aws-terraform-agent.test.ts
+alz bootstrap | test/local-operator-workspace.test.ts
+alz demo | test/operator-cli.test.ts
+alz design | test/operator-cli.test.ts
+alz inspect | test/operator-cli.test.ts
+alz session | test/operator-cli.test.ts
+alz debug | test/debug-diagnostics.test.ts
+alz target | test/operator-cli.test.ts
+alz recovery | test/operator-cli.test.ts
+alz control-plane | test/control-plane-recovery.test.ts
+alz economics | test/operator-cli.test.ts
+alz teardown | test/teardown-traceability.test.ts
+alz health | test/observability-health-server.test.ts
+alz doctor | test/operator-cli.test.ts
+alz verify | test/operator-cli.test.ts
+alz plugins | test/operator-cli.test.ts
+alz prompts | test/operator-cli.test.ts
+alz prompt-guide | test/operator-cli.test.ts
+alz models | test/operator-cli.test.ts, test/local-operator-workspace.test.ts, test/operator-ui-journey-fixes.test.tsx
+alz sbom | test/operator-cli.test.ts
+alz scan | test/operator-cli.test.ts
+alz enterprise | test/operations-core.test.ts, test/operations-parity.test.ts
+alz qualify | test/operations-qualification.test.ts, test/operations-parity.test.ts
+alz workspace | test/local-operator-workspace.test.ts, test/operator-ui-react.test.tsx
+alz matrix | test/local-operator-workspace.test.ts, test/operator-ui-react.test.tsx
+alz chaos | test/local-operator-workspace.test.ts, test/operator-ui-journey-fixes.test.tsx
+console aws-review | test/local-operator-workspace.test.ts, test/aws-terraform-agent.test.ts
 ```
-
-`alz models` is the one command with a partial UI relationship: the console shows whether the models `./alz models verify` would check are installed, using its own probe (`src/operator-ui/model-availability.ts`). It does not run `models verify`.
 
 ## What this means for teardown
 
-`./alz teardown record | check-plan | destroy-preview | orphans` has **no UI caller and no browser journey**. The same holds for `./alz teardown destroy-preview-run` and `preview-run`, the human-invoked entry to the preview driver (`docs/destroy-preview-driver.md`): they have no UI caller, need a real terminal on stdin and stdout, and are not reachable from the console server, the tool broker or any agent. It is covered by backend tests only (`test/teardown-*.test.ts`, including real-output fixtures), not by a UI journey test, because there is no UI journey to test. This is consistent with the recorded decisions for the destroy-preview driver: it is human-invoked, the operator authorizes each preview, and no agent or browser initiates one. If a teardown view is ever added to the console, it should be a read-only display of a verdict the CLI already produced, with its own journey tests; it must not gain a button that runs a preview or anything that changes infrastructure.
+`./alz teardown record | check-plan | destroy-preview | orphans` are read-only verdicts; the console can show what the CLI already produced. `./alz teardown destroy-preview-run` and `preview-run`, the human-invoked entry to the preview driver (`docs/destroy-preview-driver.md`), are never run by the console: they need a real terminal on stdin and stdout where a person types the exact target (Decision 1 in `docs/teardown-broker-review.md`). In the console they are a guided handoff: what the command does, why it needs a terminal, the exact command filled in from the form, and a read-only viewer for the redacted evidence it wrote. The rules are enforced by `test/cli-ui-journey-map.test.ts`: the console server and `src/operations/` never import or spawn the driver, no runnable entry's job points at it, and no job argument list can contain `destroy`, `preview-only`, `apply` or `auto-approve`.
 
 ## Gaps this map does not close
 
-- The `NONE` rows have CLI tests, not journey tests. A command being covered means its behavior is tested, not that an end-to-end operator journey (install, run, read the result, act on it) is exercised.
+- A covered command has tests for its behavior, not necessarily an end-to-end operator journey (install, run, read the result, act on it).
 - The console journeys are covered with component tests and a server test against a fake runner. No committed real-browser journey check exists; adding one needs a decision on a browser-automation dependency.
-- `aws-review` has no `./alz` alias, so its CLI equivalent is the script itself.

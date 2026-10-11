@@ -1,4 +1,4 @@
-import { executeTool } from "../tools/broker.js";
+import { runGovernedTool } from "../tools/governed.js";
 import type {
   ToolName,
   ToolResult,
@@ -47,7 +47,7 @@ console.log();
 
 for (const tool of checks) {
   const result =
-    executeTool(
+    await runGovernedTool(
       { tool },
       context,
     );

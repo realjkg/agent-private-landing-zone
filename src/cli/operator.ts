@@ -233,7 +233,7 @@ function choice(
   return selected;
 }
 
-function help(): void {
+async function help(): Promise<void> {
   console.log();
   console.log("Agent Private Landing Zone");
   console.log("────────────────────────────────");
@@ -286,6 +286,7 @@ function help(): void {
   );
   console.log("  ./alz economics report <input.json> [--json]");
   console.log("  ./alz teardown record|check-plan|destroy-preview|orphans (read-only)");
+  console.log("  ./alz teardown destroy-preview-run|preview-run (interactive terminal only; the console shows the command and never runs it)");
   console.log("  ./alz health [--serve]");
   console.log("  ./alz doctor");
   console.log("  ./alz verify");
@@ -297,6 +298,12 @@ function help(): void {
   );
   console.log("  ./alz sbom");
   console.log("  ./alz scan");
+  console.log("  ./alz matrix --offline-fixture [--scenario ID]");
+  console.log("  ./alz matrix --live-models [--scenario ID]");
+  console.log("  ./alz chaos");
+  // One line per catalog command group; the catalog loads only when needed.
+  const { groupHelpLines } = await import("../operations/groups.js");
+  for (const line of groupHelpLines()) console.log(line);
   console.log();
   console.log(
     "ACT remains disabled. inspect/session use read-only provider access.",
@@ -489,7 +496,7 @@ try {
     command === "--help" ||
     command === "-h"
   ) {
-    help();
+    await help();
   } else if (
     command === "demo" ||
     command === "design"
@@ -852,8 +859,25 @@ try {
   } else if (command === "scan") {
     scan();
   } else {
-    help();
-    process.exitCode = 2;
+    // Catalog command groups (./alz <group> <subcommand>) for capabilities
+    // with no legacy branch above.
+    const { resolveGroupCommand } = await import("../operations/groups.js");
+    const resolved = resolveGroupCommand(command, argv.slice(1));
+    if (resolved === null) {
+      await help();
+      process.exitCode = 2;
+    } else if (resolved.kind === "run") {
+      // A catalog report may exit 2 for a diagnosis (checked and rejected): propagate it, as teardown and health do.
+      runTs(resolved.script, resolved.args, true);
+    } else if (resolved.kind === "list") {
+      console.log(["", ...resolved.lines, ""].join("\n"));
+    } else {
+      throw operatorError(
+        "unknown " + command + " subcommand " + String(first) + ".",
+        "Use one of the subcommands listed below.",
+        "Run ./alz " + command + " list.\n" + resolved.lines.join("\n"),
+      );
+    }
   }
 } catch (error) {
   console.error();

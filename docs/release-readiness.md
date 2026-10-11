@@ -185,7 +185,7 @@ The current phase already produced:
 - fast deterministic PR validation
 - no-collision agent coordination rules
 - manual-only heavyweight release workflows
-- deterministic recovery target/profile compiler and unattended recovery automation
+- deterministic recovery target/profile compiler and recovery automation controller (library only; no unattended service entry point)
 - explicit AWS/Azure provider-recovery evidence classification
 - operator RC smoke coverage for target/recovery flows
 - completed eight-adapter direct-versus-LangGraph convergence qualification
