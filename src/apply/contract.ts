@@ -59,7 +59,7 @@ const bad = (message: string): never => { throw new Invalid(message); };
 
 const WORKSPACE = /^[A-Za-z0-9_-]{1,90}$/;
 const STORAGE_ACCOUNT = /^[a-z0-9]{3,24}$/;
-const CONTAINER = /^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/;
+const CONTAINER = /^(?!.*--)[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/;
 const KEY_SEGMENT = /^(?!\.\.?$)[A-Za-z0-9._-]+$/;
 const ENVIRONMENTS: readonly ApplyEnvironment[] = ["DEV", "PROD"];
 
