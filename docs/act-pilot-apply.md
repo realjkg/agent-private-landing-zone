@@ -113,9 +113,17 @@ The evidence also records the Terraform binary's sha256, the attested STATE_WRIT
 
 Rerun it when the engine version or either adapter's argument list changes (the digest changes with it). The `terraform apply` step itself is not exercised by qualification, since that would change infrastructure; its behavior is covered only by the first supervised DEV apply, which the owner should watch.
 
-### Open question: backend and identity ordering at apply (G2)
+### Backend and identity ordering at apply (G2): partly answered by the simulation
 
-The sealed plan embeds backend settings from the **seal-time** `init`, which runs as STATE (read) and not as STATE_WRITE. Whether `terraform apply <planfile>` uses those embedded settings, the settings `init` saved at apply time, or the apply process's own `ARM_*` variables, and so which principal writes state, is an open real-engine question. The code does not answer it and the qualify attestation does not prove it: it attests what the person saw in the cloud logs of one qualify run, which never ran `terraform apply`. The first supervised DEV apply is where it becomes observable; do not rely on the ordering until a person has watched it.
+The real Terraform 1.16.4 against the Azurite emulator (`docs/act-pilot-simulation.md`, DEV MODE ONLY) showed: `terraform apply <planfile>` uses the backend settings **embedded in the plan**, not the settings that `init` saved in the apply directory. Attributes embedded as null are filled from the apply process's own `ARM_*` variables, and an environment variable with the same name does not override an embedded value. The plan file also embeds a `-backend-config` `sas_token` in plaintext, so a sealed plan is secret-bearing (it is encrypted at rest). Tested with SAS and access-key auth only; Entra and OIDC are inferred, not run.
+
+Consequences for this design, still to be settled with a real Azure run:
+
+- The STATE_WRITE partial backend configuration passed to `init` at apply time is probably not what authenticates the state write. Which principal writes state follows from the seal-time settings plus the apply process's `ARM_*` variables (APPLY's).
+- Keeping STATE_WRITE and APPLY distinct for the state write would therefore need the seal-time `init` to embed STATE_WRITE's non-secret settings (client id, tenant, token file path), which makes the seal-time state access write-capable. That is a trade-off for the owner, not something the code decides.
+- Until a real azurerm run shows which principal wrote state, `qualify` records an attestation and not proof, and the first supervised DEV apply is where it becomes observable. Do not rely on the separation before then.
+
+Known, not changed: Terraform contacts the HashiCorp checkpoint service on every run (the runner profile does not set `CHECKPOINT_DISABLE`; production network policy should block it), and a failed state save writes `errored.tfstate` with mode 0644 and quotes the full backend URL in its error text, which is why engine output is withheld from messages.
 
 ### The backend and provider binding
 
