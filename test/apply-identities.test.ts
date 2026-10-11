@@ -216,6 +216,7 @@ const OTHER = "00000000-0000-4000-8000-0000000000ff";
 const contract = {
   targets: {
     DEV: { tenantId: TENANT, subscriptionId: SUBSCRIPTION, backend: "x/y/z", workspace: "default" },
+    QA: { tenantId: "00000000-0000-4000-8000-000000000005", subscriptionId: "00000000-0000-4000-8000-000000000006", backend: "x/y/q", workspace: "default" },
     PROD: { tenantId: "00000000-0000-4000-8000-000000000003", subscriptionId: "00000000-0000-4000-8000-000000000004", backend: "x/y/p", workspace: "default" },
   },
 } as unknown as PilotContract;
@@ -228,6 +229,17 @@ test("identity targets: matching tenant and subscription pass", () => {
     prod[`ALZ_${identity}_ARM_SUBSCRIPTION_ID`] = contract.targets.PROD.subscriptionId;
   }
   assert.deepEqual(verifyIdentityTargets(contract, "PROD", prod), { ok: true }, "case does not matter");
+  const qa = fixture();
+  for (const identity of APPLY_IDENTITIES) {
+    qa[`ALZ_${identity}_ARM_TENANT_ID`] = contract.targets.QA.tenantId;
+    qa[`ALZ_${identity}_ARM_SUBSCRIPTION_ID`] = contract.targets.QA.subscriptionId.toUpperCase();
+  }
+  assert.deepEqual(verifyIdentityTargets(contract, "QA", qa), { ok: true });
+  // Each environment's credentials apply only there.
+  for (const [good, other] of [["QA", "DEV"], ["QA", "PROD"], ["DEV", "QA"], ["PROD", "QA"]] as const) {
+    const env = good === "QA" ? qa : good === "PROD" ? prod : fixture();
+    assert.equal(verifyIdentityTargets(contract, other, env).ok, false, good + " credentials for " + other);
+  }
 });
 
 test("identity targets: any identity pointing elsewhere is IDENTITY_TARGET_MISMATCH, naming variables and never values", () => {

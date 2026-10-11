@@ -32,7 +32,7 @@ The existing security policy interface decides whether work is allowed. The exis
 
 Models may explain, compare, summarize and recommend. Models are never the source of authority.
 
-ACT = DISABLED remains a repository invariant.
+ACT = DISABLED is the repository default. The one owner-approved exception is the internal reference-build pilot, enabled only by a pinned pilot contract (`docs/act-pilot-plan.md`).
 
 ## Deterministic execution sequence
 
@@ -50,7 +50,7 @@ single ACT boundary
 
 PLAN is serialized and authoritative for an iteration. Independent DO lanes may execute in parallel only inside their assigned scopes. CONVERGE/VERIFY is serialized and evidence-driven. A bounded lane failure returns to that DO lane; a changed architecture, policy intent, ownership boundary, or source assumption requires a new PLAN.
 
-ACT is a single authority boundary. For repository engineering it is the controlled integration/merge decision. For infrastructure runtime, ACT remains disabled.
+ACT is a single authority boundary. For repository engineering it is the controlled integration/merge decision. For infrastructure runtime, ACT is disabled by default and enabled only under the pilot contract.
 
 ## What stays deliberately small
 

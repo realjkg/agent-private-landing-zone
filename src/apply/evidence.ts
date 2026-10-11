@@ -33,7 +33,7 @@ const count: Check = (v) => typeof v === "number" && Number.isSafeInteger(v) && 
 
 const SHAPE: Shape = {
   schemaVersion: oneOf(1),
-  environment: oneOf("DEV", "PROD"),
+  environment: oneOf("DEV", "QA", "PROD"),
   target: { account: text, backend: text, workspace: text },
   artifactSha256: hash,
   manifestHash: hash,

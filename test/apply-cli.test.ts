@@ -11,10 +11,11 @@ import { reserveArtifact } from "../src/apply/ledger.js";
 import { openNonceStore, type NonceStore } from "../src/apply/nonces.js";
 import { APPLY_ADAPTER, APPLY_ARGV, APPLY_INIT_ARGV } from "../src/apply/terraform.js";
 import { removeTree } from "../src/teardown/driver/cleanup.js";
+import type { ApplyEnvironment } from "../src/apply/types.js";
 import type { ResolvedTarget } from "../src/teardown/driver/types.js";
 import { targetString } from "../src/cli/teardown-driver.js";
 import {
-  DEV_TARGET, ENGINE_VERSION, NOW, OUTPUT_CANARY, PLAN_CANARY, POLICY, PROD_TARGET, STATE_CANARY, VALUE_CANARY,
+  DEV_TARGET, ENGINE_VERSION, NOW, OUTPUT_CANARY, PLAN_CANARY, POLICY, PROD_TARGET, QA_TARGET, STATE_CANARY, VALUE_CANARY, targetOf,
   behave as behaveIn, callsOf, contractJson, identityEnv, installFakeTerraform, keys, pinPathOf, testFixtureForgeQualificationEvidence, writePinnedContract,
   writeProject, type Behavior, type Project,
 } from "./helpers/apply-fixtures.js";
@@ -106,9 +107,9 @@ const sealArgs = (p: Project, target: ResolvedTarget, environment: string, extra
   ["seal", "--request", requestFile(p, target, environment, extra), "--manifest", manifestFile(p)];
 const PHRASE = "RUN PROJECT CODE";
 
-type Sealed = { project: Project; target: ResolvedTarget; environment: "DEV" | "PROD"; path: string; bundle: string; artifactSha256: string };
-async function sealed(w: World, environment: "DEV" | "PROD"): Promise<Sealed> {
-  const target = environment === "DEV" ? DEV_TARGET : PROD_TARGET;
+type Sealed = { project: Project; target: ResolvedTarget; environment: ApplyEnvironment; path: string; bundle: string; artifactSha256: string };
+async function sealed(w: World, environment: ApplyEnvironment): Promise<Sealed> {
+  const target = targetOf(environment);
   const p = writeProject(fresh("project"), target);
   const run = await cli(w, sealArgs(p, target, environment), [targetString(target), PHRASE], { env: identityEnv(environment) });
   assert.equal(run.code, 0, run.stderr);
@@ -294,6 +295,8 @@ test("qualify stops without evidence on a wrong confirmation or attestation, out
   }
   const prod = writeProject(fresh("project"), PROD_TARGET);
   await none(await cli(w, qualifyArgs(prod, "PROD", PROD_TARGET), [targetString(PROD_TARGET), PHRASE, attest()], { env: identityEnv("PROD") }), 2, /BLOCKED ARTIFACT_INVALID/);
+  const qa = writeProject(fresh("project"), QA_TARGET);
+  await none(await cli(w, qualifyArgs(qa, "QA", QA_TARGET), [targetString(QA_TARGET), PHRASE, attest()], { env: identityEnv("QA") }), 2, /BLOCKED ARTIFACT_INVALID/);
   const off = await world(contractJson(KILL, { enabled: false }), false);
   const disabled = await cli(off, qualifyArgs(p), [targetString(DEV_TARGET), PHRASE, attest()]);
   assert.equal(disabled.code, 2);
@@ -455,7 +458,7 @@ test("apply stops at the prompt: a wrong environment, artifact or target, or the
   const sha12 = s.artifactSha256.slice(0, 12);
   const target = targetString(DEV_TARGET);
   for (const typed of [
-    "APPLY DEV", "APPLY PROD " + sha12 + " " + target, "APPLY DEV " + "0".repeat(12) + " " + target, "APPLY DEV " + sha12, "APPLY DEV " + sha12 + " " + targetString(PROD_TARGET),
+    "APPLY DEV", "APPLY PROD " + sha12 + " " + target, "APPLY QA " + sha12 + " " + target, "APPLY DEV " + "0".repeat(12) + " " + target, "APPLY DEV " + sha12, "APPLY DEV " + sha12 + " " + targetString(PROD_TARGET),
     applyPhrase(s).toLowerCase(), target, "yes", "",
   ]) {
     const run = await cli(w, applyArgs(s, [approval]), [typed], applyIn(s));
@@ -616,26 +619,54 @@ test("the sweep is skipped, with a notice, while the ledger holds a reservation 
   }
 });
 
-test("PROD needs a DEV apply of the same release and two distinct allowlisted approvers; one approver cannot sign twice", async () => {
+test("QA needs a DEV apply of the same release and PROD a QA apply, each with its own approvers; one approver cannot sign twice", async () => {
   const w = await world();
   const dev = await sealed(w, "DEV");
+  const qa = await sealed(w, "QA");
   const prod = await sealed(w, "PROD");
-  const prodRun = (approvals: string[]) => cli(w, applyArgs(prod, approvals), [applyPhrase(prod)], applyIn(prod));
+  const runOf = (s: Sealed, approvals: string[]) => cli(w, applyArgs(s, approvals), [applyPhrase(s)], applyIn(s));
   const alice = await approve(w, prod, "alice");
   const bob = await approve(w, prod, "bob");
+  const qaAlice = await approve(w, qa, "alice");
 
-  const noPromotion = await prodRun([alice, bob]);
-  assert.equal(noPromotion.code, 2);
-  assert.match(noPromotion.stderr, /PROMOTION_EVIDENCE_MISSING/);
+  // The phrases carry the environment.
+  assert.match(applyPhrase(qa), /^APPLY QA [0-9a-f]{12} /);
+  assert.match(approvePhrase(qa), /^APPROVE QA [0-9a-f]{12}$/);
 
-  const devRun = await cli(w, applyArgs(dev, [await approve(w, dev, "alice")]), [applyPhrase(dev)], applyIn(dev));
+  // Neither QA nor PROD can go first.
+  const qaFirst = await runOf(qa, [qaAlice]);
+  assert.equal(qaFirst.code, 2);
+  assert.match(qaFirst.stderr, /PROMOTION_EVIDENCE_MISSING/);
+  const prodFirst = await runOf(prod, [alice, bob]);
+  assert.equal(prodFirst.code, 2);
+  assert.match(prodFirst.stderr, /PROMOTION_EVIDENCE_MISSING/);
+
+  // A QA approval is not a DEV or PROD approval: it is signed for QA's environment and artifact.
+  const wrongEnv = await runOf(dev, [qaAlice]);
+  assert.equal(wrongEnv.code, 2);
+  assert.match(wrongEnv.stderr, /APPROVAL_MISBOUND/);
+
+  const devRun = await runOf(dev, [await approve(w, dev, "alice")]);
   assert.equal(devRun.code, 0, devRun.stderr);
 
-  const one = await prodRun([alice]);
+  // DEV evidence alone does not let PROD through.
+  const prodAfterDev = await runOf(prod, [alice, bob]);
+  assert.equal(prodAfterDev.code, 2);
+  assert.match(prodAfterDev.stderr, /PROMOTION_EVIDENCE_MISSING/);
+
+  const qaRun = await runOf(qa, [qaAlice]);
+  assert.equal(qaRun.code, 0, qaRun.stderr);
+  assert.equal((JSON.parse(qaRun.stdout) as { environment: string }).environment, "QA");
+
+  const qaApprovalsForProd = await runOf(prod, [qaAlice, await approve(w, qa, "bob")]);
+  assert.equal(qaApprovalsForProd.code, 2);
+  assert.match(qaApprovalsForProd.stderr, /APPROVAL_MISBOUND/);
+
+  const one = await runOf(prod, [alice]);
   assert.equal(one.code, 2);
   assert.match(one.stderr, /APPROVAL_INSUFFICIENT/);
 
-  const twice = await prodRun([alice, await approve(w, prod, "alice")]);
+  const twice = await runOf(prod, [alice, await approve(w, prod, "alice")]);
   assert.equal(twice.code, 2);
   assert.match(twice.stderr, /SAME_APPROVER_TWICE/);
 
@@ -643,7 +674,19 @@ test("PROD needs a DEV apply of the same release and two distinct allowlisted ap
   const ok = await cli(w, applyArgs(prod, [alice, bob]), [applyPhrase(prod)], applyIn(prod, { operatorId: "alice" }));
   assert.equal(ok.code, 0, ok.stderr);
   assert.equal((JSON.parse(ok.stdout) as { environment: string }).environment, "PROD");
-  assert.equal(applyCalls().length, 2);
+  assert.equal(applyCalls().length, 3);
+});
+
+test("an environment other than DEV, QA or PROD is refused as invalid input before anything runs", async () => {
+  const w = await world();
+  const p = writeProject(fresh("project"), QA_TARGET);
+  for (const environment of ["STAGING", "qa", "", 7]) {
+    const run = await cli(w, sealArgs(p, QA_TARGET, environment as string), [targetString(QA_TARGET), PHRASE], { env: identityEnv("QA") });
+    assert.equal(run.code, 1, String(environment));
+    assert.match(run.stderr, /APPLY_INPUT_INVALID.*DEV, QA or PROD/);
+    assert.equal(run.stdout, "");
+  }
+  assert.deepEqual(engineCalls(), []);
 });
 
 test("an apply is refused before anything is asked when the manifest is not valid, or the vault holds no qualification", async () => {

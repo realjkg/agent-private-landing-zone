@@ -12,7 +12,7 @@ import { canonicalJson } from "../src/teardown/manifest.js";
 import { createImmutableSnapshot } from "../src/teardown/snapshot.js";
 import { createPrivateDirectory } from "../src/tools/private-workdir.js";
 import {
-  DEV_TARGET, ENGINE_VERSION, ENV, TENANT, H, PLAN_CANARY, POLICY, PROD_TARGET, VALUE_CANARY, behave as behaveIn, callsOf, installFakeTerraform, sha,
+  DEV_TARGET, ENGINE_VERSION, ENV, TENANT, H, PLAN_CANARY, POLICY, PROD_TARGET, QA_TARGET, VALUE_CANARY, behave as behaveIn, callsOf, installFakeTerraform, sha,
   writeProject, type Behavior,
 } from "./helpers/apply-fixtures.js";
 
@@ -44,7 +44,7 @@ installFakeTerraform(toolDir);
 const behave = (behavior: Behavior = {}) => behaveIn(toolDir, join(root, "KILL"), behavior);
 const calls = () => callsOf(toolDir);
 
-function fixture(options: { target?: typeof DEV_TARGET; environment?: "DEV" | "PROD"; mainTf?: string; env?: NodeJS.ProcessEnv; workspace?: string } = {}) {
+function fixture(options: { target?: typeof DEV_TARGET; environment?: "DEV" | "QA" | "PROD"; mainTf?: string; env?: NodeJS.ProcessEnv; workspace?: string } = {}) {
   const target = { ...(options.target ?? DEV_TARGET), ...(options.workspace ? { workspace: options.workspace } : {}) };
   behave({ workspace: target.workspace });
   const { projectRoot, manifest } = writeProject(fresh("project"), target, options.mainTf);
@@ -129,7 +129,7 @@ test("any change to a bound field changes the artifact hash", async () => {
   const s = (result as Extract<typeof result, { ok: true }>).sealed;
   const base = s.artifactSha256;
   const variants: Partial<SealedPlan>[] = [
-    { planSha256: H("a") }, { manifestHash: H("b") }, { releaseIdentity: H("c") }, { environment: "PROD" },
+    { planSha256: H("a") }, { manifestHash: H("b") }, { releaseIdentity: H("c") }, { environment: "PROD" }, { environment: "QA" },
     { target: { ...s.target, workspace: "other" } }, { target: { ...s.target, account: "sub-other" } },
     { target: { ...s.target, backend: "x/y/z" } }, { engineVersion: "1.9.6" }, { policyVersion: "2026-10-12.1" },
     { changes: [] }, { changes: s.changes.slice(1) }, { changes: s.changes.map((c) => ({ ...c, action: "DELETE" })) },
@@ -152,10 +152,22 @@ test("the plan is kept only encrypted in the vault, and nothing readable is left
 
 test("release identity is target-independent; the artifact hash is not", async () => {
   const dev = (await sealed({ environment: "DEV", target: DEV_TARGET })).result as Extract<Awaited<ReturnType<typeof sealPlan>>, { ok: true }>;
+  const qa = (await sealed({ environment: "QA", target: QA_TARGET })).result as Extract<Awaited<ReturnType<typeof sealPlan>>, { ok: true }>;
   const prod = (await sealed({ environment: "PROD", target: PROD_TARGET })).result as Extract<Awaited<ReturnType<typeof sealPlan>>, { ok: true }>;
+  assert.equal(qa.sealed.environment, "QA");
   assert.notEqual(dev.sealed.manifestHash, prod.sealed.manifestHash, "manifests are target-bound");
+  assert.notEqual(dev.sealed.manifestHash, qa.sealed.manifestHash, "manifests are target-bound");
   assert.equal(dev.sealed.releaseIdentity, prod.sealed.releaseIdentity, "the qualified release is the same");
+  assert.equal(dev.sealed.releaseIdentity, qa.sealed.releaseIdentity, "the qualified release is the same");
   assert.notEqual(dev.sealed.artifactSha256, prod.sealed.artifactSha256);
+  assert.notEqual(dev.sealed.artifactSha256, qa.sealed.artifactSha256);
+  assert.notEqual(qa.sealed.artifactSha256, prod.sealed.artifactSha256);
+  // A QA record loads back as QA; an environment outside DEV, QA and PROD is not a sealed plan.
+  const loaded = await loadSealedPlan(qa.path);
+  assert.ok(loaded.ok && loaded.sealed.environment === "QA");
+  await rewrite(qa.path, (i) => { i.sealed.environment = "STAGING" as never; });
+  const bogus = await loadSealedPlan(qa.path);
+  assert.ok(!bogus.ok, "an unknown environment is refused");
 
   const changed = (await sealed({ mainTf: 'resource "azurerm_resource_group" "other" {}\n' })).result as Extract<Awaited<ReturnType<typeof sealPlan>>, { ok: true }>;
   assert.notEqual(changed.sealed.releaseIdentity, dev.sealed.releaseIdentity, "different project files are a different release");
@@ -183,6 +195,7 @@ test("any mismatch is ARTIFACT_TAMPERED: swapped plan bytes, edited target, edit
     ["plan bytes swapped", (i) => { i.planBase64 = Buffer.from("a different plan").toString("base64"); }],
     ["target edited", (i) => { i.sealed.target = { ...i.sealed.target, workspace: "other" }; }],
     ["environment edited", (i) => { i.sealed.environment = "PROD"; }],
+    ["environment edited to QA", (i) => { i.sealed.environment = "QA"; }],
     ["artifact hash edited", (i) => { i.sealed.artifactSha256 = H("0"); }],
     ["plan hash edited", (i) => { i.sealed.planSha256 = H("0"); }],
     ["release identity edited", (i) => { i.sealed.releaseIdentity = H("0"); }],
@@ -368,6 +381,12 @@ test("the change list carries an import, a move, a forget and output changes, st
     const checked = verifyReviewBundle(edited);
     assert.ok(!checked.ok && checked.code === "ARTIFACT_TAMPERED");
   }
+  // A QA bundle verifies once its hashes are recomputed for QA, and an unknown environment never does.
+  const qaRecord = { ...s, environment: "QA" as const };
+  const qaBundle = { ...reviewBundleOf({ ...qaRecord, artifactSha256: computeArtifactSha256(qaRecord) }) };
+  assert.ok(verifyReviewBundle(qaBundle).ok && qaBundle.environment === "QA");
+  assert.ok(!verifyReviewBundle({ ...qaBundle, environment: "STAGING" }).ok);
+  assert.ok(!verifyReviewBundle({ ...qaBundle, environment: "DEV" }).ok, "relabeling a QA bundle breaks its hash");
   // A list that hides characters, adds fields or flags something other than true is not well formed.
   const planBytes = Buffer.from("x");
   for (const bad of [{ address: "a\u202Eb" }, { type: "t\u200Bx" }, { previousAddress: "p\uFEFF" }, { importing: false }, { previousAddress: "" }, { extra: 1 }]) {

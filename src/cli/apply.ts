@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { signApproval } from "../apply/approval.js";
+import { ENVIRONMENTS } from "../apply/constants.js";
 import {
   contractRefusal, isKillSwitchActive, loadPilotContract, pilotContractSha256, repoPaths, requireNotApplied, targetForEnvironment, writeQualificationEvidence, type Refusal,
 } from "../apply/contract.js";
@@ -133,7 +134,7 @@ function readRequest(sub: "seal" | "apply", path: string): Record<string, unknow
       "; the command supplies the invocation, the manifest and the approvals");
   }
   const request = file as Record<string, unknown>;
-  if (request.environment !== "DEV" && request.environment !== "PROD") fail("APPLY_INPUT_INVALID", "request.environment must be DEV or PROD");
+  if (!ENVIRONMENTS.includes(request.environment as ApplyEnvironment)) fail("APPLY_INPUT_INVALID", "request.environment must be DEV, QA or PROD");
   if (typeof request.projectRoot !== "string" || request.projectRoot === "") fail("APPLY_INPUT_INVALID", "request.projectRoot is required");
   return { ...request, environment: request.environment as ApplyEnvironment, target: readTarget(request.target), projectRoot: resolve(request.projectRoot as string) };
 }

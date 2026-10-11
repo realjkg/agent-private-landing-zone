@@ -22,7 +22,7 @@ import { removeTree, runCleanups } from "../src/teardown/driver/cleanup.js";
 import { runBoundedProcess, runStoppableProcess } from "../src/tools/process.js";
 import { TERRAFORM_APPLY_PROFILE } from "../src/tools/profiles.js";
 import {
-  CANARIES, DEV_TARGET, approvers, ENV, H, NOW, OPERATOR, OUTPUT_CANARY, PLAN_CANARY, POLICY, PROD_TARGET, STATE_CANARY, TENANT, VALUE_CANARY,
+  CANARIES, DEV_TARGET, approvers, ENV, H, NOW, OPERATOR, OUTPUT_CANARY, PLAN_CANARY, POLICY, PROD_TARGET, QA_TARGET, STATE_CANARY, TENANT, VALUE_CANARY,
   approvalFor as approval, behave as behaveIn, callsOf, contractJson, human, identityEnv, installFakeTerraform, keys, pinPathOf,
   testFixtureForgeQualificationEvidence, recordApplied, signalsOf, targetOf, writePinnedContract, writeProject, type Behavior, type Call, type Project,
 } from "./helpers/apply-fixtures.js";
@@ -100,6 +100,20 @@ async function seal(w: World, environment: ApplyEnvironment, p: Project = writeP
   return { sealed: result.sealed, path: result.path, project: p, loaded: { sealed: loaded.sealed, planBytes: loaded.planBytes } };
 }
 type Sealed = Awaited<ReturnType<typeof seal>>;
+
+/** One release, sealed for each environment: the same project files, so the same releaseIdentity. */
+const SHARED_TF = 'resource "azurerm_resource_group" "pilot" {}\n';
+const sealShared = (w: World, environment: ApplyEnvironment, mainTf: string = SHARED_TF) => seal(w, environment, writeProject(fresh("project"), targetOf(environment), mainTf));
+/** The approvals a stage needs from the fixture contract: one for DEV and QA, two for PROD. */
+const approvalsFor = (s: Sealed): SignedApproval[] => (s.sealed.environment === "PROD"
+  ? [approval(s.sealed, "alice"), approval(s.sealed, "bob")] : [approval(s.sealed, "alice")]);
+/** Seals and applies one stage of the shared release, and returns what it applied. */
+async function promoteTo(w: World, environment: ApplyEnvironment, mainTf?: string) {
+  const sealedPlan = await sealShared(w, environment, mainTf);
+  const result = await run(w, sealedPlan, approvalsFor(sealedPlan));
+  assert.ok(result.ok, environment + " " + JSON.stringify(result));
+  return result.evidence;
+}
 
 const requestFor = (s: Sealed, approvals: SignedApproval[], over: Partial<ApplyRequest> = {}): ApplyRequest => ({
   invocation: human(s.sealed.target), environment: s.sealed.environment, target: { ...s.sealed.target }, sealedPlan: s.loaded,
@@ -613,8 +627,8 @@ test("a crash after the reservation leaves the artifact reserved: never silently
   refused(await run(w, s, [approval(s.sealed, "bob")]), "ARTIFACT_ALREADY_APPLIED");
   assert.equal(applyCalls().length, again);
   // A reservation is not evidence of a successful DEV apply.
-  const prod = await seal(w, "PROD", writeProject(fresh("project"), PROD_TARGET));
-  refused(await run(w, prod, [approval(prod.sealed, "alice"), approval(prod.sealed, "bob")]), "PROMOTION_EVIDENCE_MISSING");
+  const qa = await seal(w, "QA", writeProject(fresh("project"), QA_TARGET));
+  refused(await run(w, qa, [approval(qa.sealed, "alice")]), "PROMOTION_EVIDENCE_MISSING");
 });
 
 test("a step that fails before the engine runs gives the artifact back, and the same approvals work after", async () => {
@@ -828,6 +842,7 @@ test("every refusal comes in the specified order, and the apply argv is never ex
   const w = world();
   behave();
   const devSeal = await seal(w, "DEV");
+  const qaSeal = await seal(w, "QA");
   const prodSeal = await seal(w, "PROD");
   rmSync(w.contractPath); // 1. no contract
   const prodApprovals = () => [approval(prodSeal.sealed, "alice"), approval(prodSeal.sealed, "bob")];
@@ -860,11 +875,13 @@ test("every refusal comes in the specified order, and the apply argv is never ex
   assert.ok((await recordApplied(evidence, w.dirs.evidence)).ok);
   await step("ARTIFACT_ALREADY_APPLIED"); // 6.
   rmSync(ledgerOf(w, prodSeal));
-  await step("PROMOTION_EVIDENCE_MISSING"); // 7. PROD, and no successful DEV apply for this release yet
+  await step("PROMOTION_EVIDENCE_MISSING"); // 7. PROD, and no successful QA apply for this release yet
+  await step("PROMOTION_EVIDENCE_MISSING", requestFor(qaSeal, [approval(qaSeal.sealed, "alice")]), forEnv(w, "QA")); // 7. QA, and no successful DEV apply either
 
   behave({ applyAdvance: true });
   assert.ok((await run(w, devSeal, [approval(devSeal.sealed, "alice")])).ok);
-  const baseline = applyCalls().length;
+  assert.equal(applyCalls().length, 1);
+  let baseline = applyCalls().length;
   assert.equal(baseline, 1);
   const step2 = async (code: string, req: ApplyRequest, deps: ApplyDeps = prodDeps) => {
     refused(await runApply(req, deps), code);
@@ -872,6 +889,10 @@ test("every refusal comes in the specified order, and the apply argv is never ex
     assert.ok(!existsSync(ledgerOf(w, prodSeal)), "nothing was reserved by " + code);
     clean(w);
   };
+  await step2("PROMOTION_EVIDENCE_MISSING", request); // 7. PROD does not accept a DEV apply alone
+  assert.ok((await run(w, qaSeal, [approval(qaSeal.sealed, "alice")])).ok);
+  baseline = applyCalls().length;
+  assert.equal(baseline, 2);
   await step2("APPROVAL_INSUFFICIENT", requestFor(prodSeal, [approval(prodSeal.sealed, "alice")])); // 8.
   request = requestFor(prodSeal, prodApprovals());
   await step2("ENGINE_NOT_QUALIFIED", request, { ...prodDeps, qualificationDir: previewOnlyVault }); // 9. a preview qualification does not activate apply
@@ -880,6 +901,7 @@ test("every refusal comes in the specified order, and the apply argv is never ex
   const noState = Object.fromEntries(Object.entries(identityEnv("PROD")).filter(([key]) => !key.startsWith("ALZ_STATE_") || key.startsWith("ALZ_STATE_WRITE_")));
   await step2("IDENTITY_NOT_CONFIGURED", request, { ...prodDeps, env: noState }); // 10.
   await step2("IDENTITY_TARGET_MISMATCH", request, { ...prodDeps, env: ENV }); // 10. DEV's credentials do not apply to PROD
+  await step2("IDENTITY_TARGET_MISMATCH", request, { ...prodDeps, env: identityEnv("QA") }); // 10. nor do QA's
   assert.ok((await runApply(request, prodDeps)).ok); // all repaired
   assert.equal(applyCalls().length, baseline + 1);
 });
@@ -956,6 +978,7 @@ test("approval failures: unsigned, wrong key, wrong artifact, wrong target, expi
     ["APPROVAL_MISBOUND", [approval(s.sealed, "alice", { artifactSha256: H("9") })]],
     ["APPROVAL_MISBOUND", [approval(s.sealed, "alice", { target: { ...s.sealed.target, workspace: "other" } })]],
     ["APPROVAL_MISBOUND", [approval(s.sealed, "alice", { environment: "PROD" })]],
+    ["APPROVAL_MISBOUND", [approval(s.sealed, "alice", { environment: "QA" })]],
     ["APPROVAL_EXPIRED", [approval(s.sealed, "alice", { issuedAt: new Date(NOW.getTime() - 50 * 60_000).toISOString(), expiresAt: new Date(NOW.getTime() - 10 * 60_000).toISOString() })]],
     ["SAME_APPROVER_TWICE", [approval(s.sealed, "alice"), approval(s.sealed, "alice")]],
   ];
@@ -966,68 +989,122 @@ test("approval failures: unsigned, wrong key, wrong artifact, wrong target, expi
   assert.ok(!existsSync(ledgerOf(w, s)));
 });
 
-test("PROD needs two distinct verified approvals from the contract's allowlist", async () => {
-  const lax = world({}, contractJson(KILL, { requiredApprovals: { DEV: 1, PROD: 1 } }));
+test("PROD needs two distinct verified approvals from the contract's allowlist, and QA at least one", async () => {
+  const lax = world({}, contractJson(KILL, { requiredApprovals: { DEV: 1, QA: 1, PROD: 1 } }));
+  const noQa = world({}, contractJson(KILL, { requiredApprovals: { DEV: 1, QA: 0, PROD: 2 } }));
   const w = world();
   behave({ applyAdvance: true });
-  const dev = await seal(w, "DEV");
-  assert.ok((await run(w, dev, [approval(dev.sealed, "alice")])).ok);
-  const prod = await seal(w, "PROD");
+  await promoteTo(w, "DEV");
+  const qa = await sealShared(w, "QA");
+  // QA needs an approver the contract allows for QA: carol is DEV only.
+  refused(await run(w, qa, [approval(qa.sealed, "carol")]), "APPROVER_NOT_ALLOWED");
+  refused(await run(w, qa, []), "APPROVAL_INSUFFICIENT");
+  refused(await runApply(requestFor(qa, [approval(qa.sealed, "alice")]), forEnv(noQa, "QA")), "CONTRACT_INVALID"); // fewer than one QA approval is not a contract
+  assert.ok((await run(w, qa, [approval(qa.sealed, "alice")])).ok);
+  const prod = await sealShared(w, "PROD");
   refused(await run(w, prod, [approval(prod.sealed, "alice")]), "APPROVAL_INSUFFICIENT");
   refused(await run(w, prod, [approval(prod.sealed, "alice"), approval(prod.sealed, "alice")]), "SAME_APPROVER_TWICE");
   refused(await run(w, prod, [approval(prod.sealed, "alice"), approval(prod.sealed, "carol")]), "APPROVER_NOT_ALLOWED"); // carol is DEV only
+  // An approval signed for QA is not one for PROD, and the reverse.
+  refused(await run(w, prod, [approval(qa.sealed, "alice"), approval(qa.sealed, "bob")]), "APPROVAL_MISBOUND");
+  refused(await run(w, prod, [approval(prod.sealed, "alice", { environment: "QA" }), approval(prod.sealed, "bob", { environment: "QA" })]), "APPROVAL_MISBOUND");
   // A contract that asks for fewer than two PROD approvals is not a contract.
   refused(await runApply(requestFor(prod, [approval(prod.sealed, "alice")]), forEnv(lax, "PROD")), "CONTRACT_INVALID");
-  assert.equal(applyCalls().length, 1, "only the DEV apply ran");
+  assert.equal(applyCalls().length, 2, "only the DEV and QA applies ran");
 });
 
 // --- the path from dev to production ------------------------------------------------------
 
-test("fixture path: seal and apply DEV, then a separate PROD-target plan bound to the same release, with its own approvals", async () => {
+test("fixture path: seal and apply DEV, then QA, then PROD, each a separate plan bound to the same release with its own approvals", async () => {
   const w = world();
   behave({ applyAdvance: true });
-  const shared = 'resource "azurerm_resource_group" "pilot" {}\n';
-  const dev = await seal(w, "DEV", writeProject(fresh("project"), DEV_TARGET, shared));
-  const prod = await seal(w, "PROD", writeProject(fresh("project"), PROD_TARGET, shared));
-  assert.notEqual(dev.sealed.manifestHash, prod.sealed.manifestHash, "manifests are target-bound and differ");
-  assert.equal(dev.sealed.releaseIdentity, prod.sealed.releaseIdentity, "the qualified release is the same");
-  assert.notEqual(dev.sealed.artifactSha256, prod.sealed.artifactSha256);
+  const dev = await sealShared(w, "DEV");
+  const qa = await sealShared(w, "QA");
+  const prod = await sealShared(w, "PROD");
+  const all = [dev, qa, prod];
+  assert.equal(new Set(all.map((x) => x.sealed.manifestHash)).size, 3, "manifests are target-bound and differ");
+  assert.equal(new Set(all.map((x) => x.sealed.releaseIdentity)).size, 1, "the qualified release is the same");
+  assert.equal(new Set(all.map((x) => x.sealed.artifactSha256)).size, 3);
 
-  const prodApprovals = [approval(prod.sealed, "alice"), approval(prod.sealed, "bob")];
-  // PROD cannot go first.
-  refused(await run(w, prod, prodApprovals), "PROMOTION_EVIDENCE_MISSING");
-  // A DEV approval cannot be used for PROD, and a DEV plan cannot be applied to PROD.
-  refused(await runApply({ ...requestFor(dev, [approval(dev.sealed, "alice")]), environment: "PROD", target: PROD_TARGET, invocation: human(PROD_TARGET) }, forEnv(w, "PROD")), "ARTIFACT_INVALID");
+  // Nothing goes out of order: QA cannot go first, and PROD cannot go first.
+  refused(await run(w, qa, approvalsFor(qa)), "PROMOTION_EVIDENCE_MISSING");
+  refused(await run(w, prod, approvalsFor(prod)), "PROMOTION_EVIDENCE_MISSING");
+  // A plan sealed for one environment cannot be applied to another.
+  refused(await runApply({ ...requestFor(dev, approvalsFor(dev)), environment: "QA", target: QA_TARGET, invocation: human(QA_TARGET) }, forEnv(w, "QA")), "ARTIFACT_INVALID");
+  refused(await runApply({ ...requestFor(qa, approvalsFor(qa)), environment: "PROD", target: PROD_TARGET, invocation: human(PROD_TARGET) }, forEnv(w, "PROD")), "ARTIFACT_INVALID");
+  assert.equal(applyCalls().length, 0);
 
-  const devResult = await run(w, dev, [approval(dev.sealed, "alice")]);
+  const devResult = await run(w, dev, approvalsFor(dev));
   assert.ok(devResult.ok, JSON.stringify(devResult));
-  const prodResult = await run(w, prod, prodApprovals);
+  // DEV evidence alone does not let PROD through.
+  refused(await run(w, prod, approvalsFor(prod)), "PROMOTION_EVIDENCE_MISSING");
+  const qaResult = await run(w, qa, approvalsFor(qa));
+  assert.ok(qaResult.ok, JSON.stringify(qaResult));
+  assert.equal(qaResult.evidence.environment, "QA");
+  assert.equal(qaResult.evidence.releaseIdentity, devResult.evidence.releaseIdentity);
+  assert.deepEqual(qaResult.evidence.target, QA_TARGET);
+  const prodResult = await run(w, prod, approvalsFor(prod));
   assert.ok(prodResult.ok, JSON.stringify(prodResult));
   assert.equal(prodResult.evidence.environment, "PROD");
   assert.equal(prodResult.evidence.releaseIdentity, devResult.evidence.releaseIdentity);
   assert.deepEqual(prodResult.evidence.approvals.map((a) => a.approverId).sort(), ["alice", "bob"]);
-  assert.equal(applyCalls().length, 2);
+  assert.equal(applyCalls().length, 3);
   clean(w);
 });
 
-test("PROD of a different release than the one DEV applied is refused", async () => {
+test("QA of a different release than the one DEV applied is refused, and so is PROD of a different release than the one QA applied", async () => {
   const w = world();
   behave({ applyAdvance: true });
-  const dev = await seal(w, "DEV", writeProject(fresh("project"), DEV_TARGET));
-  assert.ok((await run(w, dev, [approval(dev.sealed, "alice")])).ok);
-  const prod = await seal(w, "PROD", writeProject(fresh("project"), PROD_TARGET, 'resource "azurerm_resource_group" "different" {}\n'));
-  assert.notEqual(prod.sealed.releaseIdentity, dev.sealed.releaseIdentity);
-  refused(await run(w, prod, [approval(prod.sealed, "alice"), approval(prod.sealed, "bob")]), "PROMOTION_EVIDENCE_MISSING");
+  const other = 'resource "azurerm_resource_group" "different" {}\n';
+  await promoteTo(w, "DEV");
+  const qa = await sealShared(w, "QA", other);
+  assert.notEqual(qa.sealed.releaseIdentity, (await sealShared(w, "DEV")).sealed.releaseIdentity);
+  refused(await run(w, qa, approvalsFor(qa)), "PROMOTION_EVIDENCE_MISSING");
   assert.equal(applyCalls().length, 1);
+
+  // The other release has been through DEV and QA; the shared release only through DEV and QA of its own. PROD of a third release has neither.
+  await promoteTo(w, "QA");
+  const prodOther = await sealShared(w, "PROD", other);
+  refused(await run(w, prodOther, approvalsFor(prodOther)), "PROMOTION_EVIDENCE_MISSING"); // QA applied the shared release, not this one
+  const prodThird = await sealShared(w, "PROD", 'resource "azurerm_resource_group" "third" {}\n');
+  refused(await run(w, prodThird, approvalsFor(prodThird)), "PROMOTION_EVIDENCE_MISSING");
+  assert.equal(applyCalls().length, 2);
 });
 
-test("a failed DEV apply is not promotion evidence", async () => {
+test("a failed DEV or QA apply is not promotion evidence", async () => {
   const w = world();
+  // Release A: its DEV apply fails, so QA is refused.
   behave({ applyExit: 1 });
-  const dev = await seal(w, "DEV");
-  refused(await run(w, dev, [approval(dev.sealed, "alice")]), "APPLY_FAILED");
-  const prod = await seal(w, "PROD");
-  refused(await run(w, prod, [approval(prod.sealed, "alice"), approval(prod.sealed, "bob")]), "PROMOTION_EVIDENCE_MISSING");
+  const devA = await sealShared(w, "DEV");
+  refused(await run(w, devA, approvalsFor(devA)), "APPLY_FAILED");
+  const qaA = await sealShared(w, "QA");
+  refused(await run(w, qaA, approvalsFor(qaA)), "PROMOTION_EVIDENCE_MISSING");
+  // Release B: DEV succeeds but its QA apply fails, so PROD is refused.
+  const releaseB = SHARED_TF + "# b\n";
+  behave({ applyAdvance: true });
+  await promoteTo(w, "DEV", releaseB);
+  behave({ applyExit: 1 });
+  const qaB = await sealShared(w, "QA", releaseB);
+  refused(await run(w, qaB, approvalsFor(qaB)), "APPLY_FAILED");
+  const prodB = await sealShared(w, "PROD", releaseB);
+  refused(await run(w, prodB, approvalsFor(prodB)), "PROMOTION_EVIDENCE_MISSING");
+});
+
+test("a contract where QA shares a subscription or a backend with DEV or PROD is not a contract, so nothing is sealed or applied", async () => {
+  const base = contractJson(KILL) as { targets: Record<string, { subscriptionId: string; backend: string }> };
+  const shared = (key: "subscriptionId" | "backend", from: string) => ({ ...base, targets: { ...base.targets, QA: { ...base.targets.QA, [key]: base.targets[from][key] } } });
+  const w = world();
+  const s = await seal(w, "QA");
+  for (const from of ["DEV", "PROD"]) {
+    for (const key of ["subscriptionId", "backend"] as const) {
+      const bad = world({}, shared(key, from));
+      refused(await runApply(requestFor(s, approvalsFor(s)), forEnv(bad, "QA")), "CONTRACT_INVALID");
+      const p = writeProject(fresh("project"), QA_TARGET);
+      const sealResult = await sealPreview({ invocation: human(QA_TARGET), environment: "QA", target: QA_TARGET, manifest: p.manifest, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved }, forEnv(bad, "QA"));
+      assert.ok(!sealResult.ok && sealResult.code === "CONTRACT_INVALID", key + " shared with " + from);
+    }
+  }
+  assert.equal(applyCalls().length, 0);
 });
 
 // --- the preview-to-seal entry --------------------------------------------------------------
@@ -1097,7 +1174,7 @@ test("qualifying runs the seal's steps and the apply adapter's init with STATE_W
   assert.deepEqual(readdirSync(w.dirs.scratch), [], "scratch is removed");
 });
 
-test("qualifying refuses without a pinned enabling contract, in PROD, with a kill switch, a collapsed identity or a failing engine", async () => {
+test("qualifying refuses without a pinned enabling contract, in QA or PROD, with a kill switch, a collapsed identity or a failing engine", async () => {
   const p = writeProject(fresh("project"), DEV_TARGET);
   const w = world();
   const refused = async (code: string, request: SealRequest, deps: ApplyDeps) => {
@@ -1106,6 +1183,7 @@ test("qualifying refuses without a pinned enabling contract, in PROD, with a kil
     assert.equal(applyCalls().length, 0);
   };
   await refused("ARTIFACT_INVALID", qualifyRequest(p, { environment: "PROD", target: PROD_TARGET, invocation: human(PROD_TARGET) }), w.deps);
+  await refused("ARTIFACT_INVALID", qualifyRequest(p, { environment: "QA", target: QA_TARGET, invocation: human(QA_TARGET) }), w.deps);
   rmSync(pinPathOf(w.contractPath));
   await refused("ACT_DISABLED", qualifyRequest(p), w.deps);
   const k = world();
@@ -1180,9 +1258,9 @@ test("PROD is bound to the PROD backend: the DEV backend is refused there", asyn
   const w = world();
   behave({ applyAdvance: true });
   const shared = 'resource "azurerm_resource_group" "pilot" {}\n';
-  const dev = await seal(w, "DEV", writeProject(fresh("project"), DEV_TARGET, shared));
   const prod = await seal(w, "PROD", writeProject(fresh("project"), PROD_TARGET, shared));
-  assert.ok((await run(w, dev, [approval(dev.sealed, "alice")])).ok);
+  await promoteTo(w, "DEV", shared);
+  await promoteTo(w, "QA", shared);
   const approvals = [approval(prod.sealed, "alice"), approval(prod.sealed, "bob")];
   const [account, container, key] = DEV_TARGET.backend.split("/");
   behave({ savedBackend: { type: "azurerm", config: { storage_account_name: account, container_name: container, key } } });

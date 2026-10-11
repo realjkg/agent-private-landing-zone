@@ -27,20 +27,21 @@ const newKey = () => {
 };
 const keys = { alice: newKey(), bob: newKey(), carol: newKey(), mallory: newKey() };
 const allowlist: ApproverEntry[] = [
-  { id: "alice", publicKeyPem: keys.alice.pub, environments: ["DEV", "PROD"] },
-  { id: "bob", publicKeyPem: keys.bob.pub, environments: ["DEV", "PROD"] },
+  { id: "alice", publicKeyPem: keys.alice.pub, environments: ["DEV", "QA", "PROD"] },
+  { id: "bob", publicKeyPem: keys.bob.pub, environments: ["DEV", "QA", "PROD"] },
   { id: "carol", publicKeyPem: keys.carol.pub, environments: ["DEV"] },
 ];
 
-// The approval check reads the allowlist, the counts and the age from the pinned contract. Both environments use
-// TARGET here; the contract loader (not this check) is what keeps DEV and PROD apart.
+// The approval check reads the allowlist, the counts and the age from the pinned contract. All environments use
+// TARGET here; the contract loader (not this check) is what keeps DEV, QA and PROD apart.
 const contractFor = (over: Partial<PilotContract> = {}): PilotContract => ({
   schemaVersion: 1, enabled: true, provider: "AZURE", engine: "TERRAFORM",
   targets: {
     DEV: { tenantId: TENANT, subscriptionId: TARGET.account, backend: TARGET.backend, workspace: TARGET.workspace },
+    QA: { tenantId: TENANT, subscriptionId: TARGET.account, backend: TARGET.backend, workspace: TARGET.workspace },
     PROD: { tenantId: TENANT, subscriptionId: TARGET.account, backend: TARGET.backend, workspace: TARGET.workspace },
   },
-  requiredApprovals: { DEV: 1, PROD: 2 }, maxApprovalAgeMinutes: 30, approvers: allowlist, killSwitchPath: "KILL", ...over,
+  requiredApprovals: { DEV: 1, QA: 1, PROD: 2 }, maxApprovalAgeMinutes: 30, approvers: allowlist, killSwitchPath: "KILL", ...over,
 });
 
 const statement = (over: Partial<ApprovalStatement> = {}): ApprovalStatement => ({
@@ -277,4 +278,30 @@ test("the nonce store fails closed when unreadable, malformed, loosely permissio
   const { nonces, dir } = fixture();
   writeFileSync(join(dir, "consumed-nonces.lock"), "", { mode: 0o600 });
   assert.equal(consumeApprovals(nonces, [signedBy("alice")]).ok, false, "a held lock fails closed");
+});
+
+test("QA accepts one allowlisted approver, and refuses none, an approver who is not allowed for QA, and approvals signed for another environment", () => {
+  const { input } = fixture();
+  const qa = { environment: "QA" as const };
+  assert.equal(code(verifyApprovalSet(input([signedBy("alice", qa)], qa))), "OK");
+  assert.equal(code(verifyApprovalSet(input([], qa))), "APPROVAL_INSUFFICIENT");
+  // carol is allowed for DEV only: her valid signature is not a QA approval, and a DEV one is not a QA one.
+  assert.equal(code(verifyApprovalSet(input([signedBy("carol", qa)], qa))), "APPROVER_NOT_ALLOWED");
+  assert.equal(code(verifyApprovalSet(input([signedBy("carol")]))), "OK");
+  // An approval signed for QA is not an approval for DEV or PROD, and the reverse.
+  assert.equal(code(verifyApprovalSet(input([signedBy("alice", qa)]))), "APPROVAL_MISBOUND");
+  const prod = { environment: "PROD" as const };
+  assert.equal(code(verifyApprovalSet(input([signedBy("alice", qa), signedBy("bob", qa)], prod))), "APPROVAL_MISBOUND");
+  assert.equal(code(verifyApprovalSet(input([signedBy("alice")], qa))), "APPROVAL_MISBOUND");
+  assert.equal(code(verifyApprovalSet(input([signedBy("alice", prod)], qa))), "APPROVAL_MISBOUND");
+});
+
+test("QA requires the contract's QA count, and PROD still refuses one approval", () => {
+  const { input } = fixture();
+  const qa = { environment: "QA" as const };
+  const two = contractFor({ requiredApprovals: { DEV: 1, QA: 2, PROD: 2 } });
+  assert.equal(code(verifyApprovalSet(input([signedBy("alice", qa)], { ...qa, contract: two }))), "APPROVAL_INSUFFICIENT");
+  assert.equal(code(verifyApprovalSet(input([signedBy("alice", qa), signedBy("bob", qa)], { ...qa, contract: two }))), "OK");
+  const prod = { environment: "PROD" as const };
+  assert.equal(code(verifyApprovalSet(input([signedBy("alice", prod)], prod))), "APPROVAL_INSUFFICIENT");
 });

@@ -8,7 +8,8 @@ import type { ResolvedTarget } from "../teardown/driver/types.js";
  * from src/tools, src/operator-ui or any agent path, and the console only shows
  * the command. ACT stays DISABLED unless a valid pilot contract enables it.
  */
-export type ApplyEnvironment = "DEV" | "PROD";
+/** Promotion runs DEV, then QA, then PROD: each stage needs a successful apply of the same release in the stage before it. */
+export type ApplyEnvironment = "DEV" | "QA" | "PROD";
 
 /** Four principals, never substituted for one another and never the operator's own credentials. */
 export const APPLY_IDENTITIES = ["DISCOVERY", "STATE", "STATE_WRITE", "APPLY"] as const;
@@ -30,7 +31,7 @@ export type PilotContract = {
   provider: "AZURE";
   engine: "TERRAFORM";
   targets: Record<ApplyEnvironment, PilotTarget>;
-  /** Distinct verified approvals required per environment. PROD must be at least 2. */
+  /** Distinct verified approvals required per environment. DEV and QA at least 1, PROD at least 2. */
   requiredApprovals: Record<ApplyEnvironment, number>;
   maxApprovalAgeMinutes: number;
   /** The approver allowlist lives in the reviewed contract, never in an operator-supplied file. Ids and public keys are unique. */
