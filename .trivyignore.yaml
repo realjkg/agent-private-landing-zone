@@ -1,0 +1,19 @@
+misconfigurations:
+  - id: AWS-0086
+    paths: ["test/fixtures/live/aws/cdk/*.template.json"]
+    statement: Real CDK synth test fixture used by test/teardown-live-fixtures.test.ts; never deployed and excluded from the release stage and runtime image.
+  - id: AWS-0087
+    paths: ["test/fixtures/live/aws/cdk/*.template.json"]
+    statement: Same fixture; see AWS-0086.
+  - id: AWS-0091
+    paths: ["test/fixtures/live/aws/cdk/*.template.json"]
+    statement: Same fixture; see AWS-0086.
+  - id: AWS-0093
+    paths: ["test/fixtures/live/aws/cdk/*.template.json"]
+    statement: Same fixture; see AWS-0086.
+  - id: AWS-0096
+    paths: ["test/fixtures/live/aws/cdk/*.template.json"]
+    statement: Same fixture; see AWS-0086.
+  - id: AWS-0132
+    paths: ["test/fixtures/live/aws/cdk/*.template.json"]
+    statement: Same fixture; see AWS-0086.
