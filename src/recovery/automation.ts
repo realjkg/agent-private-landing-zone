@@ -1,15 +1,9 @@
 import type {
   DiscoveryAssessment,
 } from "../assessment/types.js";
-import {
-  assessEnvironment,
-} from "../assessment/posture.js";
 import type {
   DesignSpec,
 } from "../design/types.js";
-import {
-  discoverEnvironment,
-} from "../discovery/discover.js";
 import type {
   EnvironmentState,
 } from "../discovery/types.js";
@@ -106,10 +100,6 @@ export type RecoveryAutomationCycleResult = {
 export type RecoveryTargetContextProvider = (
   target: RecoveryTargetSpec,
 ) => Promise<RecoveryAutomationContext>;
-
-export type RecoveryDesignResolver = (
-  target: RecoveryTargetSpec,
-) => Promise<DesignSpec>;
 
 export type RecoveryAutomationControllerOptions = {
   targets: RecoveryTargetSpec[];
@@ -772,36 +762,6 @@ export async function runRecoveryAutomationCycle(input: {
   }
 
   return result;
-}
-
-export function createDiscoveryRecoveryContextProvider(
-  resolveDesign: RecoveryDesignResolver,
-): RecoveryTargetContextProvider {
-  return async (
-    target: RecoveryTargetSpec,
-  ): Promise<RecoveryAutomationContext> => {
-    const environment =
-      await discoverEnvironment({
-        provider: target.provider,
-        mock:
-          target.environment
-            .mode === "FIXTURE"
-            ? target.environment
-                .fixture
-            : undefined,
-      });
-
-    const assessment =
-      assessEnvironment(environment);
-    const design =
-      await resolveDesign(target);
-
-    return {
-      environment,
-      assessment,
-      design,
-    };
-  };
 }
 
 export class RecoveryAutomationController {

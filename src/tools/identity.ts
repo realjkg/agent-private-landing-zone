@@ -18,8 +18,6 @@
 export const EXECUTION_IDENTITIES = ["DISCOVERY", "STATE"] as const;
 export type ExecutionIdentity = (typeof EXECUTION_IDENTITIES)[number];
 
-export const DEFAULT_IDENTITY: ExecutionIdentity = "DISCOVERY";
-
 export function isExecutionIdentity(value: string): value is ExecutionIdentity {
   return (EXECUTION_IDENTITIES as readonly string[]).includes(value);
 }
