@@ -172,7 +172,7 @@ test("a wrong phrase skips the install, and the command stays blocked", async ()
 
 test("the exact phrase installs the verified tool, and the dialog names the file, its source and its checksum", async () => {
   const archive = fakeArchive("right");
-  const term = terminal(true, ["INSTALL TERRAFORM 1.16.4"]);
+  const term = terminal(true, ["", "INSTALL TERRAFORM 1.16.4"]);
   const lines: string[] = [];
   const code = await runDepsCommand([], {
     ...deps("right", term, {
@@ -191,7 +191,7 @@ test("the exact phrase installs the verified tool, and the dialog names the file
 
 test("a checksum mismatch in the dialog's install is shown in plain words and nothing is installed", async () => {
   const archive = fakeArchive("tamper");
-  const term = terminal(true, ["INSTALL TERRAFORM 1.16.4"]);
+  const term = terminal(true, ["", "INSTALL TERRAFORM 1.16.4"]);
   const lines: string[] = [];
   const code = await runDepsCommand([], {
     ...deps("tamper", term, {
@@ -227,17 +227,49 @@ test("the product tools come from the plugin catalog, are never required, and a 
   const { PLUGIN_CATALOG } = await import("../src/plugins/catalog.js");
   const { productChecks } = await import("../src/deps/checks.js");
   const checks = productChecks(ctx("product"));
-  for (const plugin of PLUGIN_CATALOG.filter((item) => item.executable)) {
+  const pilot = new Set(["terraform", "ollama", "aws", "git"]);
+  for (const plugin of PLUGIN_CATALOG.filter((item) => item.executable && !pilot.has(item.executable))) {
     const row = checks.find((check) => check.id === "product:" + plugin.executable);
     assert.ok(row, "catalog tool listed: " + plugin.executable);
     assert.equal(row!.required, false, plugin.executable);
     if (!row!.ok) assert.match(row!.fix ?? "", /Install /, plugin.executable);
   }
   assert.ok(checks.some((check) => check.id === "product:trivy"));
+  assert.ok(!checks.some((check) => ["product:terraform", "product:aws", "product:git"].includes(check.id)), "pilot tools are never repeated");
   assert.ok(checks.every((check) => check.required === false));
   const blocked = await blockedByDependencies("apply", {
     ...deps("product-apply", terminal(true, []), { out: () => undefined }),
     env: { PATH: pathWith("product-apply", GOOD_TOOLS) },
   });
   assert.equal(blocked, false, "a missing product tool does not block the pilot");
+});
+
+test("the selection screen preselects every missing tool; Enter continues, a number toggles, s skips all, q cancels", async () => {
+  const { chooseInstalls } = await import("../src/cli/deps.js");
+  const items = [
+    { id: "terraform", label: "Terraform 1.16.4", required: true, ok: false, detail: "", installable: "terraform" },
+    { id: "ollama", label: "Ollama 0.40.0", required: true, ok: false, detail: "", installable: "ollama" },
+  ] as const;
+  const picked = async (answers: string[]) => chooseInstalls([...items] as never, terminal(true, answers));
+  assert.deepEqual([...(await picked([""]))!].sort(), ["ollama", "terraform"], "preselected: both checked");
+  assert.deepEqual([...(await picked(["1", ""]))!], ["ollama"], "a number unchecks Terraform");
+  assert.deepEqual([...(await picked(["1", "1", ""]))!].sort(), ["ollama", "terraform"], "a number toggles back on");
+  assert.deepEqual([...(await picked(["s"]))!], [], "s skips all");
+  assert.equal(await picked(["q"]), null, "q cancels, with nothing selected");
+  const confused = terminal(true, ["banana", "9", ""]);
+  assert.deepEqual([...(await chooseInstalls([...items] as never, confused))!].sort(), ["ollama", "terraform"]);
+  assert.ok(confused.shown.join("").includes("That is not a choice"), "an invalid answer is explained, not ignored");
+});
+
+test("cancel at the selection screen installs nothing and downloads nothing", async () => {
+  const archive = fakeArchive("cancel");
+  let downloads = 0;
+  const term = terminal(true, ["q"]);
+  const code = await runDepsCommand([], {
+    ...deps("cancel", term, { download: async () => { downloads += 1; return Readable.from([archive.body]); } }),
+    pinsPath: fakePins("cancel", archive.sha256),
+  });
+  assert.equal(code, 2);
+  assert.equal(downloads, 0);
+  assert.ok(!existsSync(installedPath(join(root, "home-cli-cancel"), "terraform", "1.16.4", "terraform")));
 });

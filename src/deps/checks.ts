@@ -159,6 +159,12 @@ function defaultProbe(host: string, port: number): Promise<ServiceProbe> {
   });
 }
 
+/** Programs the pilot checks already report on their own rows; the product list never repeats them. */
+const PILOT_EXECUTABLES: ReadonlySet<string> = new Set(["terraform", "ollama", "aws", "git"]);
+
+/** The first x.y.z in a catalog version, or undefined for a date-style API version such as 2010-05-15 (never compared). */
+const semver = (text: string | undefined): string | undefined => (text ? /(\d+\.\d+\.\d+)/.exec(text)?.[1] : undefined);
+
 /** Product tools from the plugin catalog, plus the scan and container tools. Never required by the pilot. */
 const EXTRA_PRODUCT_TOOLS: ReadonlyArray<{ executable: string; testedVersion?: string; why: string; vendor: string }> = [
   { executable: "trivy", why: "./alz scan", vendor: "https://trivy.dev (Homebrew: brew install trivy)" },
@@ -173,30 +179,30 @@ export function productChecks(ctx: CheckContext): DepCheck[] {
   const seen = new Set<string>();
   const rows: Array<{ executable: string; testedVersion?: string; why: string; vendor: string }> = [];
   for (const plugin of PLUGIN_CATALOG) {
-    if (!plugin.executable || seen.has(plugin.executable)) continue;
+    if (!plugin.executable || seen.has(plugin.executable) || PILOT_EXECUTABLES.has(plugin.executable)) continue;
     seen.add(plugin.executable);
     rows.push({ executable: plugin.executable, ...(plugin.testedVersion ? { testedVersion: plugin.testedVersion } : {}),
       why: plugin.id.toLowerCase().replace(/_/g, " ") + " adapter", vendor: plugin.versionSource });
   }
   for (const extra of EXTRA_PRODUCT_TOOLS) {
-    if (!seen.has(extra.executable)) rows.push(extra);
+    if (!seen.has(extra.executable) && !PILOT_EXECUTABLES.has(extra.executable)) rows.push(extra);
   }
   return rows.map((row): DepCheck => {
     const id = ("product:" + row.executable) as `product:${string}`;
+    const tested = semver(row.testedVersion);
     const found = onPath(row.executable, ctx.env);
-    const label = row.executable + (row.testedVersion ? " " + row.testedVersion : "");
     if (!found) {
-      return { id, label, required: false, ok: false, detail: "not found (needed for " + row.why + ")",
-        fix: "Install " + row.executable + (row.testedVersion ? " " + row.testedVersion : "") + " from " + row.vendor + ", then open a new Terminal window." };
+      return { id, label: row.executable, required: false, ok: false, detail: "not found (needed for " + row.why + ")",
+        fix: "Install " + row.executable + " from " + row.vendor + ", then open a new Terminal window." };
     }
     const text = versionText(found, ["--version"]) ?? versionText(found, ["version"]) ?? "";
-    const reported = /(\d+\.\d+\.\d+)/.exec(text)?.[1];
-    if (row.testedVersion && reported !== row.testedVersion) {
-      return { id, label, required: false, ok: false,
-        detail: "found " + (reported ?? "an unreadable version") + ", tested with " + row.testedVersion + " (" + row.why + " may still work)",
-        fix: "Optional: install " + row.executable + " " + row.testedVersion + " from " + row.vendor + " to match the tested version." };
+    const reported = semver(text);
+    if (tested && reported !== tested) {
+      return { id, label: row.executable, required: false, ok: false,
+        detail: "found " + (reported ?? "an unreadable version") + ", tested with " + tested + " (" + row.why + " may still work)",
+        fix: "Optional: install " + row.executable + " " + tested + " from " + row.vendor + " to match the tested version." };
     }
-    return { id, label, required: false, ok: true, detail: (reported ?? "present") + " at " + found };
+    return { id, label: row.executable, required: false, ok: true, detail: (reported ?? "present") + " at " + found };
   });
 }
 
