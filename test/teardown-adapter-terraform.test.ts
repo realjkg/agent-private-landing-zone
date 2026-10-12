@@ -321,11 +321,12 @@ test("the plan file lives only inside the private directory and is gone afterwar
     const plan = seen.find((call) => call.args[0] === "plan");
     const show = seen.find((call) => call.args[0] === "show");
     // macOS resolves /var to /private/var, so compare against the real scratch path.
-    assert.equal(plan?.planPath, join(realpathSync(f.context.scratchDir), "alz-preview.tfplan"));
+    const scratch = realpathSync(f.context.scratchDir);
+    assert.equal(plan?.planPath, join(scratch, "alz-preview.tfplan"));
     assert.equal(show?.planPath, plan?.planPath);
     assert.equal(show?.planExists, true, "the plan existed when it was read");
     for (const call of seen) {
-      assert.ok(call.cwd === join(f.context.scratchDir, "work") || call.cwd.startsWith(join(f.context.scratchDir, "work") + "/"), call.cwd);
+      assert.ok(call.cwd === join(scratch, "work") || call.cwd.startsWith(join(scratch, "work") + "/"), call.cwd);
       assert.ok(!call.cwd.startsWith(f.snapshot.path), "nothing ran in the read-only snapshot");
     }
     assert.equal(statSync(f.context.scratchDir).mode & 0o777, 0o700);
