@@ -55,8 +55,8 @@ export function BeginnerPath(props: {
       <p>
         <small>
           Live-model choices require installed models on this machine. AWS evidence is
-          synthetic. Terraform plans and infrastructure ACT are not available from this
-          workspace.
+          synthetic. These workflows never plan or change real infrastructure. Real changes
+          happen only in the Pilot apply area, by a person.
         </small>
       </p>
       <p>

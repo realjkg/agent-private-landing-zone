@@ -13,6 +13,7 @@ import { planOperation, runPlanned } from "../operations/run.js";
 import { describeOperation, maxRequestBytes } from "../operations/schema.js";
 import type { OperationSpec, OperatorJob } from "../operations/types.js";
 import { WORKFLOW_IDS, workflowOperations } from "../operations/workflows.js";
+import { createPilotRouter, type PilotRouterOptions } from "../cli/ui-channel.js";
 import { isLoopbackModelEndpoint, probeLocalModels, type ModelAvailability } from "./model-availability.js";
 
 export type OperatorMode = (typeof WORKFLOW_IDS)[number];
@@ -187,8 +188,12 @@ export function createLocalOperatorServer(options: {
   modelProbe?: () => Promise<ModelAvailability>;
   /** Test seam: the operation catalog. Production uses the registry. */
   catalog?: readonly OperationSpec[];
-}): { server: Server; getState: () => JobState } {
+  /** Test seam for the pilot wizard's channel (src/cli/ui-channel.ts): its session token, timeouts and the CLI locations. */
+  pilot?: Omit<PilotRouterOptions, "root">;
+}): { server: Server; getState: () => JobState; pilotToken: string } {
   const token = randomBytes(24).toString("hex");
+  // The pilot wizard's only door to the apply path. Its session token goes to the operator's terminal (operator-web.ts), never to a page.
+  const pilot = createPilotRouter({ ...options.pilot, root: options.root });
   const runner = options.runner ?? runOperatorJob;
   const modelProbe = options.modelProbe ?? (() => probeLocalModels());
   const uiRoot = resolve(options.root, "dist", "operator-ui", "app");
@@ -217,6 +222,10 @@ export function createLocalOperatorServer(options: {
     };
     if (host !== expectedHost || (origin && origin !== "http://" + expectedHost)) {
       send(403, "application/json", '{"error":"LOCAL_HOST_ONLY"}');return;
+    }
+    if (pilot.owns(req.url)) {
+      await pilot.handle(req, res, { expectedOrigin: "http://" + expectedHost, headers });
+      return;
     }
     if (req.method === "GET" && req.url === "/") {
       let shell: string;
@@ -340,5 +349,5 @@ export function createLocalOperatorServer(options: {
         output: sanitizeDiagnosticText(message.slice(0, 15000), 15000) };
     });
   });
-  return { server, getState: () => ({ ...state }) };
+  return { server, getState: () => ({ ...state }), pilotToken: pilot.sessionToken };
 }

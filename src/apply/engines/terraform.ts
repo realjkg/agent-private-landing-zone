@@ -10,7 +10,7 @@ import { removeTree } from "../../teardown/driver/cleanup.js";
 import { copyTree, projectDifference } from "../../teardown/driver/adapters/project-copy.js";
 import type { ResolvedTarget } from "../../teardown/driver/types.js";
 import { approvedToolDirs, resolveExecutable } from "../../tools/child-env.js";
-import { MUTATION_IDENTITY_VARIABLE } from "../../tools/identity.js";
+import { MUTATION_IDENTITY_VARIABLE, ownsIdentityVariable } from "../../tools/identity.js";
 import { refusedVariables, runBoundedProcess, runStoppableProcess, type StoppableProcessOptions, type StoppableResult } from "../../tools/process.js";
 import { TERRAFORM_APPLY_PROFILE, type ProcessProfile } from "../../tools/profiles.js";
 import { sha256 } from "../../util/sha256.js";
@@ -34,6 +34,16 @@ import { APPLY_IDENTITIES, type PilotTarget, type PlanChange } from "../types.js
  */
 
 type StepIdentity = "DISCOVERY" | "STATE" | "STATE_WRITE" | "APPLY" | null;
+
+/**
+ * What may be rendered into the seal-time backend file when the contract opts in: an allowlist of the STATE_WRITE variables the provider
+ * specs' `backendConfig` reads (the principal's client id or role ARN, tenant, subscription, region, and the token file PATH). Any other
+ * variable, including one that holds a secret, never reaches the renderer, and a token file's content is never read. The file is rendered
+ * by this process and never handed to a child: the seal environment below still holds no STATE_WRITE or APPLY variable.
+ */
+const STATE_WRITE_SETTINGS = new Set(["ARM_CLIENT_ID", "ARM_TENANT_ID", "ARM_SUBSCRIPTION_ID", "ARM_OIDC_TOKEN_FILE", "AWS_ROLE_ARN", "AWS_WEB_IDENTITY_TOKEN_FILE"]);
+const nonSecretStateWrite = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => Object.fromEntries(
+  Object.entries(env).filter(([key]) => ownsIdentityVariable(key, "STATE_WRITE") && STATE_WRITE_SETTINGS.has(key.slice("ALZ_STATE_WRITE_".length))));
 
 /** Sealing reads with DISCOVERY and STATE only. The writer and the applier are not even in the runner's environment. */
 const sealEnvironment = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv =>
@@ -189,10 +199,13 @@ function changesOf(shown: string, judge: Judge): PlanChange[] {
 const readChanges = (session: Session, judge: Judge): PlanChange[] => changesOf(session.step(SHOW_ARGV, null, true), judge);
 
 /** Sealing and re-deriving run the preview adapter's argument lists under the apply path's restricted profile: no CLI configuration file, no plugin cache. */
-const sealSession = (input: Pick<EngineContext, "scratchDir" | "env" | "toolDirs" | "manifest">): Session => openSession({
+const sealSession = (input: Pick<EngineContext, "scratchDir" | "env" | "toolDirs" | "manifest">, embedStateWrite = false): Session => openSession({
   scratchDir: input.scratchDir, env: sealEnvironment(input.env), toolDirs: input.toolDirs, manifest: input.manifest,
-  isAllowed: (args) => isAllowedArgv("TERRAFORM", "terraform", args), profile: TERRAFORM_APPLY_PROFILE,
+  // The one extra shape, and only when the contract opts in: init with the partial backend file (`APPLY_INIT_ARGV`). Every other list is the preview adapter's.
+  isAllowed: (args) => isAllowedArgv("TERRAFORM", "terraform", args) || (embedStateWrite && sameArgv(args, APPLY_INIT_ARGV)),
+  profile: TERRAFORM_APPLY_PROFILE,
 });
+const sameArgv = (a: readonly string[], b: readonly string[]): boolean => a.length === b.length && a.every((arg, index) => arg === b[index]);
 
 /**
  * Derives the change list from the plan bytes themselves, for an apply that
@@ -278,6 +291,7 @@ function openApply(input: EngineContext & { target: ResolvedTarget; engineVersio
 export const TERRAFORM: EngineSpec = {
   id: "TERRAFORM",
   executables: ["terraform"],
+  embedsStateWrite: true,
   mutation: "TERRAFORM_APPLY_OF_SEALED_PLAN",
   providers: ["AZURE", "AWS"],
   notices: {
@@ -313,11 +327,21 @@ export const TERRAFORM: EngineSpec = {
   // STATE_WRITE or APPLY, and `terraform show -json` is read only to extract the redacted change list.
   plan(input) {
     const planFile = join(input.scratchDir, SEAL_PLAN_FILE);
-    const session = sealSession(input);
+    const embed = input.embedStateWrite === true;
+    const backendConfigPath = join(input.scratchDir, APPLY_BACKEND_CONFIG_FILE);
+    const session = sealSession(input, embed);
     try {
       prepareWorkspace(session, {
         snapshotPath: input.snapshotPath, engineVersion: input.engineVersion, target: input.target,
-        initArgv: INIT_ARGV, stateIdentity: "STATE", backendBlock: input.spec.backendBlock,
+        stateIdentity: "STATE", backendBlock: input.spec.backendBlock,
+        // Opt-in: init with STATE_WRITE's non-secret backend settings (written 0600, removed as soon as init ends), so the plan embeds them.
+        ...(embed
+          ? {
+            initArgv: APPLY_INIT_ARGV,
+            beforeInit: () => writeFileSync(backendConfigPath, input.spec.backendConfig(nonSecretStateWrite(input.env), input.pinned), { mode: 0o600, flag: "wx" }),
+            afterInit: () => rmSync(backendConfigPath, { force: true }),
+          }
+          : { initArgv: INIT_ARGV }),
       });
       // The plan embeds the backend this init saved (docs/act-pilot-simulation.md), so it is judged here as well as at apply.
       assertBackendInContract(session.work, input.pinned, input.spec);
@@ -327,6 +351,7 @@ export const TERRAFORM: EngineSpec = {
       return { artifact: readFileSync(planFile), changes: readChanges(session, input) };
     } finally {
       rmSync(planFile, { force: true });
+      rmSync(backendConfigPath, { force: true });
       removeTree(session.work);
     }
   },

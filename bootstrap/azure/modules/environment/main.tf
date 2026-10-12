@@ -23,6 +23,13 @@ resource "azurerm_storage_account" "state" {
   default_to_oauth_authentication = true
   tags                            = var.tags
 
+  # Deny by default. Only the runner's egress ranges (and trusted Azure services) reach the state account.
+  network_rules {
+    default_action = "Deny"
+    bypass         = ["AzureServices"]
+    ip_rules       = var.state_allowed_ip_ranges
+  }
+
   blob_properties {
     versioning_enabled = true
 

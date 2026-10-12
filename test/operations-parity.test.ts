@@ -31,6 +31,7 @@ const EXEMPT_SCRIPTS: Readonly<Record<string, string>> = {
 const EXEMPT_ENTRY_POINTS: Readonly<Record<string, string>> = {
   "operator.ts": "the ./alz dispatcher itself",
   "operator-web.ts": "hosts the console (./alz workspace)",
+  "ui-channel.ts": "the console's pilot wizard adapter: a module the console server mounts, not a command (the pilot's catalog entry is ./alz apply)",
 };
 
 /** Command words of a help or catalog line, cut at the first placeholder or option; `a|b` expands to several keys. */

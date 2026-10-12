@@ -129,7 +129,7 @@ export const WorkflowForm = memo(function WorkflowForm(props: {
       <p>
         <small>
           Live-model choices require installed models on this machine. AWS evidence is synthetic.
-          Terraform plans and infrastructure ACT are not available from this workspace.
+          These workflows never plan or change real infrastructure. Real changes happen only in the Pilot apply area, by a person.
         </small>
       </p>
       <button

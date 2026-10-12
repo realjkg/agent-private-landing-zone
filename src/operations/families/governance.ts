@@ -39,9 +39,10 @@ export const governanceOperations: readonly OperationSpec[] = [
     evidenceBasis: "HUMAN-AUTHORIZED APPLY OF A SEALED PLAN — PILOT CONTRACT ONLY, ACT DISABLED OTHERWISE — ENCRYPTED EVIDENCE",
     inputs: [{ kind: "enum", name: "step", label: "Step", options: ["qualify", "seal", "approve", "apply", "status"],
       help: "Each step takes its own flags; run ./alz apply with no step to see them." }],
-  }, "It needs a person at an interactive terminal: the person types the exact target, approvers sign with their own Ed25519 key files, " +
-    "and the apply driver enforces the pilot contract, the kill switch and the approvals. The console never holds a credential or runs an apply. " +
-    "Set four separate identities with the ALZ_DISCOVERY_, ALZ_STATE_, ALZ_STATE_WRITE_ and ALZ_APPLY_ prefixes; none falls back to another.",
+  }, "It needs a person: either at an interactive terminal, or in the console's guided Pilot apply wizard (open Pilot apply in the menu and paste the session token printed in the terminal where the console started). " +
+    "Either way the person types the exact phrases, approvers sign with their own Ed25519 key files, and the apply driver enforces the pilot contract, the kill switch and the approvals. " +
+    "One change runs wholly in one of the two, never both. This card only shows the terminal command; the operations job table never runs an apply. " +
+    "Set four separate identities with the ALZ_DISCOVERY_, ALZ_STATE_, ALZ_STATE_WRITE_ and ALZ_APPLY_ prefixes in the environment that runs it; none falls back to another.",
   "./alz apply {step}", [...PILOT_ENV, ...KEY]),
   handoff({
     id: "target-init", title: "Create a recovery target intent",

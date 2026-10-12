@@ -6,13 +6,13 @@ The plan is `docs/act-pilot-plan.md`. The preview driver this builds on is `docs
 
 ## Authority
 
-The operator authorizes, the driver enforces, and agents never initiate. ACT stays DISABLED globally. It is enabled for the pilot only while `config/act-pilot-contract.json` is valid, has `enabled: true`, and hashes to the committed pin (see "The contract and its pin"). The console shows the command (`./alz apply`) as a handoff and never runs it. `test/apply-boundary.test.ts` pins that nothing the broker, agents, orchestration or the console can reach imports the apply path.
+The operator authorizes, the driver enforces, and agents never initiate. ACT stays DISABLED globally. It is enabled for the pilot only while `config/act-pilot-contract.json` is valid, has `enabled: true`, and hashes to the committed pin (see "The contract and its pin"). The Operations catalog shows the command (`./alz apply`) as a handoff and its job table never runs it. A person can instead run the whole workflow in the console's Pilot apply wizard (`docs/act-pilot-walkthrough.md`); that is the UI channel (see "Channels"). `test/apply-boundary.test.ts` pins that nothing the broker, agents, orchestration or the catalog can reach imports the apply path, and that from the console side only `src/cli/ui-channel.ts`, mounted by the console server, does.
 
 An apply runs exactly the sealed artifact that was previewed and approved (for Terraform, the plan file: `terraform apply <planfile>`; for CDK, the sealed CloudFormation change set: `aws cloudformation execute-change-set` for that change set's ARN). Nothing is regenerated between approval and apply. There is no `-auto-approve`, `-target`, `-replace`, `-refresh=false` or `-lock=false`, and locking stays on. Each stage (DEV, QA, PROD) is a separate target-bound sealed plan with its own approvals, bound to the qualified release through `releaseIdentity` (project files, lock file, engine and provider versions, shared inputs); see "Promotion". The earlier stage's manifest hash is not needed, because manifests are target-bound.
 
 ## What a person, a terminal and a signature each prove
 
-A terminal is not authentication. Every subcommand needs a terminal on stdin and stdout, and that only means a person, or a script holding a pseudo-terminal, is typing; it proves nobody. Typed confirmations prevent mistakes (the wrong target, the wrong plan). They are not identity.
+A terminal is not authentication. Every subcommand needs a terminal on stdin and stdout, and that only means a person, or a script holding a pseudo-terminal, is typing; it proves nobody. The console wizard's dialog terminal is the same thing by another route: it reports a terminal only for a request that carried the one-time session token, and a person answering a dialog in a browser proves as little as a person at a keyboard. Typed confirmations prevent mistakes (the wrong target, the wrong plan). They are not identity.
 
 Signatures are the authentication. An approval is an Ed25519 signature, by a key in the contract's `approvers` list, over the artifact hash, environment, exact target, expiry and a one-time nonce. A typed name is never proof. The key is a file you name (mode 0600), never read from the environment. Whoever holds an approver's private key is that approver, so approver key custody is an operational control, not something the code enforces: each approver should keep their key on their own device, and the contract's allowlist is reviewed in the commit that changes it. The code cannot tell whether one person holds two keys.
 
@@ -26,7 +26,7 @@ The operator who runs the commands is the same user ID as the process, and holds
 
 ## Commands
 
-Every subcommand refuses before reading any file unless it has a terminal on stdin and stdout. There are no flags that force, skip or pre-answer anything; an unknown flag is an error.
+Every subcommand refuses before reading any file unless it has a terminal on stdin and stdout (at the terminal, the real one; in the console wizard, the dialog terminal of a request that passed the session-token check). There are no flags that force, skip or pre-answer anything; an unknown flag is an error. `qualify` and `pin` are terminal-only in practice: the wizard runs `preflight`, `seal`, `approve` and `apply`.
 
 | Step | Command | Who |
 | --- | --- | --- |
@@ -41,9 +41,15 @@ There is no `--allowlist` and no `--qualifications` file. The approver allowlist
 
 Request files carry only `environment`, `target` (`account`, `backend`, `workspace`; `account` is the provider's account identifier) and `projectRoot` (seal and qualify also `policyVersion` and `resolved`). The command supplies the invocation, manifest and approvals; a file that carries them is refused.
 
+### Channels: the terminal or the console, never both
+
+A workflow runs wholly in the `CLI` channel (a person at the terminal) or the `UI` channel (a person in the console wizard, `src/cli/ui-channel.ts`). The calling code sets it (`ApplyCliDeps.channel`, default `CLI`; the driver's `SealRequest.channel` and `ApplyRequest.channel`), never a flag, file or environment variable. It is a field of the sealed plan, of the artifact hash (`computeArtifactSha256`) and of the review bundle, so editing it breaks the hash (`ARTIFACT_TAMPERED`) and a record without it is `ARTIFACT_INVALID`. `approve` and `apply` refuse with `CHANNEL_MISMATCH` (exit 2) when their channel differs from the plan's: `approve` before it asks anything, `apply` before the final question, and the driver again before any approval is consumed. Nothing is spent by that refusal; the same sealed plan and approvals work in the right channel.
+
+The UI channel changes who may answer a phrase, not what is checked. The adapter asks exactly the phrases the CLI asks (target, `RUN PROJECT CODE`, `EMBED STATE_WRITE <ENV>`, `APPROVE ...`, `APPLY ...`) and answers none of them: a dialog waits for the person, one at a time, and a timeout (10 minutes) or a cancel ends the command at its own mismatch check, so nothing runs and nothing is spent. Console requests need the session token printed at console start, a same-origin `Origin` and `Host`, a JSON body under 16 KB, and no CORS; the token is compared in constant time, is never in a page, URL, response or log, and ends with the process. The approver key stays a file, checked by `readApproverKey` exactly as at the terminal.
+
 ### The review bundle
 
-`seal` also writes a review bundle beside the sealed plan, at `<sealed plan path>.review.json` (mode 0600), and prints its path. It holds `artifactSha256`, `planSha256`, `manifestHash`, `releaseIdentity`, `environment`, `target`, `engineVersion`, `policyVersion`, `contractSha256`, `createdAt`, `changes` and `changesSha256`. It holds no plan bytes and no plan, state or variable values, so it is not secret and the operator can send it to approvers on any channel.
+`seal` also writes a review bundle beside the sealed plan, at `<sealed plan path>.review.json` (mode 0600), and prints its path. It holds `artifactSha256`, `planSha256`, `manifestHash`, `releaseIdentity`, `environment`, `target`, `channel`, `engineVersion`, `policyVersion`, `contractSha256`, `createdAt`, `changes` and `changesSha256`. It holds no plan bytes and no plan, state or variable values, so it is not secret and the operator can send it to approvers on any channel.
 
 `approve` reads only that file. It checks the exact field set, recomputes `changesSha256` and the artifact hash from the bundle's fields with the same function the sealer uses (`computeArtifactSha256`), and refuses on any mismatch (`ARTIFACT_TAMPERED`) or malformed field (`ARTIFACT_INVALID`) before it asks anything. It then shows the changes and the target, and the approver types the environment and the first 12 hex characters of the artifact hash. A bundle that was edited cannot get a signature for another plan, because the change list and target are inside the hash. What the check does not prove is that the vault holds a plan with that hash; if it does not, `apply` refuses (`ARTIFACT_INVALID`) and the approval is wasted, not misused. The approver reads a change list, not the plan; the apply re-derives the list from the plan bytes (see "Plaintext on disk").
 
@@ -57,7 +63,7 @@ One list, derived in one place by the engine (Terraform: from `terraform show -j
 | --- | --- | --- |
 | 0 | Done. | |
 | 1 | Error, and nothing was spent: bad input, no terminal, a wrong confirmation, a stop signal before the engine started, or the engine could not start (`APPLY_FAILED` with "no approval was consumed"). | Fix the cause and run again. |
-| 2 | BLOCKED: the contract refused before any action (disabled or unpinned contract, kill switch, wrong target, unverified or insufficient approvals, artifact already applied, engine not qualified, identities, missing promotion evidence, a bundle or sealed plan that does not verify). | Read the code in the message. |
+| 2 | BLOCKED: the contract refused before any action (disabled or unpinned contract, kill switch, wrong target, `CHANNEL_MISMATCH`, unverified or insufficient approvals, artifact already applied, engine not qualified, identities, missing promotion evidence, a bundle or sealed plan that does not verify). | Read the code in the message. |
 | 3 | SPENT, in two cases. The engine ran and the sealed plan and its approvals are used up, whatever happened (failed, partial, killed, stale, or evidence that could not be written). Or the approvals were consumed and the engine did not start: `KILL_SWITCH_AFTER_APPROVALS` (the switch appeared) or `APPROVALS_SPENT` (the plan file could not be written, or the engine could not be spawned, for example a full disk). Nothing ran, the approvals are gone and the sealed plan is available again. | Read "When an apply fails". After an engine run, never rerun the same files. After either refusal, fix the cause (lift the switch, free the disk) and collect new approvals for the same sealed plan. |
 
 `test/apply-cli.test.ts` pins this mapping.
@@ -65,6 +71,8 @@ One list, derived in one place by the engine (Terraform: from `terraform show -j
 ## The contract and its pin
 
 The contract (`config/act-pilot-contract.json`, shapes in `config/act-pilot-contract.example.json` for Azure and `config/act-pilot-contract.aws.example.json` for AWS) names the provider (`AZURE` or `AWS`), the engine (`TERRAFORM`, or `CDK` with `AWS` only; any other pairing is `CONTRACT_INVALID`; `config/act-pilot-contract.aws-cdk.example.json` shows the CDK shape), and for DEV, QA and PROD the account fields and backend its spec defines (different pairwise in account and backend, compared case-insensitively; for CDK the backend is the stack name, which may repeat because the account differs, the workspace is `default`, and each target adds `capabilities`, see "CDK"), the required approvals (DEV at least 1, QA at least 1, PROD at least 2), the approval lifetime, the kill switch path, and the approver allowlist (id, Ed25519 public key, environments). It loads only if its canonical SHA-256 equals the hash in `config/act-pilot-contract.sha256`. That hash is sealed into every plan and recorded in the apply evidence, so a plan applies only under the contract it was sealed under: re-pinning the contract (another region, tenant, approver or any other field) means a new seal and new approvals, and the evidence shows which contract ran. An empty or absent pin means ACT is disabled, which is how the repository ships. A pin that does not match is `CONTRACT_INVALID`. Release admission checks the same pin.
+
+The optional boolean `embedStateWrite` (default off, `TERRAFORM` only) is described under "Embedding STATE_WRITE in the plan" in the G2 section.
 
 To enable the pilot, or to change a target or an approver:
 
@@ -224,7 +232,22 @@ The real Terraform 1.16.4 against the Azurite emulator (`docs/act-pilot-simulati
 Consequences for this design, still to be settled with a real run:
 
 - The STATE_WRITE partial backend configuration passed to `init` at apply time is probably not what authenticates the state write. Which principal writes state follows from the seal-time settings plus the apply process's own provider variables (APPLY's).
-- Keeping STATE_WRITE and APPLY distinct for the state write would therefore need the seal-time `init` to embed STATE_WRITE's non-secret settings (Azure: client id, tenant, token file path; AWS: `assume_role_with_web_identity`), which makes the seal-time state access write-capable. Sealing runs with DISCOVERY and STATE only, so the project's backend block would have to carry them. That is a trade-off for the owner, not something the code decides.
+- Keeping STATE_WRITE and APPLY distinct for the state write needs the seal-time `init` to embed STATE_WRITE's non-secret settings (Azure: client id, tenant, subscription, token file path; AWS: `assume_role_with_web_identity`). That is an owner decision with a cost, and the code offers it as an opt-in, off by default: the contract's `embedStateWrite` field, described next. It is **UNVERIFIED on a real backend**.
+
+#### Embedding STATE_WRITE in the plan (`embedStateWrite`, opt-in, default off)
+
+`embedStateWrite` is an optional boolean in the contract. Absent or `false` is the behavior described everywhere else on this page, unchanged: sealing runs the preview adapter's `init` with no backend file. It is valid only with the `TERRAFORM` engine; `true` with `CDK` is `CONTRACT_INVALID`. It is part of the pinned contract, so the contract hash binds it: a plan sealed with it off is refused under a contract with it on, and the reverse (`ARTIFACT_INVALID`, before any engine step). The shipped examples do not mention it and the shipped pin stays empty.
+
+When `true`:
+
+- The seal-time `init` (and the throwaway plan of `qualify`) runs the apply `init` argument list, with the same partial `-backend-config` file the apply-time `init` uses, rendered from STATE_WRITE's non-secret settings only (Azure: client id, tenant, subscription and the token file **path**; AWS: role ARN and the token file **path**). The rendering allowlist names those variables and no others, so no secret and no token content can reach the file. The file is written 0600 beside the plan, deleted as soon as `init` ends, and is never part of the sealed plan, the review bundle or the evidence.
+- The seal process renders the file itself. The engine's environment while sealing still holds no STATE_WRITE and no APPLY variable, and the backend the `init` saved is judged against the contract as before. Only this one extra argument list is allowed, and only when the contract opts in.
+- The plan then names the state writer in its embedded backend settings, which is what `terraform apply <planfile>` reads, so STATE_WRITE (not APPLY's environment) is what the plan points at for state.
+
+The cost: the seal step now carries the STATE_WRITE principal's settings, so the seal-time state read names the state writer and sealing becomes write-capable at the backend (the principal can write state, even though sealing only reads). The plan stays secret-bearing and encrypted at rest. Because of this, `seal` and `qualify` print a plain-language warning and require the exact phrase `EMBED STATE_WRITE <ENVIRONMENT>` (for example `EMBED STATE_WRITE DEV`) after the target and project-code confirmations and before any engine runs. A wrong or missing phrase runs no engine and seals nothing, and no flag skips it. The confirmation goes through the same terminal abstraction as the other prompts, which is how the console wizard asks it in a dialog (see "Channels"). `./alz apply preflight` adds an informational line, `plan will embed STATE_WRITE settings: yes` or `no`.
+
+**Still UNVERIFIED:** whether a real Terraform authenticates state reads and writes as STATE_WRITE from the embedded settings, whether the seal-time `init` accepts the STATE_WRITE client id while the process holds STATE's variables, and whether the AWS `assume_role_with_web_identity` block embeds as assumed. The tests use a fake engine and pin this program's logic only. Authentication stays SIMULATED until a real-backend run, and the attestation at `qualify` remains an operator control, not proof.
+
 - Until a real run shows which principal wrote state, `qualify` records an attestation and not proof, and the first supervised DEV apply is where it becomes observable. Do not rely on the separation before then.
 
 Known, not changed: Terraform contacts the HashiCorp checkpoint service on every run (the runner profile does not set `CHECKPOINT_DISABLE`; production network policy should block it), and a failed state save writes `errored.tfstate` with mode 0644 and quotes the full backend URL in its error text, which is why engine output is withheld from messages.
@@ -273,7 +296,7 @@ The decrypted plan and the backend configuration exist only in a private scratch
 
 ## What the tests control, and what they do not
 
-The driver trusts what the CLI hands it only as far as it re-verifies it, but the process boundary is not a security boundary: **in-process callers can forge a terminal.** Any code that runs in the same process can build a `HumanInvocation`, an `ApplyRequest` or a terminal object that says it is interactive. `checkHumanInvocation` catches mistakes and an agent that does not know the contract, not a caller that does. The control is that nothing an agent can reach imports the apply path; `test/apply-boundary.test.ts` pins that, and it is the control, so a change that weakens it is a change to the authority and needs the owner.
+The driver trusts what the CLI hands it only as far as it re-verifies it, but the process boundary is not a security boundary: **in-process callers can forge a terminal.** Any code that runs in the same process can build a `HumanInvocation`, an `ApplyRequest` or a terminal object that says it is interactive. `checkHumanInvocation` catches mistakes and an agent that does not know the contract, not a caller that does. The control is that nothing an agent can reach imports the apply path, the console adapter or the console server that mounts it, and that from the console side only `src/cli/ui-channel.ts` reaches `src/apply`; `test/apply-boundary.test.ts` pins that, and it is the control, so a change that weakens it is a change to the authority and needs the owner. The console process itself holds the same user ID and the operator's identity variables, so the session token and the loopback bind are what keep another local program or web page from driving it.
 
 ## Cleanup
 

@@ -60,10 +60,10 @@ const bad = (message: string): never => { throw new Invalid(message); };
 
 const WORKSPACE = /^[A-Za-z0-9_-]{1,90}$/;
 
-function object(value: unknown, path: string, keys: readonly string[]): Record<string, unknown> {
+function object(value: unknown, path: string, keys: readonly string[], optional: readonly string[] = []): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return bad(path + ": expected an object");
   const record = value as Record<string, unknown>;
-  for (const key of Object.keys(record)) if (!keys.includes(key)) bad(path + "." + key + ": unknown field");
+  for (const key of Object.keys(record)) if (!keys.includes(key) && !optional.includes(key)) bad(path + "." + key + ": unknown field");
   for (const key of keys) if (!Object.hasOwn(record, key)) bad(path + "." + key + ": missing");
   return record;
 }
@@ -121,7 +121,7 @@ function approvers(value: unknown, path: string): ApproverEntry[] {
 }
 
 function validate(raw: unknown): PilotContract {
-  const r = object(raw, "contract", ["schemaVersion", "enabled", "provider", "engine", "targets", "requiredApprovals", "maxApprovalAgeMinutes", "approvers", "killSwitchPath"]);
+  const r = object(raw, "contract", ["schemaVersion", "enabled", "provider", "engine", "targets", "requiredApprovals", "maxApprovalAgeMinutes", "approvers", "killSwitchPath"], ["embedStateWrite"]);
   if (r.schemaVersion !== 1) bad("schemaVersion: expected 1");
   const unsupported = "provider and engine: the pilot supports " + PROVIDER_IDS.join(", ") + " with " + ENGINE_IDS.join(", ");
   const spec = providerSpec(r.provider) ?? bad(unsupported);
@@ -130,6 +130,10 @@ function validate(raw: unknown): PilotContract {
   const targets = object(r.targets, "targets", ENVIRONMENTS as string[]);
   const approvals = object(r.requiredApprovals, "requiredApprovals", ENVIRONMENTS as string[]);
   if (r.enabled !== true) bad("enabled: the contract does not enable ACT");
+  // Optional and default off. Kept exactly as written (absent stays absent), so a contract that never mentions it hashes as it always did; the pin is over what the file says.
+  const embed = r.embedStateWrite;
+  if (embed !== undefined && typeof embed !== "boolean") bad("embedStateWrite: expected true or false");
+  if (embed === true && !engine.embedsStateWrite) bad("embedStateWrite: valid only with an engine that has a state backend (" + ENGINE_IDS.filter((id) => engineSpec(id)?.embedsStateWrite).join(", ") + "); " + engine.id + " has none");
   const contract: PilotContract = {
     schemaVersion: 1,
     enabled: true,
@@ -144,6 +148,7 @@ function validate(raw: unknown): PilotContract {
     maxApprovalAgeMinutes: integer(r.maxApprovalAgeMinutes, "maxApprovalAgeMinutes", 1, 1440),
     approvers: approvers(r.approvers, "approvers"),
     killSwitchPath: text(r.killSwitchPath, "killSwitchPath", (v) => v.length > 0 && v.length <= 1024 && !v.includes("\0")),
+    ...(typeof embed === "boolean" ? { embedStateWrite: embed } : {}),
   };
   ENVIRONMENTS.forEach((a, index) => {
     for (const b of ENVIRONMENTS.slice(index + 1)) {

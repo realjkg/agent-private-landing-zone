@@ -155,7 +155,7 @@ describe("area navigation and summary strips", () => {
       const { unmount } = renderApp({ level });
       const nav = document.querySelector("nav.view-nav") as HTMLElement;
       expect(within(nav).getAllByRole("link").map((link) => link.textContent)).toEqual([
-        "Home", "Operations", "Reference",
+        "Home", "Operations", "Pilot apply", "Reference",
       ]);
       expect(nav.querySelector("[aria-current=page]")?.textContent).toBe("Home");
       for (const id of ["workflow", "evidence"]) expect(document.getElementById(id)).toBeTruthy();
@@ -168,12 +168,12 @@ describe("area navigation and summary strips", () => {
     }
   });
 
-  test("beginner offers Home and Operations only, with no summary strip", () => {
+  test("beginner offers Home, Operations and the guided Pilot apply, with no summary strip", () => {
     stubState(idleState);
     renderApp({ level: "BEGINNER" });
     const nav = document.querySelector("nav.view-nav") as HTMLElement;
     expect(within(nav).getAllByRole("link").map((link) => link.textContent)).toEqual([
-      "Home", "Operations",
+      "Home", "Operations", "Pilot apply",
     ]);
     expect(document.querySelector(".summary-strip")).toBeNull();
   });
@@ -269,7 +269,7 @@ describe("guided empty states and first-run", () => {
     expect(card).toBeTruthy();
     expect(card?.querySelectorAll(".protection-points li").length).toBe(3);
     expect(card?.textContent).toContain("Runs stay on this machine");
-    expect(card?.textContent).toContain("infrastructure ACT is permanently disabled");
+    expect(card?.textContent).toContain("infrastructure changes are off unless the owner switched the pilot on");
 
     fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
     expect(window.localStorage.getItem(PROTECTION_CARD_STORAGE_KEY)).toBe("1");

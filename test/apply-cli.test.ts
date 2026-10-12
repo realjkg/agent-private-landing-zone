@@ -368,10 +368,11 @@ test("seal writes a non-secret review bundle: the artifact's own fields and the 
   const text = readFileSync(s.bundle, "utf8");
   const bundle = JSON.parse(text) as Record<string, unknown>;
   assert.deepEqual(Object.keys(bundle).sort(), [
-    "artifactSha256", "changes", "changesSha256", "contractSha256", "createdAt", "engineVersion", "environment", "manifestHash", "planSha256", "policyVersion", "releaseIdentity", "target",
+    "artifactSha256", "changes", "changesSha256", "channel", "contractSha256", "createdAt", "engineVersion", "environment", "manifestHash", "planSha256", "policyVersion", "releaseIdentity", "target",
   ]);
   assert.equal(bundle.artifactSha256, s.artifactSha256);
   assert.equal(bundle.environment, "DEV");
+  assert.equal(bundle.channel, "CLI", "the terminal CLI seals into the CLI channel, and the approvers' bundle says so");
   for (const secret of [PLAN_CANARY, VALUE_CANARY, STATE_CANARY, "planBase64"]) assert.ok(!text.includes(secret), secret);
 });
 

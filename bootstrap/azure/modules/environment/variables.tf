@@ -43,3 +43,8 @@ variable "alert_emails" {
 variable "tags" {
   type = map(string)
 }
+
+variable "state_allowed_ip_ranges" {
+  description = "Public IPs or CIDRs of the pilot runner's egress; the state account denies everything else."
+  type        = list(string)
+}
