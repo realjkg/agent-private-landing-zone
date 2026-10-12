@@ -28,6 +28,8 @@ import { useRoute } from "./route";
 // Reference (connectors and compliance detail) is its own chunk: it downloads
 // when that area opens, not with the first paint.
 const ReferenceView = lazy(() => import("./components/ReferenceView"));
+// The pilot wizard is its own chunk too: it downloads when the area opens. It reaches the server only through its own token-guarded routes.
+const PilotWizard = lazy(() => import("./pilot/PilotWizard"));
 
 const POLL_RUNNING_MS = 1000;
 // Nothing changes while idle unless a run starts elsewhere; check calmly.
@@ -176,7 +178,7 @@ export function OperatorApp(props: OperatorAppProps) {
       </a>
       <header className="masthead">
         <strong className="brand">SOVEREIGN ALZ</strong>
-        <span className="tag">LOCAL • PREVIEW ONLY</span>
+        <span className="tag">LOCAL • CHANGES ONLY BY A PERSON</span>
         <LevelSwitcher level={level} onSelect={changeLevel} />
       </header>
       <ViewNav level={level} view={view} />
@@ -184,7 +186,8 @@ export function OperatorApp(props: OperatorAppProps) {
         <h1>Private Agent Workspace</h1>
         <p className="intro">
           Explore governed landing-zone assessments, review private-model findings, and verify safe
-          infrastructure previews. No deployments, cloud changes or automatic approvals.
+          infrastructure previews. Nothing here deploys or changes the cloud on its own: the guided Pilot apply
+          area changes real systems only for a person who unlocks it, types each confirmation, and has approvals.
         </p>
         {sessionUnavailable && view !== "home" && (
           <p role="alert" className="session-banner">
@@ -244,6 +247,12 @@ export function OperatorApp(props: OperatorAppProps) {
             <Arrive route={route} titleId="operations-title" />
           </>
         )}
+        {view === "pilot" && (
+          <Suspense fallback={<p role="status" className="loading">Loading the pilot wizard…</p>}>
+            <PilotWizard level={level} />
+            <Arrive route={route} titleId="pilot-title" />
+          </Suspense>
+        )}
         {view === "reference" && (
           <Suspense fallback={<p role="status" className="loading">Loading reference…</p>}>
             <ReferenceView level={level} />
@@ -251,8 +260,9 @@ export function OperatorApp(props: OperatorAppProps) {
           </Suspense>
         )}
         <p className="footer">
-          Localhost-only session • One run at a time • ACT permanently disabled in this accelerator
-          release. Offline results cannot qualify live models, live-cloud discovery or a real
+          Localhost-only session • One run at a time • Infrastructure changes stay off unless the
+          owner's pilot rules are switched on, and then only the Pilot apply area, with a person
+          typing each confirmation, can make one. Offline results cannot qualify live models, live-cloud discovery or a real
           recovery test.
         </p>
       </main>

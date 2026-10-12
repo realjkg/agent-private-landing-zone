@@ -40,7 +40,7 @@ export function ProtectionCard() {
           Evidence is synthetic — runs use recorded fixtures, never your real cloud.
         </li>
         <li>
-          Nothing changes without you — infrastructure ACT is permanently disabled.
+          Nothing changes without you — infrastructure changes are off unless the owner switched the pilot on, and then only a person who types each confirmation can apply one.
         </li>
       </ul>
     </section>

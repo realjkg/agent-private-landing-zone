@@ -117,11 +117,12 @@ test("the sealed record binds plan, manifest, release identity, environment, tar
   assert.match(s.planSha256, /^[a-f0-9]{64}$/);
   assert.match(s.releaseIdentity, /^[a-f0-9]{64}$/);
   assert.equal(s.artifactSha256, computeArtifactSha256(s));
+  assert.equal(s.channel, "CLI");
   assert.equal(s.artifactSha256, sha(JSON.stringify({
-    changesSha256: sha(canonicalJson(s.changes)), contractSha256: s.contractSha256, engineVersion: s.engineVersion, environment: s.environment, manifestHash: s.manifestHash,
+    changesSha256: sha(canonicalJson(s.changes)), channel: s.channel, contractSha256: s.contractSha256, engineVersion: s.engineVersion, environment: s.environment, manifestHash: s.manifestHash,
     planSha256: s.planSha256, policyVersion: s.policyVersion, releaseIdentity: s.releaseIdentity,
     target: { account: s.target.account, backend: s.target.backend, workspace: s.target.workspace },
-  })), "canonical JSON of exactly these nine fields, the change list through its own hash");
+  })), "canonical JSON of exactly these ten fields, the change list through its own hash");
   assert.deepEqual(s.changes, [
     { address: "azurerm_log_analytics_workspace.pilot", type: "azurerm_log_analytics_workspace", action: "UPDATE" },
     { address: "azurerm_resource_group.pilot", type: "azurerm_resource_group", action: "CREATE" },
@@ -147,7 +148,7 @@ test("any change to a bound field changes the artifact hash", async () => {
   const s = (result as Extract<typeof result, { ok: true }>).sealed;
   const base = s.artifactSha256;
   const variants: Partial<SealedPlan>[] = [
-    { planSha256: H("a") }, { manifestHash: H("b") }, { releaseIdentity: H("c") }, { environment: "PROD" }, { environment: "QA" },
+    { planSha256: H("a") }, { channel: "UI" }, { manifestHash: H("b") }, { releaseIdentity: H("c") }, { environment: "PROD" }, { environment: "QA" },
     { target: { ...s.target, workspace: "other" } }, { target: { ...s.target, account: "sub-other" } },
     { target: { ...s.target, backend: "x/y/z" } }, { engineVersion: "1.9.6" }, { policyVersion: "2026-10-12.1" },
     { changes: [] }, { changes: s.changes.slice(1) }, { changes: s.changes.map((c) => ({ ...c, action: "DELETE" })) },

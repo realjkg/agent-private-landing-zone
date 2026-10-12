@@ -8,9 +8,20 @@ import type { AzureTarget } from "./providers/azure.js";
  *
  * The operator authorizes, the driver enforces, and agents never initiate an
  * apply. Everything here is human-invoked: nothing under src/apply is reachable
- * from src/tools, src/operator-ui or any agent path, and the console only shows
- * the command. ACT stays DISABLED unless a valid pilot contract enables it.
+ * from src/tools or any agent path, and from the console side only the wizard's
+ * adapter (src/cli/ui-channel.ts, a person with the session token) reaches it;
+ * the console's job table never runs an apply. ACT stays DISABLED unless a valid
+ * pilot contract enables it.
  */
+/**
+ * The one channel a pilot workflow runs through, chosen when it is started and never mixed (docs/act-pilot-walkthrough.md):
+ * `CLI` is a person at the terminal, `UI` is a person in the console wizard. The CALLER sets it (a deps seam, never a flag or a
+ * file), it is sealed into the plan and so into the artifact hash every approver signs, and `approve` and `apply` refuse
+ * (`CHANNEL_MISMATCH`) when they are invoked through the other one. It widens who may invoke the pilot, not what any gate checks.
+ */
+export type PilotChannel = "CLI" | "UI";
+export const PILOT_CHANNELS: readonly PilotChannel[] = ["CLI", "UI"];
+
 /** Promotion runs DEV, then QA, then PROD: each stage needs a successful apply of the same release in the stage before it. */
 export type ApplyEnvironment = "DEV" | "QA" | "PROD";
 
@@ -84,6 +95,8 @@ export type SealedPlan = {
   releaseIdentity: string;
   environment: ApplyEnvironment;
   target: ResolvedTarget;
+  /** The channel this workflow was started in (`CLI` or `UI`). Bound by the artifact hash: the other channel cannot approve or apply it. */
+  channel: PilotChannel;
   engineVersion: string;
   policyVersion: string;
   /** The pinned pilot contract (its canonical sha256) the plan was sealed under: it fixes the provider and every account field, region and tenant included, and the approver allowlist. An apply under another contract is refused. */
@@ -108,6 +121,8 @@ export type ApplyRefusalCode =
   /** The kill switch appeared after the approvals were consumed and before the engine started: nothing applied, the approvals are spent. */
   | "KILL_SWITCH_AFTER_APPROVALS"
   | "HUMAN_INVOCATION_REQUIRED"
+  /** The workflow was started in the other channel (terminal or console). Nothing was consumed. */
+  | "CHANNEL_MISMATCH"
   | "TARGET_NOT_IN_CONTRACT"
   | "ARTIFACT_INVALID"
   | "ARTIFACT_TAMPERED"

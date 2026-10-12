@@ -17,20 +17,22 @@ import { codeOf } from "./engine.js";
 import { acceptsManifest, engineOf, type EngineSpec, type RecoveryFile } from "./engine-spec.js";
 import { APPLY_AUTHORITY } from "./evidence.js";
 import { attestedClientId, checkApplyIdentities, verifyIdentityTargets } from "./identities.js";
+import { channelMismatchMessage } from "./channel.js";
 import { finalizeArtifact, releaseReservation, reserveArtifact } from "./ledger.js";
 import { openNonceStore, type NonceStore } from "./nonces.js";
 import { specOf, type ProviderSpec } from "./provider.js";
 import { planWithoutStoring, releaseIdentityOf, sealPlan, verifySealedPlan, type LoadedPlan, type SealResult } from "./seal.js";
 import { sha256 } from "../util/sha256.js";
-import type { ApplyEnvironment, ApplyEvidence, ApplyOutcome, ApplyRefusalCode, ApplyResult, PilotContract, PlanChange, SignedApproval } from "./types.js";
+import type { ApplyEnvironment, ApplyEvidence, ApplyOutcome, ApplyRefusalCode, ApplyResult, PilotChannel, PilotContract, PlanChange, SignedApproval } from "./types.js";
 
 /**
  * The human-invoked apply driver (docs/act-pilot-plan.md). The operator
  * authorizes, the driver enforces, and agents never initiate. Each check below
  * fails closed and nothing after it runs; the engine is reached only through
  * `runApply`, and the engine's own execution (`terraform apply`, `execute-change-set`) is the last step of the last stage. This
- * module is imported by the CLI only: nothing under src/tools, src/agent or
- * src/operator-ui reaches it, and the console never runs an apply.
+ * module is imported by the CLI only (src/cli/apply.ts, which the console wizard's
+ * adapter src/cli/ui-channel.ts drives): nothing under src/tools, src/agent or
+ * src/operations reaches it, and the console's job table never runs an apply.
  */
 export type ApplyDeps = {
   /** Where qualification evidence is read. Defaults to the repository's vault. Apply needs a record for the apply adapter, sealing one for the preview adapter. */
@@ -58,6 +60,8 @@ export type ApplyRequest = {
   invocation: HumanInvocation;
   environment: ApplyEnvironment;
   target: ResolvedTarget;
+  /** Who is invoking: the terminal CLI or the console adapter. The caller sets it (default `CLI`); a plan sealed in the other channel is refused with `CHANNEL_MISMATCH` before anything is consumed. */
+  channel?: PilotChannel;
   /** The sealed plan the CLI already loaded and showed. The driver verifies its hashes again; a caller's earlier check is not trusted. */
   sealedPlan: LoadedPlan;
   /** The manifest the plan was sealed against, and the project it describes. Both are re-bound to the sealed plan. */
@@ -70,6 +74,8 @@ export type SealRequest = {
   invocation: HumanInvocation;
   environment: ApplyEnvironment;
   target: ResolvedTarget;
+  /** Sealed into the plan and its hash (default `CLI`). The caller sets it, never a user flag. */
+  channel?: PilotChannel;
   manifest: ArtifactManifest;
   projectRoot: string;
   policyVersion: string;
@@ -183,7 +189,7 @@ async function planAgainstTarget(request: SealRequest, deps: SealDeps, kind: "se
     }
     const input = {
       engine, environment: request.environment, target: { ...request.target }, manifest, snapshotPath: snapshot.path, scratchDir: scratch.path,
-      env: deps.env ?? process.env, policyVersion: request.policyVersion, engineVersion: manifest.engineVersion,
+      channel: request.channel ?? "CLI", env: deps.env ?? process.env, policyVersion: request.policyVersion, engineVersion: manifest.engineVersion,
       pinned: admitted.contract.targets[request.environment], spec: admitted.spec, contractSha256: pilotContractSha256(admitted.contract), toolDirs: deps.toolDirs, now: deps.now,
       embedStateWrite: admitted.contract.embedStateWrite === true,
     };
@@ -288,6 +294,7 @@ export async function runApply(request: ApplyRequest, deps: ApplyDeps): Promise<
   const loaded = verifySealedPlan(request.sealedPlan);
   if (!loaded.ok) return loaded;
   const { sealed, planBytes } = loaded;
+  if (sealed.channel !== (request.channel ?? "CLI")) return refuse("CHANNEL_MISMATCH", channelMismatchMessage(sealed.channel));
   if (sealed.environment !== request.environment || !sameTarget(sealed.target, request.target) || sealed.contractSha256 !== pilotContractSha256(contract)) {
     return refuse("ARTIFACT_INVALID", "The sealed plan was sealed for another environment or target, or under another pilot contract.");
   }

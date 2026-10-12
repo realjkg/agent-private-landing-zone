@@ -4,6 +4,7 @@ import type { View } from "../route";
 const TABS: ReadonlyArray<{ view: View; href: string; label: string; beginner: boolean }> = [
   { view: "home", href: "#home", label: "Home", beginner: true },
   { view: "operations", href: "#operations", label: "Operations", beginner: true },
+  { view: "pilot", href: "#pilot", label: "Pilot apply", beginner: true },
   { view: "reference", href: "#reference", label: "Reference", beginner: false },
 ];
 

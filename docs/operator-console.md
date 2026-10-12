@@ -20,9 +20,13 @@ The console never creates the local evidence key. Jobs run with a minimal enviro
 
 ## What the console never does
 
-- ACT stays disabled: no apply, no real destroy, no arbitrary shell, no new tool or allowlist entry.
+- The operations job table never runs an apply, a real destroy or an arbitrary shell, and gains no new tool or allowlist entry. Infrastructure ACT stays disabled unless the owner's pinned pilot contract enables it, and then only a person can use the separate Pilot apply wizard below.
 - It never starts the destroy-preview driver and never builds an argument list containing `destroy`, `preview-only`, `apply` or `auto-approve`. Such a command is a handoff card with the exact command filled in from the form.
-- It collects no cloud credentials, tokens or keys. A capability that needs live cloud access is a handoff that names the environment variables to set, never their values.
+- It collects no cloud credentials, tokens or keys. A capability that needs live cloud access is a handoff that names the environment variables to set, never their values. The Pilot apply wizard asks for the location of an approver's key file, never the key, and the identity variables come from the terminal that started the console.
+
+## The Pilot apply wizard
+
+The **Pilot apply** area is a guided wizard for one change at a time (`docs/act-pilot-walkthrough.md`). It is a separate door from the operations catalog: it runs the pilot commands through `src/cli/ui-channel.ts`, the only console module that touches `src/apply`, and only for a request that carries the **session token** `./alz workspace` prints in your terminal at start. The token is never in a page, link or log, and a new one is drawn at every start. Every pilot request must also come from the console's own address, be JSON, be small, and carry no CORS permission. Dialogs ask the same exact phrases as the terminal and never fill one in. A workflow runs wholly in the console or wholly on the command line; the choice is sealed into the prepared change and the other way refuses it (`CHANNEL_MISMATCH`).
 
 ## Command groups
 

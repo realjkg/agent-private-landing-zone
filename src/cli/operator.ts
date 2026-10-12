@@ -134,7 +134,7 @@ async function help(): Promise<void> {
     "  ./alz economics report <input.json> [--json]",
     "  ./alz teardown record|check-plan|destroy-preview|orphans (read-only)",
     "  ./alz teardown destroy-preview-run|preview-run (interactive terminal only; the console shows the command and never runs it)",
-    "  ./alz apply <qualify|seal|approve|apply|status> [flags] (pilot apply of a sealed plan; interactive terminal only, the console shows the command and never runs it)",
+    "  ./alz apply <qualify|seal|approve|apply|status> [flags] (pilot apply of a sealed plan; a person at the terminal, or a person in the console's Pilot apply wizard with the session token ./alz workspace prints; one change runs wholly in one of them)",
     "  ./alz health [--serve]",
     "  ./alz doctor",
     "  ./alz verify",

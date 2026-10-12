@@ -26,7 +26,7 @@ The private-model workflows are switched off in the console when no local Ollama
 - **AWS Terraform private-agent proposal:** the bounded Scenario 01 Qwen/Mistral structured proposal. Candidate HCL is generated deterministically and marked REVIEW_REQUIRED. No Terraform plan/apply through the browser.
 - **Backup, recovery and pillar chaos:** 11 synthetic failure injections, including recovery hash tamper, design drift, cost spike, performance regression, idle resource waste, telemetry loss, unauthorized mutation and failure-domain isolation.
 
-No arbitrary command, provider/model additions, mutation, CI dispatch, cloud credential capture, production plan, recovery restore, Terraform apply, or deployment is offered by this interface. ACT remains disabled. Developer/operator CLIs remain available for qualified workflows requiring explicit approval and extra evidence.
+No arbitrary command, provider/model additions, mutation, CI dispatch, cloud credential capture, production plan or recovery restore is offered by the guided tasks above. ACT remains disabled unless the owner's pinned pilot contract enables it; the one separate exception is the Pilot apply wizard (`docs/act-pilot-walkthrough.md`), which only a person holding the session token printed at console start can use, one reviewed change at a time. Developer/operator CLIs remain available for qualified workflows requiring explicit approval and extra evidence.
 
 The browser displays workflow progress and the evidence classification. Each CLI persists its hashed evidence in `.runs/qualification/`; inspect the resulting named JSON file for source SHA, model digests when actually present and exact result status. One run at a time avoids accidentally multiplying private model usage.
 

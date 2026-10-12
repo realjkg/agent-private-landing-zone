@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
  * and the in-page links the cards already use (`#evidence`) keep working. The
  * hash selects what is shown; it never carries data and the server never sees it.
  */
-export type View = "home" | "operations" | "reference";
+export type View = "home" | "operations" | "pilot" | "reference";
 
 export type Route = {
   view: View;
@@ -19,6 +19,7 @@ const VIEW_OF_HASH: Readonly<Record<string, View | "current">> = {
   home: "home",
   workflow: "home",
   operations: "operations",
+  pilot: "pilot",
   reference: "reference",
   connectors: "reference",
   compliance: "reference",

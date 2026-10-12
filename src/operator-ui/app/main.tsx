@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { OperatorApp } from "./App";
 import "./styles/theme.css";
 import "./styles/retro.css";
+import "./pilot/pilot.css";
 
 const rootElement = document.getElementById("root");
 if (!rootElement) throw new Error("CONSOLE_ROOT_MISSING");

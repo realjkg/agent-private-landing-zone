@@ -54,9 +54,17 @@ export type HumanTerminal = {
   stdinIsTTY: boolean;
   stdoutIsTTY: boolean;
   write(text: string): void;
-  /** Shows the question and returns the one line the person typed. */
-  ask(question: string): Promise<string>;
+  /**
+   * Shows the question and returns the one line the person typed. `expectation` says which exact phrase the caller will
+   * compare the answer with, so a terminal that draws a dialog (the console adapter) can show it. It is never an answer:
+   * a terminal must not fill it in, and the caller still compares what was typed.
+   */
+  ask(question: string, expectation?: AskExpectation): Promise<string>;
 };
+
+/** The kinds of exact phrase the pilot asks a person to type. */
+export type PhraseKind = "TARGET" | "RUN_PROJECT_CODE" | "EMBED_STATE_WRITE" | "ATTEST" | "APPROVE" | "APPLY";
+export type AskExpectation = { kind: PhraseKind; phrase: string };
 
 export function processTerminal(): HumanTerminal {
   return {

@@ -9,6 +9,7 @@ import { ENVIRONMENTS, stripInvisible } from "../apply/constants.js";
 import {
   contractRefusal, inspectPilotContract, isKillSwitchActive, loadPilotContract, pilotContractSha256, repoPaths, requireNotApplied, targetForEnvironment, writeQualificationEvidence, type Refusal,
 } from "../apply/contract.js";
+import { channelMismatchMessage } from "../apply/channel.js";
 import { qualifyApply, runApply, sealPreview, type ApplyDeps, type SealRequest } from "../apply/driver.js";
 import { RECOVERY_FILE_NAMES, engineOf, engineSpec, type EngineNotices } from "../apply/engine-spec.js";
 import { assertApplyEvidence } from "../apply/evidence.js";
@@ -16,20 +17,23 @@ import { attestedClientId, checkApplyIdentities, verifyIdentityTargets } from ".
 import { holdsReservation } from "../apply/ledger.js";
 import { accountFieldsOf, specOf } from "../apply/provider.js";
 import { loadSealedPlan, reviewBundleOf, verifyReviewBundle, type LoadedPlan } from "../apply/seal.js";
-import type { ApplyEnvironment, ApplyIdentity, PilotContract, SealedPlan, SignedApproval } from "../apply/types.js";
+import type { ApplyEnvironment, ApplyIdentity, ApplyOutcome, PilotChannel, PilotContract, SealedPlan, SignedApproval } from "../apply/types.js";
 import { isRecord, SAFE_OPERATOR } from "../teardown/driver/human.js";
 import { sweepStale } from "../teardown/driver/cleanup.js";
 import { verifyManifest, type ArtifactManifest } from "../teardown/manifest.js";
 import { approvedToolDirs, resolveExecutable } from "../tools/child-env.js";
 import { identityVariables } from "../tools/identity.js";
-import { EXIT, installSignalCleanup, processTerminal, targetString, type HumanTerminal } from "./teardown-driver.js";
+import { EXIT, installSignalCleanup, processTerminal, targetString, type HumanTerminal, type PhraseKind } from "./teardown-driver.js";
 
 // The human entry to the pilot apply path (docs/act-pilot-apply.md). The
 // operator authorizes, the driver enforces, and agents never initiate: every
-// subcommand needs a person at a terminal, `apply` is the only code path that
-// calls `runApply`, and nothing under src/tools, src/agent, src/operations or
-// src/operator-ui imports this module. The console shows the command and never
-// runs it. ACT stays DISABLED unless a valid, pinned pilot contract enables it.
+// subcommand needs a person at a terminal (the real one, or the console adapter's
+// dialog terminal for a request that passed its session-token check), `apply` is
+// the only code path that calls `runApply`, and nothing under src/tools,
+// src/agent, src/operations or src/operator-ui imports this module except
+// src/cli/ui-channel.ts, the console's one bridge (test/apply-boundary.test.ts).
+// A workflow runs in ONE channel, CLI or UI, bound into the sealed plan.
+// ACT stays DISABLED unless a valid, pinned pilot contract enables it.
 // The approver allowlist is in that contract and qualification is verified from
 // vault evidence, so neither is a file an operator names.
 
@@ -41,7 +45,7 @@ const APPLY_USAGE = [
   "  ./alz apply status [--sealed SEALED_PLAN]",
   "  ./alz apply pin",
   "  ./alz apply preflight --environment DEV|QA|PROD [--contract CONTRACT.json]",
-  "      Interactive terminal only. Identities come from the contract's engine: ALZ_DISCOVERY_*, ALZ_STATE_*, ALZ_STATE_WRITE_* and ALZ_APPLY_* (Terraform),",
+  "      A person at the terminal (or a person in the console wizard, which has its own session token). A workflow runs wholly in one of them. Identities come from the contract's engine: ALZ_DISCOVERY_*, ALZ_STATE_*, ALZ_STATE_WRITE_* and ALZ_APPLY_* (Terraform),",
   "      or ALZ_DISCOVERY_*, ALZ_CHANGESET_* and ALZ_APPLY_* (CDK). No flag names an engine; the pinned contract does.",
   "      Exit 0 done, 1 error (nothing spent), 2 BLOCKED (refused before any action), 3 SPENT (approvals consumed or an apply started; read the message before any retry).",
   "      No flag forces, skips, ignores, overrides or pre-answers anything.",
@@ -63,7 +67,17 @@ export type ApplyCliDeps = {
   operatorId?: string;
   stdout?: (text: string) => void;
   stderr?: (text: string) => void;
+  /**
+   * Who is invoking: the terminal (`CLI`, the default) or the console adapter (`UI`). Set by the CALLER, never by a flag, a file
+   * or the environment. It is sealed into the plan; `approve` and `apply` refuse (`CHANNEL_MISMATCH`) when it differs from the plan's.
+   */
+  channel?: PilotChannel;
+  /** The structured end of a command, for a caller that draws its own screen. Never needed to run, and never changes what is decided. */
+  report?: (event: ApplyReport) => void;
 } & Pick<ApplyDeps, "contractPath" | "contractPinPath" | "qualificationDir" | "evidenceDir" | "nonces" | "scratchParent" | "toolDirs">;
+
+/** Why a command ended, without parsing text: a refusal's code and outcome, or a CLI error's code. */
+export type ApplyReport = { code: string; message: string; outcome?: ApplyOutcome };
 
 type Flags = { single: readonly string[]; repeated?: readonly string[]; optional?: readonly string[] };
 const SUBCOMMANDS: Readonly<Record<string, Flags>> = {
@@ -158,8 +172,8 @@ function operatorId(deps: ApplyCliDeps): string {
 }
 
 /** The person types exactly `expected`. Anything else ends the command. */
-async function confirm(terminal: HumanTerminal, expected: string, prompt: string, code: string): Promise<void> {
-  if ((await terminal.ask(prompt)) !== expected) fail(code, "what was typed is not the text above. Nothing was run");
+async function confirm(terminal: HumanTerminal, expected: string, prompt: string, code: string, kind: PhraseKind): Promise<void> {
+  if ((await terminal.ask(prompt, { kind, phrase: expected })) !== expected) fail(code, "what was typed is not the text above. Nothing was run");
 }
 
 /** Every line an approver needs: the action, the address and type, and an import, a move or a forget (which leaves the real resource and drops it from state). Output changes are lines of type `output`. */
@@ -177,11 +191,18 @@ const changeLines = ({ changes }: Pick<SealedPlan, "changes">): string[] => chan
  * not start, the evidence could not be written). 2 BLOCKED: refused before any
  * action.
  */
-function blocked(refusal: Refusal, complain: (text: string) => void): number {
-  complain("BLOCKED " + refusal.code + ": " + refusal.message + "\n");
+function blocked(refusal: Refusal, out: Out): number {
+  out.complain("BLOCKED " + refusal.code + ": " + refusal.message + "\n");
+  out.report({ code: refusal.code, message: refusal.message, ...(refusal.outcome === undefined ? {} : { outcome: refusal.outcome }) });
   if (refusal.outcome !== undefined || refusal.code === "KILL_SWITCH_AFTER_APPROVALS" || refusal.code === "APPROVALS_SPENT") return SPENT;
   return refusal.code === "APPLY_FAILED" || refusal.code === "EVIDENCE_REJECTED" ? EXIT.ERROR : EXIT.BLOCKED;
 }
+
+const blockedManifest = (out: Out): number => {
+  out.complain("BLOCKED MANIFEST_INVALID: The manifest is not valid or not sealed.\n");
+  out.report({ code: "MANIFEST_INVALID", message: "The manifest is not valid or not sealed." });
+  return EXIT.BLOCKED;
+};
 
 /** The sealed plan, loaded for display, approval or status. The driver verifies it again before applying. */
 async function openSealed(path: string): Promise<LoadedPlan | Refusal> {
@@ -198,7 +219,7 @@ const engineNotices = (deps: ApplyCliDeps): EngineNotices => {
 
 // --- seal and qualify ----------------------------------------------------------------------------------------
 
-type Out = { say: (text: string) => void; complain: (text: string) => void };
+type Out = { say: (text: string) => void; complain: (text: string) => void; report: (event: ApplyReport) => void };
 type Command = (flags: Record<string, string[]>, terminal: HumanTerminal, deps: ApplyCliDeps, out: Out) => Promise<number>;
 
 /** What `seal` and `qualify` share: the request, the manifest, the target typed, and project code allowed. Returns what the driver needs. */
@@ -207,7 +228,7 @@ async function confirmProjectCode(
 ): Promise<{ request: SealRequest; target: ResolvedTarget; who: string } | number> {
   const file = readRequest("seal", flags.request[0]);
   const manifest = readManifest(flags.manifest[0]);
-  if (!manifest) { out.complain("BLOCKED MANIFEST_INVALID: The manifest is not valid or not sealed.\n"); return EXIT.BLOCKED; }
+  if (!manifest) return blockedManifest(out);
   const { policyVersion, resolved } = file;
   if (typeof policyVersion !== "string" || !isRecord(resolved)) return fail("APPLY_INPUT_INVALID", "request.policyVersion and request.resolved are required");
   const who = operatorId(deps);
@@ -222,10 +243,10 @@ async function confirmProjectCode(
     "  project root    " + file.projectRoot, "  files bound     " + manifest.files.length,
     "", "Type the target exactly to continue (anything else stops here):", "  " + targetString(file.target), "",
   ].join("\n"));
-  await confirm(terminal, targetString(file.target), "target> ", "HUMAN_CONFIRMATION_MISMATCH");
+  await confirm(terminal, targetString(file.target), "target> ", "HUMAN_CONFIRMATION_MISMATCH", "TARGET");
   if (notices.projectCode) {
     terminal.write("\nType " + CODE_PHRASE + " to allow it (anything else stops here):\n\n");
-    await confirm(terminal, CODE_PHRASE, "code> ", "PROJECT_CODE_CONFIRMATION_MISMATCH");
+    await confirm(terminal, CODE_PHRASE, "code> ", "PROJECT_CODE_CONFIRMATION_MISMATCH", "RUN_PROJECT_CODE");
   }
   // The contract's opt-in (`embedStateWrite`): the seal step itself carries the state writer's settings, so a person says so before any engine runs.
   const contract = contractFor(deps);
@@ -240,7 +261,7 @@ async function confirmProjectCode(
       "  - Authentication is SIMULATED: whether Terraform really authenticates state access as STATE_WRITE is unverified until a real-backend run.",
       "Type this line exactly to continue (anything else stops here):", "  " + phrase, "",
     ].join("\n"));
-    await confirm(terminal, phrase, "embed> ", "EMBED_STATE_WRITE_CONFIRMATION_MISMATCH");
+    await confirm(terminal, phrase, "embed> ", "EMBED_STATE_WRITE_CONFIRMATION_MISMATCH", "EMBED_STATE_WRITE");
   }
 
   const now = deps.now ?? (() => new Date());
@@ -248,7 +269,7 @@ async function confirmProjectCode(
     target: file.target, who,
     request: {
       invocation: { operatorId: who, interactiveSession: true, confirmedTarget: { ...file.target }, confirmedAt: now().toISOString() },
-      environment: file.environment, target: file.target, manifest, projectRoot: file.projectRoot, policyVersion, resolved: resolved as never,
+      environment: file.environment, target: file.target, channel: deps.channel ?? "CLI", manifest, projectRoot: file.projectRoot, policyVersion, resolved: resolved as never,
     },
   };
 }
@@ -257,7 +278,7 @@ const sealCommand: Command = async (flags, terminal, deps, out) => {
   const gate = await confirmProjectCode(flags, terminal, deps, out, (n) => n.sealHeading, (n) => n.sealReads);
   if (typeof gate === "number") return gate;
   const result = await sealPreview(gate.request, { env: deps.env ?? process.env, now: deps.now, ...driverPaths(deps) });
-  if (!result.ok) return blocked(result, out.complain);
+  if (!result.ok) return blocked(result, out);
   const { sealed } = result;
   // The bundle approvers review. It holds no secret, so it can leave the operator's machine; the sealed plan itself cannot.
   const reviewBundlePath = result.path + ".review.json";
@@ -289,10 +310,10 @@ const qualifyCommand: Command = async (flags, terminal, deps, out) => {
   const env = deps.env ?? process.env;
   const now = deps.now ?? (() => new Date());
   const ran = await qualifyApply(gate.request, { env, now, ...driverPaths(deps) });
-  if (!ran.ok) return blocked(ran, out.complain);
+  if (!ran.ok) return blocked(ran, out);
 
   const contract = contractFor(deps);
-  if ("reason" in contract) return blocked(contractRefusal(contract), out.complain);
+  if ("reason" in contract) return blocked(contractRefusal(contract), out);
   const spec = specOf(contract);
   const engine = engineOf(contract);
   const [first, second] = engine.attests;
@@ -302,7 +323,7 @@ const qualifyCommand: Command = async (flags, terminal, deps, out) => {
     "", "The run finished. Before evidence is written, check the " + spec.logSource + " for this run (not this program's output):",
     ...engine.notices.attestation(spec, clientOf(first), clientOf(second)), "  " + phrase, "",
   ].join("\n"));
-  await confirm(terminal, phrase, "attest> ", "QUALIFICATION_ATTESTATION_MISMATCH");
+  await confirm(terminal, phrase, "attest> ", "QUALIFICATION_ATTESTATION_MISMATCH", "ATTEST");
 
   const { backend, workspace } = contract.targets.DEV;
   const qualified: { adapterVersion: string; argvDigest: string; engineVersion: string; evidenceHash: string }[] = [];
@@ -313,7 +334,7 @@ const qualifyCommand: Command = async (flags, terminal, deps, out) => {
       terraformSha256: ran.terraformSha256, adapterVersion: adapter.adapterVersion, argvDigest: adapter.argvDigest, engineVersion: ran.engineVersion, qualifiedAt: now().toISOString(),
     };
     const written = await writeQualificationEvidence(evidence, spec, deps.qualificationDir);
-    if (!written.ok) return blocked(written, out.complain);
+    if (!written.ok) return blocked(written, out);
     qualified.push({ adapterVersion: adapter.adapterVersion, argvDigest: adapter.argvDigest, engineVersion: ran.engineVersion, evidenceHash: written.evidenceHash });
   }
   out.say(JSON.stringify({ qualified }, null, 2) + "\n");
@@ -342,12 +363,16 @@ const approveCommand: Command = async (flags, terminal, deps, out) => {
   if (!SAFE_OPERATOR.test(approverId)) fail("APPLY_INPUT_INVALID", "--approver is not a usable approver id");
   const privateKeyPem = readApproverKey(flags.key[0]);
   const contract = contractFor(deps);
-  if ("reason" in contract) return blocked(contractRefusal(contract), out.complain);
+  if ("reason" in contract) return blocked(contractRefusal(contract), out);
   const opened = verifyReviewBundle(readInput(flags.bundle[0], "--bundle"));
-  if (!opened.ok) return blocked(opened, out.complain);
+  if (!opened.ok) return blocked(opened, out);
   const { bundle } = opened;
+  // One channel per workflow: refused before the approver is asked anything or the key is used.
+  if (bundle.channel !== (deps.channel ?? "CLI")) {
+    return blocked({ ok: false, code: "CHANNEL_MISMATCH", message: channelMismatchMessage(bundle.channel) }, out);
+  }
   const pinned = targetForEnvironment(contract, bundle.environment, bundle.target);
-  if (!pinned.ok) return blocked(pinned, out.complain);
+  if (!pinned.ok) return blocked(pinned, out);
 
   const now = (deps.now ?? (() => new Date()))();
   const expiresAt = new Date(now.getTime() + contract.maxApprovalAgeMinutes * 60_000);
@@ -359,7 +384,7 @@ const approveCommand: Command = async (flags, terminal, deps, out) => {
     ...changeLines(bundle), "", "The bundle's hashes match the artifact above (recomputed here, not trusted).",
     "Type " + phrase + " to sign (anything else stops here):", "",
   ].join("\n"));
-  await confirm(terminal, phrase, "approve> ", "APPLY_CONFIRMATION_MISMATCH");
+  await confirm(terminal, phrase, "approve> ", "APPLY_CONFIRMATION_MISMATCH", "APPROVE");
 
   out.say(JSON.stringify(signApproval({
     schemaVersion: 1, artifactSha256: bundle.artifactSha256, environment: bundle.environment, target: bundle.target, approverId,
@@ -378,9 +403,12 @@ const applyCommand: Command = async (flags, terminal, deps, out) => {
     const value = readInput(path, "--approval");
     return isRecord(value) ? value as unknown as SignedApproval : fail("APPLY_INPUT_INVALID", "--approval must be a JSON object");
   });
-  if (!manifest) { out.complain("BLOCKED MANIFEST_INVALID: The manifest is not valid or not sealed.\n"); return EXIT.BLOCKED; }
+  if (!manifest) return blockedManifest(out);
   const sealedPlan = await openSealed(flags.sealed[0]);
-  if (!("sealed" in sealedPlan)) return blocked(sealedPlan, out.complain);
+  if (!("sealed" in sealedPlan)) return blocked(sealedPlan, out);
+  if (sealedPlan.sealed.channel !== (deps.channel ?? "CLI")) {
+    return blocked({ ok: false, code: "CHANNEL_MISMATCH", message: channelMismatchMessage(sealedPlan.sealed.channel) }, out);
+  }
   const who = operatorId(deps);
 
   // One phrase carries the environment, the artifact and the target, so what is typed is what runs.
@@ -394,14 +422,14 @@ const applyCommand: Command = async (flags, terminal, deps, out) => {
     "", engineNotices(deps).applyNote,
     "Type this line exactly to apply (anything else stops here):", "  " + phrase, "",
   ].join("\n"));
-  await confirm(terminal, phrase, "apply> ", "APPLY_CONFIRMATION_MISMATCH");
+  await confirm(terminal, phrase, "apply> ", "APPLY_CONFIRMATION_MISMATCH", "APPLY");
 
   const now = deps.now ?? (() => new Date());
   const result = await runApply({
     invocation: { operatorId: who, interactiveSession: true, confirmedTarget: { ...request.target }, confirmedAt: now().toISOString() },
-    environment: request.environment, target: request.target, sealedPlan, manifest, projectRoot: request.projectRoot, approvals,
+    environment: request.environment, target: request.target, channel: deps.channel ?? "CLI", sealedPlan, manifest, projectRoot: request.projectRoot, approvals,
   }, { env: deps.env ?? process.env, now, evidenceDir: deps.evidenceDir, nonces: deps.nonces, ...driverPaths(deps) });
-  if (!result.ok) return blocked(result, out.complain);
+  if (!result.ok) return blocked(result, out);
   try {
     out.say(JSON.stringify(assertApplyEvidence(result.evidence), null, 2) + "\n");
   } catch {
@@ -421,7 +449,7 @@ const statusCommand: Command = async (flags, _terminal, deps, out) => {
     : { act: "PILOT_ENABLED", killSwitch: isKillSwitchActive(contract) };
   if (flags.sealed) {
     const opened = await openSealed(flags.sealed[0]);
-    if (!("sealed" in opened)) return blocked(opened, out.complain);
+    if (!("sealed" in opened)) return blocked(opened, out);
     const { artifactSha256, environment } = opened.sealed;
     report.artifact = { artifactSha256, environment, applied: !requireNotApplied(artifactSha256, deps.evidenceDir ?? repoPaths().evidence).ok };
   }
@@ -524,6 +552,7 @@ export async function runApplyCommand(args: string[], deps: ApplyCliDeps = {}): 
   const out: Out = {
     say: deps.stdout ?? ((text: string) => { process.stdout.write(text); }),
     complain: deps.stderr ?? ((text: string) => { process.stderr.write(text); }),
+    report: deps.report ?? (() => undefined),
   };
   try {
     // A person at a terminal, on input and output, before any file is read. No flag, file or variable waives this.
@@ -545,7 +574,9 @@ export async function runApplyCommand(args: string[], deps: ApplyCliDeps = {}): 
     }
   } catch (error) {
     // Only messages this module wrote. Anything else is reported by name, never by text.
-    out.complain((error instanceof CliError ? error.message : "APPLY_UNEXPECTED_ERROR") + "\n");
+    const text = error instanceof CliError ? error.message : "APPLY_UNEXPECTED_ERROR";
+    out.complain(text + "\n");
+    out.report({ code: /^[A-Z][A-Z0-9_]*/.exec(text)?.[0] ?? "APPLY_UNEXPECTED_ERROR", message: text });
     return EXIT.ERROR;
   }
 }

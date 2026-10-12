@@ -5,7 +5,7 @@ import { ENVIRONMENTS, HASH, INVISIBLE } from "./constants.js";
 import { sha256 } from "../util/sha256.js";
 import { codeOf } from "./engine.js";
 import type { EnginePlanInput, EngineSpec } from "./engine-spec.js";
-import type { ApplyEnvironment, ApplyRefusalCode, SealedPlan } from "./types.js";
+import { PILOT_CHANNELS, type ApplyEnvironment, type ApplyRefusalCode, type PilotChannel, type SealedPlan } from "./types.js";
 
 /**
  * Sealing (docs/act-pilot-plan.md, authority items 2 and 5). The engine spec
@@ -18,7 +18,7 @@ import type { ApplyEnvironment, ApplyRefusalCode, SealedPlan } from "./types.js"
 const SEAL_PURPOSE = "sealed-plan";
 
 type ArtifactFields = Pick<SealedPlan,
-  "planSha256" | "manifestHash" | "releaseIdentity" | "environment" | "target" | "engineVersion" | "policyVersion" | "contractSha256" | "changes">;
+  "planSha256" | "manifestHash" | "releaseIdentity" | "environment" | "target" | "channel" | "engineVersion" | "policyVersion" | "contractSha256" | "changes">;
 
 /**
  * The artifact hash an approver signs. The one definition; sealing and loading
@@ -29,7 +29,7 @@ export function computeArtifactSha256(fields: ArtifactFields): string {
   const { account, backend, workspace } = fields.target;
   return sha256(canonicalJson({
     planSha256: fields.planSha256, manifestHash: fields.manifestHash, releaseIdentity: fields.releaseIdentity,
-    environment: fields.environment, target: { account, backend, workspace },
+    environment: fields.environment, target: { account, backend, workspace }, channel: fields.channel,
     engineVersion: fields.engineVersion, policyVersion: fields.policyVersion, contractSha256: fields.contractSha256,
     changesSha256: sha256(canonicalJson(fields.changes)),
   }));
@@ -54,6 +54,8 @@ export type SealInput = EnginePlanInput & {
   /** The contract's engine, chosen once by the driver. */
   engine: EngineSpec;
   environment: ApplyEnvironment;
+  /** Who is sealing: the caller says (the terminal CLI or the console adapter), never a flag. Default `CLI`. */
+  channel?: PilotChannel;
   policyVersion: string;
   /** The pinned contract's canonical sha256: sealed, so the plan applies only under this contract. */
   contractSha256: string;
@@ -73,7 +75,7 @@ function runSeal(input: SealInput): { sealed: SealedPlan; planBytes: Buffer } {
   const { artifact: planBytes, changes } = input.engine.plan(input);
   const fields: ArtifactFields = {
     planSha256: sha256(planBytes), manifestHash: manifest.manifestHash, releaseIdentity: releaseIdentityOf(manifest),
-    environment: input.environment, target: { ...input.target }, engineVersion: input.engineVersion,
+    environment: input.environment, target: { ...input.target }, channel: input.channel ?? "CLI", engineVersion: input.engineVersion,
     policyVersion: input.policyVersion, contractSha256: input.contractSha256, changes,
   };
   const sealed: SealedPlan = {
@@ -119,7 +121,7 @@ export type ReviewBundle = Omit<SealedPlan, "schemaVersion"> & { changesSha256: 
 
 export const reviewBundleOf = (s: SealedPlan): ReviewBundle => ({
   artifactSha256: s.artifactSha256, planSha256: s.planSha256, manifestHash: s.manifestHash, releaseIdentity: s.releaseIdentity,
-  environment: s.environment, target: { ...s.target }, engineVersion: s.engineVersion, policyVersion: s.policyVersion,
+  environment: s.environment, target: { ...s.target }, channel: s.channel, engineVersion: s.engineVersion, policyVersion: s.policyVersion,
   contractSha256: s.contractSha256, createdAt: s.createdAt, changes: s.changes, changesSha256: sha256(canonicalJson(s.changes)),
 });
 
@@ -154,7 +156,7 @@ const wellFormedChange = (c: unknown): boolean => {
 export function verifySealedPlan(value: unknown): LoadedSeal {
   const { sealed: s, planBytes } = (value && typeof value === "object" ? value : {}) as Partial<LoadedPlan>;
   if (!s || typeof s !== "object" || !Buffer.isBuffer(planBytes) || s.schemaVersion !== 1 ||
-    !ENVIRONMENTS.includes(s.environment) || !s.target || typeof s.target !== "object" ||
+    !ENVIRONMENTS.includes(s.environment) || !PILOT_CHANNELS.includes(s.channel) || !s.target || typeof s.target !== "object" ||
     !Array.isArray(s.changes) || !s.changes.every(wellFormedChange) ||
     ![s.artifactSha256, s.planSha256, s.manifestHash, s.releaseIdentity, s.contractSha256].every((h) => typeof h === "string" && HASH.test(h))) {
     return invalid("The sealed plan record is malformed.");
@@ -169,7 +171,7 @@ export function verifySealedPlan(value: unknown): LoadedSeal {
 export function verifyReviewBundle(value: unknown): { ok: true; bundle: ReviewBundle } | SealFault {
   const b = (value && typeof value === "object" && !Array.isArray(value) ? value : {}) as Partial<ReviewBundle>;
   const t = (b.target ?? {}) as Partial<ResolvedTarget>;
-  if (Object.keys(b).sort().join() !== BUNDLE_KEYS.join() || !ENVIRONMENTS.includes(b.environment as ApplyEnvironment) ||
+  if (Object.keys(b).sort().join() !== BUNDLE_KEYS.join() || !ENVIRONMENTS.includes(b.environment as ApplyEnvironment) || !PILOT_CHANNELS.includes(b.channel as PilotChannel) ||
     !["account", "backend", "workspace"].every((key) => text((t as Record<string, unknown>)[key])) ||
     !Array.isArray(b.changes) || !b.changes.every(wellFormedChange) || !text(b.engineVersion) || !text(b.policyVersion) || !text(b.createdAt) ||
     ![b.artifactSha256, b.planSha256, b.manifestHash, b.releaseIdentity, b.contractSha256, b.changesSha256].every((h) => typeof h === "string" && HASH.test(h))) {

@@ -1,0 +1,359 @@
+/* Pilot apply wizard. Tokens come from theme.css; the three below are the wizard's own signal colors, and every signal
+   also has words so color is never the only cue. No inline styles anywhere: the CSP is style-src 'self'. */
+
+.pilot {
+  --pilot-ok: var(--accent);
+  --pilot-bad: #ff8a80;
+  --pilot-warn: #f0c24b;
+}
+
+.pilot h3 {
+  margin: 22px 0 8px;
+  font-size: 20px;
+}
+
+.pilot-safety {
+  border-left: 3px solid var(--accent);
+  padding-left: 12px;
+  color: var(--ink);
+}
+
+.pilot-step {
+  margin-top: 18px;
+}
+
+.pilot fieldset {
+  border: 1px solid var(--edge);
+  margin: 14px 0;
+  padding: 10px 16px 14px;
+}
+
+.pilot legend {
+  padding: 0 8px;
+  font-weight: 650;
+}
+
+.pilot-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 10px 0;
+}
+
+.pilot-choice input {
+  margin-top: 6px;
+  width: 18px;
+  height: 18px;
+}
+
+.pilot input[type="text"],
+.pilot input[type="password"],
+.pilot textarea {
+  width: 100%;
+  font: inherit;
+  padding: 12px 14px;
+  border: 1px solid var(--edge);
+  background: var(--bg);
+  color: var(--ink);
+}
+
+.pilot textarea:focus-visible,
+.pilot select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.pilot-secondary {
+  background: transparent;
+  color: var(--ink);
+  border: 1px solid var(--edge);
+  margin-top: 0;
+}
+
+.pilot-toolbar {
+  margin: 6px 0 0;
+}
+
+.pilot-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin-top: 20px;
+}
+
+.pilot-actions button {
+  margin-top: 0;
+}
+
+/* Progress: a bar plus the numbered list, so the place is clear without color. */
+.pilot-progress {
+  margin: 18px 0 8px;
+}
+
+.pilot-bar {
+  height: 10px;
+  border: 1px solid var(--edge);
+  background: var(--bg);
+}
+
+.pilot-bar-fill {
+  height: 100%;
+  background: var(--accent);
+}
+
+.pilot-bar-fill[data-of="2"][data-fill="1"] { width: 50.0000%; }
+.pilot-bar-fill[data-of="2"][data-fill="2"] { width: 100.0000%; }
+.pilot-bar-fill[data-of="6"][data-fill="1"] { width: 16.6667%; }
+.pilot-bar-fill[data-of="6"][data-fill="2"] { width: 33.3333%; }
+.pilot-bar-fill[data-of="6"][data-fill="3"] { width: 50.0000%; }
+.pilot-bar-fill[data-of="6"][data-fill="4"] { width: 66.6667%; }
+.pilot-bar-fill[data-of="6"][data-fill="5"] { width: 83.3333%; }
+.pilot-bar-fill[data-of="6"][data-fill="6"] { width: 100.0000%; }
+
+.pilot-steps {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  padding: 0;
+  margin: 10px 0 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.pilot-steps li[aria-current="step"] {
+  color: var(--ink);
+  font-weight: 700;
+  text-decoration: underline;
+}
+
+.pilot-steps li[data-done="true"] {
+  color: var(--ink);
+}
+
+.pilot-step-number {
+  display: inline-block;
+  min-width: 22px;
+  text-align: center;
+  border: 1px solid var(--edge);
+}
+
+.pilot-step-text {
+  display: none;
+  margin: 8px 0 0;
+  font-weight: 650;
+}
+
+.pilot-blocked,
+.pilot-reason,
+.pilot-note,
+.pilot-warning {
+  border: 1px solid var(--edge);
+  border-left: 4px solid var(--pilot-warn);
+  background: var(--bg);
+  padding: 10px 14px;
+  margin: 14px 0;
+}
+
+.pilot-reason {
+  border-left-color: var(--pilot-bad);
+}
+
+.pilot-blocked p,
+.pilot-reason p {
+  margin: 4px 0;
+}
+
+.pilot-error {
+  color: var(--pilot-bad);
+}
+
+.pilot-good {
+  color: var(--pilot-ok);
+}
+
+.pilot-details {
+  margin-top: 8px;
+}
+
+.pilot-details summary {
+  cursor: pointer;
+}
+
+.pilot-checks {
+  list-style: none;
+  padding: 0;
+  margin: 12px 0;
+}
+
+.pilot-checks li {
+  border: 1px solid var(--edge);
+  padding: 10px 14px;
+  margin: 8px 0;
+}
+
+.pilot-checks li[data-ok="false"] {
+  border-left: 4px solid var(--pilot-bad);
+}
+
+.pilot-checks li[data-ok="true"] {
+  border-left: 4px solid var(--pilot-ok);
+}
+
+.pilot-checks p {
+  margin: 4px 0;
+}
+
+.pilot-badge {
+  display: inline-block;
+  padding: 1px 9px;
+  font-size: 12px;
+  border: 1px solid currentColor;
+  margin-right: 6px;
+}
+
+.pilot-badge-ok {
+  color: var(--pilot-ok);
+}
+
+.pilot-badge-bad {
+  color: var(--pilot-bad);
+}
+
+.pilot-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 16px;
+}
+
+.pilot-facts dt {
+  color: var(--muted);
+}
+
+.pilot-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.pilot-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 10px 0;
+  font-size: 14px;
+}
+
+.pilot-table th,
+.pilot-table td {
+  text-align: left;
+  border-bottom: 1px solid var(--edge);
+  padding: 6px 8px;
+  vertical-align: top;
+}
+
+.pilot-caption {
+  text-align: left;
+  color: var(--muted);
+  padding: 4px 0;
+}
+
+.pilot-commands li {
+  margin: 12px 0;
+}
+
+.pilot-result {
+  border: 2px solid var(--edge);
+  padding: 16px 20px;
+  margin: 16px 0;
+}
+
+.pilot-result-good {
+  border-color: var(--pilot-ok);
+}
+
+.pilot-result-caution {
+  border-color: var(--pilot-warn);
+}
+
+.pilot-result-stop {
+  border-color: var(--pilot-bad);
+}
+
+.pilot-result h3 {
+  margin-top: 0;
+}
+
+/* The confirmation dialog: a full-screen layer, a centered box, and the page behind it inert. */
+.pilot-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: rgba(0, 0, 0, 0.72);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  overflow: auto;
+}
+
+.pilot-dialog {
+  width: 100%;
+  max-width: 640px;
+  max-height: 100%;
+  overflow: auto;
+  background: var(--panel);
+  color: var(--ink);
+  border: 2px solid var(--accent);
+  padding: 22px 24px;
+}
+
+.pilot-dialog h2 {
+  margin-top: 0;
+}
+
+.pilot-phrase {
+  display: inline-block;
+  padding: 8px 10px;
+  font-size: 15px;
+  user-select: all;
+  overflow-wrap: anywhere;
+}
+
+.pilot-hint {
+  min-height: 1.6em;
+  color: var(--muted);
+}
+
+.pilot-hint-ok {
+  color: var(--pilot-ok);
+}
+
+.pilot-dialog input[aria-invalid="true"] {
+  border-color: var(--pilot-warn);
+}
+
+@media (max-width: 640px) {
+  .pilot-steps {
+    display: none;
+  }
+
+  .pilot-step-text {
+    display: block;
+  }
+
+  .pilot-facts {
+    grid-template-columns: 1fr;
+  }
+
+  .pilot-table {
+    font-size: 13px;
+  }
+
+  .pilot-actions button {
+    width: 100%;
+  }
+
+  .pilot-dialog {
+    padding: 16px;
+  }
+}
