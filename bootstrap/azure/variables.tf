@@ -99,3 +99,13 @@ variable "tags" {
   type        = map(string)
   default     = { purpose = "act-pilot-bootstrap" }
 }
+
+variable "state_allowed_ip_ranges" {
+  description = "Public IPs or CIDRs the pilot runner reaches the state storage accounts from. The accounts deny every other network, so an empty list would lock the runner out."
+  type        = list(string)
+
+  validation {
+    condition     = length(var.state_allowed_ip_ranges) > 0
+    error_message = "List at least one runner egress IP or CIDR; the state accounts deny all other networks."
+  }
+}

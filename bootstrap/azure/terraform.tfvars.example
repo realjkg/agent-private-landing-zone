@@ -51,3 +51,6 @@ oidc_subjects = {
 # budget_monthly_amount = 100
 # budget_start_date     = "2026-11-01T00:00:00Z"
 # alert_emails          = ["owner@example.invalid"]
+
+# Public egress IPs or CIDRs of the pilot runner. The state accounts deny every other network.
+state_allowed_ip_ranges = ["203.0.113.10"]

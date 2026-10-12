@@ -16,6 +16,8 @@ module "environment_dev" {
   budget_start   = var.budget_start_date
   alert_emails   = var.alert_emails
   tags           = var.tags
+
+  state_allowed_ip_ranges = var.state_allowed_ip_ranges
 }
 
 module "environment_qa" {
@@ -32,6 +34,8 @@ module "environment_qa" {
   budget_start   = var.budget_start_date
   alert_emails   = var.alert_emails
   tags           = var.tags
+
+  state_allowed_ip_ranges = var.state_allowed_ip_ranges
 }
 
 module "environment_prod" {
@@ -48,4 +52,6 @@ module "environment_prod" {
   budget_start   = var.budget_start_date
   alert_emails   = var.alert_emails
   tags           = var.tags
+
+  state_allowed_ip_ranges = var.state_allowed_ip_ranges
 }

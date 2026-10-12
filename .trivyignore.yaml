@@ -17,3 +17,6 @@ misconfigurations:
   - id: AWS-0132
     paths: ["test/fixtures/live/aws/cdk/*.template.json"]
     statement: Same fixture; see AWS-0086.
+  - id: AWS-0132
+    paths: ["bootstrap/aws/state.tf"]
+    statement: Pilot state bucket uses SSE-S3 by design, with versioning, public access blocks and a bucket policy limiting it to the STATE and STATE_WRITE roles. A customer-managed key is the account owner's choice (docs/act-pilot-bootstrap.md) and would need key-policy access for those roles.
