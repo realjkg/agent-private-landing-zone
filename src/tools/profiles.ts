@@ -134,3 +134,18 @@ export const TERRAFORM_APPLY_PROFILE: ProcessProfile = {
     !PROVIDER_INSTALLATION_OVERRIDES.includes(name) && !name.startsWith("AZURE_") && !AWS_OUTSIDE_THE_IDENTITY.includes(name)),
   fixedEnvironment: { AWS_EC2_METADATA_DISABLED: "true" },
 };
+
+/**
+ * The AWS CLI as the pilot's CDK engine runs it (src/apply/engines/cdk.ts): the same identity-only environment as the
+ * Terraform apply profile (a web identity role and region, no static key, session token, shared profile or config file,
+ * endpoint override or trust store, instance metadata off), a quarter-hour limit so a change set wait fits, and no output
+ * excerpts in diagnostics because stack events and descriptions can quote template and parameter values.
+ */
+export const AWS_CFN_APPLY_PROFILE: ProcessProfile = {
+  ...PROFILES.aws,
+  injectable: PROFILES.aws.injectable.filter((name) => !AWS_OUTSIDE_THE_IDENTITY.includes(name)),
+  fixedEnvironment: { AWS_EC2_METADATA_DISABLED: "true" },
+  timeoutMs: 15 * 60_000,
+  maxOutputBytes: 8 * MIB,
+  suppressExcerpts: true,
+};

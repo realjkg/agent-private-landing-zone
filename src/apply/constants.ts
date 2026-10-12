@@ -13,3 +13,7 @@ export const TOKEN_FILE = /^\/[A-Za-z0-9._/-]{1,512}$/;
 
 /** The promotion stages in order: a release is applied to DEV, then QA, then PROD. */
 export const ENVIRONMENTS: readonly ApplyEnvironment[] = ["DEV", "QA", "PROD"];
+
+/** Bidi and zero-width control characters: they make an address read as another one. Stripped where a change list is derived, and again wherever one is displayed. */
+export const INVISIBLE = /[\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF]/g;
+export const stripInvisible = (value: string): string => value.replace(INVISIBLE, "");

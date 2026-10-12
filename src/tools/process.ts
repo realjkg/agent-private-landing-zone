@@ -140,7 +140,7 @@ function prepare(
 
   if (options.identity !== undefined && !isExecutionIdentity(options.identity)) {
     return failure(tool, command, "Unknown execution identity.", {
-      blocked: true, reason: "Unknown execution identity. Only DISCOVERY, STATE, STATE_WRITE and APPLY exist.",
+      blocked: true, reason: "Unknown execution identity. Only DISCOVERY, STATE, STATE_WRITE, APPLY and CHANGESET exist.",
     });
   }
 

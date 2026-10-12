@@ -1,33 +1,21 @@
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-
 import { readEncryptedEvidence, writeEncryptedEvidence } from "../evidence/vault.js";
-import { mapTerraformActions } from "../iac/terraform-plan.js";
 import { canonicalJson, type ArtifactManifest } from "../teardown/manifest.js";
-import { removeTree } from "../teardown/driver/cleanup.js";
-import { INIT_ARGV, PREVIEW_PLAN_ARGV, SHOW_ARGV, isAllowedArgv } from "../teardown/driver/adapters/terraform.js";
 import type { ResolvedTarget } from "../teardown/driver/types.js";
-import { MUTATION_IDENTITY_VARIABLE } from "../tools/identity.js";
-import { ENVIRONMENTS, HASH } from "./constants.js";
-import { TERRAFORM_APPLY_PROFILE } from "../tools/profiles.js";
+import { ENVIRONMENTS, HASH, INVISIBLE } from "./constants.js";
 import { sha256 } from "../util/sha256.js";
-import { assertBackendInContract, codeOf, openSession, prepareWorkspace, stop, type EngineSession } from "./engine.js";
-import type { ProviderBlock, ProviderSpec } from "./provider.js";
-import type { ApplyEnvironment, ApplyRefusalCode, PilotTarget, PlanChange, SealedPlan } from "./types.js";
+import { codeOf } from "./engine.js";
+import { engineFor, type EngineContext, type EnginePlanInput } from "./engine-spec.js";
+import type { ApplyEnvironment, ApplyRefusalCode, SealedPlan } from "./types.js";
 
 /**
- * Sealing (docs/act-pilot-plan.md, authority items 2 and 5). It runs the same
- * pinned init, workspace and plan steps as the preview adapter, but keeps the
- * plan file: the bytes are hashed, encrypted in the evidence vault, and bound
- * with the manifest, release identity, environment and exact target into one
- * artifact hash. Approvers sign that hash; the driver applies exactly those
- * bytes. Sealing never holds STATE_WRITE or APPLY, and `terraform show -json`
- * is read only to extract the redacted change list.
+ * Sealing (docs/act-pilot-plan.md, authority items 2 and 5). The engine spec
+ * (`engine-spec.ts`) produces the artifact the apply will run, from the
+ * request, and its redacted change list; this module keeps those bytes: they
+ * are hashed, encrypted in the evidence vault, and bound with the manifest,
+ * release identity, environment and exact target into one artifact hash.
+ * Approvers sign that hash; the driver applies exactly those bytes.
  */
 const SEAL_PURPOSE = "sealed-plan";
-
-/** The plan file beside the work directory that `SHOW_ARGV` names: sealing writes it, and an apply re-derives the change list from a decrypted copy of it. */
-export const SEAL_PLAN_FILE = "alz-preview.tfplan";
 
 type ArtifactFields = Pick<SealedPlan,
   "planSha256" | "manifestHash" | "releaseIdentity" | "environment" | "target" | "engineVersion" | "policyVersion" | "contractSha256" | "changes">;
@@ -61,25 +49,12 @@ export function releaseIdentityOf(manifest: ArtifactManifest): string {
   }));
 }
 
-export type SealInput = {
+/** What the engine plans from (the driver's validated manifest and its read-only snapshot, a scratch directory it deletes, the contract's target and provider), and what the seal binds besides. */
+export type SealInput = EnginePlanInput & {
   environment: ApplyEnvironment;
-  target: ResolvedTarget;
-  /** The driver's validated manifest and its read-only snapshot. */
-  manifest: ArtifactManifest;
-  snapshotPath: string;
-  /** A fresh 0700 directory owned by the driver, which deletes it afterwards. */
-  scratchDir: string;
-  env: NodeJS.ProcessEnv;
   policyVersion: string;
-  /** The engine version the manifest was validated against. */
-  engineVersion: string;
-  /** The contract's target for this environment: the backend the seal-time init saves and a constant in a provider block must be its. */
-  pinned: PilotTarget;
-  /** The contract's provider. */
-  spec: ProviderSpec;
   /** The pinned contract's canonical sha256: sealed, so the plan applies only under this contract. */
   contractSha256: string;
-  toolDirs?: readonly string[];
   now?: () => Date;
 };
 
@@ -89,114 +64,29 @@ export type SealResult = { ok: true; sealed: SealedPlan; path: string } | SealFa
 /** A qualification run's plan: made and checked, then dropped. Nothing is stored, so nothing can be approved or applied. */
 export type ThrowawayPlan = { ok: true; sealed: SealedPlan } | SealFailure;
 
-/** Sealing reads with DISCOVERY and STATE only. The writer and the applier are not even in the runner's environment. */
-const sealEnvironment = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv =>
-  Object.fromEntries(Object.entries(env).filter(([key]) => !MUTATION_IDENTITY_VARIABLE.test(key)));
-
-/** Bidi and zero-width control characters: they make an address read as another one. Stripped where the change list is derived, and again wherever one is displayed. */
-export const INVISIBLE = /[\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF]/g;
 const HAS_INVISIBLE = new RegExp(INVISIBLE.source);
-export const stripInvisible = (value: string): string => value.replace(INVISIBLE, "");
-
-type Shown = {
-  format_version?: unknown; errored?: unknown;
-  resource_changes?: { address?: string; type?: string; previous_address?: unknown; change?: { actions?: string[]; importing?: unknown } }[];
-  output_changes?: Record<string, { actions?: string[] }>;
-  configuration?: { provider_config?: Record<string, ProviderBlock> };
-};
-
-/** What the provider half of the contract binding is judged against: the contract's target and provider, and the environment that holds the APPLY role (sealing hides it from its children, not from this check). */
-type Judge = Pick<SealInput, "pinned" | "spec" | "env">;
-
-/**
- * The one extraction of the redacted change list (address, type, action, and
- * an import, a move, a forget or an output change; never a value) from
- * `terraform show -json` output. Sealing records it, and an apply derives it
- * again from the decrypted plan to prove the record describes it. It also
- * enforces the provider half of the contract binding.
- */
-function changesOf(shown: string, judge: Judge): SealedPlan["changes"] {
-  let document: Shown;
-  try { document = JSON.parse(shown); } catch { return stop("PLAN_JSON_INVALID"); }
-  if (typeof document?.format_version !== "string" || document.errored === true) return stop("PLAN_JSON_UNUSABLE");
-  judge.spec.assertProviderConfig(Object.values(document.configuration?.provider_config ?? {}), judge.pinned, judge.env);
-  const resources = (Array.isArray(document.resource_changes) ? document.resource_changes : []).map((found, index): PlanChange => {
-    const actions = found?.change?.actions ?? [];
-    const previous = found?.previous_address;
-    return {
-      address: stripInvisible(found?.address ?? "terraform:unknown:" + index), type: stripInvisible(found?.type ?? "unknown"),
-      action: actions.includes("forget") ? "FORGET" : mapTerraformActions(actions),
-      ...(found?.change?.importing ? { importing: true as const } : {}),
-      ...(typeof previous === "string" && previous !== "" ? { previousAddress: stripInvisible(previous) } : {}),
-    };
-  }).sort((a, b) => (a.address < b.address ? -1 : a.address > b.address ? 1 : 0));
-  const outputs = Object.entries(document.output_changes ?? {}).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-    .map(([name, change]): PlanChange => ({ address: "output." + stripInvisible(name), type: "output", action: mapTerraformActions(change?.actions ?? []) }))
-    .filter((change) => change.action !== "SAME");
-  return [...resources, ...outputs];
-}
-
-/** The pinned `show` of the plan file at `../alz-preview.tfplan`, in an initialized work directory, with no identity at all. */
-const readChanges = (session: EngineSession, judge: Judge): SealedPlan["changes"] =>
-  changesOf(session.step(SHOW_ARGV, null, true), judge);
 
 /**
  * Derives the change list from the plan bytes themselves, for an apply that
- * has initialized its work directory: the decrypted plan is written, shown
- * with the same pinned argument list and the same restricted profile as
- * sealing (no identity in the environment), and removed. Throws a code.
+ * has initialized its work directory. The engine's own extraction, the one
+ * sealing used; throws a code.
  */
-export function rederiveChanges(input: Pick<SealInput, "scratchDir" | "env" | "toolDirs" | "manifest" | "pinned" | "spec"> & { planBytes: Buffer }): SealedPlan["changes"] {
-  const session = sealSession(input);
-  const planFile = join(input.scratchDir, SEAL_PLAN_FILE);
-  writeFileSync(planFile, input.planBytes, { mode: 0o600, flag: "wx" });
-  try {
-    return readChanges(session, input);
-  } finally {
-    rmSync(planFile, { force: true });
-  }
-}
-
-/** Sealing and re-deriving run the preview adapter's argument lists under the apply path's restricted profile: no CLI configuration file, no plugin cache. */
-const sealSession = (input: Pick<SealInput, "scratchDir" | "env" | "toolDirs" | "manifest">): EngineSession => openSession({
-  scratchDir: input.scratchDir, env: sealEnvironment(input.env), toolDirs: input.toolDirs, manifest: input.manifest,
-  isAllowed: (args) => isAllowedArgv("TERRAFORM", "terraform", args), profile: TERRAFORM_APPLY_PROFILE,
-});
+export const rederiveChanges = (input: EngineContext & { planBytes: Buffer }) =>
+  engineFor(input.manifest).rederiveChanges({ ...input, artifact: input.planBytes });
 
 function runSeal(input: SealInput): { sealed: SealedPlan; planBytes: Buffer } {
   const { manifest } = input;
-  if (manifest.engine !== "TERRAFORM" || manifest.mode !== "PROJECT") return stop("TERRAFORM_PROJECT_REQUIRED");
-  const planFile = join(input.scratchDir, SEAL_PLAN_FILE);
-  const session = sealSession(input);
-
-  try {
-    prepareWorkspace(session, {
-      snapshotPath: input.snapshotPath, engineVersion: input.engineVersion, target: input.target,
-      initArgv: INIT_ARGV, stateIdentity: "STATE", backendBlock: input.spec.backendBlock,
-    });
-    // The plan embeds the backend this init saved (docs/act-pilot-simulation.md), so it is judged here as well as at apply.
-    assertBackendInContract(session.work, input.pinned, input.spec);
-    session.assertBound();
-    session.step(PREVIEW_PLAN_ARGV, "DISCOVERY");
-    session.assertBound();
-
-    const planBytes = readFileSync(planFile);
-    const changes = readChanges(session, input);
-
-    const fields: ArtifactFields = {
-      planSha256: sha256(planBytes), manifestHash: manifest.manifestHash, releaseIdentity: releaseIdentityOf(manifest),
-      environment: input.environment, target: { ...input.target }, engineVersion: input.engineVersion,
-      policyVersion: input.policyVersion, contractSha256: input.contractSha256, changes,
-    };
-    const sealed: SealedPlan = {
-      schemaVersion: 1, artifactSha256: computeArtifactSha256(fields), ...fields,
-      createdAt: (input.now ?? (() => new Date()))().toISOString(),
-    };
-    return { sealed, planBytes };
-  } finally {
-    rmSync(planFile, { force: true });
-    removeTree(session.work);
-  }
+  const { artifact: planBytes, changes } = engineFor(manifest).plan(input);
+  const fields: ArtifactFields = {
+    planSha256: sha256(planBytes), manifestHash: manifest.manifestHash, releaseIdentity: releaseIdentityOf(manifest),
+    environment: input.environment, target: { ...input.target }, engineVersion: input.engineVersion,
+    policyVersion: input.policyVersion, contractSha256: input.contractSha256, changes,
+  };
+  const sealed: SealedPlan = {
+    schemaVersion: 1, artifactSha256: computeArtifactSha256(fields), ...fields,
+    createdAt: (input.now ?? (() => new Date()))().toISOString(),
+  };
+  return { sealed, planBytes };
 }
 
 function build(input: SealInput): { sealed: SealedPlan; planBytes: Buffer } | SealFailure {

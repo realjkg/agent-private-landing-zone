@@ -1,8 +1,7 @@
-import { iamRoleIdentity, identityVariables } from "../../tools/identity.js";
+import { EXECUTION_IDENTITIES, iamRoleIdentity, identityVariables } from "../../tools/identity.js";
 import { TOKEN_FILE } from "../constants.js";
 import { stop } from "../engine.js";
 import type { ProviderBlock, ProviderSpec } from "../provider.js";
-import { APPLY_IDENTITIES } from "../types.js";
 import { KEY_SEGMENT, ambientRefusal, isRecord, pickIdentityValue } from "./shared.js";
 
 /**
@@ -26,6 +25,8 @@ export type AwsTarget = {
   /** The S3 backend, written as `<bucket>/<key>`. State locking is the backend's native lock file (`use_lockfile`); no DynamoDB table. */
   backend: string;
   workspace: string;
+  /** CDK engine only (`engines/cdk.ts`): the CloudFormation capabilities a change set may use in this environment. Part of the pinned contract. */
+  capabilities?: string[];
 };
 
 const ACCOUNT_ID = /^[0-9]{12}$/;
@@ -54,7 +55,7 @@ function ambient(env: NodeJS.ProcessEnv) {
     advice: "The apply identities use AWS_ROLE_ARN with AWS_WEB_IDENTITY_TOKEN_FILE only.",
   });
   if (refusal) return refusal;
-  const relative = APPLY_IDENTITIES.filter((identity) => {
+  const relative = EXECUTION_IDENTITIES.filter((identity) => {
     const path = identityVariables(env, identity).get("AWS_WEB_IDENTITY_TOKEN_FILE");
     return path !== undefined && !TOKEN_FILE.test(path);
   }).map((identity) => "ALZ_" + identity + "_AWS_WEB_IDENTITY_TOKEN_FILE");

@@ -1,20 +1,22 @@
-import { collapsedBetween, identityVariables, normalizeClientId } from "../tools/identity.js";
+import { EXECUTION_IDENTITIES, MUTATION_IDENTITIES, collapsedBetween, identityVariables, normalizeClientId } from "../tools/identity.js";
 import type { IdentityRefusal, ProviderSpec } from "./provider.js";
 import { APPLY_IDENTITIES, type ApplyEnvironment, type ApplyIdentity, type PilotContract } from "./types.js";
 
 type ApplyIdentityCheck = { ok: true } | IdentityRefusal;
 
 /**
- * The single enforcement point for apply identities: all four are configured
+ * The single enforcement point for apply identities: all of the engine's (`EngineSpec.identities`, four for Terraform) are configured
  * (`ALZ_<IDENTITY>_<VAR>`), no two carry the same secret or principal, none can
  * fall back to a CLI or ambient credentials, and none equals the operator's own
  * credentials in the same environment (the last two are the provider's, `ProviderSpec.ambientRefusal`).
+ * An identity the engine does not use is refused when it is configured, because a privileged credential nothing needs
+ * is a standing risk (the CDK engine takes no STATE or STATE_WRITE, Terraform takes no CHANGESET).
  * Messages name identities and variables, never values. The same-uid operator
  * who holds these variables is inside the trust boundary; this refuses honest
  * mistakes and crafted environments, it does not stop that operator.
  */
-export function checkApplyIdentities(env: NodeJS.ProcessEnv, spec: ProviderSpec): ApplyIdentityCheck {
-  const missing = APPLY_IDENTITIES.filter((identity) => identityVariables(env, identity).size === 0);
+export function checkApplyIdentities(env: NodeJS.ProcessEnv, spec: ProviderSpec, identities: readonly ApplyIdentity[] = APPLY_IDENTITIES): ApplyIdentityCheck {
+  const missing = identities.filter((identity) => identityVariables(env, identity).size === 0);
   if (missing.length > 0) {
     return {
       ok: false,
@@ -23,9 +25,17 @@ export function checkApplyIdentities(env: NodeJS.ProcessEnv, spec: ProviderSpec)
         "No identity falls back to another, to the operator's own credentials, or to APPLY for state access.",
     };
   }
+  const unneeded = EXECUTION_IDENTITIES.filter((identity) => !identities.includes(identity) && identityVariables(env, identity).size > 0);
+  if (unneeded.length > 0) {
+    return {
+      ok: false,
+      code: "IDENTITY_NOT_CONFIGURED",
+      message: "Credentials are configured for the " + unneeded.join(", ") + " identity, which this engine does not use. Remove them: an identity nothing needs is a privileged credential left standing.",
+    };
+  }
   const collapsed: string[] = [];
-  APPLY_IDENTITIES.forEach((a, index) => {
-    for (const b of APPLY_IDENTITIES.slice(index + 1)) {
+  identities.forEach((a, index) => {
+    for (const b of identities.slice(index + 1)) {
       const names = collapsedBetween(env, a, b);
       if (names.length > 0) collapsed.push(a + " and " + b + " (" + names.join(", ") + ")");
     }
@@ -47,23 +57,22 @@ export const attestedClientId = (env: NodeJS.ProcessEnv, identity: ApplyIdentity
 
 type IdentityTargetCheck = { ok: true } | { ok: false; code: "IDENTITY_TARGET_MISMATCH"; message: string };
 
-/** The identities that write must say where they write: both variables set, not only equal when present. */
-const MUST_NAME_TARGET: readonly ApplyIdentity[] = ["STATE_WRITE", "APPLY"];
-
 /**
  * Every identity's target variables (`ProviderSpec.identityTargetVariables`),
  * when present, must be the environment's account from the pinned contract, and
- * APPLY and STATE_WRITE must set all of them. A credential for another account,
+ * the identities that mutate (`MUTATION_IDENTITIES`) must set all of them. A credential for another account,
  * or one that names none, cannot apply here. Messages name variables, never values.
  */
-export function verifyIdentityTargets(contract: PilotContract, environment: ApplyEnvironment, env: NodeJS.ProcessEnv, spec: ProviderSpec): IdentityTargetCheck {
+export function verifyIdentityTargets(
+  contract: PilotContract, environment: ApplyEnvironment, env: NodeJS.ProcessEnv, spec: ProviderSpec, identities: readonly ApplyIdentity[] = APPLY_IDENTITIES,
+): IdentityTargetCheck {
   const target = Object.hasOwn(contract.targets, environment) ? contract.targets[environment] : undefined;
   const wrong: string[] = [];
-  for (const identity of APPLY_IDENTITIES) {
+  for (const identity of identities) {
     const variables = identityVariables(env, identity);
     for (const [name, isTarget] of Object.entries(spec.identityTargetVariables)) {
       const actual = variables.get(name);
-      const required = MUST_NAME_TARGET.includes(identity);
+      const required = (MUTATION_IDENTITIES as readonly string[]).includes(identity);
       if (actual === undefined ? required : target === undefined || !isTarget(actual, target)) {
         wrong.push("ALZ_" + identity + "_" + name + (actual === undefined ? " (not set)" : ""));
       }
