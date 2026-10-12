@@ -202,6 +202,20 @@ jobs:
       - name: Start isolated Ollama
         run: |
           set -euo pipefail
+          # A zombie has exited (its parent step ended and nothing reaped it), so it is stopped, not running.
+          # Bash builtins only: awk and grep are not on the restricted PATH the orchestration tests use.
+          process_alive() {
+            local pid="$1" stat state
+            kill -0 "${pid}" 2>/dev/null || return 1
+            if [[ -r "/proc/${pid}/stat" ]]; then
+              stat="$(< "/proc/${pid}/stat")"
+              state="${stat##*) }"
+              state="${state%% *}"
+              [[ "${state}" == "Z" ]] && return 1
+            fi
+            return 0
+          }
+
 
           # Check any listener, not merely an existing Ollama HTTP endpoint.
           node <<'NODE'
@@ -226,14 +240,14 @@ jobs:
           for _ in {1..30}; do
             pid="$(cat "${QUALIFICATION_TMP}/ollama.pid")"
 
-            if ! kill -0 "${pid}" 2>/dev/null; then
+            if ! process_alive "${pid}"; then
               cat "${QUALIFICATION_TMP}/ollama.log"
               echo "::error::Ollama exited during startup."
               exit 1
             fi
 
-            if curl --max-time 3 -fsS \
-              "${OLLAMA_BASE_URL}/api/tags" >/dev/null; then
+            if node -e 'fetch(process.argv[1], { signal: AbortSignal.timeout(3000) }).then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))' \
+              "${OLLAMA_BASE_URL}/api/tags"; then
               exit 0
             fi
 
@@ -271,13 +285,27 @@ jobs:
       - name: Restart isolated Ollama
         run: |
           set -euo pipefail
+          # A zombie has exited (its parent step ended and nothing reaped it), so it is stopped, not running.
+          # Bash builtins only: awk and grep are not on the restricted PATH the orchestration tests use.
+          process_alive() {
+            local pid="$1" stat state
+            kill -0 "${pid}" 2>/dev/null || return 1
+            if [[ -r "/proc/${pid}/stat" ]]; then
+              stat="$(< "/proc/${pid}/stat")"
+              state="${stat##*) }"
+              state="${state%% *}"
+              [[ "${state}" == "Z" ]] && return 1
+            fi
+            return 0
+          }
+
 
           pid="$(cat "${QUALIFICATION_TMP}/ollama.pid")"
           kill "${pid}"
 
           stopped=false
           for _ in {1..30}; do
-            if ! kill -0 "${pid}" 2>/dev/null; then
+            if ! process_alive "${pid}"; then
               stopped=true
               break
             fi
@@ -298,14 +326,14 @@ jobs:
           for _ in {1..30}; do
             pid="$(cat "${QUALIFICATION_TMP}/ollama.pid")"
 
-            if ! kill -0 "${pid}" 2>/dev/null; then
+            if ! process_alive "${pid}"; then
               cat "${QUALIFICATION_TMP}/ollama-restarted.log"
               echo "::error::Restarted Ollama exited."
               exit 1
             fi
 
-            if curl --max-time 3 -fsS \
-              "${OLLAMA_BASE_URL}/api/tags" >/dev/null; then
+            if node -e 'fetch(process.argv[1], { signal: AbortSignal.timeout(3000) }).then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))' \
+              "${OLLAMA_BASE_URL}/api/tags"; then
               echo "ALZ_MODEL_RESTART_VERIFIED=1" >> "${GITHUB_ENV}"
               exit 0
             fi
@@ -353,6 +381,20 @@ jobs:
         if: always()
         run: |
           set -uo pipefail
+          # A zombie has exited (its parent step ended and nothing reaped it), so it is stopped, not running.
+          # Bash builtins only: awk and grep are not on the restricted PATH the orchestration tests use.
+          process_alive() {
+            local pid="$1" stat state
+            kill -0 "${pid}" 2>/dev/null || return 1
+            if [[ -r "/proc/${pid}/stat" ]]; then
+              stat="$(< "/proc/${pid}/stat")"
+              state="${stat##*) }"
+              state="${state%% *}"
+              [[ "${state}" == "Z" ]] && return 1
+            fi
+            return 0
+          }
+
 
           if [[ -f "${QUALIFICATION_TMP}/ollama.pid" ]]; then
             pid="$(cat "${QUALIFICATION_TMP}/ollama.pid")"
@@ -360,11 +402,11 @@ jobs:
               kill "${pid}" 2>/dev/null || true
 
               for _ in {1..10}; do
-                kill -0 "${pid}" 2>/dev/null || break
+                process_alive "${pid}" || break
                 sleep 1
               done
 
-              if kill -0 "${pid}" 2>/dev/null; then
+              if process_alive "${pid}"; then
                 kill -KILL "${pid}" 2>/dev/null || true
               fi
             fi

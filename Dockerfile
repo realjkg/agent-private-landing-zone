@@ -24,6 +24,9 @@ COPY compose.yaml ./compose.yaml
 COPY docs/ ./docs/
 COPY alz ./alz
 COPY .github/workflows/model-qualification.yml ./.github/workflows/model-qualification.yml
+COPY .github/workflows/model-production-qualification.yml ./.github/workflows/model-production-qualification.yml
+COPY .github/workflows/pr-validation.yml ./.github/workflows/pr-validation.yml
+COPY .github/workflows/supply-chain.yml ./.github/workflows/supply-chain.yml
 
 RUN chmod +x ./alz
 

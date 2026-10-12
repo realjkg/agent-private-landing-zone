@@ -3,6 +3,9 @@
 !.github/workflows/
 .github/workflows/*
 !.github/workflows/model-qualification.yml
+!.github/workflows/model-production-qualification.yml
+!.github/workflows/pr-validation.yml
+!.github/workflows/supply-chain.yml
 node_modules
 dist
 coverage

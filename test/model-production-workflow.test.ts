@@ -165,7 +165,11 @@ function run(step: string, j: Job, over: NodeJS.ProcessEnv = {}, limitMs = 60_00
     });
   });
 }
-const alive = (pid: number): boolean => { try { process.kill(pid, 0); return true; } catch { return false; } };
+/** Running means signalable and not a zombie: an exited child that nothing reaped (e.g. PID 1 in a container) is stopped. */
+const alive = (pid: number): boolean => {
+  try { process.kill(pid, 0); } catch { return false; }
+  try { return !/^\d+ \(.*\) Z /.test(readFileSync("/proc/" + pid + "/stat", "utf8")); } catch { return true; }
+};
 /** SIGKILL is asynchronous: give the kernel a moment to finish before judging. */
 async function ended(pid: number): Promise<boolean> {
   for (let i = 0; i < 20 && alive(pid); i += 1) await new Promise((resolve) => setTimeout(resolve, 100));

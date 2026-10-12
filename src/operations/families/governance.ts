@@ -135,6 +135,11 @@ export const governanceOperations: readonly OperationSpec[] = [
     cli: "./alz doctor", evidenceBasis: NO_CHANGE,
   }, KEY_CREATE_REASON, "./alz doctor", undefined, "plugins"),
   handoff({
+    id: "deps", title: "Dependency check and guided installs", cliScript: "src/cli/deps.ts",
+    summary: "Checks Node, Terraform, Ollama, the isolated model service and the product tools, and offers to install the pinned Terraform and Ollama after a typed yes for each.",
+    cli: "./alz deps", evidenceBasis: "LOCAL CHECK — installs only after the exact phrase for each tool, into your user folder; no cloud, no infrastructure change",
+  }, "Installs need a person at an interactive Terminal window, with a typed confirmation for each tool, which the console never has.", "./alz deps"),
+  handoff({
     id: "security-check", title: "Security preflight", cliScript: "src/cli/security.ts",
     summary: "Checks the local session security controls and states whether a secured session may start.",
     cli: "npm run security:check", evidenceBasis: NO_CHANGE,
