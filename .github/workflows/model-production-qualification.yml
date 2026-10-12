@@ -203,11 +203,15 @@ jobs:
         run: |
           set -euo pipefail
           # A zombie has exited (its parent step ended and nothing reaped it), so it is stopped, not running.
+          # Bash builtins only: awk and grep are not on the restricted PATH the orchestration tests use.
           process_alive() {
-            local pid="$1"
+            local pid="$1" stat state
             kill -0 "${pid}" 2>/dev/null || return 1
-            if [[ -r "/proc/${pid}/stat" ]] && awk '{print $3}' "/proc/${pid}/stat" | grep -qx 'Z'; then
-              return 1
+            if [[ -r "/proc/${pid}/stat" ]]; then
+              stat="$(< "/proc/${pid}/stat")"
+              state="${stat##*) }"
+              state="${state%% *}"
+              [[ "${state}" == "Z" ]] && return 1
             fi
             return 0
           }
@@ -282,11 +286,15 @@ jobs:
         run: |
           set -euo pipefail
           # A zombie has exited (its parent step ended and nothing reaped it), so it is stopped, not running.
+          # Bash builtins only: awk and grep are not on the restricted PATH the orchestration tests use.
           process_alive() {
-            local pid="$1"
+            local pid="$1" stat state
             kill -0 "${pid}" 2>/dev/null || return 1
-            if [[ -r "/proc/${pid}/stat" ]] && awk '{print $3}' "/proc/${pid}/stat" | grep -qx 'Z'; then
-              return 1
+            if [[ -r "/proc/${pid}/stat" ]]; then
+              stat="$(< "/proc/${pid}/stat")"
+              state="${stat##*) }"
+              state="${state%% *}"
+              [[ "${state}" == "Z" ]] && return 1
             fi
             return 0
           }
@@ -374,11 +382,15 @@ jobs:
         run: |
           set -uo pipefail
           # A zombie has exited (its parent step ended and nothing reaped it), so it is stopped, not running.
+          # Bash builtins only: awk and grep are not on the restricted PATH the orchestration tests use.
           process_alive() {
-            local pid="$1"
+            local pid="$1" stat state
             kill -0 "${pid}" 2>/dev/null || return 1
-            if [[ -r "/proc/${pid}/stat" ]] && awk '{print $3}' "/proc/${pid}/stat" | grep -qx 'Z'; then
-              return 1
+            if [[ -r "/proc/${pid}/stat" ]]; then
+              stat="$(< "/proc/${pid}/stat")"
+              state="${stat##*) }"
+              state="${state%% *}"
+              [[ "${state}" == "Z" ]] && return 1
             fi
             return 0
           }
