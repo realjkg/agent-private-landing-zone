@@ -119,7 +119,7 @@ test("the shipped AWS example is clearly marked, disabled, and cannot become val
 
 const env = (environment: ApplyEnvironment = "DEV", over: Record<string, string> = {}): NodeJS.ProcessEnv => ({ ...awsIdentityEnv(environment), ...over });
 const refusal = (e: NodeJS.ProcessEnv, code: string, ...mentions: string[]): string => {
-  const outcome = checkApplyIdentities(e, AWS);
+  const outcome = checkApplyIdentities(e, AWS, APPLY_IDENTITIES);
   assert.equal(outcome.ok, false, mentions.join());
   if (outcome.ok) return "";
   assert.equal(outcome.code, code, outcome.message);
@@ -128,7 +128,7 @@ const refusal = (e: NodeJS.ProcessEnv, code: string, ...mentions: string[]): str
 };
 
 test("four distinct web-identity roles are accepted; each missing identity is IDENTITY_NOT_CONFIGURED", () => {
-  assert.deepEqual(checkApplyIdentities(env(), AWS), { ok: true });
+  assert.deepEqual(checkApplyIdentities(env(), AWS, APPLY_IDENTITIES), { ok: true });
   for (const identity of APPLY_IDENTITIES) {
     const e = env();
     for (const key of Object.keys(e)) if (key.startsWith("ALZ_" + identity + "_") && !(identity === "STATE" && key.startsWith("ALZ_STATE_WRITE_"))) delete e[key];
@@ -155,7 +155,7 @@ test("any two identities sharing a role ARN (across names, case and padding) or 
       }
     }
     // The role ARN of one identity in another identity's token variable is not special; only equal principals collapse.
-    assert.deepEqual(checkApplyIdentities(env("DEV", { ALZ_APPLY_AWS_WEB_IDENTITY_TOKEN_FILE: join(dir, "other") }), AWS), { ok: true });
+    assert.deepEqual(checkApplyIdentities(env("DEV", { ALZ_APPLY_AWS_WEB_IDENTITY_TOKEN_FILE: join(dir, "other") }), AWS, APPLY_IDENTITIES), { ok: true });
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -186,36 +186,36 @@ test("an identity value equal to the operator's own ambient AWS_* variable is re
       refusal(env("DEV", { AWS_WEB_IDENTITY_TOKEN_FILE: join(dir, "symlink"), ["ALZ_" + identity + "_AWS_WEB_IDENTITY_TOKEN_FILE"]: real }), "IDENTITY_COLLAPSED", "AWS_WEB_IDENTITY_TOKEN_FILE");
     }
     // The operator's own static keys in the ambient environment are not an identity and never reach a child; a region they share is not a clash.
-    assert.deepEqual(checkApplyIdentities(env("DEV", { AWS_REGION: AWS_REGION, AWS_ROLE_ARN: "arn:aws:iam::999999999999:role/operator" }), AWS), { ok: true });
+    assert.deepEqual(checkApplyIdentities(env("DEV", { AWS_REGION: AWS_REGION, AWS_ROLE_ARN: "arn:aws:iam::999999999999:role/operator" }), AWS, APPLY_IDENTITIES), { ok: true });
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test("identity targets: each role ARN's account and the region must be the environment's; APPLY and STATE_WRITE must set both", () => {
   const contract = { targets: { DEV: { ...awsTargetOf("DEV"), accountId: "111111111111", region: AWS_REGION }, QA: { accountId: "222222222222", region: AWS_REGION, backend: AWS_QA_TARGET.backend, workspace: "default" } } } as unknown as PilotContract;
-  assert.deepEqual(verifyIdentityTargets(contract, "DEV", env("DEV"), AWS), { ok: true });
-  assert.deepEqual(verifyIdentityTargets(contract, "QA", env("QA"), AWS), { ok: true });
-  assert.equal(verifyIdentityTargets(contract, "QA", env("DEV"), AWS).ok, false, "DEV credentials do not apply in QA");
+  assert.deepEqual(verifyIdentityTargets(contract, "DEV", env("DEV"), AWS, APPLY_IDENTITIES), { ok: true });
+  assert.deepEqual(verifyIdentityTargets(contract, "QA", env("QA"), AWS, APPLY_IDENTITIES), { ok: true });
+  assert.equal(verifyIdentityTargets(contract, "QA", env("DEV"), AWS, APPLY_IDENTITIES).ok, false, "DEV credentials do not apply in QA");
   for (const identity of APPLY_IDENTITIES) {
     for (const [name, bad] of [
       ["AWS_ROLE_ARN", awsRoleArn(identity, "QA")], ["AWS_ROLE_ARN", "not-an-arn"], ["AWS_ROLE_ARN", awsRoleArn(identity, "DEV").replace("role/", "user/")], ["AWS_REGION", "eu-west-2"],
     ] as const) {
-      const outcome = verifyIdentityTargets(contract, "DEV", env("DEV", { ["ALZ_" + identity + "_" + name]: bad }), AWS);
+      const outcome = verifyIdentityTargets(contract, "DEV", env("DEV", { ["ALZ_" + identity + "_" + name]: bad }), AWS, APPLY_IDENTITIES);
       assert.equal(outcome.ok, false, identity + name);
       if (outcome.ok) continue;
       assert.equal(outcome.code, "IDENTITY_TARGET_MISMATCH");
       assert.ok(outcome.message.includes("ALZ_" + identity + "_" + name) && !outcome.message.includes(bad), "names the variable, never the value");
     }
   }
-  assert.deepEqual(verifyIdentityTargets(contract, "DEV", env("DEV", { ALZ_APPLY_AWS_REGION: AWS_REGION.toUpperCase() }), AWS), { ok: true }, "region case does not matter");
+  assert.deepEqual(verifyIdentityTargets(contract, "DEV", env("DEV", { ALZ_APPLY_AWS_REGION: AWS_REGION.toUpperCase() }), AWS, APPLY_IDENTITIES), { ok: true }, "region case does not matter");
   for (const identity of ["APPLY", "STATE_WRITE"] as const) {
     for (const name of ["AWS_ROLE_ARN", "AWS_REGION"]) {
       const e = env(); delete e["ALZ_" + identity + "_" + name];
-      assert.equal(verifyIdentityTargets(contract, "DEV", e, AWS).ok, false, identity + name);
+      assert.equal(verifyIdentityTargets(contract, "DEV", e, AWS, APPLY_IDENTITIES).ok, false, identity + name);
     }
   }
   for (const identity of ["DISCOVERY", "STATE"] as const) {
     const e = env(); delete e["ALZ_" + identity + "_AWS_ROLE_ARN"]; delete e["ALZ_" + identity + "_AWS_REGION"];
-    assert.deepEqual(verifyIdentityTargets(contract, "DEV", e, AWS), { ok: true }, identity);
+    assert.deepEqual(verifyIdentityTargets(contract, "DEV", e, AWS, APPLY_IDENTITIES), { ok: true }, identity);
   }
 });
 
@@ -518,7 +518,7 @@ test("the identity checks also refuse the other cloud's credentials, a role spel
   }
   // IAM role names are unique per account whatever the path, so one name under two paths is one role.
   refusal(env("DEV", { ALZ_APPLY_AWS_ROLE_ARN: awsRoleArn("STATE_WRITE", "DEV").replace("role/", "role/ci/team/") }), "IDENTITY_COLLAPSED", "AWS_ROLE_ARN");
-  assert.deepEqual(checkApplyIdentities(env("DEV", { ALZ_APPLY_AWS_ROLE_ARN: awsRoleArn("APPLY", "DEV").replace("role/", "role/ci/") }), AWS), { ok: true }, "a path alone is not a collision with another name");
+  assert.deepEqual(checkApplyIdentities(env("DEV", { ALZ_APPLY_AWS_ROLE_ARN: awsRoleArn("APPLY", "DEV").replace("role/", "role/ci/") }), AWS, APPLY_IDENTITIES), { ok: true }, "a path alone is not a collision with another name");
 });
 
 test("a sealed plan applies only under the pinned contract it was sealed under; the evidence names that contract", async () => {

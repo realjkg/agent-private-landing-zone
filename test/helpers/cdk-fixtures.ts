@@ -39,6 +39,20 @@ export type AwsBehavior = {
   executeFail?: boolean;
   /** execute-change-set exits 0 and nothing happens. */
   executeNoop?: boolean;
+  /** execute-change-set exits 255 (a lost response): the execution does not begin, or (with `ranAnyway`) CloudFormation had already accepted it. */
+  executeLost?: boolean; ranAnyway?: boolean;
+  /** Someone else's update lands as execute-change-set is called: the stack moves, and (with executeFail) our execution is refused. */
+  foreignUpdateOnExecute?: boolean;
+  /** describe-change-set fails once execute-change-set was called. */
+  changeSetReadFailsAfterExecute?: boolean;
+  /** The stack is changed out of band as the named subcommand starts (a new LastUpdatedTime), or reports a service role. */
+  bumpStackOn?: string; stackRoleArn?: string; stackUpdated?: string;
+  /** get-template answers with a template that is not the one the change set was made from. */
+  templateDiffers?: boolean;
+  /** describe-change-set lists a change that is not a resource, a change with an unknown action, or is not a change set document at all. */
+  badChange?: "unreadable" | "action"; describeGarbage?: boolean;
+  /** describe-stacks prints more than the runner keeps. */
+  bigOutput?: boolean;
   /** describe-change-set reports these capabilities whatever was passed. */
   echoCapabilities?: string[];
   /** Statuses describe-stacks answers with, one per poll after execute (the last repeats), and after a cancel. */
@@ -66,7 +80,7 @@ const fail = (message, code = 254) => { process.stderr.write(message); process.e
 const role = process.env.AWS_ROLE_ARN || "";
 const account = role.split(":")[4] || "000000000000";
 const region = arg("--region");
-const a = (s.a[account] = s.a[account] || { stack: null, changeSet: null, executing: false, polls: 0, canceled: false, cancelPolls: 0, type: null });
+const a = (s.a[account] = s.a[account] || { stack: null, changeSet: null, executing: false, attempted: false, polls: 0, canceled: false, cancelPolls: 0, type: null });
 const stackArn = (name) => "arn:aws:cloudformation:" + region + ":" + account + ":stack/" + name + "/" + crypto.randomUUID();
 if (b.stackExists && !a.seeded) {
   a.seeded = true;
@@ -76,9 +90,11 @@ if (args[0] === "--version") { log({}); process.stdout.write("aws-cli/" + b.vers
 if (args[0] !== "cloudformation") { log({ unexpected: true }); process.exit(2); }
 const cmd = args[1];
 if (b.touchKillOn === cmd) fs.writeFileSync(b.killPath, "stop");
+if (b.bumpStackOn === cmd && a.stack) { a.stack.updated = "2026-10-11T11:45:00.000Z"; save(); }
 
 if (cmd === "describe-stacks") {
   log({});
+  if (b.bigOutput) process.stdout.write("x".repeat(9 * 1024 * 1024));
   if (b.describeStacksFail) fail("An error occurred (AccessDenied) when calling the DescribeStacks operation: " + (b.failStderr || "not authorized"));
   if (!a.stack) fail("An error occurred (ValidationError) when calling the DescribeStacks operation: Stack with id " + arg("--stack-name") + " does not exist");
   if (a.executing) {
@@ -91,7 +107,7 @@ if (cmd === "describe-stacks") {
   }
   process.stdout.write(JSON.stringify({ Stacks: [{
     StackId: b.describedStackId || a.stack.id, StackName: arg("--stack-name"), StackStatus: a.stack.status, EnableTerminationProtection: a.stack.protection,
-    CreationTime: a.stack.created, LastUpdatedTime: a.stack.updated, Outputs: [{ OutputKey: "Secret", OutputValue: ${JSON.stringify(OUTPUT_CANARY)} }],
+    CreationTime: a.stack.created, LastUpdatedTime: b.stackUpdated || a.stack.updated, ...(b.stackRoleArn ? { RoleARN: b.stackRoleArn } : {}), Outputs: [{ OutputKey: "Secret", OutputValue: ${JSON.stringify(OUTPUT_CANARY)} }],
   }] }));
 }
 else if (cmd === "create-change-set") {
@@ -108,8 +124,8 @@ else if (cmd === "create-change-set") {
     if (!a.stack) a.stack = { id: stackArn(name), status: "REVIEW_IN_PROGRESS", protection: false, created: "2026-10-11T11:30:00.000Z", updated: undefined };
   } else if (!a.stack) fail("An error occurred (ValidationError) when calling the CreateChangeSet operation: Stack does not exist");
   const csName = arg("--change-set-name");
-  a.changeSet = { id: "arn:aws:cloudformation:" + region + ":" + (b.arnAccount || account) + ":changeSet/" + csName + "/" + crypto.randomUUID(), name: csName, stackId: a.stack.id, stackName: name, capabilities };
-  a.type = type;
+  a.changeSet = { id: "arn:aws:cloudformation:" + region + ":" + (b.arnAccount || account) + ":changeSet/" + csName + "/" + crypto.randomUUID(), name: csName, stackId: a.stack.id, stackName: name, capabilities, template: JSON.parse(template) };
+  a.type = type; a.executing = false; a.attempted = false;
   save();
   process.stdout.write(JSON.stringify({ Id: a.changeSet.id, StackId: a.stack.id }));
 }
@@ -117,24 +133,39 @@ else if (cmd === "wait") { log({}); if (b.waitFails) fail("Waiter ChangeSetCreat
 else if (cmd === "describe-change-set") {
   log({});
   if (!a.changeSet || arg("--change-set-name") !== a.changeSet.id) fail("An error occurred (ChangeSetNotFound) when calling the DescribeChangeSet operation");
+  if (b.changeSetReadFailsAfterExecute && a.attempted) fail("An error occurred (Throttling) when calling the DescribeChangeSet operation", 255);
+  if (b.describeGarbage) { process.stdout.write("[]"); process.exit(0); }
   const changes = [
     { Type: "Resource", ResourceChange: { Action: "Add", LogicalResourceId: "PilotBucket", ResourceType: "AWS::S3::Bucket" } },
     { Type: "Resource", ResourceChange: { Action: "Modify", LogicalResourceId: "PilotTopic", ResourceType: "AWS::SNS::Topic", Replacement: "True" } },
     ...(b.extraChange ? [{ Type: "Resource", ResourceChange: { Action: "Remove", LogicalResourceId: "ExtraQueue", ResourceType: "AWS::SQS::Queue" } }] : []),
+    ...(b.badChange === "unreadable" ? [{ Type: "Hook" }] : []),
+    ...(b.badChange === "action" ? [{ Type: "Resource", ResourceChange: { Action: "Teleport", LogicalResourceId: "Odd", ResourceType: "AWS::SQS::Queue" } }] : []),
   ];
+  // What the change set reports about its execution follows the stack the fake last described.
+  const execution = !a.executing ? "AVAILABLE" : /ROLLBACK|FAILED/.test(a.stack.status) ? "EXECUTE_FAILED" : /_COMPLETE$/.test(a.stack.status) ? "EXECUTE_COMPLETE" : "EXECUTE_IN_PROGRESS";
   process.stdout.write(JSON.stringify({
     ChangeSetName: a.changeSet.name, ChangeSetId: b.swapChangeSetId || a.changeSet.id, StackId: b.swapStackId || a.changeSet.stackId, StackName: a.changeSet.stackName,
-    Status: b.changeSetStatus || "CREATE_COMPLETE", ExecutionStatus: b.executionStatus || (a.executing ? "EXECUTE_IN_PROGRESS" : "AVAILABLE"),
+    Status: b.changeSetStatus || "CREATE_COMPLETE", ExecutionStatus: b.executionStatus || execution,
     Capabilities: b.echoCapabilities || a.changeSet.capabilities, Parameters: [{ ParameterKey: "DbPassword", ParameterValue: "****", ResolvedValue: ${JSON.stringify(PARAMETER_CANARY)} }], Changes: changes,
   }));
 }
 else if (cmd === "execute-change-set") {
   log({});
+  a.attempted = true; save();
+  if (b.foreignUpdateOnExecute) { a.stack.updated = "2026-10-11T12:05:00.000Z"; a.stack.status = "UPDATE_COMPLETE"; save(); }
   if (b.executeFail) fail("An error occurred (InvalidChangeSetStatusException) when calling the ExecuteChangeSet operation: " + (b.failStderr || "cannot be executed"));
   if (!a.changeSet || arg("--change-set-name") !== a.changeSet.id) fail("An error occurred (ChangeSetNotFound) when calling the ExecuteChangeSet operation");
   if (b.executeNoop) process.exit(0);
+  if (b.executeLost && !b.ranAnyway) fail("Connection was closed before we received a valid response", 255);
   a.executing = true; a.polls = 0; a.canceled = false; a.cancelPolls = 0; a.stack.updated = "2026-10-11T12:00:30.000Z";
   save();
+  if (b.executeLost) fail("Connection was closed before we received a valid response", 255);
+}
+else if (cmd === "get-template") {
+  log({});
+  if (!a.changeSet || arg("--change-set-name") !== a.changeSet.id) fail("An error occurred (ChangeSetNotFound) when calling the GetTemplate operation");
+  process.stdout.write(JSON.stringify({ TemplateBody: b.templateDiffers ? { ...a.changeSet.template, Description: "changed" } : a.changeSet.template, StagesAvailable: ["Original", "Processed"] }));
 }
 else if (cmd === "describe-stack-events") {
   log({});
@@ -216,6 +247,10 @@ export type AssemblyOptions = {
   secondStack?: boolean; fileAsset?: boolean; dockerAsset?: boolean; nestedAssembly?: boolean;
   /** Template contents. */
   iam?: boolean; nestedStack?: boolean; importValue?: boolean; padding?: number;
+  /** Extra top-level template keys and resources (a Transform, a custom resource, a macro). */
+  templateExtra?: Record<string, unknown>; resources?: Record<string, unknown>;
+  /** Edits the files before they are written, and replaces files with these exact bytes. */
+  mutate?: (files: Record<string, any>) => void; raw?: Record<string, string>;
 };
 
 /** Writes a pre-synthesized cloud assembly (cdk.out) the way a synthesis would leave it, and the manifest that binds it. */
@@ -230,10 +265,12 @@ export function writeAssembly(root: string, target: ResolvedTarget, options: Ass
       PilotBucket: { Type: "AWS::S3::Bucket" },
       PilotTopic: { Type: "AWS::SNS::Topic" },
       ...(options.iam ? { PilotRole: { Type: "AWS::IAM::Role", Properties: { AssumeRolePolicyDocument: {} } } } : {}),
+      ...options.resources,
       ...(options.nestedStack ? { Nested: { Type: "AWS::CloudFormation::Stack", Properties: { TemplateURL: "https://example.invalid/nested.json" } } } : {}),
     },
     ...(options.importValue ? { Outputs: { Imported: { Value: { "Fn::ImportValue": "other-stack-export" } } } } : {}),
     ...(options.padding ? { Metadata: { Padding: "x".repeat(options.padding) } } : {}),
+    ...options.templateExtra,
   };
   const files: Record<string, unknown> = { [templateFile]: template };
   const artifacts: Record<string, unknown> = {
@@ -261,7 +298,8 @@ export function writeAssembly(root: string, target: ResolvedTarget, options: Ass
   files["tree.json"] = { version: "tree-0.1", tree: { id: "App" } };
   files["manifest.json"] = { version: "36.0.0", artifacts };
   files["cdk.out"] = { version: "36.0.0" };
-  for (const [name, content] of Object.entries(files)) writeFileSync(join(root, name), JSON.stringify(content));
+  options.mutate?.(files);
+  for (const [name, content] of Object.entries(files)) writeFileSync(join(root, name), options.raw?.[name] ?? JSON.stringify(content));
   const resolved: Project["resolved"] = { engineVersion: AWS_CLI_VERSION, providers: [], lockFileSha256: undefined, dependencies: [], inputs: [] };
   const manifest = buildManifest({
     engine: "CDK", mode: "PROJECT", target, unitHash: H("1"), files: captureProjectFiles(root), policyVersion: POLICY, ...resolved,

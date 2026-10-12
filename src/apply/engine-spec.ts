@@ -1,7 +1,6 @@
 import type { AdapterDescriptor, ResolvedTarget } from "../teardown/driver/types.js";
 import type { ArtifactManifest } from "../teardown/manifest.js";
 import type { StoppableProcessOptions, StoppableResult } from "../tools/process.js";
-import { stop } from "./engine.js";
 import { CDK } from "./engines/cdk.js";
 import { TERRAFORM } from "./engines/terraform.js";
 import type { ProviderSpec } from "./provider.js";
@@ -47,7 +46,10 @@ export type EngineApplyRun = {
    * artifact names can no longer be applied) or ARTIFACT_TAMPERED (it is not what the engine finds) is that refusal.
    */
   rederive(artifact: Buffer): PlanChange[];
-  /** Runs exactly the sealed bytes. Resolves once the engine existed; a throw means it never did. */
+  /**
+   * Runs exactly the sealed bytes. Resolves once the engine existed; a throw means it never did, so once the engine may
+   * exist (a process spawned, a call made) nothing here throws: whatever goes wrong afterward is a result `settle` judges.
+   */
   execute(artifact: Buffer, control: StopControl): Promise<StoppableResult>;
   /** How the run ended, from the result and the state read after it. */
   settle(applied: StoppableResult): ApplyEnd | Promise<ApplyEnd>;
@@ -106,8 +108,6 @@ export type EngineSpec = {
    * engine's own read-only steps. Throws a code. CDK: version and describe-stacks as each identity, no change set.
    */
   qualify?(input: EnginePlanInput): void;
-  /** The change list of artifact bytes, the one extraction sealing and applying share. */
-  rederiveChanges(input: EngineContext & { artifact: Buffer }): PlanChange[];
   openApply(input: EngineRunInput): EngineApplyRun;
   /** What a person is told for each way an apply can end unsuccessfully, and when recovery material could not be kept. */
   outcomeMessages: Readonly<Record<Exclude<ApplyOutcome, "SUCCEEDED">, string>>;
@@ -131,9 +131,3 @@ export const RECOVERY_FILE_NAMES: readonly string[] = Object.values(SPECS).flatM
 /** The one check that a manifest is of the kind this engine seals and applies. */
 export const acceptsManifest = (engine: EngineSpec, manifest: Pick<ArtifactManifest, "engine" | "mode">): boolean =>
   manifest.engine === engine.id && manifest.mode === engine.manifestMode;
-
-/** The spec a manifest names, or a stop code when there is none or the manifest is not the kind it accepts. */
-export const engineFor = (manifest: Pick<ArtifactManifest, "engine" | "mode">): EngineSpec => {
-  const engine = engineSpec(manifest.engine);
-  return engine && acceptsManifest(engine, manifest) ? engine : stop("ENGINE_PROJECT_REQUIRED");
-};

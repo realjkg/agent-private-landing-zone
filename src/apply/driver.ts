@@ -14,13 +14,13 @@ import {
   targetForEnvironment, verifyApplyQualification, type Refusal,
 } from "./contract.js";
 import { codeOf } from "./engine.js";
-import { acceptsManifest, engineOf, type RecoveryFile } from "./engine-spec.js";
+import { acceptsManifest, engineOf, type EngineSpec, type RecoveryFile } from "./engine-spec.js";
 import { APPLY_AUTHORITY } from "./evidence.js";
 import { attestedClientId, checkApplyIdentities, verifyIdentityTargets } from "./identities.js";
 import { finalizeArtifact, releaseReservation, reserveArtifact } from "./ledger.js";
 import { openNonceStore, type NonceStore } from "./nonces.js";
 import { specOf, type ProviderSpec } from "./provider.js";
-import { planWithoutStoring, releaseIdentityOf, sealPlan, verifySealedPlan, type LoadedPlan, type SealResult, type ThrowawayPlan } from "./seal.js";
+import { planWithoutStoring, releaseIdentityOf, sealPlan, verifySealedPlan, type LoadedPlan, type SealResult } from "./seal.js";
 import { sha256 } from "../util/sha256.js";
 import type { ApplyEnvironment, ApplyEvidence, ApplyOutcome, ApplyRefusalCode, ApplyResult, PilotContract, PlanChange, SignedApproval } from "./types.js";
 
@@ -28,7 +28,7 @@ import type { ApplyEnvironment, ApplyEvidence, ApplyOutcome, ApplyRefusalCode, A
  * The human-invoked apply driver (docs/act-pilot-plan.md). The operator
  * authorizes, the driver enforces, and agents never initiate. Each check below
  * fails closed and nothing after it runs; the engine is reached only through
- * `runApply`, and `terraform apply` is the last step of the last stage. This
+ * `runApply`, and the engine's own execution (`terraform apply`, `execute-change-set`) is the last step of the last stage. This
  * module is imported by the CLI only: nothing under src/tools, src/agent or
  * src/operator-ui reaches it, and the console never runs an apply.
  */
@@ -47,7 +47,7 @@ export type ApplyDeps = {
   scratchParent?: string;
   /** Approved executable directories. Defaults to the runner's. Tests point this at a fake. */
   toolDirs?: readonly string[];
-  /** How often the kill switch is read while the engine runs, and how long terraform gets to stop after SIGINT. Tests shorten both. */
+  /** How often the kill switch is read while the engine runs, and how long the engine gets to stop. Tests shorten both. */
   killPollMs?: number;
   killGraceMs?: number;
 };
@@ -150,8 +150,8 @@ export async function sealPreview(request: SealRequest, deps: SealDeps): Promise
 
 /** The gates sealing and qualifying share, then one plan of the pinned project in a private scratch directory. Sealing stores the plan; qualifying drops it. */
 function planAgainstTarget(request: SealRequest, deps: SealDeps, kind: "seal"): Promise<SealResult | Refusal>;
-function planAgainstTarget(request: SealRequest, deps: SealDeps, kind: "qualify"): Promise<{ ok: true } | Refusal>;
-async function planAgainstTarget(request: SealRequest, deps: SealDeps, kind: "seal" | "qualify"): Promise<SealResult | { ok: true } | Refusal> {
+function planAgainstTarget(request: SealRequest, deps: SealDeps, kind: "qualify"): Promise<{ ok: true; engine: EngineSpec } | Refusal>;
+async function planAgainstTarget(request: SealRequest, deps: SealDeps, kind: "seal" | "qualify"): Promise<SealResult | { ok: true; engine: EngineSpec } | Refusal> {
   const admitted = admit(deps, request);
   if (!admitted.ok) return admitted;
   const engine = engineOf(admitted.contract);
@@ -182,17 +182,18 @@ async function planAgainstTarget(request: SealRequest, deps: SealDeps, kind: "se
       return refuse("ARTIFACT_INVALID", "The project cannot be snapshotted; it no longer matches the manifest.");
     }
     const input = {
-      environment: request.environment, target: { ...request.target }, manifest, snapshotPath: snapshot.path, scratchDir: scratch.path,
+      engine, environment: request.environment, target: { ...request.target }, manifest, snapshotPath: snapshot.path, scratchDir: scratch.path,
       env: deps.env ?? process.env, policyVersion: request.policyVersion, engineVersion: manifest.engineVersion,
       pinned: admitted.contract.targets[request.environment], spec: admitted.spec, contractSha256: pilotContractSha256(admitted.contract), toolDirs: deps.toolDirs, now: deps.now,
     };
     // An engine with its own qualification run (CDK: read-only steps, no change set) does that and nothing else.
     if (kind === "qualify" && engine.qualify) {
       engine.qualify(input);
-      return { ok: true };
+      return { ok: true, engine };
     }
-    const sealed = kind === "seal" ? await sealPlan(input) : planWithoutStoring(input);
-    if (kind === "seal" || !sealed.ok) return sealed;
+    if (kind === "seal") return await sealPlan(input);
+    const throwaway = planWithoutStoring(input);
+    if (!throwaway.ok) return throwaway;
     // The apply adapter's own surface, up to the point where only the apply itself is left. Nothing is applied.
     const run = engine.openApply({
       scratchDir: scratch.path, env: deps.env ?? process.env, toolDirs: deps.toolDirs, manifest, pinned: input.pinned, spec: admitted.spec,
@@ -205,7 +206,7 @@ async function planAgainstTarget(request: SealRequest, deps: SealDeps, kind: "se
       unregisterSecrets();
       run.removeSecrets();
     }
-    return sealed;
+    return { ok: true, engine };
   } catch (error) {
     return refuse("ARTIFACT_INVALID", kind === "qualify"
       ? "The qualification run failed (" + codeOf(error) + "). Engine output is withheld because it can hold secrets."
@@ -229,12 +230,10 @@ export async function qualifyApply(request: SealRequest, deps: SealDeps):
   if (request.environment !== "DEV") return refuse("ARTIFACT_INVALID", "Qualification runs against the DEV target only.");
   const result = await planAgainstTarget(request, deps, "qualify");
   if (!result.ok) return result;
-  const contract = loadPilotContract(deps.contractPath, deps.contractPinPath);
-  if ("reason" in contract) return contractRefusal(contract);
-  const engine = engineOf(contract);
-  const terraformSha256 = engine.binarySha256(deps.toolDirs, deps.env ?? process.env);
-  if (terraformSha256 === undefined) return refuse("ARTIFACT_INVALID", "The engine binary that ran could not be read to record its hash.");
-  return { ok: true, engineVersion: request.resolved.engineVersion, terraformSha256, adapters: [engine.previewAdapter(), engine.applyAdapter] };
+  const { engine } = result;
+  const binarySha256 = engine.binarySha256(deps.toolDirs, deps.env ?? process.env);
+  if (binarySha256 === undefined) return refuse("ARTIFACT_INVALID", "The engine binary that ran could not be read to record its hash.");
+  return { ok: true, engineVersion: request.resolved.engineVersion, terraformSha256: binarySha256, adapters: [engine.previewAdapter(), engine.applyAdapter] };
 }
 
 // --- applying ----------------------------------------------------------------------------------------------
@@ -266,7 +265,7 @@ async function keepRecoveryFiles(files: RecoveryFile[], artifactSha256: string):
  * target is the contract's, the sealed plan verifies, it was not applied
  * before, production was promoted from a successful DEV apply of the same
  * release, the approvals verify, the apply adapter is qualified by real-engine
- * evidence, the four identities are configured, separate and aimed at the
+ * evidence, the engine's identities are configured, separate and aimed at the
  * contract's account, the artifact is reserved in the ledger,
  * the kill switch is checked once more, the approvals are consumed, and only
  * then the engine applies the sealed artifact, watched and stoppable while it
@@ -313,7 +312,7 @@ export async function runApply(request: ApplyRequest, deps: ApplyDeps): Promise<
   });
   if (!verdict.ok) return refuse(verdict.code, verdict.message);
 
-  // 9-10. The apply adapter is qualified by real-engine evidence; four separate identities aimed at this target.
+  // 9-10. The apply adapter is qualified by real-engine evidence; the engine's separate identities aimed at this target.
   const gate = await checkEngineAndIdentities(engine.applyAdapter, deps, sealed.engineVersion, contract, spec, sealed.environment, "apply");
   if (gate) return gate;
 
@@ -400,7 +399,7 @@ export async function runApply(request: ApplyRequest, deps: ApplyDeps): Promise<
     try {
       applied = await run.execute(planBytes, { stopWhen: () => isKillSwitchActive(readmitted.contract), pollMs: deps.killPollMs, graceMs: deps.killGraceMs });
     } catch (error) {
-      // The runner's promise only resolves once the child exists, so a throw means no engine ran.
+      // An engine's execute throws only before the engine can exist (`EngineApplyRun.execute`), so a throw means nothing ran.
       return unstarted(error);
     }
     engineStarted = true;

@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { lstatSync, mkdirSync, readFileSync } from "node:fs";
+import { lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { copyTree, projectDifference } from "../../teardown/driver/adapters/project-copy.js";
@@ -8,13 +8,13 @@ import { removeTree } from "../../teardown/driver/cleanup.js";
 import type { AdapterDescriptor } from "../../teardown/driver/types.js";
 import { canonicalJson } from "../../teardown/manifest.js";
 import { approvedToolDirs, resolveExecutable } from "../../tools/child-env.js";
-import { ANY_IDENTITY_VARIABLE, type ExecutionIdentity } from "../../tools/identity.js";
+import type { ExecutionIdentity } from "../../tools/identity.js";
 import { interceptStopSignals, refusedVariables, runBoundedProcess, type StoppableResult } from "../../tools/process.js";
 import { AWS_CFN_APPLY_PROFILE } from "../../tools/profiles.js";
 import type { ToolResult } from "../../tools/types.js";
 import { sha256 } from "../../util/sha256.js";
 import { stripInvisible } from "../constants.js";
-import { stop } from "../engine.js";
+import { assertUsable, checkedOutput, stop, withoutIdentities } from "../engine.js";
 import type { ApplyEnd, EngineApplyRun, EngineContext, EngineRunInput, EngineSpec } from "../engine-spec.js";
 import type { AwsTarget } from "../providers/aws.js";
 import { isRecord } from "../providers/shared.js";
@@ -28,29 +28,14 @@ import type { PlanChange } from "../types.js";
  * output (descriptions, stack events, errors) can quote template and parameter values.
  *
  * UNVERIFIED: every AWS, CloudFormation and CDK fact in this file is from memory. The AWS documentation hosts were
- * unreachable when it was written, and no real AWS CLI or CloudFormation ran any of it (the tests use a fake `aws`).
- * Each assumption is marked below and listed in docs/act-pilot-apply.md. A wrong assumption fails closed unless noted;
- * each is checked against AWS's documentation and a real DEV run before live use. In short:
- *  - the AWS CLI v2 subcommands and flags used (create-change-set, `wait change-set-create-complete`, describe-change-set,
- *    execute-change-set, describe-stacks, describe-stack-events, cancel-update-stack, --no-cli-pager, `file://` template
- *    bodies), the web identity credentials the CLI reads from AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE, and `aws --version`;
- *  - the JSON they print (Id, StackId, Status, ExecutionStatus, Capabilities, Parameters, Changes[].ResourceChange.{Action,
- *    LogicalResourceId,ResourceType,Replacement}, Stacks[].{StackId,StackStatus,EnableTerminationProtection,LastUpdatedTime,
- *    CreationTime}, StackEvents[].{ResourceType,Timestamp}) and the stack and change set statuses named below. The brief
- *    called the executable state EXECUTE_AVAILABLE; this reads ExecutionStatus AVAILABLE;
- *  - that a stack with no earlier create is told apart by "does not exist" in the error text, that a CREATE change set
- *    leaves the stack in REVIEW_IN_PROGRESS, that a change set becomes OBSOLETE or UNAVAILABLE when the stack changed
- *    after it was made, that CreateChangeSet cannot set termination protection (a person does, after the first create),
- *    and that cancel-update-stack is valid only while the stack is UPDATE_IN_PROGRESS;
- *  - the 51,200 byte limit on an inline template body, the cloud assembly layout (manifest.json artifacts of type
- *    aws:cloudformation:stack, cdk:asset-manifest, cdk:tree and cdk:feature-flag-report, their `properties`
- *    templateFile, stackName, terminationProtection, file, and environment `aws://<account>/<region>`), and that the default
- *    synthesizer lists the stack's own template as the only file asset of a stack without assets.
+ * unreachable when it was written, and no real AWS CLI or CloudFormation ran any of it (the tests use a fake `aws`). The
+ * one list of the assumptions is in docs/act-pilot-apply.md ("CDK"); a comment "UNVERIFIED (n)" below marks where
+ * assumption n is relied on. Each is checked against AWS's documentation and a real DEV run before live use.
  */
 
 const EXECUTABLE = "aws";
-const PREVIEW_ADAPTER_VERSION = "cdk-preview-1.0.0";
-const APPLY_ADAPTER_VERSION = "cdk-apply-1.0.0";
+const PREVIEW_ADAPTER_VERSION = "cdk-preview-1.1.0";
+const APPLY_ADAPTER_VERSION = "cdk-apply-1.1.0";
 
 // --- the argument lists ---------------------------------------------------------------------------------
 
@@ -63,7 +48,8 @@ const STACK_NAME = /^[A-Za-z][A-Za-z0-9-]{0,127}$/;
 const REGION = /^[a-z]{2}(-[a-z]+)+-[0-9]$/;
 const REL_PATH = /^[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*$/;
 const climbs = (path: string): boolean => path.split("/").some((part) => part === "." || part === "..");
-const CAPABILITIES = ["CAPABILITY_IAM", "CAPABILITY_NAMED_IAM", "CAPABILITY_AUTO_EXPAND"] as const;
+/** CAPABILITY_AUTO_EXPAND is not here: it is for macros and transforms, which the engine refuses (`readAssembly`). */
+const CAPABILITIES = ["CAPABILITY_IAM", "CAPABILITY_NAMED_IAM"] as const;
 
 const STACK = slot("stack", (v) => STACK_NAME.test(v));
 const REGION_SLOT = slot("region", (v) => REGION.test(v));
@@ -83,11 +69,12 @@ const createShape = (capabilities: number): Shape => [
 ];
 const WAIT: Shape = ["cloudformation", "wait", "change-set-create-complete", "--change-set-name", CHANGE_SET_ARN, ...NO_OUTPUT];
 const DESCRIBE_CHANGE_SET: Shape = ["cloudformation", "describe-change-set", "--change-set-name", CHANGE_SET_ARN, ...JSON_OUTPUT];
+const GET_TEMPLATE: Shape = ["cloudformation", "get-template", "--change-set-name", CHANGE_SET_ARN, "--template-stage", "Original", ...JSON_OUTPUT];
 const EXECUTE: Shape = ["cloudformation", "execute-change-set", "--change-set-name", CHANGE_SET_ARN, ...NO_OUTPUT];
 const DESCRIBE_EVENTS: Shape = ["cloudformation", "describe-stack-events", "--stack-name", STACK, ...JSON_OUTPUT];
 const CANCEL: Shape = ["cloudformation", "cancel-update-stack", "--stack-name", STACK, ...NO_OUTPUT];
 
-type Entry = { who: Who; shape: Shape; adapters: readonly ("preview" | "apply")[] };
+type Entry = { who: Who; shape: Shape; adapters: readonly Adapter[] };
 /**
  * Everything the engine can run, and as whom. There is no delete (a stack or a change set), no create-stack, update-stack
  * or deploy, no way to name a parameter, a tag, a role or a rollback setting, and nothing for CHANGESET to execute with:
@@ -98,9 +85,11 @@ const ENTRIES: readonly Entry[] = [
   { who: "DISCOVERY", shape: DESCRIBE_STACKS, adapters: ["preview"] },
   // Qualification reads the stack as each identity; a change set creator that cannot describe a stack fails it.
   { who: "CHANGESET", shape: DESCRIBE_STACKS, adapters: ["preview", "apply"] },
-  ...[0, 1, 2, 3].map((n): Entry => ({ who: "CHANGESET", shape: createShape(n), adapters: ["preview"] })),
+  ...[0, 1, 2].map((n): Entry => ({ who: "CHANGESET", shape: createShape(n), adapters: ["preview"] })),
   { who: "CHANGESET", shape: WAIT, adapters: ["preview"] },
   { who: "CHANGESET", shape: DESCRIBE_CHANGE_SET, adapters: ["preview", "apply"] },
+  // UNVERIFIED (3): the change set's own template, to prove it is the assembly's.
+  { who: "CHANGESET", shape: GET_TEMPLATE, adapters: ["preview", "apply"] },
   { who: "APPLY", shape: DESCRIBE_STACKS, adapters: ["apply"] },
   { who: "APPLY", shape: EXECUTE, adapters: ["apply"] },
   { who: "APPLY", shape: DESCRIBE_EVENTS, adapters: ["apply"] },
@@ -110,12 +99,15 @@ const ENTRIES: readonly Entry[] = [
 const fits = (shape: Shape, args: readonly string[]): boolean =>
   shape.length === args.length && shape.every((part, index) => (typeof part === "string" ? part === args[index] : part.ok(args[index])));
 
-/** Exact match against the lists above for this identity. */
-export function isAllowedCdkArgv(who: Who, args: readonly string[]): boolean {
-  return Array.isArray(args) && args.every((arg) => typeof arg === "string") && ENTRIES.some((entry) => entry.who === who && fits(entry.shape, args));
+type Adapter = "preview" | "apply";
+
+/** Exact match against the lists above for this identity, and (when an adapter is named) for that adapter's surface alone. */
+export function isAllowedCdkArgv(who: Who, args: readonly string[], adapter?: Adapter): boolean {
+  return Array.isArray(args) && args.every((arg) => typeof arg === "string") &&
+    ENTRIES.some((entry) => entry.who === who && (adapter === undefined || entry.adapters.includes(adapter)) && fits(entry.shape, args));
 }
 
-const digestOf = (adapter: "preview" | "apply"): string => argvDigest(ENTRIES.filter((entry) => entry.adapters.includes(adapter)).map((entry) =>
+const digestOf = (adapter: Adapter): string => argvDigest(ENTRIES.filter((entry) => entry.adapters.includes(adapter)).map((entry) =>
   [entry.who ?? "NONE", EXECUTABLE, ...entry.shape.map((part) => (typeof part === "string" ? part : "<" + part.name + ">"))]));
 
 const describeStacksArgv = (stack: string, region: string): string[] => ["cloudformation", "describe-stacks", "--stack-name", stack, "--region", region, "--output", "json", "--no-cli-pager"];
@@ -125,15 +117,13 @@ const createArgv = (c: { stack: string; name: string; type: string; template: st
 ];
 const waitArgv = (arn: string, region: string): string[] => ["cloudformation", "wait", "change-set-create-complete", "--change-set-name", arn, "--region", region, "--no-cli-pager"];
 const describeChangeSetArgv = (arn: string, region: string): string[] => ["cloudformation", "describe-change-set", "--change-set-name", arn, "--region", region, "--output", "json", "--no-cli-pager"];
+const getTemplateArgv = (arn: string, region: string): string[] => ["cloudformation", "get-template", "--change-set-name", arn, "--template-stage", "Original", "--region", region, "--output", "json", "--no-cli-pager"];
 const executeArgv = (arn: string, region: string): string[] => ["cloudformation", "execute-change-set", "--change-set-name", arn, "--region", region, "--no-cli-pager"];
 const eventsArgv = (stack: string, region: string): string[] => ["cloudformation", "describe-stack-events", "--stack-name", stack, "--region", region, "--output", "json", "--no-cli-pager"];
 const cancelArgv = (stack: string, region: string): string[] => ["cloudformation", "cancel-update-stack", "--stack-name", stack, "--region", region, "--no-cli-pager"];
 
 // --- running the AWS CLI -------------------------------------------------------------------------------
 
-/** A step that needs no credentials is given none. */
-const withoutIdentities = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv =>
-  Object.fromEntries(Object.entries(env).filter(([key]) => !ANY_IDENTITY_VARIABLE.test(key)));
 /** Sealing never has the applier in the runner's environment at all. */
 const APPLIER = /^ALZ_APPLY_/;
 
@@ -147,7 +137,8 @@ type Session = {
   assertBound(): void;
 };
 
-type SessionInput = Pick<EngineContext, "scratchDir" | "env" | "toolDirs" | "manifest"> & { hide?: RegExp };
+/** `adapter` limits the session to one surface (sealing runs the preview adapter's lists, an apply the apply adapter's); qualification runs both. */
+type SessionInput = Pick<EngineContext, "scratchDir" | "env" | "toolDirs" | "manifest"> & { hide?: RegExp; adapter?: Adapter };
 
 function openSession(input: SessionInput): Session {
   const work = join(input.scratchDir, "work");
@@ -157,22 +148,12 @@ function openSession(input: SessionInput): Session {
     identity: who ?? "DISCOVERY", root: input.scratchDir, suppressDetail: true,
   });
   const run = (who: Who, args: readonly string[]): ToolResult => {
-    if (!isAllowedCdkArgv(who, args)) stop("ARGV_NOT_ALLOWED");
+    if (!isAllowedCdkArgv(who, args, input.adapter)) stop("ARGV_NOT_ALLOWED");
     return runBoundedProcess("aws_cloudformation", EXECUTABLE, [...args], work, options(who));
-  };
-  const unusable = (result: ToolResult): void => {
-    // A credential the runner refused (a newline, an unapproved host) would otherwise mean a run with no identity.
-    if (result.refusedEnvironment?.length) stop("ENVIRONMENT_REFUSED");
-    if (result.truncated) stop("OUTPUT_TRUNCATED");
   };
   return {
     work, run,
-    ok(who, args) {
-      const result = run(who, args);
-      unusable(result);
-      if (!result.ok) stop(result.exitCode === null ? "NOT_RUN" : "EXIT_" + result.exitCode);
-      return result.stdout;
-    },
+    ok: (who, args) => checkedOutput(run(who, args)),
     refused: (who) => refusedVariables(options(who)),
     assertBound() {
       const difference = projectDifference(work, input.manifest);
@@ -197,13 +178,19 @@ function prepareWork(session: Session, snapshotPath: string, engineVersion: stri
 
 // --- the cloud assembly -----------------------------------------------------------------------------------
 
-/** The most CloudFormation takes as an inline template body. Larger templates are uploaded as assets, which the pilot does not publish. */
+/** The most CloudFormation takes as an inline template body (UNVERIFIED (7)). Larger templates are uploaded as assets, which the pilot does not publish. */
 const MAX_TEMPLATE_BYTES = 51_200;
 const MAX_JSON_BYTES = 1_048_576;
-/** Artifact types an assembly of one stack and no assets holds. Anything else (a nested assembly, a second kind of stack) is refused. */
+/** Artifact types an assembly of one stack and no assets holds (UNVERIFIED (7)). Anything else (a nested assembly, a second kind of stack) is refused. */
 const PLAIN_ARTIFACTS: readonly string[] = ["cdk:asset-manifest", "cdk:tree", "cdk:feature-flag-report"];
 
-type Assembly = { stackName: string; templateFile: string; templateSha256: string };
+type Assembly = {
+  stackName: string; templateFile: string; templateSha256: string;
+  /** The template as CloudFormation should hold it (parsed, key order aside); a change set's own template is compared to this. */
+  canonicalSha256: string;
+  /** The template has an IAM resource, the only reason to pass an IAM capability. */
+  needsIam: boolean;
+};
 
 function readFileIn(work: string, relative: unknown, max: number, code: string): Buffer {
   if (typeof relative !== "string" || !REL_PATH.test(relative) || climbs(relative)) return stop(code);
@@ -217,11 +204,37 @@ function readFileIn(work: string, relative: unknown, max: number, code: string):
   return found.bytes ?? stop(code === "TEMPLATE_UNREADABLE" ? "TEMPLATE_TOO_LARGE" : code);
 }
 
+/**
+ * Whether any JSON object repeats a key. `JSON.parse` keeps the last, and CloudFormation parses the text itself, so a
+ * repeated key could show this check one template and CloudFormation another. Run on text that already parsed.
+ */
+function hasDuplicateKey(text: string): boolean {
+  const frames: (Set<string> | null)[] = [];
+  let wantKey = false;
+  for (const [token] of text.matchAll(/"(?:[^"\\]|\\.)*"|[{}[\],:]|[^\s"{}[\],:]+/g)) {
+    const frame = frames[frames.length - 1];
+    if (token === "{") { frames.push(new Set()); wantKey = true; }
+    else if (token === "[") { frames.push(null); wantKey = false; }
+    else if (token === "}" || token === "]") { frames.pop(); wantKey = false; }
+    else if (token === ",") wantKey = frame instanceof Set;
+    else if (token === ":") wantKey = false;
+    else if (wantKey && frame instanceof Set) {
+      const key = JSON.parse(token) as string;
+      if (frame.has(key)) return true;
+      frame.add(key);
+      wantKey = false;
+    }
+  }
+  return false;
+}
+
+/** A transform or macro expands the template where the hashes cannot see it (UNVERIFIED (3): the key names). */
 function walkTemplate(value: unknown): void {
   if (Array.isArray(value)) value.forEach(walkTemplate);
   else if (isRecord(value)) {
     for (const [key, child] of Object.entries(value)) {
       if (key === "Fn::ImportValue") stop("ASSEMBLY_CROSS_STACK_IMPORT");
+      if (key === "Fn::Transform") stop("ASSEMBLY_TRANSFORM");
       walkTemplate(child);
     }
   }
@@ -231,7 +244,9 @@ function walkTemplate(value: unknown): void {
  * The refusals that keep the pilot's input to what it can apply exactly: one stack, no asset to publish (the stack's own
  * template is the one file asset it lists, and it is sent inline), no nested stack or cross-stack import, the contract's
  * stack name, account and region (an assembly synthesized for any account and region names none), and termination
- * protection declared on. Reads the work copy's files; never runs anything.
+ * protection declared on. It also refuses what changes the template where the hashes cannot see it: a transform or
+ * macro, a custom resource (code that runs in the account), and a key repeated in the template. Reads the work copy's
+ * files; never runs anything.
  */
 function readAssembly(work: string, pinned: AwsTarget): Assembly {
   const manifest = parse(readFileIn(work, "manifest.json", MAX_JSON_BYTES, "ASSEMBLY_UNREADABLE").toString("utf8"), "ASSEMBLY_UNREADABLE");
@@ -263,29 +278,41 @@ function readAssembly(work: string, pinned: AwsTarget): Assembly {
   if (properties.terminationProtection !== true) stop("TERMINATION_PROTECTION_OFF");
 
   const bytes = readFileIn(work, templateFile, MAX_TEMPLATE_BYTES, "TEMPLATE_UNREADABLE");
-  const parsed = parse(bytes.toString("utf8"), "TEMPLATE_UNREADABLE");
+  const text = bytes.toString("utf8");
+  const parsed = parse(text, "TEMPLATE_UNREADABLE");
   const template = isRecord(parsed) ? parsed : stop("TEMPLATE_UNREADABLE");
-  if (Object.values(isRecord(template.Resources) ? template.Resources : {}).some((resource) => isRecord(resource) && resource.Type === "AWS::CloudFormation::Stack")) stop("ASSEMBLY_NESTED_STACK");
+  if (hasDuplicateKey(text)) stop("TEMPLATE_DUPLICATE_KEY");
+  if (template.Transform !== undefined) stop("ASSEMBLY_TRANSFORM");
+  const types = Object.values(isRecord(template.Resources) ? template.Resources : {}).map((resource) => (isRecord(resource) ? String(resource.Type) : ""));
+  if (types.includes("AWS::CloudFormation::Stack")) stop("ASSEMBLY_NESTED_STACK");
+  if (types.some((type) => type.startsWith("Custom::") || type === "AWS::CloudFormation::CustomResource" || type === "AWS::CloudFormation::Macro")) stop("ASSEMBLY_CUSTOM_RESOURCE");
   walkTemplate(template);
-  return { stackName, templateFile, templateSha256: sha256(bytes) };
+  return { stackName, templateFile, templateSha256: sha256(bytes), canonicalSha256: sha256(canonicalJson(template)), needsIam: types.some((type) => type.startsWith("AWS::IAM::")) };
 }
 
 // --- what CloudFormation reports ---------------------------------------------------------------------------
 
-type StackView = { id: string; status: string; protection: boolean; touched: string };
+/**
+ * The stack as CloudFormation describes it. `fingerprint` hashes everything a change set inherits from the stack and the
+ * approvers cannot see: its id, status, last change, service role, notification topics and rollback configuration. The
+ * seal records it and the apply requires it unchanged, twice (UNVERIFIED (3): the field names).
+ */
+type StackView = { id: string; status: string; protection: boolean; touched: string; fingerprint: string };
 
 /** `undefined` when the stack does not exist. The text of an error is matched, never carried. */
 function readStack(session: Session, who: Who, stack: string, region: string): StackView | undefined {
   const result = session.run(who, describeStacksArgv(stack, region));
-  if (result.refusedEnvironment?.length) stop("ENVIRONMENT_REFUSED");
-  if (result.truncated) stop("OUTPUT_TRUNCATED");
+  assertUsable(result);
+  // UNVERIFIED (4): that a missing stack is told apart by this text.
   if (!result.ok) return result.exitCode !== null && /\bdoes not exist\b/.test(result.stderr) ? undefined : stop("STACK_UNREADABLE");
   const document = parse(result.stdout, "STACK_UNREADABLE");
   const found = isRecord(document) && Array.isArray(document.Stacks) && isRecord(document.Stacks[0]) ? document.Stacks[0] : stop("STACK_UNREADABLE");
-  return {
+  const view = {
     id: str(found.StackId, "STACK_UNREADABLE"), status: str(found.StackStatus, "STACK_UNREADABLE"), protection: found.EnableTerminationProtection === true,
     touched: str(found.LastUpdatedTime ?? found.CreationTime, "STACK_UNREADABLE"),
   };
+  const inherited = { roleArn: found.RoleARN ?? null, notificationArns: found.NotificationARNs ?? null, rollback: found.RollbackConfiguration ?? null };
+  return { ...view, fingerprint: sha256(canonicalJson({ ...view, inherited })) };
 }
 
 const IN_PROGRESS = new Set([
@@ -335,16 +362,17 @@ function readChangeSet(session: Session, arn: string, region: string): ChangeVie
 
 /**
  * The artifact bytes: what the apply runs. It names the change set to execute and binds everything the approvers saw: the
- * stack, the change set, the template (by hash), the parameters (by hash), the capabilities and the change list (by hash).
+ * stack, the change set, the template (by hash), the parameters (by hash), the capabilities and the change list (by hash),
+ * and the state of the stack the change set was made against (by hash, `StackView.fingerprint`).
  */
 type SealedRecord = {
   schemaVersion: 1; kind: "CDK_CHANGE_SET"; account: string; region: string; stackName: string; stackId: string;
   changeSetId: string; changeSetName: string; changeSetType: "CREATE" | "UPDATE"; templateFile: string; templateSha256: string;
-  parametersSha256: string; capabilities: string[]; changeListSha256: string;
+  parametersSha256: string; capabilities: string[]; changeListSha256: string; stackSha256: string;
 };
 const RECORD_KEYS = [
   "schemaVersion", "kind", "account", "region", "stackName", "stackId", "changeSetId", "changeSetName", "changeSetType", "templateFile", "templateSha256",
-  "parametersSha256", "capabilities", "changeListSha256",
+  "parametersSha256", "capabilities", "changeListSha256", "stackSha256",
 ];
 const HEX = /^[0-9a-f]{64}$/;
 
@@ -356,8 +384,8 @@ function parseRecord(artifact: Buffer, pinned: AwsTarget): SealedRecord {
   if (!isRecord(value) || Object.keys(value).sort().join() !== [...RECORD_KEYS].sort().join() || record.schemaVersion !== 1 || record.kind !== "CDK_CHANGE_SET" ||
     record.account !== pinned.accountId || record.region !== region || record.stackName !== pinned.backend ||
     !arn("stack", new RegExp(pinned.backend)).test(record.stackId) || !arn("changeSet", /alz-[0-9a-f]{12}/).test(record.changeSetId) ||
-    !/^alz-[0-9a-f]{12}$/.test(record.changeSetName) || !["CREATE", "UPDATE"].includes(record.changeSetType) || !REL_PATH.test(record.templateFile) || climbs(record.templateFile) ||
-    ![record.templateSha256, record.parametersSha256, record.changeListSha256].every((h) => HEX.test(h)) ||
+    !/^alz-[0-9a-f]{12}$/.test(record.changeSetName) || record.changeSetId.split("/")[1] !== record.changeSetName || !["CREATE", "UPDATE"].includes(record.changeSetType) || !REL_PATH.test(record.templateFile) || climbs(record.templateFile) ||
+    ![record.templateSha256, record.parametersSha256, record.changeListSha256, record.stackSha256].every((h) => HEX.test(h)) ||
     !Array.isArray(record.capabilities) || !record.capabilities.every((c) => (CAPABILITIES as readonly string[]).includes(c))) {
     return stop("ARTIFACT_TAMPERED");
   }
@@ -366,10 +394,19 @@ function parseRecord(artifact: Buffer, pinned: AwsTarget): SealedRecord {
 
 const sameList = (a: readonly string[], b: readonly string[]): boolean => a.length === b.length && a.every((item, index) => item === b[index]);
 
+/** The hash of the template a change set holds (UNVERIFIED (3): `get-template` prints `TemplateBody`, an object for JSON), to compare with the assembly's. */
+function changeSetTemplateSha256(session: Session, arn: string, region: string): string {
+  const document = parse(session.ok("CHANGESET", getTemplateArgv(arn, region)), "CHANGE_SET_UNREADABLE");
+  const body = isRecord(document) ? document.TemplateBody : undefined;
+  const template = typeof body === "string" ? parse(body, "CHANGE_SET_UNREADABLE") : body;
+  return isRecord(template) ? sha256(canonicalJson(template)) : stop("CHANGE_SET_UNREADABLE");
+}
+
 /**
  * The change list of the sealed record, derived again from the change set CloudFormation holds now. An id, stack or hash
  * that is not the sealed one is ARTIFACT_TAMPERED; a change set that can no longer be executed (the stack changed after it
- * was made, or it was used) is PLAN_STALE. Nothing is created, executed or deleted.
+ * was made, or it was used) is PLAN_STALE (UNVERIFIED (4): that CloudFormation says so; the stack check in `rederive` does not depend on it).
+ * Nothing is created, executed or deleted.
  */
 function describeSealed(session: Session, artifact: Buffer, pinned: AwsTarget): { record: SealedRecord; changes: PlanChange[] } {
   const record = parseRecord(artifact, pinned);
@@ -384,12 +421,13 @@ function describeSealed(session: Session, artifact: Buffer, pinned: AwsTarget): 
 
 /**
  * Creates the change set (CREATE for a stack that does not exist or was never executed, UPDATE for one that is in a
- * stable state with termination protection on), waits for it, describes it, and returns the record and the change list.
- * Executes nothing and deletes nothing: a change set that is not sealed stays for a person to clear.
+ * stable state with termination protection on), waits for it, describes it, proves that it holds the assembly's template,
+ * records the stack it was made against, and returns the record and the change list. Executes nothing and deletes
+ * nothing: a change set that is not sealed stays for a person to clear.
  */
 function plan(input: EngineContext & { snapshotPath: string; engineVersion: string }): { artifact: Buffer; changes: PlanChange[] } {
   const pinned = input.pinned as AwsTarget;
-  const session = openSession({ ...input, hide: APPLIER });
+  const session = openSession({ ...input, hide: APPLIER, adapter: "preview" });
   try {
     prepareWork(session, input.snapshotPath, input.engineVersion);
     // The runner would drop a variable it refuses and run with the rest; a change set is never created that way.
@@ -403,7 +441,8 @@ function plan(input: EngineContext & { snapshotPath: string; engineVersion: stri
       if (!stack.protection) stop("TERMINATION_PROTECTION_OFF");
       type = "UPDATE";
     }
-    const capabilities = [...(pinned.capabilities ?? [])].sort();
+    // Only a template with an IAM resource is given the contract's IAM capabilities; a template without one is given none.
+    const capabilities = assembly.needsIam ? [...(pinned.capabilities ?? [])].sort() : [];
     const name = "alz-" + randomBytes(6).toString("hex");
     const created = parse(session.ok("CHANGESET", createArgv({ stack: assembly.stackName, name, type, template: assembly.templateFile, capabilities, region })), "CHANGE_SET_UNREADABLE");
     const changeSetId = isRecord(created) ? str(created.Id, "CHANGE_SET_UNREADABLE") : stop("CHANGE_SET_UNREADABLE");
@@ -415,10 +454,16 @@ function plan(input: EngineContext & { snapshotPath: string; engineVersion: stri
     const view = readChangeSet(session, changeSetId, region);
     if (view.id !== changeSetId || view.stackId !== stackId || view.stackName !== assembly.stackName) stop("CHANGE_SET_MISMATCH");
     if (view.status !== "CREATE_COMPLETE" || view.execution !== "AVAILABLE") stop("CHANGE_SET_NOT_CREATED");
+    // CloudFormation reports no capability that was not passed.
     if (view.capabilities.some((capability) => !capabilities.includes(capability))) stop("CAPABILITY_NOT_IN_CONTRACT");
+    if (changeSetTemplateSha256(session, changeSetId, region) !== assembly.canonicalSha256) stop("CHANGE_SET_TEMPLATE_MISMATCH");
+    // The stack the change set was made against, as the apply must find it again (UNVERIFIED (4): that creating a change set does not change it).
+    const against = readStack(session, "DISCOVERY", assembly.stackName, region);
+    if (against === undefined || against.id !== stackId) stop("CHANGE_SET_MISMATCH");
     const record: SealedRecord = {
       schemaVersion: 1, kind: "CDK_CHANGE_SET", account: pinned.accountId, region, stackName: assembly.stackName, stackId, changeSetId, changeSetName: name, changeSetType: type,
       templateFile: assembly.templateFile, templateSha256: assembly.templateSha256, parametersSha256: view.parametersSha256, capabilities: view.capabilities, changeListSha256: view.changesSha256,
+      stackSha256: against!.fingerprint,
     };
     return { artifact: Buffer.from(canonicalJson(record)), changes: view.changes };
   } finally {
@@ -426,7 +471,11 @@ function plan(input: EngineContext & { snapshotPath: string; engineVersion: stri
   }
 }
 
-/** The qualification run: the version check, the assembly, and a describe-stacks as each identity. No change set, nothing created. */
+/**
+ * The qualification run: the version check, the assembly, and a describe-stacks as each identity. No change set, nothing
+ * created. It exercises no create, execute or cancel call, so it cannot show that CHANGESET cannot execute or that APPLY
+ * cannot create: that separation rests on the cloud's IAM and the person's attestation alone (docs/act-pilot-apply.md).
+ */
 function qualify(input: EngineContext & { snapshotPath: string; engineVersion: string }): void {
   const pinned = input.pinned as AwsTarget;
   const session = openSession(input);
@@ -440,15 +489,9 @@ function qualify(input: EngineContext & { snapshotPath: string; engineVersion: s
   }
 }
 
-function rederiveChanges(input: EngineContext & { artifact: Buffer }): PlanChange[] {
-  const session = openSession({ ...input, hide: APPLIER });
-  mkdirSync(session.work, { recursive: true, mode: 0o700 });
-  return describeSealed(session, input.artifact, input.pinned as AwsTarget).changes;
-}
-
 // --- applying ----------------------------------------------------------------------------------------------------
 
-/** A stack can take a long time to update; a time limit is a stop like the kill switch. */
+/** A stack can take a long time to update; a time limit is a stop like the kill switch, and like it cancels an update (which CloudFormation rolls back). */
 const APPLY_DEADLINE_MS = 60 * 60_000;
 const POLL_MS = 2_000;
 /** How long after a stop the engine waits for the stack to settle, unless the driver says otherwise. CloudFormation rolls back; it does not stop at once. */
@@ -463,20 +506,26 @@ const outcomeResult = (over: Partial<StoppableResult>): StoppableResult => ({ to
 function openApply(input: EngineRunInput): EngineApplyRun {
   const pinned = input.pinned as AwsTarget;
   const { region } = pinned;
-  const session = openSession(input);
+  const session = openSession({ ...input, adapter: "apply" });
+  /** The stack as read just before the execution; the outcome is judged against it. */
   let before: StackView | undefined;
   let sealed: SealedRecord | undefined;
   const ran: { executeExit: number | null; view?: StackView; stopped: boolean } = { executeExit: null, stopped: false };
-  const changed = (view: StackView | undefined): boolean => view !== undefined && before !== undefined && (view.status !== before.status || view.touched !== before.touched);
+  const moved = (view: StackView | undefined): boolean => view !== undefined && before !== undefined && (view.status !== before.status || view.touched !== before.touched);
+  const stackNow = (): StackView => readStack(session, "APPLY", pinned.backend, region) ?? stop("STACK_UNREADABLE");
 
   /** Whether a resource changed after the execution began: any event for something other than the stack itself. Unreadable is yes. */
   function resourcesTouched(): boolean {
-    try {
-      const events = parse(session.ok("APPLY", eventsArgv(pinned.backend, region)), "EVENTS_UNREADABLE");
-      const since = Date.parse(before?.touched ?? "");
-      if (!isRecord(events) || !Array.isArray(events.StackEvents) || Number.isNaN(since)) return true;
-      return events.StackEvents.some((event) => !isRecord(event) || (event.ResourceType !== "AWS::CloudFormation::Stack" && !(Date.parse(String(event.Timestamp)) <= since)));
-    } catch { return true; }
+    let events: unknown;
+    try { events = JSON.parse(session.ok("APPLY", eventsArgv(pinned.backend, region))); } catch { return true; }
+    const since = Date.parse(before?.touched ?? "");
+    if (!isRecord(events) || !Array.isArray(events.StackEvents) || Number.isNaN(since)) return true;
+    return events.StackEvents.some((event) => !isRecord(event) || (event.ResourceType !== "AWS::CloudFormation::Stack" && !(Date.parse(String(event.Timestamp)) <= since)));
+  }
+
+  /** What the sealed change set says about its execution now (UNVERIFIED (4): AVAILABLE before, EXECUTE_COMPLETE after); undefined when it cannot be read. */
+  function executionNow(): string | undefined {
+    try { return readChangeSet(session, sealed!.changeSetId, region).execution; } catch { return undefined; }
   }
 
   return {
@@ -484,28 +533,39 @@ function openApply(input: EngineRunInput): EngineApplyRun {
     prepare(snapshotPath) {
       prepareWork(session, snapshotPath, input.engineVersion);
       if (session.refused("APPLY").length > 0 || session.refused("CHANGESET").length > 0) stop("ENVIRONMENT_REFUSED");
-      before = readStack(session, "APPLY", pinned.backend, region) ?? stop("STACK_UNREADABLE");
+      before = stackNow();
     },
     rederive(artifact) {
       const found = describeSealed(session, artifact, pinned);
       const assembly = readAssembly(session.work, pinned);
       if (assembly.templateFile !== found.record.templateFile || assembly.templateSha256 !== found.record.templateSha256) stop("ARTIFACT_TAMPERED");
+      // The change set holds the assembly's template, whatever the hashes of its change list say.
+      if (changeSetTemplateSha256(session, found.record.changeSetId, region) !== assembly.canonicalSha256) stop("ARTIFACT_TAMPERED");
       if (before === undefined) stop("ENGINE_NOT_PREPARED");
       if (before!.id !== found.record.stackId) stop("ARTIFACT_TAMPERED");
-      if (found.record.changeSetType === "CREATE" ? before!.status !== "REVIEW_IN_PROGRESS" : !UPDATABLE.has(before!.status)) stop("PLAN_STALE");
+      // The stack is as it was when the change set was made: not changed since, and not given another role, topic or rollback setting.
+      if (before!.fingerprint !== found.record.stackSha256) stop("PLAN_STALE");
       sealed = found.record;
       return found.changes;
     },
+    // Everything before the execute call may throw: nothing has run, and the driver gives the artifact back. From the call on
+    // nothing throws, because CloudFormation may have accepted the execution: whatever goes wrong is a result for `settle`.
     async execute(artifact, control) {
       const record = parseRecord(artifact, pinned);
       // The last look before the execution exists, as the runner takes for a process it spawns.
       if (control.stopWhen()) return outcomeResult({ stopped: true, notStarted: true, stderr: "Stopped before the execution started." });
+      if (sealed === undefined) stop("ENGINE_NOT_PREPARED");
+      if (canonicalJson(record) !== canonicalJson(sealed)) stop("ARTIFACT_TAMPERED");
+      // The stack is read again now, after the approvals were consumed, and must still be the one the change set was made against.
+      const now = stackNow();
+      if (now.fingerprint !== sealed!.stackSha256) stop("PLAN_STALE");
+      if (session.refused("APPLY").length > 0 || session.refused("CHANGESET").length > 0) stop("ENVIRONMENT_REFUSED");
+      before = now;
+
       let signalled = false;
       const release = interceptStopSignals(() => { signalled = true; });
       try {
-        const started = session.run("APPLY", executeArgv(record.changeSetId, region));
-        if (started.refusedEnvironment?.length) stop("ENVIRONMENT_REFUSED");
-        ran.executeExit = started.exitCode;
+        ran.executeExit = session.run("APPLY", executeArgv(record.changeSetId, region)).exitCode;
         const pollMs = control.pollMs ?? POLL_MS;
         const deadline = Date.now() + APPLY_DEADLINE_MS;
         const settleMs = control.graceMs ?? SETTLE_AFTER_STOP_MS;
@@ -521,16 +581,17 @@ function openApply(input: EngineRunInput): EngineApplyRun {
           } else {
             unreadable = 0;
             ran.view = view;
-            if (!changed(view)) {
-              // The execution was refused and nothing moved, or it has not shown yet.
+            if (!moved(view)) {
+              // Nothing moved. A refused execute is judged by `settle` from one look; an accepted one may not have shown yet.
               if (ran.executeExit !== 0 || ++unstarted > MAX_UNSTARTED_POLLS) break;
             } else if (!IN_PROGRESS.has(view.status)) break;
           }
           if (stoppedAt === undefined && (signalled || control.stopWhen() || Date.now() > deadline)) {
             stoppedAt = Date.now();
             ran.stopped = true;
-            // Only an update in progress can be canceled (a create cannot); CloudFormation then rolls back, and this waits for it.
-            if (!canceled && view?.status === "UPDATE_IN_PROGRESS") {
+            // Only an update this command started can be canceled (a create cannot, and a stack moving under someone else's
+            // update is not ours to roll back); CloudFormation then rolls back, and this waits for it.
+            if (!canceled && ran.executeExit === 0 && view?.status === "UPDATE_IN_PROGRESS") {
               canceled = true;
               session.run("APPLY", cancelArgv(pinned.backend, region));
             }
@@ -538,19 +599,26 @@ function openApply(input: EngineRunInput): EngineApplyRun {
           if (stoppedAt !== undefined && Date.now() - stoppedAt > settleMs) break;
           await sleep(pollMs);
         }
-        return outcomeResult({ ok: ran.executeExit === 0, exitCode: ran.executeExit, stopped: ran.stopped });
+      } catch {
+        // Whatever the stack and the change set show now is what `settle` has.
       } finally {
         release();
       }
+      return outcomeResult({ ok: ran.executeExit === 0, exitCode: ran.executeExit, stopped: ran.stopped });
     },
+    // Success needs all of: our execute exited 0, the stack moved to the completed status, and the sealed change set says it was executed.
+    // Not moving is a no-change only when our execute failed and the change set is still unexecuted.
     settle() {
-      const view = ran.view;
       if (sealed === undefined) return stop("ENGINE_NOT_PREPARED");
-      if (changed(view) && view!.status === (sealed.changeSetType === "CREATE" ? "CREATE_COMPLETE" : "UPDATE_COMPLETE")) return { outcome: "SUCCEEDED" } satisfies ApplyEnd;
+      const view = ran.view;
+      const execution = executionNow();
+      if (ran.executeExit === 0 && moved(view) && view!.status === (sealed.changeSetType === "CREATE" ? "CREATE_COMPLETE" : "UPDATE_COMPLETE") && execution === "EXECUTE_COMPLETE") {
+        return { outcome: "SUCCEEDED" } satisfies ApplyEnd;
+      }
       if (ran.stopped) return { outcome: "KILLED" };
-      if (view === undefined || (!changed(view) && ran.executeExit === 0)) return { outcome: "PARTIAL_REQUIRES_REVIEW" };
-      if (!changed(view)) return { outcome: "FAILED_NO_CHANGE" };
-      if (ROLLED_BACK.has(view.status)) return { outcome: resourcesTouched() ? "PARTIAL_REQUIRES_REVIEW" : "FAILED_NO_CHANGE" };
+      if (view === undefined) return { outcome: "PARTIAL_REQUIRES_REVIEW" };
+      if (!moved(view)) return { outcome: ran.executeExit !== 0 && execution === "AVAILABLE" ? "FAILED_NO_CHANGE" : "PARTIAL_REQUIRES_REVIEW" };
+      if (ran.executeExit === 0 && ROLLED_BACK.has(view.status)) return { outcome: resourcesTouched() ? "PARTIAL_REQUIRES_REVIEW" : "FAILED_NO_CHANGE" };
       return { outcome: "PARTIAL_REQUIRES_REVIEW" };
     },
     recoveryFiles: () => [],
@@ -584,7 +652,8 @@ export const CDK: EngineSpec = {
     attestation: (_provider, changeSet, apply) => [
       "  change set creation was by   CHANGESET  " + changeSet,
       "  stack execution is by        APPLY      " + apply,
-      "Only if the logs show that, and the APPLY client never created a change set and the CHANGESET client never executed one, type (anything else writes nothing):",
+      "This run only described stacks. That CHANGESET cannot execute and APPLY cannot create a change set is shown by the roles' IAM policies and the cloud's logs, not by this run.",
+      "Only if they show that, and the APPLY client never created a change set and the CHANGESET client never executed one, type (anything else writes nothing):",
     ],
     applyNote: "It executes exactly the sealed change set, never a new one, with the APPLY identity. It never deletes a stack or a change set.",
   },
@@ -600,17 +669,18 @@ export const CDK: EngineSpec = {
   },
   plan,
   qualify,
-  rederiveChanges,
   openApply,
   outcomeMessages: {
-    FAILED_NO_CHANGE: "The change set was not executed, or the stack was rolled back with no resource touched, and the stack is as it was. Engine output is withheld because it can quote " +
-      "template and parameter values. This sealed change set and its approvals are spent: seal a new change set and obtain new approvals to try again.",
-    PARTIAL_REQUIRES_REVIEW: "The stack update or create failed after it started, or ended in a state this command does not know (UPDATE_ROLLBACK_FAILED, ROLLBACK_FAILED, a rollback " +
-      "that touched resources, or an unreadable stack). Do not retry. A person must review the stack, its events and its resources by hand before any new change set. " +
-      "This sealed change set and its approvals are spent, and the engine's output is withheld because it can quote template and parameter values.",
-    KILLED: "The apply was told to stop while it ran (the kill switch appeared, the time limit passed, or this command received SIGINT, SIGTERM, SIGHUP or SIGQUIT). An update in " +
-      "progress was sent one cancel-update-stack, and CloudFormation rolls it back; a create cannot be canceled and runs on. The stack may be partly changed or still changing. " +
-      "Do not retry. A person must review the stack and its resources by hand before any new change set. This sealed change set and its approvals are spent.",
+    FAILED_NO_CHANGE: "The execution was refused: the stack did not move and CloudFormation reports the sealed change set still unexecuted, or the stack was rolled back with no " +
+      "resource touched. Engine output is withheld because it can quote template and parameter values. This sealed change set and its approvals are spent: seal a new change set " +
+      "and obtain new approvals to try again.",
+    PARTIAL_REQUIRES_REVIEW: "The stack update or create failed after it started, or it cannot be told from one that did: a lost response, an unreadable stack or change set, a stack that " +
+      "moved for another reason, a rollback that touched resources, or a state this command does not know (UPDATE_ROLLBACK_FAILED, ROLLBACK_FAILED). Do not retry. A person must " +
+      "review the stack, its events and its resources by hand before any new change set. This sealed change set and its approvals are spent, and the engine's output is withheld " +
+      "because it can quote template and parameter values.",
+    KILLED: "The apply was told to stop while it ran (the kill switch appeared, the 60 minute time limit passed, or this command received SIGINT, SIGTERM, SIGHUP or SIGQUIT). An update " +
+      "this command started was sent one cancel-update-stack, and CloudFormation rolls it back; a create cannot be canceled and runs on. The stack may be partly changed or still " +
+      "changing. Do not retry. A person must review the stack and its resources by hand before any new change set. This sealed change set and its approvals are spent.",
   },
   recoveryLostNote: "",
   recoveryFileNames: [],

@@ -109,10 +109,10 @@ export type QualificationEvidence = { [accountField: string]: unknown } & {
   /** Besides the provider's account fields (the DEV account the qualification ran against; apply refuses any other): the DEV backend and workspace it ran against. */
   backend: string;
   workspace: string;
-  /** The STATE_WRITE and APPLY principals (client ids, role ARNs) the operator attested from the cloud logs, trimmed and lowercase. */
+  /** The two attested principals (`EngineSpec.attests`: STATE_WRITE and APPLY, or CHANGESET and APPLY for CDK; client ids, role ARNs) the operator attested from the cloud logs, trimmed and lowercase. */
   stateWriteClientId: string;
   applyClientId: string;
-  /** SHA-256 of the engine binary that qualified; a different binary needs a new qualification. */
+  /** SHA-256 of the engine binary that qualified (the aws CLI's for CDK); a different binary needs a new qualification. */
   terraformSha256: string;
   adapterVersion: string;
   argvDigest: string;
