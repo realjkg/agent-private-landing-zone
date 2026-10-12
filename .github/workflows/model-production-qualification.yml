@@ -90,7 +90,8 @@ jobs:
             exit 1
           fi
 
-          if [[ "${ALZ_TARGET_HARDWARE_ID^^}" == "UNKNOWN" ]]; then
+          # Case-insensitive UNKNOWN without ${var^^} (bash 4+) or external tools, so macOS bash 3.2 runs it too.
+          if [[ "${ALZ_TARGET_HARDWARE_ID}" =~ ^[Uu][Nn][Kk][Nn][Oo][Ww][Nn]$ ]]; then
             echo "::error::Supply the actual owner-assigned hardware-profile ID."
             exit 1
           fi
@@ -124,10 +125,10 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
 
-      - name: Configure Node 24
+      - name: Configure Node 26
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: "24"
+          node-version: "26"
           cache: npm
           cache-dependency-path: package-lock.json
           package-manager-cache: false
@@ -144,7 +145,7 @@ jobs:
           '
 
           test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
-          test "$(node -p 'process.versions.node.split(".")[0]')" = "24"
+          test "$(node -p 'process.versions.node.split(".")[0]')" = "26"
 
           # Remove stale evidence from previous self-hosted runs.
           rm -rf .runs/model-qualification .runs/qualification

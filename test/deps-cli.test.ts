@@ -19,7 +19,7 @@ const root = mkdtempSync(join(tmpdir(), "alz-deps-cli-"));
 test.after(() => rmSync(root, { recursive: true, force: true }));
 
 const pins = loadToolPins();
-const NODE = "24.11.0";
+const NODE = "26.9.0";
 
 function fakeTool(dir: string, name: string, body: string): void {
   mkdirSync(dir, { recursive: true });
@@ -59,7 +59,7 @@ test("the checks pass with the tested tools, and an unlisted Node version is nam
   const wrongNode = await runDependencyChecks(ctx("node", { nodeVersion: "22.1.0" }), REQUIRED);
   const node = byId(wrongNode, "node");
   assert.equal(node.ok, false);
-  assert.match(node.fix!, /Install Node 24/);
+  assert.match(node.fix!, /Install Node 26/);
 });
 
 test("a tool that is missing or not the pinned version fails with a fix; the app's own copy is preferred over PATH", async () => {
