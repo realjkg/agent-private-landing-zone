@@ -43,8 +43,12 @@ const fingerprint = (env: NodeJS.ProcessEnv, name: string, identity?: string) =>
   `const v = process.env[${JSON.stringify(name)}];
    process.stdout.write(v === undefined ? "absent" : require("crypto").createHash("sha256").update(v).digest("hex"))`,
   env, { identity }).stdout;
+// macOS adds __CF_USER_TEXT_ENCODING to every child process; it is not inherited from the parent and carries no secret.
 const childEnv = (env: NodeJS.ProcessEnv, options = {}) =>
-  JSON.parse(run(PRINT_ENV, env, options).stdout) as Record<string, string>;
+  Object.fromEntries(
+    Object.entries(JSON.parse(run(PRINT_ENV, env, options).stdout) as Record<string, string>)
+      .filter(([name]) => name !== "__CF_USER_TEXT_ENCODING"),
+  );
 
 test("unrelated credentials and the operator's credential files are not inherited", () => {
   const operatorHome = join(work, "operator-home");

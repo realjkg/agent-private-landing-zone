@@ -90,7 +90,8 @@ jobs:
             exit 1
           fi
 
-          if [[ "${ALZ_TARGET_HARDWARE_ID^^}" == "UNKNOWN" ]]; then
+          # Case-insensitive UNKNOWN without ${var^^} (bash 4+) or external tools, so macOS bash 3.2 runs it too.
+          if [[ "${ALZ_TARGET_HARDWARE_ID}" =~ ^[Uu][Nn][Kk][Nn][Oo][Ww][Nn]$ ]]; then
             echo "::error::Supply the actual owner-assigned hardware-profile ID."
             exit 1
           fi
