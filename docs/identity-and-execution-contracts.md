@@ -22,7 +22,7 @@ A Terraform or OpenTofu plan is not static inspection. It loads provider binarie
 
 ## Identities
 
-Exactly four identities exist (`src/tools/identity.ts`):
+Exactly five identities exist (`src/tools/identity.ts`):
 
 | Identity | Used for | Variables |
 | --- | --- | --- |
@@ -30,12 +30,13 @@ Exactly four identities exist (`src/tools/identity.ts`):
 | `STATE` | reading the state container and taking the lease, for a destroy preview | `ALZ_STATE_<VAR>` |
 | `STATE_WRITE` | writing state blobs and taking the lease; used by apply only | `ALZ_STATE_WRITE_<VAR>` |
 | `APPLY` | provider writes; used by apply only, never a state fallback | `ALZ_APPLY_<VAR>` |
+| `CHANGESET` | creates and describes CloudFormation change sets, never executes one; used by the pilot's CDK engine only | `ALZ_CHANGESET_<VAR>` |
 
 Rules, each enforced in code:
 
 1. **Neither inherits the operator's credentials.** The child starts with an empty environment and a private `HOME` (`docs/runner-hardening.md`).
-2. **Neither falls back to the deployment identity, or to each other.** The runner accepts only the four named identities; any other name (`DEPLOY`, `OPERATOR`, a typo) is refused before a process starts. A variable set for one identity is never delivered under the other.
-3. **Separate principals.** `collapsedBetween` (and `collapsedIdentityVariables` for STATE and DISCOVERY) reports, by name and never by value, any secret or client id configured identically for two identities; `checkApplyIdentities` (`src/apply/identities.ts`) requires all four configured and no pair collapsed. Discovery and preview children never receive `STATE_WRITE` or `APPLY` variables. The driver (step 4) must refuse to run when it is non-empty; step 2 supplies the check. `forbiddenIdentityVariables` reports `ALZ_DEPLOY_*`, `ALZ_OPERATOR_*`, `ALZ_ADMIN_*`, `ALZ_DESTROY_*` and similar, which nothing reads, so a mistaken export is visible instead of silently ignored.
+2. **Neither falls back to the deployment identity, or to each other.** The runner accepts only the five named identities; any other name (`DEPLOY`, `OPERATOR`, a typo) is refused before a process starts. A variable set for one identity is never delivered under the other.
+3. **Separate principals.** `collapsedBetween` (and `collapsedIdentityVariables` for STATE and DISCOVERY) reports, by name and never by value, any secret or client id configured identically for two identities; `checkApplyIdentities` (`src/apply/identities.ts`) requires all of the engine's identities configured (four for Terraform, three for CDK), none the engine does not use, and no pair collapsed. Discovery and preview children never receive `STATE_WRITE`, `APPLY` or `CHANGESET` variables. The driver (step 4) must refuse to run when it is non-empty; step 2 supplies the check. `forbiddenIdentityVariables` reports `ALZ_DEPLOY_*`, `ALZ_OPERATOR_*`, `ALZ_ADMIN_*`, `ALZ_DESTROY_*` and similar, which nothing reads, so a mistaken export is visible instead of silently ignored.
 4. **Locking stays on.** No adapter passes `-lock=false` or any other lock bypass; a test pins this for the Terraform, OpenTofu and Pulumi adapters and the broker, and the argv pins in `test/destroy-preview-boundary.test.ts` no longer contain it. The state identity needs the access to take the lock. It is never given a way around it.
 5. **State is sensitive material.** The engine profiles still log no output excerpts, and plan or state JSON is not diagnostic output.
 

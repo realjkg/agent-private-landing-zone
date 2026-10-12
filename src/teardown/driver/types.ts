@@ -18,7 +18,7 @@ import type { DeletionUnit, DestroyPreview } from "../types.js";
  * is human-invoked only. It is not a broker tool, and nothing in this
  * directory is reachable from src/tools.
  */
-export type DriverEngine = ManifestEngine;
+export type DriverEngine = Exclude<ManifestEngine, "CDK">;
 export const DRIVER_ENGINES: readonly DriverEngine[] = ["TERRAFORM", "OPENTOFU", "PULUMI"];
 
 /** Ordinary preview and destroy preview are separate operations. */
@@ -94,7 +94,7 @@ export type PreviewAuthority = {
   agentInitiated: false;
 };
 
-export type AdapterDescriptor = { engine: DriverEngine; adapterVersion: string; argvDigest: string };
+export type AdapterDescriptor = { engine: ManifestEngine; adapterVersion: string; argvDigest: string };
 
 /**
  * What a preview leaves behind. It carries the normalized, redacted change

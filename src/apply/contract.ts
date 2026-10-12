@@ -9,8 +9,8 @@ import type { QualificationRecord } from "../teardown/driver/qualification.js";
 import type { ResolvedTarget } from "../teardown/driver/types.js";
 import { canonicalJson } from "../teardown/manifest.js";
 import { sha256 } from "../util/sha256.js";
-import { approvedToolDirs, resolveExecutable } from "../tools/child-env.js";
 import { ENVIRONMENTS, HASH } from "./constants.js";
+import { ENGINE_IDS, engineSpec, type EngineSpec } from "./engine-spec.js";
 import { applyEvidenceProblems, qualificationEvidenceProblems, type QualificationEvidence } from "./evidence.js";
 import { accountFieldsOf, PROVIDER_IDS, providerSpec, specOf, type ProviderSpec } from "./provider.js";
 import type { ApplyEnvironment, ApplyEvidence, ApplyRefusalCode, ApplyResult, ApproverEntry, PilotContract, PilotTarget } from "./types.js";
@@ -74,14 +74,17 @@ const text = (value: unknown, path: string, ok: (v: string) => boolean): string 
 const integer = (value: unknown, path: string, min: number, max: number): number =>
   typeof value === "number" && Number.isInteger(value) && value >= min && value <= max ? value : bad(path + ": expected an integer from " + min + " to " + max);
 
-/** A target in the contract's provider's shape: its account fields, then the backend and the workspace. */
-function target(value: unknown, path: string, spec: ProviderSpec): PilotTarget {
+/** A target in the contract's provider's shape: its account fields, then the backend and the workspace, and the engine's own fields (CDK: the capabilities it may use). */
+function target(value: unknown, path: string, spec: ProviderSpec, engine: EngineSpec): PilotTarget {
   const fields = Object.entries(spec.accountFields);
-  const r = object(value, path, [...fields.map(([name]) => name), "backend", "workspace"]);
+  const extra = Object.entries(engine.target?.fields ?? {});
+  const r = object(value, path, [...fields.map(([name]) => name), "backend", "workspace", ...extra.map(([name]) => name)]);
+  const flag = (name: string, ok: (v: unknown) => boolean): unknown => ok(r[name]) ? r[name] : bad(path + "." + name + ": invalid");
   return {
     ...Object.fromEntries(fields.map(([name, ok]) => [name, text(r[name], path + "." + name, ok)])),
-    backend: text(r.backend, path + ".backend", spec.backendOk),
-    workspace: text(r.workspace, path + ".workspace", (v) => WORKSPACE.test(v)),
+    backend: text(r.backend, path + ".backend", engine.target?.backendOk ?? spec.backendOk),
+    workspace: text(r.workspace, path + ".workspace", engine.target?.workspaceOk ?? ((v) => WORKSPACE.test(v))),
+    ...Object.fromEntries(extra.map(([name, ok]) => [name, flag(name, ok)])),
   } as PilotTarget;
 }
 
@@ -120,9 +123,10 @@ function approvers(value: unknown, path: string): ApproverEntry[] {
 function validate(raw: unknown): PilotContract {
   const r = object(raw, "contract", ["schemaVersion", "enabled", "provider", "engine", "targets", "requiredApprovals", "maxApprovalAgeMinutes", "approvers", "killSwitchPath"]);
   if (r.schemaVersion !== 1) bad("schemaVersion: expected 1");
-  const unsupported = "provider and engine: the pilot supports " + PROVIDER_IDS.join(", ") + " with TERRAFORM";
+  const unsupported = "provider and engine: the pilot supports " + PROVIDER_IDS.join(", ") + " with " + ENGINE_IDS.join(", ");
   const spec = providerSpec(r.provider) ?? bad(unsupported);
-  if (r.engine !== "TERRAFORM") bad(unsupported);
+  const engine = engineSpec(r.engine) ?? bad(unsupported);
+  if (!engine.providers.includes(spec.id)) bad("engine: " + engine.id + " is valid only with " + engine.providers.join(", "));
   const targets = object(r.targets, "targets", ENVIRONMENTS as string[]);
   const approvals = object(r.requiredApprovals, "requiredApprovals", ENVIRONMENTS as string[]);
   if (r.enabled !== true) bad("enabled: the contract does not enable ACT");
@@ -130,8 +134,8 @@ function validate(raw: unknown): PilotContract {
     schemaVersion: 1,
     enabled: true,
     provider: spec.id,
-    engine: "TERRAFORM",
-    targets: { DEV: target(targets.DEV, "targets.DEV", spec), QA: target(targets.QA, "targets.QA", spec), PROD: target(targets.PROD, "targets.PROD", spec) },
+    engine: engine.id,
+    targets: ENVIRONMENTS.reduce((all, e) => ({ ...all, [e]: target(targets[e], "targets." + e, spec, engine) }), {} as PilotContract["targets"]),
     requiredApprovals: {
       DEV: integer(approvals.DEV, "requiredApprovals.DEV", 1, 10),
       QA: integer(approvals.QA, "requiredApprovals.QA", 1, 10),
@@ -144,7 +148,7 @@ function validate(raw: unknown): PilotContract {
   ENVIRONMENTS.forEach((a, index) => {
     for (const b of ENVIRONMENTS.slice(index + 1)) {
       if (spec.account(contract.targets[a]).toLowerCase() === spec.account(contract.targets[b]).toLowerCase()) bad("targets: " + a + " and " + b + " share " + (/^[aeiou]/.test(spec.accountNoun) ? "an " : "a ") + spec.accountNoun);
-      if (contract.targets[a].backend.toLowerCase() === contract.targets[b].backend.toLowerCase()) bad("targets: " + a + " and " + b + " share a backend");
+      if (!engine.target?.backendMayRepeat && contract.targets[a].backend.toLowerCase() === contract.targets[b].backend.toLowerCase()) bad("targets: " + a + " and " + b + " share a backend");
     }
   });
   return contract;
@@ -341,17 +345,6 @@ export async function loadQualificationRecords(spec: ProviderSpec, vaultDir: str
  * against the contract's DEV account (the provider's account fields), within the last 30 days.
  */
 const QUALIFICATION_MAX_AGE_DAYS = 30;
-
-/**
- * SHA-256 of the terraform binary a run would execute: the same lookup the
- * runner does (approved tool directories only). Undefined when there is none.
- * The same-uid operator who can replace the binary after this read is inside the
- * trust boundary (docs/act-pilot-apply.md); this refuses an honest upgrade.
- */
-export function terraformBinarySha256(toolDirs: readonly string[] | undefined, env: NodeJS.ProcessEnv): string | undefined {
-  const path = resolveExecutable("terraform", toolDirs ?? approvedToolDirs(env));
-  try { return path ? sha256(readFileSync(path)) : undefined; } catch { return undefined; }
-}
 
 export async function verifyApplyQualification(
   record: QualificationRecord,

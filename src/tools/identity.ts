@@ -5,7 +5,7 @@ import { resolve } from "node:path";
  * Execution identities for governed child processes
  * (docs/identity-and-execution-contracts.md, docs/act-pilot-plan.md).
  *
- * Four identities exist. None is the operator's own credentials, and a child
+ * Five identities exist. None is the operator's own credentials, and a child
  * never falls back from one to another, or to something it was not handed.
  *
  *  - DISCOVERY: provider reads for discovery and previews (describe, list, plan
@@ -15,18 +15,20 @@ import { resolve } from "node:path";
  *    sensitive material and state access should not imply provider access.
  *  - STATE_WRITE: writes state blobs and takes the lease. Used by apply only.
  *  - APPLY: provider writes. Used by apply only, and never a state fallback.
+ *  - CHANGESET: creates and describes CloudFormation change sets for the CDK engine and cannot execute one.
+ *    Used by the pilot's CDK path only; the Terraform engine refuses it, the CDK engine refuses STATE and STATE_WRITE.
  *
  * Locking stays on for every run. A state identity that cannot take the lock is
  * given the access to take it, not a way around it.
  */
-export const EXECUTION_IDENTITIES = ["DISCOVERY", "STATE", "STATE_WRITE", "APPLY"] as const;
+export const EXECUTION_IDENTITIES = ["DISCOVERY", "STATE", "STATE_WRITE", "APPLY", "CHANGESET"] as const;
 export type ExecutionIdentity = (typeof EXECUTION_IDENTITIES)[number];
 
 /** `^ALZ_(<identity>|...)_`, built from the identity list so no copy of the names can drift. */
 const identityPrefixPattern = (identities: readonly ExecutionIdentity[]): RegExp => new RegExp("^ALZ_(" + identities.join("|") + ")_");
 
-/** The two identities that write; see `mutationIdentityVariables`. */
-export const MUTATION_IDENTITIES = ["STATE_WRITE", "APPLY"] as const satisfies readonly ExecutionIdentity[];
+/** The identities that write (a change set is a write, though it changes no resource); see `mutationIdentityVariables`. */
+export const MUTATION_IDENTITIES = ["STATE_WRITE", "APPLY", "CHANGESET"] as const satisfies readonly ExecutionIdentity[];
 export const ANY_IDENTITY_VARIABLE = identityPrefixPattern(EXECUTION_IDENTITIES);
 export const MUTATION_IDENTITY_VARIABLE = identityPrefixPattern(MUTATION_IDENTITIES);
 
@@ -46,7 +48,7 @@ export function forbiddenIdentityVariables(env: NodeJS.ProcessEnv): string[] {
 }
 
 /**
- * The two identities that write (STATE_WRITE and APPLY) exist only for the
+ * The identities that write (STATE_WRITE, APPLY and CHANGESET) exist only for the
  * pilot apply path. A read-only preview refuses to run beside them, so a shell
  * holding mutation credentials never starts one; the apply path strips them
  * from every child that is not its own step.

@@ -1006,14 +1006,14 @@ test("no source under the driver contains apply, auto-approve, -lock=false, shel
 });
 
 // The pilot apply path (docs/act-pilot-apply.md) reuses a few pieces of the preview driver. Each file below may import exactly
-// the listed driver modules, and driver.ts alone may name createTerraformAdapter. Anything else, in any file, fails the bans.
+// the listed driver modules, and the Terraform engine spec alone may name createTerraformAdapter. Anything else, in any file, fails the bans.
 const DRIVER_IMPORT = /(from\s+["'])((?:\.{1,2}\/)+(?:[a-z-]+\/)*teardown\/driver\/([^"']+))(["'])/g;
 const APPLY_MAY_IMPORT: Readonly<Record<string, { modules: string[]; names?: string[] }>> = {
-  "src/apply/driver.ts": {
-    modules: ["adapters/terraform.js", "cleanup.js", "human.js", "qualification.js", "types.js"], names: ["createTerraformAdapter"],
-  },
-  "src/apply/engine.ts": { modules: ["adapters/terraform.js", "adapters/project-copy.js", "types.js"] },
-  "src/apply/seal.ts": { modules: ["cleanup.js", "adapters/terraform.js", "types.js"] },
+  "src/apply/driver.ts": { modules: ["cleanup.js", "human.js", "qualification.js", "types.js"] },
+  "src/apply/engines/cdk.ts": { modules: ["adapters/project-copy.js", "cleanup.js", "qualification.js", "types.js"] },
+  "src/apply/engines/terraform.ts": { modules: ["adapters/terraform.js", "adapters/project-copy.js", "cleanup.js", "types.js"], names: ["createTerraformAdapter"] },
+  "src/apply/engine-spec.ts": { modules: ["types.js"] },
+  "src/apply/seal.ts": { modules: ["types.js"] },
   "src/apply/terraform.ts": { modules: ["adapters/terraform.js", "qualification.js", "types.js"] },
   "src/apply/contract.ts": { modules: ["qualification.js", "types.js"] },
   "src/apply/approval.ts": { modules: ["types.js"] },

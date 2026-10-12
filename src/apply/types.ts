@@ -1,4 +1,5 @@
 import type { ResolvedTarget } from "../teardown/driver/types.js";
+import type { ExecutionIdentity } from "../tools/identity.js";
 import type { AwsTarget } from "./providers/aws.js";
 import type { AzureTarget } from "./providers/azure.js";
 
@@ -13,9 +14,16 @@ import type { AzureTarget } from "./providers/azure.js";
 /** Promotion runs DEV, then QA, then PROD: each stage needs a successful apply of the same release in the stage before it. */
 export type ApplyEnvironment = "DEV" | "QA" | "PROD";
 
-/** Four principals, never substituted for one another and never the operator's own credentials. */
+/**
+ * Principals, never substituted for one another and never the operator's own credentials. An engine names the ones it
+ * needs (`EngineSpec.identities`); these four are Terraform's, and the default set where no engine is named. CHANGESET
+ * (`tools/identity.ts`) is the CDK engine's fifth.
+ */
 export const APPLY_IDENTITIES = ["DISCOVERY", "STATE", "STATE_WRITE", "APPLY"] as const;
-export type ApplyIdentity = (typeof APPLY_IDENTITIES)[number];
+export type ApplyIdentity = ExecutionIdentity;
+
+/** The engines the pilot has a spec for (src/apply/engine-spec.ts). The contract's `engine` selects one; anything else is not a contract. */
+export type EngineId = "TERRAFORM" | "CDK";
 
 /** The providers the pilot has a spec for (src/apply/provider.ts). The contract's `provider` selects one; anything else is not a contract. */
 export type ProviderId = "AZURE" | "AWS";
@@ -28,7 +36,7 @@ export type PilotContract = {
   /** ACT is off unless this is exactly true. A missing or malformed contract is off. */
   enabled: boolean;
   provider: ProviderId;
-  engine: "TERRAFORM";
+  engine: EngineId;
   targets: Record<ApplyEnvironment, PilotTarget>;
   /** Distinct verified approvals required per environment. DEV and QA at least 1, PROD at least 2. */
   requiredApprovals: Record<ApplyEnvironment, number>;
@@ -136,7 +144,8 @@ export type ApplyEvidence = {
   finishedAt: string;
   authority: {
     infrastructureAct: "PILOT_ENABLED";
-    mutation: "TERRAFORM_APPLY_OF_SEALED_PLAN";
+    /** What the engine did: Terraform applied the sealed plan, or CloudFormation executed the sealed change set. */
+    mutation: "TERRAFORM_APPLY_OF_SEALED_PLAN" | "CLOUDFORMATION_EXECUTE_OF_SEALED_CHANGE_SET";
     agentInitiated: false;
   };
   /** Present when the engine left errored.tfstate or crash.log: kept encrypted in the vault, referenced here by count and hash only. */

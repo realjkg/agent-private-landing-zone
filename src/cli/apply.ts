@@ -5,18 +5,18 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { signApproval } from "../apply/approval.js";
-import { ENVIRONMENTS } from "../apply/constants.js";
+import { ENVIRONMENTS, INVISIBLE } from "../apply/constants.js";
 import {
   contractRefusal, isKillSwitchActive, loadPilotContract, pilotContractSha256, repoPaths, requireNotApplied, targetForEnvironment, writeQualificationEvidence, type Refusal,
 } from "../apply/contract.js";
 import { qualifyApply, runApply, sealPreview, type ApplyDeps, type SealRequest } from "../apply/driver.js";
+import { RECOVERY_FILE_NAMES, engineOf, engineSpec, type EngineNotices } from "../apply/engine-spec.js";
 import { assertApplyEvidence } from "../apply/evidence.js";
 import { attestedClientId } from "../apply/identities.js";
 import { holdsReservation } from "../apply/ledger.js";
 import { accountFieldsOf, specOf } from "../apply/provider.js";
-import { INVISIBLE, loadSealedPlan, reviewBundleOf, verifyReviewBundle, type LoadedPlan } from "../apply/seal.js";
-import { RECOVERY_FILES } from "../apply/terraform.js";
-import type { ApplyEnvironment, PilotContract, SealedPlan, SignedApproval } from "../apply/types.js";
+import { loadSealedPlan, reviewBundleOf, verifyReviewBundle, type LoadedPlan } from "../apply/seal.js";
+import type { ApplyEnvironment, ApplyIdentity, PilotContract, SealedPlan, SignedApproval } from "../apply/types.js";
 import { isRecord, SAFE_OPERATOR } from "../teardown/driver/human.js";
 import { sweepStale } from "../teardown/driver/cleanup.js";
 import { verifyManifest, type ArtifactManifest } from "../teardown/manifest.js";
@@ -39,7 +39,8 @@ const APPLY_USAGE = [
   "  ./alz apply apply --request REQUEST.json --manifest MANIFEST.json --sealed SEALED_PLAN --approval APPROVAL.json [--approval APPROVAL.json ...]",
   "  ./alz apply status [--sealed SEALED_PLAN]",
   "  ./alz apply pin",
-  "      Interactive terminal only. Identities come from ALZ_DISCOVERY_*, ALZ_STATE_*, ALZ_STATE_WRITE_* and ALZ_APPLY_*.",
+  "      Interactive terminal only. Identities come from the contract's engine: ALZ_DISCOVERY_*, ALZ_STATE_*, ALZ_STATE_WRITE_* and ALZ_APPLY_* (Terraform),",
+  "      or ALZ_DISCOVERY_*, ALZ_CHANGESET_* and ALZ_APPLY_* (CDK). No flag names an engine; the pinned contract does.",
   "      Exit 0 done, 1 error (nothing spent), 2 BLOCKED (refused before any action), 3 SPENT (approvals consumed or an apply started; read the message before any retry).",
   "      No flag forces, skips, ignores, overrides or pre-answers anything.",
 ].join("\n");
@@ -184,6 +185,11 @@ async function openSealed(path: string): Promise<LoadedPlan | Refusal> {
 }
 
 const contractFor = (deps: ApplyCliDeps) => loadPilotContract(deps.contractPath, deps.contractPinPath);
+/** What the contract's engine tells a person. A contract that does not load is refused by the driver after the prompts, so the prompts are the first engine's. */
+const engineNotices = (deps: ApplyCliDeps): EngineNotices => {
+  const loaded = contractFor(deps);
+  return ("reason" in loaded ? engineSpec("TERRAFORM")! : engineOf(loaded)).notices;
+};
 
 // --- seal and qualify ----------------------------------------------------------------------------------------
 
@@ -192,7 +198,7 @@ type Command = (flags: Record<string, string[]>, terminal: HumanTerminal, deps: 
 
 /** What `seal` and `qualify` share: the request, the manifest, the target typed, and project code allowed. Returns what the driver needs. */
 async function confirmProjectCode(
-  flags: Record<string, string[]>, terminal: HumanTerminal, deps: ApplyCliDeps, out: Out, heading: string, reads: string[],
+  flags: Record<string, string[]>, terminal: HumanTerminal, deps: ApplyCliDeps, out: Out, heading: (notices: EngineNotices) => string, reads: (notices: EngineNotices) => string,
 ): Promise<{ request: SealRequest; target: ResolvedTarget; who: string } | number> {
   const file = readRequest("seal", flags.request[0]);
   const manifest = readManifest(flags.manifest[0]);
@@ -200,18 +206,22 @@ async function confirmProjectCode(
   const { policyVersion, resolved } = file;
   if (typeof policyVersion !== "string" || !isRecord(resolved)) return fail("APPLY_INPUT_INVALID", "request.policyVersion and request.resolved are required");
   const who = operatorId(deps);
+  // The contract's engine says what runs. A contract that does not load is refused by the driver after the prompts, as before.
+  const notices = engineNotices(deps);
 
   terminal.write([
-    "", heading,
+    "", heading(notices),
     "  account         " + file.target.account, "  backend         " + file.target.backend, "  workspace       " + file.target.workspace,
-    "  manifest hash   " + manifest.manifestHash, ...reads,
-    "", "THIS RUNS PROJECT CODE (providers and modules) with the DISCOVERY identity on this machine.",
+    "  manifest hash   " + manifest.manifestHash, reads(notices),
+    "", notices.projectCode ?? "THIS RUNS NO PROJECT CODE: the pilot reads the pre-synthesized assembly and calls the AWS CLI with fixed arguments.",
     "  project root    " + file.projectRoot, "  files bound     " + manifest.files.length,
     "", "Type the target exactly to continue (anything else stops here):", "  " + targetString(file.target), "",
   ].join("\n"));
   await confirm(terminal, targetString(file.target), "target> ", "HUMAN_CONFIRMATION_MISMATCH");
-  terminal.write("\nType " + CODE_PHRASE + " to allow it (anything else stops here):\n\n");
-  await confirm(terminal, CODE_PHRASE, "code> ", "PROJECT_CODE_CONFIRMATION_MISMATCH");
+  if (notices.projectCode) {
+    terminal.write("\nType " + CODE_PHRASE + " to allow it (anything else stops here):\n\n");
+    await confirm(terminal, CODE_PHRASE, "code> ", "PROJECT_CODE_CONFIRMATION_MISMATCH");
+  }
 
   const now = deps.now ?? (() => new Date());
   return {
@@ -224,9 +234,7 @@ async function confirmProjectCode(
 }
 
 const sealCommand: Command = async (flags, terminal, deps, out) => {
-  const gate = await confirmProjectCode(flags, terminal, deps, out,
-    "SEAL A PREVIEW (this plans against the target and changes no infrastructure; the plan is kept encrypted)",
-    ["  reads           state with the STATE identity, then plans with the DISCOVERY identity"]);
+  const gate = await confirmProjectCode(flags, terminal, deps, out, (n) => n.sealHeading, (n) => n.sealReads);
   if (typeof gate === "number") return gate;
   const result = await sealPreview(gate.request, { env: deps.env ?? process.env, now: deps.now, ...driverPaths(deps) });
   if (!result.ok) return blocked(result, out.complain);
@@ -256,9 +264,7 @@ const driverPaths = (deps: ApplyCliDeps) => ({
  * attestation is an operator control, not machine proof.
  */
 const qualifyCommand: Command = async (flags, terminal, deps, out) => {
-  const gate = await confirmProjectCode(flags, terminal, deps, out,
-    "QUALIFY THE APPLY ADAPTER (needs the real Terraform engine; against DEV it runs version, init, workspace, a throwaway plan and the state read, and applies nothing)",
-    ["  runs            init and workspace as STATE_WRITE, the state serial as STATE, the plan as DISCOVERY"]);
+  const gate = await confirmProjectCode(flags, terminal, deps, out, (n) => n.qualifyHeading, (n) => n.qualifyReads);
   if (typeof gate === "number") return gate;
   const env = deps.env ?? process.env;
   const now = deps.now ?? (() => new Date());
@@ -268,14 +274,13 @@ const qualifyCommand: Command = async (flags, terminal, deps, out) => {
   const contract = contractFor(deps);
   if ("reason" in contract) return blocked(contractRefusal(contract), out.complain);
   const spec = specOf(contract);
-  const clientOf = (identity: "STATE_WRITE" | "APPLY") => identityVariables(env, identity).get(spec.clientIdVariable) ?? "";
-  const phrase = "SEPARATED " + clientOf("STATE_WRITE") + " " + clientOf("APPLY");
+  const engine = engineOf(contract);
+  const [first, second] = engine.attests;
+  const clientOf = (identity: ApplyIdentity) => identityVariables(env, identity).get(spec.clientIdVariable) ?? "";
+  const phrase = "SEPARATED " + clientOf(first) + " " + clientOf(second);
   terminal.write([
     "", "The run finished. Before evidence is written, check the " + spec.logSource + " for this run (not this program's output):",
-    "  state and backend access was by   STATE_WRITE  " + clientOf("STATE_WRITE"),
-    "  provider (resource) access is by  APPLY        " + clientOf("APPLY"),
-    "  the plan leaves these backend settings to the apply process (APPLY's environment): " + spec.filledAtApply.join(", "),
-    "Only if the logs show that, and the APPLY client never touched the state, type (anything else writes nothing):", "  " + phrase, "",
+    ...engine.notices.attestation(spec, clientOf(first), clientOf(second)), "  " + phrase, "",
   ].join("\n"));
   await confirm(terminal, phrase, "attest> ", "QUALIFICATION_ATTESTATION_MISMATCH");
 
@@ -283,8 +288,8 @@ const qualifyCommand: Command = async (flags, terminal, deps, out) => {
   const qualified: { adapterVersion: string; argvDigest: string; engineVersion: string; evidenceHash: string }[] = [];
   for (const adapter of ran.adapters) {
     const evidence = {
-      schemaVersion: 1 as const, engine: "TERRAFORM" as const, realEngine: true as const, backendIdentitySeparated: true as const,
-      ...accountFieldsOf(spec, contract.targets.DEV), backend, workspace, stateWriteClientId: attestedClientId(env, "STATE_WRITE", spec), applyClientId: attestedClientId(env, "APPLY", spec),
+      schemaVersion: 1 as const, engine: contract.engine, realEngine: true as const, backendIdentitySeparated: true as const,
+      ...accountFieldsOf(spec, contract.targets.DEV), backend, workspace, stateWriteClientId: attestedClientId(env, first, spec), applyClientId: attestedClientId(env, second, spec),
       terraformSha256: ran.terraformSha256, adapterVersion: adapter.adapterVersion, argvDigest: adapter.argvDigest, engineVersion: ran.engineVersion, qualifiedAt: now().toISOString(),
     };
     const written = await writeQualificationEvidence(evidence, spec, deps.qualificationDir);
@@ -366,7 +371,7 @@ const applyCommand: Command = async (flags, terminal, deps, out) => {
     "  artifact        " + sealedPlan.sealed.artifactSha256, "  manifest hash   " + manifest.manifestHash,
     "  approvals       " + approvals.map((a) => printable(String(a.statement?.approverId))).join(", ") + " (the driver verifies each signature)",
     "  changes", ...changeLines(sealedPlan.sealed),
-    "", "It applies exactly this plan file, never a new one, with locking on and the APPLY identity.",
+    "", engineNotices(deps).applyNote,
     "Type this line exactly to apply (anything else stops here):", "  " + phrase, "",
   ].join("\n"));
   await confirm(terminal, phrase, "apply> ", "APPLY_CONFIRMATION_MISMATCH");
@@ -432,7 +437,7 @@ const COMMANDS: Readonly<Record<string, Command>> = {
 function scratchHoldsRecovery(parent: string): boolean {
   try {
     return readdirSync(parent).filter((name) => name.startsWith("alz-preview-")).some((name) =>
-      RECOVERY_FILES.some((file) => [join(parent, name, file), join(parent, name, "work", file)].some((path) => existsSync(path))));
+      RECOVERY_FILE_NAMES.some((file) => [join(parent, name, file), join(parent, name, "work", file)].some((path) => existsSync(path))));
   } catch { return false; }
 }
 

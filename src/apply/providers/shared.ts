@@ -1,7 +1,6 @@
-import { identityVariables, PRINCIPAL_NAME, samePrincipalValue, type ExecutionIdentity } from "../../tools/identity.js";
+import { EXECUTION_IDENTITIES, identityVariables, PRINCIPAL_NAME, samePrincipalValue, type ExecutionIdentity } from "../../tools/identity.js";
 import { stop } from "../engine.js";
 import type { IdentityRefusal } from "../provider.js";
-import { APPLY_IDENTITIES } from "../types.js";
 
 /** A plain object, as parsed from JSON. */
 export const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -23,14 +22,14 @@ export function pickIdentityValue(env: NodeJS.ProcessEnv, identity: ExecutionIde
 export function ambientRefusal(
   env: NodeJS.ProcessEnv, rule: { fallback: RegExp; ambient: RegExp; fallbackTo: string; advice: string },
 ): IdentityRefusal | undefined {
-  const fallback = APPLY_IDENTITIES.flatMap((identity) =>
+  const fallback = EXECUTION_IDENTITIES.flatMap((identity) =>
     [...identityVariables(env, identity).keys()].filter((name) => rule.fallback.test(name)).map((name) => "ALZ_" + identity + "_" + name));
   if (fallback.length > 0) {
     return { ok: false, code: "IDENTITY_NOT_CONFIGURED", message: "These variables would let a child fall back to " + rule.fallbackTo + ": " + fallback.join(", ") + ". " + rule.advice };
   }
   const ambient = Object.entries(env).filter(([key, value]) => !key.startsWith("ALZ_") && rule.ambient.test(key) && PRINCIPAL_NAME.test(key) && value);
   const inherited: string[] = [];
-  for (const identity of APPLY_IDENTITIES) {
+  for (const identity of EXECUTION_IDENTITIES) {
     for (const [name, value] of identityVariables(env, identity)) {
       if (!PRINCIPAL_NAME.test(name)) continue;
       for (const [key, operatorValue] of ambient) if (samePrincipalValue(name, value, key, operatorValue ?? "")) inherited.push("ALZ_" + identity + "_" + name + " equals " + key);

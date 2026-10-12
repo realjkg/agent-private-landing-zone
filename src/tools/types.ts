@@ -34,6 +34,7 @@ export type ToolName =
   | "pulumi_version"
   | "pulumi_preview"
   | "aws_version"
+  | "aws_cloudformation"
   | "aws_sts_identity"
   | "aws_org_describe"
   | "aws_controltower_list_landing_zones"

@@ -1,5 +1,5 @@
 import { sha256 } from "../../util/sha256.js";
-import { canonicalJson } from "../manifest.js";
+import { canonicalJson, MANIFEST_ENGINES, type ManifestEngine } from "../manifest.js";
 import { DRIVER_ENGINES, type DriverEngine, type EngineAdapter } from "./types.js";
 
 /**
@@ -10,7 +10,7 @@ import { DRIVER_ENGINES, type DriverEngine, type EngineAdapter } from "./types.j
  * that engine.
  */
 export type QualificationRecord = {
-  engine: DriverEngine;
+  engine: ManifestEngine;
   adapterVersion: string;
   engineVersion: string;
   argvDigest: string;
@@ -20,8 +20,8 @@ export type QualificationRecord = {
 };
 
 export type EngineActivation =
-  | { engine: DriverEngine; enabled: true; record: QualificationRecord }
-  | { engine: DriverEngine; enabled: false; reason: string };
+  | { engine: ManifestEngine; enabled: true; record: QualificationRecord }
+  | { engine: ManifestEngine; enabled: false; reason: string };
 
 const HASH = /^[a-f0-9]{64}$/;
 
@@ -33,7 +33,7 @@ export function argvDigest(argvs: readonly (readonly string[])[]): string {
 function wellFormed(record: unknown): record is QualificationRecord {
   const r = record as Partial<QualificationRecord> | null;
   return !!r && typeof r === "object" &&
-    (DRIVER_ENGINES as readonly string[]).includes(r.engine as string) &&
+    (MANIFEST_ENGINES as readonly string[]).includes(r.engine as string) &&
     typeof r.adapterVersion === "string" && r.adapterVersion.length > 0 &&
     typeof r.engineVersion === "string" && r.engineVersion.length > 0 &&
     typeof r.argvDigest === "string" && HASH.test(r.argvDigest) &&
@@ -43,7 +43,7 @@ function wellFormed(record: unknown): record is QualificationRecord {
 
 /** Decides one engine from the records and adapters alone. */
 export function engineActivation(
-  engine: DriverEngine,
+  engine: ManifestEngine,
   records: readonly QualificationRecord[],
   adapters: readonly EngineAdapter[],
   engineVersion: string | undefined,

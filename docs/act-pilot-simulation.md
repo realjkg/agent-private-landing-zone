@@ -38,7 +38,7 @@ No defect was found in `src/apply` by this run: argv, init flags, backend-config
 
 ## What it proves, and what it does not
 
-Proves, for Terraform 1.16.4 and the azurerm **backend** only: the allowlisted argument lists run; the stale-plan and lock-refusal text matches in `classifyApply` match the real engine's first `Error:` line; `terraform show -json` has the shape `seal.ts` reads; a graceful stop releases the lease; the driver's ordering, ledger and evidence work with a real process.
+Proves, for Terraform 1.16.4 and the azurerm **backend** only: the allowlisted argument lists run; the stale-plan and lock-refusal text matches in `classifyApply` match the real engine's first `Error:` line; `terraform show -json` has the shape `engines/terraform.ts` reads; a graceful stop releases the lease; the driver's ordering, ledger and evidence work with a real process.
 
 Does **not** prove:
 
@@ -73,7 +73,7 @@ Yes to both. A `sas_token` passed at `init` is written in plaintext to `.terrafo
 - **Secret exposure:** that `Failed to save state` message quotes the full request URL, including the SAS token and signature. This is why the driver's withholding of engine output is load-bearing. Whether the same happens with Entra auth is not known (no token is in the URL there).
 - Uncertain: with the sandbox's blocking egress proxy and no custom endpoint, the backend retried a 403 for the real `blob.core.windows.net` host essentially forever (hundreds of thousands of retries listed). Retry limits against real Azure were not observed.
 
-**(f) `terraform show -json <plan>`.** Top-level keys: `format_version` ("1.2"), `terraform_version`, `variables`, `planned_values`, `resource_changes`, `output_changes`, `prior_state`, `configuration`, `timestamp`, `applyable`, `complete`, `errored`. The key `seal.ts` reads is `configuration.provider_config` (singular), which exists (here only `terraform` / `terraform.io/builtin/terraform`); `resource_changes[].address`, `.type` and `.change.actions` and `output_changes` match what `seal.ts` expects. The backend block and `sas_token` do **not** appear in the JSON. The test's change list was `terraform_data.pilot`, `terraform_data`, create.
+**(f) `terraform show -json <plan>`.** Top-level keys: `format_version` ("1.2"), `terraform_version`, `variables`, `planned_values`, `resource_changes`, `output_changes`, `prior_state`, `configuration`, `timestamp`, `applyable`, `complete`, `errored`. The key `engines/terraform.ts` reads is `configuration.provider_config` (singular), which exists (here only `terraform` / `terraform.io/builtin/terraform`); `resource_changes[].address`, `.type` and `.change.actions` and `output_changes` match what `engines/terraform.ts` expects. The backend block and `sas_token` do **not** appear in the JSON. The test's change list was `terraform_data.pilot`, `terraform_data`, create.
 
 ## Other observations
 

@@ -34,8 +34,9 @@ const fixture = (): NodeJS.ProcessEnv => {
 const childFor = (env: NodeJS.ProcessEnv, identity: string, profile = PROFILES.terraform) =>
   buildChildEnvironment({ profile, base: env, toolDirs: ["/usr/bin"], home: "/h", tmp: "/t", identity });
 
-test("the execution identities are the four apply identities, in the contract order", () => {
-  assert.deepEqual([...EXECUTION_IDENTITIES], [...APPLY_IDENTITIES]);
+test("the execution identities are Terraform's four apply identities, in the contract order, and CHANGESET (the CDK engine's)", () => {
+  assert.deepEqual([...EXECUTION_IDENTITIES], [...APPLY_IDENTITIES, "CHANGESET"]);
+  assert.equal(isExecutionIdentity("CHANGESET"), true);
   assert.equal(isExecutionIdentity("STATE_WRITE"), true);
   assert.equal(isExecutionIdentity("APPLY"), true);
   for (const bad of ["DEPLOY", "OPERATOR", "STATE_", "apply", "APPLY_X"]) assert.equal(isExecutionIdentity(bad), false, bad);

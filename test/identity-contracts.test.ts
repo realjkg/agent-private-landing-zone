@@ -90,8 +90,8 @@ test("every project-code tool is blocked without the capability", () => {
   }
 });
 
-test("exactly four identities exist, and a deployment or operator identity is reported, never read", () => {
-  assert.deepEqual([...EXECUTION_IDENTITIES], ["DISCOVERY", "STATE", "STATE_WRITE", "APPLY"]);
+test("exactly five identities exist, and a deployment or operator identity is reported, never read", () => {
+  assert.deepEqual([...EXECUTION_IDENTITIES], ["DISCOVERY", "STATE", "STATE_WRITE", "APPLY", "CHANGESET"]);
   assert.deepEqual(
     forbiddenIdentityVariables({
       ALZ_DEPLOY_AWS_ACCESS_KEY_ID: "x", ALZ_OPERATOR_AWS_PROFILE: "x", ALZ_DISCOVERY_AWS_REGION: "x", ALZ_STATE_AWS_REGION: "x",
@@ -103,8 +103,8 @@ test("exactly four identities exist, and a deployment or operator identity is re
 
 test("the writing identities are reported to a read-only preview, so it never runs beside mutation credentials", () => {
   assert.deepEqual(
-    mutationIdentityVariables({ ALZ_STATE_WRITE_ARM_CLIENT_ID: "x", ALZ_APPLY_ARM_CLIENT_ID: "x", ALZ_STATE_ARM_CLIENT_ID: "x", ALZ_DISCOVERY_ARM_CLIENT_ID: "x" }),
-    ["ALZ_APPLY_ARM_CLIENT_ID", "ALZ_STATE_WRITE_ARM_CLIENT_ID"],
+    mutationIdentityVariables({ ALZ_STATE_WRITE_ARM_CLIENT_ID: "x", ALZ_APPLY_ARM_CLIENT_ID: "x", ALZ_STATE_ARM_CLIENT_ID: "x", ALZ_DISCOVERY_ARM_CLIENT_ID: "x", ALZ_CHANGESET_AWS_ROLE_ARN: "x" }),
+    ["ALZ_APPLY_ARM_CLIENT_ID", "ALZ_CHANGESET_AWS_ROLE_ARN", "ALZ_STATE_WRITE_ARM_CLIENT_ID"],
   );
 });
 

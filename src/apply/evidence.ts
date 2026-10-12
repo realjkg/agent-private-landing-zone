@@ -1,6 +1,7 @@
 import { HASH } from "./constants.js";
+import { ENGINE_IDS } from "./engine-spec.js";
 import type { ProviderSpec } from "./provider.js";
-import type { ApplyEvidence } from "./types.js";
+import type { ApplyEvidence, EngineId } from "./types.js";
 
 /**
  * Apply evidence shape (docs/act-pilot-plan.md, authority model 7). Same closed
@@ -8,6 +9,7 @@ import type { ApplyEvidence } from "./types.js";
  * unknown key is refused, and a raw plan, state or engine-output field is named
  * as such. Evidence never carries plan values, state or raw engine output.
  */
+/** Terraform's; an engine with another mutation says so in its spec (`EngineSpec.mutation`). */
 export const APPLY_AUTHORITY: ApplyEvidence["authority"] = {
   infrastructureAct: "PILOT_ENABLED",
   mutation: "TERRAFORM_APPLY_OF_SEALED_PLAN",
@@ -44,7 +46,7 @@ const SHAPE: Shape = {
   exitCode,
   startedAt: iso,
   finishedAt: iso,
-  authority: { infrastructureAct: oneOf("PILOT_ENABLED"), mutation: oneOf("TERRAFORM_APPLY_OF_SEALED_PLAN"), agentInitiated: oneOf(false) },
+  authority: { infrastructureAct: oneOf("PILOT_ENABLED"), mutation: oneOf("TERRAFORM_APPLY_OF_SEALED_PLAN", "CLOUDFORMATION_EXECUTE_OF_SEALED_CHANGE_SET"), agentInitiated: oneOf(false) },
   // Files the engine left for a person to recover from (errored.tfstate, crash.log), encrypted in the vault: how many, and the hash of the encrypted record. Never their contents.
   recovery: optional({ files: count, sha256: hash }),
 };
@@ -99,7 +101,7 @@ export function assertApplyEvidence(evidence: unknown): ApplyEvidence {
  */
 export type QualificationEvidence = { [accountField: string]: unknown } & {
   schemaVersion: 1;
-  engine: "TERRAFORM";
+  engine: EngineId;
   /** The real engine binary ran the adapter's exact argument lists, not a fake. */
   realEngine: true;
   /** Backend access ran as the separate state identities, never the provider-apply identity. */
@@ -110,7 +112,7 @@ export type QualificationEvidence = { [accountField: string]: unknown } & {
   /** The STATE_WRITE and APPLY principals (client ids, role ARNs) the operator attested from the cloud logs, trimmed and lowercase. */
   stateWriteClientId: string;
   applyClientId: string;
-  /** SHA-256 of the terraform binary that qualified; a different binary needs a new qualification. */
+  /** SHA-256 of the engine binary that qualified; a different binary needs a new qualification. */
   terraformSha256: string;
   adapterVersion: string;
   argvDigest: string;
@@ -120,7 +122,7 @@ export type QualificationEvidence = { [accountField: string]: unknown } & {
 
 const qualificationShape = (spec: ProviderSpec): Shape => ({
   schemaVersion: oneOf(1),
-  engine: oneOf("TERRAFORM"),
+  engine: oneOf(...ENGINE_IDS),
   realEngine: oneOf(true),
   backendIdentitySeparated: oneOf(true),
   ...Object.fromEntries(Object.entries(spec.accountFields).map(([field, ok]): [string, Check] => [field, (v) => typeof v === "string" && ok(v)])),
