@@ -121,9 +121,17 @@ spec:
     # human-initiated apply of a sealed plan, only while the pilot contract
     # file has enabled: true (docs/act-pilot-plan.md).
     actPilot:
-      provider: AZURE
-      engine: TERRAFORM
       contract: config/act-pilot-contract.json
       requiresEnabledPilotContract: true
-      mutation: TERRAFORM_APPLY_OF_SEALED_PLAN
       initiatedBy: HUMAN_OPERATOR
+      # The only provider/engine pairs a pilot contract may name. No inference, no wildcard.
+      combinations:
+        - provider: AZURE
+          engine: TERRAFORM
+          mutation: TERRAFORM_APPLY_OF_SEALED_PLAN
+        - provider: AWS
+          engine: TERRAFORM
+          mutation: TERRAFORM_APPLY_OF_SEALED_PLAN
+        - provider: AWS
+          engine: CDK
+          mutation: CLOUDFORMATION_EXECUTE_OF_SEALED_CHANGE_SET

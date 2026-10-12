@@ -277,6 +277,7 @@ function openApply(input: EngineContext & { target: ResolvedTarget; engineVersio
 
 export const TERRAFORM: EngineSpec = {
   id: "TERRAFORM",
+  executables: ["terraform"],
   mutation: "TERRAFORM_APPLY_OF_SEALED_PLAN",
   providers: ["AZURE", "AWS"],
   notices: {

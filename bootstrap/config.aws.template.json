@@ -1,0 +1,43 @@
+{
+  "NOTE": "TEMPLATE, NOT A CONTRACT. Identifiers and file paths only; no secret belongs here. Every value below is an obviously fake placeholder. Fill from `terraform output` in bootstrap/aws, once per account (docs/act-pilot-bootstrap.md, step 5). Copy the chosen engine's `contractTargets` into config/act-pilot-contract.json by hand. Leave enabled false and config/act-pilot-contract.sha256 empty; enabling and pinning are a separate reviewed change, not part of bootstrap. Use one engine's section only: a role for an identity the engine does not use must not be configured.",
+  "provider": "AWS",
+  "identityVariables": {
+    "perIdentity": ["ALZ_<IDENTITY>_AWS_ROLE_ARN", "ALZ_<IDENTITY>_AWS_WEB_IDENTITY_TOKEN_FILE", "ALZ_<IDENTITY>_AWS_REGION"]
+  },
+  "TERRAFORM": {
+    "engine": "TERRAFORM",
+    "contractTargets": {
+      "DEV": { "accountId": "111111111111", "region": "us-east-1", "backend": "examplefake-dev-state/pilot/dev.tfstate", "workspace": "default" },
+      "QA": { "accountId": "222222222222", "region": "us-east-1", "backend": "examplefake-qa-state/pilot/qa.tfstate", "workspace": "default" },
+      "PROD": { "accountId": "333333333333", "region": "us-east-1", "backend": "examplefake-prod-state/pilot/prod.tfstate", "workspace": "default" }
+    },
+    "roleArns": {
+      "DEV": { "DISCOVERY": "arn:aws:iam::111111111111:role/alz-pilot-dev-discovery", "STATE": "arn:aws:iam::111111111111:role/alz-pilot-dev-state", "STATE_WRITE": "arn:aws:iam::111111111111:role/alz-pilot-dev-state-write", "APPLY": "arn:aws:iam::111111111111:role/alz-pilot-dev-apply" },
+      "QA": { "DISCOVERY": "arn:aws:iam::222222222222:role/alz-pilot-qa-discovery", "STATE": "arn:aws:iam::222222222222:role/alz-pilot-qa-state", "STATE_WRITE": "arn:aws:iam::222222222222:role/alz-pilot-qa-state-write", "APPLY": "arn:aws:iam::222222222222:role/alz-pilot-qa-apply" },
+      "PROD": { "DISCOVERY": "arn:aws:iam::333333333333:role/alz-pilot-prod-discovery", "STATE": "arn:aws:iam::333333333333:role/alz-pilot-prod-state", "STATE_WRITE": "arn:aws:iam::333333333333:role/alz-pilot-prod-state-write", "APPLY": "arn:aws:iam::333333333333:role/alz-pilot-prod-apply" }
+    },
+    "webIdentityTokenFiles": {
+      "DEV": { "DISCOVERY": "/var/run/alz/dev/discovery.jwt", "STATE": "/var/run/alz/dev/state.jwt", "STATE_WRITE": "/var/run/alz/dev/state-write.jwt", "APPLY": "/var/run/alz/dev/apply.jwt" },
+      "QA": { "DISCOVERY": "/var/run/alz/qa/discovery.jwt", "STATE": "/var/run/alz/qa/state.jwt", "STATE_WRITE": "/var/run/alz/qa/state-write.jwt", "APPLY": "/var/run/alz/qa/apply.jwt" },
+      "PROD": { "DISCOVERY": "/var/run/alz/prod/discovery.jwt", "STATE": "/var/run/alz/prod/state.jwt", "STATE_WRITE": "/var/run/alz/prod/state-write.jwt", "APPLY": "/var/run/alz/prod/apply.jwt" }
+    }
+  },
+  "CDK": {
+    "engine": "CDK",
+    "contractTargets": {
+      "DEV": { "accountId": "111111111111", "region": "us-east-1", "backend": "ExamplePilotStack", "workspace": "default", "capabilities": [] },
+      "QA": { "accountId": "222222222222", "region": "us-east-1", "backend": "ExamplePilotStack", "workspace": "default", "capabilities": [] },
+      "PROD": { "accountId": "333333333333", "region": "us-east-1", "backend": "ExamplePilotStack", "workspace": "default", "capabilities": [] }
+    },
+    "roleArns": {
+      "DEV": { "DISCOVERY": "arn:aws:iam::111111111111:role/alz-pilot-dev-discovery", "CHANGESET": "arn:aws:iam::111111111111:role/alz-pilot-dev-changeset", "APPLY": "arn:aws:iam::111111111111:role/alz-pilot-dev-apply" },
+      "QA": { "DISCOVERY": "arn:aws:iam::222222222222:role/alz-pilot-qa-discovery", "CHANGESET": "arn:aws:iam::222222222222:role/alz-pilot-qa-changeset", "APPLY": "arn:aws:iam::222222222222:role/alz-pilot-qa-apply" },
+      "PROD": { "DISCOVERY": "arn:aws:iam::333333333333:role/alz-pilot-prod-discovery", "CHANGESET": "arn:aws:iam::333333333333:role/alz-pilot-prod-changeset", "APPLY": "arn:aws:iam::333333333333:role/alz-pilot-prod-apply" }
+    },
+    "webIdentityTokenFiles": {
+      "DEV": { "DISCOVERY": "/var/run/alz/dev/discovery.jwt", "CHANGESET": "/var/run/alz/dev/changeset.jwt", "APPLY": "/var/run/alz/dev/apply.jwt" },
+      "QA": { "DISCOVERY": "/var/run/alz/qa/discovery.jwt", "CHANGESET": "/var/run/alz/qa/changeset.jwt", "APPLY": "/var/run/alz/qa/apply.jwt" },
+      "PROD": { "DISCOVERY": "/var/run/alz/prod/discovery.jwt", "CHANGESET": "/var/run/alz/prod/changeset.jwt", "APPLY": "/var/run/alz/prod/apply.jwt" }
+    }
+  }
+}

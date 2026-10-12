@@ -1,0 +1,24 @@
+{
+  "NOTE": "TEMPLATE, NOT A CONTRACT. Identifiers and file paths only; no secret belongs here. Every value below is an obviously fake placeholder. Fill from `terraform output` in bootstrap/azure (docs/act-pilot-bootstrap.md, step 5). Copy `contractTargets` into config/act-pilot-contract.json by hand. Leave enabled false and config/act-pilot-contract.sha256 empty; enabling and pinning are a separate reviewed change, not part of bootstrap.",
+  "provider": "AZURE",
+  "engine": "TERRAFORM",
+  "contractTargets": {
+    "DEV": { "tenantId": "00000000-0000-0000-0000-000000000000", "subscriptionId": "00000000-0000-0000-0000-000000000001", "backend": "examplealzstatedev/tfstate/dev.tfstate", "workspace": "default" },
+    "QA": { "tenantId": "00000000-0000-0000-0000-000000000000", "subscriptionId": "00000000-0000-0000-0000-000000000002", "backend": "examplealzstateqa/tfstate/qa.tfstate", "workspace": "default" },
+    "PROD": { "tenantId": "00000000-0000-0000-0000-000000000000", "subscriptionId": "00000000-0000-0000-0000-000000000003", "backend": "examplealzstateprod/tfstate/prod.tfstate", "workspace": "default" }
+  },
+  "identityVariables": {
+    "perIdentity": ["ALZ_<IDENTITY>_ARM_CLIENT_ID", "ALZ_<IDENTITY>_ARM_TENANT_ID", "ALZ_<IDENTITY>_ARM_SUBSCRIPTION_ID", "ALZ_<IDENTITY>_ARM_USE_OIDC=true", "ALZ_<IDENTITY>_ARM_OIDC_TOKEN_FILE"],
+    "clientIds": {
+      "DISCOVERY": "00000000-0000-0000-0000-0000000000d1",
+      "STATE": "00000000-0000-0000-0000-0000000000d2",
+      "STATE_WRITE": "00000000-0000-0000-0000-0000000000d3",
+      "APPLY": "00000000-0000-0000-0000-0000000000d4"
+    },
+    "oidcTokenFiles": {
+      "DEV": { "DISCOVERY": "/var/run/alz/dev/discovery.jwt", "STATE": "/var/run/alz/dev/state.jwt", "STATE_WRITE": "/var/run/alz/dev/state-write.jwt", "APPLY": "/var/run/alz/dev/apply.jwt" },
+      "QA": { "DISCOVERY": "/var/run/alz/qa/discovery.jwt", "STATE": "/var/run/alz/qa/state.jwt", "STATE_WRITE": "/var/run/alz/qa/state-write.jwt", "APPLY": "/var/run/alz/qa/apply.jwt" },
+      "PROD": { "DISCOVERY": "/var/run/alz/prod/discovery.jwt", "STATE": "/var/run/alz/prod/state.jwt", "STATE_WRITE": "/var/run/alz/prod/state-write.jwt", "APPLY": "/var/run/alz/prod/apply.jwt" }
+    }
+  }
+}

@@ -6,6 +6,7 @@ import {
   assertProductionDeploymentContract,
   evaluateObservabilityContract,
   PRODUCTION_DEPLOYMENT_CONTRACT,
+  pilotCombinationListed,
   PRODUCTION_QUALIFICATION_PHASES,
   productionQualificationTransitionAllowed,
   type ObservabilityRuntimeEvidence,
@@ -333,14 +334,23 @@ test("every contract signal is covered by the runtime signal catalog", () => {
 
 // docs/act-pilot-plan.md. ACT is DISABLED globally; the one exception is the
 // pilot, which exists only through a valid, enabled pilot contract file.
-test("the pilot ACT setting is scoped to Azure with Terraform under an enabled contract, and ACT stays disabled globally", () => {
+test("the pilot ACT setting lists exactly three explicit provider/engine pairs under an enabled contract, and ACT stays disabled globally", () => {
   const release = PRODUCTION_DEPLOYMENT_CONTRACT.spec.release;
   assert.equal(release.actEnabled, false);
   assert.equal(PRODUCTION_DEPLOYMENT_CONTRACT.spec.infrastructureMutation, "DISABLED");
   assert.deepEqual(release.actPilot, {
-    provider: "AZURE", engine: "TERRAFORM", contract: "config/act-pilot-contract.json", requiresEnabledPilotContract: true,
-    mutation: "TERRAFORM_APPLY_OF_SEALED_PLAN", initiatedBy: "HUMAN_OPERATOR",
+    contract: "config/act-pilot-contract.json", requiresEnabledPilotContract: true, initiatedBy: "HUMAN_OPERATOR",
+    combinations: [
+      { provider: "AZURE", engine: "TERRAFORM", mutation: "TERRAFORM_APPLY_OF_SEALED_PLAN" },
+      { provider: "AWS", engine: "TERRAFORM", mutation: "TERRAFORM_APPLY_OF_SEALED_PLAN" },
+      { provider: "AWS", engine: "CDK", mutation: "CLOUDFORMATION_EXECUTE_OF_SEALED_CHANGE_SET" },
+    ],
   });
+  // Each pair stands alone; an unlisted pair, a wildcard or a cross-provider CDK is not a pilot.
+  assert.ok(pilotCombinationListed("AZURE", "TERRAFORM") && pilotCombinationListed("AWS", "TERRAFORM") && pilotCombinationListed("AWS", "CDK"));
+  for (const [p, e] of [["AZURE", "CDK"], ["*", "TERRAFORM"], ["AWS", "*"], ["GCP", "TERRAFORM"], ["AWS", "PULUMI"], [undefined, undefined]]) {
+    assert.equal(pilotCombinationListed(p, e), false, String(p) + "/" + String(e));
+  }
   assert.doesNotThrow(() => assertProductionDeploymentContract());
 });
 
@@ -353,17 +363,24 @@ test("the production contract rejects a widened pilot scope or any global ACT en
   };
   check((c) => { c.spec.release.actEnabled = true; });
   check((c) => { delete c.spec.release.actPilot; });
-  check((c) => { (c.spec.release.actPilot as Record<string, unknown>).provider = "AWS"; });
-  check((c) => { (c.spec.release.actPilot as Record<string, unknown>).engine = "PULUMI"; });
+  check((c) => { ((c.spec.release.actPilot as { combinations: Record<string, unknown>[] }).combinations[0]).provider = "GCP"; });
+  check((c) => { ((c.spec.release.actPilot as { combinations: Record<string, unknown>[] }).combinations[0]).engine = "PULUMI"; });
+  check((c) => { (c.spec.release.actPilot as { combinations: unknown[] }).combinations.push({ provider: "AZURE", engine: "CDK", mutation: "X" }); });
+  check((c) => { (c.spec.release.actPilot as { combinations: unknown[] }).combinations.pop(); });
+  check((c) => { (c.spec.release.actPilot as Record<string, unknown>).provider = "*"; });
   check((c) => { (c.spec.release.actPilot as Record<string, unknown>).requiresEnabledPilotContract = false; });
   check((c) => { (c.spec.release.actPilot as Record<string, unknown>).initiatedBy = "AGENT"; });
   check((c) => { (c.spec.release.actPilot as Record<string, unknown>).extra = true; });
   check((c) => { c.spec.release.genericIacApply = "allowed"; });
 });
 
-test("the YAML contract states the same pilot scope and keeps ACT disabled", () => {
+test("the YAML contract states the same explicit pilot combinations and keeps ACT disabled", () => {
   const yaml = readFileSync("config/production-deployment-contract.yaml", "utf8");
   assert.match(yaml, /infrastructureMutation: DISABLED/);
   assert.match(yaml, /actEnabled: false/);
-  assert.match(yaml, /actPilot:\n\s+provider: AZURE\n\s+engine: TERRAFORM\n\s+contract: config\/act-pilot-contract\.json\n\s+requiresEnabledPilotContract: true\n\s+mutation: TERRAFORM_APPLY_OF_SEALED_PLAN\n\s+initiatedBy: HUMAN_OPERATOR/);
+  assert.match(yaml, /actPilot:\n\s+contract: config\/act-pilot-contract\.json\n\s+requiresEnabledPilotContract: true\n\s+initiatedBy: HUMAN_OPERATOR/);
+  for (const c of PRODUCTION_DEPLOYMENT_CONTRACT.spec.release.actPilot.combinations) {
+    assert.ok(yaml.includes("- provider: " + c.provider + "\n          engine: " + c.engine + "\n          mutation: " + c.mutation), c.provider + c.engine);
+  }
+  assert.equal((yaml.match(/- provider:/g) ?? []).length, 3);
 });

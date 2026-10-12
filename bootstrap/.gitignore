@@ -1,0 +1,8 @@
+# Bootstrap state and variable files hold account identifiers. Never commit them.
+**/.terraform/
+**/terraform.tfstate
+**/terraform.tfstate.*
+**/terraform.tfstate.d/
+**/*.tfvars
+!**/*.tfvars.example
+**/crash.log

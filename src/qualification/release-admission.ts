@@ -3,9 +3,9 @@ import { readFile, realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 
 import { pilotContractPinned, pilotContractSha256 } from "../apply/contract.js";
-import type { PilotContract, ProviderId } from "../apply/types.js";
+import type { EngineId, PilotContract, ProviderId } from "../apply/types.js";
 import { PHASE_E_SCENARIOS } from "./phase-e.js";
-import { PRODUCTION_DEPLOYMENT_CONTRACT } from "./production-contract.js";
+import { PRODUCTION_DEPLOYMENT_CONTRACT, pilotCombinationListed } from "./production-contract.js";
 
 export type ReleaseGateMode =
   | "CI" | "PRIVATE_MODEL" | "LIVE_PROVIDER" | "LIVE_PREVIEW"
@@ -64,7 +64,7 @@ export type ReleaseAdmissionInput = {
   actPilot?: ActPilotScope;
   records: ReleaseGateSubmission[];
 };
-export type ActPilotScope = { provider: ProviderId; engine: "TERRAFORM"; contractSha256: string };
+export type ActPilotScope = { provider: ProviderId; engine: EngineId; contractSha256: string };
 export type GateReview = {
   id: string;
   mode: ReleaseGateMode;
@@ -215,6 +215,7 @@ function reviewPilot(manifest: ReleaseAdmissionInput, contract: PilotContract | 
   }
   if (!contract) return { scope: null, blockers: ["ACT_PILOT_CONTRACT_MISSING_OR_DISABLED"] };
   if (!pilotContractPinned(contract, pinPath)) return { scope: null, blockers: ["ACT_PILOT_CONTRACT_NOT_PINNED"] };
+  if (!pilotCombinationListed(contract.provider, contract.engine)) return { scope: null, blockers: ["ACT_PILOT_COMBINATION_NOT_ALLOWED"] };
   const claimed = manifest.actPilot as unknown;
   const bound = isObject(claimed) && Object.keys(claimed).length === 3 && claimed.provider === contract.provider &&
     claimed.engine === contract.engine && claimed.contractSha256 === pilotContractSha256(contract);

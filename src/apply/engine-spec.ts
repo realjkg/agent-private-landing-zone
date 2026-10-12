@@ -73,6 +73,8 @@ export type EngineNotices = {
 
 export type EngineSpec = {
   id: EngineId;
+  /** The program the engine runs, looked up in approved tool directories only (the preflight reports whether it is installed). */
+  executables: readonly string[];
   /** The providers the engine is valid with. A contract naming another is not a contract. */
   providers: readonly ProviderId[];
   /**

@@ -355,3 +355,20 @@ test("any other infrastructureAct value is still rejected, with or without a con
     }
   }
 });
+
+test("each listed provider/engine pair is admitted on its own; an unlisted pair is not, even when pinned and named", async () => {
+  writeContract(true);
+  const base = loadPinned() as PilotContract;
+  const attempt = async (provider: string, engine: string) => {
+    const contract = { ...base, provider, engine } as unknown as PilotContract;
+    writeFileSync(pinPath, pilotContractSha256(contract) + "\n");
+    const scope = { provider, engine, contractSha256: pilotContractSha256(contract) };
+    return actBlockers(await review(pilotInput(scope), contract));
+  };
+  for (const [provider, engine] of [["AZURE", "TERRAFORM"], ["AWS", "TERRAFORM"], ["AWS", "CDK"]]) {
+    assert.deepEqual(await attempt(provider, engine), [], provider + "/" + engine);
+  }
+  for (const [provider, engine] of [["AZURE", "CDK"], ["GCP", "TERRAFORM"], ["AWS", "PULUMI"], ["*", "*"]]) {
+    assert.deepEqual(await attempt(provider, engine), ["ACT_PILOT_COMBINATION_NOT_ALLOWED"], provider + "/" + engine);
+  }
+});

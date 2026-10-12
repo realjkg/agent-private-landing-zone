@@ -209,16 +209,37 @@ export const PRODUCTION_DEPLOYMENT_CONTRACT = {
        * (docs/act-pilot-plan.md). Nothing here enables it.
        */
       actPilot: {
-        provider: "AZURE",
-        engine: "TERRAFORM",
         contract:
           "config/act-pilot-contract.json",
         requiresEnabledPilotContract:
           true,
-        mutation:
-          "TERRAFORM_APPLY_OF_SEALED_PLAN",
         initiatedBy:
           "HUMAN_OPERATOR",
+        /**
+         * The only provider/engine pairs a pilot contract may name, each
+         * validated on its own. Nothing is inferred and nothing is a wildcard:
+         * a pair not listed here is not a pilot.
+         */
+        combinations: [
+          {
+            provider: "AZURE",
+            engine: "TERRAFORM",
+            mutation:
+              "TERRAFORM_APPLY_OF_SEALED_PLAN",
+          },
+          {
+            provider: "AWS",
+            engine: "TERRAFORM",
+            mutation:
+              "TERRAFORM_APPLY_OF_SEALED_PLAN",
+          },
+          {
+            provider: "AWS",
+            engine: "CDK",
+            mutation:
+              "CLOUDFORMATION_EXECUTE_OF_SEALED_CHANGE_SET",
+          },
+        ],
       },
     },
   },
@@ -296,21 +317,21 @@ export function evaluateObservabilityContract(
 function pilotScopePinned(
   actPilot: unknown,
 ): boolean {
-  const pinned: Record<string, unknown> =
-    PRODUCTION_DEPLOYMENT_CONTRACT.spec.release.actPilot;
-  if (
-    !actPilot ||
-    typeof actPilot !== "object" ||
-    Object.keys(actPilot).length !==
-      Object.keys(pinned).length
-  ) {
-    return false;
-  }
+  return (
+    JSON.stringify(actPilot) ===
+    JSON.stringify(
+      PRODUCTION_DEPLOYMENT_CONTRACT.spec.release.actPilot,
+    )
+  );
+}
 
-  return Object.entries(pinned).every(
-    ([key, value]) =>
-      (actPilot as Record<string, unknown>)[key] ===
-        value,
+/** Whether the static contract lists this exact provider/engine pair. */
+export function pilotCombinationListed(
+  provider: unknown,
+  engine: unknown,
+): boolean {
+  return PRODUCTION_DEPLOYMENT_CONTRACT.spec.release.actPilot.combinations.some(
+    (c) => c.provider === provider && c.engine === engine,
   );
 }
 

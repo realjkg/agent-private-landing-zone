@@ -786,3 +786,34 @@ test("approvers and the operator see an import, a move, a forget and output chan
   assert.equal(applying.code, 0, applying.stderr);
   shown(applying.term.out.join(""));
 });
+
+test("preflight is read-only and offline: it reports shape, pin, identities, tools and kill switch, names no value, and marks authentication simulated", async () => {
+  const w = await world();
+  const before = engineCalls().length;
+  const run = async (args: string[], over: Partial<ApplyCliDeps> = {}) => cli(w, ["preflight", ...args], [], over);
+  const ok = await run(["--environment", "DEV"]);
+  assert.equal(ok.code, 0, ok.stderr);
+  const report = JSON.parse(ok.stdout) as { ready: boolean; authentication: string; checks: { check: string; ok: boolean }[] };
+  assert.equal(report.ready, true);
+  assert.match(report.authentication, /^SIMULATED/);
+  assert.ok(report.checks.length >= 5 && report.checks.every((c) => c.ok));
+  assert.equal(engineCalls().length, before, "no engine started");
+
+  // A missing identity, an unpinned or disabled draft and a kill switch are each reported, with exit 2 (BLOCKED) and no value.
+  const noIdentity = await run(["--environment", "DEV"], { env: {} });
+  assert.equal(noIdentity.code, 2);
+  assert.match(noIdentity.stdout, /IDENTITY_NOT_CONFIGURED|No credentials are configured/);
+  const secretValues = Object.values(ENV).filter((v): v is string => typeof v === "string" && v.length >= 8);
+  for (const v of secretValues) assert.ok(!ok.stdout.includes(v) && !noIdentity.stdout.includes(v), "no identity value is printed");
+  const draft = await world(contractJson(KILL, { enabled: false }));
+  const drafted = JSON.parse((await cli(draft, ["preflight", "--environment", "DEV"], [])).stdout) as { checks: { check: string; ok: boolean }[] };
+  assert.equal(drafted.checks[0].ok, true, "a draft contract's shape is checked even though it is not enabled");
+  assert.equal(drafted.checks.find((c) => c.check.startsWith("pilot contract pinned"))?.ok, false);
+  writeFileSync(KILL, "stop");
+  assert.equal((await run(["--environment", "DEV"])).code, 2);
+  rmSync(KILL);
+  // The environment is required and checked; no flag changes what is checked.
+  assert.equal((await run(["--environment", "STAGING"])).code, 1);
+  assert.equal((await run([])).code, 1);
+  assert.equal((await run(["--environment", "DEV", "--force", "yes"])).code, 1);
+});
