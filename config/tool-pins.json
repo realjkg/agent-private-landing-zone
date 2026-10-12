@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "_note": "Exact tool versions and artifact checksums that ./alz deps installs. An artifact whose SHA-256 does not match is never installed. Change a pin only in a reviewed change, and record the new hash from the vendor's checksum file.",
+  "tools": {
+    "terraform": {
+      "version": "1.16.4",
+      "checksumSource": "https://releases.hashicorp.com/terraform/1.16.4/terraform_1.16.4_SHA256SUMS",
+      "tested": ["linux-x64 (sandbox simulation with the real binary)"],
+      "artifacts": {
+        "darwin-arm64": {
+          "url": "https://releases.hashicorp.com/terraform/1.16.4/terraform_1.16.4_darwin_arm64.zip",
+          "sha256": "42cfdf97ad722f79085fe2279b06d4b8680172de3534b22eeddd9a0fbbe7b8f1",
+          "archive": "zip",
+          "binary": "terraform"
+        },
+        "darwin-x64": {
+          "url": "https://releases.hashicorp.com/terraform/1.16.4/terraform_1.16.4_darwin_amd64.zip",
+          "sha256": "2ee4b62064086e4b24b0d6cf2e61718fbaf0556feba990f708a5e32557554b3b",
+          "archive": "zip",
+          "binary": "terraform"
+        }
+      }
+    },
+    "ollama": {
+      "version": "0.40.0",
+      "checksumSource": "https://github.com/ollama/ollama/releases/download/v0.40.0/sha256sum.txt",
+      "tested": ["linux-x64 (CI runner, pinned release)"],
+      "artifacts": {
+        "darwin-arm64": {
+          "url": "https://github.com/ollama/ollama/releases/download/v0.40.0/ollama-darwin.tgz",
+          "sha256": "b490b4925a95c5f3dfcd889e566cf3dcd727848d59057fb00b03f1d6630326dc",
+          "archive": "tgz",
+          "binary": "ollama"
+        },
+        "darwin-x64": {
+          "url": "https://github.com/ollama/ollama/releases/download/v0.40.0/ollama-darwin.tgz",
+          "sha256": "b490b4925a95c5f3dfcd889e566cf3dcd727848d59057fb00b03f1d6630326dc",
+          "archive": "tgz",
+          "binary": "ollama"
+        }
+      }
+    }
+  },
+  "node": { "major": 24 },
+  "isolatedOllama": { "host": "127.0.0.1", "port": 11435, "models": ["qwen3:1.7b", "qwen3:4b", "mistral-nemo:latest"] }
+}
