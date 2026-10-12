@@ -16,6 +16,8 @@ Roles are least privilege by design but the final scope is the owner's decision 
 | APPLY | Contributor on the pilot resource group (or subscription); no role on state | The policies you name in `apply_managed_policy_arns` (no default). Denied the state bucket and edits to the bootstrap roles | `ExecuteChangeSet`, `DescribeStacks`, `DescribeStackEvents`, `CancelUpdateStack` on the stack, plus your resource policies. Denied `CreateChangeSet` and `DeleteStack` |
 | CHANGESET | not used | not used | `CreateChangeSet`, `DescribeChangeSet`, `DeleteChangeSet`, `GetTemplate`, `DescribeStacks` on the stack. Explicit deny of `ExecuteChangeSet`, `CancelUpdateStack` and `DeleteStack` |
 
+If the contract sets `embedStateWrite` (opt-in, Terraform engine only, `docs/act-pilot-apply.md`), sealing and `qualify` also carry the STATE_WRITE principal's non-secret settings, so STATE_WRITE must be usable on the machine that seals: its role or client, and its OIDC token file path, must be configured there, and its trust conditions (and any required reviewers on its environment) apply to sealing as well as applying. Sealing is then write-capable at the backend. This is unverified on a real backend.
+
 Other properties:
 
 - **Azure:** four app registrations, one client per identity for all three subscriptions (the Azure provider spec requires the same client ids everywhere). Each has one federated credential per environment, bound to the issuer, the audience and one exact subject. No client secret or certificate is created. The storage accounts have versioning, 30 day blob and container soft delete, TLS 1.2, no public blob access, and account keys and SAS disabled, so only Entra authorization works.

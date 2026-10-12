@@ -36,14 +36,14 @@ import { APPLY_IDENTITIES, type PilotTarget, type PlanChange } from "../types.js
 type StepIdentity = "DISCOVERY" | "STATE" | "STATE_WRITE" | "APPLY" | null;
 
 /**
- * What may be rendered into the seal-time backend file when the contract opts in: the STATE_WRITE variables, minus any whose name says
- * it holds a secret. The provider spec's `backendConfig` reads only the principal's client id, tenant, subscription and token file
- * PATH (Azure) or role ARN and token file PATH (AWS); a token file's content is never read here. It is rendered by this process, never
- * handed to a child: the seal environment below still holds no STATE_WRITE or APPLY variable.
+ * What may be rendered into the seal-time backend file when the contract opts in: an allowlist of the STATE_WRITE variables the provider
+ * specs' `backendConfig` reads (the principal's client id or role ARN, tenant, subscription, region, and the token file PATH). Any other
+ * variable, including one that holds a secret, never reaches the renderer, and a token file's content is never read. The file is rendered
+ * by this process and never handed to a child: the seal environment below still holds no STATE_WRITE or APPLY variable.
  */
-const SECRET_NAME = /(SECRET|PASSWORD|PASSPHRASE|ACCESS_KEY|SESSION)/i;
-const nonSecretStateWrite = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv =>
-  Object.fromEntries(Object.entries(env).filter(([key]) => ownsIdentityVariable(key, "STATE_WRITE") && !SECRET_NAME.test(key)));
+const STATE_WRITE_SETTINGS = new Set(["ARM_CLIENT_ID", "ARM_TENANT_ID", "ARM_SUBSCRIPTION_ID", "ARM_OIDC_TOKEN_FILE", "AWS_ROLE_ARN", "AWS_WEB_IDENTITY_TOKEN_FILE"]);
+const nonSecretStateWrite = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => Object.fromEntries(
+  Object.entries(env).filter(([key]) => ownsIdentityVariable(key, "STATE_WRITE") && STATE_WRITE_SETTINGS.has(key.slice("ALZ_STATE_WRITE_".length))));
 
 /** Sealing reads with DISCOVERY and STATE only. The writer and the applier are not even in the runner's environment. */
 const sealEnvironment = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv =>

@@ -233,9 +233,11 @@ async function confirmProjectCode(
     const phrase = embedPhrase(file.environment);
     terminal.write([
       "", "WARNING: this contract sets embedStateWrite. The seal step now carries the STATE_WRITE principal's non-secret backend settings",
-      "(client id or role ARN, tenant, and the token file PATH; never a secret or the token itself). The sealed plan and the seal-time",
-      "state read therefore name the state writer: sealing becomes write-capable at the backend. The plan file stays secret-bearing and",
-      "encrypted. Whether Terraform really authenticates state access as STATE_WRITE is not verified on a real backend.",
+      "(client id or role ARN, tenant, and the token file PATH; never a secret or the token itself).",
+      "  - The sealed plan and the seal-time state read name the state writer.",
+      "  - Sealing becomes write-capable at the backend.",
+      "  - The plan stays secret-bearing and encrypted.",
+      "  - Authentication is SIMULATED: whether Terraform really authenticates state access as STATE_WRITE is unverified until a real-backend run.",
       "Type this line exactly to continue (anything else stops here):", "  " + phrase, "",
     ].join("\n"));
     await confirm(terminal, phrase, "embed> ", "EMBED_STATE_WRITE_CONFIRMATION_MISMATCH");

@@ -130,7 +130,7 @@ function validate(raw: unknown): PilotContract {
   const targets = object(r.targets, "targets", ENVIRONMENTS as string[]);
   const approvals = object(r.requiredApprovals, "requiredApprovals", ENVIRONMENTS as string[]);
   if (r.enabled !== true) bad("enabled: the contract does not enable ACT");
-  // Optional and default off. Kept exactly as written (absent stays absent), so a contract that never mentions it hashes as it always did.
+  // Optional and default off. Kept exactly as written (absent stays absent), so a contract that never mentions it hashes as it always did; the pin is over what the file says.
   const embed = r.embedStateWrite;
   if (embed !== undefined && typeof embed !== "boolean") bad("embedStateWrite: expected true or false");
   if (embed === true && !engine.embedsStateWrite) bad("embedStateWrite: valid only with an engine that has a state backend (" + ENGINE_IDS.filter((id) => engineSpec(id)?.embedsStateWrite).join(", ") + "); " + engine.id + " has none");
@@ -148,7 +148,7 @@ function validate(raw: unknown): PilotContract {
     maxApprovalAgeMinutes: integer(r.maxApprovalAgeMinutes, "maxApprovalAgeMinutes", 1, 1440),
     approvers: approvers(r.approvers, "approvers"),
     killSwitchPath: text(r.killSwitchPath, "killSwitchPath", (v) => v.length > 0 && v.length <= 1024 && !v.includes("\0")),
-    ...(embed === undefined ? {} : { embedStateWrite: embed === true }),
+    ...(typeof embed === "boolean" ? { embedStateWrite: embed } : {}),
   };
   ENVIRONMENTS.forEach((a, index) => {
     for (const b of ENVIRONMENTS.slice(index + 1)) {

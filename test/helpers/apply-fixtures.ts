@@ -84,7 +84,7 @@ const args = process.argv.slice(2);
 const [cmd, sub] = args;
 const serialFile = path.join(dir, "serial.txt");
 const serial = () => Number(fs.readFileSync(serialFile, "utf8"));
-const log = (extra) => fs.appendFileSync(path.join(dir, "calls.jsonl"), JSON.stringify({ args, cwd: process.cwd(), env: process.env, ...extra }) + "\\n");
+const log = (extra) => fs.appendFileSync(path.join(dir, "calls.jsonl"), JSON.stringify({ args, cwd: process.cwd(), env: process.env, backendFileExists: fs.existsSync(path.resolve(process.cwd(), "../alz-backend.tfbackend")), ...extra }) + "\\n");
 const backend = () => { const a = args.find((x) => x.startsWith("-backend-config=")); return a ? fs.readFileSync(path.resolve(process.cwd(), a.slice(16)), "utf8") : undefined; };
 if (b.touchKillOn === cmd) fs.writeFileSync(b.killPath, "stop");
 if (b.signalParentOn && b.signalParentOn.cmd === cmd) process.kill(process.ppid, b.signalParentOn.signal);
@@ -163,7 +163,7 @@ export function behave(toolDir: string, killPath: string, behavior: Behavior = {
 
 export type Call = {
   args: string[]; cwd: string; env: Record<string, string>; backendConfig?: string; planPath?: string;
-  planSha?: string; planMode?: number; backendMode?: number; planText?: string; planDir?: string; pid?: number;
+  planSha?: string; planMode?: number; backendMode?: number; backendFileExists?: boolean; planText?: string; planDir?: string; pid?: number;
 };
 export const callsOf = (toolDir: string): Call[] => existsSync(join(toolDir, "calls.jsonl"))
   ? readFileSync(join(toolDir, "calls.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line) as Call)
