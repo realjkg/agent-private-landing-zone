@@ -30,5 +30,6 @@
     { "id": "REPLACE-WITH-APPROVER-ID-1", "publicKeyPem": "REPLACE-WITH-ED25519-PUBLIC-KEY-PEM", "environments": ["DEV", "QA", "PROD"] },
     { "id": "REPLACE-WITH-APPROVER-ID-2", "publicKeyPem": "REPLACE-WITH-ED25519-PUBLIC-KEY-PEM", "environments": ["DEV", "QA", "PROD"] }
   ],
-  "killSwitchPath": ".runs/apply/KILL"
+  "killSwitchPath": ".runs/apply/KILL",
+  "embedStateWrite": false
 }

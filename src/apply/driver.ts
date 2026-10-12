@@ -185,6 +185,7 @@ async function planAgainstTarget(request: SealRequest, deps: SealDeps, kind: "se
       engine, environment: request.environment, target: { ...request.target }, manifest, snapshotPath: snapshot.path, scratchDir: scratch.path,
       env: deps.env ?? process.env, policyVersion: request.policyVersion, engineVersion: manifest.engineVersion,
       pinned: admitted.contract.targets[request.environment], spec: admitted.spec, contractSha256: pilotContractSha256(admitted.contract), toolDirs: deps.toolDirs, now: deps.now,
+      embedStateWrite: admitted.contract.embedStateWrite === true,
     };
     // An engine with its own qualification run (CDK: read-only steps, no change set) does that and nothing else.
     if (kind === "qualify" && engine.qualify) {

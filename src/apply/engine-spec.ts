@@ -26,6 +26,8 @@ export type EngineContext = {
   /** The contract's target for this environment, and its provider. */
   pinned: PilotTarget;
   spec: ProviderSpec;
+  /** The contract's opt-in `embedStateWrite` (`PilotContract`), sealing and qualifying only. Absent or false: the seal-time init is the preview adapter's own. */
+  embedStateWrite?: boolean;
 };
 export type EngineRunInput = EngineContext & { target: ResolvedTarget; engineVersion: string };
 /** A read-only snapshot of the project the manifest describes is what sealing starts from. */
@@ -90,6 +92,8 @@ export type EngineSpec = {
     fields: Readonly<Record<string, (value: unknown) => boolean>>;
   };
   notices: EngineNotices;
+  /** Whether the engine has a state backend whose settings the plan can embed, so a contract may set `embedStateWrite`. Absent: it has none (CDK). */
+  embedsStateWrite?: boolean;
   /** The manifest mode sealing and applying accept; the manifest's engine must be this spec's. */
   manifestMode: ArtifactManifest["mode"];
   /** What the evidence says the engine did (`authority.mutation`). */

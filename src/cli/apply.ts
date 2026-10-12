@@ -78,6 +78,8 @@ const SUBCOMMANDS: Readonly<Record<string, Flags>> = {
 const MAX_INPUT_BYTES = 8 * 1024 * 1024;
 const CONTROL = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
 const CODE_PHRASE = "RUN PROJECT CODE";
+/** What the person types when the contract opts in to embedding STATE_WRITE in the plan: one phrase per environment, no flag skips it. */
+const embedPhrase = (environment: string): string => "EMBED STATE_WRITE " + environment;
 const REQUEST_KEYS: Readonly<Record<string, readonly string[]>> = {
   seal: ["environment", "target", "projectRoot", "policyVersion", "resolved"],
   apply: ["environment", "target", "projectRoot"],
@@ -224,6 +226,19 @@ async function confirmProjectCode(
   if (notices.projectCode) {
     terminal.write("\nType " + CODE_PHRASE + " to allow it (anything else stops here):\n\n");
     await confirm(terminal, CODE_PHRASE, "code> ", "PROJECT_CODE_CONFIRMATION_MISMATCH");
+  }
+  // The contract's opt-in (`embedStateWrite`): the seal step itself carries the state writer's settings, so a person says so before any engine runs.
+  const contract = contractFor(deps);
+  if (!("reason" in contract) && contract.embedStateWrite === true) {
+    const phrase = embedPhrase(file.environment);
+    terminal.write([
+      "", "WARNING: this contract sets embedStateWrite. The seal step now carries the STATE_WRITE principal's non-secret backend settings",
+      "(client id or role ARN, tenant, and the token file PATH; never a secret or the token itself). The sealed plan and the seal-time",
+      "state read therefore name the state writer: sealing becomes write-capable at the backend. The plan file stays secret-bearing and",
+      "encrypted. Whether Terraform really authenticates state access as STATE_WRITE is not verified on a real backend.",
+      "Type this line exactly to continue (anything else stops here):", "  " + phrase, "",
+    ].join("\n"));
+    await confirm(terminal, phrase, "embed> ", "EMBED_STATE_WRITE_CONFIRMATION_MISMATCH");
   }
 
   const now = deps.now ?? (() => new Date());
@@ -462,6 +477,8 @@ const preflightCommand: Command = async (flags, _terminal, deps, out) => {
     add("identities configured, distinct, no fallback (" + engine.identities.join(", ") + ")", identities.ok, identities.ok ? undefined : identities.message);
     const targets = verifyIdentityTargets(contract, environment as ApplyEnvironment, env, spec, engine.identities);
     add("identities aimed at the " + environment + " account", targets.ok, targets.ok ? undefined : targets.message);
+    // Informational: where the contract opts in, sealing itself carries STATE_WRITE's non-secret settings (typed confirmation at seal).
+    add("plan will embed STATE_WRITE settings: " + (contract.embedStateWrite === true ? "yes" : "no"), true);
     for (const tool of engine.executables) {
       add("tool " + tool + " installed in an approved directory", resolveExecutable(tool, deps.toolDirs ?? approvedToolDirs(env)) !== undefined);
     }

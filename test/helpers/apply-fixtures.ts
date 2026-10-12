@@ -103,7 +103,8 @@ else if (cmd === "init") {
     fs.writeFileSync(path.join(".terraform", "terraform.tfstate"), JSON.stringify({ version: 3, backend }));
   }
   for (const w of b.initWrites || []) { fs.mkdirSync(path.dirname(w.path), { recursive: true }); fs.writeFileSync(w.path, w.content); }
-  log({ backendConfig: backend() });
+  const bc = args.find((x) => x.startsWith("-backend-config="));
+  log({ backendConfig: backend(), backendMode: bc ? fs.statSync(path.resolve(process.cwd(), bc.slice(16))).mode & 0o777 : undefined });
 }
 else if (cmd === "workspace") { log({}); if (sub === "show") process.stdout.write(b.workspace + "\\n"); }
 else if (cmd === "state" && sub === "pull") { log({}); process.stdout.write(JSON.stringify({ version: 4, serial: serial(), resources: [{ attributes: { password: "${STATE_CANARY}" } }] })); }
@@ -162,7 +163,7 @@ export function behave(toolDir: string, killPath: string, behavior: Behavior = {
 
 export type Call = {
   args: string[]; cwd: string; env: Record<string, string>; backendConfig?: string; planPath?: string;
-  planSha?: string; planMode?: number; planText?: string; planDir?: string; pid?: number;
+  planSha?: string; planMode?: number; backendMode?: number; planText?: string; planDir?: string; pid?: number;
 };
 export const callsOf = (toolDir: string): Call[] => existsSync(join(toolDir, "calls.jsonl"))
   ? readFileSync(join(toolDir, "calls.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line) as Call)

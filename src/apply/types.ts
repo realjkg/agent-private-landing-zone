@@ -45,6 +45,12 @@ export type PilotContract = {
   approvers: ApproverEntry[];
   /** Existence of this file stops an apply before it starts and between steps. */
   killSwitchPath: string;
+  /**
+   * Opt-in, default off (absent or false is today's behavior, byte for byte). Terraform engine only. When true, the seal-time `init`
+   * embeds STATE_WRITE's non-secret backend settings, so the plan names the state writer (docs/act-pilot-apply.md, "Embedding STATE_WRITE
+   * in the plan"). It is part of the pinned contract, so the sealed plan binds the choice through `contractSha256`.
+   */
+  embedStateWrite?: boolean;
 };
 
 /** The allowlist of people who may approve. A typed name is never proof; a verified signature is. */
