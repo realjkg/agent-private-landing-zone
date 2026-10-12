@@ -94,6 +94,39 @@ function dialogFor(check: DepCheck, pins: ToolPins, platform: string, home: stri
   };
 }
 
+/**
+ * The selection screen: every missing pinned tool starts checked, a number toggles one, `a` checks all, `s` skips all,
+ * Enter continues with what is checked, and `q` cancels before anything is downloaded. Returns null on cancel.
+ */
+export async function chooseInstalls(items: readonly DepCheck[], terminal: HumanTerminal): Promise<Set<ToolId> | null> {
+  const selected = new Set(items.map((item) => item.installable as ToolId));
+  const show = (): void => {
+    const lines = items.map((item, index) => {
+      const box = selected.has(item.installable as ToolId) ? "[x]" : "[ ]";
+      return "  " + box + " " + (index + 1) + "  " + item.label + "  — " + (item.installable === "terraform" ? "needed for the pilot" : "needed for model runs");
+    });
+    terminal.write(["", "Choose what to install. Each one is still confirmed with its own phrase.", ...lines,
+      "Type a number to toggle, a to check all, s to skip all, Enter to continue with the checked items, or q to cancel.", ""].join("\n"));
+  };
+  show();
+  for (let round = 0; round < 50; round += 1) {
+    const answer = (await terminal.ask("> ")).trim().toLowerCase();
+    if (answer === "") return selected;
+    if (answer === "q") return null;
+    if (answer === "s") { selected.clear(); return selected; }
+    if (answer === "a") { items.forEach((item) => selected.add(item.installable as ToolId)); show(); continue; }
+    const index = /^\d+$/.test(answer) ? Number(answer) - 1 : -1;
+    if (index < 0 || index >= items.length) {
+      terminal.write("That is not a choice. Type a number, a, s, q, or press Enter.\n");
+      continue;
+    }
+    const tool = items[index].installable as ToolId;
+    if (selected.has(tool)) selected.delete(tool); else selected.add(tool);
+    show();
+  }
+  return selected;
+}
+
 /** `./alz deps`: the full report, then the install dialogs, but only in an interactive Terminal. */
 export async function runDepsCommand(args: string[], deps: DepsDeps = {}): Promise<number> {
   const out = deps.out ?? ((text: string) => { process.stdout.write(text); });
@@ -131,7 +164,12 @@ export async function runDepsCommand(args: string[], deps: DepsDeps = {}): Promi
     return EXIT.BLOCKED;
   }
 
-  for (const check of installable) {
+  const picks = await chooseInstalls(installable, terminal);
+  if (picks === null) {
+    out("\nCanceled. Nothing was installed.\n");
+    return EXIT.BLOCKED;
+  }
+  for (const check of installable.filter((item) => picks.has(item.installable!))) {
     const dialog = dialogFor(check, pins, platform, home);
     terminal.write(dialog.text);
     const answer = (await terminal.ask("> ")).trim();
