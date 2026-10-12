@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { signApproval } from "../apply/approval.js";
-import { ENVIRONMENTS, INVISIBLE } from "../apply/constants.js";
+import { ENVIRONMENTS, stripInvisible } from "../apply/constants.js";
 import {
   contractRefusal, isKillSwitchActive, loadPilotContract, pilotContractSha256, repoPaths, requireNotApplied, targetForEnvironment, writeQualificationEvidence, type Refusal,
 } from "../apply/contract.js";
@@ -84,7 +84,7 @@ type ResolvedTarget = SealedPlan["target"];
 
 class CliError extends Error {}
 const fail = (code: string, detail = ""): never => { throw new CliError(code + (detail ? ": " + detail : "")); };
-const printable = (text: string): string => text.replace(INVISIBLE, "").replace(CONTROL, "?");
+const printable = (text: string): string => stripInvisible(text).replace(CONTROL, "?");
 
 /** Each flag once (the repeated ones any number of times); anything else is refused, whatever it is called. */
 function parseFlags(sub: string, args: string[]): Record<string, string[]> {

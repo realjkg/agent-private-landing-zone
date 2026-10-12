@@ -4,7 +4,7 @@ import type { ResolvedTarget } from "../teardown/driver/types.js";
 import { ENVIRONMENTS, HASH, INVISIBLE } from "./constants.js";
 import { sha256 } from "../util/sha256.js";
 import { codeOf } from "./engine.js";
-import { engineFor, type EngineContext, type EnginePlanInput } from "./engine-spec.js";
+import type { EnginePlanInput, EngineSpec } from "./engine-spec.js";
 import type { ApplyEnvironment, ApplyRefusalCode, SealedPlan } from "./types.js";
 
 /**
@@ -51,6 +51,8 @@ export function releaseIdentityOf(manifest: ArtifactManifest): string {
 
 /** What the engine plans from (the driver's validated manifest and its read-only snapshot, a scratch directory it deletes, the contract's target and provider), and what the seal binds besides. */
 export type SealInput = EnginePlanInput & {
+  /** The contract's engine, chosen once by the driver. */
+  engine: EngineSpec;
   environment: ApplyEnvironment;
   policyVersion: string;
   /** The pinned contract's canonical sha256: sealed, so the plan applies only under this contract. */
@@ -66,17 +68,9 @@ export type ThrowawayPlan = { ok: true; sealed: SealedPlan } | SealFailure;
 
 const HAS_INVISIBLE = new RegExp(INVISIBLE.source);
 
-/**
- * Derives the change list from the plan bytes themselves, for an apply that
- * has initialized its work directory. The engine's own extraction, the one
- * sealing used; throws a code.
- */
-export const rederiveChanges = (input: EngineContext & { planBytes: Buffer }) =>
-  engineFor(input.manifest).rederiveChanges({ ...input, artifact: input.planBytes });
-
 function runSeal(input: SealInput): { sealed: SealedPlan; planBytes: Buffer } {
   const { manifest } = input;
-  const { artifact: planBytes, changes } = engineFor(manifest).plan(input);
+  const { artifact: planBytes, changes } = input.engine.plan(input);
   const fields: ArtifactFields = {
     planSha256: sha256(planBytes), manifestHash: manifest.manifestHash, releaseIdentity: releaseIdentityOf(manifest),
     environment: input.environment, target: { ...input.target }, engineVersion: input.engineVersion,

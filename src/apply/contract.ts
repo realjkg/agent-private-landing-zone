@@ -352,7 +352,7 @@ export async function verifyApplyQualification(
   expected: { adapterVersion: string; argvDigest: string; engineVersion: string },
   /**
    * The contract's DEV target (account fields, backend, workspace), the clock, and what this run would use: the
-   * terraform binary's hash and the normalized STATE_WRITE and APPLY client ids (not compared for a QA or PROD run when each environment
+   * engine binary's hash (`terraformSha256`, the aws CLI's for CDK) and the normalized client ids of the two attested principals (not compared for a QA or PROD run when each environment
    * brings its own principals, `ProviderSpec.principalPerEnvironment`). Evidence is for exactly these, at most 30 days old.
    */
   bound: { dev: PilotTarget; now: Date; terraformSha256: string | undefined; stateWriteClientId: string; applyClientId: string; principalsPerEnvironment?: boolean },
@@ -373,10 +373,10 @@ export async function verifyApplyQualification(
   if (evidence.backend !== bound.dev.backend || evidence.workspace !== bound.dev.workspace) {
     return deny("it was not produced against the contract's DEV backend and workspace");
   }
-  if (bound.terraformSha256 === undefined || evidence.terraformSha256 !== bound.terraformSha256) return deny("it was not produced with this terraform binary");
+  if (bound.terraformSha256 === undefined || evidence.terraformSha256 !== bound.terraformSha256) return deny("it was not produced with this engine binary");
   if (!bound.principalsPerEnvironment && (bound.stateWriteClientId === "" || evidence.stateWriteClientId !== bound.stateWriteClientId ||
     bound.applyClientId === "" || evidence.applyClientId !== bound.applyClientId)) {
-    return deny("it was not produced with these STATE_WRITE and APPLY client ids");
+    return deny("it was not produced with these attested client ids");
   }
   const age = bound.now.getTime() - Date.parse(evidence.qualifiedAt);
   if (age < 0) return deny("it is dated in the future");

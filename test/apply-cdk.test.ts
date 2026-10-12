@@ -15,7 +15,7 @@ import { attestedClientId, checkApplyIdentities, verifyIdentityTargets } from ".
 import { openNonceStore } from "../src/apply/nonces.js";
 import { AWS } from "../src/apply/providers/aws.js";
 import { loadSealedPlan, reviewBundleOf } from "../src/apply/seal.js";
-import type { ApplyEnvironment, ApplyEvidence, ApplyResult, PilotContract, SignedApproval } from "../src/apply/types.js";
+import { APPLY_IDENTITIES, type ApplyEnvironment, type ApplyEvidence, type ApplyResult, type PilotContract, type SignedApproval } from "../src/apply/types.js";
 import { runApplyCommand, type ApplyCliDeps } from "../src/cli/apply.js";
 import { targetString } from "../src/cli/teardown-driver.js";
 import { removeTree } from "../src/teardown/driver/cleanup.js";
@@ -211,7 +211,7 @@ test("a state identity is an unneeded privileged identity for CDK, and CHANGESET
   identityRefusal(env("DEV", Object.fromEntries(["STATE", "STATE_WRITE"].map((i) => ["ALZ_" + i + "_AWS_REGION", "us-east-1"]))), "IDENTITY_NOT_CONFIGURED", "STATE");
   const terraformSet = checkApplyIdentities({ ...cdkIdentityEnv("DEV"), ...Object.fromEntries(["STATE", "STATE_WRITE"].flatMap((i) => [
     ["ALZ_" + i + "_AWS_ROLE_ARN", cdkRoleArn(i, "DEV")], ["ALZ_" + i + "_AWS_WEB_IDENTITY_TOKEN_FILE", "/run/fixture/" + i + "-token"],
-  ])) }, AWS);
+  ])) }, AWS, APPLY_IDENTITIES);
   assert.equal(terraformSet.ok, false, "Terraform's four plus CHANGESET");
   if (!terraformSet.ok) assert.match(terraformSet.message, /CHANGESET/);
 });
@@ -307,8 +307,8 @@ test("a DEV, QA and PROD promotion seals a change set per account and executes e
     const before = calls().length;
     const s = await seal(w, environment);
     const sealCalls = calls().slice(before);
-    assert.deepEqual(subcommandsOf(sealCalls), ["--version", "describe-stacks", "create-change-set", "wait", "describe-change-set"], environment);
-    assert.deepEqual(sealCalls.map(roleOf), ["", ...["discovery", "changeset", "changeset", "changeset"].map((who) => "alz-" + who + "-" + environment.toLowerCase())]);
+    assert.deepEqual(subcommandsOf(sealCalls), ["--version", "describe-stacks", "create-change-set", "wait", "describe-change-set", "get-template", "describe-stacks"], environment);
+    assert.deepEqual(sealCalls.map(roleOf), ["", ...["discovery", "changeset", "changeset", "changeset", "changeset", "discovery"].map((who) => "alz-" + who + "-" + environment.toLowerCase())]);
     assert.equal(sealCalls.every((call) => !("AWS_ACCESS_KEY_ID" in call.env) && !("AWS_SECRET_ACCESS_KEY" in call.env)), true, "no ambient key reaches a child");
     assert.equal(sealCalls[0].env.AWS_ROLE_ARN, undefined, "the version check holds no identity");
     assert.ok(sealCalls.slice(1).every((call) => call.args.includes("--region") && call.args[call.args.indexOf("--region") + 1] === "us-east-1"));
@@ -319,7 +319,7 @@ test("a DEV, QA and PROD promotion seals a change set per account and executes e
     assert.equal(record.changeSetType, "CREATE");
     assert.match(String(record.changeSetId), new RegExp("^arn:aws:cloudformation:us-east-1:" + cdkTargetOf(environment).account + ":changeSet/alz-[0-9a-f]{12}/"));
     assert.match(String(record.stackId), /^arn:aws:cloudformation:us-east-1:\d{12}:stack\/PilotStack\//);
-    for (const field of ["templateSha256", "parametersSha256", "changeListSha256"]) assert.match(String(record[field]), /^[0-9a-f]{64}$/, field);
+    for (const field of ["templateSha256", "parametersSha256", "changeListSha256", "stackSha256"]) assert.match(String(record[field]), /^[0-9a-f]{64}$/, field);
     assert.deepEqual(record.capabilities, []);
     assert.deepEqual(s.sealed.changes, [
       { address: "PilotBucket", type: "AWS::S3::Bucket", action: "CREATE" },
@@ -332,8 +332,8 @@ test("a DEV, QA and PROD promotion seals a change set per account and executes e
     const result = await run(w, s);
     assert.ok(result.ok, environment + " " + JSON.stringify(result));
     const applyCalls = calls().slice(applyFrom);
-    assert.deepEqual(subcommandsOf(applyCalls), ["--version", "describe-stacks", "describe-change-set", "execute-change-set", "describe-stacks", "describe-stacks"]);
-    assert.deepEqual(applyCalls.map(roleOf).slice(1), ["alz-apply-", "alz-changeset-", "alz-apply-", "alz-apply-", "alz-apply-"].map((r) => r + environment.toLowerCase()));
+    assert.deepEqual(subcommandsOf(applyCalls), ["--version", "describe-stacks", "describe-change-set", "get-template", "describe-stacks", "execute-change-set", "describe-stacks", "describe-stacks", "describe-change-set"]);
+    assert.deepEqual(applyCalls.map(roleOf).slice(1), ["alz-apply-", "alz-changeset-", "alz-changeset-", "alz-apply-", "alz-apply-", "alz-apply-", "alz-apply-", "alz-changeset-"].map((r) => r + environment.toLowerCase()));
     const execute = applyCalls.filter((call) => call.args[1] === "execute-change-set");
     assert.equal(execute.length, 1);
     assert.deepEqual(execute[0].args, ["cloudformation", "execute-change-set", "--change-set-name", String(record.changeSetId), "--region", "us-east-1", "--no-cli-pager"]);
@@ -462,7 +462,10 @@ async function refusedBeforeExecution(behavior: AwsBehavior, code: string, w = w
   refused(result, code);
   assert.ok(!calls().some((call) => call.args[1] === "execute-change-set"), "nothing executed");
   // The approvals were not consumed: the same ones apply once the cloud is as sealed.
-  patchAws(toolDir, { swapChangeSetId: undefined, swapStackId: undefined, describedStackId: undefined, executionStatus: undefined, extraChange: undefined, changeSetStatus: undefined });
+  patchAws(toolDir, {
+    swapChangeSetId: undefined, swapStackId: undefined, describedStackId: undefined, executionStatus: undefined, extraChange: undefined, changeSetStatus: undefined,
+    stackUpdated: undefined, stackRoleArn: undefined, templateDiffers: undefined,
+  });
   assert.ok((await run(w, s)).ok, "the approvals and the sealed plan were still good");
   clean(w);
   return result;
@@ -481,9 +484,39 @@ test("a change list that differs from the sealed one is ARTIFACT_TAMPERED", asyn
   await refusedBeforeExecution({ extraChange: true }, "ARTIFACT_TAMPERED");
 });
 
-test("a stack modified between sealing and applying leaves the change set no longer executable: PLAN_STALE, nothing executed", async () => {
+test("a change set CloudFormation no longer calls executable is PLAN_STALE, nothing executed", async () => {
   for (const executionStatus of ["OBSOLETE", "UNAVAILABLE", "EXECUTE_COMPLETE"]) await refusedBeforeExecution({ executionStatus }, "PLAN_STALE");
   await refusedBeforeExecution({ changeSetStatus: "FAILED" }, "PLAN_STALE");
+});
+
+test("a stack changed after sealing is PLAN_STALE on the engine's own check, even when CloudFormation still calls the change set executable", async () => {
+  // The fake keeps the change set AVAILABLE throughout: only the sealed stack state can catch these.
+  await refusedBeforeExecution({ stackUpdated: "2026-10-11T11:45:00.000Z" }, "PLAN_STALE", world({}, undefined, { stackExists: true }));
+  await refusedBeforeExecution({ stackRoleArn: "arn:aws:iam::111111111111:role/AdministratorAccess" }, "PLAN_STALE", world({}, undefined, { stackExists: true }));
+});
+
+test("a stack that changes between the engine's preparation and the execution is read again and stops the apply before execute-change-set", async () => {
+  const w = world({}, undefined, { stackExists: true });
+  const s = await seal(w, "DEV");
+  patchAws(toolDir, { bumpStackOn: "get-template" });
+  const result = await run(w, s);
+  refused(result, "APPROVALS_SPENT");
+  assert.match((result as { message: string }).message, /PLAN_STALE/);
+  assert.ok(!calls().some((call) => call.args[1] === "execute-change-set"), "nothing executed");
+  // The approvals are spent, the artifact is given back: it is not an applied artifact.
+  patchAws(toolDir, { bumpStackOn: undefined });
+  const again = await run(w, s, [approval(s.sealed, "alice")]);
+  refused(again, "PLAN_STALE");
+  clean(w);
+});
+
+test("a change set that does not hold the assembly's template is refused at the seal and at the apply", async () => {
+  const w = world();
+  behave({ templateDiffers: true });
+  assert.match((await sealRefused(w, "DEV")).message, /CHANGE_SET_TEMPLATE_MISMATCH/);
+  assert.ok(!calls().some((call) => call.args[1] === "execute-change-set"));
+  const ok = world();
+  await refusedBeforeExecution({ templateDiffers: true }, "ARTIFACT_TAMPERED", ok);
 });
 
 test("a template changed after sealing is ARTIFACT_TAMPERED: the assembly is bound to the manifest and the sealed record", async () => {
@@ -605,6 +638,168 @@ test("the engine never starts the execution when told to stop first", async () =
   assert.equal(result.notStarted, true);
   assert.ok(!calls().some((call) => call.args[1] === "execute-change-set"));
   await sleep(1);
+});
+
+// --- the outcome is the execution's, not the stack's alone ----------------------------------------------------
+
+async function applied(behavior: AwsBehavior, setup: AwsBehavior = { stackExists: true }) {
+  const w = world({}, undefined, setup);
+  const s = await seal(w, "DEV");
+  patchAws(toolDir, behavior);
+  return { w, s, result: await run(w, s) };
+}
+
+test("a refused execute while someone else's update moves the stack is never a success, is not canceled, and does not promote the release", async () => {
+  const { w, s, result } = await applied({ executeFail: true, foreignUpdateOnExecute: true });
+  refused(result, "APPLY_FAILED");
+  assert.equal(outcomeOf(result), "PARTIAL_REQUIRES_REVIEW");
+  assert.ok(!calls().some((call) => call.args[1] === "cancel-update-stack"));
+  const qa = await seal(w, "QA");
+  refused(await run(w, qa), "PROMOTION_EVIDENCE_MISSING");
+  refused(await run(w, s), "ARTIFACT_ALREADY_APPLIED");
+});
+
+test("an execute whose response was lost is only a no-change when the change set is proven unexecuted; otherwise a person reviews", async () => {
+  const lost = await applied({ executeLost: true });
+  assert.equal(outcomeOf(lost.result), "FAILED_NO_CHANGE", "CloudFormation reports the change set still AVAILABLE");
+  const unread = await applied({ executeLost: true, changeSetReadFailsAfterExecute: true });
+  assert.equal(outcomeOf(unread.result), "PARTIAL_REQUIRES_REVIEW", "the change set could not be read");
+  const ran = await applied({ executeLost: true, ranAnyway: true });
+  refused(ran.result, "APPLY_FAILED");
+  assert.equal(outcomeOf(ran.result), "PARTIAL_REQUIRES_REVIEW", "the stack updated although the call failed");
+  assert.equal(calls().filter((call) => call.args[1] === "execute-change-set").length, 1, "never retried");
+  const stopped = await applied({ executeLost: true, ranAnyway: true, pollStatuses: ["UPDATE_IN_PROGRESS"], touchKillAtPoll: 0 });
+  assert.equal(outcomeOf(stopped.result), "KILLED");
+  assert.ok(!calls().some((call) => call.args[1] === "cancel-update-stack"), "only an update this command's execute started is canceled");
+});
+
+test("a successful stack with a change set not reported executed is not a success", async () => {
+  const { result } = await applied({ executionStatus: "EXECUTE_FAILED" }, { stackExists: true });
+  // The fake reports the override from the first read, so the apply is refused before it starts; the engine-level check is the next test.
+  refused(result, "PLAN_STALE");
+});
+
+test("the engine judges a finished stack by the change set too: EXECUTE_COMPLETE is part of success", async () => {
+  const w = world({}, undefined, { stackExists: true });
+  const s = await seal(w, "DEV");
+  const snapshot = createImmutableSnapshot(s.project.projectRoot, s.project.manifest, w.dirs.scratch);
+  try {
+    const engineRun = CDK.openApply({
+      scratchDir: fresh("direct"), env: cdkIdentityEnv("DEV"), toolDirs: [toolDir], manifest: s.project.manifest,
+      pinned: (loaded(cdkContractJson(KILL)) as PilotContract).targets.DEV, spec: AWS, target: s.sealed.target, engineVersion: AWS_CLI_VERSION,
+    });
+    engineRun.prepare(snapshot.path);
+    engineRun.rederive(s.loaded.planBytes);
+    const result = await engineRun.execute(s.loaded.planBytes, { stopWhen: () => false, pollMs: 10, graceMs: 10 });
+    assert.equal(result.ok, true);
+    assert.deepEqual(await engineRun.settle(result), { outcome: "SUCCEEDED" });
+    patchAws(toolDir, { executionStatus: "EXECUTE_FAILED" });
+    assert.deepEqual(await engineRun.settle(result), { outcome: "PARTIAL_REQUIRES_REVIEW" }, "the stack looks done but the change set does not say it was executed");
+  } finally { snapshot.remove(); }
+});
+
+test("the engine runs only the record it rederived, and only after it was prepared", async () => {
+  const w = world({}, undefined, { stackExists: true });
+  const s = await seal(w, "DEV");
+  // A well-formed record for a different stack state: the engine must not run what it did not rederive.
+  const other = Buffer.from(JSON.stringify({ ...recordOf(s), stackSha256: "f".repeat(64) }));
+  const snapshot = createImmutableSnapshot(s.project.projectRoot, s.project.manifest, w.dirs.scratch);
+  try {
+    const open = () => CDK.openApply({
+      scratchDir: fresh("direct"), env: cdkIdentityEnv("DEV"), toolDirs: [toolDir], manifest: s.project.manifest,
+      pinned: (loaded(cdkContractJson(KILL)) as PilotContract).targets.DEV, spec: AWS, target: s.sealed.target, engineVersion: AWS_CLI_VERSION,
+    });
+    const control = { stopWhen: () => false, pollMs: 10, graceMs: 10 };
+    await assert.rejects(open().execute(s.loaded.planBytes, control), (error) => codeOf(error) === "ENGINE_NOT_PREPARED");
+    const prepared = open();
+    prepared.prepare(snapshot.path);
+    prepared.rederive(s.loaded.planBytes);
+    await assert.rejects(prepared.execute(other, control), (error) => codeOf(error) === "ARTIFACT_TAMPERED");
+    assert.ok(!calls().some((call) => call.args[1] === "execute-change-set"));
+  } finally { snapshot.remove(); }
+});
+
+// --- the template and the capabilities ----------------------------------------------------------------------
+
+test("a transform, a macro, a custom resource or a repeated template key is refused before any change set exists", async () => {
+  const w = world();
+  const templateFile = STACK + ".template.json";
+  const cases: [AssemblyOptions, RegExp][] = [
+    [{ templateExtra: { Transform: "AWS::Serverless-2016-10-31" } }, /ASSEMBLY_TRANSFORM/],
+    [{ templateExtra: { Transform: { Name: "AWS::Include", Parameters: { Location: "s3://example-bucket/snippet.json" } } } }, /ASSEMBLY_TRANSFORM/],
+    [{ resources: { Wrapped: { Type: "AWS::SNS::Topic", Properties: { Tags: { "Fn::Transform": { Name: "AWS::Include" } } } } } }, /ASSEMBLY_TRANSFORM/],
+    [{ resources: { Hook: { Type: "Custom::Thing", Properties: { ServiceToken: "arn:aws:lambda:us-east-1:111111111111:function:fake" } } } }, /ASSEMBLY_CUSTOM_RESOURCE/],
+    [{ resources: { Hook: { Type: "AWS::CloudFormation::CustomResource", Properties: {} } } }, /ASSEMBLY_CUSTOM_RESOURCE/],
+    [{ resources: { Expander: { Type: "AWS::CloudFormation::Macro", Properties: {} } } }, /ASSEMBLY_CUSTOM_RESOURCE/],
+    [{ raw: { [templateFile]: '{"Resources":{"A":{"Type":"AWS::SNS::Topic"}},"Resources":{"B":{"Type":"AWS::CloudFormation::Stack"}}}' } }, /TEMPLATE_DUPLICATE_KEY/],
+    [{ raw: { [templateFile]: '{"Resources":{"A":{"Type":"AWS::SNS::Topic","Properties":{"x":1,"y":[{"k":1,"k":2}]}}}}' } }, /TEMPLATE_DUPLICATE_KEY/],
+  ];
+  for (const [options, pattern] of cases) {
+    const refusal = await sealRefused(w, "DEV", options);
+    assert.match(refusal.message, pattern, JSON.stringify(options).slice(0, 120));
+    assert.ok(!calls().some((call) => call.args[1] === "create-change-set"));
+  }
+  // The same keys in different objects, and strings that look like keys, are not duplicates.
+  const fine = '{"Resources":{"A":{"Type":"AWS::SNS::Topic","Properties":{"a":"\\"Resources\\":1","b":[{"a":1},{"a":2}]}},"B":{"Type":"AWS::SNS::Topic"}}}';
+  assert.ok((await seal(w, "DEV", { raw: { [templateFile]: fine } })).sealed);
+});
+
+test("an IAM capability is passed only for a template with an IAM resource, and only the ones the contract lists; auto-expand is not a capability", async () => {
+  const both = world({}, cdkContractJson(KILL, ["CAPABILITY_IAM", "CAPABILITY_NAMED_IAM"]));
+  const plain = await seal(both, "DEV");
+  assert.ok(!calls().some((call) => call.args.includes("--capabilities")), "the contract lists IAM but the template has no IAM resource");
+  assert.deepEqual(recordOf(plain).capabilities, []);
+  assert.ok((await run(both, plain)).ok);
+  const withRole = world({}, cdkContractJson(KILL, ["CAPABILITY_NAMED_IAM", "CAPABILITY_IAM"]));
+  const s = await seal(withRole, "DEV", { iam: true });
+  const created = calls().find((call) => call.args[1] === "create-change-set")!;
+  assert.deepEqual(created.args.slice(created.args.indexOf("--capabilities"), created.args.indexOf("--capabilities") + 3), ["--capabilities", "CAPABILITY_IAM", "CAPABILITY_NAMED_IAM"]);
+  assert.deepEqual(recordOf(s).capabilities, ["CAPABILITY_IAM", "CAPABILITY_NAMED_IAM"]);
+  assert.match(reasonOf(editTargets((t) => { t.DEV.capabilities = ["CAPABILITY_AUTO_EXPAND"]; })), /DEV\.capabilities/);
+});
+
+// --- the allowlist per adapter and the refusal codes ----------------------------------------------------------------
+
+test("an adapter's session may run only that adapter's lists: the apply cannot create, sealing cannot execute, and qualification may do neither", () => {
+  assert.equal(isAllowedCdkArgv("CHANGESET", create(), "preview"), true);
+  assert.equal(isAllowedCdkArgv("CHANGESET", create(), "apply"), false);
+  assert.equal(isAllowedCdkArgv("DISCOVERY", ["cloudformation", "describe-stacks", "--stack-name", STACK, ...COMMON], "apply"), false);
+  assert.equal(isAllowedCdkArgv("APPLY", EXECUTE, "apply"), true);
+  assert.equal(isAllowedCdkArgv("APPLY", EXECUTE, "preview"), false);
+  assert.equal(isAllowedCdkArgv("CHANGESET", ["cloudformation", "describe-change-set", "--change-set-name", ARN_CS, ...COMMON], "apply"), true);
+  const getTemplate = ["cloudformation", "get-template", "--change-set-name", ARN_CS, "--template-stage", "Original", ...COMMON];
+  for (const adapter of ["preview", "apply"] as const) assert.equal(isAllowedCdkArgv("CHANGESET", getTemplate, adapter), true);
+  assert.equal(isAllowedCdkArgv("APPLY", getTemplate), false);
+  assert.equal(isAllowedCdkArgv("CHANGESET", getTemplate.map((a) => a.replace("Original", "Processed"))), false);
+});
+
+test("each way a cloud assembly, a change set or the AWS CLI can be unreadable is a code, and nothing is created for an unreadable assembly", async () => {
+  const w = world();
+  const dependency = (files: Record<string, any>) => { files["manifest.json"].artifacts[STACK].dependencies = ["Missing"]; };
+  const assemblyCases: [AssemblyOptions, RegExp][] = [
+    [{ raw: { "manifest.json": "not json" } }, /ASSEMBLY_UNREADABLE/],
+    [{ environment: "somewhere" }, /ASSEMBLY_ENV_INVALID/],
+    [{ mutate: dependency }, /ASSEMBLY_DEPENDENCY/],
+    [{ raw: { [STACK + ".template.json"]: "{" } }, /TEMPLATE_UNREADABLE/],
+  ];
+  for (const [options, pattern] of assemblyCases) {
+    assert.match((await sealRefused(w, "DEV", options)).message, pattern, JSON.stringify(options).slice(0, 100));
+    assert.ok(!calls().some((call) => call.args[1] === "create-change-set"));
+  }
+  const cloudCases: [AwsBehavior, RegExp][] = [
+    [{ badChange: "unreadable" }, /CHANGE_UNREADABLE/],
+    [{ badChange: "action" }, /CHANGE_ACTION_UNKNOWN/],
+    [{ describeGarbage: true }, /CHANGE_SET_UNREADABLE/],
+    [{ swapChangeSetId: "arn:aws:cloudformation:us-east-1:111111111111:changeSet/alz-ffffffffffff/99999999-9999-9999-9999-999999999999" }, /CHANGE_SET_MISMATCH/],
+    [{ version: "garbled" }, /VERSION_UNREADABLE/],
+    [{ bigOutput: true }, /OUTPUT_TRUNCATED/],
+  ];
+  for (const [behavior, pattern] of cloudCases) {
+    behave(behavior);
+    assert.match((await sealRefused(w, "DEV")).message, pattern, JSON.stringify(behavior).slice(0, 100));
+    assert.ok(!calls().some((call) => call.args[1] === "execute-change-set"));
+  }
+  clean(w);
 });
 
 // --- identities at the driver -----------------------------------------------------------------------

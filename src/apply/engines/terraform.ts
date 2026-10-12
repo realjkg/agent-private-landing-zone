@@ -10,21 +10,20 @@ import { removeTree } from "../../teardown/driver/cleanup.js";
 import { copyTree, projectDifference } from "../../teardown/driver/adapters/project-copy.js";
 import type { ResolvedTarget } from "../../teardown/driver/types.js";
 import { approvedToolDirs, resolveExecutable } from "../../tools/child-env.js";
-import { ANY_IDENTITY_VARIABLE, MUTATION_IDENTITY_VARIABLE } from "../../tools/identity.js";
+import { MUTATION_IDENTITY_VARIABLE } from "../../tools/identity.js";
 import { refusedVariables, runBoundedProcess, runStoppableProcess, type StoppableProcessOptions, type StoppableResult } from "../../tools/process.js";
 import { TERRAFORM_APPLY_PROFILE, type ProcessProfile } from "../../tools/profiles.js";
-import type { ToolResult } from "../../tools/types.js";
 import { sha256 } from "../../util/sha256.js";
 import { assertBackendBlock, type BackendBlockRule } from "../backend-block.js";
 import { stripInvisible } from "../constants.js";
-import { codeOf, stop } from "../engine.js";
+import { checkedOutput, codeOf, stop, withoutIdentities } from "../engine.js";
 import type { EngineApplyRun, EngineContext, EngineSpec } from "../engine-spec.js";
 import type { ProviderBlock, ProviderSpec } from "../provider.js";
 import { isRecord } from "../providers/shared.js";
 import {
   APPLY_ADAPTER, APPLY_ARGV, APPLY_BACKEND_CONFIG_FILE, APPLY_INIT_ARGV, RECOVERY_FILES, classifyApply, isAllowedApplyArgv, parseStateSerial,
 } from "../terraform.js";
-import type { PilotTarget, PlanChange } from "../types.js";
+import { APPLY_IDENTITIES, type PilotTarget, type PlanChange } from "../types.js";
 
 /**
  * The Terraform engine spec: init, workspace, `plan -out`, `show -json` for the
@@ -35,10 +34,6 @@ import type { PilotTarget, PlanChange } from "../types.js";
  */
 
 type StepIdentity = "DISCOVERY" | "STATE" | "STATE_WRITE" | "APPLY" | null;
-
-/** A step that needs no credentials is given none. */
-const withoutIdentities = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv =>
-  Object.fromEntries(Object.entries(env).filter(([key]) => !ANY_IDENTITY_VARIABLE.test(key)));
 
 /** Sealing reads with DISCOVERY and STATE only. The writer and the applier are not even in the runner's environment. */
 const sealEnvironment = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv =>
@@ -69,19 +64,12 @@ function openSession(input: SessionInput): Session {
     identity: identity ?? "DISCOVERY", root: input.scratchDir, suppressDetail: true,
   });
   const guard = (args: readonly string[]): void => { if (!input.isAllowed(args)) stop("ARGV_NOT_ALLOWED"); };
-  const check = (result: ToolResult): string => {
-    // A credential the runner refused (a newline, an unapproved host) would otherwise mean a run with no identity.
-    if (result.refusedEnvironment?.length) return stop("ENVIRONMENT_REFUSED");
-    if (result.truncated) return stop("OUTPUT_TRUNCATED");
-    if (!result.ok) return stop(result.exitCode === null ? "NOT_RUN" : "EXIT_" + result.exitCode);
-    return result.stdout;
-  };
   return {
     work,
     step(args, identity, large = false) {
       guard(args);
       const profile = large ? { ...input.profile, maxOutputBytes: LARGE_OUTPUT_BYTES } : input.profile;
-      return check(runBoundedProcess("terraform_plan", "terraform", [...args], work, options(identity, profile)));
+      return checkedOutput(runBoundedProcess("terraform_plan", "terraform", [...args], work, options(identity, profile)));
     },
     stoppable(args, identity, profile, control) {
       guard(args);
@@ -306,7 +294,7 @@ export const TERRAFORM: EngineSpec = {
     applyNote: "It applies exactly this plan file, never a new one, with locking on and the APPLY identity.",
   },
   manifestMode: "PROJECT",
-  identities: ["DISCOVERY", "STATE", "STATE_WRITE", "APPLY"],
+  identities: APPLY_IDENTITIES,
   attests: ["STATE_WRITE", "APPLY"],
   previewAdapter: () => createTerraformAdapter("TERRAFORM"),
   applyAdapter: APPLY_ADAPTER,
@@ -341,7 +329,6 @@ export const TERRAFORM: EngineSpec = {
       removeTree(session.work);
     }
   },
-  rederiveChanges,
   openApply,
   outcomeMessages: {
     FAILED_NO_CHANGE: "The apply failed before it changed state. The engine's output is withheld because it can hold secrets. " +

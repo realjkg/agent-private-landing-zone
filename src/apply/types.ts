@@ -16,7 +16,7 @@ export type ApplyEnvironment = "DEV" | "QA" | "PROD";
 
 /**
  * Principals, never substituted for one another and never the operator's own credentials. An engine names the ones it
- * needs (`EngineSpec.identities`); these four are Terraform's, and the default set where no engine is named. CHANGESET
+ * needs (`EngineSpec.identities`); these four are Terraform's. CHANGESET
  * (`tools/identity.ts`) is the CDK engine's fifth.
  */
 export const APPLY_IDENTITIES = ["DISCOVERY", "STATE", "STATE_WRITE", "APPLY"] as const;

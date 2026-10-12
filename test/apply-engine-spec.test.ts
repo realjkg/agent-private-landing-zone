@@ -6,7 +6,6 @@ import test from "node:test";
 
 import { loadPilotContract } from "../src/apply/contract.js";
 import { engineSpec } from "../src/apply/engine-spec.js";
-import { APPLY_IDENTITIES } from "../src/apply/types.js";
 import { contractJson, pinPathOf, writePinnedContract } from "./helpers/apply-fixtures.js";
 
 test("the engine lookup returns the spec for the contract's engine id and refuses everything else", () => {
@@ -19,7 +18,7 @@ test("the engine lookup returns the spec for the contract's engine id and refuse
 
 test("the Terraform spec needs the four identities and attests the state writer and the applier", () => {
   const terraform = engineSpec("TERRAFORM");
-  assert.deepEqual([...(terraform?.identities ?? [])], [...APPLY_IDENTITIES]);
+  assert.deepEqual([...(terraform?.identities ?? [])], ["DISCOVERY", "STATE", "STATE_WRITE", "APPLY"]);
   assert.deepEqual([...(terraform?.attests ?? [])], ["STATE_WRITE", "APPLY"]);
 });
 

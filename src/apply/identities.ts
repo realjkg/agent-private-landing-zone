@@ -1,6 +1,6 @@
 import { EXECUTION_IDENTITIES, MUTATION_IDENTITIES, collapsedBetween, identityVariables, normalizeClientId } from "../tools/identity.js";
 import type { IdentityRefusal, ProviderSpec } from "./provider.js";
-import { APPLY_IDENTITIES, type ApplyEnvironment, type ApplyIdentity, type PilotContract } from "./types.js";
+import type { ApplyEnvironment, ApplyIdentity, PilotContract } from "./types.js";
 
 type ApplyIdentityCheck = { ok: true } | IdentityRefusal;
 
@@ -15,7 +15,7 @@ type ApplyIdentityCheck = { ok: true } | IdentityRefusal;
  * who holds these variables is inside the trust boundary; this refuses honest
  * mistakes and crafted environments, it does not stop that operator.
  */
-export function checkApplyIdentities(env: NodeJS.ProcessEnv, spec: ProviderSpec, identities: readonly ApplyIdentity[] = APPLY_IDENTITIES): ApplyIdentityCheck {
+export function checkApplyIdentities(env: NodeJS.ProcessEnv, spec: ProviderSpec, identities: readonly ApplyIdentity[]): ApplyIdentityCheck {
   const missing = identities.filter((identity) => identityVariables(env, identity).size === 0);
   if (missing.length > 0) {
     return {
@@ -64,7 +64,7 @@ type IdentityTargetCheck = { ok: true } | { ok: false; code: "IDENTITY_TARGET_MI
  * or one that names none, cannot apply here. Messages name variables, never values.
  */
 export function verifyIdentityTargets(
-  contract: PilotContract, environment: ApplyEnvironment, env: NodeJS.ProcessEnv, spec: ProviderSpec, identities: readonly ApplyIdentity[] = APPLY_IDENTITIES,
+  contract: PilotContract, environment: ApplyEnvironment, env: NodeJS.ProcessEnv, spec: ProviderSpec, identities: readonly ApplyIdentity[],
 ): IdentityTargetCheck {
   const target = Object.hasOwn(contract.targets, environment) ? contract.targets[environment] : undefined;
   const wrong: string[] = [];

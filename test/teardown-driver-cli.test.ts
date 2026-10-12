@@ -320,6 +320,14 @@ test("unreadable or malformed input fails with fixed text that quotes nothing fr
   nothingRan(missing);
 });
 
+test("a request naming the CDK engine (the pilot apply path's alone) is refused before anything runs", async () => {
+  const s = setup({ request: (request) => { request.engine = "CDK"; } });
+  const code = await runDriverCommand("destroy-preview-run", s.flags, s.deps());
+  assert.equal(code, EXIT.ERROR);
+  assert.match(s.stderr.join(""), /TEARDOWN_INPUT_INVALID: request.engine must be one of TERRAFORM, OPENTOFU, PULUMI/);
+  nothingRan(s);
+});
+
 // --- Exit codes ------------------------------------------------------------------
 
 test("exit codes: PASS 0, BLOCKED 2 (verdict, REVIEW_REQUIRED, unqualified engine, bad manifest), error 1", async () => {

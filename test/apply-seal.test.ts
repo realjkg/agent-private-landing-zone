@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { computeArtifactSha256, loadSealedPlan, planWithoutStoring, rederiveChanges, reviewBundleOf, sealPlan, verifyReviewBundle, verifySealedPlan, type SealInput } from "../src/apply/seal.js";
+import { computeArtifactSha256, loadSealedPlan, planWithoutStoring, reviewBundleOf, sealPlan, verifyReviewBundle, verifySealedPlan, type SealInput } from "../src/apply/seal.js";
 import type { SealedPlan } from "../src/apply/types.js";
 import { decryptEvidence, encryptEvidence, ensureEvidenceKey, type EvidenceEnvelope } from "../src/evidence/vault.js";
 import { canonicalJson } from "../src/teardown/manifest.js";
@@ -16,6 +16,7 @@ import {
   writeProject, type Behavior,
 } from "./helpers/apply-fixtures.js";
 import { AZURE } from "../src/apply/providers/azure.js";
+import { TERRAFORM } from "../src/apply/engines/terraform.js";
 
 // docs/act-pilot-plan.md, authority items 2 and 5. The engine is a fake
 // executable: these tests pin the sealing logic, not the real Terraform CLI.
@@ -53,7 +54,7 @@ function fixture(options: { target?: typeof DEV_TARGET; environment?: "DEV" | "Q
   const snapshot = createImmutableSnapshot(projectRoot, manifest, parent);
   const scratch = createPrivateDirectory("alz-seal-", parent);
   const input: SealInput = {
-    environment: options.environment ?? "DEV", target, manifest, snapshotPath: snapshot.path, scratchDir: scratch.path,
+    engine: TERRAFORM, environment: options.environment ?? "DEV", target, manifest, snapshotPath: snapshot.path, scratchDir: scratch.path,
     env: options.env ?? identityEnv(options.environment ?? "DEV"), policyVersion: POLICY, engineVersion: ENGINE_VERSION, toolDirs: [toolDir],
     pinned: { tenantId: TENANT, subscriptionId: target.account, backend: target.backend, workspace: target.workspace }, spec: AZURE, contractSha256: H("9"),
     now: () => new Date("2026-10-11T10:00:00.000Z"),
@@ -61,10 +62,13 @@ function fixture(options: { target?: typeof DEV_TARGET; environment?: "DEV" | "Q
   return { input, scratch, cleanup: () => { snapshot.remove(); scratch.remove(); } };
 }
 
-/** What `rederiveChanges` needs: the fixture's scratch directory with an (empty) work directory, as `prepareWorkspace` leaves it. */
-function fixtureSession(f: ReturnType<typeof fixture>) {
+/** What an apply's `rederive` needs: the fixture's scratch directory with an (empty) work directory, as `prepare` leaves it. */
+function fixtureRun(f: ReturnType<typeof fixture>) {
   mkdirSync(join(f.scratch.path, "work"), { recursive: true });
-  return { scratchDir: f.scratch.path, env: f.input.env, toolDirs: f.input.toolDirs, manifest: f.input.manifest, pinned: f.input.pinned, spec: f.input.spec };
+  return TERRAFORM.openApply({
+    scratchDir: f.scratch.path, env: f.input.env, toolDirs: f.input.toolDirs, manifest: f.input.manifest, pinned: f.input.pinned, spec: f.input.spec,
+    target: f.input.target, engineVersion: f.input.engineVersion,
+  });
 }
 
 async function sealed(options: Parameters<typeof fixture>[0] = {}) {
@@ -336,14 +340,14 @@ test("the change list an apply derives again comes from the same extraction as t
   try {
     // The work directory an apply has already initialized: the snapshot copy of the project, with .terraform built by init.
     const before = calls().length;
-    const session = fixtureSession(f);
-    assert.deepEqual(rederiveChanges({ ...session, planBytes: loaded.planBytes }), ok.sealed.changes);
+    const run = fixtureRun(f);
+    assert.deepEqual(run.rederive(loaded.planBytes), ok.sealed.changes);
     const shown = calls().slice(before);
     assert.deepEqual(shown.map((c) => c.args), [["show", "-json", "../alz-preview.tfplan"]]);
     assert.ok(!Object.keys(shown[0].env).some((name) => /^(ARM_|AZURE_|TF_CLI_CONFIG_FILE|TF_PLUGIN_CACHE_DIR)/.test(name)));
     assert.deepEqual(readdirSync(f.scratch.path).filter((name) => name.endsWith(".tfplan")), [], "the decrypted plan is removed");
     behave({ failOn: "show" });
-    assert.throws(() => rederiveChanges({ ...session, planBytes: loaded.planBytes }), /EXIT_1/);
+    assert.throws(() => run.rederive(loaded.planBytes), /EXIT_1/);
     assert.deepEqual(readdirSync(f.scratch.path).filter((name) => name.endsWith(".tfplan")), [], "removed even when show fails");
   } finally { f.cleanup(); }
 });
