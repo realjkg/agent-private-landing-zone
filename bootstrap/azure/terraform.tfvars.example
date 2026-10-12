@@ -1,0 +1,53 @@
+# Copy to terraform.tfvars (ignored by git) and replace every fake value. All values below are placeholders.
+tenant_id = "00000000-0000-0000-0000-000000000000"
+location  = "eastus2"
+
+environments = {
+  DEV = {
+    subscription_id            = "00000000-0000-0000-0000-000000000001"
+    state_resource_group_name  = "rg-alz-pilot-state-dev"
+    state_storage_account_name = "examplealzstatedev"
+    apply_resource_group_name  = "rg-alz-pilot-dev" # omit to scope APPLY and DISCOVERY to the whole subscription
+  }
+  QA = {
+    subscription_id            = "00000000-0000-0000-0000-000000000002"
+    state_resource_group_name  = "rg-alz-pilot-state-qa"
+    state_storage_account_name = "examplealzstateqa"
+    apply_resource_group_name  = "rg-alz-pilot-qa"
+  }
+  PROD = {
+    subscription_id            = "00000000-0000-0000-0000-000000000003"
+    state_resource_group_name  = "rg-alz-pilot-state-prod"
+    state_storage_account_name = "examplealzstateprod"
+    apply_resource_group_name  = "rg-alz-pilot-prod"
+  }
+}
+
+# GitHub OIDC with one GitHub environment per identity and stage. Replace OWNER/REPO.
+oidc_subjects = {
+  DISCOVERY = {
+    DEV  = "repo:OWNER/REPO:environment:dev-discovery"
+    QA   = "repo:OWNER/REPO:environment:qa-discovery"
+    PROD = "repo:OWNER/REPO:environment:prod-discovery"
+  }
+  STATE = {
+    DEV  = "repo:OWNER/REPO:environment:dev-state"
+    QA   = "repo:OWNER/REPO:environment:qa-state"
+    PROD = "repo:OWNER/REPO:environment:prod-state"
+  }
+  STATE_WRITE = {
+    DEV  = "repo:OWNER/REPO:environment:dev-state-write"
+    QA   = "repo:OWNER/REPO:environment:qa-state-write"
+    PROD = "repo:OWNER/REPO:environment:prod-state-write"
+  }
+  APPLY = {
+    DEV  = "repo:OWNER/REPO:environment:dev-apply"
+    QA   = "repo:OWNER/REPO:environment:qa-apply"
+    PROD = "repo:OWNER/REPO:environment:prod-apply"
+  }
+}
+
+# Optional budget (one per subscription). The start date must be the first day of a month.
+# budget_monthly_amount = 100
+# budget_start_date     = "2026-11-01T00:00:00Z"
+# alert_emails          = ["owner@example.invalid"]

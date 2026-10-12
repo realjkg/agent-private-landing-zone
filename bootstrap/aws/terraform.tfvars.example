@@ -1,0 +1,28 @@
+# Copy to <env>.tfvars (ignored by git), one per account. All values below are placeholders.
+environment = "DEV"
+account_id  = "111111111111"
+region      = "us-east-1"
+engine      = "TERRAFORM" # or "CDK"
+
+# GitHub OIDC with one GitHub environment per identity and stage. Replace OWNER/REPO.
+# CDK has no STATE or STATE_WRITE; use DISCOVERY, CHANGESET and APPLY.
+oidc_subjects = {
+  DISCOVERY   = "repo:OWNER/REPO:environment:dev-discovery"
+  STATE       = "repo:OWNER/REPO:environment:dev-state"
+  STATE_WRITE = "repo:OWNER/REPO:environment:dev-state-write"
+  APPLY       = "repo:OWNER/REPO:environment:dev-apply"
+}
+
+# Required: the owner's least-privilege decision for what APPLY may change.
+apply_managed_policy_arns = ["arn:aws:iam::111111111111:policy/example-pilot-apply"]
+
+# Terraform engine
+state_bucket_name          = "examplefake-dev-state"
+state_admin_principal_arns = ["arn:aws:iam::111111111111:role/example-bootstrap-admin"]
+
+# CDK engine
+# cdk_stack_name = "ExamplePilotStack"
+
+# Optional budget
+# budget_monthly_usd = 100
+# alert_emails       = ["owner@example.invalid"]
