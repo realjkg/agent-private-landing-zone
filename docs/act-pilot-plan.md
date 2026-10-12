@@ -29,7 +29,7 @@ Supplied by the owner and listed in `docs/act-pilot-apply.md` ("What the owner s
 
 ## Scope
 
-- One internal environment chain (dev, then QA, then production), one provider (the pinned contract's `provider`: Azure or AWS, each with its own spec), one engine (the pinned contract's `engine`: Terraform, or CDK with AWS only, each with its own spec), chosen at Gate 0 from the engines that pass real-engine qualification.
+- One internal environment chain (dev, then QA, then production), one provider (the pinned contract's `provider`: Azure or AWS, each with its own spec; the static production contract lists exactly Azure/Terraform, AWS/Terraform and AWS/CDK, with no inference or wildcard), one engine (the pinned contract's `engine`: Terraform, or CDK with AWS only, each with its own spec), chosen at Gate 0 from the engines that pass real-engine qualification.
 - No customer environments, no multi-tenant console, no new feature that lacks existing wired code.
 
 ## Gates

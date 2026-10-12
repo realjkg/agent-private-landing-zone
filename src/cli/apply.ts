@@ -7,12 +7,12 @@ import { pathToFileURL } from "node:url";
 import { signApproval } from "../apply/approval.js";
 import { ENVIRONMENTS, stripInvisible } from "../apply/constants.js";
 import {
-  contractRefusal, isKillSwitchActive, loadPilotContract, pilotContractSha256, repoPaths, requireNotApplied, targetForEnvironment, writeQualificationEvidence, type Refusal,
+  contractRefusal, inspectPilotContract, isKillSwitchActive, loadPilotContract, pilotContractSha256, repoPaths, requireNotApplied, targetForEnvironment, writeQualificationEvidence, type Refusal,
 } from "../apply/contract.js";
 import { qualifyApply, runApply, sealPreview, type ApplyDeps, type SealRequest } from "../apply/driver.js";
 import { RECOVERY_FILE_NAMES, engineOf, engineSpec, type EngineNotices } from "../apply/engine-spec.js";
 import { assertApplyEvidence } from "../apply/evidence.js";
-import { attestedClientId } from "../apply/identities.js";
+import { attestedClientId, checkApplyIdentities, verifyIdentityTargets } from "../apply/identities.js";
 import { holdsReservation } from "../apply/ledger.js";
 import { accountFieldsOf, specOf } from "../apply/provider.js";
 import { loadSealedPlan, reviewBundleOf, verifyReviewBundle, type LoadedPlan } from "../apply/seal.js";
@@ -20,6 +20,7 @@ import type { ApplyEnvironment, ApplyIdentity, PilotContract, SealedPlan, Signed
 import { isRecord, SAFE_OPERATOR } from "../teardown/driver/human.js";
 import { sweepStale } from "../teardown/driver/cleanup.js";
 import { verifyManifest, type ArtifactManifest } from "../teardown/manifest.js";
+import { approvedToolDirs, resolveExecutable } from "../tools/child-env.js";
 import { identityVariables } from "../tools/identity.js";
 import { EXIT, installSignalCleanup, processTerminal, targetString, type HumanTerminal } from "./teardown-driver.js";
 
@@ -39,6 +40,7 @@ const APPLY_USAGE = [
   "  ./alz apply apply --request REQUEST.json --manifest MANIFEST.json --sealed SEALED_PLAN --approval APPROVAL.json [--approval APPROVAL.json ...]",
   "  ./alz apply status [--sealed SEALED_PLAN]",
   "  ./alz apply pin",
+  "  ./alz apply preflight --environment DEV|QA|PROD [--contract CONTRACT.json]",
   "      Interactive terminal only. Identities come from the contract's engine: ALZ_DISCOVERY_*, ALZ_STATE_*, ALZ_STATE_WRITE_* and ALZ_APPLY_* (Terraform),",
   "      or ALZ_DISCOVERY_*, ALZ_CHANGESET_* and ALZ_APPLY_* (CDK). No flag names an engine; the pinned contract does.",
   "      Exit 0 done, 1 error (nothing spent), 2 BLOCKED (refused before any action), 3 SPENT (approvals consumed or an apply started; read the message before any retry).",
@@ -71,6 +73,7 @@ const SUBCOMMANDS: Readonly<Record<string, Flags>> = {
   apply: { single: ["request", "manifest", "sealed"], repeated: ["approval"] },
   status: { single: [], optional: ["sealed"] },
   pin: { single: [] },
+  preflight: { single: ["environment"], optional: ["contract"] },
 };
 const MAX_INPUT_BYTES = 8 * 1024 * 1024;
 const CONTROL = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
@@ -429,8 +432,49 @@ const pinCommand: Command = async (_flags, _terminal, deps, out) => {
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 };
 
+// --- preflight ---------------------------------------------------------------------------------------------
+
+/** What no check here can show: only a real backend run, attested by a person, moves it (docs/act-pilot-bootstrap.md). */
+const AUTHENTICATION_STATUS = "SIMULATED: identity separation is not verified on a real backend until `qualify` has run against a real DEV target";
+
+/**
+ * Read-only and offline: whether this machine is ready for the environment named, before any seal. It checks the contract's
+ * shape (even a draft or an example that is not enabled or pinned), that each identity the engine needs is configured,
+ * distinct and aimed at the environment's account, that the engine's tools are installed in approved directories, and the
+ * kill switch. It calls no cloud and starts no engine, prints names and never values, and enables nothing.
+ */
+const preflightCommand: Command = async (flags, _terminal, deps, out) => {
+  const environment = flags.environment[0];
+  if (!(ENVIRONMENTS as readonly string[]).includes(environment)) fail("APPLY_ARGUMENT_INVALID", "--environment must be DEV, QA or PROD");
+  const path = flags.contract?.[0] ?? deps.contractPath ?? repoPaths().contract;
+  const inspected = inspectPilotContract(readInput(path, "the pilot contract"));
+  const checks: { check: string; ok: boolean; detail?: string }[] = [];
+  const add = (check: string, ok: boolean, detail?: string) => { checks.push({ check, ok, ...(detail === undefined ? {} : { detail }) }); };
+  add("contract shape (provider, engine, targets, approvals, approvers)", inspected.ok, inspected.ok ? undefined : inspected.reason);
+  if (inspected.ok) {
+    const { contract } = inspected;
+    const spec = specOf(contract);
+    const engine = engineOf(contract);
+    const env = deps.env ?? process.env;
+    const pinned = loadPilotContract(path, deps.contractPinPath);
+    add("pilot contract pinned and enabled (required before seal)", !("reason" in pinned), "reason" in pinned ? pinned.reason : undefined);
+    const identities = checkApplyIdentities(env, spec, engine.identities);
+    add("identities configured, distinct, no fallback (" + engine.identities.join(", ") + ")", identities.ok, identities.ok ? undefined : identities.message);
+    const targets = verifyIdentityTargets(contract, environment as ApplyEnvironment, env, spec, engine.identities);
+    add("identities aimed at the " + environment + " account", targets.ok, targets.ok ? undefined : targets.message);
+    for (const tool of engine.executables) {
+      add("tool " + tool + " installed in an approved directory", resolveExecutable(tool, deps.toolDirs ?? approvedToolDirs(env)) !== undefined);
+    }
+    add("kill switch absent", !isKillSwitchActive(contract), contract.killSwitchPath);
+  }
+  const ready = checks.every((c) => c.ok);
+  out.say(JSON.stringify({ environment, ready, authentication: AUTHENTICATION_STATUS, checks }, null, 2) + "\n");
+  return ready ? EXIT.PASS : EXIT.BLOCKED;
+};
+
 const COMMANDS: Readonly<Record<string, Command>> = {
   qualify: qualifyCommand, seal: sealCommand, approve: approveCommand, apply: applyCommand, status: statusCommand, pin: pinCommand,
+  preflight: preflightCommand,
 };
 
 /** Where `alz-preview-*` directories live and what a crashed apply leaves in them. */
@@ -448,7 +492,7 @@ function scratchHoldsRecovery(parent: string): boolean {
  * them first (docs/act-pilot-apply.md).
  */
 async function sweepUnlessHeld(sub: string, deps: ApplyCliDeps, out: Out): Promise<void> {
-  if (sub === "status" || sub === "approve" || sub === "pin") return;
+  if (sub === "status" || sub === "approve" || sub === "pin" || sub === "preflight") return;
   const parent = deps.scratchParent ?? tmpdir();
   const held = scratchHoldsRecovery(parent) ? "a scratch directory holds errored.tfstate or crash.log"
     : await holdsReservation(deps.evidenceDir ?? repoPaths().evidence) ? "the apply ledger holds a reservation" : undefined;

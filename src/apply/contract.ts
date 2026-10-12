@@ -154,6 +154,19 @@ function validate(raw: unknown): PilotContract {
   return contract;
 }
 
+/**
+ * The contract's shape checked as if it were enabled, for the read-only preflight: a person can see that an example or a
+ * draft is valid before anyone pins or enables it. The result is never a usable contract (it is not pinned) and nothing
+ * here enables ACT.
+ */
+export function inspectPilotContract(raw: unknown): { ok: true; contract: PilotContract } | { ok: false; reason: string } {
+  try {
+    return { ok: true, contract: validate({ ...(raw as object), enabled: true }) };
+  } catch (error) {
+    return { ok: false, reason: error instanceof Invalid ? error.message : "contract is invalid" };
+  }
+}
+
 /** The identity a release names to say which pilot contract it was admitted under, and the value the pin file holds. */
 export const pilotContractSha256 = (contract: PilotContract): string => sha256(canonicalJson(contract));
 

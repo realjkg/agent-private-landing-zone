@@ -345,7 +345,10 @@ function changeOf(entry: unknown): PlanChange {
 /** The change set as CloudFormation describes it now, as the identity given (CHANGESET). The parameter hash covers keys and values; the values themselves are never kept. */
 function readChangeSet(session: Session, arn: string, region: string): ChangeView {
   const document = parse(session.ok("CHANGESET", describeChangeSetArgv(arn, region)), "CHANGE_SET_UNREADABLE");
-  if (!isRecord(document) || !Array.isArray(document.Changes)) return stop("CHANGE_SET_UNREADABLE");
+  if (!isRecord(document)) return stop("CHANGE_SET_UNREADABLE");
+  // UNVERIFIED (5): the AWS CLI follows NextToken itself; a token left in the output means a page was not read, and a change list the approvers did not see whole is never sealed or run.
+  if (document.NextToken !== undefined) return stop("CHANGE_SET_TRUNCATED");
+  if (!Array.isArray(document.Changes)) return stop("CHANGE_SET_UNREADABLE");
   const capabilities = document.Capabilities === undefined ? [] : Array.isArray(document.Capabilities) && document.Capabilities.every((c) => typeof c === "string") ? [...document.Capabilities as string[]].sort() : stop("CHANGE_SET_UNREADABLE");
   const parameters = (document.Parameters === undefined ? [] : Array.isArray(document.Parameters) ? document.Parameters : stop("CHANGE_SET_UNREADABLE"))
     .map((parameter) => (isRecord(parameter) ? { key: str(parameter.ParameterKey, "CHANGE_SET_UNREADABLE"), value: parameter.ParameterValue ?? null, resolved: parameter.ResolvedValue ?? null } : stop("CHANGE_SET_UNREADABLE")))
@@ -450,10 +453,20 @@ function plan(input: EngineContext & { snapshotPath: string; engineVersion: stri
     // The account and region of what was created are the contract's: the CHANGESET role really acted in the target.
     const base = "^arn:aws:cloudformation:" + region + ":" + pinned.accountId + ":";
     if (!new RegExp(base + "changeSet/" + name + "/[0-9a-f-]{36}$").test(changeSetId) || !new RegExp(base + "stack/" + assembly.stackName + "/[0-9a-f-]{36}$").test(stackId)) stop("CHANGESET_NOT_IN_CONTRACT");
-    session.ok("CHANGESET", waitArgv(changeSetId, region));
+    const waited = session.run("CHANGESET", waitArgv(changeSetId, region));
+    if (waited.exitCode !== 0) {
+      // UNVERIFIED (5): a change set with nothing to change, and one that could not be built, both end FAILED; the reason text tells them apart.
+      const failed = session.run("CHANGESET", describeChangeSetArgv(changeSetId, region));
+      const reason = failed.exitCode === 0 ? parse(failed.stdout, "CHANGE_SET_UNREADABLE") : undefined;
+      if (isRecord(reason) && reason.Status === "FAILED") {
+        stop(/didn't contain changes|No updates are to be performed/i.test(String(reason.StatusReason ?? "")) ? "NO_CHANGES_TO_APPLY" : "CHANGE_SET_CREATION_FAILED");
+      }
+      checkedOutput(waited);
+    }
     const view = readChangeSet(session, changeSetId, region);
     if (view.id !== changeSetId || view.stackId !== stackId || view.stackName !== assembly.stackName) stop("CHANGE_SET_MISMATCH");
     if (view.status !== "CREATE_COMPLETE" || view.execution !== "AVAILABLE") stop("CHANGE_SET_NOT_CREATED");
+    if (view.changes.length === 0) stop("NO_CHANGES_TO_APPLY");
     // CloudFormation reports no capability that was not passed.
     if (view.capabilities.some((capability) => !capabilities.includes(capability))) stop("CAPABILITY_NOT_IN_CONTRACT");
     if (changeSetTemplateSha256(session, changeSetId, region) !== assembly.canonicalSha256) stop("CHANGE_SET_TEMPLATE_MISMATCH");
@@ -632,6 +645,7 @@ const adapter = (kind: "preview" | "apply"): AdapterDescriptor => ({
 
 export const CDK: EngineSpec = {
   id: "CDK",
+  executables: [EXECUTABLE],
   mutation: "CLOUDFORMATION_EXECUTE_OF_SEALED_CHANGE_SET",
   providers: ["AWS"],
   target: {

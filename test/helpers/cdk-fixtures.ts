@@ -32,6 +32,8 @@ export type AwsBehavior = {
   /** describe-stacks always fails as if not allowed. */
   describeStacksFail?: boolean;
   waitFails?: boolean;
+  /** describe-change-set carries a StatusReason, a NextToken (a page was cut off) or an empty Changes list. */
+  statusReason?: string; nextToken?: boolean; noChanges?: boolean;
   /** The change set ARN is in this account instead of the role's. */
   arnAccount?: string;
   /** describe-change-set answers: a different change set id or stack id, a status, an execution status, an extra change. */
@@ -135,7 +137,7 @@ else if (cmd === "describe-change-set") {
   if (!a.changeSet || arg("--change-set-name") !== a.changeSet.id) fail("An error occurred (ChangeSetNotFound) when calling the DescribeChangeSet operation");
   if (b.changeSetReadFailsAfterExecute && a.attempted) fail("An error occurred (Throttling) when calling the DescribeChangeSet operation", 255);
   if (b.describeGarbage) { process.stdout.write("[]"); process.exit(0); }
-  const changes = [
+  const changes = b.noChanges ? [] : [
     { Type: "Resource", ResourceChange: { Action: "Add", LogicalResourceId: "PilotBucket", ResourceType: "AWS::S3::Bucket" } },
     { Type: "Resource", ResourceChange: { Action: "Modify", LogicalResourceId: "PilotTopic", ResourceType: "AWS::SNS::Topic", Replacement: "True" } },
     ...(b.extraChange ? [{ Type: "Resource", ResourceChange: { Action: "Remove", LogicalResourceId: "ExtraQueue", ResourceType: "AWS::SQS::Queue" } }] : []),
@@ -147,6 +149,7 @@ else if (cmd === "describe-change-set") {
   process.stdout.write(JSON.stringify({
     ChangeSetName: a.changeSet.name, ChangeSetId: b.swapChangeSetId || a.changeSet.id, StackId: b.swapStackId || a.changeSet.stackId, StackName: a.changeSet.stackName,
     Status: b.changeSetStatus || "CREATE_COMPLETE", ExecutionStatus: b.executionStatus || execution,
+    ...(b.statusReason ? { StatusReason: b.statusReason } : {}), ...(b.nextToken ? { NextToken: "page-2" } : {}),
     Capabilities: b.echoCapabilities || a.changeSet.capabilities, Parameters: [{ ParameterKey: "DbPassword", ParameterValue: "****", ResolvedValue: ${JSON.stringify(PARAMETER_CANARY)} }], Changes: changes,
   }));
 }

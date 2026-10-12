@@ -437,6 +437,12 @@ test("a change set the CHANGESET role did not create in the contract's account, 
   const cases: [AwsBehavior, RegExp][] = [
     [{ arnAccount: "222222222222" }, /CHANGESET_NOT_IN_CONTRACT/],
     [{ waitFails: true }, /EXIT_255/],
+    // A change set with nothing to change and one that could not be built both end FAILED; the reason tells them apart. An empty list is never sealed.
+    [{ waitFails: true, changeSetStatus: "FAILED", statusReason: "The submitted information didn't contain changes. Submit different information to create a change set." }, /NO_CHANGES_TO_APPLY/],
+    [{ waitFails: true, changeSetStatus: "FAILED", statusReason: "Template format error: unresolved resource dependencies" }, /CHANGE_SET_CREATION_FAILED/],
+    [{ noChanges: true }, /NO_CHANGES_TO_APPLY/],
+    // A page that was not read (a NextToken left in the output) is never sealed.
+    [{ nextToken: true }, /CHANGE_SET_TRUNCATED/],
     [{ changeSetStatus: "FAILED" }, /CHANGE_SET_NOT_CREATED/],
     [{ executionStatus: "UNAVAILABLE" }, /CHANGE_SET_NOT_CREATED/],
     [{ describeStacksFail: true }, /STACK_UNREADABLE/],
