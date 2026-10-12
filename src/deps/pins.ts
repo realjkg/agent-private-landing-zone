@@ -35,7 +35,7 @@ export function loadToolPins(path: string = DEFAULT_PINS): ToolPins {
       }
     }
   }
-  if (raw.node?.major !== 24) throw new Error("TOOL_PIN_INVALID: node");
+  if (raw.node?.major !== 26) throw new Error("TOOL_PIN_INVALID: node");
   return raw;
 }
 

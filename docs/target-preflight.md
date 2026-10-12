@@ -4,7 +4,7 @@ The production-target job in `.github/workflows/model-qualification.yml` runs **
 
 ## Prepare the target (operator action)
 
-1. Install a compatible Node 24 runtime and the exact pinned **Ollama 0.40.0** on the chosen customer-controlled host. The workflow requires pre-staged models `qwen3:1.7b`, `qwen3:4b`, and `mistral-nemo:latest`; the workflow **does not pull, update or replace** model weights on production hardware.
+1. Install a compatible Node 26 runtime and the exact pinned **Ollama 0.40.0** on the chosen customer-controlled host. The workflow requires pre-staged models `qwen3:1.7b`, `qwen3:4b`, and `mistral-nemo:latest`; the workflow **does not pull, update or replace** model weights on production hardware.
 2. Register a self-hosted GitHub Actions runner under this repository and assign labels `self-hosted`, `linux` and `alz-private-model`. Ensure that the target is dedicated and no unrelated customer job shares the host. The job will otherwise remain queued rather than run on an unintended machine.
 3. Verify the intended private Ollama service uses the isolated loopback port `127.0.0.1:11435` via `OLLAMA_HOST` / `OLLAMA_BASE_URL`. The workflow will refuse a port already occupied before launching Ollama and will verify the child service is running. The preflight verifies Ollama `/api/version` and `/api/tags`, requires all three correct model tags, nonempty valid SHA256 digests and sizes, exact source commit and runner/target identity.
 4. Trigger the **Private Model Qualification** GitHub Actions workflow with `production_target=true`, a stable nonsecret `target_hardware_id`, target accelerator description, and bounded `long_run_turns`. Only this target job exercises actual inference, local model service restart and session checkpointing. No cloud credentials should be put in model prompts or preflight variables. Production infrastructure ACT is disabled.
@@ -35,7 +35,7 @@ The AWS/Azure provider production workflows remain separate, use explicit author
 
 - The runner is online, idle and carries the three labels (Settings → Actions → Runners).
 - Ollama is exactly 0.40.0, and `qwen3:1.7b`, `qwen3:4b` and `mistral-nemo:latest` are already pulled. The workflow never downloads or replaces a model.
-- Node 24 is available, `terraform` is on the PATH, and nothing is listening on `127.0.0.1:11435`.
+- Node 26 is available, `terraform` is on the PATH, and nothing is listening on `127.0.0.1:11435`.
 - If the models live in a store other than the runner user's default, give its absolute path in `ollama_models_dir`.
 
 **Inputs.** `target_hardware_id` is a stable, non-secret name you give this host profile (1 to 64 letters, digits, `.`, `_` or `-`; never `UNKNOWN`). `target_accelerator` describes the accelerator, or stays `UNKNOWN` for CPU only. `long_run_turns` is at least 4. `adversarial_scope` and `live_scenario_scope` choose `first` or `all`; the default is `all`, which takes much longer, so choose `first` for the first run on a new host. The model inference deadlines in the code are not changed by any input.

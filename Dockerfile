@@ -1,4 +1,4 @@
-FROM node:24-bookworm-slim AS build
+FROM node:26-bookworm-slim AS build
 
 WORKDIR /app
 
@@ -34,14 +34,14 @@ CMD ["npm", "test"]
 
 # Production native dependencies must use the same musl ABI as the final
 # ARM64 runtime. Compiler and npm tooling stay outside the shipped image.
-FROM node:24-alpine AS runtime-deps
+FROM node:26-alpine AS runtime-deps
 WORKDIR /app
 RUN apk add --no-cache python3 make g++ \
     && apk upgrade --no-cache
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 
-FROM node:24-alpine AS runtime
+FROM node:26-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 RUN apk upgrade --no-cache && apk add --no-cache libstdc++

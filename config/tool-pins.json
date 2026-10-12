@@ -41,6 +41,6 @@
       }
     }
   },
-  "node": { "major": 24 },
+  "node": { "major": 26 },
   "isolatedOllama": { "host": "127.0.0.1", "port": 11435, "models": ["qwen3:1.7b", "qwen3:4b", "mistral-nemo:latest"] }
 }
