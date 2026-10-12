@@ -61,7 +61,7 @@
     "vitest": "^4.1.11"
   },
   "dependencies": {
-    "@langchain/core": "1.2.16",
+    "@langchain/core": "1.2.17",
     "@langchain/langgraph": "1.4.21",
     "@langchain/langgraph-checkpoint-sqlite": "1.0.4",
     "zod": "4.6.5"
