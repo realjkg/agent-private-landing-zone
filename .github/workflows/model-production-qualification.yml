@@ -1,0 +1,426 @@
+name: Private Model Production Qualification
+
+# Manual, dedicated-target model qualification (docs/target-preflight.md). It
+# qualifies the tested hardware and configuration only. It never pulls or
+# replaces model weights, never runs a Terraform plan or apply, and never
+# enables infrastructure ACT.
+on:
+  workflow_dispatch:
+    inputs:
+      target_hardware_id:
+        description: "Owner-assigned stable, non-secret hardware-profile ID"
+        required: true
+        type: string
+
+      target_accelerator:
+        description: "Actual accelerator description, or UNKNOWN for CPU-only"
+        required: false
+        default: "UNKNOWN"
+        type: string
+
+      ollama_models_dir:
+        description: "Absolute path of the pre-staged Ollama model store, if it is not the runner user's default"
+        required: false
+        default: ""
+        type: string
+
+      long_run_turns:
+        description: "Bounded multi-turn workload; minimum 4"
+        required: true
+        default: "4"
+        type: string
+
+      live_scenario_scope:
+        description: "Live private-model scenario coverage"
+        required: true
+        default: "all"
+        type: choice
+        options:
+          - first
+          - all
+
+      adversarial_scope:
+        description: "Private-model adversarial coverage"
+        required: true
+        default: "all"
+        type: choice
+        options:
+          - first
+          - all
+
+permissions:
+  contents: read
+
+# Serialize this workflow's qualification jobs.
+# Never cancel a qualification already in progress.
+concurrency:
+  group: alz-private-model-production-target
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  production-target:
+    name: Real Qwen + Mistral target qualification
+    runs-on: [self-hosted, linux, alz-private-model]
+    timeout-minutes: 120
+
+    env:
+      OLLAMA_HOST: "127.0.0.1:11435"
+      OLLAMA_BASE_URL: "http://127.0.0.1:11435"
+      OLLAMA_NUM_PARALLEL: "1"
+      OLLAMA_MAX_LOADED_MODELS: "1"
+      OLLAMA_KEEP_ALIVE: "10m"
+
+      ALZ_SOURCE_COMMIT: ${{ github.sha }}
+      ALZ_TARGET_HARDWARE_ID: ${{ inputs.target_hardware_id }}
+      ALZ_TARGET_ACCELERATOR: ${{ inputs.target_accelerator }}
+      ALZ_OLLAMA_MODELS_DIR: ${{ inputs.ollama_models_dir }}
+      ALZ_MODEL_LONG_RUN_TURNS: ${{ inputs.long_run_turns }}
+
+    steps:
+      - name: Validate dispatch inputs
+        run: |
+          set -euo pipefail
+
+          if [[ ! "${ALZ_TARGET_HARDWARE_ID}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]]; then
+            echo "::error::Hardware ID must be 1–64 safe identifier characters."
+            exit 1
+          fi
+
+          if [[ "${ALZ_TARGET_HARDWARE_ID^^}" == "UNKNOWN" ]]; then
+            echo "::error::Supply the actual owner-assigned hardware-profile ID."
+            exit 1
+          fi
+
+          if [[ ! "${ALZ_MODEL_LONG_RUN_TURNS}" =~ ^[0-9]+$ ]]; then
+            echo "::error::long_run_turns must be an integer."
+            exit 1
+          fi
+
+          if [[ -n "${ALZ_OLLAMA_MODELS_DIR}" ]]; then
+            if [[ ! "${ALZ_OLLAMA_MODELS_DIR}" =~ ^/[A-Za-z0-9._/-]+$ || "${ALZ_OLLAMA_MODELS_DIR}" == *..* ]]; then
+              echo "::error::ollama_models_dir must be a plain absolute path."
+              exit 1
+            fi
+            if [[ ! -d "${ALZ_OLLAMA_MODELS_DIR}" ]]; then
+              echo "::error::ollama_models_dir does not exist on this runner."
+              exit 1
+            fi
+            # The isolated service reads the owner's pre-staged store; nothing is pulled into it.
+            printf 'OLLAMA_MODELS=%s\n' "${ALZ_OLLAMA_MODELS_DIR}" >> "${GITHUB_ENV}"
+          fi
+
+          # The runner context is not available in job-level env, so the scratch path is built here.
+          scratch="${RUNNER_TEMP}/alz-model-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir -p "${scratch}"
+          printf 'QUALIFICATION_TMP=%s\n' "${scratch}" >> "${GITHUB_ENV}"
+
+      - name: Checkout exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Configure Node 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: package-lock.json
+          package-manager-cache: false
+
+      - name: Record source and target capacity
+        run: |
+          set -euo pipefail
+
+          node -e '
+            const n = Number(process.env.ALZ_MODEL_LONG_RUN_TURNS);
+            if (!Number.isSafeInteger(n) || n < 4) {
+              throw new Error("long_run_turns must be a safe integer >= 4");
+            }
+          '
+
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          test "$(node -p 'process.versions.node.split(".")[0]')" = "24"
+
+          # Remove stale evidence from previous self-hosted runs.
+          rm -rf .runs/model-qualification .runs/qualification
+          mkdir -p .runs/qualification/diagnostics
+
+          {
+            echo "source=${GITHUB_SHA}"
+            echo "run=${GITHUB_RUN_ID}"
+            echo "attempt=${GITHUB_RUN_ATTEMPT}"
+            echo "runner=${RUNNER_NAME}"
+            echo "target=${ALZ_TARGET_HARDWARE_ID}"
+            echo "accelerator=${ALZ_TARGET_ACCELERATOR}"
+            echo "CPUs=$(nproc)"
+            node --version
+            uname -a
+            free -h
+            lscpu
+            if command -v nvidia-smi >/dev/null; then
+              nvidia-smi
+            fi
+          } > .runs/qualification/diagnostics/target-capacity.txt 2>&1
+
+          cat .runs/qualification/diagnostics/target-capacity.txt
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Verify local Terraform toolchain
+        run: |
+          set -euo pipefail
+          command -v terraform
+          terraform version \
+            | tee .runs/qualification/diagnostics/terraform-version.txt
+
+      - name: Verify pinned local Ollama
+        run: |
+          set -euo pipefail
+
+          command -v ollama
+          version="$(ollama --version 2>&1)"
+          printf '%s\n' "${version}" \
+            | tee .runs/qualification/diagnostics/ollama-cli-version.txt
+
+          # The native preflight checks the API version exactly.
+          case "${version}" in
+            *0.40.0*) ;;
+            *)
+              echo "::error::Expected preinstalled Ollama 0.40.0."
+              exit 1
+              ;;
+          esac
+
+          printf 'ALZ_OLLAMA_VERSION=%s\n' "${version}" >> "${GITHUB_ENV}"
+
+      - name: Start isolated Ollama
+        run: |
+          set -euo pipefail
+
+          # Check any listener, not merely an existing Ollama HTTP endpoint.
+          node <<'NODE'
+          const net = require("node:net");
+          const server = net.createServer();
+
+          server.once("error", error => {
+            console.error("Qualification port unavailable:", error.message);
+            process.exitCode = 1;
+          });
+
+          server.listen(11435, "127.0.0.1", () => server.close());
+          NODE
+
+          # GitHub must not terminate this intentionally cross-step process.
+          RUNNER_TRACKING_ID="" \
+            nohup ollama serve \
+            > "${QUALIFICATION_TMP}/ollama.log" 2>&1 < /dev/null &
+
+          echo "$!" > "${QUALIFICATION_TMP}/ollama.pid"
+
+          for _ in {1..30}; do
+            pid="$(cat "${QUALIFICATION_TMP}/ollama.pid")"
+
+            if ! kill -0 "${pid}" 2>/dev/null; then
+              cat "${QUALIFICATION_TMP}/ollama.log"
+              echo "::error::Ollama exited during startup."
+              exit 1
+            fi
+
+            if curl --max-time 3 -fsS \
+              "${OLLAMA_BASE_URL}/api/tags" >/dev/null; then
+              exit 0
+            fi
+
+            sleep 1
+          done
+
+          cat "${QUALIFICATION_TMP}/ollama.log"
+          echo "::error::Ollama failed its startup health probe."
+          exit 1
+
+      - name: Verify pre-staged model weights
+        run: |
+          set -euo pipefail
+
+          for model in qwen3:1.7b qwen3:4b mistral-nemo:latest; do
+            if ! ollama show "${model}" >/dev/null 2>&1; then
+              echo "::error::Required pre-staged model missing: ${model}"
+              exit 1
+            fi
+          done
+
+          # No pull, download, or model replacement occurs here.
+
+      - name: Run native target preflight
+        run: |
+          set -euo pipefail
+
+          ./node_modules/.bin/tsx src/cli/target-preflight.ts \
+            --target-hardware-id "${ALZ_TARGET_HARDWARE_ID}" \
+            --output .runs/qualification/production-target-preflight.json
+
+      - name: Pre-restart real inference smoke
+        run: ./alz models verify --model qwen3:1.7b
+
+      - name: Restart isolated Ollama
+        run: |
+          set -euo pipefail
+
+          pid="$(cat "${QUALIFICATION_TMP}/ollama.pid")"
+          kill "${pid}"
+
+          stopped=false
+          for _ in {1..30}; do
+            if ! kill -0 "${pid}" 2>/dev/null; then
+              stopped=true
+              break
+            fi
+            sleep 1
+          done
+
+          if [[ "${stopped}" != true ]]; then
+            echo "::error::Original Ollama process did not stop."
+            exit 1
+          fi
+
+          RUNNER_TRACKING_ID="" \
+            nohup ollama serve \
+            > "${QUALIFICATION_TMP}/ollama-restarted.log" 2>&1 < /dev/null &
+
+          echo "$!" > "${QUALIFICATION_TMP}/ollama.pid"
+
+          for _ in {1..30}; do
+            pid="$(cat "${QUALIFICATION_TMP}/ollama.pid")"
+
+            if ! kill -0 "${pid}" 2>/dev/null; then
+              cat "${QUALIFICATION_TMP}/ollama-restarted.log"
+              echo "::error::Restarted Ollama exited."
+              exit 1
+            fi
+
+            if curl --max-time 3 -fsS \
+              "${OLLAMA_BASE_URL}/api/tags" >/dev/null; then
+              echo "ALZ_MODEL_RESTART_VERIFIED=1" >> "${GITHUB_ENV}"
+              exit 0
+            fi
+
+            sleep 1
+          done
+
+          cat "${QUALIFICATION_TMP}/ollama-restarted.log"
+          echo "::error::Restarted Ollama failed health probe."
+          exit 1
+
+      - name: Recheck target after restart
+        run: |
+          ./node_modules/.bin/tsx src/cli/target-preflight.ts \
+            --target-hardware-id "${ALZ_TARGET_HARDWARE_ID}" \
+            --output .runs/qualification/production-target-preflight-after-restart.json
+
+      - name: Qualify real production-target models
+        # Existing code retains its inference deadlines.
+        run: ./alz models verify --production
+
+      - name: Compile source-bound runtime
+        run: npm run build
+
+      - name: Run private-model adversarial qualification
+        env:
+          ADVERSARIAL_SCOPE: ${{ inputs.adversarial_scope }}
+        run: |
+          node dist/cli/private-model-adversarial.js \
+            --scope "${ADVERSARIAL_SCOPE}"
+
+      - name: Qualify live-model Terraform agent loop
+        # Validation only: no --terraform-plan, apply, or infrastructure ACT.
+        run: |
+          node dist/cli/qualify-aws-terraform-agent.js \
+            --live-models \
+            --terraform-validate
+
+      - name: Qualify all live-model scenario paths
+        if: ${{ inputs.live_scenario_scope == 'all' }}
+        run: |
+          node dist/cli/private-agent-matrix.js --live-models
+
+      - name: Stop isolated Ollama
+        if: always()
+        run: |
+          set -uo pipefail
+
+          if [[ -f "${QUALIFICATION_TMP}/ollama.pid" ]]; then
+            pid="$(cat "${QUALIFICATION_TMP}/ollama.pid")"
+            if [[ "${pid}" =~ ^[0-9]+$ ]]; then
+              kill "${pid}" 2>/dev/null || true
+
+              for _ in {1..10}; do
+                kill -0 "${pid}" 2>/dev/null || break
+                sleep 1
+              done
+
+              if kill -0 "${pid}" 2>/dev/null; then
+                kill -KILL "${pid}" 2>/dev/null || true
+              fi
+            fi
+          fi
+
+      - name: Collect service diagnostics
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p .runs/qualification/diagnostics
+
+          for file in ollama.log ollama-restarted.log; do
+            if [[ -f "${QUALIFICATION_TMP}/${file}" ]]; then
+              cp "${QUALIFICATION_TMP}/${file}" \
+                ".runs/qualification/diagnostics/${file}"
+            fi
+          done
+
+      - name: Upload qualification and failure evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: production-private-model-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .runs/model-qualification/*.json
+            .runs/qualification/production-target-preflight*.json
+            .runs/qualification/diagnostics/*
+            .runs/qualification/aws-brownfield-terraform-private-agents-v1-*/qualification.json
+            .runs/qualification/aws-brownfield-terraform-private-agents-v1-*/main.tf
+            .runs/qualification/private-agent-matrix/*.json
+            .runs/qualification/private-model-adversarial/*.json
+            .runs/qualification/private-model-adversarial/*.csv
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Remove run scratch directory
+        if: always()
+        run: rm -rf "${QUALIFICATION_TMP}"
+
+      - name: Write qualification summary
+        if: always()
+        env:
+          RESULT: ${{ job.status }}
+          ADVERSARIAL_SCOPE: ${{ inputs.adversarial_scope }}
+          SCENARIO_SCOPE: ${{ inputs.live_scenario_scope }}
+        run: |
+          {
+            echo "## Private model target qualification"
+            echo
+            echo "- Result: ${RESULT}"
+            echo "- Source: ${GITHUB_SHA}"
+            echo "- Target: ${ALZ_TARGET_HARDWARE_ID}"
+            echo "- Runner: ${RUNNER_NAME}"
+            echo "- Adversarial scope: ${ADVERSARIAL_SCOPE}"
+            echo "- Scenario scope: ${SCENARIO_SCOPE}"
+            echo "- Evidence: production-private-model-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            echo "- No Terraform apply or infrastructure ACT was requested."
+            echo "- A successful run qualifies this tested configuration only."
+          } >> "${GITHUB_STEP_SUMMARY}"
