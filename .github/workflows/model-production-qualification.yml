@@ -246,8 +246,8 @@ jobs:
               exit 1
             fi
 
-            if curl --max-time 3 -fsS \
-              "${OLLAMA_BASE_URL}/api/tags" >/dev/null; then
+            if node -e 'fetch(process.argv[1], { signal: AbortSignal.timeout(3000) }).then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))' \
+              "${OLLAMA_BASE_URL}/api/tags"; then
               exit 0
             fi
 
@@ -332,8 +332,8 @@ jobs:
               exit 1
             fi
 
-            if curl --max-time 3 -fsS \
-              "${OLLAMA_BASE_URL}/api/tags" >/dev/null; then
+            if node -e 'fetch(process.argv[1], { signal: AbortSignal.timeout(3000) }).then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))' \
+              "${OLLAMA_BASE_URL}/api/tags"; then
               echo "ALZ_MODEL_RESTART_VERIFIED=1" >> "${GITHUB_ENV}"
               exit 0
             fi
