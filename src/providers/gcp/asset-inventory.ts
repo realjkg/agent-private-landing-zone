@@ -58,7 +58,7 @@ const MAX_ASSETS = PAGE_SIZE * MAX_PAGES;
 const MASK = "name,assetType,project,displayName,location";
 const PROJECT = /^projects\/(?:[a-z][a-z0-9-]{4,28}[a-z0-9]|[0-9]{6,20})$/;
 const NUMBERED_SCOPE = /^(?:organizations|folders)\/[0-9]{1,20}$/;
-const ASSET_TYPE = /^[a-z0-9.-]+\.googleapis\.com\/[A-Za-z0-9._-]{1,128}$/;
+const ASSET_TYPE = /^[a-z0-9][a-z0-9.-]{0,160}\/[A-Za-z0-9._-]{1,128}$/;
 const RESOURCE_NAME = /^\/\/[^\s\x00-\x1f]{1,2000}$/;
 
 function record(value: unknown): Record<string, unknown> | null {

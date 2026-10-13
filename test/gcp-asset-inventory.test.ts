@@ -152,3 +152,17 @@ test("GCP refuses schema fields with control characters and cannot grant ownersh
   assert.equal(result.inventory[0]!.ownership, "UNKNOWN");
   assert.equal(result.inventory[0]!.mutationPolicy, "READ_ONLY");
 });
+
+test("GCP includes Cloud Asset Inventory Kubernetes asset types", async () => {
+  const k8s = {
+    name: "//container.googleapis.com/projects/sovereign-lz-dev/locations/us-central1/clusters/primary/k8s/namespaces/default/pods/demo",
+    assetType: "k8s.io/Pod",
+    displayName: "demo",
+  };
+  const result = await discoverGcpInventory(
+    projectScope,
+    fakeTransport({ status: 200, body: page([k8s]) }).transport,
+  );
+  assert.equal(result.inventory[0]!.resourceType, "k8s.io/Pod");
+  assert.equal(result.inventory[0]!.mutationPolicy, "READ_ONLY");
+});
