@@ -9,5 +9,6 @@ export default defineConfig({
   test: {
     environment: "happy-dom",
     include: ["test/*.test.tsx"],
+    setupFiles: ["test/ui-storage-setup.ts"],
   },
 });

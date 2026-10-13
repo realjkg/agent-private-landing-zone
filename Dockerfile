@@ -1,4 +1,4 @@
-FROM node:24-bookworm-slim AS build
+FROM node:26-bookworm-slim AS build
 
 WORKDIR /app
 
@@ -24,6 +24,9 @@ COPY compose.yaml ./compose.yaml
 COPY docs/ ./docs/
 COPY alz ./alz
 COPY .github/workflows/model-qualification.yml ./.github/workflows/model-qualification.yml
+COPY .github/workflows/model-production-qualification.yml ./.github/workflows/model-production-qualification.yml
+COPY .github/workflows/pr-validation.yml ./.github/workflows/pr-validation.yml
+COPY .github/workflows/supply-chain.yml ./.github/workflows/supply-chain.yml
 
 RUN chmod +x ./alz
 
@@ -31,14 +34,14 @@ CMD ["npm", "test"]
 
 # Production native dependencies must use the same musl ABI as the final
 # ARM64 runtime. Compiler and npm tooling stay outside the shipped image.
-FROM node:24-alpine AS runtime-deps
+FROM node:26-alpine AS runtime-deps
 WORKDIR /app
 RUN apk add --no-cache python3 make g++ \
     && apk upgrade --no-cache
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 
-FROM node:24-alpine AS runtime
+FROM node:26-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 RUN apk upgrade --no-cache && apk add --no-cache libstdc++

@@ -13,7 +13,7 @@ The existing general BUILD loop produces `fixture-generator` artifacts for fixtu
 
 ## Target host execution
 
-From an **exact clean checkout** with installed Node 24, pinned private local Ollama, independent Qwen/Mistral weights, Terraform (including pinned provider mirror/lockfile), and a federated/read-only authorized AWS identity:
+From an **exact clean checkout** with installed Node 26, pinned private local Ollama, independent Qwen/Mistral weights, Terraform (including pinned provider mirror/lockfile), and a federated/read-only authorized AWS identity:
 
 ```sh
 npm ci

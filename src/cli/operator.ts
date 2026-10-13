@@ -1,3 +1,4 @@
+import { runDepsCommand, blockedByDependencies } from "./deps.js";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { resolve, sep } from "node:path";
@@ -136,6 +137,7 @@ async function help(): Promise<void> {
     "  ./alz teardown destroy-preview-run|preview-run (interactive terminal only; the console shows the command and never runs it)",
     "  ./alz apply <qualify|seal|approve|apply|status> [flags] (pilot apply of a sealed plan; a person at the terminal, or a person in the console's Pilot apply wizard with the session token ./alz workspace prints; one change runs wholly in one of them)",
     "  ./alz health [--serve]",
+    "  ./alz deps",
     "  ./alz doctor",
     "  ./alz verify",
     "  ./alz plugins",
@@ -302,9 +304,13 @@ try {
   } else if (command === "teardown") {
     // Read-only verdicts; exit 2 (BLOCKED / orphans) is a diagnosis to propagate.
     runTs("src/cli/teardown.ts", argv.slice(1), true);
+  } else if (command === "deps") {
+    // Read-only checks, then guided installs of the pinned tools (docs/operator-guide.md). Installs only after a typed yes.
+    process.exitCode = await runDepsCommand(argv.slice(1));
   } else if (command === "apply") {
     // Human-invoked pilot apply (docs/act-pilot-apply.md). It needs a terminal, which a child inherits; exit 2 is BLOCKED.
-    runTs("src/cli/apply.ts", argv.slice(1), true);
+    if (await blockedByDependencies("apply")) process.exitCode = 2;
+    else runTs("src/cli/apply.ts", argv.slice(1), true);
   } else if (command === "inspect") {
     runTs("src/cli/discover.ts", ["--provider", choice(first, PROVIDERS, "aws"), "--resources"]);
   } else if (command === "session") {
@@ -339,7 +345,9 @@ try {
     console.log();
     console.log(promptGuide());
   } else if (command === "models") {
-    runTs("src/cli/models.ts", [first, second, third].filter((value): value is string => Boolean(value)));
+    // Only `verify` needs the local runtime; the other subcommands stay read-only and ungated.
+    if (first === "verify" && await blockedByDependencies("models-verify")) process.exitCode = 2;
+    else runTs("src/cli/models.ts", [first, second, third].filter((value): value is string => Boolean(value)));
   } else if (command === "sbom") {
     sbom();
   } else if (command === "scan") {

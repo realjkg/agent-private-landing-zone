@@ -214,6 +214,18 @@ Generates a CycloneDX SBOM from the locked dependency graph and writes it under 
 
 Runs the package dependency audit. If Trivy is installed locally it also scans the accelerator filesystem for HIGH/CRITICAL vulnerabilities and infrastructure misconfigurations. The full Trivy/SBOM supply-chain workflow is an explicit release gate rather than an automatic per-PR or per-merge job.
 
+## Dependencies: `./alz deps`
+
+`./alz deps` checks what this app needs and offers to install the pinned tools that are missing. It works in an interactive Terminal window only.
+
+**What it checks, in order.** Node 26. Terraform 1.16.4 and Ollama 0.40.0, which it installs on request. The isolated Ollama service on port 11435, with the three dry-run models, if it is running. The AWS CLI and Git, which are reported with exact steps but never installed. Then the product tools from the plugin catalog (CDK, Pulumi, OpenTofu, Bicep, Crossplane, Ansible), plus Trivy and Docker. Product tools are only needed by the feature that uses them, and none of them blocks the pilot.
+
+**How an install works.** When something is missing, a selection screen lists the pinned tools you can install, with every missing one already checked. Type a number to toggle one, `a` to check all, `s` to skip all, `q` to cancel, or Enter to continue with what is checked. Then, for each checked tool, a dialog names the file, its source, the folder it goes to and its SHA-256 checksum, and asks you to type one exact phrase (for example `INSTALL TERRAFORM 1.16.4`). Anything else skips it. The download is verified against the pinned checksum before anything is unpacked; a mismatch installs nothing. Installs go to `~/.alz/tools/<tool>/<version>/`, need no administrator password, and leave your PATH unchanged. The app's own copy is used before any copy on PATH.
+
+**Pilot commands check first.** `./alz apply` needs Node 26 and Terraform. `./alz models verify` needs Node 26 and Ollama. If one is missing, the command stops and says what to run; it never installs on its own.
+
+**Limits.** Installs are available for macOS (Apple silicon and Intel) only. The model downloads (`ollama pull`) are a manual dry-run step on your Mac, and the target hardware never downloads models. The model digests are not yet pinned, so a check can confirm that a model is present but not that it is the qualified build. The Terraform and Ollama archives are checked against published checksums; the Terraform checksum file itself is fetched over HTTPS, not verified with HashiCorp's signature.
+
 ## Agent-assisted build sequence
 
 The simulated landing-zone build program has been qualified through chat and direct kernel invocation across all eight registered adapters.

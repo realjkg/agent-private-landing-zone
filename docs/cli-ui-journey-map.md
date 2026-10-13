@@ -31,6 +31,7 @@ alz economics | test/operator-cli.test.ts
 alz teardown | test/teardown-traceability.test.ts
 alz apply | test/apply-cli.test.ts, test/apply-boundary.test.ts
 alz health | test/observability-health-server.test.ts
+alz deps | test/deps-cli.test.ts, test/deps-install.test.ts
 alz doctor | test/operator-cli.test.ts
 alz verify | test/operator-cli.test.ts
 alz plugins | test/operator-cli.test.ts
