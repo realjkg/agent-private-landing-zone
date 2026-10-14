@@ -40,6 +40,7 @@ Regenerate with `npm run docs:ops`; a test fails if this table is stale.
 | Family | Operation | CLI | Safety | Console | Evidence basis |
 | --- | --- | --- | --- | --- | --- |
 | Evidence and inspection | Governed design demo | `./alz demo` | SYNTHETIC | Run | DETERMINISTIC FIXTURE — NO LOCAL MODEL INFERENCE OR LIVE CLOUD |
+| Evidence and inspection | GCP offline landing-zone walkthrough | `./alz demo gcp terraform` | SYNTHETIC | Run | GCP CLOUD ASSET INVENTORY SYNTHETIC FIXTURE — NO AUTH, LIVE CLOUD, MODEL, TERRAFORM PLAN OR ACT |
 | Evidence and inspection | Design specification | `./alz design` | SYNTHETIC | Run | DETERMINISTIC FIXTURE — NO LOCAL MODEL INFERENCE OR LIVE CLOUD |
 | Evidence and inspection | Inspect a live environment | `./alz inspect` | HANDOFF | Guided handoff | LIVE READ-ONLY CLOUD DISCOVERY — YOUR OWN CREDENTIALS — WRITES AN ENCRYPTED RECORD UNDER .runs |
 | Evidence and inspection | Discover a fixture environment | `npm run discover:aws` | WRITES_LOCAL | Run | SYNTHETIC FIXTURE DISCOVERY — NO CLOUD ACCESS — WRITES AN ENCRYPTED RECORD UNDER .runs |
