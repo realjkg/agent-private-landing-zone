@@ -71,7 +71,7 @@ export function OperationCard(props: OperationCardProps) {
             : spec.safety === "WRITES_LOCAL" ? "May create local encrypted workspace evidence, never cloud resources."
             : "Read-only and does not authorize a change."}</small></p>
           <p><small>CLI: <code>{spec.cli}</code></small></p>
-          <p><small>Evidence: {spec.evidenceBasis}</small></p>
+          <p><small>{spec.evidenceBasis}</small></p>
           {level === "EXPERT" && <p><small>{spec.id} · {spec.safety} · inputs: {spec.inputs.length === 0 ? "none" : spec.inputs.map((field) => field.name).join(", ")}</small></p>}
         </details>
       )}
