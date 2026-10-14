@@ -19,7 +19,7 @@ export function MockBoundaryLab(props: { platform: string; stage: string }) {
       <select id="fixture-approval" value={approval} onChange={(e) => setApproval(e.target.value as MockActRequest)}>
         {MOCK_ACT_CHOICES.map((item) => <option key={item} value={item}>{item.replaceAll("_", " ").toLowerCase()}</option>)}
       </select>
-      <p role="status" data-testid="mock-boundary-result">
+      <p aria-live="polite" data-testid="mock-boundary-result">
         Auth: {verdict.authResult}. Approval: {verdict.approvalResult}. Infrastructure: {verdict.infrastructureResult}.
       </p>
       <p><small>Evidence: {verdict.evidence}. No account or credential is bound, and no ACT button or permission exists in this simulator.</small></p>
