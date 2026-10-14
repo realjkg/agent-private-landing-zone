@@ -273,3 +273,50 @@ test("cancel at the selection screen installs nothing and downloads nothing", as
   assert.equal(downloads, 0);
   assert.ok(!existsSync(installedPath(join(root, "home-cli-cancel"), "terraform", "1.16.4", "terraform")));
 });
+
+test("guided installer: no TTY, exact phrase missing, and checksum mismatch never install a tool", async () => {
+  const { installSelectedPinnedTools } = await import("../src/cli/deps.js");
+  const archive = fakeArchive("guided-tampered");
+  const pinsPath = fakePins("guided-tampered", "0".repeat(64));
+  let downloaded = 0;
+  const download = async () => { downloaded++; return Readable.from([archive.body]); };
+  const nonTTY = await installSelectedPinnedTools(["terraform"], {
+    ...deps("guided-nontty", terminal(false, []), { download }), pinsPath,
+  });
+  assert.deepEqual(nonTTY.installed, []);
+  assert.equal(downloaded, 0);
+  const reject = await installSelectedPinnedTools(["terraform"], {
+    ...deps("guided-reject", terminal(true, ["INSTALL EVERYTHING"]), { download }), pinsPath,
+  });
+  assert.deepEqual(reject.installed, []);
+  assert.deepEqual(reject.skipped, ["terraform"]);
+  assert.equal(downloaded, 0);
+  const tamper = await installSelectedPinnedTools(["terraform"], {
+    ...deps("guided-tamper", terminal(true, ["INSTALL TERRAFORM 1.16.4"]), { download }), pinsPath,
+  });
+  assert.deepEqual(tamper.installed, []);
+  assert.deepEqual(tamper.skipped, ["terraform"]);
+  assert.equal(downloaded, 1);
+  assert.equal(existsSync(installedPath(join(root, "home-cli-guided-tamper"), "terraform", "1.16.4", "terraform")), false);
+});
+
+test("guided installer: explicit tool selection installs only checksum-verified artifact in isolated home", async () => {
+  const { installSelectedPinnedTools } = await import("../src/cli/deps.js");
+  const archive = fakeArchive("guided-verified");
+  const pinsPath = fakePins("guided-verified", archive.sha256);
+  let downloaded = 0;
+  const term = terminal(true, ["INSTALL TERRAFORM 1.16.4"]);
+  const outcome = await installSelectedPinnedTools(["terraform"], {
+    ...deps("guided-verified", term, {
+      download: async () => { downloaded++; return Readable.from([archive.body]); },
+    }), pinsPath,
+  });
+  assert.deepEqual(outcome.installed, ["terraform"]);
+  assert.deepEqual(outcome.skipped, []);
+  assert.equal(downloaded, 1);
+  assert.equal(existsSync(installedPath(join(root, "home-cli-guided-verified"), "terraform", "1.16.4", "terraform")), true);
+  assert.match(term.shown.join(""), /SHA-256/);
+  await assert.rejects(() => installSelectedPinnedTools(["crossplane" as never], {
+    ...deps("guided-unsupported", terminal(true, [])), pinsPath,
+  }), /INSTALL_TOOL_NOT_PINNED/);
+});
