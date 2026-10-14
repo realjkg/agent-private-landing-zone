@@ -274,6 +274,14 @@ export async function installSelectedPinnedTools(
         pins, home: ctx.home, platform,
         ...(deps.download ? { download: deps.download } : {}),
       });
+      // A cached binary might exist at the pinned location but no longer report
+      // the pinned version. Never treat "reused" as proof of health.
+      const checked = await runDependencyChecks(ctx, new Set<DepCheck["id"]>([tool]));
+      if (checked.find((item) => item.id === tool)?.ok !== true) {
+        terminal.write("Pinned " + tool + " still failed verification after installation; do not continue.\n");
+        result.skipped.push(tool);
+        continue;
+      }
       terminal.write("Verified pinned " + tool + " installed at " + installed.path + "\n");
       result.installed.push(tool);
     } catch (error) {
