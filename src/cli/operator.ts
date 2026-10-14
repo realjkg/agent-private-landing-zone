@@ -119,6 +119,7 @@ async function help(): Promise<void> {
     "",
     "  ./alz bootstrap",
     "  ./alz demo [aws|azure] [terraform|pulumi|opentofu|bicep|cloudformation|cdk|crossplane|ansible] [brownfield|greenfield|unknown]",
+    "  ./alz demo gcp terraform [brownfield|greenfield|unknown] (synthetic only; no cloud, plan, or ACT)",
     "  ./alz design [aws|azure] [terraform|pulumi|opentofu|bicep|cloudformation|cdk|crossplane|ansible] [brownfield|greenfield|unknown]",
     "  ./alz inspect [aws|azure]",
     "  ./alz session [aws|azure] [terraform|pulumi|opentofu|bicep|cloudformation|cdk|crossplane|ansible]",
@@ -289,6 +290,13 @@ const [command = "help", first, second, third] = argv;
 try {
   if (command === "help" || command === "--help" || command === "-h") {
     await help();
+  } else if (command === "demo" && first?.toLowerCase() === "gcp") {
+    // GCP's mock-transport showcase is separate from AWS/Azure discovery and
+    // agent sessions until GCP provider qualification is completed.
+    choice(second, ["terraform"], "terraform");
+    runTs("src/cli/gcp-offline-demo.ts", [
+      choice(third, SCENARIOS, "brownfield"),
+    ]);
   } else if (command === "demo" || command === "design") {
     runTs("src/demo.ts", [
       "--provider", choice(first, PROVIDERS, "aws"),
