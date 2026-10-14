@@ -7,6 +7,14 @@ This interface is a **local operator wrapper** over the existing, governed ALZ q
 From a source checkout that has completed the standard one-time `./alz bootstrap`:
 
 ```sh
+./alz
+```
+
+This opens the foreground Terminal guide on a local interactive Mac. Choose **Tour the workspace** to see the UI, or **Configure** to select a planning stage (development, staging/non-production, production), provider (AWS, Azure, GCP, private), engine (including Crossplane), and whether local Qwen/Mistral inference is desired. It explains which binaries are required for **your selection** and which integrations are optional. It never installs optional products automatically. Any missing pinned core Terraform/Ollama tool can be installed separately with the existing checksum-pinned, phrase-confirmed `./alz deps` dialog.
+
+The wizard offers to start the local visual workspace and, with separate consent, open the default Mac browser to its fixed loopback URL. For direct expert startup without the wizard:
+
+```sh
 ./alz workspace
 ```
 
@@ -35,3 +43,14 @@ The browser displays workflow progress and the evidence classification. Each CLI
 Local-only bind `127.0.0.1`, exact host/origin checks, per-session CSRF token, strict allowlisted job and scenario choices, one in-flight task, bounded command output, no arbitrary shell, no remote assets, no sensitive environment-variable forwarding, restrictive Content Security Policy, and no persistence of browser session state. HTML output is inserted with `textContent`, never interpreted as HTML. Browser outputs should not include credentials or unredacted prompts; qualification CLIs are responsible for safe, limited summaries.
 
 Tests in `test/local-operator-workspace.test.ts` use a fake runner only; they test browser routing/host/CSRF/failure status, not live model inference, provider plans or production disaster recovery. The existing Trivy release failure is tracked separately; this local UI is not production release approval.
+
+
+## Simpler planning workflow and contextual help
+
+The Home and Operations areas present a **planning context selector** with Development, Staging / non-production and Production, and AWS, Azure, GCP or private targets. Each choice explains the corresponding isolation and acceptance requirements. **This is advisory UI state only**: no selected account, stage, identity or authorization is sent as a workflow input. Stage-specific real execution is still a separately scoped, future qualification task; production is NEVER eligible for ACT solely because it is selected in a menu.
+
+In Operations, recommended fixture-backed tasks appear first; **Show all advanced operations** reveals the full operations catalog. Technical CLI commands, evidence classifications and requirements sit behind **What does this do, and when would I use it?** on each advanced card. The source catalog and permissions remain identical. The three experience levels still apply, and expert workflows are not removed.
+
+Crossplane is a registered preview/render adapter and is presented when choosing an infrastructure engine. Its CLI executable is not in the required core bundle: select Crossplane to see it explicitly marked REQUIRED for that choice and the vendor source if missing. Crossplane render results remain UNKNOWN until controller reconciliation is verified. An absent binary is never represented as working just because the plugin is cataloged.
+
+The no-live-testing iteration tests selections, UI/CLI disclosure, read-only fixtures, no implicit installation, CSRF/policy invariants, ARM64 CI and encrypted recovery. It does not execute cloud provider or real local model qualifications.

@@ -61,13 +61,20 @@ export function OperationCard(props: OperationCardProps) {
     <article className="card op-card" id={"op-" + spec.id} aria-labelledby={"op-" + spec.id + "-title"}>
       <h3 id={"op-" + spec.id + "-title"} tabIndex={-1}>{spec.title}</h3>
       <p>{spec.summary}</p>
-      {level !== "BEGINNER" && <p><small>CLI: <code>{spec.cli}</code></small></p>}
-      {level === "EXPERT" && (
-        <p><small>
-          {spec.id} · {spec.safety} · inputs: {spec.inputs.length === 0 ? "none" : spec.inputs.map((field) => field.name).join(", ")}
-        </small></p>
+      {level === "BEGINNER" && <p><small>{beginnerEvidenceLine(spec.evidenceBasis)}</small></p>}
+      {level !== "BEGINNER" && (
+        <details className="op-context-help">
+          <summary>What does this do, and when would I use it?</summary>
+          <p><small>{spec.safety === "SYNTHETIC" ? "Uses recorded examples. No cloud or model call is required."
+            : spec.safety === "LOCAL_MODEL" ? "Uses the private local model endpoint; no hosted inference is authorized."
+            : spec.safety === "HANDOFF" ? "Requires a person to run a reviewed command outside this browser."
+            : spec.safety === "WRITES_LOCAL" ? "May create local encrypted workspace evidence, never cloud resources."
+            : "Read-only and does not authorize a change."}</small></p>
+          <p><small>CLI: <code>{spec.cli}</code></small></p>
+          <p><small>{spec.evidenceBasis}</small></p>
+          {level === "EXPERT" && <p><small>{spec.id} · {spec.safety} · inputs: {spec.inputs.length === 0 ? "none" : spec.inputs.map((field) => field.name).join(", ")}</small></p>}
+        </details>
       )}
-      <p><small>{level === "BEGINNER" ? beginnerEvidenceLine(spec.evidenceBasis) : spec.evidenceBasis}</small></p>
       {spec.runnable ? (
         <form onSubmit={(event) => { event.preventDefault(); void submit(); }}>
           {spec.inputs.map((field) => (

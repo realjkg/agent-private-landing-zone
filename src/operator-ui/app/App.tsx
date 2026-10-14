@@ -12,6 +12,7 @@ import {
   type OperatorMode,
 } from "./api";
 import { BeginnerPath } from "./components/BeginnerPath";
+import { DeploymentContext } from "./components/DeploymentContext";
 import { CompliancePosture } from "./components/CompliancePosture";
 import { ConnectorNotice } from "./components/ConnectorNotice";
 import { EvidencePanel } from "./components/EvidencePanel";
@@ -189,6 +190,7 @@ export function OperatorApp(props: OperatorAppProps) {
           infrastructure previews. Nothing here deploys or changes the cloud on its own: the guided Pilot apply
           area changes real systems only for a person who unlocks it, types each confirmation, and has approvals.
         </p>
+        {level !== "BEGINNER" && (view === "home" || view === "operations") && <DeploymentContext />}
         {sessionUnavailable && view !== "home" && (
           <p role="alert" className="session-banner">
             This console lost its local session — close it and start it again.

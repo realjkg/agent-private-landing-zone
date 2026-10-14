@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,6 +29,15 @@ if (!Number.isInteger(port) || port < 1024 || port > 65535) {
 server.listen(port, "127.0.0.1", () => {
   console.log("Sovereign ALZ — local browser workspace");
   console.log("Open http://127.0.0.1:" + port + " on this machine.");
+  // Auto-open only following affirmative interactive setup consent, macOS only.
+  // No shell interpolation, remote destination or implicit browser launch by ./alz workspace.
+  if (process.platform === "darwin" && process.env.ALZ_OPEN_BROWSER === "1") {
+    const opener = spawn("/usr/bin/open", ["http://127.0.0.1:" + port], {
+      stdio: "ignore", detached: true,
+    });
+    opener.on("error", () => console.log("Open the local URL above in your browser."));
+    opener.unref();
+  }
   if (observability.healthAddress) {
     console.log(
       "Observability " +

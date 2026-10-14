@@ -1,3 +1,5 @@
+import { runGuidedSetup } from "../onboarding/terminal.js";
+import { processTerminal } from "./teardown-driver.js";
 import { runDepsCommand, blockedByDependencies } from "./deps.js";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -116,6 +118,7 @@ async function help(): Promise<void> {
     "Agent Private Landing Zone",
     "────────────────────────────────",
     "Operator commands",
+    "Run ./alz without arguments for an interactive, offline-first setup and workspace launch.",
     "",
     "  ./alz bootstrap",
     "  ./alz demo [aws|azure] [terraform|pulumi|opentofu|bicep|cloudformation|cdk|crossplane|ansible] [brownfield|greenfield|unknown]",
@@ -288,7 +291,16 @@ const argv = process.argv.slice(2);
 const [command = "help", first, second, third] = argv;
 
 try {
-  if (command === "help" || command === "--help" || command === "-h") {
+  if (argv.length === 0) {
+    // Empty argv is an interactive entry point, not another privileged
+    // catalog command. All named commands keep their exact old semantics.
+    const result = await runGuidedSetup({ terminal: processTerminal() });
+    if (result.openWorkspace) {
+      // A session-local flag only; the browser opens a fixed loopback URL and no external address.
+      if (result.openBrowser) process.env.ALZ_OPEN_BROWSER = "1";
+      runTs("src/cli/operator-web.ts");
+    }
+  } else if (command === "help" || command === "--help" || command === "-h") {
     await help();
   } else if (command === "demo" && first?.toLowerCase() === "gcp") {
     // GCP's mock-transport showcase is separate from AWS/Azure discovery and
