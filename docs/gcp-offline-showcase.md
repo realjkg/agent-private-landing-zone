@@ -49,7 +49,7 @@ The end-to-end real GCP workflow is still pending: trusted GCP authentication an
 To give a local, isolated version check access to the managed Terraform binary without relaxing the broker's trust rules:
 
 ```sh
-ALZ_TOOL_DIRS="$HOME/.alz/tools/terraform/1.16.4" ./alz toolbox
+ALZ_TOOL_DIRS="$HOME/.alz/tools/terraform/1.16.4" ./alz doctor
 ```
 
 This is a local explicit execution-path grant to a reviewed binary directory, not a cloud-read or write grant. Do not add arbitrary home directories, a world-writable location, or the entire ambient PATH. The no-live-testing cycle needs only static versions and synthetic evidence.
