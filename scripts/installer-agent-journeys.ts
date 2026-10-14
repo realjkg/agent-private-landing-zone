@@ -3,8 +3,10 @@
  * No live cloud calls, local model inference, real installer or ACT.
  */
 import { runJourneyMatrix } from "../src/onboarding/agent-journeys.js";
+import { runAllOptionalJourneys } from "../src/onboarding/optional-tool-journeys.js";
 
 const result = await runJourneyMatrix();
+const optional = await runAllOptionalJourneys();
 const blocked = result.results.filter((r) => r.dependencyVerdict === "BLOCKED").length;
 const syntheticAuthSuccess = result.results.filter((r) => r.cloudAuthVerdict === "SYNTHETIC_AUTH_OK").length;
 const syntheticAuthDenied = result.results.filter((r) => r.cloudAuthVerdict === "SYNTHETIC_AUTH_REJECTED").length;
@@ -12,6 +14,11 @@ const report = {
   mode: "SCRIPTED_AGENT_SIMULATION_OFFLINE_ONLY" as const,
   noLiveQualification: true,
   scenarios: result.count,
+  optionalToolCount: optional.toolCount,
+  optionalInstallationJourneys: optional.count,
+  optionalSimulatedInstallSuccesses: optional.results.filter((x) => x.verdict === "INSTALLED_VERIFIED").length,
+  optionalBlockedOrManualJourneys: optional.results.filter((x) => x.verdict !== "INSTALLED_VERIFIED" && x.verdict !== "ALREADY_INSTALLED").length,
+  optionalDigestSha256: optional.sha256,
   dependencyBlocked: blocked,
   fakeAuthSuccess: syntheticAuthSuccess,
   fakeAuthRejected: syntheticAuthDenied,

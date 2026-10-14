@@ -2,6 +2,7 @@ import { homedir } from "node:os";
 
 import { installSelectedPinnedTools } from "../cli/deps.js";
 import type { ToolId } from "../deps/pins.js";
+import { OPTIONAL_TOOLS, installOptionalTool, type OptionalToolId, type InstallResult } from "./optional-tool-installer.js";
 
 import { runDependencyChecks, type DepCheck } from "../deps/checks.js";
 import { loadToolPins } from "../deps/pins.js";
@@ -19,6 +20,8 @@ export type SetupOptions = {
   collectChecks?: () => Promise<readonly DepCheck[]>;
   /** Test seam. In production the existing approved-pin installer asks for an exact human phrase. */
   installPinned?: (tools: readonly ToolId[], terminal: HumanTerminal) => Promise<{ installed: ToolId[]; skipped: ToolId[] }>;
+  /** Injected in tests so no package manager or network can run. */
+  installOptional?: (id: OptionalToolId, terminal: HumanTerminal) => Promise<InstallResult>;
 };
 
 async function menu<T extends string>(
@@ -63,6 +66,8 @@ export async function runGuidedSetup(options: SetupOptions): Promise<SetupOutcom
   ]);
   if (!route) return { openWorkspace: false, openBrowser: false };
   const checks = options.checks ?? await (options.collectChecks ?? loadChecks)();
+  const optionalInstaller = options.installOptional ?? ((id: OptionalToolId, selectedTerminal: HumanTerminal) =>
+    installOptionalTool(id, { terminal: selectedTerminal }));
   const pinnedInstaller = options.installPinned ??
     ((tools: readonly ToolId[], selectedTerminal: HumanTerminal) =>
       installSelectedPinnedTools(tools, { terminal: selectedTerminal }));
@@ -77,11 +82,12 @@ export async function runGuidedSetup(options: SetupOptions): Promise<SetupOutcom
       if (!check.ok && check.fix) terminal.write("    How to fix: " + check.fix + "\n");
     }
     terminal.write("\nOnly approved Terraform/Ollama packages have checksum-pinned automatic installers. Nothing installed here yet.\n");
-    const next = await menu(terminal, "Next step", ["configure", "install-pinned", "workspace", "exit"] as const, [
+    const next = await menu(terminal, "Next step", ["configure", "install-pinned", "workspace", "exit", "install-optional"] as const, [
       "Choose environment, cloud and engine to calculate actual prerequisites",
       "Choose one missing pinned Terraform/Ollama tool (human approval required)",
       "Open the local UI; no tools are installed",
       "Exit without changing anything",
+      "Review or install a selected optional CLI (Crossplane, OpenTofu, Trivy and others)",
     ]);
     if (!next || next === "exit") return { openWorkspace: false, openBrowser: false };
     if (next === "install-pinned") {
@@ -95,6 +101,19 @@ export async function runGuidedSetup(options: SetupOptions): Promise<SetupOutcom
         await pinnedInstaller([picked], terminal);
         terminal.write("Run ./alz deps or restart ./alz to verify detected versions.\n");
       }
+      return { openWorkspace: false, openBrowser: false };
+    }
+    if (next === "install-optional") {
+      const available = OPTIONAL_TOOLS.filter((tool) => checks.some((check) => check.id === tool.id && !check.ok));
+      if (!available.length) {
+        terminal.write("No missing optional tools detected. Installed tools are not upgraded automatically.\n");
+        return { openWorkspace: false, openBrowser: false };
+      }
+      const selected = await menu(terminal, "Choose optional CLI to review", available.map((tool) => tool.id),
+        available.map((tool) => tool.label + " — " + (tool.route === "BREW" ? "version-reviewed Homebrew formula" : "manual/security review required")));
+      if (!selected) return { openWorkspace: false, openBrowser: false };
+      const outcome = await optionalInstaller(selected, terminal);
+      terminal.write("Optional CLI result: " + outcome.verdict + ". Run ./alz deps to re-check your local tools.\n");
       return { openWorkspace: false, openBrowser: false };
     }
     if (next === "workspace") {
@@ -148,6 +167,16 @@ export async function runGuidedSetup(options: SetupOptions): Promise<SetupOutcom
       await pinnedInstaller(missingPinned.map((x) => x.id as ToolId), terminal);
       terminal.write("Re-run ./alz deps to verify the installation before running the selected engine.\n");
     } else terminal.write("Installation skipped. Missing requirements remain blocked.\n");
+  }
+  const requiredOptional = plan.tools.filter((item) => item.status === "REQUIRED" &&
+    item.installed !== true && OPTIONAL_TOOLS.some((tool) => tool.id === item.id));
+  if (requiredOptional.length) {
+    const missing = requiredOptional[0]!;
+    const answer = (await terminal.ask("Review selected missing optional engine " + missing.label + "? [y/N]: ")).trim().toLowerCase();
+    if (answer === "y" || answer === "yes") {
+      const outcome = await optionalInstaller(missing.id as OptionalToolId, terminal);
+      terminal.write("Installation review: " + outcome.verdict + ". Re-run ./alz deps before using this engine.\n");
+    } else terminal.write("Optional engine installation skipped. It remains unqualified.\n");
   }
   const launch = (await terminal.ask("Open local workspace on 127.0.0.1? [Y/n]: ")).trim().toLowerCase();
   if (!["", "y", "yes"].includes(launch)) {
