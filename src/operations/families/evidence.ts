@@ -42,6 +42,14 @@ const agentArgs = (v: Values) => [...value(v, "provider"), ...value(v, "engine")
 
 export const evidenceOperations: readonly OperationSpec[] = [
   demo,
+  {
+    id: "demo-gcp-offline", title: "GCP offline landing-zone walkthrough",
+    family: "evidence", cli: "./alz demo gcp terraform", safety: "SYNTHETIC",
+    summary: "Replays an isolated GCP inventory fixture across read-only discovery, design review and the disabled mutation gate.",
+    inputs: [mock],
+    evidenceBasis: "GCP CLOUD ASSET INVENTORY SYNTHETIC FIXTURE — NO AUTH, LIVE CLOUD, MODEL, TERRAFORM PLAN OR ACT",
+    job: { script: "cli/gcp-offline-demo.js", args: (v) => [String(v.mock)] },
+  },
   { ...demo, id: "design", title: "Design specification", cli: "./alz design", npm: undefined,
     summary: "Produces the same fixture DesignSpec flow as the demo; the command keeps both names." },
   {

@@ -41,7 +41,7 @@ const refusal = (id: string, inputs: unknown): string => {
 
 test("the family is registered once, with the safety classes it claims", () => {
   assert.deepEqual(runnable.map((item) => [item.id, item.safety]), [
-    ["demo", "SYNTHETIC"], ["design", "SYNTHETIC"], ["discover", "WRITES_LOCAL"], ["debug", "SYNTHETIC"],
+    ["demo", "SYNTHETIC"], ["demo-gcp-offline", "SYNTHETIC"], ["design", "SYNTHETIC"], ["discover", "WRITES_LOCAL"], ["debug", "SYNTHETIC"],
     ["debug-live", "LOCAL_MODEL"], ["build-loop", "WRITES_LOCAL"], ["agent", "WRITES_LOCAL"],
     ["agent-live", "LOCAL_MODEL"], ["agent-builder-sim", "SYNTHETIC"],
   ]);
@@ -107,6 +107,9 @@ test("each package.json script the family covers is reproduced by the form input
   }
   // demo and the matrix script run with no flags; the form defaults are the dispatcher's defaults.
   assert.deepEqual((await jobFor("demo", {})).args, ["--provider", "aws", "--engine", "terraform", "--scenario", "brownfield"]);
+  assert.deepEqual((await jobFor("demo-gcp-offline", {})).args, ["brownfield"]);
+  assert.deepEqual((await jobFor("demo-gcp-offline", { mock: "unknown" })).args, ["unknown"]);
+  assert.equal(refusal("demo-gcp-offline", { mock: "production" }), "INPUT_ENUM:mock");
   assert.deepEqual((await jobFor("agent-builder-sim", {})).args, []);
   // The bare scripts forward whatever the operator types, so they map to the private-model entries.
   const live = await jobFor("agent-live", brownfield);
@@ -226,6 +229,14 @@ test("the connector matrix and the demo run for real, offline, without writing a
   assert.equal(demoRun.status, 0, demoRun.stderr);
   assert.match(demoRun.stdout, /ACT\s+DISABLED/);
   assert.deepEqual(demoRun.written, [], "the demo is classed SYNTHETIC, so it must not write");
+
+  const gcpDemo = await jobFor("demo-gcp-offline", {});
+  const gcpRun = runReal(gcpDemo.script, gcpDemo.args);
+  assert.equal(gcpRun.status, 0, gcpRun.stderr);
+  assert.match(gcpRun.stdout, /GCP OFFLINE WALKTHROUGH/);
+  assert.match(gcpRun.stdout, /LIVE QUALIFICATION\s+NOT PERFORMED/);
+  assert.match(gcpRun.stdout, /ACT\s+DISABLED/);
+  assert.deepEqual(gcpRun.written, [], "the GCP synthetic demo must not write");
 });
 
 test("each WRITES_LOCAL or SYNTHETIC fixture job runs for real with its form defaults and the placeholder request", async () => {
