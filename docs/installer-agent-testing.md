@@ -11,9 +11,9 @@ cd agent-private-landing-zone
 npm ci
 npm run build
 npm run build:ui
-npm run test:installer
-npm run simulate:installer
-npm run simulate:installer -- --json
+./node_modules/.bin/tsx --test test/installer-agent-journeys.test.ts
+./node_modules/.bin/tsx scripts/installer-agent-journeys.ts
+./node_modules/.bin/tsx scripts/installer-agent-journeys.ts --json
 ```
 
 The simulation runs inside Node and does not call Google Cloud, AWS, Azure, Ollama, Terraform, `apply`, or the operating-system package manager. The report includes one reproducible SHA-256 digest and a count of synthetic cloud-auth accept/reject verdicts. **Success proves only that the finite scripted mock cases behaved according to the tested code.**
