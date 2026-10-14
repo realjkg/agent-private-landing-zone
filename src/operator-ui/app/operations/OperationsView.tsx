@@ -23,14 +23,20 @@ export default function OperationsView(props: OperationsViewProps) {
   const [operations, setOperations] = useState<OperationDescriptor[] | null | "loading">("loading");
   const [family, setFamily] = useState<Family | null>(null);
   const [focusId, setFocusId] = useState<string | null>(null);
+  // Full engineering catalog remains available, but the default shows only a
+  // short guided shortlist when the actual catalog contains core demos.
+  const [showAll, setShowAll] = useState(false);
 
   useEffect(() => {
     void fetchOperations().then(setOperations);
   }, []);
 
   const loaded = Array.isArray(operations) ? operations : [];
-  const families = FAMILIES.filter((name) => loaded.some((spec) => spec.family === name));
-  const current = family ?? families[0];
+  const guidedIds = new Set(["demo", "demo-gcp-offline", "inspect", "build-loop", "control-plane-status"]);
+  const guidedAvailable = loaded.some((spec) => spec.id === "demo");
+  const visible = !showAll && guidedAvailable ? loaded.filter((spec) => guidedIds.has(spec.id)) : loaded;
+  const families = FAMILIES.filter((name) => visible.some((spec) => spec.family === name));
+  const current = family && families.includes(family) ? family : families[0];
 
   // Opening a viewer from a handoff card may switch family; focus the card once it renders.
   useEffect(() => {
@@ -54,6 +60,15 @@ export default function OperationsView(props: OperationsViewProps) {
 
   return (
     <>
+      {guidedAvailable && (
+        <div className="op-directory-guide">
+          <p>{showAll ? "All engineering operations are shown, grouped by capability." :
+            "Start with a few safe, common tasks. Advanced integrations remain available when you need them."}</p>
+          <button type="button" aria-expanded={showAll} onClick={() => { setShowAll((value) => !value); setFamily(null); }}>
+            {showAll ? "Show recommended tasks" : "Show all advanced operations"}
+          </button>
+        </div>
+      )}
       <nav className="levels op-families" role="group" aria-label="Operation families">
         {families.map((name) => (
           <button key={name} type="button" aria-pressed={name === current} onClick={() => setFamily(name)}>
@@ -62,7 +77,7 @@ export default function OperationsView(props: OperationsViewProps) {
         ))}
       </nav>
       <div className="op-list">
-        {loaded.filter((spec) => spec.family === current).map((spec) => (
+        {visible.filter((spec) => spec.family === current).map((spec) => (
           <OperationCard key={spec.id} spec={spec} level={props.level} csrfToken={props.csrfToken}
             jobState={props.jobState?.operation === spec.id ? props.jobState : null} busy={props.busy}
             onRefresh={props.onRefresh} onOpenViewer={open} modelAvailability={props.modelAvailability} />
