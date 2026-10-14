@@ -260,6 +260,9 @@ describe("step 3 and the confirmation dialogs", () => {
     await clickButton(COPY.pathContinue);
     ctx.fake.onPost["/preflight"] = () => { ctx.fake.run = doneRun("preflight", { exit: 0, data: { ready: true, checks: [{ check: "kill switch absent", ok: true }] } }); };
     await clickButton(COPY.readyRun);
+    // Readiness is produced by an asynchronous synthetic response. The user
+    // cannot advance until the real UI has enabled Continue.
+    await waitFor(() => expect(screen.getByRole("button", { name: COPY.readyContinue }).hasAttribute("disabled")).toBe(false));
     await clickButton(COPY.readyContinue);
     await screen.findByRole("heading", { name: STEP_TITLES[2] });
     return ctx;
@@ -506,6 +509,9 @@ describe("step 5 and 6: apply and the result", () => {
     await clickButton(COPY.pathContinue);
     ctx.fake.onPost["/preflight"] = () => { ctx.fake.run = doneRun("preflight", { exit: 0, data: { ready: true, checks: [{ check: "kill switch absent", ok: true }] } }); };
     await clickButton(COPY.readyRun);
+    // Readiness is produced by an asynchronous synthetic response. The user
+    // cannot advance until the real UI has enabled Continue.
+    await waitFor(() => expect(screen.getByRole("button", { name: COPY.readyContinue }).hasAttribute("disabled")).toBe(false));
     await clickButton(COPY.readyContinue);
     typeInto(COPY.sealRequestLabel, "/r.json");
     typeInto(COPY.sealManifestLabel, "/m.json");
@@ -590,6 +596,9 @@ describe("levels: details appear only where the level shows them", () => {
     await clickButton(COPY.pathContinue);
     ctx.fake.onPost["/preflight"] = () => { ctx.fake.run = doneRun("preflight", { exit: 0, data: { ready: true, checks: [] } }); };
     await clickButton(COPY.readyRun);
+    // Readiness is produced by an asynchronous synthetic response. The user
+    // cannot advance until the real UI has enabled Continue.
+    await waitFor(() => expect(screen.getByRole("button", { name: COPY.readyContinue }).hasAttribute("disabled")).toBe(false));
     await clickButton(COPY.readyContinue);
     typeInto(COPY.sealRequestLabel, "/r.json");
     typeInto(COPY.sealManifestLabel, "/m.json");
