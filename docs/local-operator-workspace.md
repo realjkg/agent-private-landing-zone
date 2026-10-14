@@ -64,8 +64,8 @@ In Advanced/Expert mode, **Where are you planning to use this?** includes an exp
 
 Run the offline agent journey matrix and its tests:
 ```sh
-npm run test:installer
-npm run simulate:installer
+./node_modules/.bin/tsx --test test/installer-agent-journeys.test.ts
+./node_modules/.bin/tsx scripts/installer-agent-journeys.ts
 ```
 
 For the complete scenario contract and safety limits, see [Installer agent journey qualification](installer-agent-testing.md). Neither the UI lab nor a green matrix report is production provider qualification.
