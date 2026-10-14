@@ -31,6 +31,9 @@ test("all supported IaC engines including Crossplane remain available as explici
 });
 
 test("required/optional dependencies are selected per workflow, not falsely global", () => {
+  const tour = planSetup(intent(), checks, { offlineTour: true });
+  assert.equal(tour.tools.find((x) => x.id === "terraform")?.status, "OPTIONAL");
+  assert.deepEqual(tour.blocked, []);
   const core = planSetup(intent(), checks);
   assert.deepEqual(core.blocked, []);
   assert.equal(core.tools.find((x) => x.id === "terraform")?.status, "REQUIRED");
