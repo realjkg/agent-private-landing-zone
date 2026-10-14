@@ -109,7 +109,7 @@ export async function runAgentJourney(journey: Journey): Promise<JourneyResult> 
     // This must never be called; the harness is fully disconnected.
     collectChecks: () => { throw new Error("AGENT_LIVE_DEPENDENCY_PROBE_FORBIDDEN"); },
   });
-  if (JSON.stringify(outcome.selected) !== JSON.stringify(intent)) {
+  if (!outcome.selected || outcome.selected.provider !== intent.provider || outcome.selected.stage !== intent.stage || outcome.selected.engine !== intent.engine || outcome.selected.localModels !== intent.localModels) {
     throw new Error("AGENT_INSTALLER_SELECTION_CHANGED");
   }
   const plan = planSetup(intent, fixtureChecks(journey.install, intent.engine));
