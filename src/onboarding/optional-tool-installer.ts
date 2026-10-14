@@ -3,10 +3,10 @@ import type { HumanTerminal } from "../cli/teardown-driver.js";
 
 /** Exact ALZ dependency IDs, not arbitrary package names or user paths. */
 export const OPTIONAL_TOOLS = [
-  { id: "product:pulumi", label: "Pulumi", formula: "pulumi", reviewedVersion: "3.267.0", route: "REVIEW" },
+  { id: "product:pulumi", label: "Pulumi", formula: "pulumi", reviewedVersion: "3.267.0", route: "BREW" },
   { id: "product:tofu", label: "OpenTofu", formula: "opentofu", reviewedVersion: "1.13.1", route: "BREW" },
   { id: "product:bicep", label: "Bicep", formula: null, reviewedVersion: "0.47.16", route: "MANUAL" },
-  { id: "product:cdk", label: "AWS CDK", formula: "aws-cdk", reviewedVersion: "2.1144.0", route: "REVIEW" },
+  { id: "product:cdk", label: "AWS CDK", formula: "aws-cdk", reviewedVersion: "2.1144.0", route: "BREW" },
   { id: "product:crossplane", label: "Crossplane CLI", formula: "crossplane", reviewedVersion: "2.5.0", route: "BREW" },
   { id: "product:ansible-playbook", label: "Ansible", formula: "ansible", reviewedVersion: "2.21.5", route: "REVIEW" },
   { id: "product:trivy", label: "Trivy", formula: "trivy", reviewedVersion: "0.75.0", route: "BREW" },
@@ -43,7 +43,7 @@ export type OptionalInstallOptions = {
  * Homebrew is an external package manager, not an ALZ checksum-pinned artifact.
  * Refuse installs unless a reviewed local formula version matches the adapter
  * qualification baseline, on a TTY with a unique human-typed confirmation.
- * Bicep/Azure tap, Ansible, Docker, CDK and Pulumi remain in review/manual mode.
+ * Bicep/Azure tap, Ansible and Docker remain in manual-review mode.\n * Pulumi and CDK are eligible only when their Homebrew formula versions match\n * the separately tested adapter baselines (currently may drift).
  */
 export async function installOptionalTool(id: OptionalToolId, options: OptionalInstallOptions): Promise<InstallResult> {
   const descriptor: OptionalTool | undefined = OPTIONAL_TOOLS.find((entry) => entry.id === id);
