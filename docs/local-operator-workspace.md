@@ -54,3 +54,18 @@ In Operations, recommended fixture-backed tasks appear first; **Show all advance
 Crossplane is a registered preview/render adapter and is presented when choosing an infrastructure engine. Its CLI executable is not in the required core bundle: select Crossplane to see it explicitly marked REQUIRED for that choice and the vendor source if missing. Crossplane render results remain UNKNOWN until controller reconciliation is verified. An absent binary is never represented as working just because the plugin is cataloged.
 
 The no-live-testing iteration tests selections, UI/CLI disclosure, read-only fixtures, no implicit installation, CSRF/policy invariants, ARM64 CI and encrypted recovery. It does not execute cloud provider or real local model qualifications.
+
+
+## Interactive dependency installation and synthetic agent testing
+
+`./alz` → **Dependencies** now continues to **Configure**, **Install one missing pinned tool**, **Open workspace** or **Exit**. The pinned installer (Terraform/Ollama only) independently verifies SHA-256 and requires the exact typed approval phrase on a real TTY. Unpinned tools, such as Crossplane, are listed with their dependency guidance; they are **not installed automatically** and remain unqualified until validated.
+
+In Advanced/Expert mode, **Where are you planning to use this?** includes an expandable client-only lab: **Simulate cloud sign-in and approval safety**. Try valid, expired, wrong-scope, or denied fake sign-in, then try a mock approval or a model request for ACT. Every infrastructure verdict stays `DENIED_ACT_DISABLED`. It cannot accept credentials or contact a real provider.
+
+Run the offline agent journey matrix and its tests:
+```sh
+npm run test:installer
+npm run simulate:installer
+```
+
+For the complete scenario contract and safety limits, see [Installer agent journey qualification](installer-agent-testing.md). Neither the UI lab nor a green matrix report is production provider qualification.
