@@ -221,3 +221,66 @@ export async function blockedByDependencies(
   out("Run ./alz deps to fix them in a guided step. Nothing was started.\n");
   return true;
 }
+
+/**
+ * TTY-only, selected pinned installer for the guided first-run workflow.
+ * ALL network/archive behavior is delegated to the existing checksum-verified
+ * installer; the terminal must type each tool's exact version phrase.
+ * Optional third-party tools without pinned artifacts are never downloaded.
+ */
+export async function installSelectedPinnedTools(
+  selected: readonly ToolId[],
+  deps: DepsDeps = {},
+): Promise<{ attempted: ToolId[]; installed: ToolId[]; skipped: ToolId[] }> {
+  const result = { attempted: [] as ToolId[], installed: [] as ToolId[], skipped: [] as ToolId[] };
+  const terminal = deps.terminal ?? processTerminal();
+  if (!terminal.stdinIsTTY || !terminal.stdoutIsTTY) {
+    terminal.write("A local interactive Terminal is required. No tools were installed.\n");
+    return result;
+  }
+  const platform = platformKey(deps.platform ?? process.platform, deps.arch ?? process.arch);
+  if (!platform) {
+    terminal.write("Only approved, checksum-pinned macOS tools can be installed here. No tools were installed.\n");
+    return result;
+  }
+  let pins: ToolPins;
+  try { pins = loadToolPins(deps.pinsPath ?? DEFAULT_PINS); }
+  catch {
+    terminal.write("Pinned tool manifest missing or invalid. No tools were installed.\n");
+    return result;
+  }
+  const ctx = context(deps, pins);
+  const checks = await runDependencyChecks(ctx, new Set<DepCheck["id"]>(selected));
+  const unique = [...new Set(selected)];
+  for (const tool of unique) {
+    if (tool !== "terraform" && tool !== "ollama") throw new Error("INSTALL_TOOL_NOT_PINNED");
+    const check = checks.find((item) => item.id === tool);
+    if (!check || check.ok) continue;
+    if (check.installable !== tool) {
+      terminal.write("No verified installer is available for " + tool + ".\n");
+      result.skipped.push(tool);
+      continue;
+    }
+    result.attempted.push(tool);
+    const dialog = dialogFor(check, pins, platform, ctx.home);
+    terminal.write(dialog.text);
+    if ((await terminal.ask("> ")).trim() !== dialog.phrase) {
+      terminal.write("Skipped " + tool + ": exact approval was not supplied.\n");
+      result.skipped.push(tool);
+      continue;
+    }
+    try {
+      const installed = await installTool(tool, {
+        pins, home: ctx.home, platform,
+        ...(deps.download ? { download: deps.download } : {}),
+      });
+      terminal.write("Verified pinned " + tool + " installed at " + installed.path + "\n");
+      result.installed.push(tool);
+    } catch (error) {
+      const reason = error instanceof InstallError ? FAILURE_TEXT[error.code] : FAILURE_TEXT.INSTALL_DOWNLOAD_FAILED;
+      terminal.write(reason + "\n");
+      result.skipped.push(tool);
+    }
+  }
+  return result;
+}
