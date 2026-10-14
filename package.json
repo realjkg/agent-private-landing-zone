@@ -11,6 +11,8 @@
     "discover:azure": "tsx src/cli/discover.ts --provider azure --mock greenfield --resources",
     "test": "npm run build:ui && npm run test:node && npm run test:ui",
     "test:node": "tsx --test test/*.test.ts",
+    "test:installer": "tsx --test test/installer-agent-journeys.test.ts",
+    "simulate:installer": "tsx scripts/installer-agent-journeys.ts",
     "test:ui": "vitest run --passWithNoTests",
     "build": "tsc -p tsconfig.json",
     "build:ui": "vite build && tsx --tsconfig tsconfig.ui.json scripts/prerender-ui.tsx",
