@@ -320,3 +320,21 @@ test("guided installer: explicit tool selection installs only checksum-verified 
     ...deps("guided-unsupported", terminal(true, [])), pinsPath,
   }), /INSTALL_TOOL_NOT_PINNED/);
 });
+
+test("guided installer never calls a cached but wrong-version binary ready", async () => {
+  const { installSelectedPinnedTools } = await import("../src/cli/deps.js");
+  const home = join(root, "home-cli-guided-cached-bad");
+  const installed = installedPath(home, "terraform", "1.16.4", "terraform");
+  fakeTool(join(installed, ".."), "terraform", "echo 'Terraform v0.0.1'");
+  let downloaded = 0;
+  const term = terminal(true, ["INSTALL TERRAFORM 1.16.4"]);
+  const result = await installSelectedPinnedTools(["terraform"], {
+    ...deps("guided-cached-bad", term, {
+      download: async () => { downloaded++; return Readable.from([]); },
+    }),
+  });
+  assert.deepEqual(result.installed, [], "reused local file cannot be treated as a valid install");
+  assert.deepEqual(result.skipped, ["terraform"]);
+  assert.equal(downloaded, 0, "no download attempted for an already existing local binary");
+  assert.match(term.shown.join(""), /still failed verification/);
+});
