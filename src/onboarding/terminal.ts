@@ -86,7 +86,7 @@ export async function runGuidedSetup(options: SetupOptions): Promise<SetupOutcom
     selected = { stage: stage as DeploymentStage, provider: provider as LandingProvider,
       engine: engine as LandingEngine, localModels: inference === "local-models" };
   }
-  const plan = planSetup(selected, checks);
+  const plan = planSetup(selected, checks, { offlineTour: route === "tour" });
   terminal.write("\nYour plan: " + selected.stage + " / " + selected.provider.toUpperCase() +
     " / " + selected.engine.toUpperCase() + "\n");
   terminal.write("  " + plan.notice + "\n");
