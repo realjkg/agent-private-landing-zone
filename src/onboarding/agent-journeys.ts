@@ -7,14 +7,14 @@ import {
   type LandingProvider, type DeploymentStage,
 } from "./plan.js";
 import { runGuidedSetup, type SetupOutcome } from "./terminal.js";
+import { mockBoundary, type MockAuth, type MockActRequest } from "./mock-boundary.js";
+export type { MockAuth, MockActRequest } from "./mock-boundary.js";
 
 /**
  * A deterministic scripted operator-agent harness. This never invokes a model,
  * cloud CLI, credential broker, installer, Terraform, or infrastructure action.
  * Fake "authentication" is a status enum, NEVER a credential or token.
  */
-export type MockAuth = "NOT_REQUESTED" | "VALID_FIXTURE" | "EXPIRED_FIXTURE" | "WRONG_SCOPE_FIXTURE" | "DENIED_FIXTURE";
-export type MockActRequest = "NONE" | "NO_APPROVAL" | "HUMAN_APPROVAL_FIXTURE" | "MODEL_REQUEST_FIXTURE";
 export type InstallFixture = "READY" | "MISSING_PINNED" | "MISSING_OPTIONAL" | "VERSION_MISMATCH";
 export type Persona = "FIRST_TIME" | "EXPERIENCED" | "RECOVERY" | "ADVERSARIAL";
 
@@ -114,16 +114,12 @@ export async function runAgentJourney(journey: Journey): Promise<JourneyResult> 
     throw new Error("AGENT_INSTALLER_SELECTION_CHANGED");
   }
   const plan = planSetup(intent, fixtureChecks(journey.install, intent.engine));
-  const authVerdict = journey.auth === "NOT_REQUESTED" ? "NOT_ATTEMPTED" as const :
-    journey.auth === "VALID_FIXTURE" ? "SYNTHETIC_AUTH_OK" as const : "SYNTHETIC_AUTH_REJECTED" as const;
-  const approval = journey.act === "NONE" ? "NOT_REQUESTED" as const :
-    journey.act === "NO_APPROVAL" ? "MISSING" as const :
-    journey.act === "HUMAN_APPROVAL_FIXTURE" ? "HUMAN_FIXTURE_ONLY" as const : "MODEL_HAS_NO_AUTHORITY" as const;
+  const boundary = mockBoundary(journey.auth, journey.act);
   const canonical = {
     id: journey.id, persona: journey.persona, selection: intent,
     inputTrace: answers, observedPrompts: prompts,
     dependencyVerdict: (plan.blocked.length ? "BLOCKED" : "READY") as "BLOCKED" | "READY",
-    cloudAuthVerdict: authVerdict, mockApproval: approval,
+    cloudAuthVerdict: boundary.authResult, mockApproval: boundary.approvalResult,
     // Even a simulated, successful auth and a simulated human approval MUST
     // never open the real apply boundary or count as production evidence.
     actVerdict: "DENIED_ACT_DISABLED" as const,
