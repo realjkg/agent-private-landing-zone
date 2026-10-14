@@ -68,7 +68,7 @@ export function fixtureChecks(fixture: InstallFixture, engine: LandingEngine): D
       fixture === "MISSING_OPTIONAL" && tool.id === id && id !== "terraform" ||
       fixture === "VERSION_MISMATCH" && tool.id === id;
     return broken ? { ...tool, ok: false, detail: fixture === "VERSION_MISMATCH" ? "fixture wrong version" : "fixture missing",
-      fix: "Operator review required" } : { ...tool };
+      fix: "Operator review required", ...(tool.id === "terraform" ? { installable: "terraform" as const } : {}) } : { ...tool };
   });
 }
 
