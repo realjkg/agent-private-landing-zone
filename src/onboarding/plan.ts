@@ -44,7 +44,7 @@ export type SetupPlan = {
 };
 
 /** Pure prerequisite classification; NEVER launches installers or assumes permissions. */
-export function planSetup(intent: SetupIntent, checks: readonly DepCheck[]): SetupPlan {
+export function planSetup(intent: SetupIntent, checks: readonly DepCheck[], options: { offlineTour?: boolean } = {}): SetupPlan {
   if (!STAGES.includes(intent.stage) || !PROVIDERS.includes(intent.provider) ||
     !ENGINES.includes(intent.engine) || typeof intent.localModels !== "boolean") throw new Error("SETUP_SELECTION_INVALID");
   const plugin = PLUGIN_CATALOG.find((p) => p.id === pluginId[intent.engine]);
@@ -54,9 +54,12 @@ export function planSetup(intent: SetupIntent, checks: readonly DepCheck[]): Set
     : plugin.providers.includes(intent.provider.toUpperCase() as PluginDefinition["providers"][number]);
   const checked = new Map<string, DepCheck>(checks.map((x) => [x.id, x]));
   const required = new Set<string>(["node", "git"]);
-  if (intent.engine === "terraform") required.add("terraform");
-  else if (plugin.executable) required.add(plugin.executable === "aws" ? "aws-cli" : "product:" + plugin.executable);
-  if (intent.localModels) required.add("ollama");
+  // The offline tour executes no engine and needs no Terraform or Ollama binary.
+  if (!options.offlineTour) {
+    if (intent.engine === "terraform") required.add("terraform");
+    else if (plugin.executable) required.add(plugin.executable === "aws" ? "aws-cli" : "product:" + plugin.executable);
+    if (intent.localModels) required.add("ollama");
+  }
   const names: Array<[string, string]> = [
     ["node", "Node 26"], ["git", "Git"], ["terraform", "Terraform"], ["ollama", "Ollama"],
     ["aws-cli", "AWS CLI"], ["product:pulumi", "Pulumi"], ["product:tofu", "OpenTofu"],
