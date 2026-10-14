@@ -1,5 +1,8 @@
 import { homedir } from "node:os";
 
+import { installSelectedPinnedTools } from "../cli/deps.js";
+import type { ToolId } from "../deps/pins.js";
+
 import { runDependencyChecks, type DepCheck } from "../deps/checks.js";
 import { loadToolPins } from "../deps/pins.js";
 import type { HumanTerminal } from "../cli/teardown-driver.js";
@@ -14,6 +17,8 @@ export type SetupOptions = {
   checks?: readonly DepCheck[];
   /** Injected for deterministic tests; no subprocess/network is launched by this module. */
   collectChecks?: () => Promise<readonly DepCheck[]>;
+  /** Test seam. In production the existing approved-pin installer asks for an exact human phrase. */
+  installPinned?: (tools: readonly ToolId[], terminal: HumanTerminal) => Promise<{ installed: ToolId[]; skipped: ToolId[] }>;
 };
 
 async function menu<T extends string>(
@@ -51,21 +56,52 @@ export async function runGuidedSetup(options: SetupOptions): Promise<SetupOutcom
   }
   terminal.write("\nSOVEREIGN ALZ — Guided start\n");
   terminal.write("Private by default • Preview/Operate only • ACT disabled\n");
-  const route = await menu(terminal, "What would you like to do?", ["tour", "configure", "dependencies"] as const, [
+  let route = await menu(terminal, "What would you like to do?", ["tour", "configure", "dependencies"] as const, [
     "Open the local visual workspace (recommended)",
     "Choose provider, stage and infrastructure engine; inspect prerequisites",
     "Review required versus optional programs on this Mac",
   ]);
   if (!route) return { openWorkspace: false, openBrowser: false };
   const checks = options.checks ?? await (options.collectChecks ?? loadChecks)();
+  const pinnedInstaller = options.installPinned ??
+    ((tools: readonly ToolId[], selectedTerminal: HumanTerminal) =>
+      installSelectedPinnedTools(tools, { terminal: selectedTerminal }));
+  // A dependency report is not a dead end: navigate directly to setup,
+  // approve a single supported pinned install, or launch the local UI.
   if (route === "dependencies") {
     terminal.write("\nInstalled programs\n");
     for (const check of checks) {
       terminal.write("  " + (check.ok ? "OK" : "MISSING") + " " + check.label +
-        " — " + (check.required ? "core required" : "optional for selected capabilities") + "\n");
+        " — " + (["node", "git"].includes(check.id) ? "core required" : "optional for selected capabilities") +
+        " — " + check.detail + "\n");
+      if (!check.ok && check.fix) terminal.write("    How to fix: " + check.fix + "\n");
     }
-    terminal.write("\nPinned Terraform/Ollama installer: ./alz deps. Nothing installed here.\n");
-    return { openWorkspace: false, openBrowser: false };
+    terminal.write("\nOnly approved Terraform/Ollama packages have checksum-pinned automatic installers. Nothing installed here yet.\n");
+    const next = await menu(terminal, "Next step", ["configure", "install-pinned", "workspace", "exit"] as const, [
+      "Choose environment, cloud and engine to calculate actual prerequisites",
+      "Choose one missing pinned Terraform/Ollama tool (human approval required)",
+      "Open the local UI; no tools are installed",
+      "Exit without changing anything",
+    ]);
+    if (!next || next === "exit") return { openWorkspace: false, openBrowser: false };
+    if (next === "install-pinned") {
+      const available = checks.filter((check) => !check.ok && (check.installable === "terraform" || check.installable === "ollama"));
+      if (available.length === 0) {
+        terminal.write("No missing checksum-pinned tools. Advanced tools require reviewed manual installation.\n");
+      } else {
+        const picked = await menu(terminal, "Choose pinned dependency", available.map((item) => item.installable as ToolId),
+          available.map((item) => item.label + " — checksum-verified user-folder install"));
+        if (!picked) return { openWorkspace: false, openBrowser: false };
+        await pinnedInstaller([picked], terminal);
+        terminal.write("Run ./alz deps or restart ./alz to verify detected versions.\n");
+      }
+      return { openWorkspace: false, openBrowser: false };
+    }
+    if (next === "workspace") {
+      const consent = (await terminal.ask("Open the local browser automatically? [Y/n]: ")).trim().toLowerCase();
+      return { openWorkspace: true, openBrowser: ["", "y", "yes"].includes(consent) };
+    }
+    route = "configure";
   }
   let selected: SetupIntent = { stage: "development", provider: "aws", engine: "terraform", localModels: false };
   if (route === "configure") {
@@ -98,9 +134,21 @@ export async function runGuidedSetup(options: SetupOptions): Promise<SetupOutcom
   for (const tool of plan.tools.filter((x) => x.status === "OPTIONAL")) {
     terminal.write("  " + (tool.installed ? "OK" : "OPTIONAL") + " " + tool.label + "\n");
   }
+  for (const tool of plan.tools.filter((x) => x.status === "REQUIRED" && x.installed !== true && x.fix)) {
+    terminal.write("  To resolve " + tool.label + ": " + tool.fix + "\n");
+  }
   if (plan.blocked.length) terminal.write("Cannot qualify this plan yet: " + plan.blocked.join("; ") + "\n");
   terminal.write("No installation, cloud login, Terraform plan, or infrastructure change occurred.\n");
   terminal.write("For pinned core installs: ./alz deps. Other engines require separate reviewed installation.\n");
+  const missingPinned = plan.tools.filter((x) => x.status === "REQUIRED" &&
+    x.installed !== true && (x.id === "terraform" || x.id === "ollama"));
+  if (missingPinned.length) {
+    const answer = (await terminal.ask("Review and install missing pinned tools now? [y/N]: ")).trim().toLowerCase();
+    if (answer === "y" || answer === "yes") {
+      await pinnedInstaller(missingPinned.map((x) => x.id as ToolId), terminal);
+      terminal.write("Re-run ./alz deps to verify the installation before running the selected engine.\n");
+    } else terminal.write("Installation skipped. Missing requirements remain blocked.\n");
+  }
   const launch = (await terminal.ask("Open local workspace on 127.0.0.1? [Y/n]: ")).trim().toLowerCase();
   if (!["", "y", "yes"].includes(launch)) {
     return { openWorkspace: false, openBrowser: false, selected };
