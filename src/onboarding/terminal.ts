@@ -106,7 +106,7 @@ export async function runGuidedSetup(options: SetupOptions): Promise<SetupOutcom
     if (next === "install-optional") {
       const available = OPTIONAL_TOOLS.filter((tool) => checks.some((check) => check.id === tool.id && !check.ok));
       if (!available.length) {
-        terminal.write("No missing optional tools detected. Installed tools are not upgraded automatically.\\n");
+        terminal.write("No missing optional tools detected. Installed tools are not upgraded automatically.\n");
         return { openWorkspace: false, openBrowser: false };
       }
       const selected = await menu(terminal, "Choose optional CLI to review", available.map((tool) => tool.id),
