@@ -52,7 +52,7 @@ export function planSetup(intent: SetupIntent, checks: readonly DepCheck[]): Set
   const providerSupported = intent.provider === "gcp"
     ? intent.engine === "terraform"
     : plugin.providers.includes(intent.provider.toUpperCase() as PluginDefinition["providers"][number]);
-  const checked = new Map(checks.map((x) => [x.id, x]));
+  const checked = new Map<string, DepCheck>(checks.map((x) => [x.id, x]));
   const required = new Set<string>(["node", "git"]);
   if (intent.engine === "terraform") required.add("terraform");
   else if (plugin.executable) required.add(plugin.executable === "aws" ? "aws-cli" : "product:" + plugin.executable);
