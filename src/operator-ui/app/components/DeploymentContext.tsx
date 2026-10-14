@@ -1,6 +1,7 @@
 import { useState } from "react";
 
 import { PROVIDERS, PROVIDER_HELP, STAGES, STAGE_HELP, type DeploymentStage, type LandingProvider } from "../../../onboarding/plan.js";
+import { MockBoundaryLab } from "./MockBoundaryLab";
 
 /** A user-facing planning aid, never an authority, credential, environment binding, or workflow input. */
 export function DeploymentContext() {
@@ -33,6 +34,7 @@ export function DeploymentContext() {
         <p>All three environments need distinct inventories, access scopes, controls and evidence. Promotion and ACT are unavailable here. Nothing you select on this screen changes server permissions.</p>
       </details>
       {provider === "gcp" && <p><small>The GCP walkthrough uses synthetic Cloud Asset Inventory records; live GCP onboarding is not qualified.</small></p>}
+      <MockBoundaryLab platform={provider} stage={stage} />
     </section>
   );
 }
