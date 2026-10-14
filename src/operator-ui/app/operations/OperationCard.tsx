@@ -65,7 +65,6 @@ export function OperationCard(props: OperationCardProps) {
       {level !== "BEGINNER" && (
         <details className="op-context-help">
           <summary>What does this do, and when would I use it?</summary>
-          <p><small>{spec.summary}</small></p>
           <p><small>{spec.safety === "SYNTHETIC" ? "Uses recorded examples. No cloud or model call is required."
             : spec.safety === "LOCAL_MODEL" ? "Uses the private local model endpoint; no hosted inference is authorized."
             : spec.safety === "HANDOFF" ? "Requires a person to run a reviewed command outside this browser."
