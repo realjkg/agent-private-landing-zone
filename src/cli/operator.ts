@@ -288,14 +288,12 @@ function recovery(first: string | undefined, second: string | undefined): void {
 }
 
 const argv = process.argv.slice(2);
-const [command = "start", first, second, third] = argv;
+const [command = "help", first, second, third] = argv;
 
 try {
-  if (command === "start") {
-    if (argv.length > 0) {
-      throw operatorError("start takes no arguments.", "Run ./alz with no arguments.",
-        "Use ./alz workspace to open the existing console directly.");
-    }
+  if (argv.length === 0) {
+    // Empty argv is an interactive entry point, not another privileged
+    // catalog command. All named commands keep their exact old semantics.
     const result = await runGuidedSetup({ terminal: processTerminal() });
     if (result.openWorkspace) {
       // A session-local flag only; the browser opens a fixed loopback URL and no external address.
