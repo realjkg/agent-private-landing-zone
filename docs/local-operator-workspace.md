@@ -69,3 +69,12 @@ Run the offline agent journey matrix and its tests:
 ```
 
 For the complete scenario contract and safety limits, see [Installer agent journey qualification](installer-agent-testing.md). Neither the UI lab nor a green matrix report is production provider qualification.
+
+
+## Optional CLIs (Crossplane, OpenTofu, Trivy and others)
+
+The **Dependencies → Install optional CLI** path offers the eight optional tool integrations. Crossplane, OpenTofu, Trivy, Pulumi and AWS CDK have a version-gated Homebrew route with an individual exact typed approval. Bicep, Ansible and Docker remain guided manual review because their dependencies, upstream release channels, or runtime requirements differ. Missing tools for a selected engine are also surfaced when configuring a landing-zone plan.
+
+The agent simulator includes 80 additional disconnected installation branches (eight tools × ten outcomes) covering a matching-version install, cancellation, noninteractive terminal, missing package manager, upstream formula drift, invalid metadata, wrong formula, already installed, install failure and post-install verification failure. See [optional-tool-installer.md](optional-tool-installer.md).
+
+Homebrew installation is **separate from** ALZ's SHA-256-pinned Terraform/Ollama archive installer; the formula manager is a delegated installation trust boundary. No installer action qualifies an infrastructure provider, a Kubernetes Crossplane controller, a Docker engine, cloud authentication or ACT.
