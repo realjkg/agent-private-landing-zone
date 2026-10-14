@@ -234,8 +234,8 @@ test("the connector matrix and the demo run for real, offline, without writing a
   const gcpRun = runReal(gcpDemo.script, gcpDemo.args);
   assert.equal(gcpRun.status, 0, gcpRun.stderr);
   assert.match(gcpRun.stdout, /GCP OFFLINE WALKTHROUGH/);
-  assert.match(gcpRun.stdout, /LIVE QUALIFICATION\\s+NOT PERFORMED/);
-  assert.match(gcpRun.stdout, /ACT\\s+DISABLED/);
+  assert.match(gcpRun.stdout, /LIVE QUALIFICATION\s+NOT PERFORMED/);
+  assert.match(gcpRun.stdout, /ACT\s+DISABLED/);
   assert.deepEqual(gcpRun.written, [], "the GCP synthetic demo must not write");
 });
 
