@@ -82,13 +82,13 @@ const MODULE_FAMILIES = new Set([
   "CLOUDFORMATION_TEMPLATE", "SECURITY_GROUP", "IAM_POLICY",
   "AZURE_POLICY_INITIATIVE", "AZURE_POLICY_DEFINITION", "AZURE_VERIFIED_MODULE",
   "NETWORK_SECURITY_GROUP", "RBAC",
-  "POLICY_LIBRARY_TEMPLATE", "POLICY_LIBRARY_CONSTRAINT",
+  "POLICY_LIBRARY_TEMPLATE", "POLICY_LIBRARY_CONSTRAINT", "ORG_POLICY_CONSTRAINT",
   "TERRAFORM_BLUEPRINT", "VPC_FIREWALL_POLICY",
 ]);
 const DETECTIVE_FAMILIES = new Set(["AWS_CONFIG_RULE"]);
 const ENFORCEABLE = new Set([
   "CONTROL_TOWER_CONTROL", "SCP", "RCP", "AZURE_POLICY_ASSIGNMENT",
-  "ORGANIZATION_POLICY", "ORG_POLICY_CONSTRAINT",
+  "ORGANIZATION_POLICY",
 ]);
 
 function namingAssessment(name: NamingConvention): { debt: string[]; missing: string[]; passes: boolean } {
@@ -164,7 +164,7 @@ export function screenBrownfieldInheritance(input: InheritanceScreenInput): Inhe
       if (fact.sourceIntegrity === "UNPINNED") {
         debtSignals.push("Existing module or policy is not pinned to a reviewed revision: " + ref.id); rejected = true;
       }
-      if (MODULE_FAMILIES.has(ref.family) && fact.effect !== "TEMPLATE_ONLY" ||
+      if (MODULE_FAMILIES.has(ref.family) && (fact.effect !== "TEMPLATE_ONLY" || fact.state === "ENFORCED") ||
         DETECTIVE_FAMILIES.has(ref.family) && fact.effect !== "DETECTIVE" ||
         ENFORCEABLE.has(ref.family) && fact.effect === "TEMPLATE_ONLY") {
         debtSignals.push("Policy effect is misclassified for native control family: " + ref.id); rejected = true;
