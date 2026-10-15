@@ -30,6 +30,42 @@ GCP policy-library conventions include `policies/templates` (ConstraintTemplate 
 - [AWS Control Tower control behaviors](https://docs.aws.amazon.com/controltower/latest/controlreference/control-behavior.html) and [Control Tower proactive CloudFormation-hook scope](https://docs.aws.amazon.com/controltower/latest/controlreference/proactive-controls.html)
 - [Google Cloud Organization Policy](https://docs.cloud.google.com/organization-policy/overview), [Terraform blueprints](https://docs.cloud.google.com/docs/terraform/blueprints/terraform-blueprints) and [Policy Library structure](https://docs.cloud.google.com/docs/terraform/policy-validation/create-policy-library)
 
+
+## Debt-aware inheritance gate (authority, naming and native sources)
+
+The manifest comparison is a **first prerequisite, not acceptance**. Calling `assessBrownfieldApplicationReuse()` alone proves nothing about security quality. Importers and console journeys must next call `screenBrownfieldInheritance()` in `src/governance/brownfield-inheritance.ts` before offering an existing control or module for an application design.
+
+The screen checks:
+- **Governance authority:** each existing control has an explicit security owner, pinned source revision, target-scope applicability, reported enforcement state and exception status. Missing entries or UNKNOWN authority are REVIEW_REQUIRED; disabled controls, unpinned sources, exclusions, active/expired exceptions or falsely promoted audit-only protections block reuse.
+- **Native semantics:** a customer policy definition/module is not itself an effective enforcement assignment. Azure Verified Modules, CloudFormation templates and GCP constraint templates are treated as **templates only**. AWS Config rules are **detective**, whereas SCP/RCP and effective Organization Policy may be **preventive**. AWS proactive CloudFormation hooks are not assumed effective for direct Terraform/provider API creation.
+- **Source checks:** optional bounded native JSON inspection (`src/governance/native-policy-inspection.ts`) validates provided source digests against customer manifest fingerprints and flags high-risk patterns: permissive AWS IAM actions/resources, unrestricted SSH/RDP/all-protocol ingress, Azure Policy `DoNotEnforce`, GCP `allowAll`/`enforce: false`/`reset`. Bad examples BLOCK. Unprovided or unfamiliar source documents, target-specific inheritance, exemptions and scope remain REVIEW_REQUIRED. This is deliberately **not** a full policy-language parser or replacement for Azure Policy, AWS Control Tower/Config and GCP effective Organization Policy evaluation.
+- **Technical-debt posture:** every protected resource needs six customer-declared risk domains: network, identity, encryption, logging, change control and vulnerability. A failed check or signal such as public administrative ports, wildcard privileges, open egress, missing encryption/logging, shared mutable state or unpinned components blocks; absent/UNKNOWN domains require review.
+- **Naming authority:** an approved customer logical-app naming convention must match environment code (dev/stg/prod), region and sequence. The proposed technical key cannot collide case-insensitively with declared existing or reserved keys; incomplete inventories require review. GCP project-ID lexical rules get a separate check; global uniqueness needs a later live query. Azure resource-specific rules differ substantially, so this generic application key **must not** be used to certify a storage-account/VNet/NSG name.
+
+The outcome is one of:
+- `BLOCK_INHERITANCE` — known defect or conflict; do not reuse as-is. Open a remediation proposal owned by the customer's platform/security team, outside ALZ's application change.
+- `REVIEW_REQUIRED` — uncertainty, missing source, unknown scope or policy semantics; do not inherit automatically.
+- `CANDIDATE_FOR_INDEPENDENT_VERIFICATION` — declared checks clear, but STILL no effective control attestation. Remains **not compliant**, preview disabled and ACT disabled until actual native policy evaluation, inventory, customer-owner attestation and separately authorized release work.
+
+**No automatic policy repair or adoption.** The proper remediation for a weak inherited policy is a separately approved control-plane change by the responsible platform team. ALZ's app-only design continues in dry-run/discovery until a defensible approved boundary is available.
+
+### Example guardrail cases
+
+| Situation | Gate |
+|---|---|
+| App display name changes; approved, version-pinned reference inventory and no detected debt | Review pending native/effective policy verification |
+| Azure assignment exists but has `DoNotEnforce` | Block inherited enforcement claim |
+| AWS Config rule reports compliance but no preventive guardrail is attested | Review, not proof of prevention |
+| AWS security group allows public SSH/RDP, or overly broad IAM Allow | Block |
+| AWS CloudFormation hook is claimed as Terraform enforcement | Review coverage; no inferred protection |
+| GCP Org Policy declares `allowAll`, has `enforce: false` or resets without effective proof | Block |
+| GCP ConstraintTemplate is imported but no effective Org Policy assignment demonstrated | Review |
+| Existing network/IAM object, scope or source digest changes while renaming app | Block |
+| Technical application key collides with a reserved name | Block |
+| All offline checks appear green | Candidate at most; **not production authorized** |
+
+Tests: `./node_modules/.bin/tsx --test test/brownfield-policy-reuse.test.ts test/brownfield-inheritance.test.ts test/native-policy-inspection.test.ts`.
+
 ## Example: changing an application label, not infrastructure
 
 The following is **illustrative JSON**, not a deployment template or customer attestation:
