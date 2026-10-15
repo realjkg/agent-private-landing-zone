@@ -59,12 +59,17 @@ const HEX = /^[a-f0-9]{64}$/;
 const KEY = /^[a-zA-Z0-9][a-zA-Z0-9._:/@+* -]{0,511}$/;
 const textOk = (value: unknown): value is string => typeof value === "string" && KEY.test(value);
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+const exactFields = (value: object, allowed: readonly string[]): boolean =>
+  Object.keys(value).length === allowed.length && Object.keys(value).every((key) => allowed.includes(key));
+const isProvider = (value: unknown): value is BrownfieldProvider =>
+  typeof value === "string" && Object.prototype.hasOwnProperty.call(CLOUD_POLICY_FAMILIES, value);
 
 function validate(manifest: BrownfieldManifest): string[] {
   const reasons: string[] = [];
-  if (!manifest || manifest.schemaVersion !== 1 || !(manifest.provider in CLOUD_POLICY_FAMILIES)) {
+  if (!manifest || manifest.schemaVersion !== 1 || !isProvider(manifest.provider)) {
     return ["Unsupported manifest schema or provider."];
   }
+  if (!exactFields(manifest, ["schemaVersion", "provider", "scope", "applicationLabel", "controls", "protectedResources"])) reasons.push("Unexpected manifest fields; application-only schema is closed.");
   if (!textOk(manifest.scope) || !textOk(manifest.applicationLabel)) reasons.push("Scope or display label is invalid.");
   if (!Array.isArray(manifest.controls) || manifest.controls.length === 0) {
     reasons.push("A customer governance-control inventory is required.");
@@ -76,7 +81,8 @@ function validate(manifest: BrownfieldManifest): string[] {
         continue;
       }
       seen.add(control.id);
-      if (!(CLOUD_POLICY_FAMILIES[manifest.provider] as readonly string[]).includes(control.family) ||
+      if (!exactFields(control, ["id", "family", "sourceOfTruth", "definitionSha256", "assignedScope"]) ||
+        !(CLOUD_POLICY_FAMILIES[manifest.provider] as readonly string[]).includes(control.family) ||
         !textOk(control.sourceOfTruth) || !textOk(control.assignedScope) ||
         !HEX.test(control.definitionSha256)) {
         reasons.push("Control reference, scope, source or policy fingerprint is unqualified: " + control.id);
@@ -93,7 +99,8 @@ function validate(manifest: BrownfieldManifest): string[] {
         continue;
       }
       seen.add(resource.id);
-      if (!["NETWORK", "IDENTITY", "LOGGING", "ENCRYPTION", "PLATFORM", "POLICY"].includes(resource.category) ||
+      if (!exactFields(resource, ["id", "category", "configurationSha256", "sourceOfTruth", "ownership", "mutationPolicy"]) ||
+        !["NETWORK", "IDENTITY", "LOGGING", "ENCRYPTION", "PLATFORM", "POLICY"].includes(resource.category) ||
         !textOk(resource.sourceOfTruth) ||
         !HEX.test(resource.configurationSha256) ||
         !["CUSTOMER", "EXTERNAL_IAC"].includes(resource.ownership) ||
@@ -125,7 +132,7 @@ export function assessBrownfieldApplicationReuse(
   if (valid && !applicationLabelChanged) reasons.push("No application display-label change was supplied.");
   const canonical = {
     mode: "OFFLINE_DECLARATION_COMPARISON" as const,
-    provider: before && before.provider in CLOUD_POLICY_FAMILIES ? before.provider : "UNKNOWN" as const,
+    provider: before && isProvider(before.provider) ? before.provider : "UNKNOWN" as const,
     verdict: reasons.length ? "BLOCKED" as const : "DECLARED_APP_LABEL_ONLY" as const,
     reasons, controlsPreserved, protectedInfrastructurePreserved,
     applicationLabelChanged,
