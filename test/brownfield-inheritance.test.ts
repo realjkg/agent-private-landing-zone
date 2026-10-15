@@ -49,13 +49,13 @@ const construct = (provider: BrownfieldProvider): InheritanceScreenInput => {
 };
 const run = (input: InheritanceScreenInput) => screenBrownfieldInheritance(input);
 
-test("three clouds: a narrowly named app reference with effective declared controls is only a review candidate, never inherited as compliant", () => {
+test("three clouds: declared controls without native source remain REVIEW_REQUIRED, never inherited as compliant", () => {
   for (const cloud of ["AWS", "AZURE", "GCP"] as const) {
     const input = construct(cloud);
     const output = run(input);
-    assert.equal(output.verdict, "CANDIDATE_FOR_INDEPENDENT_VERIFICATION", cloud);
+    assert.equal(output.verdict, "REVIEW_REQUIRED", cloud);
     assert.deepEqual(output.debtSignals, []);
-    assert.deepEqual(output.missingEvidence, []);
+    assert.match(output.missingEvidence.join(" "), /Native customer policy/);
     assert.equal(output.manifestOnlyCompatible, true);
     assert.equal(output.namingPassDeclared, true);
     assert.equal(output.actualPolicyCompliance, "NOT_ASSESSED");
