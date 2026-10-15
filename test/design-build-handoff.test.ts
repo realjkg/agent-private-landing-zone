@@ -4,6 +4,7 @@ import test from "node:test";
 
 import { assessEnvironment } from "../src/assessment/posture.js";
 import { createDesignSpec } from "../src/design/create.js";
+import type { InheritanceScreen } from "../src/governance/brownfield-inheritance.js";
 import { calculateDesignContentHash,
   evaluateDesignBuildHandoff } from "../src/design/handoff.js";
 import { assessDelta } from "../src/delta/assess.js";
@@ -160,4 +161,40 @@ test("current ARM64 runtime compose keeps no privilege escalation and does not p
   assert.doesNotMatch(compose, /privileged:\s*true|network_mode:\s*host/);
   // This test is a static deployment-contract check, NOT a network probe.
   assert.ok(!/OLLAMA_BASE_URL:/.test(compose));
+});
+
+test("brownfield Build handoff requires debt-screen review before inheriting any resource references", async () => {
+  const { design, environment } = await makeDesign("AWS", "TERRAFORM", "brownfield");
+  assert.ok(design.reuse.length > 0, "test requires a brownfield resource proposed for reuse");
+  const missing = evaluateDesignBuildHandoff({ provider: "AWS", engine: "TERRAFORM", environment, design });
+  assert.equal(missing.status, "REVIEW_REQUIRED");
+  assert.ok(missing.reviewRequired.includes("BROWNFIELD_POLICY_INHERITANCE_SCREEN_REQUIRED"));
+  assert.equal(missing.infrastructureAct, "DISABLED");
+
+  const screen = {
+    provider: "AWS",
+    verdict: "BLOCK_INHERITANCE",
+    infrastructureMutationAllowed: false,
+    independentlyVerified: false,
+    actualPolicyCompliance: "NOT_ASSESSED",
+  } as InheritanceScreen;
+  const debt = evaluateDesignBuildHandoff({
+    provider: "AWS", engine: "TERRAFORM", environment, design, brownfieldInheritance: screen,
+  });
+  assert.equal(debt.status, "BLOCKED");
+  assert.ok(debt.blockers.includes("BROWNFIELD_TECHNICAL_DEBT_FOUND"));
+
+  const candidate = evaluateDesignBuildHandoff({
+    provider: "AWS", engine: "TERRAFORM", environment, design,
+    brownfieldInheritance: { ...screen, verdict: "CANDIDATE_FOR_INDEPENDENT_VERIFICATION" },
+  });
+  assert.equal(candidate.status, "REVIEW_REQUIRED");
+  assert.ok(candidate.reviewRequired.includes("BROWNFIELD_NATIVE_POLICY_VERIFICATION_REQUIRED"));
+  assert.equal(candidate.infrastructureAct, "DISABLED");
+
+  const mismatched = evaluateDesignBuildHandoff({
+    provider: "AWS", engine: "TERRAFORM", environment, design,
+    brownfieldInheritance: { ...screen, provider: "AZURE" },
+  });
+  assert.ok(mismatched.blockers.includes("BROWNFIELD_POLICY_SCREEN_UNTRUSTED"));
 });

@@ -3,6 +3,7 @@ import type { IaCEngine } from "../build/types.js";
 import type { Provider, EnvironmentState } from "../discovery/types.js";
 import { PLUGIN_CATALOG } from "../plugins/catalog.js";
 import type { DesignSpec } from "./types.js";
+import type { InheritanceScreen } from "../governance/brownfield-inheritance.js";
 
 export type DesignBuildHandoffStatus = "READY_FOR_PREVIEW" |
   "REVIEW_REQUIRED" | "BLOCKED";
@@ -61,6 +62,7 @@ export function evaluateDesignBuildHandoff(input: {
   design: DesignSpec;
   provider: Provider;
   engine: IaCEngine;
+  brownfieldInheritance?: InheritanceScreen;
 }): DesignBuildHandoff {
   const { environment, design, provider, engine } = input;
   const blocked = new Set<string>();
@@ -133,6 +135,21 @@ export function evaluateDesignBuildHandoff(input: {
         resource.mutationPolicy === "READ_ONLY" &&
         !design.forbiddenChanges.includes(resource.resourceId))) {
     blocked.add("FORBIDDEN_RESOURCE_INTENT");
+  }
+  // Declared reuse in brownfield is never production-verified by a fixture.
+  // Known debt blocks the handoff; missing or passing self-reported policy
+  // screens remain REVIEW_REQUIRED without authoritative native evaluation.
+  if (environment.classification === "BROWNFIELD" && design.reuse.length > 0) {
+    const inheritance = input.brownfieldInheritance;
+    if (!inheritance) review.add("BROWNFIELD_POLICY_INHERITANCE_SCREEN_REQUIRED");
+    else if (inheritance.provider !== provider || inheritance.infrastructureMutationAllowed ||
+      inheritance.independentlyVerified !== false || inheritance.actualPolicyCompliance !== "NOT_ASSESSED") {
+      blocked.add("BROWNFIELD_POLICY_SCREEN_UNTRUSTED");
+    } else if (inheritance.verdict === "BLOCK_INHERITANCE") {
+      blocked.add("BROWNFIELD_TECHNICAL_DEBT_FOUND");
+    } else {
+      review.add("BROWNFIELD_NATIVE_POLICY_VERIFICATION_REQUIRED");
+    }
   }
   // Preview cannot implicitly adopt or reconfigure existing assets.
   if (entries.some((entry) =>
