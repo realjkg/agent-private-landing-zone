@@ -59,6 +59,8 @@ export type InheritanceScreenInput = {
 };
 export type InheritanceScreen = {
   mode: "OFFLINE_POLICY_DEBT_SCREEN";
+  provider: BrownfieldManifest["provider"];
+  declaredScope: string;
   verdict: "BLOCK_INHERITANCE" | "REVIEW_REQUIRED" | "CANDIDATE_FOR_INDEPENDENT_VERIFICATION";
   debtSignals: string[];
   missingEvidence: string[];
@@ -243,6 +245,8 @@ export function screenBrownfieldInheritance(input: InheritanceScreenInput): Inhe
       "CANDIDATE_FOR_INDEPENDENT_VERIFICATION" as const;
   const canonical = {
     mode: "OFFLINE_POLICY_DEBT_SCREEN" as const,
+    provider: input.before.provider,
+    declaredScope: input.before.scope,
     verdict, debtSignals: [...new Set(debtSignals)].sort(),
     missingEvidence: [...new Set(missingEvidence)].sort(),
     acceptedControlReferences: acceptedControlReferences.sort(),
