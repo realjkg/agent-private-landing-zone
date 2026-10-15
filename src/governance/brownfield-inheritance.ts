@@ -98,7 +98,7 @@ const ENFORCEABLE = new Set([
 function namingAssessment(name: NamingConvention): { debt: string[]; missing: string[]; passes: boolean } {
   const debt: string[] = [];
   const missing: string[] = [];
-  if (!name || !stable(name.standardId) || !HEX64.test(name.standardSha256) ||
+  if (!name || !stable(name.standardId) || !(typeof name.standardSha256 === "string" && HEX64.test(name.standardSha256)) ||
     !stable(name.namespaceScope) || !Array.isArray(name.existingNames) ||
     !Array.isArray(name.reservedNames)) {
     return { debt: ["Naming convention source, namespace, or reservations are invalid."], missing, passes: false };
