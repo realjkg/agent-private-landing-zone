@@ -205,3 +205,10 @@ Alternative private models remain candidates until they complete the same live m
 Provider-native backup is never inferred from inventory. It is represented only when explicit provider-recovery evidence is present.
 
 ACT remains disabled.
+
+
+## Continue development without live evidence
+
+**Development and release admission are separate gates.** Missing cloud identities, real Qwen/Mistral target runs, platform measurements or production recovery artifacts do not stop implementation, the installer agent simulator, UI work or offline test-driven DO lanes. PR merge still requires exact-commit CI, and production admission still requires the unchanged real-source/target evidence registry.
+
+Run `./node_modules/.bin/tsx scripts/development-readiness.ts` in the repository to display advisory development posture and every production gate's explicit `DEFERRED_TO_RELEASE_QUALIFICATION` status. The report never marks simulated results as release evidence or enables infrastructure ACT. See [Development evidence lanes](development-evidence-lanes.md) for the full bounded workflow.
