@@ -46,7 +46,7 @@ export function inspectNativePolicyJson(
     AZURE_POLICY_ASSIGNMENT_JSON: ["AZURE", "AZURE_POLICY_ASSIGNMENT"],
     GCP_ORG_POLICY_JSON: ["GCP", "ORGANIZATION_POLICY"],
   };
-  const expected = compatible[document?.format];
+  const expected = document ? compatible[document.format] : undefined;
   if (!expected || expected[0] !== provider || expected[1] !== ref.family) {
     reject.push("Native document format cannot claim authority for the given provider and policy family.");
   }
