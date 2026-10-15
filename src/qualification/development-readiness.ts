@@ -61,7 +61,7 @@ export function reviewDevelopmentReadiness(
     }
     observations.set(entry.id, entry.status);
   }
-  const checks = DEVELOPMENT_CHECKS.map((x) => ({
+  const checks: DevelopmentReport["checks"] = DEVELOPMENT_CHECKS.map((x) => ({
     id: x.id, description: x.description, status: observations.get(x.id) ?? "NOT_RUN",
   }));
   const failedChecks = checks.filter((x) => x.status === "REPORTED_FAIL").map((x) => x.id);
