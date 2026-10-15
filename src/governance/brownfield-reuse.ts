@@ -57,7 +57,8 @@ export type BrownfieldReuseAssessment = {
 
 const HEX = /^[a-f0-9]{64}$/;
 const KEY = /^[a-zA-Z0-9][a-zA-Z0-9._:/@+* -]{0,511}$/;
-const AZURE_ARM_ID = /^\\/(?:subscriptions|providers)\\/[A-Za-z0-9][A-Za-z0-9._:/@+* -]{0,510}$/;\nconst textOk = (value: unknown): value is string => typeof value === "string" && !value.includes("../") && (KEY.test(value) || AZURE_ARM_ID.test(value));
+const AZURE_ARM_ID = /^\/(?:subscriptions|providers)\/[A-Za-z0-9][A-Za-z0-9._:/@+* -]{0,510}$/;
+const textOk = (value: unknown): value is string => typeof value === "string" && !value.includes("../") && (KEY.test(value) || AZURE_ARM_ID.test(value));
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 const exactFields = (value: object, allowed: readonly string[]): boolean =>
   Object.keys(value).length === allowed.length && Object.keys(value).every((key) => allowed.includes(key));
