@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { assessBrownfieldApplicationReuse, CLOUD_POLICY_FAMILIES, type BrownfieldManifest } from "./brownfield-reuse.js";
+import { assessBrownfieldApplicationReuse, type BrownfieldManifest } from "./brownfield-reuse.js";
+import { inspectNativePolicyJson, type NativePolicyDocument } from "./native-policy-inspection.js";
 
 /**
  * Offline preflight of DECLARED control effectiveness and application naming.
@@ -53,6 +54,8 @@ export type InheritanceScreenInput = {
   controlFacts: ControlFact[];
   postureFacts: PostureFact[];
   naming: NamingConvention;
+  /** Optional native source files; absent/unevaluated sources remain REVIEW_REQUIRED. */
+  nativePolicyDocuments?: NativePolicyDocument[];
 };
 export type InheritanceScreen = {
   mode: "OFFLINE_POLICY_DEBT_SCREEN";
@@ -64,6 +67,7 @@ export type InheritanceScreen = {
   namingCandidate: string;
   namingPassDeclared: boolean;
   manifestOnlyCompatible: boolean;
+  nativeDocumentsScreened: number;
   independentlyVerified: false;
   actualPolicyCompliance: "NOT_ASSESSED";
   previewAllowed: false;
@@ -205,6 +209,30 @@ export function screenBrownfieldInheritance(input: InheritanceScreenInput): Inhe
         missingEvidence.push("Missing " + domain + " baseline review for " + resourceId);
     }
   }
+  let nativeDocumentsScreened = 0;
+  if (!Array.isArray(input.nativePolicyDocuments)) {
+    missingEvidence.push("Native customer policy/template sources have not been provided for review.");
+  } else {
+    const refs = new Map(controls.map((control) => [control.id, control]));
+    const observed = new Set<string>();
+    for (const document of input.nativePolicyDocuments) {
+      if (!document || typeof document.controlId !== "string" || observed.has(document.controlId) ||
+        !refs.has(document.controlId)) {
+        debtSignals.push("Native document is duplicated, malformed or does not match an existing customer control.");
+        continue;
+      }
+      observed.add(document.controlId);
+      const finding = inspectNativePolicyJson(input.before.provider, refs.get(document.controlId)!, document);
+      nativeDocumentsScreened++;
+      if (finding.status === "REJECT")
+        debtSignals.push("Native policy source rejected: " + document.controlId + " — " + finding.reasons.join("; "));
+      else if (finding.status === "REVIEW")
+        missingEvidence.push("Native policy requires authoritative review: " + document.controlId + " — " + finding.reasons.join("; "));
+    }
+    for (const ref of controls) {
+      if (!observed.has(ref.id)) missingEvidence.push("Missing native customer policy/template source: " + ref.id);
+    }
+  }
   const naming = namingAssessment(input.naming);
   debtSignals.push(...naming.debt);
   missingEvidence.push(...naming.missing);
@@ -222,6 +250,7 @@ export function screenBrownfieldInheritance(input: InheritanceScreenInput): Inhe
     namingCandidate: input.naming?.proposedName ?? "",
     namingPassDeclared: naming.passes,
     manifestOnlyCompatible: baseline.verdict === "DECLARED_APP_LABEL_ONLY",
+    nativeDocumentsScreened,
     independentlyVerified: false as const, actualPolicyCompliance: "NOT_ASSESSED" as const,
     previewAllowed: false as const, infrastructureMutationAllowed: false as const,
     evidenceOrigin: "CUSTOMER_DECLARED_UNATTESTED" as const,
