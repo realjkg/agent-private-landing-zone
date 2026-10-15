@@ -136,7 +136,22 @@ export function evaluateDesignBuildHandoff(input: {
         !design.forbiddenChanges.includes(resource.resourceId))) {
     blocked.add("FORBIDDEN_RESOURCE_INTENT");
   }
-  // Declared reuse in brownfield is never production-verified by a fixture.\n  // Known debt blocks the handoff; missing or passing self-reported policy\n  // screens remain REVIEW_REQUIRED without authoritative native evaluation.\n  if (environment.classification === "BROWNFIELD" && design.reuse.length > 0) {\n    const inheritance = input.brownfieldInheritance;\n    if (!inheritance) review.add("BROWNFIELD_POLICY_INHERITANCE_SCREEN_REQUIRED");\n    else if (inheritance.provider !== provider || inheritance.infrastructureMutationAllowed ||\n      inheritance.independentlyVerified !== false || inheritance.actualPolicyCompliance !== "NOT_ASSESSED") {\n      blocked.add("BROWNFIELD_POLICY_SCREEN_UNTRUSTED");\n    } else if (inheritance.verdict === "BLOCK_INHERITANCE") {\n      blocked.add("BROWNFIELD_TECHNICAL_DEBT_FOUND");\n    } else {\n      review.add("BROWNFIELD_NATIVE_POLICY_VERIFICATION_REQUIRED");\n    }\n  }\n  // Preview cannot implicitly adopt or reconfigure existing assets.
+  // Declared reuse in brownfield is never production-verified by a fixture.
+  // Known debt blocks the handoff; missing or passing self-reported policy
+  // screens remain REVIEW_REQUIRED without authoritative native evaluation.
+  if (environment.classification === "BROWNFIELD" && design.reuse.length > 0) {
+    const inheritance = input.brownfieldInheritance;
+    if (!inheritance) review.add("BROWNFIELD_POLICY_INHERITANCE_SCREEN_REQUIRED");
+    else if (inheritance.provider !== provider || inheritance.infrastructureMutationAllowed ||
+      inheritance.independentlyVerified !== false || inheritance.actualPolicyCompliance !== "NOT_ASSESSED") {
+      blocked.add("BROWNFIELD_POLICY_SCREEN_UNTRUSTED");
+    } else if (inheritance.verdict === "BLOCK_INHERITANCE") {
+      blocked.add("BROWNFIELD_TECHNICAL_DEBT_FOUND");
+    } else {
+      review.add("BROWNFIELD_NATIVE_POLICY_VERIFICATION_REQUIRED");
+    }
+  }
+  // Preview cannot implicitly adopt or reconfigure existing assets.
   if (entries.some((entry) =>
       entry.action === "ADOPT" || entry.action === "CONFIGURE")) {
     review.add("EXPLICIT_EXISTING_RESOURCE_AUTHORIZATION_REQUIRED");
