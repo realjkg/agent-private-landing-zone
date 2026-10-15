@@ -99,6 +99,10 @@ test("missing trusted manifest lineage, malformed hashes, duplicate controls, pr
     (x) => { x.provider = "AWS"; },
     (x) => { x.applicationLabel = ""; },
     (x) => { x.controls[0]!.family = "UNTRUSTED_POLICY"; },
+    (x) => { (x as unknown as Record<string, unknown>).requestedApply = true; },
+    (x) => { (x.controls[0] as unknown as Record<string, unknown>).secretOverride = "hidden"; },
+    (x) => { (x.protectedResources[0] as unknown as Record<string, unknown>).replaceOnApply = true; },
+    (x) => { x.provider = "toString" as never; },
   ];
   for (const mutate of changes) {
     const proposed = copied(before);
