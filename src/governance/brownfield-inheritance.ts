@@ -91,6 +91,10 @@ const HEX64 = /^[0-9a-f]{64}$/;
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:\/@+* -]{0,511}$/;
 const prefix = (s: string) => /^([a-z0-9]{1,16})$/.test(s);
 const stable = (s: unknown): s is string => typeof s === "string" && ID.test(s);
+const AZURE_POLICY_ARM_ID = /^\\/(?:subscriptions\\/[0-9a-fA-F-]{36}|providers\\/Microsoft\\.Management\\/managementGroups\\/[A-Za-z0-9._-]+)(?:\\/[A-Za-z0-9._-]+)*$/;
+const validPolicyId = (id: unknown, provider: BrownfieldManifest["provider"]) =>
+  stable(id) || provider === "AZURE" && typeof id === "string" &&
+    id.length <= 1024 && !id.split("/").includes("..") && AZURE_POLICY_ARM_ID.test(id);
 const uniq = (list: string[]): boolean => list.length === new Set(list).size;
 const MODULE_FAMILIES = new Set([
   "CLOUDFORMATION_TEMPLATE", "SECURITY_GROUP", "IAM_POLICY",
@@ -158,7 +162,7 @@ export function screenBrownfieldInheritance(input: InheritanceScreenInput): Inhe
     const seen = new Set<string>();
     let preventive = 0;
     for (const fact of controlFacts) {
-      if (!fact || !stable(fact.id) || seen.has(fact.id) || !declared.has(fact.id)) {
+      if (!fact || !validPolicyId(fact.id, input.before.provider) || seen.has(fact.id) || !declared.has(fact.id)) {
         debtSignals.push("Unknown or duplicate policy fact."); continue;
       }
       seen.add(fact.id);
