@@ -49,7 +49,7 @@ function fixture(): InheritanceScreenInput {
 test("brownfield importer screens native exported Azure state and physical naming, never claims independent compliance", () => {
   const input = fixture();
   const result = screenBrownfieldInheritance(input);
-  assert.equal(result.verdict, "REVIEW_REQUIRED");
+  assert.equal(result.verdict, "REVIEW_REQUIRED", JSON.stringify({ debt: result.debtSignals, missing: result.missingEvidence }));
   assert.equal(result.policySnapshotsScreened, 1);
   assert.equal(result.physicalNamesScreened, 1);
   assert.equal(result.actualPolicyCompliance, "NOT_ASSESSED");
