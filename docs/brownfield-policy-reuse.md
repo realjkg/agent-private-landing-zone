@@ -109,3 +109,8 @@ Both snapshots must agree exactly on the customer controls and infrastructure; o
 5. **Release-only:** owner and security review, live read-only provider qualification and explicit admission. No automatic IaC adoption, security-group change, Control Tower or Org Policy mutation, Terraform apply or production ACT.
 
 Existing release and environment governance issues remain #39, #147 and #141. This comparison is intentionally independently useful in offline development even when those live qualification items are unavailable.
+
+
+## Native exported policy state and physical naming (offline v2)
+
+Customer-supplied **Control Tower enabled-control**, **Azure Policy assignment**, and **GCP GetEffectivePolicy** JSON snapshots can now be checked for exact target scope, control binding, response-hash integrity, and selected weakening conditions. Provider-specific physical-name profiles detect S3 bucket, Azure Storage account, and GCP project naming conflicts separately from a logical application label. Both are optional inputs to `screenBrownfieldInheritance`; missing or unverified sources remain REVIEW_REQUIRED, and known drift or prohibited changes block inheritance. No response alone proves active enforcement or global uniqueness. See [Brownfield source evidence](brownfield-source-evidence.md).

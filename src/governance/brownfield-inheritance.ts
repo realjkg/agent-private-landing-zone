@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { assessBrownfieldApplicationReuse, type BrownfieldManifest } from "./brownfield-reuse.js";
 import { inspectNativePolicyJson, type NativePolicyDocument } from "./native-policy-inspection.js";
+import { inspectCloudPolicySnapshot, type CloudPolicySnapshot } from "./cloud-policy-snapshots.js";
+import { assessPhysicalResourceName, type PhysicalNameIntent } from "./naming-resource-catalog.js";
 
 /**
  * Offline preflight of DECLARED control effectiveness and application naming.
@@ -56,6 +58,10 @@ export type InheritanceScreenInput = {
   naming: NamingConvention;
   /** Optional native source files; absent/unevaluated sources remain REVIEW_REQUIRED. */
   nativePolicyDocuments?: NativePolicyDocument[];
+  /** Optional customer-exported cloud GET responses; never live-verified by this API. */
+  policySnapshots?: CloudPolicySnapshot[];
+  /** Optional per-resource physical naming checks, separate from application display label. */
+  physicalNamingIntents?: PhysicalNameIntent[];
 };
 export type InheritanceScreen = {
   mode: "OFFLINE_POLICY_DEBT_SCREEN";
@@ -70,6 +76,8 @@ export type InheritanceScreen = {
   namingPassDeclared: boolean;
   manifestOnlyCompatible: boolean;
   nativeDocumentsScreened: number;
+  policySnapshotsScreened: number;
+  physicalNamesScreened: number;
   independentlyVerified: false;
   actualPolicyCompliance: "NOT_ASSESSED";
   previewAllowed: false;
@@ -83,6 +91,10 @@ const HEX64 = /^[0-9a-f]{64}$/;
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:\/@+* -]{0,511}$/;
 const prefix = (s: string) => /^([a-z0-9]{1,16})$/.test(s);
 const stable = (s: unknown): s is string => typeof s === "string" && ID.test(s);
+const AZURE_POLICY_ARM_ID = /^\/(?:subscriptions\/[0-9a-fA-F-]{36}|providers\/Microsoft\.Management\/managementGroups\/[A-Za-z0-9._-]+)(?:\/[A-Za-z0-9._-]+)*$/;
+const validPolicyId = (id: unknown, provider: BrownfieldManifest["provider"]) =>
+  stable(id) || provider === "AZURE" && typeof id === "string" &&
+    id.length <= 1024 && !id.split("/").includes("..") && AZURE_POLICY_ARM_ID.test(id);
 const uniq = (list: string[]): boolean => list.length === new Set(list).size;
 const MODULE_FAMILIES = new Set([
   "CLOUDFORMATION_TEMPLATE", "SECURITY_GROUP", "IAM_POLICY",
@@ -150,7 +162,7 @@ export function screenBrownfieldInheritance(input: InheritanceScreenInput): Inhe
     const seen = new Set<string>();
     let preventive = 0;
     for (const fact of controlFacts) {
-      if (!fact || !stable(fact.id) || seen.has(fact.id) || !declared.has(fact.id)) {
+      if (!fact || !validPolicyId(fact.id, input.before.provider) || seen.has(fact.id) || !declared.has(fact.id)) {
         debtSignals.push("Unknown or duplicate policy fact."); continue;
       }
       seen.add(fact.id);
@@ -235,6 +247,45 @@ export function screenBrownfieldInheritance(input: InheritanceScreenInput): Inhe
       if (!observed.has(ref.id)) missingEvidence.push("Missing native customer policy/template source: " + ref.id);
     }
   }
+  let policySnapshotsScreened = 0;
+  const nativeSnapshotFamilies = new Set(["CONTROL_TOWER_CONTROL", "AZURE_POLICY_ASSIGNMENT", "ORGANIZATION_POLICY"]);
+  const requiredSnapshotRefs = controls.filter((ref) => nativeSnapshotFamilies.has(ref.family));
+  if (!Array.isArray(input.policySnapshots)) {
+    if (requiredSnapshotRefs.length)
+      missingEvidence.push("Effective provider-policy read snapshots have not been supplied.");
+  } else {
+    const refs = new Map(requiredSnapshotRefs.map((ref) => [ref.id, ref]));
+    const seen = new Set<string>();
+    for (const snapshot of input.policySnapshots) {
+      if (!snapshot || typeof snapshot.controlId !== "string" ||
+        seen.has(snapshot.controlId) || !refs.has(snapshot.controlId)) {
+        debtSignals.push("Native policy snapshot is duplicated or not bound to an enforcing control.");
+        continue;
+      }
+      seen.add(snapshot.controlId);
+      const result = inspectCloudPolicySnapshot(refs.get(snapshot.controlId)!, input.before.provider, input.before.scope, snapshot);
+      policySnapshotsScreened++;
+      if (result.verdict === "BLOCK")
+        debtSignals.push("Effective policy snapshot rejected: " + snapshot.controlId + " — " + result.reasons.join("; "));
+      else
+        missingEvidence.push("Customer-exported native policy read is not independently attested: " + snapshot.controlId + " — " + result.reasons.join("; "));
+    }
+    for (const ref of requiredSnapshotRefs) if (!seen.has(ref.id))
+      missingEvidence.push("Missing effective policy snapshot for existing control: " + ref.id);
+  }
+  let physicalNamesScreened = 0;
+  if (!Array.isArray(input.physicalNamingIntents)) {
+    missingEvidence.push("Per-resource physical naming evidence has not been supplied.");
+  } else {
+    for (const intent of input.physicalNamingIntents) {
+      const result = assessPhysicalResourceName(intent);
+      physicalNamesScreened++;
+      if (intent.provider !== input.before.provider || result.verdict === "BLOCK")
+        debtSignals.push("Physical resource naming conflict: " + intent.proposedName + " — " + result.reasons.join("; "));
+      else if (result.verdict === "REVIEW")
+        missingEvidence.push("Physical resource naming requires authoritative verification: " + intent.proposedName + " — " + result.reasons.join("; "));
+    }
+  }
   const naming = namingAssessment(input.naming);
   debtSignals.push(...naming.debt);
   missingEvidence.push(...naming.missing);
@@ -255,6 +306,7 @@ export function screenBrownfieldInheritance(input: InheritanceScreenInput): Inhe
     namingPassDeclared: naming.passes,
     manifestOnlyCompatible: baseline.verdict === "DECLARED_APP_LABEL_ONLY",
     nativeDocumentsScreened,
+    policySnapshotsScreened, physicalNamesScreened,
     independentlyVerified: false as const, actualPolicyCompliance: "NOT_ASSESSED" as const,
     previewAllowed: false as const, infrastructureMutationAllowed: false as const,
     evidenceOrigin: "CUSTOMER_DECLARED_UNATTESTED" as const,
