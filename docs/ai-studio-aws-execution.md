@@ -29,6 +29,31 @@ The builder does not copy Control Tower's console-wizard steps or create a repla
 - New controls, OU changes, policy lifecycle and account vending are separately authorized governance actions. They are not blanket forbidden, and no operator should need to recreate the Control Tower estate to execute them.
 - This stage introduces the classifier but **does not yet wire it into every Terraform plan, CloudFormation change set, CDK assembly or Pulumi preview**. That is a mandatory execution gate before live use.
 
+## Conditional Control Tower bootstrap from conversational intent
+
+The user can request an AWS Landing Zone in natural language. The orchestrator first performs trusted discovery in the management account:
+
+- `landingZone=EXISTS`: reuse the existing Control Tower baseline and its APIs; never provision a parallel landing zone.
+- `landingZone=ABSENT` with verified management-account identity: produce an **initial Control Tower bootstrap blueprint** with home region, governed regions, shared accounts, OU layout, baseline control expectations, service prerequisites, cost/risk implications, and exact review bundle. `BOOTSTRAP_APPROVAL_REQUIRED` is not equivalent to execution authority.
+- `landingZone=UNKNOWN` or unverified management identity: stop before any CREATE and request read-only discovery/identity evidence.
+- Distinguish an existing AWS Organization from an absent one; avoid accidentally running Organizations CREATE inside a live organization.
+
+After dedicated governance approval, a future driver may call versioned AWS Control Tower APIs (create landing zone, obtain operation status, read resulting ARN and controls) with appropriate credentials and reconcile asynchronous outcomes. The current pilot driver is scoped to AWS Terraform/CDK DEV application resources and **does not implement this Control Tower API execution yet**. No automatic Control Tower create is authorized by the classifier.
+
+Subsequent template-tested AFT / Account Factory / Service Catalog automation is a separate phase, reusing the resulting organization and accounts instead of running a duplicate bootstrap.
+
+## Executed blueprint inventory and progress states
+
+When the user invokes a blueprint, the console, agent and eventual MCP tools should read a shared **per-resource execution inventory** rather than return a one-time plan. The code contract is `src/integrations/ai-studio/blueprint-inventory.ts`.
+
+Inventory entries have resource ID, provider, kind, requested action, source-of-truth (`EXISTING_AWS`, `BLUEPRINT`, `UNKNOWN`), current state, timestamp, evidence references and optional diagnostic detail. The status vocabulary is:
+
+`REQUESTED → DISCOVERING → DISCOVERED → PLANNED → VALIDATING → AWAITING_APPROVAL → APPROVED → EXECUTING → VERIFYING → SUCCEEDED`
+
+An existing Control Tower may transition from `DISCOVERING → REUSED`; failures may terminate in `BLOCKED` or `FAILED` and later enter recovery. Updates append hash-linked events and retain a count of items in each state. Success/reuse must have evidence references, and approvals/execution require evidence.
+
+**Current implementation boundary:** the new inventory reducer and unit tests are scaffolded, not yet wired to AWS Cloud Control/Control Tower polling, the apply driver's actual execution ledger, durable encrypted storage, Web UI push events or the hosted MCP gateway. Each corresponding adapter must write a verified state transition only upon observing its real outcome; a model's text must never set `SUCCEEDED`.
+
 ## Existing implementation to reuse
 
 - `src/apply/driver.ts`, `src/cli/apply.ts`, and `src/cli/ui-channel.ts`
