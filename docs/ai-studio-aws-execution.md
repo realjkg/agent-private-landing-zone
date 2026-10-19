@@ -15,6 +15,20 @@ The accelerator operates **within** the customer's existing AWS Organizations / 
 - The current check is admission-only. Enforce the same deny/approval rules against engine-native normalized plans, CDK assemblies, change sets and Pulumi preview before a cloud mutation can happen. Indirect templates/modules must not bypass classification.
 - Preserve customer account boundaries, SCPs, IAM permissions, shared networking and monitoring; do not silently adopt state or overwrite authoritative infrastructure.
 
+## Console-free builder versus native Control Tower workflows
+
+The builder does not copy Control Tower's console-wizard steps or create a replacement governance plane. Agents gather desired-state intent, inventory actual AWS Organizations, Control Tower landing zones, registered OUs, account enrollment and enabled controls via authorized APIs, then reconcile effective policy before producing IaC.
+
+- When an account already exists and is governed, use it as the workload target; **do not trigger Account Factory**.
+- When an account is needed, route an approved account request to the **customer's existing** Account Factory, AFT GitOps workflow, Service Catalog provisioning, or approved auto-enrollment API; do not recreate AFT infrastructure.
+- Discover effective preventive policies (SCP/RCP/declarative policy), detective AWS Config rules and proactive CloudFormation hooks; never assume a default control set from template names alone.
+- Reuse approved networking, security, logging and identity infrastructure. Generate **application-scoped deltas only** where the declared business intent requires resources.
+- Validate IaC engine output against authoritative ownership and effective controls; engine-normalized plans must undergo the same governance classification, not only the agent's declared resourceActions.
+- Avoid console clicks and repetitive CLI workflows by using existing APIs, typed tools, CI pipelines, state backends and gated plan-execute-verify orchestration. Async AWS operations must report real statuses, not imply synchronous completion.
+- Record why each resource was REUSED, ADDED, INTEGRATED, or BLOCKED, with policy and account evidence.
+- New controls, OU changes, policy lifecycle and account vending are separately authorized governance actions. They are not blanket forbidden, and no operator should need to recreate the Control Tower estate to execute them.
+- This stage introduces the classifier but **does not yet wire it into every Terraform plan, CloudFormation change set, CDK assembly or Pulumi preview**. That is a mandatory execution gate before live use.
+
 ## Existing implementation to reuse
 
 - `src/apply/driver.ts`, `src/cli/apply.ts`, and `src/cli/ui-channel.ts`
