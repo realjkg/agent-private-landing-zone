@@ -14,7 +14,10 @@ export class McpConnectorRegistry {
 
   register(value: McpConnector): McpConnector {
     if (!/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(value.id)) throw new Error("MCP_CONNECTOR_INVALID_ID");
-    if (!value.name.trim()) throw new Error("MCP_CONNECTOR_NAME_REQUIRED");
+    if (!value || typeof value !== "object") throw new Error("MCP_CONNECTOR_INVALID");
+    if (typeof value.name !== "string" || !value.name.trim()) throw new Error("MCP_CONNECTOR_NAME_REQUIRED");
+    if (Object.keys(value).some(key => !["id","name","endpoint","authProviderId"].includes(key))) throw new Error("MCP_CONNECTOR_UNEXPECTED_FIELD");
+    if (typeof value.authProviderId !== "string") throw new Error("MCP_AUTH_PROVIDER_NOT_FOUND");
     const auth = this.authProviders.get(value.authProviderId);
     if (!auth) throw new Error("MCP_AUTH_PROVIDER_NOT_FOUND");
     if (value.endpoint !== auth.endpoint) throw new Error("MCP_AUTH_ENDPOINT_MISMATCH");
