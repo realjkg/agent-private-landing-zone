@@ -1,4 +1,4 @@
-import { classifyAwsResource } from "./aws-governance.js";
+import { classifyAwsResource, type GovernanceEvidence } from "./aws-governance.js";
 /**
  * Capability negotiation for the AI Studio MCP gateway's early AWS pilot.
  * This is NOT an apply endpoint. A decision of PILOT_ELIGIBLE means the
@@ -20,6 +20,7 @@ export type ExecutionRequest = {
   /** Existing AWS organization/governance estate is customer-authoritative. */
   governance: "EXISTING_CONTROL_TOWER" | "EXISTING_ORGANIZATIONS" | "UNVERIFIED";
   /** Explicit resource-level changes requested by the workflow. */
+  governanceEvidence?: GovernanceEvidence;
   resourceActions: Array<{ resourceType: string; action: "CREATE" | "UPDATE" | "DELETE" | "IMPORT" | "READ" }>;
   pilotContractPinned: boolean;
   engineQualified: boolean;
@@ -38,9 +39,11 @@ export function assessEarlyAwsExecution(input: ExecutionRequest): ExecutionDecis
       reasons.push("RESOURCE_ACTION_INVALID");
       continue;
     }
-    const classification = classifyAwsResource(item);
+    const classification = classifyAwsResource(item, input.governanceEvidence);
     if (classification.verdict === "PARALLEL_GOVERNANCE_FORBIDDEN")
       reasons.push("PARALLEL_GOVERNANCE_DEPLOYMENT_FORBIDDEN");
+    else if (classification.verdict === "BOOTSTRAP_APPROVAL_REQUIRED")
+      reasons.push("FIRST_TIME_GOVERNANCE_BOOTSTRAP_REQUIRES_SEPARATE_AUTHORITY");
     else if (classification.verdict === "GOVERNANCE_APPROVAL_REQUIRED")
       reasons.push("GOVERNANCE_CHANGE_REQUIRES_SEPARATE_AUTHORITY");
     else if (classification.verdict === "UNKNOWN_REVIEW_REQUIRED")
