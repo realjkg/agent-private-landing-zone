@@ -4,7 +4,7 @@
  * IaC resource aliases are normalized so a generic agent cannot bypass policy.
  */
 export type GovernanceOperation = "CREATE" | "UPDATE" | "DELETE" | "IMPORT" | "READ";
-export type GovernanceVerdict = "REUSE" | "APPLICATION_CHANGE" | "GOVERNANCE_APPROVAL_REQUIRED" | "PARALLEL_GOVERNANCE_FORBIDDEN" | "UNKNOWN_REVIEW_REQUIRED";
+export type GovernanceVerdict = "REUSE" | "APPLICATION_CHANGE" | "GOVERNANCE_APPROVAL_REQUIRED" | "PARALLEL_GOVERNANCE_FORBIDDEN" | "BOOTSTRAP_APPROVAL_REQUIRED" | "UNKNOWN_REVIEW_REQUIRED";
 export type ResourceIntent = { resourceType: string; action: GovernanceOperation };
 export type ClassifiedResource = ResourceIntent & { verdict: GovernanceVerdict; reason: string };
 
@@ -17,14 +17,27 @@ const GOVERNANCE_TYPES = new Set([
   "awsorganizationsaccount", "awscontroltowerenabledbaseline",
   "awscontroltowerbaseline", "awsservicecatalogprovisionedproduct"
 ]);
-export function classifyAwsResource(input: ResourceIntent): ClassifiedResource {
+export type GovernanceEvidence = {
+  organization: "EXISTS" | "ABSENT" | "UNKNOWN";
+  landingZone: "EXISTS" | "ABSENT" | "UNKNOWN";
+  managementAccountVerified: boolean;
+};
+export function classifyAwsResource(input: ResourceIntent, evidence?: GovernanceEvidence): ClassifiedResource {
   const type = normalize(String(input?.resourceType ?? ""));
   const action = input?.action;
   if (!type || !["CREATE", "UPDATE", "DELETE", "IMPORT", "READ"].includes(action))
     return { ...input, verdict: "UNKNOWN_REVIEW_REQUIRED", reason: "INVALID_RESOURCE_INTENT" };
   if (action === "READ") return { ...input, verdict: "REUSE", reason: "DISCOVERY_ONLY" };
-  if (ESTATE_ROOTS.has(type))
-    return { ...input, verdict: "PARALLEL_GOVERNANCE_FORBIDDEN", reason: "EXISTING_ORGANIZATION_AND_CONTROL_TOWER_ARE_AUTHORITATIVE" };
+  if (ESTATE_ROOTS.has(type)) {
+    if (action !== "CREATE")
+      return { ...input, verdict: "GOVERNANCE_APPROVAL_REQUIRED", reason: "ROOT_GOVERNANCE_LIFECYCLE_CHANGE" };
+    const state = type === "awscontroltowerlandingzone" ? evidence?.landingZone : evidence?.organization;
+    if (state === "EXISTS")
+      return { ...input, verdict: "PARALLEL_GOVERNANCE_FORBIDDEN", reason: "GOVERNANCE_ROOT_ALREADY_EXISTS" };
+    if (state === "ABSENT" && evidence?.managementAccountVerified)
+      return { ...input, verdict: "BOOTSTRAP_APPROVAL_REQUIRED", reason: "FIRST_TIME_GOVERNANCE_BOOTSTRAP" };
+    return { ...input, verdict: "UNKNOWN_REVIEW_REQUIRED", reason: "GOVERNANCE_DISCOVERY_AND_MANAGEMENT_IDENTITY_REQUIRED" };
+  }
   if (GOVERNANCE_TYPES.has(type) || type.startsWith("awscontroltower") || type.startsWith("awsorganizations"))
     return { ...input, verdict: "GOVERNANCE_APPROVAL_REQUIRED", reason: "POLICY_OWNER_AUTHORITY_REQUIRED" };
   if (type.includes("landingzone") || type.includes("controltower") || type.includes("organization"))
