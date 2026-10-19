@@ -1,3 +1,4 @@
+import { classifyAwsResource } from "./aws-governance.js";
 /**
  * Capability negotiation for the AI Studio MCP gateway's early AWS pilot.
  * This is NOT an apply endpoint. A decision of PILOT_ELIGIBLE means the
@@ -37,14 +38,13 @@ export function assessEarlyAwsExecution(input: ExecutionRequest): ExecutionDecis
       reasons.push("RESOURCE_ACTION_INVALID");
       continue;
     }
-    // Reuse existing Control Tower/Organizations APIs and guardrails. Creating
-    // a second governance estate is categorically outside this accelerator.
-    const landingZone = /(?:controltower|control_tower|control-tower).*(?:landingzone|landing_zone)|aws::controltower::landingzone|aws_organizations_organization|aws::organizations::organization/.test(type);
-    const governanceResource = /controltower|control_tower|control-tower|aws::organizations::|aws_organizations_/.test(type);
-    if (landingZone && item.action === "CREATE")
+    const classification = classifyAwsResource(item);
+    if (classification.verdict === "PARALLEL_GOVERNANCE_FORBIDDEN")
       reasons.push("PARALLEL_GOVERNANCE_DEPLOYMENT_FORBIDDEN");
-    else if (governanceResource && item.action !== "READ")
+    else if (classification.verdict === "GOVERNANCE_APPROVAL_REQUIRED")
       reasons.push("GOVERNANCE_CHANGE_REQUIRES_SEPARATE_AUTHORITY");
+    else if (classification.verdict === "UNKNOWN_REVIEW_REQUIRED")
+      reasons.push("UNKNOWN_GOVERNANCE_RESOURCE");
     if (input.operation === "APPLY" && !["CREATE", "READ"].includes(item.action))
       reasons.push("EARLY_EXECUTION_ADDITIVE_ONLY");
   }
