@@ -68,7 +68,7 @@ test("never proposes a parallel Control Tower or Organizations deployment", () =
         ...eligible, operation, resourceActions: [{ resourceType, action: "CREATE" }]
       });
       assert.equal(r.status, "BLOCKED");
-      assert.ok(r.reasons.includes("GOVERNANCE_MUTATION_FORBIDDEN"));
+      assert.ok(r.reasons.includes(["AWS::ControlTower::LandingZone", "aws_controltower_landing_zone", "aws_organizations_organization"].includes(resourceType) ? "PARALLEL_GOVERNANCE_DEPLOYMENT_FORBIDDEN" : "GOVERNANCE_CHANGE_REQUIRES_SEPARATE_AUTHORITY"));
     }
   }
 });
@@ -98,4 +98,17 @@ test("valid additive workload resource inside inherited governance remains eligi
     resourceActions: [{ resourceType: "aws_cloudwatch_log_group", action: "CREATE" }]
   });
   assert.equal(r.status, "PILOT_ELIGIBLE");
+});
+
+test("existing Control Tower guardrail and Organizations API changes need distinct authority, not blanket erasure", () => {
+  for (const resourceType of ["AWS::ControlTower::EnabledControl", "aws_controltower_control",
+    "AWS::Organizations::Policy", "aws_organizations_policy"]) {
+    const result = assessEarlyAwsExecution({
+      ...eligible, operation: "PREVIEW",
+      resourceActions: [{ resourceType, action: "UPDATE" }]
+    });
+    assert.equal(result.status, "BLOCKED");
+    assert.ok(result.reasons.includes("GOVERNANCE_CHANGE_REQUIRES_SEPARATE_AUTHORITY"));
+    assert.ok(!result.reasons.includes("PARALLEL_GOVERNANCE_DEPLOYMENT_FORBIDDEN"));
+  }
 });
