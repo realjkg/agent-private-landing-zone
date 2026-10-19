@@ -54,6 +54,21 @@ An existing Control Tower may transition from `DISCOVERING → REUSED`; failures
 
 **Current implementation boundary:** the new inventory reducer and unit tests are scaffolded, not yet wired to AWS Cloud Control/Control Tower polling, the apply driver's actual execution ledger, durable encrypted storage, Web UI push events or the hosted MCP gateway. Each corresponding adapter must write a verified state transition only upon observing its real outcome; a model's text must never set `SUCCEEDED`.
 
+## Blueprint-first execution, promotion and operations
+
+**Priority:** Finish the complete validated blueprint before any cloud apply. Lifecycle: **Inventory → Plan → Design → Blueprint approval → Execute in DEV / NON-PROD → Verify → Promote with a separate production plan and approval → Execute in PROD → Verify → Operate (Maintain)**.
+
+- Inventory: actual AWS governance/account/resource state, ownership, dependencies, policies and evidence of any unknowns.
+- Plan: exact scope and targets, dependency graph, IaC tool/engine choice, costs, controls, network/identity/logging, recovery and state.
+- Design: finalized tested resource blueprint and generated IaC, with hashes, scan and policy evidence, and approval.
+- Non-production: generate a separate environment-targeted sealed plan from the approved release. Deploy and verify DEV and/or the explicitly designated NON-PROD qualification stage. When a DEV→QA chain is configured, QA follows verified DEV.
+- Production: distinct production-target plan and state, identity, independent approvals, same verified logical release identity, and authoritative deployment verification.
+- Operate (Maintain): inspect health, incidents, drift, capacity, costs, upgrades and configuration; **Modify is a maintenance sub-workflow**, performed by creating a versioned blueprint revision, computing the delta, validating, approving, staging and promoting it. Never mutate an approved baseline in place.
+- The executed blueprint inventory must surface every step and provider status, including BLOCKED/FAILED and evidence. Passing a metadata admission function does not substitute for actual state validation.
+- Current implementation: `src/integrations/ai-studio/blueprint-release.ts` is a staged approval/release-admission contract, not a Control Tower provisioning driver. `blueprint-inventory.ts` is a state projection, not yet provider-wired.
+
+**Acceptance gate:** Blueprint COMPLETE + APPROVED before applying, verified nonproduction release and independently approved target-specific plan before production. Each stage remains subject to the signed apply driver; none can be triggered solely by MCP agent request.
+
 ## Existing implementation to reuse
 
 - `src/apply/driver.ts`, `src/cli/apply.ts`, and `src/cli/ui-channel.ts`
