@@ -37,8 +37,14 @@ export function assessEarlyAwsExecution(input: ExecutionRequest): ExecutionDecis
       reasons.push("RESOURCE_ACTION_INVALID");
       continue;
     }
-    if (/controltower|control_tower|control-tower|aws::organizations::(organization|organizationalunit|policy|account)|aws_organizations_(organization|organizational_unit|policy|account)|aws::controltower::|aws_controltower_|landingzone|landing_zone/.test(type) && item.action !== "READ")
-      reasons.push("GOVERNANCE_MUTATION_FORBIDDEN");
+    // Reuse existing Control Tower/Organizations APIs and guardrails. Creating
+    // a second governance estate is categorically outside this accelerator.
+    const landingZone = /(?:controltower|control_tower|control-tower).*(?:landingzone|landing_zone)|aws::controltower::landingzone|aws_organizations_organization|aws::organizations::organization/.test(type);
+    const governanceResource = /controltower|control_tower|control-tower|aws::organizations::|aws_organizations_/.test(type);
+    if (landingZone && item.action === "CREATE")
+      reasons.push("PARALLEL_GOVERNANCE_DEPLOYMENT_FORBIDDEN");
+    else if (governanceResource && item.action !== "READ")
+      reasons.push("GOVERNANCE_CHANGE_REQUIRES_SEPARATE_AUTHORITY");
     if (input.operation === "APPLY" && !["CREATE", "READ"].includes(item.action))
       reasons.push("EARLY_EXECUTION_ADDITIVE_ONLY");
   }
