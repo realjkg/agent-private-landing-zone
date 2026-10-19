@@ -65,7 +65,7 @@ test("never proposes a parallel Control Tower or Organizations deployment", () =
   ]) {
     for (const operation of ["PREVIEW", "APPLY"] as const) {
       const r = assessEarlyAwsExecution({
-        ...eligible, operation, resourceActions: [{ resourceType, action: "CREATE" }]
+        ...eligible, operation, governanceEvidence: { organization: "EXISTS", landingZone: "EXISTS", managementAccountVerified: true }, resourceActions: [{ resourceType, action: "CREATE" }]
       });
       assert.equal(r.status, "BLOCKED");
       assert.ok(r.reasons.includes(["AWS::ControlTower::LandingZone", "aws_controltower_landing_zone", "aws_organizations_organization"].includes(resourceType) ? "PARALLEL_GOVERNANCE_DEPLOYMENT_FORBIDDEN" : "GOVERNANCE_CHANGE_REQUIRES_SEPARATE_AUTHORITY"));
@@ -111,4 +111,14 @@ test("existing Control Tower guardrail and Organizations API changes need distin
     assert.ok(result.reasons.includes("GOVERNANCE_CHANGE_REQUIRES_SEPARATE_AUTHORITY"));
     assert.ok(!result.reasons.includes("PARALLEL_GOVERNANCE_DEPLOYMENT_FORBIDDEN"));
   }
+});
+
+test("first-time Control Tower creation requests a separately approved bootstrap workflow", () => {
+  const result=assessEarlyAwsExecution({
+    ...eligible, operation:"PREVIEW",
+    governanceEvidence:{organization:"EXISTS",landingZone:"ABSENT",managementAccountVerified:true},
+    resourceActions:[{resourceType:"AWS::ControlTower::LandingZone",action:"CREATE"}]
+  });
+  assert.equal(result.status,"BLOCKED");
+  assert.ok(result.reasons.includes("FIRST_TIME_GOVERNANCE_BOOTSTRAP_REQUIRES_SEPARATE_AUTHORITY"));
 });
