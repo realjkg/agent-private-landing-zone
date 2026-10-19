@@ -16,6 +16,10 @@ export type ExecutionRequest = {
   caller: "AI_STUDIO_AGENT" | "OPERATOR";
   targetClass: "INTERNAL_PILOT" | "CUSTOMER";
   operation: "PREVIEW" | "APPLY";
+  /** Existing AWS organization/governance estate is customer-authoritative. */
+  governance: "EXISTING_CONTROL_TOWER" | "EXISTING_ORGANIZATIONS" | "UNVERIFIED";
+  /** Explicit resource-level changes requested by the workflow. */
+  resourceActions: Array<{ resourceType: string; action: "CREATE" | "UPDATE" | "DELETE" | "IMPORT" | "READ" }>;
   pilotContractPinned: boolean;
   engineQualified: boolean;
   targetIdentityVerified: boolean;
@@ -25,6 +29,21 @@ export type ExecutionRequest = {
 
 export function assessEarlyAwsExecution(input: ExecutionRequest): ExecutionDecision {
   const reasons: string[] = [];
+  if (input.governance === "UNVERIFIED") reasons.push("GOVERNANCE_BASELINE_UNVERIFIED");
+  if (!Array.isArray(input.resourceActions)) reasons.push("RESOURCE_ACTIONS_REQUIRED");
+  else for (const item of input.resourceActions) {
+    const type = String(item?.resourceType ?? "").toLowerCase();
+    if (!type || !["CREATE", "UPDATE", "DELETE", "IMPORT", "READ"].includes(item.action)) {
+      reasons.push("RESOURCE_ACTION_INVALID");
+      continue;
+    }
+    if (/controltower|control_tower|control-tower|aws::organizations::(organization|organizationalunit|policy|account)|aws_organizations_(organization|organizational_unit|policy|account)|aws::controltower::|aws_controltower_|landingzone|landing_zone/.test(type) && item.action !== "READ")
+      reasons.push("GOVERNANCE_MUTATION_FORBIDDEN");
+    if (input.operation === "APPLY" && !["CREATE", "READ"].includes(item.action))
+      reasons.push("EARLY_EXECUTION_ADDITIVE_ONLY");
+  }
+  if (input.operation === "APPLY" && (!input.resourceActions?.some(x => x.action === "CREATE")))
+    reasons.push("ADDITIVE_RESOURCE_REQUIRED");
   if (input.operation === "APPLY" && input.caller !== "OPERATOR")
     reasons.push("AGENT_CANNOT_EXECUTE_APPLY");
   if (input.targetClass !== "INTERNAL_PILOT")
