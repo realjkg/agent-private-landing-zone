@@ -4,6 +4,17 @@
 
 Early **real AWS infrastructure execution** is in scope for an explicitly authorized internal DEV pilot. The prior read-only MCP-only architecture is insufficient as the final capability. Do not bypass existing sealed-plan and human authorization boundaries.
 
+## Reuse existing AWS governance, never duplicate it
+
+The accelerator operates **within** the customer's existing AWS Organizations / Control Tower estate. It consumes Control Tower policies, landing-zone metadata, enabled controls, account enrollment, OU structure, SCPs, AWS Config and CloudTrail baselines through authorized AWS APIs and IaC references. Existing governance remains the source of truth.
+
+- Discover and reuse established Control Tower and Organizations controls and policy templates when policy-authority checks show they are fit for the workload.
+- Use AWS APIs and provider-supported tooling for controlled, evidence-linked ALZ creation and integration **inside** existing governed accounts.
+- Never create a second Control Tower landing zone or second Organizations organization alongside the customer baseline. A new landing-zone/organization CREATE is rejected.
+- Changes to existing Control Tower controls, Organizations policy or OU/account structure are **not equivalent** to a parallel deployment. They are classified as `GOVERNANCE_CHANGE_REQUIRES_SEPARATE_AUTHORITY` and require a distinct policy-owner-approved workflow outside the initial application-resource DEV pilot.
+- The current check is admission-only. Enforce the same deny/approval rules against engine-native normalized plans, CDK assemblies, change sets and Pulumi preview before a cloud mutation can happen. Indirect templates/modules must not bypass classification.
+- Preserve customer account boundaries, SCPs, IAM permissions, shared networking and monitoring; do not silently adopt state or overwrite authoritative infrastructure.
+
 ## Existing implementation to reuse
 
 - `src/apply/driver.ts`, `src/cli/apply.ts`, and `src/cli/ui-channel.ts`
