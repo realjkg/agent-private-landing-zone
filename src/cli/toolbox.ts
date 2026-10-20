@@ -71,7 +71,8 @@ for (const tool of checks) {
     const value = displayVersion(tool, primary.stdout.trim() || primary.stderr.trim());
     const plugin = PLUGIN_CATALOG.find(p => p.executable === binary);
     const tested = plugin?.testedVersion;
-    const cliTested = tool === "cdk_version" ? /AWS CDK CLI (\d+\.\d+\.\d+)/.exec(tested ?? "")?.[1] : tested;\n    const mismatch = cliTested && /^\d+\.\d+\.\d+$/.test(cliTested) && !value.includes(cliTested);
+    const cliTested = tool === "cdk_version" ? /AWS CDK CLI (\d+\.\d+\.\d+)/.exec(tested ?? "")?.[1] : tested;
+    const mismatch = cliTested && /^\d+\.\d+\.\d+$/.test(cliTested) && !value.includes(cliTested);
     console.log("✓ " + label.padEnd(15) + value + (mismatch ? "  (tested CLI: " + cliTested + ")" : ""));
   } else {
     const available = binary ? resolveExecutable(binary, approvedDirs) : undefined;
