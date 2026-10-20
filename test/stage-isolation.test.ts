@@ -66,3 +66,12 @@ test("no provider fallback, implicit stage, unknown fields or apply scope escala
  assert.ok(admitStagePlan({plan:plan(extra),authenticatedTarget:extra,operation:"PREVIEW"}).reasons.includes("STAGE_TARGET_FIELD_UNKNOWN"));
  assert.ok(admitStagePlan({plan:plan(dev,"PREVIEW"),authenticatedTarget:dev,operation:"APPLY"}).reasons.includes("OPERATION_SCOPE_MISMATCH"));
 });
+
+test("malformed stage namespace values fail closed instead of throwing",()=>{
+ const malformed={...dev,stateNamespace:undefined as unknown as string,
+ evidenceNamespace:undefined as unknown as string,keyScopeRef:undefined as unknown as string};
+ const r=admitStagePlan({plan:plan(malformed),authenticatedTarget:malformed,operation:"PREVIEW"});
+ assert.equal(r.permitted,false);
+ assert.ok(r.reasons.includes("STATE_NAMESPACE_CROSS_BOUNDARY"));
+ assert.ok(r.reasons.includes("KEY_SCOPE_CROSS_BOUNDARY"));
+});
