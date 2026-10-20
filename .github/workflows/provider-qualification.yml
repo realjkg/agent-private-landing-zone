@@ -72,7 +72,23 @@ jobs:
           AWS_QUALIFICATION_CALLER_ACCOUNT="$(aws sts get-caller-identity --query Account --output text)"
           AWS_QUALIFICATION_CALLER_ARN="$(aws sts get-caller-identity --query Arn --output text)"
           export AWS_QUALIFICATION_CALLER_ACCOUNT AWS_QUALIFICATION_CALLER_ARN
-          node dist/cli/aws-target-binding.js
+          node --input-type=module -e '
+            import { assessAwsQualificationTarget } from "./dist/qualification/aws-target-binding.js";
+            const e = process.env;
+            const r = assessAwsQualificationTarget({
+              expectedRoleArn: e.AWS_QUALIFICATION_ROLE_ARN ?? "",
+              expectedAccountId: e.AWS_QUALIFICATION_ACCOUNT_ID ?? "",
+              configuredRegion: e.AWS_QUALIFICATION_REGION ?? "",
+              stackName: e.AWS_QUALIFICATION_STACK_NAME ?? "",
+              actualCallerArn: e.AWS_QUALIFICATION_CALLER_ARN ?? "",
+              actualAccountId: e.AWS_QUALIFICATION_CALLER_ACCOUNT ?? ""
+            });
+            if (!r.allowed) {
+              console.error("AWS D4 TARGET BINDING BLOCKED: " + r.reasons.join(","));
+              process.exit(1);
+            }
+            console.log("AWS D4 target binding verified; ACT DISABLED");
+          '
           export AWS_REGION="${AWS_QUALIFICATION_REGION}"
           export AWS_DEFAULT_REGION="${AWS_QUALIFICATION_REGION}"
 
