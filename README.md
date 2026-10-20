@@ -152,6 +152,10 @@ Manage is intended to continuously evaluate:
 
 The resiliency implementation now supports compiled recovery targets, a recovery automation controller for capture/verify/drill/drift cycles (library only; no service entry point), explicit AWS/Azure provider-recovery evidence classification, encrypted evidence, and read-only conversational inspection of automated target state. A manifest is still not treated as a backup, and provider-native recovery is only claimed when explicit provider evidence exists.
 
+## Compact local test output
+
+Run `npm run test:quiet` for an animated single-line progress indicator and a concise final result. Full stdout/stderr is written to timestamped `.runs/tests/*.log`, with the latest run available at `.runs/tests/latest.log`. Failures print a short excerpt and preserve the subprocess exit code. The existing `npm test` remains verbose for CI and investigations.
+
 ## Operator experience
 
 Day-to-day use is exposed through a small operator launcher rather than npm scripts:

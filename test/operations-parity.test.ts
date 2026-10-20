@@ -22,7 +22,7 @@ const EXEMPT_COMMANDS: Readonly<Record<string, string>> = {
 };
 const EXEMPT_SCRIPTS: Readonly<Record<string, string>> = {
   operator: "alias of the ./alz dispatcher",
-  test: "developer test run", "test:node": "developer test run", "test:ui": "developer test run",
+  test: "developer test run", "test:quiet": "developer test runner with full logs", "test:node": "developer test run", "test:ui": "developer test run",
   build: "developer build", "build:ui": "developer build", check: "developer type-check and build",
   verify: "release-wide developer gate (the ./alz verify entry covers operator verification)",
   "ci:actions-pinned": "CI workflow pin check", "deps:review": "developer install-script listing",
@@ -197,7 +197,10 @@ test("the guard fails on an invented cli form, a missing source, a bad handoff o
 
 test("the broker allowlist and the driver exclusion hold", () => {
   const posture = getToolSecurityPosture();
-  assert.equal(posture.allowedTools.length, 39);
+  assert.equal(posture.allowedTools.length, 41);
+  // The two additions are read-only Control Tower operation status tools.
+  assert.ok(posture.allowedTools.includes("aws_controltower_list_landing_zone_operations"));
+  assert.ok(posture.allowedTools.includes("aws_controltower_get_landing_zone_operation"));
   assert.deepEqual(posture.mutationTools, []);
   assert.equal(posture.arbitraryShell, false);
   // No console-side or broker module imports the destroy-preview driver.

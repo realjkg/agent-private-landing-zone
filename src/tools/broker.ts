@@ -57,6 +57,8 @@ const SAFE_TOOLS = new Set([
   "aws_sts_identity",
   "aws_org_describe",
   "aws_controltower_list_landing_zones",
+  "aws_controltower_list_landing_zone_operations",
+  "aws_controltower_get_landing_zone_operation",
   "aws_org_list_scps",
   "aws_config_recorders",
   "aws_cloudtrail_trails",
@@ -300,6 +302,12 @@ export function executeTool(
         "--output",
         "json",
       ],
+      aws_controltower_list_landing_zone_operations: [
+        "controltower",
+        "list-landing-zone-operations",
+        "--output",
+        "json",
+      ],
       aws_org_list_scps: [
         "organizations",
         "list-policies",
@@ -322,6 +330,18 @@ export function executeTool(
         "json",
       ],
     };
+
+    if (request.tool === "aws_controltower_get_landing_zone_operation") {
+      const identifier=request.operationIdentifier;
+      if (!identifier || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(identifier))
+        return blocked(request,"Control Tower operation identifier must be a valid UUID.");
+      return runAllowlistedProcess(request.tool,"aws",[
+        "controltower","get-landing-zone-operation","--operation-identifier",
+        identifier,"--output","json"
+      ],workspace);
+    }
+    if (request.operationIdentifier !== undefined)
+      return blocked(request,"Operation identifier is accepted only by the exact Control Tower polling tool.");
 
     const args =
       argsByTool[request.tool];

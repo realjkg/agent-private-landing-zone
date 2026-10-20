@@ -116,7 +116,7 @@ test("the economics report is computed from the pasted entries only", async () =
 test("the offline read-only scripts run for real with fixed arguments", async () => {
   for (const [id, pattern] of [
     ["health", /ACT DISABLED/],
-    ["plugins", /PLUG-IN COMPATIBILITY/],
+    ["plugins", /PLUG-IN (?:ADAPTER )?COMPATIBILITY/],
     ["toolbox-check", /Cloud mutation DISABLED/],
     ["prompts", /Prompt Guide/],
     ["models-list", /PRIVATE MODEL CATALOG/],

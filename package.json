@@ -10,6 +10,7 @@
     "discover:aws": "tsx src/cli/discover.ts --provider aws --mock brownfield --resources",
     "discover:azure": "tsx src/cli/discover.ts --provider azure --mock greenfield --resources",
     "test": "npm run build:ui && npm run test:node && npm run test:ui",
+    "test:quiet": "node scripts/test-quiet.mjs",
     "test:node": "tsx --test test/*.test.ts",
     "test:ui": "vitest run --passWithNoTests",
     "build": "tsc -p tsconfig.json",

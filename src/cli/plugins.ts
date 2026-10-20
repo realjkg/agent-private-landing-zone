@@ -11,14 +11,14 @@ const errors = validatePluginCatalog();
 console.log();
 console.log("Agent Private Landing Zone");
 console.log("────────────────────────────────");
-console.log("PLUG-IN COMPATIBILITY");
+console.log("PLUG-IN ADAPTER COMPATIBILITY (not local installation)");
 console.log();
 
 for (const plugin of PLUGIN_CATALOG) {
   console.log(
     plugin.id.padEnd(16) +
       plugin.status.padEnd(13) +
-      (plugin.testedVersion ?? "version-on-enable"),
+      "tested " + (plugin.testedVersion ?? "version-on-enable"),
   );
 }
 

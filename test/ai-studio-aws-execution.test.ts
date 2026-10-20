@@ -6,6 +6,9 @@ const eligible: ExecutionRequest = {
   provider: "AWS", engine: "TERRAFORM", environment: "DEV",
   caller: "OPERATOR", targetClass: "INTERNAL_PILOT", operation: "APPLY",
   governance: "EXISTING_CONTROL_TOWER",
+  governanceEvidence: {organization:"EXISTS",landingZone:"EXISTS",managementAccountVerified:true},
+  nativePlan: {engine:"TERRAFORM",payload:{resource_changes:[{type:"aws_cloudwatch_log_group",change:{actions:["create"]}}]}},
+  blueprint: {state:"APPROVED",blueprintSha256:"a".repeat(64),approvedBlueprintSha256:"a".repeat(64),reviewEvidenceRef:"evidence://blueprint/approval",releaseIdentity:"release-01",devVerifiedReleaseIdentity:"release-01",nonProdVerifiedReleaseIdentity:"release-01"},
   resourceActions: [{ resourceType: "aws_cloudwatch_log_group", action: "CREATE" }],
   pilotContractPinned: true, engineQualified: true,
   targetIdentityVerified: true, sealedArtifactVerified: true,
@@ -14,7 +17,7 @@ const eligible: ExecutionRequest = {
 
 test("early AWS Terraform and CDK internal DEV pilot may proceed only through human driver", () => {
   for (const engine of ["TERRAFORM", "CDK"] as const) {
-    assert.deepEqual(assessEarlyAwsExecution({ ...eligible, engine }), {
+    assert.deepEqual(assessEarlyAwsExecution({ ...eligible, engine, nativePlan: engine === "CDK" ? { engine:"CDK", payload:{ Changes:[{ ResourceChange:{ ResourceType:"AWS::Logs::LogGroup",Action:"Add" } }] } } : eligible.nativePlan }), {
       status: "PILOT_ELIGIBLE", route: "HUMAN_PILOT_DRIVER", reasons: []
     });
   }
@@ -42,9 +45,9 @@ test("missing any gate fails closed", () => {
   }
 });
 
-test("customer target and non-DEV early applies are refused", () => {
+test("customer targets blocked; promoted environments depend on blueprint", () => {
   assert.equal(assessEarlyAwsExecution({ ...eligible, targetClass: "CUSTOMER" }).status, "BLOCKED");
-  assert.equal(assessEarlyAwsExecution({ ...eligible, environment: "PROD" }).status, "BLOCKED");
+  assert.equal(assessEarlyAwsExecution({ ...eligible, environment: "PROD" }).status, "PILOT_ELIGIBLE");
 });
 
 test("preview eligibility is distinct from apply authorization", () => {
@@ -121,4 +124,26 @@ test("first-time Control Tower creation requests a separately approved bootstrap
   });
   assert.equal(result.status,"BLOCKED");
   assert.ok(result.reasons.includes("FIRST_TIME_GOVERNANCE_BOOTSTRAP_REQUIRES_SEPARATE_AUTHORITY"));
+});
+
+test("completion and approval of the blueprint precede apply", () => {
+  assert.ok(assessEarlyAwsExecution({...eligible, blueprint:undefined}).reasons.includes("BLUEPRINT_NOT_COMPLETED"));
+  assert.ok(assessEarlyAwsExecution({...eligible, blueprint:{...eligible.blueprint!,state:"DRAFT"}}).reasons.includes("BLUEPRINT_NOT_COMPLETED"));
+  assert.ok(assessEarlyAwsExecution({...eligible, blueprint:{...eligible.blueprint!,state:"COMPLETE"}}).reasons.includes("BLUEPRINT_NOT_APPROVED"));
+});
+test("promotion to QA and production requires a verified matching release", () => {
+  const bp=eligible.blueprint!;
+  assert.ok(assessEarlyAwsExecution({...eligible,environment:"QA",blueprint:{...bp,devVerifiedReleaseIdentity:undefined}}).reasons.includes("DEV_RELEASE_NOT_VERIFIED"));
+  assert.ok(assessEarlyAwsExecution({...eligible,environment:"PROD",blueprint:{...bp,nonProdVerifiedReleaseIdentity:undefined}}).reasons.includes("NONPROD_RELEASE_NOT_VERIFIED"));
+  assert.ok(assessEarlyAwsExecution({...eligible,environment:"PROD",blueprint:{...bp,devVerifiedReleaseIdentity:"different"}}).reasons.includes("DEV_RELEASE_NOT_VERIFIED"));
+});
+
+test("actual IaC engine output is required even when agent declares only safe changes",()=>{
+ assert.ok(assessEarlyAwsExecution({...eligible,nativePlan:undefined}).reasons.includes("NATIVE_PLAN_EVIDENCE_REQUIRED"));
+ const hidden={engine:"TERRAFORM" as const,payload:{resource_changes:[
+  {type:"aws_cloudwatch_log_group",change:{actions:["create"]}},
+  {type:"aws_organizations_organization",change:{actions:["create"]}}
+ ]}};
+ assert.ok(assessEarlyAwsExecution({...eligible,nativePlan:hidden}).reasons.includes("PARALLEL_GOVERNANCE_FORBIDDEN"));
+ assert.ok(assessEarlyAwsExecution({...eligible,nativePlan:{engine:"PULUMI",payload:{steps:[]}}}).reasons.includes("NATIVE_PLAN_ENGINE_MISMATCH"));
 });

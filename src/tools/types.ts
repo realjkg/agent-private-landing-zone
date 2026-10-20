@@ -38,6 +38,8 @@ export type ToolName =
   | "aws_sts_identity"
   | "aws_org_describe"
   | "aws_controltower_list_landing_zones"
+  | "aws_controltower_list_landing_zone_operations"
+  | "aws_controltower_get_landing_zone_operation"
   | "aws_org_list_scps"
   | "aws_config_recorders"
   | "aws_cloudtrail_trails"
@@ -53,6 +55,8 @@ export type ToolRequest = {
   provider?: Provider;
   engine?: IaCEngine;
   workspace?: string;
+  /** Optional, validated AWS Control Tower operation UUID for read-only polling. */
+  operationIdentifier?: string;
   input?: AdapterInput;
 };
 

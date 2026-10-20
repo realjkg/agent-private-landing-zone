@@ -1,3 +1,5 @@
+import { assessNativeAwsPlan, type NativePlan } from "./aws-native-plan.js";
+import { admitBlueprintForEnvironment, type BlueprintRelease } from "./blueprint-release.js";
 import { classifyAwsResource, type GovernanceEvidence } from "./aws-governance.js";
 /**
  * Capability negotiation for the AI Studio MCP gateway's early AWS pilot.
@@ -22,6 +24,9 @@ export type ExecutionRequest = {
   /** Explicit resource-level changes requested by the workflow. */
   governanceEvidence?: GovernanceEvidence;
   resourceActions: Array<{ resourceType: string; action: "CREATE" | "UPDATE" | "DELETE" | "IMPORT" | "READ" }>;
+  blueprint?: BlueprintRelease;
+  /** Engine output, provided by trusted IaC adapter (never a model assertion). */
+  nativePlan?: NativePlan;
   pilotContractPinned: boolean;
   engineQualified: boolean;
   targetIdentityVerified: boolean;
@@ -30,7 +35,7 @@ export type ExecutionRequest = {
 };
 
 export function assessEarlyAwsExecution(input: ExecutionRequest): ExecutionDecision {
-  const reasons: string[] = [];
+  const reasons: string[] = [...admitBlueprintForEnvironment(input.blueprint, input.environment, input.operation).reasons];
   if (input.governance === "UNVERIFIED") reasons.push("GOVERNANCE_BASELINE_UNVERIFIED");
   if (!Array.isArray(input.resourceActions)) reasons.push("RESOURCE_ACTIONS_REQUIRED");
   else for (const item of input.resourceActions) {
@@ -57,11 +62,17 @@ export function assessEarlyAwsExecution(input: ExecutionRequest): ExecutionDecis
     reasons.push("AGENT_CANNOT_EXECUTE_APPLY");
   if (input.targetClass !== "INTERNAL_PILOT")
     reasons.push("CUSTOMER_TARGET_EXCLUDED");
-  if (input.operation === "APPLY" && input.environment !== "DEV")
-    reasons.push("EARLY_EXECUTION_DEV_ONLY");
+  // DEV -> QA -> PROD promotion is gated by the verified release identity
+  // in admitBlueprintForEnvironment and the existing signed apply driver.
   if (input.operation === "APPLY" && !["TERRAFORM", "CDK"].includes(input.engine))
     reasons.push("APPLY_ENGINE_NOT_IN_PILOT_CONTRACT");
   if (input.operation === "APPLY") {
+    if (!input.nativePlan || !input.governanceEvidence) reasons.push("NATIVE_PLAN_EVIDENCE_REQUIRED");
+    else {
+      if (input.nativePlan.engine !== input.engine) reasons.push("NATIVE_PLAN_ENGINE_MISMATCH");
+      const assessment = assessNativeAwsPlan(input.nativePlan, input.governanceEvidence);
+      if (!assessment.allowed) reasons.push(...assessment.reasons);
+    }
     if (!input.pilotContractPinned) reasons.push("PILOT_CONTRACT_NOT_PINNED");
     if (!input.engineQualified) reasons.push("ENGINE_NOT_QUALIFIED");
     if (!input.targetIdentityVerified) reasons.push("TARGET_IDENTITY_NOT_VERIFIED");
