@@ -3,7 +3,9 @@
  * orchestration and policy enforcement substrate. Skills/connectors remain
  * Studio-owned; only declared capabilities cross the MCP boundary.
  */
-import { packContext } from "../../orchestration/context-manager.js";\n\nexport type AgentRole = "INVENTORY" | "PLAN" | "DESIGN" | "POLICY" | "IAC" | "VERIFY" | "OPERATE";
+import { packContext } from "../../orchestration/context-manager.js";
+
+export type AgentRole = "INVENTORY" | "PLAN" | "DESIGN" | "POLICY" | "IAC" | "VERIFY" | "OPERATE";
 export type EngineId = "TERRAFORM" | "PULUMI" | "OPENTOFU" | "BICEP" | "CLOUDFORMATION" | "AWS_CDK" | "ANSIBLE" | "CROSSPLANE";
 export type Capability = "DISCOVERY_READ" | "EVIDENCE_READ" | "POLICY_ASSESS" | "IAC_PREVIEW";
 export type HarnessRoute = {
