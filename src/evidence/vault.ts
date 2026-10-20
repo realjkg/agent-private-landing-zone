@@ -5,6 +5,8 @@ import {
 } from "node:crypto";
 import {
   mkdir,
+  link,
+  unlink,
   readFile,
   stat,
   writeFile,
@@ -133,40 +135,36 @@ export async function ensureEvidenceKey(): Promise<{
   }
 
   const key = randomBytes(32);
+  // Write the complete secret to a private staging inode before atomically
+  // publishing it. A direct 'wx' write makes an empty/partial key visible to
+  // another process, which may otherwise fail under concurrent first use.
+  const stagedPath = path + "." + process.pid + "." +
+    randomBytes(12).toString("hex") + ".tmp";
+  await writeFile(stagedPath, key.toString("base64") + "\n", {
+    encoding: "utf8",
+    mode: 0o600,
+    flag: "wx",
+  });
 
+  let published = false;
   try {
-    await writeFile(
-      path,
-      key.toString("base64") + "\n",
-      {
-        encoding: "utf8",
-        mode: 0o600,
-        flag: "wx",
-      },
-    );
-  } catch (error) {
-    const code =
-      error &&
-      typeof error === "object" &&
-      "code" in error
-        ? String(error.code)
-        : "";
-
-    // A concurrent caller created the key between our ENOENT read and
-    // this create-exclusive write — two evidence flows in one run, or
-    // two CLI invocations on a fresh machine. Their key is the one on
-    // disk now: load it through the same validated path instead of
-    // failing a legitimate first run.
-    if (code !== "EEXIST") {
-      throw error;
+    // Hard-link creation is exclusive and atomic. Never replace a key another
+    // process has already installed, or overwrite existing encrypted evidence.
+    try {
+      await link(stagedPath, path);
+      published = true;
+    } catch (error) {
+      const code = error && typeof error === "object" && "code" in error
+        ? String(error.code) : "";
+      if (code !== "EEXIST") throw error;
     }
+  } finally {
+    await unlink(stagedPath);
+  }
 
+  if (!published) {
     const winner = await loadExistingKey(path);
-
-    if (!winner) {
-      throw error;
-    }
-
+    if (!winner) throw new Error("EVIDENCE_KEY_PUBLICATION_RACE");
     return winner;
   }
 
