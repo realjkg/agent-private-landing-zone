@@ -1,3 +1,4 @@
+import { assessNativeAwsPlan, type NativePlan } from "./aws-native-plan.js";
 import { admitBlueprintForEnvironment, type BlueprintRelease } from "./blueprint-release.js";
 import { classifyAwsResource, type GovernanceEvidence } from "./aws-governance.js";
 /**
@@ -24,6 +25,8 @@ export type ExecutionRequest = {
   governanceEvidence?: GovernanceEvidence;
   resourceActions: Array<{ resourceType: string; action: "CREATE" | "UPDATE" | "DELETE" | "IMPORT" | "READ" }>;
   blueprint?: BlueprintRelease;
+  /** Engine output, provided by trusted IaC adapter (never a model assertion). */
+  nativePlan?: NativePlan;
   pilotContractPinned: boolean;
   engineQualified: boolean;
   targetIdentityVerified: boolean;
@@ -64,6 +67,12 @@ export function assessEarlyAwsExecution(input: ExecutionRequest): ExecutionDecis
   if (input.operation === "APPLY" && !["TERRAFORM", "CDK"].includes(input.engine))
     reasons.push("APPLY_ENGINE_NOT_IN_PILOT_CONTRACT");
   if (input.operation === "APPLY") {
+    if (!input.nativePlan || !input.governanceEvidence) reasons.push("NATIVE_PLAN_EVIDENCE_REQUIRED");
+    else {
+      if (input.nativePlan.engine !== input.engine) reasons.push("NATIVE_PLAN_ENGINE_MISMATCH");
+      const assessment = assessNativeAwsPlan(input.nativePlan, input.governanceEvidence);
+      if (!assessment.allowed) reasons.push(...assessment.reasons);
+    }
     if (!input.pilotContractPinned) reasons.push("PILOT_CONTRACT_NOT_PINNED");
     if (!input.engineQualified) reasons.push("ENGINE_NOT_QUALIFIED");
     if (!input.targetIdentityVerified) reasons.push("TARGET_IDENTITY_NOT_VERIFIED");
