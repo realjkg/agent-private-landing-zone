@@ -66,15 +66,15 @@ function checkTarget(target: StageTarget, reasons: string[]): void {
   // State, evidence and key paths are stage and tenant namespaced. Never
   // infer an omitted stage from provider defaults or environment aliases.
   const prefix=String(target.tenantId)+"/"+String(target.stage).toLowerCase()+"/"+String(target.environmentId)+"/";
-  if (!target.stateNamespace.startsWith(prefix)) reasons.push("STATE_NAMESPACE_CROSS_BOUNDARY");
-  if (!target.evidenceNamespace.startsWith(prefix)) reasons.push("EVIDENCE_NAMESPACE_CROSS_BOUNDARY");
+  if (typeof target.stateNamespace!=="string" || !target.stateNamespace.startsWith(prefix)) reasons.push("STATE_NAMESPACE_CROSS_BOUNDARY");
+  if (typeof target.evidenceNamespace!=="string" || !target.evidenceNamespace.startsWith(prefix)) reasons.push("EVIDENCE_NAMESPACE_CROSS_BOUNDARY");
   const keyScope=target.tenantId+"/"+target.stage.toLowerCase()+"/"+target.environmentId;
-  if (!target.keyScopeRef.endsWith("/"+keyScope))
+  if (typeof target.keyScopeRef!=="string" || !target.keyScopeRef.endsWith("/"+keyScope))
     reasons.push("KEY_SCOPE_CROSS_BOUNDARY");
 }
 function reference(x: unknown): boolean {return typeof x==="string" && REF.test(x) && !x.includes("..");}
 function sameTarget(a:StageTarget,b:StageTarget):boolean {
-  return TARGET_FIELDS.every(k=>a[k]===b[k]);
+  return Boolean(a && b) && TARGET_FIELDS.every(k=>a[k]===b[k]);
 }
 function stageIndex(x:Stage):number {return ["DEVELOPMENT","STAGING","PRODUCTION"].indexOf(x);}
 export function admitStagePlan(input: {
