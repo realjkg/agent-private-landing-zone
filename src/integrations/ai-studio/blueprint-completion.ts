@@ -138,7 +138,7 @@ export function completeLandingZoneBlueprint(value: LandingZoneBlueprint): Bluep
       proposedControls:sortedUnique(p.proposedControls)}
   };
   const hash=sha256(JSON.stringify(canonical));
-  return {complete:true,sha256:hash,releaseIdentity:value.blueprintId};
+  return {complete:true,sha256:hash,releaseIdentity:value.blueprintId,missing:[]};
 }
 export function blueprintReleaseFromCompleted(
   value: LandingZoneBlueprint
