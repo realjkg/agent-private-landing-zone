@@ -33,7 +33,7 @@ export function classifyAwsResource(input: ResourceIntent, evidence?: Governance
   if (!type || !["CREATE", "UPDATE", "DELETE", "IMPORT", "READ"].includes(action))
     return { ...input, verdict: "UNKNOWN_REVIEW_REQUIRED", reason: "INVALID_RESOURCE_INTENT" };
   if (action === "READ") return { ...input, verdict: "REUSE", reason: "DISCOVERY_ONLY" };
-  if (OPAQUE_WRAPPERS.has(type))
+  if (OPAQUE_WRAPPERS.has(type) || type.startsWith("custom") || type.startsWith("awscustomresource"))
     return { ...input, verdict: "UNKNOWN_REVIEW_REQUIRED", reason: "OPAQUE_NESTED_INFRASTRUCTURE_REQUIRES_EXPANSION" };
   if (ESTATE_ROOTS.has(type)) {
     if (action !== "CREATE")
