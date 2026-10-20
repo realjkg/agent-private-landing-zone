@@ -1,4 +1,6 @@
 import { sha256 } from "../util/sha256.js";
+import { probeTargetPreflight } from "./target-preflight.js";
+import { PRODUCTION_OLLAMA_VERSION } from "./model-production.js";
 import { qualifyProductionIdentity } from "./identity.js";
 import { qualifyProviderProduction } from "./provider-production.js";
 import type { EnvironmentState } from "../discovery/types.js";
@@ -110,4 +112,44 @@ export function simulateD3D4(sourceCommit:string):SimulationCampaign {
     qualification:"PRELIVE_ONLY" as const,releaseAdmission:false as const,cases,
     passed:cases.every(c=>c.matched)};
   return {...payload,digest:sha256(JSON.stringify(payload))};
+}
+
+/** Exercises the actual D3 Ollama metadata preflight with an injected
+ * in-memory transport, not just the synthetic scenario state machine. */
+export async function simulateD3Preflight(): Promise<{
+  evidenceClass:"SIMULATED"; actualInference:"NOT_RUN"; releaseAdmission:false;
+  expectedCases:number; matched:boolean; failures:string[];
+}> {
+  const cases=["BASELINE","MISSING_MODEL","BAD_DIGEST","WRONG_RUNTIME","UNREACHABLE"] as const;
+  const failures:string[]=[];
+  for(const kind of cases) {
+    const mockedFetch:typeof fetch = async input => {
+      const url=String(input);
+      if(kind==="UNREACHABLE") throw new Error("SIMULATED_NETWORK_FAILURE");
+      if(url.endsWith("/api/version"))return new Response(JSON.stringify({
+        version:kind==="WRONG_RUNTIME"?"0.0.0":PRODUCTION_OLLAMA_VERSION
+      }),{status:200});
+      if(url.endsWith("/api/tags")) {
+        const names=kind==="MISSING_MODEL"
+          ?["qwen3:1.7b","mistral-nemo:latest"]
+          :["qwen3:1.7b","qwen3:4b","mistral-nemo:latest"];
+        return new Response(JSON.stringify({models:names.map(name=>({
+          name,digest:kind==="BAD_DIGEST"?"invalid":"a".repeat(64),size:42
+        }))}),{status:200});
+      }
+      throw new Error("UNEXPECTED_SYNTHETIC_URL");
+    };
+    const actual=await probeTargetPreflight({
+      sourceCommit:"a".repeat(40),targetHardwareId:"synthetic-01",
+      runnerName:"synthetic-runner",baseUrl:"http://127.0.0.1:11435",
+      host:"simulation",memoryBytes:1024*1024*1024
+    },mockedFetch);
+    const expected=kind==="BASELINE";
+    if(actual.passed!==expected)failures.push(kind+": unexpected preflight verdict");
+    if(actual.actualModelInference!=="NOT_RUN" || actual.infrastructureAct!=="DISABLED")
+      failures.push(kind+": unsafe evidence classification");
+  }
+  return {evidenceClass:"SIMULATED",actualInference:"NOT_RUN",
+    releaseAdmission:false,expectedCases:cases.length,
+    matched:failures.length===0,failures};
 }
