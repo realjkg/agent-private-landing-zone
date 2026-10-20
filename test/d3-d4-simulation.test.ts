@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { simulateD3D4, SIMULATION_CASES } from "../src/qualification/d3-d4-simulation.js";
+import { simulateD3D4, SIMULATION_CASES, simulateD3Preflight } from "../src/qualification/d3-d4-simulation.js";
 
 const commit="f".repeat(40);
 test("D3/D4 sim campaign covers all injected expected failures and baseline controls",()=>{
@@ -35,4 +35,10 @@ test("evidence hash binds source and case disposition",()=>{
 });
 test("unbound source SHA fails closed",()=>{
  assert.throws(()=>simulateD3D4("main"),/SIMULATION_SOURCE_COMMIT_INVALID/);
+});
+
+test("simulated D3 preflight runs real metadata validator with injected responses", async () => {
+ const r = await simulateD3Preflight();
+ assert.equal(r.matched, true);
+ assert.equal(r.releaseAdmission, false);
 });
