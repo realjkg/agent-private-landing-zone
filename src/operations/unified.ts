@@ -1,3 +1,4 @@
+import { sanitizeDiagnosticText } from "../observability/redaction.js";
 import { randomUUID } from "node:crypto";
 import { OPERATIONS } from "./registry.js";
 import { describeOperation } from "./schema.js";
@@ -62,7 +63,7 @@ export class UnifiedOperations {
       const plan = planOperation(id,inputText,this.catalog);
       const output = await runPlanned(plan,this.deps.root,this.deps.runner);
       // External clients must not receive uncontrolled command stdout.
-      return {ok:true,operation:id,traceId,output:output.slice(0,8192)};
+      return {ok:true,operation:id,traceId,output:sanitizeDiagnosticText(output,8192)};
     } catch (error) {
       const code = error instanceof Error ? error.message : "OPERATIONS_FAILED";
       return {ok:false,operation:id,traceId,error:/^(INPUT_|INPUTS_|OPERATION_|UNSUPPORTED_|OPERATIONS_)/.test(code)?code:"OPERATIONS_FAILED"};
