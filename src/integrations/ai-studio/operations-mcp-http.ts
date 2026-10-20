@@ -8,8 +8,6 @@ export type IngressOptions = {
   /** A real cryptographic token verifier must be injected by the trusted host. */
   verifyBearer: BearerVerifier;
   adapter: StudioMcpAdapter;
-  /** Defaults to loopback. Remote ingress requires an external authenticated private TLS proxy. */
-  host?: "127.0.0.1" | "::1";
   maxBodyBytes?: number;
 };
 function reply(res: ServerResponse, code:number, result:unknown):void {
