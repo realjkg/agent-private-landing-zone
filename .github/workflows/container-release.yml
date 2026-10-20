@@ -1,0 +1,117 @@
+name: Protected container signing and provenance
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: protected-container-release
+  cancel-in-progress: false
+
+jobs:
+  signed-native-image:
+    if: github.ref == 'refs/heads/main'
+    # Configure required independent reviewers and main-only deployment rules.
+    environment: production-image-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      checks: read
+      actions: read
+      packages: write
+      id-token: write
+    env:
+      IMAGE: ghcr.io/realjkg/agent-private-landing-zone
+      RELEASE_PLATFORM: linux/${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: "26"
+          package-manager-cache: false
+      - uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad # v4.0.0
+        with:
+          cosign-release: v3.0.2
+      - name: Require protected release environment and exact source checks
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Fail closed if the environment cannot be read or has no review gate.
+          gh api repos/$GITHUB_REPOSITORY/environments/production-image-release > environment.json
+          node -e 'const e=require("./environment.json"); if(!e.protection_rules?.some(r=>r.type==="required_reviewers" && r.reviewers?.length && r.prevent_self_review===true)) process.exit(1)'
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/environments/production-image-release/deployment-branch-policies?per_page=100" > branches.json
+          node -e 'const e=require("./environment.json"), b=require("./branches.json").flatMap(p=>p.branch_policies); if(e.deployment_branch_policy?.custom_branch_policies!==true || b.length!==1 || b[0].name!=="main" || b[0].type!=="branch") process.exit(1)'
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?per_page=100" > check-pages.json
+          node -e 'const fs=require("fs"); fs.writeFileSync("checks.json",JSON.stringify({check_runs:require("./check-pages.json").flatMap(p=>p.check_runs)}))'
+          node -e 'const c=require("./checks.json").check_runs; for(const n of ["Linux amd64 confinement","Linux arm64 confinement"]){if(!c.some(x=>x.name===n && x.head_sha===process.env.GITHUB_SHA && x.conclusion==="success"))process.exit(1)}'
+          node scripts/container-bases.mjs
+      - name: Exact-source regressions before publication
+        run: |
+          npm ci
+          npm run check
+          npm test
+          npm run ci:actions-pinned
+      - name: Build immutable native candidate with BuildKit attestations
+        env:
+          REGISTRY_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker buildx create --use --name alz-release
+          docker buildx build --platform "$RELEASE_PLATFORM" --target runtime \
+            --build-arg SOURCE_COMMIT="$GITHUB_SHA" --provenance=mode=max \
+            --metadata-file build-metadata.json --push -t "$IMAGE:candidate-$GITHUB_SHA-${{ matrix.arch }}" .
+          node -e 'const m=require("./build-metadata.json"); if(!/^sha256:[a-f0-9]{64}$/.test(m["containerimage.digest"]))process.exit(1);require("fs").appendFileSync(process.env.GITHUB_ENV,"SUBJECT="+process.env.IMAGE+"@"+m["containerimage.digest"]+"\n")'
+      - name: Scan exact immutable candidate
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ env.SUBJECT }}
+          scanners: vuln,misconfig
+          severity: HIGH,CRITICAL
+          exit-code: '1'
+          format: json
+          output: release-image-scan.json
+      - name: Native runtime, SBOM and manifest check
+        run: |
+          set -euo pipefail
+          docker pull --platform "$RELEASE_PLATFORM" "$SUBJECT"
+          docker buildx imagetools inspect --raw "$SUBJECT" > release-index.json
+          docker run --rm --network none "$SUBJECT" help
+          docker run --rm --network none --entrypoint node "$SUBJECT" dist/cli/release-package.js --root /app --verify
+          docker run --rm --network none --entrypoint node "$SUBJECT" -e 'process.stdout.write(require("fs").readFileSync("/app/sbom.cdx.json"))' > release-sbom.json
+          node scripts/container-provenance.mjs "$SUBJECT" "$GITHUB_SHA"
+      - name: Sign, attest and verify exact subject
+        run: |
+          set -euo pipefail
+          cosign sign --yes "$SUBJECT"
+          cosign attest --yes --type https://slsa.dev/provenance/v1 --predicate release-provenance.json "$SUBJECT"
+          cosign attest --yes --type cyclonedx --predicate release-sbom.json "$SUBJECT"
+          node scripts/container-signature.mjs "$SUBJECT" "$GITHUB_SHA" > release-verification.json
+      - name: Retain source-bound evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: signed-container-${{ matrix.arch }}
+          path: |
+            build-metadata.json
+            release-image-scan.json
+            release-sbom.json
+            release-provenance.json
+            release-index.json
+            release-verification.json
+          retention-days: 30
+      - name: Remove registry session
+        if: always()
+        run: docker logout ghcr.io

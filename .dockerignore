@@ -6,6 +6,8 @@
 !.github/workflows/model-production-qualification.yml
 !.github/workflows/pr-validation.yml
 !.github/workflows/supply-chain.yml
+!.github/workflows/container-release.yml
+!.github/workflows/container-hardening.yml
 node_modules
 dist
 coverage

@@ -1,4 +1,4 @@
-FROM node:26-bookworm-slim AS build
+FROM node:26-bookworm-slim@sha256:298992629d69bbd5b2b03ad57094d8e4fcb3a8eeb7c4e25d29de656519568913 AS build
 
 WORKDIR /app
 
@@ -18,6 +18,9 @@ ARG SOURCE_COMMIT
 ENV ALZ_SOURCE_COMMIT=$SOURCE_COMMIT
 
 COPY test/ ./test/
+COPY Dockerfile ./Dockerfile
+COPY scripts/ ./scripts/
+COPY security/ ./security/
 COPY config/ ./config/
 COPY policy/ ./policy/
 COPY compose.yaml ./compose.yaml
@@ -27,6 +30,9 @@ COPY .github/workflows/model-qualification.yml ./.github/workflows/model-qualifi
 COPY .github/workflows/model-production-qualification.yml ./.github/workflows/model-production-qualification.yml
 COPY .github/workflows/pr-validation.yml ./.github/workflows/pr-validation.yml
 COPY .github/workflows/supply-chain.yml ./.github/workflows/supply-chain.yml
+COPY .github/workflows/container-release.yml ./.github/workflows/container-release.yml
+COPY .github/workflows/container-hardening.yml ./.github/workflows/container-hardening.yml
+COPY compose.production.yaml ./compose.production.yaml
 
 RUN chmod +x ./alz
 
@@ -34,14 +40,14 @@ CMD ["npm", "test"]
 
 # Production native dependencies must use the same musl ABI as the final
 # ARM64 runtime. Compiler and npm tooling stay outside the shipped image.
-FROM node:26-alpine AS runtime-deps
+FROM node:26-alpine@sha256:6f08a523443ddedf52941874c203475b0ad503e859ad70cb26ab8be9a517dbd5 AS runtime-deps
 WORKDIR /app
 RUN apk add --no-cache python3 make g++ \
     && apk upgrade --no-cache
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 
-FROM node:26-alpine AS runtime
+FROM node:26-alpine@sha256:6f08a523443ddedf52941874c203475b0ad503e859ad70cb26ab8be9a517dbd5 AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 RUN apk upgrade --no-cache && apk add --no-cache libstdc++

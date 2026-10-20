@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "retrievedAt": "2026-10-20",
+  "bases": [
+    {
+      "image": "node:26-bookworm-slim",
+      "digest": "sha256:298992629d69bbd5b2b03ad57094d8e4fcb3a8eeb7c4e25d29de656519568913",
+      "platforms": {
+        "amd64": "sha256:da33e24927f94e2eea2b76124cc2beeec795bbd2fb6575cf698e34a7325d2f13",
+        "arm64": "sha256:2928a235e5af9997b97f8fbe5718cfd40676fc9190b619effc0c0249c41bb4e4"
+      },
+      "evidence": "https://github.com/docker-library/repo-info/blob/649e73bdd78dd1068baf17119792da9d12ad8423/repos/node/remote/26-bookworm-slim.md",
+      "repository": "docker.io/library/node",
+      "indexFile": "config/container-bases/26-bookworm-slim.index.json"
+    },
+    {
+      "image": "node:26-alpine",
+      "digest": "sha256:6f08a523443ddedf52941874c203475b0ad503e859ad70cb26ab8be9a517dbd5",
+      "platforms": {
+        "amd64": "sha256:45eaed5f3cf2ff1151b09eca776078cceb1df505370a34d3e7b7f4cd9bb46364",
+        "arm64": "sha256:8205592dc1414cb1e9932d6ac3c1a7615c686d9fff7cd54f57500bc26a571c52"
+      },
+      "evidence": "https://github.com/docker-library/repo-info/blob/649e73bdd78dd1068baf17119792da9d12ad8423/repos/node/remote/26-alpine.md",
+      "repository": "docker.io/library/node",
+      "indexFile": "config/container-bases/26-alpine.index.json"
+    }
+  ]
+}

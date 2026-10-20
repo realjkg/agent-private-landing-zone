@@ -1,0 +1,30 @@
+# Standalone production definition; never merge with the developer build file.
+services:
+  alz:
+    image: ${ALZ_IMAGE:?Set a verified repository@sha256 digest}
+    user: "1000:1000"
+    read_only: true
+    network_mode: none
+    init: true
+    pids_limit: 128
+    mem_limit: 1g
+    cpus: 2
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=67108864,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+      - seccomp=./security/seccomp.json
+      - apparmor=alz-runtime
+    environment:
+      NODE_ENV: production
+      AGENTIC_EVIDENCE_KEY_FILE: /run/alz-keys/evidence.key
+    volumes:
+      - alz-runtime-data:/app/.runs
+      - alz-evidence-keys:/run/alz-keys:ro
+volumes:
+  alz-runtime-data:
+    external: true
+  alz-evidence-keys:
+    external: true

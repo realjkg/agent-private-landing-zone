@@ -1,0 +1,28 @@
+# Loaded by an authorized Linux host administrator, never by the application.
+# Baseline CLI/SQLite profile: additional executables require separate review.
+#include <tunables/global>
+profile alz-runtime flags=(attach_disconnected,mediate_deleted) {
+  / r,
+  /** r,
+  /lib/** mr,
+  /usr/lib/** mr,
+  /usr/local/lib/** mr,
+  /app/node_modules/** mr,
+  /usr/local/bin/node ix,
+  /sbin/docker-init ix,
+  /dev/null rw,
+  /dev/urandom r,
+  /dev/random r,
+  /tmp/ rw,
+  /tmp/** rwk,
+  /app/.runs/ rw,
+  /app/.runs/** rwk,
+  # Kernel interfaces must never become writable via broad future rules.
+  deny /proc/** wklx,
+  deny /sys/** wklx,
+  deny /run/alz-keys/** wklx,
+  signal (send,receive) peer=alz-runtime,
+  signal (receive) peer=unconfined,
+  # Unix sockets support local runtime IPC; no IP sockets in this profile.
+  network unix,
+}

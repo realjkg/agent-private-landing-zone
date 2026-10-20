@@ -5,6 +5,7 @@
 - The same image source builds natively on GitHub-hosted Linux ARM64 and AMD64 runners.
 - Both images run with networking disabled for qualification. The final Node runtime is examined inside each image rather than relying on the host CPU.
 - Studio integration requires an external trusted OIDC/OAuth2 gateway capable of verifying issuer, audience, signature (via trusted key source), expiry, revocation policy, and role-specific scopes. This repository's admission metadata and typed flags **do not authenticate users**.
+- The implementation following blueprint PR #168 adds a trusted-host RS256 access-token verifier, mandatory session/revocation callback and enforced loopback bootstrap. See [container security](container-security.md). These implementations do not prove a deployed TLS/private Studio route or actual issuer interoperability.
 - Only the approved private ALZ MCP ingress should become reachable to Studio. The current Docker image runs the `operator help` CLI by default and does **not** expose a working MCP HTTP endpoint or implement Studio SSO.
 - Local-only inference policy requires a loopback Ollama endpoint in the chosen container/network topology. `localhost` is resolved in the container's own network namespace; an Ollama instance on the Mac host is **not automatically reachable** from a Linux container.
 - Do not add publicly reachable model endpoints, ambient cloud credentials, direct apply tools or remote inference fallbacks in order to make connectivity succeed.
