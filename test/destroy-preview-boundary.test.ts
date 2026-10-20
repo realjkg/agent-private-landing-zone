@@ -89,6 +89,7 @@ test("no adapter source contains a destroy, apply, deploy, target or replace arg
 // makes that a deliberate, reviewed act rather than a side effect.
 const ALLOWLIST: readonly string[] = [
   "ansible_preview", "ansible_syntax_check", "ansible_version", "aws_cloudtrail_trails", "aws_config_recorders",
+  "aws_controltower_get_landing_zone_operation", "aws_controltower_list_landing_zone_operations",
   "aws_controltower_list_landing_zones", "aws_org_describe", "aws_org_list_scps", "aws_sts_identity", "aws_version",
   "azure_account_show", "azure_management_groups", "azure_policy_assignments", "azure_version", "bicep_build",
   "bicep_lint", "bicep_version", "bicep_what_if", "cdk_preview", "cdk_synth", "cdk_version", "cloudformation_preview",
