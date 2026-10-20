@@ -560,3 +560,24 @@ test("debug context captures adapter process exit and sanitized output metadata"
     "number",
   );
 });
+
+test("Control Tower operation polling requires explicit cloud read",()=>{
+ const r=executeTool({tool:"aws_controltower_get_landing_zone_operation",
+  operationIdentifier:"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"},context);
+ assert.equal(Array.isArray(r),false);
+ if(!Array.isArray(r)){ assert.equal(r.blocked,true); assert.match(r.reason??"",/read-only cloud access/i); }
+});
+test("Control Tower operation polling validates UUID and rejects injected CLI arguments",()=>{
+ for(const operationIdentifier of ["","invalid","aaaa; aws s3 rm x","aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee --profile admin"]){
+  const r=executeTool({tool:"aws_controltower_get_landing_zone_operation",operationIdentifier},
+   {...context,allowCloudRead:true});
+  assert.equal(Array.isArray(r),false);
+  if(!Array.isArray(r)){ assert.equal(r.blocked,true); assert.match(r.reason??"",/UUID/i); }
+ }
+});
+test("AWS read tools reject unexpected operation identifiers",()=>{
+ const r=executeTool({tool:"aws_controltower_list_landing_zones",operationIdentifier:"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"},
+  {...context,allowCloudRead:true});
+ assert.equal(Array.isArray(r),false);
+ if(!Array.isArray(r)){ assert.equal(r.blocked,true); assert.match(r.reason??"",/only by the exact/i); }
+});
