@@ -1,0 +1,55 @@
+name: Studio ALZ multi-architecture qualification
+
+on:
+  pull_request:
+    paths:
+      - "src/integrations/ai-studio/**"
+      - "test/studio-platform-qualification.test.ts"
+      - "Dockerfile"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/studio-platform.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  abi-and-sso-prerequisites:
+    name: Linux ${{ matrix.arch }} private Studio preflight
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Build native image
+        run: |
+          docker build --platform linux/${{ matrix.arch }} --target runtime \
+            --build-arg SOURCE_COMMIT="${GITHUB_SHA}" -t alz-studio:qualify .
+      - name: Confirm native ABI, compiled ALZ and SQLite
+        run: |
+          test "$(docker image inspect alz-studio:qualify --format '{{.Os}}/{{.Architecture}}')" = "linux/${{ matrix.arch }}"
+          docker run --rm --network none --entrypoint node alz-studio:qualify -e '
+            const arch = process.arch === "x64" ? "amd64" : process.arch;
+            if (process.platform !== "linux" || arch !== "${{ matrix.arch }}") process.exit(2);
+            const Database=require("better-sqlite3");
+            const db=new Database(":memory:");
+            try { if(db.prepare("select 1 as n").get().n !== 1) process.exit(3); }
+            finally { db.close(); }
+          '
+          docker run --rm --network none alz-studio:qualify help
+          docker run --rm --network none --entrypoint node alz-studio:qualify \
+            dist/cli/release-package.js --root /app --verify
+      - name: Exercise Studio prerequisites (offline, no tokens or egress)
+        run: |
+          docker build --platform linux/${{ matrix.arch }} --target test \
+            --build-arg SOURCE_COMMIT="${GITHUB_SHA}" -t alz-studio:test .
+          docker run --rm --network none --entrypoint ./node_modules/.bin/tsx \
+            alz-studio:test --test test/studio-platform-qualification.test.ts
