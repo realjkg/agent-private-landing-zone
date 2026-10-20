@@ -197,7 +197,10 @@ test("the guard fails on an invented cli form, a missing source, a bad handoff o
 
 test("the broker allowlist and the driver exclusion hold", () => {
   const posture = getToolSecurityPosture();
-  assert.equal(posture.allowedTools.length, 39);
+  assert.equal(posture.allowedTools.length, 41);
+  // The two additions are read-only Control Tower operation status tools.
+  assert.ok(posture.allowedTools.includes("aws_controltower_list_landing_zone_operations"));
+  assert.ok(posture.allowedTools.includes("aws_controltower_get_landing_zone_operation"));
   assert.deepEqual(posture.mutationTools, []);
   assert.equal(posture.arbitraryShell, false);
   // No console-side or broker module imports the destroy-preview driver.
