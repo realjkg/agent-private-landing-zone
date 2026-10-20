@@ -42,10 +42,10 @@ const labels: Partial<
 console.log();
 console.log("Agent Private Landing Zone");
 console.log("────────────────────────────────");
-console.log("TOOLBOX SELF-CHECK");
+console.log("TOOLBOX SELF-CHECK (actual local executables)");
 console.log();
 
-for (const tool of checks) {
+const approvedDirs = approvedToolDirs();\nconst binaryByTool: Partial<Record<ToolName, string>> = {\n  terraform_version: "terraform", opentofu_version: "tofu", bicep_version: "bicep",\n  cloudformation_version: "aws", cdk_version: "cdk", ansible_version: "ansible-playbook",\n  crossplane_version: "crossplane", pulumi_version: "pulumi", aws_version: "aws", azure_version: "az"\n};\nconst missing: string[] = [];\nfor (const tool of checks) {
   const result =
     await runGovernedTool(
       { tool },
