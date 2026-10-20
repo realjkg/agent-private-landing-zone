@@ -3,7 +3,7 @@
  * orchestration and policy enforcement substrate. Skills/connectors remain
  * Studio-owned; only declared capabilities cross the MCP boundary.
  */
-export type AgentRole = "INVENTORY" | "PLAN" | "DESIGN" | "POLICY" | "IAC" | "VERIFY" | "OPERATE";
+import { packContext } from "../../orchestration/context-manager.js";\n\nexport type AgentRole = "INVENTORY" | "PLAN" | "DESIGN" | "POLICY" | "IAC" | "VERIFY" | "OPERATE";
 export type EngineId = "TERRAFORM" | "PULUMI" | "OPENTOFU" | "BICEP" | "CLOUDFORMATION" | "AWS_CDK" | "ANSIBLE" | "CROSSPLANE";
 export type Capability = "DISCOVERY_READ" | "EVIDENCE_READ" | "POLICY_ASSESS" | "IAC_PREVIEW";
 export type HarnessRoute = {
@@ -61,3 +61,18 @@ export function routeStudioSubagent(route: HarnessRoute, task: AgentTask): Route
 export const BASE_BUILD_ENGINES: readonly EngineId[] = [
   "TERRAFORM","PULUMI","OPENTOFU","BICEP","CLOUDFORMATION","AWS_CDK","ANSIBLE","CROSSPLANE"
 ];
+
+/**
+ * Build a bounded, evidence-linked context envelope for a routed sub-agent.
+ * Admission is independent: a caller must still verify route and capability.
+ */
+export function prepareSubagentContext(
+  route: HarnessRoute,
+  task: AgentTask,
+  parts: readonly import("../../orchestration/context-manager.js").ContextPart[],
+  windowTokens: number,
+): import("../../orchestration/context-manager.js").PackedContext {
+  const decision = routeStudioSubagent(route, task);
+  if (!decision.allowed) throw new Error(decision.reason);
+  return packContext(parts, windowTokens);
+}
