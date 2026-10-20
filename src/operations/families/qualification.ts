@@ -108,6 +108,14 @@ export const qualificationOperations: readonly OperationSpec[] = [
   "./alz qualify provider-aws --provider AWS --source-commit {sourceCommit} --aws-stack {stack} --aws-template qualification/provider/aws-noop-stack.yaml --output .runs/qualification/provider-aws.json",
   ["AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN", "AWS_REGION"]),
   handoff({
+    id: "provider-qualification-aws-target-binding", sub: "provider-aws-target", cliScript: "src/cli/aws-target-binding.ts",
+    title: "Verify protected AWS qualification target",
+    summary: "Checks that the manually assumed AWS role and account match the protected qualification environment before any provider preview.",
+    evidenceBasis: "LIVE STS CALLER METADATA PROVIDED BY AN OPERATOR — NO CREDENTIAL HANDLING OR CLOUD CALL IN THIS CHECK; ACT DISABLED",
+  }, "Protected AWS provider qualification must be launched by an authorized operator with a reviewed OIDC role, target account and controlled nonproduction stack. The console never obtains or holds any AWS credentials.",
+  "./alz qualify provider-aws-target",
+  ["AWS_QUALIFICATION_ROLE_ARN","AWS_QUALIFICATION_ACCOUNT_ID","AWS_QUALIFICATION_REGION","AWS_QUALIFICATION_STACK_NAME","AWS_QUALIFICATION_CALLER_ARN","AWS_QUALIFICATION_CALLER_ACCOUNT"]),
+  handoff({
     id: "provider-qualification-azure", sub: "provider-azure", cliScript: "src/cli/provider-qualification.ts",
     args: "--provider AZURE --source-commit <sha> --azure-bicep <file> --azure-location <region>",
     title: "Azure provider qualification",
