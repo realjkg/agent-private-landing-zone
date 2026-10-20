@@ -42,6 +42,7 @@ const ID=/^[A-Za-z0-9][A-Za-z0-9._:-]{1,95}$/;
 const REF=/^(?:evidence|secret|vault|keyring):\/\/[A-Za-z0-9][A-Za-z0-9._/-]{1,180}$/;
 const HASH=/^[a-f0-9]{64}$/;
 const REG=/^[a-z][a-z0-9-]{1,47}$/;
+const NAMESPACE=/^[A-Za-z0-9][A-Za-z0-9._:/-]{1,190}$/;
 const TARGET_FIELDS=["tenantId","environmentId","stage","provider","accountOrProject","region","executionIdentityRef","stateNamespace","evidenceNamespace","keyScopeRef"] as const;
 function checkTarget(target: StageTarget, reasons: string[]): void {
   if (!target || typeof target!=="object" || Array.isArray(target)) {
@@ -49,8 +50,11 @@ function checkTarget(target: StageTarget, reasons: string[]): void {
   }
   if (Object.keys(target).some(k=>!TARGET_FIELDS.includes(k as typeof TARGET_FIELDS[number])))
     reasons.push("STAGE_TARGET_FIELD_UNKNOWN");
-  for (const k of ["tenantId","environmentId","accountOrProject","stateNamespace","evidenceNamespace"] as const)
+  for (const k of ["tenantId","environmentId","accountOrProject"] as const)
     if (typeof target[k]!=="string" || !ID.test(target[k])) reasons.push("STAGE_TARGET_INVALID_"+k);
+  for (const k of ["stateNamespace","evidenceNamespace"] as const)
+    if(typeof target[k]!=="string" || !NAMESPACE.test(target[k]) || target[k].includes(".."))
+      reasons.push("STAGE_NAMESPACE_INVALID_"+k);
   if (!["DEVELOPMENT","STAGING","PRODUCTION"].includes(target.stage))
     reasons.push("STAGE_INVALID");
   if (!["AWS","AZURE","GCP","PRIVATE"].includes(target.provider))
@@ -61,7 +65,7 @@ function checkTarget(target: StageTarget, reasons: string[]): void {
       reasons.push("STAGE_REF_INVALID_"+k);
   // State, evidence and key paths are stage and tenant namespaced. Never
   // infer an omitted stage from provider defaults or environment aliases.
-  const prefix=target.tenantId+"/"+target.stage.toLowerCase()+"/"+target.environmentId+"/";
+  const prefix=String(target.tenantId)+"/"+String(target.stage).toLowerCase()+"/"+String(target.environmentId)+"/";
   if (!target.stateNamespace.startsWith(prefix)) reasons.push("STATE_NAMESPACE_CROSS_BOUNDARY");
   if (!target.evidenceNamespace.startsWith(prefix)) reasons.push("EVIDENCE_NAMESPACE_CROSS_BOUNDARY");
   const keyScope=target.tenantId+"/"+target.stage.toLowerCase()+"/"+target.environmentId;
