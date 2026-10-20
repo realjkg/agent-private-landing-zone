@@ -44,3 +44,19 @@ test("first-time organization creation is separately approved only with verified
   assert.equal(classifyAwsResource(intent,{organization:"ABSENT",landingZone:"ABSENT",managementAccountVerified:true}).verdict,"BOOTSTRAP_APPROVAL_REQUIRED");
   assert.equal(classifyAwsResource(intent,{organization:"EXISTS",landingZone:"ABSENT",managementAccountVerified:true}).verdict,"PARALLEL_GOVERNANCE_FORBIDDEN");
 });
+
+test("opaque nested CloudFormation and custom resources must be expanded before apply", () => {
+ for(const resourceType of [
+  "AWS::CloudFormation::Stack","aws_cloudformation_stack",
+  "AWS::CloudFormation::StackSet","aws_cloudformation_stack_set",
+  "Custom::AWS","aws_cloudformation_stack_set_instance"
+ ]) {
+  const result=classifyAwsResource({resourceType,action:"CREATE"});
+  if(resourceType==="Custom::AWS") {
+    // Unknown dynamic custom resource can execute arbitrary provider actions.
+    assert.equal(result.verdict,"UNKNOWN_REVIEW_REQUIRED");
+  } else {
+    assert.equal(result.verdict,"UNKNOWN_REVIEW_REQUIRED");
+  }
+ }
+});
