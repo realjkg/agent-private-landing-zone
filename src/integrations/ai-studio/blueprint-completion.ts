@@ -21,9 +21,13 @@ export type LandingZoneBlueprint = {
     discoveryEvidenceRef: string;
   };
   environments: {
-    devAccountId: string;
-    nonProdAccountId: string;
-    productionAccountId: string;
+    devAccountId?: string;
+    nonProdAccountId?: string;
+    productionAccountId?: string;
+    /** Planning targets are required before account IDs exist during bootstrap. */
+    devAccountAlias: string;
+    nonProdAccountAlias: string;
+    productionAccountAlias: string;
     separateStateBackends: boolean;
     separateExecutionIdentities: boolean;
   };
@@ -88,10 +92,19 @@ export function completeLandingZoneBlueprint(value: LandingZoneBlueprint): Bluep
   const e=value.environments;
   need(!!e,"environments");
   if(e){
-    for(const key of ["devAccountId","nonProdAccountId","productionAccountId"] as const)
-      need(ACCOUNT.test(e[key]??""),"environments."+key);
-    need(new Set([e.devAccountId,e.nonProdAccountId,e.productionAccountId]).size===3,
-      "environments.distinctTargets");
+    for(const key of ["devAccountAlias","nonProdAccountAlias","productionAccountAlias"] as const)
+      need(typeof e[key]==="string" && SAFE.test(e[key]),"environments."+key);
+    need(new Set([e.devAccountAlias,e.nonProdAccountAlias,e.productionAccountAlias]).size===3,
+      "environments.distinctTargetAliases");
+    if(value.scope!=="CONTROL_TOWER_BOOTSTRAP") {
+      for(const key of ["devAccountId","nonProdAccountId","productionAccountId"] as const)
+        need(ACCOUNT.test(e[key]??""),"environments."+key);
+      need(new Set([e.devAccountId,e.nonProdAccountId,e.productionAccountId]).size===3,
+        "environments.distinctTargets");
+    } else {
+      for(const key of ["devAccountId","nonProdAccountId","productionAccountId"] as const)
+        need(e[key]===undefined || ACCOUNT.test(e[key]),"environments."+key);
+    }
     need(e.separateStateBackends===true,"environments.separateStateBackends");
     need(e.separateExecutionIdentities===true,"environments.separateExecutionIdentities");
   }
