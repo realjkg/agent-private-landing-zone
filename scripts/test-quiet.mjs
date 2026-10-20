@@ -15,15 +15,17 @@ const logFile = join(dir, stamp + ".log");
 const latest = join(dir, "latest.log");
 const log = createWriteStream(logFile, { flags: "wx", mode: 0o600 });
 const steps = [
-  ["Build UI", ["run", "build:ui"]],
-  ["Node tests", ["run", "test:node"]],
-  ["UI tests", ["run", "test:ui"]],
+  { title: "Preparing operator interface", detail: "Compiling UI assets and checking page rendering", args: ["run", "build:ui"] },
+  { title: "Checking ALZ behavior and safeguards", detail: "Running service, workflow, policy and authorization tests", args: ["run", "test:node"] },
+  { title: "Checking operator UI", detail: "Running UI compatibility tests", args: ["run", "test:ui"] },
 ];
 const frames = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"];
 const started = Date.now();
 let active = null;
 let spinner = null;
 let stepName = "";
+let stepDetail = "";
+let stepCommand = "";
 let frame = 0;
 let stopping = false;
 let nodeSummary = "";
@@ -34,7 +36,7 @@ const elapsed = () => {
   return String(Math.floor(seconds / 60)).padStart(2, "0") + ":" + String(seconds % 60).padStart(2, "0");
 };
 const clear = () => { if (tty) process.stdout.write("\r\x1b[2K"); };
-const redraw = () => { if (tty) { clear(); process.stdout.write(frames[frame++ % frames.length] + " " + stepName + "… " + elapsed() + " elapsed"); } };
+const redraw = () => { if (tty) { clear(); process.stdout.write(frames[frame++ % frames.length] + " " + stepName + " · " + elapsed() + " elapsed"); } };
 const finishSpinner = () => {
   if (spinner) clearInterval(spinner);
   spinner = null;
@@ -49,12 +51,16 @@ function consume(chunk) {
     if (/^(?:ℹ |# )(?:tests|pass|fail|skipped)\s+\d+/.test(line)) nodeSummary += line + "\n";
   }
 }
-function runStep(name, args) {
-  stepName = name;
-  if (!tty) console.log("· " + name + "…");
+function runStep(step, index) {
+  stepName = step.title;
+  stepDetail = step.detail;
+  stepCommand = "npm " + step.args.join(" ");
+  console.log("\n[" + (index + 1) + "/" + steps.length + "] " + stepName);
+  console.log("  " + stepDetail);
+  console.log("  Command: " + stepCommand);
   redraw();
   return new Promise(resolve => {
-    const child = spawn("npm", args, {
+    const child = spawn("npm", step.args, {
       cwd: root, env: { ...process.env, FORCE_COLOR: "0" },
       stdio: ["ignore", "pipe", "pipe"], shell: false
     });
@@ -75,12 +81,17 @@ process.on("SIGTERM", () => stop("SIGTERM"));
 process.on("SIGHUP", () => stop("SIGHUP"));
 
 if (tty) spinner = setInterval(redraw, 100);
+console.log("ALZ verification  |  Caller: npm run test:quiet");
+console.log("  Full output: " + join(".runs", "tests", "latest.log"));
 log.write("ALZ local test run: " + new Date(started).toISOString() + "\n");
 let exitCode = 0;
-for (const [name, args] of steps) {
+for (const [index, step] of steps.entries()) {
   if (stopping) { exitCode = 130; break; }
-  const code = await runStep(name, args);
+  const code = await runStep(step, index);
   if (code !== 0) { exitCode = code; break; }
+  finishSpinner();
+  console.log("✓ " + step.title + " completed");
+  if (tty) spinner = setInterval(redraw, 100);
 }
 finishSpinner();
 const counters = Object.fromEntries([...nodeSummary.matchAll(/^(?:ℹ |# )(tests|pass|fail|skipped)\s+(\d+)/gm)].map(x => [x[1], Number(x[2])]));
@@ -88,6 +99,7 @@ const summary = counters.pass === undefined ? "" :
   counters.pass + " passed · " + (counters.fail ?? 0) + " failed · " + (counters.skipped ?? 0) + " skipped · ";
 console.log((exitCode === 0 ? "✓ " : "✖ ") + (exitCode === 0 ? "ALZ tests passed" : stepName + " failed") + " · " + summary + elapsed());
 console.log("  Log: " + join(".runs", "tests", "latest.log"));
+if (exitCode !== 0) console.error("  Failed command: " + stepCommand + "\n  Next: review the log and rerun npm run test:quiet.");
 if (exitCode !== 0) {
   const all = recent.split(/\r?\n/);
   const failures = all.filter(line => /(?:^\s*[✖×]|not ok\b|AssertionError|Error \[|error TS\d+|FAIL\b)/i.test(line));
