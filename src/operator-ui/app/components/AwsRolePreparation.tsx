@@ -12,7 +12,7 @@ const BUDGET_CEILING = 80;
 export function AwsRolePreparation() {
   const [account, setAccount] = useState("");
   const [identifier, setIdentifier] = useState("adaptcloud-dev");
-  const [issuer, setIssuer] = useState("token.actions.githubusercontent.com");
+  const issuer = "token.actions.githubusercontent.com";
   const [repo, setRepo] = useState("realjkg/agent-private-landing-zone");
   const [copied, setCopied] = useState(false);
   const valid = ACCOUNT.test(account) && IDENTIFIER.test(identifier) &&
@@ -20,8 +20,6 @@ export function AwsRolePreparation() {
     /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo);
   // Avoid deriving authority from a string. The plan is a proposed contract for review, not a trust policy grant.
   const roleNames = {
-    organizationRead: "sovereign-alz-org-discovery",
-    organizationBootstrap: "sovereign-alz-org-bootstrap",
     environmentBootstrap: `${identifier}-bootstrap`,
     ...Object.fromEntries(IDENTITIES.map((identity) => [identity, `${identifier}-${identity}`])),
   };
@@ -35,6 +33,7 @@ export function AwsRolePreparation() {
     region: "SELECT_BEFORE_QUALIFICATION",
     engine: "TERRAFORM",
     cumulativeCloudCreditLimitUsd: BUDGET_CEILING,
+    organizationRoleTemplates: ["sovereign-alz-org-discovery", "sovereign-alz-org-bootstrap"],
     roles: Object.fromEntries(Object.entries(roleNames).map(([key, name]) =>
       [key, { name, proposedArn: `arn:aws:iam::${account}:role/${name}`, status: "NOT_CREATED" }])),
     oidc: {
@@ -79,13 +78,13 @@ export function AwsRolePreparation() {
         onChange={(e) => { setIdentifier(e.target.value); setCopied(false); }} />
       <label className="field-label" htmlFor="alz-role-repository">Authorized GitHub repository</label>
       <input id="alz-role-repository" value={repo} onChange={(e) => { setRepo(e.target.value); setCopied(false); }} />
-      <p><small>Terraform first. Proposed roles: organization discovery/bootstrap, DEV bootstrap, and separate DEV discovery, state, state-write and apply. CDK follows separate qualification.</small></p>
+      <p><small>Terraform first. Proposed roles: organization discovery/bootstrap templates, DEV bootstrap, and separate DEV discovery, state, state-write and apply. CDK follows separate qualification.</small></p>
       {valid ? (
         <>
           <p role="status">Role names and proposed OIDC subjects are ready for owner review. No roles have been created.</p>
           <details>
             <summary>Review generated role plan</summary>
-            <pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{serialized}</pre>
+            <textarea aria-label="Generated AWS role plan" readOnly value={serialized} rows={12} />
           </details>
           <button type="button" onClick={() => void copy()}>{copied ? "Plan copied" : "Copy role-preparation plan"}</button>
         </>
