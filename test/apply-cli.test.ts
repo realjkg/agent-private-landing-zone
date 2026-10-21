@@ -818,3 +818,30 @@ test("preflight is read-only and offline: it reports shape, pin, identities, too
   assert.equal((await run([])).code, 1);
   assert.equal((await run(["--environment", "DEV", "--force", "yes"])).code, 1);
 });
+
+test("preflight gives a safe readiness item for a missing or unreadable owner contract", async () => {
+  const w = await world(undefined, false);
+  const before = engineCalls().length;
+  const args = ["preflight", "--environment", "DEV"];
+  const absent = await cli(w, args, []);
+  assert.equal(absent.code, 2, absent.stderr);
+  assert.equal(absent.stderr, "", "missing pilot configuration must not surface a generic input-file error");
+  const missing = JSON.parse(absent.stdout) as { ready: boolean; authentication: string; checks: { check: string; ok: boolean; detail?: string }[] };
+  assert.equal(missing.ready, false);
+  assert.match(missing.authentication, /^SIMULATED/);
+  assert.equal(missing.checks.length, 1);
+  assert.match(missing.checks[0].check, /^contract shape/);
+  assert.equal(missing.checks[0].ok, false);
+  assert.match(missing.checks[0].detail ?? "", /has not been installed by the owner/);
+  assert.equal(engineCalls().length, before, "preflight never starts an engine");
+
+  writeFileSync(w.contractPath, "{");
+  const malformed = await cli(w, args, []);
+  assert.equal(malformed.code, 2, malformed.stderr);
+  assert.equal(malformed.stderr, "");
+  const broken = JSON.parse(malformed.stdout) as { ready: boolean; checks: { ok: boolean; detail?: string }[] };
+  assert.equal(broken.ready, false);
+  assert.equal(broken.checks[0].ok, false);
+  assert.match(broken.checks[0].detail ?? "", /cannot be read as valid JSON/);
+  assert.equal(engineCalls().length, before, "invalid configuration cannot start an engine");
+});

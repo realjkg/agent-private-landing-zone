@@ -492,7 +492,22 @@ const preflightCommand: Command = async (flags, _terminal, deps, out) => {
   const environment = flags.environment[0];
   if (!(ENVIRONMENTS as readonly string[]).includes(environment)) fail("APPLY_ARGUMENT_INVALID", "--environment must be DEV, QA or PROD");
   const path = flags.contract?.[0] ?? deps.contractPath ?? repoPaths().contract;
-  const inspected = inspectPilotContract(readInput(path, "the pilot contract"));
+  // Missing owner configuration is a BLOCKED readiness item, not a failed user-entered request path.
+  // Preflight remains offline, read-only and fail-closed; it never synthesizes or enables a contract.
+  let inspected: ReturnType<typeof inspectPilotContract>;
+  try {
+    inspected = inspectPilotContract(readInput(path, "the pilot contract"));
+  } catch (error) {
+    if (!(error instanceof CliError)) throw error;
+    const detail = existsSync(path)
+      ? "The pilot contract exists but cannot be read as valid JSON. Ask the pilot owner to correct it."
+      : "The pilot contract has not been installed by the owner. Infrastructure ACT remains disabled.";
+    out.say(JSON.stringify({
+      environment, ready: false, authentication: AUTHENTICATION_STATUS,
+      checks: [{ check: "contract shape (provider, engine, targets, approvals, approvers)", ok: false, detail }],
+    }, null, 2) + "\n");
+    return EXIT.BLOCKED;
+  }
   const checks: { check: string; ok: boolean; detail?: string }[] = [];
   const add = (check: string, ok: boolean, detail?: string) => { checks.push({ check, ok, ...(detail === undefined ? {} : { detail }) }); };
   add("contract shape (provider, engine, targets, approvals, approvers)", inspected.ok, inspected.ok ? undefined : inspected.reason);
