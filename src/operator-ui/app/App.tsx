@@ -57,7 +57,10 @@ export function OperatorApp(props: OperatorAppProps) {
     props.initialLevel ? parseExperienceLevel(props.initialLevel) : readStoredLevel,
   );
   const [jobState, setJobState] = useState<JobState | null>(props.initialJobState ?? null);
-  const [mode, setMode] = useState<OperatorMode>("matrix-offline");
+  // Prefer the real local Qwen/Mistral path; the existing model probe
+  // reverts to offline fixtures if a private model is unavailable.
+  // Selection alone never starts inference or obtains cloud authority.
+  const [mode, setMode] = useState<OperatorMode>("matrix-live");
   const [scenario, setScenario] = useState("all");
   const [launching, setLaunching] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
@@ -206,6 +209,7 @@ export function OperatorApp(props: OperatorAppProps) {
                   jobState={jobState}
                   busy={running}
                   sessionUnavailable={sessionUnavailable}
+                  modelAvailability={modelAvailability}
                   onLaunch={launch}
                 />
                 <ProtectionCard />
