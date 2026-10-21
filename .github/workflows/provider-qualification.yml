@@ -25,6 +25,7 @@ jobs:
     environment: provider-qualification-aws
     env:
       AWS_QUALIFICATION_ROLE_ARN: ${{ vars.AWS_QUALIFICATION_ROLE_ARN }}
+      AWS_QUALIFICATION_ACCOUNT_ID: ${{ vars.AWS_QUALIFICATION_ACCOUNT_ID }}
       AWS_QUALIFICATION_REGION: ${{ vars.AWS_QUALIFICATION_REGION }}
       AWS_QUALIFICATION_STACK_NAME: ${{ vars.AWS_QUALIFICATION_STACK_NAME }}
 
@@ -52,6 +53,7 @@ jobs:
         run: |
           set -euo pipefail
           : "${AWS_QUALIFICATION_ROLE_ARN:?AWS qualification role ARN is required}"
+          : "${AWS_QUALIFICATION_ACCOUNT_ID:?AWS qualification account ID is required}"
           : "${AWS_QUALIFICATION_REGION:?AWS qualification region is required}"
           : "${AWS_QUALIFICATION_STACK_NAME:?AWS qualification stack name is required}"
 
@@ -64,6 +66,29 @@ jobs:
           export AWS_ACCESS_KEY_ID
           export AWS_SECRET_ACCESS_KEY
           export AWS_SESSION_TOKEN
+          # Check the actual caller against the protected environment account
+          # and role before any discovery or Change Set preview is attempted.
+          # OIDC session keys remain short-lived and are never printed.
+          AWS_QUALIFICATION_CALLER_ACCOUNT="$(aws sts get-caller-identity --query Account --output text)"
+          AWS_QUALIFICATION_CALLER_ARN="$(aws sts get-caller-identity --query Arn --output text)"
+          export AWS_QUALIFICATION_CALLER_ACCOUNT AWS_QUALIFICATION_CALLER_ARN
+          node --input-type=module -e '
+            import { assessAwsQualificationTarget } from "./dist/qualification/aws-target-binding.js";
+            const e = process.env;
+            const r = assessAwsQualificationTarget({
+              expectedRoleArn: e.AWS_QUALIFICATION_ROLE_ARN ?? "",
+              expectedAccountId: e.AWS_QUALIFICATION_ACCOUNT_ID ?? "",
+              configuredRegion: e.AWS_QUALIFICATION_REGION ?? "",
+              stackName: e.AWS_QUALIFICATION_STACK_NAME ?? "",
+              actualCallerArn: e.AWS_QUALIFICATION_CALLER_ARN ?? "",
+              actualAccountId: e.AWS_QUALIFICATION_CALLER_ACCOUNT ?? ""
+            });
+            if (!r.allowed) {
+              console.error("AWS D4 TARGET BINDING BLOCKED: " + r.reasons.join(","));
+              process.exit(1);
+            }
+            console.log("AWS D4 target binding verified; ACT DISABLED");
+          '
           export AWS_REGION="${AWS_QUALIFICATION_REGION}"
           export AWS_DEFAULT_REGION="${AWS_QUALIFICATION_REGION}"
 
