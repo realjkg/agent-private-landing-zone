@@ -9,6 +9,7 @@ import { extname, join, resolve, sep } from "node:path";
 import { loadConfig } from "../config.js";
 import { sanitizeDiagnosticText } from "../observability/redaction.js";
 import { OPERATIONS } from "../operations/registry.js";
+import type { LocalOperationsAdapter } from "../operations/local-adapter.js";
 import { planOperation, runPlanned } from "../operations/run.js";
 import { describeOperation, maxRequestBytes } from "../operations/schema.js";
 import type { OperationSpec, OperatorJob } from "../operations/types.js";
@@ -186,6 +187,8 @@ export function createLocalOperatorServer(options: {
   root: string;
   runner?: (job: OperatorJob, root: string) => Promise<string>;
   modelProbe?: () => Promise<ModelAvailability>;
+  /** Optional authenticated adapter from createDualEntryOperations; never synthesize caller identity. */
+  localOperations?: LocalOperationsAdapter;
   /** Test seam: the operation catalog. Production uses the registry. */
   catalog?: readonly OperationSpec[];
   /** Test seam for the pilot wizard's channel (src/cli/ui-channel.ts): its session token, timeouts and the CLI locations. */
@@ -253,6 +256,45 @@ export function createLocalOperatorServer(options: {
     if (req.method === "GET" && req.url === "/operations") {
       // Public descriptors only: no script, path or argument builder.
       send(200, "application/json", operationsJson);return;
+    }
+    // Authenticated local access to the same service instance used by Studio MCP.
+    // No adapter means unavailable, not anonymous access.
+    if ((req.url === "/api/operations" && req.method === "GET") ||
+        (req.url === "/api/operations/invoke" && req.method === "POST")) {
+      if (!options.localOperations) {
+        send(503, "application/json", '{"error":"LOCAL_AUTH_NOT_CONFIGURED"}');return;
+      }
+      if (req.headers["x-alz-csrf"] !== token) {
+        send(403, "application/json", '{"error":"CSRF_TOKEN_REQUIRED"}');return;
+      }
+      if (req.method === "GET") {
+        const result = await options.localOperations.list();
+        send(result.ok ? 200 : 403, "application/json", JSON.stringify(result));return;
+      }
+      if (!(req.headers["content-type"] ?? "").startsWith("application/json")) {
+        send(415, "application/json", '{"error":"JSON_REQUIRED"}');return;
+      }
+      let raw = "";
+      let received = 0;
+      for await (const chunk of req as AsyncIterable<Buffer>) {
+        received += chunk.length;
+        if (received > 64 * 1024) {
+          send(413, "application/json", '{"error":"REQUEST_TOO_LARGE"}');return;
+        }
+        raw += chunk.toString();
+      }
+      let payload: unknown;
+      try { payload = JSON.parse(raw); } catch {
+        send(400, "application/json", '{"error":"INVALID_JSON"}');return;
+      }
+      if (!payload || typeof payload !== "object" || Array.isArray(payload) ||
+          typeof (payload as Record<string, unknown>).operation !== "string" ||
+          Object.keys(payload).some((key) => key !== "operation" && key !== "inputs")) {
+        send(400, "application/json", '{"error":"INVALID_OPERATION"}');return;
+      }
+      const request = payload as { operation: string; inputs?: unknown };
+      const result = await options.localOperations.invoke(request.operation, request.inputs ?? {});
+      send(result.ok ? 200 : 403, "application/json", JSON.stringify(result));return;
     }
     if (req.method === "GET" && req.url === "/models") {
       // Advisory, read-only availability for the private-model workflows;
