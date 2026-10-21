@@ -107,7 +107,7 @@ test("dependency-only inspection never installs optional Crossplane or other too
 });
 
 test("AWS journey prioritizes Terraform and CDK while keeping advanced engines available", async () => {
-  const t = terminal(["2", "1", "1", "2", "1", "n"]);
+  const t = terminal(["2", "1", "1", "2", "1", "n", "n"]);
   const result = await runGuidedSetup({terminal:t,checks});
   assert.equal(result.selected?.provider,"aws");
   assert.equal(result.selected?.engine,"cdk");
