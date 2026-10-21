@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { generateKeyPairSync, sign } from "node:crypto";
+import { createPublicKey, generateKeyPairSync, sign } from "node:crypto";
 import test from "node:test";
 import { request } from "node:http";
 import { createMcpJwtVerifier, type McpJwtPolicy } from "../src/security/mcp-jwt.js";
@@ -59,7 +59,9 @@ test("JWT trust policy rejects weak/duplicate keys and cannot be widened by late
   assert.equal(await verify(jwt({ tenant: "tenant-b", aud: "other" })), null);
   assert.throws(() => createMcpJwtVerifier({ ...policy(), jwks: { keys: [jwk, jwk] } }));
   assert.throws(() => createMcpJwtVerifier({ ...policy(), issuer: "http://issuer.test" }));
-  const weak = generateKeyPairSync("rsa", { modulusLength: 1024 }).publicKey.export({ format: "jwk" });
+  // Synthetic public-only modulus exercises the size guard without generating a weak key pair.
+  const weak = { ...jwk, n: Buffer.alloc(128, 0xff).toString("base64url") };
+  assert.equal(createPublicKey({ key: weak, format: "jwk" }).asymmetricKeyDetails?.modulusLength, 1024);
   assert.throws(() => createMcpJwtVerifier({ ...policy(), jwks: { keys: [{ ...jwk, ...weak }] } }), /WEAK/);
 });
 test("production bootstrap enforces loopback and real JWT auth across MCP discovery and mutation denial", async () => {
