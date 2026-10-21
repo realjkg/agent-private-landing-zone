@@ -1,5 +1,5 @@
 import { beginnerEvidenceLine } from "../../experience-level.js";
-import type { JobState, OperatorMode } from "../api";
+import type { JobState, ModelAvailability, OperatorMode } from "../api";
 import { beginnerStatusLine } from "../beginner-status";
 
 /**
@@ -11,9 +11,14 @@ export function BeginnerPath(props: {
   jobState: JobState | null;
   busy: boolean;
   sessionUnavailable: boolean;
+  modelAvailability?: ModelAvailability | null;
   onLaunch: (mode: OperatorMode) => void;
 }) {
   const job = props.jobState;
+  // A real local model assessment is the first recommendation only when
+  // the advisory loopback probe confirms all configured private models.
+  // The button does not run inference until the person selects it.
+  const modelReady = props.modelAvailability?.status === "AVAILABLE";
   const statusLine = beginnerStatusLine(job);
   // NOT_RUN renders the shared beginner translation as the initial proof line.
   const proofLine = props.jobState
@@ -32,12 +37,14 @@ export function BeginnerPath(props: {
           type="button"
           className="card primary"
           disabled={props.busy}
-          onClick={() => props.onLaunch("matrix-offline")}
+          onClick={() => props.onLaunch(modelReady ? "matrix-live" : "matrix-offline")}
         >
           <strong>
-            Explore governed scenarios<span className="badge">Recommended</span>
+            {modelReady ? "Analyze with private models" : "Explore governed scenarios"}<span className="badge">Recommended</span>
           </strong>
-          <small>See how this protected workspace works. Nothing is changed anywhere.</small>
+          <small>{modelReady
+            ? "Use Qwen/Mistral on this machine; no infrastructure changes."
+            : "Explore safely offline. The private models are not ready yet."}</small>
         </button>
         <button
           type="button"
