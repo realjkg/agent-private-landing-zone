@@ -14,6 +14,14 @@ Use a lean loop:
 
 Do not turn CI into the development loop.
 
+## Local operator experience and output budget
+
+- **Model-interface first:** the normal operator journey is the packaged, loopback-only Sovereign ALZ UI opened with `./alz`. Do not lead customers or operators through raw npm scripts, test files, setup menus, or verbose terminal output when the UI can carry the workflow.
+- **Quiet by default:** verbose `npm run test:node` and complete test transcripts belong in CI or private engineering logs, not the user-facing workflow. For explicit local engineering qualification, use the existing concise `npm run test:quiet` runner; preserve full stdout/stderr under `.runs/tests/` and report counts, failure codes and exact source identity.
+- **One-time local bundle:** source checkouts use `./alz bootstrap` to prepare the runtime and UI; its terminal output stays concise and detailed build logs stay in `.runs/bootstrap/`. Subsequent usage is `./alz`, without further npm commands.
+- The interface checks local Qwen/Mistral readiness but does not silently pull weights, start inference, authenticate to cloud providers, switch stages, or authorize infrastructure mutation. If private inference is unavailable, show a clear BLOCKED/unavailable reason and offer the existing offline workflow.
+- Synthetic model, IaC and identity tests must never be presented as authentic AWS provider qualification or production release approval.
+
 ## Deterministic execution sequence
 
 Every workstream uses one execution order:
