@@ -128,10 +128,27 @@ export async function runGuidedSetup(options: SetupOptions): Promise<SetupOutcom
     if (!stage) return { openWorkspace: false, openBrowser: false };
     const provider = await menu(terminal, "Target platform", PROVIDERS, PROVIDERS.map((p) => PROVIDER_HELP[p]));
     if (!provider) return { openWorkspace: false, openBrowser: false };
-    const engine = await menu(terminal, "Infrastructure engine", ENGINES, [
-      "General-purpose IaC", "Language-based IaC", "Terraform-compatible IaC", "Azure-native",
-      "AWS-native", "AWS CDK", "Kubernetes control-plane compositions", "Host configuration",
-    ]);
+    // Two primary AWS engines, with the existing catalog preserved behind
+    // advanced selection. This is presentation only; no driver or policy fork.
+    let engine: LandingEngine | null = null;
+    if (provider === "aws") {
+      const choice = await menu(terminal, "AWS infrastructure engine", ["terraform", "cdk", "advanced"] as const, [
+        "Recommended: reviewed AWS Terraform modules",
+        "AWS CDK: synthesize and review CloudFormation Change Sets",
+        "Other registered engines (independent qualification required)",
+      ]);
+      if (!choice) return { openWorkspace: false, openBrowser: false };
+      if (choice === "advanced") {
+        const others = ENGINES.filter((item) => item !== "terraform" && item !== "cdk");
+        engine = await menu(terminal, "Advanced infrastructure engines", others,
+          others.map(() => "Optional; separate dependency and qualification checks"));
+      } else engine = choice;
+    } else {
+      engine = await menu(terminal, "Infrastructure engine", ENGINES, [
+        "General-purpose IaC", "Language-based IaC", "Terraform-compatible IaC", "Azure-native",
+        "AWS-native", "AWS CDK", "Kubernetes control-plane compositions", "Host configuration",
+      ]);
+    }
     if (!engine) return { openWorkspace: false, openBrowser: false };
     const inference = await menu(terminal, "Private inference", ["offline", "local-models"] as const, [
       "Synthetic fixtures, no model runtime needed",
@@ -145,6 +162,14 @@ export async function runGuidedSetup(options: SetupOptions): Promise<SetupOutcom
   terminal.write("\nYour plan: " + selected.stage + " / " + selected.provider.toUpperCase() +
     " / " + selected.engine.toUpperCase() + "\n");
   terminal.write("  " + plan.notice + "\n");
+  if (plan.awsGuidance) {
+    terminal.write("AWS delivery path: " + plan.awsGuidance.environment.toUpperCase() +
+      " / " + (plan.awsGuidance.primaryEngine?.toUpperCase() ?? "ADVANCED ENGINE") + "\n");
+    terminal.write("Identity and permissions (advisory, not granted):\n");
+    for (const item of plan.awsGuidance.permissions) terminal.write("  - " + item + "\n");
+    terminal.write("Next steps:\n");
+    for (const item of plan.awsGuidance.nextSteps) terminal.write("  - " + item + "\n");
+  }
   terminal.write("Required dependencies for this selection:\n");
   for (const tool of plan.tools.filter((x) => x.status === "REQUIRED")) {
     terminal.write("  " + (tool.installed ? "OK" : "NEEDS ATTENTION") + " " + tool.label + " — " + tool.detail + "\n");
