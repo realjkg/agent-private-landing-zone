@@ -10,13 +10,17 @@ From a source checkout that has completed the standard one-time `./alz bootstrap
 ./alz
 ```
 
-This opens the foreground Terminal guide on a local interactive Mac. Choose **Tour the workspace** to see the UI, or **Configure** to select a planning stage (development, staging/non-production, production), provider (AWS, Azure, GCP, private), engine (including Crossplane), and whether local Qwen/Mistral inference is desired. It explains which binaries are required for **your selection** and which integrations are optional. It never installs optional products automatically. Any missing pinned core Terraform/Ollama tool can be installed separately with the existing checksum-pinned, phrase-confirmed `./alz deps` dialog.
+**One-command model-first startup:** On a prepared, interactive Mac, `./alz` opens the built-in local Sovereign ALZ browser workspace at `http://127.0.0.1:8788` without requiring npm commands or terminal menu navigation. Advanced/Expert workflow selection starts with the private Qwen/Mistral option, with a read-only model availability check. If the required local Ollama models are missing or disabled, the existing UI automatically selects the offline fixture workflow and explains the gap. No model is run merely by opening the page.
 
-The wizard offers to start the local visual workspace and, with separate consent, open the default Mac browser to its fixed loopback URL. For direct expert startup without the wizard:
+If the local workspace has not been built, `./alz` falls back to the existing guided setup. `./alz bootstrap` builds the runtime and UI once; it is a development checkout step, not a recurring user journey. For required and optional tool checks use `./alz deps`; installs still require deliberate, separately confirmed operator action.
+
+For a manual start that only prints the URL without opening your browser:
 
 ```sh
 ./alz workspace
 ```
+
+Operator qualification is ordinarily conducted through the local interface and CI. Engineers requiring a full local regression may use the existing **quiet** test runner (`npm run test:quiet`), which writes complete logs to `.runs/tests/latest.log` and prints a short summary. Do not direct ordinary operators to the verbose `npm run test:node` output. A green local suite or offline model matrix does not qualify live AWS, production admission, or ACT.
 
 Open the displayed `http://127.0.0.1:8788` address **on the same machine**. Alternative local port: `ALZ_OPERATOR_PORT=8790 ./alz workspace`. No public listener, remote interface, password or internet portal is enabled.
 
