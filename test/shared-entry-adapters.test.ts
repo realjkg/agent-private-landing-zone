@@ -10,8 +10,8 @@ const catalog:OperationSpec[]=[
   {id:"health",title:"Health",summary:"Read status",family:"evidence",cli:"./alz health",
     safety:"READ_ONLY",inputs:[],evidenceBasis:"FIXTURE",job:{script:"cli/health.js",args:()=>[]}},
   {id:"deploy",title:"Deploy",summary:"Not available via shared read-only API",
-    family:"governance",cli:"./alz deploy",safety:"MUTATION",inputs:[],evidenceBasis:"FIXTURE",
-    job:{script:"cli/deploy.js",args:()=>[]}},
+    family:"governance",cli:"./alz deploy",safety:"HANDOFF",inputs:[],evidenceBasis:"FIXTURE",
+    handoff:{reason:"Operator approval required",command:"./alz apply approve"}},
 ];
 const identity=(overrides:Partial<VerifiedCaller["identity"]>={}):VerifiedCaller=>({
   verifiedBy:"TRUSTED_GATEWAY",
