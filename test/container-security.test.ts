@@ -44,7 +44,7 @@ test("production confinement stays separate from development; signing has no PR 
   const release = read(".github/workflows/container-release.yml");
   assert.doesNotMatch(release, /pull_request:/);
   assert.match(release, /environment: production-image-release/);
-  assert.match(release, /prevent_self_review/);
+  assert.match(release, /node scripts\/container-release-policy\.mjs/);
   const seccomp = JSON.parse(read("security/seccomp.json"));
   assert.equal(seccomp.defaultAction, "SCMP_ACT_ERRNO");
   assert.ok(seccomp.archMap.some((a: any) => a.architecture === "SCMP_ARCH_AARCH64"));

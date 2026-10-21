@@ -49,12 +49,9 @@ jobs:
           set -euo pipefail
           # Fail closed if the environment cannot be read or has no review gate.
           gh api repos/$GITHUB_REPOSITORY/environments/production-image-release > environment.json
-          node -e 'const e=require("./environment.json"); if(!e.protection_rules?.some(r=>r.type==="required_reviewers" && r.reviewers?.length && r.prevent_self_review===true)) process.exit(1)'
           gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/environments/production-image-release/deployment-branch-policies?per_page=100" > branches.json
-          node -e 'const e=require("./environment.json"), b=require("./branches.json").flatMap(p=>p.branch_policies); if(e.deployment_branch_policy?.custom_branch_policies!==true || b.length!==1 || b[0].name!=="main" || b[0].type!=="branch") process.exit(1)'
           gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?per_page=100" > check-pages.json
-          node -e 'const fs=require("fs"); fs.writeFileSync("checks.json",JSON.stringify({check_runs:require("./check-pages.json").flatMap(p=>p.check_runs)}))'
-          node -e 'const c=require("./checks.json").check_runs; for(const n of ["Linux amd64 confinement","Linux arm64 confinement"]){if(!c.some(x=>x.name===n && x.head_sha===process.env.GITHUB_SHA && x.conclusion==="success"))process.exit(1)}'
+          node scripts/container-release-policy.mjs
           node scripts/container-bases.mjs
       - name: Exact-source regressions before publication
         run: |
