@@ -209,6 +209,7 @@ export function OperatorApp(props: OperatorAppProps) {
                   jobState={jobState}
                   busy={running}
                   sessionUnavailable={sessionUnavailable}
+                  modelAvailability={modelAvailability}
                   onLaunch={launch}
                 />
                 <ProtectionCard />
