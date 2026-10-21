@@ -158,7 +158,13 @@ Run `npm run test:quiet` for an animated single-line progress indicator and a co
 
 ## Operator experience
 
-Day-to-day use is exposed through a small operator launcher rather than npm scripts:
+The normal operator entry is **model-first**. On a prepared Mac, one command opens the bundled loopback UI; private Qwen/Mistral workflows are offered when installed, with an automatic offline option when unavailable. Opening the UI never triggers model inference, AWS API access, or infrastructure changes.
+
+```bash
+./alz
+```
+
+For the initial developer checkout, `./alz bootstrap` builds the local bundle once and now prints a concise summary. Full build output is saved privately under `.runs/bootstrap/latest.log`; the operator does not run npm tests. Optional advanced commands:
 
 ```bash
 ./alz bootstrap
