@@ -34,6 +34,46 @@ export type ToolRequirement = {
   detail: string;
   fix?: string;
 };
+/**
+ * AWS first-run guidance shares the existing setup and policy boundaries.
+ * Informational only: never a credential, role grant, approval, or ACT ticket.
+ */
+export type AwsSetupGuidance = {
+  environment: DeploymentStage;
+  primaryEngine: "terraform" | "cdk" | null;
+  nextSteps: readonly string[];
+  permissions: readonly string[];
+  cloudAccess: "NOT_REQUESTED";
+  actEnabled: false;
+};
+export function awsSetupGuidance(intent: SetupIntent): AwsSetupGuidance | null {
+  if (intent.provider !== "aws") return null;
+  const primaryEngine = intent.engine === "terraform" || intent.engine === "cdk" ? intent.engine : null;
+  const stageNote = intent.stage === "development"
+    ? "DEV: verify one development account, stage-specific state and execution identity before native preview."
+    : intent.stage === "staging"
+      ? "STAGING: require independent non-production account/state, fresh discovery and reviewed promotion evidence."
+      : "PROD: require production account isolation, independent review, approved release and separate governed execution authorization.";
+  return {
+    environment:intent.stage,primaryEngine,
+    nextSteps:[
+      "Discover the exact AWS account and region with ./alz inspect aws only after operator authentication.",
+      primaryEngine === "terraform" ? "Validate Terraform modules and review a state-bound native plan."
+        : primaryEngine === "cdk" ? "Review CDK synthesis before a controlled CloudFormation Change Set preview."
+        : "Selected advanced engine must qualify independently before AWS provisioning.",
+      stageNote,
+      intent.localModels ? "Qualify local Ollama and configured private models; do not send prompts or cloud credentials to a remote model."
+        : "Private models are disabled for this setup; deterministic assessments remain available."
+    ],
+    permissions:[
+      "Operator: use existing browser/CLI federated AWS sign-in; no AWS credentials enter the installer or AI prompts.",
+      "Discovery: scoped STS identity check and read-only inventory for the selected account.",
+      "Preview: separate authorization for exact stack/state where cloud-side preview requires it.",
+      "Provisioning: no implicit deploy/apply; the existing governed ACT contract is a separate owner decision."
+    ],
+    cloudAccess:"NOT_REQUESTED",actEnabled:false
+  };
+}
 export type SetupPlan = {
   intent: SetupIntent;
   qualification: "SYNTHETIC_ONLY" | "PREVIEW_NOT_QUALIFIED";
@@ -41,6 +81,7 @@ export type SetupPlan = {
   tools: ToolRequirement[];
   blocked: string[];
   notice: string;
+  awsGuidance?: AwsSetupGuidance;
 };
 
 /** Pure prerequisite classification; NEVER launches installers or assumes permissions. */
@@ -87,5 +128,6 @@ export function planSetup(intent: SetupIntent, checks: readonly DepCheck[], opti
     qualification: intent.provider === "gcp" ? "SYNTHETIC_ONLY" : "PREVIEW_NOT_QUALIFIED",
     supportedDemo, tools, blocked,
     notice: `${STAGE_HELP[intent.stage]} The selection is advisory planning context, not bound to an account, credential, or real deployment. ACT is disabled.`,
+    ...(intent.provider === "aws" ? { awsGuidance: awsSetupGuidance(intent)! } : {}),
   };
 }

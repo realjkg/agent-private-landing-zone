@@ -105,3 +105,31 @@ test("dependency-only inspection never installs optional Crossplane or other too
   assert.match(t.shown.join(" "), /Crossplane|crossplane/i);
   assert.match(t.shown.join(" "), /Nothing installed here/);
 });
+
+test("AWS journey prioritizes Terraform and CDK while keeping advanced engines available", async () => {
+  const t = terminal(["2", "1", "1", "2", "1", "n", "n"]);
+  const result = await runGuidedSetup({terminal:t,checks});
+  assert.equal(result.selected?.provider,"aws");
+  assert.equal(result.selected?.engine,"cdk");
+  assert.equal(result.openWorkspace,false);
+  assert.match(t.shown.join(" "),/AWS infrastructure engine/);
+  assert.match(t.shown.join(" "),/Identity and permissions/);
+  assert.match(t.shown.join(" "),/CloudFormation Change Set/);
+});
+test("AWS advanced choice preserves registered engine options without adding dependencies", async () => {
+  const t = terminal(["2", "1", "1", "3", "1", "1", "n"]);
+  const result = await runGuidedSetup({terminal:t,checks});
+  assert.equal(result.selected?.engine,"pulumi");
+  assert.match(t.shown.join(" "),/Advanced infrastructure engines/);
+});
+test("AWS setup guidance scopes Dev, Staging and Prod and does not enable ACT", () => {
+  for(const stage of ["development","staging","production"] as const){
+    const plan=planSetup(intent({stage,localModels:true}),checks);
+    assert.equal(plan.awsGuidance?.environment,stage);
+    assert.equal(plan.awsGuidance?.cloudAccess,"NOT_REQUESTED");
+    assert.equal(plan.awsGuidance?.actEnabled,false);
+    assert.ok(plan.awsGuidance?.permissions.some(x=>x.includes("Discovery")));
+    assert.ok(plan.awsGuidance?.nextSteps.some(x=>x.includes(stage==="production"?"PROD":stage==="staging"?"STAGING":"DEV")));
+  }
+  assert.equal(planSetup(intent({provider:"azure"}),checks).awsGuidance,undefined);
+});

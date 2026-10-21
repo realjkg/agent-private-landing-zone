@@ -98,7 +98,12 @@ export async function runAgentJourney(journey: Journey): Promise<JourneyResult> 
   const { intent } = journey;
   const answers = [
     "2", numbers(STAGES, intent.stage), numbers(PROVIDERS, intent.provider),
-    numbers(ENGINES, intent.engine), intent.localModels ? "2" : "1",
+    ...(intent.provider === "aws"
+      ? intent.engine === "terraform" ? ["1"]
+        : intent.engine === "cdk" ? ["2"]
+        : ["3", numbers(ENGINES.filter(engine => engine !== "terraform" && engine !== "cdk"), intent.engine)]
+      : [numbers(ENGINES, intent.engine)]),
+    intent.localModels ? "2" : "1",
     ...(journey.install === "MISSING_PINNED" && intent.engine === "terraform" ? ["n"] : []),
     ...((journey.install === "MISSING_OPTIONAL" || journey.install === "VERSION_MISMATCH") && intent.engine !== "terraform" ? ["n"] : []),
     journey.browser === "YES" ? "y" : "n",

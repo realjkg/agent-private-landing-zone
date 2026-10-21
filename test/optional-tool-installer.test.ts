@@ -106,8 +106,8 @@ test("missing engine prompts only for the selected needed optional tool, with ex
     { id: "git", label: "Git", required: true, ok: true, detail: "fixture Git" },
     { id: "product:crossplane", label: "crossplane", required: false, ok: false, detail: "fixture missing" },
   ];
-  // configure, staging, AWS, Crossplane, synthetic inference, decline install, decline UI
-  const declines = terminal(["2", "2", "1", "7", "1", "n", "n"]);
+  // configure, staging, AWS, advanced, Crossplane, synthetic inference, decline install, decline UI
+  const declines = terminal(["2", "2", "1", "3", "5", "1", "n", "n"]);
   let invoked = 0;
   const result = await runGuidedSetup({
     terminal: declines, checks,
@@ -116,7 +116,7 @@ test("missing engine prompts only for the selected needed optional tool, with ex
   assert.equal(invoked, 0);
   assert.equal(result.openWorkspace, false);
   assert.match(declines.lines.join(""), /Optional engine installation skipped/);
-  const accepts = terminal(["2", "2", "1", "7", "1", "y", "n"]);
+  const accepts = terminal(["2", "2", "1", "3", "5", "1", "y", "n"]);
   await runGuidedSetup({
     terminal: accepts, checks,
     installOptional: async (id) => {
