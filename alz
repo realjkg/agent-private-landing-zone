@@ -12,7 +12,14 @@ if [[ "${1:-}" == "bootstrap" ]]; then
   mkdir -p "$LOG_DIR"
   LOG_FILE="$LOG_DIR/$(date -u +%Y%m%dT%H%M%SZ).log"
   echo "Preparing Sovereign ALZ local model interface..."
-  if (npm ci && npm run build && npm run build:ui) >"$LOG_FILE" 2>&1; then
+  build_local() {
+    npm ci || return $?
+    npm run build
+    local build_exit=$?
+    if (( build_exit != 0 )); then return "$build_exit"; fi
+    npm run build:ui
+  }
+  if build_local >"$LOG_FILE" 2>&1; then
     cp "$LOG_FILE" "$LOG_DIR/latest.log"
     echo "Ready. Open the private local workspace with ./alz"
     echo "Detailed build log: .runs/bootstrap/latest.log"
