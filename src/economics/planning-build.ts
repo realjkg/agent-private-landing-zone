@@ -29,7 +29,7 @@ export type BuildCostRun = {
 };
 export type BuildCostComparison = {
   id: string;
-  status: "VERIFIED_SAVINGS" | "VERIFIED_NO_SAVINGS" | "ESTIMATE_ONLY" | "NOT_COMPARABLE";
+  status: "OBSERVED_REDUCTION" | "OBSERVED_NO_REDUCTION" | "ESTIMATE_ONLY" | "NOT_COMPARABLE";
   baselineCents: number | null;
   candidateCents: number | null;
   deltaCents: number | null;
@@ -83,6 +83,8 @@ export function comparePlanningBuildCost(s:BuildCostScenario):BuildCostCompariso
   const baseline=entries("baseline");
   const candidate=entries("candidate");
   const all=[...baseline,...candidate];
+  const refs=all.map(e=>e?.evidenceRef);
+  if(new Set(refs).size!==refs.length)issues.push("REUSED_EVIDENCE_ACROSS_RUNS");
   if(all.some(e=>!e||!Number.isSafeInteger(e.costCents)||e.costCents<0))
     return {id:s.id,status:"NOT_COMPARABLE",baselineCents:null,candidateCents:null,
       deltaCents:null,savingsBps:null,byLane:[],issues:[...new Set(issues)],
@@ -100,7 +102,7 @@ export function comparePlanningBuildCost(s:BuildCostScenario):BuildCostCompariso
   const delta=a-b;
   const bothObserved=all.every(e=>e.basis==="OBSERVED");
   return {id:s.id,
-    status:!bothObserved?"ESTIMATE_ONLY":delta>0?"VERIFIED_SAVINGS":"VERIFIED_NO_SAVINGS",
+    status:!bothObserved?"ESTIMATE_ONLY":delta>0?"OBSERVED_REDUCTION":"OBSERVED_NO_REDUCTION",
     baselineCents:a,candidateCents:b,deltaCents:delta,
     savingsBps:a===0?null:Math.round(delta*10000/a),
     byLane,issues:[],
