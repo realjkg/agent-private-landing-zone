@@ -7,13 +7,23 @@ TSX="$ROOT/node_modules/.bin/tsx"
 
 if [[ "${1:-}" == "bootstrap" ]]; then
   cd "$ROOT"
-  echo "Bootstrapping Agent Private Landing Zone from the locked dependency graph..."
-  npm ci
-  npm run build
-  npm run build:ui
-  echo
-  echo "Ready. Run ./alz doctor"
-  exit 0
+  umask 077
+  LOG_DIR="$ROOT/.runs/bootstrap"
+  mkdir -p "$LOG_DIR"
+  LOG_FILE="$LOG_DIR/$(date -u +%Y%m%dT%H%M%SZ).log"
+  echo "Preparing Sovereign ALZ local model interface..."
+  if (npm ci && npm run build && npm run build:ui) >"$LOG_FILE" 2>&1; then
+    cp "$LOG_FILE" "$LOG_DIR/latest.log"
+    echo "Ready. Open the private local workspace with ./alz"
+    echo "Detailed build log: .runs/bootstrap/latest.log"
+    exit 0
+  else
+    code=$?
+    cp "$LOG_FILE" "$LOG_DIR/latest.log"
+    echo "Local setup failed. Review .runs/bootstrap/latest.log"
+    echo "No infrastructure changes were made."
+    exit "$code"
+  fi
 fi
 
 cd "$ROOT"
