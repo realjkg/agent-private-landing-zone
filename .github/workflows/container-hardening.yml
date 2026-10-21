@@ -1,0 +1,125 @@
+name: Container security qualification
+
+on:
+  pull_request:
+    paths:
+      - Dockerfile
+      - compose.production.yaml
+      - config/container-*.json
+      - config/container-bases/**
+      - security/**
+      - scripts/container-*.mjs
+      - src/security/**
+      - src/integrations/ai-studio/operations-mcp-http.ts
+      - test/container-*.test.ts
+      - test/mcp-jwt*.test.ts
+      - .github/workflows/container-*.yml
+  push:
+    branches: [main]
+    paths:
+      - Dockerfile
+      - compose.production.yaml
+      - config/container-*.json
+      - config/container-bases/**
+      - security/**
+      - scripts/container-*.mjs
+      - src/security/**
+      - src/integrations/ai-studio/operations-mcp-http.ts
+      - .github/workflows/container-*.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: container-security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  confinement:
+    name: Linux ${{ matrix.arch }} confinement
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: "26"
+          package-manager-cache: false
+      - name: Validate immutable lock against registry indexes
+        run: |
+          set -euo pipefail
+          node scripts/container-bases.mjs
+          node -e 'for(const b of require("./config/container-bases.json").bases) console.log(b.image+"@"+b.digest)' > bases.txt
+          while IFS= read -r base; do
+            docker buildx imagetools inspect --raw "$base" > index.json
+            BASE="$base" node --input-type=module -e '
+              import fs from "node:fs";
+              import crypto from "node:crypto";
+              const bytes=fs.readFileSync("index.json");
+              const b=JSON.parse(fs.readFileSync("config/container-bases.json")).bases.find(x=>x.image+"@"+x.digest===process.env.BASE);
+              const candidates=[bytes, ...(bytes.at(-1)===10?[bytes.subarray(0,-1)]:[])];
+              if(!candidates.some(v=>"sha256:"+crypto.createHash("sha256").update(v).digest("hex")===b.digest)) throw Error("INDEX_DIGEST_MISMATCH");
+              const index=JSON.parse(bytes);
+              for(const arch of ["amd64","arm64"]) if(!index.manifests.some(m=>m.platform?.os==="linux"&&m.platform.architecture===arch&&m.digest===b.platforms[arch]))throw Error("CHILD_DIGEST_MISMATCH");'
+          done < bases.txt
+      - name: Build exact native runtime
+        run: docker build --platform linux/${{ matrix.arch }} --target runtime --build-arg SOURCE_COMMIT="$GITHUB_SHA" -t alz:confined .
+      - name: Apply and exercise profiles on disposable CI host
+        run: |
+          set -euo pipefail
+          sudo apparmor_parser -r security/alz-runtime.apparmor
+          docker info --format '{{json .}}' > container-host.json
+          docker image inspect alz:confined > container-image.json
+          sha256sum security/seccomp.json security/alz-runtime.apparmor > container-profile-hashes.txt
+          volume="alz-qualification-${GITHUB_RUN_ID}-${{ matrix.arch }}"
+          docker volume create "$volume"
+          trap 'docker volume rm "$volume"' EXIT
+          # Initialize only this disposable CI evidence volume, never a target volume.
+          docker run --rm --network none --user 0 --entrypoint node \
+            -v "$volume:/app/.runs" alz:confined -e 'require("fs").chownSync("/app/.runs",1000,1000)'
+          docker run --rm --network none --read-only --user 1000:1000 \
+            --init --cap-drop ALL --security-opt no-new-privileges:true \
+            --security-opt seccomp=security/seccomp.json --security-opt apparmor=alz-runtime \
+            --pids-limit 128 --memory 1g --cpus 2 \
+            --tmpfs /tmp:rw,noexec,nosuid,nodev,size=67108864 \
+            -v "$volume:/app/.runs" \
+            -v "$PWD/scripts/container-confinement-probe.mjs:/app/confinement-probe.mjs:ro" \
+            -e ALZ_SOURCE_COMMIT="$GITHUB_SHA" -e QUALIFICATION_ARCH="${{ matrix.arch }}" \
+            --entrypoint node alz:confined /app/confinement-probe.mjs > confinement-result.json
+          docker run --rm --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges:true --security-opt seccomp=security/seccomp.json \
+            --security-opt apparmor=alz-runtime --tmpfs /tmp:rw,noexec,nosuid,nodev,size=67108864 alz:confined help
+          docker run --rm --network none --entrypoint node alz:confined \
+            dist/cli/release-package.js --root /app --verify
+          docker run --rm --network none --entrypoint node alz:confined \
+            -e 'process.stdout.write(require("fs").readFileSync("/lib/apk/db/installed"))' > container-packages.txt
+      - name: Scan native runtime
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: alz:confined
+          scanners: vuln,misconfig
+          severity: HIGH,CRITICAL
+          exit-code: '1'
+          format: json
+          output: container-scan.json
+      - name: Retain security evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: container-security-${{ matrix.arch }}
+          path: |
+            container-scan.json
+            confinement-result.json
+            container-host.json
+            container-image.json
+            container-profile-hashes.txt
+            container-packages.txt
+          retention-days: 30

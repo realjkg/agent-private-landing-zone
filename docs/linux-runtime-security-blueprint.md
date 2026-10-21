@@ -1,6 +1,6 @@
 # Linux runtime security blueprint
 
-Status: PROPOSED — independent design approval required before runtime rollout.
+Status: IMPLEMENTATION FOR REVIEW following blueprint PR #168 — independent approval and target qualification required before runtime rollout.
 Owner: Landing Zone PM; coordination ledger: #39; release blocker: #77.
 Lifecycle: Inventory → Plan → Design → Execute → Verify → Operate (Maintain).
 Baseline inspected: `ffa3eb58f95a766327c8b07fcdb14a1300438b6a` on 2026-10-20.
@@ -25,7 +25,7 @@ Existing Studio documentation describes prerequisites and has older scope marker
 
 ## Plan and approval boundary
 
-Deliver four narrow implementation PRs, in sequence below, with one owner per shared file. Check #39 ACTIVE claims, current main, and all open PR changed paths before editing. A merged blueprint alone is not a deployment approval. Record the approving security/platform reviewers, reviewed blueprint commit, target platforms and accepted limits in #39. Missing approval blocks rollout, not ordinary code, unit tests or disconnected simulations.
+PR #168 merged the blueprint only. The owner requested the four work packages below as one follow-up implementation with one owner per shared file; see [implementation and qualification](container-security.md). Check #39 ACTIVE claims, current main, and all open PR changed paths before editing. A merged blueprint alone is not a deployment approval. Record the approving security/platform reviewers, reviewed blueprint commit, target platforms and accepted limits in #39. Missing approval blocks rollout, not ordinary code, unit tests or disconnected simulations.
 
 Keep default Compose and offline developer commands usable. Introduce an explicitly selected hardened production profile and read-only preflight. Production or sensitive execution must reject missing controls; a development profile may report unsupported controls without claiming production readiness. Never substitute fixtures for authentic release evidence.
 
@@ -84,11 +84,11 @@ Every qualification record must identify source commit, target hardware/architec
 | Completion item | State at inventory | Required closeout |
 | --- | --- | --- |
 | Source and repository inventory | COMPLETE for stated baseline | Refresh before handoff |
-| Blueprint design | PROPOSED | Independent security/platform review recorded |
-| Immutable bases | OPEN | R1 validated registry lock and both native gates |
-| Signed image/provenance | OPEN | R2 authentic subject-bound verification and scans |
-| Seccomp/AppArmor | OPEN | R3 observed enforcement and denial evidence |
-| Private MCP/SSO | OPEN | R4 authenticated end-to-end target evidence |
+| Blueprint design | IMPLEMENTED FOR REVIEW | Independent security/platform review recorded |
+| Immutable bases | IMPLEMENTED; CI qualification required | R1 validated registry lock and both native gates |
+| Signed image/provenance | IMPLEMENTED; release workflow NOT_RUN | R2 authentic subject-bound verification and scans |
+| Seccomp/AppArmor | IMPLEMENTED; target qualification required | R3 observed enforcement and denial evidence |
+| Private MCP/SSO | JWT/bootstrap/probe IMPLEMENTED; target SSO NOT_RUN | R4 authenticated end-to-end target evidence |
 | Repository release controls | BLOCKED | Authorized administrator enables and verifies protected review/status/release controls |
 | Exact-candidate consolidated admission | BLOCKED | All applicable existing production gates plus this plan's evidence |
 | Independent release approval | BLOCKED | Separate reviewer decision; no tool self-approval |
