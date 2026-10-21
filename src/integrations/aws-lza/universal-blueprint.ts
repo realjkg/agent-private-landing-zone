@@ -1,5 +1,4 @@
-import { createHash } from "node:crypto";
-import { completeLandingZoneBlueprint, type LandingZoneBlueprint } from "../ai-studio/blueprint-completion.js";
+import type { LandingZoneBlueprint } from "../ai-studio/blueprint-completion.js";
 import { inspectLzaConfiguration, type LzaIntakeFile, type LzaIntakeMode } from "./config-intake.js";
 
 /**
@@ -78,7 +77,6 @@ const REGION=/^[a-z]{2}(?:-gov)?-[a-z]+-\d$/;
 const VERSION=/^v?[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?$/;
 const REF=/^[a-f0-9]{7,64}$/;
 const NAME=/^[A-Za-z0-9][A-Za-z0-9._:-]{1,95}$/;
-const sha=(s:string)=>createHash("sha256").update(s).digest("hex");
 const isObj=(x:unknown):x is Record<string,unknown>=>!!x && typeof x==="object" && !Array.isArray(x);
 const uniq=(a:string[])=>a.length===new Set(a).size;
 function names(x:unknown,field:string,issues:string[]):string[] {
