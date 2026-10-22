@@ -12,3 +12,9 @@ Run: `python3 scripts/alz-evidence-sequence.py --inventory path/to/rvtools.csv -
 In the local operator UI, open **Operations → Cost evidence and observability** to answer contextual questions and export a matching plan-only intake. The file uses a single Grafana/Prometheus/OTel stack, with conditional OpenCost adapter, excludes DrMigrate and Ratio, and never provisions resources.
 
 Never upload secret-bearing policy documents or cost records into third-party systems. Keep imports tenant-scoped; redact confidential details before external sharing. Synthetic fixtures do not prove AWS policy coverage, vendor compatibility, pricing, or production readiness.
+
+## AWS read-only brownfield policy discovery
+
+Run `python3 scripts/aws-policy-evidence-readonly.py --account-id 973471129135 --profile adaptcloud-admin --output .runs/aws-policy-evidence.json` on the operator's authenticated workstation. This reads inherited SCP/RCP attachments from the specified account through OU/root lineage. It does **not** evaluate effective permissions, identity policies, resource policies or service-specific protections. It does not change AWS. The resulting documents may be sensitive; keep files local and access-restricted.
+
+Owner decision: both policy export ingestion and live read-only AWS policy discovery are in scope; all cloud, hardware, licensing and power/facilities financial evidence categories are in scope. No externally hosted Ratio or DrMigrate dependencies. AWS $80 cumulative credit ceiling and $0 new-spend discovery authorization remain unchanged.
