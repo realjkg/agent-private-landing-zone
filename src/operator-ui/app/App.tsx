@@ -13,6 +13,7 @@ import {
 } from "./api";
 import { BeginnerPath } from "./components/BeginnerPath";
 import { DeploymentContext } from "./components/DeploymentContext";
+import { AwsRolePreparation } from "./components/AwsRolePreparation";
 import { CompliancePosture } from "./components/CompliancePosture";
 import { ConnectorNotice } from "./components/ConnectorNotice";
 import { EvidencePanel } from "./components/EvidencePanel";
@@ -194,6 +195,7 @@ export function OperatorApp(props: OperatorAppProps) {
           area changes real systems only for a person who unlocks it, types each confirmation, and has approvals.
         </p>
         {level !== "BEGINNER" && (view === "home" || view === "operations") && <DeploymentContext />}
+        {view === "operations" && <AwsRolePreparation />}
         {sessionUnavailable && view !== "home" && (
           <p role="alert" className="session-banner">
             This console lost its local session — close it and start it again.
