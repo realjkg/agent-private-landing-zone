@@ -5,6 +5,7 @@ export function CostEvidenceIntake() {
   const [profile, setProfile] = useState("kubernetes");
   const [sources, setSources] = useState<string[]>(["rvtools", "focus"]);
   const [allocation, setAllocation] = useState("unknown");
+  const [finance, setFinance] = useState<string[]>(["cloud", "hardware", "licensing", "facilities"]);
   const [telemetry, setTelemetry] = useState("reuse");
   const [notes, setNotes] = useState("");
   const [exported, setExported] = useState(false);
@@ -22,11 +23,12 @@ export function CostEvidenceIntake() {
       sources, liveInfrastructureTelemetry: telemetry !== "none",
       integrationPreference: telemetry,
     },
-    financialEvidence: { allocationBasis: allocation, verifiedActualCosts: false },
+    financialEvidence: { allocationBasis: allocation, requiredCategories: finance, verifiedActualCosts: false },
     operatorNotes: notes.trim(),
     missingEvidence: [
       ...(sources.length === 0 ? ["Select at least one evidence source"] : []),
       ...(allocation === "unknown" ? ["Cost allocation basis remains unknown"] : []),
+      ...(finance.length < 4 ? ["Full financial assessment requires cloud, hardware, licensing and facilities evidence"] : []),
       ...(telemetry === "reuse" ? ["Existing compatible telemetry endpoints need verification"] : []),
     ],
     excluded: ["DrMigrate", "FinOps Ratio"],
@@ -51,6 +53,11 @@ export function CostEvidenceIntake() {
             }} /> {title}
           </label>
         ))}
+      </fieldset>
+      <fieldset><legend>Which financial categories should the assessment request?</legend>
+        {(["cloud", "hardware", "licensing", "facilities"] as const).map((category) => <label key={category} style={{ display: "block" }}>
+          <input type="checkbox" checked={finance.includes(category)} onChange={(event) => setFinance(current => event.target.checked ? [...current,category] : current.filter(item => item !== category))}/>{" "}{category === "facilities" ? "Power and facilities" : category === "cloud" ? "Cloud resource costs" : category === "hardware" ? "Hardware acquisition and depreciation" : "Licensing and support"}
+        </label>)}
       </fieldset>
       <label htmlFor="alz-allocation">How are infrastructure costs assigned to applications?</label>
       <select id="alz-allocation" value={allocation} onChange={(event) => setAllocation(event.target.value)}>
