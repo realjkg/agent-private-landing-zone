@@ -78,7 +78,7 @@ def main():
         report = {"decision": "BLOCKED", "mode": "ACCOUNT_FACTORY_PREPARE_ONLY",
                   "error": type(exc).__name__ + ": " + str(exc)[:300], "cloudMutation": False}
     print(json.dumps(report, indent=2, sort_keys=True))
-    return 0 if "error" not in report else 2
+    return 0 if report.get("decision") == "READY" else 2
 
 if __name__ == "__main__":
     sys.exit(main())
