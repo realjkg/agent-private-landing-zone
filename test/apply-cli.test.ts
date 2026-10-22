@@ -821,6 +821,8 @@ test("preflight is read-only and offline: it reports shape, pin, identities, too
 
 test("preflight gives a safe readiness item for a missing or unreadable owner contract", async () => {
   const w = await world(undefined, false);
+  // An explicit undefined invokes the helper default, so remove its fixture to test genuine absence.
+  rmSync(w.contractPath);
   const before = engineCalls().length;
   const args = ["preflight", "--environment", "DEV"];
   const absent = await cli(w, args, []);
