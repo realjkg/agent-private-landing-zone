@@ -6,12 +6,8 @@ import {
 } from "../protection-storage.js";
 
 /**
- * The one-time "how this workspace protects you" card (UX depth pass,
- * Beginner only). Three honest bullets about what this console can and
- * cannot do; dismissed once, remembered per operator, and never shown again
- * unless storage is cleared. Dismissal is a presentation preference only —
- * it hides no status, evidence, or disclaimer content (the beginner
- * compliance posture with its disclaimer renders independently).
+ * Beginner safety summary. Short labels stay visible; optional native
+ * disclosures provide details without hiding safety or release boundaries.
  */
 export function ProtectionCard() {
   const [dismissed, setDismissed] = useState(readProtectionDismissed);
@@ -19,10 +15,10 @@ export function ProtectionCard() {
   return (
     <section
       className="panel beginner-only protection-card"
-      aria-label="How this workspace protects you"
+      aria-label="Safety"
     >
       <div className="protection-head">
-        <h2>How this workspace protects you</h2>
+        <h2>Safety</h2>
         <button
           type="button"
           className="protection-dismiss"
@@ -35,12 +31,26 @@ export function ProtectionCard() {
         </button>
       </div>
       <ul className="protection-points">
-        <li>Runs stay on this machine — the console talks only to localhost.</li>
         <li>
-          Evidence is synthetic — runs use recorded fixtures, never your real cloud.
+          <strong>Local session</strong>
+          <details>
+            <summary>Details</summary>
+            <p>The console connects only to localhost on this machine.</p>
+          </details>
         </li>
         <li>
-          Nothing changes without you — infrastructure changes are off unless the owner switched the pilot on, and then only a person who types each confirmation can apply one.
+          <strong>Sample evidence</strong>
+          <details>
+            <summary>Details</summary>
+            <p>These runs use recorded test data, not live cloud evidence.</p>
+          </details>
+        </li>
+        <li>
+          <strong>Changes disabled</strong>
+          <details>
+            <summary>Details</summary>
+            <p>Infrastructure changes are off by default. The separate pilot requires owner authorization, approvals, and a person to confirm each change.</p>
+          </details>
         </li>
       </ul>
     </section>
