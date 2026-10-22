@@ -31,6 +31,11 @@ def build(args):
         raise ValueError("Financial evidence must be an object or rows")
     if policy is not None and not isinstance(policy,dict):
         raise ValueError("Policy evidence must be a JSON object")
+    categories=("cloud","hardware","licensing","facilities")
+    financial_categories={}
+    for category in categories:
+        values=financial.get(category) if isinstance(financial,dict) else None
+        financial_categories[category]={"status":"PRESENT_UNVERIFIED" if values is not None else "UNKNOWN","data":values}
     surfaces={}
     for key in POLICIES:
         record=(policy or {}).get(key)
@@ -42,7 +47,7 @@ def build(args):
        "infrastructureAct":"DISABLED","sourceFiles":{"inventory":source(args.inventory),"financial":source(args.financial),"policies":source(args.policies)},
        "discovery":{"status":"EVIDENCED" if inventory is not None else "UNKNOWN","inventory":inventory},
        "financial":{"status":"EVIDENCED" if financial is not None else "UNKNOWN","evidence":financial,
-                    "actualCostVerified":False,"limitations":["Imported amounts require provenance, time period, currency and allocation verification before classifying actuals."]},
+                    "actualCostVerified":False,"requiredCategories":financial_categories,"limitations":["Imported amounts require provenance, time period, currency and allocation verification before classifying actuals."]},
        "governance":{"brownfield":surfaces,"equivalenceClaimed":False},
        "greenfield":{"status":"PROPOSED","policyIntent":[{"source":name,"mappingStatus":"REQUIRES_HUMAN_REVIEW" if item["status"]=="DISCOVERED" else "UNKNOWN","enforcementPlane":item["enforcementPlane"]} for name,item in surfaces.items()],"applyAuthorized":False},
        "costObservability":{"dashboard":"grafana","metrics":"prometheus","telemetry":"opentelemetry","sources":sorted(SOURCES),
