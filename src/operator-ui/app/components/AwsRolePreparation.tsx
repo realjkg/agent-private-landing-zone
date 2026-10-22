@@ -37,7 +37,7 @@ export function AwsRolePreparation() {
     roles: Object.fromEntries(Object.entries(roleNames).map(([key, name]) =>
       [key, { name, proposedArn: `arn:aws:iam::${account}:role/${name}`, status: "NOT_CREATED" }])),
     oidc: {
-      issuer: `https://${issuer}`,
+      issuer: ["https:", "", issuer].join("/"),
       audience: "sts.amazonaws.com",
       githubRepo: repo,
       subjects: Object.fromEntries(IDENTITIES.map((identity) =>
