@@ -142,7 +142,8 @@ export function planChanged(changedPaths, files) {
       if (!dependent.length) gaps.push(path + " has no known test owner; add an explicit focused test.");
       continue;
     }
-    if (/^qualification\\/aws\\/act-dev1-canary\\/.+\\.tf$/.test(path)) {
+    if (/^qualification\/aws\/act-dev1-canary\/.+\.tf$/.test(path) ||
+        /^bootstrap\/aws\/(?:main|variables)\.tf$/.test(path)) {
       addExisting(pythonTests, files, ["test/act-dev1-automation.test.py"]);
       if (!hasFile(files, "test/act-dev1-automation.test.py")) {
         gaps.push("ACT-DEV-1 Terraform canary has no focused test owner.");
