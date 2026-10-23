@@ -136,3 +136,14 @@ test("AWS bootstrap boundary changes select ACT-DEV-1 synthetic checks", () => {
   assert.deepEqual(plan.pythonTests, ["test/act-dev1-automation.test.py"]);
   assert.deepEqual(plan.gaps, []);
 });
+
+test("ACT-DEV-1 tfvars and Python handoff changes map to targeted synthetic tests", () => {
+  const files=fixture();
+  files.set("qualification/aws/act-dev1-canary/terraform.tfvars.example.json",'{"region":"us-east-2"}');
+  files.set("tests_python/test_aws_dev_terraform_handoff.py","handoff fixture");
+  files.set("test/act-dev1-automation.test.py","act-dev1");
+  const plan=planChanged(["qualification/aws/act-dev1-canary/terraform.tfvars.example.json",
+                          "tests_python/test_aws_dev_terraform_handoff.py"],files);
+  assert.deepEqual(plan.pythonTests,["test/act-dev1-automation.test.py"]);
+  assert.deepEqual(plan.gaps,[]);
+});
