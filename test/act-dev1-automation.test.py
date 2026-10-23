@@ -80,6 +80,12 @@ class ACTDev1Synthetic(unittest.TestCase):
             self.assertTrue(report["verified"])
             self.assertEqual(len(report["roles"]),4)
             self.assertFalse(report["rawTokensStored"])
+            exports=oidc.export_bindings(config,report)
+            self.assertIn("ALZ_STATE_WRITE_AWS_WEB_IDENTITY_TOKEN_FILE",exports)
+            self.assertNotIn("signaturefixture",exports)
+            self.assertIn("unset AWS_PROFILE",exports)
+            with self.assertRaisesRegex(oidc.IdentityRefusal,"STS_EVIDENCE_REQUIRED"):
+                oidc.export_bindings(config,oidc.validate(config))
             preview=oidc.validate(config)
             self.assertFalse(preview["verified"])
     def test_oidc_wrong_subject_token_reuse_and_permissions_denied(self):
@@ -123,6 +129,7 @@ class ACTDev1Synthetic(unittest.TestCase):
                 role=RoleName.split("-")[-1].upper()
                 if RoleName.endswith("state-write"):role="STATE_WRITE"
                 doc={"Statement":[{"Effect":"Allow","Action":"sts:AssumeRoleWithWebIdentity",
+                     "Principal":{"Federated":"arn:aws:iam::111111111111:oidc-provider/token.actions.githubusercontent.com"},
                      "Condition":{"StringEquals":{"token.actions.githubusercontent.com:sub":subjects[role],
                        "token.actions.githubusercontent.com:aud":"sts.amazonaws.com"}}}]}
                 return {"Role":{"Arn":"arn:aws:iam::111111111111:role/"+RoleName,"AssumeRolePolicyDocument":doc}}
@@ -133,8 +140,19 @@ class ACTDev1Synthetic(unittest.TestCase):
             def get_bucket_ownership_controls(self,Bucket):return {"OwnershipControls":{"Rules":[{"ObjectOwnership":"BucketOwnerEnforced"}]}}
             def get_bucket_encryption(self,Bucket):return {"ServerSideEncryptionConfiguration":{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}}
             def get_bucket_policy(self,Bucket):
-                return {"Policy":json.dumps({"Statement":[{"Sid":x} for x in
-                    ("DenyInsecureTransport","DenyEveryoneElse","StateCannotWriteState","StateWriteCannotDeleteVersions")]})}
+                state="arn:aws:iam::111111111111:role/alz-pilot-dev-state"
+                state_write="arn:aws:iam::111111111111:role/alz-pilot-dev-state-write"
+                return {"Policy":json.dumps({"Statement":[
+                    {"Sid":"DenyInsecureTransport","Effect":"Deny",
+                     "Condition":{"Bool":{"aws:SecureTransport":"false"}}},
+                    {"Sid":"DenyEveryoneElse","Effect":"Deny",
+                     "Condition":{"ArnNotLike":{"aws:PrincipalArn":[state,state_write]}}},
+                    {"Sid":"StateCannotWriteState","Effect":"Deny",
+                     "NotResource":"arn:aws:s3:::fake-bucket/pilot/dev.tfstate.tflock",
+                     "Principal":{"AWS":state}},
+                    {"Sid":"StateWriteCannotDeleteVersions","Effect":"Deny",
+                     "Principal":{"AWS":state_write}}
+                ]})}
         result=aws.dev_bootstrap_inspection(IAM(),S3(),Sts(),account_id="111111111111",bucket="fake-bucket",subjects=subjects)
         self.assertTrue(result["readBackVerified"])
         self.assertEqual(result["effectiveDeniedActions"],"NOT_TESTED")
