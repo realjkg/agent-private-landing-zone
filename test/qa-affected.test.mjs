@@ -127,3 +127,12 @@ test("ACT-DEV-1 Terraform source receives synthetic HCL ownership without broad 
   assert.deepEqual(plan.gaps, []);
   assert.equal(plan.needsDeps, false);
 });
+
+test("AWS bootstrap boundary changes select ACT-DEV-1 synthetic checks", () => {
+  const files = fixture();
+  files.set("bootstrap/aws/main.tf", "permissions_boundary");
+  files.set("test/act-dev1-automation.test.py", "bootstrap/aws/main.tf");
+  const plan = planChanged(["bootstrap/aws/main.tf"], files);
+  assert.deepEqual(plan.pythonTests, ["test/act-dev1-automation.test.py"]);
+  assert.deepEqual(plan.gaps, []);
+});
