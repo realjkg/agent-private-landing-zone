@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { importsOf, planChanged } from "../scripts/qa-affected.mjs";
+import { diffCommand, importsOf, planChanged } from "../scripts/qa-affected.mjs";
 
 function fixture() {
   return new Map([
@@ -105,4 +105,15 @@ test("Python source without a focused test fails closed", () => {
   files.set("scripts/orphan.py", "print('no tests')");
   const plan = planChanged(["scripts/orphan.py"], files);
   assert.match(plan.gaps[0], /no Python test owner/);
+});
+
+test("diff compares branch head with its merge-base, not the advancing main tip", () => {
+  const calls = [];
+  const args = diffCommand("base-tip", "pr-head", inputs => {
+    calls.push(inputs);
+    return "common-ancestor\\n";
+  });
+  assert.deepEqual(calls, [["merge-base", "base-tip", "pr-head"]]);
+  assert.deepEqual(args, ["diff", "--name-only", "-z", "--diff-filter=ACMRD",
+    "common-ancestor", "pr-head"]);
 });
