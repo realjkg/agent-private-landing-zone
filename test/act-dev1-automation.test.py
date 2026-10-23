@@ -190,4 +190,13 @@ class ACTDev1Synthetic(unittest.TestCase):
         with self.assertRaises(aws.ReadinessRefusal):
             aws.dev_bootstrap_inspection(IAM(),S3(),Sts(),account_id="111111111111",bucket="fake-bucket",subjects=broken,apply_boundary_arn="arn:aws:iam::111111111111:policy/act-dev1-boundary",apply_policy_arn="arn:aws:iam::111111111111:policy/act-dev1-apply")
 
+def load_tests(loader, tests, pattern):
+    """Include legacy Terraform handoff tests in the same bounded qualification."""
+    legacy=ROOT/"tests_python/test_aws_dev_terraform_handoff.py"
+    spec=importlib.util.spec_from_file_location("legacy_handoff",legacy)
+    mod=importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    tests.addTests(loader.loadTestsFromModule(mod))
+    return tests
+
 if __name__=="__main__":unittest.main()
