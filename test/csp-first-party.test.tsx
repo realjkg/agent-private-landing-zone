@@ -43,7 +43,9 @@ function assertFirstPartyOnly(text: string, label: string) {
     const awsOidcConfig =
       label.startsWith("/assets/") &&
       label.endsWith(".js") &&
-      url === "https://token.actions.githubusercontent.com`,audience:`sts.amazonaws.com`";
+      url.startsWith("https://token.actions.githubusercontent.com`,audience:`sts.amazonaws.com`,githubRepo:") &&
+      url.includes(",subjects:Object.fromEntries(") &&
+      url.includes(".map(");
     assert.ok(
       SAFE_URL.test(url) || reactErrorDecoder || awsOidcConfig,
       `${label} carries a third-party origin: ${url}`,
