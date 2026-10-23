@@ -12,6 +12,7 @@ const STAGES = [
 ] as const;
 
 export function ActDev1Setup() {
+  const [open, setOpen] = useState(false);
   const [account, setAccount] = useState("");
   const [profile, setProfile] = useState("adaptcloud-admin");
   const [checking, setChecking] = useState(false);
@@ -29,9 +30,12 @@ export function ActDev1Setup() {
     setChecking(false);
   };
   return (
-    <details className="pilot-setup" aria-label="AWS DEV guided setup">
-      <summary>Set up AWS DEV <small>· Guided administrator checks</small></summary>
-      <div className="pilot-step">
+    <section className="pilot-setup" aria-label="AWS DEV guided setup">
+      <button type="button" className="pilot-secondary" aria-expanded={open}
+        aria-controls="act-dev1-setup-content" onClick={() => setOpen((current) => !current)}>
+        {open ? "Hide AWS DEV setup" : "Set up AWS DEV"}
+      </button>
+      {open && <div className="pilot-step" id="act-dev1-setup-content">
         <h3>Connect a DEV account</h3>
         <p>Use a saved AWS connection to confirm the right account. This is a read-only check. No cloud resources are created.</p>
         <label htmlFor="dev1-connection">Saved AWS connection</label>
@@ -54,11 +58,9 @@ export function ActDev1Setup() {
           ))}
         </ol>
         <p role="note">The protected change wizard below handles review, signatures and execution. This setup check does not unlock or bypass those safeguards.</p>
-        <details>
-          <summary>What if I need help connecting AWS?</summary>
-          <p>Ask your organization's AWS administrator for an authorized management connection and a dedicated DEV account. No private keys or access tokens should be pasted into this page.</p>
-        </details>
-      </div>
-    </details>
+        <h4>Need help connecting?</h4>
+        <p>Ask your organization's AWS administrator for an authorized management connection and a dedicated DEV account. No private keys or access tokens should be pasted into this page.</p>
+      </div>}
+    </section>
   );
 }
