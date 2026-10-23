@@ -49,24 +49,60 @@ def account_inspection(org,controltower,sts,*,account_id,ou_id=OU,management_id=
             "capturedAt":datetime.now(timezone.utc).isoformat(),
             "scopeVerified":True,"actEnabled":False}
 
-def exact_trust(document, *, issuer, audience, subject):
+def exact_trust(document, *, issuer, audience, subject, account_id):
     statements=document.get("Statement",[]) if isinstance(document,dict) else []
     if isinstance(statements,dict):
         statements=[statements]
+    expected_provider="arn:aws:iam::"+account_id+":oidc-provider/"+issuer
+    allowed=[]
     for stmt in statements:
         if not isinstance(stmt,dict) or stmt.get("Effect")!="Allow":
             continue
         acts=stmt.get("Action",[])
         if isinstance(acts,str): acts=[acts]
-        if "sts:AssumeRoleWithWebIdentity" not in acts:
+        if "sts:AssumeRoleWithWebIdentity" not in acts and "sts:*" not in acts and "*" not in acts:
             continue
+        # Require precisely one permitted web-identity route; a broader parallel trust is not safe.
+        principal=stmt.get("Principal",{})
+        federated=principal.get("Federated") if isinstance(principal,dict) else None
         conditions=stmt.get("Condition",{})
-        equals=conditions.get("StringEquals",{}) if isinstance(conditions,dict) else {}
-        subj=equals.get(issuer+":sub")
-        aud=equals.get(issuer+":aud")
-        if subj==subject and aud==audience:
-            return True
-    return False
+        expected_conditions={"StringEquals":{issuer+":sub":subject,issuer+":aud":audience}}
+        if (acts != ["sts:AssumeRoleWithWebIdentity"] or federated!=expected_provider
+            or conditions!=expected_conditions):
+            return False
+        allowed.append(stmt)
+    return len(allowed)==1
+
+def state_policy_valid(document, *, bucket, roles):
+    statements=document.get("Statement",[]) if isinstance(document,dict) else []
+    if not isinstance(statements,list):return False
+    indexed={x.get("Sid"):x for x in statements if isinstance(x,dict)}
+    def denied(name):
+        s=indexed.get(name,{})
+        return s.get("Effect")=="Deny"
+    if not all(denied(k) for k in ("DenyInsecureTransport","DenyEveryoneElse",
+                                    "StateCannotWriteState","StateWriteCannotDeleteVersions")):
+        return False
+    tls=indexed["DenyInsecureTransport"]
+    if tls.get("Condition",{}).get("Bool",{}).get("aws:SecureTransport") not in ("false",False):
+        return False
+    everyone=indexed["DenyEveryoneElse"]
+    exemptions=everyone.get("Condition",{}).get("ArnNotLike",{}).get("aws:PrincipalArn",[])
+    if isinstance(exemptions,str):exemptions=[exemptions]
+    if roles["STATE"] not in exemptions or roles["STATE_WRITE"] not in exemptions:
+        return False
+    state=indexed["StateCannotWriteState"]
+    not_resources=state.get("NotResource",[])
+    if isinstance(not_resources,str):not_resources=[not_resources]
+    if f"arn:aws:s3:::{bucket}/pilot/dev.tfstate.tflock" not in not_resources:
+        # Nonstandard keys require independent review; never infer a matching lock.
+        return False
+    if state.get("Principal",{}).get("AWS")!=roles["STATE"]:
+        return False
+    no_versions=indexed["StateWriteCannotDeleteVersions"]
+    if no_versions.get("Principal",{}).get("AWS")!=roles["STATE_WRITE"]:
+        return False
+    return True
 
 def dev_bootstrap_inspection(iam,s3,sts,*,account_id,bucket,subjects,issuer="token.actions.githubusercontent.com",audience="sts.amazonaws.com",role_prefix="alz-pilot-dev"):
     if not re.fullmatch(r"\d{12}",str(account_id)) or sts.get_caller_identity()["Account"]!=account_id or account_id==MANAGEMENT:
@@ -80,7 +116,7 @@ def dev_bootstrap_inspection(iam,s3,sts,*,account_id,bucket,subjects,issuer="tok
         arn=data["Arn"]
         if arn!="arn:aws:iam::"+account_id+":role/"+name:
             deny("ROLE_ARN_MISMATCH")
-        if not exact_trust(data["AssumeRolePolicyDocument"],issuer=issuer,audience=audience,subject=subjects[identity]):
+        if not exact_trust(data["AssumeRolePolicyDocument"],issuer=issuer,audience=audience,subject=subjects[identity],account_id=account_id):
             deny("OIDC_TRUST_MISMATCH_"+identity)
         roles[identity]={"roleArn":arn,"subject":subjects[identity],"trust":"EXACT_SUBJECT_AND_AUDIENCE"}
     if len({x["roleArn"] for x in roles.values()})!=4:
@@ -98,8 +134,7 @@ def dev_bootstrap_inspection(iam,s3,sts,*,account_id,bucket,subjects,issuer="tok
         deny("STATE_ENCRYPTION_UNVERIFIED")
     policy=s3.get_bucket_policy(Bucket=bucket)["Policy"]
     data=json.loads(policy)
-    sids={x.get("Sid") for x in data.get("Statement",[])}
-    if not {"DenyInsecureTransport","DenyEveryoneElse","StateCannotWriteState","StateWriteCannotDeleteVersions"}.issubset(sids):
+    if not state_policy_valid(data,bucket=bucket,roles={k:v["roleArn"] for k,v in roles.items()}):
         deny("STATE_BUCKET_POLICY_INCOMPLETE")
     return {"kind":"ACT_DEV1_BOOTSTRAP_EVIDENCE","source":"AWS_API_READ_ONLY",
             "memberAccountId":account_id,"bucket":bucket,"roles":roles,
