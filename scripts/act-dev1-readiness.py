@@ -73,7 +73,7 @@ def exact_trust(document, *, issuer, audience, subject, account_id):
         allowed.append(stmt)
     return len(allowed)==1
 
-def state_policy_valid(document, *, bucket, roles):
+def state_policy_valid(document, *, bucket, key, roles):
     statements=document.get("Statement",[]) if isinstance(document,dict) else []
     if not isinstance(statements,list):return False
     indexed={x.get("Sid"):x for x in statements if isinstance(x,dict)}
@@ -94,7 +94,7 @@ def state_policy_valid(document, *, bucket, roles):
     state=indexed["StateCannotWriteState"]
     not_resources=state.get("NotResource",[])
     if isinstance(not_resources,str):not_resources=[not_resources]
-    if f"arn:aws:s3:::{bucket}/pilot/dev.tfstate.tflock" not in not_resources:
+    if f"arn:aws:s3:::{bucket}/{key}.tflock" not in not_resources:
         # Nonstandard keys require independent review; never infer a matching lock.
         return False
     if state.get("Principal",{}).get("AWS")!=roles["STATE"]:
@@ -104,7 +104,7 @@ def state_policy_valid(document, *, bucket, roles):
         return False
     return True
 
-def dev_bootstrap_inspection(iam,s3,sts,*,account_id,bucket,subjects,issuer="token.actions.githubusercontent.com",audience="sts.amazonaws.com",role_prefix="alz-pilot-dev"):
+def dev_bootstrap_inspection(iam,s3,sts,*,account_id,bucket,subjects,state_key="pilot/dev.tfstate",issuer="token.actions.githubusercontent.com",audience="sts.amazonaws.com",role_prefix="alz-pilot-dev"):
     if not re.fullmatch(r"\d{12}",str(account_id)) or sts.get_caller_identity()["Account"]!=account_id or account_id==MANAGEMENT:
         deny("DEV_MEMBER_IDENTITY_MISMATCH")
     if not isinstance(subjects,dict) or set(subjects)!=set(ROLES) or len(set(subjects.values()))!=4:
@@ -134,7 +134,7 @@ def dev_bootstrap_inspection(iam,s3,sts,*,account_id,bucket,subjects,issuer="tok
         deny("STATE_ENCRYPTION_UNVERIFIED")
     policy=s3.get_bucket_policy(Bucket=bucket)["Policy"]
     data=json.loads(policy)
-    if not state_policy_valid(data,bucket=bucket,roles={k:v["roleArn"] for k,v in roles.items()}):
+    if not state_policy_valid(data,bucket=bucket,key=state_key,roles={k:v["roleArn"] for k,v in roles.items()}):
         deny("STATE_BUCKET_POLICY_INCOMPLETE")
     return {"kind":"ACT_DEV1_BOOTSTRAP_EVIDENCE","source":"AWS_API_READ_ONLY",
             "memberAccountId":account_id,"bucket":bucket,"roles":roles,
@@ -166,6 +166,7 @@ def main():
     p.add_argument("--dev-account",required=True)
     p.add_argument("--ou-id",default=OU)
     p.add_argument("--bucket")
+    p.add_argument("--state-key",default="pilot/dev.tfstate")
     p.add_argument("--oidc-subjects-file",help="JSON map of four exact observed OIDC subjects")
     p.add_argument("--output",required=True)
     a=p.parse_args()
@@ -180,7 +181,7 @@ def main():
             if not a.bucket or not a.oidc_subjects_file:
                 deny("BUCKET_AND_OIDC_SUBJECTS_REQUIRED")
             result=dev_bootstrap_inspection(session.client("iam"),session.client("s3"),sts,
-                                            account_id=a.dev_account,bucket=a.bucket,
+                                            account_id=a.dev_account,bucket=a.bucket,state_key=a.state_key,
                                             subjects=json.loads(Path(a.oidc_subjects_file).read_text()))
         else:
             if sts.get_caller_identity()["Account"] != MANAGEMENT:
