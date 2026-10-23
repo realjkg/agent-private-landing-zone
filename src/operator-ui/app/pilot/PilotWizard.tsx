@@ -91,7 +91,7 @@ function Progress(props: { role: Role; step: number }) {
   );
 }
 
-function ChangeList(props: { review: ReviewSummary }) {
+export function ChangeList(props: { review: ReviewSummary }) {
   const { review } = props;
   const risky = review.counts.delete + review.counts.replace + review.counts.forget > 0;
   return (
