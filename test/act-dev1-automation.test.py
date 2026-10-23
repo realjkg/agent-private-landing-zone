@@ -18,6 +18,7 @@ oidc=load("act-dev1-identity.py")
 plan=load("act-dev1-canary-plan.py")
 aws=load("act-dev1-readiness.py")
 handoff=load("aws-dev-terraform-handoff.py")
+apply_policy=load("act-dev1-apply-policy.py")
 
 def jwt(claims):
     header=base64.urlsafe_b64encode(b'{"alg":"RS256","typ":"JWT"}').decode().rstrip("=")
@@ -52,6 +53,18 @@ class ACTDev1Synthetic(unittest.TestCase):
         self.assertIsNone(result["terraformVarsCandidate"]["oidc_subjects"])
         self.assertFalse(result["cloudMutation"])
 
+    def test_iam_canary_policy_least_privilege(self):
+        policy=apply_policy.build("111111111111","/alz/act-dev-1/canary-01","qa")
+        self.assertEqual(policy["Version"],"2012-10-17")
+        create=[x for x in policy["Statement"] if x["Sid"]=="AllowCanaryCreateWithReviewedTags"][0]
+        self.assertEqual(create["Condition"]["StringEquals"]["aws:RequestTag/environment"],"DEV")
+        self.assertNotIn("iam:*",create["Action"])
+        with self.assertRaises(ValueError):
+            apply_policy.build(aws.MANAGEMENT,"/alz/act-dev-1/canary-01","qa")
+        with self.assertRaises(ValueError):
+            apply_policy.build("111111111111","/unbounded/log-group","qa")
+        self.assertIn("permissions_boundary",(ROOT/"bootstrap/aws/main.tf").read_text())
+        self.assertIn('variable "apply_permissions_boundary_arn"',(ROOT/"bootstrap/aws/variables.tf").read_text())
     def test_canary_is_exactly_one_additive_create(self):
         accepted=plan.validate(canary(),expected_name="/alz/act-dev-1/canary-01",expected_owner="qa")
         self.assertEqual(accepted["verdict"],"STRUCTURALLY_ACCEPTABLE")
@@ -144,7 +157,12 @@ class ACTDev1Synthetic(unittest.TestCase):
                      "Principal":{"Federated":"arn:aws:iam::111111111111:oidc-provider/token.actions.githubusercontent.com"},
                      "Condition":{"StringEquals":{"token.actions.githubusercontent.com:sub":subjects[role],
                        "token.actions.githubusercontent.com:aud":"sts.amazonaws.com"}}}]}
-                return {"Role":{"Arn":"arn:aws:iam::111111111111:role/"+RoleName,"AssumeRolePolicyDocument":doc}}
+                role_data={"Arn":"arn:aws:iam::111111111111:role/"+RoleName,"AssumeRolePolicyDocument":doc}
+                if role=="APPLY":
+                    role_data["PermissionsBoundary"]={"PermissionsBoundaryArn":"arn:aws:iam::111111111111:policy/act-dev1-boundary"}
+                return {"Role":role_data}
+            def list_attached_role_policies(self,RoleName):
+                return {"AttachedPolicies":[{"PolicyArn":"arn:aws:iam::111111111111:policy/act-dev1-apply"}]}
         class S3:
             def get_public_access_block(self,Bucket):
                 return {"PublicAccessBlockConfiguration":{k:True for k in ("BlockPublicAcls","IgnorePublicAcls","BlockPublicPolicy","RestrictPublicBuckets")}}
@@ -165,11 +183,11 @@ class ACTDev1Synthetic(unittest.TestCase):
                     {"Sid":"StateWriteCannotDeleteVersions","Effect":"Deny",
                      "Principal":{"AWS":state_write}}
                 ]})}
-        result=aws.dev_bootstrap_inspection(IAM(),S3(),Sts(),account_id="111111111111",bucket="fake-bucket",subjects=subjects)
+        result=aws.dev_bootstrap_inspection(IAM(),S3(),Sts(),account_id="111111111111",bucket="fake-bucket",subjects=subjects,apply_boundary_arn="arn:aws:iam::111111111111:policy/act-dev1-boundary",apply_policy_arn="arn:aws:iam::111111111111:policy/act-dev1-apply")
         self.assertTrue(result["readBackVerified"])
         self.assertEqual(result["effectiveDeniedActions"],"NOT_TESTED")
         broken={**subjects,"APPLY":"subject-DISCOVERY"}
         with self.assertRaises(aws.ReadinessRefusal):
-            aws.dev_bootstrap_inspection(IAM(),S3(),Sts(),account_id="111111111111",bucket="fake-bucket",subjects=broken)
+            aws.dev_bootstrap_inspection(IAM(),S3(),Sts(),account_id="111111111111",bucket="fake-bucket",subjects=broken,apply_boundary_arn="arn:aws:iam::111111111111:policy/act-dev1-boundary",apply_policy_arn="arn:aws:iam::111111111111:policy/act-dev1-apply")
 
 if __name__=="__main__":unittest.main()
