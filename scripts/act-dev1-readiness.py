@@ -104,16 +104,27 @@ def state_policy_valid(document, *, bucket, key, roles):
         return False
     return True
 
-def dev_bootstrap_inspection(iam,s3,sts,*,account_id,bucket,subjects,state_key="pilot/dev.tfstate",issuer="token.actions.githubusercontent.com",audience="sts.amazonaws.com",role_prefix="alz-pilot-dev"):
+def dev_bootstrap_inspection(iam,s3,sts,*,account_id,bucket,subjects,apply_boundary_arn,apply_policy_arn,state_key="pilot/dev.tfstate",issuer="token.actions.githubusercontent.com",audience="sts.amazonaws.com",role_prefix="alz-pilot-dev"):
     if not re.fullmatch(r"\d{12}",str(account_id)) or sts.get_caller_identity()["Account"]!=account_id or account_id==MANAGEMENT:
         deny("DEV_MEMBER_IDENTITY_MISMATCH")
     if not isinstance(subjects,dict) or set(subjects)!=set(ROLES) or len(set(subjects.values()))!=4:
         deny("FOUR_DISTINCT_OIDC_SUBJECTS_REQUIRED")
+    expected_prefix="arn:aws:iam::"+account_id+":policy/"
+    if (not isinstance(apply_boundary_arn,str) or not apply_boundary_arn.startswith(expected_prefix)
+        or not isinstance(apply_policy_arn,str) or not apply_policy_arn.startswith(expected_prefix)):
+        deny("APPLY_MANAGED_POLICY_AND_BOUNDARY_REQUIRED")
     roles={}
     for identity in ROLES:
         name=role_prefix+"-"+identity.lower().replace("_","-")
         data=iam.get_role(RoleName=name)["Role"]
         arn=data["Arn"]
+        if identity=="APPLY":
+            observed=data.get("PermissionsBoundary",{}).get("PermissionsBoundaryArn")
+            if observed!=apply_boundary_arn:
+                deny("APPLY_BOUNDARY_MISSING_OR_MISMATCH")
+            attached=iam.list_attached_role_policies(RoleName=name).get("AttachedPolicies",[])
+            if not any(item.get("PolicyArn")==apply_policy_arn for item in attached):
+                deny("APPLY_CANARY_POLICY_NOT_ATTACHED")
         if arn!="arn:aws:iam::"+account_id+":role/"+name:
             deny("ROLE_ARN_MISMATCH")
         if not exact_trust(data["AssumeRolePolicyDocument"],issuer=issuer,audience=audience,subject=subjects[identity],account_id=account_id):
@@ -138,6 +149,7 @@ def dev_bootstrap_inspection(iam,s3,sts,*,account_id,bucket,subjects,state_key="
         deny("STATE_BUCKET_POLICY_INCOMPLETE")
     return {"kind":"ACT_DEV1_BOOTSTRAP_EVIDENCE","source":"AWS_API_READ_ONLY",
             "memberAccountId":account_id,"bucket":bucket,"roles":roles,
+            "boundaryArn":apply_boundary_arn,"applyManagedPolicyArn":apply_policy_arn,
             "bucketControls":{"publicAccess":"BLOCKED","versioning":"ENABLED","ownership":"BucketOwnerEnforced",
                               "encryption":"ENABLED","policyFingerprintSha256":hashlib.sha256(policy.encode()).hexdigest()},
             "readBackVerified":True,"effectiveDeniedActions":"NOT_TESTED",
@@ -167,6 +179,8 @@ def main():
     p.add_argument("--ou-id",default=OU)
     p.add_argument("--bucket")
     p.add_argument("--state-key",default="pilot/dev.tfstate")
+    p.add_argument("--apply-boundary-arn")
+    p.add_argument("--apply-policy-arn")
     p.add_argument("--oidc-subjects-file",help="JSON map of four exact observed OIDC subjects")
     p.add_argument("--output",required=True)
     a=p.parse_args()
@@ -178,10 +192,11 @@ def main():
             result=account_inspection(session.client("organizations"),session.client("controltower"),sts,
                                       account_id=a.dev_account,ou_id=a.ou_id)
         elif a.phase=="bootstrap":
-            if not a.bucket or not a.oidc_subjects_file:
-                deny("BUCKET_AND_OIDC_SUBJECTS_REQUIRED")
+            if not a.bucket or not a.oidc_subjects_file or not a.apply_boundary_arn or not a.apply_policy_arn:
+                deny("BUCKET_SUBJECTS_AND_APPLY_POLICIES_REQUIRED")
             result=dev_bootstrap_inspection(session.client("iam"),session.client("s3"),sts,
                                             account_id=a.dev_account,bucket=a.bucket,state_key=a.state_key,
+                                            apply_boundary_arn=a.apply_boundary_arn,apply_policy_arn=a.apply_policy_arn,
                                             subjects=json.loads(Path(a.oidc_subjects_file).read_text()))
         else:
             if sts.get_caller_identity()["Account"] != MANAGEMENT:
