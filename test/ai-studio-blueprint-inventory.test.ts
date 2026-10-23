@@ -42,3 +42,25 @@ test("duplicate resources and invalid evidence references are refused",()=>{
  assert.throws(()=>createBlueprintInventory("test",[item,item]),/ITEM_ID_INVALID/);
  assert.throws(()=>transitionBlueprintItem(make(),{itemId:"control-tower",to:"DISCOVERING",at,sourceRef:"adapter",evidenceRefs:["invalid-ref"]}),/EVIDENCE_INVALID/);
 });
+
+test("verifier rejects forged terminal state even when counts and evidence look consistent", () => {
+  const s = go(make(), "app-log", "PLANNED", 1);
+  const items = s.items.map(item => item.id === "app-log"
+    ? { ...item, state: "SUCCEEDED" as const, evidenceRefs: ["evidence://fake/success"] }
+    : item);
+  const counts = { ...s.counts, PLANNED: 0, SUCCEEDED: 1 };
+  assert.equal(verifyBlueprintInventory({ ...s, items, counts }), false);
+});
+test("verifier rejects evidence inserted into an item without a corresponding event", () => {
+  const s = go(make(), "app-log", "PLANNED", 1);
+  const items = s.items.map(item => item.id === "app-log"
+    ? { ...item, evidenceRefs: [...item.evidenceRefs, "evidence://fake/extra"] }
+    : item);
+  assert.equal(verifyBlueprintInventory({ ...s, items }), false);
+});
+test("verifier rejects removal of a previously recorded event", () => {
+  let s = go(make(), "app-log", "PLANNED", 1);
+  s = go(s, "app-log", "VALIDATING", 2);
+  const trimmed = { ...s, events: [s.events[0]!], headHash: s.events[0]!.hash, version: 1 };
+  assert.equal(verifyBlueprintInventory(trimmed), false);
+});
