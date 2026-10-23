@@ -268,8 +268,16 @@ describe("guided empty states and first-run", () => {
     const card = document.querySelector(".protection-card");
     expect(card).toBeTruthy();
     expect(card?.querySelectorAll(".protection-points li").length).toBe(3);
-    expect(card?.textContent).toContain("Runs stay on this machine");
-    expect(card?.textContent).toContain("infrastructure changes are off unless the owner switched the pilot on");
+    expect(card?.textContent).toContain("Local session");
+    expect(card?.textContent).toContain("Sample evidence");
+    expect(card?.textContent).toContain("Changes disabled");
+    const disclosures = card?.querySelectorAll<HTMLDetailsElement>(".protection-points details");
+    expect(disclosures?.length).toBe(3);
+    expect([...disclosures!].every((item) => !item.open)).toBe(true);
+    expect(card?.textContent).toContain("recorded test data, not live cloud evidence");
+    expect(card?.textContent).toContain("requires owner authorization, approvals");
+    fireEvent.click(disclosures![0]!.querySelector("summary")!);
+    expect(disclosures![0]!.open).toBe(true);
 
     fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
     expect(window.localStorage.getItem(PROTECTION_CARD_STORAGE_KEY)).toBe("1");
