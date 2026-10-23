@@ -7,6 +7,18 @@ on:
       - synchronize
       - reopened
       - ready_for_review
+    # Fast affected tests cover routine edits. PR CodeQL is reserved for
+    # security-sensitive boundaries; weekly and manual scans cover the rest.
+    paths:
+      - "src/security/**"
+      - "src/apply/**"
+      - "src/actions/**"
+      - "src/identity/**"
+      - "src/integrations/ai-studio/operations-mcp-http.ts"
+      - "security/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/**"
   schedule:
     # Weekly, Mondays 06:00 UTC — matches the repo's Dependabot cadence.
     - cron: "0 6 * * 1"
