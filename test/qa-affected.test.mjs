@@ -117,3 +117,33 @@ test("diff compares branch head with its merge-base, not the advancing main tip"
   assert.deepEqual(args, ["diff", "--name-only", "-z", "--diff-filter=ACMRD",
     "common-ancestor", "pr-head"]);
 });
+
+test("ACT-DEV-1 Terraform source receives synthetic HCL ownership without broad regression", () => {
+  const files = fixture();
+  files.set("qualification/aws/act-dev1-canary/main.tf", 'resource "aws_cloudwatch_log_group" "act_dev1" {}');
+  files.set("test/act-dev1-automation.test.py", 'main.tf');
+  const plan = planChanged(["qualification/aws/act-dev1-canary/main.tf"], files);
+  assert.deepEqual(plan.pythonTests, ["test/act-dev1-automation.test.py"]);
+  assert.deepEqual(plan.gaps, []);
+  assert.equal(plan.needsDeps, false);
+});
+
+test("AWS bootstrap boundary changes select ACT-DEV-1 synthetic checks", () => {
+  const files = fixture();
+  files.set("bootstrap/aws/main.tf", "permissions_boundary");
+  files.set("test/act-dev1-automation.test.py", "bootstrap/aws/main.tf");
+  const plan = planChanged(["bootstrap/aws/main.tf"], files);
+  assert.deepEqual(plan.pythonTests, ["test/act-dev1-automation.test.py"]);
+  assert.deepEqual(plan.gaps, []);
+});
+
+test("ACT-DEV-1 tfvars and Python handoff changes map to targeted synthetic tests", () => {
+  const files=fixture();
+  files.set("qualification/aws/act-dev1-canary/terraform.tfvars.example.json",'{"region":"us-east-2"}');
+  files.set("tests_python/test_aws_dev_terraform_handoff.py","handoff fixture");
+  files.set("test/act-dev1-automation.test.py","act-dev1");
+  const plan=planChanged(["qualification/aws/act-dev1-canary/terraform.tfvars.example.json",
+                          "tests_python/test_aws_dev_terraform_handoff.py"],files);
+  assert.deepEqual(plan.pythonTests,["test/act-dev1-automation.test.py"]);
+  assert.deepEqual(plan.gaps,[]);
+});

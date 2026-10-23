@@ -76,6 +76,16 @@ variable "apply_managed_policy_arns" {
   }
 }
 
+variable "apply_permissions_boundary_arn" {
+  description = "Optional reviewed IAM permissions boundary for the APPLY role. Mandatory for ACT-DEV-1 acceptance; limits the effective scope even if other policies are attached."
+  type        = string
+  default     = null
+  validation {
+    condition     = var.apply_permissions_boundary_arn == null || can(regex("^arn:aws:iam::[0-9]{12}:policy/[A-Za-z0-9+=,.@_/-]+$", var.apply_permissions_boundary_arn))
+    error_message = "Provide a customer-managed IAM policy ARN for APPLY, or null."
+  }
+}
+
 variable "discovery_managed_policy_arns" {
   description = "Read permissions for DISCOVERY (Terraform engine only; the CDK DISCOVERY role gets DescribeStacks on the stack and nothing else)."
   type        = list(string)
