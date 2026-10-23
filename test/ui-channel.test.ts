@@ -715,3 +715,17 @@ test("the approver's key stays a file: the same ownership and permission checks 
   assert.equal(pasted.status, 400, "a pasted key is refused as a location");
   assert.ok(!pasted.text.includes("PRIVATE KEY"));
 });
+
+test("guided AWS setup inherits protected pilot token and refuses malformed or elevated requests before AWS calls", async () => {
+  const w=await world();
+  const {port}=await serve(w);
+  const route="/pilot/aws-readiness";
+  const valid={account:"111111111111",profile:"adaptcloud-admin"};
+  assert.equal((await call(port,"POST",route,{body:valid,token:null})).status,401);
+  assert.equal((await call(port,"POST",route,{body:valid,token:"wrong"})).status,401);
+  assert.equal((await call(port,"POST",route,{body:valid,origin:"http://unknown.invalid"})).status,403);
+  assert.equal((await call(port,"POST",route,{body:{...valid,extra:"apply"}})).status,400);
+  assert.equal((await call(port,"POST",route,{body:{...valid,account:"973471129135"}})).status,400);
+  assert.equal((await call(port,"POST",route,{body:{...valid,profile:"unsafe;echo x"}})).status,400);
+  assert.deepEqual(mutating(),[]);
+});

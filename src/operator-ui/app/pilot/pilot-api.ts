@@ -72,6 +72,17 @@ async function send<T>(method: "GET" | "POST", path: string, body?: unknown): Pr
   }
 }
 
+export type AwsAdminStatus = {
+  status: "ACCOUNT_VERIFIED";
+  account: string;
+  checks: { name: string; status: "VERIFIED" | "NOT_CHECKED"; next: string }[];
+  action: "NONE";
+  actEnabled: false;
+};
+/** Read-only management connection check, protected by the same pilot session. */
+export const checkAwsDevAccount = (account: string, profile: string): Promise<PilotReply<AwsAdminStatus>> =>
+  send<AwsAdminStatus>("POST", "/aws-readiness", { account, profile });
+
 export const fetchPilotState = (): Promise<PilotReply> => send<PilotState>("GET", "/state");
 export const choosePath = (path: PilotPath): Promise<PilotReply> => send<PilotState>("POST", "/path", { path });
 export const startOver = (): Promise<PilotReply> => send<PilotState>("POST", "/reset", {});
