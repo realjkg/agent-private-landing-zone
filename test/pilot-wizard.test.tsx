@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
-import PilotWizard, { BlockedNotice } from "../src/operator-ui/app/pilot/PilotWizard";
+import PilotWizard, { BlockedNotice, ChangeList } from "../src/operator-ui/app/pilot/PilotWizard";
 import { forgetPilotToken, type PilotPath, type PilotRun, type ReviewSummary } from "../src/operator-ui/app/pilot/pilot-api";
 import {
   BLOCKED, CLI_COMMANDS, CODE_COPY, COPY, RESULT_COPY, STEP_TITLES, classifyResult, describeCheck, describeCounts, describeMismatch, dialogCopy, reasonFor,
@@ -809,4 +809,23 @@ describe("the browser bundle keeps out of the apply path", () => {
     expect(describeCounts({ create: 0, update: 0, replace: 0, delete: 0, forget: 0, other: 0 })).toEqual(["Nothing will change."]);
     expect(describeCounts({ create: 1, update: 0, replace: 0, delete: 1, forget: 0, other: 2 })).toEqual(["1 thing will be created", "1 thing will be deleted", "2 other changes"]);
   });
+});
+
+test("sealed plan review summarizes added, modified and removed resources with policy/access guidance", () => {
+  const review=bundleReview({
+    counts:{create:2,update:1,replace:1,delete:1,forget:0,other:0},
+    changes:[
+      {address:"aws_cloudwatch_log_group.new",type:"aws_cloudwatch_log_group",action:"CREATE"},
+      {address:"aws_cloudwatch_log_group.old",type:"aws_cloudwatch_log_group",action:"UPDATE"},
+      {address:"aws_cloudwatch_log_group.remove",type:"aws_cloudwatch_log_group",action:"DELETE"},
+    ],
+  });
+  render(<ChangeList review={review}/>);
+  expect(screen.getByText(/Added:/).textContent).toContain("2");
+  expect(screen.getByText(/Modified:/).textContent).toContain("1");
+  expect(screen.getByText(/Removed or replaced:/).textContent).toContain("2");
+  expect(screen.getByText(/Governance: every change remains subject to policy/)).toBeTruthy();
+  expect(screen.getByText(/Access: a console session alone/)).toBeTruthy();
+  expect(screen.getByText(/Stop unless a separately authorized plan/)).toBeTruthy();
+  expect(screen.getByText("aws_cloudwatch_log_group.remove")).toBeTruthy();
 });
