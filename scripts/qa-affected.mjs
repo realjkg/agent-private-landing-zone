@@ -193,6 +193,14 @@ function git(args) {
   if (r.status !== 0) throw Error("git " + args.join(" ") + " failed: " + r.stderr);
   return r.stdout;
 }
+// Three-dot semantics: only changes introduced by the PR branch are in
+// scope. Comparing base tip to head incorrectly treats newer main files as
+// deletions in an older PR and triggers unrelated QA (regression PR #192).
+export function diffCommand(base, head, runner) {
+  const ancestor = runner(["merge-base", base, head]).trim();
+  if (!ancestor) throw Error("QA cannot find the PR merge-base");
+  return ["diff", "--name-only", "-z", "--diff-filter=ACMRD", ancestor, head];
+}
 function arg(name, fallback = "") {
   const index = process.argv.indexOf(name);
   return index < 0 ? fallback : process.argv[index + 1];
@@ -253,9 +261,8 @@ function main() {
   const head = arg("--head", process.env.QA_HEAD ?? "");
   // Local edits are based on the common ancestor, not the moving main tip.
   // Include untracked files so a newly added source/test is not invisible.
-  const baseRevision = head ? base : git(["merge-base", base, "HEAD"]).trim();
-  const diff = git(["diff", "--name-only", "-z", "--diff-filter=ACMRD",
-    baseRevision, ...(head ? [head] : [])]);
+  const compareHead = head || "HEAD";
+  const diff = git(diffCommand(base, compareHead, git));
   const untracked = head ? [] : git(["ls-files", "--others", "--exclude-standard", "-z"])
     .split("\0").filter(Boolean);
   const changed = uniq([...diff.split("\0").filter(Boolean), ...untracked]);
