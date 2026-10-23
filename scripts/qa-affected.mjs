@@ -193,17 +193,18 @@ function execute(plan) {
   if (!plan.testCount && !plan.pinCheck) return console.log("QA: documentation-only; no tests needed.");
   mkdirSync(".runs/qa", {recursive: true});
   if (plan.pinCheck) runCmd("npm", ["run", "ci:actions-pinned"]);
-  if (plan.configCheck) {
-    // Build-configuration changes affect all project types, but not the full
-    // regression suite. This path intentionally qualifies the compiler only.
-    runCmd("npm", ["run", "check"]);
-  } else {
-    const nodeConfig = writeTsconfig("node-affected", "tsconfig.json", plan.typeNode);
-    const uiConfig = writeTsconfig("ui-affected", "tsconfig.ui.json", plan.typeUi);
-    if (nodeConfig) runCmd("./node_modules/.bin/tsc", ["-p", nodeConfig]);
-    if (uiConfig) runCmd("./node_modules/.bin/tsc", ["-p", uiConfig]);
-  }
-  if (plan.buildUi && !plan.configCheck) runCmd("npm", ["run", "build:ui"]);
+  // Even manifest/compiler changes compile only representative entry points
+  // and their import closures. A full project compile belongs to the
+  // separately approved release gate, never routine PR iterations.
+  const nodeInputs = plan.typeNode.length ? plan.typeNode :
+    (plan.configCheck ? ["src/config.ts"] : []);
+  const uiInputs = plan.typeUi.length ? plan.typeUi :
+    (plan.configCheck ? ["test/operator-ui-react.test.tsx"] : []);
+  const nodeConfig = writeTsconfig("node-affected", "tsconfig.json", nodeInputs);
+  const uiConfig = writeTsconfig("ui-affected", "tsconfig.ui.json", uiInputs);
+  if (nodeConfig) runCmd("./node_modules/.bin/tsc", ["-p", nodeConfig]);
+  if (uiConfig) runCmd("./node_modules/.bin/tsc", ["-p", uiConfig]);
+  if (plan.buildUi) runCmd("npm", ["run", "build:ui"]);
   if (plan.nodeTests.length) runCmd("./node_modules/.bin/tsx", ["--test", ...plan.nodeTests]);
   if (plan.uiTests.length) runCmd("./node_modules/.bin/vitest", ["run", ...plan.uiTests]);
   if (plan.jsTests.length) runCmd("node", ["--test", ...plan.jsTests]);
@@ -219,9 +220,15 @@ function main() {
   if (mode !== "plan" && mode !== "local") throw Error("Usage: qa-affected.mjs plan|local [--base SHA] [--head SHA] [--out FILE]");
   const base = arg("--base", process.env.QA_BASE ?? "origin/main");
   const head = arg("--head", process.env.QA_HEAD ?? "");
-  const diff = git(["diff", "--name-only", "-z", "--diff-filter=ACMRD", base, ...(head ? [head] : [])]);
-  const changed = diff.split("\0").filter(Boolean);
-  const tracked = git(["ls-files", "-z"]).split("\0").filter(Boolean);
+  // Local edits are based on the common ancestor, not the moving main tip.
+  // Include untracked files so a newly added source/test is not invisible.
+  const baseRevision = head ? base : git(["merge-base", base, "HEAD"]).trim();
+  const diff = git(["diff", "--name-only", "-z", "--diff-filter=ACMRD",
+    baseRevision, ...(head ? [head] : [])]);
+  const untracked = head ? [] : git(["ls-files", "--others", "--exclude-standard", "-z"])
+    .split("\0").filter(Boolean);
+  const changed = uniq([...diff.split("\0").filter(Boolean), ...untracked]);
+  const tracked = uniq([...git(["ls-files", "-z"]).split("\0").filter(Boolean), ...untracked]);
   const files = new Map();
   for (const file of tracked) {
     if (SOURCE.test(file) || TEST.test(file) || /^scripts\/.+\.(?:ts|tsx|js|mjs)$/.test(file)) {
