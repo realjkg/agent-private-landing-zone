@@ -46,10 +46,7 @@
     "models:verify": "tsx src/cli/models.ts verify",
     "matrix:agent-builder": "tsx src/cli/agent-builder-sim.ts",
     "docs:ops": "tsx src/operations/docs.ts",
-    "ci:actions-pinned": "node scripts/check-workflow-pins.mjs",
-    "qa:changed": "node scripts/qa-affected.mjs local",
-    "qa:scope": "node scripts/qa-affected.mjs plan",
-    "qa:selector:test": "node --test test/qa-affected.test.mjs"
+    "ci:actions-pinned": "node scripts/check-workflow-pins.mjs"
   },
   "devDependencies": {
     "@testing-library/react": "^16.3.3",
