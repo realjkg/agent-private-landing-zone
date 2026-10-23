@@ -21,8 +21,8 @@ For every source, test, configuration, or workflow change, the coding agent must
 run the deterministic local QA selector **before pushing**:
 
 1. Install locked dependencies once for the checkout (not once per edit).
-2. Use **npm run qa:scope -- --base origin/main** to inspect the planned tests.
-3. Run **npm run qa:changed -- --base origin/main** before handing off the PR.
+2. Use **node scripts/qa-affected.mjs plan --base origin/main** to inspect the planned tests.
+3. Run **node scripts/qa-affected.mjs local --base origin/main** before handing off the PR.
 4. If any check fails, diagnose the failing file and fix only its owning lane;
    rerun the same local affected QA until clean. Do not respond by relaxing an
    assertion, expanding cloud authority, or invoking the full suite.
