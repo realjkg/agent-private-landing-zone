@@ -40,6 +40,7 @@ def prepare(*, account, identifier, repo, management_account, region="us-east-2"
         "state_bucket_name": f"{identifier}-{account}-tfstate",
         "state_admin_principal_arns": [],
         "apply_managed_policy_arns": [],
+        "apply_permissions_boundary_arn": None,
         "budget_monthly_usd": None,
         "alert_emails": ["info@adaptcloud.io", "kristian@adaptcloud.io"],
     }
