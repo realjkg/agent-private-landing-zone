@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import stat
 import sys
 import time
@@ -113,10 +114,25 @@ def validate(config, *, sts_factory=None, now=None, environment=None):
             "rawTokensStored":False,"infrastructureAct":"DISABLED",
             "note":"Successful STS calls attest role assumption, not IAM/SCP/RCP effective permissions."}
 
+
+def export_bindings(config, report):
+    """An operator sources only verified role/path references, never raw bearer tokens."""
+    if not report.get("verified") or any(x.get("status")!="STS_VERIFIED" for x in report.get("roles",{}).values()):
+        refuse("STS_EVIDENCE_REQUIRED_FOR_EXPORT")
+    lines=["unset AWS_PROFILE AWS_DEFAULT_PROFILE AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_SHARED_CREDENTIALS_FILE AWS_CONFIG_FILE"]
+    for name in ROLES:
+        role=config["identities"][name]
+        for variable,value in (("AWS_ROLE_ARN",role["roleArn"]),
+                               ("AWS_WEB_IDENTITY_TOKEN_FILE",role["tokenFile"]),
+                               ("AWS_REGION",config["region"])):
+            lines.append("export ALZ_"+name+"_"+variable+"="+shlex.quote(value))
+    return "\\n".join(lines)+"\\n"
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True, help="Local 0600 JSON with role ARNs, observed subjects and absolute token paths")
     parser.add_argument("--output",required=True)
+    parser.add_argument("--env-output",help="Shell exports of STS-verified paths/roles only (0600); never contains tokens")
     parser.add_argument("--inspect-only",action="store_true",help="Check token claims without STS (NOT authenticated evidence)")
     a=parser.parse_args()
     try:
