@@ -17,6 +17,8 @@ Do not turn CI into the development loop.
 
 ### Required affected-QA agent cycle
 
+**Persistent agent profile:** `.github/agents/qa.agent.md` defines the ALZ QA Steward for supported GitHub Copilot coding sessions. Apply its scope-selection, local repair, evidence, and merge-readiness contract to every normal engineering PR. PR CI operates on its own when no coding agent is running; the profile does not schedule a paid hosted agent or authorize infrastructure changes.
+
 For every source, test, configuration, or workflow change, the coding agent must
 run the deterministic local QA selector **before pushing**:
 
