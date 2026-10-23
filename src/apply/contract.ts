@@ -121,14 +121,21 @@ function approvers(value: unknown, path: string): ApproverEntry[] {
 }
 
 function validate(raw: unknown): PilotContract {
-  const r = object(raw, "contract", ["schemaVersion", "enabled", "provider", "engine", "targets", "requiredApprovals", "maxApprovalAgeMinutes", "approvers", "killSwitchPath"], ["embedStateWrite"]);
+  const r = object(raw, "contract", ["schemaVersion", "enabled", "provider", "engine", "targets", "requiredApprovals", "maxApprovalAgeMinutes", "approvers", "killSwitchPath"], ["embedStateWrite", "enabledEnvironments"]);
   if (r.schemaVersion !== 1) bad("schemaVersion: expected 1");
   const unsupported = "provider and engine: the pilot supports " + PROVIDER_IDS.join(", ") + " with " + ENGINE_IDS.join(", ");
   const spec = providerSpec(r.provider) ?? bad(unsupported);
   const engine = engineSpec(r.engine) ?? bad(unsupported);
   if (!engine.providers.includes(spec.id)) bad("engine: " + engine.id + " is valid only with " + engine.providers.join(", "));
-  const targets = object(r.targets, "targets", ENVIRONMENTS as string[]);
-  const approvals = object(r.requiredApprovals, "requiredApprovals", ENVIRONMENTS as string[]);
+  // DEV-only is the one narrow exception; all other subsets are rejected.
+  // No QA/PROD target can be synthesized, omitted silently or invoked under this contract.
+  const scoped = r.enabledEnvironments;
+  if (scoped !== undefined && (!Array.isArray(scoped) || scoped.length !== 1 || scoped[0] !== "DEV")) {
+    bad("enabledEnvironments: only the explicit DEV-only pilot is supported; omit for the legacy three-stage contract");
+  }
+  const active: ApplyEnvironment[] = scoped === undefined ? [...ENVIRONMENTS] : ["DEV"];
+  const targets = object(r.targets, "targets", active);
+  const approvals = object(r.requiredApprovals, "requiredApprovals", active);
   if (r.enabled !== true) bad("enabled: the contract does not enable ACT");
   // Optional and default off. Kept exactly as written (absent stays absent), so a contract that never mentions it hashes as it always did; the pin is over what the file says.
   const embed = r.embedStateWrite;
@@ -139,21 +146,20 @@ function validate(raw: unknown): PilotContract {
     enabled: true,
     provider: spec.id,
     engine: engine.id,
-    targets: ENVIRONMENTS.reduce((all, e) => ({ ...all, [e]: target(targets[e], "targets." + e, spec, engine) }), {} as PilotContract["targets"]),
-    requiredApprovals: {
-      DEV: integer(approvals.DEV, "requiredApprovals.DEV", 1, 10),
-      QA: integer(approvals.QA, "requiredApprovals.QA", 1, 10),
-      PROD: integer(approvals.PROD, "requiredApprovals.PROD", 2, 10),
-    },
+    targets: Object.fromEntries(active.map((e) => [e, target(targets[e], "targets." + e, spec, engine)])) as PilotContract["targets"],
+    requiredApprovals: Object.fromEntries(active.map((e) => [e, integer(approvals[e], "requiredApprovals." + e, e === "PROD" ? 2 : 1, 10)])) as PilotContract["requiredApprovals"],
+    ...(scoped !== undefined ? { enabledEnvironments: ["DEV" as const] } : {}),
     maxApprovalAgeMinutes: integer(r.maxApprovalAgeMinutes, "maxApprovalAgeMinutes", 1, 1440),
     approvers: approvers(r.approvers, "approvers"),
     killSwitchPath: text(r.killSwitchPath, "killSwitchPath", (v) => v.length > 0 && v.length <= 1024 && !v.includes("\0")),
     ...(typeof embed === "boolean" ? { embedStateWrite: embed } : {}),
   };
-  ENVIRONMENTS.forEach((a, index) => {
-    for (const b of ENVIRONMENTS.slice(index + 1)) {
-      if (spec.account(contract.targets[a]).toLowerCase() === spec.account(contract.targets[b]).toLowerCase()) bad("targets: " + a + " and " + b + " share " + (/^[aeiou]/.test(spec.accountNoun) ? "an " : "a ") + spec.accountNoun);
-      if (!engine.target?.backendMayRepeat && contract.targets[a].backend.toLowerCase() === contract.targets[b].backend.toLowerCase()) bad("targets: " + a + " and " + b + " share a backend");
+  active.forEach((a, index) => {
+    for (const b of active.slice(index + 1)) {
+      const left = contract.targets[a]!;
+      const right = contract.targets[b]!;
+      if (spec.account(left).toLowerCase() === spec.account(right).toLowerCase()) bad("targets: " + a + " and " + b + " share " + (/^[aeiou]/.test(spec.accountNoun) ? "an " : "a ") + spec.accountNoun);
+      if (!engine.target?.backendMayRepeat && left.backend.toLowerCase() === right.backend.toLowerCase()) bad("targets: " + a + " and " + b + " share a backend");
     }
   });
   return contract;
@@ -237,6 +243,9 @@ export function targetForEnvironment(
   env: ApplyEnvironment,
   requested: ResolvedTarget,
 ): { ok: true; target: PilotTarget } | Refusal {
+  if (contract.enabledEnvironments && !contract.enabledEnvironments.includes(env)) {
+    return refuse("TARGET_NOT_IN_CONTRACT", "the " + env + " environment is not enabled in this reviewed pilot contract");
+  }
   const pinned = Object.hasOwn(contract.targets, env) ? contract.targets[env] : undefined;
   if (!pinned || specOf(contract).account(pinned) !== requested?.account || pinned.backend !== requested.backend || pinned.workspace !== requested.workspace) {
     return refuse("TARGET_NOT_IN_CONTRACT", "the requested target is not the contract's " + env + " target");
