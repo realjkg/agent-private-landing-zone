@@ -1,0 +1,5 @@
+{
+  "region": "us-east-2",
+  "canary_name": "/alz/act-dev-1/canary-01",
+  "owner": "REPLACE-WITH-APPROVED-OWNER"
+}
