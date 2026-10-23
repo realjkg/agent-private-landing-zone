@@ -74,7 +74,7 @@ export function planChanged(changedPaths, files) {
       addExisting(selected, files, [QA_SELF_TEST]);
       continue;
     }
-    if (TEST.test(path)) { selected.add(path); if (path.endsWith(".tsx")) buildUi = true; continue; }
+    if (TEST.test(path)) { selected.add(path); if (path === "test/csp-first-party.test.tsx") buildUi = true; continue; }
     if (/^docs\/|\.md$|^\.github\/(ISSUE_TEMPLATE|PULL_REQUEST_TEMPLATE)\//.test(path)) continue;
     if (/^\.github\/workflows\/.+\.ya?ml$/.test(path)) {
       pinCheck = true;
@@ -104,7 +104,7 @@ export function planChanged(changedPaths, files) {
         addExisting(selected, files, ["test/security-boundaries.test.ts",
           "test/apply-boundary.test.ts"]);
       }
-      if (directlyImpacted.length === 0 && selected.size === 0) {
+      if (directlyImpacted.length === 0) {
         // Do not mask missing test ownership with a blanket full-suite run.
         gaps.push(path + " has no importing test. Add a focused test.");
       }
@@ -140,7 +140,7 @@ export function planChanged(changedPaths, files) {
     gaps.push("Affected test count " + selected.size + " exceeds " + MAX_AFFECTED_TESTS +
       ". Split the change or qualify it through an explicit release gate.");
   }
-  if (!selected.size && changed.some(p => !(/\.md$|^docs\//.test(p)))) {
+  if (!selected.size && gaps.length === 0 && changed.some(p => !(/\.md$|^docs\//.test(p)))) {
     gaps.push("Executable changes selected no tests.");
   }
   const tests = uniq([...selected]);
@@ -198,8 +198,8 @@ function execute(plan) {
     // regression suite. This path intentionally qualifies the compiler only.
     runCmd("npm", ["run", "check"]);
   } else {
-    const nodeConfig = writeTsconfig("node-affected.json", "tsconfig.json", plan.typeNode);
-    const uiConfig = writeTsconfig("ui-affected.json", "tsconfig.ui.json", plan.typeUi);
+    const nodeConfig = writeTsconfig("node-affected", "tsconfig.json", plan.typeNode);
+    const uiConfig = writeTsconfig("ui-affected", "tsconfig.ui.json", plan.typeUi);
     if (nodeConfig) runCmd("./node_modules/.bin/tsc", ["-p", nodeConfig]);
     if (uiConfig) runCmd("./node_modules/.bin/tsc", ["-p", uiConfig]);
   }
