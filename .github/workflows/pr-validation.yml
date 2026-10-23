@@ -17,14 +17,28 @@ concurrency:
 
 jobs:
   validate:
-    name: Type-check and full tests
+    name: Affected code QA
     runs-on: ubuntu-24.04
+    timeout-minutes: 12
 
     steps:
-      - name: Checkout
+      - name: Checkout (including merge base)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      # The scope planner uses only built-in Node modules. It runs before
+      # npm ci, so docs-only and unknown-ownership changes cost no install.
+      # Diff SHA values are environment variables, never interpolated in shell.
+      - name: Select affected tests
+        id: scope
+        env:
+          QA_BASE: ${{ github.event.pull_request.base.sha }}
+          QA_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: node scripts/qa-affected.mjs plan --base "$QA_BASE" --head "$QA_HEAD"
 
       - name: Node
+        if: steps.scope.outputs.needs_deps == 'true'
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: "26"
@@ -32,17 +46,11 @@ jobs:
           cache-dependency-path: package-lock.json
           package-manager-cache: false
 
-      - name: Verify GitHub Actions are pinned
-        run: npm run ci:actions-pinned
-
-      - name: Install locked dependencies
+      - name: Install locked dependencies only when needed
+        if: steps.scope.outputs.needs_deps == 'true'
         run: npm ci
 
-      - name: Type-check
-        run: npm run check
-
-      - name: Full test suite
-        run: npm test
-
-      - name: Verify plug-in catalog matches runtime adapters
-        run: npm run plugins:check
+      # The local coding-agent command uses this same runner. No full
+      # regression, full-codebase typecheck, or release deploy on normal PRs.
+      - name: Run affected QA
+        run: node scripts/qa-affected.mjs run --plan .runs/qa/plan.json
