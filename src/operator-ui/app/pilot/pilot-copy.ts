@@ -177,6 +177,9 @@ export type Reason = { why: string; next: string };
 
 /** Plain words for every code a step can end with. A code the table lacks falls back to UNKNOWN_CODE, and a test fails first. */
 export const CODE_COPY: Readonly<Record<string, Reason>> = {
+  // The guided AWS connection uses the same plain-language refusal catalog.
+  AWS_SETUP_INPUT_INVALID: { why: "The account number or saved connection name could not be accepted.", next: "Enter the dedicated DEV member account number and the name of an approved saved AWS connection." },
+  AWS_ACCOUNT_NOT_VERIFIED: { why: "The DEV account, its enrollment, or its AWS connection could not be confirmed.", next: "Ask your AWS administrator to check the saved connection, Workloads enrollment and account status. Then check again." },
   // the driver's refusals
   ACT_DISABLED: { why: "The pilot is switched off. It only works while the owner's pilot rules are switched on and approved.", next: "Ask the pilot owner to switch on and approve the pilot rules. You cannot do this from here." },
   CONTRACT_INVALID: { why: "The pilot rules file has a mistake, or it was changed after the owner approved it.", next: "Ask the pilot owner to fix it and approve it again. Nothing was changed." },
