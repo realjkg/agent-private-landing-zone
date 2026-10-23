@@ -14,6 +14,7 @@ import {
 import { BeginnerPath } from "./components/BeginnerPath";
 import { DeploymentContext } from "./components/DeploymentContext";
 import { AwsRolePreparation } from "./components/AwsRolePreparation";
+import { CostEvidenceIntake } from "./components/CostEvidenceIntake";
 import { CompliancePosture } from "./components/CompliancePosture";
 import { ConnectorNotice } from "./components/ConnectorNotice";
 import { EvidencePanel } from "./components/EvidencePanel";
@@ -196,6 +197,7 @@ export function OperatorApp(props: OperatorAppProps) {
         </p>
         {level !== "BEGINNER" && (view === "home" || view === "operations") && <DeploymentContext />}
         {view === "operations" && <AwsRolePreparation />}
+        {view === "operations" && <CostEvidenceIntake />}
         {sessionUnavailable && view !== "home" && (
           <p role="alert" className="session-banner">
             This console lost its local session — close it and start it again.
