@@ -36,7 +36,16 @@ This inventory is deliberately incomplete as a spending authorization: budget al
 
 ### D3: Owner bootstrap and read-back
 
-Only an account owner with dedicated limited-time authority may initialize, review, and apply `bootstrap/aws` in its *own* independent bootstrap state. Supply a narrow APPLY managed policy, exact observed OIDC subjects, explicit administrator principal, DEV account/region and a separately reviewed budget. Do not use generic ReadOnlyAccess for an APPLY identity. Do not run this module from ACT.
+Only an account owner with dedicated limited-time authority may initialize, review, and apply `bootstrap/aws` in its *own* independent bootstrap state. Generate a proposed resource-scoped IAM policy and review it against AWS's current CloudWatch Logs authorization reference:
+
+```bash
+python3 scripts/act-dev1-apply-policy.py \\
+  --dev-account ACTUAL_DEV_ACCOUNT_ID \\
+  --log-group /alz/act-dev-1/canary-01 --owner APPROVED_OWNER \\
+  --output .runs/act-dev1/canary-apply-policy.json
+```
+
+The owner creates a *customer-managed policy* in the DEV account after reviewing this file, and binds it to both `apply_managed_policy_arns` and `apply_permissions_boundary_arn`. The reviewed account-owned policy, state administrator principal, DEV account/region, observed exact OIDC subjects and monthly budget are supplied to `bootstrap/aws`. Neither this script nor the generated policy executes IAM actions. The boundary constrains APPLY even if additional managed policies are later attached; IAM/SCP/RCP effective denies still require live tests. Do not use generic ReadOnlyAccess for an APPLY identity. Do not run this module from ACT.
 
 After the owner completes bootstrap, use a DEV-account read-only profile (not an ACT execution-identity fallback):
 
