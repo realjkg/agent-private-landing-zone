@@ -271,7 +271,7 @@ describe("guided empty states and first-run", () => {
     expect(card?.textContent).toContain("Local session");
     expect(card?.textContent).toContain("Sample evidence");
     expect(card?.textContent).toContain("Changes disabled");
-    const disclosures = card?.querySelectorAll(".protection-points details");
+    const disclosures = card?.querySelectorAll<HTMLDetailsElement>(".protection-points details");
     expect(disclosures?.length).toBe(3);
     expect([...disclosures!].every((item) => !item.open)).toBe(true);
     expect(card?.textContent).toContain("recorded test data, not live cloud evidence");
