@@ -17,6 +17,7 @@ def load(name):
 oidc=load("act-dev1-identity.py")
 plan=load("act-dev1-canary-plan.py")
 aws=load("act-dev1-readiness.py")
+handoff=load("aws-dev-terraform-handoff.py")
 
 def jwt(claims):
     header=base64.urlsafe_b64encode(b'{"alg":"RS256","typ":"JWT"}').decode().rstrip("=")
@@ -40,6 +41,17 @@ class FakeSTS:
                 "Credentials":{"AccessKeyId":"FICTIONAL","SessionToken":"FICTIONAL"}}
 
 class ACTDev1Synthetic(unittest.TestCase):
+    def test_canary_hcl_static_scope_and_bootstrap_subject_handoff(self):
+        hcl=(ROOT/"qualification/aws/act-dev1-canary/main.tf").read_text()
+        self.assertEqual(hcl.count('resource "aws_cloudwatch_log_group"'),1)
+        self.assertIn('backend "s3"',hcl)
+        self.assertIn('retention_in_days = 30',hcl)
+        self.assertNotIn('resource "aws_iam_',hcl)
+        result=handoff.prepare(account="111111111111",management_account="973471129135",
+            identifier="adaptcloud-dev",repo="realjkg/agent-private-landing-zone")
+        self.assertIsNone(result["terraformVarsCandidate"]["oidc_subjects"])
+        self.assertFalse(result["cloudMutation"])
+
     def test_canary_is_exactly_one_additive_create(self):
         accepted=plan.validate(canary(),expected_name="/alz/act-dev-1/canary-01",expected_owner="qa")
         self.assertEqual(accepted["verdict"],"STRUCTURALLY_ACCEPTABLE")
