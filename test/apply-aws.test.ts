@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-import { loadPilotContract, pilotContractSha256, verifyApplyQualification, writeQualificationEvidence } from "../src/apply/contract.js";
+import { loadPilotContract, pilotContractSha256, targetForEnvironment, verifyApplyQualification, writeQualificationEvidence } from "../src/apply/contract.js";
 import { qualifyApply, runApply, sealPreview, type ApplyDeps, type ApplyRequest } from "../src/apply/driver.js";
 import { qualificationEvidenceProblems } from "../src/apply/evidence.js";
 import { attestedClientId, checkApplyIdentities, verifyIdentityTargets } from "../src/apply/identities.js";
@@ -82,6 +82,36 @@ const editTargets = (edit: (targets: Record<string, Record<string, unknown>>) =>
   edit(contract.targets);
   return contract;
 };
+
+
+test("ACT-DEV-1 accepts only an explicit AWS Terraform DEV pilot without fictitious QA/PROD targets", () => {
+  const devOnly = awsContractJson(KILL) as any;
+  devOnly.enabledEnvironments = ["DEV"];
+  devOnly.targets = { DEV: devOnly.targets.DEV };
+  devOnly.requiredApprovals = { DEV: 1 };
+  devOnly.approvers = devOnly.approvers.map((item: any) => ({ ...item, environments: ["DEV"] }));
+  const contract = loaded(devOnly);
+  assert.equal(contract.enabled, true);
+  if (!contract.enabled) return;
+  assert.deepEqual(contract.enabledEnvironments, ["DEV"]);
+  assert.equal(contract.targets.QA, undefined);
+  assert.equal(contract.targets.PROD, undefined);
+  assert.deepEqual(contract.requiredApprovals, { DEV: 1 });
+  assert.equal(targetForEnvironment(contract, "DEV", AWS_DEV_TARGET).ok, true);
+  assert.equal(targetForEnvironment(contract, "QA", AWS_DEV_TARGET).ok, false);
+  assert.equal(targetForEnvironment(contract, "PROD", AWS_DEV_TARGET).ok, false);
+  for (const scope of [["DEV","QA"], ["QA"], ["PROD"], ["DEV","DEV"], [], "DEV"]) {
+    const bad = { ...devOnly, enabledEnvironments: scope };
+    const result = loaded(bad);
+    assert.equal(result.enabled, false, JSON.stringify(scope));
+  }
+  const surplus = { ...devOnly, targets: { ...devOnly.targets, QA: AWS_DEV_TARGET } };
+  assert.equal(loaded(surplus).enabled, false, "disabled stages may not be smuggled into target metadata");
+  const missing = { ...devOnly, targets: {} };
+  assert.equal(loaded(missing).enabled, false, "DEV target is mandatory");
+  const approvals = { ...devOnly, requiredApprovals: { DEV: 0 } };
+  assert.equal(loaded(approvals).enabled, false, "DEV approval remains required");
+});
 
 test("an AWS contract loads; DEV, QA and PROD differ pairwise in account and backend; the Azure shape is not an AWS target", () => {
   const good = loaded(awsContractJson(KILL)) as PilotContract;

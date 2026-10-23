@@ -190,7 +190,7 @@ async function planAgainstTarget(request: SealRequest, deps: SealDeps, kind: "se
     const input = {
       engine, environment: request.environment, target: { ...request.target }, manifest, snapshotPath: snapshot.path, scratchDir: scratch.path,
       channel: request.channel ?? "CLI", env: deps.env ?? process.env, policyVersion: request.policyVersion, engineVersion: manifest.engineVersion,
-      pinned: admitted.contract.targets[request.environment], spec: admitted.spec, contractSha256: pilotContractSha256(admitted.contract), toolDirs: deps.toolDirs, now: deps.now,
+      pinned: admitted.contract.targets[request.environment]!, spec: admitted.spec, contractSha256: pilotContractSha256(admitted.contract), toolDirs: deps.toolDirs, now: deps.now,
       embedStateWrite: admitted.contract.embedStateWrite === true,
     };
     // An engine with its own qualification run (CDK: read-only steps, no change set) does that and nothing else.
@@ -338,7 +338,7 @@ export async function runApply(request: ApplyRequest, deps: ApplyDeps): Promise<
   // the next run's stale-directory sweep removes the scratch directory.)
   const scratch = createPrivateDirectory("alz-preview-", deps.scratchParent);
   const run = engine.openApply({
-    scratchDir: scratch.path, env, toolDirs: deps.toolDirs, manifest, pinned: contract.targets[sealed.environment], spec,
+    scratchDir: scratch.path, env, toolDirs: deps.toolDirs, manifest, pinned: contract.targets[sealed.environment]!, spec,
     target: sealed.target, engineVersion: sealed.engineVersion,
   });
   const unregisterSecrets = registerCleanup(run.removeSecrets);

@@ -76,6 +76,9 @@ export function verifyApprovalSet(input: VerifyApprovalsInput): ApprovalVerdict 
   const maxAgeMinutes = contract.maxApprovalAgeMinutes;
   // Contract validation is the one place that enforces the minimums (DEV 1, QA 1, PROD 2).
   const required = contract.requiredApprovals[environment];
+  if (required === undefined || (contract.enabledEnvironments && !contract.enabledEnvironments.includes(environment))) {
+    return { ok: false, code: "APPROVER_NOT_ALLOWED", message: "This environment is not enabled by the pilot contract." };
+  }
   const refuse = (code: ApprovalCode, message: string): ApprovalVerdict => ({ ok: false, code, message });
   const nowMs = now.getTime();
   const seenNonces = new Set<string>();

@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "enabled": false,
+  "provider": "AWS",
+  "engine": "TERRAFORM",
+  "enabledEnvironments": ["DEV"],
+  "targets": {
+    "DEV": {
+      "accountId": "111111111111",
+      "region": "us-east-2",
+      "backend": "examplefake-dev-state/pilot/dev.tfstate",
+      "workspace": "default"
+    }
+  },
+  "requiredApprovals": {
+    "DEV": 1
+  },
+  "maxApprovalAgeMinutes": 30,
+  "approvers": [
+    {
+      "id": "REPLACE-WITH-OWNER-APPROVER",
+      "publicKeyPem": "REPLACE-WITH-ED25519-PUBLIC-KEY",
+      "environments": ["DEV"]
+    }
+  ],
+  "killSwitchPath": ".runs/apply/KILL"
+}
