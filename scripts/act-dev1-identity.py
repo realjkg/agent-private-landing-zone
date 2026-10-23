@@ -126,7 +126,7 @@ def export_bindings(config, report):
                                ("AWS_WEB_IDENTITY_TOKEN_FILE",role["tokenFile"]),
                                ("AWS_REGION",config["region"])):
             lines.append("export ALZ_"+name+"_"+variable+"="+shlex.quote(value))
-    return "\\n".join(lines)+"\\n"
+    return "\n".join(lines)+"\n"
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
