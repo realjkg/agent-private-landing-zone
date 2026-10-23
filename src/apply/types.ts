@@ -48,9 +48,12 @@ export type PilotContract = {
   enabled: boolean;
   provider: ProviderId;
   engine: EngineId;
-  targets: Record<ApplyEnvironment, PilotTarget>;
+  /** Unconfigured environments have no target. DEV is always required. */
+  targets: Partial<Record<ApplyEnvironment, PilotTarget>> & { DEV: PilotTarget };
+  /** Optional narrow pilot scope; absent preserves the original DEV/QA/PROD contract. */
+  enabledEnvironments?: ApplyEnvironment[];
   /** Distinct verified approvals required per environment. DEV and QA at least 1, PROD at least 2. */
-  requiredApprovals: Record<ApplyEnvironment, number>;
+  requiredApprovals: Partial<Record<ApplyEnvironment, number>> & { DEV: number };
   maxApprovalAgeMinutes: number;
   /** The approver allowlist lives in the reviewed contract, never in an operator-supplied file. Ids and public keys are unique. */
   approvers: ApproverEntry[];
