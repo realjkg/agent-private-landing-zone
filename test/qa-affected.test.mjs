@@ -111,7 +111,7 @@ test("diff compares branch head with its merge-base, not the advancing main tip"
   const calls = [];
   const args = diffCommand("base-tip", "pr-head", inputs => {
     calls.push(inputs);
-    return "common-ancestor\\n";
+    return "common-ancestor" + String.fromCharCode(10);
   });
   assert.deepEqual(calls, [["merge-base", "base-tip", "pr-head"]]);
   assert.deepEqual(args, ["diff", "--name-only", "-z", "--diff-filter=ACMRD",
