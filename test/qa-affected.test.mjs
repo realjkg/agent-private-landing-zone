@@ -117,3 +117,13 @@ test("diff compares branch head with its merge-base, not the advancing main tip"
   assert.deepEqual(args, ["diff", "--name-only", "-z", "--diff-filter=ACMRD",
     "common-ancestor", "pr-head"]);
 });
+
+test("ACT-DEV-1 Terraform source receives synthetic HCL ownership without broad regression", () => {
+  const files = fixture();
+  files.set("qualification/aws/act-dev1-canary/main.tf", 'resource "aws_cloudwatch_log_group" "act_dev1" {}');
+  files.set("test/act-dev1-automation.test.py", 'main.tf');
+  const plan = planChanged(["qualification/aws/act-dev1-canary/main.tf"], files);
+  assert.deepEqual(plan.pythonTests, ["test/act-dev1-automation.test.py"]);
+  assert.deepEqual(plan.gaps, []);
+  assert.equal(plan.needsDeps, false);
+});
