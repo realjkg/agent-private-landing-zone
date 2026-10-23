@@ -135,21 +135,63 @@ export function transitionBlueprintItem(
 }
 export function verifyBlueprintInventory(snapshot: BlueprintSnapshot): boolean {
   try {
-    requireValid(snapshot.version===snapshot.events.length, "VERSION_INVALID");
-    let prev: string|null=null;
-    for(let i=0;i<snapshot.events.length;i++){
-      const e=snapshot.events[i]!;
-      const {hash,...unsigned}=e;
-      requireValid(e.blueprintId===snapshot.blueprintId && e.sequence===i+1 &&
-        e.previousHash===prev && hash===eventHash(unsigned), "HASH_MISMATCH");
-      prev=hash;
+    requireValid(!!snapshot && ID.test(snapshot.blueprintId) && Array.isArray(snapshot.items) &&
+      snapshot.items.length > 0 && snapshot.items.length <= 500 && Array.isArray(snapshot.events), "SNAPSHOT_INVALID");
+    requireValid(snapshot.events.length <= 20000 && snapshot.version === snapshot.events.length, "VERSION_INVALID");
+
+    // Hash integrity alone cannot establish that the final item states follow the recorded events.
+    // Replay transitions from REQUESTED and independently derive each item's final state and evidence.
+    const replay = new Map<string, { state: BlueprintState; refs: string[]; updatedAt: string | null }>();
+    for (const item of snapshot.items) {
+      requireValid(ID.test(item.id) && !replay.has(item.id), "ITEM_ID_INVALID");
+      requireValid(item.provider === "AWS" &&
+        ["GOVERNANCE","ACCOUNT","POLICY","NETWORK","IDENTITY","WORKLOAD","TOOL"].includes(item.kind) &&
+        ["READ","CREATE","UPDATE","DELETE","IMPORT"].includes(item.action) &&
+        ["EXISTING_AWS","BLUEPRINT","UNKNOWN"].includes(item.sourceOfTruth) &&
+        typeof item.resourceType === "string" && item.resourceType.length > 0 && item.resourceType.length <= 180 &&
+        Number.isFinite(Date.parse(item.updatedAt)) && refsValid(item.evidenceRefs), "ITEM_SHAPE_INVALID");
+      replay.set(item.id, { state: "REQUESTED", refs: [], updatedAt: null });
     }
-    requireValid(snapshot.headHash===prev, "HEAD_MISMATCH");
-    const projected=Object.fromEntries(Object.keys(TRANSITIONS).map(x=>[x,0])) as Record<BlueprintState,number>;
-    for(const item of snapshot.items) projected[item.state]++;
-    requireValid(JSON.stringify(projected)===JSON.stringify(snapshot.counts), "COUNTS_MISMATCH");
-    for(const item of snapshot.items) if(TERMINAL.has(item.state) && item.state!=="BLOCKED")
-      requireValid(item.evidenceRefs.length>0, "EVIDENCE_MISSING");
+
+    let prev: string | null = null;
+    for (let i = 0; i < snapshot.events.length; i++) {
+      const event = snapshot.events[i]!;
+      const { hash, ...unsigned } = event;
+      requireValid(event.blueprintId === snapshot.blueprintId && event.sequence === i + 1 &&
+        event.previousHash === prev && hash === eventHash(unsigned), "HASH_MISMATCH");
+      requireValid(ID.test(event.sourceRef) && Number.isFinite(Date.parse(event.at)) &&
+        refsValid(event.evidenceRefs) && (event.detail === undefined ||
+          (typeof event.detail === "string" && event.detail.length <= 512)), "EVENT_INVALID");
+      const item = snapshot.items.find(x => x.id === event.itemId);
+      const current = replay.get(event.itemId);
+      requireValid(!!item && !!current && event.from === current.state &&
+        TRANSITIONS[current.state].includes(event.to), "REPLAY_TRANSITION_INVALID");
+      if (["SUCCEEDED", "REUSED", "ROLLED_BACK", "APPROVED", "EXECUTING", "VERIFYING"].includes(event.to)) {
+        requireValid(event.evidenceRefs.length > 0, "EVENT_AUTHORITY_EVIDENCE_MISSING");
+      }
+      requireValid(item!.action !== "READ" || !["EXECUTING", "SUCCEEDED"].includes(event.to), "READ_ACTION_CANNOT_MUTATE");
+      replay.set(event.itemId, {
+        state: event.to,
+        refs: [...new Set([...current!.refs, ...event.evidenceRefs])],
+        updatedAt: event.at,
+      });
+      prev = hash;
+    }
+    requireValid(snapshot.headHash === prev, "HEAD_MISMATCH");
+    const counts = Object.fromEntries(Object.keys(TRANSITIONS).map(x => [x, 0])) as Record<BlueprintState, number>;
+    for (const item of snapshot.items) {
+      const current = replay.get(item.id)!;
+      requireValid(item.state === current.state &&
+        JSON.stringify(item.evidenceRefs) === JSON.stringify(current.refs) &&
+        (current.updatedAt === null || item.updatedAt === current.updatedAt), "ITEM_REPLAY_MISMATCH");
+      if (TERMINAL.has(item.state) && item.state !== "BLOCKED") {
+        requireValid(item.evidenceRefs.length > 0, "EVIDENCE_MISSING");
+      }
+      counts[item.state]++;
+    }
+    requireValid(JSON.stringify(counts) === JSON.stringify(snapshot.counts), "COUNTS_MISMATCH");
     return true;
-  }catch{return false;}
+  } catch {
+    return false;
+  }
 }
