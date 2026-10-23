@@ -104,6 +104,19 @@ Use `config/act-pilot-contract.aws-dev.example.json` only as an intentionally di
 ./alz apply preflight --environment DEV
 ```
 
+The owner can prepare a *disabled* contract draft from actual account and bootstrap read-back rather than retyping target identifiers:
+
+```bash
+python3 scripts/act-dev1-contract-draft.py \\
+  --account-evidence .runs/act-dev1/account.json \\
+  --bootstrap-evidence .runs/act-dev1/bootstrap.json \\
+  --approver-id APPROVED_DEV_APPROVER \\
+  --public-key-file /private/owner-ed25519.pub \\
+  --output .runs/act-dev1/contract.draft.json
+```
+
+This never enables or pins ACT and cannot replace an owner's review of the actual Ed25519 public key or issuance path. The operator must copy, inspect, explicitly enable, and pin the reviewed source only after source-bound acceptance. QA/PROD are never synthesized.
+
 The one-resource canary source is `qualification/aws/act-dev1-canary/main.tf`; its only managed resource is a 30-day CloudWatch log group. The owner selects and pins the provider lockfile and captures `terraform show -json` output from a separately reviewed, authentic plan. The optional offline structural gate checks exactly one CREATE, required tags, 30-day retention, target region, and no drift or outputs:
 
 ```bash
@@ -117,8 +130,19 @@ A structural pass is **not approval**. The person must use the ACT driver's ordi
 
 ### D8: Independent evidence closure
 
-Check the exact resource and tags under a separately authenticated DISCOVERY role, the state version and S3 data events, CloudTrail mutation identity, replay and permission-denial outcomes, and delayed actual costs. Cleanup requires a **separate owner-authorized** deletion/read-back; the ACT driver has no general destroy path. Retention/cleanup disposition must be explicit. Only after the independent record is complete may the exact target/lock/commit/plan/canary earn ACT-DEV-1 acceptance.
+Check the exact resource and tags under an independently authenticated DISCOVERY role, the state version and S3 data events, CloudTrail mutation identity, replay and permission-denial outcomes, and delayed actual costs. With fresh owner-provisioned role tokens after the supervised canary, a read-only verifier re-attests four STS sessions but performs the resource query solely under DISCOVERY:
+
+```bash
+unset AWS_PROFILE AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
+python3 scripts/act-dev1-verify-canary.py \\
+  --identity-config .runs/act-dev1/identity-input.json \\
+  --name /alz/act-dev-1/canary-01 \\
+  --owner APPROVED_OWNER \\
+  --output .runs/act-dev1/canary-readback.json
+```
+
+The read-back report does not assert that CloudTrail mutation identity, state serial/version, or billed cost were verified. Those remain independent acceptance checks. Cleanup requires a **separate owner-authorized** deletion/read-back; the ACT driver has no general destroy path. Retention/cleanup disposition must be explicit. Only after the independent record is complete may the exact target/lock/commit/plan/canary earn ACT-DEV-1 acceptance.
 
 ## Engineering status
 
-The synthetic tests are scoped to these three new scripts. They intentionally use fake STS and cloud responders for negative-path verification, and cannot substitute for the authenticated read-only account and DEV bootstrap observations. No automatic account provisioning, token-minting broker, AWS mutation, ACT enablement or secret material is bundled here.
+The synthetic tests cover the read-only collectors, identity checks, strict plan, least-privilege generator, disabled contract draft and independent resource read-back. They intentionally use fake STS and cloud responders for negative-path verification, and cannot substitute for the authenticated read-only account and DEV bootstrap observations. No automatic account provisioning, token-minting broker, AWS mutation, ACT enablement or secret material is bundled here.
