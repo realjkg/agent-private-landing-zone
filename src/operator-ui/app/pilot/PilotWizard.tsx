@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { ExperienceLevel } from "../../experience-level.js";
 import { PilotDialog } from "./PilotDialog";
+import { ActDev1Setup } from "./ActDev1Setup";
 import {
   answerDialog, cancelDialog, choosePath, fetchPilotState, forgetPilotToken, loadReview, startApply, startApprove, startPreflight, startSeal, setPilotToken, startOver,
   type PilotEnvironment, type PilotPath, type PilotReply, type PilotRun, type PilotState, type PreflightCheck, type ReviewSummary, type RunResult,
@@ -100,6 +101,13 @@ function ChangeList(props: { review: ReviewSummary }) {
         <dt>Place</dt><dd><code>{review.target.account} | {review.target.backend} | {review.target.workspace}</code></dd>
         <dt>Change ID (first 12 characters)</dt><dd><code>{review.shortId}</code></dd>
       </dl>
+      <h3>Change summary</h3>
+      <p>Added: <strong>{review.counts.create}</strong> · Modified: <strong>{review.counts.update}</strong> ·
+        Removed or replaced: <strong>{review.counts.delete + review.counts.replace + review.counts.forget}</strong></p>
+      <p role="note">Governance: every change remains subject to policy checks and signed approvals.
+        Access: a console session alone does not grant cloud permissions. Live role and organization controls must be verified before execution.</p>
+      {risky && <p role="alert">This review includes removal or replacement. The AWS DEV canary permits an additive change only.
+        Stop unless a separately authorized plan and policy explicitly allow this scope.</p>}
       <h3>What will change</h3>
       <ul className="pilot-counts">{describeCounts(review.counts).map((line) => <li key={line}>{line}</li>)}</ul>
       {risky && <p className="pilot-warning" role="note">{COPY.reviewDestructive}</p>}
@@ -290,6 +298,7 @@ export default function PilotWizard(props: PilotWizardProps) {
 
         {unlocked && (
           <>
+            <ActDev1Setup />
             <Progress role={role} step={step} />
             {serverPath !== null && (
               <p className="pilot-toolbar">
