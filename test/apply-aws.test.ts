@@ -109,6 +109,12 @@ test("ACT-DEV-1 accepts only an explicit AWS Terraform DEV pilot without fictiti
   assert.equal(loaded(surplus).enabled, false, "disabled stages may not be smuggled into target metadata");
   const missing = { ...devOnly, targets: {} };
   assert.equal(loaded(missing).enabled, false, "DEV target is mandatory");
+  const missingDevApprover = { ...devOnly, approvers: devOnly.approvers.map((item: any) => ({ ...item, environments: ["QA"] })) };
+  assert.equal(loaded(missingDevApprover).enabled, false, "at least one DEV approver is required");
+  for (const combination of [{ provider: "AZURE", engine: "TERRAFORM" }, { provider: "AWS", engine: "CDK" }]) {
+    const changed = { ...devOnly, ...combination };
+    assert.equal(loaded(changed).enabled, false, "DEV-only authority cannot expand beyond AWS Terraform");
+  }
   const approvals = { ...devOnly, requiredApprovals: { DEV: 0 } };
   assert.equal(loaded(approvals).enabled, false, "DEV approval remains required");
 });

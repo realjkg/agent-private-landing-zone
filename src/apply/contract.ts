@@ -133,6 +133,9 @@ function validate(raw: unknown): PilotContract {
   if (scoped !== undefined && (!Array.isArray(scoped) || scoped.length !== 1 || scoped[0] !== "DEV")) {
     bad("enabledEnvironments: only the explicit DEV-only pilot is supported; omit for the legacy three-stage contract");
   }
+  if (scoped !== undefined && (spec.id !== "AWS" || engine.id !== "TERRAFORM")) {
+    bad("enabledEnvironments: DEV-only scope is approved only for AWS Terraform ACT-DEV-1");
+  }
   const active: ApplyEnvironment[] = scoped === undefined ? [...ENVIRONMENTS] : ["DEV"];
   const targets = object(r.targets, "targets", active);
   const approvals = object(r.requiredApprovals, "requiredApprovals", active);
@@ -154,6 +157,9 @@ function validate(raw: unknown): PilotContract {
     killSwitchPath: text(r.killSwitchPath, "killSwitchPath", (v) => v.length > 0 && v.length <= 1024 && !v.includes("\0")),
     ...(typeof embed === "boolean" ? { embedStateWrite: embed } : {}),
   };
+  if (scoped !== undefined && !contract.approvers.some((entry) => entry.environments.includes("DEV"))) {
+    bad("approvers: DEV-only pilot requires an authorized DEV approver");
+  }
   active.forEach((a, index) => {
     for (const b of active.slice(index + 1)) {
       const left = contract.targets[a]!;
