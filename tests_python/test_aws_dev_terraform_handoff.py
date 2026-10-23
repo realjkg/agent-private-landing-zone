@@ -34,10 +34,11 @@ class TerraformHandoffTests(unittest.TestCase):
         result = self.run_prepare(account="not-an-account", identifier="BAD", repo="invalid")
         self.assertEqual(len(result["errors"]), 3)
 
-    def test_oidc_identities_are_unique(self):
-        identities = self.run_prepare()["terraformVarsCandidate"]["oidc_subjects"]
-        self.assertEqual(set(identities), {"DISCOVERY","STATE","STATE_WRITE","APPLY"})
-        self.assertEqual(len(set(identities.values())), 4)
+    def test_oidc_subjects_are_not_guessed(self):
+        self.assertIsNone(self.run_prepare()["terraformVarsCandidate"]["oidc_subjects"])
+        correct = {k: "observed-subject-"+k for k in ("DISCOVERY","STATE","STATE_WRITE","APPLY")}
+        self.assertEqual(self.run_prepare(oidc_subjects=correct)["terraformVarsCandidate"]["oidc_subjects"],correct)
+        self.assertIsNone(self.run_prepare(oidc_subjects={k:"same" for k in correct})["terraformVarsCandidate"]["oidc_subjects"])
 
 if __name__ == "__main__":
     unittest.main()
