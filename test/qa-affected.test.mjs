@@ -74,3 +74,35 @@ test("policy changes keep focused security regression tests", () => {
   const plan = planChanged(["policy/opa/example.rego"], fixture());
   assert.deepEqual(plan.nodeTests, ["test/security-policy.test.ts"]);
 });
+
+test("Python cost and policy scripts select only their importing synthetic tests", () => {
+  const files = fixture();
+  files.set("scripts/alz-cost-import.py", "def collect(): pass");
+  files.set("scripts/alz-policy-coverage.py", "def coverage(): pass");
+  files.set("scripts/alz-grafana-dashboard.py", "def dashboard(): pass");
+  files.set("scripts/alz-synthetic-qualification.py",
+    'files = ["alz-cost-acceptance.test.py", "alz-evidence-integration.test.py"]');
+  files.set("test/alz-cost-acceptance.test.py",
+    'module = "scripts/alz-cost-import.py"');
+  files.set("test/alz-evidence-integration.test.py",
+    'module("alz-cost-import.py"); module("alz-policy-coverage.py"); module("alz-grafana-dashboard.py")');
+  const plan = planChanged([
+    "scripts/alz-cost-import.py", "scripts/alz-policy-coverage.py",
+    "scripts/alz-grafana-dashboard.py", "scripts/alz-synthetic-qualification.py",
+    "test/alz-cost-acceptance.test.py", "test/alz-evidence-integration.test.py"
+  ], files);
+  assert.deepEqual(plan.pythonTests, [
+    "test/alz-cost-acceptance.test.py", "test/alz-evidence-integration.test.py"
+  ]);
+  assert.deepEqual(plan.pythonEntrypoints, ["scripts/alz-synthetic-qualification.py"]);
+  assert.deepEqual(plan.nodeTests, []);
+  assert.deepEqual(plan.uiTests, []);
+  assert.equal(plan.needsDeps, false);
+  assert.deepEqual(plan.gaps, []);
+});
+test("Python source without a focused test fails closed", () => {
+  const files = fixture();
+  files.set("scripts/orphan.py", "print('no tests')");
+  const plan = planChanged(["scripts/orphan.py"], files);
+  assert.match(plan.gaps[0], /no Python test owner/);
+});

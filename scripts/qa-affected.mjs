@@ -10,6 +10,8 @@ import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
 const TEST = /^test\/[^/]+\.test\.(?:ts|tsx|mjs)$/;
+const PY_TEST = /^test\/[^/]+\.test\.py$/;
+const PY_SOURCE = /^scripts\/[^/]+\.py$/;
 const SOURCE = /^src\/.+\.(?:ts|tsx|js|mjs)$/;
 const QA_SELF_TEST = "test/qa-affected.test.mjs";
 const MAX_AFFECTED_TESTS = 45;
@@ -41,6 +43,9 @@ export function planChanged(changedPaths, files) {
   const selected = new Set();
   const gaps = [];
   const notes = [];
+  const pythonTests = new Set();
+  const pythonChanged = new Set();
+  const pythonEntrypoints = new Set();
   let buildUi = false;
   let pinCheck = false;
   let pluginCheck = false;
@@ -75,6 +80,27 @@ export function planChanged(changedPaths, files) {
       continue;
     }
     if (TEST.test(path)) { selected.add(path); if (path === "test/csp-first-party.test.tsx") buildUi = true; continue; }
+    if (PY_TEST.test(path)) { pythonTests.add(path); continue; }
+    if (PY_SOURCE.test(path)) {
+      pythonChanged.add(path);
+      const script = files.get(path) ?? "";
+      const importing = matching(files, PY_TEST).filter(testPath => {
+        const body = files.get(testPath) ?? "";
+        return body.includes(posix.basename(path)) || body.includes(path);
+      });
+      for (const testPath of importing) pythonTests.add(testPath);
+      if (posix.basename(path) === "alz-synthetic-qualification.py") {
+        // Its contract is executing the two named synthetic tests end to end.
+        pythonEntrypoints.add(path);
+        for (const testPath of matching(files, PY_TEST)) {
+          if (script.includes(posix.basename(testPath))) pythonTests.add(testPath);
+        }
+      }
+      if (!importing.length && !pythonEntrypoints.has(path)) {
+        gaps.push(path + " has no Python test owner. Add a focused test.");
+      }
+      continue;
+    }
     if (/^docs\/|\.md$|^\.github\/(ISSUE_TEMPLATE|PULL_REQUEST_TEMPLATE)\//.test(path)) continue;
     if (/^\.github\/workflows\/.+\.ya?ml$/.test(path)) {
       pinCheck = true;
@@ -136,11 +162,11 @@ export function planChanged(changedPaths, files) {
     // Unknown executable or deployment configuration: do not silently pass.
     gaps.push(path + " has no QA ownership rule.");
   }
-  if (selected.size > MAX_AFFECTED_TESTS) {
-    gaps.push("Affected test count " + selected.size + " exceeds " + MAX_AFFECTED_TESTS +
+  if (selected.size + pythonTests.size > MAX_AFFECTED_TESTS) {
+    gaps.push("Affected test count " + (selected.size + pythonTests.size) + " exceeds " + MAX_AFFECTED_TESTS +
       ". Split the change or qualify it through an explicit release gate.");
   }
-  if (!selected.size && gaps.length === 0 && changed.some(p => !(/\.md$|^docs\//.test(p)))) {
+  if (!selected.size && !pythonTests.size && gaps.length === 0 && changed.some(p => !(/\.md$|^docs\//.test(p)))) {
     gaps.push("Executable changes selected no tests.");
   }
   const tests = uniq([...selected]);
@@ -149,7 +175,9 @@ export function planChanged(changedPaths, files) {
   const jsTests = tests.filter(p => p.endsWith(".test.mjs"));
   if (uiTests.includes("test/csp-first-party.test.tsx")) buildUi = true;
   return {
-    changed, nodeTests, uiTests, jsTests, gaps, notes, buildUi, pinCheck,
+    changed, nodeTests, uiTests, jsTests, pythonTests: uniq([...pythonTests]),
+    pythonChanged: uniq([...pythonChanged]), pythonEntrypoints: uniq([...pythonEntrypoints]),
+    gaps, notes, buildUi, pinCheck,
     pluginCheck, configCheck,
     typeNode: uniq(changed.filter(p => /^src\/.+\.ts$/.test(p) &&
       !p.startsWith("src/operator-ui/app/"))),
@@ -157,7 +185,7 @@ export function planChanged(changedPaths, files) {
       ...uiTests]),
     needsDeps: Boolean(nodeTests.length || uiTests.length || buildUi || pluginCheck || configCheck ||
       changed.some(p => SOURCE.test(p))),
-    testCount: tests.length,
+    testCount: tests.length + pythonTests.size,
   };
 }
 function git(args) {
@@ -208,6 +236,9 @@ function execute(plan) {
   if (plan.nodeTests.length) runCmd("./node_modules/.bin/tsx", ["--test", ...plan.nodeTests]);
   if (plan.uiTests.length) runCmd("./node_modules/.bin/vitest", ["run", ...plan.uiTests]);
   if (plan.jsTests.length) runCmd("node", ["--test", ...plan.jsTests]);
+  if (plan.pythonChanged?.length) runCmd("python3", ["-m", "py_compile", ...plan.pythonChanged]);
+  for (const testPath of plan.pythonTests ?? []) runCmd("python3", [testPath]);
+  for (const entrypoint of plan.pythonEntrypoints ?? []) runCmd("python3", [entrypoint]);
   if (plan.pluginCheck) runCmd("npm", ["run", "plugins:check"]);
   console.log("QA: passed " + plan.testCount + " affected test files.");
 }
@@ -231,7 +262,7 @@ function main() {
   const tracked = uniq([...git(["ls-files", "-z"]).split("\0").filter(Boolean), ...untracked]);
   const files = new Map();
   for (const file of tracked) {
-    if (SOURCE.test(file) || TEST.test(file) || /^scripts\/.+\.(?:ts|tsx|js|mjs)$/.test(file)) {
+    if (SOURCE.test(file) || TEST.test(file) || PY_TEST.test(file) || PY_SOURCE.test(file) || /^scripts\/.+\.(?:ts|tsx|js|mjs)$/.test(file)) {
       if (existsSync(file)) files.set(file, readFileSync(file, "utf8"));
     } else files.set(file, "");
   }
@@ -241,10 +272,10 @@ function main() {
   writeFileSync(file, JSON.stringify(plan, null, 2) + "\n");
   console.log("QA scope: " + plan.testCount + " affected test files; " + changed.length + " changed paths.");
   console.log("QA paths: " + JSON.stringify({node:plan.nodeTests, ui:plan.uiTests,
-    js:plan.jsTests, gaps:plan.gaps, notes:plan.notes}));
+    js:plan.jsTests, python:plan.pythonTests, gaps:plan.gaps, notes:plan.notes}));
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY,
     "### Affected QA\n\nChanged paths: " + changed.length + "; test files: " + plan.testCount +
-    "\n\n" + plan.nodeTests.concat(plan.uiTests, plan.jsTests).map(p => "- " + p).join("\n") + "\n");
+    "\n\n" + plan.nodeTests.concat(plan.uiTests, plan.jsTests, plan.pythonTests).map(p => "- " + p).join("\n") + "\n");
   if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT,
     "needs_deps=" + String(plan.needsDeps) + "\n");
   if (plan.gaps.length) throw Error("QA requires focused coverage:\n" + plan.gaps.join("\n"));
