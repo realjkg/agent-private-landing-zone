@@ -14,6 +14,35 @@ Use a lean loop:
 
 Do not turn CI into the development loop.
 
+
+### Required affected-QA agent cycle
+
+For every source, test, configuration, or workflow change, the coding agent must
+run the deterministic local QA selector **before pushing**:
+
+1. Install locked dependencies once for the checkout (not once per edit).
+2. Use **node scripts/qa-affected.mjs plan --base origin/main** to inspect the planned tests.
+3. Run **node scripts/qa-affected.mjs local --base origin/main** before handing off the PR.
+4. If any check fails, diagnose the failing file and fix only its owning lane;
+   rerun the same local affected QA until clean. Do not respond by relaxing an
+   assertion, expanding cloud authority, or invoking the full suite.
+5. Record changed paths, selected test files, and the local result in the PR.
+   GitHub's affected-code check repeats that scope after each PR push.
+6. A coverage-gap error blocks acceptance. Add an owning test or an explicit
+   ownership rule to scripts/qa-affected.mjs with a selector unit test.
+7. Run broad regression, provider qualification, or production release checks
+   only for a justified release boundary. Never silently substitute synthetic
+   checks for live provider evidence.
+
+The selector intentionally follows module imports and a small set of safety
+ownership rules. It does not guarantee coverage for filesystem-loaded fixtures,
+dynamic runtime calls, or behavior invisible to unit tests. When those paths
+change, add a focused test and explicit ownership before merge.
+
+GitHub Actions does not run an unattended hosted coding agent or auto-commit
+remediation. Local coding agents own the fix/recheck loop. A failed remote
+check is an evidence handoff to the agent, and the PR stays unmerged.
+
 ## Local operator experience and output budget
 
 - **Model-interface first:** the normal operator journey is the packaged, loopback-only Sovereign ALZ UI opened with `./alz`. Do not lead customers or operators through raw npm scripts, test files, setup menus, or verbose terminal output when the UI can carry the workflow.
