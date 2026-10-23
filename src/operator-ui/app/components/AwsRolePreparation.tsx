@@ -40,9 +40,9 @@ export function AwsRolePreparation() {
       issuer: ["https:", "", issuer].join("/"),
       audience: "sts.amazonaws.com",
       githubRepo: repo,
-      subjects: Object.fromEntries(IDENTITIES.map((identity) =>
-        [identity, `repo:${repo}:environment:dev-${identity}`])),
-      status: "REQUIRES_OWNER_REVIEW",
+      // Subject format must be observed from a real token before trust is configured.
+      subjects: null,
+      status: "REQUIRES_VERIFIED_SUBJECT_EVIDENCE",
     },
     requirements: [
       "Verify the active STS account matches the intended account.",
@@ -67,7 +67,7 @@ export function AwsRolePreparation() {
   return (
     <section className="panel" aria-label="AWS role preparation" id="aws-role-preparation">
       <h2>Prepare AWS landing-zone roles</h2>
-      <p>Generate a reusable, account-specific role plan locally. No AWS sign-in or infrastructure changes happen here.</p>
+      <p>Prepare an account-specific role plan. For connected checks and guided approvals, open Pilot apply. No infrastructure changes happen here.</p>
       <label className="field-label" htmlFor="alz-role-account">DEV AWS account ID</label>
       <input
         id="alz-role-account" value={account} onChange={(e) => { setAccount(e.target.value); setCopied(false); }}
@@ -81,7 +81,7 @@ export function AwsRolePreparation() {
       <p><small>Terraform first. Proposed roles: organization discovery/bootstrap templates, DEV bootstrap, and separate DEV discovery, state, state-write and apply. CDK follows separate qualification.</small></p>
       {valid ? (
         <>
-          <p role="status">Role names and proposed OIDC subjects are ready for owner review. No roles have been created.</p>
+          <p role="status">Role names are ready for review. Sign-in identities must be verified from real evidence; no roles have been created.</p>
           <details>
             <summary>Review generated role plan</summary>
             <textarea aria-label="Generated AWS role plan" readOnly value={serialized} rows={12} />
@@ -91,6 +91,7 @@ export function AwsRolePreparation() {
       ) : (
         <p role="status">Enter a 12-digit DEV member account, a lowercase identifier (3–40 characters), and the authorized GitHub owner/repository.</p>
       )}
+      <p><a href="#pilot">Open guided AWS setup and approvals</a></p>
       <p><small>Budget ceiling: $80 cumulative cloud credits. PLAN only; next: confirm DEV account, authenticate operator, review the existing bootstrap/aws Terraform plan and trust policies. This screen cannot enable ACT.</small></p>
     </section>
   );
