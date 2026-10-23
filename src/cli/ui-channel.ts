@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { join, resolve } from "node:path";
 
+import { checkDevAccount, validatedAccountRequest } from "./act-dev1-admin.js";
 import { channelMismatchMessage } from "../apply/channel.js";
 import { repoPaths } from "../apply/contract.js";
 import { verifyReviewBundle } from "../apply/seal.js";
@@ -359,6 +360,21 @@ export function createPilotRouter(options: PilotRouterOptions): PilotRouter {
     const body = await readBody(req);
 
     switch (url.slice(PILOT_BASE.length)) {
+      case "/aws-readiness": {
+        const input = fields(body, ["account", "profile"]);
+        if (running()) throw new Bad(409, "PILOT_RUN_ACTIVE", "Finish the current change before checking another AWS account.");
+        let request: { account: string; profile: string };
+        try { request = validatedAccountRequest(input); }
+        catch { throw new Bad(400, "AWS_SETUP_INPUT_INVALID", "Enter a separate 12-digit DEV account and a saved AWS connection name."); }
+        try {
+          const result = await checkDevAccount(request);
+          send(res, context.headers, 200, result);
+        } catch {
+          // Never echo stderr, credentials, account metadata or a token in API errors.
+          throw new Bad(422, "AWS_ACCOUNT_NOT_VERIFIED", "This AWS account could not be verified. Check the saved connection, DEV account, Workloads area, and governance status.");
+        }
+        return;
+      }
       case "/path": {
         const { path } = fields(body, ["path"]);
         if (path !== "UI" && path !== "CLI") throw new Bad(400, "PILOT_REQUEST_INVALID", "Choose the command line or this console.");
