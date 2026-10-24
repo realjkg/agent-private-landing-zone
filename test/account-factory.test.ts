@@ -4,7 +4,7 @@ import { run as runAccountFactoryCli } from "../src/cli/account-factory.js";
 import {prepare,submit,status,verifyAdministrator,verifyProposal,verifyProvisionedAccount, type AwsCall, type Intake, MANAGEMENT_ACCOUNT, WORKLOADS_OU} from "../src/account-factory/flow.js";
 const arn="arn:aws:sts::973471129135:assumed-role/AWSReservedSSO_AWSAdministratorAccess_7b52a7ec08abfa76/jkristian";
 const ou="arn:aws:organizations::973471129135:ou/o-0u6mts6li3/"+WORKLOADS_OU;
-const intake:Intake={profile:"adaptcloud-admin",name:"ALZ-DEV-01",email:"newdev@example.org",ownerEmail:"owner@example.org",ownerFirst:"Test",ownerLast:"Owner"};
+const intake:Intake={profile:"adaptcloud-admin",practiceRole:"MODERN_PLATFORMS_DELIVERY",name:"ALZ-DEV-01",email:"newdev@example.org",ownerEmail:"owner@example.org",ownerFirst:"Test",ownerLast:"Owner"};
 function fixture(changes:Record<string,unknown>={}){
   const calls:string[][]=[];
   const responses:Record<string,Record<string,unknown>>={
@@ -37,7 +37,7 @@ test("existing approved non-root administrator session is required",async()=>{
 });
 test("discovery builds a short-lived review-only immutable proposal",async()=>{
   const mock=fixture();const p=await prepare(intake,mock.call);
-  assert.equal(p.ouId,WORKLOADS_OU);assert.equal(p.status,"AWAITING_OWNER_AND_FINANCE_APPROVAL");
+  assert.equal(p.ouId,WORKLOADS_OU);assert.equal(p.requesterPracticeRole,"MODERN_PLATFORMS_DELIVERY");assert.equal(p.status,"AWAITING_OWNER_AND_FINANCE_APPROVAL");
   assert.equal(p.infrastructureAct,"DISABLED");assert.equal(p.financialEvidence,"UNVERIFIED");
   assert.ok(mock.calls.every(x=>x[1]!=="provision-product"));
   assert.equal(p.parameters.find(x=>x.Key==="ManagedOrganizationalUnit")?.Value,"Workloads ("+WORKLOADS_OU+")");
@@ -104,4 +104,15 @@ test("independent account readback requires active member account and correct OU
     });
     await assert.rejects(verifyProvisionedAccount(intake.profile,intake.name,intake.email,broken.call));
   }
+});
+
+test("all four practice roles can prepare governed DEV proposals but role claim alone grants no authority",async()=>{
+  for(const practiceRole of ["MODERN_PLATFORMS_PRESALES","MODERN_PLATFORMS_DELIVERY","DIGITAL_PRESALES","DIGITAL_DELIVERY"] as const){
+    const next=await prepare({...intake,practiceRole},fixture().call);
+    assert.equal(next.requesterPracticeRole,practiceRole);
+    assert.equal(next.roleClassification,"DECLARED_NOT_AUTHORIZING");
+    assert.equal(next.financialEvidence,"UNVERIFIED");
+    await assert.rejects(submit(next,intake.profile,next.proposalHash,false,fixture().call),/OWNER_AND_FINANCE_APPROVAL_REQUIRED/);
+  }
+  await assert.rejects(prepare({...intake,practiceRole:"UNTRUSTED" as never},fixture().call),/PRACTICE_ROLE_INVALID/);
 });
