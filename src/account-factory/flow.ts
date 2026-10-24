@@ -328,6 +328,8 @@ export async function follow(
   const { proposalHash, status: _status, infrastructureAct: _act, ...draft } = proposal;
   if (proposal.schema !== 2 || hash(draft) !== proposalHash)
     throw Error("REQUEST_PROPOSAL_TAMPERED");
+  const identity = await verifyAdministrator(profile, call);
+  if (identity.Account !== proposal.managementAccount) throw Error("TRACKING_ORGANIZATION_CHANGED");
   const maxPolls = options.maxPolls ?? 60;
   const intervalMs = options.intervalMs ?? 30_000;
   if (!Number.isInteger(maxPolls) || maxPolls < 1 || maxPolls > 240 ||
