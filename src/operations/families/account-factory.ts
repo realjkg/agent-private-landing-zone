@@ -3,6 +3,17 @@ import type { OperationSpec } from "../types.js";
 /** Only HANDOFF cards: the generic browser operations job runner must never submit AWS mutations. */
 export const accountFactoryOperations: readonly OperationSpec[] = [
   {
+    id: "account-factory-create", family: "governance", title: "Guided environment setup",
+    summary: "Collect environment details and hand off to the interactive AWS Account Factory workflow.",
+    cli: "./alz account-factory create", safety: "HANDOFF",
+    inputs: [{ kind: "text", name: "profile", label: "AWS SSO profile",
+      pattern: "[A-Za-z0-9][A-Za-z0-9._-]{0,63}", maxLength: 64, example: "adaptcloud-admin" }],
+    evidenceBasis: "LIVE AWS ACCOUNT FACTORY — individually signed-in operator and reviewed account request",
+    cliScript: "src/cli/account-factory.ts", command: { group: "account-factory", sub: "create" },
+    handoff: { reason: "Collect the account details in the trusted local terminal using the current AWS SSO session.",
+      command: "./alz account-factory create {profile}" },
+  },
+  {
     id: "account-factory-inspect", family: "governance", title: "Connect existing AWS access",
     summary: "Use your current signed-in AWS role and the organization’s existing management account.",
     cli: "./alz account-factory inspect", safety: "HANDOFF",
