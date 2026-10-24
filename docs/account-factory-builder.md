@@ -25,6 +25,12 @@ On submission the builder writes private plan, intent and receipt files under `.
 ./alz account-factory verify adaptcloud-admin ACCOUNT_NAME UNIQUE_ACCOUNT_EMAIL
 ```
 
+The guided wizard automatically follows the initial request for a bounded period and records its result. If provisioning continues after that window, resume the same request without creating a duplicate:
+
+```bash
+./alz account-factory follow adaptcloud-admin .runs/account-factory/REQUEST.proposal.json .runs/account-factory/REQUEST.receipt.json
+```
+
 A Service Catalog SUCCEEDED record is an authoritative provider completion status; the separate read-back checks the resulting active member account and OU/Control Tower baseline. The account read-back currently **does not independently establish per-account Control Tower enrollment, cost forecasts or production release fitness**. It reports these as unknown rather than pretending a full live environment qualification passed.
 
 ## Practice-specific prerequisites (no separate ALZ grant)
