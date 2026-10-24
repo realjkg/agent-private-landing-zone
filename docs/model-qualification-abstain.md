@@ -1,53 +1,43 @@
-# Independent model risk reconciliation and blocked-run provenance
+# Authentic blocked model qualification evidence
 
-This qualification path keeps local Qwen3/Mistral Nemo inference, synthetic AWS fixture evidence,
-and live AWS discovery **strictly separate**. No model adjudication constitutes an IAM
-authorization, Terraform apply, infrastructure ACT approval, or production release decision.
+## Mac evidence observed on 2026-10-24
 
-## Mac observation (2026-10-24)
+The owner ran local Qwen3 1.7B router, Qwen3 4B primary,
+Mistral Nemo validator and Qwen3 1.7B adjudicator against **synthetic AWS**
+brownfield discovery. All four roles returned schema-valid outputs. The
+primary's top risk was **unverified restore capability**; the validator's was
+**insecure execution role**. The adjudicator returned **ABSTAIN**.
+No Terraform apply, cloud mutation or infrastructure ACT occurred.
 
-The operator's Mac invoked all four configured roles (router Qwen3 1.7B, primary
-Qwen3 4B, validator Mistral Nemo, adjudicator Qwen3 1.7B). All observed model
-invocations emitted valid schemas. The primary named an unverified restore
-capability; the independent validator named an insecure execution role. The
-adjudicator chose `ABSTAIN`; the qualification runner returned
-`INDEPENDENT_AGENT_ASSESSMENT_NOT_VERIFIED`. This is **authentic blocked
-local inference**, not a preflight `NOT_RUN` and not successful qualification.
-Both risks remain open and neither is proven resolved by the synthetic fixture.
+These are two **distinct unresolved findings**. Do not collapse them, assert
+they conflict, declare them compatible, claim they are resolved, or re-run
+repeatedly just to obtain a passing sample. Changing the shared model
+adjudication policy remains a **separate explicitly qualified engineering
+change**, because it has many dependent tests and must not bypass CI's
+affected-QA ceiling.
 
-## Model judgment and deterministic enforcement
+## Persist source-bound blocked execution receipts
 
-The adjudicator now must return a structured `relationship`:
-`ALIGNED`, `COMPLEMENTARY`, `CONFLICTING`, or `UNCERTAIN`.
-`COMPLEMENTARY` means both findings may remain on the risk register and their
-controls can be pursued without mutually exclusive or unsafe actions; it does
-not mean the risks are resolved. The independent adjudicator must positively
-assess *both* risks as addressable. The deterministic harness accepts only
-`ALIGNED`/`COMPLEMENTARY` with **both** flags true, and otherwise
-`ABSTAIN`s. Malformed schemas fail closed. Distinct risk names alone never
-establish compatibility. Every downstream design, policy, authorization and
-ACT gate still applies.
-
-The primary and validator full assessments remain distinct, and a bounded risk
-relationship record is attached to the agent result.
-
-## Blocked-run output for the Mac kit
-
-On a failed independent assessment, `qualify-aws-terraform-agent` writes
+A Mac model attempt that reaches inference but fails
+`INDEPENDENT_AGENT_ASSESSMENT_NOT_VERIFIED` now leaves a private JSON file at
 `.runs/qualification/aws-brownfield-terraform-private-agents-v1-<id>/qualification-blocked.json`
-before exiting nonzero. The record has exact source SHA, model tags/digests,
-observed role/schema participation, typed `BLOCKED` verdict, primary/validator
-risk names, adjudication reason/relationship, and mandatory `ACT DISABLED`,
-`NOT_GRANTED` authorization. It contains no raw model transcript, AWS
-credentials, Terraform state, or plan. Treat even risk labels as internal
-operational metadata. A blocked receipt is not a passed model qualification.
+before the CLI returns nonzero. It records:
 
-The standalone Mac evidence kit (distributed separately from GitHub) must
-include this file only after validating its source/role/model/ACT bindings,
-and must distinguish `BLOCKED` execution from never-started `NOT_RUN`.
-Previously generated ZIP files cannot be retroactively made authoritative.
-Only rerunning the updated ALZ build can collect this new receipt.
+- exact clean Git source commit and model tag/digest identities;
+- observed per-role model schema participation and kernel/assessment status;
+- primary and validator top-risk labels, adjudication explanation;
+- explicit `BLOCKED`, approval `NOT_GRANTED` and infrastructure ACT `DISABLED`.
 
-The maintained synthetic scenario is not an AWS account test. A later
-approved AWS DEV run must independently establish identity, inventory,
-native plan provenance and negative authorization evidence.
+It does not include raw prompts, AWS credentials, Terraform state, native
+plans or authorization tokens. The risk labels remain internal metadata.
+
+The separately distributed Mac Evidence Qualification Kit v1.1 consumes this
+record only after source, model, role and authorization binding checks, and
+prints a **BLOCKED** attempted-run result instead of incorrectly reporting
+`NOT_RUN`. A blocked result is never a model qualification pass.
+
+The previous blocked run's ZIP cannot be retroactively upgraded. After
+this code is merged and rebuilt on Mac, rerun once to acquire its new
+authentic attempted-run receipt. A subsequent risk decision may still
+ABSTAIN, which is valid safety behavior. Real AWS DEV evidence, native
+Terraform/CDK previews and any ACT qualification remain separately gated.
