@@ -1,46 +1,70 @@
-# Sovereign ALZ Builder — customer-first Account Factory workflow
+# Sovereign ALZ Builder — customer environment setup
 
-## Eligible practice roles and customer-specific prerequisites
+## One builder for every practice
 
-Every practitioner in **Modern Platforms Presales**, **Modern Platforms Delivery**, **Digital Presales** and **Digital Delivery** is eligible to create a governed DEV account when the individual's customer-specific AWS authorization, owner approval and financial authorization are verified. Neither a job title nor a selection in the ALZ interface automatically grants AWS permissions.
+Modern Platforms Presales, Modern Platforms Delivery, Digital Presales, and Digital Delivery all use the same ALZ Builder. Practice selection tailors the guidance; **it is not another permission or approval system**. Staff use the AWS Identity Center session and effective permissions they already have. The builder never asks for access keys or issues a new administrator role.
 
-| Practitioner | Role-specific prerequisites | Outcome and handoff |
+The first destination is **DEV**, then QA or STAGING, then PROD when each separate environment is needed. Each is a **different AWS member account** under the same selected Control Tower management account. Adapt Cloud is our initial provenance environment, **not a hardcoded organization requirement** and not a place to deploy workloads.
+
+## Quick start — guided account creation
+
+In your already authenticated AWS SSO session, from the existing repository checkout:
+
+```bash
+./alz account-factory create adaptcloud-admin
+```
+
+The terminal guide prompts for practice, environment (DEV, QA, STAGING, PROD), new account name, unique account email, and Identity Center administrator details. It then discovers the signed-in management account and organization, the existing Control Tower landing zone and enabled OU, and the available Service Catalog Account Factory product/version/launch path. It displays the actual target details and asks **one clear confirmation** before making a real AWS account request. You do not manually enter Service Catalog product IDs, copy hashes, or complete another ALZ financial attestation.
+
+AWS IAM/Service Catalog authorizes the actual request. Cloud account creation can result in charges from Control Tower-managed services; the wizard states this before confirmation. The Account Factory product provisions the account through the existing landing zone, without AWS Organizations CreateAccount bypass and without provisioning workloads into the management account.
+
+On submission the builder writes private plan, intent and receipt files under `.runs/account-factory`. Record IDs can be queried using:
+
+```bash
+./alz account-factory status adaptcloud-admin rec-RECORD_ID
+./alz account-factory verify adaptcloud-admin ACCOUNT_NAME UNIQUE_ACCOUNT_EMAIL
+```
+
+A Service Catalog SUCCEEDED record is an authoritative provider completion status; the separate read-back checks the resulting active member account and OU/Control Tower baseline. The account read-back currently **does not independently establish per-account Control Tower enrollment, cost forecasts or production release fitness**. It reports these as unknown rather than pretending a full live environment qualification passed.
+
+## Practice-specific prerequisites (no separate ALZ grant)
+
+| Practice | What staff need | What to hand off |
 | --- | --- | --- |
-| Modern Platforms — Presales | Customer sponsor approves DEV demo; architecture, governance and scope reviewed | Customer-specific platform blueprint and delivery handoff |
-| Modern Platforms — Delivery | Customer scope, account purpose, OU, governance controls and platform owner accepted | Verified account evidence and Digital Operations handoff |
-| Digital — Presales | Customer permits DEV demo/data; workload design and platform alignment reviewed | Digital solution blueprint, security boundaries and cost assumptions |
-| Digital — Delivery | Customer approves workload design, identity and data classification; accountable owner assigned | Verified digital DEV environment and operational handoff |
+| Modern Platforms Presales | Signed-in AWS SSO profile, dedicated account email, account admin, demonstration architecture | Platform account and design details |
+| Modern Platforms Delivery | Signed-in AWS SSO profile, account name/email/admin, planned baseline use | Member account ID and baseline record |
+| Digital Presales | Signed-in AWS SSO profile, digital demo scope, account email/admin | Digital workload concept and environment account |
+| Digital Delivery | Signed-in AWS SSO profile, workload requirements, account email/admin | Environment inventory and runbook |
 
-**Shared prerequisites:** an individually authenticated, non-root, customer-authorized AWS Account Factory execution identity; actual Service Catalog access; correct customer organization, Control Tower and governed OU; unique customer-controlled account email and named Identity Center owner; explicit account/cost authorization; exact request review; independently verified ACTIVE member account, OU and baseline; named monitoring, recovery, finance and support owners. QA and PROD have separate permissions and approvals. A budget alert is not a spending cap.
+The shared minimum is an existing **AWS-authorized management-account role**, a fresh unique account email, an administrator email and name, a healthy Control Tower landing zone, and an OU with `AWSControlTowerBaseline` enabled. These are AWS requirements, not newly invented ALZ approval committees. Final human review is a single `CREATE ENV NAME` confirmation.
 
-The Operations area of the existing ALZ Builder shows **Start a customer DEV environment**, a practice-role selector, and the role-specific prerequisites and handoff. Role selection is a recorded **declaration, not authorization**. The generic browser job runner still cannot provision; it provides the existing authenticated administrative handoff path.
+## Any verified AWS organization
 
-Customer differentiation must come from *observed* organization controls, unique account, architecture, required guardrails, permitted data, region, cost owner, and independent account/infrastructure evidence. Do not reuse client evidence, credentials, or grants across customers.
+The runtime resolves the actual AWS Organization ID and management-account ID from the named session, walks the OU hierarchy to find the target OU, and discovers the landing zone and Service Catalog product in that account. It rejects ambiguous or unhealthy targets instead of guessing.
 
-## Delivery journey and current commands
+For Adapt Cloud, the established SSO profile `adaptcloud-admin` and `Workloads` OU in `us-east-2` provide proven baseline provenance. To use another AWS organization, **select that organization's existing authenticated management-account profile**, and optionally configure its Control Tower home Region and managed OU:
 
-The customer-oriented journey is: customer intake → authenticated discovery → account plan → human approval and finance check → provision with existing Control Tower → independently verify governed account → handoff to Digital Operations.
+```bash
+export ALZ_ACCOUNT_FACTORY_REGION=us-east-2
+export ALZ_ACCOUNT_FACTORY_OU=Workloads
+./alz account-factory create YOUR_EXISTING_AWS_PROFILE
+```
 
-The operator-facing catalog and `./alz account-factory list` expose:
+`ALZ_ACCOUNT_FACTORY_OU` accepts an OU name (unique within the discovered org) or a specific OU ID. Environment names and account emails are tenant-specific. No customer account, authorization evidence or model output is copied from Adapt Cloud into another organization.
 
-- `./alz account-factory inspect adaptcloud-admin`: Verify the current Identity Center administrator role and management account, read-only.
-- `./alz account-factory prepare adaptcloud-admin MODERN_PLATFORMS_DELIVERY ALZ-DEV-01 UNIQUE_ACCOUNT_EMAIL OWNER_EMAIL OWNER_FIRST OWNER_LAST .runs/account-factory/dev-proposal.json`: Verify real AWS Organizations, existing landing zone, Workloads OU and baseline, and discover Service Catalog Account Factory product, path and provisioning schema. Save a private, short-lived, SHA-256-bound plan. No cloud writes.
-- `./alz account-factory submit adaptcloud-admin .runs/account-factory/dev-proposal.json .runs/account-factory/dev-submission.json`: A trusted human terminal, exact plan-hash confirmation and explicit owner billing authorization are required. No agent-triggered submission. Writes an intent marker before the bounded Service Catalog call to prevent blind retries.
-- `./alz account-factory status adaptcloud-admin rec-RECORD_ID`: Read the actual asynchronous provider record status, which is *not* proof that Control Tower governance finished.
-- `./alz account-factory verify adaptcloud-admin ALZ-DEV-01 UNIQUE_ACCOUNT_EMAIL`: independently read back ACTIVE member account ID, direct Workloads OU membership and succeeded Workloads baseline. This does **not** yet verify per-account Control Tower enrollment, budget alerts, cost authorization or release readiness.
+If you prefer scripted prepare/submit instead of the guided command:
 
-The proposal records the selected practitioner role inside the SHA-256-bound plan with classification `DECLARED_NOT_AUTHORIZING`. These commands use a **distinct authorized administrator SSO profile** in an administrator-only operator function. They do not widen the generic tool broker or leak profile session material into models. The terraform pilot's four short-lived OIDC identity roles remain separate. Infrastructure ACT remains DISABLED.
+```bash
+./alz account-factory prepare PROFILE MODERN_PLATFORMS_DELIVERY DEV ACCOUNT_NAME UNIQUE_EMAIL ADMIN_EMAIL FIRST LAST .runs/account-factory/dev-proposal.json
+./alz account-factory submit PROFILE .runs/account-factory/dev-proposal.json .runs/account-factory/dev-receipt.json
+```
 
-Financial authorization is not satisfied merely by a typed phrase: the owner must independently review cost exposure, account-email custody, ownership and available credits/budget alerts. The existing $80 cumulative internal pilot bound is **not** a hard AWS spending limit and must not be generalized to customers.
+The second command still asks for one final creation confirmation. Receipt/intent names are exclusive to avoid blind retries. Always check Service Catalog if submission is interrupted before trying again.
 
-## GitLab and GitHub portability
+## What this does not change
 
-The runtime must be repository-host neutral. It does not call GitHub APIs, use GitHub Actions workflow names or assume GitHub OIDC subject format for Account Factory authentication. Use the source commit and artifact SHA-256 as portable evidence identifiers, and store approval and customer evidence outside the source repository. The named AWS administrative SSO profile is configured on the authorized execution host, not stored in Git.
-
-When cloned to GitLab, review protected branches, protected deployment environments, required approvals, protected runners, secret storage, artifact retention and the real **GitLab ID token issuer, audience and subject**. Do not copy GitHub OIDC trust conditions to GitLab; separately establish and test exact short-lived DISCOVERY/STATE/STATE_WRITE/APPLY subjects on the approved host before Terraform ACT.
-
-## Remaining acceptance work
-
-Offline unit tests exercise success and fail-closed paths with injected AWS responses. The live Mac session binding, real AWS Account Factory Product/Artifact/Path discovery, account creation, cross-account verification, Studio authentication, multi-user authorization and customer delivery UX are **not demonstrated** by these tests. Do not claim completed account creation or production readiness; QA/PROD require their own approvals, policies and independent account evidence.
-
-The current runtime binds the organization's specific internal management account and OU; before a customer deployment those must become tenant-scoped immutable, policy-reviewed configuration, not assumed universal values. Existing authorized account creation is a separate governance action and does not imply broad workload ACT.
+- The ALZ Browser Operations area provides the four-practice guidance and Account Factory terminal handoffs. Browser-initiated AWS mutations and authenticated `studio.presidio.ai` agent delegation are **not yet integrated** in this PR.
+- GitHub and GitLab are interchangeable source hosts for this local runtime; a future GitLab-runner AWS OIDC path is separate from the already-authenticated Account Factory SSO workflow.
+- Terraform application roles and private-model security qualification remain separate; infrastructure ACT stays DISABLED.
+- QA, STAGING and PROD are intentionally selected as separate member-account creation requests, not silently deployed as side effects of DEV.
+- No AWS account has been created or modified by the unit/UI tests. Before claiming live success, run the guided creation from the operator's AWS session and retain the provider record and member-account read-back.
