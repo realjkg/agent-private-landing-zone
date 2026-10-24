@@ -1,6 +1,7 @@
 import { lazy, Suspense, useState } from "react";
 
 import type { OperationsViewProps } from "./OperationsView";
+import { PracticeDevSetup } from "./PracticeDevSetup";
 
 // The catalog UI is its own chunk: it downloads when the section is shown.
 const OperationsView = lazy(() => import("./OperationsView"));
@@ -17,6 +18,7 @@ export function OperationsEntry(props: OperationsViewProps & { eager?: boolean }
   return (
     <section className="panel" id="operations" aria-labelledby="operations-title">
       <h2 id="operations-title" tabIndex={-1}>All operations</h2>
+      <PracticeDevSetup />
       {show ? (
         <Suspense fallback={<p role="status">Loading operations…</p>}>
           <OperationsView {...view} />

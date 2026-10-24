@@ -49,6 +49,10 @@ alz chaos | test/local-operator-workspace.test.ts, test/operator-ui-journey-fixe
 console aws-review | test/local-operator-workspace.test.ts, test/aws-terraform-agent.test.ts
 ```
 
+## Customer-first DEV role prerequisites
+
+The shared Operations page provides role-specific prerequisites and customer evidence expectations to practitioners in Modern Platforms Presales/Delivery and Digital Presales/Delivery. All four can provision DEV only with verified AWS Account Factory authority and individual owner/financial authorization. The role selector itself cannot grant cloud access or start a mutation. The catalog presents guarded Account Factory terminal handoffs, and QA/PROD remain separately approved.
+
 ## What this means for teardown
 
 `./alz teardown record | check-plan | destroy-preview | orphans` are read-only verdicts; the console can show what the CLI already produced. `./alz teardown destroy-preview-run` and `preview-run`, the human-invoked entry to the preview driver (`docs/destroy-preview-driver.md`), are never run by the console: they need a real terminal on stdin and stdout where a person types the exact target (Decision 1 in `docs/teardown-broker-review.md`). In the console they are a guided handoff: what the command does, why it needs a terminal, the exact command filled in from the form, and a read-only viewer for the redacted evidence it wrote. The rules are enforced by `test/cli-ui-journey-map.test.ts`: the console server and `src/operations/` never import or spawn the driver, no runnable entry's job points at it, and no job argument list can contain `destroy`, `preview-only`, `apply` or `auto-approve`.
