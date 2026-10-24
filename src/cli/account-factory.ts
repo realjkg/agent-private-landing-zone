@@ -1,6 +1,7 @@
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { pathToFileURL } from "node:url";
+import { isPracticeRole } from "../account-factory/practice-roles.js";
 import {
   prepare, submit, status, verifyProvisionedAccount, loadProposal, writePrivateJson, verifyAdministrator,
   type Intake, MANAGEMENT_ACCOUNT,
@@ -9,7 +10,7 @@ import {
 const HELP = [
   "Sovereign ALZ Account Factory — explicitly authorized administrative workflow",
   "alz account-factory inspect PROFILE",
-  "alz account-factory prepare PROFILE ACCOUNT_NAME ACCOUNT_EMAIL OWNER_EMAIL OWNER_FIRST OWNER_LAST OUTPUT.json",
+  "alz account-factory prepare PROFILE PRACTICE_ROLE ACCOUNT_NAME ACCOUNT_EMAIL OWNER_EMAIL OWNER_FIRST OWNER_LAST OUTPUT.json",
   "alz account-factory submit PROFILE PROPOSAL.json SUBMISSION.json",
   "alz account-factory status PROFILE RECORD_ID",
   "alz account-factory verify PROFILE ACCOUNT_NAME ACCOUNT_EMAIL",
@@ -25,15 +26,17 @@ export async function run(args: string[]): Promise<void> {
       account: MANAGEMENT_ACCOUNT, infrastructureAct: "DISABLED" }, null, 2));
     return;
   }
-  if (action === "prepare" && rest.length === 7) {
-    const [profile, name, email, ownerEmail, ownerFirst, ownerLast, path] = rest;
-    const intake: Intake = { profile: profile!, name: name!, email: email!,
+  if (action === "prepare" && rest.length === 8) {
+    const [profile, practiceRole, name, email, ownerEmail, ownerFirst, ownerLast, path] = rest;
+    if (!isPracticeRole(practiceRole)) throw Error("PRACTICE_ROLE_INVALID");
+    const intake: Intake = { profile: profile!, practiceRole, name: name!, email: email!,
       ownerEmail: ownerEmail!, ownerFirst: ownerFirst!, ownerLast: ownerLast! };
     const proposal = await prepare(intake);
     writePrivateJson(path!, proposal);
     console.log(JSON.stringify({
       status: proposal.status, proposalFile: path, proposalHash: proposal.proposalHash,
-      accountName: proposal.accountName, ouId: proposal.ouId, productId: proposal.productId,
+      accountName: proposal.accountName, requesterPracticeRole: proposal.requesterPracticeRole,
+      roleClassification: proposal.roleClassification, ouId: proposal.ouId, productId: proposal.productId,
       pilotCeilingUsd: 80, financialEvidence: "UNVERIFIED",
       infrastructureAct: "DISABLED", next: "Submit requires operator/finance authorization",
     }, null, 2));
@@ -47,6 +50,8 @@ export async function run(args: string[]): Promise<void> {
     console.log("ACCOUNT FACTORY OWNER REVIEW");
     console.log(JSON.stringify({
       proposalHash: proposal.proposalHash, account: proposal.accountName,
+      requesterPracticeRole: proposal.requesterPracticeRole,
+      roleClassification: proposal.roleClassification,
       accountEmail: proposal.accountEmail, owner: proposal.owner.email,
       targetOU: proposal.ouId, principal: proposal.identity.Arn, region: proposal.region,
       pilotCeilingUsd: proposal.pilotCeilingUsd,
