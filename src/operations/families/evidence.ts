@@ -41,15 +41,6 @@ const demo: OperationSpec = {
 const agentArgs = (v: Values) => [...value(v, "provider"), ...value(v, "engine"), ...value(v, "mock"), ...requestArgs(v), ...flags(v, "approve", "verbose")];
 
 export const evidenceOperations: readonly OperationSpec[] = [
-  {
-    id: "lz-live-journey", title: "Live AWS private-model and native preview evidence",
-    family: "evidence", cli: "npx tsx src/cli/lz-live-journey.ts --help", safety: "HANDOFF",
-    summary: "Collects separately gated private-model, AWS discovery and native IaC preview evidence; never applies resources.",
-    inputs: [], evidenceBasis: "LIVE QUALIFICATION ONLY — requires dedicated DEV OIDC identity, approved project and model qualification; ACT DISABLED",
-    cliScript: "src/cli/lz-live-journey.ts",
-    handoff: { reason: "Requires reviewed target/source, signed-in dedicated DEV discovery identity, and private-model qualification; consult the guide.",
-      command: "npx tsx src/cli/lz-live-journey.ts --help" },
-  },
   demo,
   {
     id: "demo-gcp-offline", title: "GCP offline landing-zone walkthrough",
@@ -150,6 +141,20 @@ export const evidenceOperations: readonly OperationSpec[] = [
       reason: "Needs Terraform, the local models and your AWS read access, then writes plan evidence. Also set TF_VAR_aws_region (the catalog lists only upper-case names). " + TERMINAL,
       command: "npx tsx src/cli/real-private-build.ts --live-aws-read-only",
       env: ["ALZ_ALLOW_REAL_PRIVATE_BUILD", "ALZ_ALLOW_TERRAFORM_PLAN", "AWS_PROFILE"],
+    },
+  },
+  {
+    id: "lz-live-journey", title: "Live AWS landing zone journey preview", family: "evidence",
+    cli: "npx tsx src/cli/lz-live-journey.ts --instruction <text> --engine <terraform|cdk> --account <dev-account> --region <region> --workspace <reviewed-project> --allow-project-code",
+    safety: "HANDOFF",
+    summary: "Runs the private models, real AWS discovery and a Terraform or CDK preview in one governed sequence; nothing is applied.",
+    inputs: [],
+    evidenceBasis: "REAL LOCAL QWEN/MISTRAL — LIVE AWS DISCOVERY (OIDC) — NATIVE TERRAFORM PLAN OR CDK CHANGE SET PREVIEW, NO APPLY, RELEASE HOLD" + RECORD,
+    cliScript: "src/cli/lz-live-journey.ts",
+    handoff: {
+      reason: "Needs local Ollama models, a short-lived DISCOVERY OIDC identity for a dedicated non-production account and a reviewed IaC project; CDK also needs --allow-preview-write. See docs/lz-live-journey.md. " + TERMINAL,
+      command: "npx tsx src/cli/lz-live-journey.ts --instruction <text> --engine <terraform|cdk> --account <dev-account> --region <region> --workspace <reviewed-project> --allow-project-code",
+      env: ["ALZ_DISCOVERY_AWS_ROLE_ARN", "ALZ_DISCOVERY_AWS_WEB_IDENTITY_TOKEN_FILE", "ALZ_DISCOVERY_AWS_REGION"],
     },
   },
   ...[
