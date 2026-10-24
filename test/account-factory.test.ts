@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { run as runCli } from "../src/cli/account-factory.js";
 import {
-  prepare, submit, status, verifyAdministrator, verifyProposal, verifyProvisionedAccount,
+  prepare, submit, follow, status, verifyAdministrator, verifyProposal, verifyProvisionedAccount,
   type AwsCall, type Intake,
 } from "../src/account-factory/flow.js";
 
@@ -193,4 +193,36 @@ test("independent post-provision readback confirms member/OU but not unobserved 
 test("Account Factory CLI advertises guided workflow without invoking the cloud", async () => {
   await runCli(["--help"]);
   assert.equal(process.exitCode ?? 0, 0);
+});
+
+test("resumable tracking returns member-account readback without another submission", async () => {
+  const proposal = await prepare(intake, fixture().call);
+  const receipt = await submit(proposal, intake.profile, fixture().call);
+  const member = "111111111111";
+  const f = fixture({ changes: { "organizations list-accounts": {
+    Accounts: [{ Id: member, Name: intake.name, Email: intake.email, State: "ACTIVE" }],
+  } } });
+  const completed = await follow(intake.profile, proposal, receipt, f.call,
+    { maxPolls: 1, intervalMs: 0, pause: async () => {} });
+  assert.equal(completed.status, "MEMBER_ACCOUNT_VERIFIED");
+  assert.equal(completed.accountId, member);
+  assert.ok(f.calls.every(x => x[1] !== "provision-product"));
+});
+test("tracking is bounded and remains in progress without claiming success", async () => {
+  const p = await prepare(intake, fixture().call);
+  const receipt = await submit(p, intake.profile, fixture().call);
+  const f = fixture({ changes: {
+    "servicecatalog describe-record": {
+      RecordDetail: { RecordId: receipt.recordId, Status: "IN_PROGRESS" },
+    },
+  } });
+  const result = await follow(intake.profile, p, receipt, f.call,
+    { maxPolls: 2, intervalMs: 0, pause: async () => {} });
+  assert.equal(result.status, "PROVISIONING_IN_PROGRESS");
+  assert.equal(result.verified, false);
+  await assert.rejects(follow(intake.profile, p, { ...receipt, requestHash: "wrong" },
+    fixture().call, { maxPolls: 1, intervalMs: 0 }), /REQUEST_RECEIPT_MISMATCH/);
+  const foreign = fixture({ management: "111122223333", orgId: "o-abcd1234567" });
+  await assert.rejects(follow(intake.profile, p, receipt, foreign.call,
+    { maxPolls: 1, intervalMs: 0 }), /TRACKING_ORGANIZATION_CHANGED/);
 });
