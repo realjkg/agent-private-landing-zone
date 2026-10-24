@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { run as runAccountFactoryCli } from "../src/cli/account-factory.js";
 import {prepare,submit,status,verifyAdministrator,verifyProposal, type AwsCall, type Intake, MANAGEMENT_ACCOUNT, WORKLOADS_OU} from "../src/account-factory/flow.js";
 const arn="arn:aws:sts::973471129135:assumed-role/AWSReservedSSO_AWSAdministratorAccess_7b52a7ec08abfa76/jkristian";
 const ou="arn:aws:organizations::973471129135:ou/o-0u6mts6li3/"+WORKLOADS_OU;
@@ -76,4 +77,9 @@ test("successful Service Catalog record does not establish independent account v
   const s=await status(intake.profile,"rec-abc123",fixture().call);
   assert.equal(s.providerStatus,"SUCCEEDED");assert.equal(s.verified,false);
   await assert.rejects(status(intake.profile,"bad",fixture().call),/RECORD_ID_INVALID/);
+});
+
+test("operator CLI exposes the guarded Account Factory help without cloud calls",async()=>{
+  await runAccountFactoryCli(["--help"]);
+  assert.equal(process.exitCode ?? 0,0);
 });
