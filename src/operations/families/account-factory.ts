@@ -15,10 +15,11 @@ export const accountFactoryOperations: readonly OperationSpec[] = [
   },
   {
     id: "account-factory-prepare", family: "governance", title: "Account Factory: prepare request",
-    summary: "Discover the governed AWS Account Factory product and prepare a hash-bound, non-mutating proposal.",
+    summary: "Prepare a customer-specific DEV account plan for any one of the four eligible practice roles.",
     cli: "./alz account-factory prepare", safety: "HANDOFF",
     inputs: [
       { kind: "text", name: "profile", label: "Saved SSO profile", pattern: "[A-Za-z0-9][A-Za-z0-9._-]{0,63}", maxLength: 64, example: "adaptcloud-admin" },
+      { kind: "enum", name: "practiceRole", label: "Your practice role", options: ["MODERN_PLATFORMS_PRESALES", "MODERN_PLATFORMS_DELIVERY", "DIGITAL_PRESALES", "DIGITAL_DELIVERY"] },
       { kind: "text", name: "name", label: "Account name", pattern: "[A-Za-z0-9][A-Za-z0-9 _.-]{1,49}", maxLength: 50, example: "ALZ-DEV-01" },
       { kind: "text", name: "email", label: "Unique account email", pattern: "[^ @]+@[^ @]+[.][^ @]+", maxLength: 120, example: "dev-accounts@example.org" },
       { kind: "text", name: "ownerEmail", label: "Identity Center owner email", pattern: "[^ @]+@[^ @]+[.][^ @]+", maxLength: 120, example: "owner@example.org" },
@@ -29,11 +30,11 @@ export const accountFactoryOperations: readonly OperationSpec[] = [
     evidenceBasis: "LIVE AWS CONTROL TOWER, ORGANIZATIONS AND SERVICE CATALOG — READ ONLY, FINANCIAL APPROVAL NOT_GRANTED",
     cliScript: "src/cli/account-factory.ts", command: { group: "account-factory", sub: "prepare" },
     handoff: { reason: "Uses a separately authenticated admin SSO session and writes a private proposal. No account is created.",
-      command: "./alz account-factory prepare {profile} {name} {email} {ownerEmail} {ownerFirst} {ownerLast} {output}" },
+      command: "./alz account-factory prepare {profile} {practiceRole} {name} {email} {ownerEmail} {ownerFirst} {ownerLast} {output}" },
   },
   {
     id: "account-factory-submit", family: "governance", title: "Account Factory: approve and submit",
-    summary: "Requires human financial acknowledgement and exact request hash; submits one account request through Service Catalog.",
+    summary: "Eligible Presales or Delivery practitioners submit an exact, approved DEV account request under verified customer authority.",
     cli: "./alz account-factory submit", safety: "HANDOFF",
     inputs: [
       { kind: "text", name: "profile", label: "Saved SSO profile", pattern: "[A-Za-z0-9][A-Za-z0-9._-]{0,63}", maxLength: 64, example: "adaptcloud-admin" },
