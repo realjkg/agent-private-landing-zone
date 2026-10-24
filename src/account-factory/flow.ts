@@ -196,3 +196,38 @@ export async function status(profile: string, recordId: string, call: AwsCall = 
     verified: false, accountProvisioningComplete: record.Status === "SUCCEEDED",
     note: "Service Catalog record status is not independent Organizations and Control Tower account verification." };
 }
+
+/** Independent Organizations and Control Tower read-back after Account Factory completes. */
+export async function verifyProvisionedAccount(
+  profile: string, name: string, email: string, call: AwsCall = awsAdminCall,
+) {
+  if (!ACCOUNT_NAME.test(name) || !EMAIL.test(email)) throw Error("ACCOUNT_IDENTIFIERS_INVALID");
+  const identity = await verifyAdministrator(profile, call);
+  const aws = (service: string, operation: string, ...args: string[]) =>
+    call(profile, [service, operation, ...args]);
+  const matches = array((await aws("organizations", "list-accounts")).Accounts).filter(x =>
+    String(x.Name) === name && String(x.Email).toLowerCase() === email.toLowerCase());
+  if (matches.length !== 1) throw Error("ACCOUNT_NOT_UNIQUELY_IDENTIFIED");
+  const account = matches[0]!;
+  const accountId = String(account.Id ?? "");
+  if (!/^\d{12}$/.test(accountId) || accountId === MANAGEMENT_ACCOUNT ||
+      (account.State ?? account.Status) !== "ACTIVE")
+    throw Error("DEDICATED_MEMBER_ACCOUNT_NOT_ACTIVE");
+  const parents = array((await aws("organizations", "list-parents", "--child-id", accountId)).Parents);
+  if (!parents.some(x => x.Id === WORKLOADS_OU && x.Type === "ORGANIZATIONAL_UNIT"))
+    throw Error("ACCOUNT_NOT_IN_WORKLOADS");
+  const ou = obj((await aws("organizations", "describe-organizational-unit",
+    "--organizational-unit-id", WORKLOADS_OU)).OrganizationalUnit);
+  if (ou.Id !== WORKLOADS_OU || typeof ou.Arn !== "string")
+    throw Error("WORKLOADS_OU_UNVERIFIED");
+  const enabled = array((await aws("controltower", "list-enabled-baselines")).enabledBaselines);
+  if (!enabled.some(x => x.targetIdentifier === ou.Arn && obj(x.statusSummary).status === "SUCCEEDED"))
+    throw Error("WORKLOADS_BASELINE_NOT_HEALTHY");
+  return {
+    status: "ACCOUNT_ORGANIZATION_AND_OU_VERIFIED" as const,
+    accountId, name, managementAccount: identity.Account,
+    targetOuId: WORKLOADS_OU, baseline: "SUCCEEDED" as const,
+    controlTowerAccountEnrollment: "NOT_INDEPENDENTLY_CONFIRMED" as const,
+    finances: "UNVERIFIED" as const, infrastructureAct: "DISABLED" as const,
+  };
+}
