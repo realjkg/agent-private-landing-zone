@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -139,6 +139,25 @@ test("failed independent primary assessment blocks Build candidate", async () =>
     await assert.rejects(() => qualifyAwsTerraformAgents({
       sourceCommit: "a".repeat(40), outputRoot: root,
     }, deps), /INDEPENDENT_AGENT_ASSESSMENT_NOT_VERIFIED/);
+    const dirs = readdirSync(root);
+    assert.equal(dirs.length, 1);
+    const path = join(root, dirs[0]!, "qualification-blocked.json");
+    const blocked = JSON.parse(readFileSync(path, "utf8")) as {
+      status: string; assessmentStatus: string; failedGate: string;
+      sourceCommit: string; modelEvidence: unknown[];
+      observedModelRoles: unknown[]; infrastructureAct: string;
+      approval: string; mutationObserved: boolean;
+    };
+    assert.equal(blocked.status, "BLOCKED");
+    assert.equal(blocked.assessmentStatus, "ABSTAIN");
+    assert.equal(blocked.failedGate, "INDEPENDENT_AGENT_ASSESSMENT_NOT_VERIFIED");
+    assert.equal(blocked.sourceCommit, "a".repeat(40));
+    assert.equal(blocked.modelEvidence.length, 3);
+    assert.equal(blocked.observedModelRoles.length, 0);
+    assert.equal(blocked.infrastructureAct, "DISABLED");
+    assert.equal(blocked.approval, "NOT_GRANTED");
+    assert.equal(blocked.mutationObserved, false);
+    assert.equal(statSync(path).mode & 0o077, 0);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
