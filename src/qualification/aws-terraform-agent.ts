@@ -66,7 +66,6 @@ export type AwsTerraformAgentResult = {
   sourceCommit: string;
   mode: "LIVE_LOCAL_MODELS_WITH_SYNTHETIC_AWS_EVIDENCE";
   modelEvidence: Array<{ role: string; tag: string; digest: string }>;
-  independentRiskReview?: { relationship: string; primaryRisk: string; validatorRisk: string; reason: string };
   designHash: string;
   policyHash: string;
   discoveryHash: string;
@@ -314,7 +313,7 @@ export async function qualifyAwsTerraformAgents(
       primaryRisk: assessment?.primary?.topRisk ?? null,
       validatorRisk: assessment?.validator?.topRisk ?? null,
       adjudication: assessment?.adjudication?.slice(0, 1200) ?? null,
-      riskRelationship: assessment?.riskReconciliation?.relationship ?? null,
+      riskRelationship: assessment?.status === "ABSTAIN" ? "UNRESOLVED" : null,
       approval: "NOT_GRANTED",
       infrastructureAct: "DISABLED",
       mutationObserved: false,
@@ -388,14 +387,6 @@ export async function qualifyAwsTerraformAgents(
     sourceCommit: input.sourceCommit,
     mode: "LIVE_LOCAL_MODELS_WITH_SYNTHETIC_AWS_EVIDENCE",
     modelEvidence: models,
-    ...(state.assessment?.riskReconciliation ? {
-      independentRiskReview: {
-        relationship: state.assessment.riskReconciliation.relationship,
-        primaryRisk: state.assessment.riskReconciliation.primaryRisk,
-        validatorRisk: state.assessment.riskReconciliation.validatorRisk,
-        reason: state.assessment.riskReconciliation.reason,
-      },
-    } : {}),
     designHash: state.design.designHash,
     policyHash: state.design.policies.bundleHash,
     discoveryHash: sha256(JSON.stringify(evidence)),
