@@ -29,6 +29,7 @@ const EXEMPT_SCRIPTS: Readonly<Record<string, string>> = {
   "docs:ops": "developer generator for the operations table in docs/operator-console.md",
 };
 const EXEMPT_ENTRY_POINTS: Readonly<Record<string, string>> = {
+  "act-dev1-admin.ts": "read-only imported DEV readiness helper; not an executable CLI",
   "operator.ts": "the ./alz dispatcher itself",
   "operator-web.ts": "hosts the console (./alz workspace)",
   "ui-channel.ts": "the console's pilot wizard adapter: a module the console server mounts, not a command (the pilot's catalog entry is ./alz apply)",
