@@ -1,7 +1,7 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdirSync, openSync, readFileSync, writeFileSync, closeSync, existsSync } from "node:fs";
+import { mkdirSync, openSync, readFileSync, writeFileSync, closeSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
 const exec = promisify(execFile);
@@ -139,7 +139,8 @@ export function verifyProposal(proposal: AccountProposal, now = new Date()) {
     draft.ouId !== WORKLOADS_OU || draft.region !== REGION ||
     draft.parameters.length !== 6 || draft.identity.Account !== MANAGEMENT_ACCOUNT)
     throw Error("PROPOSAL_TAMPERED_OR_WRONG_TARGET");
-  if (now < new Date(draft.createdAt) || now > new Date(draft.expiresAt))
+  if (Number.isNaN(Date.parse(draft.createdAt)) || Number.isNaN(Date.parse(draft.expiresAt)) ||
+      now < new Date(draft.createdAt) || now > new Date(draft.expiresAt))
     throw Error("PROPOSAL_EXPIRED");
   return proposalHash;
 }
