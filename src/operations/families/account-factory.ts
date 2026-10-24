@@ -58,4 +58,18 @@ export const accountFactoryOperations: readonly OperationSpec[] = [
     handoff: { reason: "Uses the named short-lived SSO session to query the AWS Service Catalog record.",
       command: "./alz account-factory status {profile} {recordId}" },
   },
+  {
+    id: "account-factory-verify", family: "governance", title: "Verify customer's new AWS account",
+    summary: "Independently check active member account, direct Workloads OU membership and effective OU baseline.",
+    cli: "./alz account-factory verify", safety: "HANDOFF",
+    inputs: [
+      {kind:"text",name:"profile",label:"Saved SSO profile",pattern:"[A-Za-z0-9][A-Za-z0-9._-]{0,63}",maxLength:64,example:"adaptcloud-admin"},
+      {kind:"text",name:"name",label:"Account name",pattern:"[A-Za-z0-9][A-Za-z0-9 _.-]{1,49}",maxLength:50,example:"ALZ-DEV-01"},
+      {kind:"text",name:"email",label:"Account email",pattern:"[^ @]+@[^ @]+[.][^ @]+",maxLength:120,example:"dev-accounts@example.org"}
+    ],
+    evidenceBasis: "LIVE AWS ORGANIZATIONS AND CONTROL TOWER — READ-ONLY MEMBER-ACCOUNT CHECK, NOT A PRODUCTION RELEASE CLAIM",
+    cliScript:"src/cli/account-factory.ts",command:{group:"account-factory",sub:"verify"},
+    handoff:{reason:"After provisioning, verify the actual account using the approved SSO administrator session.",
+      command:"./alz account-factory verify {profile} {name} {email}"}
+  },
 ];
