@@ -1,21 +1,21 @@
-# AWS operator evidence journey (read-only)
+# AWS operator evidence journey — Milestone 1 Preview/Operate
 
-Audience: AWS Control Tower administrators evaluating ALZ without development or IAM engineering experience.
+Audience: authorized AWS administrators evaluating ALZ in a **dedicated nonproduction account**. Issue #39 is the release ledger. **ACT remains DISABLED**; this runbook is not release authorization.
 
-## What this run proves
+## Choose the evidence lane
 
-A run has four independent gates. Never combine a green fixture test with a live-cloud qualification claim.
-
-| Gate | Required input | Evidence | Failure behavior |
+| Lane | Purpose | Authentication | Evidence meaning |
 | --- | --- | --- | --- |
-| Local readiness | Checked-out ALZ, Node/npm, Terraform, Ollama, models | Version and model digest records | STOP; provide a specific remediation |
-| Private-model inference | Running loopback Ollama and installed Qwen/Mistral models | `.runs/model-qualification/` records | STOP; no candidate promotion |
-| Offline orchestration | ALZ source checkout | `./alz matrix --offline-fixture` output | Mark SYNTHETIC, not cloud-qualified |
-| AWS inventory | Explicit authorized AWS CLI profile, selected account and region | STS identity and read-only inventory records | STOP on wrong identity, denied API, or missing permissions |
+| Offline fixture | Test orchestration without cloud access | None | SYNTHETIC; never D3/D4 qualification |
+| Local private model | Test local Qwen/Mistral reasoning | Loopback Ollama | Local inference; not dedicated-target D3 unless target contract is satisfied |
+| AWS identity diagnostic | Confirm the account selected in an operator's CLI | AWS SSO profile, if approved | Read-only identity check **only**; not the live-journey credential |
+| Governed AWS live journey | Private model + authentic AWS discovery + Terraform/CDK native preview | **Short-lived OIDC DISCOVERY identity** with explicit target binding | Review-required account-scoped evidence; not release GO |
 
-## Step 1: prerequisites
+**Important:** The live journey deliberately rejects ambient `AWS_PROFILE` and static-key fallback. A successful `aws sso login` does **not** satisfy its OIDC requirement. Follow `docs/lz-live-journey.md` and the protected provider-qualification workflow for authentic D4 qualification.
 
-Open Terminal on the operator's machine. Check:
+## 1. Local prerequisites and baseline
+
+Run on a controlled host with a clean committed ALZ checkout:
 
 ```sh
 node --version
@@ -24,27 +24,19 @@ terraform version
 ollama --version
 ollama list
 aws --version
-```
-
-The current required baseline tags are `qwen3:1.7b`, `qwen3:4b`, and `mistral-nemo:latest`. Granite and Nemotron are **comparison candidates**, not required defaults. Use the exact tags printed by `ollama list`; never type placeholder strings such as `YOUR_GRANITE_TAG`. If a candidate is missing, mark its comparison NOT_RUN rather than treating it as failed or inventing a tag. On the dedicated production qualification runner, follow `docs/target-preflight.md` for pinned Node/Ollama versions, model digests, and hardware identity.
-
-## Step 2: local tests
-
-From the ALZ checkout:
-
-```sh
 npm ci
+npm run build
 ./alz doctor
 ./alz models list
 ./alz models verify
 ./alz matrix --offline-fixture
 ```
 
-Run `./alz matrix --live-models` only after Ollama is available and the installed baseline models pass. The offline matrix is fixture-based. The live matrix uses local inference but still has synthetic IaC previews. Neither command authenticates to AWS.
+Required baseline Ollama tags: `qwen3:1.7b`, `qwen3:4b`, `mistral-nemo:latest`. Granite and Nemotron are optional comparison candidates, **not** replacement models for the D3 production gate. Select exact tags reported by `ollama list`; missing candidates are NOT_RUN, never assumed installed. For the dedicated production target, obey `docs/target-preflight.md` (pinned Ollama 0.40.0, model digests, host identity, and policy/source binding). An offline matrix is synthetic; `./alz matrix --live-models` uses real local inference but does not make the IaC preview live.
 
-## Step 3: authorize the exact AWS identity
+## 2. Optional AWS SSO identity diagnostic — not the journey
 
-Use an approved read-only or discovery-scoped AWS IAM Identity Center profile. Do not paste credentials into prompts, logs, or issue comments.
+If permitted by the account owner, check which identity a configured CLI profile uses:
 
 ```sh
 aws configure list-profiles
@@ -52,21 +44,43 @@ aws sso login --profile PROFILE_NAME
 AWS_PROFILE=PROFILE_NAME aws sts get-caller-identity --output json
 ```
 
-The operator must check that the returned account ID and ARN correspond to the intended **management or member account** before proceeding. Record account ID, role ARN, region, timestamp, and any denied APIs in the private evidence packet. AWS Control Tower discovery can require management-account permissions; member-account results must not be presented as organization-wide inventory.
+Compare the account ID and ARN against the intended account. Do not place credentials or token contents in issues, model prompts, or shared logs. This is a separate diagnostic and cannot be substituted for the live journey's OIDC identity.
 
-## Step 4: evidence acceptance
+## 3. Authentic AWS preview — explicit operator authorization required
 
-For every test, record `PASS`, `FAIL`, `SKIPPED`, or `NOT_RUN`, along with source commit, target account, host identity, command, exit code, output checksum, and whether the input was LIVE_CLOUD, LOCAL_MODEL, or SYNTHETIC. Redact account-sensitive inventory before sharing externally. A command's exit code alone does not prove its asserted scope.
+Use a **dedicated nonproduction member account**, not the Control Tower management account. Supply an approved, short-lived DISCOVERY OIDC identity using `ALZ_DISCOVERY_AWS_ROLE_ARN`, `ALZ_DISCOVERY_AWS_WEB_IDENTITY_TOKEN_FILE`, and `ALZ_DISCOVERY_AWS_REGION`. Bind the expected 12-digit account and region; the runner verifies STS identity. Review the project and its provider lock/backend first. Both Terraform and CDK can execute reviewed project/provider code, so use a sandboxed host and least privilege.
 
-The following are **separate** gates and remain unqualified until authentic evidence exists: authenticated AWS discovery-to-DesignSpec lineage, real Terraform/CDK preview with provider credentials and immutable source hashes, separate OIDC execution identities, governed ACT lease and authorization, and production admission.
+Terraform example (non-executing additive native preview):
 
-## Operator decision
+```sh
+node dist/cli/lz-live-journey.js \
+  --instruction "Design a governed AWS landing zone preview" \
+  --engine terraform --account YOUR_DEV_ACCOUNT_ID --region us-east-2 \
+  --workspace qualification/aws/act-dev1-canary --allow-project-code
+```
 
-- **Proceed to the next read-only gate** only when prerequisites and identity match.
-- **Stop and remediate** if permissions, installed models, source revision, or evidence are missing.
-- **Never promote an agent model** based solely on a synthetic matrix or one successful prompt.
-- **Never run `terraform apply`, `cdk deploy`, cloud mutations, or ACT** as part of this journey.
+Terraform uses a native `plan -refresh=false`, not `apply`. It is **not a drift-detection run**. It accepts only governed additive changes and produces source/model/tool/native-plan provenance.
 
-## Future guided UX acceptance criteria
+CDK example (requires separate preview-write permission):
 
-The interactive wizard should (1) discover installed model tags and AWS profiles; (2) ask for an account/region only when AWS is selected; (3) show expected read-only API calls and explicit consent; (4) present a resource inventory summary; (5) display proposed ADD/MODIFY/TERMINATE operations without executing them; (6) export a redacted and a private evidence bundle; and (7) offer actionable fixes for every blocked gate. Until those controls are implemented and tested, this document is an operator runbook, **not** a claim that the wizard already supports them.
+```sh
+node dist/cli/lz-live-journey.js \
+  --instruction "Design a governed AWS CDK preview" \
+  --engine cdk --account YOUR_DEV_ACCOUNT_ID --region us-east-2 \
+  --workspace path/to/reviewed/cdk/app --stack ExistingDevStack \
+  --allow-project-code --allow-preview-write
+```
+
+**CDK is not strictly read-only:** its adapter creates, describes, and deletes a temporary CloudFormation UPDATE Change Set. It does **not execute** the Change Set, but creation/deletion are AWS control-plane writes and cleanup can fail. Do not run CDK without an explicitly authorized narrowly scoped preview-write identity. CDK is outside the AWS Terraform-only ACT-DEV-1 pilot.
+
+For complete runtime contracts, limitations, and failure handling, see `docs/lz-live-journey.md`. The discovery probes are scoped, **not** a complete AWS account inventory. OPA approval is not proof of effective AWS IAM/SCP/RCP authorization.
+
+## 4. Evidence acceptance
+
+The live runner writes `.runs/qualification/lz-live-journey/<run-id>/journey.json` and local `inventory.html`. Successful gate completion results in `REVIEW_REQUIRED`, **not** RELEASE_READY. Retain source SHA, model digests, target identity, native preview hash, typed changes, scope, timestamps, and any blocked stages. Keep account-sensitive artifacts private; share only reviewed/redacted evidence.
+
+The following remain independent release blockers in Issue #39 until exact-source authentic evidence is retained: D3 dedicated target Qwen/Mistral, D4 protected AWS OIDC/discovery/native preview, D5 Azure, D6 GitHub administration and required security/recovery/consolidated VERIFY. Personal-account results must be labeled **personal-account scope**, never customer/organizational qualification. Do not enable ACT, run apply/deploy/destroy, or mark production GO from a synthetic or partially executed run.
+
+## 5. Guided UX acceptance (not yet claimed complete)
+
+A future nondeveloper wizard should discover installed model tags, explain OIDC identity setup without requesting secrets, display exact account/region and preview side effects, summarize proposed CREATE/UPDATE/DELETE operations, and export private/redacted evidence with actionable remediation. The existing `lz-live-journey` CLI implements a governed sequence but is **not** that interactive wizard.
