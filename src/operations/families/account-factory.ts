@@ -72,6 +72,23 @@ export const accountFactoryOperations: readonly OperationSpec[] = [
       command: "./alz account-factory status {profile} {recordId}" },
   },
   {
+    id: "account-factory-follow", family: "governance", title: "Follow environment provisioning",
+    summary: "Resume the saved Service Catalog request and check the resulting member-account baseline.",
+    cli: "./alz account-factory follow", safety: "HANDOFF",
+    inputs: [
+      { kind: "text", name: "profile", label: "AWS SSO profile",
+        pattern: "[A-Za-z0-9][A-Za-z0-9._-]{0,63}", maxLength: 64, example: "adaptcloud-admin" },
+      { kind: "text", name: "proposal", label: "Saved proposal file",
+        pattern: "[A-Za-z0-9_./-]{1,200}", maxLength: 200, example: ".runs/account-factory/dev-proposal.json" },
+      { kind: "text", name: "receipt", label: "Saved receipt file",
+        pattern: "[A-Za-z0-9_./-]{1,200}", maxLength: 200, example: ".runs/account-factory/dev-receipt.json" },
+    ],
+    evidenceBasis: "LIVE AWS STATUS AND READBACK — no repeat submission, member account / OU / baseline validation",
+    cliScript: "src/cli/account-factory.ts", command: { group: "account-factory", sub: "follow" },
+    handoff: { reason: "Monitor an existing submission through your signed-in AWS session; never create the account twice.",
+      command: "./alz account-factory follow {profile} {proposal} {receipt}" },
+  },
+  {
     id: "account-factory-verify", family: "governance", title: "View created member account",
     summary: "Independently check active member account, direct Workloads OU membership and effective OU baseline.",
     cli: "./alz account-factory verify", safety: "HANDOFF",
