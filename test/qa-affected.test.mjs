@@ -19,6 +19,9 @@ function fixture() {
     ["test/development-readiness.test.ts", "test()"],
     ["test/qa-affected.test.mjs", "test()"],
     ["scripts/qa-affected.mjs", "export const x = 1;"],
+    ["test/operations-parity.test.ts", "test()"],
+    ["test/operations-core.test.ts", "test()"],
+    ["test/cli-ui-journey-map.test.ts", "test()"],
   ]);
 }
 test("resolves TypeScript sources referenced by .js specifiers", () => {
@@ -146,4 +149,27 @@ test("ACT-DEV-1 tfvars and Python handoff changes map to targeted synthetic test
                           "tests_python/test_aws_dev_terraform_handoff.py"],files);
   assert.deepEqual(plan.pythonTests,["test/act-dev1-automation.test.py"]);
   assert.deepEqual(plan.gaps,[]);
+});
+test("a new CLI entry point always runs the filesystem inventory guards", () => {
+  const files = fixture();
+  files.set("src/cli/new-tool.ts", "export const run = 1;");
+  files.set("test/new-tool.test.ts", 'import "../src/cli/new-tool.js";');
+  const plan = planChanged(["src/cli/new-tool.ts", "test/new-tool.test.ts"], files);
+  assert.deepEqual(plan.gaps, []);
+  for (const guard of ["test/cli-ui-journey-map.test.ts", "test/operations-core.test.ts",
+    "test/operations-parity.test.ts"]) assert.ok(plan.nodeTests.includes(guard), guard);
+});
+test("deleting a CLI entry point or editing ./alz still runs the inventory guards", () => {
+  for (const path of ["src/cli/removed.ts", "alz", "package.json"]) {
+    const plan = planChanged([path], fixture());
+    assert.ok(plan.nodeTests.includes("test/operations-parity.test.ts"), path);
+  }
+});
+test("guarded generated docs run their guard instead of being skipped as documentation", () => {
+  for (const path of ["docs/operator-console.md", "docs/cli-ui-journey-map.md"]) {
+    const plan = planChanged([path], fixture());
+    assert.ok(plan.nodeTests.includes("test/operations-core.test.ts"), path);
+    assert.ok(plan.nodeTests.includes("test/cli-ui-journey-map.test.ts"), path);
+    assert.deepEqual(plan.gaps, []);
+  }
 });

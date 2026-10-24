@@ -7,11 +7,16 @@ on:
       - synchronize
       - reopened
       - ready_for_review
-    paths-ignore:
-      - "**/*.md"
-      - "docs/**"
-      - ".github/ISSUE_TEMPLATE/**"
-      - ".github/PULL_REQUEST_TEMPLATE/**"
+    # Docs are skipped except the two generated tables guarded by tests;
+    # later patterns win, so those two re-enter after the exclusions.
+    paths:
+      - "**"
+      - "!**/*.md"
+      - "!docs/**"
+      - "!.github/ISSUE_TEMPLATE/**"
+      - "!.github/PULL_REQUEST_TEMPLATE/**"
+      - "docs/operator-console.md"
+      - "docs/cli-ui-journey-map.md"
 
 permissions:
   contents: read

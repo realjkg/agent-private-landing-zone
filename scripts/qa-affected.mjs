@@ -15,6 +15,13 @@ const PY_SOURCE = /^scripts\/[^/]+\.py$/;
 const SOURCE = /^src\/.+\.(?:ts|tsx|js|mjs)$/;
 const QA_SELF_TEST = "test/qa-affected.test.mjs";
 const MAX_AFFECTED_TESTS = 45;
+// Inventory guards scan the filesystem (src/cli, ./alz, package.json scripts,
+// generated docs) instead of importing what they check, so the import closure
+// can never select them. Without this rule a new CLI entry point merges with
+// a red parity guard that only surfaces on the next PR touching the catalog.
+const INVENTORY_GUARDS = ["test/operations-parity.test.ts", "test/operations-core.test.ts",
+  "test/cli-ui-journey-map.test.ts"];
+const INVENTORY_INPUT = /^(?:src\/cli\/[^/]+\.ts|src\/operations\/.+\.ts|alz|package\.json|docs\/operator-console\.md|docs\/cli-ui-journey-map\.md)$/;
 
 function uniq(values) { return [...new Set(values)].sort(); }
 function hasFile(files, name) { return files.has(name); }
@@ -75,6 +82,8 @@ export function planChanged(changedPaths, files) {
   };
 
   for (const path of changed) {
+    if (INVENTORY_INPUT.test(path)) addExisting(selected, files, INVENTORY_GUARDS);
+    if (/^docs\/(?:operator-console|cli-ui-journey-map)\.md$/.test(path)) continue;
     if (path === "scripts/qa-affected.mjs" || path === QA_SELF_TEST) {
       addExisting(selected, files, [QA_SELF_TEST]);
       continue;
