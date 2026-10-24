@@ -3,76 +3,88 @@ import { stdin, stdout } from "node:process";
 import { pathToFileURL } from "node:url";
 import { isPracticeRole } from "../account-factory/practice-roles.js";
 import {
-  prepare, submit, status, verifyProvisionedAccount, loadProposal, writePrivateJson, verifyAdministrator,
-  type Intake, MANAGEMENT_ACCOUNT,
+  prepare, submit, status, verifyProvisionedAccount, loadProposal, writePrivateJson,
+  verifyAdministrator, type AccountEnvironment, type Intake,
 } from "../account-factory/flow.js";
 
 const HELP = [
-  "Sovereign ALZ Account Factory — explicitly authorized administrative workflow",
+  "Sovereign ALZ Builder — provision DEV, QA, STAGING or PROD through your existing Control Tower",
   "alz account-factory inspect PROFILE",
-  "alz account-factory prepare PROFILE PRACTICE_ROLE ACCOUNT_NAME ACCOUNT_EMAIL OWNER_EMAIL OWNER_FIRST OWNER_LAST OUTPUT.json",
-  "alz account-factory submit PROFILE PROPOSAL.json SUBMISSION.json",
+  "alz account-factory prepare PROFILE PRACTICE_ROLE DEV|QA|STAGING|PROD NAME EMAIL OWNER_EMAIL FIRST LAST OUTPUT.json",
+  "alz account-factory submit PROFILE PROPOSAL.json RECEIPT.json",
   "alz account-factory status PROFILE RECORD_ID",
   "alz account-factory verify PROFILE ACCOUNT_NAME ACCOUNT_EMAIL",
-  "The console's operation catalog offers a guided handoff. These are owner-run commands.",
-  "ProvisionProduct is a governance account-vending mutation; workload ACT remains DISABLED.",
+  "AWS credentials and permissions come from the named, signed-in AWS SSO profile, not the model.",
+  "Each account is its own member account under the discovered management account and configured OU.",
+  "The final submission asks for one clear confirmation; no extra internal finance gate.",
+  "Set ALZ_ACCOUNT_FACTORY_REGION and ALZ_ACCOUNT_FACTORY_OU to select another Control Tower region/OU.",
+  "Infrastructure workload ACT remains DISABLED.",
 ].join("\n");
+
+function isEnvironment(value: unknown): value is AccountEnvironment {
+  return value === "DEV" || value === "QA" || value === "STAGING" || value === "PROD";
+}
 
 export async function run(args: string[]): Promise<void> {
   const [action, ...rest] = args;
   if (action === "inspect" && rest.length === 1) {
     const identity = await verifyAdministrator(rest[0]!);
-    console.log(JSON.stringify({ status: "AUTHORIZED_ADMIN_SESSION", identity,
-      account: MANAGEMENT_ACCOUNT, infrastructureAct: "DISABLED" }, null, 2));
+    console.log(JSON.stringify({
+      status: "AWS_ROLE_ACTIVE", identity,
+      region: process.env.ALZ_ACCOUNT_FACTORY_REGION ?? "us-east-2",
+      infrastructureAct: "DISABLED",
+    }, null, 2));
     return;
   }
-  if (action === "prepare" && rest.length === 8) {
-    const [profile, practiceRole, name, email, ownerEmail, ownerFirst, ownerLast, path] = rest;
+  if (action === "prepare" && rest.length === 9) {
+    const [profile, practiceRole, environment, name, email, ownerEmail, ownerFirst, ownerLast, path] = rest;
     if (!isPracticeRole(practiceRole)) throw Error("PRACTICE_ROLE_INVALID");
-    const intake: Intake = { profile: profile!, practiceRole, name: name!, email: email!,
-      ownerEmail: ownerEmail!, ownerFirst: ownerFirst!, ownerLast: ownerLast! };
+    if (!isEnvironment(environment)) throw Error("ENVIRONMENT_INVALID");
+    const intake: Intake = {
+      profile: profile!, practiceRole, environment, name: name!, email: email!,
+      ownerEmail: ownerEmail!, ownerFirst: ownerFirst!, ownerLast: ownerLast!,
+    };
     const proposal = await prepare(intake);
     writePrivateJson(path!, proposal);
     console.log(JSON.stringify({
-      status: proposal.status, proposalFile: path, proposalHash: proposal.proposalHash,
-      accountName: proposal.accountName, requesterPracticeRole: proposal.requesterPracticeRole,
-      roleClassification: proposal.roleClassification, ouId: proposal.ouId, productId: proposal.productId,
-      pilotCeilingUsd: 80, financialEvidence: "UNVERIFIED",
-      infrastructureAct: "DISABLED", next: "Submit requires operator/finance authorization",
+      status: proposal.status, file: path, hash: proposal.proposalHash,
+      environment: proposal.environment, accountName: proposal.accountName,
+      accountEmail: proposal.accountEmail, organization: proposal.orgId,
+      managementAccount: proposal.managementAccount, region: proposal.region,
+      ou: proposal.ouName + " (" + proposal.ouId + ")",
+      landingZone: proposal.landingZoneArn, role: proposal.requesterPracticeRole,
+      next: "Review this plan, then submit once from your own AWS SSO session.",
+      infrastructureAct: "DISABLED",
     }, null, 2));
     return;
   }
   if (action === "submit" && rest.length === 3) {
-    if (!stdin.isTTY || !stdout.isTTY) throw Error("INTERACTIVE_HUMAN_TERMINAL_REQUIRED");
+    if (!stdin.isTTY || !stdout.isTTY) throw Error("INTERACTIVE_TERMINAL_REQUIRED");
     const [profile, path, receiptPath] = rest;
     const proposal = loadProposal(path!);
-    // Never allow a model, unattended job, CI, connector or injected stdin to grant authority.
-    console.log("ACCOUNT FACTORY OWNER REVIEW");
+    console.log("REVIEW ACCOUNT FACTORY REQUEST");
     console.log(JSON.stringify({
-      proposalHash: proposal.proposalHash, account: proposal.accountName,
-      requesterPracticeRole: proposal.requesterPracticeRole,
-      roleClassification: proposal.roleClassification,
-      accountEmail: proposal.accountEmail, owner: proposal.owner.email,
-      targetOU: proposal.ouId, principal: proposal.identity.Arn, region: proposal.region,
-      pilotCeilingUsd: proposal.pilotCeilingUsd,
-      financialEvidence: proposal.financialEvidence, runtimeAct: proposal.infrastructureAct,
+      environment: proposal.environment, name: proposal.accountName,
+      email: proposal.accountEmail, administrator: proposal.owner.email,
+      organization: proposal.orgId, managementAccount: proposal.managementAccount,
+      managementRole: proposal.identity.Arn, landingZone: proposal.landingZoneArn,
+      ou: proposal.ouName + " (" + proposal.ouId + ")",
+      region: proposal.region, practiceRole: proposal.requesterPracticeRole,
+      note: "A new AWS account may incur charges; account creation is a real cloud action.",
+      infrastructureAct: "DISABLED",
     }, null, 2));
     const prompt = createInterface({ input: stdin, output: stdout });
     try {
-      const consent = await prompt.question(
-        "Confirm that you separately verified billing/credits and authorized possible AWS charges (type AUTHORIZE ACCOUNT COST): ");
-      if (consent !== "AUTHORIZE ACCOUNT COST") throw Error("FINANCIAL_APPROVAL_NOT_GRANTED");
-      const exact = await prompt.question("Type the full proposal SHA-256 to authorize exactly this account: ");
-      if (exact !== proposal.proposalHash) throw Error("REQUEST_HASH_NOT_APPROVED");
-      const phrase = await prompt.question("Type CREATE " + proposal.accountName + " to submit one Account Factory request: ");
-      if (phrase !== "CREATE " + proposal.accountName) throw Error("ACCOUNT_FACTORY_EXECUTION_NOT_AUTHORIZED");
+      const exact = "CREATE " + proposal.environment + " " + proposal.accountName;
+      if ((await prompt.question("To submit this exact account request, type " + exact + ": ")) !== exact)
+        throw Error("ACCOUNT_CREATION_NOT_CONFIRMED");
     } finally { prompt.close(); }
-    // Write an intent marker before external execution; never retry blindly.
+    // Exclusive intent is the crash/retry lock. Do not silently retry a network timeout.
     writePrivateJson(receiptPath! + ".intent", {
-      proposalHash: proposal.proposalHash, at: new Date().toISOString(),
-      status: "SUBMISSION_INTENT_RECORDED", note: "Check Service Catalog before any retry",
+      proposalHash: proposal.proposalHash, createdAt: new Date().toISOString(),
+      status: "REQUEST_STARTED", note: "Inspect Service Catalog before attempting to resubmit.",
     });
-    const result = await submit(proposal, profile!, proposal.proposalHash, true);
+    const result = await submit(proposal, profile!);
     writePrivateJson(receiptPath!, result);
     console.log(JSON.stringify(result, null, 2));
     return;
@@ -89,11 +101,10 @@ export async function run(args: string[]): Promise<void> {
   if (!args.includes("--help")) process.exitCode = 2;
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href)
-  run(process.argv.slice(2)).catch((error) => {
-    // Don't copy AWS CLI stderr or provider payloads to the operator console.
+  run(process.argv.slice(2)).catch(error => {
     const code = error instanceof Error && /^[A-Z0-9_]+$/.test(error.message) ?
       error.message : "ACCOUNT_FACTORY_OPERATION_FAILED";
     console.error("ACCOUNT_FACTORY_BLOCKED: " + code);
-    console.error("No workload ACT was invoked. On submission errors inspect Service Catalog before retry.");
+    console.error("If a submission may have started, inspect Service Catalog before retrying.");
     process.exitCode = 2;
   });
