@@ -6,25 +6,30 @@ import { COMMON_DEV_GATES, PRACTICE_ROLES } from "../src/account-factory/practic
 
 afterEach(() => cleanup());
 
-test("all four practices see role-specific customer DEV prerequisites", () => {
+test("four practice users see their own AWS access and setup checklist", () => {
   render(<PracticeDevSetup />);
-  fireEvent.click(screen.getByRole("button", { name: "Start a customer DEV environment" }));
-  const chooser = screen.getByLabelText("Your practice and role") as HTMLSelectElement;
+  fireEvent.click(screen.getByRole("button", { name: "Create a customer environment" }));
+  const chooser = screen.getByLabelText("Your practice") as HTMLSelectElement;
   expect(chooser.options.length).toBe(4);
   for (const role of PRACTICE_ROLES) {
     fireEvent.change(chooser, { target: { value: role.id } });
-    expect(screen.getByText(role.focus)).toBeTruthy();
+    expect(screen.getByRole("status").textContent).toContain(role.focus);
     expect(screen.getByText(role.handoff)).toBeTruthy();
     for (const item of role.prerequisites) expect(screen.getByText(item)).toBeTruthy();
   }
   for (const item of COMMON_DEV_GATES) expect(screen.getByText(item)).toBeTruthy();
 });
 
-test("role selection never authorizes creation or invites credentials", () => {
+test("DEV QA STAGING PROD selectable, browser cannot silently create accounts", () => {
   render(<PracticeDevSetup />);
-  fireEvent.click(screen.getByText("Start a customer DEV environment"));
-  expect(screen.getByText(/Selecting a role here never grants AWS access/)).toBeTruthy();
-  expect(screen.getByText(/These cards currently provide terminal handoffs/)).toBeTruthy();
-  expect(screen.getByText(/QA\/PROD remain separate gated environments/)).toBeTruthy();
-  expect(screen.queryByRole("button", { name: /submit|create account|deploy|apply/i })).toBeNull();
+  fireEvent.click(screen.getByText("Create a customer environment"));
+  const field = screen.getByLabelText("Environment") as HTMLSelectElement;
+  expect(field.value).toBe("DEV");
+  for (const env of ["QA", "STAGING", "PROD"]) {
+    fireEvent.change(field, { target: { value: env } });
+    expect(screen.getByRole("status").textContent).toContain("Selected environment: " + env);
+  }
+  expect(screen.getByText(/No new ALZ role/)).toBeTruthy();
+  expect(screen.getByText(/The browser does not silently/)).toBeTruthy();
+  expect(screen.queryByRole("button", { name: /submit|deploy|apply/i })).toBeNull();
 });
