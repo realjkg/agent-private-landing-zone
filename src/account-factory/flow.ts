@@ -315,3 +315,55 @@ export async function verifyProvisionedAccount(
     infrastructureAct: "DISABLED" as const,
   };
 }
+
+/** One resumable, read-only post-submission operation; it never provisions another product. */
+export async function follow(
+  profile: string, proposal: AccountProposal, submission: Submission,
+  call: AwsCall = awsAdminCall,
+  options: { maxPolls?: number; intervalMs?: number; pause?: (ms: number) => Promise<void> } = {},
+) {
+  if (submission.schema !== 2 || proposal.proposalHash !== submission.requestHash ||
+      submission.status !== "SUBMITTED") throw Error("REQUEST_RECEIPT_MISMATCH");
+  // Checking this request after submission does not require a still-unexpired proposal.
+  const { proposalHash, status: _status, infrastructureAct: _act, ...draft } = proposal;
+  if (proposal.schema !== 2 || hash(draft) !== proposalHash)
+    throw Error("REQUEST_PROPOSAL_TAMPERED");
+  const maxPolls = options.maxPolls ?? 60;
+  const intervalMs = options.intervalMs ?? 30_000;
+  if (!Number.isInteger(maxPolls) || maxPolls < 1 || maxPolls > 240 ||
+      !Number.isInteger(intervalMs) || intervalMs < 0 || intervalMs > 300_000)
+    throw Error("TRACKING_OPTIONS_INVALID");
+  const pause = options.pause ?? (async (ms: number) =>
+    new Promise<void>(resolve => setTimeout(resolve, ms)));
+  let providerStatus = "UNKNOWN";
+  for (let attempt = 0; attempt < maxPolls; attempt++) {
+    const current = await status(profile, submission.recordId, call);
+    providerStatus = current.providerStatus;
+    if (providerStatus === "FAILED" || providerStatus === "ERROR")
+      throw Error("ACCOUNT_FACTORY_PROVISIONING_FAILED");
+    if (providerStatus === "SUCCEEDED") {
+      try {
+        const result = await verifyProvisionedAccount(
+          profile, proposal.accountName, proposal.accountEmail, call);
+        if (result.targetOuId !== proposal.ouId)
+          throw Error("ACCOUNT_OU_TARGET_MISMATCH");
+        return {
+          status: "MEMBER_ACCOUNT_VERIFIED" as const,
+          recordId: submission.recordId, providerStatus, environment: proposal.environment,
+          ...result, accountEnrollment: "NOT_INDEPENDENTLY_CONFIRMED" as const,
+        };
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "READBACK_FAILED";
+        if (!["ACCOUNT_NOT_UNIQUELY_IDENTIFIED", "DEDICATED_MEMBER_ACCOUNT_NOT_ACTIVE",
+          "ACCOUNT_NOT_IN_MANAGED_OU", "CONTROL_TOWER_OU_BASELINE_NOT_READY"].includes(code))
+          throw error;
+      }
+    }
+    if (attempt < maxPolls - 1) await pause(intervalMs);
+  }
+  return {
+    status: "PROVISIONING_IN_PROGRESS" as const,
+    recordId: submission.recordId, providerStatus, environment: proposal.environment,
+    verified: false, next: "Run account-factory follow with the saved proposal and receipt.",
+  };
+}
