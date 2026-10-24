@@ -1,67 +1,61 @@
 /**
- * Practice role is an operator-experience classification, NEVER AWS authority.
- * Live STS identity, scoped AWS permission and per-customer approvals govern provisioning.
+ * Internal practice affiliation guides the customer experience, not AWS IAM.
+ * Anyone in these practices can use their organization's existing AWS access.
  */
 export const PRACTICE_ROLES = [
   {
     id: "MODERN_PLATFORMS_PRESALES",
     label: "Modern Platforms · Presales",
-    focus: "Demonstrate the customer's governed DEV landing zone and document its distinctive platform choices.",
+    focus: "Demonstrate a customer-specific, governed DEV platform.",
     prerequisites: [
-      "Customer sponsor approves this specific DEV account and demonstration scope.",
-      "Named practitioner has a currently valid customer-authorized AWS administrator or account-vending session.",
-      "Customer account email and DEV owner are assigned; data residency and solution assumptions are reviewed.",
-      "Account-specific financial owner has approved potential AWS charges and budget notifications.",
+      "Use an existing AWS SSO profile with access to the customer's Control Tower Account Factory.",
+      "Have a unique email for the DEV account and a named administrator for the account.",
+      "Know which DEV architecture and baseline capabilities you want to demonstrate.",
     ],
-    handoff: "Record a customer-specific architecture and cost blueprint for the delivery team.",
+    handoff: "Share the environment's architecture and account details with Delivery.",
   },
   {
     id: "MODERN_PLATFORMS_DELIVERY",
     label: "Modern Platforms · Delivery",
-    focus: "Provision the customer DEV foundation, validate existing Control Tower guardrails and hand off operational evidence.",
+    focus: "Create the customer DEV platform using its existing landing-zone guardrails.",
     prerequisites: [
-      "Customer scope and DEV design are approved by the delivery owner.",
-      "Named practitioner has a currently valid customer-authorized AWS administrator or account-vending session.",
-      "Dedicated account email, Identity Center DEV owner and Workloads OU are agreed.",
-      "Financial approval is recorded and post-provision evidence ownership is assigned.",
+      "Use the AWS SSO profile for the customer's existing Control Tower management account.",
+      "Provide the DEV account name, unique email and administrator contact.",
+      "Record the resulting account ID and existing baseline for ongoing support.",
     ],
-    handoff: "Give Digital Operations verified account ID, OU/baseline evidence and the exception register.",
+    handoff: "Share account ID, OU, baseline and setup notes with Digital Operations.",
   },
   {
     id: "DIGITAL_PRESALES",
     label: "Digital · Presales",
-    focus: "Demonstrate customer-specific digital workloads on an isolated, governed DEV account.",
+    focus: "Demonstrate digital solutions on a dedicated customer DEV account.",
     prerequisites: [
-      "Customer sponsor authorizes a nonproduction demonstration and permitted datasets.",
-      "Named practitioner has a currently valid customer-authorized AWS administrator or account-vending session.",
-      "Digital solution requirements and security boundaries are reviewed with Modern Platforms.",
-      "Distinct DEV owner, account email, approved spending and evidence retention are identified.",
+      "Use an AWS SSO profile that can access the customer's existing Account Factory.",
+      "Supply a unique DEV account email and a named administrator.",
+      "Identify sample workloads and data that are suitable for a nonproduction demonstration.",
     ],
-    handoff: "Share the solution blueprint, workload boundaries and cost assumptions with Delivery.",
+    handoff: "Share the digital solution blueprint and environment details with Delivery.",
   },
   {
     id: "DIGITAL_DELIVERY",
     label: "Digital · Delivery",
-    focus: "Establish and validate a guarded customer DEV account for an approved digital workload.",
+    focus: "Establish a dedicated, governed DEV environment for digital workloads.",
     prerequisites: [
-      "Customer DEV workload scope and deployment ownership are accepted.",
-      "Named practitioner has a currently valid customer-authorized AWS administrator or account-vending session.",
-      "Platform governance alignment, account email, access requirements and data classification are reviewed.",
-      "Owner-approved costs, monitoring responsibility and post-provision acceptance criteria are recorded.",
+      "Use an AWS SSO profile with the necessary existing Service Catalog permissions.",
+      "Provide the unique member-account email, account owner and workload name.",
+      "Share the account ID, baseline and maintenance notes with the digital operations team.",
     ],
-    handoff: "Transfer account evidence, workload runbooks and operational ownership to Digital Operations.",
+    handoff: "Transfer the environment record and workload runbook to Digital Operations.",
   },
 ] as const;
-
 export type PracticeRole = typeof PRACTICE_ROLES[number]["id"];
 export function isPracticeRole(value: unknown): value is PracticeRole {
-  return typeof value === "string" && PRACTICE_ROLES.some(role => role.id === value);
+  return typeof value === "string" && PRACTICE_ROLES.some(x => x.id === value);
 }
 export const COMMON_DEV_GATES = [
-  "Verified, non-root customer-specific AWS execution identity and effective Account Factory access",
-  "Correct customer organization, healthy Control Tower landing zone and permitted organizational unit",
-  "Unique owner-controlled account email, named Identity Center administrator and account purpose",
-  "Exact request review, separate customer/financial authorization and explicit cost exposure",
-  "Service Catalog submission receipt, independent active account/OU/baseline read-back",
-  "No implicit QA/PROD promotion, Terraform APPLY, or infrastructure ACT authorization",
+  "Sign in with an existing named AWS SSO profile; AWS IAM decides if Account Factory is permitted",
+  "Select DEV, QA, STAGING or PROD and supply a unique account name and email",
+  "Reuse the organization's discovered Control Tower landing zone and an enabled organizational unit",
+  "Review and confirm the exact account before creating it; AWS accounts may incur charges",
+  "Read the Account Factory status and resulting member-account ID for handoff",
 ] as const;
