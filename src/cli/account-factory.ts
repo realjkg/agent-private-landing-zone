@@ -1,13 +1,15 @@
 import { createInterface } from "node:readline/promises";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { PRACTICE_ROLES } from "../account-factory/practice-roles.js";
 import { stdin, stdout } from "node:process";
 import { pathToFileURL } from "node:url";
 import { isPracticeRole } from "../account-factory/practice-roles.js";
 import {
-  prepare, submit, status, verifyProvisionedAccount, loadProposal, writePrivateJson,
+  prepare, submit, follow, status, verifyProvisionedAccount, loadProposal, writePrivateJson,
   verifyAdministrator, type AccountEnvironment, type Intake,
+  type AccountProposal, type Submission,
 } from "../account-factory/flow.js";
 
 const HELP = [
@@ -17,6 +19,7 @@ const HELP = [
   "alz account-factory prepare PROFILE PRACTICE_ROLE DEV|QA|STAGING|PROD NAME EMAIL OWNER_EMAIL FIRST LAST OUTPUT.json",
   "alz account-factory submit PROFILE PROPOSAL.json RECEIPT.json",
   "alz account-factory status PROFILE RECORD_ID",
+  "alz account-factory follow PROFILE PROPOSAL.json RECEIPT.json",
   "alz account-factory verify PROFILE ACCOUNT_NAME ACCOUNT_EMAIL",
   "AWS credentials and permissions come from the named, signed-in AWS SSO profile, not the model.",
   "Each account is its own member account under the discovered management account and configured OU.",
@@ -91,6 +94,15 @@ export async function run(args: string[]): Promise<void> {
         verification: "./alz account-factory verify " + profile + " " +
           proposal.accountName + " " + proposal.accountEmail,
       }, null, 2));
+      console.log("Tracking the Service Catalog request and reading back the member account...");
+      const tracked = await follow(profile, proposal, record, undefined, {
+        maxPolls: 20, intervalMs: 15_000,
+      });
+      writePrivateJson(base + ".tracking.json", tracked);
+      console.log(JSON.stringify(tracked, null, 2));
+      if (tracked.status !== "MEMBER_ACCOUNT_VERIFIED")
+        console.log("Account provisioning is still underway. Resume with: ./alz account-factory follow " +
+          profile + " " + base + ".proposal.json " + base + ".receipt.json");
     } finally { prompt.close(); }
     return;
   }
@@ -153,6 +165,15 @@ export async function run(args: string[]): Promise<void> {
     });
     const result = await submit(proposal, profile!);
     writePrivateJson(receiptPath!, result);
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+  if (action === "follow" && rest.length === 3) {
+    const [profile, proposalFile, receiptFile] = rest;
+    const proposal = JSON.parse(readFileSync(proposalFile!, "utf8")) as AccountProposal;
+    const receipt = JSON.parse(readFileSync(receiptFile!, "utf8")) as Submission;
+    const result = await follow(profile!, proposal, receipt);
+    writePrivateJson(receiptFile! + ".tracking-" + randomUUID() + ".json", result);
     console.log(JSON.stringify(result, null, 2));
     return;
   }
