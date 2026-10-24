@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { run as runAccountFactoryCli } from "../src/cli/account-factory.js";
-import {prepare,submit,status,verifyAdministrator,verifyProposal, type AwsCall, type Intake, MANAGEMENT_ACCOUNT, WORKLOADS_OU} from "../src/account-factory/flow.js";
+import {prepare,submit,status,verifyAdministrator,verifyProposal,verifyProvisionedAccount, type AwsCall, type Intake, MANAGEMENT_ACCOUNT, WORKLOADS_OU} from "../src/account-factory/flow.js";
 const arn="arn:aws:sts::973471129135:assumed-role/AWSReservedSSO_AWSAdministratorAccess_7b52a7ec08abfa76/jkristian";
 const ou="arn:aws:organizations::973471129135:ou/o-0u6mts6li3/"+WORKLOADS_OU;
 const intake:Intake={profile:"adaptcloud-admin",name:"ALZ-DEV-01",email:"newdev@example.org",ownerEmail:"owner@example.org",ownerFirst:"Test",ownerLast:"Owner"};
@@ -82,4 +82,26 @@ test("successful Service Catalog record does not establish independent account v
 test("operator CLI exposes the guarded Account Factory help without cloud calls",async()=>{
   await runAccountFactoryCli(["--help"]);
   assert.equal(process.exitCode ?? 0,0);
+});
+
+test("independent account readback requires active member account and correct OU",async()=>{
+  const member="111111111111";
+  const ok=fixture({
+    "organizations list-accounts":{Accounts:[{Id:member,Name:intake.name,Email:intake.email,State:"ACTIVE"}]},
+    "organizations list-parents":{Parents:[{Id:WORKLOADS_OU,Type:"ORGANIZATIONAL_UNIT"}]}
+  });
+  const value=await verifyProvisionedAccount(intake.profile,intake.name,intake.email,ok.call);
+  assert.equal(value.accountId,member);
+  assert.equal(value.controlTowerAccountEnrollment,"NOT_INDEPENDENTLY_CONFIRMED");
+  for(const [key,override] of [
+    ["organizations list-parents",{Parents:[]}],
+    ["organizations list-accounts",{Accounts:[{Id:member,Name:intake.name,Email:intake.email,State:"SUSPENDED"}]}]
+  ] as const){
+    const broken=fixture({
+      "organizations list-accounts":{Accounts:[{Id:member,Name:intake.name,Email:intake.email,State:"ACTIVE"}]},
+      "organizations list-parents":{Parents:[{Id:WORKLOADS_OU,Type:"ORGANIZATIONAL_UNIT"}]},
+      [key]:override,
+    });
+    await assert.rejects(verifyProvisionedAccount(intake.profile,intake.name,intake.email,broken.call));
+  }
 });
