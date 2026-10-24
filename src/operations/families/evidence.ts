@@ -41,6 +41,15 @@ const demo: OperationSpec = {
 const agentArgs = (v: Values) => [...value(v, "provider"), ...value(v, "engine"), ...value(v, "mock"), ...requestArgs(v), ...flags(v, "approve", "verbose")];
 
 export const evidenceOperations: readonly OperationSpec[] = [
+  {
+    id: "lz-live-journey", title: "Live AWS private-model and native preview evidence",
+    family: "evidence", cli: "npx tsx src/cli/lz-live-journey.ts --help", safety: "HANDOFF",
+    summary: "Collects separately gated private-model, AWS discovery and native IaC preview evidence; never applies resources.",
+    inputs: [], evidenceBasis: "LIVE QUALIFICATION ONLY — requires dedicated DEV OIDC identity, approved project and model qualification; ACT DISABLED",
+    cliScript: "src/cli/lz-live-journey.ts",
+    handoff: { reason: "Requires reviewed target/source, signed-in dedicated DEV discovery identity, and private-model qualification; consult the guide.",
+      command: "npx tsx src/cli/lz-live-journey.ts --help" },
+  },
   demo,
   {
     id: "demo-gcp-offline", title: "GCP offline landing-zone walkthrough",
