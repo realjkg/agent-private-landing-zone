@@ -18,7 +18,7 @@ function setup(engine: "TERRAFORM" | "AWS_CDK" = "TERRAFORM") {
   const out = mkdtempSync(join(tmpdir(), "alz-lz-journey-"));
   const cleanup = () => { rmSync(workspace, { recursive: true, force: true }); rmSync(out, { recursive: true, force: true }); };
   const input: JourneyInput = {
-    instruction: "Design a governed AWS landing zone preview with additive changes.",
+    instruction: "Design a governed AWS landing zone preview with additive resources.",
     engine, expectedAccount: ACCOUNT, region: "us-east-2",
     workspace: relative(process.cwd(), workspace), sourceCommit: SHA, outputRoot: out,
     allowProjectCodeExecution: true, allowPreviewWrite: engine === "AWS_CDK",
