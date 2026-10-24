@@ -54,6 +54,18 @@ export type ModelInvocationDiagnostic = {
   schemaValid: true;
 };
 
+export type RiskRelationship = "ALIGNED" | "COMPLEMENTARY" | "CONFLICTING" | "UNCERTAIN";
+
+/** Adjudication is a risk-register compatibility finding, not a security approval. */
+export type RiskReconciliation = {
+  relationship: RiskRelationship;
+  primaryRisk: string;
+  validatorRisk: string;
+  primaryAddressable: boolean;
+  validatorAddressable: boolean;
+  reason: string;
+};
+
 export type AgentResult = {
   requestId: string;
   plan: TaskPlan;
@@ -61,9 +73,52 @@ export type AgentResult = {
   primary?: EngineeringAssessment;
   validator?: EngineeringAssessment;
   adjudication?: string;
+  riskReconciliation?: RiskReconciliation;
   modelInvocations?: ModelInvocationDiagnostic[];
   durationMs: number;
 };
+
+/**
+ * Accept complementary *risks* only when the independent adjudicator explicitly
+ * finds both addressable without contradictory actions. Different risk names
+ * alone never imply agreement; uncertainty and malformed decisions fail closed.
+ */
+export function reconcileIndependentRisks(
+  raw: unknown, primary: EngineeringAssessment, validator: EngineeringAssessment,
+): { accepted: boolean; evidence: RiskReconciliation } {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("INVALID_ADJUDICATION_OUTPUT: object");
+  }
+  const decision = raw as Record<string, unknown>;
+  const allowed: readonly string[] = [
+    "relationship", "primaryAddressable", "validatorAddressable", "reason",
+  ];
+  if (Object.keys(decision).some((key) => !allowed.includes(key)) ||
+      !["ALIGNED", "COMPLEMENTARY", "CONFLICTING", "UNCERTAIN"].includes(String(decision.relationship)) ||
+      typeof decision.primaryAddressable !== "boolean" ||
+      typeof decision.validatorAddressable !== "boolean" ||
+      typeof decision.reason !== "string" ||
+      !decision.reason.trim() || decision.reason.length > 1200) {
+    throw new Error("INVALID_ADJUDICATION_OUTPUT: schema");
+  }
+  const relationship = decision.relationship as RiskRelationship;
+  const evidence: RiskReconciliation = {
+    relationship,
+    primaryRisk: primary.topRisk,
+    validatorRisk: validator.topRisk,
+    primaryAddressable: decision.primaryAddressable,
+    validatorAddressable: decision.validatorAddressable,
+    reason: decision.reason,
+  };
+  // An explicit positive determination about BOTH risks is necessary, not
+  // sufficient for infrastructure authorization. The resulting design remains
+  // subject to every deterministic governance and approval gate.
+  return {
+    accepted: (relationship === "ALIGNED" || relationship === "COMPLEMENTARY") &&
+      evidence.primaryAddressable && evidence.validatorAddressable,
+    evidence,
+  };
+}
 
 function extractJson<T>(value: string): T {
   const match = value.match(/\{[\s\S]*\}/);
@@ -489,43 +544,41 @@ export async function runAgentLoop(
           {
             role: "system",
             content: [
-              "Compare two independent engineering risk assessments.",
-              "",
+              "Independently reconcile TWO engineering risk assessments.",
+              "Compare compatibility of required controls, not mere identity of risk names.",
               "Return JSON only:",
-              '{"agree": boolean, "reason": string}',
-              "",
-              "agree=true when the assessments are materially compatible,",
-              "even if they use different wording.",
-              "",
-              "agree=false when they identify materially different top risks",
-              "or materially incompatible operational priorities.",
-              "",
-              "Keep reason to one concise sentence.",
+              '{"relationship":"ALIGNED|COMPLEMENTARY|CONFLICTING|UNCERTAIN",',
+              ' "primaryAddressable":boolean,"validatorAddressable":boolean,"reason":"one concise explanation"}',
+              "ALIGNED: same underlying risk even if phrased differently.",
+              "COMPLEMENTARY: distinct risks that can both remain on the risk register",
+              "and be addressed without mutually exclusive or unsafe actions.",
+              "CONFLICTING: recommended controls or priorities materially contradict.",
+              "UNCERTAIN: evidence is insufficient to judge compatibility.",
+              "Never declare compatible merely because the risk names differ.",
+              "Set each Addressable flag true only if that risk can be acted on",
+              "without relaxing any existing governance or the other risk's controls.",
+              "Do not claim a risk was fixed, a role verified, or a restore tested.",
+              "Synthetic evidence cannot establish live account safety.",
+              "If in doubt, choose UNCERTAIN. Explain the disposition of BOTH risks.",
             ].join("\n"),
           },
           {
             role: "user",
-            content: JSON.stringify({
-              primary,
-              validator,
-            }),
+            content: JSON.stringify({ primary, validator }),
           },
         ],
       );
 
-    const decision = extractJson<{
-      agree: boolean;
-      reason: string;
-    }>(
-      adjudicationCall.raw,
+    const decision = reconcileIndependentRisks(
+      extractJson<unknown>(adjudicationCall.raw), primary, validator,
     );
     modelInvocations.push({
       ...adjudicationCall.diagnostic,
       schemaValid: true,
     });
 
-    if (!decision.agree) {
-      report("ABSTAIN", "independent assessments disagree");
+    if (!decision.accepted) {
+      report("ABSTAIN", "risks conflict, are not both addressable, or remain uncertain");
 
       return {
         requestId,
@@ -533,7 +586,8 @@ export async function runAgentLoop(
         status: "ABSTAIN",
         primary,
         validator,
-        adjudication: decision.reason,
+        adjudication: decision.evidence.reason,
+        riskReconciliation: decision.evidence,
         modelInvocations,
         durationMs: Date.now() - startedAt,
       };
@@ -547,7 +601,8 @@ export async function runAgentLoop(
       status: "OK",
       primary,
       validator,
-      adjudication: decision.reason,
+      adjudication: decision.evidence.reason,
+      riskReconciliation: decision.evidence,
       modelInvocations,
       durationMs: Date.now() - startedAt,
     };
