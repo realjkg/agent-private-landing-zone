@@ -1,3 +1,4 @@
+import { pathToFileURL } from "node:url";
 import { assertCleanSource, evidenceDir, headCommit } from "../util/cli-support.js";
 import { runLzLiveJourney, type JourneyEngine } from "../qualification/lz-live-journey.js";
 
@@ -15,7 +16,7 @@ const HELP = [
   "Result remains REVIEW_REQUIRED; ACT DISABLED; release HOLD.",
 ].join("\n");
 
-function parseArgs(args: string[]): {
+export function parseArgs(args: string[]): {
   instruction: string; engine: JourneyEngine; expectedAccount: string; region: string;
   workspace: string; stack?: string; allowProjectCodeExecution: boolean; allowPreviewWrite: boolean;
 } {
@@ -76,7 +77,7 @@ async function main(): Promise<void> {
   console.log("ACT DISABLED / AUTHORIZATION NOT_GRANTED / RELEASE HOLD");
   if (report.status !== "REVIEW_REQUIRED") process.exitCode = 2;
 }
-main().catch((error) => {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main().catch((error) => {
   const message = error instanceof Error ? error.message.split(":")[0] : "UNKNOWN_FAILURE";
   console.error("LZ_JOURNEY_BLOCKED: " + (/^[A-Z0-9_]+$/.test(message) ? message : "UNEXPECTED_ERROR"));
   console.error("ACT DISABLED / NO INFRASTRUCTURE APPLY");
