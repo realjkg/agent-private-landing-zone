@@ -348,9 +348,10 @@ export async function follow(
         if (result.targetOuId !== proposal.ouId)
           throw Error("ACCOUNT_OU_TARGET_MISMATCH");
         return {
+          ...result,
           status: "MEMBER_ACCOUNT_VERIFIED" as const,
           recordId: submission.recordId, providerStatus, environment: proposal.environment,
-          ...result, accountEnrollment: "NOT_INDEPENDENTLY_CONFIRMED" as const,
+          verified: true as const,
         };
       } catch (error) {
         const code = error instanceof Error ? error.message : "READBACK_FAILED";
