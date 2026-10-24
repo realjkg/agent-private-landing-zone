@@ -2,7 +2,7 @@ import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { pathToFileURL } from "node:url";
 import {
-  prepare, submit, status, loadProposal, writePrivateJson, verifyAdministrator,
+  prepare, submit, status, verifyProvisionedAccount, loadProposal, writePrivateJson, verifyAdministrator,
   type Intake, MANAGEMENT_ACCOUNT,
 } from "../account-factory/flow.js";
 
@@ -12,6 +12,7 @@ const HELP = [
   "alz account-factory prepare PROFILE ACCOUNT_NAME ACCOUNT_EMAIL OWNER_EMAIL OWNER_FIRST OWNER_LAST OUTPUT.json",
   "alz account-factory submit PROFILE PROPOSAL.json SUBMISSION.json",
   "alz account-factory status PROFILE RECORD_ID",
+  "alz account-factory verify PROFILE ACCOUNT_NAME ACCOUNT_EMAIL",
   "The console's operation catalog offers a guided handoff. These are owner-run commands.",
   "ProvisionProduct is a governance account-vending mutation; workload ACT remains DISABLED.",
 ].join("\n");
@@ -69,6 +70,10 @@ export async function run(args: string[]): Promise<void> {
     const result = await submit(proposal, profile!, proposal.proposalHash, true);
     writePrivateJson(receiptPath!, result);
     console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+  if (action === "verify" && rest.length === 3) {
+    console.log(JSON.stringify(await verifyProvisionedAccount(rest[0]!, rest[1]!, rest[2]!), null, 2));
     return;
   }
   if (action === "status" && rest.length === 2) {
