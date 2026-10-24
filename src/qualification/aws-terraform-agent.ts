@@ -40,11 +40,33 @@ export type AwsTerraformAgentDeps = {
   model: typeof invokeLocalModel;
 };
 
+/** Typed failure receipt: real inference may execute and still legitimately ABSTAIN. */
+export type AwsTerraformBlockedEvidence = {
+  schema: 1;
+  scenario: typeof AWS_TERRAFORM_SCENARIO.id;
+  sourceCommit: string;
+  mode: "LIVE_LOCAL_MODELS_WITH_SYNTHETIC_AWS_EVIDENCE";
+  status: "BLOCKED";
+  failedGate: string;
+  kernelPhase: string;
+  assessmentStatus: string;
+  modelEvidence: Array<{ role: string; tag: string; digest: string }>;
+  observedModelRoles: Array<{ role: string; model: string; schemaValid: boolean }>;
+  primaryRisk: string | null;
+  validatorRisk: string | null;
+  adjudication: string | null;
+  riskRelationship: string | null;
+  approval: "NOT_GRANTED";
+  infrastructureAct: "DISABLED";
+  mutationObserved: false;
+};
+
 export type AwsTerraformAgentResult = {
   scenario: typeof AWS_TERRAFORM_SCENARIO.id;
   sourceCommit: string;
   mode: "LIVE_LOCAL_MODELS_WITH_SYNTHETIC_AWS_EVIDENCE";
   modelEvidence: Array<{ role: string; tag: string; digest: string }>;
+  independentRiskReview?: { relationship: string; primaryRisk: string; validatorRisk: string; reason: string };
   designHash: string;
   policyHash: string;
   discoveryHash: string;
@@ -261,6 +283,10 @@ export async function qualifyAwsTerraformAgents(
     models.push({ ...role, digest: info.digest });
   }
 
+  // Establish the private evidence directory before inference so an ABSTAIN
+  // is retained as an authentic attempted-but-blocked result, not NOT_RUN.
+  const directory = resolve(input.outputRoot, AWS_TERRAFORM_SCENARIO.id + "-" + randomUUID());
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
   const state = await deps.kernel({
     request: AWS_TERRAFORM_SCENARIO.request,
     provider: "AWS",
@@ -268,7 +294,35 @@ export async function qualifyAwsTerraformAgents(
     mock: "brownfield",
     approveBuild: false,
   });
-  assertAgentState(state);
+  try {
+    assertAgentState(state);
+  } catch (error) {
+    const failedGate = error instanceof Error ? error.message.split(":")[0] : "UNKNOWN";
+    const assessment = state.assessment;
+    const blocked: AwsTerraformBlockedEvidence = {
+      schema: 1,
+      scenario: AWS_TERRAFORM_SCENARIO.id,
+      sourceCommit: input.sourceCommit,
+      mode: "LIVE_LOCAL_MODELS_WITH_SYNTHETIC_AWS_EVIDENCE",
+      status: "BLOCKED",
+      failedGate,
+      kernelPhase: state.phase,
+      assessmentStatus: assessment?.status ?? "NOT_AVAILABLE",
+      modelEvidence: models,
+      observedModelRoles: (assessment?.modelInvocations ?? []).map(({ role, model, schemaValid }) =>
+        ({ role, model, schemaValid })),
+      primaryRisk: assessment?.primary?.topRisk ?? null,
+      validatorRisk: assessment?.validator?.topRisk ?? null,
+      adjudication: assessment?.adjudication?.slice(0, 1200) ?? null,
+      riskRelationship: assessment?.riskReconciliation?.relationship ?? null,
+      approval: "NOT_GRANTED",
+      infrastructureAct: "DISABLED",
+      mutationObserved: false,
+    };
+    writeFileSync(resolve(directory, "qualification-blocked.json"),
+      JSON.stringify(blocked, null, 2) + "\n", { mode: 0o600, flag: "wx" });
+    throw error;
+  }
   const observedCalls = state.assessment.modelInvocations ?? [];
   for (const expected of models) {
     requireCondition(
@@ -326,8 +380,6 @@ export async function qualifyAwsTerraformAgents(
   ]);
   const proposal = reviewAwsTerraformProposals(primaryRaw, validatorRaw, evidenceKeys);
   const terraform = renderAwsTerraformCandidate(proposal);
-  const directory = resolve(input.outputRoot, AWS_TERRAFORM_SCENARIO.id + "-" + randomUUID());
-  mkdirSync(directory, { recursive: true, mode: 0o700 });
   const artifactPath = resolve(directory, "main.tf");
   const evidencePath = resolve(directory, "qualification.json");
   writeFileSync(artifactPath, terraform, { mode: 0o600, flag: "wx" });
@@ -336,6 +388,14 @@ export async function qualifyAwsTerraformAgents(
     sourceCommit: input.sourceCommit,
     mode: "LIVE_LOCAL_MODELS_WITH_SYNTHETIC_AWS_EVIDENCE",
     modelEvidence: models,
+    ...(state.assessment?.riskReconciliation ? {
+      independentRiskReview: {
+        relationship: state.assessment.riskReconciliation.relationship,
+        primaryRisk: state.assessment.riskReconciliation.primaryRisk,
+        validatorRisk: state.assessment.riskReconciliation.validatorRisk,
+        reason: state.assessment.riskReconciliation.reason,
+      },
+    } : {}),
     designHash: state.design.designHash,
     policyHash: state.design.policies.bundleHash,
     discoveryHash: sha256(JSON.stringify(evidence)),
