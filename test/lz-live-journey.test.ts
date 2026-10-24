@@ -27,7 +27,11 @@ function setup(engine: "TERRAFORM" | "AWS_CDK" = "TERRAFORM") {
   if (engine === "TERRAFORM") writeFileSync(join(workspace, ".terraform.lock.hcl"), "provider lock");
   else {
     mkdirSync(join(workspace, ".runs/cdk/synth"), { recursive: true });
-    writeFileSync(join(workspace, ".runs/cdk/synth/manifest.json"), '{"artifacts":{}}');
+    writeFileSync(join(workspace, ".runs/cdk/synth/manifest.json"),
+      JSON.stringify({ artifacts: { ExistingDevStack: { type: "aws:cloudformation:stack",
+        properties: { templateFile: "ExistingDevStack.template.json" } } } }));
+    writeFileSync(join(workspace, ".runs/cdk/synth/ExistingDevStack.template.json"),
+      '{"Resources":{"Log":{"Type":"AWS::Logs::LogGroup"}}}');
   }
   return { workspace, out, input, cleanup };
 }
@@ -85,7 +89,7 @@ function depsFor(engine: "TERRAFORM" | "AWS_CDK", workspace: string,
           ok("terraform_fmt_check"), ok("terraform_validate", '{"valid":true,"error_count":0}')];
         if (request.tool === "cdk_synth") return [ok("cdk_synth")];
         if (request.tool === "cdk_preview") return ok("cdk_preview", JSON.stringify({
-          Changes: [{ ResourceChange: { Action: opts.update ? "Modify" : "Add",
+          Status: "CREATE_COMPLETE", Changes: [{ ResourceChange: { Action: opts.update ? "Modify" : "Add",
             ResourceType: "AWS::Logs::LogGroup" } }],
         }));
         if (request.tool === "terraform_version" || request.tool === "cdk_version")
