@@ -143,6 +143,20 @@ export const evidenceOperations: readonly OperationSpec[] = [
       env: ["ALZ_ALLOW_REAL_PRIVATE_BUILD", "ALZ_ALLOW_TERRAFORM_PLAN", "AWS_PROFILE"],
     },
   },
+  {
+    id: "lz-live-journey", title: "Live AWS landing zone journey preview", family: "evidence",
+    cli: "npx tsx src/cli/lz-live-journey.ts --instruction <text> --engine <terraform|cdk> --account <dev-account> --region <region> --workspace <reviewed-project> --allow-project-code",
+    safety: "HANDOFF",
+    summary: "Runs the private models, real AWS discovery and a Terraform or CDK preview in one governed sequence; nothing is applied.",
+    inputs: [],
+    evidenceBasis: "REAL LOCAL QWEN/MISTRAL — LIVE AWS DISCOVERY (OIDC) — NATIVE TERRAFORM PLAN OR CDK CHANGE SET PREVIEW, NO APPLY, RELEASE HOLD" + RECORD,
+    cliScript: "src/cli/lz-live-journey.ts",
+    handoff: {
+      reason: "Needs local Ollama models, a short-lived DISCOVERY OIDC identity for a dedicated non-production account and a reviewed IaC project; CDK also needs --allow-preview-write. See docs/lz-live-journey.md. " + TERMINAL,
+      command: "npx tsx src/cli/lz-live-journey.ts --instruction <text> --engine <terraform|cdk> --account <dev-account> --region <region> --workspace <reviewed-project> --allow-project-code",
+      env: ["ALZ_DISCOVERY_AWS_ROLE_ARN", "ALZ_DISCOVERY_AWS_WEB_IDENTITY_TOKEN_FILE", "ALZ_DISCOVERY_AWS_REGION"],
+    },
+  },
   ...[
     { id: "qualify-terraform-validate", flag: "--terraform-validate", env: [] as string[],
       title: "Terraform validation of the reviewed candidate",
