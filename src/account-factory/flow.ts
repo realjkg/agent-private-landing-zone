@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isPracticeRole, type PracticeRole } from "./practice-roles.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdirSync, openSync, readFileSync, writeFileSync, closeSync } from "node:fs";
@@ -31,11 +32,12 @@ export const awsAdminCall: AwsCall = async (profile, args) => {
   return obj(JSON.parse(stdout));
 };
 export type Intake = {
-  profile: string; name: string; email: string; ownerEmail: string;
+  profile: string; practiceRole: PracticeRole; name: string; email: string; ownerEmail: string;
   ownerFirst: string; ownerLast: string;
 };
 export function validateIntake(value: Intake): Intake {
   if (!PROFILE.test(value.profile)) throw Error("AWS_PROFILE_INVALID");
+  if (!isPracticeRole(value.practiceRole)) throw Error("PRACTICE_ROLE_INVALID");
   if (!ACCOUNT_NAME.test(value.name)) throw Error("ACCOUNT_NAME_INVALID");
   if (!EMAIL.test(value.email) || !EMAIL.test(value.ownerEmail)) throw Error("ACCOUNT_EMAIL_INVALID");
   if (value.ownerFirst.trim().length < 1 || value.ownerFirst.length > 64 ||
@@ -45,6 +47,7 @@ export function validateIntake(value: Intake): Intake {
 export type AccountProposal = {
   schema: 1; createdAt: string; expiresAt: string; identity: { Account: string; Arn: string };
   orgId: string; ouId: string; ouArn: string; accountName: string; accountEmail: string;
+  requesterPracticeRole: PracticeRole; roleClassification: "DECLARED_NOT_AUTHORIZING";
   owner: { email: string; first: string; last: string };
   productId: string; artifactId: string; pathId: string;
   baseline: string; managementAccount: string; region: string;
@@ -125,6 +128,7 @@ export async function prepare(intake: Intake, call: AwsCall = awsAdminCall, now 
     expiresAt: new Date(now.getTime() + 15 * 60_000).toISOString(),
     identity, orgId: String(org.Id), ouId: WORKLOADS_OU, ouArn: String(ou.Arn),
     accountName: intake.name, accountEmail: intake.email,
+    requesterPracticeRole: intake.practiceRole, roleClassification: "DECLARED_NOT_AUTHORIZING" as const,
     owner: { email: intake.ownerEmail, first: intake.ownerFirst, last: intake.ownerLast },
     productId, artifactId, pathId, baseline: String(verifiedBaseline.baselineIdentifier),
     managementAccount: MANAGEMENT_ACCOUNT, region: REGION, parameters,
@@ -137,7 +141,8 @@ export function verifyProposal(proposal: AccountProposal, now = new Date()) {
   const { proposalHash, status, financialEvidence, pilotCeilingUsd, infrastructureAct, ...draft } = proposal;
   if (digest(draft) !== proposalHash || draft.managementAccount !== MANAGEMENT_ACCOUNT ||
     draft.ouId !== WORKLOADS_OU || draft.region !== REGION ||
-    draft.parameters.length !== 6 || draft.identity.Account !== MANAGEMENT_ACCOUNT)
+    draft.parameters.length !== 6 || draft.identity.Account !== MANAGEMENT_ACCOUNT ||
+    !isPracticeRole(draft.requesterPracticeRole) || draft.roleClassification !== "DECLARED_NOT_AUTHORIZING")
     throw Error("PROPOSAL_TAMPERED_OR_WRONG_TARGET");
   if (Number.isNaN(Date.parse(draft.createdAt)) || Number.isNaN(Date.parse(draft.expiresAt)) ||
       now < new Date(draft.createdAt) || now > new Date(draft.expiresAt))
