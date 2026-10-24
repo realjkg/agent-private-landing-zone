@@ -47,9 +47,9 @@ export type JourneyReport = {
   stages: StageRecord[];
   modelDigests: Array<{ role: string; tag: string; digest: string }>;
   inventory: Array<{ idHash: string; type: string; ownership: string; mutationPolicy: string }>;
-  provenance: { designHash?: string; policyHash?: string; toolVersionHash?: string; lockOrAssemblyHash?: string; nativePlanHash?: string };
+  provenance: { designHash?: string; policyHash?: string; toolVersionHash?: string; lockOrAssemblyHash?: string; synthesizedTemplateHash?: string; binaryPlanHash?: string; nativePlanHash?: string };
   proposedChanges: Array<{ type: string; action: string; governance: string }>;
-  actSnapshot: { infrastructureAct: "DISABLED"; executed: false; mutationObserved: false; authorization: "NOT_GRANTED"; candidatePlanHash?: string };
+  actSnapshot: { infrastructureAct: "DISABLED"; executed: false; mutationObserved: false; authorization: "NOT_GRANTED"; previewControlPlaneWrite: boolean; candidatePlanHash?: string };
   status: "REVIEW_REQUIRED" | "BLOCKED";
   releaseAdmission: "HOLD";
   evidencePath: string;
@@ -184,7 +184,7 @@ export async function runLzLiveJourney(input: JourneyInput, deps: Deps = default
     startedAt: new Date().toISOString(), stages: [], modelDigests: [], inventory: [],
     provenance: {}, proposedChanges: [],
     actSnapshot: { infrastructureAct: "DISABLED", executed: false, mutationObserved: false,
-      authorization: "NOT_GRANTED" },
+      authorization: "NOT_GRANTED", previewControlPlaneWrite: input.engine === "AWS_CDK" },
     status: "BLOCKED", releaseAdmission: "HOLD", evidencePath, visualizationPath,
   };
   const persist = () => {
@@ -264,10 +264,15 @@ export async function runLzLiveJourney(input: JourneyInput, deps: Deps = default
       tool: engineTool === "terraform" ? "terraform_version" : "cdk_version", workspace,
     }, context), "IAC_TOOL_VERSION_FAILED");
     report.provenance.toolVersionHash = hash(version.stdout);
-    checkedResult(await deps.governed({
+    const validation = checkedResult(await deps.governed({
       tool: engineTool === "terraform" ? "terraform_validate" : "cdk_synth", workspace,
       ...(input.stack ? { input: { stack: input.stack } } : {}),
     }, { ...context, allowProjectCodeExecution: true }), "IAC_VALIDATION_FAILED");
+    if (input.engine === "TERRAFORM") {
+      const parsed = JSON.parse(validation.stdout) as { valid?: unknown; error_count?: unknown };
+      requireGate(parsed.valid === true && parsed.error_count === 0,
+        "TERRAFORM_VALIDATION_NOT_VALID");
+    }
     const preview = checkedResult(await deps.governed({
       tool: engineTool === "terraform" ? "terraform_plan" : "cdk_preview", workspace,
       ...(input.stack ? { input: { stack: input.stack, stackName: input.stack, changeSetType: "UPDATE" } } : {}),
@@ -280,6 +285,7 @@ export async function runLzLiveJourney(input: JourneyInput, deps: Deps = default
       const planPath = readableFile(resolve(cwd, ".agentic-preview.tfplan"), cwd);
       report.provenance.lockOrAssemblyHash = hash(readFileSync(lock));
       const binaryPlanHash = hash(readFileSync(planPath));
+      report.provenance.binaryPlanHash = binaryPlanHash;
       const shown = checkedResult(deps.localTerraformShow(cwd), "TERRAFORM_SHOW_FAILED");
       native = { engine: "TERRAFORM", payload: JSON.parse(shown.stdout) };
       report.provenance.nativePlanHash = hash(shown.stdout);
@@ -288,13 +294,28 @@ export async function runLzLiveJourney(input: JourneyInput, deps: Deps = default
       requireGate(/^[a-f0-9]{64}$/.test(binaryPlanHash), "PLAN_BINARY_HASH_INVALID");
     } else {
       const assembly = readableFile(resolve(cwd, ".runs/cdk/synth/manifest.json"), cwd);
-      report.provenance.lockOrAssemblyHash = hash(readFileSync(assembly));
-      native = { engine: "CDK", payload: JSON.parse(preview.stdout) };
+      const manifestBytes = readFileSync(assembly);
+      const manifest = JSON.parse(manifestBytes.toString("utf8")) as {
+        artifacts?: Record<string, { type?: string; properties?: { templateFile?: string } }>;
+      };
+      const selected = manifest.artifacts?.[input.stack!];
+      requireGate(selected?.type === "aws:cloudformation:stack" &&
+        typeof selected.properties?.templateFile === "string", "CDK_STACK_ASSEMBLY_NOT_ATTESTED");
+      const template = readableFile(resolve(cwd, ".runs/cdk/synth",
+        selected.properties!.templateFile!), cwd);
+      JSON.parse(readFileSync(template, "utf8"));
+      report.provenance.lockOrAssemblyHash = hash(manifestBytes);
+      report.provenance.synthesizedTemplateHash = hash(readFileSync(template));
+      const described = JSON.parse(preview.stdout) as { Status?: string };
+      requireGate(described.Status === "CREATE_COMPLETE", "CDK_CHANGESET_NOT_COMPLETE");
+      native = { engine: "CDK", payload: described };
       report.provenance.nativePlanHash = hash(preview.stdout);
     }
     report.proposedChanges = previewActions(native, governance);
     stage(report, "native_preview", { source: input.sourceCommit, engine: input.engine,
       toolVersionHash: report.provenance.toolVersionHash, lockOrAssemblyHash: report.provenance.lockOrAssemblyHash,
+      synthesizedTemplateHash: report.provenance.synthesizedTemplateHash,
+      binaryPlanHash: report.provenance.binaryPlanHash,
       nativePlanHash: report.provenance.nativePlanHash, proposedChanges: report.proposedChanges });
     report.actSnapshot.candidatePlanHash = report.provenance.nativePlanHash;
     stage(report, "act_boundary", report.actSnapshot);
