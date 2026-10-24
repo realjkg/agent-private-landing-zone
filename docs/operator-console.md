@@ -2,6 +2,10 @@
 
 `./alz workspace` starts the local operator console on `127.0.0.1`. Every capability an operator can call from the command line has a matching entry in one typed catalog (`src/operations/`). The console server, the React UI, this table and the parity guard (`test/operations-parity.test.ts`) all read that catalog, so a command cannot exist without a console equivalent.
 
+## Customer DEV — four eligible practices
+
+The unified Operations interface includes **Start a customer DEV environment** and a role-specific guide for Modern Platforms Presales, Modern Platforms Delivery, Digital Presales and Digital Delivery. Each is eligible to provision DEV only with its practitioner's verified customer-scoped AWS permissions, unique customer account/owner, approved cost exposure, and exact human-reviewed request. A role selector never grants AWS authority. Account Factory remains an authenticated terminal handoff, not a browser or agent mutation. See `docs/account-factory-builder.md`.
+
 ## How an operation is described
 
 Each entry has an id, a one-sentence summary, a family, the exact CLI form, a safety class, a small input schema and the literal evidence basis shown beside results.
