@@ -73,7 +73,10 @@ function fixture(opts: {
   const call: AwsCall = async (_profile, args) => {
     calls.push([...args]);
     const key = args.slice(0, 2).join(" ");
-    const response = Object.hasOwn(opts.changes ?? {}, key) ? opts.changes![key] : responses[key];
+    const override = Object.hasOwn(opts.changes ?? {}, key);
+    if (key === "organizations list-organizational-units-for-parent" && !override && args.includes(targetId))
+      return { OrganizationalUnits: [] };
+    const response = override ? opts.changes![key] : responses[key];
     if (!response) throw Error("UNEXPECTED_API:" + key);
     return response as Record<string, any>;
   };
