@@ -14,7 +14,7 @@ This operator-driven qualification path connects existing Sovereign ALZ componen
 
 ```sh
 node dist/cli/lz-live-journey.js \
-  --instruction "Design a governed AWS landing zone preview with additive changes" \
+  --instruction "Design a governed AWS landing zone preview with additive resources" \
   --engine terraform --account YOUR_DEV_ACCOUNT_ID --region us-east-2 \
   --workspace qualification/aws/act-dev1-canary --allow-project-code
 ```
@@ -25,7 +25,7 @@ The trusted adapter performs actual `terraform version`, format/validation check
 
 ```sh
 node dist/cli/lz-live-journey.js \
-  --instruction "Design a governed AWS landing zone CDK preview with additive changes" \
+  --instruction "Design a governed AWS landing zone CDK preview with additive resources" \
   --engine cdk --account YOUR_DEV_ACCOUNT_ID --region us-east-2 \
   --workspace path/to/reviewed/cdk/app --stack ExistingDevStack \
   --allow-project-code --allow-preview-write
