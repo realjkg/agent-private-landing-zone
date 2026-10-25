@@ -23,6 +23,11 @@ import {
   planReleaseLifecycle,
   validateReleaseLifecyclePlan,
 } from "../src/release/lifecycle.js";
+import {
+  releaseSourceOrigin,
+  validReleaseSourceOrigin,
+  SOVEREIGN_ALZ_ORIGIN_SHA256,
+} from "../src/release/provenance.js";
 
 const hash =
   sha256Buffer("fixture");
@@ -83,6 +88,34 @@ test("release manifest binds version provenance SBOM and Preview Operate contrac
     ),
     [],
   );
+});
+
+test("JK Gonzalez source identity fingerprint is deterministic and rejects tampering", () => {
+  const origin = releaseSourceOrigin();
+  assert.equal(origin.author, "JK Gonzalez");
+  assert.equal(origin.trademark, "Sovereign ALZ™");
+  assert.equal(origin.trademarkClaimant, "JK Gonzalez");
+  assert.equal(origin.license, "MIT");
+  assert.equal(origin.repository, "realjkg/agent-private-landing-zone");
+  assert.equal(origin.identitySha256, SOVEREIGN_ALZ_ORIGIN_SHA256);
+  assert.match(origin.identitySha256, /^[a-f0-9]{64}$/);
+  assert.equal(validReleaseSourceOrigin(origin), true);
+  assert.equal(validReleaseSourceOrigin({ ...origin, author: "Other" }), false);
+  assert.equal(validReleaseSourceOrigin({ ...origin, identitySha256: "0".repeat(64) }), false);
+  assert.equal(validReleaseSourceOrigin({ ...origin, extra: "spoof" }), false);
+  assert.equal(validReleaseSourceOrigin(null), false);
+
+  // No release contract change: the compiled provenance module is covered
+  // by the existing per-file SHA-256 release manifest.
+  const manifest = createReleaseManifest({
+    productVersion: "1.0.0",
+    sourceCommit: "a".repeat(40),
+    files: [{ path: "dist/release/provenance.js", sha256: hash }],
+    sbomPath: "sbom.cdx.json",
+    sbomSha256: hash,
+  });
+  assert.equal(manifest.schemaVersion, 1);
+  assert.deepEqual(validateReleaseManifest(manifest), []);
 });
 
 test("release manifest rejects invalid provenance and file evidence", () => {
