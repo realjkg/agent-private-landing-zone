@@ -138,6 +138,12 @@ export const COPY = {
   sessionLost: "This page lost contact with the console. Close it and start the console again.",
   working: "Working...",
   noChanges: "No changes in this list.",
+  reviewToolLabel: "Build tool that made this preview",
+  reviewToolVersion: "version",
+  reviewToolProgram: "program ID",
+  reviewTestedLabel: "Tested on the real cloud",
+  reviewTestedYes: "Yes. This exact program passed the real-cloud test on",
+  reviewTestedNo: "No. This exact program has not passed the real-cloud test for this place, so approvers are signing a preview from an untested program. The change can still only run with this same program.",
   omitted: "more lines are in the review file and are not shown here.",
 } as const;
 
@@ -222,6 +228,7 @@ export const CODE_COPY: Readonly<Record<string, Reason>> = {
   LIVE_ATTESTATION_MISMATCH: { why: "What you typed did not match the phrase shown. Nothing was written.", next: "Type the phrase only if the change really ran against the real account, and use the Copy button so it is exact." },
   LIVE_RECORD_EXISTS: { why: "This change is already recorded as live. A record is never replaced.", next: "Use the record that is already there. Nothing was changed." },
   SOURCE_UNVERIFIED: { why: "This copy of the app has changes that are not saved in its history, or its version cannot be read, so a record could not say which version ran. Nothing ran or was used up.", next: "Save (commit) or remove the local changes, or use the packaged app, then try again." },
+  ENGINE_BINARY_CHANGED: { why: "The build tool program on this computer is not the one that made the preview the approvers signed. A change only runs with that exact program. Nothing was used up.", next: "Put the same build tool version back, or prepare the change again with this one and collect new approvals." },
   SOURCE_CHANGED: { why: "The app was updated after this change was prepared. A change only runs on the exact app version that prepared it. Nothing was used up.", next: "Run it from the app version shown on the review, or prepare the change again and collect new approvals." },
   CHANNEL_MISMATCH: { why: "This change was started the other way, on the command line or in the console, and has to be finished the same way. Nothing was used up.", next: "Finish it where it was started, or start a new change here." },
   TARGET_NOT_IN_CONTRACT: { why: "The place you named is not one the pilot rules allow, or the project points somewhere else.", next: "Check the account, storage and workspace in your request file against the pilot rules, or ask the owner. Nothing was changed." },

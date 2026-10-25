@@ -36,7 +36,7 @@ const bundleReview = (over: Partial<ReviewSummary> = {}): ReviewSummary => ({
     { address: "azurerm_resource_group.pilot", type: "azurerm_resource_group", action: "CREATE" },
     { address: "azurerm_log_analytics_workspace.pilot", type: "azurerm_log_analytics_workspace", action: "UPDATE" },
     { address: "azurerm_storage_account.logs", type: "azurerm_storage_account", action: "CREATE" },
-  ], changesOmitted: 0, ...over,
+  ], changesOmitted: 0, preview: { engineVersion: "1.9.5", programId: "7e57ab1e0000", qualified: true, qualifiedAt: "2026-10-11T00:00:00.000Z" }, ...over,
 });
 const doneRun = (step: PilotRun["step"], result: PilotRun["result"], id = step + "-1"): PilotRun => ({ id, step, status: "DONE", startedAt: "2026-10-12T00:00:00.000Z", transcript: "TRANSCRIPT LINE", result });
 const waitingRun = (step: PilotRun["step"], kind: NonNullable<PilotRun["dialog"]>["kind"], phrase: string, id = "d-" + kind): PilotRun => ({
@@ -906,4 +906,21 @@ test("sealed plan review summarizes added, modified and removed resources with p
   expect(screen.getByText(/Access: a console session alone/)).toBeTruthy();
   expect(screen.getByText(/Stop unless a separately authorized plan/)).toBeTruthy();
   expect(screen.getByText("aws_cloudwatch_log_group.remove")).toBeTruthy();
+});
+
+test("the review says which build tool program made the preview and whether it passed the real-cloud test, in plain words", () => {
+  const tested = render(<ChangeList review={bundleReview()} />);
+  const yes = document.querySelector('[data-preview-tested="yes"]');
+  expect(document.body.textContent).toContain(COPY.reviewToolLabel + COPY.reviewToolVersion + " 1.9.5, " + COPY.reviewToolProgram + " 7e57ab1e0000");
+  expect(yes?.textContent).toContain(COPY.reviewTestedYes + " 2026-10-11T00:00:00.000Z");
+  expect(jargonIn(primaryText())).toEqual([]);
+  tested.unmount();
+  const reason = "ENGINE_NOT_QUALIFIED: the qualification record is not backed by real-engine qualification evidence: it was not produced with this engine binary";
+  render(<ChangeList review={bundleReview({ preview: { engineVersion: "1.9.5", programId: "0badc0de0000", qualified: false, reason } })} />);
+  const no = document.querySelector('[data-preview-tested="no"]');
+  expect(no?.textContent).toContain(COPY.reviewTestedNo);
+  // The exact reason is there for whoever needs it, folded away from the primary words.
+  expect(no?.querySelector("details")?.hasAttribute("open")).toBe(false);
+  expect(no?.querySelector("details pre")?.textContent).toBe(reason);
+  expect(jargonIn(primaryText())).toEqual([]);
 });

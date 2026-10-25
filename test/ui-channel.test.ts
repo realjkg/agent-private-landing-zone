@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { randomBytes } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { request, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,7 +16,7 @@ import { removeTree } from "../src/teardown/driver/cleanup.js";
 import type { ApplyEnvironment } from "../src/apply/types.js";
 import type { ResolvedTarget } from "../src/teardown/driver/types.js";
 import { SOURCE_COMMIT,
-  NOW, POLICY, awsContractJson, awsIdentityEnv, awsTargetOf, behave as behaveIn, callsOf, contractJson, identityEnv, installFakeTerraform, keys, pinPathOf, targetOf,
+  ENGINE_VERSION, NOW, POLICY, awsContractJson, awsIdentityEnv, awsTargetOf, behave as behaveIn, callsOf, contractJson, identityEnv, installFakeTerraform, keys, pinPathOf, targetOf,
   testFixtureForgeQualificationEvidence,
   writePinnedContract, writeProject, type Behavior, type Project,
 } from "./helpers/apply-fixtures.js";
@@ -862,6 +862,9 @@ async function wholeJourneyInConsole(cloud: Cloud): Promise<void> {
   assert.equal(reviewed.ok, true);
   assert.deepEqual(reviewed.summary.target, target);
   assert.equal(reviewed.summary.sourceCommit, SOURCE_COMMIT, "approvers see the product commit they sign");
+  assert.deepEqual({ ...reviewed.summary.preview, qualifiedAt: undefined }, { engineVersion: ENGINE_VERSION, programId: programId(), qualified: true, qualifiedAt: undefined },
+    "approvers see which engine program made the preview, and that real-engine evidence covers it");
+  assert.match(reviewed.summary.preview.qualifiedAt, /^\d{4}-\d{2}-\d{2}T/);
   const approvalPath = await approveViaUi(port, sealed, "alice");
   const before = engineCalls().filter((args) => args[0] === "apply").length;
   // The router derives the apply request from the prepared seal request.
@@ -913,6 +916,31 @@ test("AWS Terraform in the console: prepare from a project folder, preview, appr
 test("AWS Terraform in the console: a wrong phrase or a cancel at approval or apply signs nothing and spends nothing, and the same approval still applies", () => interruptedJourneyInConsole("AWS"));
 test("Azure Terraform in the console: prepare from a project folder, preview, approve and apply through the real router, service and adapter", () => wholeJourneyInConsole("AZURE"));
 test("Azure Terraform in the console: a wrong phrase or a cancel at approval or apply signs nothing and spends nothing, and the same approval still applies", () => interruptedJourneyInConsole("AZURE"));
+
+/** The first 12 characters of the engine program's sha256, as the review shows it. */
+const programId = (): string => createHash("sha256").update(readFileSync(join(toolDir, "terraform"))).digest("hex").slice(0, 12);
+
+test("AWS Terraform in the console: a plan applies only with the engine program that made its preview, and nothing is consumed by a mismatch", async () => {
+  const { port, target, project } = await consoleJourney("AWS");
+  const { prepared, sealed } = await prepareAndSealInConsole(port, project, target);
+  const approvalPath = await approveViaUi(port, sealed, "alice");
+  const applies = () => engineCalls().filter((args) => args[0] === "apply").length;
+  const before = applies();
+  appendFileSync(join(toolDir, "terraform"), "// another build of the program\n");
+  try {
+    const started = await call(port, "POST", "/pilot/apply", {
+      body: { environment: "DEV", requestPath: prepared.files.request, manifestPath: prepared.files.manifest, sealedPath: sealed.path, approvalPaths: [approvalPath] },
+    });
+    assert.equal(started.status, 202, started.text);
+    const refusal = (await finished(port)).run!.result!;
+    assert.equal(refusal.exit, 2, JSON.stringify(refusal));
+    assert.equal(refusal.code, "ENGINE_BINARY_CHANGED");
+    assert.equal(applies(), before, "no engine ran");
+  } finally { installFakeTerraform(toolDir); }
+  // Nothing was consumed: with the program that made the preview, the same approval applies.
+  const applied = await applyInConsole(port, prepared.files, sealed, [approvalPath], applyPhrase(sealed));
+  assert.equal(applied.exit, 0, JSON.stringify(applied));
+});
 
 test("AWS Terraform in the console: a plan applies only from the product commit that sealed it, and nothing is consumed by a mismatch", async () => {
   const { w, port, target, project } = await consoleJourney("AWS");

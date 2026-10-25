@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -24,7 +24,7 @@ import { TERRAFORM_APPLY_PROFILE } from "../src/tools/profiles.js";
 import { SOURCE_COMMIT,
   CANARIES, DEV_TARGET, approvers, ENV, H, NOW, OPERATOR, OUTPUT_CANARY, PLAN_CANARY, POLICY, PROD_TARGET, QA_TARGET, STATE_CANARY, TENANT, VALUE_CANARY,
   approvalFor as approval, behave as behaveIn, callsOf, contractJson, human, identityEnv, installFakeTerraform, keys, pinPathOf,
-  testFixtureForgeQualificationEvidence, recordApplied, signalsOf, targetOf, writePinnedContract, writeProject, type Behavior, type Call, type Project,
+  testFixtureForgeQualificationEvidence, recordApplied, sha, signalsOf, targetOf, writePinnedContract, writeProject, type Behavior, type Call, type Project,
 } from "./helpers/apply-fixtures.js";
 
 // docs/act-pilot-plan.md. The engine is a fake executable, so these tests pin
@@ -217,6 +217,61 @@ test("evidence is encrypted at rest, is the ledger entry, and carries no plan, s
     for (const canary of CANARIES) assert.ok(!text.includes(canary) && !text.includes(Buffer.from(canary).toString("base64")), path + " holds " + canary);
   }
   for (const canary of CANARIES) assert.ok(!JSON.stringify(stored).includes(canary));
+});
+
+// --- preview provenance ---------------------------------------------------------------
+
+const programSha = (): string => sha(readFileSync(join(toolDir, "terraform")));
+/** Another engine program in the same place: the fake with one more line, so it behaves the same and hashes differently. */
+function swapProgram(): void { appendFileSync(join(toolDir, "terraform"), "// another build of the program\n"); }
+
+test("the seal records the engine program that made the preview and the real-engine evidence that covers it, and the apply runs with that program", async () => {
+  const w = world();
+  behave({ applyAdvance: true });
+  const s = await seal(w, "DEV");
+  const { previewRecord } = await testFixtureForgeQualificationEvidence(fresh("records"));
+  assert.deepEqual(s.sealed.provenance, {
+    engineBinarySha256: programSha(),
+    qualification: { state: "QUALIFIED", evidenceHash: previewRecord.evidenceHash, qualifiedAt: previewRecord.qualifiedAt },
+  });
+  const result = await run(w, s, [approval(s.sealed, "alice")]);
+  assert.ok(result.ok, JSON.stringify(result));
+  clean(w);
+});
+
+test("a preview from a program the evidence does not cover is sealed as UNQUALIFIED with the reason, and that plan still cannot apply", async () => {
+  const w = world();
+  swapProgram();
+  try {
+    behave({ applyAdvance: true });
+    const s = await seal(w, "DEV");
+    assert.equal(s.sealed.provenance.engineBinarySha256, programSha());
+    const q = s.sealed.provenance.qualification;
+    assert.ok(q.state === "UNQUALIFIED" && /not produced with this engine binary/.test(q.reason), JSON.stringify(q));
+    refused(await run(w, s, [approval(s.sealed, "alice")]), "ENGINE_NOT_QUALIFIED");
+    assert.equal(applyCalls().length, 0);
+  } finally { installFakeTerraform(toolDir); }
+  clean(w);
+});
+
+test("a program swapped or removed between seal and apply is ENGINE_BINARY_CHANGED before any engine call or reservation, and the same approval applies once the sealed program is back", async () => {
+  const w = world();
+  behave({ applyAdvance: true });
+  const s = await seal(w, "DEV");
+  const signed = approval(s.sealed, "alice");
+  const before = calls().length;
+  swapProgram();
+  try {
+    refused(await run(w, s, [signed]), "ENGINE_BINARY_CHANGED");
+  } finally { installFakeTerraform(toolDir); }
+  // No program at all where the runner looks is the same refusal.
+  refused(await runApply(requestFor(s, [signed]), { ...forEnv(w, "DEV"), toolDirs: [fresh("no-tools")] }), "ENGINE_BINARY_CHANGED");
+  assert.equal(calls().length, before, "no engine step ran for either refusal");
+  assert.ok(!existsSync(ledgerOf(w, s)), "nothing was reserved");
+  // Nothing was consumed: the approval that was refused applies the plan with the program that made it.
+  const result = await run(w, s, [signed]);
+  assert.ok(result.ok, JSON.stringify(result));
+  clean(w);
 });
 
 test("a second apply of the same artifact is refused, even with fresh approvals, and never runs the engine", async () => {

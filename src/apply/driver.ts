@@ -1,6 +1,6 @@
 import { registerCleanup, removeTree } from "../teardown/driver/cleanup.js";
 import { checkHumanInvocation, isRecord } from "../teardown/driver/human.js";
-import { engineActivation } from "../teardown/driver/qualification.js";
+import { engineActivation, type QualificationRecord } from "../teardown/driver/qualification.js";
 import type { AdapterDescriptor, EngineAdapter, HumanInvocation, ResolvedInputs, ResolvedTarget } from "../teardown/driver/types.js";
 import { canonicalJson, validateManifestForRequest, verifyManifest, type ArtifactManifest } from "../teardown/manifest.js";
 import { captureProjectFiles, createImmutableSnapshot, type ImmutableSnapshot } from "../teardown/snapshot.js";
@@ -22,9 +22,9 @@ import { channelMismatchMessage } from "./channel.js";
 import { finalizeArtifact, releaseReservation, reserveArtifact } from "./ledger.js";
 import { openNonceStore, type NonceStore } from "./nonces.js";
 import { specOf, type ProviderSpec } from "./provider.js";
-import { planWithoutStoring, releaseIdentityOf, sealPlan, verifySealedPlan, type LoadedPlan, type SealResult } from "./seal.js";
+import { engineBinaryChange, planWithoutStoring, releaseIdentityOf, sealPlan, verifySealedPlan, type LoadedPlan, type SealResult } from "./seal.js";
 import { sha256 } from "../util/sha256.js";
-import type { ApplyEnvironment, ApplyEvidence, ApplyOutcome, ApplyRefusalCode, ApplyResult, PilotChannel, PilotContract, PlanChange, SignedApproval } from "./types.js";
+import type { ApplyEnvironment, ApplyEvidence, ApplyOutcome, ApplyRefusalCode, ApplyResult, PilotChannel, PilotContract, PlanChange, PreviewProvenance, SignedApproval } from "./types.js";
 
 /**
  * The human-invoked apply driver (docs/act-pilot-plan.md). The operator
@@ -121,26 +121,42 @@ function admit(deps: Pick<ApplyDeps, "contractPath" | "contractPinPath">, reques
  * evidence in the vault. `engineActivation` reads only an adapter's engine,
  * version and argv digest, which a descriptor carries.
  */
+/**
+ * Whether real-engine qualification evidence in the vault covers this adapter, engine version and engine program for
+ * the contract's target: the apply's gate, and what a seal records about its preview. The one definition of both.
+ */
+async function backedQualification(
+  adapter: AdapterDescriptor, deps: SealDeps, engineVersion: string, binarySha256: string | undefined,
+  contract: PilotContract, spec: ProviderSpec, environment: ApplyEnvironment,
+): Promise<{ ok: true; record: QualificationRecord } | Refusal> {
+  const engine = engineOf(contract);
+  const env = deps.env ?? process.env;
+  const vault = deps.qualificationDir ?? repoPaths().qualifications;
+  const activation = engineActivation(engine.id, await loadQualificationRecords(spec, vault), [adapter as unknown as EngineAdapter], engineVersion);
+  if (!activation.enabled) return refuse("ENGINE_NOT_QUALIFIED", activation.reason);
+  const attested = await verifyApplyQualification(activation.record, vault,
+    { adapterVersion: adapter.adapterVersion, argvDigest: adapter.argvDigest, engineVersion },
+    {
+      dev: contract.targets.DEV, now: (deps.now ?? (() => new Date()))(), terraformSha256: binarySha256,
+      stateWriteClientId: attestedClientId(env, engine.attests[0], spec), applyClientId: attestedClientId(env, engine.attests[1], spec),
+      principalsPerEnvironment: spec.principalPerEnvironment && environment !== "DEV",
+    }, spec);
+  return attested.ok ? { ok: true, record: activation.record } : attested;
+}
+
 async function checkEngineAndIdentities(
   adapter: AdapterDescriptor, deps: SealDeps, engineVersion: string,
   contract: PilotContract, spec: ProviderSpec, environment: ApplyEnvironment, kind: "seal" | "apply" | "qualify",
 ): Promise<Refusal | undefined> {
   const engine = engineOf(contract);
   // Qualifying is how a record comes to exist, so it is the one run that needs none. Identities and targets are judged the same.
-  if (kind !== "qualify") {
+  if (kind === "seal") {
     const vault = deps.qualificationDir ?? repoPaths().qualifications;
     const activation = engineActivation(engine.id, await loadQualificationRecords(spec, vault), [adapter as unknown as EngineAdapter], engineVersion);
     if (!activation.enabled) return refuse("ENGINE_NOT_QUALIFIED", activation.reason);
-    if (kind === "apply") {
-      const attested = await verifyApplyQualification(activation.record, vault,
-        { adapterVersion: adapter.adapterVersion, argvDigest: adapter.argvDigest, engineVersion },
-        {
-          dev: contract.targets.DEV, now: (deps.now ?? (() => new Date()))(), terraformSha256: engine.binarySha256(deps.toolDirs, deps.env ?? process.env),
-          stateWriteClientId: attestedClientId(deps.env ?? process.env, engine.attests[0], spec), applyClientId: attestedClientId(deps.env ?? process.env, engine.attests[1], spec),
-          principalsPerEnvironment: spec.principalPerEnvironment && environment !== "DEV",
-        }, spec);
-      if (!attested.ok) return attested;
-    }
+  } else if (kind === "apply") {
+    const attested = await backedQualification(adapter, deps, engineVersion, engine.binarySha256(deps.toolDirs, deps.env ?? process.env), contract, spec, environment);
+    if (!attested.ok) return attested;
   }
   const env = deps.env ?? process.env;
   const identities = checkApplyIdentities(env, spec, engine.identities);
@@ -193,6 +209,17 @@ async function planAgainstTarget(request: SealRequest, deps: SealDeps, kind: "se
   const gate = await checkEngineAndIdentities(engine.previewAdapter(), deps, manifest.engineVersion, admitted.contract, admitted.spec, request.environment, kind);
   if (gate) return gate;
 
+  // Which program makes this preview, and whether qualification evidence stands behind it: read once, before planning, and sealed.
+  const engineBinarySha256 = engine.binarySha256(deps.toolDirs, deps.env ?? process.env);
+  if (engineBinarySha256 === undefined) return refuse("ARTIFACT_INVALID", "The engine program cannot be found or read, so the preview cannot record which program made it.");
+  const backed = await backedQualification(engine.previewAdapter(), deps, manifest.engineVersion, engineBinarySha256, admitted.contract, admitted.spec, request.environment);
+  const provenance: PreviewProvenance = {
+    engineBinarySha256,
+    qualification: backed.ok
+      ? { state: "QUALIFIED", evidenceHash: backed.record.evidenceHash, qualifiedAt: backed.record.qualifiedAt }
+      : { state: "UNQUALIFIED", reason: backed.message },
+  };
+
   // The directory prefix is the one the stale-directory sweep knows.
   const scratch = createPrivateDirectory("alz-preview-", deps.scratchParent);
   let snapshot: ImmutableSnapshot | undefined;
@@ -204,7 +231,7 @@ async function planAgainstTarget(request: SealRequest, deps: SealDeps, kind: "se
     const input = {
       engine, environment: request.environment, target: { ...request.target }, manifest, snapshotPath: snapshot.path, scratchDir: scratch.path,
       channel: request.channel ?? "CLI", env: deps.env ?? process.env, policyVersion: request.policyVersion, engineVersion: manifest.engineVersion,
-      pinned: admitted.contract.targets[request.environment]!, spec: admitted.spec, contractSha256: pilotContractSha256(admitted.contract), sourceCommit, toolDirs: deps.toolDirs, now: deps.now,
+      pinned: admitted.contract.targets[request.environment]!, spec: admitted.spec, contractSha256: pilotContractSha256(admitted.contract), sourceCommit, provenance, toolDirs: deps.toolDirs, now: deps.now,
       embedStateWrite: admitted.contract.embedStateWrite === true,
     };
     // An engine with its own qualification run (CDK: read-only steps, no change set) does that and nothing else.
@@ -315,6 +342,9 @@ export async function runApply(request: ApplyRequest, deps: ApplyDeps): Promise<
     return refuse("SOURCE_CHANGED", "This plan was sealed from product commit " + sealed.sourceCommit.slice(0, 12) + ", but " + running.slice(0, 12) +
       " is running. Nothing was consumed. Apply from the commit that sealed it, or seal and approve a new plan.");
   }
+  // The program that made the preview approvers signed, and no other. Checked before anything is reserved or consumed.
+  const changedBinary = engineBinaryChange(sealed, engine.binarySha256(deps.toolDirs, env));
+  if (changedBinary) return changedBinary;
   if (sealed.environment !== request.environment || !sameTarget(sealed.target, request.target) || sealed.contractSha256 !== pilotContractSha256(contract)) {
     return refuse("ARTIFACT_INVALID", "The sealed plan was sealed for another environment or target, or under another pilot contract.");
   }

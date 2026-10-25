@@ -24,6 +24,8 @@ export type ReviewSummary = {
   counts: ChangeCounts;
   changes: PlanChange[];
   changesOmitted: number;
+  /** Which build tool program made the preview, and whether it was tested on the real cloud (the sealed provenance). */
+  preview: { engineVersion: string; programId: string; qualified: boolean; qualifiedAt?: string; reason?: string };
 };
 /** Why an item is not ready (src/apply/readiness.ts): absent, present but wrong, not yet proven on the real cloud, not usable here, or stopped on purpose. */
 export type ReadinessState = "READY" | "MISSING" | "INVALID" | "UNVERIFIED" | "UNAVAILABLE" | "BLOCKED";
