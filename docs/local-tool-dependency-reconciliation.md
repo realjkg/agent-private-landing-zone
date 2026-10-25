@@ -30,6 +30,18 @@ export ALZ_TOOL_DIRS="$HOME/.alz/tools/terraform/1.16.4"
 ./alz doctor
 ```
 
+### Updating a pinned tool, and what "rollback" means
+
+When `config/tool-pins.json` names a newer version than the one `./alz deps` installed before (for example, the app installed Terraform 1.15.0 and the pin now says 1.16.4), the check says so and `./alz deps` offers **Update to the tested versions**. Everything is a numbered menu choice:
+
+1. The update installs the new pinned version through the same installer as a first install. It downloads into a private file, checks the SHA-256 against the pin, unpacks into a `<version>.partial-<pid>` folder, and renames it into place.
+2. The new copy must then report the pinned version. A copy that fails this check is removed again, so the next run downloads a fresh one.
+3. The earlier version is not touched during any of this. Only after the new version passes its check does `./alz deps` ask whether to remove the earlier one. The default answer is to keep it.
+
+If the update fails at any step (download, checksum, unpack, missing program or version check), the earlier version is byte-for-byte unchanged and still runs, and `./alz deps` says so. Commands that need the tool stay blocked, because this version of the app uses only the pinned version.
+
+**Rollback** therefore means one thing here. The pin, not the person, chooses the active version, and there is no switch to make this app use an earlier tool version. You go back by running an earlier version of the app, whose own pin names the earlier tool version. If you kept that version, the earlier app finds it in `~/.alz/tools` and uses it without a download. If you removed it, the earlier app offers to install it again. An interrupted install or update leaves at most a `.partial-<pid>` folder and a file in `~/.alz/tmp`. Neither is ever treated as an installed version, and the next run installs normally. Each step is written to the private diagnostic log in `~/.alz/logs`, which holds no paths, URLs or secrets.
+
 You may append other reviewed absolute executable directories, separated by colons. Never add writable shared directories, `.`, or arbitrary downloaded binaries. ALZ checks the directory and executable permission bits. `ALZ_TOOL_DIRS` only changes which **approved executables** the runner can locate; it does not enable cloud read, project execution, preview write or ACT permissions.
 
 Other executables are optional and should be installed only if the selected blueprint uses their engine:

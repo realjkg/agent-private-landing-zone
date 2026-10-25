@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, statSync } from "node:fs";
 import { createConnection } from "node:net";
 import { join } from "node:path";
 
@@ -43,6 +43,35 @@ export function installedPath(home: string, tool: ToolId, version: string, binar
   return join(home, ".alz", "tools", tool, version, binary);
 }
 
+/**
+ * The versions of `tool` this app installed, newest first: `~/.alz/tools/<tool>/<version>` folders that hold the binary.
+ * Only real folders count (no link on the way from the home folder), named like a pinned version, so an unfinished
+ * `<version>.partial-<pid>` folder or anything a person put there is never mistaken for an install.
+ */
+export function appInstalledVersions(home: string, tool: ToolId, binary: string): string[] {
+  let dir = home;
+  for (const component of [".alz", "tools", tool]) {
+    dir = join(dir, component);
+    try {
+      const entry = lstatSync(dir);
+      if (entry.isSymbolicLink() || !entry.isDirectory()) return [];
+    } catch { return []; }
+  }
+  const versions = readdirSync(dir).filter((name) => {
+    if (!/^\d+\.\d+\.\d+$/.test(name)) return false;
+    try {
+      const folder = lstatSync(join(dir, name));
+      const file = lstatSync(join(dir, name, binary));
+      return folder.isDirectory() && !folder.isSymbolicLink() && file.isFile();
+    } catch { return false; }
+  });
+  const parts = (version: string) => version.split(".").map(Number);
+  return versions.sort((a, b) => {
+    const [x, y] = [parts(a), parts(b)];
+    return (y[0]! - x[0]!) || (y[1]! - x[1]!) || (y[2]! - x[2]!);
+  });
+}
+
 /** The first executable named `name` on PATH, but never inside the app's own folder (that copy is checked separately). */
 function onPath(name: string, env: NodeJS.ProcessEnv): string | undefined {
   for (const dir of (env.PATH ?? "").split(":").filter(Boolean)) {
@@ -79,13 +108,17 @@ function toolCheck(tool: ToolId, ctx: CheckContext, required: boolean, platform:
   const own = artifact ? installedPath(ctx.home, tool, pin.version, artifact.binary) : undefined;
   const found = own && existsSync(own) ? own : onPath(tool, ctx.env);
   const installable = artifact ? tool : undefined;
+  const previous = artifact ? appInstalledVersions(ctx.home, tool, artifact.binary).filter((version) => version !== pin.version) : [];
+  const update = previous.length > 0
+    ? "Run ./alz deps and choose Update to replace the app's " + TOOL_LABEL[tool] + " " + previous[0] + " with the tested " + pin.version + "."
+    : undefined;
   if (!found) {
     return {
       id: tool, label, required, ok: false, installable,
-      detail: "not found",
-      fix: installable
+      detail: previous.length > 0 ? "not found; this app installed " + previous.join(", ") + " before" : "not found",
+      fix: update ?? (installable
         ? "Run ./alz deps and choose Install to add it to your user folder."
-        : "Install " + TOOL_LABEL[tool] + " " + pin.version + " yourself, then open a new Terminal window.",
+        : "Install " + TOOL_LABEL[tool] + " " + pin.version + " yourself, then open a new Terminal window."),
     };
   }
   const version = TOOL_VERSION_ARGS[tool];
@@ -95,9 +128,9 @@ function toolCheck(tool: ToolId, ctx: CheckContext, required: boolean, platform:
     return {
       id: tool, label, required, ok: false, installable,
       detail: "found " + (reported ?? "an unreadable version") + " at " + found,
-      fix: installable
+      fix: update ?? (installable
         ? "Run ./alz deps and choose Install to add the tested " + TOOL_LABEL[tool] + " " + pin.version + " to your user folder. It will be used before any other copy."
-        : "Install " + TOOL_LABEL[tool] + " " + pin.version + ", the tested version.",
+        : "Install " + TOOL_LABEL[tool] + " " + pin.version + ", the tested version."),
     };
   }
   return { id: tool, label, required, ok: true, detail: "installed at " + found };
