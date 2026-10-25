@@ -31,7 +31,7 @@ The guided wizard automatically follows the initial request for a bounded period
 ./alz account-factory follow adaptcloud-admin .runs/account-factory/REQUEST.proposal.json .runs/account-factory/REQUEST.receipt.json
 ```
 
-A Service Catalog SUCCEEDED record is an authoritative provider completion status; the separate read-back checks the resulting active member account and OU/Control Tower baseline. The account read-back currently **does not independently establish per-account Control Tower enrollment, cost forecasts or production release fitness**. It reports these as unknown rather than pretending a full live environment qualification passed.
+A Service Catalog SUCCEEDED record is an authoritative provider completion status; the separate read-back checks the resulting active member account and OU/Control Tower baseline. The account read-back checks the inherited account-level AWSControlTowerBaseline where observable, but **does not by itself establish the full set of per-account Control Tower controls, cost forecasts or production release fitness**. It reports these as unknown rather than pretending a full live environment qualification passed.
 
 ## Practice-specific prerequisites (no separate ALZ grant)
 
@@ -67,6 +67,22 @@ If you prefer scripted prepare/submit instead of the guided command:
 
 The second command still asks for one final creation confirmation. Receipt/intent names are exclusive to avoid blind retries. Always check Service Catalog if submission is interrupted before trying again.
 
+## AWS-native fidelity and measurable acceleration
+
+This workflow uses **AWS Control Tower Account Factory via AWS Service Catalog `ProvisionProduct`**, the documented native path. It does not create accounts directly through Organizations, configure new Control Tower resources, or deploy Landing Zone Accelerator on AWS (LZA). AWS remains responsible for the actual account-creation and baseline lifecycle. Sources: [AWS Account Factory programmatic provisioning](https://docs.aws.amazon.com/controltower/latest/userguide/automated-provisioning-walkthrough.html), [AWS Control Tower account lifecycle](https://docs.aws.amazon.com/controltower/latest/userguide/accounts.html), and [LZA core pipeline stages](https://docs.aws.amazon.com/solutions/latest/landing-zone-accelerator-on-aws/awsaccelerator-pipeline.html).
+
+Provider-accurate implementation details:
+
+- **Service Catalog schema:** `DescribeProvisioningParameters.ProvisioningArtifactParameters[]` exposes `ParameterKey` directly (not nested in `Parameter`). The builder checks the six Account Factory fields and rejects unexpected required fields and OUs not offered in the actual product's allowed values. See the [AWS CLI output contract](https://docs.aws.amazon.com/cli/latest/reference/servicecatalog/describe-provisioning-parameters.html).
+- **Two AWS names:** `AccountName` is the member-account display name, whereas `ProvisionedProductName` must satisfy the Service Catalog format (no spaces). The builder preserves the customer display name and derives a deterministic valid product-instance name when required. See the [AWS ProvisionProduct API](https://docs.aws.amazon.com/servicecatalog/latest/APIReference/API_ProvisionProduct.html).
+- **Provider lifecycle states:** Service Catalog `RecordDetail.Status` is `CREATED`, `IN_PROGRESS`, `IN_PROGRESS_IN_ERROR`, `SUCCEEDED`, or `FAILED`. A rollback/remediation state (`IN_PROGRESS_IN_ERROR`) is shown explicitly and is never labeled a completed account or retried automatically. Follow-up binds to a `PROVISION_PRODUCT` record. Source: [AWS Service Catalog RecordDetail](https://docs.aws.amazon.com/servicecatalog/latest/APIReference/API_RecordDetail.html).
+- **Enrollment evidence:** a healthy baseline on the parent OU is a prerequisite, not proof the new member account received its child baseline. After the Service Catalog request, the builder reads the member account, parent OU, and account-targeted Control Tower `ListEnabledBaselines --include-children`. If the child is absent, incomplete or drifted, it records a pending state, not a false completion. See the [AWS baseline API examples](https://docs.aws.amazon.com/controltower/latest/userguide/baseline-api-examples.html).
+
+**What is actually accelerated:** one operator intake, live discovery of actual account-factory IDs and eligible OU configuration, a single confirmation, and automatic progress/readback without copying AWS CLI JSON or polling several consoles. This reduces repetitive operator work compared with manually launching a Control Tower account. **It does not accelerate AWS's own asynchronous provisioning service.**
+
+**Comparison with official Landing Zone Accelerator on AWS:** LZA is a separate, broader solution that deploys and maintains multi-account configurations through CDK/CloudFormation and CodePipeline, including networking and security features. ALZ Builder's account-vending flow deliberately reuses an existing Control Tower landing zone; it is not a feature-for-feature replacement for LZA. Do not claim it is faster than LZA or than native Account Factory until real workload-matched measurements exist. Track time to prepare/review/submit, number of manual steps, AWS provider completion time, and time until verified child baseline, with source revision and request evidence. Published reference: [AWS LZA pipeline stages](https://docs.aws.amazon.com/solutions/latest/landing-zone-accelerator-on-aws/awsaccelerator-pipeline.html).
+
+**Qualification:** Offline AWS-shaped tests are not evidence that the owner's Service Catalog portfolio, provisioning artifact and managed OU are available. A read-only `prepare` call against the customer's actual profile is the first AWS integration check. The first real submission requires a unique unused account email and operator confirmation. Do not state a real deployment succeeded before recording Service Catalog and member-account child-baseline evidence.
 ## What this does not change
 
 - The ALZ Browser Operations area provides the four-practice guidance and Account Factory terminal handoffs. Browser-initiated AWS mutations and authenticated `studio.presidio.ai` agent delegation are **not yet integrated** in this PR.

@@ -148,6 +148,7 @@ export type AccountProposal = {
   schema: 2; createdAt: string; expiresAt: string;
   identity: AwsIdentity; orgId: string; ouId: string; ouArn: string; ouName: string;
   landingZoneArn: string; accountName: string; accountEmail: string;
+  provisionedProductName: string;
   environment: AccountEnvironment; requesterPracticeRole: PracticeRole;
   roleClassification: "DECLARED_NOT_AUTHORIZING";
   owner: { email: string; first: string; last: string };
@@ -189,26 +190,44 @@ export async function prepare(intake: Intake, call: AwsCall = awsAdminCall, now 
   if (!/^prod-[a-z0-9]+$/.test(productId) || !/^pa-[a-z0-9]+$/.test(artifactId) ||
       !/^lp(?:v[0-9]+)?-[a-z0-9]+$/.test(pathId))
     throw Error("ACCOUNT_FACTORY_IDENTIFIERS_INVALID");
-  const keys = records((await aws("servicecatalog", "describe-provisioning-parameters",
+  // AWS DescribeProvisioningParameters returns ParameterKey directly on each list item,
+  // NOT within a nested Parameter object. Reflect the actual CLI/API response.
+  const definitions = records((await aws("servicecatalog", "describe-provisioning-parameters",
     "--product-id", productId, "--provisioning-artifact-id", artifactId,
-    "--path-id", pathId)).ProvisioningArtifactParameters)
-    .map(x => String(object(x.Parameter).ParameterKey ?? ""));
+    "--path-id", pathId)).ProvisioningArtifactParameters);
+  const keys = definitions.map(x => String(x.ParameterKey ?? ""));
   const required = ["AccountName", "AccountEmail", "SSOUserEmail", "SSOUserFirstName",
     "SSOUserLastName", "ManagedOrganizationalUnit"];
-  if (!required.every(x => keys.includes(x))) throw Error("ACCOUNT_FACTORY_SCHEMA_UNEXPECTED");
+  if (!required.every(x => keys.includes(x)) ||
+      new Set(keys).size !== keys.length || keys.some(x => !x))
+    throw Error("ACCOUNT_FACTORY_SCHEMA_UNEXPECTED");
+  if (definitions.some(x => !required.includes(String(x.ParameterKey)) &&
+    x.DefaultValue === undefined))
+    throw Error("ACCOUNT_FACTORY_ADDITIONAL_REQUIRED_PARAMETER");
+  const offeredOus = records(definitions).find(x => x.ParameterKey === "ManagedOrganizationalUnit");
+  const allowedOus = object(offeredOus?.ParameterConstraints).AllowedValues;
+  const targetOuValue = String(ou.Name) + " (" + ouId + ")";
+  if (Array.isArray(allowedOus) && allowedOus.length > 0 && !allowedOus.includes(targetOuValue))
+    throw Error("TARGET_OU_NOT_OFFERED_BY_ACCOUNT_FACTORY");
   const parameters = [
     { Key: "AccountName", Value: intake.name },
     { Key: "AccountEmail", Value: intake.email },
     { Key: "SSOUserEmail", Value: intake.ownerEmail },
     { Key: "SSOUserFirstName", Value: intake.ownerFirst },
     { Key: "SSOUserLastName", Value: intake.ownerLast },
-    { Key: "ManagedOrganizationalUnit", Value: String(ou.Name) + " (" + ouId + ")" },
+    { Key: "ManagedOrganizationalUnit", Value: targetOuValue },
   ];
+  // Service Catalog's ProvisionedProductName excludes spaces, unlike the account display
+  // name accepted by Account Factory. Keep both distinct and hash-bound to the request.
+  const provisionedProductName = /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(intake.name)
+    ? intake.name
+    : intake.name.replace(/ +/g, "-") + "-" +
+      hash({ organization: orgId, name: intake.name, email: intake.email }).slice(0, 8);
   const draft = {
     schema: 2 as const, createdAt: now.toISOString(),
     expiresAt: new Date(now.getTime() + 2 * 60 * 60_000).toISOString(),
     identity, orgId, ouId, ouArn, ouName: String(ou.Name), landingZoneArn,
-    accountName: intake.name, accountEmail: intake.email,
+    accountName: intake.name, accountEmail: intake.email, provisionedProductName,
     environment: intake.environment, requesterPracticeRole: intake.practiceRole,
     roleClassification: "DECLARED_NOT_AUTHORIZING" as const,
     owner: { email: intake.ownerEmail, first: intake.ownerFirst, last: intake.ownerLast },
@@ -220,14 +239,17 @@ export async function prepare(intake: Intake, call: AwsCall = awsAdminCall, now 
 }
 export function verifyProposal(proposal: AccountProposal, now = new Date()): string {
   const { proposalHash, status, infrastructureAct, ...draft } = proposal;
-  if (proposal.schema !== 2 || hash(draft) !== proposalHash ||
+  if (proposal.schema !== 2 || status !== "READY_FOR_CONFIRMATION" ||
+    infrastructureAct !== "DISABLED" || hash(draft) !== proposalHash ||
     draft.managementAccount !== draft.identity.Account ||
     draft.region !== REGION || !AWS_REGION.test(draft.region) ||
     !/^\d{12}$/.test(draft.managementAccount) || !/^o-[a-z0-9]{10,32}$/.test(draft.orgId) ||
     !OU_ID.test(draft.ouId) || !String(draft.ouArn).includes(draft.orgId) ||
     !ENVS.includes(draft.environment) || !isPracticeRole(draft.requesterPracticeRole) ||
     draft.roleClassification !== "DECLARED_NOT_AUTHORIZING" ||
-    draft.parameters.length !== 6 || !draft.parameters.some(p =>
+    draft.parameters.length !== 6 ||
+    !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(draft.provisionedProductName) ||
+    !draft.parameters.some(p =>
       p.Key === "ManagedOrganizationalUnit" && p.Value === draft.ouName + " (" + draft.ouId + ")"))
     throw Error("PROPOSAL_TAMPERED_OR_WRONG_TARGET");
   if (Number.isNaN(Date.parse(draft.createdAt)) || Number.isNaN(Date.parse(draft.expiresAt)) ||
@@ -262,7 +284,7 @@ export async function submit(proposal: AccountProposal, profile: string, call: A
     throw Error("ACCOUNT_ALREADY_EXISTS");
   const record = object((await call(profile, ["servicecatalog", "provision-product",
     "--product-id", proposal.productId, "--provisioning-artifact-id", proposal.artifactId,
-    "--path-id", proposal.pathId, "--provisioned-product-name", proposal.accountName,
+    "--path-id", proposal.pathId, "--provisioned-product-name", proposal.provisionedProductName,
     "--provisioning-parameters", JSON.stringify(proposal.parameters),
     "--provision-token", proposal.proposalHash.slice(0, 32)])).RecordDetail);
   if (!/^rec-[a-z0-9]+$/.test(String(record.RecordId ?? "")))
@@ -306,12 +328,27 @@ export async function verifyProvisionedAccount(
   if (!String(ou.Arn ?? "").includes(orgId)) throw Error("ACCOUNT_OU_ORGANIZATION_MISMATCH");
   await healthyLandingZone(profile, call, identity);
   const baseline = await healthyBaseline(profile, call, String(ou.Arn));
+  // AWS reports the baseline inherited by an individual member account as a *child*
+  // EnabledBaseline. The OU's SUCCEEDED parent baseline alone does not prove enrollment.
+  const accountArn = "arn:aws:organizations::" + identity.Account + ":account/" + orgId + "/" + accountId;
+  const children = records((await call(profile, ["controltower", "list-enabled-baselines",
+    "--include-children", "--filter", JSON.stringify({
+      targetIdentifiers: [accountArn], baselineIdentifiers: [baseline],
+    })])).enabledBaselines);
+  const child = children.find(x => x.targetIdentifier === accountArn &&
+    x.baselineIdentifier === baseline);
+  const inheritedStatus = String(object(child?.statusSummary).status ?? "NOT_OBSERVED");
+  const inheritedDrift = String(object(object(object(child?.driftStatusSummary).types).inheritance).status ??
+    "NOT_REPORTED");
+  const childBaselineHealthy = inheritedStatus === "SUCCEEDED" && inheritedDrift !== "DRIFTED";
   return {
     status: "ACCOUNT_ORGANIZATION_AND_OU_VERIFIED" as const,
     accountId, name, organizationId: orgId, managementAccount: identity.Account,
     targetOuId: String(parent.Id), targetOuName: String(ou.Name),
-    baseline, baselineStatus: "SUCCEEDED" as const,
-    controlTowerAccountEnrollment: "NOT_INDEPENDENTLY_CONFIRMED" as const,
+    baseline, ouBaselineStatus: "SUCCEEDED" as const,
+    childBaselineStatus: inheritedStatus, childBaselineDrift: inheritedDrift,
+    controlTowerAccountEnrollment: childBaselineHealthy
+      ? "CHILD_BASELINE_SUCCEEDED" as const : "NOT_INDEPENDENTLY_CONFIRMED" as const,
     infrastructureAct: "DISABLED" as const,
   };
 }
@@ -326,7 +363,8 @@ export async function follow(
       submission.status !== "SUBMITTED") throw Error("REQUEST_RECEIPT_MISMATCH");
   // Checking this request after submission does not require a still-unexpired proposal.
   const { proposalHash, status: _status, infrastructureAct: _act, ...draft } = proposal;
-  if (proposal.schema !== 2 || hash(draft) !== proposalHash)
+  if (proposal.schema !== 2 || _status !== "READY_FOR_CONFIRMATION" ||
+      _act !== "DISABLED" || hash(draft) !== proposalHash)
     throw Error("REQUEST_PROPOSAL_TAMPERED");
   const identity = await verifyAdministrator(profile, call);
   if (identity.Account !== proposal.managementAccount) throw Error("TRACKING_ORGANIZATION_CHANGED");
@@ -338,23 +376,42 @@ export async function follow(
   const pause = options.pause ?? (async (ms: number) =>
     new Promise<void>(resolve => setTimeout(resolve, ms)));
   let providerStatus = "UNKNOWN";
+  let observedAccountId: string | undefined;
   for (let attempt = 0; attempt < maxPolls; attempt++) {
     const current = await status(profile, submission.recordId, call);
     providerStatus = current.providerStatus;
-    if (providerStatus === "FAILED" || providerStatus === "ERROR")
+    if (current.recordType !== "PROVISION_PRODUCT")
+      throw Error("ACCOUNT_FACTORY_RECORD_TYPE_MISMATCH");
+    // These are the statuses defined by AWS Service Catalog RecordDetail, not
+    // invented project states. An error-in-progress may be AWS rollback/remediation.
+    if (!["CREATED", "IN_PROGRESS", "IN_PROGRESS_IN_ERROR", "SUCCEEDED", "FAILED"]
+      .includes(providerStatus))
+      throw Error("ACCOUNT_FACTORY_STATUS_UNRECOGNIZED");
+    if (providerStatus === "FAILED")
       throw Error("ACCOUNT_FACTORY_PROVISIONING_FAILED");
+    if (providerStatus === "IN_PROGRESS_IN_ERROR") {
+      return {
+        status: "AWS_REMEDIATION_IN_PROGRESS" as const,
+        recordId: submission.recordId, providerStatus,
+        environment: proposal.environment, verified: false,
+        next: "Inspect the Service Catalog record errors and AWS rollback; do not resubmit.",
+      };
+    }
     if (providerStatus === "SUCCEEDED") {
       try {
         const result = await verifyProvisionedAccount(
           profile, proposal.accountName, proposal.accountEmail, call);
         if (result.targetOuId !== proposal.ouId)
           throw Error("ACCOUNT_OU_TARGET_MISMATCH");
-        return {
-          ...result,
-          status: "MEMBER_ACCOUNT_VERIFIED" as const,
-          recordId: submission.recordId, providerStatus, environment: proposal.environment,
-          verified: true as const,
-        };
+        observedAccountId = result.accountId;
+        if (result.controlTowerAccountEnrollment === "CHILD_BASELINE_SUCCEEDED") {
+          return {
+            ...result,
+            status: "MEMBER_ACCOUNT_VERIFIED" as const,
+            recordId: submission.recordId, providerStatus, environment: proposal.environment,
+            verified: true as const,
+          };
+        }
       } catch (error) {
         const code = error instanceof Error ? error.message : "READBACK_FAILED";
         if (!["ACCOUNT_NOT_UNIQUELY_IDENTIFIED", "DEDICATED_MEMBER_ACCOUNT_NOT_ACTIVE",
@@ -365,8 +422,9 @@ export async function follow(
     if (attempt < maxPolls - 1) await pause(intervalMs);
   }
   return {
-    status: "PROVISIONING_IN_PROGRESS" as const,
+    status: observedAccountId ? "ACCOUNT_BASELINE_PENDING" as const : "PROVISIONING_IN_PROGRESS" as const,
     recordId: submission.recordId, providerStatus, environment: proposal.environment,
+    ...(observedAccountId ? { accountId: observedAccountId } : {}),
     verified: false, next: "Run account-factory follow with the saved proposal and receipt.",
   };
 }

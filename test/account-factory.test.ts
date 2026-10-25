@@ -60,7 +60,7 @@ function fixture(opts: {
       ProvisioningArtifactParameters: [
         "AccountName", "AccountEmail", "SSOUserEmail", "SSOUserFirstName",
         "SSOUserLastName", "ManagedOrganizationalUnit",
-      ].map(ParameterKey => ({ Parameter: { ParameterKey } })),
+      ].map(ParameterKey => ({ ParameterKey, ParameterType: "String", IsNoEcho: false })),
     },
     "servicecatalog provision-product": {
       RecordDetail: { RecordId: "rec-abc123", ProvisionedProductId: "pp-abc123" },
@@ -76,6 +76,17 @@ function fixture(opts: {
     const override = Object.hasOwn(opts.changes ?? {}, key);
     if (key === "organizations list-organizational-units-for-parent" && !override && args.includes(targetId))
       return { OrganizationalUnits: [] };
+    if (key === "controltower list-enabled-baselines" && !override && args.includes("--include-children"))
+      return { enabledBaselines: [{
+        arn: "arn:aws:controltower:us-east-2:" + management + ":enabledbaseline/XABCDEFGH12345678",
+        baselineIdentifier: baselineArn,
+        targetIdentifier: "arn:aws:organizations::" + management +
+          ":account/" + orgId + "/111111111111",
+        parentIdentifier: "arn:aws:controltower:us-east-2:" + management +
+          ":enabledbaseline/XOUABCDEFG123456",
+        statusSummary: { status: "SUCCEEDED" },
+        driftStatusSummary: { types: { inheritance: { status: "IN_SYNC" } } },
+      }] };
     const response = override ? opts.changes![key] : responses[key];
     if (!response) throw Error("UNEXPECTED_API:" + key);
     return response as Record<string, any>;
@@ -107,12 +118,15 @@ test("discover organization, OU, baseline and modern launch path; proposal makes
   assert.equal(p.environment, "DEV");
   assert.equal(p.pathId, "lpv3-abc123");
   assert.equal(p.status, "READY_FOR_CONFIRMATION");
+  assert.equal(p.provisionedProductName, intake.name);
   assert.equal(p.infrastructureAct, "DISABLED");
   assert.ok(f.calls.every(x => x[1] !== "provision-product"));
   assert.equal(p.parameters.find(x => x.Key === "ManagedOrganizationalUnit")!.Value,
     "Workloads (" + targetId + ")");
   verifyProposal(p);
   assert.throws(() => verifyProposal({ ...p, accountName: "Altered" }), /PROPOSAL_TAMPERED/);
+  assert.throws(() => verifyProposal({ ...p, status: "READY" as never }), /PROPOSAL_TAMPERED/);
+  assert.throws(() => verifyProposal({ ...p, infrastructureAct: "ENABLED" as never }), /PROPOSAL_TAMPERED/);
   assert.throws(() => verifyProposal(p, new Date(Date.now() + 3 * 60 * 60_000)), /PROPOSAL_EXPIRED/);
 });
 test("different management accounts and organizations are discovered rather than hardcoded", async () => {
@@ -122,6 +136,46 @@ test("different management accounts and organizations are discovered rather than
   assert.equal(p.orgId, "o-abcd1234567");
   assert.equal(p.landingZoneArn, other.zoneArn);
   verifyProposal(p);
+});
+test("AWS-shaped ParameterKey entries and account display names with spaces are handled correctly", async () => {
+  const values = ["AccountName", "AccountEmail", "SSOUserEmail", "SSOUserFirstName",
+    "SSOUserLastName", "ManagedOrganizationalUnit"].map(ParameterKey =>
+    ({ ParameterKey, ParameterType: "String", ParameterConstraints: ParameterKey ===
+      "ManagedOrganizationalUnit" ? { AllowedValues: ["Workloads (" + targetId + ")"] } : {} }));
+  const f = fixture({ changes: { "servicecatalog describe-provisioning-parameters": {
+    ProvisioningArtifactParameters: values,
+  } } });
+  const display = "Customer Dev Space";
+  const p = await prepare({ ...intake, name: display }, f.call);
+  assert.equal(p.accountName, display);
+  assert.match(p.provisionedProductName, /^Customer-Dev-Space-[a-f0-9]{8}$/);
+  assert.equal(p.parameters.find(x => x.Key === "AccountName")?.Value, display);
+  const provision = fixture();
+  await submit(p, intake.profile, provision.call);
+  const call = provision.calls.find(x => x[1] === "provision-product")!;
+  assert.equal(call[call.indexOf("--provisioned-product-name") + 1], p.provisionedProductName);
+  assert.doesNotMatch(p.provisionedProductName, / /);
+});
+test("Account Factory refuses AWS product schemas missing real parameters or target OU offerings", async () => {
+  const missing = fixture({ changes: { "servicecatalog describe-provisioning-parameters": {
+    ProvisioningArtifactParameters: [
+      { ParameterKey: "AccountName" }, { ParameterKey: "AccountEmail" },
+    ],
+  } } });
+  await assert.rejects(prepare(intake, missing.call), /ACCOUNT_FACTORY_SCHEMA_UNEXPECTED/);
+  const extra = fixture({ changes: { "servicecatalog describe-provisioning-parameters": {
+    ProvisioningArtifactParameters: ["AccountName", "AccountEmail", "SSOUserEmail",
+      "SSOUserFirstName", "SSOUserLastName", "ManagedOrganizationalUnit",
+      "CustomerMandatoryField"].map(ParameterKey => ({ ParameterKey })),
+  } } });
+  await assert.rejects(prepare(intake, extra.call), /ACCOUNT_FACTORY_ADDITIONAL_REQUIRED_PARAMETER/);
+  const noOu = fixture({ changes: { "servicecatalog describe-provisioning-parameters": {
+    ProvisioningArtifactParameters: ["AccountName", "AccountEmail", "SSOUserEmail",
+      "SSOUserFirstName", "SSOUserLastName", "ManagedOrganizationalUnit"].map(ParameterKey =>
+        ({ ParameterKey, ParameterConstraints: ParameterKey === "ManagedOrganizationalUnit" ?
+          { AllowedValues: ["Sandbox (ou-zzzz-abcdef12)"] } : {} })),
+  } } });
+  await assert.rejects(prepare(intake, noOu.call), /TARGET_OU_NOT_OFFERED_BY_ACCOUNT_FACTORY/);
 });
 test("four practices and DEV QA STAGING PROD all use the same supported workflow", async () => {
   const roles = ["MODERN_PLATFORMS_PRESALES", "MODERN_PLATFORMS_DELIVERY",
@@ -183,18 +237,67 @@ test("independent post-provision readback confirms member/OU but not unobserved 
   const result = await verifyProvisionedAccount(intake.profile, intake.name, intake.email, good.call);
   assert.equal(result.accountId, member);
   assert.equal(result.targetOuId, targetId);
-  assert.equal(result.controlTowerAccountEnrollment, "NOT_INDEPENDENTLY_CONFIRMED");
+  assert.equal(result.controlTowerAccountEnrollment, "CHILD_BASELINE_SUCCEEDED");
+  assert.equal(result.childBaselineStatus, "SUCCEEDED");
   await assert.rejects(verifyProvisionedAccount(intake.profile, intake.name, intake.email,
     fixture({ changes: { "organizations list-parents": { Parents: [] },
       "organizations list-accounts": {
         Accounts: [{ Id: member, Name: intake.name, Email: intake.email, State: "ACTIVE" }],
       } } }).call), /ACCOUNT_NOT_IN_MANAGED_OU/);
 });
+test("account baseline is not marked complete when Control Tower child inheritance is absent or drifted", async () => {
+  const member = "111111111111";
+  const account = { "organizations list-accounts": {
+    Accounts: [{ Id: member, Name: intake.name, Email: intake.email, State: "ACTIVE" }],
+  } };
+  const absent = fixture({ changes: {
+    ...account,
+    "controltower list-enabled-baselines": { enabledBaselines: [
+      { targetIdentifier: "arn:aws:organizations::" + originalManagement +
+          ":ou/" + originalOrg + "/" + targetId,
+        baselineIdentifier: "arn:aws:controltower:us-east-2::baseline/17BSJV3IGJ2QSGA2",
+        statusSummary: { status: "SUCCEEDED" },
+      },
+    ] },
+  } });
+  const result = await verifyProvisionedAccount(intake.profile, intake.name, intake.email, absent.call);
+  assert.equal(result.controlTowerAccountEnrollment, "NOT_INDEPENDENTLY_CONFIRMED");
+  const proposal = await prepare(intake, fixture().call);
+  const receipt = await submit(proposal, intake.profile, fixture().call);
+  const tracked = await follow(intake.profile, proposal, receipt, absent.call,
+    { maxPolls: 1, intervalMs: 0, pause: async () => {} });
+  assert.equal(tracked.status, "ACCOUNT_BASELINE_PENDING");
+  assert.equal(tracked.verified, false);
+  assert.equal(tracked.accountId, member);
+});
 test("Account Factory CLI advertises guided workflow without invoking the cloud", async () => {
   await runCli(["--help"]);
   assert.equal(process.exitCode ?? 0, 0);
 });
 
+test("AWS RecordDetail rollback and record-type mismatch never appear as completed environments", async () => {
+  const proposal = await prepare(intake, fixture().call);
+  const receipt = await submit(proposal, intake.profile, fixture().call);
+  const rollback = fixture({ changes: { "servicecatalog describe-record": {
+    RecordDetail: {
+      RecordId: receipt.recordId, RecordType: "PROVISION_PRODUCT",
+      Status: "IN_PROGRESS_IN_ERROR",
+    },
+  } } });
+  const r = await follow(intake.profile, proposal, receipt, rollback.call,
+    { maxPolls: 1, intervalMs: 0 });
+  assert.equal(r.status, "AWS_REMEDIATION_IN_PROGRESS");
+  assert.equal(r.verified, false);
+  assert.ok(!rollback.calls.some(x => x[1] === "provision-product"));
+  const wrongRecord = fixture({ changes: { "servicecatalog describe-record": {
+    RecordDetail: {
+      RecordId: receipt.recordId, RecordType: "UPDATE_PROVISIONED_PRODUCT",
+      Status: "SUCCEEDED",
+    },
+  } } });
+  await assert.rejects(follow(intake.profile, proposal, receipt, wrongRecord.call,
+    { maxPolls: 1, intervalMs: 0 }), /ACCOUNT_FACTORY_RECORD_TYPE_MISMATCH/);
+});
 test("resumable tracking returns member-account readback without another submission", async () => {
   const proposal = await prepare(intake, fixture().call);
   const receipt = await submit(proposal, intake.profile, fixture().call);
@@ -213,7 +316,7 @@ test("tracking is bounded and remains in progress without claiming success", asy
   const receipt = await submit(p, intake.profile, fixture().call);
   const f = fixture({ changes: {
     "servicecatalog describe-record": {
-      RecordDetail: { RecordId: receipt.recordId, Status: "IN_PROGRESS" },
+      RecordDetail: { RecordId: receipt.recordId, RecordType: "PROVISION_PRODUCT", Status: "IN_PROGRESS" },
     },
   } });
   const result = await follow(intake.profile, p, receipt, f.call,
