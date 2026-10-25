@@ -316,7 +316,7 @@ test("tracking is bounded and remains in progress without claiming success", asy
   const receipt = await submit(p, intake.profile, fixture().call);
   const f = fixture({ changes: {
     "servicecatalog describe-record": {
-      RecordDetail: { RecordId: receipt.recordId, Status: "IN_PROGRESS" },
+      RecordDetail: { RecordId: receipt.recordId, RecordType: "PROVISION_PRODUCT", Status: "IN_PROGRESS" },
     },
   } });
   const result = await follow(intake.profile, p, receipt, f.call,
