@@ -2,6 +2,10 @@
 
 `./alz workspace` starts the local operator console on `127.0.0.1`. Every capability an operator can call from the command line has a matching entry in one typed catalog (`src/operations/`). The console server, the React UI, this table and the parity guard (`test/operations-parity.test.ts`) all read that catalog, so a command cannot exist without a console equivalent.
 
+## Customer environment setup for all practices
+
+Modern Platforms and Digital teams in Presales and Delivery can all use **Create a customer environment** from the existing Operations area. The guide explains the currently signed-in AWS management-account profile, customer account email and administrator details, and selection of DEV, QA, STAGING or PROD. It does not introduce extra ALZ authorization or financial-attestation workflows. AWS itself enforces Account Factory permissions, and one explicit human confirmation precedes actual account creation. The browser cards remain guided terminal handoffs and cannot silently invoke AWS writes. See `docs/account-factory-builder.md`.
+
 ## How an operation is described
 
 Each entry has an id, a one-sentence summary, a family, the exact CLI form, a safety class, a small input schema and the literal evidence basis shown beside results.
@@ -56,6 +60,13 @@ Regenerate with `npm run docs:ops`; a test fails if this table is stale.
 | Evidence and inspection | Live AWS landing zone journey preview | `npx tsx src/cli/lz-live-journey.ts --instruction <text> --engine <terraform\|cdk> --account <dev-account> --region <region> --workspace <reviewed-project> --allow-project-code` | HANDOFF | Guided handoff | REAL LOCAL QWEN/MISTRAL — LIVE AWS DISCOVERY (OIDC) — NATIVE TERRAFORM PLAN OR CDK CHANGE SET PREVIEW, NO APPLY, RELEASE HOLD — WRITES AN ENCRYPTED RECORD UNDER .runs |
 | Evidence and inspection | Terraform validation of the reviewed candidate | `npx tsx src/cli/qualify-aws-terraform-agent.ts --live-models --terraform-validate` | HANDOFF | Guided handoff | REAL LOCAL QWEN/MISTRAL — SYNTHETIC AWS INVENTORY — REAL TERRAFORM CLI, NO APPLY — WRITES AN ENCRYPTED RECORD UNDER .runs |
 | Evidence and inspection | Terraform plan of the reviewed candidate | `npx tsx src/cli/qualify-aws-terraform-agent.ts --live-models --terraform-validate --terraform-plan` | HANDOFF | Guided handoff | REAL LOCAL QWEN/MISTRAL — SYNTHETIC AWS INVENTORY — REAL TERRAFORM CLI, NO APPLY — WRITES AN ENCRYPTED RECORD UNDER .runs |
+| Governance and policy | Guided environment setup | `./alz account-factory create` | HANDOFF | Guided handoff | LIVE AWS ACCOUNT FACTORY — individually signed-in operator and reviewed account request |
+| Governance and policy | Connect existing AWS access | `./alz account-factory inspect` | HANDOFF | Guided handoff | LIVE AWS STS — existing named SSO role, no new IAM role or model credentials |
+| Governance and policy | Plan a customer environment | `./alz account-factory prepare` | HANDOFF | Guided handoff | LIVE AWS — read existing organization, OU, Control Tower and Service Catalog; no cloud change |
+| Governance and policy | Create the reviewed account | `./alz account-factory submit` | HANDOFF | Guided handoff | LIVE AWS ACCOUNT CREATION — one human confirmation, AWS-native permissions, recorded request |
+| Governance and policy | Check environment creation progress | `./alz account-factory status` | HANDOFF | Guided handoff | LIVE SERVICE CATALOG READ — PROVIDER STATUS ONLY; INDEPENDENT ACCOUNT VERIFY STILL REQUIRED |
+| Governance and policy | Follow environment provisioning | `./alz account-factory follow` | HANDOFF | Guided handoff | LIVE AWS STATUS AND READBACK — no repeat submission, member account / OU / baseline validation |
+| Governance and policy | View created member account | `./alz account-factory verify` | HANDOFF | Guided handoff | LIVE AWS ORGANIZATIONS AND CONTROL TOWER — READ-ONLY MEMBER-ACCOUNT CHECK, NOT A PRODUCTION RELEASE CLAIM |
 | Governance and policy | Pilot apply (human-authorized) | `./alz apply <qualify\|seal\|approve\|apply\|status>` | HANDOFF | Guided handoff | HUMAN-AUTHORIZED APPLY OF A SEALED PLAN — PILOT CONTRACT ONLY, ACT DISABLED OTHERWISE — ENCRYPTED EVIDENCE |
 | Governance and policy | Create a recovery target intent | `./alz target init <target-id> <owner> <aws\|azure> <scope-id> <startup\|enterprise> <development\|production> <non-critical\|business\|critical> [--compliance=PACK@1,...]` | HANDOFF | Guided handoff | WRITES config/recovery-intents/<target-id>.json — no cloud, no infrastructure change |
 | Governance and policy | Check a recovery target intent | `./alz target check <intent-file>` | READ_ONLY | Run | LOCAL READ-ONLY CHECK — no model, no cloud, no infrastructure change |

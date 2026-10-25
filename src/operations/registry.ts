@@ -1,4 +1,5 @@
 import { validateCatalog } from "./schema.js";
+import { accountFactoryOperations } from "./families/account-factory.js";
 import { enterpriseOperations } from "./families/enterprise.js";
 import { evidenceOperations } from "./families/evidence.js";
 import { governanceOperations } from "./families/governance.js";
@@ -14,6 +15,7 @@ import { workflowOperations } from "./workflows.js";
  */
 export const OPERATIONS: readonly OperationSpec[] = [
   ...workflowOperations,
+  ...accountFactoryOperations,
   ...evidenceOperations,
   ...governanceOperations,
   ...qualificationOperations,

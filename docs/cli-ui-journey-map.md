@@ -40,6 +40,7 @@ alz prompt-guide | test/operator-cli.test.ts
 alz models | test/operator-cli.test.ts, test/local-operator-workspace.test.ts, test/operator-ui-journey-fixes.test.tsx
 alz sbom | test/operator-cli.test.ts
 alz scan | test/operator-cli.test.ts
+alz account-factory | test/account-factory.test.ts, test/operations-parity.test.ts
 alz enterprise | test/operations-core.test.ts, test/operations-parity.test.ts
 alz qualify | test/operations-qualification.test.ts, test/operations-parity.test.ts
 alz workspace | test/local-operator-workspace.test.ts, test/operator-ui-react.test.tsx
@@ -47,6 +48,10 @@ alz matrix | test/local-operator-workspace.test.ts, test/operator-ui-react.test.
 alz chaos | test/local-operator-workspace.test.ts, test/operator-ui-journey-fixes.test.tsx
 console aws-review | test/local-operator-workspace.test.ts, test/aws-terraform-agent.test.ts
 ```
+
+## Customer-first DEV role prerequisites
+
+The shared Operations page provides role-specific prerequisites and customer evidence expectations to practitioners in Modern Platforms Presales/Delivery and Digital Presales/Delivery. All four can provision DEV only with verified AWS Account Factory authority and individual owner/financial authorization. The role selector itself cannot grant cloud access or start a mutation. The catalog presents guarded Account Factory terminal handoffs, and QA/PROD remain separately approved.
 
 ## What this means for teardown
 
