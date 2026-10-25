@@ -1,0 +1,131 @@
+import { parseAwsTaggedResources } from "../teardown/readers.js";
+import { ALZ_TAG_KEYS } from "../teardown/unit.js";
+import type { Blueprint, BlueprintEntry } from "./blueprint.js";
+
+/**
+ * Independent verification of a blueprint against AWS (docs/observe-and-cleanup.md).
+ *
+ * It shares nothing with the engine: it asks the AWS Cloud Control API, read-only (`cloudcontrol get-resource`), whether
+ * each resource exists under the identifier the state recorded, and it lists the resources tagged with the run's deletion
+ * unit to find any the blueprint does not name. The caller runs the AWS CLI under the read-only DISCOVERY identity. Only
+ * existence is recorded, never a property the cloud returns.
+ *
+ * The same check answers both questions the journey asks: after an apply, is everything planned there (PRESENT); after
+ * cleanup, is everything deleted gone (ABSENT).
+ */
+
+/** How Cloud Control names a Terraform resource type: its CloudFormation type, and which state identifier is its primary identifier. */
+export const CLOUD_CONTROL_TYPES: Readonly<Record<string, { typeName: string; identifier: "id" | "arn" }>> = {
+  aws_cloudwatch_log_group: { typeName: "AWS::Logs::LogGroup", identifier: "id" },
+  aws_s3_bucket: { typeName: "AWS::S3::Bucket", identifier: "id" },
+  aws_iam_role: { typeName: "AWS::IAM::Role", identifier: "id" },
+  aws_iam_openid_connect_provider: { typeName: "AWS::IAM::OIDCProvider", identifier: "arn" },
+  aws_sns_topic: { typeName: "AWS::SNS::Topic", identifier: "arn" },
+  aws_sqs_queue: { typeName: "AWS::SQS::Queue", identifier: "id" },
+  aws_kms_key: { typeName: "AWS::KMS::Key", identifier: "id" },
+  aws_dynamodb_table: { typeName: "AWS::DynamoDB::Table", identifier: "id" },
+  aws_lambda_function: { typeName: "AWS::Lambda::Function", identifier: "id" },
+  aws_vpc: { typeName: "AWS::EC2::VPC", identifier: "id" },
+  aws_subnet: { typeName: "AWS::EC2::Subnet", identifier: "id" },
+  aws_security_group: { typeName: "AWS::EC2::SecurityGroup", identifier: "id" },
+};
+
+/** One AWS CLI call. The caller supplies it, bound to the DISCOVERY identity and the bounded runner. */
+export type AwsCli = (argv: readonly string[]) => Promise<{ code: number; stdout: string; stderr: string }>;
+
+export type Existence = "PRESENT" | "ABSENT" | "UNKNOWN" | "NOT_CHECKABLE";
+export type ResourceCheck = {
+  address: string;
+  type: string;
+  /** The identifier the check used, or null when there was none to use. */
+  identifier: string | null;
+  existence: Existence;
+  /** Why the check could not decide: an error class, never the cloud's message. */
+  reason?: string;
+};
+export type ObserveVerdict = "VERIFIED" | "PARTIAL" | "INCONCLUSIVE" | "FAILED";
+export type ObserveReport = {
+  verdict: ObserveVerdict;
+  checks: ResourceCheck[];
+  /** Planned addresses the state does not hold (from the blueprint). */
+  missingFromState: string[];
+  /** ARNs tagged with this run's unit that the blueprint does not name. */
+  unexpected: string[];
+  /**
+   * COMPLETE: the tag listing covered every page. INCOMPLETE: it was paginated or failed, so it cannot prove there is
+   * nothing unexpected. NOT_AVAILABLE: the run's resources carry no deletion-unit tag, so there is nothing to list by.
+   */
+  inventory: "COMPLETE" | "INCOMPLETE" | "NOT_AVAILABLE";
+  verifier: "AWS_CLOUD_CONTROL";
+};
+
+const ERROR_CLASSES: readonly [RegExp, string][] = [
+  [/AccessDenied|UnauthorizedOperation|not authorized/i, "ACCESS_DENIED"],
+  [/Throttl|TooManyRequests|RequestLimitExceeded/i, "THROTTLED"],
+  [/ExpiredToken|InvalidClientTokenId|UnrecognizedClient|Unable to locate credentials/i, "CREDENTIALS"],
+  [/UnsupportedAction|TypeNotFound/i, "TYPE_NOT_SUPPORTED"],
+];
+const errorClass = (stderr: string): string => ERROR_CLASSES.find(([pattern]) => pattern.test(stderr))?.[1] ?? "CLI_ERROR";
+
+/** Whether one blueprint entry exists in AWS. */
+export async function checkResource(entry: BlueprintEntry, region: string, aws: AwsCli): Promise<ResourceCheck> {
+  const base = { address: entry.address, type: entry.type };
+  const mapping = CLOUD_CONTROL_TYPES[entry.type];
+  if (!mapping) return { ...base, identifier: entry.arn ?? entry.id, existence: "NOT_CHECKABLE", reason: "NO_CLOUD_CONTROL_MAPPING" };
+  const identifier = mapping.identifier === "arn" ? entry.arn : entry.id;
+  if (identifier === null) return { ...base, identifier: null, existence: "NOT_CHECKABLE", reason: "NO_IDENTIFIER_IN_STATE" };
+  let result: Awaited<ReturnType<AwsCli>>;
+  try {
+    result = await aws(["cloudcontrol", "get-resource", "--type-name", mapping.typeName, "--identifier", identifier, "--region", region, "--output", "json"]);
+  } catch {
+    return { ...base, identifier, existence: "UNKNOWN", reason: "CLI_NOT_RUN" };
+  }
+  if (result.code === 0) {
+    try {
+      const body = JSON.parse(result.stdout) as { ResourceDescription?: { Identifier?: unknown } };
+      if (body.ResourceDescription?.Identifier === identifier) return { ...base, identifier, existence: "PRESENT" };
+    } catch { /* falls through: an answer that does not name the resource proves nothing */ }
+    return { ...base, identifier, existence: "UNKNOWN", reason: "UNEXPECTED_RESPONSE" };
+  }
+  if (/ResourceNotFoundException/.test(result.stderr)) return { ...base, identifier, existence: "ABSENT" };
+  return { ...base, identifier, existence: "UNKNOWN", reason: errorClass(result.stderr) };
+}
+
+/** ARNs carrying this unit's tag that the blueprint does not name, and whether the listing was complete. */
+export async function unexpectedTagged(blueprint: Blueprint, unitId: string, region: string, aws: AwsCli):
+  Promise<{ unexpected: string[]; complete: boolean }> {
+  try {
+    const result = await aws(["resourcegroupstaggingapi", "get-resources", "--tag-filters", "Key=" + ALZ_TAG_KEYS.unit + ",Values=" + unitId,
+      "--region", region, "--output", "json"]);
+    if (result.code !== 0) return { unexpected: [], complete: false };
+    const inventory = parseAwsTaggedResources(result.stdout);
+    const known = new Set(blueprint.entries.flatMap((entry) => [entry.arn, entry.id]).filter((x): x is string => x !== null));
+    const unexpected = inventory.resources.map((resource) => resource.resourceId).filter((arn) => !known.has(arn)).sort();
+    return { unexpected, complete: inventory.complete };
+  } catch {
+    return { unexpected: [], complete: false };
+  }
+}
+
+/**
+ * After an apply: is every resource the plan left in the state really there, and is nothing else carrying this run's tag?
+ *
+ * VERIFIED: every entry is PRESENT, nothing planned is missing, nothing unexpected, and the listing was complete.
+ * PARTIAL: as VERIFIED, except some resource types cannot be checked independently (they are named, not assumed), or the
+ * run carries no unit tag, so nothing outside the state can be looked for.
+ * INCONCLUSIVE: a check could not decide (access, throttling, an incomplete listing), and nothing is known to be wrong.
+ * FAILED: something planned is absent or missing from the state, or an unexpected resource carries the tag.
+ */
+export async function observeBlueprint(blueprint: Blueprint, input: { unitId: string | null; region: string; aws: AwsCli }): Promise<ObserveReport> {
+  const checks: ResourceCheck[] = [];
+  for (const entry of blueprint.entries) checks.push(await checkResource(entry, input.region, input.aws));
+  const listed = input.unitId === null ? null : await unexpectedTagged(blueprint, input.unitId, input.region, input.aws);
+  const inventory = listed === null ? "NOT_AVAILABLE" : listed.complete ? "COMPLETE" : "INCOMPLETE";
+  const unexpected = listed?.unexpected ?? [];
+  const has = (existence: Existence) => checks.some((check) => check.existence === existence);
+  const verdict: ObserveVerdict =
+    has("ABSENT") || blueprint.missing.length > 0 || unexpected.length > 0 ? "FAILED"
+    : has("UNKNOWN") || inventory === "INCOMPLETE" ? "INCONCLUSIVE"
+    : has("NOT_CHECKABLE") || inventory === "NOT_AVAILABLE" ? "PARTIAL" : "VERIFIED";
+  return { verdict, checks, missingFromState: [...blueprint.missing], unexpected, inventory, verifier: "AWS_CLOUD_CONTROL" };
+}
