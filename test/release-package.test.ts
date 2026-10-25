@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { BRAND_FINGERPRINT, BRAND_PROVENANCE, matchesBrandProvenance } from "../src/brand/identity.js";
 import {
   mkdtemp,
   mkdir,
@@ -26,6 +27,47 @@ import {
 
 const hash =
   sha256Buffer("fixture");
+test("upstream brand is embedded in every new MIT release manifest", () => {
+  const manifest = createReleaseManifest({
+    productVersion: "1.0.0",
+    sourceCommit: "a".repeat(40),
+    files: [{ path: "dist/cli/operator.js", sha256: hash }],
+    sbomPath: "sbom.cdx.json",
+    sbomSha256: hash,
+  });
+  assert.equal(manifest.brand?.originalAuthor, "JK Gonzalez");
+  assert.equal(manifest.brand?.productMark, "Sovereign ALZ®");
+  assert.equal(manifest.brand?.copyrightHolder, "Adapt Cloud");
+  assert.equal(manifest.brand?.softwareLicense, "MIT");
+  assert.equal(manifest.brand?.fingerprintSha256, BRAND_FINGERPRINT);
+  assert.match(BRAND_FINGERPRINT, /^[a-f0-9]{64}$/);
+  assert.equal(matchesBrandProvenance(BRAND_PROVENANCE), true);
+  assert.deepEqual(validateReleaseManifest(manifest), []);
+});
+
+test("modified or incomplete embedded origin declaration fails verification", () => {
+  const manifest = createReleaseManifest({
+    productVersion: "1.0.0",
+    sourceCommit: "a".repeat(40),
+    files: [{ path: "dist/cli/operator.js", sha256: hash }],
+    sbomPath: "sbom.cdx.json",
+    sbomSha256: hash,
+  });
+  const changed = {
+    ...manifest,
+    brand: { ...BRAND_PROVENANCE, originalAuthor: "unattributed" } as unknown as typeof BRAND_PROVENANCE,
+  };
+  assert.match(validateReleaseManifest(changed).join(" "), /origin attribution fingerprint/i);
+  const incomplete = {
+    ...manifest,
+    brand: { originalAuthor: "JK Gonzalez" } as unknown as typeof BRAND_PROVENANCE,
+  };
+  assert.match(validateReleaseManifest(incomplete).join(" "), /origin attribution fingerprint/i);
+  // Historic schema-v1 manifests remain readable, but new artifacts always carry a fingerprint.
+  const legacy = { ...manifest, brand: undefined };
+  assert.deepEqual(validateReleaseManifest(legacy), []);
+});
+
 
 test("release manifest binds version provenance SBOM and Preview Operate contract", () => {
   const manifest =
