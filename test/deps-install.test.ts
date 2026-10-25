@@ -1,15 +1,17 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, createReadStream, createWriteStream, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import test from "node:test";
+import { createZstdCompress } from "node:zlib";
 
 import { installedPath } from "../src/deps/checks.js";
 import { InstallError, installTool } from "../src/deps/install.js";
-import { loadToolPins, type ToolPins } from "../src/deps/pins.js";
+import { loadToolPins, platformKey, type ToolPins } from "../src/deps/pins.js";
 
 // Installs run against a local archive the test builds, never the network. A wrong checksum must leave no install behind.
 
@@ -102,14 +104,15 @@ test("a pinned checksum is the only one accepted: a correct archive with the wro
   assert.ok(!existsSync(installedPath(home, "ollama", "0.40.0", "ollama")));
 });
 
-test("platforms without a pinned download are refused, and the shipped pins name exactly the two Mac types", async () => {
+test("platforms without a pinned download are refused, and the shipped pins name exactly the six supported platforms", async () => {
   const pins = loadToolPins();
   await assert.rejects(
-    installTool("ollama", { pins, home: root, platform: "linux-x64" as never, download: fetchFrom("/nonexistent") }),
+    installTool("ollama", { pins, home: root, platform: "sunos-x64" as never, download: fetchFrom("/nonexistent") }),
     (error: unknown) => error instanceof InstallError && error.code === "INSTALL_NO_ARTIFACT",
   );
   for (const tool of ["terraform", "ollama"] as const) {
-    assert.deepEqual(Object.keys(pins.tools[tool].artifacts).sort(), ["darwin-arm64", "darwin-x64"], tool);
+    assert.deepEqual(Object.keys(pins.tools[tool].artifacts).sort(),
+      ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win32-arm64", "win32-x64"], tool);
     for (const artifact of Object.values(pins.tools[tool].artifacts)) {
       assert.match(artifact!.sha256, /^[0-9a-f]{64}$/);
       assert.ok(artifact!.url.startsWith("https://"));
@@ -124,6 +127,15 @@ test("the shipped pins match the vendors' published checksums, and a malformed p
   assert.equal(pins.tools.terraform.artifacts["darwin-arm64"]!.sha256, "42cfdf97ad722f79085fe2279b06d4b8680172de3534b22eeddd9a0fbbe7b8f1");
   assert.equal(pins.tools.terraform.artifacts["darwin-x64"]!.sha256, "2ee4b62064086e4b24b0d6cf2e61718fbaf0556feba990f708a5e32557554b3b");
   assert.equal(pins.tools.ollama.artifacts["darwin-arm64"]!.sha256, "b490b4925a95c5f3dfcd889e566cf3dcd727848d59057fb00b03f1d6630326dc");
+  // Linux and Windows values are the vendors' published SHA256SUMS entries for the same versions.
+  assert.equal(pins.tools.terraform.artifacts["linux-x64"]!.sha256, "dc94af0eef1147718ad7c8daea792ed199e3e0492eec180d0adafa2a65a879df");
+  assert.equal(pins.tools.terraform.artifacts["linux-arm64"]!.sha256, "8263f301cb1a24489a4adeed147bf28504053f77237b3ea97a0ef2972659de30");
+  assert.equal(pins.tools.terraform.artifacts["win32-x64"]!.sha256, "5c736ed6b0f13e98bc5029fe159574cca33634c3477466c56442c28b513a7054");
+  assert.equal(pins.tools.terraform.artifacts["win32-arm64"]!.sha256, "ee984c4416d5592debc6e314f931adb222ca445b8ab23ce756c777225389e9f6");
+  assert.equal(pins.tools.ollama.artifacts["linux-x64"]!.sha256, "c94aa4156b3d13e64ebc2efe5ea53f015384c882be776e6695cfb37fb180d5ad");
+  assert.equal(pins.tools.ollama.artifacts["linux-arm64"]!.sha256, "4d27cb1d8f46176a3c0ce10aea2a16e4ad73dfe1599f2ed13468f29e5b8aba0d");
+  assert.equal(pins.tools.ollama.artifacts["win32-x64"]!.sha256, "3623e256762ca89bd6fa99b0cc4106401919ce9df926411673e632e3ea287bb5");
+  assert.equal(pins.tools.ollama.artifacts["win32-arm64"]!.sha256, "18eec8eeb6a1193b998b09c9aed2668b1b360663edf31ccf061c07a09f7bcb25");
   const bad = join(root, "bad-pins.json");
   const good = JSON.parse(readFileSync("config/tool-pins.json", "utf8"));
   good.tools.ollama.artifacts["darwin-arm64"].sha256 = "not-a-hash";
@@ -134,4 +146,36 @@ test("the shipped pins match the vendors' published checksums, and a malformed p
   writeFileSync(bad, JSON.stringify(good));
   assert.throws(() => loadToolPins(bad), /TOOL_PIN_INVALID/);
   chmodSync(bad, 0o600);
+});
+
+test("platform keys cover macOS, Linux and Windows on x64 and arm64, and nothing else", () => {
+  assert.equal(platformKey("darwin", "arm64"), "darwin-arm64");
+  assert.equal(platformKey("linux", "x64"), "linux-x64");
+  assert.equal(platformKey("linux", "arm64"), "linux-arm64");
+  assert.equal(platformKey("win32", "x64"), "win32-x64");
+  assert.equal(platformKey("win32", "arm64"), "win32-arm64");
+  assert.equal(platformKey("freebsd", "x64"), undefined);
+  assert.equal(platformKey("linux", "ia32"), undefined);
+});
+
+test("a tar.zst archive installs through Node's zstd support, and its binary keeps its folder", async () => {
+  const source = join(root, "src-zst");
+  mkdirSync(join(source, "bin"), { recursive: true });
+  writeFileSync(join(source, "bin", "ollama"), "#!/bin/sh\necho 'ollama version is 0.40.0 zst'\n");
+  chmodSync(join(source, "bin", "ollama"), 0o755);
+  const tarFile = join(root, "zst.tar");
+  execFileSync("tar", ["-cf", tarFile, "-C", source, "bin"]);
+  const file = join(root, "zst.tar.zst");
+  await pipeline(createReadStream(tarFile), createZstdCompress(), createWriteStream(file));
+  const sha256 = createHash("sha256").update(readFileSync(file)).digest("hex");
+
+  const pins = loadToolPins();
+  pins.tools.ollama.artifacts["darwin-arm64"] = {
+    url: "https://github.com/ollama/ollama/releases/download/v0.40.0/zst-fixture.tar.zst", sha256, archive: "tar.zst", binary: "bin/ollama",
+  };
+  const home = join(root, "zst-home");
+  const installed = await installTool("ollama", { pins, home, platform: "darwin-arm64", download: fetchFrom(file) });
+  assert.equal(installed.reused, false);
+  assert.ok(existsSync(installed.path), "the binary is in the install folder");
+  assert.ok(!existsSync(file + ".tar"), "the intermediate tar is removed");
 });

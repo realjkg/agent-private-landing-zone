@@ -7,8 +7,8 @@ import { fileURLToPath } from "node:url";
  * named here with its exact URL and SHA-256; nothing else is ever downloaded.
  */
 export type ToolId = "terraform" | "ollama";
-export type Platform = "darwin-arm64" | "darwin-x64";
-export type Artifact = { url: string; sha256: string; archive: "zip" | "tgz"; binary: string };
+export type Platform = "darwin-arm64" | "darwin-x64" | "linux-x64" | "linux-arm64" | "win32-x64" | "win32-arm64";
+export type Artifact = { url: string; sha256: string; archive: "zip" | "tgz" | "tar.zst"; binary: string };
 export type ToolPin = { version: string; checksumSource: string; tested: string[]; artifacts: Partial<Record<Platform, Artifact>> };
 export type ToolPins = {
   schemaVersion: 1;
@@ -30,7 +30,7 @@ export function loadToolPins(path: string = DEFAULT_PINS): ToolPins {
     const pin = raw.tools?.[tool];
     if (!pin || !/^\d+\.\d+\.\d+$/.test(pin.version)) throw new Error("TOOL_PIN_INVALID: " + tool);
     for (const [platform, artifact] of Object.entries(pin.artifacts)) {
-      if (!artifact || !HTTPS.test(artifact.url) || !HEX64.test(artifact.sha256) || !["zip", "tgz"].includes(artifact.archive) || !artifact.binary) {
+      if (!artifact || !HTTPS.test(artifact.url) || !HEX64.test(artifact.sha256) || !["zip", "tgz", "tar.zst"].includes(artifact.archive) || !artifact.binary) {
         throw new Error("TOOL_PIN_INVALID: " + tool + " " + platform);
       }
     }
@@ -39,10 +39,16 @@ export function loadToolPins(path: string = DEFAULT_PINS): ToolPins {
   return raw;
 }
 
+const PLATFORM_KEYS: Record<string, Platform> = {
+  "darwin-arm64": "darwin-arm64",
+  "darwin-x64": "darwin-x64",
+  "linux-arm64": "linux-arm64",
+  "linux-x64": "linux-x64",
+  "win32-arm64": "win32-arm64",
+  "win32-x64": "win32-x64",
+};
+
 /** The platform key a pin is looked up by, or undefined where ./alz deps installs nothing automatically. */
 export function platformKey(platform: string = process.platform, arch: string = process.arch): Platform | undefined {
-  if (platform !== "darwin") return undefined;
-  if (arch === "arm64") return "darwin-arm64";
-  if (arch === "x64") return "darwin-x64";
-  return undefined;
+  return PLATFORM_KEYS[platform + "-" + arch];
 }

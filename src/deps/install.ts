@@ -1,9 +1,10 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, createWriteStream, existsSync, mkdirSync, renameSync, rmSync, statSync } from "node:fs";
+import { chmodSync, createReadStream, createWriteStream, existsSync, mkdirSync, renameSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import { createZstdDecompress } from "node:zlib";
 
 import { installedPath } from "./checks.js";
 import { type Artifact, type Platform, type ToolId, type ToolPins } from "./pins.js";
@@ -51,10 +52,25 @@ async function fetchTo(file: string, source: Readable): Promise<string> {
   return hash.digest("hex");
 }
 
-function unpack(archive: Artifact["archive"], file: string, into: string): void {
+async function unpack(archive: Artifact["archive"], file: string, into: string): Promise<void> {
   try {
-    if (archive === "tgz") execFileSync("tar", ["-xzf", file, "-C", into], { stdio: "ignore" });
-    else execFileSync("unzip", ["-q", "-o", file, "-d", into], { stdio: "ignore" });
+    if (archive === "tgz") {
+      execFileSync("tar", ["-xzf", file, "-C", into], { stdio: "ignore" });
+    } else if (archive === "tar.zst") {
+      // Node decompresses the zstd stream; the plain tar that follows ships with macOS, Linux and Windows 10 and later.
+      const tarFile = file + ".tar";
+      try {
+        await pipeline(createReadStream(file), createZstdDecompress(), createWriteStream(tarFile, { mode: 0o600 }));
+        execFileSync("tar", ["-xf", tarFile, "-C", into], { stdio: "ignore" });
+      } finally {
+        rmSync(tarFile, { force: true });
+      }
+    } else if (process.platform === "win32") {
+      // Windows has no unzip; its built-in tar reads zip archives.
+      execFileSync("tar", ["-xf", file, "-C", into], { stdio: "ignore" });
+    } else {
+      execFileSync("unzip", ["-q", "-o", file, "-d", into], { stdio: "ignore" });
+    }
   } catch {
     throw new InstallError("INSTALL_UNPACK_FAILED", "The archive could not be unpacked.");
   }
@@ -64,7 +80,7 @@ function unpack(archive: Artifact["archive"], file: string, into: string): void 
 export async function installTool(tool: ToolId, opts: InstallOptions): Promise<InstalledTool> {
   const pin = opts.pins.tools[tool];
   const artifact = pin.artifacts[opts.platform];
-  if (!artifact) throw new InstallError("INSTALL_NO_ARTIFACT", "No pinned " + tool + " download exists for this Mac type.");
+  if (!artifact) throw new InstallError("INSTALL_NO_ARTIFACT", "No pinned " + tool + " download exists for this computer type.");
   const finalBinary = installedPath(opts.home, tool, pin.version, artifact.binary);
   if (existsSync(finalBinary)) {
     return { tool, version: pin.version, path: finalBinary, sha256: artifact.sha256, reused: true };
@@ -91,7 +107,7 @@ export async function installTool(tool: ToolId, opts: InstallOptions): Promise<I
         "The download does not match the pinned checksum, so nothing was installed. Do not retry on another network without asking the project owner.");
     }
     mkdirSync(partial, { recursive: true, mode: 0o700 });
-    unpack(artifact.archive, archiveFile, partial);
+    await unpack(artifact.archive, archiveFile, partial);
     const partialBinary = join(partial, artifact.binary);
     if (!existsSync(partialBinary) || !statSync(partialBinary).isFile()) {
       throw new InstallError("INSTALL_BINARY_MISSING", "The archive did not contain " + artifact.binary + ".");
