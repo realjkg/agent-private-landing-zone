@@ -12,6 +12,7 @@ import {
   join,
 } from "node:path";
 import test from "node:test";
+import { BRAND_PROVENANCE } from "../src/brand/identity.js";
 
 import {
   createReleaseManifest,
@@ -93,7 +94,7 @@ test("release manifest binds version provenance SBOM and Preview Operate contrac
 test("JK Gonzalez source identity fingerprint is deterministic and rejects tampering", () => {
   const origin = releaseSourceOrigin();
   assert.equal(origin.author, "JK Gonzalez");
-  assert.equal(origin.trademark, "Sovereign ALZ™");
+  assert.equal(origin.trademark, "Sovereign ALZ®");
   assert.equal(origin.trademarkClaimant, "JK Gonzalez");
   assert.equal(origin.license, "MIT");
   assert.equal(origin.repository, "realjkg/agent-private-landing-zone");
@@ -116,6 +117,26 @@ test("JK Gonzalez source identity fingerprint is deterministic and rejects tampe
   });
   assert.equal(manifest.schemaVersion, 1);
   assert.deepEqual(validateReleaseManifest(manifest), []);
+});
+
+test("compatibility origin agrees with packaged brand and rejects the superseded mark", () => {
+  const origin = releaseSourceOrigin();
+  assert.equal(origin.author, BRAND_PROVENANCE.originalAuthor);
+  assert.equal(origin.trademark, BRAND_PROVENANCE.productMark);
+  assert.equal(origin.license, BRAND_PROVENANCE.softwareLicense);
+  assert.equal("https://github.com/" + origin.repository, BRAND_PROVENANCE.sourceRepository);
+  assert.equal(BRAND_PROVENANCE.registrationBasis, "OWNER_ATTESTED_REGISTERED");
+  assert.equal(BRAND_PROVENANCE.copyrightHolder, "Adapt Cloud");
+
+  const { identitySha256: _fingerprint, ...record } = origin;
+  const stale = { ...record, trademark: "Sovereign ALZ™" };
+  // A self-consistent checksum cannot make an obsolete identity authoritative.
+  assert.equal(validReleaseSourceOrigin({
+    ...stale, identitySha256: sha256Buffer(JSON.stringify(stale)),
+  }), false);
+  assert.equal(validReleaseSourceOrigin({
+    ...origin, identitySha256: BRAND_PROVENANCE.fingerprintSha256,
+  }), false);
 });
 
 test("release manifest rejects invalid provenance and file evidence", () => {

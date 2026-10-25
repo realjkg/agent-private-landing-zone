@@ -1,11 +1,11 @@
 # Trademarks and open-source use
 
-**Sovereign ALZ™** is a trademark claimed by JK Gonzalez, the original author
-of the Sovereign Agent Private Landing Zone accelerator. The claimant reports
-that a trademark application has been filed. This notice does **not** assert
-that registration has been granted or that a particular jurisdiction, serial
-number, or class has been independently verified. Do not use the registered
-symbol (®) unless registration is established.
+**Sovereign ALZ®** is the product mark designated by the owner, who identifies
+JK Gonzalez as the original author and asserts registered status. The canonical
+record in `src/brand/identity.ts` labels this `OWNER_ATTESTED_REGISTERED`.
+This records the owner's assertion; the repository does not independently
+verify a registry certificate, jurisdiction, registration number or class.
+See [the canonical attribution notice](docs/trademark-and-attribution.md).
 
 The software is distributed under the MIT license. Any strategic services
 provider may use, adapt, distribute, and commercially provide services based on

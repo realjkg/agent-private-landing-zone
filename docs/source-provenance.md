@@ -1,20 +1,32 @@
 # Source identity, digital fingerprint and provider reuse
 
 The original author of the Sovereign Agent Private Landing Zone accelerator is
-**JK Gonzalez**. The claimed project mark is **Sovereign ALZ™**. The trademark
-claimant reports a filing; this document does not assert registration.
+**JK Gonzalez**. The product mark is **Sovereign ALZ®**, with registered status
+asserted by the owner (`OWNER_ATTESTED_REGISTERED`), not independently verified
+by this repository. See [the canonical notice](trademark-and-attribution.md).
 
 ## Source-level identity
 
-`src/release/provenance.ts` holds a stable, public source-identity record:
+`src/brand/identity.ts` is the single canonical identity declaration.
+`src/release/provenance.ts` preserves the existing compatibility interface and
+derives its author, mark, license and repository fields from that declaration:
 
 - original author: JK Gonzalez
-- project mark and claimant: Sovereign ALZ™ / JK Gonzalez
+- project mark and claimant: Sovereign ALZ® / JK Gonzalez (owner assertion)
 - license: MIT
 - canonical source repository: realjkg/agent-private-landing-zone
 
 `SOVEREIGN_ALZ_ORIGIN_SHA256` is the SHA-256 hash of the canonical JSON record.
 It identifies the *declared origin*, not the unique bytes of a release.
+The canonical `BRAND_FINGERPRINT` uses its separate versioned brand payload;
+the two digests are not interchangeable. New packages also include the canonical
+`brand-provenance.json` in the release manifest's file inventory.
+
+Reconciling the older compatibility record's mark from ™ to ® changes its
+identity digest. The validator requires the current record and rejects the old
+mark even with a matching old checksum. This does not rewrite historical
+artifacts: schema-v1 release manifests continue to verify their recorded bytes.
+The canonical brand record, its fingerprint and the release schema are unchanged.
 
 The existing release-manifest schema remains **version 1**. During the
 TypeScript build, `src/release/provenance.ts` emits
