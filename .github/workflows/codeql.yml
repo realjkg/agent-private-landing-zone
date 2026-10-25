@@ -14,6 +14,7 @@ on:
       - "src/apply/**"
       - "src/actions/**"
       - "src/identity/**"
+      - "src/qualification/lz-live-journey.ts"
       - "src/integrations/ai-studio/operations-mcp-http.ts"
       - "security/**"
       - "package.json"

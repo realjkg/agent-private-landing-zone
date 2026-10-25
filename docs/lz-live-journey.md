@@ -47,3 +47,30 @@ Only `REVIEW_REQUIRED` can result from all gates completing. A partially execute
 Important limitations: this runner automatically invokes **existing model orchestration, AWS discovery and native IaC preview interfaces**, but previews an **operator-reviewed IaC project**, not arbitrary model-generated executable Terraform or CDK. A native preview does not prove infrastructure was deployed or that a fully populated LZ works. The ACT snapshot here is a **non-authorizing pre-ACT evidence boundary**, not a sealed and signed ACT driver artifact. It cannot enable a Terraform/CDK apply, grant IAM, sign approvals or move issue #39 release admission to GO.
 
 For separately human-authorized narrow ACT-DEV-1 Terraform execution, follow issue #199, `docs/act-dev-1.md` and the existing sealed-plan/contract/approval process. Production Preview/Operate admission still requires D3 real model qualification, D4 authentic AWS provider qualification, D5 Azure, D6 repository controls, recovery and consolidated VERIFY.
+
+## Identity continuity and preview integrity
+
+Both configured DISCOVERY region variables must agree with the selected target.
+Injected static keys, session credentials, profiles and shared configuration files
+are refused even when OIDC variables are also present. The STS assumed role must
+match the configured IAM role's account and name. The runner checks STS before
+models, before project validation, before the native preview, and after preview
+analysis. A changed role/session or DISCOVERY configuration blocks the packet;
+start a new journey after refreshing credentials. `journey.json` retains the
+nonsecret STS principal and configured role references, never token contents or
+token-file paths. These calls observe identity at checkpoints, not continuously.
+
+The required Qwen/Mistral tags are fixed for this journey. Model digests are
+checked again after inference; changed weights block preview. This continuity
+check does not establish an independently approved digest or D3 qualification.
+Terraform binary-plan and lock-file digests are compared before and after native
+JSON extraction. Changed or missing inputs and truncated output block evidence.
+Checksums do not authenticate a provider, prove absence of intermediate changes,
+or replace sandboxing of reviewed project/provider code. The runner does not
+verify JWT issuer/audience/expiry itself; the OIDC provider and STS enforce token
+validity. Protected workflow qualification and human review remain required.
+
+The regression suite uses synthetic dependencies, including changed sessions,
+credential fallback, model replacement, ABSTAIN, partial discovery, plan tampering,
+truncated output and Change Set cleanup failure. Its results are not D3/D4/D5
+live qualification evidence.

@@ -12,6 +12,7 @@ import { screenOperatorPrompt } from "../security/prompt-governance.js";
 import { classifyIntent } from "../agent/intent.js";
 import { runGovernedTool } from "../tools/governed.js";
 import { runAllowlistedProcess } from "../tools/process.js";
+import { iamRoleIdentity, identityVariables } from "../tools/identity.js";
 import type { ToolRequest, ToolResult } from "../tools/types.js";
 
 /**
@@ -46,6 +47,7 @@ export type JourneyReport = {
   completedAt?: string;
   stages: StageRecord[];
   modelDigests: Array<{ role: string; tag: string; digest: string }>;
+  identity?: { principalReference: string; roleReference: string; observedAt: string };
   inventory: Array<{ idHash: string; type: string; ownership: string; mutationPolicy: string }>;
   provenance: { designHash?: string; policyHash?: string; toolVersionHash?: string; lockOrAssemblyHash?: string; synthesizedTemplateHash?: string; binaryPlanHash?: string; nativePlanHash?: string };
   proposedChanges: Array<{ type: string; action: string; governance: string }>;
@@ -93,6 +95,26 @@ function checkedResult(result: ToolResult | ToolResult[], code: string): ToolRes
 }
 function stage(report: JourneyReport, key: Stage, value: unknown): void {
   report.stages.push({ stage: key, status: "OBSERVED", evidenceHash: hash(JSON.stringify(value)) });
+}
+
+/** OIDC must be the only injectable AWS credential source for this journey. */
+function discoveryBinding(input: JourneyInput): string {
+  const variables = identityVariables(process.env, "DISCOVERY");
+  const regions = [variables.get("AWS_REGION"), variables.get("AWS_DEFAULT_REGION")]
+    .filter((value) => value !== undefined);
+  requireGate(regions.length > 0 && regions.every((value) => value === input.region),
+    "DISCOVERY_REGION_IDENTITY_REQUIRED");
+  requireGate(!["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
+    "AWS_SECURITY_TOKEN", "AWS_PROFILE", "AWS_DEFAULT_PROFILE", "AWS_CONFIG_FILE",
+    "AWS_SHARED_CREDENTIALS_FILE", "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+    "AWS_CONTAINER_CREDENTIALS_FULL_URI"].some((name) => variables.has(name)),
+  "DISCOVERY_CREDENTIAL_FALLBACK_FORBIDDEN");
+  const role = iamRoleIdentity(variables.get("AWS_ROLE_ARN") ?? "");
+  requireGate(role?.startsWith(input.expectedAccount + ":") &&
+    Boolean(variables.get("AWS_WEB_IDENTITY_TOKEN_FILE")?.trim()),
+  "DISCOVERY_OIDC_IDENTITY_REQUIRED");
+  // Compare configuration in memory only; never persist tokens or their paths.
+  return JSON.stringify([...variables].sort(([a], [b]) => a.localeCompare(b)));
 }
 function htmlEscape(s: string): string {
   return s.replaceAll("&", "&amp;").replaceAll("<", "&lt;")
@@ -195,26 +217,34 @@ export async function runLzLiveJourney(input: JourneyInput, deps: Deps = default
   try {
     // The child runner accepts identity-scoped ALZ_DISCOVERY_* variables only,
     // not ambient AWS_PROFILE, keys or a model-requested credential.
-    requireGate(process.env.ALZ_DISCOVERY_AWS_REGION === input.region ||
-      process.env.ALZ_DISCOVERY_AWS_DEFAULT_REGION === input.region,
-      "DISCOVERY_REGION_IDENTITY_REQUIRED");
-    requireGate(Boolean(process.env.ALZ_DISCOVERY_AWS_ROLE_ARN &&
-      process.env.ALZ_DISCOVERY_AWS_WEB_IDENTITY_TOKEN_FILE), "DISCOVERY_OIDC_IDENTITY_REQUIRED");
+    const binding = discoveryBinding(input);
+    const roleReference = process.env.ALZ_DISCOVERY_AWS_ROLE_ARN!;
     const context = { cwd: process.cwd(), allowCloudRead: true, allowMutation: false as const };
-    const sts = checkedResult(await deps.governed({ tool: "aws_sts_identity" }, context),
-      "AWS_STS_IDENTITY_FAILED");
-    const identity = JSON.parse(sts.stdout) as { Account?: string; Arn?: string };
-    requireGate(identity.Account === input.expectedAccount &&
-      typeof identity.Arn === "string" && identity.Arn.includes(":assumed-role/"),
+    const verifyIdentity = async (expectedPrincipal?: string): Promise<string> => {
+      requireGate(discoveryBinding(input) === binding, "DISCOVERY_IDENTITY_CHANGED");
+      const sts = checkedResult(await deps.governed({ tool: "aws_sts_identity" }, context),
+        "AWS_STS_IDENTITY_FAILED");
+      requireGate(discoveryBinding(input) === binding, "DISCOVERY_IDENTITY_CHANGED");
+      const identity = JSON.parse(sts.stdout) as { Account?: string; Arn?: string };
+      const assumed = typeof identity.Arn === "string"
+        ? /^arn:aws:sts::([0-9]{12}):assumed-role\/([A-Za-z0-9+=,.@_-]+)\/([A-Za-z0-9+=,.@_-]+)$/.exec(identity.Arn)
+        : null;
+      requireGate(identity.Account === input.expectedAccount && assumed &&
+        assumed[1] + ":" + assumed[2]!.toLowerCase() === iamRoleIdentity(roleReference),
       "AWS_ACCOUNT_OR_ROLE_MISMATCH");
-    stage(report, "identity", { account: identity.Account, arnHash: hash(identity.Arn) });
+      requireGate(!expectedPrincipal || identity.Arn === expectedPrincipal, "AWS_PRINCIPAL_CHANGED");
+      return identity.Arn!;
+    };
+    const principal = await verifyIdentity();
+    report.identity = { principalReference: principal, roleReference, observedAt: new Date().toISOString() };
+    stage(report, "identity", report.identity);
 
     const cfg = loadConfig();
     const url = new URL(cfg.ollamaBaseUrl);
     requireGate(url.protocol === "http:" &&
       ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname) &&
-      cfg.routerModel.startsWith("qwen3:") && cfg.primaryModel.startsWith("qwen3:") &&
-      cfg.validatorModel.startsWith("mistral-nemo:") &&
+      cfg.routerModel === "qwen3:1.7b" && cfg.primaryModel === "qwen3:4b" &&
+      cfg.validatorModel === "mistral-nemo:latest" &&
       process.env.AGENT_SKIP_LOCAL_MODEL !== "1", "PRIVATE_MODEL_PROFILE_INVALID");
     for (const [role, tag] of [["ROUTER", cfg.routerModel], ["PRIMARY", cfg.primaryModel],
       ["VALIDATOR", cfg.validatorModel]] as const) {
@@ -229,6 +259,11 @@ export async function runLzLiveJourney(input: JourneyInput, deps: Deps = default
       request: input.instruction, provider: "AWS", engine: input.engine, approveBuild: false,
     });
     verifiedAgent(state, input.engine, input.expectedAccount);
+    for (const recorded of report.modelDigests) {
+      const current = await deps.metadata(cfg.ollamaBaseUrl, recorded.tag);
+      requireGate(current.digest === recorded.digest && current.size > 0,
+        "PRIVATE_MODEL_DIGEST_CHANGED");
+    }
     for (const call of state.assessment?.modelInvocations ?? []) {
       const tag = call.role === "VALIDATOR" ? cfg.validatorModel :
         call.role === "PRIMARY" ? cfg.primaryModel : cfg.routerModel;
@@ -259,6 +294,7 @@ export async function runLzLiveJourney(input: JourneyInput, deps: Deps = default
     stage(report, "governance", { baseline: governance, policyHash: report.provenance.policyHash });
 
     const workspace = relative(process.cwd(), cwd);
+    await verifyIdentity(principal);
     const engineTool = input.engine === "TERRAFORM" ? "terraform" : "cdk";
     const version = checkedResult(await deps.governed({
       tool: engineTool === "terraform" ? "terraform_version" : "cdk_version", workspace,
@@ -273,6 +309,7 @@ export async function runLzLiveJourney(input: JourneyInput, deps: Deps = default
       requireGate(parsed.valid === true && parsed.error_count === 0,
         "TERRAFORM_VALIDATION_NOT_VALID");
     }
+    await verifyIdentity(principal);
     const preview = checkedResult(await deps.governed({
       tool: engineTool === "terraform" ? "terraform_plan" : "cdk_preview", workspace,
       ...(input.stack ? { input: { stack: input.stack, stackName: input.stack, changeSetType: "UPDATE" } } : {}),
@@ -287,6 +324,10 @@ export async function runLzLiveJourney(input: JourneyInput, deps: Deps = default
       const binaryPlanHash = hash(readFileSync(planPath));
       report.provenance.binaryPlanHash = binaryPlanHash;
       const shown = checkedResult(deps.localTerraformShow(cwd), "TERRAFORM_SHOW_FAILED");
+      requireGate(readableFile(resolve(cwd, ".agentic-preview.tfplan"), cwd) === planPath &&
+        hash(readFileSync(planPath)) === binaryPlanHash &&
+        hash(readFileSync(readableFile(resolve(cwd, ".terraform.lock.hcl"), cwd))) ===
+          report.provenance.lockOrAssemblyHash, "TERRAFORM_PLAN_INPUT_CHANGED");
       native = { engine: "TERRAFORM", payload: JSON.parse(shown.stdout) };
       report.provenance.nativePlanHash = hash(shown.stdout);
       // Link the binary plan digest to the native JSON without persisting either
@@ -312,6 +353,7 @@ export async function runLzLiveJourney(input: JourneyInput, deps: Deps = default
       report.provenance.nativePlanHash = hash(preview.stdout);
     }
     report.proposedChanges = previewActions(native, governance);
+    await verifyIdentity(principal);
     stage(report, "native_preview", { source: input.sourceCommit, engine: input.engine,
       toolVersionHash: report.provenance.toolVersionHash, lockOrAssemblyHash: report.provenance.lockOrAssemblyHash,
       synthesizedTemplateHash: report.provenance.synthesizedTemplateHash,
