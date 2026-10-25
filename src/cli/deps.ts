@@ -8,9 +8,9 @@ import { loadToolPins, DEFAULT_PINS, platformKey, type ToolId, type ToolPins } f
 import { EXIT, processTerminal, type HumanTerminal } from "./teardown-driver.js";
 
 /**
- * `./alz deps`: checks what this app needs, and offers to install the pinned tools one at a time. Every install is a
- * dialog that names the file, its source and its checksum, and needs the exact phrase typed back. Nothing installs
- * without that, and a terminal that cannot answer (no interactive input) only reports. Pilot commands run the same checks
+ * `./alz deps`: checks what this app needs, and offers to install the pinned tools one at a time. Every install shows
+ * the file, its source and its checksum, then a numbered menu whose default is to skip. Nothing installs without
+ * choosing "Install it", and a terminal that cannot answer (no interactive input) only reports. Pilot commands run the same checks
  * first and stop with the plain reason if something they need is missing.
  */
 export type DepsDeps = {
@@ -73,30 +73,6 @@ const FAILURE_TEXT: Record<InstallError["code"], string> = {
   INSTALL_REMOVE_REFUSED: "That folder is not an app-installed copy, so nothing was removed.",
 };
 
-/** One install dialog: what, where, from where, how it is checked, and the exact phrase that confirms it. */
-function dialogFor(check: DepCheck, pins: ToolPins, platform: string, home: string): { phrase: string; text: string } {
-  const tool = check.installable as ToolId;
-  const pin = pins.tools[tool];
-  const artifact = pin.artifacts[platform as keyof typeof pin.artifacts];
-  const phrase = "INSTALL " + tool.toUpperCase() + " " + pin.version;
-  const host = artifact ? new URL(artifact.url).host : "no pinned source";
-  return {
-    phrase,
-    text: [
-      "",
-      TOOL_NAME[tool] + " " + pin.version + " is needed and is not installed.",
-      "  What: the tested version of " + TOOL_NAME[tool] + ", for this type of Mac.",
-      "  Where: " + home + "/.alz/tools/" + tool + "/" + pin.version + " (your user folder; nothing else on this Mac changes).",
-      "  From: " + host + ".",
-      "  Checked: the download must match SHA-256 " + (artifact?.sha256 ?? "(none)") + " or it is thrown away.",
-      "  Needs: no administrator password. Your PATH is not changed.",
-      "To install, type exactly:  " + phrase,
-      "Anything else skips it. Commands that need it stay blocked until it is installed.",
-      "",
-    ].join("\n"),
-  };
-}
-
 /**
  * The selection screen: every missing pinned tool starts checked, a number toggles one, `a` checks all, `s` skips all,
  * Enter continues with what is checked, and `q` cancels before anything is downloaded. Returns null on cancel.
@@ -108,7 +84,7 @@ export async function chooseInstalls(items: readonly DepCheck[], terminal: Human
       const box = selected.has(item.installable as ToolId) ? "[x]" : "[ ]";
       return "  " + box + " " + (index + 1) + "  " + item.label + "  — " + (item.installable === "terraform" ? "needed for the pilot" : "needed for model runs");
     });
-    terminal.write(["", "Choose what to install. Each one is still confirmed with its own phrase.", ...lines,
+    terminal.write(["", "Choose what to install. You confirm each one from a menu before anything is downloaded.", ...lines,
       "Type a number to toggle, a to check all, s to skip all, Enter to continue with the checked items, or q to cancel.", ""].join("\n"));
   };
   show();
@@ -331,7 +307,7 @@ export async function blockedByDependencies(
 /**
  * TTY-only, selected pinned installer for the guided first-run workflow.
  * ALL network/archive behavior is delegated to the existing checksum-verified
- * installer; the terminal must type each tool's exact version phrase.
+ * installer; each tool is confirmed from the same menu as ./alz deps.
  * Optional third-party tools without pinned artifacts are never downloaded.
  */
 export async function installSelectedPinnedTools(
@@ -346,7 +322,7 @@ export async function installSelectedPinnedTools(
   }
   const platform = platformKey(deps.platform ?? process.platform, deps.arch ?? process.arch);
   if (!platform) {
-    terminal.write("Only approved, checksum-pinned macOS tools can be installed here. No tools were installed.\n");
+    terminal.write("There is no checksum-pinned build of these tools for this computer, so nothing was installed.\n");
     return result;
   }
   let pins: ToolPins;
@@ -368,10 +344,9 @@ export async function installSelectedPinnedTools(
       continue;
     }
     result.attempted.push(tool);
-    const dialog = dialogFor(check, pins, platform, ctx.home);
-    terminal.write(dialog.text);
-    if ((await terminal.ask("> ")).trim() !== dialog.phrase) {
-      terminal.write("Skipped " + tool + ": exact approval was not supplied.\n");
+    terminal.write(menuDialogFor(check, pins, platform, ctx.home));
+    if (await askChoice(terminal, "Install it now?", ["Install it", "Skip it"], 2) !== 1) {
+      terminal.write("Skipped " + tool + ". Commands that need it stay blocked until it is installed.\n");
       result.skipped.push(tool);
       continue;
     }

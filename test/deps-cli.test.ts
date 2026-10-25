@@ -274,7 +274,7 @@ test("cancel at the selection screen, after choosing install, installs nothing a
   assert.ok(!existsSync(installedPath(join(root, "home-cli-cancel"), "terraform", "1.16.4", "terraform")));
 });
 
-test("guided installer: no TTY, exact phrase missing, and checksum mismatch never install a tool", async () => {
+test("guided installer: no TTY, a skip or no clear choice, and checksum mismatch never install a tool", async () => {
   const { installSelectedPinnedTools } = await import("../src/cli/deps.js");
   const archive = fakeArchive("guided-tampered");
   const pinsPath = fakePins("guided-tampered", "0".repeat(64));
@@ -286,13 +286,20 @@ test("guided installer: no TTY, exact phrase missing, and checksum mismatch neve
   assert.deepEqual(nonTTY.installed, []);
   assert.equal(downloaded, 0);
   const reject = await installSelectedPinnedTools(["terraform"], {
-    ...deps("guided-reject", terminal(true, ["INSTALL EVERYTHING"]), { download }), pinsPath,
+    ...deps("guided-reject", terminal(true, ["2"]), { download }), pinsPath,
   });
   assert.deepEqual(reject.installed, []);
   assert.deepEqual(reject.skipped, ["terraform"]);
   assert.equal(downloaded, 0);
+  // Typing something that is not a choice never installs: the menu asks again, and with no clear answer it skips.
+  const unclear = await installSelectedPinnedTools(["terraform"], {
+    ...deps("guided-unclear", terminal(true, ["INSTALL TERRAFORM 1.16.4", "yes"]), { download }), pinsPath,
+  });
+  assert.deepEqual(unclear.installed, []);
+  assert.deepEqual(unclear.skipped, ["terraform"]);
+  assert.equal(downloaded, 0);
   const tamper = await installSelectedPinnedTools(["terraform"], {
-    ...deps("guided-tamper", terminal(true, ["INSTALL TERRAFORM 1.16.4"]), { download }), pinsPath,
+    ...deps("guided-tamper", terminal(true, ["1"]), { download }), pinsPath,
   });
   assert.deepEqual(tamper.installed, []);
   assert.deepEqual(tamper.skipped, ["terraform"]);
@@ -305,7 +312,7 @@ test("guided installer: explicit tool selection installs only checksum-verified 
   const archive = fakeArchive("guided-verified");
   const pinsPath = fakePins("guided-verified", archive.sha256);
   let downloaded = 0;
-  const term = terminal(true, ["INSTALL TERRAFORM 1.16.4"]);
+  const term = terminal(true, ["1"]);
   const outcome = await installSelectedPinnedTools(["terraform"], {
     ...deps("guided-verified", term, {
       download: async () => { downloaded++; return Readable.from([archive.body]); },
@@ -327,7 +334,7 @@ test("guided installer never calls a cached but wrong-version binary ready", asy
   const installed = installedPath(home, "terraform", "1.16.4", "terraform");
   fakeTool(join(installed, ".."), "terraform", "echo 'Terraform v0.0.1'");
   let downloaded = 0;
-  const term = terminal(true, ["INSTALL TERRAFORM 1.16.4"]);
+  const term = terminal(true, ["1"]);
   const result = await installSelectedPinnedTools(["terraform"], {
     ...deps("guided-cached-bad", term, {
       download: async () => { downloaded++; return Readable.from([]); },
