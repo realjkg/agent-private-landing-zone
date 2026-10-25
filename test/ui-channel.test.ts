@@ -1010,8 +1010,8 @@ async function approveCleanupViaUi(port: number, proposalPath: string, shortId: 
   else await call(port, "POST", "/pilot/answer", { body: { dialogId: asked.run!.dialog!.id, answer: answer ?? cleanupApprovePhrase(shortId) } });
   return finished(port);
 }
-async function cleanupViaUi(port: number, files: { request: string; manifest: string }, proposalPath: string, shortId: string, target: ResolvedTarget, approvals: string[], answer?: string | null): Promise<State> {
-  const started = await call(port, "POST", "/pilot/cleanup", { body: { environment: "DEV", requestPath: files.request, manifestPath: files.manifest, proposalPath, approvalPaths: approvals } });
+async function cleanupViaUi(port: number, files: { request: string; manifest: string }, sealed: Sealed, proposalPath: string, shortId: string, target: ResolvedTarget, approvals: string[], answer?: string | null): Promise<State> {
+  const started = await call(port, "POST", "/pilot/cleanup", { body: { environment: "DEV", requestPath: files.request, manifestPath: files.manifest, sealedPath: sealed.path, proposalPath, approvalPaths: approvals } });
   assert.equal(started.status, 202, started.text);
   const asked = await waiting(port);
   assert.equal(asked.run!.dialog!.kind, "CLEANUP");
@@ -1065,7 +1065,7 @@ test("AWS Terraform in the console: observe what the apply created, propose and 
   assert.ok(existsSync(cleanupApproval));
 
   const before = engineCalls().length;
-  const removed = await cleanupViaUi(port, prepared.files, proposalPath, summary.shortId, target, [cleanupApproval]);
+  const removed = await cleanupViaUi(port, prepared.files, sealed, proposalPath, summary.shortId, target, [cleanupApproval]);
   assert.equal(removed.run!.result!.exit, 0, JSON.stringify(removed.run!.result));
   const evidence = removed.run!.result!.data as { outcome: string; deletes: string[]; authority: { executedAs: string; mutation: string }; artifactSha256: string };
   assert.equal(evidence.outcome, "SUCCEEDED");
@@ -1107,22 +1107,22 @@ test("AWS Terraform in the console: a wrong phrase or a cancel at the cleanup ap
   const applies = () => engineCalls().filter((args) => args[0] === "apply").length;
   const [destroysBefore, appliesBefore] = [destroys(), applies()];
   // The approval of the change itself, offered for the cleanup: refused before any engine runs, and nothing is used up.
-  const misused = await cleanupViaUi(port, prepared.files, proposalPath, summary.shortId, target, [approvalPath]);
+  const misused = await cleanupViaUi(port, prepared.files, sealed, proposalPath, summary.shortId, target, [approvalPath]);
   assert.equal(misused.run!.result!.exit, 2, JSON.stringify(misused.run!.result));
   assert.equal(misused.run!.result!.code, "APPROVAL_UNVERIFIED");
   assert.equal(destroys(), destroysBefore);
   const cleanupApproval = (await approveCleanupViaUi(port, proposalPath, summary.shortId, "alice")).run!.result!.savedPath!;
   for (const answer of ["CLEANUP DEV " + summary.shortId, null]) {
-    const result = (await cleanupViaUi(port, prepared.files, proposalPath, summary.shortId, target, [cleanupApproval], answer)).run!.result!;
+    const result = (await cleanupViaUi(port, prepared.files, sealed, proposalPath, summary.shortId, target, [cleanupApproval], answer)).run!.result!;
     assert.notEqual(result.exit, 0);
     assert.notEqual(result.exit, 3, "nothing is spent: " + JSON.stringify(result));
     assert.equal(applies(), appliesBefore, "no destroy applied");
   }
   // The same cleanup approval still works, exactly once; a reconnect that asks again is refused, and the destroy ran once.
-  const removed = (await cleanupViaUi(port, prepared.files, proposalPath, summary.shortId, target, [cleanupApproval])).run!.result!;
+  const removed = (await cleanupViaUi(port, prepared.files, sealed, proposalPath, summary.shortId, target, [cleanupApproval])).run!.result!;
   assert.equal(removed.exit, 0, JSON.stringify(removed));
   assert.equal(applies(), appliesBefore + 1);
-  const again = (await cleanupViaUi(port, prepared.files, proposalPath, summary.shortId, target, [cleanupApproval])).run!.result!;
+  const again = (await cleanupViaUi(port, prepared.files, sealed, proposalPath, summary.shortId, target, [cleanupApproval])).run!.result!;
   assert.equal(again.exit, 2, JSON.stringify(again));
   assert.equal(again.code, "PROPOSAL_ALREADY_EXECUTED");
   assert.equal(applies(), appliesBefore + 1, "a reconnect never removes twice");
@@ -1141,9 +1141,11 @@ test("the console refuses a cleanup proposal for the other channel, a malformed 
   const reviewed = (await call(port, "POST", "/pilot/review-cleanup", { body: { proposalPath: malformed } })).body;
   assert.equal(reviewed.ok, false);
   assert.equal(reviewed.code, "PROPOSAL_INVALID");
-  const noApprovals = await call(port, "POST", "/pilot/cleanup", { body: { environment: "DEV", requestPath: "/r.json", manifestPath: "/m.json", proposalPath: malformed, approvalPaths: [] } });
+  const noApprovals = await call(port, "POST", "/pilot/cleanup", { body: { environment: "DEV", requestPath: "/r.json", manifestPath: "/m.json", sealedPath: "/s.json", proposalPath: malformed, approvalPaths: [] } });
   assert.equal(noApprovals.status, 400);
-  const extra = await call(port, "POST", "/pilot/cleanup", { body: { environment: "DEV", requestPath: "/r.json", manifestPath: "/m.json", proposalPath: malformed, approvalPaths: ["/a.json"], force: true } });
+  const noSealed = await call(port, "POST", "/pilot/cleanup", { body: { environment: "DEV", requestPath: "/r.json", manifestPath: "/m.json", proposalPath: malformed, approvalPaths: ["/a.json"] } });
+  assert.equal(noSealed.status, 400, "the prepared change file is required: the list is checked against what that change made");
+  const extra = await call(port, "POST", "/pilot/cleanup", { body: { environment: "DEV", requestPath: "/r.json", manifestPath: "/m.json", sealedPath: "/s.json", proposalPath: malformed, approvalPaths: ["/a.json"], force: true } });
   assert.equal(extra.status, 400, "no field the step does not take");
   assert.deepEqual(engineCalls().filter((args) => args[0] === "plan" && args[1] === "-destroy"), []);
 });

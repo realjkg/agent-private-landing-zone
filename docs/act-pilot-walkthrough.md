@@ -122,13 +122,14 @@ Keep the page open and do not stop the console while it applies. The page may pa
 
 ### Step 7: Check and clean up
 
-After a pilot change is applied in DEV, what it made is removed again. This step has three parts, and each one is its own decision.
+After a pilot change is applied in DEV, what it made is removed again. This step has four actions, and each one is its own decision.
 
 1. **Look at what was created.** Choose **Look at what was created**. The console looks at the cloud on its own, without the build tool, and lists each thing the change made: its name in the project, its kind, its identifier in the cloud, where it came from, and what the check found. This reads and changes nothing, so you can **Look again** as often as you like. "Everything that can be checked on its own is there" is the normal result for a pilot change; "Something is missing or unexpected" means you stop and call the pilot owner.
 2. **Write the cleanup proposal.** Choose **Write the cleanup proposal**. The console writes a file that names exactly the things this change made and the cloud found, what is kept and why (the state storage and the pilot's own identities are never on the list), and how many approvals the cleanup needs. The proposal removes nothing by itself. Send the file to each approver. On their own computer they choose **I am an approver**, then **A cleanup**, type `APPROVE CLEANUP DEV` and the proposal's 12-character ID, and send you back an approval file. An approval of the change itself is refused here.
-3. **Remove the listed things.** Enter the proposal file and the cleanup approval files and choose **Remove the listed things...**. The last window shows the list once more and asks for the line, for example `CLEANUP DEV 0123456789ab account | storage | workspace`. Keep the page open until it says it is done. Then choose **Check that everything is gone**: the console looks at the cloud again and says, for each thing, that it is gone, kept on purpose, still there, waiting for a scheduled deletion, or unknown. Only "everything is gone" closes the pilot change.
+3. **Remove the listed things.** Enter the proposal file and the cleanup approval files (the prepared change file from the earlier steps is needed too: the console checks the list against what that change really made before anything is removed) and choose **Remove the listed things...**. The last window shows the list once more and asks for the line, for example `CLEANUP DEV 0123456789ab account | storage | workspace`. Keep the page open until it says it is done. 
+4. **Check that everything is gone.** Choose **Check that everything is gone**: the console looks at the cloud again and says, for each thing, that it is gone, kept on purpose, still there, waiting for a scheduled deletion, or unknown. Only "everything is gone" closes the pilot change.
 
-The same four endings as an apply apply here. **A person must review this before anything else** means: do not retry, check that everything is gone (it only looks), and call the pilot owner. A proposal runs once; after a stopped removal a new proposal needs a new look and new approvals.
+A removal ends in one of the same four ways as an apply. **A person must review this before anything else** means: do not retry, check that everything is gone (it only looks), and call the pilot owner. A proposal runs once; after a stopped removal a new proposal needs a new look and new approvals.
 
 Everything this step shows on this computer is a synthetic result until the pilot owner records a live one. The console says so on the screen.
 
@@ -187,7 +188,7 @@ The cleanup half, after the change is applied in DEV. Operators run 7, 8 and 10;
 7. `./alz apply observe --sealed LOCKED_CHANGE` (reads and changes nothing; repeat as needed)
 8. `./alz apply propose-cleanup --sealed LOCKED_CHANGE` (prints the proposal file location to send to the approvers)
 9. `./alz apply approve --bundle PROPOSAL.json --key APPROVER_KEY.pem --approver NAME` (the phrase is `APPROVE CLEANUP DEV` and the proposal ID)
-10. `./alz apply cleanup --proposal PROPOSAL.json --request REQUEST.json --manifest MANIFEST.json --approval CLEANUP_APPROVAL.json`
+10. `./alz apply cleanup --proposal PROPOSAL.json --request REQUEST.json --manifest MANIFEST.json --sealed LOCKED_CHANGE --approval CLEANUP_APPROVAL.json`
 11. `./alz apply verify-cleanup --proposal PROPOSAL.json` (reads and changes nothing; repeat as needed)
 12. `./alz apply report --sealed LOCKED_CHANGE --proposal PROPOSAL.json` (the lifecycle report, marked synthetic until the owner records live)
 

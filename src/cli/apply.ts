@@ -61,7 +61,7 @@ const APPLY_USAGE = [
   "  ./alz apply preflight --environment DEV|QA|PROD [--contract CONTRACT.json]",
   "  ./alz apply observe --sealed SEALED_PLAN",
   "  ./alz apply propose-cleanup --sealed SEALED_PLAN",
-  "  ./alz apply cleanup --proposal PROPOSAL.json --request REQUEST.json --manifest MANIFEST.json --approval APPROVAL.json [--approval APPROVAL.json ...]",
+  "  ./alz apply cleanup --proposal PROPOSAL.json --request REQUEST.json --manifest MANIFEST.json --sealed SEALED_PLAN --approval APPROVAL.json [--approval APPROVAL.json ...]",
   "  ./alz apply verify-cleanup --proposal PROPOSAL.json",
   "  ./alz apply report --sealed SEALED_PLAN [--proposal PROPOSAL.json]",
   "      A person at the terminal (or a person in the console wizard, which has its own session token). A workflow runs wholly in one of them. Identities come from the contract's engine: ALZ_DISCOVERY_*, ALZ_STATE_*, ALZ_STATE_WRITE_* and ALZ_APPLY_* (Terraform),",
@@ -123,7 +123,7 @@ const SUBCOMMANDS: Readonly<Record<string, Flags>> = {
   "record-live": { single: ["sealed"] },
   observe: { single: ["sealed"] },
   "propose-cleanup": { single: ["sealed"] },
-  cleanup: { single: ["proposal", "request", "manifest"], repeated: ["approval"] },
+  cleanup: { single: ["proposal", "request", "manifest", "sealed"], repeated: ["approval"] },
   "verify-cleanup": { single: ["proposal"] },
   report: { single: ["sealed"], optional: ["proposal"] },
 };
@@ -553,6 +553,10 @@ const cleanupCommand: Command = async (flags, terminal, deps, out) => {
   if (!opened.ok) return blocked(opened, out);
   const { proposal } = opened;
   if (proposal.channel !== (deps.channel ?? "CLI")) return blocked({ ok: false, code: "CHANNEL_MISMATCH", message: channelMismatchMessage(proposal.channel) }, out);
+  // The sealed plan the cleaned-up apply ran from: the driver derives the proposal again from it and the records.
+  const sealedPlan = await openSealed(flags.sealed[0]);
+  if (!("sealed" in sealedPlan)) return blocked(sealedPlan, out);
+  if (sealedPlan.sealed.artifactSha256 !== proposal.artifactSha256) return blocked({ ok: false, code: "PROPOSAL_INVALID", message: "The proposal is not for this sealed plan's run. Nothing was run." }, out);
   const sourceCommit = sourceCommitFor(deps);
   if (sourceCommit !== proposal.sourceCommit) {
     return blocked(sourceCommit === undefined
@@ -574,7 +578,7 @@ const cleanupCommand: Command = async (flags, terminal, deps, out) => {
   const now = deps.now ?? (() => new Date());
   const result = await runCleanup({
     invocation: { operatorId: who, interactiveSession: true, confirmedTarget: { ...request.target }, confirmedAt: now().toISOString() },
-    environment: request.environment, target: request.target, channel: deps.channel ?? "CLI", proposal, manifest, projectRoot: request.projectRoot, approvals,
+    environment: request.environment, target: request.target, channel: deps.channel ?? "CLI", proposal, sealedPlan, manifest, projectRoot: request.projectRoot, approvals,
   }, { env: deps.env ?? process.env, now, evidenceDir: deps.evidenceDir, nonces: deps.nonces, ...driverPaths(deps, sourceCommit) });
   if (!result.ok) return blocked(result, out);
   out.say(JSON.stringify(result.evidence, null, 2) + "\n");

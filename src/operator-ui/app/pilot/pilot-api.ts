@@ -152,5 +152,5 @@ export type CleanupReviewReply = { ok: true; cleanup: CleanupSummary } | { ok: f
 export const loadCleanupReview = (proposalPath: string): Promise<PilotReply<CleanupReviewReply>> => send<CleanupReviewReply>("POST", "/review-cleanup", { proposalPath });
 export const startObserve = (sealedPath: string): Promise<PilotReply> => send<PilotState>("POST", "/observe", { sealedPath });
 export const startProposeCleanup = (sealedPath: string): Promise<PilotReply> => send<PilotState>("POST", "/propose-cleanup", { sealedPath });
-export const startCleanup = (input: { environment: PilotEnvironment; requestPath: string; manifestPath: string; proposalPath: string; approvalPaths: string[] }): Promise<PilotReply> => send<PilotState>("POST", "/cleanup", input);
+export const startCleanup = (input: { environment: PilotEnvironment; requestPath: string; manifestPath: string; sealedPath: string; proposalPath: string; approvalPaths: string[] }): Promise<PilotReply> => send<PilotState>("POST", "/cleanup", input);
 export const startVerifyCleanup = (proposalPath: string): Promise<PilotReply> => send<PilotState>("POST", "/verify-cleanup", { proposalPath });

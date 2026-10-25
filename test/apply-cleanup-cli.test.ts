@@ -154,7 +154,7 @@ test("observe, propose-cleanup, approve of the proposal, cleanup and verify-clea
   assert.equal((signed.data as { statement: { artifactSha256: string } }).statement.artifactSha256, proposal.proposalSha256, "the approval names the proposal");
 
   const before = [destroys(), applies()];
-  const removed = await cli(w, ["cleanup", "--proposal", proposalPath, "--request", run.applyRequest, "--manifest", run.manifest, "--approval", cleanupApproval],
+  const removed = await cli(w, ["cleanup", "--proposal", proposalPath, "--request", run.applyRequest, "--manifest", run.manifest, "--sealed", run.sealedPlanPath, "--approval", cleanupApproval],
     ["CLEANUP DEV " + shortId + " " + targetString(run.target)]);
   assert.equal(removed.code, 0, removed.stderr);
   assert.deepEqual(removed.term.asked.map((a) => a.kind), ["CLEANUP"]);
@@ -173,24 +173,39 @@ test("observe, propose-cleanup, approve of the proposal, cleanup and verify-clea
 
   const reported = await cli(w, ["report", "--sealed", run.sealedPlanPath, "--proposal", proposalPath]);
   assert.equal(reported.code, 0, reported.stderr);
-  const summary = reported.data as { written: string; mode: string; passed: boolean; stages: Record<string, { status: string }> };
+  const summary = reported.data as { written: string; mode: string; passed: boolean; stages: Record<string, { status: string; mode: string }> };
   assert.equal(summary.mode, "SYNTHETIC", "a fake engine and a fake cloud are never live");
   assert.equal(summary.passed, true);
   assert.deepEqual(Object.fromEntries(Object.entries(summary.stages).map(([k, v]) => [k, v.status])), { execute: "PASS", observe: "PASS", propose: "PASS", cleanup: "PASS", leftovers: "PASS" });
+  assert.ok(Object.values(summary.stages).every((stage) => stage.mode === "SYNTHETIC"), "every stage's evidence is synthetic");
   const report = JSON.parse(readFileSync(summary.written, "utf8")) as LifecycleReport;
   assert.deepEqual(lifecycleReportProblems(report, { sourceCommit: SOURCE_COMMIT, gateId: "act:aws-terraform" }), []);
   assert.equal(report.liveAttestation, null);
   assert.ok(!JSON.stringify(report).includes(VALUE_CANARY) && !JSON.stringify(report).includes(STATE_CANARY) && !JSON.stringify(report).includes("CANARY_CLOUD_PROPERTY"));
   assert.deepEqual(report.approvals, { apply: ["alice"], cleanup: ["alice"] });
 
-  // The owner's live record for this very apply evidence turns the mode LIVE; one for another run does not.
+  // The owner's live record for another run (another project, so another artifact), kept in the same acceptance directory, changes nothing here.
+  const other = await world();
+  const otherRun = await appliedRun(other, 'resource "aws_s3_bucket" "logs" { force_destroy = true }\n');
+  assert.notEqual(otherRun.artifactSha256, run.artifactSha256);
+  const recordedOther = await cli(other, ["record-live", "--sealed", otherRun.sealedPlanPath], ["LIVE DEV " + otherRun.artifactSha256.slice(0, 12)], { acceptanceDir: w.acceptanceDir });
+  assert.equal(recordedOther.code, 0, recordedOther.stderr);
+  const still = await cli(w, ["report", "--sealed", run.sealedPlanPath, "--proposal", proposalPath]);
+  assert.equal((still.data as { mode: string }).mode, "SYNTHETIC", "a live record for another artifact is not this run's");
+  // The owner's live record for this very apply evidence attests the execute step only: that stage is LIVE, the observe,
+  // propose, cleanup and leftover stages stay SYNTHETIC (no attestation form exists for them), and the report says MIXED.
   const recorded = await cli(w, ["record-live", "--sealed", run.sealedPlanPath], ["LIVE DEV " + run.artifactSha256.slice(0, 12)]);
   assert.equal(recorded.code, 0, recorded.stderr);
   const live = await cli(w, ["report", "--sealed", run.sealedPlanPath, "--proposal", proposalPath]);
-  assert.equal((live.data as { mode: string }).mode, "LIVE");
+  assert.equal((live.data as { mode: string }).mode, "MIXED");
   const liveReport = JSON.parse(readFileSync((live.data as { written: string }).written, "utf8")) as LifecycleReport;
   assert.equal(liveReport.liveAttestation?.attestedBy, "operator.fixture");
+  assert.deepEqual(Object.fromEntries(Object.entries(liveReport.stages).map(([k, v]) => [k, v.mode])), { execute: "LIVE", observe: "SYNTHETIC", propose: "SYNTHETIC", cleanup: "SYNTHETIC", leftovers: "SYNTHETIC" });
   assert.deepEqual(lifecycleReportProblems(liveReport), []);
+  // A stage promoted to LIVE by hand, or a report calling itself LIVE over mixed stages, is refused.
+  const promoted = { ...liveReport, stages: { ...liveReport.stages, cleanup: { ...liveReport.stages.cleanup, mode: "LIVE" as const } } };
+  assert.match(lifecycleReportProblems(promoted).join(" | "), /no owner attestation exists for this stage/);
+  assert.match(lifecycleReportProblems({ ...liveReport, mode: "LIVE" }).join(" | "), /not derived from the stages' evidence modes/);
   // Without the proposal the report is honest about what is open.
   const partial = await cli(w, ["report", "--sealed", run.sealedPlanPath]);
   assert.equal((partial.data as { passed: boolean }).passed, false);
@@ -216,16 +231,16 @@ test("a wrong phrase at the cleanup approval or the removal signs nothing and ru
   const signed = await cli(w, ["approve", "--bundle", proposalPath, "--key", keyFile("alice"), "--approver", "alice"], ["APPROVE CLEANUP DEV " + shortId]);
   const cleanupApproval = json(signed.data, "cleanup-approval");
   const [d0, a0] = [destroys(), applies()];
-  const wrong = await cli(w, ["cleanup", "--proposal", proposalPath, "--request", run.applyRequest, "--manifest", run.manifest, "--approval", cleanupApproval], ["CLEANUP DEV " + shortId]);
+  const wrong = await cli(w, ["cleanup", "--proposal", proposalPath, "--request", run.applyRequest, "--manifest", run.manifest, "--sealed", run.sealedPlanPath, "--approval", cleanupApproval], ["CLEANUP DEV " + shortId]);
   assert.equal(wrong.code, 1);
   assert.deepEqual([destroys(), applies()], [d0, a0], "nothing ran");
-  const misused = await cli(w, ["cleanup", "--proposal", proposalPath, "--request", run.applyRequest, "--manifest", run.manifest, "--approval", run.applyApproval], ["CLEANUP DEV " + shortId + " " + targetString(run.target)]);
+  const misused = await cli(w, ["cleanup", "--proposal", proposalPath, "--request", run.applyRequest, "--manifest", run.manifest, "--sealed", run.sealedPlanPath, "--approval", run.applyApproval], ["CLEANUP DEV " + shortId + " " + targetString(run.target)]);
   assert.equal(misused.code, 2, misused.stderr);
   assert.match(misused.stderr, /APPROVAL_UNVERIFIED/, "an approval of the change never authorizes the cleanup");
   assert.deepEqual([destroys(), applies()], [d0, a0]);
-  const removed = await cli(w, ["cleanup", "--proposal", proposalPath, "--request", run.applyRequest, "--manifest", run.manifest, "--approval", cleanupApproval], ["CLEANUP DEV " + shortId + " " + targetString(run.target)]);
+  const removed = await cli(w, ["cleanup", "--proposal", proposalPath, "--request", run.applyRequest, "--manifest", run.manifest, "--sealed", run.sealedPlanPath, "--approval", cleanupApproval], ["CLEANUP DEV " + shortId + " " + targetString(run.target)]);
   assert.equal(removed.code, 0, removed.stderr);
-  const again = await cli(w, ["cleanup", "--proposal", proposalPath, "--request", run.applyRequest, "--manifest", run.manifest, "--approval", cleanupApproval], ["CLEANUP DEV " + shortId + " " + targetString(run.target)]);
+  const again = await cli(w, ["cleanup", "--proposal", proposalPath, "--request", run.applyRequest, "--manifest", run.manifest, "--sealed", run.sealedPlanPath, "--approval", cleanupApproval], ["CLEANUP DEV " + shortId + " " + targetString(run.target)]);
   assert.equal(again.code, 2);
   assert.match(again.stderr, /PROPOSAL_ALREADY_EXECUTED/);
   assert.deepEqual([destroys(), applies()], [d0 + 1, a0 + 1], "a proposal runs once");
@@ -253,16 +268,18 @@ test("the lifecycle report validator refuses a declared pass, a live claim witho
   const problems = (edit: Partial<LifecycleReport> & Record<string, unknown>) => lifecycleReportProblems({ ...report, ...edit }).join(" | ");
   assert.match(problems({ passed: true }), /not derived from the stages/);
   assert.match(problems({ passed: true, unresolved: [] }), /not derived/);
-  assert.match(problems({ mode: "LIVE" }), /owner's attestation/);
-  assert.match(problems({ mode: "LIVE", liveAttestation: { attestedBy: "someone", attestedAt: NOW.toISOString(), evidenceSha256: "f".repeat(64) } }), /this very apply evidence/);
-  assert.match(problems({ liveAttestation: { attestedBy: "someone", attestedAt: NOW.toISOString(), evidenceSha256: report.applyEvidenceSha256 } }), /SYNTHETIC report carries no live attestation/);
+  assert.match(problems({ mode: "LIVE" }), /owner's attestation|not derived from the stages' evidence modes/);
+  assert.match(problems({ mode: "MIXED", stages: { ...report.stages, execute: { ...report.stages.execute, mode: "LIVE" } } }), /LIVE needs the owner's attestation/);
+  assert.match(problems({ mode: "MIXED", stages: { ...report.stages, execute: { ...report.stages.execute, mode: "LIVE" } }, liveAttestation: { attestedBy: "someone", attestedAt: NOW.toISOString(), evidenceSha256: "f".repeat(64) } }), /this very apply evidence/);
+  assert.match(problems({ liveAttestation: { attestedBy: "someone", attestedAt: NOW.toISOString(), evidenceSha256: report.applyEvidenceSha256 } }), /SYNTHETIC report carries no live attestation|SYNTHETIC execute step carries no live attestation/);
+  assert.match(problems({ stages: { ...report.stages, observe: { ...report.stages.observe, mode: "LIVE" } } }), /no owner attestation exists for this stage/);
   assert.match(problems({ schemaVersion: 2 as never }), /schemaVersion 1/);
   assert.match(problems({ gateVersion: 9 as never }), /gate version/);
   assert.match(problems({ stdout: "x" }), /raw state, output or secret field/);
   assert.match(problems({ sourceCommit: "0".repeat(40) } as never) || lifecycleReportProblems({ ...report, sourceCommit: "0".repeat(40) }, { sourceCommit: SOURCE_COMMIT }).join(" | "), /not the expected source commit|./);
   assert.match(lifecycleReportProblems(report, { gateId: "act:azure-terraform" }).join(" | "), /not the expected gate/);
   // Completion claimed over pending leftovers: the stages say leftovers are not PASS, so passed cannot be true.
-  const pending = { ...report, stages: { ...report.stages, cleanup: { status: "PASS", detail: "x" }, leftovers: { status: "INCONCLUSIVE", detail: "pending" } }, passed: true, unresolved: [] } as LifecycleReport;
+  const pending = { ...report, stages: { ...report.stages, cleanup: { status: "PASS", mode: "SYNTHETIC", detail: "x" }, leftovers: { status: "INCONCLUSIVE", mode: "SYNTHETIC", detail: "pending" } }, passed: true, unresolved: [] } as LifecycleReport;
   assert.match(lifecycleReportProblems(pending).join(" | "), /not derived from the stages/);
   // The report command itself refuses to write a report for a proposal of another run (another project, so another artifact).
   const other = await world();

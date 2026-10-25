@@ -706,7 +706,7 @@ export default function PilotWizard(props: PilotWizardProps) {
                   {finalResult && classifyResult(finalResult.step, finalResult.result) !== "NEEDS_REVIEW" && classifyResult(finalResult.step, finalResult.result) !== "APPLIED" && (
                     <button type="button" onClick={() => setStep(role === "APPROVER" ? 4 : 5)}>{COPY.tryAgain}</button>
                   )}
-                  {role === "OPERATOR" && <button type="button" onClick={() => setStep(7)}>{COPY.nextCleanup}</button>}
+                  {role === "OPERATOR" && finalResult && classifyResult(finalResult.step, finalResult.result) === "APPLIED" && <button type="button" onClick={() => setStep(7)}>{COPY.nextCleanup}</button>}
                   <button type="button" className="pilot-secondary" disabled={active} onClick={() => void reset()}>{COPY.newChange}</button>
                 </p>
               </div>

@@ -549,7 +549,7 @@ export function createPilotRouter(options: PilotRouterOptions): PilotRouter {
         return;
       }
       case "/cleanup": {
-        const input = fields(body, ["environment", "requestPath", "manifestPath", "proposalPath", "approvalPaths"]);
+        const input = fields(body, ["environment", "requestPath", "manifestPath", "sealedPath", "proposalPath", "approvalPaths"]);
         requirePath();
         const environment = environmentOf(input.environment);
         if (!Array.isArray(input.approvalPaths) || input.approvalPaths.length < 1 || input.approvalPaths.length > MAX_APPROVALS) {
@@ -557,11 +557,12 @@ export function createPilotRouter(options: PilotRouterOptions): PilotRouter {
         }
         const requestPath = absolute(plainPath(input.requestPath, "The request file"));
         const manifestPath = absolute(plainPath(input.manifestPath, "The manifest file"));
+        const sealedPath = absolute(plainPath(input.sealedPath, "The prepared change file"));
         const proposalPath = absolute(plainPath(input.proposalPath, "The cleanup proposal file"));
         const approvals = (input.approvalPaths as unknown[]).map((item) => absolute(plainPath(item, "An approval file")));
         checkRequestEnvironment(requestPath, environment);
         const forCleanup = applyRequestFor(requestPath);
-        start("cleanup", ["cleanup", "--proposal", proposalPath, "--request", forCleanup.path, "--manifest", manifestPath, ...approvals.flatMap((path) => ["--approval", path])], undefined, forCleanup.remove);
+        start("cleanup", ["cleanup", "--proposal", proposalPath, "--request", forCleanup.path, "--manifest", manifestPath, "--sealed", sealedPath, ...approvals.flatMap((path) => ["--approval", path])], undefined, forCleanup.remove);
         send(res, context.headers, 202, stateOf());
         return;
       }

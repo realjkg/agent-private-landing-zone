@@ -110,6 +110,7 @@ function LeftoversTable(props: { leftovers: LeftoversData }) {
       <h3>{complete ? COPY.verifyComplete : COPY.verifyIncomplete}</h3>
       <p><strong>{COPY.verifyNextLabel}</strong> {leftovers.nextAction}</p>
       {leftovers.sweep === "NOT_AVAILABLE" && <p role="note"><small>{COPY.verifyNotSearched}</small></p>}
+      <p role="note"><small>{COPY.observeSynthetic}</small></p>
       <table className="pilot-table">
         <thead><tr><th scope="col">Name in the project</th><th scope="col">Identifier in the cloud</th><th scope="col">Now</th></tr></thead>
         <tbody>
@@ -200,9 +201,10 @@ export default function CleanupStep(props: CleanupStepProps) {
       <textarea id="pilot-cleanup-approvals" rows={3} spellCheck={false} value={approvalsText} aria-describedby="pilot-cleanup-approvals-help" onChange={(event) => setApprovalsText(event.target.value)} />
       <p id="pilot-cleanup-approvals-help"><small>{COPY.cleanupApprovalsHelp} Example: <code>{COPY.egCleanupApproval}</code></small></p>
       {approvalPaths.length === 0 && <BlockedNotice state="NO_APPROVALS_YET" />}
-      {(requestPath.trim() === "" || manifestPath.trim() === "") && <p role="note"><small>The request and project fingerprint files from the earlier steps are needed too; enter them in the Apply step if you reloaded the page.</small></p>}
-      <button type="button" disabled={off || proposalPath.trim() === "" || approvalPaths.length === 0 || requestPath.trim() === "" || manifestPath.trim() === ""}
-        onClick={() => void begin(() => startCleanup({ environment, requestPath: requestPath.trim(), manifestPath: manifestPath.trim(), proposalPath: proposalPath.trim(), approvalPaths }))}>
+      {(requestPath.trim() === "" || manifestPath.trim() === "") && <p role="note"><small>{COPY.cleanupNeedsApplyFiles}</small></p>}
+      {sealedPath.trim() === "" && <p role="note"><small>{COPY.cleanupNeedsSealed}</small></p>}
+      <button type="button" disabled={off || proposalPath.trim() === "" || approvalPaths.length === 0 || requestPath.trim() === "" || manifestPath.trim() === "" || sealedPath.trim() === ""}
+        onClick={() => void begin(() => startCleanup({ environment, requestPath: requestPath.trim(), manifestPath: manifestPath.trim(), sealedPath: sealedPath.trim(), proposalPath: proposalPath.trim(), approvalPaths }))}>
         {COPY.cleanupRun}
       </button>
       {removal && removalWords && (
@@ -212,6 +214,7 @@ export default function CleanupStep(props: CleanupStepProps) {
           {removalKind !== "APPLIED" && <Reasoned step="remove the listed things" code={removal.code} message={removal.message} level={level} transcript={run?.transcript} />}
           <h4>What to do now</h4>
           <ul>{removalWords.next.map((line) => <li key={line}>{line}</li>)}</ul>
+          <p role="note"><small>{COPY.observeSynthetic}</small></p>
         </div>
       )}
 
