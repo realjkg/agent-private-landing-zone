@@ -149,6 +149,12 @@ export function PreparedSummary(props: { prepared: PreparedFiles }) {
         <dt>Project folder</dt><dd><code>{summary.projectRoot}</code> ({summary.fileCount} files)</dd>
         <dt>Tool version</dt><dd><code>{summary.engineVersion}</code></dd>
         <dt>Policy version</dt><dd><code>{summary.policyVersion}</code></dd>
+        <dt>{COPY.prepareInputsLabel}</dt>
+        <dd>{summary.inputs.length === 0 ? COPY.prepareInputsNone : (
+          <ul className="pilot-inputs">{summary.inputs.map((input) => (
+            <li key={input.name}><code>{input.name}</code>, from {input.source === "DEFAULT" ? COPY.prepareFromDefault : input.source === "TFVARS" ? COPY.prepareFromFile : COPY.prepareFromEnvironment} <code>{input.from}</code></li>
+          ))}</ul>
+        )}</dd>
       </dl>
       <p role="note">{COPY.prepareLocalOnly}</p>
       <p><strong>{nextText}</strong></p>
@@ -166,6 +172,15 @@ export function PreparedSummary(props: { prepared: PreparedFiles }) {
     </div>
   );
 }
+
+/** The plain word for why a readiness item is, or is not, ready. */
+const stateWord = (state: PreflightCheck["state"]): string => ({
+  READY: COPY.stateReady, MISSING: COPY.stateMissing, INVALID: COPY.stateInvalid, UNVERIFIED: COPY.stateUnverified, UNAVAILABLE: COPY.stateUnavailable,
+  BLOCKED: COPY.stateBlocked,
+})[state] ?? COPY.stateInvalid;
+/** Who can make a readiness item ready, in plain words. */
+const partyWord = (party: PreflightCheck["responsible"]): string | undefined =>
+  party === undefined ? undefined : ({ OWNER: COPY.partyOwner, OPERATOR: COPY.partyOperator, TOOL: COPY.partyTool })[party];
 
 /** The product version an apply's record names, when the record came back. */
 const appliedVersion = (result: RunResult): string | undefined => {
@@ -427,11 +442,12 @@ export default function PilotWizard(props: PilotWizardProps) {
                         const good = item.ok;
                         return (
                           <li key={item.check} data-ok={good ? "true" : "false"}>
-                            <p><span className={good ? "pilot-badge pilot-badge-ok" : "pilot-badge pilot-badge-bad"}>{good ? "Ready" : "Needs attention"}</span> {words.label}</p>
+                            <p><span className={good ? "pilot-badge pilot-badge-ok" : "pilot-badge pilot-badge-bad"} data-state={item.state}>{stateWord(item.state)}</span> {words.label}</p>
                             {!good && !words.informational && (
                               <>
                                 <p><strong>What is wrong:</strong> {words.wrong}</p>
                                 <p><strong>How to fix it:</strong> {words.fix}</p>
+                                {partyWord(item.responsible) && <p><strong>{COPY.whoFixes}</strong> {partyWord(item.responsible)}</p>}
                               </>
                             )}
                             {level !== "BEGINNER" && (
@@ -445,7 +461,6 @@ export default function PilotWizard(props: PilotWizardProps) {
                         );
                       })}
                     </ul>
-                    <p className="pilot-note" role="note">{COPY.readyHeadsUp}</p>
                   </div>
                 )}
                 {failureFor("preflight") && !readiness?.checks.length && (

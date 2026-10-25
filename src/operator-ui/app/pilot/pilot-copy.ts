@@ -45,7 +45,16 @@ export const COPY = {
   readyRunning: "Checking...",
   readyAllGreen: "Everything needed on this computer is ready.",
   readySomeRed: "Some items are not ready. Fix each red item, then check again.",
-  readyHeadsUp: "Heads up: whether the separate sign-ins really stay separate has not been proven against the real cloud yet. The first supervised run in DEV is where that gets checked.",
+  stateReady: "Ready",
+  stateMissing: "Missing",
+  stateInvalid: "Needs correcting",
+  stateUnverified: "Not yet proven",
+  stateUnavailable: "Not available here",
+  stateBlocked: "Stopped on purpose",
+  whoFixes: "Who can fix it:",
+  partyOwner: "the pilot owner",
+  partyOperator: "you, on this computer",
+  partyTool: "installing the missing tool (./alz deps)",
   resume: "I already prepared a change: go to Review and approve",
   resumeWhy: "Use this if you reloaded the page or came back later. You will enter the locations of the files from your earlier work.",
   signing: "Working. Keep this page open.",
@@ -65,6 +74,11 @@ export const COPY = {
   prepareNextCheck: "Next: before the first preview, a person runs the one-time DEV check in a terminal with the owner (see the walkthrough, \"Before your first change\"). Then come back and make the preview.",
   prepareNextOwner: "Next: the owner has to finish the DEV check first. You cannot do this from here.",
   prepareAdvanced: "Advanced: the saved files and their raw contents",
+  prepareInputsLabel: "Settings it uses",
+  prepareInputsNone: "none",
+  prepareFromDefault: "its default in",
+  prepareFromFile: "the file",
+  prepareFromEnvironment: "the setting",
   prepareOr: "Or use files you already have",
   prepareThen: "Then make the preview",
   sealTitle: "Prepare the change",
@@ -244,6 +258,10 @@ export const CODE_COPY: Readonly<Record<string, Reason>> = {
   APPLY_CONFIRMATION_MISMATCH: { why: "What you typed did not match the phrase shown. Nothing was signed or applied.", next: "Try again, and use the Copy button so the phrase is exact." },
   APPLY_UNEXPECTED_ERROR: { why: "Something unexpected stopped this step before it could say why.", next: "Do not assume it worked or that it did not. Tell the pilot owner, and check the Results before trying again." },
   // getting the files ready (./alz apply prepare)
+  INPUT_UNSET: { why: "The project needs settings that have no value yet. The Details name them; their values are never asked for or shown here.", next: "Give each one a default or an entry in the project's settings file, or set it where the console runs, then get the files ready again." },
+  MODULE_REMOTE: { why: "The project uses a building block (module) downloaded from outside the project, so its code is not fingerprinted and cannot be locked for review.", next: "Copy that module into the project folder and point to it with a ./ path, then get the files ready again." },
+  MODULE_OUTSIDE_PROJECT: { why: "The project points to a building block (module) folder outside the project folder, or to one that does not exist.", next: "Move that module inside the project folder, then get the files ready again." },
+  TERRAFORM_CONFIG_UNREADABLE: { why: "A project file could not be read, for example because a quote, comment or text block is not closed.", next: "Fix the file the Details name, then get the files ready again." },
   PREPARED: { why: "The files for this change are ready on this computer.", next: "Make the preview with the button under the filled-in boxes." },
   CONTRACT_DISABLED: { why: "The owner's pilot rules are not switched on and approved, so there is nothing to prepare against.", next: "Ask the pilot owner to approve the pilot rules. You cannot do this from here." },
   POLICY_VERSION_MISSING: { why: "The owner's pilot rules do not say which reviewed policy version applies, and the console never guesses it.", next: "Ask the pilot owner to add the policy version to the pilot rules and approve them again." },
@@ -323,6 +341,12 @@ export function describeCheck(item: PreflightCheck, environment: PilotEnvironmen
   const tool = /^tool (\S+) installed/.exec(name);
   if (tool) {
     return { known: true, label: "The tool \"" + tool[1] + "\" is installed in an approved folder", wrong: "The tool \"" + tool[1] + "\" was not found in a folder the pilot allows.", fix: "Install it in a standard system folder (the walkthrough lists them), restart the console, and check again." };
+  }
+  if (name.startsWith("engine qualified in DEV")) {
+    return { known: true, label: "The one-time DEV check has been done and still matches this computer", wrong: "The one-time DEV check has not been done, or it was done with a different tool, sign-in or account than this computer now uses, or it is more than 30 days old.", fix: "A person runs the one-time check in a terminal against DEV with the owner (see the walkthrough, \"Before your first change\"), then check again here." };
+  }
+  if (name.startsWith("identity separation attested")) {
+    return { known: true, label: "The separate sign-ins were shown to stay separate on the real cloud", wrong: "Nobody has confirmed yet, from the cloud's own records, that the separate sign-ins really stay separate. This is confirmed during the one-time DEV check.", fix: "It turns ready when the one-time DEV check is done and still matches this computer." };
   }
   if (name.startsWith("kill switch absent")) {
     return { known: true, label: "The emergency stop is off", wrong: "The emergency stop is on, so every change is blocked.", fix: "Only the pilot owner turns it off. Ask them, and do not remove the stop file yourself." };

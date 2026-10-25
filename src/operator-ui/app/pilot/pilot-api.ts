@@ -25,7 +25,11 @@ export type ReviewSummary = {
   changes: PlanChange[];
   changesOmitted: number;
 };
-export type PreflightCheck = { check: string; ok: boolean; detail?: string };
+/** Why an item is not ready (src/apply/readiness.ts): absent, present but wrong, not yet proven on the real cloud, not usable here, or stopped on purpose. */
+export type ReadinessState = "READY" | "MISSING" | "INVALID" | "UNVERIFIED" | "UNAVAILABLE" | "BLOCKED";
+/** Who can make an item ready. */
+export type ReadinessParty = "OWNER" | "OPERATOR" | "TOOL";
+export type PreflightCheck = { check: string; ok: boolean; state: ReadinessState; responsible?: ReadinessParty; detail?: string };
 
 /** What `prepare` saved and bound (src/apply/prepare.ts): local files, never proof that anything works in the cloud. */
 export type PreparedFiles = {
@@ -34,6 +38,8 @@ export type PreparedFiles = {
     label: "LOCAL_PREPARATION"; provider: string; engine: string; path: "PRIMARY" | "SECONDARY"; environment: PilotEnvironment;
     account: string; region?: string; backend: string; workspace: string; projectRoot: string; fileCount: number;
     providers: { source: string; version: string }[]; engineVersion: string; engineVersionSource: string; policyVersion: string;
+    /** Where each input's value comes from: a project file, a named environment variable or a default. Never the value. */
+    inputs: { name: string; source: "TFVARS" | "ENVIRONMENT" | "DEFAULT"; from: string }[];
     unitHash: string; manifestHash: string; contractSha256: string;
   };
   gaps: string[];

@@ -7,15 +7,16 @@ import { pathToFileURL } from "node:url";
 import { signApproval } from "../apply/approval.js";
 import { COMMIT, ENVIRONMENTS, stripInvisible } from "../apply/constants.js";
 import {
-  contractRefusal, inspectPilotContract, isKillSwitchActive, loadPilotContract, pilotContractSha256, repoPaths, requireNotApplied, targetForEnvironment, writeQualificationEvidence, type Refusal,
+  contractRefusal, isKillSwitchActive, loadPilotContract, pilotContractSha256, repoPaths, requireNotApplied, targetForEnvironment, writeQualificationEvidence, type Refusal,
 } from "../apply/contract.js";
 import { channelMismatchMessage } from "../apply/channel.js";
 import { liveRecordOf, readAppliedEvidence } from "../apply/live-record.js";
+import { assessReadiness } from "../apply/readiness.js";
 import { prepareApply, writePreparation, type Prepared, type PrepareRefusal } from "../apply/prepare.js";
 import { qualifyApply, runApply, sealPreview, type ApplyDeps, type SealRequest } from "../apply/driver.js";
 import { RECOVERY_FILE_NAMES, engineOf, engineSpec, type EngineNotices } from "../apply/engine-spec.js";
 import { assertApplyEvidence } from "../apply/evidence.js";
-import { attestedClientId, checkApplyIdentities, verifyIdentityTargets } from "../apply/identities.js";
+import { attestedClientId } from "../apply/identities.js";
 import { holdsReservation } from "../apply/ledger.js";
 import { accountFieldsOf, specOf } from "../apply/provider.js";
 import { loadSealedPlan, reviewBundleOf, verifyReviewBundle, type LoadedPlan } from "../apply/seal.js";
@@ -23,7 +24,6 @@ import type { ApplyEnvironment, ApplyIdentity, ApplyOutcome, PilotChannel, Pilot
 import { isRecord, SAFE_OPERATOR } from "../teardown/driver/human.js";
 import { sweepStale } from "../teardown/driver/cleanup.js";
 import { verifyManifest, type ArtifactManifest } from "../teardown/manifest.js";
-import { approvedToolDirs, resolveExecutable } from "../tools/child-env.js";
 import { resolveSourceCommit } from "../util/source-commit.js";
 import { identityVariables } from "../tools/identity.js";
 import { EXIT, installSignalCleanup, processTerminal, targetString, type HumanTerminal, type PhraseKind } from "./teardown-driver.js";
@@ -514,60 +514,22 @@ const pinCommand: Command = async (_flags, _terminal, deps, out) => {
 
 // --- preflight ---------------------------------------------------------------------------------------------
 
-/** What no check here can show: only a real backend run, attested by a person, moves it (docs/act-pilot-bootstrap.md). */
-const AUTHENTICATION_STATUS = "SIMULATED: identity separation is not verified on a real backend until `qualify` has run against a real DEV target";
-
 /**
- * Read-only and offline: whether this machine is ready for the environment named, before any seal. It checks the contract's
- * shape (even a draft or an example that is not enabled or pinned), that each identity the engine needs is configured,
- * distinct and aimed at the environment's account, that the engine's tools are installed in approved directories, and the
- * kill switch. It calls no cloud and starts no engine, prints names and never values, and enables nothing.
+ * Read-only and offline: whether this machine is ready for the environment named, before any seal. The items, their states,
+ * who can fix each one and the next step come from `assessReadiness` (src/apply/readiness.ts), the one readiness definition
+ * the console also shows. It calls no cloud, starts no engine, prints names and never values, and enables nothing.
  */
 const preflightCommand: Command = async (flags, _terminal, deps, out) => {
   const environment = flags.environment[0];
   if (!(ENVIRONMENTS as readonly string[]).includes(environment)) fail("APPLY_ARGUMENT_INVALID", "--environment must be DEV, QA or PROD");
-  const path = flags.contract?.[0] ?? deps.contractPath ?? repoPaths().contract;
-  // Missing owner configuration is a BLOCKED readiness item, not a failed user-entered request path.
-  // Preflight remains offline, read-only and fail-closed; it never synthesizes or enables a contract.
-  let inspected: ReturnType<typeof inspectPilotContract>;
-  try {
-    inspected = inspectPilotContract(readInput(path, "the pilot contract"));
-  } catch (error) {
-    if (!(error instanceof CliError)) throw error;
-    const detail = existsSync(path)
-      ? "The pilot contract exists but cannot be read as valid JSON. Ask the pilot owner to correct it."
-      : "The pilot contract has not been installed by the owner. Infrastructure ACT remains disabled.";
-    out.say(JSON.stringify({
-      environment, ready: false, authentication: AUTHENTICATION_STATUS,
-      checks: [{ check: "contract shape (provider, engine, targets, approvals, approvers)", ok: false, detail }],
-    }, null, 2) + "\n");
-    return EXIT.BLOCKED;
-  }
-  const checks: { check: string; ok: boolean; detail?: string }[] = [];
-  const add = (check: string, ok: boolean, detail?: string) => { checks.push({ check, ok, ...(detail === undefined ? {} : { detail }) }); };
-  add("contract shape (provider, engine, targets, approvals, approvers)", inspected.ok, inspected.ok ? undefined : inspected.reason);
-  if (inspected.ok) {
-    const { contract } = inspected;
-    const spec = specOf(contract);
-    const engine = engineOf(contract);
-    const env = deps.env ?? process.env;
-    const pinned = loadPilotContract(path, deps.contractPinPath);
-    add("pilot contract pinned and enabled (required before seal)", !("reason" in pinned), "reason" in pinned ? pinned.reason : undefined);
-    const identities = checkApplyIdentities(env, spec, engine.identities);
-    add("identities configured, distinct, no fallback (" + engine.identities.join(", ") + ")", identities.ok, identities.ok ? undefined : identities.message);
-    const targets = verifyIdentityTargets(contract, environment as ApplyEnvironment, env, spec, engine.identities);
-    add("identities aimed at the " + environment + " account", targets.ok, targets.ok ? undefined : targets.message);
-    // Informational: where the contract opts in, sealing itself carries STATE_WRITE's non-secret settings (typed confirmation at seal).
-    add("plan will embed STATE_WRITE settings: " + (contract.embedStateWrite === true ? "yes" : "no"), true);
-    for (const tool of engine.executables) {
-      add("tool " + tool + " installed in an approved directory", resolveExecutable(tool, deps.toolDirs ?? approvedToolDirs(env)) !== undefined);
-    }
-    add("kill switch absent", !isKillSwitchActive(contract), contract.killSwitchPath);
-  }
-  const ready = checks.every((c) => c.ok);
-  out.say(JSON.stringify({ environment, ready, authentication: AUTHENTICATION_STATUS, checks }, null, 2) + "\n");
-  return ready ? EXIT.PASS : EXIT.BLOCKED;
+  const report = await assessReadiness({
+    environment: environment as ApplyEnvironment, contractPath: flags.contract?.[0] ?? deps.contractPath, contractPinPath: deps.contractPinPath,
+    qualificationDir: deps.qualificationDir, toolDirs: deps.toolDirs, env: deps.env ?? process.env, now: deps.now,
+  });
+  out.say(JSON.stringify(report, null, 2) + "\n");
+  return report.ready ? EXIT.PASS : EXIT.BLOCKED;
 };
+
 
 // --- prepare -----------------------------------------------------------------------------------------------
 
@@ -585,6 +547,7 @@ function preparationReview(prepared: Prepared): string {
     "  project         " + s.projectRoot + " (" + s.fileCount + " files)",
     ...s.providers.map((p) => "  provider pin    " + p.source + " " + p.version),
     "  engine version  " + s.engineVersion + " (" + s.engineVersionSource.toLowerCase().replace(/_/g, " ") + ")",
+    ...s.inputs.map((i) => "  input           " + i.name + " from " + i.from + (i.source === "DEFAULT" ? " (default)" : "")),
     "  policy version  " + s.policyVersion, "  unit hash       " + s.unitHash, "  manifest hash   " + s.manifestHash,
     ...(prepared.gaps.length ? ["", "Known gaps:", ...prepared.gaps.map((gap) => "  - " + gap)] : []),
   ].join("\n") + "\n";
@@ -599,6 +562,7 @@ function preparationReview(prepared: Prepared): string {
 const prepareCommand: Command = async (flags, terminal, deps, out) => {
   const prepDeps = {
     contractPath: deps.contractPath, pinPath: deps.contractPinPath, qualificationDir: deps.qualificationDir, toolDirs: deps.toolDirs,
+    env: deps.env ?? process.env,
   };
   const input = { environment: flags.environment[0], projectRoot: flags.project[0], awsCliVersion: flags["aws-cli-version"]?.[0] };
   let result: Prepared | PrepareRefusal = await prepareApply(input, prepDeps);

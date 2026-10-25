@@ -75,7 +75,7 @@ If you choose the command line, the wizard shows the exact commands, in order, t
 
 ### Step 2: Check readiness
 
-Pick the environment (DEV, QA or PROD) and choose **Run the readiness check**. The check looks at this computer and changes nothing. Each item is "Ready" or "Needs attention". Each item that needs attention says what is wrong and how to fix it. You can continue only when everything is ready. Fix the red items, then choose **Check again**.
+Pick the environment (DEV, QA or PROD) and choose **Run the readiness check**. The check looks at this computer and changes nothing. Each item says "Ready", "Missing", "Needs correcting", "Not yet proven" (not yet shown on the real cloud) or "Not available here". Each item that is not ready says what is wrong and how to fix it. The list includes the one-time DEV check. It is ready only after a person has done it, and only while it still matches this computer; otherwise preparing the change would be refused, so the readiness check says so first. You can continue only when everything is ready. Fix the red items, then choose **Check again**.
 
 The check always ends with a heads-up: whether the separate sign-ins really stay separate has not been proven against the real cloud yet. The first supervised run in DEV is where that gets checked.
 

@@ -2,7 +2,7 @@ import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync
 import { join, resolve } from "node:path";
 
 import { loadToolPins } from "../deps/pins.js";
-import { buildManifest, canonicalJson, validateManifestForRequest, verifyManifest, type ArtifactManifest } from "../teardown/manifest.js";
+import { buildManifest, canonicalJson, validateManifestForRequest, verifyManifest, type ArtifactManifest, type ManifestDependency, type ManifestInput } from "../teardown/manifest.js";
 import { engineActivation } from "../teardown/driver/qualification.js";
 import type { EngineAdapter } from "../teardown/driver/types.js";
 import { captureProjectFiles } from "../teardown/snapshot.js";
@@ -12,6 +12,7 @@ import { ENVIRONMENTS } from "./constants.js";
 import { isKillSwitchActive, loadPilotContract, loadQualificationRecords, pilotContractSha256, repoPaths, targetForEnvironment } from "./contract.js";
 import { acceptsManifest, engineOf } from "./engine-spec.js";
 import { LockFileError, lockedProviders } from "./lockfile.js";
+import { checkModules, TerraformConfigError, variableSources } from "./terraform-inputs.js";
 import { specOf } from "./provider.js";
 import type { ApplyEnvironment, EngineId, PilotContract, ProviderId } from "./types.js";
 
@@ -38,7 +39,8 @@ const PATHS: Readonly<Record<ProviderId, { primary: EngineId; secondary: EngineI
 export type PrepareCode =
   | "CONTRACT_DISABLED" | "KILL_SWITCH_ACTIVE" | "POLICY_VERSION_MISSING" | "ENVIRONMENT_INVALID" | "TARGET_NOT_IN_CONTRACT"
   | "PROJECT_INVALID" | "PROJECT_ENGINE_MISMATCH" | "PROJECT_NOT_CLEAN" | "PROJECT_SNAPSHOT_REFUSED"
-  | "LOCK_FILE_MISSING" | "LOCK_FILE_UNREADABLE" | "ENGINE_VERSION_REQUIRED" | "TOOL_UNAVAILABLE" | "MANIFEST_INVALID";
+  | "LOCK_FILE_MISSING" | "LOCK_FILE_UNREADABLE" | "ENGINE_VERSION_REQUIRED" | "TOOL_UNAVAILABLE" | "MANIFEST_INVALID"
+  | "INPUT_UNSET" | "MODULE_REMOTE" | "MODULE_OUTSIDE_PROJECT" | "TERRAFORM_CONFIG_UNREADABLE";
 
 /** Who has to act to clear a refusal: the owner, the operator at this screen, or a missing local tool. */
 export type PrepareBlocker = "OWNER" | "OPERATOR" | "TOOL";
@@ -56,6 +58,8 @@ export type PrepareDeps = {
   qualificationDir?: string;
   toolDirs?: readonly string[];
   pinsPath?: string;
+  /** Where ALZ_DISCOVERY_TF_VAR_* are looked for (names only, never values). Defaults to `process.env`. */
+  env?: NodeJS.ProcessEnv;
 };
 
 export type SealRequestFile = {
@@ -67,10 +71,13 @@ export type SealRequestFile = {
     engineVersion: string;
     providers: { source: string; version: string }[];
     lockFileSha256?: string;
-    dependencies: never[];
-    inputs: never[];
+    dependencies: ManifestDependency[];
+    inputs: ManifestInput[];
   };
 };
+
+/** Where one input's value comes from, for the review: a file in the project, a named environment variable, or a default. Never the value. */
+export type PreparedInput = { name: string; source: "TFVARS" | "ENVIRONMENT" | "DEFAULT"; from: string };
 
 export type NextStep =
   | { step: "qualify"; reason: string }
@@ -92,6 +99,7 @@ export type PreparationSummary = {
   providers: { source: string; version: string }[];
   engineVersion: string;
   engineVersionSource: "QUALIFICATION_RECORD" | "TESTED_PIN" | "OPERATOR";
+  inputs: PreparedInput[];
   policyVersion: string;
   unitHash: string;
   manifestHash: string;
@@ -229,6 +237,11 @@ export async function prepareApply(input: PrepareInput, deps: PrepareDeps = {}):
     }
   }
 
+  // Inputs: each one's identity is a hash of where its value comes from (a fingerprinted file, a named environment variable
+  // or a default), never the value. An input with no value is refused here, before a preview would fail on it.
+  const derived = deriveInputs(engine.id, projectRoot, files, deps.env ?? process.env);
+  if ("refusal" in derived) return derived.refusal;
+
   // The engine version: a matching qualification record first; before one exists, the tested pin (Terraform) or
   // the operator's installed AWS CLI version (CDK, which has no pin). qualify still checks the real binary.
   const adapter = engine.previewAdapter() as unknown as EngineAdapter;
@@ -257,7 +270,7 @@ export async function prepareApply(input: PrepareInput, deps: PrepareDeps = {}):
   try {
     manifest = verifyManifest(buildManifest({
       engine: engine.id, mode: engine.manifestMode, target, unitHash, engineVersion, providers,
-      ...(lockFileSha256 ? { lockFileSha256 } : {}), files, dependencies: [], inputs: [], policyVersion: contract.policyVersion,
+      ...(lockFileSha256 ? { lockFileSha256 } : {}), files, dependencies: [], inputs: derived.inputs, policyVersion: contract.policyVersion,
     }));
   } catch (error) {
     return refuse("MANIFEST_INVALID", "OPERATOR", "The project fingerprint could not be built: " + (error instanceof Error ? error.message : "invalid input"));
@@ -265,12 +278,12 @@ export async function prepareApply(input: PrepareInput, deps: PrepareDeps = {}):
   if (!acceptsManifest(engine, manifest)) return refuse("MANIFEST_INVALID", "OPERATOR", "The project fingerprint does not match the contract's engine.");
   const request: SealRequestFile = {
     environment, target, projectRoot, policyVersion: contract.policyVersion,
-    resolved: { engineVersion, providers, ...(lockFileSha256 ? { lockFileSha256 } : {}), dependencies: [], inputs: [] },
+    resolved: { engineVersion, providers, ...(lockFileSha256 ? { lockFileSha256 } : {}), dependencies: [], inputs: derived.inputs },
   };
   // The same binding seal performs, run now so a mismatch is found here and not later.
   const binding = validateManifestForRequest(manifest, {
     engine: engine.id, mode: engine.manifestMode, target, unitHash: manifest.unitHash, engineVersion, providers,
-    lockFileSha256, files: captureProjectFiles(projectRoot), dependencies: [], inputs: [], policyVersion: contract.policyVersion,
+    lockFileSha256, files: captureProjectFiles(projectRoot), dependencies: [], inputs: derived.inputs, policyVersion: contract.policyVersion,
   });
   if (!binding.ok) return refuse("MANIFEST_INVALID", "OPERATOR", "The project changed while it was being prepared. Prepare it again.");
 
@@ -286,19 +299,71 @@ export async function prepareApply(input: PrepareInput, deps: PrepareDeps = {}):
     summary: {
       label: PREPARATION_LABEL, provider: spec.id, engine: engine.id, path: pathOf(spec.id, engine.id), environment,
       account: target.account, ...(region ? { region } : {}), backend: target.backend, workspace: target.workspace,
-      projectRoot, fileCount: files.length, providers, engineVersion, engineVersionSource,
+      projectRoot, fileCount: files.length, providers, engineVersion, engineVersionSource, inputs: derived.shown,
       policyVersion: contract.policyVersion, unitHash, manifestHash: manifest.manifestHash,
       contractSha256: pilotContractSha256(contract),
     },
     request,
     manifest,
     gaps: [
-      "No variable inputs or extra dependencies are bound for this change; they are not derived yet.",
+      ...(engine.id === "TERRAFORM" ? ["Every module this change calls is a local folder inside the project, so its code is fingerprinted with the project files; there are no other dependencies."] : []),
+      ...(derived.shown.some((i) => i.source === "ENVIRONMENT")
+        ? ["Values for " + derived.shown.filter((i) => i.source === "ENVIRONMENT").map((i) => i.name).join(", ") + " come from environment variables: they are named here, not fingerprinted. The sealed plan binds what they produced."]
+        : []),
       "These are local preparation files. They are not qualification evidence and prove nothing about the cloud.",
       ...(PATHS[spec.id].secondary === null ? [PATHS[spec.id].secondaryGap] : []),
     ],
     next,
   };
+}
+
+/** The inputs of a Terraform root module or a CDK assembly, as identities and as the plain list the review shows. */
+function deriveInputs(engine: EngineId, projectRoot: string, files: ArtifactManifest["files"], env: NodeJS.ProcessEnv):
+  { inputs: ManifestInput[]; shown: PreparedInput[] } | { refusal: PrepareRefusal } {
+  const fileHash = (path: string) => files.find((file) => file.path === path)?.sha256;
+  const identity = (name: string, source: Record<string, unknown>) => sha256(canonicalJson({ purpose: "pilot-input", engine, name, source } as never));
+  const inputs: ManifestInput[] = [];
+  const shown: PreparedInput[] = [];
+  const unset: string[] = [];
+  if (engine === "TERRAFORM") {
+    let sources: ReturnType<typeof variableSources>;
+    try {
+      checkModules(projectRoot);
+      sources = variableSources(projectRoot, env);
+    } catch (error) {
+      if (error instanceof TerraformConfigError) return { refusal: refuse(error.code, "OPERATOR", error.message) };
+      throw error;
+    }
+    for (const variable of sources) {
+      const { source } = variable;
+      if (source.kind === "UNSET") { unset.push(variable.name); continue; }
+      const from = source.kind === "ENVIRONMENT" ? source.variable : source.file;
+      inputs.push({ name: variable.name, identity: identity(variable.name, source.kind === "ENVIRONMENT" ? { ...source } : { ...source, sha256: fileHash(from) }) });
+      shown.push({ name: variable.name, source: source.kind, from });
+    }
+    if (unset.length > 0) {
+      return { refusal: refuse("INPUT_UNSET", "OPERATOR", "These Terraform variables have no value: " + unset.join(", ") +
+        ". Give each a default, an entry in terraform.tfvars, or set ALZ_DISCOVERY_TF_VAR_<name> where the console runs. Values are never read or stored here.") };
+    }
+  } else {
+    // CDK: the change set takes each template parameter's default; nothing passes another value.
+    for (const file of readdirSync(projectRoot).filter((name) => name.endsWith(".template.json")).sort()) {
+      let parameters: unknown;
+      try { parameters = (JSON.parse(readFileSync(join(projectRoot, file), "utf8")) as { Parameters?: unknown }).Parameters; } catch { parameters = undefined; }
+      if (!parameters || typeof parameters !== "object") continue;
+      for (const [parameter, body] of Object.entries(parameters as Record<string, unknown>)) {
+        const name = file.replace(/\.template\.json$/, "") + "/" + parameter;
+        if (!body || typeof body !== "object" || !Object.hasOwn(body, "Default")) { unset.push(name); continue; }
+        inputs.push({ name, identity: identity(name, { kind: "DEFAULT", file, sha256: fileHash(file) }) });
+        shown.push({ name, source: "DEFAULT", from: file });
+      }
+    }
+    if (unset.length > 0) {
+      return { refusal: refuse("INPUT_UNSET", "OPERATOR", "These template parameters have no default, and the pilot passes no parameter values: " + unset.join(", ") +
+        ". Give each a default in the CDK app and synthesize again.") };
+    }
+  }
+  return { inputs, shown };
 }
 
 /** Writes the request, manifest and preparation record, each named by the manifest hash, private and all-or-nothing. */

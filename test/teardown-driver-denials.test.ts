@@ -1018,6 +1018,7 @@ const APPLY_MAY_IMPORT: Readonly<Record<string, { modules: string[]; names?: str
   "src/apply/terraform.ts": { modules: ["adapters/terraform.js", "qualification.js", "types.js"] },
   "src/apply/contract.ts": { modules: ["qualification.js", "types.js"] },
   "src/apply/prepare.ts": { modules: ["qualification.js", "types.js"] },
+  "src/apply/readiness.ts": { modules: ["qualification.js", "types.js"] },
   "src/apply/approval.ts": { modules: ["types.js"] },
   "src/apply/types.ts": { modules: ["types.js"] },
   "src/cli/apply.ts": { modules: ["human.js", "cleanup.js"] },
