@@ -7,7 +7,7 @@ import { providerSpec } from "../../src/apply/provider.js";
 import { writeQualificationEvidence } from "../../src/apply/contract.js";
 import { finalizeArtifact, releaseReservation, reserveArtifact } from "../../src/apply/ledger.js";
 import type { SealRequest } from "../../src/apply/driver.js";
-import { APPLY_ADAPTER } from "../../src/apply/terraform.js";
+import { APPLY_ADAPTER, CLEANUP_ADAPTER } from "../../src/apply/terraform.js";
 import type { ApplyEnvironment, ApplyEvidence, ApplyResult, SealedPlan, SignedApproval } from "../../src/apply/types.js";
 import { ADAPTER_VERSION, terraformArgvDigest } from "../../src/teardown/driver/adapters/terraform.js";
 import type { QualificationRecord } from "../../src/teardown/driver/qualification.js";
@@ -70,12 +70,22 @@ export type Behavior = {
   applyWrites?: Array<{ path: string; content: string }>;
   /** `show` reports one more resource than the plan the seal listed. */
   showExtra?: boolean;
+  /** `show` lists only `showResources`, without the two default azurerm resources. */
+  showOnlyConfigured?: boolean;
   /** Raw `resource_changes` entries (imports, moves, forgets, hostile addresses), `output_changes` and `configuration.provider_config` that `show` adds. */
   showResources?: unknown[];
   showOutputChanges?: Record<string, unknown>;
   showProviderConfig?: Record<string, unknown>;
   /** What `init` saves in .terraform/terraform.tfstate. Default: the azurerm (or, under an AWS role, the s3) backend of the target whose subscription or account init runs under; null saves none. */
   savedBackend?: unknown;
+  /** Raw state resources `state pull` reports (state format 4), so a blueprint can be read after an apply. Default: one resource with a canary attribute and no identifier. */
+  stateResources?: unknown[];
+  /** After a destroy plan, `show` of the cleanup plan lists a delete of each `-target` address; these raw `resource_changes` are added (a dependent, an update). */
+  destroyExtra?: unknown[];
+  /** The destroy plan's `show` leaves out these targeted addresses (the state no longer holds them). */
+  destroyOmit?: string[];
+  /** The cleanup apply removes these state resources (by type.name) from later `state pull` answers; default: every targeted one. */
+  destroyKeeps?: string[];
 };
 
 const FAKE = `#!${process.execPath}
@@ -109,19 +119,40 @@ else if (cmd === "init") {
   log({ backendConfig: backend(), backendMode: bc ? fs.statSync(path.resolve(process.cwd(), bc.slice(16))).mode & 0o777 : undefined });
 }
 else if (cmd === "workspace") { log({}); if (sub === "show") process.stdout.write(b.workspace + "\\n"); }
-else if (cmd === "state" && sub === "pull") { log({}); process.stdout.write(JSON.stringify({ version: 4, serial: serial(), resources: [{ attributes: { password: "${STATE_CANARY}" } }] })); }
+else if (cmd === "state" && sub === "pull") {
+  log({});
+  const destroyedFile = path.join(dir, "destroyed.json");
+  const destroyed = fs.existsSync(destroyedFile) ? JSON.parse(fs.readFileSync(destroyedFile, "utf8")) : [];
+  const resources = (b.stateResources || [{ mode: "managed", type: "terraform_data", name: "canary", instances: [{ attributes: { password: "${STATE_CANARY}" } }] }])
+    .filter((r) => !destroyed.includes((r.module ? r.module + "." : "") + r.type + "." + r.name));
+  process.stdout.write(JSON.stringify({ version: 4, serial: serial(), resources }));
+}
 else if (cmd === "plan") {
   const p = path.resolve(process.cwd(), args.find((a) => a.startsWith("-out=")).slice(5));
-  fs.writeFileSync(p, "BINARY-PLAN ${PLAN_CANARY} " + (b.planSalt || ""));
+  fs.writeFileSync(p, "BINARY-PLAN ${PLAN_CANARY} " + (b.planSalt || "") + (args.includes("-destroy") ? " DESTROY" : ""));
+  if (args.includes("-destroy")) fs.writeFileSync(path.join(dir, "targets.json"), JSON.stringify(args.filter((a) => a.startsWith("-target=")).map((a) => a.slice(8))));
   log({ planPath: p });
+}
+else if (cmd === "show" && args[2] && args[2].endsWith("alz-cleanup.tfplan")) {
+  log({});
+  const targets = JSON.parse(fs.readFileSync(path.join(dir, "targets.json"), "utf8")).filter((t) => !(b.destroyOmit || []).includes(t));
+  const typeOf = (address) => address.replace(/^(module\.[^.]+\.)*/, "").split(".")[0];
+  process.stdout.write(JSON.stringify({
+    format_version: "1.2", errored: false,
+    resource_changes: [...targets.map((address) => ({ address, type: typeOf(address), change: { actions: ["delete"], before: { secret: "${VALUE_CANARY}" }, after: null } })), ...(b.destroyExtra || [])],
+    output_changes: {},
+    configuration: { provider_config: b.showProviderConfig || { azurerm: { name: "azurerm", full_name: "registry.terraform.io/hashicorp/azurerm", expressions: { subscription_id: { references: ["var.subscription_id"] } } } } },
+  }));
 }
 else if (cmd === "show") {
   log({});
   process.stdout.write(JSON.stringify({
     format_version: "1.2", errored: false, variables: { db_password: { value: "${VALUE_CANARY}" } },
     resource_changes: [
-      { address: "azurerm_resource_group.pilot", type: "azurerm_resource_group", change: { actions: ["create"], before: null, after: { tags: { k: "${VALUE_CANARY}" } } } },
-      { address: "azurerm_log_analytics_workspace.pilot", type: "azurerm_log_analytics_workspace", change: { actions: ["update"], before: {}, after: {} } },
+      ...(b.showOnlyConfigured ? [] : [
+        { address: "azurerm_resource_group.pilot", type: "azurerm_resource_group", change: { actions: ["create"], before: null, after: { tags: { k: "${VALUE_CANARY}" } } } },
+        { address: "azurerm_log_analytics_workspace.pilot", type: "azurerm_log_analytics_workspace", change: { actions: ["update"], before: {}, after: {} } },
+      ]),
       ...(b.showExtra ? [{ address: "azurerm_key_vault.extra", type: "azurerm_key_vault", change: { actions: ["delete"], before: {}, after: null } }] : []),
       ...(b.showResources || []),
     ],
@@ -142,6 +173,11 @@ else if (cmd === "apply") {
   log({ planSha: crypto.createHash("sha256").update(bytes).digest("hex"), planMode: fs.statSync(p).mode & 0o777, planText: bytes.toString("utf8"), planDir: path.dirname(p), pid: process.pid });
   const finish = () => {
     if (b.applyAdvance) fs.writeFileSync(serialFile, String(serial() + 1));
+    // A cleanup apply removes the targeted resources from the state the fake reports afterward (unless the test keeps some).
+    if (bytes.toString("utf8").endsWith("DESTROY") && fs.existsSync(path.join(dir, "targets.json"))) {
+      const gone = JSON.parse(fs.readFileSync(path.join(dir, "targets.json"), "utf8")).filter((t) => !(b.destroyKeeps || []).includes(t));
+      fs.writeFileSync(path.join(dir, "destroyed.json"), JSON.stringify(gone));
+    }
     process.stdout.write("APPLY-OUTPUT ${OUTPUT_CANARY}");
     if (b.applyKill) process.kill(process.pid, "SIGKILL");
     if (b.applyStderr) process.stderr.write(b.applyStderr);
@@ -163,9 +199,70 @@ export function installFakeTerraform(toolDir: string): void {
 export function behave(toolDir: string, killPath: string, behavior: Behavior = {}): void {
   writeFileSync(join(toolDir, "behavior.json"), JSON.stringify({ version: ENGINE_VERSION, workspace: "default", killPath, ...behavior }));
   writeFileSync(join(toolDir, "serial.txt"), "7");
-  for (const name of ["calls.jsonl", "signals.txt"]) rmSync(join(toolDir, name), { force: true });
+  for (const name of ["calls.jsonl", "signals.txt", "targets.json", "destroyed.json"]) rmSync(join(toolDir, name), { force: true });
   rmSync(killPath, { force: true });
 }
+
+// --- the fake AWS CLI the verifier reads with ------------------------------------------------------------------
+
+/**
+ * A fake `aws` for the independent verifier (src/observe): it answers `cloudcontrol get-resource` from a list of existing
+ * identifiers and `resourcegroupstaggingapi get-resources` from a list of tagged ARNs, and records every call. Logic
+ * only: NOT the real Cloud Control API. Install it in its own tool directory, beside the fake terraform's.
+ */
+export type AwsReadBehavior = {
+  /** Identifiers that exist. */
+  existing?: string[];
+  /** Identifiers whose read fails with this stderr. */
+  fail?: Record<string, string>;
+  /** Existing KMS keys reported in KeyState PendingDeletion. */
+  pendingDeletion?: string[];
+  /** ARNs the tagging API lists. */
+  tagged?: string[];
+  /** Every call exits non-zero with this stderr (an identity without access). */
+  failAll?: string;
+};
+const FAKE_AWS_READS = `#!${process.execPath}
+const fs = require("fs"), path = require("path");
+const dir = __dirname;
+const b = JSON.parse(fs.readFileSync(path.join(dir, "aws-behavior.json"), "utf8"));
+const args = process.argv.slice(2);
+fs.appendFileSync(path.join(dir, "aws-calls.jsonl"), JSON.stringify({ args, env: process.env, cwd: process.cwd() }) + "\\n");
+if (b.failAll) { process.stderr.write(b.failAll); process.exit(254); }
+if (args[0] === "cloudcontrol" && args[1] === "get-resource") {
+  const identifier = args[args.indexOf("--identifier") + 1];
+  if (b.fail && b.fail[identifier]) { process.stderr.write(b.fail[identifier]); process.exit(254); }
+  if ((b.existing || []).includes(identifier)) {
+    const pending = (b.pendingDeletion || []).includes(identifier);
+    process.stdout.write(JSON.stringify({ TypeName: args[3], ResourceDescription: { Identifier: identifier, Properties: JSON.stringify({ Secret: "CANARY_CLOUD_PROPERTY_c5", KeyState: pending ? "PendingDeletion" : "Enabled" }) } }));
+    process.exit(0);
+  }
+  process.stderr.write("An error occurred (ResourceNotFoundException) when calling the GetResource operation: not found");
+  process.exit(254);
+}
+if (args[0] === "resourcegroupstaggingapi") {
+  process.stdout.write(JSON.stringify({ ResourceTagMappingList: (b.tagged || []).map((arn) => ({ ResourceARN: arn, Tags: [] })) }));
+  process.exit(0);
+}
+process.stderr.write("unexpected"); process.exit(2);
+`;
+export function installFakeAwsReads(awsToolDir: string): void {
+  writeFileSync(join(awsToolDir, "aws"), FAKE_AWS_READS, { mode: 0o755 });
+  chmodSync(join(awsToolDir, "aws"), 0o755);
+}
+export function behaveAwsReads(awsToolDir: string, behavior: AwsReadBehavior = {}): void {
+  writeFileSync(join(awsToolDir, "aws-behavior.json"), JSON.stringify(behavior));
+  rmSync(join(awsToolDir, "aws-calls.jsonl"), { force: true });
+}
+export const awsReadCallsOf = (awsToolDir: string): { args: string[]; env: Record<string, string>; cwd: string }[] => existsSync(join(awsToolDir, "aws-calls.jsonl"))
+  ? readFileSync(join(awsToolDir, "aws-calls.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line) as { args: string[]; env: Record<string, string>; cwd: string })
+  : [];
+
+/** A raw state resource (format 4) for the fake's `state pull`: one instance with an id and, when given, an ARN. */
+export const stateResource = (type: string, name: string, id: string, arn?: string, module?: string) => ({
+  ...(module ? { module } : {}), mode: "managed", type, name, provider: 'provider["registry.terraform.io/hashicorp/aws"]',
+  instances: [{ schema_version: 0, attributes: { id, ...(arn ? { arn } : {}), secret_value: STATE_CANARY } }],
+});
 
 export type Call = {
   args: string[]; cwd: string; env: Record<string, string>; backendConfig?: string; planPath?: string;
@@ -277,6 +374,8 @@ export async function testFixtureForgeQualificationEvidence(vaultDir: string, on
     return written.evidenceHash;
   };
   const applyHash = await write(APPLY_ADAPTER.adapterVersion, APPLY_ADAPTER.argvDigest, only === "preview");
+  // The cleanup adapter is qualified with the apply adapter (`./alz apply qualify` records both from the same run).
+  await write(CLEANUP_ADAPTER.adapterVersion, CLEANUP_ADAPTER.argvDigest, only === "preview");
   const previewHash = await write(ADAPTER_VERSION, terraformArgvDigest("TERRAFORM"), only === "apply");
   return {
     applyRecord: applyRecordOf({ evidenceHash: applyHash }),

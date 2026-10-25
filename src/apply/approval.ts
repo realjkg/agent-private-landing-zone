@@ -1,7 +1,7 @@
 import { createPrivateKey, createPublicKey, sign, verify } from "node:crypto";
 import { canonicalJson } from "../teardown/manifest.js";
 import type { ResolvedTarget } from "../teardown/driver/types.js";
-import type { ApplyEnvironment, ApplyRefusalCode, ApproverEntry, ApprovalStatement, PilotContract, SignedApproval } from "./types.js";
+import type { ApplyEnvironment, ApplyRefusalCode, ApprovalSubject, ApproverEntry, ApprovalStatement, PilotContract, SignedApproval } from "./types.js";
 import { canonicalPublicKey } from "./contract.js";
 import { NonceStoreError, type NonceStore } from "./nonces.js";
 
@@ -23,19 +23,25 @@ type ApprovalVerdict =
   | { ok: true; approvers: { approverId: string; issuedAt: string }[] }
   | { ok: false; code: ApprovalCode; message: string };
 
-/** Domain separation: a signature over an approval statement is valid for nothing else. */
-const DOMAIN = "alz-apply-approval-v1\n";
+/**
+ * Domain separation: a signature over an approval statement is valid for nothing else, and an approval of one kind of
+ * action is valid for no other kind. An apply approval signs the sealed plan's artifact hash under the apply domain; a
+ * cleanup approval signs the cleanup proposal's hash under the cleanup domain (docs/act-pilot-plan.md, cleanup). The two
+ * never verify against each other, whatever hash they name, so an apply approval can never authorize a cleanup.
+ */
+const DOMAINS: Readonly<Record<ApprovalSubject, string>> = { APPLY: "alz-apply-approval-v1\n", CLEANUP: "alz-cleanup-approval-v1\n" };
 const SKEW_MS = 60_000;
 const NONCE = /^[a-f0-9]{32}$/;
 const STATEMENT_KEYS = ["approverId", "artifactSha256", "environment", "expiresAt", "issuedAt", "nonce", "schemaVersion", "target"];
 const TARGET_KEYS = ["account", "backend", "workspace"];
 
-const signedBytes = (statement: ApprovalStatement): Buffer => Buffer.from(DOMAIN + canonicalJson(statement));
+const signedBytes = (statement: ApprovalStatement, subject: ApprovalSubject): Buffer => Buffer.from(DOMAINS[subject] + canonicalJson(statement));
 const sameKeys = (value: object, keys: string[]): boolean => Object.keys(value).sort().join() === keys.join();
 const isText = (value: unknown): value is string => typeof value === "string" && value.length > 0;
 
-export function signApproval(statement: ApprovalStatement, privateKeyPem: string): SignedApproval {
-  const signature = sign(null, signedBytes(statement), createPrivateKey(privateKeyPem));
+/** Signs an approval of `subject` (default: an apply of a sealed plan). The statement's `artifactSha256` names the sealed plan's artifact, or the cleanup proposal's hash. */
+export function signApproval(statement: ApprovalStatement, privateKeyPem: string, subject: ApprovalSubject = "APPLY"): SignedApproval {
+  const signature = sign(null, signedBytes(statement, subject), createPrivateKey(privateKeyPem));
   return { statement, signatureBase64: signature.toString("base64") };
 }
 
@@ -49,11 +55,11 @@ function wellFormed(approval: unknown): approval is SignedApproval {
     && !!t && typeof t === "object" && sameKeys(t, TARGET_KEYS) && TARGET_KEYS.every((k) => isText(t[k as keyof ResolvedTarget]));
 }
 
-function signatureValid(approval: SignedApproval, entry: ApproverEntry): boolean {
+function signatureValid(approval: SignedApproval, entry: ApproverEntry, subject: ApprovalSubject): boolean {
   try {
     const key = createPublicKey(entry.publicKeyPem);
     if (key.asymmetricKeyType !== "ed25519") return false;
-    return verify(null, signedBytes(approval.statement), key, Buffer.from(approval.signatureBase64, "base64"));
+    return verify(null, signedBytes(approval.statement, subject), key, Buffer.from(approval.signatureBase64, "base64"));
   } catch {
     return false;
   }
@@ -68,10 +74,13 @@ export type VerifyApprovalsInput = {
   contract: PilotContract;
   now: Date;
   nonces: NonceStore;
+  /** What is being approved (default APPLY). A signature made for the other subject does not verify. */
+  subject?: ApprovalSubject;
 };
 
 export function verifyApprovalSet(input: VerifyApprovalsInput): ApprovalVerdict {
   const { approvals, artifactSha256, environment, target, contract, now, nonces } = input;
+  const subject: ApprovalSubject = input.subject ?? "APPLY";
   const allowlist: ApproverEntry[] = contract.approvers;
   const maxAgeMinutes = contract.maxApprovalAgeMinutes;
   // Contract validation is the one place that enforces the minimums (DEV 1, QA 1, PROD 2).
@@ -91,7 +100,7 @@ export function verifyApprovalSet(input: VerifyApprovalsInput): ApprovalVerdict 
     const s = approval.statement;
     const entry = allowlist.find((a) => a.id === s.approverId);
     if (!entry) return refuse("APPROVER_NOT_ALLOWED", "An approver is not on the allowlist.");
-    if (!signatureValid(approval, entry)) return refuse("APPROVAL_UNVERIFIED", "An approval signature does not verify against the allowlisted key.");
+    if (!signatureValid(approval, entry, subject)) return refuse("APPROVAL_UNVERIFIED", "An approval signature does not verify against the allowlisted key for this kind of action.");
     if (!entry.environments.includes(environment)) return refuse("APPROVER_NOT_ALLOWED", "An approver is not allowed for this environment.");
     signerKeys.add(canonicalPublicKey(entry.publicKeyPem));
     if (s.artifactSha256 !== artifactSha256 || s.environment !== environment

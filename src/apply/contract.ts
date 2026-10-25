@@ -270,11 +270,21 @@ export function targetForEnvironment(
  * needs a new preview and new approvals.
  */
 export const SUFFIX = ".apply.evidence";
+/** The cleanup ledger: one encrypted record per executed cleanup proposal, named by the proposal's hash, created exclusively. */
+export const CLEANUP_SUFFIX = ".cleanup.evidence";
 
 export function requireNotApplied(artifactSha256: string, evidenceDir: string = DEFAULT_EVIDENCE_DIR): Check {
   if (!HASH.test(artifactSha256)) return refuse("ARTIFACT_INVALID", "the artifact hash is not a SHA-256 digest");
   return existsSync(join(evidenceDir, artifactSha256 + SUFFIX))
     ? refuse("ARTIFACT_ALREADY_APPLIED", "this artifact has already been applied")
+    : { ok: true };
+}
+
+/** A cleanup proposal is executed once, whatever its outcome: retrying needs a new proposal and new approvals. */
+export function requireNotExecuted(proposalSha256: string, evidenceDir: string = DEFAULT_EVIDENCE_DIR): Check {
+  if (!HASH.test(proposalSha256)) return refuse("PROPOSAL_INVALID", "the proposal hash is not a SHA-256 digest");
+  return existsSync(join(evidenceDir, proposalSha256 + CLEANUP_SUFFIX))
+    ? refuse("PROPOSAL_ALREADY_EXECUTED", "this cleanup proposal has already been executed")
     : { ok: true };
 }
 

@@ -46,22 +46,28 @@ function* managedResources(module: StateModule, depth = 0): Generator<StateResou
 /** Types whose provider id is a credential identifier (an access key id, for example). Their id is never copied. */
 const CREDENTIAL_ID_TYPES = new Set(["aws_iam_access_key", "aws_iam_service_specific_credential"]);
 
-/** The blueprint from `terraform show -json` output and the sealed plan's changes. Throws on output that is not a state. */
-export function blueprintFromTerraformState(showJson: string, planned: readonly PlannedChange[]): Blueprint {
+/** One managed instance as either state format names it: its address, type and attribute values (read for identifiers only). */
+type Instance = { address: string; type: string; values: Record<string, unknown> };
+
+/** The parser's own message can quote the text around the error, which is state; it is never passed on. */
+function parseState(json: string): Record<string, unknown> {
   let body: unknown;
-  // The parser's own message can quote the text around the error, which is state; it is never passed on.
-  try { body = JSON.parse(showJson); } catch { throw new Error("STATE_JSON_INVALID: not JSON"); }
-  if (!isRecord(body) || !text(body.format_version)) throw new Error("STATE_JSON_INVALID: not terraform show -json output");
-  const root = isRecord(body.values) && isRecord(body.values.root_module) ? body.values.root_module : {};
+  try { body = JSON.parse(json); } catch { throw new Error("STATE_JSON_INVALID: not JSON"); }
+  if (!isRecord(body)) throw new Error("STATE_JSON_INVALID: not an object");
+  return body;
+}
+
+/** The blueprint over the instances found, whatever format they were read from. */
+function blueprintOf(instances: Iterable<Instance>, planned: readonly PlannedChange[]): Blueprint {
   // Outputs are listed among the plan's changes (address "output.<name>") but are not resources.
   const leaving = new Set(planned.filter((change) => change.type !== "output" && LEAVES_RESOURCE.has(change.action)).map((change) => change.address));
   const plannedAddresses = new Set(planned.map((change) => change.address));
   const entries: BlueprintEntry[] = [];
   const seen = new Set<string>();
-  for (const resource of managedResources(root)) {
+  for (const resource of instances) {
     if (!text(resource.address) || !text(resource.type) || seen.has(resource.address)) continue;
     seen.add(resource.address);
-    const values = isRecord(resource.values) ? resource.values : {};
+    const values = resource.values;
     entries.push({
       address: resource.address, type: resource.type,
       arn: text(values.arn) && values.arn.startsWith("arn:") ? values.arn : null,
@@ -72,4 +78,49 @@ export function blueprintFromTerraformState(showJson: string, planned: readonly 
   // Code-point order, as the sealed plan sorts its changes: the same on every machine, whatever its locale.
   entries.sort((a, b) => (a.address < b.address ? -1 : a.address > b.address ? 1 : 0));
   return { entries, missing: [...leaving].filter((address) => !seen.has(address)).sort() };
+}
+
+/** The blueprint from `terraform show -json` output and the sealed plan's changes. Throws on output that is not a state. */
+export function blueprintFromTerraformState(showJson: string, planned: readonly PlannedChange[]): Blueprint {
+  const body = parseState(showJson);
+  if (!text(body.format_version)) throw new Error("STATE_JSON_INVALID: not terraform show -json output");
+  const root = isRecord(body.values) && isRecord(body.values.root_module) ? body.values.root_module : {};
+  function* instances(): Generator<Instance> {
+    for (const resource of managedResources(root)) {
+      if (text(resource.address) && text(resource.type)) yield { address: resource.address, type: resource.type, values: isRecord(resource.values) ? resource.values : {} };
+    }
+  }
+  return blueprintOf(instances(), planned);
+}
+
+/** The address of one instance in a raw state document: module path, type and name, then the index (a number, or a quoted key). */
+function instanceAddress(resource: Record<string, unknown>, instance: Record<string, unknown>): string | undefined {
+  if (!text(resource.type) || !text(resource.name)) return undefined;
+  const module = text(resource.module) ? resource.module + "." : "";
+  const key = instance.index_key;
+  const index = typeof key === "number" && Number.isInteger(key) && key >= 0 ? "[" + key + "]"
+    : typeof key === "string" ? "[" + JSON.stringify(key) + "]" : key === undefined || key === null ? "" : undefined;
+  return index === undefined ? undefined : module + resource.type + "." + resource.name + index;
+}
+
+/**
+ * The same blueprint from a raw state document, as `terraform state pull` returns it (state format version 4), which the
+ * apply path already reads with the STATE identity: no second argument list is needed to observe. Identifiers only,
+ * as above; every other attribute value stays in the document, which the caller drops. Throws on anything that is not a state.
+ */
+export function blueprintFromTerraformStatePull(stateJson: string, planned: readonly PlannedChange[]): Blueprint {
+  const body = parseState(stateJson);
+  if (body.version !== 4 || !Array.isArray(body.resources)) throw new Error("STATE_JSON_INVALID: not a version 4 state document");
+  const resources = body.resources;
+  function* instances(): Generator<Instance> {
+    for (const resource of resources) {
+      if (!isRecord(resource) || resource.mode !== "managed" || !Array.isArray(resource.instances)) continue;
+      for (const instance of resource.instances) {
+        if (!isRecord(instance)) continue;
+        const address = instanceAddress(resource, instance);
+        if (address !== undefined) yield { address, type: resource.type as string, values: isRecord(instance.attributes) ? instance.attributes : {} };
+      }
+    }
+  }
+  return blueprintOf(instances(), planned);
 }

@@ -966,19 +966,27 @@ test("the comment stripper keeps code and drops prose, so the scans below mean w
   assert.ok(DRIVER_FILES.length >= 6, DRIVER_FILES.map(rel).join(","));
 });
 
-test("no source outside the driver, its adapters and the teardown CLI contains a -destroy or --preview-only argument", () => {
+test("no source outside the driver, its adapters, the teardown CLI and the pilot's cleanup adapter contains a -destroy or --preview-only argument", () => {
   const allowed = (path: string) => rel(path).startsWith("src/teardown/driver/") || /^src\/cli\/teardown[^/]*\.ts$/.test(rel(path));
+  // The one reviewed exception outside the preview driver (owner decisions of 2026-10-25, docs/act-pilot-plan.md "Cleanup of
+  // pilot-created resources"): the cleanup adapter's destroy plan, limited to the addresses of an approved cleanup proposal and
+  // compared with it before any approval is consumed. It is the only file that may say -destroy, in exactly two places: the
+  // argument builder and the allowlist that checks it. A third would be a new surface.
+  const CLEANUP_ADAPTER_FILE = "src/apply/terraform.ts";
   const files = sourcesUnder(resolve("src"));
   assert.ok(files.length > 100);
   const hits: string[] = [];
+  const cleanupHits: string[] = [];
   for (const path of files) {
     if (allowed(path)) continue;
     const code = codeOnly(readFileSync(path, "utf8"));
     for (const match of code.matchAll(/(["'`])((?:(?!\1)[^\\\n]|\\.)*)\1/g)) {
-      if (/(^|\s)-{1,2}(destroy|preview-only)(\b|=)/i.test(match[2])) hits.push(rel(path) + ": " + match[0]);
+      if (/(^|\s)-{1,2}(destroy|preview-only)(\b|=)/i.test(match[2])) (rel(path) === CLEANUP_ADAPTER_FILE ? cleanupHits : hits).push(rel(path) + ": " + match[0]);
     }
   }
   assert.deepEqual(hits, [], "a destroy-shaped argument outside the driver. See docs/teardown-broker-review.md");
+  assert.deepEqual(cleanupHits, [CLEANUP_ADAPTER_FILE + ': "-destroy"', CLEANUP_ADAPTER_FILE + ': "-destroy"'], "the cleanup adapter says -destroy in its builder and its allowlist, and nowhere else");
+  assert.doesNotMatch(codeOnly(readFileSync(resolve(CLEANUP_ADAPTER_FILE), "utf8")), /preview-only|auto-approve|["']destroy["']/, "no bare destroy and no preview-only in the cleanup adapter");
   // The scan does see the allowed places, so an empty result is not a blind scan.
   const terraform = codeOnly(readFileSync(resolve("src/teardown/driver/adapters/terraform.ts"), "utf8"));
   assert.match(terraform, /"-destroy"/);
@@ -1021,6 +1029,9 @@ const APPLY_MAY_IMPORT: Readonly<Record<string, { modules: string[]; names?: str
   "src/apply/readiness.ts": { modules: ["qualification.js", "types.js"] },
   "src/apply/approval.ts": { modules: ["types.js"] },
   "src/apply/types.ts": { modules: ["types.js"] },
+  // The observe and cleanup records name the resolved target by its type and nothing else of the preview driver.
+  "src/apply/cleanup-proposal.ts": { modules: ["types.js"] },
+  "src/apply/run-records.ts": { modules: ["types.js"] },
   "src/cli/apply.ts": { modules: ["human.js", "cleanup.js"] },
 };
 
