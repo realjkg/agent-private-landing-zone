@@ -76,6 +76,17 @@ function fixture(opts: {
     const override = Object.hasOwn(opts.changes ?? {}, key);
     if (key === "organizations list-organizational-units-for-parent" && !override && args.includes(targetId))
       return { OrganizationalUnits: [] };
+    if (key === "controltower list-enabled-baselines" && !override && args.includes("--include-children"))
+      return { enabledBaselines: [{
+        arn: "arn:aws:controltower:us-east-2:" + management + ":enabledbaseline/XABCDEFGH12345678",
+        baselineIdentifier: baselineArn,
+        targetIdentifier: "arn:aws:organizations::" + management +
+          ":account/" + orgId + "/111111111111",
+        parentIdentifier: "arn:aws:controltower:us-east-2:" + management +
+          ":enabledbaseline/XOUABCDEFG123456",
+        statusSummary: { status: "SUCCEEDED" },
+        driftStatusSummary: { types: { inheritance: { status: "IN_SYNC" } } },
+      }] };
     const response = override ? opts.changes![key] : responses[key];
     if (!response) throw Error("UNEXPECTED_API:" + key);
     return response as Record<string, any>;
@@ -224,12 +235,38 @@ test("independent post-provision readback confirms member/OU but not unobserved 
   const result = await verifyProvisionedAccount(intake.profile, intake.name, intake.email, good.call);
   assert.equal(result.accountId, member);
   assert.equal(result.targetOuId, targetId);
-  assert.equal(result.controlTowerAccountEnrollment, "NOT_INDEPENDENTLY_CONFIRMED");
+  assert.equal(result.controlTowerAccountEnrollment, "CHILD_BASELINE_SUCCEEDED");
+  assert.equal(result.childBaselineStatus, "SUCCEEDED");
   await assert.rejects(verifyProvisionedAccount(intake.profile, intake.name, intake.email,
     fixture({ changes: { "organizations list-parents": { Parents: [] },
       "organizations list-accounts": {
         Accounts: [{ Id: member, Name: intake.name, Email: intake.email, State: "ACTIVE" }],
       } } }).call), /ACCOUNT_NOT_IN_MANAGED_OU/);
+});
+test("account baseline is not marked complete when Control Tower child inheritance is absent or drifted", async () => {
+  const member = "111111111111";
+  const account = { "organizations list-accounts": {
+    Accounts: [{ Id: member, Name: intake.name, Email: intake.email, State: "ACTIVE" }],
+  } };
+  const absent = fixture({ changes: {
+    ...account,
+    "controltower list-enabled-baselines": { enabledBaselines: [
+      { targetIdentifier: "arn:aws:organizations::" + originalManagement +
+          ":ou/" + originalOrg + "/" + targetId,
+        baselineIdentifier: "arn:aws:controltower:us-east-2::baseline/17BSJV3IGJ2QSGA2",
+        statusSummary: { status: "SUCCEEDED" },
+      },
+    ] },
+  } });
+  const result = await verifyProvisionedAccount(intake.profile, intake.name, intake.email, absent.call);
+  assert.equal(result.controlTowerAccountEnrollment, "NOT_INDEPENDENTLY_CONFIRMED");
+  const proposal = await prepare(intake, fixture().call);
+  const receipt = await submit(proposal, intake.profile, fixture().call);
+  const tracked = await follow(intake.profile, proposal, receipt, absent.call,
+    { maxPolls: 1, intervalMs: 0, pause: async () => {} });
+  assert.equal(tracked.status, "ACCOUNT_BASELINE_PENDING");
+  assert.equal(tracked.verified, false);
+  assert.equal(tracked.accountId, member);
 });
 test("Account Factory CLI advertises guided workflow without invoking the cloud", async () => {
   await runCli(["--help"]);
