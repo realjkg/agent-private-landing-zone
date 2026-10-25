@@ -9,7 +9,7 @@
 
 export type PilotEnvironment = "DEV" | "QA" | "PROD";
 export type PilotPath = "UI" | "CLI";
-export type PilotStep = "preflight" | "seal" | "approve" | "apply";
+export type PilotStep = "preflight" | "prepare" | "seal" | "approve" | "apply";
 export type PhraseKind = "TARGET" | "RUN_PROJECT_CODE" | "EMBED_STATE_WRITE" | "ATTEST" | "APPROVE" | "APPLY";
 
 export type PlanChange = { address: string; type: string; action: string; importing?: true; previousAddress?: string };
@@ -18,12 +18,37 @@ export type ReviewSummary = {
   environment: PilotEnvironment;
   target: { account: string; backend: string; workspace: string };
   shortId: string;
+  /** The product version (source commit) that made the preview; approvers sign it with the change. */
+  sourceCommit: string;
   createdAt: string;
   counts: ChangeCounts;
   changes: PlanChange[];
   changesOmitted: number;
 };
-export type PreflightCheck = { check: string; ok: boolean; detail?: string };
+/** Why an item is not ready (src/apply/readiness.ts): absent, present but wrong, not yet proven on the real cloud, not usable here, or stopped on purpose. */
+export type ReadinessState = "READY" | "MISSING" | "INVALID" | "UNVERIFIED" | "UNAVAILABLE" | "BLOCKED";
+/** Who can make an item ready. */
+export type ReadinessParty = "OWNER" | "OPERATOR" | "TOOL";
+export type PreflightCheck = { check: string; ok: boolean; state: ReadinessState; responsible?: ReadinessParty; detail?: string };
+
+/** What `prepare` saved and bound (src/apply/prepare.ts): local files, never proof that anything works in the cloud. */
+export type PreparedFiles = {
+  files: { request: string; manifest: string; record: string };
+  summary: {
+    label: "LOCAL_PREPARATION"; provider: string; engine: string; path: "PRIMARY" | "SECONDARY"; environment: PilotEnvironment;
+    account: string; region?: string; backend: string; workspace: string; projectRoot: string; fileCount: number;
+    providers: { source: string; version: string }[]; engineVersion: string; engineVersionSource: string; policyVersion: string;
+    /** Where each input's value comes from: a project file, a named environment variable or a default. Never the value. */
+    inputs: { name: string; source: "TFVARS" | "ENVIRONMENT" | "DEFAULT"; from: string }[];
+    unitHash: string; manifestHash: string; contractSha256: string;
+  };
+  gaps: string[];
+  next: { step: "qualify" | "seal"; reason: string } | { step: "blocked"; blocker: string; reason: string };
+  request: unknown;
+  manifest: unknown;
+};
+/** Why `prepare` stopped, beside the refusal code: whose prerequisite it is, and a supported alternative when a tool is missing. */
+export type PrepareStop = { blocker: "OWNER" | "OPERATOR" | "TOOL"; alternative?: string };
 
 export type RunResult = {
   exit: number;
@@ -87,6 +112,7 @@ export const fetchPilotState = (): Promise<PilotReply> => send<PilotState>("GET"
 export const choosePath = (path: PilotPath): Promise<PilotReply> => send<PilotState>("POST", "/path", { path });
 export const startOver = (): Promise<PilotReply> => send<PilotState>("POST", "/reset", {});
 export const startPreflight = (environment: PilotEnvironment): Promise<PilotReply> => send<PilotState>("POST", "/preflight", { environment });
+export const startPrepare = (input: { environment: PilotEnvironment; projectPath: string; awsCliVersion?: string }): Promise<PilotReply> => send<PilotState>("POST", "/prepare", input);
 export const startSeal = (input: { environment: PilotEnvironment; requestPath: string; manifestPath: string }): Promise<PilotReply> => send<PilotState>("POST", "/seal", input);
 export const startApprove = (input: { bundlePath: string; keyPath: string; approverId: string }): Promise<PilotReply> => send<PilotState>("POST", "/approve", input);
 export const startApply = (input: { environment: PilotEnvironment; requestPath: string; manifestPath: string; sealedPath: string; approvalPaths: string[] }): Promise<PilotReply> => send<PilotState>("POST", "/apply", input);

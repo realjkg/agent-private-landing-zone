@@ -60,6 +60,12 @@ export type PilotContract = {
   /** Existence of this file stops an apply before it starts and between steps. */
   killSwitchPath: string;
   /**
+   * The policy version the owner has reviewed for this pilot. `./alz apply prepare` copies it into the request and
+   * manifest, so operators never type it. Optional: absent keeps an existing contract byte-for-byte as it was, and
+   * prepare then stops with an owner prerequisite instead of guessing.
+   */
+  policyVersion?: string;
+  /**
    * Opt-in, default off (absent or false is today's behavior, byte for byte). Terraform engine only. When true, the seal-time `init`
    * embeds STATE_WRITE's non-secret backend settings, so the plan names the state writer (docs/act-pilot-apply.md, "Embedding STATE_WRITE
    * in the plan"). It is part of the pinned contract, so the sealed plan binds the choice through `contractSha256`.
@@ -104,6 +110,8 @@ export type SealedPlan = {
   policyVersion: string;
   /** The pinned pilot contract (its canonical sha256) the plan was sealed under: it fixes the provider and every account field, region and tenant included, and the approver allowlist. An apply under another contract is refused. */
   contractSha256: string;
+  /** The product source commit that made this plan, bound by the artifact hash: approvers sign it, and only the same commit can apply it. */
+  sourceCommit: string;
   createdAt: string;
   /** Normalized, redacted change summary: address, type, action, and what else an approver must see (an import, a move, a forget, an output change). Never plan values. */
   changes: PlanChange[];
@@ -126,6 +134,10 @@ export type ApplyRefusalCode =
   | "HUMAN_INVOCATION_REQUIRED"
   /** The workflow was started in the other channel (terminal or console). Nothing was consumed. */
   | "CHANNEL_MISMATCH"
+  /** The product source commit could not be established, or the checkout has uncommitted changes. Nothing was consumed. */
+  | "SOURCE_UNVERIFIED"
+  /** The running product is not the commit the plan was sealed from. Nothing was consumed. */
+  | "SOURCE_CHANGED"
   | "TARGET_NOT_IN_CONTRACT"
   | "ARTIFACT_INVALID"
   | "ARTIFACT_TAMPERED"
@@ -159,6 +171,8 @@ export type ApplyEvidence = {
   releaseIdentity: string;
   /** The pinned contract the apply ran under, and so the provider, account, region or tenant it ran against. */
   contractSha256: string;
+  /** The product source commit that sealed the plan and ran the apply (they must be the same). */
+  sourceCommit: string;
   approvals: { approverId: string; issuedAt: string }[];
   adapter: { adapterVersion: string; argvDigest: string };
   toolVersions: { engine: string };

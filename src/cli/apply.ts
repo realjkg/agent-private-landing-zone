@@ -1,19 +1,22 @@
 import { createPrivateKey, randomBytes } from "node:crypto";
-import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { signApproval } from "../apply/approval.js";
-import { ENVIRONMENTS, stripInvisible } from "../apply/constants.js";
+import { COMMIT, ENVIRONMENTS, stripInvisible } from "../apply/constants.js";
 import {
-  contractRefusal, inspectPilotContract, isKillSwitchActive, loadPilotContract, pilotContractSha256, repoPaths, requireNotApplied, targetForEnvironment, writeQualificationEvidence, type Refusal,
+  contractRefusal, isKillSwitchActive, loadPilotContract, pilotContractSha256, repoPaths, requireNotApplied, targetForEnvironment, writeQualificationEvidence, type Refusal,
 } from "../apply/contract.js";
 import { channelMismatchMessage } from "../apply/channel.js";
+import { liveRecordOf, readAppliedEvidence } from "../apply/live-record.js";
+import { assessReadiness } from "../apply/readiness.js";
+import { prepareApply, writePreparation, type Prepared, type PrepareRefusal } from "../apply/prepare.js";
 import { qualifyApply, runApply, sealPreview, type ApplyDeps, type SealRequest } from "../apply/driver.js";
 import { RECOVERY_FILE_NAMES, engineOf, engineSpec, type EngineNotices } from "../apply/engine-spec.js";
 import { assertApplyEvidence } from "../apply/evidence.js";
-import { attestedClientId, checkApplyIdentities, verifyIdentityTargets } from "../apply/identities.js";
+import { attestedClientId } from "../apply/identities.js";
 import { holdsReservation } from "../apply/ledger.js";
 import { accountFieldsOf, specOf } from "../apply/provider.js";
 import { loadSealedPlan, reviewBundleOf, verifyReviewBundle, type LoadedPlan } from "../apply/seal.js";
@@ -21,7 +24,7 @@ import type { ApplyEnvironment, ApplyIdentity, ApplyOutcome, PilotChannel, Pilot
 import { isRecord, SAFE_OPERATOR } from "../teardown/driver/human.js";
 import { sweepStale } from "../teardown/driver/cleanup.js";
 import { verifyManifest, type ArtifactManifest } from "../teardown/manifest.js";
-import { approvedToolDirs, resolveExecutable } from "../tools/child-env.js";
+import { resolveSourceCommit } from "../util/source-commit.js";
 import { identityVariables } from "../tools/identity.js";
 import { EXIT, installSignalCleanup, processTerminal, targetString, type HumanTerminal, type PhraseKind } from "./teardown-driver.js";
 
@@ -38,12 +41,14 @@ import { EXIT, installSignalCleanup, processTerminal, targetString, type HumanTe
 // vault evidence, so neither is a file an operator names.
 
 const APPLY_USAGE = [
+  "  ./alz apply prepare --environment DEV|QA|PROD --project PROJECT_DIR [--aws-cli-version X.Y.Z]",
   "  ./alz apply qualify --request REQUEST.json --manifest MANIFEST.json",
   "  ./alz apply seal --request REQUEST.json --manifest MANIFEST.json",
   "  ./alz apply approve --bundle REVIEW_BUNDLE.json --key APPROVER_KEY.pem --approver ID",
   "  ./alz apply apply --request REQUEST.json --manifest MANIFEST.json --sealed SEALED_PLAN --approval APPROVAL.json [--approval APPROVAL.json ...]",
   "  ./alz apply status [--sealed SEALED_PLAN]",
   "  ./alz apply pin",
+  "  ./alz apply record-live --sealed SEALED_PLAN",
   "  ./alz apply preflight --environment DEV|QA|PROD [--contract CONTRACT.json]",
   "      A person at the terminal (or a person in the console wizard, which has its own session token). A workflow runs wholly in one of them. Identities come from the contract's engine: ALZ_DISCOVERY_*, ALZ_STATE_*, ALZ_STATE_WRITE_* and ALZ_APPLY_* (Terraform),",
   "      or ALZ_DISCOVERY_*, ALZ_CHANGESET_* and ALZ_APPLY_* (CDK). No flag names an engine; the pinned contract does.",
@@ -74,10 +79,16 @@ export type ApplyCliDeps = {
   channel?: PilotChannel;
   /** The structured end of a command, for a caller that draws its own screen. Never needed to run, and never changes what is decided. */
   report?: (event: ApplyReport) => void;
+  /** Where `prepare` saves its files; defaults to `.runs/pilot` in the repository. */
+  preparationDir?: string;
+  /** The product source commit. Production reads it from the checkout or the image's build stamp (`resolveSourceCommit`). */
+  sourceCommit?: string;
+  /** Where `record-live` writes its record; defaults to config/acceptance/evidence in the repository. */
+  acceptanceDir?: string;
 } & Pick<ApplyDeps, "contractPath" | "contractPinPath" | "qualificationDir" | "evidenceDir" | "nonces" | "scratchParent" | "toolDirs">;
 
 /** Why a command ended, without parsing text: a refusal's code and outcome, or a CLI error's code. */
-export type ApplyReport = { code: string; message: string; outcome?: ApplyOutcome };
+export type ApplyReport = { code: string; message: string; outcome?: ApplyOutcome; data?: unknown };
 
 type Flags = { single: readonly string[]; repeated?: readonly string[]; optional?: readonly string[] };
 const SUBCOMMANDS: Readonly<Record<string, Flags>> = {
@@ -88,6 +99,8 @@ const SUBCOMMANDS: Readonly<Record<string, Flags>> = {
   status: { single: [], optional: ["sealed"] },
   pin: { single: [] },
   preflight: { single: ["environment"], optional: ["contract"] },
+  prepare: { single: ["environment", "project"], optional: ["aws-cli-version"] },
+  "record-live": { single: ["sealed"] },
 };
 const MAX_INPUT_BYTES = 8 * 1024 * 1024;
 const CONTROL = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
@@ -225,12 +238,17 @@ type Command = (flags: Record<string, string[]>, terminal: HumanTerminal, deps: 
 /** What `seal` and `qualify` share: the request, the manifest, the target typed, and project code allowed. Returns what the driver needs. */
 async function confirmProjectCode(
   flags: Record<string, string[]>, terminal: HumanTerminal, deps: ApplyCliDeps, out: Out, heading: (notices: EngineNotices) => string, reads: (notices: EngineNotices) => string,
-): Promise<{ request: SealRequest; target: ResolvedTarget; who: string } | number> {
+): Promise<{ request: SealRequest; target: ResolvedTarget; who: string; sourceCommit: string } | number> {
   const file = readRequest("seal", flags.request[0]);
   const manifest = readManifest(flags.manifest[0]);
   if (!manifest) return blockedManifest(out);
   const { policyVersion, resolved } = file;
   if (typeof policyVersion !== "string" || !isRecord(resolved)) return fail("APPLY_INPUT_INVALID", "request.policyVersion and request.resolved are required");
+  // Before any phrase is asked: the plan is bound to the product commit, so an unknown or uncommitted one stops here.
+  const sourceCommit = sourceCommitFor(deps);
+  if (sourceCommit === undefined) {
+    return blocked({ ok: false, code: "SOURCE_UNVERIFIED", message: "The product source commit could not be established, so nothing was run. Commit your changes, or run the packaged image." }, out);
+  }
   const who = operatorId(deps);
   // The contract's engine says what runs. A contract that does not load is refused by the driver after the prompts, as before.
   const notices = engineNotices(deps);
@@ -238,7 +256,7 @@ async function confirmProjectCode(
   terminal.write([
     "", heading(notices),
     "  account         " + file.target.account, "  backend         " + file.target.backend, "  workspace       " + file.target.workspace,
-    "  manifest hash   " + manifest.manifestHash, reads(notices),
+    "  manifest hash   " + manifest.manifestHash, "  product commit  " + sourceCommit, reads(notices),
     "", notices.projectCode ?? "THIS RUNS NO PROJECT CODE: the pilot reads the pre-synthesized assembly and calls the AWS CLI with fixed arguments.",
     "  project root    " + file.projectRoot, "  files bound     " + manifest.files.length,
     "", "Type the target exactly to continue (anything else stops here):", "  " + targetString(file.target), "",
@@ -266,7 +284,7 @@ async function confirmProjectCode(
 
   const now = deps.now ?? (() => new Date());
   return {
-    target: file.target, who,
+    target: file.target, who, sourceCommit,
     request: {
       invocation: { operatorId: who, interactiveSession: true, confirmedTarget: { ...file.target }, confirmedAt: now().toISOString() },
       environment: file.environment, target: file.target, channel: deps.channel ?? "CLI", manifest, projectRoot: file.projectRoot, policyVersion, resolved: resolved as never,
@@ -277,7 +295,7 @@ async function confirmProjectCode(
 const sealCommand: Command = async (flags, terminal, deps, out) => {
   const gate = await confirmProjectCode(flags, terminal, deps, out, (n) => n.sealHeading, (n) => n.sealReads);
   if (typeof gate === "number") return gate;
-  const result = await sealPreview(gate.request, { env: deps.env ?? process.env, now: deps.now, ...driverPaths(deps) });
+  const result = await sealPreview(gate.request, { env: deps.env ?? process.env, now: deps.now, ...driverPaths(deps, gate.sourceCommit) });
   if (!result.ok) return blocked(result, out);
   const { sealed } = result;
   // The bundle approvers review. It holds no secret, so it can leave the operator's machine; the sealed plan itself cannot.
@@ -285,16 +303,25 @@ const sealCommand: Command = async (flags, terminal, deps, out) => {
   writeFileSync(reviewBundlePath, JSON.stringify(reviewBundleOf(sealed), null, 2) + "\n", { mode: 0o600 });
   out.say(JSON.stringify({
     artifactSha256: sealed.artifactSha256, environment: sealed.environment, target: sealed.target, releaseIdentity: sealed.releaseIdentity,
-    manifestHash: sealed.manifestHash, sealedPlanPath: result.path, reviewBundlePath, changes: sealed.changes,
+    manifestHash: sealed.manifestHash, sourceCommit: sealed.sourceCommit, sealedPlanPath: result.path, reviewBundlePath, changes: sealed.changes,
   }, null, 2) + "\n");
   return EXIT.PASS;
 };
 
 /** The locations and seams the CLI hands the driver; everything else the driver defaults from the repository. */
-const driverPaths = (deps: ApplyCliDeps) => ({
+const driverPaths = (deps: ApplyCliDeps, sourceCommit: string | undefined = sourceCommitFor(deps)) => ({
   contractPath: deps.contractPath, contractPinPath: deps.contractPinPath, qualificationDir: deps.qualificationDir,
-  scratchParent: deps.scratchParent, toolDirs: deps.toolDirs,
+  scratchParent: deps.scratchParent, toolDirs: deps.toolDirs, sourceCommit,
 });
+
+/** The product commit this command runs from, or undefined (the driver then refuses with SOURCE_UNVERIFIED). The reason goes to stderr. */
+function sourceCommitFor(deps: ApplyCliDeps): string | undefined {
+  if (deps.sourceCommit !== undefined) return COMMIT.test(deps.sourceCommit) ? deps.sourceCommit : undefined;
+  const found = resolveSourceCommit(repoPaths().root);
+  if (found.ok) return found.commit;
+  (deps.stderr ?? ((text: string) => { process.stderr.write(text); }))("NOTICE " + found.reason + "\n");
+  return undefined;
+}
 
 /**
  * The real-engine qualification (docs/act-pilot-apply.md, G2). Run once by a
@@ -309,7 +336,7 @@ const qualifyCommand: Command = async (flags, terminal, deps, out) => {
   if (typeof gate === "number") return gate;
   const env = deps.env ?? process.env;
   const now = deps.now ?? (() => new Date());
-  const ran = await qualifyApply(gate.request, { env, now, ...driverPaths(deps) });
+  const ran = await qualifyApply(gate.request, { env, now, ...driverPaths(deps, gate.sourceCommit) });
   if (!ran.ok) return blocked(ran, out);
 
   const contract = contractFor(deps);
@@ -409,6 +436,14 @@ const applyCommand: Command = async (flags, terminal, deps, out) => {
   if (sealedPlan.sealed.channel !== (deps.channel ?? "CLI")) {
     return blocked({ ok: false, code: "CHANNEL_MISMATCH", message: channelMismatchMessage(sealedPlan.sealed.channel) }, out);
   }
+  // Before anyone types the phrase: a plan applies only from the product commit that sealed it (the driver checks again).
+  const sourceCommit = sourceCommitFor(deps);
+  if (sourceCommit !== sealedPlan.sealed.sourceCommit) {
+    return blocked(sourceCommit === undefined
+      ? { ok: false, code: "SOURCE_UNVERIFIED", message: "The product source commit could not be established, so nothing was run or consumed." }
+      : { ok: false, code: "SOURCE_CHANGED", message: "This plan was sealed from product commit " + sealedPlan.sealed.sourceCommit.slice(0, 12) + ", but " +
+          sourceCommit.slice(0, 12) + " is running. Nothing was consumed. Apply from the commit that sealed it, or seal and approve a new plan." }, out);
+  }
   const who = operatorId(deps);
 
   // One phrase carries the environment, the artifact and the target, so what is typed is what runs.
@@ -416,7 +451,7 @@ const applyCommand: Command = async (flags, terminal, deps, out) => {
   terminal.write([
     "", "APPLY A SEALED PLAN TO " + request.environment + " (this changes real infrastructure; there is no undo here)",
     "  account         " + request.target.account, "  backend         " + request.target.backend, "  workspace       " + request.target.workspace,
-    "  artifact        " + sealedPlan.sealed.artifactSha256, "  manifest hash   " + manifest.manifestHash,
+    "  artifact        " + sealedPlan.sealed.artifactSha256, "  manifest hash   " + manifest.manifestHash, "  product commit  " + sealedPlan.sealed.sourceCommit,
     "  approvals       " + approvals.map((a) => printable(String(a.statement?.approverId))).join(", ") + " (the driver verifies each signature)",
     "  changes", ...changeLines(sealedPlan.sealed),
     "", engineNotices(deps).applyNote,
@@ -428,7 +463,7 @@ const applyCommand: Command = async (flags, terminal, deps, out) => {
   const result = await runApply({
     invocation: { operatorId: who, interactiveSession: true, confirmedTarget: { ...request.target }, confirmedAt: now().toISOString() },
     environment: request.environment, target: request.target, channel: deps.channel ?? "CLI", sealedPlan, manifest, projectRoot: request.projectRoot, approvals,
-  }, { env: deps.env ?? process.env, now, evidenceDir: deps.evidenceDir, nonces: deps.nonces, ...driverPaths(deps) });
+  }, { env: deps.env ?? process.env, now, evidenceDir: deps.evidenceDir, nonces: deps.nonces, ...driverPaths(deps, sourceCommit) });
   if (!result.ok) return blocked(result, out);
   try {
     out.say(JSON.stringify(assertApplyEvidence(result.evidence), null, 2) + "\n");
@@ -479,64 +514,129 @@ const pinCommand: Command = async (_flags, _terminal, deps, out) => {
 
 // --- preflight ---------------------------------------------------------------------------------------------
 
-/** What no check here can show: only a real backend run, attested by a person, moves it (docs/act-pilot-bootstrap.md). */
-const AUTHENTICATION_STATUS = "SIMULATED: identity separation is not verified on a real backend until `qualify` has run against a real DEV target";
-
 /**
- * Read-only and offline: whether this machine is ready for the environment named, before any seal. It checks the contract's
- * shape (even a draft or an example that is not enabled or pinned), that each identity the engine needs is configured,
- * distinct and aimed at the environment's account, that the engine's tools are installed in approved directories, and the
- * kill switch. It calls no cloud and starts no engine, prints names and never values, and enables nothing.
+ * Read-only and offline: whether this machine is ready for the environment named, before any seal. The items, their states,
+ * who can fix each one and the next step come from `assessReadiness` (src/apply/readiness.ts), the one readiness definition
+ * the console also shows. It calls no cloud, starts no engine, prints names and never values, and enables nothing.
  */
 const preflightCommand: Command = async (flags, _terminal, deps, out) => {
   const environment = flags.environment[0];
   if (!(ENVIRONMENTS as readonly string[]).includes(environment)) fail("APPLY_ARGUMENT_INVALID", "--environment must be DEV, QA or PROD");
-  const path = flags.contract?.[0] ?? deps.contractPath ?? repoPaths().contract;
-  // Missing owner configuration is a BLOCKED readiness item, not a failed user-entered request path.
-  // Preflight remains offline, read-only and fail-closed; it never synthesizes or enables a contract.
-  let inspected: ReturnType<typeof inspectPilotContract>;
-  try {
-    inspected = inspectPilotContract(readInput(path, "the pilot contract"));
-  } catch (error) {
-    if (!(error instanceof CliError)) throw error;
-    const detail = existsSync(path)
-      ? "The pilot contract exists but cannot be read as valid JSON. Ask the pilot owner to correct it."
-      : "The pilot contract has not been installed by the owner. Infrastructure ACT remains disabled.";
-    out.say(JSON.stringify({
-      environment, ready: false, authentication: AUTHENTICATION_STATUS,
-      checks: [{ check: "contract shape (provider, engine, targets, approvals, approvers)", ok: false, detail }],
-    }, null, 2) + "\n");
+  const report = await assessReadiness({
+    environment: environment as ApplyEnvironment, contractPath: flags.contract?.[0] ?? deps.contractPath, contractPinPath: deps.contractPinPath,
+    qualificationDir: deps.qualificationDir, toolDirs: deps.toolDirs, env: deps.env ?? process.env, now: deps.now,
+  });
+  out.say(JSON.stringify(report, null, 2) + "\n");
+  return report.ready ? EXIT.PASS : EXIT.BLOCKED;
+};
+
+
+// --- prepare -----------------------------------------------------------------------------------------------
+
+const NEXT_COMMAND: Readonly<Record<"qualify" | "seal", string>> = { qualify: "./alz apply qualify", seal: "./alz apply seal" };
+
+/** The readable review of a preparation: what was bound, what is still missing, and what the files are (and are not). */
+function preparationReview(prepared: Prepared): string {
+  const s = prepared.summary;
+  return [
+    "", "PREPARED (" + s.label + ": local files, not qualification evidence)",
+    "  provider        " + s.provider, "  engine          " + s.engine + " (" + s.path.toLowerCase() + " path)",
+    "  environment     " + s.environment, "  account         " + s.account,
+    ...(s.region ? ["  region          " + s.region] : []),
+    "  backend         " + s.backend, "  workspace       " + s.workspace,
+    "  project         " + s.projectRoot + " (" + s.fileCount + " files)",
+    ...s.providers.map((p) => "  provider pin    " + p.source + " " + p.version),
+    "  engine version  " + s.engineVersion + " (" + s.engineVersionSource.toLowerCase().replace(/_/g, " ") + ")",
+    ...s.inputs.map((i) => "  input           " + i.name + " from " + i.from + (i.source === "DEFAULT" ? " (default)" : "")),
+    "  policy version  " + s.policyVersion, "  unit hash       " + s.unitHash, "  manifest hash   " + s.manifestHash,
+    ...(prepared.gaps.length ? ["", "Known gaps:", ...prepared.gaps.map((gap) => "  - " + gap)] : []),
+  ].join("\n") + "\n";
+}
+
+/**
+ * Writes the seal request and artifact manifest for one project from the pinned contract, so an operator never authors them
+ * by hand (docs/act-pilot-apply.md). Local and offline: it reads the contract, the project folder, the lock file and
+ * qualification records, runs no engine, assumes no role, seals nothing, approves nothing and enables nothing. The engine
+ * is the contract's; a missing value is asked for only when the person can supply it, and never invented.
+ */
+const prepareCommand: Command = async (flags, terminal, deps, out) => {
+  const prepDeps = {
+    contractPath: deps.contractPath, pinPath: deps.contractPinPath, qualificationDir: deps.qualificationDir, toolDirs: deps.toolDirs,
+    env: deps.env ?? process.env,
+  };
+  const input = { environment: flags.environment[0], projectRoot: flags.project[0], awsCliVersion: flags["aws-cli-version"]?.[0] };
+  let result: Prepared | PrepareRefusal = await prepareApply(input, prepDeps);
+  if (!result.ok && result.code === "ENGINE_VERSION_REQUIRED" && input.awsCliVersion === undefined) {
+    // The one value an operator can supply: the AWS CLI version they will run, read from `aws --version` by them, not by us.
+    terminal.write("\n" + result.message + "\n");
+    const typed = (await terminal.ask("AWS CLI version (for example 2.27.10): ")).trim();
+    if (typed) result = await prepareApply({ ...input, awsCliVersion: typed }, prepDeps);
+  }
+  if (!result.ok) {
+    out.say("BLOCKED " + result.code + " (" + result.blocker.toLowerCase() + " prerequisite): " + result.message + "\n" +
+      (result.alternative ? "  Alternative: " + result.alternative + "\n" : ""));
+    out.report({ code: result.code, message: result.message, data: { blocker: result.blocker, ...(result.alternative ? { alternative: result.alternative } : {}) } });
     return EXIT.BLOCKED;
   }
-  const checks: { check: string; ok: boolean; detail?: string }[] = [];
-  const add = (check: string, ok: boolean, detail?: string) => { checks.push({ check, ok, ...(detail === undefined ? {} : { detail }) }); };
-  add("contract shape (provider, engine, targets, approvals, approvers)", inspected.ok, inspected.ok ? undefined : inspected.reason);
-  if (inspected.ok) {
-    const { contract } = inspected;
-    const spec = specOf(contract);
-    const engine = engineOf(contract);
-    const env = deps.env ?? process.env;
-    const pinned = loadPilotContract(path, deps.contractPinPath);
-    add("pilot contract pinned and enabled (required before seal)", !("reason" in pinned), "reason" in pinned ? pinned.reason : undefined);
-    const identities = checkApplyIdentities(env, spec, engine.identities);
-    add("identities configured, distinct, no fallback (" + engine.identities.join(", ") + ")", identities.ok, identities.ok ? undefined : identities.message);
-    const targets = verifyIdentityTargets(contract, environment as ApplyEnvironment, env, spec, engine.identities);
-    add("identities aimed at the " + environment + " account", targets.ok, targets.ok ? undefined : targets.message);
-    // Informational: where the contract opts in, sealing itself carries STATE_WRITE's non-secret settings (typed confirmation at seal).
-    add("plan will embed STATE_WRITE settings: " + (contract.embedStateWrite === true ? "yes" : "no"), true);
-    for (const tool of engine.executables) {
-      add("tool " + tool + " installed in an approved directory", resolveExecutable(tool, deps.toolDirs ?? approvedToolDirs(env)) !== undefined);
-    }
-    add("kill switch absent", !isKillSwitchActive(contract), contract.killSwitchPath);
+  const written = writePreparation(result, deps.preparationDir);
+  out.say(preparationReview(result) + "\nSaved (private to this account):\n  request   " + written.request + "\n  manifest  " + written.manifest +
+    "\n  record    " + written.record + "\n\n" + (result.next.step === "blocked"
+      ? "NEXT BLOCKED (" + result.next.blocker.toLowerCase() + " prerequisite): " + result.next.reason + "\n"
+      : "NEXT " + NEXT_COMMAND[result.next.step] + " --request " + written.request + " --manifest " + written.manifest + "\n  " + result.next.reason + "\n"));
+  out.report({
+    code: "PREPARED", message: "Prepared " + result.summary.engine + " for " + result.summary.environment + ".",
+    data: { files: written, summary: result.summary, gaps: result.gaps, next: result.next, request: result.request, manifest: result.manifest },
+  });
+  return EXIT.PASS;
+};
+
+// --- record-live -----------------------------------------------------------------------------------------
+
+/**
+ * Turns an owner-run apply that SUCCEEDED into the live acceptance record for the execute step (config/acceptance/journeys.json).
+ * It reads the apply's own evidence from the encrypted ledger, shows what ran, and asks the person who ran it to attest that it
+ * reached the real account. Then it writes identifiers and hashes only, never a value, for the owner to review and commit.
+ * It starts no engine and changes nothing in any cloud. The attestation is the person's, as in `qualify`.
+ */
+const recordLiveCommand: Command = async (flags, terminal, deps, out) => {
+  const contract = contractFor(deps);
+  if ("reason" in contract) return blocked(contractRefusal(contract), out);
+  const opened = await openSealed(flags.sealed[0]);
+  if (!("sealed" in opened)) return blocked(opened, out);
+  const { sealed } = opened;
+  const evidence = await readAppliedEvidence(sealed.artifactSha256, deps.evidenceDir ?? repoPaths().evidence);
+  if (!evidence) fail("LIVE_RECORD_UNAVAILABLE", "this plan has no finished apply evidence. A record is made only from an apply that ran and was recorded");
+  const who = operatorId(deps);
+  const now = (deps.now ?? (() => new Date()))();
+  const made = liveRecordOf(evidence!, contract, who, now);
+  if (!made.ok) return fail("LIVE_RECORD_UNAVAILABLE", made.reason);
+  const { record } = made;
+  const phrase = "LIVE " + record.environment + " " + record.artifactSha256.slice(0, 12);
+  terminal.write([
+    "", "RECORD LIVE ACCEPTANCE OF THE EXECUTE STEP (" + record.cloud + " " + record.engine + ")",
+    "  environment     " + record.environment, "  account         " + record.target.account, "  backend         " + record.target.backend,
+    "  workspace       " + record.target.workspace, "  artifact        " + record.artifactSha256, "  product commit  " + record.sourceCommit,
+    "  outcome         " + record.outcome + " at " + evidence!.finishedAt,
+    "", "Type this only if this apply ran against the real " + record.cloud + " account above, not a test or a fake engine.",
+    "It is your attestation, as in qualify, and it is written into the record with your name:", "  " + phrase, "",
+  ].join("\n"));
+  await confirm(terminal, phrase, "live> ", "LIVE_ATTESTATION_MISMATCH", "ATTEST");
+  const dir = deps.acceptanceDir ?? join(repoPaths().root, "config", "acceptance", "evidence");
+  const path = join(dir, [record.cloud, record.engine, "execute", record.environment, record.artifactSha256.slice(0, 12)].join("-").toLowerCase() + ".json");
+  mkdirSync(dir, { recursive: true });
+  try {
+    writeFileSync(path, JSON.stringify(record, null, 2) + "\n", { mode: 0o644, flag: "wx" });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") fail("LIVE_RECORD_EXISTS", "a record for this artifact is already written at " + path + "; it is never overwritten");
+    throw error;
   }
-  const ready = checks.every((c) => c.ok);
-  out.say(JSON.stringify({ environment, ready, authentication: AUTHENTICATION_STATUS, checks }, null, 2) + "\n");
-  return ready ? EXIT.PASS : EXIT.BLOCKED;
+  out.say(JSON.stringify({ written: path, record, next: "Review the record, commit it, and cite it as liveEvidence on the execute step in config/acceptance/journeys.json." }, null, 2) + "\n");
+  return EXIT.PASS;
 };
 
 const COMMANDS: Readonly<Record<string, Command>> = {
   qualify: qualifyCommand, seal: sealCommand, approve: approveCommand, apply: applyCommand, status: statusCommand, pin: pinCommand,
-  preflight: preflightCommand,
+  preflight: preflightCommand, prepare: prepareCommand, "record-live": recordLiveCommand,
 };
 
 /** Where `alz-preview-*` directories live and what a crashed apply leaves in them. */
@@ -554,7 +654,7 @@ function scratchHoldsRecovery(parent: string): boolean {
  * them first (docs/act-pilot-apply.md).
  */
 async function sweepUnlessHeld(sub: string, deps: ApplyCliDeps, out: Out): Promise<void> {
-  if (sub === "status" || sub === "approve" || sub === "pin" || sub === "preflight") return;
+  if (sub === "status" || sub === "approve" || sub === "pin" || sub === "preflight" || sub === "prepare" || sub === "record-live") return;
   const parent = deps.scratchParent ?? tmpdir();
   const held = scratchHoldsRecovery(parent) ? "a scratch directory holds errored.tfstate or crash.log"
     : await holdsReservation(deps.evidenceDir ?? repoPaths().evidence) ? "the apply ledger holds a reservation" : undefined;

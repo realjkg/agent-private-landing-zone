@@ -1,7 +1,7 @@
 import { readEncryptedEvidence, writeEncryptedEvidence } from "../evidence/vault.js";
 import { canonicalJson, type ArtifactManifest } from "../teardown/manifest.js";
 import type { ResolvedTarget } from "../teardown/driver/types.js";
-import { ENVIRONMENTS, HASH, INVISIBLE } from "./constants.js";
+import { COMMIT, ENVIRONMENTS, HASH, INVISIBLE } from "./constants.js";
 import { sha256 } from "../util/sha256.js";
 import { codeOf } from "./engine.js";
 import type { EnginePlanInput, EngineSpec } from "./engine-spec.js";
@@ -18,7 +18,7 @@ import { PILOT_CHANNELS, type ApplyEnvironment, type ApplyRefusalCode, type Pilo
 const SEAL_PURPOSE = "sealed-plan";
 
 type ArtifactFields = Pick<SealedPlan,
-  "planSha256" | "manifestHash" | "releaseIdentity" | "environment" | "target" | "channel" | "engineVersion" | "policyVersion" | "contractSha256" | "changes">;
+  "planSha256" | "manifestHash" | "releaseIdentity" | "environment" | "target" | "channel" | "engineVersion" | "policyVersion" | "contractSha256" | "sourceCommit" | "changes">;
 
 /**
  * The artifact hash an approver signs. The one definition; sealing and loading
@@ -31,7 +31,7 @@ export function computeArtifactSha256(fields: ArtifactFields): string {
     planSha256: fields.planSha256, manifestHash: fields.manifestHash, releaseIdentity: fields.releaseIdentity,
     environment: fields.environment, target: { account, backend, workspace }, channel: fields.channel,
     engineVersion: fields.engineVersion, policyVersion: fields.policyVersion, contractSha256: fields.contractSha256,
-    changesSha256: sha256(canonicalJson(fields.changes)),
+    sourceCommit: fields.sourceCommit, changesSha256: sha256(canonicalJson(fields.changes)),
   }));
 }
 
@@ -59,6 +59,8 @@ export type SealInput = EnginePlanInput & {
   policyVersion: string;
   /** The pinned contract's canonical sha256: sealed, so the plan applies only under this contract. */
   contractSha256: string;
+  /** The product source commit the driver was given by its caller: sealed, so only the same commit applies the plan. */
+  sourceCommit: string;
   now?: () => Date;
 };
 
@@ -76,7 +78,7 @@ function runSeal(input: SealInput): { sealed: SealedPlan; planBytes: Buffer } {
   const fields: ArtifactFields = {
     planSha256: sha256(planBytes), manifestHash: manifest.manifestHash, releaseIdentity: releaseIdentityOf(manifest),
     environment: input.environment, target: { ...input.target }, channel: input.channel ?? "CLI", engineVersion: input.engineVersion,
-    policyVersion: input.policyVersion, contractSha256: input.contractSha256, changes,
+    policyVersion: input.policyVersion, contractSha256: input.contractSha256, sourceCommit: input.sourceCommit, changes,
   };
   const sealed: SealedPlan = {
     schemaVersion: 1, artifactSha256: computeArtifactSha256(fields), ...fields,
@@ -122,7 +124,7 @@ export type ReviewBundle = Omit<SealedPlan, "schemaVersion"> & { changesSha256: 
 export const reviewBundleOf = (s: SealedPlan): ReviewBundle => ({
   artifactSha256: s.artifactSha256, planSha256: s.planSha256, manifestHash: s.manifestHash, releaseIdentity: s.releaseIdentity,
   environment: s.environment, target: { ...s.target }, channel: s.channel, engineVersion: s.engineVersion, policyVersion: s.policyVersion,
-  contractSha256: s.contractSha256, createdAt: s.createdAt, changes: s.changes, changesSha256: sha256(canonicalJson(s.changes)),
+  contractSha256: s.contractSha256, sourceCommit: s.sourceCommit, createdAt: s.createdAt, changes: s.changes, changesSha256: sha256(canonicalJson(s.changes)),
 });
 
 const BUNDLE_KEYS = Object.keys(reviewBundleOf({ target: {}, changes: [] } as never)).sort();
@@ -158,7 +160,8 @@ export function verifySealedPlan(value: unknown): LoadedSeal {
   if (!s || typeof s !== "object" || !Buffer.isBuffer(planBytes) || s.schemaVersion !== 1 ||
     !ENVIRONMENTS.includes(s.environment) || !PILOT_CHANNELS.includes(s.channel) || !s.target || typeof s.target !== "object" ||
     !Array.isArray(s.changes) || !s.changes.every(wellFormedChange) ||
-    ![s.artifactSha256, s.planSha256, s.manifestHash, s.releaseIdentity, s.contractSha256].every((h) => typeof h === "string" && HASH.test(h))) {
+    ![s.artifactSha256, s.planSha256, s.manifestHash, s.releaseIdentity, s.contractSha256].every((h) => typeof h === "string" && HASH.test(h)) ||
+    typeof s.sourceCommit !== "string" || !COMMIT.test(s.sourceCommit)) {
     return invalid("The sealed plan record is malformed.");
   }
   let recomputed: string;
@@ -174,7 +177,8 @@ export function verifyReviewBundle(value: unknown): { ok: true; bundle: ReviewBu
   if (Object.keys(b).sort().join() !== BUNDLE_KEYS.join() || !ENVIRONMENTS.includes(b.environment as ApplyEnvironment) || !PILOT_CHANNELS.includes(b.channel as PilotChannel) ||
     !["account", "backend", "workspace"].every((key) => text((t as Record<string, unknown>)[key])) ||
     !Array.isArray(b.changes) || !b.changes.every(wellFormedChange) || !text(b.engineVersion) || !text(b.policyVersion) || !text(b.createdAt) ||
-    ![b.artifactSha256, b.planSha256, b.manifestHash, b.releaseIdentity, b.contractSha256, b.changesSha256].every((h) => typeof h === "string" && HASH.test(h))) {
+    ![b.artifactSha256, b.planSha256, b.manifestHash, b.releaseIdentity, b.contractSha256, b.changesSha256].every((h) => typeof h === "string" && HASH.test(h)) ||
+    typeof b.sourceCommit !== "string" || !COMMIT.test(b.sourceCommit)) {
     return invalid("The review bundle is malformed.");
   }
   const bundle = b as ReviewBundle;

@@ -23,6 +23,26 @@ const INVENTORY_GUARDS = ["test/operations-parity.test.ts", "test/operations-cor
   "test/cli-ui-journey-map.test.ts"];
 const INVENTORY_INPUT = /^(?:src\/cli\/[^/]+\.ts|src\/operations\/.+\.ts|alz|package\.json|docs\/operator-console\.md|docs\/cli-ui-journey-map\.md)$/;
 
+// The journey matrix cites code and test titles by path, which no import reaches: a change to the matrix or to any file it
+// cites re-runs its check, so a renamed test or a removed module fails here instead of on a later, unrelated PR.
+const ACCEPTANCE_MATRIX = "config/acceptance/journeys.json";
+const ACCEPTANCE_TEST = "test/acceptance-journeys.test.ts";
+export function acceptanceCited(files) {
+  const cited = new Set([ACCEPTANCE_MATRIX]);
+  try {
+    JSON.stringify(JSON.parse(files.get(ACCEPTANCE_MATRIX) ?? "{}"), (key, value) => {
+      if ((key === "file" || key === "liveEvidence" || key === "evidence" || typeof key === "string" && /^\d+$/.test(key)) && typeof value === "string" && /^(?:src|test|scripts|config\/acceptance)\//.test(value)) cited.add(value);
+      return value;
+    });
+  } catch { /* an unreadable matrix fails its own test, which the matrix path still selects */ }
+  return cited;
+}
+
+// The release gate status is checked against its scope, the generated release view and the journey matrix, all read from
+// disk: a change to any of them re-runs that check, so a stale docs/release-status.md or an unprovable claim fails here.
+const RELEASE_STATUS_INPUT = /^(?:config\/release\/.+\.json|docs\/release-status\.md|config\/acceptance\/journeys\.json)$/;
+const RELEASE_STATUS_TEST = "test/release-status.test.ts";
+
 function uniq(values) { return [...new Set(values)].sort(); }
 function hasFile(files, name) { return files.has(name); }
 function matching(files, re) { return [...files.keys()].filter(p => re.test(p)); }
@@ -81,8 +101,14 @@ export function planChanged(changedPaths, files) {
     return [...seen].filter(p => TEST.test(p));
   };
 
+  const cited = acceptanceCited(files);
   for (const path of changed) {
     if (INVENTORY_INPUT.test(path)) addExisting(selected, files, INVENTORY_GUARDS);
+    if (cited.has(path)) addExisting(selected, files, [ACCEPTANCE_TEST]);
+    if (RELEASE_STATUS_INPUT.test(path)) {
+      addExisting(selected, files, [RELEASE_STATUS_TEST]);
+      if (path.startsWith("config/release/")) continue;
+    }
     if (/^docs\/(?:operator-console|cli-ui-journey-map)\.md$/.test(path)) continue;
     if (path === "scripts/qa-affected.mjs" || path === QA_SELF_TEST) {
       addExisting(selected, files, [QA_SELF_TEST]);
@@ -136,8 +162,9 @@ export function planChanged(changedPaths, files) {
       addExisting(selected, files, directlyImpacted);
       if (/^src\/operator-ui\/app\//.test(path)) buildUi = true;
       if (/^src\/(?:apply|security|identity|actions|policy)\//.test(path)) {
+        // teardown-driver-denials scans src/ for driver imports, which no import closure reaches.
         addExisting(selected, files, ["test/security-boundaries.test.ts",
-          "test/apply-boundary.test.ts"]);
+          "test/apply-boundary.test.ts", "test/teardown-driver-denials.test.ts"]);
       }
       if (directlyImpacted.length === 0) {
         // Do not mask missing test ownership with a blanket full-suite run.

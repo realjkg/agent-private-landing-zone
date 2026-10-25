@@ -4,6 +4,8 @@ import type { ApplyEnvironment } from "./types.js";
 
 /** A lowercase hex SHA-256 digest. */
 export const HASH = /^[0-9a-f]{64}$/;
+/** A full git commit id: the product source a plan was sealed and applied from. */
+export const COMMIT = /^[0-9a-f]{40}$/;
 
 /** A value safe to write into generated HCL: letters, digits, dot, underscore, hyphen. */
 export const SAFE_VALUE = /^[A-Za-z0-9._-]{1,128}$/;

@@ -14,7 +14,7 @@ import { removeTree } from "../src/teardown/driver/cleanup.js";
 import type { ApplyEnvironment } from "../src/apply/types.js";
 import type { ResolvedTarget } from "../src/teardown/driver/types.js";
 import { targetString } from "../src/cli/teardown-driver.js";
-import {
+import { SOURCE_COMMIT,
   DEV_TARGET, ENGINE_VERSION, NOW, OUTPUT_CANARY, PLAN_CANARY, POLICY, PROD_TARGET, QA_TARGET, STATE_CANARY, VALUE_CANARY, targetOf,
   behave as behaveIn, callsOf, contractJson, identityEnv, installFakeTerraform, keys, pinPathOf, testFixtureForgeQualificationEvidence, writePinnedContract,
   writeProject, type Behavior, type Project,
@@ -84,6 +84,7 @@ async function world(contract: unknown = contractJson(KILL), qualified = true): 
   return {
     contractPath, vault, evidenceDir,
     deps: (term, over = {}) => ({
+      sourceCommit: SOURCE_COMMIT,
       terminal: term, env: ENV, now: () => NOW, operatorId: "operator.fixture", contractPath, contractPinPath: pinPathOf(contractPath),
       qualificationDir: vault, evidenceDir, nonces, scratchParent: scratch, toolDirs: [toolDir], ...over,
     }),
@@ -368,7 +369,7 @@ test("seal writes a non-secret review bundle: the artifact's own fields and the 
   const text = readFileSync(s.bundle, "utf8");
   const bundle = JSON.parse(text) as Record<string, unknown>;
   assert.deepEqual(Object.keys(bundle).sort(), [
-    "artifactSha256", "changes", "changesSha256", "channel", "contractSha256", "createdAt", "engineVersion", "environment", "manifestHash", "planSha256", "policyVersion", "releaseIdentity", "target",
+    "artifactSha256", "changes", "changesSha256", "channel", "contractSha256", "createdAt", "engineVersion", "environment", "manifestHash", "planSha256", "policyVersion", "releaseIdentity", "sourceCommit", "target",
   ]);
   assert.equal(bundle.artifactSha256, s.artifactSha256);
   assert.equal(bundle.environment, "DEV");
@@ -788,35 +789,71 @@ test("approvers and the operator see an import, a move, a forget and output chan
   shown(applying.term.out.join(""));
 });
 
-test("preflight is read-only and offline: it reports shape, pin, identities, tools and kill switch, names no value, and marks authentication simulated", async () => {
+type Readiness = { ready: boolean; checks: { check: string; ok: boolean; state: string; detail?: string }[] };
+const stateOf = (report: Readiness, prefix: string) => report.checks.find((c) => c.check.startsWith(prefix))?.state;
+
+test("preflight is read-only and offline: every item says READY, MISSING, INVALID, UNVERIFIED, UNAVAILABLE or BLOCKED, and names no value", async () => {
   const w = await world();
   const before = engineCalls().length;
   const run = async (args: string[], over: Partial<ApplyCliDeps> = {}) => cli(w, ["preflight", ...args], [], over);
   const ok = await run(["--environment", "DEV"]);
   assert.equal(ok.code, 0, ok.stderr);
-  const report = JSON.parse(ok.stdout) as { ready: boolean; authentication: string; checks: { check: string; ok: boolean }[] };
+  const report = JSON.parse(ok.stdout) as Readiness & { authentication?: unknown };
   assert.equal(report.ready, true);
-  assert.match(report.authentication, /^SIMULATED/);
-  assert.ok(report.checks.length >= 5 && report.checks.every((c) => c.ok));
+  assert.equal(report.authentication, undefined, "there is no fixed authentication claim any more");
+  assert.ok(report.checks.length >= 7 && report.checks.every((c) => c.ok && c.state === "READY"));
+  assert.match(report.checks.find((c) => c.check.startsWith("engine qualified"))?.detail ?? "", /^Qualified in DEV/);
+  assert.equal(stateOf(report, "identity separation attested"), "READY", "attested only because the qualification evidence records it");
   assert.equal(engineCalls().length, before, "no engine started");
 
-  // A missing identity, an unpinned or disabled draft and a kill switch are each reported, with exit 2 (BLOCKED) and no value.
+  // A missing identity is MISSING, a collapsed pair INVALID; exit 2 (BLOCKED) and no value printed.
   const noIdentity = await run(["--environment", "DEV"], { env: {} });
   assert.equal(noIdentity.code, 2);
-  assert.match(noIdentity.stdout, /IDENTITY_NOT_CONFIGURED|No credentials are configured/);
+  assert.equal(stateOf(JSON.parse(noIdentity.stdout), "identities configured"), "MISSING");
   const secretValues = Object.values(ENV).filter((v): v is string => typeof v === "string" && v.length >= 8);
   for (const v of secretValues) assert.ok(!ok.stdout.includes(v) && !noIdentity.stdout.includes(v), "no identity value is printed");
+  // A draft that is not pinned or enabled is MISSING the owner's approval, though its shape is checked.
   const draft = await world(contractJson(KILL, { enabled: false }));
-  const drafted = JSON.parse((await cli(draft, ["preflight", "--environment", "DEV"], [])).stdout) as { checks: { check: string; ok: boolean }[] };
-  assert.equal(drafted.checks[0].ok, true, "a draft contract's shape is checked even though it is not enabled");
-  assert.equal(drafted.checks.find((c) => c.check.startsWith("pilot contract pinned"))?.ok, false);
+  const drafted = JSON.parse((await cli(draft, ["preflight", "--environment", "DEV"], [])).stdout) as Readiness;
+  assert.equal(drafted.checks[0].state, "READY", "a draft contract's shape is checked even though it is not enabled");
+  assert.equal(stateOf(drafted, "pilot contract pinned"), "MISSING");
+  // A missing tool is UNAVAILABLE; the emergency stop, a stop put in place on purpose, is BLOCKED.
+  assert.equal(stateOf(JSON.parse((await run(["--environment", "DEV"], { toolDirs: [fresh("empty-tools")] })).stdout), "tool terraform"), "UNAVAILABLE");
   writeFileSync(KILL, "stop");
-  assert.equal((await run(["--environment", "DEV"])).code, 2);
+  const stopped = await run(["--environment", "DEV"]);
+  assert.equal(stopped.code, 2);
+  assert.equal(stateOf(JSON.parse(stopped.stdout), "kill switch absent"), "BLOCKED");
   rmSync(KILL);
   // The environment is required and checked; no flag changes what is checked.
   assert.equal((await run(["--environment", "STAGING"])).code, 1);
   assert.equal((await run([])).code, 1);
   assert.equal((await run(["--environment", "DEV", "--force", "yes"])).code, 1);
+});
+
+test("preflight does not say ready before qualification: no record is MISSING and the backend attestation stays UNVERIFIED, as seal would refuse", async () => {
+  const w = await world(contractJson(KILL), false);
+  const run = await cli(w, ["preflight", "--environment", "DEV"], []);
+  assert.equal(run.code, 2, run.stderr);
+  const report = JSON.parse(run.stdout) as Readiness;
+  assert.equal(report.ready, false);
+  assert.equal(stateOf(report, "engine qualified"), "MISSING");
+  assert.match(report.checks.find((c) => c.check.startsWith("engine qualified"))?.detail ?? "", /\.\/alz apply qualify/);
+  assert.equal(stateOf(report, "identity separation attested"), "UNVERIFIED");
+  assert.ok(report.checks.filter((c) => !c.check.startsWith("engine qualified") && !c.check.startsWith("identity separation")).every((c) => c.state === "READY"));
+  // What readiness reports is what seal does: the same machine cannot seal.
+  const target = targetOf("DEV");
+  const sealing = await cli(w, sealArgs(writeProject(fresh("project"), target), target, "DEV"), [targetString(target), PHRASE]);
+  assert.match(sealing.stderr, /ENGINE_NOT_QUALIFIED/);
+
+  // Evidence that no longer matches this machine (another engine binary) is INVALID, not MISSING: apply would refuse it too.
+  const qualified = await world();
+  const otherBinary = fresh("other-tools");
+  installFakeTerraform(otherBinary);
+  writeFileSync(join(otherBinary, "terraform"), readFileSync(join(otherBinary, "terraform"), "utf8") + "\n// a different build\n", { mode: 0o755 });
+  const changed = JSON.parse((await cli(qualified, ["preflight", "--environment", "DEV"], [], { toolDirs: [otherBinary] })).stdout) as Readiness;
+  assert.equal(stateOf(changed, "engine qualified"), "INVALID");
+  assert.match(changed.checks.find((c) => c.check.startsWith("engine qualified"))?.detail ?? "", /this engine binary/);
+  assert.equal(stateOf(changed, "identity separation attested"), "UNVERIFIED");
 });
 
 test("preflight gives a safe readiness item for a missing or unreadable owner contract", async () => {
@@ -828,12 +865,11 @@ test("preflight gives a safe readiness item for a missing or unreadable owner co
   const absent = await cli(w, args, []);
   assert.equal(absent.code, 2, absent.stderr);
   assert.equal(absent.stderr, "", "missing pilot configuration must not surface a generic input-file error");
-  const missing = JSON.parse(absent.stdout) as { ready: boolean; authentication: string; checks: { check: string; ok: boolean; detail?: string }[] };
+  const missing = JSON.parse(absent.stdout) as Readiness;
   assert.equal(missing.ready, false);
-  assert.match(missing.authentication, /^SIMULATED/);
   assert.equal(missing.checks.length, 1);
   assert.match(missing.checks[0].check, /^contract shape/);
-  assert.equal(missing.checks[0].ok, false);
+  assert.equal(missing.checks[0].state, "MISSING");
   assert.match(missing.checks[0].detail ?? "", /has not been installed by the owner/);
   assert.equal(engineCalls().length, before, "preflight never starts an engine");
 
@@ -841,9 +877,124 @@ test("preflight gives a safe readiness item for a missing or unreadable owner co
   const malformed = await cli(w, args, []);
   assert.equal(malformed.code, 2, malformed.stderr);
   assert.equal(malformed.stderr, "");
-  const broken = JSON.parse(malformed.stdout) as { ready: boolean; checks: { ok: boolean; detail?: string }[] };
+  const broken = JSON.parse(malformed.stdout) as Readiness;
   assert.equal(broken.ready, false);
-  assert.equal(broken.checks[0].ok, false);
+  assert.equal(broken.checks[0].state, "INVALID");
   assert.match(broken.checks[0].detail ?? "", /cannot be read as valid JSON/);
   assert.equal(engineCalls().length, before, "invalid configuration cannot start an engine");
+});
+
+test("prepare writes the request and manifest from the contract and project, and seal accepts them unchanged", async () => {
+  const w = await world(contractJson(KILL, { policyVersion: POLICY }));
+  const target = targetOf("DEV");
+  const project = writeProject(fresh("project"), target).projectRoot;
+  // A variable from terraform.tfvars: prepare binds it as an input identity, and seal must accept that binding.
+  writeFileSync(join(project, "variables.tf"), 'variable "location" {}\n');
+  writeFileSync(join(project, "terraform.tfvars"), 'location = "westeurope"\n');
+  const outDir = fresh("prepared");
+  const before = engineCalls().length;
+  const run = await cli(w, ["prepare", "--environment", "DEV", "--project", project], [], { preparationDir: outDir });
+  assert.equal(run.code, 0, run.stdout + run.stderr);
+  assert.equal(engineCalls().length, before, "prepare never starts an engine");
+  assert.match(run.stdout, /LOCAL_PREPARATION: local files, not qualification evidence/);
+  assert.match(run.stdout, /account {9}\S+/);
+  assert.match(run.stdout, /Known gaps:/);
+  const request = /request {3}(\S+)/.exec(run.stdout)?.[1];
+  const manifest = /manifest {2}(\S+)/.exec(run.stdout)?.[1];
+  assert.ok(request && manifest && existsSync(request) && existsSync(manifest));
+  assert.match(run.stdout, /NEXT \.\/alz apply seal --request /);
+  assert.match(run.stdout, /input {11}location from terraform\.tfvars/);
+  assert.doesNotMatch(run.stdout, /westeurope/, "a value is never printed");
+  assert.equal(readdirSync(join(outDir, "DEV")).length, 3);
+
+  const seal = await cli(w, ["seal", "--request", request, "--manifest", manifest], [targetString(target), PHRASE]);
+  assert.equal(seal.code, 0, seal.stderr);
+  assert.match(JSON.parse(seal.stdout).artifactSha256, /^[0-9a-f]{64}$/);
+});
+
+test("prepare reports the exact owner prerequisite, offers no way around it, and writes nothing", async () => {
+  const w = await world(contractJson(KILL));
+  const project = writeProject(fresh("project"), targetOf("DEV")).projectRoot;
+  const outDir = fresh("prepared");
+  const run = await cli(w, ["prepare", "--environment", "DEV", "--project", project], [], { preparationDir: outDir });
+  assert.equal(run.code, 2);
+  assert.match(run.stdout, /^BLOCKED POLICY_VERSION_MISSING \(owner prerequisite\)/);
+  assert.doesNotMatch(run.stdout, /Alternative/);
+  assert.equal(readdirSync(outDir).length, 0);
+  // No flag names an engine, a target or a policy version.
+  for (const flag of ["--engine", "--target", "--policy-version", "--force"]) {
+    assert.equal((await cli(w, ["prepare", "--environment", "DEV", "--project", project, flag, "x"], [])).code, 1);
+  }
+  assert.equal((await cli(w, ["prepare", "--environment", "DEV"], [])).code, 1);
+});
+
+test("seal and apply stop before any question when the product commit is unknown or uncommitted, and apply only from the commit that sealed it", async () => {
+  const w = await world();
+  const target = targetOf("DEV");
+  const p = writeProject(fresh("project"), target);
+  const before = engineCalls().length;
+  const unknown = await cli(w, sealArgs(p, target, "DEV"), [targetString(target), PHRASE], { sourceCommit: "not-a-commit" });
+  assert.equal(unknown.code, 2);
+  assert.match(unknown.stderr, /^BLOCKED SOURCE_UNVERIFIED/);
+  assert.deepEqual(unknown.term.asked, [], "no phrase was asked");
+  assert.equal(engineCalls().length, before, "no engine ran");
+
+  const s = await sealed(w, "DEV");
+  assert.match(s.artifactSha256, /^[0-9a-f]{64}$/);
+  const bundle = JSON.parse(readFileSync(s.bundle, "utf8")) as { sourceCommit: string };
+  assert.equal(bundle.sourceCommit, SOURCE_COMMIT, "the review bundle names the commit approvers sign");
+  const approval = await approve(w, s, "alice");
+  const appliedBefore = applyCalls().length;
+  const moved = await cli(w, applyArgs(s, [approval]), [applyPhrase(s)], applyIn(s, { sourceCommit: "1".repeat(40) }));
+  assert.equal(moved.code, 2);
+  assert.match(moved.stderr, /^BLOCKED SOURCE_CHANGED/);
+  assert.deepEqual(moved.term.asked, [], "no phrase was asked");
+  assert.equal(applyCalls().length, appliedBefore, "no engine ran");
+  const applied = await cli(w, applyArgs(s, [approval]), [applyPhrase(s)], applyIn(s));
+  assert.equal(applied.code, 0, applied.stderr);
+  assert.equal((JSON.parse(applied.stdout) as { sourceCommit: string }).sourceCommit, SOURCE_COMMIT, "the evidence names the commit");
+});
+
+test("record-live makes the execute step's live record only from a recorded successful apply, after the person attests it, and never overwrites it", async () => {
+  const w = await world();
+  const s = await sealed(w, "DEV");
+  const acceptanceDir = fresh("acceptance");
+  const record = (answers: string[]) => cli(w, ["record-live", "--sealed", s.path], answers, { acceptanceDir });
+  const phrase = "LIVE DEV " + s.artifactSha256.slice(0, 12);
+
+  const early = await record([phrase]);
+  assert.equal(early.code, 1);
+  assert.match(early.stderr, /^LIVE_RECORD_UNAVAILABLE/);
+  assert.deepEqual(readdirSync(acceptanceDir), []);
+
+  const applied = await cli(w, applyArgs(s, [await approve(w, s, "alice")]), [applyPhrase(s)], applyIn(s));
+  assert.equal(applied.code, 0, applied.stderr);
+  const before = engineCalls().length;
+  const wrong = await record(["LIVE DEV"]);
+  assert.equal(wrong.code, 1);
+  assert.match(wrong.stderr, /^LIVE_ATTESTATION_MISMATCH/);
+  assert.deepEqual(readdirSync(acceptanceDir), [], "nothing is written without the attestation");
+
+  const done = await record([phrase]);
+  assert.equal(done.code, 0, done.stderr);
+  assert.equal(engineCalls().length, before, "recording starts no engine");
+  const { written } = JSON.parse(done.stdout) as { written: string };
+  const saved = JSON.parse(readFileSync(written, "utf8")) as Record<string, unknown>;
+  const evidence = JSON.parse(applied.stdout) as { artifactSha256: string; sourceCommit: string; target: unknown };
+  assert.deepEqual(Object.keys(saved).sort(), ["artifactSha256", "attestedAt", "attestedBy", "cloud", "contractSha256", "engine", "environment",
+    "evidenceSha256", "label", "outcome", "schemaVersion", "sourceCommit", "step", "target"]);
+  assert.equal(saved.label, "LIVE");
+  assert.equal(saved.step, "execute");
+  assert.equal(saved.cloud, "AZURE");
+  assert.equal(saved.engine, "TERRAFORM");
+  assert.equal(saved.sourceCommit, SOURCE_COMMIT);
+  assert.equal(saved.artifactSha256, evidence.artifactSha256);
+  assert.deepEqual(saved.target, evidence.target);
+  assert.equal(saved.attestedBy, "operator.fixture");
+  for (const canary of [OUTPUT_CANARY, PLAN_CANARY, VALUE_CANARY, STATE_CANARY]) assert.ok(!readFileSync(written, "utf8").includes(canary), "no value reaches the record");
+
+  const again = await record([phrase]);
+  assert.equal(again.code, 1);
+  assert.match(again.stderr, /^LIVE_RECORD_EXISTS/);
+  assert.equal(readdirSync(acceptanceDir).length, 1);
 });

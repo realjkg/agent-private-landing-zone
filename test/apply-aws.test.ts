@@ -21,7 +21,7 @@ import { targetString } from "../src/cli/teardown-driver.js";
 import { removeTree } from "../src/teardown/driver/cleanup.js";
 import { buildChildEnvironment } from "../src/tools/child-env.js";
 import { TERRAFORM_APPLY_PROFILE } from "../src/tools/profiles.js";
-import {
+import { SOURCE_COMMIT,
   AWS_DEV_TARGET, AWS_PROD_TARGET, AWS_QA_TARGET, AWS_REGION, ENGINE_VERSION, NOW, POLICY, awsContractJson, awsIdentityEnv, awsRoleArn, awsTargetOf,
   behave as behaveIn, callsOf, human, installFakeTerraform, keys, pinPathOf, sha, testFixtureForgeQualificationEvidence, writePinnedContract, writeProject,
   approvalFor as approval, type Behavior, type Call, type Project,
@@ -288,6 +288,7 @@ function world(contract: unknown = awsContractJson(KILL)): World {
   return {
     dirs, contractPath,
     deps: {
+      sourceCommit: SOURCE_COMMIT,
       contractPath, contractPinPath: pinPathOf(contractPath), qualificationDir: vaultDir, evidenceDir: dirs.evidence, nonces: openNonceStore(dirs.nonces),
       env: awsIdentityEnv("DEV"), now: () => NOW, scratchParent: dirs.scratch, toolDirs: [toolDir], killPollMs: 40, killGraceMs: 400,
     },
@@ -640,7 +641,7 @@ test("./alz apply qualify, seal, approve and apply work for an AWS contract with
     const term = terminal(answers);
     const code = await runApplyCommand(args, {
       terminal: term, env: awsIdentityEnv(environment), now: () => NOW, operatorId: "operator.fixture", contractPath, contractPinPath: pinPathOf(contractPath),
-      qualificationDir: vault, evidenceDir, nonces, scratchParent: scratch, toolDirs: [toolDir], stdout: (t: string) => { out.push(t); }, stderr: (t: string) => { err.push(t); },
+      qualificationDir: vault, evidenceDir, nonces, scratchParent: scratch, toolDirs: [toolDir], sourceCommit: SOURCE_COMMIT, stdout: (t: string) => { out.push(t); }, stderr: (t: string) => { err.push(t); },
     });
     return { code, stdout: out.join(""), stderr: err.join(""), shown: term.out.join("") };
   };

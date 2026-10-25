@@ -26,7 +26,7 @@ import type { AskExpectation, HumanTerminal, PhraseKind } from "./teardown-drive
 // its own: the engine is started only inside the driver, behind the same gates. Pilot POST endpoints exist only in this router.
 
 /** The only commands the console can run, by name. The router builds every argument list; a client sends values, never arguments. */
-export const PILOT_STEPS = ["preflight", "seal", "approve", "apply"] as const;
+export const PILOT_STEPS = ["preflight", "prepare", "seal", "approve", "apply"] as const;
 export type PilotStep = typeof PILOT_STEPS[number];
 
 export const PILOT_TOKEN_HEADER = "x-alz-pilot-token";
@@ -42,6 +42,7 @@ const DEFAULT_DIALOG_TIMEOUT_MS = 10 * 60_000;
 // The person's own text, without the characters that make a line read as another one.
 const CONTROL = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u2028\u2029]/g;
 const SAFE_APPROVER = /^[A-Za-z0-9._@+-]{1,128}$/;
+const AWS_CLI_VERSION = /^\d+\.\d+\.\d+$/;
 
 // --- the dialog terminal ------------------------------------------------------------------------------------
 
@@ -121,14 +122,16 @@ export type ReviewSummary = {
   target: { account: string; backend: string; workspace: string };
   /** The first 12 characters people compare; the whole value is in the bundle. */
   shortId: string;
+  /** The product source commit that made the preview; approvers sign it with the change. */
+  sourceCommit: string;
   createdAt: string;
   counts: ChangeCounts;
   changes: PlanChange[];
   changesOmitted: number;
 };
 
-const summaryOf = (bundle: { environment: ApplyEnvironment; target: ReviewSummary["target"]; artifactSha256: string; createdAt: string; changes: PlanChange[] }): ReviewSummary => ({
-  environment: bundle.environment, target: { ...bundle.target }, shortId: bundle.artifactSha256.slice(0, 12), createdAt: bundle.createdAt,
+const summaryOf = (bundle: { environment: ApplyEnvironment; target: ReviewSummary["target"]; artifactSha256: string; sourceCommit: string; createdAt: string; changes: PlanChange[] }): ReviewSummary => ({
+  environment: bundle.environment, target: { ...bundle.target }, shortId: bundle.artifactSha256.slice(0, 12), sourceCommit: bundle.sourceCommit, createdAt: bundle.createdAt,
   counts: countChanges(bundle.changes),
   changes: bundle.changes.slice(0, MAX_LISTED_CHANGES).map((change) => ({ ...change, address: stripInvisible(change.address), type: stripInvisible(change.type) })),
   changesOmitted: Math.max(0, bundle.changes.length - MAX_LISTED_CHANGES),
@@ -234,16 +237,18 @@ export function createPilotRouter(options: PilotRouterOptions): PilotRouter {
     if (report) { result.code = report.code; result.message = stripInvisible(report.message).replace(CONTROL, "?"); }
     if (report?.outcome) result.outcome = report.outcome;
     if (exit !== 0 && !report) result.code = "APPLY_UNEXPECTED_ERROR";
-    if (stdout.trim() !== "") {
+    // Prepare prints a readable review; its structured result travels in the report instead.
+    if (report?.data !== undefined) result.data = report.data;
+    else if (stdout.trim() !== "") {
       try { result.data = JSON.parse(stdout) as unknown; } catch { /* no structured output */ }
     }
     if (exit === 0 && step === "seal" && typeof result.data === "object" && result.data !== null) {
-      const data = result.data as { environment?: ApplyEnvironment; target?: ReviewSummary["target"]; artifactSha256?: string; changes?: PlanChange[]; sealedPlanPath?: string; reviewBundlePath?: string };
+      const data = result.data as { environment?: ApplyEnvironment; target?: ReviewSummary["target"]; artifactSha256?: string; sourceCommit?: string; changes?: PlanChange[]; sealedPlanPath?: string; reviewBundlePath?: string };
       // The page shows these locations for the person to note, so they are absolute, whatever directory the command used.
       if (typeof data.sealedPlanPath === "string") data.sealedPlanPath = absolute(data.sealedPlanPath);
       if (typeof data.reviewBundlePath === "string") data.reviewBundlePath = absolute(data.reviewBundlePath);
-      if (data.environment && data.target && typeof data.artifactSha256 === "string" && Array.isArray(data.changes)) {
-        result.summary = summaryOf({ environment: data.environment, target: data.target, artifactSha256: data.artifactSha256, createdAt: "", changes: data.changes });
+      if (data.environment && data.target && typeof data.artifactSha256 === "string" && typeof data.sourceCommit === "string" && Array.isArray(data.changes)) {
+        result.summary = summaryOf({ environment: data.environment, target: data.target, artifactSha256: data.artifactSha256, sourceCommit: data.sourceCommit, createdAt: "", changes: data.changes });
       }
     }
     return result;
@@ -396,6 +401,21 @@ export function createPilotRouter(options: PilotRouterOptions): PilotRouter {
         const input = fields(body, ["environment"]);
         requirePath();
         start("preflight", ["preflight", "--environment", environmentOf(input.environment)]);
+        send(res, context.headers, 202, stateOf());
+        return;
+      }
+      case "/prepare": {
+        // Local files only: the command writes the request and manifest from the pinned contract and the project folder,
+        // runs no engine and enables nothing. The one value a person may add is the AWS CLI version, when no record has it.
+        const input = fields(body, ["environment", "projectPath", "awsCliVersion"]);
+        requirePath();
+        const environment = environmentOf(input.environment);
+        const projectPath = absolute(plainPath(input.projectPath, "The project folder"));
+        const version = input.awsCliVersion;
+        if (version !== undefined && (typeof version !== "string" || !AWS_CLI_VERSION.test(version))) {
+          throw new Bad(400, "PILOT_REQUEST_INVALID", "Enter the AWS CLI version as three numbers, for example 2.27.10.");
+        }
+        start("prepare", ["prepare", "--environment", environment, "--project", projectPath, ...(version ? ["--aws-cli-version", version] : [])]);
         send(res, context.headers, 202, stateOf());
         return;
       }

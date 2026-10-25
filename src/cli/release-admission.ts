@@ -1,22 +1,21 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
-import { loadPilotContract } from "../apply/contract.js";
 import {
-  reviewProductionRelease,
+  reviewRepositoryRelease,
   type ReleaseAdmissionInput,
 } from "../qualification/release-admission.js";
+import { loadReleaseScope } from "../release/status.js";
 import { assertCleanSource, blockedHandler, evidenceDir, headCommit, writeJsonOnce } from "../util/cli-support.js";
 
-function argument(name: string): string | undefined {
-  const args = process.argv.slice(2);
-  const index = args.indexOf(name);
-  return index >= 0 ? args[index + 1] : undefined;
-}
-
-async function main(): Promise<void> {
-  const args = process.argv.slice(2);
+/** `node dist/cli/release-admission.js --manifest <file>`, with the arguments after the script. */
+export async function releaseAdmission(args: string[]): Promise<void> {
+  const argument = (name: string): string | undefined => {
+    const index = args.indexOf(name);
+    return index >= 0 ? args[index + 1] : undefined;
+  };
   if (args.length === 1 && args[0] === "--help") {
     console.log("Sovereign ALZ production evidence admission (no deployments)");
     console.log("node dist/cli/release-admission.js --manifest .runs/release/evidence-index.json");
@@ -31,16 +30,15 @@ async function main(): Promise<void> {
   assertCleanSource("RELEASE_ADMISSION_SOURCE_WORKTREE_DIRTY");
   const file = resolve(argument("--manifest")!);
   const manifest = JSON.parse(readFileSync(file, "utf8")) as ReleaseAdmissionInput;
-  const result = await reviewProductionRelease({
+  const result = await reviewRepositoryRelease({
     manifest, expectedCommit: sourceCommit, root: process.cwd(),
-    // ACT is off unless this release declares PILOT and config/act-pilot-contract.json is valid and enabled.
-    pilotContract: loadPilotContract(),
+    outOfScope: loadReleaseScope(process.cwd()).outOfScope.map((x) => x.gate),
   });
   const out = resolve(evidenceDir("release"), "admission-" + randomUUID() + ".json");
   writeJsonOnce(out, result);
   console.log("Production evidence admission — PREVIEW_OPERATE / ACT DISABLED");
   for (const gate of result.gates) {
-    console.log((gate.status === "EVIDENCE_PRESENT" ? "EVIDENCE " : "BLOCKED  ") +
+    console.log({ EVIDENCE_PRESENT: "EVIDENCE ", BLOCKED: "BLOCKED  ", OUT_OF_SCOPE: "EXCLUDED " }[gate.status] +
       gate.id + (gate.blockers.length ? " (" + gate.blockers.join(", ") + ")" : ""));
   }
   if (result.actPilot) console.log("Pilot ACT (human-authorized, " + result.actPilot.provider + " " + result.actPilot.engine + ") under contract " + result.actPilot.contractSha256);
@@ -56,4 +54,6 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch(blockedHandler("RELEASE_ADMISSION_BLOCKED: ", 160));
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  releaseAdmission(process.argv.slice(2)).catch(blockedHandler("RELEASE_ADMISSION_BLOCKED: ", 160));
+}

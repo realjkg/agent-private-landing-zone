@@ -36,7 +36,7 @@ export const COPY = {
   startOverWhy: "Starting over clears the choice on this page so you can begin a new change. It does not undo anything that was already applied.",
   cliTitle: "Run these commands in your terminal, in this order",
   cliNote: "These are the exact commands. They are shown here to read and copy only. The buttons in this wizard stay off for this change.",
-  cliWho: "Operator runs 1, 2 and 4. Each approver runs 3 on their own computer with their own key.",
+  cliWho: "Operator runs 1, 2, 3 and 5. Each approver runs 4 on their own computer with their own key.",
   readyTitle: "Check readiness",
   readyWhy: "This looks at this computer without changing anything: the pilot rules, the separate sign-ins, the tools and the emergency stop.",
   readyEnvironment: "Which environment are you preparing?",
@@ -45,11 +45,42 @@ export const COPY = {
   readyRunning: "Checking...",
   readyAllGreen: "Everything needed on this computer is ready.",
   readySomeRed: "Some items are not ready. Fix each red item, then check again.",
-  readyHeadsUp: "Heads up: whether the separate sign-ins really stay separate has not been proven against the real cloud yet. The first supervised run in DEV is where that gets checked.",
+  stateReady: "Ready",
+  stateMissing: "Missing",
+  stateInvalid: "Needs correcting",
+  stateUnverified: "Not yet proven",
+  stateUnavailable: "Not available here",
+  stateBlocked: "Stopped on purpose",
+  whoFixes: "Who can fix it:",
+  partyOwner: "the pilot owner",
+  partyOperator: "you, on this computer",
+  partyTool: "installing the missing tool (./alz deps)",
   resume: "I already prepared a change: go to Review and approve",
   resumeWhy: "Use this if you reloaded the page or came back later. You will enter the locations of the files from your earlier work.",
   signing: "Working. Keep this page open.",
   readyContinue: "Continue to prepare the change",
+  prepareWhy: "Start from your project folder. The console reads the owner's pilot rules and your project, and writes the two files the preview needs. It runs nothing and changes nothing.",
+  prepareProjectLabel: "Project folder",
+  prepareProjectHelp: "The folder that holds the project to deploy, for example your Terraform folder or the cdk.out folder.",
+  egProject: "/home/you/pilot/landing-zone",
+  prepareToolVersionLabel: "AWS CLI version on this computer",
+  prepareToolVersionHelp: "Run aws --version in a terminal and enter the three numbers it shows.",
+  egToolVersion: "2.27.10",
+  prepareRun: "Get the files ready",
+  prepareRunning: "Reading the project. This takes a few seconds.",
+  prepareDone: "The files are ready, and the boxes below are filled in.",
+  prepareLocalOnly: "These files were made on this computer only. They are not proof that anything works in the cloud.",
+  prepareNextSeal: "Next: make the preview with the button below.",
+  prepareNextCheck: "Next: before the first preview, a person runs the one-time DEV check in a terminal with the owner (see the walkthrough, \"Before your first change\"). Then come back and make the preview.",
+  prepareNextOwner: "Next: the owner has to finish the DEV check first. You cannot do this from here.",
+  prepareAdvanced: "Advanced: the saved files and their raw contents",
+  prepareInputsLabel: "Settings it uses",
+  prepareInputsNone: "none",
+  prepareFromDefault: "its default in",
+  prepareFromFile: "the file",
+  prepareFromEnvironment: "the setting",
+  prepareOr: "Or use files you already have",
+  prepareThen: "Then make the preview",
   sealTitle: "Prepare the change",
   sealWhy: "Preparing makes a preview of exactly what would change and keeps it locked. It changes nothing yet.",
   sealRequestLabel: "Request file",
@@ -187,6 +218,11 @@ export const CODE_COPY: Readonly<Record<string, Reason>> = {
   KILL_SWITCH_ACTIVE: { why: "The emergency stop is on, so every change is blocked.", next: "Only the pilot owner turns it off. Ask them, and do not remove the stop file yourself." },
   KILL_SWITCH_AFTER_APPROVALS: { why: "The emergency stop was turned on just as the change was about to start. Nothing was changed, but the approvals were used up.", next: "Wait until the owner says the stop is off, then collect new approvals for the same prepared change." },
   HUMAN_INVOCATION_REQUIRED: { why: "A person has to start this step, and it could not be confirmed that one did.", next: "Start the step again from the wizard yourself." },
+  LIVE_RECORD_UNAVAILABLE: { why: "There is no finished, successful change on record for this prepared change, so it cannot be recorded as live.", next: "Record it only after the change was applied and its result said it succeeded. Nothing was written." },
+  LIVE_ATTESTATION_MISMATCH: { why: "What you typed did not match the phrase shown. Nothing was written.", next: "Type the phrase only if the change really ran against the real account, and use the Copy button so it is exact." },
+  LIVE_RECORD_EXISTS: { why: "This change is already recorded as live. A record is never replaced.", next: "Use the record that is already there. Nothing was changed." },
+  SOURCE_UNVERIFIED: { why: "This copy of the app has changes that are not saved in its history, or its version cannot be read, so a record could not say which version ran. Nothing ran or was used up.", next: "Save (commit) or remove the local changes, or use the packaged app, then try again." },
+  SOURCE_CHANGED: { why: "The app was updated after this change was prepared. A change only runs on the exact app version that prepared it. Nothing was used up.", next: "Run it from the app version shown on the review, or prepare the change again and collect new approvals." },
   CHANNEL_MISMATCH: { why: "This change was started the other way, on the command line or in the console, and has to be finished the same way. Nothing was used up.", next: "Finish it where it was started, or start a new change here." },
   TARGET_NOT_IN_CONTRACT: { why: "The place you named is not one the pilot rules allow, or the project points somewhere else.", next: "Check the account, storage and workspace in your request file against the pilot rules, or ask the owner. Nothing was changed." },
   ARTIFACT_INVALID: { why: "The prepared change, or one of the files it needs, is missing, damaged, or was prepared for something else.", next: "Go back to Prepare the change, make a new one, and collect new approvals." },
@@ -221,6 +257,23 @@ export const CODE_COPY: Readonly<Record<string, Reason>> = {
   QUALIFICATION_ATTESTATION_MISMATCH: { why: "What you typed did not match the phrase shown. Nothing was recorded.", next: "Try again, and use the Copy button so the phrase is exact." },
   APPLY_CONFIRMATION_MISMATCH: { why: "What you typed did not match the phrase shown. Nothing was signed or applied.", next: "Try again, and use the Copy button so the phrase is exact." },
   APPLY_UNEXPECTED_ERROR: { why: "Something unexpected stopped this step before it could say why.", next: "Do not assume it worked or that it did not. Tell the pilot owner, and check the Results before trying again." },
+  // getting the files ready (./alz apply prepare)
+  INPUT_UNSET: { why: "The project needs settings that have no value yet. The Details name them; their values are never asked for or shown here.", next: "Give each one a default or an entry in the project's settings file, or set it where the console runs, then get the files ready again." },
+  MODULE_REMOTE: { why: "The project uses a building block (module) downloaded from outside the project, so its code is not fingerprinted and cannot be locked for review.", next: "Copy that module into the project folder and point to it with a ./ path, then get the files ready again." },
+  MODULE_OUTSIDE_PROJECT: { why: "The project points to a building block (module) folder outside the project folder, or to one that does not exist.", next: "Move that module inside the project folder, then get the files ready again." },
+  TERRAFORM_CONFIG_UNREADABLE: { why: "A project file could not be read, for example because a quote, comment or text block is not closed.", next: "Fix the file the Details name, then get the files ready again." },
+  PREPARED: { why: "The files for this change are ready on this computer.", next: "Make the preview with the button under the filled-in boxes." },
+  CONTRACT_DISABLED: { why: "The owner's pilot rules are not switched on and approved, so there is nothing to prepare against.", next: "Ask the pilot owner to approve the pilot rules. You cannot do this from here." },
+  POLICY_VERSION_MISSING: { why: "The owner's pilot rules do not say which reviewed policy version applies, and the console never guesses it.", next: "Ask the pilot owner to add the policy version to the pilot rules and approve them again." },
+  ENVIRONMENT_INVALID: { why: "The environment was not one of DEV, QA or PROD.", next: "Choose DEV, QA or PROD and try again." },
+  PROJECT_INVALID: { why: "The project folder does not exist, or it is not a folder.", next: "Check the folder location against the example and try again. Nothing was changed." },
+  PROJECT_ENGINE_MISMATCH: { why: "This folder is not the kind of project the pilot rules use, for example a CDK folder where Terraform is expected.", next: "Choose the folder for the build tool the pilot rules name. The console never switches tools for you." },
+  PROJECT_NOT_CLEAN: { why: "The project folder still holds files from an earlier local run.", next: "Remove the .terraform folder from the project, then try again." },
+  PROJECT_SNAPSHOT_REFUSED: { why: "The project folder holds something that cannot be fingerprinted safely, such as a link, a saved cloud record or a very large file.", next: "Remove what the Details name from the project folder, then try again." },
+  LOCK_FILE_MISSING: { why: "The project has no .terraform.lock.hcl file, which pins the exact provider versions.", next: "Run terraform init once in the project, review the file it writes, keep it with the project, and try again." },
+  LOCK_FILE_UNREADABLE: { why: "The project's .terraform.lock.hcl file cannot be read.", next: "Run terraform init again to rewrite it, review it, and try again." },
+  ENGINE_VERSION_REQUIRED: { why: "The console needs the version of the AWS CLI on this computer, and no earlier check recorded it.", next: "Enter the version in the box that appeared, then try again." },
+  TOOL_UNAVAILABLE: { why: "A tool this change needs is not installed in the approved place on this computer.", next: "Install it with ./alz deps, or ask the owner about the other supported way. A different tool needs its own approved rules and approvals." },
   MANIFEST_INVALID: { why: "The project fingerprint file is not valid, or was never finalized.", next: "Choose the right file or ask whoever made it to create it again." },
   // the console's own refusals
   PILOT_PATH_NOT_CHOSEN: { why: "You have not chosen how this change will run yet.", next: "Go back to step 1 and choose the console or the command line." },
@@ -288,6 +341,12 @@ export function describeCheck(item: PreflightCheck, environment: PilotEnvironmen
   const tool = /^tool (\S+) installed/.exec(name);
   if (tool) {
     return { known: true, label: "The tool \"" + tool[1] + "\" is installed in an approved folder", wrong: "The tool \"" + tool[1] + "\" was not found in a folder the pilot allows.", fix: "Install it in a standard system folder (the walkthrough lists them), restart the console, and check again." };
+  }
+  if (name.startsWith("engine qualified in DEV")) {
+    return { known: true, label: "The one-time DEV check has been done and still matches this computer", wrong: "The one-time DEV check has not been done, or it was done with a different tool, sign-in or account than this computer now uses, or it is more than 30 days old.", fix: "A person runs the one-time check in a terminal against DEV with the owner (see the walkthrough, \"Before your first change\"), then check again here." };
+  }
+  if (name.startsWith("identity separation attested")) {
+    return { known: true, label: "The separate sign-ins were shown to stay separate on the real cloud", wrong: "Nobody has confirmed yet, from the cloud's own records, that the separate sign-ins really stay separate. This is confirmed during the one-time DEV check.", fix: "It turns ready when the one-time DEV check is done and still matches this computer." };
   }
   if (name.startsWith("kill switch absent")) {
     return { known: true, label: "The emergency stop is off", wrong: "The emergency stop is on, so every change is blocked.", fix: "Only the pilot owner turns it off. Ask them, and do not remove the stop file yourself." };
@@ -371,6 +430,7 @@ export const changeNotes = (change: PlanChange): string[] => [
 /** The commands for the command-line path, in the order they are run. */
 export const CLI_COMMANDS: readonly { who: string; what: string; command: string }[] = [
   { who: "Operator", what: "Check this computer is ready", command: "./alz apply preflight --environment DEV" },
+  { who: "Operator", what: "Get the files ready from your project folder", command: "./alz apply prepare --environment DEV --project PROJECT_FOLDER" },
   { who: "Operator", what: "Prepare the change and lock it", command: "./alz apply seal --request REQUEST.json --manifest MANIFEST.json" },
   { who: "Each approver", what: "Review and sign (on their own computer)", command: "./alz apply approve --bundle REVIEW_FILE.json --key APPROVER_KEY.pem --approver NAME" },
   { who: "Operator", what: "Apply the locked change", command: "./alz apply apply --request REQUEST.json --manifest MANIFEST.json --sealed LOCKED_CHANGE --approval APPROVAL.json" },

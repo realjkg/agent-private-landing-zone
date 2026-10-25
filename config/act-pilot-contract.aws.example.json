@@ -4,6 +4,7 @@
   "enabled": false,
   "provider": "AWS",
   "engine": "TERRAFORM",
+  "policyVersion": "REPLACE-WITH-REVIEWED-POLICY-VERSION",
   "targets": {
     "DEV": {
       "accountId": "111111111111",

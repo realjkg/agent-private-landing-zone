@@ -26,20 +26,72 @@ The operator who runs the commands is the same user ID as the process, and holds
 
 ## Commands
 
-Every subcommand refuses before reading any file unless it has a terminal on stdin and stdout (at the terminal, the real one; in the console wizard, the dialog terminal of a request that passed the session-token check). There are no flags that force, skip or pre-answer anything; an unknown flag is an error. `qualify` and `pin` are terminal-only in practice: the wizard runs `preflight`, `seal`, `approve` and `apply`.
+Every subcommand refuses before reading any file unless it has a terminal on stdin and stdout (at the terminal, the real one; in the console wizard, the dialog terminal of a request that passed the session-token check). There are no flags that force, skip or pre-answer anything; an unknown flag is an error. `qualify` and `pin` are terminal-only in practice: the wizard runs `preflight`, `prepare`, `seal`, `approve` and `apply`.
 
 | Step | Command | Who |
 | --- | --- | --- |
+| Prepare | `./alz apply prepare --environment DEV\|QA\|PROD --project PROJECT_DIR [--aws-cli-version X.Y.Z]` | Operator. Writes the seal request and the artifact manifest for one project, so nobody authors them by hand. See "Preparing the request and manifest". Local and offline: runs no engine, assumes no role, seals, approves and enables nothing. |
 | Qualify | `./alz apply qualify --request REQUEST.json --manifest MANIFEST.json` | Operator, once per adapter or engine version, DEV only. See "Qualifying against a real engine". |
 | Seal | `./alz apply seal --request REQUEST.json --manifest MANIFEST.json` | Operator. Types the target, then (Terraform only, which runs providers and modules) `RUN PROJECT CODE`; the CDK engine runs no project code and asks for the target only. Prints the artifact hash, the sealed plan path, the review bundle path and the redacted change list (address, type, action). |
 | Approve | `./alz apply approve --bundle REVIEW_BUNDLE.json --key APPROVER_KEY.pem --approver ID` | Each approver, separately, with no evidence key. Reviews the changes, types `APPROVE <DEV, QA or PROD> <first 12 characters of the artifact hash>`. Prints a signed approval; no secret. |
 | Apply | `./alz apply apply --request REQUEST.json --manifest MANIFEST.json --sealed SEALED_PLAN --approval A.json [--approval B.json]` | Operator, with the evidence key (it loads the sealed plan from the vault). Types one line: `APPLY <DEV, QA or PROD> <first 12 characters of the artifact hash> <account> \| <backend> \| <workspace>`. Prints redacted evidence. |
-| Preflight | `./alz apply preflight --environment DEV\|QA\|PROD [--contract CONTRACT.json]` | Anyone at a terminal, before the first seal. Read-only and offline: checks the contract's shape (a draft or example that is not enabled or pinned too), whether it is pinned, that each identity the engine needs is configured, distinct, fallback-free and aimed at the environment's account, that the engine's program is in an approved tool directory, and the kill switch. Prints names, never values; exit 2 if anything is not ready. It always reports authentication as `SIMULATED` until `qualify` has run on a real backend. Setup of the accounts it checks is in `docs/act-pilot-bootstrap.md`, separate from any apply. |
+| Preflight | `./alz apply preflight --environment DEV\|QA\|PROD [--contract CONTRACT.json]` | Anyone at a terminal, before the first seal. Read-only and offline: checks the contract's shape (a draft or example that is not enabled or pinned too), whether it is pinned, that each identity the engine needs is configured, distinct, fallback-free and aimed at the environment's account, that the engine's program is in an approved tool directory, the kill switch, and whether the engine is qualified for seal and apply. Readiness is defined once, in `src/apply/readiness.ts` (`assessReadiness`), which the console's readiness step also uses. The qualification item runs the same record and evidence checks as seal and apply, so preflight never says ready where seal would refuse `ENGINE_NOT_QUALIFIED`.
+
+Every item has a `state`:
+- `READY`.
+- `MISSING`: absent.
+- `INVALID`: present but wrong, or evidence that no longer matches this machine.
+- `UNVERIFIED`: not yet proven on the real cloud.
+- `UNAVAILABLE`: a tool not installed here.
+- `BLOCKED`: a stop put in place on purpose, the kill switch.
+
+Each item that is not ready also names who can fix it: `OWNER`, `OPERATOR` or `TOOL`. The report's `next` is the first item that is not ready, in journey order, never a later one. "Identity separation attested on the real DEV backend" is `READY` only when the qualification evidence records the person's attestation; otherwise it is `UNVERIFIED`. Prints names, never values; exit 2 if anything is not ready. Setup of the accounts it checks is in `docs/act-pilot-bootstrap.md`, separate from any apply. |
 | Status | `./alz apply status [--sealed SEALED_PLAN]` | Anyone at a terminal. Read-only: contract state, kill switch, and whether an artifact was applied. |
 
 There is no `--allowlist` and no `--qualifications` file. The approver allowlist is part of the pinned contract, and qualification records are read from the encrypted evidence vault (`.runs/apply/qualification`), where a record exists only if valid, decryptable evidence does.
 
 Request files carry only `environment`, `target` (`account`, `backend`, `workspace`; `account` is the provider's account identifier) and `projectRoot` (seal and qualify also `policyVersion` and `resolved`). The command supplies the invocation, manifest and approvals; a file that carries them is refused.
+
+### Preparing the request and manifest
+
+`prepare` builds both files through the same schema and binding code `seal` uses (`buildManifest`, `verifyManifest`, `validateManifestForRequest`), so it is not a second implementation. Its journey: select the project folder, the engine and target come from the pinned contract, missing values are asked for, a readable review is printed, the files are saved, and the next valid step (or the exact blocker) is named.
+
+- **Engine and path.** The contract's engine is used; no flag names one and prepare never switches engines. A folder of the other kind (a `cdk.out` where Terraform is pinned, or the reverse) is refused. Paths per provider: AWS has Terraform (primary) and CDK (secondary); Azure has Terraform only, and Bicep is shown as a planned, unsupported secondary path.
+- **Target.** Account, region (when the target has one), backend or stack, and workspace come from the contract's target for the environment, confirmed by the same check `seal` runs.
+- **Values.** `policyVersion` comes from the contract's optional `policyVersion` field; when it is absent prepare stops with an owner prerequisite rather than guess. Providers and the lock file hash come from `.terraform.lock.hcl`, which must be present (and `.terraform/` absent). The engine version comes from a matching qualification record, else the tested Terraform pin in `config/tool-pins.json`, else (CDK) the AWS CLI version the operator supplies with `--aws-cli-version` or is asked for. The unit hash is a labeled convention: `sha256(canonicalJson({purpose: "pilot-preparation-unit", engine, environment, target, files}))`. Inputs (`src/apply/terraform-inputs.ts`):
+  - **Terraform:** each root variable becomes an input. Its identity is a hash of where its value comes from, never the value. The sources follow Terraform's precedence: `*.auto.tfvars(.json)` (the last one, in lexical order, wins), then `terraform.tfvars.json`, then `terraform.tfvars`, then `ALZ_DISCOVERY_TF_VAR_<name>` (the seal plans as DISCOVERY), then the default. A variable with no value is refused (`INPUT_UNSET`), naming it and never asking for its value.
+  - **CDK:** each template parameter becomes an input from its default. The pilot passes no parameter values, so a parameter without a default is refused.
+  - **Environment values:** an input from an environment variable is named, not fingerprinted; the sealed plan binds what it produced.
+
+  Dependencies: every module call is followed through local modules. Only `./` or `../` folders inside the project are accepted, and their code is fingerprinted with the project files. A remote module (registry, Git, HTTP, S3) is refused (`MODULE_REMOTE`), because neither the lock file nor the fingerprint binds its code. So is a folder outside the project (`MODULE_OUTSIDE_PROJECT`). `dependencies` is therefore empty for every accepted project.
+- **Files.** `.runs/pilot/<ENV>/request-<id>.json`, `manifest-<id>.json` and `preparation-<id>.json`, where `<id>` is the first 16 characters of the manifest hash; mode 0600 in a 0700 folder, written all-or-nothing.
+- **Evidence.** Every output is labeled `LOCAL_PREPARATION`. Prepared files are not qualification evidence and do not show that anything works in a cloud.
+- **Refusals.** Owner prerequisites (contract not pinned or enabled, kill switch, policy version missing, target not in the contract) never offer an alternative. A missing tool (`TOOL_UNAVAILABLE`) may name the other supported path, which needs its own reviewed contract, preview and approvals. Exit 0 prepared, 1 a CLI error, 2 blocked.
+
+### Source-bound evidence
+
+Every seal and apply names the product source commit it ran from.
+
+- **Where the commit comes from.** In a git checkout, the commit is `HEAD`, and only while `git status --porcelain` is empty (ignored files such as `.runs/` do not count). Without a checkout (the packaged image, which `./alz` builds only from a clean commit), it is the image's `ALZ_SOURCE_COMMIT` stamp. The stamp never overrides a checkout. Anything else is `SOURCE_UNVERIFIED`. The CLI resolves the commit (`src/util/source-commit.ts`); the driver starts no process to find it.
+- **Seal.** An unknown or uncommitted source stops `seal` and `qualify` before any phrase is asked. The commit is shown on the seal screen and bound into the artifact hash and the review bundle (`sourceCommit`), so approvers sign that version. The console shows it on the review as "App version that prepared it".
+- **Apply.** A plan applies only from the commit that sealed it. A different running commit is `SOURCE_CHANGED`, refused before the apply phrase is asked and again by the driver, and nothing is consumed. The evidence records `sourceCommit`, and the console's Results page shows it.
+- **Not covered.** A native checkout runs the compiled `dist/`, so a `dist/` built from an older commit is not detected. Run `npm run build` (or `./alz bootstrap`) after changing commits.
+
+Plans and review bundles sealed before this field existed fail verification as malformed. Seal them again.
+
+### Recording live acceptance of the execute step
+
+After an owner-supervised apply has SUCCEEDED against the real account, the person who ran it records it:
+
+```
+./alz apply record-live --sealed SEALED_PLAN
+```
+
+The command reads that plan's apply evidence from the encrypted ledger, so it needs the evidence key, and shows the environment, target, artifact, product commit and outcome. The person then types `LIVE <ENV> <first 12 characters of the artifact hash>` to attest that it ran against the real account, not a test or a fake engine. That phrase is the person's attestation, as in `qualify`; the code cannot tell a real account from a fake engine.
+
+It then writes `config/acceptance/evidence/<cloud>-<engine>-execute-<env>-<artifact>.json`. The file holds identifiers and hashes only (source commit, cloud, engine, target, artifact, outcome, evidence hash, contract hash, who attested and when) and is never overwritten. The owner reviews it, commits it, and cites it as `liveEvidence` on the execute step in `config/acceptance/journeys.json`. The matrix then accepts `LIVE_PASS` for that step only. The row is live only when every step passes.
+
+It refuses an artifact that was never applied, a failed, partial or killed apply, and an apply under another contract than the one pinned. It starts no engine and changes nothing in any cloud.
 
 ### Channels: the terminal or the console, never both
 
@@ -304,4 +356,4 @@ Actual destroy is out of scope. The named cleanup owner removes pilot resources 
 
 ## What the owner supplies
 
-For either provider: the DEV, QA and PROD accounts, the region, tags, retention, budget and least-privilege scope, the provisioned state backend (one per environment) and the federated identities, the approver public keys (and the second production approver), the execution host, the pilot scope, the cleanup owner, and a person to run `./alz apply qualify` and attest from the cloud logs. For Azure also the tenant ID and the subscription IDs. For AWS also the 12 digit account IDs, and for the CDK engine instead of the state buckets and state roles the stack name, the three web-identity roles per account (DISCOVERY, CHANGESET, APPLY), the capabilities each environment may use, a synthesized environment-agnostic `cdk.out` that publishes no asset, and a person to enable termination protection after the first create. For Terraform on AWS also one S3 bucket per environment with versioning on, one IAM OIDC identity provider and the four web-identity roles per account, and the token files for them on the execution host. Their absence blocks live apply only; tests use explicit fixtures.
+For either provider: the reviewed `policyVersion` in the contract (so `prepare` can fill it in), the DEV, QA and PROD accounts, the region, tags, retention, budget and least-privilege scope, the provisioned state backend (one per environment) and the federated identities, the approver public keys (and the second production approver), the execution host, the pilot scope, the cleanup owner, and a person to run `./alz apply qualify` and attest from the cloud logs. For Azure also the tenant ID and the subscription IDs. For AWS also the 12 digit account IDs, and for the CDK engine instead of the state buckets and state roles the stack name, the three web-identity roles per account (DISCOVERY, CHANGESET, APPLY), the capabilities each environment may use, a synthesized environment-agnostic `cdk.out` that publishes no asset, and a person to enable termination protection after the first create. For Terraform on AWS also one S3 bucket per environment with versioning on, one IAM OIDC identity provider and the four web-identity roles per account, and the token files for them on the execution host. Their absence blocks live apply only; tests use explicit fixtures.

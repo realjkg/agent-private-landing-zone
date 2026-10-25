@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import PilotWizard, { BlockedNotice, ChangeList } from "../src/operator-ui/app/pilot/PilotWizard";
-import { forgetPilotToken, type PilotPath, type PilotRun, type ReviewSummary } from "../src/operator-ui/app/pilot/pilot-api";
+import { forgetPilotToken, type PilotPath, type PilotRun, type PreflightCheck, type PreparedFiles, type ReviewSummary } from "../src/operator-ui/app/pilot/pilot-api";
 import {
   BLOCKED, CLI_COMMANDS, CODE_COPY, COPY, RESULT_COPY, STEP_TITLES, classifyResult, describeCheck, describeCounts, describeMismatch, dialogCopy, reasonFor,
   type BlockedState, type ResultKind,
@@ -30,7 +30,7 @@ type Fake = {
   reviewReply: unknown; onPost: Record<string, (body: any) => void>;
 };
 const bundleReview = (over: Partial<ReviewSummary> = {}): ReviewSummary => ({
-  environment: "DEV", target: { account: "acct-1", backend: "store/tfstate/dev.tfstate", workspace: "default" }, shortId: "0123456789ab",
+  environment: "DEV", target: { account: "acct-1", backend: "store/tfstate/dev.tfstate", workspace: "default" }, shortId: "0123456789ab", sourceCommit: "5ec0de0000000000000000000000000000c0ffee",
   createdAt: "2026-10-12T00:00:00.000Z", counts: { create: 2, update: 1, replace: 0, delete: 0, forget: 0, other: 0 },
   changes: [
     { address: "azurerm_resource_group.pilot", type: "azurerm_resource_group", action: "CREATE" },
@@ -154,7 +154,7 @@ describe("step 1: the path is chosen once", () => {
     expect(fake.path).toBe("CLI");
     const items = within(document.querySelector(".pilot-commands") as HTMLElement).getAllByRole("listitem");
     expect(items.map((item) => item.querySelector("code")?.textContent)).toEqual(CLI_COMMANDS.map((item) => item.command));
-    expect(CLI_COMMANDS.map((item) => item.command.split(" ")[2])).toEqual(["preflight", "seal", "approve", "apply", "status"]);
+    expect(CLI_COMMANDS.map((item) => item.command.split(" ")[2])).toEqual(["preflight", "prepare", "seal", "approve", "apply", "status"]);
     expect(screen.getByText(COPY.cliNote)).toBeTruthy();
     expect(screen.queryByRole("button", { name: COPY.pathContinue })).toBeNull();
     expect(screen.queryByRole("button", { name: COPY.readyRun })).toBeNull();
@@ -187,20 +187,27 @@ describe("step 1: the path is chosen once", () => {
 });
 
 describe("step 2: readiness in plain words", () => {
-  const checks = [
-    { check: "contract shape (provider, engine, targets, approvals, approvers)", ok: true },
-    { check: "pilot contract pinned and enabled (required before seal)", ok: false, detail: "enabled: the contract does not enable ACT" },
-    { check: "identities configured, distinct, no fallback (DISCOVERY, STATE, STATE_WRITE, APPLY)", ok: false, detail: "IDENTITY_NOT_CONFIGURED" },
-    { check: "identities aimed at the DEV account", ok: true },
-    { check: "plan will embed STATE_WRITE settings: no", ok: true },
-    { check: "tool terraform installed in an approved directory", ok: false },
-    { check: "kill switch absent", ok: true },
+  const checks: PreflightCheck[] = [
+    { check: "contract shape (provider, engine, targets, approvals, approvers)", ok: true, state: "READY" },
+    { check: "pilot contract pinned and enabled (required before seal)", ok: false, state: "MISSING", responsible: "OWNER", detail: "enabled: the contract does not enable ACT" },
+    { check: "identities configured, distinct, no fallback (DISCOVERY, STATE, STATE_WRITE, APPLY)", ok: false, state: "INVALID", responsible: "OPERATOR", detail: "IDENTITY_COLLAPSED" },
+    { check: "identities aimed at the DEV account", ok: true, state: "READY" },
+    { check: "plan will embed STATE_WRITE settings: no", ok: true, state: "READY" },
+    { check: "tool terraform installed in an approved directory", ok: false, state: "UNAVAILABLE", responsible: "TOOL" },
+    { check: "kill switch absent", ok: false, state: "BLOCKED", responsible: "OWNER" },
+    { check: "engine qualified in DEV for seal and apply (TERRAFORM)", ok: false, state: "MISSING", responsible: "OWNER", detail: "No qualification record exists" },
+    { check: "identity separation attested on the real DEV backend", ok: false, state: "UNVERIFIED", responsible: "OWNER" },
   ];
+  const stateWords: Record<PreflightCheck["state"], string> = {
+    READY: COPY.stateReady, MISSING: COPY.stateMissing, INVALID: COPY.stateInvalid, UNVERIFIED: COPY.stateUnverified, UNAVAILABLE: COPY.stateUnavailable,
+    BLOCKED: COPY.stateBlocked,
+  };
+  const partyWords = { OWNER: COPY.partyOwner, OPERATOR: COPY.partyOperator, TOOL: COPY.partyTool } as const;
 
   test("each red item says what is wrong and the exact fix, each green item says it is ready, and Continue waits for green", async () => {
     const fake = install();
     fake.path = "UI";
-    fake.onPost["/preflight"] = () => { fake.run = doneRun("preflight", { exit: 2, data: { ready: false, authentication: "SIMULATED", checks } }); };
+    fake.onPost["/preflight"] = () => { fake.run = doneRun("preflight", { exit: 2, data: { ready: false, checks } }); };
     render(<PilotWizard level="BEGINNER" />);
     fireEvent.change(await screen.findByLabelText(COPY.unlockLabel), { target: { value: TOKEN } });
     fireEvent.click(screen.getByRole("button", { name: COPY.unlockButton }));
@@ -213,25 +220,29 @@ describe("step 2: readiness in plain words", () => {
     for (const [index, item] of items.entries()) {
       const words = describeCheck(checks[index], "DEV");
       expect(words.known).toBe(true);
+      // The badge says why, in words: missing, needs correcting, not yet proven or not available here, never just "red".
+      expect(item.querySelector(".pilot-badge")?.textContent).toBe(stateWords[checks[index].state]);
+      expect(item.querySelector(".pilot-badge")?.getAttribute("data-state")).toBe(checks[index].state);
       if (checks[index].ok) {
-        expect(item.textContent).toContain("Ready");
         expect(item.textContent).not.toContain("What is wrong");
       } else {
-        expect(item.textContent).toContain("Needs attention");
         expect(item.textContent).toContain("What is wrong:");
         expect(item.textContent).toContain(words.wrong);
         expect(item.textContent).toContain("How to fix it:");
         expect(item.textContent).toContain(words.fix);
+        // Every item that is not ready names who can fix it.
+        expect(item.textContent).toContain(COPY.whoFixes + " " + partyWords[checks[index].responsible!]);
       }
     }
-    expect(screen.getByText(COPY.readyHeadsUp)).toBeTruthy();
+    // Whether the sign-ins stay separate on the real cloud is an item with evidence behind it, not a standing note.
+    expect(items[8].textContent).toContain(COPY.stateUnverified);
     expect(screen.getByRole("button", { name: COPY.readyContinue }).hasAttribute("disabled")).toBe(true);
     expect(document.querySelector('[data-blocked="NOT_READY"]')?.textContent).toContain(BLOCKED.NOT_READY.next);
     // No code or internal name in the primary text at the beginner level.
-    expect(document.body.textContent).not.toContain("IDENTITY_NOT_CONFIGURED");
+    expect(document.body.textContent).not.toContain("IDENTITY_COLLAPSED");
     expect(jargonIn(primaryText())).toEqual([]);
     // Fixed, checked again, green.
-    fake.onPost["/preflight"] = () => { fake.run = doneRun("preflight", { exit: 0, data: { ready: true, authentication: "SIMULATED", checks: checks.map((c) => ({ ...c, ok: true })) } }, "preflight-2"); };
+    fake.onPost["/preflight"] = () => { fake.run = doneRun("preflight", { exit: 0, data: { ready: true, checks: checks.map((c) => ({ ...c, ok: true, state: "READY" as const })) } }, "preflight-2"); };
     await clickButton(COPY.readyRerun);
     await screen.findByText(COPY.readyAllGreen);
     const next = screen.getByRole("button", { name: COPY.readyContinue });
@@ -241,16 +252,17 @@ describe("step 2: readiness in plain words", () => {
   });
 
   test("every line the real readiness check can print has words, so none falls back to a bare name", () => {
-    const source = read("src/cli/apply.ts");
+    const source = read("src/apply/readiness.ts");
     const names = [...source.matchAll(/\badd\("((?:[^"\\]|\\.)*)"/g)].map((match) => match[1]);
     const dynamic = [
       "contract shape (provider, engine, targets, approvals, approvers)", "pilot contract pinned and enabled (required before seal)",
       "identities configured, distinct, no fallback (A, B)", "identities aimed at the QA account", "plan will embed STATE_WRITE settings: yes",
       "tool terraform installed in an approved directory", "tool aws installed in an approved directory", "kill switch absent",
+      "engine qualified in DEV for seal and apply (TERRAFORM)", "identity separation attested on the real DEV backend",
     ];
     expect(names.length).toBeGreaterThanOrEqual(6);
-    for (const name of dynamic) expect(describeCheck({ check: name, ok: false }, "QA").known, name).toBe(true);
-    expect(describeCheck({ check: "something new", ok: false }, "DEV").known).toBe(false);
+    for (const name of dynamic) expect(describeCheck({ check: name, ok: false, state: "MISSING" }, "QA").known, name).toBe(true);
+    expect(describeCheck({ check: "something new", ok: false, state: "MISSING" }, "DEV").known).toBe(false);
   });
 });
 
@@ -258,7 +270,7 @@ describe("step 3 and the confirmation dialogs", () => {
   async function atSeal(level: "BEGINNER" | "ADVANCED" | "EXPERT" = "BEGINNER") {
     const ctx = await unlocked(level, { path: "UI" });
     await clickButton(COPY.pathContinue);
-    ctx.fake.onPost["/preflight"] = () => { ctx.fake.run = doneRun("preflight", { exit: 0, data: { ready: true, checks: [{ check: "kill switch absent", ok: true }] } }); };
+    ctx.fake.onPost["/preflight"] = () => { ctx.fake.run = doneRun("preflight", { exit: 0, data: { ready: true, checks: [{ check: "kill switch absent", ok: true, state: "READY" }] } }); };
     await clickButton(COPY.readyRun);
     // Readiness is produced by an asynchronous synthetic response. The user
     // cannot advance until the real UI has enabled Continue.
@@ -277,6 +289,65 @@ describe("step 3 and the confirmation dialogs", () => {
     typeInto(COPY.sealRequestLabel, " /r.json ");
     typeInto(COPY.sealManifestLabel, "/m.json");
     expect(screen.getByRole("button", { name: COPY.sealRun }).hasAttribute("disabled")).toBe(false);
+  });
+
+  const preparedFiles = (next: PreparedFiles["next"] = { step: "seal", reason: "The TERRAFORM path is qualified." }): PreparedFiles => ({
+    files: { request: "/runs/pilot/DEV/request-ab.json", manifest: "/runs/pilot/DEV/manifest-ab.json", record: "/runs/pilot/DEV/preparation-ab.json" },
+    summary: {
+      label: "LOCAL_PREPARATION", provider: "AWS", engine: "TERRAFORM", path: "PRIMARY", environment: "DEV", account: "111111111111", region: "us-east-1",
+      backend: "state-bucket", workspace: "dev", projectRoot: "/home/you/pilot/landing-zone", fileCount: 3,
+      providers: [{ source: "registry.terraform.io/hashicorp/aws", version: "6.0.0" }], engineVersion: "1.16.4", engineVersionSource: "TESTED_PIN",
+      inputs: [{ name: "region", source: "TFVARS", from: "terraform.tfvars" }, { name: "owner", source: "ENVIRONMENT", from: "ALZ_DISCOVERY_TF_VAR_owner" }],
+      policyVersion: "pilot-policy-1", unitHash: "a".repeat(64), manifestHash: "b".repeat(64), contractSha256: "c".repeat(64),
+    },
+    gaps: ["Inputs and dependencies are not derived yet."], next, request: { environment: "DEV" }, manifest: { schemaVersion: 1 },
+  });
+
+  test("getting the files ready from a project folder fills both boxes, shows what was bound in plain words, and keeps the raw files under Advanced", async () => {
+    const { fake } = await atSeal();
+    expect(screen.getByRole("button", { name: COPY.prepareRun }).hasAttribute("disabled")).toBe(true);
+    typeInto(COPY.prepareProjectLabel, " /home/you/pilot/landing-zone ");
+    fake.onPost["/prepare"] = () => { fake.run = doneRun("prepare", { exit: 0, code: "PREPARED", data: preparedFiles() }); };
+    await clickButton(COPY.prepareRun);
+    await screen.findByText(COPY.prepareDone);
+    expect(posts(fake, "/prepare")[0].body).toEqual({ environment: "DEV", projectPath: "/home/you/pilot/landing-zone" });
+    expect((screen.getByLabelText(COPY.sealRequestLabel) as HTMLInputElement).value).toBe("/runs/pilot/DEV/request-ab.json");
+    expect((screen.getByLabelText(COPY.sealManifestLabel) as HTMLInputElement).value).toBe("/runs/pilot/DEV/manifest-ab.json");
+    const box = document.querySelector(".pilot-prepared") as HTMLElement;
+    for (const text of ["AWS", "Terraform", "111111111111", "us-east-1", "1.16.4", "pilot-policy-1", COPY.prepareLocalOnly, COPY.prepareNextSeal]) expect(box.textContent).toContain(text);
+    // The settings it uses, by name and source, never a value.
+    expect(box.textContent).toContain(COPY.prepareInputsLabel);
+    expect(box.textContent).toContain("region, from " + COPY.prepareFromFile + " terraform.tfvars");
+    expect(box.textContent).toContain("owner, from " + COPY.prepareFromEnvironment + " ALZ_DISCOVERY_TF_VAR_owner");
+    expect(box.querySelector("details")?.hasAttribute("open")).toBe(false);
+    expect(box.querySelector("details pre")?.textContent).toContain("schemaVersion");
+    expect(jargonIn(primaryText())).toEqual([]);
+    expect(screen.getByRole("button", { name: COPY.sealRun }).hasAttribute("disabled")).toBe(false);
+  });
+
+  test("a preparation that waits on the one-time check or the owner says so instead of offering the preview as ready", async () => {
+    const { fake } = await atSeal();
+    typeInto(COPY.prepareProjectLabel, "/p");
+    fake.onPost["/prepare"] = () => { fake.run = doneRun("prepare", { exit: 0, code: "PREPARED", data: preparedFiles({ step: "qualify", reason: "Qualify it in DEV." }) }); };
+    await clickButton(COPY.prepareRun);
+    expect(await screen.findByText(COPY.prepareNextCheck)).toBeTruthy();
+    expect(screen.queryByText(COPY.prepareNextSeal)).toBeNull();
+  });
+
+  test("a missing tool version is asked for only when it is needed, and a refusal says why and what next", async () => {
+    const { fake } = await atSeal();
+    expect(screen.queryByLabelText(COPY.prepareToolVersionLabel)).toBeNull();
+    typeInto(COPY.prepareProjectLabel, "/cdk.out");
+    fake.onPost["/prepare"] = () => { fake.run = doneRun("prepare", { exit: 2, code: "ENGINE_VERSION_REQUIRED", message: "x", data: { blocker: "OPERATOR" } }); };
+    await clickButton(COPY.prepareRun);
+    expect((await screen.findByRole("alert")).textContent).toContain(CODE_COPY.ENGINE_VERSION_REQUIRED.next);
+    typeInto(COPY.prepareToolVersionLabel, "2.27.10");
+    fake.onPost["/prepare"] = () => { fake.run = doneRun("prepare", { exit: 2, code: "TOOL_UNAVAILABLE", message: "x", data: { blocker: "TOOL", alternative: "Install it with ./alz deps." } }, "prepare-2"); };
+    await clickButton(COPY.prepareRun);
+    expect(posts(fake, "/prepare")[1].body).toEqual({ environment: "DEV", projectPath: "/cdk.out", awsCliVersion: "2.27.10" });
+    expect((await screen.findByRole("alert")).textContent).toContain(CODE_COPY.TOOL_UNAVAILABLE.why);
+    expect(screen.getByText("Install it with ./alz deps.")).toBeTruthy();
+    expect((screen.getByLabelText(COPY.sealRequestLabel) as HTMLInputElement).value).toBe("");
   });
 
   test("the target dialog shows the exact phrase and a copy button, starts empty, and cannot be confirmed by anything but the exact phrase", async () => {
@@ -507,7 +578,7 @@ describe("step 5 and 6: apply and the result", () => {
   async function toApply(level: "BEGINNER" | "ADVANCED" | "EXPERT" = "BEGINNER") {
     const ctx = await unlocked(level, { path: "UI", reviewReply: { ok: true, summary: bundleReview() } });
     await clickButton(COPY.pathContinue);
-    ctx.fake.onPost["/preflight"] = () => { ctx.fake.run = doneRun("preflight", { exit: 0, data: { ready: true, checks: [{ check: "kill switch absent", ok: true }] } }); };
+    ctx.fake.onPost["/preflight"] = () => { ctx.fake.run = doneRun("preflight", { exit: 0, data: { ready: true, checks: [{ check: "kill switch absent", ok: true, state: "READY" }] } }); };
     await clickButton(COPY.readyRun);
     // Readiness is produced by an asynchronous synthetic response. The user
     // cannot advance until the real UI has enabled Continue.
@@ -545,7 +616,7 @@ describe("step 5 and 6: apply and the result", () => {
   });
 
   const results: Array<[string, NonNullable<PilotRun["result"]>, ResultKind]> = [
-    ["applied", { exit: 0, data: { outcome: "SUCCEEDED" } }, "APPLIED"],
+    ["applied", { exit: 0, data: { outcome: "SUCCEEDED", sourceCommit: "5ec0de0000000000000000000000000000c0ffee" } }, "APPLIED"],
     ["blocked before anything", { exit: 2, code: "KILL_SWITCH_ACTIVE", message: "m" }, "NOTHING_CHANGED"],
     ["wrong phrase", { exit: 1, code: "APPLY_CONFIRMATION_MISMATCH", message: "m" }, "NOTHING_CHANGED"],
     ["failed with no change", { exit: 3, code: "APPLY_FAILED", outcome: "FAILED_NO_CHANGE", message: "m" }, "APPROVALS_SPENT"],
@@ -576,6 +647,9 @@ describe("step 5 and 6: apply and the result", () => {
     expect(box.textContent).toContain(words.headline);
     expect(box.textContent).toContain(words.what);
     for (const line of words.next) expect(box.textContent).toContain(line);
+    // An applied record names the app version that ran it; nothing else claims one.
+    if (kind === "APPLIED") expect(box.textContent).toContain("App version that ran it: 5ec0de000000");
+    else expect(box.textContent).not.toContain("App version that ran it");
     if (kind === "NEEDS_REVIEW") {
       expect(box.textContent).toContain("DO NOT RETRY");
       expect(box.textContent).toMatch(/Call the pilot owner/);
@@ -665,8 +739,10 @@ describe("every stop has a reason and a next step", () => {
     const refusalCodes = [...read("src/apply/types.ts").split("export type ApplyRefusalCode =")[1].split(";")[0].matchAll(/\| "([A-Z_]+)"/g)].map((m) => m[1]);
     const cliCodes = [...read("src/cli/apply.ts").matchAll(/\bfail\(\s*"([A-Z_]+)"|\bcode: "([A-Z_]+)"|, "([A-Z_]+_MISMATCH)", ?"[A-Z_]+"\)/g)].map((m) => m[1] ?? m[2] ?? m[3]);
     const routerCodes = [...read("src/cli/ui-channel.ts").matchAll(/new Bad\(\d+, "([A-Z_]+)"/g)].map((m) => m[1]);
+    const prepareCodes = [...read("src/apply/prepare.ts").split("export type PrepareCode =")[1].split(";")[0].matchAll(/"([A-Z_]+)"/g)].map((m) => m[1]);
+    expect(prepareCodes.length).toBeGreaterThanOrEqual(12);
     const extra = ["MANIFEST_INVALID", "APPLY_UNEXPECTED_ERROR", "PILOT_FAILED", "PILOT_UNREACHABLE", "LOCAL_HOST_ONLY", "NOT_FOUND"];
-    const all = [...new Set([...refusalCodes, ...cliCodes, ...routerCodes, ...extra])];
+    const all = [...new Set([...refusalCodes, ...cliCodes, ...routerCodes, ...prepareCodes, ...extra])];
     expect(refusalCodes.length).toBeGreaterThanOrEqual(25);
     expect(routerCodes.length).toBeGreaterThanOrEqual(12);
     for (const code of all) {
@@ -709,8 +785,9 @@ describe("the words are plain", () => {
     for (const item of CLI_COMMANDS) strings.push(["CLI." + item.command, item.who + " " + item.what]);
     for (const environment of ["DEV", "QA", "PROD"] as const) {
       for (const name of ["contract shape (x)", "pilot contract pinned and enabled (x)", "identities configured, distinct, no fallback (x)", "identities aimed at the " + environment + " account",
-        "plan will embed STATE_WRITE settings: yes", "plan will embed STATE_WRITE settings: no", "tool terraform installed in an approved directory", "kill switch absent"]) {
-        const words = describeCheck({ check: name, ok: false }, environment);
+        "plan will embed STATE_WRITE settings: yes", "plan will embed STATE_WRITE settings: no", "tool terraform installed in an approved directory", "kill switch absent",
+        "engine qualified in DEV for seal and apply (x)", "identity separation attested on the real DEV backend"]) {
+        const words = describeCheck({ check: name, ok: false, state: "MISSING" }, environment);
         strings.push(["CHECK." + name, words.label + " " + words.wrong + " " + words.fix]);
       }
     }
@@ -821,6 +898,7 @@ test("sealed plan review summarizes added, modified and removed resources with p
     ],
   });
   render(<ChangeList review={review}/>);
+  expect(document.body.textContent).toContain("App version that prepared it5ec0de000000");
   expect(screen.getByText(/Added:/).textContent).toContain("2");
   expect(screen.getByText(/Modified:/).textContent).toContain("1");
   expect(screen.getByText(/Removed or replaced:/).textContent).toContain("2");

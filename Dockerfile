@@ -14,6 +14,12 @@ RUN npm run check && npm run build
 
 FROM build AS test
 
+# test/source-commit.test.ts drives real git in throwaway repositories: the native-checkout path of the source resolver.
+# Test stage only. The shipped runtime image has no git and no .git, and names its build stamp instead.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git \
+ && rm -rf /var/lib/apt/lists/*
+
 ARG SOURCE_COMMIT
 ENV ALZ_SOURCE_COMMIT=$SOURCE_COMMIT
 
@@ -24,6 +30,8 @@ COPY security/ ./security/
 COPY config/ ./config/
 COPY policy/ ./policy/
 COPY compose.yaml ./compose.yaml
+# test/gitignore-secrets.test.ts reads the repository's ignore rules as text.
+COPY .gitignore ./.gitignore
 COPY docs/ ./docs/
 COPY alz ./alz
 COPY .github/workflows/model-qualification.yml ./.github/workflows/model-qualification.yml
