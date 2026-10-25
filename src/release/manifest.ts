@@ -1,10 +1,5 @@
 import { sha256 } from "../util/sha256.js";
 import {
-  releaseSourceOrigin,
-  validReleaseSourceOrigin,
-  type ReleaseSourceOrigin,
-} from "./provenance.js";
-import {
   readFile,
 } from "node:fs/promises";
 import {
@@ -23,10 +18,7 @@ export type ReleaseFileEvidence = {
 };
 
 export type PreviewOperateReleaseManifest = {
-  /** Version 1 remains readable for previously published artifacts. */
-  schemaVersion: 1 | 2;
-  /** Required for new version 2 artifacts. */
-  origin?: ReleaseSourceOrigin;
+  schemaVersion: 1;
   product:
     "agent-private-landing-zone";
   productVersion: string;
@@ -168,8 +160,7 @@ export function createReleaseManifest(input: {
   }
 
   return {
-    schemaVersion: 2,
-    origin: releaseSourceOrigin(),
+    schemaVersion: 1,
     product:
       "agent-private-landing-zone",
     productVersion:
@@ -219,22 +210,13 @@ export function validateReleaseManifest(
   const blockers: string[] = [];
 
   if (
-    (value.schemaVersion !== 1 && value.schemaVersion !== 2) ||
+    value.schemaVersion !== 1 ||
     value.product !==
       "agent-private-landing-zone"
   ) {
     blockers.push(
       "Release manifest schema or product identity is invalid.",
     );
-  }
-
-  // Never silently accept missing or modified attribution on new releases.
-  // Historical v1 manifests remain verifiable without retroactive metadata.
-  if (
-    (value.schemaVersion === 2 || value.origin !== undefined) &&
-    !validReleaseSourceOrigin(value.origin)
-  ) {
-    blockers.push("Release source attribution fingerprint is missing or invalid.");
   }
 
   if (
