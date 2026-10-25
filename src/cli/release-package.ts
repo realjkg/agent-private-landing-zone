@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import {
+  chmod,
   readdir,
   readFile,
   rename,
@@ -178,7 +179,11 @@ async function generate(
       { encoding: "utf8", mode: 0o600, flag: "wx" },
     );
     // Atomic replacement does not follow a preexisting output symlink.
-    await rename(tempBrandPath, resolve(root, RELEASE_BRAND_FILE_NAME));
+    const brandDestination = resolve(root, RELEASE_BRAND_FILE_NAME);
+    await rename(tempBrandPath, brandDestination);
+    // The declaration is public metadata, not a secret. The hardened Docker
+    // image verifies its release as an unprivileged 'node' user.
+    await chmod(brandDestination, 0o644);
   } finally {
     await rm(tempBrandPath, { force: true });
   }
