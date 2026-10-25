@@ -202,3 +202,9 @@ test("the journey matrix and every file it cites select the acceptance check", (
   }
   assert.ok(!planChanged(["src/other.ts"], files).nodeTests.includes("test/acceptance-journeys.test.ts"), "an uncited file does not");
 });
+
+test("a change under src/apply selects the driver-import guard, which scans files instead of following imports", () => {
+  const files = new Map([...fixture(), ["src/apply/new-module.ts", "export const x = 1;"], ["test/new-module.test.ts", 'import { x } from "../src/apply/new-module.js";'],
+    ["test/teardown-driver-denials.test.ts", "test()"], ["test/apply-boundary.test.ts", "test()"], ["test/security-boundaries.test.ts", "test()"]]);
+  assert.ok(planChanged(["src/apply/new-module.ts"], files).nodeTests.includes("test/teardown-driver-denials.test.ts"));
+});

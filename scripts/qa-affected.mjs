@@ -153,8 +153,9 @@ export function planChanged(changedPaths, files) {
       addExisting(selected, files, directlyImpacted);
       if (/^src\/operator-ui\/app\//.test(path)) buildUi = true;
       if (/^src\/(?:apply|security|identity|actions|policy)\//.test(path)) {
+        // teardown-driver-denials scans src/ for driver imports, which no import closure reaches.
         addExisting(selected, files, ["test/security-boundaries.test.ts",
-          "test/apply-boundary.test.ts"]);
+          "test/apply-boundary.test.ts", "test/teardown-driver-denials.test.ts"]);
       }
       if (directlyImpacted.length === 0) {
         // Do not mask missing test ownership with a blanket full-suite run.

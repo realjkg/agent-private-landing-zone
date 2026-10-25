@@ -2,7 +2,6 @@ import { join } from "node:path";
 
 import { readEncryptedEvidence } from "../evidence/vault.js";
 import { canonicalJson } from "../teardown/manifest.js";
-import type { ResolvedTarget } from "../teardown/driver/types.js";
 import { sha256 } from "../util/sha256.js";
 import { pilotContractSha256, SUFFIX } from "./contract.js";
 import { engineOf } from "./engine-spec.js";
@@ -25,7 +24,7 @@ export type LiveAcceptanceRecord = {
   cloud: string;
   engine: string;
   environment: ApplyEnvironment;
-  target: ResolvedTarget;
+  target: ApplyEvidence["target"];
   sourceCommit: string;
   artifactSha256: string;
   outcome: "SUCCEEDED";
