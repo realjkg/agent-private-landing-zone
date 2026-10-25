@@ -1,4 +1,5 @@
 import { sha256 } from "../util/sha256.js";
+import { BRAND_PROVENANCE, matchesBrandProvenance, type BrandProvenance } from "../brand/identity.js";
 import {
   readFile,
 } from "node:fs/promises";
@@ -23,6 +24,8 @@ export type PreviewOperateReleaseManifest = {
     "agent-private-landing-zone";
   productVersion: string;
   sourceCommit: string;
+  /** Optional for schema-v1 compatibility; always emitted by current packaging. */
+  brand?: BrandProvenance;
   contract: {
     id: string;
     version: string;
@@ -167,6 +170,7 @@ export function createReleaseManifest(input: {
       input.productVersion,
     sourceCommit:
       input.sourceCommit,
+    brand: BRAND_PROVENANCE,
     contract: {
       id:
         PRODUCTION_DEPLOYMENT_CONTRACT
@@ -208,6 +212,10 @@ export function validateReleaseManifest(
     PreviewOperateReleaseManifest,
 ): string[] {
   const blockers: string[] = [];
+
+  if (value.brand !== undefined && !matchesBrandProvenance(value.brand)) {
+    blockers.push("Embedded origin attribution fingerprint is invalid.");
+  }
 
   if (
     value.schemaVersion !== 1 ||
