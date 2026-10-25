@@ -127,23 +127,47 @@ test("cleanup: deleted only when the cloud says gone, kept only with an owner an
   const blueprint = blueprintFromTerraformState(AWS_SHOW, PLAN);
   const keepBucket = [{ address: "aws_s3_bucket.state", owner: "platform-owner", reason: "The shared state bucket outlives this journey." },
     { address: "aws_s3_bucket_versioning.state", owner: "platform-owner", reason: "A setting of the kept state bucket." }];
-  const clean = await cleanupDisposition(blueprint, keepBucket, { region: "us-east-2", aws: fakeAws(new Set([BUCKET])).aws });
+  const clean = await cleanupDisposition(blueprint, keepBucket, { unitId: "u", region: "us-east-2", aws: fakeAws(new Set([BUCKET])).aws });
   assert.equal(clean.verdict, "CLEAN");
   assert.deepEqual(clean.dispositions.map((x) => [x.address, x.disposition]), [
     ["aws_cloudwatch_log_group.act_dev1", "DELETED"], ["aws_iam_openid_connect_provider.github", "DELETED"],
     ["aws_s3_bucket.state", "RETAINED"], ["aws_s3_bucket_versioning.state", "RETAINED"],
   ]);
-  const left = await cleanupDisposition(blueprint, keepBucket, { region: "us-east-2", aws: fakeAws(new Set([BUCKET, LOG])).aws });
+  const left = await cleanupDisposition(blueprint, keepBucket, { unitId: "u", region: "us-east-2", aws: fakeAws(new Set([BUCKET, LOG])).aws });
   assert.equal(left.verdict, "LEFTOVERS");
   assert.equal(left.dispositions.find((x) => x.address === "aws_cloudwatch_log_group.act_dev1")?.disposition, "LEFTOVER");
-  const unproven = await cleanupDisposition(blueprint, keepBucket, { region: "us-east-2", aws: fakeAws(new Set([BUCKET]), { fail: { [OIDC]: "ThrottlingException" } }).aws });
+  const unproven = await cleanupDisposition(blueprint, keepBucket, { unitId: "u", region: "us-east-2", aws: fakeAws(new Set([BUCKET]), { fail: { [OIDC]: "ThrottlingException" } }).aws });
   assert.equal(unproven.verdict, "INCONCLUSIVE");
   assert.equal(unproven.dispositions.find((x) => x.address === "aws_iam_openid_connect_provider.github")?.disposition, "UNPROVEN");
-  const notCheckable = await cleanupDisposition(blueprint, keepBucket.slice(0, 1), { region: "us-east-2", aws: fakeAws(new Set([BUCKET])).aws });
+  const notCheckable = await cleanupDisposition(blueprint, keepBucket.slice(0, 1), { unitId: "u", region: "us-east-2", aws: fakeAws(new Set([BUCKET])).aws });
   assert.equal(notCheckable.verdict, "INCONCLUSIVE", "a setting nobody kept cannot be proven deleted");
-  const gone = await cleanupDisposition(blueprint, keepBucket, { region: "us-east-2", aws: fakeAws(new Set()).aws });
+  const gone = await cleanupDisposition(blueprint, keepBucket, { unitId: "u", region: "us-east-2", aws: fakeAws(new Set()).aws });
   assert.equal(gone.verdict, "INCONCLUSIVE");
   assert.deepEqual(gone.retainedButAbsent, ["aws_s3_bucket.state"]);
+  const extra = "arn:aws:sqs:us-east-2:000000000000:outside-the-state";
+  const untracked = await cleanupDisposition(blueprint, keepBucket, { unitId: "u", region: "us-east-2", aws: fakeAws(new Set([BUCKET]), { tagged: [extra] }).aws });
+  assert.equal(untracked.verdict, "LEFTOVERS", "a resource still carrying the run's tag is a leftover even when the state never named it");
+  assert.deepEqual(untracked.untrackedLeftovers, [extra]);
+});
+
+test("cleanup never reports completion it cannot prove: an empty or unmapped blueprint, no unit tag, or an incomplete listing", async () => {
+  const blueprint = blueprintFromTerraformState(AWS_SHOW, PLAN);
+  const keepBucket = [{ address: "aws_s3_bucket.state", owner: "platform-owner", reason: "The shared state bucket outlives this journey." },
+    { address: "aws_s3_bucket_versioning.state", owner: "platform-owner", reason: "A setting of the kept state bucket." }];
+  const allGone = fakeAws(new Set([BUCKET])).aws;
+  // A blueprint rebuilt from the state after a destroy is empty: it must not read as a clean cleanup.
+  const empty = await cleanupDisposition({ entries: [], missing: [] }, [], { unitId: "u", region: "us-east-2", aws: allGone });
+  assert.equal(empty.verdict, "INCONCLUSIVE");
+  assert.match(empty.unresolved.join(" "), /names no resources/);
+  const unmapped = await cleanupDisposition({ ...blueprint, missing: ["aws_vpc.main"] }, keepBucket, { unitId: "u", region: "us-east-2", aws: allGone });
+  assert.equal(unmapped.verdict, "INCONCLUSIVE");
+  assert.match(unmapped.unresolved.join(" "), /aws_vpc\.main was planned but never mapped/);
+  const untagged = await cleanupDisposition(blueprint, keepBucket, { unitId: null, region: "us-east-2", aws: allGone });
+  assert.equal(untagged.verdict, "INCONCLUSIVE");
+  assert.equal(untagged.inventory, "NOT_AVAILABLE");
+  const paginated = await cleanupDisposition(blueprint, keepBucket, { unitId: "u", region: "us-east-2", aws: fakeAws(new Set([BUCKET]), { paginated: true }).aws });
+  assert.equal(paginated.verdict, "INCONCLUSIVE");
+  assert.equal(paginated.inventory, "INCOMPLETE");
 });
 
 test("cleanup denied: a kept resource needs a real owner and reason, must belong to the journey, and is kept once", async () => {
@@ -151,7 +175,7 @@ test("cleanup denied: a kept resource needs a real owner and reason, must belong
   for (const decision of [{ address: "aws_s3_bucket.state", owner: "", reason: "The shared state bucket." },
     { address: "aws_s3_bucket.state", owner: "owner", reason: "short" }, { address: "aws_s3_bucket.other", owner: "owner", reason: "Not part of this journey." }]) {
     assert.notDeepEqual(retentionProblems(blueprint, [decision]), [], JSON.stringify(decision));
-    await assert.rejects(cleanupDisposition(blueprint, [decision], { region: "us-east-2", aws: fakeAws(everything).aws }), /RETENTION_INVALID/);
+    await assert.rejects(cleanupDisposition(blueprint, [decision], { unitId: "u", region: "us-east-2", aws: fakeAws(everything).aws }), /RETENTION_INVALID/);
   }
   const twice = { address: "aws_s3_bucket.state", owner: "owner", reason: "The shared state bucket." };
   assert.ok(retentionProblems(blueprint, [twice, twice]).some((x) => x.includes("twice")));

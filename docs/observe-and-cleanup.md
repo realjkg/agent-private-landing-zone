@@ -48,7 +48,16 @@ The caller runs the AWS CLI as the read-only DISCOVERY identity through the boun
 | `LEFTOVER` | It still exists and nobody kept it. |
 | `UNPROVEN` | The check could not decide, or the type cannot be checked. It is never called deleted. |
 
-- **Verdicts:** `CLEAN` when every resource is `DELETED` or `RETAINED`; `LEFTOVERS` when any resource is a leftover; `INCONCLUSIVE` otherwise. A kept resource the cloud reports gone is listed in `retainedButAbsent`, and the verdict is not `CLEAN`.
+- **Verdicts:**
+  - `LEFTOVERS` when a resource of this run still exists and nobody kept it. That includes a resource still carrying the run's unit tag that the state never named.
+  - `CLEAN` only when all of these hold:
+    - the blueprint names at least one resource;
+    - every resource is `DELETED` or `RETAINED`;
+    - no planned resource was left unmapped;
+    - no kept resource is reported gone;
+    - a complete tag listing found nothing else of this run.
+  - `INCONCLUSIVE` otherwise, with `unresolved` saying why. Completion is never reported in that case.
+- **Which blueprint to use:** the one recorded when the journey was observed. A blueprint rebuilt from the state after a destroy is empty, and an empty blueprint is never `CLEAN`. A pilot run reports `INCONCLUSIVE` until the apply path tags its resources with a deletion unit.
 - **Refused retention decisions:** a decision for a resource that is not part of this journey, a decision without an owner or a reason, or a resource kept twice.
 
 ## Not covered here

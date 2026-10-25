@@ -1,5 +1,5 @@
 import type { Blueprint } from "./blueprint.js";
-import { checkResource, type AwsCli, type Existence } from "./verify.js";
+import { checkResource, unexpectedTagged, type AwsCli, type Existence } from "./verify.js";
 
 /**
  * The cleanup disposition of one journey (docs/observe-and-cleanup.md): for every resource the apply left, whether it is
@@ -20,11 +20,20 @@ export type Disposition = {
   reason?: string;
 };
 export type CleanupReport = {
-  /** CLEAN: every resource is DELETED or RETAINED. LEFTOVERS: something still exists that nobody kept. INCONCLUSIVE: otherwise. */
+  /**
+   * CLEAN: the blueprint names resources, every one is DELETED or RETAINED, nothing planned is unaccounted for, and a
+   * complete tag listing finds nothing else of this run. LEFTOVERS: something of this run still exists that nobody kept.
+   * INCONCLUSIVE: anything else; `unresolved` says what, and completion is never reported.
+   */
   verdict: "CLEAN" | "LEFTOVERS" | "INCONCLUSIVE";
   dispositions: Disposition[];
   /** Kept resources the cloud reports gone: the retention record no longer matches the cloud. */
   retainedButAbsent: string[];
+  /** ARNs still tagged with this run's unit that the blueprint does not name: leftovers outside the state. */
+  untrackedLeftovers: string[];
+  inventory: "COMPLETE" | "INCOMPLETE" | "NOT_AVAILABLE";
+  /** Why the verdict is not CLEAN, when it is INCONCLUSIVE. */
+  unresolved: string[];
 };
 
 const named = (value: unknown, min: number): value is string => typeof value === "string" && value.trim().length >= min;
@@ -44,9 +53,14 @@ export function retentionProblems(blueprint: Blueprint, retained: readonly Reten
   return problems;
 }
 
-/** The disposition of every resource in the blueprint, after cleanup. Throws on invalid retention decisions. */
-export async function cleanupDisposition(blueprint: Blueprint, retained: readonly RetentionDecision[], input: { region: string; aws: AwsCli }):
-  Promise<CleanupReport> {
+/**
+ * The disposition of every resource in the blueprint, after cleanup. Throws on invalid retention decisions.
+ *
+ * The blueprint must be the one recorded when the journey was observed, not one rebuilt from the state after a destroy:
+ * an empty blueprint, or one with planned resources it never mapped, proves nothing and is never CLEAN.
+ */
+export async function cleanupDisposition(blueprint: Blueprint, retained: readonly RetentionDecision[],
+  input: { unitId: string | null; region: string; aws: AwsCli }): Promise<CleanupReport> {
   const problems = retentionProblems(blueprint, retained);
   if (problems.length > 0) throw new Error("RETENTION_INVALID: " + problems.join("; "));
   const kept = new Map(retained.map((decision) => [decision.address, decision]));
@@ -63,8 +77,18 @@ export async function cleanupDisposition(blueprint: Blueprint, retained: readonl
       dispositions.push({ ...base, disposition: check.existence === "ABSENT" ? "DELETED" : check.existence === "PRESENT" ? "LEFTOVER" : "UNPROVEN" });
     }
   }
-  const verdict = dispositions.some((x) => x.disposition === "LEFTOVER") ? "LEFTOVERS"
-    : dispositions.every((x) => x.disposition === "DELETED" || x.disposition === "RETAINED") && retainedButAbsent.length === 0 ? "CLEAN"
-    : "INCONCLUSIVE";
-  return { verdict, dispositions, retainedButAbsent };
+  const listed = input.unitId === null ? null : await unexpectedTagged(blueprint, input.unitId, input.region, input.aws);
+  const inventory = listed === null ? "NOT_AVAILABLE" : listed.complete ? "COMPLETE" : "INCOMPLETE";
+  const untrackedLeftovers = listed?.unexpected ?? [];
+  const unresolved = [
+    ...(blueprint.entries.length === 0 ? ["the blueprint names no resources, so nothing was shown to be deleted"] : []),
+    ...blueprint.missing.map((address) => address + " was planned but never mapped to a cloud identifier"),
+    ...dispositions.filter((x) => x.disposition === "UNPROVEN").map((x) => x.address + " could not be checked (" + x.existence + ")"),
+    ...retainedButAbsent.map((address) => address + " is kept but the cloud reports it gone"),
+    ...(inventory === "NOT_AVAILABLE" ? ["this run carries no unit tag, so resources outside the state cannot be looked for"] : []),
+    ...(inventory === "INCOMPLETE" ? ["the tag listing was incomplete"] : []),
+  ];
+  const verdict = dispositions.some((x) => x.disposition === "LEFTOVER") || untrackedLeftovers.length > 0 ? "LEFTOVERS"
+    : unresolved.length === 0 ? "CLEAN" : "INCONCLUSIVE";
+  return { verdict, dispositions, retainedButAbsent, untrackedLeftovers, inventory, unresolved };
 }
