@@ -318,7 +318,7 @@ const evidenceFor = (over: Partial<ApplyEvidence> = {}): ApplyEvidence => ({
   artifactSha256: HASH_A,
   manifestHash: "d".repeat(64),
   releaseIdentity: RELEASE,
-  contractSha256: "c".repeat(64),
+  contractSha256: "c".repeat(64), sourceCommit: "5ec0de0000000000000000000000000000c0ffee",
   approvals: [{ approverId: "alice", issuedAt: "2026-10-11T12:00:00.000Z" }],
   adapter: { adapterVersion: "terraform-apply-1", argvDigest: "e".repeat(64) },
   toolVersions: { engine: "1.9.8" },
@@ -358,6 +358,13 @@ test("apply evidence: extra and raw fields, missing fields and bad values are re
   const missing = evidenceFor() as Record<string, unknown>;
   delete missing.releaseIdentity;
   assert.ok(applyEvidenceProblems(missing).some((p) => /releaseIdentity.*missing/.test(p)));
+  // The product commit is required, and only a full commit id.
+  const noSource = evidenceFor() as Record<string, unknown>;
+  delete noSource.sourceCommit;
+  assert.ok(applyEvidenceProblems(noSource).some((p) => /sourceCommit.*missing/.test(p)));
+  for (const bad of ["HEAD", "5ec0de000000", "5EC0DE0000000000000000000000000000C0FFEE"]) {
+    assert.ok(applyEvidenceProblems({ ...evidenceFor(), sourceCommit: bad }).some((p) => /sourceCommit/.test(p)), bad);
+  }
   for (const doc of [null, undefined, "x", [], 7]) assert.ok(applyEvidenceProblems(doc).length > 0);
   assert.ok(applyEvidenceProblems(evidenceFor({ schemaVersion: 2 as never })).length > 0);
   assert.ok(applyEvidenceProblems(evidenceFor({ environment: "STAGING" as never })).length > 0);
