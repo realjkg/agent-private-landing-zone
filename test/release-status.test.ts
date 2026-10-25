@@ -1,0 +1,135 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import test from "node:test";
+
+import { releaseAdmission } from "../src/cli/release-admission.js";
+import { releaseStatusView } from "../src/release/docs.js";
+import type { ReleaseAdmissionReport } from "../src/qualification/release-admission.js";
+import type { RowReport } from "../src/release/acceptance.js";
+import {
+  loadReleaseScope, loadReleaseStatus, renderReleaseStatus, scopeProblems, statusProblems,
+  type GateStatusEntry, type ReleaseScope, type ReleaseStatus,
+} from "../src/release/status.js";
+
+// The release gate status (config/release/status.json) against the scope, the admission review and the journey matrix.
+
+const root = process.cwd();
+const candidate = "c".repeat(40);
+const evidence = "e".repeat(64);
+const shippedScope = loadReleaseScope(root);
+const shippedStatus = loadReleaseStatus(root) as ReleaseStatus;
+const clone = <T>(value: T): T => structuredClone(value);
+const frozen = (): ReleaseScope => ({ ...clone(shippedScope), candidate });
+const withEntry = (gate: string, change: Partial<GateStatusEntry>): ReleaseStatus => {
+  const status = clone(shippedStatus);
+  const at = status.gates.findIndex((x) => x.gate === gate);
+  status.gates[at] = { ...status.gates[at]!, ...change };
+  return status;
+};
+const admitted = (...ids: string[]): ReleaseAdmissionReport => ({
+  sourceCommit: candidate, readyForIndependentReleaseReview: false, productionReleaseApproved: false, infrastructureAct: "DISABLED",
+  actPilot: null, blockers: [], candidateIdentityHash: "0".repeat(64),
+  gates: ids.map((id) => ({ id, mode: "CI", status: "EVIDENCE_PRESENT", blockers: [], evidenceSha256: evidence })),
+});
+const row = (cloud: string, path: string, implemented: boolean, live: RowReport["live"]): RowReport => ({
+  cloud, path, implemented, live, status: implemented ? "SYNTHETIC_PASS" : "NOT_IMPLEMENTED",
+  steps: { prepare: "SYNTHETIC_PASS", preview: "SYNTHETIC_PASS", approve: "SYNTHETIC_PASS", execute: "SYNTHETIC_PASS", observe: "SYNTHETIC_PASS", cleanup: "SYNTHETIC_PASS" },
+});
+const passing = (gate: string): Partial<GateStatusEntry> => ({ status: "PASS", candidate, evidenceMode: "LIVE", evidenceRefs: [".runs/release/" + gate + "-" + evidence + ".json"] });
+
+test("the shipped scope and status check, nothing passes before a candidate is frozen, and the release view is current", async () => {
+  const view = await releaseStatusView(root);
+  assert.deepEqual(view.problems, []);
+  assert.equal(shippedScope.candidate, null);
+  assert.ok(shippedStatus.gates.every((x) => x.status !== "PASS"));
+  assert.equal(readFileSync(join(root, "docs", "release-status.md"), "utf8"), view.markdown, "run npm run docs:release");
+  assert.match(view.markdown!, /## Ready \(0\)[\s\S]*## Needs attention[\s\S]*## Not qualified[\s\S]*## Out of scope[\s\S]*## Primary action/);
+});
+
+test("a PASS needs the frozen candidate, LIVE evidence, and the admission review finding that gate's cited evidence", () => {
+  const gate = "source-ci";
+  const scope = frozen();
+  const journeys: RowReport[] = [];
+  assert.deepEqual(statusProblems(withEntry(gate, passing(gate)), { scope, journeys, admission: admitted(gate) }), []);
+  const refusals: [string, ReleaseStatus, ReleaseScope, ReleaseAdmissionReport | undefined][] = [
+    ["no candidate frozen", withEntry(gate, { ...passing(gate), candidate: null }), shippedScope, admitted(gate)],
+    ["synthetic", withEntry(gate, { ...passing(gate), evidenceMode: "SYNTHETIC" }), scope, admitted(gate)],
+    ["no admission review", withEntry(gate, passing(gate)), scope, undefined],
+    ["admission found nothing", withEntry(gate, passing(gate)), scope, admitted("release-archive")],
+    ["another hash cited", withEntry(gate, { ...passing(gate), evidenceRefs: ["other.json"] }), scope, admitted(gate)],
+    ["stale candidate", withEntry(gate, { ...passing(gate), candidate: "d".repeat(40) }), scope, admitted(gate)],
+    ["review of another commit", withEntry(gate, passing(gate)), scope, { ...admitted(gate), sourceCommit: "d".repeat(40) }],
+  ];
+  for (const [name, status, s, admission] of refusals) {
+    assert.notDeepEqual(statusProblems(status, { scope: s, journeys, ...(admission ? { admission } : {}) }), [], name);
+  }
+});
+
+test("an ACT path passes only with its journey row implemented through cleanup and live, for the full-lifecycle scope", () => {
+  const gate = "act:aws-terraform";
+  const context = (journeys: RowReport[]) => ({ scope: frozen(), journeys, admission: admitted(gate) });
+  const status = withEntry(gate, passing(gate));
+  status.primary = "act:aws-cdk"; // a passed gate is no longer the primary action
+  assert.deepEqual(statusProblems(status, context([row("AWS", "TERRAFORM", true, "LIVE_PASS")])), []);
+  for (const journeys of [[], [row("AWS", "TERRAFORM", false, "LIVE_PASS")], [row("AWS", "TERRAFORM", true, "BLOCKED")], [row("AWS", "CDK", true, "LIVE_PASS")]]) {
+    assert.ok(statusProblems(status, context(journeys)).some((x) => x.includes("journey row")));
+  }
+});
+
+test("OUT_OF_SCOPE only for a gate the owner's scope excludes, and the scope cannot exclude its own platforms or paths", () => {
+  const journeys: RowReport[] = [];
+  assert.ok(statusProblems(withEntry("lifecycle:upgrade", { status: "OUT_OF_SCOPE" }), { scope: shippedScope, journeys }).some((x) => x.includes("OUT_OF_SCOPE needs")));
+  assert.ok(statusProblems(withEntry("preview:pulumi-aws-greenfield", { status: "NOT_RUN", nextAction: "Run the Pulumi preview." }), { scope: shippedScope, journeys })
+    .some((x) => x.includes("excludes this gate")));
+  const excluding = (gate: string) => scopeProblems({ ...clone(shippedScope), outOfScope: [...shippedScope.outOfScope, { gate, reason: "Not wanted for this release." }] });
+  for (const gate of ["platform:win32-x64", "act:aws-cdk"]) assert.ok(excluding(gate).some((x) => x.includes("cannot be excluded")), gate);
+  assert.ok(excluding("preview:nonexistent").some((x) => x.includes("not a release gate")));
+  assert.ok(excluding("preview:pulumi-aws-greenfield").some((x) => x.includes("twice")));
+  assert.ok(scopeProblems({ ...clone(shippedScope), outOfScope: [{ gate: "lifecycle:upgrade", reason: "" }] }).some((x) => x.includes("why")));
+});
+
+test("the scope must name the owner's decision and exactly the platforms and paths the admission gates define", () => {
+  assert.deepEqual(scopeProblems(shippedScope), []);
+  for (const change of [
+    { decision: { by: "AGENT", ref: shippedScope.decision.ref, recorded: "2026-10-25" } },
+    { platforms: shippedScope.platforms.filter((x) => x !== "win32-arm64") },
+    { actPaths: [...shippedScope.actPaths, "act:gcp-terraform"] },
+    { candidate: "HEAD" },
+    { manifest: "release/manifest.json" },
+    { journey: "EXECUTE_ONLY" },
+  ]) assert.notDeepEqual(scopeProblems({ ...clone(shippedScope), ...change }), [], JSON.stringify(change));
+});
+
+test("every gate is listed once in admission order, with an owner, a tested scope, invalidation and a next action", () => {
+  const journeys: RowReport[] = [];
+  const check = (status: unknown) => statusProblems(status, { scope: shippedScope, journeys });
+  const missing = clone(shippedStatus); missing.gates.pop();
+  const reordered = clone(shippedStatus); reordered.gates.reverse();
+  for (const status of [missing, reordered]) assert.ok(check(status).some((x) => x.includes("every release gate once")));
+  for (const change of [
+    { owner: "SOMEONE" as never }, { status: "DONE" as never }, { testedScope: "" }, { invalidatedBy: [] }, { nextAction: "" },
+    { evidenceMode: "LIVE" as const, evidenceRefs: [] }, { evidenceMode: null, evidenceRefs: ["x.json"] }, { candidate: "abc" },
+  ]) assert.notDeepEqual(check(withEntry("source-ci", change)), [], JSON.stringify(change));
+  assert.ok(check({ ...clone(shippedStatus), primary: "preview:pulumi-aws-greenfield" }).some((x) => x.includes("primary")));
+});
+
+test("the release view puts failures under Needs attention, names the primary action, and labels synthetic progress", () => {
+  const status = withEntry("source-ci", { status: "FAIL", nextAction: "Fix the failing type check on the candidate." });
+  delete status.primary;
+  const view = renderReleaseStatus(status, shippedScope);
+  assert.match(view, /## Needs attention \(\d+\)\n\n[^#]*`source-ci` \| CI \| FAIL/);
+  assert.match(view, /## Primary action\n\n`source-ci` \(CI\): Fix the failing type check/);
+  assert.match(view, /`act:aws-terraform`[^\n]*Synthetic progress only/);
+});
+
+test("the admission CLI explains itself and refuses to review without exactly one manifest", async () => {
+  const printed: string[] = [];
+  const log = console.log;
+  console.log = (line: string) => { printed.push(line); };
+  try { await releaseAdmission(["--help"]); } finally { console.log = log; }
+  assert.match(printed.join("\n"), /--manifest/);
+  for (const args of [[], ["--manifest"], ["--manifest", "--help"], ["--other", "x.json"]]) {
+    await assert.rejects(releaseAdmission(args), /RELEASE_ADMISSION_REQUIRES_MANIFEST/, JSON.stringify(args));
+  }
+});
