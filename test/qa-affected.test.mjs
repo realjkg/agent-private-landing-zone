@@ -173,3 +173,13 @@ test("guarded generated docs run their guard instead of being skipped as documen
     assert.deepEqual(plan.gaps, []);
   }
 });
+
+test("CI builds operator HTML before HTTP inventory guards", () => {
+  const files = fixture();
+  files.set("src/cli/new-tool.ts", "export const run = 1;");
+  files.set("test/new-tool.test.ts", 'import "../src/cli/new-tool.js";');
+  const plan = planChanged(["src/cli/new-tool.ts", "test/new-tool.test.ts"], files);
+  assert.ok(plan.nodeTests.includes("test/operations-core.test.ts"));
+  assert.equal(plan.buildUi, true);
+  assert.deepEqual(plan.gaps, []);
+});
