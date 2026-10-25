@@ -56,9 +56,9 @@ ownership rules. It does not guarantee coverage for filesystem-loaded fixtures,
 dynamic runtime calls, or behavior invisible to unit tests. When those paths
 change, add a focused test and explicit ownership before merge.
 
-GitHub Actions does not run an unattended hosted coding agent or auto-commit
-remediation. Local coding agents own the fix/recheck loop. A failed remote
-check is an evidence handoff to the agent, and the PR stays unmerged.
+GitHub Actions may execute authorized, unattended coding agents for scoped implementation, quality verification, and exceptional remediation.
+
+Such execution requires a separately reviewed workflow with explicit path ownership, least-privilege permissions, bounded attempts, affected-code QA, independent review, and protected merge gates. This policy does not itself activate a hosted agent. Failed remote checks remain blocking evidence until the underlying issue is corrected and the required gates pass.
 
 ## Local operator experience and output budget
 
