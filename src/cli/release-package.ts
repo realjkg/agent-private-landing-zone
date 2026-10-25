@@ -171,7 +171,7 @@ async function generate(
   try {
     await writeFile(
       tempBrandPath,
-      JSON.stringify(BRAND_PROVENANCE, null, 2) + "\\n",
+      JSON.stringify(BRAND_PROVENANCE, null, 2) + "\n",
       { encoding: "utf8", mode: 0o600, flag: "wx" },
     );
     // Atomic replacement does not follow a preexisting output symlink.
