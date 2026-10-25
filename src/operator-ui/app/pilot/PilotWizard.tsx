@@ -100,6 +100,7 @@ export function ChangeList(props: { review: ReviewSummary }) {
         <dt>Environment</dt><dd>{review.environment}</dd>
         <dt>Place</dt><dd><code>{review.target.account} | {review.target.backend} | {review.target.workspace}</code></dd>
         <dt>Change ID (first 12 characters)</dt><dd><code>{review.shortId}</code></dd>
+        <dt>App version that prepared it</dt><dd><code>{review.sourceCommit.slice(0, 12)}</code></dd>
       </dl>
       <h3>Change summary</h3>
       <p>Added: <strong>{review.counts.create}</strong> · Modified: <strong>{review.counts.update}</strong> ·
@@ -165,6 +166,12 @@ export function PreparedSummary(props: { prepared: PreparedFiles }) {
     </div>
   );
 }
+
+/** The product version an apply's record names, when the record came back. */
+const appliedVersion = (result: RunResult): string | undefined => {
+  const commit = (result.data as { sourceCommit?: unknown } | undefined)?.sourceCommit;
+  return typeof commit === "string" && /^[0-9a-f]{40}$/.test(commit) ? commit.slice(0, 12) : undefined;
+};
 
 // --- the wizard ------------------------------------------------------------------------------------------------
 
@@ -622,6 +629,7 @@ export default function PilotWizard(props: PilotWizardProps) {
                     <div className={"pilot-result pilot-result-" + words.tone} role="status" aria-live="polite" data-result={kind}>
                       <h3>{words.headline}</h3>
                       <p>{words.what}</p>
+                      {appliedVersion(finalResult.result) && <p>App version that ran it: <code>{appliedVersion(finalResult.result)}</code></p>}
                       {kind !== "APPLIED" && <Reasoned step="apply" code={finalResult.result.code} message={finalResult.result.message} level={level} transcript={run?.transcript} />}
                       <h4>What to do now</h4>
                       <ul>{words.next.map((line) => <li key={line}>{line}</li>)}</ul>

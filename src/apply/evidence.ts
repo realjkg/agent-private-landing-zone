@@ -1,4 +1,4 @@
-import { HASH } from "./constants.js";
+import { COMMIT, HASH } from "./constants.js";
 import { ENGINE_IDS } from "./engine-spec.js";
 import type { ProviderSpec } from "./provider.js";
 import type { ApplyEvidence, EngineId } from "./types.js";
@@ -39,6 +39,7 @@ const SHAPE: Shape = {
   manifestHash: hash,
   releaseIdentity: text,
   contractSha256: hash,
+  sourceCommit: (v) => typeof v === "string" && COMMIT.test(v),
   approvals: [{ approverId: text, issuedAt: iso }],
   adapter: { adapterVersion: text, argvDigest: hash },
   toolVersions: { engine: text },

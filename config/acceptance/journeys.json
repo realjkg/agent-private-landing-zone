@@ -141,7 +141,7 @@
           }
         },
         "execute": {
-          "status": "NOT_IMPLEMENTED",
+          "status": "SYNTHETIC_PASS",
           "code": [
             "src/apply/driver.ts",
             "src/apply/engines/terraform.ts",
@@ -151,7 +151,6 @@
             "src/cli/ui-channel.ts",
             "src/apply/providers/aws.ts"
           ],
-          "missing": "Apply evidence names the artifact, target, engine and outcome but not the product source commit it ran from, so the sourceBoundEvidence proof fails.",
           "tests": {
             "ui": [
               {
@@ -169,6 +168,10 @@
               {
                 "file": "test/apply-aws.test.ts",
                 "title": "PROD without a successful QA apply of the same release is PROMOTION_EVIDENCE_MISSING, and QA without DEV likewise"
+              },
+              {
+                "file": "test/ui-channel.test.ts",
+                "title": "AWS Terraform in the console: a plan applies only from the product commit that sealed it, and nothing is consumed by a mismatch"
               }
             ],
             "interrupted": [
@@ -222,12 +225,40 @@
           "missing": "No per-resource disposition (deleted, or retained with an owner and reason) is recorded after a journey."
         },
         "sourceBoundEvidence": {
-          "status": "NOT_IMPLEMENTED",
+          "status": "SYNTHETIC_PASS",
           "code": [
-            "src/apply/types.ts",
-            "src/apply/evidence.ts"
+            "src/util/source-commit.ts",
+            "src/apply/seal.ts",
+            "src/apply/driver.ts",
+            "src/apply/evidence.ts",
+            "src/cli/apply.ts"
           ],
-          "missing": "ApplyEvidence has no sourceCommit, so evidence does not name the product commit that ran."
+          "tests": [
+            {
+              "file": "test/source-commit.test.ts",
+              "title": "a clean checkout names its HEAD commit, and the image stamp cannot override it"
+            },
+            {
+              "file": "test/source-commit.test.ts",
+              "title": "uncommitted changes, staged or not, and new unignored files are refused, never named after HEAD"
+            },
+            {
+              "file": "test/source-commit.test.ts",
+              "title": "without a checkout only a full build stamp is used; anything else is refused, not guessed"
+            },
+            {
+              "file": "test/apply-cli.test.ts",
+              "title": "seal and apply stop before any question when the product commit is unknown or uncommitted, and apply only from the commit that sealed it"
+            },
+            {
+              "file": "test/ui-channel.test.ts",
+              "title": "AWS Terraform in the console: a plan applies only from the product commit that sealed it, and nothing is consumed by a mismatch"
+            },
+            {
+              "file": "test/ui-channel.test.ts",
+              "title": "AWS Terraform in the console: prepare from a project folder, preview, approve and apply through the real router, service and adapter"
+            }
+          ]
         }
       },
       "live": {
@@ -295,7 +326,7 @@
           "code": [
             "src/apply/engines/cdk.ts"
           ],
-          "missing": "No console test executes a CDK change set through the real router, and apply evidence names the artifact, target, engine and outcome but not the product source commit it ran from, so the sourceBoundEvidence proof fails.",
+          "missing": "No console test executes a CDK change set through the real router, and no test shows a CDK apply's evidence naming the product commit.",
           "tests": {
             "positive": [
               {
@@ -351,7 +382,7 @@
             "src/apply/types.ts",
             "src/apply/evidence.ts"
           ],
-          "missing": "ApplyEvidence has no sourceCommit, so evidence does not name the product commit that ran."
+          "missing": "This path has no apply whose evidence is shown to name the product commit that sealed and ran it."
         }
       },
       "live": {
@@ -493,7 +524,7 @@
           }
         },
         "execute": {
-          "status": "NOT_IMPLEMENTED",
+          "status": "SYNTHETIC_PASS",
           "code": [
             "src/apply/driver.ts",
             "src/apply/engines/terraform.ts",
@@ -503,7 +534,6 @@
             "src/cli/ui-channel.ts",
             "src/apply/providers/azure.ts"
           ],
-          "missing": "Apply evidence names the artifact, target, engine and outcome but not the product source commit it ran from, so the sourceBoundEvidence proof fails.",
           "tests": {
             "ui": [
               {
@@ -564,12 +594,40 @@
           "missing": "No per-resource disposition (deleted, or retained with an owner and reason) is recorded after a journey."
         },
         "sourceBoundEvidence": {
-          "status": "NOT_IMPLEMENTED",
+          "status": "SYNTHETIC_PASS",
           "code": [
-            "src/apply/types.ts",
-            "src/apply/evidence.ts"
+            "src/util/source-commit.ts",
+            "src/apply/seal.ts",
+            "src/apply/driver.ts",
+            "src/apply/evidence.ts",
+            "src/cli/apply.ts"
           ],
-          "missing": "ApplyEvidence has no sourceCommit, so evidence does not name the product commit that ran."
+          "tests": [
+            {
+              "file": "test/source-commit.test.ts",
+              "title": "a clean checkout names its HEAD commit, and the image stamp cannot override it"
+            },
+            {
+              "file": "test/source-commit.test.ts",
+              "title": "uncommitted changes, staged or not, and new unignored files are refused, never named after HEAD"
+            },
+            {
+              "file": "test/source-commit.test.ts",
+              "title": "without a checkout only a full build stamp is used; anything else is refused, not guessed"
+            },
+            {
+              "file": "test/apply-cli.test.ts",
+              "title": "seal and apply stop before any question when the product commit is unknown or uncommitted, and apply only from the commit that sealed it"
+            },
+            {
+              "file": "test/ui-channel.test.ts",
+              "title": "AWS Terraform in the console: a plan applies only from the product commit that sealed it, and nothing is consumed by a mismatch"
+            },
+            {
+              "file": "test/ui-channel.test.ts",
+              "title": "Azure Terraform in the console: prepare from a project folder, preview, approve and apply through the real router, service and adapter"
+            }
+          ]
         }
       },
       "live": {
@@ -625,7 +683,7 @@
             "src/apply/types.ts",
             "src/apply/evidence.ts"
           ],
-          "missing": "ApplyEvidence has no sourceCommit, so evidence does not name the product commit that ran."
+          "missing": "This path has no apply whose evidence is shown to name the product commit that sealed and ran it."
         }
       },
       "live": {
@@ -681,7 +739,7 @@
             "src/apply/types.ts",
             "src/apply/evidence.ts"
           ],
-          "missing": "ApplyEvidence has no sourceCommit, so evidence does not name the product commit that ran."
+          "missing": "This path has no apply whose evidence is shown to name the product commit that sealed and ran it."
         }
       },
       "live": {
@@ -737,7 +795,7 @@
             "src/apply/types.ts",
             "src/apply/evidence.ts"
           ],
-          "missing": "ApplyEvidence has no sourceCommit, so evidence does not name the product commit that ran."
+          "missing": "This path has no apply whose evidence is shown to name the product commit that sealed and ran it."
         }
       },
       "live": {

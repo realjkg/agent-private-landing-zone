@@ -18,6 +18,8 @@ export type ReviewSummary = {
   environment: PilotEnvironment;
   target: { account: string; backend: string; workspace: string };
   shortId: string;
+  /** The product version (source commit) that made the preview; approvers sign it with the change. */
+  sourceCommit: string;
   createdAt: string;
   counts: ChangeCounts;
   changes: PlanChange[];

@@ -21,7 +21,7 @@ import { readEncryptedEvidence } from "../src/evidence/vault.js";
 import { removeTree, runCleanups } from "../src/teardown/driver/cleanup.js";
 import { runBoundedProcess, runStoppableProcess } from "../src/tools/process.js";
 import { TERRAFORM_APPLY_PROFILE } from "../src/tools/profiles.js";
-import {
+import { SOURCE_COMMIT,
   CANARIES, DEV_TARGET, approvers, ENV, H, NOW, OPERATOR, OUTPUT_CANARY, PLAN_CANARY, POLICY, PROD_TARGET, QA_TARGET, STATE_CANARY, TENANT, VALUE_CANARY,
   approvalFor as approval, behave as behaveIn, callsOf, contractJson, human, identityEnv, installFakeTerraform, keys, pinPathOf,
   testFixtureForgeQualificationEvidence, recordApplied, signalsOf, targetOf, writePinnedContract, writeProject, type Behavior, type Call, type Project,
@@ -71,6 +71,7 @@ function world(over: Partial<ApplyDeps> = {}, contract: unknown = contractJson(K
   return {
     dirs, contractPath,
     deps: {
+      sourceCommit: SOURCE_COMMIT,
       contractPath, contractPinPath: pinPathOf(contractPath), qualificationDir: vaultDir,
       evidenceDir: dirs.evidence, nonces: openNonceStore(dirs.nonces), env: ENV, now: () => NOW, scratchParent: dirs.scratch,
       toolDirs: [toolDir], killPollMs: 40, killGraceMs: 400, ...over,
@@ -865,9 +866,12 @@ test("every refusal comes in the specified order, and the apply argv is never ex
   const wrongTarget = { ...PROD_TARGET, workspace: "other" };
   await step("TARGET_NOT_IN_CONTRACT", { ...request, target: wrongTarget, invocation: human(wrongTarget) }); // 4.
   await step("ARTIFACT_INVALID", { ...request, sealedPlan: undefined as never }); // 5.
+  await step("SOURCE_UNVERIFIED", request, { ...prodDeps, sourceCommit: undefined }); // 5. no product commit, or not a full one
+  await step("SOURCE_UNVERIFIED", request, { ...prodDeps, sourceCommit: "HEAD" });
+  await step("SOURCE_CHANGED", request, { ...prodDeps, sourceCommit: "1".repeat(40) }); // 5. another commit than the one that sealed it
   const evidence: ApplyEvidence = {
     schemaVersion: 1, environment: "PROD", target: prodSeal.sealed.target, artifactSha256: prodSeal.sealed.artifactSha256,
-    manifestHash: prodSeal.sealed.manifestHash, releaseIdentity: prodSeal.sealed.releaseIdentity, contractSha256: prodSeal.sealed.contractSha256,
+    manifestHash: prodSeal.sealed.manifestHash, releaseIdentity: prodSeal.sealed.releaseIdentity, contractSha256: prodSeal.sealed.contractSha256, sourceCommit: prodSeal.sealed.sourceCommit,
     approvals: [{ approverId: "alice", issuedAt: NOW.toISOString() }],
     adapter: { adapterVersion: APPLY_ADAPTER.adapterVersion, argvDigest: APPLY_ADAPTER.argvDigest },
     toolVersions: { engine: "1.9.5" }, outcome: "SUCCEEDED", exitCode: 0, startedAt: NOW.toISOString(), finishedAt: NOW.toISOString(), authority: APPLY_AUTHORITY,

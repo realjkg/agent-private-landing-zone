@@ -44,6 +44,8 @@ export const awsRoleArn = (identity: keyof typeof AWS_ROLES, environment: ApplyE
   "arn:aws:iam::" + awsTargetOf(environment).account + ":role/" + AWS_ROLES[identity] + "-" + environment.toLowerCase();
 export const NOW = new Date("2026-10-11T12:00:00.000Z");
 export const POLICY = "2026-10-11.1";
+/** The product commit the fixture seals and applies from (the CLI reads the real one from the checkout or the image stamp). */
+export const SOURCE_COMMIT = "5ec0de0000000000000000000000000000c0ffee";
 export const OPERATOR = "operator.fixture";
 export const ENGINE_VERSION = "1.9.5";
 

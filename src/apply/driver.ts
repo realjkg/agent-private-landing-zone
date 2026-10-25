@@ -13,6 +13,7 @@ import {
   DEFAULT_EVIDENCE_DIR, contractRefusal, isKillSwitchActive, loadPilotContract, loadQualificationRecords, pilotContractSha256, repoPaths, requireNotApplied, requirePromotionEvidence,
   targetForEnvironment, verifyApplyQualification, type Refusal,
 } from "./contract.js";
+import { COMMIT } from "./constants.js";
 import { codeOf } from "./engine.js";
 import { acceptsManifest, engineOf, type EngineSpec, type RecoveryFile } from "./engine-spec.js";
 import { APPLY_AUTHORITY } from "./evidence.js";
@@ -52,8 +53,19 @@ export type ApplyDeps = {
   /** How often the kill switch is read while the engine runs, and how long the engine gets to stop. Tests shorten both. */
   killPollMs?: number;
   killGraceMs?: number;
+  /**
+   * The product source commit this run comes from, established by the caller (the CLI reads the git checkout, refusing
+   * uncommitted changes, or the container's build stamp). The driver starts no process to find it: without a full commit
+   * id it seals, qualifies and applies nothing (`SOURCE_UNVERIFIED`), and it applies a plan only from the commit that sealed it.
+   */
+  sourceCommit?: string;
 };
-type SealDeps = Pick<ApplyDeps, "qualificationDir" | "contractPath" | "contractPinPath" | "env" | "now" | "scratchParent" | "toolDirs">;
+type SealDeps = Pick<ApplyDeps, "qualificationDir" | "contractPath" | "contractPinPath" | "env" | "now" | "scratchParent" | "toolDirs" | "sourceCommit">;
+
+const SOURCE_UNVERIFIED = "The product source commit could not be established, so nothing was run or consumed. Run from a git checkout with every change committed, or from the packaged image built from a commit.";
+/** The caller's source commit when it is a full commit id, else undefined. */
+const knownSource = (deps: { sourceCommit?: string }): string | undefined =>
+  typeof deps.sourceCommit === "string" && COMMIT.test(deps.sourceCommit) ? deps.sourceCommit : undefined;
 
 export type ApplyRequest = {
   /** Built from a real terminal prompt by the CLI. An agent cannot produce one. */
@@ -161,6 +173,8 @@ async function planAgainstTarget(request: SealRequest, deps: SealDeps, kind: "se
   const admitted = admit(deps, request);
   if (!admitted.ok) return admitted;
   const engine = engineOf(admitted.contract);
+  const sourceCommit = knownSource(deps);
+  if (!sourceCommit) return refuse("SOURCE_UNVERIFIED", SOURCE_UNVERIFIED);
 
   let manifest: ArtifactManifest;
   try { manifest = verifyManifest(request.manifest); } catch { return refuse("ARTIFACT_INVALID", "The manifest is not valid or not sealed."); }
@@ -190,7 +204,7 @@ async function planAgainstTarget(request: SealRequest, deps: SealDeps, kind: "se
     const input = {
       engine, environment: request.environment, target: { ...request.target }, manifest, snapshotPath: snapshot.path, scratchDir: scratch.path,
       channel: request.channel ?? "CLI", env: deps.env ?? process.env, policyVersion: request.policyVersion, engineVersion: manifest.engineVersion,
-      pinned: admitted.contract.targets[request.environment]!, spec: admitted.spec, contractSha256: pilotContractSha256(admitted.contract), toolDirs: deps.toolDirs, now: deps.now,
+      pinned: admitted.contract.targets[request.environment]!, spec: admitted.spec, contractSha256: pilotContractSha256(admitted.contract), sourceCommit, toolDirs: deps.toolDirs, now: deps.now,
       embedStateWrite: admitted.contract.embedStateWrite === true,
     };
     // An engine with its own qualification run (CDK: read-only steps, no change set) does that and nothing else.
@@ -295,6 +309,12 @@ export async function runApply(request: ApplyRequest, deps: ApplyDeps): Promise<
   if (!loaded.ok) return loaded;
   const { sealed, planBytes } = loaded;
   if (sealed.channel !== (request.channel ?? "CLI")) return refuse("CHANNEL_MISMATCH", channelMismatchMessage(sealed.channel));
+  const running = knownSource(deps);
+  if (!running) return refuse("SOURCE_UNVERIFIED", SOURCE_UNVERIFIED);
+  if (running !== sealed.sourceCommit) {
+    return refuse("SOURCE_CHANGED", "This plan was sealed from product commit " + sealed.sourceCommit.slice(0, 12) + ", but " + running.slice(0, 12) +
+      " is running. Nothing was consumed. Apply from the commit that sealed it, or seal and approve a new plan.");
+  }
   if (sealed.environment !== request.environment || !sameTarget(sealed.target, request.target) || sealed.contractSha256 !== pilotContractSha256(contract)) {
     return refuse("ARTIFACT_INVALID", "The sealed plan was sealed for another environment or target, or under another pilot contract.");
   }
@@ -423,7 +443,7 @@ export async function runApply(request: ApplyRequest, deps: ApplyDeps): Promise<
     // 15. Evidence replaces the reservation, whatever the outcome.
     const evidence: ApplyEvidence = {
       schemaVersion: 1, environment: sealed.environment, target: { ...sealed.target }, artifactSha256: sealed.artifactSha256,
-      manifestHash: sealed.manifestHash, releaseIdentity: sealed.releaseIdentity, contractSha256: sealed.contractSha256, approvals: confirmed.approvers,
+      manifestHash: sealed.manifestHash, releaseIdentity: sealed.releaseIdentity, contractSha256: sealed.contractSha256, sourceCommit: sealed.sourceCommit, approvals: confirmed.approvers,
       adapter: { adapterVersion: engine.applyAdapter.adapterVersion, argvDigest: engine.applyAdapter.argvDigest },
       toolVersions: { engine: sealed.engineVersion }, outcome, exitCode: applied.exitCode, startedAt, finishedAt: now().toISOString(),
       authority: { ...APPLY_AUTHORITY, mutation: engine.mutation }, ...(kept.recovery ? { recovery: kept.recovery } : {}),

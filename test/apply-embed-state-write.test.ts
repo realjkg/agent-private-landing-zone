@@ -16,7 +16,7 @@ import { runApplyCommand, type ApplyCliDeps } from "../src/cli/apply.js";
 import { targetString } from "../src/cli/teardown-driver.js";
 import { removeTree } from "../src/teardown/driver/cleanup.js";
 import { INIT_ARGV } from "../src/teardown/driver/adapters/terraform.js";
-import {
+import { SOURCE_COMMIT,
   AWS_REGION, DEV_TARGET, NOW, POLICY, awsContractJson, awsIdentityEnv, awsRoleArn, awsTargetOf, approvalFor as approval, behave as behaveIn, callsOf, contractJson,
   human, identityEnv, installFakeTerraform, pinPathOf, testFixtureForgeQualificationEvidence, writePinnedContract, writeProject, type Behavior, type Call,
 } from "./helpers/apply-fixtures.js";
@@ -62,6 +62,7 @@ function world(contract: unknown, provider: "AZURE" | "AWS" = "AZURE", environme
   return {
     contractPath, scratch,
     deps: {
+      sourceCommit: SOURCE_COMMIT,
       contractPath, contractPinPath: pinPathOf(contractPath), qualificationDir: provider === "AWS" ? awsVault : azureVault, evidenceDir: fresh("evidence"),
       nonces: openNonceStore(fresh("nonces")), env: provider === "AWS" ? awsIdentityEnv(environment) : identityEnv(environment), now: () => NOW,
       scratchParent: scratch, toolDirs: [toolDir], killPollMs: 40, killGraceMs: 400,
@@ -236,7 +237,7 @@ async function cli(w: World, args: string[], answers: string[]) {
   const d = w.deps;
   const code = await runApplyCommand(args, {
     terminal: term, env: d.env, now: d.now, operatorId: "operator.fixture", contractPath: d.contractPath, contractPinPath: d.contractPinPath, qualificationDir: d.qualificationDir,
-    evidenceDir: d.evidenceDir, nonces: d.nonces, scratchParent: d.scratchParent, toolDirs: d.toolDirs, stdout: (t) => { stdout.push(t); }, stderr: (t) => { stderr.push(t); },
+    evidenceDir: d.evidenceDir, nonces: d.nonces, scratchParent: d.scratchParent, toolDirs: d.toolDirs, sourceCommit: d.sourceCommit, stdout: (t) => { stdout.push(t); }, stderr: (t) => { stderr.push(t); },
   });
   return { code, stdout: stdout.join(""), stderr: stderr.join(""), term };
 }
