@@ -7,6 +7,7 @@ import { join, resolve } from "node:path";
 import { checkDevAccount, validatedAccountRequest } from "./act-dev1-admin.js";
 import { channelMismatchMessage } from "../apply/channel.js";
 import { repoPaths } from "../apply/contract.js";
+import { proposalLines, verifyCleanupProposal, type CleanupProposal } from "../apply/cleanup-proposal.js";
 import { verifyReviewBundle } from "../apply/seal.js";
 import { ENVIRONMENTS, stripInvisible } from "../apply/constants.js";
 import type { ApplyEnvironment, PlanChange, PreviewProvenance, SealedPlan } from "../apply/types.js";
@@ -26,7 +27,7 @@ import type { AskExpectation, HumanTerminal, PhraseKind } from "./teardown-drive
 // its own: the engine is started only inside the driver, behind the same gates. Pilot POST endpoints exist only in this router.
 
 /** The only commands the console can run, by name. The router builds every argument list; a client sends values, never arguments. */
-export const PILOT_STEPS = ["preflight", "prepare", "seal", "approve", "apply"] as const;
+export const PILOT_STEPS = ["preflight", "prepare", "seal", "approve", "apply", "observe", "propose-cleanup", "cleanup", "verify-cleanup"] as const;
 export type PilotStep = typeof PILOT_STEPS[number];
 
 export const PILOT_TOKEN_HEADER = "x-alz-pilot-token";
@@ -152,6 +153,29 @@ const summaryOf = (bundle: Sealed): ReviewSummary => ({
   },
 });
 
+/** What the console shows of a cleanup proposal: identifiers and reasons only, as the terminal prints them. */
+export type CleanupSummary = {
+  proposalSha256: string;
+  shortId: string;
+  environment: ApplyEnvironment;
+  target: ReviewSummary["target"];
+  sourceCommit: string;
+  artifactShortId: string;
+  requiredApprovals: number;
+  deletes: CleanupProposal["deletes"];
+  alreadyAbsent: CleanupProposal["alreadyAbsent"];
+  excluded: CleanupProposal["excluded"];
+  risks: string[];
+  lines: string[];
+};
+const cleanupSummaryOf = (proposal: CleanupProposal): CleanupSummary => ({
+  proposalSha256: proposal.proposalSha256, shortId: proposal.proposalSha256.slice(0, 12), environment: proposal.environment, target: { ...proposal.target }, sourceCommit: proposal.sourceCommit,
+  artifactShortId: proposal.artifactSha256.slice(0, 12), requiredApprovals: proposal.authorization.requiredApprovals,
+  deletes: proposal.deletes.map((x) => ({ ...x, address: stripInvisible(x.address), type: stripInvisible(x.type) })),
+  alreadyAbsent: proposal.alreadyAbsent.map((x) => ({ ...x, address: stripInvisible(x.address) })), excluded: proposal.excluded.map((x) => ({ ...x, address: stripInvisible(x.address) })),
+  risks: [...proposal.risks], lines: proposalLines(proposal).map((line) => line.replace(CONTROL, "?")),
+});
+
 // --- the router ----------------------------------------------------------------------------------------------
 
 export type RunResult = {
@@ -163,6 +187,8 @@ export type RunResult = {
   /** The command's own redacted JSON (preflight checks, the seal result, the signed approval, the apply evidence). */
   data?: unknown;
   summary?: ReviewSummary;
+  /** Propose-cleanup only: the proposal as the person reviews it, and where it was saved. */
+  cleanup?: CleanupSummary;
   /** Approve only: where the signed approval was saved for the operator. */
   savedPath?: string;
 };
@@ -257,6 +283,12 @@ export function createPilotRouter(options: PilotRouterOptions): PilotRouter {
     else if (stdout.trim() !== "") {
       try { result.data = JSON.parse(stdout) as unknown; } catch { /* no structured output */ }
     }
+    if (exit === 0 && step === "propose-cleanup" && typeof result.data === "object" && result.data !== null) {
+      const data = result.data as { path?: string; proposal?: unknown };
+      const opened = verifyCleanupProposal(data.proposal);
+      if (opened.ok) result.cleanup = cleanupSummaryOf(opened.proposal);
+      if (typeof data.path === "string") data.path = absolute(data.path);
+    }
     if (exit === 0 && step === "seal" && typeof result.data === "object" && result.data !== null) {
       const data = result.data as Partial<Omit<Sealed, "createdAt">> & { sealedPlanPath?: string; reviewBundlePath?: string };
       // The page shows these locations for the person to note, so they are absolute, whatever directory the command used.
@@ -340,6 +372,15 @@ export function createPilotRouter(options: PilotRouterOptions): PilotRouter {
     if (!opened.ok) return { ok: false, code: opened.code, message: opened.message };
     if (opened.bundle.channel !== "UI") return { ok: false, code: "CHANNEL_MISMATCH", message: channelMismatchMessage(opened.bundle.channel) };
     return { ok: true, summary: summaryOf(opened.bundle) };
+  }
+
+  function reviewCleanup(proposalPath: string): { ok: true; cleanup: CleanupSummary } | { ok: false; code: string; message: string } {
+    const file = readJsonFile(absolute(proposalPath));
+    if (file === undefined) return { ok: false, code: "APPLY_INPUT_INVALID", message: "The cleanup proposal file cannot be read as a proposal." };
+    const opened = verifyCleanupProposal(file);
+    if (!opened.ok) return { ok: false, code: opened.code, message: opened.message };
+    if (opened.proposal.channel !== "UI") return { ok: false, code: "CHANNEL_MISMATCH", message: channelMismatchMessage(opened.proposal.channel) };
+    return { ok: true, cleanup: cleanupSummaryOf(opened.proposal) };
   }
 
   function saveApproval(result: RunResult, stdout: string): void {
@@ -482,6 +523,52 @@ export function createPilotRouter(options: PilotRouterOptions): PilotRouter {
         checkRequestEnvironment(requestPath, environment);
         const forApply = applyRequestFor(requestPath);
         start("apply", ["apply", "--request", forApply.path, "--manifest", manifestPath, "--sealed", sealedPath, ...approvals.flatMap((path) => ["--approval", path])], undefined, forApply.remove);
+        send(res, context.headers, 202, stateOf());
+        return;
+      }
+      case "/observe": {
+        // Read-only: the run's identifiers against the cloud, as DISCOVERY. Repeating it observes again; it never applies again.
+        const input = fields(body, ["sealedPath"]);
+        requirePath();
+        start("observe", ["observe", "--sealed", absolute(plainPath(input.sealedPath, "The prepared change file"))]);
+        send(res, context.headers, 202, stateOf());
+        return;
+      }
+      case "/propose-cleanup": {
+        const input = fields(body, ["sealedPath"]);
+        requirePath();
+        start("propose-cleanup", ["propose-cleanup", "--sealed", absolute(plainPath(input.sealedPath, "The prepared change file"))]);
+        send(res, context.headers, 202, stateOf());
+        return;
+      }
+      case "/review-cleanup": {
+        const input = fields(body, ["proposalPath"]);
+        if (chosen === "CLI") throw new Bad(409, "PILOT_PATH_CLI", "This change was set to run on the command line, so the console buttons are off.");
+        if (chosen === null) throw new Bad(409, "PILOT_PATH_NOT_CHOSEN", "Choose how this change will run (the command line or this console) before anything else.");
+        send(res, context.headers, 200, reviewCleanup(plainPath(input.proposalPath, "The cleanup proposal file")));
+        return;
+      }
+      case "/cleanup": {
+        const input = fields(body, ["environment", "requestPath", "manifestPath", "proposalPath", "approvalPaths"]);
+        requirePath();
+        const environment = environmentOf(input.environment);
+        if (!Array.isArray(input.approvalPaths) || input.approvalPaths.length < 1 || input.approvalPaths.length > MAX_APPROVALS) {
+          throw new Bad(400, "PILOT_REQUEST_INVALID", "Add at least one cleanup approval file.");
+        }
+        const requestPath = absolute(plainPath(input.requestPath, "The request file"));
+        const manifestPath = absolute(plainPath(input.manifestPath, "The manifest file"));
+        const proposalPath = absolute(plainPath(input.proposalPath, "The cleanup proposal file"));
+        const approvals = (input.approvalPaths as unknown[]).map((item) => absolute(plainPath(item, "An approval file")));
+        checkRequestEnvironment(requestPath, environment);
+        const forCleanup = applyRequestFor(requestPath);
+        start("cleanup", ["cleanup", "--proposal", proposalPath, "--request", forCleanup.path, "--manifest", manifestPath, ...approvals.flatMap((path) => ["--approval", path])], undefined, forCleanup.remove);
+        send(res, context.headers, 202, stateOf());
+        return;
+      }
+      case "/verify-cleanup": {
+        const input = fields(body, ["proposalPath"]);
+        requirePath();
+        start("verify-cleanup", ["verify-cleanup", "--proposal", absolute(plainPath(input.proposalPath, "The cleanup proposal file"))]);
         send(res, context.headers, 202, stateOf());
         return;
       }

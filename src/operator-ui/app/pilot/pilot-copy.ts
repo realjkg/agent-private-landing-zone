@@ -7,7 +7,7 @@ import type { ChangeCounts, PhraseKind, PilotEnvironment, PlanChange, PreflightC
 //   - every confirmation says what it will do in one sentence and asks for ONE exact phrase.
 // The same words are used in docs/act-pilot-walkthrough.md.
 
-export const STEP_TITLES = ["Choose a path", "Check readiness", "Prepare the change", "Review and approve", "Apply", "Results"] as const;
+export const STEP_TITLES = ["Choose a path", "Check readiness", "Prepare the change", "Review and approve", "Apply", "Results", "Check and clean up"] as const;
 export const APPROVER_STEPS: readonly number[] = [1, 4];
 
 export const COPY = {
@@ -149,7 +149,113 @@ export const COPY = {
   reviewTestedYes: "Yes. This exact program passed the real-cloud test on",
   reviewTestedNo: "No. This exact program has not passed the real-cloud test for this place, so approvers are signing a preview from an untested program. The change can still only run with this same program.",
   omitted: "more lines are in the review file and are not shown here.",
+  // Step 7: check what was created, propose and approve its removal, remove it, and check that it is gone.
+  cleanupTitle: "Check and clean up",
+  cleanupWhy: "First the console looks at the cloud, on its own and without the build tool, to see that each thing the change made is really there. " +
+    "Then it writes down exactly which of them this change created and may be removed. Approvers sign that list, you remove exactly those things, and the console looks again to confirm they are gone.",
+  cleanupSafety: "Nothing is removed without a signed approval of the exact list, and a list signed for a change never counts as a cleanup approval. Looking at the cloud changes nothing, so you can do it as often as you like.",
+  cleanupSealedLabel: "Prepared change file",
+  cleanupSealedHelp: "The locked change this cleanup belongs to. Filled in from the earlier steps when you did them in this session.",
+  observeRun: "Look at what was created",
+  observeRerun: "Look again",
+  observeRunning: "Looking at the cloud. This reads and changes nothing.",
+  observeDone: "The console looked at each thing the change left behind.",
+  observeSynthetic: "These results come from this computer's own checks. They are not a record of a live account until the pilot owner records one.",
+  observeVerdictGood: "Everything that could be checked is there.",
+  observeVerdictPartial: "Everything that can be checked on its own is there. Some settings can only be judged through the thing they belong to.",
+  observeVerdictBad: "Something is missing or unexpected. Do not propose a cleanup until the pilot owner has looked.",
+  observeVerdictUnsure: "Some things could not be checked yet. Look again in a moment, or fix the reason shown.",
+  observeColumns: "For each thing: its name in the project, its kind, its identifier in the cloud, where it came from, and what the check found.",
+  proposeRun: "Write the cleanup proposal",
+  proposeRunning: "Working out exactly what this change created.",
+  proposeDone: "The cleanup proposal is written. Nothing is removed until it is approved and run.",
+  proposeKeep: "Note this file location. Approvers need it, and so does the removal step.",
+  proposeDeletes: "To be removed",
+  proposeDeletesNone: "Nothing: everything this change created is already gone.",
+  proposeAbsent: "Already gone",
+  proposeKept: "Kept",
+  proposeRisks: "Before anyone approves, read these",
+  proposeApprovalsNeeded: "Approvals needed for this cleanup",
+  proposeSend: "Send the proposal file to each approver. It holds names and identifiers only, no secrets.",
+  proposeAsk: "Ask each approver to open the console on their own computer, choose \"I am an approver\" and \"A cleanup\", and sign. They send you back an approval file.",
+  cleanupApprovalsLabel: "Cleanup approval files (one location per line)",
+  cleanupApprovalsHelp: "One file per approver, as they sent it back to you for this cleanup. Approval files for the change itself are refused here.",
+  egCleanupApproval: "/home/you/approvals/cleanup-alice.json",
+  cleanupProposalLabel: "Cleanup proposal file",
+  cleanupProposalHelp: "The file the console wrote when you wrote the proposal, or the one the operator sent you.",
+  egProposal: "/home/you/.runs/apply/cleanup/0123456789ab.cleanup-proposal.json",
+  cleanupRun: "Remove the listed things...",
+  cleanupRunning: "Removing. Do not close this page or stop the console until it says it is done.",
+  cleanupDoneGood: "The removal finished. Now check that everything is gone.",
+  verifyRun: "Check that everything is gone",
+  verifyRerun: "Check again",
+  verifyRunning: "Looking at the cloud for anything left. This reads and changes nothing.",
+  verifyComplete: "Everything on the list is confirmed gone, and everything kept is still there.",
+  verifyIncomplete: "Not finished yet. Nothing is reported as complete until every listed thing is confirmed gone.",
+  verifyNextLabel: "What to do now:",
+  verifyNotSearched: "Things outside the project's own records were not searched for, because this change does not label what it makes.",
+  approverSigningLegend: "What are you signing?",
+  approverSignsChange: "A change (the operator sent me a review file).",
+  approverSignsCleanup: "A cleanup (the operator sent me a cleanup proposal file).",
+  approverLoadCleanup: "Show what will be removed",
+  approverSignCleanup: "Sign my cleanup approval",
+  cleanupReconnect: "If you reloaded the page, enter the file locations again. Looking and checking can be repeated safely; a removal already done is never done twice.",
+  nextCleanup: "Next: check and clean up",
 } as const;
+
+/** Where a thing in the state came from, in words. */
+export function ownershipWord(ownership: string): string {
+  switch (ownership) {
+    case "RUN_CREATED": return "created by this change";
+    case "PRE_EXISTING": return "existed before this change";
+    case "REPLACED_PRE_EXISTING": return "replaced something that existed before";
+    case "IMPORTED": return "brought under management, not created";
+    case "NOT_IN_PLAN": return "not part of this change";
+    case "PROTECTED_BACKEND": return "the storage the pilot itself runs on";
+    case "PROTECTED_IDENTITY": return "a pilot sign-in or trust";
+    default: return "unknown";
+  }
+}
+/** What the independent check found, in words. */
+export function verificationWord(result: string): string {
+  switch (result) {
+    case "VERIFIED": return "Found as expected";
+    case "DIFFERENT_FROM_DESIRED": return "Found, but different from what was planned";
+    case "MISSING": return "Missing";
+    case "NOT_YET_OBSERVABLE": return "Could not be checked yet";
+    case "UNVERIFIABLE": return "Cannot be checked on its own";
+    default: return "Unknown";
+  }
+}
+/** What the leftover check found, in words. */
+export function dispositionWord(disposition: string): string {
+  switch (disposition) {
+    case "CONFIRMED_DELETED": return "Confirmed gone";
+    case "INTENTIONALLY_RETAINED": return "Kept on purpose";
+    case "STILL_PRESENT": return "Still there";
+    case "DELETION_PENDING": return "Removal pending";
+    default: return "Unknown";
+  }
+}
+/** The origin words for a thing the check looked at. */
+export const originWord = (origin: string): string => origin === "IN_PLAN" ? "named by this change" : "not named by this change";
+
+/** The commands for the cleanup half of the command-line path, in order; shown after the apply commands. */
+export const CLEANUP_CLI_COMMANDS: readonly { who: string; what: string; command: string }[] = [
+  { who: "Operator", what: "Look at what the change created", command: "./alz apply observe --sealed LOCKED_CHANGE" },
+  { who: "Operator", what: "Write the cleanup proposal", command: "./alz apply propose-cleanup --sealed LOCKED_CHANGE" },
+  { who: "Each approver", what: "Review and sign the cleanup (on their own computer)", command: "./alz apply approve --bundle PROPOSAL.json --key APPROVER_KEY.pem --approver NAME" },
+  { who: "Operator", what: "Remove exactly the listed things", command: "./alz apply cleanup --proposal PROPOSAL.json --request REQUEST.json --manifest MANIFEST.json --approval APPROVAL.json" },
+  { who: "Anyone", what: "Check that everything is gone", command: "./alz apply verify-cleanup --proposal PROPOSAL.json" },
+];
+
+/** What a finished removal means to the person: the same four endings as an apply, in the cleanup's words. */
+export const CLEANUP_RESULT_COPY: Readonly<Record<ResultKind, { headline: string; what: string; next: string[]; tone: "good" | "caution" | "stop" }>> = {
+  APPLIED: { tone: "good", headline: "Removed", what: "The listed things were removed as approved, and the record of it was saved.", next: ["Check that everything is gone with the button below. Nothing is complete until that check says so."] },
+  NOTHING_CHANGED: { tone: "caution", headline: "Nothing was removed", what: "The step stopped before anything was removed, and nothing was used up.", next: ["Read the reason below, fix it, and run the step again."] },
+  APPROVALS_SPENT: { tone: "caution", headline: "Nothing was removed, but the approvals are used up", what: "The removal did not run. The cleanup approvals were already used, and they cannot be used again.", next: ["Fix the cause below.", "Ask each approver to sign the same proposal again, then run the removal."] },
+  NEEDS_REVIEW: { tone: "stop", headline: "A person must review this before anything else", what: "Some listed things may be gone and others not. It is not safe to assume either way.", next: ["DO NOT RETRY. Check that everything is gone with the button below: it only looks.", "Call the pilot owner now and tell them the time, the environment, and that the cleanup needs a manual review.", "Do not write another proposal until the owner says it is safe."] },
+};
 
 // --- confirmation dialogs ---------------------------------------------------------------------------------------
 
@@ -189,6 +295,18 @@ export function dialogCopy(kind: PhraseKind, environment: PilotEnvironment | und
         title: "Sign your approval",
         consequence: "Your signature allows exactly this change to be applied to " + where + ". It is valid for a limited time and can be used once.",
         inputLabel: "Type the phrase exactly as shown", cancel: "Cancel", confirm: "Sign my approval",
+      };
+    case "APPROVE_CLEANUP":
+      return {
+        title: "Sign your approval of this cleanup",
+        consequence: "You are signing for the removal of exactly the listed resources in " + where + ", and nothing else. Your signature works once and only for this list; an approval of a change never counts as an approval of a cleanup.",
+        inputLabel: "Type the line exactly as shown", cancel: "Cancel", confirm: "Sign the cleanup approval",
+      };
+    case "CLEANUP":
+      return {
+        title: "Remove the listed resources from " + where,
+        consequence: "This deletes real resources in " + where + ": exactly the ones on the approved list, and nothing else. There is no undo button here.",
+        inputLabel: "Type the line exactly as shown", cancel: "Cancel", confirm: "Remove them now",
       };
     case "APPLY":
     default:
@@ -261,6 +379,19 @@ export const CODE_COPY: Readonly<Record<string, Reason>> = {
   APPLY_FAILED: { why: "The change could not be started, or did not finish.", next: "Read the result before doing anything else. If it says a person must review, do not retry." },
   APPROVALS_SPENT: { why: "The change could not start after the approvals were used up. Nothing was changed.", next: "Fix the cause, for example free disk space, then collect new approvals for the same prepared change." },
   EVIDENCE_REJECTED: { why: "The record of the change could not be saved.", next: "Do not retry. Write down what happened and tell the pilot owner right away, because the change may have happened." },
+  // observing and cleaning up
+  RUN_RECORD_MISSING: { why: "The records this step needs are missing: the change has no finished result, or its list of created things could not be read when it ended, or it has not been looked at yet.", next: "Do the earlier step first (apply, then look at what was created). If the change itself ended badly, the pilot owner reviews it by hand." },
+  OWNERSHIP_AMBIGUOUS: { why: "The console cannot tell for sure which things this change created, for example because the change did not finish cleanly or something it planned never got recorded.", next: "Do not clean up from here. Ask the pilot owner to review the records and the cloud by hand." },
+  OBSERVATION_INCONCLUSIVE: { why: "The last look at the cloud could not decide about something this change created, or found something unexpected.", next: "Look at what was created again. If the same thing cannot be checked, fix the discovery sign-in's access, or ask the pilot owner." },
+  PROPOSAL_INVALID: { why: "The cleanup proposal file is damaged, was edited after it was written, or belongs to another change, place or environment.", next: "Write the proposal again from this change and send the new file to the approvers." },
+  PROPOSAL_SCOPE_MISMATCH: { why: "Removing the listed things would also touch something not on the list, or something on the list is no longer there. Nothing was removed and no approval was used.", next: "Look at what was created again, write a new proposal, and collect new cleanup approvals." },
+  PROPOSAL_ALREADY_EXECUTED: { why: "This cleanup proposal was already run once, or an earlier try stopped part way. A proposal runs once only.", next: "Check that everything is gone. If something is left, a new proposal is needed after the pilot owner has reviewed." },
+  CLEANUP_NOT_SUPPORTED: { why: "The build tool this pilot uses has no cleanup step yet.", next: "Ask the pilot owner; removing what this tool made needs its own decision." },
+  OBSERVED: { why: "The console looked at each thing the change left behind.", next: "Read the list, then write the cleanup proposal if everything is as expected." },
+  CLEANUP_PROPOSED: { why: "The cleanup proposal is written.", next: "Send it to the approvers, collect their cleanup approval files, then remove the listed things." },
+  CLEANED_UP: { why: "The removal finished.", next: "Check that everything is gone." },
+  CLEANUP_COMPLETE: { why: "Everything on the list is confirmed gone.", next: "Nothing further for this change." },
+  CLEANUP_INCOMPLETE: { why: "Something on the list is not confirmed gone yet.", next: "Follow the next step shown with the list." },
   // the command line's own errors, as the wizard reaches them
   APPLY_FLAG_UNKNOWN: { why: "The wizard sent something the command did not understand. This should not happen.", next: "Reload the page and try again. If it repeats, tell the pilot owner." },
   APPLY_ARGUMENT_INVALID: { why: "The wizard sent something the command did not understand. This should not happen.", next: "Reload the page and try again. If it repeats, tell the pilot owner." },

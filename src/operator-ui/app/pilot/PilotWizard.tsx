@@ -3,12 +3,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { ExperienceLevel } from "../../experience-level.js";
 import { PilotDialog } from "./PilotDialog";
 import { ActDev1Setup } from "./ActDev1Setup";
+import CleanupStep, { CleanupList } from "./CleanupStep";
 import {
-  answerDialog, cancelDialog, choosePath, fetchPilotState, forgetPilotToken, loadReview, startApply, startApprove, startPreflight, startPrepare, startSeal, setPilotToken, startOver,
-  type PilotEnvironment, type PilotPath, type PilotReply, type PilotRun, type PilotState, type PreflightCheck, type PreparedFiles, type PrepareStop, type ReviewSummary, type RunResult,
+  answerDialog, cancelDialog, choosePath, fetchPilotState, forgetPilotToken, loadCleanupReview, loadReview, startApply, startApprove, startPreflight, startPrepare, startSeal, setPilotToken, startOver,
+  type CleanupSummary, type PilotEnvironment, type PilotPath, type PilotReply, type PilotRun, type PilotState, type PreflightCheck, type PreparedFiles, type PrepareStop, type ReviewSummary, type RunResult,
 } from "./pilot-api";
 import {
-  APPROVER_STEPS, BLOCKED, CLI_COMMANDS, COPY, RESULT_COPY, STEP_TITLES, SUPPORT_NOTE, actionWord, changeNotes, classifyResult, describeCheck, describeCounts, dialogCopy, reasonFor,
+  APPROVER_STEPS, BLOCKED, CLEANUP_CLI_COMMANDS, CLI_COMMANDS, COPY, RESULT_COPY, STEP_TITLES, SUPPORT_NOTE, actionWord, changeNotes, classifyResult, describeCheck, describeCounts, dialogCopy, reasonFor,
   type BlockedState,
 } from "./pilot-copy";
 
@@ -35,7 +36,7 @@ function Help(props: { id: string; text: string; example: string }) {
   return <p id={props.id}><small>{props.text} Example: <code>{props.example}</code></small></p>;
 }
 
-function CopyButton(props: { text: string; label?: string }) {
+export function CopyButton(props: { text: string; label?: string }) {
   const [state, setState] = useState<"" | "yes" | "no">("");
   const copy = async () => {
     try { await navigator.clipboard.writeText(props.text); setState("yes"); } catch { setState("no"); }
@@ -71,7 +72,7 @@ export function Reasoned(props: { step: string; code?: string; message?: string;
 }
 
 function Progress(props: { role: Role; step: number }) {
-  const steps = props.role === "APPROVER" ? APPROVER_STEPS : [1, 2, 3, 4, 5, 6];
+  const steps = props.role === "APPROVER" ? APPROVER_STEPS : [1, 2, 3, 4, 5, 6, 7];
   const index = Math.max(0, steps.indexOf(props.step));
   const text = "Step " + (index + 1) + " of " + steps.length + ": " + STEP_TITLES[props.step - 1];
   return (
@@ -230,6 +231,9 @@ export default function PilotWizard(props: PilotWizardProps) {
   const [keyPath, setKeyPath] = useState("");
   const [approverId, setApproverId] = useState("");
   const [signedPath, setSignedPath] = useState("");
+  const [signing, setSigning] = useState<"CHANGE" | "CLEANUP">("CHANGE");
+  const [cleanupReview, setCleanupReview] = useState<CleanupSummary | null>(null);
+  const [cleanupPath, setCleanupPath] = useState("");
   const [refusal, setRefusal] = useState<{ code: string; message: string } | null>(null);
   const [finalResult, setFinalResult] = useState<{ step: string; result: RunResult } | null>(null);
   const [starting, setStarting] = useState(false);
@@ -385,7 +389,8 @@ export default function PilotWizard(props: PilotWizardProps) {
                 <small>{COPY.startOverWhy}</small>
               </p>
             )}
-            {runningText(step === 5 ? COPY.applyRunning : step === 3 ? (run?.step === "prepare" ? COPY.prepareRunning : COPY.sealRunning) : step === 4 ? COPY.signing : COPY.readyRunning)}
+            {runningText(step === 7 ? (run?.step === "cleanup" ? COPY.cleanupRunning : run?.step === "observe" ? COPY.observeRunning : run?.step === "propose-cleanup" ? COPY.proposeRunning : COPY.verifyRunning)
+              : step === 5 ? COPY.applyRunning : step === 3 ? (run?.step === "prepare" ? COPY.prepareRunning : COPY.sealRunning) : step === 4 ? COPY.signing : COPY.readyRunning)}
 
             {stepOf(1) && (
               <div className="pilot-step">
@@ -409,6 +414,7 @@ export default function PilotWizard(props: PilotWizardProps) {
                     {role === "OPERATOR" && (
                       <p>
                         <button type="button" className="pilot-secondary" onClick={() => setStep(4)}>{COPY.resume}</button>
+                        {" "}<button type="button" className="pilot-secondary" onClick={() => setStep(7)}>{COPY.nextCleanup}</button>
                         <br /><small>{COPY.resumeWhy}</small>
                       </p>
                     )}
@@ -422,6 +428,15 @@ export default function PilotWizard(props: PilotWizardProps) {
                     <p><small>{COPY.cliWho}</small></p>
                     <ol className="pilot-commands">
                       {CLI_COMMANDS.map((item) => (
+                        <li key={item.command}>
+                          <strong>{item.who}:</strong> {item.what}<br />
+                          <code>{item.command}</code> <CopyButton text={item.command} />
+                        </li>
+                      ))}
+                    </ol>
+                    <h3>{COPY.cleanupTitle}</h3>
+                    <ol className="pilot-commands" data-commands="cleanup">
+                      {CLEANUP_CLI_COMMANDS.map((item) => (
                         <li key={item.command}>
                           <strong>{item.who}:</strong> {item.what}<br />
                           <code>{item.command}</code> <CopyButton text={item.command} />
@@ -553,7 +568,30 @@ export default function PilotWizard(props: PilotWizardProps) {
                 <p>{COPY.reviewWhy}</p>
                 {serverPath === null && <BlockedNotice state="PATH_NOT_CHOSEN" />}
                 {locked && <BlockedNotice state="PATH_IS_CLI" />}
-                {(role === "APPROVER" || !review) && (
+                {role === "APPROVER" && (
+                  <fieldset>
+                    <legend>{COPY.approverSigningLegend}</legend>
+                    <label className="pilot-choice"><input type="radio" name="pilot-signing" checked={signing === "CHANGE"} onChange={() => setSigning("CHANGE")} /> {COPY.approverSignsChange}</label>
+                    <label className="pilot-choice"><input type="radio" name="pilot-signing" checked={signing === "CLEANUP"} onChange={() => setSigning("CLEANUP")} /> {COPY.approverSignsCleanup}</label>
+                  </fieldset>
+                )}
+                {role === "APPROVER" && signing === "CLEANUP" && (
+                  <>
+                    <label htmlFor="pilot-cleanup-review">{COPY.cleanupProposalLabel}</label>
+                    <input id="pilot-cleanup-review" type="text" autoComplete="off" spellCheck={false} value={cleanupPath} aria-describedby="pilot-cleanup-review-help" onChange={(event) => setCleanupPath(event.target.value)} />
+                    <Help id="pilot-cleanup-review-help" text={COPY.cleanupProposalHelp} example={COPY.egProposal} />
+                    <button type="button" disabled={serverPath !== "UI" || cleanupPath.trim() === ""} onClick={async () => {
+                      const reply = await loadCleanupReview(cleanupPath.trim());
+                      if (!reply.ok) { take(reply as PilotReply); return; }
+                      if (reply.body.ok) { setCleanupReview(reply.body.cleanup); setReviewError(null); setEnvironment(reply.body.cleanup.environment); }
+                      else { setCleanupReview(null); setReviewError({ code: reply.body.code, message: reply.body.message }); }
+                    }}>{COPY.approverLoadCleanup}</button>
+                    {reviewError && <Reasoned step="review" code={reviewError.code} message={reviewError.message} level={level} />}
+                    {cleanupReview && <CleanupList cleanup={cleanupReview} />}
+                    {!cleanupReview && <BlockedNotice state="REVIEW_NOT_LOADED" />}
+                  </>
+                )}
+                {((role === "APPROVER" && signing === "CHANGE") || (role === "OPERATOR" && !review)) && (
                   <>
                     <label htmlFor="pilot-bundle">{COPY.approverBundleLabel}</label>
                     <input id="pilot-bundle" type="text" autoComplete="off" spellCheck={false} value={bundlePath} aria-describedby="pilot-bundle-help" onChange={(event) => setBundlePath(event.target.value)} />
@@ -567,9 +605,9 @@ export default function PilotWizard(props: PilotWizardProps) {
                     {reviewError && <Reasoned step="review" code={reviewError.code} message={reviewError.message} level={level} />}
                   </>
                 )}
-                {review && <ChangeList review={review} />}
+                {review && (role === "OPERATOR" || signing === "CHANGE") && <ChangeList review={review} />}
                 {!review && role === "OPERATOR" && <BlockedNotice state="NOTHING_PREPARED" />}
-                {!review && role === "APPROVER" && <BlockedNotice state="REVIEW_NOT_LOADED" />}
+                {!review && role === "APPROVER" && signing === "CHANGE" && <BlockedNotice state="REVIEW_NOT_LOADED" />}
 
                 {role === "OPERATOR" && review && (
                   <div className="pilot-share">
@@ -585,7 +623,7 @@ export default function PilotWizard(props: PilotWizardProps) {
                   </div>
                 )}
 
-                {role === "APPROVER" && review && (
+                {role === "APPROVER" && ((signing === "CHANGE" && review) || (signing === "CLEANUP" && cleanupReview)) && (
                   <div className="pilot-sign">
                     <h3>Your signature</h3>
                     <label htmlFor="pilot-key">{COPY.approverKeyLabel}</label>
@@ -596,8 +634,8 @@ export default function PilotWizard(props: PilotWizardProps) {
                     <Help id="pilot-approver-help" text={COPY.approverNameHelp} example={COPY.egName} />
                     {(keyPath.trim() === "" || approverId.trim() === "") && <BlockedNotice state="FIELDS_MISSING" />}
                     <button type="button" disabled={serverPath !== "UI" || active || keyPath.trim() === "" || approverId.trim() === ""}
-                      onClick={() => void begin(() => startApprove({ bundlePath: bundlePath.trim(), keyPath: keyPath.trim(), approverId: approverId.trim() }))}>
-                      {COPY.approverSign}
+                      onClick={() => void begin(() => startApprove({ bundlePath: (signing === "CLEANUP" ? cleanupPath : bundlePath).trim(), keyPath: keyPath.trim(), approverId: approverId.trim() }))}>
+                      {signing === "CLEANUP" ? COPY.approverSignCleanup : COPY.approverSign}
                     </button>
                     {failureFor("approve") && (
                       <Reasoned step="approve" code={failureFor("approve")?.result?.code} message={failureFor("approve")?.result?.message} level={level} transcript={failureFor("approve")?.transcript} />
@@ -668,12 +706,23 @@ export default function PilotWizard(props: PilotWizardProps) {
                   {finalResult && classifyResult(finalResult.step, finalResult.result) !== "NEEDS_REVIEW" && classifyResult(finalResult.step, finalResult.result) !== "APPLIED" && (
                     <button type="button" onClick={() => setStep(role === "APPROVER" ? 4 : 5)}>{COPY.tryAgain}</button>
                   )}
+                  {role === "OPERATOR" && <button type="button" onClick={() => setStep(7)}>{COPY.nextCleanup}</button>}
                   <button type="button" className="pilot-secondary" disabled={active} onClick={() => void reset()}>{COPY.newChange}</button>
                 </p>
               </div>
             )}
 
-            {level === "EXPERT" && step >= 2 && <p className="pilot-equivalent"><small>Command line equivalent of this step: <code>{CLI_COMMANDS[Math.min(step - 2, CLI_COMMANDS.length - 1)].command}</code></small></p>}
+            {stepOf(7) && (
+              <div className="pilot-step">
+                {heading(STEP_TITLES[6])}
+                <CleanupStep level={level} environment={environment} serverPath={serverPath} active={active || starting} run={run} sealedPath={sealedPath} setSealedPath={setSealedPath}
+                  requestPath={requestPath} manifestPath={manifestPath} begin={begin} />
+                <p className="pilot-actions"><button type="button" className="pilot-secondary" disabled={active} onClick={() => setStep(6)}>{COPY.back}</button></p>
+              </div>
+            )}
+
+            {level === "EXPERT" && step >= 2 && step <= 6 && <p className="pilot-equivalent"><small>Command line equivalent of this step: <code>{CLI_COMMANDS[Math.min(step - 2, CLI_COMMANDS.length - 1)].command}</code></small></p>}
+            {level === "EXPERT" && step === 7 && <p className="pilot-equivalent"><small>Command line equivalent of this step: {CLEANUP_CLI_COMMANDS.map((item) => <code key={item.command}>{item.command} </code>)}</small></p>}
           </>
         )}
       </div>

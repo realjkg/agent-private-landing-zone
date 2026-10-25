@@ -63,7 +63,7 @@ export type HumanTerminal = {
 };
 
 /** The kinds of exact phrase the pilot asks a person to type. */
-export type PhraseKind = "TARGET" | "RUN_PROJECT_CODE" | "EMBED_STATE_WRITE" | "ATTEST" | "APPROVE" | "APPLY";
+export type PhraseKind = "TARGET" | "RUN_PROJECT_CODE" | "EMBED_STATE_WRITE" | "ATTEST" | "APPROVE" | "APPLY" | "APPROVE_CLEANUP" | "CLEANUP";
 export type AskExpectation = { kind: PhraseKind; phrase: string };
 
 export function processTerminal(): HumanTerminal {
