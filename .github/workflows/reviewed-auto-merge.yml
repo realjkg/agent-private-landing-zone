@@ -33,7 +33,7 @@ jobs:
       issues: read
     steps:
       - name: Verify exact-head review, protections and checks; request native auto-merge
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a4f4e0bb99 # v8.0.0
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
