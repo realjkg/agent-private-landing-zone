@@ -275,6 +275,29 @@ test("Account Factory CLI advertises guided workflow without invoking the cloud"
   assert.equal(process.exitCode ?? 0, 0);
 });
 
+test("AWS RecordDetail rollback and record-type mismatch never appear as completed environments", async () => {
+  const proposal = await prepare(intake, fixture().call);
+  const receipt = await submit(proposal, intake.profile, fixture().call);
+  const rollback = fixture({ changes: { "servicecatalog describe-record": {
+    RecordDetail: {
+      RecordId: receipt.recordId, RecordType: "PROVISION_PRODUCT",
+      Status: "IN_PROGRESS_IN_ERROR",
+    },
+  } } });
+  const r = await follow(intake.profile, proposal, receipt, rollback.call,
+    { maxPolls: 1, intervalMs: 0 });
+  assert.equal(r.status, "AWS_REMEDIATION_IN_PROGRESS");
+  assert.equal(r.verified, false);
+  assert.ok(!rollback.calls.some(x => x[1] === "provision-product"));
+  const wrongRecord = fixture({ changes: { "servicecatalog describe-record": {
+    RecordDetail: {
+      RecordId: receipt.recordId, RecordType: "UPDATE_PROVISIONED_PRODUCT",
+      Status: "SUCCEEDED",
+    },
+  } } });
+  await assert.rejects(follow(intake.profile, proposal, receipt, wrongRecord.call,
+    { maxPolls: 1, intervalMs: 0 }), /ACCOUNT_FACTORY_RECORD_TYPE_MISMATCH/);
+});
 test("resumable tracking returns member-account readback without another submission", async () => {
   const proposal = await prepare(intake, fixture().call);
   const receipt = await submit(proposal, intake.profile, fixture().call);
