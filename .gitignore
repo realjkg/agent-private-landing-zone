@@ -7,3 +7,10 @@ dist/
 *.log
 coverage/
 .runs/
+
+# Private keys and certificates (for example a GitHub App private key): never commit
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
