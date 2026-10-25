@@ -4,8 +4,8 @@ import type { ExperienceLevel } from "../../experience-level.js";
 import { PilotDialog } from "./PilotDialog";
 import { ActDev1Setup } from "./ActDev1Setup";
 import {
-  answerDialog, cancelDialog, choosePath, fetchPilotState, forgetPilotToken, loadReview, startApply, startApprove, startPreflight, startSeal, setPilotToken, startOver,
-  type PilotEnvironment, type PilotPath, type PilotReply, type PilotRun, type PilotState, type PreflightCheck, type ReviewSummary, type RunResult,
+  answerDialog, cancelDialog, choosePath, fetchPilotState, forgetPilotToken, loadReview, startApply, startApprove, startPreflight, startPrepare, startSeal, setPilotToken, startOver,
+  type PilotEnvironment, type PilotPath, type PilotReply, type PilotRun, type PilotState, type PreflightCheck, type PreparedFiles, type PrepareStop, type ReviewSummary, type RunResult,
 } from "./pilot-api";
 import {
   APPROVER_STEPS, BLOCKED, CLI_COMMANDS, COPY, RESULT_COPY, STEP_TITLES, SUPPORT_NOTE, actionWord, changeNotes, classifyResult, describeCheck, describeCounts, dialogCopy, reasonFor,
@@ -131,6 +131,41 @@ export function ChangeList(props: { review: ReviewSummary }) {
   );
 }
 
+/** What `prepare` bound, in plain words; the raw files stay behind Advanced. */
+export function PreparedSummary(props: { prepared: PreparedFiles }) {
+  const { summary, next, files } = props.prepared;
+  const nextText = next.step === "seal" ? COPY.prepareNextSeal : next.step === "qualify" ? COPY.prepareNextCheck : COPY.prepareNextOwner;
+  return (
+    <div role="status" className="pilot-good pilot-prepared">
+      <p><strong>{COPY.prepareDone}</strong></p>
+      <dl className="pilot-facts">
+        <dt>Cloud</dt><dd>{summary.provider}</dd>
+        <dt>Build tool</dt><dd>{summary.engine === "TERRAFORM" ? "Terraform" : summary.engine === "CDK" ? "AWS CDK" : summary.engine}{summary.path === "SECONDARY" ? " (the other supported way)" : ""}</dd>
+        <dt>Environment</dt><dd>{summary.environment}</dd>
+        <dt>Account</dt><dd><code>{summary.account}</code></dd>
+        {summary.region && <><dt>Region</dt><dd><code>{summary.region}</code></dd></>}
+        <dt>Place</dt><dd><code>{summary.backend} | {summary.workspace}</code></dd>
+        <dt>Project folder</dt><dd><code>{summary.projectRoot}</code> ({summary.fileCount} files)</dd>
+        <dt>Tool version</dt><dd><code>{summary.engineVersion}</code></dd>
+        <dt>Policy version</dt><dd><code>{summary.policyVersion}</code></dd>
+      </dl>
+      <p role="note">{COPY.prepareLocalOnly}</p>
+      <p><strong>{nextText}</strong></p>
+      <details className="pilot-details">
+        <summary>{COPY.prepareAdvanced}</summary>
+        <ul>
+          <li>Request: <code>{files.request}</code> <CopyButton text={files.request} /></li>
+          <li>Manifest: <code>{files.manifest}</code> <CopyButton text={files.manifest} /></li>
+          <li>Record: <code>{files.record}</code></li>
+        </ul>
+        <p>Next step: {next.reason}</p>
+        <ul>{props.prepared.gaps.map((gap) => <li key={gap}>{gap}</li>)}</ul>
+        <pre className="output">{JSON.stringify({ request: props.prepared.request, manifest: props.prepared.manifest }, null, 2)}</pre>
+      </details>
+    </div>
+  );
+}
+
 // --- the wizard ------------------------------------------------------------------------------------------------
 
 export type PilotWizardProps = { level: ExperienceLevel };
@@ -147,6 +182,9 @@ export default function PilotWizard(props: PilotWizardProps) {
   const [step, setStep] = useState(1);
   const [environment, setEnvironment] = useState<PilotEnvironment>("DEV");
   const [readiness, setReadiness] = useState<Readiness | null>(null);
+  const [projectPath, setProjectPath] = useState("");
+  const [toolVersion, setToolVersion] = useState("");
+  const [prepared, setPrepared] = useState<PreparedFiles | null>(null);
   const [requestPath, setRequestPath] = useState("");
   const [manifestPath, setManifestPath] = useState("");
   const [sealedPath, setSealedPath] = useState("");
@@ -208,6 +246,10 @@ export default function PilotWizard(props: PilotWizardProps) {
     if (run.step === "preflight") {
       const data = result.data as { ready?: boolean; checks?: PreflightCheck[] } | undefined;
       setReadiness({ environment, ready: result.exit === 0 && data?.ready === true, checks: Array.isArray(data?.checks) ? data.checks : [] });
+    } else if (run.step === "prepare") {
+      const data = result.exit === 0 ? result.data as PreparedFiles | undefined : undefined;
+      setPrepared(data ?? null);
+      if (data) { setRequestPath(data.files.request); setManifestPath(data.files.manifest); }
     } else if (run.step === "seal" && result.exit === 0) {
       const data = result.data as { sealedPlanPath?: string; reviewBundlePath?: string } | undefined;
       setSealedPath(data?.sealedPlanPath ?? "");
@@ -243,7 +285,7 @@ export default function PilotWizard(props: PilotWizardProps) {
 
   const reset = async () => {
     if (!take(await startOver())) return;
-    setStep(1); setReadiness(null); setReview(null); setReviewError(null); setSealedPath(""); setBundlePath(""); setSignedPath("");
+    setStep(1); setReadiness(null); setPrepared(null); setReview(null); setReviewError(null); setSealedPath(""); setBundlePath(""); setSignedPath("");
     setApprovalsText(""); setFinalResult(null); setRefusal(null); handled.current = "";
   };
 
@@ -262,6 +304,8 @@ export default function PilotWizard(props: PilotWizardProps) {
   );
   const lastRunFailed = run?.status === "DONE" && run.result && run.result.exit !== 0 ? run : null;
   const failureFor = (stepName: string) => lastRunFailed && lastRunFailed.step === stepName ? lastRunFailed : null;
+  const prepareStop = failureFor("prepare")?.result?.data as PrepareStop | undefined;
+  const needsToolVersion = failureFor("prepare")?.result?.code === "ENGINE_VERSION_REQUIRED";
 
   if (state === null) {
     return (
@@ -306,7 +350,7 @@ export default function PilotWizard(props: PilotWizardProps) {
                 <small>{COPY.startOverWhy}</small>
               </p>
             )}
-            {runningText(step === 5 ? COPY.applyRunning : step === 3 ? COPY.sealRunning : step === 4 ? COPY.signing : COPY.readyRunning)}
+            {runningText(step === 5 ? COPY.applyRunning : step === 3 ? (run?.step === "prepare" ? COPY.prepareRunning : COPY.sealRunning) : step === 4 ? COPY.signing : COPY.readyRunning)}
 
             {stepOf(1) && (
               <div className="pilot-step">
@@ -415,6 +459,30 @@ export default function PilotWizard(props: PilotWizardProps) {
                 <p>Environment: <strong>{environment}</strong></p>
                 {serverPath === null && <BlockedNotice state="PATH_NOT_CHOSEN" />}
                 {locked && <BlockedNotice state="PATH_IS_CLI" />}
+                <h4>{COPY.prepareRun}</h4>
+                <p>{COPY.prepareWhy}</p>
+                <label htmlFor="pilot-project">{COPY.prepareProjectLabel}</label>
+                <input id="pilot-project" type="text" autoComplete="off" spellCheck={false} value={projectPath} aria-describedby="pilot-project-help" onChange={(event) => { setProjectPath(event.target.value); setPrepared(null); }} />
+                <Help id="pilot-project-help" text={COPY.prepareProjectHelp} example={COPY.egProject} />
+                {(needsToolVersion || toolVersion !== "") && (
+                  <>
+                    <label htmlFor="pilot-tool-version">{COPY.prepareToolVersionLabel}</label>
+                    <input id="pilot-tool-version" type="text" autoComplete="off" spellCheck={false} value={toolVersion} aria-describedby="pilot-tool-version-help" onChange={(event) => setToolVersion(event.target.value)} />
+                    <Help id="pilot-tool-version-help" text={COPY.prepareToolVersionHelp} example={COPY.egToolVersion} />
+                  </>
+                )}
+                <button type="button" disabled={serverPath !== "UI" || active || projectPath.trim() === ""}
+                  onClick={() => void begin(() => startPrepare({ environment, projectPath: projectPath.trim(), ...(toolVersion.trim() ? { awsCliVersion: toolVersion.trim() } : {}) }))}>
+                  {COPY.prepareRun}
+                </button>
+                {failureFor("prepare") && (
+                  <>
+                    <Reasoned step="get the files ready" code={failureFor("prepare")?.result?.code} message={failureFor("prepare")?.result?.message} level={level} transcript={failureFor("prepare")?.transcript} />
+                    {prepareStop?.alternative && <p role="note"><small>{prepareStop.alternative}</small></p>}
+                  </>
+                )}
+                {prepared && prepared.summary.environment === environment && <PreparedSummary prepared={prepared} />}
+                <h4>{prepared ? COPY.prepareThen : COPY.prepareOr}</h4>
                 <label htmlFor="pilot-request">{COPY.sealRequestLabel}</label>
                 <input id="pilot-request" type="text" autoComplete="off" spellCheck={false} value={requestPath} aria-describedby="pilot-request-help" onChange={(event) => setRequestPath(event.target.value)} />
                 <Help id="pilot-request-help" text={COPY.sealRequestHelp} example={COPY.egRequest} />

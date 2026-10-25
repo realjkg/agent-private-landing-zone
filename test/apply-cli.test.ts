@@ -847,3 +847,42 @@ test("preflight gives a safe readiness item for a missing or unreadable owner co
   assert.match(broken.checks[0].detail ?? "", /cannot be read as valid JSON/);
   assert.equal(engineCalls().length, before, "invalid configuration cannot start an engine");
 });
+
+test("prepare writes the request and manifest from the contract and project, and seal accepts them unchanged", async () => {
+  const w = await world(contractJson(KILL, { policyVersion: POLICY }));
+  const target = targetOf("DEV");
+  const project = writeProject(fresh("project"), target).projectRoot;
+  const outDir = fresh("prepared");
+  const before = engineCalls().length;
+  const run = await cli(w, ["prepare", "--environment", "DEV", "--project", project], [], { preparationDir: outDir });
+  assert.equal(run.code, 0, run.stdout + run.stderr);
+  assert.equal(engineCalls().length, before, "prepare never starts an engine");
+  assert.match(run.stdout, /LOCAL_PREPARATION: local files, not qualification evidence/);
+  assert.match(run.stdout, /account {9}\S+/);
+  assert.match(run.stdout, /Known gaps:/);
+  const request = /request {3}(\S+)/.exec(run.stdout)?.[1];
+  const manifest = /manifest {2}(\S+)/.exec(run.stdout)?.[1];
+  assert.ok(request && manifest && existsSync(request) && existsSync(manifest));
+  assert.match(run.stdout, /NEXT \.\/alz apply seal --request /);
+  assert.equal(readdirSync(join(outDir, "DEV")).length, 3);
+
+  const seal = await cli(w, ["seal", "--request", request, "--manifest", manifest], [targetString(target), PHRASE]);
+  assert.equal(seal.code, 0, seal.stderr);
+  assert.match(JSON.parse(seal.stdout).artifactSha256, /^[0-9a-f]{64}$/);
+});
+
+test("prepare reports the exact owner prerequisite, offers no way around it, and writes nothing", async () => {
+  const w = await world(contractJson(KILL));
+  const project = writeProject(fresh("project"), targetOf("DEV")).projectRoot;
+  const outDir = fresh("prepared");
+  const run = await cli(w, ["prepare", "--environment", "DEV", "--project", project], [], { preparationDir: outDir });
+  assert.equal(run.code, 2);
+  assert.match(run.stdout, /^BLOCKED POLICY_VERSION_MISSING \(owner prerequisite\)/);
+  assert.doesNotMatch(run.stdout, /Alternative/);
+  assert.equal(readdirSync(outDir).length, 0);
+  // No flag names an engine, a target or a policy version.
+  for (const flag of ["--engine", "--target", "--policy-version", "--force"]) {
+    assert.equal((await cli(w, ["prepare", "--environment", "DEV", "--project", project, flag, "x"], [])).code, 1);
+  }
+  assert.equal((await cli(w, ["prepare", "--environment", "DEV"], [])).code, 1);
+});

@@ -4,6 +4,7 @@
   "enabled": false,
   "provider": "AWS",
   "engine": "CDK",
+  "policyVersion": "REPLACE-WITH-REVIEWED-POLICY-VERSION",
   "targets": {
     "DEV": {
       "accountId": "111111111111",

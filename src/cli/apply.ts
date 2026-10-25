@@ -10,6 +10,7 @@ import {
   contractRefusal, inspectPilotContract, isKillSwitchActive, loadPilotContract, pilotContractSha256, repoPaths, requireNotApplied, targetForEnvironment, writeQualificationEvidence, type Refusal,
 } from "../apply/contract.js";
 import { channelMismatchMessage } from "../apply/channel.js";
+import { prepareApply, writePreparation, type Prepared, type PrepareRefusal } from "../apply/prepare.js";
 import { qualifyApply, runApply, sealPreview, type ApplyDeps, type SealRequest } from "../apply/driver.js";
 import { RECOVERY_FILE_NAMES, engineOf, engineSpec, type EngineNotices } from "../apply/engine-spec.js";
 import { assertApplyEvidence } from "../apply/evidence.js";
@@ -38,6 +39,7 @@ import { EXIT, installSignalCleanup, processTerminal, targetString, type HumanTe
 // vault evidence, so neither is a file an operator names.
 
 const APPLY_USAGE = [
+  "  ./alz apply prepare --environment DEV|QA|PROD --project PROJECT_DIR [--aws-cli-version X.Y.Z]",
   "  ./alz apply qualify --request REQUEST.json --manifest MANIFEST.json",
   "  ./alz apply seal --request REQUEST.json --manifest MANIFEST.json",
   "  ./alz apply approve --bundle REVIEW_BUNDLE.json --key APPROVER_KEY.pem --approver ID",
@@ -74,10 +76,12 @@ export type ApplyCliDeps = {
   channel?: PilotChannel;
   /** The structured end of a command, for a caller that draws its own screen. Never needed to run, and never changes what is decided. */
   report?: (event: ApplyReport) => void;
+  /** Where `prepare` saves its files; defaults to `.runs/pilot` in the repository. */
+  preparationDir?: string;
 } & Pick<ApplyDeps, "contractPath" | "contractPinPath" | "qualificationDir" | "evidenceDir" | "nonces" | "scratchParent" | "toolDirs">;
 
 /** Why a command ended, without parsing text: a refusal's code and outcome, or a CLI error's code. */
-export type ApplyReport = { code: string; message: string; outcome?: ApplyOutcome };
+export type ApplyReport = { code: string; message: string; outcome?: ApplyOutcome; data?: unknown };
 
 type Flags = { single: readonly string[]; repeated?: readonly string[]; optional?: readonly string[] };
 const SUBCOMMANDS: Readonly<Record<string, Flags>> = {
@@ -88,6 +92,7 @@ const SUBCOMMANDS: Readonly<Record<string, Flags>> = {
   status: { single: [], optional: ["sealed"] },
   pin: { single: [] },
   preflight: { single: ["environment"], optional: ["contract"] },
+  prepare: { single: ["environment", "project"], optional: ["aws-cli-version"] },
 };
 const MAX_INPUT_BYTES = 8 * 1024 * 1024;
 const CONTROL = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
@@ -534,9 +539,66 @@ const preflightCommand: Command = async (flags, _terminal, deps, out) => {
   return ready ? EXIT.PASS : EXIT.BLOCKED;
 };
 
+// --- prepare -----------------------------------------------------------------------------------------------
+
+const NEXT_COMMAND: Readonly<Record<"qualify" | "seal", string>> = { qualify: "./alz apply qualify", seal: "./alz apply seal" };
+
+/** The readable review of a preparation: what was bound, what is still missing, and what the files are (and are not). */
+function preparationReview(prepared: Prepared): string {
+  const s = prepared.summary;
+  return [
+    "", "PREPARED (" + s.label + ": local files, not qualification evidence)",
+    "  provider        " + s.provider, "  engine          " + s.engine + " (" + s.path.toLowerCase() + " path)",
+    "  environment     " + s.environment, "  account         " + s.account,
+    ...(s.region ? ["  region          " + s.region] : []),
+    "  backend         " + s.backend, "  workspace       " + s.workspace,
+    "  project         " + s.projectRoot + " (" + s.fileCount + " files)",
+    ...s.providers.map((p) => "  provider pin    " + p.source + " " + p.version),
+    "  engine version  " + s.engineVersion + " (" + s.engineVersionSource.toLowerCase().replace(/_/g, " ") + ")",
+    "  policy version  " + s.policyVersion, "  unit hash       " + s.unitHash, "  manifest hash   " + s.manifestHash,
+    ...(prepared.gaps.length ? ["", "Known gaps:", ...prepared.gaps.map((gap) => "  - " + gap)] : []),
+  ].join("\n") + "\n";
+}
+
+/**
+ * Writes the seal request and artifact manifest for one project from the pinned contract, so an operator never authors them
+ * by hand (docs/act-pilot-apply.md). Local and offline: it reads the contract, the project folder, the lock file and
+ * qualification records, runs no engine, assumes no role, seals nothing, approves nothing and enables nothing. The engine
+ * is the contract's; a missing value is asked for only when the person can supply it, and never invented.
+ */
+const prepareCommand: Command = async (flags, terminal, deps, out) => {
+  const prepDeps = {
+    contractPath: deps.contractPath, pinPath: deps.contractPinPath, qualificationDir: deps.qualificationDir, toolDirs: deps.toolDirs,
+  };
+  const input = { environment: flags.environment[0], projectRoot: flags.project[0], awsCliVersion: flags["aws-cli-version"]?.[0] };
+  let result: Prepared | PrepareRefusal = await prepareApply(input, prepDeps);
+  if (!result.ok && result.code === "ENGINE_VERSION_REQUIRED" && input.awsCliVersion === undefined) {
+    // The one value an operator can supply: the AWS CLI version they will run, read from `aws --version` by them, not by us.
+    terminal.write("\n" + result.message + "\n");
+    const typed = (await terminal.ask("AWS CLI version (for example 2.27.10): ")).trim();
+    if (typed) result = await prepareApply({ ...input, awsCliVersion: typed }, prepDeps);
+  }
+  if (!result.ok) {
+    out.say("BLOCKED " + result.code + " (" + result.blocker.toLowerCase() + " prerequisite): " + result.message + "\n" +
+      (result.alternative ? "  Alternative: " + result.alternative + "\n" : ""));
+    out.report({ code: result.code, message: result.message, data: { blocker: result.blocker, ...(result.alternative ? { alternative: result.alternative } : {}) } });
+    return EXIT.BLOCKED;
+  }
+  const written = writePreparation(result, deps.preparationDir);
+  out.say(preparationReview(result) + "\nSaved (private to this account):\n  request   " + written.request + "\n  manifest  " + written.manifest +
+    "\n  record    " + written.record + "\n\n" + (result.next.step === "blocked"
+      ? "NEXT BLOCKED (" + result.next.blocker.toLowerCase() + " prerequisite): " + result.next.reason + "\n"
+      : "NEXT " + NEXT_COMMAND[result.next.step] + " --request " + written.request + " --manifest " + written.manifest + "\n  " + result.next.reason + "\n"));
+  out.report({
+    code: "PREPARED", message: "Prepared " + result.summary.engine + " for " + result.summary.environment + ".",
+    data: { files: written, summary: result.summary, gaps: result.gaps, next: result.next, request: result.request, manifest: result.manifest },
+  });
+  return EXIT.PASS;
+};
+
 const COMMANDS: Readonly<Record<string, Command>> = {
   qualify: qualifyCommand, seal: sealCommand, approve: approveCommand, apply: applyCommand, status: statusCommand, pin: pinCommand,
-  preflight: preflightCommand,
+  preflight: preflightCommand, prepare: prepareCommand,
 };
 
 /** Where `alz-preview-*` directories live and what a crashed apply leaves in them. */
@@ -554,7 +616,7 @@ function scratchHoldsRecovery(parent: string): boolean {
  * them first (docs/act-pilot-apply.md).
  */
 async function sweepUnlessHeld(sub: string, deps: ApplyCliDeps, out: Out): Promise<void> {
-  if (sub === "status" || sub === "approve" || sub === "pin" || sub === "preflight") return;
+  if (sub === "status" || sub === "approve" || sub === "pin" || sub === "preflight" || sub === "prepare") return;
   const parent = deps.scratchParent ?? tmpdir();
   const held = scratchHoldsRecovery(parent) ? "a scratch directory holds errored.tfstate or crash.log"
     : await holdsReservation(deps.evidenceDir ?? repoPaths().evidence) ? "the apply ledger holds a reservation" : undefined;

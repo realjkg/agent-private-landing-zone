@@ -81,7 +81,9 @@ The check always ends with a heads-up: whether the separate sign-ins really stay
 
 ### Step 3: Prepare the change
 
-Enter two file locations, each with an example under the box: the **Request file** (names the environment, the place to change, and the project folder) and the **Project fingerprint file** (fingerprints the project so it cannot change after you prepare it). Choose **Prepare the change**. This makes a preview of exactly what would change and keeps it locked. It changes nothing yet.
+Start with **Get the files ready**: enter your **Project folder** (your Terraform folder, or the `cdk.out` folder) and choose the button. The console reads the owner's pilot rules and your project, and writes the two files the preview needs. It runs nothing and changes nothing. It shows what it found in plain words: the cloud, the build tool, the environment, the account, the place, the project folder, the tool version and the policy version, then fills in both boxes below. These files are made on this computer only; they are not proof that anything works in the cloud. If the AWS CLI version is needed and no earlier check recorded it, a box appears to ask for it. If something is missing that only the owner can supply, the page says so and does not offer a way around it. The raw files are under **Advanced**.
+
+If you already have the files, enter two file locations instead, each with an example under the box: the **Request file** (names the environment, the place to change, and the project folder) and the **Project fingerprint file** (fingerprints the project so it cannot change after you prepare it). Choose **Prepare the change**. This makes a preview of exactly what would change and keeps it locked. It changes nothing yet.
 
 Confirmations you may be asked, one at a time, each in a window that must be answered before you can go on:
 
@@ -159,12 +161,13 @@ Every stop shows "Why it stopped" and "What to do next". At the Advanced and Exp
 
 ## The command-line path
 
-The commands, in order. Operators run 1, 2 and 4. Each approver runs 3 on their own computer with their own key.
+The commands, in order. Operators run 1, 2, 3 and 5. Each approver runs 4 on their own computer with their own key.
 
 1. `./alz apply preflight --environment DEV`
-2. `./alz apply seal --request REQUEST.json --manifest MANIFEST.json`
-3. `./alz apply approve --bundle REVIEW_FILE.json --key APPROVER_KEY.pem --approver NAME`
-4. `./alz apply apply --request REQUEST.json --manifest MANIFEST.json --sealed LOCKED_CHANGE --approval APPROVAL.json`
-5. `./alz apply status --sealed LOCKED_CHANGE` (anyone, afterward)
+2. `./alz apply prepare --environment DEV --project PROJECT_FOLDER` (prints the request and manifest locations to use next)
+3. `./alz apply seal --request REQUEST.json --manifest MANIFEST.json`
+4. `./alz apply approve --bundle REVIEW_FILE.json --key APPROVER_KEY.pem --approver NAME`
+5. `./alz apply apply --request REQUEST.json --manifest MANIFEST.json --sealed LOCKED_CHANGE --approval APPROVAL.json`
+6. `./alz apply status --sealed LOCKED_CHANGE` (anyone, afterward)
 
 The phrases are the same as in the console. The technical reference for each command, its exit codes and its files is `docs/act-pilot-apply.md`.
