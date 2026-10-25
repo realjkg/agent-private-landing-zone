@@ -1,5 +1,22 @@
 # Codex execution contract — complete ALZ Preview/Operate, then prepare gated ACT
 
+## Launch from a checked-out repository
+
+Run this from the repository's root using a Codex CLI installation already
+authenticated by the human operator:
+
+```sh
+codex exec --sandbox workspace-write - < docs/codex-milestone-closeout.md
+```
+
+The workspace-write sandbox permits local code edits and targeted tests,
+**not** automatic IAM escalation, cloud changes, review bypass or a promise
+that remote protected gates can complete. On a later explicitly invoked
+session, continue with `codex exec resume --last` and instruct Codex to
+reconcile fresh Issue #39/main evidence before doing more work. Codex
+does not become a standing background operator merely because this
+instruction exists.
+
 **Copy this entire document into Codex with repository access.** This is a
 bounded engineering instruction, not a grant of cloud permissions. Continue
 iterating through all tasks that can actually be completed on the connected
