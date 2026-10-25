@@ -7,10 +7,10 @@
 **Source repository:** realjkg/agent-private-landing-zone
 
 The source-identity record is embedded in `src/release/provenance.ts` and
-included, with a deterministic SHA-256 identity fingerprint, in new release
-manifests. The source commit and artifact-file hashes identify a particular
-build; the identity fingerprint alone is not proof of authorship or a digital
-signature.
+compiled into the release as a deterministic SHA-256 identity fingerprint.
+Existing release manifests bind the compiled file to a source commit and
+artifact-file hashes. The identity fingerprint alone is not proof of authorship
+or a digital signature.
 
 The existing `LICENSE` identifies Adapt Cloud in its 2026 copyright notice.
 Authorship, copyright ownership, and trademark rights are separate questions.
