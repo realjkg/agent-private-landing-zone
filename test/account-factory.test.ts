@@ -60,7 +60,7 @@ function fixture(opts: {
       ProvisioningArtifactParameters: [
         "AccountName", "AccountEmail", "SSOUserEmail", "SSOUserFirstName",
         "SSOUserLastName", "ManagedOrganizationalUnit",
-      ].map(ParameterKey => ({ Parameter: { ParameterKey } })),
+      ].map(ParameterKey => ({ ParameterKey, ParameterType: "String", IsNoEcho: false })),
     },
     "servicecatalog provision-product": {
       RecordDetail: { RecordId: "rec-abc123", ProvisionedProductId: "pp-abc123" },
@@ -107,6 +107,7 @@ test("discover organization, OU, baseline and modern launch path; proposal makes
   assert.equal(p.environment, "DEV");
   assert.equal(p.pathId, "lpv3-abc123");
   assert.equal(p.status, "READY_FOR_CONFIRMATION");
+  assert.equal(p.provisionedProductName, intake.name);
   assert.equal(p.infrastructureAct, "DISABLED");
   assert.ok(f.calls.every(x => x[1] !== "provision-product"));
   assert.equal(p.parameters.find(x => x.Key === "ManagedOrganizationalUnit")!.Value,
@@ -122,6 +123,46 @@ test("different management accounts and organizations are discovered rather than
   assert.equal(p.orgId, "o-abcd1234567");
   assert.equal(p.landingZoneArn, other.zoneArn);
   verifyProposal(p);
+});
+test("AWS-shaped ParameterKey entries and account display names with spaces are handled correctly", async () => {
+  const values = ["AccountName", "AccountEmail", "SSOUserEmail", "SSOUserFirstName",
+    "SSOUserLastName", "ManagedOrganizationalUnit"].map(ParameterKey =>
+    ({ ParameterKey, ParameterType: "String", ParameterConstraints: ParameterKey ===
+      "ManagedOrganizationalUnit" ? { AllowedValues: ["Workloads (" + targetId + ")"] } : {} }));
+  const f = fixture({ changes: { "servicecatalog describe-provisioning-parameters": {
+    ProvisioningArtifactParameters: values,
+  } } });
+  const display = "Customer Dev Space";
+  const p = await prepare({ ...intake, name: display }, f.call);
+  assert.equal(p.accountName, display);
+  assert.match(p.provisionedProductName, /^Customer-Dev-Space-[a-f0-9]{8}$/);
+  assert.equal(p.parameters.find(x => x.Key === "AccountName")?.Value, display);
+  const provision = fixture();
+  await submit(p, intake.profile, provision.call);
+  const call = provision.calls.find(x => x[1] === "provision-product")!;
+  assert.equal(call[call.indexOf("--provisioned-product-name") + 1], p.provisionedProductName);
+  assert.doesNotMatch(p.provisionedProductName, / /);
+});
+test("Account Factory refuses AWS product schemas missing real parameters or target OU offerings", async () => {
+  const missing = fixture({ changes: { "servicecatalog describe-provisioning-parameters": {
+    ProvisioningArtifactParameters: [
+      { ParameterKey: "AccountName" }, { ParameterKey: "AccountEmail" },
+    ],
+  } } });
+  await assert.rejects(prepare(intake, missing.call), /ACCOUNT_FACTORY_SCHEMA_UNEXPECTED/);
+  const extra = fixture({ changes: { "servicecatalog describe-provisioning-parameters": {
+    ProvisioningArtifactParameters: ["AccountName", "AccountEmail", "SSOUserEmail",
+      "SSOUserFirstName", "SSOUserLastName", "ManagedOrganizationalUnit",
+      "CustomerMandatoryField"].map(ParameterKey => ({ ParameterKey })),
+  } } });
+  await assert.rejects(prepare(intake, extra.call), /ACCOUNT_FACTORY_ADDITIONAL_REQUIRED_PARAMETER/);
+  const noOu = fixture({ changes: { "servicecatalog describe-provisioning-parameters": {
+    ProvisioningArtifactParameters: ["AccountName", "AccountEmail", "SSOUserEmail",
+      "SSOUserFirstName", "SSOUserLastName", "ManagedOrganizationalUnit"].map(ParameterKey =>
+        ({ ParameterKey, ParameterConstraints: ParameterKey === "ManagedOrganizationalUnit" ?
+          { AllowedValues: ["Sandbox (ou-zzzz-abcdef12)"] } : {} })),
+  } } });
+  await assert.rejects(prepare(intake, noOu.call), /TARGET_OU_NOT_OFFERED_BY_ACCOUNT_FACTORY/);
 });
 test("four practices and DEV QA STAGING PROD all use the same supported workflow", async () => {
   const roles = ["MODERN_PLATFORMS_PRESALES", "MODERN_PLATFORMS_DELIVERY",
