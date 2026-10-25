@@ -4,6 +4,7 @@
   "enabled": false,
   "provider": "AZURE",
   "engine": "TERRAFORM",
+  "policyVersion": "REPLACE-WITH-REVIEWED-POLICY-VERSION",
   "targets": {
     "DEV": {
       "tenantId": "aaaabbbb-0000-cccc-1111-dddd2222eeee",

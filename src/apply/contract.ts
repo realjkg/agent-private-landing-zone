@@ -121,7 +121,7 @@ function approvers(value: unknown, path: string): ApproverEntry[] {
 }
 
 function validate(raw: unknown): PilotContract {
-  const r = object(raw, "contract", ["schemaVersion", "enabled", "provider", "engine", "targets", "requiredApprovals", "maxApprovalAgeMinutes", "approvers", "killSwitchPath"], ["embedStateWrite", "enabledEnvironments"]);
+  const r = object(raw, "contract", ["schemaVersion", "enabled", "provider", "engine", "targets", "requiredApprovals", "maxApprovalAgeMinutes", "approvers", "killSwitchPath"], ["embedStateWrite", "enabledEnvironments", "policyVersion"]);
   if (r.schemaVersion !== 1) bad("schemaVersion: expected 1");
   const unsupported = "provider and engine: the pilot supports " + PROVIDER_IDS.join(", ") + " with " + ENGINE_IDS.join(", ");
   const spec = providerSpec(r.provider) ?? bad(unsupported);
@@ -142,6 +142,9 @@ function validate(raw: unknown): PilotContract {
   if (r.enabled !== true) bad("enabled: the contract does not enable ACT");
   // Optional and default off. Kept exactly as written (absent stays absent), so a contract that never mentions it hashes as it always did; the pin is over what the file says.
   const embed = r.embedStateWrite;
+  // Same character rule as the manifest's policyVersion, so a contract value can never fail the manifest check later.
+  const policy = r.policyVersion;
+  if (policy !== undefined && (typeof policy !== "string" || !/^[A-Za-z0-9._:/@+=~ -]{1,256}$/.test(policy))) bad("policyVersion: expected 1 to 256 letters, digits or . _ : / @ + = ~ - and spaces");
   if (embed !== undefined && typeof embed !== "boolean") bad("embedStateWrite: expected true or false");
   if (embed === true && !engine.embedsStateWrite) bad("embedStateWrite: valid only with an engine that has a state backend (" + ENGINE_IDS.filter((id) => engineSpec(id)?.embedsStateWrite).join(", ") + "); " + engine.id + " has none");
   const contract: PilotContract = {
@@ -156,6 +159,7 @@ function validate(raw: unknown): PilotContract {
     approvers: approvers(r.approvers, "approvers"),
     killSwitchPath: text(r.killSwitchPath, "killSwitchPath", (v) => v.length > 0 && v.length <= 1024 && !v.includes("\0")),
     ...(typeof embed === "boolean" ? { embedStateWrite: embed } : {}),
+    ...(typeof policy === "string" ? { policyVersion: policy } : {}),
   };
   if (scoped !== undefined && !contract.approvers.some((entry) => entry.environments.includes("DEV"))) {
     bad("approvers: DEV-only pilot requires an authorized DEV approver");

@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import PilotWizard, { BlockedNotice, ChangeList } from "../src/operator-ui/app/pilot/PilotWizard";
-import { forgetPilotToken, type PilotPath, type PilotRun, type ReviewSummary } from "../src/operator-ui/app/pilot/pilot-api";
+import { forgetPilotToken, type PilotPath, type PilotRun, type PreparedFiles, type ReviewSummary } from "../src/operator-ui/app/pilot/pilot-api";
 import {
   BLOCKED, CLI_COMMANDS, CODE_COPY, COPY, RESULT_COPY, STEP_TITLES, classifyResult, describeCheck, describeCounts, describeMismatch, dialogCopy, reasonFor,
   type BlockedState, type ResultKind,
@@ -154,7 +154,7 @@ describe("step 1: the path is chosen once", () => {
     expect(fake.path).toBe("CLI");
     const items = within(document.querySelector(".pilot-commands") as HTMLElement).getAllByRole("listitem");
     expect(items.map((item) => item.querySelector("code")?.textContent)).toEqual(CLI_COMMANDS.map((item) => item.command));
-    expect(CLI_COMMANDS.map((item) => item.command.split(" ")[2])).toEqual(["preflight", "seal", "approve", "apply", "status"]);
+    expect(CLI_COMMANDS.map((item) => item.command.split(" ")[2])).toEqual(["preflight", "prepare", "seal", "approve", "apply", "status"]);
     expect(screen.getByText(COPY.cliNote)).toBeTruthy();
     expect(screen.queryByRole("button", { name: COPY.pathContinue })).toBeNull();
     expect(screen.queryByRole("button", { name: COPY.readyRun })).toBeNull();
@@ -277,6 +277,60 @@ describe("step 3 and the confirmation dialogs", () => {
     typeInto(COPY.sealRequestLabel, " /r.json ");
     typeInto(COPY.sealManifestLabel, "/m.json");
     expect(screen.getByRole("button", { name: COPY.sealRun }).hasAttribute("disabled")).toBe(false);
+  });
+
+  const preparedFiles = (next: PreparedFiles["next"] = { step: "seal", reason: "The TERRAFORM path is qualified." }): PreparedFiles => ({
+    files: { request: "/runs/pilot/DEV/request-ab.json", manifest: "/runs/pilot/DEV/manifest-ab.json", record: "/runs/pilot/DEV/preparation-ab.json" },
+    summary: {
+      label: "LOCAL_PREPARATION", provider: "AWS", engine: "TERRAFORM", path: "PRIMARY", environment: "DEV", account: "111111111111", region: "us-east-1",
+      backend: "state-bucket", workspace: "dev", projectRoot: "/home/you/pilot/landing-zone", fileCount: 3,
+      providers: [{ source: "registry.terraform.io/hashicorp/aws", version: "6.0.0" }], engineVersion: "1.16.4", engineVersionSource: "TESTED_PIN",
+      policyVersion: "pilot-policy-1", unitHash: "a".repeat(64), manifestHash: "b".repeat(64), contractSha256: "c".repeat(64),
+    },
+    gaps: ["Inputs and dependencies are not derived yet."], next, request: { environment: "DEV" }, manifest: { schemaVersion: 1 },
+  });
+
+  test("getting the files ready from a project folder fills both boxes, shows what was bound in plain words, and keeps the raw files under Advanced", async () => {
+    const { fake } = await atSeal();
+    expect(screen.getByRole("button", { name: COPY.prepareRun }).hasAttribute("disabled")).toBe(true);
+    typeInto(COPY.prepareProjectLabel, " /home/you/pilot/landing-zone ");
+    fake.onPost["/prepare"] = () => { fake.run = doneRun("prepare", { exit: 0, code: "PREPARED", data: preparedFiles() }); };
+    await clickButton(COPY.prepareRun);
+    await screen.findByText(COPY.prepareDone);
+    expect(posts(fake, "/prepare")[0].body).toEqual({ environment: "DEV", projectPath: "/home/you/pilot/landing-zone" });
+    expect((screen.getByLabelText(COPY.sealRequestLabel) as HTMLInputElement).value).toBe("/runs/pilot/DEV/request-ab.json");
+    expect((screen.getByLabelText(COPY.sealManifestLabel) as HTMLInputElement).value).toBe("/runs/pilot/DEV/manifest-ab.json");
+    const box = document.querySelector(".pilot-prepared") as HTMLElement;
+    for (const text of ["AWS", "Terraform", "111111111111", "us-east-1", "1.16.4", "pilot-policy-1", COPY.prepareLocalOnly, COPY.prepareNextSeal]) expect(box.textContent).toContain(text);
+    expect(box.querySelector("details")?.hasAttribute("open")).toBe(false);
+    expect(box.querySelector("details pre")?.textContent).toContain("schemaVersion");
+    expect(jargonIn(primaryText())).toEqual([]);
+    expect(screen.getByRole("button", { name: COPY.sealRun }).hasAttribute("disabled")).toBe(false);
+  });
+
+  test("a preparation that waits on the one-time check or the owner says so instead of offering the preview as ready", async () => {
+    const { fake } = await atSeal();
+    typeInto(COPY.prepareProjectLabel, "/p");
+    fake.onPost["/prepare"] = () => { fake.run = doneRun("prepare", { exit: 0, code: "PREPARED", data: preparedFiles({ step: "qualify", reason: "Qualify it in DEV." }) }); };
+    await clickButton(COPY.prepareRun);
+    expect(await screen.findByText(COPY.prepareNextCheck)).toBeTruthy();
+    expect(screen.queryByText(COPY.prepareNextSeal)).toBeNull();
+  });
+
+  test("a missing tool version is asked for only when it is needed, and a refusal says why and what next", async () => {
+    const { fake } = await atSeal();
+    expect(screen.queryByLabelText(COPY.prepareToolVersionLabel)).toBeNull();
+    typeInto(COPY.prepareProjectLabel, "/cdk.out");
+    fake.onPost["/prepare"] = () => { fake.run = doneRun("prepare", { exit: 2, code: "ENGINE_VERSION_REQUIRED", message: "x", data: { blocker: "OPERATOR" } }); };
+    await clickButton(COPY.prepareRun);
+    expect((await screen.findByRole("alert")).textContent).toContain(CODE_COPY.ENGINE_VERSION_REQUIRED.next);
+    typeInto(COPY.prepareToolVersionLabel, "2.27.10");
+    fake.onPost["/prepare"] = () => { fake.run = doneRun("prepare", { exit: 2, code: "TOOL_UNAVAILABLE", message: "x", data: { blocker: "TOOL", alternative: "Install it with ./alz deps." } }, "prepare-2"); };
+    await clickButton(COPY.prepareRun);
+    expect(posts(fake, "/prepare")[1].body).toEqual({ environment: "DEV", projectPath: "/cdk.out", awsCliVersion: "2.27.10" });
+    expect((await screen.findByRole("alert")).textContent).toContain(CODE_COPY.TOOL_UNAVAILABLE.why);
+    expect(screen.getByText("Install it with ./alz deps.")).toBeTruthy();
+    expect((screen.getByLabelText(COPY.sealRequestLabel) as HTMLInputElement).value).toBe("");
   });
 
   test("the target dialog shows the exact phrase and a copy button, starts empty, and cannot be confirmed by anything but the exact phrase", async () => {
@@ -665,8 +719,10 @@ describe("every stop has a reason and a next step", () => {
     const refusalCodes = [...read("src/apply/types.ts").split("export type ApplyRefusalCode =")[1].split(";")[0].matchAll(/\| "([A-Z_]+)"/g)].map((m) => m[1]);
     const cliCodes = [...read("src/cli/apply.ts").matchAll(/\bfail\(\s*"([A-Z_]+)"|\bcode: "([A-Z_]+)"|, "([A-Z_]+_MISMATCH)", ?"[A-Z_]+"\)/g)].map((m) => m[1] ?? m[2] ?? m[3]);
     const routerCodes = [...read("src/cli/ui-channel.ts").matchAll(/new Bad\(\d+, "([A-Z_]+)"/g)].map((m) => m[1]);
+    const prepareCodes = [...read("src/apply/prepare.ts").split("export type PrepareCode =")[1].split(";")[0].matchAll(/"([A-Z_]+)"/g)].map((m) => m[1]);
+    expect(prepareCodes.length).toBeGreaterThanOrEqual(12);
     const extra = ["MANIFEST_INVALID", "APPLY_UNEXPECTED_ERROR", "PILOT_FAILED", "PILOT_UNREACHABLE", "LOCAL_HOST_ONLY", "NOT_FOUND"];
-    const all = [...new Set([...refusalCodes, ...cliCodes, ...routerCodes, ...extra])];
+    const all = [...new Set([...refusalCodes, ...cliCodes, ...routerCodes, ...prepareCodes, ...extra])];
     expect(refusalCodes.length).toBeGreaterThanOrEqual(25);
     expect(routerCodes.length).toBeGreaterThanOrEqual(12);
     for (const code of all) {

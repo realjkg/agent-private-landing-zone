@@ -308,8 +308,8 @@ test("the session token goes to the operator's terminal at start, from the launc
 
 // --- the closed command surface ------------------------------------------------------------------
 
-test("the console starts only the four named steps, from values the router turns into arguments; nothing else, and no process of its own", async () => {
-  assert.deepEqual([...PILOT_STEPS], ["preflight", "seal", "approve", "apply"]);
+test("the console starts only the five named steps, from values the router turns into arguments; nothing else, and no process of its own", async () => {
+  assert.deepEqual([...PILOT_STEPS], ["preflight", "prepare", "seal", "approve", "apply"]);
   const w = await world();
   const { port } = await serve(w);
   await choose(port);
@@ -324,6 +324,10 @@ test("the console starts only the four named steps, from values the router turns
     ["seal", { environment: "DEV", requestPath: "r\nm", manifestPath: "m" }],
     ["seal", { environment: "ROOT", requestPath: "r", manifestPath: "m" }],
     ["preflight", { environment: "DEV", contract: "/tmp/other.json" }],
+    ["prepare", { environment: "DEV", projectPath: "--force" }],
+    ["prepare", { environment: "DEV", projectPath: "p", engine: "CDK" }],
+    ["prepare", { environment: "DEV", projectPath: "p", awsCliVersion: "latest" }],
+    ["prepare", { environment: "STAGING", projectPath: "p" }],
     ["approve", { bundlePath: "b", keyPath: "k", approverId: "a b" }],
     ["apply", { environment: "DEV", requestPath: "r", manifestPath: "m", sealedPath: "s", approvalPaths: [] }],
     ["apply", { environment: "DEV", requestPath: "r", manifestPath: "m", sealedPath: "s", approvalPaths: ["a"], force: true }],
@@ -728,4 +732,49 @@ test("guided AWS setup inherits protected pilot token and refuses malformed or e
   assert.equal((await call(port,"POST",route,{body:{...valid,account:"973471129135"}})).status,400);
   assert.equal((await call(port,"POST",route,{body:{...valid,profile:"unsafe;echo x"}})).status,400);
   assert.deepEqual(mutating(),[]);
+});
+
+test("prepare in the console writes the request and manifest from the contract and project, and seal accepts them unchanged", async () => {
+  const base = await world(contractJson(KILL, { policyVersion: POLICY }));
+  const preparationDir = fresh("prepared");
+  const w = { ...base, cli: { ...base.cli, preparationDir } };
+  const { port } = await serve(w);
+  await choose(port);
+  const target = targetOf("DEV");
+  const project = writeProject(fresh("project"), target);
+  const started = await call(port, "POST", "/pilot/prepare", { body: { environment: "DEV", projectPath: project.projectRoot } });
+  assert.equal(started.status, 202, started.text);
+  const done = await finished(port);
+  const result = done.run!.result!;
+  assert.equal(result.exit, 0, JSON.stringify(result));
+  assert.equal(result.code, "PREPARED");
+  const data = result.data as { files: { request: string; manifest: string }; summary: { label: string; engine: string }; next: { step: string } };
+  assert.equal(data.summary.label, "LOCAL_PREPARATION");
+  assert.equal(data.summary.engine, "TERRAFORM");
+  assert.equal(data.next.step, "seal");
+  assert.ok(data.files.request.startsWith(preparationDir) && data.files.manifest.startsWith(preparationDir));
+  assert.deepEqual(engineCalls(), [], "preparation starts no engine");
+
+  const sealing = await call(port, "POST", "/pilot/seal", { body: { environment: "DEV", requestPath: data.files.request, manifestPath: data.files.manifest } });
+  assert.equal(sealing.status, 202, sealing.text);
+  const first = await waiting(port);
+  await call(port, "POST", "/pilot/answer", { body: { dialogId: first.run!.dialog!.id, answer: targetString(target) } });
+  const second = await until(port, (s) => s.run?.status === "WAITING" && s.run.dialog?.kind === "RUN_PROJECT_CODE");
+  await call(port, "POST", "/pilot/answer", { body: { dialogId: second.run!.dialog!.id, answer: PHRASE } });
+  const sealed = await finished(port);
+  assert.equal(sealed.run!.result!.exit, 0, JSON.stringify(sealed.run!.result));
+});
+
+test("prepare in the console reports the owner prerequisite with its blocker and writes nothing", async () => {
+  const base = await world();
+  const preparationDir = fresh("prepared");
+  const { port } = await serve({ ...base, cli: { ...base.cli, preparationDir } });
+  await choose(port);
+  const project = writeProject(fresh("project"), targetOf("DEV"));
+  assert.equal((await call(port, "POST", "/pilot/prepare", { body: { environment: "DEV", projectPath: project.projectRoot } })).status, 202);
+  const result = (await finished(port)).run!.result!;
+  assert.equal(result.exit, 2);
+  assert.equal(result.code, "POLICY_VERSION_MISSING");
+  assert.deepEqual(result.data, { blocker: "OWNER" });
+  assert.deepEqual(readdirSync(preparationDir), []);
 });

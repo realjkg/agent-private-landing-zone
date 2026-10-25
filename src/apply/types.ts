@@ -60,6 +60,12 @@ export type PilotContract = {
   /** Existence of this file stops an apply before it starts and between steps. */
   killSwitchPath: string;
   /**
+   * The policy version the owner has reviewed for this pilot. `./alz apply prepare` copies it into the request and
+   * manifest, so operators never type it. Optional: absent keeps an existing contract byte-for-byte as it was, and
+   * prepare then stops with an owner prerequisite instead of guessing.
+   */
+  policyVersion?: string;
+  /**
    * Opt-in, default off (absent or false is today's behavior, byte for byte). Terraform engine only. When true, the seal-time `init`
    * embeds STATE_WRITE's non-secret backend settings, so the plan names the state writer (docs/act-pilot-apply.md, "Embedding STATE_WRITE
    * in the plan"). It is part of the pinned contract, so the sealed plan binds the choice through `contractSha256`.
