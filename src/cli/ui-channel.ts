@@ -122,14 +122,16 @@ export type ReviewSummary = {
   target: { account: string; backend: string; workspace: string };
   /** The first 12 characters people compare; the whole value is in the bundle. */
   shortId: string;
+  /** The product source commit that made the preview; approvers sign it with the change. */
+  sourceCommit: string;
   createdAt: string;
   counts: ChangeCounts;
   changes: PlanChange[];
   changesOmitted: number;
 };
 
-const summaryOf = (bundle: { environment: ApplyEnvironment; target: ReviewSummary["target"]; artifactSha256: string; createdAt: string; changes: PlanChange[] }): ReviewSummary => ({
-  environment: bundle.environment, target: { ...bundle.target }, shortId: bundle.artifactSha256.slice(0, 12), createdAt: bundle.createdAt,
+const summaryOf = (bundle: { environment: ApplyEnvironment; target: ReviewSummary["target"]; artifactSha256: string; sourceCommit: string; createdAt: string; changes: PlanChange[] }): ReviewSummary => ({
+  environment: bundle.environment, target: { ...bundle.target }, shortId: bundle.artifactSha256.slice(0, 12), sourceCommit: bundle.sourceCommit, createdAt: bundle.createdAt,
   counts: countChanges(bundle.changes),
   changes: bundle.changes.slice(0, MAX_LISTED_CHANGES).map((change) => ({ ...change, address: stripInvisible(change.address), type: stripInvisible(change.type) })),
   changesOmitted: Math.max(0, bundle.changes.length - MAX_LISTED_CHANGES),
@@ -241,12 +243,12 @@ export function createPilotRouter(options: PilotRouterOptions): PilotRouter {
       try { result.data = JSON.parse(stdout) as unknown; } catch { /* no structured output */ }
     }
     if (exit === 0 && step === "seal" && typeof result.data === "object" && result.data !== null) {
-      const data = result.data as { environment?: ApplyEnvironment; target?: ReviewSummary["target"]; artifactSha256?: string; changes?: PlanChange[]; sealedPlanPath?: string; reviewBundlePath?: string };
+      const data = result.data as { environment?: ApplyEnvironment; target?: ReviewSummary["target"]; artifactSha256?: string; sourceCommit?: string; changes?: PlanChange[]; sealedPlanPath?: string; reviewBundlePath?: string };
       // The page shows these locations for the person to note, so they are absolute, whatever directory the command used.
       if (typeof data.sealedPlanPath === "string") data.sealedPlanPath = absolute(data.sealedPlanPath);
       if (typeof data.reviewBundlePath === "string") data.reviewBundlePath = absolute(data.reviewBundlePath);
-      if (data.environment && data.target && typeof data.artifactSha256 === "string" && Array.isArray(data.changes)) {
-        result.summary = summaryOf({ environment: data.environment, target: data.target, artifactSha256: data.artifactSha256, createdAt: "", changes: data.changes });
+      if (data.environment && data.target && typeof data.artifactSha256 === "string" && typeof data.sourceCommit === "string" && Array.isArray(data.changes)) {
+        result.summary = summaryOf({ environment: data.environment, target: data.target, artifactSha256: data.artifactSha256, sourceCommit: data.sourceCommit, createdAt: "", changes: data.changes });
       }
     }
     return result;

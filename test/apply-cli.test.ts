@@ -14,7 +14,7 @@ import { removeTree } from "../src/teardown/driver/cleanup.js";
 import type { ApplyEnvironment } from "../src/apply/types.js";
 import type { ResolvedTarget } from "../src/teardown/driver/types.js";
 import { targetString } from "../src/cli/teardown-driver.js";
-import {
+import { SOURCE_COMMIT,
   DEV_TARGET, ENGINE_VERSION, NOW, OUTPUT_CANARY, PLAN_CANARY, POLICY, PROD_TARGET, QA_TARGET, STATE_CANARY, VALUE_CANARY, targetOf,
   behave as behaveIn, callsOf, contractJson, identityEnv, installFakeTerraform, keys, pinPathOf, testFixtureForgeQualificationEvidence, writePinnedContract,
   writeProject, type Behavior, type Project,
@@ -84,6 +84,7 @@ async function world(contract: unknown = contractJson(KILL), qualified = true): 
   return {
     contractPath, vault, evidenceDir,
     deps: (term, over = {}) => ({
+      sourceCommit: SOURCE_COMMIT,
       terminal: term, env: ENV, now: () => NOW, operatorId: "operator.fixture", contractPath, contractPinPath: pinPathOf(contractPath),
       qualificationDir: vault, evidenceDir, nonces, scratchParent: scratch, toolDirs: [toolDir], ...over,
     }),
@@ -368,7 +369,7 @@ test("seal writes a non-secret review bundle: the artifact's own fields and the 
   const text = readFileSync(s.bundle, "utf8");
   const bundle = JSON.parse(text) as Record<string, unknown>;
   assert.deepEqual(Object.keys(bundle).sort(), [
-    "artifactSha256", "changes", "changesSha256", "channel", "contractSha256", "createdAt", "engineVersion", "environment", "manifestHash", "planSha256", "policyVersion", "releaseIdentity", "target",
+    "artifactSha256", "changes", "changesSha256", "channel", "contractSha256", "createdAt", "engineVersion", "environment", "manifestHash", "planSha256", "policyVersion", "releaseIdentity", "sourceCommit", "target",
   ]);
   assert.equal(bundle.artifactSha256, s.artifactSha256);
   assert.equal(bundle.environment, "DEV");
@@ -885,4 +886,31 @@ test("prepare reports the exact owner prerequisite, offers no way around it, and
     assert.equal((await cli(w, ["prepare", "--environment", "DEV", "--project", project, flag, "x"], [])).code, 1);
   }
   assert.equal((await cli(w, ["prepare", "--environment", "DEV"], [])).code, 1);
+});
+
+test("seal and apply stop before any question when the product commit is unknown or uncommitted, and apply only from the commit that sealed it", async () => {
+  const w = await world();
+  const target = targetOf("DEV");
+  const p = writeProject(fresh("project"), target);
+  const before = engineCalls().length;
+  const unknown = await cli(w, sealArgs(p, target, "DEV"), [targetString(target), PHRASE], { sourceCommit: "not-a-commit" });
+  assert.equal(unknown.code, 2);
+  assert.match(unknown.stderr, /^BLOCKED SOURCE_UNVERIFIED/);
+  assert.deepEqual(unknown.term.asked, [], "no phrase was asked");
+  assert.equal(engineCalls().length, before, "no engine ran");
+
+  const s = await sealed(w, "DEV");
+  assert.match(s.artifactSha256, /^[0-9a-f]{64}$/);
+  const bundle = JSON.parse(readFileSync(s.bundle, "utf8")) as { sourceCommit: string };
+  assert.equal(bundle.sourceCommit, SOURCE_COMMIT, "the review bundle names the commit approvers sign");
+  const approval = await approve(w, s, "alice");
+  const appliedBefore = applyCalls().length;
+  const moved = await cli(w, applyArgs(s, [approval]), [applyPhrase(s)], applyIn(s, { sourceCommit: "1".repeat(40) }));
+  assert.equal(moved.code, 2);
+  assert.match(moved.stderr, /^BLOCKED SOURCE_CHANGED/);
+  assert.deepEqual(moved.term.asked, [], "no phrase was asked");
+  assert.equal(applyCalls().length, appliedBefore, "no engine ran");
+  const applied = await cli(w, applyArgs(s, [approval]), [applyPhrase(s)], applyIn(s));
+  assert.equal(applied.code, 0, applied.stderr);
+  assert.equal((JSON.parse(applied.stdout) as { sourceCommit: string }).sourceCommit, SOURCE_COMMIT, "the evidence names the commit");
 });

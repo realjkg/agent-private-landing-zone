@@ -53,6 +53,17 @@ Request files carry only `environment`, `target` (`account`, `backend`, `workspa
 - **Evidence.** Every output is labeled `LOCAL_PREPARATION`. Prepared files are not qualification evidence and do not show that anything works in a cloud.
 - **Refusals.** Owner prerequisites (contract not pinned or enabled, kill switch, policy version missing, target not in the contract) never offer an alternative. A missing tool (`TOOL_UNAVAILABLE`) may name the other supported path, which needs its own reviewed contract, preview and approvals. Exit 0 prepared, 1 a CLI error, 2 blocked.
 
+### Source-bound evidence
+
+Every seal and apply names the product source commit it ran from.
+
+- **Where the commit comes from.** In a git checkout, the commit is `HEAD`, and only while `git status --porcelain` is empty (ignored files such as `.runs/` do not count). Without a checkout (the packaged image, which `./alz` builds only from a clean commit), it is the image's `ALZ_SOURCE_COMMIT` stamp. The stamp never overrides a checkout. Anything else is `SOURCE_UNVERIFIED`. The CLI resolves the commit (`src/util/source-commit.ts`); the driver starts no process to find it.
+- **Seal.** An unknown or uncommitted source stops `seal` and `qualify` before any phrase is asked. The commit is shown on the seal screen and bound into the artifact hash and the review bundle (`sourceCommit`), so approvers sign that version. The console shows it on the review as "App version that prepared it".
+- **Apply.** A plan applies only from the commit that sealed it. A different running commit is `SOURCE_CHANGED`, refused before the apply phrase is asked and again by the driver, and nothing is consumed. The evidence records `sourceCommit`, and the console's Results page shows it.
+- **Not covered.** A native checkout runs the compiled `dist/`, so a `dist/` built from an older commit is not detected. Run `npm run build` (or `./alz bootstrap`) after changing commits.
+
+Plans and review bundles sealed before this field existed fail verification as malformed. Seal them again.
+
 ### Channels: the terminal or the console, never both
 
 A workflow runs wholly in the `CLI` channel (a person at the terminal) or the `UI` channel (a person in the console wizard, `src/cli/ui-channel.ts`). The calling code sets it (`ApplyCliDeps.channel`, default `CLI`; the driver's `SealRequest.channel` and `ApplyRequest.channel`), never a flag, file or environment variable. It is a field of the sealed plan, of the artifact hash (`computeArtifactSha256`) and of the review bundle, so editing it breaks the hash (`ARTIFACT_TAMPERED`) and a record without it is `ARTIFACT_INVALID`. `approve` and `apply` refuse with `CHANNEL_MISMATCH` (exit 2) when their channel differs from the plan's: `approve` before it asks anything, `apply` before the final question, and the driver again before any approval is consumed. Nothing is spent by that refusal; the same sealed plan and approvals work in the right channel.

@@ -15,7 +15,7 @@ import { createLocalOperatorServer } from "../src/operator-ui/server.js";
 import { removeTree } from "../src/teardown/driver/cleanup.js";
 import type { ApplyEnvironment } from "../src/apply/types.js";
 import type { ResolvedTarget } from "../src/teardown/driver/types.js";
-import {
+import { SOURCE_COMMIT,
   NOW, POLICY, awsContractJson, awsIdentityEnv, awsTargetOf, behave as behaveIn, callsOf, contractJson, identityEnv, installFakeTerraform, keys, pinPathOf, targetOf,
   testFixtureForgeQualificationEvidence,
   writePinnedContract, writeProject, type Behavior, type Project,
@@ -58,6 +58,7 @@ async function world(contract: unknown = contractJson(KILL), env: NodeJS.Process
   return {
     contractPath, vault, approvals: fresh("approvals"),
     cli: {
+      sourceCommit: SOURCE_COMMIT,
       env, now: () => NOW, operatorId: "operator.fixture", contractPath, contractPinPath: pinPathOf(contractPath), qualificationDir: vault,
       evidenceDir: fresh("evidence"), nonces: openNonceStore(fresh("nonces")), scratchParent, toolDirs: [toolDir],
     },
@@ -786,7 +787,7 @@ type Cloud = "AWS" | "AZURE";
 const AWS_PROVIDER_CONFIG = { aws: { name: "aws", full_name: "registry.terraform.io/hashicorp/aws", expressions: { region: { references: ["var.region"] } } } };
 
 /** A pinned contract with a policy version for the cloud, its identities and qualification, and a Terraform project for its DEV target. */
-async function consoleJourney(cloud: Cloud) {
+async function consoleJourney(cloud: Cloud, sourceCommit = SOURCE_COMMIT) {
   // The same fake engine as every test here (logic only, NOT real cloud behavior); the contract, identities and project are the cloud's own.
   behave(cloud === "AWS" ? { showProviderConfig: AWS_PROVIDER_CONFIG } : {});
   const contractPath = join(fresh("contract"), "act-pilot-contract.json");
@@ -796,11 +797,13 @@ async function consoleJourney(cloud: Cloud) {
   const w: World = {
     contractPath, vault, approvals: fresh("approvals"),
     cli: {
+      sourceCommit: SOURCE_COMMIT,
       env: cloud === "AWS" ? awsIdentityEnv("DEV") : identityEnv("DEV"), now: () => NOW, operatorId: "operator.fixture", contractPath,
       contractPinPath: pinPathOf(contractPath), qualificationDir: vault, evidenceDir: fresh("evidence"), nonces: openNonceStore(fresh("nonces")),
       scratchParent: fresh("scratch"), toolDirs: [toolDir], preparationDir: fresh("prepared"),
     },
   };
+  w.cli.sourceCommit = sourceCommit;
   const { port } = await serve(w);
   await choose(port);
   const target = cloud === "AWS" ? awsTargetOf("DEV") : targetOf("DEV");
@@ -849,13 +852,15 @@ async function wholeJourneyInConsole(cloud: Cloud): Promise<void> {
   const reviewed = (await call(port, "POST", "/pilot/review", { body: { bundlePath: sealed.bundle } })).body;
   assert.equal(reviewed.ok, true);
   assert.deepEqual(reviewed.summary.target, target);
+  assert.equal(reviewed.summary.sourceCommit, SOURCE_COMMIT, "approvers see the product commit they sign");
   const approvalPath = await approveViaUi(port, sealed, "alice");
   const before = engineCalls().filter((args) => args[0] === "apply").length;
   // The router derives the apply request from the prepared seal request.
   const applied = await applyInConsole(port, prepared.files, sealed, [approvalPath], applyPhrase(sealed));
   assert.equal(applied.exit, 0, JSON.stringify(applied));
-  const evidence = applied.data as { outcome: string; target: ResolvedTarget; artifactSha256: string };
+  const evidence = applied.data as { outcome: string; target: ResolvedTarget; artifactSha256: string; sourceCommit: string };
   assert.equal(evidence.outcome, "SUCCEEDED");
+  assert.equal(evidence.sourceCommit, SOURCE_COMMIT, "the evidence names the product commit that sealed and applied");
   assert.deepEqual(evidence.target, target);
   assert.equal(evidence.artifactSha256, sealed.artifactSha256);
   assert.equal(engineCalls().filter((args) => args[0] === "apply").length, before + 1);
@@ -899,3 +904,26 @@ test("AWS Terraform in the console: prepare from a project folder, preview, appr
 test("AWS Terraform in the console: a wrong phrase or a cancel at approval or apply signs nothing and spends nothing, and the same approval still applies", () => interruptedJourneyInConsole("AWS"));
 test("Azure Terraform in the console: prepare from a project folder, preview, approve and apply through the real router, service and adapter", () => wholeJourneyInConsole("AZURE"));
 test("Azure Terraform in the console: a wrong phrase or a cancel at approval or apply signs nothing and spends nothing, and the same approval still applies", () => interruptedJourneyInConsole("AZURE"));
+
+test("AWS Terraform in the console: a plan applies only from the product commit that sealed it, and nothing is consumed by a mismatch", async () => {
+  const { w, port, target, project } = await consoleJourney("AWS");
+  const { prepared, sealed } = await prepareAndSealInConsole(port, project, target);
+  const approvalPath = await approveViaUi(port, sealed, "alice");
+  const applies = () => engineCalls().filter((args) => args[0] === "apply").length;
+  const before = applies();
+  // The same files, approvals and vault, from a console running another product commit.
+  const other = await serve({ ...w, cli: { ...w.cli, sourceCommit: "1".repeat(40) } });
+  await choose(other.port);
+  const started = await call(other.port, "POST", "/pilot/apply", {
+    body: { environment: "DEV", requestPath: prepared.files.request, manifestPath: prepared.files.manifest, sealedPath: sealed.path, approvalPaths: [approvalPath] },
+  });
+  assert.equal(started.status, 202, started.text);
+  const refusal = (await finished(other.port)).run!.result!;
+  assert.equal(refusal.exit, 2, JSON.stringify(refusal));
+  assert.equal(refusal.code, "SOURCE_CHANGED");
+  assert.equal(applies(), before, "no engine ran");
+  // Nothing was consumed: from the sealing commit, the same approval applies.
+  const applied = await applyInConsole(port, prepared.files, sealed, [approvalPath], applyPhrase(sealed));
+  assert.equal(applied.exit, 0, JSON.stringify(applied));
+  assert.equal((applied.data as { sourceCommit: string }).sourceCommit, SOURCE_COMMIT);
+});

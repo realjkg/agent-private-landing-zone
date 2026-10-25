@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { signApproval } from "../apply/approval.js";
-import { ENVIRONMENTS, stripInvisible } from "../apply/constants.js";
+import { COMMIT, ENVIRONMENTS, stripInvisible } from "../apply/constants.js";
 import {
   contractRefusal, inspectPilotContract, isKillSwitchActive, loadPilotContract, pilotContractSha256, repoPaths, requireNotApplied, targetForEnvironment, writeQualificationEvidence, type Refusal,
 } from "../apply/contract.js";
@@ -23,6 +23,7 @@ import { isRecord, SAFE_OPERATOR } from "../teardown/driver/human.js";
 import { sweepStale } from "../teardown/driver/cleanup.js";
 import { verifyManifest, type ArtifactManifest } from "../teardown/manifest.js";
 import { approvedToolDirs, resolveExecutable } from "../tools/child-env.js";
+import { resolveSourceCommit } from "../util/source-commit.js";
 import { identityVariables } from "../tools/identity.js";
 import { EXIT, installSignalCleanup, processTerminal, targetString, type HumanTerminal, type PhraseKind } from "./teardown-driver.js";
 
@@ -78,6 +79,8 @@ export type ApplyCliDeps = {
   report?: (event: ApplyReport) => void;
   /** Where `prepare` saves its files; defaults to `.runs/pilot` in the repository. */
   preparationDir?: string;
+  /** The product source commit. Production reads it from the checkout or the image's build stamp (`resolveSourceCommit`). */
+  sourceCommit?: string;
 } & Pick<ApplyDeps, "contractPath" | "contractPinPath" | "qualificationDir" | "evidenceDir" | "nonces" | "scratchParent" | "toolDirs">;
 
 /** Why a command ended, without parsing text: a refusal's code and outcome, or a CLI error's code. */
@@ -230,12 +233,17 @@ type Command = (flags: Record<string, string[]>, terminal: HumanTerminal, deps: 
 /** What `seal` and `qualify` share: the request, the manifest, the target typed, and project code allowed. Returns what the driver needs. */
 async function confirmProjectCode(
   flags: Record<string, string[]>, terminal: HumanTerminal, deps: ApplyCliDeps, out: Out, heading: (notices: EngineNotices) => string, reads: (notices: EngineNotices) => string,
-): Promise<{ request: SealRequest; target: ResolvedTarget; who: string } | number> {
+): Promise<{ request: SealRequest; target: ResolvedTarget; who: string; sourceCommit: string } | number> {
   const file = readRequest("seal", flags.request[0]);
   const manifest = readManifest(flags.manifest[0]);
   if (!manifest) return blockedManifest(out);
   const { policyVersion, resolved } = file;
   if (typeof policyVersion !== "string" || !isRecord(resolved)) return fail("APPLY_INPUT_INVALID", "request.policyVersion and request.resolved are required");
+  // Before any phrase is asked: the plan is bound to the product commit, so an unknown or uncommitted one stops here.
+  const sourceCommit = sourceCommitFor(deps);
+  if (sourceCommit === undefined) {
+    return blocked({ ok: false, code: "SOURCE_UNVERIFIED", message: "The product source commit could not be established, so nothing was run. Commit your changes, or run the packaged image." }, out);
+  }
   const who = operatorId(deps);
   // The contract's engine says what runs. A contract that does not load is refused by the driver after the prompts, as before.
   const notices = engineNotices(deps);
@@ -243,7 +251,7 @@ async function confirmProjectCode(
   terminal.write([
     "", heading(notices),
     "  account         " + file.target.account, "  backend         " + file.target.backend, "  workspace       " + file.target.workspace,
-    "  manifest hash   " + manifest.manifestHash, reads(notices),
+    "  manifest hash   " + manifest.manifestHash, "  product commit  " + sourceCommit, reads(notices),
     "", notices.projectCode ?? "THIS RUNS NO PROJECT CODE: the pilot reads the pre-synthesized assembly and calls the AWS CLI with fixed arguments.",
     "  project root    " + file.projectRoot, "  files bound     " + manifest.files.length,
     "", "Type the target exactly to continue (anything else stops here):", "  " + targetString(file.target), "",
@@ -271,7 +279,7 @@ async function confirmProjectCode(
 
   const now = deps.now ?? (() => new Date());
   return {
-    target: file.target, who,
+    target: file.target, who, sourceCommit,
     request: {
       invocation: { operatorId: who, interactiveSession: true, confirmedTarget: { ...file.target }, confirmedAt: now().toISOString() },
       environment: file.environment, target: file.target, channel: deps.channel ?? "CLI", manifest, projectRoot: file.projectRoot, policyVersion, resolved: resolved as never,
@@ -282,7 +290,7 @@ async function confirmProjectCode(
 const sealCommand: Command = async (flags, terminal, deps, out) => {
   const gate = await confirmProjectCode(flags, terminal, deps, out, (n) => n.sealHeading, (n) => n.sealReads);
   if (typeof gate === "number") return gate;
-  const result = await sealPreview(gate.request, { env: deps.env ?? process.env, now: deps.now, ...driverPaths(deps) });
+  const result = await sealPreview(gate.request, { env: deps.env ?? process.env, now: deps.now, ...driverPaths(deps, gate.sourceCommit) });
   if (!result.ok) return blocked(result, out);
   const { sealed } = result;
   // The bundle approvers review. It holds no secret, so it can leave the operator's machine; the sealed plan itself cannot.
@@ -290,16 +298,25 @@ const sealCommand: Command = async (flags, terminal, deps, out) => {
   writeFileSync(reviewBundlePath, JSON.stringify(reviewBundleOf(sealed), null, 2) + "\n", { mode: 0o600 });
   out.say(JSON.stringify({
     artifactSha256: sealed.artifactSha256, environment: sealed.environment, target: sealed.target, releaseIdentity: sealed.releaseIdentity,
-    manifestHash: sealed.manifestHash, sealedPlanPath: result.path, reviewBundlePath, changes: sealed.changes,
+    manifestHash: sealed.manifestHash, sourceCommit: sealed.sourceCommit, sealedPlanPath: result.path, reviewBundlePath, changes: sealed.changes,
   }, null, 2) + "\n");
   return EXIT.PASS;
 };
 
 /** The locations and seams the CLI hands the driver; everything else the driver defaults from the repository. */
-const driverPaths = (deps: ApplyCliDeps) => ({
+const driverPaths = (deps: ApplyCliDeps, sourceCommit: string | undefined = sourceCommitFor(deps)) => ({
   contractPath: deps.contractPath, contractPinPath: deps.contractPinPath, qualificationDir: deps.qualificationDir,
-  scratchParent: deps.scratchParent, toolDirs: deps.toolDirs,
+  scratchParent: deps.scratchParent, toolDirs: deps.toolDirs, sourceCommit,
 });
+
+/** The product commit this command runs from, or undefined (the driver then refuses with SOURCE_UNVERIFIED). The reason goes to stderr. */
+function sourceCommitFor(deps: ApplyCliDeps): string | undefined {
+  if (deps.sourceCommit !== undefined) return COMMIT.test(deps.sourceCommit) ? deps.sourceCommit : undefined;
+  const found = resolveSourceCommit(repoPaths().root);
+  if (found.ok) return found.commit;
+  (deps.stderr ?? ((text: string) => { process.stderr.write(text); }))("NOTICE " + found.reason + "\n");
+  return undefined;
+}
 
 /**
  * The real-engine qualification (docs/act-pilot-apply.md, G2). Run once by a
@@ -314,7 +331,7 @@ const qualifyCommand: Command = async (flags, terminal, deps, out) => {
   if (typeof gate === "number") return gate;
   const env = deps.env ?? process.env;
   const now = deps.now ?? (() => new Date());
-  const ran = await qualifyApply(gate.request, { env, now, ...driverPaths(deps) });
+  const ran = await qualifyApply(gate.request, { env, now, ...driverPaths(deps, gate.sourceCommit) });
   if (!ran.ok) return blocked(ran, out);
 
   const contract = contractFor(deps);
@@ -414,6 +431,14 @@ const applyCommand: Command = async (flags, terminal, deps, out) => {
   if (sealedPlan.sealed.channel !== (deps.channel ?? "CLI")) {
     return blocked({ ok: false, code: "CHANNEL_MISMATCH", message: channelMismatchMessage(sealedPlan.sealed.channel) }, out);
   }
+  // Before anyone types the phrase: a plan applies only from the product commit that sealed it (the driver checks again).
+  const sourceCommit = sourceCommitFor(deps);
+  if (sourceCommit !== sealedPlan.sealed.sourceCommit) {
+    return blocked(sourceCommit === undefined
+      ? { ok: false, code: "SOURCE_UNVERIFIED", message: "The product source commit could not be established, so nothing was run or consumed." }
+      : { ok: false, code: "SOURCE_CHANGED", message: "This plan was sealed from product commit " + sealedPlan.sealed.sourceCommit.slice(0, 12) + ", but " +
+          sourceCommit.slice(0, 12) + " is running. Nothing was consumed. Apply from the commit that sealed it, or seal and approve a new plan." }, out);
+  }
   const who = operatorId(deps);
 
   // One phrase carries the environment, the artifact and the target, so what is typed is what runs.
@@ -421,7 +446,7 @@ const applyCommand: Command = async (flags, terminal, deps, out) => {
   terminal.write([
     "", "APPLY A SEALED PLAN TO " + request.environment + " (this changes real infrastructure; there is no undo here)",
     "  account         " + request.target.account, "  backend         " + request.target.backend, "  workspace       " + request.target.workspace,
-    "  artifact        " + sealedPlan.sealed.artifactSha256, "  manifest hash   " + manifest.manifestHash,
+    "  artifact        " + sealedPlan.sealed.artifactSha256, "  manifest hash   " + manifest.manifestHash, "  product commit  " + sealedPlan.sealed.sourceCommit,
     "  approvals       " + approvals.map((a) => printable(String(a.statement?.approverId))).join(", ") + " (the driver verifies each signature)",
     "  changes", ...changeLines(sealedPlan.sealed),
     "", engineNotices(deps).applyNote,
@@ -433,7 +458,7 @@ const applyCommand: Command = async (flags, terminal, deps, out) => {
   const result = await runApply({
     invocation: { operatorId: who, interactiveSession: true, confirmedTarget: { ...request.target }, confirmedAt: now().toISOString() },
     environment: request.environment, target: request.target, channel: deps.channel ?? "CLI", sealedPlan, manifest, projectRoot: request.projectRoot, approvals,
-  }, { env: deps.env ?? process.env, now, evidenceDir: deps.evidenceDir, nonces: deps.nonces, ...driverPaths(deps) });
+  }, { env: deps.env ?? process.env, now, evidenceDir: deps.evidenceDir, nonces: deps.nonces, ...driverPaths(deps, sourceCommit) });
   if (!result.ok) return blocked(result, out);
   try {
     out.say(JSON.stringify(assertApplyEvidence(result.evidence), null, 2) + "\n");

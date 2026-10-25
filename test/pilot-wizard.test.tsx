@@ -30,7 +30,7 @@ type Fake = {
   reviewReply: unknown; onPost: Record<string, (body: any) => void>;
 };
 const bundleReview = (over: Partial<ReviewSummary> = {}): ReviewSummary => ({
-  environment: "DEV", target: { account: "acct-1", backend: "store/tfstate/dev.tfstate", workspace: "default" }, shortId: "0123456789ab",
+  environment: "DEV", target: { account: "acct-1", backend: "store/tfstate/dev.tfstate", workspace: "default" }, shortId: "0123456789ab", sourceCommit: "5ec0de0000000000000000000000000000c0ffee",
   createdAt: "2026-10-12T00:00:00.000Z", counts: { create: 2, update: 1, replace: 0, delete: 0, forget: 0, other: 0 },
   changes: [
     { address: "azurerm_resource_group.pilot", type: "azurerm_resource_group", action: "CREATE" },
@@ -599,7 +599,7 @@ describe("step 5 and 6: apply and the result", () => {
   });
 
   const results: Array<[string, NonNullable<PilotRun["result"]>, ResultKind]> = [
-    ["applied", { exit: 0, data: { outcome: "SUCCEEDED" } }, "APPLIED"],
+    ["applied", { exit: 0, data: { outcome: "SUCCEEDED", sourceCommit: "5ec0de0000000000000000000000000000c0ffee" } }, "APPLIED"],
     ["blocked before anything", { exit: 2, code: "KILL_SWITCH_ACTIVE", message: "m" }, "NOTHING_CHANGED"],
     ["wrong phrase", { exit: 1, code: "APPLY_CONFIRMATION_MISMATCH", message: "m" }, "NOTHING_CHANGED"],
     ["failed with no change", { exit: 3, code: "APPLY_FAILED", outcome: "FAILED_NO_CHANGE", message: "m" }, "APPROVALS_SPENT"],
@@ -630,6 +630,9 @@ describe("step 5 and 6: apply and the result", () => {
     expect(box.textContent).toContain(words.headline);
     expect(box.textContent).toContain(words.what);
     for (const line of words.next) expect(box.textContent).toContain(line);
+    // An applied record names the app version that ran it; nothing else claims one.
+    if (kind === "APPLIED") expect(box.textContent).toContain("App version that ran it: 5ec0de000000");
+    else expect(box.textContent).not.toContain("App version that ran it");
     if (kind === "NEEDS_REVIEW") {
       expect(box.textContent).toContain("DO NOT RETRY");
       expect(box.textContent).toMatch(/Call the pilot owner/);
@@ -877,6 +880,7 @@ test("sealed plan review summarizes added, modified and removed resources with p
     ],
   });
   render(<ChangeList review={review}/>);
+  expect(document.body.textContent).toContain("App version that prepared it5ec0de000000");
   expect(screen.getByText(/Added:/).textContent).toContain("2");
   expect(screen.getByText(/Modified:/).textContent).toContain("1");
   expect(screen.getByText(/Removed or replaced:/).textContent).toContain("2");
