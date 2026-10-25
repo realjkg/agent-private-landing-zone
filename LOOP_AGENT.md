@@ -23,7 +23,7 @@ Follow these authorities in descending order:
 When instructions conflict, stop and report the conflict.
 Never silently reinterpret a restriction as authorization.
 
-## 2. Current Work Queue
+## 2. Current Work Queue and Lanes
 
 Treat the following as operator-reported status until verified:
 
@@ -38,7 +38,18 @@ Treat the following as operator-reported status until verified:
 Do not assume this file pauses an already running external agent.
 Report any active #228 job; do not alter it without authorization.
 
-## 3. Execution Order
+Two lanes run under this file:
+
+- **Lane A — #225 verification** (section 3).
+- **Lane B — ACT engineering** (section 4).
+
+The lanes are separate. They may run in parallel only when their
+ownership and files do not overlap; otherwise sequence them through
+the coordination ledger. Neither lane silently replaces, absorbs or
+pauses the other. Adding or amending a lane does not restart or modify
+#228; its hold remains in place.
+
+## 3. Lane A — #225 Verification: Execution Order
 
 ### Step 1 — Observe
 
@@ -170,48 +181,9 @@ Use READY_FOR_OWNER_DECISION only when technical gates pass.
 
 Do not merge automatically.
 
-## 4. Loop Rules
+## 4. Lane B — ACT Engineering Workstream
 
-Execute:
-
-OBSERVE → PLAN → AUTHORIZED WORK → VERIFY → HANDOFF
-
-Repeat only when:
-
-- New evidence arrives.
-- An authorized change requires verification.
-- A previously blocked dependency is resolved.
-
-When waiting on an owner or reviewer, stop.
-Resume through an approved scheduler or a new instruction.
-Never claim a future check-in was scheduled unless a scheduling
-tool actually created it.
-
-## 5. Prohibited Actions
-
-Do not:
-
-- Enable infrastructure ACT.
-- Perform cloud deployment or teardown.
-- Merge or close PRs without explicit authorization.
-- Modify #228 while it remains on hold.
-- Treat clean CI as security approval.
-- Treat synthetic evidence as live acceptance.
-- Start another agent without separate approval.
-
-## 6. Completion
-
-This workstream is complete only after:
-
-1. Required technical gates pass.
-2. The owner explicitly authorizes the integration action.
-3. The authorized action is verified.
-4. Coordination claims are released.
-5. The final evidence and remaining limitations are recorded.
-
-## ACT Engineering Workstream
-
-### Objective
+### 4.0 Objective
 
 Complete the code path from guided preparation to an observable,
 human-authorized ACT journey.
@@ -225,7 +197,12 @@ Do not confuse:
 A live prerequisite does not justify leaving independently
 implementable code unfinished.
 
-### 1. Inspect Before Building
+### 4.1 Inspect Before Building
+
+Each ACT task starts here: inspect what has merged, identify the first
+missing production connection in the dependency order of 4.2, and
+implement it end to end (UI, service, adapter, tests and evidence).
+Another scaffolding or planning document is not an ACT task.
 
 Inspect current main and merged/open PRs.
 
@@ -240,7 +217,7 @@ Do not duplicate code already delivered by another workstream.
 Exported types, fixtures, and unused reducers are not integrated
 capabilities.
 
-### 2. Complete the AWS Terraform Vertical Slice
+### 4.2 Complete the AWS Terraform Vertical Slice
 
 Work in this dependency order:
 
@@ -290,7 +267,7 @@ Work in this dependency order:
    - If cleanup authority is not yet defined, implement proposal
      and observation only; report execution as BLOCKED.
 
-### 3. Complete Native and Additional Cloud Paths
+### 4.3 Complete Native and Additional Cloud Paths
 
 After the shared lifecycle contracts are stable:
 
@@ -312,7 +289,7 @@ Alternative paths require explicit selection, a fresh preview,
 and approval. Never switch engines automatically after a partial
 execution or to bypass a policy denial.
 
-### 4. Required Synthetic Acceptance
+### 4.4 Required Synthetic Acceptance
 
 For every implemented slice, test:
 
@@ -332,7 +309,7 @@ test implementation.
 
 A mock UI with canned success responses is not acceptance.
 
-### 5. Scaffolding Completion Rule
+### 4.5 Scaffolding Completion Rule
 
 Scaffolding is complete only when:
 
@@ -347,7 +324,7 @@ Scaffolding is complete only when:
 Documentation, empty handlers, TODOs, fixtures, and interface-only
 PRs do not close an implementation requirement.
 
-### 6. Owner Boundary
+### 4.6 Owner Boundary
 
 The agent may implement and test an authorized code-only scope.
 
@@ -361,3 +338,42 @@ It must not:
 When code is complete, hand the owner a ready-to-run acceptance
 package: exact source/artifact, prerequisite checks, proposed
 scope, expected observations, and cleanup procedure.
+
+## 5. Loop Rules
+
+Execute:
+
+OBSERVE → PLAN → AUTHORIZED WORK → VERIFY → HANDOFF
+
+Repeat only when:
+
+- New evidence arrives.
+- An authorized change requires verification.
+- A previously blocked dependency is resolved.
+
+When waiting on an owner or reviewer, stop.
+Resume through an approved scheduler or a new instruction.
+Never claim a future check-in was scheduled unless a scheduling
+tool actually created it.
+
+## 6. Prohibited Actions
+
+Do not:
+
+- Enable infrastructure ACT.
+- Perform cloud deployment or teardown.
+- Merge or close PRs without explicit authorization.
+- Modify #228 while it remains on hold.
+- Treat clean CI as security approval.
+- Treat synthetic evidence as live acceptance.
+- Start another agent without separate approval.
+
+## 7. Completion
+
+Each lane is complete only after:
+
+1. Required technical gates pass.
+2. The owner explicitly authorizes the integration action.
+3. The authorized action is verified.
+4. Coordination claims are released.
+5. The final evidence and remaining limitations are recorded.
