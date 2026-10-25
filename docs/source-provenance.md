@@ -16,10 +16,15 @@ claimant reports a filing; this document does not assert registration.
 `SOVEREIGN_ALZ_ORIGIN_SHA256` is the SHA-256 hash of the canonical JSON record.
 It identifies the *declared origin*, not the unique bytes of a release.
 
-New release manifests use **schema version 2** and include `origin`, with the
-identity hash. Validation rejects missing, changed, or extended origin metadata
-for v2. Previously published schema-v1 manifests remain readable for
-compatibility. Do not interpret legacy compatibility as proof of attribution.
+The existing release-manifest schema remains **version 1**. During the
+TypeScript build, `src/release/provenance.ts` emits
+`dist/release/provenance.js`. Release packaging includes this compiled module
+in the per-file SHA-256 inventory, alongside the source commit and SBOM. The
+release verifier checks those recorded bytes. This preserves compatibility
+without widening the normal PR test scope or changing the release contract.
+
+The source-identity fingerprint is checked by focused tests; it is not a
+signature or an independent registry of legal ownership.
 
 ## Artifact-specific verification
 
