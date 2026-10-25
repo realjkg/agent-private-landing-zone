@@ -27,6 +27,7 @@ const EXEMPT_SCRIPTS: Readonly<Record<string, string>> = {
   verify: "release-wide developer gate (the ./alz verify entry covers operator verification)",
   "ci:actions-pinned": "CI workflow pin check", "deps:review": "developer install-script listing",
   "docs:ops": "developer generator for the operations table in docs/operator-console.md",
+  "docs:release": "developer generator for the release view in docs/release-status.md",
 };
 const EXEMPT_ENTRY_POINTS: Readonly<Record<string, string>> = {
   "operator.ts": "the ./alz dispatcher itself",

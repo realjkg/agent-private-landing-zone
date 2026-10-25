@@ -38,6 +38,11 @@ export function acceptanceCited(files) {
   return cited;
 }
 
+// The release gate status is checked against its scope, the generated release view and the journey matrix, all read from
+// disk: a change to any of them re-runs that check, so a stale docs/release-status.md or an unprovable claim fails here.
+const RELEASE_STATUS_INPUT = /^(?:config\/release\/.+\.json|docs\/release-status\.md|config\/acceptance\/journeys\.json)$/;
+const RELEASE_STATUS_TEST = "test/release-status.test.ts";
+
 function uniq(values) { return [...new Set(values)].sort(); }
 function hasFile(files, name) { return files.has(name); }
 function matching(files, re) { return [...files.keys()].filter(p => re.test(p)); }
@@ -100,6 +105,10 @@ export function planChanged(changedPaths, files) {
   for (const path of changed) {
     if (INVENTORY_INPUT.test(path)) addExisting(selected, files, INVENTORY_GUARDS);
     if (cited.has(path)) addExisting(selected, files, [ACCEPTANCE_TEST]);
+    if (RELEASE_STATUS_INPUT.test(path)) {
+      addExisting(selected, files, [RELEASE_STATUS_TEST]);
+      if (path.startsWith("config/release/")) continue;
+    }
     if (/^docs\/(?:operator-console|cli-ui-journey-map)\.md$/.test(path)) continue;
     if (path === "scripts/qa-affected.mjs" || path === QA_SELF_TEST) {
       addExisting(selected, files, [QA_SELF_TEST]);

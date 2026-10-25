@@ -63,6 +63,9 @@ test("release gate registry covers actual AWS, Azure, Pulumi and production obli
     "lifecycle:rollback", "lifecycle:configuration-migration",
     "pillar:cost", "pillar:performance", "pillar:sustainability",
     "pillar:security", "pillar:operational-excellence",
+    "platform:darwin-arm64", "platform:darwin-x64", "platform:linux-x64", "platform:linux-arm64", "platform:win32-arm64", "platform:win32-x64",
+    "act:aws-terraform", "act:azure-terraform", "act:aws-cdk", "act-run-recovery", "security-review:independent",
+    "preview:terraform-azure-brownfield",
   ]) assert.ok(keys.includes(id), id);
 });
 
@@ -371,4 +374,82 @@ test("each listed provider/engine pair is admitted on its own; an unlisted pair 
   for (const [provider, engine] of [["AZURE", "CDK"], ["GCP", "TERRAFORM"], ["AWS", "PULUMI"], ["*", "*"]]) {
     assert.deepEqual(await attempt(provider, engine), ["ACT_PILOT_COMBINATION_NOT_ALLOWED"], provider + "/" + engine);
   }
+});
+
+test("a live ACT gate admits only the record-live record of its own path, commit and a successful apply", async () => {
+  const h = harness();
+  try {
+    const id = "act:aws-terraform";
+    const record = {
+      schemaVersion: 1, label: "LIVE", step: "execute", cloud: "AWS", engine: "TERRAFORM", environment: "DEV",
+      target: { accountId: "000000000000" }, sourceCommit: commit, artifactSha256: "1".repeat(64), outcome: "SUCCEEDED",
+      evidenceSha256: "2".repeat(64), contractSha256: "3".repeat(64), attestedBy: "owner", attestedAt: "2026-10-25T00:00:00.000Z",
+    };
+    const status = async (payload: object, gate = id) => (await reviewProductionRelease({
+      manifest: input([h.attach(gate, "LIVE_ACT", payload)]), expectedCommit: commit, root: h.root,
+    })).gates.find((g) => g.id === gate)?.status;
+    assert.equal(await status(record), "EVIDENCE_PRESENT");
+    assert.equal(await status(record, "act:aws-cdk"), "BLOCKED");
+    for (const change of [{ engine: "CDK" }, { sourceCommit: "c".repeat(40) }, { outcome: "PARTIAL_REQUIRES_REVIEW" },
+      { label: "SYNTHETIC" }, { attestedBy: " " }, { evidenceSha256: "short" }, { fixture: true }]) {
+      assert.equal(await status({ ...record, ...change }), "BLOCKED", JSON.stringify(change));
+    }
+  } finally { h.cleanup(); }
+});
+
+test("a platform gate needs its own host, version, artifact digest and all seven lifecycle checks", async () => {
+  const h = harness();
+  try {
+    const id = "platform:linux-x64";
+    const names = ["install", "launch", "uninstall", "repeat-uninstall", "partial-install-recovery", "unusual-paths", "unrelated-files-preserved"];
+    const report = {
+      ...generic(id, "LIFECYCLE"), platform: "linux-x64", osVersion: "Ubuntu 24.04", artifactSha256: "4".repeat(64),
+      checks: names.map((name) => ({ name, passed: true, evidenceSha256: "b".repeat(64) })),
+    };
+    const status = async (payload: object) => (await reviewProductionRelease({
+      manifest: input([h.attach(id, "LIFECYCLE", payload)]), expectedCommit: commit, root: h.root,
+    })).gates.find((g) => g.id === id)?.status;
+    assert.equal(await status(report), "EVIDENCE_PRESENT");
+    for (const change of [{ platform: "linux-arm64" }, { osVersion: "" }, { artifactSha256: undefined }, { checks: report.checks.slice(1) }]) {
+      assert.equal(await status({ ...report, ...change }), "BLOCKED", JSON.stringify(change));
+    }
+  } finally { h.cleanup(); }
+});
+
+test("independent review refuses self-review and open blocking findings; ACT recovery must reconcile, never resume unapproved", async () => {
+  const h = harness();
+  try {
+    const review = { ...generic("security-review:independent", "INDEPENDENT_REVIEW"), reviewer: "reviewer-1", reviewerIsAuthor: false, blockingFindingsOpen: 0 };
+    const recovery = { ...generic("act-run-recovery", "ACT_RECOVERY"), actEnabled: true, interruptedArtifactSha256: "5".repeat(64),
+      interruptedOutcome: "KILLED", reconciledFromLedger: true, resumedWithoutApproval: false };
+    const status = async (id: string, mode: ReleaseGateSubmission["mode"], payload: object) => (await reviewProductionRelease({
+      manifest: input([h.attach(id, mode, payload)]), expectedCommit: commit, root: h.root,
+    })).gates.find((g) => g.id === id)?.status;
+    assert.equal(await status("security-review:independent", "INDEPENDENT_REVIEW", review), "EVIDENCE_PRESENT");
+    assert.equal(await status("security-review:independent", "INDEPENDENT_REVIEW", { ...review, reviewerIsAuthor: true }), "BLOCKED");
+    assert.equal(await status("security-review:independent", "INDEPENDENT_REVIEW", { ...review, blockingFindingsOpen: 1 }), "BLOCKED");
+    assert.equal(await status("security-review:independent", "INDEPENDENT_REVIEW", { ...review, actEnabled: true }), "BLOCKED");
+    assert.equal(await status("act-run-recovery", "ACT_RECOVERY", recovery), "EVIDENCE_PRESENT");
+    assert.equal(await status("act-run-recovery", "ACT_RECOVERY", { ...recovery, resumedWithoutApproval: true }), "BLOCKED");
+    assert.equal(await status("act-run-recovery", "ACT_RECOVERY", { ...recovery, interruptedOutcome: "SUCCEEDED" }), "BLOCKED");
+  } finally { h.cleanup(); }
+});
+
+test("a gate the owner's scope excludes is reported OUT_OF_SCOPE, and evidence or an unknown gate in the exclusion is refused", async () => {
+  const h = harness();
+  try {
+    const excluded = "preview:pulumi-aws-greenfield";
+    const others = PRODUCTION_RELEASE_GATES.filter((g) => g.id !== excluded).map((g) => g.id);
+    const review = await reviewProductionRelease({ manifest: input([]), expectedCommit: commit, root: h.root, outOfScope: [excluded] });
+    assert.equal(review.gates.find((g) => g.id === excluded)?.status, "OUT_OF_SCOPE");
+    assert.equal(review.readyForIndependentReleaseReview, false);
+    const all = await reviewProductionRelease({ manifest: input([]), expectedCommit: commit, root: h.root, outOfScope: others });
+    assert.equal(all.gates.find((g) => g.id === excluded)?.status, "BLOCKED", "only excluded gates are skipped");
+    const evidenced = await reviewProductionRelease({
+      manifest: input([h.attach(excluded, "LIVE_PREVIEW", generic(excluded, "LIVE_PREVIEW"))]), expectedCommit: commit, root: h.root, outOfScope: [excluded],
+    });
+    assert.ok(evidenced.blockers.includes("RELEASE_RECORD_FOR_OUT_OF_SCOPE_GATE:" + excluded));
+    const unknown = await reviewProductionRelease({ manifest: input([]), expectedCommit: commit, root: h.root, outOfScope: ["preview:nope"] });
+    assert.ok(unknown.blockers.includes("RELEASE_SCOPE_UNKNOWN_GATE:preview:nope"));
+  } finally { h.cleanup(); }
 });

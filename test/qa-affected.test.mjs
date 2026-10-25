@@ -208,3 +208,16 @@ test("a change under src/apply selects the driver-import guard, which scans file
     ["test/teardown-driver-denials.test.ts", "test()"], ["test/apply-boundary.test.ts", "test()"], ["test/security-boundaries.test.ts", "test()"]]);
   assert.ok(planChanged(["src/apply/new-module.ts"], files).nodeTests.includes("test/teardown-driver-denials.test.ts"));
 });
+
+test("release scope, status and the generated release view rerun the release status check", () => {
+  const files = fixture();
+  files.set("config/release/status.json", "{}");
+  files.set("config/release/scope.json", "{}");
+  files.set("docs/release-status.md", "# Release status");
+  files.set("test/release-status.test.ts", "test()");
+  for (const path of ["config/release/status.json", "config/release/scope.json", "docs/release-status.md"]) {
+    const plan = planChanged([path], files);
+    assert.deepEqual(plan.nodeTests, ["test/release-status.test.ts"], path);
+    assert.deepEqual(plan.gaps, [], path);
+  }
+});
