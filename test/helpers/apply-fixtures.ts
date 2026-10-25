@@ -130,6 +130,12 @@ else if (cmd === "show") {
   }));
 }
 else if (cmd === "apply") {
+  // A held apply installs its signal handlers before it records the call: tests treat the recorded call as "the engine is
+  // running", so a signal sent right after it must meet these handlers, never the default one.
+  if (b.applyWaitFor) {
+    process.on("SIGINT", () => { if (b.ignoreSigint) return; fs.appendFileSync(path.join(dir, "signals.txt"), "SIGINT\\n"); process.exit(1); });
+    process.on("SIGTERM", () => { fs.appendFileSync(path.join(dir, "signals.txt"), "SIGTERM\\n"); process.exit(1); });
+  }
   for (const w of b.applyWrites || []) fs.writeFileSync(w.path, w.content);
   const p = path.resolve(process.cwd(), args[3]);
   const bytes = fs.readFileSync(p);
@@ -142,8 +148,6 @@ else if (cmd === "apply") {
     process.exit(b.applyExit || 0);
   };
   if (b.applyWaitFor) {
-    process.on("SIGINT", () => { if (b.ignoreSigint) return; fs.appendFileSync(path.join(dir, "signals.txt"), "SIGINT\\n"); process.exit(1); });
-    process.on("SIGTERM", () => { fs.appendFileSync(path.join(dir, "signals.txt"), "SIGTERM\\n"); process.exit(1); });
     const tick = () => { if (fs.existsSync(b.applyWaitFor)) finish(); else setTimeout(tick, 20); };
     tick();
   } else finish();
