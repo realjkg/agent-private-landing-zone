@@ -1,14 +1,16 @@
+import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
+import { join } from "node:path";
 
-import { type CheckContext, type DepCheck, allRequiredPass, runDependencyChecks } from "../deps/checks.js";
-import { InstallError, installTool, type InstalledTool } from "../deps/install.js";
+import { type CheckContext, type DepCheck, allRequiredPass, installedPath, runDependencyChecks } from "../deps/checks.js";
+import { InstallError, installTool, type InstalledTool, removeInstalledTool } from "../deps/install.js";
 import { loadToolPins, DEFAULT_PINS, platformKey, type ToolId, type ToolPins } from "../deps/pins.js";
 import { EXIT, processTerminal, type HumanTerminal } from "./teardown-driver.js";
 
 /**
- * `./alz deps`: checks what this app needs, and offers to install the pinned tools one at a time. Every install is a
- * dialog that names the file, its source and its checksum, and needs the exact phrase typed back. Nothing installs
- * without that, and a terminal that cannot answer (no interactive input) only reports. Pilot commands run the same checks
+ * `./alz deps`: checks what this app needs, and offers to install the pinned tools one at a time. Every install shows
+ * the file, its source and its checksum, then a numbered menu whose default is to skip. Nothing installs without
+ * choosing "Install it", and a terminal that cannot answer (no interactive input) only reports. Pilot commands run the same checks
  * first and stop with the plain reason if something they need is missing.
  */
 export type DepsDeps = {
@@ -68,31 +70,8 @@ const FAILURE_TEXT: Record<InstallError["code"], string> = {
   INSTALL_CHECKSUM_MISMATCH: "The file that arrived did not match the checksum this app expects, so nothing was installed.",
   INSTALL_UNPACK_FAILED: "The download could not be unpacked, so nothing was installed. Run ./alz deps again.",
   INSTALL_BINARY_MISSING: "The download did not contain the expected program, so nothing was installed.",
+  INSTALL_REMOVE_REFUSED: "That folder is not an app-installed copy, so nothing was removed.",
 };
-
-/** One install dialog: what, where, from where, how it is checked, and the exact phrase that confirms it. */
-function dialogFor(check: DepCheck, pins: ToolPins, platform: string, home: string): { phrase: string; text: string } {
-  const tool = check.installable as ToolId;
-  const pin = pins.tools[tool];
-  const artifact = pin.artifacts[platform as keyof typeof pin.artifacts];
-  const phrase = "INSTALL " + tool.toUpperCase() + " " + pin.version;
-  const host = artifact ? new URL(artifact.url).host : "no pinned source";
-  return {
-    phrase,
-    text: [
-      "",
-      TOOL_NAME[tool] + " " + pin.version + " is needed and is not installed.",
-      "  What: the tested version of " + TOOL_NAME[tool] + ", for this type of Mac.",
-      "  Where: " + home + "/.alz/tools/" + tool + "/" + pin.version + " (your user folder; nothing else on this Mac changes).",
-      "  From: " + host + ".",
-      "  Checked: the download must match SHA-256 " + (artifact?.sha256 ?? "(none)") + " or it is thrown away.",
-      "  Needs: no administrator password. Your PATH is not changed.",
-      "To install, type exactly:  " + phrase,
-      "Anything else skips it. Commands that need it stay blocked until it is installed.",
-      "",
-    ].join("\n"),
-  };
-}
 
 /**
  * The selection screen: every missing pinned tool starts checked, a number toggles one, `a` checks all, `s` skips all,
@@ -105,7 +84,7 @@ export async function chooseInstalls(items: readonly DepCheck[], terminal: Human
       const box = selected.has(item.installable as ToolId) ? "[x]" : "[ ]";
       return "  " + box + " " + (index + 1) + "  " + item.label + "  — " + (item.installable === "terraform" ? "needed for the pilot" : "needed for model runs");
     });
-    terminal.write(["", "Choose what to install. Each one is still confirmed with its own phrase.", ...lines,
+    terminal.write(["", "Choose what to install. You confirm each one from a menu before anything is downloaded.", ...lines,
       "Type a number to toggle, a to check all, s to skip all, Enter to continue with the checked items, or q to cancel.", ""].join("\n"));
   };
   show();
@@ -127,11 +106,67 @@ export async function chooseInstalls(items: readonly DepCheck[], terminal: Human
   return selected;
 }
 
-/** `./alz deps`: the full report, then the install dialogs, but only in an interactive Terminal. */
+/**
+ * Diagnostic log for one `./alz deps` run: one line per step (checks, choices, results and codes), in the user's
+ * ~/.alz/logs folder. It never holds a download, a path, a URL or a secret, so it is safe to send to the project owner.
+ */
+function depsLog(home: string): { file: string; line: (text: string) => void } {
+  const dir = join(home, ".alz", "logs");
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const file = join(dir, "deps-" + new Date().toISOString().replace(/[:.]/g, "-") + ".log");
+  return {
+    file,
+    line: (text: string) => { appendFileSync(file, new Date().toISOString() + " " + text + "\n", { mode: 0o600 }); },
+  };
+}
+
+/** A numbered menu. The person picks a number; anything else asks again. `safe` is used if no answer ever comes. */
+export async function askChoice(terminal: HumanTerminal, title: string, options: readonly string[], safe: number): Promise<number> {
+  terminal.write(["", title, ...options.map((option, index) => "  " + (index + 1) + "  " + option), ""].join("\n"));
+  for (let round = 0; round < 20; round += 1) {
+    const answer = (await terminal.ask("> ")).trim();
+    const choice = /^\d+$/.test(answer) ? Number(answer) : -1;
+    if (choice >= 1 && choice <= options.length) return choice;
+    terminal.write("That is not a choice. Type one of the numbers above.\n");
+  }
+  return safe;
+}
+
+/** Pinned tools this computer already has in the app's own folder, and so can remove. */
+export function removableTools(pins: ToolPins, home: string, platform: string): Array<{ tool: ToolId; version: string; path: string }> {
+  const found: Array<{ tool: ToolId; version: string; path: string }> = [];
+  for (const tool of ["terraform", "ollama"] as const) {
+    const pin = pins.tools[tool];
+    const artifact = pin.artifacts[platform as keyof typeof pin.artifacts];
+    if (!artifact) continue;
+    const path = installedPath(home, tool, pin.version, artifact.binary);
+    if (existsSync(path)) found.push({ tool, version: pin.version, path });
+  }
+  return found;
+}
+
+/** The install dialog as a menu: what, where, from where and how it is checked, then a numbered choice. */
+function menuDialogFor(check: DepCheck, pins: ToolPins, platform: string, home: string): string {
+  const tool = check.installable as ToolId;
+  const pin = pins.tools[tool];
+  const artifact = pin.artifacts[platform as keyof typeof pin.artifacts];
+  const host = artifact ? new URL(artifact.url).host : "no pinned source";
+  return [
+    "",
+    TOOL_NAME[tool] + " " + pin.version + " is needed and is not installed.",
+    "  What: the tested version of " + TOOL_NAME[tool] + ", for this computer.",
+    "  Where: " + home + "/.alz/tools/" + tool + "/" + pin.version + " (your user folder; nothing else on this computer changes).",
+    "  From: " + host + ".",
+    "  Checked: the download must match SHA-256 " + (artifact?.sha256 ?? "(none)") + " or it is thrown away.",
+    "  Needs: no administrator password. Your PATH is not changed.",
+  ].join("\n");
+}
+
+/** `./alz deps`: the report, then numbered menus for installing what is missing or removing a copy the app installed. */
 export async function runDepsCommand(args: string[], deps: DepsDeps = {}): Promise<number> {
   const out = deps.out ?? ((text: string) => { process.stdout.write(text); });
   if (args.length > 0) {
-    out("./alz deps takes no options. Run ./alz deps and answer the dialogs.\n");
+    out("./alz deps takes no options. Run ./alz deps and choose from the menu.\n");
     return EXIT.ERROR;
   }
   const terminal = deps.terminal ?? processTerminal();
@@ -145,50 +180,97 @@ export async function runDepsCommand(args: string[], deps: DepsDeps = {}): Promi
   }
   const ctx = context(deps, pins);
   const home = ctx.home;
+  const log = depsLog(home);
   let checks = await runDependencyChecks(ctx, REQUIRED_FOR_DEPS);
+  log.line("check " + checks.map((check) => check.label + "=" + (check.ok ? "ok" : "missing")).join(" "));
   out("Dependency check\n\n");
   render(checks, out);
 
-  if (allRequiredPass(checks)) {
-    out("\nAll required dependencies are ready.\n");
-    return EXIT.PASS;
-  }
   const platform = platformKey(ctx.platform, ctx.arch);
   const installable = checks.filter((check) => !check.ok && check.required && check.installable);
+  const removable = platform ? removableTools(pins, home, platform) : [];
   if (!terminal.stdinIsTTY || !terminal.stdoutIsTTY) {
+    if (allRequiredPass(checks)) {
+      out("\nAll required dependencies are ready.\n");
+      return EXIT.PASS;
+    }
     out("\nRun ./alz deps in a Terminal window to install what is missing. Nothing was installed.\n");
     return EXIT.BLOCKED;
   }
   if (!platform) {
-    out("\nAutomatic install is available for Macs only, for now. Use the steps shown above.\n");
-    return EXIT.BLOCKED;
+    out("\nAutomatic install is not available for this computer type yet. Use the steps shown above.\n");
+    return allRequiredPass(checks) ? EXIT.PASS : EXIT.BLOCKED;
+  }
+  if (installable.length === 0 && removable.length === 0) {
+    out(allRequiredPass(checks) ? "\nAll required dependencies are ready.\n" : "\nSome required dependencies need a manual step. Fix the items marked NEEDS ATTENTION, then run ./alz deps again.\n");
+    return allRequiredPass(checks) ? EXIT.PASS : EXIT.BLOCKED;
   }
 
-  const picks = await chooseInstalls(installable, terminal);
-  if (picks === null) {
-    out("\nCanceled. Nothing was installed.\n");
-    return EXIT.BLOCKED;
-  }
-  for (const check of installable.filter((item) => picks.has(item.installable!))) {
-    const dialog = dialogFor(check, pins, platform, home);
-    terminal.write(dialog.text);
-    const answer = (await terminal.ask("> ")).trim();
-    if (answer !== dialog.phrase) {
-      out("Skipped " + check.label + ". Commands that need it stay blocked until it is installed.\n");
-      continue;
+  const options: string[] = [];
+  const actions: Array<"install" | "remove" | "none"> = [];
+  if (installable.length > 0) { options.push("Install what is missing"); actions.push("install"); }
+  if (removable.length > 0) { options.push("Remove a tool this app installed"); actions.push("remove"); }
+  options.push("Do nothing"); actions.push("none");
+  const choice = await askChoice(terminal, "What would you like to do?", options, options.length);
+  const action = actions[choice - 1];
+  log.line("menu " + (action ?? "unknown"));
+
+  if (action === "install") {
+    const picks = await chooseInstalls(installable, terminal);
+    if (picks === null) {
+      out("\nCanceled. Nothing was installed.\n");
+      return EXIT.BLOCKED;
     }
-    try {
-      const installed: InstalledTool = await installTool(check.installable!, { pins, home, platform, ...(deps.download ? { download: deps.download } : {}) });
-      out((installed.reused ? "Already installed: " : "Installed: ") + installed.path + "\n");
-    } catch (error) {
-      const code = error instanceof InstallError ? error.code : "INSTALL_DOWNLOAD_FAILED";
-      out(FAILURE_TEXT[code] + "\n");
+    for (const check of installable.filter((item) => picks.has(item.installable!))) {
+      terminal.write(menuDialogFor(check, pins, platform, home));
+      const decision = await askChoice(terminal, "Install it now?", ["Install it", "Skip it"], 2);
+      if (decision !== 1) {
+        out("Skipped " + check.label + ". Commands that need it stay blocked until it is installed.\n");
+        continue;
+      }
+      try {
+        const installed: InstalledTool = await installTool(check.installable!, { pins, home, platform, ...(deps.download ? { download: deps.download } : {}) });
+        log.line("install " + check.installable + " " + pins.tools[check.installable as ToolId].version + " " + (installed.reused ? "already-installed" : "installed"));
+        out((installed.reused ? "Already installed: " : "Installed: ") + installed.path + "\n");
+      } catch (error) {
+        const code = error instanceof InstallError ? error.code : "INSTALL_DOWNLOAD_FAILED";
+        log.line("install " + check.installable + " " + pins.tools[check.installable as ToolId].version + " failed " + code);
+        out(FAILURE_TEXT[code] + "\n");
+      }
     }
+  } else if (action === "remove") {
+    const labels = removable.map((item) => TOOL_NAME[item.tool] + " " + item.version + " (" + item.path + ")");
+    const pick = await askChoice(terminal, "Which one should be removed?", [...labels, "Cancel"], labels.length + 1);
+    if (pick <= labels.length) {
+      const item = removable[pick - 1];
+      terminal.write("\n" + TOOL_NAME[item.tool] + " " + item.version + " will be removed from " + item.path + ". Nothing else on this computer changes. You can install it again from this menu.\n");
+      const decision = await askChoice(terminal, "Remove it now?", ["Remove it", "Keep it"], 2);
+      if (decision === 1) {
+        try {
+          const outcome = removeInstalledTool(home, item.tool, item.version);
+          log.line("remove " + item.tool + " " + item.version + " " + outcome);
+          out(outcome === "removed" ? "Removed: " + item.path + "\n" : "Already removed: " + item.path + "\n");
+        } catch (error) {
+          const code = error instanceof InstallError ? error.code : "INSTALL_REMOVE_REFUSED";
+          log.line("remove " + item.tool + " " + item.version + " failed " + code);
+          out(FAILURE_TEXT[code as InstallError["code"]] + "\n");
+        }
+      } else {
+        out("Kept. Nothing was removed.\n");
+      }
+    } else {
+      out("Nothing was removed.\n");
+    }
+  } else {
+    out("\nNothing was changed.\n");
+    return EXIT.PASS;
   }
 
   checks = await runDependencyChecks(ctx, REQUIRED_FOR_DEPS);
-  out("\nDependency check, after the dialogs\n\n");
+  log.line("after " + checks.map((check) => check.label + "=" + (check.ok ? "ok" : "missing")).join(" "));
+  out("\nDependency check, after your choices\n\n");
   render(checks, out);
+  out("\nDiagnostic log: " + log.file + "\n");
   if (allRequiredPass(checks)) {
     out("\nAll required dependencies are ready.\n");
     return EXIT.PASS;
@@ -225,7 +307,7 @@ export async function blockedByDependencies(
 /**
  * TTY-only, selected pinned installer for the guided first-run workflow.
  * ALL network/archive behavior is delegated to the existing checksum-verified
- * installer; the terminal must type each tool's exact version phrase.
+ * installer; each tool is confirmed from the same menu as ./alz deps.
  * Optional third-party tools without pinned artifacts are never downloaded.
  */
 export async function installSelectedPinnedTools(
@@ -240,7 +322,7 @@ export async function installSelectedPinnedTools(
   }
   const platform = platformKey(deps.platform ?? process.platform, deps.arch ?? process.arch);
   if (!platform) {
-    terminal.write("Only approved, checksum-pinned macOS tools can be installed here. No tools were installed.\n");
+    terminal.write("There is no checksum-pinned build of these tools for this computer, so nothing was installed.\n");
     return result;
   }
   let pins: ToolPins;
@@ -262,10 +344,9 @@ export async function installSelectedPinnedTools(
       continue;
     }
     result.attempted.push(tool);
-    const dialog = dialogFor(check, pins, platform, ctx.home);
-    terminal.write(dialog.text);
-    if ((await terminal.ask("> ")).trim() !== dialog.phrase) {
-      terminal.write("Skipped " + tool + ": exact approval was not supplied.\n");
+    terminal.write(menuDialogFor(check, pins, platform, ctx.home));
+    if (await askChoice(terminal, "Install it now?", ["Install it", "Skip it"], 2) !== 1) {
+      terminal.write("Skipped " + tool + ". Commands that need it stay blocked until it is installed.\n");
       result.skipped.push(tool);
       continue;
     }

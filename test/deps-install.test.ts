@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, createReadStream, createWriteStream, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, createReadStream, createWriteStream, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
@@ -10,7 +10,7 @@ import test from "node:test";
 import { createZstdCompress } from "node:zlib";
 
 import { installedPath } from "../src/deps/checks.js";
-import { InstallError, installTool } from "../src/deps/install.js";
+import { InstallError, installTool, removeInstalledTool } from "../src/deps/install.js";
 import { loadToolPins, platformKey, type ToolPins } from "../src/deps/pins.js";
 
 // Installs run against a local archive the test builds, never the network. A wrong checksum must leave no install behind.
@@ -178,4 +178,81 @@ test("a tar.zst archive installs through Node's zstd support, and its binary kee
   assert.equal(installed.reused, false);
   assert.ok(existsSync(installed.path), "the binary is in the install folder");
   assert.ok(!existsSync(file + ".tar"), "the intermediate tar is removed");
+});
+
+test("uninstall removes one pinned version folder, leaves other versions alone, and a second removal does nothing", () => {
+  const home = join(root, "home-uninstall");
+  const removed = join(home, ".alz", "tools", "terraform", "1.16.4");
+  const kept = join(home, ".alz", "tools", "terraform", "1.15.0");
+  mkdirSync(removed, { recursive: true });
+  mkdirSync(kept, { recursive: true });
+  writeFileSync(join(removed, "terraform"), "installed");
+  writeFileSync(join(kept, "terraform"), "other version");
+  assert.equal(removeInstalledTool(home, "terraform", "1.16.4"), "removed");
+  assert.ok(!existsSync(removed), "the pinned version folder is gone");
+  assert.ok(existsSync(join(kept, "terraform")), "other versions are untouched");
+  assert.equal(removeInstalledTool(home, "terraform", "1.16.4"), "absent", "a second removal changes nothing");
+});
+
+test("uninstall refuses a version folder that is a link out of the tool folder, and touches nothing outside it", () => {
+  const home = join(root, "home-link");
+  const toolRoot = join(home, ".alz", "tools", "ollama");
+  mkdirSync(toolRoot, { recursive: true });
+  const outside = join(root, "outside-target");
+  mkdirSync(outside, { recursive: true });
+  writeFileSync(join(outside, "keep"), "not ours");
+  symlinkSync(outside, join(toolRoot, "0.40.0"));
+  assert.throws(
+    () => removeInstalledTool(home, "ollama", "0.40.0"),
+    (error: unknown) => error instanceof InstallError && error.code === "INSTALL_REMOVE_REFUSED",
+  );
+  assert.ok(existsSync(join(outside, "keep")), "the file the link points at is untouched");
+});
+
+test("uninstall refuses when .alz or tools is a link, and the folder the link points at keeps every file", () => {
+  for (const linked of [".alz", "tools"] as const) {
+    const home = join(root, "home-ancestor-" + linked.replace(".", ""));
+    const outside = join(root, "outside-" + linked.replace(".", ""));
+    // The external tree looks exactly like an install, so only the link check stands between it and the deletion.
+    const external = linked === ".alz" ? join(outside, "tools", "terraform", "1.16.4") : join(outside, "terraform", "1.16.4");
+    mkdirSync(external, { recursive: true });
+    writeFileSync(join(external, "keep"), "not ours");
+    mkdirSync(home, { recursive: true });
+    if (linked === ".alz") symlinkSync(outside, join(home, ".alz"));
+    else { mkdirSync(join(home, ".alz"), { recursive: true }); symlinkSync(outside, join(home, ".alz", "tools")); }
+    assert.throws(() => removeInstalledTool(home, "terraform", "1.16.4"),
+      (error: unknown) => error instanceof InstallError && error.code === "INSTALL_REMOVE_REFUSED", linked);
+    assert.ok(existsSync(join(external, "keep")), "the external folder is untouched through a linked " + linked);
+  }
+});
+
+test("uninstall refuses a version or tool that is not one safe path component, before touching the disk", () => {
+  const home = join(root, "home-components");
+  const victim = join(root, "victim");
+  mkdirSync(join(victim, "keep-dir"), { recursive: true });
+  mkdirSync(join(home, ".alz", "tools", "terraform"), { recursive: true });
+  for (const version of ["..", ".", "../../victim", "/abs", "a/b", "a\\b", "", " 1.0", ".hidden", "1".repeat(65)]) {
+    assert.throws(() => removeInstalledTool(home, "terraform", version),
+      (error: unknown) => error instanceof InstallError && error.code === "INSTALL_REMOVE_REFUSED", JSON.stringify(version));
+  }
+  assert.throws(() => removeInstalledTool(home, "../victim" as never, "keep-dir"),
+    (error: unknown) => error instanceof InstallError && error.code === "INSTALL_REMOVE_REFUSED");
+  assert.ok(existsSync(join(victim, "keep-dir")));
+  assert.ok(existsSync(join(home, ".alz", "tools", "terraform")), "the tool folder itself is never removed");
+});
+
+test("uninstall refuses a file where a folder belongs, and still works under a home reached through a link", () => {
+  const home = join(root, "home-file");
+  mkdirSync(join(home, ".alz", "tools", "terraform"), { recursive: true });
+  writeFileSync(join(home, ".alz", "tools", "terraform", "1.16.4"), "a file, not an install");
+  assert.throws(() => removeInstalledTool(home, "terraform", "1.16.4"),
+    (error: unknown) => error instanceof InstallError && error.code === "INSTALL_REMOVE_REFUSED");
+  // A home folder that is itself a link (macOS /var, some Linux /home layouts) is the anchor, not a component on the way.
+  const realHome = join(root, "real-home");
+  mkdirSync(join(realHome, ".alz", "tools", "ollama", "0.40.0"), { recursive: true });
+  const linkedHome = join(root, "linked-home");
+  symlinkSync(realHome, linkedHome);
+  assert.equal(removeInstalledTool(linkedHome, "ollama", "0.40.0"), "removed");
+  assert.ok(!existsSync(join(realHome, ".alz", "tools", "ollama", "0.40.0")));
+  assert.ok(existsSync(join(realHome, ".alz", "tools", "ollama")));
 });
