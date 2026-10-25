@@ -380,8 +380,23 @@ export async function follow(
   for (let attempt = 0; attempt < maxPolls; attempt++) {
     const current = await status(profile, submission.recordId, call);
     providerStatus = current.providerStatus;
-    if (providerStatus === "FAILED" || providerStatus === "ERROR")
+    if (current.recordType !== "PROVISION_PRODUCT")
+      throw Error("ACCOUNT_FACTORY_RECORD_TYPE_MISMATCH");
+    // These are the statuses defined by AWS Service Catalog RecordDetail, not
+    // invented project states. An error-in-progress may be AWS rollback/remediation.
+    if (!["CREATED", "IN_PROGRESS", "IN_PROGRESS_IN_ERROR", "SUCCEEDED", "FAILED"]
+      .includes(providerStatus))
+      throw Error("ACCOUNT_FACTORY_STATUS_UNRECOGNIZED");
+    if (providerStatus === "FAILED")
       throw Error("ACCOUNT_FACTORY_PROVISIONING_FAILED");
+    if (providerStatus === "IN_PROGRESS_IN_ERROR") {
+      return {
+        status: "AWS_REMEDIATION_IN_PROGRESS" as const,
+        recordId: submission.recordId, providerStatus,
+        environment: proposal.environment, verified: false,
+        next: "Inspect the Service Catalog record errors and AWS rollback; do not resubmit.",
+      };
+    }
     if (providerStatus === "SUCCEEDED") {
       try {
         const result = await verifyProvisionedAccount(
