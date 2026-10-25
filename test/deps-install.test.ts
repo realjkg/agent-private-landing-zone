@@ -208,3 +208,51 @@ test("uninstall refuses a version folder that is a link out of the tool folder, 
   );
   assert.ok(existsSync(join(outside, "keep")), "the file the link points at is untouched");
 });
+
+test("uninstall refuses when .alz or tools is a link, and the folder the link points at keeps every file", () => {
+  for (const linked of [".alz", "tools"] as const) {
+    const home = join(root, "home-ancestor-" + linked.replace(".", ""));
+    const outside = join(root, "outside-" + linked.replace(".", ""));
+    // The external tree looks exactly like an install, so only the link check stands between it and the deletion.
+    const external = linked === ".alz" ? join(outside, "tools", "terraform", "1.16.4") : join(outside, "terraform", "1.16.4");
+    mkdirSync(external, { recursive: true });
+    writeFileSync(join(external, "keep"), "not ours");
+    mkdirSync(home, { recursive: true });
+    if (linked === ".alz") symlinkSync(outside, join(home, ".alz"));
+    else { mkdirSync(join(home, ".alz"), { recursive: true }); symlinkSync(outside, join(home, ".alz", "tools")); }
+    assert.throws(() => removeInstalledTool(home, "terraform", "1.16.4"),
+      (error: unknown) => error instanceof InstallError && error.code === "INSTALL_REMOVE_REFUSED", linked);
+    assert.ok(existsSync(join(external, "keep")), "the external folder is untouched through a linked " + linked);
+  }
+});
+
+test("uninstall refuses a version or tool that is not one safe path component, before touching the disk", () => {
+  const home = join(root, "home-components");
+  const victim = join(root, "victim");
+  mkdirSync(join(victim, "keep-dir"), { recursive: true });
+  mkdirSync(join(home, ".alz", "tools", "terraform"), { recursive: true });
+  for (const version of ["..", ".", "../../victim", "/abs", "a/b", "a\\b", "", " 1.0", ".hidden", "1".repeat(65)]) {
+    assert.throws(() => removeInstalledTool(home, "terraform", version),
+      (error: unknown) => error instanceof InstallError && error.code === "INSTALL_REMOVE_REFUSED", JSON.stringify(version));
+  }
+  assert.throws(() => removeInstalledTool(home, "../victim" as never, "keep-dir"),
+    (error: unknown) => error instanceof InstallError && error.code === "INSTALL_REMOVE_REFUSED");
+  assert.ok(existsSync(join(victim, "keep-dir")));
+  assert.ok(existsSync(join(home, ".alz", "tools", "terraform")), "the tool folder itself is never removed");
+});
+
+test("uninstall refuses a file where a folder belongs, and still works under a home reached through a link", () => {
+  const home = join(root, "home-file");
+  mkdirSync(join(home, ".alz", "tools", "terraform"), { recursive: true });
+  writeFileSync(join(home, ".alz", "tools", "terraform", "1.16.4"), "a file, not an install");
+  assert.throws(() => removeInstalledTool(home, "terraform", "1.16.4"),
+    (error: unknown) => error instanceof InstallError && error.code === "INSTALL_REMOVE_REFUSED");
+  // A home folder that is itself a link (macOS /var, some Linux /home layouts) is the anchor, not a component on the way.
+  const realHome = join(root, "real-home");
+  mkdirSync(join(realHome, ".alz", "tools", "ollama", "0.40.0"), { recursive: true });
+  const linkedHome = join(root, "linked-home");
+  symlinkSync(realHome, linkedHome);
+  assert.equal(removeInstalledTool(linkedHome, "ollama", "0.40.0"), "removed");
+  assert.ok(!existsSync(join(realHome, ".alz", "tools", "ollama", "0.40.0")));
+  assert.ok(existsSync(join(realHome, ".alz", "tools", "ollama")));
+});

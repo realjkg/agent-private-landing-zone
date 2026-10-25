@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, createReadStream, createWriteStream, existsSync, lstatSync, mkdirSync, realpathSync, renameSync, rmSync, statSync } from "node:fs";
-import { join, sep } from "node:path";
+import { join } from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { createZstdDecompress } from "node:zlib";
@@ -122,22 +122,32 @@ export async function installTool(tool: ToolId, opts: InstallOptions): Promise<I
   }
 }
 
+const TOOL_IDS: readonly ToolId[] = ["terraform", "ollama"];
+/** One path component a pinned version can be: it starts with a letter or digit, so it is never "." or "..", and holds no separator. */
+const VERSION_COMPONENT = /^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$/;
+
 /**
  * Removes one pinned version of a tool from the app's own folder. Only `~/.alz/tools/<tool>/<version>` is deleted, and
- * only after the path is checked to sit inside that tool's folder with no link on the way. Returns "absent" when the
- * version is not installed, so a second removal does nothing.
+ * only when the tool is one the app installs, the version is a single safe path component, every folder from the home
+ * folder down (`.alz`, `tools`, the tool, the version) is a real folder and not a link, and the resolved path is exactly
+ * that folder under the resolved home. Returns "absent" when the version is not installed, so a second removal does nothing.
  */
 export function removeInstalledTool(home: string, tool: ToolId, version: string): "removed" | "absent" {
-  const toolRoot = join(home, ".alz", "tools", tool);
-  const target = join(toolRoot, version);
-  if (!existsSync(target)) return "absent";
   const refuse = (): never => {
     throw new InstallError("INSTALL_REMOVE_REFUSED", "That folder is not an app-installed copy, so nothing was removed.");
   };
-  if (lstatSync(target).isSymbolicLink() || lstatSync(toolRoot).isSymbolicLink()) refuse();
-  const realRoot = realpathSync(toolRoot);
-  const realTarget = realpathSync(target);
-  if (!realTarget.startsWith(realRoot + sep) || realTarget === realRoot) refuse();
-  rmSync(realTarget, { recursive: true, force: true });
+  if (!TOOL_IDS.includes(tool) || typeof version !== "string" || !VERSION_COMPONENT.test(version)) refuse();
+  const components = [".alz", "tools", tool, version];
+  let path = home;
+  for (const component of components) {
+    path = join(path, component);
+    let entry: ReturnType<typeof lstatSync>;
+    try { entry = lstatSync(path); } catch { return "absent"; }
+    // A link anywhere on the way could point the deletion outside the app's folder; a file where a folder belongs is not ours.
+    if (entry.isSymbolicLink() || !entry.isDirectory()) refuse();
+  }
+  const expected = join(realpathSync(home), ...components);
+  if (realpathSync(path) !== expected) refuse();
+  rmSync(expected, { recursive: true, force: true });
   return "removed";
 }
