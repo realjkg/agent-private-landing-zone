@@ -79,7 +79,7 @@ jobs:
                 if (r.user?.login && r.commit_id === pr.head.sha) latest.set(r.user.login, r.state);
               }
               const independent = [...latest].some(([login, state]) =>
-                state === 'APPROVED' && login !== pr.user.login && login !== context.actor);
+                state === 'APPROVED' && login !== pr.user.login);
               if (!independent || [...latest.values()].includes('CHANGES_REQUESTED')) continue;
               // Respect unresolved inline discussions, including comments from coding agents.
               const threads = await github.graphql(`query($owner:String!,$repo:String!,$number:Int!){
