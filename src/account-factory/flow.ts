@@ -239,7 +239,8 @@ export async function prepare(intake: Intake, call: AwsCall = awsAdminCall, now 
 }
 export function verifyProposal(proposal: AccountProposal, now = new Date()): string {
   const { proposalHash, status, infrastructureAct, ...draft } = proposal;
-  if (proposal.schema !== 2 || hash(draft) !== proposalHash ||
+  if (proposal.schema !== 2 || status !== "READY_FOR_CONFIRMATION" ||
+    infrastructureAct !== "DISABLED" || hash(draft) !== proposalHash ||
     draft.managementAccount !== draft.identity.Account ||
     draft.region !== REGION || !AWS_REGION.test(draft.region) ||
     !/^\d{12}$/.test(draft.managementAccount) || !/^o-[a-z0-9]{10,32}$/.test(draft.orgId) ||
@@ -362,7 +363,8 @@ export async function follow(
       submission.status !== "SUBMITTED") throw Error("REQUEST_RECEIPT_MISMATCH");
   // Checking this request after submission does not require a still-unexpired proposal.
   const { proposalHash, status: _status, infrastructureAct: _act, ...draft } = proposal;
-  if (proposal.schema !== 2 || hash(draft) !== proposalHash)
+  if (proposal.schema !== 2 || _status !== "READY_FOR_CONFIRMATION" ||
+      _act !== "DISABLED" || hash(draft) !== proposalHash)
     throw Error("REQUEST_PROPOSAL_TAMPERED");
   const identity = await verifyAdministrator(profile, call);
   if (identity.Account !== proposal.managementAccount) throw Error("TRACKING_ORGANIZATION_CHANGED");
