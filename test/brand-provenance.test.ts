@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -49,6 +49,8 @@ test("new preview release embeds hash-bound provenance; tampering blocks verific
     assert.equal(generated.status, 0, generated.stderr || generated.stdout);
 
     const brand = await readFile(join(root, RELEASE_BRAND_FILE_NAME), "utf8");
+    // The public mark is readable by the unprivileged production image user.
+    assert.equal((await stat(join(root, RELEASE_BRAND_FILE_NAME))).mode & 0o777, 0o644);
     assert.deepEqual(JSON.parse(brand), BRAND_PROVENANCE);
     assert.equal(brand.endsWith("\n"), true);
     const manifest = JSON.parse(await readFile(join(root, "release-manifest.json"), "utf8"));
