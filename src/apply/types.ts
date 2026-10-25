@@ -76,7 +76,11 @@ export type PilotContract = {
 /** The allowlist of people who may approve. A typed name is never proof; a verified signature is. */
 export type ApproverEntry = { id: string; publicKeyPem: string; environments: ApplyEnvironment[] };
 
-/** What an approver signs. It binds one approval to one artifact, one target and one moment. */
+/** The kinds of action an approval can authorize: an apply of a sealed plan, or a cleanup of an approved proposal. Signatures are domain-separated by kind (src/apply/approval.ts). */
+export type ApprovalSubject = "APPLY" | "CLEANUP";
+export const APPROVAL_SUBJECTS: readonly ApprovalSubject[] = ["APPLY", "CLEANUP"];
+
+/** What an approver signs. It binds one approval to one artifact (a sealed plan, or a cleanup proposal by its hash), one target and one moment. */
 export type ApprovalStatement = {
   schemaVersion: 1;
   artifactSha256: string;
@@ -172,7 +176,21 @@ export type ApplyRefusalCode =
   | "APPLY_FAILED"
   /** The approvals were consumed and the engine did not start (a plan write, spawn or preparation failure): nothing ran, the approvals are spent. */
   | "APPROVALS_SPENT"
-  | "EVIDENCE_REJECTED";
+  | "EVIDENCE_REJECTED"
+  /** The record a cleanup needs (the apply's evidence, its blueprint, a fresh observation) is missing, unreadable or does not belong to this run. Nothing was consumed. */
+  | "RUN_RECORD_MISSING"
+  /** A cleanup proposal cannot be made: the apply did not succeed, a planned resource never reached the state, or a resource's origin cannot be told. A person reviews. */
+  | "OWNERSHIP_AMBIGUOUS"
+  /** The observation a proposal rests on could not decide for a resource this run created, or found something unexpected. Observe again. */
+  | "OBSERVATION_INCONCLUSIVE"
+  /** The cleanup proposal is malformed, or does not hash to its own identity. Nothing was consumed. */
+  | "PROPOSAL_INVALID"
+  /** The engine's destroy plan is not exactly the approved proposal's resource list (state or dependencies changed). Nothing was applied and no approval was consumed. */
+  | "PROPOSAL_SCOPE_MISMATCH"
+  /** The proposal was already executed, or another run holds it. */
+  | "PROPOSAL_ALREADY_EXECUTED"
+  /** The contract's engine has no cleanup adapter (CDK stack deletion needs its own decision). */
+  | "CLEANUP_NOT_SUPPORTED";
 
 export type ApplyOutcome = "SUCCEEDED" | "FAILED_NO_CHANGE" | "PARTIAL_REQUIRES_REVIEW" | "KILLED";
 
@@ -207,4 +225,42 @@ export type ApplyEvidence = {
 
 export type ApplyResult =
   | { ok: true; evidence: ApplyEvidence }
+  | { ok: false; code: ApplyRefusalCode; message: string; outcome?: ApplyOutcome };
+
+/**
+ * What a cleanup leaves in the ledger, under the proposal's hash (docs/act-pilot-plan.md, "Cleanup of pilot-created
+ * resources"). Same closed shape discipline as `ApplyEvidence`: identifiers and hashes, never a state value or engine output.
+ */
+export type CleanupEvidence = {
+  schemaVersion: 1;
+  kind: "CLEANUP";
+  environment: ApplyEnvironment;
+  target: ResolvedTarget;
+  /** The approved proposal this cleanup executed, and the run it cleaned up. */
+  proposalSha256: string;
+  artifactSha256: string;
+  applyEvidenceSha256: string;
+  contractSha256: string;
+  sourceCommit: string;
+  approvals: { approverId: string; issuedAt: string }[];
+  adapter: { adapterVersion: string; argvDigest: string };
+  toolVersions: { engine: string };
+  /** The addresses the engine was told to destroy: the proposal's list, exactly. */
+  deletes: string[];
+  outcome: ApplyOutcome;
+  exitCode: number | null;
+  startedAt: string;
+  finishedAt: string;
+  authority: {
+    infrastructureAct: "PILOT_ENABLED";
+    mutation: "TERRAFORM_DESTROY_OF_APPROVED_PROPOSAL";
+    /** The identity that executed: the pilot's APPLY identity (owner decision, 2026-10-25), bound to `deletes`. */
+    executedAs: "APPLY";
+    agentInitiated: false;
+  };
+  recovery?: { files: number; sha256: string };
+};
+
+export type CleanupResult =
+  | { ok: true; evidence: CleanupEvidence }
   | { ok: false; code: ApplyRefusalCode; message: string; outcome?: ApplyOutcome };

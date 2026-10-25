@@ -1,6 +1,8 @@
 # Observe and cleanup
 
-**Status:** core implemented in `src/observe/`, not yet wired into `./alz apply` or the console. It covers the observe and cleanup steps of the journey matrix (`config/acceptance/journeys.json`), starting with the AWS Terraform row. Nothing here adds authority to change infrastructure: every call is a read, and ACT stays DISABLED.
+**Status:** part 1 of the slice. The core in `src/observe/` is wired into the apply driver (`src/apply/observe.ts`, `cleanup-proposal.ts`, `leftovers.ts`, `run-records.ts`, `runCleanup` in `driver.ts`) for the AWS Terraform row of the journey matrix (`config/acceptance/journeys.json`). Part 2 adds the commands (`./alz apply observe`, `propose-cleanup`, `approve` of a proposal, `cleanup`, `verify-cleanup`, `report`), the console's step 7, **Check and clean up**, the lifecycle report and the matrix rows; the command names below describe that part. The Azure Terraform and AWS CDK rows refuse with `CLEANUP_NOT_SUPPORTED` until their own slices. Every check is a read as the DISCOVERY identity. The one mutation, the targeted destroy of an approved proposal, runs under the pilot contract and its gates (`docs/act-pilot-plan.md`, "Cleanup of pilot-created resources"; commands in `docs/act-pilot-apply.md`, "Cleanup"). ACT stays DISABLED: the shipped pin is empty, and agents never initiate an observe, a proposal, an approval or a cleanup.
+
+Every result in this repository is **synthetic**: the tests run a fake `terraform` and a fake `aws` program. A lifecycle report says `mode: LIVE` only when the owner's `record-live` attestation covers that exact apply evidence.
 
 ## What it answers
 
@@ -61,18 +63,39 @@ The caller runs the AWS CLI as the read-only DISCOVERY identity through the boun
     - a complete tag listing found nothing else of this run.
   - `INCONCLUSIVE` otherwise, with `unresolved` saying why. Completion is never reported in that case.
 - **Timing:** the tagging API can keep listing a resource for a short time after it is deleted. A check run straight after a destroy can therefore report `LEFTOVERS` that clears on a later run. That fails closed.
-- **Not handled yet:** resources that delete on a schedule, such as a KMS key in `PendingDeletion`, read as present and so as `LEFTOVER`. A "deletion pending" disposition needs a per-type state read and comes with the cleanup wiring.
+- **Scheduled deletion:** a resource that deletes on a schedule, such as a KMS key in `PendingDeletion`, is read through its per-type state property (`CLOUD_CONTROL_TYPES[...].pendingDeletion`). It is `UNPROVEN` here and `DELETION_PENDING` in the leftover check, never deleted and never a plain leftover.
 - **Which blueprint to use:** the one recorded when the journey was observed. A blueprint rebuilt from the state after a destroy is empty, and an empty blueprint is never `CLEAN`. A pilot run reports `INCONCLUSIVE` until the apply path tags its resources with a deletion unit.
 - **Refused retention decisions:** a decision for a resource that is not part of this journey, a decision without an owner or a reason, or a resource kept twice.
 
+## The run records
+
+The driver and the commands keep the journey's records in the apply ledger (`.runs/apply/evidence/`), each bound to the one before it by hash. None holds an attribute value, a state document, a credential or a cloud error message.
+
+| Record | Written by | Bound to | Replaced? |
+| --- | --- | --- | --- |
+| `<artifact>.apply.evidence` | the apply | the sealed plan | never |
+| `<artifact>.blueprint.evidence` | the apply, from a `state pull` as STATE when it ends | the apply evidence hash | never |
+| `<artifact>.observation.evidence` | `observe` | the blueprint hash | each observation |
+| `.runs/apply/cleanup/<proposal12>.cleanup-proposal.json` | `propose-cleanup` | the apply evidence, blueprint and observation hashes | a new proposal is a new file |
+| `<proposal>.cleanup.evidence` | `cleanup` | the proposal hash | never (a proposal runs once) |
+| `<proposal>.leftovers.evidence` | `verify-cleanup` | the proposal hash and the cleanup evidence, when it exists | each check |
+
+## The proposal
+
+`buildCleanupProposal` (`src/apply/cleanup-proposal.ts`) turns the records into the exact list a cleanup may delete. The file it writes is a reviewable copy, not the authority: `runCleanup` reads the blueprint and the observation back from the ledger, requires them to hash to what the proposal names, rebuilds the proposal from them and the sealed plan's change list, and requires the rebuilt proposal to hash to the one handed in, before anything is reserved or any approval is consumed. It fails closed with `PROPOSAL_INVALID`, `OBSERVATION_INCONCLUSIVE` or `OWNERSHIP_AMBIGUOUS` when the apply was not `SUCCEEDED`, a planned resource never reached the state, the observation is `FAILED` or `INCONCLUSIVE`, or a resource's origin cannot be told. Each resource in the state ends in one ownership class: `RUN_CREATED` (deleted), `PRE_EXISTING`, `REPLACED_PRE_EXISTING`, `IMPORTED` and `NOT_IN_PLAN` (kept, with the reason), and `PROTECTED_BACKEND` or `PROTECTED_IDENTITY` for the state bucket and its settings, the pilot's roles and the OIDC trust (never deleted by a cleanup). Material risks, such as a bucket with objects or a key, are named for the approvers. The approvals required are the contract's for that environment; they are signed under the cleanup domain, so an apply approval never authorizes a cleanup and a cleanup approval never authorizes an apply.
+
+## The leftover check
+
+`verifyLeftovers` (`src/apply/leftovers.ts`) asks Cloud Control about every proposed resource after the cleanup, or before it to see what a cleanup would face. Each ends `CONFIRMED_DELETED`, `INTENTIONALLY_RETAINED`, `STILL_PRESENT`, `DELETION_PENDING` or `UNKNOWN`, with a next action for a person. The sweep is `COMPLETE` only when every proposed deletion is confirmed gone or retained by name; a setting whose parent is confirmed gone counts as gone (`PARENT_ABSENT`).
+
+## The report
+
+`./alz apply report` builds the lifecycle acceptance report (`src/apply/lifecycle-report.ts`) from the records: stages execute, observe, propose, cleanup and leftovers, each `PASS`, `FAIL`, `INCONCLUSIVE` or `NOT_RUN` with the hash of the record it rests on. `passed` is derived from the stages and the validator refuses a declared pass, a `LIVE` mode without the owner's attestation of this very apply evidence, or any raw state, output or secret field. The journey matrix cites the report's tests; `config/release/status.json` cites the report path for the `act:aws-terraform` gate.
+
 ## Not covered here
 
-- **Executing a destroy.** `docs/act-pilot-plan.md` says an actual destroy needs its own plan after the apply pilot. No executable cleanup driver exists until its authorization contract is approved. This module checks the result of a destroy, or of resources removed by hand. It does not perform one.
-- **Wiring.** The next step connects these modules to:
-  - `./alz apply`: an observe step after a successful apply, under the DISCOVERY identity;
-  - the console's Results and cleanup steps;
-  - the journey matrix.
+- **Tagging pilot resources.** The pilot apply tags nothing, so nothing outside the engine's state is searched for, `inventory` is `NOT_AVAILABLE`, and an observation reaches `PARTIAL` at best. Tagging is a change to the apply path.
+- **Azure Terraform and AWS CDK.** Their verifiers and cleanup adapters are later slices; the commands refuse with `CLEANUP_NOT_SUPPORTED` and nothing runs.
+- **Live acceptance.** Running the journey against a real account, the owner's `record-live` attestation, and the teardown of the pilot accounts are the owner's, under `docs/act-pilot-plan.md`. No test here is live evidence.
 
-  The journey matrix keeps observe and cleanup at `NOT_IMPLEMENTED` until then, because a step passes only with console, positive, denied, interrupted and recovery tests.
-
-All tests (`test/observe-blueprint.test.ts`) use a fake AWS CLI, so they are synthetic evidence. The blueprint parser is also checked against real `terraform show -json` output from Terraform 1.16.4.
+Tests: `test/observe-blueprint.test.ts` (the core) and `test/apply-cleanup.test.ts` (the driver and records, including forged proposals); part 2 adds `test/apply-cleanup-cli.test.ts` (the commands and the report) and the console journey in `test/ui-channel.test.ts`. All use a fake AWS CLI and a fake Terraform, so they are synthetic evidence. The blueprint parser is also checked against real `terraform show -json` and `terraform state pull` output from Terraform 1.16.4.

@@ -1,7 +1,7 @@
 import { COMMIT, HASH } from "./constants.js";
 import { ENGINE_IDS } from "./engine-spec.js";
 import type { ProviderSpec } from "./provider.js";
-import type { ApplyEvidence, EngineId } from "./types.js";
+import type { ApplyEvidence, CleanupEvidence, EngineId } from "./types.js";
 
 /**
  * Apply evidence shape (docs/act-pilot-plan.md, authority model 7). Same closed
@@ -81,6 +81,39 @@ export function applyEvidenceProblems(evidence: unknown): string[] {
   problemsOf(evidence, SHAPE, "evidence", problems);
   const record = evidence as Partial<ApplyEvidence> | null;
   if (problems.length === 0 && record?.approvals?.length === 0) problems.push("evidence.approvals: an apply records who approved it");
+  return problems;
+}
+
+const address: Check = (v) => typeof v === "string" && v.length > 0 && v.length <= 256 && !/^\s*[{[]/.test(v);
+const CLEANUP_SHAPE: Shape = {
+  schemaVersion: oneOf(1),
+  kind: oneOf("CLEANUP"),
+  environment: oneOf("DEV", "QA", "PROD"),
+  target: { account: text, backend: text, workspace: text },
+  proposalSha256: hash,
+  artifactSha256: hash,
+  applyEvidenceSha256: hash,
+  contractSha256: hash,
+  sourceCommit: (v) => typeof v === "string" && COMMIT.test(v),
+  approvals: [{ approverId: text, issuedAt: iso }],
+  adapter: { adapterVersion: text, argvDigest: hash },
+  toolVersions: { engine: text },
+  deletes: [address],
+  outcome: oneOf("SUCCEEDED", "FAILED_NO_CHANGE", "PARTIAL_REQUIRES_REVIEW", "KILLED"),
+  exitCode,
+  startedAt: iso,
+  finishedAt: iso,
+  authority: { infrastructureAct: oneOf("PILOT_ENABLED"), mutation: oneOf("TERRAFORM_DESTROY_OF_APPROVED_PROPOSAL"), executedAs: oneOf("APPLY"), agentInitiated: oneOf(false) },
+  recovery: optional({ files: count, sha256: hash }),
+};
+
+/** Every reason this document is not cleanup evidence. Empty means it is. A cleanup records who approved it and what it was told to destroy. */
+export function cleanupEvidenceProblems(evidence: unknown): string[] {
+  const problems: string[] = [];
+  problemsOf(evidence, CLEANUP_SHAPE, "evidence", problems);
+  const record = evidence as Partial<CleanupEvidence> | null;
+  if (problems.length === 0 && record?.approvals?.length === 0) problems.push("evidence.approvals: a cleanup records who approved it");
+  if (problems.length === 0 && record?.deletes?.length === 0) problems.push("evidence.deletes: a cleanup records what it was told to destroy");
   return problems;
 }
 

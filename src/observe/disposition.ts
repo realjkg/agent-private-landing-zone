@@ -74,7 +74,7 @@ export async function cleanupDisposition(blueprint: Blueprint, retained: readonl
       if (check.existence === "ABSENT") retainedButAbsent.push(entry.address);
       dispositions.push({ ...base, disposition: "RETAINED", owner: decision.owner.trim(), reason: decision.reason.trim() });
     } else {
-      dispositions.push({ ...base, disposition: check.existence === "ABSENT" ? "DELETED" : check.existence === "PRESENT" ? "LEFTOVER" : "UNPROVEN" });
+      dispositions.push({ ...base, disposition: check.existence === "ABSENT" ? "DELETED" : check.existence === "PRESENT" && !check.pendingDeletion ? "LEFTOVER" : "UNPROVEN" });
     }
   }
   const listed = input.unitId === null ? null : await unexpectedTagged(blueprint, input.unitId, input.region, input.aws);
@@ -83,7 +83,7 @@ export async function cleanupDisposition(blueprint: Blueprint, retained: readonl
   const unresolved = [
     ...(blueprint.entries.length === 0 ? ["the blueprint names no resources, so nothing was shown to be deleted"] : []),
     ...blueprint.missing.map((address) => address + " was planned but never mapped to a cloud identifier"),
-    ...dispositions.filter((x) => x.disposition === "UNPROVEN").map((x) => x.address + " could not be checked (" + x.existence + ")"),
+    ...dispositions.filter((x) => x.disposition === "UNPROVEN").map((x) => x.existence === "PRESENT" ? x.address + " is scheduled for deletion and not yet gone" : x.address + " could not be checked (" + x.existence + ")"),
     ...retainedButAbsent.map((address) => address + " is kept but the cloud reports it gone"),
     ...(inventory === "NOT_AVAILABLE" ? ["this run carries no unit tag, so resources outside the state cannot be looked for"] : []),
     ...(inventory === "INCOMPLETE" ? ["the tag listing was incomplete"] : []),

@@ -8,7 +8,10 @@ import {
   APPLY_BACKEND_CONFIG_FILE,
   APPLY_INIT_ARGV,
   applyArgvDigest,
+  CLEANUP_APPLY_ARGV,
+  CLEANUP_SHOW_ARGV,
   classifyApply,
+  cleanupPlanArgv,
   isAllowedApplyArgv,
 } from "../src/apply/terraform.js";
 import { engineActivation } from "../src/teardown/driver/qualification.js";
@@ -76,13 +79,22 @@ test("every forbidden flag, extra argument, other plan file and other executable
   assert.ok(!allowed(["workspace", "select", "-lock=false"]));
 });
 
-test("no allowed argument list anywhere carries a lock, target, replace, refresh or auto-approve switch", () => {
-  const lists = [APPLY_ARGV, VERSION_ARGV, APPLY_INIT_ARGV, WORKSPACE_SHOW_ARGV, workspaceSelectArgv("pilot")];
+test("no allowed argument list anywhere carries a lock, target, replace, refresh or auto-approve switch; the cleanup plan is the one targeted destroy", () => {
+  const lists = [APPLY_ARGV, VERSION_ARGV, APPLY_INIT_ARGV, WORKSPACE_SHOW_ARGV, workspaceSelectArgv("pilot"), CLEANUP_SHOW_ARGV, CLEANUP_APPLY_ARGV];
   for (const args of lists) {
     assert.ok(!args.some((arg) => /^-(lock(=|-timeout|$)|target|replace|refresh|auto-approve|destroy)/.test(arg)), args.join(" "));
   }
+  // The cleanup adapter's plan (docs/act-pilot-plan.md, "Cleanup of pilot-created resources") is a destroy limited to the
+  // addresses of an approved proposal, and the driver compares its change list with that proposal before any approval is
+  // consumed. It still carries no lock, replace, refresh or auto-approve switch.
+  const plan = cleanupPlanArgv(["aws_s3_bucket.logs"]);
+  assert.deepEqual(plan.slice(0, 2), ["plan", "-destroy"]);
+  assert.deepEqual(plan.filter((arg) => arg.startsWith("-target=")), ["-target=aws_s3_bucket.logs"]);
+  assert.ok(!plan.some((arg) => /^-(lock(=|-timeout|$)|replace|refresh|auto-approve)/.test(arg)), plan.join(" "));
   const source = readFileSync(new URL("../src/apply/terraform.ts", import.meta.url), "utf8");
-  assert.ok(!/["'`]-(auto-approve|target|replace|refresh=false|lock=false|destroy)/.test(source), "none of those switches appears as a literal argument");
+  assert.ok(!/["'`]-(auto-approve|replace|refresh=false|lock=false)/.test(source), "none of those switches appears as a literal argument");
+  assert.equal(source.match(/["'`]-destroy["'`]/g)?.length, 2, "-destroy appears in the cleanup plan builder and its allowlist, and nowhere else");
+  assert.equal(source.match(/["'`]-target=["'`]/g)?.length, 1, "-target= is built in one place only, for the approved addresses");
 });
 
 test("the qualification surface: a descriptor and a digest that differ from the preview adapter's and move with the argument lists", () => {

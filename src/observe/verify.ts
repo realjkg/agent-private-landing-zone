@@ -15,14 +15,15 @@ import type { Blueprint, BlueprintEntry } from "./blueprint.js";
  */
 
 /** How Cloud Control names a Terraform resource type: its CloudFormation type, and which state identifier is its primary identifier. */
-export const CLOUD_CONTROL_TYPES: Readonly<Record<string, { typeName: string; identifier: "id" | "arn" }>> = {
+export const CLOUD_CONTROL_TYPES: Readonly<Record<string, { typeName: string; identifier: "id" | "arn"; pendingDeletion?: { property: string; value: string } }>> = {
   aws_cloudwatch_log_group: { typeName: "AWS::Logs::LogGroup", identifier: "id" },
   aws_s3_bucket: { typeName: "AWS::S3::Bucket", identifier: "id" },
   aws_iam_role: { typeName: "AWS::IAM::Role", identifier: "id" },
   aws_iam_openid_connect_provider: { typeName: "AWS::IAM::OIDCProvider", identifier: "arn" },
   aws_sns_topic: { typeName: "AWS::SNS::Topic", identifier: "arn" },
   aws_sqs_queue: { typeName: "AWS::SQS::Queue", identifier: "id" },
-  aws_kms_key: { typeName: "AWS::KMS::Key", identifier: "id" },
+  // A deleted KMS key exists for a waiting period in KeyState PendingDeletion: present, and on its way out.
+  aws_kms_key: { typeName: "AWS::KMS::Key", identifier: "id", pendingDeletion: { property: "KeyState", value: "PendingDeletion" } },
   aws_dynamodb_table: { typeName: "AWS::DynamoDB::Table", identifier: "id" },
   aws_lambda_function: { typeName: "AWS::Lambda::Function", identifier: "id" },
   aws_vpc: { typeName: "AWS::EC2::VPC", identifier: "id" },
@@ -42,6 +43,8 @@ export type ResourceCheck = {
   existence: Existence;
   /** Why the check could not decide: an error class, never the cloud's message. */
   reason?: string;
+  /** PRESENT, and the cloud says the resource is scheduled for deletion (a KMS key in its waiting period): not gone, not a leftover a person must remove. */
+  pendingDeletion?: true;
 };
 export type ObserveVerdict = "VERIFIED" | "PARTIAL" | "INCONCLUSIVE" | "FAILED";
 export type ObserveReport = {
@@ -82,8 +85,16 @@ export async function checkResource(entry: BlueprintEntry, region: string, aws: 
   }
   if (result.code === 0) {
     try {
-      const body = JSON.parse(result.stdout) as { ResourceDescription?: { Identifier?: unknown } };
-      if (body.ResourceDescription?.Identifier === identifier) return { ...base, identifier, existence: "PRESENT" };
+      const body = JSON.parse(result.stdout) as { ResourceDescription?: { Identifier?: unknown; Properties?: unknown } };
+      if (body.ResourceDescription?.Identifier === identifier) {
+        // The one property ever read: the deletion state of a type that has a waiting period. Nothing else leaves the answer.
+        const pending = mapping.pendingDeletion;
+        let scheduled = false;
+        if (pending && typeof body.ResourceDescription.Properties === "string") {
+          try { scheduled = (JSON.parse(body.ResourceDescription.Properties) as Record<string, unknown>)[pending.property] === pending.value; } catch { scheduled = false; }
+        }
+        return { ...base, identifier, existence: "PRESENT", ...(scheduled ? { pendingDeletion: true as const } : {}) };
+      }
     } catch { /* falls through: an answer that does not name the resource proves nothing */ }
     return { ...base, identifier, existence: "UNKNOWN", reason: "UNEXPECTED_RESPONSE" };
   }

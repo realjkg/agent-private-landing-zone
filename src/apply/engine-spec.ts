@@ -58,6 +58,29 @@ export type EngineApplyRun = {
   recoveryFiles(): RecoveryFile[];
   /** Removes every plaintext secret the run wrote (the artifact, backend configuration). Idempotent. */
   removeSecrets(): void;
+  /**
+   * The engine's state document after the run, read with the read-only state identity, for the driver to map addresses
+   * to cloud identifiers (src/observe/blueprint.ts) and drop. Undefined when the engine keeps no state (CDK) or it cannot
+   * be read; never thrown, never logged.
+   */
+  stateDocument?(): string | undefined;
+};
+
+/**
+ * One cleanup (docs/act-pilot-plan.md, "Cleanup of pilot-created resources"): the engine destroys exactly the addresses
+ * an approved cleanup proposal lists. `prepare` as for an apply; `planDestroy` makes the destroy plan limited to those
+ * addresses and returns its redacted change list, which the driver compares with the proposal before any approval is
+ * consumed; `execute` runs that plan file and nothing else.
+ */
+export type EngineCleanupRun = {
+  prepare(snapshotPath: string): void;
+  /** Plans the destroy of exactly `addresses` and returns the change list of that plan. Throws a code. */
+  planDestroy(addresses: readonly string[]): PlanChange[];
+  /** Runs the destroy plan `planDestroy` made. Resolves once the engine existed; a throw means it never did. */
+  execute(control: StopControl): Promise<StoppableResult>;
+  settle(applied: StoppableResult): ApplyEnd | Promise<ApplyEnd>;
+  recoveryFiles(): RecoveryFile[];
+  removeSecrets(): void;
 };
 
 /** What the CLI tells a person before each step; the engine's own steps and identities are what they are told about. */
@@ -105,6 +128,8 @@ export type EngineSpec = {
   /** The adapters qualification pins: the preview surface sealing runs, and the apply surface. They never activate each other. */
   previewAdapter(): AdapterDescriptor;
   applyAdapter: AdapterDescriptor;
+  /** The cleanup surface (a destroy limited to approved addresses), qualified on its own. Absent: the engine has no cleanup path yet (CDK), and a cleanup is refused. */
+  cleanupAdapter?: AdapterDescriptor;
   /** SHA-256 of the engine binary a run would execute, or undefined; qualification evidence is for exactly one. */
   binarySha256(toolDirs: readonly string[] | undefined, env: NodeJS.ProcessEnv): string | undefined;
   /** Produces the artifact to seal from the request (bytes the apply runs verbatim) and its redacted change list. */
@@ -115,6 +140,10 @@ export type EngineSpec = {
    */
   qualify?(input: EnginePlanInput): void;
   openApply(input: EngineRunInput): EngineApplyRun;
+  /** The cleanup run for this engine, present only with `cleanupAdapter`. */
+  openCleanup?(input: EngineRunInput): EngineCleanupRun;
+  /** What the evidence says a cleanup did (`CleanupEvidence.authority.mutation`), present only with `cleanupAdapter`. */
+  cleanupMutation?: "TERRAFORM_DESTROY_OF_APPROVED_PROPOSAL";
   /** What a person is told for each way an apply can end unsuccessfully, and when recovery material could not be kept. */
   outcomeMessages: Readonly<Record<Exclude<ApplyOutcome, "SUCCEEDED">, string>>;
   recoveryLostNote: string;

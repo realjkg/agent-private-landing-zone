@@ -17,11 +17,12 @@ import { sha256 } from "../../util/sha256.js";
 import { assertBackendBlock, type BackendBlockRule } from "../backend-block.js";
 import { stripInvisible } from "../constants.js";
 import { checkedOutput, codeOf, stop, withoutIdentities } from "../engine.js";
-import type { EngineApplyRun, EngineContext, EngineSpec } from "../engine-spec.js";
+import type { EngineApplyRun, EngineCleanupRun, EngineContext, EngineSpec } from "../engine-spec.js";
 import type { ProviderBlock, ProviderSpec } from "../provider.js";
 import { isRecord } from "../providers/shared.js";
 import {
-  APPLY_ADAPTER, APPLY_ARGV, APPLY_BACKEND_CONFIG_FILE, APPLY_INIT_ARGV, RECOVERY_FILES, classifyApply, isAllowedApplyArgv, parseStateSerial,
+  APPLY_ADAPTER, APPLY_ARGV, APPLY_BACKEND_CONFIG_FILE, APPLY_INIT_ARGV, CLEANUP_ADAPTER, CLEANUP_APPLY_ARGV, CLEANUP_PLAN_FILE, CLEANUP_SHOW_ARGV, RECOVERY_FILES,
+  classifyApply, cleanupPlanArgv, isAllowedApplyArgv, isAllowedCleanupArgv, parseStateSerial,
 } from "../terraform.js";
 import { APPLY_IDENTITIES, type PilotTarget, type PlanChange } from "../types.js";
 
@@ -275,15 +276,84 @@ function openApply(input: EngineContext & { target: ResolvedTarget; engineVersio
       try { serialAfter = parseStateSerial(session.step(STATE_PULL_ARGV, "STATE", true)); } catch { serialAfter = undefined; }
       return classifyApply({ exitCode: applied.exitCode, stderr: applied.stderr, serialBefore, serialAfter, stopped: applied.stopped });
     },
-    recoveryFiles() {
-      const files: { name: string; base64: string }[] = [];
-      for (const name of RECOVERY_FILES) {
-        try {
-          if (lstatSync(join(session.work, name)).isFile()) files.push({ name, base64: readFileSync(join(session.work, name)).toString("base64") });
-        } catch { /* not there */ }
-      }
-      return files;
+    recoveryFiles: () => recoveryFilesIn(session.work),
+    removeSecrets,
+    // The state after the run, as the STATE identity reads it (the same pinned list `settle` used). Held in memory by the caller for identifiers only.
+    stateDocument() {
+      try { return session.step(STATE_PULL_ARGV, "STATE", true); } catch { return undefined; }
     },
+  };
+}
+
+/** What Terraform left in its working directory for a person to recover from. */
+function recoveryFilesIn(work: string): { name: string; base64: string }[] {
+  const files: { name: string; base64: string }[] = [];
+  for (const name of RECOVERY_FILES) {
+    try {
+      if (lstatSync(join(work, name)).isFile()) files.push({ name, base64: readFileSync(join(work, name)).toString("base64") });
+    } catch { /* not there */ }
+  }
+  return files;
+}
+
+// --- cleanup -------------------------------------------------------------------------------------------------
+
+/**
+ * A cleanup (docs/act-pilot-plan.md, "Cleanup of pilot-created resources"): init and workspace as for an apply (STATE_WRITE
+ * owns the backend, the state serial is read as STATE), then a destroy plan limited to the approved addresses as
+ * DISCOVERY (provider reads), shown with no identity to derive the change list the driver compares with the proposal, and
+ * applied as APPLY. The destroy plan is written by Terraform into the scratch directory and removed with it; nothing of
+ * the project is changed. Every list is the cleanup adapter's own (`isAllowedCleanupArgv`).
+ */
+function openCleanup(input: EngineContext & { target: ResolvedTarget; engineVersion: string }): EngineCleanupRun {
+  const { scratchDir, env, pinned, spec } = input;
+  const session = openSession({
+    scratchDir, env, toolDirs: input.toolDirs, manifest: input.manifest, isAllowed: (args) => isAllowedCleanupArgv("terraform", args), profile: TERRAFORM_APPLY_PROFILE,
+  });
+  const planPath = join(scratchDir, CLEANUP_PLAN_FILE);
+  const backendConfigPath = join(scratchDir, APPLY_BACKEND_CONFIG_FILE);
+  let serialBefore: string | undefined;
+  let planned = false;
+  const removeSecrets = (): void => {
+    for (const path of [planPath, backendConfigPath]) rmSync(path, { force: true });
+  };
+  return {
+    prepare(snapshotPath) {
+      prepareWorkspace(session, {
+        snapshotPath, engineVersion: input.engineVersion, target: input.target, initArgv: APPLY_INIT_ARGV, stateIdentity: "STATE_WRITE", backendBlock: spec.backendBlock,
+        beforeInit: () => writeFileSync(backendConfigPath, spec.backendConfig(env, pinned), { mode: 0o600, flag: "wx" }),
+        afterInit: () => rmSync(backendConfigPath, { force: true }),
+      });
+      assertBackendInContract(session.work, pinned, spec);
+      serialBefore = parseStateSerial(session.step(STATE_PULL_ARGV, "STATE", true)) ?? stop("STATE_SERIAL_UNREADABLE");
+      if (session.refused("APPLY", APPLY_PROFILE).length > 0) stop("ENVIRONMENT_REFUSED");
+    },
+    planDestroy(addresses) {
+      if (serialBefore === undefined) return stop("ENGINE_NOT_PREPARED");
+      let argv: readonly string[];
+      try { argv = cleanupPlanArgv(addresses); } catch { return stop("CLEANUP_ADDRESSES_INVALID"); }
+      rmSync(planPath, { force: true });
+      session.step(argv, "DISCOVERY");
+      session.assertBound();
+      if (!existsSync(planPath)) stop("PLAN_FILE_MISSING");
+      planned = true;
+      // The same redacted extraction as sealing, with the same provider-config judgment; the plan file stays for `execute`.
+      const shown = session.step(CLEANUP_SHOW_ARGV, null, true);
+      return changesOf(shown, input);
+    },
+    async execute(control) {
+      if (!planned || !existsSync(planPath)) return stop("ENGINE_NOT_PREPARED");
+      const applied = await session.stoppable(CLEANUP_APPLY_ARGV, "APPLY", APPLY_PROFILE, { ...control, forwardSignals: true, onStop: removeSecrets });
+      rmSync(planPath, { force: true });
+      return applied;
+    },
+    settle(applied) {
+      if (serialBefore === undefined) return stop("ENGINE_NOT_PREPARED");
+      let serialAfter: string | undefined;
+      try { serialAfter = parseStateSerial(session.step(STATE_PULL_ARGV, "STATE", true)); } catch { serialAfter = undefined; }
+      return classifyApply({ exitCode: applied.exitCode, stderr: applied.stderr, serialBefore, serialAfter, stopped: applied.stopped });
+    },
+    recoveryFiles: () => recoveryFilesIn(session.work),
     removeSecrets,
   };
 }
@@ -313,6 +383,8 @@ export const TERRAFORM: EngineSpec = {
   attests: ["STATE_WRITE", "APPLY"],
   previewAdapter: () => createTerraformAdapter("TERRAFORM"),
   applyAdapter: APPLY_ADAPTER,
+  cleanupAdapter: CLEANUP_ADAPTER,
+  cleanupMutation: "TERRAFORM_DESTROY_OF_APPROVED_PROPOSAL",
   /**
    * SHA-256 of the terraform binary a run would execute: the same lookup the
    * runner does (approved tool directories only). Undefined when there is none.
@@ -356,6 +428,7 @@ export const TERRAFORM: EngineSpec = {
     }
   },
   openApply,
+  openCleanup,
   outcomeMessages: {
     FAILED_NO_CHANGE: "The apply failed before it changed state. The engine's output is withheld because it can hold secrets. " +
       "This sealed plan and its approvals are spent: seal a new preview and obtain new approvals to try again.",

@@ -155,6 +155,8 @@ test("a DEV apply runs the pinned steps with the right identity at each step and
     ["show", "-json", "../alz-preview.tfplan"],
     [...APPLY_ARGV],
     ["state", "pull"],
+    // The blueprint read (docs/observe-and-cleanup.md): the state after the apply, as STATE, mapped to identifiers and dropped.
+    ["state", "pull"],
   ]);
   const clientOf = (c: Call) => c.env.ARM_CLIENT_ID;
   assert.equal(clientOf(steps[0]), undefined, "version needs no credentials");
@@ -209,7 +211,8 @@ test("evidence is encrypted at rest, is the ledger entry, and carries no plan, s
   assert.equal(statSync(file).mode & 0o077, 0);
   const stored = await readEncryptedEvidence<ApplyEvidence>(file);
   assert.deepEqual(stored, result.evidence);
-  assert.deepEqual(readdirSync(w.dirs.evidence), [s.sealed.artifactSha256 + ".apply.evidence"], "no reservation or staging file is left beside the evidence");
+  assert.deepEqual(readdirSync(w.dirs.evidence).sort(), [s.sealed.artifactSha256 + ".apply.evidence", s.sealed.artifactSha256 + ".blueprint.evidence"],
+    "the evidence and the blueprint of what the run left; no reservation or staging file is left beside them");
   // Nothing readable anywhere the run wrote: evidence, nonces, vault, scratch.
   const walk = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap((e) => e.isDirectory() ? walk(join(dir, e.name)) : [join(dir, e.name)]);
   for (const path of walk(root)) {
@@ -1217,7 +1220,7 @@ test("qualifying runs the seal's steps and the apply adapter's init with STATE_W
   const stored = sealedPlanFiles();
   const result = await qualifyApply(qualifyRequest(p), w.deps);
   assert.ok(result.ok, JSON.stringify(result));
-  assert.equal(result.ok && result.adapters.length, 2, "the preview adapter and the apply adapter");
+  assert.equal(result.ok && result.adapters.length, 3, "the preview adapter, the apply adapter and the cleanup adapter");
   assert.ok(result.ok && result.adapters.some((a) => a.adapterVersion === APPLY_ADAPTER.adapterVersion && a.argvDigest === APPLY_ADAPTER.argvDigest));
   assert.equal(applyCalls().length, 0, "nothing is applied");
   const names = calls().map((c) => c.args[0] + (c.args[1] === "pull" || c.args[1] === "show" ? " " + c.args[1] : ""));

@@ -67,6 +67,63 @@ export const APPLY_ADAPTER: AdapterDescriptor = {
   engine: "TERRAFORM", adapterVersion: APPLY_ADAPTER_VERSION, argvDigest: applyArgvDigest(),
 };
 
+// --- the cleanup adapter --------------------------------------------------------------------------------------
+
+/**
+ * The cleanup adapter's pinned surface (docs/act-pilot-plan.md, "Cleanup of pilot-created resources"). A cleanup
+ * destroys exactly the resources an approved cleanup proposal lists, nothing more: it plans a destroy limited to those
+ * addresses, shows the plan to prove the list is the proposal's, and applies that plan file. The targeting is the scope
+ * enforcement, not a way around review: every address comes from the approved proposal, the derived change list must
+ * equal it exactly, and the apply list is the one list that runs a plan file. There is no bare destroy, no way to skip
+ * a refresh, turn locking off or approve for the operator; the apply adapter above still carries no targeting at all.
+ */
+const CLEANUP_ADAPTER_VERSION = "cleanup-1.0.0";
+/** The destroy plan sits in the private scratch directory, one level above the work directory, under its own name. */
+const CLEANUP_PLAN_ARG = "../alz-cleanup.tfplan";
+export const CLEANUP_PLAN_FILE = "alz-cleanup.tfplan";
+/** A Terraform resource address: module path, type and name, an optional index (a number or a quoted key). Nothing else may follow the targeting flag. */
+const ADDRESS = /^(?:module\.[A-Za-z0-9_-]+(?:\[(?:[0-9]+|"[A-Za-z0-9._:/-]+")\])?\.)*[a-z][a-z0-9_]*\.[A-Za-z0-9_-]+(?:\[(?:[0-9]+|"[A-Za-z0-9._:/-]+")\])?$/;
+const MAX_CLEANUP_ADDRESSES = 200;
+const TARGET_FLAG = "-target=";
+export const isResourceAddress = (value: unknown): value is string => typeof value === "string" && value.length <= 256 && ADDRESS.test(value);
+
+/** `plan -destroy` limited to the proposal's addresses, written to the cleanup plan file. Throws for an address outside the allowed shape. */
+export function cleanupPlanArgv(addresses: readonly string[]): readonly string[] {
+  if (addresses.length === 0 || addresses.length > MAX_CLEANUP_ADDRESSES || addresses.some((address) => !isResourceAddress(address))) {
+    throw new Error("CLEANUP_ADDRESSES_INVALID");
+  }
+  return ["plan", "-destroy", "-input=false", "-no-color", ...addresses.map((address) => TARGET_FLAG + address), "-out=" + CLEANUP_PLAN_ARG];
+}
+export const CLEANUP_SHOW_ARGV: readonly string[] = ["show", "-json", CLEANUP_PLAN_ARG];
+export const CLEANUP_APPLY_ARGV: readonly string[] = ["apply", "-input=false", "-no-color", CLEANUP_PLAN_ARG];
+/** The one address the digest is computed with; a real run's addresses come from the approved proposal. */
+const ADDRESS_PLACEHOLDER = "alz_placeholder.address";
+
+/** Exact match: the targeted destroy plan (each target a resource address), its show, its apply, or the pinned version, init and workspace steps. */
+export function isAllowedCleanupArgv(executable: string, args: readonly string[]): boolean {
+  if (executable !== EXECUTABLE || !Array.isArray(args) || args.some((arg) => typeof arg !== "string")) return false;
+  if (sameArgv(args, CLEANUP_SHOW_ARGV) || sameArgv(args, CLEANUP_APPLY_ARGV) || sameArgv(args, APPLY_INIT_ARGV)) return true;
+  if (args[0] === "plan") {
+    const targets = args.slice(4, -1);
+    return args.length >= 6 && args[1] === "-destroy" && args[2] === "-input=false" && args[3] === "-no-color" && args[args.length - 1] === "-out=" + CLEANUP_PLAN_ARG &&
+      targets.length <= MAX_CLEANUP_ADDRESSES && targets.every((arg) => arg.startsWith(TARGET_FLAG) && isResourceAddress(arg.slice(TARGET_FLAG.length)));
+  }
+  return SHARED_SUBCOMMANDS.includes(args[0]) && isAllowedArgv("TERRAFORM", executable, args);
+}
+
+/** The digest a qualification record pins for the cleanup adapter: every list it can run, with one placeholder address. */
+export function cleanupArgvDigest(): string {
+  return argvDigest([
+    [EXECUTABLE, ...VERSION_ARGV], [EXECUTABLE, ...APPLY_INIT_ARGV], [EXECUTABLE, ...workspaceSelectArgv(WORKSPACE_PLACEHOLDER)],
+    [EXECUTABLE, ...WORKSPACE_SHOW_ARGV], [EXECUTABLE, ...STATE_PULL_ARGV], [EXECUTABLE, ...cleanupPlanArgv([ADDRESS_PLACEHOLDER])],
+    [EXECUTABLE, ...CLEANUP_SHOW_ARGV], [EXECUTABLE, ...CLEANUP_APPLY_ARGV],
+  ]);
+}
+
+export const CLEANUP_ADAPTER: AdapterDescriptor = {
+  engine: "TERRAFORM", adapterVersion: CLEANUP_ADAPTER_VERSION, argvDigest: cleanupArgvDigest(),
+};
+
 /**
  * The only two failures Terraform raises before it touches anything remote,
  * matched at the start of the first error summary (it draws errors in a box, so a

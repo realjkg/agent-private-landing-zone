@@ -127,10 +127,21 @@ test("the apply command is a handoff: the console shows the command and its reas
   assert.ok(spec.handoff!.env!.every((name) => /^[A-Z][A-Z0-9_]*$/.test(name)));
 });
 
-test("-auto-approve appears nowhere in src, and the apply path carries no -target, -replace, -refresh=false or -lock=false", () => {
+test("-auto-approve appears nowhere in src; the apply path carries no -target, -replace, -refresh=false or -lock=false, and the cleanup adapter's targeting is the one exception", () => {
   for (const file of walk("src")) assert.doesNotMatch(readFileSync(file, "utf8"), /-auto-approve/, file);
-  // Existing plan-only flows may use -refresh=false; the apply path never does, and locking stays on.
+  // Existing plan-only flows may use -refresh=false; the apply path never does, and locking stays on. The cleanup adapter
+  // (src/apply/terraform.ts) is the one place that builds `-target=`: a destroy limited to the addresses of an approved cleanup
+  // proposal (docs/act-pilot-plan.md, "Cleanup of pilot-created resources"), which the driver compares with the plan before
+  // any approval is consumed. The apply argument lists themselves still carry no targeting.
   for (const file of [...walk("src/apply"), "src/cli/apply.ts"]) {
-    assert.doesNotMatch(readFileSync(file, "utf8"), /["'`]-(target|replace|refresh=false|lock=false|lock-timeout)\b/, file);
+    const text = readFileSync(file, "utf8");
+    assert.doesNotMatch(text, /["'`]-(replace|refresh=false|lock=false|lock-timeout)\b/, file);
+    if (file === "src/apply/terraform.ts") {
+      const targets = [...text.matchAll(/["'`]-target\b[^"'`]*["'`]/g)].map((m) => m[0]);
+      assert.deepEqual(targets, ['"-target="'], "one targeting flag, in the cleanup adapter's own builder");
+      assert.doesNotMatch(text, /APPLY_ARGV[^;]*-target/, "the apply list never targets");
+    } else {
+      assert.doesNotMatch(text, /["'`]-target\b/, file);
+    }
   }
 });

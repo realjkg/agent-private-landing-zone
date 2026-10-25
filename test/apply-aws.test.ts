@@ -344,7 +344,7 @@ test("DEV, then QA, then PROD: each stage seals and applies with the right role 
     assert.deepEqual(result.evidence.target, target);
 
     const steps = calls().slice(before);
-    assert.deepEqual(steps.map((c) => c.args[0]), ["version", "init", "workspace", "state", "show", "apply", "state"]);
+    assert.deepEqual(steps.map((c) => c.args[0]), ["version", "init", "workspace", "state", "show", "apply", "state", "state"], "the last state read is the blueprint of what the run left");
     assert.deepEqual(steps[1].args, [...APPLY_INIT_ARGV]);
     const roleOf = (c: Call) => c.env.AWS_ROLE_ARN;
     assert.equal(roleOf(steps[0]), undefined, "version needs no credentials");
