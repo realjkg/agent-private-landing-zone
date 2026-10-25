@@ -190,3 +190,13 @@ test("a .gitignore change selects the secret-rule test and leaves no coverage ga
   assert.deepEqual(plan.nodeTests, ["test/gitignore-secrets.test.ts"]);
   assert.deepEqual(plan.gaps, []);
 });
+
+test("the journey matrix and every file it cites select the acceptance check", () => {
+  const matrix = JSON.stringify({ rows: [{ steps: { prepare: { code: ["src/apply/prepare.ts"], tests: { ui: [{ file: "test/ui-channel.test.ts", title: "t" }] } } } }] });
+  const files = new Map([...fixture(), ["config/acceptance/journeys.json", matrix], ["test/acceptance-journeys.test.ts", "test()"],
+    ["src/apply/prepare.ts", "export const x = 1;"], ["test/ui-channel.test.ts", "test()"], ["src/other.ts", "export const y = 1;"]]);
+  for (const path of ["config/acceptance/journeys.json", "src/apply/prepare.ts", "test/ui-channel.test.ts"]) {
+    assert.ok(planChanged([path], files).nodeTests.includes("test/acceptance-journeys.test.ts"), path);
+  }
+  assert.ok(!planChanged(["src/other.ts"], files).nodeTests.includes("test/acceptance-journeys.test.ts"), "an uncited file does not");
+});

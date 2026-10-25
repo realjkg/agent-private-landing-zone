@@ -1,0 +1,749 @@
+{
+  "README": "The tracked delivery plan for cloud journeys. Each status is a claim that src/release/acceptance.ts checks against this repository (test/acceptance-journeys.test.ts). There is no COMPLETE status. SYNTHETIC_PASS proves software behavior with fake engines; LIVE_PASS needs owner-authorized evidence naming the source commit, target, engine and outcome. Neither stands in for the other.",
+  "schemaVersion": 1,
+  "focus": {
+    "cloud": "AWS",
+    "path": "TERRAFORM"
+  },
+  "rows": [
+    {
+      "cloud": "AWS",
+      "path": "TERRAFORM",
+      "steps": {
+        "prepare": {
+          "status": "SYNTHETIC_PASS",
+          "code": [
+            "src/apply/prepare.ts",
+            "src/apply/lockfile.ts",
+            "src/cli/apply.ts",
+            "src/cli/ui-channel.ts",
+            "src/operator-ui/app/pilot/PilotWizard.tsx"
+          ],
+          "tests": {
+            "ui": [
+              {
+                "file": "test/ui-channel.test.ts",
+                "title": "AWS Terraform in the console: prepare from a project folder, preview, approve and apply through the real router, service and adapter"
+              }
+            ],
+            "positive": [
+              {
+                "file": "test/apply-prepare.test.ts",
+                "title": "Terraform on AWS: the request and manifest come from the contract and the project, and bind exactly as seal binds them"
+              }
+            ],
+            "denied": [
+              {
+                "file": "test/apply-prepare.test.ts",
+                "title": "owner prerequisites stop preparation with the owner named, and never offer another path around them"
+              }
+            ],
+            "interrupted": [
+              {
+                "file": "test/apply-prepare.test.ts",
+                "title": "the files are private, named by the manifest hash, and written all or nothing"
+              }
+            ],
+            "recovery": [
+              {
+                "file": "test/apply-prepare.test.ts",
+                "title": "a project changed after preparation is no longer current, and its old manifest no longer binds"
+              }
+            ]
+          }
+        },
+        "preview": {
+          "status": "SYNTHETIC_PASS",
+          "code": [
+            "src/apply/driver.ts",
+            "src/apply/seal.ts",
+            "src/apply/engines/terraform.ts",
+            "src/cli/apply.ts",
+            "src/cli/ui-channel.ts",
+            "src/operator-ui/app/pilot/PilotWizard.tsx",
+            "src/apply/providers/aws.ts"
+          ],
+          "tests": {
+            "ui": [
+              {
+                "file": "test/ui-channel.test.ts",
+                "title": "AWS Terraform in the console: prepare from a project folder, preview, approve and apply through the real router, service and adapter"
+              }
+            ],
+            "positive": [
+              {
+                "file": "test/apply-aws.test.ts",
+                "title": "DEV, then QA, then PROD: each stage seals and applies with the right role at each step, the contract's S3 backend, and nothing else in the child"
+              }
+            ],
+            "denied": [
+              {
+                "file": "test/apply-aws.test.ts",
+                "title": "the backend init saved must be the contract's bucket, key and region with native locking; anything else is refused at seal (the plan embeds it) and before the approvals are consumed at apply"
+              }
+            ],
+            "interrupted": [
+              {
+                "file": "test/ui-channel.test.ts",
+                "title": "a dialog that times out, or is canceled, ends the command with nothing run and nothing spent",
+                "scope": "SHARED_ENGINE"
+              }
+            ],
+            "recovery": [
+              {
+                "file": "test/apply-cli.test.ts",
+                "title": "qualify, seal and apply sweep stale scratch directories at startup, as the teardown CLI does, and leave young ones and other names alone",
+                "scope": "SHARED_ENGINE"
+              }
+            ]
+          }
+        },
+        "approve": {
+          "status": "SYNTHETIC_PASS",
+          "code": [
+            "src/apply/approval.ts",
+            "src/cli/apply.ts",
+            "src/cli/ui-channel.ts",
+            "src/operator-ui/app/pilot/PilotWizard.tsx"
+          ],
+          "tests": {
+            "ui": [
+              {
+                "file": "test/ui-channel.test.ts",
+                "title": "AWS Terraform in the console: prepare from a project folder, preview, approve and apply through the real router, service and adapter"
+              }
+            ],
+            "positive": [
+              {
+                "file": "test/apply-aws.test.ts",
+                "title": "./alz apply qualify, seal, approve and apply work for an AWS contract with no provider flag, and the attestation names the role ARNs"
+              }
+            ],
+            "denied": [
+              {
+                "file": "test/ui-channel.test.ts",
+                "title": "AWS Terraform in the console: a wrong phrase or a cancel at approval or apply signs nothing and spends nothing, and the same approval still applies"
+              }
+            ],
+            "interrupted": [
+              {
+                "file": "test/ui-channel.test.ts",
+                "title": "AWS Terraform in the console: a wrong phrase or a cancel at approval or apply signs nothing and spends nothing, and the same approval still applies"
+              }
+            ],
+            "recovery": [
+              {
+                "file": "test/apply-cli.test.ts",
+                "title": "the kill switch appearing after the approvals were consumed exits 3: they are spent although nothing ran, and the plan can be approved again",
+                "scope": "SHARED_ENGINE"
+              }
+            ]
+          }
+        },
+        "execute": {
+          "status": "NOT_IMPLEMENTED",
+          "code": [
+            "src/apply/driver.ts",
+            "src/apply/engines/terraform.ts",
+            "src/apply/ledger.ts",
+            "src/apply/evidence.ts",
+            "src/cli/apply.ts",
+            "src/cli/ui-channel.ts",
+            "src/apply/providers/aws.ts"
+          ],
+          "missing": "Apply evidence names the artifact, target, engine and outcome but not the product source commit it ran from, so the sourceBoundEvidence proof fails.",
+          "tests": {
+            "ui": [
+              {
+                "file": "test/ui-channel.test.ts",
+                "title": "AWS Terraform in the console: prepare from a project folder, preview, approve and apply through the real router, service and adapter"
+              }
+            ],
+            "positive": [
+              {
+                "file": "test/apply-aws.test.ts",
+                "title": "DEV, then QA, then PROD: each stage seals and applies with the right role at each step, the contract's S3 backend, and nothing else in the child"
+              }
+            ],
+            "denied": [
+              {
+                "file": "test/apply-aws.test.ts",
+                "title": "PROD without a successful QA apply of the same release is PROMOTION_EVIDENCE_MISSING, and QA without DEV likewise"
+              }
+            ],
+            "interrupted": [
+              {
+                "file": "test/apply-driver.test.ts",
+                "title": "the kill switch appearing while the engine runs stops it: SIGINT first, KILLED, evidence, a true message",
+                "scope": "SHARED_ENGINE"
+              },
+              {
+                "file": "test/ui-channel.test.ts",
+                "title": "AWS Terraform in the console: a wrong phrase or a cancel at approval or apply signs nothing and spends nothing, and the same approval still applies"
+              }
+            ],
+            "recovery": [
+              {
+                "file": "test/ui-channel.test.ts",
+                "title": "AWS Terraform in the console: a wrong phrase or a cancel at approval or apply signs nothing and spends nothing, and the same approval still applies"
+              },
+              {
+                "file": "test/apply-driver.test.ts",
+                "title": "a step that fails before the engine runs gives the artifact back, and the same approvals work after",
+                "scope": "SHARED_ENGINE"
+              }
+            ]
+          }
+        },
+        "observe": {
+          "status": "NOT_IMPLEMENTED",
+          "missing": "After an apply nothing reads back what was created: the evidence and the Results page carry no cloud resource IDs, and no independent read-only check runs."
+        },
+        "cleanup": {
+          "status": "NOT_IMPLEMENTED",
+          "code": [
+            "src/teardown/driver/driver.ts",
+            "src/cli/teardown-driver.ts"
+          ],
+          "missing": "Only a terminal destroy preview exists; there is no console step, no owner-supervised destroy execution and no leftover check against the cloud."
+        }
+      },
+      "proofs": {
+        "blueprint": {
+          "status": "NOT_IMPLEMENTED",
+          "missing": "No record maps each desired resource (engine address) to the cloud resource ID that was created."
+        },
+        "independentVerification": {
+          "status": "NOT_IMPLEMENTED",
+          "missing": "No read-only check, separate from the engine, confirms after an apply that the resources exist as planned."
+        },
+        "cleanupDisposition": {
+          "status": "NOT_IMPLEMENTED",
+          "missing": "No per-resource disposition (deleted, or retained with an owner and reason) is recorded after a journey."
+        },
+        "sourceBoundEvidence": {
+          "status": "NOT_IMPLEMENTED",
+          "code": [
+            "src/apply/types.ts",
+            "src/apply/evidence.ts"
+          ],
+          "missing": "ApplyEvidence has no sourceCommit, so evidence does not name the product commit that ran."
+        }
+      },
+      "live": {
+        "status": "BLOCKED",
+        "blockedBy": "Owner supervision and inputs (docs/act-pilot-apply.md, What the owner supplies): a pinned, enabled AWS contract with policyVersion, the DEV account, the S3 state bucket, the four web-identity roles and token files, approver public keys, and a person to run ./alz apply qualify with the CloudTrail attestation. Observe and cleanup must also pass synthetically first."
+      }
+    },
+    {
+      "cloud": "AWS",
+      "path": "CDK",
+      "steps": {
+        "prepare": {
+          "status": "NOT_IMPLEMENTED",
+          "code": [
+            "src/apply/prepare.ts"
+          ],
+          "missing": "No console test runs prepare with a CDK contract through the real router.",
+          "tests": {
+            "positive": [
+              {
+                "file": "test/apply-prepare.test.ts",
+                "title": "CDK is the AWS secondary path: no lock file, no providers, and the AWS CLI version is asked only until it is qualified"
+              }
+            ]
+          }
+        },
+        "preview": {
+          "status": "NOT_IMPLEMENTED",
+          "code": [
+            "src/apply/engines/cdk.ts"
+          ],
+          "missing": "No console test seals a CDK change set through the real router; terminal and driver tests exist.",
+          "tests": {
+            "positive": [
+              {
+                "file": "test/apply-cdk.test.ts",
+                "title": "a DEV, QA and PROD promotion seals a change set per account and executes exactly it, each step as the right identity"
+              }
+            ],
+            "denied": [
+              {
+                "file": "test/apply-cdk.test.ts",
+                "title": "an assembly that needs asset publishing, a second stack, a nested stack or a cross-stack import is refused before any change set exists"
+              }
+            ]
+          }
+        },
+        "approve": {
+          "status": "NOT_IMPLEMENTED",
+          "code": [
+            "src/apply/approval.ts"
+          ],
+          "missing": "No console test approves a CDK change set through the real router.",
+          "tests": {
+            "positive": [
+              {
+                "file": "test/apply-cdk.test.ts",
+                "title": "./alz apply works for the engine the pinned contract names, with no engine flag: qualify, seal, approve and apply, and no project code is run"
+              }
+            ]
+          }
+        },
+        "execute": {
+          "status": "NOT_IMPLEMENTED",
+          "code": [
+            "src/apply/engines/cdk.ts"
+          ],
+          "missing": "No console test executes a CDK change set through the real router, and apply evidence names the artifact, target, engine and outcome but not the product source commit it ran from, so the sourceBoundEvidence proof fails.",
+          "tests": {
+            "positive": [
+              {
+                "file": "test/apply-cdk.test.ts",
+                "title": "a DEV, QA and PROD promotion seals a change set per account and executes exactly it, each step as the right identity"
+              }
+            ],
+            "denied": [
+              {
+                "file": "test/apply-cdk.test.ts",
+                "title": "QA needs a successful DEV apply of the same release, and PROD a successful QA apply"
+              }
+            ],
+            "interrupted": [
+              {
+                "file": "test/apply-cdk.test.ts",
+                "title": "the kill switch before the apply stops it with nothing executed; during polling it cancels an update once and is KILLED; a create cannot be canceled"
+              }
+            ],
+            "recovery": [
+              {
+                "file": "test/apply-cdk.test.ts",
+                "title": "an execute whose response was lost is only a no-change when the change set is proven unexecuted; otherwise a person reviews"
+              }
+            ]
+          }
+        },
+        "observe": {
+          "status": "NOT_IMPLEMENTED",
+          "missing": "After an apply nothing reads back what was created: the evidence and the Results page carry no cloud resource IDs, and no independent read-only check runs."
+        },
+        "cleanup": {
+          "status": "NOT_IMPLEMENTED",
+          "missing": "There is no CDK stack teardown step in the product, and no leftover check against the cloud."
+        }
+      },
+      "proofs": {
+        "blueprint": {
+          "status": "NOT_IMPLEMENTED",
+          "missing": "No record maps each desired resource (engine address) to the cloud resource ID that was created."
+        },
+        "independentVerification": {
+          "status": "NOT_IMPLEMENTED",
+          "missing": "No read-only check, separate from the engine, confirms after an apply that the resources exist as planned."
+        },
+        "cleanupDisposition": {
+          "status": "NOT_IMPLEMENTED",
+          "missing": "No per-resource disposition (deleted, or retained with an owner and reason) is recorded after a journey."
+        },
+        "sourceBoundEvidence": {
+          "status": "NOT_IMPLEMENTED",
+          "code": [
+            "src/apply/types.ts",
+            "src/apply/evidence.ts"
+          ],
+          "missing": "ApplyEvidence has no sourceCommit, so evidence does not name the product commit that ran."
+        }
+      },
+      "live": {
+        "status": "BLOCKED",
+        "blockedBy": "AWS Terraform must pass live first (focus row), then owner inputs for CDK: a pinned CDK contract, the stack name, the DISCOVERY, CHANGESET and APPLY roles per account, a synthesized cdk.out with no assets, and a person to qualify it."
+      }
+    },
+    {
+      "cloud": "AZURE",
+      "path": "TERRAFORM",
+      "steps": {
+        "prepare": {
+          "status": "SYNTHETIC_PASS",
+          "code": [
+            "src/apply/prepare.ts",
+            "src/apply/lockfile.ts",
+            "src/cli/apply.ts",
+            "src/cli/ui-channel.ts",
+            "src/operator-ui/app/pilot/PilotWizard.tsx"
+          ],
+          "tests": {
+            "ui": [
+              {
+                "file": "test/ui-channel.test.ts",
+                "title": "Azure Terraform in the console: prepare from a project folder, preview, approve and apply through the real router, service and adapter"
+              }
+            ],
+            "positive": [
+              {
+                "file": "test/apply-cli.test.ts",
+                "title": "prepare writes the request and manifest from the contract and project, and seal accepts them unchanged"
+              }
+            ],
+            "denied": [
+              {
+                "file": "test/apply-cli.test.ts",
+                "title": "prepare reports the exact owner prerequisite, offers no way around it, and writes nothing"
+              }
+            ],
+            "interrupted": [
+              {
+                "file": "test/apply-prepare.test.ts",
+                "title": "the files are private, named by the manifest hash, and written all or nothing",
+                "scope": "SHARED_ENGINE"
+              }
+            ],
+            "recovery": [
+              {
+                "file": "test/apply-prepare.test.ts",
+                "title": "a project changed after preparation is no longer current, and its old manifest no longer binds",
+                "scope": "SHARED_ENGINE"
+              }
+            ]
+          }
+        },
+        "preview": {
+          "status": "SYNTHETIC_PASS",
+          "code": [
+            "src/apply/driver.ts",
+            "src/apply/seal.ts",
+            "src/apply/engines/terraform.ts",
+            "src/cli/apply.ts",
+            "src/cli/ui-channel.ts",
+            "src/operator-ui/app/pilot/PilotWizard.tsx",
+            "src/apply/providers/azure.ts"
+          ],
+          "tests": {
+            "ui": [
+              {
+                "file": "test/ui-channel.test.ts",
+                "title": "Azure Terraform in the console: prepare from a project folder, preview, approve and apply through the real router, service and adapter"
+              }
+            ],
+            "positive": [
+              {
+                "file": "test/apply-cli.test.ts",
+                "title": "seal shows the target, needs the exact target and the project code phrase, and prints the artifact and redacted changes"
+              }
+            ],
+            "denied": [
+              {
+                "file": "test/apply-cli.test.ts",
+                "title": "seal stops on a wrong target, a wrong phrase, a disabled contract or a vault with no qualification, and runs no engine"
+              }
+            ],
+            "interrupted": [
+              {
+                "file": "test/ui-channel.test.ts",
+                "title": "a dialog that times out, or is canceled, ends the command with nothing run and nothing spent"
+              }
+            ],
+            "recovery": [
+              {
+                "file": "test/apply-cli.test.ts",
+                "title": "qualify, seal and apply sweep stale scratch directories at startup, as the teardown CLI does, and leave young ones and other names alone"
+              }
+            ]
+          }
+        },
+        "approve": {
+          "status": "SYNTHETIC_PASS",
+          "code": [
+            "src/apply/approval.ts",
+            "src/cli/apply.ts",
+            "src/cli/ui-channel.ts",
+            "src/operator-ui/app/pilot/PilotWizard.tsx"
+          ],
+          "tests": {
+            "ui": [
+              {
+                "file": "test/ui-channel.test.ts",
+                "title": "Azure Terraform in the console: prepare from a project folder, preview, approve and apply through the real router, service and adapter"
+              }
+            ],
+            "positive": [
+              {
+                "file": "test/apply-cli.test.ts",
+                "title": "approve shows the redacted changes, needs the artifact phrase, and signs with the key file it was given"
+              }
+            ],
+            "denied": [
+              {
+                "file": "test/apply-cli.test.ts",
+                "title": "approve refuses without the typed phrase, with an open key file, a non-Ed25519 key, a tampered bundle or a contract that is disabled or does not match its pin"
+              }
+            ],
+            "interrupted": [
+              {
+                "file": "test/ui-channel.test.ts",
+                "title": "Azure Terraform in the console: a wrong phrase or a cancel at approval or apply signs nothing and spends nothing, and the same approval still applies"
+              }
+            ],
+            "recovery": [
+              {
+                "file": "test/apply-cli.test.ts",
+                "title": "the kill switch appearing after the approvals were consumed exits 3: they are spent although nothing ran, and the plan can be approved again"
+              }
+            ]
+          }
+        },
+        "execute": {
+          "status": "NOT_IMPLEMENTED",
+          "code": [
+            "src/apply/driver.ts",
+            "src/apply/engines/terraform.ts",
+            "src/apply/ledger.ts",
+            "src/apply/evidence.ts",
+            "src/cli/apply.ts",
+            "src/cli/ui-channel.ts",
+            "src/apply/providers/azure.ts"
+          ],
+          "missing": "Apply evidence names the artifact, target, engine and outcome but not the product source commit it ran from, so the sourceBoundEvidence proof fails.",
+          "tests": {
+            "ui": [
+              {
+                "file": "test/ui-channel.test.ts",
+                "title": "Azure Terraform in the console: prepare from a project folder, preview, approve and apply through the real router, service and adapter"
+              }
+            ],
+            "positive": [
+              {
+                "file": "test/apply-driver.test.ts",
+                "title": "a DEV apply runs the pinned steps with the right identity at each step and applies exactly the sealed plan bytes"
+              }
+            ],
+            "denied": [
+              {
+                "file": "test/apply-driver.test.ts",
+                "title": "approval failures: unsigned, wrong key, wrong artifact, wrong target, expired, wrong environment approver, same approver twice"
+              }
+            ],
+            "interrupted": [
+              {
+                "file": "test/apply-driver.test.ts",
+                "title": "the kill switch appearing while the engine runs stops it: SIGINT first, KILLED, evidence, a true message"
+              }
+            ],
+            "recovery": [
+              {
+                "file": "test/ui-channel.test.ts",
+                "title": "Azure Terraform in the console: a wrong phrase or a cancel at approval or apply signs nothing and spends nothing, and the same approval still applies"
+              }
+            ]
+          }
+        },
+        "observe": {
+          "status": "NOT_IMPLEMENTED",
+          "missing": "After an apply nothing reads back what was created: the evidence and the Results page carry no cloud resource IDs, and no independent read-only check runs."
+        },
+        "cleanup": {
+          "status": "NOT_IMPLEMENTED",
+          "code": [
+            "src/teardown/driver/driver.ts",
+            "src/cli/teardown-driver.ts"
+          ],
+          "missing": "Only a terminal destroy preview exists; there is no console step, no owner-supervised destroy execution and no leftover check against the cloud."
+        }
+      },
+      "proofs": {
+        "blueprint": {
+          "status": "NOT_IMPLEMENTED",
+          "missing": "No record maps each desired resource (engine address) to the cloud resource ID that was created."
+        },
+        "independentVerification": {
+          "status": "NOT_IMPLEMENTED",
+          "missing": "No read-only check, separate from the engine, confirms after an apply that the resources exist as planned."
+        },
+        "cleanupDisposition": {
+          "status": "NOT_IMPLEMENTED",
+          "missing": "No per-resource disposition (deleted, or retained with an owner and reason) is recorded after a journey."
+        },
+        "sourceBoundEvidence": {
+          "status": "NOT_IMPLEMENTED",
+          "code": [
+            "src/apply/types.ts",
+            "src/apply/evidence.ts"
+          ],
+          "missing": "ApplyEvidence has no sourceCommit, so evidence does not name the product commit that ran."
+        }
+      },
+      "live": {
+        "status": "BLOCKED",
+        "blockedBy": "AWS Terraform is the focus row and goes live first. Then owner inputs for Azure: a pinned, enabled Azure contract with policyVersion, the tenant and subscription IDs, the state storage per environment, the federated identities, approver public keys, and a person to qualify it."
+      }
+    },
+    {
+      "cloud": "AZURE",
+      "path": "BICEP",
+      "steps": {
+        "prepare": {
+          "status": "NOT_IMPLEMENTED",
+          "missing": "No Bicep engine is registered for apply (src/apply/engine-spec.ts); Bicep exists only as a what-if reader for teardown review."
+        },
+        "preview": {
+          "status": "NOT_IMPLEMENTED",
+          "missing": "No Bicep engine is registered for apply (src/apply/engine-spec.ts); Bicep exists only as a what-if reader for teardown review."
+        },
+        "approve": {
+          "status": "NOT_IMPLEMENTED",
+          "missing": "No Bicep engine is registered for apply (src/apply/engine-spec.ts); Bicep exists only as a what-if reader for teardown review."
+        },
+        "execute": {
+          "status": "NOT_IMPLEMENTED",
+          "missing": "No Bicep engine is registered for apply (src/apply/engine-spec.ts); Bicep exists only as a what-if reader for teardown review."
+        },
+        "observe": {
+          "status": "NOT_IMPLEMENTED",
+          "missing": "No Bicep engine is registered for apply (src/apply/engine-spec.ts); Bicep exists only as a what-if reader for teardown review."
+        },
+        "cleanup": {
+          "status": "NOT_IMPLEMENTED",
+          "missing": "No Bicep engine is registered for apply (src/apply/engine-spec.ts); Bicep exists only as a what-if reader for teardown review."
+        }
+      },
+      "proofs": {
+        "blueprint": {
+          "status": "NOT_IMPLEMENTED",
+          "missing": "No record maps each desired resource (engine address) to the cloud resource ID that was created."
+        },
+        "independentVerification": {
+          "status": "NOT_IMPLEMENTED",
+          "missing": "No read-only check, separate from the engine, confirms after an apply that the resources exist as planned."
+        },
+        "cleanupDisposition": {
+          "status": "NOT_IMPLEMENTED",
+          "missing": "No per-resource disposition (deleted, or retained with an owner and reason) is recorded after a journey."
+        },
+        "sourceBoundEvidence": {
+          "status": "NOT_IMPLEMENTED",
+          "code": [
+            "src/apply/types.ts",
+            "src/apply/evidence.ts"
+          ],
+          "missing": "ApplyEvidence has no sourceCommit, so evidence does not name the product commit that ran."
+        }
+      },
+      "live": {
+        "status": "NOT_IMPLEMENTED",
+        "missing": "Nothing to qualify until the Bicep path exists in the product."
+      }
+    },
+    {
+      "cloud": "GCP",
+      "path": "TERRAFORM",
+      "steps": {
+        "prepare": {
+          "status": "NOT_IMPLEMENTED",
+          "missing": "GCP is not a pilot provider: src/apply/providers has AWS and Azure only, and GCP has read-only discovery and an offline demo."
+        },
+        "preview": {
+          "status": "NOT_IMPLEMENTED",
+          "missing": "GCP is not a pilot provider: src/apply/providers has AWS and Azure only, and GCP has read-only discovery and an offline demo."
+        },
+        "approve": {
+          "status": "NOT_IMPLEMENTED",
+          "missing": "GCP is not a pilot provider: src/apply/providers has AWS and Azure only, and GCP has read-only discovery and an offline demo."
+        },
+        "execute": {
+          "status": "NOT_IMPLEMENTED",
+          "missing": "GCP is not a pilot provider: src/apply/providers has AWS and Azure only, and GCP has read-only discovery and an offline demo."
+        },
+        "observe": {
+          "status": "NOT_IMPLEMENTED",
+          "missing": "GCP is not a pilot provider: src/apply/providers has AWS and Azure only, and GCP has read-only discovery and an offline demo."
+        },
+        "cleanup": {
+          "status": "NOT_IMPLEMENTED",
+          "missing": "GCP is not a pilot provider: src/apply/providers has AWS and Azure only, and GCP has read-only discovery and an offline demo."
+        }
+      },
+      "proofs": {
+        "blueprint": {
+          "status": "NOT_IMPLEMENTED",
+          "missing": "No record maps each desired resource (engine address) to the cloud resource ID that was created."
+        },
+        "independentVerification": {
+          "status": "NOT_IMPLEMENTED",
+          "missing": "No read-only check, separate from the engine, confirms after an apply that the resources exist as planned."
+        },
+        "cleanupDisposition": {
+          "status": "NOT_IMPLEMENTED",
+          "missing": "No per-resource disposition (deleted, or retained with an owner and reason) is recorded after a journey."
+        },
+        "sourceBoundEvidence": {
+          "status": "NOT_IMPLEMENTED",
+          "code": [
+            "src/apply/types.ts",
+            "src/apply/evidence.ts"
+          ],
+          "missing": "ApplyEvidence has no sourceCommit, so evidence does not name the product commit that ran."
+        }
+      },
+      "live": {
+        "status": "NOT_IMPLEMENTED",
+        "missing": "Nothing to qualify until a GCP provider exists in the pilot path."
+      }
+    },
+    {
+      "cloud": "GCP",
+      "path": "NATIVE_API",
+      "steps": {
+        "prepare": {
+          "status": "NOT_IMPLEMENTED",
+          "missing": "No service-native GCP provisioning path exists; GCP has read-only Cloud Asset Inventory discovery only."
+        },
+        "preview": {
+          "status": "NOT_IMPLEMENTED",
+          "missing": "No service-native GCP provisioning path exists; GCP has read-only Cloud Asset Inventory discovery only."
+        },
+        "approve": {
+          "status": "NOT_IMPLEMENTED",
+          "missing": "No service-native GCP provisioning path exists; GCP has read-only Cloud Asset Inventory discovery only."
+        },
+        "execute": {
+          "status": "NOT_IMPLEMENTED",
+          "missing": "No service-native GCP provisioning path exists; GCP has read-only Cloud Asset Inventory discovery only."
+        },
+        "observe": {
+          "status": "NOT_IMPLEMENTED",
+          "missing": "No service-native GCP provisioning path exists; GCP has read-only Cloud Asset Inventory discovery only."
+        },
+        "cleanup": {
+          "status": "NOT_IMPLEMENTED",
+          "missing": "No service-native GCP provisioning path exists; GCP has read-only Cloud Asset Inventory discovery only."
+        }
+      },
+      "proofs": {
+        "blueprint": {
+          "status": "NOT_IMPLEMENTED",
+          "missing": "No record maps each desired resource (engine address) to the cloud resource ID that was created."
+        },
+        "independentVerification": {
+          "status": "NOT_IMPLEMENTED",
+          "missing": "No read-only check, separate from the engine, confirms after an apply that the resources exist as planned."
+        },
+        "cleanupDisposition": {
+          "status": "NOT_IMPLEMENTED",
+          "missing": "No per-resource disposition (deleted, or retained with an owner and reason) is recorded after a journey."
+        },
+        "sourceBoundEvidence": {
+          "status": "NOT_IMPLEMENTED",
+          "code": [
+            "src/apply/types.ts",
+            "src/apply/evidence.ts"
+          ],
+          "missing": "ApplyEvidence has no sourceCommit, so evidence does not name the product commit that ran."
+        }
+      },
+      "live": {
+        "status": "NOT_IMPLEMENTED",
+        "missing": "Nothing to qualify until a native GCP path exists in the product."
+      }
+    }
+  ]
+}
