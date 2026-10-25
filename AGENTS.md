@@ -2,6 +2,21 @@
 
 These rules apply to every coding agent working in this repository.
 
+## Standing engineering standard — correct by construction
+
+**Release outcome over PR throughput:** Engineering exists to deliver a usable, releasable product, not to maximize commits, green CI runs, or cleanup cycles. Prevent defects at design time; autonomous repair is exceptional, bounded recovery, never the normal development strategy.
+
+1. **PLAN before coding.** Define the user journey, explicit acceptance criteria, typed interfaces, dependencies, invariants, trust/authorization boundaries, failure cases, and observable evidence. Reject ambiguous contracts before implementation.
+2. **DESIGN the complete vertical slice.** Specify inputs/outputs, safe defaults, error reporting, security and policy checks, idempotency, restart/recovery and cleanup where applicable. Favor the existing guided `./alz` experience over exposing implementation details to operators.
+3. **BUILD once, coherently.** Implement production behavior together with its focused positive, negative, interrupted and unauthorized tests. Do not defer basic validation, logging, edge cases, or recovery to a backend cleanup pass. Avoid redundant abstractions and speculative features.
+4. **PROVE before pushing.** Run deterministic synthetic operator journeys and `scripts/qa-affected.mjs` scoped qualification against the actual change. Verify type/schema contracts and relevant security invariants. Synthetic evidence must be labeled synthetic and never substituted for live cloud acceptance.
+5. **USE CI as independent verification.** Do not treat GitHub Actions as the primary debugger or rerun full repository/release gates for routine changes. Reserve consolidated end-to-end, security, provenance and provider gates for an immutable release candidate or an evidenced cross-cutting change.
+6. **FIX root causes, not symptoms.** When a failure occurs, stop the affected lane, classify design versus implementation versus environment, correct the owning contract and smallest code slice, and add a regression test. No assertion weakening, silent retries, permission expansion, blanket timeouts or test suppression to achieve green.
+7. **MEASURE first-pass quality and customer completion.** Evaluate first-pass acceptance, escaped defects, recovery behavior, clarity of prerequisites, and successful end-to-end journeys—not PR count, agent activity or CI green rate alone.
+8. **BOUND unattended engineering.** GitHub Actions may host an unattended coding agent for code-only, path-scoped implementation and exceptional repair on its own branch, with bounded attempts, affected tests and auditable commits. It may not bypass review, required release gates, secrets boundaries, policy, cloud authorization or ACT. Repeated failures escalate to design review rather than an endless repair loop.
+
+**Release boundary:** The final owner-supervised AWS DEV ACT acceptance, resource teardown, and independent cleanup verification remain separately authorized. No synthetic test or unattended coding agent enables infrastructure ACT or certifies a live release.
+
 ## Release loop
 
 Use a lean loop:
