@@ -125,6 +125,8 @@ test("discover organization, OU, baseline and modern launch path; proposal makes
     "Workloads (" + targetId + ")");
   verifyProposal(p);
   assert.throws(() => verifyProposal({ ...p, accountName: "Altered" }), /PROPOSAL_TAMPERED/);
+  assert.throws(() => verifyProposal({ ...p, status: "READY" as never }), /PROPOSAL_TAMPERED/);
+  assert.throws(() => verifyProposal({ ...p, infrastructureAct: "ENABLED" as never }), /PROPOSAL_TAMPERED/);
   assert.throws(() => verifyProposal(p, new Date(Date.now() + 3 * 60 * 60_000)), /PROPOSAL_EXPIRED/);
 });
 test("different management accounts and organizations are discovered rather than hardcoded", async () => {
