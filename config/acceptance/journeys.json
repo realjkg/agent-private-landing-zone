@@ -263,7 +263,7 @@
       },
       "live": {
         "status": "BLOCKED",
-        "blockedBy": "Owner supervision and inputs (docs/act-pilot-apply.md, What the owner supplies): a pinned, enabled AWS contract with policyVersion, the DEV account, the S3 state bucket, the four web-identity roles and token files, approver public keys, and a person to run ./alz apply qualify with the CloudTrail attestation. Observe and cleanup must also pass synthetically first."
+        "blockedBy": "Owner supervision and inputs (docs/act-pilot-apply.md, What the owner supplies): a pinned, enabled AWS contract with policyVersion, the DEV account, the S3 state bucket, the four web-identity roles and token files, approver public keys, and a person to run ./alz apply qualify with the CloudTrail attestation. The execute step alone becomes LIVE_PASS when that person runs one owner-supervised DEV apply, records it with ./alz apply record-live, and the owner commits the record and cites it as liveEvidence. The row also needs observe and cleanup to pass synthetically first."
       }
     },
     {

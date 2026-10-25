@@ -1,5 +1,5 @@
 import { createPrivateKey, randomBytes } from "node:crypto";
-import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -10,6 +10,7 @@ import {
   contractRefusal, inspectPilotContract, isKillSwitchActive, loadPilotContract, pilotContractSha256, repoPaths, requireNotApplied, targetForEnvironment, writeQualificationEvidence, type Refusal,
 } from "../apply/contract.js";
 import { channelMismatchMessage } from "../apply/channel.js";
+import { liveRecordOf, readAppliedEvidence } from "../apply/live-record.js";
 import { prepareApply, writePreparation, type Prepared, type PrepareRefusal } from "../apply/prepare.js";
 import { qualifyApply, runApply, sealPreview, type ApplyDeps, type SealRequest } from "../apply/driver.js";
 import { RECOVERY_FILE_NAMES, engineOf, engineSpec, type EngineNotices } from "../apply/engine-spec.js";
@@ -47,6 +48,7 @@ const APPLY_USAGE = [
   "  ./alz apply apply --request REQUEST.json --manifest MANIFEST.json --sealed SEALED_PLAN --approval APPROVAL.json [--approval APPROVAL.json ...]",
   "  ./alz apply status [--sealed SEALED_PLAN]",
   "  ./alz apply pin",
+  "  ./alz apply record-live --sealed SEALED_PLAN",
   "  ./alz apply preflight --environment DEV|QA|PROD [--contract CONTRACT.json]",
   "      A person at the terminal (or a person in the console wizard, which has its own session token). A workflow runs wholly in one of them. Identities come from the contract's engine: ALZ_DISCOVERY_*, ALZ_STATE_*, ALZ_STATE_WRITE_* and ALZ_APPLY_* (Terraform),",
   "      or ALZ_DISCOVERY_*, ALZ_CHANGESET_* and ALZ_APPLY_* (CDK). No flag names an engine; the pinned contract does.",
@@ -81,6 +83,8 @@ export type ApplyCliDeps = {
   preparationDir?: string;
   /** The product source commit. Production reads it from the checkout or the image's build stamp (`resolveSourceCommit`). */
   sourceCommit?: string;
+  /** Where `record-live` writes its record; defaults to config/acceptance/evidence in the repository. */
+  acceptanceDir?: string;
 } & Pick<ApplyDeps, "contractPath" | "contractPinPath" | "qualificationDir" | "evidenceDir" | "nonces" | "scratchParent" | "toolDirs">;
 
 /** Why a command ended, without parsing text: a refusal's code and outcome, or a CLI error's code. */
@@ -96,6 +100,7 @@ const SUBCOMMANDS: Readonly<Record<string, Flags>> = {
   pin: { single: [] },
   preflight: { single: ["environment"], optional: ["contract"] },
   prepare: { single: ["environment", "project"], optional: ["aws-cli-version"] },
+  "record-live": { single: ["sealed"] },
 };
 const MAX_INPUT_BYTES = 8 * 1024 * 1024;
 const CONTROL = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
@@ -621,9 +626,53 @@ const prepareCommand: Command = async (flags, terminal, deps, out) => {
   return EXIT.PASS;
 };
 
+// --- record-live -----------------------------------------------------------------------------------------
+
+/**
+ * Turns an owner-run apply that SUCCEEDED into the live acceptance record for the execute step (config/acceptance/journeys.json).
+ * It reads the apply's own evidence from the encrypted ledger, shows what ran, and asks the person who ran it to attest that it
+ * reached the real account. Then it writes identifiers and hashes only, never a value, for the owner to review and commit.
+ * It starts no engine and changes nothing in any cloud. The attestation is the person's, as in `qualify`.
+ */
+const recordLiveCommand: Command = async (flags, terminal, deps, out) => {
+  const contract = contractFor(deps);
+  if ("reason" in contract) return blocked(contractRefusal(contract), out);
+  const opened = await openSealed(flags.sealed[0]);
+  if (!("sealed" in opened)) return blocked(opened, out);
+  const { sealed } = opened;
+  const evidence = await readAppliedEvidence(sealed.artifactSha256, deps.evidenceDir ?? repoPaths().evidence);
+  if (!evidence) fail("LIVE_RECORD_UNAVAILABLE", "this plan has no finished apply evidence. A record is made only from an apply that ran and was recorded");
+  const who = operatorId(deps);
+  const now = (deps.now ?? (() => new Date()))();
+  const made = liveRecordOf(evidence!, contract, who, now);
+  if (!made.ok) return fail("LIVE_RECORD_UNAVAILABLE", made.reason);
+  const { record } = made;
+  const phrase = "LIVE " + record.environment + " " + record.artifactSha256.slice(0, 12);
+  terminal.write([
+    "", "RECORD LIVE ACCEPTANCE OF THE EXECUTE STEP (" + record.cloud + " " + record.engine + ")",
+    "  environment     " + record.environment, "  account         " + record.target.account, "  backend         " + record.target.backend,
+    "  workspace       " + record.target.workspace, "  artifact        " + record.artifactSha256, "  product commit  " + record.sourceCommit,
+    "  outcome         " + record.outcome + " at " + evidence!.finishedAt,
+    "", "Type this only if this apply ran against the real " + record.cloud + " account above, not a test or a fake engine.",
+    "It is your attestation, as in qualify, and it is written into the record with your name:", "  " + phrase, "",
+  ].join("\n"));
+  await confirm(terminal, phrase, "live> ", "LIVE_ATTESTATION_MISMATCH", "ATTEST");
+  const dir = deps.acceptanceDir ?? join(repoPaths().root, "config", "acceptance", "evidence");
+  const path = join(dir, [record.cloud, record.engine, "execute", record.environment, record.artifactSha256.slice(0, 12)].join("-").toLowerCase() + ".json");
+  mkdirSync(dir, { recursive: true });
+  try {
+    writeFileSync(path, JSON.stringify(record, null, 2) + "\n", { mode: 0o644, flag: "wx" });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") fail("LIVE_RECORD_EXISTS", "a record for this artifact is already written at " + path + "; it is never overwritten");
+    throw error;
+  }
+  out.say(JSON.stringify({ written: path, record, next: "Review the record, commit it, and cite it as liveEvidence on the execute step in config/acceptance/journeys.json." }, null, 2) + "\n");
+  return EXIT.PASS;
+};
+
 const COMMANDS: Readonly<Record<string, Command>> = {
   qualify: qualifyCommand, seal: sealCommand, approve: approveCommand, apply: applyCommand, status: statusCommand, pin: pinCommand,
-  preflight: preflightCommand, prepare: prepareCommand,
+  preflight: preflightCommand, prepare: prepareCommand, "record-live": recordLiveCommand,
 };
 
 /** Where `alz-preview-*` directories live and what a crashed apply leaves in them. */
@@ -641,7 +690,7 @@ function scratchHoldsRecovery(parent: string): boolean {
  * them first (docs/act-pilot-apply.md).
  */
 async function sweepUnlessHeld(sub: string, deps: ApplyCliDeps, out: Out): Promise<void> {
-  if (sub === "status" || sub === "approve" || sub === "pin" || sub === "preflight" || sub === "prepare") return;
+  if (sub === "status" || sub === "approve" || sub === "pin" || sub === "preflight" || sub === "prepare" || sub === "record-live") return;
   const parent = deps.scratchParent ?? tmpdir();
   const held = scratchHoldsRecovery(parent) ? "a scratch directory holds errored.tfstate or crash.log"
     : await holdsReservation(deps.evidenceDir ?? repoPaths().evidence) ? "the apply ledger holds a reservation" : undefined;

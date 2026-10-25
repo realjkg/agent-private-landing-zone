@@ -64,6 +64,20 @@ Every seal and apply names the product source commit it ran from.
 
 Plans and review bundles sealed before this field existed fail verification as malformed. Seal them again.
 
+### Recording live acceptance of the execute step
+
+After an owner-supervised apply has SUCCEEDED against the real account, the person who ran it records it:
+
+```
+./alz apply record-live --sealed SEALED_PLAN
+```
+
+The command reads that plan's apply evidence from the encrypted ledger, so it needs the evidence key, and shows the environment, target, artifact, product commit and outcome. The person then types `LIVE <ENV> <first 12 characters of the artifact hash>` to attest that it ran against the real account, not a test or a fake engine. That phrase is the person's attestation, as in `qualify`; the code cannot tell a real account from a fake engine.
+
+It then writes `config/acceptance/evidence/<cloud>-<engine>-execute-<env>-<artifact>.json`. The file holds identifiers and hashes only (source commit, cloud, engine, target, artifact, outcome, evidence hash, contract hash, who attested and when) and is never overwritten. The owner reviews it, commits it, and cites it as `liveEvidence` on the execute step in `config/acceptance/journeys.json`. The matrix then accepts `LIVE_PASS` for that step only. The row is live only when every step passes.
+
+It refuses an artifact that was never applied, a failed, partial or killed apply, and an apply under another contract than the one pinned. It starts no engine and changes nothing in any cloud.
+
 ### Channels: the terminal or the console, never both
 
 A workflow runs wholly in the `CLI` channel (a person at the terminal) or the `UI` channel (a person in the console wizard, `src/cli/ui-channel.ts`). The calling code sets it (`ApplyCliDeps.channel`, default `CLI`; the driver's `SealRequest.channel` and `ApplyRequest.channel`), never a flag, file or environment variable. It is a field of the sealed plan, of the artifact hash (`computeArtifactSha256`) and of the review bundle, so editing it breaks the hash (`ARTIFACT_TAMPERED`) and a record without it is `ARTIFACT_INVALID`. `approve` and `apply` refuse with `CHANNEL_MISMATCH` (exit 2) when their channel differs from the plan's: `approve` before it asks anything, `apply` before the final question, and the driver again before any approval is consumed. Nothing is spent by that refusal; the same sealed plan and approvals work in the right channel.

@@ -31,7 +31,7 @@ export function acceptanceCited(files) {
   const cited = new Set([ACCEPTANCE_MATRIX]);
   try {
     JSON.stringify(JSON.parse(files.get(ACCEPTANCE_MATRIX) ?? "{}"), (key, value) => {
-      if ((key === "file" || typeof key === "string" && /^\d+$/.test(key)) && typeof value === "string" && /^(?:src|test|scripts)\//.test(value)) cited.add(value);
+      if ((key === "file" || key === "liveEvidence" || key === "evidence" || typeof key === "string" && /^\d+$/.test(key)) && typeof value === "string" && /^(?:src|test|scripts|config\/acceptance)\//.test(value)) cited.add(value);
       return value;
     });
   } catch { /* an unreadable matrix fails its own test, which the matrix path still selects */ }

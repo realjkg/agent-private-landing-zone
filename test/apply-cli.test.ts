@@ -914,3 +914,47 @@ test("seal and apply stop before any question when the product commit is unknown
   assert.equal(applied.code, 0, applied.stderr);
   assert.equal((JSON.parse(applied.stdout) as { sourceCommit: string }).sourceCommit, SOURCE_COMMIT, "the evidence names the commit");
 });
+
+test("record-live makes the execute step's live record only from a recorded successful apply, after the person attests it, and never overwrites it", async () => {
+  const w = await world();
+  const s = await sealed(w, "DEV");
+  const acceptanceDir = fresh("acceptance");
+  const record = (answers: string[]) => cli(w, ["record-live", "--sealed", s.path], answers, { acceptanceDir });
+  const phrase = "LIVE DEV " + s.artifactSha256.slice(0, 12);
+
+  const early = await record([phrase]);
+  assert.equal(early.code, 1);
+  assert.match(early.stderr, /^LIVE_RECORD_UNAVAILABLE/);
+  assert.deepEqual(readdirSync(acceptanceDir), []);
+
+  const applied = await cli(w, applyArgs(s, [await approve(w, s, "alice")]), [applyPhrase(s)], applyIn(s));
+  assert.equal(applied.code, 0, applied.stderr);
+  const before = engineCalls().length;
+  const wrong = await record(["LIVE DEV"]);
+  assert.equal(wrong.code, 1);
+  assert.match(wrong.stderr, /^LIVE_ATTESTATION_MISMATCH/);
+  assert.deepEqual(readdirSync(acceptanceDir), [], "nothing is written without the attestation");
+
+  const done = await record([phrase]);
+  assert.equal(done.code, 0, done.stderr);
+  assert.equal(engineCalls().length, before, "recording starts no engine");
+  const { written } = JSON.parse(done.stdout) as { written: string };
+  const saved = JSON.parse(readFileSync(written, "utf8")) as Record<string, unknown>;
+  const evidence = JSON.parse(applied.stdout) as { artifactSha256: string; sourceCommit: string; target: unknown };
+  assert.deepEqual(Object.keys(saved).sort(), ["artifactSha256", "attestedAt", "attestedBy", "cloud", "contractSha256", "engine", "environment",
+    "evidenceSha256", "label", "outcome", "schemaVersion", "sourceCommit", "step", "target"]);
+  assert.equal(saved.label, "LIVE");
+  assert.equal(saved.step, "execute");
+  assert.equal(saved.cloud, "AZURE");
+  assert.equal(saved.engine, "TERRAFORM");
+  assert.equal(saved.sourceCommit, SOURCE_COMMIT);
+  assert.equal(saved.artifactSha256, evidence.artifactSha256);
+  assert.deepEqual(saved.target, evidence.target);
+  assert.equal(saved.attestedBy, "operator.fixture");
+  for (const canary of [OUTPUT_CANARY, PLAN_CANARY, VALUE_CANARY, STATE_CANARY]) assert.ok(!readFileSync(written, "utf8").includes(canary), "no value reaches the record");
+
+  const again = await record([phrase]);
+  assert.equal(again.code, 1);
+  assert.match(again.stderr, /^LIVE_RECORD_EXISTS/);
+  assert.equal(readdirSync(acceptanceDir).length, 1);
+});

@@ -127,5 +127,33 @@ test("LIVE_PASS needs every synthetic proof first and an evidence file naming co
     refused(matrix((m) => { m.rows[0].live = { status: "LIVE_PASS", evidence: "test/bad.json" }; }), /LIVE_PASS needs an evidence file/);
   }
   refused(live((m) => { m.rows[0].steps.cleanup = { status: "NOT_IMPLEMENTED", missing: "No owner-supervised destroy yet." }; }), /LIVE_PASS needs every step and proof to pass synthetically first/);
-  refused(matrix((m) => { m.rows[0].steps.prepare.status = "LIVE_PASS"; }), /a step is LIVE_PASS only when the row's live acceptance passed/);
+});
+
+test("one step can be LIVE_PASS before its row, only with its own matching live record", () => {
+  const record = {
+    schemaVersion: 1, label: "LIVE", step: "execute", cloud: "AWS", engine: "TERRAFORM", environment: "DEV", target: { account: "111111111111", backend: "b", workspace: "default" },
+    sourceCommit: "a".repeat(40), artifactSha256: "1".repeat(64), outcome: "SUCCEEDED", evidenceSha256: "2".repeat(64), contractSha256: "3".repeat(64),
+    attestedBy: "operator", attestedAt: "2026-10-25T00:00:00.000Z",
+  };
+  const withRecord = (over: Record<string, unknown>, step: "execute" | "prepare" = "execute") => {
+    writeFileSync(join(root, "test", "step-live.json"), JSON.stringify({ ...record, ...over }));
+    return matrix((m) => { m.rows[0].steps[step] = { ...m.rows[0].steps[step], status: "LIVE_PASS", liveEvidence: "test/step-live.json" }; });
+  };
+  const result = checkJourneyMatrix(withRecord({}), root);
+  assert.deepEqual(result.problems, []);
+  assert.equal(result.rows[0].steps.execute, "LIVE_PASS");
+  assert.equal(result.rows[0].live, "BLOCKED", "the row is not live because one step is");
+  refused(matrix((m) => { m.rows[0].steps.execute.status = "LIVE_PASS"; }), /execute: LIVE_PASS needs liveEvidence/);
+  for (const [field, value] of [["label", "SYNTHETIC"], ["step", "preview"], ["cloud", "AZURE"], ["engine", "CDK"], ["sourceCommit", "HEAD"],
+    ["outcome", "PARTIAL_REQUIRES_REVIEW"], ["artifactSha256", "x"], ["evidenceSha256", undefined], ["attestedBy", ""], ["target", "acct"]] as const) {
+    refused(withRecord({ [field]: value }), /execute: LIVE_PASS needs liveEvidence/);
+  }
+  // The record names its step: an execute record cannot make prepare live.
+  refused(withRecord({}, "prepare"), /prepare: LIVE_PASS needs liveEvidence/);
+  // A live step still needs every synthetic proof.
+  refused(matrix((m) => {
+    writeFileSync(join(root, "test", "step-live.json"), JSON.stringify(record));
+    m.rows[0].steps.execute = { ...m.rows[0].steps.execute, status: "LIVE_PASS", liveEvidence: "test/step-live.json" };
+    delete m.rows[0].steps.execute.tests!.recovery;
+  }), /execute: LIVE_PASS needs a recovery test/);
 });
