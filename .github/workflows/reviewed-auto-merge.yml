@@ -89,14 +89,8 @@ jobs:
               }`, { owner, repo, number });
               const t = threads.repository.pullRequest.reviewThreads;
               if (t.pageInfo.hasNextPage || t.nodes.some(x => !x.isResolved)) continue;
-              // Fail closed unless GitHub reports exact-head required checks successful.
-              const combined = await github.rest.repos.getCombinedStatusForRef({ owner, repo, ref: pr.head.sha });
-              const checkRuns = await github.rest.checks.listForRef({ owner, repo, ref: pr.head.sha, per_page: 100 });
-              const runs = checkRuns.data.check_runs;
-              if (checkRuns.data.total_count > 100 ||
-                  combined.data.state === 'failure' || combined.data.state === 'pending' ||
-                  runs.length === 0 || runs.some(r => r.status !== 'completed' ||
-                    !['success', 'neutral', 'skipped'].includes(r.conclusion))) continue;
+              // Required checks are enforced by GitHub native branch protection.
+              // Optional check runs must not block admission or consume extra polling.
               // Do not bypass branch protection. GitHub native auto-merge queues until required checks pass.
               // GitHub API returns an error when auto-merge is disabled or policy forbids this PR.
               try {
@@ -106,7 +100,7 @@ jobs:
                   }}
                 }`, { owner, repo, number });
                 const p = node.repository.pullRequest;
-                if (p.autoMergeRequest || p.mergeStateStatus !== 'CLEAN') continue;
+                if (p.autoMergeRequest || ['DIRTY', 'UNKNOWN'].includes(p.mergeStateStatus)) continue;
                 await github.graphql(`mutation($id:ID!,$sha:GitObjectID!){
                   enablePullRequestAutoMerge(input:{pullRequestId:$id,mergeMethod:SQUASH,expectedHeadOid:$sha}){
                     pullRequest{id}
