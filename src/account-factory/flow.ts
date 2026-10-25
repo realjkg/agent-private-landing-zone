@@ -327,12 +327,27 @@ export async function verifyProvisionedAccount(
   if (!String(ou.Arn ?? "").includes(orgId)) throw Error("ACCOUNT_OU_ORGANIZATION_MISMATCH");
   await healthyLandingZone(profile, call, identity);
   const baseline = await healthyBaseline(profile, call, String(ou.Arn));
+  // AWS reports the baseline inherited by an individual member account as a *child*
+  // EnabledBaseline. The OU's SUCCEEDED parent baseline alone does not prove enrollment.
+  const accountArn = "arn:aws:organizations::" + identity.Account + ":account/" + orgId + "/" + accountId;
+  const children = records((await call(profile, ["controltower", "list-enabled-baselines",
+    "--include-children", "--filter", JSON.stringify({
+      targetIdentifiers: [accountArn], baselineIdentifiers: [baseline],
+    })])).enabledBaselines);
+  const child = children.find(x => x.targetIdentifier === accountArn &&
+    x.baselineIdentifier === baseline);
+  const inheritedStatus = String(object(child?.statusSummary).status ?? "NOT_OBSERVED");
+  const inheritedDrift = String(object(object(object(child?.driftStatusSummary).types).inheritance).status ??
+    "NOT_REPORTED");
+  const childBaselineHealthy = inheritedStatus === "SUCCEEDED" && inheritedDrift !== "DRIFTED";
   return {
     status: "ACCOUNT_ORGANIZATION_AND_OU_VERIFIED" as const,
     accountId, name, organizationId: orgId, managementAccount: identity.Account,
     targetOuId: String(parent.Id), targetOuName: String(ou.Name),
-    baseline, baselineStatus: "SUCCEEDED" as const,
-    controlTowerAccountEnrollment: "NOT_INDEPENDENTLY_CONFIRMED" as const,
+    baseline, ouBaselineStatus: "SUCCEEDED" as const,
+    childBaselineStatus: inheritedStatus, childBaselineDrift: inheritedDrift,
+    controlTowerAccountEnrollment: childBaselineHealthy
+      ? "CHILD_BASELINE_SUCCEEDED" as const : "NOT_INDEPENDENTLY_CONFIRMED" as const,
     infrastructureAct: "DISABLED" as const,
   };
 }
@@ -359,6 +374,7 @@ export async function follow(
   const pause = options.pause ?? (async (ms: number) =>
     new Promise<void>(resolve => setTimeout(resolve, ms)));
   let providerStatus = "UNKNOWN";
+  let observedAccountId: string | undefined;
   for (let attempt = 0; attempt < maxPolls; attempt++) {
     const current = await status(profile, submission.recordId, call);
     providerStatus = current.providerStatus;
@@ -370,12 +386,15 @@ export async function follow(
           profile, proposal.accountName, proposal.accountEmail, call);
         if (result.targetOuId !== proposal.ouId)
           throw Error("ACCOUNT_OU_TARGET_MISMATCH");
-        return {
-          ...result,
-          status: "MEMBER_ACCOUNT_VERIFIED" as const,
-          recordId: submission.recordId, providerStatus, environment: proposal.environment,
-          verified: true as const,
-        };
+        observedAccountId = result.accountId;
+        if (result.controlTowerAccountEnrollment === "CHILD_BASELINE_SUCCEEDED") {
+          return {
+            ...result,
+            status: "MEMBER_ACCOUNT_VERIFIED" as const,
+            recordId: submission.recordId, providerStatus, environment: proposal.environment,
+            verified: true as const,
+          };
+        }
       } catch (error) {
         const code = error instanceof Error ? error.message : "READBACK_FAILED";
         if (!["ACCOUNT_NOT_UNIQUELY_IDENTIFIED", "DEDICATED_MEMBER_ACCOUNT_NOT_ACTIVE",
@@ -386,8 +405,9 @@ export async function follow(
     if (attempt < maxPolls - 1) await pause(intervalMs);
   }
   return {
-    status: "PROVISIONING_IN_PROGRESS" as const,
+    status: observedAccountId ? "ACCOUNT_BASELINE_PENDING" as const : "PROVISIONING_IN_PROGRESS" as const,
     recordId: submission.recordId, providerStatus, environment: proposal.environment,
+    ...(observedAccountId ? { accountId: observedAccountId } : {}),
     verified: false, next: "Run account-factory follow with the saved proposal and receipt.",
   };
 }
