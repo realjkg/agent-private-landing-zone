@@ -80,7 +80,7 @@ Regenerate with `npm run docs:ops`; a test fails if this table is stale.
 | Governance and policy | Operating economics report | `./alz economics report <input.json> [--json]` | READ_ONLY | Run | ADVISORY — computed only from the pasted entries; no billing or cloud access |
 | Governance and policy | Runtime health and readiness | `./alz health [--serve]` | READ_ONLY | Run | LOCAL PROCESS SNAPSHOT — one shot, no listener started, no cloud |
 | Governance and policy | Operator self-check | `./alz doctor` | HANDOFF | Guided handoff | LOCAL READ-ONLY CHECK — no model, no cloud, no infrastructure change |
-| Governance and policy | Dependency check and guided installs | `./alz deps` | HANDOFF | Guided handoff | LOCAL CHECK — installs only after you choose "Install it" for each tool, into your user folder; no cloud, no infrastructure change |
+| Governance and policy | Dependency check and guided installs | `./alz deps` | HANDOFF | Guided handoff | LOCAL CHECK — installs or updates only after you choose "Install it" or "Update it" for each tool, into your user folder; an earlier version stays until the new one is checked; no cloud, no infrastructure change |
 | Governance and policy | Security preflight | `npm run security:check` | HANDOFF | Guided handoff | LOCAL READ-ONLY CHECK — no model, no cloud, no infrastructure change |
 | Governance and policy | Toolbox self-check | `npm run toolbox:check` | READ_ONLY | Run | LOCAL READ-ONLY CHECK — no model, no cloud, no infrastructure change |
 | Governance and policy | Plug-in compatibility | `./alz plugins` | READ_ONLY | Run | LOCAL READ-ONLY CHECK — no model, no cloud, no infrastructure change |
