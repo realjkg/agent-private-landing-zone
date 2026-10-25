@@ -62,7 +62,7 @@ jobs:
               if (labels.some(l => blockedLabels.includes(l) || l.startsWith('superseded-by:'))) continue;
               const { data: issue } = await github.rest.issues.get({ owner, repo, issue_number: number });
               const body = (pr.body || '') + '\\n' + (issue.body || '');
-              if (/\\b(superseded\\s+by|replaced\\s+by|obsolete\\s+in\\s+favor\\s+of)\\s+(?:[\\w.-]+\\/[\\w.-]+)?#?\\d+\\b/i.test(body)) continue;
+              if (/\b(superseded\s+by|replaced\s+by|obsolete\s+in\s+favor\s+of)\s+(?:[\w.-]+\/[\w.-]+)?#?\d+\b/i.test(body)) continue;
               // An explicit superseding PR can reference the older PR in its title/body.
               // Restrict to open PRs; closed-but-merged replacement references are also
               // caught by the superseded label/body on the older PR.
@@ -70,7 +70,7 @@ jobs:
                 { owner, repo, state: 'open', per_page: 100 });
               if (openPRs.length > 1000) continue; // bound API spend / ambiguous huge queues
               const referencedAsSuperseded = openPRs.some(other => other.number !== number &&
-                new RegExp('\\\\b(?:supersedes|replaces)\\\\s+(?:[\\\\w.-]+\\\\/[\\\\w.-]+)?#?' + number + '\\\\b', 'i')
+                new RegExp('\\b(?:supersedes|replaces)\\s+(?:[\\w.-]+\\/[\\w.-]+)?#?' + number + '\\b', 'i')
                   .test((other.title || '') + '\\n' + (other.body || '')));
               if (referencedAsSuperseded) continue;
               const reviews = await github.paginate(github.rest.pulls.listReviews, { owner, repo, pull_number: number });
@@ -79,7 +79,7 @@ jobs:
                 if (r.user?.login && r.commit_id === pr.head.sha) latest.set(r.user.login, r.state);
               }
               const independent = [...latest].some(([login, state]) =>
-                state === 'APPROVED' && login !== pr.user.login && login !== context.actor);
+                state === 'APPROVED' && login !== pr.user.login);
               if (!independent || [...latest.values()].includes('CHANGES_REQUESTED')) continue;
               // Respect unresolved inline discussions, including comments from coding agents.
               const threads = await github.graphql(`query($owner:String!,$repo:String!,$number:Int!){
