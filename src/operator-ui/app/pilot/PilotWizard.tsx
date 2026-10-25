@@ -167,6 +167,11 @@ export function PreparedSummary(props: { prepared: PreparedFiles }) {
   );
 }
 
+/** The plain word for why a readiness item is, or is not, ready. */
+const stateWord = (state: PreflightCheck["state"]): string => ({
+  READY: COPY.stateReady, MISSING: COPY.stateMissing, INVALID: COPY.stateInvalid, UNVERIFIED: COPY.stateUnverified, UNAVAILABLE: COPY.stateUnavailable,
+})[state] ?? COPY.stateInvalid;
+
 /** The product version an apply's record names, when the record came back. */
 const appliedVersion = (result: RunResult): string | undefined => {
   const commit = (result.data as { sourceCommit?: unknown } | undefined)?.sourceCommit;
@@ -427,7 +432,7 @@ export default function PilotWizard(props: PilotWizardProps) {
                         const good = item.ok;
                         return (
                           <li key={item.check} data-ok={good ? "true" : "false"}>
-                            <p><span className={good ? "pilot-badge pilot-badge-ok" : "pilot-badge pilot-badge-bad"}>{good ? "Ready" : "Needs attention"}</span> {words.label}</p>
+                            <p><span className={good ? "pilot-badge pilot-badge-ok" : "pilot-badge pilot-badge-bad"} data-state={item.state}>{stateWord(item.state)}</span> {words.label}</p>
                             {!good && !words.informational && (
                               <>
                                 <p><strong>What is wrong:</strong> {words.wrong}</p>
@@ -445,7 +450,6 @@ export default function PilotWizard(props: PilotWizardProps) {
                         );
                       })}
                     </ul>
-                    <p className="pilot-note" role="note">{COPY.readyHeadsUp}</p>
                   </div>
                 )}
                 {failureFor("preflight") && !readiness?.checks.length && (

@@ -45,7 +45,11 @@ export const COPY = {
   readyRunning: "Checking...",
   readyAllGreen: "Everything needed on this computer is ready.",
   readySomeRed: "Some items are not ready. Fix each red item, then check again.",
-  readyHeadsUp: "Heads up: whether the separate sign-ins really stay separate has not been proven against the real cloud yet. The first supervised run in DEV is where that gets checked.",
+  stateReady: "Ready",
+  stateMissing: "Missing",
+  stateInvalid: "Needs correcting",
+  stateUnverified: "Not yet proven",
+  stateUnavailable: "Not available here",
   resume: "I already prepared a change: go to Review and approve",
   resumeWhy: "Use this if you reloaded the page or came back later. You will enter the locations of the files from your earlier work.",
   signing: "Working. Keep this page open.",
@@ -323,6 +327,12 @@ export function describeCheck(item: PreflightCheck, environment: PilotEnvironmen
   const tool = /^tool (\S+) installed/.exec(name);
   if (tool) {
     return { known: true, label: "The tool \"" + tool[1] + "\" is installed in an approved folder", wrong: "The tool \"" + tool[1] + "\" was not found in a folder the pilot allows.", fix: "Install it in a standard system folder (the walkthrough lists them), restart the console, and check again." };
+  }
+  if (name.startsWith("engine qualified in DEV")) {
+    return { known: true, label: "The one-time DEV check has been done and still matches this computer", wrong: "The one-time DEV check has not been done, or it was done with a different tool, sign-in or account than this computer now uses, or it is more than 30 days old.", fix: "A person runs the one-time check in a terminal against DEV with the owner (see the walkthrough, \"Before your first change\"), then check again here." };
+  }
+  if (name.startsWith("identity separation attested")) {
+    return { known: true, label: "The separate sign-ins were shown to stay separate on the real cloud", wrong: "Nobody has confirmed yet, from the cloud's own records, that the separate sign-ins really stay separate. This is confirmed during the one-time DEV check.", fix: "It turns ready when the one-time DEV check is done and still matches this computer." };
   }
   if (name.startsWith("kill switch absent")) {
     return { known: true, label: "The emergency stop is off", wrong: "The emergency stop is on, so every change is blocked.", fix: "Only the pilot owner turns it off. Ask them, and do not remove the stop file yourself." };

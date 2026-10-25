@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import PilotWizard, { BlockedNotice, ChangeList } from "../src/operator-ui/app/pilot/PilotWizard";
-import { forgetPilotToken, type PilotPath, type PilotRun, type PreparedFiles, type ReviewSummary } from "../src/operator-ui/app/pilot/pilot-api";
+import { forgetPilotToken, type PilotPath, type PilotRun, type PreflightCheck, type PreparedFiles, type ReviewSummary } from "../src/operator-ui/app/pilot/pilot-api";
 import {
   BLOCKED, CLI_COMMANDS, CODE_COPY, COPY, RESULT_COPY, STEP_TITLES, classifyResult, describeCheck, describeCounts, describeMismatch, dialogCopy, reasonFor,
   type BlockedState, type ResultKind,
@@ -187,20 +187,25 @@ describe("step 1: the path is chosen once", () => {
 });
 
 describe("step 2: readiness in plain words", () => {
-  const checks = [
-    { check: "contract shape (provider, engine, targets, approvals, approvers)", ok: true },
-    { check: "pilot contract pinned and enabled (required before seal)", ok: false, detail: "enabled: the contract does not enable ACT" },
-    { check: "identities configured, distinct, no fallback (DISCOVERY, STATE, STATE_WRITE, APPLY)", ok: false, detail: "IDENTITY_NOT_CONFIGURED" },
-    { check: "identities aimed at the DEV account", ok: true },
-    { check: "plan will embed STATE_WRITE settings: no", ok: true },
-    { check: "tool terraform installed in an approved directory", ok: false },
-    { check: "kill switch absent", ok: true },
+  const checks: PreflightCheck[] = [
+    { check: "contract shape (provider, engine, targets, approvals, approvers)", ok: true, state: "READY" },
+    { check: "pilot contract pinned and enabled (required before seal)", ok: false, state: "MISSING", detail: "enabled: the contract does not enable ACT" },
+    { check: "identities configured, distinct, no fallback (DISCOVERY, STATE, STATE_WRITE, APPLY)", ok: false, state: "INVALID", detail: "IDENTITY_COLLAPSED" },
+    { check: "identities aimed at the DEV account", ok: true, state: "READY" },
+    { check: "plan will embed STATE_WRITE settings: no", ok: true, state: "READY" },
+    { check: "tool terraform installed in an approved directory", ok: false, state: "UNAVAILABLE" },
+    { check: "kill switch absent", ok: true, state: "READY" },
+    { check: "engine qualified in DEV for seal and apply (TERRAFORM)", ok: false, state: "MISSING", detail: "No qualification record exists" },
+    { check: "identity separation attested on the real DEV backend", ok: false, state: "UNVERIFIED" },
   ];
+  const stateWords: Record<PreflightCheck["state"], string> = {
+    READY: COPY.stateReady, MISSING: COPY.stateMissing, INVALID: COPY.stateInvalid, UNVERIFIED: COPY.stateUnverified, UNAVAILABLE: COPY.stateUnavailable,
+  };
 
   test("each red item says what is wrong and the exact fix, each green item says it is ready, and Continue waits for green", async () => {
     const fake = install();
     fake.path = "UI";
-    fake.onPost["/preflight"] = () => { fake.run = doneRun("preflight", { exit: 2, data: { ready: false, authentication: "SIMULATED", checks } }); };
+    fake.onPost["/preflight"] = () => { fake.run = doneRun("preflight", { exit: 2, data: { ready: false, checks } }); };
     render(<PilotWizard level="BEGINNER" />);
     fireEvent.change(await screen.findByLabelText(COPY.unlockLabel), { target: { value: TOKEN } });
     fireEvent.click(screen.getByRole("button", { name: COPY.unlockButton }));
@@ -213,25 +218,27 @@ describe("step 2: readiness in plain words", () => {
     for (const [index, item] of items.entries()) {
       const words = describeCheck(checks[index], "DEV");
       expect(words.known).toBe(true);
+      // The badge says why, in words: missing, needs correcting, not yet proven or not available here, never just "red".
+      expect(item.querySelector(".pilot-badge")?.textContent).toBe(stateWords[checks[index].state]);
+      expect(item.querySelector(".pilot-badge")?.getAttribute("data-state")).toBe(checks[index].state);
       if (checks[index].ok) {
-        expect(item.textContent).toContain("Ready");
         expect(item.textContent).not.toContain("What is wrong");
       } else {
-        expect(item.textContent).toContain("Needs attention");
         expect(item.textContent).toContain("What is wrong:");
         expect(item.textContent).toContain(words.wrong);
         expect(item.textContent).toContain("How to fix it:");
         expect(item.textContent).toContain(words.fix);
       }
     }
-    expect(screen.getByText(COPY.readyHeadsUp)).toBeTruthy();
+    // Whether the sign-ins stay separate on the real cloud is an item with evidence behind it, not a standing note.
+    expect(items[8].textContent).toContain(COPY.stateUnverified);
     expect(screen.getByRole("button", { name: COPY.readyContinue }).hasAttribute("disabled")).toBe(true);
     expect(document.querySelector('[data-blocked="NOT_READY"]')?.textContent).toContain(BLOCKED.NOT_READY.next);
     // No code or internal name in the primary text at the beginner level.
-    expect(document.body.textContent).not.toContain("IDENTITY_NOT_CONFIGURED");
+    expect(document.body.textContent).not.toContain("IDENTITY_COLLAPSED");
     expect(jargonIn(primaryText())).toEqual([]);
     // Fixed, checked again, green.
-    fake.onPost["/preflight"] = () => { fake.run = doneRun("preflight", { exit: 0, data: { ready: true, authentication: "SIMULATED", checks: checks.map((c) => ({ ...c, ok: true })) } }, "preflight-2"); };
+    fake.onPost["/preflight"] = () => { fake.run = doneRun("preflight", { exit: 0, data: { ready: true, checks: checks.map((c) => ({ ...c, ok: true, state: "READY" as const })) } }, "preflight-2"); };
     await clickButton(COPY.readyRerun);
     await screen.findByText(COPY.readyAllGreen);
     const next = screen.getByRole("button", { name: COPY.readyContinue });
@@ -247,10 +254,11 @@ describe("step 2: readiness in plain words", () => {
       "contract shape (provider, engine, targets, approvals, approvers)", "pilot contract pinned and enabled (required before seal)",
       "identities configured, distinct, no fallback (A, B)", "identities aimed at the QA account", "plan will embed STATE_WRITE settings: yes",
       "tool terraform installed in an approved directory", "tool aws installed in an approved directory", "kill switch absent",
+      "engine qualified in DEV for seal and apply (TERRAFORM)", "identity separation attested on the real DEV backend",
     ];
     expect(names.length).toBeGreaterThanOrEqual(6);
-    for (const name of dynamic) expect(describeCheck({ check: name, ok: false }, "QA").known, name).toBe(true);
-    expect(describeCheck({ check: "something new", ok: false }, "DEV").known).toBe(false);
+    for (const name of dynamic) expect(describeCheck({ check: name, ok: false, state: "MISSING" }, "QA").known, name).toBe(true);
+    expect(describeCheck({ check: "something new", ok: false, state: "MISSING" }, "DEV").known).toBe(false);
   });
 });
 
@@ -258,7 +266,7 @@ describe("step 3 and the confirmation dialogs", () => {
   async function atSeal(level: "BEGINNER" | "ADVANCED" | "EXPERT" = "BEGINNER") {
     const ctx = await unlocked(level, { path: "UI" });
     await clickButton(COPY.pathContinue);
-    ctx.fake.onPost["/preflight"] = () => { ctx.fake.run = doneRun("preflight", { exit: 0, data: { ready: true, checks: [{ check: "kill switch absent", ok: true }] } }); };
+    ctx.fake.onPost["/preflight"] = () => { ctx.fake.run = doneRun("preflight", { exit: 0, data: { ready: true, checks: [{ check: "kill switch absent", ok: true, state: "READY" }] } }); };
     await clickButton(COPY.readyRun);
     // Readiness is produced by an asynchronous synthetic response. The user
     // cannot advance until the real UI has enabled Continue.
@@ -561,7 +569,7 @@ describe("step 5 and 6: apply and the result", () => {
   async function toApply(level: "BEGINNER" | "ADVANCED" | "EXPERT" = "BEGINNER") {
     const ctx = await unlocked(level, { path: "UI", reviewReply: { ok: true, summary: bundleReview() } });
     await clickButton(COPY.pathContinue);
-    ctx.fake.onPost["/preflight"] = () => { ctx.fake.run = doneRun("preflight", { exit: 0, data: { ready: true, checks: [{ check: "kill switch absent", ok: true }] } }); };
+    ctx.fake.onPost["/preflight"] = () => { ctx.fake.run = doneRun("preflight", { exit: 0, data: { ready: true, checks: [{ check: "kill switch absent", ok: true, state: "READY" }] } }); };
     await clickButton(COPY.readyRun);
     // Readiness is produced by an asynchronous synthetic response. The user
     // cannot advance until the real UI has enabled Continue.
@@ -768,8 +776,9 @@ describe("the words are plain", () => {
     for (const item of CLI_COMMANDS) strings.push(["CLI." + item.command, item.who + " " + item.what]);
     for (const environment of ["DEV", "QA", "PROD"] as const) {
       for (const name of ["contract shape (x)", "pilot contract pinned and enabled (x)", "identities configured, distinct, no fallback (x)", "identities aimed at the " + environment + " account",
-        "plan will embed STATE_WRITE settings: yes", "plan will embed STATE_WRITE settings: no", "tool terraform installed in an approved directory", "kill switch absent"]) {
-        const words = describeCheck({ check: name, ok: false }, environment);
+        "plan will embed STATE_WRITE settings: yes", "plan will embed STATE_WRITE settings: no", "tool terraform installed in an approved directory", "kill switch absent",
+        "engine qualified in DEV for seal and apply (x)", "identity separation attested on the real DEV backend"]) {
+        const words = describeCheck({ check: name, ok: false, state: "MISSING" }, environment);
         strings.push(["CHECK." + name, words.label + " " + words.wrong + " " + words.fix]);
       }
     }

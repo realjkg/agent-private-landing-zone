@@ -427,8 +427,13 @@ test("readiness: the check runs the preflight logic and reports each item", asyn
   const result = done.run!.result!;
   assert.equal(result.exit, 0, JSON.stringify(result));
   assert.equal(result.data.ready, true);
-  assert.ok(result.data.checks.length >= 5);
+  assert.ok(result.data.checks.length >= 7);
   assert.match(JSON.stringify(result.data.checks), /kill switch absent/);
+  // Every item reaches the page with its state, including qualification and the evidence-based attestation.
+  const states = Object.fromEntries((result.data.checks as { check: string; state: string }[]).map((c) => [c.check.split(" (")[0], c.state]));
+  assert.ok(Object.values(states).every((state) => state === "READY"), JSON.stringify(states));
+  assert.equal(states["engine qualified in DEV for seal and apply"], "READY");
+  assert.equal(states["identity separation attested on the real DEV backend"], "READY");
   // Missing identities: the same command, a red item per fact, still no engine.
   const bare = await world(contractJson(KILL), {});
   const other = await serve(bare, { token: "u".repeat(64) });
@@ -437,7 +442,11 @@ test("readiness: the check runs the preflight logic and reports each item", asyn
   const red = (await (async () => { for (let i = 0; i < 400; i += 1) { const s = (await call(other.port, "GET", "/pilot/state", { token: "u".repeat(64) })).body as State; if (s.run?.status === "DONE") return s; await new Promise((r) => setTimeout(r, 25)); } throw new Error("never finished"); })()).run!.result!;
   assert.equal(red.exit, 2);
   assert.equal(red.data.ready, false);
-  assert.ok(red.data.checks.some((c: { ok: boolean }) => !c.ok));
+  const redStates = Object.fromEntries((red.data.checks as { check: string; state: string }[]).map((c) => [c.check.split(" (")[0], c.state]));
+  assert.equal(redStates["identities configured, distinct, no fallback"], "MISSING");
+  // Without the attested sign-ins, the stored qualification no longer matches this machine, so neither is reported ready.
+  assert.notEqual(redStates["engine qualified in DEV for seal and apply"], "READY");
+  assert.equal(redStates["identity separation attested on the real DEV backend"], "UNVERIFIED");
   assert.deepEqual(mutating(), []);
 });
 

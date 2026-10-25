@@ -25,7 +25,9 @@ export type ReviewSummary = {
   changes: PlanChange[];
   changesOmitted: number;
 };
-export type PreflightCheck = { check: string; ok: boolean; detail?: string };
+/** Why an item is not ready (src/cli/apply.ts): absent, present but wrong, not yet proven on the real cloud, or not usable here. */
+export type ReadinessState = "READY" | "MISSING" | "INVALID" | "UNVERIFIED" | "UNAVAILABLE";
+export type PreflightCheck = { check: string; ok: boolean; state: ReadinessState; detail?: string };
 
 /** What `prepare` saved and bound (src/apply/prepare.ts): local files, never proof that anything works in the cloud. */
 export type PreparedFiles = {
