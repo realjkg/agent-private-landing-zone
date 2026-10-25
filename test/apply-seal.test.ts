@@ -5,8 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { computeArtifactSha256, loadSealedPlan, planWithoutStoring, reviewBundleOf, sealPlan, verifyReviewBundle, verifySealedPlan, type SealInput } from "../src/apply/seal.js";
-import type { SealedPlan } from "../src/apply/types.js";
+import { computeArtifactSha256, engineBinaryChange, loadSealedPlan, planWithoutStoring, reviewBundleOf, sealPlan, verifyReviewBundle, verifySealedPlan, type SealInput } from "../src/apply/seal.js";
+import type { PreviewProvenance, SealedPlan } from "../src/apply/types.js";
 import { decryptEvidence, encryptEvidence, ensureEvidenceKey, type EvidenceEnvelope } from "../src/evidence/vault.js";
 import { canonicalJson } from "../src/teardown/manifest.js";
 import { createImmutableSnapshot } from "../src/teardown/snapshot.js";
@@ -44,6 +44,8 @@ const fresh = (label: string) => {
 const toolDir = fresh("tools");
 installFakeTerraform(toolDir);
 const behave = (behavior: Behavior = {}) => behaveIn(toolDir, join(root, "KILL"), behavior);
+/** What the driver observed before planning; these tests seal it and do not judge it (apply-driver tests do). */
+const PROVENANCE: PreviewProvenance = { engineBinarySha256: H("e"), qualification: { state: "UNQUALIFIED", reason: "Fixture: no qualification evidence is in this test's vault." } };
 const calls = () => callsOf(toolDir);
 
 function fixture(options: { target?: typeof DEV_TARGET; environment?: "DEV" | "QA" | "PROD"; mainTf?: string; env?: NodeJS.ProcessEnv; workspace?: string } = {}) {
@@ -57,7 +59,7 @@ function fixture(options: { target?: typeof DEV_TARGET; environment?: "DEV" | "Q
     engine: TERRAFORM, environment: options.environment ?? "DEV", target, manifest, snapshotPath: snapshot.path, scratchDir: scratch.path,
     env: options.env ?? identityEnv(options.environment ?? "DEV"), policyVersion: POLICY, engineVersion: ENGINE_VERSION, toolDirs: [toolDir],
     pinned: { tenantId: TENANT, subscriptionId: target.account, backend: target.backend, workspace: target.workspace }, spec: AZURE, contractSha256: H("9"), sourceCommit: SOURCE_COMMIT,
-    now: () => new Date("2026-10-11T10:00:00.000Z"),
+    provenance: PROVENANCE, now: () => new Date("2026-10-11T10:00:00.000Z"),
   };
   return { input, scratch, cleanup: () => { snapshot.remove(); scratch.remove(); } };
 }
@@ -120,9 +122,12 @@ test("the sealed record binds plan, manifest, release identity, environment, tar
   assert.equal(s.channel, "CLI");
   assert.equal(s.artifactSha256, sha(JSON.stringify({
     changesSha256: sha(canonicalJson(s.changes)), channel: s.channel, contractSha256: s.contractSha256, engineVersion: s.engineVersion, environment: s.environment, manifestHash: s.manifestHash,
-    planSha256: s.planSha256, policyVersion: s.policyVersion, releaseIdentity: s.releaseIdentity, sourceCommit: s.sourceCommit,
+    planSha256: s.planSha256, policyVersion: s.policyVersion,
+    provenance: { engineBinarySha256: PROVENANCE.engineBinarySha256, qualification: { reason: "Fixture: no qualification evidence is in this test's vault.", state: "UNQUALIFIED" } },
+    releaseIdentity: s.releaseIdentity, sourceCommit: s.sourceCommit,
     target: { account: s.target.account, backend: s.target.backend, workspace: s.target.workspace },
-  })), "canonical JSON of exactly these eleven fields, the change list through its own hash");
+  })), "canonical JSON of exactly these twelve fields, the change list through its own hash");
+  assert.deepEqual(s.provenance, PROVENANCE, "the seal keeps the provenance the driver observed, unchanged");
   assert.deepEqual(s.changes, [
     { address: "azurerm_log_analytics_workspace.pilot", type: "azurerm_log_analytics_workspace", action: "UPDATE" },
     { address: "azurerm_resource_group.pilot", type: "azurerm_resource_group", action: "CREATE" },
@@ -153,6 +158,9 @@ test("any change to a bound field changes the artifact hash", async () => {
     { target: { ...s.target, backend: "x/y/z" } }, { engineVersion: "1.9.6" }, { policyVersion: "2026-10-12.1" },
     { changes: [] }, { changes: s.changes.slice(1) }, { changes: s.changes.map((c) => ({ ...c, action: "DELETE" })) },
     { changes: s.changes.map((c) => ({ ...c, address: c.address + "x" })) }, { changes: [...s.changes].reverse() }, { contractSha256: H("8") }, { sourceCommit: "1".repeat(40) },
+    { provenance: { ...s.provenance, engineBinarySha256: H("7") } },
+    { provenance: { ...s.provenance, qualification: { state: "QUALIFIED", evidenceHash: H("6"), qualifiedAt: "2026-10-10T10:00:00.000Z" } } },
+    { provenance: { ...s.provenance, qualification: { state: "UNQUALIFIED", reason: "Another reason." } } },
   ];
   for (const change of variants) assert.notEqual(computeArtifactSha256({ ...s, ...change }), base, JSON.stringify(change));
 });
@@ -253,6 +261,40 @@ test("verifySealedPlan is the one verification: an already-loaded plan is re-che
   tamper("ARTIFACT_INVALID", { sealed: { ...loaded.sealed, changes: "none" }, planBytes: loaded.planBytes });
   tamper("ARTIFACT_INVALID", { sealed: loaded.sealed, planBytes: loaded.planBytes.toString("base64") });
   for (const junk of [undefined, null, 7, {}, { sealed: loaded.sealed }]) tamper("ARTIFACT_INVALID", junk);
+});
+
+test("a sealed plan or review bundle whose preview provenance is missing or malformed is refused, never shown as qualified", async () => {
+  const { result } = await sealed();
+  const ok = result as Extract<typeof result, { ok: true }>;
+  const loaded = await loadSealedPlan(ok.path);
+  assert.ok(loaded.ok);
+  const bundle = reviewBundleOf(loaded.sealed);
+  assert.ok(verifyReviewBundle(bundle).ok);
+  const qualified = { state: "QUALIFIED", evidenceHash: H("6"), qualifiedAt: "2026-10-10T10:00:00.000Z" };
+  for (const provenance of [
+    undefined, null, {}, { engineBinarySha256: "short", qualification: PROVENANCE.qualification }, { engineBinarySha256: H("e") },
+    { ...PROVENANCE, extra: true }, { ...PROVENANCE, qualification: { state: "QUALIFIED" } }, { ...PROVENANCE, qualification: { ...qualified, evidenceHash: "x" } },
+    { ...PROVENANCE, qualification: { ...qualified, qualifiedAt: "yesterday" } }, { ...PROVENANCE, qualification: { state: "UNQUALIFIED", reason: "" } },
+    { ...PROVENANCE, qualification: { state: "UNQUALIFIED", reason: "hidden\u202e text" } }, { ...PROVENANCE, qualification: { state: "MAYBE", reason: "unsure" } },
+    { ...PROVENANCE, qualification: { ...qualified, reason: "both" } },
+  ]) {
+    const plan = verifySealedPlan({ sealed: { ...loaded.sealed, provenance }, planBytes: loaded.planBytes });
+    assert.ok(!plan.ok && plan.code === "ARTIFACT_INVALID", JSON.stringify(provenance));
+    const review = verifyReviewBundle({ ...bundle, provenance });
+    assert.ok(!review.ok && review.code === "ARTIFACT_INVALID", JSON.stringify(provenance));
+  }
+  // A well-formed but edited provenance (claiming qualification after the fact) breaks the signed hash.
+  const claimed = verifyReviewBundle({ ...bundle, provenance: { ...PROVENANCE, qualification: qualified } });
+  assert.ok(!claimed.ok && claimed.code === "ARTIFACT_TAMPERED");
+});
+
+test("only the engine program that made the preview may apply it: another program, or none, is ENGINE_BINARY_CHANGED", () => {
+  assert.equal(engineBinaryChange({ provenance: PROVENANCE }, PROVENANCE.engineBinarySha256), undefined);
+  for (const now of [H("7"), undefined]) {
+    const changed = engineBinaryChange({ provenance: PROVENANCE }, now);
+    assert.equal(changed?.code, "ENGINE_BINARY_CHANGED");
+    assert.match(changed!.message, /Nothing was consumed/);
+  }
 });
 
 test("a missing or malformed record is ARTIFACT_INVALID, and a record of the wrong shape is refused", async () => {

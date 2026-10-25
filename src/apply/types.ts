@@ -115,6 +115,19 @@ export type SealedPlan = {
   createdAt: string;
   /** Normalized, redacted change summary: address, type, action, and what else an approver must see (an import, a move, a forget, an output change). Never plan values. */
   changes: PlanChange[];
+  /** Which engine made the preview, as observed when it was sealed. Bound by the artifact hash: approvers sign it. */
+  provenance: PreviewProvenance;
+};
+
+/**
+ * Where a preview came from (docs/act-pilot-apply.md, "Preview provenance"). The tool pins hash the downloaded archive,
+ * not the program, so the observable check is the qualification evidence: it records the hash of the program it ran.
+ */
+export type PreviewProvenance = {
+  /** SHA-256 of the engine program the preview ran (the aws CLI's for CDK). An apply with another program is refused. */
+  engineBinarySha256: string;
+  /** Whether real-engine qualification evidence covers this program, engine version and preview adapter for this target, or why not. */
+  qualification: { state: "QUALIFIED"; evidenceHash: string; qualifiedAt: string } | { state: "UNQUALIFIED"; reason: string };
 };
 
 /**
@@ -138,6 +151,8 @@ export type ApplyRefusalCode =
   | "SOURCE_UNVERIFIED"
   /** The running product is not the commit the plan was sealed from. Nothing was consumed. */
   | "SOURCE_CHANGED"
+  /** The engine program on this machine is not the one that made the sealed preview. Nothing was consumed. */
+  | "ENGINE_BINARY_CHANGED"
   | "TARGET_NOT_IN_CONTRACT"
   | "ARTIFACT_INVALID"
   | "ARTIFACT_TAMPERED"

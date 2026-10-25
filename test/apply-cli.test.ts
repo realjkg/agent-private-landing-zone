@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { generateKeyPairSync, randomBytes } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -369,7 +369,7 @@ test("seal writes a non-secret review bundle: the artifact's own fields and the 
   const text = readFileSync(s.bundle, "utf8");
   const bundle = JSON.parse(text) as Record<string, unknown>;
   assert.deepEqual(Object.keys(bundle).sort(), [
-    "artifactSha256", "changes", "changesSha256", "channel", "contractSha256", "createdAt", "engineVersion", "environment", "manifestHash", "planSha256", "policyVersion", "releaseIdentity", "sourceCommit", "target",
+    "artifactSha256", "changes", "changesSha256", "channel", "contractSha256", "createdAt", "engineVersion", "environment", "manifestHash", "planSha256", "policyVersion", "provenance", "releaseIdentity", "sourceCommit", "target",
   ]);
   assert.equal(bundle.artifactSha256, s.artifactSha256);
   assert.equal(bundle.environment, "DEV");
@@ -953,6 +953,34 @@ test("seal and apply stop before any question when the product commit is unknown
   const applied = await cli(w, applyArgs(s, [approval]), [applyPhrase(s)], applyIn(s));
   assert.equal(applied.code, 0, applied.stderr);
   assert.equal((JSON.parse(applied.stdout) as { sourceCommit: string }).sourceCommit, SOURCE_COMMIT, "the evidence names the commit");
+});
+
+test("approvers and the operator see which engine program made the preview and that real-engine evidence covers it; apply stops before any question when the program changed", async () => {
+  const w = await world();
+  const s = await sealed(w, "DEV");
+  const program = createHash("sha256").update(readFileSync(join(toolDir, "terraform"))).digest("hex");
+  const bundle = JSON.parse(readFileSync(s.bundle, "utf8")) as { provenance: { engineBinarySha256: string; qualification: { state: string } } };
+  assert.equal(bundle.provenance.engineBinarySha256, program, "the review bundle names the program approvers sign");
+  assert.equal(bundle.provenance.qualification.state, "QUALIFIED");
+  const approved = await cli(w, ["approve", "--bundle", s.bundle, "--key", keyFile("alice"), "--approver", "alice"], [approvePhrase(s)]);
+  assert.equal(approved.code, 0, approved.stderr);
+  const shown = approved.term.out.join("");
+  assert.ok(shown.includes("preview engine  version 1.9.5, program sha256 " + program), shown);
+  assert.match(shown, /qualified {7}yes: real-engine evidence [0-9a-f]{12} from /);
+  const approval = await approve(w, s, "alice");
+
+  const appliedBefore = applyCalls().length;
+  appendFileSync(join(toolDir, "terraform"), "// another build of the program\n");
+  try {
+    const swapped = await cli(w, applyArgs(s, [approval]), [applyPhrase(s)], applyIn(s));
+    assert.equal(swapped.code, 2);
+    assert.match(swapped.stderr, /^BLOCKED ENGINE_BINARY_CHANGED/);
+    assert.deepEqual(swapped.term.asked, [], "no phrase was asked");
+    assert.equal(applyCalls().length, appliedBefore, "no engine ran");
+  } finally { installFakeTerraform(toolDir); }
+  const applied = await cli(w, applyArgs(s, [approval]), [applyPhrase(s)], applyIn(s));
+  assert.equal(applied.code, 0, applied.stderr);
+  assert.ok(applied.term.out.join("").includes("program sha256 " + program), "the apply screen shows the program too");
 });
 
 test("record-live makes the execute step's live record only from a recorded successful apply, after the person attests it, and never overwrites it", async () => {

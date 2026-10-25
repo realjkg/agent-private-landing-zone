@@ -101,6 +101,11 @@ export function ChangeList(props: { review: ReviewSummary }) {
         <dt>Place</dt><dd><code>{review.target.account} | {review.target.backend} | {review.target.workspace}</code></dd>
         <dt>Change ID (first 12 characters)</dt><dd><code>{review.shortId}</code></dd>
         <dt>App version that prepared it</dt><dd><code>{review.sourceCommit.slice(0, 12)}</code></dd>
+        <dt>{COPY.reviewToolLabel}</dt><dd>{COPY.reviewToolVersion} <code>{review.preview.engineVersion}</code>, {COPY.reviewToolProgram} <code>{review.preview.programId}</code></dd>
+        <dt>{COPY.reviewTestedLabel}</dt>
+        <dd data-preview-tested={review.preview.qualified ? "yes" : "no"}>{review.preview.qualified
+          ? <>{COPY.reviewTestedYes} <code>{review.preview.qualifiedAt}</code></>
+          : <>{COPY.reviewTestedNo}<details><summary>{COPY.detailsLabel}</summary><pre>{review.preview.reason}</pre></details></>}</dd>
       </dl>
       <h3>Change summary</h3>
       <p>Added: <strong>{review.counts.create}</strong> · Modified: <strong>{review.counts.update}</strong> ·

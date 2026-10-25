@@ -79,6 +79,18 @@ Every seal and apply names the product source commit it ran from.
 
 Plans and review bundles sealed before this field existed fail verification as malformed. Seal them again.
 
+### Preview provenance
+
+Every seal records which engine program made its preview and whether real-engine evidence covers that program (`provenance` in `src/apply/types.ts`).
+
+- **What is recorded.** `engineBinarySha256` is the SHA-256 of the program the runner resolves from the approved tool directories (Terraform's `terraform`, the aws CLI for CDK), read once before the plan runs. `qualification` is `QUALIFIED`, with the evidence hash and date, only when the vault's real-engine qualification evidence for the preview adapter covers this adapter version, argument digest, engine version, the contract's DEV target, the attested client ids and this exact program hash. The check is the same one an apply passes (`verifyApplyQualification`). Otherwise it is `UNQUALIFIED` with the reason. The seal still needs a qualification record for the preview adapter, as before; the provenance says whether that record's evidence stands behind this program.
+- **Why not the tool pin.** `config/tool-pins.json` pins the checksum of the downloaded archive, not of the program inside it, so the program hash cannot be compared to the pin. The qualification evidence records the hash of the program it actually ran, so that is the comparison made.
+- **Bound and shown.** The provenance is inside the artifact hash and the review bundle, so approvers sign it and an edited claim is `ARTIFACT_TAMPERED`. `approve` and `apply` show it as `preview engine` and `qualified`. The console review shows "Build tool that made this preview" and "Tested on the real cloud"; when the answer is no, the exact reason is under Details.
+- **Apply.** A plan applies only with the program that made its preview. Another program, or none, is `ENGINE_BINARY_CHANGED`, refused before the apply phrase is asked and again by the driver, before anything is reserved or consumed. Restore that program, or seal and approve a new plan. The apply's own qualification check still runs, so an `UNQUALIFIED` preview made by a program the apply evidence does not cover is also refused (`ENGINE_NOT_QUALIFIED`).
+- **Not covered.** As for the qualification check, the same-uid operator who can replace the program between this read and the run is inside the trust boundary.
+
+Plans and review bundles sealed before this field existed fail verification as malformed. Seal them again.
+
 ### Recording live acceptance of the execute step
 
 After an owner-supervised apply has SUCCEEDED against the real account, the person who ran it records it:
@@ -101,9 +113,9 @@ The UI channel changes who may answer a phrase, not what is checked. The adapter
 
 ### The review bundle
 
-`seal` also writes a review bundle beside the sealed plan, at `<sealed plan path>.review.json` (mode 0600), and prints its path. It holds `artifactSha256`, `planSha256`, `manifestHash`, `releaseIdentity`, `environment`, `target`, `channel`, `engineVersion`, `policyVersion`, `contractSha256`, `createdAt`, `changes` and `changesSha256`. It holds no plan bytes and no plan, state or variable values, so it is not secret and the operator can send it to approvers on any channel.
+`seal` also writes a review bundle beside the sealed plan, at `<sealed plan path>.review.json` (mode 0600), and prints its path. It holds `artifactSha256`, `planSha256`, `manifestHash`, `releaseIdentity`, `environment`, `target`, `channel`, `engineVersion`, `policyVersion`, `contractSha256`, `sourceCommit`, `createdAt`, `changes`, `changesSha256` and `provenance`. It holds no plan bytes and no plan, state or variable values, so it is not secret and the operator can send it to approvers on any channel.
 
-`approve` reads only that file. It checks the exact field set, recomputes `changesSha256` and the artifact hash from the bundle's fields with the same function the sealer uses (`computeArtifactSha256`), and refuses on any mismatch (`ARTIFACT_TAMPERED`) or malformed field (`ARTIFACT_INVALID`) before it asks anything. It then shows the changes and the target, and the approver types the environment and the first 12 hex characters of the artifact hash. A bundle that was edited cannot get a signature for another plan, because the change list and target are inside the hash. What the check does not prove is that the vault holds a plan with that hash; if it does not, `apply` refuses (`ARTIFACT_INVALID`) and the approval is wasted, not misused. The approver reads a change list, not the plan; the apply re-derives the list from the plan bytes (see "Plaintext on disk").
+`approve` reads only that file. It checks the exact field set, recomputes `changesSha256` and the artifact hash from the bundle's fields with the same function the sealer uses (`computeArtifactSha256`), and refuses on any mismatch (`ARTIFACT_TAMPERED`) or malformed field (`ARTIFACT_INVALID`) before it asks anything. It then shows the changes, the target and the preview provenance, and the approver types the environment and the first 12 hex characters of the artifact hash. A bundle that was edited cannot get a signature for another plan, because the change list and target are inside the hash. What the check does not prove is that the vault holds a plan with that hash; if it does not, `apply` refuses (`ARTIFACT_INVALID`) and the approval is wasted, not misused. The approver reads a change list, not the plan; the apply re-derives the list from the plan bytes (see "Plaintext on disk").
 
 ### What the change list shows
 

@@ -19,7 +19,7 @@ import { assertApplyEvidence } from "../apply/evidence.js";
 import { attestedClientId } from "../apply/identities.js";
 import { holdsReservation } from "../apply/ledger.js";
 import { accountFieldsOf, specOf } from "../apply/provider.js";
-import { loadSealedPlan, reviewBundleOf, verifyReviewBundle, type LoadedPlan } from "../apply/seal.js";
+import { engineBinaryChange, loadSealedPlan, reviewBundleOf, verifyReviewBundle, type LoadedPlan } from "../apply/seal.js";
 import type { ApplyEnvironment, ApplyIdentity, ApplyOutcome, PilotChannel, PilotContract, SealedPlan, SignedApproval } from "../apply/types.js";
 import { isRecord, SAFE_OPERATOR } from "../teardown/driver/human.js";
 import { sweepStale } from "../teardown/driver/cleanup.js";
@@ -195,6 +195,14 @@ const changeLines = ({ changes }: Pick<SealedPlan, "changes">): string[] => chan
     (change.importing ? " [importing an existing resource]" : "") + (change.previousAddress ? " [moved from " + printable(change.previousAddress) + "]" : "") +
     (change.action === "FORGET" ? " [removed from state only; the real resource is left]" : ""));
 
+/** Which program made the preview and whether qualification evidence covers it: on every screen that shows a sealed plan. */
+const provenanceLines = ({ engineVersion, provenance }: Pick<SealedPlan, "engineVersion" | "provenance">): string[] => [
+  "  preview engine  version " + printable(engineVersion) + ", program sha256 " + provenance.engineBinarySha256,
+  provenance.qualification.state === "QUALIFIED"
+    ? "  qualified       yes: real-engine evidence " + provenance.qualification.evidenceHash.slice(0, 12) + " from " + provenance.qualification.qualifiedAt
+    : "  qualified       NO: " + printable(provenance.qualification.reason),
+];
+
 /**
  * The exit code for a refusal. 3 SPENT: the engine ran (the result carries an
  * outcome), or the approvals were consumed and the engine then did not start
@@ -303,7 +311,8 @@ const sealCommand: Command = async (flags, terminal, deps, out) => {
   writeFileSync(reviewBundlePath, JSON.stringify(reviewBundleOf(sealed), null, 2) + "\n", { mode: 0o600 });
   out.say(JSON.stringify({
     artifactSha256: sealed.artifactSha256, environment: sealed.environment, target: sealed.target, releaseIdentity: sealed.releaseIdentity,
-    manifestHash: sealed.manifestHash, sourceCommit: sealed.sourceCommit, sealedPlanPath: result.path, reviewBundlePath, changes: sealed.changes,
+    manifestHash: sealed.manifestHash, sourceCommit: sealed.sourceCommit, engineVersion: sealed.engineVersion, provenance: sealed.provenance,
+    sealedPlanPath: result.path, reviewBundlePath, changes: sealed.changes,
   }, null, 2) + "\n");
   return EXIT.PASS;
 };
@@ -407,7 +416,7 @@ const approveCommand: Command = async (flags, terminal, deps, out) => {
   terminal.write([
     "", "APPROVE AN APPLY OF THIS EXACT PLAN TO " + bundle.environment + " (your signature, valid until " + expiresAt.toISOString() + ", usable once)",
     "  artifact        " + bundle.artifactSha256, "  manifest hash   " + bundle.manifestHash,
-    "  target          " + targetString(bundle.target), "  approver        " + approverId, "  changes",
+    "  target          " + targetString(bundle.target), "  approver        " + approverId, ...provenanceLines(bundle), "  changes",
     ...changeLines(bundle), "", "The bundle's hashes match the artifact above (recomputed here, not trusted).",
     "Type " + phrase + " to sign (anything else stops here):", "",
   ].join("\n"));
@@ -444,6 +453,10 @@ const applyCommand: Command = async (flags, terminal, deps, out) => {
       : { ok: false, code: "SOURCE_CHANGED", message: "This plan was sealed from product commit " + sealedPlan.sealed.sourceCommit.slice(0, 12) + ", but " +
           sourceCommit.slice(0, 12) + " is running. Nothing was consumed. Apply from the commit that sealed it, or seal and approve a new plan." }, out);
   }
+  // And only with the engine program that made the preview (the driver checks again). Without an enabled contract the driver refuses first.
+  const contract = contractFor(deps);
+  const changedBinary = "reason" in contract ? undefined : engineBinaryChange(sealedPlan.sealed, engineOf(contract).binarySha256(deps.toolDirs, deps.env ?? process.env));
+  if (changedBinary) return blocked(changedBinary, out);
   const who = operatorId(deps);
 
   // One phrase carries the environment, the artifact and the target, so what is typed is what runs.
@@ -453,7 +466,7 @@ const applyCommand: Command = async (flags, terminal, deps, out) => {
     "  account         " + request.target.account, "  backend         " + request.target.backend, "  workspace       " + request.target.workspace,
     "  artifact        " + sealedPlan.sealed.artifactSha256, "  manifest hash   " + manifest.manifestHash, "  product commit  " + sealedPlan.sealed.sourceCommit,
     "  approvals       " + approvals.map((a) => printable(String(a.statement?.approverId))).join(", ") + " (the driver verifies each signature)",
-    "  changes", ...changeLines(sealedPlan.sealed),
+    ...provenanceLines(sealedPlan.sealed), "  changes", ...changeLines(sealedPlan.sealed),
     "", engineNotices(deps).applyNote,
     "Type this line exactly to apply (anything else stops here):", "  " + phrase, "",
   ].join("\n"));
