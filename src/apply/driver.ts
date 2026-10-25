@@ -10,7 +10,7 @@ import { interceptStopSignals } from "../tools/process.js";
 import { createPrivateDirectory } from "../tools/private-workdir.js";
 import { blueprintFromTerraformStatePull } from "../observe/blueprint.js";
 import { consumeApprovals, verifyApprovalSet } from "./approval.js";
-import { verifyCleanupProposal, type CleanupProposal } from "./cleanup-proposal.js";
+import { buildCleanupProposal, computeProposalSha256, verifyCleanupProposal, type CleanupProposal } from "./cleanup-proposal.js";
 import {
   DEFAULT_EVIDENCE_DIR, contractRefusal, isKillSwitchActive, loadPilotContract, loadQualificationRecords, pilotContractSha256, repoPaths, requireNotApplied, requireNotExecuted,
   requirePromotionEvidence, targetForEnvironment, verifyApplyQualification, type Refusal,
@@ -23,7 +23,7 @@ import { attestedClientId, checkApplyIdentities, verifyIdentityTargets } from ".
 import { channelMismatchMessage } from "./channel.js";
 import { finalizeArtifact, finalizeCleanup, releaseReservation, reserveArtifact } from "./ledger.js";
 import { readAppliedEvidence } from "./live-record.js";
-import { recordSha256, writeBlueprintRecord, type BlueprintRecord } from "./run-records.js";
+import { readBlueprintRecord, readObservationRecord, recordSha256, writeBlueprintRecord, type BlueprintRecord } from "./run-records.js";
 import { openNonceStore, type NonceStore } from "./nonces.js";
 import { specOf, type ProviderSpec } from "./provider.js";
 import { engineBinaryChange, planWithoutStoring, releaseIdentityOf, sealPlan, verifySealedPlan, type LoadedPlan, type SealResult } from "./seal.js";
@@ -534,8 +534,10 @@ export type CleanupRequest = {
   environment: ApplyEnvironment;
   target: ResolvedTarget;
   channel?: PilotChannel;
-  /** The proposal as the CLI loaded and showed it. The driver verifies its hash again. */
+  /** The proposal as the CLI loaded and showed it. The driver verifies its hash again, and derives it again from the records. */
   proposal: unknown;
+  /** The sealed plan the cleaned-up apply ran from: its change list is what the proposal's ownership classes were derived from. */
+  sealedPlan: LoadedPlan;
   /** The manifest the run was sealed against, and the project it describes: the engine needs the project to init. */
   manifest: ArtifactManifest;
   projectRoot: string;
@@ -543,6 +545,39 @@ export type CleanupRequest = {
 };
 
 const CLEANUP_PURPOSE = "cleanup-recovery";
+
+/**
+ * The proposal must be exactly what this run's records derive. The blueprint and the observation are read back from the
+ * ledger and must hash to what the proposal names; the proposal is then rebuilt from them, the sealed plan's change list
+ * and the pinned contract (the same ownership classes and protections `buildCleanupProposal` applies, with the identities
+ * configured now) and must hash to the proposal handed in. A list that names a resource this run did not create, a
+ * protected backend or identity, or a resource of another run, or that leaves one out, is refused before anything is
+ * reserved or consumed. A proposal's self-hash alone proves only that its own fields agree with each other.
+ */
+async function requireProposalDerivedFromRecords(
+  proposal: CleanupProposal, applied: ApplyEvidence, changes: readonly PlanChange[], contract: PilotContract, env: NodeJS.ProcessEnv, evidenceDir: string,
+): Promise<Refusal | undefined> {
+  const blueprint = await readBlueprintRecord(proposal.artifactSha256, proposal.applyEvidenceSha256, evidenceDir);
+  if (!blueprint || recordSha256(blueprint) !== proposal.blueprintSha256) {
+    return refuse("RUN_RECORD_MISSING", "The blueprint this proposal names is not the one recorded for this apply. Observe and propose the cleanup again; nothing was run.");
+  }
+  const observation = await readObservationRecord(proposal.artifactSha256, proposal.applyEvidenceSha256, evidenceDir);
+  if (!observation || recordSha256(observation) !== proposal.observationSha256) {
+    return refuse("RUN_RECORD_MISSING", "The observation this proposal names is not the one recorded for this apply. Observe and propose the cleanup again; nothing was run.");
+  }
+  const rebuilt = buildCleanupProposal({
+    applyEvidence: applied, applyEvidenceSha256: proposal.applyEvidenceSha256, blueprint, blueprintSha256: proposal.blueprintSha256, observation, observationSha256: proposal.observationSha256,
+    changes, channel: proposal.channel, contract, engineVersion: proposal.engineVersion, env, now: new Date(proposal.createdAt),
+  });
+  if (!rebuilt.ok) return rebuilt;
+  if (computeProposalSha256(rebuilt.proposal) !== proposal.proposalSha256) {
+    const list = (items: readonly { address: string }[]) => items.map((item) => item.address).sort().join(", ");
+    const what = list(rebuilt.proposal.deletes) !== list(proposal.deletes) ? "deletion list" : list(rebuilt.proposal.excluded) !== list(proposal.excluded) ? "list of kept resources" : "content";
+    return refuse("PROPOSAL_INVALID", "The proposal's " + what + " is not what this run's records derive (the sealed plan, the blueprint and the observation): it was not made by " +
+      "./alz apply propose-cleanup from these records, or the pinned identities changed since. Propose the cleanup again; nothing was run and no approval was consumed.");
+  }
+  return undefined;
+}
 
 /**
  * Executes an approved cleanup proposal, exactly as approved (docs/act-pilot-plan.md, "Cleanup of pilot-created
@@ -592,6 +627,17 @@ export async function runCleanup(request: CleanupRequest, deps: ApplyDeps): Prom
   if (applied.environment !== proposal.environment || !sameTarget(applied.target, proposal.target) || applied.contractSha256 !== proposal.contractSha256) {
     return refuse("PROPOSAL_INVALID", "The apply evidence and the proposal name different environments, targets or contracts.");
   }
+  // The sealed plan that apply ran from, verified against its own hashes as runApply does, and the one the proposal names.
+  const loadedSeal = verifySealedPlan(request.sealedPlan);
+  if (!loadedSeal.ok) return loadedSeal;
+  const { sealed } = loadedSeal;
+  if (sealed.artifactSha256 !== proposal.artifactSha256 || sealed.manifestHash !== applied.manifestHash || sealed.channel !== proposal.channel) {
+    return refuse("PROPOSAL_INVALID", "The sealed plan is not the one the cleaned-up apply ran from. Nothing was run.");
+  }
+  // The deletion list is derived here from the records, never taken from the proposal file (owner decision 1: the delete
+  // is bound in code to what this run created). A proposal that was edited and re-hashed cannot pass this.
+  const derived = await requireProposalDerivedFromRecords(proposal, applied, sealed.changes, contract, env, evidenceDir);
+  if (derived) return derived;
   let manifest: ArtifactManifest;
   try { manifest = verifyManifest(request.manifest); } catch { return refuse("ARTIFACT_INVALID", "The manifest is not valid or not sealed."); }
   if (!acceptsManifest(engine, manifest) || manifest.manifestHash !== applied.manifestHash || !sameTarget(manifest.target, proposal.target) || manifest.engineVersion !== proposal.engineVersion) {

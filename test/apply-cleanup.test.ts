@@ -109,9 +109,9 @@ const observeDeps = (w: World, now: Date = new Date(NOW.getTime() + 60_000)) => 
   contractPath: w.contractPath, contractPinPath: pinPathOf(w.contractPath), evidenceDir: w.dirs.evidence, env: w.deps.env, toolDirs: w.deps.toolDirs, scratchParent: w.dirs.scratch, now: () => now,
 });
 
-async function seal(w: World, environment: ApplyEnvironment = "DEV") {
+async function seal(w: World, environment: ApplyEnvironment = "DEV", mainTf = 'resource "aws_s3_bucket" "logs" {}\n') {
   const target = awsTargetOf(environment);
-  const p = writeProject(fresh("project"), target, 'resource "aws_s3_bucket" "logs" {}\n');
+  const p = writeProject(fresh("project"), target, mainTf);
   const result = await sealPreview({ invocation: human(target), environment, target, manifest: p.manifest, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved }, w.deps);
   assert.ok(result.ok, JSON.stringify(result));
   const loaded = await loadSealedPlan(result.path);
@@ -152,7 +152,7 @@ const cleanupApproval = (proposal: CleanupProposal, who: keyof typeof keys, over
   issuedAt: new Date(NOW.getTime() - 5 * 60_000).toISOString(), expiresAt: new Date(NOW.getTime() + 25 * 60_000).toISOString(), nonce: randomBytes(16).toString("hex"), ...over,
 }, keys[who].priv, "CLEANUP");
 const cleanup = (w: World, run: Awaited<ReturnType<typeof proposed>>, approvals: SignedApproval[] = [cleanupApproval(run.proposal, "alice")], over: Partial<CleanupRequest> = {}) => runCleanup({
-  invocation: human(run.s.sealed.target), environment: "DEV", target: { ...run.s.sealed.target }, proposal: run.proposal, manifest: run.s.project.manifest, projectRoot: run.s.project.projectRoot, approvals, ...over,
+  invocation: human(run.s.sealed.target), environment: "DEV", target: { ...run.s.sealed.target }, proposal: run.proposal, sealedPlan: run.s.loaded, manifest: run.s.project.manifest, projectRoot: run.s.project.projectRoot, approvals, ...over,
 }, w.deps);
 const refused = (result: { ok: boolean }, code: string) => {
   assert.equal(result.ok, false, JSON.stringify(result));
@@ -380,7 +380,7 @@ test("cleanup refuses, consuming nothing: a wrong target, an apply approval, an 
   refused(await cleanup(w, run, undefined, { proposal: { ...run.proposal, deletes: [...run.proposal.deletes, { address: "aws_sqs_queue.preexisting", type: "aws_sqs_queue", identifier: OLD_QUEUE, ownership: "RUN_CREATED", observed: "VERIFIED" }] } }), "PROPOSAL_INVALID");
   refused(await cleanup(w, run, undefined, { proposal: { ...run.proposal, channel: "UI", proposalSha256: computeProposalSha256({ ...run.proposal, channel: "UI" }) } }), "CHANNEL_MISMATCH");
   refused(await cleanup(w, run, undefined, { proposal: { ...run.proposal, applyEvidenceSha256: "d".repeat(64), proposalSha256: computeProposalSha256({ ...run.proposal, applyEvidenceSha256: "d".repeat(64) }) } }), "RUN_RECORD_MISSING");
-  refused(await runCleanup({ invocation: human(run.s.sealed.target), environment: "DEV", target: run.s.sealed.target, proposal: run.proposal, manifest: run.s.project.manifest, projectRoot: run.s.project.projectRoot, approvals: [cleanupApproval(run.proposal, "alice")] },
+  refused(await runCleanup({ invocation: human(run.s.sealed.target), environment: "DEV", target: run.s.sealed.target, proposal: run.proposal, sealedPlan: run.s.loaded, manifest: run.s.project.manifest, projectRoot: run.s.project.projectRoot, approvals: [cleanupApproval(run.proposal, "alice")] },
     { ...w.deps, sourceCommit: "0".repeat(40) }), "SOURCE_CHANGED");
   nothingRan();
   assert.deepEqual(readdirSync(w.dirs.evidence).filter((n) => n.endsWith(CLEANUP_SUFFIX)), [], "no cleanup entry exists");
@@ -392,6 +392,51 @@ test("cleanup refuses, consuming nothing: a wrong target, an apply approval, an 
   refused(await cleanup(w, run, [approval]), "PROPOSAL_ALREADY_EXECUTED");
   refused(await cleanup(w, run, [cleanupApproval(run.proposal, "alice")]), "PROPOSAL_ALREADY_EXECUTED");
   assert.equal(destroyPlans().length, 1, "the destroy planned once");
+});
+
+test("a forged, re-hashed proposal never executes: the deletion list is derived again from the sealed plan, the blueprint and the observation, and a protected identity, the state backend, a pre-existing resource, a resource of another run, or a dropped entry is refused before any approval is consumed", async () => {
+  const w = world();
+  cloud();
+  const run = await proposed(w);
+  const honest = run.proposal;
+  const rehashed = (edit: Partial<CleanupProposal>): CleanupProposal => {
+    const fields = { ...honest, ...edit, deletes: [...(edit.deletes ?? honest.deletes)].sort((a, b) => (a.address < b.address ? -1 : 1)) };
+    return { ...fields, proposalSha256: computeProposalSha256(fields) };
+  };
+  const row = (address: string, type: string, identifier: string) => ({ address, type, identifier, ownership: "RUN_CREATED" as const, observed: "VERIFIED" as const });
+  const without = (address: string) => honest.excluded.filter((x) => x.address !== address);
+  const approval = cleanupApproval(honest, "alice");
+  const forgeries: [string, CleanupProposal, string][] = [
+    // Each forgery hashes to itself, so the self-hash check passes; the records do not derive it.
+    ["the pilot's APPLY role, protected", rehashed({ deletes: [...honest.deletes, row("aws_iam_role.apply", "aws_iam_role", "alz-apply-dev")], excluded: without("aws_iam_role.apply") }), "PROPOSAL_INVALID"],
+    ["the state backend bucket, protected", rehashed({ deletes: [...honest.deletes, row("aws_s3_bucket.state", "aws_s3_bucket", STATE_BUCKET)], excluded: without("aws_s3_bucket.state") }), "PROPOSAL_INVALID"],
+    ["a resource the state holds but the plan never created", rehashed({ deletes: [...honest.deletes, row("aws_sqs_queue.preexisting", "aws_sqs_queue", OLD_QUEUE)], excluded: without("aws_sqs_queue.preexisting") }), "PROPOSAL_INVALID"],
+    ["a resource of another run entirely", rehashed({ deletes: [...honest.deletes, row("aws_s3_bucket.other", "aws_s3_bucket", "examplefake-other-run")] }), "PROPOSAL_INVALID"],
+    ["a dropped entry", rehashed({ deletes: honest.deletes.slice(1) }), "PROPOSAL_INVALID"],
+    ["a kept resource silently removed from the kept list", rehashed({ excluded: without("aws_sqs_queue.preexisting") }), "PROPOSAL_INVALID"],
+    ["a blueprint hash of another record", rehashed({ blueprintSha256: "b".repeat(64) }), "RUN_RECORD_MISSING"],
+    ["an observation hash of another record", rehashed({ observationSha256: "c".repeat(64) }), "RUN_RECORD_MISSING"],
+  ];
+  for (const [label, forged, code] of forgeries) {
+    assert.ok(verifyCleanupProposal(forged).ok, label + ": the forgery is self-consistent");
+    // The approval is signed over the forged hash: it verifies, and still nothing runs.
+    const result = await cleanup(w, { ...run, proposal: forged }, [cleanupApproval(forged, "alice")]);
+    assert.equal(result.ok, false, label + ": " + JSON.stringify(result).slice(0, 200));
+    refused(result, code);
+    assert.match((result as { message: string }).message, /nothing was run|Nothing was run/, label);
+  }
+  // The sealed plan of another run (another project, so another artifact), or a tampered one, with the honest proposal: refused the same way.
+  const other = await seal(w, "DEV", 'resource "aws_s3_bucket" "logs" { force_destroy = true }\n');
+  assert.notEqual(other.sealed.artifactSha256, run.s.sealed.artifactSha256);
+  refused(await cleanup(w, run, [approval], { sealedPlan: other.loaded }), "PROPOSAL_INVALID");
+  refused(await cleanup(w, run, [approval], { sealedPlan: { sealed: run.s.loaded.sealed, planBytes: Buffer.from("x") } }), "ARTIFACT_TAMPERED");
+  assert.equal(destroyPlans().length, 0, "no destroy was planned for any forgery");
+  assert.equal(applyCalls().length, 1, "only the original apply ran");
+  assert.deepEqual(readdirSync(w.dirs.evidence).filter((n) => n.endsWith(CLEANUP_SUFFIX)), [], "nothing was reserved or recorded");
+  // The honest proposal with the same, unconsumed approval still runs once.
+  const done = await cleanup(w, run, [approval]);
+  assert.ok(done.ok, JSON.stringify(done));
+  assert.deepEqual(destroyPlans()[0]!.args.filter((a) => a.startsWith("-target=")).sort(), honest.deletes.map((d) => "-target=" + d.address).sort());
 });
 
 test("the destroy plan must be exactly the approved list: a dependent the engine adds, an address the state no longer holds, or a non-delete action stops before any approval is consumed", async () => {
