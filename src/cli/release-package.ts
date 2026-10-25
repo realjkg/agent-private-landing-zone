@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { pathToFileURL } from "node:url";
 import {
   readdir,
   readFile,
@@ -13,6 +14,8 @@ import {
 } from "node:path";
 
 import { BRAND_PROVENANCE } from "../brand/identity.js";
+
+export const RELEASE_BRAND_FILE_NAME = "brand-provenance.json";
 
 import {
   createReleaseManifest,
@@ -175,7 +178,7 @@ async function generate(
       { encoding: "utf8", mode: 0o600, flag: "wx" },
     );
     // Atomic replacement does not follow a preexisting output symlink.
-    await rename(tempBrandPath, resolve(root, "brand-provenance.json"));
+    await rename(tempBrandPath, resolve(root, RELEASE_BRAND_FILE_NAME));
   } finally {
     await rm(tempBrandPath, { force: true });
   }
@@ -266,6 +269,7 @@ async function generate(
   await verify(root);
 }
 
+export async function runReleasePackage(): Promise<void> {
 const root =
   resolve(
     readArg("--root") ??
@@ -305,4 +309,10 @@ try {
       : "Release packaging failed.",
   );
   process.exitCode = 1;
+}
+
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  void runReleasePackage();
 }
