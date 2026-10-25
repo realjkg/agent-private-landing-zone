@@ -792,7 +792,7 @@ test("approvers and the operator see an import, a move, a forget and output chan
 type Readiness = { ready: boolean; checks: { check: string; ok: boolean; state: string; detail?: string }[] };
 const stateOf = (report: Readiness, prefix: string) => report.checks.find((c) => c.check.startsWith(prefix))?.state;
 
-test("preflight is read-only and offline: every item says READY, MISSING, INVALID, UNVERIFIED or UNAVAILABLE, and names no value", async () => {
+test("preflight is read-only and offline: every item says READY, MISSING, INVALID, UNVERIFIED, UNAVAILABLE or BLOCKED, and names no value", async () => {
   const w = await world();
   const before = engineCalls().length;
   const run = async (args: string[], over: Partial<ApplyCliDeps> = {}) => cli(w, ["preflight", ...args], [], over);
@@ -817,12 +817,12 @@ test("preflight is read-only and offline: every item says READY, MISSING, INVALI
   const drafted = JSON.parse((await cli(draft, ["preflight", "--environment", "DEV"], [])).stdout) as Readiness;
   assert.equal(drafted.checks[0].state, "READY", "a draft contract's shape is checked even though it is not enabled");
   assert.equal(stateOf(drafted, "pilot contract pinned"), "MISSING");
-  // A missing tool is UNAVAILABLE; the emergency stop makes the pilot UNAVAILABLE.
+  // A missing tool is UNAVAILABLE; the emergency stop, a stop put in place on purpose, is BLOCKED.
   assert.equal(stateOf(JSON.parse((await run(["--environment", "DEV"], { toolDirs: [fresh("empty-tools")] })).stdout), "tool terraform"), "UNAVAILABLE");
   writeFileSync(KILL, "stop");
   const stopped = await run(["--environment", "DEV"]);
   assert.equal(stopped.code, 2);
-  assert.equal(stateOf(JSON.parse(stopped.stdout), "kill switch absent"), "UNAVAILABLE");
+  assert.equal(stateOf(JSON.parse(stopped.stdout), "kill switch absent"), "BLOCKED");
   rmSync(KILL);
   // The environment is required and checked; no flag changes what is checked.
   assert.equal((await run(["--environment", "STAGING"])).code, 1);

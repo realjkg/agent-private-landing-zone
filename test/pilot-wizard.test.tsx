@@ -189,18 +189,20 @@ describe("step 1: the path is chosen once", () => {
 describe("step 2: readiness in plain words", () => {
   const checks: PreflightCheck[] = [
     { check: "contract shape (provider, engine, targets, approvals, approvers)", ok: true, state: "READY" },
-    { check: "pilot contract pinned and enabled (required before seal)", ok: false, state: "MISSING", detail: "enabled: the contract does not enable ACT" },
-    { check: "identities configured, distinct, no fallback (DISCOVERY, STATE, STATE_WRITE, APPLY)", ok: false, state: "INVALID", detail: "IDENTITY_COLLAPSED" },
+    { check: "pilot contract pinned and enabled (required before seal)", ok: false, state: "MISSING", responsible: "OWNER", detail: "enabled: the contract does not enable ACT" },
+    { check: "identities configured, distinct, no fallback (DISCOVERY, STATE, STATE_WRITE, APPLY)", ok: false, state: "INVALID", responsible: "OPERATOR", detail: "IDENTITY_COLLAPSED" },
     { check: "identities aimed at the DEV account", ok: true, state: "READY" },
     { check: "plan will embed STATE_WRITE settings: no", ok: true, state: "READY" },
-    { check: "tool terraform installed in an approved directory", ok: false, state: "UNAVAILABLE" },
-    { check: "kill switch absent", ok: true, state: "READY" },
-    { check: "engine qualified in DEV for seal and apply (TERRAFORM)", ok: false, state: "MISSING", detail: "No qualification record exists" },
-    { check: "identity separation attested on the real DEV backend", ok: false, state: "UNVERIFIED" },
+    { check: "tool terraform installed in an approved directory", ok: false, state: "UNAVAILABLE", responsible: "TOOL" },
+    { check: "kill switch absent", ok: false, state: "BLOCKED", responsible: "OWNER" },
+    { check: "engine qualified in DEV for seal and apply (TERRAFORM)", ok: false, state: "MISSING", responsible: "OWNER", detail: "No qualification record exists" },
+    { check: "identity separation attested on the real DEV backend", ok: false, state: "UNVERIFIED", responsible: "OWNER" },
   ];
   const stateWords: Record<PreflightCheck["state"], string> = {
     READY: COPY.stateReady, MISSING: COPY.stateMissing, INVALID: COPY.stateInvalid, UNVERIFIED: COPY.stateUnverified, UNAVAILABLE: COPY.stateUnavailable,
+    BLOCKED: COPY.stateBlocked,
   };
+  const partyWords = { OWNER: COPY.partyOwner, OPERATOR: COPY.partyOperator, TOOL: COPY.partyTool } as const;
 
   test("each red item says what is wrong and the exact fix, each green item says it is ready, and Continue waits for green", async () => {
     const fake = install();
@@ -228,6 +230,8 @@ describe("step 2: readiness in plain words", () => {
         expect(item.textContent).toContain(words.wrong);
         expect(item.textContent).toContain("How to fix it:");
         expect(item.textContent).toContain(words.fix);
+        // Every item that is not ready names who can fix it.
+        expect(item.textContent).toContain(COPY.whoFixes + " " + partyWords[checks[index].responsible!]);
       }
     }
     // Whether the sign-ins stay separate on the real cloud is an item with evidence behind it, not a standing note.
@@ -248,7 +252,7 @@ describe("step 2: readiness in plain words", () => {
   });
 
   test("every line the real readiness check can print has words, so none falls back to a bare name", () => {
-    const source = read("src/cli/apply.ts");
+    const source = read("src/apply/readiness.ts");
     const names = [...source.matchAll(/\badd\("((?:[^"\\]|\\.)*)"/g)].map((match) => match[1]);
     const dynamic = [
       "contract shape (provider, engine, targets, approvals, approvers)", "pilot contract pinned and enabled (required before seal)",

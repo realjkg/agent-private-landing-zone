@@ -170,7 +170,11 @@ export function PreparedSummary(props: { prepared: PreparedFiles }) {
 /** The plain word for why a readiness item is, or is not, ready. */
 const stateWord = (state: PreflightCheck["state"]): string => ({
   READY: COPY.stateReady, MISSING: COPY.stateMissing, INVALID: COPY.stateInvalid, UNVERIFIED: COPY.stateUnverified, UNAVAILABLE: COPY.stateUnavailable,
+  BLOCKED: COPY.stateBlocked,
 })[state] ?? COPY.stateInvalid;
+/** Who can make a readiness item ready, in plain words. */
+const partyWord = (party: PreflightCheck["responsible"]): string | undefined =>
+  party === undefined ? undefined : ({ OWNER: COPY.partyOwner, OPERATOR: COPY.partyOperator, TOOL: COPY.partyTool })[party];
 
 /** The product version an apply's record names, when the record came back. */
 const appliedVersion = (result: RunResult): string | undefined => {
@@ -437,6 +441,7 @@ export default function PilotWizard(props: PilotWizardProps) {
                               <>
                                 <p><strong>What is wrong:</strong> {words.wrong}</p>
                                 <p><strong>How to fix it:</strong> {words.fix}</p>
+                                {partyWord(item.responsible) && <p><strong>{COPY.whoFixes}</strong> {partyWord(item.responsible)}</p>}
                               </>
                             )}
                             {level !== "BEGINNER" && (

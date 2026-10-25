@@ -238,46 +238,6 @@ async function planAgainstTarget(request: SealRequest, deps: SealDeps, kind: "se
   }
 }
 
-/** What readiness can say about qualification, from the same records and checks seal and apply use. */
-export type QualificationReadiness =
-  | { state: "READY"; engineVersion: string; qualifiedAt: string; detail: string }
-  | { state: "MISSING" | "INVALID"; detail: string };
-
-/**
- * Read-only: whether the contract's engine is qualified for both its preview (seal) and apply adapters, and whether the
- * apply qualification still matches this machine (engine binary, attested principals, DEV target, age). It runs the same
- * `engineActivation` and `verifyApplyQualification` checks as seal and apply, so readiness cannot say "ready" where they
- * refuse. It starts no engine, reads no cloud and writes nothing. Without a usable record the answer is MISSING (run
- * `./alz apply qualify` in DEV); a record that no longer matches is INVALID.
- */
-export async function qualificationReadiness(contract: PilotContract, deps: SealDeps, environment: ApplyEnvironment): Promise<QualificationReadiness> {
-  const engine = engineOf(contract);
-  const spec = specOf(contract);
-  const vault = deps.qualificationDir ?? repoPaths().qualifications;
-  let records: Awaited<ReturnType<typeof loadQualificationRecords>>;
-  try { records = await loadQualificationRecords(spec, vault); } catch { return { state: "INVALID", detail: "The qualification records cannot be read with this evidence key." }; }
-  const preview = engine.previewAdapter();
-  const latest = records.filter((r) => r.engine === engine.id && r.adapterVersion === preview.adapterVersion && r.argvDigest === preview.argvDigest)
-    .sort((a, b) => b.qualifiedAt.localeCompare(a.qualifiedAt))[0];
-  if (!latest) return { state: "MISSING", detail: "No qualification record exists for this engine's preview adapter. A person runs ./alz apply qualify against DEV." };
-  // Seal needs the preview adapter's record and apply the apply adapter's, both for the same engine version.
-  const [previewRecord, applyRecord] = [preview, engine.applyAdapter].map((adapter) =>
-    engineActivation(engine.id, records, [adapter as unknown as EngineAdapter], latest.engineVersion));
-  if (!previewRecord.enabled) return { state: "MISSING", detail: previewRecord.reason };
-  if (!applyRecord.enabled) return { state: "MISSING", detail: applyRecord.reason };
-  const env = deps.env ?? process.env;
-  const attested = await verifyApplyQualification(applyRecord.record, vault,
-    { adapterVersion: engine.applyAdapter.adapterVersion, argvDigest: engine.applyAdapter.argvDigest, engineVersion: latest.engineVersion },
-    {
-      dev: contract.targets.DEV, now: (deps.now ?? (() => new Date()))(), terraformSha256: engine.binarySha256(deps.toolDirs, env),
-      stateWriteClientId: attestedClientId(env, engine.attests[0], spec), applyClientId: attestedClientId(env, engine.attests[1], spec),
-      principalsPerEnvironment: spec.principalPerEnvironment && environment !== "DEV",
-    }, spec);
-  if (!attested.ok) return { state: "INVALID", detail: attested.message };
-  return { state: "READY", engineVersion: latest.engineVersion, qualifiedAt: latest.qualifiedAt,
-    detail: "Qualified in DEV for engine version " + latest.engineVersion + " on " + latest.qualifiedAt.slice(0, 10) + "; the evidence matches this machine." };
-}
-
 /**
  * The real-engine qualification run (`./alz apply qualify`), DEV only: the
  * seal's steps with a throwaway plan that is never stored, then the apply
