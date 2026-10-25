@@ -192,11 +192,19 @@ test("a .gitignore change selects the secret-rule test and leaves no coverage ga
 });
 
 test("the journey matrix and every file it cites select the acceptance check", () => {
-  const matrix = JSON.stringify({ rows: [{ steps: { prepare: { code: ["src/apply/prepare.ts"], tests: { ui: [{ file: "test/ui-channel.test.ts", title: "t" }] } } } }] });
+  const matrix = JSON.stringify({ rows: [{ steps: { prepare: { code: ["src/apply/prepare.ts"], tests: { ui: [{ file: "test/ui-channel.test.ts", title: "t" }] } },
+    execute: { liveEvidence: "config/acceptance/evidence/aws-terraform-execute-dev-1.json" } } }] });
   const files = new Map([...fixture(), ["config/acceptance/journeys.json", matrix], ["test/acceptance-journeys.test.ts", "test()"],
-    ["src/apply/prepare.ts", "export const x = 1;"], ["test/ui-channel.test.ts", "test()"], ["src/other.ts", "export const y = 1;"]]);
-  for (const path of ["config/acceptance/journeys.json", "src/apply/prepare.ts", "test/ui-channel.test.ts"]) {
+    ["src/apply/prepare.ts", "export const x = 1;"], ["test/ui-channel.test.ts", "test()"], ["src/other.ts", "export const y = 1;"],
+    ["config/acceptance/evidence/aws-terraform-execute-dev-1.json", "{}"]]);
+  for (const path of ["config/acceptance/journeys.json", "src/apply/prepare.ts", "test/ui-channel.test.ts", "config/acceptance/evidence/aws-terraform-execute-dev-1.json"]) {
     assert.ok(planChanged([path], files).nodeTests.includes("test/acceptance-journeys.test.ts"), path);
   }
   assert.ok(!planChanged(["src/other.ts"], files).nodeTests.includes("test/acceptance-journeys.test.ts"), "an uncited file does not");
+});
+
+test("a change under src/apply selects the driver-import guard, which scans files instead of following imports", () => {
+  const files = new Map([...fixture(), ["src/apply/new-module.ts", "export const x = 1;"], ["test/new-module.test.ts", 'import { x } from "../src/apply/new-module.js";'],
+    ["test/teardown-driver-denials.test.ts", "test()"], ["test/apply-boundary.test.ts", "test()"], ["test/security-boundaries.test.ts", "test()"]]);
+  assert.ok(planChanged(["src/apply/new-module.ts"], files).nodeTests.includes("test/teardown-driver-denials.test.ts"));
 });

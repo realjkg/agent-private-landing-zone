@@ -6,7 +6,8 @@ import { join } from "node:path";
 // A row is one cloud and one build path. Its six steps each hold one status, and a status is a claim this module checks
 // against the repository: cited code must exist, cited tests must exist under their exact titles, and the console proof must
 // be a test that drives the real pilot router, never a mocked page. There is no "complete": a path is implemented only when
-// every step and every row proof passes, and it is live only when an evidence file names the commit, target, engine and outcome.
+// every step and every row proof passes. A single step is live only with its own owner-attested record from a successful apply
+// (`./alz apply record-live`); a row is live only when every step passes and an evidence file names the commit, target, engine and outcome.
 // Synthetic and live are separate claims; neither stands in for the other.
 
 export const JOURNEY_STEPS = ["prepare", "preview", "approve", "execute", "observe", "cleanup"] as const;
@@ -45,6 +46,8 @@ export type StepClaim = {
   missing?: string;
   /** Required for BLOCKED: the exact dependency. */
   blockedBy?: string;
+  /** Required for LIVE_PASS: the committed live record for this step (`./alz apply record-live`), naming its commit, cloud, engine and target. */
+  liveEvidence?: string;
 };
 export type ProofClaim = { status: "NOT_IMPLEMENTED" | "SYNTHETIC_PASS"; code?: string[]; tests?: TestRef[]; missing?: string };
 export type LiveClaim = { status: "NOT_IMPLEMENTED" | "BLOCKED" | "LIVE_PASS"; blockedBy?: string; missing?: string; evidence?: string };
@@ -69,6 +72,7 @@ export type RowReport = {
 };
 export type AcceptanceResult = { problems: string[]; rows: RowReport[] };
 
+const parseJson = (body: string | undefined): unknown => { try { return body === undefined ? undefined : JSON.parse(body); } catch { return undefined; } };
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const text = (value: unknown): value is string => typeof value === "string" && value.trim().length >= 10;
 
@@ -164,7 +168,17 @@ export function checkJourneyMatrix(matrix: unknown, root: string): AcceptanceRes
         }
         for (const proof of STEP_NEEDS[step] ?? []) if (!proofPass[proof]) problems.push(where + ": " + status + " needs the row proof " + proof);
       }
-      if (status === "LIVE_PASS" && row.live?.status !== "LIVE_PASS") problems.push(where + ": a step is LIVE_PASS only when the row's live acceptance passed");
+      if (status === "LIVE_PASS") {
+        // One step can be live before the row is: its own owner-attested record, made from a successful apply's evidence.
+        const record = parseJson(typeof claim.liveEvidence === "string" ? read(claim.liveEvidence) : undefined);
+        if (!isRecord(record) || record.schemaVersion !== 1 || record.label !== "LIVE" || record.step !== step || record.cloud !== row.cloud ||
+            record.engine !== row.path || typeof record.sourceCommit !== "string" || !/^[0-9a-f]{40}$/.test(record.sourceCommit) ||
+            record.outcome !== "SUCCEEDED" || !isRecord(record.target) || typeof record.target.account !== "string" ||
+            ![record.artifactSha256, record.evidenceSha256, record.contractSha256].every((h) => typeof h === "string" && /^[0-9a-f]{64}$/.test(h)) ||
+            typeof record.attestedBy !== "string" || record.attestedBy === "") {
+          problems.push(where + ": LIVE_PASS needs liveEvidence: a LIVE record for this step, cloud and engine with the source commit, target, artifact, evidence hash and a SUCCEEDED outcome");
+        }
+      }
     }
 
     const live = row.live;
