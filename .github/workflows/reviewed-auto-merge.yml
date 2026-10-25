@@ -30,6 +30,7 @@ jobs:
       contents: read
       pull-requests: write
       checks: read
+      issues: read
     steps:
       - name: Verify exact-head review, protections and checks; request native auto-merge
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a4f4e0bb99 # v8.0.0
@@ -55,6 +56,23 @@ jobs:
                 { owner, repo, issue_number: number })).map(l => l.name);
               if (!labels.includes('automerge:approved-scope') ||
                   labels.some(l => ['design-decision', 'architecture', 'security-boundary', 'act', 'release-gate', 'human-decision'].includes(l))) continue;
+              // Supersession is a hard veto, even if all tests and approvals are green.
+              // Use explicit labels AND PR relationship metadata. Ambiguous evidence fails closed.
+              const blockedLabels = ['superseded', 'superseded-by', 'obsolete', 'do-not-merge'];
+              if (labels.some(l => blockedLabels.includes(l) || l.startsWith('superseded-by:'))) continue;
+              const { data: issue } = await github.rest.issues.get({ owner, repo, issue_number: number });
+              const body = (pr.body || '') + '\\n' + (issue.body || '');
+              if (/\\b(superseded\\s+by|replaced\\s+by|obsolete\\s+in\\s+favor\\s+of)\\s+(?:[\\w.-]+\\/[\\w.-]+)?#?\\d+\\b/i.test(body)) continue;
+              // An explicit superseding PR can reference the older PR in its title/body.
+              // Restrict to open PRs; closed-but-merged replacement references are also
+              // caught by the superseded label/body on the older PR.
+              const openPRs = await github.paginate(github.rest.pulls.list,
+                { owner, repo, state: 'open', per_page: 100 });
+              if (openPRs.length > 1000) continue; // bound API spend / ambiguous huge queues
+              const referencedAsSuperseded = openPRs.some(other => other.number !== number &&
+                new RegExp('\\\\b(?:supersedes|replaces)\\\\s+(?:[\\\\w.-]+\\\\/[\\\\w.-]+)?#?' + number + '\\\\b', 'i')
+                  .test((other.title || '') + '\\n' + (other.body || '')));
+              if (referencedAsSuperseded) continue;
               const reviews = await github.paginate(github.rest.pulls.listReviews, { owner, repo, pull_number: number });
               const latest = new Map();
               for (const r of reviews) {
