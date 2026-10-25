@@ -2,14 +2,15 @@ import { createHash } from "node:crypto";
 import { readFile, realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 
-import { pilotContractPinned, pilotContractSha256 } from "../apply/contract.js";
+import { loadPilotContract, pilotContractPinned, pilotContractSha256 } from "../apply/contract.js";
 import type { EngineId, PilotContract, ProviderId } from "../apply/types.js";
 import { PHASE_E_SCENARIOS } from "./phase-e.js";
 import { PRODUCTION_DEPLOYMENT_CONTRACT, pilotCombinationListed } from "./production-contract.js";
 
 export type ReleaseGateMode =
   | "CI" | "PRIVATE_MODEL" | "LIVE_PROVIDER" | "LIVE_PREVIEW"
-  | "ISOLATED_RECOVERY" | "LIFECYCLE" | "SECURITY_SCAN" | "LIVE_METRIC";
+  | "ISOLATED_RECOVERY" | "LIFECYCLE" | "SECURITY_SCAN" | "LIVE_METRIC"
+  | "LIVE_ACT" | "ACT_RECOVERY" | "INDEPENDENT_REVIEW";
 export type ReleaseGate = {
   id: string;
   mode: ReleaseGateMode;
@@ -21,8 +22,20 @@ const previewScenarioIds = [
     "pulumi-aws-greenfield",
     "pulumi-aws-brownfield",
     "pulumi-azure-brownfield",
+    "terraform-azure-brownfield",
   ]),
 ];
+/** The operating systems a release is qualified on, one gate each: a Linux pass never stands in for macOS or Windows. */
+export const RELEASE_PLATFORMS = ["darwin-arm64", "darwin-x64", "linux-x64", "linux-arm64", "win32-arm64", "win32-x64"] as const;
+/** What one platform's lifecycle report must show it actually ran on that host. */
+export const PLATFORM_LIFECYCLE_CHECKS = [
+  "install", "launch", "uninstall", "repeat-uninstall", "partial-install-recovery", "unusual-paths", "unrelated-files-preserved",
+] as const;
+/** The pilot paths a release can qualify live, each against its journey row (config/acceptance/journeys.json). */
+export const ACT_RELEASE_PATHS: readonly { provider: ProviderId; engine: EngineId }[] = [
+  { provider: "AWS", engine: "TERRAFORM" }, { provider: "AZURE", engine: "TERRAFORM" }, { provider: "AWS", engine: "CDK" },
+];
+export const actGateId = (path: { provider: string; engine: string }): string => "act:" + path.provider.toLowerCase() + "-" + path.engine.toLowerCase();
 export const PRODUCTION_RELEASE_GATES: readonly ReleaseGate[] = [
   { id: "source-ci", mode: "CI", why: "Type check and functional regression on exact release source" },
   { id: "release-archive", mode: "CI", why: "Reproducible archive, SBOM, release manifest and provenance" },
@@ -40,6 +53,16 @@ export const PRODUCTION_RELEASE_GATES: readonly ReleaseGate[] = [
     id: "lifecycle:" + id, mode: "LIFECYCLE" as const,
     why: "Actual lifecycle execution with data integrity and rollback evidence",
   })),
+  ...RELEASE_PLATFORMS.map((id) => ({
+    id: "platform:" + id, mode: "LIFECYCLE" as const,
+    why: "Install, launch, uninstall and recovery on a real disposable " + id + " host",
+  })),
+  ...ACT_RELEASE_PATHS.map((path) => ({
+    id: actGateId(path), mode: "LIVE_ACT" as const,
+    why: "Owner-supervised DEV apply on the real account, recorded from its own ledger evidence (./alz apply record-live)",
+  })),
+  { id: "act-run-recovery", mode: "ACT_RECOVERY", why: "An interrupted real pilot apply reconciled from its ledger, never resumed without new approval" },
+  { id: "security-review:independent", mode: "INDEPENDENT_REVIEW", why: "Security review of the candidate by someone who did not write it" },
   ...["operational-excellence", "security", "reliability", "performance", "cost", "sustainability"].map((id) => ({
     id: "pillar:" + id, mode: "LIVE_METRIC" as const,
     why: "Actual deployed-environment measurement, not a synthetic fixture",
@@ -68,7 +91,8 @@ export type ActPilotScope = { provider: ProviderId; engine: EngineId; contractSh
 export type GateReview = {
   id: string;
   mode: ReleaseGateMode;
-  status: "EVIDENCE_PRESENT" | "BLOCKED";
+  /** OUT_OF_SCOPE only for a gate the owner's release scope excludes (config/release/scope.json). */
+  status: "EVIDENCE_PRESENT" | "BLOCKED" | "OUT_OF_SCOPE";
   blockers: string[];
   evidenceSha256?: string;
 };
@@ -140,10 +164,19 @@ function observedLivePayload(value: unknown, gate: ReleaseGate, record: ReleaseG
       typeof value.preview.outputSha256 === "string" &&
       sha64.test(value.preview.outputSha256);
   }
+  if (gate.mode === "LIVE_ACT") {
+    // The live record `./alz apply record-live` writes from the apply's own ledger evidence (src/apply/live-record.ts).
+    const path = ACT_RELEASE_PATHS.find((x) => actGateId(x) === gate.id);
+    return path !== undefined && value.schemaVersion === 1 && value.label === "LIVE" && value.step === "execute" &&
+      value.cloud === path.provider && value.engine === path.engine && value.sourceCommit === commit &&
+      value.outcome === "SUCCEEDED" && typeof value.attestedBy === "string" && value.attestedBy.trim() !== "" &&
+      [value.artifactSha256, value.evidenceSha256, value.contractSha256].every((x) => typeof x === "string" && sha64.test(x));
+  }
   // These statements must be produced by real target/CI tools. The checker
   // validates provenance and content, not the honesty of an external machine.
   const report = value as Json;
-  if (report.sourceCommit !== commit || report.actEnabled !== false ||
+  // A recovery report is about a pilot apply, so it is the one report that may say ACT ran.
+  if (report.sourceCommit !== commit || (gate.mode !== "ACT_RECOVERY" && report.actEnabled !== false) ||
       report.targetHardwareId !== record.targetHardwareId ||
       report.schemaVersion !== 1 || report.gateId !== gate.id ||
       report.executionMode !== gate.mode || report.passed !== true ||
@@ -178,6 +211,21 @@ function observedLivePayload(value: unknown, gate: ReleaseGate, record: ReleaseG
     return report.measurementsAreSynthetic === false &&
       isObject(report.measurements) &&
       Object.keys(report.measurements).length > 0;
+  }
+  if (gate.mode === "ACT_RECOVERY") {
+    return typeof report.interruptedArtifactSha256 === "string" && sha64.test(report.interruptedArtifactSha256) &&
+      (report.interruptedOutcome === "PARTIAL_REQUIRES_REVIEW" || report.interruptedOutcome === "KILLED") &&
+      report.reconciledFromLedger === true && report.resumedWithoutApproval === false;
+  }
+  if (gate.mode === "INDEPENDENT_REVIEW") {
+    return typeof report.reviewer === "string" && report.reviewer.trim() !== "" &&
+      report.reviewerIsAuthor === false && report.blockingFindingsOpen === 0;
+  }
+  if (gate.id.startsWith("platform:")) {
+    const names = new Set((report.checks as Json[]).map((x) => x.name));
+    return report.platform === gate.id.slice("platform:".length) && typeof report.osVersion === "string" &&
+      report.osVersion.trim() !== "" && typeof report.artifactSha256 === "string" && sha64.test(report.artifactSha256) &&
+      PLATFORM_LIFECYCLE_CHECKS.every((name) => names.has(name));
   }
   return gate.mode === "LIFECYCLE" || gate.mode === "CI";
 }
@@ -230,6 +278,8 @@ export async function reviewProductionRelease(input: {
   pilotContract?: PilotContract | { enabled: false };
   /** The committed pin the contract must match. Defaults to config/act-pilot-contract.sha256 in the repository. */
   pilotPinPath?: string;
+  /** Gates the owner's release scope excludes (config/release/scope.json). They are reported, and do not block; a record for one is refused. */
+  outOfScope?: readonly string[];
 }): Promise<ReleaseAdmissionReport> {
   const { manifest, expectedCommit } = input;
   const blockers: string[] = [];
@@ -256,10 +306,19 @@ export async function reviewProductionRelease(input: {
     }
     byId.set(record.id, record as ReleaseGateSubmission);
   }
+  const excluded = new Set(input.outOfScope ?? []);
+  for (const id of excluded) {
+    if (!PRODUCTION_RELEASE_GATES.some((gate) => gate.id === id)) blockers.push("RELEASE_SCOPE_UNKNOWN_GATE:" + id);
+  }
   const gates: GateReview[] = [];
   for (const gate of PRODUCTION_RELEASE_GATES) {
     const record = byId.get(gate.id);
     const reasons: string[] = [];
+    if (excluded.has(gate.id)) {
+      if (record) blockers.push("RELEASE_RECORD_FOR_OUT_OF_SCOPE_GATE:" + gate.id);
+      gates.push({ id: gate.id, mode: gate.mode, status: "OUT_OF_SCOPE", blockers: [] });
+      continue;
+    }
     if (!record) {
       reasons.push("NOT_RUN: no source-bound evidence record");
     } else if (record.mode !== gate.mode ||
@@ -294,7 +353,7 @@ export async function reviewProductionRelease(input: {
     gates: gates.map((gate) => [gate.id, gate.status, gate.evidenceSha256]),
   }));
   const readyForIndependentReleaseReview =
-    blockers.length === 0 && gates.every((gate) => gate.status === "EVIDENCE_PRESENT");
+    blockers.length === 0 && gates.every((gate) => gate.status !== "BLOCKED");
   return {
     sourceCommit: expectedCommit,
     readyForIndependentReleaseReview,
@@ -307,4 +366,13 @@ export async function reviewProductionRelease(input: {
       gate.id + ": " + gate.blockers.join(", "))],
     candidateIdentityHash,
   };
+}
+
+/**
+ * The admission review of a release from this repository: the pilot contract and pin it ships (config/act-pilot-contract.json),
+ * and the gates the owner's scope excludes. The one entry both the admission CLI and the release status view use.
+ */
+export function reviewRepositoryRelease(input: { manifest: ReleaseAdmissionInput; root: string; expectedCommit: string; outOfScope: readonly string[] }): Promise<ReleaseAdmissionReport> {
+  // ACT is off unless the release declares PILOT and the shipped contract is valid, enabled and pinned.
+  return reviewProductionRelease({ ...input, pilotContract: loadPilotContract() });
 }

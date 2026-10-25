@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
@@ -150,13 +150,13 @@ test("without an interactive Terminal, ./alz deps only reports: nothing is insta
   assert.equal(code, 2);
   assert.equal(downloads, 0);
   assert.equal(term.asked, 0, "nothing is asked");
-  assert.ok(!existsSync(join(root, "home-cli-noninteractive", ".alz")));
+  assert.ok(!existsSync(join(root, "home-cli-noninteractive", ".alz", "tools")), "no tool folder is created");
 });
 
-test("a wrong phrase skips the install, and the command stays blocked", async () => {
+test("choosing Skip at the install menu installs nothing, and the command stays blocked", async () => {
   const archive = fakeArchive("wrong");
   let downloads = 0;
-  const term = terminal(true, ["yes please"]);
+  const term = terminal(true, ["1", "", "2"]);
   const code = await runDepsCommand([], {
     ...deps("wrong", term, { download: async () => { downloads += 1; return Readable.from([archive.body]); } }),
     pinsPath: fakePins("wrong", archive.sha256),
@@ -165,14 +165,14 @@ test("a wrong phrase skips the install, and the command stays blocked", async ()
   assert.equal(downloads, 0, "a skipped dialog downloads nothing");
   assert.ok(!existsSync(installedPath(join(root, "home-cli-wrong"), "terraform", "1.16.4", "terraform")));
   const dialog = term.shown.join("");
-  assert.match(dialog, /To install, type exactly:\s+INSTALL TERRAFORM 1\.16\.4/);
+  assert.match(dialog, /Install it now\?/);
   assert.match(dialog, /Needs: no administrator password/);
-  assert.match(dialog, /Anything else skips it/);
+  assert.match(dialog, /Install it\s+2\s+Skip it/);
 });
 
-test("the exact phrase installs the verified tool, and the dialog names the file, its source and its checksum", async () => {
+test("choosing Install from the menu installs the verified tool, and the dialog names the file, its source and its checksum", async () => {
   const archive = fakeArchive("right");
-  const term = terminal(true, ["", "INSTALL TERRAFORM 1.16.4"]);
+  const term = terminal(true, ["1", "", "1"]);
   const lines: string[] = [];
   const code = await runDepsCommand([], {
     ...deps("right", term, {
@@ -189,9 +189,9 @@ test("the exact phrase installs the verified tool, and the dialog names the file
   assert.equal(code, 0);
 });
 
-test("a checksum mismatch in the dialog's install is shown in plain words and nothing is installed", async () => {
+test("a checksum mismatch in the menu install is shown in plain words and nothing is installed", async () => {
   const archive = fakeArchive("tamper");
-  const term = terminal(true, ["", "INSTALL TERRAFORM 1.16.4"]);
+  const term = terminal(true, ["1", "", "1"]);
   const lines: string[] = [];
   const code = await runDepsCommand([], {
     ...deps("tamper", term, {
@@ -261,10 +261,10 @@ test("the selection screen preselects every missing tool; Enter continues, a num
   assert.ok(confused.shown.join("").includes("That is not a choice"), "an invalid answer is explained, not ignored");
 });
 
-test("cancel at the selection screen installs nothing and downloads nothing", async () => {
+test("cancel at the selection screen, after choosing install, installs nothing and downloads nothing", async () => {
   const archive = fakeArchive("cancel");
   let downloads = 0;
-  const term = terminal(true, ["q"]);
+  const term = terminal(true, ["1", "q"]);
   const code = await runDepsCommand([], {
     ...deps("cancel", term, { download: async () => { downloads += 1; return Readable.from([archive.body]); } }),
     pinsPath: fakePins("cancel", archive.sha256),
@@ -274,7 +274,7 @@ test("cancel at the selection screen installs nothing and downloads nothing", as
   assert.ok(!existsSync(installedPath(join(root, "home-cli-cancel"), "terraform", "1.16.4", "terraform")));
 });
 
-test("guided installer: no TTY, exact phrase missing, and checksum mismatch never install a tool", async () => {
+test("guided installer: no TTY, a skip or no clear choice, and checksum mismatch never install a tool", async () => {
   const { installSelectedPinnedTools } = await import("../src/cli/deps.js");
   const archive = fakeArchive("guided-tampered");
   const pinsPath = fakePins("guided-tampered", "0".repeat(64));
@@ -286,13 +286,20 @@ test("guided installer: no TTY, exact phrase missing, and checksum mismatch neve
   assert.deepEqual(nonTTY.installed, []);
   assert.equal(downloaded, 0);
   const reject = await installSelectedPinnedTools(["terraform"], {
-    ...deps("guided-reject", terminal(true, ["INSTALL EVERYTHING"]), { download }), pinsPath,
+    ...deps("guided-reject", terminal(true, ["2"]), { download }), pinsPath,
   });
   assert.deepEqual(reject.installed, []);
   assert.deepEqual(reject.skipped, ["terraform"]);
   assert.equal(downloaded, 0);
+  // Typing something that is not a choice never installs: the menu asks again, and with no clear answer it skips.
+  const unclear = await installSelectedPinnedTools(["terraform"], {
+    ...deps("guided-unclear", terminal(true, ["INSTALL TERRAFORM 1.16.4", "yes"]), { download }), pinsPath,
+  });
+  assert.deepEqual(unclear.installed, []);
+  assert.deepEqual(unclear.skipped, ["terraform"]);
+  assert.equal(downloaded, 0);
   const tamper = await installSelectedPinnedTools(["terraform"], {
-    ...deps("guided-tamper", terminal(true, ["INSTALL TERRAFORM 1.16.4"]), { download }), pinsPath,
+    ...deps("guided-tamper", terminal(true, ["1"]), { download }), pinsPath,
   });
   assert.deepEqual(tamper.installed, []);
   assert.deepEqual(tamper.skipped, ["terraform"]);
@@ -305,7 +312,7 @@ test("guided installer: explicit tool selection installs only checksum-verified 
   const archive = fakeArchive("guided-verified");
   const pinsPath = fakePins("guided-verified", archive.sha256);
   let downloaded = 0;
-  const term = terminal(true, ["INSTALL TERRAFORM 1.16.4"]);
+  const term = terminal(true, ["1"]);
   const outcome = await installSelectedPinnedTools(["terraform"], {
     ...deps("guided-verified", term, {
       download: async () => { downloaded++; return Readable.from([archive.body]); },
@@ -327,7 +334,7 @@ test("guided installer never calls a cached but wrong-version binary ready", asy
   const installed = installedPath(home, "terraform", "1.16.4", "terraform");
   fakeTool(join(installed, ".."), "terraform", "echo 'Terraform v0.0.1'");
   let downloaded = 0;
-  const term = terminal(true, ["INSTALL TERRAFORM 1.16.4"]);
+  const term = terminal(true, ["1"]);
   const result = await installSelectedPinnedTools(["terraform"], {
     ...deps("guided-cached-bad", term, {
       download: async () => { downloaded++; return Readable.from([]); },
@@ -337,4 +344,28 @@ test("guided installer never calls a cached but wrong-version binary ready", asy
   assert.deepEqual(result.skipped, ["terraform"]);
   assert.equal(downloaded, 0, "no download attempted for an already existing local binary");
   assert.match(term.shown.join(""), /still failed verification/);
+});
+
+test("each ./alz deps run leaves a private diagnostic log of its steps, with no paths, URLs or downloads in it", async () => {
+  const archive = fakeArchive("logged");
+  const term = terminal(true, ["1", "", "1"]);
+  const home = join(root, "home-cli-logged");
+  await runDepsCommand([], {
+    ...deps("logged", term, {
+      out: () => {},
+      download: async () => Readable.from([archive.body]),
+      env: { PATH: pathWith("cli-logged", { ...GOOD_TOOLS, terraform: "" }) },
+    }),
+    pinsPath: fakePins("logged", archive.sha256),
+  });
+  const logDir = join(home, ".alz", "logs");
+  const files = readdirSync(logDir).filter((name) => name.startsWith("deps-") && name.endsWith(".log"));
+  assert.equal(files.length, 1, "one log file for the run");
+  assert.equal(statSync(join(logDir, files[0])).mode & 0o777, 0o600, "the log is private");
+  const text = readFileSync(join(logDir, files[0]), "utf8");
+  assert.match(text, /check .*Terraform 1\.16\.4=missing/);
+  assert.match(text, /menu install/);
+  assert.match(text, /install terraform 1\.16\.4 installed/);
+  assert.match(text, /after /);
+  assert.doesNotMatch(text, /https?:\/\/|\/home|\.alz\/tools/, "no URLs or paths in the log");
 });

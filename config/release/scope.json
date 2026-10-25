@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "decision": {
+    "by": "OWNER",
+    "ref": "https://github.com/realjkg/agent-private-landing-zone/issues/39#issuecomment-6403630201",
+    "recorded": "2026-10-25"
+  },
+  "candidate": null,
+  "manifest": null,
+  "platforms": [
+    "darwin-arm64",
+    "darwin-x64",
+    "linux-x64",
+    "linux-arm64",
+    "win32-arm64",
+    "win32-x64"
+  ],
+  "actPaths": [
+    "act:aws-terraform",
+    "act:azure-terraform",
+    "act:aws-cdk"
+  ],
+  "journey": "FULL_LIFECYCLE",
+  "outOfScope": [
+    {
+      "gate": "preview:pulumi-azure-greenfield",
+      "reason": "Pulumi is not one of the three release paths the owner selected (AWS Terraform, Azure Terraform, AWS CDK)."
+    },
+    {
+      "gate": "preview:pulumi-aws-greenfield",
+      "reason": "Pulumi is not one of the three release paths the owner selected (AWS Terraform, Azure Terraform, AWS CDK)."
+    },
+    {
+      "gate": "preview:pulumi-aws-brownfield",
+      "reason": "Pulumi is not one of the three release paths the owner selected (AWS Terraform, Azure Terraform, AWS CDK)."
+    },
+    {
+      "gate": "preview:pulumi-azure-brownfield",
+      "reason": "Pulumi is not one of the three release paths the owner selected (AWS Terraform, Azure Terraform, AWS CDK)."
+    },
+    {
+      "gate": "preview:opentofu-aws-brownfield",
+      "reason": "OpenTofu is not one of the three release paths the owner selected (AWS Terraform, Azure Terraform, AWS CDK)."
+    },
+    {
+      "gate": "preview:bicep-azure-brownfield",
+      "reason": "Bicep is not one of the three release paths the owner selected (AWS Terraform, Azure Terraform, AWS CDK)."
+    },
+    {
+      "gate": "preview:cloudformation-aws-existing",
+      "reason": "Existing CloudFormation stacks are not one of the three release paths the owner selected; CDK is qualified through its own preview gate."
+    },
+    {
+      "gate": "preview:ansible-existing-hosts",
+      "reason": "Ansible is not one of the three release paths the owner selected (AWS Terraform, Azure Terraform, AWS CDK)."
+    },
+    {
+      "gate": "preview:crossplane-local-render",
+      "reason": "Crossplane is not one of the three release paths the owner selected (AWS Terraform, Azure Terraform, AWS CDK)."
+    }
+  ]
+}

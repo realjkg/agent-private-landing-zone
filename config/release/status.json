@@ -1,0 +1,576 @@
+{
+  "schemaVersion": 1,
+  "primary": "act:aws-terraform",
+  "gates": [
+    {
+      "gate": "source-ci",
+      "candidate": null,
+      "owner": "CI",
+      "status": "NOT_RUN",
+      "evidenceMode": null,
+      "evidenceRefs": [],
+      "testedScope": "Type check and functional regression on the exact candidate source.",
+      "invalidatedBy": [
+        "the candidate commit changes"
+      ],
+      "nextAction": "Freeze a candidate commit in config/release/scope.json, then run this CI gate on that exact commit and add its record to the admission manifest."
+    },
+    {
+      "gate": "release-archive",
+      "candidate": null,
+      "owner": "CI",
+      "status": "NOT_RUN",
+      "evidenceMode": null,
+      "evidenceRefs": [],
+      "testedScope": "Reproducible archive, SBOM, release manifest and provenance for the candidate.",
+      "invalidatedBy": [
+        "the candidate commit changes"
+      ],
+      "nextAction": "Freeze a candidate commit in config/release/scope.json, then run this CI gate on that exact commit and add its record to the admission manifest."
+    },
+    {
+      "gate": "arm64-final-image",
+      "candidate": null,
+      "owner": "ENGINEERING",
+      "status": "NOT_RUN",
+      "evidenceMode": null,
+      "evidenceRefs": [],
+      "testedScope": "The actual ARM64 image digest and its scan.",
+      "invalidatedBy": [
+        "the candidate commit changes",
+        "a base image or dependency pin changes"
+      ],
+      "nextAction": "Build the ARM64 runtime image from the frozen candidate and run the blocking vulnerability scan on it."
+    },
+    {
+      "gate": "private-model-runtime",
+      "candidate": null,
+      "owner": "OWNER",
+      "status": "BLOCKED",
+      "evidenceMode": null,
+      "evidenceRefs": [],
+      "testedScope": "Qwen and Mistral models on the target host, digests, restart and long-session recovery.",
+      "invalidatedBy": [
+        "the candidate commit changes",
+        "a model, digest or runtime configuration changes"
+      ],
+      "nextAction": "The owner names the target model host; then run model qualification there on the candidate."
+    },
+    {
+      "gate": "aws-provider",
+      "candidate": null,
+      "owner": "OWNER",
+      "status": "BLOCKED",
+      "evidenceMode": null,
+      "evidenceRefs": [],
+      "testedScope": "Live authenticated read-only AWS inventory and governed preview.",
+      "invalidatedBy": [
+        "the candidate commit changes",
+        "the provider adapter or its pinned tool changes"
+      ],
+      "nextAction": "The owner provides the AWS sandbox identifiers (account or subscription IDs and role names, never credentials); then run the read-only AWS inventory and governed preview on the candidate."
+    },
+    {
+      "gate": "azure-provider",
+      "candidate": null,
+      "owner": "OWNER",
+      "status": "BLOCKED",
+      "evidenceMode": null,
+      "evidenceRefs": [],
+      "testedScope": "Live authenticated read-only Azure inventory and governed preview.",
+      "invalidatedBy": [
+        "the candidate commit changes",
+        "the provider adapter or its pinned tool changes"
+      ],
+      "nextAction": "The owner provides the Azure sandbox identifiers (account or subscription IDs and role names, never credentials); then run the read-only Azure inventory and governed preview on the candidate."
+    },
+    {
+      "gate": "preview:terraform-aws-brownfield",
+      "candidate": null,
+      "owner": "OWNER",
+      "status": "BLOCKED",
+      "evidenceMode": null,
+      "evidenceRefs": [],
+      "testedScope": "Exact provider and IaC scenario with real tool output and no infrastructure mutation.",
+      "invalidatedBy": [
+        "the candidate commit changes",
+        "the engine pin or the provider adapter changes"
+      ],
+      "nextAction": "Waits on the AWS provider gate's sandbox; then run this preview scenario on the candidate."
+    },
+    {
+      "gate": "preview:pulumi-azure-greenfield",
+      "candidate": null,
+      "owner": "OWNER",
+      "status": "OUT_OF_SCOPE",
+      "evidenceMode": null,
+      "evidenceRefs": [],
+      "testedScope": "Not tested for this release; excluded by the owner's scope decision.",
+      "invalidatedBy": [
+        "the owner adds the path to the release scope"
+      ],
+      "nextAction": ""
+    },
+    {
+      "gate": "preview:opentofu-aws-brownfield",
+      "candidate": null,
+      "owner": "OWNER",
+      "status": "OUT_OF_SCOPE",
+      "evidenceMode": null,
+      "evidenceRefs": [],
+      "testedScope": "Not tested for this release; excluded by the owner's scope decision.",
+      "invalidatedBy": [
+        "the owner adds the path to the release scope"
+      ],
+      "nextAction": ""
+    },
+    {
+      "gate": "preview:bicep-azure-brownfield",
+      "candidate": null,
+      "owner": "OWNER",
+      "status": "OUT_OF_SCOPE",
+      "evidenceMode": null,
+      "evidenceRefs": [],
+      "testedScope": "Not tested for this release; excluded by the owner's scope decision.",
+      "invalidatedBy": [
+        "the owner adds the path to the release scope"
+      ],
+      "nextAction": ""
+    },
+    {
+      "gate": "preview:cloudformation-aws-existing",
+      "candidate": null,
+      "owner": "OWNER",
+      "status": "OUT_OF_SCOPE",
+      "evidenceMode": null,
+      "evidenceRefs": [],
+      "testedScope": "Not tested for this release; excluded by the owner's scope decision.",
+      "invalidatedBy": [
+        "the owner adds the path to the release scope"
+      ],
+      "nextAction": ""
+    },
+    {
+      "gate": "preview:cdk-aws-brownfield",
+      "candidate": null,
+      "owner": "OWNER",
+      "status": "BLOCKED",
+      "evidenceMode": null,
+      "evidenceRefs": [],
+      "testedScope": "Exact provider and IaC scenario with real tool output and no infrastructure mutation.",
+      "invalidatedBy": [
+        "the candidate commit changes",
+        "the engine pin or the provider adapter changes"
+      ],
+      "nextAction": "Waits on the AWS provider gate's sandbox; then run this preview scenario on the candidate."
+    },
+    {
+      "gate": "preview:ansible-existing-hosts",
+      "candidate": null,
+      "owner": "OWNER",
+      "status": "OUT_OF_SCOPE",
+      "evidenceMode": null,
+      "evidenceRefs": [],
+      "testedScope": "Not tested for this release; excluded by the owner's scope decision.",
+      "invalidatedBy": [
+        "the owner adds the path to the release scope"
+      ],
+      "nextAction": ""
+    },
+    {
+      "gate": "preview:crossplane-local-render",
+      "candidate": null,
+      "owner": "OWNER",
+      "status": "OUT_OF_SCOPE",
+      "evidenceMode": null,
+      "evidenceRefs": [],
+      "testedScope": "Not tested for this release; excluded by the owner's scope decision.",
+      "invalidatedBy": [
+        "the owner adds the path to the release scope"
+      ],
+      "nextAction": ""
+    },
+    {
+      "gate": "preview:pulumi-aws-greenfield",
+      "candidate": null,
+      "owner": "OWNER",
+      "status": "OUT_OF_SCOPE",
+      "evidenceMode": null,
+      "evidenceRefs": [],
+      "testedScope": "Not tested for this release; excluded by the owner's scope decision.",
+      "invalidatedBy": [
+        "the owner adds the path to the release scope"
+      ],
+      "nextAction": ""
+    },
+    {
+      "gate": "preview:pulumi-aws-brownfield",
+      "candidate": null,
+      "owner": "OWNER",
+      "status": "OUT_OF_SCOPE",
+      "evidenceMode": null,
+      "evidenceRefs": [],
+      "testedScope": "Not tested for this release; excluded by the owner's scope decision.",
+      "invalidatedBy": [
+        "the owner adds the path to the release scope"
+      ],
+      "nextAction": ""
+    },
+    {
+      "gate": "preview:pulumi-azure-brownfield",
+      "candidate": null,
+      "owner": "OWNER",
+      "status": "OUT_OF_SCOPE",
+      "evidenceMode": null,
+      "evidenceRefs": [],
+      "testedScope": "Not tested for this release; excluded by the owner's scope decision.",
+      "invalidatedBy": [
+        "the owner adds the path to the release scope"
+      ],
+      "nextAction": ""
+    },
+    {
+      "gate": "preview:terraform-azure-brownfield",
+      "candidate": null,
+      "owner": "ENGINEERING",
+      "status": "BLOCKED",
+      "evidenceMode": null,
+      "evidenceRefs": [],
+      "testedScope": "Real Terraform plan output against the Azure sandbox, with no infrastructure applied.",
+      "invalidatedBy": [
+        "the candidate commit changes",
+        "the Terraform pin or the Azure provider adapter changes"
+      ],
+      "nextAction": "Add the Azure Terraform brownfield preview scenario to the qualification scenarios; no scenario produces this gate's evidence yet."
+    },
+    {
+      "gate": "isolated-recovery",
+      "candidate": null,
+      "owner": "OWNER",
+      "status": "BLOCKED",
+      "evidenceMode": null,
+      "evidenceRefs": [],
+      "testedScope": "Actual isolated restore with measured recovery objectives.",
+      "invalidatedBy": [
+        "the candidate commit changes",
+        "the backup or restore code changes"
+      ],
+      "nextAction": "The owner names an isolated restore target; then run the restore on the candidate and measure RPO and RTO."
+    },
+    {
+      "gate": "lifecycle:clean-install",
+      "candidate": null,
+      "owner": "ENGINEERING",
+      "status": "NOT_RUN",
+      "evidenceMode": null,
+      "evidenceRefs": [],
+      "testedScope": "Actual clean-install execution with data integrity and rollback evidence.",
+      "invalidatedBy": [
+        "the candidate commit changes",
+        "the installer, update or migration code changes"
+      ],
+      "nextAction": "Run this lifecycle step for real on a disposable host with the candidate archive and record data integrity and rollback evidence."
+    },
+    {
+      "gate": "lifecycle:upgrade",
+      "candidate": null,
+      "owner": "ENGINEERING",
+      "status": "NOT_RUN",
+      "evidenceMode": null,
+      "evidenceRefs": [],
+      "testedScope": "Actual upgrade execution with data integrity and rollback evidence.",
+      "invalidatedBy": [
+        "the candidate commit changes",
+        "the installer, update or migration code changes"
+      ],
+      "nextAction": "Run this lifecycle step for real on a disposable host with the candidate archive and record data integrity and rollback evidence."
+    },
+    {
+      "gate": "lifecycle:rollback",
+      "candidate": null,
+      "owner": "ENGINEERING",
+      "status": "NOT_RUN",
+      "evidenceMode": null,
+      "evidenceRefs": [],
+      "testedScope": "Actual rollback execution with data integrity and rollback evidence.",
+      "invalidatedBy": [
+        "the candidate commit changes",
+        "the installer, update or migration code changes"
+      ],
+      "nextAction": "Run this lifecycle step for real on a disposable host with the candidate archive and record data integrity and rollback evidence."
+    },
+    {
+      "gate": "lifecycle:uninstall",
+      "candidate": null,
+      "owner": "ENGINEERING",
+      "status": "NOT_RUN",
+      "evidenceMode": null,
+      "evidenceRefs": [],
+      "testedScope": "Actual uninstall execution with data integrity and rollback evidence.",
+      "invalidatedBy": [
+        "the candidate commit changes",
+        "the installer, update or migration code changes"
+      ],
+      "nextAction": "Run this lifecycle step for real on a disposable host with the candidate archive and record data integrity and rollback evidence."
+    },
+    {
+      "gate": "lifecycle:configuration-migration",
+      "candidate": null,
+      "owner": "ENGINEERING",
+      "status": "NOT_RUN",
+      "evidenceMode": null,
+      "evidenceRefs": [],
+      "testedScope": "Actual configuration-migration execution with data integrity and rollback evidence.",
+      "invalidatedBy": [
+        "the candidate commit changes",
+        "the installer, update or migration code changes"
+      ],
+      "nextAction": "Run this lifecycle step for real on a disposable host with the candidate archive and record data integrity and rollback evidence."
+    },
+    {
+      "gate": "platform:darwin-arm64",
+      "candidate": null,
+      "owner": "OWNER",
+      "status": "BLOCKED",
+      "evidenceMode": null,
+      "evidenceRefs": [],
+      "testedScope": "The seven lifecycle checks on a real disposable darwin-arm64 host.",
+      "invalidatedBy": [
+        "the candidate commit changes",
+        "the installer, launcher or uninstall code changes"
+      ],
+      "nextAction": "The owner provides a disposable darwin-arm64 host (never the owner's working machine); then run the seven lifecycle checks there."
+    },
+    {
+      "gate": "platform:darwin-x64",
+      "candidate": null,
+      "owner": "OWNER",
+      "status": "BLOCKED",
+      "evidenceMode": null,
+      "evidenceRefs": [],
+      "testedScope": "The seven lifecycle checks on a real disposable darwin-x64 host.",
+      "invalidatedBy": [
+        "the candidate commit changes",
+        "the installer, launcher or uninstall code changes"
+      ],
+      "nextAction": "The owner provides a disposable darwin-x64 host (never the owner's working machine); then run the seven lifecycle checks there."
+    },
+    {
+      "gate": "platform:linux-x64",
+      "candidate": null,
+      "owner": "ENGINEERING",
+      "status": "NOT_RUN",
+      "evidenceMode": null,
+      "evidenceRefs": [],
+      "testedScope": "The seven lifecycle checks on a real disposable linux-x64 host.",
+      "invalidatedBy": [
+        "the candidate commit changes",
+        "the installer, launcher or uninstall code changes"
+      ],
+      "nextAction": "Lane A: run install, launch, uninstall, repeat uninstall, partial-install recovery, unusual paths and unrelated-file preservation in a disposable linux-x64 container; this counts for linux-x64 only."
+    },
+    {
+      "gate": "platform:linux-arm64",
+      "candidate": null,
+      "owner": "OWNER",
+      "status": "BLOCKED",
+      "evidenceMode": null,
+      "evidenceRefs": [],
+      "testedScope": "The seven lifecycle checks on a real disposable linux-arm64 host.",
+      "invalidatedBy": [
+        "the candidate commit changes",
+        "the installer, launcher or uninstall code changes"
+      ],
+      "nextAction": "The owner provides a disposable linux-arm64 host (never the owner's working machine); then run the seven lifecycle checks there."
+    },
+    {
+      "gate": "platform:win32-arm64",
+      "candidate": null,
+      "owner": "OWNER",
+      "status": "BLOCKED",
+      "evidenceMode": null,
+      "evidenceRefs": [],
+      "testedScope": "The seven lifecycle checks on a real disposable win32-arm64 host.",
+      "invalidatedBy": [
+        "the candidate commit changes",
+        "the installer, launcher or uninstall code changes"
+      ],
+      "nextAction": "The owner provides a disposable win32-arm64 host (never the owner's working machine); then run the seven lifecycle checks there."
+    },
+    {
+      "gate": "platform:win32-x64",
+      "candidate": null,
+      "owner": "OWNER",
+      "status": "BLOCKED",
+      "evidenceMode": null,
+      "evidenceRefs": [],
+      "testedScope": "The seven lifecycle checks on a real disposable win32-x64 host.",
+      "invalidatedBy": [
+        "the candidate commit changes",
+        "the installer, launcher or uninstall code changes"
+      ],
+      "nextAction": "The owner provides a disposable win32-x64 host (never the owner's working machine); then run the seven lifecycle checks there."
+    },
+    {
+      "gate": "act:aws-terraform",
+      "candidate": null,
+      "owner": "OWNER",
+      "status": "BLOCKED",
+      "evidenceMode": "SYNTHETIC",
+      "evidenceRefs": [
+        "config/acceptance/journeys.json (AWS TERRAFORM: prepare to execute SYNTHETIC_PASS)"
+      ],
+      "testedScope": "Full lifecycle on the real AWS DEV account: prepare, preview, approve, execute, observe and cleanup.",
+      "invalidatedBy": [
+        "the candidate commit changes",
+        "the pilot contract or its pin changes",
+        "src/apply or the Terraform pin changes"
+      ],
+      "nextAction": "Engineering first finishes observe and cleanup for the AWS Terraform row; the owner then supplies the pinned AWS contract inputs (identifiers and public keys only) and supervises one DEV apply, recorded with ./alz apply record-live."
+    },
+    {
+      "gate": "act:azure-terraform",
+      "candidate": null,
+      "owner": "OWNER",
+      "status": "BLOCKED",
+      "evidenceMode": "SYNTHETIC",
+      "evidenceRefs": [
+        "config/acceptance/journeys.json (AZURE TERRAFORM: prepare to execute SYNTHETIC_PASS)"
+      ],
+      "testedScope": "Full lifecycle on the real Azure DEV subscription.",
+      "invalidatedBy": [
+        "the candidate commit changes",
+        "the pilot contract or its pin changes",
+        "src/apply or the Terraform pin changes"
+      ],
+      "nextAction": "Waits on the AWS Terraform row going live first; then engineering finishes observe and cleanup and the owner supplies the pinned Azure contract inputs (identifiers and public keys only)."
+    },
+    {
+      "gate": "act:aws-cdk",
+      "candidate": null,
+      "owner": "ENGINEERING",
+      "status": "NOT_RUN",
+      "evidenceMode": null,
+      "evidenceRefs": [],
+      "testedScope": "Full lifecycle on the real AWS DEV account through CDK.",
+      "invalidatedBy": [
+        "the candidate commit changes",
+        "the pilot contract or its pin changes",
+        "src/apply or the CDK pin changes"
+      ],
+      "nextAction": "Build the AWS CDK row in the console (prepare through cleanup) with its synthetic tests; nothing is implemented for this row yet."
+    },
+    {
+      "gate": "act-run-recovery",
+      "candidate": null,
+      "owner": "OWNER",
+      "status": "BLOCKED",
+      "evidenceMode": null,
+      "evidenceRefs": [],
+      "testedScope": "An interrupted real pilot apply reconciled from its ledger.",
+      "invalidatedBy": [
+        "the candidate commit changes",
+        "the driver, ledger or kill-switch code changes"
+      ],
+      "nextAction": "Waits on a live ACT path; then interrupt one owner-supervised DEV apply and show it reconciled from the ledger without resuming unapproved."
+    },
+    {
+      "gate": "security-review:independent",
+      "candidate": null,
+      "owner": "OWNER",
+      "status": "BLOCKED",
+      "evidenceMode": null,
+      "evidenceRefs": [],
+      "testedScope": "Security review of the frozen candidate with no open blocking findings.",
+      "invalidatedBy": [
+        "the candidate commit changes",
+        "any security, identity, policy or apply code changes"
+      ],
+      "nextAction": "The owner names an independent security reviewer who did not write the candidate; self-review does not count."
+    },
+    {
+      "gate": "pillar:operational-excellence",
+      "candidate": null,
+      "owner": "OWNER",
+      "status": "BLOCKED",
+      "evidenceMode": null,
+      "evidenceRefs": [],
+      "testedScope": "Actual deployed-environment operational-excellence measurement, not a synthetic fixture.",
+      "invalidatedBy": [
+        "the candidate commit changes",
+        "the deployed blueprint changes"
+      ],
+      "nextAction": "Waits on a deployed environment from a live ACT path; then measure this pillar there."
+    },
+    {
+      "gate": "pillar:security",
+      "candidate": null,
+      "owner": "OWNER",
+      "status": "BLOCKED",
+      "evidenceMode": null,
+      "evidenceRefs": [],
+      "testedScope": "Actual deployed-environment security measurement, not a synthetic fixture.",
+      "invalidatedBy": [
+        "the candidate commit changes",
+        "the deployed blueprint changes"
+      ],
+      "nextAction": "Waits on a deployed environment from a live ACT path; then measure this pillar there."
+    },
+    {
+      "gate": "pillar:reliability",
+      "candidate": null,
+      "owner": "OWNER",
+      "status": "BLOCKED",
+      "evidenceMode": null,
+      "evidenceRefs": [],
+      "testedScope": "Actual deployed-environment reliability measurement, not a synthetic fixture.",
+      "invalidatedBy": [
+        "the candidate commit changes",
+        "the deployed blueprint changes"
+      ],
+      "nextAction": "Waits on a deployed environment from a live ACT path; then measure this pillar there."
+    },
+    {
+      "gate": "pillar:performance",
+      "candidate": null,
+      "owner": "OWNER",
+      "status": "BLOCKED",
+      "evidenceMode": null,
+      "evidenceRefs": [],
+      "testedScope": "Actual deployed-environment performance measurement, not a synthetic fixture.",
+      "invalidatedBy": [
+        "the candidate commit changes",
+        "the deployed blueprint changes"
+      ],
+      "nextAction": "Waits on a deployed environment from a live ACT path; then measure this pillar there."
+    },
+    {
+      "gate": "pillar:cost",
+      "candidate": null,
+      "owner": "OWNER",
+      "status": "BLOCKED",
+      "evidenceMode": null,
+      "evidenceRefs": [],
+      "testedScope": "Actual deployed-environment cost measurement, not a synthetic fixture.",
+      "invalidatedBy": [
+        "the candidate commit changes",
+        "the deployed blueprint changes"
+      ],
+      "nextAction": "Waits on a deployed environment from a live ACT path; then measure this pillar there."
+    },
+    {
+      "gate": "pillar:sustainability",
+      "candidate": null,
+      "owner": "OWNER",
+      "status": "BLOCKED",
+      "evidenceMode": null,
+      "evidenceRefs": [],
+      "testedScope": "Actual deployed-environment sustainability measurement, not a synthetic fixture.",
+      "invalidatedBy": [
+        "the candidate commit changes",
+        "the deployed blueprint changes"
+      ],
+      "nextAction": "Waits on a deployed environment from a live ACT path; then measure this pillar there."
+    }
+  ]
+}
