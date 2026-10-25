@@ -191,7 +191,12 @@ export function planChanged(changedPaths, files) {
   const nodeTests = tests.filter(p => p.endsWith(".test.ts"));
   const uiTests = tests.filter(p => p.endsWith(".test.tsx"));
   const jsTests = tests.filter(p => p.endsWith(".test.mjs"));
-  if (uiTests.includes("test/csp-first-party.test.tsx")) buildUi = true;
+  if (uiTests.includes("test/csp-first-party.test.tsx") ||
+      nodeTests.includes("test/operations-core.test.ts")) {
+    // The HTTP inventory guard serves the generated UI index to obtain its
+    // CSRF token. A clean CI checkout must build that real asset first.
+    buildUi = true;
+  }
   return {
     changed, nodeTests, uiTests, jsTests, pythonTests: uniq([...pythonTests]),
     pythonChanged: uniq([...pythonChanged]), pythonEntrypoints: uniq([...pythonEntrypoints]),
