@@ -16,7 +16,8 @@ import { removeTree } from "../src/teardown/driver/cleanup.js";
 import type { ApplyEnvironment } from "../src/apply/types.js";
 import type { ResolvedTarget } from "../src/teardown/driver/types.js";
 import {
-  NOW, POLICY, behave as behaveIn, callsOf, contractJson, identityEnv, installFakeTerraform, keys, pinPathOf, targetOf, testFixtureForgeQualificationEvidence,
+  NOW, POLICY, awsContractJson, awsIdentityEnv, awsTargetOf, behave as behaveIn, callsOf, contractJson, identityEnv, installFakeTerraform, keys, pinPathOf, targetOf,
+  testFixtureForgeQualificationEvidence,
   writePinnedContract, writeProject, type Behavior, type Project,
 } from "./helpers/apply-fixtures.js";
 
@@ -778,3 +779,123 @@ test("prepare in the console reports the owner prerequisite with its blocker and
   assert.deepEqual(result.data, { blocker: "OWNER" });
   assert.deepEqual(readdirSync(preparationDir), []);
 });
+
+// --- whole journeys through the real router, service and adapter, per cloud (config/acceptance/journeys.json cites these) ---
+
+type Cloud = "AWS" | "AZURE";
+const AWS_PROVIDER_CONFIG = { aws: { name: "aws", full_name: "registry.terraform.io/hashicorp/aws", expressions: { region: { references: ["var.region"] } } } };
+
+/** A pinned contract with a policy version for the cloud, its identities and qualification, and a Terraform project for its DEV target. */
+async function consoleJourney(cloud: Cloud) {
+  // The same fake engine as every test here (logic only, NOT real cloud behavior); the contract, identities and project are the cloud's own.
+  behave(cloud === "AWS" ? { showProviderConfig: AWS_PROVIDER_CONFIG } : {});
+  const contractPath = join(fresh("contract"), "act-pilot-contract.json");
+  writePinnedContract(contractPath, cloud === "AWS" ? awsContractJson(KILL, { policyVersion: POLICY }) : contractJson(KILL, { policyVersion: POLICY }));
+  const vault = fresh("vault");
+  await testFixtureForgeQualificationEvidence(vault, undefined, cloud);
+  const w: World = {
+    contractPath, vault, approvals: fresh("approvals"),
+    cli: {
+      env: cloud === "AWS" ? awsIdentityEnv("DEV") : identityEnv("DEV"), now: () => NOW, operatorId: "operator.fixture", contractPath,
+      contractPinPath: pinPathOf(contractPath), qualificationDir: vault, evidenceDir: fresh("evidence"), nonces: openNonceStore(fresh("nonces")),
+      scratchParent: fresh("scratch"), toolDirs: [toolDir], preparationDir: fresh("prepared"),
+    },
+  };
+  const { port } = await serve(w);
+  await choose(port);
+  const target = cloud === "AWS" ? awsTargetOf("DEV") : targetOf("DEV");
+  const project = writeProject(fresh("project"), target, cloud === "AWS" ? 'resource "aws_s3_bucket" "pilot" {}\n' : undefined);
+  return { w, port, target, project };
+}
+
+/** Prepare from the project folder (no hand-written request or manifest), then seal those files through the two dialogs. */
+async function prepareAndSealInConsole(port: number, project: Project, target: ResolvedTarget) {
+  assert.equal((await call(port, "POST", "/pilot/prepare", { body: { environment: "DEV", projectPath: project.projectRoot } })).status, 202);
+  const prepared = (await finished(port)).run!.result!;
+  assert.equal(prepared.exit, 0, JSON.stringify(prepared));
+  const data = prepared.data as { files: { request: string; manifest: string }; summary: { provider: string; engine: string; account: string } };
+  assert.equal((await call(port, "POST", "/pilot/seal", { body: { environment: "DEV", requestPath: data.files.request, manifestPath: data.files.manifest } })).status, 202);
+  const first = await waiting(port);
+  assert.equal(first.run!.dialog!.phrase, targetString(target));
+  await call(port, "POST", "/pilot/answer", { body: { dialogId: first.run!.dialog!.id, answer: targetString(target) } });
+  const second = await until(port, (s) => s.run?.status === "WAITING" && s.run.dialog?.kind === "RUN_PROJECT_CODE");
+  await call(port, "POST", "/pilot/answer", { body: { dialogId: second.run!.dialog!.id, answer: PHRASE } });
+  const sealedRun = (await finished(port)).run!.result!;
+  assert.equal(sealedRun.exit, 0, JSON.stringify(sealedRun));
+  const out = sealedRun.data as { artifactSha256: string; sealedPlanPath: string; reviewBundlePath: string };
+  const sealed: Sealed = { project, target, environment: "DEV", path: out.sealedPlanPath, bundle: out.reviewBundlePath, artifactSha256: out.artifactSha256 };
+  return { prepared: data, sealed };
+}
+
+/** Starts an apply of the prepared request and answers its one dialog with `answer` (undefined cancels it). */
+async function applyInConsole(port: number, files: { request: string; manifest: string }, sealed: Sealed, approvals: string[], answer: string | undefined) {
+  const started = await call(port, "POST", "/pilot/apply", {
+    body: { environment: "DEV", requestPath: files.request, manifestPath: files.manifest, sealedPath: sealed.path, approvalPaths: approvals },
+  });
+  assert.equal(started.status, 202, started.text);
+  const asked = await waiting(port);
+  assert.equal(asked.run!.dialog!.kind, "APPLY");
+  if (answer === undefined) await call(port, "POST", "/pilot/cancel", { body: {} });
+  else await call(port, "POST", "/pilot/answer", { body: { dialogId: asked.run!.dialog!.id, answer } });
+  return (await finished(port)).run!.result!;
+}
+
+async function wholeJourneyInConsole(cloud: Cloud): Promise<void> {
+  const { port, target, project } = await consoleJourney(cloud);
+  const { prepared, sealed } = await prepareAndSealInConsole(port, project, target);
+  assert.equal(prepared.summary.provider, cloud);
+  assert.equal(prepared.summary.engine, "TERRAFORM");
+  assert.equal(prepared.summary.account, target.account);
+  const reviewed = (await call(port, "POST", "/pilot/review", { body: { bundlePath: sealed.bundle } })).body;
+  assert.equal(reviewed.ok, true);
+  assert.deepEqual(reviewed.summary.target, target);
+  const approvalPath = await approveViaUi(port, sealed, "alice");
+  const before = engineCalls().filter((args) => args[0] === "apply").length;
+  // The router derives the apply request from the prepared seal request.
+  const applied = await applyInConsole(port, prepared.files, sealed, [approvalPath], applyPhrase(sealed));
+  assert.equal(applied.exit, 0, JSON.stringify(applied));
+  const evidence = applied.data as { outcome: string; target: ResolvedTarget; artifactSha256: string };
+  assert.equal(evidence.outcome, "SUCCEEDED");
+  assert.deepEqual(evidence.target, target);
+  assert.equal(evidence.artifactSha256, sealed.artifactSha256);
+  assert.equal(engineCalls().filter((args) => args[0] === "apply").length, before + 1);
+}
+
+async function interruptedJourneyInConsole(cloud: Cloud): Promise<void> {
+  const { w, port, target, project } = await consoleJourney(cloud);
+  const { prepared, sealed } = await prepareAndSealInConsole(port, project, target);
+  const approvalFiles = () => readdirSync(w.approvals);
+
+  // Approval: a wrong phrase, then a cancel, each end with nothing signed.
+  for (const answer of ["APPROVE " + sealed.environment, undefined]) {
+    assert.equal((await call(port, "POST", "/pilot/approve", { body: { bundlePath: sealed.bundle, keyPath: keyFile("alice"), approverId: "alice" } })).status, 202);
+    const asked = await waiting(port);
+    if (answer === undefined) await call(port, "POST", "/pilot/cancel", { body: {} });
+    else await call(port, "POST", "/pilot/answer", { body: { dialogId: asked.run!.dialog!.id, answer } });
+    const result = (await finished(port)).run!.result!;
+    assert.notEqual(result.exit, 0);
+    assert.equal(result.savedPath, undefined);
+    assert.deepEqual(approvalFiles(), [], "nothing was signed");
+  }
+  const approvalPath = await approveViaUi(port, sealed, "alice");
+
+  // Apply: a wrong phrase, then a cancel, each run no engine and spend neither the approval nor the plan.
+  const applies = () => engineCalls().filter((args) => args[0] === "apply").length;
+  const before = applies();
+  for (const answer of ["APPLY " + sealed.environment, undefined]) {
+    const result = await applyInConsole(port, prepared.files, sealed, [approvalPath], answer);
+    assert.notEqual(result.exit, 0);
+    assert.notEqual(result.exit, 3, "nothing is spent: " + JSON.stringify(result));
+    assert.equal(applies(), before, "no engine ran");
+  }
+  // Recovery: the same approval still applies, exactly once.
+  const applied = await applyInConsole(port, prepared.files, sealed, [approvalPath], applyPhrase(sealed));
+  assert.equal(applied.exit, 0, JSON.stringify(applied));
+  assert.equal(applies(), before + 1);
+}
+
+// Literal titles: config/acceptance/journeys.json cites each one exactly.
+test("AWS Terraform in the console: prepare from a project folder, preview, approve and apply through the real router, service and adapter", () => wholeJourneyInConsole("AWS"));
+test("AWS Terraform in the console: a wrong phrase or a cancel at approval or apply signs nothing and spends nothing, and the same approval still applies", () => interruptedJourneyInConsole("AWS"));
+test("Azure Terraform in the console: prepare from a project folder, preview, approve and apply through the real router, service and adapter", () => wholeJourneyInConsole("AZURE"));
+test("Azure Terraform in the console: a wrong phrase or a cancel at approval or apply signs nothing and spends nothing, and the same approval still applies", () => interruptedJourneyInConsole("AZURE"));

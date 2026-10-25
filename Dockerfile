@@ -24,6 +24,8 @@ COPY security/ ./security/
 COPY config/ ./config/
 COPY policy/ ./policy/
 COPY compose.yaml ./compose.yaml
+# test/gitignore-secrets.test.ts reads the repository's ignore rules as text.
+COPY .gitignore ./.gitignore
 COPY docs/ ./docs/
 COPY alz ./alz
 COPY .github/workflows/model-qualification.yml ./.github/workflows/model-qualification.yml
