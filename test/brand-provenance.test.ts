@@ -12,12 +12,14 @@ import {
   matchesBrandProvenance,
 } from "../src/brand/identity.js";
 import { sha256Buffer } from "../src/release/manifest.js";
+import { RELEASE_BRAND_FILE_NAME } from "../src/cli/release-package.js";
 
 const repository = fileURLToPath(new URL("../", import.meta.url));
 const tsx = resolve(repository, "node_modules/.bin/tsx");
 const cli = resolve(repository, "src/cli/release-package.ts");
 
 test("brand fingerprint identifies author, upstream repository, MIT software and owner-declared mark", () => {
+  assert.equal(RELEASE_BRAND_FILE_NAME, "brand-provenance.json");
   assert.equal(BRAND_PROVENANCE.originalAuthor, "JK Gonzalez");
   assert.equal(BRAND_PROVENANCE.productMark, "Sovereign ALZ®");
   assert.equal(BRAND_PROVENANCE.copyrightHolder, "Adapt Cloud");
@@ -46,14 +48,14 @@ test("new preview release embeds hash-bound provenance; tampering blocks verific
     ], { cwd: repository, encoding: "utf8", timeout: 30000 });
     assert.equal(generated.status, 0, generated.stderr || generated.stdout);
 
-    const brand = await readFile(join(root, "brand-provenance.json"), "utf8");
+    const brand = await readFile(join(root, RELEASE_BRAND_FILE_NAME), "utf8");
     assert.deepEqual(JSON.parse(brand), BRAND_PROVENANCE);
     assert.equal(brand.endsWith("\n"), true);
     const manifest = JSON.parse(await readFile(join(root, "release-manifest.json"), "utf8"));
     assert.equal(manifest.contract.actEnabled, false);
     assert.equal(
       manifest.files.find((item: {path: string; sha256: string}) =>
-        item.path === "brand-provenance.json")?.sha256,
+        item.path === RELEASE_BRAND_FILE_NAME)?.sha256,
       sha256Buffer(brand),
     );
 
