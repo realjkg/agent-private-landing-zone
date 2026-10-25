@@ -148,6 +148,7 @@ export type AccountProposal = {
   schema: 2; createdAt: string; expiresAt: string;
   identity: AwsIdentity; orgId: string; ouId: string; ouArn: string; ouName: string;
   landingZoneArn: string; accountName: string; accountEmail: string;
+  provisionedProductName: string;
   environment: AccountEnvironment; requesterPracticeRole: PracticeRole;
   roleClassification: "DECLARED_NOT_AUTHORIZING";
   owner: { email: string; first: string; last: string };
@@ -189,26 +190,44 @@ export async function prepare(intake: Intake, call: AwsCall = awsAdminCall, now 
   if (!/^prod-[a-z0-9]+$/.test(productId) || !/^pa-[a-z0-9]+$/.test(artifactId) ||
       !/^lp(?:v[0-9]+)?-[a-z0-9]+$/.test(pathId))
     throw Error("ACCOUNT_FACTORY_IDENTIFIERS_INVALID");
-  const keys = records((await aws("servicecatalog", "describe-provisioning-parameters",
+  // AWS DescribeProvisioningParameters returns ParameterKey directly on each list item,
+  // NOT within a nested Parameter object. Reflect the actual CLI/API response.
+  const definitions = records((await aws("servicecatalog", "describe-provisioning-parameters",
     "--product-id", productId, "--provisioning-artifact-id", artifactId,
-    "--path-id", pathId)).ProvisioningArtifactParameters)
-    .map(x => String(object(x.Parameter).ParameterKey ?? ""));
+    "--path-id", pathId)).ProvisioningArtifactParameters);
+  const keys = definitions.map(x => String(x.ParameterKey ?? ""));
   const required = ["AccountName", "AccountEmail", "SSOUserEmail", "SSOUserFirstName",
     "SSOUserLastName", "ManagedOrganizationalUnit"];
-  if (!required.every(x => keys.includes(x))) throw Error("ACCOUNT_FACTORY_SCHEMA_UNEXPECTED");
+  if (!required.every(x => keys.includes(x)) ||
+      new Set(keys).size !== keys.length || keys.some(x => !x))
+    throw Error("ACCOUNT_FACTORY_SCHEMA_UNEXPECTED");
+  if (definitions.some(x => !required.includes(String(x.ParameterKey)) &&
+    x.DefaultValue === undefined))
+    throw Error("ACCOUNT_FACTORY_ADDITIONAL_REQUIRED_PARAMETER");
+  const offeredOus = records(definitions).find(x => x.ParameterKey === "ManagedOrganizationalUnit");
+  const allowedOus = object(offeredOus?.ParameterConstraints).AllowedValues;
+  const targetOuValue = String(ou.Name) + " (" + ouId + ")";
+  if (Array.isArray(allowedOus) && allowedOus.length > 0 && !allowedOus.includes(targetOuValue))
+    throw Error("TARGET_OU_NOT_OFFERED_BY_ACCOUNT_FACTORY");
   const parameters = [
     { Key: "AccountName", Value: intake.name },
     { Key: "AccountEmail", Value: intake.email },
     { Key: "SSOUserEmail", Value: intake.ownerEmail },
     { Key: "SSOUserFirstName", Value: intake.ownerFirst },
     { Key: "SSOUserLastName", Value: intake.ownerLast },
-    { Key: "ManagedOrganizationalUnit", Value: String(ou.Name) + " (" + ouId + ")" },
+    { Key: "ManagedOrganizationalUnit", Value: targetOuValue },
   ];
+  // Service Catalog's ProvisionedProductName excludes spaces, unlike the account display
+  // name accepted by Account Factory. Keep both distinct and hash-bound to the request.
+  const provisionedProductName = /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(intake.name)
+    ? intake.name
+    : intake.name.replace(/ +/g, "-") + "-" +
+      hash({ organization: orgId, name: intake.name, email: intake.email }).slice(0, 8);
   const draft = {
     schema: 2 as const, createdAt: now.toISOString(),
     expiresAt: new Date(now.getTime() + 2 * 60 * 60_000).toISOString(),
     identity, orgId, ouId, ouArn, ouName: String(ou.Name), landingZoneArn,
-    accountName: intake.name, accountEmail: intake.email,
+    accountName: intake.name, accountEmail: intake.email, provisionedProductName,
     environment: intake.environment, requesterPracticeRole: intake.practiceRole,
     roleClassification: "DECLARED_NOT_AUTHORIZING" as const,
     owner: { email: intake.ownerEmail, first: intake.ownerFirst, last: intake.ownerLast },
@@ -227,7 +246,9 @@ export function verifyProposal(proposal: AccountProposal, now = new Date()): str
     !OU_ID.test(draft.ouId) || !String(draft.ouArn).includes(draft.orgId) ||
     !ENVS.includes(draft.environment) || !isPracticeRole(draft.requesterPracticeRole) ||
     draft.roleClassification !== "DECLARED_NOT_AUTHORIZING" ||
-    draft.parameters.length !== 6 || !draft.parameters.some(p =>
+    draft.parameters.length !== 6 ||
+    !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(draft.provisionedProductName) ||
+    !draft.parameters.some(p =>
       p.Key === "ManagedOrganizationalUnit" && p.Value === draft.ouName + " (" + draft.ouId + ")"))
     throw Error("PROPOSAL_TAMPERED_OR_WRONG_TARGET");
   if (Number.isNaN(Date.parse(draft.createdAt)) || Number.isNaN(Date.parse(draft.expiresAt)) ||
@@ -262,7 +283,7 @@ export async function submit(proposal: AccountProposal, profile: string, call: A
     throw Error("ACCOUNT_ALREADY_EXISTS");
   const record = object((await call(profile, ["servicecatalog", "provision-product",
     "--product-id", proposal.productId, "--provisioning-artifact-id", proposal.artifactId,
-    "--path-id", proposal.pathId, "--provisioned-product-name", proposal.accountName,
+    "--path-id", proposal.pathId, "--provisioned-product-name", proposal.provisionedProductName,
     "--provisioning-parameters", JSON.stringify(proposal.parameters),
     "--provision-token", proposal.proposalHash.slice(0, 32)])).RecordDetail);
   if (!/^rec-[a-z0-9]+$/.test(String(record.RecordId ?? "")))
