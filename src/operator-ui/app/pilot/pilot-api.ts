@@ -38,6 +38,8 @@ export type PreparedFiles = {
     label: "LOCAL_PREPARATION"; provider: string; engine: string; path: "PRIMARY" | "SECONDARY"; environment: PilotEnvironment;
     account: string; region?: string; backend: string; workspace: string; projectRoot: string; fileCount: number;
     providers: { source: string; version: string }[]; engineVersion: string; engineVersionSource: string; policyVersion: string;
+    /** Where each input's value comes from: a project file, a named environment variable or a default. Never the value. */
+    inputs: { name: string; source: "TFVARS" | "ENVIRONMENT" | "DEFAULT"; from: string }[];
     unitHash: string; manifestHash: string; contractSha256: string;
   };
   gaps: string[];

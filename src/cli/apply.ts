@@ -547,6 +547,7 @@ function preparationReview(prepared: Prepared): string {
     "  project         " + s.projectRoot + " (" + s.fileCount + " files)",
     ...s.providers.map((p) => "  provider pin    " + p.source + " " + p.version),
     "  engine version  " + s.engineVersion + " (" + s.engineVersionSource.toLowerCase().replace(/_/g, " ") + ")",
+    ...s.inputs.map((i) => "  input           " + i.name + " from " + i.from + (i.source === "DEFAULT" ? " (default)" : "")),
     "  policy version  " + s.policyVersion, "  unit hash       " + s.unitHash, "  manifest hash   " + s.manifestHash,
     ...(prepared.gaps.length ? ["", "Known gaps:", ...prepared.gaps.map((gap) => "  - " + gap)] : []),
   ].join("\n") + "\n";
@@ -561,6 +562,7 @@ function preparationReview(prepared: Prepared): string {
 const prepareCommand: Command = async (flags, terminal, deps, out) => {
   const prepDeps = {
     contractPath: deps.contractPath, pinPath: deps.contractPinPath, qualificationDir: deps.qualificationDir, toolDirs: deps.toolDirs,
+    env: deps.env ?? process.env,
   };
   const input = { environment: flags.environment[0], projectRoot: flags.project[0], awsCliVersion: flags["aws-cli-version"]?.[0] };
   let result: Prepared | PrepareRefusal = await prepareApply(input, prepDeps);

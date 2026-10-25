@@ -888,6 +888,9 @@ test("prepare writes the request and manifest from the contract and project, and
   const w = await world(contractJson(KILL, { policyVersion: POLICY }));
   const target = targetOf("DEV");
   const project = writeProject(fresh("project"), target).projectRoot;
+  // A variable from terraform.tfvars: prepare binds it as an input identity, and seal must accept that binding.
+  writeFileSync(join(project, "variables.tf"), 'variable "location" {}\n');
+  writeFileSync(join(project, "terraform.tfvars"), 'location = "westeurope"\n');
   const outDir = fresh("prepared");
   const before = engineCalls().length;
   const run = await cli(w, ["prepare", "--environment", "DEV", "--project", project], [], { preparationDir: outDir });
@@ -900,6 +903,8 @@ test("prepare writes the request and manifest from the contract and project, and
   const manifest = /manifest {2}(\S+)/.exec(run.stdout)?.[1];
   assert.ok(request && manifest && existsSync(request) && existsSync(manifest));
   assert.match(run.stdout, /NEXT \.\/alz apply seal --request /);
+  assert.match(run.stdout, /input {11}location from terraform\.tfvars/);
+  assert.doesNotMatch(run.stdout, /westeurope/, "a value is never printed");
   assert.equal(readdirSync(join(outDir, "DEV")).length, 3);
 
   const seal = await cli(w, ["seal", "--request", request, "--manifest", manifest], [targetString(target), PHRASE]);

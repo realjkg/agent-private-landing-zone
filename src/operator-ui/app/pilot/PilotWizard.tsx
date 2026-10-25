@@ -149,6 +149,12 @@ export function PreparedSummary(props: { prepared: PreparedFiles }) {
         <dt>Project folder</dt><dd><code>{summary.projectRoot}</code> ({summary.fileCount} files)</dd>
         <dt>Tool version</dt><dd><code>{summary.engineVersion}</code></dd>
         <dt>Policy version</dt><dd><code>{summary.policyVersion}</code></dd>
+        <dt>{COPY.prepareInputsLabel}</dt>
+        <dd>{summary.inputs.length === 0 ? COPY.prepareInputsNone : (
+          <ul className="pilot-inputs">{summary.inputs.map((input) => (
+            <li key={input.name}><code>{input.name}</code>, from {input.source === "DEFAULT" ? COPY.prepareFromDefault : input.source === "TFVARS" ? COPY.prepareFromFile : COPY.prepareFromEnvironment} <code>{input.from}</code></li>
+          ))}</ul>
+        )}</dd>
       </dl>
       <p role="note">{COPY.prepareLocalOnly}</p>
       <p><strong>{nextText}</strong></p>

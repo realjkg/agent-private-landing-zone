@@ -18,7 +18,7 @@ import {
   awsContractJson, awsTargetOf, contractJson, ENGINE_VERSION, installFakeTerraform, LOCK, pinPathOf, sha, targetOf,
   testFixtureForgeQualificationEvidence, writePinnedContract, writeProject,
 } from "./helpers/apply-fixtures.js";
-import { cdkContractJson, cdkTargetOf, installFakeAws, writeAssembly } from "./helpers/cdk-fixtures.js";
+import { cdkContractJson, cdkTargetOf, installFakeAws, PARAMETER_CANARY, writeAssembly } from "./helpers/cdk-fixtures.js";
 
 // Preparation is local: these tests run no engine, read no cloud and need no credential. The fake tools only exist so
 // the "is the tool installed" check has something to find; prepare never runs them.
@@ -89,7 +89,8 @@ test("Terraform on AWS: the request and manifest come from the contract and the 
   assert.equal(prepared.summary.engineVersionSource, "TESTED_PIN");
   assert.equal(prepared.summary.engineVersion, "1.16.4");
   assert.equal(prepared.next.step, "qualify", "no qualification record yet, so DEV qualifies first");
-  assert.ok(prepared.gaps.some((gap) => /not derived yet/.test(gap)));
+  assert.ok(prepared.gaps.some((gap) => /local folder inside the project/.test(gap)), "dependencies are stated, not left as a gap");
+  assert.ok(!prepared.gaps.some((gap) => /not derived yet/.test(gap)));
   assert.ok(prepared.gaps.some((gap) => /not qualification evidence/.test(gap)));
 });
 
@@ -267,4 +268,108 @@ test("preparation starts no process, reaches no engine session and calls nothing
     assert.ok(!imports.includes(forbidden), "prepare.ts must not import " + forbidden);
   }
   assert.ok(!existsSync(join(root, ".runs")), "tests write only under their own temp folder");
+});
+
+// --- inputs and dependencies --------------------------------------------------------------------------------------------
+
+const VALUE_CANARY = "s3cr3t-value-canary-91";
+function tfProject(s: Setup, files: Record<string, string>): string {
+  const project = terraformProject(s);
+  for (const [name, text] of Object.entries(files)) {
+    mkdirSync(join(project, name, ".."), { recursive: true });
+    writeFileSync(join(project, name), text);
+  }
+  return project;
+}
+const VARIABLES = [
+  'variable "region" {\n  type = string\n}',
+  'variable "env" {\n  default = "' + VALUE_CANARY + '"\n}',
+  'variable "owner" {}',
+  'variable "tags" {\n  description = <<EOT\nA { brace } and default = inside a heredoc are not structure.\nEOT\n  default = { team = "a" }\n}',
+  'variable "note" {\n  description = "a \\"quoted\\" ${upper("default = x")} { brace"\n  # default = in a comment\n  /* default = in a block comment { */\n}',
+].join("\n");
+
+test("each Terraform variable becomes an input named by where its value comes from, in Terraform's precedence, and never by its value", async () => {
+  const s = setup(awsTf());
+  const project = tfProject(s, {
+    "variables.tf": VARIABLES,
+    "terraform.tfvars": 'region = "' + VALUE_CANARY + '"\nnote = "x"\n',
+    "b.auto.tfvars": 'region = "later"\n',
+    "a.auto.tfvars.json": JSON.stringify({ region: "earlier", note: "y" }),
+  });
+  const env = { ALZ_DISCOVERY_TF_VAR_owner: VALUE_CANARY };
+  const prepared = ok(await prepareApply({ environment: "DEV", projectRoot: project }, { ...s.deps, env }));
+  assert.deepEqual(prepared.summary.inputs, [
+    { name: "env", source: "DEFAULT", from: "variables.tf" },
+    { name: "note", source: "TFVARS", from: "a.auto.tfvars.json" },
+    { name: "owner", source: "ENVIRONMENT", from: "ALZ_DISCOVERY_TF_VAR_owner" },
+    { name: "region", source: "TFVARS", from: "b.auto.tfvars" },
+    { name: "tags", source: "DEFAULT", from: "variables.tf" },
+  ], "the last *.auto.tfvars wins, auto files beat terraform.tfvars, a file beats the environment, the environment beats a default");
+  assert.deepEqual(prepared.request.resolved.inputs.map((i) => i.name), ["env", "note", "owner", "region", "tags"]);
+  assert.deepEqual(prepared.manifest.inputs, prepared.request.resolved.inputs, "the manifest binds exactly the request's inputs");
+  assert.ok(prepared.request.resolved.inputs.every((i) => /^[0-9a-f]{64}$/.test(i.identity)));
+  for (const text of [JSON.stringify(prepared.request), JSON.stringify(prepared.manifest), JSON.stringify(prepared.summary)]) {
+    assert.ok(!text.includes(VALUE_CANARY), "no input value is ever recorded");
+  }
+  assert.ok(prepared.gaps.some((gap) => /owner come from environment variables/.test(gap)));
+  // A changed value file changes that input's identity; an unrelated input keeps its own.
+  writeFileSync(join(project, "b.auto.tfvars"), 'region = "changed"\n');
+  const again = ok(await prepareApply({ environment: "DEV", projectRoot: project }, { ...s.deps, env }));
+  const identity = (p: Prepared, name: string) => p.request.resolved.inputs.find((i) => i.name === name)!.identity;
+  assert.notEqual(identity(again, "region"), identity(prepared, "region"));
+  assert.equal(identity(again, "owner"), identity(prepared, "owner"));
+});
+
+test("a Terraform variable with no value anywhere is refused before any preview, naming it and never asking for its value", async () => {
+  const s = setup(awsTf());
+  const project = tfProject(s, { "variables.tf": 'variable "region" {}\nvariable "zone" {}\nvariable "defaulted" {\n  default = 1\n}' });
+  const refusal = refused(await prepareApply({ environment: "DEV", projectRoot: project }, { ...s.deps, env: {} }), "INPUT_UNSET", "OPERATOR");
+  assert.match(refusal.message, /region, zone/);
+  assert.doesNotMatch(refusal.message, /defaulted/, "a variable with a default is not reported");
+  assert.match(refusal.message, /ALZ_DISCOVERY_TF_VAR_<name>/);
+});
+
+test("local modules inside the project are followed and bound with its files; remote and outside modules are refused", async () => {
+  const s = setup(awsTf());
+  const project = tfProject(s, {
+    "modules.tf": 'module "net" {\n  source = "./modules/net"\n}',
+    "modules/net/main.tf": 'module "inner" {\n  source = "../inner"\n}\nvariable "cidr" {}',
+    "modules/inner/main.tf": 'resource "aws_s3_bucket" "b" {}',
+  });
+  const prepared = ok(await prepareApply({ environment: "DEV", projectRoot: project }, s.deps));
+  assert.deepEqual(prepared.request.resolved.dependencies, []);
+  assert.deepEqual(prepared.summary.inputs, [], "a module's own variables are not root inputs");
+  assert.ok(prepared.manifest.files.some((f) => f.path === "modules/inner/main.tf"), "nested local module code is fingerprinted");
+
+  for (const [source, code] of [["hashicorp/consul/aws", "MODULE_REMOTE"], ["git::https://example.invalid/m.git", "MODULE_REMOTE"], ["../../outside", "MODULE_OUTSIDE_PROJECT"], ["./missing", "MODULE_OUTSIDE_PROJECT"]] as const) {
+    const other = setup(awsTf());
+    const dir = tfProject(other, { "modules.tf": 'module "m" {\n  source = "' + source + '"\n  version = "1.0.0"\n}' });
+    refused(await prepareApply({ environment: "DEV", projectRoot: dir }, other.deps), code, "OPERATOR");
+  }
+  const nested = setup(awsTf());
+  const deep = tfProject(nested, { "modules.tf": 'module "net" {\n  source = "./net"\n}', "net/main.tf": 'module "x" {\n  source = "terraform-aws-modules/vpc/aws"\n}' });
+  refused(await prepareApply({ environment: "DEV", projectRoot: deep }, nested.deps), "MODULE_REMOTE");
+});
+
+test("a Terraform file that cannot be scanned is refused rather than guessed at", async () => {
+  const s = setup(awsTf());
+  const project = tfProject(s, { "broken.tf": 'variable "a" {\n  default = "unterminated\n}' });
+  refused(await prepareApply({ environment: "DEV", projectRoot: project }, s.deps), "TERRAFORM_CONFIG_UNREADABLE", "OPERATOR");
+});
+
+test("CDK template parameters become inputs from their defaults, without the default's value; one with no default is refused", async () => {
+  const s = setup(awsCdk(), "aws");
+  const project = join(s.dir, "assembly");
+  writeAssembly(project, cdkTargetOf("DEV"));
+  const prepared = ok(await prepareApply({ environment: "DEV", projectRoot: project, awsCliVersion: "2.37.0" }, s.deps));
+  assert.equal(prepared.summary.inputs.length, 1);
+  assert.match(prepared.summary.inputs[0].name, /\/DbPassword$/);
+  assert.equal(prepared.summary.inputs[0].source, "DEFAULT");
+  for (const text of [JSON.stringify(prepared.request), JSON.stringify(prepared.manifest), JSON.stringify(prepared.summary)]) assert.ok(!text.includes(PARAMETER_CANARY));
+  const template = readdirSync(project).find((name) => name.endsWith(".template.json"))!;
+  const body = JSON.parse(readFileSync(join(project, template), "utf8")) as { Parameters: Record<string, Record<string, unknown>> };
+  delete body.Parameters.DbPassword.Default;
+  writeFileSync(join(project, template), JSON.stringify(body));
+  refused(await prepareApply({ environment: "DEV", projectRoot: project, awsCliVersion: "2.37.0" }, s.deps), "INPUT_UNSET", "OPERATOR");
 });

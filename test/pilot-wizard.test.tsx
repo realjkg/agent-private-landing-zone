@@ -297,6 +297,7 @@ describe("step 3 and the confirmation dialogs", () => {
       label: "LOCAL_PREPARATION", provider: "AWS", engine: "TERRAFORM", path: "PRIMARY", environment: "DEV", account: "111111111111", region: "us-east-1",
       backend: "state-bucket", workspace: "dev", projectRoot: "/home/you/pilot/landing-zone", fileCount: 3,
       providers: [{ source: "registry.terraform.io/hashicorp/aws", version: "6.0.0" }], engineVersion: "1.16.4", engineVersionSource: "TESTED_PIN",
+      inputs: [{ name: "region", source: "TFVARS", from: "terraform.tfvars" }, { name: "owner", source: "ENVIRONMENT", from: "ALZ_DISCOVERY_TF_VAR_owner" }],
       policyVersion: "pilot-policy-1", unitHash: "a".repeat(64), manifestHash: "b".repeat(64), contractSha256: "c".repeat(64),
     },
     gaps: ["Inputs and dependencies are not derived yet."], next, request: { environment: "DEV" }, manifest: { schemaVersion: 1 },
@@ -314,6 +315,10 @@ describe("step 3 and the confirmation dialogs", () => {
     expect((screen.getByLabelText(COPY.sealManifestLabel) as HTMLInputElement).value).toBe("/runs/pilot/DEV/manifest-ab.json");
     const box = document.querySelector(".pilot-prepared") as HTMLElement;
     for (const text of ["AWS", "Terraform", "111111111111", "us-east-1", "1.16.4", "pilot-policy-1", COPY.prepareLocalOnly, COPY.prepareNextSeal]) expect(box.textContent).toContain(text);
+    // The settings it uses, by name and source, never a value.
+    expect(box.textContent).toContain(COPY.prepareInputsLabel);
+    expect(box.textContent).toContain("region, from " + COPY.prepareFromFile + " terraform.tfvars");
+    expect(box.textContent).toContain("owner, from " + COPY.prepareFromEnvironment + " ALZ_DISCOVERY_TF_VAR_owner");
     expect(box.querySelector("details")?.hasAttribute("open")).toBe(false);
     expect(box.querySelector("details pre")?.textContent).toContain("schemaVersion");
     expect(jargonIn(primaryText())).toEqual([]);
