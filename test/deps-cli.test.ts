@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
@@ -150,7 +150,7 @@ test("without an interactive Terminal, ./alz deps only reports: nothing is insta
   assert.equal(code, 2);
   assert.equal(downloads, 0);
   assert.equal(term.asked, 0, "nothing is asked");
-  assert.ok(!existsSync(join(root, "home-cli-noninteractive", ".alz")));
+  assert.ok(!existsSync(join(root, "home-cli-noninteractive", ".alz", "tools")), "no tool folder is created");
 });
 
 test("choosing Skip at the install menu installs nothing, and the command stays blocked", async () => {
@@ -337,4 +337,28 @@ test("guided installer never calls a cached but wrong-version binary ready", asy
   assert.deepEqual(result.skipped, ["terraform"]);
   assert.equal(downloaded, 0, "no download attempted for an already existing local binary");
   assert.match(term.shown.join(""), /still failed verification/);
+});
+
+test("each ./alz deps run leaves a private diagnostic log of its steps, with no paths, URLs or downloads in it", async () => {
+  const archive = fakeArchive("logged");
+  const term = terminal(true, ["1", "", "1"]);
+  const home = join(root, "home-cli-logged");
+  await runDepsCommand([], {
+    ...deps("logged", term, {
+      out: () => {},
+      download: async () => Readable.from([archive.body]),
+      env: { PATH: pathWith("cli-logged", { ...GOOD_TOOLS, terraform: "" }) },
+    }),
+    pinsPath: fakePins("logged", archive.sha256),
+  });
+  const logDir = join(home, ".alz", "logs");
+  const files = readdirSync(logDir).filter((name) => name.startsWith("deps-") && name.endsWith(".log"));
+  assert.equal(files.length, 1, "one log file for the run");
+  assert.equal(statSync(join(logDir, files[0])).mode & 0o777, 0o600, "the log is private");
+  const text = readFileSync(join(logDir, files[0]), "utf8");
+  assert.match(text, /check .*Terraform 1\.16\.4=missing/);
+  assert.match(text, /menu install/);
+  assert.match(text, /install terraform 1\.16\.4 installed/);
+  assert.match(text, /after /);
+  assert.doesNotMatch(text, /https?:\/\/|\/home|\.alz\/tools/, "no URLs or paths in the log");
 });

@@ -1,5 +1,6 @@
-import { existsSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
+import { join } from "node:path";
 
 import { type CheckContext, type DepCheck, allRequiredPass, installedPath, runDependencyChecks } from "../deps/checks.js";
 import { InstallError, installTool, type InstalledTool, removeInstalledTool } from "../deps/install.js";
@@ -129,6 +130,20 @@ export async function chooseInstalls(items: readonly DepCheck[], terminal: Human
   return selected;
 }
 
+/**
+ * Diagnostic log for one `./alz deps` run: one line per step (checks, choices, results and codes), in the user's
+ * ~/.alz/logs folder. It never holds a download, a path, a URL or a secret, so it is safe to send to the project owner.
+ */
+function depsLog(home: string): { file: string; line: (text: string) => void } {
+  const dir = join(home, ".alz", "logs");
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const file = join(dir, "deps-" + new Date().toISOString().replace(/[:.]/g, "-") + ".log");
+  return {
+    file,
+    line: (text: string) => { appendFileSync(file, new Date().toISOString() + " " + text + "\n", { mode: 0o600 }); },
+  };
+}
+
 /** A numbered menu. The person picks a number; anything else asks again. `safe` is used if no answer ever comes. */
 export async function askChoice(terminal: HumanTerminal, title: string, options: readonly string[], safe: number): Promise<number> {
   terminal.write(["", title, ...options.map((option, index) => "  " + (index + 1) + "  " + option), ""].join("\n"));
@@ -189,7 +204,9 @@ export async function runDepsCommand(args: string[], deps: DepsDeps = {}): Promi
   }
   const ctx = context(deps, pins);
   const home = ctx.home;
+  const log = depsLog(home);
   let checks = await runDependencyChecks(ctx, REQUIRED_FOR_DEPS);
+  log.line("check " + checks.map((check) => check.label + "=" + (check.ok ? "ok" : "missing")).join(" "));
   out("Dependency check\n\n");
   render(checks, out);
 
@@ -220,6 +237,7 @@ export async function runDepsCommand(args: string[], deps: DepsDeps = {}): Promi
   options.push("Do nothing"); actions.push("none");
   const choice = await askChoice(terminal, "What would you like to do?", options, options.length);
   const action = actions[choice - 1];
+  log.line("menu " + (action ?? "unknown"));
 
   if (action === "install") {
     const picks = await chooseInstalls(installable, terminal);
@@ -236,9 +254,11 @@ export async function runDepsCommand(args: string[], deps: DepsDeps = {}): Promi
       }
       try {
         const installed: InstalledTool = await installTool(check.installable!, { pins, home, platform, ...(deps.download ? { download: deps.download } : {}) });
+        log.line("install " + check.installable + " " + pins.tools[check.installable as ToolId].version + " " + (installed.reused ? "already-installed" : "installed"));
         out((installed.reused ? "Already installed: " : "Installed: ") + installed.path + "\n");
       } catch (error) {
         const code = error instanceof InstallError ? error.code : "INSTALL_DOWNLOAD_FAILED";
+        log.line("install " + check.installable + " " + pins.tools[check.installable as ToolId].version + " failed " + code);
         out(FAILURE_TEXT[code] + "\n");
       }
     }
@@ -252,9 +272,11 @@ export async function runDepsCommand(args: string[], deps: DepsDeps = {}): Promi
       if (decision === 1) {
         try {
           const outcome = removeInstalledTool(home, item.tool, item.version);
+          log.line("remove " + item.tool + " " + item.version + " " + outcome);
           out(outcome === "removed" ? "Removed: " + item.path + "\n" : "Already removed: " + item.path + "\n");
         } catch (error) {
           const code = error instanceof InstallError ? error.code : "INSTALL_REMOVE_REFUSED";
+          log.line("remove " + item.tool + " " + item.version + " failed " + code);
           out(FAILURE_TEXT[code as InstallError["code"]] + "\n");
         }
       } else {
@@ -269,8 +291,10 @@ export async function runDepsCommand(args: string[], deps: DepsDeps = {}): Promi
   }
 
   checks = await runDependencyChecks(ctx, REQUIRED_FOR_DEPS);
+  log.line("after " + checks.map((check) => check.label + "=" + (check.ok ? "ok" : "missing")).join(" "));
   out("\nDependency check, after your choices\n\n");
   render(checks, out);
+  out("\nDiagnostic log: " + log.file + "\n");
   if (allRequiredPass(checks)) {
     out("\nAll required dependencies are ready.\n");
     return EXIT.PASS;
