@@ -7,14 +7,16 @@
  * file hashes. The MIT license permits commercial use by services providers.
  */
 import { sha256 } from "../util/sha256.js";
+import { BRAND_IDENTITY } from "../brand/identity.js";
 
+/** Compatibility projection of the canonical brand record; not a second authority. */
 export const SOVEREIGN_ALZ_ORIGIN = Object.freeze({
   project: "Sovereign Agent Private Landing Zone",
-  author: "JK Gonzalez",
-  trademark: "Sovereign ALZ™",
-  trademarkClaimant: "JK Gonzalez",
-  license: "MIT",
-  repository: "realjkg/agent-private-landing-zone",
+  author: BRAND_IDENTITY.originalAuthor,
+  trademark: BRAND_IDENTITY.productMark,
+  trademarkClaimant: BRAND_IDENTITY.originalAuthor,
+  license: BRAND_IDENTITY.softwareLicense,
+  repository: BRAND_IDENTITY.sourceRepository.replace("https://github.com/", ""),
 } as const);
 
 /** Stable across builds; the source commit identifies the particular build. */

@@ -2,12 +2,13 @@
 
 **Original author:** JK Gonzalez
 
-**Project:** Sovereign Agent Private Landing Zone (Sovereign ALZ™)
+**Project:** Sovereign Agent Private Landing Zone (Sovereign ALZ®; registered designation asserted by the owner)
 
 **Source repository:** realjkg/agent-private-landing-zone
 
-The source-identity record is embedded in `src/release/provenance.ts` and
-compiled into the release as a deterministic SHA-256 identity fingerprint.
+The canonical identity is `src/brand/identity.ts`. The compatibility interface
+in `src/release/provenance.ts` derives its shared fields from that record and
+compiles into the release with a deterministic SHA-256 identity fingerprint.
 Existing release manifests bind the compiled file to a source commit and
 artifact-file hashes. The identity fingerprint alone is not proof of authorship
 or a digital signature.
