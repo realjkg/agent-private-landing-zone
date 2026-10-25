@@ -1,6 +1,9 @@
+import { randomUUID } from "node:crypto";
 import {
   readdir,
   readFile,
+  rename,
+  rm,
   writeFile,
 } from "node:fs/promises";
 import {
@@ -8,6 +11,8 @@ import {
   resolve,
   sep,
 } from "node:path";
+
+import { BRAND_PROVENANCE } from "../brand/identity.js";
 
 import {
   createReleaseManifest,
@@ -159,6 +164,22 @@ async function generate(
   version: string,
   sourceCommit: string,
 ): Promise<void> {
+  // A branded release contains a byte-identical origin declaration.
+  // Publish it before enumerating files so the existing signed/source-bound
+  // release manifest also checks its SHA-256. No change to schema v1.
+  const tempBrandPath = resolve(root, ".brand-origin-" + randomUUID() + ".tmp");
+  try {
+    await writeFile(
+      tempBrandPath,
+      JSON.stringify(BRAND_PROVENANCE, null, 2) + "\\n",
+      { encoding: "utf8", mode: 0o600, flag: "wx" },
+    );
+    // Atomic replacement does not follow a preexisting output symlink.
+    await rename(tempBrandPath, resolve(root, "brand-provenance.json"));
+  } finally {
+    await rm(tempBrandPath, { force: true });
+  }
+
   const files =
     await collectFiles(root);
 
