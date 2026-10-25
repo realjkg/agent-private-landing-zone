@@ -87,7 +87,8 @@ export async function checkResource(entry: BlueprintEntry, region: string, aws: 
     } catch { /* falls through: an answer that does not name the resource proves nothing */ }
     return { ...base, identifier, existence: "UNKNOWN", reason: "UNEXPECTED_RESPONSE" };
   }
-  if (/ResourceNotFoundException/.test(result.stderr)) return { ...base, identifier, existence: "ABSENT" };
+  // The AWS CLI's own error line for this call, not the word anywhere in the output.
+  if (/An error occurred \(ResourceNotFoundException\) when calling the GetResource operation/.test(result.stderr)) return { ...base, identifier, existence: "ABSENT" };
   return { ...base, identifier, existence: "UNKNOWN", reason: errorClass(result.stderr) };
 }
 
@@ -113,7 +114,8 @@ export async function unexpectedTagged(blueprint: Blueprint, unitId: string, reg
  * VERIFIED: every entry is PRESENT, nothing planned is missing, nothing unexpected, and the listing was complete.
  * PARTIAL: as VERIFIED, except some resource types cannot be checked independently (they are named, not assumed), or the
  * run carries no unit tag, so nothing outside the state can be looked for.
- * INCONCLUSIVE: a check could not decide (access, throttling, an incomplete listing), and nothing is known to be wrong.
+ * INCONCLUSIVE: a check could not decide (access, throttling, an incomplete listing), or the blueprint names no resources
+ * so nothing was checked; nothing is known to be wrong.
  * FAILED: something planned is absent or missing from the state, or an unexpected resource carries the tag.
  */
 export async function observeBlueprint(blueprint: Blueprint, input: { unitId: string | null; region: string; aws: AwsCli }): Promise<ObserveReport> {
@@ -125,7 +127,7 @@ export async function observeBlueprint(blueprint: Blueprint, input: { unitId: st
   const has = (existence: Existence) => checks.some((check) => check.existence === existence);
   const verdict: ObserveVerdict =
     has("ABSENT") || blueprint.missing.length > 0 || unexpected.length > 0 ? "FAILED"
-    : has("UNKNOWN") || inventory === "INCOMPLETE" ? "INCONCLUSIVE"
+    : has("UNKNOWN") || inventory === "INCOMPLETE" || blueprint.entries.length === 0 ? "INCONCLUSIVE"
     : has("NOT_CHECKABLE") || inventory === "NOT_AVAILABLE" ? "PARTIAL" : "VERIFIED";
   return { verdict, checks, missingFromState: [...blueprint.missing], unexpected, inventory, verifier: "AWS_CLOUD_CONTROL" };
 }

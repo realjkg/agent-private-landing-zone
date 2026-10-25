@@ -43,9 +43,14 @@ function* managedResources(module: StateModule, depth = 0): Generator<StateResou
   }
 }
 
+/** Types whose provider id is a credential identifier (an access key id, for example). Their id is never copied. */
+const CREDENTIAL_ID_TYPES = new Set(["aws_iam_access_key", "aws_iam_service_specific_credential"]);
+
 /** The blueprint from `terraform show -json` output and the sealed plan's changes. Throws on output that is not a state. */
 export function blueprintFromTerraformState(showJson: string, planned: readonly PlannedChange[]): Blueprint {
-  const body = JSON.parse(showJson) as unknown;
+  let body: unknown;
+  // The parser's own message can quote the text around the error, which is state; it is never passed on.
+  try { body = JSON.parse(showJson); } catch { throw new Error("STATE_JSON_INVALID: not JSON"); }
   if (!isRecord(body) || !text(body.format_version)) throw new Error("STATE_JSON_INVALID: not terraform show -json output");
   const root = isRecord(body.values) && isRecord(body.values.root_module) ? body.values.root_module : {};
   // Outputs are listed among the plan's changes (address "output.<name>") but are not resources.
@@ -60,7 +65,7 @@ export function blueprintFromTerraformState(showJson: string, planned: readonly 
     entries.push({
       address: resource.address, type: resource.type,
       arn: text(values.arn) && values.arn.startsWith("arn:") ? values.arn : null,
-      id: text(values.id) ? values.id : null,
+      id: text(values.id) && !CREDENTIAL_ID_TYPES.has(resource.type) ? values.id : null,
       origin: plannedAddresses.has(resource.address) ? "IN_PLAN" : "NOT_IN_PLAN",
     });
   }

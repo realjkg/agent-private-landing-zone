@@ -32,7 +32,7 @@ export type CleanupReport = {
   /** ARNs still tagged with this run's unit that the blueprint does not name: leftovers outside the state. */
   untrackedLeftovers: string[];
   inventory: "COMPLETE" | "INCOMPLETE" | "NOT_AVAILABLE";
-  /** Why the verdict is not CLEAN, when it is INCONCLUSIVE. */
+  /** What stops a CLEAN verdict. With LEFTOVERS it can also list what else is unresolved. */
   unresolved: string[];
 };
 

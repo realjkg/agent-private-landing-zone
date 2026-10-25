@@ -14,7 +14,10 @@
 `blueprintFromTerraformState` reads `terraform show -json` of the state after the apply and the sealed plan's redacted changes.
 
 - **What it records:** each managed resource's address, type, ARN and the provider's `id`. Both identifiers are kept because Cloud Control names some types by one and some by the other.
-- **What it never copies:** any other attribute value. Tests check this with canary values.
+- **What it never copies:**
+  - any other attribute value. Tests check this with canary values;
+  - the `id` of types whose id is a credential identifier, such as `aws_iam_access_key`;
+  - the state text in a parse error.
 - **Data sources and outputs:** skipped.
 - **`missing`:** every address the plan says should exist afterward (created, updated, replaced or unchanged) that the state does not hold.
 - **`origin`:** `NOT_IN_PLAN` marks a resource that is in the state but that the plan never mentioned.
@@ -32,7 +35,7 @@ The caller runs the AWS CLI as the read-only DISCOVERY identity through the boun
 | --- | --- |
 | `VERIFIED` | Every resource is present. Nothing planned is missing, nothing unexpected carries the tag, and the tag listing was complete. |
 | `PARTIAL` | As `VERIFIED`, except that some types cannot be checked on their own, or the run carries no unit tag. Unchecked types are named, never assumed present. An example is a bucket setting such as `aws_s3_bucket_versioning`, which is not a separate cloud resource. |
-| `INCONCLUSIVE` | A check could not decide (access, throttling, credentials, or a paginated listing), and nothing is known to be wrong. |
+| `INCONCLUSIVE` | A check could not decide (access, throttling, credentials, or a paginated listing), or the blueprint names no resources so nothing was checked. Nothing is known to be wrong. |
 | `FAILED` | A resource is absent, a planned resource is missing from the state, or an unexpected resource carries the run's tag. |
 
 **Known limit:** the pilot apply does not tag its resources with a deletion unit yet. Only the build path does. So a pilot run reports `inventory: NOT_AVAILABLE` and can reach `PARTIAL` at best. Tagging pilot resources is a change to the apply path.
@@ -57,6 +60,8 @@ The caller runs the AWS CLI as the read-only DISCOVERY identity through the boun
     - no kept resource is reported gone;
     - a complete tag listing found nothing else of this run.
   - `INCONCLUSIVE` otherwise, with `unresolved` saying why. Completion is never reported in that case.
+- **Timing:** the tagging API can keep listing a resource for a short time after it is deleted. A check run straight after a destroy can therefore report `LEFTOVERS` that clears on a later run. That fails closed.
+- **Not handled yet:** resources that delete on a schedule, such as a KMS key in `PendingDeletion`, read as present and so as `LEFTOVER`. A "deletion pending" disposition needs a per-type state read and comes with the cleanup wiring.
 - **Which blueprint to use:** the one recorded when the journey was observed. A blueprint rebuilt from the state after a destroy is empty, and an empty blueprint is never `CLEAN`. A pilot run reports `INCONCLUSIVE` until the apply path tags its resources with a deletion unit.
 - **Refused retention decisions:** a decision for a resource that is not part of this journey, a decision without an owner or a reason, or a resource kept twice.
 

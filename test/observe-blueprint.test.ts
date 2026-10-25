@@ -65,7 +65,11 @@ test("real terraform show output: managed resources from the root and child modu
   assert.deepEqual(blueprint.missing, []);
   assert.doesNotMatch(JSON.stringify(blueprint), /secret-like-value|root-value-not-an-id/);
   assert.throws(() => blueprintFromTerraformState("{}", []), /STATE_JSON_INVALID/);
-  assert.throws(() => blueprintFromTerraformState("not json", []), SyntaxError);
+  assert.throws(() => blueprintFromTerraformState('{"format_version": "1.0", "values": {"secret": "AKIA-LEAK"', []), (error: Error) =>
+    /^STATE_JSON_INVALID/.test(error.message) && !error.message.includes("AKIA"), "a parse error never quotes the state");
+  const key = JSON.stringify({ format_version: "1.0", values: { root_module: { resources: [
+    { address: "aws_iam_access_key.ci", mode: "managed", type: "aws_iam_access_key", values: { id: "AKIAEXAMPLECREDENTIAL", secret: "S" } }] } } });
+  assert.equal(blueprintFromTerraformState(key, []).entries[0]?.id, null, "a credential identifier is not copied");
 });
 
 test("the blueprint names what the plan left in place but the state lacks, and skips data sources and outputs", () => {
@@ -115,6 +119,10 @@ test("observe interrupted: access, throttling, credentials or a paginated listin
     assert.equal(report.checks.find((x) => x.identifier === LOG)?.reason, reason);
     assert.doesNotMatch(JSON.stringify(report), /not authorized/, "the cloud's message is not copied");
   }
+  const echoed = await observeBlueprint(blueprint, { unitId: "u", region: "us-east-2", aws: fakeAws(everything, { fail: { [LOG]: "AccessDenied: the role cannot read ResourceNotFoundException-named-thing" } }).aws });
+  assert.equal(echoed.checks.find((x) => x.identifier === LOG)?.existence, "UNKNOWN", "only the CLI's own not-found line means absent");
+  const nothing = await observeBlueprint({ entries: [], missing: [] }, { unitId: "u", region: "us-east-2", aws: fakeAws(everything).aws });
+  assert.equal(nothing.verdict, "INCONCLUSIVE", "an empty blueprint verifies nothing");
   const thrown: AwsCli = async () => { throw new Error("spawn failed"); };
   assert.equal((await observeBlueprint(blueprint, { unitId: "u", region: "us-east-2", aws: thrown })).verdict, "INCONCLUSIVE");
   assert.equal((await observeBlueprint(blueprint, { unitId: "u", region: "us-east-2", aws: fakeAws(everything, { paginated: true }).aws })).verdict, "INCONCLUSIVE");
@@ -168,6 +176,14 @@ test("cleanup never reports completion it cannot prove: an empty or unmapped blu
   const paginated = await cleanupDisposition(blueprint, keepBucket, { unitId: "u", region: "us-east-2", aws: fakeAws(new Set([BUCKET]), { paginated: true }).aws });
   assert.equal(paginated.verdict, "INCONCLUSIVE");
   assert.equal(paginated.inventory, "INCOMPLETE");
+  const listingFails: AwsCli = async (argv) => argv[0] === "resourcegroupstaggingapi" ? { code: 255, stdout: "", stderr: "ThrottlingException" } : allGone(argv);
+  const failed = await cleanupDisposition(blueprint, keepBucket, { unitId: "u", region: "us-east-2", aws: listingFails });
+  assert.equal(failed.verdict, "INCONCLUSIVE");
+  assert.equal(failed.inventory, "INCOMPLETE");
+  const extra = "arn:aws:sqs:us-east-2:000000000000:outside-the-state";
+  const emptyButTagged = await cleanupDisposition({ entries: [], missing: [] }, [], { unitId: "u", region: "us-east-2", aws: fakeAws(new Set(), { tagged: [extra] }).aws });
+  assert.equal(emptyButTagged.verdict, "LEFTOVERS");
+  assert.deepEqual(emptyButTagged.untrackedLeftovers, [extra]);
 });
 
 test("cleanup denied: a kept resource needs a real owner and reason, must belong to the journey, and is kept once", async () => {
