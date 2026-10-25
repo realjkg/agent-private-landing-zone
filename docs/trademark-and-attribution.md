@@ -35,11 +35,12 @@ or trademark verification.
 
 - `BRAND_FINGERPRINT` is a reproducible SHA-256 hash of the versioned
   declaration's exact bytes; it is not a signature or proof of trademark ownership.
-- New Preview/Operate release manifests embed `brand` containing the
-  original author, mark, license, repository URL, owner-attestation basis and hash.
-  The normal release integrity verification refuses a changed or incomplete
-  embedded declaration. Legacy v1 manifests without the new optional field
-  remain readable; new manifests always include it.
+- New Preview/Operate release packages embed `brand-provenance.json`,
+  containing the original author, mark, license, repository URL,
+  owner-attestation basis and hash. The existing release manifest includes
+  that file's SHA-256 in its normal file inventory. The release verifier
+  therefore rejects modifications to the embedded declaration. Historic
+  schema-v1 manifests remain readable; the release schema is unchanged.
 - The source SHA, SBOM hashes, container provenance, signatures and release
   admission checks remain independently authoritative. A fork may update its
   identity claims, but must not claim to be an official upstream release or
