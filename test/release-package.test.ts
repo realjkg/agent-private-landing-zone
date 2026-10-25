@@ -85,6 +85,51 @@ test("release manifest binds version provenance SBOM and Preview Operate contrac
   );
 });
 
+test("new release artifacts carry JK Gonzalez attribution and a stable identity fingerprint", () => {
+  const manifest = createReleaseManifest({
+    productVersion: "1.0.0",
+    sourceCommit: "a".repeat(40),
+    files: [{ path: "dist/cli/operator.js", sha256: hash }],
+    sbomPath: "sbom.cdx.json",
+    sbomSha256: hash,
+  });
+
+  assert.equal(manifest.schemaVersion, 2);
+  assert.equal(manifest.origin?.author, "JK Gonzalez");
+  assert.equal(manifest.origin?.trademark, "Sovereign ALZ™");
+  assert.equal(manifest.origin?.trademarkClaimant, "JK Gonzalez");
+  assert.equal(manifest.origin?.license, "MIT");
+  assert.match(manifest.origin?.identitySha256 ?? "", /^[a-f0-9]{64}$/);
+  assert.deepEqual(validateReleaseManifest(manifest), []);
+
+  const modified = structuredClone(manifest);
+  Object.assign(modified.origin!, { author: "Someone else" });
+  assert.match(
+    validateReleaseManifest(modified).join(" "),
+    /attribution fingerprint is missing or invalid/i,
+  );
+
+  const alteredFingerprint = structuredClone(manifest);
+  Object.assign(alteredFingerprint.origin!, { identitySha256: "0".repeat(64) });
+  assert.match(
+    validateReleaseManifest(alteredFingerprint).join(" "),
+    /attribution fingerprint is missing or invalid/i,
+  );
+
+  const missing = structuredClone(manifest);
+  delete missing.origin;
+  assert.match(
+    validateReleaseManifest(missing).join(" "),
+    /attribution fingerprint is missing or invalid/i,
+  );
+
+  // Previously published schema-v1 release manifests remain readable.
+  const legacy = structuredClone(manifest);
+  legacy.schemaVersion = 1;
+  delete legacy.origin;
+  assert.deepEqual(validateReleaseManifest(legacy), []);
+});
+
 test("release manifest rejects invalid provenance and file evidence", () => {
   assert.throws(
     () =>
