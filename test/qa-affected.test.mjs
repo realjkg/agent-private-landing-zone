@@ -183,3 +183,10 @@ test("CI builds operator HTML before HTTP inventory guards", () => {
   assert.equal(plan.buildUi, true);
   assert.deepEqual(plan.gaps, []);
 });
+
+test("a .gitignore change selects the secret-rule test and leaves no coverage gap", () => {
+  const files = new Map([...fixture(), ["test/gitignore-secrets.test.ts", "test()"]]);
+  const plan = planChanged([".gitignore"], files);
+  assert.deepEqual(plan.nodeTests, ["test/gitignore-secrets.test.ts"]);
+  assert.deepEqual(plan.gaps, []);
+});

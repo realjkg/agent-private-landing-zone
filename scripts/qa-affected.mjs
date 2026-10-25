@@ -172,6 +172,10 @@ export function planChanged(changedPaths, files) {
       addExisting(selected, files, ["test/" + stem + ".test.ts", "test/" + stem + ".test.tsx", QA_SELF_TEST]);
       continue;
     }
+    if (path === ".gitignore") {
+      addExisting(selected, files, ["test/gitignore-secrets.test.ts"]);
+      continue;
+    }
     if (/^(?:Dockerfile|compose(?:\.production)?\.yaml|\.dockerignore|alz)$/.test(path)) {
       addExisting(selected, files, ["test/container-security.test.ts", "test/deps-cli.test.ts"]);
       notes.push("Release-sensitive artifact changed: dedicated qualification remains independent.");
