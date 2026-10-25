@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -79,7 +79,7 @@ function depsFor(engine: "TERRAFORM" | "AWS_CDK", workspace: string,
         if (request.tool === "aws_sts_identity")
           return ok("aws_sts_identity", JSON.stringify({
             Account: opts.changedAccount ?? ACCOUNT,
-            Arn: "arn:aws:sts::" + (opts.changedAccount ?? ACCOUNT) + ":assumed-role/qualification/agent",
+            Arn: "arn:aws:sts::" + (opts.changedAccount ?? ACCOUNT) + ":assumed-role/qualify/agent",
           }));
         if (request.tool === "terraform_plan") {
           writeFileSync(join(workspace, ".agentic-preview.tfplan"), "binary sensitive plan");
@@ -105,17 +105,16 @@ function depsFor(engine: "TERRAFORM" | "AWS_CDK", workspace: string,
 }
 
 async function withIdentity<T>(fn: () => Promise<T>): Promise<T> {
-  const keys = ["ALZ_DISCOVERY_AWS_REGION", "ALZ_DISCOVERY_AWS_ROLE_ARN",
-    "ALZ_DISCOVERY_AWS_WEB_IDENTITY_TOKEN_FILE"] as const;
-  const old = keys.map(k => process.env[k]);
+  const old = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.startsWith("ALZ_DISCOVERY_")));
+  for (const key of Object.keys(old)) delete process.env[key];
   process.env.ALZ_DISCOVERY_AWS_REGION = "us-east-2";
   process.env.ALZ_DISCOVERY_AWS_ROLE_ARN = "arn:aws:iam::" + ACCOUNT + ":role/qualify";
   process.env.ALZ_DISCOVERY_AWS_WEB_IDENTITY_TOKEN_FILE = "/tmp/non-real-token-test";
   try { return await fn(); }
-  finally { keys.forEach((key, index) => {
-    if (old[index] === undefined) delete process.env[key];
-    else process.env[key] = old[index];
-  }); }
+  finally {
+    for (const key of Object.keys(process.env)) if (key.startsWith("ALZ_DISCOVERY_")) delete process.env[key];
+    Object.assign(process.env, old);
+  }
 }
 
 test("Terraform runs live-model and real-tool interfaces but never ACT or apply", async () => {
@@ -130,8 +129,9 @@ test("Terraform runs live-model and real-tool interfaces but never ACT or apply"
       assert.equal(result.inventory.length, 2);
       assert.equal(result.proposedChanges[0]?.action, "CREATE");
       assert.ok(result.provenance.nativePlanHash);
-      assert.deepEqual(calls, ["aws_sts_identity", "agent", "terraform_version",
-        "terraform_validate", "terraform_plan"]);
+      assert.deepEqual(calls, ["aws_sts_identity", "agent", "aws_sts_identity", "terraform_version",
+        "terraform_validate", "aws_sts_identity", "terraform_plan", "aws_sts_identity"]);
+      assert.equal(result.identity?.principalReference, "arn:aws:sts::" + ACCOUNT + ":assumed-role/qualify/agent");
       assert.ok(!calls.some(x => /apply|destroy|execute-change-set/.test(x)));
     });
   } finally { x.cleanup(); }
@@ -197,4 +197,143 @@ test("HTML escapes untrusted content", () => {
   } as never);
   assert.ok(html.includes("&lt;script&gt;"));
   assert.ok(!html.includes("<script>"));
+});
+
+test("conflicting regions and injected credential fallbacks block before any tool", async () => {
+  const cases = [
+    ["ALZ_DISCOVERY_AWS_DEFAULT_REGION", "us-west-2", "DISCOVERY_REGION_IDENTITY_REQUIRED"],
+    ["ALZ_DISCOVERY_AWS_REGION", "us-west-2", "DISCOVERY_REGION_IDENTITY_REQUIRED"],
+    ...["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_PROFILE",
+      "AWS_CONFIG_FILE", "AWS_SHARED_CREDENTIALS_FILE"].map(name =>
+      ["ALZ_DISCOVERY_" + name, "secret-fallback-canary", "DISCOVERY_CREDENTIAL_FALLBACK_FORBIDDEN"]),
+    ["ALZ_DISCOVERY_AWS_ROLE_ARN", "arn:aws:iam::999999999999:role/qualify", "DISCOVERY_OIDC_IDENTITY_REQUIRED"],
+    ["ALZ_DISCOVERY_AWS_WEB_IDENTITY_TOKEN_FILE", "", "DISCOVERY_OIDC_IDENTITY_REQUIRED"],
+  ];
+  for (const [key, value, reason] of cases) {
+    const x = setup();
+    try {
+      await withIdentity(async () => {
+        // A matching default must not hide a conflicting primary region.
+        process.env.ALZ_DISCOVERY_AWS_DEFAULT_REGION = "us-east-2";
+        process.env[key!] = value;
+        const { deps, calls } = depsFor("TERRAFORM", x.workspace);
+        const report = await runLzLiveJourney(x.input, deps as never);
+        assert.equal(report.status, "BLOCKED", key);
+        assert.equal(report.stages.at(-1)?.reason, reason, key);
+        assert.deepEqual(calls, [], key);
+        assert.ok(!readFileSync(report.evidencePath, "utf8").includes("secret-fallback-canary"));
+      });
+    } finally { x.cleanup(); }
+  }
+});
+
+test("STS must match the configured role and retain the same session through preview", async () => {
+  for (const changedAt of [1, 2, 3, 4]) {
+    const x = setup();
+    try {
+      await withIdentity(async () => {
+        const { deps, calls } = depsFor("TERRAFORM", x.workspace);
+        const governed = deps.governed;
+        let identities = 0;
+        deps.governed = async request => {
+          if (request.tool === "aws_sts_identity" && ++identities === changedAt) {
+            calls.push(request.tool);
+            return ok("aws_sts_identity", JSON.stringify({ Account: ACCOUNT,
+              Arn: `arn:aws:sts::${ACCOUNT}:assumed-role/${changedAt === 1 ? "wrong-role" : "qualify"}/new-session` }));
+          }
+          return governed(request);
+        };
+        const report = await runLzLiveJourney(x.input, deps as never);
+        assert.equal(report.status, "BLOCKED");
+        assert.equal(report.stages.at(-1)?.reason, changedAt === 1 ? "AWS_ACCOUNT_OR_ROLE_MISMATCH" : "AWS_PRINCIPAL_CHANGED");
+        assert.equal(report.releaseAdmission, "HOLD");
+        if (changedAt === 1) assert.ok(!calls.includes("agent"));
+        if (changedAt < 4) assert.ok(!calls.includes("terraform_plan"));
+      });
+    } finally { x.cleanup(); }
+  }
+});
+
+test("identity configuration changes during model execution block project code", async () => {
+  const x = setup();
+  try {
+    await withIdentity(async () => {
+      const { deps, calls } = depsFor("TERRAFORM", x.workspace);
+      deps.agent = async () => {
+        process.env.ALZ_DISCOVERY_AWS_WEB_IDENTITY_TOKEN_FILE = "/tmp/replaced-token";
+        return state("TERRAFORM");
+      };
+      const report = await runLzLiveJourney(x.input, deps as never);
+      assert.equal(report.stages.at(-1)?.reason, "DISCOVERY_IDENTITY_CHANGED");
+      assert.ok(!calls.includes("terraform_validate"));
+      assert.ok(!readFileSync(report.evidencePath, "utf8").includes("replaced-token"));
+    });
+  } finally { x.cleanup(); }
+});
+
+test("model digest replacement, skipped validator, ABSTAIN and partial discovery block previews", async () => {
+  for (const failure of ["digest", "validator", "abstain", "partial"] as const) {
+    const x = setup();
+    try {
+      await withIdentity(async () => {
+        const { deps, calls } = depsFor("TERRAFORM", x.workspace);
+        let metadataCalls = 0;
+        deps.metadata = async (_, tag) => ({ model: tag, size: 1024,
+          digest: (failure === "digest" && ++metadataCalls > 3 ? "e" : "d").repeat(64) });
+        deps.agent = async () => {
+          const result = state("TERRAFORM");
+          if (failure === "validator") result.assessment!.modelInvocations = result.assessment!.modelInvocations!.filter(x => x.role !== "VALIDATOR");
+          if (failure === "abstain") result.assessment!.status = "ABSTAIN";
+          if (failure === "partial") result.environment!.warnings.push("DISCOVERY_PARTIAL: probe failed");
+          return result;
+        };
+        const report = await runLzLiveJourney(x.input, deps as never);
+        assert.equal(report.status, "BLOCKED", failure);
+        assert.ok(!calls.includes("terraform_plan"), failure);
+      });
+    } finally { x.cleanup(); }
+  }
+});
+
+test("plan or lock replacement during show and truncated JSON never produce accepted evidence", async () => {
+  for (const failure of ["plan", "lock", "truncated", "missing"] as const) {
+    const x = setup();
+    try {
+      await withIdentity(async () => {
+        const { deps } = depsFor("TERRAFORM", x.workspace);
+        const show = deps.localTerraformShow;
+        deps.localTerraformShow = () => {
+          const result = show();
+          if (failure === "plan") writeFileSync(join(x.workspace, ".agentic-preview.tfplan"), "replacement");
+          if (failure === "lock") writeFileSync(join(x.workspace, ".terraform.lock.hcl"), "replacement");
+          if (failure === "truncated") result.truncated = true;
+          if (failure === "missing") rmSync(join(x.workspace, ".agentic-preview.tfplan"));
+          return result;
+        };
+        const report = await runLzLiveJourney(x.input, deps as never);
+        assert.equal(report.status, "BLOCKED", failure);
+        assert.equal(report.provenance.nativePlanHash, undefined, failure);
+        assert.equal(report.actSnapshot.candidatePlanHash, undefined, failure);
+      });
+    } finally { x.cleanup(); }
+  }
+});
+
+test("CDK cleanup failure is BLOCKED even when a Change Set was described", async () => {
+  const x = setup("AWS_CDK");
+  try {
+    await withIdentity(async () => {
+      const { deps } = depsFor("AWS_CDK", x.workspace);
+      const governed = deps.governed;
+      deps.governed = async request => {
+        const result = await governed(request);
+        return request.tool === "cdk_preview" ? { ...result as ToolResult, ok: false,
+          stderr: "cleanup failed", exitCode: 1 } : result;
+      };
+      const report = await runLzLiveJourney(x.input, deps as never);
+      assert.equal(report.status, "BLOCKED");
+      assert.equal(report.stages.at(-1)?.reason, "NATIVE_PREVIEW_FAILED");
+      assert.equal(report.actSnapshot.executed, false);
+    });
+  } finally { x.cleanup(); }
 });
