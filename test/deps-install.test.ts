@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, createReadStream, createWriteStream, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, createReadStream, createWriteStream, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
@@ -10,7 +10,7 @@ import test from "node:test";
 import { createZstdCompress } from "node:zlib";
 
 import { installedPath } from "../src/deps/checks.js";
-import { InstallError, installTool } from "../src/deps/install.js";
+import { InstallError, installTool, removeInstalledTool } from "../src/deps/install.js";
 import { loadToolPins, platformKey, type ToolPins } from "../src/deps/pins.js";
 
 // Installs run against a local archive the test builds, never the network. A wrong checksum must leave no install behind.
@@ -178,4 +178,33 @@ test("a tar.zst archive installs through Node's zstd support, and its binary kee
   assert.equal(installed.reused, false);
   assert.ok(existsSync(installed.path), "the binary is in the install folder");
   assert.ok(!existsSync(file + ".tar"), "the intermediate tar is removed");
+});
+
+test("uninstall removes one pinned version folder, leaves other versions alone, and a second removal does nothing", () => {
+  const home = join(root, "home-uninstall");
+  const removed = join(home, ".alz", "tools", "terraform", "1.16.4");
+  const kept = join(home, ".alz", "tools", "terraform", "1.15.0");
+  mkdirSync(removed, { recursive: true });
+  mkdirSync(kept, { recursive: true });
+  writeFileSync(join(removed, "terraform"), "installed");
+  writeFileSync(join(kept, "terraform"), "other version");
+  assert.equal(removeInstalledTool(home, "terraform", "1.16.4"), "removed");
+  assert.ok(!existsSync(removed), "the pinned version folder is gone");
+  assert.ok(existsSync(join(kept, "terraform")), "other versions are untouched");
+  assert.equal(removeInstalledTool(home, "terraform", "1.16.4"), "absent", "a second removal changes nothing");
+});
+
+test("uninstall refuses a version folder that is a link out of the tool folder, and touches nothing outside it", () => {
+  const home = join(root, "home-link");
+  const toolRoot = join(home, ".alz", "tools", "ollama");
+  mkdirSync(toolRoot, { recursive: true });
+  const outside = join(root, "outside-target");
+  mkdirSync(outside, { recursive: true });
+  writeFileSync(join(outside, "keep"), "not ours");
+  symlinkSync(outside, join(toolRoot, "0.40.0"));
+  assert.throws(
+    () => removeInstalledTool(home, "ollama", "0.40.0"),
+    (error: unknown) => error instanceof InstallError && error.code === "INSTALL_REMOVE_REFUSED",
+  );
+  assert.ok(existsSync(join(outside, "keep")), "the file the link points at is untouched");
 });

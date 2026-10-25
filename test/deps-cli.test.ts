@@ -153,10 +153,10 @@ test("without an interactive Terminal, ./alz deps only reports: nothing is insta
   assert.ok(!existsSync(join(root, "home-cli-noninteractive", ".alz")));
 });
 
-test("a wrong phrase skips the install, and the command stays blocked", async () => {
+test("choosing Skip at the install menu installs nothing, and the command stays blocked", async () => {
   const archive = fakeArchive("wrong");
   let downloads = 0;
-  const term = terminal(true, ["yes please"]);
+  const term = terminal(true, ["1", "", "2"]);
   const code = await runDepsCommand([], {
     ...deps("wrong", term, { download: async () => { downloads += 1; return Readable.from([archive.body]); } }),
     pinsPath: fakePins("wrong", archive.sha256),
@@ -165,14 +165,14 @@ test("a wrong phrase skips the install, and the command stays blocked", async ()
   assert.equal(downloads, 0, "a skipped dialog downloads nothing");
   assert.ok(!existsSync(installedPath(join(root, "home-cli-wrong"), "terraform", "1.16.4", "terraform")));
   const dialog = term.shown.join("");
-  assert.match(dialog, /To install, type exactly:\s+INSTALL TERRAFORM 1\.16\.4/);
+  assert.match(dialog, /Install it now\?/);
   assert.match(dialog, /Needs: no administrator password/);
-  assert.match(dialog, /Anything else skips it/);
+  assert.match(dialog, /Install it\s+2\s+Skip it/);
 });
 
-test("the exact phrase installs the verified tool, and the dialog names the file, its source and its checksum", async () => {
+test("choosing Install from the menu installs the verified tool, and the dialog names the file, its source and its checksum", async () => {
   const archive = fakeArchive("right");
-  const term = terminal(true, ["", "INSTALL TERRAFORM 1.16.4"]);
+  const term = terminal(true, ["1", "", "1"]);
   const lines: string[] = [];
   const code = await runDepsCommand([], {
     ...deps("right", term, {
@@ -189,9 +189,9 @@ test("the exact phrase installs the verified tool, and the dialog names the file
   assert.equal(code, 0);
 });
 
-test("a checksum mismatch in the dialog's install is shown in plain words and nothing is installed", async () => {
+test("a checksum mismatch in the menu install is shown in plain words and nothing is installed", async () => {
   const archive = fakeArchive("tamper");
-  const term = terminal(true, ["", "INSTALL TERRAFORM 1.16.4"]);
+  const term = terminal(true, ["1", "", "1"]);
   const lines: string[] = [];
   const code = await runDepsCommand([], {
     ...deps("tamper", term, {
@@ -261,10 +261,10 @@ test("the selection screen preselects every missing tool; Enter continues, a num
   assert.ok(confused.shown.join("").includes("That is not a choice"), "an invalid answer is explained, not ignored");
 });
 
-test("cancel at the selection screen installs nothing and downloads nothing", async () => {
+test("cancel at the selection screen, after choosing install, installs nothing and downloads nothing", async () => {
   const archive = fakeArchive("cancel");
   let downloads = 0;
-  const term = terminal(true, ["q"]);
+  const term = terminal(true, ["1", "q"]);
   const code = await runDepsCommand([], {
     ...deps("cancel", term, { download: async () => { downloads += 1; return Readable.from([archive.body]); } }),
     pinsPath: fakePins("cancel", archive.sha256),
