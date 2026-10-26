@@ -701,6 +701,16 @@ export async function runCleanup(request: CleanupRequest, deps: ApplyDeps): Prom
       if (/_NOT_IN_CONTRACT$/.test(code)) {
         return refuse("TARGET_NOT_IN_CONTRACT", "The backend or provider the project configures is not the contract's target (" + code + "). Nothing was destroyed and no approval was consumed.");
       }
+      // A CDK removal that would leave the stack empty, keep a resource under its deletion policy, or break what stays: refused by name (docs/observe-and-cleanup.md, "CloudFormation").
+      if (code === "CLEANUP_WOULD_EMPTY_STACK") {
+        return refuse("CLEANUP_WOULD_EMPTY_STACK", "Removing every approved resource would leave the stack with no resource, which CloudFormation does not hold. The stack is never deleted by a cleanup: its last resources go with the stack itself, and retiring the stack is the pilot owner's separate, reviewed decision. Nothing was destroyed and no approval was consumed.");
+      }
+      if (code === "CLEANUP_RETAIN_POLICY") {
+        return refuse("CLEANUP_RETAIN_POLICY", "An approved resource has a deletion policy that keeps it when it is removed from the template, so the removal would leave it behind, unapproved and untracked. Nothing was destroyed and no approval was consumed. A person decides about that resource by hand.");
+      }
+      if (code === "CLEANUP_DEPENDENT_REFERENCED") {
+        return refuse("CLEANUP_DEPENDENT_REFERENCED", "A resource or output that stays in the stack still refers to an approved resource, so the removal would break or take along something not on the list. Nothing was destroyed and no approval was consumed. Observe the run again and propose a cleanup that includes or excludes the dependent.");
+      }
       return refuse("APPLY_FAILED", "The cleanup could not plan the destroy (" + code + "). Nothing was destroyed and no approval was consumed. Engine output is withheld.");
     }
     // The policy check: whatever the engine's destroy plan would take along, a protected object (a resource group, an identity or

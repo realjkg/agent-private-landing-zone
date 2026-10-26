@@ -223,11 +223,13 @@ test("the CloudFormation blueprint maps logical ids to physical ids, derives the
     row("PilotLogs", "AWS::Logs::LogGroup", "/aws/pilot/logs"),
     row("PilotAlarm", "AWS::CloudWatch::Alarm", "PilotStack-PilotAlarm-X"),
     row("Nested", "AWS::CloudFormation::Stack", "arn:aws:cloudformation:us-east-1:111111111111:stack/nested/0000"),
+    row("Fleet", "AWS::CloudFormation::StackSet", "fleet:0000"),
+    row("Hook", "Custom::Thing_v2@x", "2026/10/26/hook0000"),
     row("Deployer", "AWS::IAM::User", "PilotStack-Deployer-X"),
     row("DeployerKey", "AWS::IAM::AccessKey", "AKIAFAKEDEPLOYERKEY0"),
     row("Gone", "AWS::SQS::Queue", "https://sqs.us-east-1.amazonaws.com/111111111111/gone", "DELETE_COMPLETE"),
     row("NoPhysical", "AWS::S3::Bucket", undefined, "CREATE_IN_PROGRESS"),
-    { LogicalResourceId: "bad id!", ResourceType: "AWS::S3::Bucket", PhysicalResourceId: "x" }, { LogicalResourceId: "BadType", ResourceType: "Bucket", PhysicalResourceId: "x" }, "garbage", null,
+    { LogicalResourceId: "bad id!", ResourceType: "AWS::S3::Bucket", PhysicalResourceId: "x" }, { LogicalResourceId: "BadType", ResourceType: "Bucket", PhysicalResourceId: "x" }, { LogicalResourceId: "BadCustom", ResourceType: "Custom::", PhysicalResourceId: "x" }, { LogicalResourceId: "LongCustom", ResourceType: "Custom::" + "a".repeat(61), PhysicalResourceId: "x" }, "garbage", null,
   ] });
   const planned = [{ address: "PilotBucket", type: "AWS::S3::Bucket", action: "CREATE" }, { address: "PilotTopic", type: "AWS::SNS::Topic", action: "REPLACE" }, { address: "Planned", type: "AWS::SQS::Queue", action: "CREATE" },
     { address: "Removed", type: "AWS::SQS::Queue", action: "DELETE" }, { address: "Dynamic", type: "AWS::S3::Bucket", action: "DYNAMIC" }];
@@ -236,6 +238,9 @@ test("the CloudFormation blueprint maps logical ids to physical ids, derives the
     // A credential's id is never copied (the access key id); a user's ARN follows from its name.
     { address: "Deployer", type: "AWS::IAM::User", id: "PilotStack-Deployer-X", arn: "arn:aws:iam::111111111111:user/PilotStack-Deployer-X", origin: "NOT_IN_PLAN" },
     { address: "DeployerKey", type: "AWS::IAM::AccessKey", id: null, arn: null, origin: "NOT_IN_PLAN" },
+    // A stack set and a custom resource are recorded under their own types (the proposal keeps each as CONTAINS_OTHERS), never dropped.
+    { address: "Fleet", type: "AWS::CloudFormation::StackSet", id: "fleet:0000", arn: null, origin: "NOT_IN_PLAN" },
+    { address: "Hook", type: "Custom::Thing_v2@x", id: "2026/10/26/hook0000", arn: null, origin: "NOT_IN_PLAN" },
     { address: "Nested", type: "AWS::CloudFormation::Stack", id: "arn:aws:cloudformation:us-east-1:111111111111:stack/nested/0000", arn: "arn:aws:cloudformation:us-east-1:111111111111:stack/nested/0000", origin: "NOT_IN_PLAN" },
     { address: "NoPhysical", type: "AWS::S3::Bucket", id: null, arn: null, origin: "NOT_IN_PLAN" },
     { address: "OddQueue", type: "AWS::SQS::Queue", id: "not-a-queue-url", arn: null, origin: "NOT_IN_PLAN" },

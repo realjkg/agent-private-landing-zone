@@ -579,7 +579,7 @@ const cleanupCommand: Command = async (flags, terminal, deps, out) => {
     "  account         " + request.target.account, "  backend         " + request.target.backend, "  workspace       " + request.target.workspace,
     "  product commit  " + proposal.sourceCommit, "  approvals       " + approvals.map((a) => printable(String(a.statement?.approverId))).join(", ") + " (the driver verifies each signature under the cleanup domain)",
     ...proposalLines(proposal), "",
-    "The engine first plans the destroy of exactly this list and stops, before any approval is used, if the plan would touch anything else.",
+    engineNotices(deps).cleanupNote ?? "The engine first plans the destroy of exactly this list and stops, before any approval is used, if the plan would touch anything else.",
     "Type this line exactly to remove them (anything else stops here):", "  " + phrase, "",
   ].join("\n"));
   await confirm(terminal, phrase, "cleanup> ", "APPLY_CONFIRMATION_MISMATCH", "CLEANUP");

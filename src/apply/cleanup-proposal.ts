@@ -50,7 +50,7 @@ export const PROTECTION_REASONS: Readonly<Record<Exclude<Ownership, "RUN_CREATED
   PROTECTED_IDENTITY: "an identity or authorization object (on Azure anything under Microsoft.Authorization or Microsoft.ManagedIdentity: an identity, a trust, a role or policy assignment, a role definition, a policy exemption or a lock; on AWS anything in the IAM, IAM Identity Center or Identity Store services, including attachments, access keys and other credentials of those identities) is never deleted by a cleanup, directly or as a dependent",
   PROTECTED_DEPLOYMENT: "deployment history (Microsoft.Resources/deployments) records what was deployed and is never deleted by a cleanup",
   RETAINED_GROUP: "a resource group is never deleted by a pilot cleanup, whatever it holds; the pilot owner retains it, and its deletion is a separate, reviewed action (environment retirement, outstanding)",
-  CONTAINS_OTHERS: "a subscription or management group holds deployments no listing here accounts for, and a provider or feature registration is a subscription-wide setting other deployments rely on; neither is ever deleted by a cleanup",
+  CONTAINS_OTHERS: "a subscription or management group holds deployments no listing here accounts for, and a provider or feature registration is a subscription-wide setting other deployments rely on; on AWS a nested stack or stack set holds resources of its own and a custom resource runs code of its own; none is ever deleted by a cleanup",
 };
 
 export type ProposedDeletion = {
@@ -290,12 +290,14 @@ function protectionOf(entry: { type: string; id: string | null; arn: string | nu
   if (contract.provider !== "AWS") return undefined;
   const buckets = new Set(Object.values(contract.targets).map((target) => (target as AwsTarget).backend.split("/")[0]));
   if (/^aws_s3_bucket(_|$)/.test(entry.type) && entry.id !== null && buckets.has(entry.id)) return "PROTECTED_BACKEND";
-  // A nested stack holds resources no listing here accounts for; the CDK engine refuses one at the seal, and one that appears in the stack anyway is never proposed.
-  if (entry.type === "AWS::CloudFormation::Stack") return "CONTAINS_OTHERS";
+  // A nested stack or a stack set holds resources no listing here accounts for; the CDK engine refuses one at the seal, and one that appears in the stack anyway is never proposed.
+  if (entry.type === "AWS::CloudFormation::Stack" || entry.type === "AWS::CloudFormation::StackSet") return "CONTAINS_OTHERS";
   if (isAwsIdentityType(entry.type)) return "PROTECTED_IDENTITY";
   // Fail closed: an identity's ARN under a type that is not an identity type (a custom resource, a stack output, `terraform_data`) may be a pilot role in
   // disguise, whether it is the recorded identifier or sits in any attribute the state holds (`holdsIdentityArn`, judged in place by the blueprint).
   if ([entry.arn, entry.id].some((value) => value !== null && IAM_ARN.test(value)) || entry.holdsIdentityArn === true) return UNCLASSIFIABLE;
+  // A custom resource runs code of its own on removal, and what that code holds no listing here accounts for: never proposed (the CDK engine refuses one at the seal too).
+  if (entry.type.startsWith("Custom::") || entry.type === "AWS::CloudFormation::CustomResource") return "CONTAINS_OTHERS";
   return undefined;
 }
 

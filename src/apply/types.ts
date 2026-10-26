@@ -199,7 +199,13 @@ export type ApplyRefusalCode =
   /** The proposal was already executed, or another run holds it. */
   | "PROPOSAL_ALREADY_EXECUTED"
   /** The contract's engine has no cleanup adapter (CDK stack deletion needs its own decision). */
-  | "CLEANUP_NOT_SUPPORTED";
+  | "CLEANUP_NOT_SUPPORTED"
+  /** A CDK removal would leave the stack with no resource. The stack is never deleted by a cleanup; retiring it with its last resources is the owner's separate decision. Nothing was consumed. */
+  | "CLEANUP_WOULD_EMPTY_STACK"
+  /** An approved resource's deletion policy keeps it when it is removed from the template, so the removal would not delete it. Nothing was consumed. */
+  | "CLEANUP_RETAIN_POLICY"
+  /** A resource or output that stays still refers to an approved one, so the removal would break or take along something not on the list. Nothing was consumed. */
+  | "CLEANUP_DEPENDENT_REFERENCED";
 
 export type ApplyOutcome = "SUCCEEDED" | "FAILED_NO_CHANGE" | "PARTIAL_REQUIRES_REVIEW" | "KILLED";
 
@@ -262,7 +268,7 @@ export type CleanupEvidence = {
   finishedAt: string;
   authority: {
     infrastructureAct: "PILOT_ENABLED";
-    mutation: "TERRAFORM_DESTROY_OF_APPROVED_PROPOSAL";
+    mutation: "TERRAFORM_DESTROY_OF_APPROVED_PROPOSAL" | "CLOUDFORMATION_EXECUTE_OF_REMOVAL_CHANGE_SET";
     /** The identity that executed: the pilot's APPLY identity (owner decision, 2026-10-25), bound to `deletes`. */
     executedAs: "APPLY";
     agentInitiated: false;

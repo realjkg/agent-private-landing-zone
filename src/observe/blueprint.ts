@@ -178,7 +178,8 @@ const CLOUDFORMATION_ARNS: Readonly<Record<string, (physicalId: string, place: {
 /** Change-set actions after which a successful execution leaves the resource in the stack (the sealed change list's own vocabulary, src/apply/engines/cdk.ts). */
 const LEAVES_IN_STACK = new Set(["CREATE", "UPDATE", "REPLACE", "REPLACE_CONDITIONAL", "IMPORT", "DYNAMIC", "SAME"]);
 const LOGICAL_ID = /^[A-Za-z0-9]{1,255}$/;
-const CFN_TYPE = /^(?:AWS|Alexa)::[A-Za-z0-9]+::[A-Za-z0-9]+$/;
+/** A CloudFormation resource type name, including a custom resource's (`Custom::` and up to 60 of the characters CloudFormation allows): recorded so the proposal keeps it as CONTAINS_OTHERS, never dropped from the blueprint. */
+const CFN_TYPE = /^(?:(?:AWS|Alexa)::[A-Za-z0-9]+::[A-Za-z0-9]+|Custom::[A-Za-z0-9_@-]{1,60})$/;
 
 /**
  * The blueprint from `describe-stack-resources` (UNVERIFIED (9): `StackResources[].LogicalResourceId`, `PhysicalResourceId`,

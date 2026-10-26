@@ -1336,7 +1336,8 @@ test("the console refuses a cleanup proposal for the other channel, a malformed 
 
 /** A pinned CDK contract with a policy version, its three identities and qualification, a synthesized assembly for DEV, and the fake `aws` as the one tool. */
 async function cdkConsoleJourney() {
-  behaveAws(cdkToolDir, KILL, {});
+  // The fake derives an update's change list from the executed template (a removal shows as Remove), and a person protected the stack after its first create.
+  behaveAws(cdkToolDir, KILL, { diffChanges: true, protectAfterCreate: true });
   const contractPath = join(fresh("contract"), "act-pilot-contract.json");
   writePinnedContract(contractPath, cdkContractJson(KILL, [], { policyVersion: POLICY }));
   const vault = fresh("vault");
@@ -1425,15 +1426,42 @@ test("AWS CDK in the console: prepare from the cdk.out folder, preview the chang
   assert.equal(reviewedCleanup.cleanup.shortId, summary.shortId);
   assert.ok(reviewedCleanup.cleanup.lines.some((line: string) => /stack itself is never deleted/.test(line)), "the review says the stack stays");
   noCdkCanary(reviewedCleanup);
-  // Until the CDK cleanup path exists, the cleanup step itself is refused before anything runs, and the approval is not spent.
+  // The approver signs under the cleanup domain; the removal is one UPDATE change set from the sealed template minus the bucket, created by CHANGESET and executed by APPLY.
   const signed = await approveCleanupViaUi(port, proposalPath, summary.shortId, "alice");
   assert.equal(signed.run!.result!.exit, 0, JSON.stringify(signed.run!.result));
-  const executesBefore = cdkCalls().filter((call) => call.args[1] === "execute-change-set").length;
+  const callsBefore = cdkCalls().length;
   const removed = await cleanupViaUi(port, prepared.files, sealed, proposalPath, summary.shortId, target, [signed.run!.result!.savedPath!]);
-  assert.notEqual(removed.run!.result!.exit, 0);
-  assert.equal(removed.run!.result!.code, "CLEANUP_NOT_SUPPORTED", JSON.stringify(removed.run!.result));
-  assert.equal(cdkCalls().filter((call) => call.args[1] === "execute-change-set").length, executesBefore, "nothing executed");
-  assert.ok(!cdkCalls().some((call) => /delete/.test(call.args[1] ?? "")), "nothing deleted");
+  assert.equal(removed.run!.result!.exit, 0, JSON.stringify(removed.run!.result));
+  const removal = removed.run!.result!.data as { outcome: string; deletes: string[]; authority: { executedAs: string; mutation: string }; artifactSha256: string };
+  assert.equal(removal.outcome, "SUCCEEDED");
+  assert.deepEqual(removal.deletes, ["PilotBucket"]);
+  assert.deepEqual(removal.authority, { infrastructureAct: "PILOT_ENABLED", mutation: "CLOUDFORMATION_EXECUTE_OF_REMOVAL_CHANGE_SET", executedAs: "APPLY", agentInitiated: false });
+  assert.equal(removal.artifactSha256, sealed.artifactSha256);
+  const steps = cdkCalls().slice(callsBefore).filter((call) => call.args[0] === "cloudformation");
+  const created = steps.filter((call) => call.args[1] === "create-change-set");
+  assert.equal(created.length, 1);
+  assert.equal(created[0].args[created[0].args.indexOf("--change-set-type") + 1], "UPDATE");
+  assert.equal(created[0].args[created[0].args.indexOf("--template-body") + 1], "file://alz-cleanup-template.json");
+  assert.equal(created[0].env.AWS_ROLE_ARN, cdkRoleArn("CHANGESET", "DEV"));
+  const executed = steps.filter((call) => call.args[1] === "execute-change-set");
+  assert.equal(executed.length, 1);
+  assert.equal(executed[0].env.AWS_ROLE_ARN, cdkRoleArn("APPLY", "DEV"));
+  assert.ok(!cdkCalls().some((call) => /delete/.test(call.args[1] ?? "")), "nothing deleted: the stack stands");
+  noCdkCanary(removed.run!.result);
+  // The independent check: the bucket is gone, the topic is kept for the environment's owner, nothing else carries the unit, and the environment is not retired.
+  assert.equal((await call(port, "POST", "/pilot/verify-cleanup", { body: { proposalPath } })).status, 202);
+  const verified = (await finished(port)).run!.result!;
+  assert.equal(verified.exit, 0, JSON.stringify(verified));
+  assert.equal(verified.code, "CLEANUP_COMPLETE");
+  const leftovers = verified.data as { disposition: string; nextAction: string; resources: { address: string; disposition: string; owner?: string }[] };
+  assert.equal(leftovers.disposition, "COMPLETE");
+  assert.deepEqual(leftovers.resources.map((r) => [r.address, r.disposition, r.owner ?? null]), [["PilotBucket", "CONFIRMED_DELETED", null], ["PilotTopic", "INTENTIONALLY_RETAINED", "ENVIRONMENT_OWNER"]]);
+  assert.match(leftovers.nextAction, /environment retirement.*remains outstanding/);
+  assert.ok(!/environment (is |was )?deleted|entire environment|stack (is |was )?deleted/.test(leftovers.nextAction), "the environment and the stack are never reported deleted");
+  // A reconnect never removes twice.
+  const again = await cleanupViaUi(port, prepared.files, sealed, proposalPath, summary.shortId, target, [signed.run!.result!.savedPath!]);
+  assert.notEqual(again.run!.result!.exit, 0);
+  assert.equal(cdkCalls().filter((call) => call.args[1] === "execute-change-set").length, 2, "the apply and the removal, once each");
 });
 
 test("AWS CDK in the console: a wrong phrase or a cancel at approval or execution signs nothing and executes nothing, and the same approval still executes once", async () => {
