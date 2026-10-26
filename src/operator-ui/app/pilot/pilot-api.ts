@@ -65,7 +65,7 @@ export type CleanupSummary = {
   requiredApprovals: number;
   deletes: { address: string; type: string; identifier: string | null; ownership: string; observed: string; risk?: string }[];
   alreadyAbsent: { address: string; type: string; identifier: string | null }[];
-  excluded: { address: string; type: string; identifier: string | null; ownership: string; reason: string }[];
+  excluded: { address: string; type: string; identifier: string | null; ownership: string; reason: string; retainedBy: string }[];
   risks: string[];
   lines: string[];
 };

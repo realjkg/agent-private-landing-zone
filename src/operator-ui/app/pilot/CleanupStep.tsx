@@ -6,7 +6,7 @@ import {
   type CleanupSummary, type LeftoversData, type ObservationData, type PilotEnvironment, type PilotReply, type PilotRun, type RunResult,
 } from "./pilot-api";
 import { BlockedNotice, CopyButton, Reasoned } from "./PilotWizard";
-import { CLEANUP_RESULT_COPY, COPY, classifyResult, dispositionWord, originWord, ownershipWord, verificationWord } from "./pilot-copy";
+import { CLEANUP_RESULT_COPY, COPY, classifyResult, dispositionWord, originWord, ownershipWord, retentionOwnerWord, verificationWord } from "./pilot-copy";
 
 /**
  * Step 7 of the pilot wizard (docs/act-pilot-walkthrough.md, "Check and clean up"): look at what the change created,
@@ -66,8 +66,9 @@ export function CleanupList(props: { cleanup: CleanupSummary }) {
       )}
       <h3>{COPY.proposeKept} ({cleanup.excluded.length})</h3>
       {cleanup.excluded.length === 0 ? <p>Nothing else is in the project's records.</p> : (
-        <ul>{cleanup.excluded.map((item) => <li key={item.address} data-kept={item.address}><code>{item.address}</code> ({ownershipWord(item.ownership)}): {item.reason}</li>)}</ul>
+        <ul>{cleanup.excluded.map((item) => <li key={item.address} data-kept={item.address}><code>{item.address}</code> ({ownershipWord(item.ownership)}; {retentionOwnerWord(item.retainedBy)}): {item.reason}</li>)}</ul>
       )}
+      <p role="note"><small>{COPY.proposeRetainedNote}</small></p>
       <h3>{COPY.proposeRisks}</h3>
       <ul>{cleanup.risks.map((risk) => <li key={risk}>{risk}</li>)}</ul>
     </div>
@@ -109,6 +110,7 @@ function LeftoversTable(props: { leftovers: LeftoversData }) {
   return (
     <div role="status" aria-live="polite" className={complete ? "pilot-result pilot-result-good" : "pilot-result pilot-result-caution"} data-leftovers={leftovers.disposition}>
       <h3>{complete ? COPY.verifyComplete : known ? COPY.verifyKnownConfirmed : COPY.verifyIncomplete}</h3>
+      {complete && <p data-retirement="OUTSTANDING">{COPY.verifyRetirementOutstanding}</p>}
       <p><strong>{COPY.verifyNextLabel}</strong> {leftovers.nextAction}</p>
       {leftovers.sweep === "NOT_AVAILABLE" && <p role="note"><small>{COPY.verifyNotSearched}</small></p>}
       <p role="note"><small>{COPY.observeSynthetic}</small></p>
