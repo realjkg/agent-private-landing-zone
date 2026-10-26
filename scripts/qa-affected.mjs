@@ -23,6 +23,27 @@ const INVENTORY_GUARDS = ["test/operations-parity.test.ts", "test/operations-cor
   "test/cli-ui-journey-map.test.ts"];
 const INVENTORY_INPUT = /^(?:src\/cli\/[^/]+\.ts|src\/operations\/.+\.ts|alz|package\.json|docs\/operator-console\.md|docs\/cli-ui-journey-map\.md)$/;
 
+// Source-scan guards read a source tree from disk (a forbidden literal, import or call anywhere under it) instead of
+// importing what they check, so the import closure never selects them. Each is declared with the roots it scans and
+// runs for any source change under one of them; test/qa-affected.test.mjs fails if a test scans source without an
+// entry here. Without this, a governed -destroy builder added under src/apply merged with the destroy-literal scan red.
+export const SOURCE_SCAN_GUARDS = {
+  "test/apply-boundary.test.ts": ["src/"],
+  "test/policy-path.test.ts": ["src/"],
+  "test/teardown-adapter-terraform.test.ts": ["src/"],
+  "test/teardown-driver-denials.test.ts": ["src/"],
+  "test/teardown-driver-cli.test.ts": ["src/tools/", "src/operator-ui/", "src/agent/"],
+  "test/teardown-driver.test.ts": ["src/tools/"],
+  "test/teardown-adapter-pulumi.test.ts": ["src/tools/"],
+  "test/destroy-preview-boundary.test.ts": ["src/iac/"],
+  "test/runner-hardening.test.ts": ["src/iac/", "src/tools/"],
+  "test/learn-path.test.ts": ["src/learn/"],
+  "test/cli-ui-journey-map.test.ts": ["src/operator-ui/", "src/operations/"],
+  "test/operations-teardown.test.ts": ["src/operations/"],
+  "test/operations-enterprise.test.ts": ["src/cli/"],
+  "test/operations-parity.test.ts": ["src/cli/"],
+};
+
 // The journey matrix cites code and test titles by path, which no import reaches: a change to the matrix or to any file it
 // cites re-runs its check, so a renamed test or a removed module fails here instead of on a later, unrelated PR.
 const ACCEPTANCE_MATRIX = "config/acceptance/journeys.json";
@@ -162,9 +183,10 @@ export function planChanged(changedPaths, files) {
       addExisting(selected, files, directlyImpacted);
       if (/^src\/operator-ui\/app\//.test(path)) buildUi = true;
       if (/^src\/(?:apply|security|identity|actions|policy)\//.test(path)) {
-        // teardown-driver-denials scans src/ for driver imports, which no import closure reaches.
-        addExisting(selected, files, ["test/security-boundaries.test.ts",
-          "test/apply-boundary.test.ts", "test/teardown-driver-denials.test.ts"]);
+        addExisting(selected, files, ["test/security-boundaries.test.ts"]);
+      }
+      for (const [guard, roots] of Object.entries(SOURCE_SCAN_GUARDS)) {
+        if (roots.some((root) => path.startsWith(root))) addExisting(selected, files, [guard]);
       }
       if (directlyImpacted.length === 0) {
         // Do not mask missing test ownership with a blanket full-suite run.
