@@ -141,11 +141,15 @@ test("the shipped work graph checks, its page is current, and what runs next is 
   assert.equal(readFileSync(join(root, "docs", "work-graph.md"), "utf8"), view.workGraph, "run npm run docs:release");
   const graph = loadWorkGraph(root) as WorkGraph;
   assert.deepEqual(workGraphProblems(graph), []);
-  const runnable = runnableTasks(graph).map((node) => node.id);
-  assert.ok(runnable.includes("baseline-repair"));
-  assert.ok(!runnable.includes("dependency-updates"), "queued behind the baseline repair until it is DONE");
-  assert.ok(!runnable.includes("guided-journey-ui"), "a held task never runs");
-  assert.ok(!runnable.includes("candidate-freeze"), "the freeze waits on the integrated synthetic matrix");
+  // Derived from the graph as shipped, so the check holds as tasks move to DONE.
+  const runnable = new Set(runnableTasks(graph).map((node) => node.id));
+  const done = new Set(graph.nodes.filter((node) => node.status === "DONE").map((node) => node.id));
+  for (const node of graph.nodes) {
+    const ready = !["DONE", "BLOCKED", "HOLD"].includes(node.status) && node.dependsOn.every((id) => done.has(id));
+    assert.equal(runnable.has(node.id), ready, node.id + " runs exactly when it is open and its dependencies are DONE");
+  }
+  assert.ok(!runnable.has("guided-journey-ui"), "a held task never runs");
+  assert.ok(!runnable.has("candidate-freeze"), "the freeze waits on the integrated synthetic matrix");
 });
 
 test("the work graph refuses a cycle, an unknown dependency or gate, a DONE task without its merge, and an unexplained block", () => {
@@ -157,13 +161,13 @@ test("the work graph refuses a cycle, an unknown dependency or gate, a DONE task
     ["unknown gate", (g) => { g.nodes[0]!.gates = ["preview:nope"]; }, /not a release gate/],
     ["DONE without merge", (g) => { const n = g.nodes.find((x) => x.id === "release-gate-matrix")!; delete n.merges; }, /DONE needs the merge/],
     ["short sha", (g) => { g.nodes.find((x) => x.id === "release-gate-matrix")!.merges = ["6b4cc53"]; }, /full commit SHAs/],
-    ["DONE before dependency", (g) => { const n = g.nodes.find((x) => x.id === "dependency-updates")!; n.status = "DONE"; n.merges = ["a".repeat(40)]; delete n.next; }, /DONE before its dependency/],
+    ["DONE before dependency", (g) => { const n = g.nodes.find((x) => x.id === "candidate-freeze")!; n.status = "DONE"; n.merges = ["a".repeat(40)]; delete n.next; }, /DONE before its dependency/],
     ["blocked without reason", (g) => { delete g.nodes.find((x) => x.id === "live-qualification")!.blockedBy; }, /needs blockedBy/],
-    ["no next action", (g) => { delete g.nodes.find((x) => x.id === "baseline-repair")!.next; }, /next must say/],
+    ["no next action", (g) => { delete g.nodes.find((x) => x.id === "candidate-freeze")!.next; }, /next must say/],
     ["duplicate", (g) => { g.nodes.push({ ...(g.nodes[0] as WorkNode) }); }, /listed twice/],
     ["unknown field", (g) => { (g.nodes[0] as Record<string, unknown>).approvedBy = "agent"; }, /unknown field/],
   ];
-  assert.ok(at("baseline-repair"));
+  assert.ok(at("baseline-repair") && at("candidate-freeze").status !== "DONE");
   for (const [name, change, pattern] of variants) {
     const copy = structuredClone(graph);
     change(copy);
