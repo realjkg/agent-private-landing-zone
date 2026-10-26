@@ -47,9 +47,12 @@ let sink: Awaited<ReturnType<typeof tracingSink>>;
 before(async () => { sink = await tracingSink(); });
 after(async () => { await sink.close(); });
 
+// The tracing client batches uploads for about 250 ms. A control waits until its batch arrives, then a further second
+// so nothing late lands in the next test; a no-egress check waits well past several batch periods before concluding.
 async function settle(wantAny: boolean) {
   await awaitAllCallbacks();
-  for (let i = 0; i < 50 && (wantAny ? sink.paths.length === 0 : i < 15); i += 1) await new Promise((done) => setTimeout(done, 20));
+  if (wantAny) for (let i = 0; i < 150 && sink.paths.length === 0; i += 1) await new Promise((done) => setTimeout(done, 20));
+  await new Promise((done) => setTimeout(done, 1500));
 }
 
 test("the harness sees tracing egress: a bare graph with tracing on reaches the sink (control)", async () => {
@@ -66,6 +69,33 @@ test("the harness sees tracing egress: a bare graph with tracing on reaches the 
     restore();
   }
 });
+
+const REQUEST = { request: "Review this environment and assess operational risk.", provider: "AWS" as const,
+  engine: "TERRAFORM" as const, mock: "brownfield" as const, approveBuild: false, fixture: true };
+
+// invoke runs through stream inside LangGraph, so each entry point is checked on its own. The sink is checked after
+// the wait, before the environment, so a leak is reported as egress and its late batch cannot spill into the next test.
+for (const [entry, run] of [
+  ["invoke", (graph: ReturnType<typeof createSessionGraph>["graph"], thread: string) => graph.invoke(REQUEST, { configurable: { thread_id: thread } })],
+  ["stream", async (graph: ReturnType<typeof createSessionGraph>["graph"], thread: string) => {
+    for await (const chunk of await graph.stream(REQUEST, { configurable: { thread_id: thread } })) void chunk;
+  }],
+] as const) {
+  test("a tracing variable set after the graph was created is removed before " + entry, async () => {
+    sink.paths.length = 0;
+    const { graph } = createSessionGraph(":memory:");
+    const restore = withEnv(TRACING(sink.endpoint));
+    try {
+      await run(graph, "late-env-" + entry);
+      await settle(false);
+      assert.deepEqual(sink.paths, [], "no request reached the tracing sink");
+      assert.equal(process.env.LANGSMITH_TRACING, undefined, "removed at the run");
+    } finally {
+      restore();
+      disableHostedTracing();
+    }
+  });
+}
 
 test("the session graph sends nothing to a tracing service even when the environment asks it to", async () => {
   sink.paths.length = 0;
