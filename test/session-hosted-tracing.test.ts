@@ -47,9 +47,12 @@ let sink: Awaited<ReturnType<typeof tracingSink>>;
 before(async () => { sink = await tracingSink(); });
 after(async () => { await sink.close(); });
 
+// The tracing client batches uploads for about 250 ms. A control waits until its batch arrives, then a further second
+// so nothing late lands in the next test; a no-egress check waits well past several batch periods before concluding.
 async function settle(wantAny: boolean) {
   await awaitAllCallbacks();
-  for (let i = 0; i < 50 && (wantAny ? sink.paths.length === 0 : i < 15); i += 1) await new Promise((done) => setTimeout(done, 20));
+  if (wantAny) for (let i = 0; i < 150 && sink.paths.length === 0; i += 1) await new Promise((done) => setTimeout(done, 20));
+  await new Promise((done) => setTimeout(done, 1500));
 }
 
 test("the harness sees tracing egress: a bare graph with tracing on reaches the sink (control)", async () => {
@@ -64,6 +67,22 @@ test("the harness sees tracing egress: a bare graph with tracing on reaches the 
     assert.ok(sink.paths.length > 0, "the control must reach the sink, or the next test proves nothing");
   } finally {
     restore();
+  }
+});
+
+test("a tracing variable set after the graph was created is removed before the run", async () => {
+  sink.paths.length = 0;
+  const { graph } = createSessionGraph(":memory:");
+  const restore = withEnv(TRACING(sink.endpoint));
+  try {
+    await graph.invoke({ request: "Review this environment and assess operational risk.", provider: "AWS",
+      engine: "TERRAFORM", mock: "brownfield", approveBuild: false, fixture: true }, { configurable: { thread_id: "late-env" } });
+    assert.equal(process.env.LANGSMITH_TRACING, undefined, "removed at the run");
+    await settle(false);
+    assert.deepEqual(sink.paths, [], "no request reached the tracing sink");
+  } finally {
+    restore();
+    disableHostedTracing();
   }
 });
 
