@@ -4,9 +4,10 @@ import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import PilotWizard, { BlockedNotice, ChangeList } from "../src/operator-ui/app/pilot/PilotWizard";
+import { CleanupList, LeftoversTable } from "../src/operator-ui/app/pilot/CleanupStep";
 import { forgetPilotToken, type PilotPath, type PilotRun, type PreflightCheck, type PreparedFiles, type ReviewSummary } from "../src/operator-ui/app/pilot/pilot-api";
 import {
-  BLOCKED, CLI_COMMANDS, CODE_COPY, COPY, RESULT_COPY, STEP_TITLES, classifyResult, describeCheck, describeCounts, describeMismatch, dialogCopy, reasonFor,
+  BLOCKED, CLI_COMMANDS, CODE_COPY, COPY, RESULT_COPY, STEP_TITLES, classifyResult, describeCheck, describeCounts, describeMismatch, dialogCopy, dispositionWord, ownershipWord, reasonFor, retentionOwnerWord,
   type BlockedState, type ResultKind,
 } from "../src/operator-ui/app/pilot/pilot-copy";
 
@@ -863,6 +864,100 @@ describe("the words are plain", () => {
     await clickButton(COPY.approverLoad);
     await screen.findByText("What will change");
     expect(jargonIn(primaryText())).toEqual([]);
+  });
+});
+
+describe("step 7: the cleanup lists say only what the records say", () => {
+  /** The ownership classes and retention owners the backend can emit, read from its one definition (src/apply/cleanup-proposal.ts). */
+  const union = (name: string): string[] => [...read("src/apply/cleanup-proposal.ts").split("export type " + name + " =")[1].split(";")[0].matchAll(/"([A-Z_]+)"/g)].map((m) => m[1]);
+  const OWNERSHIPS = union("Ownership");
+  const OWNERS = union("RetentionOwner");
+  const KEPT = OWNERSHIPS.filter((o) => o !== "RUN_CREATED");
+
+  test("every ownership class and retention owner the backend can emit has its own words, so a new class never shows as unknown", () => {
+    expect(OWNERSHIPS.length).toBeGreaterThanOrEqual(10);
+    expect(OWNERS).toEqual(["PILOT_OWNER", "ENVIRONMENT_OWNER"]);
+    for (const ownership of OWNERSHIPS) {
+      expect(ownershipWord(ownership), ownership).not.toBe("unknown");
+      expect(ownershipWord(ownership).length, ownership).toBeGreaterThan(10);
+      expect(jargonIn(ownershipWord(ownership)), ownership).toEqual([]);
+    }
+    for (const owner of OWNERS) expect(retentionOwnerWord(owner), owner).toMatch(/^kept by the (?:pilot owner|environment's owner)$/);
+    expect(ownershipWord("A_CLASS_NOBODY_HAS_SEEN")).toBe("unknown");
+    expect(retentionOwnerWord("NOBODY")).toBe("kept by an unknown owner");
+    // The identity class covers both clouds: roles and assignments, managed identities, sign-in trusts, and names no cloud's namespace.
+    expect(ownershipWord("PROTECTED_IDENTITY")).toMatch(/role/);
+    expect(ownershipWord("PROTECTED_IDENTITY")).toMatch(/managed identity/);
+    expect(ownershipWord("PROTECTED_IDENTITY")).toMatch(/sign-in trust/);
+    expect(ownershipWord("PROTECTED_IDENTITY")).not.toMatch(/Microsoft|AWS|IAM/);
+    expect(dispositionWord("UNKNOWN")).toBe("Unresolved: not confirmed gone");
+  });
+
+  test("the proposal list names each kept thing's class in words and who keeps it", () => {
+    const cleanup = {
+      shortId: "0123456789ab", proposalSha256: "0".repeat(64), environment: "DEV" as const, target: { account: "acct", backend: "b", workspace: "default" }, sourceCommit: "c".repeat(40), artifactShortId: "0123456789ab", requiredApprovals: 1,
+      deletes: [{ address: "thing.one", type: "a_thing", identifier: "id-1", ownership: "RUN_CREATED", observed: "VERIFIED" }], alreadyAbsent: [],
+      excluded: KEPT.map((ownership, index) => ({ address: "kept.k" + index, type: "a_kind", identifier: "id-k" + index, ownership, reason: "because " + index, retainedBy: ["PROTECTED_BACKEND", "PROTECTED_IDENTITY", "PROTECTED_DEPLOYMENT", "RETAINED_GROUP", "CONTAINS_OTHERS"].includes(ownership) ? "PILOT_OWNER" : "ENVIRONMENT_OWNER" })),
+      risks: ["a risk"], lines: ["line"],
+    };
+    const { container, unmount } = render(<CleanupList cleanup={cleanup} />);
+    for (const [index, ownership] of KEPT.entries()) {
+      const row = container.querySelector('[data-kept="kept.k' + index + '"]') as HTMLElement;
+      expect(row, ownership).toBeTruthy();
+      expect(row.textContent).toContain(ownershipWord(ownership));
+      expect(row.textContent).toContain(retentionOwnerWord(cleanup.excluded[index].retainedBy));
+      expect(row.textContent).not.toMatch(/\b[A-Z]{2,}(?:_[A-Z0-9]+)+\b/);
+    }
+    expect(container.textContent).toContain(COPY.proposeRetainedNote);
+    unmount();
+  });
+
+  test("a complete leftover check claims nothing about kept things, says the environment is not retired, shows kept rows in words with their owner, and leaves an unresolved row unresolved", () => {
+    const retained = ["PROTECTED_BACKEND", "PROTECTED_IDENTITY", "PROTECTED_DEPLOYMENT", "RETAINED_GROUP", "CONTAINS_OTHERS", "NOT_IN_PLAN"].map((ownership, index) => ({
+      address: "kept." + ownership.toLowerCase(), type: "a_kind", identifier: "id-" + index, disposition: "INTENTIONALLY_RETAINED", basis: "RETENTION_DECISION",
+      reason: ownership + ": the record's own sentence for item " + index, owner: ownership === "NOT_IN_PLAN" ? "ENVIRONMENT_OWNER" : "PILOT_OWNER",
+    }));
+    const complete = {
+      disposition: "COMPLETE" as const, sweep: "COMPLETE", nextAction: "Approved resources deleted. Full environment retirement remains outstanding.", observedAt: "2026-10-26T00:00:00.000Z",
+      resources: [{ address: "thing.one", type: "a_thing", identifier: "id-1", disposition: "CONFIRMED_DELETED", basis: "CLOUD_CONTROL_ABSENT" }, ...retained],
+    };
+    const { container, unmount } = render(<LeftoversTable leftovers={complete} />);
+    const headline = container.querySelector("h3")!.textContent ?? "";
+    expect(headline).toBe(COPY.verifyComplete);
+    expect(headline).toMatch(/confirmed gone/);
+    expect(headline).toMatch(/were not checked/);
+    expect(headline).not.toMatch(/still there|verified|present|checked and/);
+    const retirement = container.querySelector('[data-retirement="OUTSTANDING"]') as HTMLElement;
+    expect(retirement.textContent).toBe(COPY.verifyRetirementOutstanding);
+    expect(retirement.textContent).toMatch(/not retired/);
+    expect(retirement.textContent).not.toMatch(/^.*the resource group,/);
+    expect(retirement.textContent).toMatch(/resource group or a stack/);
+    for (const item of retained) {
+      const row = container.querySelector('[data-disposition="INTENTIONALLY_RETAINED"] code') ? [...container.querySelectorAll("tr")].find((tr) => tr.textContent?.includes(item.address)) : undefined;
+      expect(row, item.address).toBeTruthy();
+      const ownership = item.reason.split(":")[0];
+      expect(row!.textContent).toContain(dispositionWord("INTENTIONALLY_RETAINED"));
+      expect(row!.textContent).toContain(retentionOwnerWord(item.owner));
+      expect(row!.textContent).toContain(ownershipWord(ownership));
+      expect(row!.textContent).toContain("the record's own sentence for item");
+      expect(row!.textContent?.replace(item.address, "").replace(item.identifier, ""), item.address).not.toMatch(/\b[A-Z]{2,}(?:_[A-Z0-9]+)+\b/);
+    }
+    expect(jargonIn(COPY.verifyComplete + " " + COPY.verifyRetirementOutstanding + " " + CODE_COPY.CLEANUP_COMPLETE.why + " " + CODE_COPY.CLEANUP_COMPLETE.next)).toEqual([]);
+    expect(CODE_COPY.CLEANUP_COMPLETE.why).not.toMatch(/still there/);
+    expect(CODE_COPY.CLEANUP_COMPLETE.next).not.toMatch(/resource group/);
+    unmount();
+    // Not complete: an unresolved row is "not confirmed gone", and no retirement line is shown because nothing is complete.
+    const incomplete = {
+      disposition: "INCOMPLETE" as const, sweep: "COMPLETE", nextAction: "Fix the discovery sign-in's access, then check again.", observedAt: "2026-10-26T00:00:00.000Z",
+      resources: [{ address: "thing.two", type: "a_thing", identifier: "id-2", disposition: "UNKNOWN", basis: "CHECK_FAILED", reason: "ACCESS_DENIED" }],
+    };
+    const second = render(<LeftoversTable leftovers={incomplete} />);
+    expect(second.container.querySelector("h3")!.textContent).toBe(COPY.verifyIncomplete);
+    expect(second.container.querySelector('[data-retirement="OUTSTANDING"]')).toBeNull();
+    const unresolved = second.container.querySelector('[data-disposition="UNKNOWN"]') as HTMLElement;
+    expect(unresolved.textContent).toContain("Unresolved: not confirmed gone");
+    expect(unresolved.textContent).not.toMatch(/Confirmed gone|Kept on purpose/);
+    second.unmount();
   });
 });
 

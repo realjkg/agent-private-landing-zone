@@ -192,9 +192,9 @@ export const COPY = {
   verifyRun: "Check that everything is gone",
   verifyRerun: "Check again",
   verifyRunning: "Looking at the cloud for anything left. This reads and changes nothing.",
-  verifyComplete: "Approved things deleted; protected things kept on purpose. Everything on the list is confirmed gone, and everything kept is still there.",
-  verifyRetirementOutstanding: "The environment itself is not retired: the resource group, sign-ins and trusts, deployment history and the pilot's own storage were never on the list and are kept by their owners. Retiring them is a separate, reviewed action by the pilot owner, and it is still outstanding.",
-  proposeRetainedNote: "A pilot cleanup never removes a resource group, a sign-in or trust, a role or policy assignment, a role or policy definition, an exemption, a lock, deployment history, or the storage the pilot runs on, whatever this change did. Those stay, with their owner named, and retiring the environment is a separate decision.",
+  verifyComplete: "Approved things deleted; protected things kept on purpose. Everything on the list is confirmed gone. Kept items were left in place and were not checked.",
+  verifyRetirementOutstanding: "The environment itself is not retired: its container (a resource group or a stack), identity and access objects, deployment history and the pilot's own storage were never on the list and are kept by their owners. Retiring them is a separate, reviewed action by the pilot owner, and it is still outstanding.",
+  proposeRetainedNote: "A pilot cleanup never removes a resource group or a stack, an identity or access object (a role, a role or policy assignment, a role or policy definition, a managed identity, a sign-in trust, an exemption, a lock), deployment history, or the storage the pilot runs on, whatever this change did. Those stay, with their owner named, and retiring the environment is a separate decision.",
   verifyIncomplete: "Not finished yet. Nothing is reported as complete until every listed thing is confirmed gone.",
   verifyKnownConfirmed: "Everything on the list is confirmed gone, but this change carried no cleanup marker, so nothing outside its records could be searched for. This is not complete.",
   verifyNextLabel: "What to do now:",
@@ -217,10 +217,10 @@ export function ownershipWord(ownership: string): string {
     case "IMPORTED": return "brought under management, not created";
     case "NOT_IN_PLAN": return "not part of this change";
     case "PROTECTED_BACKEND": return "the storage the pilot itself runs on";
-    case "PROTECTED_IDENTITY": return "a sign-in, trust, role or policy assignment, role or policy definition, exemption or lock (anything under Microsoft.Authorization)";
+    case "PROTECTED_IDENTITY": return "an identity or access object (a role, a role or policy assignment, a role or policy definition, a managed identity, a sign-in trust, an exemption or a lock)";
     case "PROTECTED_DEPLOYMENT": return "deployment history";
     case "RETAINED_GROUP": return "a resource group, never removed by a pilot cleanup";
-    case "CONTAINS_OTHERS": return "a subscription or management group holding others' things";
+    case "CONTAINS_OTHERS": return "a subscription, management group, nested stack or provider registration holding or serving others' things";
     default: return "unknown";
   }
 }
@@ -406,7 +406,7 @@ export const CODE_COPY: Readonly<Record<string, Reason>> = {
   OBSERVED: { why: "The console looked at each thing the change left behind.", next: "Read the list, then write the cleanup proposal if everything is as expected." },
   CLEANUP_PROPOSED: { why: "The cleanup proposal is written.", next: "Send it to the approvers, collect their cleanup approval files, then remove the listed things." },
   CLEANED_UP: { why: "The removal finished.", next: "Check that everything is gone." },
-  CLEANUP_COMPLETE: { why: "Approved things deleted; protected things kept on purpose. Everything on the list is confirmed gone.", next: "Nothing further for this change's resources. The environment itself (its resource group, sign-ins, deployment history and the pilot's storage) is not retired; that is the pilot owner's separate, reviewed action." },
+  CLEANUP_COMPLETE: { why: "Approved things deleted; protected things kept on purpose. Everything on the list is confirmed gone; kept items were left in place and were not checked.", next: "Nothing further for this change's resources. The environment itself (its container, identity and access objects, deployment history and the pilot's storage) is not retired; that is the pilot owner's separate, reviewed action." },
   CLEANUP_INCOMPLETE: { why: "Something on the list is not confirmed gone yet.", next: "Follow the next step shown with the list." },
   CLEANUP_KNOWN_CONFIRMED: { why: "Everything on the list is confirmed gone, but the change carried no cleanup marker, so things outside its records could not be searched for.", next: "Ask the pilot owner to confirm by hand that nothing else of this change remains, or apply with the cleanup marker so the search can run." },
   // the command line's own errors, as the wizard reaches them
