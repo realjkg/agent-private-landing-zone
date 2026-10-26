@@ -1,4 +1,4 @@
-import { LIVE_CONDITION_REASONS, previewScenarioOf, PREVIEW_EVIDENCE_VERSION, type PreviewGateEvidence, type PreviewLiveConditions } from "../qualification/preview-gate.js";
+import { LIVE_CONDITION_REASONS, previewScenarioOf, PREVIEW_EVIDENCE_VERSION, unauthorizedPreviewActions, type PreviewGateEvidence, type PreviewLiveConditions } from "../qualification/preview-gate.js";
 import { canonicalJson } from "../teardown/manifest.js";
 import { sha256 } from "../util/sha256.js";
 import { COMMIT } from "./constants.js";
@@ -35,7 +35,7 @@ export type PreviewEvidenceInput = {
   attestedBy: string | null;
   now: Date;
 };
-export type PreviewEvidenceRefusal = { ok: false; code: "GATE_UNKNOWN" | "SCENARIO_MISMATCH" | "CONTRACT_MISMATCH"; message: string };
+export type PreviewEvidenceRefusal = { ok: false; code: "GATE_UNKNOWN" | "SCENARIO_MISMATCH" | "CONTRACT_MISMATCH" | "CHANGES_UNAUTHORIZED"; message: string };
 
 const ENGINE_NAMES: Readonly<Record<string, string>> = { TERRAFORM: "TERRAFORM", CDK: "AWS_CDK" };
 
@@ -59,6 +59,14 @@ export function buildPreviewGateEvidence(input: PreviewEvidenceInput): { ok: tru
   }
   if (sealed.contractSha256 !== pilotContractSha256(contract)) return { ok: false, code: "CONTRACT_MISMATCH", message: "The sealed plan was made under another pilot contract than the one pinned now. Nothing was written." };
   const changes = countChanges(sealed.changes);
+  // The documented rule (docs/production-release-admission.md, gate 4): a change set with a delete, a replacement or an unreviewed
+  // action is not preview-gate evidence at all, LIVE or SYNTHETIC; it is refused before any attestation is asked for, and the
+  // validator refuses the same document at admission (src/qualification/preview-gate.ts, PREVIEW_GATE_ACTIONS).
+  const unauthorized = unauthorizedPreviewActions(changes.byAction);
+  if (unauthorized.length > 0) {
+    return { ok: false, code: "CHANGES_UNAUTHORIZED", message: "The sealed change set holds an action a preview gate never admits (" + unauthorized.join(", ") +
+      "): a delete, a replacement or an unreviewed action is not evidence for " + input.gateId + ", whatever a person attests. Nothing was written." };
+  }
   const liveConditions: PreviewLiveConditions = {
     attested: input.attestedBy !== null,
     sourceCommitMatches: input.sourceCommit !== undefined && COMMIT.test(input.sourceCommit) && sealed.sourceCommit === input.sourceCommit,
