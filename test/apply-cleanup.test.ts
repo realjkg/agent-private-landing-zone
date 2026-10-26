@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { signApproval } from "../src/apply/approval.js";
-import { buildCleanupProposal, computeProposalSha256, proposalProblems, verifyCleanupProposal, type CleanupProposal } from "../src/apply/cleanup-proposal.js";
+import { buildCleanupProposal, computeProposalSha256, isAwsIdentityType, proposalProblems, protectedDeletionIn, verifyCleanupProposal, type CleanupProposal } from "../src/apply/cleanup-proposal.js";
 import { CLEANUP_SUFFIX, SUFFIX, loadPilotContract, pilotContractSha256 } from "../src/apply/contract.js";
 import { pilotUnitOf } from "../src/apply/unit.js";
 import { cleanupScopeProblem, runApply, runCleanup, sealPreview, type ApplyDeps, type ApplyRequest, type CleanupRequest } from "../src/apply/driver.js";
@@ -711,34 +711,83 @@ test("the raw state parser maps every managed instance, with module paths and in
   assert.throws(() => blueprintFromTerraformStatePull("{" + STATE_CANARY, []), (error: Error) => /STATE_JSON_INVALID/.test(error.message) && !error.message.includes(STATE_CANARY));
 });
 
-test("AWS identities the run created are never deleted (owner policy #39): an application role, its inline policy and its policy attachment are kept as PROTECTED_IDENTITY by the pilot owner, a destroy plan that would take one along stops before any approval is consumed, the run's other resources are cleaned up, and the leftover check is COMPLETE with the identities intentionally retained", async () => {
+const IDENTITY_FIXTURE_CONTRACT = loadPilotContract(fixtureContractPath, pinPathOf(fixtureContractPath)) as PilotContract;
+/** Every type the reviewer named (6412182848), and the account-wide settings: all in the identity service, all kept. */
+const AWS_IAM_TYPES = ["aws_iam_role", "aws_iam_policy", "aws_iam_policy_attachment", "aws_iam_role_policy", "aws_iam_role_policy_attachment", "aws_iam_role_policies_exclusive", "aws_iam_role_policy_attachments_exclusive",
+  "aws_iam_user", "aws_iam_user_policy", "aws_iam_user_policy_attachment", "aws_iam_user_login_profile", "aws_iam_user_ssh_key", "aws_iam_user_group_membership", "aws_iam_group", "aws_iam_group_policy", "aws_iam_group_policy_attachment",
+  "aws_iam_group_membership", "aws_iam_instance_profile", "aws_iam_openid_connect_provider", "aws_iam_saml_provider", "aws_iam_service_linked_role", "aws_iam_access_key", "aws_iam_signing_certificate", "aws_iam_service_specific_credential",
+  "aws_iam_virtual_mfa_device", "aws_iam_account_password_policy", "aws_iam_account_alias", "aws_iam_security_token_service_preferences", "aws_iam_organizations_features", "aws_iam_server_certificate",
+  "awscc_iam_role", "awscc_iam_user", "aws_ssoadmin_account_assignment", "aws_ssoadmin_permission_set", "aws_ssoadmin_managed_policy_attachment",
+  "AWS::IAM::Role", "AWS::IAM::Policy", "AWS::IAM::ManagedPolicy", "AWS::IAM::User", "AWS::IAM::Group", "AWS::IAM::AccessKey", "AWS::IAM::InstanceProfile", "AWS::IAM::OIDCProvider", "AWS::IAM::SAMLProvider", "AWS::IAM::ServiceLinkedRole",
+  "AWS::IAM::UserToGroupAddition", "AWS::IAM::VirtualMFADevice", "AWS::SSO::Assignment", "AWS::SSO::PermissionSet"];
+
+test("anything in the IAM or identity service is PROTECTED_IDENTITY by an anchored prefix (owner policy #39; review 6412182848): every aws_iam_, awscc_iam_, aws_ssoadmin_, AWS::IAM:: and AWS::SSO:: type, and nothing that merely resembles one; an identity's ARN under another type is unclassifiable and refused", () => {
+  const entry = (address: string, type: string, id: string | null = "x", arn: string | null = null) => ({ address, type, id, arn });
+  const change = (address: string, type: string) => [{ address, type, action: "DELETE" }];
+  for (const type of AWS_IAM_TYPES) {
+    assert.ok(isAwsIdentityType(type), type);
+    const refusal = protectedDeletionIn(change("x.y", type), [entry("x.y", type)], IDENTITY_FIXTURE_CONTRACT, awsIdentityEnv("DEV"));
+    assert.ok(refusal !== undefined && refusal.includes("(PROTECTED_IDENTITY)"), type + ": " + refusal);
+    // By type alone, for a dependent the state does not hold.
+    assert.ok(protectedDeletionIn(change("x.y", type), [], IDENTITY_FIXTURE_CONTRACT, awsIdentityEnv("DEV"))?.includes("(PROTECTED_IDENTITY)"), type + " by type alone");
+  }
+  for (const type of ["aws_iamx", "aws_iam", "aws_s3_bucket", "aws_cloudwatch_log_group", "AWS::IAMX::Foo", "AWS::Iam::Role", "aws::iam::role", "AWS::IAM:Role", "aws_sso_admin", "awscc_s3_bucket", "aws_ssoadminx"]) {
+    assert.ok(!isAwsIdentityType(type), type + " is not an identity type");
+    assert.equal(protectedDeletionIn(change("x.y", type), [entry("x.y", type, "x", "arn:aws:s3:::x")], IDENTITY_FIXTURE_CONTRACT, awsIdentityEnv("DEV")), undefined, type);
+  }
+  // A pilot role's ARN recorded under a type outside the identity service: fail closed, never ordinary.
+  const pilot = awsRoleArn("APPLY", "DEV");
+  for (const [type, id, arn] of [["terraform_data", pilot, null], ["aws_cloudformation_stack", "stack", pilot], ["AWS::CloudFormation::CustomResource", pilot, null], ["Custom::PilotRole", "x", pilot], ["aws_lambda_function", "fn", "arn:aws-us-gov:iam::111111111111:role/x"]] as const) {
+    const refusal = protectedDeletionIn(change("x.y", type), [entry("x.y", type, id, arn)], IDENTITY_FIXTURE_CONTRACT, awsIdentityEnv("DEV"));
+    assert.ok(refusal !== undefined && refusal.includes("(OWNERSHIP_AMBIGUOUS)") && refusal.includes("an identity's ARN under another type"), type + ": " + refusal);
+  }
+  assert.equal(protectedDeletionIn(change("x.y", "terraform_data"), [entry("x.y", "terraform_data", "not-an-arn", null)], IDENTITY_FIXTURE_CONTRACT, awsIdentityEnv("DEV")), undefined, "terraform_data without an IAM ARN stays ordinary");
+});
+
+test("AWS identities the run created are never deleted (owner policy #39): an application role, its inline policy, a policy attachment and an access key are kept as PROTECTED_IDENTITY by the pilot owner, a destroy plan that would take any of them along stops before any approval is consumed, a pilot role's ARN under terraform_data refuses the proposal, the run's other resources are cleaned up, and the leftover check is COMPLETE with the identities intentionally retained", async () => {
   const APP_ROLE = "alz-app-role";
   const APP_ROLE_ARN = "arn:aws:iam::111111111111:role/" + APP_ROLE;
   const creates = [...CREATES,
     { address: "aws_iam_role.app", type: "aws_iam_role", change: { actions: ["create"], before: null, after: {} } },
     { address: "aws_iam_role_policy.app_inline", type: "aws_iam_role_policy", change: { actions: ["create"], before: null, after: {} } },
-    { address: "aws_iam_role_policy_attachment.app_managed", type: "aws_iam_role_policy_attachment", change: { actions: ["create"], before: null, after: {} } },
+    { address: "aws_iam_policy_attachment.shared", type: "aws_iam_policy_attachment", change: { actions: ["create"], before: null, after: {} } },
+    { address: "aws_iam_access_key.app", type: "aws_iam_access_key", change: { actions: ["create"], before: null, after: {} } },
   ];
   const state = [...STATE, stateResource("aws_iam_role", "app", APP_ROLE, APP_ROLE_ARN), stateResource("aws_iam_role_policy", "app_inline", APP_ROLE + ":inline"),
-    stateResource("aws_iam_role_policy_attachment", "app_managed", APP_ROLE + "-20261026/arn:aws:iam::aws:policy/ReadOnlyAccess")];
+    stateResource("aws_iam_policy_attachment", "shared", "shared-attachment"), stateResource("aws_iam_access_key", "app", "AKIAFAKEAPPKEY000000")];
   const w = world();
   behave({ showResources: creates, stateResources: state });
   cloud({ existing: [...EXISTING, APP_ROLE], tagged: [...TAGGED, APP_ROLE_ARN] });
   const run = await proposed(w);
   assert.deepEqual(run.proposal.deletes.map((d) => d.address), ["aws_cloudwatch_log_group.canary", "aws_s3_bucket.logs", "aws_s3_bucket_versioning.logs"], "only the run's non-identity resources are proposed");
   const kept = new Map(run.proposal.excluded.map((x) => [x.address, x]));
-  for (const address of ["aws_iam_role.app", "aws_iam_role_policy.app_inline", "aws_iam_role_policy_attachment.app_managed", "aws_iam_role.apply"]) {
+  for (const address of ["aws_iam_role.app", "aws_iam_role_policy.app_inline", "aws_iam_policy_attachment.shared", "aws_iam_access_key.app", "aws_iam_role.apply"]) {
     assert.equal(kept.get(address)?.ownership, "PROTECTED_IDENTITY", address);
     assert.equal(kept.get(address)?.retainedBy, "PILOT_OWNER", address);
-    assert.match(kept.get(address)!.reason, /every IAM role, policy, user, group, instance profile, identity provider or service-linked role.*never deleted by a cleanup, directly or as a dependent/, address);
+    assert.match(kept.get(address)!.reason, /anything in the IAM or identity service.*access keys and credentials of those identities.*never deleted by a cleanup, directly or as a dependent/, address);
   }
-  // A destroy plan that would take the application role along stops before any approval is consumed, naming the policy.
+  assert.equal(kept.get("aws_iam_access_key.app")?.identifier, null, "the access key id is never recorded");
+  assert.ok(!JSON.stringify([run.proposal, run.records.blueprint, run.records.observation]).includes("AKIAFAKEAPPKEY000000"), "no access key id reaches a record");
+  // A destroy plan that would take the role, the attachment or the key along stops before any approval is consumed, naming the policy.
   const approval = cleanupApproval(run.proposal, "alice");
-  behave({ showResources: creates, stateResources: state, destroyExtra: [{ address: "aws_iam_role.app", type: "aws_iam_role", change: { actions: ["delete"], before: {}, after: null } }] });
-  const taken = await cleanup(w, run, [approval]);
-  refused(taken, "PROPOSAL_SCOPE_MISMATCH");
-  assert.match((taken as { message: string }).message, /would delete aws_iam_role\.app, an identity or authorization object, which a pilot cleanup never deletes, directly or as a dependent \(PROTECTED_IDENTITY\)/);
-  assert.equal(applyCalls().length, 0);
+  for (const [address, type] of [["aws_iam_role.app", "aws_iam_role"], ["aws_iam_policy_attachment.shared", "aws_iam_policy_attachment"], ["aws_iam_access_key.app", "aws_iam_access_key"]] as const) {
+    behave({ showResources: creates, stateResources: state, destroyExtra: [{ address, type, change: { actions: ["delete"], before: {}, after: null } }] });
+    const taken = await cleanup(w, run, [approval]);
+    refused(taken, "PROPOSAL_SCOPE_MISMATCH");
+    assert.match((taken as { message: string }).message, new RegExp("would delete " + address.replace(".", "\\.") + ", an identity or authorization object, which a pilot cleanup never deletes, directly or as a dependent \\(PROTECTED_IDENTITY\\)"), address);
+    assert.equal(applyCalls().length, 0, address);
+  }
+  // A pilot role's ARN recorded under terraform_data: the whole proposal is refused for a person to review.
+  const disguised = world();
+  behave({ showResources: [...creates, { address: "terraform_data.pilot_role", type: "terraform_data", change: { actions: ["create"], before: null, after: {} } }], stateResources: [...state, stateResource("terraform_data", "pilot_role", "pilot-role", awsRoleArn("APPLY", "DEV"))] });
+  cloud({ existing: [...EXISTING, APP_ROLE], tagged: [...TAGGED, APP_ROLE_ARN] });
+  const applied2 = await observed(disguised);
+  const records2 = await loadRunRecords(applied2.s.sealed.artifactSha256, disguised.dirs.evidence);
+  assert.ok(records2.ok);
+  const built2 = buildCleanupProposal({ ...records2, changes: applied2.s.sealed.changes, channel: "CLI", contract: { ...(JSON.parse(JSON.stringify(awsContractJson(KILL))) as object), enabled: true } as never, engineVersion: applied2.s.sealed.engineVersion, env: disguised.deps.env!, now: new Date(NOW.getTime() + 120_000) });
+  refused(built2, "OWNERSHIP_AMBIGUOUS");
+  assert.match((built2 as { message: string }).message, /terraform_data\.pilot_role that is not a resource id the cleanup can classify exactly/);
+  behave({ showResources: creates, stateResources: state });
   // A forged proposal that lists the role never executes.
   const fields = { ...run.proposal, deletes: [...run.proposal.deletes, { address: "aws_iam_role.app", type: "aws_iam_role", identifier: APP_ROLE, ownership: "RUN_CREATED" as const, observed: "VERIFIED" as const }].sort((a, b) => (a.address < b.address ? -1 : 1)), excluded: run.proposal.excluded.filter((x) => x.address !== "aws_iam_role.app") };
   const forged = { ...fields, proposalSha256: computeProposalSha256(fields) };
@@ -756,6 +805,7 @@ test("AWS identities the run created are never deleted (owner policy #39): an ap
   assert.ok(leftovers.ok);
   assert.equal(leftovers.record.disposition, "COMPLETE");
   const dispositions = new Map(leftovers.record.resources.map((r) => [r.address, [r.disposition, r.owner]]));
-  for (const address of ["aws_iam_role.app", "aws_iam_role_policy.app_inline", "aws_iam_role_policy_attachment.app_managed", "aws_iam_role.apply"]) assert.deepEqual(dispositions.get(address), ["INTENTIONALLY_RETAINED", "PILOT_OWNER"], address);
+  for (const address of ["aws_iam_role.app", "aws_iam_role_policy.app_inline", "aws_iam_policy_attachment.shared", "aws_iam_access_key.app", "aws_iam_role.apply"]) assert.deepEqual(dispositions.get(address), ["INTENTIONALLY_RETAINED", "PILOT_OWNER"], address);
   assert.deepEqual(dispositions.get("aws_s3_bucket.logs"), ["CONFIRMED_DELETED", undefined]);
+  assert.ok(!JSON.stringify(leftovers.record).includes("AKIAFAKEAPPKEY000000"));
 });

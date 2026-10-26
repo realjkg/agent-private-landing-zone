@@ -38,6 +38,13 @@ export type EnginePlanInput = EngineRunInput & {
   unit: PilotUnit;
 };
 
+/**
+ * What an engine knows after a run about the resources it left, for the blueprint (src/observe/blueprint.ts): Terraform's
+ * state (`terraform state pull`, read as STATE), or CloudFormation's logical-to-physical mapping of the stack
+ * (`describe-stack-resources`, read as DISCOVERY). The driver maps either to identifiers and drops the document.
+ */
+export type StateDocument = { source: "TERRAFORM_STATE_PULL" | "CLOUDFORMATION_STACK_RESOURCES"; document: string };
+
 /** How an apply ended: an outcome, or a plan its state has outgrown (nothing applied). */
 export type ApplyEnd = { outcome: ApplyOutcome } | { stale: true };
 /** What the engine left behind that a person recovers from, kept by the driver in the encrypted vault. */
@@ -64,11 +71,11 @@ export type EngineApplyRun = {
   /** Removes every plaintext secret the run wrote (the artifact, backend configuration). Idempotent. */
   removeSecrets(): void;
   /**
-   * The engine's state document after the run, read with the read-only state identity, for the driver to map addresses
-   * to cloud identifiers (src/observe/blueprint.ts) and drop. Undefined when the engine keeps no state (CDK) or it cannot
-   * be read; never thrown, never logged.
+   * What the engine knows about the resources it left after the run, read with a read-only identity (Terraform: the state
+   * as STATE; CDK: the stack's resources as DISCOVERY), for the driver to map addresses to cloud identifiers
+   * (src/observe/blueprint.ts) and drop. Undefined when it cannot be read; never thrown, never logged.
    */
-  stateDocument?(): string | undefined;
+  stateDocument?(): StateDocument | undefined;
 };
 
 /**
@@ -133,7 +140,7 @@ export type EngineSpec = {
   /** The adapters qualification pins: the preview surface sealing runs, and the apply surface. They never activate each other. */
   previewAdapter(): AdapterDescriptor;
   applyAdapter: AdapterDescriptor;
-  /** The cleanup surface (a destroy limited to approved addresses), qualified on its own. Absent: the engine has no cleanup path yet (CDK), and a cleanup is refused. */
+  /** The cleanup surface (a destroy limited to approved addresses), qualified on its own. Absent: the engine has no cleanup path yet, and a cleanup is refused. */
   cleanupAdapter?: AdapterDescriptor;
   /** SHA-256 of the engine binary a run would execute, or undefined; qualification evidence is for exactly one. */
   binarySha256(toolDirs: readonly string[] | undefined, env: NodeJS.ProcessEnv): string | undefined;

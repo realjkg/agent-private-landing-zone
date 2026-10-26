@@ -15,10 +15,11 @@ import type { ToolResult } from "../../tools/types.js";
 import { sha256 } from "../../util/sha256.js";
 import { stripInvisible } from "../constants.js";
 import { assertUsable, checkedOutput, stop, withoutIdentities } from "../engine.js";
-import type { ApplyEnd, EngineApplyRun, EngineContext, EngineRunInput, EngineSpec } from "../engine-spec.js";
+import type { ApplyEnd, EngineApplyRun, EngineContext, EngineRunInput, EngineSpec, StateDocument } from "../engine-spec.js";
 import type { AwsTarget } from "../providers/aws.js";
 import { isRecord } from "../providers/shared.js";
-import type { PlanChange } from "../types.js";
+import type { PlanChange, SealedUnit } from "../types.js";
+import type { PilotUnit } from "../unit.js";
 
 /**
  * The CDK engine spec (docs/act-pilot-apply.md, "CDK"): a pre-synthesized CDK cloud assembly (cdk.out) with one stack
@@ -34,8 +35,8 @@ import type { PlanChange } from "../types.js";
  */
 
 const EXECUTABLE = "aws";
-const PREVIEW_ADAPTER_VERSION = "cdk-preview-1.1.0";
-const APPLY_ADAPTER_VERSION = "cdk-apply-1.1.0";
+const PREVIEW_ADAPTER_VERSION = "cdk-preview-1.2.0";
+const APPLY_ADAPTER_VERSION = "cdk-apply-1.2.0";
 
 // --- the argument lists ---------------------------------------------------------------------------------
 
@@ -58,6 +59,12 @@ const CHANGE_SET_ARN = slot("change-set-arn", (v) => /^arn:aws:cloudformation:[a
 const CHANGE_SET_TYPE = slot("type", (v) => v === "CREATE" || v === "UPDATE");
 const TEMPLATE = slot("template", (v) => v.startsWith("file://") && REL_PATH.test(v.slice(7)) && !climbs(v.slice(7)));
 const CAPABILITY = slot("capability", (v) => (CAPABILITIES as readonly string[]).includes(v));
+/**
+ * One stack tag as the CLI's shorthand (UNVERIFIED (8)): the deletion unit's tags (src/apply/unit.ts), always exactly these
+ * three keys, so the sweep after an apply can list what the stack created by the run's unit. A tag with any other key is refused.
+ */
+const UNIT_TAG_KEYS: readonly string[] = ["alz-managed-by", "alz-unit", "alz-build"];
+const TAG = slot("tag", (v) => /^Key=(alz-managed-by|alz-unit|alz-build),Value=[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(v));
 const JSON_OUTPUT: Shape = ["--region", REGION_SLOT, "--output", "json", "--no-cli-pager"];
 const NO_OUTPUT: Shape = ["--region", REGION_SLOT, "--no-cli-pager"];
 
@@ -65,20 +72,23 @@ const VERSION_SHAPE: Shape = ["--version"];
 const DESCRIBE_STACKS: Shape = ["cloudformation", "describe-stacks", "--stack-name", STACK, ...JSON_OUTPUT];
 const createShape = (capabilities: number): Shape => [
   "cloudformation", "create-change-set", "--stack-name", STACK, "--change-set-name", CHANGE_SET_NAME, "--change-set-type", CHANGE_SET_TYPE,
-  "--template-body", TEMPLATE, ...(capabilities > 0 ? ["--capabilities", ...Array<Slot>(capabilities).fill(CAPABILITY)] : []), ...JSON_OUTPUT,
+  "--template-body", TEMPLATE, ...(capabilities > 0 ? ["--capabilities", ...Array<Slot>(capabilities).fill(CAPABILITY)] : []),
+  "--tags", ...Array<Slot>(UNIT_TAG_KEYS.length).fill(TAG), ...JSON_OUTPUT,
 ];
 const WAIT: Shape = ["cloudformation", "wait", "change-set-create-complete", "--change-set-name", CHANGE_SET_ARN, ...NO_OUTPUT];
 const DESCRIBE_CHANGE_SET: Shape = ["cloudformation", "describe-change-set", "--change-set-name", CHANGE_SET_ARN, ...JSON_OUTPUT];
 const GET_TEMPLATE: Shape = ["cloudformation", "get-template", "--change-set-name", CHANGE_SET_ARN, "--template-stage", "Original", ...JSON_OUTPUT];
 const EXECUTE: Shape = ["cloudformation", "execute-change-set", "--change-set-name", CHANGE_SET_ARN, ...NO_OUTPUT];
 const DESCRIBE_EVENTS: Shape = ["cloudformation", "describe-stack-events", "--stack-name", STACK, ...JSON_OUTPUT];
+/** The stack's resources, logical id to physical id (UNVERIFIED (9)): the blueprint's source, read once after an apply as DISCOVERY. */
+const DESCRIBE_RESOURCES: Shape = ["cloudformation", "describe-stack-resources", "--stack-name", STACK, ...JSON_OUTPUT];
 const CANCEL: Shape = ["cloudformation", "cancel-update-stack", "--stack-name", STACK, ...NO_OUTPUT];
 
 type Entry = { who: Who; shape: Shape; adapters: readonly Adapter[] };
 /**
  * Everything the engine can run, and as whom. There is no delete (a stack or a change set), no create-stack, update-stack
- * or deploy, no way to name a parameter, a tag, a role or a rollback setting, and nothing for CHANGESET to execute with:
- * an argument list that is not one of these, for that identity, is refused before it reaches the runner.
+ * or deploy, no way to name a parameter, a role or a rollback setting, no tag but the deletion unit's own, and nothing for
+ * CHANGESET to execute with: an argument list that is not one of these, for that identity, is refused before it reaches the runner.
  */
 const ENTRIES: readonly Entry[] = [
   { who: null, shape: VERSION_SHAPE, adapters: ["preview", "apply"] },
@@ -94,6 +104,8 @@ const ENTRIES: readonly Entry[] = [
   { who: "APPLY", shape: EXECUTE, adapters: ["apply"] },
   { who: "APPLY", shape: DESCRIBE_EVENTS, adapters: ["apply"] },
   { who: "APPLY", shape: CANCEL, adapters: ["apply"] },
+  // The blueprint's source after an apply: read-only, as DISCOVERY, like the observation that follows it.
+  { who: "DISCOVERY", shape: DESCRIBE_RESOURCES, adapters: ["apply"] },
 ];
 
 const fits = (shape: Shape, args: readonly string[]): boolean =>
@@ -111,10 +123,19 @@ const digestOf = (adapter: Adapter): string => argvDigest(ENTRIES.filter((entry)
   [entry.who ?? "NONE", EXECUTABLE, ...entry.shape.map((part) => (typeof part === "string" ? part : "<" + part.name + ">"))]));
 
 const describeStacksArgv = (stack: string, region: string): string[] => ["cloudformation", "describe-stacks", "--stack-name", stack, "--region", region, "--output", "json", "--no-cli-pager"];
-const createArgv = (c: { stack: string; name: string; type: string; template: string; capabilities: readonly string[]; region: string }): string[] => [
+const createArgv = (c: { stack: string; name: string; type: string; template: string; capabilities: readonly string[]; tags: readonly string[]; region: string }): string[] => [
   "cloudformation", "create-change-set", "--stack-name", c.stack, "--change-set-name", c.name, "--change-set-type", c.type, "--template-body", "file://" + c.template,
-  ...(c.capabilities.length > 0 ? ["--capabilities", ...c.capabilities] : []), "--region", c.region, "--output", "json", "--no-cli-pager",
+  ...(c.capabilities.length > 0 ? ["--capabilities", ...c.capabilities] : []), "--tags", ...c.tags, "--region", c.region, "--output", "json", "--no-cli-pager",
 ];
+const resourcesArgv = (stack: string, region: string): string[] => ["cloudformation", "describe-stack-resources", "--stack-name", stack, "--region", region, "--output", "json", "--no-cli-pager"];
+/** The unit's tags as the CLI's shorthand, in key order; exactly the three unit keys, or a code (the shape above refuses anything else anyway). */
+function tagArgsOf(unit: PilotUnit): string[] {
+  const keys = Object.keys(unit.tags).sort();
+  if (keys.join() !== [...UNIT_TAG_KEYS].sort().join()) return stop("UNIT_TAGS_INVALID");
+  return keys.map((key) => "Key=" + key + ",Value=" + unit.tags[key]);
+}
+/** The hash of a change set's tags as CloudFormation reports them, key order aside; the seal binds it and the apply requires it. */
+const tagsSha256Of = (tags: readonly { key: string; value: string }[]): string => sha256(canonicalJson([...tags].sort((a, b) => byText(a.key, b.key))));
 const waitArgv = (arn: string, region: string): string[] => ["cloudformation", "wait", "change-set-create-complete", "--change-set-name", arn, "--region", region, "--no-cli-pager"];
 const describeChangeSetArgv = (arn: string, region: string): string[] => ["cloudformation", "describe-change-set", "--change-set-name", arn, "--region", region, "--output", "json", "--no-cli-pager"];
 const getTemplateArgv = (arn: string, region: string): string[] => ["cloudformation", "get-template", "--change-set-name", arn, "--template-stage", "Original", "--region", region, "--output", "json", "--no-cli-pager"];
@@ -326,6 +347,8 @@ const ROLLED_BACK = new Set(["ROLLBACK_COMPLETE", "UPDATE_ROLLBACK_COMPLETE"]);
 type ChangeView = {
   id: string; stackId: string; stackName: string; status: string; execution: string; capabilities: string[];
   parametersSha256: string; changes: PlanChange[]; changesSha256: string;
+  /** The stack tags the change set carries (UNVERIFIED (8): `Tags[].Key/Value`), and their hash. */
+  tags: { key: string; value: string }[]; tagsSha256: string;
 };
 
 const ACTIONS: Readonly<Record<string, string>> = { Add: "CREATE", Modify: "UPDATE", Remove: "DELETE", Import: "IMPORT", Dynamic: "DYNAMIC" };
@@ -354,10 +377,13 @@ function readChangeSet(session: Session, arn: string, region: string): ChangeVie
     .map((parameter) => (isRecord(parameter) ? { key: str(parameter.ParameterKey, "CHANGE_SET_UNREADABLE"), value: parameter.ParameterValue ?? null, resolved: parameter.ResolvedValue ?? null } : stop("CHANGE_SET_UNREADABLE")))
     .sort((a, b) => byText(a.key, b.key));
   const changes = document.Changes.map(changeOf).sort((a, b) => byText(a.address + "\0" + a.type, b.address + "\0" + b.type));
+  const tags = (document.Tags === undefined ? [] : Array.isArray(document.Tags) ? document.Tags : stop("CHANGE_SET_UNREADABLE"))
+    .map((tag) => (isRecord(tag) ? { key: str(tag.Key, "CHANGE_SET_UNREADABLE"), value: str(tag.Value, "CHANGE_SET_UNREADABLE") } : stop("CHANGE_SET_UNREADABLE")))
+    .sort((a, b) => byText(a.key, b.key));
   return {
     id: str(document.ChangeSetId, "CHANGE_SET_UNREADABLE"), stackId: str(document.StackId, "CHANGE_SET_UNREADABLE"), stackName: str(document.StackName, "CHANGE_SET_UNREADABLE"),
     status: str(document.Status, "CHANGE_SET_UNREADABLE"), execution: str(document.ExecutionStatus, "CHANGE_SET_UNREADABLE"), capabilities,
-    parametersSha256: sha256(canonicalJson(parameters)), changes, changesSha256: sha256(canonicalJson(changes)),
+    parametersSha256: sha256(canonicalJson(parameters)), changes, changesSha256: sha256(canonicalJson(changes)), tags, tagsSha256: tagsSha256Of(tags),
   };
 }
 
@@ -372,10 +398,12 @@ type SealedRecord = {
   schemaVersion: 1; kind: "CDK_CHANGE_SET"; account: string; region: string; stackName: string; stackId: string;
   changeSetId: string; changeSetName: string; changeSetType: "CREATE" | "UPDATE"; templateFile: string; templateSha256: string;
   parametersSha256: string; capabilities: string[]; changeListSha256: string; stackSha256: string;
+  /** The deletion unit's stack tags the change set carries, by hash; the unit itself is in the sealed plan the approvers sign. */
+  tagsSha256: string;
 };
 const RECORD_KEYS = [
   "schemaVersion", "kind", "account", "region", "stackName", "stackId", "changeSetId", "changeSetName", "changeSetType", "templateFile", "templateSha256",
-  "parametersSha256", "capabilities", "changeListSha256", "stackSha256",
+  "parametersSha256", "capabilities", "changeListSha256", "stackSha256", "tagsSha256",
 ];
 const HEX = /^[0-9a-f]{64}$/;
 
@@ -388,7 +416,7 @@ function parseRecord(artifact: Buffer, pinned: AwsTarget): SealedRecord {
     record.account !== pinned.accountId || record.region !== region || record.stackName !== pinned.backend ||
     !arn("stack", new RegExp(pinned.backend)).test(record.stackId) || !arn("changeSet", /alz-[0-9a-f]{12}/).test(record.changeSetId) ||
     !/^alz-[0-9a-f]{12}$/.test(record.changeSetName) || record.changeSetId.split("/")[1] !== record.changeSetName || !["CREATE", "UPDATE"].includes(record.changeSetType) || !REL_PATH.test(record.templateFile) || climbs(record.templateFile) ||
-    ![record.templateSha256, record.parametersSha256, record.changeListSha256, record.stackSha256].every((h) => HEX.test(h)) ||
+    ![record.templateSha256, record.parametersSha256, record.changeListSha256, record.stackSha256, record.tagsSha256].every((h) => HEX.test(h)) ||
     !Array.isArray(record.capabilities) || !record.capabilities.every((c) => (CAPABILITIES as readonly string[]).includes(c))) {
     return stop("ARTIFACT_TAMPERED");
   }
@@ -416,7 +444,7 @@ function describeSealed(session: Session, artifact: Buffer, pinned: AwsTarget): 
   const view = readChangeSet(session, record.changeSetId, record.region);
   if (view.id !== record.changeSetId || view.stackId !== record.stackId || view.stackName !== record.stackName) stop("ARTIFACT_TAMPERED");
   if (view.status !== "CREATE_COMPLETE" || view.execution !== "AVAILABLE") stop("PLAN_STALE");
-  if (!sameList(view.capabilities, record.capabilities) || view.parametersSha256 !== record.parametersSha256 || view.changesSha256 !== record.changeListSha256) stop("ARTIFACT_TAMPERED");
+  if (!sameList(view.capabilities, record.capabilities) || view.parametersSha256 !== record.parametersSha256 || view.changesSha256 !== record.changeListSha256 || view.tagsSha256 !== record.tagsSha256) stop("ARTIFACT_TAMPERED");
   return { record, changes: view.changes };
 }
 
@@ -428,7 +456,7 @@ function describeSealed(session: Session, artifact: Buffer, pinned: AwsTarget): 
  * records the stack it was made against, and returns the record and the change list. Executes nothing and deletes
  * nothing: a change set that is not sealed stays for a person to clear.
  */
-function plan(input: EngineContext & { snapshotPath: string; engineVersion: string }): { artifact: Buffer; changes: PlanChange[]; unit: null } {
+function plan(input: EngineContext & { snapshotPath: string; engineVersion: string; unit: PilotUnit }): { artifact: Buffer; changes: PlanChange[]; unit: SealedUnit } {
   const pinned = input.pinned as AwsTarget;
   const session = openSession({ ...input, hide: APPLIER, adapter: "preview" });
   try {
@@ -446,8 +474,11 @@ function plan(input: EngineContext & { snapshotPath: string; engineVersion: stri
     }
     // Only a template with an IAM resource is given the contract's IAM capabilities; a template without one is given none.
     const capabilities = assembly.needsIam ? [...(pinned.capabilities ?? [])].sort() : [];
+    // The deletion unit as stack tags (UNVERIFIED (8): CloudFormation stamps them on every resource of the stack that takes tags), so the
+    // observation and the leftover check can sweep by the run's unit. The template itself is never edited.
+    const tags = tagArgsOf(input.unit);
     const name = "alz-" + randomBytes(6).toString("hex");
-    const created = parse(session.ok("CHANGESET", createArgv({ stack: assembly.stackName, name, type, template: assembly.templateFile, capabilities, region })), "CHANGE_SET_UNREADABLE");
+    const created = parse(session.ok("CHANGESET", createArgv({ stack: assembly.stackName, name, type, template: assembly.templateFile, capabilities, tags, region })), "CHANGE_SET_UNREADABLE");
     const changeSetId = isRecord(created) ? str(created.Id, "CHANGE_SET_UNREADABLE") : stop("CHANGE_SET_UNREADABLE");
     const stackId = isRecord(created) ? str(created.StackId, "CHANGE_SET_UNREADABLE") : stop("CHANGE_SET_UNREADABLE");
     // The account and region of what was created are the contract's: the CHANGESET role really acted in the target.
@@ -470,16 +501,19 @@ function plan(input: EngineContext & { snapshotPath: string; engineVersion: stri
     // CloudFormation reports no capability that was not passed.
     if (view.capabilities.some((capability) => !capabilities.includes(capability))) stop("CAPABILITY_NOT_IN_CONTRACT");
     if (changeSetTemplateSha256(session, changeSetId, region) !== assembly.canonicalSha256) stop("CHANGE_SET_TEMPLATE_MISMATCH");
+    // CloudFormation reports exactly the unit's tags: no tag dropped, none added, none with another value.
+    if (view.tags.map((tag) => "Key=" + tag.key + ",Value=" + tag.value).join("\n") !== [...tags].sort().join("\n")) stop("CHANGE_SET_TAGS_MISMATCH");
     // The stack the change set was made against, as the apply must find it again (UNVERIFIED (4): that creating a change set does not change it).
     const against = readStack(session, "DISCOVERY", assembly.stackName, region);
     if (against === undefined || against.id !== stackId) stop("CHANGE_SET_MISMATCH");
     const record: SealedRecord = {
       schemaVersion: 1, kind: "CDK_CHANGE_SET", account: pinned.accountId, region, stackName: assembly.stackName, stackId, changeSetId, changeSetName: name, changeSetType: type,
       templateFile: assembly.templateFile, templateSha256: assembly.templateSha256, parametersSha256: view.parametersSha256, capabilities: view.capabilities, changeListSha256: view.changesSha256,
-      stackSha256: against!.fingerprint,
+      stackSha256: against!.fingerprint, tagsSha256: view.tagsSha256,
     };
-    // The change set view carries no tags, so the CDK engine seals no unit: its leftovers stay KNOWN_ADDRESSES_CONFIRMED at best.
-    return { artifact: Buffer.from(canonicalJson(record)), changes: view.changes, unit: null };
+    // The unit the stack tags carry. `untagged` is empty because stack tags reach every resource type that takes tags (UNVERIFIED (8));
+    // which types take none is CloudFormation's knowledge, not this engine's, and such a resource stays traceable through the stack's own resource list.
+    return { artifact: Buffer.from(canonicalJson(record)), changes: view.changes, unit: { unitId: input.unit.unitId, tags: { ...input.unit.tags }, untagged: [] } };
   } finally {
     removeTree(session.work);
   }
@@ -637,6 +671,11 @@ function openApply(input: EngineRunInput): EngineApplyRun {
     },
     recoveryFiles: () => [],
     removeSecrets: () => undefined,
+    // What the stack holds after the run, logical id to physical id, read once as DISCOVERY (UNVERIFIED (9)). The driver maps it to
+    // identifiers (src/observe/blueprint.ts) and drops it; a read that fails leaves no blueprint, and a later cleanup is refused for want of one.
+    stateDocument(): StateDocument | undefined {
+      try { return { source: "CLOUDFORMATION_STACK_RESOURCES", document: session.ok("DISCOVERY", resourcesArgv(pinned.backend, region)) }; } catch { return undefined; }
+    },
   };
 }
 

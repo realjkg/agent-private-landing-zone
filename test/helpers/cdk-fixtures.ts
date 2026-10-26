@@ -66,6 +66,16 @@ export type AwsBehavior = {
   /** Plants this text in stderr of a failing step. */
   failStderr?: string;
   killPath?: string;
+  /** describe-change-set reports these tags (Key=k,Value=v) instead of the ones create-change-set was given. */
+  swapTags?: string[];
+  /** describe-stack-resources fails, or lists an extra resource the template never had (someone else's), or a nested stack. */
+  resourcesFail?: boolean; resourcesExtra?: boolean; resourcesNested?: boolean;
+  /** Physical ids the stack reports for these logical ids, instead of the fake's derived ones. */
+  physicalIds?: Record<string, string>;
+  /** cloudcontrol get-resource: these identifiers are absent whatever the stack holds; these fail with the given stderr. */
+  absent?: string[]; readFail?: Record<string, string>;
+  /** resourcegroupstaggingapi lists these extra ARNs under the unit, or fails. */
+  stray?: string[]; taggingFail?: boolean;
 };
 
 const FAKE = `#!${process.execPath}
@@ -89,6 +99,49 @@ if (b.stackExists && !a.seeded) {
   a.stack = { id: stackArn(${JSON.stringify(STACK)}), status: b.stackStatus || "UPDATE_COMPLETE", protection: b.termination !== false, created: "2026-01-01T00:00:00.000Z", updated: "2026-10-11T11:00:00.000Z" };
 }
 if (args[0] === "--version") { log({}); process.stdout.write("aws-cli/" + b.version + " Python/3.11.6 Linux/6.1.0 exe/x86_64.ubuntu.22\\n"); process.exit(0); }
+// What the stack holds once a change set was executed to completion: logical id, type, physical id (derived per type the way CloudFormation names them, from memory) and ARN.
+const stackResources = () => {
+  if (!a.changeSet || !a.executing || !/_COMPLETE$/.test(a.stack.status) || /ROLLBACK/.test(a.stack.status)) return [];
+  const rows = [];
+  for (const [logical, resource] of Object.entries(a.changeSet.template.Resources || {})) {
+    const type = resource.Type;
+    const given = (b.physicalIds || {})[logical];
+    const physical = given !== undefined ? given
+      : type === "AWS::SNS::Topic" ? "arn:aws:sns:" + region + ":" + account + ":" + a.changeSet.stackName + "-" + logical + "-FAKE1"
+      : type === "AWS::S3::Bucket" ? (a.changeSet.stackName + "-" + logical + "-fake1").toLowerCase()
+      : type === "AWS::IAM::Role" ? a.changeSet.stackName + "-" + logical + "-FAKE1"
+      : type === "AWS::SQS::Queue" ? "https://sqs." + region + ".amazonaws.com/" + account + "/" + a.changeSet.stackName + "-" + logical + "-FAKE1"
+      : a.changeSet.stackName + "-" + logical + "-fake1";
+    const arn = physical.startsWith("arn:") ? physical
+      : type === "AWS::S3::Bucket" ? "arn:aws:s3:::" + physical
+      : type === "AWS::IAM::Role" ? "arn:aws:iam::" + account + ":role/" + physical
+      : type === "AWS::SQS::Queue" ? "arn:aws:sqs:" + region + ":" + account + ":" + physical.split("/").pop()
+      : type === "AWS::Logs::LogGroup" ? "arn:aws:logs:" + region + ":" + account + ":log-group:" + physical
+      : "arn:aws:fake:" + region + ":" + account + ":" + type.split("::")[2].toLowerCase() + "/" + physical;
+    rows.push({ logical, type, physical, arn });
+  }
+  if (b.resourcesExtra) rows.push({ logical: "SomeoneElsesQueue", type: "AWS::SQS::Queue", physical: "https://sqs." + region + ".amazonaws.com/" + account + "/someone-elses", arn: "arn:aws:sqs:" + region + ":" + account + ":someone-elses" });
+  if (b.resourcesNested) rows.push({ logical: "NestedLater", type: "AWS::CloudFormation::Stack", physical: "arn:aws:cloudformation:" + region + ":" + account + ":stack/nested/0000", arn: "arn:aws:cloudformation:" + region + ":" + account + ":stack/nested/0000" });
+  return rows;
+};
+// The read-only verifier's two calls (src/observe/aws-cli.ts), so one fake serves the engine and the independent reader.
+if (args[0] === "cloudcontrol" && args[1] === "get-resource") {
+  log({});
+  const identifier = arg("--identifier");
+  if (b.readFail && b.readFail[identifier]) fail(b.readFail[identifier]);
+  const found = stackResources().find((r) => r.physical === identifier) && !(b.absent || []).includes(identifier);
+  if (!found) fail("An error occurred (ResourceNotFoundException) when calling the GetResource operation: not found");
+  process.stdout.write(JSON.stringify({ TypeName: arg("--type-name"), ResourceDescription: { Identifier: identifier, Properties: JSON.stringify({ Secret: "CANARY_CLOUD_PROPERTY_c5", Note: ${JSON.stringify(TEMPLATE_CANARY)} }) } }));
+  process.exit(0);
+}
+if (args[0] === "resourcegroupstaggingapi") {
+  log({});
+  if (b.taggingFail) fail("An error occurred (AccessDeniedException) when calling the GetResources operation: " + (b.failStderr || "not authorized"));
+  const unit = /Values=(.*)$/.exec(arg("--tag-filters") || "")?.[1];
+  const tagged = a.changeSet && (a.changeSet.tags || []).includes("Key=alz-unit,Value=" + unit) ? stackResources().map((r) => r.arn) : [];
+  process.stdout.write(JSON.stringify({ ResourceTagMappingList: [...tagged, ...(b.stray || [])].map((arn) => ({ ResourceARN: arn, Tags: [{ Key: "alz-unit", Value: unit }] })) }));
+  process.exit(0);
+}
 if (args[0] !== "cloudformation") { log({ unexpected: true }); process.exit(2); }
 const cmd = args[1];
 if (b.touchKillOn === cmd) fs.writeFileSync(b.killPath, "stop");
@@ -126,7 +179,9 @@ else if (cmd === "create-change-set") {
     if (!a.stack) a.stack = { id: stackArn(name), status: "REVIEW_IN_PROGRESS", protection: false, created: "2026-10-11T11:30:00.000Z", updated: undefined };
   } else if (!a.stack) fail("An error occurred (ValidationError) when calling the CreateChangeSet operation: Stack does not exist");
   const csName = arg("--change-set-name");
-  a.changeSet = { id: "arn:aws:cloudformation:" + region + ":" + (b.arnAccount || account) + ":changeSet/" + csName + "/" + crypto.randomUUID(), name: csName, stackId: a.stack.id, stackName: name, capabilities, template: JSON.parse(template) };
+  const tagAt = args.indexOf("--tags");
+  const tags = []; if (tagAt >= 0) for (let i = tagAt + 1; i < args.length && !args[i].startsWith("--"); i++) tags.push(args[i]);
+  a.changeSet = { id: "arn:aws:cloudformation:" + region + ":" + (b.arnAccount || account) + ":changeSet/" + csName + "/" + crypto.randomUUID(), name: csName, stackId: a.stack.id, stackName: name, capabilities, tags, template: JSON.parse(template) };
   a.type = type; a.executing = false; a.attempted = false;
   save();
   process.stdout.write(JSON.stringify({ Id: a.changeSet.id, StackId: a.stack.id }));
@@ -151,6 +206,7 @@ else if (cmd === "describe-change-set") {
     Status: b.changeSetStatus || "CREATE_COMPLETE", ExecutionStatus: b.executionStatus || execution,
     ...(b.statusReason ? { StatusReason: b.statusReason } : {}), ...(b.nextToken ? { NextToken: "page-2" } : {}),
     Capabilities: b.echoCapabilities || a.changeSet.capabilities, Parameters: [{ ParameterKey: "DbPassword", ParameterValue: "****", ResolvedValue: ${JSON.stringify(PARAMETER_CANARY)} }], Changes: changes,
+    Tags: (b.swapTags || a.changeSet.tags || []).map((tag) => { const m = /^Key=([^,]*),Value=(.*)$/.exec(tag); return { Key: m[1], Value: m[2] }; }),
   }));
 }
 else if (cmd === "execute-change-set") {
@@ -175,6 +231,15 @@ else if (cmd === "describe-stack-events") {
   const events = [{ EventId: "e0", ResourceType: "AWS::CloudFormation::Stack", Timestamp: "2026-10-11T11:00:00.000Z", ResourceStatus: "UPDATE_COMPLETE" }];
   if (b.eventsTouched) events.unshift({ EventId: "e1", ResourceType: "AWS::S3::Bucket", LogicalResourceId: "PilotBucket", Timestamp: "2026-10-11T12:01:00.000Z", ResourceStatus: "UPDATE_COMPLETE", ResourceStatusReason: ${JSON.stringify(EVENT_CANARY)} });
   process.stdout.write(JSON.stringify({ StackEvents: events }));
+}
+else if (cmd === "describe-stack-resources") {
+  log({});
+  if (b.resourcesFail) fail("An error occurred (AccessDenied) when calling the DescribeStackResources operation: " + (b.failStderr || "not authorized"));
+  if (!a.stack) fail("An error occurred (ValidationError) when calling the DescribeStackResources operation: Stack with id " + arg("--stack-name") + " does not exist");
+  process.stdout.write(JSON.stringify({ StackResources: stackResources().map((r) => ({
+    StackName: a.changeSet.stackName, StackId: a.stack.id, LogicalResourceId: r.logical, PhysicalResourceId: r.physical, ResourceType: r.type, Timestamp: "2026-10-11T12:02:00.000Z",
+    ResourceStatus: "CREATE_COMPLETE", ResourceStatusReason: ${JSON.stringify(EVENT_CANARY)}, DriftInformation: { StackResourceDriftStatus: "NOT_CHECKED" },
+  })) }));
 }
 else if (cmd === "cancel-update-stack") {
   log({});
