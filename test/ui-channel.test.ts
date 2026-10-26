@@ -1383,7 +1383,7 @@ async function prepareAndSealCdkInConsole(port: number, project: Project, target
   return { prepared: data, sealed, unit };
 }
 
-test("AWS CDK in the console: prepare from the cdk.out folder, preview the change set, approve and execute it, observe what the stack created through Cloud Control and the unit sweep, and propose and review the cleanup, through the real router, service and adapter", async () => {
+test("AWS CDK in the console: prepare from the cdk.out folder, preview the change set, approve and execute it, observe what the stack created through Cloud Control and the unit sweep, propose and approve the cleanup, remove exactly that list through a removal change set that never deletes the stack, and verify it is gone, through the real router, service and adapter", async () => {
   const { port, target, project } = await cdkConsoleJourney();
   const { prepared, sealed, unit } = await prepareAndSealCdkInConsole(port, project, target);
   const reviewed = (await call(port, "POST", "/pilot/review", { body: { bundlePath: sealed.bundle } })).body;

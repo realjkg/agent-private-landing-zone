@@ -52,7 +52,7 @@ None.
 | `lifecycle:uninstall` | lifecycle | ENGINEERING | Run this lifecycle step for real on a disposable host with the candidate archive and record data integrity and rollback evidence. |
 | `lifecycle:configuration-migration` | lifecycle | ENGINEERING | Run this lifecycle step for real on a disposable host with the candidate archive and record data integrity and rollback evidence. |
 | `platform:linux-x64` | lifecycle | ENGINEERING | Lane A: run install, launch, uninstall, repeat uninstall, partial-install recovery, unusual paths and unrelated-file preservation in a disposable linux-x64 container; this counts for linux-x64 only. |
-| `act:aws-cdk` | live ACT | ENGINEERING | Prepare, preview, approve, execute and observe exist for the AWS CDK row in the console with synthetic tests (stack tags carry the unit; the blueprint is CloudFormation's resource list; Cloud Control reads by CloudFormation type). Build the cleanup step (a removal change set that never deletes the stack) and its leftover check, then qualify on the real DEV account. |
+| `act:aws-cdk` | live ACT | ENGINEERING | The AWS CDK row is implemented end to end in the console with synthetic tests (stack tags carry the unit; CloudFormation's resource list is the blueprint; Cloud Control reads by CloudFormation type; cleanup is a removal change set that never deletes the stack). Qualify the three adapters on the real DEV account, then run the supervised DEV lifecycle. |
 
 ## Out of scope (9)
 

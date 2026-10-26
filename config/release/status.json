@@ -461,7 +461,7 @@
         "the pilot contract or its pin changes",
         "src/apply or the CDK pin changes"
       ],
-      "nextAction": "Prepare, preview, approve, execute and observe exist for the AWS CDK row in the console with synthetic tests (stack tags carry the unit; the blueprint is CloudFormation's resource list; Cloud Control reads by CloudFormation type). Build the cleanup step (a removal change set that never deletes the stack) and its leftover check, then qualify on the real DEV account."
+      "nextAction": "The AWS CDK row is implemented end to end in the console with synthetic tests (stack tags carry the unit; CloudFormation's resource list is the blueprint; Cloud Control reads by CloudFormation type; cleanup is a removal change set that never deletes the stack). Qualify the three adapters on the real DEV account, then run the supervised DEV lifecycle."
     },
     {
       "gate": "act-run-recovery",
