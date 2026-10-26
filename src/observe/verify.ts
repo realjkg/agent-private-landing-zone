@@ -31,6 +31,20 @@ export const CLOUD_CONTROL_TYPES: Readonly<Record<string, { typeName: string; id
   aws_security_group: { typeName: "AWS::EC2::SecurityGroup", identifier: "id" },
 };
 
+/**
+ * The same reader for a CloudFormation-typed blueprint entry (the CDK engine, whose addresses are logical ids and whose
+ * types are CloudFormation types): a type the table above names is read under its own type name with the physical id the
+ * stack reported as the identifier. UNVERIFIED (9, src/apply/engines/cdk.ts): that the physical id is the Cloud Control
+ * primary identifier for each of these types. A CloudFormation type the table does not name is NOT_CHECKABLE, never assumed.
+ */
+const CLOUD_CONTROL_TYPE_NAMES = new Map(Object.values(CLOUD_CONTROL_TYPES).map((mapping) => [mapping.typeName, mapping]));
+export function cloudControlMappingOf(type: string): { typeName: string; identifier: "id" | "arn"; pendingDeletion?: { property: string; value: string } } | undefined {
+  const byTerraformType = CLOUD_CONTROL_TYPES[type];
+  if (byTerraformType) return byTerraformType;
+  const byTypeName = CLOUD_CONTROL_TYPE_NAMES.get(type);
+  return byTypeName ? { typeName: byTypeName.typeName, identifier: "id", ...(byTypeName.pendingDeletion ? { pendingDeletion: byTypeName.pendingDeletion } : {}) } : undefined;
+}
+
 /** One AWS CLI call. The caller supplies it, bound to the DISCOVERY identity and the bounded runner. */
 export type AwsCli = (argv: readonly string[]) => Promise<{ code: number; stdout: string; stderr: string }>;
 
@@ -110,7 +124,7 @@ const errorClass = (stderr: string): string => ERROR_CLASSES.find(([pattern]) =>
 /** Whether one blueprint entry exists in AWS. */
 export async function checkResource(entry: BlueprintEntry, region: string, aws: AwsCli): Promise<ResourceCheck> {
   const base = { address: entry.address, type: entry.type };
-  const mapping = CLOUD_CONTROL_TYPES[entry.type];
+  const mapping = cloudControlMappingOf(entry.type);
   if (!mapping) return { ...base, identifier: entry.arn ?? entry.id, existence: "NOT_CHECKABLE", reason: "NO_CLOUD_CONTROL_MAPPING" };
   const identifier = mapping.identifier === "arn" ? entry.arn : entry.id;
   if (identifier === null) return { ...base, identifier: null, existence: "NOT_CHECKABLE", reason: "NO_IDENTIFIER_IN_STATE" };

@@ -16,6 +16,12 @@ import { openNonceStore } from "../src/apply/nonces.js";
 import { AWS } from "../src/apply/providers/aws.js";
 import { loadSealedPlan, reviewBundleOf } from "../src/apply/seal.js";
 import { APPLY_IDENTITIES, type ApplyEnvironment, type ApplyEvidence, type ApplyResult, type PilotContract, type SignedApproval } from "../src/apply/types.js";
+import { buildCleanupProposal, verifyCleanupProposal } from "../src/apply/cleanup-proposal.js";
+import { loadRunRecords, observeRun, type ObserveDeps } from "../src/apply/observe.js";
+import { readBlueprintRecord } from "../src/apply/run-records.js";
+import { runCleanup } from "../src/apply/driver.js";
+import { canonicalJson } from "../src/teardown/manifest.js";
+import { sha256 } from "../src/util/sha256.js";
 import { runApplyCommand, type ApplyCliDeps } from "../src/cli/apply.js";
 import { targetString } from "../src/cli/teardown-driver.js";
 import { removeTree } from "../src/teardown/driver/cleanup.js";
@@ -266,8 +272,10 @@ test("every CDK role names the contract's account and region; CHANGESET is a mut
 
 const ARN_CS = "arn:aws:cloudformation:us-east-1:111111111111:changeSet/alz-0123456789ab/11111111-2222-3333-4444-555555555555";
 const COMMON = ["--region", "us-east-1", "--output", "json", "--no-cli-pager"];
-const create = (caps: string[] = []) => ["cloudformation", "create-change-set", "--stack-name", STACK, "--change-set-name", "alz-0123456789ab", "--change-set-type", "UPDATE",
-  "--template-body", "file://PilotStack.template.json", ...(caps.length ? ["--capabilities", ...caps] : []), ...COMMON];
+/** The deletion unit's three stack tags, as the CLI's shorthand (src/apply/unit.ts; the engine passes exactly these keys). */
+const UNIT_TAGS = ["Key=alz-build,Value=alzb-0123456789abcdef0123", "Key=alz-managed-by,Value=alz", "Key=alz-unit,Value=alzu-0123456789abcdef0123"];
+const create = (caps: string[] = [], tags: string[] = UNIT_TAGS) => ["cloudformation", "create-change-set", "--stack-name", STACK, "--change-set-name", "alz-0123456789ab", "--change-set-type", "UPDATE",
+  "--template-body", "file://PilotStack.template.json", ...(caps.length ? ["--capabilities", ...caps] : []), "--tags", ...tags, ...COMMON];
 const EXECUTE = ["cloudformation", "execute-change-set", "--change-set-name", ARN_CS, "--region", "us-east-1", "--no-cli-pager"];
 
 test("each identity may run only its own argument lists: CHANGESET cannot execute, APPLY cannot create, and nothing deletes", () => {
@@ -297,6 +305,17 @@ test("each identity may run only its own argument lists: CHANGESET cannot execut
   assert.equal(isAllowedCdkArgv("APPLY", EXECUTE.map((a) => a.replace("us-east-1", "us-east-1 --profile x"))), false);
   assert.equal(isAllowedCdkArgv("APPLY", [...EXECUTE, "--profile", "operator"]), false);
   assert.equal(isAllowedCdkArgv("APPLY", EXECUTE.map((a) => a.replace(ARN_CS, "alz-0123456789ab"))), false, "a change set is named by its ARN");
+  // The stack tags are the deletion unit's three and nothing else: no tag dropped, no fourth, no other key, no value outside the tag-safe shape.
+  assert.equal(isAllowedCdkArgv("CHANGESET", create([], [])), false, "a change set without the unit's tags");
+  assert.equal(isAllowedCdkArgv("CHANGESET", create([], UNIT_TAGS.slice(0, 2))), false, "a dropped tag");
+  assert.equal(isAllowedCdkArgv("CHANGESET", create([], [...UNIT_TAGS, "Key=alz-expires,Value=2026-12-31"])), false, "a fourth tag");
+  assert.equal(isAllowedCdkArgv("CHANGESET", create([], [...UNIT_TAGS.slice(0, 2), "Key=owner,Value=alice"])), false, "another key");
+  assert.equal(isAllowedCdkArgv("CHANGESET", create([], [...UNIT_TAGS.slice(0, 2), "Key=alz-unit,Value=../x"])), false, "a value outside the tag-safe shape");
+  // The blueprint's read is DISCOVERY's alone, on the apply surface.
+  const resources = ["cloudformation", "describe-stack-resources", "--stack-name", STACK, ...COMMON];
+  assert.equal(isAllowedCdkArgv("DISCOVERY", resources), true);
+  for (const who of [null, "CHANGESET", "APPLY"] as const) assert.equal(isAllowedCdkArgv(who, resources), false, String(who) + " cannot read the stack's resources");
+  assert.equal(isAllowedCdkArgv("DISCOVERY", resources, "preview"), false, "sealing reads no resources");
 });
 
 // --- the full path, in order ------------------------------------------------------------------------
@@ -320,8 +339,16 @@ test("a DEV, QA and PROD promotion seals a change set per account and executes e
     assert.equal(record.changeSetType, "CREATE");
     assert.match(String(record.changeSetId), new RegExp("^arn:aws:cloudformation:us-east-1:" + cdkTargetOf(environment).account + ":changeSet/alz-[0-9a-f]{12}/"));
     assert.match(String(record.stackId), /^arn:aws:cloudformation:us-east-1:\d{12}:stack\/PilotStack\//);
-    for (const field of ["templateSha256", "parametersSha256", "changeListSha256", "stackSha256"]) assert.match(String(record[field]), /^[0-9a-f]{64}$/, field);
+    for (const field of ["templateSha256", "parametersSha256", "changeListSha256", "stackSha256", "tagsSha256"]) assert.match(String(record[field]), /^[0-9a-f]{64}$/, field);
     assert.deepEqual(record.capabilities, []);
+    // The deletion unit rides on the change set as stack tags, and the sealed plan carries the unit the approvers sign.
+    const created = sealCalls.find((call) => call.args[1] === "create-change-set")!;
+    const tagArgs = created.args.slice(created.args.indexOf("--tags") + 1, created.args.indexOf("--region"));
+    assert.ok(s.sealed.unit, "the CDK seal carries the unit");
+    assert.deepEqual(tagArgs, Object.entries(s.sealed.unit!.tags).sort(([a], [b]) => (a < b ? -1 : 1)).map(([key, value]) => "Key=" + key + ",Value=" + value));
+    assert.deepEqual(Object.keys(s.sealed.unit!.tags).sort(), ["alz-build", "alz-managed-by", "alz-unit"]);
+    assert.equal(s.sealed.unit!.tags["alz-unit"], s.sealed.unit!.unitId);
+    assert.deepEqual(s.sealed.unit!.untagged, []);
     assert.deepEqual(s.sealed.changes, [
       { address: "PilotBucket", type: "AWS::S3::Bucket", action: "CREATE" },
       { address: "PilotTopic", type: "AWS::SNS::Topic", action: "REPLACE" },
@@ -333,8 +360,9 @@ test("a DEV, QA and PROD promotion seals a change set per account and executes e
     const result = await run(w, s);
     assert.ok(result.ok, environment + " " + JSON.stringify(result));
     const applyCalls = calls().slice(applyFrom);
-    assert.deepEqual(subcommandsOf(applyCalls), ["--version", "describe-stacks", "describe-change-set", "get-template", "describe-stacks", "execute-change-set", "describe-stacks", "describe-stacks", "describe-change-set"]);
-    assert.deepEqual(applyCalls.map(roleOf).slice(1), ["alz-apply-", "alz-changeset-", "alz-changeset-", "alz-apply-", "alz-apply-", "alz-apply-", "alz-apply-", "alz-changeset-"].map((r) => r + environment.toLowerCase()));
+    // After the execution the stack's resources are read once as DISCOVERY for the blueprint (src/observe/blueprint.ts), and nothing else runs.
+    assert.deepEqual(subcommandsOf(applyCalls), ["--version", "describe-stacks", "describe-change-set", "get-template", "describe-stacks", "execute-change-set", "describe-stacks", "describe-stacks", "describe-change-set", "describe-stack-resources"]);
+    assert.deepEqual(applyCalls.map(roleOf).slice(1), ["alz-apply-", "alz-changeset-", "alz-changeset-", "alz-apply-", "alz-apply-", "alz-apply-", "alz-apply-", "alz-changeset-", "alz-discovery-"].map((r) => r + environment.toLowerCase()));
     const execute = applyCalls.filter((call) => call.args[1] === "execute-change-set");
     assert.equal(execute.length, 1);
     assert.deepEqual(execute[0].args, ["cloudformation", "execute-change-set", "--change-set-name", String(record.changeSetId), "--region", "us-east-1", "--no-cli-pager"]);
@@ -771,6 +799,7 @@ test("an adapter's session may run only that adapter's lists: the apply cannot c
   assert.equal(isAllowedCdkArgv("CHANGESET", create(), "preview"), true);
   assert.equal(isAllowedCdkArgv("CHANGESET", create(), "apply"), false);
   assert.equal(isAllowedCdkArgv("DISCOVERY", ["cloudformation", "describe-stacks", "--stack-name", STACK, ...COMMON], "apply"), false);
+  assert.equal(isAllowedCdkArgv("DISCOVERY", ["cloudformation", "describe-stack-resources", "--stack-name", STACK, ...COMMON], "apply"), true, "the blueprint's read is on the apply surface");
   assert.equal(isAllowedCdkArgv("APPLY", EXECUTE, "apply"), true);
   assert.equal(isAllowedCdkArgv("APPLY", EXECUTE, "preview"), false);
   assert.equal(isAllowedCdkArgv("CHANGESET", ["cloudformation", "describe-change-set", "--change-set-name", ARN_CS, ...COMMON], "apply"), true);
@@ -977,4 +1006,139 @@ test("./alz apply works for the engine the pinned contract names, with no engine
   assert.equal(evidence.outcome, "SUCCEEDED");
   noCanary(applied.out);
   assert.equal(calls().filter((call) => call.args[1] === "execute-change-set").length, 1);
+});
+
+// --- observe and the cleanup proposal (docs/observe-and-cleanup.md, "CloudFormation") ---------------------------------------
+
+/** The observe step's dependencies for a world: the same contract, ledger and fake `aws`, read as DISCOVERY through the runner. */
+const observeDepsOf = (w: World, environment: ApplyEnvironment = "DEV"): ObserveDeps => ({
+  contractPath: w.contractPath, contractPinPath: pinPathOf(w.contractPath), evidenceDir: w.dirs.evidence, env: cdkIdentityEnv(environment), toolDirs: [toolDir], scratchParent: w.dirs.scratch, now: () => new Date(NOW.getTime() + 60_000),
+});
+const BUCKET_ID = "pilotstack-pilotbucket-fake1";
+const TOPIC_ARN = "arn:aws:sns:us-east-1:111111111111:PilotStack-PilotTopic-FAKE1";
+
+test("after a CDK apply the blueprint is CloudFormation's own resource list, read once as DISCOVERY: logical ids, physical ids, ARNs derived for the known types, the stack tags' unit, and nothing else; observe reads each resource back through Cloud Control and sweeps by the unit; the proposal lists exactly the run-created resources by logical id, keeps the pilot's role and a nested stack, and says the stack itself is never deleted", async () => {
+  // The pilot's own APPLY role appears in the template under its real name, so the proposal must keep it; the SNS physical id is an ARN.
+  const w = world({}, cdkContractJson(KILL, ["CAPABILITY_IAM"]), { physicalIds: { PilotRole: "alz-apply-dev" } });
+  const s = await seal(w, "DEV", { iam: true });
+  const result = await run(w, s);
+  assert.ok(result.ok, JSON.stringify(result));
+  const applyEvidenceSha256 = sha256(canonicalJson(result.evidence as never));
+  const blueprint = await readBlueprintRecord(s.sealed.artifactSha256, applyEvidenceSha256, w.dirs.evidence);
+  assert.ok(blueprint, "the apply left a blueprint");
+  assert.equal(blueprint.source, "CLOUDFORMATION_STACK_RESOURCES");
+  assert.equal(blueprint.unitId, s.sealed.unit!.unitId, "the record carries the unit the stack tags stamped");
+  assert.deepEqual(blueprint.blueprint.entries, [
+    { address: "PilotBucket", type: "AWS::S3::Bucket", id: BUCKET_ID, arn: "arn:aws:s3:::" + BUCKET_ID, origin: "IN_PLAN" },
+    { address: "PilotRole", type: "AWS::IAM::Role", id: "alz-apply-dev", arn: "arn:aws:iam::111111111111:role/alz-apply-dev", origin: "NOT_IN_PLAN" },
+    { address: "PilotTopic", type: "AWS::SNS::Topic", id: TOPIC_ARN, arn: TOPIC_ARN, origin: "IN_PLAN" },
+  ]);
+  assert.deepEqual(blueprint.blueprint.missing, []);
+  noCanary(blueprint);
+  const read = calls().filter((call) => call.args[1] === "describe-stack-resources");
+  assert.equal(read.length, 1);
+  assert.equal(roleOf(read[0]), "alz-discovery-dev", "the stack's resources are read as DISCOVERY");
+
+  // Observe: each identifier through Cloud Control under its CloudFormation type, the sweep by the unit; all as DISCOVERY, nothing but existence kept.
+  const before = calls().length;
+  const observed = await observeRun(s.sealed.artifactSha256, observeDepsOf(w));
+  assert.ok(observed.ok, JSON.stringify(observed));
+  assert.equal(observed.record.verdict, "VERIFIED");
+  assert.equal(observed.record.inventory, "COMPLETE");
+  assert.deepEqual(observed.record.resources.map((r) => [r.address, r.result, r.identifier]), [["PilotBucket", "VERIFIED", BUCKET_ID], ["PilotRole", "VERIFIED", "alz-apply-dev"], ["PilotTopic", "VERIFIED", TOPIC_ARN]]);
+  const reads = calls().slice(before);
+  assert.deepEqual(reads.map((call) => call.args[0] + " " + call.args[1]), ["cloudcontrol get-resource", "cloudcontrol get-resource", "cloudcontrol get-resource", "resourcegroupstaggingapi get-resources"]);
+  assert.deepEqual(reads.slice(0, 3).map((call) => call.args[3]), ["AWS::S3::Bucket", "AWS::IAM::Role", "AWS::SNS::Topic"], "read under the CloudFormation type itself");
+  assert.ok(reads.every((call) => roleOf(call) === "alz-discovery-dev"));
+  assert.ok(reads[3].args.includes("Key=alz-unit,Values=" + s.sealed.unit!.unitId), "the sweep asks for this run's unit");
+  noCanary(observed.record);
+
+  // The proposal: run-created resources by logical id; the pilot's role kept as PROTECTED_IDENTITY; the stack never deleted.
+  const records = await loadRunRecords(s.sealed.artifactSha256, w.dirs.evidence);
+  assert.ok(records.ok, JSON.stringify(records));
+  const contract = loadPilotContract(w.contractPath, pinPathOf(w.contractPath)) as PilotContract;
+  const built = buildCleanupProposal({ ...records, changes: s.sealed.changes, channel: "CLI", contract, engineVersion: AWS_CLI_VERSION, env: cdkIdentityEnv("DEV"), now: new Date(NOW.getTime() + 120_000) });
+  assert.ok(built.ok, JSON.stringify(built));
+  assert.ok(verifyCleanupProposal(built.proposal).ok);
+  // The change set created the bucket and replaced the topic (the fake's change list), so only the bucket is this run's to delete.
+  assert.deepEqual(built.proposal.deletes.map((d) => [d.address, d.type, d.identifier, d.observed]), [["PilotBucket", "AWS::S3::Bucket", BUCKET_ID, "VERIFIED"]]);
+  assert.match(built.proposal.deletes[0].risk ?? "", /deletes stored objects/);
+  assert.deepEqual(built.proposal.excluded.map((x) => [x.address, x.ownership, x.retainedBy]), [["PilotRole", "PROTECTED_IDENTITY", "PILOT_OWNER"], ["PilotTopic", "REPLACED_PRE_EXISTING", "ENVIRONMENT_OWNER"]]);
+  assert.ok(built.proposal.risks.some((r) => /the CloudFormation stack itself is never deleted/.test(r)), JSON.stringify(built.proposal.risks));
+  assert.equal(built.proposal.unitId, s.sealed.unit!.unitId);
+  assert.equal(built.proposal.engine, "CDK");
+  noCanary(built.proposal);
+  // Until the CDK cleanup path exists, a cleanup of that proposal is refused before anything runs.
+  const cleanup = await runCleanup({ invocation: human(s.sealed.target), environment: "DEV", target: { ...s.sealed.target }, proposal: built.proposal, sealedPlan: s.loaded, manifest: s.project.manifest, projectRoot: s.project.projectRoot, approvals: [] }, forEnv(w, "DEV"));
+  assert.equal(cleanup.ok, false);
+  assert.equal((cleanup as { code: string }).code, "CLEANUP_NOT_SUPPORTED");
+  clean(w);
+});
+
+test("CDK observe denied and interrupted: a resource Cloud Control no longer returns fails the observation, a stray ARN under the unit fails it, a failed sweep leaves it inconclusive, a stack resource read that fails leaves no blueprint so nothing can be observed or proposed, and a nested stack that appears in the stack is never proposed", async () => {
+  const w = world();
+  const s = await seal(w, "DEV");
+  assert.ok((await run(w, s)).ok);
+  patchAws(toolDir, { absent: [BUCKET_ID] });
+  const missing = await observeRun(s.sealed.artifactSha256, observeDepsOf(w));
+  assert.ok(missing.ok);
+  assert.equal(missing.record.verdict, "FAILED");
+  assert.deepEqual(missing.record.resources.map((r) => [r.address, r.result]), [["PilotBucket", "MISSING"], ["PilotTopic", "VERIFIED"]]);
+  patchAws(toolDir, { absent: [], stray: ["arn:aws:sqs:us-east-1:111111111111:stray-of-this-unit"] });
+  const stray = await observeRun(s.sealed.artifactSha256, observeDepsOf(w));
+  assert.ok(stray.ok);
+  assert.equal(stray.record.verdict, "FAILED");
+  assert.deepEqual(stray.record.unexpected, ["arn:aws:sqs:us-east-1:111111111111:stray-of-this-unit"]);
+  patchAws(toolDir, { stray: [], taggingFail: true, failStderr: STDERR_CANARY });
+  const unswept = await observeRun(s.sealed.artifactSha256, observeDepsOf(w));
+  assert.ok(unswept.ok);
+  assert.equal(unswept.record.verdict, "INCONCLUSIVE");
+  assert.equal(unswept.record.inventory, "INCOMPLETE");
+  noCanary(unswept.record);
+  patchAws(toolDir, { taggingFail: false, readFail: { [BUCKET_ID]: "An error occurred (AccessDeniedException) when calling the GetResource operation: " + STDERR_CANARY } });
+  const denied = await observeRun(s.sealed.artifactSha256, observeDepsOf(w));
+  assert.ok(denied.ok);
+  assert.deepEqual(denied.record.resources.find((r) => r.address === "PilotBucket")?.reason, "ACCESS_DENIED");
+  noCanary(denied.record);
+  // A nested stack that appears in the stack (never through this engine, which refuses one at the seal) is CONTAINS_OTHERS, never proposed.
+  patchAws(toolDir, { readFail: {} });
+  const w2 = world({}, cdkContractJson(KILL), { resourcesNested: true });
+  const s2 = await seal(w2, "DEV");
+  assert.ok((await run(w2, s2)).ok);
+  const observed2 = await observeRun(s2.sealed.artifactSha256, observeDepsOf(w2));
+  assert.ok(observed2.ok);
+  assert.equal(observed2.record.resources.find((r) => r.address === "NestedLater")?.result, "UNVERIFIABLE");
+  const records2 = await loadRunRecords(s2.sealed.artifactSha256, w2.dirs.evidence);
+  assert.ok(records2.ok);
+  const contract2 = loadPilotContract(w2.contractPath, pinPathOf(w2.contractPath)) as PilotContract;
+  const built2 = buildCleanupProposal({ ...records2, changes: s2.sealed.changes, channel: "CLI", contract: contract2, engineVersion: AWS_CLI_VERSION, env: cdkIdentityEnv("DEV"), now: new Date(NOW.getTime() + 120_000) });
+  assert.ok(built2.ok, JSON.stringify(built2));
+  assert.deepEqual(built2.proposal.excluded.map((x) => [x.address, x.ownership]), [["NestedLater", "CONTAINS_OTHERS"], ["PilotTopic", "REPLACED_PRE_EXISTING"]]);
+  assert.deepEqual(built2.proposal.deletes.map((d) => d.address), ["PilotBucket"]);
+  // A stack resource read that fails after the execution: the apply still succeeded, but it left no blueprint, and nothing downstream guesses.
+  const w3 = world({}, cdkContractJson(KILL), { resourcesFail: true, failStderr: STDERR_CANARY });
+  const s3 = await seal(w3, "DEV");
+  const applied3 = await run(w3, s3);
+  assert.ok(applied3.ok && applied3.evidence.outcome === "SUCCEEDED", JSON.stringify(applied3));
+  noCanary(applied3);
+  const none = await observeRun(s3.sealed.artifactSha256, observeDepsOf(w3));
+  assert.equal(none.ok, false);
+  assert.equal((none as { code: string }).code, "RUN_RECORD_MISSING");
+  assert.match((none as { message: string }).message, /left no blueprint/);
+  assert.equal((await loadRunRecords(s3.sealed.artifactSha256, w3.dirs.evidence)).ok, false);
+});
+
+test("the stack tags are bound: a change set whose tags are not the unit's is refused at the seal, and one whose tags changed after sealing is ARTIFACT_TAMPERED before any approval is consumed", async () => {
+  const w = world({}, cdkContractJson(KILL), { swapTags: ["Key=alz-managed-by,Value=alz", "Key=alz-unit,Value=alzu-someone-elses-unit00", "Key=alz-build,Value=alzb-0123456789abcdef0123"] });
+  const refusedSeal = await sealRefused(w, "DEV");
+  assert.equal(refusedSeal.code, "ARTIFACT_INVALID", JSON.stringify(refusedSeal));
+  assert.match(refusedSeal.message, /CHANGE_SET_TAGS_MISMATCH/);
+  assert.ok(!calls().some((call) => call.args[1] === "execute-change-set"));
+  const w2 = world();
+  const s = await seal(w2, "DEV");
+  patchAws(toolDir, { swapTags: ["Key=alz-managed-by,Value=alz", "Key=alz-unit,Value=alzu-someone-elses-unit00", "Key=alz-build,Value=alzb-0123456789abcdef0123"] });
+  const result = await run(w2, s);
+  refused(result, "ARTIFACT_TAMPERED");
+  assert.ok(!calls().some((call) => call.args[1] === "execute-change-set"), "nothing executed");
+  assert.equal(result.ok || (result as { outcome?: string }).outcome === undefined, true, "no approval consumed: the refusal has no outcome");
 });

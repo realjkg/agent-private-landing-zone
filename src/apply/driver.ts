@@ -8,7 +8,7 @@ import { forbiddenIdentityVariables } from "../tools/identity.js";
 import { writeEncryptedEvidence } from "../evidence/vault.js";
 import { interceptStopSignals } from "../tools/process.js";
 import { createPrivateDirectory } from "../tools/private-workdir.js";
-import { blueprintFromTerraformStatePull } from "../observe/blueprint.js";
+import { blueprintFromCloudFormationResources, blueprintFromTerraformStatePull } from "../observe/blueprint.js";
 import { consumeApprovals, verifyApprovalSet } from "./approval.js";
 import { buildCleanupProposal, computeProposalSha256, protectedDeletionIn, verifyCleanupProposal, type CleanupProposal } from "./cleanup-proposal.js";
 import { pilotUnitOf } from "./unit.js";
@@ -18,7 +18,7 @@ import {
 } from "./contract.js";
 import { COMMIT } from "./constants.js";
 import { codeOf } from "./engine.js";
-import { acceptsManifest, engineOf, type EngineCleanupRun, type EngineSpec, type RecoveryFile } from "./engine-spec.js";
+import { acceptsManifest, engineOf, type EngineCleanupRun, type EngineSpec, type RecoveryFile, type StateDocument } from "./engine-spec.js";
 import { APPLY_AUTHORITY } from "./evidence.js";
 import { attestedClientId, checkApplyIdentities, verifyIdentityTargets } from "./identities.js";
 import { channelMismatchMessage } from "./channel.js";
@@ -314,15 +314,21 @@ async function keepRecoveryFiles(files: RecoveryFile[], artifactSha256: string):
   return { recovery: { files: files.length, sha256: sha256(canonicalJson(record as never)) } };
 }
 
-/** Reads the engine's state once, maps it to identifiers only, and records the blueprint beside the evidence. Never throws: a missing blueprint is a refusal later, not a failed apply now. */
-async function keepBlueprint(run: { stateDocument?(): string | undefined }, sealed: Pick<SealedPlan, "changes" | "unit">, evidence: ApplyEvidence, evidenceDir: string, now: Date): Promise<void> {
+/**
+ * Reads what the engine knows about the resources it left once (Terraform's state, or CloudFormation's logical-to-physical
+ * mapping), maps it to identifiers only, and records the blueprint beside the evidence. Never throws: a missing blueprint is
+ * a refusal later, not a failed apply now. `place` is the account and region the identifiers are in (an ARN is derived from
+ * a CloudFormation physical id for the types the independent reader knows).
+ */
+async function keepBlueprint(run: { stateDocument?(): StateDocument | undefined }, sealed: Pick<SealedPlan, "changes" | "unit">, evidence: ApplyEvidence, evidenceDir: string, now: Date,
+  place: { account: string; region: string | undefined }): Promise<void> {
   try {
-    const document = run.stateDocument?.();
-    if (document === undefined) return;
-    const blueprint = blueprintFromTerraformStatePull(document, sealed.changes);
+    const state = run.stateDocument?.();
+    if (state === undefined) return;
+    const blueprint = state.source === "CLOUDFORMATION_STACK_RESOURCES" ? blueprintFromCloudFormationResources(state.document, sealed.changes, place) : blueprintFromTerraformStatePull(state.document, sealed.changes);
     const record: BlueprintRecord = {
       schemaVersion: 1, kind: "BLUEPRINT", artifactSha256: evidence.artifactSha256, applyEvidenceSha256: sha256(canonicalJson(evidence as never)), environment: evidence.environment,
-      target: { ...evidence.target }, sourceCommit: evidence.sourceCommit, contractSha256: evidence.contractSha256, outcome: evidence.outcome, source: "TERRAFORM_STATE_PULL", blueprint,
+      target: { ...evidence.target }, sourceCommit: evidence.sourceCommit, contractSha256: evidence.contractSha256, outcome: evidence.outcome, source: state.source, blueprint,
       unitId: sealed.unit?.unitId ?? null, readAt: now.toISOString(),
     };
     await writeBlueprintRecord(record, evidenceDir);
@@ -511,7 +517,7 @@ export async function runApply(request: ApplyRequest, deps: ApplyDeps): Promise<
     // The blueprint of what the run left: addresses and cloud identifiers from the engine's own state, read as STATE and
     // dropped. It is the observe and cleanup steps' starting point (docs/observe-and-cleanup.md). A state that cannot be
     // read leaves no blueprint, and a later cleanup is then refused for want of one, never guessed.
-    await keepBlueprint(run, sealed, evidence, evidenceDir, now());
+    await keepBlueprint(run, sealed, evidence, evidenceDir, now(), { account: sealed.target.account, region: (contract.targets[sealed.environment] as { region?: string } | undefined)?.region });
     if (outcome === "SUCCEEDED") return written;
     if ("stale" in end) {
       return { ok: false, code: "PLAN_STALE", outcome, message: "The saved plan is stale: state changed after it was sealed. Nothing was applied. Seal a new preview and obtain new approvals." };

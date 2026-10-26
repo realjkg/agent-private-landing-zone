@@ -1,4 +1,4 @@
-import { CLOUD_CONTROL_TYPES } from "../observe/verify.js";
+import { cloudControlMappingOf } from "../observe/verify.js";
 import { iamRoleIdentity, identityVariables } from "../tools/identity.js";
 import { canonicalJson } from "../teardown/manifest.js";
 import type { ResolvedTarget } from "../teardown/driver/types.js";
@@ -129,6 +129,15 @@ const MATERIAL_RISKS: Readonly<Record<string, string>> = {
   azurerm_mssql_database: "deletes the database and its data unless a backup was kept",
   azurerm_postgresql_flexible_server: "deletes the server and its databases unless a backup was kept",
   azurerm_kubernetes_cluster: "deletes the cluster and every workload running in it",
+  // The same risks by CloudFormation type, for the CDK engine's logical ids.
+  "AWS::S3::Bucket": "deletes stored objects, which cannot be recovered (CloudFormation refuses to delete a bucket that still holds objects)",
+  "AWS::Logs::LogGroup": "deletes retained log data, which cannot be recovered",
+  "AWS::KMS::Key": "schedules the key for deletion; data encrypted under it becomes unreadable after the waiting period",
+  "AWS::DynamoDB::Table": "deletes the table and its data unless a backup was kept",
+  "AWS::RDS::DBInstance": "deletes the database and its data unless a final snapshot was configured",
+  "AWS::RDS::DBCluster": "deletes the database and its data unless a final snapshot was configured",
+  "AWS::EFS::FileSystem": "deletes stored files, which cannot be recovered",
+  "AWS::EC2::Volume": "deletes the volume and its data",
 };
 
 /**
@@ -230,10 +239,14 @@ function protectionOf(entry: { type: string; id: string | null; arn: string | nu
   const pinned = contract.targets[contract.enabledEnvironments?.[0] ?? "DEV"] as AwsTarget | undefined;
   const buckets = new Set(Object.values(contract.targets).map((target) => (target as AwsTarget).backend.split("/")[0]));
   if (/^aws_s3_bucket(_|$)/.test(entry.type) && entry.id !== null && buckets.has(entry.id)) return "PROTECTED_BACKEND";
+  // A nested stack holds resources no listing here accounts for; the CDK engine refuses one at the seal, and one that appears in the stack anyway is never proposed.
+  if (entry.type === "AWS::CloudFormation::Stack") return "CONTAINS_OTHERS";
   if (pinned === undefined) return undefined;
-  if (entry.type === "aws_iam_openid_connect_provider") return "PROTECTED_IDENTITY";
+  if (entry.type === "aws_iam_openid_connect_provider" || entry.type === "AWS::IAM::OIDCProvider") return "PROTECTED_IDENTITY";
   const roles = new Set((["DISCOVERY", "STATE", "STATE_WRITE", "APPLY"] as const).map((identity) => iamRoleIdentity(identityVariables(env, identity).get("AWS_ROLE_ARN") ?? "")).filter((x): x is string => x !== undefined));
   if (IDENTITY_TYPES.has(entry.type) && entry.arn !== null && roles.has(iamRoleIdentity(entry.arn) ?? "")) return "PROTECTED_IDENTITY";
+  // By CloudFormation type (the CDK engine): a role whose physical id is one of the pilot's role names, or its ARN; a policy attached to one.
+  if (/^AWS::IAM::(?:Role|Policy|ManagedPolicy|RolePolicy)$/.test(entry.type) && [entry.arn, entry.id].some((value) => value !== null && (roles.has(iamRoleIdentity(value) ?? "") || [...roles].some((role) => role.split("/").pop() === value)))) return "PROTECTED_IDENTITY";
   if (entry.type === "aws_iam_role_policy" && entry.id !== null && [...roles].some((role) => entry.id!.toLowerCase().startsWith(role.split("/").pop() ?? "\u0000"))) return "PROTECTED_IDENTITY";
   return undefined;
 }
@@ -288,10 +301,10 @@ export function buildCleanupProposal(input: ProposalInput): { ok: true; proposal
   const backendGroups = contract.provider === "AZURE" ? azureBackendGroups(record.blueprint.entries, azureBackendAccounts(contract)) : new Set<string>();
   for (const entry of record.blueprint.entries) {
     // The identifier the independent verifier uses for this type (the one it will be asked about again after the cleanup), else whatever the state had.
-    const mapping = CLOUD_CONTROL_TYPES[entry.type];
+    const mapping = cloudControlMappingOf(entry.type);
     const identifier = contract.provider === "AZURE" ? entry.id : mapping ? (mapping.identifier === "arn" ? entry.arn : entry.id) ?? entry.arn ?? entry.id : entry.arn ?? entry.id;
     const base = { address: entry.address, type: entry.type, identifier };
-    if (!isResourceAddress(entry.address) || HAS_INVISIBLE.test(entry.address) || HAS_INVISIBLE.test(entry.type)) {
+    if (!isCleanupAddress(contract.engine, entry.address) || HAS_INVISIBLE.test(entry.address) || HAS_INVISIBLE.test(entry.type)) {
       return refuse("OWNERSHIP_AMBIGUOUS", "A resource address in the state is not one the cleanup can name exactly. A person reviews it by hand; no cleanup proposal is made.");
     }
     // An ARM-shaped id the URL parser would rewrite (a `..` segment, a backslash, a percent escape) names no resource exactly; the state that holds it is reviewed by hand.
@@ -326,6 +339,9 @@ export function buildCleanupProposal(input: ProposalInput): { ok: true; proposal
   }
   if (deletes.some((x) => x.observed === "UNVERIFIABLE")) risks.add("some listed resources are settings the independent reader cannot read alone; their deletion is proved through the resource they belong to");
   risks.add("the engine destroys a listed resource together with anything in the state that depends on it; a dependent outside this list stops the cleanup before anything is destroyed");
+  if (contract.engine === "CDK") {
+    risks.add("the CloudFormation stack itself is never deleted by a cleanup: approved resources are removed from it, the stack stays with whatever it still holds, and retiring the stack is a separate, reviewed action that remains outstanding");
+  }
   if (excluded.some((x) => PROTECTED_OWNERSHIPS.includes(x.ownership))) {
     risks.add("protected objects (resource groups, identities and grants, deployment history, the state backend) are intentionally retained and never on this list; retiring the environment itself is a separate, reviewed action and stays outstanding after this cleanup");
   }
@@ -339,6 +355,11 @@ export function buildCleanupProposal(input: ProposalInput): { ok: true; proposal
   };
   return { ok: true, proposal: { ...fields, proposalSha256: computeProposalSha256(fields) } };
 }
+
+/** A CloudFormation logical id, the CDK engine's address. */
+const LOGICAL_ID = /^[A-Za-z0-9]{1,255}$/;
+/** The address shape a cleanup can name exactly, by engine: a Terraform resource address, or a CloudFormation logical id. */
+export const isCleanupAddress = (engine: EngineId, value: unknown): value is string => engine === "CDK" ? typeof value === "string" && LOGICAL_ID.test(value) : isResourceAddress(value);
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const text = (value: unknown, max = 512): value is string => typeof value === "string" && value.length > 0 && value.length <= max && !HAS_INVISIBLE.test(value);
@@ -366,12 +387,14 @@ export function proposalProblems(value: unknown): string[] {
   }
   if (value.unitId !== null && !(typeof value.unitId === "string" && /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(value.unitId))) problems.push("proposal.unitId: not a tag-safe unit id or null");
   const deletes = value.deletes;
+  // The address shape is the engine's: a Terraform resource address, or a CloudFormation logical id for the CDK engine (an unknown engine was refused above).
+  const engine: EngineId = value.engine === "CDK" ? "CDK" : "TERRAFORM";
   if (!Array.isArray(deletes) || !deletes.every((x) => isRecord(x) && Object.keys(x).every((key) => ["address", "type", "identifier", "ownership", "observed", "risk"].includes(key)) &&
-    isResourceAddress(x.address) && text(x.type, 128) && idText(x.identifier) && x.ownership === "RUN_CREATED" && (x.observed === "VERIFIED" || x.observed === "UNVERIFIABLE") &&
+    isCleanupAddress(engine, x.address) && text(x.type, 128) && idText(x.identifier) && x.ownership === "RUN_CREATED" && (x.observed === "VERIFIED" || x.observed === "UNVERIFIABLE") &&
     (x.risk === undefined || text(x.risk)))) problems.push("proposal.deletes: each needs a resource address, type, identifier, RUN_CREATED ownership and an observation");
   else if (new Set(deletes.map((x) => x.address)).size !== deletes.length) problems.push("proposal.deletes: an address is listed twice");
   else if ([...deletes.map((x) => x.address)].some((address, index, all) => index > 0 && !(all[index - 1] < address))) problems.push("proposal.deletes: addresses must be in code-point order");
-  if (!Array.isArray(value.alreadyAbsent) || !value.alreadyAbsent.every((x) => isRecord(x) && Object.keys(x).sort().join() === "address,identifier,type" && isResourceAddress(x.address) && text(x.type, 128) && idText(x.identifier))) {
+  if (!Array.isArray(value.alreadyAbsent) || !value.alreadyAbsent.every((x) => isRecord(x) && Object.keys(x).sort().join() === "address,identifier,type" && isCleanupAddress(engine, x.address) && text(x.type, 128) && idText(x.identifier))) {
     problems.push("proposal.alreadyAbsent: each needs address, type and identifier");
   }
   if (!Array.isArray(value.excluded) || !value.excluded.every((x) => isRecord(x) && Object.keys(x).sort().join() === "address,identifier,ownership,reason,retainedBy,type" && text(x.address, 256) && text(x.type, 128) &&
