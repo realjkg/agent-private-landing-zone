@@ -5,6 +5,7 @@ import test from "node:test";
 
 import { releaseAdmission } from "../src/cli/release-admission.js";
 import { releaseStatusView } from "../src/release/docs.js";
+import { loadWorkGraph, runnableTasks, workGraphProblems, type WorkGraph, type WorkNode } from "../src/release/work-graph.js";
 import type { ReleaseAdmissionReport } from "../src/qualification/release-admission.js";
 import type { RowReport } from "../src/release/acceptance.js";
 import {
@@ -131,5 +132,40 @@ test("the admission CLI explains itself and refuses to review without exactly on
   assert.match(printed.join("\n"), /--manifest/);
   for (const args of [[], ["--manifest"], ["--manifest", "--help"], ["--other", "x.json"]]) {
     await assert.rejects(releaseAdmission(args), /RELEASE_ADMISSION_REQUIRES_MANIFEST/, JSON.stringify(args));
+  }
+});
+
+test("the shipped work graph checks, its page is current, and what runs next is derived from its dependencies", async () => {
+  const view = await releaseStatusView(root);
+  assert.equal(readFileSync(join(root, "docs", "work-graph.md"), "utf8"), view.workGraph, "run npm run docs:release");
+  const graph = loadWorkGraph(root) as WorkGraph;
+  assert.deepEqual(workGraphProblems(graph), []);
+  const runnable = runnableTasks(graph).map((node) => node.id);
+  assert.ok(runnable.includes("baseline-repair"));
+  assert.ok(!runnable.includes("dependency-updates"), "queued behind the baseline repair until it is DONE");
+  assert.ok(!runnable.includes("guided-journey-ui"), "a held task never runs");
+  assert.ok(!runnable.includes("candidate-freeze"), "the freeze waits on the integrated synthetic matrix");
+});
+
+test("the work graph refuses a cycle, an unknown dependency or gate, a DONE task without its merge, and an unexplained block", () => {
+  const graph = structuredClone(loadWorkGraph(root)) as WorkGraph;
+  const at = (id: string) => graph.nodes.find((node) => node.id === id)!;
+  const variants: [string, (g: WorkGraph) => void, RegExp][] = [
+    ["cycle", (g) => { g.nodes.find((n) => n.id === "baseline-repair")!.dependsOn = ["dependency-updates"]; }, /dependency cycle/],
+    ["unknown dependency", (g) => { g.nodes[0]!.dependsOn = ["no-such-task"]; }, /unknown task/],
+    ["unknown gate", (g) => { g.nodes[0]!.gates = ["preview:nope"]; }, /not a release gate/],
+    ["DONE without merge", (g) => { const n = g.nodes.find((x) => x.id === "release-gate-matrix")!; delete n.merges; }, /DONE needs the merge/],
+    ["short sha", (g) => { g.nodes.find((x) => x.id === "release-gate-matrix")!.merges = ["6b4cc53"]; }, /full commit SHAs/],
+    ["DONE before dependency", (g) => { const n = g.nodes.find((x) => x.id === "dependency-updates")!; n.status = "DONE"; n.merges = ["a".repeat(40)]; delete n.next; }, /DONE before its dependency/],
+    ["blocked without reason", (g) => { delete g.nodes.find((x) => x.id === "live-qualification")!.blockedBy; }, /needs blockedBy/],
+    ["no next action", (g) => { delete g.nodes.find((x) => x.id === "baseline-repair")!.next; }, /next must say/],
+    ["duplicate", (g) => { g.nodes.push({ ...(g.nodes[0] as WorkNode) }); }, /listed twice/],
+    ["unknown field", (g) => { (g.nodes[0] as Record<string, unknown>).approvedBy = "agent"; }, /unknown field/],
+  ];
+  assert.ok(at("baseline-repair"));
+  for (const [name, change, pattern] of variants) {
+    const copy = structuredClone(graph);
+    change(copy);
+    assert.match(workGraphProblems(copy).join(" | "), pattern, name);
   }
 });
