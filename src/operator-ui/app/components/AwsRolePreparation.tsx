@@ -37,7 +37,8 @@ export function AwsRolePreparation() {
     roles: Object.fromEntries(Object.entries(roleNames).map(([key, name]) =>
       [key, { name, proposedArn: `arn:aws:iam::${account}:role/${name}`, status: "NOT_CREATED" }])),
     oidc: {
-      issuer: ["https:", "", issuer].join("/"),
+      // A plain literal, so every bundler emits the same inert text: test/csp-first-party.test.tsx pins it exactly.
+      issuer: "https://token.actions.githubusercontent.com",
       audience: "sts.amazonaws.com",
       githubRepo: repo,
       // Subject format must be observed from a real token before trust is configured.
