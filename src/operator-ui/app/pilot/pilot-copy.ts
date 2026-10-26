@@ -192,9 +192,9 @@ export const COPY = {
   verifyRun: "Check that everything is gone",
   verifyRerun: "Check again",
   verifyRunning: "Looking at the cloud for anything left. This reads and changes nothing.",
-  verifyComplete: "Approved things deleted; protected things kept on purpose. Everything on the list is confirmed gone. Kept items were left in place and were not checked.",
-  verifyRetirementOutstanding: "The environment itself is not retired: its container (a resource group or a stack), identity and access objects, deployment history and the pilot's own storage were never on the list and are kept by their owners. Retiring them is a separate, reviewed action by the pilot owner, and it is still outstanding.",
-  proposeRetainedNote: "A pilot cleanup never removes a resource group or a stack, an identity or access object (a role, a role or policy assignment, a role or policy definition, a managed identity, a sign-in trust, an exemption, a lock), deployment history, or the storage the pilot runs on, whatever this change did. Those stay, with their owner named, and retiring the environment is a separate decision.",
+  verifyKeptNotChecked: "Kept items were left in place and were not checked.",
+  verifyRetirementTail: "Retiring the environment itself is a separate, reviewed action by the pilot owner, and it is still outstanding.",
+  proposeWillDelete: "If approved, everything on the delete list above will be deleted, and nothing else.",
   verifyIncomplete: "Not finished yet. Nothing is reported as complete until every listed thing is confirmed gone.",
   verifyKnownConfirmed: "Everything on the list is confirmed gone, but this change carried no cleanup marker, so nothing outside its records could be searched for. This is not complete.",
   verifyNextLabel: "What to do now:",
@@ -219,8 +219,8 @@ export function ownershipWord(ownership: string): string {
     case "PROTECTED_BACKEND": return "the storage the pilot itself runs on";
     case "PROTECTED_IDENTITY": return "an identity or access object (a role, a role or policy assignment, a role or policy definition, a managed identity, a sign-in trust, an exemption or a lock)";
     case "PROTECTED_DEPLOYMENT": return "deployment history";
-    case "RETAINED_GROUP": return "a resource group, never removed by a pilot cleanup";
-    case "CONTAINS_OTHERS": return "a subscription, management group, nested stack or provider registration holding or serving others' things";
+    case "RETAINED_GROUP": return "a resource group, kept whole (a pilot cleanup removes only approved things inside it)";
+    case "CONTAINS_OTHERS": return "a subscription, management group or provider registration holding or serving others' things";
     default: return "unknown";
   }
 }
@@ -231,6 +231,64 @@ export function retentionOwnerWord(owner: string): string {
     case "ENVIRONMENT_OWNER": return "kept by the environment's owner";
     default: return "kept by an unknown owner";
   }
+}
+/** Why a check could not decide, in words: the record's reason code, never shown raw. */
+export function reasonWord(reason: string): string {
+  switch (reason) {
+    case "ACCESS_DENIED": return "the discovery sign-in was not allowed to read it";
+    case "CREDENTIALS": return "the discovery sign-in could not sign in";
+    case "THROTTLED": return "the cloud asked us to slow down; check again later";
+    case "TYPE_NOT_SUPPORTED": return "the cloud's read service does not know this kind of thing";
+    case "CLI_ERROR": case "HTTP_ERROR": case "UNEXPECTED_RESPONSE": return "the read failed or answered in an unexpected way";
+    case "CLI_NOT_RUN": case "HOST_REFUSED": case "READER_CLOSED": return "the read could not be sent";
+    case "NOT_INDEPENDENTLY_CHECKABLE": case "NO_CLOUD_CONTROL_MAPPING": return "it cannot be checked on its own; only the thing it belongs to can be";
+    case "NO_IDENTIFIER_IN_STATE": return "the project's records hold no identifier for it";
+    case "NOT_AN_ARM_RESOURCE_ID": return "its identifier is not one the cloud can be asked about";
+    case "OUTSIDE_TARGET_SUBSCRIPTION": return "it is outside the subscription this pilot works in";
+    default: return "the check gave no usable answer";
+  }
+}
+
+/** The distinct ownership classes present in a kept list, each in words with who keeps it, in list order. */
+function keptClassWords(kept: readonly { ownership: string; retainedBy: string }[]): string[] {
+  const seen = new Set<string>();
+  const words: string[] = [];
+  for (const item of kept) {
+    const key = item.ownership + "|" + item.retainedBy;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    words.push(ownershipWord(item.ownership) + " (" + retentionOwnerWord(item.retainedBy) + ")");
+  }
+  return words;
+}
+/**
+ * The note under a cleanup proposal, built from this proposal's own lists: what the delete list will do if approved, and which
+ * kinds of thing this proposal keeps, with their owner. It promises nothing about kinds that are not in the records.
+ */
+export function retainedNoteFor(cleanup: { deletes: readonly unknown[]; excluded: readonly { ownership: string; retainedBy: string }[] }): string {
+  const head = cleanup.deletes.length === 0 ? "Nothing is on the delete list, so an approval would delete nothing." : COPY.proposeWillDelete;
+  const kept = keptClassWords(cleanup.excluded);
+  const tail = kept.length === 0 ? "Nothing else from this change's records is kept." : "Kept, and never on that list: " + kept.join("; ") + ".";
+  return head + " " + tail + " Retiring the environment itself is a separate, reviewed decision for the pilot owner.";
+}
+/** A kept leftover row's ownership class, from the record's reason (`CLASS: sentence`), and its owner. */
+const keptClassOf = (item: { reason?: string; owner?: string }): { ownership: string; retainedBy: string } => ({ ownership: /^([A-Z][A-Z_]+): /.exec(item.reason ?? "")?.[1] ?? "UNKNOWN", retainedBy: item.owner ?? "UNKNOWN" });
+/**
+ * The headline of a COMPLETE leftover check, from the record: how many listed things are confirmed gone, whether an approved
+ * cleanup ran at all (a record with no cleanup evidence means none did), and that kept things were left in place and not checked.
+ */
+export function completeHeadlineFor(leftovers: { resources: readonly { disposition: string }[]; cleanupEvidenceSha256?: string | null }): string {
+  const gone = leftovers.resources.filter((item) => item.disposition === "CONFIRMED_DELETED").length;
+  const head = gone === 0 ? "Nothing was on the delete list, so nothing was deleted."
+    : leftovers.cleanupEvidenceSha256 === null ? "No cleanup ran; the " + gone + " listed thing(s) are confirmed gone anyway."
+    : "Approved things deleted: " + gone + " listed thing(s) confirmed gone.";
+  return head + " " + COPY.verifyKeptNotChecked;
+}
+/** The retirement line of a COMPLETE leftover check: which kinds this record kept, with their owner, and that the environment is not retired. */
+export function retirementOutstandingFor(leftovers: { resources: readonly { disposition: string; reason?: string; owner?: string }[] }): string {
+  const kept = keptClassWords(leftovers.resources.filter((item) => item.disposition === "INTENTIONALLY_RETAINED").map(keptClassOf));
+  const body = kept.length === 0 ? "Nothing from this change's records was kept." : "Kept and left in place, not checked: " + kept.join("; ") + ".";
+  return "The environment itself is not retired. " + body + " " + COPY.verifyRetirementTail;
 }
 /** What the independent check found, in words. */
 export function verificationWord(result: string): string {
@@ -406,7 +464,7 @@ export const CODE_COPY: Readonly<Record<string, Reason>> = {
   OBSERVED: { why: "The console looked at each thing the change left behind.", next: "Read the list, then write the cleanup proposal if everything is as expected." },
   CLEANUP_PROPOSED: { why: "The cleanup proposal is written.", next: "Send it to the approvers, collect their cleanup approval files, then remove the listed things." },
   CLEANED_UP: { why: "The removal finished.", next: "Check that everything is gone." },
-  CLEANUP_COMPLETE: { why: "Approved things deleted; protected things kept on purpose. Everything on the list is confirmed gone; kept items were left in place and were not checked.", next: "Nothing further for this change's resources. The environment itself (its container, identity and access objects, deployment history and the pilot's storage) is not retired; that is the pilot owner's separate, reviewed action." },
+  CLEANUP_COMPLETE: { why: "Everything on the list is confirmed gone; kept items were left in place and were not checked.", next: "Nothing further for this change's listed resources. The environment itself is not retired; that is the pilot owner's separate, reviewed action." },
   CLEANUP_INCOMPLETE: { why: "Something on the list is not confirmed gone yet.", next: "Follow the next step shown with the list." },
   CLEANUP_KNOWN_CONFIRMED: { why: "Everything on the list is confirmed gone, but the change carried no cleanup marker, so things outside its records could not be searched for.", next: "Ask the pilot owner to confirm by hand that nothing else of this change remains, or apply with the cleanup marker so the search can run." },
   // the command line's own errors, as the wizard reaches them

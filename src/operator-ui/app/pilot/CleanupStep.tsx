@@ -6,7 +6,7 @@ import {
   type CleanupSummary, type LeftoverResource, type LeftoversData, type ObservationData, type PilotEnvironment, type PilotReply, type PilotRun, type RunResult,
 } from "./pilot-api";
 import { BlockedNotice, CopyButton, Reasoned } from "./PilotWizard";
-import { CLEANUP_RESULT_COPY, COPY, classifyResult, dispositionWord, originWord, ownershipWord, retentionOwnerWord, verificationWord } from "./pilot-copy";
+import { CLEANUP_RESULT_COPY, COPY, classifyResult, completeHeadlineFor, dispositionWord, originWord, ownershipWord, reasonWord, retainedNoteFor, retentionOwnerWord, retirementOutstandingFor, verificationWord } from "./pilot-copy";
 
 /**
  * Step 7 of the pilot wizard (docs/act-pilot-walkthrough.md, "Check and clean up"): look at what the change created,
@@ -68,7 +68,7 @@ export function CleanupList(props: { cleanup: CleanupSummary }) {
       {cleanup.excluded.length === 0 ? <p>Nothing else is in the project's records.</p> : (
         <ul>{cleanup.excluded.map((item) => <li key={item.address} data-kept={item.address}><code>{item.address}</code> ({ownershipWord(item.ownership)}; {retentionOwnerWord(item.retainedBy)}): {item.reason}</li>)}</ul>
       )}
-      <p role="note"><small>{COPY.proposeRetainedNote}</small></p>
+      <p role="note" data-retained-note><small>{retainedNoteFor(cleanup)}</small></p>
       <h3>{COPY.proposeRisks}</h3>
       <ul>{cleanup.risks.map((risk) => <li key={risk}>{risk}</li>)}</ul>
     </div>
@@ -119,8 +119,8 @@ export function LeftoversTable(props: { leftovers: LeftoversData }) {
   const known = leftovers.disposition === "KNOWN_ADDRESSES_CONFIRMED";
   return (
     <div role="status" aria-live="polite" className={complete ? "pilot-result pilot-result-good" : "pilot-result pilot-result-caution"} data-leftovers={leftovers.disposition}>
-      <h3>{complete ? COPY.verifyComplete : known ? COPY.verifyKnownConfirmed : COPY.verifyIncomplete}</h3>
-      {complete && <p data-retirement="OUTSTANDING">{COPY.verifyRetirementOutstanding}</p>}
+      <h3>{complete ? completeHeadlineFor(leftovers) : known ? COPY.verifyKnownConfirmed : COPY.verifyIncomplete}</h3>
+      {complete && <p data-retirement="OUTSTANDING">{retirementOutstandingFor(leftovers)}</p>}
       <p><strong>{COPY.verifyNextLabel}</strong> {leftovers.nextAction}</p>
       {leftovers.sweep === "NOT_AVAILABLE" && <p role="note"><small>{COPY.verifyNotSearched}</small></p>}
       <p role="note"><small>{COPY.observeSynthetic}</small></p>
@@ -130,7 +130,7 @@ export function LeftoversTable(props: { leftovers: LeftoversData }) {
           {leftovers.resources.map((item) => (
             <tr key={item.address + "|" + (item.identifier ?? "")} data-disposition={item.disposition}>
               <td><code>{item.address}</code></td><td><code>{idOf(item.identifier)}</code></td>
-              <td>{dispositionWord(item.disposition)}{item.disposition === "INTENTIONALLY_RETAINED" ? <>: {keptWords(item)}</> : item.reason && <>: {item.reason}</>}</td>
+              <td>{dispositionWord(item.disposition)}{item.disposition === "INTENTIONALLY_RETAINED" ? <>: {keptWords(item)}</> : item.disposition === "UNKNOWN" ? <>: {reasonWord(item.reason ?? "")}</> : item.reason && <>: {item.reason}</>}</td>
             </tr>
           ))}
         </tbody>
