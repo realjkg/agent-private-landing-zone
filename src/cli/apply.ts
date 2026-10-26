@@ -29,6 +29,7 @@ import { accountFieldsOf, specOf } from "../apply/provider.js";
 import { engineBinaryChange, loadSealedPlan, reviewBundleOf, verifyReviewBundle, type LoadedPlan } from "../apply/seal.js";
 import type { ApplyEnvironment, ApplyIdentity, ApplyOutcome, PilotChannel, PilotContract, SealedPlan, SignedApproval } from "../apply/types.js";
 import type { AwsCli } from "../observe/verify.js";
+import type { ArmHttp } from "../observe/azure-rest.js";
 import { isRecord, SAFE_OPERATOR } from "../teardown/driver/human.js";
 import { sweepStale } from "../teardown/driver/cleanup.js";
 import { canonicalJson, verifyManifest, type ArtifactManifest } from "../teardown/manifest.js";
@@ -105,6 +106,8 @@ export type ApplyCliDeps = {
   reportsDir?: string;
   /** TEST-ONLY SEAM: the verifier's AWS CLI for observe and verify-cleanup. Production builds it from the DISCOVERY identity. */
   observeAws?: AwsCli;
+  /** Test seam: the Azure reader's HTTP client (src/observe/azure-rest.ts). Production uses fetch against the two Azure hosts. */
+  observeArm?: ArmHttp;
 } & Pick<ApplyDeps, "contractPath" | "contractPinPath" | "qualificationDir" | "evidenceDir" | "nonces" | "scratchParent" | "toolDirs">;
 
 /** Why a command ended, without parsing text: a refusal's code and outcome, or a CLI error's code. */
@@ -494,7 +497,7 @@ async function approveCleanup(raw: unknown, approverId: string, privateKeyPem: s
 /** Where the observe steps read and write: the ledger directory and the contract, as the driver has them. */
 const observeDeps = (deps: ApplyCliDeps) => ({
   contractPath: deps.contractPath, contractPinPath: deps.contractPinPath, evidenceDir: deps.evidenceDir ?? repoPaths().evidence, env: deps.env ?? process.env,
-  toolDirs: deps.toolDirs, scratchParent: deps.scratchParent, now: deps.now, aws: deps.observeAws,
+  toolDirs: deps.toolDirs, scratchParent: deps.scratchParent, now: deps.now, aws: deps.observeAws, arm: deps.observeArm,
 });
 
 /** Read-only: the run's identifiers against the cloud, as the DISCOVERY identity sees them. Repeating it observes again; it never applies again. */
@@ -579,7 +582,7 @@ const cleanupCommand: Command = async (flags, terminal, deps, out) => {
   const result = await runCleanup({
     invocation: { operatorId: who, interactiveSession: true, confirmedTarget: { ...request.target }, confirmedAt: now().toISOString() },
     environment: request.environment, target: request.target, channel: deps.channel ?? "CLI", proposal, sealedPlan, manifest, projectRoot: request.projectRoot, approvals,
-  }, { env: deps.env ?? process.env, now, evidenceDir: deps.evidenceDir, nonces: deps.nonces, ...driverPaths(deps, sourceCommit) });
+  }, { env: deps.env ?? process.env, now, evidenceDir: deps.evidenceDir, nonces: deps.nonces, arm: deps.observeArm, ...driverPaths(deps, sourceCommit) });
   if (!result.ok) return blocked(result, out);
   out.say(JSON.stringify(result.evidence, null, 2) + "\n");
   out.report({ code: "CLEANED_UP", message: "The cleanup ended " + result.evidence.outcome + ". Verify leftovers next.", data: result.evidence });

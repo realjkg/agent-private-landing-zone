@@ -1,5 +1,5 @@
 import type { Blueprint } from "./blueprint.js";
-import { checkResource, unexpectedTagged, type AwsCli, type Existence } from "./verify.js";
+import { readerOf, unexpectedOf, type Existence, type ReaderInput } from "./verify.js";
 
 /**
  * The cleanup disposition of one journey (docs/observe-and-cleanup.md): for every resource the apply left, whether it is
@@ -60,14 +60,15 @@ export function retentionProblems(blueprint: Blueprint, retained: readonly Reten
  * an empty blueprint, or one with planned resources it never mapped, proves nothing and is never CLEAN.
  */
 export async function cleanupDisposition(blueprint: Blueprint, retained: readonly RetentionDecision[],
-  input: { unitId: string | null; region: string; aws: AwsCli }): Promise<CleanupReport> {
+  input: { unitId: string | null } & ReaderInput): Promise<CleanupReport> {
   const problems = retentionProblems(blueprint, retained);
   if (problems.length > 0) throw new Error("RETENTION_INVALID: " + problems.join("; "));
+  const reader = readerOf(input);
   const kept = new Map(retained.map((decision) => [decision.address, decision]));
   const dispositions: Disposition[] = [];
   const retainedButAbsent: string[] = [];
   for (const entry of blueprint.entries) {
-    const check = await checkResource(entry, input.region, input.aws);
+    const check = await reader.check(entry);
     const base = { address: entry.address, type: entry.type, identifier: check.identifier, existence: check.existence };
     const decision = kept.get(entry.address);
     if (decision) {
@@ -77,7 +78,7 @@ export async function cleanupDisposition(blueprint: Blueprint, retained: readonl
       dispositions.push({ ...base, disposition: check.existence === "ABSENT" ? "DELETED" : check.existence === "PRESENT" && !check.pendingDeletion ? "LEFTOVER" : "UNPROVEN" });
     }
   }
-  const listed = input.unitId === null ? null : await unexpectedTagged(blueprint, input.unitId, input.region, input.aws);
+  const listed = input.unitId === null ? null : unexpectedOf(blueprint, await reader.listTagged(input.unitId), reader.verifier);
   const inventory = listed === null ? "NOT_AVAILABLE" : listed.complete ? "COMPLETE" : "INCOMPLETE";
   const untrackedLeftovers = listed?.unexpected ?? [];
   const unresolved = [

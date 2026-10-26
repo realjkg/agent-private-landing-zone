@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { encryptEvidence, ensureEvidenceKey, readEncryptedEvidence } from "../evidence/vault.js";
 import type { Blueprint, BlueprintEntry } from "../observe/blueprint.js";
 import type { ObserveReport } from "../observe/verify.js";
+import { VERIFIERS, type VerifierId } from "../observe/verify.js";
 import { canonicalJson } from "../teardown/manifest.js";
 import type { ResolvedTarget } from "../teardown/driver/types.js";
 import { sha256 } from "../util/sha256.js";
@@ -82,8 +83,15 @@ export type ObservationRecord = {
   /** Identifiers tagged with the run's unit that the blueprint does not name. */
   unexpected: string[];
   inventory: ObserveReport["inventory"];
+  /**
+   * For every container resource the blueprint holds and the cloud reports present (an Azure resource group): the
+   * identifiers of everything inside it, every page, and whether the listing was complete. The proposal deletes a group
+   * only when every member is a resource of this run that is deleted with it. Empty for clouds without containers.
+   */
+  groups: ObservedGroup[];
   observedAt: string;
 };
+export type ObservedGroup = { address: string; identifier: string; members: string[]; complete: boolean };
 
 /** The disposition of one proposed resource after a cleanup, in the journey's words. */
 export type LeftoverDisposition = "CONFIRMED_DELETED" | "INTENTIONALLY_RETAINED" | "STILL_PRESENT" | "DELETION_PENDING" | "UNKNOWN";
@@ -93,7 +101,8 @@ export type LeftoverResource = {
   identifier: string | null;
   disposition: LeftoverDisposition;
   /** For CONFIRMED_DELETED: the independent read, or a parent whose absence proves this setting gone. For the rest: why. */
-  basis: "CLOUD_CONTROL_ABSENT" | "PARENT_ABSENT" | "RETENTION_DECISION" | "CLOUD_CONTROL_PRESENT" | "CLEANUP_NOT_FINISHED" | "NOT_INDEPENDENTLY_CHECKABLE" | "CHECK_FAILED";
+  /** What the disposition rests on: the provider's read API said absent or present (Cloud Control for AWS, Azure Resource Manager for Azure), a parent's absence, a retention decision, or why no proof exists. */
+  basis: LeftoverBasis;
   reason?: string;
   owner?: string;
 };
@@ -175,7 +184,7 @@ export function observationRecordProblems(value: unknown): string[] {
   if (!isRecord(value)) return ["observation record: expected an object"];
   const problems: string[] = [];
   const keys = ["schemaVersion", "kind", "artifactSha256", "applyEvidenceSha256", "blueprintSha256", "environment", "target", "sourceCommit", "contractSha256", "verifier",
-    "verifierBinarySha256", "verdict", "resources", "missingFromState", "unexpected", "inventory", "observedAt"];
+    "verifierBinarySha256", "verdict", "resources", "missingFromState", "unexpected", "inventory", "groups", "observedAt"];
   for (const key of Object.keys(value)) if (!keys.includes(key)) problems.push("observation record." + key + (RAW_KEY.test(key) ? ": raw state or output field" : ": not part of the record"));
   for (const key of keys) if (!Object.hasOwn(value, key)) problems.push("observation record." + key + ": missing");
   if (problems.length > 0) return problems;
@@ -184,21 +193,29 @@ export function observationRecordProblems(value: unknown): string[] {
   if (value.verifierBinarySha256 !== null && !hashText(value.verifierBinarySha256)) problems.push("observation record: verifierBinarySha256 is malformed");
   if (!ENVIRONMENTS.includes(value.environment as string) || !targetOk(value.target)) problems.push("observation record: environment or target is malformed");
   if (typeof value.sourceCommit !== "string" || !COMMIT.test(value.sourceCommit)) problems.push("observation record: sourceCommit is not a commit id");
-  if (value.verifier !== "AWS_CLOUD_CONTROL" || !["VERIFIED", "PARTIAL", "INCONCLUSIVE", "FAILED"].includes(value.verdict as string)) problems.push("observation record: verifier or verdict is unknown");
+  if (!VERIFIERS.includes(value.verifier as VerifierId) || !["VERIFIED", "PARTIAL", "INCONCLUSIVE", "FAILED"].includes(value.verdict as string)) problems.push("observation record: verifier or verdict is unknown");
   if (!Array.isArray(value.resources) || !value.resources.every(observedOk)) problems.push("observation record.resources: each needs address, type, identifier, origin and a result");
   if (!Array.isArray(value.missingFromState) || !value.missingFromState.every((x) => typeof x === "string") || !Array.isArray(value.unexpected) || !value.unexpected.every((x) => typeof x === "string")) {
     problems.push("observation record: missingFromState and unexpected are lists of addresses or identifiers");
   }
   if (!["COMPLETE", "INCOMPLETE", "NOT_AVAILABLE"].includes(value.inventory as string) || !isoText(value.observedAt)) problems.push("observation record: inventory or observedAt is malformed");
+  if (!Array.isArray(value.groups) || !value.groups.every((g) => isRecord(g) && Object.keys(g).sort().join() === "address,complete,identifier,members" && typeof g.address === "string" &&
+    typeof g.identifier === "string" && typeof g.complete === "boolean" && Array.isArray(g.members) && g.members.every((m) => typeof m === "string"))) {
+    problems.push("observation record.groups: each needs address, identifier, members (identifiers) and complete");
+  }
   return problems;
 }
 
 const DISPOSITIONS: readonly LeftoverDisposition[] = ["CONFIRMED_DELETED", "INTENTIONALLY_RETAINED", "STILL_PRESENT", "DELETION_PENDING", "UNKNOWN"];
-const BASES = ["CLOUD_CONTROL_ABSENT", "PARENT_ABSENT", "RETENTION_DECISION", "CLOUD_CONTROL_PRESENT", "CLEANUP_NOT_FINISHED", "NOT_INDEPENDENTLY_CHECKABLE", "CHECK_FAILED"];
+export type LeftoverBasis = "CLOUD_CONTROL_ABSENT" | "CLOUD_CONTROL_PRESENT" | "ARM_ABSENT" | "ARM_PRESENT" | "PARENT_ABSENT" | "RETENTION_DECISION" | "CLEANUP_NOT_FINISHED" | "NOT_INDEPENDENTLY_CHECKABLE" | "CHECK_FAILED";
+const BASES: readonly LeftoverBasis[] = ["CLOUD_CONTROL_ABSENT", "CLOUD_CONTROL_PRESENT", "ARM_ABSENT", "ARM_PRESENT", "PARENT_ABSENT", "RETENTION_DECISION", "CLEANUP_NOT_FINISHED", "NOT_INDEPENDENTLY_CHECKABLE", "CHECK_FAILED"];
+/** The read API's absent and present bases for a verifier, so a record never names a service that did not answer. */
+export const basesOf = (verifier: VerifierId): { absent: LeftoverBasis; present: LeftoverBasis } =>
+  verifier === "AZURE_RESOURCE_MANAGER" ? { absent: "ARM_ABSENT", present: "ARM_PRESENT" } : { absent: "CLOUD_CONTROL_ABSENT", present: "CLOUD_CONTROL_PRESENT" };
 function leftoverOk(value: unknown): value is LeftoverResource {
   return isRecord(value) && Object.keys(value).every((key) => ["address", "type", "identifier", "disposition", "basis", "reason", "owner"].includes(key)) &&
     typeof value.address === "string" && typeof value.type === "string" && idText(value.identifier) && DISPOSITIONS.includes(value.disposition as LeftoverDisposition) &&
-    BASES.includes(value.basis as string) && (value.reason === undefined || typeof value.reason === "string") && (value.owner === undefined || typeof value.owner === "string");
+    BASES.includes(value.basis as LeftoverBasis) && (value.reason === undefined || typeof value.reason === "string") && (value.owner === undefined || typeof value.owner === "string");
 }
 
 /** Every reason this is not a leftovers record. Empty means it is. A COMPLETE disposition with anything but confirmed deletions and retentions is refused here too. */
@@ -216,7 +233,7 @@ export function leftoversRecordProblems(value: unknown): string[] {
   if (value.verifierBinarySha256 !== null && !hashText(value.verifierBinarySha256)) problems.push("leftovers record: verifierBinarySha256 is malformed");
   if (!ENVIRONMENTS.includes(value.environment as string) || !targetOk(value.target)) problems.push("leftovers record: environment or target is malformed");
   if (typeof value.sourceCommit !== "string" || !COMMIT.test(value.sourceCommit)) problems.push("leftovers record: sourceCommit is not a commit id");
-  if (value.verifier !== "AWS_CLOUD_CONTROL") problems.push("leftovers record: verifier is unknown");
+  if (!VERIFIERS.includes(value.verifier as VerifierId)) problems.push("leftovers record: verifier is unknown");
   const resources = value.resources;
   if (!Array.isArray(resources) || !resources.every(leftoverOk)) problems.push("leftovers record.resources: each needs address, type, identifier, disposition and basis");
   else {

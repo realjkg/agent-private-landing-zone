@@ -268,6 +268,114 @@ export const stateResource = (type: string, name: string, id: string, arn?: stri
   instances: [{ schema_version: 0, attributes: { id, ...(arn ? { arn } : {}), secret_value: STATE_CANARY } }],
 });
 
+/** An azurerm state resource: its `id` is the ARM resource id, which is what the Azure reader asks about. */
+export const azureStateResource = (type: string, name: string, id: string, module?: string) => ({
+  ...(module ? { module } : {}), mode: "managed", type, name, provider: 'provider["registry.terraform.io/hashicorp/azurerm"]',
+  instances: [{ schema_version: 0, attributes: { id, secret_value: STATE_CANARY } }],
+});
+
+// --- the scripted Azure Resource Manager client the reader reads with ---------------------------------------------
+
+/**
+ * A scripted HTTP client for the Azure reader (src/observe/azure-rest.ts): the token endpoint answers the DISCOVERY
+ * identity's federated token with an access token; management.azure.com answers provider API versions, one resource
+ * by id (from a list of existing ids) and the tag listing (from a list of tagged ids). Logic only: NOT the real API.
+ * Every request is recorded so a test can prove what was sent, to which host, and that no token appeared where it must not.
+ */
+export type ArmBehavior = {
+  /** ARM ids that exist. */
+  existing?: string[];
+  /** ARM ids whose read answers this status. */
+  fail?: Record<string, number>;
+  /** Ids the tag listing returns (resources and resource groups together), split across pages when `pages` is set. */
+  tagged?: string[];
+  pages?: number;
+  /** The token endpoint answers this status instead of 200. */
+  tokenStatus?: number;
+  /** Every management request answers this status (an identity without access). */
+  failAll?: number;
+  /** Resource types (namespace/type) the provider does not list. */
+  unknownTypes?: string[];
+  /** Resource types (namespace/type) the provider offers only in preview API versions. */
+  previewOnlyTypes?: string[];
+  /** What each resource group holds (group id → member ids); a group not named here holds nothing. */
+  groupMembers?: Record<string, string[]>;
+  /** Pages for a group listing; `groupListingFails` makes the second page answer 500, an incomplete listing. */
+  groupPages?: number;
+  groupListingFails?: boolean;
+  /** The group-scope extension listings (role assignments, policy assignments, locks) answer this status (an identity that may read resources but not grants). */
+  extensionListingStatus?: number;
+};
+export type ArmCall = { method: string; url: string; headers: Record<string, string>; body?: string };
+/** The federated token the fake identity carries, and the access token the fake endpoint issues: canaries that must never appear in a record. */
+export const ARM_FEDERATED_TOKEN_CANARY = "CANARY_FEDERATED_TOKEN_f3d3r4t3d";
+export const ARM_ACCESS_TOKEN_CANARY = "CANARY_ACCESS_TOKEN_4cc355";
+export function fakeArmHttp(behavior: ArmBehavior = {}): { http: (request: ArmCall) => Promise<{ status: number; body: string }>; calls: ArmCall[]; behave(next: ArmBehavior): void } {
+  const calls: ArmCall[] = [];
+  let b = behavior;
+  const typeOf = (id: string): string => { const m = /\/providers\/([A-Za-z0-9.]+)\/(.+)$/.exec(id); if (!m) return "Microsoft.Resources/resourceGroups"; const seg = m[2].split("/"); return m[1] + "/" + seg.filter((_, i) => i % 2 === 0).join("/"); };
+  const http = async (request: ArmCall) => {
+    calls.push({ ...request, headers: { ...request.headers } });
+    const url = new URL(request.url);
+    if (url.host === "login.microsoftonline.com") {
+      const params = new URLSearchParams(request.body ?? "");
+      if (params.get("client_assertion") !== ARM_FEDERATED_TOKEN_CANARY || params.get("grant_type") !== "client_credentials") return { status: 401, body: JSON.stringify({ error: "invalid_client" }) };
+      if (b.tokenStatus && b.tokenStatus !== 200) return { status: b.tokenStatus, body: JSON.stringify({ error: "CANARY_CLOUD_ERROR_c6" }) };
+      return { status: 200, body: JSON.stringify({ token_type: "Bearer", expires_in: 3599, access_token: ARM_ACCESS_TOKEN_CANARY }) };
+    }
+    if (url.host !== "management.azure.com") return { status: 0, body: "" };
+    if (request.headers.authorization !== "Bearer " + ARM_ACCESS_TOKEN_CANARY) return { status: 401, body: JSON.stringify({ error: { code: "InvalidAuthenticationToken" } }) };
+    if (b.failAll) return { status: b.failAll, body: JSON.stringify({ error: { code: "CANARY_CLOUD_ERROR_c6", message: "CANARY_CLOUD_ERROR_c6" } }) };
+    const path = decodeURIComponent(url.pathname);
+    const providers = /^\/subscriptions\/[^/]+\/providers\/([A-Za-z0-9.]+)$/.exec(path);
+    if (providers) {
+      const namespace = providers[1];
+      // The real provider lists every type it offers whether or not a resource exists; the fake knows a few common ones plus whatever the scenario names.
+      const KNOWN_TYPES = ["Microsoft.OperationalInsights/workspaces", "Microsoft.Storage/storageAccounts", "Microsoft.Storage/storageAccounts/blobServices/containers", "Microsoft.Authorization/roleAssignments", "Microsoft.KeyVault/vaults"];
+      const types = new Set([...KNOWN_TYPES, ...[...(b.existing ?? []), ...Object.keys(b.fail ?? {}), ...(b.tagged ?? [])].map(typeOf)].filter((t) => t.toLowerCase().startsWith(namespace.toLowerCase() + "/")).map((t) => t.slice(namespace.length + 1)));
+      const resourceTypes = [...types].filter((t) => !(b.unknownTypes ?? []).includes(namespace + "/" + t))
+        .map((t) => ({ resourceType: t, apiVersions: (b.previewOnlyTypes ?? []).includes(namespace + "/" + t) ? ["2024-01-01-preview"] : ["2024-01-01-preview", "2023-05-01"] }));
+      return { status: 200, body: JSON.stringify({ namespace, resourceTypes }) };
+    }
+    // What a group holds: its top-level resources at `/resources`, and its scope's role assignments, policy assignments and locks
+    // at the Authorization provider (the real `atScope()` answers also carry inherited assignments from above; the fake adds one).
+    const groupListing = /^(\/subscriptions\/[^/]+\/resourceGroups\/[^/]+)\/(resources|providers\/Microsoft\.Authorization\/(roleAssignments|policyAssignments|locks|policyExemptions))$/i.exec(path);
+    if (groupListing) {
+      const extension = groupListing[3];
+      if (extension && b.extensionListingStatus && b.extensionListingStatus !== 200) return { status: b.extensionListingStatus, body: JSON.stringify({ error: { code: "CANARY_CLOUD_ERROR_c6" } }) };
+      const isExtension = (id: string) => /\/providers\/Microsoft\.Authorization\/(roleAssignments|policyAssignments|locks|policyExemptions)\//i.test(id);
+      const groupId = Object.keys(b.groupMembers ?? {}).find((id) => id.toLowerCase() === groupListing[1].toLowerCase());
+      const members = groupId ? (b.groupMembers ?? {})[groupId] : [];
+      const inherited = extension && extension !== "locks" && extension !== "policyExemptions" ? ["/subscriptions/" + path.split("/")[2] + "/providers/Microsoft.Authorization/" + extension + "/99999999-0000-4000-8000-00000000inhe"] : [];
+      const all = extension ? [...members.filter((id) => new RegExp("/Microsoft\\.Authorization/" + extension + "/", "i").test(id)), ...inherited] : members.filter((id) => !isExtension(id));
+      const pages = Math.max(1, b.groupPages ?? 1);
+      const page = Number(url.searchParams.get("$skiptoken") ?? "0");
+      if (b.groupListingFails && page > 0) return { status: 500, body: JSON.stringify({ error: { code: "CANARY_CLOUD_ERROR_c6" } }) };
+      const size = Math.ceil(all.length / pages) || 1;
+      const value = all.slice(page * size, (page + 1) * size).map((id) => ({ id, name: id.split("/").pop(), type: typeOf(id) }));
+      const next = page + 1 < pages ? request.url.replace(/&\$skiptoken=\d+/, "") + "&$skiptoken=" + (page + 1) : undefined;
+      return { status: 200, body: JSON.stringify({ value, ...(next ? { nextLink: next } : {}) }) };
+    }
+    if (/^\/subscriptions\/[^/]+\/(resources|resourcegroups)$/i.test(path) && url.searchParams.has("$filter")) {
+      const collection = path.toLowerCase().endsWith("/resources") ? "resources" : "groups";
+      const all = (b.tagged ?? []).filter((id) => (/\/providers\//.test(id) ? "resources" : "groups") === collection);
+      const pages = Math.max(1, b.pages ?? 1);
+      const page = Number(url.searchParams.get("$skiptoken") ?? "0");
+      const size = Math.ceil(all.length / pages) || 1;
+      const value = all.slice(page * size, (page + 1) * size).map((id) => ({ id, name: id.split("/").pop(), type: typeOf(id), tags: { "alz-unit": "x" } }));
+      const next = page + 1 < pages ? request.url.replace(/&\$skiptoken=\d+/, "") + "&$skiptoken=" + (page + 1) : undefined;
+      return { status: 200, body: JSON.stringify({ value, ...(next ? { nextLink: next } : {}) }) };
+    }
+    const lower = path.toLowerCase();
+    const failing = Object.entries(b.fail ?? {}).find(([id]) => id.toLowerCase() === lower);
+    if (failing) return { status: failing[1], body: JSON.stringify({ error: { code: "CANARY_CLOUD_ERROR_c6", message: "CANARY_CLOUD_ERROR_c6" } }) };
+    const found = (b.existing ?? []).find((id) => id.toLowerCase() === lower);
+    if (found) return { status: 200, body: JSON.stringify({ id: found, name: found.split("/").pop(), type: typeOf(found), properties: { secret: "CANARY_CLOUD_PROPERTY_c5" } }) };
+    return { status: 404, body: JSON.stringify({ error: { code: "ResourceNotFound", message: "not found" } }) };
+  };
+  return { http, calls, behave: (next) => { b = next; calls.length = 0; } };
+}
+
 export type Call = {
   args: string[]; cwd: string; env: Record<string, string>; backendConfig?: string; planPath?: string;
   planSha?: string; planMode?: number; backendMode?: number; backendFileExists?: boolean; planText?: string; planDir?: string; pid?: number;

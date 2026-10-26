@@ -59,8 +59,50 @@ export type ObserveReport = {
    * nothing unexpected. NOT_AVAILABLE: the run's resources carry no deletion-unit tag, so there is nothing to list by.
    */
   inventory: "COMPLETE" | "INCOMPLETE" | "NOT_AVAILABLE";
-  verifier: "AWS_CLOUD_CONTROL";
+  verifier: VerifierId;
 };
+
+/** Which independent read API answered: AWS Cloud Control through the aws CLI, or Azure Resource Manager through its REST API. */
+export type VerifierId = "AWS_CLOUD_CONTROL" | "AZURE_RESOURCE_MANAGER";
+export const VERIFIERS: readonly VerifierId[] = ["AWS_CLOUD_CONTROL", "AZURE_RESOURCE_MANAGER"];
+
+/**
+ * One cloud's independent reader: existence of one blueprint entry, and the identifiers carrying this run's unit tag.
+ * Both read-only, both under the DISCOVERY identity, both returning existence and identifiers and nothing else.
+ */
+export type ResourceReader = {
+  verifier: VerifierId;
+  check(entry: BlueprintEntry): Promise<ResourceCheck>;
+  /** Identifiers tagged with the unit, and whether the listing covered every page; undefined when the listing failed. */
+  listTagged(unitId: string): Promise<{ identifiers: string[]; complete: boolean } | undefined>;
+  /**
+   * The identifiers of every resource inside a container resource (an Azure resource group), every page; undefined when
+   * the listing failed. A reader whose cloud has no such containers leaves it out.
+   */
+  listGroup?(groupIdentifier: string): Promise<{ identifiers: string[]; complete: boolean } | undefined>;
+};
+
+/** How a verifier is handed in: the AWS CLI with its region (the original shape), or any reader. */
+export type ReaderInput = { region: string; aws: AwsCli } | { reader: ResourceReader };
+export const readerOf = (input: ReaderInput): ResourceReader => "reader" in input ? input.reader : cloudControlReader(input.aws, input.region);
+
+/** The AWS reader: Cloud Control for existence, the tagging API for the sweep. */
+export function cloudControlReader(aws: AwsCli, region: string): ResourceReader {
+  return {
+    verifier: "AWS_CLOUD_CONTROL",
+    check: (entry) => checkResource(entry, region, aws),
+    async listTagged(unitId) {
+      try {
+        const result = await aws(["resourcegroupstaggingapi", "get-resources", "--tag-filters", "Key=" + ALZ_TAG_KEYS.unit + ",Values=" + unitId, "--region", region, "--output", "json"]);
+        if (result.code !== 0) return undefined;
+        const inventory = parseAwsTaggedResources(result.stdout);
+        return { identifiers: inventory.resources.map((resource) => resource.resourceId), complete: inventory.complete };
+      } catch {
+        return undefined;
+      }
+    },
+  };
+}
 
 const ERROR_CLASSES: readonly [RegExp, string][] = [
   [/AccessDenied|UnauthorizedOperation|not authorized/i, "ACCESS_DENIED"],
@@ -129,10 +171,11 @@ export async function unexpectedTagged(blueprint: Blueprint, unitId: string, reg
  * so nothing was checked; nothing is known to be wrong.
  * FAILED: something planned is absent or missing from the state, or an unexpected resource carries the tag.
  */
-export async function observeBlueprint(blueprint: Blueprint, input: { unitId: string | null; region: string; aws: AwsCli }): Promise<ObserveReport> {
+export async function observeBlueprint(blueprint: Blueprint, input: { unitId: string | null } & ReaderInput): Promise<ObserveReport> {
+  const reader = readerOf(input);
   const checks: ResourceCheck[] = [];
-  for (const entry of blueprint.entries) checks.push(await checkResource(entry, input.region, input.aws));
-  const listed = input.unitId === null ? null : await unexpectedTagged(blueprint, input.unitId, input.region, input.aws);
+  for (const entry of blueprint.entries) checks.push(await reader.check(entry));
+  const listed = input.unitId === null ? null : unexpectedOf(blueprint, await reader.listTagged(input.unitId), reader.verifier);
   const inventory = listed === null ? "NOT_AVAILABLE" : listed.complete ? "COMPLETE" : "INCOMPLETE";
   const unexpected = listed?.unexpected ?? [];
   const has = (existence: Existence) => checks.some((check) => check.existence === existence);
@@ -140,5 +183,17 @@ export async function observeBlueprint(blueprint: Blueprint, input: { unitId: st
     has("ABSENT") || blueprint.missing.length > 0 || unexpected.length > 0 ? "FAILED"
     : has("UNKNOWN") || inventory === "INCOMPLETE" || blueprint.entries.length === 0 ? "INCONCLUSIVE"
     : has("NOT_CHECKABLE") || inventory === "NOT_AVAILABLE" ? "PARTIAL" : "VERIFIED";
-  return { verdict, checks, missingFromState: [...blueprint.missing], unexpected, inventory, verifier: "AWS_CLOUD_CONTROL" };
+  return { verdict, checks, missingFromState: [...blueprint.missing], unexpected, inventory, verifier: reader.verifier };
+}
+
+/**
+ * The listed identifiers the blueprint does not name, from any reader's listing. A failed listing is incomplete and names
+ * nothing. Identifiers are compared exactly, except under Azure Resource Manager, whose ids are case-insensitive: an AWS
+ * ARN that differs only in case names another resource (queue, topic and function names are case-sensitive) and stays a stray.
+ */
+export function unexpectedOf(blueprint: Blueprint, listed: { identifiers: string[]; complete: boolean } | undefined, verifier: VerifierId): { unexpected: string[]; complete: boolean } {
+  if (!listed) return { unexpected: [], complete: false };
+  const fold = (x: string): string => verifier === "AZURE_RESOURCE_MANAGER" ? x.toLowerCase() : x;
+  const known = new Set(blueprint.entries.flatMap((entry) => [entry.arn, entry.id]).filter((x): x is string => x !== null).map(fold));
+  return { unexpected: listed.identifiers.filter((identifier) => !known.has(fold(identifier))).sort(), complete: listed.complete };
 }

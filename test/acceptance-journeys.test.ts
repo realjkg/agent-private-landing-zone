@@ -16,14 +16,14 @@ test("the shipped journey matrix holds only claims the repository backs", () => 
   const result = checkJourneyMatrix(loadJourneyMatrix(repoRoot), repoRoot);
   assert.deepEqual(result.problems, []);
   assert.deepEqual(result.rows.map((row) => row.cloud + "/" + row.path), REQUIRED_ROWS.map((row) => row.cloud + "/" + row.path));
-  // The focus row (AWS Terraform) is implemented end to end synthetically: every step and every proof passes with a fake engine
-  // and a fake AWS CLI. Nothing is live, and every other row still has open steps.
+  // The two Terraform rows (AWS, the focus row, and Azure) are implemented end to end synthetically: every step and every proof
+  // passes with a fake engine and a fake AWS CLI or a scripted Azure Resource Manager. Nothing is live, and every other row still has open steps.
   for (const row of result.rows) {
-    const focus = row.cloud === "AWS" && row.path === "TERRAFORM";
-    assert.equal(row.implemented, focus, row.cloud + "/" + row.path);
-    assert.equal(row.steps.observe === "SYNTHETIC_PASS" && row.steps.cleanup === "SYNTHETIC_PASS", focus, row.cloud + "/" + row.path);
+    const terraform = row.path === "TERRAFORM" && (row.cloud === "AWS" || row.cloud === "AZURE");
+    assert.equal(row.implemented, terraform, row.cloud + "/" + row.path);
+    assert.equal(row.steps.observe === "SYNTHETIC_PASS" && row.steps.cleanup === "SYNTHETIC_PASS", terraform, row.cloud + "/" + row.path);
     assert.notEqual(row.live, "LIVE_PASS");
-    assert.equal(row.status === "SYNTHETIC_PASS", focus, row.cloud + "/" + row.path);
+    assert.equal(row.status === "SYNTHETIC_PASS", terraform, row.cloud + "/" + row.path);
   }
 });
 

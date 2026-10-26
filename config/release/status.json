@@ -241,7 +241,7 @@
         "the candidate commit changes",
         "the Terraform pin or the Azure provider adapter changes"
       ],
-      "nextAction": "Add the Azure Terraform brownfield preview scenario to the qualification scenarios; no scenario produces this gate's evidence yet."
+      "nextAction": "Deferred, not forgotten: no scenario produces this gate's evidence yet. The preview scenario set holds one scenario per engine adapter (test/phase-e-simulated-builds.test.ts), so an Azure Terraform brownfield preview needs its own PLAN before it is added; the Azure Terraform lifecycle (act:azure-terraform) passes synthetically in the meantime and does not stand in for this gate."
     },
     {
       "gate": "isolated-recovery",
@@ -436,7 +436,9 @@
       "status": "BLOCKED",
       "evidenceMode": "SYNTHETIC",
       "evidenceRefs": [
-        "config/acceptance/journeys.json (AZURE TERRAFORM: prepare to execute SYNTHETIC_PASS)"
+        "config/acceptance/journeys.json (AZURE TERRAFORM: every step and proof SYNTHETIC_PASS)",
+        "test/apply-cleanup-azure.test.ts",
+        "test/ui-channel.test.ts (Azure Terraform in the console: observe, propose, approve, clean up, verify)"
       ],
       "testedScope": "Full lifecycle on the real Azure DEV subscription.",
       "invalidatedBy": [
@@ -444,7 +446,7 @@
         "the pilot contract or its pin changes",
         "src/apply or the Terraform pin changes"
       ],
-      "nextAction": "Waits on the AWS Terraform row going live first; then engineering finishes observe and cleanup and the owner supplies the pinned Azure contract inputs (identifiers and public keys only)."
+      "nextAction": "The Azure Terraform row now passes synthetically end to end (prepare, preview, approve, execute, observe, cleanup, leftovers; the Azure reader exchanges the DISCOVERY federated token in process and reads Azure Resource Manager). Waits on the AWS Terraform row going live first; then the owner supplies the pinned Azure contract inputs (identifiers, the OIDC token files on the execution host and public keys only) and supervises one DEV apply."
     },
     {
       "gate": "act:aws-cdk",

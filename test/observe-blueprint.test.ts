@@ -108,6 +108,12 @@ test("observe denied: an absent resource, a planned resource missing from the st
   const unexpected = await observeBlueprint(blueprint, { unitId: "u", region: "us-east-2", aws: fakeAws(everything, { tagged: [extra, "arn:aws:s3:::" + BUCKET] }).aws });
   assert.equal(unexpected.verdict, "FAILED");
   assert.deepEqual(unexpected.unexpected, [extra]);
+  // AWS identifiers are compared exactly: an ARN that differs from a known one only in case names another resource and stays a stray.
+  const spelled = "arn:aws:s3:::" + BUCKET.toUpperCase();
+  const cased = await observeBlueprint(blueprint, { unitId: "u", region: "us-east-2", aws: fakeAws(everything, { tagged: [spelled, "arn:aws:s3:::" + BUCKET] }).aws });
+  assert.equal(cased.verdict, "FAILED");
+  assert.deepEqual(cased.unexpected, [spelled]);
+  assert.equal(cased.inventory, "COMPLETE");
 });
 
 test("observe interrupted: access, throttling, credentials or a paginated listing never pass, and no unit tag caps the verdict", async () => {

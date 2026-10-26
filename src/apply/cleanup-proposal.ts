@@ -8,6 +8,9 @@ import type { BlueprintRecord, ObservationRecord, ObservedResource } from "./run
 import { PILOT_CHANNELS, type ApplyEnvironment, type ApplyEvidence, type ApplyRefusalCode, type EngineId, type PilotChannel, type PilotContract, type PlanChange, type ProviderId } from "./types.js";
 import { isResourceAddress } from "./terraform.js";
 import type { AwsTarget } from "./providers/aws.js";
+import type { AzureTarget } from "./providers/azure.js";
+import { isContainerEntry } from "./observe.js";
+import { armPathSafe, armTypeOf, isArmScopeId } from "../observe/azure-rest.js";
 
 /**
  * The cleanup proposal (docs/act-pilot-plan.md, "Cleanup of pilot-created resources"): the reviewable, hash-identified list
@@ -23,14 +26,14 @@ import type { AwsTarget } from "./providers/aws.js";
  * Approvers sign the proposal's hash under the cleanup domain (src/apply/approval.ts); the cleanup driver destroys the
  * proposal's addresses and nothing else, and refuses when the engine's destroy plan differs from them.
  */
-export type Ownership = "RUN_CREATED" | "PRE_EXISTING" | "REPLACED_PRE_EXISTING" | "IMPORTED" | "NOT_IN_PLAN" | "PROTECTED_BACKEND" | "PROTECTED_IDENTITY";
+export type Ownership = "RUN_CREATED" | "PRE_EXISTING" | "REPLACED_PRE_EXISTING" | "IMPORTED" | "NOT_IN_PLAN" | "PROTECTED_BACKEND" | "PROTECTED_IDENTITY" | "CONTAINS_OTHERS";
 
 export type ProposedDeletion = {
   address: string;
   type: string;
   identifier: string | null;
   ownership: "RUN_CREATED";
-  /** What the independent observation said: VERIFIED (present under its identifier) or UNVERIFIABLE (a setting Cloud Control cannot read alone). */
+  /** What the independent observation said: VERIFIED (present under its identifier) or UNVERIFIABLE (a setting or object the independent reader cannot read alone). */
   observed: "VERIFIED" | "UNVERIFIABLE";
   /** A material risk of deleting this kind of resource, when the type is known to hold data or to have a deletion window. */
   risk?: string;
@@ -94,12 +97,68 @@ const MATERIAL_RISKS: Readonly<Record<string, string>> = {
   aws_rds_instance: "deletes the database and its data unless a final snapshot was configured",
   aws_db_instance: "deletes the database and its data unless a final snapshot was configured",
   aws_ebs_volume: "deletes the volume and its data",
+  azurerm_resource_group: "deletes every resource in the group, including any the state never recorded",
+  azurerm_storage_account: "deletes stored blobs, tables, queues and files, which cannot be recovered",
+  azurerm_storage_container: "deletes stored blobs, which cannot be recovered",
+  azurerm_key_vault: "soft-deletes the vault; purge protection or the retention window decides when its secrets are gone for good",
+  azurerm_log_analytics_workspace: "deletes retained log data (the workspace may stay recoverable for a limited time)",
+  azurerm_mssql_database: "deletes the database and its data unless a backup was kept",
+  azurerm_postgresql_flexible_server: "deletes the server and its databases unless a backup was kept",
+  azurerm_kubernetes_cluster: "deletes the cluster and every workload running in it",
+  azurerm_resource_group_template_deployment: "with the provider's default, deletes every resource the template deployed, including pre-existing resources an incremental deployment adopted",
+  azurerm_subscription_template_deployment: "with the provider's default, deletes every resource the template deployed, including pre-existing resources an incremental deployment adopted",
+  azurerm_management_group_template_deployment: "with the provider's default, deletes every resource the template deployed, including pre-existing resources an incremental deployment adopted",
+  azurerm_tenant_template_deployment: "with the provider's default, deletes every resource the template deployed, including pre-existing resources an incremental deployment adopted",
 };
+
+/**
+ * Azure identity objects and grants the pilot runs on; a run that created one still never deletes it from here (fail closed:
+ * an identity, or a role grant whose principal the state does not name, needs its own decision). Every `azuread_*` type counts.
+ */
+const AZURE_IDENTITY_TYPES = new Set(["azurerm_user_assigned_identity", "azurerm_federated_identity_credential", "azurerm_role_assignment", "azurerm_role_definition"]);
+const isAzureIdentityType = (type: string): boolean => type.startsWith("azuread_") || AZURE_IDENTITY_TYPES.has(type);
+/** Scopes that hold other people's deployments: never proposed, whatever created them, because nothing here can list what deleting them would take. */
+const AZURE_SCOPE_TYPES = new Set(["azurerm_subscription", "azurerm_subscription_alias", "azurerm_management_group", "azurerm_management_group_subscription_association"]);
+const isAzureScope = (entry: { type: string; id: string | null }): boolean => AZURE_SCOPE_TYPES.has(entry.type) || (entry.id !== null && isArmScopeId(entry.id));
+
+/** A storage data-plane URL (`https://<account>.blob.core.windows.net/<container>`), which the azurerm provider uses as the id of containers and blobs. */
+const STORAGE_DATA_PLANE = /^https:\/\/([a-z0-9]{3,24})\.(?:blob|dfs|file|queue|table|web)\.core\.windows\.net(?:\/|$)/;
+/** The backend storage accounts of every environment's `<storage-account>/<container>/<key>`. */
+const azureBackendAccounts = (contract: PilotContract): Set<string> => new Set(Object.values(contract.targets).map((target) => (target as AzureTarget).backend.split("/")[0].toLowerCase()));
+/** Whether an id names a backend account in any form: the account name, an ARM id under it, or a data-plane URL on it. */
+function namesBackendAccount(id: string | null, accounts: Set<string>): boolean {
+  if (id === null) return false;
+  const lower = id.toLowerCase();
+  const arm = /\/storageaccounts\/([a-z0-9]{3,24})(?:\/|$)/.exec(lower)?.[1];
+  const dataPlane = STORAGE_DATA_PLANE.exec(lower)?.[1];
+  return accounts.has(lower) || (arm !== undefined && accounts.has(arm)) || (dataPlane !== undefined && accounts.has(dataPlane));
+}
+/** The resource groups that hold a backend storage account, from the backend account ARM ids the state names: deleting such a group would delete the backend. */
+function azureBackendGroups(entries: readonly { type: string; id: string | null }[], accounts: Set<string>): Set<string> {
+  const groups = new Set<string>();
+  for (const entry of entries) {
+    if (!/^azurerm_storage_/.test(entry.type) || !namesBackendAccount(entry.id, accounts)) continue;
+    const group = /^(\/subscriptions\/[^/]+\/resourcegroups\/[^/]+)\//.exec((entry.id ?? "").toLowerCase())?.[1];
+    if (group) groups.add(group);
+  }
+  return groups;
+}
+
+/** The Azure bootstrap a cleanup never touches: the backend storage account in any form, its containers and settings, the group that holds it, and the pilot's identities and grants. */
+function azureProtectionOf(entry: { type: string; id: string | null }, contract: PilotContract, backendGroups: Set<string>): ExcludedResource["ownership"] | undefined {
+  const accounts = azureBackendAccounts(contract);
+  if (/^azurerm_storage_/.test(entry.type) && namesBackendAccount(entry.id, accounts)) return "PROTECTED_BACKEND";
+  if (isContainerEntry(entry) && entry.id !== null && backendGroups.has(entry.id.toLowerCase())) return "PROTECTED_BACKEND";
+  if (isAzureIdentityType(entry.type)) return "PROTECTED_IDENTITY";
+  if (isAzureScope(entry)) return "CONTAINS_OTHERS";
+  return undefined;
+}
 
 const IDENTITY_TYPES = new Set(["aws_iam_openid_connect_provider", "aws_iam_role", "aws_iam_role_policy", "aws_iam_role_policy_attachment", "aws_iam_policy"]);
 
 /** The bootstrap the pilot runs on, which a cleanup never touches: the state backend and the identities that run it. */
-function protectionOf(entry: { type: string; id: string | null; arn: string | null }, contract: PilotContract, env: NodeJS.ProcessEnv): ExcludedResource["ownership"] | undefined {
+function protectionOf(entry: { type: string; id: string | null; arn: string | null }, contract: PilotContract, env: NodeJS.ProcessEnv, backendGroups: Set<string>): ExcludedResource["ownership"] | undefined {
+  if (contract.provider === "AZURE") return azureProtectionOf(entry, contract, backendGroups);
   if (contract.provider !== "AWS") return undefined;
   const pinned = contract.targets[contract.enabledEnvironments?.[0] ?? "DEV"] as AwsTarget | undefined;
   const buckets = new Set(Object.values(contract.targets).map((target) => (target as AwsTarget).backend.split("/")[0]));
@@ -159,17 +218,24 @@ export function buildCleanupProposal(input: ProposalInput): { ok: true; proposal
   const alreadyAbsent: AbsentResource[] = [];
   const excluded: ExcludedResource[] = [];
   const risks = new Set<string>();
+  const backendGroups = contract.provider === "AZURE" ? azureBackendGroups(record.blueprint.entries, azureBackendAccounts(contract)) : new Set<string>();
   for (const entry of record.blueprint.entries) {
     // The identifier the independent verifier uses for this type (the one it will be asked about again after the cleanup), else whatever the state had.
     const mapping = CLOUD_CONTROL_TYPES[entry.type];
-    const identifier = mapping ? (mapping.identifier === "arn" ? entry.arn : entry.id) ?? entry.arn ?? entry.id : entry.arn ?? entry.id;
+    const identifier = contract.provider === "AZURE" ? entry.id : mapping ? (mapping.identifier === "arn" ? entry.arn : entry.id) ?? entry.arn ?? entry.id : entry.arn ?? entry.id;
     const base = { address: entry.address, type: entry.type, identifier };
     if (!isResourceAddress(entry.address) || HAS_INVISIBLE.test(entry.address) || HAS_INVISIBLE.test(entry.type)) {
       return refuse("OWNERSHIP_AMBIGUOUS", "A resource address in the state is not one the cleanup can name exactly. A person reviews it by hand; no cleanup proposal is made.");
     }
-    const protection = protectionOf(entry, contract, input.env);
+    // An ARM-shaped id the URL parser would rewrite (a `..` segment, a backslash, a percent escape) names no resource exactly; the state that holds it is reviewed by hand.
+    if (contract.provider === "AZURE" && identifier !== null && identifier.startsWith("/") && !armPathSafe(identifier)) {
+      return refuse("OWNERSHIP_AMBIGUOUS", "The state holds an identifier for " + entry.address + " that cannot be read exactly as written. A person reviews it by hand; no cleanup proposal is made.");
+    }
+    const protection = protectionOf(entry, contract, input.env, backendGroups);
     if (protection) {
-      excluded.push({ ...base, ownership: protection, reason: protection === "PROTECTED_BACKEND" ? "the state backend the pilot itself runs on is never deleted by a cleanup" : "a pilot identity or trust is never deleted by a cleanup" });
+      excluded.push({ ...base, ownership: protection, reason: protection === "PROTECTED_BACKEND" ? "the state backend the pilot itself runs on is never deleted by a cleanup"
+        : protection === "CONTAINS_OTHERS" ? "a subscription or management group holds deployments no listing here accounts for; it is never deleted by a cleanup"
+        : "a pilot identity or trust is never deleted by a cleanup" });
       continue;
     }
     const change = byAddress.get(entry.address);
@@ -181,15 +247,32 @@ export function buildCleanupProposal(input: ProposalInput): { ok: true; proposal
     if (seen === undefined || seen.result === "NOT_YET_OBSERVABLE" || seen.result === "DIFFERENT_FROM_DESIRED") {
       return refuse("OBSERVATION_INCONCLUSIVE", "The observation could not decide about " + entry.address + " (" + (seen?.reason ?? "not observed") + "). Observe this run again before proposing a cleanup.");
     }
-    if (seen.result === "UNVERIFIABLE" && seen.reason !== "NO_CLOUD_CONTROL_MAPPING" && seen.reason !== "NO_IDENTIFIER_IN_STATE" && seen.reason !== "NOT_INDEPENDENTLY_CHECKABLE") {
+    // A type the reader cannot address (no Cloud Control mapping; an Azure id that is not an ARM resource id) is named, not refused; a denied or failed read is refused.
+    // On Azure an entry with no id cannot be classified at all (a container, a scope, a backend?), so it is refused rather than proposed.
+    const accepted = contract.provider === "AZURE" ? ["NOT_AN_ARM_RESOURCE_ID"] : ["NO_CLOUD_CONTROL_MAPPING", "NO_IDENTIFIER_IN_STATE", "NOT_INDEPENDENTLY_CHECKABLE"];
+    if (seen.result === "UNVERIFIABLE" && !accepted.includes(seen.reason ?? "")) {
       return refuse("OBSERVATION_INCONCLUSIVE", "The observation was refused for " + entry.address + " (" + seen.reason + "). Fix the DISCOVERY identity's access and observe again.");
     }
     if (seen.result === "MISSING") { alreadyAbsent.push(base); continue; }
-    const risk = MATERIAL_RISKS[entry.type];
+    // A risk is keyed by the Terraform type, and for Azure also by the ARM type the id names (an azapi_resource deployment is a deployment).
+    const armType = contract.provider === "AZURE" && entry.id !== null ? armTypeOf(entry.id) : undefined;
+    const risk = MATERIAL_RISKS[entry.type] ?? (armType && /^Microsoft\.Resources$/i.test(armType.namespace) && /^deployments$/i.test(armType.typePath) ? MATERIAL_RISKS.azurerm_resource_group_template_deployment : undefined);
     if (risk) risks.add(entry.type + ": " + risk);
     deletes.push({ ...base, ownership: "RUN_CREATED", observed: seen.result === "VERIFIED" ? "VERIFIED" : "UNVERIFIABLE", ...(risk ? { risk } : {}) });
   }
-  if (deletes.some((x) => x.observed === "UNVERIFIABLE")) risks.add("some listed resources are settings Cloud Control cannot read alone; their deletion is proved through the resource they belong to");
+  // A container (an Azure resource group) is never deleted on run ownership alone: the observation listed its members, and
+  // every one must be a resource of this run that goes with it. Anything else inside, or an incomplete listing, keeps it.
+  const deletedIdentifiers = new Set(deletes.map((d) => d.identifier?.toLowerCase()).filter((x): x is string => x !== undefined));
+  for (const group of deletes.filter((d) => isContainerEntry({ type: d.type, id: d.identifier }))) {
+    const listed = observation.groups.find((g) => g.address === group.address && g.identifier.toLowerCase() === (group.identifier ?? "").toLowerCase());
+    const others = listed ? listed.members.filter((m) => m.toLowerCase() !== (group.identifier ?? "").toLowerCase() && !deletedIdentifiers.has(m.toLowerCase())) : [];
+    const reason = !listed || !listed.complete ? "its contents could not be listed completely, so what deleting it would take along is unknown"
+      : others.length > 0 ? "it holds " + others.length + " resource(s) this run did not create or does not delete with it; a group is never deleted on run ownership alone" : undefined;
+    if (reason === undefined) continue;
+    deletes.splice(deletes.indexOf(group), 1);
+    excluded.push({ address: group.address, type: group.type, identifier: group.identifier, ownership: "CONTAINS_OTHERS", reason });
+  }
+  if (deletes.some((x) => x.observed === "UNVERIFIABLE")) risks.add("some listed resources are settings the independent reader cannot read alone; their deletion is proved through the resource they belong to");
   risks.add("the engine destroys a listed resource together with anything in the state that depends on it; a dependent outside this list stops the cleanup before anything is destroyed");
   const required = contract.requiredApprovals[evidence.environment];
   if (required === undefined) return refuse("TARGET_NOT_IN_CONTRACT", "The pilot contract does not enable " + evidence.environment + ".");
@@ -206,7 +289,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 const text = (value: unknown, max = 512): value is string => typeof value === "string" && value.length > 0 && value.length <= max && !HAS_INVISIBLE.test(value);
 const hashText = (value: unknown): value is string => typeof value === "string" && HASH.test(value);
 const idText = (value: unknown): boolean => value === null || text(value, 2048);
-const OWNERSHIPS: readonly Ownership[] = ["RUN_CREATED", "PRE_EXISTING", "REPLACED_PRE_EXISTING", "IMPORTED", "NOT_IN_PLAN", "PROTECTED_BACKEND", "PROTECTED_IDENTITY"];
+const OWNERSHIPS: readonly Ownership[] = ["RUN_CREATED", "PRE_EXISTING", "REPLACED_PRE_EXISTING", "IMPORTED", "NOT_IN_PLAN", "PROTECTED_BACKEND", "PROTECTED_IDENTITY", "CONTAINS_OTHERS"];
 const KEYS = ["schemaVersion", "kind", "proposalSha256", "artifactSha256", "applyEvidenceSha256", "blueprintSha256", "observationSha256", "provider", "engine", "environment", "target", "unitId",
   "channel", "contractSha256", "sourceCommit", "engineVersion", "createdAt", "deletes", "alreadyAbsent", "excluded", "risks", "authorization"];
 
