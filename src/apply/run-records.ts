@@ -140,8 +140,8 @@ const RAW_KEY = /^(values|attributes|properties|state|plan|stdout|stderr|output|
 const ENVIRONMENTS = ["DEV", "QA", "PROD"];
 
 function entryOk(value: unknown): value is BlueprintEntry {
-  return isRecord(value) && Object.keys(value).sort().join() === "address,arn,id,origin,type" && typeof value.address === "string" && value.address.length > 0 &&
-    typeof value.type === "string" && idText(value.arn) && idText(value.id) && (value.origin === "IN_PLAN" || value.origin === "NOT_IN_PLAN");
+  return isRecord(value) && ["address,arn,id,origin,type", "address,arn,holdsIdentityArn,id,origin,type"].includes(Object.keys(value).sort().join()) && typeof value.address === "string" && value.address.length > 0 &&
+    typeof value.type === "string" && idText(value.arn) && idText(value.id) && (value.origin === "IN_PLAN" || value.origin === "NOT_IN_PLAN") && (value.holdsIdentityArn === undefined || value.holdsIdentityArn === true);
 }
 
 /** Every reason this is not a blueprint record. Empty means it is. Checks every key, so a raw state value cannot ride along. */

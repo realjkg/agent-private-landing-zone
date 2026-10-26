@@ -251,3 +251,21 @@ test("the CloudFormation blueprint maps logical ids to physical ids, derives the
   for (const bad of ["", "not json", "[]", JSON.stringify({ Stacks: [] }), JSON.stringify({ StackResources: {} })]) assert.throws(() => blueprintFromCloudFormationResources(bad, planned, place), /STATE_JSON_INVALID/, bad);
   assert.deepEqual(blueprintFromCloudFormationResources(JSON.stringify({ StackResources: [] }), planned, place), { entries: [], missing: ["Dynamic", "PilotBucket", "PilotTopic", "Planned"] }, "code-point order");
 });
+
+test("a wrapper type that holds an identity's ARN anywhere in its attributes is flagged in place (holdsIdentityArn), as a whole value or a list element, in any partition; the attribute is never copied, an ordinary type with the same attribute is not flagged, and a wrapper without one is not", () => {
+  const ROLE = "arn:aws:iam::000000000000:role/alz-apply-dev";
+  const show = (type: string, values: Record<string, unknown>) => JSON.stringify({ format_version: "1.0", values: { root_module: { resources: [{ address: type + ".x", mode: "managed", type, values: { id: "x-id", ...values } }] } } });
+  const flagged = (type: string, values: Record<string, unknown>) => blueprintFromTerraformState(show(type, values), []).entries[0].holdsIdentityArn === true;
+  assert.ok(flagged("terraform_data", { input: ROLE }), "a whole value");
+  assert.ok(flagged("terraform_data", { input: { nested: { deeper: [1, { role: ROLE }] } } }), "nested in objects and lists");
+  assert.ok(flagged("null_resource", { triggers: { roles: "reader," + ROLE + ",writer" } }), "an element of a comma list");
+  assert.ok(flagged("null_resource", { triggers: { roles: "a;" + ROLE } }), "an element of a semicolon list");
+  assert.ok(flagged("aws_cloudformation_stack", { outputs: { RoleArn: ROLE } }), "a stack output");
+  assert.ok(flagged("terraform_data", { input: "arn:aws-us-gov:iam::000000000000:role/x" }), "another partition");
+  assert.ok(!flagged("terraform_data", { input: "not an arn", output: ["arn:aws:s3:::bucket"] }), "no IAM ARN");
+  assert.ok(!flagged("terraform_data", { input: "prefixarn:aws:iam::000000000000:role/x" }), "not anchored as a value or an element");
+  assert.ok(!flagged("aws_s3_bucket", { policy: ROLE }), "an ordinary type is judged by its own identifier, not its attributes");
+  const blueprint = blueprintFromTerraformState(show("terraform_data", { input: { secret: "CANARY_WRAPPER_VALUE", roles: ROLE } }), []);
+  assert.deepEqual(blueprint.entries[0], { address: "terraform_data.x", type: "terraform_data", id: "x-id", arn: null, origin: "NOT_IN_PLAN", holdsIdentityArn: true });
+  assert.ok(!JSON.stringify(blueprint).includes("CANARY_WRAPPER_VALUE") && !JSON.stringify(blueprint).includes(ROLE), "nothing of the attributes is copied");
+});

@@ -46,7 +46,8 @@ export const retentionOwnerOf = (ownership: Exclude<Ownership, "RUN_CREATED">): 
 /** Why a resource of a protected class is kept, in the words the proposal, the leftover check and the report use. */
 export const PROTECTION_REASONS: Readonly<Record<Exclude<Ownership, "RUN_CREATED" | "PRE_EXISTING" | "REPLACED_PRE_EXISTING" | "IMPORTED" | "NOT_IN_PLAN">, string>> = {
   PROTECTED_BACKEND: "the state backend the pilot itself runs on is never deleted by a cleanup",
-  PROTECTED_IDENTITY: "an identity or authorization object (on Azure anything under Microsoft.Authorization or Microsoft.ManagedIdentity: an identity, a trust, a role or policy assignment, a role definition, a policy exemption or a lock; on AWS anything in the IAM or identity service: every role, policy, attachment, user, group, instance profile, identity provider, service-linked role, Identity Center assignment, and the access keys and credentials of those identities) is never deleted by a cleanup, directly or as a dependent",
+  // Under 512 characters: a proposal's reason text has that limit.
+  PROTECTED_IDENTITY: "an identity or authorization object (on Azure anything under Microsoft.Authorization or Microsoft.ManagedIdentity: an identity, a trust, a role or policy assignment, a role definition, a policy exemption or a lock; on AWS anything in the IAM, IAM Identity Center or Identity Store services, including attachments, access keys and other credentials of those identities) is never deleted by a cleanup, directly or as a dependent",
   PROTECTED_DEPLOYMENT: "deployment history (Microsoft.Resources/deployments) records what was deployed and is never deleted by a cleanup",
   RETAINED_GROUP: "a resource group is never deleted by a pilot cleanup, whatever it holds; the pilot owner retains it, and its deletion is a separate, reviewed action (environment retirement, outstanding)",
   CONTAINS_OTHERS: "a subscription or management group holds deployments no listing here accounts for, and a provider or feature registration is a subscription-wide setting other deployments rely on; neither is ever deleted by a cleanup",
@@ -266,22 +267,25 @@ function azureProtectionOf(entry: { type: string; id: string | null }, contract:
 }
 
 /**
- * AWS identity and access objects (owner's standing policy, #39: identities and access are never deleted; reviews 6411551942 B2
- * and 6412182848): anything in the IAM or identity service, by an anchored prefix and nothing else, so no hand-picked list can
- * miss an attachment, a credential or a setting. Every Terraform type under `aws_iam_` (roles, policies, attachments of every
- * kind, users, groups, instance profiles, identity providers, service-linked roles, access keys, login profiles, SSH keys,
- * signing certificates, MFA devices, the account password policy and alias), every `awscc_iam_` type, IAM Identity Center
- * (`aws_ssoadmin_`), and every CloudFormation type under `AWS::IAM::` or `AWS::SSO::` (case-exact, as CloudFormation names
- * them). All are PROTECTED_IDENTITY, kept by the pilot owner, never deleted directly or as a dependent. Credentials (access
- * keys, login profiles, SSH keys, certificates, MFA devices) are kept with the identity they belong to, in both engines.
+ * AWS identity and access objects (owner's standing policy, #39: identities and access are never deleted; reviews 6411551942 B2,
+ * 6412182848 and 6412488764): anything in the IAM, IAM Identity Center (SSO) or Identity Store services, by an anchored prefix
+ * and nothing else, so no hand-picked list can miss an attachment, a credential, a setting or a workforce identity. The full
+ * identity family across the four namespaces (docs/observe-and-cleanup.md lists it): Terraform `aws_iam_` (roles, policies,
+ * attachments of every kind, users, groups, instance profiles, identity providers, service-linked roles, access keys, login
+ * profiles, SSH keys, signing certificates, MFA devices, the account password policy and alias), `aws_ssoadmin_` (Identity
+ * Center assignments, permission sets and their policies) and `aws_identitystore_` (workforce users, groups, memberships); the
+ * Cloud Control provider's `awscc_iam_`, `awscc_sso_` and `awscc_identitystore_`; and CloudFormation `AWS::IAM::`, `AWS::SSO::`
+ * and `AWS::IdentityStore::` (case-exact, as CloudFormation names them). A `Custom::` resource has no namespace of its own; one
+ * that carries an identity's ARN is refused below. All are PROTECTED_IDENTITY, kept by the pilot owner, never deleted directly
+ * or as a dependent. Credentials are kept with the identity they belong to, in both engines.
  */
-const AWS_IDENTITY_PREFIXES: readonly string[] = ["aws_iam_", "awscc_iam_", "aws_ssoadmin_", "AWS::IAM::", "AWS::SSO::"];
+const AWS_IDENTITY_PREFIXES: readonly string[] = ["aws_iam_", "aws_ssoadmin_", "aws_identitystore_", "awscc_iam_", "awscc_sso_", "awscc_identitystore_", "AWS::IAM::", "AWS::SSO::", "AWS::IdentityStore::"];
 export const isAwsIdentityType = (type: string): boolean => AWS_IDENTITY_PREFIXES.some((prefix) => type.startsWith(prefix));
 /** An IAM ARN recorded under a type outside the identity service (a custom resource, a stack, `terraform_data`): unclassifiable, so refused. */
 const IAM_ARN = /^arn:aws(?:-[a-z]+)*:iam::/;
 
 /** The bootstrap the pilot runs on and the identities of the account, which a cleanup never touches: the state backend and everything in the identity service. */
-function protectionOf(entry: { type: string; id: string | null; arn: string | null }, contract: PilotContract, backendGroups: Set<string>): AzureProtection | undefined {
+function protectionOf(entry: { type: string; id: string | null; arn: string | null; holdsIdentityArn?: true }, contract: PilotContract, backendGroups: Set<string>): AzureProtection | undefined {
   if (contract.provider === "AZURE") return azureProtectionOf(entry, contract, backendGroups);
   if (contract.provider !== "AWS") return undefined;
   const buckets = new Set(Object.values(contract.targets).map((target) => (target as AwsTarget).backend.split("/")[0]));
@@ -289,8 +293,9 @@ function protectionOf(entry: { type: string; id: string | null; arn: string | nu
   // A nested stack holds resources no listing here accounts for; the CDK engine refuses one at the seal, and one that appears in the stack anyway is never proposed.
   if (entry.type === "AWS::CloudFormation::Stack") return "CONTAINS_OTHERS";
   if (isAwsIdentityType(entry.type)) return "PROTECTED_IDENTITY";
-  // Fail closed: an identity's ARN under a type that is not an identity type (a custom resource, a stack output, `terraform_data`) may be a pilot role in disguise.
-  if ([entry.arn, entry.id].some((value) => value !== null && IAM_ARN.test(value))) return UNCLASSIFIABLE;
+  // Fail closed: an identity's ARN under a type that is not an identity type (a custom resource, a stack output, `terraform_data`) may be a pilot role in
+  // disguise, whether it is the recorded identifier or sits in any attribute the state holds (`holdsIdentityArn`, judged in place by the blueprint).
+  if ([entry.arn, entry.id].some((value) => value !== null && IAM_ARN.test(value)) || entry.holdsIdentityArn === true) return UNCLASSIFIABLE;
   return undefined;
 }
 
@@ -488,7 +493,7 @@ export function proposalLines(proposal: CleanupProposal): string[] {
  * entry (type and recorded id) when the state holds one, else by its type alone, with the same rules the proposal applies.
  * The cleanup driver runs this on the engine's destroy plan before any approval is consumed.
  */
-export function protectedDeletionIn(planned: readonly PlanChange[], entries: readonly { address: string; type: string; id: string | null; arn: string | null }[], contract: PilotContract, env: NodeJS.ProcessEnv): string | undefined {
+export function protectedDeletionIn(planned: readonly PlanChange[], entries: readonly { address: string; type: string; id: string | null; arn: string | null; holdsIdentityArn?: true }[], contract: PilotContract, env: NodeJS.ProcessEnv): string | undefined {
   const byAddress = new Map(entries.map((entry) => [entry.address, entry]));
   const backendGroups = contract.provider === "AZURE" ? azureBackendGroups(entries, azureBackendAccounts(contract)) : new Set<string>();
   for (const change of planned) {

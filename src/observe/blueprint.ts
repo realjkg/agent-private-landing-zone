@@ -18,6 +18,12 @@ export type BlueprintEntry = {
   id: string | null;
   /** IN_PLAN: the sealed plan names it. NOT_IN_PLAN: the state holds it and the plan never mentioned it. */
   origin: "IN_PLAN" | "NOT_IN_PLAN";
+  /**
+   * Set when a wrapper type (`terraform_data`, `null_resource`, `aws_cloudformation_stack`, a CloudFormation custom resource)
+   * holds an IAM ARN in any attribute the state recorded, as a whole value or an element of a list: an identity may be in
+   * disguise, so the cleanup refuses to classify it. Judged in place; the attribute itself is never copied.
+   */
+  holdsIdentityArn?: true;
 };
 export type Blueprint = {
   entries: BlueprintEntry[];
@@ -46,6 +52,18 @@ function* managedResources(module: StateModule, depth = 0): Generator<StateResou
 
 /** Types whose provider id is a credential identifier (an access key id, for example). Their id is never copied. */
 const CREDENTIAL_ID_TYPES = new Set(["aws_iam_access_key", "aws_iam_service_specific_credential"]);
+/** Wrapper types that can carry anything, an identity's ARN among it (review 6412488764, N2); their attributes are judged for one. */
+const WRAPPER_TYPE = /^(?:terraform_data|null_resource|aws_cloudformation_stack|AWS::CloudFormation::CustomResource|Custom::)/;
+/** An IAM ARN as a whole string value, or as one element of a separated list, in any partition. */
+const IAM_ARN_ELEMENT = /(?:^|[\s,;|])arn:aws(?:-[a-z]+)*:iam::[^\s,;|]*/;
+/** Whether any string anywhere in a value (an attribute, a nested object, a list) is or contains an IAM ARN element. Reads in place, copies nothing. */
+function holdsIamArn(value: unknown, depth = 0): boolean {
+  if (depth > 32) return false;
+  if (typeof value === "string") return IAM_ARN_ELEMENT.test(value);
+  if (Array.isArray(value)) return value.some((item) => holdsIamArn(item, depth + 1));
+  if (isRecord(value)) return Object.values(value).some((item) => holdsIamArn(item, depth + 1));
+  return false;
+}
 
 /** One managed instance as either state format names it: its address, type and attribute values (read for identifiers only). */
 type Instance = { address: string; type: string; values: Record<string, unknown> };
@@ -74,6 +92,7 @@ function blueprintOf(instances: Iterable<Instance>, planned: readonly PlannedCha
       arn: text(values.arn) && values.arn.startsWith("arn:") ? values.arn : null,
       id: text(values.id) && !CREDENTIAL_ID_TYPES.has(resource.type) ? values.id : null,
       origin: plannedAddresses.has(resource.address) ? "IN_PLAN" : "NOT_IN_PLAN",
+      ...(WRAPPER_TYPE.test(resource.type) && holdsIamArn(values) ? { holdsIdentityArn: true as const } : {}),
     });
   }
   // Code-point order, as the sealed plan sorts its changes: the same on every machine, whatever its locale.
