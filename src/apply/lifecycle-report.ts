@@ -57,7 +57,8 @@ export type LifecycleReport = {
   passed: boolean;
   /** What stands between this run and a pass, in sentences. */
   unresolved: string[];
-  liveAttestation: { attestedBy: string; attestedAt: string; evidenceSha256: string } | null;
+  /** The owner's live record for the execute step, when one covers this very apply evidence of this very artifact. */
+  liveAttestation: { attestedBy: string; attestedAt: string; evidenceSha256: string; artifactSha256: string; step: "execute" } | null;
   generatedAt: string;
 };
 
@@ -139,7 +140,7 @@ export function buildLifecycleReport(input: LifecycleReportInput): LifecycleRepo
     approvals: { apply: input.applyEvidence.approvals.map((a) => a.approverId), cleanup: input.cleanup?.approvals.map((a) => a.approverId) ?? [] },
     observation: input.observation ? { verdict: input.observation.verdict, resources: input.observation.resources.map((r) => ({ address: r.address, type: r.type, identifier: r.identifier, result: r.result })) } : null,
     dispositions: input.leftovers ? { disposition: input.leftovers.disposition, resources: input.leftovers.resources.map((r) => ({ address: r.address, disposition: r.disposition, basis: r.basis })) } : null,
-    passed, unresolved: [...new Set(unresolved)], liveAttestation: live ? { attestedBy: live.attestedBy, attestedAt: live.attestedAt, evidenceSha256: live.evidenceSha256 } : null,
+    passed, unresolved: [...new Set(unresolved)], liveAttestation: live ? { attestedBy: live.attestedBy, attestedAt: live.attestedAt, evidenceSha256: live.evidenceSha256, artifactSha256: live.artifactSha256, step: "execute" } : null,
     generatedAt: input.now.toISOString(),
   };
 }
@@ -194,6 +195,11 @@ export function lifecycleReportProblems(value: unknown, expected: { sourceCommit
     const attested = isRecord(value.liveAttestation);
     if (typed.execute.mode === "LIVE" && !attested) problems.push("report.stages.execute: LIVE needs the owner's attestation");
     if (typed.execute.mode === "SYNTHETIC" && attested) problems.push("report.stages.execute: a SYNTHETIC execute step carries no live attestation");
+    // A stage result must agree with the record it summarizes: a stored report cannot claim a pass its own records do not show.
+    const observation = isRecord(value.observation) ? value.observation : null;
+    if (typed.observe.status === "PASS" && (observation === null || (observation.verdict !== "VERIFIED" && observation.verdict !== "PARTIAL"))) problems.push("report.stages.observe: PASS needs an observation whose verdict is VERIFIED or PARTIAL");
+    const dispositions = isRecord(value.dispositions) ? value.dispositions : null;
+    if (typed.leftovers.status === "PASS" && (dispositions === null || dispositions.disposition !== "COMPLETE")) problems.push("report.stages.leftovers: PASS needs dispositions that say COMPLETE (a complete deletion-unit sweep); KNOWN_ADDRESSES_CONFIRMED is not completion");
     const derived = Object.values(stages).every((stage) => (stage as StageResult).status === "PASS");
     if (value.passed !== derived) problems.push("report.passed: not derived from the stages (a declaration never counts)");
     if (derived && Array.isArray(value.unresolved) && value.unresolved.length > 0) problems.push("report: a pass leaves nothing unresolved");
@@ -214,6 +220,7 @@ export function lifecycleReportProblems(value: unknown, expected: { sourceCommit
     problems.push("report: LIVE needs the owner's attestation of this very apply evidence; synthetic records never pass as live");
   }
   if (live !== null && (!isRecord(live) || live.evidenceSha256 !== value.applyEvidenceSha256)) problems.push("report.liveAttestation: not of this very apply evidence");
+  if (live !== null && isRecord(live) && (live.artifactSha256 !== value.artifactSha256 || live.step !== "execute")) problems.push("report.liveAttestation: must name this artifact and the execute step");
   if (value.mode === "SYNTHETIC" && live !== null) problems.push("report: a SYNTHETIC report carries no live attestation");
   if (typeof value.generatedAt !== "string" || Number.isNaN(Date.parse(value.generatedAt))) problems.push("report.generatedAt: malformed");
   return problems;

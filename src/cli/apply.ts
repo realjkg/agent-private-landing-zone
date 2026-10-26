@@ -626,7 +626,7 @@ const reportCommand: Command = async (flags, _terminal, deps, out) => {
     observation: await readObservationRecord(sealed.artifactSha256, applyEvidenceSha256, evidenceDir), proposal,
     cleanup: proposal ? await readCleanupEvidence(proposal.proposalSha256, evidenceDir) : undefined,
     leftovers: proposal ? await readLeftoversRecord(proposal.proposalSha256, evidenceDir) : undefined,
-    live: readLiveRecord(liveDir, sealed.artifactSha256), now: (deps.now ?? (() => new Date()))(),
+    live: readLiveRecord(liveDir, sealed.artifactSha256, applyEvidenceSha256), now: (deps.now ?? (() => new Date()))(),
   });
   const problems = lifecycleReportProblems(report, { sourceCommit: sealed.sourceCommit });
   if (problems.length > 0) return blocked({ ok: false, code: "EVIDENCE_REJECTED", message: "The report did not pass its own validation: " + problems.slice(0, 4).join("; ") }, out);
@@ -640,13 +640,13 @@ const reportCommand: Command = async (flags, _terminal, deps, out) => {
 };
 
 /** The owner's live record for an artifact, when `record-live` wrote one into the acceptance directory. Only a record that names this artifact is read. */
-function readLiveRecord(dir: string, artifactSha256: string): LiveAcceptanceRecord | undefined {
+function readLiveRecord(dir: string, artifactSha256: string, evidenceSha256: string): LiveAcceptanceRecord | undefined {
   let names: string[];
   try { names = readdirSync(dir); } catch { return undefined; }
   for (const name of names.filter((n) => n.endsWith(".json"))) {
     try {
       const record = JSON.parse(readFileSync(join(dir, name), "utf8")) as Partial<LiveAcceptanceRecord>;
-      if (record.schemaVersion === 1 && record.label === "LIVE" && record.artifactSha256 === artifactSha256 && typeof record.evidenceSha256 === "string" && typeof record.attestedBy === "string") return record as LiveAcceptanceRecord;
+      if (record.schemaVersion === 1 && record.label === "LIVE" && record.step === "execute" && record.artifactSha256 === artifactSha256 && record.evidenceSha256 === evidenceSha256 && typeof record.attestedBy === "string") return record as LiveAcceptanceRecord;
     } catch { /* not a record */ }
   }
   return undefined;
