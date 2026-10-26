@@ -14,6 +14,7 @@ import { acceptsManifest, engineOf } from "./engine-spec.js";
 import { LockFileError, lockedProviders } from "./lockfile.js";
 import { checkModules, TerraformConfigError, variableSources } from "./terraform-inputs.js";
 import { specOf } from "./provider.js";
+import { pilotUnitOf, type PilotUnit } from "./unit.js";
 import type { ApplyEnvironment, EngineId, PilotContract, ProviderId } from "./types.js";
 
 /**
@@ -104,6 +105,8 @@ export type PreparationSummary = {
   unitHash: string;
   manifestHash: string;
   contractSha256: string;
+  /** The deletion unit this environment's state container is (src/apply/unit.ts) and the tags the operator's provider configuration must stamp on every created resource; `seal` verifies them in the plan. */
+  unit: PilotUnit;
 };
 
 export type Prepared = {
@@ -302,6 +305,7 @@ export async function prepareApply(input: PrepareInput, deps: PrepareDeps = {}):
       projectRoot, fileCount: files.length, providers, engineVersion, engineVersionSource, inputs: derived.shown,
       policyVersion: contract.policyVersion, unitHash, manifestHash: manifest.manifestHash,
       contractSha256: pilotContractSha256(contract),
+      unit: pilotUnitOf({ provider: spec.id, contractSha256: pilotContractSha256(contract), environment, target }),
     },
     request,
     manifest,

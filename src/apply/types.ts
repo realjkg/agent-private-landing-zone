@@ -121,6 +121,8 @@ export type SealedPlan = {
   changes: PlanChange[];
   /** Which engine made the preview, as observed when it was sealed. Bound by the artifact hash: approvers sign it. */
   provenance: PreviewProvenance;
+  /** The deletion unit the plan stamps on what it creates, verified in the plan at sealing. Bound by the artifact hash. */
+  unit: SealedUnit | null;
 };
 
 /**
@@ -140,6 +142,13 @@ export type PreviewProvenance = {
  * plan says so. Addresses never carry bidi or zero-width control characters (see `stripInvisible`).
  */
 export type PlanChange = { address: string; type: string; action: string; importing?: true; previousAddress?: string };
+
+/**
+ * The deletion unit the sealed plan stamps on what it creates (src/apply/unit.ts): the unit id, the tags every created,
+ * taggable resource was verified to carry in the plan, and the created resources whose type carries no tags (traceable
+ * through the state only). Bound by the artifact hash, so approvers sign it. Null for an engine without a tag reader.
+ */
+export type SealedUnit = { unitId: string; tags: Record<string, string>; untagged: string[] };
 
 export type ApplyRefusalCode =
   | "ACT_DISABLED"

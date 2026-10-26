@@ -74,6 +74,9 @@ export type Behavior = {
   showOnlyConfigured?: boolean;
   /** Raw `resource_changes` entries (imports, moves, forgets, hostile addresses), `output_changes` and `configuration.provider_config` that `show` adds. */
   showResources?: unknown[];
+  /** When set, `show` stamps these tags on every created resource it lists (under `unitTagAttribute`, default `tags_all`), as a provider's default_tags would. */
+  unitTags?: Record<string, string>;
+  unitTagAttribute?: string;
   showOutputChanges?: Record<string, unknown>;
   showProviderConfig?: Record<string, unknown>;
   /** What `init` saves in .terraform/terraform.tfstate. Default: the azurerm (or, under an AWS role, the s3) backend of the target whose subscription or account init runs under; null saves none. */
@@ -150,11 +153,12 @@ else if (cmd === "show") {
     format_version: "1.2", errored: false, variables: { db_password: { value: "${VALUE_CANARY}" } },
     resource_changes: [
       ...(b.showOnlyConfigured ? [] : [
-        { address: "azurerm_resource_group.pilot", type: "azurerm_resource_group", change: { actions: ["create"], before: null, after: { tags: { k: "${VALUE_CANARY}" } } } },
+        { address: "azurerm_resource_group.pilot", type: "azurerm_resource_group", change: { actions: ["create"], before: null, after: { properties: { k: "${VALUE_CANARY}" } } } },
         { address: "azurerm_log_analytics_workspace.pilot", type: "azurerm_log_analytics_workspace", change: { actions: ["update"], before: {}, after: {} } },
       ]),
       ...(b.showExtra ? [{ address: "azurerm_key_vault.extra", type: "azurerm_key_vault", change: { actions: ["delete"], before: {}, after: null } }] : []),
-      ...(b.showResources || []),
+      ...(b.showResources || []).map((r) => (b.unitTags && r && r.change && (r.change.actions || []).includes("create"))
+        ? { ...r, change: { ...r.change, after: { ...(r.change.after || {}), [b.unitTagAttribute || "tags_all"]: b.unitTags } } } : r),
     ],
     output_changes: b.showOutputChanges || {},
     configuration: { provider_config: b.showProviderConfig || { azurerm: { name: "azurerm", full_name: "registry.terraform.io/hashicorp/azurerm", expressions: { subscription_id: { references: ["var.subscription_id"] } } } } },

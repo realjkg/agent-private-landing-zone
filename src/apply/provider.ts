@@ -59,6 +59,8 @@ export type ProviderSpec = {
   filledAtApply: readonly string[];
   /** Throws a code if a provider block names another account than the contract's, or (AWS) credentials, files, destinations or providers the pilot does not allow. `env` holds the APPLY identity. */
   assertProviderConfig(blocks: readonly ProviderBlock[], target: PilotTarget, env: NodeJS.ProcessEnv): void;
+  /** The plan attributes that hold a resource's tags, most complete first (AWS: `tags_all`, then `tags`; Azure: `tags`). A created resource with none of them is untaggable. */
+  tagAttributes: readonly string[];
 };
 
 const SPECS: Readonly<Record<ProviderId, ProviderSpec>> = { AZURE, AWS };

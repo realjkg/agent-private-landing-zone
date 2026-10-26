@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { pilotUnitOf } from "../src/apply/unit.js";
 import { randomBytes } from "node:crypto";
 import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -60,6 +61,7 @@ function fixture(options: { target?: typeof DEV_TARGET; environment?: "DEV" | "Q
     env: options.env ?? identityEnv(options.environment ?? "DEV"), policyVersion: POLICY, engineVersion: ENGINE_VERSION, toolDirs: [toolDir],
     pinned: { tenantId: TENANT, subscriptionId: target.account, backend: target.backend, workspace: target.workspace }, spec: AZURE, contractSha256: H("9"), sourceCommit: SOURCE_COMMIT,
     provenance: PROVENANCE, now: () => new Date("2026-10-11T10:00:00.000Z"),
+    unit: pilotUnitOf({ provider: "AZURE", contractSha256: H("9"), environment: options.environment ?? "DEV", target }),
   };
   return { input, scratch, cleanup: () => { snapshot.remove(); scratch.remove(); } };
 }
@@ -126,7 +128,8 @@ test("the sealed record binds plan, manifest, release identity, environment, tar
     provenance: { engineBinarySha256: PROVENANCE.engineBinarySha256, qualification: { reason: "Fixture: no qualification evidence is in this test's vault.", state: "UNQUALIFIED" } },
     releaseIdentity: s.releaseIdentity, sourceCommit: s.sourceCommit,
     target: { account: s.target.account, backend: s.target.backend, workspace: s.target.workspace },
-  })), "canonical JSON of exactly these twelve fields, the change list through its own hash");
+    unit: { tags: { "alz-build": s.unit!.tags["alz-build"], "alz-managed-by": "alz", "alz-unit": s.unit!.unitId }, unitId: s.unit!.unitId, untagged: s.unit!.untagged },
+  })), "canonical JSON of exactly these thirteen fields, the change list through its own hash");
   assert.deepEqual(s.provenance, PROVENANCE, "the seal keeps the provenance the driver observed, unchanged");
   assert.deepEqual(s.changes, [
     { address: "azurerm_log_analytics_workspace.pilot", type: "azurerm_log_analytics_workspace", action: "UPDATE" },
@@ -405,6 +408,46 @@ const shownWith = async (behavior: Behavior, options: Parameters<typeof fixture>
   } finally { f.cleanup(); }
 };
 const WORKING = { address: "azurerm_x.moved", type: "azurerm_x", previous_address: "azurerm_x.old", change: { actions: ["no-op"] } };
+
+test("the deletion unit is verified in the plan and sealed: every created resource that carries tags must carry exactly the unit's tags; a missing, foreign or computed tag refuses the seal; untaggable types are listed", async () => {
+  const f = fixture();
+  const unit = f.input.unit;
+  f.cleanup();
+  const created = (address: string, after: Record<string, unknown>, more: Record<string, unknown> = {}) => ({ address, type: address.split(".")[0], change: { actions: ["create"], before: null, after, ...more } });
+  // Tagged as required, one untaggable type, and a data source and an update that are not judged.
+  const ok = await shownWith({ showResources: [
+    created("azurerm_resource_group.a", { tags: { ...unit.tags, team: "CANARY_TEAM" } }), created("azurerm_role_assignment.b", { scope: "/x" }),
+    { address: "data.azurerm_client_config.me", type: "azurerm_client_config", mode: "data", change: { actions: ["read"], after: { tags: {} } } },
+    { address: "azurerm_storage_account.old", type: "azurerm_storage_account", change: { actions: ["update"], before: { tags: {} }, after: { tags: {} } } },
+  ] });
+  assert.ok(ok.ok, JSON.stringify(ok));
+  assert.deepEqual(ok.sealed.unit, { unitId: unit.unitId, tags: { ...unit.tags }, untagged: ["azurerm_resource_group.pilot", "azurerm_role_assignment.b"] }, "the fixture's default resource group carries no tag attribute either");
+  assert.ok(!JSON.stringify(ok.sealed).includes("CANARY_TEAM"), "only the unit's own tag keys are read; no other tag value is recorded");
+  assert.equal(computeArtifactSha256({ ...ok.sealed, unit: null }) === ok.sealed.artifactSha256, false, "the unit is bound by the artifact hash");
+  assert.match(unit.unitId, /^alzu-[0-9a-f]{20}$/);
+  assert.deepEqual(unit.tags["alz-unit"], unit.unitId);
+  // The same unit for the same contract, environment and state container; another environment is another unit.
+  assert.equal(pilotUnitOf({ provider: "AZURE", contractSha256: H("9"), environment: "DEV", target: f.input.target }).unitId, unit.unitId);
+  assert.notEqual(pilotUnitOf({ provider: "AZURE", contractSha256: H("9"), environment: "QA", target: f.input.target }).unitId, unit.unitId);
+  for (const [label, after, more, code] of [
+    ["no unit tag", { tags: { team: "x" } }, {}, "UNIT_TAG_MISSING"],
+    ["another unit", { tags: { ...unit.tags, "alz-unit": "alzu-00000000000000000000" } }, {}, "UNIT_TAG_FOREIGN"],
+    ["another build id", { tags: { ...unit.tags, "alz-build": "someone-else" } }, {}, "UNIT_TAG_MISSING"],
+    ["tags computed at apply time", {}, { after_unknown: { tags: true } }, "UNIT_TAG_UNVERIFIABLE"],
+    ["tags that are not a map", { tags: "alz" }, {}, "UNIT_TAG_MISSING"],
+  ] as const) {
+    const result = await shownWith({ showResources: [created("azurerm_resource_group.a", after as Record<string, unknown>, more as Record<string, unknown>)] });
+    assert.ok(!result.ok && result.code === "ARTIFACT_INVALID" && result.message.includes(code), label + ": " + JSON.stringify(result));
+  }
+  // A record whose unit was edited or malformed is refused, as any other bound field.
+  const base = (await sealed()).result as Extract<Awaited<ReturnType<typeof sealPlan>>, { ok: true }>;
+  const loaded = await loadSealedPlan(base.path);
+  assert.ok(loaded.ok);
+  for (const unitEdit of [{ ...loaded.sealed.unit!, untagged: ["x"] }, { ...loaded.sealed.unit!, tags: { "alz-unit": "alzu-ffffffffffffffffffff" } }, { unitId: "Bad Id", tags: {}, untagged: [] }, undefined]) {
+    const result = verifySealedPlan({ sealed: { ...loaded.sealed, unit: unitEdit }, planBytes: loaded.planBytes });
+    assert.ok(!result.ok, JSON.stringify(unitEdit));
+  }
+});
 
 test("the change list carries an import, a move, a forget and output changes, strips bidi and zero-width characters, and all of it is bound by the hashes", async () => {
   const result = await shownWith({

@@ -11,6 +11,7 @@ import { createPrivateDirectory } from "../tools/private-workdir.js";
 import { blueprintFromTerraformStatePull } from "../observe/blueprint.js";
 import { consumeApprovals, verifyApprovalSet } from "./approval.js";
 import { buildCleanupProposal, computeProposalSha256, verifyCleanupProposal, type CleanupProposal } from "./cleanup-proposal.js";
+import { pilotUnitOf } from "./unit.js";
 import {
   DEFAULT_EVIDENCE_DIR, contractRefusal, isKillSwitchActive, loadPilotContract, loadQualificationRecords, pilotContractSha256, repoPaths, requireNotApplied, requireNotExecuted,
   requirePromotionEvidence, targetForEnvironment, verifyApplyQualification, type Refusal,
@@ -28,7 +29,7 @@ import { openNonceStore, type NonceStore } from "./nonces.js";
 import { specOf, type ProviderSpec } from "./provider.js";
 import { engineBinaryChange, planWithoutStoring, releaseIdentityOf, sealPlan, verifySealedPlan, type LoadedPlan, type SealResult } from "./seal.js";
 import { sha256 } from "../util/sha256.js";
-import type { ApplyEnvironment, ApplyEvidence, ApplyOutcome, ApplyRefusalCode, ApplyResult, CleanupEvidence, CleanupResult, PilotChannel, PilotContract, PlanChange, PreviewProvenance, SignedApproval } from "./types.js";
+import type { ApplyEnvironment, ApplyEvidence, ApplyOutcome, ApplyRefusalCode, ApplyResult, CleanupEvidence, CleanupResult, PilotChannel, PilotContract, PlanChange, PreviewProvenance, SealedPlan, SignedApproval } from "./types.js";
 
 /**
  * The human-invoked apply driver (docs/act-pilot-plan.md). The operator
@@ -237,6 +238,7 @@ async function planAgainstTarget(request: SealRequest, deps: SealDeps, kind: "se
       channel: request.channel ?? "CLI", env: deps.env ?? process.env, policyVersion: request.policyVersion, engineVersion: manifest.engineVersion,
       pinned: admitted.contract.targets[request.environment]!, spec: admitted.spec, contractSha256: pilotContractSha256(admitted.contract), sourceCommit, provenance, toolDirs: deps.toolDirs, now: deps.now,
       embedStateWrite: admitted.contract.embedStateWrite === true,
+      unit: pilotUnitOf({ provider: admitted.contract.provider, contractSha256: pilotContractSha256(admitted.contract), environment: request.environment, target: request.target }),
     };
     // An engine with its own qualification run (CDK: read-only steps, no change set) does that and nothing else.
     if (kind === "qualify" && engine.qualify) {
@@ -313,14 +315,15 @@ async function keepRecoveryFiles(files: RecoveryFile[], artifactSha256: string):
 }
 
 /** Reads the engine's state once, maps it to identifiers only, and records the blueprint beside the evidence. Never throws: a missing blueprint is a refusal later, not a failed apply now. */
-async function keepBlueprint(run: { stateDocument?(): string | undefined }, changes: readonly PlanChange[], evidence: ApplyEvidence, evidenceDir: string, now: Date): Promise<void> {
+async function keepBlueprint(run: { stateDocument?(): string | undefined }, sealed: Pick<SealedPlan, "changes" | "unit">, evidence: ApplyEvidence, evidenceDir: string, now: Date): Promise<void> {
   try {
     const document = run.stateDocument?.();
     if (document === undefined) return;
-    const blueprint = blueprintFromTerraformStatePull(document, changes);
+    const blueprint = blueprintFromTerraformStatePull(document, sealed.changes);
     const record: BlueprintRecord = {
       schemaVersion: 1, kind: "BLUEPRINT", artifactSha256: evidence.artifactSha256, applyEvidenceSha256: sha256(canonicalJson(evidence as never)), environment: evidence.environment,
-      target: { ...evidence.target }, sourceCommit: evidence.sourceCommit, contractSha256: evidence.contractSha256, outcome: evidence.outcome, source: "TERRAFORM_STATE_PULL", blueprint, readAt: now.toISOString(),
+      target: { ...evidence.target }, sourceCommit: evidence.sourceCommit, contractSha256: evidence.contractSha256, outcome: evidence.outcome, source: "TERRAFORM_STATE_PULL", blueprint,
+      unitId: sealed.unit?.unitId ?? null, readAt: now.toISOString(),
     };
     await writeBlueprintRecord(record, evidenceDir);
   } catch { /* the state could not be read or mapped: no blueprint, and the cleanup step says so */ }
@@ -508,7 +511,7 @@ export async function runApply(request: ApplyRequest, deps: ApplyDeps): Promise<
     // The blueprint of what the run left: addresses and cloud identifiers from the engine's own state, read as STATE and
     // dropped. It is the observe and cleanup steps' starting point (docs/observe-and-cleanup.md). A state that cannot be
     // read leaves no blueprint, and a later cleanup is then refused for want of one, never guessed.
-    await keepBlueprint(run, sealed.changes, evidence, evidenceDir, now());
+    await keepBlueprint(run, sealed, evidence, evidenceDir, now());
     if (outcome === "SUCCEEDED") return written;
     if ("stale" in end) {
       return { ok: false, code: "PLAN_STALE", outcome, message: "The saved plan is stale: state changed after it was sealed. Nothing was applied. Seal a new preview and obtain new approvals." };

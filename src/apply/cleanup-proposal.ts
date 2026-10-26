@@ -58,6 +58,8 @@ export type CleanupProposal = {
   sourceCommit: string;
   engineVersion: string;
   createdAt: string;
+  /** The deletion unit the run stamped (from the blueprint record), swept by the leftover check; null when the engine sealed none. */
+  unitId: string | null;
   /** Exactly what a cleanup may destroy, in address order. */
   deletes: ProposedDeletion[];
   /** Resources this run created that the observation already finds gone: nothing to destroy, listed so the person knows. */
@@ -194,7 +196,7 @@ export function buildCleanupProposal(input: ProposalInput): { ok: true; proposal
   const fields: ProposalFields = {
     schemaVersion: 1, kind: "CLEANUP_PROPOSAL", artifactSha256: evidence.artifactSha256, applyEvidenceSha256: input.applyEvidenceSha256, blueprintSha256: input.blueprintSha256,
     observationSha256: input.observationSha256, provider: contract.provider, engine: contract.engine, environment: evidence.environment, target: { ...evidence.target }, channel: input.channel,
-    contractSha256: evidence.contractSha256, sourceCommit: evidence.sourceCommit, engineVersion: input.engineVersion, createdAt: input.now.toISOString(),
+    contractSha256: evidence.contractSha256, sourceCommit: evidence.sourceCommit, engineVersion: input.engineVersion, createdAt: input.now.toISOString(), unitId: record.unitId,
     deletes, alreadyAbsent, excluded, risks: [...risks].sort(), authorization: { subject: "CLEANUP", requiredApprovals: required, executesAs: "APPLY" },
   };
   return { ok: true, proposal: { ...fields, proposalSha256: computeProposalSha256(fields) } };
@@ -205,7 +207,7 @@ const text = (value: unknown, max = 512): value is string => typeof value === "s
 const hashText = (value: unknown): value is string => typeof value === "string" && HASH.test(value);
 const idText = (value: unknown): boolean => value === null || text(value, 2048);
 const OWNERSHIPS: readonly Ownership[] = ["RUN_CREATED", "PRE_EXISTING", "REPLACED_PRE_EXISTING", "IMPORTED", "NOT_IN_PLAN", "PROTECTED_BACKEND", "PROTECTED_IDENTITY"];
-const KEYS = ["schemaVersion", "kind", "proposalSha256", "artifactSha256", "applyEvidenceSha256", "blueprintSha256", "observationSha256", "provider", "engine", "environment", "target",
+const KEYS = ["schemaVersion", "kind", "proposalSha256", "artifactSha256", "applyEvidenceSha256", "blueprintSha256", "observationSha256", "provider", "engine", "environment", "target", "unitId",
   "channel", "contractSha256", "sourceCommit", "engineVersion", "createdAt", "deletes", "alreadyAbsent", "excluded", "risks", "authorization"];
 
 /** Every reason a value is not a well-formed cleanup proposal (shape only; the hash is checked by `verifyCleanupProposal`). */
@@ -224,6 +226,7 @@ export function proposalProblems(value: unknown): string[] {
   if (typeof value.sourceCommit !== "string" || !COMMIT.test(value.sourceCommit) || !text(value.engineVersion, 64) || !text(value.createdAt, 64) || Number.isNaN(Date.parse(value.createdAt as string))) {
     problems.push("proposal: sourceCommit, engineVersion or createdAt is malformed");
   }
+  if (value.unitId !== null && !(typeof value.unitId === "string" && /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(value.unitId))) problems.push("proposal.unitId: not a tag-safe unit id or null");
   const deletes = value.deletes;
   if (!Array.isArray(deletes) || !deletes.every((x) => isRecord(x) && Object.keys(x).every((key) => ["address", "type", "identifier", "ownership", "observed", "risk"].includes(key)) &&
     isResourceAddress(x.address) && text(x.type, 128) && idText(x.identifier) && x.ownership === "RUN_CREATED" && (x.observed === "VERIFIED" || x.observed === "UNVERIFIABLE") &&

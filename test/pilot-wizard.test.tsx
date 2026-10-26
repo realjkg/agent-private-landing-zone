@@ -36,7 +36,8 @@ const bundleReview = (over: Partial<ReviewSummary> = {}): ReviewSummary => ({
     { address: "azurerm_resource_group.pilot", type: "azurerm_resource_group", action: "CREATE" },
     { address: "azurerm_log_analytics_workspace.pilot", type: "azurerm_log_analytics_workspace", action: "UPDATE" },
     { address: "azurerm_storage_account.logs", type: "azurerm_storage_account", action: "CREATE" },
-  ], changesOmitted: 0, preview: { engineVersion: "1.9.5", programId: "7e57ab1e0000", qualified: true, qualifiedAt: "2026-10-11T00:00:00.000Z" }, ...over,
+  ], changesOmitted: 0, preview: { engineVersion: "1.9.5", programId: "7e57ab1e0000", qualified: true, qualifiedAt: "2026-10-11T00:00:00.000Z" },
+  unit: { unitId: "alzu-0123456789abcdef0123", tags: { "alz-managed-by": "alz", "alz-unit": "alzu-0123456789abcdef0123", "alz-build": "alz-pilot-dev-0123456789ab" }, untagged: [] }, ...over,
 });
 const doneRun = (step: PilotRun["step"], result: PilotRun["result"], id = step + "-1"): PilotRun => ({ id, step, status: "DONE", startedAt: "2026-10-12T00:00:00.000Z", transcript: "TRANSCRIPT LINE", result });
 const waitingRun = (step: PilotRun["step"], kind: NonNullable<PilotRun["dialog"]>["kind"], phrase: string, id = "d-" + kind): PilotRun => ({

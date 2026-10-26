@@ -165,5 +165,6 @@ export const AWS: ProviderSpec = {
   // The plan embeds what the seal-time init saved from the project's backend block: nothing but the contract's settings may be set there. The apply process fills the rest (docs/act-pilot-simulation.md, Azure; assumed the same here).
   backendBlock: { type: "s3", attributes: ["bucket", "key", "region", "use_lockfile"] },
   filledAtApply: ["assume_role_with_web_identity"],
+  tagAttributes: ["tags_all", "tags"],
   assertProviderConfig: (blocks, target, env) => assertProviderConfig(blocks, target as AwsTarget, env),
 };

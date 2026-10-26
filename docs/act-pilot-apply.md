@@ -68,6 +68,10 @@ Request files carry only `environment`, `target` (`account`, `backend`, `workspa
 - **Evidence.** Every output is labeled `LOCAL_PREPARATION`. Prepared files are not qualification evidence and do not show that anything works in a cloud.
 - **Refusals.** Owner prerequisites (contract not pinned or enabled, kill switch, policy version missing, target not in the contract) never offer an alternative. A missing tool (`TOOL_UNAVAILABLE`) may name the other supported path, which needs its own reviewed contract, preview and approvals. Exit 0 prepared, 1 a CLI error, 2 blocked.
 
+### The deletion unit
+
+Every pilot run into one environment's state container belongs to one deletion unit (`src/apply/unit.ts`, reusing `src/teardown/unit.ts`): `alz-managed-by=alz`, `alz-unit=alzu-<20 hex>`, `alz-build=alz-pilot-<env>-<contract12>`. `prepare` prints the unit and the required tags; the operator declares them in the project's own provider configuration (AWS: `default_tags` in the `aws` provider block; Azure: `tags` on each resource). `seal` reads the plan's `after` for each created resource: a type whose plan carries a tag attribute (`tags_all` or `tags` for AWS, `tags` for Azure) must carry exactly the unit's tags, or the seal is `ARTIFACT_INVALID` with `UNIT_TAG_MISSING` (absent or another build), `UNIT_TAG_FOREIGN` (another unit) or `UNIT_TAG_UNVERIFIABLE` (computed at apply time); only the unit's own tag keys are read, no other value leaves the plan. Created resources with no tag attribute are listed as `untagged` in the sealed artifact and the review bundle. The sealed `unit` is bound by the artifact hash, shown to approvers at the terminal and in the console, written into the blueprint record at apply, and swept by the observation and the leftover check. The CDK engine seals `unit: null`.
+
 ### Source-bound evidence
 
 Every seal and apply names the product source commit it ran from.
