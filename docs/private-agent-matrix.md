@@ -1,6 +1,6 @@
 # ALZ functional scenario matrix — existing adapters
 
-This milestone makes the existing eight Phase E application landing-zone scenarios measurable and reproducible. It does **not** enable infrastructure ACT, install any model, introduce an adapter, change provider scope or loosen policy.
+This milestone makes the existing nine Phase E application landing-zone scenarios measurable and reproducible (one per engine and provider; the Azure Terraform brownfield scenario was added for the `preview:terraform-azure-brownfield` release gate, owner decision 6408600057). It does **not** enable infrastructure ACT, install any model, introduce an adapter, change provider scope or loosen policy.
 
 ## Coverage
 
@@ -14,6 +14,7 @@ This milestone makes the existing eight Phase E application landing-zone scenari
 | crossplane-local-render | AWS | Crossplane | Brownfield |
 | pulumi-azure-greenfield | Azure | Pulumi | Greenfield |
 | bicep-azure-brownfield | Azure | Bicep | Brownfield |
+| terraform-azure-brownfield | Azure | Terraform | Brownfield |
 
 The authoritative scenario list is `src/qualification/phase-e.ts`. The matrix runs each in direct agent-kernel and conversational LangGraph modes; results must agree materially on DesignSpec, policy, artifact and preview hashes.
 
@@ -30,7 +31,7 @@ On an approved local host with Ollama loopback, installed Qwen3 1.7B, Qwen3 4B a
 node dist/cli/private-agent-matrix.js --live-models
 ```
 
-For a bounded single scenario before running all eight:
+For a bounded single scenario before running all nine:
 ```sh
 node dist/cli/private-agent-matrix.js --live-models --scenario terraform-aws-brownfield
 ```

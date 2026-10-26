@@ -16,15 +16,21 @@ export type ReleaseGate = {
   mode: ReleaseGateMode;
   why: string;
 };
-const previewScenarioIds = [
-  ...new Set([
-    ...PHASE_E_SCENARIOS.map((scenario) => scenario.id),
-    "pulumi-aws-greenfield",
-    "pulumi-aws-brownfield",
-    "pulumi-azure-brownfield",
-    "terraform-azure-brownfield",
-  ]),
-];
+/**
+ * What each `preview:<id>` gate is about, so its evidence is bound to the exact provider, IaC engine and estate: the Phase E
+ * scenarios (src/qualification/phase-e.ts) and the Pulumi permutations that have no Phase E lane. Terraform evidence never
+ * qualifies the CDK gate, an AWS preview never the Azure one, a greenfield plan never a brownfield gate.
+ */
+export type PreviewGateScenario = { provider: ProviderId; engine: string; estate: "brownfield" | "greenfield" };
+export const PREVIEW_GATE_SCENARIOS: Readonly<Record<string, PreviewGateScenario>> = {
+  ...Object.fromEntries(PHASE_E_SCENARIOS.map((scenario) => [scenario.id, { provider: scenario.provider as ProviderId, engine: scenario.engine, estate: scenario.mock as PreviewGateScenario["estate"] }])),
+  "pulumi-aws-greenfield": { provider: "AWS", engine: "PULUMI", estate: "greenfield" },
+  "pulumi-aws-brownfield": { provider: "AWS", engine: "PULUMI", estate: "brownfield" },
+  "pulumi-azure-brownfield": { provider: "AZURE", engine: "PULUMI", estate: "brownfield" },
+};
+const previewScenarioIds = Object.keys(PREVIEW_GATE_SCENARIOS);
+/** The scenario a `preview:<id>` gate is about, or undefined for any other gate id. */
+export const previewScenarioOf = (gateId: string): PreviewGateScenario | undefined => gateId.startsWith("preview:") ? PREVIEW_GATE_SCENARIOS[gateId.slice("preview:".length)] : undefined;
 /** The operating systems a release is qualified on, one gate each: a Linux pass never stands in for macOS or Windows. */
 export const RELEASE_PLATFORMS = ["darwin-arm64", "darwin-x64", "linux-x64", "linux-arm64", "win32-arm64", "win32-x64"] as const;
 /** What one platform's lifecycle report must show it actually ran on that host. */
@@ -187,6 +193,12 @@ function observedLivePayload(value: unknown, gate: ReleaseGate, record: ReleaseG
         x.passed === true && typeof x.evidenceSha256 === "string" &&
         sha64.test(x.evidenceSha256))) return false;
   if (gate.mode === "LIVE_PREVIEW") {
+    // The evidence names the gate's exact scenario, provider, engine and estate, calls itself LIVE, and (when it carries the
+    // producer's live conditions, src/apply/preview-evidence.ts) every one of them holds: a synthetic preview relabeled by hand fails here.
+    const scenario = previewScenarioOf(gate.id);
+    if (scenario === undefined || report.scenario !== gate.id.slice("preview:".length) || report.provider !== scenario.provider ||
+        report.engine !== scenario.engine || report.estate !== scenario.estate || report.label !== "LIVE") return false;
+    if (report.liveConditions !== undefined && (!isObject(report.liveConditions) || !Object.values(report.liveConditions).every((x) => x === true))) return false;
     return report.previewExecuted === true &&
       report.toolOutputHash !== undefined &&
       typeof report.toolOutputHash === "string" &&
