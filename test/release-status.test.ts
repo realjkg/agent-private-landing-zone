@@ -180,9 +180,9 @@ const sha = (c: string) => c.repeat(40);
 const node = (id: string, change: Partial<WorkNode> = {}): WorkNode =>
   ({ id, title: "Task " + id, owner: "LANE", status: "QUEUED", dependsOn: [], gates: [], next: "Do the task " + id, ...change });
 const facts = (pr: number, change: Partial<PrFacts> = {}): PrFacts => ({
-  pr, head: sha("a"), open: true, merged: false, checksGreen: true, checksFailed: false, qaPassed: true,
+  pr, head: sha("a"), open: true, merged: false, inScope: true, checksGreen: true, checksFailed: false, qaPassed: true,
   verdict: { result: "NO_BLOCKING_ISSUES", head: sha("a"), commentId: 1 }, laterBlocking: false, compatibleWithMain: true,
-  policyChange: false, onHold: false, repairRounds: 0, ...change,
+  evidenceHead: sha("a"), policyChange: false, onHold: false, protectionsPermit: true, repairRounds: 0, ...change,
 });
 const idle: SchedulerState = { active: {}, reviewing: [] };
 const graphOf = (...nodes: WorkNode[]): WorkGraph => ({ schemaVersion: 1, updated: "2026-10-26", nodes });
@@ -190,12 +190,17 @@ const graphOf = (...nodes: WorkNode[]): WorkGraph => ({ schemaVersion: 1, update
 test("scheduler: a head merges only when all nine mandate conditions hold, one merge per tick", () => {
   assert.deepEqual(mergeBlockers(facts(1)), []);
   const failing: [string, Partial<PrFacts>][] = [
-    ["closed", { open: false }], ["on hold", { onHold: true }], ["checks", { checksGreen: false }], ["qa", { qaPassed: false }],
-    ["no review", { verdict: undefined }], ["stale review", { head: sha("b") }],
+    ["closed", { open: false }], ["out of scope", { inScope: false }], ["no review", { verdict: undefined }],
+    ["stale review", { head: sha("b"), evidenceHead: sha("b") }], ["checks", { checksGreen: false }],
+    ["contradictory checks", { checksFailed: true }], ["qa", { qaPassed: false }],
     ["blocking review", { verdict: { result: "BLOCKING", head: sha("a"), commentId: 2 } }], ["later finding", { laterBlocking: true }],
-    ["behind main", { compatibleWithMain: false }], ["policy change", { policyChange: true }],
+    ["behind main", { compatibleWithMain: false }], ["stale evidence", { evidenceHead: sha("c") }], ["no evidence", { evidenceHead: undefined }],
+    ["policy change", { policyChange: true }], ["on hold", { onHold: true }], ["protections", { protectionsPermit: false }],
+    ["not a commit", { head: "", evidenceHead: "", verdict: { result: "NO_BLOCKING_ISSUES", head: "", commentId: 1 } }],
   ];
   for (const [name, change] of failing) assert.notDeepEqual(mergeBlockers(facts(1, change)), [], name);
+  assert.ok(mergeBlockers(facts(1, { head: "", evidenceHead: "", verdict: { result: "NO_BLOCKING_ISSUES", head: "", commentId: 1 } }))
+    .includes("the head is not a full commit SHA"));
   const actions = schedule(graphOf(node("a", { status: "IN_PROGRESS", prs: [1] }), node("b", { status: "IN_PROGRESS", prs: [2] })),
     [facts(1), facts(2)], idle);
   assert.deepEqual(actions.filter((x) => x.kind === "MERGE").map((x) => x.pr), [1], "integration is serialized");
@@ -221,10 +226,20 @@ test("scheduler: a task past its repair limit escalates and stops only its depen
     node("independent", { owner: "COORDINATOR" }),
     node("owner-only", { owner: "OWNER" }),
   );
-  const actions = schedule(graph, [facts(1, { repairRounds: 3, verdict: { result: "BLOCKING", head: sha("a"), commentId: 4 } })], idle);
-  assert.ok(actions.some((x) => x.kind === "ESCALATE" && x.task === "stuck"));
+  const blocking = { verdict: { result: "BLOCKING" as const, head: sha("a"), commentId: 4 } };
+  assert.equal(schedule(graph, [facts(1, { ...blocking, repairRounds: 1 })], idle).find((x) => x.task === "stuck")?.kind, "FIX", "the second round is a repair");
+  const actions = schedule(graph, [facts(1, { ...blocking, repairRounds: 2 })], idle);
+  assert.ok(actions.some((x) => x.kind === "ESCALATE" && x.task === "stuck"), "after two rounds the next finding escalates instead of a third repair");
+  assert.ok(!actions.some((x) => x.kind === "FIX"));
   assert.ok(actions.some((x) => x.kind === "DISPATCH" && x.task === "independent"), "a blocked task does not stop the release");
   assert.ok(!actions.some((x) => x.task === "after-stuck"), "its dependents wait");
+  // A green, reviewed PR on a dependent, or on a BLOCKED task, still does not merge.
+  const withChild = graphOf(node("stuck", { status: "IN_PROGRESS", prs: [1] }), node("after-stuck", { status: "IN_PROGRESS", dependsOn: ["stuck"], prs: [2] }),
+    node("blocked", { status: "BLOCKED", blockedBy: "the owner's sandbox", prs: [3] }));
+  const held = schedule(withChild, [facts(1, { ...blocking, repairRounds: 2 }), facts(2), facts(3)], idle);
+  assert.equal(held.filter((x) => x.kind === "MERGE").length, 0, "neither a dependent of an unfinished task nor a BLOCKED task merges");
+  assert.ok(held.some((x) => x.kind === "WAIT" && x.pr === 2 && /dependencies are not DONE: stuck/.test(x.reason)));
+  assert.ok(held.some((x) => x.kind === "WAIT" && x.pr === 3 && /blocked/.test(x.reason)));
   assert.ok(!actions.some((x) => x.kind === "DISPATCH" && x.task === "owner-only"), "owner tasks are never dispatched to an agent");
 });
 
@@ -232,6 +247,11 @@ test("scheduler: one lane at a time, one owner per task, and a resumed session f
   const graph = graphOf(node("x"), node("y"), node("z", { owner: "COORDINATOR" }));
   assert.deepEqual(schedule(graph, [], idle).filter((x) => x.kind === "DISPATCH").map((x) => x.task), ["x", "z"], "the lane budget is one");
   assert.deepEqual(schedule(graph, [], { active: { x: "LANE" }, reviewing: [] }).filter((x) => x.kind === "DISPATCH").map((x) => x.task), ["z"]);
+  // A task whose PR merged but the graph has not recorded it, or whose PR facts did not load, is not given a second owner.
+  const started = graphOf(node("x", { status: "IN_PROGRESS", prs: [1] }), node("y", { status: "IN_PROGRESS", prs: [2] }));
+  const again = schedule(started, [facts(1, { open: false, merged: true })], idle);
+  assert.equal(again.filter((x) => x.kind === "DISPATCH").length, 0);
+  assert.deepEqual(again.filter((x) => x.kind === "WAIT").map((x) => x.task), ["x", "y"]);
   const checkpoint: Checkpoint = { schemaVersion: 1, tick: 7, at: "2026-10-26T06:00:00Z", mainHead: sha("d"), last: [],
     state: { active: { x: "LANE", z: "COORDINATOR" }, reviewing: [{ pr: 5, head: sha("e") }] } };
   assert.deepEqual(resumeState(checkpoint, new Set(["z"])), { active: { z: "COORDINATOR" }, reviewing: [] },

@@ -15,10 +15,21 @@ The release mandate needs a scheduler. Each tick it picks a dependency-ready tas
 
 The decision step enforces these rules in code, and `test/release-status.test.ts` tests them.
 
-- **Merge:** a head is merged only when all nine mandate conditions hold (`mergeBlockers`). Integration is serialized, with at most one merge per tick. The merge records the reviewed head and the merge commit.
+- **Merge:** a head is merged only when `mergeBlockers` returns nothing. It checks the nine mandate conditions, one fact each:
+  1. in scope (`inScope`);
+  2. independent review complete on the current head (`verdict.head`);
+  3. required checks and affected QA green on that head, with no check failed;
+  4. findings resolved: no blocking verdict and no later blocking comment;
+  5. compatible with main;
+  6. the evidence names the current head (`evidenceHead`);
+  7. no new security exception or policy change;
+  8. not on hold;
+  9. branch protection permits the merge (`protectionsPermit`).
+
+  A head that is not a full commit SHA never merges. The task must also not be BLOCKED, and every task it depends on must be DONE. Integration is serialized, with at most one merge per tick. The merge records the reviewed head and the merge commit.
 - **Budget:** the owner's budget is one implementation lane and one concurrent reviewer (`OWNER_BUDGET`). A green, unreviewed head waits for the reviewer slot.
-- **Repair:** a failed check, a blocking review or a later blocking comment goes back to the task's owner as `FIX`. After two repair rounds on the same root problem, the task escalates. Only that task and its dependents stop.
-- **Dispatch:** a task runs only after its dependencies are done, and only with one owner. Tasks owned by `OWNER`, `EXTERNAL` or `DEPENDABOT` are never dispatched to an agent.
+- **Repair:** a failed check, a blocking review or a later blocking comment goes back to the task's owner as `FIX`. After two repair rounds on the same root problem, the next finding escalates instead of starting a third. Only that task and its dependents stop.
+- **Dispatch:** a task runs only after its dependencies are done, and only with one owner. Tasks owned by `OWNER`, `EXTERNAL` or `DEPENDABOT` are never dispatched to an agent. A task with a PR the tick has no facts for, or with more merged PRs than the graph records, waits for the record instead of getting a second owner.
 
 ## Resume
 

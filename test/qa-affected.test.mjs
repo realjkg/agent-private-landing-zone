@@ -248,11 +248,13 @@ test("every test that scans a source tree from disk is declared with the roots i
   const SRC_PATH = "[\"'`](?:\\.\\/)?src(?:\\/[^\"'`]*)?[\"'`]";
   const SCANS_SOURCE = new RegExp(LISTER + "\\([^)\\n]*" + SRC_PATH + "|\\[[^\\]\\n]*" + SRC_PATH + "[^\\]\\n]*\\]\\.(?:flatMap|map)\\(" + LISTER);
   // The path can also reach the lister through a constant: const DIR = join(ROOT, "src/x"); ... readdirSync(DIR).
-  const SRC_CONSTANT = new RegExp("const\\s+([A-Za-z_$][\\w$]*)\\s*=[^;]*?" + SRC_PATH, "g");
+  // The initializer stops at a semicolon or the next declaration, so code without semicolons binds the right name.
+  const SRC_CONSTANT = new RegExp("const\\s+([A-Za-z_$][\\w$]*)\\s*=(?:(?!\\b(?:const|let|var|function)\\b)[^;])*?" + SRC_PATH, "g");
   const scansSource = (text) => SCANS_SOURCE.test(text)
-    || [...text.matchAll(SRC_CONSTANT)].some(([, name]) => new RegExp(LISTER + "\\(\\s*" + name + "\\b").test(text));
+    || [...text.matchAll(SRC_CONSTANT)].some(([, name]) => new RegExp(LISTER + "\\([^)\\n]*\\b" + name + "\\b").test(text));
   for (const spelling of ['readdirSync(join(ROOT, "src/learn"))', "walk('src')", 'sourceFiles("./src")', 'readdirSync(resolve(`src/tools`))',
-    '["src/tools", "src/agent"].flatMap(walk)', 'const DIR = join(\n  ROOT,\n  "src/compliance",\n);\nreaddirSync(DIR, { recursive: true })'])
+    '["src/tools", "src/agent"].flatMap(walk)', 'const DIR = join(\n  ROOT,\n  "src/compliance",\n);\nreaddirSync(DIR, { recursive: true })',
+    'const ROOT = here()\nconst DIR = join(ROOT, "src/x")\nreaddirSync(DIR)', 'const DIR = "src/x";\nreaddirSync(join(ROOT, DIR))'])
     assert.ok(scansSource(spelling), spelling);
   assert.ok(!scansSource('mkdirSync(join(root, "src"))'), "creating a fixture directory is not a scan");
   assert.ok(!scansSource('readdirSync(join(root, "src-" + label))'), "a src- prefixed scratch folder is not src");
