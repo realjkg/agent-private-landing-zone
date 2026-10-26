@@ -5,22 +5,45 @@ import {
   PHASE_E_SCENARIOS,
   runPhaseEQualification,
 } from "../src/qualification/phase-e.js";
+import { ACT_RELEASE_PATHS, PRODUCTION_RELEASE_GATES } from "../src/qualification/release-admission.js";
 
-test("Phase E covers each implemented adapter exactly once", () => {
+test("Phase E covers each engine and provider pair at most once, every implemented adapter at least once, and every release path the owner selected", () => {
   assert.equal(
     PHASE_E_SCENARIOS.length,
-    8,
+    9,
   );
-
-  const engines =
+  const pairs =
     PHASE_E_SCENARIOS.map(
       (scenario) =>
-        scenario.engine,
+        scenario.engine + "/" + scenario.provider,
     );
-
   assert.equal(
-    new Set(engines).size,
+    new Set(pairs).size,
+    pairs.length,
+    "one scenario per engine and provider",
+  );
+  assert.equal(
+    new Set(PHASE_E_SCENARIOS.map((scenario) => scenario.engine)).size,
     8,
+    "every implemented adapter has a lane",
+  );
+  // The three release paths (config/release/scope.json; src/qualification/release-admission.ts ACT_RELEASE_PATHS) each
+  // have a brownfield preview scenario of their own: the Azure Terraform path is not covered by the AWS one.
+  const ENGINE_NAMES: Record<string, string> = { TERRAFORM: "TERRAFORM", CDK: "AWS_CDK" };
+  for (const path of ACT_RELEASE_PATHS) {
+    const scenario = PHASE_E_SCENARIOS.find(
+      (item) => item.provider === path.provider && item.engine === ENGINE_NAMES[path.engine],
+    );
+    assert.ok(scenario, path.provider + " " + path.engine + " has a preview scenario");
+    assert.equal(scenario.mock, "brownfield", scenario.id);
+    assert.ok(PRODUCTION_RELEASE_GATES.some((gate) => gate.id === "preview:" + scenario.id), "preview:" + scenario.id + " is a release gate");
+  }
+  assert.deepEqual(
+    PHASE_E_SCENARIOS.find((item) => item.id === "terraform-azure-brownfield"),
+    {
+      id: "terraform-azure-brownfield", provider: "AZURE", mock: "brownfield", engine: "TERRAFORM",
+      request: "Build a governed Azure brownfield landing zone using Terraform.", requiredCapabilities: ["EVIDENCE_READ", "BUILD_PREVIEW", "CLOUD_READ"],
+    },
   );
 });
 
@@ -43,7 +66,7 @@ test("parallel simulated builds converge across direct and LangGraph paths witho
   );
   assert.equal(
     result.lanes.length,
-    8,
+    9,
   );
   assert.equal(
     result.converged,
