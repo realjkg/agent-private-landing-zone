@@ -98,7 +98,7 @@ export async function runPreliveCampaign(input: {
   if (new Set(cases.map((item) => item.id)).size !== cases.length) {
     throw new Error("DUPLICATE_SCENARIO_ID");
   }
-  input.onProgress?.("Evaluating eight existing direct/conversational scenarios");
+  input.onProgress?.("Evaluating " + cases.length + " existing direct/conversational scenarios");
   const baseline = await runPrivateAgentMatrix({
     sourceCommit: input.sourceCommit, mode: "OFFLINE_FIXTURE", scenarios: cases,
   });

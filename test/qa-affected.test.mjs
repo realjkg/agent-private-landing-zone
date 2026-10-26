@@ -71,6 +71,20 @@ test("configuration changes perform targeted dependency checks", () => {
   assert.equal(plan.configCheck, true);
   assert.deepEqual(plan.nodeTests, ["test/deps-install.test.ts", "test/development-readiness.test.ts"]);
 });
+test("a dependency bump runs the tests of the agent runtime framework's consumers, not every importer of every package", () => {
+  const files = fixture();
+  files.set("src/session/graph.ts", 'import { StateGraph } from "@langchain/langgraph"; import "../agent/core.js";');
+  files.set("test/session-graph.test.ts", 'import "../src/session/graph.js";');
+  files.set("src/util/schema.ts", 'import { z } from "zod";');
+  files.set("test/schema.test.ts", 'import "../src/util/schema.js";');
+  for (const manifest of ["package.json", "package-lock.json"]) {
+    const plan = planChanged([manifest], files);
+    assert.ok(plan.nodeTests.includes("test/session-graph.test.ts"), manifest + " runs the framework consumer's test");
+    assert.ok(!plan.nodeTests.includes("test/schema.test.ts"), manifest + " leaves zod to the typecheck");
+    assert.deepEqual(plan.gaps, []);
+  }
+  assert.ok(!planChanged(["tsconfig.json"], files).nodeTests.includes("test/session-graph.test.ts"), "only the dependency manifests");
+});
 test("unknown executable paths require a mapping before passing", () => {
   const plan = planChanged(["installer/unknown-executable"], fixture());
   assert.match(plan.gaps[0], /no QA ownership rule/);
@@ -238,6 +252,13 @@ test("a source change selects every guard that scans its tree, which no import r
   assert.ok(agent.nodeTests.includes("test/teardown-driver-cli.test.ts"));
   assert.ok(agent.nodeTests.includes("test/teardown-adapter-terraform.test.ts"));
   assert.deepEqual(agent.gaps, []);
+  // The console's plain-words check reads codes out of src/cli and src/apply from disk (types, prepare, the preview-evidence
+  // producer, the CLI and the router): a new code in any of them runs it (a UI suite).
+  for (const source of ["src/cli/apply.ts", "src/apply/prepare.ts", "src/apply/preview-evidence.ts", "src/cli/ui-channel.ts", "src/apply/types.ts"]) {
+    const plan = planChanged([source], files);
+    assert.ok(plan.uiTests.includes("test/pilot-wizard.test.tsx"), source + " selects the plain-words check");
+  }
+  assert.ok(!planChanged(["src/agent/core.ts"], files).uiTests.includes("test/pilot-wizard.test.tsx"), "a guard runs only for the roots it scans");
 });
 
 test("every test that scans a source tree from disk is declared with the roots it scans", () => {

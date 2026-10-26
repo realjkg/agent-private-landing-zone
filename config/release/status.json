@@ -191,6 +191,20 @@
       "nextAction": ""
     },
     {
+      "gate": "preview:terraform-azure-brownfield",
+      "candidate": null,
+      "owner": "OWNER",
+      "status": "BLOCKED",
+      "evidenceMode": null,
+      "evidenceRefs": [],
+      "testedScope": "Real Terraform plan output against the Azure brownfield sandbox, with no infrastructure applied, produced by ./alz apply preview-evidence from a sealed preview and bound to the candidate commit, the pinned engine program and the plan bytes.",
+      "invalidatedBy": [
+        "the candidate commit changes",
+        "the Terraform pin or the Azure provider adapter changes"
+      ],
+      "nextAction": "The scenario (src/qualification/phase-e.ts terraform-azure-brownfield) and its producer (./alz apply preview-evidence --gate preview:terraform-azure-brownfield) exist and are qualified synthetically; the gate closes only when the producer, run from the candidate commit with the pinned, qualified Terraform against the Azure sandbox (it waits on the azure-provider gate's sandbox), writes LIVE evidence that the admission review accepts. Synthetic evidence from a fake engine is labeled SYNTHETIC and is refused by the gate."
+    },
+    {
       "gate": "preview:pulumi-aws-greenfield",
       "candidate": null,
       "owner": "OWNER",
@@ -228,20 +242,6 @@
         "the owner adds the path to the release scope"
       ],
       "nextAction": ""
-    },
-    {
-      "gate": "preview:terraform-azure-brownfield",
-      "candidate": null,
-      "owner": "ENGINEERING",
-      "status": "BLOCKED",
-      "evidenceMode": null,
-      "evidenceRefs": [],
-      "testedScope": "Real Terraform plan output against the Azure sandbox, with no infrastructure applied.",
-      "invalidatedBy": [
-        "the candidate commit changes",
-        "the Terraform pin or the Azure provider adapter changes"
-      ],
-      "nextAction": "Deferred, not forgotten: no scenario produces this gate's evidence yet. The preview scenario set holds one scenario per engine adapter (test/phase-e-simulated-builds.test.ts), so an Azure Terraform brownfield preview needs its own PLAN before it is added; the Azure Terraform lifecycle (act:azure-terraform) passes synthetically in the meantime and does not stand in for this gate."
     },
     {
       "gate": "isolated-recovery",

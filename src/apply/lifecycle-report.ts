@@ -1,7 +1,7 @@
 import { canonicalJson } from "../teardown/manifest.js";
 import type { ResolvedTarget } from "../teardown/driver/types.js";
 import { sha256 } from "../util/sha256.js";
-import { PROTECTED_OWNERSHIPS, RETENTION_OWNERS, type CleanupProposal } from "./cleanup-proposal.js";
+import { PROTECTED_OWNERSHIPS, RETENTION_OWNERS, retentionOwnerOf, type CleanupProposal, type Ownership } from "./cleanup-proposal.js";
 import { COMMIT, HASH } from "./constants.js";
 import type { LiveAcceptanceRecord } from "./live-record.js";
 import type { LeftoversRecord, ObservationRecord } from "./run-records.js";
@@ -263,6 +263,15 @@ export function lifecycleReportProblems(value: unknown, expected: { sourceCommit
       if (sum(retained.byOwnership) !== retained.total || sum(retained.byOwner) !== retained.total) problems.push("report.acceptance.retained: the counts by ownership and by owner must add up to the total");
       if (!Object.keys(retained.byOwnership).every((key) => KEPT_OWNERSHIPS.includes(key))) problems.push("report.acceptance.retained.byOwnership: a key is not an ownership class a kept resource can carry");
       if (!Object.keys(retained.byOwner).every((key) => (RETENTION_OWNERS as readonly string[]).includes(key))) problems.push("report.acceptance.retained.byOwner: a key is not a retention owner");
+      // Who keeps what follows from the ownership classes (retentionOwnerOf), so the owner counts are recomputed from the ownership counts, never trusted as stored.
+      const owners: Record<string, number> = {};
+      for (const [ownership, n] of Object.entries(retained.byOwnership)) {
+        if (!KEPT_OWNERSHIPS.includes(ownership)) continue;
+        const owner = retentionOwnerOf(ownership as Exclude<Ownership, "RUN_CREATED">);
+        owners[owner] = (owners[owner] ?? 0) + n;
+      }
+      const same = (a: Record<string, number>, b: Record<string, number>) => Object.keys(a).sort().join() === Object.keys(b).sort().join() && Object.entries(a).every(([k, n]) => b[k] === n);
+      if (!same(owners, retained.byOwner)) problems.push("report.acceptance.retained.byOwner: not derived from the counts by ownership (a declaration never counts)");
       // The statement is recomputed from the derived facts, never matched as text: a stored sentence that says more (or less) is refused.
       if (acceptance.statement !== acceptanceStatement(expected, retained)) problems.push("report.acceptance.statement: not derived from the resource cleanup state and the retained counts (a declaration never counts)");
     }

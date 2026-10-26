@@ -8,7 +8,7 @@ import test from "node:test";
 import { runApplyCommand, type ApplyCliDeps } from "../src/cli/apply.js";
 import { targetString } from "../src/cli/teardown-driver.js";
 import { loadPilotContract, pilotContractSha256 } from "../src/apply/contract.js";
-import { lifecycleReportProblems, type LifecycleReport } from "../src/apply/lifecycle-report.js";
+import { acceptanceStatement, lifecycleReportProblems, type LifecycleReport } from "../src/apply/lifecycle-report.js";
 import type { PilotContract } from "../src/apply/types.js";
 import { pilotUnitOf } from "../src/apply/unit.js";
 import { openNonceStore } from "../src/apply/nonces.js";
@@ -321,6 +321,11 @@ test("the lifecycle report validator refuses a declared pass, a live claim witho
   assert.match(problems({ acceptance: { ...report.acceptance, retained: { ...report.acceptance.retained, byOwner: { AGENT: report.acceptance.retained.total } } } }), /byOwner: a key is not a retention owner/);
   assert.match(problems({ acceptance: { ...report.acceptance, retained: { ...report.acceptance.retained, byOwnership: { RUN_CREATED: report.acceptance.retained.total } } } }), /byOwnership: a key is not an ownership class a kept resource can carry/);
   assert.match(problems({ acceptance: { ...report.acceptance, retained: { ...report.acceptance.retained, total: report.acceptance.retained.total + 1 } } }), /counts by ownership and by owner must add up/);
+  // NB1 (review 6410149770): who keeps what follows from the ownership classes. A swapped owner with a consistent statement and total is still refused.
+  const swapped = { ...report.acceptance.retained, byOwner: { ENVIRONMENT_OWNER: report.acceptance.retained.total } };
+  assert.match(problems({ acceptance: { ...report.acceptance, retained: swapped, statement: acceptanceStatement(report.acceptance.resourceCleanup, swapped) } }), /byOwner: not derived from the counts by ownership/);
+  const split = { total: 2, byOwnership: { PROTECTED_BACKEND: 1, NOT_IN_PLAN: 1 }, byOwner: { PILOT_OWNER: 2 } };
+  assert.match(lifecycleReportProblems({ ...report, acceptance: { ...report.acceptance, retained: split, statement: acceptanceStatement(report.acceptance.resourceCleanup, split) } }).join(" | "), /byOwner: not derived from the counts by ownership/, "a count moved between owners");
   const { acceptance: _dropped, ...withoutAcceptance } = report;
   assert.match(lifecycleReportProblems(withoutAcceptance).join(" | "), /report\.acceptance: missing/);
   // Completion claimed over pending leftovers: the stages say leftovers are not PASS, so passed cannot be true.
