@@ -44,8 +44,9 @@ export const SOURCE_SCAN_GUARDS = {
   "test/operations-teardown.test.ts": ["src/operations/"],
   "test/operations-enterprise.test.ts": ["src/cli/"],
   "test/operations-parity.test.ts": ["src/cli/"],
-  // The console's plain-words check reads the refusal, CLI, router and prepare codes out of these sources, so a code added
-  // under either root without its words merged unnoticed (#257 round 1: PREVIEW_ATTESTATION_MISMATCH).
+  // The console's plain-words check reads codes out of src/apply/types.ts, src/apply/prepare.ts, src/apply/preview-evidence.ts
+  // (the producer's refusals), src/cli/apply.ts and src/cli/ui-channel.ts, so a code added under either directory without its
+  // words merged unnoticed (#257 round 1: PREVIEW_ATTESTATION_MISMATCH; round 2 NB6: the producer's own codes).
   "test/pilot-wizard.test.tsx": ["src/apply/", "src/cli/"],
 };
 

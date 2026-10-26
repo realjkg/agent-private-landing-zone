@@ -252,8 +252,9 @@ test("a source change selects every guard that scans its tree, which no import r
   assert.ok(agent.nodeTests.includes("test/teardown-driver-cli.test.ts"));
   assert.ok(agent.nodeTests.includes("test/teardown-adapter-terraform.test.ts"));
   assert.deepEqual(agent.gaps, []);
-  // The console's plain-words check reads codes out of src/cli and src/apply from disk: a new code in either runs it (a UI suite).
-  for (const source of ["src/cli/apply.ts", "src/apply/prepare.ts"]) {
+  // The console's plain-words check reads codes out of src/cli and src/apply from disk (types, prepare, the preview-evidence
+  // producer, the CLI and the router): a new code in any of them runs it (a UI suite).
+  for (const source of ["src/cli/apply.ts", "src/apply/prepare.ts", "src/apply/preview-evidence.ts", "src/cli/ui-channel.ts", "src/apply/types.ts"]) {
     const plan = planChanged([source], files);
     assert.ok(plan.uiTests.includes("test/pilot-wizard.test.tsx"), source + " selects the plain-words check");
   }
