@@ -42,6 +42,15 @@ The caller runs the AWS CLI as the read-only DISCOVERY identity through the boun
 
 **The unit tag:** a pilot run stamps its deletion unit on everything it creates (`src/apply/unit.ts`; the operator's provider configuration declares the tags and `seal` verifies them in the plan, docs/act-pilot-plan.md item 6). The blueprint record carries the unit, so the observation lists resources carrying it and reports `inventory: COMPLETE` when the listing covered every page; a tagged resource the state does not name is `unexpected` and the verdict `FAILED`. A run whose engine seals no unit (CDK) reports `inventory: NOT_AVAILABLE` and reaches `PARTIAL` at best.
 
+## The Azure reader
+
+For the Azure Terraform row the same checks read Azure Resource Manager (`src/observe/azure-rest.ts`), in process, as the DISCOVERY identity. No `az` CLI runs, so no credential ever reaches a process argument list, a child environment, a log or an evidence digest:
+
+- The DISCOVERY identity's federated token (`ALZ_DISCOVERY_ARM_OIDC_TOKEN_FILE`) is exchanged once, in the body of one HTTPS POST to `https://login.microsoftonline.com/<tenant>/oauth2/v2.0/token` (client credentials with a client assertion), for an access token scoped to `management.azure.com`. Both tokens live in memory for one observation and are dropped with it; they never appear in a record, a message or an error. Failures are recorded as classes (`CREDENTIALS`, `ACCESS_DENIED`, `THROTTLED`, `HTTP_ERROR`, `HOST_REFUSED`, `UNEXPECTED_RESPONSE`).
+- Requests are GETs to `management.azure.com` only: the provider's API versions once per resource type, one resource by its ARM id (`200` whose `id` is the one asked about → present; `404` → absent; anything else → unknown with a class), and the subscription's resources and resource groups carrying the `alz-unit` tag, every page. A URL anywhere else is refused before a request exists. Only existence and identifiers are kept.
+- Checkable: a resource group, or a resource under a provider namespace in the target subscription. Not checkable: an id outside the subscription (`OUTSIDE_TARGET_SUBSCRIPTION`), a data-plane URL such as a key vault secret (`NOT_AN_ARM_RESOURCE_ID`), or an entry with no id.
+- Tests (`test/apply-cleanup-azure.test.ts`, `test/ui-channel.test.ts`) run a scripted Azure Resource Manager with canary token values and prove that the values appear in no recorded request URL, record, result or error, that only the token POST and GETs to the two hosts are sent, and that the observation, proposal, cleanup and leftover check behave as on AWS. Synthetic evidence only.
+
 ## Cleanup disposition
 
 `cleanupDisposition` runs the same existence check after cleanup. Each resource ends in exactly one of these states:
@@ -96,7 +105,9 @@ The driver and the commands keep the journey's records in the apply ledger (`.ru
 
 - **Untaggable types.** A created resource whose type carries no tags (a bucket's versioning setting, a role assignment) is listed as untagged in the sealed artifact and is covered by the per-resource checks only; a sweep cannot find an orphan of such a type.
 - **The CDK engine** seals no unit (its change set view carries no tags), so its cleanup is `KNOWN_ADDRESSES_CONFIRMED` at best until it has a tag reader.
-- **Azure Terraform and AWS CDK.** Their verifiers and cleanup adapters are later slices; the commands refuse with `CLEANUP_NOT_SUPPORTED` and nothing runs.
+- **AWS CDK.** It has no tag reader and no cleanup adapter; the commands refuse with `CLEANUP_NOT_SUPPORTED` and nothing runs.
+- **Azure identity objects.** `azuread_*` applications, service principals and federated credentials, and user-assigned identities, are never deleted by a cleanup (`PROTECTED_IDENTITY`), whoever created them; an identity needs its own decision.
+- **Azure resources without an ARM id.** A key vault secret, a key, a certificate or anything else whose state `id` is a data-plane URL cannot be read by the Azure reader: it is `UNVERIFIABLE` (`NOT_AN_ARM_RESOURCE_ID`) in the observation, proposed as such, and `UNKNOWN` after a cleanup unless a confirmed-gone parent speaks for it, so a run that created one never reaches `COMPLETE` without a person's confirmation.
 - **Live acceptance.** Running the journey against a real account, the owner's `record-live` attestation, and the teardown of the pilot accounts are the owner's, under `docs/act-pilot-plan.md`. No test here is live evidence.
 
 Tests: `test/observe-blueprint.test.ts` (the core), `test/apply-cleanup.test.ts` (the driver and records, including forged proposals), `test/apply-cleanup-cli.test.ts` (the commands and the report) and `test/ui-channel.test.ts` (the console journey). All use a fake AWS CLI and a fake Terraform, so they are synthetic evidence. The blueprint parser is also checked against real `terraform show -json` and `terraform state pull` output from Terraform 1.16.4.

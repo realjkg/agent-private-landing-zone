@@ -21,6 +21,7 @@ import { SOURCE_COMMIT,
   AWS_DEV_TARGET, ENGINE_VERSION, NOW, POLICY, awsContractJson, awsIdentityEnv, awsReadCallsOf, awsRoleArn, awsTargetOf, behave as behaveIn, behaveAwsReads, callsOf, contractJson, identityEnv,
   installFakeAwsReads, installFakeTerraform, keys, pinPathOf, stateResource, targetOf, testFixtureForgeQualificationEvidence,
   writePinnedContract, writeProject, type Behavior, type Project,
+  ARM_ACCESS_TOKEN_CANARY, ARM_FEDERATED_TOKEN_CANARY, DEV_TARGET, azureStateResource, fakeArmHttp,
 } from "./helpers/apply-fixtures.js";
 
 // The console's pilot channel (src/cli/ui-channel.ts, docs/act-pilot-walkthrough.md). A workflow runs wholly in the terminal or
@@ -1158,6 +1159,147 @@ test("AWS Terraform in the console: a wrong phrase or a cancel at the cleanup ap
   const observed = (await finished(port)).run!.result!;
   assert.equal(observed.exit, 0);
   assert.equal((observed.data as { verdict: string }).verdict, "FAILED", "after the cleanup, the created things are missing from the cloud, and the observation says so");
+  assert.equal(applies(), appliesBefore + 1);
+});
+
+// --- the Azure row: the same console steps, read through Azure Resource Manager in process ------------------------------
+
+const AZ_SUB = DEV_TARGET.account;
+const AZ_RG = "/subscriptions/" + AZ_SUB + "/resourceGroups/alz-console-rg";
+const AZ_LAW = AZ_RG + "/providers/Microsoft.OperationalInsights/workspaces/alz-console-law";
+const AZ_STATE_ACCOUNT = AZ_RG + "/providers/Microsoft.Storage/storageAccounts/" + DEV_TARGET.backend.split("/")[0];
+const AZ_OLD_ROLE = "/subscriptions/" + AZ_SUB + "/providers/Microsoft.Authorization/roleAssignments/22222222-bbbb-4bbb-8bbb-222222222222";
+const AZ_STRAY = AZ_RG + "/providers/Microsoft.Storage/storageAccounts/strayofthisunit";
+const AZ_CREATES = [
+  { address: "azurerm_resource_group.pilot", type: "azurerm_resource_group", change: { actions: ["create"], before: null, after: { tags: {} } } },
+  { address: "azurerm_log_analytics_workspace.pilot", type: "azurerm_log_analytics_workspace", change: { actions: ["create"], before: null, after: { tags: {} } } },
+  { address: "azurerm_storage_account.state", type: "azurerm_storage_account", change: { actions: ["update"], before: {}, after: {} } },
+];
+const AZ_STATE = [
+  azureStateResource("azurerm_resource_group", "pilot", AZ_RG), azureStateResource("azurerm_log_analytics_workspace", "pilot", AZ_LAW),
+  azureStateResource("azurerm_storage_account", "state", AZ_STATE_ACCOUNT), azureStateResource("azurerm_role_assignment", "old", AZ_OLD_ROLE),
+];
+const AZ_EXISTING = [AZ_RG, AZ_LAW, AZ_STATE_ACCOUNT, AZ_OLD_ROLE];
+const AZ_TAGGED = [AZ_RG, AZ_LAW];
+const AZ_UNIT = (() => {
+  const path = join(fresh("unit-contract"), "act-pilot-contract.json");
+  writePinnedContract(path, contractJson(KILL, { policyVersion: POLICY }));
+  return pilotUnitOf({ provider: "AZURE", contractSha256: pilotContractSha256(loadPilotContract(path, pinPathOf(path)) as PilotContract), environment: "DEV", target: targetOf("DEV") });
+})();
+/** The DISCOVERY identity's federated token, in a file as the owner's host provides it; its value is a canary that must never be seen again. */
+const azTokenFile = (() => { const path = join(fresh("token"), "discovery-oidc-token"); writeFileSync(path, ARM_FEDERATED_TOKEN_CANARY + "\n", { mode: 0o600 }); return path; })();
+
+/** An Azure console journey whose fake engine reports a state, with a scripted Azure Resource Manager the in-process reader reads through. */
+async function azureCleanupJourney() {
+  const journey = await consoleJourney("AZURE");
+  behaveIn(toolDir, KILL, { applyAdvance: true, showOnlyConfigured: true, showResources: AZ_CREATES, stateResources: AZ_STATE, unitTags: { ...AZ_UNIT.tags }, unitTagAttribute: "tags" });
+  const arm = fakeArmHttp({ existing: AZ_EXISTING, tagged: AZ_TAGGED });
+  const w = { ...journey.w, cli: { ...journey.w.cli, env: { ...identityEnv("DEV"), ALZ_DISCOVERY_ARM_OIDC_TOKEN_FILE: azTokenFile }, observeArm: arm.http, proposalsDir: fresh("proposals") } };
+  const { port } = await serve(w);
+  await choose(port);
+  return { ...journey, w, port, arm };
+}
+const noAzureTokenIn = (arm: ReturnType<typeof fakeArmHttp>, ...texts: unknown[]) => {
+  for (const c of arm.calls) assert.ok(!c.url.includes(ARM_FEDERATED_TOKEN_CANARY) && !c.url.includes(ARM_ACCESS_TOKEN_CANARY), "a token reached a URL");
+  for (const text of texts.map((t) => JSON.stringify(t))) assert.ok(!text.includes(ARM_FEDERATED_TOKEN_CANARY) && !text.includes(ARM_ACCESS_TOKEN_CANARY), "a token reached a result the console shows");
+};
+
+// Literal titles: config/acceptance/journeys.json cites each one exactly.
+test("Azure Terraform in the console: observe what the apply created, propose and approve the cleanup, remove exactly that list and verify it is gone, through the real router, service and adapter", async () => {
+  const { port, target, project, arm } = await azureCleanupJourney();
+  const { prepared, sealed } = await prepareAndSealInConsole(port, project, target);
+  const approvalPath = await approveViaUi(port, sealed, "alice");
+  const applied = await applyInConsole(port, prepared.files, sealed, [approvalPath], applyPhrase(sealed));
+  assert.equal(applied.exit, 0, JSON.stringify(applied));
+
+  const { observation, proposalPath, summary } = await observeAndProposeInConsole(port, sealed);
+  assert.equal(observation.verdict, "VERIFIED", "every resource is found under its ARM id, and the unit sweep found nothing else");
+  assert.deepEqual(observation.resources.map((r) => [r.address, r.result]).sort(), [
+    ["azurerm_log_analytics_workspace.pilot", "VERIFIED"], ["azurerm_resource_group.pilot", "VERIFIED"], ["azurerm_role_assignment.old", "VERIFIED"], ["azurerm_storage_account.state", "VERIFIED"],
+  ]);
+  assert.equal(observation.inventory, "COMPLETE");
+  // The reader exchanged the federated token once, in a POST body, and read management.azure.com with the result; nothing else, nowhere else.
+  assert.deepEqual([...new Set(arm.calls.map((c) => new URL(c.url).host))].sort(), ["login.microsoftonline.com", "management.azure.com"]);
+  assert.equal(arm.calls.filter((c) => c.method === "POST").length, 1);
+  assert.ok(arm.calls.filter((c) => c.method !== "POST").every((c) => c.method === "GET"));
+  noAzureTokenIn(arm, observation, summary);
+  assert.deepEqual(summary.deletes.map((d) => d.address), ["azurerm_log_analytics_workspace.pilot", "azurerm_resource_group.pilot"]);
+  assert.deepEqual(summary.excluded.map((x) => [x.address, x.ownership]), [["azurerm_role_assignment.old", "NOT_IN_PLAN"], ["azurerm_storage_account.state", "PROTECTED_BACKEND"]]);
+
+  const signed = await approveCleanupViaUi(port, proposalPath, summary.shortId, "alice");
+  assert.equal(signed.run!.result!.exit, 0, JSON.stringify(signed.run!.result));
+  const cleanupApproval = signed.run!.result!.savedPath!;
+  const removed = await cleanupViaUi(port, prepared.files, sealed, proposalPath, summary.shortId, target, [cleanupApproval]);
+  assert.equal(removed.run!.result!.exit, 0, JSON.stringify(removed.run!.result));
+  const evidence = removed.run!.result!.data as { outcome: string; deletes: string[]; authority: { executedAs: string } };
+  assert.equal(evidence.outcome, "SUCCEEDED");
+  assert.deepEqual(evidence.deletes, ["azurerm_log_analytics_workspace.pilot", "azurerm_resource_group.pilot"]);
+  assert.equal(evidence.authority.executedAs, "APPLY");
+
+  // The independent check reads ARM again: the created things are gone and nothing carries the unit's tag.
+  arm.behave({ existing: [AZ_STATE_ACCOUNT, AZ_OLD_ROLE], tagged: [] });
+  assert.equal((await call(port, "POST", "/pilot/verify-cleanup", { body: { proposalPath } })).status, 202);
+  const verified = (await finished(port)).run!.result!;
+  assert.equal(verified.exit, 0, JSON.stringify(verified));
+  const leftovers = verified.data as { disposition: string; resources: { address: string; disposition: string }[] };
+  assert.equal(leftovers.disposition, "COMPLETE");
+  assert.equal(verified.code, "CLEANUP_COMPLETE");
+  assert.deepEqual(leftovers.resources.map((r) => [r.address, r.disposition]), [
+    ["azurerm_log_analytics_workspace.pilot", "CONFIRMED_DELETED"], ["azurerm_resource_group.pilot", "CONFIRMED_DELETED"], ["azurerm_role_assignment.old", "INTENTIONALLY_RETAINED"], ["azurerm_storage_account.state", "INTENTIONALLY_RETAINED"],
+  ]);
+  noAzureTokenIn(arm, verified);
+  // Something else still carrying the change's cleanup marker keeps it incomplete.
+  arm.behave({ existing: [AZ_STATE_ACCOUNT, AZ_OLD_ROLE], tagged: [AZ_STRAY] });
+  assert.equal((await call(port, "POST", "/pilot/verify-cleanup", { body: { proposalPath } })).status, 202);
+  const strayRun = (await finished(port)).run!.result!;
+  assert.equal(strayRun.code, "CLEANUP_INCOMPLETE");
+  assert.deepEqual((strayRun.data as { resources: { address: string; identifier: string | null; disposition: string }[] }).resources.filter((r) => r.address === "(not in state)").map((r) => [r.identifier, r.disposition]), [[AZ_STRAY, "STILL_PRESENT"]]);
+});
+
+test("Azure Terraform in the console: a wrong phrase or a cancel at the cleanup approval or the removal signs nothing and removes nothing, an apply approval never authorizes a cleanup, and a reconnect never removes twice", async () => {
+  const { w, port, target, project, arm } = await azureCleanupJourney();
+  const { prepared, sealed } = await prepareAndSealInConsole(port, project, target);
+  const approvalPath = await approveViaUi(port, sealed, "alice");
+  assert.equal((await applyInConsole(port, prepared.files, sealed, [approvalPath], applyPhrase(sealed))).exit, 0);
+  const { proposalPath, summary } = await observeAndProposeInConsole(port, sealed);
+  const approvalFiles = () => readdirSync(w.approvals).length;
+  const signedBefore = approvalFiles();
+  for (const answer of ["APPROVE DEV " + summary.shortId, "APPROVE CLEANUP DEV", null]) {
+    const result = (await approveCleanupViaUi(port, proposalPath, summary.shortId, "alice", answer)).run!.result!;
+    assert.notEqual(result.exit, 0);
+    assert.equal(result.savedPath, undefined);
+    assert.equal(approvalFiles(), signedBefore, "nothing was signed");
+  }
+  const destroys = () => engineCalls().filter((args) => args[0] === "plan" && args[1] === "-destroy").length;
+  const applies = () => engineCalls().filter((args) => args[0] === "apply").length;
+  const [destroysBefore, appliesBefore] = [destroys(), applies()];
+  const misused = await cleanupViaUi(port, prepared.files, sealed, proposalPath, summary.shortId, target, [approvalPath]);
+  assert.equal(misused.run!.result!.exit, 2, JSON.stringify(misused.run!.result));
+  assert.equal(misused.run!.result!.code, "APPROVAL_UNVERIFIED");
+  assert.equal(destroys(), destroysBefore);
+  const cleanupApproval = (await approveCleanupViaUi(port, proposalPath, summary.shortId, "alice")).run!.result!.savedPath!;
+  for (const answer of ["CLEANUP DEV " + summary.shortId, null]) {
+    const result = (await cleanupViaUi(port, prepared.files, sealed, proposalPath, summary.shortId, target, [cleanupApproval], answer)).run!.result!;
+    assert.notEqual(result.exit, 0);
+    assert.notEqual(result.exit, 3, "nothing is spent: " + JSON.stringify(result));
+    assert.equal(applies(), appliesBefore, "no destroy applied");
+  }
+  const removed = (await cleanupViaUi(port, prepared.files, sealed, proposalPath, summary.shortId, target, [cleanupApproval])).run!.result!;
+  assert.equal(removed.exit, 0, JSON.stringify(removed));
+  assert.equal(applies(), appliesBefore + 1);
+  const again = (await cleanupViaUi(port, prepared.files, sealed, proposalPath, summary.shortId, target, [cleanupApproval])).run!.result!;
+  assert.equal(again.exit, 2, JSON.stringify(again));
+  assert.equal(again.code, "PROPOSAL_ALREADY_EXECUTED");
+  assert.equal(applies(), appliesBefore + 1, "a reconnect never removes twice");
+  // A token the tenant refuses: the observation is INCONCLUSIVE, the reason is a class, and the token value appears nowhere.
+  arm.behave({ existing: AZ_EXISTING, tagged: AZ_TAGGED, tokenStatus: 401 });
+  assert.equal((await call(port, "POST", "/pilot/observe", { body: { sealedPath: sealed.path } })).status, 202);
+  const observed = (await finished(port)).run!.result!;
+  assert.equal(observed.exit, 0, JSON.stringify(observed));
+  const data = observed.data as { verdict: string; resources: { result: string; reason?: string }[] };
+  assert.equal(data.verdict, "INCONCLUSIVE");
+  assert.ok(data.resources.every((r) => r.result !== "VERIFIED" && (r.reason === "CREDENTIALS" || r.reason === undefined)), JSON.stringify(data.resources));
+  noAzureTokenIn(arm, observed);
   assert.equal(applies(), appliesBefore + 1);
 });
 

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { encryptEvidence, ensureEvidenceKey, readEncryptedEvidence } from "../evidence/vault.js";
 import type { Blueprint, BlueprintEntry } from "../observe/blueprint.js";
 import type { ObserveReport } from "../observe/verify.js";
+import { VERIFIERS, type VerifierId } from "../observe/verify.js";
 import { canonicalJson } from "../teardown/manifest.js";
 import type { ResolvedTarget } from "../teardown/driver/types.js";
 import { sha256 } from "../util/sha256.js";
@@ -184,7 +185,7 @@ export function observationRecordProblems(value: unknown): string[] {
   if (value.verifierBinarySha256 !== null && !hashText(value.verifierBinarySha256)) problems.push("observation record: verifierBinarySha256 is malformed");
   if (!ENVIRONMENTS.includes(value.environment as string) || !targetOk(value.target)) problems.push("observation record: environment or target is malformed");
   if (typeof value.sourceCommit !== "string" || !COMMIT.test(value.sourceCommit)) problems.push("observation record: sourceCommit is not a commit id");
-  if (value.verifier !== "AWS_CLOUD_CONTROL" || !["VERIFIED", "PARTIAL", "INCONCLUSIVE", "FAILED"].includes(value.verdict as string)) problems.push("observation record: verifier or verdict is unknown");
+  if (!VERIFIERS.includes(value.verifier as VerifierId) || !["VERIFIED", "PARTIAL", "INCONCLUSIVE", "FAILED"].includes(value.verdict as string)) problems.push("observation record: verifier or verdict is unknown");
   if (!Array.isArray(value.resources) || !value.resources.every(observedOk)) problems.push("observation record.resources: each needs address, type, identifier, origin and a result");
   if (!Array.isArray(value.missingFromState) || !value.missingFromState.every((x) => typeof x === "string") || !Array.isArray(value.unexpected) || !value.unexpected.every((x) => typeof x === "string")) {
     problems.push("observation record: missingFromState and unexpected are lists of addresses or identifiers");
@@ -216,7 +217,7 @@ export function leftoversRecordProblems(value: unknown): string[] {
   if (value.verifierBinarySha256 !== null && !hashText(value.verifierBinarySha256)) problems.push("leftovers record: verifierBinarySha256 is malformed");
   if (!ENVIRONMENTS.includes(value.environment as string) || !targetOk(value.target)) problems.push("leftovers record: environment or target is malformed");
   if (typeof value.sourceCommit !== "string" || !COMMIT.test(value.sourceCommit)) problems.push("leftovers record: sourceCommit is not a commit id");
-  if (value.verifier !== "AWS_CLOUD_CONTROL") problems.push("leftovers record: verifier is unknown");
+  if (!VERIFIERS.includes(value.verifier as VerifierId)) problems.push("leftovers record: verifier is unknown");
   const resources = value.resources;
   if (!Array.isArray(resources) || !resources.every(leftoverOk)) problems.push("leftovers record.resources: each needs address, type, identifier, disposition and basis");
   else {

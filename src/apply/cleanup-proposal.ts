@@ -8,6 +8,7 @@ import type { BlueprintRecord, ObservationRecord, ObservedResource } from "./run
 import { PILOT_CHANNELS, type ApplyEnvironment, type ApplyEvidence, type ApplyRefusalCode, type EngineId, type PilotChannel, type PilotContract, type PlanChange, type ProviderId } from "./types.js";
 import { isResourceAddress } from "./terraform.js";
 import type { AwsTarget } from "./providers/aws.js";
+import type { AzureTarget } from "./providers/azure.js";
 
 /**
  * The cleanup proposal (docs/act-pilot-plan.md, "Cleanup of pilot-created resources"): the reviewable, hash-identified list
@@ -94,12 +95,34 @@ const MATERIAL_RISKS: Readonly<Record<string, string>> = {
   aws_rds_instance: "deletes the database and its data unless a final snapshot was configured",
   aws_db_instance: "deletes the database and its data unless a final snapshot was configured",
   aws_ebs_volume: "deletes the volume and its data",
+  azurerm_resource_group: "deletes every resource in the group, including any the state never recorded",
+  azurerm_storage_account: "deletes stored blobs, tables, queues and files, which cannot be recovered",
+  azurerm_storage_container: "deletes stored blobs, which cannot be recovered",
+  azurerm_key_vault: "soft-deletes the vault; purge protection or the retention window decides when its secrets are gone for good",
+  azurerm_log_analytics_workspace: "deletes retained log data (the workspace may stay recoverable for a limited time)",
+  azurerm_mssql_database: "deletes the database and its data unless a backup was kept",
+  azurerm_postgresql_flexible_server: "deletes the server and its databases unless a backup was kept",
+  azurerm_kubernetes_cluster: "deletes the cluster and every workload running in it",
 };
+
+/** Azure identity objects the pilot runs on; a run that created one still never deletes it from here (fail closed: an identity needs its own decision). */
+const AZURE_IDENTITY_TYPES = new Set(["azuread_application", "azuread_application_federated_identity_credential", "azuread_application_password", "azuread_service_principal", "azurerm_user_assigned_identity", "azurerm_federated_identity_credential"]);
+
+/** The Azure backend the pilot runs on: the storage account named by any environment's `<storage-account>/<container>/<key>`, its containers and its settings. */
+function azureProtectionOf(entry: { type: string; id: string | null }, contract: PilotContract): ExcludedResource["ownership"] | undefined {
+  const accounts = new Set(Object.values(contract.targets).map((target) => (target as AzureTarget).backend.split("/")[0].toLowerCase()));
+  const id = (entry.id ?? "").toLowerCase();
+  const account = /\/storageaccounts\/([a-z0-9]{3,24})(?:\/|$)/.exec(id)?.[1];
+  if (/^azurerm_storage_(account|container|account_|container_)/.test(entry.type) && ((account !== undefined && accounts.has(account)) || accounts.has(id))) return "PROTECTED_BACKEND";
+  if (AZURE_IDENTITY_TYPES.has(entry.type)) return "PROTECTED_IDENTITY";
+  return undefined;
+}
 
 const IDENTITY_TYPES = new Set(["aws_iam_openid_connect_provider", "aws_iam_role", "aws_iam_role_policy", "aws_iam_role_policy_attachment", "aws_iam_policy"]);
 
 /** The bootstrap the pilot runs on, which a cleanup never touches: the state backend and the identities that run it. */
 function protectionOf(entry: { type: string; id: string | null; arn: string | null }, contract: PilotContract, env: NodeJS.ProcessEnv): ExcludedResource["ownership"] | undefined {
+  if (contract.provider === "AZURE") return azureProtectionOf(entry, contract);
   if (contract.provider !== "AWS") return undefined;
   const pinned = contract.targets[contract.enabledEnvironments?.[0] ?? "DEV"] as AwsTarget | undefined;
   const buckets = new Set(Object.values(contract.targets).map((target) => (target as AwsTarget).backend.split("/")[0]));
@@ -162,7 +185,7 @@ export function buildCleanupProposal(input: ProposalInput): { ok: true; proposal
   for (const entry of record.blueprint.entries) {
     // The identifier the independent verifier uses for this type (the one it will be asked about again after the cleanup), else whatever the state had.
     const mapping = CLOUD_CONTROL_TYPES[entry.type];
-    const identifier = mapping ? (mapping.identifier === "arn" ? entry.arn : entry.id) ?? entry.arn ?? entry.id : entry.arn ?? entry.id;
+    const identifier = contract.provider === "AZURE" ? entry.id : mapping ? (mapping.identifier === "arn" ? entry.arn : entry.id) ?? entry.arn ?? entry.id : entry.arn ?? entry.id;
     const base = { address: entry.address, type: entry.type, identifier };
     if (!isResourceAddress(entry.address) || HAS_INVISIBLE.test(entry.address) || HAS_INVISIBLE.test(entry.type)) {
       return refuse("OWNERSHIP_AMBIGUOUS", "A resource address in the state is not one the cleanup can name exactly. A person reviews it by hand; no cleanup proposal is made.");
@@ -181,7 +204,8 @@ export function buildCleanupProposal(input: ProposalInput): { ok: true; proposal
     if (seen === undefined || seen.result === "NOT_YET_OBSERVABLE" || seen.result === "DIFFERENT_FROM_DESIRED") {
       return refuse("OBSERVATION_INCONCLUSIVE", "The observation could not decide about " + entry.address + " (" + (seen?.reason ?? "not observed") + "). Observe this run again before proposing a cleanup.");
     }
-    if (seen.result === "UNVERIFIABLE" && seen.reason !== "NO_CLOUD_CONTROL_MAPPING" && seen.reason !== "NO_IDENTIFIER_IN_STATE" && seen.reason !== "NOT_INDEPENDENTLY_CHECKABLE") {
+    // A type the reader cannot address (no Cloud Control mapping; an Azure id that is not an ARM resource id) is named, not refused; a denied or failed read is refused.
+    if (seen.result === "UNVERIFIABLE" && !["NO_CLOUD_CONTROL_MAPPING", "NO_IDENTIFIER_IN_STATE", "NOT_INDEPENDENTLY_CHECKABLE", "NOT_AN_ARM_RESOURCE_ID"].includes(seen.reason ?? "")) {
       return refuse("OBSERVATION_INCONCLUSIVE", "The observation was refused for " + entry.address + " (" + seen.reason + "). Fix the DISCOVERY identity's access and observe again.");
     }
     if (seen.result === "MISSING") { alreadyAbsent.push(base); continue; }

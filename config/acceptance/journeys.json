@@ -748,30 +748,191 @@
           }
         },
         "observe": {
-          "status": "NOT_IMPLEMENTED",
-          "missing": "After an apply nothing reads back what was created: the evidence and the Results page carry no cloud resource IDs, and no independent read-only check runs."
+          "status": "SYNTHETIC_PASS",
+          "code": [
+            "src/apply/observe.ts",
+            "src/apply/run-records.ts",
+            "src/observe/azure-rest.ts",
+            "src/observe/blueprint.ts",
+            "src/observe/verify.ts",
+            "src/apply/driver.ts",
+            "src/cli/apply.ts",
+            "src/cli/ui-channel.ts",
+            "src/operator-ui/app/pilot/CleanupStep.tsx"
+          ],
+          "tests": {
+            "ui": [
+              {
+                "file": "test/ui-channel.test.ts",
+                "title": "Azure Terraform in the console: observe what the apply created, propose and approve the cleanup, remove exactly that list and verify it is gone, through the real router, service and adapter"
+              }
+            ],
+            "positive": [
+              {
+                "file": "test/apply-cleanup-azure.test.ts",
+                "title": "Azure Terraform observe: after a successful apply the driver records the blueprint from the state, identifiers only, and observe verifies each resource through Azure Resource Manager as DISCOVERY, with no credential outside memory"
+              },
+              {
+                "file": "test/apply-cleanup-azure.test.ts",
+                "title": "the Azure reader refuses to read outside its two hosts or outside the target subscription, needs an ARM id, and resolves API versions once per type"
+              }
+            ],
+            "denied": [
+              {
+                "file": "test/apply-cleanup-azure.test.ts",
+                "title": "Azure observe denied and interrupted: a refused token, a forbidden or throttled read, a paginated listing and a tagged resource outside the state never pass, and nothing but the class is recorded"
+              },
+              {
+                "file": "test/apply-cleanup-azure.test.ts",
+                "title": "the Azure reader refuses to read outside its two hosts or outside the target subscription, needs an ARM id, and resolves API versions once per type"
+              }
+            ],
+            "interrupted": [
+              {
+                "file": "test/apply-cleanup-azure.test.ts",
+                "title": "Azure observe denied and interrupted: a refused token, a forbidden or throttled read, a paginated listing and a tagged resource outside the state never pass, and nothing but the class is recorded"
+              }
+            ],
+            "recovery": [
+              {
+                "file": "test/apply-cleanup-azure.test.ts",
+                "title": "Azure observe denied and interrupted: a refused token, a forbidden or throttled read, a paginated listing and a tagged resource outside the state never pass, and nothing but the class is recorded"
+              },
+              {
+                "file": "test/ui-channel.test.ts",
+                "title": "Azure Terraform in the console: a wrong phrase or a cancel at the cleanup approval or the removal signs nothing and removes nothing, an apply approval never authorizes a cleanup, and a reconnect never removes twice"
+              }
+            ]
+          }
         },
         "cleanup": {
-          "status": "NOT_IMPLEMENTED",
+          "status": "SYNTHETIC_PASS",
           "code": [
-            "src/teardown/driver/driver.ts",
-            "src/cli/teardown-driver.ts"
+            "src/apply/cleanup-proposal.ts",
+            "src/apply/driver.ts",
+            "src/apply/approval.ts",
+            "src/apply/terraform.ts",
+            "src/apply/engines/terraform.ts",
+            "src/apply/ledger.ts",
+            "src/apply/leftovers.ts",
+            "src/apply/lifecycle-report.ts",
+            "src/cli/apply.ts",
+            "src/cli/ui-channel.ts",
+            "src/operator-ui/app/pilot/CleanupStep.tsx"
           ],
-          "missing": "Only a terminal destroy preview exists; there is no console step, no owner-supervised destroy execution and no leftover check against the cloud."
+          "tests": {
+            "ui": [
+              {
+                "file": "test/ui-channel.test.ts",
+                "title": "Azure Terraform in the console: observe what the apply created, propose and approve the cleanup, remove exactly that list and verify it is gone, through the real router, service and adapter"
+              },
+              {
+                "file": "test/ui-channel.test.ts",
+                "title": "Azure Terraform in the console: a wrong phrase or a cancel at the cleanup approval or the removal signs nothing and removes nothing, an apply approval never authorizes a cleanup, and a reconnect never removes twice"
+              }
+            ],
+            "positive": [
+              {
+                "file": "test/apply-cleanup-azure.test.ts",
+                "title": "Azure Terraform cleanup: the proposal keeps the state storage account and the pilot's identity objects, the APPLY identity destroys exactly the created list after a targeted destroy plan, and the leftover check reads ARM again: COMPLETE only when the unit sweep finds nothing else"
+              }
+            ],
+            "denied": [
+              {
+                "file": "test/apply-cleanup-azure.test.ts",
+                "title": "Azure Terraform cleanup: the proposal keeps the state storage account and the pilot's identity objects, the APPLY identity destroys exactly the created list after a targeted destroy plan, and the leftover check reads ARM again: COMPLETE only when the unit sweep finds nothing else"
+              },
+              {
+                "file": "test/apply-cleanup.test.ts",
+                "title": "cleanup refuses, consuming nothing: a wrong target, an apply approval, an expired or replayed approval, an altered proposal, a proposal of another run or channel, and a second execution"
+              },
+              {
+                "file": "test/apply-cleanup.test.ts",
+                "title": "the destroy plan must be exactly the approved list: a dependent the engine adds, an address the state no longer holds, or a non-delete action stops before any approval is consumed"
+              },
+              {
+                "file": "test/apply-cleanup.test.ts",
+                "title": "a proposal is refused on ambiguous ownership (a partial apply, a planned resource the state never held) and on an inconclusive or changed observation"
+              },
+              {
+                "file": "test/apply-cleanup.test.ts",
+                "title": "forged inventory and evidence are rejected: a blueprint, observation or leftovers record with a wrong shape, a raw field or a claimed completion, and a proposal that was edited"
+              }
+            ],
+            "interrupted": [
+              {
+                "file": "test/apply-cleanup.test.ts",
+                "title": "a partial or killed cleanup records its outcome and spends the proposal, and leftover verification reports deletion pending or still present, never complete"
+              },
+              {
+                "file": "test/apply-cleanup.test.ts",
+                "title": "a kill switch during the cleanup stops the engine, records KILLED, and the proposal is spent; one appearing before the engine starts spends the approvals and destroys nothing"
+              }
+            ],
+            "recovery": [
+              {
+                "file": "test/ui-channel.test.ts",
+                "title": "Azure Terraform in the console: a wrong phrase or a cancel at the cleanup approval or the removal signs nothing and removes nothing, an apply approval never authorizes a cleanup, and a reconnect never removes twice"
+              },
+              {
+                "file": "test/apply-cleanup.test.ts",
+                "title": "a restart or reconnect never executes a proposal twice: a held reservation refuses, verification is repeatable, and a lost response is reconciled from the ledger"
+              },
+              {
+                "file": "test/apply-cleanup.test.ts",
+                "title": "a KMS key scheduled for deletion is DELETION_PENDING: not complete, not a leftover"
+              }
+            ]
+          },
+          "note": "The cleanup driver, ledger, approvals and kill switch are engine- and provider-agnostic; their denied, interrupted and recovery cases are proved once in the AWS suite and hold for the Azure row, whose own suite proves the Azure reader, protections and sweep."
         }
       },
       "proofs": {
         "blueprint": {
-          "status": "NOT_IMPLEMENTED",
-          "missing": "No record maps each desired resource (engine address) to the cloud resource ID that was created."
+          "status": "SYNTHETIC_PASS",
+          "code": [
+            "src/observe/blueprint.ts",
+            "src/apply/run-records.ts",
+            "src/apply/driver.ts"
+          ],
+          "tests": [
+            {
+              "file": "test/apply-cleanup-azure.test.ts",
+              "title": "Azure Terraform observe: after a successful apply the driver records the blueprint from the state, identifiers only, and observe verifies each resource through Azure Resource Manager as DISCOVERY, with no credential outside memory"
+            }
+          ]
         },
         "independentVerification": {
-          "status": "NOT_IMPLEMENTED",
-          "missing": "No read-only check, separate from the engine, confirms after an apply that the resources exist as planned."
+          "status": "SYNTHETIC_PASS",
+          "code": [
+            "src/observe/verify.ts",
+            "src/observe/azure-rest.ts",
+            "src/apply/observe.ts"
+          ],
+          "tests": [
+            {
+              "file": "test/apply-cleanup-azure.test.ts",
+              "title": "Azure Terraform observe: after a successful apply the driver records the blueprint from the state, identifiers only, and observe verifies each resource through Azure Resource Manager as DISCOVERY, with no credential outside memory"
+            },
+            {
+              "file": "test/apply-cleanup-azure.test.ts",
+              "title": "the Azure reader refuses to read outside its two hosts or outside the target subscription, needs an ARM id, and resolves API versions once per type"
+            }
+          ]
         },
         "cleanupDisposition": {
-          "status": "NOT_IMPLEMENTED",
-          "missing": "No per-resource disposition (deleted, or retained with an owner and reason) is recorded after a journey."
+          "status": "SYNTHETIC_PASS",
+          "code": [
+            "src/observe/disposition.ts",
+            "src/apply/leftovers.ts",
+            "src/apply/run-records.ts"
+          ],
+          "tests": [
+            {
+              "file": "test/apply-cleanup-azure.test.ts",
+              "title": "Azure Terraform cleanup: the proposal keeps the state storage account and the pilot's identity objects, the APPLY identity destroys exactly the created list after a targeted destroy plan, and the leftover check reads ARM again: COMPLETE only when the unit sweep finds nothing else"
+            }
+          ]
         },
         "sourceBoundEvidence": {
           "status": "SYNTHETIC_PASS",
@@ -812,7 +973,7 @@
       },
       "live": {
         "status": "BLOCKED",
-        "blockedBy": "AWS Terraform is the focus row and goes live first. Then owner inputs for Azure: a pinned, enabled Azure contract with policyVersion, the tenant and subscription IDs, the state storage per environment, the federated identities, approver public keys, and a person to qualify it."
+        "blockedBy": "AWS Terraform goes live first. Then owner inputs for Azure (docs/act-pilot-apply.md, What the owner supplies): a pinned, enabled Azure contract with policyVersion, the tenant and subscription IDs, the state storage per environment, the federated identities (the DISCOVERY identity's OIDC token file is what the in-process reader exchanges; no az CLI runs), approver public keys, and a person to qualify it. Every step and proof of this row passes synthetically (fake engine, scripted Azure Resource Manager)."
       }
     },
     {

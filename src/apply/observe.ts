@@ -1,5 +1,6 @@
 import { createDiscoveryAwsCli, verifierBinarySha256 } from "../observe/aws-cli.js";
-import { observeBlueprint, type AwsCli, type ObserveReport } from "../observe/verify.js";
+import { createDiscoveryArmReader, type ArmHttp } from "../observe/azure-rest.js";
+import { cloudControlReader, observeBlueprint, type AwsCli, type ObserveReport, type ResourceReader } from "../observe/verify.js";
 import { canonicalJson } from "../teardown/manifest.js";
 import { sha256 } from "../util/sha256.js";
 import type { CleanupProposal } from "./cleanup-proposal.js";
@@ -8,6 +9,7 @@ import { readCleanupEvidence } from "./ledger.js";
 import { verifyLeftovers } from "./leftovers.js";
 import { readAppliedEvidence } from "./live-record.js";
 import type { AwsTarget } from "./providers/aws.js";
+import type { AzureTarget } from "./providers/azure.js";
 import {
   readBlueprintRecord, readObservationRecord, recordSha256, verificationOf, writeLeftoversRecord, writeObservationRecord,
   type BlueprintRecord, type LeftoversRecord, type ObservationRecord, type ObservedResource,
@@ -29,20 +31,41 @@ export type ObserveDeps = {
   toolDirs?: readonly string[];
   scratchParent?: string;
   now?: () => Date;
-  /** Test seam: the verifier's CLI. Production builds it from the DISCOVERY identity. */
+  /** Test seam: the AWS verifier's CLI. Production builds it from the DISCOVERY identity. */
   aws?: AwsCli;
+  /** Test seam: the Azure reader's HTTP client. Production uses fetch against the two Azure hosts. */
+  arm?: ArmHttp;
 };
 
 const refuse = (code: ApplyRefusalCode, message: string): Refusal => ({ ok: false, code, message });
 
-/** The region the DISCOVERY identity reads in: the contract target's. Only AWS has a verifier today. */
-function regionOf(deps: ObserveDeps, environment: ApplyEvidence["environment"]): { ok: true; region: string } | Refusal {
+type OpenReader = { ok: true; reader: ResourceReader; binarySha256: string | null; close(): void };
+
+/**
+ * The contract provider's independent reader, bound to the DISCOVERY identity and the environment's target: AWS Cloud
+ * Control through the aws CLI in the target's region, or Azure Resource Manager in process in the target's subscription.
+ * The Terraform engine is the only one with a cleanup path, and both of its providers read here.
+ */
+function openReader(deps: ObserveDeps, environment: ApplyEvidence["environment"]): OpenReader | Refusal {
   const contract = loadPilotContract(deps.contractPath, deps.contractPinPath);
   if ("reason" in contract) return contractRefusal(contract);
-  if (contract.provider !== "AWS") return refuse("CLEANUP_NOT_SUPPORTED", "Independent observation exists for AWS only so far; the " + contract.provider + " verifier is a later slice. Nothing was run.");
-  const target = contract.targets[environment] as AwsTarget | undefined;
+  const target = contract.targets[environment];
   if (!target) return refuse("TARGET_NOT_IN_CONTRACT", "The contract does not enable " + environment + ".");
-  return { ok: true, region: target.region };
+  if (contract.provider === "AWS") {
+    const region = (target as AwsTarget).region;
+    if (deps.aws) return { ok: true, reader: cloudControlReader(deps.aws, region), binarySha256: null, close: () => undefined };
+    const cli = createDiscoveryAwsCli({ env: deps.env, toolDirs: deps.toolDirs, scratchParent: deps.scratchParent });
+    return { ok: true, reader: cloudControlReader(cli.aws, region), binarySha256: verifierBinarySha256({ env: deps.env, toolDirs: deps.toolDirs }), close: cli.close };
+  }
+  if (contract.provider === "AZURE") {
+    try {
+      const opened = createDiscoveryArmReader({ env: deps.env, subscriptionId: (target as AzureTarget).subscriptionId, http: deps.arm });
+      return { ok: true, reader: opened.reader, binarySha256: null, close: opened.close };
+    } catch {
+      return refuse("CONTRACT_INVALID", "The contract's Azure target does not name a subscription the reader can use. Nothing was run.");
+    }
+  }
+  return refuse("CLEANUP_NOT_SUPPORTED", "Independent observation exists for AWS and Azure; the " + String(contract.provider) + " verifier does not exist. Nothing was run.");
 }
 
 export type ObservationOutcome = { ok: true; record: ObservationRecord; report: ObserveReport; blueprint: BlueprintRecord; applyEvidence: ApplyEvidence } | Refusal;
@@ -56,14 +79,13 @@ export async function observeRun(artifactSha256: string, deps: ObserveDeps): Pro
   if (!blueprint) {
     return refuse("RUN_RECORD_MISSING", "This apply left no blueprint: its state could not be read when it ended (" + applied.outcome + "). A person reviews the state and the cloud by hand; nothing can be observed or cleaned up from here.");
   }
-  const region = regionOf(deps, applied.environment);
-  if (!region.ok) return region;
-  const cli = deps.aws ? { aws: deps.aws, close: () => undefined } : createDiscoveryAwsCli({ env: deps.env, toolDirs: deps.toolDirs, scratchParent: deps.scratchParent });
+  const opened = openReader(deps, applied.environment);
+  if (!opened.ok) return opened;
   let report: ObserveReport;
   try {
-    report = await observeBlueprint(blueprint.blueprint, { unitId: blueprint.unitId, region: region.region, aws: cli.aws });
+    report = await observeBlueprint(blueprint.blueprint, { unitId: blueprint.unitId, reader: opened.reader });
   } finally {
-    cli.close();
+    opened.close();
   }
   const origins = new Map(blueprint.blueprint.entries.map((entry) => [entry.address, entry.origin]));
   const resources: ObservedResource[] = report.checks.map((check) => ({
@@ -72,7 +94,7 @@ export async function observeRun(artifactSha256: string, deps: ObserveDeps): Pro
   const record: ObservationRecord = {
     schemaVersion: 1, kind: "OBSERVATION", artifactSha256, applyEvidenceSha256, blueprintSha256: recordSha256(blueprint), environment: applied.environment, target: { ...applied.target },
     sourceCommit: applied.sourceCommit, contractSha256: applied.contractSha256, verifier: report.verifier,
-    verifierBinarySha256: deps.aws ? null : verifierBinarySha256({ env: deps.env, toolDirs: deps.toolDirs }), verdict: report.verdict, resources,
+    verifierBinarySha256: opened.binarySha256, verdict: report.verdict, resources,
     missingFromState: [...report.missingFromState], unexpected: [...report.unexpected], inventory: report.inventory, observedAt: (deps.now ?? (() => new Date()))().toISOString(),
   };
   const written = await writeObservationRecord(record, deps.evidenceDir);
@@ -101,22 +123,21 @@ export type LeftoversOutcome = { ok: true; record: LeftoversRecord; cleanupRan: 
 export async function verifyProposalLeftovers(proposal: CleanupProposal, deps: ObserveDeps): Promise<LeftoversOutcome> {
   const applied = await readAppliedEvidence(proposal.artifactSha256, deps.evidenceDir);
   if (!applied || sha256(canonicalJson(applied as never)) !== proposal.applyEvidenceSha256) return refuse("RUN_RECORD_MISSING", "The apply this proposal cleans up is not recorded with this evidence.");
-  const region = regionOf(deps, proposal.environment);
-  if (!region.ok) return region;
+  const opened = openReader(deps, proposal.environment);
+  if (!opened.ok) return opened;
   // The blueprint the proposal was derived from: its identifiers tell a tag listing's known entries from leftovers.
   const blueprint = await readBlueprintRecord(proposal.artifactSha256, proposal.applyEvidenceSha256, deps.evidenceDir);
   if (!blueprint || recordSha256(blueprint) !== proposal.blueprintSha256) return refuse("RUN_RECORD_MISSING", "The blueprint this proposal names is not the one recorded for this apply.");
   const knownIdentifiers = blueprint.blueprint.entries.flatMap((entry) => [entry.arn, entry.id]).filter((x): x is string => x !== null);
   const cleanup = await readCleanupEvidence(proposal.proposalSha256, deps.evidenceDir);
-  const cli = deps.aws ? { aws: deps.aws, close: () => undefined } : createDiscoveryAwsCli({ env: deps.env, toolDirs: deps.toolDirs, scratchParent: deps.scratchParent });
   let record: LeftoversRecord;
   try {
     record = await verifyLeftovers({
-      proposal, cleanup, cleanupEvidenceSha256: cleanup ? sha256(canonicalJson(cleanup as never)) : null, unitId: proposal.unitId, knownIdentifiers, region: region.region, aws: cli.aws,
-      verifierBinarySha256: deps.aws ? null : verifierBinarySha256({ env: deps.env, toolDirs: deps.toolDirs }), now: (deps.now ?? (() => new Date()))(),
+      proposal, cleanup, cleanupEvidenceSha256: cleanup ? sha256(canonicalJson(cleanup as never)) : null, unitId: proposal.unitId, knownIdentifiers, reader: opened.reader,
+      verifierBinarySha256: opened.binarySha256, now: (deps.now ?? (() => new Date()))(),
     });
   } finally {
-    cli.close();
+    opened.close();
   }
   const written = await writeLeftoversRecord(record, deps.evidenceDir);
   if (written !== "WRITTEN") return refuse("EVIDENCE_REJECTED", "The leftover check could not be recorded (" + written + ").");

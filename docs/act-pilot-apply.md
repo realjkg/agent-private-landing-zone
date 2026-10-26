@@ -368,7 +368,7 @@ The driver trusts what the CLI hands it only as far as it re-verifies it, but th
 
 ## Cleanup
 
-Cleanup of what a pilot apply created is its own governed action under the same contract (docs/act-pilot-plan.md, "Cleanup of pilot-created resources"; operations in `docs/observe-and-cleanup.md`). In order, after a successful apply:
+Cleanup of what a pilot apply created is its own governed action under the same contract (docs/act-pilot-plan.md, "Cleanup of pilot-created resources"; operations in `docs/observe-and-cleanup.md`). It exists for both Terraform providers: the AWS row reads Cloud Control through the aws CLI as DISCOVERY; the Azure row reads Azure Resource Manager in process as DISCOVERY, exchanging the identity's federated token in an HTTPS body and never through a process argument (`docs/observe-and-cleanup.md`, "The Azure reader"). The CDK engine has no cleanup path. In order, after a successful apply:
 
 | Command | Who | What it does | Writes |
 | --- | --- | --- | --- |
