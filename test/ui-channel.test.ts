@@ -13,7 +13,9 @@ import { targetString } from "../src/cli/teardown-driver.js";
 import { PILOT_STEPS, countChanges, createDialogBroker, PILOT_TOKEN_HEADER } from "../src/cli/ui-channel.js";
 import { createLocalOperatorServer } from "../src/operator-ui/server.js";
 import { removeTree } from "../src/teardown/driver/cleanup.js";
-import type { ApplyEnvironment } from "../src/apply/types.js";
+import { loadPilotContract, pilotContractSha256 } from "../src/apply/contract.js";
+import type { ApplyEnvironment, PilotContract } from "../src/apply/types.js";
+import { pilotUnitOf } from "../src/apply/unit.js";
 import type { ResolvedTarget } from "../src/teardown/driver/types.js";
 import { SOURCE_COMMIT,
   AWS_DEV_TARGET, ENGINE_VERSION, NOW, POLICY, awsContractJson, awsIdentityEnv, awsReadCallsOf, awsRoleArn, awsTargetOf, behave as behaveIn, behaveAwsReads, callsOf, contractJson, identityEnv,
@@ -990,12 +992,21 @@ const CLEANUP_STATE = [
   stateResource("aws_s3_bucket", "state", CLEANUP_STATE_BUCKET, "arn:aws:s3:::" + CLEANUP_STATE_BUCKET), stateResource("aws_sqs_queue", "preexisting", CLEANUP_QUEUE, "arn:aws:sqs:us-east-1:111111111111:console-preexisting"),
 ];
 const CLEANUP_EXISTING = [CLEANUP_BUCKET, CLEANUP_LOG, CLEANUP_STATE_BUCKET, CLEANUP_QUEUE];
+/** The run's own resources as the tagging API lists them by the change's deletion unit: a listing that is not empty and matches the records. */
+const CLEANUP_TAGGED = ["arn:aws:s3:::" + CLEANUP_BUCKET, "arn:aws:logs:us-east-1:111111111111:log-group:" + CLEANUP_LOG];
+const CLEANUP_STRAY = "arn:aws:sqs:us-east-1:111111111111:stray-of-this-unit";
+/** The deletion unit of the DEV state container under the console's AWS contract: what the fake provider stamps on every created resource. */
+const CLEANUP_UNIT = (() => {
+  const path = join(fresh("unit-contract"), "act-pilot-contract.json");
+  writePinnedContract(path, awsContractJson(KILL, { policyVersion: POLICY }));
+  return pilotUnitOf({ provider: "AWS", contractSha256: pilotContractSha256(loadPilotContract(path, pinPathOf(path)) as PilotContract), environment: "DEV", target: awsTargetOf("DEV") });
+})();
 
 /** An AWS console journey whose fake engine reports a state, with the fake AWS CLI the verifier reads through, in a second approved tool directory. */
 async function cleanupJourney() {
   const journey = await consoleJourney("AWS");
-  behaveIn(toolDir, KILL, { applyAdvance: true, showProviderConfig: AWS_PROVIDER_CONFIG, showOnlyConfigured: true, showResources: CLEANUP_CREATES, stateResources: CLEANUP_STATE });
-  behaveAwsReads(awsToolDir, { existing: CLEANUP_EXISTING });
+  behaveIn(toolDir, KILL, { applyAdvance: true, showProviderConfig: AWS_PROVIDER_CONFIG, showOnlyConfigured: true, showResources: CLEANUP_CREATES, stateResources: CLEANUP_STATE, unitTags: { ...CLEANUP_UNIT.tags } });
+  behaveAwsReads(awsToolDir, { existing: CLEANUP_EXISTING, tagged: CLEANUP_TAGGED });
   // The same console, now able to find the aws program for the read-only verifier.
   const w = { ...journey.w, cli: { ...journey.w.cli, toolDirs: [toolDir, awsToolDir], proposalsDir: fresh("proposals") } };
   const { port } = await serve(w);
@@ -1082,8 +1093,8 @@ test("AWS Terraform in the console: observe what the apply created, propose and 
   assert.deepEqual(steps.map((args) => args[0]), ["version", "init", "workspace", "state", "plan", "show", "apply", "state"]);
   assert.deepEqual(steps[4].filter((arg) => arg.startsWith("-target=")), ["-target=aws_cloudwatch_log_group.canary", "-target=aws_s3_bucket.logs"], "the destroy targets exactly the approved list");
 
-  // The independent check: the fake cloud no longer holds what was removed.
-  behaveAwsReads(awsToolDir, { existing: [CLEANUP_STATE_BUCKET, CLEANUP_QUEUE] });
+  // The independent check: the fake cloud no longer holds what was removed, and nothing carries the unit's tag any more.
+  behaveAwsReads(awsToolDir, { existing: [CLEANUP_STATE_BUCKET, CLEANUP_QUEUE], tagged: [] });
   assert.equal((await call(port, "POST", "/pilot/verify-cleanup", { body: { proposalPath } })).status, 202);
   const verified = (await finished(port)).run!.result!;
   assert.equal(verified.exit, 0, JSON.stringify(verified));
@@ -1093,6 +1104,15 @@ test("AWS Terraform in the console: observe what the apply created, propose and 
     ["aws_cloudwatch_log_group.canary", "CONFIRMED_DELETED"], ["aws_s3_bucket.logs", "CONFIRMED_DELETED"], ["aws_s3_bucket.state", "INTENTIONALLY_RETAINED"], ["aws_sqs_queue.preexisting", "INTENTIONALLY_RETAINED"],
   ]);
   assert.equal(verified.code, "CLEANUP_COMPLETE");
+  // Had something else still carried this change's cleanup marker, the check would have found it and not called the cleanup complete.
+  behaveAwsReads(awsToolDir, { existing: [CLEANUP_STATE_BUCKET, CLEANUP_QUEUE], tagged: [CLEANUP_STRAY] });
+  assert.equal((await call(port, "POST", "/pilot/verify-cleanup", { body: { proposalPath } })).status, 202);
+  const strayRun = (await finished(port)).run!.result!;
+  assert.equal(strayRun.exit, 0, JSON.stringify(strayRun));
+  assert.equal(strayRun.code, "CLEANUP_INCOMPLETE");
+  const strayLeftovers = strayRun.data as { disposition: string; resources: { address: string; identifier: string | null; disposition: string }[] };
+  assert.equal(strayLeftovers.disposition, "INCOMPLETE");
+  assert.deepEqual(strayLeftovers.resources.filter((r) => r.address === "(not in state)").map((r) => [r.identifier, r.disposition]), [[CLEANUP_STRAY, "STILL_PRESENT"]]);
 });
 
 test("AWS Terraform in the console: a wrong phrase or a cancel at the cleanup approval or the removal signs nothing and removes nothing, an apply approval never authorizes a cleanup, and a reconnect never removes twice", async () => {

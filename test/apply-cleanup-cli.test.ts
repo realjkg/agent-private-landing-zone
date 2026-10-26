@@ -7,7 +7,10 @@ import test from "node:test";
 
 import { runApplyCommand, type ApplyCliDeps } from "../src/cli/apply.js";
 import { targetString } from "../src/cli/teardown-driver.js";
+import { loadPilotContract, pilotContractSha256 } from "../src/apply/contract.js";
 import { lifecycleReportProblems, type LifecycleReport } from "../src/apply/lifecycle-report.js";
+import type { PilotContract } from "../src/apply/types.js";
+import { pilotUnitOf } from "../src/apply/unit.js";
 import { openNonceStore } from "../src/apply/nonces.js";
 import { removeTree } from "../src/teardown/driver/cleanup.js";
 import {
@@ -49,7 +52,13 @@ const STATE = [
   stateResource("aws_s3_bucket", "state", STATE_BUCKET, "arn:aws:s3:::" + STATE_BUCKET),
 ];
 const EXISTING = [BUCKET, LOG, STATE_BUCKET];
-const behave = (behavior: Behavior = {}) => behaveIn(toolDir, KILL, { applyAdvance: true, showOnlyConfigured: true, showResources: CREATES, showProviderConfig: AWS_PROVIDER_CONFIG, stateResources: STATE, ...behavior });
+const BUCKET_ARN = "arn:aws:s3:::" + BUCKET;
+const LOG_ARN = "arn:aws:logs:us-east-1:111111111111:log-group:" + LOG;
+/** The deletion unit of the DEV state container under the fixture contract: what every created resource is stamped with, and what the fake tagging API lists by. */
+const UNIT = (() => { const path = join(fresh("unit-contract"), "act-pilot-contract.json"); writePinnedContract(path, awsContractJson(KILL)); return pilotUnitOf({ provider: "AWS", contractSha256: pilotContractSha256(loadPilotContract(path, pinPathOf(path)) as PilotContract), environment: "DEV", target: awsTargetOf("DEV") }); })();
+/** The run's own resources, as the tagging API lists them: the listing is not empty, and it matches the records. */
+const TAGGED = [BUCKET_ARN, LOG_ARN];
+const behave = (behavior: Behavior = {}) => behaveIn(toolDir, KILL, { applyAdvance: true, showOnlyConfigured: true, showResources: CREATES, showProviderConfig: AWS_PROVIDER_CONFIG, stateResources: STATE, unitTags: { ...UNIT.tags }, ...behavior });
 const engineCalls = (): string[][] => callsOf(toolDir).map((call) => call.args);
 const destroys = () => engineCalls().filter((args) => args[0] === "plan" && args[1] === "-destroy").length;
 const applies = () => engineCalls().filter((args) => args[0] === "apply").length;
@@ -74,7 +83,7 @@ const terminal = (answers: string[]): Terminal => {
 type World = { deps: (term: Terminal, over?: Partial<ApplyCliDeps>) => ApplyCliDeps; contractPath: string; evidenceDir: string; acceptanceDir: string; reportsDir: string };
 async function world(): Promise<World> {
   behave();
-  behaveAwsReads(awsToolDir, { existing: EXISTING });
+  behaveAwsReads(awsToolDir, { existing: EXISTING, tagged: TAGGED });
   const contractPath = join(fresh("contract"), "act-pilot-contract.json");
   writePinnedContract(contractPath, awsContractJson(KILL));
   const vault = fresh("vault");
@@ -164,7 +173,7 @@ test("observe, propose-cleanup, approve of the proposal, cleanup and verify-clea
   assert.equal(evidence.authority.executedAs, "APPLY");
   assert.deepEqual([destroys(), applies()], [before[0] + 1, before[1] + 1]);
 
-  behaveAwsReads(awsToolDir, { existing: [STATE_BUCKET] });
+  behaveAwsReads(awsToolDir, { existing: [STATE_BUCKET], tagged: [] });
   const verified = await cli(w, ["verify-cleanup", "--proposal", proposalPath]);
   assert.equal(verified.code, 0, verified.stderr);
   const leftovers = verified.data as { disposition: string; cleanupRan: boolean; resources: { address: string; disposition: string }[] };
@@ -200,6 +209,7 @@ test("observe, propose-cleanup, approve of the proposal, cleanup and verify-clea
   assert.equal((live.data as { mode: string }).mode, "MIXED");
   const liveReport = JSON.parse(readFileSync((live.data as { written: string }).written, "utf8")) as LifecycleReport;
   assert.equal(liveReport.liveAttestation?.attestedBy, "operator.fixture");
+  assert.deepEqual([liveReport.liveAttestation?.artifactSha256, liveReport.liveAttestation?.step, liveReport.liveAttestation?.evidenceSha256], [run.artifactSha256, "execute", liveReport.applyEvidenceSha256]);
   assert.deepEqual(Object.fromEntries(Object.entries(liveReport.stages).map(([k, v]) => [k, v.mode])), { execute: "LIVE", observe: "SYNTHETIC", propose: "SYNTHETIC", cleanup: "SYNTHETIC", leftovers: "SYNTHETIC" });
   assert.deepEqual(lifecycleReportProblems(liveReport), []);
   // A stage promoted to LIVE by hand, or a report calling itself LIVE over mixed stages, is refused.
@@ -270,13 +280,19 @@ test("the lifecycle report validator refuses a declared pass, a live claim witho
   assert.match(problems({ passed: true, unresolved: [] }), /not derived/);
   assert.match(problems({ mode: "LIVE" }), /owner's attestation|not derived from the stages' evidence modes/);
   assert.match(problems({ mode: "MIXED", stages: { ...report.stages, execute: { ...report.stages.execute, mode: "LIVE" } } }), /LIVE needs the owner's attestation/);
-  assert.match(problems({ mode: "MIXED", stages: { ...report.stages, execute: { ...report.stages.execute, mode: "LIVE" } }, liveAttestation: { attestedBy: "someone", attestedAt: NOW.toISOString(), evidenceSha256: "f".repeat(64) } }), /this very apply evidence/);
-  assert.match(problems({ liveAttestation: { attestedBy: "someone", attestedAt: NOW.toISOString(), evidenceSha256: report.applyEvidenceSha256 } }), /SYNTHETIC report carries no live attestation|SYNTHETIC execute step carries no live attestation/);
+  assert.match(problems({ mode: "MIXED", stages: { ...report.stages, execute: { ...report.stages.execute, mode: "LIVE" } }, liveAttestation: { attestedBy: "someone", attestedAt: NOW.toISOString(), evidenceSha256: "f".repeat(64), artifactSha256: report.artifactSha256, step: "execute" } }), /this very apply evidence/);
+  assert.match(problems({ mode: "MIXED", stages: { ...report.stages, execute: { ...report.stages.execute, mode: "LIVE" } }, liveAttestation: { attestedBy: "someone", attestedAt: NOW.toISOString(), evidenceSha256: report.applyEvidenceSha256, artifactSha256: "e".repeat(64), step: "execute" } }), /must name this artifact and the execute step/);
+  assert.match(problems({ mode: "MIXED", stages: { ...report.stages, execute: { ...report.stages.execute, mode: "LIVE" } }, liveAttestation: { attestedBy: "someone", attestedAt: NOW.toISOString(), evidenceSha256: report.applyEvidenceSha256, artifactSha256: report.artifactSha256, step: "cleanup" } as never }), /must name this artifact and the execute step/);
+  assert.match(problems({ liveAttestation: { attestedBy: "someone", attestedAt: NOW.toISOString(), evidenceSha256: report.applyEvidenceSha256, artifactSha256: report.artifactSha256, step: "execute" } }), /SYNTHETIC report carries no live attestation|SYNTHETIC execute step carries no live attestation/);
   assert.match(problems({ stages: { ...report.stages, observe: { ...report.stages.observe, mode: "LIVE" } } }), /no owner attestation exists for this stage/);
   assert.match(problems({ schemaVersion: 2 as never }), /schemaVersion 1/);
   assert.match(problems({ gateVersion: 9 as never }), /gate version/);
   assert.match(problems({ stdout: "x" }), /raw state, output or secret field/);
-  assert.match(problems({ sourceCommit: "0".repeat(40) } as never) || lifecycleReportProblems({ ...report, sourceCommit: "0".repeat(40) }, { sourceCommit: SOURCE_COMMIT }).join(" | "), /not the expected source commit|./);
+  assert.match(lifecycleReportProblems({ ...report, sourceCommit: "0".repeat(40) }, { sourceCommit: SOURCE_COMMIT }).join(" | "), /not the expected source commit/);
+  // A stage result must agree with the record it summarizes, so a stored report cannot be promoted by hand.
+  assert.match(problems({ stages: { ...report.stages, observe: { ...report.stages.observe, status: "PASS" } }, observation: { verdict: "FAILED", resources: [] } }), /observe: PASS needs an observation whose verdict is VERIFIED or PARTIAL/);
+  assert.match(problems({ stages: { ...report.stages, leftovers: { ...report.stages.leftovers, status: "PASS" } }, dispositions: { disposition: "KNOWN_ADDRESSES_CONFIRMED", resources: [] } }), /leftovers: PASS needs dispositions that say COMPLETE/);
+  assert.match(problems({ stages: { ...report.stages, leftovers: { ...report.stages.leftovers, status: "PASS" } }, dispositions: null }), /leftovers: PASS needs dispositions that say COMPLETE/);
   assert.match(lifecycleReportProblems(report, { gateId: "act:azure-terraform" }).join(" | "), /not the expected gate/);
   // Completion claimed over pending leftovers: the stages say leftovers are not PASS, so passed cannot be true.
   const pending = { ...report, stages: { ...report.stages, cleanup: { status: "PASS", mode: "SYNTHETIC", detail: "x" }, leftovers: { status: "INCONCLUSIVE", mode: "SYNTHETIC", detail: "pending" } }, passed: true, unresolved: [] } as LifecycleReport;

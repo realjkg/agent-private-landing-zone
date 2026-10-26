@@ -162,7 +162,7 @@ export const COPY = {
   observeDone: "The console looked at each thing the change left behind.",
   observeSynthetic: "These results come from this computer's own checks. They are not a record of a live account until the pilot owner records one.",
   observeVerdictGood: "Everything that could be checked is there.",
-  observeVerdictPartial: "Everything that can be checked on its own is there. Some settings can only be judged through the thing they belong to.",
+  observeVerdictPartial: "Everything that can be checked on its own is there. Some settings can only be judged through the thing they belong to, or this change carries no cleanup marker, so nothing outside its records was searched for.",
   observeVerdictBad: "Something is missing or unexpected. Do not propose a cleanup until the pilot owner has looked.",
   observeVerdictUnsure: "Some things could not be checked yet. Look again in a moment, or fix the reason shown.",
   observeColumns: "For each thing: its name in the project, its kind, its identifier in the cloud, where it came from, and what the check found.",
