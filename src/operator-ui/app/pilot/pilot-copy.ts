@@ -194,7 +194,7 @@ export const COPY = {
   verifyRunning: "Looking at the cloud for anything left. This reads and changes nothing.",
   verifyComplete: "Approved things deleted; protected things kept on purpose. Everything on the list is confirmed gone, and everything kept is still there.",
   verifyRetirementOutstanding: "The environment itself is not retired: the resource group, sign-ins and trusts, deployment history and the pilot's own storage were never on the list and are kept by their owners. Retiring them is a separate, reviewed action by the pilot owner, and it is still outstanding.",
-  proposeRetainedNote: "A pilot cleanup never removes a resource group, a sign-in, a role assignment or definition, deployment history, or the storage the pilot runs on, whatever this change did. Those stay, with their owner named, and retiring the environment is a separate decision.",
+  proposeRetainedNote: "A pilot cleanup never removes a resource group, a sign-in or trust, a role or policy assignment, a role or policy definition, an exemption, a lock, deployment history, or the storage the pilot runs on, whatever this change did. Those stay, with their owner named, and retiring the environment is a separate decision.",
   verifyIncomplete: "Not finished yet. Nothing is reported as complete until every listed thing is confirmed gone.",
   verifyKnownConfirmed: "Everything on the list is confirmed gone, but this change carried no cleanup marker, so nothing outside its records could be searched for. This is not complete.",
   verifyNextLabel: "What to do now:",
@@ -217,7 +217,7 @@ export function ownershipWord(ownership: string): string {
     case "IMPORTED": return "brought under management, not created";
     case "NOT_IN_PLAN": return "not part of this change";
     case "PROTECTED_BACKEND": return "the storage the pilot itself runs on";
-    case "PROTECTED_IDENTITY": return "a sign-in, role assignment, role definition or trust";
+    case "PROTECTED_IDENTITY": return "a sign-in, trust, role or policy assignment, role or policy definition, exemption or lock (anything under Microsoft.Authorization)";
     case "PROTECTED_DEPLOYMENT": return "deployment history";
     case "RETAINED_GROUP": return "a resource group, never removed by a pilot cleanup";
     case "CONTAINS_OTHERS": return "a subscription or management group holding others' things";
