@@ -12,7 +12,7 @@ import type { PilotContract, SealedPlan } from "../src/apply/types.js";
 import { runApplyCommand, type ApplyCliDeps } from "../src/cli/apply.js";
 import { targetString } from "../src/cli/teardown-driver.js";
 import { openNonceStore } from "../src/apply/nonces.js";
-import { previewGateScenarioOf } from "../src/qualification/preview-gate.js";
+import { PREVIEW_GATE_ACTIONS, previewGateScenarioOf, unauthorizedPreviewActions } from "../src/qualification/preview-gate.js";
 import { PREVIEW_GATE_SCENARIOS, PRODUCTION_RELEASE_GATES, previewScenarioOf, reviewProductionRelease, type ReleaseGateSubmission } from "../src/qualification/release-admission.js";
 import { removeTree } from "../src/teardown/driver/cleanup.js";
 import {
@@ -258,6 +258,59 @@ test("preview-evidence labels SYNTHETIC, and the gate refuses, a preview recorde
   // A host identity that is not a short name is an input error; the flag set is closed.
   assert.match((await produce(w, s2, [phraseFor(s2)], GATE, "UNKNOWN host")).stderr, /^APPLY_INPUT_INVALID/);
   assert.match((await cli(w, ["preview-evidence", "--sealed", s2.path, "--gate", GATE, "--target-hardware-id", HOST, "--live", "yes"], [])).stderr, /^APPLY_FLAG_UNKNOWN/);
+});
+
+test("a change set with a delete, a replacement, a forget or an unreviewed action is never preview-gate evidence (#257 NB3; docs/production-release-admission.md gate 4): the producer refuses it before any attestation is asked for and writes nothing, the validator refuses a LIVE document relabeled over such counts, the admission review refuses the same file, and an update or an adoption of a pre-existing resource still passes", async () => {
+  const w = await world();
+  assert.deepEqual([...PREVIEW_GATE_ACTIONS], ["CREATE", "UPDATE", "IMPORT", "READ", "SAME"], "the admitted actions are a closed list");
+  assert.deepEqual(unauthorizedPreviewActions({ CREATE: 2, UPDATE: 1, IMPORT: 1, READ: 1, SAME: 3, DELETE: 0 }), []);
+  assert.deepEqual(unauthorizedPreviewActions({ UPDATE: 1, REPLACE: 2, DELETE: 1, FORGET: 1, REPLACE_CONDITIONAL: 1, DYNAMIC: 1, UNKNOWN: 1, EXOTIC: 1 }),
+    ["DELETE: 1", "DYNAMIC: 1", "EXOTIC: 1", "FORGET: 1", "REPLACE: 2", "REPLACE_CONDITIONAL: 1", "UNKNOWN: 1"]);
+  // Negative, through the command: a brownfield plan that also deletes, replaces or forgets a pre-existing resource is refused with the
+  // action named, before the phrase is asked for, and no file is written. The seal itself is not the gate's concern and still succeeds.
+  const cases: [string, unknown[], RegExp][] = [
+    ["delete", [change("azurerm_storage_account.old", "azurerm_storage_account", ["delete"])], /DELETE: 1/],
+    // A replacement is a delete and a create of the same address (a group, whose type carries no tags, so the seal's unit check is not what refuses it).
+    ["replace", [{ address: "azurerm_resource_group.old", type: "azurerm_resource_group", change: { actions: ["delete", "create"], before: {}, after: { location: "westeurope" } } }], /REPLACE: 1/],
+    ["forget", [{ address: "azurerm_storage_account.old", type: "azurerm_storage_account", change: { actions: ["forget"], before: {}, after: {} } }], /FORGET: 1/],
+    ["delete beside an update", [change("azurerm_virtual_network.existing", "azurerm_virtual_network", ["update"]), change("azurerm_storage_account.old", "azurerm_storage_account", ["delete"])], /DELETE: 1/],
+  ];
+  for (const [label, resources, pattern] of cases) {
+    const s = await seal(w, { showResources: resources, planSalt: label });
+    const refused = await produce(w, s, [phraseFor(s)]);
+    assert.equal(refused.code, 2, label + ": " + refused.stderr);
+    assert.match(refused.stderr, /^BLOCKED CHANGES_UNAUTHORIZED: /, label);
+    assert.match(refused.stderr, pattern, label);
+    assert.match(refused.stderr, /Nothing was written/, label);
+    assert.deepEqual(refused.term.asked, [], label + ": refused before any phrase");
+    assert.ok(!existsSync(join(w.releaseEvidenceDir, "preview-terraform-azure-brownfield-" + s.sealed.artifactSha256.slice(0, 12) + ".json")), label);
+    // The builder refuses the same plan with the attestation given, so no caller can get a SYNTHETIC document out of it either.
+    const built = buildPreviewGateEvidence({ sealed: s.sealed, gateId: GATE, sourceCommit: SOURCE_COMMIT, targetHardwareId: HOST, engineProgramSha256Now: s.sealed.provenance.engineBinarySha256, contract: w.contract, attestedBy: "operator.fixture", now: NOW });
+    assert.equal(built.ok, false, label);
+    assert.equal((built as { code: string }).code, "CHANGES_UNAUTHORIZED", label);
+  }
+  // Positive: an update of a pre-existing resource (the brownfield estate) and an adoption (import) are admitted, as before.
+  const adopted = await seal(w, { showResources: [change("azurerm_virtual_network.existing", "azurerm_virtual_network", ["update"]),
+    { address: "azurerm_storage_account.adopted", type: "azurerm_storage_account", change: { actions: ["update"], before: {}, after: { tags: {} }, importing: { id: "/subscriptions/x" } } }], planSalt: "adopted" });
+  assert.ok(adopted.sealed.changes.some((c) => c.importing === true), "the sealed plan records the adoption");
+  const live = await produce(w, adopted, [phraseFor(adopted)]);
+  assert.equal(live.code, 0, live.stderr);
+  const out = JSON.parse(live.stdout) as { written: string; label: string; record: ReleaseGateSubmission };
+  assert.equal(out.label, "LIVE");
+  const evidence = JSON.parse(readFileSync(out.written, "utf8")) as PreviewGateEvidence;
+  assert.deepEqual(unauthorizedPreviewActions(evidence.changes.byAction), []);
+  assert.deepEqual((await admit(w, out.written, out.record)).blockers, [], "a brownfield update and an adoption are admitted (fixture attestation: synthetic)");
+  // Relabeled: the LIVE document with a delete or a replacement counted in by hand, every other count adjusted so they still add up, is refused by the validator and at admission.
+  for (const [label, extra] of [["delete", { DELETE: 1 }], ["replacement", { REPLACE: 1 }], ["conditional replacement", { REPLACE_CONDITIONAL: 1 }], ["dynamic", { DYNAMIC: 1 }]] as const) {
+    const byAction = { ...evidence.changes.byAction, ...extra };
+    const forged = { ...evidence, changes: { byAction, total: evidence.changes.total + 1, create: evidence.changes.create, preExistingTouched: evidence.changes.preExistingTouched + 1 } };
+    assert.match(previewGateEvidenceProblems(forged, { sourceCommit: SOURCE_COMMIT, gateId: GATE }).join(" | "), /a delete, a replacement or an unreviewed action is never admitted \(/, label);
+    const path = join(fresh("forged"), "forged.json");
+    const bytes = JSON.stringify(forged, null, 2) + "\n";
+    writeFileSync(path, bytes);
+    const record = { ...out.record, evidencePath: path, evidenceSha256: sha256(bytes) };
+    assert.deepEqual((await admit(w, path, record)).blockers, ["EVIDENCE_GATE_CONTRACT_FAILED"], label + ": a relabeled document never closes the gate");
+  }
 });
 
 test("the preview evidence validator refuses an unknown gate, a mismatched scenario, a declared pass, a hidden raw field, counts that do not add up and a missing field", async () => {
