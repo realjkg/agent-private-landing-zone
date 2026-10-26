@@ -43,6 +43,7 @@ import {
 import {
   evaluateOperatorRequest,
 } from "./operator-policy.js";
+import { disableHostedTracing } from "./hosted-tracing.js";
 import { routeSessionRequest } from "./router.js";
 import {
   isRecoveryCommand,
@@ -299,6 +300,8 @@ export function createSessionGraph(
     RecoveryAutomationInspectionProvider =
       inspectConfiguredRecoveryAutomation,
 ) {
+  // Prompts and state never leave the host: the framework's hosted tracing is switched off before any run.
+  disableHostedTracing();
   const checkpointer = dbPath
     ? (() => {
         mkdirSync(
