@@ -10,7 +10,7 @@ import { isResourceAddress } from "./terraform.js";
 import type { AwsTarget } from "./providers/aws.js";
 import type { AzureTarget } from "./providers/azure.js";
 import { isContainerEntry } from "./observe.js";
-import { armPathSafe, isArmScopeId } from "../observe/azure-rest.js";
+import { armPathSafe, armTypeOf, isArmScopeId } from "../observe/azure-rest.js";
 
 /**
  * The cleanup proposal (docs/act-pilot-plan.md, "Cleanup of pilot-created resources"): the reviewable, hash-identified list
@@ -254,7 +254,9 @@ export function buildCleanupProposal(input: ProposalInput): { ok: true; proposal
       return refuse("OBSERVATION_INCONCLUSIVE", "The observation was refused for " + entry.address + " (" + seen.reason + "). Fix the DISCOVERY identity's access and observe again.");
     }
     if (seen.result === "MISSING") { alreadyAbsent.push(base); continue; }
-    const risk = MATERIAL_RISKS[entry.type];
+    // A risk is keyed by the Terraform type, and for Azure also by the ARM type the id names (an azapi_resource deployment is a deployment).
+    const armType = contract.provider === "AZURE" && entry.id !== null ? armTypeOf(entry.id) : undefined;
+    const risk = MATERIAL_RISKS[entry.type] ?? (armType && /^Microsoft\.Resources$/i.test(armType.namespace) && /^deployments$/i.test(armType.typePath) ? MATERIAL_RISKS.azurerm_resource_group_template_deployment : undefined);
     if (risk) risks.add(entry.type + ": " + risk);
     deletes.push({ ...base, ownership: "RUN_CREATED", observed: seen.result === "VERIFIED" ? "VERIFIED" : "UNVERIFIABLE", ...(risk ? { risk } : {}) });
   }

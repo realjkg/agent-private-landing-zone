@@ -658,6 +658,11 @@ test("Azure listings never change scope while marked complete: a continuation li
     ["another group", "https://management.azure.com" + RG + "/resources?api-version=2021-04-01&$skiptoken=1"],
     ["a fragment", first + "&$skiptoken=1#x"],
     ["plaintext", first.replace("https:", "http:") + "&$skiptoken=1"],
+    ["a repeated filter", first + "&$filter=tagName%20eq%20'x'&$skiptoken=1"],
+    ["a repeated API version", first + "&$skiptoken=1&api-version=2015-01-01"],
+    ["a repeated filter in another key case", first + "&$Filter=tagName%20eq%20'x'&$skiptoken=1"],
+    ["a repeated skip token", first + "&$skiptoken=1&$skiptoken=2"],
+    ["a repeated API version in another key case", first + "&API-VERSION=2015-01-01&$skiptoken=1"],
   ] as const) assert.ok(!sameListing(first, next), label);
   assert.ok(!sameListing("https://management.azure.com" + RG + "/resources?api-version=2021-04-01", "https://management.azure.com" + RG_STATE + "/resources?api-version=2021-04-01&$skiptoken=1"), "another group");
 
@@ -667,6 +672,9 @@ test("Azure listings never change scope while marked complete: a continuation li
     ["dropped filter", "tagged", (url) => ({ value: [{ id: RG }], nextLink: url.replace(/\$filter=[^&]*&/, "") + "&$skiptoken=1" })],
     ["changed filter", "tagged", (url) => ({ value: [{ id: RG }], nextLink: url.replace(encodeURIComponent(UNIT.unitId), "other-unit").replace(UNIT.unitId, "other-unit") + "&$skiptoken=1" })],
     ["changed group", "group", (url) => ({ value: [{ id: LAW }], nextLink: url.replace("alz-pilot-rg", "alz-state-rg") + "&$skiptoken=1" })],
+    ["repeated filter", "tagged", (url) => ({ value: [{ id: RG }], nextLink: url + "&$filter=tagName%20eq%20'x'&$skiptoken=1" })],
+    ["repeated API version", "group", (url) => ({ value: [{ id: LAW }], nextLink: url + "&$skiptoken=1&api-version=2015-01-01" })],
+    ["a continuation under another key", "group", (url) => ({ value: [{ id: LAW }], "@odata.nextLink": url + "&$skiptoken=1" })],
     ["another subscription's group", "group", (url) => ({ value: [{ id: LAW }], nextLink: url.replace(SUB, "99999999-9999-4999-8999-999999999999") + "&$skiptoken=1" })],
   ];
   for (const [label, kind, drift] of drifts) {
@@ -725,7 +733,8 @@ test("Azure group-scope grants and locks count as contents: a group with no fore
   const FOREIGN_ROLE = RG + "/providers/Microsoft.Authorization/roleAssignments/aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa";
   const FOREIGN_POLICY = RG + "/providers/Microsoft.Authorization/policyAssignments/someone-elses-policy";
   const FOREIGN_LOCK = RG + "/providers/Microsoft.Authorization/locks/do-not-delete";
-  for (const extension of [FOREIGN_ROLE, FOREIGN_POLICY, FOREIGN_LOCK]) {
+  const FOREIGN_EXEMPTION = RG + "/providers/Microsoft.Authorization/policyExemptions/someone-elses-exemption";
+  for (const extension of [FOREIGN_ROLE, FOREIGN_POLICY, FOREIGN_LOCK, FOREIGN_EXEMPTION]) {
     const w = world({ ...CLOUD, groupMembers: { ...GROUPS, [RG]: [LAW, extension] } });
     behave({ showResources: withoutSecret(CREATES), stateResources: withoutSecret(STATE as { type: string }[]) });
     const run = await proposed(w);
@@ -739,7 +748,9 @@ test("Azure group-scope grants and locks count as contents: a group with no fore
   behave({ showResources: withoutSecret(CREATES), stateResources: withoutSecret(STATE as { type: string }[]) });
   const run = await proposed(w);
   assert.ok(run.proposal.deletes.some((d) => d.address === "azurerm_resource_group.pilot"));
-  assert.ok(w.arm.calls.some((c) => c.url.includes(RG + "/providers/Microsoft.Authorization/roleAssignments?")) && w.arm.calls.some((c) => c.url.includes("/policyAssignments?")) && w.arm.calls.some((c) => c.url.includes("/locks?")), "the three scope listings were read");
+  for (const collection of ["roleAssignments?$filter=atScope()", "policyAssignments?$filter=atScope()", "locks?", "policyExemptions?$filter=atScope()"]) {
+    assert.ok(w.arm.calls.some((c) => decodeURIComponent(c.url).startsWith("https://management.azure.com" + RG + "/providers/Microsoft.Authorization/" + collection)), collection + " was read at the group's scope");
+  }
   const approval = cleanupApproval(run.proposal, "alice");
   // A lock placed at the group right before the destroy stops the cleanup, with nothing consumed.
   cloud(w, { ...CLOUD, groupMembers: { ...GROUPS, [RG]: [LAW, FOREIGN_LOCK] } });

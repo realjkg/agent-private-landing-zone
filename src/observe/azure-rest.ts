@@ -34,6 +34,7 @@ const RESOURCES_API = "2021-04-01";
 const ROLE_ASSIGNMENTS_API = "2022-04-01";
 const POLICY_ASSIGNMENTS_API = "2022-06-01";
 const LOCKS_API = "2020-05-01";
+const POLICY_EXEMPTIONS_API = "2022-07-01-preview";
 const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const CLIENT_ID = /^[A-Za-z0-9._:/-]{1,128}$/;
 /** An ARM id the reader can ask about: a resource group, or a resource under a provider namespace at subscription or resource-group scope. Anything else (a data-plane URL, a key vault secret, a directory object) is not checkable here. */
@@ -101,18 +102,30 @@ const httpsOn = (url: string, host: string): boolean => {
 /** Where a GET with the bearer may go: management.azure.com over https, nowhere else (a nextLink is checked the same way). */
 const armUrlAllowed = (url: string): boolean => httpsOn(url, ARM_HOST);
 const SKIP_PARAMS = new Set(["$skiptoken", "$skip", "$top"]);
+/** A URL's query as lower-cased keys, each with every value it occurs with, in order. */
+function queryOf(url: URL): Map<string, string[]> {
+  const query = new Map<string, string[]>();
+  for (const [key, value] of url.searchParams) query.set(key.toLowerCase(), [...(query.get(key.toLowerCase()) ?? []), value]);
+  return query;
+}
 /**
  * Whether a continuation link continues exactly the listing that was asked for: an allowed ARM URL with the same path (case
- * aside, so the same subscription, collection or group) and the same query, with only a skip token added. A link to another
- * subscription or group, one that drops or changes the tag filter or the API version, or one that adds any other parameter, is drift.
+ * aside, so the same subscription, collection or group) and the same query (every original parameter with exactly the same
+ * values, the same number of times, keys compared case-insensitively), with only paging parameters added, each once. A link to
+ * another subscription or group, one that drops, changes or repeats the tag filter or the API version, or one that adds any
+ * other parameter, is drift. Which value a server honors for a repeated key is its decision, so a repeat is never followed.
  */
 export function sameListing(first: string, next: string): boolean {
   if (!armUrlAllowed(next)) return false;
   let a: URL, b: URL;
   try { a = new URL(first); b = new URL(next); } catch { return false; }
   if (a.pathname.toLowerCase() !== b.pathname.toLowerCase() || b.hash !== "") return false;
-  for (const [key, value] of a.searchParams) if (b.searchParams.get(key) !== value) return false;
-  for (const [key] of b.searchParams) if (!a.searchParams.has(key) && !SKIP_PARAMS.has(key.toLowerCase())) return false;
+  const wanted = queryOf(a), got = queryOf(b);
+  for (const [key, values] of wanted) {
+    const theirs = got.get(key);
+    if (!theirs || theirs.length !== values.length || theirs.some((value, index) => value !== values[index])) return false;
+  }
+  for (const [key, values] of got) if (!wanted.has(key) && (!SKIP_PARAMS.has(key) || values.length !== 1)) return false;
   return true;
 }
 
@@ -244,6 +257,8 @@ export function createDiscoveryArmReader(options: DiscoveryArmOptions): { reader
         if (typeof id !== "string" || id === "") return undefined;
         if (keep(id)) identifiers.push(id);
       }
+      // A continuation under any other name (`@odata.nextLink`, `nextlink`) is a page this walker cannot follow: incomplete, never the last page.
+      if (Object.keys(body).some((key) => key !== "nextLink" && /nextlink$/i.test(key))) return { identifiers: identifiers.sort(), complete: false };
       if (nextLink === undefined || nextLink === null || nextLink === "") return { identifiers: identifiers.sort(), complete: true };
       if (typeof nextLink !== "string" || !sameListing(first, nextLink)) return { identifiers: identifiers.sort(), complete: false };
       url = nextLink;
@@ -268,10 +283,11 @@ export function createDiscoveryArmReader(options: DiscoveryArmOptions): { reader
 
   /**
    * Everything a deletion of a resource group would take with it, every page, by id only: its top-level tracked resources,
-   * and the extension resources at its scope that the group's deletion also removes (role assignments, policy assignments
-   * and locks whose id lies under the group; `atScope()` answers also carry inherited assignments from above, which are not
-   * the group's and are left out by their id). Any listing that fails, is denied or drifts makes the whole result failed or
-   * incomplete: a group is never judged empty on partial evidence.
+   * and the extension resources at its scope that the group's deletion also removes (role assignments, policy assignments,
+   * locks and policy exemptions whose id lies under the group; `atScope()` answers also carry inherited assignments from
+   * above, which are not the group's and are left out by their id). Any listing that fails, is denied or drifts makes the
+   * whole result failed or incomplete: a group is never judged empty on partial evidence. Policy exemptions have no stable
+   * API version, so that one collection names its preview version explicitly (the only preview version this reader uses).
    */
   const listGroup = async (groupIdentifier: string): Promise<{ identifiers: string[]; complete: boolean } | undefined> => {
     if (!GROUP_ID.test(groupIdentifier) || !armPathSafe(groupIdentifier) || !groupIdentifier.toLowerCase().startsWith("/subscriptions/" + subscription + "/")) return undefined;
@@ -282,6 +298,7 @@ export function createDiscoveryArmReader(options: DiscoveryArmOptions): { reader
       [ARM + groupIdentifier + "/providers/Microsoft.Authorization/roleAssignments?$filter=atScope()&api-version=" + ROLE_ASSIGNMENTS_API, inGroup],
       [ARM + groupIdentifier + "/providers/Microsoft.Authorization/policyAssignments?$filter=atScope()&api-version=" + POLICY_ASSIGNMENTS_API, inGroup],
       [ARM + groupIdentifier + "/providers/Microsoft.Authorization/locks?api-version=" + LOCKS_API, inGroup],
+      [ARM + groupIdentifier + "/providers/Microsoft.Authorization/policyExemptions?$filter=atScope()&api-version=" + POLICY_EXEMPTIONS_API, inGroup],
     ];
     const identifiers: string[] = [];
     let complete = true;
