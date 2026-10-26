@@ -40,7 +40,7 @@ The caller runs the AWS CLI as the read-only DISCOVERY identity through the boun
 | `INCONCLUSIVE` | A check could not decide (access, throttling, credentials, or a paginated listing), or the blueprint names no resources so nothing was checked. Nothing is known to be wrong. |
 | `FAILED` | A resource is absent, a planned resource is missing from the state, or an unexpected resource carries the run's tag. |
 
-**Known limit:** the pilot apply does not tag its resources with a deletion unit yet. Only the build path does. So a pilot run reports `inventory: NOT_AVAILABLE` and can reach `PARTIAL` at best. Tagging pilot resources is a change to the apply path.
+**The unit tag:** a pilot run stamps its deletion unit on everything it creates (`src/apply/unit.ts`; the operator's provider configuration declares the tags and `seal` verifies them in the plan, docs/act-pilot-plan.md item 6). The blueprint record carries the unit, so the observation lists resources carrying it and reports `inventory: COMPLETE` when the listing covered every page; a tagged resource the state does not name is `unexpected` and the verdict `FAILED`. A run whose engine seals no unit (CDK) reports `inventory: NOT_AVAILABLE` and reaches `PARTIAL` at best.
 
 ## Cleanup disposition
 
@@ -94,7 +94,8 @@ The driver and the commands keep the journey's records in the apply ledger (`.ru
 
 ## Not covered here
 
-- **Tagging pilot resources.** The pilot apply tags nothing, so nothing outside the engine's state is searched for, `inventory` is `NOT_AVAILABLE`, and an observation reaches `PARTIAL` at best. Tagging is a change to the apply path.
+- **Untaggable types.** A created resource whose type carries no tags (a bucket's versioning setting, a role assignment) is listed as untagged in the sealed artifact and is covered by the per-resource checks only; a sweep cannot find an orphan of such a type.
+- **The CDK engine** seals no unit (its change set view carries no tags), so its cleanup is `KNOWN_ADDRESSES_CONFIRMED` at best until it has a tag reader.
 - **Azure Terraform and AWS CDK.** Their verifiers and cleanup adapters are later slices; the commands refuse with `CLEANUP_NOT_SUPPORTED` and nothing runs.
 - **Live acceptance.** Running the journey against a real account, the owner's `record-live` attestation, and the teardown of the pilot accounts are the owner's, under `docs/act-pilot-plan.md`. No test here is live evidence.
 

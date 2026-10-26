@@ -4,7 +4,8 @@ import type { StoppableProcessOptions, StoppableResult } from "../tools/process.
 import { CDK } from "./engines/cdk.js";
 import { TERRAFORM } from "./engines/terraform.js";
 import type { ProviderSpec } from "./provider.js";
-import type { ApplyEvidence, ApplyIdentity, ApplyOutcome, EngineId, PilotContract, PilotTarget, PlanChange, ProviderId } from "./types.js";
+import type { ApplyEvidence, ApplyIdentity, ApplyOutcome, EngineId, PilotContract, PilotTarget, PlanChange, ProviderId, SealedUnit } from "./types.js";
+import type { PilotUnit } from "./unit.js";
 
 /**
  * The one place an engine's specifics live (docs/act-pilot-apply.md, "Engines").
@@ -31,7 +32,11 @@ export type EngineContext = {
 };
 export type EngineRunInput = EngineContext & { target: ResolvedTarget; engineVersion: string };
 /** A read-only snapshot of the project the manifest describes is what sealing starts from. */
-export type EnginePlanInput = EngineRunInput & { snapshotPath: string };
+export type EnginePlanInput = EngineRunInput & {
+  snapshotPath: string;
+  /** The deletion unit this run must stamp (src/apply/unit.ts); the engine verifies it in the plan when it can read tags, else seals `unit: null`. */
+  unit: PilotUnit;
+};
 
 /** How an apply ended: an outcome, or a plan its state has outgrown (nothing applied). */
 export type ApplyEnd = { outcome: ApplyOutcome } | { stale: true };
@@ -133,7 +138,7 @@ export type EngineSpec = {
   /** SHA-256 of the engine binary a run would execute, or undefined; qualification evidence is for exactly one. */
   binarySha256(toolDirs: readonly string[] | undefined, env: NodeJS.ProcessEnv): string | undefined;
   /** Produces the artifact to seal from the request (bytes the apply runs verbatim) and its redacted change list. */
-  plan(input: EnginePlanInput): { artifact: Buffer; changes: PlanChange[] };
+  plan(input: EnginePlanInput): { artifact: Buffer; changes: PlanChange[]; unit: SealedUnit | null };
   /**
    * The qualification run, when it is not a throwaway seal followed by `openApply().prepare()` (Terraform): the
    * engine's own read-only steps. Throws a code. CDK: version and describe-stacks as each identity, no change set.

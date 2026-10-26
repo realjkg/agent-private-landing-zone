@@ -428,7 +428,7 @@ function describeSealed(session: Session, artifact: Buffer, pinned: AwsTarget): 
  * records the stack it was made against, and returns the record and the change list. Executes nothing and deletes
  * nothing: a change set that is not sealed stays for a person to clear.
  */
-function plan(input: EngineContext & { snapshotPath: string; engineVersion: string }): { artifact: Buffer; changes: PlanChange[] } {
+function plan(input: EngineContext & { snapshotPath: string; engineVersion: string }): { artifact: Buffer; changes: PlanChange[]; unit: null } {
   const pinned = input.pinned as AwsTarget;
   const session = openSession({ ...input, hide: APPLIER, adapter: "preview" });
   try {
@@ -478,7 +478,8 @@ function plan(input: EngineContext & { snapshotPath: string; engineVersion: stri
       templateFile: assembly.templateFile, templateSha256: assembly.templateSha256, parametersSha256: view.parametersSha256, capabilities: view.capabilities, changeListSha256: view.changesSha256,
       stackSha256: against!.fingerprint,
     };
-    return { artifact: Buffer.from(canonicalJson(record)), changes: view.changes };
+    // The change set view carries no tags, so the CDK engine seals no unit: its leftovers stay KNOWN_ADDRESSES_CONFIRMED at best.
+    return { artifact: Buffer.from(canonicalJson(record)), changes: view.changes, unit: null };
   } finally {
     removeTree(session.work);
   }

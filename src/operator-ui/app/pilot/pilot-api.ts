@@ -26,6 +26,8 @@ export type ReviewSummary = {
   changesOmitted: number;
   /** Which build tool program made the preview, and whether it was tested on the real cloud (the sealed provenance). */
   preview: { engineVersion: string; programId: string; qualified: boolean; qualifiedAt?: string; reason?: string };
+  /** The cleanup marker this change stamps on what it creates (src/cli/ui-channel.ts ReviewSummary.unit); null when the build tool seals none. */
+  unit: { unitId: string; tags: Record<string, string>; untagged: string[] } | null;
 };
 /** Why an item is not ready (src/apply/readiness.ts): absent, present but wrong, not yet proven on the real cloud, not usable here, or stopped on purpose. */
 export type ReadinessState = "READY" | "MISSING" | "INVALID" | "UNVERIFIED" | "UNAVAILABLE" | "BLOCKED";

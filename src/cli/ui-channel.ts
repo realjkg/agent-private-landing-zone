@@ -9,7 +9,7 @@ import { channelMismatchMessage } from "../apply/channel.js";
 import { repoPaths } from "../apply/contract.js";
 import { verifyReviewBundle } from "../apply/seal.js";
 import { ENVIRONMENTS, stripInvisible } from "../apply/constants.js";
-import type { ApplyEnvironment, PlanChange, PreviewProvenance } from "../apply/types.js";
+import type { ApplyEnvironment, PlanChange, PreviewProvenance, SealedPlan } from "../apply/types.js";
 import { runApplyCommand, type ApplyCliDeps, type ApplyReport } from "./apply.js";
 import type { AskExpectation, HumanTerminal, PhraseKind } from "./teardown-driver.js";
 
@@ -130,10 +130,12 @@ export type ReviewSummary = {
   changesOmitted: number;
   /** Which engine program made the preview, and whether real-engine qualification evidence covers it (the sealed provenance). */
   preview: { engineVersion: string; programId: string; qualified: boolean; qualifiedAt?: string; reason?: string };
+  /** The deletion unit the plan stamps on what it creates, verified in the plan at sealing; null when the engine seals none. */
+  unit: { unitId: string; tags: Record<string, string>; untagged: string[] } | null;
 };
 
 type Sealed = { environment: ApplyEnvironment; target: ReviewSummary["target"]; artifactSha256: string; sourceCommit: string; createdAt: string; changes: PlanChange[];
-  engineVersion: string; provenance: PreviewProvenance };
+  engineVersion: string; provenance: PreviewProvenance; unit: SealedPlan["unit"] };
 const previewOf = ({ engineVersion, provenance: { engineBinarySha256, qualification } }: Sealed): ReviewSummary["preview"] => ({
   engineVersion: stripInvisible(engineVersion), programId: engineBinarySha256.slice(0, 12), qualified: qualification.state === "QUALIFIED",
   ...(qualification.state === "QUALIFIED" ? { qualifiedAt: qualification.qualifiedAt } : { reason: stripInvisible(qualification.reason) }),
@@ -144,6 +146,10 @@ const summaryOf = (bundle: Sealed): ReviewSummary => ({
   changes: bundle.changes.slice(0, MAX_LISTED_CHANGES).map((change) => ({ ...change, address: stripInvisible(change.address), type: stripInvisible(change.type) })),
   changesOmitted: Math.max(0, bundle.changes.length - MAX_LISTED_CHANGES),
   preview: previewOf(bundle),
+  unit: bundle.unit === null ? null : {
+    unitId: stripInvisible(bundle.unit.unitId), tags: Object.fromEntries(Object.entries(bundle.unit.tags).map(([k, v]) => [stripInvisible(k), stripInvisible(String(v))])),
+    untagged: bundle.unit.untagged.slice(0, MAX_LISTED_CHANGES).map((a) => stripInvisible(a)),
+  },
 });
 
 // --- the router ----------------------------------------------------------------------------------------------
@@ -257,10 +263,10 @@ export function createPilotRouter(options: PilotRouterOptions): PilotRouter {
       if (typeof data.sealedPlanPath === "string") data.sealedPlanPath = absolute(data.sealedPlanPath);
       if (typeof data.reviewBundlePath === "string") data.reviewBundlePath = absolute(data.reviewBundlePath);
       if (data.environment && data.target && typeof data.artifactSha256 === "string" && typeof data.sourceCommit === "string" && Array.isArray(data.changes) &&
-        typeof data.engineVersion === "string" && data.provenance) {
+        typeof data.engineVersion === "string" && data.provenance && (data.unit === null || (typeof data.unit === "object" && data.unit !== null))) {
         result.summary = summaryOf({
           environment: data.environment, target: data.target, artifactSha256: data.artifactSha256, sourceCommit: data.sourceCommit, createdAt: "", changes: data.changes,
-          engineVersion: data.engineVersion, provenance: data.provenance,
+          engineVersion: data.engineVersion, provenance: data.provenance, unit: data.unit as SealedPlan["unit"],
         });
       }
     }

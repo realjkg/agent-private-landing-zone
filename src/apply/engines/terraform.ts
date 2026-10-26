@@ -24,7 +24,9 @@ import {
   APPLY_ADAPTER, APPLY_ARGV, APPLY_BACKEND_CONFIG_FILE, APPLY_INIT_ARGV, CLEANUP_ADAPTER, CLEANUP_APPLY_ARGV, CLEANUP_PLAN_FILE, CLEANUP_SHOW_ARGV, RECOVERY_FILES,
   classifyApply, cleanupPlanArgv, isAllowedApplyArgv, isAllowedCleanupArgv, parseStateSerial,
 } from "../terraform.js";
-import { APPLY_IDENTITIES, type PilotTarget, type PlanChange } from "../types.js";
+import { APPLY_IDENTITIES, type PilotTarget, type PlanChange, type SealedUnit } from "../types.js";
+import type { PilotUnit } from "../unit.js";
+import { ALZ_TAG_KEYS } from "../../teardown/unit.js";
 
 /**
  * The Terraform engine spec: init, workspace, `plan -out`, `show -json` for the
@@ -160,7 +162,7 @@ const APPLY_PLAN_FILE = "alz-apply.tfplan";
 
 type Shown = {
   format_version?: unknown; errored?: unknown;
-  resource_changes?: { address?: string; type?: string; previous_address?: unknown; change?: { actions?: string[]; importing?: unknown } }[];
+  resource_changes?: { address?: string; type?: string; mode?: unknown; previous_address?: unknown; change?: { actions?: string[]; importing?: unknown; after?: unknown; after_unknown?: unknown } }[];
   output_changes?: Record<string, { actions?: string[] }>;
   configuration?: { provider_config?: Record<string, ProviderBlock> };
 };
@@ -198,6 +200,35 @@ function changesOf(shown: string, judge: Judge): PlanChange[] {
 
 /** The pinned `show` of the plan file at `../alz-preview.tfplan`, in an initialized work directory, with no identity at all. */
 const readChanges = (session: Session, judge: Judge): PlanChange[] => changesOf(session.step(SHOW_ARGV, null, true), judge);
+
+/**
+ * The deletion unit, verified in the plan (src/apply/unit.ts): every resource the plan creates and whose type carries
+ * tags must carry exactly the unit's tags, as constants the plan already knows. A missing tag (UNIT_TAG_MISSING), a
+ * tag with another unit's value (UNIT_TAG_FOREIGN) or tags the plan cannot show because they are computed at apply time
+ * (UNIT_TAG_UNVERIFIABLE) stop the seal. Created resources with no tag attribute are listed as untagged: traceable
+ * through the state only. The only values read are the unit's own tag keys; nothing else of `after` leaves this function.
+ */
+function unitOfPlan(shown: string, judge: Judge, unit: PilotUnit): SealedUnit {
+  let document: Shown;
+  try { document = JSON.parse(shown); } catch { return stop("PLAN_JSON_INVALID"); }
+  const untagged: string[] = [];
+  for (const found of Array.isArray(document.resource_changes) ? document.resource_changes : []) {
+    if (found?.mode === "data" || !(found?.change?.actions ?? []).includes("create")) continue;
+    const address = stripInvisible(found?.address ?? "terraform:unknown");
+    const after = isPlainRecord(found?.change?.after) ? found.change!.after as Record<string, unknown> : {};
+    const unknown = isPlainRecord(found?.change?.after_unknown) ? found.change!.after_unknown as Record<string, unknown> : {};
+    const attribute = judge.spec.tagAttributes.find((name) => Object.hasOwn(after, name) || Object.hasOwn(unknown, name));
+    if (attribute === undefined) { untagged.push(address); continue; }
+    const tags: unknown = after[attribute];
+    if (!isPlainRecord(tags)) return stop(unknown[attribute] !== undefined ? "UNIT_TAG_UNVERIFIABLE" : "UNIT_TAG_MISSING");
+    for (const [key, value] of Object.entries(unit.tags)) {
+      if (!Object.hasOwn(tags, key)) return stop("UNIT_TAG_MISSING");
+      if (tags[key] !== value) return stop(key === ALZ_TAG_KEYS.unit ? "UNIT_TAG_FOREIGN" : "UNIT_TAG_MISSING");
+    }
+  }
+  return { unitId: unit.unitId, tags: { ...unit.tags }, untagged: untagged.sort() };
+}
+const isPlainRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
 /** Sealing and re-deriving run the preview adapter's argument lists under the apply path's restricted profile: no CLI configuration file, no plugin cache. */
 const sealSession = (input: Pick<EngineContext, "scratchDir" | "env" | "toolDirs" | "manifest">, embedStateWrite = false): Session => openSession({
@@ -420,7 +451,8 @@ export const TERRAFORM: EngineSpec = {
       session.assertBound();
       session.step(PREVIEW_PLAN_ARGV, "DISCOVERY");
       session.assertBound();
-      return { artifact: readFileSync(planFile), changes: readChanges(session, input) };
+      const shown = session.step(SHOW_ARGV, null, true);
+      return { artifact: readFileSync(planFile), changes: changesOf(shown, input), unit: unitOfPlan(shown, input, input.unit) };
     } finally {
       rmSync(planFile, { force: true });
       rmSync(backendConfigPath, { force: true });

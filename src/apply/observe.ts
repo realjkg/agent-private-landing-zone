@@ -61,7 +61,7 @@ export async function observeRun(artifactSha256: string, deps: ObserveDeps): Pro
   const cli = deps.aws ? { aws: deps.aws, close: () => undefined } : createDiscoveryAwsCli({ env: deps.env, toolDirs: deps.toolDirs, scratchParent: deps.scratchParent });
   let report: ObserveReport;
   try {
-    report = await observeBlueprint(blueprint.blueprint, { unitId: null, region: region.region, aws: cli.aws });
+    report = await observeBlueprint(blueprint.blueprint, { unitId: blueprint.unitId, region: region.region, aws: cli.aws });
   } finally {
     cli.close();
   }
@@ -103,12 +103,16 @@ export async function verifyProposalLeftovers(proposal: CleanupProposal, deps: O
   if (!applied || sha256(canonicalJson(applied as never)) !== proposal.applyEvidenceSha256) return refuse("RUN_RECORD_MISSING", "The apply this proposal cleans up is not recorded with this evidence.");
   const region = regionOf(deps, proposal.environment);
   if (!region.ok) return region;
+  // The blueprint the proposal was derived from: its identifiers tell a tag listing's known entries from leftovers.
+  const blueprint = await readBlueprintRecord(proposal.artifactSha256, proposal.applyEvidenceSha256, deps.evidenceDir);
+  if (!blueprint || recordSha256(blueprint) !== proposal.blueprintSha256) return refuse("RUN_RECORD_MISSING", "The blueprint this proposal names is not the one recorded for this apply.");
+  const knownIdentifiers = blueprint.blueprint.entries.flatMap((entry) => [entry.arn, entry.id]).filter((x): x is string => x !== null);
   const cleanup = await readCleanupEvidence(proposal.proposalSha256, deps.evidenceDir);
   const cli = deps.aws ? { aws: deps.aws, close: () => undefined } : createDiscoveryAwsCli({ env: deps.env, toolDirs: deps.toolDirs, scratchParent: deps.scratchParent });
   let record: LeftoversRecord;
   try {
     record = await verifyLeftovers({
-      proposal, cleanup, cleanupEvidenceSha256: cleanup ? sha256(canonicalJson(cleanup as never)) : null, unitId: null, region: region.region, aws: cli.aws,
+      proposal, cleanup, cleanupEvidenceSha256: cleanup ? sha256(canonicalJson(cleanup as never)) : null, unitId: proposal.unitId, knownIdentifiers, region: region.region, aws: cli.aws,
       verifierBinarySha256: deps.aws ? null : verifierBinarySha256({ env: deps.env, toolDirs: deps.toolDirs }), now: (deps.now ?? (() => new Date()))(),
     });
   } finally {

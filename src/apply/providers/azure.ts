@@ -99,5 +99,6 @@ export const AZURE: ProviderSpec = {
   savedBackendMatches: (saved, target) => savedBackendMatches(saved, target as AzureTarget),
   // Simulation finding (docs/act-pilot-simulation.md): the plan embeds the backend block's settings; the rest is filled from the apply process's ARM_* variables.
   filledAtApply: ["use_oidc", "client_id", "tenant_id", "subscription_id", "oidc_token_file_path"],
+  tagAttributes: ["tags"],
   assertProviderConfig: (blocks, target) => assertProviderConfig(blocks, target as AzureTarget),
 };

@@ -7,7 +7,8 @@ import test from "node:test";
 
 import { signApproval } from "../src/apply/approval.js";
 import { buildCleanupProposal, computeProposalSha256, proposalProblems, verifyCleanupProposal, type CleanupProposal } from "../src/apply/cleanup-proposal.js";
-import { CLEANUP_SUFFIX, SUFFIX } from "../src/apply/contract.js";
+import { CLEANUP_SUFFIX, SUFFIX, loadPilotContract, pilotContractSha256 } from "../src/apply/contract.js";
+import { pilotUnitOf } from "../src/apply/unit.js";
 import { cleanupScopeProblem, runApply, runCleanup, sealPreview, type ApplyDeps, type ApplyRequest, type CleanupRequest } from "../src/apply/driver.js";
 import { cleanupEvidenceProblems } from "../src/apply/evidence.js";
 import { readCleanupEvidence, reserveArtifact } from "../src/apply/ledger.js";
@@ -20,7 +21,7 @@ import {
   recordSha256, writeBlueprintRecord, type BlueprintRecord,
 } from "../src/apply/run-records.js";
 import { CLEANUP_ADAPTER, CLEANUP_APPLY_ARGV, CLEANUP_SHOW_ARGV, cleanupPlanArgv, isAllowedCleanupArgv } from "../src/apply/terraform.js";
-import type { ApplyEnvironment, SignedApproval } from "../src/apply/types.js";
+import type { ApplyEnvironment, PilotContract, SignedApproval } from "../src/apply/types.js";
 import { blueprintFromTerraformStatePull } from "../src/observe/blueprint.js";
 import { isAllowedReadArgv } from "../src/observe/aws-cli.js";
 import { readEncryptedEvidence } from "../src/evidence/vault.js";
@@ -81,8 +82,13 @@ const STATE = [
 ];
 // What the fake cloud holds, by the identifier Cloud Control names each type by: a role by its name, a queue by its URL.
 const EXISTING = [BUCKET, LOG, STATE_BUCKET, OLD_QUEUE, "alz-apply-dev"];
-const behave = (behavior: Behavior = {}) => behaveIn(toolDir, KILL, { applyAdvance: true, showOnlyConfigured: true, showResources: CREATES, showProviderConfig: AWS_PROVIDER_CONFIG, stateResources: STATE, ...behavior });
-const cloud = (behavior: AwsReadBehavior = {}) => behaveAwsReads(awsToolDir, { existing: EXISTING, ...behavior });
+/** The deletion unit of the DEV state container under the fixture contract: what the sealed plan must stamp and the fake cloud lists by. */
+const fixtureContractPath = (() => { const path = join(fresh("contract"), "act-pilot-contract.json"); writePinnedContract(path, awsContractJson(KILL)); return path; })();
+const UNIT = pilotUnitOf({ provider: "AWS", contractSha256: pilotContractSha256(loadPilotContract(fixtureContractPath, pinPathOf(fixtureContractPath)) as PilotContract), environment: "DEV", target: awsTargetOf("DEV") });
+const behave = (behavior: Behavior = {}) => behaveIn(toolDir, KILL, { applyAdvance: true, showOnlyConfigured: true, showResources: CREATES, showProviderConfig: AWS_PROVIDER_CONFIG, stateResources: STATE, unitTags: { ...UNIT.tags }, ...behavior });
+/** The ARNs the fake tagging API lists for this unit: what the plan created and nothing else, unless a test says otherwise. */
+const TAGGED = [BUCKET_ARN, LOG_ARN];
+const cloud = (behavior: AwsReadBehavior = {}) => behaveAwsReads(awsToolDir, { existing: EXISTING, tagged: TAGGED, ...behavior });
 const calls = () => callsOf(toolDir);
 const applyCalls = () => calls().filter((c) => c.args[0] === "apply");
 
@@ -189,11 +195,16 @@ test("AWS Terraform observe: after a successful apply the driver records the blu
     ["aws_cloudwatch_log_group.canary", "VERIFIED"], ["aws_iam_role.apply", "VERIFIED"], ["aws_s3_bucket.logs", "VERIFIED"], ["aws_s3_bucket.state", "VERIFIED"],
     ["aws_s3_bucket_versioning.logs", "UNVERIFIABLE"], ["aws_sqs_queue.preexisting", "VERIFIED"],
   ]);
-  assert.equal(observation.record.inventory, "NOT_AVAILABLE", "the pilot apply tags nothing, and the record says so");
+  assert.equal(blueprint.unitId, UNIT.unitId, "the blueprint carries the unit the sealed plan stamped");
+  assert.equal(s.sealed.unit?.unitId, UNIT.unitId);
+  assert.deepEqual(s.sealed.unit?.untagged, [], "the fake provider stamps every created resource, as default_tags would");
+  assert.equal(observation.record.inventory, "COMPLETE", "the run carries its unit tag, so the sweep by it ran and was complete");
+  assert.deepEqual(observation.record.unexpected, []);
   assert.match(observation.record.verifierBinarySha256 ?? "", /^[0-9a-f]{64}$/);
   const reads = awsReadCallsOf(awsToolDir);
-  assert.equal(reads.length, 5, "one read per checkable resource, no tag listing without a unit");
-  for (const read of reads) {
+  assert.equal(reads.length, 6, "one read per checkable resource, and one tag listing for the unit");
+  assert.deepEqual(reads.filter((r) => r.args[0] === "resourcegroupstaggingapi").map((r) => r.args.slice(0, 4)), [["resourcegroupstaggingapi", "get-resources", "--tag-filters", "Key=alz-unit,Values=" + UNIT.unitId]]);
+  for (const read of reads.filter((r) => r.args[0] !== "resourcegroupstaggingapi")) {
     assert.equal(read.args[1], "get-resource");
     assert.equal(read.env.AWS_ROLE_ARN, awsRoleArn("DISCOVERY", "DEV"), "the verifier reads as DISCOVERY");
     assert.equal(read.env.AWS_EC2_METADATA_DISABLED, "true");
@@ -227,7 +238,7 @@ test("observe refuses a run with no apply evidence, a blueprint that is not this
   assert.ok(empty.ok);
   assert.equal(empty.record.verdict, "FAILED", "the plan created resources the state never recorded: a failed observation, never a pass");
   assert.deepEqual(empty.record.missingFromState, ["aws_cloudwatch_log_group.canary", "aws_s3_bucket.logs", "aws_s3_bucket.state", "aws_s3_bucket_versioning.logs"]);
-  assert.equal(awsReadCallsOf(awsToolDir).length, 0, "nothing to read");
+  assert.deepEqual(awsReadCallsOf(awsToolDir).map((r) => r.args[0]), ["resourcegroupstaggingapi"], "no resource to read; the unit listing still runs, so an orphan of this unit would be found");
   refused(await (async () => { const records = await loadRunRecords(s2.sealed.artifactSha256, other.dirs.evidence); assert.ok(records.ok); return buildCleanupProposal({ ...records, changes: s2.sealed.changes, channel: "CLI",
     contract: { ...awsContractJson(KILL), enabled: true } as never, engineVersion: s2.sealed.engineVersion, env: other.deps.env!, now: new Date(NOW.getTime() + 120_000) }); })(), "OWNERSHIP_AMBIGUOUS");
 });
@@ -346,22 +357,27 @@ test("AWS Terraform cleanup: approve under the cleanup domain, destroy exactly t
   assert.ok(existsSync(join(w.dirs.evidence, run.s.sealed.artifactSha256 + SUFFIX)), "the apply evidence stays untouched");
   assert.deepEqual(await readCleanupEvidence(run.proposal.proposalSha256, w.dirs.evidence), result.evidence);
 
-  // The independent leftover check: the fake cloud now lacks what the destroy removed.
-  cloud({ existing: EXISTING.filter((x) => x !== BUCKET && x !== LOG) });
+  // The independent leftover check: the fake cloud now lacks what the destroy removed, and the tagging API lists nothing of this unit.
+  cloud({ existing: EXISTING.filter((x) => x !== BUCKET && x !== LOG), tagged: [] });
   const leftovers = await verifyProposalLeftovers(run.proposal, observeDeps(w, new Date(NOW.getTime() + 600_000)));
   assert.ok(leftovers.ok, JSON.stringify(leftovers));
   assert.equal(leftovers.cleanupRan, true);
-  // Every named resource is settled, but the pilot apply tags nothing, so nothing outside the state could be searched for: that is
-  // KNOWN_ADDRESSES_CONFIRMED, never COMPLETE (the #235 contract: completion needs a complete deletion-unit sweep).
-  assert.equal(leftovers.record.disposition, "KNOWN_ADDRESSES_CONFIRMED");
-  assert.equal(leftovers.record.sweep, "NOT_AVAILABLE");
-  assert.match(leftoversRecordProblems({ ...leftovers.record, disposition: "COMPLETE" }).join(), /COMPLETE needs a complete deletion-unit sweep/, "a record cannot claim completion without the sweep");
+  // Every named resource is settled and the sweep by the run's unit tag found nothing else: COMPLETE (the #235 contract).
+  assert.equal(leftovers.record.disposition, "COMPLETE");
+  assert.equal(leftovers.record.sweep, "COMPLETE");
+  assert.match(leftoversRecordProblems({ ...leftovers.record, disposition: "KNOWN_ADDRESSES_CONFIRMED" }).join(), /with a sweep the record is COMPLETE or INCOMPLETE/);
   assert.deepEqual(leftovers.record.resources.map((r) => [r.address, r.disposition, r.basis]), [
     ["aws_cloudwatch_log_group.canary", "CONFIRMED_DELETED", "CLOUD_CONTROL_ABSENT"], ["aws_s3_bucket.logs", "CONFIRMED_DELETED", "CLOUD_CONTROL_ABSENT"],
     ["aws_s3_bucket_versioning.logs", "CONFIRMED_DELETED", "PARENT_ABSENT"],
     ["aws_iam_role.apply", "INTENTIONALLY_RETAINED", "RETENTION_DECISION"], ["aws_s3_bucket.state", "INTENTIONALLY_RETAINED", "RETENTION_DECISION"], ["aws_sqs_queue.preexisting", "INTENTIONALLY_RETAINED", "RETENTION_DECISION"],
   ]);
-  assert.match(leftovers.record.nextAction, /not searched for.*not independently complete/, "the record says what it does not cover and that it is not completion");
+  assert.match(leftovers.record.nextAction, /nothing else carries this run's tag/);
+  // Had the fake cloud still listed a resource under this unit's tag, the sweep would have found it and the record would not be complete.
+  cloud({ existing: EXISTING.filter((x) => x !== BUCKET && x !== LOG), tagged: ["arn:aws:sqs:us-east-1:111111111111:stray-of-this-unit"] });
+  const stray = await verifyProposalLeftovers(run.proposal, observeDeps(w, new Date(NOW.getTime() + 700_000)));
+  assert.ok(stray.ok);
+  assert.equal(stray.record.disposition, "INCOMPLETE");
+  assert.deepEqual(stray.record.resources.filter((r) => r.address === "(not in state)").map((r) => [r.identifier, r.disposition]), [["arn:aws:sqs:us-east-1:111111111111:stray-of-this-unit", "STILL_PRESENT"]]);
   assert.equal(leftovers.record.cleanupEvidenceSha256, sha256(canonicalJson(result.evidence as never)));
   assert.deepEqual(leftoversRecordProblems(leftovers.record), []);
   for (const read of awsReadCallsOf(awsToolDir)) assert.equal(read.env.AWS_ROLE_ARN, awsRoleArn("DISCOVERY", "DEV"));
@@ -599,7 +615,22 @@ test("a KMS key scheduled for deletion is DELETION_PENDING: not complete, not a 
   cloud({ existing: EXISTING.filter((x) => x !== BUCKET && x !== LOG) });
   const later = await verifyProposalLeftovers(run.proposal, observeDeps(w, new Date(NOW.getTime() + 8 * 86_400_000)));
   assert.ok(later.ok);
-  assert.equal(later.record.disposition, "KNOWN_ADDRESSES_CONFIRMED", "settled, and still no sweep: not completion");
+  assert.equal(later.record.disposition, "COMPLETE", "settled, and the sweep by the unit tag found nothing else");
+});
+
+test("a run sealed without a unit (an engine with no tag reader) stays KNOWN_ADDRESSES_CONFIRMED at best, and a tagged resource outside the state fails the observation", async () => {
+  const w = world();
+  cloud();
+  // The observation of a tagged run finds a resource of this unit the state does not name: FAILED, and no proposal is made from it.
+  cloud({ tagged: [...TAGGED, "arn:aws:sqs:us-east-1:111111111111:orphan-of-this-unit"] });
+  const { s } = await applied(w);
+  const failed = await observeRun(s.sealed.artifactSha256, observeDeps(w));
+  assert.ok(failed.ok);
+  assert.equal(failed.record.verdict, "FAILED");
+  assert.deepEqual(failed.record.unexpected, ["arn:aws:sqs:us-east-1:111111111111:orphan-of-this-unit"]);
+  const records = await loadRunRecords(s.sealed.artifactSha256, w.dirs.evidence);
+  assert.ok(records.ok);
+  refused(buildCleanupProposal({ ...records, changes: s.sealed.changes, channel: "CLI", contract: { ...(awsContractJson(KILL) as object), enabled: true } as never, engineVersion: s.sealed.engineVersion, env: w.deps.env!, now: new Date(NOW.getTime() + 120_000) }), "OBSERVATION_INCONCLUSIVE");
 });
 
 test("leftovers are COMPLETE only with a complete deletion-unit sweep, and a check that never ran proves nothing: an already-absent setting is UNKNOWN unless its parent is confirmed gone", async () => {
@@ -616,7 +647,7 @@ test("leftovers are COMPLETE only with a complete deletion-unit sweep, and a che
     return bucketExists ? found(BUCKET) : notFound;
   };
   const check = (bucketExists: boolean, unitId: string | null, listing?: string[] | "paginated") => verifyLeftovers({
-    proposal, cleanup: undefined, cleanupEvidenceSha256: null, unitId, region: "us-east-1", aws: cloud(bucketExists, listing), verifierBinarySha256: null, now: NOW,
+    proposal, cleanup: undefined, cleanupEvidenceSha256: null, unitId, knownIdentifiers: [BUCKET, BUCKET_ARN], region: "us-east-1", aws: cloud(bucketExists, listing), verifierBinarySha256: null, now: NOW,
   });
   // The parent is gone: the setting is confirmed through it, and with no unit tag the record is KNOWN_ADDRESSES_CONFIRMED.
   const known = await check(false, null);

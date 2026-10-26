@@ -369,7 +369,7 @@ test("seal writes a non-secret review bundle: the artifact's own fields and the 
   const text = readFileSync(s.bundle, "utf8");
   const bundle = JSON.parse(text) as Record<string, unknown>;
   assert.deepEqual(Object.keys(bundle).sort(), [
-    "artifactSha256", "changes", "changesSha256", "channel", "contractSha256", "createdAt", "engineVersion", "environment", "manifestHash", "planSha256", "policyVersion", "provenance", "releaseIdentity", "sourceCommit", "target",
+    "artifactSha256", "changes", "changesSha256", "channel", "contractSha256", "createdAt", "engineVersion", "environment", "manifestHash", "planSha256", "policyVersion", "provenance", "releaseIdentity", "sourceCommit", "target", "unit",
   ]);
   assert.equal(bundle.artifactSha256, s.artifactSha256);
   assert.equal(bundle.environment, "DEV");

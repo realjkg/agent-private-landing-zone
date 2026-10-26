@@ -1031,6 +1031,7 @@ const APPLY_MAY_IMPORT: Readonly<Record<string, { modules: string[]; names?: str
   "src/apply/types.ts": { modules: ["types.js"] },
   // The observe and cleanup records name the resolved target by its type and nothing else of the preview driver.
   "src/apply/cleanup-proposal.ts": { modules: ["types.js"] },
+  "src/apply/unit.ts": { modules: ["types.js"] },
   "src/apply/run-records.ts": { modules: ["types.js"] },
   "src/cli/apply.ts": { modules: ["human.js", "cleanup.js"] },
 };

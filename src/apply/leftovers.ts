@@ -19,8 +19,10 @@ export type LeftoversInput = {
   /** The finished cleanup evidence, when the cleanup ran; absent before it ran or when it is still reserved. */
   cleanup: CleanupEvidence | undefined;
   cleanupEvidenceSha256: string | null;
-  /** The deletion-unit tag of this run, when it has one; the pilot apply does not tag yet, so null is the usual value. */
+  /** The deletion-unit tag of this run (from the proposal, which took it from the blueprint record), or null when the engine sealed none. */
   unitId: string | null;
+  /** Every identifier the blueprint record holds for this run's resources (ARNs and ids): what a tag listing may name without being a leftover. */
+  knownIdentifiers: readonly string[];
   region: string;
   aws: AwsCli;
   verifierBinarySha256: string | null;
@@ -81,8 +83,12 @@ export async function verifyLeftovers(input: LeftoversInput): Promise<LeftoversR
   // Resources outside the engine's state: only findable by the run's unit tag, which the pilot apply does not set yet.
   let sweep: LeftoversRecord["sweep"] = "NOT_AVAILABLE";
   if (input.unitId !== null) {
-    const known = { entries: proposal.deletes.concat(proposal.alreadyAbsent as never[], proposal.excluded as never[]).map((x) => ({ address: x.address, type: x.type, arn: x.identifier?.startsWith("arn:") ? x.identifier : null,
-      id: x.identifier !== null && !x.identifier.startsWith("arn:") ? x.identifier : null, origin: "IN_PLAN" as const })), missing: [] };
+    const known = { entries: [
+      ...proposal.deletes.concat(proposal.alreadyAbsent as never[], proposal.excluded as never[]).map((x) => ({ address: x.address, type: x.type, arn: x.identifier?.startsWith("arn:") ? x.identifier : null,
+        id: x.identifier !== null && !x.identifier.startsWith("arn:") ? x.identifier : null, origin: "IN_PLAN" as const })),
+      // The blueprint knows a resource by ARN and id; the proposal names one of them, the tagging API the other.
+      ...input.knownIdentifiers.map((identifier) => ({ address: "(blueprint)", type: "known", arn: identifier.startsWith("arn:") ? identifier : null, id: identifier.startsWith("arn:") ? null : identifier, origin: "IN_PLAN" as const })),
+    ], missing: [] };
     const listed = await unexpectedTagged(known, input.unitId, input.region, input.aws);
     sweep = listed.complete ? "COMPLETE" : "INCOMPLETE";
     for (const arn of listed.unexpected) resources.push({ address: "(not in state)", type: "tagged", identifier: arn, disposition: "STILL_PRESENT", basis: "CLOUD_CONTROL_PRESENT", reason: "carries this run's tag and is not in the state" });

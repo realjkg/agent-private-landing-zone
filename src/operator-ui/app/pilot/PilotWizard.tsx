@@ -102,6 +102,14 @@ export function ChangeList(props: { review: ReviewSummary }) {
         <dt>Change ID (first 12 characters)</dt><dd><code>{review.shortId}</code></dd>
         <dt>App version that prepared it</dt><dd><code>{review.sourceCommit.slice(0, 12)}</code></dd>
         <dt>{COPY.reviewToolLabel}</dt><dd>{COPY.reviewToolVersion} <code>{review.preview.engineVersion}</code>, {COPY.reviewToolProgram} <code>{review.preview.programId}</code></dd>
+        <dt>{COPY.reviewUnitLabel}</dt>
+        <dd data-unit={review.unit?.unitId ?? "none"}>{review.unit === null ? COPY.reviewUnitNone : (
+          <>
+            <code>{Object.entries(review.unit.tags).map(([key, value]) => key + "=" + value).join(", ")}</code>
+            <br /><small>{COPY.reviewUnitWhat}</small>
+            {review.unit.untagged.length > 0 && <><br /><small>{COPY.reviewUnitUntagged} <code>{review.unit.untagged.join(", ")}</code></small></>}
+          </>
+        )}</dd>
         <dt>{COPY.reviewTestedLabel}</dt>
         <dd data-preview-tested={review.preview.qualified ? "yes" : "no"}>{review.preview.qualified
           ? <>{COPY.reviewTestedYes} <code>{review.preview.qualifiedAt}</code></>

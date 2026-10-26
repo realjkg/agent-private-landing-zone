@@ -5,7 +5,7 @@ import { COMMIT, ENVIRONMENTS, HASH, INVISIBLE } from "./constants.js";
 import { sha256 } from "../util/sha256.js";
 import { codeOf } from "./engine.js";
 import type { EnginePlanInput, EngineSpec } from "./engine-spec.js";
-import { PILOT_CHANNELS, type ApplyEnvironment, type ApplyRefusalCode, type PilotChannel, type PreviewProvenance, type SealedPlan } from "./types.js";
+import { PILOT_CHANNELS, type ApplyEnvironment, type ApplyRefusalCode, type PilotChannel, type PreviewProvenance, type SealedPlan, type SealedUnit } from "./types.js";
 
 /**
  * Sealing (docs/act-pilot-plan.md, authority items 2 and 5). The engine spec
@@ -18,7 +18,7 @@ import { PILOT_CHANNELS, type ApplyEnvironment, type ApplyRefusalCode, type Pilo
 const SEAL_PURPOSE = "sealed-plan";
 
 type ArtifactFields = Pick<SealedPlan,
-  "planSha256" | "manifestHash" | "releaseIdentity" | "environment" | "target" | "channel" | "engineVersion" | "policyVersion" | "contractSha256" | "sourceCommit" | "changes" | "provenance">;
+  "planSha256" | "manifestHash" | "releaseIdentity" | "environment" | "target" | "channel" | "engineVersion" | "policyVersion" | "contractSha256" | "sourceCommit" | "changes" | "provenance" | "unit">;
 
 /**
  * The artifact hash an approver signs. The one definition; sealing and loading
@@ -31,7 +31,7 @@ export function computeArtifactSha256(fields: ArtifactFields): string {
     planSha256: fields.planSha256, manifestHash: fields.manifestHash, releaseIdentity: fields.releaseIdentity,
     environment: fields.environment, target: { account, backend, workspace }, channel: fields.channel,
     engineVersion: fields.engineVersion, policyVersion: fields.policyVersion, contractSha256: fields.contractSha256,
-    sourceCommit: fields.sourceCommit, changesSha256: sha256(canonicalJson(fields.changes)), provenance: fields.provenance as never,
+    sourceCommit: fields.sourceCommit, changesSha256: sha256(canonicalJson(fields.changes)), provenance: fields.provenance as never, unit: fields.unit as never,
   }));
 }
 
@@ -76,11 +76,11 @@ const HAS_INVISIBLE = new RegExp(INVISIBLE.source);
 
 function runSeal(input: SealInput): { sealed: SealedPlan; planBytes: Buffer } {
   const { manifest } = input;
-  const { artifact: planBytes, changes } = input.engine.plan(input);
+  const { artifact: planBytes, changes, unit } = input.engine.plan(input);
   const fields: ArtifactFields = {
     planSha256: sha256(planBytes), manifestHash: manifest.manifestHash, releaseIdentity: releaseIdentityOf(manifest),
     environment: input.environment, target: { ...input.target }, channel: input.channel ?? "CLI", engineVersion: input.engineVersion,
-    policyVersion: input.policyVersion, contractSha256: input.contractSha256, sourceCommit: input.sourceCommit, changes, provenance: input.provenance,
+    policyVersion: input.policyVersion, contractSha256: input.contractSha256, sourceCommit: input.sourceCommit, changes, provenance: input.provenance, unit,
   };
   const sealed: SealedPlan = {
     schemaVersion: 1, artifactSha256: computeArtifactSha256(fields), ...fields,
@@ -127,8 +127,19 @@ export const reviewBundleOf = (s: SealedPlan): ReviewBundle => ({
   artifactSha256: s.artifactSha256, planSha256: s.planSha256, manifestHash: s.manifestHash, releaseIdentity: s.releaseIdentity,
   environment: s.environment, target: { ...s.target }, channel: s.channel, engineVersion: s.engineVersion, policyVersion: s.policyVersion,
   contractSha256: s.contractSha256, sourceCommit: s.sourceCommit, createdAt: s.createdAt, changes: s.changes, changesSha256: sha256(canonicalJson(s.changes)),
-  provenance: s.provenance,
+  provenance: s.provenance, unit: s.unit,
 });
+
+const TAG_SAFE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+/** The sealed unit with exactly its fields, or null for an engine without a tag reader. */
+function wellFormedUnit(value: unknown): value is SealedUnit | null {
+  if (value === null) return true;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const u = value as Record<string, unknown>;
+  return Object.keys(u).sort().join() === "tags,unitId,untagged" && typeof u.unitId === "string" && TAG_SAFE.test(u.unitId) &&
+    !!u.tags && typeof u.tags === "object" && !Array.isArray(u.tags) && Object.entries(u.tags as Record<string, unknown>).every(([k, v]) => TAG_SAFE.test(k) && typeof v === "string" && TAG_SAFE.test(v)) &&
+    Array.isArray(u.untagged) && u.untagged.every((a) => text(a) && !HAS_INVISIBLE.test(a as string));
+}
 
 const BUNDLE_KEYS = Object.keys(reviewBundleOf({ target: {}, changes: [] } as never)).sort();
 
@@ -193,7 +204,7 @@ export function verifySealedPlan(value: unknown): LoadedSeal {
     !ENVIRONMENTS.includes(s.environment) || !PILOT_CHANNELS.includes(s.channel) || !s.target || typeof s.target !== "object" ||
     !Array.isArray(s.changes) || !s.changes.every(wellFormedChange) ||
     ![s.artifactSha256, s.planSha256, s.manifestHash, s.releaseIdentity, s.contractSha256].every((h) => typeof h === "string" && HASH.test(h)) ||
-    typeof s.sourceCommit !== "string" || !COMMIT.test(s.sourceCommit) || !wellFormedProvenance(s.provenance)) {
+    typeof s.sourceCommit !== "string" || !COMMIT.test(s.sourceCommit) || !wellFormedProvenance(s.provenance) || !wellFormedUnit(s.unit)) {
     return invalid("The sealed plan record is malformed.");
   }
   let recomputed: string;
@@ -210,7 +221,7 @@ export function verifyReviewBundle(value: unknown): { ok: true; bundle: ReviewBu
     !["account", "backend", "workspace"].every((key) => text((t as Record<string, unknown>)[key])) ||
     !Array.isArray(b.changes) || !b.changes.every(wellFormedChange) || !text(b.engineVersion) || !text(b.policyVersion) || !text(b.createdAt) ||
     ![b.artifactSha256, b.planSha256, b.manifestHash, b.releaseIdentity, b.contractSha256, b.changesSha256].every((h) => typeof h === "string" && HASH.test(h)) ||
-    typeof b.sourceCommit !== "string" || !COMMIT.test(b.sourceCommit) || !wellFormedProvenance(b.provenance)) {
+    typeof b.sourceCommit !== "string" || !COMMIT.test(b.sourceCommit) || !wellFormedProvenance(b.provenance) || !wellFormedUnit(b.unit)) {
     return invalid("The review bundle is malformed.");
   }
   const bundle = b as ReviewBundle;

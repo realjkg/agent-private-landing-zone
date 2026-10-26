@@ -42,6 +42,8 @@ export type BlueprintRecord = {
   /** Where the identifiers came from: the engine's own state, read with the read-only state identity. */
   source: "TERRAFORM_STATE_PULL";
   blueprint: Blueprint;
+  /** The deletion unit the sealed plan stamped on what it created (src/apply/unit.ts), or null when the engine seals none. The observation sweeps by it. */
+  unitId: string | null;
   readAt: string;
 };
 
@@ -142,7 +144,7 @@ function entryOk(value: unknown): value is BlueprintEntry {
 export function blueprintRecordProblems(value: unknown): string[] {
   if (!isRecord(value)) return ["blueprint record: expected an object"];
   const problems: string[] = [];
-  const keys = ["schemaVersion", "kind", "artifactSha256", "applyEvidenceSha256", "environment", "target", "sourceCommit", "contractSha256", "outcome", "source", "blueprint", "readAt"];
+  const keys = ["schemaVersion", "kind", "artifactSha256", "applyEvidenceSha256", "environment", "target", "sourceCommit", "contractSha256", "outcome", "source", "blueprint", "unitId", "readAt"];
   for (const key of Object.keys(value)) if (!keys.includes(key)) problems.push("blueprint record." + key + (RAW_KEY.test(key) ? ": raw state or output field" : ": not part of the record"));
   for (const key of keys) if (!Object.hasOwn(value, key)) problems.push("blueprint record." + key + ": missing");
   if (problems.length > 0) return problems;
@@ -152,6 +154,7 @@ export function blueprintRecordProblems(value: unknown): string[] {
   if (typeof value.sourceCommit !== "string" || !COMMIT.test(value.sourceCommit)) problems.push("blueprint record: sourceCommit is not a commit id");
   if (!["SUCCEEDED", "FAILED_NO_CHANGE", "PARTIAL_REQUIRES_REVIEW", "KILLED"].includes(value.outcome as string)) problems.push("blueprint record: outcome is unknown");
   if (value.source !== "TERRAFORM_STATE_PULL" || !isoText(value.readAt)) problems.push("blueprint record: source or readAt is malformed");
+  if (value.unitId !== null && !(typeof value.unitId === "string" && /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(value.unitId))) problems.push("blueprint record: unitId is not a tag-safe unit id or null");
   const blueprint = value.blueprint;
   if (!isRecord(blueprint) || Object.keys(blueprint).sort().join() !== "entries,missing" || !Array.isArray(blueprint.entries) || !blueprint.entries.every(entryOk) ||
     !Array.isArray(blueprint.missing) || !blueprint.missing.every((x) => typeof x === "string")) {
