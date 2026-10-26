@@ -42,7 +42,8 @@ const ENGINE_NAMES: Readonly<Record<string, string>> = { TERRAFORM: "TERRAFORM",
 /** What the plan touched, counted by action, and how many resources existed before it (anything but a create). */
 export function countChanges(changes: readonly PlanChange[]): PreviewGateEvidence["changes"] {
   const resources = changes.filter((change) => change.type !== "output");
-  const byAction: Record<string, number> = {};
+  // Counted on a null-prototype object, so an action named like an inherited property ("constructor", "__proto__") is a count of its own, never a lookup up the chain (#268 review N2).
+  const byAction: Record<string, number> = Object.create(null) as Record<string, number>;
   for (const change of resources) byAction[change.action] = (byAction[change.action] ?? 0) + 1;
   return { total: resources.length, create: byAction.CREATE ?? 0, preExistingTouched: resources.filter((change) => change.action !== "CREATE").length, byAction };
 }
