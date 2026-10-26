@@ -839,6 +839,10 @@
               {
                 "file": "test/apply-cleanup-azure.test.ts",
                 "title": "Azure resource-group containment: a group is deleted only when everything it holds is this run's and goes with it; a foreign member, a pre-existing group or an incomplete listing keeps it, and a member added after the proposal stops the cleanup before anything is consumed"
+              },
+              {
+                "file": "test/apply-cleanup-azure.test.ts",
+                "title": "Azure containers by identifier: a resource group created through any type (azapi_resource) is listed and kept when it holds another's resource, re-listed before the destroy, and a subscription or management group is never proposed, even through a forged proposal"
               }
             ],
             "denied": [
@@ -853,6 +857,10 @@
               {
                 "file": "test/apply-cleanup-azure.test.ts",
                 "title": "Azure cleanup denied: a forged, re-hashed proposal naming the backend account, its container, the group that holds it, a grant, a pre-existing, imported, shared or unrelated resource, or a dropped entry never executes, an apply approval never authorizes a cleanup, and a state id that cannot be read exactly as written makes no proposal"
+              },
+              {
+                "file": "test/apply-cleanup-azure.test.ts",
+                "title": "Azure containers by identifier: a resource group created through any type (azapi_resource) is listed and kept when it holds another's resource, re-listed before the destroy, and a subscription or management group is never proposed, even through a forged proposal"
               },
               {
                 "file": "test/apply-cleanup.test.ts",

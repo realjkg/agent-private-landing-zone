@@ -1,5 +1,5 @@
 import { createDiscoveryAwsCli, verifierBinarySha256 } from "../observe/aws-cli.js";
-import { createDiscoveryArmReader, type ArmHttp } from "../observe/azure-rest.js";
+import { createDiscoveryArmReader, type ArmHttp, isArmGroupId } from "../observe/azure-rest.js";
 import { cloudControlReader, observeBlueprint, type AwsCli, type ObserveReport, type ResourceReader } from "../observe/verify.js";
 import { canonicalJson } from "../teardown/manifest.js";
 import { sha256 } from "../util/sha256.js";
@@ -16,7 +16,11 @@ import {
 } from "./run-records.js";
 
 /** Resource types that hold other resources, which a cleanup must never delete on run ownership alone. */
-export const isContainerType = (type: string): boolean => type === "azurerm_resource_group";
+/**
+ * A container: an entry whose recorded ARM id is a resource group, whatever Terraform type created it (`azurerm_resource_group`,
+ * `azapi_resource`, a module's own type), or the azurerm type itself. Classified by the id the state holds, never by the type name alone.
+ */
+export const isContainerEntry = (entry: { type: string; id: string | null }): boolean => entry.type === "azurerm_resource_group" || (entry.id !== null && isArmGroupId(entry.id));
 import type { ApplyEvidence, ApplyRefusalCode } from "./types.js";
 
 /**
@@ -89,7 +93,7 @@ export async function observeRun(artifactSha256: string, deps: ObserveDeps): Pro
   try {
     report = await observeBlueprint(blueprint.blueprint, { unitId: blueprint.unitId, reader: opened.reader });
     // What each present container (an Azure resource group) holds, so the proposal never deletes a group on run ownership alone.
-    for (const entry of blueprint.blueprint.entries.filter((e) => isContainerType(e.type) && e.id !== null)) {
+    for (const entry of blueprint.blueprint.entries.filter((e) => isContainerEntry(e) && e.id !== null)) {
       const check = report.checks.find((c) => c.address === entry.address);
       if (check?.existence !== "PRESENT" || !opened.reader.listGroup) continue;
       const listed = await opened.reader.listGroup(entry.id!);

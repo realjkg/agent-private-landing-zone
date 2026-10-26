@@ -12,7 +12,7 @@ import { blueprintFromTerraformStatePull } from "../observe/blueprint.js";
 import { consumeApprovals, verifyApprovalSet } from "./approval.js";
 import { buildCleanupProposal, computeProposalSha256, verifyCleanupProposal, type CleanupProposal } from "./cleanup-proposal.js";
 import { pilotUnitOf } from "./unit.js";
-import { isContainerType, openReader } from "./observe.js";
+import { isContainerEntry, openReader } from "./observe.js";
 import type { ArmHttp } from "../observe/azure-rest.js";
 import {
   DEFAULT_EVIDENCE_DIR, contractRefusal, isKillSwitchActive, loadPilotContract, loadQualificationRecords, pilotContractSha256, repoPaths, requireNotApplied, requireNotExecuted,
@@ -560,7 +560,7 @@ const CLEANUP_PURPOSE = "cleanup-recovery";
  * OBSERVATION_INCONCLUSIVE. Nothing is consumed either way.
  */
 async function requireGroupsStillOwn(proposal: CleanupProposal, deps: ApplyDeps): Promise<Refusal | undefined> {
-  const groups = proposal.deletes.filter((d) => isContainerType(d.type) && d.identifier !== null);
+  const groups = proposal.deletes.filter((d) => isContainerEntry({ type: d.type, id: d.identifier }) && d.identifier !== null);
   if (groups.length === 0) return undefined;
   const opened = openReader({ contractPath: deps.contractPath, contractPinPath: deps.contractPinPath, evidenceDir: deps.evidenceDir ?? DEFAULT_EVIDENCE_DIR, env: deps.env, toolDirs: deps.toolDirs, scratchParent: deps.scratchParent, arm: deps.arm }, proposal.environment);
   if (!opened.ok) return opened;
@@ -738,6 +738,9 @@ export async function runCleanup(request: CleanupRequest, deps: ApplyDeps): Prom
     await yieldToSignals();
     const late = interruptedBeforeEngine();
     if (late) return late;
+    // The engine's init and destroy plan took time: list each proposed group once more, right before anything is consumed.
+    const stillOwn = await requireGroupsStillOwn(proposal, deps);
+    if (stillOwn) return stillOwn;
     const readmitted = admit(deps, request);
     if (!readmitted.ok) return readmitted;
     const confirmed = verifyApprovalSet({

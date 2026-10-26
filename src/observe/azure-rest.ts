@@ -45,6 +45,14 @@ export const armPathSafe = (id: string): boolean =>
   id.startsWith("/") && !/[\\%\s\u0000-\u001f\u007f]/.test(id) && id.slice(1).split("/").every((segment) => segment !== "" && segment !== "." && segment !== "..");
 /** An ARM resource id the reader can address: well-formed and sent exactly as written. */
 export const isArmResourceId = (id: string): boolean => RESOURCE_ID.test(id) && armPathSafe(id);
+/** A resource group's ARM id (nothing after the group), whatever Terraform type recorded it: the one container this reader can list. */
+export const isArmGroupId = (id: string): boolean => GROUP_ID.test(id) && armPathSafe(id);
+/**
+ * A scope that holds other people's deployments and that no listing here accounts for: a subscription (by id or alias) or a
+ * management group. Nothing with such an id is ever proposed for deletion.
+ */
+export const isArmScopeId = (id: string): boolean =>
+  /^\/subscriptions\/[0-9a-f-]{36}\/?$/i.test(id) || /^\/providers\/Microsoft\.Subscription\/aliases\/[^/?#]+\/?$/i.test(id) || /^\/providers\/Microsoft\.Management\/managementGroups\/[^/?#]+\/?$/i.test(id);
 
 export type ArmErrorClass = "ACCESS_DENIED" | "THROTTLED" | "CREDENTIALS" | "HTTP_ERROR" | "HOST_REFUSED" | "UNEXPECTED_RESPONSE" | "READER_CLOSED";
 

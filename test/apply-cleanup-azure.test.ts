@@ -582,3 +582,61 @@ test("Azure cleanup interrupted: an apply that did not succeed makes no proposal
   assert.match(leftovers.record.nextAction, /PARTIAL_REQUIRES_REVIEW.*by hand/);
   noTokenIn(w, leftovers.record, partial);
 });
+
+test("Azure containers by identifier: a resource group created through any type (azapi_resource) is listed and kept when it holds another's resource, re-listed before the destroy, and a subscription or management group is never proposed, even through a forged proposal", async () => {
+  const AZAPI_RG = "/subscriptions/" + SUB + "/resourceGroups/rg-azapi";
+  const AZAPI_OWNED = AZAPI_RG + "/providers/Microsoft.Storage/storageAccounts/azapiowned";
+  const FOREIGN = AZAPI_RG + "/providers/Microsoft.Storage/storageAccounts/foreignone";
+  const ALIAS = "/providers/Microsoft.Subscription/aliases/vended-sub";
+  const MG = "/providers/Microsoft.Management/managementGroups/mg-platform";
+  const creates = [...withoutSecret(CREATES), change("azapi_resource.rg", "azapi_resource", ["create"]), change("azurerm_storage_account.azapi", "azurerm_storage_account", ["create"]),
+    change("azurerm_subscription.vended", "azurerm_subscription", ["create"]), change("azurerm_management_group.platform", "azurerm_management_group", ["create"])];
+  const state = [...withoutSecret(STATE as { type: string }[]), azureStateResource("azapi_resource", "rg", AZAPI_RG), azureStateResource("azurerm_storage_account", "azapi", AZAPI_OWNED),
+    azureStateResource("azurerm_subscription", "vended", ALIAS), azureStateResource("azurerm_management_group", "platform", MG)];
+  const existing = [...EXISTING, AZAPI_RG, AZAPI_OWNED, FOREIGN];
+  // The azapi group holds a resource of someone else: the group is kept, its run-owned member is still proposed, the scopes are never proposed.
+  const w = world({ existing, tagged: [...TAGGED, AZAPI_RG, AZAPI_OWNED], groupMembers: { ...GROUPS, [AZAPI_RG]: [AZAPI_OWNED, FOREIGN] } });
+  behave({ showResources: creates, stateResources: state });
+  const run = await proposed(w);
+  assert.deepEqual(run.observation.record.groups.find((g) => g.address === "azapi_resource.rg"), { address: "azapi_resource.rg", identifier: AZAPI_RG, members: [AZAPI_OWNED, FOREIGN].sort(), complete: true }, "a group is recognized by its id, not its type");
+  assert.deepEqual(run.proposal.deletes.map((d) => d.address), ["azurerm_log_analytics_workspace.pilot", "azurerm_resource_group.pilot", "azurerm_storage_account.azapi"]);
+  const kept = new Map(run.proposal.excluded.map((x) => [x.address, x]));
+  assert.equal(kept.get("azapi_resource.rg")?.ownership, "CONTAINS_OTHERS");
+  assert.match(kept.get("azapi_resource.rg")!.reason, /holds 1 resource/);
+  for (const address of ["azurerm_subscription.vended", "azurerm_management_group.platform"]) {
+    assert.equal(kept.get(address)?.ownership, "CONTAINS_OTHERS", address);
+    assert.match(kept.get(address)!.reason, /subscription or management group/);
+  }
+  assert.ok(!JSON.stringify(run.proposal).includes("foreignone"));
+  const done = await cleanup(w, run);
+  assert.ok(done.ok, JSON.stringify(done));
+  assert.deepEqual(done.evidence.deletes, run.proposal.deletes.map((d) => d.address));
+
+  // The azapi group holds only what the run created: proposed; then a member appears before the cleanup, and it stops before anything is reserved.
+  const w2 = world({ existing, tagged: [...TAGGED, AZAPI_RG, AZAPI_OWNED], groupMembers: { ...GROUPS, [AZAPI_RG]: [AZAPI_OWNED] } });
+  behave({ showResources: creates, stateResources: state });
+  const honest = await proposed(w2);
+  assert.deepEqual(honest.proposal.deletes.map((d) => d.address), ["azapi_resource.rg", "azurerm_log_analytics_workspace.pilot", "azurerm_resource_group.pilot", "azurerm_storage_account.azapi"]);
+  const approval = cleanupApproval(honest.proposal, "alice");
+  cloud(w2, { existing, tagged: [...TAGGED, AZAPI_RG, AZAPI_OWNED], groupMembers: { ...GROUPS, [AZAPI_RG]: [AZAPI_OWNED, FOREIGN] } });
+  const grown = await cleanup(w2, honest, [approval]);
+  refused(grown, "PROPOSAL_SCOPE_MISMATCH");
+  assert.match((grown as { message: string }).message, /azapi_resource\.rg now holds 1 resource/);
+  assert.equal(destroyPlans().length, 0);
+  assert.deepEqual(readdirSync(w2.dirs.evidence).filter((n) => n.endsWith(CLEANUP_SUFFIX)), []);
+  // A forged proposal that adds the subscription alias or the management group never executes.
+  const row = (address: string, type: string, identifier: string) => ({ address, type, identifier, ownership: "RUN_CREATED" as const, observed: "UNVERIFIABLE" as const });
+  for (const [address, type, id] of [["azurerm_subscription.vended", "azurerm_subscription", ALIAS], ["azurerm_management_group.platform", "azurerm_management_group", MG]] as const) {
+    const fields = { ...honest.proposal, deletes: [...honest.proposal.deletes, row(address, type, id)].sort((a, b) => (a.address < b.address ? -1 : 1)), excluded: honest.proposal.excluded.filter((x) => x.address !== address) };
+    const forged = { ...fields, proposalSha256: computeProposalSha256(fields) };
+    assert.ok(verifyCleanupProposal(forged).ok);
+    refused(await cleanup(w2, honest, [cleanupApproval(forged, "alice")], forged), "PROPOSAL_INVALID");
+  }
+  assert.equal(destroyPlans().length, 0);
+  // Back to what was approved: the same approval runs once, and the group was listed again after the destroy plan, right before the approvals were consumed.
+  cloud(w2, { existing, tagged: [...TAGGED, AZAPI_RG, AZAPI_OWNED], groupMembers: { ...GROUPS, [AZAPI_RG]: [AZAPI_OWNED] } });
+  const done2 = await cleanup(w2, honest, [approval]);
+  assert.ok(done2.ok, JSON.stringify(done2));
+  assert.equal(w2.arm.calls.filter((c) => c.url.startsWith("https://management.azure.com" + AZAPI_RG + "/resources?")).length, 2, "listed once before the destroy plan and once right before the approvals were consumed");
+  assert.equal(destroyPlans().length, 1);
+});

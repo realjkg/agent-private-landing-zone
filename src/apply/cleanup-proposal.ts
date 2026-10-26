@@ -9,8 +9,8 @@ import { PILOT_CHANNELS, type ApplyEnvironment, type ApplyEvidence, type ApplyRe
 import { isResourceAddress } from "./terraform.js";
 import type { AwsTarget } from "./providers/aws.js";
 import type { AzureTarget } from "./providers/azure.js";
-import { isContainerType } from "./observe.js";
-import { armPathSafe } from "../observe/azure-rest.js";
+import { isContainerEntry } from "./observe.js";
+import { armPathSafe, isArmScopeId } from "../observe/azure-rest.js";
 
 /**
  * The cleanup proposal (docs/act-pilot-plan.md, "Cleanup of pilot-created resources"): the reviewable, hash-identified list
@@ -113,6 +113,9 @@ const MATERIAL_RISKS: Readonly<Record<string, string>> = {
  */
 const AZURE_IDENTITY_TYPES = new Set(["azurerm_user_assigned_identity", "azurerm_federated_identity_credential", "azurerm_role_assignment", "azurerm_role_definition"]);
 const isAzureIdentityType = (type: string): boolean => type.startsWith("azuread_") || AZURE_IDENTITY_TYPES.has(type);
+/** Scopes that hold other people's deployments: never proposed, whatever created them, because nothing here can list what deleting them would take. */
+const AZURE_SCOPE_TYPES = new Set(["azurerm_subscription", "azurerm_subscription_alias", "azurerm_management_group", "azurerm_management_group_subscription_association"]);
+const isAzureScope = (entry: { type: string; id: string | null }): boolean => AZURE_SCOPE_TYPES.has(entry.type) || (entry.id !== null && isArmScopeId(entry.id));
 
 /** A storage data-plane URL (`https://<account>.blob.core.windows.net/<container>`), which the azurerm provider uses as the id of containers and blobs. */
 const STORAGE_DATA_PLANE = /^https:\/\/([a-z0-9]{3,24})\.(?:blob|dfs|file|queue|table|web)\.core\.windows\.net(?:\/|$)/;
@@ -141,8 +144,9 @@ function azureBackendGroups(entries: readonly { type: string; id: string | null 
 function azureProtectionOf(entry: { type: string; id: string | null }, contract: PilotContract, backendGroups: Set<string>): ExcludedResource["ownership"] | undefined {
   const accounts = azureBackendAccounts(contract);
   if (/^azurerm_storage_/.test(entry.type) && namesBackendAccount(entry.id, accounts)) return "PROTECTED_BACKEND";
-  if (isContainerType(entry.type) && entry.id !== null && backendGroups.has(entry.id.toLowerCase())) return "PROTECTED_BACKEND";
+  if (isContainerEntry(entry) && entry.id !== null && backendGroups.has(entry.id.toLowerCase())) return "PROTECTED_BACKEND";
   if (isAzureIdentityType(entry.type)) return "PROTECTED_IDENTITY";
+  if (isAzureScope(entry)) return "CONTAINS_OTHERS";
   return undefined;
 }
 
@@ -225,7 +229,9 @@ export function buildCleanupProposal(input: ProposalInput): { ok: true; proposal
     }
     const protection = protectionOf(entry, contract, input.env, backendGroups);
     if (protection) {
-      excluded.push({ ...base, ownership: protection, reason: protection === "PROTECTED_BACKEND" ? "the state backend the pilot itself runs on is never deleted by a cleanup" : "a pilot identity or trust is never deleted by a cleanup" });
+      excluded.push({ ...base, ownership: protection, reason: protection === "PROTECTED_BACKEND" ? "the state backend the pilot itself runs on is never deleted by a cleanup"
+        : protection === "CONTAINS_OTHERS" ? "a subscription or management group holds deployments no listing here accounts for; it is never deleted by a cleanup"
+        : "a pilot identity or trust is never deleted by a cleanup" });
       continue;
     }
     const change = byAddress.get(entry.address);
@@ -249,7 +255,7 @@ export function buildCleanupProposal(input: ProposalInput): { ok: true; proposal
   // A container (an Azure resource group) is never deleted on run ownership alone: the observation listed its members, and
   // every one must be a resource of this run that goes with it. Anything else inside, or an incomplete listing, keeps it.
   const deletedIdentifiers = new Set(deletes.map((d) => d.identifier?.toLowerCase()).filter((x): x is string => x !== undefined));
-  for (const group of deletes.filter((d) => isContainerType(d.type))) {
+  for (const group of deletes.filter((d) => isContainerEntry({ type: d.type, id: d.identifier }))) {
     const listed = observation.groups.find((g) => g.address === group.address && g.identifier.toLowerCase() === (group.identifier ?? "").toLowerCase());
     const others = listed ? listed.members.filter((m) => m.toLowerCase() !== (group.identifier ?? "").toLowerCase() && !deletedIdentifiers.has(m.toLowerCase())) : [];
     const reason = !listed || !listed.complete ? "its contents could not be listed completely, so what deleting it would take along is unknown"
