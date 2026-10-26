@@ -9,7 +9,10 @@ import { runnableTasks, type WorkGraph, type WorkNode, type WorkOwner } from "./
  * A blocked task stops only the tasks that depend on it; everything else keeps moving.
  */
 
-/** What GitHub and the coordinator show for one PR at the moment of the tick. */
+/**
+ * What GitHub and the coordinator show for one PR at the moment of the tick. The runner supplies facts for every PR the
+ * graph lists, closed and merged ones included: a listed PR without facts holds its task in WAIT.
+ */
 export type PrFacts = {
   pr: number;
   head: string;
@@ -80,7 +83,7 @@ export function mergeBlockers(facts: PrFacts): string[] {
   if (!facts.checksGreen || facts.checksFailed) reasons.push("required checks not green on " + facts.head.slice(0, 7));
   if (!facts.qaPassed) reasons.push("affected QA not passed on " + facts.head.slice(0, 7));
   // 4. Findings resolved, including any raised after the verdict.
-  if (facts.verdict?.result === "BLOCKING") reasons.push("the review found blocking issues");
+  if (facts.verdict && facts.verdict.result !== "NO_BLOCKING_ISSUES") reasons.push("the review did not report NO_BLOCKING_ISSUES");
   if (facts.laterBlocking) reasons.push("a later comment raises a blocking finding");
   // 5. Compatible with main.
   if (!facts.compatibleWithMain) reasons.push("not compatible with current main");

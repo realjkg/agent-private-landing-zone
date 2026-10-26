@@ -196,6 +196,7 @@ test("scheduler: a head merges only when all nine mandate conditions hold, one m
     ["blocking review", { verdict: { result: "BLOCKING", head: sha("a"), commentId: 2 } }], ["later finding", { laterBlocking: true }],
     ["behind main", { compatibleWithMain: false }], ["stale evidence", { evidenceHead: sha("c") }], ["no evidence", { evidenceHead: undefined }],
     ["policy change", { policyChange: true }], ["on hold", { onHold: true }], ["protections", { protectionsPermit: false }],
+    ["unrecognized verdict", { verdict: { result: "APPROVED" as "BLOCKING", head: sha("a"), commentId: 2 } }],
     ["not a commit", { head: "", evidenceHead: "", verdict: { result: "NO_BLOCKING_ISSUES", head: "", commentId: 1 } }],
   ];
   for (const [name, change] of failing) assert.notDeepEqual(mergeBlockers(facts(1, change)), [], name);
