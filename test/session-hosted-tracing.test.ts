@@ -70,21 +70,32 @@ test("the harness sees tracing egress: a bare graph with tracing on reaches the 
   }
 });
 
-test("a tracing variable set after the graph was created is removed before the run", async () => {
-  sink.paths.length = 0;
-  const { graph } = createSessionGraph(":memory:");
-  const restore = withEnv(TRACING(sink.endpoint));
-  try {
-    await graph.invoke({ request: "Review this environment and assess operational risk.", provider: "AWS",
-      engine: "TERRAFORM", mock: "brownfield", approveBuild: false, fixture: true }, { configurable: { thread_id: "late-env" } });
-    assert.equal(process.env.LANGSMITH_TRACING, undefined, "removed at the run");
-    await settle(false);
-    assert.deepEqual(sink.paths, [], "no request reached the tracing sink");
-  } finally {
-    restore();
-    disableHostedTracing();
-  }
-});
+const REQUEST = { request: "Review this environment and assess operational risk.", provider: "AWS" as const,
+  engine: "TERRAFORM" as const, mock: "brownfield" as const, approveBuild: false, fixture: true };
+
+// invoke runs through stream inside LangGraph, so each entry point is checked on its own. The sink is checked after
+// the wait, before the environment, so a leak is reported as egress and its late batch cannot spill into the next test.
+for (const [entry, run] of [
+  ["invoke", (graph: ReturnType<typeof createSessionGraph>["graph"], thread: string) => graph.invoke(REQUEST, { configurable: { thread_id: thread } })],
+  ["stream", async (graph: ReturnType<typeof createSessionGraph>["graph"], thread: string) => {
+    for await (const chunk of await graph.stream(REQUEST, { configurable: { thread_id: thread } })) void chunk;
+  }],
+] as const) {
+  test("a tracing variable set after the graph was created is removed before " + entry, async () => {
+    sink.paths.length = 0;
+    const { graph } = createSessionGraph(":memory:");
+    const restore = withEnv(TRACING(sink.endpoint));
+    try {
+      await run(graph, "late-env-" + entry);
+      await settle(false);
+      assert.deepEqual(sink.paths, [], "no request reached the tracing sink");
+      assert.equal(process.env.LANGSMITH_TRACING, undefined, "removed at the run");
+    } finally {
+      restore();
+      disableHostedTracing();
+    }
+  });
+}
 
 test("the session graph sends nothing to a tracing service even when the environment asks it to", async () => {
   sink.paths.length = 0;
