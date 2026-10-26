@@ -739,6 +739,13 @@ test("protectedDeletionIn classifies every planned change by its blueprint entry
     ["a deployment in another case", RG + "/providers/microsoft.resources/DEPLOYMENTS/d", "PROTECTED_DEPLOYMENT"],
     // Both pairs are protected; the resource's own kind (the last pair, a deployment) is judged first, and either way nothing is deleted.
     ["a deployment nested under a role-scoped path", RG + "/providers/Microsoft.Authorization/roleAssignments/x/providers/Microsoft.Resources/deployments/d", "PROTECTED_DEPLOYMENT"],
+    // Round 2 (review 6410149770, B3): `providers` as a group or resource name is a name, not the keyword; the pairs after it are still judged.
+    ["a role assignment in a group named providers", sub + "/resourceGroups/providers/providers/Microsoft.Authorization/roleAssignments/g", "PROTECTED_IDENTITY"],
+    ["a lock on a storage account named providers", RG + "/providers/Microsoft.Storage/storageAccounts/providers/providers/Microsoft.Authorization/locks/alz-lock", "PROTECTED_IDENTITY"],
+    ["a deployment in a group named providers", sub + "/resourceGroups/providers/providers/Microsoft.Resources/deployments/alz-deploy", "PROTECTED_DEPLOYMENT"],
+    ["a group named providers", sub + "/resourceGroups/providers", "RETAINED_GROUP"],
+    ["a role assignment on a storage account named providers in a group named providers, mixed case", "/SUBSCRIPTIONS/" + SUB + "/RESOURCEGROUPS/providers/PROVIDERS/Microsoft.Storage/storageAccounts/providers/Providers/microsoft.authorization/roleassignments/g", "PROTECTED_IDENTITY"],
+    ["an identity under a nested name of providers", RG + "/providers/Microsoft.Storage/storageAccounts/a/blobServices/providers/providers/Microsoft.ManagedIdentity/userAssignedIdentities/u", "PROTECTED_IDENTITY"],
   ];
   for (const [label, id, cls] of protectedIds) {
     const refusal = protectedDeletionIn(change("azapi_resource.x"), [entry("azapi_resource.x", "azapi_resource", id)], contract, env());
@@ -761,6 +768,125 @@ test("protectedDeletionIn classifies every planned change by its blueprint entry
   assert.equal(protectedDeletionIn(change("azurerm_log_analytics_workspace.pilot", "azurerm_log_analytics_workspace"), [entry("azurerm_log_analytics_workspace.pilot", "azurerm_log_analytics_workspace", LAW)], contract, env()), undefined);
   assert.equal(protectedDeletionIn(change("azurerm_storage_account.data", "azurerm_storage_account"), [entry("azurerm_storage_account.data", "azurerm_storage_account", RG + "/providers/Microsoft.Storage/storageAccounts/alzpilotdata")], contract, env()), undefined);
   assert.equal(protectedDeletionIn(change("azurerm_key_vault_secret.s", "azurerm_key_vault_secret"), [entry("azurerm_key_vault_secret.s", "azurerm_key_vault_secret", SECRET)], contract, env()), undefined, "a data-plane URL is not an ARM id and names no protected type");
+  // Positive controls: ordinary resources named `providers`, or inside a group named `providers`, are not protected.
+  for (const [label, id] of [
+    ["a storage account named providers", RG + "/providers/Microsoft.Storage/storageAccounts/providers"],
+    ["a storage account in a group named providers", sub + "/resourceGroups/providers/providers/Microsoft.Storage/storageAccounts/alzinproviders"],
+    ["a storage account named providers in a group named providers", sub + "/resourceGroups/providers/providers/Microsoft.Storage/storageAccounts/providers"],
+    ["a virtual machine", RG + "/providers/Microsoft.Compute/virtualMachines/alz-vm"],
+    ["a type named like a protected one inside a name", RG + "/providers/Microsoft.Storage/storageAccounts/Microsoft.Authorization"],
+    ["a deployment script (not a deployment)", RG + "/providers/Microsoft.Resources/deploymentScripts/s"],
+  ] as const) assert.equal(protectedDeletionIn(change("azapi_resource.x"), [entry("azapi_resource.x", "azapi_resource", id)], contract, env()), undefined, label);
+  // Fail closed: an ARM-shaped id the parser cannot consume in full is never ordinary; the destroy plan stops on it, naming the policy.
+  for (const [label, id] of [
+    ["an authorization type with no name", RG + "/providers/Microsoft.Authorization/roleAssignments"],
+    ["a site named providers with an odd tail", RG + "/providers/Microsoft.Web/sites/providers/Microsoft.Authorization/roleAssignments/g"],
+    ["a dotless namespace", RG + "/providers/providers/locks/l"],
+    ["a trailing slash", RG + "/providers/Microsoft.Authorization/roleAssignments/g/"],
+    ["an empty segment", RG + "/providers//roleAssignments/x"],
+    ["a stray segment after the subscription", sub + "/foo/Microsoft.Authorization/roleAssignments/g"],
+    ["a bad subscription", "/subscriptions/not-a-guid/providers/Microsoft.Authorization/roleAssignments/g"],
+    ["a path the URL parser would rewrite", RG + "/providers/Microsoft.Storage/storageAccounts/a\\..\\b"],
+    ["a directory-looking path under a slash", "/servicePrincipals/00000000-0000-4000-8000-000000000002"],
+    ["a slash alone", "/"], ["an empty identifier", ""], ["a blank identifier", " "],
+    ["a keyword with a zero-width character", RG + "/provid\u200bers/Microsoft.Authorization/roleAssignments/g"],
+    ["a subscription with a trailing slash", sub + "/"],
+  ] as const) {
+    const refusal = protectedDeletionIn(change("azapi_resource.x"), [entry("azapi_resource.x", "azapi_resource", id)], contract, env());
+    assert.ok(refusal !== undefined && refusal.includes("(OWNERSHIP_AMBIGUOUS)") && refusal.includes("does not parse as an ARM id"), label + ": " + refusal);
+  }
+});
+
+test("ARM ids are classified by position (review 6410149770, B3): an authorization object, a lock and a deployment under a group or a storage account named providers are kept, a destroy plan that would take one along stops, a forged proposal naming one never executes, an id the parser cannot consume in full makes no proposal and stops any destroy plan, and ordinary resources named providers are still proposed, verified and cleaned up", async () => {
+  const sub = "/subscriptions/" + SUB;
+  const RG_P = sub + "/resourceGroups/providers";
+  const ROLE_P = RG_P + "/providers/Microsoft.Authorization/roleAssignments/88888888-bbbb-4bbb-8bbb-888888888888";
+  const SA_P = RG + "/providers/Microsoft.Storage/storageAccounts/providers";
+  const LOCK_P = SA_P + "/providers/Microsoft.Authorization/locks/alz-lock";
+  const DEPLOY_P = RG_P + "/providers/Microsoft.Resources/deployments/alz-deploy";
+  const SA_IN_P = RG_P + "/providers/Microsoft.Storage/storageAccounts/alzinproviders";
+  const VM = RG + "/providers/Microsoft.Compute/virtualMachines/alz-vm";
+  const creates = [...withoutSecret(CREATES),
+    change("azurerm_resource_group.providers", "azurerm_resource_group", ["create"]), change("azapi_resource.role_in_providers", "azapi_resource", ["create"]),
+    change("azurerm_storage_account.providers", "azurerm_storage_account", ["create"]), change("azapi_resource.lock_on_providers", "azapi_resource", ["create"]),
+    change("azapi_resource.deploy_in_providers", "azapi_resource", ["create"]), change("azurerm_storage_account.in_providers", "azurerm_storage_account", ["create"]),
+    change("azurerm_linux_virtual_machine.pilot", "azurerm_linux_virtual_machine", ["create"])];
+  const state = [...withoutSecret(STATE as { type: string }[]),
+    azureStateResource("azurerm_resource_group", "providers", RG_P), azureStateResource("azapi_resource", "role_in_providers", ROLE_P),
+    azureStateResource("azurerm_storage_account", "providers", SA_P), azureStateResource("azapi_resource", "lock_on_providers", LOCK_P),
+    azureStateResource("azapi_resource", "deploy_in_providers", DEPLOY_P), azureStateResource("azurerm_storage_account", "in_providers", SA_IN_P),
+    azureStateResource("azurerm_linux_virtual_machine", "pilot", VM)];
+  const existing = [...EXISTING, RG_P, ROLE_P, SA_P, LOCK_P, DEPLOY_P, SA_IN_P, VM];
+  const w = world({ existing, tagged: [...TAGGED, RG_P, SA_P, SA_IN_P, VM] });
+  behave({ showResources: creates, stateResources: state });
+  const run = await proposed(w);
+  const deletes = new Map(run.proposal.deletes.map((d) => [d.address, d]));
+  assert.deepEqual([...deletes.keys()].sort(), ["azurerm_linux_virtual_machine.pilot", "azurerm_log_analytics_workspace.pilot", "azurerm_storage_account.in_providers", "azurerm_storage_account.providers"],
+    "ordinary resources, named providers or inside a group named providers, are proposed; nothing else is");
+  for (const d of deletes.values()) assert.equal(d.observed, "VERIFIED", d.address + ": the reader addressed it by its parsed type");
+  const kept = new Map(run.proposal.excluded.map((x) => [x.address, x]));
+  assert.equal(kept.get("azapi_resource.role_in_providers")?.ownership, "PROTECTED_IDENTITY");
+  assert.equal(kept.get("azapi_resource.lock_on_providers")?.ownership, "PROTECTED_IDENTITY");
+  assert.equal(kept.get("azapi_resource.deploy_in_providers")?.ownership, "PROTECTED_DEPLOYMENT");
+  assert.equal(kept.get("azurerm_resource_group.providers")?.ownership, "RETAINED_GROUP");
+  for (const address of ["azapi_resource.role_in_providers", "azapi_resource.lock_on_providers", "azapi_resource.deploy_in_providers", "azurerm_resource_group.providers"]) assert.equal(kept.get(address)?.retainedBy, "PILOT_OWNER", address);
+  const approval = cleanupApproval(run.proposal, "alice");
+  // A destroy plan that would take one along stops before any approval is consumed.
+  for (const [address, cls] of [["azapi_resource.role_in_providers", "PROTECTED_IDENTITY"], ["azapi_resource.lock_on_providers", "PROTECTED_IDENTITY"], ["azapi_resource.deploy_in_providers", "PROTECTED_DEPLOYMENT"], ["azurerm_resource_group.providers", "RETAINED_GROUP"]] as const) {
+    behave({ showResources: creates, stateResources: state, destroyExtra: [{ address, type: address.split(".")[0]!, change: { actions: ["delete"], before: {}, after: null } }] });
+    const taken = await cleanup(w, run, [approval]);
+    refused(taken, "PROPOSAL_SCOPE_MISMATCH");
+    assert.match((taken as { message: string }).message, new RegExp("would delete " + address.replace(".", "\\.") + ", .*never deletes, directly or as a dependent \\(" + cls + "\\)"), address);
+    assert.deepEqual([destroyPlans().length, applyCalls().length], [1, 0], address);
+  }
+  // A forged proposal naming one never executes.
+  for (const [address, type, id] of [["azapi_resource.role_in_providers", "azapi_resource", ROLE_P], ["azapi_resource.lock_on_providers", "azapi_resource", LOCK_P], ["azapi_resource.deploy_in_providers", "azapi_resource", DEPLOY_P], ["azurerm_resource_group.providers", "azurerm_resource_group", RG_P]] as const) {
+    const fields = { ...run.proposal, deletes: [...run.proposal.deletes, { address, type, identifier: id, ownership: "RUN_CREATED" as const, observed: "VERIFIED" as const }].sort((a, b) => (a.address < b.address ? -1 : 1)), excluded: run.proposal.excluded.filter((x) => x.address !== address) };
+    const forged = { ...fields, proposalSha256: computeProposalSha256(fields) };
+    assert.ok(verifyCleanupProposal(forged).ok, address);
+    behave({ showResources: creates, stateResources: state });
+    refused(await cleanup(w, run, [cleanupApproval(forged, "alice")], forged), "PROPOSAL_INVALID");
+    assert.equal(applyCalls().length, 0, address);
+  }
+  // Fail closed: a state id the parser cannot consume in full is observed as not addressable and makes no proposal; a plan that would delete it stops.
+  for (const [label, id] of [
+    ["an authorization type with no name", RG + "/providers/Microsoft.Authorization/roleAssignments"],
+    ["a site named providers with an odd tail", RG + "/providers/Microsoft.Web/sites/providers/Microsoft.Authorization/roleAssignments/g"],
+    ["a dotless namespace", RG + "/providers/providers/locks/l"],
+  ] as const) {
+    const w2 = world({ existing: EXISTING, tagged: TAGGED });
+    behave({ showResources: [...withoutSecret(CREATES), change("azapi_resource.odd", "azapi_resource", ["create"])], stateResources: [...withoutSecret(STATE as { type: string }[]), azureStateResource("azapi_resource", "odd", id)] });
+    const applied2 = await applied(w2);
+    const observation = await observeRun(applied2.s.sealed.artifactSha256, observeDeps(w2));
+    assert.ok(observation.ok, label);
+    assert.equal(observation.record.resources.find((r) => r.address === "azapi_resource.odd")?.reason, "NOT_AN_ARM_RESOURCE_ID", label);
+    const records = await loadRunRecords(applied2.s.sealed.artifactSha256, w2.dirs.evidence);
+    assert.ok(records.ok);
+    const built = build(w2, applied2.s, records);
+    refused(built, "OWNERSHIP_AMBIGUOUS");
+    assert.match((built as { message: string }).message, /azapi_resource\.odd that is not a resource id the cleanup can classify exactly/, label);
+    // The same address appearing as a dependent of an honest proposal's destroy plan (it was never in the observed blueprint, so it has
+    // no id to classify) stops the cleanup as an unlisted resource before any approval is consumed; the id itself is refused by
+    // protectedDeletionIn directly (the table test above), and a state that holds it never reaches a proposal at all.
+    behave({ showResources: creates, stateResources: [...state, azureStateResource("azapi_resource", "odd", id)], destroyExtra: [{ address: "azapi_resource.odd", type: "azapi_resource", change: { actions: ["delete"], before: {}, after: null } }] });
+    const taken = await cleanup(w, run, [cleanupApproval(run.proposal, "bob")]);
+    refused(taken, "PROPOSAL_SCOPE_MISMATCH");
+    assert.match((taken as { message: string }).message, /the proposal does not list \(azapi_resource\.odd\).*Nothing was destroyed and no approval was consumed/, label);
+    assert.equal(applyCalls().length, 0, label);
+  }
+  behave({ showResources: creates, stateResources: state });
+  const done = await cleanup(w, run, [approval]);
+  assert.ok(done.ok, JSON.stringify(done));
+  assert.deepEqual(destroyPlans()[0]!.args.filter((a) => a.startsWith("-target=")).sort(), [...deletes.keys()].sort().map((a) => "-target=" + a));
+  cloud(w, { existing: [...RETAINED, RG_P, ROLE_P, LOCK_P, DEPLOY_P], tagged: [RG, RG_P] });
+  const leftovers = await verifyProposalLeftovers(run.proposal, observeDeps(w, new Date(NOW.getTime() + 600_000)));
+  assert.ok(leftovers.ok);
+  assert.equal(leftovers.record.disposition, "COMPLETE", JSON.stringify(leftovers.record).slice(0, 3000));
+  const dispositions = new Map(leftovers.record.resources.map((r) => [r.address, r.disposition]));
+  for (const address of deletes.keys()) assert.equal(dispositions.get(address), "CONFIRMED_DELETED", address);
+  for (const address of ["azapi_resource.role_in_providers", "azapi_resource.lock_on_providers", "azapi_resource.deploy_in_providers", "azurerm_resource_group.providers"]) assert.equal(dispositions.get(address), "INTENTIONALLY_RETAINED", address);
+  noTokenIn(w, run.proposal, leftovers.record);
+
 });
 
 test("an observation record written with the earlier version's groups field is refused on read-back, so no cleanup is proposed from it until the run is observed again", async () => {

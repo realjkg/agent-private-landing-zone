@@ -7,6 +7,7 @@ import { providerSpec } from "../../src/apply/provider.js";
 import { writeQualificationEvidence } from "../../src/apply/contract.js";
 import { finalizeArtifact, releaseReservation, reserveArtifact } from "../../src/apply/ledger.js";
 import type { SealRequest } from "../../src/apply/driver.js";
+import { armTypeOf } from "../../src/observe/arm-id.js";
 import { APPLY_ADAPTER, CLEANUP_ADAPTER } from "../../src/apply/terraform.js";
 import type { ApplyEnvironment, ApplyEvidence, ApplyResult, SealedPlan, SignedApproval } from "../../src/apply/types.js";
 import { ADAPTER_VERSION, terraformArgvDigest } from "../../src/teardown/driver/adapters/terraform.js";
@@ -306,8 +307,8 @@ export const ARM_ACCESS_TOKEN_CANARY = "CANARY_ACCESS_TOKEN_4cc355";
 export function fakeArmHttp(behavior: ArmBehavior = {}): { http: (request: ArmCall) => Promise<{ status: number; body: string }>; calls: ArmCall[]; behave(next: ArmBehavior): void } {
   const calls: ArmCall[] = [];
   let b = behavior;
-  // The resource's own type is its last `/providers/` pair (an extension resource sits under a tracked one), as the real provider reports it.
-  const typeOf = (id: string): string => { const parts = id.split(/\/providers\//i); if (parts.length === 1) return "Microsoft.Resources/resourceGroups"; const seg = parts[parts.length - 1].split("/"); return seg[0] + "/" + seg.slice(1).filter((_, i) => i % 2 === 0).join("/"); };
+  // The resource's own type is its last `/providers/` pair (an extension resource sits under a tracked one), as the real provider reports it; parsed by position like the product, so a group or an account named `providers` is a name.
+  const typeOf = (id: string): string => { const type = armTypeOf(id); return type === undefined ? "Unknown/unknown" : type.namespace + "/" + type.typePath; };
   const http = async (request: ArmCall) => {
     calls.push({ ...request, headers: { ...request.headers } });
     const url = new URL(request.url);
@@ -325,7 +326,7 @@ export function fakeArmHttp(behavior: ArmBehavior = {}): { http: (request: ArmCa
     if (providers) {
       const namespace = providers[1];
       // The real provider lists every type it offers whether or not a resource exists; the fake knows a few common ones plus whatever the scenario names.
-      const KNOWN_TYPES = ["Microsoft.OperationalInsights/workspaces", "Microsoft.Storage/storageAccounts", "Microsoft.Storage/storageAccounts/blobServices/containers", "Microsoft.Authorization/roleAssignments", "Microsoft.KeyVault/vaults"];
+      const KNOWN_TYPES = ["Microsoft.OperationalInsights/workspaces", "Microsoft.Storage/storageAccounts", "Microsoft.Storage/storageAccounts/blobServices/containers", "Microsoft.Authorization/roleAssignments", "Microsoft.Authorization/locks", "Microsoft.Resources/deployments", "Microsoft.Compute/virtualMachines", "Microsoft.KeyVault/vaults"];
       const types = new Set([...KNOWN_TYPES, ...[...(b.existing ?? []), ...Object.keys(b.fail ?? {}), ...(b.tagged ?? [])].map(typeOf)].filter((t) => t.toLowerCase().startsWith(namespace.toLowerCase() + "/")).map((t) => t.slice(namespace.length + 1)));
       const resourceTypes = [...types].filter((t) => !(b.unknownTypes ?? []).includes(namespace + "/" + t))
         .map((t) => ({ resourceType: t, apiVersions: (b.previewOnlyTypes ?? []).includes(namespace + "/" + t) ? ["2024-01-01-preview"] : ["2024-01-01-preview", "2023-05-01"] }));
@@ -333,7 +334,7 @@ export function fakeArmHttp(behavior: ArmBehavior = {}): { http: (request: ArmCa
     }
     if (/^\/subscriptions\/[^/]+\/(resources|resourcegroups)$/i.test(path) && url.searchParams.has("$filter")) {
       const collection = path.toLowerCase().endsWith("/resources") ? "resources" : "groups";
-      const all = (b.tagged ?? []).filter((id) => (/\/providers\//.test(id) ? "resources" : "groups") === collection);
+      const all = (b.tagged ?? []).filter((id) => (typeOf(id) === "Microsoft.Resources/resourceGroups" ? "groups" : "resources") === collection);
       const pages = Math.max(1, b.pages ?? 1);
       const page = Number(url.searchParams.get("$skiptoken") ?? "0");
       const size = Math.ceil(all.length / pages) || 1;

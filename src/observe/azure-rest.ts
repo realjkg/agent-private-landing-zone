@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { identityVariables } from "../tools/identity.js";
 import { ALZ_TAG_KEYS } from "../teardown/unit.js";
 import type { BlueprintEntry } from "./blueprint.js";
+import { armTypeOf } from "./arm-id.js";
 import type { ResourceCheck, ResourceReader } from "./verify.js";
 
 /**
@@ -130,34 +131,11 @@ export function sameListing(first: string, next: string): boolean {
   return true;
 }
 
-export type ArmType = { namespace: string; typePath: string };
 /**
- * Every `/providers/<namespace>/<type path>` pair of an ARM id, in order: one for a tracked resource, two or more for an
- * extension resource (a role assignment on a workspace is `.../providers/Microsoft.OperationalInsights/workspaces/law/providers/Microsoft.Authorization/roleAssignments/<guid>`:
- * the scope's pair, then the resource's own). A resource group alone is `Microsoft.Resources/resourceGroups`. Undefined when any
- * pair is malformed (an odd number of segments, an empty one): such an id names no resource exactly. Compared case-insensitively by callers.
+ * ARM ids are parsed by position in ./arm-id.ts (a `providers` in a name slot is a name, not the keyword); the reader and the
+ * cleanup classifier share that one parser, so what one cannot parse the other never treats as ordinary.
  */
-export function armTypePairsOf(id: string): ArmType[] | undefined {
-  const parts = id.split(/\/providers\//i);
-  if (parts.length === 1) return /^\/subscriptions\/[0-9a-f-]{36}\/resourceGroups\/[^/?#]+$/i.test(id) ? [{ namespace: "Microsoft.Resources", typePath: "resourceGroups" }] : undefined;
-  const pairs: ArmType[] = [];
-  for (const part of parts.slice(1)) {
-    const segments = part.split("/").filter((s) => s !== "");
-    const [namespace, ...rest] = segments;
-    if (namespace === undefined || !/^[A-Za-z0-9.]+$/.test(namespace) || rest.length === 0 || rest.length % 2 !== 0) return undefined;
-    pairs.push({ namespace, typePath: rest.filter((_, index) => index % 2 === 0).join("/") });
-  }
-  return pairs;
-}
-/**
- * The resource type of an ARM id: its own, which is the last `/providers/` pair (`Microsoft.Authorization/roleAssignments` for a
- * role assignment at any scope, `Microsoft.Storage/storageAccounts/blobServices/containers` for a nested tracked type); the
- * resource group when the id ends at the group. Undefined for an id that is not an ARM resource id.
- */
-export function armTypeOf(id: string): ArmType | undefined {
-  const pairs = armTypePairsOf(id);
-  return pairs === undefined ? undefined : pairs[pairs.length - 1];
-}
+export { armTypeOf, armTypePairsOf, parseArmId, type ArmType, type ParsedArmId } from "./arm-id.js";
 
 /** The Azure reader bound to DISCOVERY. `close` drops the tokens; call it when the observation is done. */
 export function createDiscoveryArmReader(options: DiscoveryArmOptions): { reader: ResourceReader; close(): void } {

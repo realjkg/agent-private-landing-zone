@@ -9,7 +9,7 @@ import { PILOT_CHANNELS, type ApplyEnvironment, type ApplyEvidence, type ApplyRe
 import { isResourceAddress } from "./terraform.js";
 import type { AwsTarget } from "./providers/aws.js";
 import type { AzureTarget } from "./providers/azure.js";
-import { armPathSafe, armTypePairsOf, isArmGroupId, isArmScopeId } from "../observe/azure-rest.js";
+import { armPathSafe, isArmGroupId, isArmScopeId, parseArmId, type ArmType } from "../observe/azure-rest.js";
 
 /**
  * The cleanup proposal (docs/act-pilot-plan.md, "Cleanup of pilot-created resources"): the reviewable, hash-identified list
@@ -144,19 +144,15 @@ const MATERIAL_RISKS: Readonly<Record<string, string>> = {
 const AZURE_IDENTITY_TYPES = new Set(["azurerm_user_assigned_identity", "azurerm_federated_identity_credential", "azurerm_management_lock"]);
 const AZURE_IDENTITY_TYPE = /^azurerm_(?:role_|pim_|policy_|[a-z_]+_policy_assignment$|[a-z_]+_policy_exemption$)/;
 const AZURE_IDENTITY_NAMESPACE = /^Microsoft\.(?:Authorization|ManagedIdentity)$/i;
-/** The `/providers/` pairs of an entry's id, or none: an id that is not ARM-shaped (a data-plane URL) names no ARM type. */
-const armPairsOf = (entry: { id: string | null }) => (entry.id !== null && entry.id.startsWith("/") ? armTypePairsOf(entry.id) ?? [] : []);
-const isAzureIdentityEntry = (entry: { type: string; id: string | null }): boolean =>
-  entry.type.startsWith("azuread_") || AZURE_IDENTITY_TYPE.test(entry.type) || AZURE_IDENTITY_TYPES.has(entry.type) ||
-  armPairsOf(entry).some((pair) => AZURE_IDENTITY_NAMESPACE.test(pair.namespace));
+const isAzureIdentityType = (type: string): boolean => type.startsWith("azuread_") || AZURE_IDENTITY_TYPE.test(type) || AZURE_IDENTITY_TYPES.has(type);
+const isAzureIdentityPair = (pair: ArmType): boolean => AZURE_IDENTITY_NAMESPACE.test(pair.namespace);
 /**
  * Deployment history: every template-deployment type (the four scoped ones and the legacy `azurerm_template_deployment`), and,
  * whatever type recorded it, any id with a `/providers/` pair of `Microsoft.Resources/deployments` at any scope (a resource
  * group's, a resource's, a subscription's or a management group's deployment; an `azapi_resource` deployment).
  */
-const isAzureDeploymentEntry = (entry: { type: string; id: string | null }): boolean =>
-  /^azurerm_(?:[a-z_]+_)?template_deployment$/.test(entry.type) ||
-  armPairsOf(entry).some((pair) => /^Microsoft\.Resources$/i.test(pair.namespace) && /^deployments(?:\/|$)/i.test(pair.typePath));
+const isAzureDeploymentType = (type: string): boolean => /^azurerm_(?:[a-z_]+_)?template_deployment$/.test(type);
+const isAzureDeploymentPair = (pair: ArmType): boolean => /^Microsoft\.Resources$/i.test(pair.namespace) && /^deployments(?:\/|$)/i.test(pair.typePath);
 /**
  * A container: an entry whose recorded ARM id is a resource group, whatever Terraform type created it (`azurerm_resource_group`,
  * `azapi_resource`, a module's own type), or the azurerm type itself. Classified by the id the state holds, never by the type name alone.
@@ -164,7 +160,6 @@ const isAzureDeploymentEntry = (entry: { type: string; id: string | null }): boo
 export const isContainerEntry = (entry: { type: string; id: string | null }): boolean => entry.type === "azurerm_resource_group" || (entry.id !== null && isArmGroupId(entry.id));
 /** Scopes that hold other people's deployments: never proposed, whatever created them, because nothing here can list what deleting them would take. */
 const AZURE_SCOPE_TYPES = new Set(["azurerm_subscription", "azurerm_subscription_alias", "azurerm_management_group", "azurerm_management_group_subscription_association"]);
-const isAzureScope = (entry: { type: string; id: string | null }): boolean => AZURE_SCOPE_TYPES.has(entry.type) || (entry.id !== null && isArmScopeId(entry.id));
 
 /** A storage data-plane URL (`https://<account>.blob.core.windows.net/<container>`), which the azurerm provider uses as the id of containers and blobs. */
 const STORAGE_DATA_PLANE = /^https:\/\/([a-z0-9]{3,24})\.(?:blob|dfs|file|queue|table|web)\.core\.windows\.net(?:\/|$)/;
@@ -195,22 +190,41 @@ function azureBackendGroups(entries: readonly { type: string; id: string | null 
  * subscription or management group. A type the plan or state names as a resource group (`azurerm_resource_group`) is a group
  * even without an id, so a destroy plan's change list can be classified too.
  */
-function azureProtectionOf(entry: { type: string; id: string | null }, contract: PilotContract, backendGroups: Set<string>): ExcludedResource["ownership"] | undefined {
+/**
+ * An entry the cleanup cannot classify: an ARM-shaped id (it starts with `/`) that the positional parser does not consume in
+ * full, so its type pairs are unknown. Never "not protected": the proposal refuses it and a destroy plan that touches it stops.
+ */
+export const UNCLASSIFIABLE = "UNCLASSIFIABLE";
+export type AzureProtection = ExcludedResource["ownership"] | typeof UNCLASSIFIABLE;
+function azureProtectionOf(entry: { type: string; id: string | null }, contract: PilotContract, backendGroups: Set<string>): AzureProtection | undefined {
   const accounts = azureBackendAccounts(contract);
   // The backend account in any form its identifier takes, whatever Terraform type recorded it (azurerm_storage_*, azapi_resource, a module's type).
   if (namesBackendAccount(entry.id, accounts)) return "PROTECTED_BACKEND";
   if (isContainerEntry(entry) && entry.id !== null && backendGroups.has(entry.id.toLowerCase())) return "PROTECTED_BACKEND";
-  if (isAzureDeploymentEntry(entry)) return "PROTECTED_DEPLOYMENT";
-  if (isAzureIdentityEntry(entry)) return "PROTECTED_IDENTITY";
-  if (isContainerEntry(entry)) return "RETAINED_GROUP";
-  if (isAzureScope(entry)) return "CONTAINS_OTHERS";
+  // By Terraform type first: a protected type is protected whatever its id says, and a dependent the state does not hold has only a type.
+  if (isAzureDeploymentType(entry.type)) return "PROTECTED_DEPLOYMENT";
+  if (isAzureIdentityType(entry.type)) return "PROTECTED_IDENTITY";
+  if (entry.type === "azurerm_resource_group") return "RETAINED_GROUP";
+  if (AZURE_SCOPE_TYPES.has(entry.type)) return "CONTAINS_OTHERS";
+  // Then by id. A data-plane URL names no ARM type; it is judged by its type alone, above. An empty or blank id is no id at all.
+  if (entry.id === null) return undefined;
+  if (entry.id.trim() === "") return UNCLASSIFIABLE;
+  if (!entry.id.startsWith("/")) return undefined;
+  // Fail closed: an ARM-shaped id the parser cannot consume in full has unknown pairs, so it is never ordinary. (The earlier
+  // `armTypePairsOf(id) ?? []` read "unparseable" as "no pairs" and let an authorization object under a group named `providers` through.)
+  const parsed = armPathSafe(entry.id) ? parseArmId(entry.id) : undefined;
+  if (parsed === undefined) return UNCLASSIFIABLE;
+  if (parsed.pairs.some(isAzureDeploymentPair)) return "PROTECTED_DEPLOYMENT";
+  if (parsed.pairs.some(isAzureIdentityPair)) return "PROTECTED_IDENTITY";
+  if (isArmGroupId(entry.id)) return "RETAINED_GROUP";
+  if (isArmScopeId(entry.id)) return "CONTAINS_OTHERS";
   return undefined;
 }
 
 const IDENTITY_TYPES = new Set(["aws_iam_openid_connect_provider", "aws_iam_role", "aws_iam_role_policy", "aws_iam_role_policy_attachment", "aws_iam_policy"]);
 
 /** The bootstrap the pilot runs on, which a cleanup never touches: the state backend and the identities that run it. */
-function protectionOf(entry: { type: string; id: string | null; arn: string | null }, contract: PilotContract, env: NodeJS.ProcessEnv, backendGroups: Set<string>): ExcludedResource["ownership"] | undefined {
+function protectionOf(entry: { type: string; id: string | null; arn: string | null }, contract: PilotContract, env: NodeJS.ProcessEnv, backendGroups: Set<string>): AzureProtection | undefined {
   if (contract.provider === "AZURE") return azureProtectionOf(entry, contract, backendGroups);
   if (contract.provider !== "AWS") return undefined;
   const pinned = contract.targets[contract.enabledEnvironments?.[0] ?? "DEV"] as AwsTarget | undefined;
@@ -286,6 +300,9 @@ export function buildCleanupProposal(input: ProposalInput): { ok: true; proposal
     }
     const keep = (ownership: Exclude<Ownership, "RUN_CREATED">, reason: string): void => { excluded.push({ ...base, ownership, reason, retainedBy: retentionOwnerOf(ownership) }); };
     const protection = protectionOf(entry, contract, input.env, backendGroups);
+    if (protection === UNCLASSIFIABLE) {
+      return refuse("OWNERSHIP_AMBIGUOUS", "The state holds an identifier for " + entry.address + " that is not a resource id the cleanup can classify exactly (it does not parse as an ARM id, so what it protects is unknown). A person reviews it by hand; no cleanup proposal is made.");
+    }
     if (protection) { keep(protection, PROTECTION_REASONS[protection as keyof typeof PROTECTION_REASONS]); continue; }
     const change = byAddress.get(entry.address);
     if (entry.origin === "NOT_IN_PLAN" || change === undefined) { keep("NOT_IN_PLAN", "the state holds it but the sealed plan never mentioned it, so this run did not create it"); continue; }
@@ -413,6 +430,7 @@ export function protectedDeletionIn(planned: readonly PlanChange[], entries: rea
     const entry = byAddress.get(change.address) ?? { address: change.address, type: change.type, id: null, arn: null };
     const protection = protectionOf(entry, contract, env, backendGroups);
     if (protection === undefined) continue;
+    if (protection === UNCLASSIFIABLE) return "The destroy plan would " + change.action.toLowerCase() + " " + stripInvisible(change.address) + ", whose identifier does not parse as an ARM id, so what it protects is unknown and a pilot cleanup never deletes it (OWNERSHIP_AMBIGUOUS).";
     const what = protection === "RETAINED_GROUP" ? "a resource group" : protection === "PROTECTED_IDENTITY" ? "an identity or authorization object" : protection === "PROTECTED_DEPLOYMENT" ? "deployment history"
       : protection === "PROTECTED_BACKEND" ? "the state backend" : "a subscription or management group";
     return "The destroy plan would " + change.action.toLowerCase() + " " + stripInvisible(change.address) + ", " + what + ", which a pilot cleanup never deletes, directly or as a dependent (" + protection + ").";
