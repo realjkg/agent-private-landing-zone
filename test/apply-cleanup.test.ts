@@ -11,6 +11,7 @@ import { CLEANUP_SUFFIX, SUFFIX } from "../src/apply/contract.js";
 import { cleanupScopeProblem, runApply, runCleanup, sealPreview, type ApplyDeps, type ApplyRequest, type CleanupRequest } from "../src/apply/driver.js";
 import { cleanupEvidenceProblems } from "../src/apply/evidence.js";
 import { readCleanupEvidence, reserveArtifact } from "../src/apply/ledger.js";
+import { verifyLeftovers } from "../src/apply/leftovers.js";
 import { loadRunRecords, observeRun, verifyProposalLeftovers } from "../src/apply/observe.js";
 import { openNonceStore } from "../src/apply/nonces.js";
 import { loadSealedPlan } from "../src/apply/seal.js";
@@ -350,14 +351,17 @@ test("AWS Terraform cleanup: approve under the cleanup domain, destroy exactly t
   const leftovers = await verifyProposalLeftovers(run.proposal, observeDeps(w, new Date(NOW.getTime() + 600_000)));
   assert.ok(leftovers.ok, JSON.stringify(leftovers));
   assert.equal(leftovers.cleanupRan, true);
-  assert.equal(leftovers.record.disposition, "COMPLETE");
+  // Every named resource is settled, but the pilot apply tags nothing, so nothing outside the state could be searched for: that is
+  // KNOWN_ADDRESSES_CONFIRMED, never COMPLETE (the #235 contract: completion needs a complete deletion-unit sweep).
+  assert.equal(leftovers.record.disposition, "KNOWN_ADDRESSES_CONFIRMED");
   assert.equal(leftovers.record.sweep, "NOT_AVAILABLE");
+  assert.match(leftoversRecordProblems({ ...leftovers.record, disposition: "COMPLETE" }).join(), /COMPLETE needs a complete deletion-unit sweep/, "a record cannot claim completion without the sweep");
   assert.deepEqual(leftovers.record.resources.map((r) => [r.address, r.disposition, r.basis]), [
     ["aws_cloudwatch_log_group.canary", "CONFIRMED_DELETED", "CLOUD_CONTROL_ABSENT"], ["aws_s3_bucket.logs", "CONFIRMED_DELETED", "CLOUD_CONTROL_ABSENT"],
     ["aws_s3_bucket_versioning.logs", "CONFIRMED_DELETED", "PARENT_ABSENT"],
     ["aws_iam_role.apply", "INTENTIONALLY_RETAINED", "RETENTION_DECISION"], ["aws_s3_bucket.state", "INTENTIONALLY_RETAINED", "RETENTION_DECISION"], ["aws_sqs_queue.preexisting", "INTENTIONALLY_RETAINED", "RETENTION_DECISION"],
   ]);
-  assert.match(leftovers.record.nextAction, /not searched for/, "completion says what it does not cover");
+  assert.match(leftovers.record.nextAction, /not searched for.*not independently complete/, "the record says what it does not cover and that it is not completion");
   assert.equal(leftovers.record.cleanupEvidenceSha256, sha256(canonicalJson(result.evidence as never)));
   assert.deepEqual(leftoversRecordProblems(leftovers.record), []);
   for (const read of awsReadCallsOf(awsToolDir)) assert.equal(read.env.AWS_ROLE_ARN, awsRoleArn("DISCOVERY", "DEV"));
@@ -595,7 +599,47 @@ test("a KMS key scheduled for deletion is DELETION_PENDING: not complete, not a 
   cloud({ existing: EXISTING.filter((x) => x !== BUCKET && x !== LOG) });
   const later = await verifyProposalLeftovers(run.proposal, observeDeps(w, new Date(NOW.getTime() + 8 * 86_400_000)));
   assert.ok(later.ok);
-  assert.equal(later.record.disposition, "COMPLETE");
+  assert.equal(later.record.disposition, "KNOWN_ADDRESSES_CONFIRMED", "settled, and still no sweep: not completion");
+});
+
+test("leftovers are COMPLETE only with a complete deletion-unit sweep, and a check that never ran proves nothing: an already-absent setting is UNKNOWN unless its parent is confirmed gone", async () => {
+  // A pure check of verifyLeftovers against a scripted read-only cloud: no engine, no ledger.
+  const run = await proposed(world());
+  const bucket = run.proposal.deletes.find((d) => d.address === "aws_s3_bucket.logs")!;
+  const setting = { address: "aws_s3_bucket_versioning.logs", type: "aws_s3_bucket_versioning", identifier: BUCKET };
+  const proposal: CleanupProposal = { ...run.proposal, deletes: [bucket], alreadyAbsent: [setting], excluded: [] };
+  const notFound = { code: 254, stdout: "", stderr: "An error occurred (ResourceNotFoundException) when calling the GetResource operation: not found" };
+  const found = (identifier: string) => ({ code: 0, stdout: JSON.stringify({ ResourceDescription: { Identifier: identifier, Properties: "{}" } }), stderr: "" });
+  const tagged = (arns: string[]) => ({ code: 0, stdout: JSON.stringify({ ResourceTagMappingList: arns.map((arn) => ({ ResourceARN: arn, Tags: [] })) }), stderr: "" });
+  const cloud = (bucketExists: boolean, listing?: string[] | "paginated") => async (argv: readonly string[]) => {
+    if (argv[0] === "resourcegroupstaggingapi") return listing === "paginated" ? { code: 0, stdout: JSON.stringify({ ResourceTagMappingList: [], PaginationToken: "more" }), stderr: "" } : tagged(listing ?? []);
+    return bucketExists ? found(BUCKET) : notFound;
+  };
+  const check = (bucketExists: boolean, unitId: string | null, listing?: string[] | "paginated") => verifyLeftovers({
+    proposal, cleanup: undefined, cleanupEvidenceSha256: null, unitId, region: "us-east-1", aws: cloud(bucketExists, listing), verifierBinarySha256: null, now: NOW,
+  });
+  // The parent is gone: the setting is confirmed through it, and with no unit tag the record is KNOWN_ADDRESSES_CONFIRMED.
+  const known = await check(false, null);
+  assert.deepEqual(known.resources.map((r) => [r.address, r.disposition, r.basis]), [["aws_s3_bucket.logs", "CONFIRMED_DELETED", "CLOUD_CONTROL_ABSENT"], ["aws_s3_bucket_versioning.logs", "CONFIRMED_DELETED", "PARENT_ABSENT"]]);
+  assert.equal(known.disposition, "KNOWN_ADDRESSES_CONFIRMED");
+  assert.deepEqual(leftoversRecordProblems(known), []);
+  assert.match(leftoversRecordProblems({ ...known, disposition: "COMPLETE" }).join(), /complete deletion-unit sweep/);
+  // The parent still exists: the setting's own check never ran, so it is UNKNOWN, never CONFIRMED_DELETED.
+  const present = await check(true, null);
+  assert.deepEqual(present.resources.map((r) => [r.address, r.disposition, r.basis]), [["aws_s3_bucket.logs", "DELETION_PENDING", "CLEANUP_NOT_FINISHED"], ["aws_s3_bucket_versioning.logs", "UNKNOWN", "NOT_INDEPENDENTLY_CHECKABLE"]]);
+  assert.equal(present.disposition, "INCOMPLETE");
+  // With a unit tag: a complete, empty sweep makes it COMPLETE; a paginated sweep or a tagged resource outside the state does not.
+  const complete = await check(false, "unit-1");
+  assert.equal(complete.sweep, "COMPLETE");
+  assert.equal(complete.disposition, "COMPLETE");
+  assert.deepEqual(leftoversRecordProblems(complete), []);
+  assert.match(leftoversRecordProblems({ ...complete, disposition: "KNOWN_ADDRESSES_CONFIRMED" }).join(), /with a sweep the record is COMPLETE or INCOMPLETE/);
+  const paginated = await check(false, "unit-1", "paginated");
+  assert.equal(paginated.sweep, "INCOMPLETE");
+  assert.equal(paginated.disposition, "INCOMPLETE");
+  const stray = await check(false, "unit-1", ["arn:aws:sqs:us-east-1:111111111111:stray"]);
+  assert.equal(stray.disposition, "INCOMPLETE");
+  assert.deepEqual(stray.resources.filter((r) => r.address === "(not in state)").map((r) => [r.identifier, r.disposition]), [["arn:aws:sqs:us-east-1:111111111111:stray", "STILL_PRESENT"]]);
 });
 
 test("the cleanup adapter's surface: targeted destroy plan, its show and its apply, and the shared pinned steps; nothing else, and no bare destroy", () => {

@@ -110,8 +110,13 @@ export type LeftoversRecord = {
   verifier: ObserveReport["verifier"];
   verifierBinarySha256: string | null;
   resources: LeftoverResource[];
-  /** COMPLETE only when every proposed deletion is CONFIRMED_DELETED and every excluded resource is INTENTIONALLY_RETAINED. */
-  disposition: "COMPLETE" | "INCOMPLETE";
+  /**
+   * COMPLETE only when every proposed deletion is CONFIRMED_DELETED, every excluded resource is INTENTIONALLY_RETAINED, and a
+   * COMPLETE sweep by the run's deletion-unit tag found nothing else. KNOWN_ADDRESSES_CONFIRMED: the named resources are
+   * settled but no sweep was possible (the run carries no unit tag), so resources outside the state were not searched for;
+   * it is not completion. INCOMPLETE otherwise.
+   */
+  disposition: "COMPLETE" | "KNOWN_ADDRESSES_CONFIRMED" | "INCOMPLETE";
   /** Resources outside the engine's state were looked for by the run's unit tag, or could not be (NOT_AVAILABLE). */
   sweep: "COMPLETE" | "INCOMPLETE" | "NOT_AVAILABLE";
   /** What a person does next when the disposition is INCOMPLETE. */
@@ -213,8 +218,10 @@ export function leftoversRecordProblems(value: unknown): string[] {
   if (!Array.isArray(resources) || !resources.every(leftoverOk)) problems.push("leftovers record.resources: each needs address, type, identifier, disposition and basis");
   else {
     const settled = resources.every((x) => x.disposition === "CONFIRMED_DELETED" || x.disposition === "INTENTIONALLY_RETAINED");
-    if (value.disposition === "COMPLETE" && (!settled || resources.length === 0)) problems.push("leftovers record: COMPLETE needs every resource confirmed deleted or intentionally retained");
-    if (value.disposition !== "COMPLETE" && value.disposition !== "INCOMPLETE") problems.push("leftovers record: disposition is unknown");
+    if ((value.disposition === "COMPLETE" || value.disposition === "KNOWN_ADDRESSES_CONFIRMED") && (!settled || resources.length === 0)) problems.push("leftovers record: COMPLETE needs every resource confirmed deleted or intentionally retained");
+    if (value.disposition === "COMPLETE" && value.sweep !== "COMPLETE") problems.push("leftovers record: COMPLETE needs a complete deletion-unit sweep; without one the most a record says is KNOWN_ADDRESSES_CONFIRMED");
+    if (value.disposition === "KNOWN_ADDRESSES_CONFIRMED" && value.sweep !== "NOT_AVAILABLE") problems.push("leftovers record: KNOWN_ADDRESSES_CONFIRMED is for a run with no unit tag; with a sweep the record is COMPLETE or INCOMPLETE");
+    if (!["COMPLETE", "KNOWN_ADDRESSES_CONFIRMED", "INCOMPLETE"].includes(value.disposition as string)) problems.push("leftovers record: disposition is unknown");
   }
   if (!["COMPLETE", "INCOMPLETE", "NOT_AVAILABLE"].includes(value.sweep as string) || typeof value.nextAction !== "string" || !isoText(value.observedAt)) {
     problems.push("leftovers record: sweep, nextAction or observedAt is malformed");
