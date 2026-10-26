@@ -451,27 +451,58 @@
       "path": "CDK",
       "steps": {
         "prepare": {
-          "status": "NOT_IMPLEMENTED",
+          "status": "SYNTHETIC_PASS",
           "code": [
-            "src/apply/prepare.ts"
+            "src/apply/prepare.ts",
+            "src/cli/apply.ts",
+            "src/cli/ui-channel.ts"
           ],
-          "missing": "No console test runs prepare with a CDK contract through the real router.",
           "tests": {
+            "ui": [
+              {
+                "file": "test/ui-channel.test.ts",
+                "title": "AWS CDK in the console: prepare from the cdk.out folder, preview the change set, approve and execute it, observe what the stack created through Cloud Control and the unit sweep, and propose and review the cleanup, through the real router, service and adapter"
+              }
+            ],
             "positive": [
               {
                 "file": "test/apply-prepare.test.ts",
                 "title": "CDK is the AWS secondary path: no lock file, no providers, and the AWS CLI version is asked only until it is qualified"
               }
+            ],
+            "denied": [
+              {
+                "file": "test/apply-prepare.test.ts",
+                "title": "owner prerequisites stop preparation with the owner named, and never offer another path around them"
+              }
+            ],
+            "interrupted": [
+              {
+                "file": "test/apply-prepare.test.ts",
+                "title": "the files are private, named by the manifest hash, and written all or nothing"
+              }
+            ],
+            "recovery": [
+              {
+                "file": "test/apply-prepare.test.ts",
+                "title": "a project changed after preparation is no longer current, and its old manifest no longer binds"
+              }
             ]
           }
         },
         "preview": {
-          "status": "NOT_IMPLEMENTED",
+          "status": "SYNTHETIC_PASS",
           "code": [
-            "src/apply/engines/cdk.ts"
+            "src/apply/engines/cdk.ts",
+            "src/apply/seal.ts"
           ],
-          "missing": "No console test seals a CDK change set through the real router; terminal and driver tests exist.",
           "tests": {
+            "ui": [
+              {
+                "file": "test/ui-channel.test.ts",
+                "title": "AWS CDK in the console: prepare from the cdk.out folder, preview the change set, approve and execute it, observe what the stack created through Cloud Control and the unit sweep, and propose and review the cleanup, through the real router, service and adapter"
+              }
+            ],
             "positive": [
               {
                 "file": "test/apply-cdk.test.ts",
@@ -482,32 +513,78 @@
               {
                 "file": "test/apply-cdk.test.ts",
                 "title": "an assembly that needs asset publishing, a second stack, a nested stack or a cross-stack import is refused before any change set exists"
+              },
+              {
+                "file": "test/apply-cdk.test.ts",
+                "title": "the stack tags are bound: a change set whose tags are not the unit's is refused at the seal, and one whose tags changed after sealing is ARTIFACT_TAMPERED before any approval is consumed"
+              }
+            ],
+            "interrupted": [
+              {
+                "file": "test/apply-cdk.test.ts",
+                "title": "a change set the CHANGESET role did not create in the contract's account, a failed wait, a failed describe or a wrong CLI version fail the seal closed"
+              }
+            ],
+            "recovery": [
+              {
+                "file": "test/apply-cdk.test.ts",
+                "title": "a change set that does not hold the assembly's template is refused at the seal and at the apply"
               }
             ]
           }
         },
         "approve": {
-          "status": "NOT_IMPLEMENTED",
+          "status": "SYNTHETIC_PASS",
           "code": [
-            "src/apply/approval.ts"
+            "src/apply/approval.ts",
+            "src/cli/apply.ts"
           ],
-          "missing": "No console test approves a CDK change set through the real router.",
           "tests": {
+            "ui": [
+              {
+                "file": "test/ui-channel.test.ts",
+                "title": "AWS CDK in the console: prepare from the cdk.out folder, preview the change set, approve and execute it, observe what the stack created through Cloud Control and the unit sweep, and propose and review the cleanup, through the real router, service and adapter"
+              }
+            ],
             "positive": [
               {
                 "file": "test/apply-cdk.test.ts",
                 "title": "./alz apply works for the engine the pinned contract names, with no engine flag: qualify, seal, approve and apply, and no project code is run"
               }
+            ],
+            "denied": [
+              {
+                "file": "test/ui-channel.test.ts",
+                "title": "AWS CDK in the console: a wrong phrase or a cancel at approval or execution signs nothing and executes nothing, and the same approval still executes once"
+              }
+            ],
+            "interrupted": [
+              {
+                "file": "test/ui-channel.test.ts",
+                "title": "AWS CDK in the console: a wrong phrase or a cancel at approval or execution signs nothing and executes nothing, and the same approval still executes once"
+              }
+            ],
+            "recovery": [
+              {
+                "file": "test/ui-channel.test.ts",
+                "title": "AWS CDK in the console: a wrong phrase or a cancel at approval or execution signs nothing and executes nothing, and the same approval still executes once"
+              }
             ]
           }
         },
         "execute": {
-          "status": "NOT_IMPLEMENTED",
+          "status": "SYNTHETIC_PASS",
           "code": [
-            "src/apply/engines/cdk.ts"
+            "src/apply/engines/cdk.ts",
+            "src/apply/driver.ts"
           ],
-          "missing": "No console test executes a CDK change set through the real router, and no test shows a CDK apply's evidence naming the product commit.",
           "tests": {
+            "ui": [
+              {
+                "file": "test/ui-channel.test.ts",
+                "title": "AWS CDK in the console: prepare from the cdk.out folder, preview the change set, approve and execute it, observe what the stack created through Cloud Control and the unit sweep, and propose and review the cleanup, through the real router, service and adapter"
+              }
+            ],
             "positive": [
               {
                 "file": "test/apply-cdk.test.ts",
@@ -522,6 +599,10 @@
             ],
             "interrupted": [
               {
+                "file": "test/ui-channel.test.ts",
+                "title": "AWS CDK in the console: a wrong phrase or a cancel at approval or execution signs nothing and executes nothing, and the same approval still executes once"
+              },
+              {
                 "file": "test/apply-cdk.test.ts",
                 "title": "the kill switch before the apply stops it with nothing executed; during polling it cancels an update once and is KILLED; a create cannot be canceled"
               }
@@ -535,39 +616,125 @@
           }
         },
         "observe": {
-          "status": "NOT_IMPLEMENTED",
-          "missing": "After an apply nothing reads back what was created: the evidence and the Results page carry no cloud resource IDs, and no independent read-only check runs."
+          "status": "SYNTHETIC_PASS",
+          "code": [
+            "src/observe/blueprint.ts",
+            "src/observe/verify.ts",
+            "src/apply/observe.ts",
+            "src/apply/engines/cdk.ts"
+          ],
+          "tests": {
+            "ui": [
+              {
+                "file": "test/ui-channel.test.ts",
+                "title": "AWS CDK in the console: prepare from the cdk.out folder, preview the change set, approve and execute it, observe what the stack created through Cloud Control and the unit sweep, and propose and review the cleanup, through the real router, service and adapter"
+              }
+            ],
+            "positive": [
+              {
+                "file": "test/apply-cdk.test.ts",
+                "title": "after a CDK apply the blueprint is CloudFormation's own resource list, read once as DISCOVERY: logical ids, physical ids, ARNs derived for the known types, the stack tags' unit, and nothing else; observe reads each resource back through Cloud Control and sweeps by the unit; the proposal lists exactly the run-created resources by logical id, keeps the pilot's role and a nested stack, and says the stack itself is never deleted"
+              }
+            ],
+            "denied": [
+              {
+                "file": "test/apply-cdk.test.ts",
+                "title": "CDK observe denied and interrupted: a resource Cloud Control no longer returns fails the observation, a stray ARN under the unit fails it, a failed sweep leaves it inconclusive, a stack resource read that fails leaves no blueprint so nothing can be observed or proposed, and a nested stack that appears in the stack is never proposed"
+              }
+            ],
+            "interrupted": [
+              {
+                "file": "test/apply-cdk.test.ts",
+                "title": "CDK observe denied and interrupted: a resource Cloud Control no longer returns fails the observation, a stray ARN under the unit fails it, a failed sweep leaves it inconclusive, a stack resource read that fails leaves no blueprint so nothing can be observed or proposed, and a nested stack that appears in the stack is never proposed"
+              }
+            ],
+            "recovery": [
+              {
+                "file": "test/apply-cdk.test.ts",
+                "title": "CDK observe denied and interrupted: a resource Cloud Control no longer returns fails the observation, a stray ARN under the unit fails it, a failed sweep leaves it inconclusive, a stack resource read that fails leaves no blueprint so nothing can be observed or proposed, and a nested stack that appears in the stack is never proposed"
+              }
+            ]
+          }
         },
         "cleanup": {
           "status": "NOT_IMPLEMENTED",
-          "missing": "There is no CDK stack teardown step in the product, and no leftover check against the cloud."
+          "code": [
+            "src/apply/cleanup-proposal.ts"
+          ],
+          "missing": "The proposal and its review exist for CDK (logical ids; the stack itself is never deleted), but the CDK engine has no cleanup path: `./alz apply cleanup` is refused with CLEANUP_NOT_SUPPORTED and no leftover check follows. Slice 3b adds the removal change set.",
+          "tests": {
+            "positive": [
+              {
+                "file": "test/ui-channel.test.ts",
+                "title": "AWS CDK in the console: prepare from the cdk.out folder, preview the change set, approve and execute it, observe what the stack created through Cloud Control and the unit sweep, and propose and review the cleanup, through the real router, service and adapter"
+              },
+              {
+                "file": "test/apply-cdk.test.ts",
+                "title": "after a CDK apply the blueprint is CloudFormation's own resource list, read once as DISCOVERY: logical ids, physical ids, ARNs derived for the known types, the stack tags' unit, and nothing else; observe reads each resource back through Cloud Control and sweeps by the unit; the proposal lists exactly the run-created resources by logical id, keeps the pilot's role and a nested stack, and says the stack itself is never deleted"
+              }
+            ]
+          }
         }
       },
       "proofs": {
         "blueprint": {
-          "status": "NOT_IMPLEMENTED",
-          "missing": "No record maps each desired resource (engine address) to the cloud resource ID that was created."
+          "status": "SYNTHETIC_PASS",
+          "code": [
+            "src/observe/blueprint.ts",
+            "src/apply/driver.ts"
+          ],
+          "tests": [
+            {
+              "file": "test/apply-cdk.test.ts",
+              "title": "after a CDK apply the blueprint is CloudFormation's own resource list, read once as DISCOVERY: logical ids, physical ids, ARNs derived for the known types, the stack tags' unit, and nothing else; observe reads each resource back through Cloud Control and sweeps by the unit; the proposal lists exactly the run-created resources by logical id, keeps the pilot's role and a nested stack, and says the stack itself is never deleted"
+            },
+            {
+              "file": "test/observe-blueprint.test.ts",
+              "title": "the CloudFormation blueprint maps logical ids to physical ids, derives the ARN for the known types only, keeps the physical ARN as it is, marks what the change set never named, skips deleted rows and malformed rows, copies no status text, and refuses a document that is not a stack resource listing"
+            }
+          ]
         },
         "independentVerification": {
-          "status": "NOT_IMPLEMENTED",
-          "missing": "No read-only check, separate from the engine, confirms after an apply that the resources exist as planned."
+          "status": "SYNTHETIC_PASS",
+          "code": [
+            "src/observe/verify.ts"
+          ],
+          "tests": [
+            {
+              "file": "test/ui-channel.test.ts",
+              "title": "AWS CDK in the console: prepare from the cdk.out folder, preview the change set, approve and execute it, observe what the stack created through Cloud Control and the unit sweep, and propose and review the cleanup, through the real router, service and adapter"
+            },
+            {
+              "file": "test/apply-cdk.test.ts",
+              "title": "after a CDK apply the blueprint is CloudFormation's own resource list, read once as DISCOVERY: logical ids, physical ids, ARNs derived for the known types, the stack tags' unit, and nothing else; observe reads each resource back through Cloud Control and sweeps by the unit; the proposal lists exactly the run-created resources by logical id, keeps the pilot's role and a nested stack, and says the stack itself is never deleted"
+            },
+            {
+              "file": "test/apply-cdk.test.ts",
+              "title": "CDK observe denied and interrupted: a resource Cloud Control no longer returns fails the observation, a stray ARN under the unit fails it, a failed sweep leaves it inconclusive, a stack resource read that fails leaves no blueprint so nothing can be observed or proposed, and a nested stack that appears in the stack is never proposed"
+            }
+          ]
         },
         "cleanupDisposition": {
           "status": "NOT_IMPLEMENTED",
           "missing": "No per-resource disposition (deleted, or retained with an owner and reason) is recorded after a journey."
         },
         "sourceBoundEvidence": {
-          "status": "NOT_IMPLEMENTED",
+          "status": "SYNTHETIC_PASS",
           "code": [
             "src/apply/types.ts",
             "src/apply/evidence.ts"
           ],
-          "missing": "This path has no apply whose evidence is shown to name the product commit that sealed and ran it."
+          "tests": [
+            {
+              "file": "test/ui-channel.test.ts",
+              "title": "AWS CDK in the console: prepare from the cdk.out folder, preview the change set, approve and execute it, observe what the stack created through Cloud Control and the unit sweep, and propose and review the cleanup, through the real router, service and adapter"
+            }
+          ]
         }
       },
       "live": {
         "status": "BLOCKED",
-        "blockedBy": "AWS Terraform must pass live first (focus row), then owner inputs for CDK: a pinned CDK contract, the stack name, the DISCOVERY, CHANGESET and APPLY roles per account, a synthesized cdk.out with no assets, and a person to qualify it."
+        "blockedBy": "AWS Terraform must pass live first (focus row), then owner inputs for CDK: a pinned CDK contract, the stack name, the DISCOVERY, CHANGESET and APPLY roles per account, a synthesized cdk.out with no assets, and a person to qualify it. The cleanup step (Slice 3b) is not implemented yet."
       }
     },
     {

@@ -311,7 +311,7 @@ function openApply(input: EngineContext & { target: ResolvedTarget; engineVersio
     removeSecrets,
     // The state after the run, as the STATE identity reads it (the same pinned list `settle` used). Held in memory by the caller for identifiers only.
     stateDocument() {
-      try { return session.step(STATE_PULL_ARGV, "STATE", true); } catch { return undefined; }
+      try { return { source: "TERRAFORM_STATE_PULL", document: session.step(STATE_PULL_ARGV, "STATE", true) }; } catch { return undefined; }
     },
   };
 }

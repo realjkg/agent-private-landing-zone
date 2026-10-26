@@ -1,8 +1,9 @@
 /**
  * The blueprint of one apply (docs/observe-and-cleanup.md): each planned engine address mapped to the cloud identifier the
- * engine recorded for it. It is read from `terraform show -json` of the state after the apply, and it keeps identifiers
- * only: the ARN and the provider's `id`, because the cloud's own read API names some resource types by one and some by
- * the other. No other attribute value is ever copied out of the state, so the blueprint can go into reviewable evidence.
+ * engine recorded for it. It is read from Terraform's state after the apply (`terraform show -json` or `state pull`), or
+ * from CloudFormation's stack resource listing for the CDK engine, and it keeps identifiers only: the ARN and the
+ * provider's `id` (CloudFormation: the physical id), because the cloud's own read API names some resource types by one and
+ * some by the other. No other attribute value is ever copied out, so the blueprint can go into reviewable evidence.
  */
 
 /** A planned change, as the sealed plan's redacted summary lists it (src/apply/types.ts PlanChange, structurally). */
@@ -123,4 +124,60 @@ export function blueprintFromTerraformStatePull(stateJson: string, planned: read
     }
   }
   return blueprintOf(instances(), planned);
+}
+
+// --- CloudFormation (the CDK engine) ------------------------------------------------------------------------------
+
+/**
+ * How a CloudFormation resource's ARN follows from its physical id, for the types the independent reader knows
+ * (`CLOUD_CONTROL_TYPES` in ./verify.ts names the same types). The tagging API lists ARNs, so the sweep by the run's unit
+ * can tell a stack's own resource from a stray only when the blueprint holds its ARN too. A type not here keeps `arn: null`:
+ * its tagged ARN would be reported as unexpected and a person reviews it (fail closed, never assumed to be ours).
+ * UNVERIFIED (9): the ARN formats and which physical id each type reports are from memory; checked against AWS documentation
+ * and a real DEV run before live use.
+ */
+const CLOUDFORMATION_ARNS: Readonly<Record<string, (physicalId: string, place: { account: string; region: string }) => string | null>> = {
+  "AWS::S3::Bucket": (id) => "arn:aws:s3:::" + id,
+  "AWS::Logs::LogGroup": (id, p) => "arn:aws:logs:" + p.region + ":" + p.account + ":log-group:" + id,
+  // The physical id is the role name; a role under a path has the path in its ARN, which the name alone does not show (UNVERIFIED (9)).
+  "AWS::IAM::Role": (id, p) => (id.includes("/") ? null : "arn:aws:iam::" + p.account + ":role/" + id),
+  "AWS::SQS::Queue": (id, p) => { const name = /^https:\/\/sqs\.[a-z0-9-]+\.amazonaws\.com\/[0-9]{12}\/([A-Za-z0-9_-]+)$/.exec(id)?.[1]; return name === undefined ? null : "arn:aws:sqs:" + p.region + ":" + p.account + ":" + name; },
+  "AWS::KMS::Key": (id, p) => "arn:aws:kms:" + p.region + ":" + p.account + ":key/" + id,
+  "AWS::DynamoDB::Table": (id, p) => "arn:aws:dynamodb:" + p.region + ":" + p.account + ":table/" + id,
+  "AWS::Lambda::Function": (id, p) => "arn:aws:lambda:" + p.region + ":" + p.account + ":function:" + id,
+  "AWS::EC2::VPC": (id, p) => "arn:aws:ec2:" + p.region + ":" + p.account + ":vpc/" + id,
+  "AWS::EC2::Subnet": (id, p) => "arn:aws:ec2:" + p.region + ":" + p.account + ":subnet/" + id,
+  "AWS::EC2::SecurityGroup": (id, p) => "arn:aws:ec2:" + p.region + ":" + p.account + ":security-group/" + id,
+};
+
+/** Change-set actions after which a successful execution leaves the resource in the stack (the sealed change list's own vocabulary, src/apply/engines/cdk.ts). */
+const LEAVES_IN_STACK = new Set(["CREATE", "UPDATE", "REPLACE", "REPLACE_CONDITIONAL", "IMPORT", "DYNAMIC", "SAME"]);
+const LOGICAL_ID = /^[A-Za-z0-9]{1,255}$/;
+const CFN_TYPE = /^(?:AWS|Alexa)::[A-Za-z0-9]+::[A-Za-z0-9]+$/;
+
+/**
+ * The blueprint from `describe-stack-resources` (UNVERIFIED (9): `StackResources[].LogicalResourceId`, `PhysicalResourceId`,
+ * `ResourceType`, `ResourceStatus`) and the sealed change list: each logical id mapped to its physical id, which is the
+ * resource's Cloud Control identifier for the known types, and to the ARN derived from it where the table above can. A
+ * resource whose status says it is gone (`DELETE_COMPLETE`) is not in the stack. Nothing else of the document is read: no
+ * status reason, no timestamp, no drift information. Throws on anything that is not a stack resource listing; a resource
+ * row that is not well formed is skipped rather than guessed, and shows up as `missing` if the plan expected it.
+ */
+export function blueprintFromCloudFormationResources(resourcesJson: string, planned: readonly PlannedChange[], place: { account: string; region: string | undefined }): Blueprint {
+  const body = parseState(resourcesJson);
+  if (!Array.isArray(body.StackResources)) throw new Error("STATE_JSON_INVALID: not a describe-stack-resources document");
+  const rows = body.StackResources;
+  function* instances(): Generator<Instance> {
+    for (const row of rows) {
+      if (!isRecord(row) || !text(row.LogicalResourceId) || !LOGICAL_ID.test(row.LogicalResourceId) || !text(row.ResourceType) || !CFN_TYPE.test(row.ResourceType)) continue;
+      if (typeof row.ResourceStatus === "string" && /DELETE_COMPLETE$/.test(row.ResourceStatus)) continue;
+      const physical = text(row.PhysicalResourceId) ? row.PhysicalResourceId : undefined;
+      const derived = physical !== undefined && place.region !== undefined ? CLOUDFORMATION_ARNS[row.ResourceType]?.(physical, { account: place.account, region: place.region }) ?? null : null;
+      const arn = physical !== undefined && physical.startsWith("arn:") ? physical : derived;
+      yield { address: row.LogicalResourceId, type: row.ResourceType, values: { id: physical, arn: arn ?? undefined } };
+    }
+  }
+  const leaving = new Set(planned.filter((change) => LEAVES_IN_STACK.has(change.action)).map((change) => change.address));
+  const built = blueprintOf(instances(), planned);
+  return { entries: built.entries, missing: [...leaving].filter((address) => !built.entries.some((entry) => entry.address === address)).sort() };
 }

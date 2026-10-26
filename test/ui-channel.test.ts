@@ -23,6 +23,7 @@ import { SOURCE_COMMIT,
   writePinnedContract, writeProject, type Behavior, type Project,
   ARM_ACCESS_TOKEN_CANARY, ARM_FEDERATED_TOKEN_CANARY, DEV_TARGET, azureStateResource, fakeArmHttp,
 } from "./helpers/apply-fixtures.js";
+import { AWS_CLI_VERSION, CDK_CANARIES, awsCallsOf as cdkCallsOf, behaveAws, cdkContractJson, cdkIdentityEnv, cdkRoleArn, cdkTargetOf, forgeCdkQualification, installFakeAws, writeAssembly } from "./helpers/cdk-fixtures.js";
 
 // The console's pilot channel (src/cli/ui-channel.ts, docs/act-pilot-walkthrough.md). A workflow runs wholly in the terminal or
 // wholly in the console; the channel is sealed into the plan; the console reaches the same gates through dialogs. The engine is a
@@ -32,12 +33,15 @@ const repo = (path: string): string => fileURLToPath(new URL("../" + path, impor
 const root = mkdtempSync(join(tmpdir(), "alz-ui-"));
 const toolDir = mkdtempSync(join(tmpdir(), "alz-ui-tools-"));
 const awsToolDir = mkdtempSync(join(tmpdir(), "alz-ui-aws-"));
+/** The CDK engine's fake `aws`, which also serves the read-only verifier's two calls, so a CDK journey needs one tool directory. */
+const cdkToolDir = mkdtempSync(join(tmpdir(), "alz-ui-cdk-"));
 process.env.AGENTIC_EVIDENCE_KEY = randomBytes(32).toString("base64");
 process.chdir(root);
 const servers: Server[] = [];
-test.after(() => { for (const server of servers) server.close(); removeTree(root); removeTree(toolDir); removeTree(awsToolDir); });
+test.after(() => { for (const server of servers) server.close(); removeTree(root); removeTree(toolDir); removeTree(awsToolDir); removeTree(cdkToolDir); });
 installFakeTerraform(toolDir);
 installFakeAwsReads(awsToolDir);
+installFakeAws(cdkToolDir);
 
 let counter = 0;
 const fresh = (label: string): string => {
@@ -1326,4 +1330,137 @@ test("the console refuses a cleanup proposal for the other channel, a malformed 
   const extra = await call(port, "POST", "/pilot/cleanup", { body: { environment: "DEV", requestPath: "/r.json", manifestPath: "/m.json", sealedPath: "/s.json", proposalPath: malformed, approvalPaths: ["/a.json"], force: true } });
   assert.equal(extra.status, 400, "no field the step does not take");
   assert.deepEqual(engineCalls().filter((args) => args[0] === "plan" && args[1] === "-destroy"), []);
+});
+
+// --- AWS CDK in the console (config/acceptance/journeys.json, the AWS/CDK row cites these titles exactly) -------------------
+
+/** A pinned CDK contract with a policy version, its three identities and qualification, a synthesized assembly for DEV, and the fake `aws` as the one tool. */
+async function cdkConsoleJourney() {
+  behaveAws(cdkToolDir, KILL, {});
+  const contractPath = join(fresh("contract"), "act-pilot-contract.json");
+  writePinnedContract(contractPath, cdkContractJson(KILL, [], { policyVersion: POLICY }));
+  const vault = fresh("vault");
+  await forgeCdkQualification(vault);
+  const w: World = {
+    contractPath, vault, approvals: fresh("approvals"),
+    cli: {
+      sourceCommit: SOURCE_COMMIT, env: cdkIdentityEnv("DEV"), now: () => NOW, operatorId: "operator.fixture", contractPath, contractPinPath: pinPathOf(contractPath), qualificationDir: vault,
+      evidenceDir: fresh("evidence"), nonces: openNonceStore(fresh("nonces")), scratchParent: fresh("scratch"), toolDirs: [cdkToolDir], preparationDir: fresh("prepared"), proposalsDir: fresh("proposals"),
+    },
+  };
+  const { port } = await serve(w);
+  await choose(port);
+  const target = cdkTargetOf("DEV");
+  const project = writeAssembly(fresh("cdk.out"), target);
+  return { w, port, target, project };
+}
+const cdkCalls = () => cdkCallsOf(cdkToolDir);
+const noCdkCanary = (value: unknown): void => { const text = JSON.stringify(value); for (const canary of CDK_CANARIES) assert.ok(!text.includes(canary), "carries " + canary); };
+
+/** Prepare from the assembly folder (the engine is the contract's; the CLI version comes from the qualification record), then seal through the one target dialog: no project code runs for CDK. */
+async function prepareAndSealCdkInConsole(port: number, project: Project, target: ResolvedTarget) {
+  assert.equal((await call(port, "POST", "/pilot/prepare", { body: { environment: "DEV", projectPath: project.projectRoot } })).status, 202);
+  const prepared = (await finished(port)).run!.result!;
+  assert.equal(prepared.exit, 0, JSON.stringify(prepared));
+  const data = prepared.data as { files: { request: string; manifest: string }; summary: { provider: string; engine: string; account: string; engineVersion?: string } };
+  assert.equal(data.summary.engine, "CDK");
+  assert.equal(data.summary.provider, "AWS");
+  assert.equal(data.summary.account, target.account);
+  assert.equal((await call(port, "POST", "/pilot/seal", { body: { environment: "DEV", requestPath: data.files.request, manifestPath: data.files.manifest } })).status, 202);
+  const first = await waiting(port);
+  assert.equal(first.run!.dialog!.kind, "TARGET");
+  assert.equal(first.run!.dialog!.phrase, targetString(target));
+  await call(port, "POST", "/pilot/answer", { body: { dialogId: first.run!.dialog!.id, answer: targetString(target) } });
+  const sealedRun = (await finished(port)).run!.result!;
+  assert.equal(sealedRun.exit, 0, JSON.stringify(sealedRun));
+  assert.ok(!sealedRun.transcript?.includes(PHRASE), "no project-code dialog for CDK");
+  const unit = (sealedRun.summary as { unit: { unitId: string; tags: Record<string, string>; untagged: string[] } | null } | undefined)?.unit;
+  assert.ok(unit, "the console summary carries the unit the stack tags stamp");
+  assert.equal(unit.tags["alz-unit"], unit.unitId);
+  const out = sealedRun.data as { artifactSha256: string; sealedPlanPath: string; reviewBundlePath: string };
+  const sealed: Sealed = { project, target, environment: "DEV", path: out.sealedPlanPath, bundle: out.reviewBundlePath, artifactSha256: out.artifactSha256 };
+  return { prepared: data, sealed, unit };
+}
+
+test("AWS CDK in the console: prepare from the cdk.out folder, preview the change set, approve and execute it, observe what the stack created through Cloud Control and the unit sweep, and propose and review the cleanup, through the real router, service and adapter", async () => {
+  const { port, target, project } = await cdkConsoleJourney();
+  const { prepared, sealed, unit } = await prepareAndSealCdkInConsole(port, project, target);
+  const reviewed = (await call(port, "POST", "/pilot/review", { body: { bundlePath: sealed.bundle } })).body;
+  assert.equal(reviewed.ok, true);
+  assert.deepEqual(reviewed.summary.target, target);
+  assert.equal(reviewed.summary.sourceCommit, SOURCE_COMMIT, "approvers see the product commit they sign");
+  assert.equal(reviewed.summary.preview.engineVersion, AWS_CLI_VERSION);
+  assert.deepEqual(reviewed.summary.changes.map((c: { address: string; action: string }) => [c.address, c.action]), [["PilotBucket", "CREATE"], ["PilotTopic", "REPLACE"]], "logical ids, types and actions: never a property");
+  noCdkCanary(reviewed);
+  const approvalPath = await approveViaUi(port, sealed, "alice");
+  const applied = await applyInConsole(port, prepared.files, sealed, [approvalPath], applyPhrase(sealed));
+  assert.equal(applied.exit, 0, JSON.stringify(applied));
+  const evidence = applied.data as { outcome: string; target: ResolvedTarget; artifactSha256: string; sourceCommit: string; authority: { mutation: string } };
+  assert.equal(evidence.outcome, "SUCCEEDED");
+  assert.equal(evidence.sourceCommit, SOURCE_COMMIT, "the evidence names the product commit that sealed and executed");
+  assert.deepEqual(evidence.target, target);
+  assert.equal(evidence.artifactSha256, sealed.artifactSha256);
+  assert.equal(evidence.authority.mutation, "CLOUDFORMATION_EXECUTE_OF_SEALED_CHANGE_SET");
+  const executes = cdkCalls().filter((call) => call.args[1] === "execute-change-set");
+  assert.equal(executes.length, 1);
+  assert.equal((executes[0].env.AWS_ROLE_ARN ?? ""), cdkRoleArn("APPLY", "DEV"), "executed as APPLY");
+  assert.equal(cdkCalls().filter((call) => call.args[1] === "describe-stack-resources").map((call) => call.env.AWS_ROLE_ARN).join(), cdkRoleArn("DISCOVERY", "DEV"), "the blueprint read as DISCOVERY, once");
+  noCdkCanary(applied);
+
+  // Observe: the stack's resources under their CloudFormation types, the sweep by the unit the stack tags carry.
+  const before = cdkCalls().length;
+  const { observation, proposalPath, summary } = await observeAndProposeInConsole(port, sealed);
+  assert.equal(observation.verdict, "VERIFIED");
+  assert.equal(observation.inventory, "COMPLETE");
+  assert.deepEqual(observation.resources.map((r) => [r.address, r.result]).sort(), [["PilotBucket", "VERIFIED"], ["PilotTopic", "VERIFIED"]]);
+  const reads = cdkCalls().slice(before).filter((call) => call.args[0] !== "cloudformation");
+  assert.ok(reads.length >= 3 && reads.every((read) => read.env.AWS_ROLE_ARN === cdkRoleArn("DISCOVERY", "DEV")), "the verifier read as DISCOVERY through the runner");
+  assert.ok(reads.some((read) => read.args[0] === "resourcegroupstaggingapi" && read.args.includes("Key=alz-unit,Values=" + unit.unitId)), "the sweep asked for this change's own unit tag");
+  // The proposal: the bucket this change created, by logical id; the replaced topic kept for the environment's owner; the stack itself never deleted.
+  assert.deepEqual(summary.deletes.map((d) => d.address), ["PilotBucket"]);
+  assert.deepEqual(summary.excluded.map((x) => [x.address, x.ownership, x.retainedBy]), [["PilotTopic", "REPLACED_PRE_EXISTING", "ENVIRONMENT_OWNER"]]);
+  assert.equal(summary.requiredApprovals, 1);
+  const reviewedCleanup = (await call(port, "POST", "/pilot/review-cleanup", { body: { proposalPath } })).body;
+  assert.equal(reviewedCleanup.ok, true, JSON.stringify(reviewedCleanup));
+  assert.equal(reviewedCleanup.cleanup.shortId, summary.shortId);
+  assert.ok(reviewedCleanup.cleanup.lines.some((line: string) => /stack itself is never deleted/.test(line)), "the review says the stack stays");
+  noCdkCanary(reviewedCleanup);
+  // Until the CDK cleanup path exists, the cleanup step itself is refused before anything runs, and the approval is not spent.
+  const signed = await approveCleanupViaUi(port, proposalPath, summary.shortId, "alice");
+  assert.equal(signed.run!.result!.exit, 0, JSON.stringify(signed.run!.result));
+  const executesBefore = cdkCalls().filter((call) => call.args[1] === "execute-change-set").length;
+  const removed = await cleanupViaUi(port, prepared.files, sealed, proposalPath, summary.shortId, target, [signed.run!.result!.savedPath!]);
+  assert.notEqual(removed.run!.result!.exit, 0);
+  assert.equal(removed.run!.result!.code, "CLEANUP_NOT_SUPPORTED", JSON.stringify(removed.run!.result));
+  assert.equal(cdkCalls().filter((call) => call.args[1] === "execute-change-set").length, executesBefore, "nothing executed");
+  assert.ok(!cdkCalls().some((call) => /delete/.test(call.args[1] ?? "")), "nothing deleted");
+});
+
+test("AWS CDK in the console: a wrong phrase or a cancel at approval or execution signs nothing and executes nothing, and the same approval still executes once", async () => {
+  const { w, port, target, project } = await cdkConsoleJourney();
+  const { prepared, sealed } = await prepareAndSealCdkInConsole(port, project, target);
+  for (const answer of ["APPROVE " + sealed.environment, undefined]) {
+    assert.equal((await call(port, "POST", "/pilot/approve", { body: { bundlePath: sealed.bundle, keyPath: keyFile("alice"), approverId: "alice" } })).status, 202);
+    const asked = await waiting(port);
+    if (answer === undefined) await call(port, "POST", "/pilot/cancel", { body: {} });
+    else await call(port, "POST", "/pilot/answer", { body: { dialogId: asked.run!.dialog!.id, answer } });
+    const result = (await finished(port)).run!.result!;
+    assert.notEqual(result.exit, 0);
+    assert.deepEqual(readdirSync(w.approvals), [], "nothing was signed");
+  }
+  const approvalPath = await approveViaUi(port, sealed, "alice");
+  const executes = () => cdkCalls().filter((call) => call.args[1] === "execute-change-set").length;
+  const before = executes();
+  for (const answer of ["APPLY " + sealed.environment, undefined]) {
+    const result = await applyInConsole(port, prepared.files, sealed, [approvalPath], answer);
+    assert.notEqual(result.exit, 0);
+    assert.notEqual(result.exit, 3, "nothing is spent: " + JSON.stringify(result));
+    assert.equal(executes(), before, "no change set executed");
+  }
+  const applied = await applyInConsole(port, prepared.files, sealed, [approvalPath], applyPhrase(sealed));
+  assert.equal(applied.exit, 0, JSON.stringify(applied));
+  assert.equal(executes(), before + 1);
+  const again = await applyInConsole(port, prepared.files, sealed, [approvalPath], applyPhrase(sealed));
+  assert.notEqual(again.exit, 0, "a reconnect never executes twice");
+  assert.equal(executes(), before + 1);
 });

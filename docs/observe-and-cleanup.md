@@ -24,11 +24,21 @@ Every result in this repository is **synthetic**: the tests run a fake `terrafor
 - **`missing`:** every address the plan says should exist afterward (created, updated, replaced or unchanged) that the state does not hold.
 - **`origin`:** `NOT_IN_PLAN` marks a resource that is in the state but that the plan never mentioned.
 
+### CloudFormation (the CDK engine)
+
+`blueprintFromCloudFormationResources` reads `describe-stack-resources` of the stack after the execution (as DISCOVERY, once, `src/apply/engines/cdk.ts`) and the sealed change list.
+
+- **Addresses are logical ids**, types are CloudFormation types (`AWS::S3::Bucket`), `id` is the physical id and `arn` is the physical id when it is an ARN (an SNS topic) or the ARN derived from it for the types the independent reader knows (UNVERIFIED (9) in `docs/act-pilot-apply.md`); other types keep `arn: null`.
+- **Nothing else is copied:** no status reason, timestamp or drift information. A row that is not well formed is skipped, not guessed; a `DELETE_COMPLETE` row is not in the stack.
+- **`missing`:** every logical id the change set created, updated, replaced, imported or left dynamic that the stack does not hold.
+- **The unit** comes from the stack tags the change set carried (UNVERIFIED (8)); the blueprint record names it so the sweep can run.
+- **A nested stack** (`AWS::CloudFormation::Stack`) that appears in the stack is `CONTAINS_OTHERS`: never proposed, and the engine refuses one at the seal.
+
 ## Independent verification
 
 `observeBlueprint` is independent of the engine:
 
-- It asks the AWS Cloud Control API (`cloudcontrol get-resource`) whether each resource exists under its primary identifier (`CLOUD_CONTROL_TYPES`).
+- It asks the AWS Cloud Control API (`cloudcontrol get-resource`) whether each resource exists under its primary identifier (`CLOUD_CONTROL_TYPES`). A CloudFormation-typed entry (the CDK engine) is read under its own type name with the physical id as the identifier, for the same set of types (`cloudControlMappingOf`); a CloudFormation type outside that set is `NOT_CHECKABLE`, never assumed.
 - It lists resources tagged with the run's deletion unit (`resourcegroupstaggingapi get-resources`, read with `src/teardown/readers.ts`) to find resources the blueprint does not name.
 
 The caller runs the AWS CLI as the read-only DISCOVERY identity through the bounded runner. Only existence is recorded. A failure is recorded as an error class (`ACCESS_DENIED`, `THROTTLED`, `CREDENTIALS`, `TYPE_NOT_SUPPORTED`, `CLI_ERROR`), never as the cloud's message.
