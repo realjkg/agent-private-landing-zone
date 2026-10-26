@@ -595,7 +595,7 @@ const verifyCleanupCommand: Command = async (flags, _terminal, deps, out) => {
   const { record } = result;
   out.say(JSON.stringify({ label: "SYNTHETIC_UNLESS_ATTESTED_LIVE", disposition: record.disposition, sweep: record.sweep, cleanupRan: result.cleanupRan, nextAction: record.nextAction,
     resources: record.resources, observedAt: record.observedAt }, null, 2) + "\n");
-  out.report({ code: record.disposition === "COMPLETE" ? "CLEANUP_COMPLETE" : "CLEANUP_INCOMPLETE", message: record.nextAction, data: record });
+  out.report({ code: record.disposition === "COMPLETE" ? "CLEANUP_COMPLETE" : record.disposition === "KNOWN_ADDRESSES_CONFIRMED" ? "CLEANUP_KNOWN_CONFIRMED" : "CLEANUP_INCOMPLETE", message: record.nextAction, data: record });
   return EXIT.PASS;
 };
 

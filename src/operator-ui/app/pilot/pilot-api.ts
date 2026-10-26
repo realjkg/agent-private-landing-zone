@@ -74,7 +74,7 @@ export type ObservedResource = { address: string; type: string; identifier: stri
 export type ObservationData = { verdict: string; inventory: string; observedAt: string; resources: ObservedResource[]; missingFromState: string[]; unexpected: string[] };
 /** One thing the leftover check looked at (src/apply/run-records.ts LeftoverResource). */
 export type LeftoverResource = { address: string; type: string; identifier: string | null; disposition: string; basis: string; reason?: string; owner?: string };
-export type LeftoversData = { disposition: "COMPLETE" | "INCOMPLETE"; sweep: string; nextAction: string; resources: LeftoverResource[]; observedAt: string };
+export type LeftoversData = { disposition: "COMPLETE" | "KNOWN_ADDRESSES_CONFIRMED" | "INCOMPLETE"; sweep: string; nextAction: string; resources: LeftoverResource[]; observedAt: string };
 
 export type RunResult = {
   exit: number;

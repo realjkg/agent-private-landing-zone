@@ -836,6 +836,12 @@ async function prepareAndSealInConsole(port: number, project: Project, target: R
   await call(port, "POST", "/pilot/answer", { body: { dialogId: second.run!.dialog!.id, answer: PHRASE } });
   const sealedRun = (await finished(port)).run!.result!;
   assert.equal(sealedRun.exit, 0, JSON.stringify(sealedRun));
+  // The review the approvers see names the cleanup marker (the deletion unit) the sealed plan was checked for.
+  const unit = (sealedRun.summary as { unit: { unitId: string; tags: Record<string, string>; untagged: string[] } | null } | undefined)?.unit;
+  assert.ok(unit, "the console summary carries the unit");
+  assert.match(unit.unitId, /^alzu-[0-9a-f]{20}$/);
+  assert.equal(unit.tags["alz-unit"], unit.unitId);
+  assert.ok(Array.isArray(unit.untagged));
   const out = sealedRun.data as { artifactSha256: string; sealedPlanPath: string; reviewBundlePath: string };
   const sealed: Sealed = { project, target, environment: "DEV", path: out.sealedPlanPath, bundle: out.reviewBundlePath, artifactSha256: out.artifactSha256 };
   return { prepared: data, sealed };
@@ -1042,13 +1048,13 @@ test("AWS Terraform in the console: observe what the apply created, propose and 
   assert.equal(applied.exit, 0, JSON.stringify(applied));
 
   const { observation, proposalPath, summary } = await observeAndProposeInConsole(port, sealed);
-  // Everything the state recorded is found under its identifier; the pilot apply tags nothing, so there is no inventory to
-  // sweep and the observe core says PARTIAL, never VERIFIED.
-  assert.equal(observation.verdict, "PARTIAL", "found under its identifier, no tag inventory");
+  // Everything the state recorded is found under its identifier, and the sweep by the change's deletion-unit tag found
+  // nothing else: VERIFIED.
+  assert.equal(observation.verdict, "VERIFIED", "found under its identifier, and the unit sweep found nothing else");
   assert.deepEqual(observation.resources.map((r) => [r.address, r.result]).sort(), [
     ["aws_cloudwatch_log_group.canary", "VERIFIED"], ["aws_s3_bucket.logs", "VERIFIED"], ["aws_s3_bucket.state", "VERIFIED"], ["aws_sqs_queue.preexisting", "VERIFIED"],
   ]);
-  assert.equal(observation.inventory, "NOT_AVAILABLE", "the pilot apply tags nothing; the record says so");
+  assert.equal(observation.inventory, "COMPLETE", "the unit sweep covered every page");
   assert.ok(awsReadCallsOf(awsToolDir).every((read) => read.env.AWS_ROLE_ARN === awsRoleArn("DISCOVERY", "DEV")), "the verifier read as DISCOVERY through the runner");
   assert.deepEqual(summary.deletes.map((d) => d.address), ["aws_cloudwatch_log_group.canary", "aws_s3_bucket.logs"]);
   assert.deepEqual(summary.excluded.map((x) => [x.address, x.ownership]), [["aws_s3_bucket.state", "PROTECTED_BACKEND"], ["aws_sqs_queue.preexisting", "NOT_IN_PLAN"]]);

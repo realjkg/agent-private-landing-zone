@@ -14,8 +14,9 @@ import type { ApplyEnvironment, ApplyEvidence, CleanupEvidence, EngineId, Provid
  * the records, and `lifecycleReportProblems` recomputes it, so a report that claims more than its records show is
  * refused. Each stage carries its own evidence mode: the execute step is LIVE only when the owner's live record
  * (`./alz apply record-live`) covers this exact apply evidence, and every other stage is SYNTHETIC until an attestation
- * form exists for it; the report's mode is derived from the stages. The report is SYNTHETIC unless that record covers this exact apply
- * evidence: a fake engine and a fake cloud write the same records, and only a person's attestation tells them apart.
+ * form exists for it; the report's mode is derived from the stages, so with the owner's record it is MIXED, and LIVE only
+ * once every stage has an attestation. A fake engine and a fake cloud write the same records as real ones, and only a
+ * person's attestation tells them apart.
  *
  * Identifiers and hashes only: no state value, cloud property, approval signature or engine output.
  */
@@ -51,7 +52,7 @@ export type LifecycleReport = {
   stages: LifecycleStages;
   approvals: { apply: string[]; cleanup: string[] };
   observation: { verdict: string; resources: { address: string; type: string; identifier: string | null; result: string }[] } | null;
-  dispositions: { disposition: "COMPLETE" | "INCOMPLETE"; resources: { address: string; disposition: string; basis: string }[] } | null;
+  dispositions: { disposition: "COMPLETE" | "KNOWN_ADDRESSES_CONFIRMED" | "INCOMPLETE"; resources: { address: string; disposition: string; basis: string }[] } | null;
   /** Derived: every stage PASS. Never set by a caller. */
   passed: boolean;
   /** What stands between this run and a pass, in sentences. */
@@ -103,12 +104,16 @@ function stagesOf(input: LifecycleReportInput, applyEvidenceSha256: string): { s
   let leftoversStage: StageResult;
   if (!proposal) leftoversStage = { status: "NOT_RUN", mode: "SYNTHETIC", detail: "no proposal to verify" };
   else if (!leftovers || leftovers.proposalSha256 !== proposal.proposalSha256) { leftoversStage = { status: "NOT_RUN", mode: "SYNTHETIC", detail: "leftovers not verified for this proposal" }; unresolved.push("verify leftovers"); }
-  else if (leftovers.disposition === "COMPLETE") leftoversStage = { status: "PASS", mode: "SYNTHETIC", detail: "every proposed deletion confirmed gone by independent read (" + leftovers.sweep + " sweep)", evidenceSha256: hashOf(leftovers), at: leftovers.observedAt };
+  else if (leftovers.disposition === "COMPLETE") leftoversStage = { status: "PASS", mode: "SYNTHETIC", detail: "every proposed deletion confirmed gone by independent read, and a complete sweep by the run's deletion-unit tag found nothing else", evidenceSha256: hashOf(leftovers), at: leftovers.observedAt };
+  else if (leftovers.disposition === "KNOWN_ADDRESSES_CONFIRMED") {
+    // The named resources are settled, but nothing outside the state could be searched for: not completion, and the gap is named.
+    leftoversStage = { status: "INCONCLUSIVE", mode: "SYNTHETIC", detail: "every proposed deletion confirmed gone by address; no deletion-unit sweep was possible (the run carries no unit tag), so the cleanup is not independently complete", evidenceSha256: hashOf(leftovers), at: leftovers.observedAt };
+    unresolved.push("a complete sweep by the run's deletion-unit tag is needed for completion; this run carries none, so a person confirms by hand that nothing else of it remains");
+  }
   else { leftoversStage = { status: "INCONCLUSIVE", mode: "SYNTHETIC", detail: "leftover check INCOMPLETE", evidenceSha256: hashOf(leftovers), at: leftovers.observedAt }; unresolved.push(leftovers.nextAction); }
   return { stages: { execute, observe, propose, cleanup: cleanupStage, leftovers: leftoversStage }, unresolved };
 }
 
-/** Builds the report from the records. It writes nothing; the CLI stores what it returns. */
 /** The owner's live record, only when it attests this very apply evidence of this very artifact for the execute step. */
 function liveRecordFor(input: LifecycleReportInput, applyEvidenceSha256: string): LiveAcceptanceRecord | undefined {
   const live = input.live;
@@ -121,6 +126,7 @@ export function modeOfStages(stages: LifecycleStages): LifecycleReport["mode"] {
   return modes.every((mode) => mode === "LIVE") ? "LIVE" : modes.some((mode) => mode === "LIVE") ? "MIXED" : "SYNTHETIC";
 }
 
+/** Builds the report from the records. It writes nothing; the CLI stores what it returns. */
 export function buildLifecycleReport(input: LifecycleReportInput): LifecycleReport {
   const applyEvidenceSha256 = hashOf(input.applyEvidence);
   const { stages, unresolved } = stagesOf(input, applyEvidenceSha256);
@@ -200,7 +206,7 @@ export function lifecycleReportProblems(value: unknown, expected: { sourceCommit
   if (!isRecord(approvals) || !Array.isArray(approvals.apply) || !Array.isArray(approvals.cleanup) || ![...approvals.apply, ...approvals.cleanup].every((x) => typeof x === "string" && x.length > 0)) problems.push("report.approvals: approver ids only");
   if (value.observation !== null && (!isRecord(value.observation) || typeof value.observation.verdict !== "string" || !Array.isArray(value.observation.resources) ||
     !value.observation.resources.every((r) => isRecord(r) && Object.keys(r).sort().join() === "address,identifier,result,type"))) problems.push("report.observation: verdict and resources with address, type, identifier and result only");
-  if (value.dispositions !== null && (!isRecord(value.dispositions) || (value.dispositions.disposition !== "COMPLETE" && value.dispositions.disposition !== "INCOMPLETE") || !Array.isArray(value.dispositions.resources) ||
+  if (value.dispositions !== null && (!isRecord(value.dispositions) || !["COMPLETE", "KNOWN_ADDRESSES_CONFIRMED", "INCOMPLETE"].includes(value.dispositions.disposition as string) || !Array.isArray(value.dispositions.resources) ||
     !value.dispositions.resources.every((r) => isRecord(r) && Object.keys(r).sort().join() === "address,basis,disposition"))) problems.push("report.dispositions: a disposition and resources with address, disposition and basis only");
   if (!Array.isArray(value.unresolved) || !value.unresolved.every((x) => typeof x === "string")) problems.push("report.unresolved: sentences");
   const live = value.liveAttestation;

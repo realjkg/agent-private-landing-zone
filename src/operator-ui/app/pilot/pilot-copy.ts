@@ -194,6 +194,7 @@ export const COPY = {
   verifyRunning: "Looking at the cloud for anything left. This reads and changes nothing.",
   verifyComplete: "Everything on the list is confirmed gone, and everything kept is still there.",
   verifyIncomplete: "Not finished yet. Nothing is reported as complete until every listed thing is confirmed gone.",
+  verifyKnownConfirmed: "Everything on the list is confirmed gone, but this change carried no cleanup marker, so nothing outside its records could be searched for. This is not complete.",
   verifyNextLabel: "What to do now:",
   verifyNotSearched: "Things outside the project's own records were not searched for, because this change does not label what it makes.",
   approverSigningLegend: "What are you signing?",
@@ -387,6 +388,7 @@ export const CODE_COPY: Readonly<Record<string, Reason>> = {
   CLEANED_UP: { why: "The removal finished.", next: "Check that everything is gone." },
   CLEANUP_COMPLETE: { why: "Everything on the list is confirmed gone.", next: "Nothing further for this change." },
   CLEANUP_INCOMPLETE: { why: "Something on the list is not confirmed gone yet.", next: "Follow the next step shown with the list." },
+  CLEANUP_KNOWN_CONFIRMED: { why: "Everything on the list is confirmed gone, but the change carried no cleanup marker, so things outside its records could not be searched for.", next: "Ask the pilot owner to confirm by hand that nothing else of this change remains, or apply with the cleanup marker so the search can run." },
   // the command line's own errors, as the wizard reaches them
   APPLY_FLAG_UNKNOWN: { why: "The wizard sent something the command did not understand. This should not happen.", next: "Reload the page and try again. If it repeats, tell the pilot owner." },
   APPLY_ARGUMENT_INVALID: { why: "The wizard sent something the command did not understand. This should not happen.", next: "Reload the page and try again. If it repeats, tell the pilot owner." },

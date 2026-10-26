@@ -119,17 +119,17 @@ async function appliedRun(w: World, mainTf = 'resource "aws_s3_bucket" "logs" {}
   return { target, project, sealedPlanPath, artifactSha256, applyRequest, manifest, applyApproval: approval };
 }
 
-test("observe, propose-cleanup, approve of the proposal, cleanup and verify-cleanup run at the terminal with their own phrases, and the report says SYNTHETIC until the owner records live", async () => {
+test("observe, propose-cleanup, approve of the proposal, cleanup and verify-cleanup run at the terminal with their own phrases, and the report is SYNTHETIC, MIXED only after the owner's live record", async () => {
   const w = await world();
   const run = await appliedRun(w);
   const observed = await cli(w, ["observe", "--sealed", run.sealedPlanPath]);
   assert.equal(observed.code, 0, observed.stderr);
   const observation = observed.data as { label: string; verdict: string; resources: { address: string; result: string }[]; inventory: string };
   assert.equal(observation.label, "SYNTHETIC_UNLESS_ATTESTED_LIVE");
-  // Every entry is found under its identifier, yet the pilot apply tags nothing, so no inventory outside the state exists:
-  // the observe core reads that as PARTIAL (docs/observe-and-cleanup.md), never as VERIFIED.
-  assert.equal(observation.verdict, "PARTIAL", "found everything; no tag inventory to sweep");
-  assert.equal(observation.inventory, "NOT_AVAILABLE");
+  // Every entry is found under its identifier, and the sweep by the run's deletion-unit tag (the fake tagging API lists
+  // nothing else) covered every page: VERIFIED. The fixture's created types carry no tag attribute, so they are listed untagged.
+  assert.equal(observation.verdict, "VERIFIED", "found everything, and the unit sweep found nothing else");
+  assert.equal(observation.inventory, "COMPLETE");
   assert.deepEqual(observation.resources.map((r) => [r.address, r.result]), [["aws_cloudwatch_log_group.canary", "VERIFIED"], ["aws_s3_bucket.logs", "VERIFIED"], ["aws_s3_bucket.state", "VERIFIED"]]);
   assert.ok(awsReadCallsOf(awsToolDir).every((read) => read.env.AWS_ROLE_ARN === awsRoleArn("DISCOVERY", "DEV")));
   assert.deepEqual(observed.term.asked, [], "observing asks no phrase: it reads and changes nothing");
@@ -288,4 +288,9 @@ test("the lifecycle report validator refuses a declared pass, a live claim witho
   const foreign = await cli(other, ["report", "--sealed", otherRun.sealedPlanPath, "--proposal", proposalPath]);
   assert.equal(foreign.code, 2);
   assert.match(foreign.stderr, /PROPOSAL_INVALID/);
+  // And the cleanup command refuses another run's sealed plan for this proposal before any phrase is asked.
+  const wrongSeal = await cli(w, ["cleanup", "--proposal", proposalPath, "--request", run.applyRequest, "--manifest", run.manifest, "--sealed", otherRun.sealedPlanPath, "--approval", run.applyApproval]);
+  assert.equal(wrongSeal.code, 2);
+  assert.match(wrongSeal.stderr, /PROPOSAL_INVALID/);
+  assert.deepEqual(wrongSeal.term.asked, [], "refused before the phrase");
 });

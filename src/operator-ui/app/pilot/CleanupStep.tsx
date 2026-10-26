@@ -105,9 +105,10 @@ function ObservationTable(props: { observation: ObservationData }) {
 function LeftoversTable(props: { leftovers: LeftoversData }) {
   const { leftovers } = props;
   const complete = leftovers.disposition === "COMPLETE";
+  const known = leftovers.disposition === "KNOWN_ADDRESSES_CONFIRMED";
   return (
     <div role="status" aria-live="polite" className={complete ? "pilot-result pilot-result-good" : "pilot-result pilot-result-caution"} data-leftovers={leftovers.disposition}>
-      <h3>{complete ? COPY.verifyComplete : COPY.verifyIncomplete}</h3>
+      <h3>{complete ? COPY.verifyComplete : known ? COPY.verifyKnownConfirmed : COPY.verifyIncomplete}</h3>
       <p><strong>{COPY.verifyNextLabel}</strong> {leftovers.nextAction}</p>
       {leftovers.sweep === "NOT_AVAILABLE" && <p role="note"><small>{COPY.verifyNotSearched}</small></p>}
       <p role="note"><small>{COPY.observeSynthetic}</small></p>

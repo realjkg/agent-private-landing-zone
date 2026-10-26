@@ -427,7 +427,7 @@
         "the pilot contract or its pin changes",
         "src/apply or the Terraform pin changes"
       ],
-      "nextAction": "The AWS Terraform row now passes synthetically end to end (prepare, preview, approve, execute, observe, cleanup, leftovers; ./alz apply report writes the lifecycle report, SYNTHETIC until a live record exists). The owner supplies the pinned AWS contract inputs (identifiers and public keys only), supervises one DEV apply recorded with ./alz apply record-live, and separately authorizes the live cleanup of what it created."
+      "nextAction": "The AWS Terraform row now passes synthetically end to end (prepare, preview, approve, execute, observe, cleanup, leftovers; ./alz apply report writes the lifecycle report with a mode per stage: SYNTHETIC, and MIXED once the owner's live record covers the execute step). The owner supplies the pinned AWS contract inputs (identifiers and public keys only), supervises one DEV apply recorded with ./alz apply record-live, and separately authorizes the live cleanup of what it created."
     },
     {
       "gate": "act:azure-terraform",
