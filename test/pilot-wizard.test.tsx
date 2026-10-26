@@ -4,9 +4,10 @@ import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import PilotWizard, { BlockedNotice, ChangeList } from "../src/operator-ui/app/pilot/PilotWizard";
+import { CleanupList, LeftoversTable } from "../src/operator-ui/app/pilot/CleanupStep";
 import { forgetPilotToken, type PilotPath, type PilotRun, type PreflightCheck, type PreparedFiles, type ReviewSummary } from "../src/operator-ui/app/pilot/pilot-api";
 import {
-  BLOCKED, CLI_COMMANDS, CODE_COPY, COPY, RESULT_COPY, STEP_TITLES, classifyResult, describeCheck, describeCounts, describeMismatch, dialogCopy, reasonFor,
+  BLOCKED, CLI_COMMANDS, CODE_COPY, COPY, RESULT_COPY, STEP_TITLES, classifyResult, describeCheck, describeCounts, describeMismatch, dialogCopy, dispositionWord, ownershipWord, reasonFor, reasonWord, retentionOwnerWord,
   type BlockedState, type ResultKind,
 } from "../src/operator-ui/app/pilot/pilot-copy";
 
@@ -896,6 +897,138 @@ describe("the words are plain", () => {
     await clickButton(COPY.approverLoad);
     await screen.findByText("What will change");
     expect(jargonIn(primaryText())).toEqual([]);
+  });
+});
+
+describe("step 7: the cleanup lists say only what the records say", () => {
+  /** The ownership classes and retention owners the backend can emit, read from its one definition (src/apply/cleanup-proposal.ts). */
+  const union = (name: string): string[] => [...read("src/apply/cleanup-proposal.ts").split("export type " + name + " =")[1].split(";")[0].matchAll(/"([A-Z_]+)"/g)].map((m) => m[1]);
+  const OWNERSHIPS = union("Ownership");
+  const OWNERS = union("RetentionOwner");
+  const KEPT = OWNERSHIPS.filter((o) => o !== "RUN_CREATED");
+  const PILOT_KEPT = ["PROTECTED_BACKEND", "PROTECTED_IDENTITY", "PROTECTED_DEPLOYMENT", "RETAINED_GROUP", "CONTAINS_OTHERS"];
+  const ownerOf = (ownership: string) => (PILOT_KEPT.includes(ownership) ? "PILOT_OWNER" : "ENVIRONMENT_OWNER");
+  const summary = (deletes: { address: string; type: string; identifier: string; ownership: string; observed: string }[], excluded: { address: string; type: string; identifier: string; ownership: string; reason: string; retainedBy: string }[]) => ({
+    shortId: "0123456789ab", proposalSha256: "0".repeat(64), environment: "DEV" as const, target: { account: "acct", backend: "b", workspace: "default" }, sourceCommit: "c".repeat(40), artifactShortId: "0123456789ab", requiredApprovals: 1,
+    deletes, alreadyAbsent: [], excluded, risks: ["a risk"], lines: ["line"],
+  });
+  const NEVER = /never (?:removes|removed|deletes|deleted)|were never on the list|whatever this change did/;
+
+  test("every ownership class and retention owner the backend can emit has its own words, so a new class never shows as unknown", () => {
+    expect(OWNERSHIPS.length).toBeGreaterThanOrEqual(10);
+    expect(OWNERS).toEqual(["PILOT_OWNER", "ENVIRONMENT_OWNER"]);
+    for (const ownership of OWNERSHIPS) {
+      expect(ownershipWord(ownership), ownership).not.toBe("unknown");
+      expect(ownershipWord(ownership).length, ownership).toBeGreaterThan(10);
+      expect(jargonIn(ownershipWord(ownership)), ownership).toEqual([]);
+    }
+    for (const owner of OWNERS) expect(retentionOwnerWord(owner), owner).toMatch(/^kept by the (?:pilot owner|environment's owner)$/);
+    expect(ownershipWord("A_CLASS_NOBODY_HAS_SEEN")).toBe("unknown");
+    expect(retentionOwnerWord("NOBODY")).toBe("kept by an unknown owner");
+    // The identity class covers both clouds and names no cloud's namespace; the scope class names only what the backend emits today.
+    expect(ownershipWord("PROTECTED_IDENTITY")).toMatch(/role/);
+    expect(ownershipWord("PROTECTED_IDENTITY")).toMatch(/managed identity/);
+    expect(ownershipWord("PROTECTED_IDENTITY")).toMatch(/sign-in trust/);
+    expect(ownershipWord("PROTECTED_IDENTITY")).not.toMatch(/Microsoft|AWS|IAM/);
+    expect(ownershipWord("CONTAINS_OTHERS")).not.toMatch(/nested stack/);
+    expect(dispositionWord("UNKNOWN")).toBe("Unresolved: not confirmed gone");
+    // Every reason code the records can carry has words, and the fallback is honest.
+    for (const code of ["ACCESS_DENIED", "CREDENTIALS", "THROTTLED", "TYPE_NOT_SUPPORTED", "CLI_ERROR", "NOT_INDEPENDENTLY_CHECKABLE", "NO_IDENTIFIER_IN_STATE", "NOT_AN_ARM_RESOURCE_ID", "OUTSIDE_TARGET_SUBSCRIPTION", "UNEXPECTED_RESPONSE", "HOST_REFUSED"]) {
+      expect(reasonWord(code), code).not.toMatch(/\b[A-Z]{2,}(?:_[A-Z0-9]+)+\b/);
+      expect(reasonWord(code).length, code).toBeGreaterThan(10);
+    }
+    expect(reasonWord("A_REASON_NOBODY_HAS_SEEN")).toBe("the check gave no usable answer");
+  });
+
+  test("the note under a proposal is built from that proposal: it says the delete list will be deleted if approved, names only the kept classes present with their owner, and promises nothing about absent classes", () => {
+    // Every kept class present: each is named once, with its owner.
+    const all = summary([{ address: "thing.one", type: "a_thing", identifier: "id-1", ownership: "RUN_CREATED", observed: "VERIFIED" }],
+      KEPT.map((ownership, index) => ({ address: "kept.k" + index, type: "a_kind", identifier: "id-k" + index, ownership, reason: "because " + index, retainedBy: ownerOf(ownership) })));
+    const everything = render(<CleanupList cleanup={all} />);
+    const note = everything.container.querySelector("[data-retained-note]")!.textContent ?? "";
+    expect(note).toContain(COPY.proposeWillDelete);
+    for (const ownership of KEPT) {
+      expect(note).toContain(ownershipWord(ownership) + " (" + retentionOwnerWord(ownerOf(ownership)) + ")");
+      const row = everything.container.querySelector('[data-kept="kept.k' + KEPT.indexOf(ownership) + '"]') as HTMLElement;
+      expect(row.textContent).toContain(ownershipWord(ownership));
+      expect(row.textContent).toContain(retentionOwnerWord(ownerOf(ownership)));
+      expect(row.textContent).not.toMatch(/\b[A-Z]{2,}(?:_[A-Z0-9]+)+\b/);
+    }
+    expect(note).toMatch(/Retiring the environment itself is a separate, reviewed decision/);
+    expect(note).not.toMatch(NEVER);
+    expect(jargonIn(note)).toEqual([]);
+    everything.unmount();
+    // An AWS proposal with a run-created role on the delete list and only the backend kept: the note names the backend and nothing about roles.
+    const aws = summary([{ address: "aws_iam_role.app", type: "aws_iam_role", identifier: "alz-app-role", ownership: "RUN_CREATED", observed: "VERIFIED" }, { address: "aws_s3_bucket.logs", type: "aws_s3_bucket", identifier: "logs", ownership: "RUN_CREATED", observed: "VERIFIED" }],
+      [{ address: "aws_s3_bucket.state", type: "aws_s3_bucket", identifier: "state", ownership: "PROTECTED_BACKEND", reason: "the state backend", retainedBy: "PILOT_OWNER" }]);
+    const partial = render(<CleanupList cleanup={aws} />);
+    const text = partial.container.textContent ?? "";
+    const awsNote = partial.container.querySelector("[data-retained-note]")!.textContent ?? "";
+    expect(awsNote).toContain(ownershipWord("PROTECTED_BACKEND") + " (" + retentionOwnerWord("PILOT_OWNER") + ")");
+    for (const absent of KEPT.filter((o) => o !== "PROTECTED_BACKEND")) expect(awsNote, absent).not.toContain(ownershipWord(absent));
+    expect(text).not.toMatch(/roles? (?:is|are) never|never removes? (?:a |an )?(?:identity|role|resource group|stack)/i);
+    expect(text).not.toMatch(NEVER);
+    expect(text).toContain("aws_iam_role.app");
+    partial.unmount();
+    // Nothing kept, nothing to delete: said plainly.
+    const empty = render(<CleanupList cleanup={summary([], [])} />);
+    const emptyNote = empty.container.querySelector("[data-retained-note]")!.textContent ?? "";
+    expect(emptyNote).toMatch(/Nothing is on the delete list, so an approval would delete nothing/);
+    expect(emptyNote).toMatch(/Nothing else from this change's records is kept/);
+    expect(emptyNote).not.toMatch(NEVER);
+    empty.unmount();
+  });
+
+  test("a complete leftover check says how many listed things are confirmed gone, whether a cleanup ran, that kept things were left in place and not checked, which kept kinds this record holds, and that the environment is not retired; an unresolved row shows words for its reason", () => {
+    const kept = ["PROTECTED_BACKEND", "PROTECTED_IDENTITY", "NOT_IN_PLAN"].map((ownership, index) => ({
+      address: "kept." + ownership.toLowerCase(), type: "a_kind", identifier: "id-" + index, disposition: "INTENTIONALLY_RETAINED", basis: "RETENTION_DECISION", reason: ownership + ": the record's own sentence for item " + index, owner: ownerOf(ownership),
+    }));
+    const gone = [{ address: "thing.one", type: "a_thing", identifier: "id-1", disposition: "CONFIRMED_DELETED", basis: "CLOUD_CONTROL_ABSENT" }, { address: "thing.two", type: "a_thing", identifier: "id-2", disposition: "CONFIRMED_DELETED", basis: "CLOUD_CONTROL_ABSENT" }];
+    const base = { disposition: "COMPLETE" as const, sweep: "COMPLETE", nextAction: "Approved resources deleted: every listed resource (2) is confirmed gone.", observedAt: "2026-10-26T00:00:00.000Z" };
+    // A cleanup ran and two listed things are gone.
+    const ran = render(<LeftoversTable leftovers={{ ...base, resources: [...gone, ...kept], cleanupEvidenceSha256: "a".repeat(64) }} />);
+    const headline = ran.container.querySelector("h3")!.textContent ?? "";
+    expect(headline).toBe("Approved things deleted: 2 listed thing(s) confirmed gone. " + COPY.verifyKeptNotChecked);
+    expect(headline).not.toMatch(/still there|verified|present\b/);
+    const retirement = ran.container.querySelector('[data-retirement="OUTSTANDING"]')!.textContent ?? "";
+    expect(retirement).toMatch(/^The environment itself is not retired\. Kept and left in place, not checked: /);
+    for (const item of kept) {
+      const ownership = item.reason.split(":")[0];
+      expect(retirement).toContain(ownershipWord(ownership) + " (" + retentionOwnerWord(item.owner) + ")");
+      const row = [...ran.container.querySelectorAll("tr")].find((tr) => tr.textContent?.includes(item.address))!;
+      expect(row.textContent).toContain(dispositionWord("INTENTIONALLY_RETAINED"));
+      expect(row.textContent).toContain(retentionOwnerWord(item.owner));
+      expect(row.textContent).toContain(ownershipWord(ownership));
+      expect(row.textContent?.replace(item.address, "").replace(item.identifier, "")).not.toMatch(/\b[A-Z]{2,}(?:_[A-Z0-9]+)+\b/);
+    }
+    for (const absent of KEPT.filter((o) => !["PROTECTED_BACKEND", "PROTECTED_IDENTITY", "NOT_IN_PLAN"].includes(o))) expect(retirement, absent).not.toContain(ownershipWord(absent));
+    expect(retirement).toMatch(/separate, reviewed action by the pilot owner, and it is still outstanding\.$/);
+    expect(retirement).not.toMatch(NEVER);
+    expect(retirement).not.toMatch(/resource group or a stack/);
+    expect(jargonIn(headline + " " + retirement)).toEqual([]);
+    ran.unmount();
+    // No cleanup ran, yet the listed things are gone: said so, never "approved things deleted".
+    const none = render(<LeftoversTable leftovers={{ ...base, resources: gone, cleanupEvidenceSha256: null }} />);
+    expect(none.container.querySelector("h3")!.textContent).toBe("No cleanup ran; the 2 listed thing(s) are confirmed gone anyway. " + COPY.verifyKeptNotChecked);
+    expect(none.container.querySelector('[data-retirement="OUTSTANDING"]')!.textContent).toBe("The environment itself is not retired. Nothing from this change's records was kept. " + COPY.verifyRetirementTail);
+    none.unmount();
+    // Nothing was on the delete list.
+    const nothing = render(<LeftoversTable leftovers={{ ...base, resources: kept, cleanupEvidenceSha256: null }} />);
+    expect(nothing.container.querySelector("h3")!.textContent).toBe("Nothing was on the delete list, so nothing was deleted. " + COPY.verifyKeptNotChecked);
+    nothing.unmount();
+    expect(CODE_COPY.CLEANUP_COMPLETE.why).not.toMatch(/Approved things deleted|still there/);
+    expect(CODE_COPY.CLEANUP_COMPLETE.next).not.toMatch(/resource group|identity|deployment history/);
+    expect(jargonIn(CODE_COPY.CLEANUP_COMPLETE.why + " " + CODE_COPY.CLEANUP_COMPLETE.next)).toEqual([]);
+    // Not complete: an unresolved row is "not confirmed gone" with its reason in words, and no retirement line is shown.
+    const incomplete = { disposition: "INCOMPLETE" as const, sweep: "COMPLETE", nextAction: "Fix the discovery sign-in's access, then check again.", observedAt: "2026-10-26T00:00:00.000Z", cleanupEvidenceSha256: "a".repeat(64),
+      resources: [{ address: "thing.two", type: "a_thing", identifier: "id-2", disposition: "UNKNOWN", basis: "CHECK_FAILED", reason: "ACCESS_DENIED" }] };
+    const second = render(<LeftoversTable leftovers={incomplete} />);
+    expect(second.container.querySelector("h3")!.textContent).toBe(COPY.verifyIncomplete);
+    expect(second.container.querySelector('[data-retirement="OUTSTANDING"]')).toBeNull();
+    const unresolved = second.container.querySelector('[data-disposition="UNKNOWN"]') as HTMLElement;
+    expect(unresolved.textContent).toContain("Unresolved: not confirmed gone: " + reasonWord("ACCESS_DENIED"));
+    expect(unresolved.textContent).not.toMatch(/ACCESS_DENIED|Confirmed gone|Kept on purpose/);
+    second.unmount();
   });
 });
 

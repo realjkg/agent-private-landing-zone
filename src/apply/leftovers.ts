@@ -102,9 +102,14 @@ export async function verifyLeftovers(input: LeftoversInput): Promise<LeftoversR
   const disposition: LeftoversRecord["disposition"] = !known ? "INCOMPLETE" : sweep === "COMPLETE" ? "COMPLETE" : sweep === "NOT_AVAILABLE" ? "KNOWN_ADDRESSES_CONFIRMED" : "INCOMPLETE";
   const open = resources.filter((x) => x.disposition !== "CONFIRMED_DELETED" && x.disposition !== "INTENTIONALLY_RETAINED");
   const retained = resources.filter((x) => x.disposition === "INTENTIONALLY_RETAINED");
-  const nextAction = disposition === "COMPLETE" ? "Approved resources deleted: every proposed resource is confirmed gone and nothing else carries this run's tag." +
-      (retained.length > 0 ? " Protected objects intentionally retained (" + retained.length + ", kept by " + [...new Set(retained.map((x) => x.owner))].sort().join(" and ") + "); they were never on the list." : "") +
-      " Full environment retirement (the resource group, identities and grants, deployment history, the state backend) is a separate, reviewed action and remains outstanding; this record does not claim the environment retired."
+  // COMPLETE says only what the record shows: how many listed resources are confirmed gone, whether an approved cleanup ran at all, what was kept (left in
+  // place, not read), and that the environment is not retired. No cloud's list of protected kinds is recited (review 6411551942, N7 and N8).
+  const gone = resources.filter((x) => x.disposition === "CONFIRMED_DELETED").length;
+  const nextAction = disposition === "COMPLETE" ? (gone === 0 ? "Nothing was on the delete list, so nothing was deleted, and nothing else carries this run's tag."
+      : cleanup === undefined ? "No cleanup ran; the " + gone + " listed resource(s) are confirmed gone anyway, and nothing else carries this run's tag."
+      : "Approved resources deleted: every listed resource (" + gone + ") is confirmed gone and nothing else carries this run's tag.") +
+      (retained.length > 0 ? " Protected or pre-existing objects intentionally retained (" + retained.length + ", kept by " + [...new Set(retained.map((x) => x.owner))].sort().join(" and ") + "); they were never on the list, were left in place and were not read." : "") +
+      " Full environment retirement is a separate, reviewed action and remains outstanding; this record does not claim the environment retired."
     : disposition === "KNOWN_ADDRESSES_CONFIRMED"
       ? "Every proposed resource is confirmed gone, but resources outside the engine's state were not searched for: this run carries no deletion-unit tag, so the cleanup is not independently complete. A person confirms by hand that nothing else of this run remains, or the run is applied with its unit tag so the sweep can run."
     : open.some((x) => x.disposition === "DELETION_PENDING" && x.basis === "CLEANUP_NOT_FINISHED") ? (cleanup === undefined
