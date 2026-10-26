@@ -736,16 +736,32 @@ describe("every stop has a reason and a next step", () => {
     }
   });
 
-  test("every code any step can end with has plain words for why and what next", () => {
-    const refusalCodes = [...read("src/apply/types.ts").split("export type ApplyRefusalCode =")[1].split(";")[0].matchAll(/\| "([A-Z_]+)"/g)].map((m) => m[1]);
-    const cliCodes = [...read("src/cli/apply.ts").matchAll(/\bfail\(\s*"([A-Z_]+)"|\bcode: "([A-Z_]+)"|, "([A-Z_]+_MISMATCH)", ?"[A-Z_]+"\)/g)].map((m) => m[1] ?? m[2] ?? m[3]);
-    const routerCodes = [...read("src/cli/ui-channel.ts").matchAll(/new Bad\(\d+, "([A-Z_]+)"/g)].map((m) => m[1]);
-    const prepareCodes = [...read("src/apply/prepare.ts").split("export type PrepareCode =")[1].split(";")[0].matchAll(/"([A-Z_]+)"/g)].map((m) => m[1]);
-    expect(prepareCodes.length).toBeGreaterThanOrEqual(12);
+  /** Every code the console can show, read out of the sources that define or emit one (the selector's guard for this file names the same directories). */
+  const CODE_SOURCES = ["src/apply/types.ts", "src/cli/apply.ts", "src/cli/ui-channel.ts", "src/apply/prepare.ts", "src/apply/preview-evidence.ts"] as const;
+  function codesIn(sources: Record<(typeof CODE_SOURCES)[number], string>): { all: string[]; refusalCodes: string[]; routerCodes: string[]; prepareCodes: string[]; producerCodes: string[] } {
+    const refusalCodes = [...sources["src/apply/types.ts"].split("export type ApplyRefusalCode =")[1].split(";")[0].matchAll(/\| "([A-Z_]+)"/g)].map((m) => m[1]);
+    const cliCodes = [...sources["src/cli/apply.ts"].matchAll(/\bfail\(\s*"([A-Z_]+)"|\bcode: "([A-Z_]+)"|, "([A-Z_]+_MISMATCH)", ?"[A-Z_]+"\)/g)].map((m) => m[1] ?? m[2] ?? m[3]);
+    const routerCodes = [...sources["src/cli/ui-channel.ts"].matchAll(/new Bad\(\d+, "([A-Z_]+)"/g)].map((m) => m[1]);
+    const prepareCodes = [...sources["src/apply/prepare.ts"].split("export type PrepareCode =")[1].split(";")[0].matchAll(/"([A-Z_]+)"/g)].map((m) => m[1]);
+    // The preview-evidence producer's refusals reach the terminal and the console through the CLI's `dry.code` and `built.code`
+    // (#257 round 2, NB6): the code union of PreviewEvidenceRefusal, plus any PREVIEW_* literal it fails or throws with.
+    const producer = sources["src/apply/preview-evidence.ts"];
+    const producerCodes = [
+      ...[...(/export type PreviewEvidenceRefusal = \{[^}]*\}/.exec(producer)?.[0] ?? "").matchAll(/"([A-Z_]+)"/g)].map((m) => m[1]),
+      ...[...producer.matchAll(/\b(?:fail|refuse)\(\s*"([A-Z_]+)"|\bcode: "([A-Z_]+)"|throw new Error\("(PREVIEW_[A-Z_]+)/g)].map((m) => m[1] ?? m[2] ?? m[3]),
+    ];
     const extra = ["MANIFEST_INVALID", "APPLY_UNEXPECTED_ERROR", "PILOT_FAILED", "PILOT_UNREACHABLE", "LOCAL_HOST_ONLY", "NOT_FOUND"];
-    const all = [...new Set([...refusalCodes, ...cliCodes, ...routerCodes, ...prepareCodes, ...extra])];
+    return { all: [...new Set([...refusalCodes, ...cliCodes, ...routerCodes, ...prepareCodes, ...producerCodes, ...extra])], refusalCodes, routerCodes, prepareCodes, producerCodes };
+  }
+  const sourcesOnDisk = () => Object.fromEntries(CODE_SOURCES.map((path) => [path, read(path)])) as Record<(typeof CODE_SOURCES)[number], string>;
+  const withoutWords = (all: string[]): string[] => all.filter((code) => { const entry = CODE_COPY[code]; return !entry || entry.why.trim().length <= 10 || entry.next.trim().length <= 10; });
+
+  test("every code any step can end with has plain words for why and what next", () => {
+    const { all, refusalCodes, routerCodes, prepareCodes, producerCodes } = codesIn(sourcesOnDisk());
+    expect(prepareCodes.length).toBeGreaterThanOrEqual(12);
     expect(refusalCodes.length).toBeGreaterThanOrEqual(25);
     expect(routerCodes.length).toBeGreaterThanOrEqual(12);
+    expect(producerCodes).toEqual(expect.arrayContaining(["GATE_UNKNOWN", "SCENARIO_MISMATCH", "CONTRACT_MISMATCH"]));
     for (const code of all) {
       const entry = CODE_COPY[code];
       expect(entry, code + " has no plain words").toBeTruthy();
@@ -755,6 +771,27 @@ describe("every stop has a reason and a next step", () => {
     }
     expect(reasonFor("A_CODE_NOBODY_HAS_SEEN")).toBe(CODE_COPY.UNKNOWN_CODE);
     expect(CODE_COPY.UNKNOWN_CODE.next).toMatch(/Tell the pilot owner/);
+  });
+
+  test("a code added to the preview-evidence producer, the CLI, the router, the prepare codes or the refusal codes without plain words fails the check", () => {
+    const sources = sourcesOnDisk();
+    expect(withoutWords(codesIn(sources).all)).toEqual([]);
+    const probes: [string, (typeof CODE_SOURCES)[number], (text: string) => string][] = [
+      ["a new member of PreviewEvidenceRefusal", "src/apply/preview-evidence.ts", (t) => t.replace('code: "GATE_UNKNOWN" |', 'code: "GATE_UNKNOWN" | "PROBE_PRODUCER_UNION" |')],
+      ["a PREVIEW_* throw in the producer", "src/apply/preview-evidence.ts", (t) => t + '\nfunction probe() { throw new Error("PREVIEW_PROBE_THROWN: x"); }\n'],
+      ["a refusal object in the producer", "src/apply/preview-evidence.ts", (t) => t + '\nconst probe = { ok: false, code: "PROBE_PRODUCER_OBJECT", message: "x" };\n'],
+      ["a fail() in the CLI", "src/cli/apply.ts", (t) => t + '\nfunction probe() { fail("PROBE_CLI_CODE", "x"); }\n'],
+      ["a router refusal", "src/cli/ui-channel.ts", (t) => t + '\nconst probe = new Bad(400, "PROBE_ROUTER_CODE");\n'],
+      ["a prepare code", "src/apply/prepare.ts", (t) => t.replace("export type PrepareCode =", 'export type PrepareCode = "PROBE_PREPARE_CODE" |')],
+      ["a refusal code", "src/apply/types.ts", (t) => t.replace("export type ApplyRefusalCode =", 'export type ApplyRefusalCode =\n  | "PROBE_REFUSAL_CODE"')],
+    ];
+    for (const [label, path, inject] of probes) {
+      const mutated = { ...sources, [path]: inject(sources[path]) };
+      expect(mutated[path], label).not.toBe(sources[path]);
+      const missing = withoutWords(codesIn(mutated).all);
+      expect(missing, label).toHaveLength(1);
+      expect(missing[0], label).toMatch(/^(?:PROBE_|PREVIEW_PROBE_)/);
+    }
   });
 
   test("every ending of an apply says whether nothing changed, whether anything was used up, and who to call when it is unsafe", () => {

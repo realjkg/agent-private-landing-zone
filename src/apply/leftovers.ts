@@ -78,8 +78,11 @@ export async function verifyLeftovers(input: LeftoversInput): Promise<LeftoversR
       : check.existence === "PRESENT" ? { disposition: "STILL_PRESENT" as const, basis: bases.present, reason: "it was absent when the cleanup was proposed and exists again" }
       : { disposition: "UNKNOWN" as const, basis: "CHECK_FAILED" as const, reason: check.reason ?? "CLI_ERROR" }) });
   }
+  // Everything the proposal kept is a retention decision with an owner and a reason: a protected object (a resource group, an
+  // identity or grant, deployment history, the state backend) is the pilot owner's; a resource this run did not create is the
+  // environment owner's. Neither is ever read as deleted, and the record never says the environment is gone.
   for (const item of proposal.excluded) {
-    resources.push({ address: item.address, type: item.type, identifier: item.identifier, disposition: "INTENTIONALLY_RETAINED", basis: "RETENTION_DECISION", reason: item.reason, owner: item.ownership });
+    resources.push({ address: item.address, type: item.type, identifier: item.identifier, disposition: "INTENTIONALLY_RETAINED", basis: "RETENTION_DECISION", reason: item.ownership + ": " + item.reason, owner: item.retainedBy });
   }
   // Resources outside the engine's state: only findable by the run's unit tag, which the pilot apply does not set yet.
   let sweep: LeftoversRecord["sweep"] = "NOT_AVAILABLE";
@@ -98,7 +101,10 @@ export async function verifyLeftovers(input: LeftoversInput): Promise<LeftoversR
   // COMPLETE needs both: every named resource settled, and a complete sweep by the run's unit tag that found nothing else.
   const disposition: LeftoversRecord["disposition"] = !known ? "INCOMPLETE" : sweep === "COMPLETE" ? "COMPLETE" : sweep === "NOT_AVAILABLE" ? "KNOWN_ADDRESSES_CONFIRMED" : "INCOMPLETE";
   const open = resources.filter((x) => x.disposition !== "CONFIRMED_DELETED" && x.disposition !== "INTENTIONALLY_RETAINED");
-  const nextAction = disposition === "COMPLETE" ? "Nothing further: every proposed resource is confirmed gone and nothing else carries this run's tag."
+  const retained = resources.filter((x) => x.disposition === "INTENTIONALLY_RETAINED");
+  const nextAction = disposition === "COMPLETE" ? "Approved resources deleted: every proposed resource is confirmed gone and nothing else carries this run's tag." +
+      (retained.length > 0 ? " Protected objects intentionally retained (" + retained.length + ", kept by " + [...new Set(retained.map((x) => x.owner))].sort().join(" and ") + "); they were never on the list." : "") +
+      " Full environment retirement (the resource group, identities and grants, deployment history, the state backend) is a separate, reviewed action and remains outstanding; this record does not claim the environment retired."
     : disposition === "KNOWN_ADDRESSES_CONFIRMED"
       ? "Every proposed resource is confirmed gone, but resources outside the engine's state were not searched for: this run carries no deletion-unit tag, so the cleanup is not independently complete. A person confirms by hand that nothing else of this run remains, or the run is applied with its unit tag so the sweep can run."
     : open.some((x) => x.disposition === "DELETION_PENDING" && x.basis === "CLEANUP_NOT_FINISHED") ? (cleanup === undefined

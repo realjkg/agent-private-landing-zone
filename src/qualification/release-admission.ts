@@ -4,7 +4,9 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 
 import { loadPilotContract, pilotContractPinned, pilotContractSha256 } from "../apply/contract.js";
 import type { EngineId, PilotContract, ProviderId } from "../apply/types.js";
-import { PHASE_E_SCENARIOS } from "./phase-e.js";
+import { PREVIEW_GATE_SCENARIOS, previewGateEvidenceProblems, previewScenarioOf } from "./preview-gate.js";
+export { PREVIEW_GATE_SCENARIOS, previewScenarioOf, type PreviewGateScenario } from "./preview-gate.js";
+const previewScenarioIds = Object.keys(PREVIEW_GATE_SCENARIOS);
 import { PRODUCTION_DEPLOYMENT_CONTRACT, pilotCombinationListed } from "./production-contract.js";
 
 export type ReleaseGateMode =
@@ -16,15 +18,6 @@ export type ReleaseGate = {
   mode: ReleaseGateMode;
   why: string;
 };
-const previewScenarioIds = [
-  ...new Set([
-    ...PHASE_E_SCENARIOS.map((scenario) => scenario.id),
-    "pulumi-aws-greenfield",
-    "pulumi-aws-brownfield",
-    "pulumi-azure-brownfield",
-    "terraform-azure-brownfield",
-  ]),
-];
 /** The operating systems a release is qualified on, one gate each: a Linux pass never stands in for macOS or Windows. */
 export const RELEASE_PLATFORMS = ["darwin-arm64", "darwin-x64", "linux-x64", "linux-arm64", "win32-arm64", "win32-x64"] as const;
 /** What one platform's lifecycle report must show it actually ran on that host. */
@@ -187,6 +180,12 @@ function observedLivePayload(value: unknown, gate: ReleaseGate, record: ReleaseG
         x.passed === true && typeof x.evidenceSha256 === "string" &&
         sha64.test(x.evidenceSha256))) return false;
   if (gate.mode === "LIVE_PREVIEW") {
+    // The evidence is a valid preview-gate document of this gate and this commit (src/qualification/preview-gate.ts: the exact
+    // scenario, provider, engine and estate; exactly the six live conditions, all true, with the label, mode, `passed`,
+    // `simulation`, `reasons`, attestation and qualification derived from them), and it calls itself LIVE. A document that lacks
+    // the conditions, has an empty or partial set, or was relabeled by hand with its conditions flipped and its reasons, null
+    // attestation or UNQUALIFIED provenance left behind, is refused here, not only by the producer's own validator.
+    if (previewGateEvidenceProblems(report, { sourceCommit: commit, gateId: gate.id }).length > 0 || report.label !== "LIVE") return false;
     return report.previewExecuted === true &&
       report.toolOutputHash !== undefined &&
       typeof report.toolOutputHash === "string" &&

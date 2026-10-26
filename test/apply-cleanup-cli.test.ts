@@ -8,7 +8,7 @@ import test from "node:test";
 import { runApplyCommand, type ApplyCliDeps } from "../src/cli/apply.js";
 import { targetString } from "../src/cli/teardown-driver.js";
 import { loadPilotContract, pilotContractSha256 } from "../src/apply/contract.js";
-import { lifecycleReportProblems, type LifecycleReport } from "../src/apply/lifecycle-report.js";
+import { acceptanceStatement, lifecycleReportProblems, type LifecycleReport } from "../src/apply/lifecycle-report.js";
 import type { PilotContract } from "../src/apply/types.js";
 import { pilotUnitOf } from "../src/apply/unit.js";
 import { openNonceStore } from "../src/apply/nonces.js";
@@ -135,12 +135,13 @@ test("observe, propose-cleanup, approve of the proposal, cleanup and verify-clea
   assert.equal(observed.code, 0, observed.stderr);
   const observation = observed.data as { label: string; verdict: string; resources: { address: string; result: string }[]; inventory: string };
   assert.equal(observation.label, "SYNTHETIC_UNLESS_ATTESTED_LIVE");
-  // Every entry is found under its identifier, and the sweep by the run's deletion-unit tag (the fake tagging API lists
-  // nothing else) covered every page: VERIFIED. The fixture's created types carry no tag attribute, so they are listed untagged.
+  // Every entry is found under its identifier, and the sweep by the run's deletion-unit tag (the fixture stamps the unit tags on
+  // what it creates, and its fake tagging API lists exactly those ARNs) covered every page: VERIFIED.
   assert.equal(observation.verdict, "VERIFIED", "found everything, and the unit sweep found nothing else");
   assert.equal(observation.inventory, "COMPLETE");
   assert.deepEqual(observation.resources.map((r) => [r.address, r.result]), [["aws_cloudwatch_log_group.canary", "VERIFIED"], ["aws_s3_bucket.logs", "VERIFIED"], ["aws_s3_bucket.state", "VERIFIED"]]);
   assert.ok(awsReadCallsOf(awsToolDir).every((read) => read.env.AWS_ROLE_ARN === awsRoleArn("DISCOVERY", "DEV")));
+  assert.ok(awsReadCallsOf(awsToolDir).some((read) => read.args[0] === "resourcegroupstaggingapi" && read.args.includes("Key=alz-unit,Values=" + UNIT.unitId)), "the sweep asked for this run's own unit tag");
   assert.deepEqual(observed.term.asked, [], "observing asks no phrase: it reads and changes nothing");
 
   const proposed = await cli(w, ["propose-cleanup", "--sealed", run.sealedPlanPath]);
@@ -190,6 +191,13 @@ test("observe, propose-cleanup, approve of the proposal, cleanup and verify-clea
   const report = JSON.parse(readFileSync(summary.written, "utf8")) as LifecycleReport;
   assert.deepEqual(lifecycleReportProblems(report, { sourceCommit: SOURCE_COMMIT, gateId: "act:aws-terraform" }), []);
   assert.equal(report.liveAttestation, null);
+  // Three states, kept apart: the approved resources are cleaned up, the protected object is retained by its owner, and the environment is not retired.
+  assert.deepEqual(report.acceptance, {
+    resourceCleanup: "COMPLETED", retained: { total: 1, byOwnership: { PROTECTED_BACKEND: 1 }, byOwner: { PILOT_OWNER: 1 } }, environmentRetirement: "OUTSTANDING",
+    statement: "approved resources deleted; 1 protected or pre-existing object(s) intentionally retained (1 kept by PILOT_OWNER); environment retirement outstanding (a separate, reviewed action; this report does not claim the environment retired)",
+  });
+  assert.match(report.stages.leftovers.detail, /^approved resources deleted.*protected objects intentionally retained; environment retirement outstanding$/);
+  assert.ok(!/entire environment|environment (is |was )?deleted/.test(JSON.stringify(report)), "a passing report never says the environment is deleted");
   assert.ok(!JSON.stringify(report).includes(VALUE_CANARY) && !JSON.stringify(report).includes(STATE_CANARY) && !JSON.stringify(report).includes("CANARY_CLOUD_PROPERTY"));
   assert.deepEqual(report.approvals, { apply: ["alice"], cleanup: ["alice"] });
 
@@ -201,6 +209,14 @@ test("observe, propose-cleanup, approve of the proposal, cleanup and verify-clea
   assert.equal(recordedOther.code, 0, recordedOther.stderr);
   const still = await cli(w, ["report", "--sealed", run.sealedPlanPath, "--proposal", proposalPath]);
   assert.equal((still.data as { mode: string }).mode, "SYNTHETIC", "a live record for another artifact is not this run's");
+  // A stale record for this very artifact but other apply evidence (a re-applied plan, say), sorted ahead of the valid one, does not shadow it:
+  // the report matches the record on step, artifact and evidence hash, not on the artifact alone.
+  writeFileSync(join(w.acceptanceDir, "0-stale-" + run.artifactSha256.slice(0, 12) + ".json"), JSON.stringify({
+    schemaVersion: 1, label: "LIVE", step: "execute", cloud: "AWS", engine: "TERRAFORM", environment: "DEV", target: run.target, sourceCommit: SOURCE_COMMIT, artifactSha256: run.artifactSha256,
+    outcome: "SUCCEEDED", evidenceSha256: "1".repeat(64), contractSha256: report.contractSha256, attestedBy: "someone.else", attestedAt: NOW.toISOString(),
+  }, null, 2) + "\n");
+  const shadowed = await cli(w, ["report", "--sealed", run.sealedPlanPath, "--proposal", proposalPath]);
+  assert.equal((shadowed.data as { mode: string }).mode, "SYNTHETIC", "a same-artifact record for other evidence is not this run's either");
   // The owner's live record for this very apply evidence attests the execute step only: that stage is LIVE, the observe,
   // propose, cleanup and leftover stages stay SYNTHETIC (no attestation form exists for them), and the report says MIXED.
   const recorded = await cli(w, ["record-live", "--sealed", run.sealedPlanPath], ["LIVE DEV " + run.artifactSha256.slice(0, 12)]);
@@ -212,6 +228,7 @@ test("observe, propose-cleanup, approve of the proposal, cleanup and verify-clea
   assert.deepEqual([liveReport.liveAttestation?.artifactSha256, liveReport.liveAttestation?.step, liveReport.liveAttestation?.evidenceSha256], [run.artifactSha256, "execute", liveReport.applyEvidenceSha256]);
   assert.deepEqual(Object.fromEntries(Object.entries(liveReport.stages).map(([k, v]) => [k, v.mode])), { execute: "LIVE", observe: "SYNTHETIC", propose: "SYNTHETIC", cleanup: "SYNTHETIC", leftovers: "SYNTHETIC" });
   assert.deepEqual(lifecycleReportProblems(liveReport), []);
+  assert.equal(liveReport.liveAttestation?.attestedBy, "operator.fixture", "the valid record is found although a stale same-artifact record sorts ahead of it");
   // A stage promoted to LIVE by hand, or a report calling itself LIVE over mixed stages, is refused.
   const promoted = { ...liveReport, stages: { ...liveReport.stages, cleanup: { ...liveReport.stages.cleanup, mode: "LIVE" as const } } };
   assert.match(lifecycleReportProblems(promoted).join(" | "), /no owner attestation exists for this stage/);
@@ -294,6 +311,23 @@ test("the lifecycle report validator refuses a declared pass, a live claim witho
   assert.match(problems({ stages: { ...report.stages, leftovers: { ...report.stages.leftovers, status: "PASS" } }, dispositions: { disposition: "KNOWN_ADDRESSES_CONFIRMED", resources: [] } }), /leftovers: PASS needs dispositions that say COMPLETE/);
   assert.match(problems({ stages: { ...report.stages, leftovers: { ...report.stages.leftovers, status: "PASS" } }, dispositions: null }), /leftovers: PASS needs dispositions that say COMPLETE/);
   assert.match(lifecycleReportProblems(report, { gateId: "act:azure-terraform" }).join(" | "), /not the expected gate/);
+  // The three acceptance states are derived and kept apart: no report claims the environment deleted or retired, or a cleanup complete its leftovers stage does not show.
+  assert.match(problems({ acceptance: { ...report.acceptance, environmentRetirement: "COMPLETE" as never } }), /environmentRetirement: always OUTSTANDING/);
+  assert.match(problems({ acceptance: { ...report.acceptance, resourceCleanup: "COMPLETED" } }), /resourceCleanup: not derived from the leftovers stage/);
+  // The statement is recomputed, not matched as text: a forged sentence that adds a claim, or drops one, is refused.
+  for (const forged of ["entire environment deleted; environment retirement outstanding", "approved resources deleted", report.acceptance.statement + "; the environment has been deleted", report.acceptance.statement.replace("outstanding", "complete")]) {
+    assert.match(problems({ acceptance: { ...report.acceptance, statement: forged } }), /statement: not derived from the resource cleanup state and the retained counts/, forged);
+  }
+  assert.match(problems({ acceptance: { ...report.acceptance, retained: { ...report.acceptance.retained, byOwner: { AGENT: report.acceptance.retained.total } } } }), /byOwner: a key is not a retention owner/);
+  assert.match(problems({ acceptance: { ...report.acceptance, retained: { ...report.acceptance.retained, byOwnership: { RUN_CREATED: report.acceptance.retained.total } } } }), /byOwnership: a key is not an ownership class a kept resource can carry/);
+  assert.match(problems({ acceptance: { ...report.acceptance, retained: { ...report.acceptance.retained, total: report.acceptance.retained.total + 1 } } }), /counts by ownership and by owner must add up/);
+  // NB1 (review 6410149770): who keeps what follows from the ownership classes. A swapped owner with a consistent statement and total is still refused.
+  const swapped = { ...report.acceptance.retained, byOwner: { ENVIRONMENT_OWNER: report.acceptance.retained.total } };
+  assert.match(problems({ acceptance: { ...report.acceptance, retained: swapped, statement: acceptanceStatement(report.acceptance.resourceCleanup, swapped) } }), /byOwner: not derived from the counts by ownership/);
+  const split = { total: 2, byOwnership: { PROTECTED_BACKEND: 1, NOT_IN_PLAN: 1 }, byOwner: { PILOT_OWNER: 2 } };
+  assert.match(lifecycleReportProblems({ ...report, acceptance: { ...report.acceptance, retained: split, statement: acceptanceStatement(report.acceptance.resourceCleanup, split) } }).join(" | "), /byOwner: not derived from the counts by ownership/, "a count moved between owners");
+  const { acceptance: _dropped, ...withoutAcceptance } = report;
+  assert.match(lifecycleReportProblems(withoutAcceptance).join(" | "), /report\.acceptance: missing/);
   // Completion claimed over pending leftovers: the stages say leftovers are not PASS, so passed cannot be true.
   const pending = { ...report, stages: { ...report.stages, cleanup: { status: "PASS", mode: "SYNTHETIC", detail: "x" }, leftovers: { status: "INCONCLUSIVE", mode: "SYNTHETIC", detail: "pending" } }, passed: true, unresolved: [] } as LifecycleReport;
   assert.match(lifecycleReportProblems(pending).join(" | "), /not derived from the stages/);

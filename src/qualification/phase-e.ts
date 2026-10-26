@@ -159,6 +159,22 @@ export const PHASE_E_SCENARIOS:
         "PROJECT_CODE_EXECUTION",
       ],
     },
+    // The Azure Terraform release path (config/release/scope.json, act:azure-terraform) has its own preview scenario: the
+    // set holds one scenario per engine and provider, not one per engine (owner decision 6408600057, Slice 2b).
+    {
+      id:
+        "terraform-azure-brownfield",
+      provider: "AZURE",
+      mock: "brownfield",
+      engine: "TERRAFORM",
+      request:
+        "Build a governed Azure brownfield landing zone using Terraform.",
+      requiredCapabilities: [
+        "EVIDENCE_READ",
+        "BUILD_PREVIEW",
+        "CLOUD_READ",
+      ],
+    },
   ];
 
 export type PhaseELaneSummary = {

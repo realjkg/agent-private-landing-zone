@@ -9,13 +9,13 @@ import {
   type MatrixRunnerDeps,
 } from "../src/qualification/private-agent-matrix.js";
 
-test("all eight existing ALZ scenarios converge through direct and conversational fixture paths", async () => {
+test("all nine existing ALZ scenarios converge through direct and conversational fixture paths", async () => {
   const report = await runPrivateAgentMatrix({
     sourceCommit: "a".repeat(40),
     mode: "OFFLINE_FIXTURE",
   });
-  assert.equal(report.scenarioCount, 8);
-  assert.equal(new Set(report.results.map((r) => r.id)).size, 8);
+  assert.equal(report.scenarioCount, 9);
+  assert.equal(new Set(report.results.map((r) => r.id)).size, 9);
   assert.equal(report.passed, true, JSON.stringify(report.results.map((r) => ({id:r.id,d:r.direct.status,c:r.conversational.status,dh:r.direct.designHash,ch:r.conversational.designHash,reason:r.direct.errorCode ?? r.conversational.errorCode}))));
   assert.equal(report.agentAuthoredIacQualified, false);
   assert.equal(report.infrastructureAct, "DISABLED");

@@ -1,7 +1,7 @@
 import { createPrivateKey, randomBytes } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { signApproval } from "../apply/approval.js";
@@ -18,6 +18,7 @@ import {
 import { channelMismatchMessage } from "../apply/channel.js";
 import { tagLine } from "../apply/unit.js";
 import { liveRecordOf, readAppliedEvidence, type LiveAcceptanceRecord } from "../apply/live-record.js";
+import { admissionRecordOf, buildPreviewGateEvidence } from "../apply/preview-evidence.js";
 import { assessReadiness } from "../apply/readiness.js";
 import { prepareApply, writePreparation, type Prepared, type PrepareRefusal } from "../apply/prepare.js";
 import { qualifyApply, runApply, runCleanup, sealPreview, type ApplyDeps, type SealRequest } from "../apply/driver.js";
@@ -64,6 +65,7 @@ const APPLY_USAGE = [
   "  ./alz apply propose-cleanup --sealed SEALED_PLAN",
   "  ./alz apply cleanup --proposal PROPOSAL.json --request REQUEST.json --manifest MANIFEST.json --sealed SEALED_PLAN --approval APPROVAL.json [--approval APPROVAL.json ...]",
   "  ./alz apply verify-cleanup --proposal PROPOSAL.json",
+  "  ./alz apply preview-evidence --sealed SEALED_PLAN --gate preview:terraform-azure-brownfield --target-hardware-id HOST",
   "  ./alz apply report --sealed SEALED_PLAN [--proposal PROPOSAL.json]",
   "      A person at the terminal (or a person in the console wizard, which has its own session token). A workflow runs wholly in one of them. Identities come from the contract's engine: ALZ_DISCOVERY_*, ALZ_STATE_*, ALZ_STATE_WRITE_* and ALZ_APPLY_* (Terraform),",
   "      or ALZ_DISCOVERY_*, ALZ_CHANGESET_* and ALZ_APPLY_* (CDK). No flag names an engine; the pinned contract does.",
@@ -104,6 +106,8 @@ export type ApplyCliDeps = {
   proposalsDir?: string;
   /** Where `report` writes lifecycle reports; defaults to `.runs/apply/reports` in the repository. */
   reportsDir?: string;
+  /** Where `preview-evidence` writes a preview gate's evidence; defaults to `.runs/release/preview` in the repository. */
+  releaseEvidenceDir?: string;
   /** TEST-ONLY SEAM: the verifier's AWS CLI for observe and verify-cleanup. Production builds it from the DISCOVERY identity. */
   observeAws?: AwsCli;
   /** Test seam: the Azure reader's HTTP client (src/observe/azure-rest.ts). Production uses fetch against the two Azure hosts. */
@@ -129,6 +133,7 @@ const SUBCOMMANDS: Readonly<Record<string, Flags>> = {
   cleanup: { single: ["proposal", "request", "manifest", "sealed"], repeated: ["approval"] },
   "verify-cleanup": { single: ["proposal"] },
   report: { single: ["sealed"], optional: ["proposal"] },
+  "preview-evidence": { single: ["sealed", "gate", "target-hardware-id"] },
 };
 const MAX_INPUT_BYTES = 8 * 1024 * 1024;
 const CONTROL = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
@@ -582,7 +587,7 @@ const cleanupCommand: Command = async (flags, terminal, deps, out) => {
   const result = await runCleanup({
     invocation: { operatorId: who, interactiveSession: true, confirmedTarget: { ...request.target }, confirmedAt: now().toISOString() },
     environment: request.environment, target: request.target, channel: deps.channel ?? "CLI", proposal, sealedPlan, manifest, projectRoot: request.projectRoot, approvals,
-  }, { env: deps.env ?? process.env, now, evidenceDir: deps.evidenceDir, nonces: deps.nonces, arm: deps.observeArm, ...driverPaths(deps, sourceCommit) });
+  }, { env: deps.env ?? process.env, now, evidenceDir: deps.evidenceDir, nonces: deps.nonces, ...driverPaths(deps, sourceCommit) });
   if (!result.ok) return blocked(result, out);
   out.say(JSON.stringify(result.evidence, null, 2) + "\n");
   out.report({ code: "CLEANED_UP", message: "The cleanup ended " + result.evidence.outcome + ". Verify leftovers next.", data: result.evidence });
@@ -876,10 +881,85 @@ const recordLiveCommand: Command = async (flags, terminal, deps, out) => {
   return EXIT.PASS;
 };
 
+// --- preview-evidence ------------------------------------------------------------------------------------
+
+/**
+ * The product-owned producer of a `preview:<scenario>` release gate's evidence (src/apply/preview-evidence.ts): from a sealed
+ * preview, bound to the product commit, the engine program and the plan bytes, with nothing applied. The person who ran the
+ * preview attests, as in `record-live`, that it ran the pinned, qualified engine against the real target; the evidence is LIVE
+ * only then and only when every other live condition holds. Typing SYNTHETIC records the same document labeled synthetic,
+ * which the live gate refuses. It starts no engine, reads no cloud and never overwrites a file.
+ */
+const previewEvidenceCommand: Command = async (flags, terminal, deps, out) => {
+  const contract = contractFor(deps);
+  if ("reason" in contract) return blocked(contractRefusal(contract), out);
+  const opened = await openSealed(flags.sealed[0]);
+  if (!("sealed" in opened)) return blocked(opened, out);
+  const { sealed } = opened;
+  const gateId = flags.gate[0];
+  const hardware = flags["target-hardware-id"][0];
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(hardware)) fail("APPLY_INPUT_INVALID", "--target-hardware-id must name the host this preview ran on (letters, digits, dots, dashes), as the admission manifest names it");
+  const now = (deps.now ?? (() => new Date()))();
+  const sourceCommit = sourceCommitFor(deps);
+  const engine = engineOf(contract);
+  const common = { sealed, gateId, sourceCommit, targetHardwareId: hardware, engineProgramSha256Now: engine.binarySha256(deps.toolDirs, deps.env ?? process.env), contract, now };
+  const dry = buildPreviewGateEvidence({ ...common, attestedBy: null });
+  if (!dry.ok) {
+    out.complain("BLOCKED " + dry.code + ": " + dry.message + "\n");
+    out.report({ code: dry.code, message: dry.message });
+    return EXIT.BLOCKED;
+  }
+  const who = operatorId(deps);
+  const scenario = gateId.slice("preview:".length);
+  const phrase = "PREVIEW LIVE " + scenario + " " + sealed.artifactSha256.slice(0, 12);
+  // Every condition but the attestation is already decided; the person sees what fails before typing anything.
+  const failing = dry.evidence.reasons.filter((reason) => !reason.startsWith("no person attested"));
+  terminal.write([
+    "", "RECORD PREVIEW GATE EVIDENCE (" + gateId + ": " + dry.evidence.provider + " " + dry.evidence.engine + ", " + dry.evidence.estate + ")",
+    "  environment     " + sealed.environment, "  account         " + sealed.target.account, "  backend         " + sealed.target.backend, "  workspace       " + sealed.target.workspace,
+    "  artifact        " + sealed.artifactSha256, "  plan output     sha256 " + sealed.planSha256, "  product commit  " + sealed.sourceCommit,
+    ...provenanceLines(sealed),
+    "  changes         " + dry.evidence.changes.total + " resource change(s): " + dry.evidence.changes.create + " created, " + dry.evidence.changes.preExistingTouched + " pre-existing touched",
+    ...(failing.length > 0 ? ["", "This evidence will be SYNTHETIC whatever you type, because:", ...failing.map((reason) => "  - " + reason)] : []),
+    "", "Type this only if this preview ran the pinned, qualified " + dry.evidence.engine + " against the real " + dry.evidence.provider + " target above, not a test or a fake engine.",
+    "It is your attestation, as in record-live, and it is written into the evidence with your name:", "  " + phrase,
+    "Type SYNTHETIC to record this as synthetic evidence instead (a fake engine, a test, a rehearsal); synthetic evidence never passes the release gate.", "",
+  ].join("\n"));
+  const typed = await terminal.ask("preview> ", { kind: "ATTEST", phrase });
+  if (typed !== phrase && typed !== "SYNTHETIC") fail("PREVIEW_ATTESTATION_MISMATCH", "what was typed is neither the attestation above nor SYNTHETIC. Nothing was written");
+  const built = buildPreviewGateEvidence({ ...common, attestedBy: typed === phrase ? who : null });
+  if (!built.ok) {
+    out.complain("BLOCKED " + built.code + ": " + built.message + "\n");
+    out.report({ code: built.code, message: built.message });
+    return EXIT.BLOCKED;
+  }
+  const { evidence } = built;
+  const dir = deps.releaseEvidenceDir ?? join(repoPaths().root, ".runs", "release", "preview");
+  const path = join(dir, gateId.replaceAll(":", "-") + "-" + sealed.artifactSha256.slice(0, 12) + ".json");
+  const bytes = JSON.stringify(evidence, null, 2) + "\n";
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  try {
+    writeFileSync(path, bytes, { mode: 0o600, flag: "wx" });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") fail("PREVIEW_EVIDENCE_EXISTS", "evidence for this gate and artifact is already written at " + path + "; it is never overwritten");
+    throw error;
+  }
+  const rel = relative(repoPaths().root, path);
+  const record = admissionRecordOf(evidence, rel.startsWith("..") || isAbsolute(rel) ? path : rel, bytes);
+  const live = evidence.label === "LIVE";
+  out.say(JSON.stringify({
+    written: path, label: evidence.label, reasons: evidence.reasons, record,
+    next: live ? "Review the evidence, keep it with the release candidate, and add the record above to the admission manifest (node dist/cli/release-admission.js --manifest ...); the gate closes only when that review accepts it."
+      : "Synthetic evidence: it never passes the release gate (" + evidence.reasons.length + " live condition(s) fail). Seal the preview with the pinned, qualified engine against the real target from the release commit, then record it again.",
+  }, null, 2) + "\n");
+  out.report({ code: live ? "PREVIEW_EVIDENCE_LIVE" : "PREVIEW_EVIDENCE_SYNTHETIC", message: live ? "Recorded LIVE preview evidence for " + gateId + "." : "Recorded SYNTHETIC preview evidence for " + gateId + "; it never passes the gate.", data: { path, evidence, record } });
+  return EXIT.PASS;
+};
+
 const COMMANDS: Readonly<Record<string, Command>> = {
   qualify: qualifyCommand, seal: sealCommand, approve: approveCommand, apply: applyCommand, status: statusCommand, pin: pinCommand,
   preflight: preflightCommand, prepare: prepareCommand, "record-live": recordLiveCommand,
-  observe: observeCommand, "propose-cleanup": proposeCleanupCommand, cleanup: cleanupCommand, "verify-cleanup": verifyCleanupCommand, report: reportCommand,
+  observe: observeCommand, "propose-cleanup": proposeCleanupCommand, cleanup: cleanupCommand, "verify-cleanup": verifyCleanupCommand, report: reportCommand, "preview-evidence": previewEvidenceCommand,
 };
 
 /** Where `alz-preview-*` directories live and what a crashed apply leaves in them. */
@@ -897,7 +977,7 @@ function scratchHoldsRecovery(parent: string): boolean {
  * them first (docs/act-pilot-apply.md).
  */
 async function sweepUnlessHeld(sub: string, deps: ApplyCliDeps, out: Out): Promise<void> {
-  if (["status", "approve", "pin", "preflight", "prepare", "record-live", "observe", "propose-cleanup", "verify-cleanup", "report"].includes(sub)) return;
+  if (["status", "approve", "pin", "preflight", "prepare", "record-live", "observe", "propose-cleanup", "verify-cleanup", "report", "preview-evidence"].includes(sub)) return;
   const parent = deps.scratchParent ?? tmpdir();
   const held = scratchHoldsRecovery(parent) ? "a scratch directory holds errored.tfstate or crash.log"
     : await holdsReservation(deps.evidenceDir ?? repoPaths().evidence) ? "the apply ledger holds a reservation" : undefined;

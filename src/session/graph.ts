@@ -43,6 +43,7 @@ import {
 import {
   evaluateOperatorRequest,
 } from "./operator-policy.js";
+import { disableHostedTracing } from "./hosted-tracing.js";
 import { routeSessionRequest } from "./router.js";
 import {
   isRecoveryCommand,
@@ -299,6 +300,8 @@ export function createSessionGraph(
     RecoveryAutomationInspectionProvider =
       inspectConfiguredRecoveryAutomation,
 ) {
+  // Prompts and state never leave the host: the framework's hosted tracing is switched off before any run.
+  disableHostedTracing();
   const checkpointer = dbPath
     ? (() => {
         mkdirSync(
@@ -312,7 +315,7 @@ export function createSessionGraph(
       })()
     : new MemorySaver();
 
-  const graph = new StateGraph(
+  const compiled = new StateGraph(
     SessionAnnotation,
   )
     .addNode(
@@ -327,6 +330,14 @@ export function createSessionGraph(
     .addEdge(START, "session")
     .addEdge("session", END)
     .compile({ checkpointer });
+
+  // And again before every run: a variable set after the graph was created never reaches the tracer.
+  const invoke = compiled.invoke.bind(compiled);
+  const stream = compiled.stream.bind(compiled);
+  const graph = Object.assign(compiled, {
+    invoke: ((...args: Parameters<typeof invoke>) => { disableHostedTracing(); return invoke(...args); }) as typeof invoke,
+    stream: ((...args: Parameters<typeof stream>) => { disableHostedTracing(); return stream(...args); }) as typeof stream,
+  });
 
   return {
     graph,
