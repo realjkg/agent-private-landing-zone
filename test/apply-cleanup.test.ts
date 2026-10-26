@@ -710,3 +710,52 @@ test("the raw state parser maps every managed instance, with module paths and in
   assert.throws(() => blueprintFromTerraformStatePull('{"version":3,"resources":[]}', []), /STATE_JSON_INVALID/);
   assert.throws(() => blueprintFromTerraformStatePull("{" + STATE_CANARY, []), (error: Error) => /STATE_JSON_INVALID/.test(error.message) && !error.message.includes(STATE_CANARY));
 });
+
+test("AWS identities the run created are never deleted (owner policy #39): an application role, its inline policy and its policy attachment are kept as PROTECTED_IDENTITY by the pilot owner, a destroy plan that would take one along stops before any approval is consumed, the run's other resources are cleaned up, and the leftover check is COMPLETE with the identities intentionally retained", async () => {
+  const APP_ROLE = "alz-app-role";
+  const APP_ROLE_ARN = "arn:aws:iam::111111111111:role/" + APP_ROLE;
+  const creates = [...CREATES,
+    { address: "aws_iam_role.app", type: "aws_iam_role", change: { actions: ["create"], before: null, after: {} } },
+    { address: "aws_iam_role_policy.app_inline", type: "aws_iam_role_policy", change: { actions: ["create"], before: null, after: {} } },
+    { address: "aws_iam_role_policy_attachment.app_managed", type: "aws_iam_role_policy_attachment", change: { actions: ["create"], before: null, after: {} } },
+  ];
+  const state = [...STATE, stateResource("aws_iam_role", "app", APP_ROLE, APP_ROLE_ARN), stateResource("aws_iam_role_policy", "app_inline", APP_ROLE + ":inline"),
+    stateResource("aws_iam_role_policy_attachment", "app_managed", APP_ROLE + "-20261026/arn:aws:iam::aws:policy/ReadOnlyAccess")];
+  const w = world();
+  behave({ showResources: creates, stateResources: state });
+  cloud({ existing: [...EXISTING, APP_ROLE], tagged: [...TAGGED, APP_ROLE_ARN] });
+  const run = await proposed(w);
+  assert.deepEqual(run.proposal.deletes.map((d) => d.address), ["aws_cloudwatch_log_group.canary", "aws_s3_bucket.logs", "aws_s3_bucket_versioning.logs"], "only the run's non-identity resources are proposed");
+  const kept = new Map(run.proposal.excluded.map((x) => [x.address, x]));
+  for (const address of ["aws_iam_role.app", "aws_iam_role_policy.app_inline", "aws_iam_role_policy_attachment.app_managed", "aws_iam_role.apply"]) {
+    assert.equal(kept.get(address)?.ownership, "PROTECTED_IDENTITY", address);
+    assert.equal(kept.get(address)?.retainedBy, "PILOT_OWNER", address);
+    assert.match(kept.get(address)!.reason, /every IAM role, policy, user, group, instance profile, identity provider or service-linked role.*never deleted by a cleanup, directly or as a dependent/, address);
+  }
+  // A destroy plan that would take the application role along stops before any approval is consumed, naming the policy.
+  const approval = cleanupApproval(run.proposal, "alice");
+  behave({ showResources: creates, stateResources: state, destroyExtra: [{ address: "aws_iam_role.app", type: "aws_iam_role", change: { actions: ["delete"], before: {}, after: null } }] });
+  const taken = await cleanup(w, run, [approval]);
+  refused(taken, "PROPOSAL_SCOPE_MISMATCH");
+  assert.match((taken as { message: string }).message, /would delete aws_iam_role\.app, an identity or authorization object, which a pilot cleanup never deletes, directly or as a dependent \(PROTECTED_IDENTITY\)/);
+  assert.equal(applyCalls().length, 0);
+  // A forged proposal that lists the role never executes.
+  const fields = { ...run.proposal, deletes: [...run.proposal.deletes, { address: "aws_iam_role.app", type: "aws_iam_role", identifier: APP_ROLE, ownership: "RUN_CREATED" as const, observed: "VERIFIED" as const }].sort((a, b) => (a.address < b.address ? -1 : 1)), excluded: run.proposal.excluded.filter((x) => x.address !== "aws_iam_role.app") };
+  const forged = { ...fields, proposalSha256: computeProposalSha256(fields) };
+  assert.ok(verifyCleanupProposal(forged).ok);
+  behave({ showResources: creates, stateResources: state });
+  refused(await cleanup(w, { ...run, proposal: forged }, [cleanupApproval(forged, "alice")]), "PROPOSAL_INVALID");
+  assert.equal(applyCalls().length, 0);
+  // The honest cleanup runs once with the same approval; the identities stay, tagged, and the check is COMPLETE.
+  behave({ showResources: creates, stateResources: state });
+  const done = await cleanup(w, run, [approval]);
+  assert.ok(done.ok, JSON.stringify(done));
+  assert.deepEqual(destroyPlans()[0]!.args.filter((a) => a.startsWith("-target=")).sort(), run.proposal.deletes.map((d) => "-target=" + d.address).sort());
+  cloud({ existing: [STATE_BUCKET, OLD_QUEUE, "alz-apply-dev", APP_ROLE], tagged: [APP_ROLE_ARN] });
+  const leftovers = await verifyProposalLeftovers(run.proposal, observeDeps(w, new Date(NOW.getTime() + 600_000)));
+  assert.ok(leftovers.ok);
+  assert.equal(leftovers.record.disposition, "COMPLETE");
+  const dispositions = new Map(leftovers.record.resources.map((r) => [r.address, [r.disposition, r.owner]]));
+  for (const address of ["aws_iam_role.app", "aws_iam_role_policy.app_inline", "aws_iam_role_policy_attachment.app_managed", "aws_iam_role.apply"]) assert.deepEqual(dispositions.get(address), ["INTENTIONALLY_RETAINED", "PILOT_OWNER"], address);
+  assert.deepEqual(dispositions.get("aws_s3_bucket.logs"), ["CONFIRMED_DELETED", undefined]);
+});

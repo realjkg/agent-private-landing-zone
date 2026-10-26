@@ -1,5 +1,4 @@
 import { CLOUD_CONTROL_TYPES } from "../observe/verify.js";
-import { iamRoleIdentity, identityVariables } from "../tools/identity.js";
 import { canonicalJson } from "../teardown/manifest.js";
 import type { ResolvedTarget } from "../teardown/driver/types.js";
 import { sha256 } from "../util/sha256.js";
@@ -47,7 +46,7 @@ export const retentionOwnerOf = (ownership: Exclude<Ownership, "RUN_CREATED">): 
 /** Why a resource of a protected class is kept, in the words the proposal, the leftover check and the report use. */
 export const PROTECTION_REASONS: Readonly<Record<Exclude<Ownership, "RUN_CREATED" | "PRE_EXISTING" | "REPLACED_PRE_EXISTING" | "IMPORTED" | "NOT_IN_PLAN">, string>> = {
   PROTECTED_BACKEND: "the state backend the pilot itself runs on is never deleted by a cleanup",
-  PROTECTED_IDENTITY: "an identity or authorization object (an identity, a trust, a role or policy assignment, a role definition, a policy exemption or a lock: anything under Microsoft.Authorization or Microsoft.ManagedIdentity) is never deleted by a cleanup, directly or as a dependent",
+  PROTECTED_IDENTITY: "an identity or authorization object (on Azure anything under Microsoft.Authorization or Microsoft.ManagedIdentity: an identity, a trust, a role or policy assignment, a role definition, a policy exemption or a lock; on AWS every IAM role, policy, user, group, instance profile, identity provider or service-linked role) is never deleted by a cleanup, directly or as a dependent",
   PROTECTED_DEPLOYMENT: "deployment history (Microsoft.Resources/deployments) records what was deployed and is never deleted by a cleanup",
   RETAINED_GROUP: "a resource group is never deleted by a pilot cleanup, whatever it holds; the pilot owner retains it, and its deletion is a separate, reviewed action (environment retirement, outstanding)",
   CONTAINS_OTHERS: "a subscription or management group holds deployments no listing here accounts for, and a provider or feature registration is a subscription-wide setting other deployments rely on; neither is ever deleted by a cleanup",
@@ -257,20 +256,23 @@ function azureProtectionOf(entry: { type: string; id: string | null }, contract:
   return undefined;
 }
 
-const IDENTITY_TYPES = new Set(["aws_iam_openid_connect_provider", "aws_iam_role", "aws_iam_role_policy", "aws_iam_role_policy_attachment", "aws_iam_policy"]);
+/**
+ * AWS identity and access objects (owner's standing policy, #39: identities are never deleted; review 6411551942, B2): every
+ * IAM role, policy, role policy and attachment, user, group, instance profile, OIDC and SAML provider and service-linked role,
+ * whether the run created it or the pilot runs on it, by Terraform type and by CloudFormation type (the CDK engine's
+ * `AWS::IAM::*`). Kept by the pilot owner, never deleted directly or as a dependent. An access key is a credential of a
+ * user, not an identity; it is not in this class.
+ */
+const AWS_IDENTITY_TYPE = /^aws_iam_(?:role|policy|instance_profile|openid_connect_provider|saml_provider|service_linked_role)$|^aws_iam_(?:role_policy|user|group)(?:_|$)|^AWS::IAM::/;
 
-/** The bootstrap the pilot runs on, which a cleanup never touches: the state backend and the identities that run it. */
+/** The bootstrap the pilot runs on and the identities of the account, which a cleanup never touches: the state backend and every IAM object. */
 function protectionOf(entry: { type: string; id: string | null; arn: string | null }, contract: PilotContract, env: NodeJS.ProcessEnv, backendGroups: Set<string>): AzureProtection | undefined {
   if (contract.provider === "AZURE") return azureProtectionOf(entry, contract, backendGroups);
   if (contract.provider !== "AWS") return undefined;
-  const pinned = contract.targets[contract.enabledEnvironments?.[0] ?? "DEV"] as AwsTarget | undefined;
+  void env;
   const buckets = new Set(Object.values(contract.targets).map((target) => (target as AwsTarget).backend.split("/")[0]));
   if (/^aws_s3_bucket(_|$)/.test(entry.type) && entry.id !== null && buckets.has(entry.id)) return "PROTECTED_BACKEND";
-  if (pinned === undefined) return undefined;
-  if (entry.type === "aws_iam_openid_connect_provider") return "PROTECTED_IDENTITY";
-  const roles = new Set((["DISCOVERY", "STATE", "STATE_WRITE", "APPLY"] as const).map((identity) => iamRoleIdentity(identityVariables(env, identity).get("AWS_ROLE_ARN") ?? "")).filter((x): x is string => x !== undefined));
-  if (IDENTITY_TYPES.has(entry.type) && entry.arn !== null && roles.has(iamRoleIdentity(entry.arn) ?? "")) return "PROTECTED_IDENTITY";
-  if (entry.type === "aws_iam_role_policy" && entry.id !== null && [...roles].some((role) => entry.id!.toLowerCase().startsWith(role.split("/").pop() ?? "\u0000"))) return "PROTECTED_IDENTITY";
+  if (AWS_IDENTITY_TYPE.test(entry.type)) return "PROTECTED_IDENTITY";
   return undefined;
 }
 
