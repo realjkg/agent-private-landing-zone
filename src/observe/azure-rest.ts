@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { identityVariables } from "../tools/identity.js";
 import { ALZ_TAG_KEYS } from "../teardown/unit.js";
 import type { BlueprintEntry } from "./blueprint.js";
-import { armTypeOf } from "./arm-id.js";
+import { armTypeOf, isArmRegistrationId, parseArmId } from "./arm-id.js";
 import type { ResourceCheck, ResourceReader } from "./verify.js";
 
 /**
@@ -135,7 +135,7 @@ export function sameListing(first: string, next: string): boolean {
  * ARM ids are parsed by position in ./arm-id.ts (a `providers` in a name slot is a name, not the keyword); the reader and the
  * cleanup classifier share that one parser, so what one cannot parse the other never treats as ordinary.
  */
-export { armTypeOf, armTypePairsOf, parseArmId, type ArmType, type ParsedArmId } from "./arm-id.js";
+export { armTypeOf, armTypePairsOf, isArmRegistrationId, parseArmId, type ArmType, type ParsedArmId } from "./arm-id.js";
 
 /** The Azure reader bound to DISCOVERY. `close` drops the tokens; call it when the observation is done. */
 export function createDiscoveryArmReader(options: DiscoveryArmOptions): { reader: ResourceReader; close(): void } {
@@ -210,7 +210,9 @@ export function createDiscoveryArmReader(options: DiscoveryArmOptions): { reader
     const base = { address: entry.address, type: entry.type };
     const identifier = entry.id;
     if (identifier === null) return { ...base, identifier: null, existence: "NOT_CHECKABLE", reason: "NO_IDENTIFIER_IN_STATE" };
-    const type = isArmResourceId(identifier) ? armTypeOf(identifier) : undefined;
+    // A provider or feature registration names a subscription-wide setting, not a resource with an API version of its own: not checkable here.
+    const parsed = isArmResourceId(identifier) ? parseArmId(identifier) : undefined;
+    const type = parsed !== undefined && !isArmRegistrationId(parsed) ? armTypeOf(identifier) : undefined;
     if (!type) return { ...base, identifier, existence: "NOT_CHECKABLE", reason: "NOT_AN_ARM_RESOURCE_ID" };
     if (!identifier.toLowerCase().startsWith("/subscriptions/" + subscription + "/")) return { ...base, identifier, existence: "NOT_CHECKABLE", reason: "OUTSIDE_TARGET_SUBSCRIPTION" };
     const version = await apiVersionFor(type.namespace, type.typePath);

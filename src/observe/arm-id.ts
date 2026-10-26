@@ -25,7 +25,10 @@ export type ParsedArmId = {
   /**
    * Every `/providers/` pair in order, each the namespace and the slash-joined type path (`Microsoft.Storage` +
    * `storageAccounts/blobServices/containers`). A resource group alone carries the one pair `Microsoft.Resources/resourceGroups`;
-   * a bare subscription carries none.
+   * a bare subscription carries none. A provider block with a namespace and no type/name pair (a provider registration
+   * `/subscriptions/<guid>/providers/Microsoft.ContainerService`, the `Microsoft.Features` block of a feature registration,
+   * the `Microsoft.Marketplace` block of a marketplace-scope id) is a pair with an empty `typePath`: it names a scope or a
+   * registration, never a resource (`isArmRegistrationId`).
    */
   pairs: ArmType[];
 };
@@ -58,7 +61,10 @@ export function parseArmId(id: string): ParsedArmId | undefined {
     }
   }
   // Every remaining segment belongs to a provider block: `providers`, a namespace, then one or more type/name pairs. A `providers`
-  // in a type slot starts the next block; a `providers` in a name slot is a name.
+  // in a type slot starts the next block; a `providers` in a name slot is a name. A block with no pair is allowed only where a
+  // registration or a provider-level scope lives: as the first block at subscription scope (`/subscriptions/<guid>/providers/<Ns>`,
+  // and the `Microsoft.Features` form that follows it with one more block) or at tenant scope (`/providers/Microsoft.Marketplace...`).
+  // Under a resource group or after a resource, ARM has no such object, so the id is not parsed (review 6411080437, N4).
   while (at < segments.length) {
     if (!keyword(segments[at], "providers")) return undefined;
     const namespace = segments[at + 1];
@@ -71,12 +77,15 @@ export function parseArmId(id: string): ParsedArmId | undefined {
       types.push(segments[at]!);
       at += 2;
     }
-    if (types.length === 0) return undefined;
+    if (types.length === 0 && (parsed.resourceGroup !== undefined || parsed.pairs.length > 0)) return undefined;
     parsed.pairs.push({ namespace, typePath: types.join("/") });
   }
   if (parsed.subscription === undefined && parsed.pairs.length === 0) return undefined;
   return parsed;
 }
+
+/** Whether a parsed id names a provider or feature registration, or a provider-level scope, rather than a resource: any block with no type/name pair. */
+export const isArmRegistrationId = (parsed: ParsedArmId): boolean => parsed.pairs.some((pair) => pair.typePath === "");
 
 /**
  * Every `/providers/` pair of an ARM id, in order (one for a tracked resource, two or more for an extension resource; the one
