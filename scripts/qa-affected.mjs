@@ -38,6 +38,7 @@ export const SOURCE_SCAN_GUARDS = {
   "test/destroy-preview-boundary.test.ts": ["src/iac/"],
   "test/runner-hardening.test.ts": ["src/iac/", "src/tools/"],
   "test/learn-path.test.ts": ["src/learn/"],
+  "test/compliance-packs.test.ts": ["src/compliance/"],
   "test/cli-ui-journey-map.test.ts": ["src/operator-ui/", "src/operations/"],
   "test/operations-teardown.test.ts": ["src/operations/"],
   "test/operations-enterprise.test.ts": ["src/cli/"],
