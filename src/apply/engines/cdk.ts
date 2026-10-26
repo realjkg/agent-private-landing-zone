@@ -353,14 +353,20 @@ type ChangeView = {
 
 const ACTIONS: Readonly<Record<string, string>> = { Add: "CREATE", Modify: "UPDATE", Remove: "DELETE", Import: "IMPORT", Dynamic: "DYNAMIC" };
 
+/**
+ * A Modify's `Replacement` (UNVERIFIED: `True`, `False` or `Conditional`), read exactly: only `False` is an in-place UPDATE; `True` is a
+ * REPLACE and `Conditional` a REPLACE_CONDITIONAL; anything else, a missing value included, is UNKNOWN, which no preview gate admits and
+ * the cleanup proposal keeps as pre-existing. Fail closed: a value this reader does not know is never read as the harmless case.
+ */
+const REPLACEMENTS: Readonly<Record<string, string>> = { False: "UPDATE", True: "REPLACE", Conditional: "REPLACE_CONDITIONAL" };
 /** One line of the change list: logical id, resource type, action and, for a change that replaces, whether it does or may. Never a property or a value. */
 function changeOf(entry: unknown): PlanChange {
   const change = isRecord(entry) && entry.Type === "Resource" && isRecord(entry.ResourceChange) ? entry.ResourceChange : stop("CHANGE_UNREADABLE");
   const action = typeof change.Action === "string" && Object.hasOwn(ACTIONS, change.Action) ? ACTIONS[change.Action] : stop("CHANGE_ACTION_UNKNOWN");
-  const replacement = action === "UPDATE" ? change.Replacement : undefined;
+  const replacement = typeof change.Replacement === "string" && Object.hasOwn(REPLACEMENTS, change.Replacement) ? REPLACEMENTS[change.Replacement] : "UNKNOWN";
   return {
     address: stripInvisible(str(change.LogicalResourceId, "CHANGE_UNREADABLE")), type: stripInvisible(str(change.ResourceType, "CHANGE_UNREADABLE")),
-    action: replacement === "True" ? "REPLACE" : replacement === "Conditional" ? "REPLACE_CONDITIONAL" : action,
+    action: action === "UPDATE" ? replacement : action,
     ...(action === "IMPORT" ? { importing: true as const } : {}),
   };
 }
