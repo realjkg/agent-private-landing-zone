@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { armTypeOf, armTypePairsOf, parseArmId } from "../src/observe/arm-id.js";
+import { armTypeOf, armTypePairsOf, isArmRegistrationId, parseArmId } from "../src/observe/arm-id.js";
 
 // The positional ARM id parser (review 6410149770, B3): a `providers` segment is the keyword only in a key slot. Pure, synthetic, table-driven.
 const SUB = "12345678-1234-4123-8123-123456789abc";
@@ -37,8 +37,18 @@ test("parseArmId reads an id by position: subscription, group, then provider blo
     ["a deployment at management-group scope", "/providers/Microsoft.Management/managementGroups/mg/providers/Microsoft.Resources/deployments/d",
       { pairs: [{ namespace: "Microsoft.Management", typePath: "managementGroups" }, { namespace: "Microsoft.Resources", typePath: "deployments" }] }],
     ["a name with a pipe (a diagnostic setting id)", RG + "/providers/Microsoft.Compute/virtualMachines/vm|diag", { subscription: SUB, resourceGroup: "alz-pilot-rg", pairs: [{ namespace: "Microsoft.Compute", typePath: "virtualMachines" }] }],
+    // Registrations and provider-level scopes (review 6410591513, NB-B): a block with a namespace and no pair.
+    ["a provider registration", sub + "/providers/Microsoft.ContainerService", { subscription: SUB, pairs: [{ namespace: "Microsoft.ContainerService", typePath: "" }] }],
+    ["a feature registration", sub + "/providers/Microsoft.Features/providers/Microsoft.ContainerService/features/AKS-x",
+      { subscription: SUB, pairs: [{ namespace: "Microsoft.Features", typePath: "" }, { namespace: "Microsoft.ContainerService", typePath: "features" }] }],
+    ["a marketplace-scope role assignment", "/providers/Microsoft.Marketplace/providers/Microsoft.Authorization/roleAssignments/g",
+      { pairs: [{ namespace: "Microsoft.Marketplace", typePath: "" }, { namespace: "Microsoft.Authorization", typePath: "roleAssignments" }] }],
   ];
   for (const [label, id, expected] of rows) assert.deepEqual(parseArmId(id), expected, label);
+  for (const id of [sub + "/providers/Microsoft.ContainerService", sub + "/providers/Microsoft.Features/providers/Microsoft.ContainerService/features/AKS-x", "/providers/Microsoft.Marketplace/providers/Microsoft.Authorization/roleAssignments/g", "/providers/Microsoft.Marketplace"]) {
+    assert.ok(isArmRegistrationId(parseArmId(id)!), id + " is a registration or provider scope, not a resource");
+  }
+  for (const id of [RG, RG + "/providers/Microsoft.OperationalInsights/workspaces/law", sub + "/providers/Microsoft.Authorization/roleDefinitions/d", sub]) assert.ok(!isArmRegistrationId(parseArmId(id)!), id);
 });
 
 test("parseArmId is undefined for anything it cannot consume in full: a trailing slash, an empty segment, an odd pair, a name-less type, a bad subscription, a dotless namespace, a path the URL parser would rewrite, and garbage", () => {
@@ -51,7 +61,12 @@ test("parseArmId is undefined for anything it cannot consume in full: a trailing
     ["whitespace", RG + "/providers/Microsoft.Storage/storageAccounts/a b"], ["a control character", RG + "/providers/Microsoft.Storage/storageAccounts/a\u0001b"],
     ["a query", RG + "?api-version=1"], ["a fragment", RG + "#x"],
     ["a type with no name", RG + "/providers/Microsoft.Storage/storageAccounts"], ["an authorization type with no name", RG + "/providers/Microsoft.Authorization/roleAssignments"],
-    ["a provider block with no pair", RG + "/providers/Microsoft.Storage"], ["providers with nothing after it", RG + "/providers"],
+    ["providers with nothing after it", RG + "/providers"], ["a registration followed by a stray segment", sub + "/providers/Microsoft.ContainerService/foo"],
+    // An empty provider block anywhere but a registration scope (review 6411080437, N4): under a group, after a resource, as a second block.
+    ["a provider block with no pair under a resource group", RG + "/providers/Microsoft.Compute"],
+    ["a provider block with no pair after a resource", RG + "/providers/Microsoft.OperationalInsights/workspaces/law/providers/Microsoft.Resources"],
+    ["a second empty block at subscription scope", sub + "/providers/Microsoft.Features/providers/Microsoft.ContainerService"],
+    ["a registration prefix with a trailing empty authorization block", sub + "/providers/Microsoft.ContainerService/providers/Microsoft.Authorization"],
     ["a bad subscription", "/subscriptions/not-a-guid/resourceGroups/x"], ["a subscription with a stray segment", sub + "/foo"], ["a group keyword with no name", sub + "/resourceGroups"],
     ["something after the group that is not providers", RG + "/foo/bar"],
     ["a dotless namespace", RG + "/providers/providers/locks/l"], ["a namespace that is the keyword after a name named providers", RG + "/providers/Microsoft.Storage/storageAccounts/x/providers/providers/providers/Microsoft.Authorization/locks/l"],
