@@ -16,8 +16,8 @@ import { removeTree } from "../src/teardown/driver/cleanup.js";
 import type { ApplyEnvironment } from "../src/apply/types.js";
 import type { ResolvedTarget } from "../src/teardown/driver/types.js";
 import { SOURCE_COMMIT,
-  ENGINE_VERSION, NOW, POLICY, awsContractJson, awsIdentityEnv, awsTargetOf, behave as behaveIn, callsOf, contractJson, identityEnv, installFakeTerraform, keys, pinPathOf, targetOf,
-  testFixtureForgeQualificationEvidence,
+  AWS_DEV_TARGET, ENGINE_VERSION, NOW, POLICY, awsContractJson, awsIdentityEnv, awsReadCallsOf, awsRoleArn, awsTargetOf, behave as behaveIn, behaveAwsReads, callsOf, contractJson, identityEnv,
+  installFakeAwsReads, installFakeTerraform, keys, pinPathOf, stateResource, targetOf, testFixtureForgeQualificationEvidence,
   writePinnedContract, writeProject, type Behavior, type Project,
 } from "./helpers/apply-fixtures.js";
 
@@ -28,11 +28,13 @@ import { SOURCE_COMMIT,
 const repo = (path: string): string => fileURLToPath(new URL("../" + path, import.meta.url));
 const root = mkdtempSync(join(tmpdir(), "alz-ui-"));
 const toolDir = mkdtempSync(join(tmpdir(), "alz-ui-tools-"));
+const awsToolDir = mkdtempSync(join(tmpdir(), "alz-ui-aws-"));
 process.env.AGENTIC_EVIDENCE_KEY = randomBytes(32).toString("base64");
 process.chdir(root);
 const servers: Server[] = [];
-test.after(() => { for (const server of servers) server.close(); removeTree(root); removeTree(toolDir); });
+test.after(() => { for (const server of servers) server.close(); removeTree(root); removeTree(toolDir); removeTree(awsToolDir); });
 installFakeTerraform(toolDir);
+installFakeAwsReads(awsToolDir);
 
 let counter = 0;
 const fresh = (label: string): string => {
@@ -310,8 +312,8 @@ test("the session token goes to the operator's terminal at start, from the launc
 
 // --- the closed command surface ------------------------------------------------------------------
 
-test("the console starts only the five named steps, from values the router turns into arguments; nothing else, and no process of its own", async () => {
-  assert.deepEqual([...PILOT_STEPS], ["preflight", "prepare", "seal", "approve", "apply"]);
+test("the console starts only the nine named steps, from values the router turns into arguments; nothing else, and no process of its own", async () => {
+  assert.deepEqual([...PILOT_STEPS], ["preflight", "prepare", "seal", "approve", "apply", "observe", "propose-cleanup", "cleanup", "verify-cleanup"]);
   const w = await world();
   const { port } = await serve(w);
   await choose(port);
@@ -834,6 +836,12 @@ async function prepareAndSealInConsole(port: number, project: Project, target: R
   await call(port, "POST", "/pilot/answer", { body: { dialogId: second.run!.dialog!.id, answer: PHRASE } });
   const sealedRun = (await finished(port)).run!.result!;
   assert.equal(sealedRun.exit, 0, JSON.stringify(sealedRun));
+  // The review the approvers see names the cleanup marker (the deletion unit) the sealed plan was checked for.
+  const unit = (sealedRun.summary as { unit: { unitId: string; tags: Record<string, string>; untagged: string[] } | null } | undefined)?.unit;
+  assert.ok(unit, "the console summary carries the unit");
+  assert.match(unit.unitId, /^alzu-[0-9a-f]{20}$/);
+  assert.equal(unit.tags["alz-unit"], unit.unitId);
+  assert.ok(Array.isArray(unit.untagged));
   const out = sealedRun.data as { artifactSha256: string; sealedPlanPath: string; reviewBundlePath: string };
   const sealed: Sealed = { project, target, environment: "DEV", path: out.sealedPlanPath, bundle: out.reviewBundlePath, artifactSha256: out.artifactSha256 };
   return { prepared: data, sealed };
@@ -963,4 +971,187 @@ test("AWS Terraform in the console: a plan applies only from the product commit 
   const applied = await applyInConsole(port, prepared.files, sealed, [approvalPath], applyPhrase(sealed));
   assert.equal(applied.exit, 0, JSON.stringify(applied));
   assert.equal((applied.data as { sourceCommit: string }).sourceCommit, SOURCE_COMMIT);
+});
+
+// --- observe and clean up (docs/observe-and-cleanup.md) --------------------------------------------------------------
+
+// The run's shape for the cleanup journey: two things the plan creates, the state bucket the pilot runs on, and one thing the plan never mentioned.
+const CLEANUP_BUCKET = "examplefake-console-logs";
+const CLEANUP_LOG = "/alz/console/canary";
+const CLEANUP_STATE_BUCKET = AWS_DEV_TARGET.backend.split("/")[0];
+const CLEANUP_QUEUE = "https://sqs.us-east-1.amazonaws.com/111111111111/console-preexisting";
+const CLEANUP_CREATES = [
+  { address: "aws_s3_bucket.logs", type: "aws_s3_bucket", change: { actions: ["create"], before: null, after: {} } },
+  { address: "aws_cloudwatch_log_group.canary", type: "aws_cloudwatch_log_group", change: { actions: ["create"], before: null, after: {} } },
+  { address: "aws_s3_bucket.state", type: "aws_s3_bucket", change: { actions: ["update"], before: {}, after: {} } },
+];
+const CLEANUP_STATE = [
+  stateResource("aws_s3_bucket", "logs", CLEANUP_BUCKET, "arn:aws:s3:::" + CLEANUP_BUCKET), stateResource("aws_cloudwatch_log_group", "canary", CLEANUP_LOG, "arn:aws:logs:us-east-1:111111111111:log-group:" + CLEANUP_LOG),
+  stateResource("aws_s3_bucket", "state", CLEANUP_STATE_BUCKET, "arn:aws:s3:::" + CLEANUP_STATE_BUCKET), stateResource("aws_sqs_queue", "preexisting", CLEANUP_QUEUE, "arn:aws:sqs:us-east-1:111111111111:console-preexisting"),
+];
+const CLEANUP_EXISTING = [CLEANUP_BUCKET, CLEANUP_LOG, CLEANUP_STATE_BUCKET, CLEANUP_QUEUE];
+
+/** An AWS console journey whose fake engine reports a state, with the fake AWS CLI the verifier reads through, in a second approved tool directory. */
+async function cleanupJourney() {
+  const journey = await consoleJourney("AWS");
+  behaveIn(toolDir, KILL, { applyAdvance: true, showProviderConfig: AWS_PROVIDER_CONFIG, showOnlyConfigured: true, showResources: CLEANUP_CREATES, stateResources: CLEANUP_STATE });
+  behaveAwsReads(awsToolDir, { existing: CLEANUP_EXISTING });
+  // The same console, now able to find the aws program for the read-only verifier.
+  const w = { ...journey.w, cli: { ...journey.w.cli, toolDirs: [toolDir, awsToolDir], proposalsDir: fresh("proposals") } };
+  const { port } = await serve(w);
+  await choose(port);
+  return { ...journey, w, port };
+}
+const cleanupApprovePhrase = (shortId: string) => "APPROVE CLEANUP DEV " + shortId;
+const cleanupPhrase = (shortId: string, target: ResolvedTarget) => "CLEANUP DEV " + shortId + " " + targetString(target);
+type CleanupSummary = { shortId: string; deletes: { address: string }[]; excluded: { address: string; ownership: string }[]; requiredApprovals: number };
+
+async function approveCleanupViaUi(port: number, proposalPath: string, shortId: string, who: keyof typeof keys, answer?: string | null): Promise<State> {
+  const started = await call(port, "POST", "/pilot/approve", { body: { bundlePath: proposalPath, keyPath: keyFile(who), approverId: who } });
+  assert.equal(started.status, 202, started.text);
+  const asked = await waiting(port);
+  assert.equal(asked.run!.dialog!.kind, "APPROVE_CLEANUP", "a cleanup approval has its own dialog");
+  assert.equal(asked.run!.dialog!.phrase, cleanupApprovePhrase(shortId));
+  if (answer === null) await call(port, "POST", "/pilot/cancel", { body: {} });
+  else await call(port, "POST", "/pilot/answer", { body: { dialogId: asked.run!.dialog!.id, answer: answer ?? cleanupApprovePhrase(shortId) } });
+  return finished(port);
+}
+async function cleanupViaUi(port: number, files: { request: string; manifest: string }, sealed: Sealed, proposalPath: string, shortId: string, target: ResolvedTarget, approvals: string[], answer?: string | null): Promise<State> {
+  const started = await call(port, "POST", "/pilot/cleanup", { body: { environment: "DEV", requestPath: files.request, manifestPath: files.manifest, sealedPath: sealed.path, proposalPath, approvalPaths: approvals } });
+  assert.equal(started.status, 202, started.text);
+  const asked = await waiting(port);
+  assert.equal(asked.run!.dialog!.kind, "CLEANUP");
+  assert.equal(asked.run!.dialog!.phrase, cleanupPhrase(shortId, target));
+  if (answer === null) await call(port, "POST", "/pilot/cancel", { body: {} });
+  else await call(port, "POST", "/pilot/answer", { body: { dialogId: asked.run!.dialog!.id, answer: answer ?? cleanupPhrase(shortId, target) } });
+  return finished(port);
+}
+async function observeAndProposeInConsole(port: number, sealed: Sealed) {
+  assert.equal((await call(port, "POST", "/pilot/observe", { body: { sealedPath: sealed.path } })).status, 202);
+  const observed = (await finished(port)).run!.result!;
+  assert.equal(observed.exit, 0, JSON.stringify(observed));
+  const observation = observed.data as { verdict: string; resources: { address: string; result: string }[]; inventory: string };
+  assert.equal((await call(port, "POST", "/pilot/propose-cleanup", { body: { sealedPath: sealed.path } })).status, 202);
+  const proposed = (await finished(port)).run!.result!;
+  assert.equal(proposed.exit, 0, JSON.stringify(proposed));
+  const data = proposed.data as { path: string; proposal: { proposalSha256: string } };
+  assert.ok(proposed.cleanup, "the console summarizes the proposal for the person");
+  return { observation, proposalPath: data.path, summary: proposed.cleanup as unknown as CleanupSummary };
+}
+
+// Literal titles: config/acceptance/journeys.json cites each one exactly.
+test("AWS Terraform in the console: observe what the apply created, propose and approve the cleanup, remove exactly that list and verify it is gone, through the real router, service and adapter", async () => {
+  const { port, target, project } = await cleanupJourney();
+  const { prepared, sealed } = await prepareAndSealInConsole(port, project, target);
+  const approvalPath = await approveViaUi(port, sealed, "alice");
+  const applied = await applyInConsole(port, prepared.files, sealed, [approvalPath], applyPhrase(sealed));
+  assert.equal(applied.exit, 0, JSON.stringify(applied));
+
+  const { observation, proposalPath, summary } = await observeAndProposeInConsole(port, sealed);
+  // Everything the state recorded is found under its identifier, and the sweep by the change's deletion-unit tag found
+  // nothing else: VERIFIED.
+  assert.equal(observation.verdict, "VERIFIED", "found under its identifier, and the unit sweep found nothing else");
+  assert.deepEqual(observation.resources.map((r) => [r.address, r.result]).sort(), [
+    ["aws_cloudwatch_log_group.canary", "VERIFIED"], ["aws_s3_bucket.logs", "VERIFIED"], ["aws_s3_bucket.state", "VERIFIED"], ["aws_sqs_queue.preexisting", "VERIFIED"],
+  ]);
+  assert.equal(observation.inventory, "COMPLETE", "the unit sweep covered every page");
+  assert.ok(awsReadCallsOf(awsToolDir).every((read) => read.env.AWS_ROLE_ARN === awsRoleArn("DISCOVERY", "DEV")), "the verifier read as DISCOVERY through the runner");
+  assert.deepEqual(summary.deletes.map((d) => d.address), ["aws_cloudwatch_log_group.canary", "aws_s3_bucket.logs"]);
+  assert.deepEqual(summary.excluded.map((x) => [x.address, x.ownership]), [["aws_s3_bucket.state", "PROTECTED_BACKEND"], ["aws_sqs_queue.preexisting", "NOT_IN_PLAN"]]);
+  assert.equal(summary.requiredApprovals, 1);
+
+  // An approver reviews the proposal file the operator sent, and signs it under the cleanup domain.
+  const reviewed = (await call(port, "POST", "/pilot/review-cleanup", { body: { proposalPath } })).body;
+  assert.equal(reviewed.ok, true, JSON.stringify(reviewed));
+  assert.equal(reviewed.cleanup.shortId, summary.shortId);
+  assert.ok(Array.isArray(reviewed.cleanup.lines) && reviewed.cleanup.lines.some((line: string) => line.includes("executes as")));
+  const signed = await approveCleanupViaUi(port, proposalPath, summary.shortId, "alice");
+  assert.equal(signed.run!.result!.exit, 0, JSON.stringify(signed.run!.result));
+  const cleanupApproval = signed.run!.result!.savedPath!;
+  assert.ok(existsSync(cleanupApproval));
+
+  const before = engineCalls().length;
+  const removed = await cleanupViaUi(port, prepared.files, sealed, proposalPath, summary.shortId, target, [cleanupApproval]);
+  assert.equal(removed.run!.result!.exit, 0, JSON.stringify(removed.run!.result));
+  const evidence = removed.run!.result!.data as { outcome: string; deletes: string[]; authority: { executedAs: string; mutation: string }; artifactSha256: string };
+  assert.equal(evidence.outcome, "SUCCEEDED");
+  assert.deepEqual(evidence.deletes, ["aws_cloudwatch_log_group.canary", "aws_s3_bucket.logs"]);
+  assert.deepEqual(evidence.authority, { infrastructureAct: "PILOT_ENABLED", mutation: "TERRAFORM_DESTROY_OF_APPROVED_PROPOSAL", executedAs: "APPLY", agentInitiated: false });
+  assert.equal(evidence.artifactSha256, sealed.artifactSha256);
+  const steps = engineCalls().slice(before);
+  assert.deepEqual(steps.map((args) => args[0]), ["version", "init", "workspace", "state", "plan", "show", "apply", "state"]);
+  assert.deepEqual(steps[4].filter((arg) => arg.startsWith("-target=")), ["-target=aws_cloudwatch_log_group.canary", "-target=aws_s3_bucket.logs"], "the destroy targets exactly the approved list");
+
+  // The independent check: the fake cloud no longer holds what was removed.
+  behaveAwsReads(awsToolDir, { existing: [CLEANUP_STATE_BUCKET, CLEANUP_QUEUE] });
+  assert.equal((await call(port, "POST", "/pilot/verify-cleanup", { body: { proposalPath } })).status, 202);
+  const verified = (await finished(port)).run!.result!;
+  assert.equal(verified.exit, 0, JSON.stringify(verified));
+  const leftovers = verified.data as { disposition: string; cleanupRan?: boolean; resources: { address: string; disposition: string }[] };
+  assert.equal(leftovers.disposition, "COMPLETE");
+  assert.deepEqual(leftovers.resources.map((r) => [r.address, r.disposition]), [
+    ["aws_cloudwatch_log_group.canary", "CONFIRMED_DELETED"], ["aws_s3_bucket.logs", "CONFIRMED_DELETED"], ["aws_s3_bucket.state", "INTENTIONALLY_RETAINED"], ["aws_sqs_queue.preexisting", "INTENTIONALLY_RETAINED"],
+  ]);
+  assert.equal(verified.code, "CLEANUP_COMPLETE");
+});
+
+test("AWS Terraform in the console: a wrong phrase or a cancel at the cleanup approval or the removal signs nothing and removes nothing, an apply approval never authorizes a cleanup, and a reconnect never removes twice", async () => {
+  const { w, port, target, project } = await cleanupJourney();
+  const { prepared, sealed } = await prepareAndSealInConsole(port, project, target);
+  const approvalPath = await approveViaUi(port, sealed, "alice");
+  assert.equal((await applyInConsole(port, prepared.files, sealed, [approvalPath], applyPhrase(sealed))).exit, 0);
+  const { proposalPath, summary } = await observeAndProposeInConsole(port, sealed);
+  const approvalFiles = () => readdirSync(w.approvals).length;
+  const signedBefore = approvalFiles();
+  for (const answer of ["APPROVE DEV " + summary.shortId, "APPROVE CLEANUP DEV", null]) {
+    const result = (await approveCleanupViaUi(port, proposalPath, summary.shortId, "alice", answer)).run!.result!;
+    assert.notEqual(result.exit, 0);
+    assert.equal(result.savedPath, undefined);
+    assert.equal(approvalFiles(), signedBefore, "nothing was signed");
+  }
+  const destroys = () => engineCalls().filter((args) => args[0] === "plan" && args[1] === "-destroy").length;
+  const applies = () => engineCalls().filter((args) => args[0] === "apply").length;
+  const [destroysBefore, appliesBefore] = [destroys(), applies()];
+  // The approval of the change itself, offered for the cleanup: refused before any engine runs, and nothing is used up.
+  const misused = await cleanupViaUi(port, prepared.files, sealed, proposalPath, summary.shortId, target, [approvalPath]);
+  assert.equal(misused.run!.result!.exit, 2, JSON.stringify(misused.run!.result));
+  assert.equal(misused.run!.result!.code, "APPROVAL_UNVERIFIED");
+  assert.equal(destroys(), destroysBefore);
+  const cleanupApproval = (await approveCleanupViaUi(port, proposalPath, summary.shortId, "alice")).run!.result!.savedPath!;
+  for (const answer of ["CLEANUP DEV " + summary.shortId, null]) {
+    const result = (await cleanupViaUi(port, prepared.files, sealed, proposalPath, summary.shortId, target, [cleanupApproval], answer)).run!.result!;
+    assert.notEqual(result.exit, 0);
+    assert.notEqual(result.exit, 3, "nothing is spent: " + JSON.stringify(result));
+    assert.equal(applies(), appliesBefore, "no destroy applied");
+  }
+  // The same cleanup approval still works, exactly once; a reconnect that asks again is refused, and the destroy ran once.
+  const removed = (await cleanupViaUi(port, prepared.files, sealed, proposalPath, summary.shortId, target, [cleanupApproval])).run!.result!;
+  assert.equal(removed.exit, 0, JSON.stringify(removed));
+  assert.equal(applies(), appliesBefore + 1);
+  const again = (await cleanupViaUi(port, prepared.files, sealed, proposalPath, summary.shortId, target, [cleanupApproval])).run!.result!;
+  assert.equal(again.exit, 2, JSON.stringify(again));
+  assert.equal(again.code, "PROPOSAL_ALREADY_EXECUTED");
+  assert.equal(applies(), appliesBefore + 1, "a reconnect never removes twice");
+  // Observing again after the cleanup is safe and reads the cloud again; it never applies.
+  behaveAwsReads(awsToolDir, { existing: [CLEANUP_STATE_BUCKET, CLEANUP_QUEUE] });
+  assert.equal((await call(port, "POST", "/pilot/observe", { body: { sealedPath: sealed.path } })).status, 202);
+  const observed = (await finished(port)).run!.result!;
+  assert.equal(observed.exit, 0);
+  assert.equal((observed.data as { verdict: string }).verdict, "FAILED", "after the cleanup, the created things are missing from the cloud, and the observation says so");
+  assert.equal(applies(), appliesBefore + 1);
+});
+
+test("the console refuses a cleanup proposal for the other channel, a malformed one, and a cleanup without approval files, before any command runs", async () => {
+  const { port } = await cleanupJourney();
+  const malformed = json({ kind: "CLEANUP_PROPOSAL", deletes: "all" }, "proposal");
+  const reviewed = (await call(port, "POST", "/pilot/review-cleanup", { body: { proposalPath: malformed } })).body;
+  assert.equal(reviewed.ok, false);
+  assert.equal(reviewed.code, "PROPOSAL_INVALID");
+  const noApprovals = await call(port, "POST", "/pilot/cleanup", { body: { environment: "DEV", requestPath: "/r.json", manifestPath: "/m.json", sealedPath: "/s.json", proposalPath: malformed, approvalPaths: [] } });
+  assert.equal(noApprovals.status, 400);
+  const noSealed = await call(port, "POST", "/pilot/cleanup", { body: { environment: "DEV", requestPath: "/r.json", manifestPath: "/m.json", proposalPath: malformed, approvalPaths: ["/a.json"] } });
+  assert.equal(noSealed.status, 400, "the prepared change file is required: the list is checked against what that change made");
+  const extra = await call(port, "POST", "/pilot/cleanup", { body: { environment: "DEV", requestPath: "/r.json", manifestPath: "/m.json", sealedPath: "/s.json", proposalPath: malformed, approvalPaths: ["/a.json"], force: true } });
+  assert.equal(extra.status, 400, "no field the step does not take");
+  assert.deepEqual(engineCalls().filter((args) => args[0] === "plan" && args[1] === "-destroy"), []);
 });

@@ -9,8 +9,8 @@
 
 export type PilotEnvironment = "DEV" | "QA" | "PROD";
 export type PilotPath = "UI" | "CLI";
-export type PilotStep = "preflight" | "prepare" | "seal" | "approve" | "apply";
-export type PhraseKind = "TARGET" | "RUN_PROJECT_CODE" | "EMBED_STATE_WRITE" | "ATTEST" | "APPROVE" | "APPLY";
+export type PilotStep = "preflight" | "prepare" | "seal" | "approve" | "apply" | "observe" | "propose-cleanup" | "cleanup" | "verify-cleanup";
+export type PhraseKind = "TARGET" | "RUN_PROJECT_CODE" | "EMBED_STATE_WRITE" | "ATTEST" | "APPROVE" | "APPLY" | "APPROVE_CLEANUP" | "CLEANUP";
 
 export type PlanChange = { address: string; type: string; action: string; importing?: true; previousAddress?: string };
 export type ChangeCounts = { create: number; update: number; replace: number; delete: number; forget: number; other: number };
@@ -54,6 +54,28 @@ export type PreparedFiles = {
 /** Why `prepare` stopped, beside the refusal code: whose prerequisite it is, and a supported alternative when a tool is missing. */
 export type PrepareStop = { blocker: "OWNER" | "OPERATOR" | "TOOL"; alternative?: string };
 
+/** What the console shows of a cleanup proposal (src/cli/ui-channel.ts CleanupSummary): names, identifiers and reasons only. */
+export type CleanupSummary = {
+  proposalSha256: string;
+  shortId: string;
+  environment: PilotEnvironment;
+  target: { account: string; backend: string; workspace: string };
+  sourceCommit: string;
+  artifactShortId: string;
+  requiredApprovals: number;
+  deletes: { address: string; type: string; identifier: string | null; ownership: string; observed: string; risk?: string }[];
+  alreadyAbsent: { address: string; type: string; identifier: string | null }[];
+  excluded: { address: string; type: string; identifier: string | null; ownership: string; reason: string }[];
+  risks: string[];
+  lines: string[];
+};
+/** One thing the independent check looked at (src/apply/run-records.ts ObservedResource). */
+export type ObservedResource = { address: string; type: string; identifier: string | null; origin: string; result: string; reason?: string };
+export type ObservationData = { verdict: string; inventory: string; observedAt: string; resources: ObservedResource[]; missingFromState: string[]; unexpected: string[] };
+/** One thing the leftover check looked at (src/apply/run-records.ts LeftoverResource). */
+export type LeftoverResource = { address: string; type: string; identifier: string | null; disposition: string; basis: string; reason?: string; owner?: string };
+export type LeftoversData = { disposition: "COMPLETE" | "KNOWN_ADDRESSES_CONFIRMED" | "INCOMPLETE"; sweep: string; nextAction: string; resources: LeftoverResource[]; observedAt: string };
+
 export type RunResult = {
   exit: number;
   code?: string;
@@ -61,6 +83,7 @@ export type RunResult = {
   outcome?: string;
   data?: unknown;
   summary?: ReviewSummary;
+  cleanup?: CleanupSummary;
   savedPath?: string;
 };
 export type PilotRun = {
@@ -125,3 +148,9 @@ export const cancelDialog = (): Promise<PilotReply> => send<PilotState>("POST", 
 
 export type ReviewReply = { ok: true; summary: ReviewSummary } | { ok: false; code: string; message: string };
 export const loadReview = (bundlePath: string): Promise<PilotReply<ReviewReply>> => send<ReviewReply>("POST", "/review", { bundlePath });
+export type CleanupReviewReply = { ok: true; cleanup: CleanupSummary } | { ok: false; code: string; message: string };
+export const loadCleanupReview = (proposalPath: string): Promise<PilotReply<CleanupReviewReply>> => send<CleanupReviewReply>("POST", "/review-cleanup", { proposalPath });
+export const startObserve = (sealedPath: string): Promise<PilotReply> => send<PilotState>("POST", "/observe", { sealedPath });
+export const startProposeCleanup = (sealedPath: string): Promise<PilotReply> => send<PilotState>("POST", "/propose-cleanup", { sealedPath });
+export const startCleanup = (input: { environment: PilotEnvironment; requestPath: string; manifestPath: string; sealedPath: string; proposalPath: string; approvalPaths: string[] }): Promise<PilotReply> => send<PilotState>("POST", "/cleanup", input);
+export const startVerifyCleanup = (proposalPath: string): Promise<PilotReply> => send<PilotState>("POST", "/verify-cleanup", { proposalPath });

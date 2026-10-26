@@ -418,7 +418,8 @@
       "status": "BLOCKED",
       "evidenceMode": "SYNTHETIC",
       "evidenceRefs": [
-        "config/acceptance/journeys.json (AWS TERRAFORM: prepare to execute SYNTHETIC_PASS)"
+        "config/acceptance/journeys.json (AWS TERRAFORM: every step prepare to cleanup and every row proof SYNTHETIC_PASS; live BLOCKED)",
+        "test/apply-cleanup.test.ts, test/apply-cleanup-cli.test.ts, test/ui-channel.test.ts (fake engine and fake AWS CLI: synthetic lifecycle through observe, cleanup and leftover verification)"
       ],
       "testedScope": "Full lifecycle on the real AWS DEV account: prepare, preview, approve, execute, observe and cleanup.",
       "invalidatedBy": [
@@ -426,7 +427,7 @@
         "the pilot contract or its pin changes",
         "src/apply or the Terraform pin changes"
       ],
-      "nextAction": "Engineering first finishes observe and cleanup for the AWS Terraform row; the owner then supplies the pinned AWS contract inputs (identifiers and public keys only) and supervises one DEV apply, recorded with ./alz apply record-live."
+      "nextAction": "The AWS Terraform row now passes synthetically end to end (prepare, preview, approve, execute, observe, cleanup, leftovers; ./alz apply report writes the lifecycle report with a mode per stage: SYNTHETIC, and MIXED once the owner's live record covers the execute step). The owner supplies the pinned AWS contract inputs (identifiers and public keys only), supervises one DEV apply recorded with ./alz apply record-live, and separately authorizes the live cleanup of what it created."
     },
     {
       "gate": "act:azure-terraform",

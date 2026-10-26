@@ -110,6 +110,13 @@
 .pilot-bar-fill[data-of="6"][data-fill="4"] { width: 66.6667%; }
 .pilot-bar-fill[data-of="6"][data-fill="5"] { width: 83.3333%; }
 .pilot-bar-fill[data-of="6"][data-fill="6"] { width: 100.0000%; }
+.pilot-bar-fill[data-of="7"][data-fill="1"] { width: 14.2857%; }
+.pilot-bar-fill[data-of="7"][data-fill="2"] { width: 28.5714%; }
+.pilot-bar-fill[data-of="7"][data-fill="3"] { width: 42.8571%; }
+.pilot-bar-fill[data-of="7"][data-fill="4"] { width: 57.1429%; }
+.pilot-bar-fill[data-of="7"][data-fill="5"] { width: 71.4286%; }
+.pilot-bar-fill[data-of="7"][data-fill="6"] { width: 85.7143%; }
+.pilot-bar-fill[data-of="7"][data-fill="7"] { width: 100.0000%; }
 
 .pilot-steps {
   list-style: none;

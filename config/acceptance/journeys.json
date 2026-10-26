@@ -172,6 +172,10 @@
               {
                 "file": "test/ui-channel.test.ts",
                 "title": "AWS Terraform in the console: a plan applies only from the product commit that sealed it, and nothing is consumed by a mismatch"
+              },
+              {
+                "file": "test/ui-channel.test.ts",
+                "title": "AWS Terraform in the console: a plan applies only with the engine program that made its preview, and nothing is consumed by a mismatch"
               }
             ],
             "interrupted": [
@@ -199,30 +203,206 @@
           }
         },
         "observe": {
-          "status": "NOT_IMPLEMENTED",
-          "missing": "After an apply nothing reads back what was created: the evidence and the Results page carry no cloud resource IDs, and no independent read-only check runs."
+          "status": "SYNTHETIC_PASS",
+          "code": [
+            "src/apply/observe.ts",
+            "src/apply/run-records.ts",
+            "src/observe/aws-cli.ts",
+            "src/observe/blueprint.ts",
+            "src/observe/verify.ts",
+            "src/apply/driver.ts",
+            "src/cli/apply.ts",
+            "src/cli/ui-channel.ts",
+            "src/operator-ui/app/pilot/CleanupStep.tsx"
+          ],
+          "tests": {
+            "ui": [
+              {
+                "file": "test/ui-channel.test.ts",
+                "title": "AWS Terraform in the console: observe what the apply created, propose and approve the cleanup, remove exactly that list and verify it is gone, through the real router, service and adapter"
+              }
+            ],
+            "positive": [
+              {
+                "file": "test/apply-cleanup.test.ts",
+                "title": "AWS Terraform observe: after a successful apply the driver records the blueprint from the state, identifiers only, and observe verifies each resource through Cloud Control as DISCOVERY"
+              },
+              {
+                "file": "test/apply-cleanup-cli.test.ts",
+                "title": "observe, propose-cleanup, approve of the proposal, cleanup and verify-cleanup run at the terminal with their own phrases, and the report is SYNTHETIC, MIXED only after the owner's live record"
+              }
+            ],
+            "denied": [
+              {
+                "file": "test/apply-cleanup.test.ts",
+                "title": "observe refuses a run with no apply evidence, a blueprint that is not this run's, and a forged blueprint record, and reads nothing from the cloud"
+              }
+            ],
+            "interrupted": [
+              {
+                "file": "test/apply-cleanup.test.ts",
+                "title": "observe records NOT_YET_OBSERVABLE on throttling and UNVERIFIABLE on access denial, never VERIFIED, and can be repeated without applying again"
+              }
+            ],
+            "recovery": [
+              {
+                "file": "test/apply-cleanup.test.ts",
+                "title": "observe records NOT_YET_OBSERVABLE on throttling and UNVERIFIABLE on access denial, never VERIFIED, and can be repeated without applying again"
+              },
+              {
+                "file": "test/ui-channel.test.ts",
+                "title": "AWS Terraform in the console: a wrong phrase or a cancel at the cleanup approval or the removal signs nothing and removes nothing, an apply approval never authorizes a cleanup, and a reconnect never removes twice"
+              }
+            ]
+          }
         },
         "cleanup": {
-          "status": "NOT_IMPLEMENTED",
+          "status": "SYNTHETIC_PASS",
           "code": [
-            "src/teardown/driver/driver.ts",
-            "src/cli/teardown-driver.ts"
+            "src/apply/cleanup-proposal.ts",
+            "src/apply/driver.ts",
+            "src/apply/approval.ts",
+            "src/apply/terraform.ts",
+            "src/apply/engines/terraform.ts",
+            "src/apply/ledger.ts",
+            "src/apply/leftovers.ts",
+            "src/apply/lifecycle-report.ts",
+            "src/cli/apply.ts",
+            "src/cli/ui-channel.ts",
+            "src/operator-ui/app/pilot/CleanupStep.tsx"
           ],
-          "missing": "Only a terminal destroy preview exists; there is no console step, no owner-supervised destroy execution and no leftover check against the cloud."
+          "tests": {
+            "ui": [
+              {
+                "file": "test/ui-channel.test.ts",
+                "title": "AWS Terraform in the console: observe what the apply created, propose and approve the cleanup, remove exactly that list and verify it is gone, through the real router, service and adapter"
+              },
+              {
+                "file": "test/ui-channel.test.ts",
+                "title": "AWS Terraform in the console: a wrong phrase or a cancel at the cleanup approval or the removal signs nothing and removes nothing, an apply approval never authorizes a cleanup, and a reconnect never removes twice"
+              }
+            ],
+            "positive": [
+              {
+                "file": "test/apply-cleanup.test.ts",
+                "title": "AWS Terraform cleanup: approve under the cleanup domain, destroy exactly the proposal's addresses as APPLY after a targeted destroy plan as DISCOVERY, record evidence, and verify every deletion gone"
+              },
+              {
+                "file": "test/apply-cleanup.test.ts",
+                "title": "the proposal lists exactly what this run created and the observation found present, keeps the state backend, the pilot identities and pre-existing resources, and hashes to its identity"
+              }
+            ],
+            "denied": [
+              {
+                "file": "test/apply-cleanup.test.ts",
+                "title": "cleanup refuses, consuming nothing: a wrong target, an apply approval, an expired or replayed approval, an altered proposal, a proposal of another run or channel, and a second execution"
+              },
+              {
+                "file": "test/apply-cleanup.test.ts",
+                "title": "the destroy plan must be exactly the approved list: a dependent the engine adds, an address the state no longer holds, or a non-delete action stops before any approval is consumed"
+              },
+              {
+                "file": "test/apply-cleanup.test.ts",
+                "title": "a proposal is refused on ambiguous ownership (a partial apply, a planned resource the state never held) and on an inconclusive or changed observation"
+              },
+              {
+                "file": "test/apply-cleanup-cli.test.ts",
+                "title": "a wrong phrase at the cleanup approval or the removal signs nothing and runs nothing; an apply approval, a tampered proposal and a second run are refused before any phrase"
+              },
+              {
+                "file": "test/apply-cleanup.test.ts",
+                "title": "forged inventory and evidence are rejected: a blueprint, observation or leftovers record with a wrong shape, a raw field or a claimed completion, and a proposal that was edited"
+              }
+            ],
+            "interrupted": [
+              {
+                "file": "test/apply-cleanup.test.ts",
+                "title": "a partial or killed cleanup records its outcome and spends the proposal, and leftover verification reports deletion pending or still present, never complete"
+              },
+              {
+                "file": "test/apply-cleanup.test.ts",
+                "title": "a kill switch during the cleanup stops the engine, records KILLED, and the proposal is spent; one appearing before the engine starts spends the approvals and destroys nothing"
+              }
+            ],
+            "recovery": [
+              {
+                "file": "test/apply-cleanup.test.ts",
+                "title": "a restart or reconnect never executes a proposal twice: a held reservation refuses, verification is repeatable, and a lost response is reconciled from the ledger"
+              },
+              {
+                "file": "test/apply-cleanup.test.ts",
+                "title": "a KMS key scheduled for deletion is DELETION_PENDING: not complete, not a leftover"
+              }
+            ]
+          }
         }
       },
       "proofs": {
         "blueprint": {
-          "status": "NOT_IMPLEMENTED",
-          "missing": "No record maps each desired resource (engine address) to the cloud resource ID that was created."
+          "status": "SYNTHETIC_PASS",
+          "code": [
+            "src/observe/blueprint.ts",
+            "src/apply/run-records.ts",
+            "src/apply/driver.ts"
+          ],
+          "tests": [
+            {
+              "file": "test/observe-blueprint.test.ts",
+              "title": "real terraform show output: managed resources from the root and child modules, identifiers only"
+            },
+            {
+              "file": "test/observe-blueprint.test.ts",
+              "title": "the blueprint names what the plan left in place but the state lacks, and skips data sources and outputs"
+            },
+            {
+              "file": "test/apply-cleanup.test.ts",
+              "title": "the raw state parser maps every managed instance, with module paths and index keys, to identifiers only"
+            }
+          ]
         },
         "independentVerification": {
-          "status": "NOT_IMPLEMENTED",
-          "missing": "No read-only check, separate from the engine, confirms after an apply that the resources exist as planned."
+          "status": "SYNTHETIC_PASS",
+          "code": [
+            "src/observe/verify.ts",
+            "src/observe/aws-cli.ts",
+            "src/apply/observe.ts"
+          ],
+          "tests": [
+            {
+              "file": "test/observe-blueprint.test.ts",
+              "title": "observe: every resource present under its Cloud Control identifier is verified, read-only, with no property copied"
+            },
+            {
+              "file": "test/observe-blueprint.test.ts",
+              "title": "observe denied: an absent resource, a planned resource missing from the state, or an unexpected tagged resource fails"
+            },
+            {
+              "file": "test/apply-cleanup.test.ts",
+              "title": "AWS Terraform observe: after a successful apply the driver records the blueprint from the state, identifiers only, and observe verifies each resource through Cloud Control as DISCOVERY"
+            }
+          ]
         },
         "cleanupDisposition": {
-          "status": "NOT_IMPLEMENTED",
-          "missing": "No per-resource disposition (deleted, or retained with an owner and reason) is recorded after a journey."
+          "status": "SYNTHETIC_PASS",
+          "code": [
+            "src/observe/disposition.ts",
+            "src/apply/leftovers.ts",
+            "src/apply/run-records.ts"
+          ],
+          "tests": [
+            {
+              "file": "test/observe-blueprint.test.ts",
+              "title": "cleanup: deleted only when the cloud says gone, kept only with an owner and reason, and leftovers are named"
+            },
+            {
+              "file": "test/observe-blueprint.test.ts",
+              "title": "cleanup never reports completion it cannot prove: an empty or unmapped blueprint, no unit tag, or an incomplete listing"
+            },
+            {
+              "file": "test/apply-cleanup.test.ts",
+              "title": "a partial or killed cleanup records its outcome and spends the proposal, and leftover verification reports deletion pending or still present, never complete"
+            }
+          ]
         },
         "sourceBoundEvidence": {
           "status": "SYNTHETIC_PASS",
@@ -263,7 +443,7 @@
       },
       "live": {
         "status": "BLOCKED",
-        "blockedBy": "Owner supervision and inputs (docs/act-pilot-apply.md, What the owner supplies): a pinned, enabled AWS contract with policyVersion, the DEV account, the S3 state bucket, the four web-identity roles and token files, approver public keys, and a person to run ./alz apply qualify with the CloudTrail attestation. The execute step alone becomes LIVE_PASS when that person runs one owner-supervised DEV apply, records it with ./alz apply record-live, and the owner commits the record and cites it as liveEvidence. The row also needs observe and cleanup to pass synthetically first."
+        "blockedBy": "Owner supervision and inputs (docs/act-pilot-apply.md, What the owner supplies): a pinned, enabled AWS contract with policyVersion, the DEV account, the S3 state bucket, the four web-identity roles and token files, approver public keys, and a person to run ./alz apply qualify with the CloudTrail attestation. Every step and proof of this row passes synthetically (fake engine, fake AWS CLI). The execute step alone becomes LIVE_PASS when that person runs one owner-supervised DEV apply, records it with ./alz apply record-live, and the owner commits the record and cites it as liveEvidence; the lifecycle report then marks the execute stage LIVE and is MIXED, never LIVE by declaration. A live cleanup of what that apply created needs the owner's separate authorization (docs/act-pilot-plan.md, Cleanup of pilot-created resources); the lifecycle report (./alz apply report) stays SYNTHETIC until the live record exists."
       }
     },
     {

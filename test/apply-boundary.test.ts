@@ -65,7 +65,7 @@ test("from the console side exactly src/cli/ui-channel.ts reaches the apply path
   assert.deepEqual(sources.filter((file) => importsOf(file).includes("src/cli/apply.ts")), [UI_CHANNEL]);
   // The adapter takes from src/apply only what it names here: no driver, no engine, no identities, no approvals, no ledger.
   const taken = importsOf(UI_CHANNEL).filter((file) => file.startsWith("src/apply/")).sort();
-  assert.deepEqual(taken, ["src/apply/channel.ts", "src/apply/constants.ts", "src/apply/contract.ts", "src/apply/seal.ts", "src/apply/types.ts"]);
+  assert.deepEqual(taken, ["src/apply/channel.ts", "src/apply/cleanup-proposal.ts", "src/apply/constants.ts", "src/apply/contract.ts", "src/apply/seal.ts", "src/apply/types.ts"]);
   // Outside src/apply, exactly these modules import it: the two CLI doors and the release-admission checks that read the same pin.
   const outside = sources.filter((file) => !file.startsWith("src/apply/") && importsOf(file).some((dep) => dep.startsWith("src/apply/"))).sort();
   assert.deepEqual(outside, ["src/cli/apply.ts", "src/cli/release-admission.ts", "src/cli/ui-channel.ts", "src/qualification/release-admission.ts", "src/tools/profiles.ts"]

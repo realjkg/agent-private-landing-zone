@@ -120,6 +120,19 @@ Keep the page open and do not stop the console while it applies. The page may pa
 | **Nothing changed, but the approvals are used up** | The change was not applied, but the approvals were already used and cannot be used again. | Fix the cause. Ask each approver to sign again. Then apply the same prepared change. |
 | **A person must review this before anything else** | The change may be partly done, or it was stopped half way. | **DO NOT RETRY.** Call the pilot owner now and tell them the time, the environment, and that the apply needs a manual review. Keep the page open and do not start another change until the owner says it is safe. |
 
+### Step 7: Check and clean up
+
+After a pilot change is applied in DEV, what it made is removed again. This step has four actions, and each one is its own decision.
+
+1. **Look at what was created.** Choose **Look at what was created**. The console looks at the cloud on its own, without the build tool, and lists each thing the change made: its name in the project, its kind, its identifier in the cloud, where it came from, and what the check found. This reads and changes nothing, so you can **Look again** as often as you like. "Everything that can be checked on its own is there" is the normal result for a pilot change; "Something is missing or unexpected" means you stop and call the pilot owner.
+2. **Write the cleanup proposal.** Choose **Write the cleanup proposal**. The console writes a file that names exactly the things this change made and the cloud found, what is kept and why (the state storage and the pilot's own identities are never on the list), and how many approvals the cleanup needs. The proposal removes nothing by itself. Send the file to each approver. On their own computer they choose **I am an approver**, then **A cleanup**, type `APPROVE CLEANUP DEV` and the proposal's 12-character ID, and send you back an approval file. An approval of the change itself is refused here.
+3. **Remove the listed things.** Enter the proposal file and the cleanup approval files (the prepared change file from the earlier steps is needed too: the console checks the list against what that change really made before anything is removed) and choose **Remove the listed things...**. The last window shows the list once more and asks for the line, for example `CLEANUP DEV 0123456789ab account | storage | workspace`. Keep the page open until it says it is done.
+4. **Check that everything is gone.** Choose **Check that everything is gone**: the console looks at the cloud again and says, for each thing, that it is gone, kept on purpose, still there, waiting for a scheduled deletion, or unknown. It also searches, by the cleanup marker from step 3, for anything of this change outside its records. Only "everything is gone" with nothing else found closes the pilot change.
+
+A removal ends in one of the same four ways as an apply. **A person must review this before anything else** means: do not retry, check that everything is gone (it only looks), and call the pilot owner. A proposal runs once; after a stopped removal a new proposal needs a new look and new approvals.
+
+Everything this step shows on this computer is a synthetic result until the pilot owner records a live one. The console says so on the screen.
+
 ## The safety stops, in plain words
 
 Every stop shows "Why it stopped" and "What to do next". At the Advanced and Expert levels there is also a **Details** disclosure with the reference code, for the person helping you. At the Beginner level, **Copy a note for the pilot owner** puts the code and message on your clipboard.
@@ -169,5 +182,14 @@ The commands, in order. Operators run 1, 2, 3 and 5. Each approver runs 4 on the
 4. `./alz apply approve --bundle REVIEW_FILE.json --key APPROVER_KEY.pem --approver NAME`
 5. `./alz apply apply --request REQUEST.json --manifest MANIFEST.json --sealed LOCKED_CHANGE --approval APPROVAL.json`
 6. `./alz apply status --sealed LOCKED_CHANGE` (anyone, afterward)
+
+The cleanup half, after the change is applied in DEV. Operators run 7, 8 and 10; each approver runs 9 with their own key; anyone runs 11 and 12.
+
+7. `./alz apply observe --sealed LOCKED_CHANGE` (reads and changes nothing; repeat as needed)
+8. `./alz apply propose-cleanup --sealed LOCKED_CHANGE` (prints the proposal file location to send to the approvers)
+9. `./alz apply approve --bundle PROPOSAL.json --key APPROVER_KEY.pem --approver NAME` (the phrase is `APPROVE CLEANUP DEV` and the proposal ID)
+10. `./alz apply cleanup --proposal PROPOSAL.json --request REQUEST.json --manifest MANIFEST.json --sealed LOCKED_CHANGE --approval CLEANUP_APPROVAL.json`
+11. `./alz apply verify-cleanup --proposal PROPOSAL.json` (reads and changes nothing; repeat as needed)
+12. `./alz apply report --sealed LOCKED_CHANGE --proposal PROPOSAL.json` (the lifecycle report, marked synthetic until the owner records live)
 
 The phrases are the same as in the console. The technical reference for each command, its exit codes and its files is `docs/act-pilot-apply.md`.

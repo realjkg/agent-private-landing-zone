@@ -836,7 +836,7 @@ describe("accessibility and mobile", () => {
     const heading = await screen.findByRole("heading", { name: STEP_TITLES[1] });
     await waitFor(() => expect(document.activeElement).toBe(heading));
     const bar = screen.getByRole("progressbar");
-    expect(bar.getAttribute("aria-valuetext")).toBe("Step 2 of 6: Check readiness");
+    expect(bar.getAttribute("aria-valuetext")).toBe("Step 2 of 7: Check readiness");
     expect(bar.getAttribute("aria-valuenow")).toBe("2");
     for (const control of Array.from(document.querySelectorAll("input, select, textarea"))) {
       const id = control.getAttribute("id");
@@ -867,7 +867,7 @@ describe("accessibility and mobile", () => {
 
   test("the progress fill has a rule for every step of both lengths", () => {
     const css = read("src/operator-ui/app/pilot/pilot.css");
-    for (const [of, count] of [[2, 2], [6, 6]] as const) {
+    for (const [of, count] of [[2, 2], [7, 7]] as const) {
       for (let fill = 1; fill <= count; fill += 1) expect(css).toContain('.pilot-bar-fill[data-of="' + of + '"][data-fill="' + fill + '"]');
     }
   });
