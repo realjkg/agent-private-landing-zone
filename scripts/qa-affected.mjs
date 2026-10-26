@@ -15,6 +15,7 @@ const PY_SOURCE = /^scripts\/[^/]+\.py$/;
 const SOURCE = /^src\/.+\.(?:ts|tsx|js|mjs)$/;
 const QA_SELF_TEST = "test/qa-affected.test.mjs";
 const MAX_AFFECTED_TESTS = 45;
+const RUNTIME_FRAMEWORK_IMPORT = /from\s+["']@langchain\//;
 // Inventory guards scan the filesystem (src/cli, ./alz, package.json scripts,
 // generated docs) instead of importing what they check, so the import closure
 // can never select them. Without this rule a new CLI entry point merges with
@@ -168,6 +169,14 @@ export function planChanged(changedPaths, files) {
       configCheck = true;
       if (/vite|vitest/.test(path)) buildUi = true;
       addExisting(selected, files, ["test/deps-install.test.ts", "test/development-readiness.test.ts", QA_SELF_TEST]);
+      if (/^package(?:-lock)?\.json$/.test(path)) {
+        // A dependency bump changes code no import edge in this repo points at. The agent runtime's framework is the
+        // dependency whose behavior tests can observe (graph execution, checkpoints, no tracing egress), so its
+        // consumers' tests run. zod is left to the typecheck: it is imported almost everywhere.
+        for (const [file, content] of files) {
+          if (SOURCE.test(file) && RUNTIME_FRAMEWORK_IMPORT.test(content)) addExisting(selected, files, impactedBy(file));
+        }
+      }
       continue;
     }
     if (/^src\/plugins\/|^config\/plugins/.test(path)) {

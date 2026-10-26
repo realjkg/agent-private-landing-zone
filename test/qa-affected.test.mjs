@@ -71,6 +71,20 @@ test("configuration changes perform targeted dependency checks", () => {
   assert.equal(plan.configCheck, true);
   assert.deepEqual(plan.nodeTests, ["test/deps-install.test.ts", "test/development-readiness.test.ts"]);
 });
+test("a dependency bump runs the tests of the agent runtime framework's consumers, not every importer of every package", () => {
+  const files = fixture();
+  files.set("src/session/graph.ts", 'import { StateGraph } from "@langchain/langgraph"; import "../agent/core.js";');
+  files.set("test/session-graph.test.ts", 'import "../src/session/graph.js";');
+  files.set("src/util/schema.ts", 'import { z } from "zod";');
+  files.set("test/schema.test.ts", 'import "../src/util/schema.js";');
+  for (const manifest of ["package.json", "package-lock.json"]) {
+    const plan = planChanged([manifest], files);
+    assert.ok(plan.nodeTests.includes("test/session-graph.test.ts"), manifest + " runs the framework consumer's test");
+    assert.ok(!plan.nodeTests.includes("test/schema.test.ts"), manifest + " leaves zod to the typecheck");
+    assert.deepEqual(plan.gaps, []);
+  }
+  assert.ok(!planChanged(["tsconfig.json"], files).nodeTests.includes("test/session-graph.test.ts"), "only the dependency manifests");
+});
 test("unknown executable paths require a mapping before passing", () => {
   const plan = planChanged(["installer/unknown-executable"], fixture());
   assert.match(plan.gaps[0], /no QA ownership rule/);
