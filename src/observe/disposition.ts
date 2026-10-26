@@ -78,7 +78,7 @@ export async function cleanupDisposition(blueprint: Blueprint, retained: readonl
       dispositions.push({ ...base, disposition: check.existence === "ABSENT" ? "DELETED" : check.existence === "PRESENT" && !check.pendingDeletion ? "LEFTOVER" : "UNPROVEN" });
     }
   }
-  const listed = input.unitId === null ? null : unexpectedOf(blueprint, await reader.listTagged(input.unitId));
+  const listed = input.unitId === null ? null : unexpectedOf(blueprint, await reader.listTagged(input.unitId), reader.verifier);
   const inventory = listed === null ? "NOT_AVAILABLE" : listed.complete ? "COMPLETE" : "INCOMPLETE";
   const untrackedLeftovers = listed?.unexpected ?? [];
   const unresolved = [

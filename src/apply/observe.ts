@@ -12,8 +12,11 @@ import type { AwsTarget } from "./providers/aws.js";
 import type { AzureTarget } from "./providers/azure.js";
 import {
   readBlueprintRecord, readObservationRecord, recordSha256, verificationOf, writeLeftoversRecord, writeObservationRecord,
-  type BlueprintRecord, type LeftoversRecord, type ObservationRecord, type ObservedResource,
+  type BlueprintRecord, type LeftoversRecord, type ObservationRecord, type ObservedGroup, type ObservedResource,
 } from "./run-records.js";
+
+/** Resource types that hold other resources, which a cleanup must never delete on run ownership alone. */
+export const isContainerType = (type: string): boolean => type === "azurerm_resource_group";
 import type { ApplyEvidence, ApplyRefusalCode } from "./types.js";
 
 /**
@@ -46,7 +49,7 @@ type OpenReader = { ok: true; reader: ResourceReader; binarySha256: string | nul
  * Control through the aws CLI in the target's region, or Azure Resource Manager in process in the target's subscription.
  * The Terraform engine is the only one with a cleanup path, and both of its providers read here.
  */
-function openReader(deps: ObserveDeps, environment: ApplyEvidence["environment"]): OpenReader | Refusal {
+export function openReader(deps: ObserveDeps, environment: ApplyEvidence["environment"]): OpenReader | Refusal {
   const contract = loadPilotContract(deps.contractPath, deps.contractPinPath);
   if ("reason" in contract) return contractRefusal(contract);
   const target = contract.targets[environment];
@@ -82,8 +85,16 @@ export async function observeRun(artifactSha256: string, deps: ObserveDeps): Pro
   const opened = openReader(deps, applied.environment);
   if (!opened.ok) return opened;
   let report: ObserveReport;
+  const groups: ObservedGroup[] = [];
   try {
     report = await observeBlueprint(blueprint.blueprint, { unitId: blueprint.unitId, reader: opened.reader });
+    // What each present container (an Azure resource group) holds, so the proposal never deletes a group on run ownership alone.
+    for (const entry of blueprint.blueprint.entries.filter((e) => isContainerType(e.type) && e.id !== null)) {
+      const check = report.checks.find((c) => c.address === entry.address);
+      if (check?.existence !== "PRESENT" || !opened.reader.listGroup) continue;
+      const listed = await opened.reader.listGroup(entry.id!);
+      groups.push({ address: entry.address, identifier: entry.id!, members: listed ? [...listed.identifiers] : [], complete: listed?.complete === true });
+    }
   } finally {
     opened.close();
   }
@@ -95,7 +106,7 @@ export async function observeRun(artifactSha256: string, deps: ObserveDeps): Pro
     schemaVersion: 1, kind: "OBSERVATION", artifactSha256, applyEvidenceSha256, blueprintSha256: recordSha256(blueprint), environment: applied.environment, target: { ...applied.target },
     sourceCommit: applied.sourceCommit, contractSha256: applied.contractSha256, verifier: report.verifier,
     verifierBinarySha256: opened.binarySha256, verdict: report.verdict, resources,
-    missingFromState: [...report.missingFromState], unexpected: [...report.unexpected], inventory: report.inventory, observedAt: (deps.now ?? (() => new Date()))().toISOString(),
+    missingFromState: [...report.missingFromState], unexpected: [...report.unexpected], inventory: report.inventory, groups, observedAt: (deps.now ?? (() => new Date()))().toISOString(),
   };
   const written = await writeObservationRecord(record, deps.evidenceDir);
   if (written !== "WRITTEN") return refuse("EVIDENCE_REJECTED", "The observation could not be recorded (" + written + ").");

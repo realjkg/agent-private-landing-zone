@@ -1167,7 +1167,8 @@ test("AWS Terraform in the console: a wrong phrase or a cancel at the cleanup ap
 const AZ_SUB = DEV_TARGET.account;
 const AZ_RG = "/subscriptions/" + AZ_SUB + "/resourceGroups/alz-console-rg";
 const AZ_LAW = AZ_RG + "/providers/Microsoft.OperationalInsights/workspaces/alz-console-law";
-const AZ_STATE_ACCOUNT = AZ_RG + "/providers/Microsoft.Storage/storageAccounts/" + DEV_TARGET.backend.split("/")[0];
+/** The state backend lives in its own, pre-existing group; the group the run creates holds only what the run created. */
+const AZ_STATE_ACCOUNT = "/subscriptions/" + AZ_SUB + "/resourceGroups/alz-state-rg/providers/Microsoft.Storage/storageAccounts/" + DEV_TARGET.backend.split("/")[0];
 const AZ_OLD_ROLE = "/subscriptions/" + AZ_SUB + "/providers/Microsoft.Authorization/roleAssignments/22222222-bbbb-4bbb-8bbb-222222222222";
 const AZ_STRAY = AZ_RG + "/providers/Microsoft.Storage/storageAccounts/strayofthisunit";
 const AZ_CREATES = [
@@ -1193,7 +1194,7 @@ const azTokenFile = (() => { const path = join(fresh("token"), "discovery-oidc-t
 async function azureCleanupJourney() {
   const journey = await consoleJourney("AZURE");
   behaveIn(toolDir, KILL, { applyAdvance: true, showOnlyConfigured: true, showResources: AZ_CREATES, stateResources: AZ_STATE, unitTags: { ...AZ_UNIT.tags }, unitTagAttribute: "tags" });
-  const arm = fakeArmHttp({ existing: AZ_EXISTING, tagged: AZ_TAGGED });
+  const arm = fakeArmHttp({ existing: AZ_EXISTING, tagged: AZ_TAGGED, groupMembers: { [AZ_RG]: [AZ_LAW] } });
   const w = { ...journey.w, cli: { ...journey.w.cli, env: { ...identityEnv("DEV"), ALZ_DISCOVERY_ARM_OIDC_TOKEN_FILE: azTokenFile }, observeArm: arm.http, proposalsDir: fresh("proposals") } };
   const { port } = await serve(w);
   await choose(port);
@@ -1224,7 +1225,7 @@ test("Azure Terraform in the console: observe what the apply created, propose an
   assert.ok(arm.calls.filter((c) => c.method !== "POST").every((c) => c.method === "GET"));
   noAzureTokenIn(arm, observation, summary);
   assert.deepEqual(summary.deletes.map((d) => d.address), ["azurerm_log_analytics_workspace.pilot", "azurerm_resource_group.pilot"]);
-  assert.deepEqual(summary.excluded.map((x) => [x.address, x.ownership]), [["azurerm_role_assignment.old", "NOT_IN_PLAN"], ["azurerm_storage_account.state", "PROTECTED_BACKEND"]]);
+  assert.deepEqual(summary.excluded.map((x) => [x.address, x.ownership]), [["azurerm_role_assignment.old", "PROTECTED_IDENTITY"], ["azurerm_storage_account.state", "PROTECTED_BACKEND"]]);
 
   const signed = await approveCleanupViaUi(port, proposalPath, summary.shortId, "alice");
   assert.equal(signed.run!.result!.exit, 0, JSON.stringify(signed.run!.result));
@@ -1292,7 +1293,7 @@ test("Azure Terraform in the console: a wrong phrase or a cancel at the cleanup 
   assert.equal(again.code, "PROPOSAL_ALREADY_EXECUTED");
   assert.equal(applies(), appliesBefore + 1, "a reconnect never removes twice");
   // A token the tenant refuses: the observation is INCONCLUSIVE, the reason is a class, and the token value appears nowhere.
-  arm.behave({ existing: AZ_EXISTING, tagged: AZ_TAGGED, tokenStatus: 401 });
+  arm.behave({ existing: AZ_EXISTING, tagged: AZ_TAGGED, groupMembers: { [AZ_RG]: [AZ_LAW] }, tokenStatus: 401 });
   assert.equal((await call(port, "POST", "/pilot/observe", { body: { sealedPath: sealed.path } })).status, 202);
   const observed = (await finished(port)).run!.result!;
   assert.equal(observed.exit, 0, JSON.stringify(observed));

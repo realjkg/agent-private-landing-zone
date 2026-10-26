@@ -770,11 +770,11 @@
             "positive": [
               {
                 "file": "test/apply-cleanup-azure.test.ts",
-                "title": "Azure Terraform observe: after a successful apply the driver records the blueprint from the state, identifiers only, and observe verifies each resource through Azure Resource Manager as DISCOVERY, with no credential outside memory"
+                "title": "Azure Terraform observe: after a successful apply the driver records the blueprint from the state, identifiers only, and observe verifies each resource through Azure Resource Manager as DISCOVERY, lists what each group holds, with no credential outside memory"
               },
               {
                 "file": "test/apply-cleanup-azure.test.ts",
-                "title": "the Azure reader refuses to read outside its two hosts or outside the target subscription, needs an ARM id, and resolves API versions once per type"
+                "title": "the Azure reader sends nothing to a foreign host, a plaintext or login-host link, or a path the URL parser would rewrite; it stays inside the target subscription, needs an ARM id, resolves stable API versions once per type, and reads nothing once closed"
               }
             ],
             "denied": [
@@ -784,7 +784,7 @@
               },
               {
                 "file": "test/apply-cleanup-azure.test.ts",
-                "title": "the Azure reader refuses to read outside its two hosts or outside the target subscription, needs an ARM id, and resolves API versions once per type"
+                "title": "the Azure reader sends nothing to a foreign host, a plaintext or login-host link, or a path the URL parser would rewrite; it stays inside the target subscription, needs an ARM id, resolves stable API versions once per type, and reads nothing once closed"
               }
             ],
             "interrupted": [
@@ -834,57 +834,65 @@
             "positive": [
               {
                 "file": "test/apply-cleanup-azure.test.ts",
-                "title": "Azure Terraform cleanup: the proposal keeps the state storage account and the pilot's identity objects, the APPLY identity destroys exactly the created list after a targeted destroy plan, and the leftover check reads ARM again: COMPLETE only when the unit sweep finds nothing else"
+                "title": "Azure Terraform cleanup: the proposal keeps the state backend in every form and the group that holds it, the pilot's identities and grants, and every pre-existing, shared, imported or unrelated resource; the APPLY identity destroys exactly the created list after a targeted destroy plan, and the leftover check reads ARM again: COMPLETE only when the unit sweep finds nothing else"
+              },
+              {
+                "file": "test/apply-cleanup-azure.test.ts",
+                "title": "Azure resource-group containment: a group is deleted only when everything it holds is this run's and goes with it; a foreign member, a pre-existing group or an incomplete listing keeps it, and a member added after the proposal stops the cleanup before anything is consumed"
               }
             ],
             "denied": [
               {
                 "file": "test/apply-cleanup-azure.test.ts",
-                "title": "Azure Terraform cleanup: the proposal keeps the state storage account and the pilot's identity objects, the APPLY identity destroys exactly the created list after a targeted destroy plan, and the leftover check reads ARM again: COMPLETE only when the unit sweep finds nothing else"
+                "title": "Azure Terraform cleanup: the proposal keeps the state backend in every form and the group that holds it, the pilot's identities and grants, and every pre-existing, shared, imported or unrelated resource; the APPLY identity destroys exactly the created list after a targeted destroy plan, and the leftover check reads ARM again: COMPLETE only when the unit sweep finds nothing else"
+              },
+              {
+                "file": "test/apply-cleanup-azure.test.ts",
+                "title": "Azure resource-group containment: a group is deleted only when everything it holds is this run's and goes with it; a foreign member, a pre-existing group or an incomplete listing keeps it, and a member added after the proposal stops the cleanup before anything is consumed"
+              },
+              {
+                "file": "test/apply-cleanup-azure.test.ts",
+                "title": "Azure cleanup denied: a forged, re-hashed proposal naming the backend account, its container, the group that holds it, a grant, a pre-existing, imported, shared or unrelated resource, or a dropped entry never executes, an apply approval never authorizes a cleanup, and a state id that cannot be read exactly as written makes no proposal"
               },
               {
                 "file": "test/apply-cleanup.test.ts",
-                "title": "cleanup refuses, consuming nothing: a wrong target, an apply approval, an expired or replayed approval, an altered proposal, a proposal of another run or channel, and a second execution"
+                "title": "the destroy plan must be exactly the approved list: a dependent the engine adds, an address the state no longer holds, or a non-delete action stops before any approval is consumed",
+                "scope": "SHARED_ENGINE"
               },
               {
                 "file": "test/apply-cleanup.test.ts",
-                "title": "the destroy plan must be exactly the approved list: a dependent the engine adds, an address the state no longer holds, or a non-delete action stops before any approval is consumed"
-              },
-              {
-                "file": "test/apply-cleanup.test.ts",
-                "title": "a proposal is refused on ambiguous ownership (a partial apply, a planned resource the state never held) and on an inconclusive or changed observation"
-              },
-              {
-                "file": "test/apply-cleanup.test.ts",
-                "title": "forged inventory and evidence are rejected: a blueprint, observation or leftovers record with a wrong shape, a raw field or a claimed completion, and a proposal that was edited"
+                "title": "forged inventory and evidence are rejected: a blueprint, observation or leftovers record with a wrong shape, a raw field or a claimed completion, and a proposal that was edited",
+                "scope": "SHARED_ENGINE"
               }
             ],
             "interrupted": [
               {
-                "file": "test/apply-cleanup.test.ts",
-                "title": "a partial or killed cleanup records its outcome and spends the proposal, and leftover verification reports deletion pending or still present, never complete"
+                "file": "test/apply-cleanup-azure.test.ts",
+                "title": "Azure cleanup interrupted: an apply that did not succeed makes no proposal, and a cleanup the engine fails part-way records PARTIAL_REQUIRES_REVIEW, spends the proposal, and leaves the leftover check pending or present, never complete"
               },
               {
                 "file": "test/apply-cleanup.test.ts",
-                "title": "a kill switch during the cleanup stops the engine, records KILLED, and the proposal is spent; one appearing before the engine starts spends the approvals and destroys nothing"
+                "title": "a kill switch during the cleanup stops the engine, records KILLED, and the proposal is spent; one appearing before the engine starts spends the approvals and destroys nothing",
+                "scope": "SHARED_ENGINE"
               }
             ],
             "recovery": [
+              {
+                "file": "test/apply-cleanup-azure.test.ts",
+                "title": "Azure resource-group containment: a group is deleted only when everything it holds is this run's and goes with it; a foreign member, a pre-existing group or an incomplete listing keeps it, and a member added after the proposal stops the cleanup before anything is consumed"
+              },
               {
                 "file": "test/ui-channel.test.ts",
                 "title": "Azure Terraform in the console: a wrong phrase or a cancel at the cleanup approval or the removal signs nothing and removes nothing, an apply approval never authorizes a cleanup, and a reconnect never removes twice"
               },
               {
                 "file": "test/apply-cleanup.test.ts",
-                "title": "a restart or reconnect never executes a proposal twice: a held reservation refuses, verification is repeatable, and a lost response is reconciled from the ledger"
-              },
-              {
-                "file": "test/apply-cleanup.test.ts",
-                "title": "a KMS key scheduled for deletion is DELETION_PENDING: not complete, not a leftover"
+                "title": "a restart or reconnect never executes a proposal twice: a held reservation refuses, verification is repeatable, and a lost response is reconciled from the ledger",
+                "scope": "SHARED_ENGINE"
               }
             ]
           },
-          "note": "The cleanup driver, ledger, approvals and kill switch are engine- and provider-agnostic; their denied, interrupted and recovery cases are proved once in the AWS suite and hold for the Azure row, whose own suite proves the Azure reader, protections and sweep."
+          "note": "Denied, interrupted and recovery cases run on this row's own fixture (scripted Azure Resource Manager, azurerm state). The citations marked SHARED_ENGINE exercise driver code both Terraform rows share (the destroy-plan scope check, record shape validation, the kill switch, the ledger reservation) on the AWS fixture and are not Azure-row evidence."
         }
       },
       "proofs": {
@@ -898,7 +906,7 @@
           "tests": [
             {
               "file": "test/apply-cleanup-azure.test.ts",
-              "title": "Azure Terraform observe: after a successful apply the driver records the blueprint from the state, identifiers only, and observe verifies each resource through Azure Resource Manager as DISCOVERY, with no credential outside memory"
+              "title": "Azure Terraform observe: after a successful apply the driver records the blueprint from the state, identifiers only, and observe verifies each resource through Azure Resource Manager as DISCOVERY, lists what each group holds, with no credential outside memory"
             }
           ]
         },
@@ -912,11 +920,11 @@
           "tests": [
             {
               "file": "test/apply-cleanup-azure.test.ts",
-              "title": "Azure Terraform observe: after a successful apply the driver records the blueprint from the state, identifiers only, and observe verifies each resource through Azure Resource Manager as DISCOVERY, with no credential outside memory"
+              "title": "Azure Terraform observe: after a successful apply the driver records the blueprint from the state, identifiers only, and observe verifies each resource through Azure Resource Manager as DISCOVERY, lists what each group holds, with no credential outside memory"
             },
             {
               "file": "test/apply-cleanup-azure.test.ts",
-              "title": "the Azure reader refuses to read outside its two hosts or outside the target subscription, needs an ARM id, and resolves API versions once per type"
+              "title": "the Azure reader sends nothing to a foreign host, a plaintext or login-host link, or a path the URL parser would rewrite; it stays inside the target subscription, needs an ARM id, resolves stable API versions once per type, and reads nothing once closed"
             }
           ]
         },
@@ -930,7 +938,11 @@
           "tests": [
             {
               "file": "test/apply-cleanup-azure.test.ts",
-              "title": "Azure Terraform cleanup: the proposal keeps the state storage account and the pilot's identity objects, the APPLY identity destroys exactly the created list after a targeted destroy plan, and the leftover check reads ARM again: COMPLETE only when the unit sweep finds nothing else"
+              "title": "Azure Terraform cleanup: the proposal keeps the state backend in every form and the group that holds it, the pilot's identities and grants, and every pre-existing, shared, imported or unrelated resource; the APPLY identity destroys exactly the created list after a targeted destroy plan, and the leftover check reads ARM again: COMPLETE only when the unit sweep finds nothing else"
+            },
+            {
+              "file": "test/apply-cleanup-azure.test.ts",
+              "title": "Azure cleanup interrupted: an apply that did not succeed makes no proposal, and a cleanup the engine fails part-way records PARTIAL_REQUIRES_REVIEW, spends the proposal, and leaves the leftover check pending or present, never complete"
             }
           ]
         },

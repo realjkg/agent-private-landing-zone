@@ -12,6 +12,8 @@ import { blueprintFromTerraformStatePull } from "../observe/blueprint.js";
 import { consumeApprovals, verifyApprovalSet } from "./approval.js";
 import { buildCleanupProposal, computeProposalSha256, verifyCleanupProposal, type CleanupProposal } from "./cleanup-proposal.js";
 import { pilotUnitOf } from "./unit.js";
+import { isContainerType, openReader } from "./observe.js";
+import type { ArmHttp } from "../observe/azure-rest.js";
 import {
   DEFAULT_EVIDENCE_DIR, contractRefusal, isKillSwitchActive, loadPilotContract, loadQualificationRecords, pilotContractSha256, repoPaths, requireNotApplied, requireNotExecuted,
   requirePromotionEvidence, targetForEnvironment, verifyApplyQualification, type Refusal,
@@ -58,6 +60,8 @@ export type ApplyDeps = {
   /** How often the kill switch is read while the engine runs, and how long the engine gets to stop. Tests shorten both. */
   killPollMs?: number;
   killGraceMs?: number;
+  /** Test seam: the Azure reader's HTTP client for the cleanup-time container check (src/observe/azure-rest.ts). Production uses fetch. */
+  arm?: ArmHttp;
   /**
    * The product source commit this run comes from, established by the caller (the CLI reads the git checkout, refusing
    * uncommitted changes, or the container's build stamp). The driver starts no process to find it: without a full commit
@@ -550,6 +554,35 @@ export type CleanupRequest = {
 const CLEANUP_PURPOSE = "cleanup-recovery";
 
 /**
+ * Every container the proposal deletes (an Azure resource group) is listed again by the independent reader, right before
+ * anything is reserved: a member that is not itself on the deletion list (one added since the proposal, or one the
+ * proposal never saw) refuses with PROPOSAL_SCOPE_MISMATCH, and a listing that failed or was incomplete refuses with
+ * OBSERVATION_INCONCLUSIVE. Nothing is consumed either way.
+ */
+async function requireGroupsStillOwn(proposal: CleanupProposal, deps: ApplyDeps): Promise<Refusal | undefined> {
+  const groups = proposal.deletes.filter((d) => isContainerType(d.type) && d.identifier !== null);
+  if (groups.length === 0) return undefined;
+  const opened = openReader({ contractPath: deps.contractPath, contractPinPath: deps.contractPinPath, evidenceDir: deps.evidenceDir ?? DEFAULT_EVIDENCE_DIR, env: deps.env, toolDirs: deps.toolDirs, scratchParent: deps.scratchParent, arm: deps.arm }, proposal.environment);
+  if (!opened.ok) return opened;
+  try {
+    if (!opened.reader.listGroup) return refuse("OBSERVATION_INCONCLUSIVE", "The reader cannot list what a container holds, so a group is never deleted from here. Nothing was run.");
+    const deleting = new Set(proposal.deletes.map((d) => d.identifier?.toLowerCase()).filter((x): x is string => x !== undefined));
+    for (const group of groups) {
+      const listed = await opened.reader.listGroup(group.identifier!);
+      if (!listed || !listed.complete) return refuse("OBSERVATION_INCONCLUSIVE", "The contents of " + group.address + " could not be listed completely right now, so the cleanup does not run. Nothing was consumed; try again when the cloud answers.");
+      const others = listed.identifiers.filter((m) => m.toLowerCase() !== group.identifier!.toLowerCase() && !deleting.has(m.toLowerCase()));
+      if (others.length > 0) {
+        return refuse("PROPOSAL_SCOPE_MISMATCH", group.address + " now holds " + others.length + " resource(s) this cleanup does not delete, so destroying it would take more than was approved. " +
+          "Nothing was run and no approval was consumed. Observe again, propose again and collect new approvals.");
+      }
+    }
+    return undefined;
+  } finally {
+    opened.close();
+  }
+}
+
+/**
  * The proposal must be exactly what this run's records derive. The blueprint and the observation are read back from the
  * ledger and must hash to what the proposal names; the proposal is then rebuilt from them, the sealed plan's change list
  * and the pinned contract (the same ownership classes and protections `buildCleanupProposal` applies, with the identities
@@ -641,6 +674,9 @@ export async function runCleanup(request: CleanupRequest, deps: ApplyDeps): Prom
   // is bound in code to what this run created). A proposal that was edited and re-hashed cannot pass this.
   const derived = await requireProposalDerivedFromRecords(proposal, applied, sealed.changes, contract, env, evidenceDir);
   if (derived) return derived;
+  // A container in the list (an Azure resource group) is read again now: it must still hold only resources this cleanup deletes.
+  const contained = await requireGroupsStillOwn(proposal, deps);
+  if (contained) return contained;
   let manifest: ArtifactManifest;
   try { manifest = verifyManifest(request.manifest); } catch { return refuse("ARTIFACT_INVALID", "The manifest is not valid or not sealed."); }
   if (!acceptsManifest(engine, manifest) || manifest.manifestHash !== applied.manifestHash || !sameTarget(manifest.target, proposal.target) || manifest.engineVersion !== proposal.engineVersion) {

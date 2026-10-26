@@ -216,6 +216,7 @@ export function ownershipWord(ownership: string): string {
     case "NOT_IN_PLAN": return "not part of this change";
     case "PROTECTED_BACKEND": return "the storage the pilot itself runs on";
     case "PROTECTED_IDENTITY": return "a pilot sign-in or trust";
+    case "CONTAINS_OTHERS": return "a group holding things this change did not create";
     default: return "unknown";
   }
 }

@@ -296,6 +296,13 @@ export type ArmBehavior = {
   failAll?: number;
   /** Resource types (namespace/type) the provider does not list. */
   unknownTypes?: string[];
+  /** Resource types (namespace/type) the provider offers only in preview API versions. */
+  previewOnlyTypes?: string[];
+  /** What each resource group holds (group id → member ids); a group not named here holds nothing. */
+  groupMembers?: Record<string, string[]>;
+  /** Pages for a group listing; `groupListingFails` makes the second page answer 500, an incomplete listing. */
+  groupPages?: number;
+  groupListingFails?: boolean;
 };
 export type ArmCall = { method: string; url: string; headers: Record<string, string>; body?: string };
 /** The federated token the fake identity carries, and the access token the fake endpoint issues: canaries that must never appear in a record. */
@@ -324,8 +331,21 @@ export function fakeArmHttp(behavior: ArmBehavior = {}): { http: (request: ArmCa
       // The real provider lists every type it offers whether or not a resource exists; the fake knows a few common ones plus whatever the scenario names.
       const KNOWN_TYPES = ["Microsoft.OperationalInsights/workspaces", "Microsoft.Storage/storageAccounts", "Microsoft.Storage/storageAccounts/blobServices/containers", "Microsoft.Authorization/roleAssignments", "Microsoft.KeyVault/vaults"];
       const types = new Set([...KNOWN_TYPES, ...[...(b.existing ?? []), ...Object.keys(b.fail ?? {}), ...(b.tagged ?? [])].map(typeOf)].filter((t) => t.toLowerCase().startsWith(namespace.toLowerCase() + "/")).map((t) => t.slice(namespace.length + 1)));
-      const resourceTypes = [...types].filter((t) => !(b.unknownTypes ?? []).includes(namespace + "/" + t)).map((t) => ({ resourceType: t, apiVersions: ["2024-01-01-preview", "2023-05-01"] }));
+      const resourceTypes = [...types].filter((t) => !(b.unknownTypes ?? []).includes(namespace + "/" + t))
+        .map((t) => ({ resourceType: t, apiVersions: (b.previewOnlyTypes ?? []).includes(namespace + "/" + t) ? ["2024-01-01-preview"] : ["2024-01-01-preview", "2023-05-01"] }));
       return { status: 200, body: JSON.stringify({ namespace, resourceTypes }) };
+    }
+    const groupListing = /^(\/subscriptions\/[^/]+\/resourceGroups\/[^/]+)\/resources$/i.exec(path);
+    if (groupListing) {
+      const groupId = Object.keys(b.groupMembers ?? {}).find((id) => id.toLowerCase() === groupListing[1].toLowerCase());
+      const all = groupId ? (b.groupMembers ?? {})[groupId] : [];
+      const pages = Math.max(1, b.groupPages ?? 1);
+      const page = Number(url.searchParams.get("$skiptoken") ?? "0");
+      if (b.groupListingFails && page > 0) return { status: 500, body: JSON.stringify({ error: { code: "CANARY_CLOUD_ERROR_c6" } }) };
+      const size = Math.ceil(all.length / pages) || 1;
+      const value = all.slice(page * size, (page + 1) * size).map((id) => ({ id, name: id.split("/").pop(), type: typeOf(id) }));
+      const next = page + 1 < pages ? request.url.replace(/&\$skiptoken=\d+/, "") + "&$skiptoken=" + (page + 1) : undefined;
+      return { status: 200, body: JSON.stringify({ value, ...(next ? { nextLink: next } : {}) }) };
     }
     if (/^\/subscriptions\/[^/]+\/(resources|resourcegroups)$/i.test(path) && url.searchParams.has("$filter")) {
       const collection = path.toLowerCase().endsWith("/resources") ? "resources" : "groups";

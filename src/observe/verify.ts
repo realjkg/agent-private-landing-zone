@@ -75,6 +75,11 @@ export type ResourceReader = {
   check(entry: BlueprintEntry): Promise<ResourceCheck>;
   /** Identifiers tagged with the unit, and whether the listing covered every page; undefined when the listing failed. */
   listTagged(unitId: string): Promise<{ identifiers: string[]; complete: boolean } | undefined>;
+  /**
+   * The identifiers of every resource inside a container resource (an Azure resource group), every page; undefined when
+   * the listing failed. A reader whose cloud has no such containers leaves it out.
+   */
+  listGroup?(groupIdentifier: string): Promise<{ identifiers: string[]; complete: boolean } | undefined>;
 };
 
 /** How a verifier is handed in: the AWS CLI with its region (the original shape), or any reader. */
@@ -170,7 +175,7 @@ export async function observeBlueprint(blueprint: Blueprint, input: { unitId: st
   const reader = readerOf(input);
   const checks: ResourceCheck[] = [];
   for (const entry of blueprint.entries) checks.push(await reader.check(entry));
-  const listed = input.unitId === null ? null : await unexpectedOf(blueprint, await reader.listTagged(input.unitId));
+  const listed = input.unitId === null ? null : unexpectedOf(blueprint, await reader.listTagged(input.unitId), reader.verifier);
   const inventory = listed === null ? "NOT_AVAILABLE" : listed.complete ? "COMPLETE" : "INCOMPLETE";
   const unexpected = listed?.unexpected ?? [];
   const has = (existence: Existence) => checks.some((check) => check.existence === existence);
@@ -181,9 +186,14 @@ export async function observeBlueprint(blueprint: Blueprint, input: { unitId: st
   return { verdict, checks, missingFromState: [...blueprint.missing], unexpected, inventory, verifier: reader.verifier };
 }
 
-/** The listed identifiers the blueprint does not name, from any reader's listing. A failed listing is incomplete and names nothing. */
-export function unexpectedOf(blueprint: Blueprint, listed: { identifiers: string[]; complete: boolean } | undefined): { unexpected: string[]; complete: boolean } {
+/**
+ * The listed identifiers the blueprint does not name, from any reader's listing. A failed listing is incomplete and names
+ * nothing. Identifiers are compared exactly, except under Azure Resource Manager, whose ids are case-insensitive: an AWS
+ * ARN that differs only in case names another resource (queue, topic and function names are case-sensitive) and stays a stray.
+ */
+export function unexpectedOf(blueprint: Blueprint, listed: { identifiers: string[]; complete: boolean } | undefined, verifier: VerifierId): { unexpected: string[]; complete: boolean } {
   if (!listed) return { unexpected: [], complete: false };
-  const known = new Set(blueprint.entries.flatMap((entry) => [entry.arn, entry.id]).filter((x): x is string => x !== null).map((x) => x.toLowerCase()));
-  return { unexpected: listed.identifiers.filter((identifier) => !known.has(identifier.toLowerCase())).sort(), complete: listed.complete };
+  const fold = (x: string): string => verifier === "AZURE_RESOURCE_MANAGER" ? x.toLowerCase() : x;
+  const known = new Set(blueprint.entries.flatMap((entry) => [entry.arn, entry.id]).filter((x): x is string => x !== null).map(fold));
+  return { unexpected: listed.identifiers.filter((identifier) => !known.has(fold(identifier))).sort(), complete: listed.complete };
 }

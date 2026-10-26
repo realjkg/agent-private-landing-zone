@@ -241,7 +241,7 @@
         "the candidate commit changes",
         "the Terraform pin or the Azure provider adapter changes"
       ],
-      "nextAction": "Add the Azure Terraform brownfield preview scenario to the qualification scenarios; no scenario produces this gate's evidence yet."
+      "nextAction": "Deferred, not forgotten: no scenario produces this gate's evidence yet. The preview scenario set holds one scenario per engine adapter (test/phase-e-simulated-builds.test.ts), so an Azure Terraform brownfield preview needs its own PLAN before it is added; the Azure Terraform lifecycle (act:azure-terraform) passes synthetically in the meantime and does not stand in for this gate."
     },
     {
       "gate": "isolated-recovery",

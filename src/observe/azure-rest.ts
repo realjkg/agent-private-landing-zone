@@ -15,9 +15,11 @@ import type { ResourceCheck, ResourceReader } from "./verify.js";
  * management.azure.com. Both tokens live in this module's memory for one observation and are dropped with it. They
  * never appear in a record, a message or an error: failures are recorded as classes.
  *
- * Requests: exactly two kinds of GET against management.azure.com (one resource by its ARM id, after reading the
- * provider's API versions; the subscription's resources and resource groups carrying the unit tag), plus the token POST.
- * Nothing else is sent, and only those two hosts are allowed. Only existence and identifiers are kept from an answer.
+ * Requests: GETs against https://management.azure.com only (one resource by its ARM id, after reading the provider's API
+ * versions; the subscription's resources and resource groups carrying the unit tag; a resource group's members), plus one
+ * POST to the tenant's token endpoint on https://login.microsoftonline.com. Nothing else is sent: a URL on any other host,
+ * scheme or port, with userinfo, or a GET to the login host, is refused before a request exists, so the bearer never
+ * travels in cleartext or to the token service. Only existence and identifiers are kept from an answer.
  */
 export type ArmRequest = { method: "GET" | "POST"; url: string; headers: Readonly<Record<string, string>>; body?: string };
 export type ArmResponse = { status: number; body: string };
@@ -32,8 +34,19 @@ const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const CLIENT_ID = /^[A-Za-z0-9._:/-]{1,128}$/;
 /** An ARM id the reader can ask about: a resource group, or a resource under a provider namespace at subscription or resource-group scope. Anything else (a data-plane URL, a key vault secret, a directory object) is not checkable here. */
 const RESOURCE_ID = /^\/subscriptions\/[0-9a-f-]{36}(?:\/resourceGroups\/[^/?#]+(?:\/providers\/[A-Za-z0-9.]+\/[^?#]+)?|\/providers\/[A-Za-z0-9.]+\/[^?#]+)$/i;
+const GROUP_ID = /^\/subscriptions\/[0-9a-f-]{36}\/resourceGroups\/[^/?#]+$/i;
 
-export type ArmErrorClass = "ACCESS_DENIED" | "THROTTLED" | "CREDENTIALS" | "HTTP_ERROR" | "HOST_REFUSED" | "UNEXPECTED_RESPONSE";
+/**
+ * Whether an ARM id's path is sent exactly as written: no empty, `.` or `..` segment, no backslash, no percent escape, no
+ * whitespace or control character. URL parsing normalizes those before a request leaves, so an id from an engine's state
+ * that carries them would make the reader ask about a different path and read its 404 as this resource's absence.
+ */
+export const armPathSafe = (id: string): boolean =>
+  id.startsWith("/") && !/[\\%\s\u0000-\u001f\u007f]/.test(id) && id.slice(1).split("/").every((segment) => segment !== "" && segment !== "." && segment !== "..");
+/** An ARM resource id the reader can address: well-formed and sent exactly as written. */
+export const isArmResourceId = (id: string): boolean => RESOURCE_ID.test(id) && armPathSafe(id);
+
+export type ArmErrorClass = "ACCESS_DENIED" | "THROTTLED" | "CREDENTIALS" | "HTTP_ERROR" | "HOST_REFUSED" | "UNEXPECTED_RESPONSE" | "READER_CLOSED";
 
 const classOf = (status: number): ArmErrorClass => status === 401 ? "CREDENTIALS" : status === 403 ? "ACCESS_DENIED" : status === 429 ? "THROTTLED" : "HTTP_ERROR";
 
@@ -65,10 +78,15 @@ function discoveryIdentity(env: NodeJS.ProcessEnv): { ok: true; clientId: string
   return { ok: true, clientId, tenantId, tokenFile };
 }
 
-/** Only the two hosts the reader is for; a URL anywhere else is refused before a request exists. */
-const hostAllowed = (url: string): boolean => {
-  try { const host = new URL(url).host; return host === LOGIN_HOST || host === ARM_HOST; } catch { return false; }
+/** An https URL on exactly this host: no other scheme, no port, no userinfo. */
+const httpsOn = (url: string, host: string): boolean => {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "https:" && parsed.hostname === host && parsed.port === "" && parsed.username === "" && parsed.password === "";
+  } catch { return false; }
 };
+/** Where a GET with the bearer may go: management.azure.com over https, nowhere else (a nextLink is checked the same way). */
+const armUrlAllowed = (url: string): boolean => httpsOn(url, ARM_HOST);
 
 /** The resource type path of an ARM id: `Microsoft.Storage/storageAccounts` or `.../blobServices/containers`; the resource group when the id ends at the group. */
 export function armTypeOf(id: string): { namespace: string; typePath: string } | undefined {
@@ -86,15 +104,19 @@ export function createDiscoveryArmReader(options: DiscoveryArmOptions): { reader
   if (!GUID.test(options.subscriptionId)) throw new Error("ARM_SUBSCRIPTION_INVALID");
   const subscription = options.subscriptionId.toLowerCase();
   let access: { token: string } | { failed: ArmErrorClass } | undefined;
+  let closed = false;
   const apiVersions = new Map<string, Promise<string | undefined>>();
 
-  const send = async (request: ArmRequest): Promise<ArmResponse> => {
-    if (!hostAllowed(request.url)) return { status: 0, body: "HOST_REFUSED" };
+  /** The one gate every request passes: a POST only to this tenant's token endpoint, a GET only to management.azure.com, both https. */
+  const send = async (request: ArmRequest, tokenEndpoint?: string): Promise<ArmResponse> => {
+    const allowed = request.method === "POST" ? tokenEndpoint !== undefined && request.url === tokenEndpoint && httpsOn(request.url, LOGIN_HOST) : armUrlAllowed(request.url);
+    if (!allowed) return { status: 0, body: "HOST_REFUSED" };
     return http(request);
   };
 
   /** The access token for management.azure.com, exchanged once from the federated token. Neither token leaves this closure. */
   const bearer = async (): Promise<{ token: string } | { failed: ArmErrorClass }> => {
+    if (closed) return { failed: "READER_CLOSED" };
     if (access) return access;
     const identity = discoveryIdentity(env);
     if (!identity.ok) return (access = { failed: identity.reason });
@@ -105,7 +127,8 @@ export function createDiscoveryArmReader(options: DiscoveryArmOptions): { reader
       client_id: identity.clientId, grant_type: "client_credentials", scope: ARM + "/.default",
       client_assertion_type: "urn:ietf:params:oauth:client-assertion-type:jwt-bearer", client_assertion: assertion,
     }).toString();
-    const response = await send({ method: "POST", url: "https://" + LOGIN_HOST + "/" + identity.tenantId + "/oauth2/v2.0/token", headers: { "content-type": "application/x-www-form-urlencoded" }, body });
+    const tokenEndpoint = "https://" + LOGIN_HOST + "/" + identity.tenantId + "/oauth2/v2.0/token";
+    const response = await send({ method: "POST", url: tokenEndpoint, headers: { "content-type": "application/x-www-form-urlencoded" }, body }, tokenEndpoint);
     if (response.status !== 200) return (access = { failed: response.status === 400 || response.status === 401 ? "CREDENTIALS" : classOf(response.status) });
     try {
       const token = (JSON.parse(response.body) as { access_token?: unknown }).access_token;
@@ -122,7 +145,7 @@ export function createDiscoveryArmReader(options: DiscoveryArmOptions): { reader
     return response;
   };
 
-  /** The newest stable API version a provider offers for a type, read once per type; undefined when it cannot be read. */
+  /** The newest stable API version a provider offers for a type, read once per type; undefined when it cannot be read or the type has only preview versions (fail closed: TYPE_NOT_SUPPORTED). */
   const apiVersionFor = (namespace: string, typePath: string): Promise<string | undefined> => {
     if (namespace === "Microsoft.Resources" && typePath === "resourceGroups") return Promise.resolve(RESOURCES_API);
     const key = (namespace + "/" + typePath).toLowerCase();
@@ -135,7 +158,7 @@ export function createDiscoveryArmReader(options: DiscoveryArmOptions): { reader
           const body = JSON.parse(response.body) as { resourceTypes?: { resourceType?: unknown; apiVersions?: unknown }[] };
           const found = (body.resourceTypes ?? []).find((t) => typeof t.resourceType === "string" && t.resourceType.toLowerCase() === typePath.toLowerCase());
           const versions = Array.isArray(found?.apiVersions) ? found!.apiVersions.filter((v): v is string => typeof v === "string") : [];
-          return versions.find((v) => !/preview/i.test(v)) ?? versions[0];
+          return versions.find((v) => !/preview/i.test(v));
         } catch { return undefined; }
       })();
       apiVersions.set(key, pending);
@@ -147,7 +170,7 @@ export function createDiscoveryArmReader(options: DiscoveryArmOptions): { reader
     const base = { address: entry.address, type: entry.type };
     const identifier = entry.id;
     if (identifier === null) return { ...base, identifier: null, existence: "NOT_CHECKABLE", reason: "NO_IDENTIFIER_IN_STATE" };
-    const type = RESOURCE_ID.test(identifier) ? armTypeOf(identifier) : undefined;
+    const type = isArmResourceId(identifier) ? armTypeOf(identifier) : undefined;
     if (!type) return { ...base, identifier, existence: "NOT_CHECKABLE", reason: "NOT_AN_ARM_RESOURCE_ID" };
     if (!identifier.toLowerCase().startsWith("/subscriptions/" + subscription + "/")) return { ...base, identifier, existence: "NOT_CHECKABLE", reason: "OUTSIDE_TARGET_SUBSCRIPTION" };
     const version = await apiVersionFor(type.namespace, type.typePath);
@@ -155,7 +178,10 @@ export function createDiscoveryArmReader(options: DiscoveryArmOptions): { reader
       const auth = await bearer();
       return { ...base, identifier, existence: "UNKNOWN", reason: "failed" in auth ? auth.failed : "TYPE_NOT_SUPPORTED" };
     }
-    const response = await get(ARM + identifier + "?api-version=" + version);
+    const url = ARM + identifier + "?api-version=" + version;
+    // The request asks about exactly this id: a path the URL parser would rewrite is never sent, so a 404 can only mean this resource.
+    if (new URL(url).pathname !== identifier) return { ...base, identifier, existence: "NOT_CHECKABLE", reason: "NOT_AN_ARM_RESOURCE_ID" };
+    const response = await get(url);
     if ("failed" in response) return { ...base, identifier, existence: "UNKNOWN", reason: response.failed };
     if (response.status === 404) return { ...base, identifier, existence: "ABSENT" };
     if (response.status !== 200) return { ...base, identifier, existence: "UNKNOWN", reason: classOf(response.status) };
@@ -185,15 +211,38 @@ export function createDiscoveryArmReader(options: DiscoveryArmOptions): { reader
           if (typeof id === "string" && id !== "") identifiers.push(id);
         }
         url = typeof body.nextLink === "string" && body.nextLink !== "" ? body.nextLink : undefined;
-        if (url !== undefined && !hostAllowed(url)) { complete = false; url = undefined; }
+        if (url !== undefined && !armUrlAllowed(url)) { complete = false; url = undefined; }
       }
       if (url !== undefined) complete = false;
     }
     return { identifiers: identifiers.sort(), complete };
   };
 
+  /** Every resource inside a resource group, every page, by id only: what a cleanup of the group would take with it. */
+  const listGroup = async (groupIdentifier: string): Promise<{ identifiers: string[]; complete: boolean } | undefined> => {
+    if (!GROUP_ID.test(groupIdentifier) || !armPathSafe(groupIdentifier) || !groupIdentifier.toLowerCase().startsWith("/subscriptions/" + subscription + "/")) return undefined;
+    const identifiers: string[] = [];
+    let complete = true;
+    let url: string | undefined = ARM + groupIdentifier + "/resources?api-version=" + RESOURCES_API;
+    if (new URL(url).pathname !== groupIdentifier + "/resources") return undefined;
+    for (let page = 0; url !== undefined && page < 50; page += 1) {
+      const response = await get(url);
+      if ("failed" in response || response.status !== 200) return undefined;
+      let body: { value?: unknown; nextLink?: unknown };
+      try { body = JSON.parse(response.body) as typeof body; } catch { return undefined; }
+      for (const item of Array.isArray(body.value) ? body.value : []) {
+        const id = (item as { id?: unknown })?.id;
+        if (typeof id === "string" && id !== "") identifiers.push(id);
+      }
+      url = typeof body.nextLink === "string" && body.nextLink !== "" ? body.nextLink : undefined;
+      if (url !== undefined && !armUrlAllowed(url)) { complete = false; url = undefined; }
+    }
+    if (url !== undefined) complete = false;
+    return { identifiers: identifiers.sort(), complete };
+  };
+
   return {
-    reader: { verifier: "AZURE_RESOURCE_MANAGER", check, listTagged },
-    close: () => { access = undefined; apiVersions.clear(); },
+    reader: { verifier: "AZURE_RESOURCE_MANAGER", check, listTagged, listGroup },
+    close: () => { closed = true; access = undefined; apiVersions.clear(); },
   };
 }
