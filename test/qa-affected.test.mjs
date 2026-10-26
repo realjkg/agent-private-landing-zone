@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { diffCommand, importsOf, planChanged } from "../scripts/qa-affected.mjs";
+import { readdirSync, readFileSync } from "node:fs";
+import { diffCommand, importsOf, planChanged, SOURCE_SCAN_GUARDS } from "../scripts/qa-affected.mjs";
 
 function fixture() {
   return new Map([
@@ -28,9 +29,10 @@ test("resolves TypeScript sources referenced by .js specifiers", () => {
   assert.deepEqual([...importsOf('import "../src/agent/service.js";', "test/agent-core.test.ts", fixture())],
     ["src/agent/service.ts"]);
 });
-test("transitively selects importing tests without running the full suite", () => {
+test("transitively selects importing tests, plus the declared guards that scan its tree, without running the full suite", () => {
   const plan = planChanged(["src/agent/core.ts"], fixture());
-  assert.deepEqual(plan.nodeTests, ["test/agent-core.test.ts"]);
+  // apply-boundary scans all of src/ (SOURCE_SCAN_GUARDS); nothing else in the fixture imports or scans src/agent.
+  assert.deepEqual(plan.nodeTests, ["test/agent-core.test.ts", "test/apply-boundary.test.ts"]);
   assert.deepEqual(plan.uiTests, []);
   assert.deepEqual(plan.gaps, []);
   assert.deepEqual(plan.typeNode, ["src/agent/core.ts"]);
@@ -219,5 +221,52 @@ test("release scope, status and the generated release view rerun the release sta
     const plan = planChanged([path], files);
     assert.deepEqual(plan.nodeTests, ["test/release-status.test.ts"], path);
     assert.deepEqual(plan.gaps, [], path);
+  }
+});
+
+test("a source change selects every guard that scans its tree, which no import reaches", () => {
+  const files = fixture();
+  files.set("src/apply/terraform.ts", "export const argv = [];");
+  files.set("test/apply-terraform.test.ts", 'import "../src/apply/terraform.js";');
+  for (const guard of Object.keys(SOURCE_SCAN_GUARDS)) files.set(guard, "test()");
+  // The miss behind #253: a governed -destroy builder under src/apply never ran the whole-tree destroy-literal scan.
+  const apply = planChanged(["src/apply/terraform.ts"], files);
+  for (const guard of ["test/teardown-adapter-terraform.test.ts", "test/apply-boundary.test.ts", "test/policy-path.test.ts",
+    "test/teardown-driver-denials.test.ts"]) assert.ok(apply.nodeTests.includes(guard), guard);
+  assert.ok(!apply.nodeTests.includes("test/teardown-driver-cli.test.ts"), "a guard runs only for the roots it scans");
+  const agent = planChanged(["src/agent/core.ts"], files);
+  assert.ok(agent.nodeTests.includes("test/teardown-driver-cli.test.ts"));
+  assert.ok(agent.nodeTests.includes("test/teardown-adapter-terraform.test.ts"));
+  assert.deepEqual(agent.gaps, []);
+});
+
+test("every test that scans a source tree from disk is declared with the roots it scans", () => {
+  // A listing of src, or of a directory under it, is a scan the import closure cannot see, whatever the quoting or
+  // path form: resolve("src"), join(ROOT, "src/learn"), "./src", 'src', an array of roots mapped through a lister, or a
+  // constant holding the path that a lister is later called with.
+  const LISTER = "(?:readdirSync|walk|sourcesUnder|sourceFiles)";
+  const SRC_PATH = "[\"'`](?:\\.\\/)?src(?:\\/[^\"'`]*)?[\"'`]";
+  const SCANS_SOURCE = new RegExp(LISTER + "\\([^)\\n]*" + SRC_PATH + "|\\[[^\\]\\n]*" + SRC_PATH + "[^\\]\\n]*\\]\\.(?:flatMap|map)\\(" + LISTER);
+  // The path can also reach the lister through a constant: const DIR = join(ROOT, "src/x"); ... readdirSync(DIR).
+  // The initializer stops at a semicolon or the next declaration, so code without semicolons binds the right name.
+  const SRC_CONSTANT = new RegExp("const\\s+([A-Za-z_$][\\w$]*)\\s*=(?:(?!\\b(?:const|let|var|function)\\b)[^;])*?" + SRC_PATH, "g");
+  const scansSource = (text) => SCANS_SOURCE.test(text)
+    || [...text.matchAll(SRC_CONSTANT)].some(([, name]) => new RegExp(LISTER + "\\([^)\\n]*\\b" + name + "\\b").test(text));
+  for (const spelling of ['readdirSync(join(ROOT, "src/learn"))', "walk('src')", 'sourceFiles("./src")', 'readdirSync(resolve(`src/tools`))',
+    '["src/tools", "src/agent"].flatMap(walk)', 'const DIR = join(\n  ROOT,\n  "src/compliance",\n);\nreaddirSync(DIR, { recursive: true })',
+    'const ROOT = here()\nconst DIR = join(ROOT, "src/x")\nreaddirSync(DIR)', 'const DIR = "src/x";\nreaddirSync(join(ROOT, DIR))'])
+    assert.ok(scansSource(spelling), spelling);
+  assert.ok(!scansSource('mkdirSync(join(root, "src"))'), "creating a fixture directory is not a scan");
+  assert.ok(!scansSource('readdirSync(join(root, "src-" + label))'), "a src- prefixed scratch folder is not src");
+  assert.ok(!scansSource('const FILE = join(ROOT, "src/x.ts"); readFileSync(FILE)'), "reading one named file is not a scan");
+  // This file holds the sample spellings above, not a scan.
+  const scanners = readdirSync("test").filter((name) => /\.test\.(?:ts|tsx|mjs)$/.test(name) && name !== "qa-affected.test.mjs")
+    .filter((name) => scansSource(readFileSync("test/" + name, "utf8"))).map((name) => "test/" + name).sort();
+  assert.ok(scanners.includes("test/teardown-adapter-terraform.test.ts"), "the detector finds the known scanners");
+  assert.deepEqual(scanners.filter((name) => !Object.hasOwn(SOURCE_SCAN_GUARDS, name)), [],
+    "add each source-scanning test to SOURCE_SCAN_GUARDS in scripts/qa-affected.mjs with the roots it scans");
+  for (const [guard, roots] of Object.entries(SOURCE_SCAN_GUARDS)) {
+    assert.ok(readdirSync("test").includes(guard.slice("test/".length)), guard + " exists");
+    assert.ok(roots.length > 0 && roots.every((root) => /^src\/(?:[^/]+\/)?$/.test(root)), guard + " roots are source directories");
   }
 });
