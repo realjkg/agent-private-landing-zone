@@ -12,6 +12,7 @@ import type { PilotContract, SealedPlan } from "../src/apply/types.js";
 import { runApplyCommand, type ApplyCliDeps } from "../src/cli/apply.js";
 import { targetString } from "../src/cli/teardown-driver.js";
 import { openNonceStore } from "../src/apply/nonces.js";
+import { previewGateScenarioOf } from "../src/qualification/preview-gate.js";
 import { PREVIEW_GATE_SCENARIOS, PRODUCTION_RELEASE_GATES, previewScenarioOf, reviewProductionRelease, type ReleaseGateSubmission } from "../src/qualification/release-admission.js";
 import { removeTree } from "../src/teardown/driver/cleanup.js";
 import {
@@ -114,6 +115,10 @@ test("the gate's scenario is bound: every preview gate names one provider, engin
   assert.deepEqual(PREVIEW_GATE_SCENARIOS["terraform-azure-brownfield"], { provider: "AZURE", engine: "TERRAFORM", estate: "brownfield" });
   assert.deepEqual(PREVIEW_GATE_SCENARIOS["cdk-aws-brownfield"], { provider: "AWS", engine: "AWS_CDK", estate: "brownfield" });
   assert.equal(previewScenarioOf("act:azure-terraform"), undefined);
+  // A scenario's estate and provider are parsed, never cast: an unknown estate or provider is refused, so nothing binds silently.
+  assert.deepEqual(previewGateScenarioOf({ id: "x", provider: "AWS", engine: "TERRAFORM", mock: "greenfield" }), { provider: "AWS", engine: "TERRAFORM", estate: "greenfield" });
+  assert.throws(() => previewGateScenarioOf({ id: "x", provider: "AWS", engine: "TERRAFORM", mock: "unknown" }), /PREVIEW_GATE_ESTATE_UNKNOWN: x has mock unknown/);
+  assert.throws(() => previewGateScenarioOf({ id: "x", provider: "GCP", engine: "TERRAFORM", mock: "brownfield" }), /PREVIEW_GATE_PROVIDER_UNKNOWN/);
   assert.deepEqual(countChanges([{ address: "a.b", type: "x", action: "CREATE" }, { address: "a.c", type: "x", action: "UPDATE" }, { address: "output.o", type: "output", action: "UPDATE" }]),
     { total: 2, create: 1, preExistingTouched: 1, byAction: { CREATE: 1, UPDATE: 1 } });
 });
@@ -160,13 +165,30 @@ test("preview-evidence writes LIVE evidence only from a qualified sealed preview
     assert.deepEqual([wrong.status, wrong.blockers], ["BLOCKED", ["EVIDENCE_GATE_CONTRACT_FAILED"]], other + ": Terraform evidence for Azure never qualifies another provider or engine");
   }
   assert.deepEqual((await admit(w, written, { ...record, sourceCommit: "f".repeat(40) })).blockers, ["EVIDENCE_IDENTITY_MISMATCH"]);
-  // A relabeled copy is refused by the validator and by the gate.
-  const relabeled = { ...evidence, liveConditions: { ...evidence.liveConditions, attested: false }, attestation: null };
-  assert.match(previewGateEvidenceProblems(relabeled).join(" | "), /label: not derived from liveConditions/);
-  const forgedPath = join(w.releaseEvidenceDir, "forged.json");
-  const forgedText = JSON.stringify(relabeled) + "\n";
-  writeFileSync(forgedPath, forgedText);
-  assert.deepEqual((await admit(w, forgedPath, { ...record, evidenceSha256: sha256(forgedText) })).blockers, ["EVIDENCE_GATE_CONTRACT_FAILED"], "a live label over a failed condition never passes the gate");
+  // The admission review runs the same validator as the producer: every document that is not a valid, LIVE preview-gate document of this
+  // gate and commit is refused, not only one whose label disagrees with a present condition (review 6409586918, B1).
+  const forge = async (label: string, document: unknown) => {
+    const path = join(w.releaseEvidenceDir, "forged-" + label.replaceAll(/[^a-z]+/g, "-") + ".json");
+    const text = JSON.stringify(document) + "\n";
+    writeFileSync(path, text);
+    const reviewed = await admit(w, path, { ...record, evidenceSha256: sha256(text) });
+    assert.deepEqual([reviewed.status, reviewed.blockers], ["BLOCKED", ["EVIDENCE_GATE_CONTRACT_FAILED"]], label);
+  };
+  await forge("a live label over a failed condition", { ...evidence, liveConditions: { ...evidence.liveConditions, attested: false }, attestation: null });
+  const { liveConditions: _conditions, ...withoutConditions } = evidence;
+  await forge("a hand-written LIVE document with no live conditions", withoutConditions);
+  await forge("a LIVE document whose conditions are an empty, vacuously true set", { ...evidence, liveConditions: {} });
+  // A producer-written SYNTHETIC document relabeled by hand: label, mode and passed set to LIVE, simulation removed, every condition flipped
+  // to true, while the reasons, the null attestation and the UNQUALIFIED provenance it was written with stay behind.
+  const syntheticBuilt = buildPreviewGateEvidence({ sealed: { ...s.sealed, provenance: { ...s.sealed.provenance, qualification: { state: "UNQUALIFIED", reason: "no evidence" } } }, gateId: GATE, sourceCommit: SOURCE_COMMIT,
+    targetHardwareId: HOST, engineProgramSha256Now: s.sealed.provenance.engineBinarySha256, contract: w.contract, attestedBy: null, now: NOW });
+  assert.ok(syntheticBuilt.ok && syntheticBuilt.evidence.label === "SYNTHETIC" && syntheticBuilt.evidence.reasons.length === 2);
+  const { simulation: _simulation, ...relabeled } = { ...syntheticBuilt.evidence, label: "LIVE" as const, executionMode: "LIVE_PREVIEW" as const, passed: true,
+    liveConditions: Object.fromEntries(Object.keys(syntheticBuilt.evidence.liveConditions).map((key) => [key, true])) as PreviewGateEvidence["liveConditions"] };
+  assert.ok(previewGateEvidenceProblems(relabeled).length >= 3, "the validator names the leftover reasons, attestation and qualification");
+  await forge("a relabeled synthetic document", relabeled);
+  await forge("a LIVE document whose gate version is unknown", { ...evidence, gateVersion: 2 });
+  await forge("a LIVE document of another commit", { ...evidence, sourceCommit: "0".repeat(40) });
   // Written once: the same gate and artifact are never overwritten.
   const again = await produce(w, s, [phraseFor(s)]);
   assert.equal(again.code, 1);

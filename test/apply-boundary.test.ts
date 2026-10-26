@@ -66,10 +66,12 @@ test("from the console side exactly src/cli/ui-channel.ts reaches the apply path
   // The adapter takes from src/apply only what it names here: no driver, no engine, no identities, no approvals, no ledger.
   const taken = importsOf(UI_CHANNEL).filter((file) => file.startsWith("src/apply/")).sort();
   assert.deepEqual(taken, ["src/apply/channel.ts", "src/apply/cleanup-proposal.ts", "src/apply/constants.ts", "src/apply/contract.ts", "src/apply/seal.ts", "src/apply/types.ts"]);
-  // Outside src/apply, exactly these modules import it: the two CLI doors and the release-admission checks that read the same pin.
+  // Outside src/apply, exactly these modules import it: the two CLI doors, the release-admission checks that read the same pin, and the
+  // preview-gate contract (src/qualification/preview-gate.ts), which takes only the sealed plan's types and the hash and commit patterns.
   const outside = sources.filter((file) => !file.startsWith("src/apply/") && importsOf(file).some((dep) => dep.startsWith("src/apply/"))).sort();
-  assert.deepEqual(outside, ["src/cli/apply.ts", "src/cli/release-admission.ts", "src/cli/ui-channel.ts", "src/qualification/release-admission.ts", "src/tools/profiles.ts"]
+  assert.deepEqual(outside, ["src/cli/apply.ts", "src/cli/release-admission.ts", "src/cli/ui-channel.ts", "src/qualification/preview-gate.ts", "src/qualification/release-admission.ts", "src/tools/profiles.ts"]
     .filter((file) => outside.includes(file)));
+  assert.deepEqual(importsOf("src/qualification/preview-gate.ts").filter((dep) => dep.startsWith("src/apply/")).sort(), ["src/apply/constants.ts", "src/apply/types.ts"], "the preview-gate contract reaches no driver, engine, ledger or approval");
   assert.ok(outside.includes(UI_CHANNEL) && outside.includes("src/cli/apply.ts"));
   assert.deepEqual(outside.filter((file) => file.startsWith("src/operator-ui/")), [], "no console module imports src/apply directly");
 });
