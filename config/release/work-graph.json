@@ -64,12 +64,12 @@
       "id": "baseline-repair",
       "title": "Repair the destroy-literal invariant on main and select every source-scanning test",
       "owner": "COORDINATOR",
-      "status": "IN_PROGRESS",
+      "status": "DONE",
       "dependsOn": [],
       "gates": ["source-ci"],
       "branch": "fix/terraform-destroy-plan-test-contract",
       "prs": [253],
-      "next": "Finish the full-suite run and the independent security review on head 79f3ead, then merge under the release mandate if all nine conditions hold."
+      "merges": ["13e83b26553b401ec5b79aa13d3b1115ae76912b"]
     },
     {
       "id": "release-work-graph",
@@ -89,7 +89,7 @@
       "dependsOn": ["baseline-repair"],
       "gates": [],
       "prs": [244, 245, 246, 247, 248, 249, 250, 251, 252],
-      "next": "After #253 merges, refresh each PR against main and validate it on its own head; no PR stands in for another."
+      "next": "Refresh each PR against main (#253 merged as 13e83b2) and validate it on its own head; no PR stands in for another."
     },
     {
       "id": "azure-preview-and-cleanup-policy",
