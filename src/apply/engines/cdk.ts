@@ -13,6 +13,7 @@ import { interceptStopSignals, refusedVariables, runBoundedProcess, type Stoppab
 import { AWS_CFN_APPLY_PROFILE } from "../../tools/profiles.js";
 import type { ToolResult } from "../../tools/types.js";
 import { sha256 } from "../../util/sha256.js";
+import { isAwsIdentityType } from "../cleanup-proposal.js";
 import { stripInvisible } from "../constants.js";
 import { assertUsable, checkedOutput, stop, withoutIdentities } from "../engine.js";
 import type { ApplyEnd, EngineApplyRun, EngineCleanupRun, EngineContext, EngineRunInput, EngineSpec, StateDocument, StopControl } from "../engine-spec.js";
@@ -725,6 +726,13 @@ const KEEPS_RESOURCE = new Set(["Retain", "RetainExceptOnCreate", "Snapshot"]);
  * once more so no forged list can reach CloudFormation with one.
  */
 const isStackType = (type: string): boolean => type === "AWS::CloudFormation::Stack" || type === "AWS::CloudFormation::StackSet";
+/**
+ * A resource whose deletion policy is `Snapshot` when the template names none (UNVERIFIED (11): CloudFormation's documented default for an
+ * RDS cluster, and for an RDS instance that is not in a cluster): removing it leaves a snapshot behind, untracked, so it is refused as a
+ * written retain policy is.
+ */
+const keepsBySnapshotDefault = (type: string, properties: unknown): boolean =>
+  type === "AWS::RDS::DBCluster" || (type === "AWS::RDS::DBInstance" && !(isRecord(properties) && properties.DBClusterIdentifier !== undefined));
 const isCustomResourceType = (type: string): boolean => type.startsWith("Custom::") || type === "AWS::CloudFormation::CustomResource" || type === "AWS::CloudFormation::Macro";
 
 /** Every logical id a template value refers to: `Ref`, `Fn::GetAtt` (as a list or `"X.Attr"`), `DependsOn`, and `${X}` or `${X.Attr}` inside `Fn::Sub`. */
@@ -749,8 +757,11 @@ function referencesIn(value: unknown, into: Set<string>): void {
 /**
  * The removal template: the sealed template minus exactly the approved logical ids, and the refusals that keep a removal to
  * what a cleanup may do. Every approved id must be a resource of the template (`CLEANUP_ADDRESS_NOT_IN_TEMPLATE`); a resource
- * whose deletion policy keeps it is not removed this way (`CLEANUP_RETAIN_POLICY`: the removal would leave it, unapproved and
- * untracked); a remaining resource or output that still refers to a removed one stops the removal before CloudFormation would
+ * whose deletion policy keeps it, whose deletion policy is not a plain word this reader can judge, or whose type keeps a snapshot by
+ * default when it names none, is not removed this way (`CLEANUP_RETAIN_POLICY`: the removal would leave it, unapproved and
+ * untracked); an identity or access object is never in a removal (`CLEANUP_PROTECTED_IDENTITY`, the rule of src/apply/cleanup-proposal.ts,
+ * refused here so no list, forged or not, reaches CloudFormation with one and no change set is left behind for it); a stack, a stack
+ * set, a custom resource or a macro likewise; a remaining resource or output that still refers to a removed one stops the removal before CloudFormation would
  * (`CLEANUP_DEPENDENT_REFERENCED`: the dependent is not on the approved list); and a removal that would leave the stack with no
  * resource is refused (`CLEANUP_WOULD_EMPTY_STACK`): CloudFormation does not hold an empty stack (UNVERIFIED (11)), the stack
  * is never deleted by a cleanup, and retiring it with its last resources is the owner's separate decision.
@@ -760,9 +771,13 @@ export function removalTemplateOf(template: Record<string, unknown>, addresses: 
   for (const address of addresses) {
     const resource = resources[address];
     if (!isRecord(resource)) return stop("CLEANUP_ADDRESS_NOT_IN_TEMPLATE");
-    if (isStackType(String(resource.Type))) stop("ASSEMBLY_NESTED_STACK");
-    if (isCustomResourceType(String(resource.Type))) stop("ASSEMBLY_CUSTOM_RESOURCE");
-    if (typeof resource.DeletionPolicy === "string" && KEEPS_RESOURCE.has(resource.DeletionPolicy)) stop("CLEANUP_RETAIN_POLICY");
+    const type = String(resource.Type);
+    if (isStackType(type)) stop("ASSEMBLY_NESTED_STACK");
+    if (isCustomResourceType(type)) stop("ASSEMBLY_CUSTOM_RESOURCE");
+    if (isAwsIdentityType(type)) stop("CLEANUP_PROTECTED_IDENTITY");
+    // A policy that is not a plain word (an intrinsic) cannot be judged here and is refused, not read as "Delete".
+    if (resource.DeletionPolicy !== undefined && (typeof resource.DeletionPolicy !== "string" || KEEPS_RESOURCE.has(resource.DeletionPolicy))) stop("CLEANUP_RETAIN_POLICY");
+    if (resource.DeletionPolicy === undefined && keepsBySnapshotDefault(type, resource.Properties)) stop("CLEANUP_RETAIN_POLICY");
   }
   const removed = new Set(addresses);
   const remaining = Object.fromEntries(Object.entries(resources).filter(([logical]) => !removed.has(logical)));
@@ -817,6 +832,10 @@ function openCleanup(input: EngineRunInput): EngineCleanupRun {
       const capabilities = types.some((type) => type.startsWith("AWS::IAM::")) ? [...(pinned.capabilities ?? [])].sort() : [];
       const tags = before.tags.map((tag) => "Key=" + tag.key + ",Value=" + tag.value);
       const name = "alz-" + randomBytes(6).toString("hex");
+      // Residual risk, stated plainly (review 6413520217, finding 1): everything above is refused before this call, but what the change set
+      // would do beyond the list is known only after CloudFormation computes it. When the driver then refuses the removal (a wider change
+      // list, a protected object CloudFormation would take along), this change set stays in CloudFormation, unexecuted and AVAILABLE,
+      // for a person to clear: no surface here may delete a change set, and the pilot's authority is not widened to do so.
       const created = parse(session.ok("CHANGESET", createArgv({ stack: assembly.stackName, name, type: "UPDATE", template: CLEANUP_TEMPLATE_FILE, capabilities, tags, region })), "CHANGE_SET_UNREADABLE");
       const id = isRecord(created) ? str(created.Id, "CHANGE_SET_UNREADABLE") : stop("CHANGE_SET_UNREADABLE");
       const base = "^arn:aws:cloudformation:" + region + ":" + pinned.accountId + ":";

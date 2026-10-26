@@ -1222,7 +1222,7 @@ test("a CDK cleanup removes exactly the approved logical ids through one UPDATE 
   clean(w);
 });
 
-test("a CDK cleanup is refused before any change set exists or any approval is consumed when the removal would empty the stack, when an approved resource's deletion policy would keep it, when something that stays still refers to an approved resource, when a forged proposal names a protected object, and when the change set would touch anything beyond the approved list; a stop during the removal cancels the update once and spends the proposal", async () => {
+test("a CDK cleanup is refused before any change set exists when the stack is unprotected, when the removal would empty the stack, when an approved resource's deletion policy would keep it, when something that stays still refers to an approved resource, and when a forged proposal names a protected object; a change set that would touch anything beyond the approved list is refused after CloudFormation computed it, before any approval is consumed, and is disclosed as left behind; a stop during the removal cancels the update once and spends the proposal", async () => {
   // Every resource of the stack was created by this run: removing them all would leave the stack empty, and the stack is the owner's to retire.
   // A stack a person has not yet protected after its first create is not cleaned up either: the same policy as an update.
   const unprotected = world({}, cdkContractJson(KILL), { diffChanges: true });
@@ -1273,6 +1273,9 @@ test("a CDK cleanup is refused before any change set exists or any approval is c
   const scope = await cleanupCdk(wide, scoped.s, scoped.proposal);
   refused(scope as never, "PROPOSAL_SCOPE_MISMATCH");
   assert.match((scope as { message: string }).message, /the proposal does not list \(ExtraQueue\)/);
+  assert.equal(removalCreates().length, 1, "the width of a change set is known only after CloudFormation computed it");
+  assert.match((scope as { message: string }).message, /removal change set created to plan this is left unexecuted in CloudFormation for a person to clear; nothing here deletes a change set/);
+  assert.ok(!calls().some((call) => /delete-change-set|delete-stack/.test(call.args[1] ?? "")), "no delete surface exists");
   assert.equal(calls().filter((call) => call.args[1] === "execute-change-set" && call.args.includes(removalCreates().length > 0 ? "x" : "y")).length, 0);
   assert.equal(calls().filter((call) => call.args[1] === "execute-change-set").length, 1, "only the apply executed; the removal did not");
   // The same approval then removes the honest list once the plan is honest again.
@@ -1326,14 +1329,31 @@ test("a stack, a stack set, a custom resource or a macro is never in a removal, 
       Hook: { Type: "Custom::Thing", Properties: { ServiceToken: "arn:aws:lambda:us-east-1:111111111111:function:fake" } },
       Legacy: { Type: "AWS::CloudFormation::CustomResource", Properties: {} },
       Expander: { Type: "AWS::CloudFormation::Macro", Properties: {} },
+      // Identities and access objects (the rule of src/apply/cleanup-proposal.ts), refused here before any change set exists (review 6413520217, finding 1).
+      PilotRole: { Type: "AWS::IAM::Role", Properties: {} },
+      PilotPolicy: { Type: "AWS::IAM::ManagedPolicy", Properties: {} },
+      PilotKey: { Type: "AWS::IAM::AccessKey", Properties: {} },
+      Assignment: { Type: "AWS::SSO::Assignment", Properties: {} },
+      Workforce: { Type: "AWS::IdentityStore::Group", Properties: {} },
+      // A deletion policy that is not a plain word, and the types whose default policy takes a snapshot (finding 2 and 3).
+      Judged: { Type: "AWS::SQS::Queue", DeletionPolicy: { "Fn::If": ["c", "Retain", "Delete"] } },
+      Cluster: { Type: "AWS::RDS::DBCluster", Properties: { Engine: "aurora-postgresql" } },
+      Standalone: { Type: "AWS::RDS::DBInstance", Properties: { Engine: "postgres" } },
+      Member: { Type: "AWS::RDS::DBInstance", Properties: { Engine: "aurora-postgresql", DBClusterIdentifier: { Ref: "Cluster" } } },
+      Dropped: { Type: "AWS::RDS::DBCluster", DeletionPolicy: "Delete", Properties: { Engine: "aurora-postgresql" } },
     },
   };
-  for (const [address, code] of [["Nested", "ASSEMBLY_NESTED_STACK"], ["Fleet", "ASSEMBLY_NESTED_STACK"], ["Hook", "ASSEMBLY_CUSTOM_RESOURCE"], ["Legacy", "ASSEMBLY_CUSTOM_RESOURCE"], ["Expander", "ASSEMBLY_CUSTOM_RESOURCE"]] as const) {
+  for (const [address, code] of [["Nested", "ASSEMBLY_NESTED_STACK"], ["Fleet", "ASSEMBLY_NESTED_STACK"], ["Hook", "ASSEMBLY_CUSTOM_RESOURCE"], ["Legacy", "ASSEMBLY_CUSTOM_RESOURCE"], ["Expander", "ASSEMBLY_CUSTOM_RESOURCE"],
+    ["PilotRole", "CLEANUP_PROTECTED_IDENTITY"], ["PilotPolicy", "CLEANUP_PROTECTED_IDENTITY"], ["PilotKey", "CLEANUP_PROTECTED_IDENTITY"], ["Assignment", "CLEANUP_PROTECTED_IDENTITY"], ["Workforce", "CLEANUP_PROTECTED_IDENTITY"],
+    ["Judged", "CLEANUP_RETAIN_POLICY"], ["Cluster", "CLEANUP_RETAIN_POLICY"], ["Standalone", "CLEANUP_RETAIN_POLICY"]] as const) {
     assert.throws(() => removalTemplateOf(template, [address]), (error: unknown) => codeOf(error) === code, address);
     assert.throws(() => removalTemplateOf(template, ["PilotBucket", address]), (error: unknown) => codeOf(error) === code, "with an ordinary resource beside it: " + address);
   }
   const removal = removalTemplateOf(template, ["PilotBucket"]);
-  assert.deepEqual(Object.keys((removal as { Resources: Record<string, unknown> }).Resources).sort(), ["Expander", "Fleet", "Hook", "Legacy", "Nested", "PilotTopic"]);
+  assert.deepEqual(Object.keys((removal as { Resources: Record<string, unknown> }).Resources).sort(), ["Assignment", "Cluster", "Dropped", "Expander", "Fleet", "Hook", "Judged", "Legacy", "Member", "Nested", "PilotKey", "PilotPolicy", "PilotRole", "PilotTopic", "Standalone", "Workforce"]);
+  // A cluster member names its cluster, so its default policy is not Snapshot; a cluster whose policy is written Delete is judged by the word. Both may be removed (with the cluster's member and dependents accounted for).
+  assert.ok(removalTemplateOf(template, ["Member"]));
+  assert.ok(removalTemplateOf({ Resources: { PilotBucket: template.Resources.PilotBucket, Dropped: template.Resources.Dropped } }, ["Dropped"]));
 });
 
 test("no IAM object is ever in a removal change set (owner policy #39; review 6411896219 B1 and B2): the pilot's CHANGESET role under its real name, an inline policy on it, a managed policy, a user and an access key the stack created are all kept as PROTECTED_IDENTITY by the pilot owner, the access key id is never recorded, the removal takes out only the ordinary resources, and the leftover check is COMPLETE with every identity intentionally retained", async () => {

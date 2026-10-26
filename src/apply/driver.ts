@@ -706,7 +706,10 @@ export async function runCleanup(request: CleanupRequest, deps: ApplyDeps): Prom
         return refuse("CLEANUP_WOULD_EMPTY_STACK", "Removing every approved resource would leave the stack with no resource, which CloudFormation does not hold. The stack is never deleted by a cleanup: its last resources go with the stack itself, and retiring the stack is the pilot owner's separate, reviewed decision. Nothing was destroyed and no approval was consumed.");
       }
       if (code === "CLEANUP_RETAIN_POLICY") {
-        return refuse("CLEANUP_RETAIN_POLICY", "An approved resource has a deletion policy that keeps it when it is removed from the template, so the removal would leave it behind, unapproved and untracked. Nothing was destroyed and no approval was consumed. A person decides about that resource by hand.");
+        return refuse("CLEANUP_RETAIN_POLICY", "An approved resource has a deletion policy that keeps it when it is removed from the template (written, not a plain word this cleanup can judge, or a database's default snapshot), so the removal would leave something behind, unapproved and untracked. Nothing was destroyed and no approval was consumed. A person decides about that resource by hand.");
+      }
+      if (code === "CLEANUP_PROTECTED_IDENTITY") {
+        return refuse("PROPOSAL_SCOPE_MISMATCH", "The approved list names an identity or access object, which is never deleted by a cleanup. Refused before any change set exists. Nothing was destroyed and no approval was consumed. The protected object is intentionally retained; a person reviews what depends on it.");
       }
       if (code === "CLEANUP_DEPENDENT_REFERENCED") {
         return refuse("CLEANUP_DEPENDENT_REFERENCED", "A resource or output that stays in the stack still refers to an approved resource, so the removal would break or take along something not on the list. Nothing was destroyed and no approval was consumed. Observe the run again and propose a cleanup that includes or excludes the dependent.");
@@ -715,12 +718,15 @@ export async function runCleanup(request: CleanupRequest, deps: ApplyDeps): Prom
     }
     // The policy check: whatever the engine's destroy plan would take along, a protected object (a resource group, an identity or
     // authorization object, deployment history, the state backend, a scope) stops the cleanup here, before any approval is consumed.
+    // Residual risk, stated plainly: for CDK the destroy plan is a change set CloudFormation has already created by now, and a refusal
+    // here leaves it unexecuted and AVAILABLE in CloudFormation for a person to clear; no surface deletes a change set (docs/observe-and-cleanup.md).
+    const leftBehind = contract.engine === "CDK" ? " The removal change set created to plan this is left unexecuted in CloudFormation for a person to clear; nothing here deletes a change set." : "";
     const protectedDeletion = protectedDeletionIn(planned, blueprint.blueprint.entries, contract, env);
-    if (protectedDeletion) return refuse("PROPOSAL_SCOPE_MISMATCH", protectedDeletion + " Nothing was destroyed and no approval was consumed. The protected object is intentionally retained; a person reviews what depends on it.");
+    if (protectedDeletion) return refuse("PROPOSAL_SCOPE_MISMATCH", protectedDeletion + " Nothing was destroyed and no approval was consumed. The protected object is intentionally retained; a person reviews what depends on it." + leftBehind);
     // The scope check: the destroy plan deletes exactly the approved addresses and does nothing else. A dependent the engine
     // added, a resource it would leave, an update or a create means the state is not what the proposal was made from.
     const scope = cleanupScopeProblem(planned, addresses);
-    if (scope) return refuse("PROPOSAL_SCOPE_MISMATCH", scope + " Nothing was destroyed and no approval was consumed. Observe the run again and propose a new cleanup.");
+    if (scope) return refuse("PROPOSAL_SCOPE_MISMATCH", scope + " Nothing was destroyed and no approval was consumed. Observe the run again and propose a new cleanup." + leftBehind);
     // The last thing before the approvals are consumed is the signal check: nothing is awaited between it and consumeApprovals,
     // so a stop signal that arrived during the blocking steps above (the engine) is read here and stops the cleanup.
     await yieldToSignals();
