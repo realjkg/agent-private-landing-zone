@@ -515,7 +515,9 @@ test("only the two reviewed destroy-plan builders contain -destroy, and neither 
   const source = readFileSync(adapter, "utf8");
   const cleanupSource = readFileSync(cleanup, "utf8");
   assert.equal(source.match(/"-destroy/g)?.length, 1, "destroy-preview uses one reviewed argv");
-  assert.equal(cleanupSource.match(/"-destroy/g)?.length, 1, "targeted cleanup uses one reviewed argv");
+  assert.equal(cleanupSource.match(/"-destroy/g)?.length, 2, "targeted cleanup builder and its allowlist guard are the only two literals");
+  assert.match(cleanupSource, /return \["plan", "-destroy"/, "cleanup plan builder is explicit");
+  assert.match(cleanupSource, /args\[1\] === "-destroy"/, "cleanup plan guard verifies destroy mode");
   const withoutComments = (text: string) => text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
   assert.doesNotMatch(withoutComments(source), /"-lock(=|"|-timeout)|-lock[a-z-]*=false|auto-approve|"apply"|"-target|"-replace/);
   assert.doesNotMatch(withoutComments(cleanupSource), /"-lock(=|"|-timeout)|-lock[a-z-]*=false|auto-approve|"destroy"|"-refresh=false"/);
