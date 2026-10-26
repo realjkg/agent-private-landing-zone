@@ -142,7 +142,7 @@ const MATERIAL_RISKS: Readonly<Record<string, string>> = {
  * first or the last, so an extension resource on a tracked resource and a tracked resource under an authorization scope are both caught.
  */
 const AZURE_IDENTITY_TYPES = new Set(["azurerm_user_assigned_identity", "azurerm_federated_identity_credential", "azurerm_management_lock"]);
-const AZURE_IDENTITY_TYPE = /^azurerm_(?:role_|pim_|policy_|[a-z_]+_policy_assignment$|[a-z_]+_policy_exemption$)/;
+const AZURE_IDENTITY_TYPE = /^azurerm_(?:role_|pim_|policy_|[a-z_]+_policy_assignment$|[a-z_]+_policy_exemption$|key_vault_managed_hardware_security_module_role_(?:assignment|definition)$)/;
 const AZURE_IDENTITY_NAMESPACE = /^Microsoft\.(?:Authorization|ManagedIdentity)$/i;
 const isAzureIdentityType = (type: string): boolean => type.startsWith("azuread_") || AZURE_IDENTITY_TYPE.test(type) || AZURE_IDENTITY_TYPES.has(type);
 const isAzureIdentityPair = (pair: ArmType): boolean => AZURE_IDENTITY_NAMESPACE.test(pair.namespace);
@@ -165,13 +165,35 @@ const AZURE_SCOPE_TYPES = new Set(["azurerm_subscription", "azurerm_subscription
 const STORAGE_DATA_PLANE = /^https:\/\/([a-z0-9]{3,24})\.(?:blob|dfs|file|queue|table|web)\.core\.windows\.net(?:\/|$)/;
 /** A key vault or managed HSM data-plane URL (`https://<vault>.vault.azure.net/secrets/<name>/<version>`), the azurerm id of secrets, keys and certificates. */
 const VAULT_DATA_PLANE = /^https:\/\/[a-z0-9-]{3,24}\.(?:vault\.azure\.net|managedhsm\.azure\.net)\/[^\s/]+(?:\/[^\s/]+)*$/i;
+/** A managed HSM data-plane URL in any form. */
+const MANAGED_HSM_HOST = /^https:\/\/[a-z0-9-]{3,24}\.managedhsm\.azure\.net\//i;
 /**
- * The only ids that are not ARM paths and still name something the cleanup can classify by type alone: the two data-plane
- * URL shapes above. Anything else that does not start with `/` (an id under the `https://management.azure.com` host, one
- * with a leading space, a bare GUID on an `azapi_resource`, any other URL) may name an ARM object the parser never saw, so
- * it fails closed like an unparseable path (review 6410591513, NB-A).
+ * The azurerm types whose recorded id is a data-plane URL, and the host family each records: the storage containers, blobs,
+ * queues, tables and shares (and what lives in them) on `*.core.windows.net`; key vault keys, secrets and certificates on
+ * `*.vault.azure.net`; managed HSM keys on `*.managedhsm.azure.net`. Only these types are judged by their type alone when
+ * their id is such a URL (review 6411080437, B1): any other type with a non-ARM id, every `azapi_*` type among them, may
+ * name an ARM object the parser never saw and fails closed. A data-plane path with a `providers` segment never qualifies.
  */
-const isAzureDataPlaneId = (id: string): boolean => STORAGE_DATA_PLANE.test(id.toLowerCase()) || VAULT_DATA_PLANE.test(id);
+const DATA_PLANE_TYPES: Readonly<Record<string, "STORAGE" | "VAULT" | "MANAGED_HSM">> = {
+  azurerm_storage_container: "STORAGE", azurerm_storage_blob: "STORAGE", azurerm_storage_queue: "STORAGE", azurerm_storage_table: "STORAGE", azurerm_storage_table_entity: "STORAGE",
+  azurerm_storage_share: "STORAGE", azurerm_storage_share_directory: "STORAGE", azurerm_storage_share_file: "STORAGE", azurerm_storage_data_lake_gen2_filesystem: "STORAGE", azurerm_storage_data_lake_gen2_path: "STORAGE",
+  azurerm_key_vault_key: "VAULT", azurerm_key_vault_secret: "VAULT", azurerm_key_vault_certificate: "VAULT", azurerm_key_vault_certificate_issuer: "VAULT",
+  azurerm_key_vault_managed_hardware_security_module_key: "MANAGED_HSM", azurerm_key_vault_managed_hardware_security_module_key_rotation_policy: "MANAGED_HSM",
+};
+const hasProvidersSegment = (id: string): boolean => id.split(/[/?#]/).some((segment) => segment.toLowerCase() === "providers");
+const isAzureDataPlaneId = (type: string, id: string): boolean => {
+  const family = DATA_PLANE_TYPES[type];
+  if (family === undefined || hasProvidersSegment(id)) return false;
+  if (family === "STORAGE") return STORAGE_DATA_PLANE.test(id.toLowerCase());
+  return VAULT_DATA_PLANE.test(id) && (family === "MANAGED_HSM") === MANAGED_HSM_HOST.test(id);
+};
+/**
+ * A managed HSM role assignment or role definition by any id form the azurerm provider or an import has used
+ * (`https://<hsm>.managedhsm.azure.net///RoleAssignment/<guid>`, `.../keys/RoleAssignment/<guid>`, and the authorization
+ * path `.../providers/Microsoft.Authorization/roleAssignments/<guid>`; the same for RoleDefinition): an authorization object
+ * under the owner's standing policy (#39), whatever Terraform type recorded it (review 6411080437, N1).
+ */
+const isManagedHsmAuthorizationId = (id: string): boolean => MANAGED_HSM_HOST.test(id) && /\/(?:RoleAssignments?|RoleDefinitions?)\/[^/\s]+\/?$|\/providers\/Microsoft\.Authorization\//i.test(id);
 /** The backend storage accounts of every environment's `<storage-account>/<container>/<key>`. */
 const azureBackendAccounts = (contract: PilotContract): Set<string> => new Set(Object.values(contract.targets).map((target) => (target as AzureTarget).backend.split("/")[0].toLowerCase()));
 /** Whether an id names a backend account in any form: the account name, an ARM id under it, or a data-plane URL on it. */
@@ -219,7 +241,10 @@ function azureProtectionOf(entry: { type: string; id: string | null }, contract:
   // and any other id that is not an ARM path is never ordinary (NB-A: a management-host URL, a leading space).
   if (entry.id === null) return undefined;
   if (entry.id.trim() === "") return UNCLASSIFIABLE;
-  if (!entry.id.startsWith("/")) return isAzureDataPlaneId(entry.id) ? undefined : UNCLASSIFIABLE;
+  if (!entry.id.startsWith("/")) {
+    if (isManagedHsmAuthorizationId(entry.id)) return "PROTECTED_IDENTITY";
+    return isAzureDataPlaneId(entry.type, entry.id) ? undefined : UNCLASSIFIABLE;
+  }
   // Fail closed: an ARM-shaped id the parser cannot consume in full has unknown pairs, so it is never ordinary. (The earlier
   // `armTypePairsOf(id) ?? []` read "unparseable" as "no pairs" and let an authorization object under a group named `providers` through.)
   const parsed = armPathSafe(entry.id) ? parseArmId(entry.id) : undefined;
@@ -441,7 +466,7 @@ export function protectedDeletionIn(planned: readonly PlanChange[], entries: rea
     const entry = byAddress.get(change.address) ?? { address: change.address, type: change.type, id: null, arn: null };
     const protection = protectionOf(entry, contract, env, backendGroups);
     if (protection === undefined) continue;
-    if (protection === UNCLASSIFIABLE) return "The destroy plan would " + change.action.toLowerCase() + " " + stripInvisible(change.address) + ", whose identifier does not parse as an ARM id, so what it protects is unknown and a pilot cleanup never deletes it (OWNERSHIP_AMBIGUOUS).";
+    if (protection === UNCLASSIFIABLE) return "The destroy plan would " + change.action.toLowerCase() + " " + stripInvisible(change.address) + ", whose identifier does not parse as an ARM id (or is a URL its type does not record), so what it protects is unknown and a pilot cleanup never deletes it (OWNERSHIP_AMBIGUOUS).";
     const what = protection === "RETAINED_GROUP" ? "a resource group" : protection === "PROTECTED_IDENTITY" ? "an identity or authorization object" : protection === "PROTECTED_DEPLOYMENT" ? "deployment history"
       : protection === "PROTECTED_BACKEND" ? "the state backend" : "a subscription, management group, provider scope or registration";
     return "The destroy plan would " + change.action.toLowerCase() + " " + stripInvisible(change.address) + ", " + what + ", which a pilot cleanup never deletes, directly or as a dependent (" + protection + ").";

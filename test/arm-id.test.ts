@@ -43,10 +43,9 @@ test("parseArmId reads an id by position: subscription, group, then provider blo
       { subscription: SUB, pairs: [{ namespace: "Microsoft.Features", typePath: "" }, { namespace: "Microsoft.ContainerService", typePath: "features" }] }],
     ["a marketplace-scope role assignment", "/providers/Microsoft.Marketplace/providers/Microsoft.Authorization/roleAssignments/g",
       { pairs: [{ namespace: "Microsoft.Marketplace", typePath: "" }, { namespace: "Microsoft.Authorization", typePath: "roleAssignments" }] }],
-    ["a provider block with no pair under a resource", RG + "/providers/Microsoft.Storage", { subscription: SUB, resourceGroup: "alz-pilot-rg", pairs: [{ namespace: "Microsoft.Storage", typePath: "" }] }],
   ];
   for (const [label, id, expected] of rows) assert.deepEqual(parseArmId(id), expected, label);
-  for (const id of [sub + "/providers/Microsoft.ContainerService", sub + "/providers/Microsoft.Features/providers/Microsoft.ContainerService/features/AKS-x", "/providers/Microsoft.Marketplace/providers/Microsoft.Authorization/roleAssignments/g", RG + "/providers/Microsoft.Storage"]) {
+  for (const id of [sub + "/providers/Microsoft.ContainerService", sub + "/providers/Microsoft.Features/providers/Microsoft.ContainerService/features/AKS-x", "/providers/Microsoft.Marketplace/providers/Microsoft.Authorization/roleAssignments/g", "/providers/Microsoft.Marketplace"]) {
     assert.ok(isArmRegistrationId(parseArmId(id)!), id + " is a registration or provider scope, not a resource");
   }
   for (const id of [RG, RG + "/providers/Microsoft.OperationalInsights/workspaces/law", sub + "/providers/Microsoft.Authorization/roleDefinitions/d", sub]) assert.ok(!isArmRegistrationId(parseArmId(id)!), id);
@@ -63,6 +62,11 @@ test("parseArmId is undefined for anything it cannot consume in full: a trailing
     ["a query", RG + "?api-version=1"], ["a fragment", RG + "#x"],
     ["a type with no name", RG + "/providers/Microsoft.Storage/storageAccounts"], ["an authorization type with no name", RG + "/providers/Microsoft.Authorization/roleAssignments"],
     ["providers with nothing after it", RG + "/providers"], ["a registration followed by a stray segment", sub + "/providers/Microsoft.ContainerService/foo"],
+    // An empty provider block anywhere but a registration scope (review 6411080437, N4): under a group, after a resource, as a second block.
+    ["a provider block with no pair under a resource group", RG + "/providers/Microsoft.Compute"],
+    ["a provider block with no pair after a resource", RG + "/providers/Microsoft.OperationalInsights/workspaces/law/providers/Microsoft.Resources"],
+    ["a second empty block at subscription scope", sub + "/providers/Microsoft.Features/providers/Microsoft.ContainerService"],
+    ["a registration prefix with a trailing empty authorization block", sub + "/providers/Microsoft.ContainerService/providers/Microsoft.Authorization"],
     ["a bad subscription", "/subscriptions/not-a-guid/resourceGroups/x"], ["a subscription with a stray segment", sub + "/foo"], ["a group keyword with no name", sub + "/resourceGroups"],
     ["something after the group that is not providers", RG + "/foo/bar"],
     ["a dotless namespace", RG + "/providers/providers/locks/l"], ["a namespace that is the keyword after a name named providers", RG + "/providers/Microsoft.Storage/storageAccounts/x/providers/providers/providers/Microsoft.Authorization/locks/l"],

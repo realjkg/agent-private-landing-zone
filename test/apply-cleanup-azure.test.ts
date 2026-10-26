@@ -751,7 +751,12 @@ test("protectedDeletionIn classifies every planned change by its blueprint entry
     ["a feature registration", sub + "/providers/Microsoft.Features/providers/Microsoft.ContainerService/features/AKS-x", "CONTAINS_OTHERS"],
     ["a marketplace scope", "/providers/Microsoft.Marketplace", "CONTAINS_OTHERS"],
     ["a marketplace-scope role assignment", "/providers/Microsoft.Marketplace/providers/Microsoft.Authorization/roleAssignments/g", "PROTECTED_IDENTITY"],
-    ["a provider block with no pair under a resource", RG + "/providers/Microsoft.Storage", "CONTAINS_OTHERS"],
+    // Round 1 of #262 (review 6411080437, N1): a managed HSM role assignment or definition, by type and by any id form.
+    ["a managed HSM role assignment in the import form", "https://alz-hsm.managedhsm.azure.net///RoleAssignment/55555555-eeee-4eee-8eee-555555555555", "PROTECTED_IDENTITY"],
+    ["a managed HSM role assignment in the keys form", "https://alz-hsm.managedhsm.azure.net/keys/RoleAssignment/55555555-eeee-4eee-8eee-555555555555", "PROTECTED_IDENTITY"],
+    ["a managed HSM role assignment in the authorization-path form", "https://alz-hsm.managedhsm.azure.net/providers/Microsoft.Authorization/roleAssignments/55555555-eeee-4eee-8eee-555555555555", "PROTECTED_IDENTITY"],
+    ["a managed HSM role definition in the import form", "https://alz-hsm.managedhsm.azure.net///RoleDefinition/66666666-ffff-4fff-8fff-666666666666", "PROTECTED_IDENTITY"],
+    ["a managed HSM role definition in the authorization-path form", "https://ALZ-HSM.managedhsm.azure.net/providers/Microsoft.Authorization/roleDefinitions/66666666-ffff-4fff-8fff-666666666666", "PROTECTED_IDENTITY"],
   ];
   for (const [label, id, cls] of protectedIds) {
     const refusal = protectedDeletionIn(change("azapi_resource.x"), [entry("azapi_resource.x", "azapi_resource", id)], contract, env());
@@ -763,6 +768,7 @@ test("protectedDeletionIn classifies every planned change by its blueprint entry
   assert.ok(protectedDeletionIn(change("azapi_resource.acct"), [entry("azapi_resource.acct", "azapi_resource", STATE_ACCOUNT)], contract, env())?.includes("(PROTECTED_BACKEND)"), "the backend account by id, whatever type recorded it");
   // By type alone, for an address the state does not hold.
   for (const [type, cls] of [["azurerm_resource_group", "RETAINED_GROUP"], ["azurerm_role_assignment", "PROTECTED_IDENTITY"], ["azurerm_pim_active_role_assignment", "PROTECTED_IDENTITY"],
+    ["azurerm_key_vault_managed_hardware_security_module_role_assignment", "PROTECTED_IDENTITY"], ["azurerm_key_vault_managed_hardware_security_module_role_definition", "PROTECTED_IDENTITY"],
     ["azurerm_subscription_policy_assignment", "PROTECTED_IDENTITY"], ["azurerm_resource_policy_exemption", "PROTECTED_IDENTITY"], ["azurerm_policy_definition", "PROTECTED_IDENTITY"],
     ["azurerm_management_lock", "PROTECTED_IDENTITY"], ["azuread_group", "PROTECTED_IDENTITY"], ["azurerm_subscription_template_deployment", "PROTECTED_DEPLOYMENT"], ["azurerm_template_deployment", "PROTECTED_DEPLOYMENT"],
     ["azurerm_management_group", "CONTAINS_OTHERS"]] as const) {
@@ -804,6 +810,15 @@ test("protectedDeletionIn classifies every planned change by its blueprint entry
     ["a bare GUID on an azapi resource", "33333333-cccc-4ccc-8ccc-333333333333"],
     ["another URL", "https://example.invalid/" + SUB + "/roleAssignments/g"],
     ["a management-host URL with a vault-like path", "https://management.azure.com/secrets/x"],
+    // Round 1 of #262 (review 6411080437, B1): a data-plane URL shape on a type that does not record one, or with an authorization or deployment path in it.
+    ["a vault-host URL with a role-assignment path on an azapi resource", "https://alz-kv.vault.azure.net/providers/Microsoft.Authorization/roleAssignments/55555555-eeee-4eee-8eee-555555555555"],
+    ["a storage-host URL with a role-assignment path on an azapi resource", "https://alzdata.blob.core.windows.net" + RG + "/providers/Microsoft.Authorization/roleAssignments/55555555-eeee-4eee-8eee-555555555555"],
+    ["a storage-host URL with a deployment path on an azapi resource", "https://alzdata.blob.core.windows.net" + RG + "/providers/Microsoft.Resources/deployments/d"],
+    ["a plain vault secret URL on an azapi resource", SECRET],
+    ["a plain storage container URL on an azapi resource", "https://alzpilotdata.blob.core.windows.net/logs"],
+    // N4: an empty provider block anywhere but a registration scope.
+    ["a provider block with no pair under a resource group", RG + "/providers/Microsoft.Compute"],
+    ["a provider block with no pair after a resource", LAW + "/providers/Microsoft.Resources"],
   ] as const) {
     const refusal = protectedDeletionIn(change("azapi_resource.x"), [entry("azapi_resource.x", "azapi_resource", id)], contract, env());
     assert.ok(refusal !== undefined && refusal.includes("(OWNERSHIP_AMBIGUOUS)") && refusal.includes("does not parse as an ARM id"), label + ": " + refusal);
@@ -813,7 +828,20 @@ test("protectedDeletionIn classifies every planned change by its blueprint entry
     ["a storage container", "azurerm_storage_container", "https://alzpilotdata.blob.core.windows.net/logs"],
     ["a key vault secret", "azurerm_key_vault_secret", SECRET],
     ["a managed HSM key", "azurerm_key_vault_managed_hardware_security_module_key", "https://alz-hsm.managedhsm.azure.net/keys/k/1"],
+    ["a storage blob", "azurerm_storage_blob", "https://alzpilotdata.blob.core.windows.net/logs/2026/01.log"],
+    ["a key vault certificate", "azurerm_key_vault_certificate", "https://alz-pilot-kv.vault.azure.net/certificates/c/0123456789abcdef"],
   ] as const) assert.equal(protectedDeletionIn(change(type + ".x", type), [entry(type + ".x", type, id)], contract, env()), undefined, label);
+  // The URL must be the family its type records: a vault URL on a storage type, a storage URL on a vault type, a managed HSM URL on a key vault type, or a vault URL on a managed HSM key.
+  for (const [label, type, id] of [
+    ["a vault URL on a storage container", "azurerm_storage_container", SECRET],
+    ["a storage URL on a key vault secret", "azurerm_key_vault_secret", "https://alzpilotdata.blob.core.windows.net/logs"],
+    ["a managed HSM URL on a key vault key", "azurerm_key_vault_key", "https://alz-hsm.managedhsm.azure.net/keys/k/1"],
+    ["a vault URL on a managed HSM key", "azurerm_key_vault_managed_hardware_security_module_key", "https://alz-pilot-kv.vault.azure.net/keys/k/1"],
+    ["a storage URL with a providers segment on a storage container", "azurerm_storage_container", "https://alzpilotdata.blob.core.windows.net/providers/x"],
+  ] as const) {
+    const refusal = protectedDeletionIn(change(type + ".x", type), [entry(type + ".x", type, id)], contract, env());
+    assert.ok(refusal !== undefined && refusal.includes("(OWNERSHIP_AMBIGUOUS)"), label + ": " + refusal);
+  }
 });
 
 test("ARM ids are classified by position (review 6410149770, B3): an authorization object, a lock and a deployment under a group or a storage account named providers are kept, a destroy plan that would take one along stops, a forged proposal naming one never executes, an id the parser cannot consume in full makes no proposal and stops any destroy plan, and ordinary resources named providers are still proposed, verified and cleaned up", async () => {
@@ -876,6 +904,10 @@ test("ARM ids are classified by position (review 6410149770, B3): an authorizati
     ["a role assignment under the management host", "https://management.azure.com" + RG + "/providers/Microsoft.Authorization/roleAssignments/44444444-dddd-4ddd-8ddd-444444444444"],
     ["a role assignment with a leading space", " " + RG + "/providers/Microsoft.Authorization/roleAssignments/44444444-dddd-4ddd-8ddd-444444444444"],
     ["a deployment under the management host", "https://management.azure.com" + RG + "/providers/Microsoft.Resources/deployments/alz-deploy"],
+    // Round 1 of #262 (B1): data-plane URL shapes on an azapi resource, with an authorization or deployment path.
+    ["a vault-host URL with a role-assignment path", "https://alz-kv.vault.azure.net/providers/Microsoft.Authorization/roleAssignments/55555555-eeee-4eee-8eee-555555555555"],
+    ["a storage-host URL with a role-assignment path", "https://alzdata.blob.core.windows.net" + RG + "/providers/Microsoft.Authorization/roleAssignments/55555555-eeee-4eee-8eee-555555555555"],
+    ["a storage-host URL with a deployment path", "https://alzdata.blob.core.windows.net" + RG + "/providers/Microsoft.Resources/deployments/d"],
   ] as const) {
     const w2 = world({ existing: EXISTING, tagged: TAGGED });
     behave({ showResources: [...withoutSecret(CREATES), change("azapi_resource.odd", "azapi_resource", ["create"])], stateResources: [...withoutSecret(STATE as { type: string }[]), azureStateResource("azapi_resource", "odd", id)] });
@@ -1051,24 +1083,33 @@ test("Azure cleanup interrupted at the last check: a stop signal that arrives wh
   refused(await cleanup(w, run, [approval]), "PROPOSAL_ALREADY_EXECUTED");
 });
 
-test("provider and feature registrations a run made are kept, never proposed (review 6410591513, NB-B): the proposal still forms, the ordinary resources are cleaned up, and the registrations are recorded intentionally retained by the pilot owner", async () => {
+test("provider and feature registrations a run made are kept, never proposed (review 6410591513, NB-B), and so are managed HSM role assignments and definitions in every id form (review 6411080437, N1): the proposal still forms, the ordinary resources are cleaned up, and the kept objects are recorded intentionally retained by the pilot owner", async () => {
   const sub = "/subscriptions/" + SUB;
   const REGISTRATION = sub + "/providers/Microsoft.ContainerService";
   const FEATURE = sub + "/providers/Microsoft.Features/providers/Microsoft.ContainerService/features/AKS-ExtensionManager";
-  const creates = [...withoutSecret(CREATES), change("azurerm_resource_provider_registration.aks", "azurerm_resource_provider_registration", ["create"]), change("azurerm_resource_provider_feature_registration.ext", "azurerm_resource_provider_feature_registration", ["create"])];
-  const state = [...withoutSecret(STATE as { type: string }[]), azureStateResource("azurerm_resource_provider_registration", "aks", REGISTRATION), azureStateResource("azurerm_resource_provider_feature_registration", "ext", FEATURE)];
+  const HSM_IMPORT = "https://alz-hsm.managedhsm.azure.net///RoleAssignment/55555555-eeee-4eee-8eee-555555555555";
+  const HSM_KEYS = "https://alz-hsm.managedhsm.azure.net/keys/RoleAssignment/66666666-ffff-4fff-8fff-666666666666";
+  const HSM_AUTH = "https://alz-hsm.managedhsm.azure.net/providers/Microsoft.Authorization/roleDefinitions/77777777-aaaa-4aaa-8aaa-777777777777";
+  const creates = [...withoutSecret(CREATES), change("azurerm_resource_provider_registration.aks", "azurerm_resource_provider_registration", ["create"]), change("azurerm_resource_provider_feature_registration.ext", "azurerm_resource_provider_feature_registration", ["create"]),
+    change("azurerm_key_vault_managed_hardware_security_module_role_assignment.hsm", "azurerm_key_vault_managed_hardware_security_module_role_assignment", ["create"]), change("azapi_resource.hsm_keys", "azapi_resource", ["create"]), change("azapi_resource.hsm_auth", "azapi_resource", ["create"])];
+  const state = [...withoutSecret(STATE as { type: string }[]), azureStateResource("azurerm_resource_provider_registration", "aks", REGISTRATION), azureStateResource("azurerm_resource_provider_feature_registration", "ext", FEATURE),
+    azureStateResource("azurerm_key_vault_managed_hardware_security_module_role_assignment", "hsm", HSM_IMPORT), azureStateResource("azapi_resource", "hsm_keys", HSM_KEYS), azureStateResource("azapi_resource", "hsm_auth", HSM_AUTH)];
   const w = world({ existing: [...EXISTING, REGISTRATION, FEATURE], tagged: TAGGED });
   behave({ showResources: creates, stateResources: state });
   const run = await proposed(w);
   assert.deepEqual(run.observation.record.resources.filter((r) => /registration/.test(r.address)).map((r) => [r.address, r.result, r.reason]),
     [["azurerm_resource_provider_feature_registration.ext", "UNVERIFIABLE", "NOT_AN_ARM_RESOURCE_ID"], ["azurerm_resource_provider_registration.aks", "UNVERIFIABLE", "NOT_AN_ARM_RESOURCE_ID"]], "a registration is not a resource the reader asks about");
-  assert.ok(!w.arm.calls.some((c) => c.url.includes("Microsoft.ContainerService")), "no request was sent for a registration");
+  assert.ok(!w.arm.calls.some((c) => c.url.includes("Microsoft.ContainerService") || c.url.includes("managedhsm")), "no request was sent for a registration or a managed HSM object");
   assert.deepEqual(run.proposal.deletes.map((d) => d.address), ["azurerm_log_analytics_workspace.pilot"]);
   const kept = new Map(run.proposal.excluded.map((x) => [x.address, x]));
   for (const address of ["azurerm_resource_provider_registration.aks", "azurerm_resource_provider_feature_registration.ext"]) {
     assert.equal(kept.get(address)?.ownership, "CONTAINS_OTHERS", address);
     assert.equal(kept.get(address)?.retainedBy, "PILOT_OWNER", address);
     assert.match(kept.get(address)!.reason, /provider or feature registration/, address);
+  }
+  for (const address of ["azurerm_key_vault_managed_hardware_security_module_role_assignment.hsm", "azapi_resource.hsm_keys", "azapi_resource.hsm_auth"]) {
+    assert.equal(kept.get(address)?.ownership, "PROTECTED_IDENTITY", address + ": a managed HSM role assignment or definition, by type or by any id form");
+    assert.equal(kept.get(address)?.retainedBy, "PILOT_OWNER", address);
   }
   // A destroy plan that would take a registration along stops before any approval is consumed.
   const approval = cleanupApproval(run.proposal, "alice");
@@ -1085,6 +1126,7 @@ test("provider and feature registrations a run made are kept, never proposed (re
   assert.ok(leftovers.ok);
   assert.equal(leftovers.record.disposition, "COMPLETE");
   const dispositions = new Map(leftovers.record.resources.map((r) => [r.address, [r.disposition, r.owner]]));
+  for (const address of ["azurerm_key_vault_managed_hardware_security_module_role_assignment.hsm", "azapi_resource.hsm_keys", "azapi_resource.hsm_auth"]) assert.deepEqual(dispositions.get(address), ["INTENTIONALLY_RETAINED", "PILOT_OWNER"], address);
   assert.deepEqual(dispositions.get("azurerm_resource_provider_registration.aks"), ["INTENTIONALLY_RETAINED", "PILOT_OWNER"]);
   assert.deepEqual(dispositions.get("azurerm_resource_provider_feature_registration.ext"), ["INTENTIONALLY_RETAINED", "PILOT_OWNER"]);
   assert.deepEqual(dispositions.get("azurerm_log_analytics_workspace.pilot"), ["CONFIRMED_DELETED", undefined]);
