@@ -6,6 +6,7 @@ import test from "node:test";
 import { releaseAdmission } from "../src/cli/release-admission.js";
 import { releaseStatusView } from "../src/release/docs.js";
 import { loadWorkGraph, runnableTasks, workGraphProblems, type WorkGraph, type WorkNode } from "../src/release/work-graph.js";
+import { mergeBlockers, OWNER_BUDGET, resumeState, schedule, type Checkpoint, type PrFacts, type SchedulerState } from "../src/release/scheduler.js";
 import type { ReleaseAdmissionReport } from "../src/qualification/release-admission.js";
 import type { RowReport } from "../src/release/acceptance.js";
 import {
@@ -168,4 +169,69 @@ test("the work graph refuses a cycle, an unknown dependency or gate, a DONE task
     change(copy);
     assert.match(workGraphProblems(copy).join(" | "), pattern, name);
   }
+});
+
+// The scheduler's decision step (src/release/scheduler.ts), on a small graph.
+const sha = (c: string) => c.repeat(40);
+const node = (id: string, change: Partial<WorkNode> = {}): WorkNode =>
+  ({ id, title: "Task " + id, owner: "LANE", status: "QUEUED", dependsOn: [], gates: [], next: "Do the task " + id, ...change });
+const facts = (pr: number, change: Partial<PrFacts> = {}): PrFacts => ({
+  pr, head: sha("a"), open: true, merged: false, checksGreen: true, checksFailed: false, qaPassed: true,
+  verdict: { result: "NO_BLOCKING_ISSUES", head: sha("a"), commentId: 1 }, laterBlocking: false, compatibleWithMain: true,
+  policyChange: false, onHold: false, repairRounds: 0, ...change,
+});
+const idle: SchedulerState = { active: {}, reviewing: [] };
+const graphOf = (...nodes: WorkNode[]): WorkGraph => ({ schemaVersion: 1, updated: "2026-10-26", nodes });
+
+test("scheduler: a head merges only when all nine mandate conditions hold, one merge per tick", () => {
+  assert.deepEqual(mergeBlockers(facts(1)), []);
+  const failing: [string, Partial<PrFacts>][] = [
+    ["closed", { open: false }], ["on hold", { onHold: true }], ["checks", { checksGreen: false }], ["qa", { qaPassed: false }],
+    ["no review", { verdict: undefined }], ["stale review", { head: sha("b") }],
+    ["blocking review", { verdict: { result: "BLOCKING", head: sha("a"), commentId: 2 } }], ["later finding", { laterBlocking: true }],
+    ["behind main", { compatibleWithMain: false }], ["policy change", { policyChange: true }],
+  ];
+  for (const [name, change] of failing) assert.notDeepEqual(mergeBlockers(facts(1, change)), [], name);
+  const actions = schedule(graphOf(node("a", { status: "IN_PROGRESS", prs: [1] }), node("b", { status: "IN_PROGRESS", prs: [2] })),
+    [facts(1), facts(2)], idle);
+  assert.deepEqual(actions.filter((x) => x.kind === "MERGE").map((x) => x.pr), [1], "integration is serialized");
+  assert.ok(actions.some((x) => x.kind === "WAIT" && x.pr === 2));
+});
+
+test("scheduler: an unreviewed green head gets the one reviewer slot; a blocking result or failed check goes back to its owner", () => {
+  const unreviewed = { verdict: { result: "NO_BLOCKING_ISSUES" as const, head: sha("b"), commentId: 1 } };
+  const graph = graphOf(node("a", { status: "IN_PROGRESS", prs: [1] }), node("b", { status: "IN_PROGRESS", prs: [2] }));
+  const actions = schedule(graph, [facts(1, unreviewed), facts(2, unreviewed)], idle);
+  assert.deepEqual(actions.filter((x) => x.kind === "REVIEW").map((x) => x.pr), [1], "one reviewer at a time");
+  assert.equal(schedule(graph, [facts(1, unreviewed)], { active: {}, reviewing: [{ pr: 9, head: sha("c") }] })
+    .filter((x) => x.kind === "REVIEW").length, 0, "a busy slot waits");
+  const blocked = schedule(graph, [facts(1, { verdict: { result: "BLOCKING", head: sha("a"), commentId: 3 } }), facts(2, { checksGreen: false, checksFailed: true })], idle);
+  assert.deepEqual(blocked.filter((x) => x.kind === "FIX").map((x) => [x.pr, (x as { owner: string }).owner]), [[1, "LANE"], [2, "LANE"]]);
+  assert.equal(blocked.filter((x) => x.kind === "MERGE").length, 0);
+});
+
+test("scheduler: a task past its repair limit escalates and stops only its dependents; independent work keeps moving", () => {
+  const graph = graphOf(
+    node("stuck", { status: "IN_PROGRESS", prs: [1] }),
+    node("after-stuck", { dependsOn: ["stuck"] }),
+    node("independent", { owner: "COORDINATOR" }),
+    node("owner-only", { owner: "OWNER" }),
+  );
+  const actions = schedule(graph, [facts(1, { repairRounds: 3, verdict: { result: "BLOCKING", head: sha("a"), commentId: 4 } })], idle);
+  assert.ok(actions.some((x) => x.kind === "ESCALATE" && x.task === "stuck"));
+  assert.ok(actions.some((x) => x.kind === "DISPATCH" && x.task === "independent"), "a blocked task does not stop the release");
+  assert.ok(!actions.some((x) => x.task === "after-stuck"), "its dependents wait");
+  assert.ok(!actions.some((x) => x.kind === "DISPATCH" && x.task === "owner-only"), "owner tasks are never dispatched to an agent");
+});
+
+test("scheduler: one lane at a time, one owner per task, and a resumed session forgets workers it cannot see", () => {
+  const graph = graphOf(node("x"), node("y"), node("z", { owner: "COORDINATOR" }));
+  assert.deepEqual(schedule(graph, [], idle).filter((x) => x.kind === "DISPATCH").map((x) => x.task), ["x", "z"], "the lane budget is one");
+  assert.deepEqual(schedule(graph, [], { active: { x: "LANE" }, reviewing: [] }).filter((x) => x.kind === "DISPATCH").map((x) => x.task), ["z"]);
+  const checkpoint: Checkpoint = { schemaVersion: 1, tick: 7, at: "2026-10-26T06:00:00Z", mainHead: sha("d"), last: [],
+    state: { active: { x: "LANE", z: "COORDINATOR" }, reviewing: [{ pr: 5, head: sha("e") }] } };
+  assert.deepEqual(resumeState(checkpoint, new Set(["z"])), { active: { z: "COORDINATOR" }, reviewing: [] },
+    "a lost worker's task returns to the scheduler for re-dispatch");
+  assert.equal(OWNER_BUDGET.lanes, 1);
+  assert.equal(OWNER_BUDGET.reviewers, 1);
 });
