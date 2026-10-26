@@ -34,6 +34,7 @@ import {
   workspaceSelectArgv,
   type TerraformEngine,
 } from "../src/teardown/driver/adapters/terraform.js";
+import { cleanupPlanArgv, isAllowedApplyArgv, isAllowedCleanupArgv } from "../src/apply/terraform.js";
 import { buildManifest } from "../src/teardown/manifest.js";
 import { captureProjectFiles, createImmutableSnapshot, type ImmutableSnapshot } from "../src/teardown/snapshot.js";
 import { recordDeletionUnit } from "../src/teardown/unit.js";
@@ -505,16 +506,38 @@ test("the existing preview guard is untouched: it still flags the destroy argv, 
 const sourcesUnder = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap((entry) =>
   entry.isDirectory() ? sourcesUnder(join(dir, entry.name)) : entry.name.endsWith(".ts") ? [join(dir, entry.name)] : []);
 
-test("the only -destroy literal in the source tree is this adapter's single destroy-preview argv, and no lock switch exists", () => {
+test("only the two reviewed destroy-plan builders contain -destroy, and neither exposes an unbounded path", () => {
   const adapter = resolve("src/teardown/driver/adapters/terraform.ts");
-  const holders = sourcesUnder(resolve("src")).filter((file) => /"-destroy/.test(readFileSync(file, "utf8")));
-  assert.deepEqual(holders, [adapter]);
+  const cleanup = resolve("src/apply/terraform.ts");
+  const holders = sourcesUnder(resolve("src")).filter((file) => /"-destroy/.test(readFileSync(file, "utf8"))).sort();
+  assert.deepEqual(holders, [adapter, cleanup].sort(), "a third destroy-plan builder requires independent review");
+
   const source = readFileSync(adapter, "utf8");
-  assert.equal(source.match(/"-destroy/g)?.length, 1);
-  assert.doesNotMatch(source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, ""), /"-lock(=|"|-timeout)|-lock[a-z-]*=false|auto-approve|"apply"|"-target|"-replace/);
-  // Not reachable by an agent: nothing under src/tools refers to it.
+  const cleanupSource = readFileSync(cleanup, "utf8");
+  assert.equal(source.match(/"-destroy/g)?.length, 1, "destroy-preview uses one reviewed argv");
+  assert.equal(cleanupSource.match(/"-destroy/g)?.length, 2, "targeted cleanup builder and its allowlist guard are the only two literals");
+  assert.match(cleanupSource, /return \["plan", "-destroy"/, "cleanup plan builder is explicit");
+  assert.match(cleanupSource, /args\[1\] === "-destroy"/, "cleanup plan guard verifies destroy mode");
+  const withoutComments = (text: string) => text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+  assert.doesNotMatch(withoutComments(source), /"-lock(=|"|-timeout)|-lock[a-z-]*=false|auto-approve|"apply"|"-target|"-replace/);
+  assert.doesNotMatch(withoutComments(cleanupSource), /"-lock(=|"|-timeout)|-lock[a-z-]*=false|auto-approve|"destroy"|"-refresh=false"|"-replace/);
+
+  const targeted = cleanupPlanArgv(["aws_s3_bucket.logs"]);
+  assert.deepEqual(targeted, ["plan", "-destroy", "-input=false", "-no-color", "-target=aws_s3_bucket.logs", "-out=../alz-cleanup.tfplan"]);
+  assert.equal(isAllowedCleanupArgv("terraform", targeted), true, "reviewed targeted cleanup argv");
+  assert.equal(isAllowedCleanupArgv("tofu", targeted), false, "cleanup is not an OpenTofu authority");
+  assert.equal(isAllowedCleanupArgv("terraform", ["plan", "-destroy", "-input=false", "-no-color", "-out=../alz-cleanup.tfplan"]), false, "untargeted destroy refused");
+  assert.equal(isAllowedCleanupArgv("terraform", ["destroy", "-auto-approve"]), false, "direct destroy refused");
+  assert.equal(isAllowedArgv("TERRAFORM", "terraform", targeted), false, "ordinary preview adapter cannot invoke cleanup");
+  assert.equal(isAllowedApplyArgv("terraform", targeted), false, "ordinary apply adapter cannot create a destroy plan");
+  assert.equal(dangerousPreviewCommand({
+    tool: "terraform_plan", ok: true, exitCode: 0, stdout: "", stderr: "", durationMs: 0,
+    command: ["terraform", ...targeted],
+  }), true, "targeted destroy plan remains dangerous in the ordinary preview path");
+
+  // Neither the destroy-preview adapter nor the cleanup adapter is a model-accessible tool.
   for (const file of sourcesUnder(resolve("src/tools"))) {
-    assert.doesNotMatch(readFileSync(file, "utf8"), /teardown\/driver|adapters\/terraform/, file);
+    assert.doesNotMatch(readFileSync(file, "utf8"), /teardown\/driver|adapters\/terraform|apply\/terraform|cleanupPlanArgv/, file);
   }
 });
 
