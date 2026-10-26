@@ -298,13 +298,6 @@ export type ArmBehavior = {
   unknownTypes?: string[];
   /** Resource types (namespace/type) the provider offers only in preview API versions. */
   previewOnlyTypes?: string[];
-  /** What each resource group holds (group id → member ids); a group not named here holds nothing. */
-  groupMembers?: Record<string, string[]>;
-  /** Pages for a group listing; `groupListingFails` makes the second page answer 500, an incomplete listing. */
-  groupPages?: number;
-  groupListingFails?: boolean;
-  /** The group-scope extension listings (role assignments, policy assignments, locks) answer this status (an identity that may read resources but not grants). */
-  extensionListingStatus?: number;
 };
 export type ArmCall = { method: string; url: string; headers: Record<string, string>; body?: string };
 /** The federated token the fake identity carries, and the access token the fake endpoint issues: canaries that must never appear in a record. */
@@ -336,25 +329,6 @@ export function fakeArmHttp(behavior: ArmBehavior = {}): { http: (request: ArmCa
       const resourceTypes = [...types].filter((t) => !(b.unknownTypes ?? []).includes(namespace + "/" + t))
         .map((t) => ({ resourceType: t, apiVersions: (b.previewOnlyTypes ?? []).includes(namespace + "/" + t) ? ["2024-01-01-preview"] : ["2024-01-01-preview", "2023-05-01"] }));
       return { status: 200, body: JSON.stringify({ namespace, resourceTypes }) };
-    }
-    // What a group holds: its top-level resources at `/resources`, and its scope's role assignments, policy assignments and locks
-    // at the Authorization provider (the real `atScope()` answers also carry inherited assignments from above; the fake adds one).
-    const groupListing = /^(\/subscriptions\/[^/]+\/resourceGroups\/[^/]+)\/(resources|providers\/Microsoft\.Authorization\/(roleAssignments|policyAssignments|locks|policyExemptions))$/i.exec(path);
-    if (groupListing) {
-      const extension = groupListing[3];
-      if (extension && b.extensionListingStatus && b.extensionListingStatus !== 200) return { status: b.extensionListingStatus, body: JSON.stringify({ error: { code: "CANARY_CLOUD_ERROR_c6" } }) };
-      const isExtension = (id: string) => /\/providers\/Microsoft\.Authorization\/(roleAssignments|policyAssignments|locks|policyExemptions)\//i.test(id);
-      const groupId = Object.keys(b.groupMembers ?? {}).find((id) => id.toLowerCase() === groupListing[1].toLowerCase());
-      const members = groupId ? (b.groupMembers ?? {})[groupId] : [];
-      const inherited = extension && extension !== "locks" && extension !== "policyExemptions" ? ["/subscriptions/" + path.split("/")[2] + "/providers/Microsoft.Authorization/" + extension + "/99999999-0000-4000-8000-00000000inhe"] : [];
-      const all = extension ? [...members.filter((id) => new RegExp("/Microsoft\\.Authorization/" + extension + "/", "i").test(id)), ...inherited] : members.filter((id) => !isExtension(id));
-      const pages = Math.max(1, b.groupPages ?? 1);
-      const page = Number(url.searchParams.get("$skiptoken") ?? "0");
-      if (b.groupListingFails && page > 0) return { status: 500, body: JSON.stringify({ error: { code: "CANARY_CLOUD_ERROR_c6" } }) };
-      const size = Math.ceil(all.length / pages) || 1;
-      const value = all.slice(page * size, (page + 1) * size).map((id) => ({ id, name: id.split("/").pop(), type: typeOf(id) }));
-      const next = page + 1 < pages ? request.url.replace(/&\$skiptoken=\d+/, "") + "&$skiptoken=" + (page + 1) : undefined;
-      return { status: 200, body: JSON.stringify({ value, ...(next ? { nextLink: next } : {}) }) };
     }
     if (/^\/subscriptions\/[^/]+\/(resources|resourcegroups)$/i.test(path) && url.searchParams.has("$filter")) {
       const collection = path.toLowerCase().endsWith("/resources") ? "resources" : "groups";

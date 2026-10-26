@@ -18,6 +18,13 @@ import type { ApplyEnvironment, ApplyEvidence, CleanupEvidence, EngineId, Provid
  * once every stage has an attestation. A fake engine and a fake cloud write the same records as real ones, and only a
  * person's attestation tells them apart.
  *
+ * The report separates three things that are never one (owner decision 6408642348): the cleanup of this run's approved
+ * resources (`acceptance.resourceCleanup`), the protected objects intentionally retained by a named owner (resource groups,
+ * identities and grants, deployment history, the state backend: `acceptance.retained`), and the retirement of the
+ * environment itself, which is a separate, reviewed action and is always reported `OUTSTANDING`. A passing report reads
+ * "approved resources deleted; protected objects intentionally retained; environment retirement outstanding" and never
+ * "entire environment deleted".
+ *
  * Identifiers and hashes only: no state value, cloud property, approval signature or engine output.
  */
 export const LIFECYCLE_REPORT_VERSION = 1;
@@ -30,6 +37,17 @@ export type EvidenceMode = "SYNTHETIC" | "LIVE";
  */
 export type StageResult = { status: StageStatus; mode: EvidenceMode; detail: string; evidenceSha256?: string; at?: string };
 export type LifecycleStages = { execute: StageResult; observe: StageResult; propose: StageResult; cleanup: StageResult; leftovers: StageResult };
+/** The three states of a pilot run's end, kept apart. Derived from the records; `lifecycleReportProblems` recomputes it. */
+export type AcceptanceDisposition = {
+  /** COMPLETED only when the leftovers stage passed (every approved deletion confirmed gone, a complete unit sweep); NOT_RUN before any check; INCOMPLETE otherwise. */
+  resourceCleanup: "COMPLETED" | "INCOMPLETE" | "NOT_RUN";
+  /** What the proposal kept, by ownership class and by the owner who keeps it. Never deleted, never counted as leftovers. */
+  retained: { total: number; byOwnership: Record<string, number>; byOwner: Record<string, number> };
+  /** Always OUTSTANDING: retiring the environment (its resource group, identities, deployment history, backend) is a separate, reviewed action this report never claims. */
+  environmentRetirement: "OUTSTANDING";
+  /** The one sentence a person reads. */
+  statement: string;
+};
 
 export type LifecycleReport = {
   schemaVersion: 1;
@@ -53,6 +71,8 @@ export type LifecycleReport = {
   approvals: { apply: string[]; cleanup: string[] };
   observation: { verdict: string; resources: { address: string; type: string; identifier: string | null; result: string }[] } | null;
   dispositions: { disposition: "COMPLETE" | "KNOWN_ADDRESSES_CONFIRMED" | "INCOMPLETE"; resources: { address: string; disposition: string; basis: string }[] } | null;
+  /** Derived from the stages and the proposal: resource cleanup, protected objects retained, environment retirement outstanding. */
+  acceptance: AcceptanceDisposition;
   /** Derived: every stage PASS. Never set by a caller. */
   passed: boolean;
   /** What stands between this run and a pass, in sentences. */
@@ -105,7 +125,7 @@ function stagesOf(input: LifecycleReportInput, applyEvidenceSha256: string): { s
   let leftoversStage: StageResult;
   if (!proposal) leftoversStage = { status: "NOT_RUN", mode: "SYNTHETIC", detail: "no proposal to verify" };
   else if (!leftovers || leftovers.proposalSha256 !== proposal.proposalSha256) { leftoversStage = { status: "NOT_RUN", mode: "SYNTHETIC", detail: "leftovers not verified for this proposal" }; unresolved.push("verify leftovers"); }
-  else if (leftovers.disposition === "COMPLETE") leftoversStage = { status: "PASS", mode: "SYNTHETIC", detail: "every proposed deletion confirmed gone by independent read, and a complete sweep by the run's deletion-unit tag found nothing else", evidenceSha256: hashOf(leftovers), at: leftovers.observedAt };
+  else if (leftovers.disposition === "COMPLETE") leftoversStage = { status: "PASS", mode: "SYNTHETIC", detail: "approved resources deleted (every proposed deletion confirmed gone by independent read, and a complete sweep by the run's deletion-unit tag found nothing else); protected objects intentionally retained; environment retirement outstanding", evidenceSha256: hashOf(leftovers), at: leftovers.observedAt };
   else if (leftovers.disposition === "KNOWN_ADDRESSES_CONFIRMED") {
     // The named resources are settled, but nothing outside the state could be searched for: not completion, and the gap is named.
     leftoversStage = { status: "INCONCLUSIVE", mode: "SYNTHETIC", detail: "every proposed deletion confirmed gone by address; no deletion-unit sweep was possible (the run carries no unit tag), so the cleanup is not independently complete", evidenceSha256: hashOf(leftovers), at: leftovers.observedAt };
@@ -113,6 +133,17 @@ function stagesOf(input: LifecycleReportInput, applyEvidenceSha256: string): { s
   }
   else { leftoversStage = { status: "INCONCLUSIVE", mode: "SYNTHETIC", detail: "leftover check INCOMPLETE", evidenceSha256: hashOf(leftovers), at: leftovers.observedAt }; unresolved.push(leftovers.nextAction); }
   return { stages: { execute, observe, propose, cleanup: cleanupStage, leftovers: leftoversStage }, unresolved };
+}
+
+/** The three-state end of the run, from the stages and the proposal's kept list. */
+export function acceptanceOf(stages: LifecycleStages, excluded: readonly { ownership: string; retainedBy: string }[]): AcceptanceDisposition {
+  const count = (keys: string[]): Record<string, number> => Object.fromEntries([...new Set(keys)].sort().map((key) => [key, keys.filter((k) => k === key).length]));
+  const retained = { total: excluded.length, byOwnership: count(excluded.map((x) => x.ownership)), byOwner: count(excluded.map((x) => x.retainedBy)) };
+  const resourceCleanup: AcceptanceDisposition["resourceCleanup"] = stages.leftovers.status === "PASS" ? "COMPLETED" : stages.leftovers.status === "NOT_RUN" ? "NOT_RUN" : "INCOMPLETE";
+  const statement = (resourceCleanup === "COMPLETED" ? "approved resources deleted" : resourceCleanup === "NOT_RUN" ? "resource cleanup not run" : "resource cleanup incomplete") +
+    "; " + (retained.total > 0 ? retained.total + " protected or pre-existing object(s) intentionally retained (" + Object.entries(retained.byOwner).map(([owner, n]) => n + " kept by " + owner).join(", ") + ")" : "nothing retained by this run") +
+    "; environment retirement outstanding (a separate, reviewed action; this report does not claim the environment retired)";
+  return { resourceCleanup, retained, environmentRetirement: "OUTSTANDING", statement };
 }
 
 /** The owner's live record, only when it attests this very apply evidence of this very artifact for the execute step. */
@@ -140,6 +171,7 @@ export function buildLifecycleReport(input: LifecycleReportInput): LifecycleRepo
     approvals: { apply: input.applyEvidence.approvals.map((a) => a.approverId), cleanup: input.cleanup?.approvals.map((a) => a.approverId) ?? [] },
     observation: input.observation ? { verdict: input.observation.verdict, resources: input.observation.resources.map((r) => ({ address: r.address, type: r.type, identifier: r.identifier, result: r.result })) } : null,
     dispositions: input.leftovers ? { disposition: input.leftovers.disposition, resources: input.leftovers.resources.map((r) => ({ address: r.address, disposition: r.disposition, basis: r.basis })) } : null,
+    acceptance: acceptanceOf(stages, input.proposal?.excluded ?? []),
     passed, unresolved: [...new Set(unresolved)], liveAttestation: live ? { attestedBy: live.attestedBy, attestedAt: live.attestedAt, evidenceSha256: live.evidenceSha256, artifactSha256: live.artifactSha256, step: "execute" } : null,
     generatedAt: input.now.toISOString(),
   };
@@ -149,7 +181,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 const hashText = (value: unknown): value is string => typeof value === "string" && HASH.test(value);
 const STATUSES: readonly StageStatus[] = ["PASS", "FAIL", "NOT_RUN", "INCONCLUSIVE"];
 const KEYS = ["schemaVersion", "reportKind", "gateVersion", "gateId", "provider", "engine", "scenario", "mode", "sourceCommit", "contractSha256", "environment", "target", "artifactSha256",
-  "applyEvidenceSha256", "proposalSha256", "stages", "approvals", "observation", "dispositions", "passed", "unresolved", "liveAttestation", "generatedAt"];
+  "applyEvidenceSha256", "proposalSha256", "stages", "approvals", "observation", "dispositions", "acceptance", "passed", "unresolved", "liveAttestation", "generatedAt"];
 const RAW_KEY = /^(values|attributes|properties|state|plan|stdout|stderr|output|credentials|secret|token|password|signature)$/i;
 
 function stageOk(value: unknown): value is StageResult {
@@ -207,6 +239,22 @@ export function lifecycleReportProblems(value: unknown, expected: { sourceCommit
     const cleanup = (stages as Record<string, StageResult>).cleanup;
     const leftovers = (stages as Record<string, StageResult>).leftovers;
     if (cleanup.status === "PASS" && leftovers.status !== "PASS" && value.passed === true) problems.push("report: a cleanup is not complete while leftovers are pending or unknown");
+    // The three states stay apart and are derived: a report never claims the environment deleted, and its cleanup state is the leftovers stage's.
+    const acceptance = value.acceptance;
+    const counts = (v: unknown): v is Record<string, number> => isRecord(v) && Object.values(v).every((n) => typeof n === "number" && Number.isInteger(n) && n >= 0);
+    if (!isRecord(acceptance) || Object.keys(acceptance).sort().join() !== "environmentRetirement,resourceCleanup,retained,statement" || !isRecord(acceptance.retained) ||
+      Object.keys(acceptance.retained).sort().join() !== "byOwner,byOwnership,total" || typeof acceptance.retained.total !== "number" || !counts(acceptance.retained.byOwnership) || !counts(acceptance.retained.byOwner) ||
+      typeof acceptance.statement !== "string") problems.push("report.acceptance: resourceCleanup, retained (total, byOwnership, byOwner), environmentRetirement and statement");
+    else {
+      if (acceptance.environmentRetirement !== "OUTSTANDING") problems.push("report.acceptance.environmentRetirement: always OUTSTANDING; retiring the environment is a separate, reviewed action no run report claims");
+      const expected = typed.leftovers.status === "PASS" ? "COMPLETED" : typed.leftovers.status === "NOT_RUN" ? "NOT_RUN" : "INCOMPLETE";
+      if (acceptance.resourceCleanup !== expected) problems.push("report.acceptance.resourceCleanup: not derived from the leftovers stage (" + expected + ")");
+      const dispositions = isRecord(value.dispositions) && Array.isArray(value.dispositions.resources) ? value.dispositions.resources as { disposition?: unknown }[] : null;
+      if (dispositions !== null && dispositions.filter((r) => r.disposition === "INTENTIONALLY_RETAINED").length !== acceptance.retained.total) problems.push("report.acceptance.retained: does not match the leftover record's intentionally retained resources");
+      const sum = (v: Record<string, number>) => Object.values(v).reduce((a, b) => a + b, 0);
+      if (sum(acceptance.retained.byOwnership) !== acceptance.retained.total || sum(acceptance.retained.byOwner) !== acceptance.retained.total) problems.push("report.acceptance.retained: the counts by ownership and by owner must add up to the total");
+      if (/environment (?:is |was |entirely )?deleted|entire environment deleted/i.test(acceptance.statement) || !/environment retirement outstanding/.test(acceptance.statement)) problems.push("report.acceptance.statement: must report environment retirement outstanding and never the environment deleted");
+    }
   }
   const approvals = value.approvals;
   if (!isRecord(approvals) || !Array.isArray(approvals.apply) || !Array.isArray(approvals.cleanup) || ![...approvals.apply, ...approvals.cleanup].every((x) => typeof x === "string" && x.length > 0)) problems.push("report.approvals: approver ids only");
