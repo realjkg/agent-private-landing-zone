@@ -1,5 +1,5 @@
 import { createDiscoveryAwsCli, verifierBinarySha256 } from "../observe/aws-cli.js";
-import { createDiscoveryArmReader, type ArmHttp, isArmGroupId } from "../observe/azure-rest.js";
+import { createDiscoveryArmReader, type ArmHttp } from "../observe/azure-rest.js";
 import { cloudControlReader, observeBlueprint, type AwsCli, type ObserveReport, type ResourceReader } from "../observe/verify.js";
 import { canonicalJson } from "../teardown/manifest.js";
 import { sha256 } from "../util/sha256.js";
@@ -12,15 +12,8 @@ import type { AwsTarget } from "./providers/aws.js";
 import type { AzureTarget } from "./providers/azure.js";
 import {
   readBlueprintRecord, readObservationRecord, recordSha256, verificationOf, writeLeftoversRecord, writeObservationRecord,
-  type BlueprintRecord, type LeftoversRecord, type ObservationRecord, type ObservedGroup, type ObservedResource,
+  type BlueprintRecord, type LeftoversRecord, type ObservationRecord, type ObservedResource,
 } from "./run-records.js";
-
-/** Resource types that hold other resources, which a cleanup must never delete on run ownership alone. */
-/**
- * A container: an entry whose recorded ARM id is a resource group, whatever Terraform type created it (`azurerm_resource_group`,
- * `azapi_resource`, a module's own type), or the azurerm type itself. Classified by the id the state holds, never by the type name alone.
- */
-export const isContainerEntry = (entry: { type: string; id: string | null }): boolean => entry.type === "azurerm_resource_group" || (entry.id !== null && isArmGroupId(entry.id));
 import type { ApplyEvidence, ApplyRefusalCode } from "./types.js";
 
 /**
@@ -89,16 +82,10 @@ export async function observeRun(artifactSha256: string, deps: ObserveDeps): Pro
   const opened = openReader(deps, applied.environment);
   if (!opened.ok) return opened;
   let report: ObserveReport;
-  const groups: ObservedGroup[] = [];
   try {
+    // Existence of each recorded identifier and the sweep by the run's unit tag. Nothing here lists what a resource group holds: a
+    // pilot cleanup never deletes a group, so its contents are not a deletion decision (docs/observe-and-cleanup.md).
     report = await observeBlueprint(blueprint.blueprint, { unitId: blueprint.unitId, reader: opened.reader });
-    // What each present container (an Azure resource group) holds, so the proposal never deletes a group on run ownership alone.
-    for (const entry of blueprint.blueprint.entries.filter((e) => isContainerEntry(e) && e.id !== null)) {
-      const check = report.checks.find((c) => c.address === entry.address);
-      if (check?.existence !== "PRESENT" || !opened.reader.listGroup) continue;
-      const listed = await opened.reader.listGroup(entry.id!);
-      groups.push({ address: entry.address, identifier: entry.id!, members: listed ? [...listed.identifiers] : [], complete: listed?.complete === true });
-    }
   } finally {
     opened.close();
   }
@@ -110,7 +97,7 @@ export async function observeRun(artifactSha256: string, deps: ObserveDeps): Pro
     schemaVersion: 1, kind: "OBSERVATION", artifactSha256, applyEvidenceSha256, blueprintSha256: recordSha256(blueprint), environment: applied.environment, target: { ...applied.target },
     sourceCommit: applied.sourceCommit, contractSha256: applied.contractSha256, verifier: report.verifier,
     verifierBinarySha256: opened.binarySha256, verdict: report.verdict, resources,
-    missingFromState: [...report.missingFromState], unexpected: [...report.unexpected], inventory: report.inventory, groups, observedAt: (deps.now ?? (() => new Date()))().toISOString(),
+    missingFromState: [...report.missingFromState], unexpected: [...report.unexpected], inventory: report.inventory, observedAt: (deps.now ?? (() => new Date()))().toISOString(),
   };
   const written = await writeObservationRecord(record, deps.evidenceDir);
   if (written !== "WRITTEN") return refuse("EVIDENCE_REJECTED", "The observation could not be recorded (" + written + ").");

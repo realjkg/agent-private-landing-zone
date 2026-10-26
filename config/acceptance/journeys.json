@@ -770,7 +770,7 @@
             "positive": [
               {
                 "file": "test/apply-cleanup-azure.test.ts",
-                "title": "Azure Terraform observe: after a successful apply the driver records the blueprint from the state, identifiers only, and observe verifies each resource through Azure Resource Manager as DISCOVERY, lists what each group holds, with no credential outside memory"
+                "title": "Azure Terraform observe: after a successful apply the driver records the blueprint from the state, identifiers only, and observe verifies each resource through Azure Resource Manager as DISCOVERY, with no credential outside memory"
               },
               {
                 "file": "test/apply-cleanup-azure.test.ts",
@@ -788,7 +788,7 @@
               },
               {
                 "file": "test/apply-cleanup-azure.test.ts",
-                "title": "Azure listings never change scope while marked complete: a continuation link to another subscription or group, one that drops or changes the tag filter or API version, one with an extra parameter, and a malformed page end the listing incomplete or failed, and no observation or leftover check reaches COMPLETE on it"
+                "title": "Azure listings never change scope while marked complete: a continuation link to another subscription or collection, one that drops, changes, repeats or re-cases the tag filter or API version, one with an extra parameter, a path that only normalizes to the same listing, a continuation under another key, and a malformed page end the listing incomplete or failed, and no observation or leftover check reaches COMPLETE on it"
               }
             ],
             "interrupted": [
@@ -798,7 +798,7 @@
               },
               {
                 "file": "test/apply-cleanup-azure.test.ts",
-                "title": "Azure listings never change scope while marked complete: a continuation link to another subscription or group, one that drops or changes the tag filter or API version, one with an extra parameter, and a malformed page end the listing incomplete or failed, and no observation or leftover check reaches COMPLETE on it"
+                "title": "Azure listings never change scope while marked complete: a continuation link to another subscription or collection, one that drops, changes, repeats or re-cases the tag filter or API version, one with an extra parameter, a path that only normalizes to the same listing, a continuation under another key, and a malformed page end the listing incomplete or failed, and no observation or leftover check reaches COMPLETE on it"
               }
             ],
             "recovery": [
@@ -842,41 +842,33 @@
             "positive": [
               {
                 "file": "test/apply-cleanup-azure.test.ts",
-                "title": "Azure Terraform cleanup: the proposal keeps the state backend in every form and the group that holds it, the pilot's identities and grants, and every pre-existing, shared, imported or unrelated resource; the APPLY identity destroys exactly the created list after a targeted destroy plan, and the leftover check reads ARM again: COMPLETE only when the unit sweep finds nothing else"
+                "title": "Azure Terraform cleanup: the proposal keeps the resource group this run created, the state backend in every form and the group that holds it, the pilot's identities and grants, and every pre-existing, shared, imported or unrelated resource, each with its retention owner; the APPLY identity destroys exactly the approved list after a targeted destroy plan; the leftover check reads ARM again and COMPLETE reads approved resources deleted and protected objects retained, never the environment deleted"
               },
               {
                 "file": "test/apply-cleanup-azure.test.ts",
-                "title": "Azure resource-group containment: a group is deleted only when everything it holds is this run's and goes with it; a foreign member, a pre-existing group or an incomplete listing keeps it, and a member added after the proposal stops the cleanup before anything is consumed"
+                "title": "Azure resource groups are never deleted: a group this run created, through azurerm_resource_group or any type whose id is a group (azapi_resource), is kept as RETAINED_GROUP by the pilot owner with a reason; a destroy plan that would take a group along as a dependent stops before any approval is consumed; a forged proposal naming a group never executes; a subscription or management group is never proposed"
               },
               {
                 "file": "test/apply-cleanup-azure.test.ts",
-                "title": "Azure containers by identifier: a resource group created through any type (azapi_resource) is listed and kept when it holds another's resource, re-listed before the destroy, and a subscription or management group is never proposed, even through a forged proposal"
-              },
-              {
-                "file": "test/apply-cleanup-azure.test.ts",
-                "title": "Azure group-scope grants and locks count as contents: a group with no foreign top-level resource but someone else's role assignment, policy assignment or lock at its scope is kept, one appearing right before the destroy stops the cleanup, and a denied grant listing is never read as empty"
+                "title": "Azure identity, authorization and deployment-history objects are never deleted: role assignments, role definitions, user-assigned identities, azuread objects and deployments this run created are kept as PROTECTED_IDENTITY or PROTECTED_DEPLOYMENT by type or by the ARM type of their id (azapi_resource), a destroy plan that would take one along stops before any approval is consumed, and a forged proposal naming one never executes"
               }
             ],
             "denied": [
               {
                 "file": "test/apply-cleanup-azure.test.ts",
-                "title": "Azure Terraform cleanup: the proposal keeps the state backend in every form and the group that holds it, the pilot's identities and grants, and every pre-existing, shared, imported or unrelated resource; the APPLY identity destroys exactly the created list after a targeted destroy plan, and the leftover check reads ARM again: COMPLETE only when the unit sweep finds nothing else"
+                "title": "Azure Terraform cleanup: the proposal keeps the resource group this run created, the state backend in every form and the group that holds it, the pilot's identities and grants, and every pre-existing, shared, imported or unrelated resource, each with its retention owner; the APPLY identity destroys exactly the approved list after a targeted destroy plan; the leftover check reads ARM again and COMPLETE reads approved resources deleted and protected objects retained, never the environment deleted"
               },
               {
                 "file": "test/apply-cleanup-azure.test.ts",
-                "title": "Azure resource-group containment: a group is deleted only when everything it holds is this run's and goes with it; a foreign member, a pre-existing group or an incomplete listing keeps it, and a member added after the proposal stops the cleanup before anything is consumed"
+                "title": "Azure resource groups are never deleted: a group this run created, through azurerm_resource_group or any type whose id is a group (azapi_resource), is kept as RETAINED_GROUP by the pilot owner with a reason; a destroy plan that would take a group along as a dependent stops before any approval is consumed; a forged proposal naming a group never executes; a subscription or management group is never proposed"
               },
               {
                 "file": "test/apply-cleanup-azure.test.ts",
-                "title": "Azure cleanup denied: a forged, re-hashed proposal naming the backend account, its container, the group that holds it, a grant, a pre-existing, imported, shared or unrelated resource, or a dropped entry never executes, an apply approval never authorizes a cleanup, and a state id that cannot be read exactly as written makes no proposal"
+                "title": "Azure cleanup denied: a forged, re-hashed proposal naming the backend account, its container, the group that holds it, the group this run created, a grant, a pre-existing, imported, shared or unrelated resource, a dropped entry or a changed retention owner never executes, an apply approval never authorizes a cleanup, and a state id that cannot be read exactly as written makes no proposal"
               },
               {
                 "file": "test/apply-cleanup-azure.test.ts",
-                "title": "Azure containers by identifier: a resource group created through any type (azapi_resource) is listed and kept when it holds another's resource, re-listed before the destroy, and a subscription or management group is never proposed, even through a forged proposal"
-              },
-              {
-                "file": "test/apply-cleanup-azure.test.ts",
-                "title": "Azure group-scope grants and locks count as contents: a group with no foreign top-level resource but someone else's role assignment, policy assignment or lock at its scope is kept, one appearing right before the destroy stops the cleanup, and a denied grant listing is never read as empty"
+                "title": "Azure identity, authorization and deployment-history objects are never deleted: role assignments, role definitions, user-assigned identities, azuread objects and deployments this run created are kept as PROTECTED_IDENTITY or PROTECTED_DEPLOYMENT by type or by the ARM type of their id (azapi_resource), a destroy plan that would take one along stops before any approval is consumed, and a forged proposal naming one never executes"
               },
               {
                 "file": "test/apply-cleanup.test.ts",
@@ -890,7 +882,7 @@
               },
               {
                 "file": "test/apply-cleanup-azure.test.ts",
-                "title": "Azure listings never change scope while marked complete: a continuation link to another subscription or group, one that drops or changes the tag filter or API version, one with an extra parameter, and a malformed page end the listing incomplete or failed, and no observation or leftover check reaches COMPLETE on it"
+                "title": "Azure listings never change scope while marked complete: a continuation link to another subscription or collection, one that drops, changes, repeats or re-cases the tag filter or API version, one with an extra parameter, a path that only normalizes to the same listing, a continuation under another key, and a malformed page end the listing incomplete or failed, and no observation or leftover check reaches COMPLETE on it"
               }
             ],
             "interrupted": [
@@ -900,7 +892,7 @@
               },
               {
                 "file": "test/apply-cleanup-azure.test.ts",
-                "title": "Azure cleanup interrupted at the last check: a stop signal during the second group listing, or a member appearing only then, stops the cleanup after the destroy plan with nothing destroyed and no approval consumed, and the same approval then runs once"
+                "title": "Azure cleanup interrupted at the last check: a stop signal that arrives while the engine plans the destroy stops the cleanup after the plan with nothing destroyed and no approval consumed, and the same approval then runs once"
               },
               {
                 "file": "test/apply-cleanup.test.ts",
@@ -911,11 +903,11 @@
             "recovery": [
               {
                 "file": "test/apply-cleanup-azure.test.ts",
-                "title": "Azure resource-group containment: a group is deleted only when everything it holds is this run's and goes with it; a foreign member, a pre-existing group or an incomplete listing keeps it, and a member added after the proposal stops the cleanup before anything is consumed"
+                "title": "Azure resource groups are never deleted: a group this run created, through azurerm_resource_group or any type whose id is a group (azapi_resource), is kept as RETAINED_GROUP by the pilot owner with a reason; a destroy plan that would take a group along as a dependent stops before any approval is consumed; a forged proposal naming a group never executes; a subscription or management group is never proposed"
               },
               {
                 "file": "test/apply-cleanup-azure.test.ts",
-                "title": "Azure cleanup interrupted at the last check: a stop signal during the second group listing, or a member appearing only then, stops the cleanup after the destroy plan with nothing destroyed and no approval consumed, and the same approval then runs once"
+                "title": "Azure cleanup interrupted at the last check: a stop signal that arrives while the engine plans the destroy stops the cleanup after the plan with nothing destroyed and no approval consumed, and the same approval then runs once"
               },
               {
                 "file": "test/ui-channel.test.ts",
@@ -942,7 +934,7 @@
           "tests": [
             {
               "file": "test/apply-cleanup-azure.test.ts",
-              "title": "Azure Terraform observe: after a successful apply the driver records the blueprint from the state, identifiers only, and observe verifies each resource through Azure Resource Manager as DISCOVERY, lists what each group holds, with no credential outside memory"
+              "title": "Azure Terraform observe: after a successful apply the driver records the blueprint from the state, identifiers only, and observe verifies each resource through Azure Resource Manager as DISCOVERY, with no credential outside memory"
             }
           ]
         },
@@ -956,7 +948,7 @@
           "tests": [
             {
               "file": "test/apply-cleanup-azure.test.ts",
-              "title": "Azure Terraform observe: after a successful apply the driver records the blueprint from the state, identifiers only, and observe verifies each resource through Azure Resource Manager as DISCOVERY, lists what each group holds, with no credential outside memory"
+              "title": "Azure Terraform observe: after a successful apply the driver records the blueprint from the state, identifiers only, and observe verifies each resource through Azure Resource Manager as DISCOVERY, with no credential outside memory"
             },
             {
               "file": "test/apply-cleanup-azure.test.ts",
@@ -964,7 +956,7 @@
             },
             {
               "file": "test/apply-cleanup-azure.test.ts",
-              "title": "Azure listings never change scope while marked complete: a continuation link to another subscription or group, one that drops or changes the tag filter or API version, one with an extra parameter, and a malformed page end the listing incomplete or failed, and no observation or leftover check reaches COMPLETE on it"
+              "title": "Azure listings never change scope while marked complete: a continuation link to another subscription or collection, one that drops, changes, repeats or re-cases the tag filter or API version, one with an extra parameter, a path that only normalizes to the same listing, a continuation under another key, and a malformed page end the listing incomplete or failed, and no observation or leftover check reaches COMPLETE on it"
             }
           ]
         },
@@ -978,7 +970,7 @@
           "tests": [
             {
               "file": "test/apply-cleanup-azure.test.ts",
-              "title": "Azure Terraform cleanup: the proposal keeps the state backend in every form and the group that holds it, the pilot's identities and grants, and every pre-existing, shared, imported or unrelated resource; the APPLY identity destroys exactly the created list after a targeted destroy plan, and the leftover check reads ARM again: COMPLETE only when the unit sweep finds nothing else"
+              "title": "Azure Terraform cleanup: the proposal keeps the resource group this run created, the state backend in every form and the group that holds it, the pilot's identities and grants, and every pre-existing, shared, imported or unrelated resource, each with its retention owner; the APPLY identity destroys exactly the approved list after a targeted destroy plan; the leftover check reads ARM again and COMPLETE reads approved resources deleted and protected objects retained, never the environment deleted"
             },
             {
               "file": "test/apply-cleanup-azure.test.ts",
@@ -986,7 +978,7 @@
             },
             {
               "file": "test/apply-cleanup-azure.test.ts",
-              "title": "Azure listings never change scope while marked complete: a continuation link to another subscription or group, one that drops or changes the tag filter or API version, one with an extra parameter, and a malformed page end the listing incomplete or failed, and no observation or leftover check reaches COMPLETE on it"
+              "title": "Azure listings never change scope while marked complete: a continuation link to another subscription or collection, one that drops, changes, repeats or re-cases the tag filter or API version, one with an extra parameter, a path that only normalizes to the same listing, a continuation under another key, and a malformed page end the listing incomplete or failed, and no observation or leftover check reaches COMPLETE on it"
             }
           ]
         },

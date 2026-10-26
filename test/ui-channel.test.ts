@@ -1016,7 +1016,7 @@ async function cleanupJourney() {
 }
 const cleanupApprovePhrase = (shortId: string) => "APPROVE CLEANUP DEV " + shortId;
 const cleanupPhrase = (shortId: string, target: ResolvedTarget) => "CLEANUP DEV " + shortId + " " + targetString(target);
-type CleanupSummary = { shortId: string; deletes: { address: string }[]; excluded: { address: string; ownership: string }[]; requiredApprovals: number };
+type CleanupSummary = { shortId: string; deletes: { address: string }[]; excluded: { address: string; ownership: string; retainedBy: string }[]; requiredApprovals: number };
 
 async function approveCleanupViaUi(port: number, proposalPath: string, shortId: string, who: keyof typeof keys, answer?: string | null): Promise<State> {
   const started = await call(port, "POST", "/pilot/approve", { body: { bundlePath: proposalPath, keyPath: keyFile(who), approverId: who } });
@@ -1068,6 +1068,7 @@ test("AWS Terraform in the console: observe what the apply created, propose and 
   ]);
   assert.equal(observation.inventory, "COMPLETE", "the unit sweep covered every page");
   assert.ok(awsReadCallsOf(awsToolDir).every((read) => read.env.AWS_ROLE_ARN === awsRoleArn("DISCOVERY", "DEV")), "the verifier read as DISCOVERY through the runner");
+  assert.ok(awsReadCallsOf(awsToolDir).some((read) => read.args[0] === "resourcegroupstaggingapi" && read.args.includes("Key=alz-unit,Values=" + CLEANUP_UNIT.unitId)), "the sweep asked for this change's own unit tag");
   assert.deepEqual(summary.deletes.map((d) => d.address), ["aws_cloudwatch_log_group.canary", "aws_s3_bucket.logs"]);
   assert.deepEqual(summary.excluded.map((x) => [x.address, x.ownership]), [["aws_s3_bucket.state", "PROTECTED_BACKEND"], ["aws_sqs_queue.preexisting", "NOT_IN_PLAN"]]);
   assert.equal(summary.requiredApprovals, 1);
@@ -1194,7 +1195,7 @@ const azTokenFile = (() => { const path = join(fresh("token"), "discovery-oidc-t
 async function azureCleanupJourney() {
   const journey = await consoleJourney("AZURE");
   behaveIn(toolDir, KILL, { applyAdvance: true, showOnlyConfigured: true, showResources: AZ_CREATES, stateResources: AZ_STATE, unitTags: { ...AZ_UNIT.tags }, unitTagAttribute: "tags" });
-  const arm = fakeArmHttp({ existing: AZ_EXISTING, tagged: AZ_TAGGED, groupMembers: { [AZ_RG]: [AZ_LAW] } });
+  const arm = fakeArmHttp({ existing: AZ_EXISTING, tagged: AZ_TAGGED });
   const w = { ...journey.w, cli: { ...journey.w.cli, env: { ...identityEnv("DEV"), ALZ_DISCOVERY_ARM_OIDC_TOKEN_FILE: azTokenFile }, observeArm: arm.http, proposalsDir: fresh("proposals") } };
   const { port } = await serve(w);
   await choose(port);
@@ -1223,9 +1224,13 @@ test("Azure Terraform in the console: observe what the apply created, propose an
   assert.deepEqual([...new Set(arm.calls.map((c) => new URL(c.url).host))].sort(), ["login.microsoftonline.com", "management.azure.com"]);
   assert.equal(arm.calls.filter((c) => c.method === "POST").length, 1);
   assert.ok(arm.calls.filter((c) => c.method !== "POST").every((c) => c.method === "GET"));
+  assert.ok(arm.calls.some((c) => decodeURIComponent(c.url).includes("tagName eq 'alz-unit' and tagValue eq '" + AZ_UNIT.unitId + "'")), "the sweep asked for this change's own unit tag");
   noAzureTokenIn(arm, observation, summary);
-  assert.deepEqual(summary.deletes.map((d) => d.address), ["azurerm_log_analytics_workspace.pilot", "azurerm_resource_group.pilot"]);
-  assert.deepEqual(summary.excluded.map((x) => [x.address, x.ownership]), [["azurerm_role_assignment.old", "PROTECTED_IDENTITY"], ["azurerm_storage_account.state", "PROTECTED_BACKEND"]]);
+  // The group this change created is never on the list: a pilot cleanup deletes approved resources only, and the pilot owner keeps the group.
+  assert.deepEqual(summary.deletes.map((d) => d.address), ["azurerm_log_analytics_workspace.pilot"]);
+  assert.deepEqual(summary.excluded.map((x) => [x.address, x.ownership, x.retainedBy]), [
+    ["azurerm_resource_group.pilot", "RETAINED_GROUP", "PILOT_OWNER"], ["azurerm_role_assignment.old", "PROTECTED_IDENTITY", "PILOT_OWNER"], ["azurerm_storage_account.state", "PROTECTED_BACKEND", "PILOT_OWNER"],
+  ]);
 
   const signed = await approveCleanupViaUi(port, proposalPath, summary.shortId, "alice");
   assert.equal(signed.run!.result!.exit, 0, JSON.stringify(signed.run!.result));
@@ -1234,23 +1239,27 @@ test("Azure Terraform in the console: observe what the apply created, propose an
   assert.equal(removed.run!.result!.exit, 0, JSON.stringify(removed.run!.result));
   const evidence = removed.run!.result!.data as { outcome: string; deletes: string[]; authority: { executedAs: string } };
   assert.equal(evidence.outcome, "SUCCEEDED");
-  assert.deepEqual(evidence.deletes, ["azurerm_log_analytics_workspace.pilot", "azurerm_resource_group.pilot"]);
+  assert.deepEqual(evidence.deletes, ["azurerm_log_analytics_workspace.pilot"]);
   assert.equal(evidence.authority.executedAs, "APPLY");
 
-  // The independent check reads ARM again: the created things are gone and nothing carries the unit's tag.
-  arm.behave({ existing: [AZ_STATE_ACCOUNT, AZ_OLD_ROLE], tagged: [] });
+  // The independent check reads ARM again: the approved thing is gone, the retained group still stands (and still carries the unit's
+  // tag, as a known identifier of this change), and the record says approved resources deleted, protected objects retained, retirement outstanding.
+  arm.behave({ existing: [AZ_RG, AZ_STATE_ACCOUNT, AZ_OLD_ROLE], tagged: [AZ_RG] });
   assert.equal((await call(port, "POST", "/pilot/verify-cleanup", { body: { proposalPath } })).status, 202);
   const verified = (await finished(port)).run!.result!;
   assert.equal(verified.exit, 0, JSON.stringify(verified));
-  const leftovers = verified.data as { disposition: string; resources: { address: string; disposition: string }[] };
+  const leftovers = verified.data as { disposition: string; nextAction: string; resources: { address: string; disposition: string; owner?: string }[] };
   assert.equal(leftovers.disposition, "COMPLETE");
   assert.equal(verified.code, "CLEANUP_COMPLETE");
-  assert.deepEqual(leftovers.resources.map((r) => [r.address, r.disposition]), [
-    ["azurerm_log_analytics_workspace.pilot", "CONFIRMED_DELETED"], ["azurerm_resource_group.pilot", "CONFIRMED_DELETED"], ["azurerm_role_assignment.old", "INTENTIONALLY_RETAINED"], ["azurerm_storage_account.state", "INTENTIONALLY_RETAINED"],
+  assert.deepEqual(leftovers.resources.map((r) => [r.address, r.disposition, r.owner]), [
+    ["azurerm_log_analytics_workspace.pilot", "CONFIRMED_DELETED", undefined], ["azurerm_resource_group.pilot", "INTENTIONALLY_RETAINED", "PILOT_OWNER"],
+    ["azurerm_role_assignment.old", "INTENTIONALLY_RETAINED", "PILOT_OWNER"], ["azurerm_storage_account.state", "INTENTIONALLY_RETAINED", "PILOT_OWNER"],
   ]);
+  assert.match(leftovers.nextAction, /Approved resources deleted.*Protected objects intentionally retained \(3, kept by PILOT_OWNER\).*environment retirement.*remains outstanding/);
+  assert.ok(!/environment (is |was )?deleted|entire environment/.test(leftovers.nextAction), "the environment is never reported deleted");
   noAzureTokenIn(arm, verified);
   // Something else still carrying the change's cleanup marker keeps it incomplete.
-  arm.behave({ existing: [AZ_STATE_ACCOUNT, AZ_OLD_ROLE], tagged: [AZ_STRAY] });
+  arm.behave({ existing: [AZ_RG, AZ_STATE_ACCOUNT, AZ_OLD_ROLE], tagged: [AZ_RG, AZ_STRAY] });
   assert.equal((await call(port, "POST", "/pilot/verify-cleanup", { body: { proposalPath } })).status, 202);
   const strayRun = (await finished(port)).run!.result!;
   assert.equal(strayRun.code, "CLEANUP_INCOMPLETE");
@@ -1293,7 +1302,7 @@ test("Azure Terraform in the console: a wrong phrase or a cancel at the cleanup 
   assert.equal(again.code, "PROPOSAL_ALREADY_EXECUTED");
   assert.equal(applies(), appliesBefore + 1, "a reconnect never removes twice");
   // A token the tenant refuses: the observation is INCONCLUSIVE, the reason is a class, and the token value appears nowhere.
-  arm.behave({ existing: AZ_EXISTING, tagged: AZ_TAGGED, groupMembers: { [AZ_RG]: [AZ_LAW] }, tokenStatus: 401 });
+  arm.behave({ existing: AZ_EXISTING, tagged: AZ_TAGGED, tokenStatus: 401 });
   assert.equal((await call(port, "POST", "/pilot/observe", { body: { sealedPath: sealed.path } })).status, 202);
   const observed = (await finished(port)).run!.result!;
   assert.equal(observed.exit, 0, JSON.stringify(observed));
