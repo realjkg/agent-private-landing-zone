@@ -306,7 +306,8 @@ export const ARM_ACCESS_TOKEN_CANARY = "CANARY_ACCESS_TOKEN_4cc355";
 export function fakeArmHttp(behavior: ArmBehavior = {}): { http: (request: ArmCall) => Promise<{ status: number; body: string }>; calls: ArmCall[]; behave(next: ArmBehavior): void } {
   const calls: ArmCall[] = [];
   let b = behavior;
-  const typeOf = (id: string): string => { const m = /\/providers\/([A-Za-z0-9.]+)\/(.+)$/.exec(id); if (!m) return "Microsoft.Resources/resourceGroups"; const seg = m[2].split("/"); return m[1] + "/" + seg.filter((_, i) => i % 2 === 0).join("/"); };
+  // The resource's own type is its last `/providers/` pair (an extension resource sits under a tracked one), as the real provider reports it.
+  const typeOf = (id: string): string => { const parts = id.split(/\/providers\//i); if (parts.length === 1) return "Microsoft.Resources/resourceGroups"; const seg = parts[parts.length - 1].split("/"); return seg[0] + "/" + seg.slice(1).filter((_, i) => i % 2 === 0).join("/"); };
   const http = async (request: ArmCall) => {
     calls.push({ ...request, headers: { ...request.headers } });
     const url = new URL(request.url);

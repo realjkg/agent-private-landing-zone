@@ -9,7 +9,7 @@ import { PILOT_CHANNELS, type ApplyEnvironment, type ApplyEvidence, type ApplyRe
 import { isResourceAddress } from "./terraform.js";
 import type { AwsTarget } from "./providers/aws.js";
 import type { AzureTarget } from "./providers/azure.js";
-import { armPathSafe, armTypeOf, isArmGroupId, isArmScopeId } from "../observe/azure-rest.js";
+import { armPathSafe, armTypePairsOf, isArmGroupId, isArmScopeId } from "../observe/azure-rest.js";
 
 /**
  * The cleanup proposal (docs/act-pilot-plan.md, "Cleanup of pilot-created resources"): the reviewable, hash-identified list
@@ -47,7 +47,7 @@ export const retentionOwnerOf = (ownership: Exclude<Ownership, "RUN_CREATED">): 
 /** Why a resource of a protected class is kept, in the words the proposal, the leftover check and the report use. */
 export const PROTECTION_REASONS: Readonly<Record<Exclude<Ownership, "RUN_CREATED" | "PRE_EXISTING" | "REPLACED_PRE_EXISTING" | "IMPORTED" | "NOT_IN_PLAN">, string>> = {
   PROTECTED_BACKEND: "the state backend the pilot itself runs on is never deleted by a cleanup",
-  PROTECTED_IDENTITY: "an identity, a role assignment, a role definition or a trust is never deleted by a cleanup, directly or as a dependent",
+  PROTECTED_IDENTITY: "an identity or authorization object (an identity, a trust, a role or policy assignment, a role definition, a policy exemption or a lock: anything under Microsoft.Authorization or Microsoft.ManagedIdentity) is never deleted by a cleanup, directly or as a dependent",
   PROTECTED_DEPLOYMENT: "deployment history (Microsoft.Resources/deployments) records what was deployed and is never deleted by a cleanup",
   RETAINED_GROUP: "a resource group is never deleted by a pilot cleanup, whatever it holds; the pilot owner retains it, and its deletion is a separate, reviewed action (environment retirement, outstanding)",
   CONTAINS_OTHERS: "a subscription or management group holds deployments no listing here accounts for; it is never deleted by a cleanup",
@@ -133,27 +133,30 @@ const MATERIAL_RISKS: Readonly<Record<string, string>> = {
 
 /**
  * Azure identity and authorization objects; a run that created one still never deletes it from here (fail closed: an identity,
- * or a role grant whose principal the state does not name, needs its own decision). Every `azuread_*` type counts, every
- * `azurerm_role_*` type (assignments, definitions, management-policy assignments), the user-assigned identities and their
- * federated credentials, and, whatever Terraform type recorded it (`azapi_resource`, a module's type), any id whose ARM type is
- * under `Microsoft.Authorization` (roleAssignments, roleDefinitions, roleEligibilityScheduleRequests, ...) or `Microsoft.ManagedIdentity`.
+ * a grant, a policy or a lock needs its own decision). By Terraform type: every `azuread_*` type, every `azurerm_role_*` and
+ * `azurerm_pim_*` type (assignments, definitions, schedules, management policies), every policy assignment, exemption and
+ * `azurerm_policy_*` type, `azurerm_management_lock`, the user-assigned identities and their federated credentials. By id,
+ * whatever Terraform type recorded it (`azapi_resource`, a module's type): any id with a `/providers/` pair under
+ * `Microsoft.Authorization` (the whole namespace: role assignments and definitions, PIM schedules, policy assignments,
+ * definitions and exemptions, locks) or `Microsoft.ManagedIdentity`, at any scope. Every pair of the id is judged, not only the
+ * first or the last, so an extension resource on a tracked resource and a tracked resource under an authorization scope are both caught.
  */
-const AZURE_IDENTITY_TYPES = new Set(["azurerm_user_assigned_identity", "azurerm_federated_identity_credential", "azurerm_role_assignment", "azurerm_role_definition"]);
-const AZURE_IDENTITY_ARM = /^(?:roleAssignments|roleDefinitions|roleEligibilitySchedule|roleAssignmentSchedule|roleManagementPolic)/i;
-const isAzureIdentityEntry = (entry: { type: string; id: string | null }): boolean => {
-  if (entry.type.startsWith("azuread_") || entry.type.startsWith("azurerm_role_") || AZURE_IDENTITY_TYPES.has(entry.type)) return true;
-  const arm = entry.id !== null ? armTypeOf(entry.id) : undefined;
-  return arm !== undefined && ((/^Microsoft\.Authorization$/i.test(arm.namespace) && AZURE_IDENTITY_ARM.test(arm.typePath)) || /^Microsoft\.ManagedIdentity$/i.test(arm.namespace));
-};
+const AZURE_IDENTITY_TYPES = new Set(["azurerm_user_assigned_identity", "azurerm_federated_identity_credential", "azurerm_management_lock"]);
+const AZURE_IDENTITY_TYPE = /^azurerm_(?:role_|pim_|policy_|[a-z_]+_policy_assignment$|[a-z_]+_policy_exemption$)/;
+const AZURE_IDENTITY_NAMESPACE = /^Microsoft\.(?:Authorization|ManagedIdentity)$/i;
+/** The `/providers/` pairs of an entry's id, or none: an id that is not ARM-shaped (a data-plane URL) names no ARM type. */
+const armPairsOf = (entry: { id: string | null }) => (entry.id !== null && entry.id.startsWith("/") ? armTypePairsOf(entry.id) ?? [] : []);
+const isAzureIdentityEntry = (entry: { type: string; id: string | null }): boolean =>
+  entry.type.startsWith("azuread_") || AZURE_IDENTITY_TYPE.test(entry.type) || AZURE_IDENTITY_TYPES.has(entry.type) ||
+  armPairsOf(entry).some((pair) => AZURE_IDENTITY_NAMESPACE.test(pair.namespace));
 /**
  * Deployment history: every template-deployment type (the four scoped ones and the legacy `azurerm_template_deployment`), and,
- * whatever type recorded it, any id whose ARM type is `Microsoft.Resources/deployments` (an `azapi_resource` deployment).
+ * whatever type recorded it, any id with a `/providers/` pair of `Microsoft.Resources/deployments` at any scope (a resource
+ * group's, a resource's, a subscription's or a management group's deployment; an `azapi_resource` deployment).
  */
-const isAzureDeploymentEntry = (entry: { type: string; id: string | null }): boolean => {
-  if (/^azurerm_(?:[a-z_]+_)?template_deployment$/.test(entry.type)) return true;
-  const arm = entry.id !== null ? armTypeOf(entry.id) : undefined;
-  return arm !== undefined && /^Microsoft\.Resources$/i.test(arm.namespace) && /^deployments(?:\/|$)/i.test(arm.typePath);
-};
+const isAzureDeploymentEntry = (entry: { type: string; id: string | null }): boolean =>
+  /^azurerm_(?:[a-z_]+_)?template_deployment$/.test(entry.type) ||
+  armPairsOf(entry).some((pair) => /^Microsoft\.Resources$/i.test(pair.namespace) && /^deployments(?:\/|$)/i.test(pair.typePath));
 /**
  * A container: an entry whose recorded ARM id is a resource group, whatever Terraform type created it (`azurerm_resource_group`,
  * `azapi_resource`, a module's own type), or the azurerm type itself. Classified by the id the state holds, never by the type name alone.
@@ -179,7 +182,7 @@ function namesBackendAccount(id: string | null, accounts: Set<string>): boolean 
 function azureBackendGroups(entries: readonly { type: string; id: string | null }[], accounts: Set<string>): Set<string> {
   const groups = new Set<string>();
   for (const entry of entries) {
-    if (!/^azurerm_storage_/.test(entry.type) || !namesBackendAccount(entry.id, accounts)) continue;
+    if (!namesBackendAccount(entry.id, accounts)) continue;
     const group = /^(\/subscriptions\/[^/]+\/resourcegroups\/[^/]+)\//.exec((entry.id ?? "").toLowerCase())?.[1];
     if (group) groups.add(group);
   }
@@ -194,7 +197,8 @@ function azureBackendGroups(entries: readonly { type: string; id: string | null 
  */
 function azureProtectionOf(entry: { type: string; id: string | null }, contract: PilotContract, backendGroups: Set<string>): ExcludedResource["ownership"] | undefined {
   const accounts = azureBackendAccounts(contract);
-  if (/^azurerm_storage_/.test(entry.type) && namesBackendAccount(entry.id, accounts)) return "PROTECTED_BACKEND";
+  // The backend account in any form its identifier takes, whatever Terraform type recorded it (azurerm_storage_*, azapi_resource, a module's type).
+  if (namesBackendAccount(entry.id, accounts)) return "PROTECTED_BACKEND";
   if (isContainerEntry(entry) && entry.id !== null && backendGroups.has(entry.id.toLowerCase())) return "PROTECTED_BACKEND";
   if (isAzureDeploymentEntry(entry)) return "PROTECTED_DEPLOYMENT";
   if (isAzureIdentityEntry(entry)) return "PROTECTED_IDENTITY";
