@@ -97,6 +97,25 @@ test("observe: every resource present under its Cloud Control identifier is veri
   assert.equal((await observeBlueprint(checkable, { unitId: "alz-unit-1", region: "us-east-2", aws })).verdict, "VERIFIED");
 });
 
+test("a CloudFormation entry is checked by its physical id: for a type Cloud Control identifies by ARN either field serves when it holds an ARN, and for a type identified by id an ARN is never read as the id (review of #265, N2)", async () => {
+  const TOPIC = "arn:aws:sns:us-east-2:111111111111:PilotStack-PilotTopic-X";
+  const blueprint = { entries: [
+    { address: "PilotTopic", type: "AWS::SNS::Topic", id: TOPIC, arn: null, origin: "IN_PLAN" as const },
+    { address: "OtherTopic", type: "AWS::SNS::Topic", id: "not-an-arn", arn: null, origin: "IN_PLAN" as const },
+    { address: "PilotBucket", type: "AWS::S3::Bucket", id: null, arn: "arn:aws:s3:::" + BUCKET, origin: "IN_PLAN" as const },
+    { address: "PilotLogs", type: "AWS::Logs::LogGroup", id: LOG, arn: "arn:aws:logs:us-east-2:111111111111:log-group:" + LOG, origin: "IN_PLAN" as const },
+  ], missing: [] };
+  const { aws, calls } = fakeAws(new Set([TOPIC, LOG, BUCKET]));
+  const report = await observeBlueprint(blueprint, { unitId: "u", region: "us-east-2", aws });
+  assert.deepEqual(report.checks.map((x) => [x.address, x.existence, x.identifier, x.reason ?? null]), [
+    ["PilotTopic", "PRESENT", TOPIC, null],
+    ["OtherTopic", "NOT_CHECKABLE", null, "NO_IDENTIFIER_IN_STATE"],
+    ["PilotBucket", "NOT_CHECKABLE", null, "NO_IDENTIFIER_IN_STATE"],
+    ["PilotLogs", "PRESENT", LOG, null],
+  ]);
+  assert.ok(!calls.some((call) => call.includes("arn:aws:s3:::" + BUCKET)), "a bucket's ARN is never sent as its id");
+});
+
 test("observe denied: an absent resource, a planned resource missing from the state, or an unexpected tagged resource fails", async () => {
   const blueprint = blueprintFromTerraformState(AWS_SHOW, PLAN);
   const absent = await observeBlueprint(blueprint, { unitId: "u", region: "us-east-2", aws: fakeAws(new Set([BUCKET, OIDC])).aws });
