@@ -684,7 +684,7 @@
             "denied": [
               {
                 "file": "test/apply-cdk.test.ts",
-                "title": "a CDK cleanup is refused before any change set exists or any approval is consumed when the removal would empty the stack, when an approved resource's deletion policy would keep it, when something that stays still refers to an approved resource, when a forged proposal names a protected object, and when the change set would touch anything beyond the approved list; a stop during the removal cancels the update once and spends the proposal"
+                "title": "a CDK cleanup is refused before any change set exists when the stack is unprotected, when the removal would empty the stack, when an approved resource's deletion policy would keep it, when something that stays still refers to an approved resource, and when a forged proposal names a protected object; a change set that would touch anything beyond the approved list is refused after CloudFormation computed it, before any approval is consumed, and is disclosed as left behind; a stop during the removal cancels the update once and spends the proposal"
               },
               {
                 "file": "test/apply-cdk.test.ts",
@@ -694,13 +694,13 @@
             "interrupted": [
               {
                 "file": "test/apply-cdk.test.ts",
-                "title": "a CDK cleanup is refused before any change set exists or any approval is consumed when the removal would empty the stack, when an approved resource's deletion policy would keep it, when something that stays still refers to an approved resource, when a forged proposal names a protected object, and when the change set would touch anything beyond the approved list; a stop during the removal cancels the update once and spends the proposal"
+                "title": "a CDK cleanup is refused before any change set exists when the stack is unprotected, when the removal would empty the stack, when an approved resource's deletion policy would keep it, when something that stays still refers to an approved resource, and when a forged proposal names a protected object; a change set that would touch anything beyond the approved list is refused after CloudFormation computed it, before any approval is consumed, and is disclosed as left behind; a stop during the removal cancels the update once and spends the proposal"
               }
             ],
             "recovery": [
               {
                 "file": "test/apply-cdk.test.ts",
-                "title": "a CDK cleanup is refused before any change set exists or any approval is consumed when the removal would empty the stack, when an approved resource's deletion policy would keep it, when something that stays still refers to an approved resource, when a forged proposal names a protected object, and when the change set would touch anything beyond the approved list; a stop during the removal cancels the update once and spends the proposal"
+                "title": "a CDK cleanup is refused before any change set exists when the stack is unprotected, when the removal would empty the stack, when an approved resource's deletion policy would keep it, when something that stays still refers to an approved resource, and when a forged proposal names a protected object; a change set that would touch anything beyond the approved list is refused after CloudFormation computed it, before any approval is consumed, and is disclosed as left behind; a stop during the removal cancels the update once and spends the proposal"
               },
               {
                 "file": "test/ui-channel.test.ts",
@@ -785,7 +785,7 @@
       },
       "live": {
         "status": "BLOCKED",
-        "blockedBy": "AWS Terraform must pass live first (focus row), then owner inputs for CDK: a pinned CDK contract, the stack name, the DISCOVERY, CHANGESET and APPLY roles per account (CHANGESET and APPLY also need the removal change set's permissions, the same as an update), a synthesized cdk.out with no assets, and a person to qualify it."
+        "blockedBy": "AWS Terraform must pass live first (focus row), then owner inputs for CDK: a pinned CDK contract, the stack name, the DISCOVERY, CHANGESET and APPLY roles per account (CHANGESET and APPLY also need the removal change set's permissions, the same as an update), a synthesized cdk.out with no assets, and a person to qualify it. Every step and proof of this row passes synthetically (fake AWS CLI). A live cleanup of what a live apply created needs the owner's separate authorization (docs/act-pilot-plan.md, Cleanup of pilot-created resources); the lifecycle report (./alz apply report) is SYNTHETIC until then and MIXED after it, never LIVE by declaration."
       }
     },
     {
