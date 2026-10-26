@@ -86,7 +86,7 @@ The driver and the commands keep the journey's records in the apply ledger (`.ru
 
 ## The leftover check
 
-`verifyLeftovers` (`src/apply/leftovers.ts`) asks Cloud Control about every proposed resource after the cleanup, or before it to see what a cleanup would face. Each ends `CONFIRMED_DELETED`, `INTENTIONALLY_RETAINED`, `STILL_PRESENT`, `DELETION_PENDING` or `UNKNOWN`, with a next action for a person. The sweep is `COMPLETE` only when every proposed deletion is confirmed gone or retained by name; a setting whose parent is confirmed gone counts as gone (`PARENT_ABSENT`).
+`verifyLeftovers` (`src/apply/leftovers.ts`) asks Cloud Control about every proposed resource after the cleanup, or before it to see what a cleanup would face. Each ends `CONFIRMED_DELETED`, `INTENTIONALLY_RETAINED`, `STILL_PRESENT`, `DELETION_PENDING` or `UNKNOWN`, with a next action for a person. A setting whose parent is confirmed gone counts as gone (`PARENT_ABSENT`); a setting whose own check cannot run and whose parent is not confirmed gone is `UNKNOWN`, also when it was already absent at proposal time. The record's disposition is `COMPLETE` only when every proposed deletion is confirmed gone or retained by name **and** a complete sweep by the run's deletion-unit tag found nothing else of this run outside the state. When the run carries no unit tag the sweep is `NOT_AVAILABLE` and the most the record says is `KNOWN_ADDRESSES_CONFIRMED`: the named resources are settled, resources outside the state were not searched for, and the cleanup is not independently complete (the #235 contract). `INCOMPLETE` otherwise. The validator refuses a `COMPLETE` without a complete sweep.
 
 ## The report
 

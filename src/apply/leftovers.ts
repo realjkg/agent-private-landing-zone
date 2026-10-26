@@ -8,8 +8,11 @@ import type { CleanupEvidence } from "./types.js";
  * listed, what the cloud says now, read through the same read-only boundary the observation used (Cloud Control, the
  * DISCOVERY identity) and never through the engine. It deletes nothing and never trusts the cleanup's own exit code:
  * a resource is CONFIRMED_DELETED only when the cloud no longer returns it (or, for a setting Cloud Control cannot read
- * alone, when the resource it belongs to is gone), and completion is reported only when every proposed deletion is
- * confirmed. Anything pending or unknown keeps the disposition INCOMPLETE and says what a person does next.
+ * alone, when the resource it belongs to is gone). COMPLETE is reported only when every proposed deletion is confirmed
+ * and a complete deletion-unit sweep found nothing else of this run outside the state: the per-resource checks can only
+ * speak for the addresses the state named. When the run carries no unit tag the sweep is NOT_AVAILABLE and the most the
+ * record says is KNOWN_ADDRESSES_CONFIRMED, which is not completion (docs/observe-and-cleanup.md; #39, the #235 handoff).
+ * Anything pending or unknown keeps the disposition INCOMPLETE and says what a person does next.
  */
 export type LeftoversInput = {
   proposal: CleanupProposal;
@@ -60,11 +63,15 @@ export async function verifyLeftovers(input: LeftoversInput): Promise<LeftoversR
     const parentAbsent = item.identifier !== null && absentIdentifiers.has(item.identifier);
     resources.push({ address: item.address, type: item.type, identifier: item.identifier, ...dispositionOf(check, parentAbsent, cleanup) });
   }
+  // A resource that was already gone when the cleanup was proposed is read again, with the same rules: a check that never
+  // ran (a setting Cloud Control cannot read alone) proves nothing by itself, only its parent's confirmed absence does.
   for (const item of proposal.alreadyAbsent) {
     const check = await checkResource({ address: item.address, type: item.type, arn: item.identifier?.startsWith("arn:") ? item.identifier : null,
       id: item.identifier !== null && !item.identifier.startsWith("arn:") ? item.identifier : null, origin: "IN_PLAN" }, input.region, input.aws);
-    resources.push({ address: item.address, type: item.type, identifier: item.identifier, ...(check.existence === "ABSENT" || check.existence === "NOT_CHECKABLE"
-      ? { disposition: "CONFIRMED_DELETED" as const, basis: "CLOUD_CONTROL_ABSENT" as const }
+    const parentAbsent = item.identifier !== null && absentIdentifiers.has(item.identifier);
+    resources.push({ address: item.address, type: item.type, identifier: item.identifier, ...(check.existence === "ABSENT" ? { disposition: "CONFIRMED_DELETED" as const, basis: "CLOUD_CONTROL_ABSENT" as const }
+      : check.existence === "NOT_CHECKABLE" ? (parentAbsent ? { disposition: "CONFIRMED_DELETED" as const, basis: "PARENT_ABSENT" as const }
+        : { disposition: "UNKNOWN" as const, basis: "NOT_INDEPENDENTLY_CHECKABLE" as const, reason: "a setting Cloud Control cannot read alone, and the resource it belongs to is not confirmed gone" })
       : check.existence === "PRESENT" ? { disposition: "STILL_PRESENT" as const, basis: "CLOUD_CONTROL_PRESENT" as const, reason: "it was absent when the cleanup was proposed and exists again" }
       : { disposition: "UNKNOWN" as const, basis: "CHECK_FAILED" as const, reason: check.reason ?? "CLI_ERROR" }) });
   }
@@ -80,10 +87,13 @@ export async function verifyLeftovers(input: LeftoversInput): Promise<LeftoversR
     sweep = listed.complete ? "COMPLETE" : "INCOMPLETE";
     for (const arn of listed.unexpected) resources.push({ address: "(not in state)", type: "tagged", identifier: arn, disposition: "STILL_PRESENT", basis: "CLOUD_CONTROL_PRESENT", reason: "carries this run's tag and is not in the state" });
   }
-  const settled = resources.length > 0 && resources.every((x) => x.disposition === "CONFIRMED_DELETED" || x.disposition === "INTENTIONALLY_RETAINED") && sweep !== "INCOMPLETE";
+  const known = resources.length > 0 && resources.every((x) => x.disposition === "CONFIRMED_DELETED" || x.disposition === "INTENTIONALLY_RETAINED");
+  // COMPLETE needs both: every named resource settled, and a complete sweep by the run's unit tag that found nothing else.
+  const disposition: LeftoversRecord["disposition"] = !known ? "INCOMPLETE" : sweep === "COMPLETE" ? "COMPLETE" : sweep === "NOT_AVAILABLE" ? "KNOWN_ADDRESSES_CONFIRMED" : "INCOMPLETE";
   const open = resources.filter((x) => x.disposition !== "CONFIRMED_DELETED" && x.disposition !== "INTENTIONALLY_RETAINED");
-  const nextAction = settled
-    ? (sweep === "NOT_AVAILABLE" ? "Nothing further: every proposed resource is confirmed gone. Resources outside the engine's state were not searched for, because this run carries no unit tag." : "Nothing further: every proposed resource is confirmed gone and nothing else carries this run's tag.")
+  const nextAction = disposition === "COMPLETE" ? "Nothing further: every proposed resource is confirmed gone and nothing else carries this run's tag."
+    : disposition === "KNOWN_ADDRESSES_CONFIRMED"
+      ? "Every proposed resource is confirmed gone, but resources outside the engine's state were not searched for: this run carries no deletion-unit tag, so the cleanup is not independently complete. A person confirms by hand that nothing else of this run remains, or the run is applied with its unit tag so the sweep can run."
     : open.some((x) => x.disposition === "DELETION_PENDING" && x.basis === "CLEANUP_NOT_FINISHED") ? (cleanup === undefined
       ? "Run the approved cleanup, then verify leftovers again."
       : "The cleanup ended " + cleanup.outcome + ". A person reviews the state and the cloud resources by hand (docs/act-pilot-apply.md); do not propose a second cleanup until that review is done.")
@@ -94,6 +104,6 @@ export async function verifyLeftovers(input: LeftoversInput): Promise<LeftoversR
   return {
     schemaVersion: 1, kind: "LEFTOVERS", proposalSha256: proposal.proposalSha256, artifactSha256: proposal.artifactSha256, applyEvidenceSha256: proposal.applyEvidenceSha256,
     cleanupEvidenceSha256: input.cleanupEvidenceSha256, environment: proposal.environment, target: { ...proposal.target }, sourceCommit: proposal.sourceCommit, contractSha256: proposal.contractSha256,
-    verifier: "AWS_CLOUD_CONTROL", verifierBinarySha256: input.verifierBinarySha256, resources, disposition: settled ? "COMPLETE" : "INCOMPLETE", sweep, nextAction, observedAt: input.now.toISOString(),
+    verifier: "AWS_CLOUD_CONTROL", verifierBinarySha256: input.verifierBinarySha256, resources, disposition, sweep, nextAction, observedAt: input.now.toISOString(),
   };
 }
