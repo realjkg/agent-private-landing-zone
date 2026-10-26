@@ -351,6 +351,39 @@ describe("step 3 and the confirmation dialogs", () => {
     expect((screen.getByLabelText(COPY.sealRequestLabel) as HTMLInputElement).value).toBe("");
   });
 
+  test("an open dialog keeps focus: a step change or a re-sent unlock while it is open never moves focus to the step heading, and focus is inside the dialog in the same commit that shows it", async () => {
+    const { fake } = await atSeal();
+    const phrase = "acct-1 | store/tfstate/dev.tfstate | default";
+    fake.onPost["/seal"] = () => { fake.run = waitingRun("seal", "TARGET", phrase); };
+    typeInto(COPY.sealRequestLabel, "/r.json");
+    typeInto(COPY.sealManifestLabel, "/m.json");
+    await clickButton(COPY.sealRun);
+    const dialog = await screen.findByRole("dialog");
+    const input = within(dialog).getByLabelText(dialogCopy("TARGET", "DEV").inputLabel) as HTMLInputElement;
+    expect(document.activeElement).toBe(input);
+    // The step changes while the dialog is open. The page behind is inert and hidden from the accessibility tree, and this environment
+    // (happy-dom) refuses focus under inert as a browser does; the attribute is lifted here to stand for a browser without inert
+    // support and for the commit in which the dialog mounts, where the heading effect runs before the page is made inert. The
+    // heading effect runs for the new step and must leave focus in the dialog either way.
+    expect(document.querySelector("[inert]")).toBeTruthy();
+    document.querySelector("[inert]")!.removeAttribute("inert");
+    fireEvent.click(screen.getByRole("button", { name: COPY.back, hidden: true }));
+    expect(screen.getByRole("heading", { name: STEP_TITLES[1], hidden: true })).toBeTruthy();
+    expect(screen.getByRole("dialog")).toBe(dialog);
+    expect(document.activeElement).toBe(input);
+    // The console re-sends its state (the poll while a run waits): focus stays in the dialog.
+    const polls = fake.calls.filter((call) => call.url === "/pilot/state").length;
+    await waitFor(() => expect(fake.calls.filter((call) => call.url === "/pilot/state").length).toBeGreaterThan(polls));
+    expect(document.activeElement).toBe(input);
+    // After the dialog closes, focus returns to where it was and the next step change moves it to the heading again.
+    fake.onPost["/cancel"] = () => { fake.run = doneRun("seal", { exit: 1, code: "HUMAN_CONFIRMATION_MISMATCH", message: "canceled" }); };
+    fireEvent.click(within(dialog).getByRole("button", { name: dialogCopy("TARGET", "DEV").cancel }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    fireEvent.click(screen.getByRole("button", { name: COPY.back }));
+    expect(screen.getByRole("heading", { name: STEP_TITLES[0] })).toBeTruthy();
+    expect(document.activeElement).toBe(document.getElementById("pilot-step-title"));
+  });
+
   test("the target dialog shows the exact phrase and a copy button, starts empty, and cannot be confirmed by anything but the exact phrase", async () => {
     const { fake } = await atSeal();
     const phrase = "acct-1 | store/tfstate/dev.tfstate | default";
