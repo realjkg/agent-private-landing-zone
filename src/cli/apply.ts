@@ -587,7 +587,7 @@ const cleanupCommand: Command = async (flags, terminal, deps, out) => {
   const result = await runCleanup({
     invocation: { operatorId: who, interactiveSession: true, confirmedTarget: { ...request.target }, confirmedAt: now().toISOString() },
     environment: request.environment, target: request.target, channel: deps.channel ?? "CLI", proposal, sealedPlan, manifest, projectRoot: request.projectRoot, approvals,
-  }, { env: deps.env ?? process.env, now, evidenceDir: deps.evidenceDir, nonces: deps.nonces, arm: deps.observeArm, ...driverPaths(deps, sourceCommit) });
+  }, { env: deps.env ?? process.env, now, evidenceDir: deps.evidenceDir, nonces: deps.nonces, ...driverPaths(deps, sourceCommit) });
   if (!result.ok) return blocked(result, out);
   out.say(JSON.stringify(result.evidence, null, 2) + "\n");
   out.report({ code: "CLEANED_UP", message: "The cleanup ended " + result.evidence.outcome + ". Verify leftovers next.", data: result.evidence });
