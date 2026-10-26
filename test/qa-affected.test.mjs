@@ -241,9 +241,17 @@ test("a source change selects every guard that scans its tree, which no import r
 });
 
 test("every test that scans a source tree from disk is declared with the roots it scans", () => {
-  // A recursive listing of src, or of a directory under it, is a scan the import closure cannot see.
-  const SCANS_SOURCE = /(?:sourcesUnder|sourceFiles|walk|readdirSync)\((?:resolve\(|join\(root, )?"src(?:\/[^"]*)?"/;
-  const scanners = readdirSync("test").filter((name) => /\.test\.(?:ts|tsx|mjs)$/.test(name))
+  // A listing of src, or of a directory under it, is a scan the import closure cannot see, whatever the quoting or
+  // path form: resolve("src"), join(ROOT, "src/learn"), "./src", 'src', or an array of roots mapped through a lister.
+  const LISTER = "(?:readdirSync|walk|sourcesUnder|sourceFiles)";
+  const SRC_PATH = "[\"'`](?:\\.\\/)?src(?:\\/[^\"'`]*)?[\"'`]";
+  const SCANS_SOURCE = new RegExp(LISTER + "\\([^)\\n]*" + SRC_PATH + "|\\[[^\\]\\n]*" + SRC_PATH + "[^\\]\\n]*\\]\\.(?:flatMap|map)\\(" + LISTER);
+  for (const spelling of ['readdirSync(join(ROOT, "src/learn"))', "walk('src')", 'sourceFiles("./src")', 'readdirSync(resolve(`src/tools`))',
+    '["src/tools", "src/agent"].flatMap(walk)']) assert.match(spelling, SCANS_SOURCE, spelling);
+  assert.doesNotMatch('mkdirSync(join(root, "src"))', SCANS_SOURCE, "creating a fixture directory is not a scan");
+  assert.doesNotMatch('readdirSync(join(root, "src-" + label))', SCANS_SOURCE, "a src- prefixed scratch folder is not src");
+  // This file holds the sample spellings above, not a scan.
+  const scanners = readdirSync("test").filter((name) => /\.test\.(?:ts|tsx|mjs)$/.test(name) && name !== "qa-affected.test.mjs")
     .filter((name) => SCANS_SOURCE.test(readFileSync("test/" + name, "utf8"))).map((name) => "test/" + name).sort();
   assert.ok(scanners.includes("test/teardown-adapter-terraform.test.ts"), "the detector finds the known scanners");
   assert.deepEqual(scanners.filter((name) => !Object.hasOwn(SOURCE_SCAN_GUARDS, name)), [],

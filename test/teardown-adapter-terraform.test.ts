@@ -520,7 +520,7 @@ test("only the two reviewed destroy-plan builders contain -destroy, and neither 
   assert.match(cleanupSource, /args\[1\] === "-destroy"/, "cleanup plan guard verifies destroy mode");
   const withoutComments = (text: string) => text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
   assert.doesNotMatch(withoutComments(source), /"-lock(=|"|-timeout)|-lock[a-z-]*=false|auto-approve|"apply"|"-target|"-replace/);
-  assert.doesNotMatch(withoutComments(cleanupSource), /"-lock(=|"|-timeout)|-lock[a-z-]*=false|auto-approve|"destroy"|"-refresh=false"/);
+  assert.doesNotMatch(withoutComments(cleanupSource), /"-lock(=|"|-timeout)|-lock[a-z-]*=false|auto-approve|"destroy"|"-refresh=false"|"-replace/);
 
   const targeted = cleanupPlanArgv(["aws_s3_bucket.logs"]);
   assert.deepEqual(targeted, ["plan", "-destroy", "-input=false", "-no-color", "-target=aws_s3_bucket.logs", "-out=../alz-cleanup.tfplan"]);
