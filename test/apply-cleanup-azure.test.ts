@@ -746,6 +746,12 @@ test("protectedDeletionIn classifies every planned change by its blueprint entry
     ["a group named providers", sub + "/resourceGroups/providers", "RETAINED_GROUP"],
     ["a role assignment on a storage account named providers in a group named providers, mixed case", "/SUBSCRIPTIONS/" + SUB + "/RESOURCEGROUPS/providers/PROVIDERS/Microsoft.Storage/storageAccounts/providers/Providers/microsoft.authorization/roleassignments/g", "PROTECTED_IDENTITY"],
     ["an identity under a nested name of providers", RG + "/providers/Microsoft.Storage/storageAccounts/a/blobServices/providers/providers/Microsoft.ManagedIdentity/userAssignedIdentities/u", "PROTECTED_IDENTITY"],
+    // Round 3 (review 6410591513, NB-B): registrations and provider-level scopes are kept, never proposed; an authorization pair under a marketplace scope is an identity.
+    ["a provider registration", sub + "/providers/Microsoft.ContainerService", "CONTAINS_OTHERS"],
+    ["a feature registration", sub + "/providers/Microsoft.Features/providers/Microsoft.ContainerService/features/AKS-x", "CONTAINS_OTHERS"],
+    ["a marketplace scope", "/providers/Microsoft.Marketplace", "CONTAINS_OTHERS"],
+    ["a marketplace-scope role assignment", "/providers/Microsoft.Marketplace/providers/Microsoft.Authorization/roleAssignments/g", "PROTECTED_IDENTITY"],
+    ["a provider block with no pair under a resource", RG + "/providers/Microsoft.Storage", "CONTAINS_OTHERS"],
   ];
   for (const [label, id, cls] of protectedIds) {
     const refusal = protectedDeletionIn(change("azapi_resource.x"), [entry("azapi_resource.x", "azapi_resource", id)], contract, env());
@@ -791,10 +797,23 @@ test("protectedDeletionIn classifies every planned change by its blueprint entry
     ["a slash alone", "/"], ["an empty identifier", ""], ["a blank identifier", " "],
     ["a keyword with a zero-width character", RG + "/provid\u200bers/Microsoft.Authorization/roleAssignments/g"],
     ["a subscription with a trailing slash", sub + "/"],
+    // Round 3 (NB-A): an id that is not an ARM path and not a known data-plane URL may name an ARM object the parser never saw.
+    ["a role assignment under the management host", "https://management.azure.com" + RG + "/providers/Microsoft.Authorization/roleAssignments/g"],
+    ["a deployment under the management host", "https://management.azure.com" + RG + "/providers/Microsoft.Resources/deployments/d"],
+    ["a role assignment with a leading space", " " + RG + "/providers/Microsoft.Authorization/roleAssignments/g"],
+    ["a bare GUID on an azapi resource", "33333333-cccc-4ccc-8ccc-333333333333"],
+    ["another URL", "https://example.invalid/" + SUB + "/roleAssignments/g"],
+    ["a management-host URL with a vault-like path", "https://management.azure.com/secrets/x"],
   ] as const) {
     const refusal = protectedDeletionIn(change("azapi_resource.x"), [entry("azapi_resource.x", "azapi_resource", id)], contract, env());
     assert.ok(refusal !== undefined && refusal.includes("(OWNERSHIP_AMBIGUOUS)") && refusal.includes("does not parse as an ARM id"), label + ": " + refusal);
   }
+  // The two data-plane URL shapes stay ordinary, judged by their type alone: a storage container, a key vault secret, a managed HSM key.
+  for (const [label, type, id] of [
+    ["a storage container", "azurerm_storage_container", "https://alzpilotdata.blob.core.windows.net/logs"],
+    ["a key vault secret", "azurerm_key_vault_secret", SECRET],
+    ["a managed HSM key", "azurerm_key_vault_managed_hardware_security_module_key", "https://alz-hsm.managedhsm.azure.net/keys/k/1"],
+  ] as const) assert.equal(protectedDeletionIn(change(type + ".x", type), [entry(type + ".x", type, id)], contract, env()), undefined, label);
 });
 
 test("ARM ids are classified by position (review 6410149770, B3): an authorization object, a lock and a deployment under a group or a storage account named providers are kept, a destroy plan that would take one along stops, a forged proposal naming one never executes, an id the parser cannot consume in full makes no proposal and stops any destroy plan, and ordinary resources named providers are still proposed, verified and cleaned up", async () => {
@@ -853,6 +872,10 @@ test("ARM ids are classified by position (review 6410149770, B3): an authorizati
     ["an authorization type with no name", RG + "/providers/Microsoft.Authorization/roleAssignments"],
     ["a site named providers with an odd tail", RG + "/providers/Microsoft.Web/sites/providers/Microsoft.Authorization/roleAssignments/g"],
     ["a dotless namespace", RG + "/providers/providers/locks/l"],
+    // Round 3 (NB-A): the reviewer's three ids, which the reader cannot address and the classifier never reads as ordinary.
+    ["a role assignment under the management host", "https://management.azure.com" + RG + "/providers/Microsoft.Authorization/roleAssignments/44444444-dddd-4ddd-8ddd-444444444444"],
+    ["a role assignment with a leading space", " " + RG + "/providers/Microsoft.Authorization/roleAssignments/44444444-dddd-4ddd-8ddd-444444444444"],
+    ["a deployment under the management host", "https://management.azure.com" + RG + "/providers/Microsoft.Resources/deployments/alz-deploy"],
   ] as const) {
     const w2 = world({ existing: EXISTING, tagged: TAGGED });
     behave({ showResources: [...withoutSecret(CREATES), change("azapi_resource.odd", "azapi_resource", ["create"])], stateResources: [...withoutSecret(STATE as { type: string }[]), azureStateResource("azapi_resource", "odd", id)] });
@@ -1026,4 +1049,44 @@ test("Azure cleanup interrupted at the last check: a stop signal that arrives wh
   assert.equal(applyCalls().length, 1);
   assert.equal(w.arm.calls.filter((c) => c.method === "GET").length, readsBefore);
   refused(await cleanup(w, run, [approval]), "PROPOSAL_ALREADY_EXECUTED");
+});
+
+test("provider and feature registrations a run made are kept, never proposed (review 6410591513, NB-B): the proposal still forms, the ordinary resources are cleaned up, and the registrations are recorded intentionally retained by the pilot owner", async () => {
+  const sub = "/subscriptions/" + SUB;
+  const REGISTRATION = sub + "/providers/Microsoft.ContainerService";
+  const FEATURE = sub + "/providers/Microsoft.Features/providers/Microsoft.ContainerService/features/AKS-ExtensionManager";
+  const creates = [...withoutSecret(CREATES), change("azurerm_resource_provider_registration.aks", "azurerm_resource_provider_registration", ["create"]), change("azurerm_resource_provider_feature_registration.ext", "azurerm_resource_provider_feature_registration", ["create"])];
+  const state = [...withoutSecret(STATE as { type: string }[]), azureStateResource("azurerm_resource_provider_registration", "aks", REGISTRATION), azureStateResource("azurerm_resource_provider_feature_registration", "ext", FEATURE)];
+  const w = world({ existing: [...EXISTING, REGISTRATION, FEATURE], tagged: TAGGED });
+  behave({ showResources: creates, stateResources: state });
+  const run = await proposed(w);
+  assert.deepEqual(run.observation.record.resources.filter((r) => /registration/.test(r.address)).map((r) => [r.address, r.result, r.reason]),
+    [["azurerm_resource_provider_feature_registration.ext", "UNVERIFIABLE", "NOT_AN_ARM_RESOURCE_ID"], ["azurerm_resource_provider_registration.aks", "UNVERIFIABLE", "NOT_AN_ARM_RESOURCE_ID"]], "a registration is not a resource the reader asks about");
+  assert.ok(!w.arm.calls.some((c) => c.url.includes("Microsoft.ContainerService")), "no request was sent for a registration");
+  assert.deepEqual(run.proposal.deletes.map((d) => d.address), ["azurerm_log_analytics_workspace.pilot"]);
+  const kept = new Map(run.proposal.excluded.map((x) => [x.address, x]));
+  for (const address of ["azurerm_resource_provider_registration.aks", "azurerm_resource_provider_feature_registration.ext"]) {
+    assert.equal(kept.get(address)?.ownership, "CONTAINS_OTHERS", address);
+    assert.equal(kept.get(address)?.retainedBy, "PILOT_OWNER", address);
+    assert.match(kept.get(address)!.reason, /provider or feature registration/, address);
+  }
+  // A destroy plan that would take a registration along stops before any approval is consumed.
+  const approval = cleanupApproval(run.proposal, "alice");
+  behave({ showResources: creates, stateResources: state, destroyExtra: [{ address: "azurerm_resource_provider_registration.aks", type: "azurerm_resource_provider_registration", change: { actions: ["delete"], before: {}, after: null } }] });
+  const taken = await cleanup(w, run, [approval]);
+  refused(taken, "PROPOSAL_SCOPE_MISMATCH");
+  assert.match((taken as { message: string }).message, /would delete azurerm_resource_provider_registration\.aks, a subscription, management group, provider scope or registration, which a pilot cleanup never deletes.*\(CONTAINS_OTHERS\)/);
+  assert.equal(applyCalls().length, 0);
+  behave({ showResources: creates, stateResources: state });
+  const done = await cleanup(w, run, [approval]);
+  assert.ok(done.ok, JSON.stringify(done));
+  cloud(w, { existing: [...RETAINED, REGISTRATION, FEATURE], tagged: [RG] });
+  const leftovers = await verifyProposalLeftovers(run.proposal, observeDeps(w, new Date(NOW.getTime() + 600_000)));
+  assert.ok(leftovers.ok);
+  assert.equal(leftovers.record.disposition, "COMPLETE");
+  const dispositions = new Map(leftovers.record.resources.map((r) => [r.address, [r.disposition, r.owner]]));
+  assert.deepEqual(dispositions.get("azurerm_resource_provider_registration.aks"), ["INTENTIONALLY_RETAINED", "PILOT_OWNER"]);
+  assert.deepEqual(dispositions.get("azurerm_resource_provider_feature_registration.ext"), ["INTENTIONALLY_RETAINED", "PILOT_OWNER"]);
+  assert.deepEqual(dispositions.get("azurerm_log_analytics_workspace.pilot"), ["CONFIRMED_DELETED", undefined]);
+  noTokenIn(w, run.proposal, leftovers.record);
 });

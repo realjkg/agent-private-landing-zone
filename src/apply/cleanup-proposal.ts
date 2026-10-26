@@ -9,7 +9,7 @@ import { PILOT_CHANNELS, type ApplyEnvironment, type ApplyEvidence, type ApplyRe
 import { isResourceAddress } from "./terraform.js";
 import type { AwsTarget } from "./providers/aws.js";
 import type { AzureTarget } from "./providers/azure.js";
-import { armPathSafe, isArmGroupId, isArmScopeId, parseArmId, type ArmType } from "../observe/azure-rest.js";
+import { armPathSafe, isArmGroupId, isArmRegistrationId, isArmScopeId, parseArmId, type ArmType } from "../observe/azure-rest.js";
 
 /**
  * The cleanup proposal (docs/act-pilot-plan.md, "Cleanup of pilot-created resources"): the reviewable, hash-identified list
@@ -50,7 +50,7 @@ export const PROTECTION_REASONS: Readonly<Record<Exclude<Ownership, "RUN_CREATED
   PROTECTED_IDENTITY: "an identity or authorization object (an identity, a trust, a role or policy assignment, a role definition, a policy exemption or a lock: anything under Microsoft.Authorization or Microsoft.ManagedIdentity) is never deleted by a cleanup, directly or as a dependent",
   PROTECTED_DEPLOYMENT: "deployment history (Microsoft.Resources/deployments) records what was deployed and is never deleted by a cleanup",
   RETAINED_GROUP: "a resource group is never deleted by a pilot cleanup, whatever it holds; the pilot owner retains it, and its deletion is a separate, reviewed action (environment retirement, outstanding)",
-  CONTAINS_OTHERS: "a subscription or management group holds deployments no listing here accounts for; it is never deleted by a cleanup",
+  CONTAINS_OTHERS: "a subscription or management group holds deployments no listing here accounts for, and a provider or feature registration is a subscription-wide setting other deployments rely on; neither is ever deleted by a cleanup",
 };
 
 export type ProposedDeletion = {
@@ -163,6 +163,15 @@ const AZURE_SCOPE_TYPES = new Set(["azurerm_subscription", "azurerm_subscription
 
 /** A storage data-plane URL (`https://<account>.blob.core.windows.net/<container>`), which the azurerm provider uses as the id of containers and blobs. */
 const STORAGE_DATA_PLANE = /^https:\/\/([a-z0-9]{3,24})\.(?:blob|dfs|file|queue|table|web)\.core\.windows\.net(?:\/|$)/;
+/** A key vault or managed HSM data-plane URL (`https://<vault>.vault.azure.net/secrets/<name>/<version>`), the azurerm id of secrets, keys and certificates. */
+const VAULT_DATA_PLANE = /^https:\/\/[a-z0-9-]{3,24}\.(?:vault\.azure\.net|managedhsm\.azure\.net)\/[^\s/]+(?:\/[^\s/]+)*$/i;
+/**
+ * The only ids that are not ARM paths and still name something the cleanup can classify by type alone: the two data-plane
+ * URL shapes above. Anything else that does not start with `/` (an id under the `https://management.azure.com` host, one
+ * with a leading space, a bare GUID on an `azapi_resource`, any other URL) may name an ARM object the parser never saw, so
+ * it fails closed like an unparseable path (review 6410591513, NB-A).
+ */
+const isAzureDataPlaneId = (id: string): boolean => STORAGE_DATA_PLANE.test(id.toLowerCase()) || VAULT_DATA_PLANE.test(id);
 /** The backend storage accounts of every environment's `<storage-account>/<container>/<key>`. */
 const azureBackendAccounts = (contract: PilotContract): Set<string> => new Set(Object.values(contract.targets).map((target) => (target as AzureTarget).backend.split("/")[0].toLowerCase()));
 /** Whether an id names a backend account in any form: the account name, an ARM id under it, or a data-plane URL on it. */
@@ -206,10 +215,11 @@ function azureProtectionOf(entry: { type: string; id: string | null }, contract:
   if (isAzureIdentityType(entry.type)) return "PROTECTED_IDENTITY";
   if (entry.type === "azurerm_resource_group") return "RETAINED_GROUP";
   if (AZURE_SCOPE_TYPES.has(entry.type)) return "CONTAINS_OTHERS";
-  // Then by id. A data-plane URL names no ARM type; it is judged by its type alone, above. An empty or blank id is no id at all.
+  // Then by id. A data-plane URL names no ARM type; it is judged by its type alone, above. An empty or blank id is no id at all,
+  // and any other id that is not an ARM path is never ordinary (NB-A: a management-host URL, a leading space).
   if (entry.id === null) return undefined;
   if (entry.id.trim() === "") return UNCLASSIFIABLE;
-  if (!entry.id.startsWith("/")) return undefined;
+  if (!entry.id.startsWith("/")) return isAzureDataPlaneId(entry.id) ? undefined : UNCLASSIFIABLE;
   // Fail closed: an ARM-shaped id the parser cannot consume in full has unknown pairs, so it is never ordinary. (The earlier
   // `armTypePairsOf(id) ?? []` read "unparseable" as "no pairs" and let an authorization object under a group named `providers` through.)
   const parsed = armPathSafe(entry.id) ? parseArmId(entry.id) : undefined;
@@ -217,7 +227,8 @@ function azureProtectionOf(entry: { type: string; id: string | null }, contract:
   if (parsed.pairs.some(isAzureDeploymentPair)) return "PROTECTED_DEPLOYMENT";
   if (parsed.pairs.some(isAzureIdentityPair)) return "PROTECTED_IDENTITY";
   if (isArmGroupId(entry.id)) return "RETAINED_GROUP";
-  if (isArmScopeId(entry.id)) return "CONTAINS_OTHERS";
+  // A subscription, a management group, a provider-level scope, a provider or feature registration: never proposed, kept by the pilot owner.
+  if (isArmScopeId(entry.id) || isArmRegistrationId(parsed)) return "CONTAINS_OTHERS";
   return undefined;
 }
 
@@ -432,7 +443,7 @@ export function protectedDeletionIn(planned: readonly PlanChange[], entries: rea
     if (protection === undefined) continue;
     if (protection === UNCLASSIFIABLE) return "The destroy plan would " + change.action.toLowerCase() + " " + stripInvisible(change.address) + ", whose identifier does not parse as an ARM id, so what it protects is unknown and a pilot cleanup never deletes it (OWNERSHIP_AMBIGUOUS).";
     const what = protection === "RETAINED_GROUP" ? "a resource group" : protection === "PROTECTED_IDENTITY" ? "an identity or authorization object" : protection === "PROTECTED_DEPLOYMENT" ? "deployment history"
-      : protection === "PROTECTED_BACKEND" ? "the state backend" : "a subscription or management group";
+      : protection === "PROTECTED_BACKEND" ? "the state backend" : "a subscription, management group, provider scope or registration";
     return "The destroy plan would " + change.action.toLowerCase() + " " + stripInvisible(change.address) + ", " + what + ", which a pilot cleanup never deletes, directly or as a dependent (" + protection + ").";
   }
   return undefined;
