@@ -75,11 +75,6 @@ export type ResourceReader = {
   check(entry: BlueprintEntry): Promise<ResourceCheck>;
   /** Identifiers tagged with the unit, and whether the listing covered every page; undefined when the listing failed. */
   listTagged(unitId: string): Promise<{ identifiers: string[]; complete: boolean } | undefined>;
-  /**
-   * The identifiers of every resource inside a container resource (an Azure resource group), every page; undefined when
-   * the listing failed. A reader whose cloud has no such containers leaves it out.
-   */
-  listGroup?(groupIdentifier: string): Promise<{ identifiers: string[]; complete: boolean } | undefined>;
 };
 
 /** How a verifier is handed in: the AWS CLI with its region (the original shape), or any reader. */

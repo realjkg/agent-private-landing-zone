@@ -15,6 +15,7 @@ const PY_SOURCE = /^scripts\/[^/]+\.py$/;
 const SOURCE = /^src\/.+\.(?:ts|tsx|js|mjs)$/;
 const QA_SELF_TEST = "test/qa-affected.test.mjs";
 const MAX_AFFECTED_TESTS = 45;
+const RUNTIME_FRAMEWORK_IMPORT = /from\s+["']@langchain\//;
 // Inventory guards scan the filesystem (src/cli, ./alz, package.json scripts,
 // generated docs) instead of importing what they check, so the import closure
 // can never select them. Without this rule a new CLI entry point merges with
@@ -22,6 +23,32 @@ const MAX_AFFECTED_TESTS = 45;
 const INVENTORY_GUARDS = ["test/operations-parity.test.ts", "test/operations-core.test.ts",
   "test/cli-ui-journey-map.test.ts"];
 const INVENTORY_INPUT = /^(?:src\/cli\/[^/]+\.ts|src\/operations\/.+\.ts|alz|package\.json|docs\/operator-console\.md|docs\/cli-ui-journey-map\.md)$/;
+
+// Source-scan guards read a source tree from disk (a forbidden literal, import or call anywhere under it) instead of
+// importing what they check, so the import closure never selects them. Each is declared with the roots it scans and
+// runs for any source change under one of them; test/qa-affected.test.mjs fails if a test scans source without an
+// entry here. Without this, a governed -destroy builder added under src/apply merged with the destroy-literal scan red.
+export const SOURCE_SCAN_GUARDS = {
+  "test/apply-boundary.test.ts": ["src/"],
+  "test/policy-path.test.ts": ["src/"],
+  "test/teardown-adapter-terraform.test.ts": ["src/"],
+  "test/teardown-driver-denials.test.ts": ["src/"],
+  "test/teardown-driver-cli.test.ts": ["src/tools/", "src/operator-ui/", "src/agent/"],
+  "test/teardown-driver.test.ts": ["src/tools/"],
+  "test/teardown-adapter-pulumi.test.ts": ["src/tools/"],
+  "test/destroy-preview-boundary.test.ts": ["src/iac/"],
+  "test/runner-hardening.test.ts": ["src/iac/", "src/tools/"],
+  "test/learn-path.test.ts": ["src/learn/"],
+  "test/compliance-packs.test.ts": ["src/compliance/"],
+  "test/cli-ui-journey-map.test.ts": ["src/operator-ui/", "src/operations/"],
+  "test/operations-teardown.test.ts": ["src/operations/"],
+  "test/operations-enterprise.test.ts": ["src/cli/"],
+  "test/operations-parity.test.ts": ["src/cli/"],
+  // The console's plain-words check reads codes out of src/apply/types.ts, src/apply/prepare.ts, src/apply/preview-evidence.ts
+  // (the producer's refusals), src/cli/apply.ts and src/cli/ui-channel.ts, so a code added under either directory without its
+  // words merged unnoticed (#257 round 1: PREVIEW_ATTESTATION_MISMATCH; round 2 NB6: the producer's own codes).
+  "test/pilot-wizard.test.tsx": ["src/apply/", "src/cli/"],
+};
 
 // The journey matrix cites code and test titles by path, which no import reaches: a change to the matrix or to any file it
 // cites re-runs its check, so a renamed test or a removed module fails here instead of on a later, unrelated PR.
@@ -146,6 +173,14 @@ export function planChanged(changedPaths, files) {
       configCheck = true;
       if (/vite|vitest/.test(path)) buildUi = true;
       addExisting(selected, files, ["test/deps-install.test.ts", "test/development-readiness.test.ts", QA_SELF_TEST]);
+      if (/^package(?:-lock)?\.json$/.test(path)) {
+        // A dependency bump changes code no import edge in this repo points at. The agent runtime's framework is the
+        // dependency whose behavior tests can observe (graph execution, checkpoints, no tracing egress), so its
+        // consumers' tests run. zod is left to the typecheck: it is imported almost everywhere.
+        for (const [file, content] of files) {
+          if (SOURCE.test(file) && RUNTIME_FRAMEWORK_IMPORT.test(content)) addExisting(selected, files, impactedBy(file));
+        }
+      }
       continue;
     }
     if (/^src\/plugins\/|^config\/plugins/.test(path)) {
@@ -162,9 +197,10 @@ export function planChanged(changedPaths, files) {
       addExisting(selected, files, directlyImpacted);
       if (/^src\/operator-ui\/app\//.test(path)) buildUi = true;
       if (/^src\/(?:apply|security|identity|actions|policy)\//.test(path)) {
-        // teardown-driver-denials scans src/ for driver imports, which no import closure reaches.
-        addExisting(selected, files, ["test/security-boundaries.test.ts",
-          "test/apply-boundary.test.ts", "test/teardown-driver-denials.test.ts"]);
+        addExisting(selected, files, ["test/security-boundaries.test.ts"]);
+      }
+      for (const [guard, roots] of Object.entries(SOURCE_SCAN_GUARDS)) {
+        if (roots.some((root) => path.startsWith(root))) addExisting(selected, files, [guard]);
       }
       if (directlyImpacted.length === 0) {
         // Do not mask missing test ownership with a blanket full-suite run.
