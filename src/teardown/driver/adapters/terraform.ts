@@ -50,7 +50,7 @@ export const WORKSPACE_SHOW_ARGV: readonly string[] = ["workspace", "show"];
 export const workspaceSelectArgv = (workspace: string): readonly string[] => ["workspace", "select", workspace];
 export const STATE_PULL_ARGV: readonly string[] = ["state", "pull"];
 export const PREVIEW_PLAN_ARGV: readonly string[] = ["plan", "-input=false", "-no-color", "-out=" + PLAN_FILE_ARG];
-/** The only argument list in the codebase that contains -destroy. It plans a destroy; it never runs one. */
+/** The only -destroy argument list in this preview adapter. A separate, explicitly authorized targeted-cleanup plan builder exists in src/apply/terraform.ts; neither is an ordinary preview or a bare destroy. */
 export const DESTROY_PREVIEW_PLAN_ARGV: readonly string[] = [
   "plan", "-destroy", "-input=false", "-no-color", "-out=" + PLAN_FILE_ARG,
 ];
