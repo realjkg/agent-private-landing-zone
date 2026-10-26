@@ -16,7 +16,8 @@ import type { ResourceCheck, ResourceReader } from "./verify.js";
  * never appear in a record, a message or an error: failures are recorded as classes.
  *
  * Requests: GETs against https://management.azure.com only (one resource by its ARM id, after reading the provider's API
- * versions; the subscription's resources and resource groups carrying the unit tag; a resource group's members), plus one
+ * versions; the subscription's resources and resource groups carrying the unit tag; a resource group's members and its
+ * scope's role assignments, policy assignments and locks), plus one
  * POST to the tenant's token endpoint on https://login.microsoftonline.com. Nothing else is sent: a URL on any other host,
  * scheme or port, with userinfo, or a GET to the login host, is refused before a request exists, so the bearer never
  * travels in cleartext or to the token service. Only existence and identifiers are kept from an answer.
@@ -30,6 +31,9 @@ const LOGIN_HOST = "login.microsoftonline.com";
 const ARM_HOST = "management.azure.com";
 const ARM = "https://" + ARM_HOST;
 const RESOURCES_API = "2021-04-01";
+const ROLE_ASSIGNMENTS_API = "2022-04-01";
+const POLICY_ASSIGNMENTS_API = "2022-06-01";
+const LOCKS_API = "2020-05-01";
 const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const CLIENT_ID = /^[A-Za-z0-9._:/-]{1,128}$/;
 /** An ARM id the reader can ask about: a resource group, or a resource under a provider namespace at subscription or resource-group scope. Anything else (a data-plane URL, a key vault secret, a directory object) is not checkable here. */
@@ -52,7 +56,8 @@ export const isArmGroupId = (id: string): boolean => GROUP_ID.test(id) && armPat
  * management group. Nothing with such an id is ever proposed for deletion.
  */
 export const isArmScopeId = (id: string): boolean =>
-  /^\/subscriptions\/[0-9a-f-]{36}\/?$/i.test(id) || /^\/providers\/Microsoft\.Subscription\/aliases\/[^/?#]+\/?$/i.test(id) || /^\/providers\/Microsoft\.Management\/managementGroups\/[^/?#]+\/?$/i.test(id);
+  /^\/subscriptions\/[0-9a-f-]{36}\/?$/i.test(id) || /^\/providers\/Microsoft\.Subscription\/aliases\/[^/?#]+\/?$/i.test(id) ||
+  /^\/providers\/Microsoft\.Management\/managementGroups\/[^/?#]+(?:\/subscriptions\/[0-9a-f-]{36})?\/?$/i.test(id);
 
 export type ArmErrorClass = "ACCESS_DENIED" | "THROTTLED" | "CREDENTIALS" | "HTTP_ERROR" | "HOST_REFUSED" | "UNEXPECTED_RESPONSE" | "READER_CLOSED";
 
@@ -95,6 +100,21 @@ const httpsOn = (url: string, host: string): boolean => {
 };
 /** Where a GET with the bearer may go: management.azure.com over https, nowhere else (a nextLink is checked the same way). */
 const armUrlAllowed = (url: string): boolean => httpsOn(url, ARM_HOST);
+const SKIP_PARAMS = new Set(["$skiptoken", "$skip", "$top"]);
+/**
+ * Whether a continuation link continues exactly the listing that was asked for: an allowed ARM URL with the same path (case
+ * aside, so the same subscription, collection or group) and the same query, with only a skip token added. A link to another
+ * subscription or group, one that drops or changes the tag filter or the API version, or one that adds any other parameter, is drift.
+ */
+export function sameListing(first: string, next: string): boolean {
+  if (!armUrlAllowed(next)) return false;
+  let a: URL, b: URL;
+  try { a = new URL(first); b = new URL(next); } catch { return false; }
+  if (a.pathname.toLowerCase() !== b.pathname.toLowerCase() || b.hash !== "") return false;
+  for (const [key, value] of a.searchParams) if (b.searchParams.get(key) !== value) return false;
+  for (const [key] of b.searchParams) if (!a.searchParams.has(key) && !SKIP_PARAMS.has(key.toLowerCase())) return false;
+  return true;
+}
 
 /** The resource type path of an ARM id: `Microsoft.Storage/storageAccounts` or `.../blobServices/containers`; the resource group when the id ends at the group. */
 export function armTypeOf(id: string): { namespace: string; typePath: string } | undefined {
@@ -201,6 +221,36 @@ export function createDiscoveryArmReader(options: DiscoveryArmOptions): { reader
     return { ...base, identifier, existence: "UNKNOWN", reason: "UNEXPECTED_RESPONSE" };
   };
 
+  /**
+   * One listing, every page, by id only. A continuation link is followed only when it is the same listing: the same path
+   * (so the same subscription, collection or group), the same query (the same tag filter and API version) plus a skip token,
+   * on https://management.azure.com. Any drift ends the listing as incomplete and the link is never sent. A page that is not
+   * an object with an array `value` of items that each carry a non-empty string `id` fails the listing (undefined), so a
+   * malformed answer can never read as "nothing here".
+   */
+  const walk = async (first: string, keep: (id: string) => boolean = () => true): Promise<{ identifiers: string[]; complete: boolean } | undefined> => {
+    const identifiers: string[] = [];
+    let url: string | undefined = first;
+    for (let page = 0; url !== undefined && page < 50; page += 1) {
+      const response = await get(url);
+      if ("failed" in response || response.status !== 200) return undefined;
+      let body: unknown;
+      try { body = JSON.parse(response.body); } catch { return undefined; }
+      if (typeof body !== "object" || body === null || Array.isArray(body)) return undefined;
+      const { value, nextLink } = body as { value?: unknown; nextLink?: unknown };
+      if (!Array.isArray(value)) return undefined;
+      for (const item of value) {
+        const id = (item as { id?: unknown } | null)?.id;
+        if (typeof id !== "string" || id === "") return undefined;
+        if (keep(id)) identifiers.push(id);
+      }
+      if (nextLink === undefined || nextLink === null || nextLink === "") return { identifiers: identifiers.sort(), complete: true };
+      if (typeof nextLink !== "string" || !sameListing(first, nextLink)) return { identifiers: identifiers.sort(), complete: false };
+      url = nextLink;
+    }
+    return { identifiers: identifiers.sort(), complete: false };
+  };
+
   /** Resources and resource groups carrying the unit tag, every page, by id only. */
   const listTagged = async (unitId: string): Promise<{ identifiers: string[]; complete: boolean } | undefined> => {
     if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(unitId)) return undefined;
@@ -208,44 +258,40 @@ export function createDiscoveryArmReader(options: DiscoveryArmOptions): { reader
     const identifiers: string[] = [];
     let complete = true;
     for (const collection of ["resources", "resourcegroups"]) {
-      let url: string | undefined = ARM + "/subscriptions/" + subscription + "/" + collection + "?" + filter + "&api-version=" + RESOURCES_API;
-      for (let page = 0; url !== undefined && page < 50; page += 1) {
-        const response = await get(url);
-        if ("failed" in response || response.status !== 200) return undefined;
-        let body: { value?: unknown; nextLink?: unknown };
-        try { body = JSON.parse(response.body) as typeof body; } catch { return undefined; }
-        for (const item of Array.isArray(body.value) ? body.value : []) {
-          const id = (item as { id?: unknown })?.id;
-          if (typeof id === "string" && id !== "") identifiers.push(id);
-        }
-        url = typeof body.nextLink === "string" && body.nextLink !== "" ? body.nextLink : undefined;
-        if (url !== undefined && !armUrlAllowed(url)) { complete = false; url = undefined; }
-      }
-      if (url !== undefined) complete = false;
+      const listed = await walk(ARM + "/subscriptions/" + subscription + "/" + collection + "?" + filter + "&api-version=" + RESOURCES_API);
+      if (!listed) return undefined;
+      identifiers.push(...listed.identifiers);
+      complete = complete && listed.complete;
     }
     return { identifiers: identifiers.sort(), complete };
   };
 
-  /** Every resource inside a resource group, every page, by id only: what a cleanup of the group would take with it. */
+  /**
+   * Everything a deletion of a resource group would take with it, every page, by id only: its top-level tracked resources,
+   * and the extension resources at its scope that the group's deletion also removes (role assignments, policy assignments
+   * and locks whose id lies under the group; `atScope()` answers also carry inherited assignments from above, which are not
+   * the group's and are left out by their id). Any listing that fails, is denied or drifts makes the whole result failed or
+   * incomplete: a group is never judged empty on partial evidence.
+   */
   const listGroup = async (groupIdentifier: string): Promise<{ identifiers: string[]; complete: boolean } | undefined> => {
     if (!GROUP_ID.test(groupIdentifier) || !armPathSafe(groupIdentifier) || !groupIdentifier.toLowerCase().startsWith("/subscriptions/" + subscription + "/")) return undefined;
+    const under = groupIdentifier.toLowerCase() + "/";
+    const inGroup = (id: string): boolean => id.toLowerCase().startsWith(under);
+    const listings: [string, (id: string) => boolean][] = [
+      [ARM + groupIdentifier + "/resources?api-version=" + RESOURCES_API, () => true],
+      [ARM + groupIdentifier + "/providers/Microsoft.Authorization/roleAssignments?$filter=atScope()&api-version=" + ROLE_ASSIGNMENTS_API, inGroup],
+      [ARM + groupIdentifier + "/providers/Microsoft.Authorization/policyAssignments?$filter=atScope()&api-version=" + POLICY_ASSIGNMENTS_API, inGroup],
+      [ARM + groupIdentifier + "/providers/Microsoft.Authorization/locks?api-version=" + LOCKS_API, inGroup],
+    ];
     const identifiers: string[] = [];
     let complete = true;
-    let url: string | undefined = ARM + groupIdentifier + "/resources?api-version=" + RESOURCES_API;
-    if (new URL(url).pathname !== groupIdentifier + "/resources") return undefined;
-    for (let page = 0; url !== undefined && page < 50; page += 1) {
-      const response = await get(url);
-      if ("failed" in response || response.status !== 200) return undefined;
-      let body: { value?: unknown; nextLink?: unknown };
-      try { body = JSON.parse(response.body) as typeof body; } catch { return undefined; }
-      for (const item of Array.isArray(body.value) ? body.value : []) {
-        const id = (item as { id?: unknown })?.id;
-        if (typeof id === "string" && id !== "") identifiers.push(id);
-      }
-      url = typeof body.nextLink === "string" && body.nextLink !== "" ? body.nextLink : undefined;
-      if (url !== undefined && !armUrlAllowed(url)) { complete = false; url = undefined; }
+    for (const [url, keep] of listings) {
+      if (!new URL(url).pathname.startsWith(groupIdentifier + "/")) return undefined;
+      const listed = await walk(url, keep);
+      if (!listed) return undefined;
+      identifiers.push(...listed.identifiers);
+      complete = complete && listed.complete;
     }
-    if (url !== undefined) complete = false;
     return { identifiers: identifiers.sort(), complete };
   };
 

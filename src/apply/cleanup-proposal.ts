@@ -105,6 +105,10 @@ const MATERIAL_RISKS: Readonly<Record<string, string>> = {
   azurerm_mssql_database: "deletes the database and its data unless a backup was kept",
   azurerm_postgresql_flexible_server: "deletes the server and its databases unless a backup was kept",
   azurerm_kubernetes_cluster: "deletes the cluster and every workload running in it",
+  azurerm_resource_group_template_deployment: "with the provider's default, deletes every resource the template deployed, including pre-existing resources an incremental deployment adopted",
+  azurerm_subscription_template_deployment: "with the provider's default, deletes every resource the template deployed, including pre-existing resources an incremental deployment adopted",
+  azurerm_management_group_template_deployment: "with the provider's default, deletes every resource the template deployed, including pre-existing resources an incremental deployment adopted",
+  azurerm_tenant_template_deployment: "with the provider's default, deletes every resource the template deployed, including pre-existing resources an incremental deployment adopted",
 };
 
 /**
@@ -244,7 +248,9 @@ export function buildCleanupProposal(input: ProposalInput): { ok: true; proposal
       return refuse("OBSERVATION_INCONCLUSIVE", "The observation could not decide about " + entry.address + " (" + (seen?.reason ?? "not observed") + "). Observe this run again before proposing a cleanup.");
     }
     // A type the reader cannot address (no Cloud Control mapping; an Azure id that is not an ARM resource id) is named, not refused; a denied or failed read is refused.
-    if (seen.result === "UNVERIFIABLE" && !["NO_CLOUD_CONTROL_MAPPING", "NO_IDENTIFIER_IN_STATE", "NOT_INDEPENDENTLY_CHECKABLE", "NOT_AN_ARM_RESOURCE_ID"].includes(seen.reason ?? "")) {
+    // On Azure an entry with no id cannot be classified at all (a container, a scope, a backend?), so it is refused rather than proposed.
+    const accepted = contract.provider === "AZURE" ? ["NOT_AN_ARM_RESOURCE_ID"] : ["NO_CLOUD_CONTROL_MAPPING", "NO_IDENTIFIER_IN_STATE", "NOT_INDEPENDENTLY_CHECKABLE"];
+    if (seen.result === "UNVERIFIABLE" && !accepted.includes(seen.reason ?? "")) {
       return refuse("OBSERVATION_INCONCLUSIVE", "The observation was refused for " + entry.address + " (" + seen.reason + "). Fix the DISCOVERY identity's access and observe again.");
     }
     if (seen.result === "MISSING") { alreadyAbsent.push(base); continue; }

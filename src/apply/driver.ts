@@ -554,10 +554,11 @@ export type CleanupRequest = {
 const CLEANUP_PURPOSE = "cleanup-recovery";
 
 /**
- * Every container the proposal deletes (an Azure resource group) is listed again by the independent reader, right before
- * anything is reserved: a member that is not itself on the deletion list (one added since the proposal, or one the
- * proposal never saw) refuses with PROPOSAL_SCOPE_MISMATCH, and a listing that failed or was incomplete refuses with
- * OBSERVATION_INCONCLUSIVE. Nothing is consumed either way.
+ * Every container the proposal deletes (an Azure resource group) is listed again by the independent reader, twice: before
+ * anything is reserved, and again after the engine's destroy plan right before the approvals are consumed. A member that is
+ * not itself on the deletion list (one added since the proposal, or one the proposal never saw) refuses with
+ * PROPOSAL_SCOPE_MISMATCH, and a listing that failed or was incomplete refuses with OBSERVATION_INCONCLUSIVE. Nothing is
+ * consumed either way.
  */
 async function requireGroupsStillOwn(proposal: CleanupProposal, deps: ApplyDeps): Promise<Refusal | undefined> {
   const groups = proposal.deletes.filter((d) => isContainerEntry({ type: d.type, id: d.identifier }) && d.identifier !== null);
@@ -735,12 +736,14 @@ export async function runCleanup(request: CleanupRequest, deps: ApplyDeps): Prom
     const scope = cleanupScopeProblem(planned, addresses);
     if (scope) return refuse("PROPOSAL_SCOPE_MISMATCH", scope + " Nothing was destroyed and no approval was consumed. Observe the run again and propose a new cleanup.");
 
+    // The engine's init and destroy plan took time: list each proposed group once more before anything is consumed.
+    const stillOwn = await requireGroupsStillOwn(proposal, deps);
+    if (stillOwn) return stillOwn;
+    // The last thing before the approvals are consumed is the signal check: nothing is awaited between it and consumeApprovals,
+    // so a stop signal that arrived during the blocking steps above (the engine, the listing) is read here and stops the cleanup.
     await yieldToSignals();
     const late = interruptedBeforeEngine();
     if (late) return late;
-    // The engine's init and destroy plan took time: list each proposed group once more, right before anything is consumed.
-    const stillOwn = await requireGroupsStillOwn(proposal, deps);
-    if (stillOwn) return stillOwn;
     const readmitted = admit(deps, request);
     if (!readmitted.ok) return readmitted;
     const confirmed = verifyApprovalSet({

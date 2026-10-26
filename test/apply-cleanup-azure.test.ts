@@ -16,7 +16,7 @@ import { loadSealedPlan } from "../src/apply/seal.js";
 import { BLUEPRINT_SUFFIX, readBlueprintRecord } from "../src/apply/run-records.js";
 import type { PilotContract, SignedApproval } from "../src/apply/types.js";
 import { pilotUnitOf } from "../src/apply/unit.js";
-import { armPathSafe, armTypeOf, createDiscoveryArmReader, type ArmHttp, type ArmRequest } from "../src/observe/azure-rest.js";
+import { armPathSafe, armTypeOf, createDiscoveryArmReader, sameListing, type ArmHttp, type ArmRequest } from "../src/observe/azure-rest.js";
 import { readEncryptedEvidence } from "../src/evidence/vault.js";
 import { removeTree } from "../src/teardown/driver/cleanup.js";
 import { canonicalJson } from "../src/teardown/manifest.js";
@@ -547,6 +547,9 @@ test("Azure cleanup denied: a forged, re-hashed proposal naming the backend acco
   const built = build(w2, applied2.s, records);
   refused(built, "OWNERSHIP_AMBIGUOUS");
   assert.match((built as { message: string }).message, /cannot be read exactly as written/);
+  // An Azure entry with no id at all cannot be classified (a container? a scope? the backend?), so it is refused, never proposed as unverifiable.
+  const noId = { ...run.records, observation: { ...run.records.observation, resources: run.records.observation.resources.map((r) => (r.address === "azurerm_log_analytics_workspace.pilot" ? { ...r, result: "UNVERIFIABLE" as const, reason: "NO_IDENTIFIER_IN_STATE" } : r)) } };
+  refused(build(w, run.s, noId as never), "OBSERVATION_INCONCLUSIVE");
 });
 
 test("Azure cleanup interrupted: an apply that did not succeed makes no proposal, and a cleanup the engine fails part-way records PARTIAL_REQUIRES_REVIEW, spends the proposal, and leaves the leftover check pending or present, never complete", async () => {
@@ -639,4 +642,160 @@ test("Azure containers by identifier: a resource group created through any type 
   assert.ok(done2.ok, JSON.stringify(done2));
   assert.equal(w2.arm.calls.filter((c) => c.url.startsWith("https://management.azure.com" + AZAPI_RG + "/resources?")).length, 2, "listed once before the destroy plan and once right before the approvals were consumed");
   assert.equal(destroyPlans().length, 1);
+});
+
+test("Azure listings never change scope while marked complete: a continuation link to another subscription or group, one that drops or changes the tag filter or API version, one with an extra parameter, and a malformed page end the listing incomplete or failed, and no observation or leftover check reaches COMPLETE on it", async () => {
+  const first = "https://management.azure.com/subscriptions/" + SUB + "/resources?$filter=tagName%20eq%20'alz-unit'%20and%20tagValue%20eq%20'u'&api-version=2021-04-01";
+  assert.ok(sameListing(first, first + "&$skiptoken=abc"));
+  assert.ok(sameListing(first, first.replace("/subscriptions/", "/SUBSCRIPTIONS/") + "&$skipToken=abc"), "ARM paths are case-insensitive");
+  for (const [label, next] of [
+    ["another subscription", first.replace(SUB, "99999999-9999-4999-8999-999999999999") + "&$skiptoken=1"],
+    ["the filter dropped", "https://management.azure.com/subscriptions/" + SUB + "/resources?api-version=2021-04-01&$skiptoken=1"],
+    ["the filter changed", first.replace("'u'", "'v'") + "&$skiptoken=1"],
+    ["the API version changed", first.replace("2021-04-01", "2015-01-01") + "&$skiptoken=1"],
+    ["an extra parameter", first + "&$expand=all&$skiptoken=1"],
+    ["another collection", first.replace("/resources?", "/resourcegroups?") + "&$skiptoken=1"],
+    ["another group", "https://management.azure.com" + RG + "/resources?api-version=2021-04-01&$skiptoken=1"],
+    ["a fragment", first + "&$skiptoken=1#x"],
+    ["plaintext", first.replace("https:", "http:") + "&$skiptoken=1"],
+  ] as const) assert.ok(!sameListing(first, next), label);
+  assert.ok(!sameListing("https://management.azure.com" + RG + "/resources?api-version=2021-04-01", "https://management.azure.com" + RG_STATE + "/resources?api-version=2021-04-01&$skiptoken=1"), "another group");
+
+  // Through the reader: the first page's ids are kept, the drifted link is never sent, and the listing is incomplete.
+  const drifts: [string, "tagged" | "group", (url: string) => unknown][] = [
+    ["cross-subscription", "tagged", (url) => ({ value: [{ id: RG }], nextLink: url.replace(SUB, "99999999-9999-4999-8999-999999999999") + "&$skiptoken=1" })],
+    ["dropped filter", "tagged", (url) => ({ value: [{ id: RG }], nextLink: url.replace(/\$filter=[^&]*&/, "") + "&$skiptoken=1" })],
+    ["changed filter", "tagged", (url) => ({ value: [{ id: RG }], nextLink: url.replace(encodeURIComponent(UNIT.unitId), "other-unit").replace(UNIT.unitId, "other-unit") + "&$skiptoken=1" })],
+    ["changed group", "group", (url) => ({ value: [{ id: LAW }], nextLink: url.replace("alz-pilot-rg", "alz-state-rg") + "&$skiptoken=1" })],
+    ["another subscription's group", "group", (url) => ({ value: [{ id: LAW }], nextLink: url.replace(SUB, "99999999-9999-4999-8999-999999999999") + "&$skiptoken=1" })],
+  ];
+  for (const [label, kind, drift] of drifts) {
+    const inner = fakeArmHttp({ tagged: [], groupMembers: { [RG]: [] } });
+    const seen: ArmRequest[] = [];
+    const hooked = (url: string) => (kind === "tagged" ? /\/subscriptions\/[^/]+\/resources\?/.test(url) : url.startsWith("https://management.azure.com" + RG + "/resources?")) && !url.includes("$skiptoken");
+    const http: ArmHttp = async (request) => {
+      seen.push(request);
+      const answer = await inner.http(request);
+      return request.method === "GET" && hooked(request.url) ? { status: 200, body: JSON.stringify(drift(request.url)) } : answer;
+    };
+    const { reader, close } = createDiscoveryArmReader({ env: env(), subscriptionId: SUB, http });
+    const listed = kind === "tagged" ? await reader.listTagged(UNIT.unitId) : await reader.listGroup!(RG);
+    assert.deepEqual(listed, { identifiers: [kind === "tagged" ? RG : LAW], complete: false }, label);
+    assert.ok(seen.every((r) => !r.url.includes("$skiptoken")), label + ": the drifted link was never sent");
+    close();
+  }
+  // Malformed pages fail the listing rather than reading as empty: no `value`, a non-array `value`, an item without an id, a non-object body.
+  for (const [label, body] of [["no value", {}], ["value not an array", { value: {} }], ["item without id", { value: [{ name: "x" }] }], ["empty id", { value: [{ id: "" }] }], ["array body", []], ["text", "ok"]] as const) {
+    const inner = fakeArmHttp({ tagged: [] });
+    const http: ArmHttp = async (request) => (request.method === "GET" && /\/(resources|resourcegroups)\?/.test(request.url) ? { status: 200, body: JSON.stringify(body) } : inner.http(request));
+    const { reader, close } = createDiscoveryArmReader({ env: env(), subscriptionId: SUB, http });
+    assert.equal(await reader.listTagged(UNIT.unitId), undefined, label);
+    assert.equal(await reader.listGroup!(RG), undefined, label);
+    close();
+  }
+
+  // Through a run: a sweep whose continuation drifts to another subscription is INCOMPLETE at observation and never COMPLETE after the cleanup.
+  const drifting = (honest: ArmHttp): ArmHttp => async (request) => {
+    const answer = await honest(request);
+    if (request.method === "GET" && /\/subscriptions\/[^/]+\/resources\?\$filter/.test(request.url) && !request.url.includes("$skiptoken")) {
+      return { status: 200, body: JSON.stringify({ value: [], nextLink: request.url.replace(SUB, "99999999-9999-4999-8999-999999999999") + "&$skiptoken=1" }) };
+    }
+    return answer;
+  };
+  const w = world();
+  behave({ showResources: withoutSecret(CREATES), stateResources: withoutSecret(STATE as { type: string }[]) });
+  const { s } = await applied(w);
+  const drifted = await observeRun(s.sealed.artifactSha256, { ...observeDeps(w), arm: drifting(w.arm.http) });
+  assert.ok(drifted.ok);
+  assert.equal(drifted.record.inventory, "INCOMPLETE");
+  assert.equal(drifted.record.verdict, "INCONCLUSIVE");
+  const w2 = world();
+  behave({ showResources: withoutSecret(CREATES), stateResources: withoutSecret(STATE as { type: string }[]) });
+  const run = await proposed(w2);
+  assert.ok((await cleanup(w2, run)).ok);
+  cloud(w2, { existing: RETAINED, tagged: [] });
+  const leftovers = await verifyProposalLeftovers(run.proposal, { ...observeDeps(w2, new Date(NOW.getTime() + 600_000)), arm: drifting(w2.arm.http) });
+  assert.ok(leftovers.ok);
+  assert.equal(leftovers.record.sweep, "INCOMPLETE");
+  assert.notEqual(leftovers.record.disposition, "COMPLETE");
+  assert.ok([...w.arm.calls, ...w2.arm.calls].every((c) => !c.url.includes("99999999-9999-4999-8999-999999999999")), "the other subscription was never asked");
+});
+
+test("Azure group-scope grants and locks count as contents: a group with no foreign top-level resource but someone else's role assignment, policy assignment or lock at its scope is kept, one appearing right before the destroy stops the cleanup, and a denied grant listing is never read as empty", async () => {
+  const FOREIGN_ROLE = RG + "/providers/Microsoft.Authorization/roleAssignments/aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa";
+  const FOREIGN_POLICY = RG + "/providers/Microsoft.Authorization/policyAssignments/someone-elses-policy";
+  const FOREIGN_LOCK = RG + "/providers/Microsoft.Authorization/locks/do-not-delete";
+  for (const extension of [FOREIGN_ROLE, FOREIGN_POLICY, FOREIGN_LOCK]) {
+    const w = world({ ...CLOUD, groupMembers: { ...GROUPS, [RG]: [LAW, extension] } });
+    behave({ showResources: withoutSecret(CREATES), stateResources: withoutSecret(STATE as { type: string }[]) });
+    const run = await proposed(w);
+    assert.deepEqual(run.observation.record.groups.find((g) => g.identifier === RG)?.members, [LAW, extension].sort(), extension);
+    assert.deepEqual(run.proposal.deletes.map((d) => d.address), ["azurerm_log_analytics_workspace.pilot"], extension);
+    assert.equal(run.proposal.excluded.find((x) => x.address === "azurerm_resource_group.pilot")?.ownership, "CONTAINS_OTHERS", extension);
+    assert.ok(!JSON.stringify(run.proposal).includes("someone-elses") && !JSON.stringify(run.proposal).includes("do-not-delete"), "the foreign grant is counted, not named");
+  }
+  // Inherited assignments from above the group are not the group's: a clean group is still proposed.
+  const w = world();
+  behave({ showResources: withoutSecret(CREATES), stateResources: withoutSecret(STATE as { type: string }[]) });
+  const run = await proposed(w);
+  assert.ok(run.proposal.deletes.some((d) => d.address === "azurerm_resource_group.pilot"));
+  assert.ok(w.arm.calls.some((c) => c.url.includes(RG + "/providers/Microsoft.Authorization/roleAssignments?")) && w.arm.calls.some((c) => c.url.includes("/policyAssignments?")) && w.arm.calls.some((c) => c.url.includes("/locks?")), "the three scope listings were read");
+  const approval = cleanupApproval(run.proposal, "alice");
+  // A lock placed at the group right before the destroy stops the cleanup, with nothing consumed.
+  cloud(w, { ...CLOUD, groupMembers: { ...GROUPS, [RG]: [LAW, FOREIGN_LOCK] } });
+  refused(await cleanup(w, run, [approval]), "PROPOSAL_SCOPE_MISMATCH");
+  // The identity may read resources but not grants: the group cannot be judged empty, so the cleanup does not run.
+  cloud(w, { ...CLOUD, extensionListingStatus: 403 });
+  refused(await cleanup(w, run, [approval]), "OBSERVATION_INCONCLUSIVE");
+  assert.equal(destroyPlans().length, 0);
+  assert.deepEqual(readdirSync(w.dirs.evidence).filter((n) => n.endsWith(CLEANUP_SUFFIX)), []);
+  cloud(w, CLOUD);
+  assert.ok((await cleanup(w, run, [approval])).ok, "the same approval runs once the group is back to what was approved");
+  // And at observation time the same denial keeps the group out of the proposal: its listing is on record as incomplete.
+  const w2 = world({ ...CLOUD, extensionListingStatus: 403 });
+  behave({ showResources: withoutSecret(CREATES), stateResources: withoutSecret(STATE as { type: string }[]) });
+  const unlisted = await proposed(w2);
+  assert.equal(unlisted.observation.record.groups.find((g) => g.identifier === RG)?.complete, false);
+  assert.deepEqual(unlisted.proposal.deletes.map((d) => d.address), ["azurerm_log_analytics_workspace.pilot"]);
+  assert.match(unlisted.proposal.excluded.find((x) => x.address === "azurerm_resource_group.pilot")!.reason, /could not be listed completely/);
+});
+
+test("Azure cleanup interrupted at the last check: a stop signal during the second group listing, or a member appearing only then, stops the cleanup after the destroy plan with nothing destroyed and no approval consumed, and the same approval then runs once", async () => {
+  const FOREIGN = RG + "/providers/Microsoft.Storage/storageAccounts/someoneelses";
+  const w = world();
+  behave({ showResources: withoutSecret(CREATES), stateResources: withoutSecret(STATE as { type: string }[]) });
+  const run = await proposed(w);
+  const approval = cleanupApproval(run.proposal, "alice");
+  const honest = w.arm.http;
+  const groupListing = (request: ArmRequest) => request.method === "GET" && request.url.startsWith("https://management.azure.com" + RG + "/resources?");
+  // A person's Ctrl-C arrives while the second listing is in flight: the destroy was planned, and nothing more happens.
+  let listings = 0;
+  w.deps.arm = async (request) => {
+    if (groupListing(request) && (listings += 1) === 2) process.emit("SIGINT", "SIGINT");
+    return honest(request);
+  };
+  const interrupted = await cleanup(w, run, [approval]);
+  refused(interrupted, "APPLY_FAILED");
+  assert.match((interrupted as { message: string }).message, /interrupted by a signal before the engine started/);
+  assert.equal(destroyPlans().length, 1, "the destroy was planned");
+  assert.equal(applyCalls().length, 1, "only the original apply ran: no destroy was applied");
+  assert.deepEqual(readdirSync(w.dirs.evidence).filter((n) => n.endsWith(CLEANUP_SUFFIX)), [], "nothing was recorded or reserved");
+  // A member appears only on the second listing, after the destroy plan.
+  listings = 0;
+  w.deps.arm = async (request) => {
+    const answer = await honest(request);
+    if (groupListing(request) && (listings += 1) === 2) return { status: 200, body: JSON.stringify({ value: [{ id: LAW }, { id: FOREIGN }] }) };
+    return answer;
+  };
+  const grown = await cleanup(w, run, [approval]);
+  refused(grown, "PROPOSAL_SCOPE_MISMATCH");
+  assert.equal(destroyPlans().length, 2);
+  assert.equal(applyCalls().length, 1);
+  assert.deepEqual(readdirSync(w.dirs.evidence).filter((n) => n.endsWith(CLEANUP_SUFFIX)), []);
+  // The same approval, with the group as approved: runs once.
+  w.deps.arm = honest;
+  const done = await cleanup(w, run, [approval]);
+  assert.ok(done.ok, JSON.stringify(done));
+  assert.equal(applyCalls().length, 2);
+  refused(await cleanup(w, run, [approval]), "PROPOSAL_ALREADY_EXECUTED");
 });
