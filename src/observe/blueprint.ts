@@ -29,6 +29,11 @@ export type Blueprint = {
   entries: BlueprintEntry[];
   /** Addresses the plan says should exist after the apply (created, updated, replaced or unchanged) that the state does not hold. */
   missing: string[];
+  /**
+   * The unit's own container when the engine has one (CloudFormation: the stack, by its ARN): it carries the unit's tags, so the
+   * tag sweep lists it, and it is never a leftover and never a proposal entry. Absent for Terraform, which has no container.
+   */
+  container?: { type: string; identifier: string };
 };
 
 /** Plan actions (src/iac/terraform-plan.ts mapTerraformActions) after which a successful apply leaves the resource in the state. */
@@ -51,7 +56,7 @@ function* managedResources(module: StateModule, depth = 0): Generator<StateResou
 }
 
 /** Types whose provider id is a credential identifier (an access key id, for example). Their id is never copied. */
-const CREDENTIAL_ID_TYPES = new Set(["aws_iam_access_key", "aws_iam_service_specific_credential"]);
+const CREDENTIAL_ID_TYPES = new Set(["aws_iam_access_key", "aws_iam_service_specific_credential", "AWS::IAM::AccessKey"]);
 /** Wrapper types that can carry anything, an identity's ARN among it (review 6412488764, N2); their attributes are judged for one. */
 const WRAPPER_TYPE = /^(?:terraform_data|null_resource|aws_cloudformation_stack|AWS::CloudFormation::CustomResource|Custom::)/;
 /** An IAM ARN as a whole string value, or as one element of a separated list, in any partition. */
@@ -158,8 +163,9 @@ export function blueprintFromTerraformStatePull(stateJson: string, planned: read
 const CLOUDFORMATION_ARNS: Readonly<Record<string, (physicalId: string, place: { account: string; region: string }) => string | null>> = {
   "AWS::S3::Bucket": (id) => "arn:aws:s3:::" + id,
   "AWS::Logs::LogGroup": (id, p) => "arn:aws:logs:" + p.region + ":" + p.account + ":log-group:" + id,
-  // The physical id is the role name; a role under a path has the path in its ARN, which the name alone does not show (UNVERIFIED (9)).
+  // The physical id is the role or user name; one under a path has the path in its ARN, which the name alone does not show (UNVERIFIED (9)).
   "AWS::IAM::Role": (id, p) => (id.includes("/") ? null : "arn:aws:iam::" + p.account + ":role/" + id),
+  "AWS::IAM::User": (id, p) => (id.includes("/") ? null : "arn:aws:iam::" + p.account + ":user/" + id),
   "AWS::SQS::Queue": (id, p) => { const name = /^https:\/\/sqs\.[a-z0-9-]+\.amazonaws\.com\/[0-9]{12}\/([A-Za-z0-9_-]+)$/.exec(id)?.[1]; return name === undefined ? null : "arn:aws:sqs:" + p.region + ":" + p.account + ":" + name; },
   "AWS::KMS::Key": (id, p) => "arn:aws:kms:" + p.region + ":" + p.account + ":key/" + id,
   "AWS::DynamoDB::Table": (id, p) => "arn:aws:dynamodb:" + p.region + ":" + p.account + ":table/" + id,
@@ -182,10 +188,15 @@ const CFN_TYPE = /^(?:AWS|Alexa)::[A-Za-z0-9]+::[A-Za-z0-9]+$/;
  * status reason, no timestamp, no drift information. Throws on anything that is not a stack resource listing; a resource
  * row that is not well formed is skipped rather than guessed, and shows up as `missing` if the plan expected it.
  */
-export function blueprintFromCloudFormationResources(resourcesJson: string, planned: readonly PlannedChange[], place: { account: string; region: string | undefined }): Blueprint {
+export function blueprintFromCloudFormationResources(resourcesJson: string, planned: readonly PlannedChange[], place: { account: string; region: string | undefined; stack?: string }): Blueprint {
   const body = parseState(resourcesJson);
   if (!Array.isArray(body.StackResources)) throw new Error("STATE_JSON_INVALID: not a describe-stack-resources document");
   const rows = body.StackResources;
+  // The stack itself, by the id every row names (UNVERIFIED (9): `StackId`): the unit's container, which the tag sweep lists and which is never a leftover.
+  // Recorded only when it is the pinned stack in the pinned account and region; anything else is not this run's container and is not recorded.
+  const stackIds = new Set(rows.filter(isRecord).map((row) => row.StackId).filter((id): id is string => typeof id === "string"));
+  const stackArn = place.region !== undefined && place.stack !== undefined ? new RegExp("^arn:aws:cloudformation:" + place.region + ":" + place.account + ":stack/" + place.stack + "/[0-9a-f-]{36}$") : undefined;
+  const container = stackIds.size === 1 && stackArn !== undefined && stackArn.test([...stackIds][0]!) ? { type: "AWS::CloudFormation::Stack", identifier: [...stackIds][0]! } : undefined;
   function* instances(): Generator<Instance> {
     for (const row of rows) {
       if (!isRecord(row) || !text(row.LogicalResourceId) || !LOGICAL_ID.test(row.LogicalResourceId) || !text(row.ResourceType) || !CFN_TYPE.test(row.ResourceType)) continue;
@@ -198,5 +209,5 @@ export function blueprintFromCloudFormationResources(resourcesJson: string, plan
   }
   const leaving = new Set(planned.filter((change) => LEAVES_IN_STACK.has(change.action)).map((change) => change.address));
   const built = blueprintOf(instances(), planned);
-  return { entries: built.entries, missing: [...leaving].filter((address) => !built.entries.some((entry) => entry.address === address)).sort() };
+  return { entries: built.entries, missing: [...leaving].filter((address) => !built.entries.some((entry) => entry.address === address)).sort(), ...(container ? { container } : {}) };
 }

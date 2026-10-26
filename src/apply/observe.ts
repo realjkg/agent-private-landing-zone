@@ -130,7 +130,7 @@ export async function verifyProposalLeftovers(proposal: CleanupProposal, deps: O
   // The blueprint the proposal was derived from: its identifiers tell a tag listing's known entries from leftovers.
   const blueprint = await readBlueprintRecord(proposal.artifactSha256, proposal.applyEvidenceSha256, deps.evidenceDir);
   if (!blueprint || recordSha256(blueprint) !== proposal.blueprintSha256) return refuse("RUN_RECORD_MISSING", "The blueprint this proposal names is not the one recorded for this apply.");
-  const knownIdentifiers = blueprint.blueprint.entries.flatMap((entry) => [entry.arn, entry.id]).filter((x): x is string => x !== null);
+  const knownIdentifiers = [...blueprint.blueprint.entries.flatMap((entry) => [entry.arn, entry.id]), blueprint.blueprint.container?.identifier ?? null].filter((x): x is string => x !== null);
   const cleanup = await readCleanupEvidence(proposal.proposalSha256, deps.evidenceDir);
   let record: LeftoversRecord;
   try {

@@ -207,9 +207,10 @@ test("cleanup denied: a kept resource needs a real owner and reason, must belong
 
 test("the CloudFormation blueprint maps logical ids to physical ids, derives the ARN for the known types only, keeps the physical ARN as it is, marks what the change set never named, skips deleted rows and malformed rows, copies no status text, and refuses a document that is not a stack resource listing", async () => {
   const { blueprintFromCloudFormationResources } = await import("../src/observe/blueprint.js");
-  const place = { account: "111111111111", region: "us-east-1" };
+  const place = { account: "111111111111", region: "us-east-1", stack: "PilotStack" };
+  const STACK_ID = "arn:aws:cloudformation:us-east-1:111111111111:stack/PilotStack/11111111-2222-3333-4444-555555555555";
   const row = (logical: string, type: string, physical: string | undefined, status = "CREATE_COMPLETE") => ({
-    StackName: "PilotStack", LogicalResourceId: logical, ResourceType: type, ...(physical === undefined ? {} : { PhysicalResourceId: physical }), ResourceStatus: status,
+    StackName: "PilotStack", StackId: STACK_ID, LogicalResourceId: logical, ResourceType: type, ...(physical === undefined ? {} : { PhysicalResourceId: physical }), ResourceStatus: status,
     ResourceStatusReason: "CANARY_STATUS_REASON_r1", Timestamp: "2026-10-11T12:02:00.000Z", DriftInformation: { StackResourceDriftStatus: "NOT_CHECKED" },
   });
   const document = JSON.stringify({ StackResources: [
@@ -222,6 +223,8 @@ test("the CloudFormation blueprint maps logical ids to physical ids, derives the
     row("PilotLogs", "AWS::Logs::LogGroup", "/aws/pilot/logs"),
     row("PilotAlarm", "AWS::CloudWatch::Alarm", "PilotStack-PilotAlarm-X"),
     row("Nested", "AWS::CloudFormation::Stack", "arn:aws:cloudformation:us-east-1:111111111111:stack/nested/0000"),
+    row("Deployer", "AWS::IAM::User", "PilotStack-Deployer-X"),
+    row("DeployerKey", "AWS::IAM::AccessKey", "AKIAFAKEDEPLOYERKEY0"),
     row("Gone", "AWS::SQS::Queue", "https://sqs.us-east-1.amazonaws.com/111111111111/gone", "DELETE_COMPLETE"),
     row("NoPhysical", "AWS::S3::Bucket", undefined, "CREATE_IN_PROGRESS"),
     { LogicalResourceId: "bad id!", ResourceType: "AWS::S3::Bucket", PhysicalResourceId: "x" }, { LogicalResourceId: "BadType", ResourceType: "Bucket", PhysicalResourceId: "x" }, "garbage", null,
@@ -230,6 +233,9 @@ test("the CloudFormation blueprint maps logical ids to physical ids, derives the
     { address: "Removed", type: "AWS::SQS::Queue", action: "DELETE" }, { address: "Dynamic", type: "AWS::S3::Bucket", action: "DYNAMIC" }];
   const blueprint = blueprintFromCloudFormationResources(document, planned, place);
   assert.deepEqual(blueprint.entries, [
+    // A credential's id is never copied (the access key id); a user's ARN follows from its name.
+    { address: "Deployer", type: "AWS::IAM::User", id: "PilotStack-Deployer-X", arn: "arn:aws:iam::111111111111:user/PilotStack-Deployer-X", origin: "NOT_IN_PLAN" },
+    { address: "DeployerKey", type: "AWS::IAM::AccessKey", id: null, arn: null, origin: "NOT_IN_PLAN" },
     { address: "Nested", type: "AWS::CloudFormation::Stack", id: "arn:aws:cloudformation:us-east-1:111111111111:stack/nested/0000", arn: "arn:aws:cloudformation:us-east-1:111111111111:stack/nested/0000", origin: "NOT_IN_PLAN" },
     { address: "NoPhysical", type: "AWS::S3::Bucket", id: null, arn: null, origin: "NOT_IN_PLAN" },
     { address: "OddQueue", type: "AWS::SQS::Queue", id: "not-a-queue-url", arn: null, origin: "NOT_IN_PLAN" },
@@ -243,13 +249,19 @@ test("the CloudFormation blueprint maps logical ids to physical ids, derives the
   ]);
   // Planned to exist and not in the stack (a created queue, a dynamic change); a planned delete is not expected.
   assert.deepEqual(blueprint.missing, ["Dynamic", "Planned"]);
+  assert.ok(!JSON.stringify(blueprint).includes("AKIAFAKEDEPLOYERKEY0"), "the access key id is never copied");
+  // The stack itself is the unit's container, recorded by the pinned stack's id and never as an entry; another stack's id, or no pinned stack, records none.
+  assert.deepEqual(blueprint.container, { type: "AWS::CloudFormation::Stack", identifier: STACK_ID });
+  assert.equal(blueprintFromCloudFormationResources(document, planned, { ...place, stack: "OtherStack" }).container, undefined);
+  assert.equal(blueprintFromCloudFormationResources(document, planned, { account: "222222222222", region: "us-east-1", stack: "PilotStack" }).container, undefined);
+  assert.equal(blueprintFromCloudFormationResources(document, planned, { account: "111111111111", region: undefined, stack: "PilotStack" }).container, undefined);
   assert.ok(!JSON.stringify(blueprint).includes("CANARY_STATUS_REASON_r1"), "no status text is copied");
   // Without a region no ARN is derived; a physical ARN still stands.
   const unplaced = blueprintFromCloudFormationResources(document, planned, { account: "111111111111", region: undefined });
   assert.equal(unplaced.entries.find((e) => e.address === "PilotBucket")!.arn, null);
   assert.equal(unplaced.entries.find((e) => e.address === "PilotTopic")!.arn, "arn:aws:sns:us-east-1:111111111111:PilotStack-PilotTopic-X");
   for (const bad of ["", "not json", "[]", JSON.stringify({ Stacks: [] }), JSON.stringify({ StackResources: {} })]) assert.throws(() => blueprintFromCloudFormationResources(bad, planned, place), /STATE_JSON_INVALID/, bad);
-  assert.deepEqual(blueprintFromCloudFormationResources(JSON.stringify({ StackResources: [] }), planned, place), { entries: [], missing: ["Dynamic", "PilotBucket", "PilotTopic", "Planned"] }, "code-point order");
+  assert.deepEqual(blueprintFromCloudFormationResources(JSON.stringify({ StackResources: [] }), planned, place), { entries: [], missing: ["Dynamic", "PilotBucket", "PilotTopic", "Planned"] }, "code-point order; no rows, no container");
 });
 
 test("a wrapper type that holds an identity's ARN anywhere in its attributes is flagged in place (holdsIdentityArn), as a whole value or a list element, in any partition; the attribute is never copied, an ordinary type with the same attribute is not flagged, and a wrapper without one is not", () => {

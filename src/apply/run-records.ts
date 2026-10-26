@@ -160,9 +160,10 @@ export function blueprintRecordProblems(value: unknown): string[] {
   if (!["TERRAFORM_STATE_PULL", "CLOUDFORMATION_STACK_RESOURCES"].includes(value.source as string) || !isoText(value.readAt)) problems.push("blueprint record: source or readAt is malformed");
   if (value.unitId !== null && !(typeof value.unitId === "string" && /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(value.unitId))) problems.push("blueprint record: unitId is not a tag-safe unit id or null");
   const blueprint = value.blueprint;
-  if (!isRecord(blueprint) || Object.keys(blueprint).sort().join() !== "entries,missing" || !Array.isArray(blueprint.entries) || !blueprint.entries.every(entryOk) ||
-    !Array.isArray(blueprint.missing) || !blueprint.missing.every((x) => typeof x === "string")) {
-    problems.push("blueprint record.blueprint: entries must carry address, type, arn, id and origin only");
+  const containerOk = (value: unknown): boolean => isRecord(value) && Object.keys(value).sort().join() === "identifier,type" && typeof value.type === "string" && typeof value.identifier === "string" && value.identifier.length > 0 && value.identifier.length <= 2048;
+  if (!isRecord(blueprint) || !["entries,missing", "container,entries,missing"].includes(Object.keys(blueprint).sort().join()) || !Array.isArray(blueprint.entries) || !blueprint.entries.every(entryOk) ||
+    !Array.isArray(blueprint.missing) || !blueprint.missing.every((x) => typeof x === "string") || (blueprint.container !== undefined && !containerOk(blueprint.container))) {
+    problems.push("blueprint record.blueprint: entries must carry address, type, arn, id and origin only, and a container only its type and identifier");
   }
   return problems;
 }
