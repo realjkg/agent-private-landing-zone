@@ -314,8 +314,12 @@ test("the lifecycle report validator refuses a declared pass, a live claim witho
   // The three acceptance states are derived and kept apart: no report claims the environment deleted or retired, or a cleanup complete its leftovers stage does not show.
   assert.match(problems({ acceptance: { ...report.acceptance, environmentRetirement: "COMPLETE" as never } }), /environmentRetirement: always OUTSTANDING/);
   assert.match(problems({ acceptance: { ...report.acceptance, resourceCleanup: "COMPLETED" } }), /resourceCleanup: not derived from the leftovers stage/);
-  assert.match(problems({ acceptance: { ...report.acceptance, statement: "entire environment deleted; environment retirement outstanding" } }), /never the environment deleted/);
-  assert.match(problems({ acceptance: { ...report.acceptance, statement: "approved resources deleted" } }), /must report environment retirement outstanding/);
+  // The statement is recomputed, not matched as text: a forged sentence that adds a claim, or drops one, is refused.
+  for (const forged of ["entire environment deleted; environment retirement outstanding", "approved resources deleted", report.acceptance.statement + "; the environment has been deleted", report.acceptance.statement.replace("outstanding", "complete")]) {
+    assert.match(problems({ acceptance: { ...report.acceptance, statement: forged } }), /statement: not derived from the resource cleanup state and the retained counts/, forged);
+  }
+  assert.match(problems({ acceptance: { ...report.acceptance, retained: { ...report.acceptance.retained, byOwner: { AGENT: report.acceptance.retained.total } } } }), /byOwner: a key is not a retention owner/);
+  assert.match(problems({ acceptance: { ...report.acceptance, retained: { ...report.acceptance.retained, byOwnership: { RUN_CREATED: report.acceptance.retained.total } } } }), /byOwnership: a key is not an ownership class a kept resource can carry/);
   assert.match(problems({ acceptance: { ...report.acceptance, retained: { ...report.acceptance.retained, total: report.acceptance.retained.total + 1 } } }), /counts by ownership and by owner must add up/);
   const { acceptance: _dropped, ...withoutAcceptance } = report;
   assert.match(lifecycleReportProblems(withoutAcceptance).join(" | "), /report\.acceptance: missing/);

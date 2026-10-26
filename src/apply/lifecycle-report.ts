@@ -1,7 +1,7 @@
 import { canonicalJson } from "../teardown/manifest.js";
 import type { ResolvedTarget } from "../teardown/driver/types.js";
 import { sha256 } from "../util/sha256.js";
-import type { CleanupProposal } from "./cleanup-proposal.js";
+import { PROTECTED_OWNERSHIPS, RETENTION_OWNERS, type CleanupProposal } from "./cleanup-proposal.js";
 import { COMMIT, HASH } from "./constants.js";
 import type { LiveAcceptanceRecord } from "./live-record.js";
 import type { LeftoversRecord, ObservationRecord } from "./run-records.js";
@@ -135,15 +135,22 @@ function stagesOf(input: LifecycleReportInput, applyEvidenceSha256: string): { s
   return { stages: { execute, observe, propose, cleanup: cleanupStage, leftovers: leftoversStage }, unresolved };
 }
 
+/** The ownership classes a kept resource can carry: the protected ones and the environment owner's. */
+const KEPT_OWNERSHIPS: readonly string[] = ["PRE_EXISTING", "REPLACED_PRE_EXISTING", "IMPORTED", "NOT_IN_PLAN", ...PROTECTED_OWNERSHIPS];
+/** The resource-cleanup state the leftovers stage derives. */
+const resourceCleanupOf = (leftovers: StageResult): AcceptanceDisposition["resourceCleanup"] => leftovers.status === "PASS" ? "COMPLETED" : leftovers.status === "NOT_RUN" ? "NOT_RUN" : "INCOMPLETE";
+/** The one sentence, a pure function of the two derived facts: the validator recomputes it, so no stored text can say more. */
+export function acceptanceStatement(resourceCleanup: AcceptanceDisposition["resourceCleanup"], retained: AcceptanceDisposition["retained"]): string {
+  return (resourceCleanup === "COMPLETED" ? "approved resources deleted" : resourceCleanup === "NOT_RUN" ? "resource cleanup not run" : "resource cleanup incomplete") +
+    "; " + (retained.total > 0 ? retained.total + " protected or pre-existing object(s) intentionally retained (" + Object.entries(retained.byOwner).sort(([a], [b]) => (a < b ? -1 : 1)).map(([owner, n]) => n + " kept by " + owner).join(", ") + ")" : "nothing retained by this run") +
+    "; environment retirement outstanding (a separate, reviewed action; this report does not claim the environment retired)";
+}
 /** The three-state end of the run, from the stages and the proposal's kept list. */
 export function acceptanceOf(stages: LifecycleStages, excluded: readonly { ownership: string; retainedBy: string }[]): AcceptanceDisposition {
   const count = (keys: string[]): Record<string, number> => Object.fromEntries([...new Set(keys)].sort().map((key) => [key, keys.filter((k) => k === key).length]));
   const retained = { total: excluded.length, byOwnership: count(excluded.map((x) => x.ownership)), byOwner: count(excluded.map((x) => x.retainedBy)) };
-  const resourceCleanup: AcceptanceDisposition["resourceCleanup"] = stages.leftovers.status === "PASS" ? "COMPLETED" : stages.leftovers.status === "NOT_RUN" ? "NOT_RUN" : "INCOMPLETE";
-  const statement = (resourceCleanup === "COMPLETED" ? "approved resources deleted" : resourceCleanup === "NOT_RUN" ? "resource cleanup not run" : "resource cleanup incomplete") +
-    "; " + (retained.total > 0 ? retained.total + " protected or pre-existing object(s) intentionally retained (" + Object.entries(retained.byOwner).map(([owner, n]) => n + " kept by " + owner).join(", ") + ")" : "nothing retained by this run") +
-    "; environment retirement outstanding (a separate, reviewed action; this report does not claim the environment retired)";
-  return { resourceCleanup, retained, environmentRetirement: "OUTSTANDING", statement };
+  const resourceCleanup = resourceCleanupOf(stages.leftovers);
+  return { resourceCleanup, retained, environmentRetirement: "OUTSTANDING", statement: acceptanceStatement(resourceCleanup, retained) };
 }
 
 /** The owner's live record, only when it attests this very apply evidence of this very artifact for the execute step. */
@@ -247,13 +254,17 @@ export function lifecycleReportProblems(value: unknown, expected: { sourceCommit
       typeof acceptance.statement !== "string") problems.push("report.acceptance: resourceCleanup, retained (total, byOwnership, byOwner), environmentRetirement and statement");
     else {
       if (acceptance.environmentRetirement !== "OUTSTANDING") problems.push("report.acceptance.environmentRetirement: always OUTSTANDING; retiring the environment is a separate, reviewed action no run report claims");
-      const expected = typed.leftovers.status === "PASS" ? "COMPLETED" : typed.leftovers.status === "NOT_RUN" ? "NOT_RUN" : "INCOMPLETE";
+      const expected = resourceCleanupOf(typed.leftovers);
       if (acceptance.resourceCleanup !== expected) problems.push("report.acceptance.resourceCleanup: not derived from the leftovers stage (" + expected + ")");
       const dispositions = isRecord(value.dispositions) && Array.isArray(value.dispositions.resources) ? value.dispositions.resources as { disposition?: unknown }[] : null;
-      if (dispositions !== null && dispositions.filter((r) => r.disposition === "INTENTIONALLY_RETAINED").length !== acceptance.retained.total) problems.push("report.acceptance.retained: does not match the leftover record's intentionally retained resources");
+      const retained = acceptance.retained as AcceptanceDisposition["retained"];
+      if (dispositions !== null && dispositions.filter((r) => r.disposition === "INTENTIONALLY_RETAINED").length !== retained.total) problems.push("report.acceptance.retained: does not match the leftover record's intentionally retained resources");
       const sum = (v: Record<string, number>) => Object.values(v).reduce((a, b) => a + b, 0);
-      if (sum(acceptance.retained.byOwnership) !== acceptance.retained.total || sum(acceptance.retained.byOwner) !== acceptance.retained.total) problems.push("report.acceptance.retained: the counts by ownership and by owner must add up to the total");
-      if (/environment (?:is |was |entirely )?deleted|entire environment deleted/i.test(acceptance.statement) || !/environment retirement outstanding/.test(acceptance.statement)) problems.push("report.acceptance.statement: must report environment retirement outstanding and never the environment deleted");
+      if (sum(retained.byOwnership) !== retained.total || sum(retained.byOwner) !== retained.total) problems.push("report.acceptance.retained: the counts by ownership and by owner must add up to the total");
+      if (!Object.keys(retained.byOwnership).every((key) => KEPT_OWNERSHIPS.includes(key))) problems.push("report.acceptance.retained.byOwnership: a key is not an ownership class a kept resource can carry");
+      if (!Object.keys(retained.byOwner).every((key) => (RETENTION_OWNERS as readonly string[]).includes(key))) problems.push("report.acceptance.retained.byOwner: a key is not a retention owner");
+      // The statement is recomputed from the derived facts, never matched as text: a stored sentence that says more (or less) is refused.
+      if (acceptance.statement !== acceptanceStatement(expected, retained)) problems.push("report.acceptance.statement: not derived from the resource cleanup state and the retained counts (a declaration never counts)");
     }
   }
   const approvals = value.approvals;
