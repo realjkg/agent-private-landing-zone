@@ -82,7 +82,8 @@ export async function verifyLeftovers(input: LeftoversInput): Promise<LeftoversR
   // identity or grant, deployment history, the state backend) is the pilot owner's; a resource this run did not create is the
   // environment owner's. Neither is ever read as deleted, and the record never says the environment is gone.
   for (const item of proposal.excluded) {
-    resources.push({ address: item.address, type: item.type, identifier: item.identifier, disposition: "INTENTIONALLY_RETAINED", basis: "RETENTION_DECISION", reason: item.ownership + ": " + item.reason, owner: item.retainedBy });
+    // A resource of an unreviewed type (TYPE_UNREVIEWED) is retained and named too, on its own basis: a person still decides about it, so it keeps the record INCOMPLETE.
+    resources.push({ address: item.address, type: item.type, identifier: item.identifier, disposition: "INTENTIONALLY_RETAINED", basis: item.ownership === "TYPE_UNREVIEWED" ? "UNREVIEWED_TYPE" : "RETENTION_DECISION", reason: item.ownership + ": " + item.reason, owner: item.retainedBy });
   }
   // Resources outside the engine's state: only findable by the run's unit tag, which the pilot apply does not set yet.
   let sweep: LeftoversRecord["sweep"] = "NOT_AVAILABLE";
@@ -99,7 +100,8 @@ export async function verifyLeftovers(input: LeftoversInput): Promise<LeftoversR
   }
   const known = resources.length > 0 && resources.every((x) => x.disposition === "CONFIRMED_DELETED" || x.disposition === "INTENTIONALLY_RETAINED");
   // COMPLETE needs both: every named resource settled, and a complete sweep by the run's unit tag that found nothing else.
-  const disposition: LeftoversRecord["disposition"] = !known ? "INCOMPLETE" : sweep === "COMPLETE" ? "COMPLETE" : sweep === "NOT_AVAILABLE" ? "KNOWN_ADDRESSES_CONFIRMED" : "INCOMPLETE";
+  const unreviewed = resources.filter((x) => x.basis === "UNREVIEWED_TYPE");
+  const disposition: LeftoversRecord["disposition"] = !known || unreviewed.length > 0 ? "INCOMPLETE" : sweep === "COMPLETE" ? "COMPLETE" : sweep === "NOT_AVAILABLE" ? "KNOWN_ADDRESSES_CONFIRMED" : "INCOMPLETE";
   const open = resources.filter((x) => x.disposition !== "CONFIRMED_DELETED" && x.disposition !== "INTENTIONALLY_RETAINED");
   const retained = resources.filter((x) => x.disposition === "INTENTIONALLY_RETAINED");
   // COMPLETE says only what the record shows: how many listed resources are confirmed gone, whether an approved cleanup ran at all, what was kept (left in
@@ -117,6 +119,7 @@ export async function verifyLeftovers(input: LeftoversInput): Promise<LeftoversR
       : "The cleanup ended " + cleanup.outcome + ". A person reviews the state and the cloud resources by hand (docs/act-pilot-apply.md); do not propose a second cleanup until that review is done.")
     : open.some((x) => x.disposition === "DELETION_PENDING") ? "Wait for the deletion window to pass, then verify leftovers again."
     : open.some((x) => x.disposition === "STILL_PRESENT") ? "The cleanup did not remove everything it was approved for. A person reviews the listed resources by hand; a new proposal is needed for anything still to delete."
+    : unreviewed.length > 0 ? "The run created " + unreviewed.length + " resource(s) of a type not on the reviewed leaf allowlist (" + [...new Set(unreviewed.map((x) => x.type))].sort().join(", ") + "). They were kept and never deleted; a person deletes or keeps them by hand, and a type joins the allowlist only by review. Then verify leftovers again."
     : sweep === "INCOMPLETE" ? "The tag listing was incomplete; verify leftovers again when the tagging API answers completely."
     : open.every((x) => x.disposition === "UNKNOWN" && x.basis === "NOT_INDEPENDENTLY_CHECKABLE")
       ? "The remaining resources cannot be read independently (a setting, or a type the reader cannot address) and no confirmed-gone parent speaks for them. A person confirms by hand that they are gone; the record never assumes it."
