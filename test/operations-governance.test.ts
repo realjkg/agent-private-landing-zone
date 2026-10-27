@@ -69,7 +69,7 @@ test("the family is well formed: runnable entries are read-only or local-model, 
   }
   const handoffs = catalog.filter((spec) => spec.safety === "HANDOFF").map((spec) => spec.id).sort();
   assert.deepEqual(handoffs, ["act-pilot-apply", "control-plane-capture", "control-plane-drill", "control-plane-restore", "control-plane-verify",
-    "deps", "doctor", "evidence-migrate", "operator-verify", "sbom", "scan", "security-check", "target-init", "target-preflight"]);
+    "deps", "doctor", "evidence-migrate", "lifecycle", "operator-verify", "sbom", "scan", "security-check", "target-init", "target-preflight"]);
 });
 
 test("target check and explain validate and describe a pasted intent, and refuse a bad one", async () => {

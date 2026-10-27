@@ -13,17 +13,31 @@
  * (Terraform types are lowercase; CloudFormation types are case-exact); there are no prefixes here, because a prefix would admit a
  * future type nobody reviewed. The table lives in the observe layer, below src/apply, beside the container table.
  *
+ * An attachment or setting that modifies another resource is a leaf only together with its parent: it is deleted only when its
+ * parent is deleted in the same proposal, else held (the `parent` field and `awsParentIdOf`; design review 6434540427, B3).
+ *
  * Not seeded, on purpose: the EKS access entries and policy associations and the Verified Permissions types (round 3, N4; still the
  * owner's decision), `terraform_data` and `null_resource` (a destroy-time provisioner can do anything; round 3, N2, still the
- * owner's), and every type of the identity services (always PROTECTED_IDENTITY).
+ * owner's), Organizations delegated administrators and Lake Formation permissions (not on the owner's list; a delegated
+ * administrator has organization-wide effects and a Lake Formation grant may have existed before the run; design review
+ * 6434540427, B1), the Redshift cluster IAM role set (it manages the cluster's whole role set; N5), and every type of the identity
+ * services (always PROTECTED_IDENTITY).
  */
 export type AwsLeafBasis =
   /** The pilot's own journeys create it: the bootstrap project, the pilot fixtures and the synthetic journeys' stacks. */
   | "PILOT_JOURNEY"
-  /** The owner declared it deletable when this run created it (decision 6431744115, item 3). */
+  /** The owner declared it deletable when this run created it (decision 6431744115, item 3), and nothing more than that list. */
   | "OWNER_DECISION"
   /** A common leaf, justified one by one in its reason. */
   | "COMMON_LEAF";
+
+/**
+ * How an attachment or setting names the resource it modifies, read from its own identifier in the state (design review 6434540427, B3):
+ * SAME (the identifier is the parent's, as for an S3 bucket's settings and policy or an SQS queue's policy), BEFORE_FIRST_COLON or
+ * BEFORE_FIRST_COMMA (`<parent>:<child>`, `<parent>,<role>`), AFTER_LAST_COLON (`<target>:<parent>`), or NOT_IN_STATE (the parent is not
+ * in the identifier at all, so it can never be shown to be deleted and the entry is always held).
+ */
+export type AwsParentKey = "SAME" | "BEFORE_FIRST_COLON" | "BEFORE_FIRST_COMMA" | "AFTER_LAST_COLON" | "NOT_IN_STATE";
 
 export type AwsLeafEntry = {
   /** What the object is. */
@@ -31,28 +45,44 @@ export type AwsLeafEntry = {
   /** Why deleting it removes that object alone: it deploys no stack, product, project, environment or nested deployment. */
   reason: string;
   basis: AwsLeafBasis;
+  /**
+   * The object holds data that deleting it destroys (or makes unreadable). Every type of such an entry carries a material-risk note in
+   * the proposal (src/apply/cleanup-proposal.ts, MATERIAL_RISKS); a test fails when one is missing.
+   */
+  dataBearing?: true;
+  /**
+   * For an attachment or setting that modifies another resource (a bucket's settings and policy, a queue's policy, a function's
+   * permission, a key's grant, a database's role association, a policy's attachment): the parent's types and how the parent's
+   * identifier is read from this one's. Such a type is deleted only when its parent is deleted in the same proposal; otherwise it is
+   * held for a person (TYPE_UNREVIEWED), because for these types a planned "create" can overwrite what the parent already had, so it
+   * does not prove the run introduced it, and deleting it would change a resource the cleanup keeps.
+   */
+  parent?: { types: readonly string[]; key: AwsParentKey };
   /** Exact type names: Terraform `aws_`, the Cloud Control provider's `awscc_`, and the CloudFormation type of the same object, where each exists. */
   types: readonly string[];
 };
+
+const BUCKETS = ["aws_s3_bucket", "awscc_s3_bucket", "AWS::S3::Bucket"] as const;
 
 export const AWS_LEAF_TYPES: readonly AwsLeafEntry[] = [
   // The pilot's own journeys.
   {
     what: "an S3 bucket",
     reason: "a storage bucket holds objects only; deleting it deploys or deletes no other resource (CloudFormation refuses a non-empty bucket)",
-    basis: "PILOT_JOURNEY",
+    basis: "PILOT_JOURNEY", dataBearing: true,
     types: ["aws_s3_bucket", "awscc_s3_bucket", "AWS::S3::Bucket"],
   },
   {
     what: "a setting of an S3 bucket (versioning, encryption, public access block, ownership controls, lifecycle)",
-    reason: "a configuration on its bucket; deleting it resets that one setting",
+    reason: "a configuration on its bucket; deleted only with the bucket, because on a bucket the cleanup keeps it would remove a control the bucket's owner relies on",
     basis: "PILOT_JOURNEY",
+    parent: { types: BUCKETS, key: "SAME" },
     types: ["aws_s3_bucket_versioning", "aws_s3_bucket_server_side_encryption_configuration", "aws_s3_bucket_public_access_block", "aws_s3_bucket_ownership_controls", "aws_s3_bucket_lifecycle_configuration"],
   },
   {
     what: "a CloudWatch Logs log group",
     reason: "holds log events only; deleting it removes them and nothing else",
-    basis: "PILOT_JOURNEY",
+    basis: "PILOT_JOURNEY", dataBearing: true,
     types: ["aws_cloudwatch_log_group", "awscc_logs_log_group", "AWS::Logs::LogGroup"],
   },
   {
@@ -75,14 +105,14 @@ export const AWS_LEAF_TYPES: readonly AwsLeafEntry[] = [
   },
   {
     what: "a DynamoDB table",
-    reason: "holds items only; deleting it removes the table and its data (a material risk the proposal names), nothing else",
-    basis: "PILOT_JOURNEY",
+    reason: "holds items only; deleting it removes the table, its replicas and its data (a material risk the proposal names), nothing else",
+    basis: "PILOT_JOURNEY", dataBearing: true,
     types: ["aws_dynamodb_table", "awscc_dynamodb_table", "AWS::DynamoDB::Table"],
   },
   {
     what: "a KMS key",
     reason: "deleting it schedules that key's deletion (a material risk the proposal names); it deploys nothing",
-    basis: "PILOT_JOURNEY",
+    basis: "PILOT_JOURNEY", dataBearing: true,
     types: ["aws_kms_key", "awscc_kms_key", "AWS::KMS::Key"],
   },
   {
@@ -109,30 +139,49 @@ export const AWS_LEAF_TYPES: readonly AwsLeafEntry[] = [
     basis: "PILOT_JOURNEY",
     types: ["AWS::CDK::Metadata"],
   },
-  // The owner's decision 6431744115, item 3: authorization-adjacent objects outside the identity services, deletable when the run created them.
+  // The owner's decision 6431744115, item 3, exactly: SCPs and their attachments, KMS grants, S3/SQS/Lambda resource policies, Roles Anywhere,
+  // RDS role associations and Cognito users. Not seeded (design review 6434540427): delegated administrators and Lake Formation permissions
+  // (not on the owner's list), and the Redshift cluster IAM role set (it manages the cluster's whole role set, not one association).
   {
-    what: "an Organizations policy (a service control policy), its attachment, or a delegated administrator",
-    reason: "a policy document and where it is attached; deleting it detaches or removes that policy and deploys nothing (owner: deletable when run-created)",
+    what: "an Organizations policy (a service control policy)",
+    reason: "a policy document; deleting it detaches and removes that policy and deploys nothing (owner: deletable when run-created)",
     basis: "OWNER_DECISION",
-    types: ["aws_organizations_policy", "aws_organizations_policy_attachment", "aws_organizations_delegated_administrator", "awscc_organizations_policy", "AWS::Organizations::Policy"],
+    types: ["aws_organizations_policy", "awscc_organizations_policy", "AWS::Organizations::Policy"],
   },
   {
-    what: "a Lake Formation permission",
-    reason: "one grant on a data catalog object; deleting it revokes that grant only (owner: deletable when run-created)",
+    what: "the attachment of an Organizations policy",
+    reason: "where a policy is attached; deleted only with its policy, never alone from a target that keeps other policies (owner: deletable when run-created)",
     basis: "OWNER_DECISION",
-    types: ["aws_lakeformation_permissions", "awscc_lakeformation_principal_permissions", "AWS::LakeFormation::Permissions", "AWS::LakeFormation::PrincipalPermissions"],
+    parent: { types: ["aws_organizations_policy"], key: "AFTER_LAST_COLON" },
+    types: ["aws_organizations_policy_attachment"],
   },
   {
     what: "a KMS grant",
-    reason: "one grant on a key; deleting it retires that grant only (owner: deletable when run-created)",
+    reason: "one grant on a key; deleted only with its key (owner: deletable when run-created)",
     basis: "OWNER_DECISION",
+    parent: { types: ["aws_kms_key"], key: "BEFORE_FIRST_COLON" },
     types: ["aws_kms_grant"],
   },
   {
-    what: "a resource-based policy on a bucket, a queue or a Lambda function",
-    reason: "a policy on its resource; deleting it removes that policy only (owner: deletable when run-created)",
+    what: "an S3 bucket policy",
+    reason: "a policy on its bucket; deleted only with the bucket, because creating one overwrites the policy a bucket had and deleting it can remove deny statements (owner: deletable when run-created)",
     basis: "OWNER_DECISION",
-    types: ["aws_s3_bucket_policy", "awscc_s3_bucket_policy", "AWS::S3::BucketPolicy", "aws_sqs_queue_policy", "AWS::SQS::QueuePolicy", "aws_lambda_permission", "awscc_lambda_permission", "AWS::Lambda::Permission"],
+    parent: { types: BUCKETS, key: "SAME" },
+    types: ["aws_s3_bucket_policy", "awscc_s3_bucket_policy", "AWS::S3::BucketPolicy"],
+  },
+  {
+    what: "an SQS queue policy",
+    reason: "a policy on its queue; deleted only with the queue, because creating one overwrites the policy a queue had (owner: deletable when run-created)",
+    basis: "OWNER_DECISION",
+    parent: { types: ["aws_sqs_queue", "awscc_sqs_queue", "AWS::SQS::Queue"], key: "SAME" },
+    types: ["aws_sqs_queue_policy", "AWS::SQS::QueuePolicy"],
+  },
+  {
+    what: "a Lambda permission",
+    reason: "a statement in its function's resource policy; the state does not name the function in its identifier, so it is always held for a person until it can be shown to go with its function (owner: deletable when run-created)",
+    basis: "OWNER_DECISION",
+    parent: { types: ["aws_lambda_function", "awscc_lambda_function", "AWS::Lambda::Function"], key: "NOT_IN_STATE" },
+    types: ["aws_lambda_permission", "awscc_lambda_permission", "AWS::Lambda::Permission"],
   },
   {
     what: "an IAM Roles Anywhere trust anchor or profile",
@@ -141,10 +190,18 @@ export const AWS_LEAF_TYPES: readonly AwsLeafEntry[] = [
     types: ["aws_rolesanywhere_trust_anchor", "aws_rolesanywhere_profile", "awscc_rolesanywhere_trust_anchor", "awscc_rolesanywhere_profile", "AWS::RolesAnywhere::TrustAnchor", "AWS::RolesAnywhere::Profile"],
   },
   {
-    what: "an RDS or Redshift role association",
-    reason: "the link between a database and a role; deleting it removes the link, never the role or the database (owner: deletable when run-created)",
+    what: "an RDS cluster role association",
+    reason: "the link between a cluster and a role; deleted only with the cluster, never the role (owner: deletable when run-created)",
     basis: "OWNER_DECISION",
-    types: ["aws_rds_cluster_role_association", "aws_db_instance_role_association", "aws_redshift_cluster_iam_roles"],
+    parent: { types: ["aws_rds_cluster"], key: "BEFORE_FIRST_COMMA" },
+    types: ["aws_rds_cluster_role_association"],
+  },
+  {
+    what: "an RDS database instance role association",
+    reason: "the link between a database instance and a role; deleted only with the instance, never the role (owner: deletable when run-created)",
+    basis: "OWNER_DECISION",
+    parent: { types: ["aws_db_instance"], key: "BEFORE_FIRST_COMMA" },
+    types: ["aws_db_instance_role_association"],
   },
   {
     what: "a Cognito user pool user",
@@ -152,23 +209,23 @@ export const AWS_LEAF_TYPES: readonly AwsLeafEntry[] = [
     basis: "OWNER_DECISION",
     types: ["aws_cognito_user", "awscc_cognito_user_pool_user", "AWS::Cognito::UserPoolUser"],
   },
-  // Common leaves, each with a material-risk note already in the proposal (src/apply/cleanup-proposal.ts, MATERIAL_RISKS).
+  // Common leaves; each data-bearing one carries a material-risk note in the proposal (src/apply/cleanup-proposal.ts, MATERIAL_RISKS), which a test enforces.
   {
     what: "a Secrets Manager secret",
     reason: "one secret; deleting it schedules that secret's deletion (a material risk the proposal names) and deploys nothing",
-    basis: "COMMON_LEAF",
+    basis: "COMMON_LEAF", dataBearing: true,
     types: ["aws_secretsmanager_secret", "awscc_secretsmanager_secret", "AWS::SecretsManager::Secret"],
   },
   {
     what: "an RDS database instance or cluster",
     reason: "one database; deleting it removes that database and its data (a material risk the proposal names), and AWS refuses to delete a cluster that still has instances",
-    basis: "COMMON_LEAF",
+    basis: "COMMON_LEAF", dataBearing: true,
     types: ["aws_db_instance", "aws_rds_cluster", "awscc_rds_db_instance", "awscc_rds_db_cluster", "AWS::RDS::DBInstance", "AWS::RDS::DBCluster"],
   },
   {
     what: "an EFS file system or an EBS volume",
     reason: "one storage volume; deleting it removes that volume and its data (a material risk the proposal names), nothing else",
-    basis: "COMMON_LEAF",
+    basis: "COMMON_LEAF", dataBearing: true,
     types: ["aws_efs_file_system", "awscc_efs_file_system", "AWS::EFS::FileSystem", "aws_ebs_volume", "awscc_ec2_volume", "AWS::EC2::Volume"],
   },
   {
@@ -185,6 +242,18 @@ const LEAF_SET: ReadonlySet<string> = new Set(AWS_LEAF_TYPE_NAMES);
 
 /** The entry a type belongs to, by exact name, or undefined for a type nobody has reviewed. */
 export const awsLeafEntryOf = (type: string): AwsLeafEntry | undefined => LEAF_SET.has(type) ? AWS_LEAF_TYPES.find((entry) => entry.types.includes(type)) : undefined;
+
+/**
+ * The identifier of the parent an attachment or setting modifies, read from its own identifier, or undefined when it cannot be read
+ * (NOT_IN_STATE, no identifier, or no separator): the one rule for every entry with a `parent` (design review 6434540427, B3).
+ */
+export function awsParentIdOf(key: AwsParentKey, id: string | null): string | undefined {
+  if (id === null || id === "" || key === "NOT_IN_STATE") return undefined;
+  if (key === "SAME") return id;
+  const at = key === "BEFORE_FIRST_COLON" ? id.indexOf(":") : key === "BEFORE_FIRST_COMMA" ? id.indexOf(",") : id.lastIndexOf(":");
+  if (at <= 0 || at >= id.length - 1) return undefined;
+  return key === "AFTER_LAST_COLON" ? id.slice(at + 1) : id.slice(0, at);
+}
 
 /** Whether a type is on the reviewed leaf allowlist (exact, case-exact). */
 export const isAwsLeafType = (type: string): boolean => LEAF_SET.has(type);
