@@ -17,7 +17,7 @@ import {
   requirePromotionEvidence, targetForEnvironment, verifyApplyQualification, type Refusal,
 } from "./contract.js";
 import { COMMIT } from "./constants.js";
-import { codeOf } from "./engine.js";
+import { codeOf, leftBehindOf } from "./engine.js";
 import { acceptsManifest, engineOf, type EngineCleanupRun, type EngineSpec, type RecoveryFile, type StateDocument } from "./engine-spec.js";
 import { APPLY_AUTHORITY } from "./evidence.js";
 import { attestedClientId, checkApplyIdentities, verifyIdentityTargets } from "./identities.js";
@@ -588,6 +588,9 @@ async function requireProposalDerivedFromRecords(
   return { ok: true, blueprint };
 }
 
+/** What a CDK refusal says once CHANGESET has created the removal change set: it stays in CloudFormation, and no surface here deletes a change set. */
+const LEFT_CHANGE_SET = " The removal change set created to plan this is left unexecuted in CloudFormation for a person to clear; nothing here deletes a change set.";
+
 /**
  * Executes an approved cleanup proposal, exactly as approved (docs/act-pilot-plan.md, "Cleanup of pilot-created
  * resources"). In order and fail closed: the pilot contract enables ACT, the kill switch is off, a person invoked it, the
@@ -698,8 +701,10 @@ export async function runCleanup(request: CleanupRequest, deps: ApplyDeps): Prom
       planned = run.planDestroy(addresses);
     } catch (error) {
       const code = codeOf(error);
+      // A CDK refusal after CHANGESET created the removal change set leaves it in CloudFormation, whatever the code (review 6432294529, N1): said in every such refusal.
+      const left = leftBehindOf(error) === "CHANGE_SET" ? LEFT_CHANGE_SET : "";
       if (/_NOT_IN_CONTRACT$/.test(code)) {
-        return refuse("TARGET_NOT_IN_CONTRACT", "The backend or provider the project configures is not the contract's target (" + code + "). Nothing was destroyed and no approval was consumed.");
+        return refuse("TARGET_NOT_IN_CONTRACT", "The backend, provider or change set is not the contract's target (" + code + "). Nothing was destroyed and no approval was consumed." + left);
       }
       // A CDK removal that would leave the stack empty, keep a resource under its deletion policy, or break what stays: refused by name (docs/observe-and-cleanup.md, "CloudFormation").
       if (code === "CLEANUP_WOULD_EMPTY_STACK") {
@@ -714,13 +719,13 @@ export async function runCleanup(request: CleanupRequest, deps: ApplyDeps): Prom
       if (code === "CLEANUP_DEPENDENT_REFERENCED") {
         return refuse("CLEANUP_DEPENDENT_REFERENCED", "A resource or output that stays in the stack still refers to an approved resource, so the removal would break or take along something not on the list. Nothing was destroyed and no approval was consumed. Observe the run again and propose a cleanup that includes or excludes the dependent.");
       }
-      return refuse("APPLY_FAILED", "The cleanup could not plan the destroy (" + code + "). Nothing was destroyed and no approval was consumed. Engine output is withheld.");
+      return refuse("APPLY_FAILED", "The cleanup could not plan the destroy (" + code + "). Nothing was destroyed and no approval was consumed. Engine output is withheld." + left);
     }
     // The policy check: whatever the engine's destroy plan would take along, a protected object (a resource group, an identity or
     // authorization object, deployment history, the state backend, a scope) stops the cleanup here, before any approval is consumed.
     // Residual risk, stated plainly: for CDK the destroy plan is a change set CloudFormation has already created by now, and a refusal
     // here leaves it unexecuted and AVAILABLE in CloudFormation for a person to clear; no surface deletes a change set (docs/observe-and-cleanup.md).
-    const leftBehind = contract.engine === "CDK" ? " The removal change set created to plan this is left unexecuted in CloudFormation for a person to clear; nothing here deletes a change set." : "";
+    const leftBehind = contract.engine === "CDK" ? LEFT_CHANGE_SET : "";
     const protectedDeletion = protectedDeletionIn(planned, blueprint.blueprint.entries, contract, env);
     if (protectedDeletion) return refuse("PROPOSAL_SCOPE_MISMATCH", protectedDeletion + " Nothing was destroyed and no approval was consumed. The protected object is intentionally retained; a person reviews what depends on it." + leftBehind);
     // The scope check: the destroy plan deletes exactly the approved addresses and does nothing else. A dependent the engine

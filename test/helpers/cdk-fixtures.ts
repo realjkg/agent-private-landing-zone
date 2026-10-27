@@ -74,6 +74,8 @@ export type AwsBehavior = {
   resourcesFail?: boolean; resourcesExtra?: boolean; resourcesNested?: boolean;
   /** Physical ids the stack reports for these logical ids, instead of the fake's derived ones. */
   physicalIds?: Record<string, string>;
+  /** The type the stack listing reports for a logical id, when it is not the template's (a drifted or lying listing). */
+  resourceTypes?: Record<string, string>;
   /** cloudcontrol get-resource: these identifiers are absent whatever the stack holds; these fail with the given stderr. */
   absent?: string[]; readFail?: Record<string, string>;
   /** resourcegroupstaggingapi lists these extra ARNs under the unit, or fails. */
@@ -115,7 +117,7 @@ const stackResources = () => {
   if (!a.changeSet || !a.stackTemplate || /^ROLLBACK_/.test(a.stack.status)) return [];
   const rows = [];
   for (const [logical, resource] of Object.entries(a.stackTemplate.Resources || {})) {
-    const type = resource.Type;
+    const type = (b.resourceTypes || {})[logical] || resource.Type;
     const given = (b.physicalIds || {})[logical];
     const physical = given !== undefined ? given
       : type === "AWS::SNS::Topic" ? "arn:aws:sns:" + region + ":" + account + ":" + a.changeSet.stackName + "-" + logical + "-FAKE1"

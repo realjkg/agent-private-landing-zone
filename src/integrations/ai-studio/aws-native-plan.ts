@@ -29,7 +29,7 @@ function action(raw: unknown): ResourceIntent["action"] {
   if (!ACTIONS.has(a)) throw new Error("PLAN_ACTION_UNSUPPORTED");
   return a as ResourceIntent["action"];
 }
-function terraformAction(actions: unknown): ResourceIntent["action"] | null {
+function terraformAction(actions: unknown): ResourceIntent["action"] | "REPLACE" | null {
   const seq = array(actions);
   if (!seq.length || seq.some(a => typeof a !== "string")) throw new Error("TERRAFORM_ACTION_INVALID");
   const key=seq.join(",");
@@ -39,9 +39,21 @@ function terraformAction(actions: unknown): ResourceIntent["action"] | null {
     case "create": return "CREATE";
     case "update": return "UPDATE";
     case "delete": return "DELETE";
-    case "delete,create": case "create,delete": return "UPDATE";
+    // A replacement destroys the resource and creates another: both intents, never flattened to an update (#270 review N1).
+    case "delete,create": case "create,delete": return "REPLACE";
     default: throw new Error("TERRAFORM_ACTION_UNSUPPORTED");
   }
+}
+/** A replacement as the governance classifier sees it: the delete of what exists and the create of what follows, each judged on its own. */
+const REPLACEMENT: readonly ResourceIntent["action"][] = ["DELETE", "CREATE"];
+/**
+ * A CloudFormation Modify's `Replacement`, read exactly (#270 review N1): only "False" is an in-place update; "True" and
+ * "Conditional" are replacements; anything else, a missing value included, is unsupported and fails closed.
+ */
+function cloudFormationModify(replacement: unknown): "UPDATE" | "REPLACE" {
+  if (replacement === "False") return "UPDATE";
+  if (replacement === "True" || replacement === "Conditional") return "REPLACE";
+  throw new Error("CLOUDFORMATION_REPLACEMENT_UNSUPPORTED");
 }
 function extractNative(plan: NativePlan): ResourceIntent[] {
   const p=object(plan.payload);
@@ -52,31 +64,35 @@ function extractNative(plan: NativePlan): ResourceIntent[] {
       const kind=terraformAction(c.actions);
       if (kind===null) return [];
       // Terraform provider can surface imported resources without CREATE.
-      const operation = c.importing !== undefined ? "IMPORT" : kind;
-      return [{ resourceType:string(row.type),action:operation }];
+      if (c.importing !== undefined) return [{ resourceType:string(row.type),action:"IMPORT" }];
+      if (kind==="REPLACE") return REPLACEMENT.map(action => ({ resourceType:string(row.type),action }));
+      return [{ resourceType:string(row.type),action:kind }];
     });
   }
   if (plan.engine === "CLOUDFORMATION" || plan.engine === "CDK") {
     // DescribeChangeSet output, not a template that may contain conditions.
     const changes=array(p.Changes);
-    return changes.map(change => {
+    return changes.flatMap(change => {
       const rc=object(object(change).ResourceChange);
       const kind=String(rc.Action);
-      const mapped=kind==="Add"?"CREATE":kind==="Modify"?"UPDATE":kind==="Remove"?"DELETE":kind==="Import"?"IMPORT":undefined;
+      const mapped=kind==="Add"?"CREATE":kind==="Modify"?cloudFormationModify(rc.Replacement):kind==="Remove"?"DELETE":kind==="Import"?"IMPORT":undefined;
       if (!mapped) throw new Error("CLOUDFORMATION_ACTION_UNSUPPORTED");
-      return { resourceType:string(rc.ResourceType),action:action(mapped) };
+      if (mapped==="REPLACE") return REPLACEMENT.map(action => ({ resourceType:string(rc.ResourceType),action }));
+      return [{ resourceType:string(rc.ResourceType),action:action(mapped) }];
     });
   }
   if (plan.engine === "PULUMI") {
     // A normalized Pulumi preview envelope produced by our trusted adapter.
     // Refuse arbitrary third-party preview output that lacks explicit steps.
     const steps=array(p.steps);
-    return steps.map(x => {
+    return steps.flatMap(x => {
       const step=object(x);
       const op=String(step.op);
-      const mapped: Record<string,string>={create:"CREATE",update:"UPDATE",delete:"DELETE",replace:"UPDATE",import:"IMPORT",read:"READ"};
+      // A Pulumi replace is a delete and a create, never flattened to an update (#270 review N1).
+      if (op==="replace") return REPLACEMENT.map(action => ({ resourceType:string(step.type),action }));
+      const mapped: Record<string,string>={create:"CREATE",update:"UPDATE",delete:"DELETE",import:"IMPORT",read:"READ"};
       if (!mapped[op]) throw new Error("PULUMI_ACTION_UNSUPPORTED");
-      return {resourceType:string(step.type),action:action(mapped[op])};
+      return [{resourceType:string(step.type),action:action(mapped[op])}];
     });
   }
   throw new Error("ENGINE_UNSUPPORTED");
