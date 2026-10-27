@@ -218,3 +218,79 @@ test("N1: the saved azurerm backend may hold a value only in the contract's sett
     ["oidc_request_url", "https://evil.example"], ["oidc_token", "x"], ["an_attribute_this_code_does_not_name", ""], ["use_oidc", false], ["use_oidc", "true"],
   ] as const) assert.equal(matches(config({ [name]: value })), false, `${name} = ${JSON.stringify(value)}`);
 });
+
+// --- .tf.json read as HCL's JSON parser reads it (review #287 round 2, B1) ----------------------------------------------------
+// HCL's JSON parser keeps every repeated property: a repeated `terraform` key or backend type is another block, and Terraform
+// 1.16.4 `init` configures the backend such a block names (checked offline with a `local` backend). `JSON.parse` keeps only
+// the last value, so the reader parses `.tf.json` itself and refuses a repeated property anywhere, and every shape at the
+// `terraform`, `backend` and settings levels whose meaning is not certain.
+
+const JSON_RULES = [
+  { name: "s3", rule: ALLOWED, backend: S3_BACKEND, allowed: { bucket: "b" }, forbidden: { endpoints: { s3: "https://evil" } }, other: { access_key: "K" } },
+  { name: "azurerm", rule: AZURERM, backend: AZURE_BACKEND, allowed: { use_azuread_auth: true }, forbidden: { endpoint: "https://evil" }, other: { sas_token: "SAS" } },
+] as const;
+const json = (text: string) => ({ "main.tf.json": text });
+const j = (value: unknown) => JSON.stringify(value);
+
+test("B1 (JSON): a repeated property cannot hide a backend, a cloud block or a setting, for the s3 and azurerm rules", () => {
+  for (const { name, rule, backend, allowed, forbidden, other } of JSON_RULES) {
+    const verdictOf = (text: string) => verdict(json(text), rule, backend);
+    const good = j({ backend: { [name]: allowed } });
+    assert.equal(verdictOf(`{"terraform":${good}}`), "ok", `${name}: the allowed block is read`);
+    for (const [label, text] of [
+      ["the review's case: a repeated root terraform key", `{"terraform":${j({ backend: { [name]: forbidden } })},"terraform":{}}`],
+      ["the empty one first", `{"terraform":{},"terraform":${j({ backend: { [name]: forbidden } })}}`],
+      ["beside an allowed one", `{"terraform":${good},"terraform":${j({ backend: { [name]: other } })}}`],
+      ["with other keys between", `{"terraform":${j({ backend: { [name]: forbidden } })},"locals":{},"terraform":${good}}`],
+      ["the review's case: a repeated backend type with null", `{"terraform":{"backend":{"${name}":${j(forbidden)},"${name}":null}}}`],
+      ["a repeated backend type with the allowed settings", `{"terraform":{"backend":{"${name}":${j(forbidden)},"${name}":${j(allowed)}}}}`],
+      ["a repeated backend key", `{"terraform":{"backend":{"${name}":${j(forbidden)}},"backend":{"${name}":${j(allowed)}}}}`],
+      ["a repeated setting", `{"terraform":{"backend":{"${name}":{"${Object.keys(allowed)[0]}":${j(Object.values(allowed)[0])},"${Object.keys(allowed)[0]}":"x"}}}}`],
+      ["the review's case: a repeated terraform key hiding a cloud block", `{"terraform":{"cloud":{"hostname":"evil"}},"terraform":{"required_version":">= 1"}}`],
+      ["the same key spelled with an escape", `{"terraform":${j({ backend: { [name]: forbidden } })},"terr\\u0061form":{}}`],
+      ["a repeated property anywhere else", `{"locals":{"a":1,"a":2},"terraform":${good}}`],
+      ["a repeated property deep in a value", `{"locals":{"a":[{"b":{"c":1,"c":1}}]},"terraform":${good}}`],
+    ] as const) {
+      assert.equal(verdictOf(text), NOT_ALLOWED, `${name}: ${label}`);
+      assert.equal(verdictOf(text.replace(/,/g, ",\r\n  ")), NOT_ALLOWED, `${name}: ${label}, CRLF and indentation`);
+    }
+  }
+});
+
+test("B1 (JSON): only one shape is read; null, arrays of blocks, unknown terraform items and anything not strict JSON are refused", () => {
+  for (const { name, rule, backend, allowed } of JSON_RULES) {
+    const verdictOf = (text: string) => verdict(json(text), rule, backend);
+    const settings = j(allowed);
+    assert.equal(verdictOf(`{"//":"comment","locals":{"a":"\\u00e9\\ud83d\\ude00"},"terraform":{"//":"x","required_version":">= 1.9","required_providers":{"azurerm":{"source":"hashicorp/azurerm"}},"backend":{"${name}":${settings}}}}`), "ok", `${name}: comments, providers, escapes`);
+    assert.equal(verdictOf(`{"locals":{}}`), "ok", `${name}: no terraform block`);
+    for (const [label, text] of [
+      ["terraform null", `{"terraform":null}`], ["terraform an array of blocks", `{"terraform":[{"backend":{"${name}":${settings}}}]}`],
+      ["terraform a string", `{"terraform":"x"}`], ["backend null", `{"terraform":{"backend":null}}`],
+      ["backend an array of blocks", `{"terraform":{"backend":[{"${name}":${settings}}]}}`], ["settings null", `{"terraform":{"backend":{"${name}":null}}}`],
+      ["settings an array of blocks", `{"terraform":{"backend":{"${name}":[${settings}]}}}`], ["a cloud block", `{"terraform":{"cloud":{}}}`],
+      ["a null cloud block", `{"terraform":{"cloud":null}}`], ["a state_store block", `{"terraform":{"state_store":{"x":{}}}}`],
+      ["experiments", `{"terraform":{"experiments":[]}}`], ["provider_meta", `{"terraform":{"provider_meta":{"x":{}}}}`],
+      ["an unknown terraform item", `{"terraform":{"backends":{}}}`], ["a root array", `[{"terraform":{"backend":{"${name}":${settings}}}}]`],
+      ["a byte order mark", `﻿{"terraform":{"backend":{"${name}":${settings}}}}`], ["a trailing comma", `{"terraform":{},}`],
+      ["trailing data", `{"terraform":{}} {"terraform":{"cloud":{}}}`], ["a comment", `{"terraform":{}} // x`],
+      ["a non-ASCII property name", `{"terraform":{},"é":1}`], ["an unpaired surrogate", `{"a":"\\ud800"}`],
+      ["a raw control character in a string", `{"a":"x\ty"}`], ["a single-quoted string", `{'terraform':{}}`], ["a leading zero", `{"a":01}`],
+      ["an unterminated document", `{"terraform":{"backend":{"${name}":${settings}}}`], ["nesting beyond the limit", `{"a":${"[".repeat(300)}${"]".repeat(300)}}`],
+    ] as const) assert.equal(verdictOf(text), NOT_ALLOWED, `${name}: ${label}`);
+  }
+  const dir = mkdtempSync(join(tmpdir(), "alz-backend-block-"));
+  try {
+    writeFileSync(join(dir, "main.tf.json"), Buffer.concat([Buffer.from('{"a":"'), Buffer.from([0xc3]), Buffer.from('"}')]));
+    assert.throws(() => assertBackendBlock(dir, ALLOWED, S3_BACKEND), (error) => codeOf(error) === NOT_ALLOWED, "invalid UTF-8");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a terraform block in native syntax may hold only its required version and providers besides the backend", () => {
+  const ok = 'terraform {\n  required_version = ">= 1.9"\n  required_providers {\n    azurerm = {\n      source = "hashicorp/azurerm"\n    }\n  }\n}\n';
+  assert.equal(verdict({ "main.tf": ok }), "ok");
+  assert.equal(azureVerdict({ "main.tf": ok + azure("use_azuread_auth = true") }), "ok");
+  for (const item of ["cloud {\n  }", 'state_store "x" {\n  }', "experiments = []", 'provider_meta "x" {\n  }', "language = TF2021", "backends = {}"]) {
+    assert.equal(verdict({ "main.tf": `terraform {\n  ${item}\n}\n` }), NOT_ALLOWED, item);
+    assert.equal(azureVerdict({ "main.tf": `terraform {\n  ${item}\n}\n` + azure("use_azuread_auth = true") }), NOT_ALLOWED, item);
+  }
+});
