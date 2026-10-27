@@ -4,9 +4,9 @@
 
 **Candidate:** none frozen yet.
 
-**Golden release:** not ready. 0 of 35 in-scope gates pass.
+**Golden release:** not ready. 0 of 34 in-scope gates pass.
 
-**Scope:** darwin-arm64, darwin-x64, linux-x64, linux-arm64, win32-arm64, win32-x64; ACT paths act:aws-terraform, act:azure-terraform, act:aws-cdk, act:gcp-terraform; full lifecycle. Decided by the owner (https://github.com/realjkg/agent-private-landing-zone/issues/39#issuecomment-6403630201, recorded 2026-10-25).
+**Scope:** darwin-arm64, darwin-x64, linux-x64, linux-arm64, win32-arm64, win32-x64; ACT paths act:aws-terraform, act:azure-terraform, act:aws-cdk; full lifecycle. Decided by the owner (https://github.com/realjkg/agent-private-landing-zone/issues/39#issuecomment-6403630201, recorded 2026-10-25).
 
 ## Ready (0)
 
@@ -41,7 +41,7 @@ None.
 | `pillar:cost` | live metric | BLOCKED | OWNER | Waits on a deployed environment from a live ACT path; then measure this pillar there. |
 | `pillar:sustainability` | live metric | BLOCKED | OWNER | Waits on a deployed environment from a live ACT path; then measure this pillar there. |
 
-## Not qualified (11)
+## Not qualified (10)
 
 | Gate | Kind | Owner | Next action |
 | --- | --- | --- | --- |
@@ -55,7 +55,6 @@ None.
 | `lifecycle:configuration-migration` | lifecycle | ENGINEERING | Run this lifecycle step for real on a disposable host with the candidate archive and record data integrity and rollback evidence. |
 | `platform:linux-x64` | lifecycle | ENGINEERING | Lane A: run install, launch, uninstall, repeat uninstall, partial-install recovery, unusual paths and unrelated-file preservation in a disposable linux-x64 container; this counts for linux-x64 only. |
 | `act:aws-cdk` | live ACT | ENGINEERING | The AWS CDK row is implemented end to end in the console with synthetic tests (stack tags carry the unit; CloudFormation's resource list is the blueprint; Cloud Control reads by CloudFormation type; cleanup is a removal change set that never deletes the stack). Qualify the three adapters on the real DEV account, then run the supervised DEV lifecycle. |
-| `act:gcp-terraform` | live ACT | ENGINEERING | Engineering owes GCP admission in the pilot contract (authorization lane), the provider spec, reader and classifier wiring (path 5: #305, #310), the driver-level emulated G1b (S6b, after #311), the bootstrap (#308), and console parity. Then the owner fills a DEV-only GCP contract, places the four credential configurations and token files on the execution host, commits the contract and its pin in one reviewed change, has a person run ./alz apply qualify, and supervises one DEV apply recorded with ./alz apply record-live. No GCP evidence exists yet. |
 
 ## Out of scope (9)
 

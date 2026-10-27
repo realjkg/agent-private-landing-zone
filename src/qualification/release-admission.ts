@@ -25,13 +25,9 @@ export const RELEASE_PLATFORMS = ["darwin-arm64", "darwin-x64", "linux-x64", "li
 export const PLATFORM_LIFECYCLE_CHECKS = [
   "install", "launch", "uninstall", "repeat-uninstall", "partial-install-recovery", "unusual-paths", "unrelated-files-preserved",
 ] as const;
-/**
- * The pilot paths a release can qualify live, each against its journey row (config/acceptance/journeys.json). GCP Terraform (path 5)
- * is a release requirement before GCP is an admitted provider: its gate stays unmet until `./alz apply record-live` can write a GCP
- * record, which needs the admitted contract, so naming it here only makes a release stricter.
- */
-export const ACT_RELEASE_PATHS: readonly { provider: ProviderId | "GCP"; engine: EngineId }[] = [
-  { provider: "AWS", engine: "TERRAFORM" }, { provider: "AZURE", engine: "TERRAFORM" }, { provider: "AWS", engine: "CDK" }, { provider: "GCP", engine: "TERRAFORM" },
+/** The pilot paths a release can qualify live, each against its journey row (config/acceptance/journeys.json). */
+export const ACT_RELEASE_PATHS: readonly { provider: ProviderId; engine: EngineId }[] = [
+  { provider: "AWS", engine: "TERRAFORM" }, { provider: "AZURE", engine: "TERRAFORM" }, { provider: "AWS", engine: "CDK" },
 ];
 /** Which cloud each live-provider gate's report must name. A gate missing here admits no report (never a default cloud). */
 const LIVE_PROVIDER_CLOUD: Readonly<Record<string, string>> = { "aws-provider": "AWS", "azure-provider": "AZURE", "gcp-provider": "GCP" };

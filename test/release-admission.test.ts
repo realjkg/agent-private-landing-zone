@@ -71,17 +71,18 @@ test("release gate registry covers actual AWS, Azure, Pulumi and production obli
     "platform:darwin-arm64", "platform:darwin-x64", "platform:linux-x64", "platform:linux-arm64", "platform:win32-arm64", "platform:win32-x64",
     "act:aws-terraform", "act:azure-terraform", "act:aws-cdk", "act-run-recovery", "security-review:independent",
     "preview:terraform-azure-brownfield",
-    "gcp-provider", "preview:terraform-gcp-brownfield", "act:gcp-terraform",
+    "gcp-provider", "preview:terraform-gcp-brownfield",
   ]) assert.ok(keys.includes(id), id);
 });
 
-test("the GCP gates are unmet requirements: they block an empty release, and no AWS or Azure evidence ever stands in for them", async () => {
+test("the GCP gates are unmet requirements: they block an empty release, and no AWS or Azure report ever stands in for them", async () => {
   assert.deepEqual(previewScenarioOf("preview:terraform-gcp-brownfield"), { provider: "GCP", engine: "TERRAFORM", estate: "brownfield" });
-  assert.ok(ACT_RELEASE_PATHS.some((path) => path.provider === "GCP" && path.engine === "TERRAFORM"));
+  // act:gcp-terraform waits for a Phase E GCP scenario (test/phase-e-simulated-builds.test.ts requires one per ACT path).
+  assert.equal(ACT_RELEASE_PATHS.some((path) => (path.provider as string) === "GCP"), false);
   const h = harness();
   try {
     const empty = await reviewProductionRelease({ manifest: input([]), expectedCommit: commit, root: h.root });
-    for (const id of ["gcp-provider", "preview:terraform-gcp-brownfield", "act:gcp-terraform"]) {
+    for (const id of ["gcp-provider", "preview:terraform-gcp-brownfield"]) {
       assert.equal(empty.gates.find((g) => g.id === id)?.status, "BLOCKED", id);
       assert.ok(empty.blockers.some((m) => m.includes(id)), id);
     }
@@ -98,12 +99,6 @@ test("the GCP gates are unmet requirements: they block an empty release, and no 
     assert.equal(await providerStatus("azure-provider", "GCP"), "BLOCKED");
     assert.equal(await providerStatus("azure-provider", "AZURE"), "EVIDENCE_PRESENT", "the existing gates are unchanged");
     assert.equal(await providerStatus("aws-provider", "AWS"), "EVIDENCE_PRESENT");
-    const live = { schemaVersion: 1, label: "LIVE", step: "execute", cloud: "AWS", engine: "TERRAFORM", environment: "DEV", sourceCommit: commit,
-      artifactSha256: "1".repeat(64), outcome: "SUCCEEDED", evidenceSha256: "2".repeat(64), contractSha256: "3".repeat(64), attestedBy: "owner", attestedAt: "2026-10-27T00:00:00.000Z" };
-    for (const cloud of ["AWS", "AZURE"]) {
-      const review = await reviewProductionRelease({ manifest: input([h.attach("act:gcp-terraform", "LIVE_ACT", { ...live, cloud })]), expectedCommit: commit, root: h.root });
-      assert.equal(review.gates.find((g) => g.id === "act:gcp-terraform")?.status, "BLOCKED", cloud);
-    }
   } finally { h.cleanup(); }
 });
 

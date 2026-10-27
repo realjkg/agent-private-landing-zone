@@ -101,6 +101,12 @@ test("every release gate is mapped, read as data without the registry; gates wit
   assert.equal(mode("platform:linux-x64"), "OWNER", "the merged lifecycle runner produces the platform gates on each host");
   assert.equal(mode("aws-provider"), "AUTO");
   assert.equal(mode("azure-provider"), "AUTO");
+  // GCP's gates are required before GCP is admitted: reported, never planned as AUTO or GUIDED, and never Azure's stage by default.
+  for (const id of ["gcp-provider", "preview:terraform-gcp-brownfield"]) {
+    assert.equal(mode(id), "NO_PRODUCER", id);
+    assert.match(plan.find((gate) => gate.id === id)!.note, /not an admitted provider/, id);
+  }
+  assert.equal(gatePlan(["other-provider"], new Set())[0].mode, "NO_PRODUCER");
   assert.equal(mode("private-model-runtime"), "OWNER");
   assert.equal(mode("act:aws-terraform"), "GUIDED");
   assert.match(plan.find((gate) => gate.id === "act:aws-cdk")!.note, /CDK_CLEANUP_NOT_IMPLEMENTED/);

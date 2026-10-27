@@ -492,21 +492,6 @@
       "nextAction": "The AWS CDK row is implemented end to end in the console with synthetic tests (stack tags carry the unit; CloudFormation's resource list is the blueprint; Cloud Control reads by CloudFormation type; cleanup is a removal change set that never deletes the stack). Qualify the three adapters on the real DEV account, then run the supervised DEV lifecycle."
     },
     {
-      "gate": "act:gcp-terraform",
-      "candidate": null,
-      "owner": "ENGINEERING",
-      "status": "NOT_RUN",
-      "evidenceMode": null,
-      "evidenceRefs": [],
-      "testedScope": "Full lifecycle on the real GCP DEV project through Terraform.",
-      "invalidatedBy": [
-        "the candidate commit changes",
-        "the pilot contract or its pin changes",
-        "src/apply or the Terraform pin changes"
-      ],
-      "nextAction": "Engineering owes GCP admission in the pilot contract (authorization lane), the provider spec, reader and classifier wiring (path 5: #305, #310), the driver-level emulated G1b (S6b, after #311), the bootstrap (#308), and console parity. Then the owner fills a DEV-only GCP contract, places the four credential configurations and token files on the execution host, commits the contract and its pin in one reviewed change, has a person run ./alz apply qualify, and supervises one DEV apply recorded with ./alz apply record-live. No GCP evidence exists yet."
-    },
-    {
       "gate": "act-run-recovery",
       "candidate": null,
       "owner": "OWNER",
