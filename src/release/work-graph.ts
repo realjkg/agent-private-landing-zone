@@ -5,9 +5,10 @@ import { PRODUCTION_RELEASE_GATES } from "../qualification/release-admission.js"
 
 /**
  * The release work graph (config/release/work-graph.json): the one dependency graph of the remaining release work, with
- * who owns each task, its branch and PR, its status and the gates it advances. It is the second of the release mandate's
- * three authoritative records, beside the release scope (config/release/scope.json) and the candidate and admission
- * record (the scope's candidate and manifest, and the admission report). What runs next is derived from it, not claimed.
+ * who owns each task, its branch and PR, its status, the gates it advances and the evidence that accepts it. It is the
+ * second of the release mandate's three authoritative records, beside the release scope (config/release/scope.json) and
+ * the candidate and admission record (the scope's candidate and manifest, and the admission report). What runs next is
+ * derived from it, not claimed. Status summaries (docs/work-graph.md) are generated from it, never kept by hand.
  */
 export const WORK_STATUSES = ["DONE", "IN_PROGRESS", "READY", "QUEUED", "BLOCKED", "HOLD"] as const;
 export type WorkStatus = typeof WORK_STATUSES[number];
@@ -28,6 +29,8 @@ export type WorkNode = {
   merges?: string[];
   /** Why the task cannot run, for BLOCKED and HOLD. */
   blockedBy?: string;
+  /** The evidence that proves the task done: the exact test, check or record, and on which head or target. Every task names it. */
+  acceptance: string;
   /** The next concrete action, for every task that is not DONE. */
   next?: string;
 };
@@ -37,7 +40,7 @@ const SHA = /^[0-9a-f]{40}$/;
 const ID = /^[a-z0-9][a-z0-9-]{1,63}$/;
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const text = (value: unknown, min = 1): value is string => typeof value === "string" && value.trim().length >= min;
-const KEYS = new Set(["id", "title", "owner", "status", "dependsOn", "gates", "branch", "prs", "merges", "blockedBy", "next"]);
+const KEYS = new Set(["id", "title", "owner", "status", "dependsOn", "gates", "branch", "prs", "merges", "blockedBy", "acceptance", "next"]);
 
 export function loadWorkGraph(root: string): unknown {
   return JSON.parse(readFileSync(join(root, "config", "release", "work-graph.json"), "utf8")) as unknown;
@@ -68,6 +71,7 @@ export function workGraphProblems(graph: unknown): string[] {
     if (node.prs !== undefined && !(Array.isArray(node.prs) && node.prs.every((x) => Number.isInteger(x) && x > 0))) problems.push(at + "prs must be PR numbers");
     if (node.merges !== undefined && !(Array.isArray(node.merges) && node.merges.every((x) => typeof x === "string" && SHA.test(x)))) problems.push(at + "merges must be full commit SHAs");
     if (node.branch !== undefined && !text(node.branch)) problems.push(at + "branch must name a branch");
+    if (!text(node.acceptance, 10)) problems.push(at + "acceptance must name the evidence that proves the task done");
     if (node.status === "DONE") {
       if (node.owner !== "OWNER" && !(node.merges && node.merges.length > 0)) problems.push(at + "DONE needs the merge commits that integrated it");
       if (node.next !== undefined) problems.push(at + "a DONE task has no next action");
@@ -101,6 +105,9 @@ export function runnableTasks(graph: WorkGraph): WorkNode[] {
     node.dependsOn.every((dep) => done.has(dep)));
 }
 
+/** Task ids that start with this prefix are execution paths: capabilities with their own acceptance evidence. */
+export const EXECUTION_PATH_PREFIX = "path-";
+
 /** The work graph as a readable page (docs/work-graph.md), from a graph that has already been checked. */
 export function renderWorkGraph(graph: WorkGraph): string {
   const cell = (value: string) => value.replaceAll("|", "\\|").replaceAll("\n", " ");
@@ -108,6 +115,26 @@ export function renderWorkGraph(graph: WorkGraph): string {
   const order: readonly WorkStatus[] = ["IN_PROGRESS", "READY", "BLOCKED", "QUEUED", "HOLD", "DONE"];
   const rows = [...graph.nodes].sort((a, b) => order.indexOf(a.status) - order.indexOf(b.status));
   const link = (node: WorkNode) => [node.branch ? "`" + node.branch + "`" : "", ...(node.prs ?? []).map((pr) => "#" + pr)].filter(Boolean).join(" ");
+  // The execution paths (ids starting "path-"), reported as blocker -> owner -> required evidence -> next action.
+  const byId = new Map(graph.nodes.map((node) => [node.id, node]));
+  const paths = graph.nodes.filter((node) => node.id.startsWith(EXECUTION_PATH_PREFIX));
+  const openDeps = (node: WorkNode) => node.dependsOn.filter((id) => byId.get(id)?.status !== "DONE");
+  const pathSection = paths.length === 0 ? [] : [
+    "## Execution paths",
+    "",
+    "**Paths completed:** " + paths.filter((node) => node.status === "DONE").length + " of " + paths.length + ".",
+    "",
+    "| Path | Status | Blocker | Owner | Required evidence | Next action |",
+    "| --- | --- | --- | --- | --- | --- |",
+    ...paths.map((node) => "| `" + node.id + "` " + cell(node.title) + " | " + node.status + " | " +
+      cell(node.status === "DONE" ? "none" : [
+        ...(openDeps(node).length ? ["open tasks " + openDeps(node).map((id) => "`" + id + "` (" + (byId.get(id)?.owner ?? "?") + ")").join(", ")] : []),
+        ...(node.blockedBy ? [node.blockedBy] : []),
+      ].join("; ") || "none") + " | " + node.owner + " | " + cell(node.acceptance) + " | " + cell(node.next ?? "none") + " |"),
+    "",
+    "## All tasks",
+    "",
+  ];
   return [
     "# Release work graph",
     "",
@@ -115,10 +142,11 @@ export function renderWorkGraph(graph: WorkGraph): string {
     "",
     "**Updated:** " + graph.updated + ". **Runnable now:** " + (runnable.size === 0 ? "none" : [...runnable].map((id) => "`" + id + "`").join(", ") + ".") ,
     "",
-    "| Task | Status | Owner | Depends on | Branch / PRs | Next action or result |",
-    "| --- | --- | --- | --- | --- | --- |",
+    ...pathSection,
+    "| Task | Status | Owner | Depends on | Branch / PRs | Acceptance evidence | Next action or result |",
+    "| --- | --- | --- | --- | --- | --- | --- |",
     ...rows.map((node) => "| `" + node.id + "` " + cell(node.title) + " | " + node.status + (runnable.has(node.id) ? " (runnable)" : "") + " | " + node.owner + " | " +
-      (node.dependsOn.length === 0 ? "none" : node.dependsOn.map((dep) => "`" + dep + "`").join(", ")) + " | " + cell(link(node) || "none") + " | " +
+      (node.dependsOn.length === 0 ? "none" : node.dependsOn.map((dep) => "`" + dep + "`").join(", ")) + " | " + cell(link(node) || "none") + " | " + cell(node.acceptance) + " | " +
       cell(node.status === "DONE" ? (node.merges?.length ? "Integrated: " + node.merges.map((sha) => "`" + sha.slice(0, 7) + "`").join(", ") : "Owner action complete") :
         (node.blockedBy ? "Blocked by: " + node.blockedBy + ". " : "") + (node.next ?? "")) + " |"),
     "",
