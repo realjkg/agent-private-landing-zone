@@ -3,7 +3,7 @@ import { join } from "node:path";
 
 import { mapTerraformActions } from "../../iac/terraform-plan.js";
 import {
-  INIT_ARGV, LARGE_OUTPUT_BYTES, PREVIEW_PLAN_ARGV, SHOW_ARGV, STATE_PULL_ARGV, VERSION_ARGV, WORKSPACE_SHOW_ARGV, assertModulesAreLocal,
+  LARGE_OUTPUT_BYTES, PREVIEW_PLAN_ARGV, SHOW_ARGV, STATE_PULL_ARGV, VERSION_ARGV, WORKSPACE_SHOW_ARGV, assertModulesAreLocal,
   createTerraformAdapter, isAllowedArgv, workspaceSelectArgv,
 } from "../../teardown/driver/adapters/terraform.js";
 import { removeTree } from "../../teardown/driver/cleanup.js";
@@ -14,7 +14,7 @@ import { MUTATION_IDENTITY_VARIABLE, ownsIdentityVariable } from "../../tools/id
 import { refusedVariables, runBoundedProcess, runStoppableProcess, type StoppableProcessOptions, type StoppableResult } from "../../tools/process.js";
 import { TERRAFORM_APPLY_PROFILE, type ProcessProfile } from "../../tools/profiles.js";
 import { sha256 } from "../../util/sha256.js";
-import { assertBackendBlock, type BackendBlockRule } from "../backend-block.js";
+import { assertNoBackendOverrideOrState, writeBackendOverride, type BackendType } from "../backend-pin.js";
 import { stripInvisible } from "../constants.js";
 import { checkedOutput, codeOf, stop, withoutIdentities } from "../engine.js";
 import type { EngineApplyRun, EngineCleanupRun, EngineContext, EngineSpec } from "../engine-spec.js";
@@ -60,8 +60,10 @@ type Session = {
   stoppable(args: readonly string[], identity: StepIdentity, profile: ProcessProfile, control: Pick<StoppableProcessOptions, "stopWhen" | "pollMs" | "graceMs" | "forwardSignals" | "onStop">): Promise<StoppableResult>;
   /** Identity variables the runner would refuse to hand this step, so a step that cannot be undone is never started with a partial identity. */
   refused(identity: StepIdentity, profile: ProcessProfile): string[];
-  /** The files, the lock file and the module sources, all against the manifest. */
+  /** The files, the lock file and the module sources, all against the manifest (and, once written, the product's backend override). */
   assertBound(): void;
+  /** Writes the product-owned backend override into the work copy and binds it: from then on `assertBound` expects it, byte for byte. */
+  pinBackend(type: BackendType): void;
 };
 
 type SessionInput = Pick<EngineContext, "scratchDir" | "env" | "toolDirs" | "manifest"> & {
@@ -77,6 +79,7 @@ function openSession(input: SessionInput): Session {
     identity: identity ?? "DISCOVERY", root: input.scratchDir, suppressDetail: true,
   });
   const guard = (args: readonly string[]): void => { if (!input.isAllowed(args)) stop("ARGV_NOT_ALLOWED"); };
+  let bound = input.manifest;
   return {
     work,
     step(args, identity, large = false) {
@@ -92,9 +95,14 @@ function openSession(input: SessionInput): Session {
       return refusedVariables(options(identity, profile));
     },
     assertBound() {
-      const difference = projectDifference(work, input.manifest);
+      const difference = projectDifference(work, bound);
       if (difference) stop(difference);
       assertModulesAreLocal(work);
+    },
+    pinBackend(type) {
+      if (bound !== input.manifest) return stop("BACKEND_ALREADY_PINNED");
+      const entry = writeBackendOverride(work, type);
+      bound = { ...input.manifest, files: [...input.manifest.files, entry] };
     },
   };
 }
@@ -106,24 +114,29 @@ type WorkspaceInput = {
   initArgv: readonly string[];
   /** The identity that owns the backend: STATE to read for a preview, STATE_WRITE to write for an apply. */
   stateIdentity: "STATE" | "STATE_WRITE";
-  /** The provider's rule for the project's own backend block, judged before init reads it (`ProviderSpec.backendBlock`). */
-  backendBlock?: BackendBlockRule;
-  /** Runs between the version check and init (the apply writes its backend configuration here). */
+  /** The backend type the product override pins (`ProviderSpec.backendType`). Every init in the pilot runs with it. */
+  backendType: BackendType;
+  /** Runs between the version check and init (writes the product's `-backend-config` file). */
   beforeInit?: () => void;
   afterInit?: () => void;
 };
 
 /**
  * The one init and workspace sequence: a writable copy of the snapshot that
- * must equal the manifest, the pinned engine version, backend initialization,
- * and the target's workspace. Locking stays on: there is no -lock flag in any
- * argument list. Nothing here changes state.
+ * must equal the manifest, the backend pin (docs/act-pilot-backend-pinning.md),
+ * the pinned engine version, backend initialization, and the target's
+ * workspace. Locking stays on: there is no -lock flag in any argument list.
+ * Nothing here changes state.
  */
 function prepareWorkspace(session: Session, input: WorkspaceInput): void {
   const copyProblem = copyTree(input.snapshotPath, session.work);
   if (copyProblem) stop(copyProblem);
-  // init builds .terraform itself; one that arrived with the snapshot could hold modules or providers nobody reviewed.
-  if (existsSync(join(session.work, ".terraform"))) stop("PRE_EXISTING_TERRAFORM_DIRECTORY");
+  // By name, before anything reads the copy: no other override file (it could outrank ours) and no saved state or data
+  // directory (init could reuse or migrate it). The data directory init builds is therefore always fresh and empty.
+  assertNoBackendOverrideOrState(session.work);
+  session.assertBound();
+  // The project's own backend, cloud or state_store block is replaced: init builds only this type, with only the product's settings.
+  session.pinBackend(input.backendType);
   session.assertBound();
 
   let reported: unknown;
@@ -133,7 +146,6 @@ function prepareWorkspace(session: Session, input: WorkspaceInput): void {
   }
   if (reported !== input.engineVersion) stop("ENGINE_VERSION_MISMATCH");
 
-  if (input.backendBlock) assertBackendBlock(session.work, input.backendBlock);
   input.beforeInit?.();
   try { session.step(input.initArgv, input.stateIdentity); } finally { input.afterInit?.(); }
   session.assertBound();
@@ -290,10 +302,10 @@ function unitOfPlan(shown: string, judge: Judge, unit: PilotUnit): SealedUnit {
 const isPlainRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
 /** Sealing and re-deriving run the preview adapter's argument lists under the apply path's restricted profile: no CLI configuration file, no plugin cache. */
-const sealSession = (input: Pick<EngineContext, "scratchDir" | "env" | "toolDirs" | "manifest">, embedStateWrite = false): Session => openSession({
+const sealSession = (input: Pick<EngineContext, "scratchDir" | "env" | "toolDirs" | "manifest">): Session => openSession({
   scratchDir: input.scratchDir, env: sealEnvironment(input.env), toolDirs: input.toolDirs, manifest: input.manifest,
-  // The one extra shape, and only when the contract opts in: init with the partial backend file (`APPLY_INIT_ARGV`). Every other list is the preview adapter's.
-  isAllowed: (args) => isAllowedArgv("TERRAFORM", "terraform", args) || (embedStateWrite && sameArgv(args, APPLY_INIT_ARGV)),
+  // The one extra shape: init with the product's backend file (`APPLY_INIT_ARGV`), since the pinned backend has no settings of its own. Every other list is the preview adapter's.
+  isAllowed: (args) => isAllowedArgv("TERRAFORM", "terraform", args) || sameArgv(args, APPLY_INIT_ARGV),
   profile: TERRAFORM_APPLY_PROFILE,
 });
 const sameArgv = (a: readonly string[], b: readonly string[]): boolean => a.length === b.length && a.every((arg, index) => arg === b[index]);
@@ -343,7 +355,7 @@ function openApply(input: EngineContext & { target: ResolvedTarget; engineVersio
     // the APPLY identity, because an apply cannot be undone.
     prepare(snapshotPath) {
       prepareWorkspace(session, {
-        snapshotPath, engineVersion: input.engineVersion, target: input.target, initArgv: APPLY_INIT_ARGV, stateIdentity: "STATE_WRITE", backendBlock: spec.backendBlock,
+        snapshotPath, engineVersion: input.engineVersion, target: input.target, initArgv: APPLY_INIT_ARGV, stateIdentity: "STATE_WRITE", backendType: spec.backendType,
         beforeInit: () => writeFileSync(backendConfigPath, spec.backendConfig(env, pinned), { mode: 0o600, flag: "wx" }),
         afterInit: () => rmSync(backendConfigPath, { force: true }),
       });
@@ -410,7 +422,7 @@ function openCleanup(input: EngineContext & { target: ResolvedTarget; engineVers
   return {
     prepare(snapshotPath) {
       prepareWorkspace(session, {
-        snapshotPath, engineVersion: input.engineVersion, target: input.target, initArgv: APPLY_INIT_ARGV, stateIdentity: "STATE_WRITE", backendBlock: spec.backendBlock,
+        snapshotPath, engineVersion: input.engineVersion, target: input.target, initArgv: APPLY_INIT_ARGV, stateIdentity: "STATE_WRITE", backendType: spec.backendType,
         beforeInit: () => writeFileSync(backendConfigPath, spec.backendConfig(env, pinned), { mode: 0o600, flag: "wx" }),
         afterInit: () => rmSync(backendConfigPath, { force: true }),
       });
@@ -491,19 +503,16 @@ export const TERRAFORM: EngineSpec = {
     const planFile = join(input.scratchDir, SEAL_PLAN_FILE);
     const embed = input.embedStateWrite === true;
     const backendConfigPath = join(input.scratchDir, APPLY_BACKEND_CONFIG_FILE);
-    const session = sealSession(input, embed);
+    const session = sealSession(input);
     try {
       prepareWorkspace(session, {
         snapshotPath: input.snapshotPath, engineVersion: input.engineVersion, target: input.target,
-        stateIdentity: "STATE", backendBlock: input.spec.backendBlock,
-        // Opt-in: init with STATE_WRITE's non-secret backend settings (written 0600, removed as soon as init ends), so the plan embeds them.
-        ...(embed
-          ? {
-            initArgv: APPLY_INIT_ARGV,
-            beforeInit: () => writeFileSync(backendConfigPath, input.spec.backendConfig(nonSecretStateWrite(input.env), input.pinned), { mode: 0o600, flag: "wx" }),
-            afterInit: () => rmSync(backendConfigPath, { force: true }),
-          }
-          : { initArgv: INIT_ARGV }),
+        stateIdentity: "STATE", backendType: input.spec.backendType, initArgv: APPLY_INIT_ARGV,
+        // The contract's backend location (written 0600, removed as soon as init ends), and on opt-in STATE_WRITE's non-secret settings too, so the plan embeds them.
+        beforeInit: () => writeFileSync(backendConfigPath, embed
+          ? input.spec.backendConfig(nonSecretStateWrite(input.env), input.pinned)
+          : input.spec.backendLocation(input.pinned), { mode: 0o600, flag: "wx" }),
+        afterInit: () => rmSync(backendConfigPath, { force: true }),
       });
       // The plan embeds the backend this init saved (docs/act-pilot-simulation.md), so it is judged here as well as at apply.
       assertBackendInContract(session.work, input.pinned, input.spec);
