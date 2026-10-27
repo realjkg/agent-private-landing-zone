@@ -675,7 +675,7 @@ test("one install of a tool at a time: a second run finds the lock and changes n
   );
   assert.equal(fetches, 0);
   assert.equal(readFileSync(lock, "utf8").trim(), JSON.stringify({ pid: 4242, startedAt: "2026-10-27T00:00:00.000Z" }), "the other run's lock is untouched");
-  assert.deepEqual(readdirSync(join(home, ".alz", "tools", "ollama")), [], "nothing was swept or installed under the lock");
+  assert.ok(!existsSync(join(home, ".alz", "tools", "ollama")), "nothing was swept or installed under the lock: the tool folder was never created");
   // An unreadable lock is somebody's too.
   writeFileSync(lock, "not json");
   await assert.rejects(installTool("ollama", { pins: pinsWith(good.sha256), home, platform: "darwin-arm64", download: fetchFrom(good.file), pidAlive: DEAD }),
@@ -744,6 +744,8 @@ test("a removal that stops after the folder is renamed aside leaves the final pa
   assert.deepEqual(readdirSync(toolDir(home)), [PINNED_OLLAMA + ".removing-" + process.pid], "the folder waits aside under this pid");
   assert.ok(existsSync(join(toolDir(home), PINNED_OLLAMA + ".removing-" + process.pid, "ollama")), "renamed, not deleted in place");
   assert.equal(removeInstalledTool(home, "ollama", PINNED_OLLAMA), "absent");
-  assert.deepEqual(sweepLeftovers(home, "ollama", { pidAlive: DEAD }).removed.map((path) => path.slice(home.length)), ["/.alz/tools/ollama/0.40.0.removing-" + process.pid]);
-  assert.deepEqual(readdirSync(toolDir(home)), []);
+  // The folder aside carries this process's pid, which is alive, so no sweep (even one told every pid is dead) touches it; a
+  // later run, once this pid is proven dead, removes it as the sweep test shows for pid 1111.
+  assert.deepEqual(sweepLeftovers(home, "ollama", { pidAlive: DEAD }).removed, []);
+  assert.deepEqual(readdirSync(toolDir(home)), [PINNED_OLLAMA + ".removing-" + process.pid]);
 });
