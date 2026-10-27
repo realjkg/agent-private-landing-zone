@@ -6,7 +6,7 @@ import test from "node:test";
 
 import { codeOf } from "../src/apply/engine.js";
 import { engineSpec } from "../src/apply/engine-spec.js";
-import { AZ_STACK_PROFILE, BICEP, DENY_SETTINGS_MODE, azWouldExpandFile, checkTemplate, isAllowedBicepArgv, pinnedBicepVersion } from "../src/apply/engines/bicep.js";
+import { AZURE_NAME, AZ_STACK_PROFILE, BICEP, DENY_SETTINGS_MODE, RESOURCE_GROUP_TEMPLATE_SCHEMA, azWouldExpandFile, checkTemplate, isAllowedBicepArgv, pinnedBicepVersion } from "../src/apply/engines/bicep.js";
 import { AZURE } from "../src/apply/providers/azure.js";
 import { loadToolPins } from "../src/deps/pins.js";
 import { createDiscoveryArmReader } from "../src/observe/azure-rest.js";
@@ -371,3 +371,113 @@ test("qualify: both versions, both sign-ins and read-only calls as each identity
   assert.ok(azCalls().every((call) => ["version", "login", "account", "group"].includes(call.args[0]) || sub(call) === "stack group show"));
   assert.deepEqual([...new Set(azCalls().filter((call) => sub(call) === "stack group show").map((call) => call.who))].sort(), ["APPLY", "DISCOVERY"]);
 });
+
+// --- review 6449621747 -------------------------------------------------------------------------------------------------
+
+/** Runs `use` with the az profile's time limit or output cap lowered, as a timeout or a chatty az would hit them, then restores it. */
+async function withAzLimits<T>(over: { timeoutMs?: number; maxOutputBytes?: number }, use: () => Promise<T>): Promise<T> {
+  const saved = { timeoutMs: AZ_STACK_PROFILE.timeoutMs, maxOutputBytes: AZ_STACK_PROFILE.maxOutputBytes };
+  Object.assign(AZ_STACK_PROFILE, over);
+  try { return await use(); } finally { Object.assign(AZ_STACK_PROFILE, saved); }
+}
+const showsAfter = (name: string) => { const all = azCalls(); const at = all.findIndex((call) => sub(call) === name); return all.slice(at + 1).filter((call) => sub(call) === "stack group show").length; };
+
+test("B1: a create with no exit code (az killed at its time limit, or at the output cap) after the request may have reached ARM is PARTIAL_REQUIRES_REVIEW, never FAILED_NO_CHANGE", async () => {
+  const w = world({ createSleepMs: 3000 });
+  const sealed = seal(w);
+  const timedOut = await withAzLimits({ timeoutMs: 1000 }, () => apply(w, sealed.artifact));
+  assert.equal(timedOut.result.exitCode, null);
+  assert.deepEqual(timedOut.end, { outcome: "PARTIAL_REQUIRES_REVIEW" });
+  const v = world({ createOutputBytes: 200_000 });
+  const capped = await withAzLimits({ maxOutputBytes: 64 * 1024 }, () => apply(v, seal(v).artifact));
+  assert.notEqual(capped.result.exitCode, 0);
+  assert.deepEqual(capped.end, { outcome: "PARTIAL_REQUIRES_REVIEW" });
+});
+
+test("B1: a refused create is FAILED_NO_CHANGE only after several reads show the stack unmoved; a stack that appears after a lost response is PARTIAL_REQUIRES_REVIEW", async () => {
+  const w = world({ createFail: true });
+  assert.deepEqual((await apply(w, seal(w).artifact)).end, { outcome: "FAILED_NO_CHANGE" });
+  assert.ok(showsAfter("stack group create") >= 3, "positive evidence: at least three reads of the unmoved stack after the refusal");
+  const v = world({ createLostAppearAfter: 2 });
+  const late = await apply(v, seal(v).artifact);
+  assert.equal(late.result.exitCode, 1);
+  assert.deepEqual(late.end, { outcome: "PARTIAL_REQUIRES_REVIEW" }, "az said no, but the stack appeared");
+});
+
+test("B1: a cleanup delete with no definite answer is never FAILED_NO_CHANGE: the time limit stops it (KILLED), the output cap leaves it PARTIAL_REQUIRES_REVIEW, and a definite refusal needs several unchanged reads", async () => {
+  const w = world();
+  await apply(w, seal(w).artifact);
+  patch(toolDir, { deleteSleepMs: 3000 });
+  const timedOut = await withAzLimits({ timeoutMs: 1000 }, () => cleanup(w, [VNET_ID]));
+  assert.equal(timedOut.result.stopped, true, "the stoppable runner reports its time limit as a stop");
+  assert.deepEqual(timedOut.end, { outcome: "KILLED" });
+
+  const v = world();
+  await apply(v, seal(v).artifact);
+  patch(toolDir, { deleteOutputBytes: 200_000 });
+  const capped = await withAzLimits({ maxOutputBytes: 64 * 1024 }, () => cleanup(v, [VNET_ID]));
+  assert.equal(capped.result.truncated, true);
+  assert.deepEqual(capped.end, { outcome: "PARTIAL_REQUIRES_REVIEW" });
+  patch(toolDir, { deleteOutputBytes: 0, deleteFail: true });
+  assert.deepEqual((await cleanup(v, [VNET_ID])).end, { outcome: "FAILED_NO_CHANGE" });
+  assert.ok(showsAfter("stack group delete") >= 3, "positive evidence: at least three reads of the unchanged stack after the refusal");
+});
+
+test("N1: the template is one empty VNet: exactly one resource, addressSpace only, no subnets, delegations, peerings, DDoS plan, outputs, functions or list* calls", () => {
+  const vnet = (extra: Record<string, unknown> = {}, properties: Record<string, unknown> = {}) => ({
+    type: "Microsoft.Network/virtualNetworks", apiVersion: "2024-05-01", name: VNET, location: "eastus2", tags: UNIT.tags,
+    properties: { addressSpace: { addressPrefixes: ["10.250.0.0/24"] }, ...properties }, ...extra,
+  });
+  assert.doesNotThrow(() => checkTemplate(vnetTemplate()));
+  const refused: Array<[string, string]> = [
+    ["two VNets", vnetTemplate({ resources: [vnet(), { ...vnet(), name: "second" }] })],
+    ["a subnet with a delegation", vnetTemplate({ resources: [vnet({}, { subnets: [{ name: "s", properties: { addressPrefix: "10.250.0.0/26", delegations: [{ name: "d", properties: { serviceName: "Microsoft.Web/serverFarms" } }] } }] })] })],
+    ["a plain subnet", vnetTemplate({ resources: [vnet({}, { subnets: [{ name: "s", properties: { addressPrefix: "10.250.0.0/26" } }] })] })],
+    ["a peering", vnetTemplate({ resources: [vnet({}, { virtualNetworkPeerings: [{ name: "p", properties: { remoteVirtualNetwork: { id: "/subscriptions/99999999-9999-4999-8999-999999999999/x" } } }] })] })],
+    ["a DDoS plan", vnetTemplate({ resources: [vnet({}, { enableDdosProtection: true, ddosProtectionPlan: { id: "/x" } })] })],
+    ["an extra address-space key", vnetTemplate({ resources: [vnet({}, { addressSpace: { addressPrefixes: ["10.0.0.0/8"], ipamPoolPrefixAllocations: [] } })] })],
+    ["a dependsOn", vnetTemplate({ resources: [vnet({ dependsOn: ["x"] })] })],
+    ["a list* call in a tag", vnetTemplate({ tags: { ...UNIT.tags, leak: "[listKeys(resourceId('other-rg', 'Microsoft.Storage/storageAccounts', 's'), '2023-01-01').keys[0].value]" } })],
+  ];
+  for (const [what, template] of refused) assert.throws(() => checkTemplate(template), refusedWith("TEMPLATE_SHAPE_NOT_ALLOWED"), what);
+  const withOutputs = JSON.parse(vnetTemplate());
+  withOutputs.outputs = { key: { type: "string", value: "[listKeys('x', '2023-01-01').keys[0].value]" } };
+  assert.throws(() => checkTemplate(JSON.stringify(withOutputs)), refusedWith("TEMPLATE_SHAPE_NOT_ALLOWED"), "outputs");
+  const plainOutputs = JSON.parse(vnetTemplate());
+  plainOutputs.outputs = { id: { type: "string", value: "x" } };
+  assert.throws(() => checkTemplate(JSON.stringify(plainOutputs)), refusedWith("TEMPLATE_SHAPE_NOT_ALLOWED"), "any outputs");
+  const functions = JSON.parse(vnetTemplate());
+  functions.functions = [];
+  assert.throws(() => checkTemplate(JSON.stringify(functions)), refusedWith("TEMPLATE_SHAPE_NOT_ALLOWED"), "user functions");
+});
+
+test("N4: the schema must be the full resource-group deployment template URL, host included", () => {
+  assert.equal(RESOURCE_GROUP_TEMPLATE_SCHEMA, "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#");
+  for (const schema of ["https://evil.example/x/deploymentTemplate.json#", "http://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#", "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json"]) {
+    assert.throws(() => checkTemplate(vnetTemplate({ schema })), refusedWith("TEMPLATE_SHAPE_NOT_ALLOWED"), schema);
+  }
+});
+
+test("N2: a stack or resource group name starts with a letter or digit, so a value can never read as an option", () => {
+  for (const name of ["--deny-settings-excluded-principals", "--debug", "-x", "_group", ".group", "group."]) {
+    assert.equal(AZURE_NAME.test(name), false, name);
+    assert.equal(BICEP.target!.backendOk(name), false, name);
+    assert.equal(BICEP.target!.fields.resourceGroup(name), false, name);
+  }
+  for (const name of [RESOURCE_GROUP, STACK_NAME, "a", "A1_b-c.d"]) assert.equal(AZURE_NAME.test(name), true, name);
+  const create = ["stack", "group", "create", "--name", STACK_NAME, "--resource-group", "--deny-settings-excluded-principals", "--template-file", "/scratch/template/alz-template.json",
+    "--deny-settings-mode", DENY_SETTINGS_MODE, "--deny-settings-apply-to-child-scopes", "--action-on-unmanage", "deleteResources",
+    "--tags", "alz-build=alz-pilot-dev-0123456789ab", "alz-managed-by=alz", "alz-unit=alz-unit-0123456789abcdef", "--yes", "--no-wait", "--subscription", SUBSCRIPTION_ID, "--output", "none"];
+  assert.equal(isAllowedBicepArgv("az", "APPLY", create, "apply"), false, "an option-like resource group value is refused by the slot itself");
+});
+
+test("N3: an existing stack must carry exactly the unit's tags, keys and values, at seal and at apply", async () => {
+  const w = world();
+  await apply(w, seal(w).artifact);
+  const next = world({}, vnetTemplate({ addressPrefix: "10.251.0.0/24" }), w.env);
+  writeFileSync(join(toolDir, "state.json"), JSON.stringify({ stack: { name: STACK_NAME, state: "succeeded", deploymentId: "y", lastModified: "2026-10-27T15:00:00Z", tags: { ...UNIT.tags, "alz-unit": "alz-unit-someone-else" }, denyMode: DENY_SETTINGS_MODE, childScopes: true, resources: [VNET_ID] } }));
+  assert.throws(() => seal(next), refusedWith("STACK_TAGS_UNKNOWN"));
+  patch(toolDir, { stackTags: { ...UNIT.tags, extra: "x" } });
+  assert.throws(() => seal(next), refusedWith("STACK_TAGS_UNKNOWN"), "an extra key");
+});
+

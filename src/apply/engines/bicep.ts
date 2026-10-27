@@ -68,8 +68,11 @@ type Shape = readonly Slot[];
 const slot = (name: string, ok: (value: string) => boolean): Slot => ({ name, ok });
 
 const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-/** A stack or resource group name: letters, digits, `.`, `_`, `-`, up to 90, not ending in `.`. No `@` and no `=`, which az would expand as a file. */
-export const AZURE_NAME = /^[A-Za-z0-9_-](?:[A-Za-z0-9._-]{0,88}[A-Za-z0-9_-])?$/;
+/**
+ * A stack or resource group name: a letter or digit first (so a value never reads as an option such as `--debug`), then letters,
+ * digits, `.`, `_`, `-`, up to 90, not ending in `.`. No `@` and no `=`, which az would expand as a file.
+ */
+export const AZURE_NAME = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,88}[A-Za-z0-9_-])?$/;
 const TEMPLATE_PATH = /^\/[A-Za-z0-9._/-]{1,1024}\/alz-template\.json$/;
 
 const SUB = slot("subscription", (v) => GUID.test(v));
@@ -282,21 +285,40 @@ function compile(session: Session): string {
   return text;
 }
 
+/** The one schema a resource-group deployment template compiled by Bicep names, host included. */
+export const RESOURCE_GROUP_TEMPLATE_SCHEMA = "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#";
+/** What the template, the one resource and its properties may hold: refuse by default, so "one empty VNet" is the only shape. */
+const TEMPLATE_KEYS = new Set(["$schema", "languageVersion", "contentVersion", "metadata", "parameters", "variables", "resources"]);
+const RESOURCE_KEYS = new Set(["type", "apiVersion", "name", "location", "tags", "properties"]);
+/** An ARM `list*` function (listKeys, listSecrets, listAccountSas, ...): it reads secrets of other resources at deploy time. */
+const LIST_FUNCTION = /\blist[A-Za-z0-9]*\s*\(/i;
+
 /**
- * The refusals that keep the template to the minimal workload (UNVERIFIED (A4): Bicep's output shape): a resource-group
- * deployment template whose every resource is a virtual network. No module (a nested deployment), no existing or extension
- * resource, no inline child resource, and no resource group: the run never creates one. Reads text; runs nothing.
+ * The refusals that keep the template to the minimal workload, one empty virtual network (UNVERIFIED (A4): Bicep's output shape;
+ * coordinator decision 6444382695). Exactly the resource-group deployment schema; exactly one resource, of type
+ * `Microsoft.Network/virtualNetworks`; its properties only `addressSpace.addressPrefixes`, so no subnet (and no delegation), no
+ * peering and no `ddosProtectionPlan`; no module, existing, extension, child or copied resource; no outputs or functions; and no
+ * `list*` call anywhere. A resource group is refused like any other type: the run never creates one. Reads text; runs nothing.
  */
 export function checkTemplate(text: string): void {
   const template = parse(text, "TEMPLATE_UNREADABLE");
   if (!isRecord(template)) return stop("TEMPLATE_UNREADABLE");
-  if (typeof template.$schema !== "string" || !/\/deploymentTemplate\.json#$/.test(template.$schema)) stop("TEMPLATE_SHAPE_NOT_ALLOWED");
+  if (template.$schema !== RESOURCE_GROUP_TEMPLATE_SCHEMA) stop("TEMPLATE_SHAPE_NOT_ALLOWED");
+  if (Object.keys(template).some((key) => !TEMPLATE_KEYS.has(key))) stop("TEMPLATE_SHAPE_NOT_ALLOWED");
+  if (LIST_FUNCTION.test(text)) stop("TEMPLATE_SHAPE_NOT_ALLOWED");
   const resources = Array.isArray(template.resources) ? template.resources : isRecord(template.resources) ? Object.values(template.resources) : stop("TEMPLATE_SHAPE_NOT_ALLOWED");
   if (resources.length === 0) stop("NO_CHANGES_TO_APPLY");
   for (const resource of resources) {
     if (!isRecord(resource) || typeof resource.type !== "string") return stop("TEMPLATE_SHAPE_NOT_ALLOWED");
     if (resource.type.toLowerCase() !== ALLOWED_RESOURCE_TYPE.toLowerCase()) stop("RESOURCE_TYPE_NOT_ALLOWED");
-    if (resource.existing !== undefined || resource.scope !== undefined || resource.resources !== undefined || resource.copy !== undefined) stop("TEMPLATE_SHAPE_NOT_ALLOWED");
+  }
+  if (resources.length !== 1) stop("TEMPLATE_SHAPE_NOT_ALLOWED");
+  const vnet = resources[0] as Record<string, unknown>;
+  if (Object.keys(vnet).some((key) => !RESOURCE_KEYS.has(key))) stop("TEMPLATE_SHAPE_NOT_ALLOWED");
+  const properties = vnet.properties;
+  const space = isRecord(properties) ? properties.addressSpace : undefined;
+  if (!isRecord(properties) || Object.keys(properties).join() !== "addressSpace" || !isRecord(space) || Object.keys(space).join() !== "addressPrefixes" || !Array.isArray(space.addressPrefixes)) {
+    stop("TEMPLATE_SHAPE_NOT_ALLOWED");
   }
 }
 
@@ -334,11 +356,15 @@ function readStack(session: Session, who: "DISCOVERY" | "APPLY", pinned: BicepTa
   return { ...view, tags, fingerprint: sha256(canonicalJson({ ...view, managed: managed.map((id) => id.toLowerCase()), deny })) };
 }
 
-/** A stack the engine may seal against, update or clean up: settled, protected, and carrying exactly the unit's tag keys. */
-function assertStackUsable(view: StackView): void {
+/**
+ * A stack the engine may seal against, update or clean up: settled, protected, and carrying exactly the unit's three tags. Seal and
+ * apply know the unit and require its values too; a cleanup is given no unit, so it requires the three keys.
+ */
+function assertStackUsable(view: StackView, unit?: Readonly<Record<string, string>>): void {
   if (!FINAL_STATES.has(view.state)) stop("STACK_STATE_UNSUITABLE");
   if (!view.denyOk) stop("DENY_SETTINGS_OFF");
   if (Object.keys(view.tags).sort().join() !== UNIT_TAG_KEYS.join()) stop("STACK_TAGS_UNKNOWN");
+  if (unit !== undefined && UNIT_TAG_KEYS.some((key) => view.tags[key] !== unit[key])) stop("STACK_TAGS_UNKNOWN");
 }
 
 /** The ARM id is a virtual network in the contract's subscription and resource group: the only thing this engine changes. */
@@ -462,7 +488,7 @@ function plan(input: EngineContext & { snapshotPath: string; engineVersion: stri
     assertUsable(group);
     if (!group.ok) stop(/ResourceGroupNotFound|could not be found/i.test(group.stderr) ? "RESOURCE_GROUP_NOT_FOUND" : "RESOURCE_GROUP_UNREADABLE");
     const stack = readStack(session, "DISCOVERY", pinned);
-    if (stack !== undefined) assertStackUsable(stack);
+    if (stack !== undefined) assertStackUsable(stack, input.unit.tags);
     writeTemplate(session, template);
     const changes = whatIf(session, pinned, stack?.managed ?? [], input.unit.tags);
     const record: SealedRecord = {
@@ -500,12 +526,21 @@ const APPLY_DEADLINE_MS = 60 * 60_000;
 const POLL_MS = 2_000;
 const MAX_UNSTARTED_POLLS = 30;
 const MAX_UNREADABLE_POLLS = 3;
+/**
+ * FAILED_NO_CHANGE needs positive evidence, as the CDK engine's does: az ran to completion with a definite non-zero exit (not a
+ * timeout, an output cap or a spawn failure, which all give no exit code), and this many reads over the poll window show the stack
+ * unmoved. A stack can appear after a lost response, so one read is not enough.
+ */
+const UNMOVED_READS_FOR_NO_CHANGE = 3;
+/** az gave a definite answer: it ran to completion (an exit code, nothing cut off, no refused environment). */
+const definite = (result: Pick<ToolResult, "exitCode" | "truncated" | "refusedEnvironment">): boolean =>
+  typeof result.exitCode === "number" && result.truncated !== true && !(result.refusedEnvironment?.length);
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => { setTimeout(resolve, ms); });
 const outcomeResult = (over: Partial<StoppableResult>): StoppableResult => ({ tool: "azure_deployment_stack", ok: false, exitCode: null, stdout: "", stderr: "", durationMs: 0, stopped: false, ...over });
 
 /** The stack as last read: a view, known absent, or unreadable. */
 type Seen = StackView | "ABSENT" | undefined;
-type Ran = { exit: number | null; seen: Seen; stopped: boolean };
+type Ran = { exit: number | null; definite: boolean; unmovedReads: number; seen: Seen; stopped: boolean };
 const fingerprintOf = (seen: Seen): string | undefined => (seen === "ABSENT" ? ABSENT_FINGERPRINT : seen?.fingerprint);
 const movedFrom = (before: Seen, seen: Seen): boolean =>
   seen !== undefined && seen !== "ABSENT" && (before === "ABSENT" || (before !== undefined && (seen.deploymentId !== before.deploymentId || seen.lastModified !== before.lastModified)));
@@ -519,7 +554,7 @@ function openApply(input: EngineRunInput): BicepApplyRun {
   const session = openSession(input, "apply");
   let before: Seen;
   let sealed: SealedRecord | undefined;
-  let ran: Ran = { exit: null, seen: undefined, stopped: false };
+  let ran: Ran = { exit: null, definite: false, unmovedReads: 0, seen: undefined, stopped: false };
   const stackNow = (): Seen => readStack(session, "APPLY", pinned) ?? "ABSENT";
   return {
     prepare(snapshotPath) {
@@ -533,7 +568,7 @@ function openApply(input: EngineRunInput): BicepApplyRun {
       // The project, compiled again by the pinned bicep, is exactly the sealed template: any change after the seal is refused.
       if (compile(session) !== record.template) stop("ARTIFACT_TAMPERED");
       checkTemplate(record.template);
-      if (before !== "ABSENT") assertStackUsable(before);
+      if (before !== "ABSENT") assertStackUsable(before, unitOfTags(record.tags));
       // The stack is as it was when the plan was sealed; a stack an earlier apply moved (this artifact's own, too) is refused here.
       if (fingerprintOf(before) !== record.stackSha256) stop("PLAN_STALE");
       writeTemplate(session, record.template);
@@ -554,15 +589,17 @@ function openApply(input: EngineRunInput): BicepApplyRun {
       if (sha256(readFileSync(session.templatePath, "utf8")) !== record.templateSha256) stop("ARTIFACT_TAMPERED");
       before = now;
       // From the create call on nothing throws: Azure may have accepted the stack.
-      ran = { exit: null, seen: undefined, stopped: false };
-      let signalled = false;
-      const release = interceptStopSignals(() => { signalled = true; });
+      ran = { exit: null, definite: false, unmovedReads: 0, seen: undefined, stopped: false };
+      let signaled = false;
+      const release = interceptStopSignals(() => { signaled = true; });
       try {
-        ran.exit = session.run("APPLY", [
+        const created = session.run("APPLY", [
           "stack", "group", "create", "--name", pinned.backend, "--resource-group", pinned.resourceGroup, "--template-file", session.templatePath,
           "--deny-settings-mode", DENY_SETTINGS_MODE, "--deny-settings-apply-to-child-scopes", "--action-on-unmanage", ACTION_ON_UNMANAGE,
           "--tags", ...record.tags, "--yes", "--no-wait", "--subscription", pinned.subscriptionId, "--output", "none",
-        ]).exitCode;
+        ]);
+        ran.exit = created.exitCode;
+        ran.definite = definite(created);
         const deadline = Date.now() + APPLY_DEADLINE_MS;
         let unreadable = 0;
         let unstarted = 0;
@@ -574,11 +611,13 @@ function openApply(input: EngineRunInput): BicepApplyRun {
           } else {
             unreadable = 0;
             if (!movedFrom(before, seen)) {
-              if (ran.exit !== 0 || ++unstarted > MAX_UNSTARTED_POLLS) break;
-            } else if (FINAL_STATES.has((seen as StackView).state)) break;
+              // A refused create is judged only after several unmoved reads; anything else waits for the stack to move or for the limit.
+              if (ran.exit === 0 && ran.definite) { if (++unstarted > MAX_UNSTARTED_POLLS) break; }
+              else if (++ran.unmovedReads >= (ran.definite ? UNMOVED_READS_FOR_NO_CHANGE : MAX_UNSTARTED_POLLS)) break;
+            } else { ran.unmovedReads = 0; if (FINAL_STATES.has((seen as StackView).state)) break; }
           }
           // UNVERIFIED (A3): no cancel is in the allowlist, so a stop ends the watch and the create runs on in Azure.
-          if (signalled || control.stopWhen() || Date.now() > deadline) { ran.stopped = true; break; }
+          if (signaled || control.stopWhen() || Date.now() > deadline) { ran.stopped = true; break; }
           await sleep(control.pollMs ?? POLL_MS);
         }
       } catch {
@@ -592,9 +631,10 @@ function openApply(input: EngineRunInput): BicepApplyRun {
     settle(): ApplyEnd {
       if (sealed === undefined || before === undefined) return stop("ENGINE_NOT_PREPARED");
       const seen = ran.seen;
-      if (ran.exit === 0 && movedFrom(before, seen) && seen !== undefined && seen !== "ABSENT" && seen.state === "succeeded" && seen.failed === 0 && seen.denyOk) return { outcome: "SUCCEEDED" };
+      if (ran.exit === 0 && ran.definite && movedFrom(before, seen) && seen !== undefined && seen !== "ABSENT" && seen.state === "succeeded" && seen.failed === 0 && seen.denyOk) return { outcome: "SUCCEEDED" };
       if (ran.stopped) return { outcome: "KILLED" };
-      if (ran.exit !== 0 && seen !== undefined && !movedFrom(before, seen)) return { outcome: "FAILED_NO_CHANGE" };
+      // Positive evidence only: a definite refusal, then several reads of an unmoved stack. No exit code (timeout, cap, spawn error) is never this.
+      if (ran.definite && ran.exit !== 0 && ran.unmovedReads >= UNMOVED_READS_FOR_NO_CHANGE && seen !== undefined && !movedFrom(before, seen)) return { outcome: "FAILED_NO_CHANGE" };
       return { outcome: "PARTIAL_REQUIRES_REVIEW" };
     },
     recoveryFiles: () => [],
@@ -623,6 +663,7 @@ function openCleanup(input: EngineRunInput): EngineCleanupRun {
   const session = openSession(input, "cleanup");
   let before: StackView | undefined;
   let planned = false;
+  let pollMs = POLL_MS;
   return {
     prepare(snapshotPath) {
       prepareWork(session, snapshotPath, input.engineVersion);
@@ -645,6 +686,7 @@ function openCleanup(input: EngineRunInput): EngineCleanupRun {
     async execute(control) {
       if (before === undefined || !planned) return stop("ENGINE_NOT_PREPARED");
       if (control.stopWhen()) return outcomeResult({ stopped: true, notStarted: true, stderr: "Stopped before the stack delete started." });
+      pollMs = control.pollMs ?? POLL_MS;
       const now = readStack(session, "APPLY", pinned);
       if (now === undefined || now.fingerprint !== before.fingerprint) stop("PLAN_STALE");
       // The sign-ins stay until `settle` has read the stack once more; they go with removeSecrets.
@@ -653,14 +695,23 @@ function openCleanup(input: EngineRunInput): EngineCleanupRun {
         "--yes", "--subscription", pinned.subscriptionId, "--output", "none",
       ], control);
     },
-    settle(applied) {
+    async settle(applied) {
       if (before === undefined) return stop("ENGINE_NOT_PREPARED");
-      const seen = look(session, "APPLY", pinned);
-      session.removeSecrets();
-      if (applied.exitCode === 0 && !applied.stopped && seen === "ABSENT") return { outcome: "SUCCEEDED" };
-      if (applied.stopped) return { outcome: "KILLED" };
-      if (applied.exitCode !== 0 && seen !== undefined && seen !== "ABSENT" && seen.fingerprint === before.fingerprint) return { outcome: "FAILED_NO_CHANGE" };
-      return { outcome: "PARTIAL_REQUIRES_REVIEW" };
+      const unchanged = (seen: Seen): boolean => seen !== undefined && seen !== "ABSENT" && seen.fingerprint === before!.fingerprint;
+      try {
+        const seen = look(session, "APPLY", pinned);
+        if (applied.exitCode === 0 && definite(applied) && !applied.stopped && seen === "ABSENT") return { outcome: "SUCCEEDED" };
+        if (applied.stopped) return { outcome: "KILLED" };
+        // Positive evidence only, as for the apply: a definite refusal, then several reads over the poll window that show the stack unchanged.
+        if (!definite(applied) || applied.exitCode === 0 || !unchanged(seen)) return { outcome: "PARTIAL_REQUIRES_REVIEW" };
+        for (let reads = 1; reads < UNMOVED_READS_FOR_NO_CHANGE; reads++) {
+          await sleep(pollMs);
+          if (!unchanged(look(session, "APPLY", pinned))) return { outcome: "PARTIAL_REQUIRES_REVIEW" };
+        }
+        return { outcome: "FAILED_NO_CHANGE" };
+      } finally {
+        session.removeSecrets();
+      }
     },
     recoveryFiles: () => [],
     removeSecrets: () => session.removeSecrets(),

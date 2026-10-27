@@ -47,6 +47,10 @@ export type AzBehavior = {
   /** States the stack reports after a create, one per look (the last repeats). */
   pollStates?: string[];
   createFail?: boolean; deleteFail?: boolean;
+  /** The create (or delete) reaches ARM, then az hangs for this long (a timeout kills it) or prints this many bytes (the output cap). */
+  createSleepMs?: number; createOutputBytes?: number; deleteSleepMs?: number; deleteOutputBytes?: number;
+  /** The create reaches ARM but az exits 1 (a lost response); the stack shows only after this many reads. */
+  createLostAppearAfter?: number;
   /** Creates the kill file at the n-th look after the create (0-based). */
   touchKillAtPoll?: number; killPath?: string;
   /** The stack is changed out of band at the next look. */
@@ -100,6 +104,11 @@ const stackView = () => ({
   failedResources: Array.from({ length: b.failedResources || 0 }, (_, i) => ({ id: rg + "/failed/" + i })),
   outputs: { secret: ${JSON.stringify(TEMPLATE_CANARY)} },
 });
+const hang = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+if (cmd === "stack group show" && s.late) {
+  if (s.lateReads++ >= s.late.after) { s.stack = s.late.stack; s.late = null; s.creating = true; s.polls = 0; }
+  save();
+}
 if (cmd === "stack group show") {
   if (!s.stack) fail("(DeploymentStackNotFound) The deployment stack '" + arg("--name") + "' could not be found.", 3);
   if (s.creating) {
@@ -138,17 +147,23 @@ if (cmd === "stack group create") {
   const at = args.indexOf("--tags");
   const tags = {}; for (let i = at + 1; i < args.length && !args[i].startsWith("--"); i++) { const [k, ...v] = args[i].split("="); tags[k] = v.join("="); }
   const existing = s.stack;
-  s.stack = { name: arg("--name"), state: "deploying", deploymentId: crypto.randomUUID(), lastModified: "2026-10-27T16:00:0" + (s.creates = (s.creates || 0) + 1) + "Z",
+  const created = { name: arg("--name"), state: "deploying", deploymentId: crypto.randomUUID(), lastModified: "2026-10-27T16:00:0" + (s.creates = (s.creates || 0) + 1) + "Z",
     tags, denyMode: arg("--deny-settings-mode"), childScopes: args.includes("--deny-settings-apply-to-child-scopes"),
     resources: existing ? existing.resources : [], template: existing ? existing.template : undefined };
-  s.pending = resourcesOf(text).map((r) => vnetId(r.name)); s.pendingTemplate = text; s.creating = true; s.polls = 0;
+  s.pending = resourcesOf(text).map((r) => vnetId(r.name)); s.pendingTemplate = text;
+  if (b.createLostAppearAfter !== undefined) { s.late = { stack: created, after: b.createLostAppearAfter }; s.lateReads = 0; save(); fail("Connection was closed before we received a valid response", 1); }
+  s.stack = created; s.creating = true; s.polls = 0;
   save();
+  if (b.createOutputBytes) process.stdout.write("x".repeat(b.createOutputBytes));
+  if (b.createSleepMs) hang(b.createSleepMs);
   process.exit(0);
 }
 if (cmd === "stack group delete") {
   if (b.deleteFail) fail("(DeploymentStackDeleteFailed) refused");
   if (!s.stack) fail("DeploymentStack not found", 3);
+  if (b.deleteOutputBytes) { process.stdout.write("x".repeat(b.deleteOutputBytes)); process.exit(1); }
   s.stack = null; s.deleted = true; save();
+  if (b.deleteSleepMs) hang(b.deleteSleepMs);
   process.exit(0);
 }
 fs.appendFileSync(path.join(dir, "calls.jsonl"), JSON.stringify({ unexpected: true, args }) + "\\n");
