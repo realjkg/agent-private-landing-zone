@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useId, useLayoutEffect, useRef, useState } from "react";
 
 import { COPY, describeMismatch, type DialogCopy } from "./pilot-copy";
 
@@ -25,7 +25,9 @@ export function PilotDialog(props: {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const matches = typed === phrase;
 
-  useEffect(() => {
+  // Focus moves into the dialog in the same commit that shows it (a layout effect, flushed before the browser paints and before any
+  // passive effect of the page behind), so there is no moment in which the dialog is on screen with focus still behind it.
+  useLayoutEffect(() => {
     const before = document.activeElement as HTMLElement | null;
     inputRef.current?.focus();
     return () => { before?.focus?.(); };

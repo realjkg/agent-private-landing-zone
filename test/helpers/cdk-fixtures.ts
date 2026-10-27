@@ -53,6 +53,8 @@ export type AwsBehavior = {
   templateDiffers?: boolean;
   /** describe-change-set lists a change that is not a resource, a change with an unknown action, or is not a change set document at all. */
   badChange?: "unreadable" | "action"; describeGarbage?: boolean;
+  /** The PilotTopic Modify's `Replacement` value instead of "True"; null leaves the field out. */
+  modifyReplacement?: string | null;
   /** describe-stacks prints more than the runner keeps. */
   bigOutput?: boolean;
   /** describe-change-set reports these capabilities whatever was passed. */
@@ -194,7 +196,7 @@ else if (cmd === "describe-change-set") {
   if (b.describeGarbage) { process.stdout.write("[]"); process.exit(0); }
   const changes = b.noChanges ? [] : [
     { Type: "Resource", ResourceChange: { Action: "Add", LogicalResourceId: "PilotBucket", ResourceType: "AWS::S3::Bucket" } },
-    { Type: "Resource", ResourceChange: { Action: "Modify", LogicalResourceId: "PilotTopic", ResourceType: "AWS::SNS::Topic", Replacement: "True" } },
+    { Type: "Resource", ResourceChange: { Action: "Modify", LogicalResourceId: "PilotTopic", ResourceType: "AWS::SNS::Topic", ...(b.modifyReplacement === null ? {} : { Replacement: b.modifyReplacement === undefined ? "True" : b.modifyReplacement }) } },
     ...(b.extraChange ? [{ Type: "Resource", ResourceChange: { Action: "Remove", LogicalResourceId: "ExtraQueue", ResourceType: "AWS::SQS::Queue" } }] : []),
     ...(b.badChange === "unreadable" ? [{ Type: "Hook" }] : []),
     ...(b.badChange === "action" ? [{ Type: "Resource", ResourceChange: { Action: "Teleport", LogicalResourceId: "Odd", ResourceType: "AWS::SQS::Queue" } }] : []),

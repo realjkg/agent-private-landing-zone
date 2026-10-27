@@ -23,10 +23,11 @@ function operation(
   if (action === "Add") return "CREATE";
   if (action === "Remove") return "DELETE";
   if (action === "Modify") {
-    return replacement === "True" ||
-      replacement === "Conditional"
-      ? "REPLACE"
-      : "UPDATE";
+    // Only an exact "False" is an in-place update. A missing or
+    // unexpected Replacement value is never read as the harmless
+    // case: UNKNOWN, which no preview gate admits.
+    if (replacement === "True" || replacement === "Conditional") return "REPLACE";
+    return replacement === "False" ? "UPDATE" : "UNKNOWN";
   }
 
   // Import is adoption semantics and must not
