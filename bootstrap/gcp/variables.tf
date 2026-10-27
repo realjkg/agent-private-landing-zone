@@ -82,6 +82,16 @@ variable "oidc_subjects" {
   }
 }
 
+variable "oidc_required_claims" {
+  description = "Optional exact claims every token must also carry, ANDed into the provider's attribute condition. A subject is name-based; for GitHub, pin the numeric repository_id (and repository_owner_id) so a deleted-and-recreated or transferred repository with the same name cannot mint accepted tokens. Empty adds nothing."
+  type        = map(string)
+  default     = {}
+  validation {
+    condition     = alltrue([for k, v in var.oidc_required_claims : can(regex("^[a-z][a-z0-9_]{0,63}$", k)) && can(regex("^[A-Za-z0-9:._/@-]{1,127}$", v))])
+    error_message = "A required claim is a lowercase claim name and a value of letters, digits and : . _ / @ - only (it is written into the attribute condition)."
+  }
+}
+
 variable "token_files" {
   description = "Absolute path of each identity's OIDC token file on the runner. Only the credential configurations this package outputs name them; nothing reads them here."
   type        = map(string)
@@ -96,12 +106,19 @@ variable "token_files" {
 }
 
 variable "apply_additional_roles" {
-  description = "Predefined roles APPLY needs beyond the minimal workload's Pub/Sub permissions, granted on this project. Least privilege is the owner's decision. Owner, editor and every role that administers IAM, the project, org policy or billing is refused."
+  description = "Predefined roles APPLY needs beyond the minimal workload's custom role, granted on this project. Only roles on the reviewed allowlist below are accepted. A denylist cannot keep up: storage.admin can re-grant the state bucket, and deploymentmanager.editor or cloudbuild.builds.editor run deployments as a service agent that may hold project editor. A role joins the allowlist only by a reviewed change to this package, after checking that it cannot change IAM, the state bucket, or act as another identity. Least privilege remains the owner's review."
   type        = list(string)
   default     = []
   validation {
-    condition     = alltrue([for r in var.apply_additional_roles : can(regex("^roles/[A-Za-z0-9.]+$", r)) && !contains(["roles/owner", "roles/editor"], r) && !can(regex("^roles/(iam|resourcemanager|orgpolicy|billing|accesscontextmanager)\\.", r))])
-    error_message = "apply_additional_roles may not include roles/owner, roles/editor, or an iam, resourcemanager, orgpolicy, billing or accesscontextmanager role."
+    # The reviewed allowlist: Pub/Sub data-plane and read roles for the minimal workload, and read-only telemetry. None administers IAM,
+    # storage or a deployment service, and none can act as another identity (UNVERIFIED against Google's role reference; a wrong entry is
+    # removed by review, never widened).
+    condition     = alltrue([for r in var.apply_additional_roles : contains(["roles/pubsub.publisher", "roles/pubsub.subscriber", "roles/pubsub.viewer", "roles/logging.viewer", "roles/monitoring.viewer"], r)])
+    error_message = "apply_additional_roles accepts only the reviewed allowlist: roles/pubsub.publisher, roles/pubsub.subscriber, roles/pubsub.viewer, roles/logging.viewer, roles/monitoring.viewer. Any other role (owner, editor, an admin, storage, deployment or build role) needs a reviewed change to this package."
+  }
+  validation {
+    condition     = length(distinct(var.apply_additional_roles)) == length(var.apply_additional_roles)
+    error_message = "Name each additional role once."
   }
   validation {
     condition     = var.engine != "GCP_API" || length(var.apply_additional_roles) == 0
@@ -110,7 +127,7 @@ variable "apply_additional_roles" {
 }
 
 variable "state_bucket_name" {
-  description = "TERRAFORM: the state bucket (the first part of the contract's backend). Dotless names only, as the provider spec accepts."
+  description = "TERRAFORM: the state bucket (the first part of the contract's backend). Dotless names only, as the S1 provider spec (#305) accepts."
   type        = string
   default     = null
   validation {

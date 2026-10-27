@@ -10,7 +10,7 @@ output "workload_identity_audience" {
 }
 
 output "credential_configurations" {
-  description = "Per identity, the credential configuration file to write on the runner and name in ALZ_<IDENTITY>_GOOGLE_APPLICATION_CREDENTIALS. Exactly the shape the provider spec accepts: an external_account file source, no key, token or impersonation URL of its own."
+  description = "Per identity, the credential configuration file to write on the runner and name in ALZ_<IDENTITY>_GOOGLE_APPLICATION_CREDENTIALS. Exactly the shape the G0 package requires and the S1 provider spec (#305) checks: an external_account file source, no key, token or impersonation URL of its own."
   value = { for i in local.identities : i => jsonencode({
     type               = "external_account"
     audience           = "//iam.googleapis.com/${google_iam_workload_identity_pool_provider.oidc.name}"

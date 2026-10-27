@@ -24,8 +24,12 @@ token_files = {
 state_bucket_name = "examplefake-dev-state"
 # state_prefix    = "pilot/dev"
 
-# Optional: predefined roles APPLY needs beyond the Pub/Sub topic. Owner, editor and IAM administration roles are refused.
+# Optional: extra predefined roles for APPLY, from the reviewed allowlist only (roles/pubsub.publisher, roles/pubsub.subscriber,
+# roles/pubsub.viewer, roles/logging.viewer, roles/monitoring.viewer). Anything else needs a reviewed change to this package.
 # apply_additional_roles = []
+
+# Recommended for GitHub: pin the numeric repository and owner ids, so a recreated or transferred repository name is refused.
+# oidc_required_claims = { repository_id = "000000000", repository_owner_id = "000000000" }
 
 # Owner items P3 and P5, off until decided
 # lock_version_retention_days     = 7

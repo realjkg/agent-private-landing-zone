@@ -78,6 +78,16 @@ run "terraform_engine_dev" {
     error_message = "Key creation is forbidden and the deny guardrails are on; P5 and the budget are off by default."
   }
   assert {
+    condition = anytrue([for rule in google_iam_deny_policy.guardrails[0].rules : anytrue([for deny in rule.deny_rule :
+      toset(deny.denied_permissions) == toset(["storage.googleapis.com/buckets.setIamPolicy", "storage.googleapis.com/buckets.update", "storage.googleapis.com/buckets.delete"]) &&
+    deny.denied_principals == tolist(["principal://iam.googleapis.com/projects/-/serviceAccounts/alz-pilot-dev-apply@examplefake-dev.iam.gserviceaccount.com"])])])
+    error_message = "APPLY is denied changing any bucket's IAM policy or settings, and deleting one (review N2)."
+  }
+  assert {
+    condition     = google_iam_workload_identity_pool_provider.oidc.attribute_condition == "assertion.sub in [${join(", ", [for s in values(var.oidc_subjects) : "\"${s}\""])}]"
+    error_message = "With no required claims, the condition is the subject list alone."
+  }
+  assert {
     condition     = output.contract_target.backend == "examplefake-dev-state/pilot/dev" && output.contract_target.projectId == "examplefake-dev" && output.contract_target.workspace == "default"
     error_message = "The contract target."
   }
@@ -298,4 +308,72 @@ run "refuses_budget_without_billing_account" {
     budget_monthly_usd = 50
   }
   expect_failures = [google_billing_budget.pilot]
+}
+
+run "pins_required_claims" {
+  variables {
+    oidc_required_claims = { repository_id = "123456789", repository_owner_id = "987654321" }
+  }
+  assert {
+    condition     = endswith(google_iam_workload_identity_pool_provider.oidc.attribute_condition, " && assertion.repository_id == \"123456789\" && assertion.repository_owner_id == \"987654321\"") && startswith(google_iam_workload_identity_pool_provider.oidc.attribute_condition, "assertion.sub in [")
+    error_message = "Each required claim is ANDed into the condition (review N3)."
+  }
+}
+
+run "refuses_required_claim_that_ends_a_cel_string" {
+  command = plan
+  variables {
+    oidc_required_claims = { repository_id = "1\" || true || \"" }
+  }
+  expect_failures = [var.oidc_required_claims]
+}
+
+run "refuses_required_claim_with_an_expression_name" {
+  command = plan
+  variables {
+    oidc_required_claims = { "sub || true" = "x" }
+  }
+  expect_failures = [var.oidc_required_claims]
+}
+
+run "accepts_an_allowlisted_role" {
+  variables {
+    apply_additional_roles = ["roles/pubsub.viewer"]
+  }
+  assert {
+    condition     = length(google_project_iam_member.apply_additional) == 1 && google_project_iam_member.apply_additional["roles/pubsub.viewer"].member == "serviceAccount:alz-pilot-dev-apply@examplefake-dev.iam.gserviceaccount.com"
+    error_message = "A reviewed role is granted to APPLY only."
+  }
+}
+
+run "refuses_storage_admin_role" {
+  command = plan
+  variables {
+    apply_additional_roles = ["roles/storage.admin"]
+  }
+  expect_failures = [var.apply_additional_roles]
+}
+
+run "refuses_deployment_manager_editor_role" {
+  command = plan
+  variables {
+    apply_additional_roles = ["roles/deploymentmanager.editor"]
+  }
+  expect_failures = [var.apply_additional_roles]
+}
+
+run "refuses_cloud_build_editor_role" {
+  command = plan
+  variables {
+    apply_additional_roles = ["roles/cloudbuild.builds.editor"]
+  }
+  expect_failures = [var.apply_additional_roles]
+}
+
+run "refuses_any_admin_or_unreviewed_role" {
+  command = plan
+  variables {
+    apply_additional_roles = ["roles/pubsub.viewer", "roles/pubsub.admin"]
+  }
+  expect_failures = [var.apply_additional_roles]
 }

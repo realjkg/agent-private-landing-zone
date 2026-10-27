@@ -20,9 +20,9 @@ test("the package is the documented files, and never creates a key, a key-bearin
   for (const banned of ["google_service_account_key", "google_service_account_access_token", "private_key", "access_token", "client_secret", "service_account_impersonation_url", "allUsers", "allAuthenticatedUsers"]) {
     assert.equal(source.includes(banned), false, banned);
   }
-  // roles/owner and roles/editor appear only in the validation that refuses them.
-  const roleLines = source.split("\n").filter((line) => /roles\/(owner|editor)/.test(line));
-  assert.ok(roleLines.length > 0 && roleLines.every((line) => /contains\(\["roles\/owner", "roles\/editor"\], r\)/.test(line)), roleLines.join("\n"));
+  // No basic role anywhere in the code; APPLY's extra roles are an exact, reviewed allowlist (review N1), not a denylist.
+  assert.equal(/roles\/(owner|editor)\b/.test(source), false);
+  assert.match(source, /contains\(\["roles\/pubsub\.publisher", "roles\/pubsub\.subscriber", "roles\/pubsub\.viewer", "roles\/logging\.viewer", "roles\/monitoring\.viewer"\], r\)/);
   assert.match(source, /hashicorp\/google"/);
   assert.equal(source.includes("google-beta"), false, "the bootstrap uses hashicorp/google only");
 });
@@ -32,7 +32,10 @@ test("each service account trusts one exact subject through workload identity fe
   assert.match(main, /role\s+= "roles\/iam\.workloadIdentityUser"/);
   assert.match(main, /member\s+= "principal:\/\/iam\.googleapis\.com\/\$\{google_iam_workload_identity_pool\.pilot\.name\}\/subject\/\$\{var\.oidc_subjects\[each\.key\]\}"/);
   assert.equal(/principalSet:\/\//.test(main), false, "no principal set: one subject per account");
-  assert.match(main, /attribute_condition\s+= "assertion\.sub in \[/);
+  assert.match(main, /attribute_condition = join\(" && ", concat\(\n\s+\["assertion\.sub in \[/);
+  // Optional exact claims (review N3) are ANDed in, never ORed, and validated like the subjects before they reach CEL.
+  assert.match(main, /\[for claim, value in var\.oidc_required_claims : "assertion\.\$\{claim\} == \\"\$\{value\}\\""\]/);
+  assert.match(hcl("variables.tf"), /\^\[a-z\]\[a-z0-9_\]\{0,63\}\$/);
   // The subjects are interpolated into CEL, so the validation must keep quotes, backslashes and wildcards out.
   assert.match(hcl("variables.tf"), /\^\[A-Za-z0-9:\._\/@-\]\{1,127\}\$/);
 });
@@ -66,6 +69,9 @@ test("the state bucket separates STATE (read, lock object only) from STATE_WRITE
   const guard = hcl("guardrails.tf");
   assert.match(guard, /iam\.disableServiceAccountKeyCreation/);
   assert.match(guard, /denied_principals\s+= \[local\.deny_principal\["APPLY"\], local\.deny_principal\["DISCOVERY"\]\]/);
+  // Review N2: APPLY can never re-grant, reconfigure or delete a bucket, so not the state bucket either.
+  assert.match(guard, /deny_bucket_administration = \[for verb in \["setIamPolicy", "update", "delete"\] : "storage\.googleapis\.com\/buckets\.\$\{verb\}"\]/);
+  assert.match(guard, /denied_principals\s+= \[local\.deny_principal\["APPLY"\]\]\n\s+denied_permissions = local\.deny_bucket_administration/);
 });
 
 test("owner items P3 and P5 stay off by default, and P3 can never match a state object", () => {
@@ -102,5 +108,7 @@ test("the mocked terraform test suite covers every refusal the package promises"
     "terraform_engine_dev", "api_engine_dev", "p3_lock_versions_opt_in", "refuses_api_outside_dev", "refuses_api_with_state_bucket", "refuses_api_with_additional_roles",
     "refuses_owner_role", "refuses_editor_role", "refuses_iam_admin_role", "refuses_shared_subject", "refuses_subject_that_ends_a_cel_string", "refuses_wildcard_subject",
     "refuses_missing_identity_subject", "refuses_relative_or_shared_token_file", "refuses_budget_without_billing_account",
+    "pins_required_claims", "refuses_required_claim_that_ends_a_cel_string", "refuses_required_claim_with_an_expression_name", "accepts_an_allowlisted_role",
+    "refuses_storage_admin_role", "refuses_deployment_manager_editor_role", "refuses_cloud_build_editor_role", "refuses_any_admin_or_unreviewed_role",
   ]) assert.match(suite, new RegExp('^run "' + run + '" \\{', "m"), run);
 });

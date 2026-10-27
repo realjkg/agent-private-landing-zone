@@ -4,11 +4,11 @@ Status: **offline-validated only; unverified until a project owner runs it.**
 
 On 2026-10-27, `bootstrap/gcp` was checked with Terraform 1.16.4 (binary sha256 `44d3683c2ac9d72b6ca8ad880a2df8dd956dd5e019b1d111cb6a5d914d576b73`), `hashicorp/google` 8.8.1 and no cloud credentials:
 - `terraform fmt -check -recursive`, `init -backend=false` and `validate` passed, with no warnings;
-- `terraform test` passed all 20 runs against a **mocked** `google` provider (`bootstrap/gcp/tests/bootstrap.tftest.hcl`).
+- `terraform test` passed all 28 runs against a **mocked** `google` provider (`bootstrap/gcp/tests/bootstrap.tftest.hcl`).
 
 That confirms the resource and attribute names against that provider schema, and this package's own logic: names, grants, conditions, validations and outputs. Nothing more. No `plan` or `apply` has run against Google, no resource has been created, and the IAM, workload identity federation, Cloud Storage and deny-policy behavior is untested.
 
-The provider zip came from `releases.hashicorp.com`. Its SHA256SUMS entry matched, but the signature on SHA256SUMS was **not** verified: the HashiCorp key import failed in the sandbox. Rerun `terraform init` against the registry on your own machine.
+The provider zip came from `releases.hashicorp.com`. Its SHA256SUMS entry matched. The lane could not check the signature (the HashiCorp key import failed in its sandbox), but the #308 reviewer did, independently: `terraform-provider-google_8.8.1_SHA256SUMS.sig` is a **good signature** from "HashiCorp Security" (subkey `374E C75B 4859 1360 4A83 1CC7 C820 C6D5 CD27 AB87`, primary key `C874 011F 0AB4 0511 0D02 1055 3436 5D94 72D7 468F`), and the `linux_amd64` zip matches the signed entry. Rerun `terraform init` against the registry on your own machine anyway.
 
 The GCP release-path PLAN (owner approval 6433121154 on issue #39) and the G0 package (`docs/act-pilot-gcp-terraform-g0.md`) define what this package provisions. This is slice S2. Like `bootstrap/aws` and `bootstrap/azure`, it is owner-run and separate from the pilot apply:
 - nothing under `src/` references it;
@@ -47,19 +47,31 @@ Each engine still gets its own service accounts, pool, custom roles and deny pol
 **Workload identity federation, never a key.**
 - Each service account has one `roles/iam.workloadIdentityUser` binding, for the pool principal of exactly one subject (`principal://iam.googleapis.com/<pool>/subject/<subject>`).
 - The provider's attribute condition admits only the engine's subjects.
+- Optionally, `oidc_required_claims` ANDs exact claims into that condition. A subject is name-based, so for GitHub pin the numeric `repository_id` (and `repository_owner_id`): a deleted-and-recreated or transferred repository with the same name then mints no accepted token. Recommended for GitHub.
 - No key is created, and the org policy forbids creating one.
-- The package outputs one credential configuration per identity: an `external_account` file source with no key, no token and no `service_account_impersonation_url`. That is exactly the shape the provider spec (`src/apply/providers/gcp.ts`) accepts.
+- The package outputs one credential configuration per identity: an `external_account` file source with no key, no token and no `service_account_impersonation_url`. That is exactly the shape the G0 package requires and the S1 provider spec checks. The spec is in #305 (`src/apply/providers/gcp.ts` once it merges); it is not on main yet.
 
 **State bucket (TERRAFORM).**
 - Uniform bucket-level access and public access prevention are on, and versioning is on.
 - One lifecycle rule deletes a noncurrent version only once at least `noncurrent_versions_kept` newer versions exist (default 10) and it has been noncurrent for `noncurrent_version_retention_days` (default 90).
-- The bucket name must be dotless, matching the provider spec.
+- The bucket name must be dotless, matching the S1 provider spec (#305).
 - STATE's and STATE_WRITE's grants are on the bucket only, under IAM Conditions on the object name (UNVERIFIED, G-4).
 
 **Deny guardrails** (`deny_pilot_guardrails`, default on).
 - APPLY and DISCOVERY are denied every Cloud Storage object permission in the project. Neither can become a state fallback, whatever role it is later given.
+- APPLY is denied changing any bucket's IAM policy or settings, or deleting a bucket (`storage.googleapis.com/buckets.setIamPolicy`, `.update`, `.delete`). Even if APPLY is later given a storage administration role, it cannot re-grant the state bucket, turn off its versioning or change its lifecycle. Deny conditions judge resource tags, not names, so this covers every bucket in the project.
 - APPLY is also denied editing the pilot's service accounts, pool, custom roles and the project IAM policy. This is the GCP form of the AWS bucket policy's "deny everyone else" and of `DenyEditingBootstrapIdentity`.
-- If a reviewed blueprint must write objects, turn it off for that project and say so in the change record.
+- If a reviewed blueprint must write objects or manage a bucket, turn it off for that project and say so in the change record.
+
+**APPLY's extra roles are an allowlist** (`apply_additional_roles`). Only these are accepted: `roles/pubsub.publisher`, `roles/pubsub.subscriber`, `roles/pubsub.viewer`, `roles/logging.viewer` and `roles/monitoring.viewer`.
+- A denylist cannot keep up with Google's roles. `roles/storage.admin` can re-grant the state bucket. `roles/deploymentmanager.editor` and `roles/cloudbuild.builds.editor` run deployments as a service agent that may hold project editor.
+- A role joins the allowlist only by a reviewed change to this package, after checking that it cannot change IAM or the state bucket and cannot act as another identity.
+
+**DISCOVERY is deliberately narrower than the G0 table.**
+- The G0 identity table gives DISCOVERY `roles/cloudasset.viewer`, `roles/browser` and `roles/storage.objectViewer` on the state bucket.
+- This package grants only `pubsub.topics.get`, `cloudasset.assets.searchAllResources` and, on the state bucket alone, `storage.buckets.get`. The deny policy also forbids DISCOVERY every object.
+- Why: the reader (S3, #310) needs exactly these permissions, and the readiness check reads the bucket's metadata, never an object. State is STATE's and STATE_WRITE's only, which matches `bootstrap/aws`, where the bucket policy also denies DISCOVERY.
+- A wider read, if a later reader needs one, is a reviewed change.
 
 **Owner items, off by default** (`docs/act-pilot-gcp-terraform-g0.md`, proposals):
 - **P3** `lock_version_retention_days`: a rule that deletes noncurrent `*.tflock` versions after N days. It matches the suffix `.tflock` only, never `.tfstate`.
@@ -108,7 +120,7 @@ Expect no service account key and no role on the project for STATE or STATE_WRIT
 
 Use the DEV project again, with a **separate** state directory, `engine = "GCP_API"`, the two subjects and token files, and no `state_bucket_name`.
 
-If the TERRAFORM run in that project already manages the org policy, set `enforce_no_service_account_keys = false`. Otherwise the policy would be managed twice; it stays enforced either way.
+If the TERRAFORM run in that project already manages the org policy, set `enforce_no_service_account_keys = false`, so the policy is not managed twice. The policy is then owned by the TERRAFORM run alone: destroying that run removes it, even while the GCP_API run remains. Tear down the GCP_API run first (see Teardown), or re-apply the GCP_API run with `enforce_no_service_account_keys = true` before destroying the TERRAFORM run.
 
 The run creates `<prefix>-dev-api-discovery` and `<prefix>-dev-api-apply`, its own pool, roles and deny policy, and nothing else.
 
@@ -122,7 +134,7 @@ The runner's OIDC token for that identity must be written to the `token_files` p
 - `ALZ_<IDENTITY>_GOOGLE_APPLICATION_CREDENTIALS`: that file's absolute path;
 - `ALZ_<IDENTITY>_GOOGLE_IMPERSONATE_SERVICE_ACCOUNT`, `ALZ_<IDENTITY>_GOOGLE_PROJECT` and `ALZ_<IDENTITY>_GOOGLE_REGION`: from `terraform output -json identity_variables`.
 
-Set no other `GOOGLE_*`, `GCLOUD_*`, `CLOUDSDK_*` or `GCE_*` variable, and never `STORAGE_EMULATOR_HOST`. The provider spec refuses each of them by name.
+Set no other `GOOGLE_*`, `GCLOUD_*`, `CLOUDSDK_*` or `GCE_*` variable, and never `STORAGE_EMULATOR_HOST`. The G0 package forbids them, and the S1 provider spec (#305) refuses each of them by name once it merges.
 
 ## Step 4: Fill the configuration
 
@@ -164,7 +176,8 @@ Then check the separation:
 ## Teardown
 
 1. Remove the runner's credential configuration and token files.
-2. Run `terraform destroy` per project. For TERRAFORM, set `force_destroy_state = true` once, apply, then destroy.
+2. In the DEV project, destroy the GCP_API run before the TERRAFORM run. The org policy belongs to whichever run manages it (Step 2), so the order keeps it in place while either run remains.
+3. Run `terraform destroy` per project. For TERRAFORM, set `force_destroy_state = true` once, apply, then destroy.
 
 Custom roles are soft-deleted for about 7 days, and a pool for about 30. Recreating one with the same id inside that window fails; undelete it or choose another `name_prefix`.
 
@@ -174,6 +187,7 @@ Custom roles are soft-deleted for about 7 days, and a pool for about 30. Recreat
 - **G-1.** The `google` provider and the `gcs` backend honor an `external_account` file-source configuration through `GOOGLE_APPLICATION_CREDENTIALS`, with impersonation from `GOOGLE_IMPERSONATE_SERVICE_ACCOUNT` and the backend's `impersonate_service_account`.
 - **`roles/iam.workloadIdentityUser`** is sufficient for a federated principal to impersonate the account through `generateAccessToken`, without `roles/iam.serviceAccountTokenCreator`.
 - **G-4.** IAM Conditions on `resource.name` for Cloud Storage objects hold under uniform bucket-level access. A list call is judged against the bucket, which the conditions admit.
-- **Deny policies.** The `storage.googleapis.com/objects.*`, `iam.googleapis.com/...` and `cloudresourcemanager.googleapis.com/projects.setIamPolicy` permission names are supported in deny policies.
+- **Deny policies.** The `storage.googleapis.com/objects.*`, `storage.googleapis.com/buckets.setIamPolicy`, `.update` and `.delete`, `iam.googleapis.com/...` and `cloudresourcemanager.googleapis.com/projects.setIamPolicy` permission names are supported in deny policies.
+- **The APPLY role allowlist.** None of its five predefined roles can change IAM or the state bucket, or act as another identity (from memory; a wrong entry is removed by review, never widened).
 - **Permissions.** `pubsub.topics.create`, `.delete`, `.get` and `.update` are enough for the Pub/Sub topic workload, and `cloudasset.assets.searchAllResources` for the unit sweep.
 - **Billing budget.** The budget API may require a quota project for the owner's login (`gcloud auth application-default set-quota-project`).

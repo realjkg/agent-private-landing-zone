@@ -56,7 +56,10 @@ resource "google_iam_workload_identity_pool_provider" "oidc" {
   workload_identity_pool_provider_id = "oidc"
   display_name                       = "Runner OIDC issuer"
   attribute_mapping                  = { "google.subject" = "assertion.sub" }
-  attribute_condition                = "assertion.sub in [${join(", ", [for s in values(var.oidc_subjects) : "\"${s}\""])}]"
+  attribute_condition = join(" && ", concat(
+    ["assertion.sub in [${join(", ", [for s in values(var.oidc_subjects) : "\"${s}\""])}]"],
+    [for claim, value in var.oidc_required_claims : "assertion.${claim} == \"${value}\""],
+  ))
 
   oidc {
     issuer_uri        = var.oidc_issuer_uri

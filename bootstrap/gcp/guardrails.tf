@@ -13,12 +13,16 @@ resource "google_org_policy_policy" "no_service_account_keys" {
   }
 }
 
-# The AWS bucket policy's "deny everyone else" and "deny editing the bootstrap identity", as an IAM deny policy. A deny outranks any
+# The AWS bucket policy's "deny everyone else" and "deny editing the bootstrap identity", as an IAM deny policy, plus a rule that
+# keeps APPLY from re-granting or reconfiguring the state bucket even if it is later given a storage administration role. A deny outranks any
 # allow, so a broad role later given to APPLY cannot make it a state fallback or let it edit what bounds it.
 # UNVERIFIED: the permission names below are from memory, in the deny-policy form <service>.googleapis.com/<resource>.<verb>. A wrong
 # name fails the bootstrap apply (it never silently allows), and the runbook checks them against Google's supported-permissions list first.
 locals {
   deny_object_access = [for verb in ["create", "delete", "get", "list", "update"] : "storage.googleapis.com/objects.${verb}"]
+  # Deny conditions cannot name a bucket (they judge resource tags), so this covers every bucket in the project: a blueprint that must
+  # manage a bucket needs deny_pilot_guardrails = false, a reviewed decision.
+  deny_bucket_administration = [for verb in ["setIamPolicy", "update", "delete"] : "storage.googleapis.com/buckets.${verb}"]
   deny_identity_edits = [
     "iam.googleapis.com/serviceAccounts.delete", "iam.googleapis.com/serviceAccounts.update", "iam.googleapis.com/serviceAccounts.setIamPolicy",
     "iam.googleapis.com/serviceAccountKeys.create", "iam.googleapis.com/roles.update", "iam.googleapis.com/roles.delete",
@@ -40,6 +44,14 @@ resource "google_iam_deny_policy" "guardrails" {
     deny_rule {
       denied_principals  = [local.deny_principal["APPLY"], local.deny_principal["DISCOVERY"]]
       denied_permissions = local.deny_object_access
+    }
+  }
+
+  rules {
+    description = "APPLY never changes a bucket's IAM policy or settings, nor deletes one: the state bucket's grants, versioning and lifecycle stay the owner's."
+    deny_rule {
+      denied_principals  = [local.deny_principal["APPLY"]]
+      denied_permissions = local.deny_bucket_administration
     }
   }
 
