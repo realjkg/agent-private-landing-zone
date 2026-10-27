@@ -529,6 +529,129 @@ test("a provider block that names another account, role, credential, file, desti
   }
 });
 
+test("Terraform's built-in provider is allowed for terraform_data resources only (docs/act-pilot-simulation-aws.md): the exact provider_config entry 1.16.4 emits seals and applies with a terraform_data resource; a terraform_remote_state data source (configured in the root module or a nested one, read into the prior state, or planned), an unknown built-in type and a built-in data source are refused at seal and at apply with PROVIDER_BUILTIN_TYPE_NOT_IN_CONTRACT, whether the plan names the provider or not", async () => {
+  const BUILTIN_NAME = "terraform.io/builtin/terraform";
+  // Exactly what Terraform 1.16.4 emits for a project with a terraform_data resource: no expressions key.
+  const BUILTIN = { terraform: { name: "terraform", full_name: BUILTIN_NAME } };
+  const CODE = "PROVIDER_BUILTIN_TYPE_NOT_IN_CONTRACT";
+  const change = (address: string, type: string, mode = "managed", provider_name: string | undefined = BUILTIN_NAME) =>
+    ({ address, mode, type, ...(provider_name === undefined ? {} : { provider_name }), change: { actions: ["create"], before: null, after: {} } });
+  const configured = (address: string, type: string, mode: string, provider_config_key = "terraform") => ({ address, mode, type, provider_config_key });
+  const pilot = { showResources: [change("terraform_data.pilot", "terraform_data")], showConfigurationExtra: { root_module: { resources: [configured("terraform_data.pilot", "terraform_data", "managed")] } } };
+  const fine: Array<[string, Behavior]> = [
+    ["terraform_data beside a matching aws block", { ...pilot, showProviderConfig: { ...BUILTIN, aws: { ...AWS_PROVIDER, expressions: { allowed_account_ids: { constant_value: [AWS_DEV_TARGET.account] } } } } }],
+    ["terraform_data alone, with the built-in provider as the only one", { ...pilot, showProviderConfig: BUILTIN, showOnlyConfigured: true }],
+    ["terraform_data planned and in the prior state too", { ...pilot, showProviderConfig: BUILTIN, showDocumentExtra: {
+      prior_state: { values: { root_module: { resources: [{ address: "terraform_data.pilot", mode: "managed", type: "terraform_data", provider_name: BUILTIN_NAME }] } } },
+      planned_values: { root_module: { resources: [{ address: "terraform_data.pilot", mode: "managed", type: "terraform_data", provider_name: BUILTIN_NAME }] } },
+    } }],
+    ["terraform_data with no provider named in the changes (the fake engine's shape)", { showProviderConfig: BUILTIN, showResources: [change("terraform_data.pilot", "terraform_data", "managed", undefined)] }],
+  ];
+  const refusing: Array<[string, Behavior]> = [
+    ["a terraform_remote_state data source configured in the root module (as 1.16.4 lists one whose read failed: nowhere else)", { ...pilot, showProviderConfig: BUILTIN,
+      showConfigurationExtra: { root_module: { resources: [configured("terraform_data.pilot", "terraform_data", "managed"), configured("data.terraform_remote_state.other", "terraform_remote_state", "data")] } } }],
+    ["a terraform_remote_state data source configured in a nested module, under a provider key with no block", { ...pilot, showProviderConfig: BUILTIN,
+      showConfigurationExtra: { root_module: { module_calls: { net: { source: "./net", module: { resources: [configured("module.net.data.terraform_remote_state.x", "terraform_remote_state", "data", "module.net:terraform")] } } } } } }],
+    ["a terraform_remote_state data source read into the prior state of a child module", { ...pilot, showProviderConfig: BUILTIN,
+      showDocumentExtra: { prior_state: { values: { root_module: { child_modules: [{ address: "module.net", resources: [{ address: "module.net.data.terraform_remote_state.x", mode: "data", type: "terraform_remote_state", provider_name: BUILTIN_NAME }] }] } } } } }],
+    ["a terraform_remote_state data source in the planned values", { ...pilot, showProviderConfig: BUILTIN,
+      showDocumentExtra: { planned_values: { root_module: { resources: [{ address: "data.terraform_remote_state.x", mode: "data", type: "terraform_remote_state", provider_name: BUILTIN_NAME }] } } } }],
+    ["a terraform_remote_state data source with no provider named anywhere", { showProviderConfig: BUILTIN, showConfigurationExtra: { root_module: { resources: [{ address: "data.terraform_remote_state.x", mode: "data", type: "terraform_remote_state" }] } } }],
+    ["an unknown built-in type among the changes", { showProviderConfig: BUILTIN, showResources: [change("terraform_future.x", "terraform_future")] }],
+    ["an unknown built-in type with no provider named", { showProviderConfig: BUILTIN, showResources: [change("terraform_future.x", "terraform_future", "managed", undefined)] }],
+    ["a data source of the built-in provider, even of the allowed type", { showProviderConfig: BUILTIN, showDocumentExtra: { planned_values: { root_module: { resources: [{ address: "data.terraform_data.x", mode: "data", type: "terraform_data", provider_name: BUILTIN_NAME }] } } } }],
+    ["a built-in type reported under a lookalike registry name", { showProviderConfig: BUILTIN, showResources: [change("terraform_remote_state.x", "terraform_remote_state", "managed", "registry.terraform.io/hashicorp/terraform")] }],
+  ];
+  for (const [label, behavior] of fine) {
+    const w = world();
+    behave({ ...behavior, applyAdvance: true });
+    const s = await seal(w, "DEV");
+    assert.ok((await run(w, s, approvalsFor(s))).ok, label);
+  }
+  for (const [label, behavior] of refusing) {
+    const w = world();
+    behave(behavior);
+    const atSeal = await sealRefusal(w, "DEV");
+    refused(atSeal, "ARTIFACT_INVALID");
+    assert.match((atSeal as { message: string }).message, new RegExp(CODE), label);
+    // Applying: the plan is shown again, and what it shows is judged again.
+    behave({});
+    const s = await seal(w, "DEV");
+    const approvals = approvalsFor(s);
+    behave(behavior);
+    const result = await run(w, s, approvals);
+    refused(result, "TARGET_NOT_IN_CONTRACT");
+    assert.match((result as { message: string }).message, new RegExp(CODE), label);
+    await nothingSpent(w, s, approvals);
+  }
+});
+
+test("the built-in provider walker fails closed (#279 review B1, N1): a tree nested to depth 64 is judged normally and one at depth 65 is PROVIDER_PLAN_TOO_DEEP, in the configuration and in the prior state, at seal and at apply; and a tree that is present but malformed (a root module that is not an object, resources as an object, child_modules that is not a list, a module call that is not an object, a changes entry that is not an object) is PROVIDER_PLAN_UNREADABLE, never skipped", async () => {
+  const BUILTIN_NAME = "terraform.io/builtin/terraform";
+  const BUILTIN = { terraform: { name: "terraform", full_name: BUILTIN_NAME } };
+  const resource = (type: string, mode: string) => ({ address: "module.deep." + (mode === "data" ? "data." : "") + type + ".x", mode, type, provider_config_key: "module.deep:terraform", provider_name: BUILTIN_NAME });
+  /** A configuration tree whose innermost module, `depth` calls below the root, holds the resource (depth 0 is the root module itself). */
+  const configurationAt = (depth: number, leaf: object): Record<string, unknown> => {
+    let module: Record<string, unknown> = { resources: [leaf] };
+    for (let level = 0; level < depth; level++) module = { module_calls: { deep: { source: "./deep", module } } };
+    return { root_module: module };
+  };
+  /** A values tree (prior state or planned values) whose innermost child module, `depth` levels below the root, holds the resource. */
+  const valuesAt = (depth: number, leaf: object): Record<string, unknown> => {
+    let module: Record<string, unknown> = { address: "module.deep", resources: [leaf] };
+    for (let level = 0; level < depth; level++) module = { address: "module.deep", child_modules: [module] };
+    return { root_module: module };
+  };
+  const DEEP = "PROVIDER_PLAN_TOO_DEEP", UNREADABLE = "PROVIDER_PLAN_UNREADABLE", BUILTIN_CODE = "PROVIDER_BUILTIN_TYPE_NOT_IN_CONTRACT";
+  const judged = (code: string, behavior: Behavior): [string, Behavior] => [code, { showProviderConfig: BUILTIN, ...behavior }];
+  const refusing: Array<[string, Behavior]> = [
+    // Depth 64: still read, so a remote state there is refused for what it is, and a terraform_data there passes (below).
+    judged(BUILTIN_CODE, { showConfigurationExtra: configurationAt(64, resource("terraform_remote_state", "data")) }),
+    judged(BUILTIN_CODE, { showDocumentExtra: { prior_state: { values: valuesAt(64, resource("terraform_remote_state", "data")) } } }),
+    // Depth 65: not read; refused as too deep whatever it holds, even an allowed type, in each tree.
+    judged(DEEP, { showConfigurationExtra: configurationAt(65, resource("terraform_remote_state", "data")) }),
+    judged(DEEP, { showConfigurationExtra: configurationAt(65, resource("terraform_data", "managed")) }),
+    judged(DEEP, { showDocumentExtra: { prior_state: { values: valuesAt(65, resource("terraform_remote_state", "data")) } } }),
+    judged(DEEP, { showDocumentExtra: { prior_state: { values: valuesAt(65, resource("terraform_data", "managed")) } } }),
+    judged(DEEP, { showDocumentExtra: { planned_values: valuesAt(65, resource("terraform_data", "managed")) } }),
+    // Malformed trees: present but not the documented shape.
+    judged(UNREADABLE, { showConfigurationExtra: { root_module: "not an object" } }),
+    judged(UNREADABLE, { showConfigurationExtra: { root_module: { resources: { x: resource("terraform_data", "managed") } } } }),
+    judged(UNREADABLE, { showConfigurationExtra: { root_module: { module_calls: { deep: "not an object" } } } }),
+    judged(UNREADABLE, { showConfigurationExtra: { root_module: { module_calls: ["not an object"] } } }),
+    judged(UNREADABLE, { showConfigurationExtra: { root_module: { resources: ["not an object"] } } }),
+    judged(UNREADABLE, { showDocumentExtra: { prior_state: { values: { root_module: { child_modules: { x: 1 } } } } } }),
+    judged(UNREADABLE, { showDocumentExtra: { prior_state: { values: { root_module: [] } } } }),
+    judged(UNREADABLE, { showDocumentExtra: { planned_values: { root_module: { resources: "x" } } } }),
+    judged(UNREADABLE, { showOnlyConfigured: true, showResources: ["not an object"] }),
+  ];
+  for (const [code, behavior] of refusing) {
+    const w = world();
+    behave(behavior);
+    const atSeal = await sealRefusal(w, "DEV");
+    refused(atSeal, "ARTIFACT_INVALID");
+    assert.match((atSeal as { message: string }).message, new RegExp(code), JSON.stringify(behavior).slice(0, 160));
+    behave({});
+    const s = await seal(w, "DEV");
+    const approvals = approvalsFor(s);
+    behave(behavior);
+    const result = await run(w, s, approvals);
+    assert.equal(result.ok, false);
+    assert.match((result as { message: string }).message, new RegExp(code), JSON.stringify(behavior).slice(0, 160));
+    await nothingSpent(w, s, approvals);
+  }
+  // Depth 64 with the allowed type seals and applies, in both trees.
+  for (const behavior of [
+    { showConfigurationExtra: configurationAt(64, resource("terraform_data", "managed")) },
+    { showDocumentExtra: { prior_state: { values: valuesAt(64, resource("terraform_data", "managed")) }, planned_values: valuesAt(64, resource("terraform_data", "managed")) } },
+  ]) {
+    const w = world();
+    behave({ showProviderConfig: BUILTIN, ...behavior, applyAdvance: true });
+    const s = await seal(w, "DEV");
+    assert.ok((await run(w, s, approvalsFor(s))).ok, JSON.stringify(behavior).slice(0, 120));
+  }
+});
+
 test("the project's backend block is judged before init: any attribute beyond bucket, key, region and use_lockfile is refused and no init runs", async () => {
   const [bucket, ...key] = AWS_DEV_TARGET.backend.split("/");
   const backend = (body: string) => `terraform {\n  backend "s3" {\n    bucket = "${bucket}"\n    key = "${key.join("/")}"\n    region = "${AWS_REGION}"\n    use_lockfile = true\n${body}\n  }\n}\n` + SHARED_TF;

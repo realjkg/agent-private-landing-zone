@@ -21,7 +21,7 @@ import { buildManifest } from "../src/teardown/manifest.js";
 import { captureProjectFiles } from "../src/teardown/snapshot.js";
 import { removeTree } from "../src/teardown/driver/cleanup.js";
 import {
-  DEV_TARGET, NOW, POLICY, TENANT, approvalFor, contractJson, human, identityEnv, pinPathOf, sha, writePinnedContract,
+  DEV_TARGET, NOW, POLICY, QA_TARGET, SOURCE_COMMIT, TENANT, approvalFor, contractJson, human, identityEnv, pinPathOf, sha, writePinnedContract,
 } from "./helpers/apply-fixtures.js";
 import { AZURE } from "../src/apply/providers/azure.js";
 
@@ -161,6 +161,8 @@ meta.listen(0, "127.0.0.1", () => {
   const routes = { [metadataHost]: meta.address().port, [blobHost + ":443"]: Number(blobPort) };
   const proxy = http.createServer((_req, res) => { res.writeHead(403); res.end(); });
   proxy.on("connect", (req, client, head) => {
+    // A client reset at any moment (a refused host hanging up, a canceled request) must never end the helper: no CONNECT is ever unhandled.
+    client.on("error", () => client.destroy());
     fs.appendFileSync(log, req.url + "\\n");
     const target = routes[req.url];
     if (target === undefined) { client.end("HTTP/1.1 403 Forbidden\\r\\n\\r\\n"); return; }
@@ -170,8 +172,9 @@ meta.listen(0, "127.0.0.1", () => {
       upstream.pipe(client); client.pipe(upstream);
     });
     upstream.on("error", () => client.destroy());
-    client.on("error", () => upstream.destroy());
+    client.on("close", () => upstream.destroy());
   });
+  proxy.on("clientError", (_error, socket) => socket.destroy());
   proxy.listen(0, "127.0.0.1", () => process.stdout.write(String(proxy.address().port) + "\\n"));
 });
 `;
@@ -227,6 +230,7 @@ describe("emulated backend simulation: real Terraform, Azurite, built-in resourc
     const contract = contractJson(KILL, {
       targets: {
         DEV: { tenantId: TENANT, subscriptionId: DEV_TARGET.account, backend: BACKEND, workspace: "default" },
+        QA: { tenantId: TENANT, subscriptionId: QA_TARGET.account, backend: "emulatedqa/tfstate/qa.tfstate", workspace: "default" },
         PROD: { tenantId: TENANT, subscriptionId: "33333333-3333-4333-8333-333333333333", backend: "emulatedprod/tfstate/prod.tfstate", workspace: "default" },
       },
     });
@@ -257,7 +261,8 @@ describe("emulated backend simulation: real Terraform, Azurite, built-in resourc
     };
     deps = {
       contractPath, contractPinPath: pinPathOf(contractPath), qualificationDir: vault, evidenceDir: evidence, nonces: openNonceStore(nonces), env,
-      now: () => NOW, scratchParent: scratch, toolDirs: [toolDir, "/usr/bin", "/bin"], killPollMs: 100, killGraceMs: 30_000,
+      // The product commit a seal binds (a fixture value: the test runs from a temporary directory, not from a checkout).
+      now: () => NOW, scratchParent: scratch, toolDirs: [toolDir, "/usr/bin", "/bin"], killPollMs: 100, killGraceMs: 30_000, sourceCommit: SOURCE_COMMIT,
     };
   });
 
