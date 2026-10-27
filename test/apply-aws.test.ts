@@ -113,10 +113,13 @@ test("ACT-DEV-1 accepts only an explicit AWS Terraform DEV pilot without fictiti
   assert.equal(loaded(missing).enabled, false, "DEV target is mandatory");
   const missingDevApprover = { ...devOnly, approvers: devOnly.approvers.map((item: any) => ({ ...item, environments: ["QA"] })) };
   assert.equal(loaded(missingDevApprover).enabled, false, "at least one DEV approver is required");
-  for (const combination of [{ provider: "AZURE", engine: "TERRAFORM" }, { provider: "AWS", engine: "CDK" }]) {
-    const changed = { ...devOnly, ...combination };
-    assert.equal(loaded(changed).enabled, false, "DEV-only authority cannot expand beyond AWS Terraform");
-  }
+  // Azure Terraform DEV-only is its own owner decision (test/apply-contract.test.ts); an AWS-shaped target is still not an Azure one.
+  const azureShaped = loaded({ ...devOnly, provider: "AZURE", engine: "TERRAFORM" });
+  assert.equal(azureShaped.enabled, false, "an AWS DEV target is not an Azure target");
+  assert.match((azureShaped as { reason: string }).reason, /targets\.DEV/);
+  const cdk = loaded({ ...devOnly, provider: "AWS", engine: "CDK" });
+  assert.equal(cdk.enabled, false, "DEV-only authority cannot expand to AWS CDK");
+  assert.match((cdk as { reason: string }).reason, /DEV-only scope is approved only for AWS Terraform and Azure Terraform/);
   const approvals = { ...devOnly, requiredApprovals: { DEV: 0 } };
   assert.equal(loaded(approvals).enabled, false, "DEV approval remains required");
 });
