@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import { request as httpRequest } from "node:http";
 import test from "node:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -312,4 +313,127 @@ test("bootstrap builds the console UI as well as the runtime", () => {
   const bootstrap = launcher.slice(launcher.indexOf('"bootstrap"'), launcher.indexOf("exit 0"));
   assert.match(bootstrap, /npm run build\n/);
   assert.match(bootstrap, /npm run build:ui\n/);
+});
+
+// --- the launcher, executed --------------------------------------------------------------------------------------
+// A copy of ./alz in a temporary checkout, with a fake dist/, a fake npm and a fake git on a private PATH. Nothing real
+// is built, and the real .runs folder is never touched. Synthetic: this qualifies the launcher's logic, not a platform.
+
+type Launcher = { root: string; bin: string; run: (args: string[], env?: Record<string, string>) => ReturnType<typeof spawnSync> };
+
+function launcher(label: string, npmScript: string): Launcher {
+  const root = mkdtempSync(join(tmpdir(), "alz-launcher-" + label + "-"));
+  const bin = join(root, "fake-bin");
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(join(root, "alz"), readFileSync("alz", "utf8"));
+  chmodSync(join(root, "alz"), 0o755);
+  // The fake git answers only `rev-parse HEAD`, with the commit the test chooses through FAKE_COMMIT.
+  writeFileSync(join(bin, "git"), "#!/bin/sh\necho \"${FAKE_COMMIT:-unknown}\"\n");
+  writeFileSync(join(bin, "npm"), "#!/bin/sh\necho \"npm $*\"\n" + npmScript + "\n");
+  chmodSync(join(bin, "git"), 0o755);
+  chmodSync(join(bin, "npm"), 0o755);
+  const run: Launcher["run"] = (args, env = {}) => spawnSync("bash", [join(root, "alz"), ...args], {
+    encoding: "utf8", cwd: root,
+    env: { PATH: bin + ":" + dirname(process.execPath) + ":/usr/bin:/bin", HOME: root, FAKE_COMMIT: "c0ffee", ...env },
+  });
+  return { root, bin, run };
+}
+
+function fakeDist(root: string): void {
+  mkdirSync(join(root, "dist", "cli"), { recursive: true });
+  writeFileSync(join(root, "dist", "cli", "operator.js"), "console.log('operator ran ' + process.argv.slice(2).join(' '));\n");
+}
+
+const stateOf = (root: string): { startedAt: string; step: string; completedAt: string | null; sourceCommit: string } =>
+  JSON.parse(readFileSync(join(root, ".runs", "bootstrap", "state.json"), "utf8"));
+
+test("./alz refuses to run dist/ while the bootstrap state is unfinished or from another commit, and runs it when the state is finished or absent", () => {
+  const { root, run } = launcher("gate", "exit 0");
+  try {
+    fakeDist(root);
+    // No state file: a build made another way (CI's own npm steps, an older bootstrap) runs as before.
+    let result = run(["help"]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /operator ran help/);
+    mkdirSync(join(root, ".runs", "bootstrap"), { recursive: true });
+    const state = join(root, ".runs", "bootstrap", "state.json");
+    const unfinished = { startedAt: "2026-10-27T00:00:00Z", step: "npm run build", completedAt: null, sourceCommit: "c0ffee" };
+    for (const [label, content] of [
+      ["unfinished", JSON.stringify(unfinished)],
+      ["another commit", JSON.stringify({ ...unfinished, completedAt: "2026-10-27T00:05:00Z", sourceCommit: "0ld" })],
+      ["unreadable", "not json"],
+      ["empty completedAt", JSON.stringify({ ...unfinished, completedAt: "" })],
+    ] as const) {
+      writeFileSync(state, content);
+      result = run(["help"]);
+      assert.equal(result.status, 2, label);
+      assert.doesNotMatch(result.stdout, /operator ran/, label + ": dist/ is never run");
+      assert.match(result.stdout, /The local build is not ready: \.\/alz bootstrap did not finish, or the source changed after it ran\.\nRun: \.\/alz bootstrap\n/, label);
+    }
+    writeFileSync(state, JSON.stringify({ ...unfinished, completedAt: "2026-10-27T00:05:00Z" }));
+    result = run(["help"]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /operator ran help/);
+    // The same finished state is stale once the checkout moves to another commit.
+    result = run(["help"], { FAKE_COMMIT: "deadbeef" });
+    assert.equal(result.status, 2);
+    assert.match(result.stdout, /Run: \.\/alz bootstrap/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("./alz bootstrap records its state before the first step, completes it only at the end, and keeps the log when it fails or is stopped", () => {
+  // A fake npm that stops the bootstrap at the build step the way Ctrl-C or a closed terminal would: a stop signal to the launcher.
+  const stopped = launcher("stopped", 'case "$*" in "run build") kill -TERM $PPID ;; esac\nexit 0');
+  try {
+    const result = stopped.run(["bootstrap"]);
+    assert.notEqual(result.status, 0, "a stopped bootstrap never reports success");
+    assert.match(result.stdout, /Local setup did not finish\. Review \.runs\/bootstrap\/latest\.log, then run \.\/alz bootstrap again\.\nNo infrastructure changes were made\.\n/);
+    assert.doesNotMatch(result.stdout, /Ready\./);
+    assert.equal(result.stdout.split("\n").filter(Boolean).length, 3, "the terminal output stays short: the banner and two lines");
+    const state = stateOf(stopped.root);
+    assert.equal(state.completedAt, null, "an interrupted bootstrap is never marked finished");
+    assert.equal(state.step, "npm run build", "the step that was running is recorded");
+    assert.equal(state.sourceCommit, "c0ffee");
+    assert.match(state.startedAt, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
+    const latest = readFileSync(join(stopped.root, ".runs", "bootstrap", "latest.log"), "utf8");
+    assert.match(latest, /npm ci\nnpm run build\n/, "the detailed log is kept even when the run is stopped");
+    fakeDist(stopped.root);
+    const refused = stopped.run(["help"]);
+    assert.equal(refused.status, 2, "a partial dist/ left by the stopped bootstrap is refused");
+    assert.match(refused.stdout, /did not finish/);
+  } finally {
+    rmSync(stopped.root, { recursive: true, force: true });
+  }
+
+  // A failing step is recorded the same way; a finished bootstrap completes the state and ./alz then runs dist/.
+  const failing = launcher("failing", 'case "$*" in "run build:ui") exit 7 ;; esac\nexit 0');
+  try {
+    const result = failing.run(["bootstrap"]);
+    assert.equal(result.status, 7, "the failing step's exit code is kept");
+    assert.match(result.stdout, /Local setup did not finish/);
+    assert.equal(stateOf(failing.root).step, "npm run build:ui");
+    assert.equal(stateOf(failing.root).completedAt, null);
+    assert.ok(existsSync(join(failing.root, ".runs", "bootstrap", "latest.log")));
+  } finally {
+    rmSync(failing.root, { recursive: true, force: true });
+  }
+  const finished = launcher("finished", "exit 0");
+  try {
+    const result = finished.run(["bootstrap"]);
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stdout, /Preparing Sovereign ALZ local model interface\.\.\.\nReady\. Open the private local workspace with \.\/alz\nDetailed build log: \.runs\/bootstrap\/latest\.log\n/);
+    const state = stateOf(finished.root);
+    assert.equal(state.step, "done");
+    assert.match(state.completedAt!, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
+    assert.equal(state.sourceCommit, "c0ffee");
+    assert.match(readFileSync(join(finished.root, ".runs", "bootstrap", "latest.log"), "utf8"), /npm ci\nnpm run build\nnpm run build:ui\n/);
+    fakeDist(finished.root);
+    const ran = finished.run(["help"]);
+    assert.equal(ran.status, 0);
+    assert.match(ran.stdout, /operator ran help/);
+  } finally {
+    rmSync(finished.root, { recursive: true, force: true });
+  }
 });
