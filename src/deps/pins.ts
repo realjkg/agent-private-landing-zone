@@ -19,6 +19,10 @@ export type ToolPins = {
   isolatedOllama: { host: string; port: number; models: string[] };
   /** The AWS CLI v2 the CDK path is tested with: check only (the vendor's installer needs an administrator password on macOS). */
   awsCli: CheckOnlyPin;
+  /** The Azure CLI the Bicep path's deployment-stack engine runs (docs/act-pilot-bicep.md): check only, like the AWS CLI. */
+  azureCli: CheckOnlyPin;
+  /** The Bicep CLI the Bicep path compiles with: check only, and the same version the Bicep preview adapter records as tested. */
+  bicep: CheckOnlyPin;
 };
 
 const HEX64 = /^[0-9a-f]{64}$/;
@@ -41,6 +45,8 @@ export function loadToolPins(path: string = DEFAULT_PINS): ToolPins {
   }
   if (raw.node?.major !== 26) throw new Error("TOOL_PIN_INVALID: node");
   if (!/^2\.\d+\.\d+$/.test(raw.awsCli?.version ?? "") || raw.awsCli.versionCommand !== "aws --version" || !Array.isArray(raw.awsCli.tested)) throw new Error("TOOL_PIN_INVALID: awsCli");
+  if (!/^2\.\d+\.\d+$/.test(raw.azureCli?.version ?? "") || raw.azureCli.versionCommand !== "az version --output json" || !Array.isArray(raw.azureCli.tested)) throw new Error("TOOL_PIN_INVALID: azureCli");
+  if (!/^0\.\d+\.\d+$/.test(raw.bicep?.version ?? "") || raw.bicep.versionCommand !== "bicep --version" || !Array.isArray(raw.bicep.tested)) throw new Error("TOOL_PIN_INVALID: bicep");
   return raw;
 }
 
