@@ -102,21 +102,22 @@ variable "discovery_managed_policy_arns" {
 }
 
 variable "discovery_data_read_exceptions" {
-  description = "Exceptions to the DISCOVERY deny on data-plane and secret reads. Each names actions the deny lists (discovery-policy.json), the exact resource ARNs they apply to, and the purpose. An exact ARN has no * or ? anywhere, the aws partition, a region and a 12-digit account unless its service has none (S3 has neither; API Gateway has no account), and no empty resource segment. The action stays denied on every other resource. Empty by default: the owner's decision is control-plane metadata only."
+  description = "Exceptions to the DISCOVERY deny on data-plane and secret reads. Each names actions the deny lists (discovery-policy.json), the exact resource ARNs they apply to, and the purpose. An exact ARN has no * or ? anywhere, no $ anywhere (an IAM policy variable such as $${aws:UserAgent} is substituted from the request, so it would act as a wildcard the caller chooses), no whitespace or control character, the aws partition, a region and a 12-digit account unless its service has none (S3 has neither; API Gateway has no account), and no empty resource segment. The action stays denied on every other resource. Empty by default: the owner's decision is control-plane metadata only."
   type = list(object({
     actions   = list(string)
     resources = list(string)
     purpose   = string
   }))
   default = []
-  # A resource is exact when it has no wildcard character anywhere, the aws partition, a real region and account (empty only
-  # where the service has none), and a resource part with no empty segment (no "//" or "::", no trailing "/" or ":").
+  # A resource is exact when it has no wildcard character and no policy variable ($) anywhere, no whitespace or control
+  # character (\p{Z}, \p{Cc}), the aws partition, a real region and account (empty only where the service has none), and a
+  # resource part with no empty segment (no "//" or "::", no trailing "/" or ":").
   validation {
     condition = alltrue([for e in var.discovery_data_read_exceptions :
       length(e.actions) > 0 && length(e.resources) > 0 && length(trimspace(e.purpose)) >= 20 &&
       alltrue([for a in e.actions : can(regex("^[a-z0-9-]+:[A-Za-z0-9*]+$", a))]) &&
       alltrue([for r in e.resources : try(
-        length(regexall("[*?]", r)) == 0 &&
+        length(regexall("[*?$\\p{Z}\\p{Cc}]", r)) == 0 &&
         can(regex("^arn:aws:[a-z0-9-]+:([a-z]{2}(-[a-z]+)+-[0-9]+)?:([0-9]{12})?:.+$", r)) &&
         (split(":", r)[3] != "" || contains(["s3"], split(":", r)[2])) &&
         (split(":", r)[4] != "" || contains(["s3", "apigateway"], split(":", r)[2])) &&
@@ -124,7 +125,7 @@ variable "discovery_data_read_exceptions" {
         false
       )])
     ])
-    error_message = "Each DISCOVERY data-read exception needs at least one action, at least one exact resource ARN (no * or ? anywhere; partition aws; a region and a 12-digit account unless the service has none; no empty resource segment), and a purpose of at least 20 characters."
+    error_message = "Each DISCOVERY data-read exception needs at least one action, at least one exact resource ARN (no * or ? anywhere; no $, so no IAM policy variable; no whitespace or control character; partition aws; a region and a 12-digit account unless the service has none; no empty resource segment), and a purpose of at least 20 characters."
   }
 }
 

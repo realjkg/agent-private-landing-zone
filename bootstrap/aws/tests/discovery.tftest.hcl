@@ -205,6 +205,14 @@ run "exact_object_and_api_key_accepted" {
       { actions = ["secretsmanager:GetSecretValue"], resources = ["arn:aws:secretsmanager:us-east-1:111111111111:secret:alz/pilot/token-AbCdEf"], purpose = "The plan refreshes the one secret version the project manages." },
     ]
   }
+  assert {
+    condition     = length(jsondecode(aws_iam_role_policy.discovery_scope.policy).Statement) == 7
+    error_message = "Each exception adds an allow and a NotResource deny."
+  }
+  assert {
+    condition     = length(aws_iam_role_policy.discovery_scope.policy) <= 10240
+    error_message = "The inline policy still fits the 10,240-character limit with two exceptions."
+  }
 }
 
 run "every_object_in_every_bucket_refused" {
@@ -323,6 +331,62 @@ run "not_an_arn_refused" {
   command = plan
   variables {
     discovery_data_read_exceptions = [{ actions = ["kms:Decrypt"], resources = ["key/1234abcd-12ab-34cd-56ef-1234567890ab"], purpose = "A purpose long enough to pass the length rule." }]
+  }
+  expect_failures = [var.discovery_data_read_exceptions]
+}
+
+run "policy_variable_object_refused" {
+  command = plan
+  variables {
+    discovery_data_read_exceptions = [{ actions = ["s3:GetObject*"], resources = ["arn:aws:s3:::examplefake-bucket/$${aws:UserAgent}"], purpose = "A purpose long enough to pass the length rule." }]
+  }
+  expect_failures = [var.discovery_data_read_exceptions]
+}
+
+run "policy_variable_secret_refused" {
+  command = plan
+  variables {
+    discovery_data_read_exceptions = [{ actions = ["secretsmanager:GetSecretValue"], resources = ["arn:aws:secretsmanager:us-east-1:111111111111:secret:$${aws:UserAgent}"], purpose = "A purpose long enough to pass the length rule." }]
+  }
+  expect_failures = [var.discovery_data_read_exceptions]
+}
+
+run "dollar_sign_refused" {
+  command = plan
+  variables {
+    discovery_data_read_exceptions = [{ actions = ["ssm:GetParameter"], resources = ["arn:aws:ssm:us-east-1:111111111111:parameter/alz/pilot/$version"], purpose = "A purpose long enough to pass the length rule." }]
+  }
+  expect_failures = [var.discovery_data_read_exceptions]
+}
+
+run "trailing_whitespace_refused" {
+  command = plan
+  variables {
+    discovery_data_read_exceptions = [{ actions = ["s3:GetObject*"], resources = ["arn:aws:s3:::examplefake-bucket/key "], purpose = "A purpose long enough to pass the length rule." }]
+  }
+  expect_failures = [var.discovery_data_read_exceptions]
+}
+
+run "embedded_tab_refused" {
+  command = plan
+  variables {
+    discovery_data_read_exceptions = [{ actions = ["ssm:GetParameter"], resources = ["arn:aws:ssm:us-east-1:111111111111:parameter/alz/pilot\tversion"], purpose = "A purpose long enough to pass the length rule." }]
+  }
+  expect_failures = [var.discovery_data_read_exceptions]
+}
+
+run "non_breaking_space_refused" {
+  command = plan
+  variables {
+    discovery_data_read_exceptions = [{ actions = ["ssm:GetParameter"], resources = ["arn:aws:ssm:us-east-1:111111111111:parameter/alz/pilot\u00a0version"], purpose = "A purpose long enough to pass the length rule." }]
+  }
+  expect_failures = [var.discovery_data_read_exceptions]
+}
+
+run "control_character_refused" {
+  command = plan
+  variables {
+    discovery_data_read_exceptions = [{ actions = ["ssm:GetParameter"], resources = ["arn:aws:ssm:us-east-1:111111111111:parameter/alz/pilot\u0007version"], purpose = "A purpose long enough to pass the length rule." }]
   }
   expect_failures = [var.discovery_data_read_exceptions]
 }

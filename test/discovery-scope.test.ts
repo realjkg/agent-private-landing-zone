@@ -142,26 +142,32 @@ test("bootstrap: the default is ViewOnlyAccess, the deny is inline and independe
   assert.match(variables, /variable "discovery_data_read_exceptions"[\s\S]*purpose\s+=\s+string/);
 });
 
-test("bootstrap: a data-read exception names exact resource ARNs only (review 6442107608, B2)", () => {
+test("bootstrap: a data-read exception names exact resource ARNs only (reviews 6442107608 B2, 6444403493 B1)", () => {
   // The rule as variables.tf writes it, read from the file and applied as Terraform applies it (RE2; the same syntax in JavaScript for these patterns).
   const variables = read("bootstrap/aws/variables.tf");
   const block = variables.slice(variables.indexOf('variable "discovery_data_read_exceptions"'));
   const unescape = (text: string): string => text.replace(/\\\\/g, "\\");
   const shape = new RegExp(unescape(/can\(regex\("(\^arn:aws:[^"]+)", r\)\)/.exec(block)?.[1] ?? "(?!)"));
   const emptySegment = new RegExp(unescape(/!can\(regex\("([^"]+)", join\(":", slice\(split\(":", r\), 5/.exec(block)?.[1] ?? "(?!)"));
-  assert.match(block, /length\(regexall\("\[\*\?\]", r\)\) == 0/, "no * or ? anywhere");
+  const forbidden = new RegExp(unescape(/length\(regexall\("([^"]+)", r\)\) == 0/.exec(block)?.[1] ?? "(?!)"), "u");
+  for (const character of ["*", "?", "$", " ", "\t", "\n", "\u00a0", "\u0007", "\u007f"]) {
+    assert.ok(forbidden.test("arn:aws:s3:::examplefake-bucket/a" + character + "b"), "refused anywhere: " + JSON.stringify(character));
+  }
   assert.match(block, /split\(":", r\)\[3\] != "" \|\| contains\(\["s3"\], split\(":", r\)\[2\]\)/, "a region unless the service has none");
   assert.match(block, /split\(":", r\)\[4\] != "" \|\| contains\(\["s3", "apigateway"\], split\(":", r\)\[2\]\)/, "an account unless the service has none");
   const exact = (arn: string): boolean => {
     const parts = arn.split(":");
-    return !/[*?]/.test(arn) && shape.test(arn) && (parts[3] !== "" || parts[2] === "s3") && (parts[4] !== "" || ["s3", "apigateway"].includes(parts[2]!))
+    return !forbidden.test(arn) && shape.test(arn) && (parts[3] !== "" || parts[2] === "s3") && (parts[4] !== "" || ["s3", "apigateway"].includes(parts[2]!))
       && !emptySegment.test(parts.slice(5).join(":"));
   };
   for (const arn of ["arn:aws:s3:::*/*", "arn:aws:s3:::examplefake-bucket/*", "arn:aws:secretsmanager:us-east-1:111111111111:secret:*", "arn:aws:ssm:*:*:parameter/*",
     "arn:aws:kms:*:*:key/*", "arn:aws:dynamodb:us-east-1:111111111111:table/*", "arn:aws:ssm:us-east-1:111111111111:parameter/alz/pilot/versio?", "*",
     "arn:aws:s3:::*", "arn:aws:logs:*:*:*", "arn:*:s3:::examplefake-bucket/key", "arn:aws-cn:s3:::examplefake-bucket/key", "arn:aws:ssm::111111111111:parameter/alz/pilot/version",
     "arn:aws:kms:us-east-1::key/1234abcd-12ab-34cd-56ef-1234567890ab", "arn:aws:dynamodb:us-east-1:111111111111:table/", "arn:aws:secretsmanager:us-east-1:111111111111:secret:",
-    "arn:aws:s3:::examplefake-bucket//key", "arn:aws:s3:::", "key/1234abcd-12ab-34cd-56ef-1234567890ab", "arn:aws:kms:us-east-1:11111111111:key/abc"]) {
+    "arn:aws:s3:::examplefake-bucket//key", "arn:aws:s3:::", "key/1234abcd-12ab-34cd-56ef-1234567890ab", "arn:aws:kms:us-east-1:11111111111:key/abc",
+    // Review 6444403493, B1 and N2: an IAM policy variable is substituted from the request, so it is a caller-chosen wildcard; whitespace and control characters never match.
+    "arn:aws:s3:::examplefake-bucket/${aws:UserAgent}", "arn:aws:secretsmanager:us-east-1:111111111111:secret:${aws:UserAgent}",
+    "arn:aws:s3:::examplefake-bucket/key ", "arn:aws:ssm:us-east-1:111111111111:parameter/alz/pilot\tversion", "arn:aws:ssm:us-east-1:111111111111:parameter/alz/pilot\u0007version"]) {
     assert.equal(exact(arn), false, "refused: " + arn);
   }
   for (const arn of ["arn:aws:s3:::examplefake-pilot-config/settings.json", "arn:aws:secretsmanager:us-east-1:111111111111:secret:alz/pilot/token-AbCdEf",
