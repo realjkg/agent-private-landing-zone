@@ -1,6 +1,6 @@
 # ACT pilot: the Azure Bicep / ARM engine (path 4)
 
-Status: **design and engine spec. ACT stays DISABLED.** Nothing in this note enables infrastructure mutation, and no run on Azure has happened. There is no emulator for Azure Resource Manager, so every Azure fact below is either checked against the vendor's own source (the az CLI 2.91.0 wheel) or marked UNVERIFIED. Live verification is the owner-supervised **G2** DEV run.
+Status: **design and engine spec, admitted in code for DEV only. ACT stays DISABLED.** The `BICEP` engine is registered and a contract may name Azure with it under the DEV-only scope (the admission-wiring lane, #39); admission still needs the owner's reviewed contract with an `authorize` entry, and the repository ships none. Nothing in this note enables infrastructure mutation, and no run on Azure has happened. There is no emulator for Azure Resource Manager, so every Azure fact below is either checked against the vendor's own source (the az CLI 2.91.0 wheel) or marked UNVERIFIED. Live verification is the owner-supervised **G2** DEV run.
 
 **Path 4 cannot run on the `bootstrap/azure` that is on main today.** Its two identities need two actions that the merged bootstrap does not grant. See [Prerequisites not yet on main](#prerequisites-not-yet-on-main-owner-decision-required).
 
@@ -48,7 +48,7 @@ az login --service-principal --username <ARM_CLIENT_ID> --tenant <ARM_TENANT_ID>
 - **Sign-in checks.** `az account show` must report the contract's tenant and subscription, and the identity's own client id as a service principal (otherwise `ACCOUNT_NOT_IN_CONTRACT`). DISCOVERY and APPLY must report different client ids (otherwise `IDENTITY_COLLAPSED`).
 - **Clean-up.** `removeSecrets()` deletes the directories, which hold az's token cache.
 
-The `@` expansion applies to every az argument, and not only at its start: az splits each argument on its first `=` and reads the part after it as a file when it starts with `@`, so `key=@/path` (the shape of a `--tags` value) is a file read too. Each argument list is therefore matched exactly against an allowlist (`isAllowedBicepArgv`) before it runs. No argument may contain `@`, or be one az would expand (`@x` or `key=@x`), except the login's own token slot, which must be `@` followed by an absolute token-file path.
+The `@` expansion applies to every az argument, in exactly two places: az splits each argument on its first `=`, and reads as a file the part after that `=`, or the whole argument when it has no `=`, when that part starts with `@` and something follows it (`_expand_file_prefixed_files`, azure-cli-core 2.91.0). So both `@/path` and `key=@/path` (the shape of a `--tags` value) are file reads, and `@-` reads standard input; an `@` anywhere else (`a@b`, `key=a@b`) is left as written. Each argument list is therefore matched exactly against an allowlist (`isAllowedBicepArgv`) before it runs, and the allowlist is stricter than az: no argument may contain `@` at all, except the login's own token slot, which must be `@` followed by an absolute token-file path.
 
 ## Prerequisites not yet on main (owner decision required)
 
@@ -88,7 +88,8 @@ The contract names `provider: AZURE` and `engine: BICEP`. Each environment's tar
    - there must be exactly one resource, of type `Microsoft.Network/virtualNetworks`, holding only `type`, `apiVersion`, `name`, `location`, `tags` and `properties`;
    - its properties must be only `addressSpace.addressPrefixes`: the network is empty, so no subnet (and so no delegation), no peering and no `ddosProtectionPlan`;
    - the template may hold only `$schema`, `languageVersion`, `contentVersion`, `metadata`, `parameters`, `variables` and `resources`: no `outputs` and no user `functions`;
-   - no `list*` function call (`listKeys` and the like) appears anywhere in the template;
+   - no `list*` function call (`listKeys` and the like) appears in any key or string value of the parsed template (judged after parsing, so a JSON escape such as `\u006cistKeys(` cannot hide one);
+   - each address prefix is a literal CIDR block and the tags, keys and values, are literal strings: no ARM expression (`[...]`), so what is deployed is exactly the sealed text (`TEMPLATE_VALUE_NOT_LITERAL`); a project that passes its tags as a parameter is refused;
    - there may be no module (`Microsoft.Resources/deployments`), no `existing` resource and no extension resource (`scope`).
 
    Any other type is `RESOURCE_TYPE_NOT_ALLOWED`, and any other shape is `TEMPLATE_SHAPE_NOT_ALLOWED`. A `Microsoft.Resources/resourceGroups` resource is refused like any other type: the run must not create a group.
@@ -158,7 +159,7 @@ az stack group create --name <stack> --resource-group <group> --template-file <s
 | Outcome | When |
 |---|---|
 | SUCCEEDED | The create exited 0, the stack moved (new deployment id or last-modified time), its state is `succeeded`, it lists no failed resources, and it reports the sealed deny settings. All five must hold. |
-| FAILED_NO_CHANGE | Positive evidence only: az ran to completion and gave a definite non-zero exit, and at least three reads over the poll window show the stack unmoved. A create with no exit code (a timeout, the output cap or a spawn error) may have reached ARM, so it is never this outcome. |
+| FAILED_NO_CHANGE | Positive evidence only: az ran to completion and gave a definite non-zero exit, and at least three reads over the poll window show the stack unmoved. Definite means a refusal ARM itself returned, printed by az as `(<Code>) <message>`; an az transport error that exits 1 (a closed connection, a timeout) may follow a request that reached ARM, so it is not definite (UNVERIFIED (A3): az's error format). A create with no exit code (a timeout, the output cap or a spawn error) may have reached ARM, so it is never this outcome. |
 | KILLED | A stop arrived. |
 | PARTIAL_REQUIRES_REVIEW | Everything else. |
 
@@ -200,23 +201,20 @@ az stack group delete --name <stack> --resource-group <group> --action-on-unmana
 - **Last check.** Just before the call, the engine checks once more that the stack fingerprint is unchanged.
 - **The group stays.** `deleteResources` deletes managed resources and detaches resource groups (`_prepare_stacks_action_on_unmanage` in az 2.91.0). The stack manages no group, so the pilot resource group is never deleted.
 - **Stopping.** az 2.91.0 offers no `--no-wait` for a delete, so the call runs as a stoppable process. A stop ends the local call (KILLED), and Azure may still finish the delete.
-- **Outcome.** `settle` returns SUCCEEDED only when the delete exited 0 with nothing cut off and the stack is gone. It returns FAILED_NO_CHANGE only after a definite non-zero exit and at least three reads over the poll window that show the stack unchanged. A delete stopped by the kill switch or the time limit is KILLED, and any other result is PARTIAL_REQUIRES_REVIEW. A person then confirms each id is gone with the independent read-back.
+- **Outcome.** `settle` returns SUCCEEDED only when the delete exited 0 with nothing cut off and the stack is gone. It returns FAILED_NO_CHANGE only after a definite non-zero exit (an ARM refusal, as for the create) and at least three reads over the poll window that show the stack unchanged. A delete stopped by the kill switch or the time limit is KILLED, and any other result is PARTIAL_REQUIRES_REVIEW. A person then confirms each id is gone with the independent read-back.
 - **Order with the bootstrap teardown.** The stack cleanup (or `az stack group delete`) must run **before** the bootstrap teardown removes the pilot resource group. A stack left behind keeps its `denyWriteAndDelete` assignment on its resources, applied to child scopes, and that blocks the group's deletion.
 
-## Engine-id admission (not in this lane)
+## Engine-id admission (the admission-wiring lane, #39)
 
-The engine is written against `EngineSpec`, but it is **not registered**. Registering it needs:
+The engine is registered, for DEV only:
 
-- the `BICEP` engine id in `EngineId`;
-- the two evidence `mutation` values;
-- the `BICEP` manifest engine;
-- the contract's DEV-only scope for Azure Bicep.
+- `BICEP` is an `EngineId` and is in `SPECS` (`src/apply/engine-spec.ts`); the evidence names its two `mutation` values (`AZURE_DEPLOYMENT_STACK_CREATE_OF_SEALED_TEMPLATE`, `AZURE_DEPLOYMENT_STACK_DELETE_OF_RUN_STACK`).
+- A contract may name `AZURE` with `BICEP` only under `"enabledEnvironments": ["DEV"]`; a three-stage one is `CONTRACT_INVALID`. Each target adds `resourceGroup`, which joins the run's target hash, so a cleanup refuses a contract that moved the stack to another group.
+- The driver's blueprint hook reads the stack's id and managed resources as DISCOVERY after the run (`stateDocument`, source `AZURE_DEPLOYMENT_STACK_RESOURCES`); each managed resource is its own address, by ARM id, and the stack is the unit's container. The cleanup proposal names resources by their ARM ids, and the cleanup deletes the whole stack.
+- `test/apply-bicep-admission.test.ts` drives the path through the driver (contract, requester signature, approvals, ledger, evidence, observe, proposal, cleanup, leftovers) with the fake `az` and `bicep` and a scripted ARM (SYNTHETIC).
+- The release gate `act:azure-bicep` is in `ACT_RELEASE_PATHS` and `config/release/scope.json`, BLOCKED.
 
-These belong to the authorization lane (`src/apply/types.ts`, `src/apply/contract.ts`). Until they land:
-
-- `BICEP` is exported with its own narrow type. Registering it is one entry in `SPECS` (`src/apply/engine-spec.ts`).
-- Its tests (`test/apply-bicep.test.ts`, added in #316) drive the engine's steps directly with a fake `az` and `bicep`. They do not go through the driver, so the ledger, approvals, requester signature and evidence are not yet exercised for this engine. These shared modules are unchanged and are tested for the other engines.
-- The blueprint (`src/observe/blueprint.ts`) and the cleanup proposal's address form (`src/apply/cleanup-proposal.ts`, ARM ids) are wired when the engine is registered.
+Path 4 still cannot run on the merged `bootstrap/azure` (see above): that waits on the owner's role decision (issue #39, 6449189954). The static production contract's pilot combinations (`src/qualification/production-contract.ts`) do not list Azure Bicep, so a release under a pilot contract for it is refused until the owner adds it.
 
 ## Assumptions to verify at G2
 

@@ -11,6 +11,7 @@ import { sha256 } from "../util/sha256.js";
 import { ENVIRONMENTS } from "./constants.js";
 import { isKillSwitchActive, loadPilotContract, loadQualificationRecords, pilotContractSha256, repoPaths, targetForEnvironment } from "./contract.js";
 import { acceptsManifest, engineOf } from "./engine-spec.js";
+import { BICEP_ENTRY } from "./engines/bicep.js";
 import { LockFileError, lockedProviders } from "./lockfile.js";
 import { checkModules, TerraformConfigError, variableSources } from "./terraform-inputs.js";
 import { specOf } from "./provider.js";
@@ -34,7 +35,7 @@ const AWS_CLI_VERSION = /^\d+\.\d+\.\d+$/;
 /** The secondary path for each provider: what an owner could choose instead, and what is not yet supported. */
 const PATHS: Readonly<Record<ProviderId, { primary: EngineId; secondary: EngineId | null; secondaryGap: string }>> = {
   AWS: { primary: "TERRAFORM", secondary: "CDK", secondaryGap: "" },
-  AZURE: { primary: "TERRAFORM", secondary: null, secondaryGap: "Bicep is the planned secondary path for Azure and is not supported for apply yet." },
+  AZURE: { primary: "TERRAFORM", secondary: "BICEP", secondaryGap: "" },
   GCP: { primary: "TERRAFORM", secondary: null, secondaryGap: "The GCP API-native path is planned and is not supported for apply yet." },
 };
 
@@ -169,6 +170,11 @@ function checkProjectShape(engine: EngineId, root: string): PrepareRefusal | und
     }
     return undefined;
   }
+  if (engine === "BICEP") {
+    // The engine compiles exactly main.bicep with the pinned bicep and no module restore; nothing else is an entry point.
+    return names.includes(BICEP_ENTRY) ? undefined
+      : refuse("PROJECT_ENGINE_MISMATCH", "OPERATOR", "This folder has no " + BICEP_ENTRY + ". Choose the folder that holds the Bicep project's " + BICEP_ENTRY + ".");
+  }
   if (!hasAssembly) {
     return refuse("PROJECT_ENGINE_MISMATCH", "OPERATOR", hasTf
       ? "This folder is a Terraform project, but the contract's engine is CDK. Choose the synthesized cdk.out folder."
@@ -259,9 +265,10 @@ export async function prepareApply(input: PrepareInput, deps: PrepareDeps = {}):
     engineVersionSource = "QUALIFICATION_RECORD";
   } else {
     const pins = loadToolPins(deps.pinsPath);
-    engineVersion = engine.id === "TERRAFORM" ? pins.tools.terraform.version : pins.awsCli.version;
+    // Bicep's engine version is the az CLI's (src/apply/engines/bicep.ts checks it, and the pinned bicep, before anything runs).
+    engineVersion = engine.id === "TERRAFORM" ? pins.tools.terraform.version : engine.id === "BICEP" ? pins.azureCli.version : pins.awsCli.version;
     engineVersionSource = "TESTED_PIN";
-    if (engine.id !== "TERRAFORM" && input.awsCliVersion !== undefined && input.awsCliVersion !== engineVersion) {
+    if (engine.id === "CDK" && input.awsCliVersion !== undefined && input.awsCliVersion !== engineVersion) {
       return refuse("ENGINE_VERSION_REQUIRED", "OPERATOR", AWS_CLI_VERSION.test(input.awsCliVersion)
         ? "The CDK path is tested with AWS CLI " + engineVersion + ", and that is the version preparation records; " + input.awsCliVersion + " is not it. Install the tested version (./alz deps shows the step), then prepare again without naming a version."
         : "That is not an AWS CLI version. The tested version is " + engineVersion + "; prepare again without naming one.");
@@ -349,6 +356,8 @@ function deriveInputs(engine: EngineId, projectRoot: string, files: ArtifactMani
       return { refusal: refuse("INPUT_UNSET", "OPERATOR", "These Terraform variables have no value: " + unset.join(", ") +
         ". Give each a default, an entry in terraform.tfvars, or set ALZ_DISCOVERY_TF_VAR_<name> where the console runs. Values are never read or stored here.") };
     }
+  } else if (engine === "BICEP") {
+    // Bicep: the stack is created from the compiled template with no parameters file, so every parameter takes its default; nothing passes another value.
   } else {
     // CDK: the change set takes each template parameter's default; nothing passes another value.
     for (const file of readdirSync(projectRoot).filter((name) => name.endsWith(".template.json")).sort()) {

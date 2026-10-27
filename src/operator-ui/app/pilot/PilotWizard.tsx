@@ -178,7 +178,7 @@ export function PreparedSummary(props: { prepared: PreparedFiles }) {
       <p><strong>{COPY.prepareDone}</strong></p>
       <dl className="pilot-facts">
         <dt>Cloud</dt><dd>{summary.provider}</dd>
-        <dt>Build tool</dt><dd>{summary.engine === "TERRAFORM" ? "Terraform" : summary.engine === "CDK" ? "AWS CDK" : summary.engine}{summary.path === "SECONDARY" ? " (the other supported way)" : ""}</dd>
+        <dt>Build tool</dt><dd>{summary.engine === "TERRAFORM" ? "Terraform" : summary.engine === "CDK" ? "AWS CDK" : summary.engine === "BICEP" ? "Azure Bicep" : summary.engine}{summary.path === "SECONDARY" ? " (the other supported way)" : ""}</dd>
         <dt>Environment</dt><dd>{summary.environment}</dd>
         <dt>Account</dt><dd><code>{summary.account}</code></dd>
         {summary.region && <><dt>Region</dt><dd><code>{summary.region}</code></dd></>}

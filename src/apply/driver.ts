@@ -8,7 +8,7 @@ import { forbiddenIdentityVariables } from "../tools/identity.js";
 import { writeEncryptedEvidence } from "../evidence/vault.js";
 import { interceptStopSignals } from "../tools/process.js";
 import { createPrivateDirectory } from "../tools/private-workdir.js";
-import { blueprintFromCloudFormationResources, blueprintFromTerraformStatePull } from "../observe/blueprint.js";
+import { blueprintFromCloudFormationResources, blueprintFromDeploymentStackResources, blueprintFromTerraformStatePull } from "../observe/blueprint.js";
 import { consumeApprovals, requesterRefusal, verifyApprovalSet, verifyRequestSignature } from "./approval.js";
 import { buildCleanupProposal, computeProposalSha256, protectedDeletionIn, verifyCleanupProposal, type CleanupProposal } from "./cleanup-proposal.js";
 import { pilotUnitOf } from "./unit.js";
@@ -339,8 +339,9 @@ async function keepRecoveryFiles(files: RecoveryFile[], artifactSha256: string):
 }
 
 /**
- * Reads what the engine knows about the resources it left once (Terraform's state, or CloudFormation's logical-to-physical
- * mapping), maps it to identifiers only, and records the blueprint beside the evidence. Never throws: a missing blueprint is
+ * Reads what the engine knows about the resources it left once (Terraform's state, CloudFormation's logical-to-physical
+ * mapping, or an Azure deployment stack's managed resources: the hook every engine with a cleanup path fills through
+ * `EngineApplyRun.stateDocument`), maps it to identifiers only, and records the blueprint beside the evidence. Never throws: a missing blueprint is
  * a refusal later, not a failed apply now. `place` is the account and region the identifiers are in (an ARN is derived from
  * a CloudFormation physical id for the types the independent reader knows).
  */
@@ -349,7 +350,9 @@ async function keepBlueprint(run: { stateDocument?(): StateDocument | undefined 
   try {
     const state = run.stateDocument?.();
     if (state === undefined) return;
-    const blueprint = state.source === "CLOUDFORMATION_STACK_RESOURCES" ? blueprintFromCloudFormationResources(state.document, sealed.changes, place) : blueprintFromTerraformStatePull(state.document, sealed.changes);
+    const blueprint = state.source === "CLOUDFORMATION_STACK_RESOURCES" ? blueprintFromCloudFormationResources(state.document, sealed.changes, place)
+      : state.source === "AZURE_DEPLOYMENT_STACK_RESOURCES" ? blueprintFromDeploymentStackResources(state.document, sealed.changes, place)
+      : blueprintFromTerraformStatePull(state.document, sealed.changes);
     const record: BlueprintRecord = {
       schemaVersion: 1, kind: "BLUEPRINT", artifactSha256: evidence.artifactSha256, applyEvidenceSha256: sha256(canonicalJson(evidence as never)), environment: evidence.environment,
       target: { ...evidence.target }, sourceCommit: evidence.sourceCommit, contractSha256: evidence.contractSha256, outcome: evidence.outcome, source: state.source, blueprint,

@@ -27,9 +27,9 @@ test("Phase E covers each engine and provider pair at most once, every implement
     8,
     "every implemented adapter has a lane",
   );
-  // The three release paths (config/release/scope.json; src/qualification/release-admission.ts ACT_RELEASE_PATHS) each
+  // The release paths (config/release/scope.json; src/qualification/release-admission.ts ACT_RELEASE_PATHS) each
   // have a brownfield preview scenario of their own: the Azure Terraform path is not covered by the AWS one.
-  const ENGINE_NAMES: Record<string, string> = { TERRAFORM: "TERRAFORM", CDK: "AWS_CDK" };
+  const ENGINE_NAMES: Record<string, string> = { TERRAFORM: "TERRAFORM", CDK: "AWS_CDK", BICEP: "BICEP" };
   for (const path of ACT_RELEASE_PATHS) {
     const scenario = PHASE_E_SCENARIOS.find(
       (item) => item.provider === path.provider && item.engine === ENGINE_NAMES[path.engine],

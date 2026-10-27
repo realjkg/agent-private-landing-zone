@@ -35,7 +35,7 @@ export const APPLY_IDENTITIES = ["DISCOVERY", "STATE", "STATE_WRITE", "APPLY"] a
 export type ApplyIdentity = ExecutionIdentity;
 
 /** The engines the pilot has a spec for (src/apply/engine-spec.ts). The contract's `engine` selects one; anything else is not a contract. */
-export type EngineId = "TERRAFORM" | "CDK";
+export type EngineId = "TERRAFORM" | "CDK" | "BICEP";
 
 /** The providers the pilot has a spec for (src/apply/provider.ts). The contract's `provider` selects one; anything else is not a contract. */
 export type ProviderId = "AZURE" | "AWS" | "GCP";
@@ -316,7 +316,7 @@ export type ApplyEvidence = {
   authority: {
     infrastructureAct: "PILOT_ENABLED";
     /** What the engine did: Terraform applied the sealed plan, or CloudFormation executed the sealed change set. */
-    mutation: "TERRAFORM_APPLY_OF_SEALED_PLAN" | "CLOUDFORMATION_EXECUTE_OF_SEALED_CHANGE_SET";
+    mutation: "TERRAFORM_APPLY_OF_SEALED_PLAN" | "CLOUDFORMATION_EXECUTE_OF_SEALED_CHANGE_SET" | "AZURE_DEPLOYMENT_STACK_CREATE_OF_SEALED_TEMPLATE";
     agentInitiated: false;
   };
   /** Present when the engine left errored.tfstate or crash.log: kept encrypted in the vault, referenced here by count and hash only. */
@@ -359,7 +359,7 @@ export type CleanupEvidence = {
   finishedAt: string;
   authority: {
     infrastructureAct: "PILOT_ENABLED";
-    mutation: "TERRAFORM_DESTROY_OF_APPROVED_PROPOSAL" | "CLOUDFORMATION_EXECUTE_OF_REMOVAL_CHANGE_SET";
+    mutation: "TERRAFORM_DESTROY_OF_APPROVED_PROPOSAL" | "CLOUDFORMATION_EXECUTE_OF_REMOVAL_CHANGE_SET" | "AZURE_DEPLOYMENT_STACK_DELETE_OF_RUN_STACK";
     /** The identity that executed: the pilot's APPLY identity (owner decision, 2026-10-25), bound to `deletes`. */
     executedAs: "APPLY";
     agentInitiated: false;

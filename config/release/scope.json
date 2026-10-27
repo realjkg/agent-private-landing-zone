@@ -18,7 +18,8 @@
   "actPaths": [
     "act:aws-terraform",
     "act:azure-terraform",
-    "act:aws-cdk"
+    "act:aws-cdk",
+    "act:azure-bicep"
   ],
   "journey": "FULL_LIFECYCLE",
   "outOfScope": [

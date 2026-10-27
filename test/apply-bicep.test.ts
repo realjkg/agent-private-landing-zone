@@ -17,9 +17,9 @@ import {
   behave, callsOf, identityEnv, installFakes, patch, stateOf, vnetTemplate, writeBicepProject, type AzBehavior,
 } from "./helpers/bicep-fixtures.js";
 
-// SYNTHETIC. The path 4 engine (docs/act-pilot-bicep.md) driven step by step with a fake `az` and `bicep`. The engine is not
-// registered until the authorization lane admits the BICEP engine id, so these tests call its steps directly; the driver, ledger,
-// approvals and evidence around them are the shared modules, tested for the other engines. Nothing here is provider qualification.
+// SYNTHETIC. The path 4 engine (docs/act-pilot-bicep.md) driven step by step with a fake `az` and `bicep`. These tests call its
+// steps directly; test/apply-bicep-admission.test.ts drives the same engine through the driver, ledger, approvals and evidence.
+// Nothing here is provider qualification.
 
 const root = mkdtempSync(join(tmpdir(), "alz-bicep-"));
 test.after(() => rmSync(root, { recursive: true, force: true }));
@@ -108,7 +108,7 @@ test("the allowlist admits exactly the engine's own az and bicep lists, each for
   assert.equal(AZ_STACK_PROFILE.injectable.join(), "AZURE_CONFIG_DIR", "az receives only its private sign-in directory");
 });
 
-test("the spec: two identities, three adapters with their own argument digests, never registered until the engine id is admitted", () => {
+test("the spec: two identities, three adapters with their own argument digests, registered as the BICEP engine (admitted for DEV only)", () => {
   assert.equal(BICEP.id, "BICEP");
   assert.deepEqual([...BICEP.identities], ["DISCOVERY", "APPLY"]);
   assert.deepEqual([...BICEP.attests], ["DISCOVERY", "APPLY"]);
@@ -116,7 +116,8 @@ test("the spec: two identities, three adapters with their own argument digests, 
   const digests = [BICEP.previewAdapter(), BICEP.applyAdapter, BICEP.cleanupAdapter!].map((adapter) => adapter.argvDigest);
   assert.equal(new Set(digests).size, 3);
   assert.ok([BICEP.previewAdapter(), BICEP.applyAdapter, BICEP.cleanupAdapter!].every((adapter) => adapter.engine === "BICEP"));
-  assert.equal(engineSpec("BICEP"), undefined, "a contract naming BICEP is still not a contract (ACT stays DISABLED for this path)");
+  assert.equal(engineSpec("BICEP"), BICEP, "registered; the contract admits it for DEV only (test/apply-bicep-admission.test.ts)");
+  assert.deepEqual(BICEP.target!.locationFields, ["resourceGroup"], "the resource group joins the run's target hash");
   assert.equal(BICEP.target!.fields.resourceGroup(RESOURCE_GROUP), true);
   assert.equal(BICEP.target!.fields.resourceGroup("bad/group"), false);
   assert.equal(PIN, loadToolPins().bicep.version);
@@ -481,3 +482,54 @@ test("N3: an existing stack must carry exactly the unit's tags, keys and values,
   assert.throws(() => seal(next), refusedWith("STACK_TAGS_UNKNOWN"), "an extra key");
 });
 
+
+// --- the registration follow-ups of #39 6450296103 --------------------------------------------------------------------
+
+test("follow-up 1: only a refusal ARM itself returned is definite; an az transport error that exits 1 is PARTIAL_REQUIRES_REVIEW, never FAILED_NO_CHANGE, for the create and for the delete", async () => {
+  // The create reaches ARM but az reports a closed connection and exits 1; the stack shows only long after the reads end.
+  const w = world({ createLostAppearAfter: 1000 });
+  const lost = await apply(w, seal(w).artifact);
+  assert.equal(lost.result.exitCode, 1);
+  assert.deepEqual(lost.end, { outcome: "PARTIAL_REQUIRES_REVIEW" }, "no ARM error code: the request may have reached ARM");
+  // The control: an ARM refusal, printed as `(<Code>) <message>`, is definite.
+  const v = world({ createFail: true });
+  assert.deepEqual((await apply(v, seal(v).artifact)).end, { outcome: "FAILED_NO_CHANGE" });
+  // The delete: the same rule.
+  const d = world();
+  const sealed = seal(d);
+  assert.deepEqual((await apply(d, sealed.artifact)).end, { outcome: "SUCCEEDED" });
+  patch(toolDir, { deleteLost: true });
+  assert.deepEqual((await cleanup(d, [VNET_ID])).end, { outcome: "PARTIAL_REQUIRES_REVIEW" }, "a transport error on the delete is never a confirmed no-change");
+  assert.notEqual(stateOf(toolDir).stack, null, "the fake left the stack, as an unconfirmed delete may");
+});
+
+test("follow-up 2: a list* call is found in any parsed key or string value, also behind a JSON escape a text scan cannot see", () => {
+  const vnet = (over: Record<string, unknown>) => vnetTemplate({ resources: [{ type: "Microsoft.Network/virtualNetworks", apiVersion: "2024-05-01", name: VNET, location: "eastus2", tags: UNIT.tags, properties: { addressSpace: { addressPrefixes: ["10.250.0.0/24"] } }, ...over }] });
+  const escaped = vnetTemplate().replace('"note": "' + TEMPLATE_CANARY + '"', '"note": "[\\u006cistKeys(resourceId(\'Microsoft.Storage/storageAccounts\', \'x\'), \'2023-01-01\').keys[0].value]"');
+  assert.notEqual(escaped, vnetTemplate(), "the fixture holds the escaped call");
+  assert.ok(!/\blist[A-Za-z0-9]*\s*\(/i.test(escaped), "a scan of the raw text does not see it");
+  assert.throws(() => checkTemplate(escaped), refusedWith("TEMPLATE_SHAPE_NOT_ALLOWED"));
+  assert.throws(() => checkTemplate(vnet({ name: "[listSecrets('x', '2023-01-01').value]" })), refusedWith("TEMPLATE_SHAPE_NOT_ALLOWED"));
+  const keyed = JSON.parse(vnetTemplate());
+  keyed.variables = { "[listKeys('a','b')]": "x" };
+  assert.throws(() => checkTemplate(JSON.stringify(keyed)), refusedWith("TEMPLATE_SHAPE_NOT_ALLOWED"), "in a key too");
+  assert.doesNotThrow(() => checkTemplate(vnetTemplate()), "control");
+});
+
+test("follow-up 3: address prefixes and tags must be literal strings, never an ARM expression", () => {
+  const vnet = (tags: unknown, prefixes: unknown[]) => vnetTemplate({ resources: [{ type: "Microsoft.Network/virtualNetworks", apiVersion: "2024-05-01", name: VNET, location: "eastus2", tags, properties: { addressSpace: { addressPrefixes: prefixes } } }] });
+  assert.doesNotThrow(() => checkTemplate(vnet(UNIT.tags, ["10.250.0.0/24", "fd00:250::/64"])));
+  for (const [label, tags, prefixes] of [
+    ["tags from a parameter", "[parameters('tags')]", ["10.250.0.0/24"]],
+    ["a tag value expression", { ...UNIT.tags, "alz-unit": "[parameters('unit')]" }, ["10.250.0.0/24"]],
+    ["an escaped literal bracket", { ...UNIT.tags, owner: "[[team]" }, ["10.250.0.0/24"]],
+    ["a tag key expression", { ...UNIT.tags, "[variables('k')]": "v" }, ["10.250.0.0/24"]],
+    ["a non-string tag value", { ...UNIT.tags, n: 1 }, ["10.250.0.0/24"]],
+    ["a prefix expression", UNIT.tags, ["[variables('prefix')]"]],
+    ["a prefix that is not a CIDR block", UNIT.tags, ["10.250.0.0"]],
+    ["a non-string prefix", UNIT.tags, [10]],
+    ["no prefix", UNIT.tags, []],
+  ] as const) {
+    assert.throws(() => checkTemplate(vnet(tags, [...prefixes])), refusedWith("TEMPLATE_VALUE_NOT_LITERAL"), label);
+  }
+});

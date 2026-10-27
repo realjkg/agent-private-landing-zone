@@ -47,6 +47,8 @@ export type AzBehavior = {
   /** States the stack reports after a create, one per look (the last repeats). */
   pollStates?: string[];
   createFail?: boolean; deleteFail?: boolean;
+  /** The delete fails the way an az transport error does: exit 1 with no ARM error code, and the stack left as it was. */
+  deleteLost?: boolean;
   /** The create (or delete) reaches ARM, then az hangs for this long (a timeout kills it) or prints this many bytes (the output cap). */
   createSleepMs?: number; createOutputBytes?: number; deleteSleepMs?: number; deleteOutputBytes?: number;
   /** The create reaches ARM but az exits 1 (a lost response); the stack shows only after this many reads. */
@@ -160,6 +162,7 @@ if (cmd === "stack group create") {
 }
 if (cmd === "stack group delete") {
   if (b.deleteFail) fail("(DeploymentStackDeleteFailed) refused");
+  if (b.deleteLost) fail("Connection was closed before we received a valid response", 1);
   if (!s.stack) fail("DeploymentStack not found", 3);
   if (b.deleteOutputBytes) { process.stdout.write("x".repeat(b.deleteOutputBytes)); process.exit(1); }
   s.stack = null; s.deleted = true; save();

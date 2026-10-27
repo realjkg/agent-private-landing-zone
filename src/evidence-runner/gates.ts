@@ -42,12 +42,11 @@ const NO_PRODUCER_PLAN = "A new PLAN names this gate's producer (delegated decis
 /**
  * Gates no producer can run yet, so the runner reports them and writes nothing, whatever their mode would otherwise plan. GCP
  * Terraform is admitted in code for DEV only (the admission-wiring lane, #39), so its preview gate is produced at seal like any
- * other; the live read-only GCP inventory has no runner stage yet. The Bicep preview gate is back in scope (path 4; owner rebaseline
- * 6443352284), but no contract can name the BICEP engine until its id is admitted, so it is never planned as the GUIDED S5 stage.
+ * other; the live read-only GCP inventory has no runner stage yet. Azure Bicep (path 4) is admitted the same way, so its preview gate
+ * is produced at seal too.
  */
 const NOT_ADMITTED: Readonly<Record<string, string>> = {
   "gcp-provider": "The runner has no read-only GCP inventory stage yet, so no producer can run this gate. ",
-  "preview:bicep-azure-brownfield": "The BICEP engine is not an admitted engine yet (path 4), so no producer can run this gate. ",
 };
 
 function planFor(id: string): GatePlan {

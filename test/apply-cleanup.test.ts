@@ -242,6 +242,17 @@ test("observe refuses a run with no apply evidence, a blueprint that is not this
   assert.match(withContainer({ type: "AWS::CloudFormation::Stack", identifier: stackId }, "CLOUDFORMATION_STACK_RESOURCES", genuine), /a container only from a CloudFormation read/, "a backend that is not a stack name has no container");
   assert.match(withContainer({ type: "AWS::CloudFormation::Stack", identifier: "arn:aws:cloudformation:us-east-1:" + stacked.target.account + ":stack/PilotStack" }), /a container only from a CloudFormation read/, "no stack guid");
   assert.match(withContainer({ type: "AWS::CloudFormation::Stack", identifier: stackId, extra: 1 }), /a container only from a CloudFormation read/, "closed shape");
+  // An Azure deployment stack (the Bicep engine) is a container only from its own read, of its type, named by the target's subscription and stack.
+  const azure = { ...genuine, target: { account: "22222222-2222-4222-8222-222222222222", backend: "alz-pilot-stack", workspace: "default" } };
+  const stackArmId = "/subscriptions/22222222-2222-4222-8222-222222222222/resourceGroups/alz-pilot-dev/providers/Microsoft.Resources/deploymentStacks/alz-pilot-stack";
+  const deploymentStack = { type: "Microsoft.Resources/deploymentStacks", identifier: stackArmId };
+  assert.equal(withContainer(deploymentStack, "AZURE_DEPLOYMENT_STACK_RESOURCES", azure), "");
+  assert.match(withContainer(deploymentStack, "TERRAFORM_STATE_PULL", azure), /a container only from a CloudFormation read/, "a Terraform read has no container");
+  assert.match(withContainer(deploymentStack, "CLOUDFORMATION_STACK_RESOURCES", azure), /a container only from a CloudFormation read/, "not from a CloudFormation read");
+  assert.match(withContainer({ ...deploymentStack, identifier: stackArmId.replace("alz-pilot-stack", "other-stack") }, "AZURE_DEPLOYMENT_STACK_RESOURCES", azure), /a container only/, "another stack");
+  assert.match(withContainer({ ...deploymentStack, identifier: stackArmId.replace("22222222-2222", "33333333-3333") }, "AZURE_DEPLOYMENT_STACK_RESOURCES", azure), /a container only/, "another subscription");
+  assert.match(withContainer({ ...deploymentStack, type: "Microsoft.Resources/deployments" }, "AZURE_DEPLOYMENT_STACK_RESOURCES", azure), /a container only/, "the stack type only");
+  assert.match(withContainer({ type: "AWS::CloudFormation::Stack", identifier: stackId }, "AZURE_DEPLOYMENT_STACK_RESOURCES", stacked), /a container only/, "a CloudFormation stack is not a deployment stack");
   assert.equal(await writeBlueprintRecord(genuine, w.dirs.evidence), "EXISTS", "a blueprint is written once");
   // A run whose state could not be read leaves no blueprint, and observe says so instead of guessing.
   const other = world();

@@ -28,6 +28,8 @@ export const PLATFORM_LIFECYCLE_CHECKS = [
 /** The pilot paths a release can qualify live, each against its journey row (config/acceptance/journeys.json). */
 export const ACT_RELEASE_PATHS: readonly { provider: ProviderId; engine: EngineId }[] = [
   { provider: "AWS", engine: "TERRAFORM" }, { provider: "AZURE", engine: "TERRAFORM" }, { provider: "AWS", engine: "CDK" },
+  // Path 4, admitted in code for DEV only (the admission-wiring lane, #39). Its gate is an unmet requirement (BLOCKED) until live evidence exists.
+  { provider: "AZURE", engine: "BICEP" },
 ];
 /** Which cloud each live-provider gate's report must name. A gate missing here admits no report (never a default cloud). */
 const LIVE_PROVIDER_CLOUD: Readonly<Record<string, string>> = { "aws-provider": "AWS", "azure-provider": "AZURE", "gcp-provider": "GCP" };

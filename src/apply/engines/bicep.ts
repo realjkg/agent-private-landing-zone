@@ -32,8 +32,10 @@ import type { PilotUnit } from "../unit.js";
  * from those bytes only, as APPLY. A cleanup deletes the whole stack with `deleteResources`, which leaves the group in place.
  * Codes only: engine output (what-if payloads, stack errors) can quote template values.
  *
- * NOT REGISTERED. `EngineId`, the evidence `mutation` values and the contract's scope for Azure Bicep belong to the authorization
- * lane (src/apply/types.ts, src/apply/contract.ts); until they name BICEP this spec is exported on its own and is not in `SPECS`.
+ * ADMITTED IN CODE, DEV ONLY. `EngineId` names BICEP, this spec is in `SPECS` (src/apply/engine-spec.ts), the evidence names its two
+ * `mutation` values, and the contract admits Azure with this engine under the DEV-only scope (src/apply/contract.ts). Admission still
+ * needs the owner's reviewed contract with an `authorize` entry, and the repository ships none, so ACT stays DISABLED. Path 4 also
+ * cannot run on the merged `bootstrap/azure` until the owner decides its identity roles (issue #39, 6449189954; docs/act-pilot-bicep.md).
  *
  * Every az argument below was checked against the azure-cli 2.91.0 source (the resource and profile modules, azure-cli-core).
  * What ARM answers is UNVERIFIED (A1 to A4 in the design note): there is no ARM emulator, and no Azure call has been made. The
@@ -292,20 +294,40 @@ const TEMPLATE_KEYS = new Set(["$schema", "languageVersion", "contentVersion", "
 const RESOURCE_KEYS = new Set(["type", "apiVersion", "name", "location", "tags", "properties"]);
 /** An ARM `list*` function (listKeys, listSecrets, listAccountSas, ...): it reads secrets of other resources at deploy time. */
 const LIST_FUNCTION = /\blist[A-Za-z0-9]*\s*\(/i;
+/**
+ * Whether any key or string value anywhere in the parsed template calls a `list*` function. Judged on the parsed values, not the raw
+ * text (#39 6450296103, follow-up 2): JSON escapes (`\u006cistKeys(`) hide a call from a text scan and unescape when ARM parses it.
+ * Past a depth no Bicep output reaches, the scan fails closed.
+ */
+function callsListFunction(value: unknown, depth = 0): boolean {
+  if (depth > 64) return true;
+  if (typeof value === "string") return LIST_FUNCTION.test(value);
+  if (Array.isArray(value)) return value.some((item) => callsListFunction(item, depth + 1));
+  if (isRecord(value)) return Object.entries(value).some(([key, item]) => LIST_FUNCTION.test(key) || callsListFunction(item, depth + 1));
+  return false;
+}
+/**
+ * A literal string ARM uses as written: not an expression, which ARM evaluates when the whole string is in brackets (`[...]`), and
+ * not the `[[` escape either, so the value deployed is exactly the text sealed (#39 6450296103, follow-up 3).
+ */
+const literal = (value: unknown): value is string => typeof value === "string" && !value.startsWith("[");
+/** An address prefix: a literal IPv4 or IPv6 CIDR block (UNVERIFIED (A4): the only shape Bicep emits for a literal prefix). */
+const ADDRESS_PREFIX = /^(?:[0-9]{1,3}(?:\.[0-9]{1,3}){3}|[0-9A-Fa-f:]{2,39})\/[0-9]{1,3}$/;
 
 /**
  * The refusals that keep the template to the minimal workload, one empty virtual network (UNVERIFIED (A4): Bicep's output shape;
  * coordinator decision 6444382695). Exactly the resource-group deployment schema; exactly one resource, of type
  * `Microsoft.Network/virtualNetworks`; its properties only `addressSpace.addressPrefixes`, so no subnet (and no delegation), no
  * peering and no `ddosProtectionPlan`; no module, existing, extension, child or copied resource; no outputs or functions; and no
- * `list*` call anywhere. A resource group is refused like any other type: the run never creates one. Reads text; runs nothing.
+ * `list*` call in any parsed key or value; and literal address prefixes and tags (no ARM expression). A resource group is refused
+ * like any other type: the run never creates one. Reads text; runs nothing.
  */
 export function checkTemplate(text: string): void {
   const template = parse(text, "TEMPLATE_UNREADABLE");
   if (!isRecord(template)) return stop("TEMPLATE_UNREADABLE");
   if (template.$schema !== RESOURCE_GROUP_TEMPLATE_SCHEMA) stop("TEMPLATE_SHAPE_NOT_ALLOWED");
   if (Object.keys(template).some((key) => !TEMPLATE_KEYS.has(key))) stop("TEMPLATE_SHAPE_NOT_ALLOWED");
-  if (LIST_FUNCTION.test(text)) stop("TEMPLATE_SHAPE_NOT_ALLOWED");
+  if (callsListFunction(template)) stop("TEMPLATE_SHAPE_NOT_ALLOWED");
   const resources = Array.isArray(template.resources) ? template.resources : isRecord(template.resources) ? Object.values(template.resources) : stop("TEMPLATE_SHAPE_NOT_ALLOWED");
   if (resources.length === 0) stop("NO_CHANGES_TO_APPLY");
   for (const resource of resources) {
@@ -320,6 +342,10 @@ export function checkTemplate(text: string): void {
   if (!isRecord(properties) || Object.keys(properties).join() !== "addressSpace" || !isRecord(space) || Object.keys(space).join() !== "addressPrefixes" || !Array.isArray(space.addressPrefixes)) {
     stop("TEMPLATE_SHAPE_NOT_ALLOWED");
   }
+  // Literal values only where the sealed text must be what is deployed: each address prefix, and the tags (keys and values), which carry the unit.
+  const prefixes = (space as { addressPrefixes: unknown[] }).addressPrefixes;
+  if (prefixes.length === 0 || !prefixes.every((prefix) => literal(prefix) && ADDRESS_PREFIX.test(prefix))) stop("TEMPLATE_VALUE_NOT_LITERAL");
+  if (vnet.tags !== undefined && !(isRecord(vnet.tags) && Object.entries(vnet.tags).every(([key, value]) => literal(key) && literal(value)))) stop("TEMPLATE_VALUE_NOT_LITERAL");
 }
 
 // --- what ARM reports ------------------------------------------------------------------------------------------
@@ -532,9 +558,22 @@ const MAX_UNREADABLE_POLLS = 3;
  * unmoved. A stack can appear after a lost response, so one read is not enough.
  */
 const UNMOVED_READS_FOR_NO_CHANGE = 3;
-/** az gave a definite answer: it ran to completion (an exit code, nothing cut off, no refused environment). */
-const definite = (result: Pick<ToolResult, "exitCode" | "truncated" | "refusedEnvironment">): boolean =>
+/** az ran to completion: an exit code, nothing cut off, no refused environment. */
+const completed = (result: Pick<ToolResult, "exitCode" | "truncated" | "refusedEnvironment">): boolean =>
   typeof result.exitCode === "number" && result.truncated !== true && !(result.refusedEnvironment?.length);
+/**
+ * An error ARM itself returned, as az prints a service error: `(<Code>) <message>`, optionally after `ERROR: `. A transport error
+ * (a closed connection, a timeout, a DNS or TLS failure) prints no ARM code, and the request may still have reached ARM.
+ * UNVERIFIED (A3): az's error format for every ARM refusal. A refusal az prints any other way is not definite, which only ever
+ * gives PARTIAL_REQUIRES_REVIEW instead of FAILED_NO_CHANGE (fails closed).
+ */
+const ARM_ERROR = /^(?:ERROR: )?\([A-Za-z][A-Za-z0-9.]{2,100}\) /m;
+/**
+ * az gave a definite answer (#39 6450296103, follow-up 1): it ran to completion, and a non-zero exit is a refusal ARM itself
+ * returned, never an az transport error that exits 1 after the request may have reached ARM.
+ */
+const definite = (result: Pick<ToolResult, "exitCode" | "truncated" | "refusedEnvironment" | "stderr">): boolean =>
+  completed(result) && (result.exitCode === 0 || ARM_ERROR.test(result.stderr ?? ""));
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => { setTimeout(resolve, ms); });
 const outcomeResult = (over: Partial<StoppableResult>): StoppableResult => ({ tool: "azure_deployment_stack", ok: false, exitCode: null, stdout: "", stderr: "", durationMs: 0, stopped: false, ...over });
 
@@ -646,6 +685,15 @@ function openApply(input: EngineRunInput): BicepApplyRun {
         return view?.managed;
       } catch { return undefined; } finally { session.removeSecrets(); }
     },
+    // The driver's blueprint hook (src/apply/driver.ts `keepBlueprint`): the stack's id and managed resources, read once as DISCOVERY
+    // after the run, ARM ids only. Never thrown: a stack that cannot be read leaves no blueprint, and the cleanup step says so.
+    stateDocument() {
+      try {
+        session.signIn();
+        const view = readStack(session, "DISCOVERY", pinned);
+        return view === undefined ? undefined : { source: "AZURE_DEPLOYMENT_STACK_RESOURCES" as const, document: JSON.stringify({ stackId: view.id, managed: view.managed }) };
+      } catch { return undefined; } finally { session.removeSecrets(); }
+    },
   };
 }
 
@@ -746,6 +794,8 @@ export const BICEP: BicepEngineSpec = {
     // The same stack name in each subscription is the usual case; the subscription already differs.
     backendMayRepeat: true,
     fields: { resourceGroup: (value) => typeof value === "string" && AZURE_NAME.test(value) },
+    // Where the stack is: a cleanup in another group would find another group's stack of the same name.
+    locationFields: ["resourceGroup"],
   },
   notices: {
     sealHeading: "SEAL A DEPLOYMENT STACK PLAN (this compiles main.bicep and runs a what-if; nothing is created, changed or deleted)",

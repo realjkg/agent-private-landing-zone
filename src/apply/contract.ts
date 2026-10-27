@@ -10,7 +10,7 @@ import type { ResolvedTarget } from "../teardown/driver/types.js";
 import { canonicalJson } from "../teardown/manifest.js";
 import { sha256 } from "../util/sha256.js";
 import { ENVIRONMENTS, HASH } from "./constants.js";
-import { ENGINE_IDS, engineSpec, type EngineSpec } from "./engine-spec.js";
+import { ENGINE_IDS, engineOf, engineSpec, type EngineSpec } from "./engine-spec.js";
 import { applyEvidenceProblems, qualificationEvidenceProblems, type QualificationEvidence } from "./evidence.js";
 import { accountFieldsOf, PROVIDER_IDS, providerSpec, specOf, type ProviderSpec } from "./provider.js";
 import { ACT_OPERATIONS, type ActOperation } from "./types.js";
@@ -148,7 +148,6 @@ function authorizeOf(value: unknown, active: readonly ApplyEnvironment[]): Pilot
 
 /** A path that exists only as an admission-level id until its lane lands (six-path baseline, #39): refused NOT_IMPLEMENTED. */
 const PLANNED_PATHS: readonly { provider: string; engine: string; path: string }[] = [
-  { provider: "AZURE", engine: "BICEP", path: "path 4" },
   { provider: "GCP", engine: "GCP_API", path: "path 6" },
 ];
 
@@ -158,6 +157,7 @@ const PLANNED_PATHS: readonly { provider: string; engine: string; path: string }
  * paths' own; nothing here lets one of these reach QA or PROD.
  */
 const DEV_ONLY_PATHS: readonly { provider: string; engine: string; path: string }[] = [
+  { provider: "AZURE", engine: "BICEP", path: "path 4" },
   { provider: "GCP", engine: "TERRAFORM", path: "path 5" },
 ];
 class NotImplemented extends Invalid {}
@@ -297,7 +297,8 @@ export type Authorization = { operation: ActOperation; contractSha256: string; a
 
 /**
  * The canonical hash of one environment's full target (review of #313, R1): provider, every account field (account or
- * subscription, tenant, region, project), the provider's optional fields when stated (GCP: `parent`), backend and workspace. Sealed into the plan and recorded in the apply evidence, so a
+ * subscription, tenant, region, project), the provider's optional fields when stated (GCP: `parent`), the engine's location fields
+ * (Bicep: `resourceGroup`), backend and workspace. Sealed into the plan and recorded in the apply evidence, so a
  * cleanup or removal runs only where the run ran, even when it is authorized by a later contract. Undefined when the contract
  * has no target for the environment.
  */
@@ -306,7 +307,8 @@ export function pilotTargetSha256(contract: PilotContract, env: ApplyEnvironment
   if (!target) return undefined;
   const spec = specOf(contract);
   const account = Object.fromEntries(Object.entries(accountFieldsOf(spec, target)).map(([key, value]) => [key, canonicalGuid(value)]));
-  const optional = Object.keys(spec.optionalTargetFields ?? {}).filter((name) => Object.hasOwn(target, name)).map((name) => [name, (target as unknown as Record<string, string>)[name]]);
+  const located = [...Object.keys(spec.optionalTargetFields ?? {}), ...(engineOf(contract).target?.locationFields ?? [])];
+  const optional = located.filter((name) => Object.hasOwn(target, name)).map((name) => [name, (target as unknown as Record<string, string>)[name]]);
   return sha256(canonicalJson({ provider: contract.provider, ...account, ...Object.fromEntries(optional), backend: target.backend, workspace: target.workspace } as never));
 }
 
