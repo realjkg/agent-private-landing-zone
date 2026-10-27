@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { checkDraftContract, contractCheckLines, type ContractCheckReport } from "../src/apply/contract-check.js";
+import { checkDraftContract, contractCheckLines, shippedExampleValues, type ContractCheckReport } from "../src/apply/contract-check.js";
 import { runApplyCommand, type ApplyCliDeps } from "../src/cli/apply.js";
 import { keys } from "./helpers/apply-fixtures.js";
 
@@ -26,21 +26,24 @@ const file = (value: unknown, label = "draft"): string => {
   return path;
 };
 
-/** A complete AWS Terraform DEV-only draft: fake ids (not the shipped example's repeated digits) and test keys, enabled false as a draft is. */
+/**
+ * A complete AWS Terraform DEV-only draft: fake ids (not the shipped example's repeated digits), a region, workspace and kill
+ * switch path no shipped example uses, and test keys; enabled false as a draft is.
+ */
 const completeDraft = (over: Record<string, unknown> = {}) => ({
   schemaVersion: 1, enabled: false, provider: "AWS", engine: "TERRAFORM", policyVersion: "2026-10-11.1", enabledEnvironments: ["DEV"],
-  targets: { DEV: { accountId: "123456789012", region: "us-east-2", backend: "fixture-dev-state/pilot/dev.tfstate", workspace: "default" } },
+  targets: { DEV: { accountId: "123456789012", region: "eu-central-1", backend: "fixture-dev-state/pilot/dev.tfstate", workspace: "pilot-dev" } },
   requiredApprovals: { DEV: 1 }, maxApprovalAgeMinutes: 30,
   approvers: [{ id: "pilot-owner", publicKeyPem: keys.alice.pub, environments: ["DEV"] }],
-  killSwitchPath: ".runs/apply/KILL", ...over,
+  killSwitchPath: ".runs/apply/STOP-DEV", ...over,
 });
 /** The three-stage chain with two production approvers. */
 const chainDraft = () => ({
   ...completeDraft(), enabledEnvironments: undefined,
   targets: {
-    DEV: { accountId: "123456789012", region: "us-east-2", backend: "fixture-dev-state/pilot/dev.tfstate", workspace: "default" },
-    QA: { accountId: "234567890123", region: "us-east-2", backend: "fixture-qa-state/pilot/qa.tfstate", workspace: "default" },
-    PROD: { accountId: "345678901234", region: "us-east-2", backend: "fixture-prod-state/pilot/prod.tfstate", workspace: "default" },
+    DEV: { accountId: "123456789012", region: "eu-central-1", backend: "fixture-dev-state/pilot/dev.tfstate", workspace: "pilot-dev" },
+    QA: { accountId: "234567890123", region: "eu-central-1", backend: "fixture-qa-state/pilot/qa.tfstate", workspace: "pilot-qa" },
+    PROD: { accountId: "345678901234", region: "eu-central-1", backend: "fixture-prod-state/pilot/prod.tfstate", workspace: "pilot-prod" },
   },
   requiredApprovals: { DEV: 1, QA: 1, PROD: 2 },
   approvers: [
@@ -59,7 +62,7 @@ test("a complete draft with fake ids and test keys is COMPLETE, maps every owner
   assert.equal(report.enabledAsWritten, false, "a draft is reported as written, never flipped");
   assert.deepEqual(report.scope, ["DEV"]);
   assert.deepEqual(report.inputs.map((x) => x.field), [
-    "provider", "engine", "policyVersion", "enabledEnvironments",
+    "enabled", "provider", "engine", "policyVersion", "enabledEnvironments",
     "targets.DEV.accountId", "targets.DEV.region", "targets.DEV.backend", "targets.DEV.workspace", "requiredApprovals.DEV",
     "maxApprovalAgeMinutes", "approvers[0].id", "approvers[0].publicKeyPem", "approvers[0].environments", "killSwitchPath",
   ]);
@@ -99,7 +102,9 @@ test("the shipped AWS examples are refused as placeholders and example values, e
     assert.equal(statusOf(report, "targets.DEV.backend"), "EXAMPLE", name);
     assert.equal(statusOf(report, "approvers[0].id"), "PLACEHOLDER", name);
     assert.equal(statusOf(report, "approvers[0].publicKeyPem"), "PLACEHOLDER", name);
-    assert.ok(report.inputs.filter((x) => x.status !== "PRESENT").length >= 5, name + ": every placeholder is listed, not only the first");
+    // The example's region, workspace and kill switch path copied verbatim are not decisions: EXAMPLE, never PRESENT.
+    for (const field of ["targets.DEV.region", "targets.DEV.workspace", "killSwitchPath"]) assert.equal(statusOf(report, field), "EXAMPLE", name + " " + field);
+    assert.ok(report.inputs.filter((x) => x.status !== "PRESENT").length >= 8, name + ": every placeholder is listed, not only the first");
     if (Object.hasOwn(example, "EXAMPLE")) assert.equal(statusOf(report, "EXAMPLE"), "PLACEHOLDER", name + ": the example marker is named");
   }
 });
@@ -134,6 +139,48 @@ test("each missing owner input is reported by its field in plain words, and the 
   }
 });
 
+test("a missing or non-boolean enabled flag is never COMPLETE, as the loader refuses it, even though the shape check overrides it", () => {
+  const absent = checkDraftContract(completeDraft({ enabled: undefined }));
+  assert.equal(absent.shape.ok, true, "the validator sees enabled: true substituted");
+  assert.equal(statusOf(absent, "enabled"), "MISSING");
+  assert.equal(absent.enabledAsWritten, null);
+  assert.equal(absent.complete, false);
+  for (const value of ["true", "yes", 1, null, {}]) {
+    const r = checkDraftContract(completeDraft({ enabled: value }));
+    assert.equal(statusOf(r, "enabled"), "INVALID", JSON.stringify(value));
+    assert.equal(r.complete, false, JSON.stringify(value));
+  }
+  assert.equal(checkDraftContract(completeDraft({ enabled: true })).complete, true, "a boolean either way is an explicit decision");
+});
+
+test("a region, workspace or kill switch path copied verbatim from a shipped example is EXAMPLE, read from the example files themselves", () => {
+  const shipped = shippedExampleValues();
+  assert.ok(shipped.region.size > 0 && shipped.workspace.has("default") && shipped.killSwitchPath.has(".runs/apply/KILL"), "the repository's examples were read");
+  for (const [field, over] of [
+    ["targets.DEV.region", { targets: { DEV: { accountId: "123456789012", region: [...shipped.region][0], backend: "fixture-dev-state/pilot/dev.tfstate", workspace: "pilot-dev" } } }],
+    ["targets.DEV.workspace", { targets: { DEV: { accountId: "123456789012", region: "eu-central-1", backend: "fixture-dev-state/pilot/dev.tfstate", workspace: "default" } } }],
+    ["killSwitchPath", { killSwitchPath: ".runs/apply/KILL" }],
+  ] as const) {
+    const r = checkDraftContract(completeDraft(over));
+    assert.equal(r.shape.ok, true, field + ": the validator accepts the value; the kit is what refuses the copy");
+    assert.equal(statusOf(r, field), "EXAMPLE", field);
+    assert.match(r.inputs.find((x) => x.field === field)!.detail!, /copied verbatim from a shipped example/);
+    assert.equal(r.complete, false, field);
+  }
+  // The example values come from the files, not from this module: with no example files nothing is EXAMPLE on those fields.
+  const none = shippedExampleValues(join(root, "no-examples"));
+  assert.deepEqual([none.region.size, none.workspace.size, none.killSwitchPath.size], [0, 0, 0]);
+  const fromNowhere = checkDraftContract(completeDraft({ killSwitchPath: ".runs/apply/KILL" }), none);
+  assert.equal(statusOf(fromNowhere, "killSwitchPath"), "PRESENT");
+  // And a fixture example directory is honored.
+  const dir = join(root, "examples");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "act-pilot-contract.fixture.example.json"), JSON.stringify({ targets: { DEV: { region: "ap-south-1", workspace: "copied" } }, killSwitchPath: "/stop" }));
+  writeFileSync(join(dir, "act-pilot-contract.broken.example.json"), "{");
+  const fixture = shippedExampleValues(dir);
+  assert.deepEqual([[...fixture.region], [...fixture.workspace], [...fixture.killSwitchPath]], [["ap-south-1"], ["copied"], ["/stop"]]);
+});
+
 // --- the command ---------------------------------------------------------------------------------------------
 
 type Terminal = NonNullable<ApplyCliDeps["terminal"]> & { out: string[] };
@@ -164,6 +211,7 @@ test("./alz apply contract-check reads one draft file offline: exit 0 complete, 
   assert.equal(example.code, 2, "placeholders remain: BLOCKED, nothing spent");
   assert.deepEqual(example.reports.map((r) => r.code), ["CONTRACT_DRAFT_INCOMPLETE"]);
   assert.match(example.term.out.join(""), /PLACEHOLDER\s+policyVersion/);
+  assert.match(example.term.out.join(""), /EXAMPLE\s+killSwitchPath/);
   assert.match(example.term.out.join(""), /INCOMPLETE: \d+ input\(s\) above are not ready/);
 
   const unreadable = await cli(["contract-check", "--file", file("{", "broken")]);
