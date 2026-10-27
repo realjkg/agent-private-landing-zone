@@ -108,6 +108,18 @@ const serialFile = path.join(dir, "serial.txt");
 const serial = () => Number(fs.readFileSync(serialFile, "utf8"));
 const log = (extra) => fs.appendFileSync(path.join(dir, "calls.jsonl"), JSON.stringify({ args, cwd: process.cwd(), env: process.env, backendFileExists: fs.existsSync(path.resolve(process.cwd(), "../alz-backend.tfbackend")), ...extra }) + "\\n");
 const backend = () => { const a = args.find((x) => x.startsWith("-backend-config=")); return a ? fs.readFileSync(path.resolve(process.cwd(), a.slice(16)), "utf8") : undefined; };
+// Like Terraform's show -json, every resource_changes entry names its mode and its provider: a fixture entry that leaves one out gets
+// it from its address and type prefix. An entry that sets provider_name to null keeps no provider (an unnamed use, which is refused).
+const PROVIDERS = { aws: "registry.terraform.io/hashicorp/aws", azurerm: "registry.terraform.io/hashicorp/azurerm", google: "registry.terraform.io/hashicorp/google",
+  terraform: "terraform.io/builtin/terraform", random: "registry.terraform.io/hashicorp/random", null: "registry.terraform.io/hashicorp/null", time: "registry.terraform.io/hashicorp/time", tls: "registry.terraform.io/hashicorp/tls" };
+const named = (r) => {
+  if (!r || typeof r !== "object" || Array.isArray(r)) return r;
+  const out = { ...r };
+  if (!("mode" in out)) out.mode = /(^|\\.)data\\./.test(String(out.address || "")) ? "data" : "managed";
+  if (!("provider_name" in out)) { const p = PROVIDERS[String(out.type || "").split("_")[0]]; if (p) out.provider_name = p; }
+  else if (out.provider_name === null) delete out.provider_name;
+  return out;
+};
 if (b.touchKillOn === cmd) fs.writeFileSync(b.killPath, "stop");
 if (b.signalParentOn && b.signalParentOn.cmd === cmd) process.kill(process.ppid, b.signalParentOn.signal);
 if (b.failOn === cmd) { log({}); process.stderr.write(b.failStderr || "boom ${VALUE_CANARY}"); process.exit(1); }
@@ -153,7 +165,7 @@ else if (cmd === "show" && args[2] && args[2].endsWith("alz-cleanup.tfplan")) {
   const typeOf = (address) => address.replace(/^(module\.[^.]+\.)*/, "").split(".")[0];
   process.stdout.write(JSON.stringify({
     format_version: "1.2", errored: false,
-    resource_changes: [...targets.map((address) => ({ address, type: typeOf(address), change: { actions: ["delete"], before: { secret: "${VALUE_CANARY}" }, after: null } })), ...(b.destroyExtra || [])],
+    resource_changes: [...targets.map((address) => ({ address, type: typeOf(address), change: { actions: ["delete"], before: { secret: "${VALUE_CANARY}" }, after: null } })), ...(b.destroyExtra || [])].map(named),
     output_changes: {},
     configuration: { provider_config: b.showProviderConfig || { azurerm: { name: "azurerm", full_name: "registry.terraform.io/hashicorp/azurerm", expressions: { subscription_id: { references: ["var.subscription_id"] } } } } },
   }));
@@ -163,14 +175,19 @@ else if (cmd === "show") {
   process.stdout.write(JSON.stringify({
     format_version: "1.2", errored: false, variables: { db_password: { value: "${VALUE_CANARY}" } },
     resource_changes: [
-      ...(b.showOnlyConfigured ? [] : [
+      // The two default changes are of the configured cloud: azurerm when the configuration names it (or is the default), aws when it
+      // names aws and not azurerm, and none when it names neither (a plan of providers that reach no cloud).
+      ...(b.showOnlyConfigured || (b.showProviderConfig && !b.showProviderConfig.aws && !b.showProviderConfig.azurerm) ? [] : b.showProviderConfig && b.showProviderConfig.aws && !b.showProviderConfig.azurerm ? [
+        { address: "aws_cloudwatch_log_group.pilot", type: "aws_cloudwatch_log_group", change: { actions: ["create"], before: null, after: { name: "${VALUE_CANARY}" } } },
+        { address: "aws_cloudwatch_log_group.existing", type: "aws_cloudwatch_log_group", change: { actions: ["update"], before: {}, after: {} } },
+      ] : [
         { address: "azurerm_resource_group.pilot", type: "azurerm_resource_group", change: { actions: ["create"], before: null, after: { properties: { k: "${VALUE_CANARY}" } } } },
         { address: "azurerm_log_analytics_workspace.pilot", type: "azurerm_log_analytics_workspace", change: { actions: ["update"], before: {}, after: {} } },
       ]),
       ...(b.showExtra ? [{ address: "azurerm_key_vault.extra", type: "azurerm_key_vault", change: { actions: ["delete"], before: {}, after: null } }] : []),
       ...(b.showResources || []).map((r) => (b.unitTags && r && r.change && (r.change.actions || []).includes("create"))
         ? { ...r, change: { ...r.change, after: { ...(r.change.after || {}), [b.unitTagAttribute || "tags_all"]: b.unitTags } } } : r),
-    ],
+    ].map(named),
     output_changes: b.showOutputChanges || {},
     configuration: { provider_config: b.showProviderConfig || { azurerm: { name: "azurerm", full_name: "registry.terraform.io/hashicorp/azurerm", expressions: { subscription_id: { references: ["var.subscription_id"] } } } }, ...(b.showConfigurationExtra || {}) },
     ...(b.showDocumentExtra || {}),
