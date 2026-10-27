@@ -73,6 +73,9 @@ test("mode rules: a project run needs files and a lock file; a state-derived run
   assert.throws(() => buildManifest({ ...base, executionManifestSha256: H("1") }), /PROJECT_HAS_EXECUTION_MANIFEST/);
   const pulumi = { ...base, engine: "PULUMI" as const, lockFileSha256: undefined };
   assert.doesNotThrow(() => buildManifest(pulumi)); // Pulumi has no Terraform-style lock file
+  // The pilot's Bicep path compiles local .bicep files with the pinned bicep: no lock file, and never a destroy-preview driver engine.
+  assert.doesNotThrow(() => buildManifest({ ...base, engine: "BICEP" as const, lockFileSha256: undefined }));
+  assert.throws(() => buildManifest({ ...base, engine: "BICEP" as const, lockFileSha256: undefined, mode: "STATE_DERIVED", files: [], executionManifestSha256: H("1") }), /STATE_DERIVED_ENGINE/);
   const derived = { ...pulumi, mode: "STATE_DERIVED" as const, files: [], dependencies: [], executionManifestSha256: H("1") };
   const sealed = buildManifest(derived);
   assert.equal(sealed.files.length, 0);

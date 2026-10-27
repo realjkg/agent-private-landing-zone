@@ -12,9 +12,12 @@ import type { IaCEngine } from "../build/types.js";
  * never part of it, because live state is not expected to match a hash taken
  * when the infrastructure was built.
  */
-export type ManifestEngine = Extract<IaCEngine, "TERRAFORM" | "OPENTOFU" | "PULUMI"> | "CDK";
-/** CDK is the pilot apply path's alone (its project is a pre-synthesized cloud assembly, no lock file); the destroy-preview driver does not take it (`DRIVER_ENGINES`). */
-export const MANIFEST_ENGINES: readonly ManifestEngine[] = ["TERRAFORM", "OPENTOFU", "PULUMI", "CDK"];
+export type ManifestEngine = Extract<IaCEngine, "TERRAFORM" | "OPENTOFU" | "PULUMI" | "BICEP"> | "CDK";
+/**
+ * CDK and BICEP are the pilot apply path's alone (a pre-synthesized cloud assembly; Bicep files compiled by the pinned bicep), and
+ * neither has a lock file; the destroy-preview driver takes neither (`DRIVER_ENGINES`).
+ */
+export const MANIFEST_ENGINES: readonly ManifestEngine[] = ["TERRAFORM", "OPENTOFU", "PULUMI", "CDK", "BICEP"];
 
 /** PROJECT: the project's own files run. STATE_DERIVED: a Pulumi destroy preview that reads state and runs no project. */
 export type InputMode = "PROJECT" | "STATE_DERIVED";
@@ -113,7 +116,7 @@ function validateBody(body: ManifestBody): ManifestBody {
   if (body.mode === "PROJECT") {
     require(body.files.length > 0, "PROJECT_FILES_REQUIRED");
     require(body.executionManifestSha256 === undefined, "PROJECT_HAS_EXECUTION_MANIFEST");
-    if (body.engine !== "PULUMI" && body.engine !== "CDK") {
+    if (body.engine !== "PULUMI" && body.engine !== "CDK" && body.engine !== "BICEP") {
       require(body.lockFileSha256 !== undefined && HASH.test(body.lockFileSha256), "LOCK_FILE_REQUIRED");
     }
   } else {
