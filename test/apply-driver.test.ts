@@ -23,9 +23,8 @@ import { runBoundedProcess, runStoppableProcess } from "../src/tools/process.js"
 import { TERRAFORM_APPLY_PROFILE } from "../src/tools/profiles.js";
 import { SOURCE_COMMIT,
   CANARIES, DEV_TARGET, approvers, ENV, H, NOW, OPERATOR, OUTPUT_CANARY, PLAN_CANARY, POLICY, PROD_TARGET, QA_TARGET, STATE_CANARY, TENANT, VALUE_CANARY,
-  approvalFor as approval, behave as behaveIn, callsOf, contractJson, human, identityEnv, installFakeTerraform, keys, pinPathOf,
-  testFixtureForgeQualificationEvidence, recordApplied, sha, signalsOf, targetOf, writePinnedContract, writeProject, type Behavior, type Call, type Project,
-  REQUESTER,
+  approvalFor as approval, behave as behaveIn, callsOf, contractJson, human, identityEnv, installFakeTerraform, keys, testFixtureForgeQualificationEvidence, recordApplied, sha, signalsOf, targetOf, writeReviewedContract, writeProject, type Behavior, type Call, type Project,
+  REQUESTER, AUTHORIZE_ALL, decisionsFor,
 } from "./helpers/apply-fixtures.js";
 
 // docs/act-pilot-plan.md. The engine is a fake executable, so these tests pin
@@ -68,12 +67,12 @@ function world(over: Partial<ApplyDeps> = {}, contract: unknown = contractJson(K
   behave();
   const dirs = { scratch: fresh("scratch"), evidence: fresh("evidence"), nonces: fresh("nonces"), vault: fresh("vault") };
   const contractPath = join(fresh("contract"), "act-pilot-contract.json");
-  if (contract !== undefined) writePinnedContract(contractPath, contract);
+  if (contract !== undefined) writeReviewedContract(contractPath, contract);
   return {
     dirs, contractPath,
     deps: {
       sourceCommit: SOURCE_COMMIT,
-      contractPath, contractPinPath: pinPathOf(contractPath), qualificationDir: vaultDir,
+      contractPath, qualificationDir: vaultDir,
       evidenceDir: dirs.evidence, nonces: openNonceStore(dirs.nonces), env: ENV, now: () => NOW, scratchParent: dirs.scratch,
       toolDirs: [toolDir], killPollMs: 40, killGraceMs: 400, ...over,
     },
@@ -605,13 +604,16 @@ test("the kill switch appearing after the approvals were consumed and before the
 
 // --- everything that can change while the engine is prepared is read again before the approvals are consumed
 
-const rewriteContract = (w: World, over: Record<string, unknown>) => writePinnedContract(w.contractPath, contractJson(KILL, over));
+const rewriteContract = (w: World, over: Record<string, unknown>) => writeReviewedContract(w.contractPath, contractJson(KILL, over));
 
 test("the contract, the allowlist and approval expiry are checked again right before the approvals are consumed", async () => {
   const cases: Array<[string, string, (w: World) => void]> = [
     ["ACT_DISABLED", "the contract stops enabling ACT", (w) => rewriteContract(w, { enabled: false })],
-    ["APPROVER_NOT_ALLOWED", "the approver leaves the allowlist", (w) => rewriteContract(w, { approvers: approvers.filter((entry) => entry.id !== "alice") })],
-    ["CONTRACT_INVALID", "the contract no longer matches its pin", (w) => writeFileSync(w.contractPath, JSON.stringify(contractJson(KILL, { maxApprovalAgeMinutes: 61 })))],
+    // Any edit to the reviewed contract (the allowlist included) is a different contract than the approvals signed.
+    ["ACT_AUTHORIZATION_CHANGED", "the approver leaves the allowlist", (w) => rewriteContract(w, { approvers: approvers.filter((entry) => entry.id !== "alice") })],
+    ["ACT_AUTHORIZATION_CHANGED", "the contract is edited after sealing", (w) => writeFileSync(w.contractPath, JSON.stringify(contractJson(KILL, { maxApprovalAgeMinutes: 61 })))],
+    ["ACT_NOT_AUTHORIZED", "the contract stops authorizing APPLY in DEV", (w) => rewriteContract(w, { authorize: { ...AUTHORIZE_ALL, DEV: ["CLEANUP"] } })],
+    ["ACT_DISABLED", "the contract's authorization is emptied", (w) => rewriteContract(w, { authorize: {} })],
     ["KILL_SWITCH_ACTIVE", "the kill switch appears", () => writeFileSync(KILL, "stop")],
   ];
   for (const [code, label, change] of cases) {
@@ -915,9 +917,9 @@ test("every refusal comes in the specified order, and the apply argv is never ex
   };
 
   await step("ACT_DISABLED"); // 1. no contract
-  writePinnedContract(w.contractPath, { ...contractJson(KILL), force: true });
+  writeReviewedContract(w.contractPath, { ...contractJson(KILL), force: true });
   await step("CONTRACT_INVALID"); // 1. a contract that is not one
-  writePinnedContract(w.contractPath, contractJson(KILL));
+  writeReviewedContract(w.contractPath, contractJson(KILL));
   writeFileSync(KILL, "stop");
   await step("KILL_SWITCH_ACTIVE"); // 2.
   rmSync(KILL);
@@ -930,7 +932,7 @@ test("every refusal comes in the specified order, and the apply argv is never ex
   await step("SOURCE_CHANGED", request, { ...prodDeps, sourceCommit: "1".repeat(40) }); // 5. another commit than the one that sealed it
   const evidence: ApplyEvidence = {
     schemaVersion: 1, environment: "PROD", target: prodSeal.sealed.target, artifactSha256: prodSeal.sealed.artifactSha256,
-    manifestHash: prodSeal.sealed.manifestHash, releaseIdentity: prodSeal.sealed.releaseIdentity, contractSha256: prodSeal.sealed.contractSha256, sourceCommit: prodSeal.sealed.sourceCommit,
+    manifestHash: prodSeal.sealed.manifestHash, releaseIdentity: prodSeal.sealed.releaseIdentity, contractSha256: prodSeal.sealed.contractSha256, decisions: decisionsFor(prodSeal.sealed.contractSha256, "APPLY", prodSeal.sealed.authorizationSha256), sourceCommit: prodSeal.sealed.sourceCommit,
     approvals: [{ approverId: "alice", issuedAt: NOW.toISOString() }], requester: { requesterId: "carol", nonce: "0".repeat(32) },
     adapter: { adapterVersion: APPLY_ADAPTER.adapterVersion, argvDigest: APPLY_ADAPTER.argvDigest },
     toolVersions: { engine: "1.9.5" }, outcome: "SUCCEEDED", exitCode: 0, startedAt: NOW.toISOString(), finishedAt: NOW.toISOString(), authority: APPLY_AUTHORITY,
@@ -983,12 +985,16 @@ test("ACT stays disabled without an enabling contract: a missing file, enabled=f
       if (contract !== undefined) writeFileSync(w.contractPath, contract);
       refused(await runApply(requestFor(s, [approval(s.sealed, "alice")]), w.deps), code);
     }
-    writePinnedContract(w.contractPath, contractJson(KILL));
-    rmSync(pinPathOf(w.contractPath));
-    refused(await runApply(requestFor(s, [approval(s.sealed, "alice")]), w.deps), "ACT_DISABLED"); // unpinned
-    writePinnedContract(w.contractPath, contractJson(KILL));
-    writeFileSync(w.contractPath, JSON.stringify(contractJson(KILL, { maxApprovalAgeMinutes: 600 }))); // edited after the pin
-    refused(await runApply(requestFor(s, [approval(s.sealed, "alice")]), w.deps), "CONTRACT_INVALID");
+    // The contract is the authorization: absent or empty authorize is disabled, an operation it does not list is refused,
+    // and any other edit after sealing no longer matches the contract hash the approvals signed.
+    writeReviewedContract(w.contractPath, contractJson(KILL, { authorize: undefined }));
+    refused(await runApply(requestFor(s, [approval(s.sealed, "alice")]), w.deps), "ACT_DISABLED");
+    writeReviewedContract(w.contractPath, contractJson(KILL, { authorize: {} }));
+    refused(await runApply(requestFor(s, [approval(s.sealed, "alice")]), w.deps), "ACT_DISABLED");
+    writeReviewedContract(w.contractPath, contractJson(KILL, { authorize: { ...AUTHORIZE_ALL, DEV: ["CLEANUP"] } }));
+    refused(await runApply(requestFor(s, [approval(s.sealed, "alice")]), w.deps), "ACT_NOT_AUTHORIZED");
+    writeReviewedContract(w.contractPath, contractJson(KILL, { maxApprovalAgeMinutes: 600 })); // edited after sealing
+    refused(await runApply(requestFor(s, [approval(s.sealed, "alice")]), w.deps), "ARTIFACT_INVALID");
   } finally { delete process.env.ALZ_ACT_ENABLED; }
   assert.equal(applyCalls().length, 0);
 });
@@ -1188,7 +1194,7 @@ test("sealing refuses in order: contract, kill switch, human, target, then manif
     clean(w);
   };
   await refuse("ACT_DISABLED");
-  writePinnedContract(w.contractPath, contractJson(KILL));
+  writeReviewedContract(w.contractPath, contractJson(KILL));
   writeFileSync(KILL, "stop");
   await refuse("KILL_SWITCH_ACTIVE");
   rmSync(KILL);
@@ -1247,7 +1253,7 @@ test("qualifying refuses without a pinned enabling contract, in QA or PROD, with
   };
   await refused("ARTIFACT_INVALID", qualifyRequest(p, { environment: "PROD", target: PROD_TARGET, invocation: human(PROD_TARGET) }), w.deps);
   await refused("ARTIFACT_INVALID", qualifyRequest(p, { environment: "QA", target: QA_TARGET, invocation: human(QA_TARGET) }), w.deps);
-  rmSync(pinPathOf(w.contractPath));
+  writeReviewedContract(w.contractPath, contractJson(KILL, { authorize: undefined }));
   await refused("ACT_DISABLED", qualifyRequest(p), w.deps);
   const k = world();
   writeFileSync(KILL, "stop");

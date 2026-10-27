@@ -59,7 +59,7 @@ type IdentityTargetCheck = { ok: true } | { ok: false; code: "IDENTITY_TARGET_MI
 
 /**
  * Every identity's target variables (`ProviderSpec.identityTargetVariables`),
- * when present, must be the environment's account from the pinned contract, and
+ * when present, must be the environment's account from the reviewed contract, and
  * the identities that mutate (`MUTATION_IDENTITIES`) must set all of them. A credential for another account,
  * or one that names none, cannot apply here. Messages name variables, never values.
  */

@@ -2,7 +2,7 @@
 
 **Offline-validated only; unverified until run by an account owner.** `fmt`, `init -backend=false` and `validate` pass with the provider versions named in `docs/act-pilot-bootstrap.md`, which checks names against the provider schemas and nothing about real cloud behavior. These templates have never created a resource. Read `docs/act-pilot-bootstrap.md` before running anything.
 
-This is an owner-run, one-time provisioning package. It is separate from the pilot apply: nothing under `src/` references it, `./alz apply` never runs it, and it never enables ACT. The contract stays `enabled: false` and its pin stays empty; bootstrap only produces the identifiers the owner then reviews into `config/act-pilot-contract.json`.
+This is an owner-run, one-time provisioning package. It is separate from the pilot apply: nothing under `src/` references it, `./alz apply` never runs it, and it never enables ACT. The contract stays `enabled: false` with no `authorize` entry; bootstrap only produces the identifiers the owner then reviews into `config/act-pilot-contract.json`.
 
 | Path | Provisions |
 | --- | --- |

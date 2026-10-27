@@ -19,7 +19,7 @@ import type { ApplyEnvironment, EngineId, PilotContract, ProviderId } from "./ty
 
 /**
  * `./alz apply prepare`: builds the request and the project fingerprint (manifest) that `qualify`, `seal` and
- * `apply` read, so nobody writes them by hand. Every value comes from the pinned contract, the project folder or an
+ * `apply` read, so nobody writes them by hand. Every value comes from the reviewed contract, the project folder or an
  * existing qualification record. A value with no source stops preparation with the exact owner or operator step.
  *
  * Preparing never enables ACT, assumes a role, starts a process, seals, approves, applies or creates a change set.
@@ -31,7 +31,7 @@ export const PREPARATION_LABEL = "LOCAL_PREPARATION" as const;
 export const TERRAFORM_LOCK_FILE = ".terraform.lock.hcl";
 const AWS_CLI_VERSION = /^\d+\.\d+\.\d+$/;
 
-/** The secondary path for each provider: what an owner could pin instead, and what is not yet supported. */
+/** The secondary path for each provider: what an owner could choose instead, and what is not yet supported. */
 const PATHS: Readonly<Record<ProviderId, { primary: EngineId; secondary: EngineId | null; secondaryGap: string }>> = {
   AWS: { primary: "TERRAFORM", secondary: "CDK", secondaryGap: "" },
   AZURE: { primary: "TERRAFORM", secondary: null, secondaryGap: "Bicep is the planned secondary path for Azure and is not supported for apply yet." },
@@ -55,7 +55,6 @@ export type PrepareInput = {
 
 export type PrepareDeps = {
   contractPath?: string;
-  pinPath?: string;
   qualificationDir?: string;
   toolDirs?: readonly string[];
   pinsPath?: string;
@@ -133,7 +132,7 @@ function alternativeFor(provider: ProviderId, engine: EngineId): string {
   const paths = PATHS[provider];
   const other = engine === paths.primary ? paths.secondary : paths.primary;
   if (!other) return paths.secondaryGap + " Install the missing tool with ./alz deps.";
-  return "Install the missing tool with ./alz deps, or ask the owner to pin a contract for " + other + ". " +
+  return "Install the missing tool with ./alz deps, or ask the owner to commit a contract for " + other + ". " +
     "A different engine needs its own reviewed contract, its own preview and its own approvals.";
 }
 
@@ -187,16 +186,16 @@ export function preparationUnitHash(input: { engine: EngineId; environment: Appl
 
 /** Prepares the request and manifest for one environment. Pure apart from reading the contract, records and project. */
 export async function prepareApply(input: PrepareInput, deps: PrepareDeps = {}): Promise<Prepared | PrepareRefusal> {
-  const loaded = loadPilotContract(deps.contractPath ?? repoPaths().contract, deps.pinPath ?? repoPaths().pin);
+  const loaded = loadPilotContract(deps.contractPath ?? repoPaths().contract);
   if ("reason" in loaded) {
-    return refuse("CONTRACT_DISABLED", "OWNER", "There is no pinned, enabled pilot contract (" + loaded.reason + "). The owner reviews the contract and records its pin first.");
+    return refuse("CONTRACT_DISABLED", "OWNER", "There is no enabled pilot contract that authorizes ACT (" + loaded.reason + "). The owner reviews the contract and commits its authorize entry first.");
   }
   const contract: PilotContract = loaded;
   if (isKillSwitchActive(contract)) {
     return refuse("KILL_SWITCH_ACTIVE", "OWNER", "The emergency stop is on, so nothing is prepared. The owner clears it when it is safe to continue.");
   }
   if (!contract.policyVersion) {
-    return refuse("POLICY_VERSION_MISSING", "OWNER", "The pinned contract has no policyVersion. The owner adds the reviewed policy version to the contract and records a new pin.");
+    return refuse("POLICY_VERSION_MISSING", "OWNER", "The reviewed contract has no policyVersion. The owner adds the reviewed policy version to the contract in a reviewed commit.");
   }
   if (!(ENVIRONMENTS as readonly string[]).includes(input.environment)) {
     return refuse("ENVIRONMENT_INVALID", "OPERATOR", "Choose DEV, QA or PROD.");

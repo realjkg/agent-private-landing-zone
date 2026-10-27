@@ -23,7 +23,7 @@ import { buildChildEnvironment } from "../src/tools/child-env.js";
 import { TERRAFORM_APPLY_PROFILE } from "../src/tools/profiles.js";
 import { SOURCE_COMMIT,
   AWS_DEV_TARGET, AWS_PROD_TARGET, AWS_QA_TARGET, AWS_REGION, ENGINE_VERSION, NOW, POLICY, awsContractJson, awsIdentityEnv, awsRoleArn, awsTargetOf,
-  behave as behaveIn, callsOf, human, installFakeTerraform, keys, pinPathOf, sha, testFixtureForgeQualificationEvidence, writePinnedContract, writeProject,
+  behave as behaveIn, callsOf, human, installFakeTerraform, keys, sha, testFixtureForgeQualificationEvidence, writeReviewedContract, writeProject,
   approvalFor as approval, type Behavior, type Call, type Project,
   REQUESTER,
   requesterArgs,
@@ -75,10 +75,10 @@ test("the AWS target fields and backend accept the documented shapes and refuse 
 
 const writeContract = (contract: unknown): string => {
   const path = join(fresh("contract"), "act-pilot-contract.json");
-  writePinnedContract(path, contract);
+  writeReviewedContract(path, contract);
   return path;
 };
-const loaded = (contract: unknown) => { const path = writeContract(contract); return loadPilotContract(path, pinPathOf(path)); };
+const loaded = (contract: unknown) => { const path = writeContract(contract); return loadPilotContract(path); };
 const editTargets = (edit: (targets: Record<string, Record<string, unknown>>) => void) => {
   const contract = awsContractJson(KILL) as { targets: Record<string, Record<string, unknown>> };
   edit(contract.targets);
@@ -92,6 +92,7 @@ test("ACT-DEV-1 accepts only an explicit AWS Terraform DEV pilot without fictiti
   devOnly.targets = { DEV: devOnly.targets.DEV };
   devOnly.requiredApprovals = { DEV: 1 };
   devOnly.approvers = devOnly.approvers.map((item: any) => ({ ...item, environments: ["DEV"] }));
+  devOnly.authorize = { DEV: ["APPLY", "CLEANUP"] };
   const contract = loaded(devOnly);
   assert.equal(contract.enabled, true);
   if (!contract.enabled) return;
@@ -113,13 +114,13 @@ test("ACT-DEV-1 accepts only an explicit AWS Terraform DEV pilot without fictiti
   assert.equal(loaded(missing).enabled, false, "DEV target is mandatory");
   const missingDevApprover = { ...devOnly, approvers: devOnly.approvers.map((item: any) => ({ ...item, environments: ["QA"] })) };
   assert.equal(loaded(missingDevApprover).enabled, false, "at least one DEV approver is required");
-  // Azure Terraform DEV-only is its own owner decision (test/apply-contract.test.ts); an AWS-shaped target is still not an Azure one.
-  const azureShaped = loaded({ ...devOnly, provider: "AZURE", engine: "TERRAFORM" });
-  assert.equal(azureShaped.enabled, false, "an AWS DEV target is not an Azure target");
-  assert.match((azureShaped as { reason: string }).reason, /targets\.DEV/);
-  const cdk = loaded({ ...devOnly, provider: "AWS", engine: "CDK" });
-  assert.equal(cdk.enabled, false, "DEV-only authority cannot expand to AWS CDK");
-  assert.match((cdk as { reason: string }).reason, /DEV-only scope is approved only for AWS Terraform and Azure Terraform/);
+  // The DEV-only scope is one rule for every implemented path (test/apply-contract.test.ts), but each path keeps its own target
+  // shape: an AWS Terraform DEV target is neither an Azure target nor a CDK one.
+  for (const combination of [{ provider: "AZURE", engine: "TERRAFORM" }, { provider: "AWS", engine: "CDK" }]) {
+    const changed = loaded({ ...devOnly, ...combination });
+    assert.equal(changed.enabled, false, JSON.stringify(combination));
+    assert.match((changed as { reason: string }).reason, /targets\.DEV/);
+  }
   const approvals = { ...devOnly, requiredApprovals: { DEV: 0 } };
   assert.equal(loaded(approvals).enabled, false, "DEV approval remains required");
 });
@@ -289,12 +290,12 @@ function world(contract: unknown = awsContractJson(KILL)): World {
   behave({ applyAdvance: true });
   const dirs = { scratch: fresh("scratch"), evidence: fresh("evidence"), nonces: fresh("nonces") };
   const contractPath = join(fresh("contract"), "act-pilot-contract.json");
-  writePinnedContract(contractPath, contract);
+  writeReviewedContract(contractPath, contract);
   return {
     dirs, contractPath,
     deps: {
       sourceCommit: SOURCE_COMMIT,
-      contractPath, contractPinPath: pinPathOf(contractPath), qualificationDir: vaultDir, evidenceDir: dirs.evidence, nonces: openNonceStore(dirs.nonces),
+      contractPath, qualificationDir: vaultDir, evidenceDir: dirs.evidence, nonces: openNonceStore(dirs.nonces),
       env: awsIdentityEnv("DEV"), now: () => NOW, scratchParent: dirs.scratch, toolDirs: [toolDir], killPollMs: 40, killGraceMs: 400,
     },
   };
@@ -689,17 +690,17 @@ test("the identity checks also refuse the other cloud's credentials, a role spel
 test("a sealed plan applies only under the pinned contract it was sealed under; the evidence names that contract", async () => {
   const w = world();
   const s = await seal(w, "DEV");
-  const pinned = loadPilotContract(w.contractPath, pinPathOf(w.contractPath)) as PilotContract;
+  const pinned = loadPilotContract(w.contractPath) as PilotContract;
   assert.equal(s.sealed.contractSha256, pilotContractSha256(pinned));
   assert.equal(reviewBundleOf(s.sealed).contractSha256, s.sealed.contractSha256, "the approvers' bundle carries it");
   // Re-pinned with the same account and backend but another region: every other gate would pass against the new contract.
   const other = awsContractJson(KILL) as { targets: Record<string, Record<string, unknown>> };
   other.targets.DEV.region = "eu-west-2";
-  writePinnedContract(w.contractPath, other);
+  writeReviewedContract(w.contractPath, other);
   const approvals = approvalsFor(s);
   refused(await run(w, s, approvals, {}, { ...forEnv(w, "DEV"), env: env("DEV", { ALZ_APPLY_AWS_REGION: "eu-west-2", ALZ_STATE_WRITE_AWS_REGION: "eu-west-2" }) }), "ARTIFACT_INVALID");
   assert.equal(applyCalls().length, 0);
-  writePinnedContract(w.contractPath, awsContractJson(KILL));
+  writeReviewedContract(w.contractPath, awsContractJson(KILL));
   const result = await run(w, s, approvals);
   assert.ok(result.ok, JSON.stringify(result));
   assert.equal(result.evidence.contractSha256, s.sealed.contractSha256);
@@ -759,7 +760,7 @@ const json = (value: unknown): string => { const path = join(fresh("file"), "fil
 test("./alz apply qualify, seal, approve and apply work for an AWS contract with no provider flag, and the attestation names the role ARNs", async () => {
   behave({ applyAdvance: true });
   const contractPath = join(fresh("contract"), "act-pilot-contract.json");
-  writePinnedContract(contractPath, awsContractJson(KILL));
+  writeReviewedContract(contractPath, awsContractJson(KILL));
   const vault = fresh("cli-vault");
   const evidenceDir = fresh("cli-evidence");
   const nonces = openNonceStore(fresh("cli-nonces"));
@@ -768,7 +769,7 @@ test("./alz apply qualify, seal, approve and apply work for an AWS contract with
     const out: string[] = []; const err: string[] = [];
     const term = terminal(answers);
     const code = await runApplyCommand(args, {
-      terminal: term, env: awsIdentityEnv(environment), now: () => NOW, operatorId: "operator.fixture", contractPath, contractPinPath: pinPathOf(contractPath),
+      terminal: term, env: awsIdentityEnv(environment), now: () => NOW, operatorId: "operator.fixture", contractPath,
       qualificationDir: vault, evidenceDir, nonces, scratchParent: scratch, toolDirs: [toolDir], sourceCommit: SOURCE_COMMIT, stdout: (t: string) => { out.push(t); }, stderr: (t: string) => { err.push(t); },
     });
     return { code, stdout: out.join(""), stderr: err.join(""), shown: term.out.join("") };

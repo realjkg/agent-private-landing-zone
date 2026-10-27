@@ -6,7 +6,7 @@ Status: G0 is a documentation gate ("Docs only; no heavyweight run", `docs/act-p
 
 **Nothing on this page is implemented yet.** The product has no GCP provider spec. `ProviderId` in `src/apply/types.ts` is `AZURE` or `AWS`, so a contract with `"provider": "GCP"` is refused. The names, fields and checks below are the design that slices S1 to S7 build and test, in the PLAN's order. Where this page says "the driver refuses", read "the driver will refuse, once the slice named has landed".
 
-Nothing on this page enables ACT. The shipped pin (`config/act-pilot-contract.sha256`) stays empty, and the product's ACT default stays DISABLED. Agents never hold approver keys and never initiate an apply (`AGENTS.md`, the ACT amendment). Owner decision 5 sets the order: GCP goes live after AWS Terraform and Azure.
+Nothing on this page enables ACT. The repository ships no pilot contract (the old `config/act-pilot-contract.sha256` pin is removed; the contract's `authorize` entry is the switch), and the product's ACT default stays DISABLED. A GCP contract is refused `NOT_IMPLEMENTED` until its lane lands. Agents never hold approver keys and never initiate an apply (`AGENTS.md`, the ACT amendment). Owner decision 5 sets the order: GCP goes live after AWS Terraform and Azure.
 
 People are never named here. Where a person is needed, the text uses a role and the placeholder `<name>`.
 
@@ -221,7 +221,7 @@ Evidence from a fake engine or an emulator is synthetic and never counts as live
 | G1 | none for GCP | S1 (spec, identities, backend, provider config); S3 (reader); S4 (classifier), each with its denial-path tests | none |
 | G1b | the G-7 answer: the `gcs` backend honors `STORAGE_EMULATOR_HOST` against fake-gcs-server | S6: the opt-in emulated test through the driver | none for the simulation |
 | G2 | none | S2 (bootstrap); `qualify` and `preflight` once S1 lands | three projects, the bootstrap, the credential configurations and token files, a qualifier, one supervised DEV apply recorded with `record-live` |
-| G3 | release admission reads the same pin | S5: `act:gcp-terraform` in `scope.json` and `status.json`, `gcp-provider` gate | the pin commit |
+| G3 | release admission reads the same pin | S5: `act:gcp-terraform` in `scope.json` and `status.json`, `gcp-provider` gate | the owner's authorization commit |
 | G4 | the promotion chain, provider-independent | none beyond S1 to S7 | the QA and PROD projects, buckets, identities and both production approvers |
 | G5 | `./alz apply record-recovery`, provider-independent | none beyond S1 | demonstrate a recovery on the real project |
 
@@ -258,7 +258,7 @@ Each step is the owner's, or done by a person the owner names. No agent performs
 4. Fill a copy of the GCP example contract with `enabled: false`, and run `./alz apply contract-check` until it reports COMPLETE.
 5. Set the identity variables and run `./alz apply preflight --environment DEV`.
 6. Wait for G1b (S6) to pass.
-7. Review, set `enabled: true`, run `./alz apply pin`, and commit the contract and the pin in one reviewed change. This step enables the pilot, and it is the owner's alone.
+7. Review, set `enabled: true`, add the `authorize` entry, and commit the contract in one reviewed change. This step enables the pilot, and it is the owner's alone.
 8. Have the qualifier run `./alz apply qualify` and attest from Cloud Audit Logs.
 9. Supervise the DEV apply in one channel, and record it with `./alz apply record-live`. Then promote to QA and PROD under their own seals and approvals.
 10. Separately authorize the live cleanup.

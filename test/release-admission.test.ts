@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { loadPilotContract, pilotContractSha256 } from "../src/apply/contract.js";
+import { authorizeContract, loadPilotContract, pilotContractSha256 } from "../src/apply/contract.js";
 import { APPLY_AUTHORITY } from "../src/apply/evidence.js";
 import { buildRecoveryEvidence } from "../src/apply/recovery-record.js";
 import type { ApplyEvidence, PilotContract } from "../src/apply/types.js";
@@ -237,10 +237,9 @@ test("real recovery requires observed times and restore; scanner requires zero b
 const pilotRoot = mkdtempSync(join(tmpdir(), "alz-release-pilot-"));
 test.after(() => rmSync(pilotRoot, { recursive: true, force: true }));
 const contractPath = join(pilotRoot, "act-pilot-contract.json");
-const pinPath = join(pilotRoot, "act-pilot-contract.sha256");
 const publicKey = () => generateKeyPairSync("ed25519").publicKey.export({ type: "spki", format: "pem" }).toString();
 const approvers = [1, 2].map((n) => ({ id: "approver-" + n, publicKeyPem: publicKey(), environments: ["DEV", "QA", "PROD"] }));
-const loadPinned = (path: string = contractPath) => loadPilotContract(path, pinPath);
+const loadPinned = (path: string = contractPath) => loadPilotContract(path);
 const pilotTarget = (n: string, store: string) => ({ tenantId: "11111111-1111-4111-8111-111111111111",
   subscriptionId: n.repeat(8) + "-" + n.repeat(4) + "-4" + n.repeat(3) + "-8" + n.repeat(3) + "-" + n.repeat(12),
   backend: store + "/tfstate/x.tfstate", workspace: "default" });
@@ -248,19 +247,19 @@ const contractJson = (enabled: boolean, age = 60) => ({
   schemaVersion: 1, enabled, provider: "AZURE", engine: "TERRAFORM",
   targets: { DEV: pilotTarget("2", "fixturedevstore"), QA: pilotTarget("4", "fixtureqastore"), PROD: pilotTarget("3", "fixtureprodstore") },
   requiredApprovals: { DEV: 1, QA: 1, PROD: 2 }, maxApprovalAgeMinutes: age, approvers, killSwitchPath: join(pilotRoot, "KILL"),
+  authorize: { DEV: ["APPLY"], QA: ["APPLY"], PROD: ["APPLY"] },
 });
-/** Writes the contract and, like a reviewed commit, its pin. */
+/** Writes the contract as a reviewed commit would: the contract carries its own authorization, there is no hash file. */
 const writeContract = (enabled: boolean, age = 60) => {
   writeFileSync(contractPath, JSON.stringify(contractJson(enabled, age)));
-  writeFileSync(pinPath, pilotContractSha256(contractJson(true, age) as unknown as PilotContract) + "\n");
 };
 const pilotInput = (actPilot: unknown, infrastructureAct: string = "PILOT") =>
   ({ ...input([]), infrastructureAct, ...(actPilot === undefined ? {} : { actPilot }) }) as unknown as ReleaseAdmissionInput;
 const review = (manifest: ReleaseAdmissionInput, pilotContract?: ReturnType<typeof loadPilotContract>) =>
-  reviewProductionRelease({ manifest, expectedCommit: commit, root: pilotRoot, pilotContract, pilotPinPath: pinPath });
+  reviewProductionRelease({ manifest, expectedCommit: commit, root: pilotRoot, pilotContract });
 const actBlockers = (r: { blockers: string[] }) => r.blockers.filter((b) => /^ACT_PILOT|^RELEASE_MANIFEST/.test(b));
 
-test("under a PILOT release a live ACT record and a recovery record must name the pinned contract, and the recovery record the approval count that contract requires for its environment (#269 review N2); a release with no pilot scope binds neither", async () => {
+test("under a PILOT release a live ACT record and a recovery record must name the reviewed contract (and the live record its APPLY authorization), and the recovery record the approval count that contract requires for its environment (#269 review N2); a release with no pilot scope binds neither", async () => {
   writeContract(true);
   const pinned = loadPinned() as PilotContract;
   const scope = { provider: "AZURE", engine: "TERRAFORM", contractSha256: pilotContractSha256(pinned) };
@@ -276,10 +275,16 @@ test("under a PILOT release a live ACT record and a recovery record must name th
   // The live ACT record: the pinned contract's hash is admitted, another contract's is not.
   const live = {
     schemaVersion: 1, label: "LIVE", step: "execute", cloud: "AZURE", engine: "TERRAFORM", environment: "DEV", target: { account: "a", backend: "b", workspace: "default" },
-    sourceCommit: commit, artifactSha256: "1".repeat(64), outcome: "SUCCEEDED", evidenceSha256: "2".repeat(64), contractSha256: scope.contractSha256, attestedBy: "owner", attestedAt: "2026-10-25T00:00:00.000Z",
+    sourceCommit: commit, artifactSha256: "1".repeat(64), outcome: "SUCCEEDED", evidenceSha256: "2".repeat(64), contractSha256: scope.contractSha256,
+    authorizationSha256: (authorizeContract(pinned, "DEV", "APPLY") as { ok: true; authorization: { authorizationSha256: string } }).authorization.authorizationSha256,
+    attestedBy: "owner", attestedAt: "2026-10-25T00:00:00.000Z",
   };
   assert.equal(await status("act:azure-terraform", "LIVE_ACT", live), "EVIDENCE_PRESENT");
   assert.equal(await status("act:azure-terraform", "LIVE_ACT", { ...live, contractSha256: "3".repeat(64) }), "BLOCKED", "another contract");
+  // The authorization the apply ran under must be the candidate contract's APPLY entry for that environment.
+  assert.equal(await status("act:azure-terraform", "LIVE_ACT", { ...live, authorizationSha256: "3".repeat(64) }), "BLOCKED", "another authorization");
+  assert.equal(await status("act:azure-terraform", "LIVE_ACT", { ...live, environment: "QA" }), "BLOCKED", "DEV's authorization named for QA");
+  assert.equal(await status("act:azure-terraform", "LIVE_ACT", { ...live, authorizationSha256: undefined }), "BLOCKED", "no authorization");
   // The recovery record, built by the producer under the pinned contract: DEV with the one approval the contract requires is admitted.
   const at = (minutes: number): string => new Date(Date.UTC(2026, 9, 12, 12, minutes)).toISOString();
   const apply = (over: Partial<ApplyEvidence>): ApplyEvidence => ({
@@ -347,23 +352,19 @@ test("a PILOT release must name this contract, this provider and this engine, an
   assert.deepEqual(actBlockers(await review(pilotInput(good), loadPinned())), ["ACT_PILOT_SCOPE_MISMATCH"]);
 });
 
-test("the release checks the same committed pin the loader does: a contract the pin does not name is rejected", async () => {
+test("the release checks the contract's authorization as the loader does: a contract that authorizes nothing is rejected", async () => {
   writeContract(true);
   const enabled = loadPinned() as PilotContract;
   const scope = { provider: "AZURE", engine: "TERRAFORM", contractSha256: pilotContractSha256(enabled) };
-  // A hand-built or stale contract object that was never loaded through the pin.
-  const edited = { ...enabled, maxApprovalAgeMinutes: 61 };
-  const editedScope = { ...scope, contractSha256: pilotContractSha256(edited) };
-  for (const [manifestScope, contract] of [[editedScope, edited], [scope, edited]] as const) {
-    const result = await review(pilotInput(manifestScope), contract);
-    assert.deepEqual(actBlockers(result), ["ACT_PILOT_CONTRACT_NOT_PINNED"]);
+  // A hand-built or stale contract object whose authorization is absent or empty, named by its own hash.
+  for (const contract of [{ ...enabled, authorize: {} }, (({ authorize: _dropped, ...rest }) => rest)(enabled)] as PilotContract[]) {
+    const result = await review(pilotInput({ ...scope, contractSha256: pilotContractSha256(contract) }), contract);
+    assert.deepEqual(actBlockers(result), ["ACT_PILOT_CONTRACT_NOT_AUTHORIZED"]);
     assert.equal(result.actPilot, null);
   }
-  // An absent, empty or malformed pin pins nothing.
-  for (const pin of [null, "", "\n", "not a hash", "0".repeat(64)]) {
-    if (pin === null) rmSync(pinPath, { force: true }); else writeFileSync(pinPath, pin);
-    assert.deepEqual(actBlockers(await review(pilotInput(scope), enabled)), ["ACT_PILOT_CONTRACT_NOT_PINNED"], JSON.stringify(pin));
-  }
+  // On disk, the loader refuses the same contract, so a repository release never sees it enabled.
+  writeFileSync(contractPath, JSON.stringify({ ...contractJson(true), authorize: {} }));
+  assert.equal(loadPinned().enabled, false);
   writeContract(true);
   assert.deepEqual(actBlockers(await review(pilotInput(scope), enabled)), []);
 });
@@ -408,12 +409,11 @@ test("any other infrastructureAct value is still rejected, with or without a con
   }
 });
 
-test("each listed provider/engine pair is admitted on its own; an unlisted pair is not, even when pinned and named", async () => {
+test("each listed provider/engine pair is admitted on its own; an unlisted pair is not, even when authorized and named", async () => {
   writeContract(true);
   const base = loadPinned() as PilotContract;
   const attempt = async (provider: string, engine: string) => {
     const contract = { ...base, provider, engine } as unknown as PilotContract;
-    writeFileSync(pinPath, pilotContractSha256(contract) + "\n");
     const scope = { provider, engine, contractSha256: pilotContractSha256(contract) };
     return actBlockers(await review(pilotInput(scope), contract));
   };
@@ -432,7 +432,7 @@ test("a live ACT gate admits only the record-live record of its own path, commit
     const record = {
       schemaVersion: 1, label: "LIVE", step: "execute", cloud: "AWS", engine: "TERRAFORM", environment: "DEV",
       target: { accountId: "000000000000" }, sourceCommit: commit, artifactSha256: "1".repeat(64), outcome: "SUCCEEDED",
-      evidenceSha256: "2".repeat(64), contractSha256: "3".repeat(64), attestedBy: "owner", attestedAt: "2026-10-25T00:00:00.000Z",
+      evidenceSha256: "2".repeat(64), contractSha256: "3".repeat(64), authorizationSha256: "4".repeat(64), attestedBy: "owner", attestedAt: "2026-10-25T00:00:00.000Z",
     };
     const status = async (payload: object, gate = id) => (await reviewProductionRelease({
       manifest: input([h.attach(gate, "LIVE_ACT", payload)]), expectedCommit: commit, root: h.root,
@@ -440,7 +440,7 @@ test("a live ACT gate admits only the record-live record of its own path, commit
     assert.equal(await status(record), "EVIDENCE_PRESENT");
     assert.equal(await status(record, "act:aws-cdk"), "BLOCKED");
     for (const change of [{ engine: "CDK" }, { sourceCommit: "c".repeat(40) }, { outcome: "PARTIAL_REQUIRES_REVIEW" },
-      { label: "SYNTHETIC" }, { attestedBy: " " }, { evidenceSha256: "short" }, { fixture: true }]) {
+      { label: "SYNTHETIC" }, { attestedBy: " " }, { evidenceSha256: "short" }, { authorizationSha256: undefined }, { fixture: true }]) {
       assert.equal(await status({ ...record, ...change }), "BLOCKED", JSON.stringify(change));
     }
   } finally { h.cleanup(); }

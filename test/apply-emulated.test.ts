@@ -21,7 +21,7 @@ import { buildManifest } from "../src/teardown/manifest.js";
 import { captureProjectFiles } from "../src/teardown/snapshot.js";
 import { removeTree } from "../src/teardown/driver/cleanup.js";
 import {
-  DEV_TARGET, NOW, POLICY, QA_TARGET, REQUESTER, SOURCE_COMMIT, TENANT, approvalFor, contractJson, human, identityEnv, pinPathOf, sha, writePinnedContract,
+  DEV_TARGET, NOW, POLICY, QA_TARGET, REQUESTER, SOURCE_COMMIT, TENANT, approvalFor, contractJson, human, identityEnv, sha, writeReviewedContract,
 } from "./helpers/apply-fixtures.js";
 import { AZURE } from "../src/apply/providers/azure.js";
 
@@ -234,7 +234,7 @@ describe("emulated backend simulation: real Terraform, Azurite, built-in resourc
         PROD: { tenantId: TENANT, subscriptionId: "33333333-3333-4333-8333-333333333333", backend: "emulatedprod/tfstate/prod.tfstate", workspace: "default" },
       },
     });
-    writePinnedContract(contractPath, contract);
+    writeReviewedContract(contractPath, contract);
 
     // TEST FIXTURE: the qualification attestation is forged here because no person can attest an emulator run. It records the REAL
     // binary hash and version. It is not evidence of identity separation and must never be copied into production code.
@@ -260,7 +260,7 @@ describe("emulated backend simulation: real Terraform, Azurite, built-in resourc
       ALZ_NETWORK_HTTPS_PROXY: emulator.proxyUrl, ALZ_NETWORK_SSL_CERT_FILE: emulator.caFile,
     };
     deps = {
-      contractPath, contractPinPath: pinPathOf(contractPath), qualificationDir: vault, evidenceDir: evidence, nonces: openNonceStore(nonces), env,
+      contractPath, qualificationDir: vault, evidenceDir: evidence, nonces: openNonceStore(nonces), env,
       // The product commit a seal binds (a fixture value: the test runs from a temporary directory, not from a checkout).
       now: () => NOW, scratchParent: scratch, toolDirs: [toolDir, "/usr/bin", "/bin"], killPollMs: 100, killGraceMs: 30_000, sourceCommit: SOURCE_COMMIT,
     };

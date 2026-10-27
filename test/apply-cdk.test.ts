@@ -31,7 +31,7 @@ import { codeOf } from "../src/apply/engine.js";
 import { buildChildEnvironment } from "../src/tools/child-env.js";
 import { AWS_CFN_APPLY_PROFILE } from "../src/tools/profiles.js";
 import { EXECUTION_IDENTITIES } from "../src/tools/identity.js";
-import { reHashedProposal, requesterArgs, REQUESTER, SOURCE_COMMIT, NOW, POLICY, approvalFor as approval, contractJson, human, keys, pinPathOf, writePinnedContract, type Project } from "./helpers/apply-fixtures.js";
+import { reHashedProposal, requesterArgs, REQUESTER, SOURCE_COMMIT, NOW, POLICY, approvalFor as approval, contractJson, human, keys, writeReviewedContract, type Project } from "./helpers/apply-fixtures.js";
 import {
   AWS_CLI_VERSION, CDK_CANARIES, FAKE_AWS_SHA256, STACK, STDERR_CANARY, awsCallsOf, behaveAws, cdkContractJson, cdkIdentityEnv, cdkRoleArn, cdkTargetOf,
   forgeCdkQualification, installFakeAws, patchAws, subcommandsOf, writeAssembly, type AssemblyOptions, type AwsBehavior, type AwsCall,
@@ -66,12 +66,12 @@ function world(over: Partial<ApplyDeps> = {}, contract: unknown = cdkContractJso
   behave(behavior);
   const dirs = { scratch: fresh("scratch"), evidence: fresh("evidence"), nonces: fresh("nonces") };
   const contractPath = join(fresh("contract"), "act-pilot-contract.json");
-  writePinnedContract(contractPath, contract);
+  writeReviewedContract(contractPath, contract);
   return {
     dirs, contractPath,
     deps: {
       sourceCommit: SOURCE_COMMIT,
-      contractPath, contractPinPath: pinPathOf(contractPath), qualificationDir: vaultDir, evidenceDir: dirs.evidence,
+      contractPath, qualificationDir: vaultDir, evidenceDir: dirs.evidence,
       nonces: openNonceStore(dirs.nonces), env: cdkIdentityEnv("DEV"), now: () => NOW, scratchParent: dirs.scratch,
       toolDirs: [toolDir], killPollMs: 40, killGraceMs: 400, ...over,
     },
@@ -146,10 +146,10 @@ test("the CDK engine is registered, needs DISCOVERY, CHANGESET and APPLY, and is
 
 const writeContract = (contract: unknown): string => {
   const path = join(fresh("contract"), "act-pilot-contract.json");
-  writePinnedContract(path, contract);
+  writeReviewedContract(path, contract);
   return path;
 };
-const loaded = (contract: unknown) => { const path = writeContract(contract); return loadPilotContract(path, pinPathOf(path)); };
+const loaded = (contract: unknown) => { const path = writeContract(contract); return loadPilotContract(path); };
 const reasonOf = (contract: unknown): string => { const l = loaded(contract); assert.equal(l.enabled, false); return (l as { reason: string }).reason; };
 const editTargets = (edit: (targets: Record<string, Record<string, unknown>>) => void, capabilities: string[] = []) => {
   const contract = cdkContractJson(KILL, capabilities) as { targets: Record<string, Record<string, unknown>> };
@@ -969,7 +969,7 @@ test("./alz apply works for the engine the pinned contract names, with no engine
     const err: string[] = [];
     const deps: ApplyCliDeps = {
       terminal: { stdinIsTTY: true, stdoutIsTTY: true, write: (t) => { out.push(t); }, ask: async (q) => { asked.push(q); return answers.shift() ?? ""; } },
-      env: cdkIdentityEnv(environment), now: () => NOW, operatorId: "operator.fixture", contractPath: w.contractPath, contractPinPath: pinPathOf(w.contractPath),
+      env: cdkIdentityEnv(environment), now: () => NOW, operatorId: "operator.fixture", contractPath: w.contractPath,
       qualificationDir: vault, evidenceDir: w.dirs.evidence, nonces: w.deps.nonces, scratchParent: w.dirs.scratch, toolDirs: [toolDir], sourceCommit: SOURCE_COMMIT,
       stdout: (t) => { out.push(t); }, stderr: (t) => { err.push(t); },
     };
@@ -1019,7 +1019,7 @@ test("./alz apply works for the engine the pinned contract names, with no engine
 
 /** The observe step's dependencies for a world: the same contract, ledger and fake `aws`, read as DISCOVERY through the runner. */
 const observeDepsOf = (w: World, environment: ApplyEnvironment = "DEV"): ObserveDeps => ({
-  contractPath: w.contractPath, contractPinPath: pinPathOf(w.contractPath), evidenceDir: w.dirs.evidence, env: cdkIdentityEnv(environment), toolDirs: [toolDir], scratchParent: w.dirs.scratch, now: () => new Date(NOW.getTime() + 60_000),
+  contractPath: w.contractPath, evidenceDir: w.dirs.evidence, env: cdkIdentityEnv(environment), toolDirs: [toolDir], scratchParent: w.dirs.scratch, now: () => new Date(NOW.getTime() + 60_000),
 });
 const BUCKET_ID = "pilotstack-pilotbucket-fake1";
 const TOPIC_ARN = "arn:aws:sns:us-east-1:111111111111:PilotStack-PilotTopic-FAKE1";
@@ -1067,7 +1067,7 @@ test("after a CDK apply the blueprint is CloudFormation's own resource list, rea
   // The proposal: run-created resources by logical id; the pilot's role kept as PROTECTED_IDENTITY; the stack never deleted.
   const records = await loadRunRecords(s.sealed.artifactSha256, w.dirs.evidence);
   assert.ok(records.ok, JSON.stringify(records));
-  const contract = loadPilotContract(w.contractPath, pinPathOf(w.contractPath)) as PilotContract;
+  const contract = loadPilotContract(w.contractPath) as PilotContract;
   const built = buildCleanupProposal({ requesterId: REQUESTER.requesterId, ...records, changes: s.sealed.changes, channel: "CLI", contract, engineVersion: AWS_CLI_VERSION, env: cdkIdentityEnv("DEV"), now: new Date(NOW.getTime() + 120_000) });
   assert.ok(built.ok, JSON.stringify(built));
   const signed = signCleanupProposal(built.proposal, REQUESTER.privateKeyPem);
@@ -1123,7 +1123,7 @@ test("CDK observe denied and interrupted: a resource Cloud Control no longer ret
   assert.equal(observed2.record.resources.find((r) => r.address === "NestedLater")?.result, "UNVERIFIABLE");
   const records2 = await loadRunRecords(s2.sealed.artifactSha256, w2.dirs.evidence);
   assert.ok(records2.ok);
-  const contract2 = loadPilotContract(w2.contractPath, pinPathOf(w2.contractPath)) as PilotContract;
+  const contract2 = loadPilotContract(w2.contractPath) as PilotContract;
   const built2 = buildCleanupProposal({ requesterId: REQUESTER.requesterId, ...records2, changes: s2.sealed.changes, channel: "CLI", contract: contract2, engineVersion: AWS_CLI_VERSION, env: cdkIdentityEnv("DEV"), now: new Date(NOW.getTime() + 120_000) });
   assert.ok(built2.ok, JSON.stringify(built2));
   assert.deepEqual(built2.proposal.excluded.map((x) => [x.address, x.ownership]), [["NestedHook", "CONTAINS_OTHERS"], ["NestedLater", "CONTAINS_OTHERS"], ["NestedSet", "CONTAINS_OTHERS"], ["PilotTopic", "REPLACED_PRE_EXISTING"]]);
@@ -1181,7 +1181,7 @@ async function proposedCdk(w: World, options: AssemblyOptions = {}) {
   assert.ok(observed.ok, JSON.stringify(observed));
   const records = await loadRunRecords(s.sealed.artifactSha256, w.dirs.evidence);
   assert.ok(records.ok, JSON.stringify(records));
-  const contract = loadPilotContract(w.contractPath, pinPathOf(w.contractPath)) as PilotContract;
+  const contract = loadPilotContract(w.contractPath) as PilotContract;
   const built = buildCleanupProposal({ requesterId: REQUESTER.requesterId, ...records, changes: s.sealed.changes, channel: "CLI", contract, engineVersion: AWS_CLI_VERSION, env: cdkIdentityEnv("DEV"), now: new Date(NOW.getTime() + 120_000) });
   assert.ok(built.ok, JSON.stringify(built));
   return { s, proposal: signCleanupProposal(built.proposal, REQUESTER.privateKeyPem), observed };

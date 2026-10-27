@@ -418,14 +418,14 @@ export const contractJson = (killPath: string, over: Record<string, unknown> = {
     QA: { tenantId: TENANT, subscriptionId: QA_TARGET.account, backend: QA_TARGET.backend, workspace: "default" },
     PROD: { tenantId: TENANT, subscriptionId: PROD_TARGET.account, backend: PROD_TARGET.backend, workspace: "default" },
   },
-  requiredApprovals: { DEV: 1, QA: 1, PROD: 2 }, maxApprovalAgeMinutes: 60, approvers, killSwitchPath: killPath, ...over,
+  requiredApprovals: { DEV: 1, QA: 1, PROD: 2 }, maxApprovalAgeMinutes: 60, approvers, killSwitchPath: killPath, authorize: AUTHORIZE_ALL, ...over,
 });
 
-/** The committed pin the contract is loaded against: its canonical sha256, in `<path>.sha256`. */
-export const pinPathOf = (contractPath: string): string => contractPath + ".sha256";
-export function writePinnedContract(contractPath: string, contract: unknown): void {
+/** The fixtures' default-deny authorization: APPLY and CLEANUP in every environment. A test that needs less says so. */
+export const AUTHORIZE_ALL = { DEV: ["APPLY", "CLEANUP"], QA: ["APPLY", "CLEANUP"], PROD: ["APPLY", "CLEANUP"] };
+/** The reviewed contract as a test writes it. The contract itself carries the authorization; there is no hash file. */
+export function writeReviewedContract(contractPath: string, contract: unknown): void {
   writeFileSync(contractPath, JSON.stringify(contract));
-  writeFileSync(pinPathOf(contractPath), sha(canonicalJson(contract as never)) + "\n");
 }
 
 export const awsContractJson = (killPath: string, over: Record<string, unknown> = {}) => ({
@@ -536,6 +536,13 @@ export const approvalFor = (sealed: SealedPlan, who: keyof typeof keys, over: Pa
   }, keys[who].priv);
 
 /** Records an applied artifact the way a run does: reserve it, then replace the reservation with the evidence. A rejected record leaves nothing behind. */
+/** The three decisions an evidence fixture records (AUTHORIZED, READY, EXECUTE), for evidence built by hand in a test. */
+export const decisionsFor = (contractSha256: string, operation: "APPLY" | "CLEANUP" = "APPLY", authorizationSha256: string = "a".repeat(64)) => ({
+  authorized: { operation, contractSha256, authorizationSha256 },
+  ready: { engineBinarySha256: null, qualificationEvidenceHash: null },
+  execute: { requesterId: "carol", approverIds: ["alice"] },
+});
+
 export async function recordApplied(evidence: ApplyEvidence, evidenceDir: string): Promise<ApplyResult> {
   const reserved = await reserveArtifact(evidence.artifactSha256, evidenceDir, NOW);
   if (!reserved.ok) return reserved;

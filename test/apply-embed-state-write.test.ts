@@ -18,7 +18,7 @@ import { removeTree } from "../src/teardown/driver/cleanup.js";
 import { INIT_ARGV } from "../src/teardown/driver/adapters/terraform.js";
 import { SOURCE_COMMIT,
   AWS_REGION, DEV_TARGET, NOW, POLICY, awsContractJson, awsIdentityEnv, awsRoleArn, awsTargetOf, approvalFor as approval, behave as behaveIn, callsOf, contractJson,
-  human, identityEnv, installFakeTerraform, pinPathOf, testFixtureForgeQualificationEvidence, writePinnedContract, writeProject, type Behavior, type Call,
+  human, identityEnv, installFakeTerraform, testFixtureForgeQualificationEvidence, writeReviewedContract, writeProject, type Behavior, type Call,
   REQUESTER,
   requesterArgs,
 } from "./helpers/apply-fixtures.js";
@@ -60,12 +60,12 @@ function world(contract: unknown, provider: "AZURE" | "AWS" = "AZURE", environme
   behave(provider === "AWS" ? { showProviderConfig: { aws: AWS_PROVIDER } } : {});
   const scratch = fresh("scratch");
   const contractPath = join(fresh("contract"), "act-pilot-contract.json");
-  writePinnedContract(contractPath, contract);
+  writeReviewedContract(contractPath, contract);
   return {
     contractPath, scratch,
     deps: {
       sourceCommit: SOURCE_COMMIT,
-      contractPath, contractPinPath: pinPathOf(contractPath), qualificationDir: provider === "AWS" ? awsVault : azureVault, evidenceDir: fresh("evidence"),
+      contractPath, qualificationDir: provider === "AWS" ? awsVault : azureVault, evidenceDir: fresh("evidence"),
       nonces: openNonceStore(fresh("nonces")), env: provider === "AWS" ? awsIdentityEnv(environment) : identityEnv(environment), now: () => NOW,
       scratchParent: scratch, toolDirs: [toolDir], killPollMs: 40, killGraceMs: 400,
     },
@@ -78,11 +78,11 @@ async function seal(w: World, provider: "AZURE" | "AWS" = "AZURE") {
   const result = await sealPreview({ invocation: human(target), environment: "DEV", target, manifest: p.manifest, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved, requester: REQUESTER }, w.deps);
   return { result, project: p, target };
 }
-const loadedContract = (w: World) => loadPilotContract(w.contractPath, pinPathOf(w.contractPath));
+const loadedContract = (w: World) => loadPilotContract(w.contractPath);
 const reasonOf = (contract: unknown): string => {
   const path = join(fresh("contract"), "act-pilot-contract.json");
-  writePinnedContract(path, contract);
-  const l = loadPilotContract(path, pinPathOf(path));
+  writeReviewedContract(path, contract);
+  const l = loadPilotContract(path);
   assert.equal(l.enabled, false);
   return (l as { reason: string }).reason;
 };
@@ -106,13 +106,13 @@ test("the field is optional and default off: absent and false behave the same, t
   assert.notEqual(on.hash, absent.hash, "the contract hash binds the choice");
   for (const bad of ["true", 1, null, "yes", [], {}]) assert.match(reasonOf(contractJson(KILL, { embedStateWrite: bad })), /embedStateWrite: expected true or false/);
   // AWS with Terraform may opt in too.
-  assert.equal((loadPilotContract(...(() => { const w = world(awsContractJson(KILL, { embedStateWrite: true }), "AWS"); return [w.contractPath, pinPathOf(w.contractPath)] as const; })()) as PilotContract).embedStateWrite, true);
-  // The shipped examples do not mention it (so they stay valid and unchanged) and the shipped pin is empty.
+  assert.equal((loadPilotContract(...(() => { const w = world(awsContractJson(KILL, { embedStateWrite: true }), "AWS"); return [w.contractPath] as const; })()) as PilotContract).embedStateWrite, true);
+  // The shipped examples do not mention it (so they stay valid and unchanged), and the repository ships no contract and no pin.
   for (const name of ["act-pilot-contract.example.json", "act-pilot-contract.aws.example.json", "act-pilot-contract.aws-cdk.example.json"]) {
     assert.ok(!readFileSync(fileURLToPath(new URL("../config/" + name, import.meta.url)), "utf8").includes("embedStateWrite"), name);
   }
-  const pin = fileURLToPath(new URL("../config/act-pilot-contract.sha256", import.meta.url));
-  assert.equal(!existsSync(pin) || readFileSync(pin, "utf8").trim() === "", true, "the shipped pin stays empty");
+  assert.equal(existsSync(fileURLToPath(new URL("../config/act-pilot-contract.json", import.meta.url))), false, "no contract is shipped");
+  assert.equal(existsSync(fileURLToPath(new URL("../config/act-pilot-contract.sha256", import.meta.url))), false, "the retired pin is gone");
 });
 
 test("true with the CDK engine is an invalid contract", () => {
@@ -209,7 +209,7 @@ test("a plan sealed with embed=false is refused under embed=true and the reverse
     const loaded = await loadSealedPlan(result.path);
     assert.ok(loaded.ok);
     const sealedPlan = { sealed: loaded.sealed, planBytes: loaded.planBytes };
-    writePinnedContract(w.contractPath, contractJson(KILL, { embedStateWrite: appliedUnder }));
+    writeReviewedContract(w.contractPath, contractJson(KILL, { embedStateWrite: appliedUnder }));
     const before = calls().length;
     const refused = await runApply({
       invocation: human(target), environment: "DEV", target: { ...target }, sealedPlan, manifest: project.manifest, projectRoot: project.projectRoot,
@@ -238,7 +238,7 @@ async function cli(w: World, args: string[], answers: string[]) {
   const term = terminal(answers);
   const d = w.deps;
   const code = await runApplyCommand(args, {
-    terminal: term, env: d.env, now: d.now, operatorId: "operator.fixture", contractPath: d.contractPath, contractPinPath: d.contractPinPath, qualificationDir: d.qualificationDir,
+    terminal: term, env: d.env, now: d.now, operatorId: "operator.fixture", contractPath: d.contractPath, qualificationDir: d.qualificationDir,
     evidenceDir: d.evidenceDir, nonces: d.nonces, scratchParent: d.scratchParent, toolDirs: d.toolDirs, sourceCommit: d.sourceCommit, stdout: (t) => { stdout.push(t); }, stderr: (t) => { stderr.push(t); },
   });
   return { code, stdout: stdout.join(""), stderr: stderr.join(""), term };

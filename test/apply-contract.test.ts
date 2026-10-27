@@ -6,6 +6,9 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 
 import {
+  authorizationChanged,
+  authorizationSha256Of,
+  authorizeContract,
   canonicalPublicKey,
   isKillSwitchActive,
   loadPilotContract,
@@ -13,6 +16,7 @@ import {
   pilotContractSha256,
   repoPaths,
   requireNotApplied,
+  requireActAuthorized,
   requirePromotionEvidence,
   targetForEnvironment,
   verifyApplyQualification,
@@ -49,21 +53,18 @@ const fixtureContract = (): PilotContract => ({
     { id: "bob", publicKeyPem: KEYS.bob, environments: ["DEV", "QA", "PROD"] },
   ],
   killSwitchPath: KILL,
+  authorize: { DEV: ["APPLY", "CLEANUP"], QA: ["APPLY"], PROD: ["APPLY"] },
 });
 
-// Every written contract gets a committed-style pin beside it (<path>.sha256), computed from the raw JSON, so
-// a test reaches validation; the pin tests below write their own.
 let counter = 0;
-const pinOf = (path: string): string => path + ".sha256";
 const write = (value: unknown): string => {
   const path = join(scratch, "contract-" + counter++ + ".json");
   writeFileSync(path, typeof value === "string" ? value : JSON.stringify(value));
-  try { writeFileSync(pinOf(path), createHash("sha256").update(canonicalJson(JSON.parse(readFileSync(path, "utf8")))).digest("hex") + "\n"); } catch { /* not JSON: no pin */ }
   return path;
 };
-const load = (path: string) => loadPilotContract(path, pinOf(path));
+const load = (path: string) => loadPilotContract(path);
 const mutate = (edit: (c: any) => void): string => { const c = fixtureContract() as any; edit(c); return write(c); };
-const disabled = (path: string, pattern?: RegExp, code?: "ACT_DISABLED" | "CONTRACT_INVALID") => {
+const disabled = (path: string, pattern?: RegExp, code?: "ACT_DISABLED" | "CONTRACT_INVALID" | "NOT_IMPLEMENTED") => {
   const loaded = load(path);
   assert.equal(loaded.enabled, false);
   assert.ok("reason" in loaded && loaded.reason.length > 0);
@@ -98,39 +99,34 @@ test("contract fails closed: missing, unparseable, not an object, disabled, unkn
   disabled(mutate((c) => { c.engine = "PULUMI"; }));
 });
 
-// Owner decision of 2026-10-27 (issue #39, comment 6442856302): the DEV-only exception extends to Azure Terraform, DEV only.
+// One DEV-only rule for every implemented path (six-path baseline, #39; it folds in #298's Azure Terraform extension).
 const azureDevOnly = (): any => {
   const c = fixtureContract() as any;
   c.enabledEnvironments = ["DEV"];
   c.targets = { DEV: c.targets.DEV };
   c.requiredApprovals = { DEV: 1 };
   c.approvers = c.approvers.map((entry: any) => ({ ...entry, environments: ["DEV"] }));
+  c.authorize = { DEV: ["APPLY", "CLEANUP"] };
   return c;
 };
 
-test("an Azure Terraform DEV-only contract loads with no QA or PROD target, and resolves only the DEV target", () => {
+test("an Azure Terraform DEV-only contract loads with no QA or PROD target, and resolves and authorizes only DEV", () => {
   const loaded = load(write(azureDevOnly()));
   assert.equal(loaded.enabled, true);
   if (!loaded.enabled) return;
-  assert.equal(loaded.provider, "AZURE");
-  assert.equal(loaded.engine, "TERRAFORM");
   assert.deepEqual(loaded.enabledEnvironments, ["DEV"]);
   assert.deepEqual(Object.keys(loaded.targets), ["DEV"]);
-  assert.deepEqual(loaded.requiredApprovals, { DEV: 1 });
   const dev = { account: "22222222-2222-4222-8222-222222222222", backend: "fixturedevstore/tfstate/dev.tfstate", workspace: "default" };
   assert.equal(targetForEnvironment(loaded, "DEV", dev).ok, true);
   assert.equal(targetForEnvironment(loaded, "QA", dev).ok, false, "QA is outside a DEV-only contract");
   assert.equal(targetForEnvironment(loaded, "PROD", dev).ok, false, "PROD is outside a DEV-only contract");
+  assert.ok(authorizeContract(loaded, "DEV", "APPLY").ok);
+  for (const env of ["QA", "PROD"] as const) assert.equal((authorizeContract(loaded, env, "APPLY") as { code: string }).code, "ACT_NOT_AUTHORIZED");
 });
 
-test("an Azure DEV-only contract cannot name QA or PROD, and QA and PROD still need the full three-stage contract", () => {
+test("a DEV-only contract cannot name QA or PROD, and QA and PROD still need the full three-stage contract", () => {
   for (const scope of [["QA"], ["PROD"], ["DEV", "QA"], ["DEV", "PROD"], ["DEV", "QA", "PROD"], ["DEV", "DEV"], [], "DEV"]) {
     disabled(write({ ...azureDevOnly(), enabledEnvironments: scope }), /enabledEnvironments/, "CONTRACT_INVALID");
-  }
-  // A QA-only or PROD-only contract shaped around that one stage is refused the same way.
-  for (const stage of ["QA", "PROD"] as const) {
-    const base = fixtureContract() as any;
-    disabled(write({ ...azureDevOnly(), enabledEnvironments: [stage], targets: { [stage]: base.targets[stage] }, requiredApprovals: { [stage]: 2 } }), /enabledEnvironments/, "CONTRACT_INVALID");
   }
   const base = fixtureContract() as any;
   disabled(write({ ...azureDevOnly(), targets: { DEV: base.targets.DEV, QA: base.targets.QA } }), /QA/, "CONTRACT_INVALID");
@@ -138,17 +134,29 @@ test("an Azure DEV-only contract cannot name QA or PROD, and QA and PROD still n
   disabled(write({ ...azureDevOnly(), targets: {} }), /DEV/, "CONTRACT_INVALID");
   disabled(write({ ...azureDevOnly(), requiredApprovals: { DEV: 0 } }), /DEV/, "CONTRACT_INVALID");
   disabled(write({ ...azureDevOnly(), approvers: azureDevOnly().approvers.map((entry: any) => ({ ...entry, environments: ["QA"] })) }), /DEV approver/, "CONTRACT_INVALID");
-  // Without the DEV-only field, the Azure contract is the three-stage chain: every stage, distinct targets, two PROD approvals.
-  disabled(mutate((c) => { delete c.targets.QA; delete c.requiredApprovals.QA; }), /QA/, "CONTRACT_INVALID");
+  // Without the DEV-only field the contract is the three-stage chain: every stage, distinct targets, two PROD approvals.
+  disabled(mutate((c) => { delete c.targets.QA; delete c.requiredApprovals.QA; c.authorize = { DEV: ["APPLY"] }; }), /QA/, "CONTRACT_INVALID");
   disabled(mutate((c) => { c.requiredApprovals.PROD = 1; }), /PROD/, "CONTRACT_INVALID");
 });
 
-test("the DEV-only scope stays Terraform on AWS and Azure: GCP and any other provider or engine are refused", () => {
-  for (const provider of ["GCP", "gcp", "OCI"]) {
-    disabled(write({ ...azureDevOnly(), provider }), /provider and engine/, "CONTRACT_INVALID");
+test("the DEV-only rule is the same for AWS CDK: its own target shape, DEV only", () => {
+  const cdk = {
+    ...azureDevOnly(), provider: "AWS", engine: "CDK",
+    targets: { DEV: { accountId: "123456789012", region: "us-east-2", backend: "alz-pilot-stack", workspace: "default", capabilities: [] } },
+  };
+  const loaded = load(write(cdk));
+  assert.equal(loaded.enabled, true, JSON.stringify(loaded));
+  assert.deepEqual((loaded as PilotContract).enabledEnvironments, ["DEV"]);
+  disabled(write({ ...cdk, enabledEnvironments: ["DEV", "QA"] }), /enabledEnvironments/, "CONTRACT_INVALID");
+});
+
+test("planned paths are named and refused NOT_IMPLEMENTED until their lane lands; unknown ones stay CONTRACT_INVALID", () => {
+  for (const [provider, engine] of [["AZURE", "BICEP"], ["GCP", "TERRAFORM"], ["GCP", "GCP_API"]]) {
+    disabled(write({ ...fixtureContract(), provider, engine }), /planned path that is not implemented/, "NOT_IMPLEMENTED");
+    disabled(write({ ...azureDevOnly(), provider, engine }), /not implemented/, "NOT_IMPLEMENTED");
   }
-  for (const engine of ["CDK", "PULUMI"]) {
-    disabled(write({ ...azureDevOnly(), engine }), /engine/, "CONTRACT_INVALID");
+  for (const [provider, engine] of [["GCP", "CDK"], ["AWS", "BICEP"], ["AZURE", "GCP_API"], ["OCI", "TERRAFORM"], ["gcp", "TERRAFORM"], ["AWS", "PULUMI"]]) {
+    disabled(write({ ...fixtureContract(), provider, engine }), undefined, "CONTRACT_INVALID");
   }
 });
 
@@ -241,37 +249,70 @@ test("approvers: the same public key under two ids is refused whatever its PEM t
   disabled(mutate((c) => { c.approvers[1].publicKeyPem = reformatted; }), /duplicate/i);
 });
 
-// --- the contract is pinned to the committed hash ------------------------------------------------------------
+// --- the contract is the authorization (owner direction, #39): no hash file ------------------------------------
 
-test("pin: the contract loads only when its sha256 equals the pin file", () => {
+test("authorize: an enabled, valid contract is disabled unless it authorizes an operation", () => {
+  assert.equal(load(write(fixtureContract())).enabled, true);
+  // Key order and whitespace do not matter: the contract hash is canonical.
   const path = write(fixtureContract());
-  const sha = pilotContractSha256(fixtureContract());
-  assert.equal(load(path).enabled, true);
-  // The hash is of the canonical contract, so key order and whitespace do not matter.
   writeFileSync(path, JSON.stringify(fixtureContract(), null, 4));
   assert.equal(load(path).enabled, true);
-  for (const pin of [sha.replace(/.$/, (d) => (d === "0" ? "1" : "0")), "f".repeat(64), "not a hash", sha + "00", "0x" + sha]) {
-    writeFileSync(pinOf(path), pin + "\n");
-    disabled(path, /pin/i, "CONTRACT_INVALID");
+  disabled(mutate((c) => { delete c.authorize; }), /authorize/, "ACT_DISABLED");
+  disabled(mutate((c) => { c.authorize = {}; }), /authorize/, "ACT_DISABLED");
+});
+
+test("authorize: a malformed authorization is refused, never ignored", () => {
+  for (const [authorize, why] of [
+    [[], /expected an object/], ["DEV", /expected an object/], [{ STAGING: ["APPLY"] }, /unknown field/], [{ DEV: [] }, /distinct operations/],
+    [{ DEV: ["APPLY", "APPLY"] }, /distinct operations/], [{ DEV: ["DESTROY"] }, /distinct operations/], [{ DEV: "APPLY" }, /distinct operations/],
+  ] as const) disabled(mutate((c) => { c.authorize = authorize; }), why, "CONTRACT_INVALID");
+  // A DEV-only contract cannot authorize an environment it does not enable.
+  disabled(mutate((c) => {
+    c.enabledEnvironments = ["DEV"]; c.provider = "AWS"; c.targets = { DEV: { accountId: "123456789012", region: "us-east-2", backend: "fixture-dev-state/pilot/dev.tfstate", workspace: "default" } };
+    c.requiredApprovals = { DEV: 1 }; c.authorize = { DEV: ["APPLY"], QA: ["APPLY"] };
+  }), /authorize\.QA: unknown field/, "CONTRACT_INVALID");
+});
+
+test("authorizeContract: default deny per environment and operation, bound to the contract's provider, engine and account", () => {
+  const contract = load(write(fixtureContract())) as PilotContract;
+  const dev = authorizeContract(contract, "DEV", "APPLY");
+  assert.ok(dev.ok);
+  assert.deepEqual(dev.authorization.entry, { provider: "AZURE", engine: "TERRAFORM", environment: "DEV", account: "22222222-2222-4222-8222-222222222222", operations: ["APPLY", "CLEANUP"] });
+  assert.equal(dev.authorization.contractSha256, pilotContractSha256(contract));
+  assert.equal(dev.authorization.authorizationSha256, authorizationSha256Of(dev.authorization.entry));
+  assert.ok(authorizeContract(contract, "DEV", "CLEANUP").ok);
+  for (const [env, op] of [["DEV", "REMOVE"], ["QA", "CLEANUP"], ["PROD", "REMOVE"]] as const) {
+    const refused = authorizeContract(contract, env, op);
+    assert.ok(!refused.ok && refused.code === "ACT_NOT_AUTHORIZED", env + " " + op);
   }
-  writeFileSync(pinOf(path), sha.toUpperCase() + "\n");
-  assert.equal(load(path).enabled, true, "hex case does not matter");
+  // Each environment's entry is its own: a QA authorization is not a DEV one.
+  const qa = authorizeContract(contract, "QA", "APPLY");
+  assert.ok(qa.ok && qa.authorization.authorizationSha256 !== dev.authorization.authorizationSha256);
+  // An entry for another cloud or engine never matches: the provider and engine are part of the signed entry.
+  const entry = dev.authorization.entry;
+  for (const other of [{ ...entry, engine: "CDK" as const }, { ...entry, provider: "AWS" as const }, { ...entry, account: "33333333-3333-4333-8333-333333333333" }]) {
+    assert.notEqual(authorizationSha256Of(other), dev.authorization.authorizationSha256);
+  }
+  // The removal lane's entry point reads the same contract.
+  const path = write(fixtureContract());
+  assert.ok(requireActAuthorized("CLEANUP", "DEV", path).ok);
+  const removal = requireActAuthorized("REMOVE", "DEV", path);
+  assert.ok(!removal.ok && removal.code === "ACT_NOT_AUTHORIZED");
+  const none = requireActAuthorized("APPLY", "DEV", join(scratch, "absent.json"));
+  assert.ok(!none.ok && none.code === "ACT_DISABLED");
 });
 
-test("pin: an absent or empty pin file means disabled, even for an enabled valid contract", () => {
-  const path = write(fixtureContract());
-  rmSync(pinOf(path));
-  disabled(path, /pin/i, "ACT_DISABLED");
-  writeFileSync(pinOf(path), "");
-  disabled(path, /pin/i, "ACT_DISABLED");
-  writeFileSync(pinOf(path), "\n  \n");
-  disabled(path, /pin/i, "ACT_DISABLED");
-  writeFileSync(pinOf(path), pilotContractSha256(fixtureContract()));
-  assert.equal(load(path).enabled, true);
+test("authorizationChanged: a changed contract or entry is refused, nothing else is", () => {
+  const contract = load(write(fixtureContract())) as PilotContract;
+  const now = authorizeContract(contract, "DEV", "APPLY");
+  assert.ok(now.ok);
+  const bound = { contractSha256: now.authorization.contractSha256, authorizationSha256: now.authorization.authorizationSha256 };
+  assert.equal(authorizationChanged(bound, now.authorization), undefined);
+  assert.equal(authorizationChanged({ ...bound, contractSha256: "0".repeat(64) }, now.authorization)?.code, "ACT_AUTHORIZATION_CHANGED");
+  assert.equal(authorizationChanged({ ...bound, authorizationSha256: "0".repeat(64) }, now.authorization)?.code, "ACT_AUTHORIZATION_CHANGED");
 });
 
-test("pin: any edit to the contract after it was pinned disables it", () => {
-  const path = write(fixtureContract());
+test("any edit to the contract changes its hash, so a plan sealed before the edit no longer matches", () => {
   const sha = pilotContractSha256(fixtureContract());
   const edits: ((c: any) => void)[] = [
     (c) => { c.maxApprovalAgeMinutes = 61; },
@@ -279,22 +320,33 @@ test("pin: any edit to the contract after it was pinned disables it", () => {
     (c) => { c.approvers[0].environments = ["DEV"]; },
     (c) => { c.targets.DEV.tenantId = "99999999-9999-4999-8999-999999999999"; },
     (c) => { c.killSwitchPath = join(scratch, "elsewhere"); },
+    (c) => { c.authorize.DEV = ["APPLY"]; },
   ];
   for (const edit of edits) {
-    const c = fixtureContract() as any; edit(c);
-    writeFileSync(path, JSON.stringify(c));
-    writeFileSync(pinOf(path), sha);
-    disabled(path, /pin/i, "CONTRACT_INVALID");
+    const loaded = load(mutate(edit));
+    assert.equal(loaded.enabled, true);
+    assert.notEqual(pilotContractSha256(loaded as PilotContract), sha);
   }
 });
 
-test("the committed pin file is empty or absent, so the repository ships with ACT disabled", () => {
-  const pin = repoPaths().pin;
-  assert.equal(existsSync(pin) ? readFileSync(pin, "utf8").trim() : "", "");
+test("the repository ships no contract and no pin file: ACT is disabled and no product code reads or writes a pin or the contract", () => {
+  const root = resolve(import.meta.dirname, "..");
+  assert.equal(existsSync(join(root, "config/act-pilot-contract.sha256")), false, "the old pin is removed, not left as a second switch");
+  assert.equal(existsSync(repoPaths().contract), false, "the shipped default is no contract");
   const loaded = loadPilotContract();
   assert.equal(loaded.enabled, false);
   assert.equal((loaded as { code: string }).code, "ACT_DISABLED");
+  for (const file of sourceFiles(join(root, "src"))) {
+    const text = readFileSync(file, "utf8");
+    assert.doesNotMatch(text, /act-pilot-contract\.sha256/, file + " still names the retired pin");
+    // Nothing writes the contract: the owner's reviewed commit is the only author of the authorization.
+    assert.doesNotMatch(text, /(writeFile|appendFile|copyFile|rename|createWriteStream)[A-Za-z]*\([^)]*(repoPaths\(\)\.contract|act-pilot-contract\.json)/, file + " writes the contract");
+  }
 });
+
+function sourceFiles(dir: string): string[] {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((e) => e.isDirectory() ? sourceFiles(join(dir, e.name)) : /\.tsx?$/.test(e.name) ? [join(dir, e.name)] : []);
+}
 
 // --- every path is anchored to the repository, never the working directory ------------------------------------
 
@@ -303,16 +355,15 @@ test("repoPaths and the defaults resolve from the module location, not process.c
   const root = resolve(import.meta.dirname, "..");
   assert.equal(here.root, root);
   assert.deepEqual(here, {
-    root, contract: join(root, "config/act-pilot-contract.json"), pin: join(root, "config/act-pilot-contract.sha256"),
+    root, contract: join(root, "config/act-pilot-contract.json"),
     evidence: join(root, ".runs/apply/evidence"), qualifications: join(root, ".runs/apply/qualification"), nonces: join(root, ".runs/apply"),
   });
   const cwd = process.cwd();
-  // A hostile working directory with its own contract, pin and kill switch changes nothing.
+  // A hostile working directory with its own contract and kill switch changes nothing.
   const hostile = mkdtempSync(join(scratch, "cwd-"));
   mkdirSync(join(hostile, "config"), { recursive: true });
   const contract = fixtureContract();
   writeFileSync(join(hostile, "config/act-pilot-contract.json"), JSON.stringify(contract));
-  writeFileSync(join(hostile, "config/act-pilot-contract.sha256"), pilotContractSha256(contract));
   mkdirSync(join(hostile, ".runs/apply"), { recursive: true });
   writeFileSync(join(hostile, ".runs/apply/KILL-anchor-test"), "");
   process.chdir(hostile);
@@ -373,6 +424,7 @@ const evidenceFor = (over: Partial<ApplyEvidence> = {}): ApplyEvidence => ({
   manifestHash: "d".repeat(64),
   releaseIdentity: RELEASE,
   contractSha256: "c".repeat(64), sourceCommit: "5ec0de0000000000000000000000000000c0ffee",
+  decisions: { authorized: { operation: "APPLY", contractSha256: "c".repeat(64), authorizationSha256: "a".repeat(64) }, ready: { engineBinarySha256: null, qualificationEvidenceHash: null }, execute: { requesterId: "carol", approverIds: ["alice"] } },
   approvals: [{ approverId: "alice", issuedAt: "2026-10-11T12:00:00.000Z" }],
   requester: { requesterId: "carol", nonce: "0".repeat(32) },
   adapter: { adapterVersion: "terraform-apply-1", argvDigest: "e".repeat(64) },

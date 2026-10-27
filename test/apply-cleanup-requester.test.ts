@@ -20,7 +20,7 @@ import { runApplyCommand, type ApplyCliDeps } from "../src/cli/apply.js";
 import { removeTree } from "../src/teardown/driver/cleanup.js";
 import {
   NOW, POLICY, SOURCE_COMMIT, approvalFor, awsContractJson, awsIdentityEnv, awsTargetOf, behave as behaveIn, behaveAwsReads, callsOf, human, installFakeAwsReads, installFakeTerraform, keys,
-  pinPathOf, stateResource, testFixtureForgeQualificationEvidence, writePinnedContract, writeProject, type Project,
+  stateResource, testFixtureForgeQualificationEvidence, writeReviewedContract, writeProject, type Project,
 } from "./helpers/apply-fixtures.js";
 
 // Production cleanup approvals use the production apply quorum (owner decision on issue #39, 6440801434, item 1; closes
@@ -68,11 +68,11 @@ let vaultDir = "";
 test.before(async () => { vaultDir = fresh("qualification"); await testFixtureForgeQualificationEvidence(vaultDir, undefined, "AWS"); });
 function world(contract: unknown = CONTRACT): World {
   const contractPath = join(fresh("contract"), "act-pilot-contract.json");
-  writePinnedContract(contractPath, contract);
+  writeReviewedContract(contractPath, contract);
   const noncesDir = fresh("nonces");
   return { contractPath, evidenceDir: fresh("evidence"), noncesDir, scratch: fresh("scratch"), vault: vaultDir, proposalsDir: fresh("proposals"), nonces: openNonceStore(noncesDir) };
 }
-const contractOf = (w: World): PilotContract => loadPilotContract(w.contractPath, pinPathOf(w.contractPath)) as PilotContract;
+const contractOf = (w: World): PilotContract => loadPilotContract(w.contractPath) as PilotContract;
 /** The engine and the cloud as one environment's run shapes them: its deletion unit's tags, its state and the ARNs its unit lists. */
 function shape(w: World, environment: ApplyEnvironment): void {
   const unit = pilotUnitOf({ provider: "AWS", contractSha256: pilotContractSha256(contractOf(w)), environment, target: awsTargetOf(environment) });
@@ -80,7 +80,7 @@ function shape(w: World, environment: ApplyEnvironment): void {
   behaveAwsReads(awsToolDir, { existing: [BUCKET, LOG], tagged: ["arn:aws:s3:::" + BUCKET, logArn(environment)] });
 }
 const depsOf = (w: World, environment: ApplyEnvironment): ApplyDeps => ({
-  sourceCommit: SOURCE_COMMIT, contractPath: w.contractPath, contractPinPath: pinPathOf(w.contractPath), qualificationDir: w.vault, evidenceDir: w.evidenceDir, nonces: w.nonces,
+  sourceCommit: SOURCE_COMMIT, contractPath: w.contractPath, qualificationDir: w.vault, evidenceDir: w.evidenceDir, nonces: w.nonces,
   env: awsIdentityEnv(environment), now: () => NOW, scratchParent: w.scratch, toolDirs: [toolDir, awsToolDir], killPollMs: 40, killGraceMs: 400,
 });
 const destroyPlans = () => callsOf(toolDir).filter((c) => c.args[0] === "plan" && c.args[1] === "-destroy").length;
@@ -111,7 +111,7 @@ async function appliedIn(w: World, environment: ApplyEnvironment): Promise<Run> 
 async function proposedIn(w: World, run: Run, requester: Who): Promise<CleanupProposal> {
   const environment = run.sealed.environment;
   shape(w, environment);
-  const observed = await observeRun(run.sealed.artifactSha256, { contractPath: w.contractPath, contractPinPath: pinPathOf(w.contractPath), evidenceDir: w.evidenceDir, env: awsIdentityEnv(environment),
+  const observed = await observeRun(run.sealed.artifactSha256, { contractPath: w.contractPath, evidenceDir: w.evidenceDir, env: awsIdentityEnv(environment),
     toolDirs: [toolDir, awsToolDir], scratchParent: w.scratch, now: () => new Date(NOW.getTime() + 60_000) });
   assert.ok(observed.ok, JSON.stringify(observed));
   const records = await loadRunRecords(run.sealed.artifactSha256, w.evidenceDir);
@@ -303,8 +303,7 @@ async function cli(w: World, environment: ApplyEnvironment, args: string[], answ
   const stderr: string[] = [];
   const term = terminal(answers);
   const code = await runApplyCommand(args, {
-    sourceCommit: SOURCE_COMMIT, terminal: term, env: awsIdentityEnv(environment), now: () => new Date(NOW.getTime() + 120_000), operatorId: "operator.fixture", contractPath: w.contractPath,
-    contractPinPath: pinPathOf(w.contractPath), qualificationDir: w.vault, evidenceDir: w.evidenceDir, nonces: w.nonces, scratchParent: w.scratch, toolDirs: [toolDir, awsToolDir], proposalsDir: w.proposalsDir,
+    sourceCommit: SOURCE_COMMIT, terminal: term, env: awsIdentityEnv(environment), now: () => new Date(NOW.getTime() + 120_000), operatorId: "operator.fixture", contractPath: w.contractPath, qualificationDir: w.vault, evidenceDir: w.evidenceDir, nonces: w.nonces, scratchParent: w.scratch, toolDirs: [toolDir, awsToolDir], proposalsDir: w.proposalsDir,
     stdout: (t) => { stdout.push(t); }, stderr: (t) => { stderr.push(t); },
   });
   return { code, stdout: stdout.join(""), stderr: stderr.join(""), term };

@@ -16,8 +16,8 @@ import { PREVIEW_GATE_ACTIONS, previewGateScenarioOf, unauthorizedPreviewActions
 import { PREVIEW_GATE_SCENARIOS, PRODUCTION_RELEASE_GATES, previewScenarioOf, reviewProductionRelease, type ReleaseGateSubmission } from "../src/qualification/release-admission.js";
 import { removeTree } from "../src/teardown/driver/cleanup.js";
 import {
-  CANARIES, NOW, POLICY, SOURCE_COMMIT, behave as behaveIn, callsOf, contractJson, identityEnv, installFakeTerraform, pinPathOf, targetOf, testFixtureForgeQualificationEvidence,
-  writePinnedContract, writeProject, type Behavior, type Project,
+  CANARIES, NOW, POLICY, SOURCE_COMMIT, behave as behaveIn, callsOf, contractJson, identityEnv, installFakeTerraform, targetOf, testFixtureForgeQualificationEvidence,
+  writeReviewedContract, writeProject, type Behavior, type Project,
   requesterArgs,
 } from "./helpers/apply-fixtures.js";
 
@@ -61,14 +61,14 @@ type World = { deps: (term: Terminal, over?: Partial<ApplyCliDeps>) => ApplyCliD
 async function world(contract: unknown = contractJson(KILL)): Promise<World> {
   behave();
   const contractPath = join(fresh("contract"), "act-pilot-contract.json");
-  writePinnedContract(contractPath, contract);
+  writeReviewedContract(contractPath, contract);
   const vault = fresh("vault");
   await testFixtureForgeQualificationEvidence(vault);
   const releaseEvidenceDir = join(root, "evidence-" + (counter += 1));
   return {
-    contractPath, releaseEvidenceDir, contract: loadPilotContract(contractPath, pinPathOf(contractPath)) as PilotContract,
+    contractPath, releaseEvidenceDir, contract: loadPilotContract(contractPath) as PilotContract,
     deps: (term, over = {}) => ({
-      sourceCommit: SOURCE_COMMIT, terminal: term, env: identityEnv("DEV"), now: () => NOW, operatorId: "operator.fixture", contractPath, contractPinPath: pinPathOf(contractPath),
+      sourceCommit: SOURCE_COMMIT, terminal: term, env: identityEnv("DEV"), now: () => NOW, operatorId: "operator.fixture", contractPath,
       qualificationDir: vault, evidenceDir: fresh("ledger"), nonces: openNonceStore(fresh("nonces")), scratchParent: fresh("scratch"), toolDirs: [toolDir], releaseEvidenceDir, ...over,
     }),
   };

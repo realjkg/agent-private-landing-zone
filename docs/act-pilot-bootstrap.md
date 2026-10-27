@@ -2,7 +2,7 @@
 
 Status: **offline-validated only; unverified until run by an account owner.** On 2026-10-12, with Terraform 1.16.4 and no cloud credentials, `terraform fmt -check`, `init -backend=false` and `validate` passed for `bootstrap/aws` (provider `hashicorp/aws` 6.68.0) and `bootstrap/azure` (`hashicorp/azurerm` 4.81.0, `hashicorp/azuread` 3.10.0). That confirms the resource and attribute names against those provider schemas, nothing more: no `plan` or `apply` has run, no resource has been created, and the IAM, Entra and storage behavior (trust conditions, role scopes, the state lock, the network rules) is untested. `validate` reports one deprecation warning for the Azure state container's `resource_manager_id`; the provider removes it in 5.0, so the `~> 4.0` pin stays. The provider binaries came from a local mirror with no signature check, so rerun `terraform init` against the registry on your machine. The remaining assumptions are listed at the end.
 
-This page provisions the cloud side of the pilot once, by hand, before anyone can qualify or apply. It is separate from `docs/act-pilot-apply.md` and `docs/act-pilot-plan.md`, which define what the identities must be and how the driver uses them: this page does not repeat that. Nothing in `src/` references the bootstrap, `./alz apply` never runs it, and agents never run it. It does not enable ACT. `config/act-pilot-contract.sha256` stays empty until the owner pins a reviewed contract.
+This page provisions the cloud side of the pilot once, by hand, before anyone can qualify or apply. It is separate from `docs/act-pilot-apply.md` and `docs/act-pilot-plan.md`, which define what the identities must be and how the driver uses them: this page does not repeat that. Nothing in `src/` references the bootstrap, `./alz apply` never runs it, and agents never run it. It does not enable ACT. No pilot contract is committed until the owner commits a reviewed one with its `authorize` entry.
 
 ## What it creates
 
@@ -106,7 +106,7 @@ Copy the `terraform output` values into the template that matches your provider 
 
 1. Copy the `contractTargets` block into `config/act-pilot-contract.json` by hand, starting from the matching `config/act-pilot-contract*.example.json`. Add the approvers per `docs/act-pilot-apply.md`. Leave `enabled: false`.
 2. Set the `ALZ_<IDENTITY>_<VAR>` variables on the execution host from `identityVariables` (client ids or role ARNs, tenant and subscription or region, token file paths).
-3. Do **not** write the pin. Enabling the pilot and committing the hash is a separate reviewed change (`docs/act-pilot-apply.md`, "The contract and its pin").
+3. Do **not** write the pin. Enabling the pilot and committing the hash is a separate reviewed change (`docs/act-pilot-apply.md`, "The contract is the authorization").
 
 The template files hold identifiers and paths only. Keep your filled copy out of the repository.
 

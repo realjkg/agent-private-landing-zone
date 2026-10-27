@@ -6,7 +6,7 @@ import test from "node:test";
 
 import { loadPilotContract } from "../src/apply/contract.js";
 import { engineSpec } from "../src/apply/engine-spec.js";
-import { contractJson, pinPathOf, writePinnedContract } from "./helpers/apply-fixtures.js";
+import { contractJson, writeReviewedContract } from "./helpers/apply-fixtures.js";
 
 test("the engine lookup returns the spec for the contract's engine id and refuses everything else", () => {
   assert.equal(engineSpec("TERRAFORM")?.id, "TERRAFORM");
@@ -27,8 +27,8 @@ test("a pinned contract naming an engine with no spec is CONTRACT_INVALID, not a
   try {
     for (const engine of ["PULUMI", "OPENTOFU", "terraform", "toString"]) {
       const path = join(dir, engine + ".json");
-      writePinnedContract(path, contractJson(join(dir, "kill"), { engine }));
-      const loaded = loadPilotContract(path, pinPathOf(path));
+      writeReviewedContract(path, contractJson(join(dir, "kill"), { engine }));
+      const loaded = loadPilotContract(path);
       assert.ok("reason" in loaded && loaded.code === "CONTRACT_INVALID" && /engine/.test(loaded.reason), engine);
     }
   } finally { rmSync(dir, { recursive: true, force: true }); }

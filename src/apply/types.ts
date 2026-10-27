@@ -42,6 +42,10 @@ export type ProviderId = "AZURE" | "AWS";
 /** One environment's exact target, in the shape the contract's provider defines. Real values come from the owner; tests use explicit fixtures. */
 export type PilotTarget = AzureTarget | AwsTarget;
 
+/** What ACT can be authorized for: an apply, a cleanup of what a run created, or a removal of what the product generated. */
+export type ActOperation = "APPLY" | "CLEANUP" | "REMOVE";
+export const ACT_OPERATIONS: readonly ActOperation[] = ["APPLY", "CLEANUP", "REMOVE"];
+
 export type PilotContract = {
   schemaVersion: 1;
   /** ACT is off unless this is exactly true. A missing or malformed contract is off. */
@@ -52,6 +56,12 @@ export type PilotContract = {
   targets: Partial<Record<ApplyEnvironment, PilotTarget>> & { DEV: PilotTarget };
   /** Optional narrow pilot scope; absent preserves the original DEV/QA/PROD contract. */
   enabledEnvironments?: ApplyEnvironment[];
+  /**
+   * The default-deny ACT authorization (owner direction, #39): per environment, the operations ACT may run under this
+   * contract, for its provider, engine and that environment's account. The owner's reviewed commit of the contract is the
+   * authorization. Absent or empty means ACT is disabled; an environment or operation not listed is refused.
+   */
+  authorize?: Partial<Record<ApplyEnvironment, ActOperation[]>>;
   /** Distinct verified approvals required per environment. DEV and QA at least 1, PROD at least 2. */
   requiredApprovals: Partial<Record<ApplyEnvironment, number>> & { DEV: number };
   maxApprovalAgeMinutes: number;
@@ -68,7 +78,7 @@ export type PilotContract = {
   /**
    * Opt-in, default off (absent or false is today's behavior, byte for byte). Terraform engine only. When true, the seal-time `init`
    * embeds STATE_WRITE's non-secret backend settings, so the plan names the state writer (docs/act-pilot-apply.md, "Embedding STATE_WRITE
-   * in the plan"). It is part of the pinned contract, so the sealed plan binds the choice through `contractSha256`.
+   * in the plan"). It is part of the reviewed contract, so the sealed plan binds the choice through `contractSha256`.
    */
   embedStateWrite?: boolean;
 };
@@ -137,7 +147,13 @@ export type SealedPlan = {
   channel: PilotChannel;
   engineVersion: string;
   policyVersion: string;
-  /** The pinned pilot contract (its canonical sha256) the plan was sealed under: it fixes the provider and every account field, region and tenant included, and the approver allowlist. An apply under another contract is refused. */
+  /**
+   * AUTHORIZED, as sealed: the canonical hash of the contract's authorizing entry for this APPLY (`authorizationEntryOf`). Bound
+   * by the artifact hash with `contractSha256`, so every approval covers the exact authorization; the apply derives it again
+   * from the contract it loads and refuses, with nothing consumed, if it changed.
+   */
+  authorizationSha256: string;
+  /** The pilot contract (its canonical sha256) the plan was sealed under: it fixes the provider and every account field, region and tenant included, and the approver allowlist. An apply under another contract is refused. */
   contractSha256: string;
   /** The product source commit that made this plan, bound by the artifact hash: approvers sign it, and only the same commit can apply it. */
   sourceCommit: string;
@@ -181,7 +197,13 @@ export type SealedUnit = { unitId: string; tags: Record<string, string>; untagge
 
 export type ApplyRefusalCode =
   | "ACT_DISABLED"
+  /** The reviewed contract's `authorize` does not list this operation for this environment. Nothing ran. */
+  | "ACT_NOT_AUTHORIZED"
+  /** The contract or its authorizing entry changed since the plan was sealed or the cleanup proposed. Nothing was consumed. */
+  | "ACT_AUTHORIZATION_CHANGED"
   | "CONTRACT_INVALID"
+  /** The contract names a planned provider and engine (Azure Bicep, GCP Terraform, GCP API-native) whose lane has not landed. ACT stays disabled. */
+  | "NOT_IMPLEMENTED"
   | "IDENTITY_TARGET_MISMATCH"
   | "KILL_SWITCH_ACTIVE"
   /** The kill switch appeared after the approvals were consumed and before the engine started: nothing applied, the approvals are spent. */
@@ -250,6 +272,17 @@ export type ApplyRefusalCode =
 
 export type ApplyOutcome = "SUCCEEDED" | "FAILED_NO_CHANGE" | "PARTIAL_REQUIRES_REVIEW" | "KILLED";
 
+/**
+ * The three decisions a run rests on, recorded in its evidence (owner decisions, #39): AUTHORIZED (the reviewed contract's
+ * hash and its authorizing entry's hash), READY (the engine program and the qualification evidence the run was admitted with; null where the
+ * operation has no qualification gate) and EXECUTE (the requester and the approvers, also in `requester` and `approvals`).
+ */
+export type RunDecisions = {
+  authorized: { operation: "APPLY" | "CLEANUP"; contractSha256: string; authorizationSha256: string };
+  ready: { engineBinarySha256: string | null; qualificationEvidenceHash: string | null };
+  execute: { requesterId: string; approverIds: string[] };
+};
+
 /** Encrypted at rest. Never carries plan values, state, or raw engine output. */
 export type ApplyEvidence = {
   schemaVersion: 1;
@@ -258,8 +291,9 @@ export type ApplyEvidence = {
   artifactSha256: string;
   manifestHash: string;
   releaseIdentity: string;
-  /** The pinned contract the apply ran under, and so the provider, account, region or tenant it ran against. */
+  /** The contract the apply ran under, and so the provider, account, region or tenant it ran against. */
   contractSha256: string;
+  decisions: RunDecisions;
   /** The product source commit that sealed the plan and ran the apply (they must be the same). */
   sourceCommit: string;
   approvals: { approverId: string; issuedAt: string }[];
@@ -302,6 +336,7 @@ export type CleanupEvidence = {
   artifactSha256: string;
   applyEvidenceSha256: string;
   contractSha256: string;
+  decisions: RunDecisions;
   sourceCommit: string;
   approvals: { approverId: string; issuedAt: string }[];
   /**

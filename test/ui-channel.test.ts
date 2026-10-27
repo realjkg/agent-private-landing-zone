@@ -19,8 +19,8 @@ import { pilotUnitOf } from "../src/apply/unit.js";
 import type { ResolvedTarget } from "../src/teardown/driver/types.js";
 import { SOURCE_COMMIT,
   AWS_DEV_TARGET, ENGINE_VERSION, NOW, POLICY, awsContractJson, awsIdentityEnv, awsReadCallsOf, awsRoleArn, awsTargetOf, behave as behaveIn, behaveAwsReads, callsOf, contractJson, identityEnv,
-  installFakeAwsReads, installFakeTerraform, keys, pinPathOf, stateResource, targetOf, testFixtureForgeQualificationEvidence,
-  writePinnedContract, writeProject, type Behavior, type Project,
+  installFakeAwsReads, installFakeTerraform, keys, stateResource, targetOf, testFixtureForgeQualificationEvidence,
+  writeReviewedContract, writeProject, type Behavior, type Project,
   ARM_ACCESS_TOKEN_CANARY, ARM_FEDERATED_TOKEN_CANARY, DEV_TARGET, azureStateResource, fakeArmHttp,
   REQUESTER,
   requesterArgs,
@@ -63,7 +63,7 @@ type World = { cli: NonNullable<Parameters<typeof createLocalOperatorServer>[0][
 async function world(contract: unknown = contractJson(KILL), env: NodeJS.ProcessEnv = identityEnv("DEV")): Promise<World> {
   behave();
   const contractPath = join(fresh("contract"), "act-pilot-contract.json");
-  writePinnedContract(contractPath, contract);
+  writeReviewedContract(contractPath, contract);
   const vault = fresh("vault");
   await testFixtureForgeQualificationEvidence(vault);
   const scratchParent = fresh("scratch");
@@ -71,7 +71,7 @@ async function world(contract: unknown = contractJson(KILL), env: NodeJS.Process
     contractPath, vault, approvals: fresh("approvals"),
     cli: {
       sourceCommit: SOURCE_COMMIT,
-      env, now: () => NOW, operatorId: "operator.fixture", contractPath, contractPinPath: pinPathOf(contractPath), qualificationDir: vault,
+      env, now: () => NOW, operatorId: "operator.fixture", contractPath, qualificationDir: vault,
       evidenceDir: fresh("evidence"), nonces: openNonceStore(fresh("nonces")), scratchParent, toolDirs: [toolDir],
     },
   };
@@ -505,7 +505,12 @@ test("readiness: the check runs the preflight logic and reports each item", asyn
   assert.match(JSON.stringify(result.data.checks), /kill switch absent/);
   // Every item reaches the page with its state, including qualification and the evidence-based attestation.
   const states = Object.fromEntries((result.data.checks as { check: string; state: string }[]).map((c) => [c.check.split(" (")[0], c.state]));
-  assert.ok(Object.values(states).every((state) => state === "READY"), JSON.stringify(states));
+  assert.ok(Object.entries(states).every(([check, state]) => state === "READY" || (check === "financial controls" && state === "UNVERIFIED")), JSON.stringify(states));
+  // The status block reads the same view: AUTHORIZED, with the contract and entry hashes, and the per-run approvals.
+  assert.equal(result.data.decisions.act, "PILOT_ENABLED");
+  assert.deepEqual(result.data.decisions.authorized.map((a: { environment: string; operations: string[] }) => [a.environment, a.operations]), [["DEV", ["APPLY", "CLEANUP"]], ["QA", ["APPLY", "CLEANUP"]], ["PROD", ["APPLY", "CLEANUP"]]]);
+  assert.match(result.data.decisions.contract.contractSha256, /^[0-9a-f]{64}$/);
+  assert.deepEqual(result.data.decisions.approved.map((a: { requiredApprovals: number }) => a.requiredApprovals), [1, 1, 2]);
   assert.equal(states["engine qualified in DEV for seal and apply"], "READY");
   assert.equal(states["identity separation attested on the real DEV backend"], "READY");
   // Missing identities: the same command, a red item per fact, still no engine.
@@ -874,15 +879,14 @@ async function consoleJourney(cloud: Cloud, sourceCommit = SOURCE_COMMIT) {
   // The same fake engine as every test here (logic only, NOT real cloud behavior); the contract, identities and project are the cloud's own.
   behave(cloud === "AWS" ? { showProviderConfig: AWS_PROVIDER_CONFIG } : {});
   const contractPath = join(fresh("contract"), "act-pilot-contract.json");
-  writePinnedContract(contractPath, cloud === "AWS" ? awsContractJson(KILL, { policyVersion: POLICY }) : contractJson(KILL, { policyVersion: POLICY }));
+  writeReviewedContract(contractPath, cloud === "AWS" ? awsContractJson(KILL, { policyVersion: POLICY }) : contractJson(KILL, { policyVersion: POLICY }));
   const vault = fresh("vault");
   await testFixtureForgeQualificationEvidence(vault, undefined, cloud);
   const w: World = {
     contractPath, vault, approvals: fresh("approvals"),
     cli: {
       sourceCommit: SOURCE_COMMIT,
-      env: cloud === "AWS" ? awsIdentityEnv("DEV") : identityEnv("DEV"), now: () => NOW, operatorId: "operator.fixture", contractPath,
-      contractPinPath: pinPathOf(contractPath), qualificationDir: vault, evidenceDir: fresh("evidence"), nonces: openNonceStore(fresh("nonces")),
+      env: cloud === "AWS" ? awsIdentityEnv("DEV") : identityEnv("DEV"), now: () => NOW, operatorId: "operator.fixture", contractPath, qualificationDir: vault, evidenceDir: fresh("evidence"), nonces: openNonceStore(fresh("nonces")),
       scratchParent: fresh("scratch"), toolDirs: [toolDir], preparationDir: fresh("prepared"),
     },
   };
@@ -1068,8 +1072,8 @@ const CLEANUP_STRAY = "arn:aws:sqs:us-east-1:111111111111:stray-of-this-unit";
 /** The deletion unit of the DEV state container under the console's AWS contract: what the fake provider stamps on every created resource. */
 const CLEANUP_UNIT = (() => {
   const path = join(fresh("unit-contract"), "act-pilot-contract.json");
-  writePinnedContract(path, awsContractJson(KILL, { policyVersion: POLICY }));
-  return pilotUnitOf({ provider: "AWS", contractSha256: pilotContractSha256(loadPilotContract(path, pinPathOf(path)) as PilotContract), environment: "DEV", target: awsTargetOf("DEV") });
+  writeReviewedContract(path, awsContractJson(KILL, { policyVersion: POLICY }));
+  return pilotUnitOf({ provider: "AWS", contractSha256: pilotContractSha256(loadPilotContract(path) as PilotContract), environment: "DEV", target: awsTargetOf("DEV") });
 })();
 
 /** An AWS console journey whose fake engine reports a state, with the fake AWS CLI the verifier reads through, in a second approved tool directory. */
@@ -1254,8 +1258,8 @@ const AZ_EXISTING = [AZ_RG, AZ_LAW, AZ_STATE_ACCOUNT, AZ_OLD_ROLE];
 const AZ_TAGGED = [AZ_RG, AZ_LAW];
 const AZ_UNIT = (() => {
   const path = join(fresh("unit-contract"), "act-pilot-contract.json");
-  writePinnedContract(path, contractJson(KILL, { policyVersion: POLICY }));
-  return pilotUnitOf({ provider: "AZURE", contractSha256: pilotContractSha256(loadPilotContract(path, pinPathOf(path)) as PilotContract), environment: "DEV", target: targetOf("DEV") });
+  writeReviewedContract(path, contractJson(KILL, { policyVersion: POLICY }));
+  return pilotUnitOf({ provider: "AZURE", contractSha256: pilotContractSha256(loadPilotContract(path) as PilotContract), environment: "DEV", target: targetOf("DEV") });
 })();
 /** The DISCOVERY identity's federated token, in a file as the owner's host provides it; its value is a canary that must never be seen again. */
 const azTokenFile = (() => { const path = join(fresh("token"), "discovery-oidc-token"); writeFileSync(path, ARM_FEDERATED_TOKEN_CANARY + "\n", { mode: 0o600 }); return path; })();
@@ -1404,13 +1408,13 @@ async function cdkConsoleJourney() {
   // The fake derives an update's change list from the executed template (a removal shows as Remove), and a person protected the stack after its first create.
   behaveAws(cdkToolDir, KILL, { diffChanges: true, protectAfterCreate: true });
   const contractPath = join(fresh("contract"), "act-pilot-contract.json");
-  writePinnedContract(contractPath, cdkContractJson(KILL, [], { policyVersion: POLICY }));
+  writeReviewedContract(contractPath, cdkContractJson(KILL, [], { policyVersion: POLICY }));
   const vault = fresh("vault");
   await forgeCdkQualification(vault);
   const w: World = {
     contractPath, vault, approvals: fresh("approvals"),
     cli: {
-      sourceCommit: SOURCE_COMMIT, env: cdkIdentityEnv("DEV"), now: () => NOW, operatorId: "operator.fixture", contractPath, contractPinPath: pinPathOf(contractPath), qualificationDir: vault,
+      sourceCommit: SOURCE_COMMIT, env: cdkIdentityEnv("DEV"), now: () => NOW, operatorId: "operator.fixture", contractPath, qualificationDir: vault,
       evidenceDir: fresh("evidence"), nonces: openNonceStore(fresh("nonces")), scratchParent: fresh("scratch"), toolDirs: [cdkToolDir], preparationDir: fresh("prepared"), proposalsDir: fresh("proposals"),
     },
   };

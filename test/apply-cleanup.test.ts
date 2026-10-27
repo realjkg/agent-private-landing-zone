@@ -33,8 +33,8 @@ import { canonicalJson } from "../src/teardown/manifest.js";
 import { sha256 } from "../src/util/sha256.js";
 import {
   AWS_DEV_TARGET, AWS_REGION, CANARIES, NOW, POLICY, SOURCE_COMMIT, STATE_CANARY, VALUE_CANARY, awsContractJson, awsIdentityEnv, awsReadCallsOf, awsRoleArn, awsTargetOf,
-  approvalFor, behave as behaveIn, behaveAwsReads, callsOf, human, installFakeAwsReads, installFakeTerraform, keys, pinPathOf, stateResource, testFixtureForgeQualificationEvidence,
-  writePinnedContract, writeProject, type AwsReadBehavior, type Behavior,
+  approvalFor, behave as behaveIn, behaveAwsReads, callsOf, human, installFakeAwsReads, installFakeTerraform, keys, stateResource, testFixtureForgeQualificationEvidence,
+  writeReviewedContract, writeProject, type AwsReadBehavior, type Behavior,
   REQUESTER, reHashedProposal,
 } from "./helpers/apply-fixtures.js";
 
@@ -87,8 +87,8 @@ const STATE = [
 // What the fake cloud holds, by the identifier Cloud Control names each type by: a role by its name, a queue by its URL.
 const EXISTING = [BUCKET, LOG, STATE_BUCKET, OLD_QUEUE, "alz-apply-dev"];
 /** The deletion unit of the DEV state container under the fixture contract: what the sealed plan must stamp and the fake cloud lists by. */
-const fixtureContractPath = (() => { const path = join(fresh("contract"), "act-pilot-contract.json"); writePinnedContract(path, awsContractJson(KILL)); return path; })();
-const UNIT = pilotUnitOf({ provider: "AWS", contractSha256: pilotContractSha256(loadPilotContract(fixtureContractPath, pinPathOf(fixtureContractPath)) as PilotContract), environment: "DEV", target: awsTargetOf("DEV") });
+const fixtureContractPath = (() => { const path = join(fresh("contract"), "act-pilot-contract.json"); writeReviewedContract(path, awsContractJson(KILL)); return path; })();
+const UNIT = pilotUnitOf({ provider: "AWS", contractSha256: pilotContractSha256(loadPilotContract(fixtureContractPath) as PilotContract), environment: "DEV", target: awsTargetOf("DEV") });
 const behave = (behavior: Behavior = {}) => behaveIn(toolDir, KILL, { applyAdvance: true, showOnlyConfigured: true, showResources: CREATES, showProviderConfig: AWS_PROVIDER_CONFIG, stateResources: STATE, unitTags: { ...UNIT.tags }, ...behavior });
 /** The ARNs the fake tagging API lists for this unit: what the plan created and nothing else, unless a test says otherwise. */
 const TAGGED = [BUCKET_ARN, LOG_ARN];
@@ -107,17 +107,17 @@ function world(contract: unknown = awsContractJson(KILL)): World {
   cloud();
   const dirs = { scratch: fresh("scratch"), evidence: fresh("evidence"), nonces: fresh("nonces") };
   const contractPath = join(fresh("contract"), "act-pilot-contract.json");
-  writePinnedContract(contractPath, contract);
+  writeReviewedContract(contractPath, contract);
   return {
     dirs, contractPath,
     deps: {
-      sourceCommit: SOURCE_COMMIT, contractPath, contractPinPath: pinPathOf(contractPath), qualificationDir: vaultDir, evidenceDir: dirs.evidence, nonces: openNonceStore(dirs.nonces),
+      sourceCommit: SOURCE_COMMIT, contractPath, qualificationDir: vaultDir, evidenceDir: dirs.evidence, nonces: openNonceStore(dirs.nonces),
       env: awsIdentityEnv("DEV"), now: () => NOW, scratchParent: dirs.scratch, toolDirs: [toolDir, awsToolDir], killPollMs: 40, killGraceMs: 400,
     },
   };
 }
 const observeDeps = (w: World, now: Date = new Date(NOW.getTime() + 60_000)) => ({
-  contractPath: w.contractPath, contractPinPath: pinPathOf(w.contractPath), evidenceDir: w.dirs.evidence, env: w.deps.env, toolDirs: w.deps.toolDirs, scratchParent: w.dirs.scratch, now: () => now,
+  contractPath: w.contractPath, evidenceDir: w.dirs.evidence, env: w.deps.env, toolDirs: w.deps.toolDirs, scratchParent: w.dirs.scratch, now: () => now,
 });
 
 async function seal(w: World, environment: ApplyEnvironment = "DEV", mainTf = 'resource "aws_s3_bucket" "logs" {}\n') {
@@ -727,7 +727,7 @@ test("the raw state parser maps every managed instance, with module paths and in
   assert.throws(() => blueprintFromTerraformStatePull("{" + STATE_CANARY, []), (error: Error) => /STATE_JSON_INVALID/.test(error.message) && !error.message.includes(STATE_CANARY));
 });
 
-const IDENTITY_FIXTURE_CONTRACT = loadPilotContract(fixtureContractPath, pinPathOf(fixtureContractPath)) as PilotContract;
+const IDENTITY_FIXTURE_CONTRACT = loadPilotContract(fixtureContractPath) as PilotContract;
 /** Every type the reviewer named (6412182848), and the account-wide settings: all in the identity service, all kept. */
 const AWS_IAM_TYPES = ["aws_iam_role", "aws_iam_policy", "aws_iam_policy_attachment", "aws_iam_role_policy", "aws_iam_role_policy_attachment", "aws_iam_role_policies_exclusive", "aws_iam_role_policy_attachments_exclusive",
   "aws_iam_user", "aws_iam_user_policy", "aws_iam_user_policy_attachment", "aws_iam_user_login_profile", "aws_iam_user_ssh_key", "aws_iam_user_group_membership", "aws_iam_group", "aws_iam_group_policy", "aws_iam_group_policy_attachment",

@@ -904,7 +904,7 @@
             "denied": [
               {
                 "file": "test/apply-cli.test.ts",
-                "title": "approve refuses without the typed phrase, with an open key file, a non-Ed25519 key, a tampered bundle or a contract that is disabled or does not match its pin"
+                "title": "approve refuses without the typed phrase, with an open key file, a non-Ed25519 key, a tampered bundle, a disabled contract, or a contract or authorization other than the sealed one"
               }
             ],
             "interrupted": [

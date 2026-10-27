@@ -120,7 +120,7 @@ export type EngineSpec = {
    * What a contract target holds besides the provider's account fields. Absent: the provider's own backend and a free
    * workspace name (Terraform). `backendOk` judges the `backend` field when the engine has no state backend (CDK: the stack
    * name), and `backendMayRepeat` lets it be the same in every environment because the account already differs.
-   * `fields` are extra per-environment fields, each judged by its validator and part of the pinned contract.
+   * `fields` are extra per-environment fields, each judged by its validator and part of the reviewed contract.
    */
   target?: {
     backendOk(value: string): boolean;

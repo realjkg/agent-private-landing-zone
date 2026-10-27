@@ -39,7 +39,7 @@ test("offline sequence: complete blueprint, inspect real-format plan, approve DE
   provider:"AWS",engine:"TERRAFORM",environment:"DEV",operation:"APPLY",caller:"OPERATOR",
   targetClass:"INTERNAL_PILOT",governance:"EXISTING_CONTROL_TOWER",
   governanceEvidence,resourceActions:[{resourceType:"aws_cloudwatch_log_group",action:"CREATE"}],
-  blueprint,nativePlan,pilotContractPinned:true,engineQualified:true,
+  blueprint,nativePlan,pilotContractAuthorized:true,engineQualified:true,
   targetIdentityVerified:true,sealedArtifactVerified:true,signedApprovalsVerified:true
  };
  assert.equal(assessEarlyAwsExecution(candidate).status,"PILOT_ELIGIBLE");

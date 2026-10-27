@@ -15,7 +15,7 @@ import { openNonceStore } from "../src/apply/nonces.js";
 import { removeTree } from "../src/teardown/driver/cleanup.js";
 import {
   AWS_DEV_TARGET, NOW, POLICY, SOURCE_COMMIT, STATE_CANARY, VALUE_CANARY, awsContractJson, awsIdentityEnv, awsReadCallsOf, awsRoleArn, awsTargetOf, behave as behaveIn, behaveAwsReads, callsOf,
-  installFakeAwsReads, installFakeTerraform, keys, pinPathOf, stateResource, testFixtureForgeQualificationEvidence, writePinnedContract, writeProject, type Behavior, type Project,
+  installFakeAwsReads, installFakeTerraform, keys, stateResource, testFixtureForgeQualificationEvidence, writeReviewedContract, writeProject, type Behavior, type Project,
   requesterArgs,
 } from "./helpers/apply-fixtures.js";
 
@@ -56,7 +56,7 @@ const EXISTING = [BUCKET, LOG, STATE_BUCKET];
 const BUCKET_ARN = "arn:aws:s3:::" + BUCKET;
 const LOG_ARN = "arn:aws:logs:us-east-1:111111111111:log-group:" + LOG;
 /** The deletion unit of the DEV state container under the fixture contract: what every created resource is stamped with, and what the fake tagging API lists by. */
-const UNIT = (() => { const path = join(fresh("unit-contract"), "act-pilot-contract.json"); writePinnedContract(path, awsContractJson(KILL)); return pilotUnitOf({ provider: "AWS", contractSha256: pilotContractSha256(loadPilotContract(path, pinPathOf(path)) as PilotContract), environment: "DEV", target: awsTargetOf("DEV") }); })();
+const UNIT = (() => { const path = join(fresh("unit-contract"), "act-pilot-contract.json"); writeReviewedContract(path, awsContractJson(KILL)); return pilotUnitOf({ provider: "AWS", contractSha256: pilotContractSha256(loadPilotContract(path) as PilotContract), environment: "DEV", target: awsTargetOf("DEV") }); })();
 /** The run's own resources, as the tagging API lists them: the listing is not empty, and it matches the records. */
 const TAGGED = [BUCKET_ARN, LOG_ARN];
 const behave = (behavior: Behavior = {}) => behaveIn(toolDir, KILL, { applyAdvance: true, showOnlyConfigured: true, showResources: CREATES, showProviderConfig: AWS_PROVIDER_CONFIG, stateResources: STATE, unitTags: { ...UNIT.tags }, ...behavior });
@@ -86,7 +86,7 @@ async function world(): Promise<World> {
   behave();
   behaveAwsReads(awsToolDir, { existing: EXISTING, tagged: TAGGED });
   const contractPath = join(fresh("contract"), "act-pilot-contract.json");
-  writePinnedContract(contractPath, awsContractJson(KILL));
+  writeReviewedContract(contractPath, awsContractJson(KILL));
   const vault = fresh("vault");
   await testFixtureForgeQualificationEvidence(vault, undefined, "AWS");
   const [scratch, evidenceDir, acceptanceDir, reportsDir, proposalsDir] = [fresh("scratch"), fresh("evidence"), fresh("acceptance"), fresh("reports"), fresh("proposals")];
@@ -94,7 +94,7 @@ async function world(): Promise<World> {
   return {
     contractPath, evidenceDir, acceptanceDir, reportsDir,
     deps: (term, over = {}) => ({
-      sourceCommit: SOURCE_COMMIT, terminal: term, env: awsIdentityEnv("DEV"), now: () => NOW, operatorId: "operator.fixture", contractPath, contractPinPath: pinPathOf(contractPath),
+      sourceCommit: SOURCE_COMMIT, terminal: term, env: awsIdentityEnv("DEV"), now: () => NOW, operatorId: "operator.fixture", contractPath,
       qualificationDir: vault, evidenceDir, nonces, scratchParent: scratch, toolDirs: [toolDir, awsToolDir], acceptanceDir, reportsDir, proposalsDir, ...over,
     }),
   };

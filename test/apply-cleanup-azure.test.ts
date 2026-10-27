@@ -23,7 +23,7 @@ import { canonicalJson } from "../src/teardown/manifest.js";
 import { sha256 } from "../src/util/sha256.js";
 import {
   ARM_ACCESS_TOKEN_CANARY, ARM_FEDERATED_TOKEN_CANARY, CANARIES, DEV_TARGET, NOW, POLICY, SOURCE_COMMIT, STATE_CANARY, approvalFor, azureStateResource, behave as behaveIn, callsOf, contractJson,
-  fakeArmHttp, human, identityEnv, installFakeTerraform, keys, pinPathOf, targetOf, testFixtureForgeQualificationEvidence, writePinnedContract, writeProject, type ArmBehavior, type Behavior,
+  fakeArmHttp, human, identityEnv, installFakeTerraform, keys, targetOf, testFixtureForgeQualificationEvidence, writeReviewedContract, writeProject, type ArmBehavior, type Behavior,
   REQUESTER, reHashedProposal,
 } from "./helpers/apply-fixtures.js";
 
@@ -82,8 +82,8 @@ const TAGGED = [RG, LAW];
 const CLOUD: ArmBehavior = { existing: EXISTING, tagged: TAGGED };
 /** What stays after a cleanup: everything the proposal keeps, the run's own resource group among them (a pilot cleanup never deletes a group). */
 const RETAINED = [RG, STATE_ACCOUNT, RG_STATE, OLD_ROLE, POLICY_ASSIGNMENT, REUSED_VAULT, UNRELATED_VNET];
-const fixtureContractPath = (() => { const path = join(fresh("contract"), "act-pilot-contract.json"); writePinnedContract(path, contractJson(KILL)); return path; })();
-const UNIT = pilotUnitOf({ provider: "AZURE", contractSha256: pilotContractSha256(loadPilotContract(fixtureContractPath, pinPathOf(fixtureContractPath)) as PilotContract), environment: "DEV", target: targetOf("DEV") });
+const fixtureContractPath = (() => { const path = join(fresh("contract"), "act-pilot-contract.json"); writeReviewedContract(path, contractJson(KILL)); return path; })();
+const UNIT = pilotUnitOf({ provider: "AZURE", contractSha256: pilotContractSha256(loadPilotContract(fixtureContractPath) as PilotContract), environment: "DEV", target: targetOf("DEV") });
 const behave = (behavior: Behavior = {}) => behaveIn(toolDir, KILL, { applyAdvance: true, showOnlyConfigured: true, showResources: CREATES, stateResources: STATE, unitTags: { ...UNIT.tags }, unitTagAttribute: "tags", ...behavior });
 const calls = () => callsOf(toolDir);
 const applyCalls = () => calls().filter((c) => c.args[0] === "apply");
@@ -105,18 +105,18 @@ function world(cloudBehavior: ArmBehavior = CLOUD): World {
   behave();
   const dirs = { scratch: fresh("scratch"), evidence: fresh("evidence"), nonces: fresh("nonces") };
   const contractPath = join(fresh("contract"), "act-pilot-contract.json");
-  writePinnedContract(contractPath, contractJson(KILL));
+  writeReviewedContract(contractPath, contractJson(KILL));
   const arm = fakeArmHttp(cloudBehavior);
   return {
     dirs, contractPath, arm,
     deps: {
-      sourceCommit: SOURCE_COMMIT, contractPath, contractPinPath: pinPathOf(contractPath), qualificationDir: vaultDir, evidenceDir: dirs.evidence, nonces: openNonceStore(dirs.nonces),
+      sourceCommit: SOURCE_COMMIT, contractPath, qualificationDir: vaultDir, evidenceDir: dirs.evidence, nonces: openNonceStore(dirs.nonces),
       env: env(), now: () => NOW, scratchParent: dirs.scratch, toolDirs: [toolDir], killPollMs: 40, killGraceMs: 400, arm: arm.http,
     },
   };
 }
 const observeDeps = (w: World, now: Date = new Date(NOW.getTime() + 60_000)): ObserveDeps => ({
-  contractPath: w.contractPath, contractPinPath: pinPathOf(w.contractPath), evidenceDir: w.dirs.evidence, env: w.deps.env, toolDirs: w.deps.toolDirs, scratchParent: w.dirs.scratch, now: () => now, arm: w.arm.http,
+  contractPath: w.contractPath, evidenceDir: w.dirs.evidence, env: w.deps.env, toolDirs: w.deps.toolDirs, scratchParent: w.dirs.scratch, now: () => now, arm: w.arm.http,
 });
 const cloud = (w: World, behavior: ArmBehavior) => w.arm.behave(behavior);
 
@@ -713,7 +713,7 @@ test("Azure identity, authorization and deployment-history objects are never del
 });
 
 test("protectedDeletionIn classifies every planned change by its blueprint entry or type: groups, scopes, the backend, every Microsoft.Authorization and ManagedIdentity pair and every deployment at any scope and in any case are refused, and a plain run-owned resource is not", () => {
-  const contract = loadPilotContract(fixtureContractPath, pinPathOf(fixtureContractPath)) as PilotContract;
+  const contract = loadPilotContract(fixtureContractPath) as PilotContract;
   const entry = (address: string, type: string, id: string | null) => ({ address, type, id, arn: null });
   const change = (address: string, type = "azapi_resource", action = "DELETE") => [{ address, type, action }];
   const sub = "/subscriptions/" + SUB;
