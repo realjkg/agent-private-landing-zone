@@ -6,6 +6,7 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 
 import { loadPilotContract } from "../src/apply/contract.js";
+import { loadToolPins } from "../src/deps/pins.js";
 import { lockedProviders, LockFileError } from "../src/apply/lockfile.js";
 import {
   preparationIsCurrent, preparationUnitHash, prepareApply, PREPARATION_LABEL, TERRAFORM_LOCK_FILE, writePreparation,
@@ -109,16 +110,23 @@ test("QA before DEV is qualified is prepared but blocked on the owner, with the 
   assert.deepEqual(prepared.next, { step: "blocked", blocker: "OWNER", reason: "The TERRAFORM path must be qualified in DEV before QA can be sealed." });
 });
 
-test("CDK is the AWS secondary path: no lock file, no providers, and the AWS CLI version is asked only until it is qualified", async () => {
+test("CDK is the AWS secondary path: no lock file, no providers, and the engine version is the tested AWS CLI pin until it is qualified; nobody is asked, and a version that is not the pin is refused", async () => {
   const s = setup(awsCdk(), "aws");
   const assembly = join(s.dir, "cdk.out");
   writeAssembly(assembly, cdkTargetOf("DEV"));
-  refused(await prepareApply({ environment: "DEV", projectRoot: assembly }, s.deps), "ENGINE_VERSION_REQUIRED", "OPERATOR");
-  refused(await prepareApply({ environment: "DEV", projectRoot: assembly, awsCliVersion: "two" }, s.deps), "ENGINE_VERSION_REQUIRED", "OPERATOR");
-  const prepared = ok(await prepareApply({ environment: "DEV", projectRoot: assembly, awsCliVersion: "2.15.0" }, s.deps));
+  const pin = loadToolPins().awsCli.version;
+  assert.match(pin, /^2\.\d+\.\d+$/);
+  const prepared = ok(await prepareApply({ environment: "DEV", projectRoot: assembly }, s.deps));
+  assert.equal(prepared.summary.engineVersion, pin);
+  assert.equal(prepared.summary.engineVersionSource, "TESTED_PIN");
+  // The pin named explicitly (an older caller) is the same preparation; any other version, or a non-version, is refused with the tested version named.
+  assert.equal(ok(await prepareApply({ environment: "DEV", projectRoot: assembly, awsCliVersion: pin }, s.deps)).summary.engineVersion, pin);
+  const other = refused(await prepareApply({ environment: "DEV", projectRoot: assembly, awsCliVersion: "2.15.0" }, s.deps), "ENGINE_VERSION_REQUIRED", "OPERATOR");
+  const at = other.message.indexOf("tested with AWS CLI " + pin);
+  assert.ok(at >= 0 && other.message.indexOf("2.15.0 is not it", at) > at, other.message);
+  assert.match(refused(await prepareApply({ environment: "DEV", projectRoot: assembly, awsCliVersion: "two" }, s.deps), "ENGINE_VERSION_REQUIRED", "OPERATOR").message, /not an AWS CLI version/);
   assert.equal(prepared.summary.engine, "CDK");
   assert.equal(prepared.summary.path, "SECONDARY");
-  assert.equal(prepared.summary.engineVersionSource, "OPERATOR");
   assert.deepEqual(prepared.request.resolved.providers, []);
   assert.equal(prepared.request.resolved.lockFileSha256, undefined);
   assert.equal(prepared.manifest.engine, "CDK");
@@ -362,7 +370,7 @@ test("CDK template parameters become inputs from their defaults, without the def
   const s = setup(awsCdk(), "aws");
   const project = join(s.dir, "assembly");
   writeAssembly(project, cdkTargetOf("DEV"));
-  const prepared = ok(await prepareApply({ environment: "DEV", projectRoot: project, awsCliVersion: "2.37.0" }, s.deps));
+  const prepared = ok(await prepareApply({ environment: "DEV", projectRoot: project }, s.deps));
   assert.equal(prepared.summary.inputs.length, 1);
   assert.match(prepared.summary.inputs[0].name, /\/DbPassword$/);
   assert.equal(prepared.summary.inputs[0].source, "DEFAULT");
@@ -371,5 +379,5 @@ test("CDK template parameters become inputs from their defaults, without the def
   const body = JSON.parse(readFileSync(join(project, template), "utf8")) as { Parameters: Record<string, Record<string, unknown>> };
   delete body.Parameters.DbPassword.Default;
   writeFileSync(join(project, template), JSON.stringify(body));
-  refused(await prepareApply({ environment: "DEV", projectRoot: project, awsCliVersion: "2.37.0" }, s.deps), "INPUT_UNSET", "OPERATOR");
+  refused(await prepareApply({ environment: "DEV", projectRoot: project }, s.deps), "INPUT_UNSET", "OPERATOR");
 });
