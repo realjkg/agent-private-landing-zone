@@ -156,17 +156,17 @@ test("AWS bootstrap boundary changes select ACT-DEV-1 synthetic checks", () => {
   assert.deepEqual(plan.gaps, []);
 });
 
-test("GCP bootstrap changes select their one focused test, and its absence is a gap", () => {
+test("Azure bootstrap changes select its focused owner, and a missing owner is a gap", () => {
   const files = fixture();
-  files.set("bootstrap/gcp/main.tf", 'resource "google_service_account" "identity" {}');
-  files.set("test/bootstrap-gcp.test.ts", "test()");
-  const changed = ["bootstrap/gcp/main.tf", "bootstrap/gcp/tests/bootstrap.tftest.hcl", "bootstrap/config.gcp.template.json"];
+  const changed = ["bootstrap/azure/variables.tf", "bootstrap/azure/modules/environment/outputs.tf", "bootstrap/azure/tests/environments.tftest.hcl", "bootstrap/azure/terraform.tfvars.example"];
+  for (const path of changed) files.set(path, "x");
+  files.set("test/bootstrap-azure.test.ts", "bootstrap/azure");
   const plan = planChanged(changed, files);
-  assert.deepEqual(plan.nodeTests, ["test/bootstrap-gcp.test.ts"]);
+  assert.deepEqual(plan.nodeTests, ["test/bootstrap-azure.test.ts"]);
+  assert.deepEqual(plan.pythonTests, []);
   assert.deepEqual(plan.gaps, []);
-  files.delete("test/bootstrap-gcp.test.ts");
-  assert.deepEqual(planChanged(changed, files).gaps, ["The GCP bootstrap has no focused test owner."]);
-  assert.match(planChanged(["bootstrap/gcpx/main.tf"], fixture()).gaps.join(), /no QA ownership rule/);
+  files.delete("test/bootstrap-azure.test.ts");
+  assert.deepEqual(planChanged(["bootstrap/azure/variables.tf"], files).gaps, ["The Azure bootstrap has no focused test owner."]);
 });
 
 test("DISCOVERY scope bootstrap files select the synthetic checks and the policy-content test", () => {
@@ -181,6 +181,19 @@ test("DISCOVERY scope bootstrap files select the synthetic checks and the policy
   // A bootstrap file with no owner is still a gap.
   files.set("bootstrap/aws/outputs.tf", "x");
   assert.ok(planChanged(["bootstrap/aws/outputs.tf"], files).gaps.length > 0);
+});
+
+test("GCP bootstrap changes select their one focused test, and its absence is a gap", () => {
+  const files = fixture();
+  files.set("bootstrap/gcp/main.tf", 'resource "google_service_account" "identity" {}');
+  files.set("test/bootstrap-gcp.test.ts", "test()");
+  const changed = ["bootstrap/gcp/main.tf", "bootstrap/gcp/tests/bootstrap.tftest.hcl", "bootstrap/config.gcp.template.json"];
+  const plan = planChanged(changed, files);
+  assert.deepEqual(plan.nodeTests, ["test/bootstrap-gcp.test.ts"]);
+  assert.deepEqual(plan.gaps, []);
+  files.delete("test/bootstrap-gcp.test.ts");
+  assert.deepEqual(planChanged(changed, files).gaps, ["The GCP bootstrap has no focused test owner."]);
+  assert.match(planChanged(["bootstrap/gcpx/main.tf"], fixture()).gaps.join(), /no QA ownership rule/);
 });
 
 test("ACT-DEV-1 tfvars and Python handoff changes map to targeted synthetic tests", () => {
