@@ -32,7 +32,7 @@ type Fake = {
 };
 const bundleReview = (over: Partial<ReviewSummary> = {}): ReviewSummary => ({
   environment: "DEV", target: { account: "acct-1", backend: "store/tfstate/dev.tfstate", workspace: "default" }, shortId: "0123456789ab", sourceCommit: "5ec0de0000000000000000000000000000c0ffee",
-  createdAt: "2026-10-12T00:00:00.000Z", counts: { create: 2, update: 1, replace: 0, delete: 0, forget: 0, other: 0 },
+  requestedBy: "carol", createdAt: "2026-10-12T00:00:00.000Z", counts: { create: 2, update: 1, replace: 0, delete: 0, forget: 0, other: 0 },
   changes: [
     { address: "azurerm_resource_group.pilot", type: "azurerm_resource_group", action: "CREATE" },
     { address: "azurerm_log_analytics_workspace.pilot", type: "azurerm_log_analytics_workspace", action: "UPDATE" },
@@ -78,6 +78,8 @@ async function unlocked(level: "BEGINNER" | "ADVANCED" | "EXPERT" = "BEGINNER", 
 }
 const clickButton = async (name: string | RegExp) => { fireEvent.click(await screen.findByRole("button", { name })); };
 const typeInto = (label: string | RegExp, value: string) => fireEvent.change(screen.getByLabelText(label), { target: { value } });
+/** The requester's name and key file the seal step needs besides the two files (the requester signs the sealed request). */
+const typeRequester = () => { typeInto(COPY.sealRequesterLabel, "carol"); typeInto(COPY.sealKeyLabel, "/k.pem"); };
 
 /** The text a person reads: everything except Details disclosures and the one dialog that explains an internal term in words. */
 function primaryText(root: ParentNode = document.body): string {
@@ -290,6 +292,7 @@ describe("step 3 and the confirmation dialogs", () => {
     expect(document.body.textContent).toContain("Example: /home/you/pilot/request-dev.json");
     typeInto(COPY.sealRequestLabel, " /r.json ");
     typeInto(COPY.sealManifestLabel, "/m.json");
+    typeRequester();
     expect(screen.getByRole("button", { name: COPY.sealRun }).hasAttribute("disabled")).toBe(false);
   });
 
@@ -324,6 +327,7 @@ describe("step 3 and the confirmation dialogs", () => {
     expect(box.querySelector("details")?.hasAttribute("open")).toBe(false);
     expect(box.querySelector("details pre")?.textContent).toContain("schemaVersion");
     expect(jargonIn(primaryText())).toEqual([]);
+    typeRequester();
     expect(screen.getByRole("button", { name: COPY.sealRun }).hasAttribute("disabled")).toBe(false);
   });
 
@@ -357,6 +361,7 @@ describe("step 3 and the confirmation dialogs", () => {
     const phrase = "acct-1 | store/tfstate/dev.tfstate | default";
     fake.onPost["/seal"] = () => { fake.run = waitingRun("seal", "TARGET", phrase); };
     typeInto(COPY.sealRequestLabel, "/r.json");
+    typeRequester();
     typeInto(COPY.sealManifestLabel, "/m.json");
     await clickButton(COPY.sealRun);
     const dialog = await screen.findByRole("dialog");
@@ -390,6 +395,7 @@ describe("step 3 and the confirmation dialogs", () => {
     const phrase = "acct-1 | store/tfstate/dev.tfstate | default";
     fake.onPost["/seal"] = () => { fake.run = waitingRun("seal", "TARGET", phrase); };
     typeInto(COPY.sealRequestLabel, "/r.json");
+    typeRequester();
     typeInto(COPY.sealManifestLabel, "/m.json");
     await clickButton(COPY.sealRun);
     const dialog = await screen.findByRole("dialog");
@@ -437,6 +443,7 @@ describe("step 3 and the confirmation dialogs", () => {
     const { fake } = await atSeal();
     fake.onPost["/seal"] = () => { fake.run = waitingRun("seal", "TARGET", "acct | b | w"); };
     typeInto(COPY.sealRequestLabel, "/r.json");
+    typeRequester();
     typeInto(COPY.sealManifestLabel, "/m.json");
     const start = screen.getByRole("button", { name: COPY.sealRun });
     start.focus();
@@ -458,6 +465,7 @@ describe("step 3 and the confirmation dialogs", () => {
     const { fake } = await atSeal();
     fake.onPost["/seal"] = () => { fake.run = waitingRun("seal", "APPROVE", "APPROVE DEV 0123456789ab"); };
     typeInto(COPY.sealRequestLabel, "/r.json");
+    typeRequester();
     typeInto(COPY.sealManifestLabel, "/m.json");
     await clickButton(COPY.sealRun);
     const dialog = await screen.findByRole("dialog");
@@ -479,6 +487,7 @@ describe("step 3 and the confirmation dialogs", () => {
     const { fake } = await atSeal();
     fake.onPost["/seal"] = () => { fake.run = waitingRun("seal", "EMBED_STATE_WRITE", "EMBED STATE_WRITE DEV"); };
     typeInto(COPY.sealRequestLabel, "/r.json");
+    typeRequester();
     typeInto(COPY.sealManifestLabel, "/m.json");
     await clickButton(COPY.sealRun);
     const dialog = await screen.findByRole("dialog");
@@ -620,6 +629,7 @@ describe("step 5 and 6: apply and the result", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: COPY.readyContinue }).hasAttribute("disabled")).toBe(false));
     await clickButton(COPY.readyContinue);
     typeInto(COPY.sealRequestLabel, "/r.json");
+    typeRequester();
     typeInto(COPY.sealManifestLabel, "/m.json");
     ctx.fake.onPost["/seal"] = () => {
       ctx.fake.run = doneRun("seal", { exit: 0, data: { sealedPlanPath: "/s/sealed.json", reviewBundlePath: "/s/sealed.json.review.json", artifactSha256: "x".repeat(64) }, summary: bundleReview() });
@@ -710,6 +720,7 @@ describe("levels: details appear only where the level shows them", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: COPY.readyContinue }).hasAttribute("disabled")).toBe(false));
     await clickButton(COPY.readyContinue);
     typeInto(COPY.sealRequestLabel, "/r.json");
+    typeRequester();
     typeInto(COPY.sealManifestLabel, "/m.json");
     ctx.fake.onPost["/seal"] = () => { ctx.fake.run = doneRun("seal", { exit: 2, code: "ENGINE_NOT_QUALIFIED", message: "Qualification evidence is missing." }); };
     await clickButton(COPY.sealRun);

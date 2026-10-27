@@ -482,7 +482,7 @@ test("independent review refuses self-review and open blocking findings; ACT rec
     const at = (minutes: number): string => new Date(Date.UTC(2026, 9, 12, 12, minutes)).toISOString();
     const apply = (over: Partial<ApplyEvidence>): ApplyEvidence => ({
       schemaVersion: 1, environment: "DEV", target: { account: "111111111111", backend: "b", workspace: "default" }, artifactSha256: "5".repeat(64), manifestHash: "2".repeat(64),
-      releaseIdentity: "3".repeat(64), contractSha256: pilotContractSha256(contract), sourceCommit: commit, approvals: [{ approverId: "alice", issuedAt: at(-30) }],
+      releaseIdentity: "3".repeat(64), contractSha256: pilotContractSha256(contract), sourceCommit: commit, approvals: [{ approverId: "alice", issuedAt: at(-30) }], requester: { requesterId: "carol", nonce: "0".repeat(32) }, 
       adapter: { adapterVersion: "a", argvDigest: "4".repeat(64) }, toolVersions: { engine: "1.9.5" }, outcome: "SUCCEEDED", exitCode: 0, startedAt: at(-10), finishedAt: at(0), authority: APPLY_AUTHORITY, ...over,
     });
     const built = buildRecoveryEvidence({
