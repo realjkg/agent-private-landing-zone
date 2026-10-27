@@ -6,7 +6,7 @@ import test from "node:test";
 
 import { codeOf } from "../src/apply/engine.js";
 import { engineSpec } from "../src/apply/engine-spec.js";
-import { AZ_STACK_PROFILE, BICEP, DENY_SETTINGS_MODE, checkTemplate, isAllowedBicepArgv, pinnedBicepVersion } from "../src/apply/engines/bicep.js";
+import { AZ_STACK_PROFILE, BICEP, DENY_SETTINGS_MODE, azWouldExpandFile, checkTemplate, isAllowedBicepArgv, pinnedBicepVersion } from "../src/apply/engines/bicep.js";
 import { AZURE } from "../src/apply/providers/azure.js";
 import { loadToolPins } from "../src/deps/pins.js";
 import { createDiscoveryArmReader } from "../src/observe/azure-rest.js";
@@ -94,6 +94,14 @@ test("the allowlist admits exactly the engine's own az and bicep lists, each for
   assert.equal(isAllowedBicepArgv("az", "APPLY", login("@/run/token")), true);
   assert.equal(isAllowedBicepArgv("az", "APPLY", login("eyJ.raw-token")), false, "a token is never an argument; only its file");
   assert.equal(isAllowedBicepArgv("az", "APPLY", login("@/run/../etc/token")), false);
+  // az reads a file for `@x` and for `key=@x` (it splits on the first `=`): a `--tags` value of that shape, or any other `@`, is refused.
+  assert.deepEqual(["@/p", "alz-unit=@/etc/passwd", "k=v=@x", "plain", "k=v@x", "alz-unit=x"].map(azWouldExpandFile), [true, true, false, false, false, false]);
+  for (const value of ["alz-unit=@/etc/passwd", "alz-unit=@x", "alz-build=a@b", "@/etc/passwd"]) {
+    assert.equal(isAllowedBicepArgv("az", "APPLY", create.map((arg) => (arg.startsWith("alz-unit=") ? value : arg)), "apply"), false, value);
+  }
+  assert.equal(isAllowedBicepArgv("az", "APPLY", ["account", "show", "--subscription", "@/run/token", "--output", "json"]), false, "a token-file shape outside the login's token slot");
+  assert.equal(isAllowedBicepArgv("az", "APPLY", login("@/run/token").map((arg) => (arg === CLIENTS.APPLY ? "name=@/run/token" : arg))), false, "only the token slot of the login");
+  assert.equal(isAllowedBicepArgv("bicep", null, ["build", "@main.bicep", "--stdout", "--no-restore"]), false);
   assert.equal(isAllowedBicepArgv("bicep", null, ["build", "main.bicep", "--stdout", "--no-restore"]), true);
   assert.equal(isAllowedBicepArgv("bicep", null, ["build", "main.bicep", "--stdout"]), false, "a build always skips module restore");
   assert.equal(isAllowedBicepArgv("bicep", "APPLY", ["build", "main.bicep", "--stdout", "--no-restore"]), false, "the compiler gets no identity");

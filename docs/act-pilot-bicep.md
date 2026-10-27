@@ -48,7 +48,7 @@ az login --service-principal --username <ARM_CLIENT_ID> --tenant <ARM_TENANT_ID>
 - **Sign-in checks.** `az account show` must report the contract's tenant and subscription, and the identity's own client id as a service principal (otherwise `ACCOUNT_NOT_IN_CONTRACT`). DISCOVERY and APPLY must report different client ids (otherwise `IDENTITY_COLLAPSED`).
 - **Clean-up.** `removeSecrets()` deletes the directories, which hold az's token cache.
 
-The `@` expansion applies to every az argument. Each argument list is therefore matched exactly against an allowlist (`isAllowedBicepArgv`) before it runs. Only the token slot may start with `@`, and only as `@` followed by an absolute token-file path.
+The `@` expansion applies to every az argument, and not only at its start: az splits each argument on its first `=` and reads the part after it as a file when it starts with `@`, so `key=@/path` (the shape of a `--tags` value) is a file read too. Each argument list is therefore matched exactly against an allowlist (`isAllowedBicepArgv`) before it runs. No argument may contain `@`, or be one az would expand (`@x` or `key=@x`), except the login's own token slot, which must be `@` followed by an absolute token-file path.
 
 ## Prerequisites not yet on main (owner decision required)
 

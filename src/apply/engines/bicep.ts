@@ -129,11 +129,20 @@ const ENTRIES: readonly Entry[] = [
 const fits = (shape: Shape, args: readonly string[]): boolean =>
   shape.length === args.length && shape.every((part, index) => (typeof part === "string" ? part === args[index] : part.ok(args[index])));
 
+/**
+ * Whether az would read a file into this argument (`_expand_file_prefixed_files`, azure-cli-core 2.91.0): it splits each argument
+ * on its first `=` and loads the part after it, or the whole argument when there is no `=`, as a file when that part starts with `@`.
+ * So both `@/path` and `key=@/path` (the shape of a `--tags` value) are file reads.
+ */
+export const azWouldExpandFile = (arg: string): boolean => (arg.includes("=") ? arg.slice(arg.indexOf("=") + 1) : arg).startsWith("@");
+
 /** Exact match against the lists above for this executable and identity, and (when an adapter is named) for that adapter's surface alone. */
 export function isAllowedBicepArgv(exe: string, who: Who, args: readonly string[], adapter?: Adapter): boolean {
   if (!Array.isArray(args) || !args.every((arg) => typeof arg === "string")) return false;
-  // `@` outside the token slot would make az read a file into that argument.
-  if (args.some((arg, index) => arg.includes("@") && !(index > 0 && args[index - 1] === "--federated-token"))) return false;
+  // The one file az may read is the federated token, in the login's own token slot: `login ... --federated-token @<file>`. Any other
+  // argument az would expand (`@x` or `key=@x`), and any other `@` at all, is refused.
+  const tokenSlot = exe === AZ && args[0] === "login" ? args.indexOf("--federated-token") + 1 : 0;
+  if (args.some((arg, index) => (index !== tokenSlot || tokenSlot === 0) && (azWouldExpandFile(arg) || arg.includes("@")))) return false;
   const at = args.indexOf("--tags");
   if (at >= 0 && new Set(args.slice(at + 1, at + 1 + UNIT_TAG_KEYS.length).map((tag) => tag.split("=")[0])).size !== UNIT_TAG_KEYS.length) return false;
   return ENTRIES.some((entry) => entry.exe === exe && entry.who === who && (adapter === undefined || entry.adapters.includes(adapter)) && fits(entry.shape, args));
