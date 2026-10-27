@@ -10,10 +10,9 @@ import { KEY_SEGMENT, ambientRefusal, isRecord, pickIdentityValue } from "./shar
  * (docs/act-pilot-gcp-terraform-g0.md; the GCP release-path PLAN, owner approval 6433121154 on issue #39). Nothing
  * outside this file names a GCP field, variable or backend type.
  *
- * NOT YET ADMITTED. `ProviderId`, `PilotTarget` and the `SPECS` table (src/apply/types.ts, src/apply/provider.ts) and the
- * contract's provider enum (src/apply/contract.ts) belong to the authorization lane. Until that lane adds "GCP", a contract
- * naming GCP is refused at admission and nothing here is reachable from the driver. The spec is typed as `GcpProviderSpec`
- * so it can be registered unchanged once `BackendType` (src/apply/backend-pin.ts) also names "gcs".
+ * ADMITTED IN CODE, DEV ONLY. "GCP" is a `ProviderId` and this spec is in the `SPECS` table (src/apply/provider.ts), and the
+ * contract admits GCP with the Terraform engine under the DEV-only scope (src/apply/contract.ts). Admission still needs the
+ * owner's reviewed contract with an `authorize` entry, and the repository ships none, so ACT stays DISABLED.
  *
  * Self-contained by design: the identity collapse checks for the two GCP principal variables and the built-in provider rule
  * live here rather than in the shared modules (src/tools/identity.ts, providers/aws.ts), so this slice changes nothing the
@@ -50,11 +49,8 @@ export type GcpTarget = {
   parent?: string;
 };
 
-/**
- * The spec's shape until "GCP" is a `ProviderId` (the authorization lane). Every member is the `ProviderSpec` one, so
- * registering it is `SPECS = { AZURE, AWS, GCP }` with no change here.
- */
-export type GcpProviderSpec = Omit<ProviderSpec, "id" | "backendType"> & { id: "GCP"; backendType: "gcs" };
+/** The spec's own type: `ProviderSpec` with its id and backend type fixed. */
+export type GcpProviderSpec = ProviderSpec & { id: "GCP"; backendType: "gcs" };
 
 const PROJECT_ID = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
 const REGION = /^[a-z]+-[a-z]+[0-9]{1,2}$/;
@@ -308,6 +304,7 @@ const asGcp = (target: unknown): GcpTarget => target as GcpTarget;
 export const GCP: GcpProviderSpec = {
   id: "GCP",
   accountFields: { projectId: (v) => PROJECT_ID.test(v), region: (v) => REGION.test(v) },
+  optionalTargetFields: { parent: (v) => PARENT.test(v) },
   backendOk,
   account: (target) => asGcp(target).projectId,
   accountNoun: "project",
@@ -333,5 +330,5 @@ export const GCP: GcpProviderSpec = {
   assertProviderConfig: (blocks, target, _env, uses) => assertProviderConfig(blocks, asGcp(target), uses),
 };
 
-/** Whether a contract target's optional `parent` is well formed. For the authorization lane's contract validator. */
+/** Whether a contract target's optional `parent` is well formed (the contract validator uses `optionalTargetFields`). */
 export const gcpParentOk = (value: string): boolean => PARENT.test(value);

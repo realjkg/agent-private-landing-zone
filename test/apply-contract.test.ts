@@ -152,13 +152,16 @@ test("the DEV-only rule is the same for AWS CDK: its own target shape, DEV only"
 });
 
 test("planned paths are named and refused NOT_IMPLEMENTED until their lane lands; unknown ones stay CONTRACT_INVALID", () => {
-  for (const [provider, engine] of [["AZURE", "BICEP"], ["GCP", "TERRAFORM"], ["GCP", "GCP_API"]]) {
+  for (const [provider, engine] of [["AZURE", "BICEP"], ["GCP", "GCP_API"]]) {
     disabled(write({ ...fixtureContract(), provider, engine }), /planned path that is not implemented/, "NOT_IMPLEMENTED");
     disabled(write({ ...azureDevOnly(), provider, engine }), /not implemented/, "NOT_IMPLEMENTED");
   }
   for (const [provider, engine] of [["GCP", "CDK"], ["AWS", "BICEP"], ["AZURE", "GCP_API"], ["OCI", "TERRAFORM"], ["gcp", "TERRAFORM"], ["AWS", "PULUMI"]]) {
     disabled(write({ ...fixtureContract(), provider, engine }), undefined, "CONTRACT_INVALID");
   }
+  // GCP Terraform is admitted (the admission-wiring lane, #39), for DEV only: a three-stage contract, or one with another provider's target shape, is not a contract.
+  disabled(write({ ...fixtureContract(), provider: "GCP", engine: "TERRAFORM" }), /enabledEnvironments: GCP TERRAFORM \(path 5\) is admitted for DEV only/, "CONTRACT_INVALID");
+  disabled(write({ ...azureDevOnly(), provider: "GCP", engine: "TERRAFORM" }), /targets\.DEV\./, "CONTRACT_INVALID");
 });
 
 test("a flag in the environment alone never enables ACT", () => {

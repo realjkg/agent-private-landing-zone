@@ -1028,7 +1028,7 @@ function preparationReview(prepared: Prepared): string {
     ...s.inputs.map((i) => "  input           " + i.name + " from " + i.from + (i.source === "DEFAULT" ? " (default)" : "")),
     "  policy version  " + s.policyVersion, "  unit hash       " + s.unitHash, "  manifest hash   " + s.manifestHash,
     "  deletion unit   " + s.unit.unitId, "  required tags   " + tagLine(s.unit.tags),
-    "  Your provider configuration must stamp these tags on every resource this change creates (AWS: default_tags in the provider block; Azure: tags on each resource).",
+    "  Your provider configuration must stamp these tags on every resource this change creates (AWS: default_tags in the provider block; Azure: tags on each resource; GCP: default_labels in the google provider block).",
     "  Sealing checks the plan for them and refuses a missing or foreign tag; types that carry no tags are listed for the approvers.",
     ...(prepared.gaps.length ? ["", "Known gaps:", ...prepared.gaps.map((gap) => "  - " + gap)] : []),
   ].join("\n") + "\n";

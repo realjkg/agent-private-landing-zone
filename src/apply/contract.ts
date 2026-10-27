@@ -80,16 +80,21 @@ const text = (value: unknown, path: string, ok: (v: string) => boolean): string 
 const integer = (value: unknown, path: string, min: number, max: number): number =>
   typeof value === "number" && Number.isInteger(value) && value >= min && value <= max ? value : bad(path + ": expected an integer from " + min + " to " + max);
 
-/** A target in the contract's provider's shape: its account fields, then the backend and the workspace, and the engine's own fields (CDK: the capabilities it may use). */
+/**
+ * A target in the contract's provider's shape: its account fields, then the backend and the workspace, the provider's optional
+ * fields when stated (GCP: `parent`), and the engine's own fields (CDK: the capabilities it may use).
+ */
 function target(value: unknown, path: string, spec: ProviderSpec, engine: EngineSpec): PilotTarget {
   const fields = Object.entries(spec.accountFields);
+  const optional = Object.entries(spec.optionalTargetFields ?? {});
   const extra = Object.entries(engine.target?.fields ?? {});
-  const r = object(value, path, [...fields.map(([name]) => name), "backend", "workspace", ...extra.map(([name]) => name)]);
+  const r = object(value, path, [...fields.map(([name]) => name), "backend", "workspace", ...extra.map(([name]) => name)], optional.map(([name]) => name));
   const flag = (name: string, ok: (v: unknown) => boolean): unknown => ok(r[name]) ? r[name] : bad(path + "." + name + ": invalid");
   return {
     ...Object.fromEntries(fields.map(([name, ok]) => [name, text(r[name], path + "." + name, ok)])),
     backend: text(r.backend, path + ".backend", engine.target?.backendOk ?? spec.backendOk),
     workspace: text(r.workspace, path + ".workspace", engine.target?.workspaceOk ?? ((v) => WORKSPACE.test(v))),
+    ...Object.fromEntries(optional.filter(([name]) => Object.hasOwn(r, name)).map(([name, ok]) => [name, text(r[name], path + "." + name, ok)])),
     ...Object.fromEntries(extra.map(([name, ok]) => [name, flag(name, ok)])),
   } as PilotTarget;
 }
@@ -144,8 +149,16 @@ function authorizeOf(value: unknown, active: readonly ApplyEnvironment[]): Pilot
 /** A path that exists only as an admission-level id until its lane lands (six-path baseline, #39): refused NOT_IMPLEMENTED. */
 const PLANNED_PATHS: readonly { provider: string; engine: string; path: string }[] = [
   { provider: "AZURE", engine: "BICEP", path: "path 4" },
-  { provider: "GCP", engine: "TERRAFORM", path: "path 5" },
   { provider: "GCP", engine: "GCP_API", path: "path 6" },
+];
+
+/**
+ * The paths admitted for DEV only (six-path baseline and the admission-wiring lane, #39): a contract for one of them must state
+ * the DEV-only scope (`enabledEnvironments: ["DEV"]`). The three-stage contract stays the AWS and Azure Terraform and AWS CDK
+ * paths' own; nothing here lets one of these reach QA or PROD.
+ */
+const DEV_ONLY_PATHS: readonly { provider: string; engine: string; path: string }[] = [
+  { provider: "GCP", engine: "TERRAFORM", path: "path 5" },
 ];
 class NotImplemented extends Invalid {}
 
@@ -166,6 +179,8 @@ function validate(raw: unknown): PilotContract {
   if (scoped !== undefined && (!Array.isArray(scoped) || scoped.length !== 1 || scoped[0] !== "DEV")) {
     bad("enabledEnvironments: only the explicit DEV-only pilot is supported; omit for the legacy three-stage contract");
   }
+  const devOnly = DEV_ONLY_PATHS.find((p) => p.provider === spec.id && p.engine === engine.id);
+  if (devOnly && scoped === undefined) bad("enabledEnvironments: " + devOnly.provider + " " + devOnly.engine + " (" + devOnly.path + ") is admitted for DEV only; state enabledEnvironments [\"DEV\"]");
   const active: ApplyEnvironment[] = scoped === undefined ? [...ENVIRONMENTS] : ["DEV"];
   const targets = object(r.targets, "targets", active);
   const approvals = object(r.requiredApprovals, "requiredApprovals", active);
@@ -282,14 +297,16 @@ export type Authorization = { operation: ActOperation; contractSha256: string; a
 
 /**
  * The canonical hash of one environment's full target (review of #313, R1): provider, every account field (account or
- * subscription, tenant, region, project), backend and workspace. Sealed into the plan and recorded in the apply evidence, so a
+ * subscription, tenant, region, project), the provider's optional fields when stated (GCP: `parent`), backend and workspace. Sealed into the plan and recorded in the apply evidence, so a
  * cleanup or removal runs only where the run ran, even when it is authorized by a later contract. Undefined when the contract
  * has no target for the environment.
  */
 export function pilotTargetSha256(contract: PilotContract, env: ApplyEnvironment): string | undefined {
   const target = Object.hasOwn(contract.targets, env) ? contract.targets[env] : undefined;
   if (!target) return undefined;
-  return sha256(canonicalJson({ provider: contract.provider, ...accountFieldsOf(specOf(contract), target), backend: target.backend, workspace: target.workspace } as never));
+  const spec = specOf(contract);
+  const optional = Object.keys(spec.optionalTargetFields ?? {}).filter((name) => Object.hasOwn(target, name)).map((name) => [name, (target as unknown as Record<string, string>)[name]]);
+  return sha256(canonicalJson({ provider: contract.provider, ...accountFieldsOf(spec, target), ...Object.fromEntries(optional), backend: target.backend, workspace: target.workspace } as never));
 }
 
 /** The run's target, as the contract committed now states it, is exactly the run's own; otherwise nothing is consumed. */

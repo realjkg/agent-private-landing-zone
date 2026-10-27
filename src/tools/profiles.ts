@@ -52,7 +52,16 @@ const AZURE = [
   "ARM_OIDC_TOKEN_FILE",
 ];
 
+/**
+ * The Google variables an identity may hand a Terraform child (src/apply/providers/gcp.ts, `GCP_IDENTITY_VARIABLES`): a workload
+ * identity federation credential configuration (a file path), the service account it impersonates, and the project and region.
+ * Every other `GOOGLE_*`, `GCLOUD_*`, `CLOUDSDK_*` or `GCE_*` variable is not injectable, so a key file, an access token, a backend
+ * credential, an encryption key or a metadata host never reaches a child.
+ */
+const GOOGLE = ["GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_IMPERSONATE_SERVICE_ACCOUNT", "GOOGLE_PROJECT", "GOOGLE_REGION"];
+
 const AWS_HOSTS = ["*.amazonaws.com", "*.amazonaws.com.cn"];
+const GOOGLE_HOSTS = ["*.googleapis.com"];
 const AZURE_HOSTS = ["*.microsoftonline.com", "*.microsoft.com", "*.azure.com", "*.windows.net", "*.azure.net"];
 const TERRAFORM_HOSTS = ["registry.terraform.io", "releases.hashicorp.com", "registry.opentofu.org", "app.terraform.io"];
 const PULUMI_HOSTS = ["api.pulumi.com", "*.pulumi.com"];
@@ -77,9 +86,9 @@ export const PROFILES: Readonly<Record<string, ProcessProfile>> = {
     approvedHosts: AZURE_HOSTS, suppressExcerpts: false, ...base,
   },
   terraform: {
-    injectable: [...AWS, ...AZURE, "TF_CLI_CONFIG_FILE", "TF_PLUGIN_CACHE_DIR", "TF_IN_AUTOMATION"],
+    injectable: [...AWS, ...AZURE, ...GOOGLE, "TF_CLI_CONFIG_FILE", "TF_PLUGIN_CACHE_DIR", "TF_IN_AUTOMATION"],
     injectablePrefixes: ["TF_VAR_", "TF_TOKEN_"], urlVariables: ["AWS_ENDPOINT_URL"],
-    approvedHosts: [...AWS_HOSTS, ...AZURE_HOSTS, ...TERRAFORM_HOSTS], suppressExcerpts: true, ...base,
+    approvedHosts: [...AWS_HOSTS, ...AZURE_HOSTS, ...GOOGLE_HOSTS, ...TERRAFORM_HOSTS], suppressExcerpts: true, ...base,
   },
   tofu: {
     injectable: [...AWS, ...AZURE, "TF_CLI_CONFIG_FILE", "TF_PLUGIN_CACHE_DIR", "TF_IN_AUTOMATION"],
@@ -128,12 +137,19 @@ const AWS_OUTSIDE_THE_IDENTITY: readonly string[] = [
   "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_PROFILE", "AWS_SHARED_CREDENTIALS_FILE", "AWS_CONFIG_FILE", "AWS_EC2_METADATA_DISABLED",
   "AWS_ENDPOINT_URL", "AWS_CA_BUNDLE", "AWS_DEFAULT_REGION",
 ];
+/**
+ * The Google metadata server switched off for every apply child, so it can never be a credential fallback: the metadata host and
+ * address name a closed loopback port, and the GCE check is skipped. UNVERIFIED (G-2, docs/act-pilot-gcp-terraform-g0.md): which of
+ * these variables the Google auth library in the pinned provider honors. Each one only ever removes a source of credentials.
+ */
+const GOOGLE_METADATA_OFF: Readonly<Record<string, string>> = { GCE_METADATA_HOST: "127.0.0.1:9", GCE_METADATA_IP: "127.0.0.1:9", NO_GCE_CHECK: "True" };
+
 export const TERRAFORM_APPLY_PROFILE: ProcessProfile = {
   ...PROFILES.terraform,
   injectable: PROFILES.terraform.injectable.filter((name) =>
     !PROVIDER_INSTALLATION_OVERRIDES.includes(name) && !name.startsWith("AZURE_") && !AWS_OUTSIDE_THE_IDENTITY.includes(name)),
   // The data directory is always init's own fresh one in the work copy (the copy is refused if it already holds one; src/apply/backend-pin.ts).
-  fixedEnvironment: { AWS_EC2_METADATA_DISABLED: "true", TF_DATA_DIR: ".terraform" },
+  fixedEnvironment: { AWS_EC2_METADATA_DISABLED: "true", TF_DATA_DIR: ".terraform", ...GOOGLE_METADATA_OFF },
 };
 
 /**

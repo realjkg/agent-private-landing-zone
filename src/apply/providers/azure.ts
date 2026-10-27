@@ -30,11 +30,11 @@ function backendOk(value: string): boolean {
 /**
  * Anything that lets a child fall back to the az CLI, a managed identity, a
  * certificate or an Azure SDK default instead of the identity's own OIDC token
- * file, or to another cloud's credentials (`AWS_*`). The recommended setup is `ARM_*` with `ARM_USE_OIDC` and
+ * file, or to another cloud's credentials (`AWS_*`, and `GOOGLE_*`, `GCLOUD_*`, `CLOUDSDK_*`, `GCE_*`). The recommended setup is `ARM_*` with `ARM_USE_OIDC` and
  * `ARM_OIDC_TOKEN_FILE`, but that is not enforced: a per-identity `ARM_CLIENT_SECRET` is still injectable on the shared
  * Terraform profiles and is accepted as that identity's own explicit credential (docs/act-pilot-apply.md, Azure).
  */
-const FALLBACK_VARIABLE = /^(AZURE_.*|ARM_USE_(?!OIDC$).*|ARM_MSI_.*|ARM_CLIENT_CERTIFICATE.*|AWS_.*)$/;
+const FALLBACK_VARIABLE = /^(AZURE_.*|ARM_USE_(?!OIDC$).*|ARM_MSI_.*|ARM_CLIENT_CERTIFICATE.*|AWS_.*|GOOGLE_.*|GCLOUD_.*|CLOUDSDK_.*|GCE_.*)$/;
 
 const ambient = (env: NodeJS.ProcessEnv) => ambientRefusal(env, {
   fallback: FALLBACK_VARIABLE, ambient: /^(AZURE|ARM)_/, fallbackTo: "the az CLI, ambient or another cloud's credentials",

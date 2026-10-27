@@ -110,11 +110,11 @@ test("every release gate is mapped, read as data without the registry; gates wit
   assert.equal(mode("platform:linux-x64"), "OWNER", "the merged lifecycle runner produces the platform gates on each host");
   assert.equal(mode("aws-provider"), "AUTO");
   assert.equal(mode("azure-provider"), "AUTO");
-  // GCP's gates are required before GCP is admitted: reported, never planned as AUTO or GUIDED, and never Azure's stage by default.
-  for (const id of ["gcp-provider", "preview:terraform-gcp-brownfield"]) {
-    assert.equal(mode(id), "NO_PRODUCER", id);
-    assert.match(plan.find((gate) => gate.id === id)!.note, /not an admitted provider/, id);
-  }
+  // GCP Terraform is admitted for DEV only: its preview gate is produced at seal (GUIDED S5); the live read-only GCP inventory has no
+  // runner stage, so it is reported, never planned as AUTO, and never Azure's stage by default.
+  assert.equal(mode("gcp-provider"), "NO_PRODUCER");
+  assert.match(plan.find((gate) => gate.id === "gcp-provider")!.note, /no read-only GCP inventory stage/);
+  assert.deepEqual([mode("preview:terraform-gcp-brownfield"), plan.find((gate) => gate.id === "preview:terraform-gcp-brownfield")!.slice], ["GUIDED", "S5"]);
   assert.equal(gatePlan(["other-provider"], new Set())[0].mode, "NO_PRODUCER");
   assert.equal(mode("private-model-runtime"), "OWNER");
   assert.equal(mode("act:aws-terraform"), "GUIDED");

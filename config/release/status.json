@@ -96,7 +96,7 @@
         "the candidate commit changes",
         "the provider adapter or its pinned tool changes"
       ],
-      "nextAction": "GCP is not yet an admitted provider: the authorization lane adds it to the pilot contract first, and the live read-only GCP inventory producer is the ./alz evidence runner's (path 6 lane). Then the owner provides the GCP sandbox identifiers (the DEV project id and the service account emails, never credentials) and runs the read-only GCP inventory and governed preview on the candidate."
+      "nextAction": "GCP Terraform is admitted in code for DEV only (the admission-wiring lane, #39); the live read-only GCP inventory producer is still to be built in the ./alz evidence runner, which has no GCP stage yet. Then the owner provides the GCP sandbox identifiers (the DEV project id and the service account emails, never credentials) and runs the read-only GCP inventory and governed preview on the candidate."
     },
     {
       "gate": "preview:terraform-aws-brownfield",
@@ -270,7 +270,7 @@
         "the candidate commit changes",
         "the Terraform pin or the GCP provider spec changes"
       ],
-      "nextAction": "Waits on GCP admission (no GCP contract can seal a plan yet, so ./alz apply preview-evidence refuses this gate for any AWS or Azure plan) and on the gcp-provider gate's sandbox. Then the producer, run from the candidate commit with the pinned, qualified Terraform against the GCP sandbox, writes LIVE evidence that the admission review accepts. Synthetic evidence is labeled SYNTHETIC and is refused by the gate."
+      "nextAction": "GCP Terraform is admitted in code for DEV only, so a GCP contract can seal a plan and ./alz apply preview-evidence can write this gate's evidence at seal (it refuses any AWS or Azure plan). Waits on the owner's reviewed GCP contract and on the gcp-provider gate's sandbox. Then the producer, run from the candidate commit with the pinned, qualified Terraform against the GCP sandbox, writes LIVE evidence that the admission review accepts. Synthetic evidence is labeled SYNTHETIC and is refused by the gate."
     },
     {
       "gate": "isolated-recovery",

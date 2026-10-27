@@ -211,11 +211,15 @@ export function observationRecordProblems(value: unknown): string[] {
 
 const DISPOSITIONS: readonly LeftoverDisposition[] = ["CONFIRMED_DELETED", "INTENTIONALLY_RETAINED", "STILL_PRESENT", "DELETION_PENDING", "UNKNOWN"];
 /** UNREVIEWED_TYPE: kept because its type is not on the reviewed AWS leaf allowlist (TYPE_UNREVIEWED); a person still decides about it, so a record holding one is never COMPLETE. */
-export type LeftoverBasis = "CLOUD_CONTROL_ABSENT" | "CLOUD_CONTROL_PRESENT" | "ARM_ABSENT" | "ARM_PRESENT" | "PARENT_ABSENT" | "RETENTION_DECISION" | "UNREVIEWED_TYPE" | "CLEANUP_NOT_FINISHED" | "NOT_INDEPENDENTLY_CHECKABLE" | "CHECK_FAILED";
-const BASES: readonly LeftoverBasis[] = ["CLOUD_CONTROL_ABSENT", "CLOUD_CONTROL_PRESENT", "ARM_ABSENT", "ARM_PRESENT", "PARENT_ABSENT", "RETENTION_DECISION", "UNREVIEWED_TYPE", "CLEANUP_NOT_FINISHED", "NOT_INDEPENDENTLY_CHECKABLE", "CHECK_FAILED"];
+export type LeftoverBasis = "CLOUD_CONTROL_ABSENT" | "CLOUD_CONTROL_PRESENT" | "ARM_ABSENT" | "ARM_PRESENT" | "GCP_REST_ABSENT" | "GCP_REST_PRESENT" | "PARENT_ABSENT" | "RETENTION_DECISION" | "UNREVIEWED_TYPE" | "CLEANUP_NOT_FINISHED" | "NOT_INDEPENDENTLY_CHECKABLE" | "CHECK_FAILED";
+const BASES: readonly LeftoverBasis[] = ["CLOUD_CONTROL_ABSENT", "CLOUD_CONTROL_PRESENT", "ARM_ABSENT", "ARM_PRESENT", "GCP_REST_ABSENT", "GCP_REST_PRESENT", "PARENT_ABSENT", "RETENTION_DECISION", "UNREVIEWED_TYPE", "CLEANUP_NOT_FINISHED", "NOT_INDEPENDENTLY_CHECKABLE", "CHECK_FAILED"];
 /** The read API's absent and present bases for a verifier, so a record never names a service that did not answer. */
-export const basesOf = (verifier: VerifierId): { absent: LeftoverBasis; present: LeftoverBasis } =>
-  verifier === "AZURE_RESOURCE_MANAGER" ? { absent: "ARM_ABSENT", present: "ARM_PRESENT" } : { absent: "CLOUD_CONTROL_ABSENT", present: "CLOUD_CONTROL_PRESENT" };
+const VERIFIER_BASES: Readonly<Record<VerifierId, { absent: LeftoverBasis; present: LeftoverBasis }>> = {
+  AWS_CLOUD_CONTROL: { absent: "CLOUD_CONTROL_ABSENT", present: "CLOUD_CONTROL_PRESENT" },
+  AZURE_RESOURCE_MANAGER: { absent: "ARM_ABSENT", present: "ARM_PRESENT" },
+  GCP_REST: { absent: "GCP_REST_ABSENT", present: "GCP_REST_PRESENT" },
+};
+export const basesOf = (verifier: VerifierId): { absent: LeftoverBasis; present: LeftoverBasis } => VERIFIER_BASES[verifier];
 function leftoverOk(value: unknown): value is LeftoverResource {
   return isRecord(value) && Object.keys(value).every((key) => ["address", "type", "identifier", "disposition", "basis", "reason", "owner"].includes(key)) &&
     typeof value.address === "string" && typeof value.type === "string" && idText(value.identifier) && DISPOSITIONS.includes(value.disposition as LeftoverDisposition) &&

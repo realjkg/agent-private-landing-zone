@@ -1,5 +1,6 @@
 import { AWS } from "./providers/aws.js";
 import { AZURE } from "./providers/azure.js";
+import { GCP } from "./providers/gcp.js";
 import type { BackendType } from "./backend-pin.js";
 import type { PilotContract, PilotTarget, ProviderId } from "./types.js";
 
@@ -30,6 +31,11 @@ export type ProviderSpec = {
   id: ProviderId;
   /** Target shape: a validator per account field, in the order the contract lists them. `backend` and `workspace` are every provider's. */
   accountFields: Readonly<Record<string, (value: string) => boolean>>;
+  /**
+   * Optional target fields of this provider, each judged by its validator when the contract states it (GCP: `parent`, a
+   * readiness check for DISCOVERY that carries no authority). Part of the reviewed contract and of the run's target hash.
+   */
+  optionalTargetFields?: Readonly<Record<string, (value: string) => boolean>>;
   /** Whether a backend string, as the contract writes it, is well formed. */
   backendOk(value: string): boolean;
   /** What `ResolvedTarget.account` carries for a target, and what to call it in a message. */
@@ -78,7 +84,7 @@ export type ProviderSpec = {
   tagAttributes: readonly string[];
 };
 
-const SPECS: Readonly<Record<ProviderId, ProviderSpec>> = { AZURE, AWS };
+const SPECS: Readonly<Record<ProviderId, ProviderSpec>> = { AZURE, AWS, GCP };
 
 /** The spec for a contract's `provider`, or undefined for anything that is not an implemented provider id. */
 export const providerSpec = (id: unknown): ProviderSpec | undefined =>

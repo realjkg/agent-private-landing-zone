@@ -20,8 +20,8 @@ import { stop } from "./engine.js";
 export const BACKEND_OVERRIDE_FILE = "zzzz_alz_backend_override.tf";
 
 /** The backend types a provider spec may pin. Nothing else is ever written into the override. */
-export type BackendType = "s3" | "azurerm";
-const BACKEND_TYPES: readonly string[] = ["s3", "azurerm"];
+export type BackendType = "s3" | "azurerm" | "gcs";
+const BACKEND_TYPES: readonly string[] = ["s3", "azurerm", "gcs"];
 
 /** Saved state or a data directory in the root that init could read, reuse or migrate from. */
 const STATE_NAMES = new Set([".terraform", "terraform.tfstate", "terraform.tfstate.backup", "terraform.tfstate.d"]);

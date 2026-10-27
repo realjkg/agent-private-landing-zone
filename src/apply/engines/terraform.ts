@@ -40,11 +40,14 @@ type StepIdentity = "DISCOVERY" | "STATE" | "STATE_WRITE" | "APPLY" | null;
 
 /**
  * What may be rendered into the seal-time backend file when the contract opts in: an allowlist of the STATE_WRITE variables the provider
- * specs' `backendConfig` reads (the principal's client id or role ARN, tenant, subscription, region, and the token file PATH). Any other
+ * specs' `backendConfig` reads (the principal's client id, role ARN or service account email, tenant, subscription, and the token or credential configuration file PATH). Any other
  * variable, including one that holds a secret, never reaches the renderer, and a token file's content is never read. The file is rendered
  * by this process and never handed to a child: the seal environment below still holds no STATE_WRITE or APPLY variable.
  */
-const STATE_WRITE_SETTINGS = new Set(["ARM_CLIENT_ID", "ARM_TENANT_ID", "ARM_SUBSCRIPTION_ID", "ARM_OIDC_TOKEN_FILE", "AWS_ROLE_ARN", "AWS_WEB_IDENTITY_TOKEN_FILE"]);
+const STATE_WRITE_SETTINGS = new Set([
+  "ARM_CLIENT_ID", "ARM_TENANT_ID", "ARM_SUBSCRIPTION_ID", "ARM_OIDC_TOKEN_FILE", "AWS_ROLE_ARN", "AWS_WEB_IDENTITY_TOKEN_FILE",
+  "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_IMPERSONATE_SERVICE_ACCOUNT",
+]);
 const nonSecretStateWrite = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => Object.fromEntries(
   Object.entries(env).filter(([key]) => ownsIdentityVariable(key, "STATE_WRITE") && STATE_WRITE_SETTINGS.has(key.slice("ALZ_STATE_WRITE_".length))));
 
@@ -468,7 +471,7 @@ export const TERRAFORM: EngineSpec = {
   executables: ["terraform"],
   embedsStateWrite: true,
   mutation: "TERRAFORM_APPLY_OF_SEALED_PLAN",
-  providers: ["AZURE", "AWS"],
+  providers: ["AZURE", "AWS", "GCP"],
   notices: {
     sealHeading: "SEAL A PREVIEW (this plans against the target and changes no infrastructure; the plan is kept encrypted)",
     sealReads: "  reads           state with the STATE identity, then plans with the DISCOVERY identity",

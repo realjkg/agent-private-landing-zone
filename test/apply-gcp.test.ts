@@ -69,9 +69,9 @@ const codeFrom = (run: () => unknown): string => {
 
 // --- admission and the target shape ---------------------------------------------------------------
 
-test("GCP is not admitted until the authorization lane registers it: no provider id, no spec, and a contract naming it is not a contract", () => {
-  assert.equal(PROVIDER_IDS.includes("GCP" as never), false);
-  assert.equal(providerSpec("GCP"), undefined);
+test("GCP is a registered provider id whose spec is this one (admission rules: test/apply-gcp-admission.test.ts)", () => {
+  assert.equal(PROVIDER_IDS.includes("GCP"), true);
+  assert.equal(providerSpec("GCP"), GCP);
   assert.equal(GCP.id, "GCP");
 });
 
