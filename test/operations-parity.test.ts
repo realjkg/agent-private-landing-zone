@@ -292,3 +292,48 @@ test("npm run build:ui keeps a current completion marker across the UI build, re
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("a failed UI build's leftover note never revives a marker and npm run build removes it; with no readable HEAD, build:ui keeps any well-formed marker, and with one it drops an unknown marker", () => {
+  const { root, bin, npm } = scriptsRoot("keep");
+  const keep = join(root, "dist", ".alz-build-ui.keep");
+  try {
+    assert.equal(npm("build").status, 0);
+    // A failing vite leaves the UI build's note behind, with no marker.
+    writeFileSync(join(bin, "vite"), "#!/bin/sh\nexit 3\n");
+    assert.notEqual(npm("build:ui").status, 0);
+    assert.equal(markerOf(root), undefined);
+    assert.equal(readFileSync(keep, "utf8"), "c0ffee", "the failed UI build left its note");
+    // The next UI build overwrites the note before reading it, so the leftover never brings a marker back.
+    writeFileSync(join(bin, "vite"), "#!/bin/sh\nexit 0\n");
+    assert.equal(npm("build:ui").status, 0);
+    assert.equal(markerOf(root), undefined, "a leftover note does not revive a marker");
+    assert.ok(!existsSync(keep));
+    // npm run build removes a leftover note too, so a dist/ staged after a good build never carries one.
+    writeFileSync(join(bin, "vite"), "#!/bin/sh\nexit 3\n");
+    assert.equal(npm("build").status, 0);
+    assert.notEqual(npm("build:ui").status, 0);
+    assert.ok(existsSync(keep));
+    writeFileSync(join(bin, "vite"), "#!/bin/sh\nexit 0\n");
+    assert.equal(npm("build").status, 0);
+    assert.ok(!existsSync(keep), "npm run build removes the failed UI build's note");
+    assert.deepEqual(markerOf(root), { schemaVersion: 1, sourceCommit: "c0ffee" });
+    // With HEAD known, a marker that says "unknown" is not a build of this commit: dropped (the launcher refuses it too).
+    writeFileSync(join(root, "dist", ".alz-build-complete"), JSON.stringify({ schemaVersion: 1, sourceCommit: "unknown" }) + "\n");
+    assert.equal(npm("build:ui").status, 0);
+    assert.equal(markerOf(root), undefined, "an unknown marker is dropped when HEAD is known");
+    // With no readable HEAD (no checkout, as in the Docker build stage), any well-formed marker is kept as it was.
+    writeFileSync(join(bin, "git"), "#!/bin/sh\nexit 128\n");
+    for (const commit of ["older", "unknown"]) {
+      writeFileSync(join(root, "dist", ".alz-build-complete"), JSON.stringify({ schemaVersion: 1, sourceCommit: commit }) + "\n");
+      assert.equal(npm("build:ui").status, 0);
+      assert.deepEqual(markerOf(root), { schemaVersion: 1, sourceCommit: commit }, commit + ": kept when HEAD is unknown");
+    }
+    rmSync(join(root, "dist", ".alz-build-complete"));
+    assert.equal(npm("build:ui").status, 0);
+    assert.equal(markerOf(root), undefined, "with no marker, none is written");
+    assert.equal(npm("build").status, 0);
+    assert.deepEqual(markerOf(root), { schemaVersion: 1, sourceCommit: "unknown" }, "with no readable HEAD, the build's own marker says unknown");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
