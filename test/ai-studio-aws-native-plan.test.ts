@@ -45,3 +45,28 @@ test("Terraform resource import is classified separately",()=>{
   type:"aws_organizations_policy",change:{actions:["create"],importing:{id:"p-012345"}}}]}},existing);
  assert.equal(r.allowed,false);
 });
+test("a replacement is never flattened to an update (#270 review N1): CloudFormation Modify counts as UPDATE only with an exact Replacement of False, True and Conditional are a delete and a create, a missing or odd value fails closed; Terraform delete,create and Pulumi replace are a delete and a create",()=>{
+ const modify=(type:string,replacement?:string)=>({engine:"CLOUDFORMATION",payload:{Changes:[{ResourceChange:{ResourceType:type,Action:"Modify",...(replacement===undefined?{}:{Replacement:replacement})}}]}}) as NativePlan;
+ const inPlace=assessNativeAwsPlan(modify("AWS::Logs::LogGroup","False"),existing);
+ assert.equal(inPlace.allowed,true);
+ assert.deepEqual(inPlace.findings.map(f=>f.action),["UPDATE"]);
+ for(const replacement of ["True","Conditional"]) {
+  const r=assessNativeAwsPlan(modify("AWS::Logs::LogGroup",replacement),existing);
+  assert.deepEqual(r.findings.map(f=>f.action),["DELETE","CREATE"],replacement);
+ }
+ for(const replacement of [undefined,"false","true","","Maybe"]) {
+  const r=assessNativeAwsPlan(modify("AWS::Logs::LogGroup",replacement),existing);
+  assert.equal(r.allowed,false,JSON.stringify(replacement));
+  assert.deepEqual(r.reasons,["NATIVE_PLAN_INVALID:CLOUDFORMATION_REPLACEMENT_UNSUPPORTED"],JSON.stringify(replacement));
+ }
+ // A replacement of a governance root is judged as the delete it is, not as an update.
+ assert.equal(assessNativeAwsPlan(modify("AWS::Organizations::Organization","True"),existing).allowed,false);
+ for(const actions of [["delete","create"],["create","delete"]]) {
+  const r=assessNativeAwsPlan(terraform("aws_cloudwatch_log_group",actions),existing);
+  assert.deepEqual(r.findings.map(f=>f.action),["DELETE","CREATE"],actions.join(","));
+  assert.equal(assessNativeAwsPlan(terraform("aws_organizations_organization",actions),existing).allowed,false,actions.join(","));
+ }
+ const pulumi=assessNativeAwsPlan({engine:"PULUMI",payload:{steps:[{type:"aws:cloudwatch/logGroup:LogGroup",op:"replace"}]}},existing);
+ assert.deepEqual(pulumi.findings.map(f=>f.action),["DELETE","CREATE"]);
+ assert.equal(assessNativeAwsPlan({engine:"PULUMI",payload:{steps:[{type:"aws:organizations/organization:Organization",op:"replace"}]}},existing).allowed,false);
+});
