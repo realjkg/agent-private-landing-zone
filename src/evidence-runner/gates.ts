@@ -24,7 +24,7 @@ export type GatePlan = { id: string; mode: GateRunnerMode; slice?: string; note:
 
 const FIXED: Readonly<Record<string, GateMode>> = {
   "source-ci": "CI", "release-archive": "CI", "arm64-final-image": "SECURITY_SCAN", "private-model-runtime": "PRIVATE_MODEL",
-  "aws-provider": "LIVE_PROVIDER", "azure-provider": "LIVE_PROVIDER", "isolated-recovery": "ISOLATED_RECOVERY",
+  "aws-provider": "LIVE_PROVIDER", "azure-provider": "LIVE_PROVIDER", "gcp-provider": "LIVE_PROVIDER", "isolated-recovery": "ISOLATED_RECOVERY",
   "act-run-recovery": "ACT_RECOVERY", "security-review:independent": "INDEPENDENT_REVIEW",
 };
 const PREFIXED: readonly [string, GateMode][] = [
@@ -39,7 +39,14 @@ export function gateModeOf(id: string): GateMode {
 
 const NO_PRODUCER_PLAN = "A new PLAN names this gate's producer (delegated decision 4); the runner writes nothing for it.";
 
+/**
+ * GCP's gates, required before GCP is an admitted provider (path 5; owner approval 6433121154 on issue #39): no producer can run
+ * them until a GCP contract exists, so the runner reports them and writes nothing, whatever their mode would otherwise plan.
+ */
+const NOT_ADMITTED: ReadonlySet<string> = new Set(["gcp-provider", "preview:terraform-gcp-brownfield"]);
+
 function planFor(id: string): GatePlan {
+  if (NOT_ADMITTED.has(id)) return { id, mode: "NO_PRODUCER", note: "GCP is not an admitted provider yet, so no producer can run this gate. " + NO_PRODUCER_PLAN };
   const mode = gateModeOf(id);
   switch (mode) {
     case "CI":
@@ -52,9 +59,11 @@ function planFor(id: string): GatePlan {
     case "PRIVATE_MODEL":
       return { id, mode: "OWNER", note: "Run ./alz models verify --production on the target model host. In this build the runner has no model stage; a later slice may add one for the model host." };
     case "LIVE_PROVIDER":
-      return id === "aws-provider"
-        ? { id, mode: "AUTO", slice: "S2", note: "Needs the federated qualification identity and the owner's no-op stack; BLOCKED until both exist." }
-        : { id, mode: "AUTO", slice: "S3", note: "Needs the federated qualification identity; BLOCKED until it exists." };
+      if (id === "aws-provider") return { id, mode: "AUTO", slice: "S2", note: "Needs the federated qualification identity and the owner's no-op stack; BLOCKED until both exist." };
+      // Only the Azure gate is the S3 stage's; any other live-provider gate has no producer here, never Azure's by default.
+      return id === "azure-provider"
+        ? { id, mode: "AUTO", slice: "S3", note: "Needs the federated qualification identity; BLOCKED until it exists." }
+        : { id, mode: "NO_PRODUCER", note: NO_PRODUCER_PLAN };
     case "LIVE_PREVIEW":
       return { id, mode: "GUIDED", slice: "S5", note: "Produced at seal after the owner's reviewed pin (owner input); only for the pinned path." };
     case "LIVE_ACT":

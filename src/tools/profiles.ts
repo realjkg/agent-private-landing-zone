@@ -132,7 +132,8 @@ export const TERRAFORM_APPLY_PROFILE: ProcessProfile = {
   ...PROFILES.terraform,
   injectable: PROFILES.terraform.injectable.filter((name) =>
     !PROVIDER_INSTALLATION_OVERRIDES.includes(name) && !name.startsWith("AZURE_") && !AWS_OUTSIDE_THE_IDENTITY.includes(name)),
-  fixedEnvironment: { AWS_EC2_METADATA_DISABLED: "true" },
+  // The data directory is always init's own fresh one in the work copy (the copy is refused if it already holds one; src/apply/backend-pin.ts).
+  fixedEnvironment: { AWS_EC2_METADATA_DISABLED: "true", TF_DATA_DIR: ".terraform" },
 };
 
 /**
