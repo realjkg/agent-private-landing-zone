@@ -8,7 +8,8 @@ locals {
 
   managed_policies = merge(
     { for arn in var.apply_managed_policy_arns : "APPLY/${arn}" => { identity = "APPLY", arn = arn } },
-    { for arn in var.discovery_managed_policy_arns : "DISCOVERY/${arn}" => { identity = "DISCOVERY", arn = arn } if var.engine == "TERRAFORM" },
+    # Both engines: the independent observation after an apply reads as DISCOVERY (CloudFormation's resource list, Cloud Control, the tag API), so the CDK role needs the same read scope.
+    { for arn in var.discovery_managed_policy_arns : "DISCOVERY/${arn}" => { identity = "DISCOVERY", arn = arn } },
   )
 }
 

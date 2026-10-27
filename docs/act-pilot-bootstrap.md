@@ -10,7 +10,7 @@ Roles are least privilege by design but the final scope is the owner's decision 
 
 | Identity | Azure (Terraform engine) | AWS Terraform engine | AWS CDK engine |
 | --- | --- | --- | --- |
-| DISCOVERY | Reader on the pilot resource group (or subscription); nothing on state | `ReadOnlyAccess` by default (override it); the bucket policy denies it the state bucket | `cloudformation:DescribeStacks` on the stack |
+| DISCOVERY | Reader on the pilot resource group (or subscription); nothing on state | `ReadOnlyAccess` by default (override it); the bucket policy denies it the state bucket | `ReadOnlyAccess` by default (override it), the same `discovery_managed_policy_arns` as the Terraform engine, plus `cloudformation:DescribeStacks` on the stack inline. The observation after an apply runs `describe-stack-resources`, `cloudcontrol get-resource` and `tag:GetResources` as this role (`docs/observe-and-cleanup.md`); with `DescribeStacks` alone it is refused at the first read |
 | STATE | Storage Blob Data Reader on the state container | Get the state object; get, put and delete the `.tflock` object; list the bucket. Denied writes to the state object | not used |
 | STATE_WRITE | Storage Blob Data Contributor on the state container only | Get, put and delete the state object and the lock object; list the bucket. Denied `DeleteObjectVersion` | not used |
 | APPLY | Contributor on the pilot resource group (or subscription); no role on state | The policies you name in `apply_managed_policy_arns` (no default). Denied the state bucket and edits to the bootstrap roles | `ExecuteChangeSet`, `DescribeStacks`, `DescribeStackEvents`, `CancelUpdateStack` on the stack, plus your resource policies. Denied `CreateChangeSet` and `DeleteStack` |

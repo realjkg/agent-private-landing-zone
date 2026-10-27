@@ -87,7 +87,7 @@ variable "apply_permissions_boundary_arn" {
 }
 
 variable "discovery_managed_policy_arns" {
-  description = "Read permissions for DISCOVERY (Terraform engine only; the CDK DISCOVERY role gets DescribeStacks on the stack and nothing else)."
+  description = "Read permissions for DISCOVERY, both engines: the preview's reads, and after an apply the independent observation (describe-stack-resources, cloudcontrol get-resource, tag get-resources). The CDK role also keeps its inline DescribeStacks on the stack. Override the default with a scoped read policy once the pilot's resource types are fixed."
   type        = list(string)
   default     = ["arn:aws:iam::aws:policy/ReadOnlyAccess"]
 }
