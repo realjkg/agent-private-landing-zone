@@ -123,8 +123,9 @@ export async function assessReadiness(input: ReadinessInput): Promise<ReadinessR
     identities.ok ? "READY" : identities.code === "IDENTITY_NOT_CONFIGURED" ? "MISSING" : "INVALID", "OPERATOR", identities.ok ? undefined : identities.message);
   const targets = verifyIdentityTargets(contract, environment, env, spec, engine.identities);
   add("identities aimed at the " + environment + " account", targets.ok ? "READY" : "INVALID", "OPERATOR", targets.ok ? undefined : targets.message);
-  // Informational: where the contract opts in, sealing itself carries STATE_WRITE's non-secret settings (typed confirmation at seal).
-  add("plan will embed STATE_WRITE settings: " + (contract.embedStateWrite === true ? "yes" : "no"), "READY", "OWNER");
+  // Informational, Terraform only (the one engine with a STATE_WRITE identity and a state backend): where the contract opts in,
+  // sealing itself carries STATE_WRITE's non-secret settings (typed confirmation at seal). The CDK engine has no such item.
+  if (engine.id === "TERRAFORM") add("plan will embed STATE_WRITE settings: " + (contract.embedStateWrite === true ? "yes" : "no"), "READY", "OWNER");
   for (const tool of engine.executables) {
     add("tool " + tool + " installed in an approved directory", resolveExecutable(tool, input.toolDirs ?? approvedToolDirs(env)) !== undefined ? "READY" : "UNAVAILABLE", "TOOL");
   }
