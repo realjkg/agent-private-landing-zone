@@ -8,6 +8,9 @@ dist/
 coverage/
 .runs/
 
+# The owner's evidence-runner configuration (./alz evidence init); the committed template is config/evidence-runner.example.json
+config/evidence-runner.json
+
 # Private keys and certificates (for example a GitHub App private key): never commit
 *.pem
 *.key

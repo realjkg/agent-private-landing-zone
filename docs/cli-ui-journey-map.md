@@ -43,6 +43,7 @@ alz scan | test/operator-cli.test.ts
 alz account-factory | test/account-factory.test.ts, test/operations-parity.test.ts
 alz enterprise | test/operations-core.test.ts, test/operations-parity.test.ts
 alz qualify | test/operations-qualification.test.ts, test/operations-parity.test.ts
+alz evidence | test/evidence-cli.test.ts, test/operations-parity.test.ts
 alz workspace | test/local-operator-workspace.test.ts, test/operator-ui-react.test.tsx
 alz matrix | test/local-operator-workspace.test.ts, test/operator-ui-react.test.tsx
 alz chaos | test/local-operator-workspace.test.ts, test/operator-ui-journey-fixes.test.tsx
