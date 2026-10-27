@@ -36,9 +36,9 @@ const DOMAINS: Readonly<Record<ApprovalSubject, string>> = { APPLY: "alz-apply-a
 /**
  * Whether the requester of a change may also approve it (owner decisions on issue #39, 2026-10-27: 6432129534, 6432161993).
  * DEV and QA: one person may request and approve. PROD: three distinct people, the requester plus two approvers, and an
- * approval from the requester's key or id is refused. A code constant, never a contract field or a flag, so no file can widen it.
+ * approval from the requester's key or id is refused. A frozen code constant, never a contract field or a flag, so no file or caller can widen it.
  */
-export const REQUESTER_MAY_APPROVE: Readonly<Record<ApplyEnvironment, boolean>> = { DEV: true, QA: true, PROD: false };
+export const REQUESTER_MAY_APPROVE: Readonly<Record<ApplyEnvironment, boolean>> = Object.freeze({ DEV: true, QA: true, PROD: false });
 const REQUEST_KEYS = ["artifactSha256", "environment", "nonce", "requesterId", "schemaVersion"];
 const SKEW_MS = 60_000;
 const NONCE = /^[a-f0-9]{32}$/;

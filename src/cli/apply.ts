@@ -820,7 +820,11 @@ const preflightCommand: Command = async (flags, _terminal, deps, out) => {
 
 // --- prepare -----------------------------------------------------------------------------------------------
 
-const NEXT_COMMAND: Readonly<Record<"qualify" | "seal", string>> = { qualify: "./alz apply qualify", seal: "./alz apply seal" };
+/** The command each `prepare` next step names; flags after the request and manifest are placeholders the operator fills in. */
+const NEXT_COMMAND: Readonly<Record<"qualify" | "seal", { command: string; trailing: string }>> = {
+  qualify: { command: "./alz apply qualify", trailing: "" },
+  seal: { command: "./alz apply seal", trailing: " --requester ID --key REQUESTER_KEY.pem" },
+};
 
 /** The readable review of a preparation: what was bound, what is still missing, and what the files are (and are not). */
 function preparationReview(prepared: Prepared): string {
@@ -872,7 +876,7 @@ const prepareCommand: Command = async (flags, terminal, deps, out) => {
   out.say(preparationReview(result) + "\nSaved (private to this account):\n  request   " + written.request + "\n  manifest  " + written.manifest +
     "\n  record    " + written.record + "\n\n" + (result.next.step === "blocked"
       ? "NEXT BLOCKED (" + result.next.blocker.toLowerCase() + " prerequisite): " + result.next.reason + "\n"
-      : "NEXT " + NEXT_COMMAND[result.next.step] + " --request " + written.request + " --manifest " + written.manifest + "\n  " + result.next.reason + "\n"));
+      : "NEXT " + NEXT_COMMAND[result.next.step].command + " --request " + written.request + " --manifest " + written.manifest + NEXT_COMMAND[result.next.step].trailing + "\n  " + result.next.reason + "\n"));
   out.report({
     code: "PREPARED", message: "Prepared " + result.summary.engine + " for " + result.summary.environment + ".",
     data: { files: written, summary: result.summary, gaps: result.gaps, next: result.next, request: result.request, manifest: result.manifest },

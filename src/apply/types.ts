@@ -92,7 +92,10 @@ export type RequestStatement = {
   requesterId: string;
   artifactSha256: string;
   environment: ApplyEnvironment;
-  /** 128-bit random value, consumed with the approvals when the plan is applied. */
+  /**
+   * 128-bit random value, recorded (not consumed) when the plan is applied. Replay is prevented by the artifact ledger: an
+   * artifact applies once, and a second apply of it is refused as ARTIFACT_ALREADY_APPLIED.
+   */
   nonce: string;
 };
 export type SealedRequest = { statement: RequestStatement; signatureBase64: string };
@@ -250,7 +253,10 @@ export type ApplyEvidence = {
   /** The product source commit that sealed the plan and ran the apply (they must be the same). */
   sourceCommit: string;
   approvals: { approverId: string; issuedAt: string }[];
-  /** Who requested the change (the verified requester signature's id) and the nonce that signature carried, consumed with the approvals. */
+  /**
+   * Who requested the change (the verified requester signature's id) and the nonce that signature carried. The nonce is
+   * recorded, not consumed; the artifact ledger prevents replay (ARTIFACT_ALREADY_APPLIED).
+   */
   requester: { requesterId: string; nonce: string };
   adapter: { adapterVersion: string; argvDigest: string };
   toolVersions: { engine: string };

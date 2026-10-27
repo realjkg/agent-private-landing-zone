@@ -87,7 +87,10 @@ const underApprovalDomain = (statement: RequestStatement, privateKeyPem: string)
 
 test("the rule is a code constant: DEV and QA let the requester approve, PROD never does, and no contract field or flag changes it", () => {
   assert.deepEqual(REQUESTER_MAY_APPROVE, { DEV: true, QA: true, PROD: false });
-  assert.ok(Object.isFrozen(REQUESTER_MAY_APPROVE) || true, "a Readonly record; the test pins its values");
+  assert.ok(Object.isFrozen(REQUESTER_MAY_APPROVE), "the rule is frozen at runtime, not only Readonly in its type");
+  assert.throws(() => { (REQUESTER_MAY_APPROVE as Record<string, boolean>).PROD = true; }, TypeError, "a strict-mode write to the frozen rule throws");
+  assert.equal(Reflect.set(REQUESTER_MAY_APPROVE, "PROD", true), false, "a reflective write is refused");
+  assert.equal(REQUESTER_MAY_APPROVE.PROD, false, "no mutation attempt widens PROD");
 });
 
 // --- positive flows ------------------------------------------------------------------------------------------

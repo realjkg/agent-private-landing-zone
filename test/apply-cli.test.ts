@@ -906,7 +906,8 @@ test("prepare writes the request and manifest from the contract and project, and
   const request = /request {3}(\S+)/.exec(run.stdout)?.[1];
   const manifest = /manifest {2}(\S+)/.exec(run.stdout)?.[1];
   assert.ok(request && manifest && existsSync(request) && existsSync(manifest));
-  assert.match(run.stdout, /NEXT \.\/alz apply seal --request /);
+  assert.match(run.stdout, /NEXT \.\/alz apply seal --request \S+ --manifest \S+ --requester ID --key REQUESTER_KEY\.pem\n/,
+    "the hint names the requester flags seal requires, as placeholders");
   assert.match(run.stdout, /input {11}location from terraform\.tfvars/);
   assert.doesNotMatch(run.stdout, /westeurope/, "a value is never printed");
   assert.equal(readdirSync(join(outDir, "DEV")).length, 3);

@@ -360,6 +360,39 @@ test("the console starts only the nine named steps, from values the router turns
   assert.match(adapter, /channel: "UI"/);
 });
 
+test("/seal refuses a missing or unusable requester id, a missing key path and any extra field before a job exists", async () => {
+  const w = await world();
+  const { port } = await serve(w);
+  await choose(port);
+  const target = targetOf("DEV");
+  const project = writeProject(fresh("project"), target);
+  const valid = { environment: "DEV", requestPath: requestFile(project, target, "DEV"), manifestPath: json(project.manifest, "manifest"), requesterId: REQUESTER.requesterId, keyPath: requesterKeyFile() };
+  const { requesterId: _requesterId, ...withoutRequester } = valid;
+  const { keyPath: _keyPath, ...withoutKey } = valid;
+  const refused: [string, Record<string, unknown>][] = [
+    ["missing requesterId", withoutRequester],
+    ["empty requesterId", { ...valid, requesterId: "" }],
+    ["requesterId with a space", { ...valid, requesterId: "car ol" }],
+    ["requesterId with a newline", { ...valid, requesterId: "carol\nalice" }],
+    ["requesterId as an array", { ...valid, requesterId: [REQUESTER.requesterId] }],
+    ["requesterId as a number", { ...valid, requesterId: 7 }],
+    ["missing keyPath", withoutKey],
+    ["empty keyPath", { ...valid, keyPath: "" }],
+    ["keyPath as a flag", { ...valid, keyPath: "--yes" }],
+    ["extra privateKeyPem field", { ...valid, privateKeyPem: REQUESTER.privateKeyPem }],
+  ];
+  for (const [label, body] of refused) {
+    const reply = await call(port, "POST", "/pilot/seal", { body });
+    assert.equal(reply.status, 400, label + " -> " + reply.status);
+    assert.equal((await stateOf(port)).run, null, label + ": no job was started");
+  }
+  assert.deepEqual(engineCalls(), [], "no engine ran");
+  // The same body with every field valid is accepted, so each refusal above came from the one field it changed.
+  assert.equal((await call(port, "POST", "/pilot/seal", { body: valid })).status, 202);
+  await waiting(port);
+  await call(port, "POST", "/pilot/cancel", { body: {} });
+});
+
 test("the job route still refuses the pilot: the catalog's apply card is a handoff, and a job for it is not accepted", async () => {
   const w = await world();
   let ran = 0;
