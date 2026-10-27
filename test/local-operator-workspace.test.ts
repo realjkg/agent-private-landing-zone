@@ -330,8 +330,10 @@ function launcher(label: string, npmScript: string): Launcher {
   mkdirSync(bin, { recursive: true });
   writeFileSync(join(root, "alz"), readFileSync("alz", "utf8"));
   chmodSync(join(root, "alz"), 0o755);
-  // The fake git answers only `rev-parse HEAD`, with the commit the test chooses through FAKE_COMMIT.
-  writeFileSync(join(bin, "git"), "#!/bin/sh\necho \"${FAKE_COMMIT:-unknown}\"\n");
+  // The fake git answers `rev-parse --show-toplevel` with FAKE_TOPLEVEL (the copy's root unless a test says otherwise) and
+  // `rev-parse HEAD` with FAKE_COMMIT; FAKE_COMMIT=unknown is no checkout at all, so git fails as it does outside one.
+  writeFileSync(join(bin, "git"), "#!/bin/sh\n[ \"${FAKE_COMMIT:-unknown}\" = unknown ] && exit 128\n" +
+    'case "$*" in *--show-toplevel*) echo "$FAKE_TOPLEVEL" ;; *) echo "$FAKE_COMMIT" ;; esac\n');
   // The fake npm's `run build:runtime` writes dist/ like the real compile (no marker), and `run build` adds the marker like the
   // real build does after a successful compile; then the test's own script runs.
   writeFileSync(join(bin, "npm"), "#!/bin/sh\necho \"npm $*\"\n" +
@@ -342,7 +344,7 @@ function launcher(label: string, npmScript: string): Launcher {
   chmodSync(join(bin, "npm"), 0o755);
   const run: Launcher["run"] = (args, env = {}) => spawnSync("bash", [join(root, "alz"), ...args], {
     encoding: "utf8", cwd: root,
-    env: { PATH: bin + ":" + dirname(process.execPath) + ":/usr/bin:/bin", HOME: root, FAKE_COMMIT: "c0ffee", ...env },
+    env: { PATH: bin + ":" + dirname(process.execPath) + ":/usr/bin:/bin", HOME: root, FAKE_COMMIT: "c0ffee", FAKE_TOPLEVEL: root, ...env },
   });
   return { root, bin, run };
 }
@@ -381,9 +383,16 @@ test("./alz refuses to run dist/ while the bootstrap state is unfinished or from
     assert.match(result.stdout, REFUSAL);
     result = run(["help"], { FAKE_COMMIT: "unknown" });
     assert.equal(result.status, 0, "no checkout: the marker's commit cannot be compared, so the build runs");
+    result = run(["help"], { FAKE_TOPLEVEL: dirname(root) });
+    assert.equal(result.status, 0, "the copy is not the top of the enclosing checkout: that checkout's commit is not its own, so it runs");
+    // A marker that says "unknown" is a build of no known commit: refused in a checkout (npm run build:ui drops it too), and
+    // run only where the launcher cannot read a commit itself.
     writeFileSync(join(root, "dist", ".alz-build-complete"), JSON.stringify({ schemaVersion: 1, sourceCommit: "unknown" }) + "\n");
     result = run(["help"]);
-    assert.equal(result.status, 0, "an archive's marker says unknown and runs in a checkout too");
+    assert.equal(result.status, 2, "an unknown marker in a checkout at a known commit is refused");
+    assert.match(result.stdout, REFUSAL);
+    result = run(["help"], { FAKE_COMMIT: "unknown" });
+    assert.equal(result.status, 0, "no checkout and an unknown marker (a build with no git, as in the Docker stage): runs");
     writeFileSync(join(root, "dist", ".alz-build-complete"), "not json");
     assert.equal(run(["help"]).status, 2, "an unreadable marker is refused");
     fakeDist(root);
@@ -526,7 +535,11 @@ test("a stale marker never survives a failed build: npm run build removes it bef
     mkdirSync(bin, { recursive: true });
     writeFileSync(join(bin, "tsc"), "#!/bin/sh\nmkdir -p dist; echo partial > dist/partial.js; exit 2\n");
     chmodSync(join(bin, "tsc"), 0o755);
-    // The fake bin comes first, so its tsc and vite shadow the real ones; npm itself comes from this test's own PATH.
+    // A fake git that fails as it does outside a checkout, so "unknown" below holds wherever the temporary folder is, even
+    // when TMPDIR is inside some git checkout.
+    writeFileSync(join(bin, "git"), "#!/bin/sh\nexit 128\n");
+    chmodSync(join(bin, "git"), 0o755);
+    // The fake bin comes first, so its tsc, vite and git shadow the real ones; npm itself comes from this test's own PATH.
     const env = { ...process.env, PATH: bin + ":" + (process.env.PATH ?? ""), HOME: root };
     const failed = spawnSync("npm", ["run", "build"], { cwd: root, encoding: "utf8", env });
     assert.notEqual(failed.status, 0, failed.stdout + failed.stderr);
@@ -545,5 +558,90 @@ test("a stale marker never survives a failed build: npm run build removes it bef
     assert.ok(!existsSync(join(root, "dist", ".alz-build-complete")));
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a complete, current build stays runnable after a UI rebuild: npm run build, then npm run build:ui, then ./alz help exits 0", () => {
+  // The real package.json scripts and the real launcher in a temporary checkout copy, with fake tsc, vite, tsx and git on PATH:
+  // the order scripts/admin-check.sh, npm test, npm run check and qa-affected local use. Synthetic: nothing real is built.
+  const root = mkdtempSync(join(tmpdir(), "alz-build-ui-launch-"));
+  try {
+    const pkg = JSON.parse(readFileSync("package.json", "utf8")) as { scripts: Record<string, string> };
+    const scripts = Object.fromEntries(["build", "build:runtime", "build:complete", "build:ui"].map((name) => [name, pkg.scripts[name]]));
+    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "fake", version: "0.0.0", scripts }));
+    writeFileSync(join(root, "alz"), readFileSync("alz", "utf8"));
+    chmodSync(join(root, "alz"), 0o755);
+    const bin = join(root, "fake-bin");
+    mkdirSync(bin, { recursive: true });
+    const tool = (name: string, body: string) => { writeFileSync(join(bin, name), "#!/bin/sh\n" + body + "\n"); chmodSync(join(bin, name), 0o755); };
+    tool("git", 'case "$*" in *--show-toplevel*) echo "$FAKE_TOPLEVEL" ;; *) echo c0ffee ;; esac');
+    tool("tsc", "mkdir -p dist/cli; echo \"console.log('operator ran ' + process.argv.slice(2).join(' '))\" > dist/cli/operator.js");
+    tool("vite", "mkdir -p dist/operator-ui/app; echo ui > dist/operator-ui/app/index.html");
+    tool("tsx", "exit 0");
+    const env = { ...process.env, PATH: bin + ":" + (process.env.PATH ?? ""), HOME: root, FAKE_TOPLEVEL: root };
+    const step = (command: string, args: string[]) => spawnSync(command, args, { cwd: root, encoding: "utf8", env });
+    const help = () => step("bash", [join(root, "alz"), "help"]);
+    for (const script of ["build", "build:ui"]) {
+      const result = step("npm", ["run", script]);
+      assert.equal(result.status, 0, script + ": " + result.stdout + result.stderr);
+    }
+    let result = help();
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stdout, /operator ran help/);
+    // The same in a bootstrapped checkout (state finished at HEAD): another UI rebuild does not make ./alz refuse.
+    mkdirSync(join(root, ".runs", "bootstrap"), { recursive: true });
+    writeFileSync(join(root, ".runs", "bootstrap", "state.json"), JSON.stringify({ startedAt: "2026-10-27T00:00:00Z", step: "done", completedAt: "2026-10-27T00:05:00Z", sourceCommit: "c0ffee" }));
+    assert.equal(step("npm", ["run", "build:ui"]).status, 0);
+    result = help();
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stdout, /operator ran help/);
+    // A failing UI build still leaves a refused dist/.
+    tool("vite", "exit 3");
+    assert.notEqual(step("npm", ["run", "build:ui"]).status, 0);
+    result = help();
+    assert.equal(result.status, 2);
+    assert.match(result.stdout, REFUSAL);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a released archive extracted inside another git checkout is judged on its own marker, not that checkout's commit", () => {
+  // Real git: an enclosing repository with one commit, and an archive-like copy (launcher, dist/, marker naming the CI commit,
+  // no state, no .git) in a subfolder of it. Then the copy itself becomes a checkout, where its own commit counts again.
+  const outer = mkdtempSync(join(tmpdir(), "alz-archive-in-repo-"));
+  const env = { ...process.env, HOME: outer, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.invalid", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.invalid" };
+  const git = (cwd: string, ...args: string[]) => {
+    const result = spawnSync("git", args, { cwd, encoding: "utf8", env });
+    assert.equal(result.status, 0, "git " + args.join(" ") + ": " + result.stderr);
+    return result.stdout.trim();
+  };
+  try {
+    git(outer, "init", "-q");
+    writeFileSync(join(outer, "README"), "outer\n");
+    git(outer, "add", "README");
+    git(outer, "commit", "-q", "-m", "outer");
+    const archive = join(outer, "vendor", "alz");
+    mkdirSync(archive, { recursive: true });
+    writeFileSync(join(archive, "alz"), readFileSync("alz", "utf8"));
+    chmodSync(join(archive, "alz"), 0o755);
+    fakeDist(archive);
+    writeFileSync(join(archive, "dist", ".alz-build-complete"), JSON.stringify({ schemaVersion: 1, sourceCommit: "1234567890abcdef1234567890abcdef12345678" }) + "\n");
+    const help = () => spawnSync("bash", [join(archive, "alz"), "help"], { cwd: archive, encoding: "utf8", env });
+    let result = help();
+    assert.equal(result.status, 0, "the enclosing checkout's commit is not the archive's: " + result.stdout + result.stderr);
+    assert.match(result.stdout, /operator ran help/);
+    // Once the folder is a checkout of its own, its HEAD counts: the CI commit's marker is refused, a marker for HEAD runs.
+    git(archive, "init", "-q");
+    git(archive, "add", "alz");
+    git(archive, "commit", "-q", "-m", "inner");
+    result = help();
+    assert.equal(result.status, 2, "a marker for another commit than the copy's own checkout is refused");
+    assert.match(result.stdout, REFUSAL);
+    writeFileSync(join(archive, "dist", ".alz-build-complete"), JSON.stringify({ schemaVersion: 1, sourceCommit: git(archive, "rev-parse", "HEAD") }) + "\n");
+    result = help();
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+  } finally {
+    rmSync(outer, { recursive: true, force: true });
   }
 });

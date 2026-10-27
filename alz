@@ -9,8 +9,12 @@ STATE="$ROOT/.runs/bootstrap/state.json"
 # every step); without it dist/ is an unfinished build, and with another commit than the checkout's it is a stale one.
 BUILD_MARKER="$ROOT/dist/.alz-build-complete"
 
-# The commit this checkout is at, or "unknown" outside a git checkout. A build is only trusted for the commit it was made from.
+# The commit this checkout is at, or "unknown" when $ROOT is not itself the top of a git checkout: an archive extracted inside
+# some other repository must not be judged by that repository's commit. A build is only trusted for the commit it was made from.
 source_commit() {
+  local top
+  top="$(git -C "$ROOT" rev-parse --show-toplevel 2>/dev/null)" || { echo unknown; return; }
+  if [[ -z "$top" || ! -d "$top" || "$(cd "$top" && pwd -P)" != "$(cd "$ROOT" && pwd -P)" ]]; then echo unknown; return; fi
   git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown
 }
 
@@ -109,15 +113,17 @@ if [[ -f "$DIST" ]]; then
     fi
   fi
   if [[ ! -f "$BUILD_MARKER" ]]; then refuse_build; fi
-  # A marker from another commit than the checkout's is a stale build. An archive has no checkout, so both read "unknown".
+  # In a checkout, the marker must name the checkout's commit; a marker for another commit, or one that says "unknown", is not
+  # a build of this source (the same rule npm run build:ui applies when it keeps a marker). Only when this launcher cannot read
+  # a commit itself (an archive, no checkout) is any well-formed marker accepted.
   if ! node -e '
     const fs = require("node:fs");
     let marker;
     try { marker = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); } catch { process.exit(1); }
-    const built = typeof marker.sourceCommit === "string" ? marker.sourceCommit : "";
+    const built = marker && typeof marker.sourceCommit === "string" ? marker.sourceCommit : "";
     if (built === "") process.exit(1);
     const head = process.argv[2];
-    process.exit(built === "unknown" || head === "unknown" || built === head ? 0 : 1);
+    process.exit(head === "unknown" || built === head ? 0 : 1);
   ' "$BUILD_MARKER" "$(source_commit)"; then refuse_build; fi
   exec node "$DIST" "$@"
 fi
