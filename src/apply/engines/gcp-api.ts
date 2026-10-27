@@ -1,11 +1,12 @@
 import { randomBytes } from "node:crypto";
-import { closeSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { closeSync, lstatSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { canonicalJson } from "../../teardown/manifest.js";
 import { ALZ_TAG_KEYS } from "../../teardown/unit.js";
 import { identityVariables, type ExecutionIdentity } from "../../tools/identity.js";
 import { sha256 } from "../../util/sha256.js";
+import { GCP, checkCredentialConfiguration } from "../providers/gcp.js";
 import { requesterKeyRefusal, signRequest, verifyRequestSignature } from "../approval.js";
 import { HASH, TOKEN_FILE } from "../constants.js";
 import type { ApplyEnvironment, ApproverEntry, PilotContract, SealedRequest } from "../types.js";
@@ -36,13 +37,14 @@ const IAM_CREDENTIALS_HOST = "iamcredentials.googleapis.com";
 const PUBSUB_HOST = "pubsub.googleapis.com";
 const STS_TOKEN_URL = "https://" + STS_HOST + "/v1/token";
 const SCOPE_EXCHANGE = "https://www.googleapis.com/auth/cloud-platform";
-/** APPLY's bearer reaches Pub/Sub only; DISCOVERY's reads only. */
-const SCOPE_BY_IDENTITY: Readonly<Record<"APPLY" | "DISCOVERY", string>> = {
-  APPLY: "https://www.googleapis.com/auth/pubsub",
-  DISCOVERY: "https://www.googleapis.com/auth/cloud-platform.read-only",
-};
+/**
+ * The scope both identities' bearers carry. Pub/Sub accepts only `cloud-platform` and `pubsub` on `topics.get`, `.create`
+ * and `.delete` (its v1 discovery document); `cloud-platform.read-only` is refused with 403. The narrower of the two is
+ * requested for both identities, so a bearer reaches Pub/Sub only. Read-only is IAM's job, not the scope's: DISCOVERY's
+ * service account holds `pubsub.topics.get` and nothing else (#308).
+ */
+const SCOPE_PUBSUB = "https://www.googleapis.com/auth/pubsub";
 const TOKEN_LIFETIME = "300s";
-const CONFIG_MAX_BYTES = 64 * 1024;
 
 /** A GCP project id. */
 export const PROJECT_ID = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
@@ -51,10 +53,8 @@ export const TOPIC_ID = /^alz-[a-z0-9-]{1,59}[a-z0-9]$/;
 const LABEL_VALUE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 const UNIT_ID = /^alzu-[0-9a-f]{20}$/;
 const SERVICE_ACCOUNT = /^([a-z][a-z0-9-]{4,28}[a-z0-9])@([a-z][a-z0-9-]{4,28}[a-z0-9])\.iam\.gserviceaccount\.com$/;
-const WIF_AUDIENCE = /^\/\/iam\.googleapis\.com\/projects\/[0-9]{1,20}\/locations\/global\/workloadIdentityPools\/[a-z0-9-]{4,32}\/providers\/[a-z0-9-]{4,32}$/;
-const SUBJECT_TOKEN_TYPES = new Set(["urn:ietf:params:oauth:token-type:jwt", "urn:ietf:params:oauth:token-type:id_token"]);
-/** Fields that mark a credential file as holding a secret: a service-account key or a user's refresh token. */
-const SECRET_FIELDS = ["private_key", "private_key_id", "client_secret", "refresh_token", "token", "access_token"];
+/** The seal's own nonce, bound into the artifact: every seal is a new artifact, so a stopped plan is recovered by sealing again. */
+const SEAL_NONCE = /^[0-9a-f]{32}$/;
 const REQUEST_KEYS = "kind,labels,projectId,topicId";
 const LABEL_KEYS = [ALZ_TAG_KEYS.build, ALZ_TAG_KEYS.managedBy, ALZ_TAG_KEYS.unit].sort().join();
 
@@ -76,6 +76,12 @@ export type SealedGcpApiPlan = {
   create: GcpApiCall;
   readBack: GcpApiCall;
   cleanup: GcpApiCall;
+  /**
+   * Fresh random hex from this seal, inside the hash the requester signs. Sealing the same request again gives a new
+   * artifact, which is how a plan stopped before its create is recovered (the ledger applies each artifact once). A second
+   * topic cannot follow: every seal and every apply reads the topic ABSENT first, and Pub/Sub refuses a duplicate name (409).
+   */
+  sealNonce: string;
   artifactSha256: string;
   requesterId: string;
   request: SealedRequest;
@@ -134,8 +140,8 @@ function callsOf(request: GcpApiRequest): Pick<SealedGcpApiPlan, "create" | "rea
   return { create: { method: "PUT", url, body: { labels: { ...request.labels } } }, readBack: { method: "GET", url, body: null }, cleanup: { method: "DELETE", url, body: null } };
 }
 
-const artifactOf = (environment: ApplyEnvironment, request: GcpApiRequest): string =>
-  sha256(canonicalJson({ engine: GCP_API_ENGINE, provider: "GCP", environment, precondition: "ABSENT", resource: request, ...callsOf(request) }));
+const artifactOf = (environment: ApplyEnvironment, request: GcpApiRequest, sealNonce: string): string =>
+  sha256(canonicalJson({ engine: GCP_API_ENGINE, provider: "GCP", environment, precondition: "ABSENT", resource: request, ...callsOf(request), sealNonce }));
 
 /** The engine's own verification the requester allowlist needs (only `approvers` is read). */
 const allowlistOf = (target: GcpApiTarget): PilotContract => ({ approvers: target.approvers }) as unknown as PilotContract;
@@ -155,15 +161,16 @@ export async function sealGcpApiPlan(input: { request: unknown; requester: { req
   if (!read.ok) return read;
   if (read.existence !== "ABSENT") return refuse("TOPIC_EXISTS");
   const environment = deps.target.environment;
-  const artifactSha256 = artifactOf(environment, checked.request);
+  const sealNonce = randomBytes(16).toString("hex");
+  const artifactSha256 = artifactOf(environment, checked.request, sealNonce);
   const request = signRequest({ schemaVersion: 1, artifactSha256, environment, requesterId: input.requester.requesterId, nonce: randomBytes(16).toString("hex") }, input.requester.privateKeyPem);
   return {
     ok: true,
-    sealed: { schemaVersion: 1, engine: GCP_API_ENGINE, provider: "GCP", environment, resource: checked.request, precondition: "ABSENT", ...calls, artifactSha256, requesterId: input.requester.requesterId, request },
+    sealed: { schemaVersion: 1, engine: GCP_API_ENGINE, provider: "GCP", environment, resource: checked.request, precondition: "ABSENT", ...calls, sealNonce, artifactSha256, requesterId: input.requester.requesterId, request },
   };
 }
 
-const PLAN_KEYS = "artifactSha256,cleanup,create,engine,environment,precondition,provider,readBack,request,requesterId,resource,schemaVersion";
+const PLAN_KEYS = "artifactSha256,cleanup,create,engine,environment,precondition,provider,readBack,request,requesterId,resource,schemaVersion,sealNonce";
 
 /** A sealed plan exactly as sealing makes it, for this contract: same fields, same derived calls, same hash, a valid requester signature. */
 export function verifyGcpApiPlan(value: unknown, target: GcpApiTarget): Ok<{ plan: SealedGcpApiPlan }> | GcpApiRefusal {
@@ -173,7 +180,8 @@ export function verifyGcpApiPlan(value: unknown, target: GcpApiTarget): Ok<{ pla
   const checked = checkRequest(value.resource, target);
   if (!checked.ok) return checked;
   if (value.precondition !== "ABSENT" || canonicalJson({ create: value.create, readBack: value.readBack, cleanup: value.cleanup }) !== canonicalJson(callsOf(checked.request))) return refuse("PLAN_FORGED");
-  if (typeof value.artifactSha256 !== "string" || !HASH.test(value.artifactSha256) || value.artifactSha256 !== artifactOf(target.environment, checked.request)) return refuse("PLAN_FORGED");
+  if (typeof value.sealNonce !== "string" || !SEAL_NONCE.test(value.sealNonce)) return refuse("PLAN_FORGED");
+  if (typeof value.artifactSha256 !== "string" || !HASH.test(value.artifactSha256) || value.artifactSha256 !== artifactOf(target.environment, checked.request, value.sealNonce)) return refuse("PLAN_FORGED");
   if (typeof value.requesterId !== "string") return refuse("PLAN_FORGED");
   const verdict = verifyRequestSignature({ request: value.request, artifactSha256: value.artifactSha256, environment: target.environment, requesterId: value.requesterId, contract: allowlistOf(target) });
   if (!verdict.ok) return refuse(verdict.code);
@@ -202,28 +210,24 @@ function allowed(request: GcpHttpRequest, topic: string): boolean {
 
 type GoogleIdentity = { audience: string; subjectTokenType: string; tokenFile: string; serviceAccount: string };
 
-/** The identity's credential configuration: a workload identity federation file that holds no secret, impersonating an SA of the contract's project. */
+/**
+ * The identity's credential configuration, judged by path 5's rules (src/apply/providers/gcp.ts), so one file has one verdict:
+ * first every identity in the environment together (no fallback variable, no identity carrying the operator's own
+ * credentials, and no two identities sharing a service account, a credential configuration or a token file:
+ * `IDENTITY_COLLAPSED`), then this identity's file (a workload identity federation file source by key allowlist, with no
+ * `service_account_impersonation_url` of its own, P1). Its service account must be of the contract's project.
+ */
 function identityOf(env: NodeJS.ProcessEnv, identity: "APPLY" | "DISCOVERY", projectId: string): Ok<{ id: GoogleIdentity }> | GcpApiRefusal {
+  const ambient = GCP.ambientRefusal(env);
+  if (ambient) return refuse(ambient.code);
   const variables = identityVariables(env, identity as ExecutionIdentity);
   const configPath = variables.get("GOOGLE_APPLICATION_CREDENTIALS") ?? "";
-  const serviceAccount = (variables.get("GOOGLE_IMPERSONATE_SERVICE_ACCOUNT") ?? "").toLowerCase();
+  const serviceAccount = variables.get("GOOGLE_IMPERSONATE_SERVICE_ACCOUNT") ?? "";
   const sa = SERVICE_ACCOUNT.exec(serviceAccount);
   if (!TOKEN_FILE.test(configPath) || !sa || sa[2] !== projectId) return refuse("IDENTITY_NOT_CONFIGURED");
-  let config: unknown;
-  try {
-    const bytes = readFileSync(configPath);
-    if (bytes.length > CONFIG_MAX_BYTES) return refuse("IDENTITY_NOT_CONFIGURED");
-    config = JSON.parse(bytes.toString("utf8"));
-  } catch { return refuse("IDENTITY_NOT_CONFIGURED"); }
-  if (!isRecord(config) || config.type !== "external_account" || SECRET_FIELDS.some((field) => field in config)) return refuse("IDENTITY_NOT_CONFIGURED");
-  const source = config.credential_source;
-  if (typeof config.audience !== "string" || !WIF_AUDIENCE.test(config.audience) || config.token_url !== STS_TOKEN_URL ||
-    typeof config.subject_token_type !== "string" || !SUBJECT_TOKEN_TYPES.has(config.subject_token_type) ||
-    !isRecord(source) || Object.keys(source).join() !== "file" || typeof source.file !== "string" || !TOKEN_FILE.test(source.file)) return refuse("IDENTITY_NOT_CONFIGURED");
-  // An impersonation URL in the file, if any, must name the same SA: the env variable is the attested principal.
-  if ("service_account_impersonation_url" in config &&
-    config.service_account_impersonation_url !== "https://" + IAM_CREDENTIALS_HOST + "/v1/projects/-/serviceAccounts/" + serviceAccount + ":generateAccessToken") return refuse("IDENTITY_NOT_CONFIGURED");
-  return { ok: true, id: { audience: config.audience, subjectTokenType: config.subject_token_type, tokenFile: source.file, serviceAccount } };
+  const config = checkCredentialConfiguration(configPath);
+  if (!config.ok) return refuse("IDENTITY_NOT_CONFIGURED");
+  return { ok: true, id: { audience: config.audience, subjectTokenType: config.subjectTokenType, tokenFile: config.tokenFile, serviceAccount } };
 }
 
 /** A gated sender for one run: every request is judged by `allowed` before it exists. Status 0 means not sent or no answer. */
@@ -250,7 +254,7 @@ async function bearerFor(identity: "APPLY" | "DISCOVERY", deps: Pick<GcpApiDeps,
   const impersonated = await send({
     method: "POST", url: "https://" + IAM_CREDENTIALS_HOST + "/v1/projects/-/serviceAccounts/" + id.id.serviceAccount + ":generateAccessToken",
     headers: { "content-type": "application/json", authorization: "Bearer " + federated.token },
-    body: JSON.stringify({ scope: [SCOPE_BY_IDENTITY[identity]], lifetime: TOKEN_LIFETIME }),
+    body: JSON.stringify({ scope: [SCOPE_PUBSUB], lifetime: TOKEN_LIFETIME }),
   });
   return tokenField(impersonated, "accessToken");
 }
@@ -287,6 +291,17 @@ async function readTopic(url: string, deps: Pick<GcpApiDeps, "env" | "target" | 
 /* ------------------------------------------------------------------ ledger */
 
 type LedgerState = "CLAIMED" | "APPLIED" | "NOT_APPLIED" | "UNCERTAIN" | "CLEANED";
+
+/**
+ * The ledger decides what cleanup may delete, so only this user may write it: a real directory (not a symlink) owned by
+ * this process's user, with no group or other permission bits. Anything else is refused before the ledger is read.
+ */
+function ledgerPrivate(dir: string): boolean {
+  try {
+    const stat = lstatSync(dir);
+    return stat.isDirectory() && (stat.mode & 0o077) === 0 && (process.getuid === undefined || stat.uid === process.getuid());
+  } catch { return false; }
+}
 const ledgerPath = (dir: string, artifactSha256: string): string => join(dir, "gcp-api-" + artifactSha256 + ".json");
 
 /** Claims a plan before anything is sent: an exclusive create, so a second apply of the same plan, even a concurrent one, is refused. */
@@ -334,6 +349,7 @@ export async function applyGcpApiPlan(value: unknown, deps: GcpApiDeps): Promise
   const verified = verifyGcpApiPlan(value, deps.target);
   if (!verified.ok) return stopped(verified.code);
   const plan = verified.plan;
+  if (!ledgerPrivate(deps.ledgerDir)) return stopped("LEDGER_NOT_PRIVATE");
   if (stateOf(deps.ledgerDir, plan.artifactSha256) !== undefined) return stopped("ALREADY_APPLIED");
   const before = await readTopic(plan.readBack.url, deps);
   if (!before.ok) return stopped(before.code);
@@ -370,6 +386,8 @@ export type GcpApiCleanupResult = { ok: true; outcome: "DELETED" | "ALREADY_ABSE
 /**
  * Deletes the run-created topic only: the plan must be in this ledger as applied (or uncertain), and the topic must still
  * carry exactly the sealed labels. A topic that changed is kept (OWNERSHIP_MISMATCH). Verified absent by a read-back after.
+ * Pub/Sub's delete takes no etag, so a label change between the read and the DELETE is not caught; this is accepted for one
+ * run-named `alz-` topic in DEV (docs/act-pilot-gcp-api.md, "Cleanup").
  */
 export async function cleanupGcpApiPlan(value: unknown, deps: GcpApiDeps): Promise<GcpApiCleanupResult> {
   const calls: CallEvidence[] = [];
@@ -378,6 +396,7 @@ export async function cleanupGcpApiPlan(value: unknown, deps: GcpApiDeps): Promi
   const verified = verifyGcpApiPlan(value, deps.target);
   if (!verified.ok) return stopped(verified.code);
   const plan = verified.plan;
+  if (!ledgerPrivate(deps.ledgerDir)) return stopped("LEDGER_NOT_PRIVATE");
   const state = stateOf(deps.ledgerDir, plan.artifactSha256);
   if (state === "CLEANED") return { ok: true, outcome: "ALREADY_ABSENT", calls };
   if (state !== "APPLIED" && state !== "UNCERTAIN") return stopped("NOT_RUN_CREATED");

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -25,18 +25,25 @@ const TOPIC_URL = "https://pubsub.googleapis.com/v1/projects/" + PROJECT + "/top
 const LABELS = { "alz-managed-by": "alz", "alz-unit": "alzu-0123456789abcdef0123", "alz-build": "alz-pilot-dev-0123456789ab" };
 const AUDIENCE = "//iam.googleapis.com/projects/123456789/locations/global/workloadIdentityPools/alz-pool/providers/alz-oidc";
 /** Canaries: none of these may appear in any result, record or error. */
-const OIDC = "oidc-canary-subject-token";
+const OIDC = { APPLY: "oidc-canary-apply-subject-token", DISCOVERY: "oidc-canary-discovery-subject-token" } as const;
 const FEDERATED = "federated-canary-token";
 const BEARER = { APPLY: "apply-canary-bearer", DISCOVERY: "discovery-canary-bearer" } as const;
+/**
+ * The only OAuth scopes Pub/Sub accepts on projects.topics.get, .create and .delete, from its public v1 discovery document
+ * (https://pubsub.googleapis.com/$discovery/rest?version=v1). A bearer minted with any other scope, `cloud-platform.read-only`
+ * included, gets 403 from the real service, and from this fake.
+ */
+const PUBSUB_ACCEPTED_SCOPES = new Set(["https://www.googleapis.com/auth/cloud-platform", "https://www.googleapis.com/auth/pubsub"]);
 
 const target = (over: Partial<GcpApiTarget> = {}): GcpApiTarget => ({ environment: "DEV", projectId: PROJECT, approvers: approvers as ApproverEntry[], ...over });
 const request = (over: Record<string, unknown> = {}) => ({ kind: "PUBSUB_TOPIC", projectId: PROJECT, topicId: TOPIC, labels: { ...LABELS }, ...over });
 
+/** Two separate principals: each identity has its own token file, credential configuration and service account. */
 function identityEnv(dir: string): NodeJS.ProcessEnv {
-  const tokenFile = join(dir, "oidc.jwt");
-  writeFileSync(tokenFile, OIDC + "\n");
   const env: NodeJS.ProcessEnv = {};
   for (const identity of ["APPLY", "DISCOVERY"] as const) {
+    const tokenFile = join(dir, identity.toLowerCase() + "-oidc.jwt");
+    writeFileSync(tokenFile, OIDC[identity] + "\n");
     const config = join(dir, identity.toLowerCase() + "-wif.json");
     writeFileSync(config, JSON.stringify({
       type: "external_account", audience: AUDIENCE, subject_token_type: "urn:ietf:params:oauth:token-type:jwt",
@@ -48,27 +55,36 @@ function identityEnv(dir: string): NodeJS.ProcessEnv {
   return env;
 }
 
-/** The fake Google: STS, IAM credentials and one Pub/Sub project. Scope decides which bearer is minted; Pub/Sub checks it. */
+/**
+ * The fake Google: STS, IAM credentials and one Pub/Sub project. The impersonated service account decides which bearer is
+ * minted, and the bearer carries the scope it was minted with. Pub/Sub refuses a bearer whose scope it does not accept
+ * (`PUBSUB_ACCEPTED_SCOPES`), then applies IAM: DISCOVERY's SA may only get, APPLY's only create and delete (#308).
+ */
 function fakeGoogle() {
   const topics = new Map<string, Record<string, string>>();
   const sent: GcpHttpRequest[] = [];
+  const scopeOf = new Map<string, string>();
   const hooks: { beforePut?: () => void; putStatus?: number } = {};
   const http: GcpHttp = async (req) => {
     sent.push(req);
     const url = new URL(req.url);
     if (url.hostname === "sts.googleapis.com") {
       const body = JSON.parse(req.body ?? "{}");
-      return body.subjectToken === OIDC && body.audience === AUDIENCE ? { status: 200, body: JSON.stringify({ access_token: FEDERATED }) } : { status: 400, body: "{}" };
+      return Object.values(OIDC).includes(body.subjectToken) && body.audience === AUDIENCE ? { status: 200, body: JSON.stringify({ access_token: FEDERATED }) } : { status: 400, body: "{}" };
     }
     if (url.hostname === "iamcredentials.googleapis.com") {
       if (req.headers.authorization !== "Bearer " + FEDERATED) return { status: 401, body: "{}" };
-      const scope = JSON.parse(req.body ?? "{}").scope?.[0] as string;
-      const identity = scope.endsWith("/pubsub") ? "APPLY" : "DISCOVERY";
-      if (!req.url.includes("alz-pilot-dev-" + identity.toLowerCase() + "@")) return { status: 403, body: "{}" };
+      const scopes = JSON.parse(req.body ?? "{}").scope as unknown;
+      if (!Array.isArray(scopes) || scopes.length !== 1 || typeof scopes[0] !== "string") return { status: 400, body: "{}" };
+      const identity = (["APPLY", "DISCOVERY"] as const).find((id) => req.url.includes("/serviceAccounts/alz-pilot-dev-" + id.toLowerCase() + "@"));
+      if (!identity) return { status: 403, body: "{}" };
+      scopeOf.set(BEARER[identity], scopes[0]);
       return { status: 200, body: JSON.stringify({ accessToken: BEARER[identity], expireTime: "x" }) };
     }
     const name = url.pathname.replace(/^\/v1\//, "");
     const auth = req.headers.authorization;
+    const bearer = auth?.replace(/^Bearer /, "") ?? "";
+    if (!PUBSUB_ACCEPTED_SCOPES.has(scopeOf.get(bearer) ?? "")) return { status: 403, body: "{}" };
     if (req.method === "GET") {
       if (auth !== "Bearer " + BEARER.DISCOVERY) return { status: 403, body: "{}" };
       const labels = topics.get(name);
@@ -85,7 +101,7 @@ function fakeGoogle() {
     if (req.method === "DELETE") return topics.delete(name) ? { status: 200, body: "{}" } : { status: 404, body: "{}" };
     return { status: 400, body: "{}" };
   };
-  return { http, topics, sent, hooks };
+  return { http, topics, sent, hooks, scopeOf };
 }
 
 function setup(over: Partial<GcpApiDeps> = {}) {
@@ -105,7 +121,7 @@ async function seal(deps: GcpApiDeps, req: unknown = request()): Promise<SealedG
 /** No canary token appears in anything the engine returns, and no request left for another host. */
 function assertClean(google: ReturnType<typeof fakeGoogle>, ...results: unknown[]): void {
   const text = JSON.stringify(results);
-  for (const canary of [OIDC, FEDERATED, BEARER.APPLY, BEARER.DISCOVERY]) assert.ok(!text.includes(canary), canary);
+  for (const canary of [OIDC.APPLY, OIDC.DISCOVERY, FEDERATED, BEARER.APPLY, BEARER.DISCOVERY]) assert.ok(!text.includes(canary), canary);
   for (const req of google.sent) assert.match(req.url, /^https:\/\/(sts|iamcredentials|pubsub)\.googleapis\.com\//);
 }
 
@@ -134,6 +150,22 @@ test("SYNTHETIC: seal, apply, observe and cleanup one labeled Pub/Sub topic", as
   const again = await cleanupGcpApiPlan(plan, deps);
   assert.ok(again.ok && again.outcome === "ALREADY_ABSENT", "cleanup is idempotent");
   assertClean(google, plan, applied, observed, cleaned, again);
+  const minted = google.sent.filter((r) => r.url.startsWith("https://iamcredentials.googleapis.com/"));
+  assert.ok(minted.length >= 4);
+  for (const r of minted) assert.deepEqual(JSON.parse(r.body ?? "{}").scope, ["https://www.googleapis.com/auth/pubsub"], "both identities request a scope Pub/Sub accepts");
+});
+
+test("SYNTHETIC: the fake refuses a bearer whose scope Pub/Sub does not accept, so a read-only scope would fail the seal", async () => {
+  const google = fakeGoogle();
+  const mint = (scope: string) => google.http({
+    method: "POST", url: "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/alz-pilot-dev-discovery@" + PROJECT + ".iam.gserviceaccount.com:generateAccessToken",
+    headers: { authorization: "Bearer " + FEDERATED }, body: JSON.stringify({ scope: [scope] }),
+  });
+  const get = () => google.http({ method: "GET", url: TOPIC_URL, headers: { authorization: "Bearer " + BEARER.DISCOVERY } });
+  assert.equal((await mint("https://www.googleapis.com/auth/cloud-platform.read-only")).status, 200);
+  assert.equal((await get()).status, 403, "cloud-platform.read-only is not a Pub/Sub scope");
+  assert.equal((await mint("https://www.googleapis.com/auth/pubsub")).status, 200);
+  assert.equal((await get()).status, 404, "the pubsub scope reaches the API; IAM then allows the get");
 });
 
 test("SYNTHETIC: a second apply of the same plan is refused before anything is sent", async () => {
@@ -200,7 +232,59 @@ test("SYNTHETIC: the kill switch stops the run before it starts and between the 
   assert.equal(during.google.topics.size, 0);
   during.deps.killSwitch = () => false;
   const retried = await applyGcpApiPlan(plan2, during.deps);
-  assert.deepEqual([retried.ok, !retried.ok && retried.code], [false, "ALREADY_APPLIED"], "a stopped plan is consumed; it is sealed again");
+  assert.deepEqual([retried.ok, !retried.ok && retried.code], [false, "ALREADY_APPLIED"], "a stopped plan is consumed");
+});
+
+test("SYNTHETIC: recovery after a stop is a new seal: a new artifact applies once, and the stopped plan stays consumed", async () => {
+  // Each stop records NOT_APPLIED and creates nothing: the kill switch between the token and the create, an APPLY token
+  // failure, and a 4xx on create (429 and 403 shown).
+  const stops: [string, (s: ReturnType<typeof setup>) => void, string | undefined][] = [
+    ["kill switch during apply", (s) => { let reads = 0; s.deps.killSwitch = () => ++reads > 1; }, "KILL_SWITCH_DURING_APPLY"],
+    ["APPLY token refused", (s) => { s.deps.env.ALZ_APPLY_GOOGLE_IMPERSONATE_SERVICE_ACCOUNT = "alz-pilot-dev-nobody@" + PROJECT + ".iam.gserviceaccount.com"; }, "CREDENTIALS"],
+    ["create throttled (429)", (s) => { s.google.hooks.putStatus = 429; }, undefined],
+    ["create refused (403)", (s) => { s.google.hooks.putStatus = 403; }, undefined],
+  ];
+  for (const [label, stop, code] of stops) {
+    const s = setup();
+    const env = { ...s.deps.env };
+    const first = await seal(s.deps);
+    stop(s);
+    const stopped = await applyGcpApiPlan(first, s.deps);
+    if (code) assert.deepEqual([stopped.ok, !stopped.ok && stopped.code], [false, code], label);
+    else assert.ok(stopped.ok && stopped.outcome === "NOT_APPLIED" && stopped.code === "CREATE_REFUSED", label);
+    assert.equal(s.google.topics.size, 0, label + ": nothing was created");
+
+    s.deps.killSwitch = () => false;
+    s.deps.env = env;
+    delete s.google.hooks.putStatus;
+    const again = await applyGcpApiPlan(first, s.deps);
+    assert.deepEqual([again.ok, !again.ok && again.code], [false, "ALREADY_APPLIED"], label + ": the stopped plan is never applied twice");
+    const cleanup = await cleanupGcpApiPlan(first, s.deps);
+    assert.deepEqual([cleanup.ok, !cleanup.ok && cleanup.code], [false, "NOT_RUN_CREATED"], label + ": a stopped plan owns nothing");
+
+    const second = await seal(s.deps);
+    assert.notEqual(second.artifactSha256, first.artifactSha256, label + ": a new seal is a new artifact");
+    assert.deepEqual(second.resource, first.resource);
+    const applied = await applyGcpApiPlan(second, s.deps);
+    assert.ok(applied.ok && applied.outcome === "APPLIED", label + ": " + JSON.stringify(applied));
+    assert.equal(s.google.topics.size, 1);
+    const replay = await applyGcpApiPlan(second, s.deps);
+    assert.deepEqual([replay.ok, !replay.ok && replay.code], [false, "ALREADY_APPLIED"], label + ": the new plan applies once");
+    assertClean(s.google, first, stopped, again, second, applied, replay);
+  }
+});
+
+test("SYNTHETIC: two seals of one request cannot make two topics: the second is refused at seal or stale at apply", async () => {
+  const { deps, google } = setup();
+  const a = await seal(deps);
+  const b = await seal(deps);
+  assert.notEqual(a.artifactSha256, b.artifactSha256);
+  assert.ok((await applyGcpApiPlan(a, deps)).ok);
+  const stale = await applyGcpApiPlan(b, deps);
+  assert.deepEqual([stale.ok, !stale.ok && stale.code], [false, "PLAN_STALE"]);
+  assert.deepEqual(await sealGcpApiPlan({ request: request(), requester: REQUESTER }, deps), { ok: false, code: "TOPIC_EXISTS" });
+  assert.equal(google.sent.filter((r) => r.method === "PUT").length, 1);
+  assert.equal(google.topics.size, 1);
 });
 
 test("SYNTHETIC: a create with no answer is UNCERTAIN, never sent again, and settled by the read-back", async () => {
@@ -258,6 +342,75 @@ test("SYNTHETIC: identities: a key file, a foreign SA or a missing configuration
     const sealed = await sealGcpApiPlan({ request: request(), requester: REQUESTER }, deps);
     assert.deepEqual(sealed, { ok: false, code: "IDENTITY_NOT_CONFIGURED" });
     assert.equal(google.sent.length, 0);
+  }
+});
+
+test("SYNTHETIC: identities follow path 5's rules: an impersonation URL or an unknown key in the file is refused", async () => {
+  for (const extra of [
+    { service_account_impersonation_url: "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/alz-pilot-dev-discovery@" + PROJECT + ".iam.gserviceaccount.com:generateAccessToken" },
+    { workforce_pool_user_project: "x" },
+    { token_info_url: "https://sts.googleapis.com/v1/introspect" },
+  ]) {
+    const { deps, google } = setup();
+    const path = deps.env.ALZ_DISCOVERY_GOOGLE_APPLICATION_CREDENTIALS!;
+    writeFileSync(path, JSON.stringify({
+      type: "external_account", audience: AUDIENCE, subject_token_type: "urn:ietf:params:oauth:token-type:jwt",
+      token_url: "https://sts.googleapis.com/v1/token", credential_source: { file: join(path, "..", "discovery-oidc.jwt") }, ...extra,
+    }));
+    assert.deepEqual(await sealGcpApiPlan({ request: request(), requester: REQUESTER }, deps), { ok: false, code: "IDENTITY_NOT_CONFIGURED" }, Object.keys(extra)[0]);
+    assert.equal(google.sent.length, 0);
+  }
+});
+
+test("SYNTHETIC: DISCOVERY and APPLY collapsed into one principal are refused before any token request, at seal and at apply", async () => {
+  const collapses: [string, (env: NodeJS.ProcessEnv) => void][] = [
+    ["same service account", (env) => { env.ALZ_APPLY_GOOGLE_IMPERSONATE_SERVICE_ACCOUNT = env.ALZ_DISCOVERY_GOOGLE_IMPERSONATE_SERVICE_ACCOUNT; }],
+    ["same service account, other case", (env) => { env.ALZ_APPLY_GOOGLE_IMPERSONATE_SERVICE_ACCOUNT = env.ALZ_DISCOVERY_GOOGLE_IMPERSONATE_SERVICE_ACCOUNT!.toUpperCase(); }],
+    ["same credential configuration", (env) => { env.ALZ_APPLY_GOOGLE_APPLICATION_CREDENTIALS = env.ALZ_DISCOVERY_GOOGLE_APPLICATION_CREDENTIALS; }],
+    ["same configuration through a symlink", (env) => {
+      const link = env.ALZ_APPLY_GOOGLE_APPLICATION_CREDENTIALS + ".link.json";
+      symlinkSync(env.ALZ_DISCOVERY_GOOGLE_APPLICATION_CREDENTIALS!, link);
+      env.ALZ_APPLY_GOOGLE_APPLICATION_CREDENTIALS = link;
+    }],
+    ["same token file", (env) => {
+      const path = env.ALZ_APPLY_GOOGLE_APPLICATION_CREDENTIALS!;
+      writeFileSync(path, JSON.stringify({
+        type: "external_account", audience: AUDIENCE, subject_token_type: "urn:ietf:params:oauth:token-type:jwt",
+        token_url: "https://sts.googleapis.com/v1/token", credential_source: { file: join(path, "..", "discovery-oidc.jwt") },
+      }));
+    }],
+  ];
+  for (const [label, collapse] of collapses) {
+    const { deps, google } = setup();
+    const plan = await seal(deps);
+    const sentBefore = google.sent.length;
+    collapse(deps.env);
+    assert.deepEqual(await sealGcpApiPlan({ request: request(), requester: REQUESTER }, deps), { ok: false, code: "IDENTITY_COLLAPSED" }, label);
+    const applied = await applyGcpApiPlan(plan, deps);
+    assert.deepEqual([applied.ok, !applied.ok && applied.code], [false, "IDENTITY_COLLAPSED"], label);
+    assert.equal(google.sent.length, sentBefore, label + ": nothing is sent");
+  }
+});
+
+test("SYNTHETIC: a ledger directory that is not private is refused at apply and at cleanup before anything is sent", async () => {
+  for (const [label, spoil] of [
+    ["group-writable", (dir: string) => { chmodSync(dir, 0o770); return dir; }],
+    ["world-readable", (dir: string) => { chmodSync(dir, 0o704); return dir; }],
+    ["a symlink", (dir: string) => { const link = dir + "-link"; symlinkSync(dir, link); return link; }],
+    ["missing", (dir: string) => dir + "-missing"],
+  ] as const) {
+    const { deps, google } = setup();
+    const plan = await seal(deps);
+    const unapplied = await seal(deps);
+    assert.ok((await applyGcpApiPlan(plan, deps)).ok);
+    const sentBefore = google.sent.length;
+    const spoiled = { ...deps, ledgerDir: spoil(deps.ledgerDir) };
+    const applied = await applyGcpApiPlan(unapplied, spoiled);
+    assert.deepEqual([applied.ok, !applied.ok && applied.code], [false, "LEDGER_NOT_PRIVATE"], label);
+    const cleaned = await cleanupGcpApiPlan(plan, spoiled);
+    assert.deepEqual([cleaned.ok, !cleaned.ok && cleaned.code], [false, "LEDGER_NOT_PRIVATE"], label);
+    assert.equal(google.sent.length, sentBefore, label + ": nothing is sent");
+    assert.equal(google.topics.size, 1, label + ": the topic is kept");
   }
 });
 

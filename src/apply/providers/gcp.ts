@@ -95,7 +95,7 @@ const CONFIGURATION_KEYS = new Set(["type", "audience", "subject_token_type", "t
 const SOURCE_KEYS = new Set(["file", "format"]);
 
 /** The failure class of a credential configuration. The file's contents are never put in a message. */
-type ConfigurationResult = { ok: true; tokenFile: string } | { ok: false; reason: string };
+export type ConfigurationResult = { ok: true; tokenFile: string; audience: string; subjectTokenType: string } | { ok: false; reason: string };
 
 function readConfiguration(path: string): unknown {
   const fd = openSync(path, "r");
@@ -132,7 +132,7 @@ export function checkCredentialConfiguration(path: string): ConfigurationResult 
   if (!isRecord(source) || Object.keys(source).some((key) => !SOURCE_KEYS.has(key))) return { ok: false, reason: "does not read its token from a file only" };
   if (typeof source.file !== "string" || !TOKEN_FILE.test(source.file)) return { ok: false, reason: "does not name an absolute token file path" };
   if (source.format !== undefined && !(isRecord(source.format) && source.format.type === "text" && Object.keys(source.format).length === 1)) return { ok: false, reason: "reads its token in a format other than plain text" };
-  return { ok: true, tokenFile: source.file };
+  return { ok: true, tokenFile: source.file, audience: parsed.audience, subjectTokenType: parsed.subject_token_type };
 }
 
 const notConfigured = (message: string): IdentityRefusal => ({ ok: false, code: "IDENTITY_NOT_CONFIGURED", message });
