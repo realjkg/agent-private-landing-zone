@@ -427,7 +427,8 @@ test("Azure Terraform cleanup: the proposal keeps the resource group this run cr
   assert.deepEqual(sorted(leftovers.record.resources.filter((r) => r.disposition === "INTENTIONALLY_RETAINED").map((r) => [r.address, r.basis, r.owner])),
     sorted(PROTECTED_EXCLUSIONS.map(([address, ownership]) => [address, "RETENTION_DECISION", RETAINED_BY[ownership]])), "every kept resource has a named owner");
   assert.ok(leftovers.record.resources.filter((r) => r.disposition === "INTENTIONALLY_RETAINED").every((r) => /^[A-Z_]+: .{10,}/.test(r.reason ?? "")), "and a reason");
-  assert.match(leftovers.record.nextAction, /^Approved resources deleted.*Protected objects intentionally retained \(9, kept by ENVIRONMENT_OWNER and PILOT_OWNER\).*environment retirement.*separate, reviewed action and remains outstanding.*does not claim the environment retired/);
+  assert.match(leftovers.record.nextAction, /^Approved resources deleted: every listed resource \(1\) is confirmed gone.*Protected or pre-existing objects intentionally retained \(9, kept by ENVIRONMENT_OWNER and PILOT_OWNER\); they were never on the list, were left in place and were not read.*environment retirement is a separate, reviewed action and remains outstanding.*does not claim the environment retired/);
+  assert.ok(!/resource group|identities and grants|state backend/.test(leftovers.record.nextAction), "no cloud's list of protected kinds is recited");
   assert.ok(!/environment (is |was )?deleted|entire environment/.test(leftovers.record.nextAction));
   assert.ok(!JSON.stringify(leftovers.record).includes("CLOUD_CONTROL"), "no record of an Azure run names a service that did not answer");
   noTokenIn(w, leftovers.record, result.evidence);

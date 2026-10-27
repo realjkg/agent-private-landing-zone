@@ -6,7 +6,10 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { loadPilotContract, pilotContractSha256 } from "../src/apply/contract.js";
-import type { PilotContract } from "../src/apply/types.js";
+import { APPLY_AUTHORITY } from "../src/apply/evidence.js";
+import { buildRecoveryEvidence } from "../src/apply/recovery-record.js";
+import type { ApplyEvidence, PilotContract } from "../src/apply/types.js";
+import { awsContractJson } from "./helpers/apply-fixtures.js";
 import {
   PRODUCTION_RELEASE_GATES,
   reviewProductionRelease,
@@ -420,8 +423,22 @@ test("independent review refuses self-review and open blocking findings; ACT rec
   const h = harness();
   try {
     const review = { ...generic("security-review:independent", "INDEPENDENT_REVIEW"), reviewer: "reviewer-1", reviewerIsAuthor: false, blockingFindingsOpen: 0 };
-    const recovery = { ...generic("act-run-recovery", "ACT_RECOVERY"), actEnabled: true, interruptedArtifactSha256: "5".repeat(64),
-      interruptedOutcome: "KILLED", reconciledFromLedger: true, resumedWithoutApproval: false };
+    // The recovery gate takes only the product's own record (src/apply/recovery-record.ts): the four fields are derived from two ledger
+    // evidences, so the fixture is built by the producer; a bare document that states the four fields is a hand-written one, refused.
+    const contract = awsContractJson("/nonexistent/kill") as unknown as PilotContract;
+    const at = (minutes: number): string => new Date(Date.UTC(2026, 9, 12, 12, minutes)).toISOString();
+    const apply = (over: Partial<ApplyEvidence>): ApplyEvidence => ({
+      schemaVersion: 1, environment: "DEV", target: { account: "111111111111", backend: "b", workspace: "default" }, artifactSha256: "5".repeat(64), manifestHash: "2".repeat(64),
+      releaseIdentity: "3".repeat(64), contractSha256: pilotContractSha256(contract), sourceCommit: commit, approvals: [{ approverId: "alice", issuedAt: at(-30) }],
+      adapter: { adapterVersion: "a", argvDigest: "4".repeat(64) }, toolVersions: { engine: "1.9.5" }, outcome: "SUCCEEDED", exitCode: 0, startedAt: at(-10), finishedAt: at(0), authority: APPLY_AUTHORITY, ...over,
+    });
+    const built = buildRecoveryEvidence({
+      interrupted: apply({ outcome: "KILLED", exitCode: null }), resumed: apply({ artifactSha256: "6".repeat(64), approvals: [{ approverId: "alice", issuedAt: at(15) }], startedAt: at(20), finishedAt: at(25) }),
+      contract, sourceCommit: commit, targetHardwareId: target, attestedBy: "operator", now: new Date(Date.UTC(2026, 9, 12, 13)),
+    });
+    assert.ok(built.ok);
+    const recovery = built.evidence;
+    const bare = { ...generic("act-run-recovery", "ACT_RECOVERY"), actEnabled: true, interruptedArtifactSha256: "5".repeat(64), interruptedOutcome: "KILLED", reconciledFromLedger: true, resumedWithoutApproval: false };
     const status = async (id: string, mode: ReleaseGateSubmission["mode"], payload: object) => (await reviewProductionRelease({
       manifest: input([h.attach(id, mode, payload)]), expectedCommit: commit, root: h.root,
     })).gates.find((g) => g.id === id)?.status;
@@ -432,6 +449,9 @@ test("independent review refuses self-review and open blocking findings; ACT rec
     assert.equal(await status("act-run-recovery", "ACT_RECOVERY", recovery), "EVIDENCE_PRESENT");
     assert.equal(await status("act-run-recovery", "ACT_RECOVERY", { ...recovery, resumedWithoutApproval: true }), "BLOCKED");
     assert.equal(await status("act-run-recovery", "ACT_RECOVERY", { ...recovery, interruptedOutcome: "SUCCEEDED" }), "BLOCKED");
+    assert.equal(await status("act-run-recovery", "ACT_RECOVERY", { ...recovery, interrupted: { ...recovery.interrupted, outcome: "SUCCEEDED" } }), "BLOCKED", "relabeled over a run that was not interrupted");
+    assert.equal(await status("act-run-recovery", "ACT_RECOVERY", { ...recovery, resumed: { ...recovery.resumed, approvals: [{ approverId: "alice", issuedAt: at(-30) }] } }), "BLOCKED", "an approval carried over");
+    assert.equal(await status("act-run-recovery", "ACT_RECOVERY", bare), "BLOCKED", "a hand-written document is not the producer's");
   } finally { h.cleanup(); }
 });
 

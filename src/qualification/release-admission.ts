@@ -5,6 +5,7 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 import { loadPilotContract, pilotContractPinned, pilotContractSha256 } from "../apply/contract.js";
 import type { EngineId, PilotContract, ProviderId } from "../apply/types.js";
 import { PREVIEW_GATE_SCENARIOS, previewGateEvidenceProblems, previewScenarioOf } from "./preview-gate.js";
+import { recoveryGateEvidenceProblems } from "./recovery-gate.js";
 export { PREVIEW_GATE_SCENARIOS, previewScenarioOf, type PreviewGateScenario } from "./preview-gate.js";
 const previewScenarioIds = Object.keys(PREVIEW_GATE_SCENARIOS);
 import { PRODUCTION_DEPLOYMENT_CONTRACT, pilotCombinationListed } from "./production-contract.js";
@@ -212,7 +213,11 @@ function observedLivePayload(value: unknown, gate: ReleaseGate, record: ReleaseG
       Object.keys(report.measurements).length > 0;
   }
   if (gate.mode === "ACT_RECOVERY") {
-    return typeof report.interruptedArtifactSha256 === "string" && sha64.test(report.interruptedArtifactSha256) &&
+    // The evidence is a valid recovery-gate document of this commit (src/qualification/recovery-gate.ts): the four gate fields,
+    // the conditions, the label and `passed` are recomputed from the cited ledger records, so a hand-written document, or one
+    // relabeled over records that show no interruption or an approval carried over, is refused here as well as by the producer.
+    return recoveryGateEvidenceProblems(report, { sourceCommit: commit }).length === 0 &&
+      typeof report.interruptedArtifactSha256 === "string" && sha64.test(report.interruptedArtifactSha256) &&
       (report.interruptedOutcome === "PARTIAL_REQUIRES_REVIEW" || report.interruptedOutcome === "KILLED") &&
       report.reconciledFromLedger === true && report.resumedWithoutApproval === false;
   }
