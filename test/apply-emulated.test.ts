@@ -1,18 +1,26 @@
 import assert from "node:assert/strict";
 import { createHash, createHmac, randomBytes } from "node:crypto";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import type http from "node:http";
 import https from "node:https";
 import net from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { after, before, describe, it } from "node:test";
+import { fileURLToPath } from "node:url";
 
-import { writeQualificationEvidence } from "../src/apply/contract.js";
+import { loadPilotContract, writeQualificationEvidence } from "../src/apply/contract.js";
 import { runApply, sealPreview, type ApplyDeps, type ApplyRequest } from "../src/apply/driver.js";
 import { openNonceStore } from "../src/apply/nonces.js";
-import { loadSealedPlan, reviewBundleOf, verifyReviewBundle } from "../src/apply/seal.js";
+import { loadSealedPlan, reviewBundleOf, sealPlan, verifyReviewBundle } from "../src/apply/seal.js";
+import { TERRAFORM as TERRAFORM_ENGINE } from "../src/apply/engines/terraform.js";
+import { pilotUnitOf } from "../src/apply/unit.js";
+import { buildChildEnvironment } from "../src/tools/child-env.js";
+import { TERRAFORM_APPLY_PROFILE } from "../src/tools/profiles.js";
+import { EXECUTION_IDENTITIES } from "../src/tools/identity.js";
+import { createImmutableSnapshot } from "../src/teardown/snapshot.js";
+import { createPrivateDirectory } from "../src/tools/private-workdir.js";
 import { APPLY_ADAPTER } from "../src/apply/terraform.js";
 import type { ApplyEnvironment, ApplyEvidence, ApplyResult, SignedApproval } from "../src/apply/types.js";
 import { readEncryptedEvidence } from "../src/evidence/vault.js";
@@ -21,7 +29,8 @@ import { buildManifest } from "../src/teardown/manifest.js";
 import { captureProjectFiles } from "../src/teardown/snapshot.js";
 import { removeTree } from "../src/teardown/driver/cleanup.js";
 import {
-  DEV_TARGET, NOW, POLICY, QA_TARGET, REQUESTER, SOURCE_COMMIT, TENANT, approvalFor, contractJson, human, identityEnv, pinPathOf, sha, writePinnedContract,
+  DEV_TARGET, ENGINE_VERSION, H, NOW, POLICY, QA_TARGET, REQUESTER, SOURCE_COMMIT, TENANT, approvalFor, behave as behaveFake, callsOf, contractJson, human, identityEnv,
+  installFakeTerraform, pinPathOf, sha, writePinnedContract, writeProject,
 } from "./helpers/apply-fixtures.js";
 import { AZURE } from "../src/apply/providers/azure.js";
 
@@ -39,7 +48,8 @@ import { AZURE } from "../src/apply/providers/azure.js";
  *
  * What this does NOT exercise: Entra ID and OIDC (Azurite cannot emulate them;
  * state access here is a SAS token signed with Azurite's published development
- * key, which is not a secret), the azurerm provider (the registry is not
+ * key, which is not a secret, supplied only by the TEST-ONLY AZURITE SAS HARNESS
+ * below; Entra ID state auth is proven only in the supervised DEV qualification), the azurerm provider (the registry is not
  * reachable and no resource is declared), real Azure RBAC, real latency or
  * throttling. Whether the STATE_WRITE and APPLY identities stay separate is
  * therefore still unproven; see "What this does not prove" in the doc.
@@ -49,6 +59,10 @@ import { AZURE } from "../src/apply/providers/azure.js";
  *   ALZ_SIM_TERRAFORM=<verified terraform> ALZ_SIM_AZURITE=<scratch>/azurite/node_modules/.bin/azurite-blob \
  *     npx tsx --test test/apply-emulated.test.ts
  * Optional: ALZ_SIM_TERRAFORM_SHA256 makes the test refuse a binary whose hash differs.
+ *
+ * The last describe block runs in default CI with no emulator and a fake engine: it proves that the emulator's
+ * credentials (the SAS token, the metadata host, the development key) are refused however they are supplied
+ * (contract, project files, backend configuration, environment) and that the harness is reachable only from here.
  */
 const TERRAFORM = process.env.ALZ_SIM_TERRAFORM;
 const AZURITE = process.env.ALZ_SIM_AZURITE;
@@ -179,6 +193,29 @@ meta.listen(0, "127.0.0.1", () => {
 });
 `;
 
+/**
+ * TEST-ONLY AZURITE SAS HARNESS. Azurite cannot issue Entra ID tokens, so the emulated backend is reached with a
+ * container SAS (signed with Azurite's published development key, not a secret) and a custom metadata host. The
+ * product never accepts either: the project's backend block carries neither, no contract field names them, and no
+ * product flag or variable selects them. The harness is a wrapper the TEST installs as `terraform` in the tool
+ * directory it hands the driver (`deps.toolDirs`); the wrapper sets Terraform's own `ARM_SAS_TOKEN` and
+ * `ARM_METADATA_HOSTNAME` in its own process and then runs the real binary. It exists only in this file and in a
+ * temporary directory, and nothing in src/ can reach it.
+ */
+function installAzuriteSasHarness(toolDir: string, realTerraform: string, sas: string): string {
+  const quote = (value: string): string => "'" + value.replace(/'/g, "'\\''") + "'";
+  const wrapper = join(toolDir, "terraform");
+  writeFileSync(wrapper, [
+    "#!/bin/sh",
+    "# ALZ TEST-ONLY AZURITE SAS HARNESS (test/apply-emulated.test.ts). Never shipped and never an operator step.",
+    "ARM_SAS_TOKEN=" + quote(sas) + "; export ARM_SAS_TOKEN",
+    "ARM_METADATA_HOSTNAME=" + quote(METADATA_HOST) + "; export ARM_METADATA_HOSTNAME",
+    "exec " + quote(realTerraform) + ' "$@"',
+    "",
+  ].join("\n"), { mode: 0o700 });
+  return wrapper;
+}
+
 /** Creates the state container with a SharedKey-signed request (the only unsigned-by-SAS call: a container SAS cannot create its own container). */
 function createContainer(emulator: Emulator): Promise<number> {
   const date = new Date().toUTCString();
@@ -195,6 +232,8 @@ describe("emulated backend simulation: real Terraform, Azurite, built-in resourc
   const previousKey = process.env.AGENTIC_EVIDENCE_KEY;
   let emulator: Emulator;
   let toolDir = "";
+  let plainToolDir = "";
+  let realSha = "";
   let engineVersion = "";
   let counter = 0;
   const KILL = join(root, "KILL");
@@ -215,15 +254,20 @@ describe("emulated backend simulation: real Terraform, Azurite, built-in resourc
 
     const binary = TERRAFORM as string;
     assert.ok(existsSync(binary), "ALZ_SIM_TERRAFORM does not exist");
-    const binarySha = createHash("sha256").update(readFileSync(binary)).digest("hex");
-    if (process.env.ALZ_SIM_TERRAFORM_SHA256) assert.equal(binarySha, process.env.ALZ_SIM_TERRAFORM_SHA256.toLowerCase(), "the terraform binary is not the verified one");
-    // The runner finds `terraform` by name in approved directories; /usr/bin and /bin keep sh, touch and sleep reachable for the local-exec fixture.
-    toolDir = fresh("tools");
-    symlinkSync(binary, join(toolDir, "terraform"));
+    realSha = createHash("sha256").update(readFileSync(binary)).digest("hex");
+    if (process.env.ALZ_SIM_TERRAFORM_SHA256) assert.equal(realSha, process.env.ALZ_SIM_TERRAFORM_SHA256.toLowerCase(), "the terraform binary is not the verified one");
     engineVersion = (JSON.parse(execFileSync(binary, ["version", "-json"], { env: { PATH: "/usr/bin:/bin" }, encoding: "utf8" })) as { terraform_version: string }).terraform_version;
 
     emulator = await startEmulator(fresh("emulator"));
     assert.equal(await createContainer(emulator), 201);
+
+    // The runner finds `terraform` by name in approved directories; /usr/bin and /bin keep sh, touch and sleep reachable for the local-exec fixture.
+    // The `terraform` it finds here is the test-only SAS harness around the real binary, so the engine hash the driver binds is the harness's.
+    toolDir = fresh("tools");
+    const binarySha = createHash("sha256").update(readFileSync(installAzuriteSasHarness(toolDir, binary, containerSas()))).digest("hex");
+    // The real binary on its own, as a production host would run it: no harness.
+    plainToolDir = fresh("plain-tools");
+    symlinkSync(binary, join(plainToolDir, "terraform"));
 
     // The DEV contract names the emulator's storage account; the tenant and subscription are obviously fake GUIDs.
     contractPath = join(fresh("contract"), "act-pilot-contract.json");
@@ -276,7 +320,7 @@ describe("emulated backend simulation: real Terraform, Azurite, built-in resourc
   // --- fixtures ---------------------------------------------------------------------------------
 
   const LOCK = "# This file is maintained automatically by \"terraform init\".\n# The pilot fixture uses only the built-in terraform provider.\n";
-  /** The pinned project: an azurerm backend aimed at the emulator and one built-in resource. The SAS token is the emulator's, signed with its public development key. */
+  /** The pinned project: an azurerm backend naming the contract's storage account, container and key, and one built-in resource. It carries no credential and no endpoint: the harness supplies the emulator's. */
   function project(input: string, extra = "") {
     const projectRoot = fresh("project");
     writeFileSync(join(projectRoot, "main.tf"), [
@@ -285,8 +329,6 @@ describe("emulated backend simulation: real Terraform, Azurite, built-in resourc
       `    storage_account_name = "${ACCOUNT}"`,
       `    container_name       = "${CONTAINER}"`,
       `    key                  = "${STATE_KEY}"`,
-      `    metadata_host        = "${METADATA_HOST}"`,
-      `    sas_token            = "${containerSas()}"`,
       "  }",
       "}",
       'resource "terraform_data" "pilot" {',
@@ -443,5 +485,241 @@ describe("emulated backend simulation: real Terraform, Azurite, built-in resourc
     } finally { rmSync(KILL, { force: true }); }
     assert.equal(await leaseState(), "available", "a graceful interrupt releases the lease");
     assert.ok((await stateBlob()).serial > before.serial, "the interrupted resource was recorded in state");
+  });
+
+  // --- emulator-only credentials never enter a production path, against the real engine -----------------
+
+  const emulatorHosts = () => emulator.connects().filter((c) => c === METADATA_HOST || c === BLOB_HOST + ":443").length;
+
+  it("a production seal without the harness is refused even when the project and the operator's environment carry the emulator's SAS and metadata host", async () => {
+    const before = await stateBlob();
+    const contacts = emulatorHosts();
+    const projectRoot = fresh("project");
+    // The project's own backend block names the emulator's credential and endpoint; the product's pinned override replaces the block.
+    writeFileSync(join(projectRoot, "main.tf"), [
+      "terraform {",
+      '  backend "azurerm" {',
+      `    storage_account_name = "${ACCOUNT}"`,
+      `    container_name       = "${CONTAINER}"`,
+      `    key                  = "${STATE_KEY}"`,
+      `    metadata_host        = "${METADATA_HOST}"`,
+      `    sas_token            = "${containerSas()}"`,
+      "  }",
+      "}",
+      'resource "terraform_data" "pilot" {',
+      '  input = "never-sealed"',
+      "}",
+      "",
+    ].join("\n"));
+    writeFileSync(join(projectRoot, ".terraform.lock.hcl"), LOCK);
+    const resolved = { engineVersion, providers: [], lockFileSha256: sha(LOCK), dependencies: [], inputs: [] };
+    const manifest = buildManifest({
+      engine: "TERRAFORM", mode: "PROJECT", target: DEV_TARGET_EMULATED, unitHash: "1".repeat(64), files: captureProjectFiles(projectRoot), policyVersion: POLICY, ...resolved,
+    });
+    // The operator's own environment carries the harness's settings too; a child never inherits it.
+    const production = { ...deps, toolDirs: [plainToolDir, "/usr/bin", "/bin"], env: { ...env, ...harnessSettings() } };
+    const result = await sealPreview({
+      invocation: human(DEV_TARGET_EMULATED), environment: "DEV", target: DEV_TARGET_EMULATED, manifest, projectRoot, policyVersion: POLICY, resolved, requester: REQUESTER,
+    }, production);
+    assert.equal(result.ok, false, "a production seal never reaches the emulator's state");
+    // Init ran with the product's pinned backend and the STATE identity's OIDC settings only, and failed: the proxy refuses Entra ID.
+    assert.equal((result as { code: string }).code, "ARTIFACT_INVALID", JSON.stringify(result));
+    noSecrets(result);
+    assert.equal(emulatorHosts(), contacts, "neither the emulator's storage host nor its metadata host was contacted");
+    assert.deepEqual(await stateBlob(), before);
+  });
+
+  it("a production apply with the harness's settings is refused: as identity variables, or through an engine binary the qualification did not attest", async () => {
+    const s = await seal("harness-settings-refused");
+    const before = await stateBlob();
+    // As one identity's variables (one at a time, so the refusal is theirs and not a shared value's): refused before the engine changes anything.
+    for (const identity of TERRAFORM_IDENTITIES) {
+      const injected = await runApply(requestFor(s, [approvalFor(s.sealed, "alice")]), { ...deps, env: { ...env, ...harnessIdentityVariables([identity]) } });
+      assert.equal(injected.ok, false, identity);
+      assert.match((injected as { message: string }).message, /ENVIRONMENT_REFUSED/, identity);
+      noSecrets(injected);
+      assert.deepEqual(await stateBlob(), before, identity);
+      assert.equal(await leaseState(), "available", identity);
+    }
+    // Through the harness binary under a production qualification, which attests the real binary only.
+    const productionVault = fresh("production-qualification");
+    for (const [version, digest] of [[APPLY_ADAPTER.adapterVersion, APPLY_ADAPTER.argvDigest], [ADAPTER_VERSION, terraformArgvDigest("TERRAFORM")]]) {
+      const written = await writeQualificationEvidence({
+        schemaVersion: 1, engine: "TERRAFORM", realEngine: true, backendIdentitySeparated: true,
+        tenantId: TENANT, subscriptionId: DEV_TARGET.account, backend: BACKEND, workspace: "default",
+        stateWriteClientId: "statewrite-client-3", applyClientId: "apply-client-4", terraformSha256: realSha,
+        adapterVersion: version, argvDigest: digest, engineVersion, qualifiedAt: "2026-10-11T00:00:00.000Z",
+      }, AZURE, productionVault);
+      assert.ok(written.ok, JSON.stringify(written));
+    }
+    const unattested = await runApply(requestFor(s, [approvalFor(s.sealed, "bob")]), { ...deps, qualificationDir: productionVault });
+    assert.equal((unattested as { code?: string }).code, "ENGINE_NOT_QUALIFIED", JSON.stringify(unattested));
+    noSecrets(unattested);
+    assert.deepEqual(await stateBlob(), before);
+    // And the real binary cannot apply a plan the harness sealed: the engine that applies must be the one that sealed.
+    const swapped = await runApply(requestFor(s, [approvalFor(s.sealed, "carol")]), { ...deps, toolDirs: [plainToolDir, "/usr/bin", "/bin"], qualificationDir: productionVault });
+    assert.equal((swapped as { code?: string }).code, "ENGINE_BINARY_CHANGED", JSON.stringify(swapped));
+    assert.deepEqual(await stateBlob(), before);
+  });
+});
+
+// --- default CI: emulator-only credentials can never enter a production path ------------------------------
+
+/** The settings the harness gives Terraform, as an operator might try to supply them in the environment. */
+const harnessSettings = (): NodeJS.ProcessEnv => ({ ARM_SAS_TOKEN: containerSas(), ARM_METADATA_HOSTNAME: METADATA_HOST, ARM_ACCESS_KEY: DEV_KEY });
+/** The same settings as every identity's variables and as network variables. */
+const harnessIdentityVariables = (identities: readonly string[] = TERRAFORM_IDENTITIES): NodeJS.ProcessEnv => Object.fromEntries([...identities, "NETWORK"].flatMap((identity) =>
+  Object.entries(harnessSettings()).map(([name, value]) => ["ALZ_" + identity + "_" + name, value])));
+/** The Terraform engine's four identities; CHANGESET belongs to CDK, and configuring it here would be refused for that reason alone. */
+const TERRAFORM_IDENTITIES = ["DISCOVERY", "STATE", "STATE_WRITE", "APPLY"] as const;
+const HARNESS_NAMES = ["ARM_SAS_TOKEN", "ARM_METADATA_HOSTNAME", "ARM_ACCESS_KEY"];
+const HARNESS_TEXT = ["sas_token", "metadata_host", "access_key", METADATA_HOST, "sig=", DEV_KEY];
+
+describe("emulator-only credentials never enter a production path (default CI; no emulator, fake engine)", () => {
+  const root = mkdtempSync(join(tmpdir(), "alz-sim-guard-"));
+  const previousCwd = process.cwd();
+  const previousKey = process.env.AGENTIC_EVIDENCE_KEY;
+  let counter = 0;
+  const fresh = (label: string): string => { const dir = join(root, label + "-" + ++counter); mkdirSync(dir, { recursive: true }); return dir; };
+  const KILL = join(root, "KILL");
+  const toolDir = join(root, "fake-tools");
+  // The fake engine saves the shared fixture's backend; the emulator's own location is checked in the contract test.
+  const pinned = { tenantId: TENANT, subscriptionId: DEV_TARGET.account, backend: DEV_TARGET.backend, workspace: "default" };
+  const target = { ...DEV_TARGET };
+
+  before(() => {
+    process.env.AGENTIC_EVIDENCE_KEY = randomBytes(32).toString("base64");
+    process.chdir(root); // the vault writes sealed plans under ./.runs
+    mkdirSync(toolDir, { recursive: true });
+    installFakeTerraform(toolDir);
+  });
+  after(() => {
+    process.chdir(previousCwd);
+    if (previousKey === undefined) delete process.env.AGENTIC_EVIDENCE_KEY; else process.env.AGENTIC_EVIDENCE_KEY = previousKey;
+    removeTree(root);
+  });
+
+  it("the contract refuses an Azurite SAS token or metadata host in any field", () => {
+    const base = contractJson(KILL, {
+      targets: {
+        DEV: { tenantId: TENANT, subscriptionId: DEV_TARGET.account, backend: BACKEND, workspace: "default" },
+        QA: { tenantId: TENANT, subscriptionId: QA_TARGET.account, backend: "emulatedqa/tfstate/qa.tfstate", workspace: "default" },
+        PROD: { tenantId: TENANT, subscriptionId: "33333333-3333-4333-8333-333333333333", backend: "emulatedprod/tfstate/prod.tfstate", workspace: "default" },
+      },
+    });
+    const load = (contract: unknown) => { const path = join(fresh("contract"), "act-pilot-contract.json"); writePinnedContract(path, contract); return loadPilotContract(path, pinPathOf(path)); };
+    assert.equal(load(base).enabled, true, "control: the emulator's storage account name alone is an ordinary backend location");
+    const dev = (base.targets as Record<string, Record<string, unknown>>).DEV;
+    for (const [label, contract] of [
+      ["targets.DEV.sas_token", { ...base, targets: { ...base.targets, DEV: { ...dev, sas_token: containerSas() } } }],
+      ["targets.DEV.metadata_host", { ...base, targets: { ...base.targets, DEV: { ...dev, metadata_host: METADATA_HOST } } }],
+      ["targets.DEV.access_key", { ...base, targets: { ...base.targets, DEV: { ...dev, access_key: DEV_KEY } } }],
+      ["sas_token", { ...base, sas_token: containerSas() }],
+      ["metadata_host", { ...base, metadata_host: METADATA_HOST }],
+      ["backend with a SAS query", { ...base, targets: { ...base.targets, DEV: { ...dev, backend: BACKEND + "?" + containerSas() } } }],
+      ["backend with a metadata host", { ...base, targets: { ...base.targets, DEV: { ...dev, backend: METADATA_HOST + "/" + CONTAINER + "/" + STATE_KEY } } }],
+    ] as const) {
+      const loaded = load(contract);
+      assert.equal(loaded.enabled, false, label);
+      assert.equal((loaded as { code: string }).code, "CONTRACT_INVALID", label);
+    }
+  });
+
+  it("the product's backend configuration never carries one, whatever the identity variables say", () => {
+    const env = { ...identityEnv("DEV"), ...harnessSettings(), ...harnessIdentityVariables() };
+    for (const text of [AZURE.backendLocation(pinned), AZURE.backendConfig(env, pinned)]) {
+      for (const marker of HARNESS_TEXT) assert.ok(!text.includes(marker), "the backend configuration carries " + marker.slice(0, 13));
+      const keys = text.split("\n").filter(Boolean).map((line) => line.split("=")[0].trim());
+      for (const key of keys) {
+        assert.ok(["storage_account_name", "container_name", "key", "use_oidc", "use_azuread_auth", "client_id", "tenant_id", "subscription_id", "oidc_token_file_path"].includes(key), key);
+      }
+    }
+  });
+
+  it("the environment never delivers one to a Terraform child: not as an identity variable, a network variable or the operator's own", () => {
+    for (const name of HARNESS_NAMES) {
+      assert.equal(TERRAFORM_APPLY_PROFILE.injectable.includes(name), false, name);
+      assert.equal(TERRAFORM_APPLY_PROFILE.injectablePrefixes.some((prefix) => name.startsWith(prefix)), false, name);
+    }
+    const base = { ...identityEnv("DEV"), ...harnessSettings(), ...harnessIdentityVariables(EXECUTION_IDENTITIES) };
+    for (const identity of EXECUTION_IDENTITIES) {
+      const child = buildChildEnvironment({ profile: TERRAFORM_APPLY_PROFILE, base, toolDirs: [toolDir], home: root, tmp: root, identity });
+      for (const name of HARNESS_NAMES) {
+        assert.equal(child.env[name], undefined, identity + " " + name);
+        assert.ok(child.refused.includes("ALZ_" + identity + "_" + name), identity + " refuses ALZ_" + identity + "_" + name);
+        assert.ok(child.refused.includes("ALZ_NETWORK_" + name), identity + " refuses ALZ_NETWORK_" + name);
+      }
+      const text = JSON.stringify(child.env);
+      for (const marker of [METADATA_HOST, "sig=", DEV_KEY]) assert.ok(!text.includes(marker), identity);
+    }
+  });
+
+  /** A production seal (src/apply/seal.ts) through the fake engine, the way test/apply-seal.test.ts drives it. */
+  async function productionSeal(options: { mainTf?: string; extraFile?: [string, string]; env?: NodeJS.ProcessEnv }) {
+    behaveFake(toolDir, KILL);
+    const projectRoot = fresh("project");
+    if (options.extraFile) writeFileSync(join(projectRoot, options.extraFile[0]), options.extraFile[1]);
+    const { manifest } = writeProject(projectRoot, target, options.mainTf);
+    const parent = fresh("scratch");
+    const snapshot = createImmutableSnapshot(projectRoot, manifest, parent);
+    const scratch = createPrivateDirectory("alz-sim-guard-", parent);
+    try {
+      return await sealPlan({
+        engine: TERRAFORM_ENGINE, environment: "DEV", target, manifest, snapshotPath: snapshot.path, scratchDir: scratch.path,
+        env: options.env ?? identityEnv("DEV"), policyVersion: POLICY, engineVersion: ENGINE_VERSION, toolDirs: [toolDir],
+        pinned, spec: AZURE, contractSha256: H("9"), sourceCommit: SOURCE_COMMIT,
+        provenance: { engineBinarySha256: H("e"), qualification: { state: "UNQUALIFIED", reason: "Fixture: no qualification evidence." } },
+        requester: REQUESTER, now: () => NOW, unit: pilotUnitOf({ provider: "AZURE", contractSha256: H("9"), environment: "DEV", target }),
+      });
+    } finally { snapshot.remove(); scratch.remove(); }
+  }
+  const SIM_BACKEND_TF = 'terraform {\n  backend "azurerm" {\n    metadata_host = "' + METADATA_HOST + '"\n    sas_token     = "' + containerSas() + '"\n  }\n}\nresource "azurerm_resource_group" "pilot" {}\n';
+
+  it("a production seal with the harness's settings in the identity or network variables is refused before the engine uses them", async () => {
+    const result = await productionSeal({ env: { ...identityEnv("DEV"), ...harnessIdentityVariables() } });
+    assert.equal(result.ok, false);
+    assert.match(JSON.stringify(result), /ENVIRONMENT_REFUSED/);
+    for (const call of callsOf(toolDir)) for (const name of HARNESS_NAMES) assert.equal(call.env[name], undefined, call.args[0] + " " + name);
+  });
+
+  it("a production seal refuses a project override file that would carry the harness's settings, by name, before any engine step", async () => {
+    for (const name of ["zzzz_alz_sim_override.tf", "azurite_override.tf", "override.tf.json"]) {
+      const result = await productionSeal({ extraFile: [name, SIM_BACKEND_TF.replace(/resource[^\n]*\n$/, "")] });
+      assert.equal(result.ok, false, name);
+      assert.match(JSON.stringify(result), /BACKEND_OVERRIDE_NOT_ALLOWED/, name);
+      assert.deepEqual(callsOf(toolDir).filter((c) => c.args[0] !== "version"), [], name + ": no engine step ran");
+    }
+  });
+
+  it("a project's own SAS token or metadata host, and the operator's own, never reach init: the product's pinned backend replaces the block", async () => {
+    const result = await productionSeal({ mainTf: SIM_BACKEND_TF, env: { ...identityEnv("DEV"), ...harnessSettings() } });
+    assert.ok(result.ok, JSON.stringify(result));
+    const init = callsOf(toolDir).find((c) => c.args[0] === "init");
+    assert.equal(init?.backendOverride, 'terraform {\n  backend "azurerm" {}\n}\n', "the product's override pins an empty azurerm block");
+    for (const marker of HARNESS_TEXT) assert.ok(!(init?.backendConfig ?? "").includes(marker), "init's backend configuration carries " + marker.slice(0, 13));
+    for (const call of callsOf(toolDir)) for (const name of HARNESS_NAMES) assert.equal(call.env[name], undefined, call.args[0] + " " + name);
+  });
+
+  it("the test-only allowance is reachable only from this test file: no product code, script, configuration or other test names it", () => {
+    const repo = resolve(fileURLToPath(new URL("..", import.meta.url)));
+    const self = fileURLToPath(import.meta.url);
+    const source = readFileSync(self, "utf8");
+    assert.ok(!/^export /m.test(source), "this file exports nothing, so nothing can import the harness");
+    const markers = ["installAzuriteSasHarness", "AZURITE SAS HARNESS", "ALZ_SIM_AZURITE", "alz-sim.test", DEV_KEY];
+    const hits: string[] = [];
+    const walk = (dir: string): void => {
+      for (const name of readdirSync(dir)) {
+        if (["node_modules", ".git", ".runs", "dist", "docs"].includes(name)) continue;
+        const path = join(dir, name);
+        const stat = statSync(path, { throwIfNoEntry: false });
+        if (!stat) continue;
+        if (stat.isDirectory()) { walk(path); continue; }
+        if (path === self || stat.size > 2_000_000 || !/\.(m?[jt]sx?|c?js|json|ya?ml|sh|py|hcl|tf|toml|txt)$|^(alz|Dockerfile)$/.test(name)) continue;
+        const text = readFileSync(path, "utf8");
+        for (const marker of markers) if (text.includes(marker)) hits.push(path.slice(repo.length + 1) + ": " + marker.slice(0, 24));
+      }
+    };
+    walk(repo);
+    assert.deepEqual(hits, [], "the harness and its emulator settings appear only in test/apply-emulated.test.ts (and its documentation)");
   });
 });

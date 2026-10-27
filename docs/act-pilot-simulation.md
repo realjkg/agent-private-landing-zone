@@ -2,6 +2,8 @@
 
 Status: run on 2026-10-11, and again on 2026-10-27 (same Terraform 1.16.4 binary, Azurite 3.37.0, all seven scenarios passing after the test's fixture and proxy-helper fixes recorded in `docs/act-pilot-simulation-aws.md`, the AWS counterpart for gate G1b), in a Linux sandbox. It runs the **real Terraform engine** against an **emulated Azure Storage backend (Azurite)** with Terraform's built-in `terraform_data` resource only. No Azure account, no real cloud resource and no registry access was used. It answers part of the open G2 questions in `docs/act-pilot-apply.md` and exercises the apply driver (`src/apply`) with the real binary. It does not replace the supervised DEV qualification.
 
+**Gate G1b for Azure Terraform DEV** (owner decision of 2026-10-27, issue #39, comment 6442856302, and the test-only emulator allowance, comment 6432984515). Rerun on 2026-10-27 on top of backend pinning (`docs/act-pilot-backend-pinning.md`): the product writes its own `zzzz_alz_backend_override.tf` with an empty `backend "azurerm" {}` block and supplies every backend setting itself, so the project's own backend block no longer carries the emulator's settings. All nine real-engine scenarios pass, and so do the seven default-CI guard tests (below). This is **emulated evidence, labeled as such**. **Entra ID authentication to the state backend is proven only in the supervised DEV qualification (G2)**, never here.
+
 ## What was run
 
 | Item | Value |
@@ -26,13 +28,31 @@ The test is skipped unless both variables are set, so default CI is unaffected. 
    `ALZ_SIM_TERRAFORM=<dir>/terraform ALZ_SIM_AZURITE=<scratch>/azurite/node_modules/.bin/azurite-blob npx tsx --test test/apply-emulated.test.ts`
    Optional: `ALZ_SIM_TERRAFORM_SHA256=<binary sha256>` makes it refuse any other binary. It needs `openssl` on the path. It needs no root, no hosts-file change and no system trust change.
 
-How the emulator is reached (no operator or system change): Azurite runs over TLS with a throwaway self-signed certificate. The azurerm backend is told `metadata_host = alz-sim.test:8443`; a small local metadata endpoint returns `alz-sim.test` as the storage suffix. A local CONNECT proxy, handed to Terraform through `ALZ_NETWORK_HTTPS_PROXY`, sends exactly two hostnames to loopback and answers 403 to everything else. The certificate is handed over as `ALZ_NETWORK_SSL_CERT_FILE`. The test records every host Terraform tried to reach and asserts that nothing beyond those two and Terraform's own version check was attempted.
+How the emulator is reached (no operator or system change): Azurite runs over TLS with a throwaway self-signed certificate. The test-only harness (below) tells the azurerm backend `ARM_METADATA_HOSTNAME=alz-sim.test:8443`; a small local metadata endpoint returns `alz-sim.test` as the storage suffix. A local CONNECT proxy, handed to Terraform through `ALZ_NETWORK_HTTPS_PROXY`, sends exactly two hostnames to loopback and answers 403 to everything else. The certificate is handed over as `ALZ_NETWORK_SSL_CERT_FILE`. The test records every host Terraform tried to reach and asserts that nothing beyond those two and Terraform's own version check was attempted.
 
-Authentication to the emulator is a container SAS token signed with Azurite's published development key. The test project's backend block carries it (see finding (a)).
+Authentication to the emulator is a container SAS token signed with Azurite's published development key, supplied by the **test-only Azurite SAS harness** (`installAzuriteSasHarness` in the test). The harness is a small wrapper that the test installs as `terraform` in the tool directory it gives the driver. The wrapper sets Terraform's own `ARM_SAS_TOKEN` and `ARM_METADATA_HOSTNAME` in its own process and then runs the real binary. No product code path, flag, environment variable or contract field can select it:
+- the project's backend block carries neither setting;
+- the product's backend configuration never writes them;
+- the runner never injects them.
+
+Because the driver binds the engine binary's hash, the harness is also a different engine. A production qualification attests the real binary, so it refuses the harness (`ENGINE_NOT_QUALIFIED`). A plan the harness sealed cannot be applied by the real binary either (`ENGINE_BINARY_CHANGED`).
 
 ## What the test covers
 
 `test/apply-emulated.test.ts` drives the real driver (`sealPreview`, `runApply`) through: seal with the real engine; an Ed25519 test approval over a fixture contract with fake GUIDs; apply (state lands in the emulator, lease released, evidence and ledger written, no secret in any result); a second apply of the same artifact refused (`ARTIFACT_ALREADY_APPLIED`); a stale plan refused (`PLAN_STALE`, outcome `FAILED_NO_CHANGE`, state unchanged); a held state lease (`FAILED_NO_CHANGE`, the other holder's lease untouched); the kill switch before the engine; and the kill switch while Terraform runs (`KILLED`, lease released). All seven pass. The qualification attestation is forged in the test (labeled as such) because no person can attest an emulator.
+
+Two more real-engine scenarios prove that the emulator's settings cannot enter a production path:
+- **A production seal is refused.** The seal uses the real binary without the harness, with the SAS token and metadata host in the project's backend block and in the operator's environment. It is refused at init (`ARTIFACT_INVALID`), and neither the emulator's storage host nor its metadata host is contacted.
+- **A production apply is refused.** The harness's settings are passed as any one identity's variables (`ENVIRONMENT_REFUSED`), through the harness binary under a qualification of the real binary (`ENGINE_NOT_QUALIFIED`), or by the real binary on a plan the harness sealed (`ENGINE_BINARY_CHANGED`). In each case the state is unchanged and the lease is free.
+
+The default-CI guard block (no emulator, fake engine) proves the same boundary everywhere a value could come from:
+- the contract refuses a SAS token, metadata host or access key as a field or inside the backend string;
+- the product's backend configuration contains only its own settings;
+- `ARM_SAS_TOKEN`, `ARM_METADATA_HOSTNAME` and `ARM_ACCESS_KEY` are refused as identity or network variables for every identity, and are never inherited from the operator;
+- a seal with them as identity variables is refused (`ENVIRONMENT_REFUSED`);
+- an override file carrying them is refused by name (`BACKEND_OVERRIDE_NOT_ALLOWED`);
+- a project block carrying them is replaced by the product's pinned empty block before init;
+- the harness and the emulator's markers appear in no file outside this test and its documentation.
 
 No defect was found in `src/apply` by this run: argv, init flags, backend-config handling, profile environment, `show -json` shape and stderr classification all worked against the real binary. No source file was changed.
 
@@ -79,7 +99,7 @@ Yes to both. A `sas_token` passed at `init` is written in plaintext to `.terrafo
 
 - Terraform contacts `checkpoint-api.hashicorp.com` on every run (version check). The runner profile does not set `CHECKPOINT_DISABLE`; in the simulation the proxy refused it. On an operator host this is an outbound call outside the approved-host list (that list governs URL variables only). Not changed here.
 - A real run needs the OIDC token file to exist before `init` when the STATE_WRITE configuration sets it.
-- The apply identity variables did not need any `ARM_SAS_TOKEN`: the runner does not inject it, so the simulation puts the (emulator-only) SAS in the project's backend block.
+- The apply identity variables never carry `ARM_SAS_TOKEN`, `ARM_METADATA_HOSTNAME` or `ARM_ACCESS_KEY`: the runner refuses them. Only the test-only harness supplies the emulator's SAS and metadata host, inside its own process.
 
 ## Cleanup after a run
 
