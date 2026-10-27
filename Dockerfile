@@ -33,8 +33,9 @@ COPY compose.yaml ./compose.yaml
 # test/gitignore-secrets.test.ts reads the repository's ignore rules as text.
 COPY .gitignore ./.gitignore
 COPY docs/ ./docs/
-# test/discovery-scope.test.ts reads the DISCOVERY policy, its variables and its Terraform as text. Test stage only.
-COPY bootstrap/aws/discovery-policy.json bootstrap/aws/discovery.tf bootstrap/aws/variables.tf ./bootstrap/aws/
+# The bootstrap tests (discovery-scope, bootstrap-azure, bootstrap-gcp) read the bootstrap packages as text. Test stage
+# only; .dockerignore keeps local state, tfvars and .terraform out of the build context.
+COPY bootstrap/ ./bootstrap/
 COPY alz ./alz
 COPY .github/workflows/model-qualification.yml ./.github/workflows/model-qualification.yml
 COPY .github/workflows/model-production-qualification.yml ./.github/workflows/model-production-qualification.yml
