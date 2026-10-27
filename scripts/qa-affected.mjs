@@ -229,9 +229,11 @@ export function planChanged(changedPaths, files) {
       continue;
     }
     if (/^qualification\/aws\/act-dev1-canary\/(?:.+\.tf|terraform\.tfvars\.example\.json)$/.test(path) ||
-        /^bootstrap\/aws\/(?:main|variables)\.tf$/.test(path) ||
+        /^bootstrap\/aws\/(?:(?:main|variables|discovery)\.tf|discovery-policy\.json|terraform\.tfvars\.example|tests\/discovery\.tftest\.hcl)$/.test(path) ||
         path === "tests_python/test_aws_dev_terraform_handoff.py") {
       addExisting(pythonTests, files, ["test/act-dev1-automation.test.py"]);
+      // The DISCOVERY scope (owner decision 6440801434, item 2): its policy content is asserted by a focused node test.
+      if (/^bootstrap\/aws\/(?:discovery|variables)\b|^bootstrap\/aws\/tests\/discovery\./.test(path)) addExisting(selected, files, ["test/discovery-scope.test.ts"]);
       if (!hasFile(files, "test/act-dev1-automation.test.py")) {
         gaps.push("ACT-DEV-1 Terraform canary has no focused test owner.");
       }

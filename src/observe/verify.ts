@@ -25,11 +25,24 @@ export const CLOUD_CONTROL_TYPES: Readonly<Record<string, { typeName: string; id
   // A deleted KMS key exists for a waiting period in KeyState PendingDeletion: present, and on its way out.
   aws_kms_key: { typeName: "AWS::KMS::Key", identifier: "id", pendingDeletion: { property: "KeyState", value: "PendingDeletion" } },
   aws_dynamodb_table: { typeName: "AWS::DynamoDB::Table", identifier: "id" },
-  aws_lambda_function: { typeName: "AWS::Lambda::Function", identifier: "id" },
   aws_vpc: { typeName: "AWS::EC2::VPC", identifier: "id" },
   aws_subnet: { typeName: "AWS::EC2::Subnet", identifier: "id" },
   aws_security_group: { typeName: "AWS::EC2::SecurityGroup", identifier: "id" },
 };
+
+/**
+ * Types whose only Cloud Control read returns application data or secret contents, so the verifier never asks for them
+ * (owner decision 2026-10-27, issue #39 comment 6440801434, item 2: DISCOVERY reads control-plane metadata only). The
+ * Lambda function read handler returns the environment variables and needs kms:Decrypt. Each is NOT_CHECKABLE with
+ * DATA_BEARING_READ_EXCLUDED: named, never assumed present or absent. A cleanup proposal lists a run-created one as
+ * UNVERIFIABLE (it still needs the contract's human approvals), and the leftover check reports it UNKNOWN, so the record
+ * stays INCOMPLETE.
+ */
+export const DATA_BEARING_TYPES: ReadonlySet<string> = new Set([
+  "aws_lambda_function", "awscc_lambda_function", "AWS::Lambda::Function",
+  "aws_ssm_parameter", "awscc_ssm_parameter", "AWS::SSM::Parameter",
+  "aws_secretsmanager_secret", "awscc_secretsmanager_secret", "AWS::SecretsManager::Secret",
+]);
 
 /**
  * The same reader for a CloudFormation-typed blueprint entry (the CDK engine, whose addresses are logical ids and whose
@@ -125,6 +138,7 @@ const errorClass = (stderr: string): string => ERROR_CLASSES.find(([pattern]) =>
 /** Whether one blueprint entry exists in AWS. */
 export async function checkResource(entry: BlueprintEntry, region: string, aws: AwsCli): Promise<ResourceCheck> {
   const base = { address: entry.address, type: entry.type };
+  if (DATA_BEARING_TYPES.has(entry.type)) return { ...base, identifier: entry.arn ?? entry.id, existence: "NOT_CHECKABLE", reason: "DATA_BEARING_READ_EXCLUDED" };
   const mapping = cloudControlMappingOf(entry.type);
   if (!mapping) return { ...base, identifier: entry.arn ?? entry.id, existence: "NOT_CHECKABLE", reason: "NO_CLOUD_CONTROL_MAPPING" };
   // For a type Cloud Control identifies by ARN (an SNS topic, an OIDC provider) a CloudFormation physical id is that ARN, and a proposal
