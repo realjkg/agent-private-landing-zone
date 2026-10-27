@@ -100,6 +100,19 @@ export const LIVE_CONDITION_REASONS: Readonly<Record<keyof PreviewLiveConditions
   targetHardwareKnown: "the host this preview ran on is not named",
 };
 
+/**
+ * The change actions a preview gate's change set may hold (docs/production-release-admission.md, gate 4: "no unauthorized updates,
+ * adoption, delete, replacement or infrastructure apply"). A create, an update or an adoption (import) of a resource, a data read
+ * and a no-op are what a reviewed preview is about; a delete, a replacement (unconditional or conditional), a forget (a resource
+ * dropped from state unreviewed), a dynamic or unknown action, or anything else never is, whatever the label says. The list is
+ * closed: an action not named here is refused, so a new engine vocabulary fails closed until it is reviewed here.
+ */
+export const PREVIEW_GATE_ACTIONS: readonly string[] = Object.freeze(["CREATE", "UPDATE", "IMPORT", "READ", "SAME"]);
+/** The actions in a counted change list that a preview gate never admits, with their counts, as "DELETE: 2"; empty when every action is admitted. */
+export function unauthorizedPreviewActions(byAction: Readonly<Record<string, number>>): string[] {
+  return Object.entries(byAction).filter(([action, count]) => count > 0 && !PREVIEW_GATE_ACTIONS.includes(action)).map(([action, count]) => action + ": " + count).sort();
+}
+
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const hashText = (value: unknown): value is string => typeof value === "string" && HASH.test(value);
 const KEYS = ["schemaVersion", "reportKind", "gateVersion", "gateId", "executionMode", "label", "simulation", "scenario", "provider", "engine", "estate", "sourceCommit", "targetHardwareId", "passed",
@@ -159,6 +172,11 @@ export function previewGateEvidenceProblems(value: unknown, expected: { sourceCo
     !Object.values(changes.byAction).every((n) => typeof n === "number" && Number.isInteger(n) && n >= 0) || typeof changes.total !== "number" || typeof changes.create !== "number" || typeof changes.preExistingTouched !== "number" ||
     (Object.values(changes.byAction) as number[]).reduce((a, b) => a + b, 0) !== changes.total || (changes.byAction.CREATE ?? 0) !== changes.create || changes.total - changes.create !== changes.preExistingTouched) {
     problems.push("preview evidence.changes: counts by action that add up");
+  } else {
+    // The documented rule, enforced on the evidence itself so a document relabeled by hand never reads as admissible: a delete,
+    // a replacement or an unreviewed action in the change set is refused whatever the label and the conditions say.
+    const unauthorized = unauthorizedPreviewActions(changes.byAction as Record<string, number>);
+    if (unauthorized.length > 0) problems.push("preview evidence.changes: a delete, a replacement or an unreviewed action is never admitted (" + unauthorized.join(", ") + ")");
   }
   if (!Array.isArray(value.checks) || value.checks.length === 0 || !value.checks.every((c) => isRecord(c) && Object.keys(c).sort().join() === "evidenceSha256,name,passed" && typeof c.name === "string" && c.passed === true && hashText(c.evidenceSha256))) {
     problems.push("preview evidence.checks: each names what it checked and the hash it rests on");
