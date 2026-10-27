@@ -17,7 +17,7 @@ import { canonicalJson } from "../src/teardown/manifest.js";
 import { readEncryptedEvidence } from "../src/evidence/vault.js";
 import { SOURCE_COMMIT,
   DEV_TARGET, ENV, NOW, POLICY, REQUESTER, approvalFor, behave as behaveIn, callsOf, contractJson, human, identityEnv, installFakeTerraform, keys, pinPathOf,
-  requesterArgs, targetOf, testFixtureForgeQualificationEvidence, writePinnedContract, writeProject, type Project,
+  AZURE_BACKEND_TF, AZURE_MAIN_TF, requesterArgs, targetOf, testFixtureForgeQualificationEvidence, writePinnedContract, writeProject, type Project,
 } from "./helpers/apply-fixtures.js";
 
 // The requester signs the sealed request (docs/act-pilot-plan.md, authority item 3; owner decisions on issue #39 of
@@ -57,7 +57,8 @@ function world(contract: unknown = contractJson(KILL)): World {
 const forEnv = (w: World, environment: ApplyEnvironment): ApplyDeps => ({ ...w.deps, env: identityEnv(environment) });
 const contractOf = (w: World): PilotContract => JSON.parse(readFileSync(w.contractPath, "utf8")) as PilotContract;
 
-const SHARED_TF = 'resource "azurerm_resource_group" "pilot" {}\n';
+/** State access is Entra ID only (#287): the project's backend block turns it on, as the driver fixture's default project does. */
+const SHARED_TF = AZURE_MAIN_TF;
 type Requester = { requesterId: string; privateKeyPem: string };
 async function seal(w: World, environment: ApplyEnvironment, requester: Requester | null = REQUESTER, p: Project = writeProject(fresh("project"), targetOf(environment), SHARED_TF)) {
   const target = targetOf(environment);
@@ -212,7 +213,7 @@ test("a forged requester signature is refused at apply: a non-allowlisted key, a
 test("a requester signature cannot be moved between artifacts: a sealed plan or review bundle carrying another plan's request is ARTIFACT_TAMPERED", async () => {
   const w = world();
   const a = await seal(w, "DEV") as Sealed;
-  const b = await seal(w, "DEV", REQUESTER, writeProject(fresh("project"), targetOf("DEV"), 'resource "azurerm_resource_group" "other" {}\n')) as Sealed;
+  const b = await seal(w, "DEV", REQUESTER, writeProject(fresh("project"), targetOf("DEV"), AZURE_BACKEND_TF + 'resource "azurerm_resource_group" "other" {}\n')) as Sealed;
   assert.notEqual(a.sealed.artifactSha256, b.sealed.artifactSha256);
   const moved = verifySealedPlan({ sealed: { ...b.loaded.sealed, request: a.sealed.request }, planBytes: b.loaded.planBytes });
   refused(moved, "ARTIFACT_TAMPERED");
