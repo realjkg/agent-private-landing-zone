@@ -145,7 +145,7 @@ describe("GCP Terraform against an emulated Cloud Storage backend (SYNTHETIC, op
     const init = terraform(dir, ["init", "-input=false", "-backend-config=" + join(root, "seal.hcl")]);
     assert.equal(init.code, 0, init.stderr);
     const saved = savedBackend(dir);
-    assert.equal(GCP.savedBackendMatches(saved, target), true);
+    assert.equal(GCP.savedBackendMatches(saved, target, stateWriteEnv), true);
     const config = saved.config as Record<string, unknown>;
     assert.equal(config.bucket, BUCKET, "the project's own bucket did not survive the pin");
     assert.equal(config.storage_custom_endpoint, null, "nor its endpoint");
@@ -156,7 +156,7 @@ describe("GCP Terraform against an emulated Cloud Storage backend (SYNTHETIC, op
     const plain = project("plain", 'resource "terraform_data" "unit" {\n  input = "one"\n}');
     writeFileSync(join(root, "plain.hcl"), GCP.backendLocation(target));
     assert.equal(terraform(plain, ["init", "-input=false", "-backend-config=" + join(root, "plain.hcl")]).code, 0);
-    assert.equal(GCP.savedBackendMatches(savedBackend(plain), target), true);
+    assert.equal(GCP.savedBackendMatches(savedBackend(plain), target, stateWriteEnv), true);
     assert.equal((savedBackend(plain).config as Record<string, unknown>).credentials, null);
   });
 
@@ -165,7 +165,7 @@ describe("GCP Terraform against an emulated Cloud Storage backend (SYNTHETIC, op
       const dir = project("refused-" + name, 'resource "terraform_data" "unit" {\n  input = "one"\n}');
       writeFileSync(join(dir, "extra.hcl"), GCP.backendLocation(target) + name + ' = "' + value + '"\n');
       assert.equal(terraform(dir, ["init", "-input=false", "-backend-config=extra.hcl"]).code, 0, name);
-      assert.equal(GCP.savedBackendMatches(savedBackend(dir), target), false, name);
+      assert.equal(GCP.savedBackendMatches(savedBackend(dir), target, stateWriteEnv), false, name);
       if (name === "access_token") assert.ok(readFileSync(join(dir, ".terraform", "terraform.tfstate"), "utf8").includes(TOKEN_CANARY), "Terraform stores it in plaintext, which is why the spec refuses it");
     }
   });

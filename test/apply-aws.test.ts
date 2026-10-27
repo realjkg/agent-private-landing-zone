@@ -593,6 +593,43 @@ test("Terraform's built-in provider is allowed for terraform_data resources only
   }
 });
 
+test("review N3 of #305, the AWS equivalents: data sources that mint a token or read a secret are refused at seal and at apply (PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT); the same names as managed resources, and ordinary data sources, are not", async () => {
+  const AWS_NAME = "registry.terraform.io/hashicorp/aws";
+  const CODE = "PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT";
+  const env = awsIdentityEnv("DEV");
+  const pinned = { accountId: AWS_DEV_TARGET.account, region: AWS_REGION, backend: AWS_DEV_TARGET.backend, workspace: "default" };
+  const judge = (uses: { address: string; mode: string; type: string }[]): string => {
+    try { AWS.assertProviderConfig([AWS_PROVIDER], pinned, env, uses.map((u) => ({ ...u, provider: { name: "aws", full_name: AWS_NAME } }))); return "OK"; } catch (error) { return (error as Error).message; }
+  };
+  const SECRET = [
+    "aws_ecr_authorization_token", "aws_ecrpublic_authorization_token", "aws_eks_cluster_auth", "aws_codeartifact_authorization_token",
+    "aws_secretsmanager_secret_version", "aws_secretsmanager_random_password", "aws_ssm_parameter", "aws_ssm_parameters_by_path",
+    "aws_kms_secrets", "aws_kms_secret", "aws_cognito_user_pool_client",
+  ];
+  for (const type of SECRET) {
+    assert.equal(judge([{ address: "data." + type + ".x", mode: "data", type }]), CODE, type);
+    assert.equal(judge([{ address: "module.app.data." + type + ".x", mode: "managed", type }]), CODE, type + " under a data address");
+    assert.equal(judge([{ address: type + ".x", mode: "", type }]), CODE, type + " with no mode");
+  }
+  for (const type of ["aws_ssm_parameter", "aws_secretsmanager_secret_version", "aws_cognito_user_pool_client"]) assert.equal(judge([{ address: type + ".x", mode: "managed", type }]), "OK", type + " as a resource");
+  assert.equal(judge([{ address: "data.aws_caller_identity.me", mode: "data", type: "aws_caller_identity" }, { address: "data.aws_region.r", mode: "data", type: "aws_region" }]), "OK");
+  // Through the driver: refused at seal, and again at apply when the plan is shown and judged again; nothing is spent.
+  const behavior: Behavior = { showProviderConfig: { aws: AWS_PROVIDER }, showConfigurationExtra: { root_module: { resources: [{ address: "data.aws_ecr_authorization_token.t", mode: "data", type: "aws_ecr_authorization_token", provider_config_key: "aws" }] } } };
+  const w = world();
+  behave(behavior);
+  const atSeal = await sealRefusal(w, "DEV");
+  refused(atSeal, "ARTIFACT_INVALID");
+  assert.match((atSeal as { message: string }).message, new RegExp(CODE));
+  behave({});
+  const s = await seal(w, "DEV");
+  const approvals = approvalsFor(s);
+  behave(behavior);
+  const result = await run(w, s, approvals);
+  refused(result, "TARGET_NOT_IN_CONTRACT");
+  assert.match((result as { message: string }).message, new RegExp(CODE));
+  await nothingSpent(w, s, approvals);
+});
+
 test("the built-in provider walker fails closed (#279 review B1, N1): a tree nested to depth 64 is judged normally and one at depth 65 is PROVIDER_PLAN_TOO_DEEP, in the configuration and in the prior state, at seal and at apply; and a tree that is present but malformed (a root module that is not an object, resources as an object, child_modules that is not a list, a module call that is not an object, a changes entry that is not an object) is PROVIDER_PLAN_UNREADABLE, never skipped", async () => {
   const BUILTIN_NAME = "terraform.io/builtin/terraform";
   const BUILTIN = { terraform: { name: "terraform", full_name: BUILTIN_NAME } };

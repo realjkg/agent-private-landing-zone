@@ -1,3 +1,4 @@
+import { identityVariables } from "../../tools/identity.js";
 import { SAFE_VALUE, TOKEN_FILE } from "../constants.js";
 import { stop } from "../engine.js";
 import type { ProviderBlock, ProviderSpec } from "../provider.js";
@@ -94,19 +95,23 @@ const SAVED_SETTINGS = new Set(["storage_account_name", "container_name", "key",
  * `lookup_blob_endpoint`), `snapshot`, and any attribute a later backend version adds.
  *
  * The STATE_WRITE settings, when saved, are bound too: `tenant_id` and `subscription_id` must be the contract's, and `client_id`
- * and `oidc_token_file_path` must have the strict shape `backendConfig` writes. Which client id and token path STATE_WRITE uses is
- * not known here (this check sees the contract target, not the identity variables); identity checks and qualification bind those.
+ * and `oidc_token_file_path` must have the strict shape `backendConfig` writes and be exactly the STATE_WRITE identity's own
+ * `ARM_CLIENT_ID` and `ARM_OIDC_TOKEN_FILE` in `env`, the environment init's configuration was written from (review N3 of #318). A
+ * saved value with no STATE_WRITE value to match is refused.
  */
-function savedBackendMatches(backend: Record<string, unknown>, target: AzureTarget): boolean {
+function savedBackendMatches(backend: Record<string, unknown>, target: AzureTarget, env: NodeJS.ProcessEnv): boolean {
   const config = isRecord(backend.config) ? backend.config : {};
   const parts = [config.storage_account_name, config.container_name, config.key];
   const unsetOr = (name: string, ok: (value: string) => boolean): boolean =>
     config[name] === undefined || config[name] === null || (typeof config[name] === "string" && ok(config[name] as string));
+  const stateWrite = identityVariables(env, "STATE_WRITE");
+  const isStateWrite = (name: string) => (v: string): boolean => stateWrite.get(name) === v;
   return backend.type === "azurerm" && parts.every((part) => typeof part === "string") && parts.join("/") === target.backend &&
     config.use_azuread_auth === true && (config.use_oidc === undefined || config.use_oidc === null || config.use_oidc === true) &&
     unsetOr("tenant_id", (v) => GUID.test(v) && v.toLowerCase() === target.tenantId.toLowerCase()) &&
     unsetOr("subscription_id", (v) => GUID.test(v) && v.toLowerCase() === target.subscriptionId.toLowerCase()) &&
-    unsetOr("client_id", (v) => SAFE_VALUE.test(v)) && unsetOr("oidc_token_file_path", (v) => TOKEN_FILE.test(v)) &&
+    unsetOr("client_id", (v) => SAFE_VALUE.test(v) && isStateWrite("ARM_CLIENT_ID")(v)) &&
+    unsetOr("oidc_token_file_path", (v) => TOKEN_FILE.test(v) && isStateWrite("ARM_OIDC_TOKEN_FILE")(v)) &&
     Object.entries(config).every(([name, value]) => SAVED_SETTINGS.has(name) || value === null);
 }
 
@@ -144,7 +149,7 @@ export const AZURE: ProviderSpec = {
   backendConfig: (env, target) => backendConfig(env, target as AzureTarget),
   backendType: "azurerm",
   backendLocation: (target) => backendLocation(target as AzureTarget),
-  savedBackendMatches: (saved, target) => savedBackendMatches(saved, target as AzureTarget),
+  savedBackendMatches: (saved, target, env) => savedBackendMatches(saved, target as AzureTarget, env),
   // Simulation finding (docs/act-pilot-simulation.md): the plan embeds the seal-time backend settings (now the product's backend file, under the azurerm pin); the rest is filled from the apply process's ARM_* variables.
   filledAtApply: ["use_oidc", "client_id", "tenant_id", "subscription_id", "oidc_token_file_path"],
   tagAttributes: ["tags"],

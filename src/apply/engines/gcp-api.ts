@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { canonicalJson } from "../../teardown/manifest.js";
 import { ALZ_TAG_KEYS } from "../../teardown/unit.js";
-import { checkCredentialConfiguration } from "../../tools/gcp-credentials.js";
+import { checkCredentialConfiguration, readTokenFile } from "../../tools/gcp-credentials.js";
 import { identityVariables, type ExecutionIdentity } from "../../tools/identity.js";
 import { sha256 } from "../../util/sha256.js";
 import { GCP } from "../providers/gcp.js";
@@ -243,9 +243,9 @@ function senderFor(topic: string, http: GcpHttp): GcpHttp {
 async function bearerFor(identity: "APPLY" | "DISCOVERY", deps: Pick<GcpApiDeps, "env" | "target">, send: GcpHttp): Promise<Ok<{ token: string }> | GcpApiRefusal> {
   const id = identityOf(deps.env, identity, deps.target.projectId);
   if (!id.ok) return id;
-  let subjectToken: string;
-  try { subjectToken = readFileSync(id.id.tokenFile, "utf8").trim(); } catch { return refuse("CREDENTIALS"); }
-  if (subjectToken === "" || /\s/.test(subjectToken)) return refuse("CREDENTIALS");
+  // A regular file of one word, read without blocking (a FIFO in its place cannot hang the run; review N1 of #305).
+  const subjectToken = readTokenFile(id.id.tokenFile);
+  if (subjectToken === undefined) return refuse("CREDENTIALS");
   const exchanged = await send({
     method: "POST", url: STS_TOKEN_URL, headers: { "content-type": "application/json" },
     body: JSON.stringify({ grantType: "urn:ietf:params:oauth:grant-type:token-exchange", audience: id.id.audience, scope: SCOPE_EXCHANGE, requestedTokenType: "urn:ietf:params:oauth:token-type:access_token", subjectTokenType: id.id.subjectTokenType, subjectToken }),

@@ -199,6 +199,11 @@ Each security requirement the spike produced, with the PLAN slice that builds it
 | `STORAGE_EMULATOR_HOST` allowed only inside the opt-in harness, on the terms of owner decision 6432984515 on issue #39 (the Azurite precedent) | S6 | `test/apply-emulated-gcp.test.ts` (opt-in through `ALZ_SIM_TERRAFORM` and `ALZ_SIM_FAKE_GCS`) |
 | Lock, stale plan, kill switch and SIGINT behavior through the driver against the real binary | S6 | `test/apply-emulated-gcp.test.ts` |
 | Protected classes, including `b/<bucket>`, the `google_iam_` namespace, `google_project_service_identity` and `/serviceAccounts/` ids under another type | S4 | `test/apply-cleanup-gcp.test.ts` |
+| Review of #305, N1: a FIFO, device or directory in place of a credential configuration or token file is refused at once, never waited on (`stat` before a non-blocking open) | admission prerequisites | `test/apply-gcp.test.ts` (review N1) |
+| Review of #305, N2: the saved `gcs` backend is an allowlist (`bucket`, `prefix`, `credentials`, `impersonate_service_account`; anything else must be null), and the saved `credentials` and `impersonate_service_account` are exactly STATE_WRITE's own `GOOGLE_APPLICATION_CREDENTIALS` and `GOOGLE_IMPERSONATE_SERVICE_ACCOUNT` | admission prerequisites | `test/apply-gcp.test.ts` (review N2) |
+| Review of #305, N3: data sources that mint a token or read a secret (`google_client_config`, `google_service_account_access_token`, `_id_token`, `_jwt`, Secret Manager secret versions and their access forms, `google_kms_secret`, `google_kms_secret_asymmetric`) are refused (`PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT`) | admission prerequisites | `test/apply-gcp.test.ts` (review N3) |
+| Review of #305, N4: a resource or data source whose provider the plan does not name is refused (`PROVIDER_CONFIG_NOT_IN_CONTRACT`) | admission prerequisites | `test/apply-gcp.test.ts` (review N4) |
+| Review of #310, N5: the cleanup classifier calls the GCP branch for a GCP contract, and any provider with no branch of its own is unclassifiable, never an ordinary leaf | admission prerequisites | `test/apply-cleanup-provider.test.ts` |
 
 ## Departures and open owner questions
 

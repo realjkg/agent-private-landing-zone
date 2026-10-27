@@ -53,8 +53,12 @@ export type ProviderSpec = {
   ambientRefusal(env: NodeJS.ProcessEnv): IdentityRefusal | undefined;
   /** The partial backend configuration init saves for STATE_WRITE. Throws a code if a value is unusable. */
   backendConfig(env: NodeJS.ProcessEnv, target: PilotTarget): string;
-  /** Whether the backend `init` saved (`.terraform/terraform.tfstate`) is the contract target's. Checked after the seal-time init, whose settings the plan embeds, and after the apply-time init. */
-  savedBackendMatches(saved: Record<string, unknown>, target: PilotTarget): boolean;
+  /**
+   * Whether the backend `init` saved (`.terraform/terraform.tfstate`) is the contract target's, and whether every identity
+   * setting it saved is the STATE_WRITE identity's own value in `env` (the environment that init's backend configuration was
+   * written from). Checked after the seal-time init, whose settings the plan embeds, and after the apply-time init.
+   */
+  savedBackendMatches(saved: Record<string, unknown>, target: PilotTarget, env: NodeJS.ProcessEnv): boolean;
   /**
    * The backend type the product-owned override file pins (src/apply/backend-pin.ts). The project's own backend block is never
    * read: the override replaces it, and every setting comes from `backendConfig` or `backendLocation`.

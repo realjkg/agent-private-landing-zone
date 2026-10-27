@@ -106,7 +106,7 @@ describe("the backend pin against real Terraform init (SYNTHETIC, loopback only)
       const exit = await init(project, join(work, "home"));
       const savedFile = join(project, ".terraform", "terraform.tfstate");
       const saved = existsSync(savedFile) ? (JSON.parse(readFileSync(savedFile, "utf8")) as { backend?: Record<string, unknown> }).backend : undefined;
-      const record = { case: name, exit, userContacts: userContacts - userBefore, oursContacts: oursContacts - oursBefore, savedType: saved?.type ?? null, savedMatches: saved ? AWS.savedBackendMatches(saved, TARGET as never) : null };
+      const record = { case: name, exit, userContacts: userContacts - userBefore, oursContacts: oursContacts - oursBefore, savedType: saved?.type ?? null, savedMatches: saved ? AWS.savedBackendMatches(saved, TARGET as never, {}) : null };
       results.push(record);
       assert.equal(record.userContacts, 0, "the user's backend is never contacted");
       if (saved) {
