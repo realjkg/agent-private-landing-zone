@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { AWS_CONTAINER_PREFIXES } from "../src/apply/aws-containers.js";
 import { SCAN_DEPTH, blueprintFromTerraformState } from "../src/observe/blueprint.js";
 import { cleanupDisposition, retentionProblems } from "../src/observe/disposition.js";
 import { CLOUD_CONTROL_TYPES, observeBlueprint, type AwsCli } from "../src/observe/verify.js";
@@ -267,6 +268,8 @@ test("a wrapper type that holds an identity's ARN anywhere in its attributes is 
   assert.ok(!flagged("terraform_data", { input: "not an arn", output: ["arn:aws:s3:::bucket"] }), "no IAM ARN");
   assert.ok(!flagged("terraform_data", { input: "prefixarn:aws:iam::000000000000:role/x" }), "not anchored as a value or an element");
   assert.ok(!flagged("aws_s3_bucket", { policy: ROLE }), "an ordinary type is judged by its own identifier, not its attributes");
+  // Every stack container of the one family table is a wrapper too (review 6432262110 B1): an identity's ARN in its outputs is flagged, whatever the family.
+  for (const prefix of AWS_CONTAINER_PREFIXES) assert.ok(flagged(prefix, { outputs: { RoleArn: ROLE } }) && !flagged(prefix, { outputs: { Name: "plain" } }), prefix);
   const blueprint = blueprintFromTerraformState(show("terraform_data", { input: { secret: "CANARY_WRAPPER_VALUE", roles: ROLE } }), []);
   assert.deepEqual(blueprint.entries[0], { address: "terraform_data.x", type: "terraform_data", id: "x-id", arn: null, origin: "NOT_IN_PLAN", holdsIdentityArn: true });
   assert.ok(!JSON.stringify(blueprint).includes("CANARY_WRAPPER_VALUE") && !JSON.stringify(blueprint).includes(ROLE), "nothing of the attributes is copied");

@@ -9,6 +9,7 @@ import { isResourceAddress } from "./terraform.js";
 import type { AwsTarget } from "./providers/aws.js";
 import type { AzureTarget } from "./providers/azure.js";
 import { armPathSafe, isArmGroupId, isArmRegistrationId, isArmScopeId, parseArmId, type ArmType } from "../observe/azure-rest.js";
+import { awsContainerFamilyOf } from "./aws-containers.js";
 
 /**
  * The cleanup proposal (docs/act-pilot-plan.md, "Cleanup of pilot-created resources"): the reviewable, hash-identified list
@@ -51,7 +52,7 @@ export const PROTECTION_REASONS: Readonly<Record<Exclude<Ownership, "RUN_CREATED
   PROTECTED_DEPLOYMENT: "deployment history (Microsoft.Resources/deployments) records what was deployed and is never deleted by a cleanup",
   RETAINED_GROUP: "a resource group is never deleted by a pilot cleanup, whatever it holds; the pilot owner retains it, and its deletion is a separate, reviewed action (environment retirement, outstanding)",
   // Under 512 characters: a proposal's reason text has that limit.
-  CONTAINS_OTHERS: "a container of other resources is never deleted by a cleanup: on Azure a subscription or management group holds deployments no listing here accounts for, and a provider or feature registration is a subscription-wide setting other deployments rely on; on AWS deleting a CloudFormation stack, stack set, stack instance or Service Catalog provisioned product deletes everything its template holds, identities among it, none of which the engine's state lists",
+  CONTAINS_OTHERS: "a container is never deleted by a cleanup: on Azure a subscription or management group holds other deployments, and a provider or feature registration is a setting others rely on; on AWS anything that deploys a CloudFormation stack or a provisioned product (CloudFormation, Service Catalog, Serverless Application Repository, SageMaker, Proton, Elastic Beanstalk) is kept: deleting it deletes all the stack holds, identities among it, which the state does not list",
 };
 
 export type ProposedDeletion = {
@@ -285,18 +286,12 @@ export const isAwsIdentityType = (type: string): boolean => AWS_IDENTITY_PREFIXE
 /** An IAM ARN recorded under a type outside the identity service (a custom resource, a stack, `terraform_data`): unclassifiable, so refused. */
 const IAM_ARN = /^arn:aws(?:-[a-z]+)*:iam::/;
 /**
- * AWS stack containers (review 6412896598 B1, owner decision 6431744115): a CloudFormation stack, stack set or stack set
- * instance (`aws_cloudformation_stack`, `_stack_set`, `_stack_set_instance`, `_stack_instances`), the Cloud Control provider's
- * `awscc_cloudformation_stack` and `_stack_set`, a Service Catalog provisioned product in either provider (it provisions a
- * stack), and the CloudFormation-typed `AWS::CloudFormation::Stack` and `::StackSet` and `AWS::ServiceCatalog::CloudFormationProvisionedProduct`,
- * by an anchored prefix. Deleting one deletes everything its template holds, IAM roles and other identities among it, and
- * none of that is in the engine's state (a template body names types, not ARNs; a template URL is not in the state at all),
- * so no listing here accounts for it. CONTAINS_OTHERS: never deleted, directly or as a dependent, whoever created it; the
- * CDK engine refuses a nested stack at the seal, and one that appears in the stack anyway is never proposed.
+ * AWS stack containers (reviews 6412896598 B1 and 6432262110 B1, owner decision 6431744115): anything whose deletion tears
+ * down a CloudFormation stack or a provisioned product, by the one family table in ./aws-containers.ts (`isAwsContainerType`).
+ * CONTAINS_OTHERS: never deleted, directly or as a dependent, whoever created it; the CDK engine refuses a nested stack at
+ * the seal, and one that appears in the stack anyway is never proposed.
  */
-const AWS_CONTAINER_PREFIXES: readonly string[] = ["aws_cloudformation_stack", "awscc_cloudformation_stack", "aws_servicecatalog_provisioned_product", "awscc_servicecatalog_cloud_formation_provisioned_product",
-  "AWS::CloudFormation::Stack", "AWS::ServiceCatalog::CloudFormationProvisionedProduct"];
-export const isAwsContainerType = (type: string): boolean => AWS_CONTAINER_PREFIXES.some((prefix) => type.startsWith(prefix));
+export { isAwsContainerType } from "./aws-containers.js";
 
 /** The bootstrap the pilot runs on and the identities of the account, which a cleanup never touches: the state backend, every stack container and everything in the identity service. */
 function protectionOf(entry: { type: string; id: string | null; arn: string | null; holdsIdentityArn?: true }, contract: PilotContract, backendGroups: Set<string>): AzureProtection | undefined {
@@ -305,7 +300,7 @@ function protectionOf(entry: { type: string; id: string | null; arn: string | nu
   const buckets = new Set(Object.values(contract.targets).map((target) => (target as AwsTarget).backend.split("/")[0]));
   if (/^aws_s3_bucket(_|$)/.test(entry.type) && entry.id !== null && buckets.has(entry.id)) return "PROTECTED_BACKEND";
   // By type first, as on Azure: a container or an identity type is protected whatever its identifier says, and a dependent the state does not hold has only a type.
-  if (isAwsContainerType(entry.type)) return "CONTAINS_OTHERS";
+  if (awsContainerFamilyOf(entry.type) !== undefined) return "CONTAINS_OTHERS";
   if (isAwsIdentityType(entry.type)) return "PROTECTED_IDENTITY";
   // Fail closed: an identity's ARN under a type that is not an identity type (a custom resource, `terraform_data`) may be a pilot role in disguise, whether it
   // is the recorded identifier or sits in any attribute the state holds (`holdsIdentityArn`, judged in place by the blueprint, which also sets it when the
@@ -518,7 +513,7 @@ export function protectedDeletionIn(planned: readonly PlanChange[], entries: rea
     if (protection === undefined) continue;
     if (protection === UNCLASSIFIABLE) return "The destroy plan would " + change.action.toLowerCase() + " " + stripInvisible(change.address) + ", whose identifier does not parse as an ARM id (or is a URL its type does not record, or an identity's ARN under another type, or an attribute set the blueprint could not scan in full), so what it protects is unknown and a pilot cleanup never deletes it (OWNERSHIP_AMBIGUOUS).";
     const what = protection === "RETAINED_GROUP" ? "a resource group" : protection === "PROTECTED_IDENTITY" ? "an identity or authorization object" : protection === "PROTECTED_DEPLOYMENT" ? "deployment history"
-      : protection === "PROTECTED_BACKEND" ? "the state backend" : contract.provider === "AWS" ? "a stack container (a CloudFormation stack, stack set, stack instance or provisioned product) holding resources the state does not list"
+      : protection === "PROTECTED_BACKEND" ? "the state backend" : contract.provider === "AWS" ? "a stack container (" + (awsContainerFamilyOf(entry.type)?.what ?? "a type that deploys a CloudFormation stack") + ") holding resources the state does not list"
       : "a subscription, management group, provider scope or registration";
     return "The destroy plan would " + change.action.toLowerCase() + " " + stripInvisible(change.address) + ", " + what + ", which a pilot cleanup never deletes, directly or as a dependent (" + protection + ").";
   }

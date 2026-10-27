@@ -6,6 +6,8 @@
  * some by the other. No other attribute value is ever copied out, so the blueprint can go into reviewable evidence.
  */
 
+import { isAwsContainerType } from "../apply/aws-containers.js";
+
 /** A planned change, as the sealed plan's redacted summary lists it (src/apply/types.ts PlanChange, structurally). */
 export type PlannedChange = { address: string; type: string; action: string };
 
@@ -53,8 +55,12 @@ function* managedResources(module: StateModule, depth = 0): Generator<StateResou
 
 /** Types whose provider id is a credential identifier (an access key id, for example). Their id is never copied. */
 const CREDENTIAL_ID_TYPES = new Set(["aws_iam_access_key", "aws_iam_service_specific_credential"]);
-/** Wrapper types that can carry anything, an identity's ARN among it (review 6412488764, N2); their attributes are judged for one. */
-const WRAPPER_TYPE = /^(?:terraform_data|null_resource|aws_cloudformation_stack|AWS::CloudFormation::CustomResource|Custom::)/;
+/**
+ * Wrapper types that can carry anything, an identity's ARN among it (review 6412488764, N2): the generic wrappers here, and every
+ * stack container of the one family table (src/apply/aws-containers.ts; review 6432262110 B1). Their attributes are judged for one.
+ */
+const WRAPPER_TYPE = /^(?:terraform_data|null_resource|AWS::CloudFormation::CustomResource|Custom::)/;
+const isWrapperType = (type: string): boolean => WRAPPER_TYPE.test(type) || isAwsContainerType(type);
 /** An IAM ARN as a whole string value, or as one element of a separated list, in any partition. */
 const IAM_ARN_ELEMENT = /(?:^|[\s,;|])arn:aws(?:-[a-z]+)*:iam::[^\s,;|]*/;
 /**
@@ -101,7 +107,7 @@ function blueprintOf(instances: Iterable<Instance>, planned: readonly PlannedCha
       arn: text(values.arn) && values.arn.startsWith("arn:") ? values.arn : null,
       id: text(values.id) && !CREDENTIAL_ID_TYPES.has(resource.type) ? values.id : null,
       origin: plannedAddresses.has(resource.address) ? "IN_PLAN" : "NOT_IN_PLAN",
-      ...(WRAPPER_TYPE.test(resource.type) && holdsIamArn(values) ? { holdsIdentityArn: true as const } : {}),
+      ...(isWrapperType(resource.type) && holdsIamArn(values) ? { holdsIdentityArn: true as const } : {}),
     });
   }
   // Code-point order, as the sealed plan sorts its changes: the same on every machine, whatever its locale.
