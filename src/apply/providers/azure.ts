@@ -67,15 +67,27 @@ function backendConfig(env: NodeJS.ProcessEnv): string {
 }
 
 /**
+ * The settings init may save with a value: the contract's storage names, the two switches, and the STATE_WRITE principal's
+ * identifiers the partial configuration writes (`backendConfig`). Init saves every other attribute of the backend's schema as
+ * `null` when nothing set it (docs/act-pilot-simulation.md, (a)).
+ */
+const SAVED_SETTINGS = new Set(["storage_account_name", "container_name", "key", "use_azuread_auth", "use_oidc", "client_id", "tenant_id", "subscription_id", "oidc_token_file_path"]);
+
+/**
  * The storage account, container and key init saved must be the contract's `<storage-account>/<container>/<key>`, and Entra ID
  * authorization must be on (`use_azuread_auth` saved as `true`: the partial configuration sets it, and without one the project's
- * own block must, since init saves nothing from the environment). The plan embeds what init saved, so this is what the apply uses.
+ * own block must, since init saves nothing from the environment). Every other saved setting must be `null` or absent: a shared
+ * key or SAS token, another credential or auth path (`client_secret`, `client_certificate*`, `use_msi`, `msi_endpoint`,
+ * `use_cli`), another endpoint or cloud (`endpoint`, `metadata_host`, `environment`), `resource_group_name`, `snapshot` or any
+ * attribute this list does not name. `use_oidc`, when saved, must be `true`. The plan embeds what init saved, so this is what the
+ * apply uses; the backend-block check refuses the same settings before init, and this one holds even if a block got past it.
  */
 function savedBackendMatches(backend: Record<string, unknown>, target: AzureTarget): boolean {
   const config = isRecord(backend.config) ? backend.config : {};
   const parts = [config.storage_account_name, config.container_name, config.key];
   return backend.type === "azurerm" && parts.every((part) => typeof part === "string") && parts.join("/") === target.backend &&
-    config.use_azuread_auth === true;
+    config.use_azuread_auth === true && (config.use_oidc === undefined || config.use_oidc === null || config.use_oidc === true) &&
+    Object.entries(config).every(([name, value]) => SAVED_SETTINGS.has(name) || value === null);
 }
 
 /**
