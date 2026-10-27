@@ -30,7 +30,7 @@ Use a disposable code-only issue with a small, deterministic test change. Captur
 ## Current status
 
 - Agent instruction profiles: present in `.github/agents/`.
-- Protected merge admission: present in `.github/workflows/reviewed-auto-merge.yml`.
+- Protected merge admission: `.github/workflows/reviewed-auto-merge.yml` is **removed for the release freeze** (issue #39). Restore it by reverting the freeze-control commit that removed it.
 - Hosted unattended coding runner: **not yet installed or qualified**.
 - Separate coding/reviewer identity: **not yet configured or qualified**.
 - AWS ACT: **not enabled by this contract**.
