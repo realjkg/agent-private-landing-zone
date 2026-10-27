@@ -58,9 +58,41 @@ export type AwsLeafEntry = {
    * does not prove the run introduced it, and deleting it would change a resource the cleanup keeps.
    */
   parent?: { types: readonly string[]; key: AwsParentKey };
+  /**
+   * A further condition on the object itself, judged from the identifiers the state recorded (never fetched): why this one object is
+   * not the kind the entry admits, or undefined when it is. An object that fails it is held as TYPE_UNREVIEWED with that reason.
+   */
+  condition?: (entry: LeafObject) => string | undefined;
   /** Exact type names: Terraform `aws_`, the Cloud Control provider's `awscc_`, and the CloudFormation type of the same object, where each exists. */
   types: readonly string[];
 };
+
+/** What the cleanup knows of one object: its type and the identifiers the state recorded. */
+export type LeafObject = { type: string; id: string | null; arn: string | null };
+
+/**
+ * An Organizations policy's ARN names its kind: `arn:aws:organizations::<management account>:policy/o-<org>/<kind>/p-<id>`, where the
+ * kind is `service_control_policy`, `resource_control_policy`, `tag_policy`, `backup_policy`, `aiservices_opt_out_policy`,
+ * `chatbot_policy`, `declarative_policy_ec2` and so on. UNVERIFIED against a live organization: the format is AWS's documented one.
+ */
+const ORGANIZATIONS_POLICY_ARN = /^arn:aws(?:-[a-z]+)*:organizations::[0-9]{12}:policy\/o-[a-z0-9]{10,32}\/([a-z0-9_]{1,64})\/(p-[0-9a-zA-Z_]{8,128})$/;
+const SERVICE_CONTROL_POLICY = "service_control_policy";
+
+/**
+ * The owner's decision 6440801434, item 3: an Organizations policy is a leaf only when it is a service control policy, read from the
+ * policy ARN the state recorded. A missing or unreadable ARN, an ARN whose policy id is not the recorded id, or any other kind is held,
+ * each with its own reason; other kinds need their own authorization and tests. The CloudFormation physical id of a policy is its id
+ * alone, so a CDK-created policy is always held.
+ */
+export function serviceControlPolicyProblem(entry: LeafObject): string | undefined {
+  const held = "; only service control policies are on the reviewed allowlist (owner decision 6440801434, item 3), so it is left in place for the environment's owner to delete or keep by hand";
+  if (entry.arn === null) return "it is an Organizations policy whose kind cannot be read: the state records no policy ARN" + held;
+  const parsed = ORGANIZATIONS_POLICY_ARN.exec(entry.arn);
+  if (parsed === null) return "it is an Organizations policy whose kind cannot be read: its recorded ARN is not an Organizations policy ARN" + held;
+  if (entry.id !== null && entry.id !== parsed[2]) return "it is an Organizations policy whose recorded id does not match the policy its ARN names, so its kind cannot be trusted" + held;
+  if (parsed[1] !== SERVICE_CONTROL_POLICY) return "it is an Organizations policy of kind " + parsed[1]!.toUpperCase() + ", not a service control policy" + held;
+  return undefined;
+}
 
 const BUCKETS = ["aws_s3_bucket", "awscc_s3_bucket", "AWS::S3::Bucket"] as const;
 
@@ -143,14 +175,15 @@ export const AWS_LEAF_TYPES: readonly AwsLeafEntry[] = [
   // RDS role associations and Cognito users. Not seeded (design review 6434540427): delegated administrators and Lake Formation permissions
   // (not on the owner's list), and the Redshift cluster IAM role set (it manages the cluster's whole role set, not one association).
   {
-    what: "an Organizations policy (a service control policy)",
-    reason: "a policy document; deleting it detaches and removes that policy and deploys nothing (owner: deletable when run-created)",
+    what: "an Organizations service control policy",
+    reason: "a policy document; deleting it detaches and removes that policy and deploys nothing (owner: deletable when run-created, service control policies only, decision 6440801434 item 3)",
     basis: "OWNER_DECISION",
+    condition: serviceControlPolicyProblem,
     types: ["aws_organizations_policy", "awscc_organizations_policy", "AWS::Organizations::Policy"],
   },
   {
-    what: "the attachment of an Organizations policy",
-    reason: "where a policy is attached; deleted only with its policy, never alone from a target that keeps other policies (owner: deletable when run-created)",
+    what: "the attachment of an Organizations service control policy",
+    reason: "where a policy is attached; deleted only with its policy, a run-created service control policy this proposal deletes, never alone from a target that keeps other policies (owner: deletable when run-created)",
     basis: "OWNER_DECISION",
     parent: { types: ["aws_organizations_policy"], key: "AFTER_LAST_COLON" },
     types: ["aws_organizations_policy_attachment"],
@@ -254,6 +287,9 @@ export function awsParentIdOf(key: AwsParentKey, id: string | null): string | un
   if (at <= 0 || at >= id.length - 1) return undefined;
   return key === "AFTER_LAST_COLON" ? id.slice(at + 1) : id.slice(0, at);
 }
+
+/** Why this object fails its allowlist entry's condition, or undefined (no condition, the condition holds, or the type is not allowlisted). */
+export const awsLeafConditionProblem = (entry: LeafObject): string | undefined => awsLeafEntryOf(entry.type)?.condition?.(entry);
 
 /** Whether a type is on the reviewed leaf allowlist (exact, case-exact). */
 export const isAwsLeafType = (type: string): boolean => LEAF_SET.has(type);
