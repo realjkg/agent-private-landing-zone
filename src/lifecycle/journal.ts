@@ -120,15 +120,25 @@ export class Journal {
 }
 
 /**
+ * Why acquireRunLock did not take a lock: HELD, its pid may be alive (or is this process); UNREADABLE, the lock is empty, torn
+ * or names no pid; TAKEOVER, another run holds the takeover token for this stale lock; CONTENDED, the lock changed hands on
+ * every attempt.
+ */
+export type RunLockBusy = { kind: "HELD"; pid: number } | { kind: "UNREADABLE" } | { kind: "TAKEOVER"; token: string } | { kind: "CONTENDED" };
+
+/**
  * One run of the lifecycle runner per evidence folder at a time: `<evidence>/lifecycle/run.lock`, created exclusively and
  * holding this pid. A lock whose pid is proven dead is stale and replaced; one whose pid may be alive means another run is
  * using the folder, and this one refuses before it reads or writes anything. Released by the run that holds it, only while
- * it still holds it. The same rule the pinned-tool installer's lock follows. Taking over a stale lock is itself exclusive:
- * only the run that creates `run.lock.takeover-<dead pid>` may delete a lock, and only after reading it again under that
- * token and finding the same dead pid, so two runs that both saw the stale lock can never delete each other's new one.
+ * it still holds it. The pinned-tool installer's per-tool lock is this same function. Taking over a stale lock is itself
+ * exclusive: only the run that creates `<lock>.takeover-<dead pid>` may delete a lock, and only after reading it again under
+ * that token and finding the same dead pid, so two runs that both saw the stale lock can never delete each other's new one.
+ * `onBusy`, when given, is called instead of the default refusal with why the lock was not taken, so a caller can raise its
+ * own error and name the lock in its message; it must throw.
  */
-export function acquireRunLock(file: string, pidAlive?: (pid: number) => boolean): () => void {
-  const busy = (): never => { throw new JournalError("LIFECYCLE_RUN_IN_PROGRESS", "Another lifecycle run is using this evidence folder right now, so this run changed nothing. Wait for it to finish, or start a new evidence folder."); };
+export function acquireRunLock(file: string, pidAlive?: (pid: number) => boolean, onBusy?: (why: RunLockBusy) => never): () => void {
+  const refuse = (): never => { throw new JournalError("LIFECYCLE_RUN_IN_PROGRESS", "Another lifecycle run is using this evidence folder right now, so this run changed nothing. Wait for it to finish, or start a new evidence folder."); };
+  const busy = (why: RunLockBusy): never => (onBusy ?? refuse)(why);
   mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
@@ -145,12 +155,13 @@ export function acquireRunLock(file: string, pidAlive?: (pid: number) => boolean
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       let pid: unknown;
       try { pid = (JSON.parse(readFileSync(file, "utf8")) as { pid?: unknown }).pid; } catch { pid = undefined; }
-      const dead = typeof pid === "number" && Number.isInteger(pid) && pid >= 1 && pid !== process.pid && (pidAlive ? !pidAlive(pid) : pidProvenDead(pid));
-      if (!dead) busy();
+      if (typeof pid !== "number" || !Number.isInteger(pid) || pid < 1) return busy({ kind: "UNREADABLE" });
+      const dead = pid !== process.pid && (pidAlive ? !pidAlive(pid) : pidProvenDead(pid));
+      if (!dead) return busy({ kind: "HELD", pid });
       const token = file + ".takeover-" + String(pid);
       let tokenFd: number;
       try { tokenFd = openSync(token, "wx", 0o600); } catch (tokenError) {
-        if ((tokenError as NodeJS.ErrnoException).code === "EEXIST") busy();
+        if ((tokenError as NodeJS.ErrnoException).code === "EEXIST") return busy({ kind: "TAKEOVER", token });
         throw tokenError;
       }
       try {
@@ -165,5 +176,5 @@ export function acquireRunLock(file: string, pidAlive?: (pid: number) => boolean
       }
     }
   }
-  return busy();
+  return busy({ kind: "CONTENDED" });
 }

@@ -589,7 +589,9 @@ test("the ./alz deps report says in plain words when a leftover is left alone or
   });
   assert.equal(locked, 2);
   assert.equal(downloads, 0);
-  assert.match(out.join(""), /Another \.\/alz deps run is installing this tool right now, so this run changed nothing\. Wait for it to finish, then run \.\/alz deps again\./);
+  assert.match(out.join(""), /Another \.\/alz deps run \(pid 4343\) is installing or removing terraform right now, so this run changed nothing\. Wait for it to finish, then run \.\/alz deps again\. If no other \.\/alz deps run is open in any window, .*: delete \S+\/\.alz\/tmp\/terraform\.install\.lock, then run \.\/alz deps again\./);
+  // The report's own sweep takes the same lock, so it does not touch the tool's leftovers while the other run holds it.
+  assert.match(out.join(""), /^Did not check the leftovers of earlier Terraform runs\. Another \.\/alz deps run \(pid 4343\)/m);
   assert.ok(existsSync(join(lockHome, ".alz", "tmp", "terraform.install.lock")), "the other run's lock stays");
   assert.ok(!existsSync(installedPath(lockHome, "terraform", "1.16.4", "terraform")));
 });

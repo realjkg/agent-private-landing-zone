@@ -6,6 +6,7 @@ import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { createZstdDecompress } from "node:zlib";
 
+import { acquireRunLock, type RunLockBusy } from "../lifecycle/journal.js";
 import { INSTALL_MARKER, type InstallMarker, installedPath, installState, readInstallMarker, realFolder, REMOVING_MARKER, reportedVersion } from "./checks.js";
 import { type Artifact, type Platform, type ToolId, type ToolPins } from "./pins.js";
 
@@ -43,6 +44,11 @@ export type InstallOptions = {
   signal?: AbortSignal;
   /** Decides whether a pid is still running; the default asks the kernel. Tests inject it, so no real process is ever read. */
   pidAlive?: (pid: number) => boolean;
+  /**
+   * Checks the copy the way every command does, while the per-tool lock is still held. When it fails for a copy this run
+   * installed, that copy is removed again under the same lock, so no other run can have reported it as reused meanwhile.
+   */
+  verify?: () => Promise<boolean>;
   /** Test hook only: runs between the two renames of the swap, so a test can make that step fail like a crash would. */
   betweenRenames?: () => void;
   /** Test hook only: runs right before the archive is unpacked, after the download and its checksum, so a test can stop there. */
@@ -59,6 +65,8 @@ export type InstalledTool = {
   refused: string[];
   /** What stood at the final folder before this install replaced it: a copy from before completion checks, or an unfinished install or removal. */
   replaced?: "LEGACY" | "UNFINISHED" | "REMOVING";
+  /** The result of InstallOptions.verify, when one was given. A copy installed by this run that failed it has been removed again. */
+  verified?: boolean;
 };
 
 async function defaultDownload(url: string, signal: AbortSignal): Promise<Readable> {
@@ -81,35 +89,31 @@ async function fetchTo(file: string, source: Readable, signal: AbortSignal): Pro
 }
 
 /**
- * The per-tool install lock, `<scratch>/<tool>.install.lock`, created exclusively and holding this pid. A lock whose pid is
- * proven dead is stale and is replaced; one whose pid may be alive means another `./alz deps` run is installing this tool,
- * and this run does nothing. Released by the run that holds it, only while it still holds it.
+ * The per-tool lock, `<scratch>/<tool>.install.lock` (scratch defaults to `~/.alz/tmp`). It covers everything that changes a
+ * tool's folders: an install (its sweep, state read, download, swap and post-install check), a removal, and the report's
+ * sweep. It is acquireRunLock (src/lifecycle/journal.ts): created exclusively and holding this pid; a lock whose pid is
+ * proven dead is taken over under a takeover token, so two runs that both saw the same dead pid never both hold it; an
+ * unreadable lock or one whose pid may be alive is never removed. When it is busy, the message names the lock and says how
+ * to clear it safely, because an empty lock (a run stopped while taking it) or a pid now used by another program never
+ * clears by itself.
  */
-function acquireInstallLock(scratch: string, tool: ToolId, pidAlive?: (pid: number) => boolean): () => void {
+export function acquireToolLock(home: string, tool: ToolId, opts: { scratch?: string; pidAlive?: (pid: number) => boolean } = {}): () => void {
+  const scratch = opts.scratch ?? join(home, ".alz", "tmp");
+  mkdirSync(scratch, { recursive: true, mode: 0o700 });
   const file = join(scratch, tool + ".install.lock");
-  const busy = (): never => { throw new InstallError("INSTALL_IN_PROGRESS", "Another ./alz deps run is installing " + tool + " right now, so this run changed nothing. Wait for it to finish."); };
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      const fd = openSync(file, "wx", 0o600);
-      writeSync(fd, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }) + "\n");
-      closeSync(fd);
-      return () => {
-        try {
-          const held = JSON.parse(readFileSync(file, "utf8")) as { pid?: unknown };
-          if (held.pid === process.pid) unlinkSync(file);
-        } catch { /* already gone, or not ours */ }
-      };
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      let pid: unknown;
-      try { pid = (JSON.parse(readFileSync(file, "utf8")) as { pid?: unknown }).pid; } catch { pid = undefined; }
-      const dead = typeof pid === "number" && Number.isInteger(pid) && pid >= 1 && pid !== process.pid && (pidAlive ? !pidAlive(pid) : pidProvenDead(pid));
-      // An unreadable lock, or one whose pid may be alive, is somebody's: never removed. Only a proven-dead pid's lock is stale.
-      if (!dead) busy();
-      rmSync(file, { force: true });
-    }
-  }
-  return busy();
+  const clear = (path: string): string => " If no other ./alz deps run is open in any window, delete " + path + ", then run ./alz deps again.";
+  const busy = (why: RunLockBusy): never => {
+    const text = why.kind === "HELD"
+      ? "Another ./alz deps run (pid " + why.pid + ") is installing or removing " + tool + " right now, so this run changed nothing. Wait for it to finish, then run ./alz deps again." +
+        " If no other ./alz deps run is open in any window, the run that took the lock has ended and its process number now belongs to another program: delete " + file + ", then run ./alz deps again."
+      : why.kind === "UNREADABLE"
+        ? "The " + tool + " install lock " + file + " is empty or unreadable, so this run changed nothing. Another run may be taking it right now, or a run was stopped while taking it." + clear(file)
+        : why.kind === "TAKEOVER"
+          ? "Another ./alz deps run is replacing a stale " + tool + " install lock right now, so this run changed nothing. Run ./alz deps again in a moment." + clear(why.token)
+          : "Other ./alz deps runs kept taking the " + tool + " install lock, so this run changed nothing. Wait for them to finish, then run ./alz deps again." + clear(file);
+    throw new InstallError("INSTALL_IN_PROGRESS", text);
+  };
+  return acquireRunLock(file, opts.pidAlive, busy);
 }
 
 const aborted = (signal: AbortSignal | undefined): never | void => {
@@ -263,6 +267,22 @@ export function sweepLeftovers(home: string, tool: ToolId, opts: { scratch?: str
   return result;
 }
 
+/**
+ * The report's sweep: sweepLeftovers under the per-tool lock, so it never races an install's or a removal's own sweep. When
+ * neither the tool's folder nor the scratch folder exists there is nothing to sweep, and nothing is created.
+ */
+export function sweepToolLeftovers(home: string, tool: ToolId, opts: { scratch?: string; pidAlive?: (pid: number) => boolean } = {}): SweepResult {
+  const toolDir = realFolder(home, [".alz", "tools", tool]);
+  const scratchThere = opts.scratch !== undefined ? existsSync(opts.scratch) : realFolder(home, [".alz", "tmp"]) !== undefined;
+  if (toolDir === undefined && !scratchThere) return { removed: [], recovered: [], refused: [] };
+  const unlock = acquireToolLock(home, tool, opts);
+  try {
+    return sweepLeftovers(home, tool, opts);
+  } finally {
+    unlock();
+  }
+}
+
 /** Writes the completion marker into `folder`. The marker is the last file an install writes before the folder is put in place. */
 export function writeInstallMarker(folder: string, marker: Omit<InstallMarker, "schemaVersion">): void {
   const value: InstallMarker = { schemaVersion: 1, ...marker };
@@ -280,11 +300,15 @@ export async function installTool(tool: ToolId, opts: InstallOptions): Promise<I
   const finalBinary = installedPath(opts.home, tool, pin.version, artifact.binary);
   const sweepOptions = { ...(opts.scratch !== undefined ? { scratch: opts.scratch } : {}), ...(opts.pidAlive ? { pidAlive: opts.pidAlive } : {}) };
   const scratch = opts.scratch ?? join(opts.home, ".alz", "tmp");
-  mkdirSync(scratch, { recursive: true, mode: 0o700 });
-  // One install of a tool at a time: the lock is taken before the sweep and the state are read, so two runs never swap at once.
-  const unlock = acquireInstallLock(scratch, tool, opts.pidAlive);
+  // One run changes a tool's folders at a time: the lock is taken before the sweep and the state are read and held through
+  // the check, so two runs never swap at once and a copy that fails its check is removed before any other run can reuse it.
+  const unlock = acquireToolLock(opts.home, tool, sweepOptions);
   try {
-    return await installLocked(tool, opts, pin.version, artifact, finalBinary, scratch, sweepOptions);
+    const installed = await installLocked(tool, opts, pin.version, artifact, finalBinary, scratch, sweepOptions);
+    if (!opts.verify) return installed;
+    const verified = await opts.verify();
+    if (!verified && !installed.reused) removeUnlocked(opts.home, tool, pin.version);
+    return { ...installed, verified };
   } finally {
     unlock();
   }
@@ -340,7 +364,11 @@ async function installLocked(tool: ToolId, opts: InstallOptions, version: string
     // The swap is two renames. Between them the final path is empty, never half-removed; a crash there leaves only suffixed
     // folders, which the next run rolls forward or back once this pid is dead. If the second rename fails, the earlier copy
     // goes straight back.
-    if (before !== "ABSENT") renameSync(finalDir, replaced);
+    if (before !== "ABSENT") {
+      try { renameSync(finalDir, replaced); } catch {
+        throw new InstallError("INSTALL_SWAP_FAILED", "The copy at " + finalDir + " changed while this run was installing, so nothing was put in place. Run ./alz deps again.");
+      }
+    }
     try {
       opts.betweenRenames?.();
       renameSync(partial, finalDir);
@@ -369,7 +397,32 @@ const VERSION_COMPONENT = /^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$/;
  * (the marker) or as absent with a leftover the next run sweeps, never as a copy to keep, and running the removal again
  * completes it. Returns "absent" when the version is not there, so a second removal of a finished one does nothing.
  */
-export function removeInstalledTool(home: string, tool: ToolId, version: string, hooks: { /** Test hook only: runs after the folder is renamed aside and before it is deleted. */ afterRenameAside?: () => void } = {}): "removed" | "absent" {
+export function removeInstalledTool(home: string, tool: ToolId, version: string, hooks: RemoveOptions = {}): "removed" | "absent" {
+  if (!TOOL_IDS.includes(tool) || typeof version !== "string" || !VERSION_COMPONENT.test(version)) return removeUnlocked(home, tool, version, hooks);
+  // Nothing of the app's is there: nothing to lock and nothing to remove (and no ~/.alz/tmp is created for it).
+  let app: ReturnType<typeof lstatSync> | undefined;
+  try { app = lstatSync(join(home, ".alz")); } catch { app = undefined; }
+  if (app === undefined) return "absent";
+  if (app.isSymbolicLink() || !app.isDirectory()) return removeUnlocked(home, tool, version, hooks);
+  // The same per-tool lock as an install, so a removal never runs while another run installs, reuses or sweeps this tool.
+  const unlock = acquireToolLock(home, tool, { ...(hooks.scratch !== undefined ? { scratch: hooks.scratch } : {}), ...(hooks.pidAlive ? { pidAlive: hooks.pidAlive } : {}) });
+  try {
+    return removeUnlocked(home, tool, version, hooks);
+  } finally {
+    unlock();
+  }
+}
+
+export type RemoveOptions = {
+  /** As in InstallOptions: the scratch folder that holds the per-tool lock, and the pid check. */
+  scratch?: string;
+  pidAlive?: (pid: number) => boolean;
+  /** Test hook only: runs after the folder is renamed aside and before it is deleted. */
+  afterRenameAside?: () => void;
+};
+
+/** removeInstalledTool's work, for a caller that already holds the per-tool lock. */
+function removeUnlocked(home: string, tool: ToolId, version: string, hooks: RemoveOptions = {}): "removed" | "absent" {
   const refuse = (): never => {
     throw new InstallError("INSTALL_REMOVE_REFUSED", "That folder is not an app-installed copy, so nothing was removed.");
   };

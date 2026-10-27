@@ -10,7 +10,7 @@ import test from "node:test";
 import { createZstdCompress } from "node:zlib";
 
 import { appInstallStates, INSTALL_MARKER, installedPath, installState, readInstallMarker, REMOVING_MARKER } from "../src/deps/checks.js";
-import { InstallError, installTool, pidProvenDead, removeInstalledTool, sweepLeftovers, writeInstallMarker } from "../src/deps/install.js";
+import { acquireToolLock, InstallError, installTool, pidProvenDead, removeInstalledTool, sweepLeftovers, sweepToolLeftovers, writeInstallMarker } from "../src/deps/install.js";
 import { loadToolPins, platformKey, type ToolPins } from "../src/deps/pins.js";
 
 // Installs run against a local archive the test builds, never the network. A wrong checksum must leave no install behind.
@@ -671,16 +671,21 @@ test("one install of a tool at a time: a second run finds the lock and changes n
   let fetches = 0;
   await assert.rejects(
     installTool("ollama", { pins: pinsWith(good.sha256), home, platform: "darwin-arm64", download: async () => { fetches += 1; return Readable.from([]); }, pidAlive: (pid) => pid === 4242 }),
-    (error: unknown) => error instanceof InstallError && error.code === "INSTALL_IN_PROGRESS" && /Another \.\/alz deps run is installing ollama right now, so this run changed nothing/.test(error.message),
+    (error: unknown) => error instanceof InstallError && error.code === "INSTALL_IN_PROGRESS" &&
+      /^Another \.\/alz deps run \(pid 4242\) is installing or removing ollama right now, so this run changed nothing\. Wait for it to finish, then run \.\/alz deps again\. If no other \.\/alz deps run is open in any window, the run that took the lock has ended and its process number now belongs to another program: delete \S+\/\.alz\/tmp\/ollama\.install\.lock, then run \.\/alz deps again\.$/.test(error.message),
   );
   assert.equal(fetches, 0);
   assert.equal(readFileSync(lock, "utf8").trim(), JSON.stringify({ pid: 4242, startedAt: "2026-10-27T00:00:00.000Z" }), "the other run's lock is untouched");
   assert.ok(!existsSync(join(home, ".alz", "tools", "ollama")), "nothing was swept or installed under the lock: the tool folder was never created");
-  // An unreadable lock is somebody's too.
-  writeFileSync(lock, "not json");
-  await assert.rejects(installTool("ollama", { pins: pinsWith(good.sha256), home, platform: "darwin-arm64", download: fetchFrom(good.file), pidAlive: DEAD }),
-    (error: unknown) => error instanceof InstallError && error.code === "INSTALL_IN_PROGRESS");
-  assert.equal(readFileSync(lock, "utf8"), "not json");
+  // An unreadable lock (torn, or empty: a run stopped between creating it and writing its pid) is somebody's too. It never
+  // clears by itself, so the message names the lock and says how to clear it safely instead of "wait".
+  for (const content of ["not json", "", '{"pid": 12']) {
+    writeFileSync(lock, content);
+    await assert.rejects(installTool("ollama", { pins: pinsWith(good.sha256), home, platform: "darwin-arm64", download: fetchFrom(good.file), pidAlive: DEAD }),
+      (error: unknown) => error instanceof InstallError && error.code === "INSTALL_IN_PROGRESS" &&
+        /^The ollama install lock \S+\/\.alz\/tmp\/ollama\.install\.lock is empty or unreadable, so this run changed nothing\..* If no other \.\/alz deps run is open in any window, delete \S+ollama\.install\.lock, then run \.\/alz deps again\.$/.test(error.message));
+    assert.equal(readFileSync(lock, "utf8"), content, JSON.stringify(content) + ": the lock is never removed");
+  }
   // A dead run's lock is stale: it is replaced and the install goes ahead; afterwards the lock is gone.
   writeFileSync(lock, JSON.stringify({ pid: 4242, startedAt: "2026-10-27T00:00:00.000Z" }) + "\n");
   const installed = await installTool("ollama", { pins: pinsWith(good.sha256), home, platform: "darwin-arm64", download: fetchFrom(good.file), pidAlive: DEAD });
@@ -748,4 +753,115 @@ test("a removal that stops after the folder is renamed aside leaves the final pa
   // later run, once this pid is proven dead, removes it as the sweep test shows for pid 1111.
   assert.deepEqual(sweepLeftovers(home, "ollama", { pidAlive: DEAD }).removed, []);
   assert.deepEqual(readdirSync(toolDir(home)), [PINNED_OLLAMA + ".removing-" + process.pid]);
+});
+
+test("two reruns that both see the same dead pid's lock: exactly one takes it over, and the other never deletes the new lock", () => {
+  const home = join(root, "home-takeover-race");
+  const tmp = join(home, ".alz", "tmp");
+  mkdirSync(tmp, { recursive: true });
+  const lock = join(tmp, "ollama.install.lock");
+  writeFileSync(lock, JSON.stringify({ pid: 99999, startedAt: "2026-10-27T00:00:00.000Z" }) + "\n");
+  // Run B reads the dead pid; its pid check is the scheduling point at which run A takes the stale lock over completely.
+  // Then B goes on with what it read. Without the takeover token and the re-read under it, B would delete A's new lock and
+  // both would hold it.
+  let releaseA: (() => void) | undefined;
+  let lockOfA = "";
+  const pausingB = (pid: number): boolean => {
+    if (releaseA === undefined) {
+      releaseA = acquireToolLock(home, "ollama", { pidAlive: (other) => other !== 99999 });
+      lockOfA = readFileSync(lock, "utf8");
+    }
+    return pid !== 99999;
+  };
+  assert.throws(() => acquireToolLock(home, "ollama", { pidAlive: pausingB }),
+    (error: unknown) => error instanceof InstallError && error.code === "INSTALL_IN_PROGRESS", "run B does not get the lock");
+  assert.ok(releaseA, "run A took the stale lock over");
+  assert.equal(readFileSync(lock, "utf8"), lockOfA, "run A's lock is exactly as A wrote it");
+  assert.deepEqual(readdirSync(tmp), ["ollama.install.lock"], "no takeover token is left behind");
+  releaseA!();
+  assert.ok(!existsSync(lock));
+  // A takeover token left by a run that died mid-takeover is named, so it can be cleared by hand instead of waited on forever.
+  writeFileSync(lock, JSON.stringify({ pid: 99999 }) + "\n");
+  writeFileSync(lock + ".takeover-99999", JSON.stringify({ pid: 88888 }) + "\n");
+  assert.throws(() => acquireToolLock(home, "ollama", { pidAlive: DEAD }),
+    (error: unknown) => error instanceof InstallError && error.code === "INSTALL_IN_PROGRESS" &&
+      /^Another \.\/alz deps run is replacing a stale ollama install lock right now, so this run changed nothing\. Run \.\/alz deps again in a moment\. If no other \.\/alz deps run is open in any window, delete \S+ollama\.install\.lock\.takeover-99999, then run \.\/alz deps again\.$/.test((error as Error).message));
+  assert.ok(existsSync(lock), "the stale lock is not removed without the token");
+});
+
+test("a removal takes the tool's lock: it waits for no one, changes nothing while another run holds it, and leaves no lock behind", async () => {
+  const home = join(root, "home-remove-lock");
+  const good = archive("remove-lock");
+  await installTool("ollama", { pins: pinsWith(good.sha256), home, platform: "darwin-arm64", download: fetchFrom(good.file) });
+  const lock = join(home, ".alz", "tmp", "ollama.install.lock");
+  writeFileSync(lock, JSON.stringify({ pid: 4242 }) + "\n");
+  assert.throws(() => removeInstalledTool(home, "ollama", "0.40.0", { pidAlive: (pid) => pid === 4242 }),
+    (error: unknown) => error instanceof InstallError && error.code === "INSTALL_IN_PROGRESS");
+  assert.equal(installState(home, "ollama", "0.40.0", "ollama"), "INSTALLED", "the copy another run may be reusing is untouched");
+  rmSync(lock);
+  // While the removal holds the lock, an install of the same tool is refused.
+  let refused = false;
+  assert.equal(removeInstalledTool(home, "ollama", "0.40.0", { afterRenameAside: () => {
+    assert.throws(() => acquireToolLock(home, "ollama"), (error: unknown) => error instanceof InstallError && error.code === "INSTALL_IN_PROGRESS");
+    refused = true;
+  } }), "removed");
+  assert.ok(refused);
+  assert.ok(!existsSync(lock), "the removal released the lock");
+  // Nothing of the app's there at all: "absent", and no ~/.alz is created for a lock.
+  const empty = join(root, "home-remove-nothing");
+  assert.equal(removeInstalledTool(empty, "ollama", "0.40.0"), "absent");
+  assert.ok(!existsSync(join(empty, ".alz")));
+});
+
+test("the post-install check runs under the tool's lock: a new copy that fails it is removed before the lock is released, and a reused copy is never removed", async () => {
+  const home = join(root, "home-verify-lock");
+  const good = archive("verify-lock");
+  const lock = join(home, ".alz", "tmp", "ollama.install.lock");
+  let heldDuringCheck = false;
+  const failed = await installTool("ollama", { pins: pinsWith(good.sha256), home, platform: "darwin-arm64", download: fetchFrom(good.file), verify: async () => {
+    heldDuringCheck = (JSON.parse(readFileSync(lock, "utf8")) as { pid: number }).pid === process.pid;
+    return false;
+  } });
+  assert.ok(heldDuringCheck, "the check runs while this run holds the lock");
+  assert.equal(failed.verified, false);
+  assert.equal(failed.reused, false);
+  assert.equal(installState(home, "ollama", "0.40.0", "ollama"), "ABSENT", "the new copy that failed its check was removed under the lock");
+  assert.ok(!existsSync(lock));
+  const ok = await installTool("ollama", { pins: pinsWith(good.sha256), home, platform: "darwin-arm64", download: fetchFrom(good.file), verify: async () => true });
+  assert.equal(ok.verified, true);
+  const reused = await installTool("ollama", { pins: pinsWith(good.sha256), home, platform: "darwin-arm64", download: fetchFrom(good.file), verify: async () => false });
+  assert.equal(reused.reused, true);
+  assert.equal(reused.verified, false);
+  assert.equal(installState(home, "ollama", "0.40.0", "ollama"), "INSTALLED", "a reused copy is never removed by the install");
+});
+
+test("a copy that vanishes from the final path during an install is reported as a failed swap, never as a failed download", async () => {
+  const home = join(root, "home-swap-vanished");
+  const good = archive("swap-vanished");
+  const finalDir = join(home, ".alz", "tools", "ollama", "0.40.0");
+  mkdirSync(finalDir, { recursive: true });
+  writeFileSync(join(finalDir, "ollama"), "#!/bin/sh\necho 'ollama version is 0.40.0'\n");
+  chmodSync(join(finalDir, "ollama"), 0o755);
+  assert.equal(installState(home, "ollama", "0.40.0", "ollama"), "LEGACY");
+  await assert.rejects(installTool("ollama", { pins: pinsWith(good.sha256), home, platform: "darwin-arm64", download: fetchFrom(good.file),
+    onUnpackStart: () => { rmSync(finalDir, { recursive: true, force: true }); } }),
+  (error: unknown) => error instanceof InstallError && error.code === "INSTALL_SWAP_FAILED" && /changed while this run was installing/.test((error as Error).message));
+  assert.deepEqual(readdirSync(join(home, ".alz", "tools", "ollama")), [], "no partial copy is left");
+});
+
+test("the report's sweep takes the tool's lock, and creates nothing when there is nothing to sweep", () => {
+  const home = join(root, "home-sweep-lock");
+  assert.deepEqual(sweepToolLeftovers(home, "ollama", { pidAlive: DEAD }), { removed: [], recovered: [], refused: [] });
+  assert.ok(!existsSync(join(home, ".alz")), "no folder is created for the lock");
+  const toolDir = join(home, ".alz", "tools", "ollama");
+  mkdirSync(join(toolDir, "0.40.0.partial-77777"), { recursive: true });
+  const lock = join(home, ".alz", "tmp", "ollama.install.lock");
+  mkdirSync(join(home, ".alz", "tmp"), { recursive: true });
+  writeFileSync(lock, JSON.stringify({ pid: 4242 }) + "\n");
+  assert.throws(() => sweepToolLeftovers(home, "ollama", { pidAlive: (pid) => pid === 4242 }),
+    (error: unknown) => error instanceof InstallError && error.code === "INSTALL_IN_PROGRESS");
+  assert.ok(existsSync(join(toolDir, "0.40.0.partial-77777")), "nothing is swept while another run holds the lock");
+  rmSync(lock);
+  assert.deepEqual(sweepToolLeftovers(home, "ollama", { pidAlive: (pid) => pid !== 77777 }).removed, [join(toolDir, "0.40.0.partial-77777")]);
+  assert.ok(!existsSync(lock), "the sweep released the lock");
 });
