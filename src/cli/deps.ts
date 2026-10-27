@@ -76,6 +76,7 @@ const FAILURE_TEXT: Record<InstallError["code"], string> = {
   INSTALL_UNPACK_FAILED: "The download could not be unpacked, so nothing was installed. Run ./alz deps again.",
   INSTALL_BINARY_MISSING: "The download did not contain the expected program, so nothing was installed.",
   INSTALL_VERIFY_FAILED: "The downloaded program still failed verification after installation, so it is not used. The new copy was removed again.",
+  INSTALL_SWAP_FAILED: "The checked copy could not be put in place, so nothing changed; the earlier copy was kept. Run ./alz deps again.",
   INSTALL_INTERRUPTED: "Stopped. Nothing was installed, and the unfinished download was removed. Run ./alz deps again to start the install over.",
   INSTALL_REMOVE_REFUSED: "That folder is not an app-installed copy, so nothing was removed.",
 };
@@ -166,7 +167,12 @@ const stateSuffix = (state: Exclude<InstallState, "ABSENT">): string => state ==
  */
 function sweepAndReport(pins: ToolPins, home: string, deps: DepsDeps, out: (text: string) => void, log: (text: string) => void): void {
   for (const tool of Object.keys(pins.tools) as ToolId[]) {
-    for (const path of sweepLeftovers(home, tool, deps.pidAlive ? { pidAlive: deps.pidAlive } : {})) {
+    const swept = sweepLeftovers(home, tool, deps.pidAlive ? { pidAlive: deps.pidAlive } : {});
+    for (const line of swept.recovered) {
+      log("recover " + tool);
+      out("Finished an interrupted earlier run: " + line + ".\n");
+    }
+    for (const path of swept.removed) {
       log("sweep " + tool);
       out("Removed a leftover of an earlier run that did not finish: " + path + "\n");
     }
@@ -219,7 +225,7 @@ function installQuestion(previous: readonly string[], repair: boolean): { title:
   return previous.length > 0 ? { title: "Update it now?", options: ["Update it", "Skip it"] } : { title: "Install it now?", options: ["Install it", "Skip it"] };
 }
 
-type Verified = { ok: true; installed: InstalledTool } | { ok: false; step: string; text: string };
+type Verified = { ok: true; installed: InstalledTool } | { ok: false; step: string; text: string; stopped?: boolean };
 
 /**
  * Takes over the stop signals for one install. The first signal says what happens next and aborts the download, so
@@ -258,10 +264,11 @@ async function installAndVerify(tool: ToolId, ctx: CheckContext, pins: ToolPins,
     });
   } catch (error) {
     const code = error instanceof InstallError ? error.code : "INSTALL_DOWNLOAD_FAILED";
-    return { ok: false, step: "failed " + code, text: FAILURE_TEXT[code] };
+    return { ok: false, step: "failed " + code, text: FAILURE_TEXT[code], ...(code === "INSTALL_INTERRUPTED" ? { stopped: true } : {}) };
   } finally {
     guard.release();
   }
+  for (const line of installed.recovered) terminal.write("Finished an interrupted earlier run: " + line + ".\n");
   for (const path of installed.swept) terminal.write("Removed a leftover of an earlier run that did not finish: " + path + "\n");
   if (installed.replaced) terminal.write("Replaced the copy at " + join(installed.path, "..") + " (" + INSTALL_STATE_WORDS[installed.replaced] + ") after the new copy passed its check.\n");
   const checked = await runDependencyChecks(ctx, new Set<DepCheck["id"]>([tool]));
@@ -386,6 +393,10 @@ export async function runDepsCommand(args: string[], deps: DepsDeps = {}): Promi
         log.line("install " + tool + " " + version + " " + result.step);
         out(result.text + "\n");
         if (previous.length > 0) out(previousKept(tool, version, previous));
+        if (result.stopped) {
+          out("The remaining installs were not started.\n");
+          break;
+        }
         continue;
       }
       log.line("install " + tool + " " + version + " " + (result.installed.reused ? "already-installed" : "installed") + " verified");
@@ -511,6 +522,12 @@ export async function installSelectedPinnedTools(
     if (!verified.ok) {
       terminal.write(verified.text + "\n" + (previous.length > 0 ? previousKept(tool, pins.tools[tool].version, previous) : ""));
       result.skipped.push(tool);
+      if (verified.stopped) {
+        // A stop ends the whole selection: the tools after this one are skipped, not asked about.
+        for (const rest of unique.slice(unique.indexOf(tool) + 1)) if (!result.skipped.includes(rest)) result.skipped.push(rest);
+        terminal.write("The remaining installs were not started.\n");
+        break;
+      }
       continue;
     }
     terminal.write("Verified pinned " + tool + " installed at " + verified.installed.path + "\n");
