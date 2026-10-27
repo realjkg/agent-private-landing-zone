@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { Readable } from "node:stream";
 import test from "node:test";
 
-import { allRequiredPass, installedPath, runDependencyChecks, type CheckContext } from "../src/deps/checks.js";
+import { allRequiredPass, installedPath, runDependencyChecks, type CheckContext, AWS_CLI_VERSION_PATTERN } from "../src/deps/checks.js";
 import { writeInstallMarker } from "../src/deps/install.js";
 import { loadToolPins } from "../src/deps/pins.js";
 import { blockedByDependencies, runDepsCommand, type DepsDeps } from "../src/cli/deps.js";
@@ -107,7 +107,33 @@ test("the AWS CLI and Git are reported with exact steps and never installed", as
   assert.equal(aws.ok, false);
   assert.equal(aws.installable, undefined, "the AWS CLI is check-only");
   assert.match(aws.fix!, /administrator password/);
+  assert.ok(aws.fix!.includes("AWS CLI version " + pins.awsCli.version + ", the tested version"), aws.fix);
   assert.ok(!("installable" in byId(checks, "git")) || byId(checks, "git").installable === undefined);
+});
+
+test("the AWS CLI is pinned to a tested version, check only: the pin's own version passes, any other is named with the tested one and the install step, and the version line is read in the vendor's format", async () => {
+  const pin = pins.awsCli.version;
+  const line = (version: string, rest = "Python/3.13.11 Linux/6.1.0 exe/x86_64") => "echo 'aws-cli/" + version + " " + rest + "'";
+  const tested = await runDependencyChecks(ctx("awsok", { env: { PATH: pathWith("awsok", { ...GOOD_TOOLS, aws: line(pin) }) } }), REQUIRED);
+  assert.equal(byId(tested, "aws-cli").ok, true);
+  assert.equal(byId(tested, "aws-cli").label, "AWS CLI " + pin);
+  assert.ok(byId(tested, "aws-cli").detail.startsWith("version " + pin + " at "), byId(tested, "aws-cli").detail);
+  const older = await runDependencyChecks(ctx("awsold", { env: { PATH: pathWith("awsold", { ...GOOD_TOOLS, aws: line("2.15.0", "Python/3.11.6 Darwin/23.0.0 exe/arm64") }) } }), REQUIRED);
+  assert.equal(byId(older, "aws-cli").ok, false);
+  assert.equal(byId(older, "aws-cli").installable, undefined, "still never installed by this app");
+  assert.match(byId(older, "aws-cli").detail, /^found 2\.15\.0 at .*, tested /);
+  assert.ok(byId(older, "aws-cli").detail.endsWith(", tested " + pin), byId(older, "aws-cli").detail);
+  assert.ok(byId(older, "aws-cli").fix!.includes("Install AWS CLI version " + pin), byId(older, "aws-cli").fix);
+  // A version 1 CLI prints the same shape with a 1.x version: read, then refused as not the tested version.
+  const v1 = await runDependencyChecks(ctx("awsv1", { env: { PATH: pathWith("awsv1", { ...GOOD_TOOLS, aws: line("1.32.0", "Python/3.11.6 Linux/6.1.0 botocore/1.34.0") }) } }), REQUIRED);
+  assert.equal(byId(v1, "aws-cli").ok, false);
+  assert.match(byId(v1, "aws-cli").detail, /^found 1\.32\.0 at /);
+  // The vendor's version line on each platform, and what is not one.
+  for (const text of ["aws-cli/2.38.6 Python/3.13.11 Linux/6.1.0 exe/x86_64", "aws-cli/2.38.6 Python/3.13.11 Darwin/24.6.0 exe/arm64", "aws-cli/2.38.6 Python/3.13.11 Windows/10 exe/AMD64 prompt/off", "aws-cli/2.38.6 Python/3.13.11 Linux/6.1.0 source/x86_64"]) {
+    assert.equal(AWS_CLI_VERSION_PATTERN.exec(text)?.[1], "2.38.6", text);
+  }
+  assert.equal(AWS_CLI_VERSION_PATTERN.exec("aws-cli/2.38.6")?.[1], "2.38.6", "the version alone, as the CDK engine reads it");
+  for (const text of ["", "aws-cli/2.38 Python/3.13.11", "awscli 2.38.6", "AWS CLI 2.38.6", "Python/3.13.11 aws-cli/2.38.6", "aws-cli/2.38.6.1 Python/3.13.11", "aws-cli/2.38.6-dev0 Python/3.13.11"]) assert.equal(AWS_CLI_VERSION_PATTERN.exec(text), null, text);
 });
 
 // --- the guided command -------------------------------------------------------------------------------------

@@ -1,6 +1,7 @@
 import { runGuidedSetup } from "../onboarding/terminal.js";
 import { processTerminal } from "./teardown-driver.js";
 import { runDepsCommand, blockedByDependencies } from "./deps.js";
+import { runLifecycleCommand } from "./lifecycle.js";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { resolve, sep } from "node:path";
@@ -142,6 +143,7 @@ async function help(): Promise<void> {
     "  ./alz apply <qualify|seal|approve|apply|status> [flags] (pilot apply of a sealed plan; a person at the terminal, or a person in the console's Pilot apply wizard with the session token ./alz workspace prints; one change runs wholly in one of them)",
     "  ./alz health [--serve]",
     "  ./alz deps",
+    "  ./alz lifecycle <clean-install|uninstall|partial-install-recovery|all> --artifact FILE.tgz --evidence DIR --host ID --commit SHA [--home DIR] [--synthetic] (packaged release lifecycle on a disposable host; a person at the terminal; produces evidence, never submits it)",
     "  ./alz doctor",
     "  ./alz verify",
     "  ./alz plugins",
@@ -338,6 +340,9 @@ try {
   } else if (command === "deps") {
     // Read-only checks, then guided installs of the pinned tools (docs/operator-guide.md). Installs only after a typed yes.
     process.exitCode = await runDepsCommand(argv.slice(1));
+  } else if (command === "lifecycle") {
+    // The packaged release lifecycle runner (docs/operator-guide.md): journaled journeys on a disposable host, evidence only.
+    process.exitCode = await runLifecycleCommand(argv.slice(1));
   } else if (command === "apply") {
     // Human-invoked pilot apply (docs/act-pilot-apply.md). It needs a terminal, which a child inherits; exit 2 is BLOCKED.
     if (await blockedByDependencies("apply")) process.exitCode = 2;

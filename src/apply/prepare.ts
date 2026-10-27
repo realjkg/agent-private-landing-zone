@@ -245,8 +245,9 @@ export async function prepareApply(input: PrepareInput, deps: PrepareDeps = {}):
   const derived = deriveInputs(engine.id, projectRoot, files, deps.env ?? process.env);
   if ("refusal" in derived) return derived.refusal;
 
-  // The engine version: a matching qualification record first; before one exists, the tested pin (Terraform) or
-  // the operator's installed AWS CLI version (CDK, which has no pin). qualify still checks the real binary.
+  // The engine version: a matching qualification record first; before one exists, the tested pin (Terraform's binary pin,
+  // or the AWS CLI's check-only pin for CDK). qualify still checks the real binary. A version the operator passes is
+  // accepted only when it is the pin: there is nothing to type any more, and a different version is not the tested one.
   const adapter = engine.previewAdapter() as unknown as EngineAdapter;
   const records = (await loadQualificationRecords(spec, deps.qualificationDir ?? repoPaths().qualifications))
     .filter((record) => record.engine === engine.id && record.adapterVersion === adapter.adapterVersion && record.argvDigest === adapter.argvDigest)
@@ -256,16 +257,15 @@ export async function prepareApply(input: PrepareInput, deps: PrepareDeps = {}):
   if (records.length > 0) {
     engineVersion = records[0].engineVersion;
     engineVersionSource = "QUALIFICATION_RECORD";
-  } else if (engine.id === "TERRAFORM") {
-    engineVersion = loadToolPins(deps.pinsPath).tools.terraform.version;
-    engineVersionSource = "TESTED_PIN";
-  } else if (input.awsCliVersion && AWS_CLI_VERSION.test(input.awsCliVersion)) {
-    engineVersion = input.awsCliVersion;
-    engineVersionSource = "OPERATOR";
   } else {
-    return refuse("ENGINE_VERSION_REQUIRED", "OPERATOR", input.awsCliVersion
-      ? "That is not an AWS CLI version. Enter the three-part version that `aws --version` prints, for example 2.37.0."
-      : "The CDK path is not qualified yet, so preparation needs the installed AWS CLI version (`aws --version`, for example 2.37.0).");
+    const pins = loadToolPins(deps.pinsPath);
+    engineVersion = engine.id === "TERRAFORM" ? pins.tools.terraform.version : pins.awsCli.version;
+    engineVersionSource = "TESTED_PIN";
+    if (engine.id !== "TERRAFORM" && input.awsCliVersion !== undefined && input.awsCliVersion !== engineVersion) {
+      return refuse("ENGINE_VERSION_REQUIRED", "OPERATOR", AWS_CLI_VERSION.test(input.awsCliVersion)
+        ? "The CDK path is tested with AWS CLI " + engineVersion + ", and that is the version preparation records; " + input.awsCliVersion + " is not it. Install the tested version (./alz deps shows the step), then prepare again without naming a version."
+        : "That is not an AWS CLI version. The tested version is " + engineVersion + "; prepare again without naming one.");
+    }
   }
 
   const unitHash = preparationUnitHash({ engine: engine.id, environment, target, files });

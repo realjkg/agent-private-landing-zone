@@ -12,7 +12,9 @@ From the repository root:
 
 This installs the locked runtime dependencies and builds the runtime and the console UI. After bootstrap, use `./alz` for day-to-day operation.
 
-Bootstrap records its progress in `.runs/bootstrap/state.json` (`startedAt`, `step`, `completedAt`, `sourceCommit`) and keeps its detailed log in `.runs/bootstrap/latest.log`, even when the run is stopped with Ctrl-C or fails. `./alz` refuses to run a build whose bootstrap did not finish, or that was made from a different commit than the checkout is at now, and says so in one line: run `./alz bootstrap` again. A build made another way (for example CI's own `npm run build`) has no state file and runs as before.
+Bootstrap records its progress in `.runs/bootstrap/state.json` (`startedAt`, `step`, `completedAt`, `sourceCommit`) and keeps its detailed log in `.runs/bootstrap/latest.log`, even when the run is stopped with Ctrl-C or fails. Every finished build also writes its own marker, `dist/.alz-build-complete` (`schemaVersion` and `sourceCommit`, no timestamp, so two builds of one commit stay byte-identical), as its last step: `npm run build` removes any old marker before compiling and writes it only after the compile succeeds; `npm run build:ui` removes it while the UI builds and puts the same marker back only when the UI build succeeds and the marker named the checkout's commit; `./alz bootstrap` compiles without a marker and writes it after its UI build. So a `dist/` left by an interrupted or failed build carries no marker even if `.runs/` was deleted afterwards.
+
+`./alz` refuses to run `dist/` in four cases: the bootstrap state is unfinished, the state was recorded for a different commit than the checkout is at now, `dist/` has no completion marker, or the marker does not name the commit the checkout is at now (a marker that says `unknown` included). The refusal is two lines, naming the reason and the fix (`Run: ./alz bootstrap`). Once a checkout has been bootstrapped, a later manual `npm run build` at a new commit is still refused until `./alz bootstrap` runs again, because the recorded commit no longer matches. CI's own `npm run build` writes the marker for the commit it built, so a released archive's marker names that CI commit. The archive still runs because it is not a checkout: `./alz` compares the marker with a commit only when its own folder is the top of a git checkout, so an archive reads its commit as `unknown`, even when it is extracted inside some other repository.
 
 ## Common commands
 
@@ -237,6 +239,24 @@ Runs the package dependency audit. If Trivy is installed locally it also scans t
 **Pilot commands check first.** `./alz apply` needs Node 26 and Terraform. `./alz models verify` needs Node 26 and Ollama. If one is missing, the command stops and says what to run; it never installs on its own.
 
 **Limits.** Installs are available for macOS (Apple silicon and Intel) only. The model downloads (`ollama pull`) are a manual dry-run step on your Mac, and the target hardware never downloads models. The model digests are not yet pinned, so a check can confirm that a model is present but not that it is the qualified build. The Terraform and Ollama archives are checked against published checksums; the Terraform checksum file itself is fetched over HTTPS, not verified with HashiCorp's signature.
+
+## Packaged release lifecycle: `./alz lifecycle`
+
+`./alz lifecycle` runs the packaged release's lifecycle journeys on a disposable host and writes the evidence the `platform:<os-arch>` release gate needs. A person runs it at that host's Terminal; the console never runs it. It produces evidence and never submits or admits it.
+
+**A live run belongs on a disposable host only, never on a working machine.** It installs the release into that host's own `~/.alz/app` and removes it again, so it asks you to type `LIFECYCLE LIVE <host>` first, naming the host the report will carry; anything else stops it with nothing run. `--home` is for rehearsals only and is refused without `--synthetic`. The report and the journal record the user folder the run used, the host, the platform and the label, and a journal continues only a run with the same artifact, commit, label, home, host and platform: a synthetic rehearsal can never continue as a live run. One run per evidence folder at a time (`<evidence>/lifecycle/run.lock`).
+
+```bash
+./alz lifecycle all --artifact agent-private-landing-zone.tar.gz --evidence ./evidence --host disposable-01 --commit <release source commit>
+```
+
+**Journeys in this slice.** `clean-install` (install the archive under `~/.alz/app/<version>`, then launch it), `uninstall` (remove it, then remove it again: the second run must find nothing and change nothing), and `partial-install-recovery` (plant what a crashed install leaves, then install: the leftovers must be swept and reported, the copy launched and removed). `all` runs the three in that order. Upgrade, rollback, configuration migration, unusual paths and unrelated-file preservation are later slices; until they exist the report says which of the seven platform checks it does not yet carry.
+
+**The journal.** Every step is written to `<evidence>/lifecycle/journal.jsonl` before it runs and after it finishes. Press Ctrl-C once and the run stops after the current step; running the same command again continues from there, skipping every step that already passed and rerunning one that was started and never finished. An uninstall stopped partway (even by a power cut) is finished by that rerun: it completes the removal the earlier run started and clears a `current` file that names a removed version; any other state it does not recognize stops the step with nothing changed. A live run also needs `HOME` set to the user's absolute folder path. A journal belongs to one archive and one commit; the same evidence folder refuses another candidate.
+
+**The report.** `<evidence>/platform-<os-arch>.json` is the gate report (the seven check names, each with the SHA-256 of its own detail file under `<evidence>/lifecycle/checks/`). The runner then judges it with the release admission review itself (`src/qualification/release-admission.ts`), never a copy of its rules, and writes the verdict beside it as `platform-<os-arch>.review.json`. A report is submittable only when that review says EVIDENCE_PRESENT and the run was live. `--synthetic` labels the report SYNTHETIC: the review refuses it and it is never submittable, whatever its checks say; use it for rehearsals on your own machine.
+
+**Install discipline.** The archive's SHA-256 is checked first, it is unpacked beside the final folder, the completion marker is written last, and the folder is put in place by renames alone; a removal writes its own marker first. Leftovers of a process that died are swept only under `~/.alz/app`, never through a link, never a final version folder.
 
 ## Agent-assisted build sequence
 

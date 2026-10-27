@@ -207,14 +207,20 @@ function toolCheck(tool: ToolId, ctx: CheckContext, required: boolean, platform:
 
 /**
  * Check-only tools: reported with exact steps, never installed. The AWS CLI's macOS installer needs an administrator
- * password and its checksum is not pinned here; Git is the operator's own.
+ * password and its checksum is not pinned here; Git is the operator's own. With `pinned` (the AWS CLI's tested version,
+ * config/tool-pins.json `awsCli`), the found version must be exactly it, as for the installable tools: the CDK path's
+ * qualification binds the program that ran, so another version is not the tested one.
  */
-function presenceCheck(id: "aws-cli" | "git", label: string, args: string[], pattern: RegExp, required: boolean, fix: string, env: NodeJS.ProcessEnv): DepCheck {
+function presenceCheck(id: "aws-cli" | "git", label: string, args: string[], pattern: RegExp, required: boolean, fix: string, env: NodeJS.ProcessEnv, pinned?: string): DepCheck {
   const found = onPath(id === "aws-cli" ? "aws" : "git", env);
-  const reported = found ? pattern.exec(versionText(found, args) ?? "")?.[1] : undefined;
+  const reported = found ? pattern.exec((versionText(found, args) ?? "").trim())?.[1] : undefined;
   if (!reported) return { id, label, required, ok: false, detail: found ? "found, but its version could not be read" : "not found", fix };
+  if (pinned !== undefined && reported !== pinned) return { id, label, required, ok: false, detail: "found " + reported + " at " + found + ", tested " + pinned, fix };
   return { id, label, required, ok: true, detail: "version " + reported + " at " + found };
 }
+
+/** The AWS CLI v2 version line, as the vendor prints it: `aws-cli/2.x.y Python/... <os>/... <source>/<arch> ...`. Read from trimmed text, the same rule the CDK engine applies before it runs, so `./alz deps` and qualification agree. */
+export const AWS_CLI_VERSION_PATTERN = /^aws-cli\/(\d+\.\d+\.\d+)(?:\s|$)/;
 
 /** Looks at the isolated service's port: nothing listening is fine, a listener that is not Ollama is a blocker. */
 async function serviceCheck(ctx: CheckContext, required: boolean): Promise<DepCheck> {
@@ -322,8 +328,8 @@ export async function runDependencyChecks(ctx: CheckContext, required: ReadonlyS
     toolCheck("terraform", ctx, required.has("terraform"), platform),
     toolCheck("ollama", ctx, required.has("ollama"), platform),
     await serviceCheck(ctx, required.has("isolated-service")),
-    presenceCheck("aws-cli", "AWS CLI 2", ["--version"], /aws-cli\/(\d+\.\d+\.\d+)/, required.has("aws-cli"),
-      "Install AWS CLI version 2 from docs.aws.amazon.com (macOS installer; it asks for your administrator password), then open a new Terminal window.", ctx.env),
+    presenceCheck("aws-cli", "AWS CLI " + ctx.pins.awsCli.version, ["--version"], AWS_CLI_VERSION_PATTERN, required.has("aws-cli"),
+      "Install AWS CLI version " + ctx.pins.awsCli.version + ", the tested version, from docs.aws.amazon.com (macOS installer; it asks for your administrator password), then open a new Terminal window.", ctx.env, ctx.pins.awsCli.version),
     presenceCheck("git", "Git", ["--version"], /git version (\d+\.\d+\.\d+)/, required.has("git"),
       "Install Git (run xcode-select --install in Terminal), then open a new Terminal window.", ctx.env),
   ];
