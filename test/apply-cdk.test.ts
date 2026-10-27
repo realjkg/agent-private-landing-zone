@@ -1220,7 +1220,7 @@ test("a CDK cleanup removes exactly the approved logical ids through one UPDATE 
   assert.ok(leftovers.ok, JSON.stringify(leftovers));
   assert.equal(leftovers.record.disposition, "COMPLETE");
   assert.deepEqual(leftovers.record.resources.map((r) => [r.address, r.disposition, r.owner ?? null]), [["PilotBucket", "CONFIRMED_DELETED", null], ["PilotTopic", "INTENTIONALLY_RETAINED", "ENVIRONMENT_OWNER"]]);
-  assert.match(leftovers.record.nextAction, /Approved resources deleted.*Protected objects intentionally retained.*Full environment retirement .*remains outstanding; this record does not claim the environment retired/);
+  assert.match(leftovers.record.nextAction, /Approved resources deleted.*Protected or pre-existing objects intentionally retained \(1, kept by ENVIRONMENT_OWNER\).*Full environment retirement .*remains outstanding; this record does not claim the environment retired/);
   assert.equal(leftovers.record.sweep, "COMPLETE");
   const stack = calls().filter((call) => call.args[1] === "describe-stacks").length;
   assert.ok(stack > 0, "the stack was described throughout and never deleted");
