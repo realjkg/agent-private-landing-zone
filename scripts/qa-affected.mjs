@@ -189,6 +189,11 @@ export function planChanged(changedPaths, files) {
       continue;
     }
     if (/^docs\/|\.md$|^\.github\/(ISSUE_TEMPLATE|PULL_REQUEST_TEMPLATE)\//.test(path)) continue;
+    // Dependabot's update settings are owned by the selector's own test, which reads the committed file.
+    if (path === ".github/dependabot.yml") {
+      addExisting(selected, files, [QA_SELF_TEST]);
+      continue;
+    }
     if (/^\.github\/workflows\/.+\.ya?ml$/.test(path)) {
       pinCheck = true;
       addExisting(selected, files, [QA_SELF_TEST]);

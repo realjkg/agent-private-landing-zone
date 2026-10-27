@@ -66,6 +66,14 @@ test("workflow edits only verify pins and the QA selector", () => {
   assert.deepEqual(plan.jsTests, ["test/qa-affected.test.mjs"]);
   assert.equal(plan.needsDeps, false);
 });
+test("Dependabot settings are owned by the selector test, which checks every ecosystem has an explicit PR limit", () => {
+  const plan = planChanged([".github/dependabot.yml"], fixture());
+  assert.deepEqual(plan.jsTests, ["test/qa-affected.test.mjs"]);
+  assert.equal(plan.gaps.length, 0);
+  const entries = readFileSync(".github/dependabot.yml", "utf8").split(/^  - /m).slice(1);
+  assert.deepEqual(entries.map(e => /package-ecosystem: (\S+)/.exec(e)?.[1]), ["npm", "github-actions"]);
+  for (const entry of entries) assert.match(entry, /^    open-pull-requests-limit: \d+$/m);
+});
 test("configuration changes perform targeted dependency checks", () => {
   const plan = planChanged(["package-lock.json"], fixture());
   assert.equal(plan.configCheck, true);
