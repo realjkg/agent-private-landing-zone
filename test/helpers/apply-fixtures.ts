@@ -80,6 +80,10 @@ export type Behavior = {
   unitTagAttribute?: string;
   showOutputChanges?: Record<string, unknown>;
   showProviderConfig?: Record<string, unknown>;
+  /** Merged into `show`'s `configuration` beside `provider_config` (a `root_module` tree, for resources and data sources the plan names). */
+  showConfigurationExtra?: Record<string, unknown>;
+  /** Merged into `show`'s top level (a `prior_state` or `planned_values` tree). */
+  showDocumentExtra?: Record<string, unknown>;
   /** What `init` saves in .terraform/terraform.tfstate. Default: the azurerm (or, under an AWS role, the s3) backend of the target whose subscription or account init runs under; null saves none. */
   savedBackend?: unknown;
   /** Raw state resources `state pull` reports (state format 4), so a blueprint can be read after an apply. Default: one resource with a canary attribute and no identifier. */
@@ -162,7 +166,8 @@ else if (cmd === "show") {
         ? { ...r, change: { ...r.change, after: { ...(r.change.after || {}), [b.unitTagAttribute || "tags_all"]: b.unitTags } } } : r),
     ],
     output_changes: b.showOutputChanges || {},
-    configuration: { provider_config: b.showProviderConfig || { azurerm: { name: "azurerm", full_name: "registry.terraform.io/hashicorp/azurerm", expressions: { subscription_id: { references: ["var.subscription_id"] } } } } },
+    configuration: { provider_config: b.showProviderConfig || { azurerm: { name: "azurerm", full_name: "registry.terraform.io/hashicorp/azurerm", expressions: { subscription_id: { references: ["var.subscription_id"] } } } }, ...(b.showConfigurationExtra || {}) },
+    ...(b.showDocumentExtra || {}),
   }));
 }
 else if (cmd === "apply") {
