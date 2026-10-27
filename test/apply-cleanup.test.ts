@@ -1000,7 +1000,8 @@ const AWS_UNREVIEWED_TYPES = [
   "terraform_data", "null_resource", "random_id", "aws_datazone_project", "aws_vpc", "aws_instance",
   // Removed by design review 6434540427 (B1, N5): held for the owner, not re-justified here.
   "aws_organizations_delegated_administrator", "aws_lakeformation_permissions", "awscc_lakeformation_principal_permissions", "AWS::LakeFormation::Permissions", "AWS::LakeFormation::PrincipalPermissions", "aws_redshift_cluster_iam_roles",
-  "aws_s3_bucketx", "aws_s3_bucket_notification", "aws_s3_object", "aws_sqs_queue_redrive_policy", "AWS::S3::BucketX", "AWS::S3::Bucket::Thing", "AWS::s3::Bucket", "Custom::Anything", "AWS::CloudFormation::CustomResource", "AWS::CloudFormation::WaitCondition",
+  "aws_s3_bucketx", "aws_s3_bucket_notification", "aws_s3_object", "aws_sqs_queue_redrive_policy", "AWS::S3::BucketX", "AWS::S3::Bucket::Thing", "AWS::s3::Bucket", "AWS::CloudFormation::WaitCondition",
+  // A custom resource (`Custom::*`, `AWS::CloudFormation::CustomResource`) is CONTAINS_OTHERS with its own reason here, ahead of the allowlist (test/apply-cdk.test.ts).
 ];
 
 test("the reviewed AWS leaf allowlist is closed (delegated owner decision 6433391052): only a type listed by exact name is ordinary, every other well-formed type is TYPE_UNREVIEWED, a malformed type is unclassifiable, and the identity and container rules still come first", () => {

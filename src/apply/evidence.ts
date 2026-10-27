@@ -105,7 +105,7 @@ const CLEANUP_SHAPE: Shape = {
   exitCode,
   startedAt: iso,
   finishedAt: iso,
-  authority: { infrastructureAct: oneOf("PILOT_ENABLED"), mutation: oneOf("TERRAFORM_DESTROY_OF_APPROVED_PROPOSAL"), executedAs: oneOf("APPLY"), agentInitiated: oneOf(false) },
+  authority: { infrastructureAct: oneOf("PILOT_ENABLED"), mutation: oneOf("TERRAFORM_DESTROY_OF_APPROVED_PROPOSAL", "CLOUDFORMATION_EXECUTE_OF_REMOVAL_CHANGE_SET"), executedAs: oneOf("APPLY"), agentInitiated: oneOf(false) },
   recovery: optional({ files: count, sha256: hash }),
 };
 

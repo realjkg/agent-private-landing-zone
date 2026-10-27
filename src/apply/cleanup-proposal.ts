@@ -60,7 +60,7 @@ export const PROTECTION_REASONS: Readonly<Record<Exclude<Ownership, "RUN_CREATED
   PROTECTED_DEPLOYMENT: "deployment history (Microsoft.Resources/deployments) records what was deployed and is never deleted by a cleanup",
   RETAINED_GROUP: "a resource group is never deleted by a pilot cleanup, whatever it holds; the pilot owner retains it, and its deletion is a separate, reviewed action (environment retirement, outstanding)",
   // Under 512 characters: a proposal's reason text has that limit.
-  CONTAINS_OTHERS: "a container is never deleted by a cleanup: on Azure a subscription or management group holds other deployments, and a provider or feature registration is a setting others rely on; on AWS anything that deploys a CloudFormation stack or a provisioned product (CloudFormation, Service Catalog, Serverless Application Repository, SageMaker, Proton, Elastic Beanstalk, SSM Quick Setup, DataZone, Control Tower) is kept: deleting it deletes all the stack holds, identities among it, which the state does not list",
+  CONTAINS_OTHERS: "a container is never deleted by a cleanup: on Azure a subscription or management group holds other deployments, and a provider or feature registration is a setting others rely on; on AWS anything that deploys a CloudFormation stack or a provisioned product (Service Catalog, SAR, SageMaker, Proton, Beanstalk, SSM Quick Setup, DataZone, Control Tower) is kept: deleting it deletes all the stack holds, identities among it, unlisted in the state; a custom resource runs its own code on removal",
 };
 
 export type ProposedDeletion = {
@@ -335,6 +335,8 @@ function protectionOf(entry: { type: string; id: string | null; arn: string | nu
   // is the recorded identifier or sits in any attribute the state holds (`holdsIdentityArn`, judged in place by the blueprint, which also sets it when the
   // attributes nest past the depth it scans, so an entry it could not scan in full is never ordinary either).
   if ([entry.arn, entry.id].some((value) => value !== null && IAM_ARN.test(value)) || entry.holdsIdentityArn === true) return UNCLASSIFIABLE;
+  // A custom resource runs code of its own on removal, and what that code holds no listing here accounts for: never proposed (the CDK engine refuses one at the seal too).
+  if (entry.type.startsWith("Custom::") || entry.type === "AWS::CloudFormation::CustomResource") return "CONTAINS_OTHERS";
   if (!isWellFormedResourceType(entry.type)) return UNCLASSIFIABLE;
   return isAwsLeafType(entry.type) ? undefined : "TYPE_UNREVIEWED";
 }

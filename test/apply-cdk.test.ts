@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -9,15 +9,16 @@ import { fileURLToPath } from "node:url";
 import { loadPilotContract, loadQualificationRecords } from "../src/apply/contract.js";
 import { qualifyApply, runApply, sealPreview, type ApplyDeps, type ApplyRequest } from "../src/apply/driver.js";
 import { ENGINE_IDS, engineSpec } from "../src/apply/engine-spec.js";
-import { CDK, isAllowedCdkArgv } from "../src/apply/engines/cdk.js";
+import { CDK, isAllowedCdkArgv, removalTemplateOf } from "../src/apply/engines/cdk.js";
 import { assertApplyEvidence } from "../src/apply/evidence.js";
 import { attestedClientId, checkApplyIdentities, verifyIdentityTargets } from "../src/apply/identities.js";
 import { openNonceStore } from "../src/apply/nonces.js";
 import { AWS } from "../src/apply/providers/aws.js";
 import { loadSealedPlan, reviewBundleOf } from "../src/apply/seal.js";
 import { APPLY_IDENTITIES, type ApplyEnvironment, type ApplyEvidence, type ApplyResult, type PilotContract, type SignedApproval } from "../src/apply/types.js";
-import { buildCleanupProposal, verifyCleanupProposal } from "../src/apply/cleanup-proposal.js";
-import { loadRunRecords, observeRun, type ObserveDeps } from "../src/apply/observe.js";
+import { signApproval } from "../src/apply/approval.js";
+import { buildCleanupProposal, computeProposalSha256, verifyCleanupProposal, type CleanupProposal } from "../src/apply/cleanup-proposal.js";
+import { loadRunRecords, observeRun, verifyProposalLeftovers, type ObserveDeps } from "../src/apply/observe.js";
 import { readBlueprintRecord } from "../src/apply/run-records.js";
 import { runCleanup } from "../src/apply/driver.js";
 import { canonicalJson } from "../src/teardown/manifest.js";
@@ -311,6 +312,10 @@ test("each identity may run only its own argument lists: CHANGESET cannot execut
   assert.equal(isAllowedCdkArgv("CHANGESET", create([], [...UNIT_TAGS, "Key=alz-expires,Value=2026-12-31"])), false, "a fourth tag");
   assert.equal(isAllowedCdkArgv("CHANGESET", create([], [...UNIT_TAGS.slice(0, 2), "Key=owner,Value=alice"])), false, "another key");
   assert.equal(isAllowedCdkArgv("CHANGESET", create([], [...UNIT_TAGS.slice(0, 2), "Key=alz-unit,Value=../x"])), false, "a value outside the tag-safe shape");
+  // The three slots must be the three distinct keys (review 6411896219, N3): a repeated key, even with the unit's value, is not the unit.
+  assert.equal(isAllowedCdkArgv("CHANGESET", create([], [UNIT_TAGS[2], UNIT_TAGS[2], UNIT_TAGS[2]])), false, "the unit key three times");
+  assert.equal(isAllowedCdkArgv("CHANGESET", create([], [UNIT_TAGS[0], UNIT_TAGS[1], UNIT_TAGS[1]])), false, "a repeated key");
+  assert.equal(isAllowedCdkArgv("CHANGESET", create([], [UNIT_TAGS[2], UNIT_TAGS[0], UNIT_TAGS[1]])), true, "any order of the three");
   // The blueprint's read is DISCOVERY's alone, on the apply surface.
   const resources = ["cloudformation", "describe-stack-resources", "--stack-name", STACK, ...COMMON];
   assert.equal(isAllowedCdkArgv("DISCOVERY", resources), true);
@@ -421,6 +426,7 @@ test("an assembly that needs asset publishing, a second stack, a nested stack or
     [{ secondStack: true }, /ASSEMBLY_STACK_COUNT/],
     [{ nestedAssembly: true }, /ASSEMBLY_ARTIFACT_UNSUPPORTED/],
     [{ nestedStack: true }, /ASSEMBLY_NESTED_STACK/],
+    [{ resources: { Fleet: { Type: "AWS::CloudFormation::StackSet", Properties: { StackSetName: "fleet", PermissionModel: "SELF_MANAGED" } } } }, /ASSEMBLY_NESTED_STACK/],
     [{ importValue: true }, /ASSEMBLY_CROSS_STACK_IMPORT/],
     [{ padding: 60_000 }, /TEMPLATE_TOO_LARGE/],
     [{ terminationProtection: false }, /TERMINATION_PROTECTION_OFF/],
@@ -933,7 +939,8 @@ test("qualify runs describe-stacks as each identity and nothing that creates, ex
   assert.ok(ran.ok, JSON.stringify(ran));
   if (ran.ok) {
     assert.equal(ran.terraformSha256, FAKE_AWS_SHA256);
-    assert.deepEqual(ran.adapters.map((a) => a.argvDigest), [CDK.previewAdapter().argvDigest, CDK.applyAdapter.argvDigest]);
+    // The cleanup adapter is qualified with the apply adapter: one run records all three surfaces.
+    assert.deepEqual(ran.adapters.map((a) => a.argvDigest), [CDK.previewAdapter().argvDigest, CDK.applyAdapter.argvDigest, CDK.cleanupAdapter!.argvDigest]);
     assert.equal(ran.engineVersion, AWS_CLI_VERSION);
   }
   const all = calls();
@@ -982,7 +989,7 @@ test("./alz apply works for the engine the pinned contract names, with no engine
   assert.match(qualified.out, /THIS RUNS NO PROJECT CODE/);
   assert.match(qualified.out, /change set creation was by\s+CHANGESET/);
   assert.doesNotMatch(asked.join("\n"), /code>/);
-  assert.deepEqual((await loadQualificationRecords(AWS, vault)).map((r) => r.engine), ["CDK", "CDK"]);
+  assert.deepEqual((await loadQualificationRecords(AWS, vault)).map((r) => r.engine), ["CDK", "CDK", "CDK"], "preview, apply and cleanup adapters");
   assert.deepEqual([...new Set(subcommandsOf(calls()))].sort(), ["--version", "describe-stacks"], "qualifying created nothing");
 
   const sealed = await cli(["seal", "--request", request, "--manifest", manifest, ...requesterArgs()], [targetString(target)]);
@@ -1034,6 +1041,9 @@ test("after a CDK apply the blueprint is CloudFormation's own resource list, rea
     { address: "PilotTopic", type: "AWS::SNS::Topic", id: TOPIC_ARN, arn: TOPIC_ARN, origin: "IN_PLAN" },
   ]);
   assert.deepEqual(blueprint.blueprint.missing, []);
+  // The stack itself is the unit's container, by the pinned stack's id: it carries the tags, and it is never an entry, a proposal line or a leftover.
+  assert.match(blueprint.blueprint.container!.identifier, /^arn:aws:cloudformation:us-east-1:111111111111:stack\/PilotStack\/[0-9a-f-]{36}$/);
+  assert.equal(blueprint.blueprint.container!.type, "AWS::CloudFormation::Stack");
   noCanary(blueprint);
   const read = calls().filter((call) => call.args[1] === "describe-stack-resources");
   assert.equal(read.length, 1);
@@ -1051,6 +1061,7 @@ test("after a CDK apply the blueprint is CloudFormation's own resource list, rea
   assert.deepEqual(reads.slice(0, 3).map((call) => call.args[3]), ["AWS::S3::Bucket", "AWS::IAM::Role", "AWS::SNS::Topic"], "read under the CloudFormation type itself");
   assert.ok(reads.every((call) => roleOf(call) === "alz-discovery-dev"));
   assert.ok(reads[3].args.includes("Key=alz-unit,Values=" + s.sealed.unit!.unitId), "the sweep asks for this run's unit");
+  assert.deepEqual(observed.record.unexpected, [], "the stack's own ARN, which the tagging API lists, is the container and not a stray");
   noCanary(observed.record);
 
   // The proposal: run-created resources by logical id; the pilot's role kept as PROTECTED_IDENTITY; the stack never deleted.
@@ -1068,10 +1079,11 @@ test("after a CDK apply the blueprint is CloudFormation's own resource list, rea
   assert.equal(built.proposal.unitId, s.sealed.unit!.unitId);
   assert.equal(built.proposal.engine, "CDK");
   noCanary(built.proposal);
-  // Until the CDK cleanup path exists, a cleanup of that proposal is refused before anything runs.
+  // A cleanup without a cleanup approval is refused before the engine runs (the removal itself is the next test's).
   const cleanup = await runCleanup({ invocation: human(s.sealed.target), environment: "DEV", target: { ...s.sealed.target }, proposal: built.proposal, sealedPlan: s.loaded, manifest: s.project.manifest, projectRoot: s.project.projectRoot, approvals: [] }, forEnv(w, "DEV"));
   assert.equal(cleanup.ok, false);
-  assert.equal((cleanup as { code: string }).code, "CLEANUP_NOT_SUPPORTED");
+  assert.equal((cleanup as { code: string }).code, "APPROVAL_INSUFFICIENT");
+  assert.ok(!calls().some((call) => call.args[1] === "create-change-set" && call.args.includes("file://alz-cleanup-template.json")), "no removal change set was created");
   clean(w);
 });
 
@@ -1113,7 +1125,8 @@ test("CDK observe denied and interrupted: a resource Cloud Control no longer ret
   const contract2 = loadPilotContract(w2.contractPath, pinPathOf(w2.contractPath)) as PilotContract;
   const built2 = buildCleanupProposal({ ...records2, changes: s2.sealed.changes, channel: "CLI", contract: contract2, engineVersion: AWS_CLI_VERSION, env: cdkIdentityEnv("DEV"), now: new Date(NOW.getTime() + 120_000) });
   assert.ok(built2.ok, JSON.stringify(built2));
-  assert.deepEqual(built2.proposal.excluded.map((x) => [x.address, x.ownership]), [["NestedLater", "CONTAINS_OTHERS"], ["PilotTopic", "REPLACED_PRE_EXISTING"]]);
+  assert.deepEqual(built2.proposal.excluded.map((x) => [x.address, x.ownership]), [["NestedHook", "CONTAINS_OTHERS"], ["NestedLater", "CONTAINS_OTHERS"], ["NestedSet", "CONTAINS_OTHERS"], ["PilotTopic", "REPLACED_PRE_EXISTING"]]);
+  assert.ok(built2.proposal.excluded.filter((x) => x.ownership === "CONTAINS_OTHERS").every((x) => x.retainedBy === "PILOT_OWNER"));
   assert.deepEqual(built2.proposal.deletes.map((d) => d.address), ["PilotBucket"]);
   // A stack resource read that fails after the execution: the apply still succeeded, but it left no blueprint, and nothing downstream guesses.
   const w3 = world({}, cdkContractJson(KILL), { resourcesFail: true, failStderr: STDERR_CANARY });
@@ -1150,4 +1163,294 @@ test("the stack tags are bound: a change set whose tags are not the unit's is re
   refused(result, "ARTIFACT_TAMPERED");
   assert.ok(!calls().some((call) => call.args[1] === "execute-change-set"), "nothing executed");
   assert.equal(result.ok || (result as { outcome?: string }).outcome === undefined, true, "no approval consumed: the refusal has no outcome");
+});
+
+// --- the cleanup: a removal change set (docs/observe-and-cleanup.md, "CloudFormation") ----------------------------------------
+
+const cdkCleanupApproval = (proposal: CleanupProposal, who: keyof typeof keys): SignedApproval => signApproval({
+  schemaVersion: 1, artifactSha256: proposal.proposalSha256, environment: proposal.environment, target: proposal.target, approverId: who,
+  issuedAt: new Date(NOW.getTime() - 5 * 60_000).toISOString(), expiresAt: new Date(NOW.getTime() + 25 * 60_000).toISOString(), nonce: randomBytes(16).toString("hex"),
+}, keys[who].priv, "CLEANUP");
+/** Seal, execute, observe and propose in one world; the proposal is built exactly as the CLI builds it. */
+async function proposedCdk(w: World, options: AssemblyOptions = {}) {
+  const s = await seal(w, "DEV", options);
+  const applied = await run(w, s);
+  assert.ok(applied.ok, JSON.stringify(applied));
+  const observed = await observeRun(s.sealed.artifactSha256, observeDepsOf(w));
+  assert.ok(observed.ok, JSON.stringify(observed));
+  const records = await loadRunRecords(s.sealed.artifactSha256, w.dirs.evidence);
+  assert.ok(records.ok, JSON.stringify(records));
+  const contract = loadPilotContract(w.contractPath, pinPathOf(w.contractPath)) as PilotContract;
+  const built = buildCleanupProposal({ ...records, changes: s.sealed.changes, channel: "CLI", contract, engineVersion: AWS_CLI_VERSION, env: cdkIdentityEnv("DEV"), now: new Date(NOW.getTime() + 120_000) });
+  assert.ok(built.ok, JSON.stringify(built));
+  return { s, proposal: built.proposal, observed };
+}
+const cleanupCdk = (w: World, s: Sealed, proposal: CleanupProposal, approvals: SignedApproval[] = [cdkCleanupApproval(proposal, "alice")]) => runCleanup({
+  invocation: human(s.sealed.target), environment: "DEV", target: { ...s.sealed.target }, proposal, sealedPlan: s.loaded, manifest: s.project.manifest, projectRoot: s.project.projectRoot, approvals,
+}, forEnv(w, "DEV"));
+const CLEANUP_TEMPLATE = "file://alz-cleanup-template.json";
+const removalCreates = () => calls().filter((call) => call.args[1] === "create-change-set" && call.args.includes(CLEANUP_TEMPLATE));
+
+test("a CDK cleanup removes exactly the approved logical ids through one UPDATE change set the CHANGESET identity creates from the sealed template and the APPLY identity executes, never deletes the stack or a change set, keeps the stack's tags, and the leftover check reads the removed resources gone through Cloud Control, the kept ones intentionally retained, and the environment's retirement outstanding", async () => {
+  const w = world({}, cdkContractJson(KILL), { diffChanges: true, protectAfterCreate: true });
+  const { s, proposal } = await proposedCdk(w);
+  assert.deepEqual(proposal.deletes.map((d) => d.address), ["PilotBucket"]);
+  const before = calls().length;
+  const done = await cleanupCdk(w, s, proposal);
+  assert.ok(done.ok, JSON.stringify(done));
+  const steps = calls().slice(before);
+  const named = steps.map((call) => (call.args[0] === "cloudformation" ? call.args[1] : call.args[0]) + ":" + roleOf(call).replace(/-dev$/, "").replace(/^alz-/, ""));
+  assert.deepEqual(named.slice(0, 10), ["--version:", "describe-stacks:changeset", "create-change-set:changeset", "wait:changeset", "describe-change-set:changeset", "get-template:changeset", "describe-stacks:changeset",
+    "describe-change-set:changeset", "describe-stacks:apply", "execute-change-set:apply"], "the removal is planned as CHANGESET and executed as APPLY");
+  assert.equal(named[named.length - 1], "describe-change-set:changeset", "the execution is judged by the change set too");
+  assert.ok(!steps.some((call) => /delete|update-stack|create-stack/.test(call.args[1] ?? "") || call.args[1] === "describe-stack-resources"), "nothing deletes, and the blueprint is not read again");
+  const created = steps.find((call) => call.args[1] === "create-change-set")!;
+  assert.equal(created.args[created.args.indexOf("--change-set-type") + 1], "UPDATE");
+  assert.equal(created.args[created.args.indexOf("--template-body") + 1], CLEANUP_TEMPLATE, "the removal template, by its one name");
+  assert.deepEqual(created.args.slice(created.args.indexOf("--tags") + 1, created.args.indexOf("--region")), Object.entries(s.sealed.unit!.tags).sort(([a], [b]) => (a < b ? -1 : 1)).map(([key, value]) => "Key=" + key + ",Value=" + value), "the stack keeps the unit's tags");
+  assert.ok(!created.args.includes("--capabilities"), "the removal template has no IAM resource, so no capability is passed");
+  assert.equal(steps.filter((call) => call.args[1] === "execute-change-set").length, 1);
+  assert.equal(done.evidence.outcome, "SUCCEEDED");
+  assert.deepEqual(done.evidence.deletes, ["PilotBucket"]);
+  assert.deepEqual(done.evidence.authority, { infrastructureAct: "PILOT_ENABLED", mutation: "CLOUDFORMATION_EXECUTE_OF_REMOVAL_CHANGE_SET", executedAs: "APPLY", agentInitiated: false });
+  assert.deepEqual(done.evidence.adapter, { adapterVersion: CDK.cleanupAdapter!.adapterVersion, argvDigest: CDK.cleanupAdapter!.argvDigest });
+  noCanary(done.evidence);
+  // The independent check: the bucket is gone, the replaced topic is kept for the environment's owner, the stack still stands, and the environment is not retired.
+  const leftovers = await verifyProposalLeftovers(proposal, observeDepsOf(w));
+  assert.ok(leftovers.ok, JSON.stringify(leftovers));
+  assert.equal(leftovers.record.disposition, "COMPLETE");
+  assert.deepEqual(leftovers.record.resources.map((r) => [r.address, r.disposition, r.owner ?? null]), [["PilotBucket", "CONFIRMED_DELETED", null], ["PilotTopic", "INTENTIONALLY_RETAINED", "ENVIRONMENT_OWNER"]]);
+  assert.match(leftovers.record.nextAction, /Approved resources deleted.*Protected or pre-existing objects intentionally retained \(1, kept by ENVIRONMENT_OWNER\).*Full environment retirement .*remains outstanding; this record does not claim the environment retired/);
+  assert.equal(leftovers.record.sweep, "COMPLETE");
+  const stack = calls().filter((call) => call.args[1] === "describe-stacks").length;
+  assert.ok(stack > 0, "the stack was described throughout and never deleted");
+  noCanary(leftovers.record);
+  // The proposal is spent: the same approval runs nothing twice.
+  const again = await cleanupCdk(w, s, proposal);
+  refused(again as never, "PROPOSAL_ALREADY_EXECUTED");
+  clean(w);
+});
+
+test("a CDK cleanup is refused before any change set exists when the stack is unprotected, when the removal would empty the stack, when an approved resource's deletion policy would keep it, when something that stays still refers to an approved resource, and when a forged proposal names a protected object; a change set that would touch anything beyond the approved list is refused after CloudFormation computed it, before any approval is consumed, and is disclosed as left behind; a stop during the removal cancels the update once and spends the proposal", async () => {
+  // Every resource of the stack was created by this run: removing them all would leave the stack empty, and the stack is the owner's to retire.
+  // A stack a person has not yet protected after its first create is not cleaned up either: the same policy as an update.
+  const unprotected = world({}, cdkContractJson(KILL), { diffChanges: true });
+  const fresh = await proposedCdk(unprotected);
+  const off = await cleanupCdk(unprotected, fresh.s, fresh.proposal);
+  refused(off as never, "APPLY_FAILED");
+  assert.match((off as { message: string }).message, /TERMINATION_PROTECTION_OFF/);
+  assert.equal(removalCreates().length, 0);
+  const all = world({}, cdkContractJson(KILL), { changesAllAdd: true, diffChanges: true, protectAfterCreate: true });
+  const whole = await proposedCdk(all);
+  assert.deepEqual(whole.proposal.deletes.map((d) => d.address), ["PilotBucket", "PilotTopic"]);
+  const empty = await cleanupCdk(all, whole.s, whole.proposal);
+  refused(empty as never, "CLEANUP_WOULD_EMPTY_STACK");
+  assert.match((empty as { message: string }).message, /never deleted by a cleanup.*pilot owner's separate, reviewed decision.*no approval was consumed/);
+  assert.equal(removalCreates().length, 0, "no removal change set was created");
+  const retry = await cleanupCdk(all, whole.s, whole.proposal);
+  refused(retry as never, "CLEANUP_WOULD_EMPTY_STACK");
+  // A deletion policy that keeps the bucket: the removal would leave it behind.
+  const retain = world({}, cdkContractJson(KILL), { diffChanges: true, protectAfterCreate: true });
+  const kept = await proposedCdk(retain, { resources: { PilotBucket: { Type: "AWS::S3::Bucket", DeletionPolicy: "Retain" } } });
+  const retained = await cleanupCdk(retain, kept.s, kept.proposal);
+  refused(retained as never, "CLEANUP_RETAIN_POLICY");
+  assert.equal(removalCreates().length, 0);
+  // A topic that stays and depends on the bucket (DependsOn), and an output that refers to it: the dependent is not on the list.
+  const dependent = world({}, cdkContractJson(KILL), { diffChanges: true, protectAfterCreate: true });
+  const referenced = await proposedCdk(dependent, { resources: { PilotAlarmTopic: { Type: "AWS::SNS::Topic", DependsOn: "PilotBucket" } } });
+  assert.deepEqual(referenced.proposal.deletes.map((d) => d.address), ["PilotBucket"]);
+  assert.ok(referenced.proposal.excluded.some((x) => x.address === "PilotAlarmTopic" && x.ownership === "NOT_IN_PLAN"));
+  const broken = await cleanupCdk(dependent, referenced.s, referenced.proposal);
+  refused(broken as never, "CLEANUP_DEPENDENT_REFERENCED");
+  assert.equal(removalCreates().length, 0);
+  const outputWorld = world({}, cdkContractJson(KILL), { diffChanges: true, protectAfterCreate: true });
+  const output = await proposedCdk(outputWorld, { templateExtra: { Outputs: { BucketName: { Value: { "Fn::Sub": "${PilotBucket}" } } } } });
+  refused(await cleanupCdk(outputWorld, output.s, output.proposal) as never, "CLEANUP_DEPENDENT_REFERENCED");
+  assert.equal(removalCreates().length, 0);
+  // A forged proposal that adds the pilot's role: the list is derived from the records, never taken from the file.
+  const forgedWorld = world({}, cdkContractJson(KILL, ["CAPABILITY_IAM"]), { diffChanges: true, protectAfterCreate: true, physicalIds: { PilotRole: "alz-apply-dev" } });
+  const honest = await proposedCdk(forgedWorld, { iam: true });
+  const fields = { ...honest.proposal, deletes: [...honest.proposal.deletes, { address: "PilotRole", type: "AWS::IAM::Role", identifier: "alz-apply-dev", ownership: "RUN_CREATED" as const, observed: "VERIFIED" as const }].sort((a, b) => (a.address < b.address ? -1 : 1)), excluded: honest.proposal.excluded.filter((x) => x.address !== "PilotRole") };
+  const forged = { ...fields, proposalSha256: computeProposalSha256(fields) };
+  assert.ok(verifyCleanupProposal(forged).ok);
+  refused(await cleanupCdk(forgedWorld, honest.s, forged, [cdkCleanupApproval(forged, "alice")]) as never, "PROPOSAL_INVALID");
+  assert.equal(removalCreates().length, 0);
+  // The change set CloudFormation makes would remove something not on the list: stopped after the plan, before any approval is consumed.
+  const wide = world({}, cdkContractJson(KILL), { diffChanges: true, protectAfterCreate: true });
+  const scoped = await proposedCdk(wide);
+  patchAws(toolDir, { extraChange: true });
+  const scope = await cleanupCdk(wide, scoped.s, scoped.proposal);
+  refused(scope as never, "PROPOSAL_SCOPE_MISMATCH");
+  assert.match((scope as { message: string }).message, /the proposal does not list \(ExtraQueue\)/);
+  assert.equal(removalCreates().length, 1, "the width of a change set is known only after CloudFormation computed it");
+  assert.match((scope as { message: string }).message, /removal change set created to plan this is left unexecuted in CloudFormation for a person to clear; nothing here deletes a change set/);
+  assert.ok(!calls().some((call) => /delete-change-set|delete-stack/.test(call.args[1] ?? "")), "no delete surface exists");
+  assert.equal(calls().filter((call) => call.args[1] === "execute-change-set" && call.args.includes(removalCreates().length > 0 ? "x" : "y")).length, 0);
+  assert.equal(calls().filter((call) => call.args[1] === "execute-change-set").length, 1, "only the apply executed; the removal did not");
+  // The same approval then removes the honest list once the plan is honest again.
+  patchAws(toolDir, { extraChange: false });
+  const approval = cdkCleanupApproval(scoped.proposal, "alice");
+  const ok = await cleanupCdk(wide, scoped.s, scoped.proposal, [approval]);
+  assert.ok(ok.ok, JSON.stringify(ok));
+  // A stop during the removal: the update is canceled once, the outcome is KILLED, and the proposal is spent.
+  const stopped = world({}, cdkContractJson(KILL), { diffChanges: true, protectAfterCreate: true });
+  const toStop = await proposedCdk(stopped);
+  patchAws(toolDir, { touchKillAtPoll: 0, pollStatuses: ["UPDATE_IN_PROGRESS", "UPDATE_IN_PROGRESS", "UPDATE_IN_PROGRESS", "UPDATE_COMPLETE"] });
+  const killed = await cleanupCdk(stopped, toStop.s, toStop.proposal);
+  assert.equal(killed.ok, false);
+  assert.equal((killed as { outcome?: string }).outcome, "KILLED", JSON.stringify(killed));
+  assert.equal(calls().filter((call) => call.args[1] === "cancel-update-stack").length, 1, "one cancel for the update this cleanup started");
+  rmSync(KILL, { force: true });
+  refused(await cleanupCdk(stopped, toStop.s, toStop.proposal) as never, "PROPOSAL_ALREADY_EXECUTED");
+  const after = await verifyProposalLeftovers(toStop.proposal, observeDepsOf(stopped));
+  assert.ok(after.ok);
+  assert.notEqual(after.record.disposition, "COMPLETE", "a stopped removal is never complete on its own say-so: " + JSON.stringify(after.record.resources));
+  assert.equal(after.record.resources.find((r) => r.address === "PilotBucket")?.disposition, "DELETION_PENDING", "the canceled update rolled back: the bucket is still there and the cleanup did not finish");
+});
+
+test("the cleanup surface may create only an UPDATE change set from the removal template as CHANGESET and execute it as APPLY: sealing and applying cannot name the removal template, a cleanup cannot name the assembly's, and nothing deletes", () => {
+  const removal = create().map((a) => (a === "file://PilotStack.template.json" ? CLEANUP_TEMPLATE : a));
+  assert.equal(isAllowedCdkArgv("CHANGESET", removal, "cleanup"), true);
+  assert.equal(isAllowedCdkArgv("CHANGESET", removal, "preview"), false, "sealing never names the removal template");
+  assert.equal(isAllowedCdkArgv("CHANGESET", removal, "apply"), false);
+  assert.equal(isAllowedCdkArgv("CHANGESET", removal), true, "the shape exists for CHANGESET; the surface decides where it may run");
+  assert.equal(isAllowedCdkArgv("CHANGESET", create(), "cleanup"), false, "a cleanup never names the assembly's template");
+  assert.equal(isAllowedCdkArgv("CHANGESET", removal.map((a) => (a === "UPDATE" ? "CREATE" : a)), "cleanup"), false, "a removal is always an update");
+  assert.equal(isAllowedCdkArgv("APPLY", removal, "cleanup"), false);
+  assert.equal(isAllowedCdkArgv("APPLY", EXECUTE, "cleanup"), true);
+  assert.equal(isAllowedCdkArgv("CHANGESET", EXECUTE, "cleanup"), false);
+  assert.equal(isAllowedCdkArgv("DISCOVERY", ["cloudformation", "describe-stack-resources", "--stack-name", STACK, ...COMMON], "cleanup"), false);
+  for (const identity of [null, "DISCOVERY", "CHANGESET", "APPLY"] as const) {
+    assert.equal(isAllowedCdkArgv(identity, ["cloudformation", "delete-stack", "--stack-name", STACK, ...COMMON], "cleanup"), false);
+    assert.equal(isAllowedCdkArgv(identity, ["cloudformation", "delete-change-set", "--change-set-name", ARN_CS, ...COMMON], "cleanup"), false);
+  }
+  assert.equal(new Set([CDK.previewAdapter().argvDigest, CDK.applyAdapter.argvDigest, CDK.cleanupAdapter!.argvDigest]).size, 3, "three surfaces, three digests");
+  assert.equal(CDK.cleanupMutation, "CLOUDFORMATION_EXECUTE_OF_REMOVAL_CHANGE_SET");
+});
+
+test("a stack, a stack set, a custom resource or a macro is never in a removal, whatever list reaches the engine: the removal template refuses each by name before any change set exists, and an ordinary removal from the same template goes through", () => {
+  const template = {
+    Resources: {
+      PilotBucket: { Type: "AWS::S3::Bucket" },
+      PilotTopic: { Type: "AWS::SNS::Topic" },
+      Nested: { Type: "AWS::CloudFormation::Stack", Properties: { TemplateURL: "https://example.invalid/t.json" } },
+      Fleet: { Type: "AWS::CloudFormation::StackSet", Properties: { StackSetName: "fleet" } },
+      Hook: { Type: "Custom::Thing", Properties: { ServiceToken: "arn:aws:lambda:us-east-1:111111111111:function:fake" } },
+      Legacy: { Type: "AWS::CloudFormation::CustomResource", Properties: {} },
+      Expander: { Type: "AWS::CloudFormation::Macro", Properties: {} },
+      // Identities and access objects (the rule of src/apply/cleanup-proposal.ts), refused here before any change set exists (review 6413520217, finding 1).
+      PilotRole: { Type: "AWS::IAM::Role", Properties: {} },
+      PilotPolicy: { Type: "AWS::IAM::ManagedPolicy", Properties: {} },
+      PilotKey: { Type: "AWS::IAM::AccessKey", Properties: {} },
+      Assignment: { Type: "AWS::SSO::Assignment", Properties: {} },
+      Workforce: { Type: "AWS::IdentityStore::Group", Properties: {} },
+      // A deletion policy that is not a plain word, and the types whose default policy takes a snapshot (finding 2 and 3).
+      Judged: { Type: "AWS::SQS::Queue", DeletionPolicy: { "Fn::If": ["c", "Retain", "Delete"] } },
+      Cluster: { Type: "AWS::RDS::DBCluster", Properties: { Engine: "aurora-postgresql" } },
+      Standalone: { Type: "AWS::RDS::DBInstance", Properties: { Engine: "postgres" } },
+      Member: { Type: "AWS::RDS::DBInstance", Properties: { Engine: "aurora-postgresql", DBClusterIdentifier: { Ref: "Cluster" } } },
+      Named: { Type: "AWS::RDS::DBInstance", Properties: { Engine: "aurora-postgresql", DBClusterIdentifier: "my-cluster" } },
+      // A cluster identifier that names no cluster (review 6432294529, N2): the instance is standalone, so its default policy is Snapshot.
+      NullMember: { Type: "AWS::RDS::DBInstance", Properties: { Engine: "postgres", DBClusterIdentifier: null } },
+      BlankMember: { Type: "AWS::RDS::DBInstance", Properties: { Engine: "postgres", DBClusterIdentifier: " " } },
+      NoValueMember: { Type: "AWS::RDS::DBInstance", Properties: { Engine: "postgres", DBClusterIdentifier: { Ref: "AWS::NoValue" } } },
+      IntrinsicMember: { Type: "AWS::RDS::DBInstance", Properties: { Engine: "postgres", DBClusterIdentifier: { "Fn::If": ["c", { Ref: "Cluster" }, { Ref: "AWS::NoValue" }] } } },
+      Dropped: { Type: "AWS::RDS::DBCluster", DeletionPolicy: "Delete", Properties: { Engine: "aurora-postgresql" } },
+    },
+  };
+  for (const [address, code] of [["Nested", "ASSEMBLY_NESTED_STACK"], ["Fleet", "ASSEMBLY_NESTED_STACK"], ["Hook", "ASSEMBLY_CUSTOM_RESOURCE"], ["Legacy", "ASSEMBLY_CUSTOM_RESOURCE"], ["Expander", "ASSEMBLY_CUSTOM_RESOURCE"],
+    ["PilotRole", "CLEANUP_PROTECTED_IDENTITY"], ["PilotPolicy", "CLEANUP_PROTECTED_IDENTITY"], ["PilotKey", "CLEANUP_PROTECTED_IDENTITY"], ["Assignment", "CLEANUP_PROTECTED_IDENTITY"], ["Workforce", "CLEANUP_PROTECTED_IDENTITY"],
+    ["Judged", "CLEANUP_RETAIN_POLICY"], ["Cluster", "CLEANUP_RETAIN_POLICY"], ["Standalone", "CLEANUP_RETAIN_POLICY"],
+    ["NullMember", "CLEANUP_RETAIN_POLICY"], ["BlankMember", "CLEANUP_RETAIN_POLICY"], ["NoValueMember", "CLEANUP_RETAIN_POLICY"], ["IntrinsicMember", "CLEANUP_RETAIN_POLICY"]] as const) {
+    assert.throws(() => removalTemplateOf(template, [address]), (error: unknown) => codeOf(error) === code, address);
+    assert.throws(() => removalTemplateOf(template, ["PilotBucket", address]), (error: unknown) => codeOf(error) === code, "with an ordinary resource beside it: " + address);
+  }
+  const removal = removalTemplateOf(template, ["PilotBucket"]);
+  assert.deepEqual(Object.keys((removal as { Resources: Record<string, unknown> }).Resources).sort(), ["Assignment", "BlankMember", "Cluster", "Dropped", "Expander", "Fleet", "Hook", "IntrinsicMember", "Judged", "Legacy", "Member", "Named", "Nested", "NoValueMember", "NullMember", "PilotKey", "PilotPolicy", "PilotRole", "PilotTopic", "Standalone", "Workforce"]);
+  // A cluster member names its cluster, so its default policy is not Snapshot; a cluster whose policy is written Delete is judged by the word. Both may be removed (with the cluster's member and dependents accounted for).
+  assert.ok(removalTemplateOf(template, ["Member"]));
+  assert.ok(removalTemplateOf(template, ["Named"]), "a cluster named by a non-empty string is a member too");
+  assert.ok(removalTemplateOf({ Resources: { PilotBucket: template.Resources.PilotBucket, Dropped: template.Resources.Dropped } }, ["Dropped"]));
+});
+
+test("every CDK refusal after CHANGESET created the removal change set says it was left unexecuted for a person to clear, whatever the code (review 6432294529, N1): a capability or a tag check that fails after creation (TARGET_NOT_IN_CONTRACT, APPLY_FAILED) says so, and a refusal before creation does not", async () => {
+  const LEFT = /The removal change set created to plan this is left unexecuted in CloudFormation for a person to clear; nothing here deletes a change set\.$/;
+  // CloudFormation reports a capability the removal never asked for: refused after creation as not in the contract.
+  const capabilityWorld = world({}, cdkContractJson(KILL), { diffChanges: true, protectAfterCreate: true });
+  const capability = await proposedCdk(capabilityWorld);
+  patchAws(toolDir, { echoCapabilities: ["CAPABILITY_NAMED_IAM"] });
+  const notInContract = await cleanupCdk(capabilityWorld, capability.s, capability.proposal);
+  refused(notInContract as never, "TARGET_NOT_IN_CONTRACT");
+  assert.match((notInContract as { message: string }).message, /CAPABILITY_NOT_IN_CONTRACT/);
+  assert.match((notInContract as { message: string }).message, LEFT);
+  assert.equal(removalCreates().length, 1, "the change set exists");
+  assert.equal(calls().filter((call) => call.args[1] === "execute-change-set").length, 1, "only the apply executed; the removal did not");
+  // The change set comes back with other tags than the stack's: an engine failure after creation.
+  const tagWorld = world({}, cdkContractJson(KILL), { diffChanges: true, protectAfterCreate: true });
+  const tagged = await proposedCdk(tagWorld);
+  patchAws(toolDir, { swapTags: ["Key=alz-managed-by,Value=someone-else"] });
+  const mismatch = await cleanupCdk(tagWorld, tagged.s, tagged.proposal);
+  refused(mismatch as never, "APPLY_FAILED");
+  assert.match((mismatch as { message: string }).message, /CHANGE_SET_TAGS_MISMATCH/);
+  assert.match((mismatch as { message: string }).message, LEFT);
+  assert.equal(removalCreates().length, 1);
+  assert.ok(!calls().some((call) => /delete-change-set|delete-stack/.test(call.args[1] ?? "")), "no delete surface exists");
+  // A refusal before any change set exists carries no such sentence.
+  const earlyWorld = world({}, cdkContractJson(KILL), { diffChanges: true, protectAfterCreate: true });
+  const early = await proposedCdk(earlyWorld, { resources: { PilotBucket: { Type: "AWS::S3::Bucket", DeletionPolicy: "Retain" } } });
+  const retained = await cleanupCdk(earlyWorld, early.s, early.proposal);
+  refused(retained as never, "CLEANUP_RETAIN_POLICY");
+  assert.doesNotMatch((retained as { message: string }).message, /left unexecuted/);
+  assert.equal(removalCreates().length, 0);
+});
+
+test("the engine's identity check is the driver's second line (review 6432294529, N3): a stack listing that reports the pilot's role under an ordinary type gets it proposed, and the removal template still refuses CLEANUP_PROTECTED_IDENTITY, reported as PROPOSAL_SCOPE_MISMATCH before any change set exists and with no approval consumed", async () => {
+  // The listing says PilotRole is a topic (a drifted or lying listing), so the proposal's type rule cannot see an identity and lists it.
+  // The plan creates the whole stack (bucket, topic, role), so every resource is this run's; the identity check runs per address, before the emptiness check.
+  const w = world({}, cdkContractJson(KILL, ["CAPABILITY_IAM"]), { changesAllAdd: true, diffChanges: true, protectAfterCreate: true, physicalIds: { PilotRole: "arn:aws:sns:us-east-1:111111111111:PilotStack-PilotRole-FAKE1" }, resourceTypes: { PilotRole: "AWS::SNS::Topic" } });
+  const run = await proposedCdk(w, { iam: true });
+  assert.deepEqual(run.proposal.deletes.map((d) => [d.address, d.type]), [["PilotBucket", "AWS::S3::Bucket"], ["PilotRole", "AWS::SNS::Topic"], ["PilotTopic", "AWS::SNS::Topic"]], "the listing's type, not the template's, reached the proposal");
+  const taken = await cleanupCdk(w, run.s, run.proposal);
+  refused(taken as never, "PROPOSAL_SCOPE_MISMATCH");
+  assert.match((taken as { message: string }).message, /names an identity or access object, which is never deleted by a cleanup\. Refused before any change set exists\. Nothing was destroyed and no approval was consumed/);
+  assert.doesNotMatch((taken as { message: string }).message, /left unexecuted/);
+  assert.equal(removalCreates().length, 0, "no removal change set was created");
+  assert.equal(calls().filter((call) => call.args[1] === "execute-change-set").length, 1, "only the apply executed");
+  // The same approval is not spent: the honest proposal of a listing that tells the truth still runs once.
+  const retry = await cleanupCdk(w, run.s, run.proposal);
+  refused(retry as never, "PROPOSAL_SCOPE_MISMATCH");
+});
+
+test("no IAM object is ever in a removal change set (owner policy #39; review 6411896219 B1 and B2): the pilot's CHANGESET role under its real name, an inline policy on it, a managed policy, a user and an access key the stack created are all kept as PROTECTED_IDENTITY by the pilot owner, the access key id is never recorded, the removal takes out only the ordinary resources, and the leftover check is COMPLETE with every identity intentionally retained", async () => {
+  const w = world({}, cdkContractJson(KILL, ["CAPABILITY_NAMED_IAM"]), { changesAllAdd: true, diffChanges: true, protectAfterCreate: true, physicalIds: { PilotRole: "alz-changeset-dev" } });
+  const resources = {
+    PilotRolePolicy: { Type: "AWS::IAM::Policy", Properties: { PolicyName: "inline", Roles: [{ Ref: "PilotRole" }], PolicyDocument: {} } },
+    PilotManaged: { Type: "AWS::IAM::ManagedPolicy", Properties: { PolicyDocument: {} } },
+    PilotUser: { Type: "AWS::IAM::User" },
+    PilotUserKey: { Type: "AWS::IAM::AccessKey", Properties: { UserName: { Ref: "PilotUser" } } },
+  };
+  const { s, proposal, observed } = await proposedCdk(w, { iam: true, resources });
+  assert.deepEqual(proposal.deletes.map((d) => d.address), ["PilotBucket", "PilotTopic"], "only the ordinary resources are proposed, although every resource is run-created");
+  const kept = new Map(proposal.excluded.map((x) => [x.address, x]));
+  for (const address of ["PilotRole", "PilotRolePolicy", "PilotManaged", "PilotUser", "PilotUserKey"]) {
+    assert.equal(kept.get(address)?.ownership, "PROTECTED_IDENTITY", address);
+    assert.equal(kept.get(address)?.retainedBy, "PILOT_OWNER", address);
+  }
+  assert.equal(kept.get("PilotUserKey")?.identifier, null, "the access key id is never recorded");
+  assert.ok(!JSON.stringify([proposal, observed.record]).includes("AKIAFAKE"), "no access key id reaches a record");
+  const done = await cleanupCdk(w, s, proposal);
+  assert.ok(done.ok, JSON.stringify(done));
+  assert.deepEqual(done.evidence.deletes, ["PilotBucket", "PilotTopic"]);
+  const leftovers = await verifyProposalLeftovers(proposal, observeDepsOf(w));
+  assert.ok(leftovers.ok, JSON.stringify(leftovers));
+  assert.equal(leftovers.record.disposition, "COMPLETE", JSON.stringify(leftovers.record.resources) + " " + leftovers.record.nextAction);
+  const dispositions = new Map(leftovers.record.resources.map((r) => [r.address, [r.disposition, r.owner ?? null]]));
+  for (const address of ["PilotRole", "PilotRolePolicy", "PilotManaged", "PilotUser", "PilotUserKey"]) assert.deepEqual(dispositions.get(address), ["INTENTIONALLY_RETAINED", "PILOT_OWNER"], address);
+  assert.deepEqual(dispositions.get("PilotBucket"), ["CONFIRMED_DELETED", null]);
+  // The stack still holds every identity: the removal template kept them (the fake reads its stack from the executed template).
+  const after = await observeRun(s.sealed.artifactSha256, observeDepsOf(w));
+  assert.ok(after.ok);
+  assert.deepEqual(after.record.resources.filter((r) => /^Pilot(?:Role|RolePolicy|Managed|User|UserKey)$/.test(r.address)).map((r) => r.address).sort(), ["PilotManaged", "PilotRole", "PilotRolePolicy", "PilotUser", "PilotUserKey"]);
+  assert.equal(after.record.resources.find((r) => r.address === "PilotRole")?.result, "VERIFIED", "the pilot role is still there");
+  noCanary(leftovers.record);
 });

@@ -4,7 +4,7 @@ import type { StoppableProcessOptions, StoppableResult } from "../tools/process.
 import { CDK } from "./engines/cdk.js";
 import { TERRAFORM } from "./engines/terraform.js";
 import type { ProviderSpec } from "./provider.js";
-import type { ApplyEvidence, ApplyIdentity, ApplyOutcome, EngineId, PilotContract, PilotTarget, PlanChange, ProviderId, SealedUnit } from "./types.js";
+import type { ApplyEvidence, ApplyIdentity, ApplyOutcome, CleanupEvidence, EngineId, PilotContract, PilotTarget, PlanChange, ProviderId, SealedUnit } from "./types.js";
 import type { PilotUnit } from "./unit.js";
 
 /**
@@ -106,6 +106,8 @@ export type EngineNotices = {
   /** What the person checks in the cloud's logs before attesting the two principals (`attests`), given as their client ids. */
   attestation(provider: ProviderSpec, first: string, second: string): string[];
   applyNote: string;
+  /** What the CLI tells a person before a cleanup, when the engine's cleanup is not a Terraform destroy. */
+  cleanupNote?: string;
 };
 
 export type EngineSpec = {
@@ -155,7 +157,7 @@ export type EngineSpec = {
   /** The cleanup run for this engine, present only with `cleanupAdapter`. */
   openCleanup?(input: EngineRunInput): EngineCleanupRun;
   /** What the evidence says a cleanup did (`CleanupEvidence.authority.mutation`), present only with `cleanupAdapter`. */
-  cleanupMutation?: "TERRAFORM_DESTROY_OF_APPROVED_PROPOSAL";
+  cleanupMutation?: CleanupEvidence["authority"]["mutation"];
   /** What a person is told for each way an apply can end unsuccessfully, and when recovery material could not be kept. */
   outcomeMessages: Readonly<Record<Exclude<ApplyOutcome, "SUCCEEDED">, string>>;
   recoveryLostNote: string;
