@@ -16,11 +16,13 @@ import type { ApplyEnvironment } from "./types.js";
  * pin, no identity variable, no tool directory, no cloud, no network. It never enables ACT and never writes the pin; a
  * complete draft still needs the owner's reviewed commit of the contract and its pin (docs/act-pilot-apply.md, "The
  * contract and its pin"). The shape verdict is the contract validator's own (`inspectPilotContract`,
- * src/apply/contract.ts). The kit is stricter than the validator in exactly two ways: it requires enough approvers
- * allowed for PROD to reach `requiredApprovals.PROD` (the validator checks the number, not the list), and it refuses
- * values copied from the shipped examples (the fake account ids, the `examplefake` buckets, and an example's region,
- * workspace or kill switch path copied verbatim). It also requires `enabled` to be written as a boolean, as the loader
- * does (`inspectPilotContract` overrides it, so the validator alone would not notice).
+ * src/apply/contract.ts). The kit is stricter than the validator in exactly three ways: it requires enough approvers
+ * allowed for PROD to reach `requiredApprovals.PROD` (the validator checks the number, not the list); it refuses values
+ * that are not inputs at all (REPLACE-WITH placeholders, the examples' fake account ids and `examplefake` buckets, and
+ * the examples' placeholder keys); and it requires `enabled` to be written as a boolean, as the loader does
+ * (`inspectPilotContract` overrides it, so the validator alone would not notice). A region, workspace or kill switch
+ * path that equals a shipped example's value is a legitimate choice (`default`, `us-east-1`, `.runs/apply/KILL`), so it
+ * stays PRESENT with a review NOTICE asking a person to confirm the default is intended; a notice never counts against COMPLETE.
  */
 
 export type ContractCheckStatus = "PRESENT" | "MISSING" | "PLACEHOLDER" | "EXAMPLE" | "INVALID";
@@ -31,6 +33,8 @@ export type ContractCheckItem = {
   input: string;
   status: ContractCheckStatus;
   detail?: string;
+  /** A review note on a PRESENT input: the value equals a shipped example's default, so a person confirms it is intended. Never counts against COMPLETE. */
+  notice?: string;
 };
 export type ContractCheckReport = {
   provider: string | null;
@@ -44,8 +48,10 @@ export type ContractCheckReport = {
   inputs: ContractCheckItem[];
   /** Owner inputs that are not contract fields, and where each one is checked or recorded instead. */
   outsideContract: { input: string; where: string }[];
-  /** Every input PRESENT and the shape valid. Completeness is information: it enables nothing. */
+  /** Every input PRESENT and the shape valid. Completeness is information: it enables nothing. Notices do not count against it. */
   complete: boolean;
+  /** How many PRESENT inputs carry a review notice. */
+  notices: number;
   guarantees: readonly string[];
 };
 
@@ -101,6 +107,7 @@ function walker(examples: ReturnType<typeof shippedExampleValues>): Walk {
   const add: Walk["add"] = (field, input, value, kind) => {
     let status: ContractCheckStatus = "PRESENT";
     let detail: string | undefined;
+    let notice: string | undefined;
     if (value === undefined || value === null || value === "" || (Array.isArray(value) && value.length === 0)) {
       status = "MISSING";
     } else if (typeof value === "string" && PLACEHOLDER.test(value)) {
@@ -113,10 +120,9 @@ function walker(examples: ReturnType<typeof shippedExampleValues>): Walk {
       status = "EXAMPLE";
       detail = "the shipped example's examplefake bucket, not a state bucket the owner provisioned";
     } else if ((kind === "region" || kind === "workspace" || kind === "killSwitchPath") && typeof value === "string" && examples[kind].has(value)) {
-      status = "EXAMPLE";
-      detail = "copied verbatim from a shipped example; the owner decides this value (change it, or keep it as a reviewed decision recorded in the pin commit)";
+      notice = "equals a shipped example's default; confirm this value is intended, not left over from the copy";
     }
-    items.push({ field, input, status, ...(detail ? { detail } : {}) });
+    items.push({ field, input, status, ...(detail ? { detail } : {}), ...(notice ? { notice } : {}) });
   };
   return { items, add };
 }
@@ -135,7 +141,7 @@ export function checkDraftContract(raw: unknown, examples: ReturnType<typeof shi
   const inspected = inspectPilotContract(raw);
   const shape: ContractCheckReport["shape"] = inspected.ok ? { ok: true } : { ok: false, reason: inspected.reason };
   const empty = (provider: string | null, engine: string | null): ContractCheckReport => ({
-    provider, engine, enabledAsWritten: null, scope: [...ENVIRONMENTS], shape, inputs: [], outsideContract: [], complete: false, guarantees: CONTRACT_CHECK_GUARANTEES,
+    provider, engine, enabledAsWritten: null, scope: [...ENVIRONMENTS], shape, inputs: [], outsideContract: [], complete: false, notices: 0, guarantees: CONTRACT_CHECK_GUARANTEES,
   });
   if (!isRecord(raw)) return empty(null, null);
 
@@ -215,7 +221,7 @@ export function checkDraftContract(raw: unknown, examples: ReturnType<typeof shi
   const complete = shape.ok && items.every((item) => item.status === "PRESENT");
   return {
     provider, engine, enabledAsWritten: typeof raw.enabled === "boolean" ? raw.enabled : null, scope, shape, inputs: items, outsideContract, complete,
-    guarantees: CONTRACT_CHECK_GUARANTEES,
+    notices: items.filter((item) => item.notice !== undefined).length, guarantees: CONTRACT_CHECK_GUARANTEES,
   };
 }
 
@@ -229,12 +235,12 @@ export function contractCheckLines(report: ContractCheckReport, file: string): s
     "  enabled         " + (report.enabledAsWritten === null ? "missing" : String(report.enabledAsWritten)) + " as written (a draft stays false; the reviewed pin commit is where it becomes true)",
     "  shape           " + (report.shape.ok ? "valid (the contract validator accepts it as if it were enabled)" : "not accepted: " + report.shape.reason),
     "", "OWNER INPUTS",
-    ...report.inputs.map((item) => "  " + pad(item.status) + item.field + ": " + item.input + (item.detail ? " [" + item.detail + "]" : "")),
+    ...report.inputs.map((item) => "  " + pad(item.status) + item.field + ": " + item.input + (item.detail ? " [" + item.detail + "]" : "") + (item.notice ? " [NOTICE: " + item.notice + "]" : "")),
     "", "NOT IN THE CONTRACT (supplied elsewhere)",
     ...report.outsideContract.map((item) => "  " + item.input + ": " + item.where),
     "",
     report.complete
-      ? "COMPLETE: every input is present and the shape is valid. Next: the owner reviews the values, runs ./alz apply pin, and commits the contract and its pin in one reviewed change. Nothing here did that."
+      ? "COMPLETE: every input is present and the shape is valid" + (report.notices > 0 ? ", with " + report.notices + " notice(s) above for a person to confirm" : "") + ". Next: the owner reviews the values, runs ./alz apply pin, and commits the contract and its pin in one reviewed change. Nothing here did that."
       : "INCOMPLETE: " + report.inputs.filter((item) => item.status !== "PRESENT").length + " input(s) above are not ready. Fill them in and run this check again.",
     ...report.guarantees.map((line) => "  " + line),
     "",

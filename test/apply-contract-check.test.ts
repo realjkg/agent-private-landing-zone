@@ -102,9 +102,13 @@ test("the shipped AWS examples are refused as placeholders and example values, e
     assert.equal(statusOf(report, "targets.DEV.backend"), "EXAMPLE", name);
     assert.equal(statusOf(report, "approvers[0].id"), "PLACEHOLDER", name);
     assert.equal(statusOf(report, "approvers[0].publicKeyPem"), "PLACEHOLDER", name);
-    // The example's region, workspace and kill switch path copied verbatim are not decisions: EXAMPLE, never PRESENT.
-    for (const field of ["targets.DEV.region", "targets.DEV.workspace", "killSwitchPath"]) assert.equal(statusOf(report, field), "EXAMPLE", name + " " + field);
-    assert.ok(report.inputs.filter((x) => x.status !== "PRESENT").length >= 8, name + ": every placeholder is listed, not only the first");
+    // The example's region, workspace and kill switch path are legitimate defaults: PRESENT with a review notice, never EXAMPLE.
+    for (const field of ["targets.DEV.region", "targets.DEV.workspace", "killSwitchPath"]) {
+      assert.equal(statusOf(report, field), "PRESENT", name + " " + field);
+      assert.match(report.inputs.find((x) => x.field === field)!.notice!, /confirm this value is intended/, name + " " + field);
+    }
+    assert.ok(report.notices >= 3, name + ": one notice per copied region, workspace and kill switch path");
+    assert.ok(report.inputs.filter((x) => x.status !== "PRESENT").length >= 5, name + ": every placeholder is listed, not only the first");
     if (Object.hasOwn(example, "EXAMPLE")) assert.equal(statusOf(report, "EXAMPLE"), "PLACEHOLDER", name + ": the example marker is named");
   }
 });
@@ -153,7 +157,7 @@ test("a missing or non-boolean enabled flag is never COMPLETE, as the loader ref
   assert.equal(checkDraftContract(completeDraft({ enabled: true })).complete, true, "a boolean either way is an explicit decision");
 });
 
-test("a region, workspace or kill switch path copied verbatim from a shipped example is EXAMPLE, read from the example files themselves", () => {
+test("a region, workspace or kill switch path that equals a shipped example's value is PRESENT with a review notice that never blocks COMPLETE (#277 round 2)", () => {
   const shipped = shippedExampleValues();
   assert.ok(shipped.region.size > 0 && shipped.workspace.has("default") && shipped.killSwitchPath.has(".runs/apply/KILL"), "the repository's examples were read");
   for (const [field, over] of [
@@ -162,16 +166,35 @@ test("a region, workspace or kill switch path copied verbatim from a shipped exa
     ["killSwitchPath", { killSwitchPath: ".runs/apply/KILL" }],
   ] as const) {
     const r = checkDraftContract(completeDraft(over));
-    assert.equal(r.shape.ok, true, field + ": the validator accepts the value; the kit is what refuses the copy");
-    assert.equal(statusOf(r, field), "EXAMPLE", field);
-    assert.match(r.inputs.find((x) => x.field === field)!.detail!, /copied verbatim from a shipped example/);
-    assert.equal(r.complete, false, field);
+    assert.equal(r.shape.ok, true, field);
+    assert.equal(statusOf(r, field), "PRESENT", field);
+    assert.match(r.inputs.find((x) => x.field === field)!.notice!, /equals a shipped example's default; confirm/);
+    assert.equal(r.notices, 1, field);
+    assert.equal(r.complete, true, field + ": a notice never counts against COMPLETE");
   }
-  // The example values come from the files, not from this module: with no example files nothing is EXAMPLE on those fields.
+  // A legitimate AWS Terraform draft with the usual defaults (us-east-1, default, .runs/apply/KILL) is COMPLETE, with three notices.
+  const usual = checkDraftContract(completeDraft({ targets: { DEV: { accountId: "123456789012", region: "us-east-1", backend: "fixture-dev-state/pilot/dev.tfstate", workspace: "default" } }, killSwitchPath: ".runs/apply/KILL" }));
+  assert.equal(usual.complete, true, JSON.stringify(notReady(usual)));
+  assert.equal(usual.notices, 3);
+  assert.match(contractCheckLines(usual, "usual.json").join("\n"), /COMPLETE: every input is present and the shape is valid, with 3 notice\(s\) above/);
+  // A valid CDK draft (the stack name is the backend, the workspace must be default, capabilities per environment) is COMPLETE.
+  const cdk = checkDraftContract({
+    ...chainDraft(), engine: "CDK",
+    targets: {
+      DEV: { accountId: "123456789012", region: "us-east-1", backend: "PilotStack", workspace: "default", capabilities: [] },
+      QA: { accountId: "234567890123", region: "us-east-1", backend: "PilotStack", workspace: "default", capabilities: [] },
+      PROD: { accountId: "345678901234", region: "us-east-1", backend: "PilotStack", workspace: "default", capabilities: ["CAPABILITY_IAM"] },
+    },
+  });
+  assert.equal(cdk.shape.ok, true, JSON.stringify(cdk.shape));
+  assert.equal(cdk.complete, true, JSON.stringify(notReady(cdk)));
+  assert.ok(cdk.notices >= 3, "the CDK defaults carry notices only");
+  // The example values come from the files, not from this module: with no example files there is no notice on those fields.
   const none = shippedExampleValues(join(root, "no-examples"));
   assert.deepEqual([none.region.size, none.workspace.size, none.killSwitchPath.size], [0, 0, 0]);
   const fromNowhere = checkDraftContract(completeDraft({ killSwitchPath: ".runs/apply/KILL" }), none);
   assert.equal(statusOf(fromNowhere, "killSwitchPath"), "PRESENT");
+  assert.equal(fromNowhere.notices, 0);
   // And a fixture example directory is honored.
   const dir = join(root, "examples");
   mkdirSync(dir, { recursive: true });
@@ -211,7 +234,7 @@ test("./alz apply contract-check reads one draft file offline: exit 0 complete, 
   assert.equal(example.code, 2, "placeholders remain: BLOCKED, nothing spent");
   assert.deepEqual(example.reports.map((r) => r.code), ["CONTRACT_DRAFT_INCOMPLETE"]);
   assert.match(example.term.out.join(""), /PLACEHOLDER\s+policyVersion/);
-  assert.match(example.term.out.join(""), /EXAMPLE\s+killSwitchPath/);
+  assert.match(example.term.out.join(""), /PRESENT\s+killSwitchPath.*\[NOTICE: equals a shipped example's default/);
   assert.match(example.term.out.join(""), /INCOMPLETE: \d+ input\(s\) above are not ready/);
 
   const unreadable = await cli(["contract-check", "--file", file("{", "broken")]);
