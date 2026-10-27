@@ -127,7 +127,7 @@ variable "apply_additional_roles" {
 }
 
 variable "state_bucket_name" {
-  description = "TERRAFORM: the state bucket (the first part of the contract's backend). Dotless names only, as the S1 provider spec (#305) accepts."
+  description = "TERRAFORM: the state bucket (the first part of the contract's backend). Dotless names only, as the S1 provider spec (src/apply/providers/gcp.ts) accepts."
   type        = string
   default     = null
   validation {

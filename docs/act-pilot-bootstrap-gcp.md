@@ -49,12 +49,12 @@ Each engine still gets its own service accounts, pool, custom roles and deny pol
 - The provider's attribute condition admits only the engine's subjects.
 - Optionally, `oidc_required_claims` ANDs exact claims into that condition. A subject is name-based, so for GitHub pin the numeric `repository_id` (and `repository_owner_id`): a deleted-and-recreated or transferred repository with the same name then mints no accepted token. Recommended for GitHub.
 - No key is created, and the org policy forbids creating one.
-- The package outputs one credential configuration per identity: an `external_account` file source with no key, no token and no `service_account_impersonation_url`. That is exactly the shape the G0 package requires and the S1 provider spec checks. The spec is in #305 (`src/apply/providers/gcp.ts` once it merges); it is not on main yet.
+- The package outputs one credential configuration per identity: an `external_account` file source with no key, no token and no `service_account_impersonation_url`. That is exactly the shape the G0 package requires and the S1 provider spec (`src/apply/providers/gcp.ts`, merged in #305) checks.
 
 **State bucket (TERRAFORM).**
 - Uniform bucket-level access and public access prevention are on, and versioning is on.
 - One lifecycle rule deletes a noncurrent version only once at least `noncurrent_versions_kept` newer versions exist (default 10) and it has been noncurrent for `noncurrent_version_retention_days` (default 90).
-- The bucket name must be dotless, matching the S1 provider spec (#305).
+- The bucket name must be dotless, matching the S1 provider spec (`src/apply/providers/gcp.ts`, #305).
 - STATE's and STATE_WRITE's grants are on the bucket only, under IAM Conditions on the object name (UNVERIFIED, G-4).
 
 **Deny guardrails** (`deny_pilot_guardrails`, default on).
@@ -134,7 +134,7 @@ The runner's OIDC token for that identity must be written to the `token_files` p
 - `ALZ_<IDENTITY>_GOOGLE_APPLICATION_CREDENTIALS`: that file's absolute path;
 - `ALZ_<IDENTITY>_GOOGLE_IMPERSONATE_SERVICE_ACCOUNT`, `ALZ_<IDENTITY>_GOOGLE_PROJECT` and `ALZ_<IDENTITY>_GOOGLE_REGION`: from `terraform output -json identity_variables`.
 
-Set no other `GOOGLE_*`, `GCLOUD_*`, `CLOUDSDK_*` or `GCE_*` variable, and never `STORAGE_EMULATOR_HOST`. The G0 package forbids them, and the S1 provider spec (#305) refuses each of them by name once it merges.
+Set no other `GOOGLE_*`, `GCLOUD_*`, `CLOUDSDK_*` or `GCE_*` variable, and never `STORAGE_EMULATOR_HOST`. The G0 package forbids them, and the S1 provider spec (`src/apply/providers/gcp.ts`, #305) refuses each of them by name. GCP is not yet an admitted provider, so the spec runs once the authorization lane admits it.
 
 ## Step 4: Fill the configuration
 
