@@ -29,10 +29,11 @@ import type { PilotUnit } from "../unit.js";
  * Sealing creates the change set and does NOT execute it; the apply executes exactly that change set. Codes only: engine
  * output (descriptions, stack events, errors) can quote template and parameter values.
  *
- * UNVERIFIED: every AWS, CloudFormation and CDK fact in this file is from memory. The AWS documentation hosts were
- * unreachable when it was written, and no real AWS CLI or CloudFormation ran any of it (the tests use a fake `aws`). The
- * one list of the assumptions is in docs/act-pilot-apply.md ("CDK"); a comment "UNVERIFIED (n)" below marks where
- * assumption n is relied on. Each is checked against AWS's documentation and a real DEV run before live use.
+ * UNVERIFIED: every AWS, CloudFormation and CDK fact in this file was written from memory, and no real CloudFormation has
+ * run any of it. The one list of the assumptions is in docs/act-pilot-apply.md ("CDK"); a comment "UNVERIFIED (n)" below
+ * marks where assumption n is relied on. "VERIFIED (emulated)" marks one the opt-in harness test/apply-emulated-cdk.test.ts
+ * showed with the real pinned AWS CLI against a local moto CloudFormation (docs/act-pilot-simulation-cdk.md): SYNTHETIC
+ * evidence, never G2. Every fact is still checked against AWS's documentation and a real DEV run before live use.
  */
 
 const EXECUTABLE = "aws";
@@ -67,7 +68,7 @@ const CLEANUP_TEMPLATE = slot("cleanup-template", (v) => v === "file://" + CLEAN
 const UPDATE_ONLY = slot("type", (v) => v === "UPDATE");
 const CAPABILITY = slot("capability", (v) => (CAPABILITIES as readonly string[]).includes(v));
 /**
- * One stack tag as the CLI's shorthand (UNVERIFIED (8)): the deletion unit's tags (src/apply/unit.ts), always exactly these
+ * One stack tag as the CLI's shorthand (VERIFIED (emulated) (8): the real CLI takes it and the stack carries the tags): the deletion unit's tags (src/apply/unit.ts), always exactly these
  * three keys, so the sweep after an apply can list what the stack created by the run's unit. A tag with any other key is refused.
  */
 const UNIT_TAG_KEYS: readonly string[] = ["alz-managed-by", "alz-unit", "alz-build"];
@@ -87,7 +88,7 @@ const DESCRIBE_CHANGE_SET: Shape = ["cloudformation", "describe-change-set", "--
 const GET_TEMPLATE: Shape = ["cloudformation", "get-template", "--change-set-name", CHANGE_SET_ARN, "--template-stage", "Original", ...JSON_OUTPUT];
 const EXECUTE: Shape = ["cloudformation", "execute-change-set", "--change-set-name", CHANGE_SET_ARN, ...NO_OUTPUT];
 const DESCRIBE_EVENTS: Shape = ["cloudformation", "describe-stack-events", "--stack-name", STACK, ...JSON_OUTPUT];
-/** The stack's resources, logical id to physical id (UNVERIFIED (9)): the blueprint's source, read once after an apply as DISCOVERY. */
+/** The stack's resources, logical id to physical id (VERIFIED (emulated) (9)): the blueprint's source, read once after an apply as DISCOVERY. */
 const DESCRIBE_RESOURCES: Shape = ["cloudformation", "describe-stack-resources", "--stack-name", STACK, ...JSON_OUTPUT];
 const CANCEL: Shape = ["cloudformation", "cancel-update-stack", "--stack-name", STACK, ...NO_OUTPUT];
 
@@ -108,7 +109,8 @@ const ENTRIES: readonly Entry[] = [
   ...[0, 1, 2].map((n): Entry => ({ who: "CHANGESET", shape: createShape(n, CLEANUP_TEMPLATE, UPDATE_ONLY), adapters: ["cleanup"] })),
   { who: "CHANGESET", shape: WAIT, adapters: ["preview", "cleanup"] },
   { who: "CHANGESET", shape: DESCRIBE_CHANGE_SET, adapters: ["preview", "apply", "cleanup"] },
-  // UNVERIFIED (3): the change set's own template, to prove it is the assembly's (or the removal template's).
+  // UNVERIFIED (3): the change set's own template, to prove it is the assembly's (or the removal template's). The real CLI takes these flags; moto
+  // ignores --change-set-name here, so what CloudFormation answers is still unverified.
   { who: "CHANGESET", shape: GET_TEMPLATE, adapters: ["preview", "apply", "cleanup"] },
   { who: "APPLY", shape: DESCRIBE_STACKS, adapters: ["apply", "cleanup"] },
   { who: "APPLY", shape: EXECUTE, adapters: ["apply", "cleanup"] },
@@ -329,7 +331,8 @@ function readAssembly(work: string, pinned: AwsTarget): Assembly {
 /**
  * The stack as CloudFormation describes it. `fingerprint` hashes everything a change set inherits from the stack and the
  * approvers cannot see: its id, status, last change, service role, notification topics and rollback configuration. The
- * seal records it and the apply requires it unchanged, twice (UNVERIFIED (3): the field names).
+ * seal records it and the apply requires it unchanged, twice (VERIFIED (emulated) (3): `StackId`, `StackStatus`, `EnableTerminationProtection`, `CreationTime`;
+ * UNVERIFIED: `LastUpdatedTime`, which moto never prints, `RoleARN` and `RollbackConfiguration`).
  */
 type StackView = { id: string; status: string; protection: boolean; touched: string; fingerprint: string; tags: { key: string; value: string }[] };
 
@@ -337,7 +340,7 @@ type StackView = { id: string; status: string; protection: boolean; touched: str
 function readStack(session: Session, who: Who, stack: string, region: string): StackView | undefined {
   const result = session.run(who, describeStacksArgv(stack, region));
   assertUsable(result);
-  // UNVERIFIED (4): that a missing stack is told apart by this text.
+  // VERIFIED (emulated) (4): a missing stack is told apart by this text (moto copies AWS's wording; the live G2 confirms it).
   if (!result.ok) return result.exitCode !== null && /\bdoes not exist\b/.test(result.stderr) ? undefined : stop("STACK_UNREADABLE");
   const document = parse(result.stdout, "STACK_UNREADABLE");
   const found = isRecord(document) && Array.isArray(document.Stacks) && isRecord(document.Stacks[0]) ? document.Stacks[0] : stop("STACK_UNREADABLE");
@@ -346,7 +349,7 @@ function readStack(session: Session, who: Who, stack: string, region: string): S
     touched: str(found.LastUpdatedTime ?? found.CreationTime, "STACK_UNREADABLE"),
   };
   const inherited = { roleArn: found.RoleARN ?? null, notificationArns: found.NotificationARNs ?? null, rollback: found.RollbackConfiguration ?? null };
-  // The stack's own tags (UNVERIFIED (10): `Tags[].Key/Value`), which a cleanup passes back unchanged so the deletion unit stays on the stack. Not part of the fingerprint: the seal binds them through the change set.
+  // The stack's own tags (VERIFIED (emulated) (10): `Tags[].Key/Value`), which a cleanup passes back unchanged so the deletion unit stays on the stack. Not part of the fingerprint: the seal binds them through the change set.
   const tags = (found.Tags === undefined ? [] : Array.isArray(found.Tags) ? found.Tags : stop("STACK_UNREADABLE"))
     .map((tag) => (isRecord(tag) && typeof tag.Key === "string" && typeof tag.Value === "string" ? { key: tag.Key, value: tag.Value } : stop("STACK_UNREADABLE")))
     .sort((a, b) => byText(a.key, b.key));
@@ -364,7 +367,7 @@ const ROLLED_BACK = new Set(["ROLLBACK_COMPLETE", "UPDATE_ROLLBACK_COMPLETE"]);
 type ChangeView = {
   id: string; stackId: string; stackName: string; status: string; execution: string; capabilities: string[];
   parametersSha256: string; changes: PlanChange[]; changesSha256: string;
-  /** The stack tags the change set carries (UNVERIFIED (8): `Tags[].Key/Value`), and their hash. */
+  /** The stack tags the change set carries (UNVERIFIED (8): `Tags[].Key/Value`; moto never echoes them), and their hash. */
   tags: { key: string; value: string }[]; tagsSha256: string;
 };
 
@@ -388,19 +391,26 @@ function changeOf(entry: unknown): PlanChange {
   };
 }
 
+/**
+ * A list CloudFormation left out of a describe-change-set answer. VERIFIED (emulated, AWS CLI 2.38.6): the CLI follows the change list's
+ * pages itself and prints every one of the paginator's other keys, `null` where the service sent none, so a change set made without
+ * capabilities prints `"Capabilities": null`. Only a missing key or that `null` is absent; any other value that is not a list stays unreadable.
+ */
+const absent = (value: unknown): boolean => value === undefined || value === null;
+
 /** The change set as CloudFormation describes it now, as the identity given (CHANGESET). The parameter hash covers keys and values; the values themselves are never kept. */
 function readChangeSet(session: Session, arn: string, region: string): ChangeView {
   const document = parse(session.ok("CHANGESET", describeChangeSetArgv(arn, region)), "CHANGE_SET_UNREADABLE");
   if (!isRecord(document)) return stop("CHANGE_SET_UNREADABLE");
-  // UNVERIFIED (5): the AWS CLI follows NextToken itself; a token left in the output means a page was not read, and a change list the approvers did not see whole is never sealed or run.
+  // VERIFIED (emulated) (5): the AWS CLI follows NextToken itself and prints none after a whole read; a token left in the output means a page was not read, and a change list the approvers did not see whole is never sealed or run.
   if (document.NextToken !== undefined) return stop("CHANGE_SET_TRUNCATED");
   if (!Array.isArray(document.Changes)) return stop("CHANGE_SET_UNREADABLE");
-  const capabilities = document.Capabilities === undefined ? [] : Array.isArray(document.Capabilities) && document.Capabilities.every((c) => typeof c === "string") ? [...document.Capabilities as string[]].sort() : stop("CHANGE_SET_UNREADABLE");
-  const parameters = (document.Parameters === undefined ? [] : Array.isArray(document.Parameters) ? document.Parameters : stop("CHANGE_SET_UNREADABLE"))
+  const capabilities = absent(document.Capabilities) ? [] : Array.isArray(document.Capabilities) && document.Capabilities.every((c) => typeof c === "string") ? [...document.Capabilities as string[]].sort() : stop("CHANGE_SET_UNREADABLE");
+  const parameters = (absent(document.Parameters) ? [] : Array.isArray(document.Parameters) ? document.Parameters : stop("CHANGE_SET_UNREADABLE"))
     .map((parameter) => (isRecord(parameter) ? { key: str(parameter.ParameterKey, "CHANGE_SET_UNREADABLE"), value: parameter.ParameterValue ?? null, resolved: parameter.ResolvedValue ?? null } : stop("CHANGE_SET_UNREADABLE")))
     .sort((a, b) => byText(a.key, b.key));
   const changes = document.Changes.map(changeOf).sort((a, b) => byText(a.address + "\0" + a.type, b.address + "\0" + b.type));
-  const tags = (document.Tags === undefined ? [] : Array.isArray(document.Tags) ? document.Tags : stop("CHANGE_SET_UNREADABLE"))
+  const tags = (absent(document.Tags) ? [] : Array.isArray(document.Tags) ? document.Tags : stop("CHANGE_SET_UNREADABLE"))
     .map((tag) => (isRecord(tag) ? { key: str(tag.Key, "CHANGE_SET_UNREADABLE"), value: str(tag.Value, "CHANGE_SET_UNREADABLE") } : stop("CHANGE_SET_UNREADABLE")))
     .sort((a, b) => byText(a.key, b.key));
   return {
@@ -448,7 +458,7 @@ function parseRecord(artifact: Buffer, pinned: AwsTarget): SealedRecord {
 
 const sameList = (a: readonly string[], b: readonly string[]): boolean => a.length === b.length && a.every((item, index) => item === b[index]);
 
-/** The hash of the template a change set holds (UNVERIFIED (3): `get-template` prints `TemplateBody`, an object for JSON), to compare with the assembly's. */
+/** The hash of the template a change set holds (UNVERIFIED (3): `get-template` prints `TemplateBody`, an object for JSON; moto cannot show it), to compare with the assembly's. */
 function changeSetTemplateSha256(session: Session, arn: string, region: string): string {
   const document = parse(session.ok("CHANGESET", getTemplateArgv(arn, region)), "CHANGE_SET_UNREADABLE");
   const body = isRecord(document) ? document.TemplateBody : undefined;
@@ -459,7 +469,8 @@ function changeSetTemplateSha256(session: Session, arn: string, region: string):
 /**
  * The change list of the sealed record, derived again from the change set CloudFormation holds now. An id, stack or hash
  * that is not the sealed one is ARTIFACT_TAMPERED; a change set that can no longer be executed (the stack changed after it
- * was made, or it was used) is PLAN_STALE (UNVERIFIED (4): that CloudFormation says so; the stack check in `rederive` does not depend on it).
+ * was made, or it was used) is PLAN_STALE (VERIFIED (emulated) (4) for a used change set, `EXECUTE_COMPLETE`; UNVERIFIED for `OBSOLETE`, which moto never
+ * reports: the stack check in `rederive` does not depend on it, and caught the emulated stale update).
  * Nothing is created, executed or deleted.
  */
 function describeSealed(session: Session, artifact: Buffer, pinned: AwsTarget): { record: SealedRecord; changes: PlanChange[] } {
@@ -509,7 +520,8 @@ function plan(input: EngineContext & { snapshotPath: string; engineVersion: stri
     if (!new RegExp(base + "changeSet/" + name + "/[0-9a-f-]{36}$").test(changeSetId) || !new RegExp(base + "stack/" + assembly.stackName + "/[0-9a-f-]{36}$").test(stackId)) stop("CHANGESET_NOT_IN_CONTRACT");
     const waited = session.run("CHANGESET", waitArgv(changeSetId, region));
     if (waited.exitCode !== 0) {
-      // UNVERIFIED (5): a change set with nothing to change, and one that could not be built, both end FAILED; the reason text tells them apart.
+      // VERIFIED (emulated) (5): the waiter exits non-zero on a FAILED change set, and a change set with nothing to change says so (in moto's copy
+      // of AWS's wording); UNVERIFIED: the reason text of one that could not be built.
       const failed = session.run("CHANGESET", describeChangeSetArgv(changeSetId, region));
       const reason = failed.exitCode === 0 ? parse(failed.stdout, "CHANGE_SET_UNREADABLE") : undefined;
       if (isRecord(reason) && reason.Status === "FAILED") {
@@ -526,7 +538,7 @@ function plan(input: EngineContext & { snapshotPath: string; engineVersion: stri
     if (changeSetTemplateSha256(session, changeSetId, region) !== assembly.canonicalSha256) stop("CHANGE_SET_TEMPLATE_MISMATCH");
     // CloudFormation reports exactly the unit's tags: no tag dropped, none added, none with another value.
     if (view.tags.map((tag) => "Key=" + tag.key + ",Value=" + tag.value).join("\n") !== [...tags].sort().join("\n")) stop("CHANGE_SET_TAGS_MISMATCH");
-    // The stack the change set was made against, as the apply must find it again (UNVERIFIED (4): that creating a change set does not change it).
+    // The stack the change set was made against, as the apply must find it again (VERIFIED (emulated) (4): creating a change set does not change it).
     const against = readStack(session, "DISCOVERY", assembly.stackName, region);
     if (against === undefined || against.id !== stackId) stop("CHANGE_SET_MISMATCH");
     const record: SealedRecord = {
@@ -664,7 +676,7 @@ function openApply(input: EngineRunInput): EngineApplyRun {
   let ran: Ran = { executeExit: null, stopped: false };
   const stackNow = (): StackView => readStack(session, "APPLY", pinned.backend, region) ?? stop("STACK_UNREADABLE");
 
-  /** What the sealed change set says about its execution now (UNVERIFIED (4): AVAILABLE before, EXECUTE_COMPLETE after); undefined when it cannot be read. */
+  /** What the sealed change set says about its execution now (VERIFIED (emulated) (4): AVAILABLE before, EXECUTE_COMPLETE after); undefined when it cannot be read. */
   function executionNow(): string | undefined {
     try { return readChangeSet(session, sealed!.changeSetId, region).execution; } catch { return undefined; }
   }
@@ -711,7 +723,7 @@ function openApply(input: EngineRunInput): EngineApplyRun {
     },
     recoveryFiles: () => [],
     removeSecrets: () => undefined,
-    // What the stack holds after the run, logical id to physical id, read once as DISCOVERY (UNVERIFIED (9)). The driver maps it to
+    // What the stack holds after the run, logical id to physical id, read once as DISCOVERY (VERIFIED (emulated) (9)). The driver maps it to
     // identifiers (src/observe/blueprint.ts) and drops it; a read that fails leaves no blueprint, and a later cleanup is refused for want of one.
     stateDocument(): StateDocument | undefined {
       try { return { source: "CLOUDFORMATION_STACK_RESOURCES", document: session.ok("DISCOVERY", resourcesArgv(pinned.backend, region)) }; } catch { return undefined; }
