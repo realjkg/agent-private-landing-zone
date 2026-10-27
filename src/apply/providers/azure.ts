@@ -29,8 +29,9 @@ function backendOk(value: string): boolean {
 /**
  * Anything that lets a child fall back to the az CLI, a managed identity, a
  * certificate or an Azure SDK default instead of the identity's own OIDC token
- * file, or to another cloud's credentials (`AWS_*`). The apply identities use `ARM_*` with `ARM_USE_OIDC` and
- * `ARM_OIDC_TOKEN_FILE` only.
+ * file, or to another cloud's credentials (`AWS_*`). The recommended setup is `ARM_*` with `ARM_USE_OIDC` and
+ * `ARM_OIDC_TOKEN_FILE`, but that is not enforced: a per-identity `ARM_CLIENT_SECRET` is still injectable on the shared
+ * Terraform profiles and is accepted as that identity's own explicit credential (docs/act-pilot-apply.md, Azure).
  */
 const FALLBACK_VARIABLE = /^(AZURE_.*|ARM_USE_(?!OIDC$).*|ARM_MSI_.*|ARM_CLIENT_CERTIFICATE.*|AWS_.*)$/;
 
@@ -91,12 +92,21 @@ const SAVED_SETTINGS = new Set(["storage_account_name", "container_name", "key",
  * (`client_secret`, `client_certificate*`, `use_msi`, `msi_endpoint`, `use_cli`, `use_aks_workload_identity`), another endpoint or
  * cloud (`endpoint`, `metadata_host`, `environment`, `use_dns_zone_endpoint`), the ARM lookups (`resource_group_name`,
  * `lookup_blob_endpoint`), `snapshot`, and any attribute a later backend version adds.
+ *
+ * The STATE_WRITE settings, when saved, are bound too: `tenant_id` and `subscription_id` must be the contract's, and `client_id`
+ * and `oidc_token_file_path` must have the strict shape `backendConfig` writes. Which client id and token path STATE_WRITE uses is
+ * not known here (this check sees the contract target, not the identity variables); identity checks and qualification bind those.
  */
 function savedBackendMatches(backend: Record<string, unknown>, target: AzureTarget): boolean {
   const config = isRecord(backend.config) ? backend.config : {};
   const parts = [config.storage_account_name, config.container_name, config.key];
+  const unsetOr = (name: string, ok: (value: string) => boolean): boolean =>
+    config[name] === undefined || config[name] === null || (typeof config[name] === "string" && ok(config[name] as string));
   return backend.type === "azurerm" && parts.every((part) => typeof part === "string") && parts.join("/") === target.backend &&
     config.use_azuread_auth === true && (config.use_oidc === undefined || config.use_oidc === null || config.use_oidc === true) &&
+    unsetOr("tenant_id", (v) => GUID.test(v) && v.toLowerCase() === target.tenantId.toLowerCase()) &&
+    unsetOr("subscription_id", (v) => GUID.test(v) && v.toLowerCase() === target.subscriptionId.toLowerCase()) &&
+    unsetOr("client_id", (v) => SAFE_VALUE.test(v)) && unsetOr("oidc_token_file_path", (v) => TOKEN_FILE.test(v)) &&
     Object.entries(config).every(([name, value]) => SAVED_SETTINGS.has(name) || value === null);
 }
 

@@ -105,6 +105,29 @@ describe("Azure state auth is Entra ID only: the backend init saved (the plan em
     }
   });
 
+  it("binds the contract's storage account, container and key one by one, with Entra ID on (so only the location differs)", () => {
+    for (const [label, change] of [
+      ["storage account", { storage_account_name: "attackerstore" }], ["container", { container_name: "other" }], ["key", { key: "prod.tfstate" }],
+      ["key prefix", { key: KEY.join("/") + "x" }], ["deeper key", { key: "a/" + KEY.join("/") }], ["account case", { storage_account_name: ACCOUNT.toUpperCase() }],
+    ] as const) {
+      assert.equal(AZURE.savedBackendMatches(SAVED(change), PINNED), false, label);
+    }
+  });
+
+  it("binds the saved STATE_WRITE tenant and subscription to the contract's, and the client id and token path to their strict shapes", () => {
+    const writer = { use_oidc: true, client_id: "statewrite-client-3", tenant_id: TENANT, subscription_id: DEV_TARGET.account, oidc_token_file_path: "/run/fixture/statewrite-oidc-token" };
+    assert.equal(AZURE.savedBackendMatches(SAVED(writer), PINNED), true, "control");
+    assert.equal(AZURE.savedBackendMatches(SAVED({ ...writer, tenant_id: TENANT.toUpperCase(), subscription_id: DEV_TARGET.account.toUpperCase() }), PINNED), true, "GUIDs compare case-insensitively");
+    const other = "99999999-9999-4999-8999-999999999999";
+    for (const [label, change] of [
+      ["another tenant", { tenant_id: other }], ["another subscription", { subscription_id: other }], ["a tenant name", { tenant_id: "contoso.onmicrosoft.com" }],
+      ["a numeric subscription", { subscription_id: 7 }], ["a quoted client id", { client_id: 'x" y' }], ["an empty client id", { client_id: "" }],
+      ["a relative token path", { oidc_token_file_path: "token" }], ["a token path with a newline", { oidc_token_file_path: "/run/t\nx" }],
+    ] as const) {
+      assert.equal(AZURE.savedBackendMatches(SAVED({ ...writer, ...change }), PINNED), false, label);
+    }
+  });
+
   it("still binds the contract's location and the azurerm type", () => {
     assert.equal(AZURE.savedBackendMatches(SAVED({ storage_account_name: "attackerstore" }), PINNED), false);
     assert.equal(AZURE.savedBackendMatches({ ...SAVED(), type: "s3" }, PINNED), false);

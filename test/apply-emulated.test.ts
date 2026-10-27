@@ -572,7 +572,7 @@ describe("emulated backend simulation: real Terraform, Azurite, built-in resourc
     assert.equal((result as { code: string }).code, "ARTIFACT_INVALID", JSON.stringify(result));
     noSecrets(result);
     assert.equal(emulatorHosts(), contacts, "neither the emulator's storage host nor its metadata host was contacted");
-    assert.ok(emulator.connects().slice(seen).includes("login.microsoftonline.com:443"), "the production backend went to Entra ID for its token");
+    assert.ok(emulator.connects().slice(seen).some((host) => host === "login.microsoftonline.com:443"), "the production backend went to Entra ID for its token");
     assert.deepEqual(await stateBlob(), before);
   });
 
