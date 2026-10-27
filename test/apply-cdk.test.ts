@@ -30,7 +30,7 @@ import { codeOf } from "../src/apply/engine.js";
 import { buildChildEnvironment } from "../src/tools/child-env.js";
 import { AWS_CFN_APPLY_PROFILE } from "../src/tools/profiles.js";
 import { EXECUTION_IDENTITIES } from "../src/tools/identity.js";
-import { SOURCE_COMMIT, NOW, POLICY, approvalFor as approval, contractJson, human, keys, pinPathOf, writePinnedContract, type Project } from "./helpers/apply-fixtures.js";
+import { requesterArgs, REQUESTER, SOURCE_COMMIT, NOW, POLICY, approvalFor as approval, contractJson, human, keys, pinPathOf, writePinnedContract, type Project } from "./helpers/apply-fixtures.js";
 import {
   AWS_CLI_VERSION, CDK_CANARIES, FAKE_AWS_SHA256, STACK, STDERR_CANARY, awsCallsOf, behaveAws, cdkContractJson, cdkIdentityEnv, cdkRoleArn, cdkTargetOf,
   forgeCdkQualification, installFakeAws, patchAws, subcommandsOf, writeAssembly, type AssemblyOptions, type AwsBehavior, type AwsCall,
@@ -90,7 +90,7 @@ test.before(async () => {
 async function seal(w: World, environment: ApplyEnvironment, options: AssemblyOptions = {}, p: Project = writeAssembly(fresh("assembly"), cdkTargetOf(environment), options)) {
   const target = cdkTargetOf(environment);
   const result = await sealPreview({
-    invocation: human(target), environment, target, manifest: p.manifest, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved,
+    invocation: human(target), environment, target, manifest: p.manifest, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved, requester: REQUESTER,
   }, forEnv(w, environment));
   assert.ok(result.ok, JSON.stringify(result));
   const loaded = await loadSealedPlan(result.path);
@@ -103,7 +103,7 @@ async function sealRefused(w: World, environment: ApplyEnvironment, options: Ass
   const target = cdkTargetOf(environment);
   const p = writeAssembly(fresh("assembly"), target, options);
   const result = await sealPreview({
-    invocation: human(target), environment, target, manifest: p.manifest, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved,
+    invocation: human(target), environment, target, manifest: p.manifest, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved, requester: REQUESTER,
   }, deps);
   assert.equal(result.ok, false, "the seal was expected to be refused");
   return result as Extract<typeof result, { ok: false }>;
@@ -976,7 +976,7 @@ test("./alz apply works for the engine the pinned contract names, with no engine
   const attest = "SEPARATED " + cdkRoleArn("CHANGESET", "DEV") + " " + cdkRoleArn("APPLY", "DEV");
 
   // Nothing is qualified yet, so a seal is refused; qualifying asks for the target and the attestation, never for the project code phrase.
-  assert.equal((await cli(["seal", "--request", request, "--manifest", manifest], [targetString(target)])).code, 2);
+  assert.equal((await cli(["seal", "--request", request, "--manifest", manifest, ...requesterArgs()], [targetString(target)])).code, 2);
   const qualified = await cli(["qualify", "--request", request, "--manifest", manifest], [targetString(target), attest]);
   assert.equal(qualified.code, 0, qualified.err);
   assert.match(qualified.out, /THIS RUNS NO PROJECT CODE/);
@@ -985,7 +985,7 @@ test("./alz apply works for the engine the pinned contract names, with no engine
   assert.deepEqual((await loadQualificationRecords(AWS, vault)).map((r) => r.engine), ["CDK", "CDK"]);
   assert.deepEqual([...new Set(subcommandsOf(calls()))].sort(), ["--version", "describe-stacks"], "qualifying created nothing");
 
-  const sealed = await cli(["seal", "--request", request, "--manifest", manifest], [targetString(target)]);
+  const sealed = await cli(["seal", "--request", request, "--manifest", manifest, ...requesterArgs()], [targetString(target)]);
   assert.equal(sealed.code, 0, sealed.err);
   assert.match(sealed.out, /SEAL A CHANGE SET/);
   const summary = JSON.parse(sealed.out.slice(sealed.out.indexOf("{"))) as { artifactSha256: string; sealedPlanPath: string; reviewBundlePath: string; changes: { address: string; action: string }[] };

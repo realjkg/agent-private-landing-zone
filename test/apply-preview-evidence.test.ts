@@ -18,6 +18,7 @@ import { removeTree } from "../src/teardown/driver/cleanup.js";
 import {
   CANARIES, NOW, POLICY, SOURCE_COMMIT, behave as behaveIn, callsOf, contractJson, identityEnv, installFakeTerraform, pinPathOf, targetOf, testFixtureForgeQualificationEvidence,
   writePinnedContract, writeProject, type Behavior, type Project,
+  requesterArgs,
 } from "./helpers/apply-fixtures.js";
 
 // The product-owned producer of the `preview:terraform-azure-brownfield` release gate's evidence (src/apply/preview-evidence.ts,
@@ -86,7 +87,7 @@ async function seal(w: World, behavior: Behavior = BROWNFIELD): Promise<Sealed> 
   const target = targetOf("DEV");
   const project = writeProject(fresh("project"), target);
   const request = json({ environment: "DEV", target, projectRoot: project.projectRoot, policyVersion: POLICY, resolved: project.resolved }, "request");
-  const run = await cli(w, ["seal", "--request", request, "--manifest", json(project.manifest, "manifest")], [targetString(target), "RUN PROJECT CODE"]);
+  const run = await cli(w, ["seal", "--request", request, "--manifest", json(project.manifest, "manifest"), ...requesterArgs()], [targetString(target), "RUN PROJECT CODE"]);
   assert.equal(run.code, 0, run.stderr);
   const { sealedPlanPath } = JSON.parse(run.stdout) as { sealedPlanPath: string };
   const loaded = await loadSealedPlan(sealedPlanPath);

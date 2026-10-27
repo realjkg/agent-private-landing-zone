@@ -125,6 +125,8 @@ export type ReviewSummary = {
   shortId: string;
   /** The product source commit that made the preview; approvers sign it with the change. */
   sourceCommit: string;
+  /** Who requested the change, by allowlist id: bound into the change ID every approver signs, and verified by the approver's own command. */
+  requestedBy: string;
   createdAt: string;
   counts: ChangeCounts;
   changes: PlanChange[];
@@ -135,14 +137,14 @@ export type ReviewSummary = {
   unit: { unitId: string; tags: Record<string, string>; untagged: string[] } | null;
 };
 
-type Sealed = { environment: ApplyEnvironment; target: ReviewSummary["target"]; artifactSha256: string; sourceCommit: string; createdAt: string; changes: PlanChange[];
+type Sealed = { environment: ApplyEnvironment; target: ReviewSummary["target"]; artifactSha256: string; sourceCommit: string; requesterId: string; createdAt: string; changes: PlanChange[];
   engineVersion: string; provenance: PreviewProvenance; unit: SealedPlan["unit"] };
 const previewOf = ({ engineVersion, provenance: { engineBinarySha256, qualification } }: Sealed): ReviewSummary["preview"] => ({
   engineVersion: stripInvisible(engineVersion), programId: engineBinarySha256.slice(0, 12), qualified: qualification.state === "QUALIFIED",
   ...(qualification.state === "QUALIFIED" ? { qualifiedAt: qualification.qualifiedAt } : { reason: stripInvisible(qualification.reason) }),
 });
 const summaryOf = (bundle: Sealed): ReviewSummary => ({
-  environment: bundle.environment, target: { ...bundle.target }, shortId: bundle.artifactSha256.slice(0, 12), sourceCommit: bundle.sourceCommit, createdAt: bundle.createdAt,
+  environment: bundle.environment, target: { ...bundle.target }, shortId: bundle.artifactSha256.slice(0, 12), sourceCommit: bundle.sourceCommit, requestedBy: stripInvisible(bundle.requesterId), createdAt: bundle.createdAt,
   counts: countChanges(bundle.changes),
   changes: bundle.changes.slice(0, MAX_LISTED_CHANGES).map((change) => ({ ...change, address: stripInvisible(change.address), type: stripInvisible(change.type) })),
   changesOmitted: Math.max(0, bundle.changes.length - MAX_LISTED_CHANGES),
@@ -294,10 +296,10 @@ export function createPilotRouter(options: PilotRouterOptions): PilotRouter {
       // The page shows these locations for the person to note, so they are absolute, whatever directory the command used.
       if (typeof data.sealedPlanPath === "string") data.sealedPlanPath = absolute(data.sealedPlanPath);
       if (typeof data.reviewBundlePath === "string") data.reviewBundlePath = absolute(data.reviewBundlePath);
-      if (data.environment && data.target && typeof data.artifactSha256 === "string" && typeof data.sourceCommit === "string" && Array.isArray(data.changes) &&
+      if (data.environment && data.target && typeof data.artifactSha256 === "string" && typeof data.sourceCommit === "string" && typeof data.requesterId === "string" && Array.isArray(data.changes) &&
         typeof data.engineVersion === "string" && data.provenance && (data.unit === null || (typeof data.unit === "object" && data.unit !== null))) {
         result.summary = summaryOf({
-          environment: data.environment, target: data.target, artifactSha256: data.artifactSha256, sourceCommit: data.sourceCommit, createdAt: "", changes: data.changes,
+          environment: data.environment, target: data.target, artifactSha256: data.artifactSha256, sourceCommit: data.sourceCommit, requesterId: data.requesterId, createdAt: "", changes: data.changes,
           engineVersion: data.engineVersion, provenance: data.provenance, unit: data.unit as SealedPlan["unit"],
         });
       }
@@ -487,13 +489,18 @@ export function createPilotRouter(options: PilotRouterOptions): PilotRouter {
         return;
       }
       case "/seal": {
-        const input = fields(body, ["environment", "requestPath", "manifestPath"]);
+        // The requester signs the sealed request with their own allowlisted key: a name and a key file on this machine, as for an approval.
+        const input = fields(body, ["environment", "requestPath", "manifestPath", "requesterId", "keyPath"]);
         requirePath();
         const environment = environmentOf(input.environment);
+        if (typeof input.requesterId !== "string" || !SAFE_APPROVER.test(input.requesterId)) {
+          throw new Bad(400, "PILOT_REQUEST_INVALID", "Your requester name may use letters, digits, dots, dashes and @ only.");
+        }
         const requestPath = absolute(plainPath(input.requestPath, "The request file"));
         const manifestPath = absolute(plainPath(input.manifestPath, "The manifest file"));
+        const keyPath = absolute(plainPath(input.keyPath, "Your key file"));
         checkRequestEnvironment(requestPath, environment);
-        start("seal", ["seal", "--request", requestPath, "--manifest", manifestPath]);
+        start("seal", ["seal", "--request", requestPath, "--manifest", manifestPath, "--requester", input.requesterId, "--key", keyPath]);
         send(res, context.headers, 202, stateOf());
         return;
       }
