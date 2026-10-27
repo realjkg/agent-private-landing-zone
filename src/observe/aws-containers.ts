@@ -5,7 +5,8 @@
  * ARNs; a template URL, a Serverless Application Repository application or a Service Catalog product's template is not in
  * the state at all. So the rule is by type, one anchored prefix check per family and nothing else, and the whole class is
  * CONTAINS_OTHERS: kept by the pilot owner, never proposed, never deleted directly or as a dependent, whoever created it.
- * The same table names the types whose attributes the blueprint scans for an identity's ARN (src/observe/blueprint.ts).
+ * The same table names the types whose attributes the blueprint scans for an identity's ARN (./blueprint.ts). It lives in the observe layer, below src/apply, so both the
+ * blueprint and the cleanup classifier (src/apply/cleanup-proposal.ts) read it without widening the apply boundary (test/apply-boundary.test.ts).
  *
  * This is the one list. A family is a Terraform `aws_` type, the Cloud Control provider's `awscc_` type and the
  * CloudFormation type of the same object; a prefix that is a namespace (`aws_proton_`) keeps every type in it, the

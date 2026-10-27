@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { AWS_CONTAINER_PREFIXES } from "../src/apply/aws-containers.js";
+import { AWS_CONTAINER_PREFIXES } from "../src/observe/aws-containers.js";
 import { SCAN_DEPTH, blueprintFromTerraformState } from "../src/observe/blueprint.js";
 import { cleanupDisposition, retentionProblems } from "../src/observe/disposition.js";
 import { CLOUD_CONTROL_TYPES, observeBlueprint, type AwsCli } from "../src/observe/verify.js";

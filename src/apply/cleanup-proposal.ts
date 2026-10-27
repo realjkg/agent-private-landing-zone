@@ -9,7 +9,7 @@ import { isResourceAddress } from "./terraform.js";
 import type { AwsTarget } from "./providers/aws.js";
 import type { AzureTarget } from "./providers/azure.js";
 import { armPathSafe, isArmGroupId, isArmRegistrationId, isArmScopeId, parseArmId, type ArmType } from "../observe/azure-rest.js";
-import { awsContainerFamilyOf } from "./aws-containers.js";
+import { awsContainerFamilyOf } from "../observe/aws-containers.js";
 
 /**
  * The cleanup proposal (docs/act-pilot-plan.md, "Cleanup of pilot-created resources"): the reviewable, hash-identified list
@@ -287,11 +287,11 @@ export const isAwsIdentityType = (type: string): boolean => AWS_IDENTITY_PREFIXE
 const IAM_ARN = /^arn:aws(?:-[a-z]+)*:iam::/;
 /**
  * AWS stack containers (reviews 6412896598 B1 and 6432262110 B1, owner decision 6431744115): anything whose deletion tears
- * down a CloudFormation stack or a provisioned product, by the one family table in ./aws-containers.ts (`isAwsContainerType`).
+ * down a CloudFormation stack or a provisioned product, by the one family table in src/observe/aws-containers.ts (`isAwsContainerType`).
  * CONTAINS_OTHERS: never deleted, directly or as a dependent, whoever created it; the CDK engine refuses a nested stack at
  * the seal, and one that appears in the stack anyway is never proposed.
  */
-export { isAwsContainerType } from "./aws-containers.js";
+export { isAwsContainerType } from "../observe/aws-containers.js";
 
 /** The bootstrap the pilot runs on and the identities of the account, which a cleanup never touches: the state backend, every stack container and everything in the identity service. */
 function protectionOf(entry: { type: string; id: string | null; arn: string | null; holdsIdentityArn?: true }, contract: PilotContract, backendGroups: Set<string>): AzureProtection | undefined {
