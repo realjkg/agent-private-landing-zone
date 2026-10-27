@@ -4,8 +4,8 @@ import { tmpdir, userInfo } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { REQUESTER_MAY_APPROVE, requesterPublicKey, signApproval, verifyRequestSignature } from "../apply/approval.js";
-import { buildCleanupProposal, proposalLines, verifyCleanupProposal, type CleanupProposal } from "../apply/cleanup-proposal.js";
+import { REQUESTER_MAY_APPROVE, approverIsRequester, requesterKeyRefusal, requesterPublicKey, signApproval, verifyRequestSignature } from "../apply/approval.js";
+import { buildCleanupProposal, proposalLines, signCleanupProposal, verifyCleanupProposal, type CleanupProposal } from "../apply/cleanup-proposal.js";
 import { buildLifecycleReport, lifecycleReportProblems } from "../apply/lifecycle-report.js";
 import { loadRunRecords, observeRun, verifyProposalLeftovers } from "../apply/observe.js";
 import { readLeftoversRecord, readObservationRecord } from "../apply/run-records.js";
@@ -66,7 +66,7 @@ const APPLY_USAGE = [
   "  ./alz apply record-recovery --sealed INTERRUPTED_SEALED_PLAN --resumed RESUMED_SEALED_PLAN --target-hardware-id HOST",
   "  ./alz apply preflight --environment DEV|QA|PROD [--contract CONTRACT.json]",
   "  ./alz apply observe --sealed SEALED_PLAN",
-  "  ./alz apply propose-cleanup --sealed SEALED_PLAN",
+  "  ./alz apply propose-cleanup --sealed SEALED_PLAN --requester ID --key REQUESTER_KEY.pem",
   "  ./alz apply cleanup --proposal PROPOSAL.json --request REQUEST.json --manifest MANIFEST.json --sealed SEALED_PLAN --approval APPROVAL.json [--approval APPROVAL.json ...]",
   "  ./alz apply verify-cleanup --proposal PROPOSAL.json",
   "  ./alz apply preview-evidence --sealed SEALED_PLAN --gate preview:terraform-azure-brownfield --target-hardware-id HOST",
@@ -135,7 +135,7 @@ const SUBCOMMANDS: Readonly<Record<string, Flags>> = {
   "record-live": { single: ["sealed"] },
   "record-recovery": { single: ["sealed", "resumed", "target-hardware-id"] },
   observe: { single: ["sealed"] },
-  "propose-cleanup": { single: ["sealed"] },
+  "propose-cleanup": { single: ["sealed", "requester", "key"] },
   cleanup: { single: ["proposal", "request", "manifest", "sealed"], repeated: ["approval"] },
   "verify-cleanup": { single: ["proposal"] },
   report: { single: ["sealed"], optional: ["proposal"] },
@@ -473,7 +473,7 @@ const approveCommand: Command = async (flags, terminal, deps, out) => {
   // forbids a requester-approver (PROD) this approver's id or key must not be the requester's. The driver checks both again.
   const requested = verifyRequestSignature({ request: bundle.request, artifactSha256: bundle.artifactSha256, environment: bundle.environment, requesterId: bundle.requesterId, contract });
   if (!requested.ok) return blocked(requested, out);
-  if (!REQUESTER_MAY_APPROVE[bundle.environment] && (approverId.toLowerCase() === requested.requesterId.toLowerCase() || requesterPublicKey(privateKeyPem) === requested.publicKeyCanonical)) {
+  if (approverIsRequester(bundle.environment, approverId, requesterPublicKey(privateKeyPem), requested)) {
     return blocked({ ok: false, code: "APPROVER_IS_REQUESTER", message: "You requested this change (" + requested.requesterId + "), so you cannot approve it in " + bundle.environment + ": the requester and the approvers must be distinct people. Nothing was signed." }, out);
   }
 
@@ -506,12 +506,22 @@ async function approveCleanup(raw: unknown, approverId: string, privateKeyPem: s
   const pinned = targetForEnvironment(contract, proposal.environment, proposal.target);
   if (!pinned.ok) return blocked(pinned, out);
   if (proposal.contractSha256 !== pilotContractSha256(contract)) return blocked({ ok: false, code: "PROPOSAL_INVALID", message: "The proposal was made under another pilot contract." }, out);
+  // The cleanup requester's signature verifies against the allowlist before the approver is shown anything, and in PROD this approver's id or key must
+  // not be the requester's: the same rule and the same check as an apply (owner decision 6440801434, item 1). The driver checks both again.
+  const requested = verifyRequestSignature({
+    request: proposal.request, artifactSha256: proposal.proposalSha256, environment: proposal.environment, requesterId: proposal.requesterId, contract, subject: "CLEANUP_REQUEST",
+  });
+  if (!requested.ok) return blocked(requested, out);
+  if (approverIsRequester(proposal.environment, approverId, requesterPublicKey(privateKeyPem), requested)) {
+    return blocked({ ok: false, code: "APPROVER_IS_REQUESTER", message: "You requested this cleanup (" + requested.requesterId + "), so you cannot approve it in " + proposal.environment + ": the requester and the approvers must be distinct people. Nothing was signed." }, out);
+  }
   const now = (deps.now ?? (() => new Date()))();
   const expiresAt = new Date(now.getTime() + contract.maxApprovalAgeMinutes * 60_000);
   const phrase = "APPROVE CLEANUP " + proposal.environment + " " + proposal.proposalSha256.slice(0, 12);
   terminal.write([
     "", "APPROVE A CLEANUP OF EXACTLY THESE RESOURCES IN " + proposal.environment + " (your signature, valid until " + expiresAt.toISOString() + ", usable once, and never valid for an apply)",
-    "  target          " + targetString(proposal.target), "  approver        " + approverId, "  product commit  " + proposal.sourceCommit, ...proposalLines(proposal), "",
+    "  target          " + targetString(proposal.target), "  approver        " + approverId, "  product commit  " + proposal.sourceCommit,
+    "  requester       " + requested.requesterId + " (signature verified against the allowlist)", ...proposalLines(proposal), "",
     "The proposal's hash was recomputed here and matches. Type " + phrase + " to sign (anything else stops here):", "",
   ].join("\n"));
   await confirm(terminal, phrase, "approve> ", "APPLY_CONFIRMATION_MISMATCH", "APPROVE_CLEANUP");
@@ -547,28 +557,38 @@ const observeCommand: Command = async (flags, _terminal, deps, out) => {
 const proposalPath = (deps: ApplyCliDeps, proposal: CleanupProposal): string =>
   join(deps.proposalsDir ?? join(repoPaths().root, ".runs", "apply", "cleanup"), proposal.proposalSha256.slice(0, 12) + ".cleanup-proposal.json");
 
-/** Builds the reviewable proposal from the run's records and writes it. Runs no engine and asks no phrase: a proposal authorizes nothing by itself. */
+/**
+ * Builds the reviewable proposal from the run's records, has its requester sign it, and writes it. Runs no engine and asks no
+ * phrase: a proposal authorizes nothing by itself. The requester (owner decision 6440801434, item 1) is an allowlisted id with
+ * that entry's own key, checked before anything is built or written; their id is hashed into the proposal every approver signs.
+ */
 const proposeCleanupCommand: Command = async (flags, _terminal, deps, out) => {
+  const requesterId = flags.requester[0];
+  if (!SAFE_OPERATOR.test(requesterId)) fail("APPLY_INPUT_INVALID", "--requester is not a usable requester id");
+  const requesterKey = readApproverKey(flags.key[0]);
   const opened = await openSealed(flags.sealed[0]);
   if (!("sealed" in opened)) return blocked(opened, out);
   const { sealed } = opened;
   if (sealed.channel !== (deps.channel ?? "CLI")) return blocked({ ok: false, code: "CHANNEL_MISMATCH", message: channelMismatchMessage(sealed.channel) }, out);
   const contract = contractFor(deps);
   if ("reason" in contract) return blocked(contractRefusal(contract), out);
+  const keyRefusal = requesterKeyRefusal(contract, requesterId, requesterKey);
+  if (keyRefusal) return blocked({ ...keyRefusal, message: keyRefusal.message + " No proposal was written." }, out);
   const records = await loadRunRecords(sealed.artifactSha256, deps.evidenceDir ?? repoPaths().evidence);
   if (!records.ok) return blocked(records, out);
   const built = buildCleanupProposal({
     applyEvidence: records.applyEvidence, applyEvidenceSha256: records.applyEvidenceSha256, blueprint: records.blueprint, blueprintSha256: records.blueprintSha256,
     observation: records.observation, observationSha256: records.observationSha256, changes: sealed.changes, channel: deps.channel ?? "CLI", contract,
-    engineVersion: sealed.engineVersion, env: deps.env ?? process.env, now: (deps.now ?? (() => new Date()))(),
+    engineVersion: sealed.engineVersion, env: deps.env ?? process.env, now: (deps.now ?? (() => new Date()))(), requesterId,
   });
   if (!built.ok) return blocked(built, out);
-  const { proposal } = built;
+  const proposal = signCleanupProposal(built.proposal, requesterKey);
   const path = proposalPath(deps, proposal);
   mkdirSync(join(path, ".."), { recursive: true, mode: 0o700 });
   writeFileSync(path, JSON.stringify(proposal, null, 2) + "\n", { mode: 0o600 });
   out.say(["", "CLEANUP PROPOSED (nothing is deleted until it is approved and run)", ...proposalLines(proposal), "", "Saved (private to this account): " + path,
-    "Next: each approver runs ./alz apply approve --bundle " + path + " --key THEIR_KEY.pem --approver THEIR_ID; then ./alz apply cleanup --proposal " + path + " ...", ""].join("\n"));
+    "Next: each approver runs ./alz apply approve --bundle " + path + " --key THEIR_KEY.pem --approver THEIR_ID" +
+      (REQUESTER_MAY_APPROVE[proposal.environment] === true ? "" : " (" + proposal.authorization.requiredApprovals + " distinct approvers, none of them the requester " + proposal.requesterId + ")") + "; then ./alz apply cleanup --proposal " + path + " ...", ""].join("\n"));
   out.report({ code: "CLEANUP_PROPOSED", message: "Proposed the deletion of " + proposal.deletes.length + " resource(s); " + proposal.excluded.length + " kept.", data: { path, proposal } });
   return EXIT.PASS;
 };

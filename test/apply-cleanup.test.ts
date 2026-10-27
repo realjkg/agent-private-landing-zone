@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { signApproval } from "../src/apply/approval.js";
-import { MATERIAL_RISKS, PROTECTION_REASONS, buildCleanupProposal, computeProposalSha256, isAwsIdentityType, proposalProblems, protectedDeletionIn, verifyCleanupProposal, type CleanupProposal } from "../src/apply/cleanup-proposal.js";
+import { MATERIAL_RISKS, PROTECTION_REASONS, buildCleanupProposal, computeProposalSha256, isAwsIdentityType, signCleanupProposal, proposalProblems, protectedDeletionIn, verifyCleanupProposal, type CleanupProposal } from "../src/apply/cleanup-proposal.js";
 import { CLEANUP_SUFFIX, SUFFIX, loadPilotContract, pilotContractSha256 } from "../src/apply/contract.js";
 import { pilotUnitOf } from "../src/apply/unit.js";
 import { cleanupScopeProblem, runApply, runCleanup, sealPreview, type ApplyDeps, type ApplyRequest, type CleanupRequest } from "../src/apply/driver.js";
@@ -35,7 +35,7 @@ import {
   AWS_DEV_TARGET, AWS_REGION, CANARIES, NOW, POLICY, SOURCE_COMMIT, STATE_CANARY, VALUE_CANARY, awsContractJson, awsIdentityEnv, awsReadCallsOf, awsRoleArn, awsTargetOf,
   approvalFor, behave as behaveIn, behaveAwsReads, callsOf, human, installFakeAwsReads, installFakeTerraform, keys, pinPathOf, stateResource, testFixtureForgeQualificationEvidence,
   writePinnedContract, writeProject, type AwsReadBehavior, type Behavior,
-  REQUESTER,
+  REQUESTER, reHashedProposal,
 } from "./helpers/apply-fixtures.js";
 
 // The AWS Terraform observe and cleanup steps (docs/observe-and-cleanup.md, docs/act-pilot-plan.md "Cleanup of pilot-created
@@ -152,11 +152,11 @@ async function proposed(w: World) {
   const records = await loadRunRecords(run.s.sealed.artifactSha256, w.dirs.evidence);
   assert.ok(records.ok, JSON.stringify(records));
   const contract = JSON.parse(JSON.stringify(awsContractJson(KILL))) as never;
-  const built = buildCleanupProposal({
+  const built = buildCleanupProposal({ requesterId: REQUESTER.requesterId,
     ...records, changes: run.s.sealed.changes, channel: "CLI", contract: { ...(contract as object), enabled: true } as never, engineVersion: run.s.sealed.engineVersion, env: w.deps.env!, now: new Date(NOW.getTime() + 120_000),
   });
   assert.ok(built.ok, JSON.stringify(built));
-  return { ...run, records, proposal: built.proposal };
+  return { ...run, records, proposal: signCleanupProposal(built.proposal, REQUESTER.privateKeyPem) };
 }
 const cleanupApproval = (proposal: CleanupProposal, who: keyof typeof keys, over: Partial<SignedApproval["statement"]> = {}): SignedApproval => signApproval({
   schemaVersion: 1, artifactSha256: proposal.proposalSha256, environment: proposal.environment, target: proposal.target, approverId: who,
@@ -255,7 +255,7 @@ test("observe refuses a run with no apply evidence, a blueprint that is not this
   assert.equal(empty.record.verdict, "FAILED", "the plan created resources the state never recorded: a failed observation, never a pass");
   assert.deepEqual(empty.record.missingFromState, ["aws_cloudwatch_log_group.canary", "aws_s3_bucket.logs", "aws_s3_bucket.state", "aws_s3_bucket_versioning.logs"]);
   assert.deepEqual(awsReadCallsOf(awsToolDir).map((r) => r.args[0]), ["resourcegroupstaggingapi"], "no resource to read; the unit listing still runs, so an orphan of this unit would be found");
-  refused(await (async () => { const records = await loadRunRecords(s2.sealed.artifactSha256, other.dirs.evidence); assert.ok(records.ok); return buildCleanupProposal({ ...records, changes: s2.sealed.changes, channel: "CLI",
+  refused(await (async () => { const records = await loadRunRecords(s2.sealed.artifactSha256, other.dirs.evidence); assert.ok(records.ok); return buildCleanupProposal({ requesterId: REQUESTER.requesterId, ...records, changes: s2.sealed.changes, channel: "CLI",
     contract: { ...awsContractJson(KILL), enabled: true } as never, engineVersion: s2.sealed.engineVersion, env: other.deps.env!, now: new Date(NOW.getTime() + 120_000) }); })(), "OWNERSHIP_AMBIGUOUS");
 });
 
@@ -315,7 +315,7 @@ test("a proposal is refused on ambiguous ownership (a partial apply, a planned r
   const records = await loadRunRecords(run.s.sealed.artifactSha256, w.dirs.evidence);
   assert.ok(records.ok);
   const contract = { ...awsContractJson(KILL), enabled: true } as never;
-  const build = (over: Partial<Parameters<typeof buildCleanupProposal>[0]>) => buildCleanupProposal({
+  const build = (over: Partial<Parameters<typeof buildCleanupProposal>[0]>) => buildCleanupProposal({ requesterId: REQUESTER.requesterId,
     ...records, changes: run.s.sealed.changes, channel: "CLI", contract, engineVersion: run.s.sealed.engineVersion, env: w.deps.env!, now: new Date(NOW.getTime() + 120_000), ...over,
   });
   refused(build({ applyEvidence: { ...records.applyEvidence, outcome: "PARTIAL_REQUIRES_REVIEW" } }), "OWNERSHIP_AMBIGUOUS");
@@ -414,8 +414,8 @@ test("cleanup refuses, consuming nothing: a wrong target, an apply approval, an 
   refused(await cleanup(w, run, [cleanupApproval(run.proposal, "mallory")]), "APPROVER_NOT_ALLOWED");
   refused(await cleanup(w, run, [cleanupApproval(run.proposal, "alice", { target: awsTargetOf("QA") })]), "APPROVAL_MISBOUND");
   refused(await cleanup(w, run, undefined, { proposal: { ...run.proposal, deletes: [...run.proposal.deletes, { address: "aws_sqs_queue.preexisting", type: "aws_sqs_queue", identifier: OLD_QUEUE, ownership: "RUN_CREATED", observed: "VERIFIED" }] } }), "PROPOSAL_INVALID");
-  refused(await cleanup(w, run, undefined, { proposal: { ...run.proposal, channel: "UI", proposalSha256: computeProposalSha256({ ...run.proposal, channel: "UI" }) } }), "CHANNEL_MISMATCH");
-  refused(await cleanup(w, run, undefined, { proposal: { ...run.proposal, applyEvidenceSha256: "d".repeat(64), proposalSha256: computeProposalSha256({ ...run.proposal, applyEvidenceSha256: "d".repeat(64) }) } }), "RUN_RECORD_MISSING");
+  refused(await cleanup(w, run, undefined, { proposal: reHashedProposal({ ...run.proposal, channel: "UI" }) }), "CHANNEL_MISMATCH");
+  refused(await cleanup(w, run, undefined, { proposal: reHashedProposal({ ...run.proposal, applyEvidenceSha256: "d".repeat(64) }) }), "RUN_RECORD_MISSING");
   refused(await runCleanup({ invocation: human(run.s.sealed.target), environment: "DEV", target: run.s.sealed.target, proposal: run.proposal, sealedPlan: run.s.loaded, manifest: run.s.project.manifest, projectRoot: run.s.project.projectRoot, approvals: [cleanupApproval(run.proposal, "alice")] },
     { ...w.deps, sourceCommit: "0".repeat(40) }), "SOURCE_CHANGED");
   nothingRan();
@@ -437,7 +437,7 @@ test("a forged, re-hashed proposal never executes: the deletion list is derived 
   const honest = run.proposal;
   const rehashed = (edit: Partial<CleanupProposal>): CleanupProposal => {
     const fields = { ...honest, ...edit, deletes: [...(edit.deletes ?? honest.deletes)].sort((a, b) => (a.address < b.address ? -1 : 1)) };
-    return { ...fields, proposalSha256: computeProposalSha256(fields) };
+    return reHashedProposal(fields);
   };
   const row = (address: string, type: string, identifier: string) => ({ address, type, identifier, ownership: "RUN_CREATED" as const, observed: "VERIFIED" as const });
   const without = (address: string) => honest.excluded.filter((x) => x.address !== address);
@@ -646,7 +646,7 @@ test("a run sealed without a unit (an engine with no tag reader) stays KNOWN_ADD
   assert.deepEqual(failed.record.unexpected, ["arn:aws:sqs:us-east-1:111111111111:orphan-of-this-unit"]);
   const records = await loadRunRecords(s.sealed.artifactSha256, w.dirs.evidence);
   assert.ok(records.ok);
-  refused(buildCleanupProposal({ ...records, changes: s.sealed.changes, channel: "CLI", contract: { ...(awsContractJson(KILL) as object), enabled: true } as never, engineVersion: s.sealed.engineVersion, env: w.deps.env!, now: new Date(NOW.getTime() + 120_000) }), "OBSERVATION_INCONCLUSIVE");
+  refused(buildCleanupProposal({ requesterId: REQUESTER.requesterId, ...records, changes: s.sealed.changes, channel: "CLI", contract: { ...(awsContractJson(KILL) as object), enabled: true } as never, engineVersion: s.sealed.engineVersion, env: w.deps.env!, now: new Date(NOW.getTime() + 120_000) }), "OBSERVATION_INCONCLUSIVE");
 });
 
 test("leftovers are COMPLETE only with a complete deletion-unit sweep, and a check that never ran proves nothing: an already-absent setting is UNKNOWN unless its parent is confirmed gone", async () => {
@@ -854,7 +854,7 @@ for (const { type, name, attributes } of CONTAINER_RUNS) {
     assert.equal(applyCalls().length, 0);
     // A forged proposal that lists the container never executes: the list is derived again and the type is a container.
     const fields = { ...run.proposal, deletes: [...run.proposal.deletes, { address, type, identifier: kept!.identifier, ownership: "RUN_CREATED" as const, observed: "UNVERIFIABLE" as const }].sort((a, b) => (a.address < b.address ? -1 : 1)), excluded: run.proposal.excluded.filter((x) => x.address !== address) };
-    const forged = { ...fields, proposalSha256: computeProposalSha256(fields) };
+    const forged = reHashedProposal(fields);
     assert.ok(verifyCleanupProposal(forged).ok);
     behave({ showResources: creates, stateResources: state });
     refused(await cleanup(w, { ...run, proposal: forged }, [cleanupApproval(forged, "alice")]), "PROPOSAL_INVALID");
@@ -876,7 +876,7 @@ test("a wrapper nested past the scan depth refuses the whole proposal, and the e
   const applied2 = await observed(w2);
   const records2 = await loadRunRecords(applied2.s.sealed.artifactSha256, w2.dirs.evidence);
   assert.ok(records2.ok);
-  const built2 = buildCleanupProposal({ ...records2, changes: applied2.s.sealed.changes, channel: "CLI", contract: { ...(JSON.parse(JSON.stringify(awsContractJson(KILL))) as object), enabled: true } as never, engineVersion: applied2.s.sealed.engineVersion, env: w2.deps.env!, now: new Date(NOW.getTime() + 120_000) });
+  const built2 = buildCleanupProposal({ requesterId: REQUESTER.requesterId, ...records2, changes: applied2.s.sealed.changes, channel: "CLI", contract: { ...(JSON.parse(JSON.stringify(awsContractJson(KILL))) as object), enabled: true } as never, engineVersion: applied2.s.sealed.engineVersion, env: w2.deps.env!, now: new Date(NOW.getTime() + 120_000) });
   refused(built2, "OWNERSHIP_AMBIGUOUS");
   assert.match((built2 as { message: string }).message, /terraform_data\.deep that is not a resource id the cleanup can classify exactly/);
   const entry2 = records2.blueprint.blueprint.entries.find((e) => e.address === "terraform_data.deep");
@@ -935,7 +935,7 @@ test("AWS identities the run created are never deleted (owner policy #39): an ap
   const applied2 = await observed(disguised);
   const records2 = await loadRunRecords(applied2.s.sealed.artifactSha256, disguised.dirs.evidence);
   assert.ok(records2.ok);
-  const built2 = buildCleanupProposal({ ...records2, changes: applied2.s.sealed.changes, channel: "CLI", contract: { ...(JSON.parse(JSON.stringify(awsContractJson(KILL))) as object), enabled: true } as never, engineVersion: applied2.s.sealed.engineVersion, env: disguised.deps.env!, now: new Date(NOW.getTime() + 120_000) });
+  const built2 = buildCleanupProposal({ requesterId: REQUESTER.requesterId, ...records2, changes: applied2.s.sealed.changes, channel: "CLI", contract: { ...(JSON.parse(JSON.stringify(awsContractJson(KILL))) as object), enabled: true } as never, engineVersion: applied2.s.sealed.engineVersion, env: disguised.deps.env!, now: new Date(NOW.getTime() + 120_000) });
   refused(built2, "OWNERSHIP_AMBIGUOUS");
   assert.match((built2 as { message: string }).message, /terraform_data\.pilot_role that is not a resource id the cleanup can classify exactly/);
   assert.equal(records2.blueprint.blueprint.entries.find((e) => e.address === "terraform_data.pilot_role")?.holdsIdentityArn, true, "the blueprint judged the attribute in place");
@@ -943,7 +943,7 @@ test("AWS identities the run created are never deleted (owner policy #39): an ap
   behave({ showResources: creates, stateResources: state });
   // A forged proposal that lists the role never executes.
   const fields = { ...run.proposal, deletes: [...run.proposal.deletes, { address: "aws_iam_role.app", type: "aws_iam_role", identifier: APP_ROLE, ownership: "RUN_CREATED" as const, observed: "VERIFIED" as const }].sort((a, b) => (a.address < b.address ? -1 : 1)), excluded: run.proposal.excluded.filter((x) => x.address !== "aws_iam_role.app") };
-  const forged = { ...fields, proposalSha256: computeProposalSha256(fields) };
+  const forged = reHashedProposal(fields);
   assert.ok(verifyCleanupProposal(forged).ok);
   behave({ showResources: creates, stateResources: state });
   refused(await cleanup(w, { ...run, proposal: forged }, [cleanupApproval(forged, "alice")]), "PROPOSAL_INVALID");
@@ -1088,7 +1088,7 @@ test("a run that created an allowlisted resource and one of an unreviewed type c
   assert.equal(applyCalls().length, 0);
   // A forged, re-hashed proposal that lists it never executes: the list is derived again.
   const fields = { ...run.proposal, deletes: [...run.proposal.deletes, { address, type: UNREVIEWED, identifier: kept!.identifier, ownership: "RUN_CREATED" as const, observed: "UNVERIFIABLE" as const }].sort((a, b) => (a.address < b.address ? -1 : 1)), excluded: run.proposal.excluded.filter((x) => x.address !== address) };
-  const forged = { ...fields, proposalSha256: computeProposalSha256(fields) };
+  const forged = reHashedProposal(fields);
   assert.ok(verifyCleanupProposal(forged).ok);
   behave({ showResources: creates, stateResources: state });
   refused(await cleanup(w, { ...run, proposal: forged }, [cleanupApproval(forged, "alice")]), "PROPOSAL_INVALID");
@@ -1156,7 +1156,7 @@ test("an attachment or setting is deleted only with its parent (design review 64
   const approval = cleanupApproval(run.proposal, "alice");
   const address = "aws_s3_bucket_public_access_block.team";
   const fields = { ...run.proposal, deletes: [...run.proposal.deletes, { address, type: "aws_s3_bucket_public_access_block", identifier: kept.get(address)!.identifier, ownership: "RUN_CREATED" as const, observed: "UNVERIFIABLE" as const }].sort((a, b) => (a.address < b.address ? -1 : 1)), excluded: run.proposal.excluded.filter((x) => x.address !== address) };
-  const forged = { ...fields, proposalSha256: computeProposalSha256(fields) };
+  const forged = reHashedProposal(fields);
   behave({ showResources: creates, stateResources: state });
   refused(await cleanup(w, { ...run, proposal: forged }, [cleanupApproval(forged, "alice")]), "PROPOSAL_INVALID");
   assert.equal(applyCalls().length, 0);

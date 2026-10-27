@@ -145,7 +145,7 @@ test("observe, propose-cleanup, approve of the proposal, cleanup and verify-clea
   assert.ok(awsReadCallsOf(awsToolDir).some((read) => read.args[0] === "resourcegroupstaggingapi" && read.args.includes("Key=alz-unit,Values=" + UNIT.unitId)), "the sweep asked for this run's own unit tag");
   assert.deepEqual(observed.term.asked, [], "observing asks no phrase: it reads and changes nothing");
 
-  const proposed = await cli(w, ["propose-cleanup", "--sealed", run.sealedPlanPath]);
+  const proposed = await cli(w, ["propose-cleanup", "--sealed", run.sealedPlanPath, ...requesterArgs()]);
   assert.equal(proposed.code, 0, proposed.stderr);
   const proposalPath = /Saved \(private to this account\): (\S+)/.exec(proposed.stdout)![1];
   assert.ok(existsSync(proposalPath));
@@ -244,7 +244,7 @@ test("a wrong phrase at the cleanup approval or the removal signs nothing and ru
   const w = await world();
   const run = await appliedRun(w);
   assert.equal((await cli(w, ["observe", "--sealed", run.sealedPlanPath])).code, 0);
-  const proposed = await cli(w, ["propose-cleanup", "--sealed", run.sealedPlanPath]);
+  const proposed = await cli(w, ["propose-cleanup", "--sealed", run.sealedPlanPath, ...requesterArgs()]);
   const proposalPath = /Saved \(private to this account\): (\S+)/.exec(proposed.stdout)![1];
   const proposal = JSON.parse(readFileSync(proposalPath, "utf8")) as { proposalSha256: string; risks: string[] };
   const shortId = proposal.proposalSha256.slice(0, 12);
@@ -273,7 +273,7 @@ test("a wrong phrase at the cleanup approval or the removal signs nothing and ru
   assert.match(again.stderr, /PROPOSAL_ALREADY_EXECUTED/);
   assert.deepEqual([destroys(), applies()], [d0 + 1, a0 + 1], "a proposal runs once");
   // Every cleanup command needs a terminal, like the apply commands.
-  for (const args of [["observe", "--sealed", run.sealedPlanPath], ["propose-cleanup", "--sealed", run.sealedPlanPath], ["verify-cleanup", "--proposal", proposalPath], ["report", "--sealed", run.sealedPlanPath]]) {
+  for (const args of [["observe", "--sealed", run.sealedPlanPath], ["propose-cleanup", "--sealed", run.sealedPlanPath, ...requesterArgs()], ["verify-cleanup", "--proposal", proposalPath], ["report", "--sealed", run.sealedPlanPath]]) {
     const noTerminal = await cli(w, args, [], { terminal: { ...terminal([]), stdinIsTTY: false, stdoutIsTTY: false } });
     assert.equal(noTerminal.code, 1, args[0]);
     assert.match(noTerminal.stderr, /HUMAN_TERMINAL_REQUIRED/);
@@ -285,7 +285,7 @@ test("the lifecycle report validator refuses a declared pass, a live claim witho
   const w = await world();
   const run = await appliedRun(w);
   assert.equal((await cli(w, ["observe", "--sealed", run.sealedPlanPath])).code, 0);
-  const proposed = await cli(w, ["propose-cleanup", "--sealed", run.sealedPlanPath]);
+  const proposed = await cli(w, ["propose-cleanup", "--sealed", run.sealedPlanPath, ...requesterArgs()]);
   const proposalPath = /Saved \(private to this account\): (\S+)/.exec(proposed.stdout)![1];
   const reported = await cli(w, ["report", "--sealed", run.sealedPlanPath, "--proposal", proposalPath]);
   assert.equal(reported.code, 0, reported.stderr);

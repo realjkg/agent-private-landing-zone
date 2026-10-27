@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { signApproval } from "../../src/apply/approval.js";
+import { computeProposalSha256, signCleanupProposal, type CleanupProposal } from "../../src/apply/cleanup-proposal.js";
 import { providerSpec } from "../../src/apply/provider.js";
 import { writeQualificationEvidence } from "../../src/apply/contract.js";
 import { finalizeArtifact, releaseReservation, reserveArtifact } from "../../src/apply/ledger.js";
@@ -519,6 +520,13 @@ export function requesterKeyFile(): string {
 }
 /** The seal flags that name the default requester and her key file. */
 export const requesterArgs = (): string[] => ["--requester", REQUESTER.requesterId, "--key", requesterKeyFile()];
+
+/**
+ * A cleanup proposal edited after it was made, re-hashed and re-signed by the default requester: what an insider who holds a
+ * requester key could forge. Its self-hash and request binding pass; the derivation from the run's records is what refuses it.
+ */
+export const reHashedProposal = (fields: Omit<CleanupProposal, "proposalSha256"> | CleanupProposal): CleanupProposal =>
+  signCleanupProposal({ ...fields, proposalSha256: computeProposalSha256(fields as CleanupProposal) } as CleanupProposal, REQUESTER.privateKeyPem);
 
 export const approvalFor = (sealed: SealedPlan, who: keyof typeof keys, over: Partial<SignedApproval["statement"]> = {}): SignedApproval =>
   signApproval({

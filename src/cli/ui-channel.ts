@@ -163,6 +163,8 @@ export type CleanupSummary = {
   target: ReviewSummary["target"];
   sourceCommit: string;
   artifactShortId: string;
+  /** Who requested this cleanup, by allowlist id: bound into the proposal ID every approver signs. In PROD the requester cannot approve it. */
+  requestedBy: string;
   requiredApprovals: number;
   deletes: CleanupProposal["deletes"];
   alreadyAbsent: CleanupProposal["alreadyAbsent"];
@@ -172,7 +174,7 @@ export type CleanupSummary = {
 };
 const cleanupSummaryOf = (proposal: CleanupProposal): CleanupSummary => ({
   proposalSha256: proposal.proposalSha256, shortId: proposal.proposalSha256.slice(0, 12), environment: proposal.environment, target: { ...proposal.target }, sourceCommit: proposal.sourceCommit,
-  artifactShortId: proposal.artifactSha256.slice(0, 12), requiredApprovals: proposal.authorization.requiredApprovals,
+  artifactShortId: proposal.artifactSha256.slice(0, 12), requestedBy: stripInvisible(proposal.requesterId), requiredApprovals: proposal.authorization.requiredApprovals,
   deletes: proposal.deletes.map((x) => ({ ...x, address: stripInvisible(x.address), type: stripInvisible(x.type) })),
   alreadyAbsent: proposal.alreadyAbsent.map((x) => ({ ...x, address: stripInvisible(x.address) })), excluded: proposal.excluded.map((x) => ({ ...x, address: stripInvisible(x.address) })),
   risks: [...proposal.risks], lines: proposalLines(proposal).map((line) => line.replace(CONTROL, "?")),
@@ -542,9 +544,15 @@ export function createPilotRouter(options: PilotRouterOptions): PilotRouter {
         return;
       }
       case "/propose-cleanup": {
-        const input = fields(body, ["sealedPath"]);
+        // The cleanup's requester signs the proposal with their own allowlisted key, as at /seal: a name and a key file on this machine.
+        const input = fields(body, ["sealedPath", "requesterId", "keyPath"]);
         requirePath();
-        start("propose-cleanup", ["propose-cleanup", "--sealed", absolute(plainPath(input.sealedPath, "The prepared change file"))]);
+        if (typeof input.requesterId !== "string" || !SAFE_APPROVER.test(input.requesterId)) {
+          throw new Bad(400, "PILOT_REQUEST_INVALID", "Your requester name may use letters, digits, dots, dashes and @ only.");
+        }
+        const sealedPath = absolute(plainPath(input.sealedPath, "The prepared change file"));
+        const keyPath = absolute(plainPath(input.keyPath, "Your key file"));
+        start("propose-cleanup", ["propose-cleanup", "--sealed", sealedPath, "--requester", input.requesterId, "--key", keyPath]);
         send(res, context.headers, 202, stateOf());
         return;
       }
