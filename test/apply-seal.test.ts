@@ -137,7 +137,7 @@ test("the sealed record binds plan, manifest, release identity, environment, tar
   })), "canonical JSON of exactly these sixteen fields (the requester id, the authorization and the full target among them), the change list through its own hash");
   assert.equal(s.requesterId, "dana");
   assert.deepEqual(Object.keys(s.request!).sort(), ["signatureBase64", "statement"]);
-  assert.deepEqual(s.request!.statement, { schemaVersion: 1, requesterId: "carol", artifactSha256: s.artifactSha256, environment: "DEV", nonce: s.request!.statement.nonce });
+  assert.deepEqual(s.request!.statement, { schemaVersion: 1, requesterId: "dana", artifactSha256: s.artifactSha256, environment: "DEV", nonce: s.request!.statement.nonce });
   assert.deepEqual(s.provenance, PROVENANCE, "the seal keeps the provenance the driver observed, unchanged");
   assert.deepEqual(s.changes, [
     { address: "azurerm_log_analytics_workspace.pilot", type: "azurerm_log_analytics_workspace", action: "UPDATE" },
@@ -501,7 +501,7 @@ test("the change list carries an import, a move, a forget and output changes, st
   // The requester signed the DEV artifact, so a relabeled record needs the requester's own new signature over the QA hash (a copied one is tampering).
   const qaRecord = { ...s, environment: "QA" as const };
   const qaHash = computeArtifactSha256(qaRecord);
-  const qaBundle = { ...reviewBundleOf({ ...qaRecord, artifactSha256: qaHash, request: signRequest({ schemaVersion: 1, requesterId: s.requesterId, artifactSha256: qaHash, environment: "QA", nonce: s.request!.statement.nonce }, keys.carol.priv) }) };
+  const qaBundle = { ...reviewBundleOf({ ...qaRecord, artifactSha256: qaHash, request: signRequest({ schemaVersion: 1, requesterId: s.requesterId, artifactSha256: qaHash, environment: "QA", nonce: s.request!.statement.nonce }, keys.dana.priv) }) };
   const relabeledOnly = verifyReviewBundle({ ...reviewBundleOf({ ...qaRecord, artifactSha256: qaHash }) });
   assert.ok(!relabeledOnly.ok && relabeledOnly.code === "ARTIFACT_TAMPERED", "the DEV request signature does not carry over to a QA relabel");
   assert.ok(verifyReviewBundle(qaBundle).ok && qaBundle.environment === "QA");
