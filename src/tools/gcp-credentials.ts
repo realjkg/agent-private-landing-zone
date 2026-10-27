@@ -37,12 +37,13 @@ export type ConfigurationResult = { ok: true; tokenFile: string; audience: strin
 /**
  * At most `max` bytes of a regular file, read without ever blocking (review N1 of #305), or undefined: a path that is not a regular
  * file is refused by `stat` before it is opened, and the open itself is non-blocking, so a FIFO swapped in between the two cannot
- * hang the read waiting for a writer (the descriptor's own `fstat` then refuses it). A device, a socket or a directory is refused
+ * hang the read waiting for a writer (the descriptor's own `fstat` then refuses it), and `O_NOCTTY` keeps a terminal swapped in
+ * from becoming the process's controlling terminal (review N6 of #320). A device, a socket or a directory is refused
  * the same way, and so is a file larger than `max`. Throws only what `stat` or `open` throws (a missing file, a denied read).
  */
 export function readRegularFile(path: string, max: number): Buffer | undefined {
   if (!statSync(path).isFile()) return undefined;
-  const fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOCTTY);
   try {
     const stat = fstatSync(fd);
     if (!stat.isFile() || stat.size > max) return undefined;

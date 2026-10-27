@@ -86,12 +86,27 @@ function backendConfig(env: NodeJS.ProcessEnv, target: AwsTarget): string {
   ].join("\n");
 }
 
-/** The bucket, key and region init saved must be the contract's, and native locking must be on: the plan embeds what the seal-time init saved. */
-function savedBackendMatches(backend: Record<string, unknown>, target: AwsTarget): boolean {
+/** The settings init may save with a value: exactly what `backendLocation` and `backendConfig` write (review N3 of #320: an allowlist). */
+const SAVED_SETTINGS: ReadonlySet<string> = new Set(["bucket", "key", "region", "use_lockfile", "assume_role_with_web_identity"]);
+const ROLE_SETTINGS: ReadonlySet<string> = new Set(["role_arn", "web_identity_token_file"]);
+
+/**
+ * The backend init saved, which the plan embeds: the s3 type, the contract's bucket and key (each compared on its own) and region,
+ * native locking on, and every other setting absent or `null` (an endpoint, a profile, static keys, another role or a later backend
+ * version's attribute is refused). `assume_role_with_web_identity`, when saved, holds exactly STATE_WRITE's own `AWS_ROLE_ARN` and
+ * `AWS_WEB_IDENTITY_TOKEN_FILE` in `env` (the environment init's configuration was written from), and nothing else with a value.
+ */
+function savedBackendMatches(backend: Record<string, unknown>, target: AwsTarget, env: NodeJS.ProcessEnv): boolean {
   const config = isRecord(backend.config) ? backend.config : {};
-  const parts = [config.bucket, config.key];
-  return backend.type === "s3" && parts.every((part) => typeof part === "string") && parts.join("/") === target.backend &&
-    config.region === target.region && config.use_lockfile === true;
+  const [bucket, ...key] = target.backend.split("/");
+  const stateWrite = identityVariables(env, "STATE_WRITE");
+  const role = config.assume_role_with_web_identity;
+  const roleOk = role === undefined || role === null || (isRecord(role) &&
+    role.role_arn === stateWrite.get("AWS_ROLE_ARN") && ROLE_ARN.test(String(role.role_arn)) &&
+    role.web_identity_token_file === stateWrite.get("AWS_WEB_IDENTITY_TOKEN_FILE") && TOKEN_FILE.test(String(role.web_identity_token_file)) &&
+    Object.entries(role).every(([name, value]) => ROLE_SETTINGS.has(name) || value === null));
+  return backend.type === "s3" && config.bucket === bucket && config.key === key.join("/") && config.region === target.region && config.use_lockfile === true &&
+    roleOk && Object.entries(config).every(([name, value]) => SAVED_SETTINGS.has(name) || value === null);
 }
 
 const constantOf = (expression: unknown): unknown => isRecord(expression) && expression.constant_value !== null ? expression.constant_value : undefined;
@@ -128,25 +143,34 @@ function assertBuiltinUses(uses: readonly ProviderUse[]): void {
   }
 }
 /**
- * Data sources that mint a credential or read a secret into the plan (review N3 of #305, "check the AWS spec for equivalents"): a
- * registry or cluster token, a CodeArtifact token, a Secrets Manager value or generated password, a parameter value (SecureString
- * parameters are decrypted by default), KMS-decrypted plaintext, or a Cognito app client (its secret). A data source is read at plan
- * time, so its result sits in the sealed plan every approver handles and, after the apply, in the state. Refused unless the plan
- * names the use as a managed resource outside any `data.` address (some of these names are also resources, which hold only what the
- * project itself configures), so a use whose mode the plan left unsaid is refused too.
- * UNVERIFIED: the type names are from memory, as the rest of this file; a missing name would let one through, so the list is
- * checked against the provider's documentation before live use.
+ * The reviewed data sources a pilot project may read (review N1 of #320): metadata about the running identity and place, the IAM
+ * policy document renderer (local, reads nothing), and the minimal workload's own type. A data source is read at plan time, as
+ * the identity that plans, so its result sits in the sealed plan every approver handles and, after the apply, in the state: any
+ * other one, of this provider or any other (a token or secret reader such as `aws_ecr_authorization_token`,
+ * `aws_secretsmanager_secret_version`, `aws_redshift_cluster_credentials` or `aws_s3_object`; `aws_lambda_invocation`, which
+ * runs a function; `http` from another provider), is refused (PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT). A type joins the list by
+ * review. The refusal comes after the plan ran, so it keeps the result out of the sealed plan and the state; it cannot undo the
+ * read itself, which the planning identity's IAM bounds (docs/act-pilot-apply.md, AWS). Terraform's built-in data sources are
+ * judged by `assertBuiltinUses`. A use whose mode the plan leaves unsaid is judged as a data source.
  */
-const SECRET_DATA_SOURCES: ReadonlySet<string> = new Set([
-  "aws_ecr_authorization_token", "aws_ecrpublic_authorization_token", "aws_eks_cluster_auth", "aws_codeartifact_authorization_token",
-  "aws_secretsmanager_secret_version", "aws_secretsmanager_random_password",
-  "aws_ssm_parameter", "aws_ssm_parameters_by_path", "aws_kms_secrets", "aws_kms_secret", "aws_cognito_user_pool_client",
+export const AWS_DATA_SOURCES: ReadonlySet<string> = new Set([
+  "aws_caller_identity", "aws_region", "aws_partition", "aws_default_tags", "aws_iam_policy_document", "aws_cloudwatch_log_group",
 ]);
-function assertNoSecretDataSources(uses: readonly ProviderUse[]): void {
+const isDataUse = (use: ProviderUse): boolean => use.mode !== "managed" || DATA_ADDRESS.test(use.address);
+/**
+ * Every use's provider is an allowed one, and a use whose provider the plan does not name is refused (review N2 of #320: a resource
+ * or data source of a provider with no configuration block, `data.http.x` among them, is still judged); every data source is reviewed.
+ */
+function assertUses(uses: readonly ProviderUse[]): void {
   for (const use of uses) {
-    if (SECRET_DATA_SOURCES.has(use.type) && (use.mode !== "managed" || DATA_ADDRESS.test(use.address))) stop("PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT");
+    const id = providerIdOf(use.provider);
+    if (id === undefined || !ALLOWED_PROVIDERS.includes(id)) stop("PROVIDER_CONFIG_NOT_IN_CONTRACT");
+    if (id !== BUILTIN_PROVIDER && isDataUse(use) && !AWS_DATA_SOURCES.has(use.type)) stop("PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT");
   }
 }
+/** A use's provider: its full name, or from its local name alone the built-in provider for `terraform` and a hashicorp one otherwise. */
+const providerIdOf = (provider: ProviderUse["provider"]): string | undefined =>
+  provider.full_name ?? (provider.name === "terraform" ? BUILTIN_PROVIDER : provider.name !== undefined ? HASHICORP + provider.name : undefined);
 
 /**
  * What the aws provider takes from the APPLY identity's environment and nowhere else: static or shared credentials and
@@ -158,9 +182,9 @@ const DENIED_ATTRIBUTE = /^(access_key|secret_key|token|profile|shared_credentia
 const DENIED_ROLE_ATTRIBUTE = /^web_identity_token(_file)?$/;
 
 /**
- * The provider half of the contract binding. Only the allowed providers may appear (`ALLOWED_PROVIDERS`), of the built-in
- * provider only `terraform_data` resources (`assertBuiltinUses`, over every resource and data source the plan names), and no data
- * source that mints a credential or reads a secret (`SECRET_DATA_SOURCES`, PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT). In an aws
+ * The provider half of the contract binding. Only the allowed providers may appear (`ALLOWED_PROVIDERS`), in a provider block and as
+ * the provider of every resource and data source the plan names (a use with no provider named is refused); of the built-in provider
+ * only `terraform_data` resources (`assertBuiltinUses`); and only the reviewed data sources (`AWS_DATA_SOURCES`). In an aws
  * provider block no attribute of `DENIED_ATTRIBUTE` is set; a constant `allowed_account_ids` must include the contract's
  * account, a constant `forbidden_account_ids` must not; and a constant `role_arn` in `assume_role` or
  * `assume_role_with_web_identity` must be the APPLY identity's own role (any role in another account is refused as such),
@@ -170,7 +194,7 @@ const DENIED_ROLE_ATTRIBUTE = /^web_identity_token(_file)?$/;
  */
 function assertProviderConfig(blocks: readonly ProviderBlock[], target: AwsTarget, env: NodeJS.ProcessEnv, uses: readonly ProviderUse[]): void {
   assertBuiltinUses(uses);
-  assertNoSecretDataSources(uses);
+  assertUses(uses);
   const applyRole = iamRoleIdentity(identityVariables(env, "APPLY").get("AWS_ROLE_ARN") ?? "");
   for (const provider of blocks) {
     const id = provider?.full_name ?? HASHICORP + provider?.name;
@@ -209,7 +233,7 @@ export const AWS: ProviderSpec = {
   },
   ambientRefusal: ambient,
   backendConfig: (env, target) => backendConfig(env, target as AwsTarget),
-  savedBackendMatches: (saved, target) => savedBackendMatches(saved, target as AwsTarget),
+  savedBackendMatches: (saved, target, env) => savedBackendMatches(saved, target as AwsTarget, env),
   // The product override pins the s3 backend; the plan embeds what the seal-time init saved from the product's own backend file.
   backendType: "s3",
   backendLocation: (target) => backendLocation(target as AwsTarget),

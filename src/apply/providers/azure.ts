@@ -1,7 +1,7 @@
 import { identityVariables } from "../../tools/identity.js";
 import { SAFE_VALUE, TOKEN_FILE } from "../constants.js";
 import { stop } from "../engine.js";
-import type { ProviderBlock, ProviderSpec } from "../provider.js";
+import type { ProviderBlock, ProviderSpec, ProviderUse } from "../provider.js";
 import { KEY_SEGMENT, ambientRefusal, isRecord, pickIdentityValue } from "./shared.js";
 
 /**
@@ -116,11 +116,30 @@ function savedBackendMatches(backend: Record<string, unknown>, target: AzureTarg
 }
 
 /**
+ * The reviewed data sources an Azure pilot project may read (review N7 of #320): the running identity's own ids, the subscription
+ * and resource group it works in, and the minimal workload's own type (a virtual network). A data source is read at plan time, so
+ * its result sits in the sealed plan and, after the apply, in the state: any other one, of any provider, is refused
+ * (PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT). That keeps out SAS minting (`azurerm_storage_account_sas`,
+ * `azurerm_storage_account_blob_container_sas`), secret reads (`azurerm_key_vault_secret`), the storage account data source whose
+ * outputs carry its access keys and connection strings, and Terraform's built-in `terraform_remote_state`. A type joins the list by
+ * review. The refusal keeps the result out of the sealed plan; it cannot undo the read, which the planning identity's roles bound.
+ * A use whose mode the plan leaves unsaid is judged as a data source. UNVERIFIED: the type names are from memory.
+ */
+export const AZURE_DATA_SOURCES: ReadonlySet<string> = new Set(["azurerm_client_config", "azurerm_subscription", "azurerm_resource_group", "azurerm_virtual_network"]);
+const DATA_ADDRESS = /(^|\.)data\./;
+function assertDataSources(uses: readonly ProviderUse[]): void {
+  for (const use of uses) {
+    if ((use.mode !== "managed" || DATA_ADDRESS.test(use.address)) && !AZURE_DATA_SOURCES.has(use.type)) stop("PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT");
+  }
+}
+
+/**
  * The provider half of the contract binding: a constant `subscription_id` or `tenant_id` in any azurerm provider block
  * must be the contract's. An expression (a variable, a data source) is not checkable from the plan and is not judged;
  * the runbook says so. The identity checks and the cloud-side role assignments still bound what the credentials reach.
  */
-function assertProviderConfig(blocks: readonly ProviderBlock[], pinned: AzureTarget): void {
+function assertProviderConfig(blocks: readonly ProviderBlock[], pinned: AzureTarget, uses: readonly ProviderUse[]): void {
+  assertDataSources(uses);
   for (const provider of blocks) {
     if (provider?.name !== "azurerm" && !/\/azurerm$/.test(provider?.full_name ?? "")) continue;
     for (const [field, want, code] of [["subscription_id", pinned.subscriptionId, "PROVIDER_SUBSCRIPTION_NOT_IN_CONTRACT"], ["tenant_id", pinned.tenantId, "PROVIDER_TENANT_NOT_IN_CONTRACT"]] as const) {
@@ -153,6 +172,7 @@ export const AZURE: ProviderSpec = {
   // Simulation finding (docs/act-pilot-simulation.md): the plan embeds the seal-time backend settings (now the product's backend file, under the azurerm pin); the rest is filled from the apply process's ARM_* variables.
   filledAtApply: ["use_oidc", "client_id", "tenant_id", "subscription_id", "oidc_token_file_path"],
   tagAttributes: ["tags"],
-  // The plan's resource uses are not judged here: the Azure allowlist is open, and the built-in provider is not singled out (as it is for AWS).
-  assertProviderConfig: (blocks, target) => assertProviderConfig(blocks, target as AzureTarget),
+  // The plan's managed resources are not judged here: the Azure provider list is open, and the built-in provider is not singled out
+  // (as it is for AWS). Its data sources are: only the reviewed ones (`AZURE_DATA_SOURCES`).
+  assertProviderConfig: (blocks, target, _env, uses) => assertProviderConfig(blocks, target as AzureTarget, uses),
 };
