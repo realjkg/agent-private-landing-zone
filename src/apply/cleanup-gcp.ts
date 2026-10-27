@@ -1,11 +1,11 @@
-import { namesBackendBucket } from "../apply/providers/gcp.js";
+import { namesBackendBucket } from "./providers/gcp.js";
 
 /**
  * The GCP branch of the cleanup classifier (docs/observe-and-cleanup.md; the GCP release-path PLAN, section 4, and the G0 package's
  * protected classes, docs/act-pilot-gcp-terraform-g0.md). One function, `gcpProtectionOf`, answers for the cleanup proposal and for
  * `protectedDeletionIn` alike: why an entry is never deleted by a pilot cleanup, or undefined when it is an ordinary leaf.
  *
- * NOT YET WIRED. `protectionOf` and `MATERIAL_RISKS` (src/apply/cleanup-proposal.ts) name AWS and Azure only, and GCP is not an
+ * It lives beside the classifier it extends. NOT YET WIRED. `protectionOf` and `MATERIAL_RISKS` (src/apply/cleanup-proposal.ts) name AWS and Azure only, and GCP is not an
  * admitted provider. The wiring is one line in `protectionOf` (`if (contract.provider === "GCP") return gcpProtectionOf(...)`, with
  * the contract's backend buckets) and a spread of `GCP_MATERIAL_RISKS`, with no change here. The answers are the cleanup proposal's
  * own ownership classes, so they map one to one.

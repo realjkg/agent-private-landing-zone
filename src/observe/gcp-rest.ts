@@ -1,6 +1,6 @@
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 
-import { checkCredentialConfiguration, projectOfServiceAccount } from "../apply/providers/gcp.js";
+import { checkCredentialConfiguration, projectOfServiceAccount } from "../tools/gcp-credentials.js";
 import { identityVariables } from "../tools/identity.js";
 import { ALZ_TAG_KEYS } from "../teardown/unit.js";
 import type { BlueprintEntry } from "./blueprint.js";
@@ -16,7 +16,8 @@ import type { ResourceCheck, ResourceReader } from "./verify.js";
  * so the wiring is `VerifierId` gaining "GCP_REST" and `openReader` gaining a GCP branch, with no change here.
  *
  * Credential handling, as the provider spec admits it: DISCOVERY's credential configuration
- * (`ALZ_DISCOVERY_GOOGLE_APPLICATION_CREDENTIALS`) must pass the same check the spec runs (an external_account file source, no
+ * (`ALZ_DISCOVERY_GOOGLE_APPLICATION_CREDENTIALS`) must pass the same check the spec runs (src/tools/gcp-credentials.ts, shared
+ * so this module never imports the apply path) (an external_account file source, no
  * key, no impersonation URL of its own). Its OIDC token file is read once and exchanged, in the body of one HTTPS POST to Google's
  * security token service, for a federated token; that token, in one HTTPS POST to the IAM Credentials API, is exchanged for a
  * short-lived access token of DISCOVERY's service account (`ALZ_DISCOVERY_GOOGLE_IMPERSONATE_SERVICE_ACCOUNT`), with the

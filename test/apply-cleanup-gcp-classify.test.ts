@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { GCP_LEAF_TYPES, GCP_MATERIAL_RISKS, GCP_SCAN_DEPTH, gcpIdentityIn, gcpProtectionOf, isGcpContainerType, isGcpIdentityType } from "../src/observe/gcp-classify.js";
+import { GCP_LEAF_TYPES, GCP_MATERIAL_RISKS, GCP_SCAN_DEPTH, gcpIdentityIn, gcpProtectionOf, isGcpContainerType, isGcpIdentityType } from "../src/apply/cleanup-gcp.js";
 
 // The GCP cleanup classifier (slice S3 of the GCP release-path PLAN; protected classes in docs/act-pilot-gcp-terraform-g0.md).
 // SYNTHETIC: fake state entries only. It pins which entries a pilot cleanup may delete, and why every other one is kept.
