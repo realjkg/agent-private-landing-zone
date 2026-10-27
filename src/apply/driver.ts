@@ -9,8 +9,7 @@ import { writeEncryptedEvidence } from "../evidence/vault.js";
 import { interceptStopSignals } from "../tools/process.js";
 import { createPrivateDirectory } from "../tools/private-workdir.js";
 import { blueprintFromCloudFormationResources, blueprintFromTerraformStatePull } from "../observe/blueprint.js";
-import { consumeApprovals, requesterPublicKey, verifyApprovalSet, verifyRequestSignature } from "./approval.js";
-import { canonicalPublicKey } from "./contract.js";
+import { consumeApprovals, requesterRefusal, verifyApprovalSet, verifyRequestSignature } from "./approval.js";
 import { buildCleanupProposal, computeProposalSha256, protectedDeletionIn, verifyCleanupProposal, type CleanupProposal } from "./cleanup-proposal.js";
 import { pilotUnitOf } from "./unit.js";
 import {
@@ -210,19 +209,15 @@ async function planAgainstTarget(request: SealRequest, deps: SealDeps, kind: "se
   const engine = engineOf(admitted.contract);
   const sourceCommit = knownSource(deps);
   if (!sourceCommit) return refuse("SOURCE_UNVERIFIED", SOURCE_UNVERIFIED);
-  // A seal is requested by an allowlisted key, checked before any engine runs: the id must be on the contract's allowlist (any
-  // environment: the entry's environments govern approving) and the key handed in must be that entry's own.
+  // A seal is requested by an allowlisted key, checked before any engine runs: the id must be on the contract's allowlist, its
+  // entry must name this environment, and the key handed in must be that entry's own (`requesterRefusal`).
   if (kind === "seal") {
     const requester = request.requester;
     if (!requester || typeof requester.requesterId !== "string" || typeof requester.privateKeyPem !== "string") {
       return refuse("REQUESTER_SIGNATURE_MISSING", "A plan is sealed by a requester: give the requester's allowlisted id and key file. Nothing ran.");
     }
-    const entry = admitted.contract.approvers.find((a) => a.id === requester.requesterId);
-    if (!entry) return refuse("REQUESTER_NOT_ALLOWED", "The requester is not on the contract's allowlist. Nothing ran.");
-    const offered = requesterPublicKey(requester.privateKeyPem);
-    if (offered === undefined || offered !== canonicalPublicKey(entry.publicKeyPem)) {
-      return refuse("REQUESTER_KEY_MISMATCH", "The key given is not the allowlisted key of requester " + entry.id + ". Nothing ran.");
-    }
+    const requesterRefused = requesterRefusal(admitted.contract, request.environment, requester.requesterId, requester.privateKeyPem);
+    if (requesterRefused) return refuse(requesterRefused.code, requesterRefused.message);
   }
 
   let manifest: ArtifactManifest;

@@ -24,7 +24,7 @@ The console never creates the local evidence key. Jobs run with a minimal enviro
 
 ## What the console never does
 
-- The operations job table never runs an apply, a real destroy or an arbitrary shell, and gains no new tool or allowlist entry. Infrastructure ACT stays disabled unless the owner's pinned pilot contract enables it, and then only a person can use the separate Pilot apply wizard below.
+- The operations job table never runs an apply, a real destroy or an arbitrary shell, and gains no new tool or allowlist entry. Infrastructure ACT stays disabled unless the owner's reviewed, committed pilot contract authorizes it in its `authorize` entry, and then only a person can use the separate Pilot apply wizard below.
 - It never starts the destroy-preview driver and never builds an argument list containing `destroy`, `preview-only`, `apply` or `auto-approve`. Such a command is a handoff card with the exact command filled in from the form.
 - It collects no cloud credentials, tokens or keys. A capability that needs live cloud access is a handoff that names the environment variables to set, never their values. The Pilot apply wizard asks for the location of an approver's key file, never the key, and the identity variables come from the terminal that started the console.
 

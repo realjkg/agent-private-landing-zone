@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { signApproval } from "../src/apply/approval.js";
-import { authorizeContract, loadPilotContract, pilotTargetSha256 } from "../src/apply/contract.js";
+import { authorizeContract, loadPilotContract, pilotContractSha256, pilotTargetSha256 } from "../src/apply/contract.js";
 import { reserveArtifact } from "../src/apply/ledger.js";
 import { openNonceStore } from "../src/apply/nonces.js";
 import type { ApplyEnvironment, PilotContract, SignedApproval } from "../src/apply/types.js";
@@ -108,7 +108,7 @@ test("an approved removal deletes the run's preparation files and stale scratch 
   assert.deepEqual(readdirSync(l.evidence).sort(), [ARTIFACT + ".apply.json", ARTIFACT + ".sealed.json", ARTIFACT + REMOVAL_RECORD_SUFFIX, "apply.log"].sort());
   const removal = recordOf(l).removals[0]!;
   assert.deepEqual([removal.status, removal.proposalSha256, removal.approvers], ["COMPLETE", p.proposalSha256, ["alice"]]);
-  assert.match(removal.authorization, /requester carol; 1 approval\(s\) \(alice\) under the cleanup domain/);
+  assert.match(removal.authorization, /requester dana; 1 approval\(s\) \(alice\) under the cleanup domain/);
   assert.deepEqual(removal.items.map((i) => [i.kind, i.path.slice(l.base.length + 1), i.removed]), [
     ["PREPARATION_FILE", "pilot/DEV/manifest-" + TAG + ".json", true], ["PREPARATION_FILE", "pilot/DEV/manifest-" + TAG + ".json.partial-4242", true],
     ["PREPARATION_FILE", "pilot/DEV/preparation-" + TAG + ".json", true], ["PREPARATION_FILE", "pilot/DEV/request-" + TAG + ".json", true], ["SCRATCH_DIRECTORY", "scratch/alz-preview-old1", true],
@@ -336,6 +336,17 @@ test("at the terminal: propose-removal, approve (APPROVE REMOVAL, cleanup domain
   assert.equal(dirty.code, 2, dirty.stderr);
   assert.match(dirty.stderr, /BLOCKED SOURCE_UNVERIFIED/);
   assert.deepEqual(readdirSync(proposalsDir), [], "no proposal was written");
+  // A requester whose allowlist entry does not name the run's environment proposes nothing: the committed contract now allows
+  // dana in QA and PROD only, so her DEV removal is refused before a proposal is built. The original contract is then restored.
+  const original = readFileSync(contractPath, "utf8");
+  const parsed = JSON.parse(original) as { approvers: { id: string; environments: string[] }[] };
+  writeReviewedContract(contractPath, { ...parsed, approvers: parsed.approvers.map((a) => (a.id === REQUESTER.requesterId ? { ...a, environments: ["QA", "PROD"] } : a)) });
+  const outside = await cli(["propose-removal", "--sealed", sealedPlanPath, ...requesterArgs()]);
+  assert.equal(outside.code, 2, outside.stderr);
+  assert.match(outside.stderr, /REQUESTER_NOT_ALLOWED/);
+  assert.match(outside.stderr, /not allowed to request in DEV/);
+  assert.deepEqual(readdirSync(proposalsDir), [], "no proposal was written for a requester outside their environments");
+  writeReviewedContract(contractPath, parsed);
   const proposed = await cli(["propose-removal", "--sealed", sealedPlanPath, ...requesterArgs()]);
   assert.equal(proposed.code, 0, proposed.stderr);
   assert.deepEqual(proposed.term.asked, [], "a proposal asks no phrase: it authorizes nothing");
@@ -424,6 +435,50 @@ test("R1: a removal is held to the run's full target: a run whose target the con
   const movedProposal = buildRemovalProposal({ run: runOf(), where: l.where, contract: moved, requesterId: REQUESTER.requesterId, now: NOW });
   assert.equal(codeOf(movedProposal), "TARGET_NOT_IN_CONTRACT");
   assert.ok(existsSync(l.where.preparationDir), "nothing was removed");
+});
+
+test("#313 F1: a requester-forged removal proposal made under a moved contract, carrying the run's original targetSha256, is refused at removal by targetMoved; nothing is removed or consumed", async () => {
+  const l = layout();
+  // The contract committed now moves the DEV region; account, backend and workspace stay, so only the full-target hash moves.
+  const c = awsContractJson(KILL, WITH_REMOVE) as { targets: Record<string, Record<string, unknown>> };
+  const moved = contractWith({ ...WITH_REMOVE, targets: { ...c.targets, DEV: { ...c.targets.DEV, region: "eu-west-2" } } });
+  assert.notEqual(pilotTargetSha256(moved, "DEV"), runOf().targetSha256);
+  // What an insider holding the requester's key could forge without propose-removal (which refuses to build it): the proposal
+  // re-stamped with the moved contract's hash, re-hashed and re-signed, still carrying the run's own targetSha256.
+  const original = proposal(l);
+  const { proposalSha256: _self, request: _request, ...fields } = { ...original, contractSha256: pilotContractSha256(moved) };
+  const forged = signRemovalProposal({ ...fields, request: null, proposalSha256: removalProposalSha256(fields) } as WorkspaceRemovalProposal, REQUESTER.privateKeyPem);
+  assert.ok(verifyRemovalProposal(forged).ok, "the forgery is a well-formed, self-consistent, requester-signed proposal");
+  assert.equal(forged.targetSha256, runOf().targetSha256);
+  const approvals = [approve(forged, "alice")];
+  const i: RemovalInput = { ...input(l, forged, approvals), contract: moved };
+  const ready = await prepareRemoval(i);
+  assert.equal(codeOf(ready), "TARGET_NOT_IN_CONTRACT", JSON.stringify(ready));
+  assert.match((ready as { message: string }).message, /runs only where the run ran/);
+  assert.equal(codeOf(await removeWorkspace({ ...i, expected: [] })), "TARGET_NOT_IN_CONTRACT");
+  assert.ok(approvals.every((a) => !l.nonces.has(a.statement.nonce)), "no approval was consumed");
+  assert.equal(readdirSync(l.env).length, 5, "nothing was removed");
+  assert.ok(existsSync(l.stale), "nothing was removed");
+});
+
+test("a removal requester's allowlist entry must name the environment: a PROD removal requested by DEV-only carol with her own key is refused before anything is removed or consumed", async () => {
+  const l = layout("PROD");
+  const built = buildRemovalProposal({ run: runOf("PROD"), where: l.where, contract: CONTRACT, requesterId: "carol", now: NOW });
+  assert.ok(built.ok, JSON.stringify(built));
+  const p = signRemovalProposal(built.proposal, keys.carol.priv);
+  const approvals = [approve(p, "alice"), approve(p, "bob")];
+  const refusal = await prepareRemoval(input(l, p, approvals, "PROD"));
+  assert.equal(codeOf(refusal), "REQUESTER_NOT_ALLOWED", JSON.stringify(refusal));
+  assert.match((refusal as { message: string }).message, /carol is not allowed to request in PROD/);
+  assert.equal(codeOf(await removeWorkspace({ ...input(l, p, approvals, "PROD"), expected: [] })), "REQUESTER_NOT_ALLOWED");
+  assert.ok(approvals.every((a) => !l.nonces.has(a.statement.nonce)), "no approval was consumed");
+  assert.ok(existsSync(l.stale), "nothing was removed");
+  // The same requester in DEV, an environment her entry names, is accepted.
+  const d = layout();
+  const dev = buildRemovalProposal({ run: runOf(), where: d.where, contract: CONTRACT, requesterId: "carol", now: NOW });
+  assert.ok(dev.ok);
+  const devProposal = signRemovalProposal(dev.proposal, keys.carol.priv);
+  assert.equal((await prepareRemoval(input(d, devProposal, [approve(devProposal, "alice")]))).ok, true);
 });
 
 test("M24: a removal record whose decisions are missing, forged or malformed is not a removal record of this run, and nothing is removed", async () => {
