@@ -169,6 +169,7 @@ type Shown = {
   planned_values?: { root_module?: unknown };
 };
 
+/** Module nesting the walker follows. Terraform has no practical nesting this deep; past it the plan is refused, never read partially. */
 const MAX_MODULE_DEPTH = 64;
 
 /**
@@ -177,9 +178,14 @@ const MAX_MODULE_DEPTH = 64;
  * `module_calls`; a data source read at plan time appears here even when its read fails and nothing else mentions it), the
  * changes, the prior state and the planned values (both with `child_modules`). A `provider_config_key` resolves through
  * `provider_config`; a key with no block is named by its last segment (`module.net:aws` is `aws`), the way a block without
- * `full_name` is named. Addresses and types are read as text only; no value leaves this function.
+ * `full_name` is named. Fail closed: a tree nested past `MAX_MODULE_DEPTH` is `PROVIDER_PLAN_TOO_DEEP`, and a tree that is
+ * present but not the shape `show -json` documents (a module, a call, a resource or a changes entry that is not an object;
+ * `resources`, `child_modules` or `resource_changes` that is not a list; `module_calls` that is not an object) is
+ * `PROVIDER_PLAN_UNREADABLE`, because a use that could not be read could be one of the built-in provider. A tree that is
+ * absent is simply absent. Addresses and types are read as text only; no value leaves this function.
  */
 function providerUsesOf(document: Shown): ProviderUse[] {
+  const UNREADABLE = "PROVIDER_PLAN_UNREADABLE";
   const blocks = document.configuration?.provider_config ?? {};
   const byKey = (key: unknown): ProviderUse["provider"] => {
     if (typeof key !== "string") return {};
@@ -188,25 +194,33 @@ function providerUsesOf(document: Shown): ProviderUse[] {
     return { name: key.slice(key.lastIndexOf(":") + 1).split(".")[0] };
   };
   const uses: ProviderUse[] = [];
-  const add = (found: unknown, provider: ProviderUse["provider"]): void => {
-    if (!isPlainRecord(found)) return;
+  const add = (found: unknown, provider: (entry: Record<string, unknown>) => ProviderUse["provider"]): void => {
+    if (!isPlainRecord(found)) return stop(UNREADABLE);
     uses.push({
       address: stripInvisible(typeof found.address === "string" ? found.address : ""), mode: typeof found.mode === "string" ? found.mode : "",
-      type: stripInvisible(typeof found.type === "string" ? found.type : ""), provider,
+      type: stripInvisible(typeof found.type === "string" ? found.type : ""), provider: provider(found),
     });
   };
+  /** A list that is present must be a list; an object that is present must be an object. Absent is an empty list or object. */
+  const listOf = (value: unknown): unknown[] => value === undefined ? [] : Array.isArray(value) ? value : stop(UNREADABLE);
+  const recordOf = (value: unknown): Record<string, unknown> => value === undefined ? {} : isPlainRecord(value) ? value : stop(UNREADABLE);
+  const byName = (entry: Record<string, unknown>): ProviderUse["provider"] => ({ full_name: typeof entry.provider_name === "string" ? entry.provider_name : undefined });
   const configured = (module: unknown, depth: number): void => {
-    if (!isPlainRecord(module) || depth > MAX_MODULE_DEPTH) return;
-    for (const found of Array.isArray(module.resources) ? module.resources : []) add(found, byKey(isPlainRecord(found) ? found.provider_config_key : undefined));
-    for (const call of Object.values(isPlainRecord(module.module_calls) ? module.module_calls : {})) if (isPlainRecord(call)) configured(call.module, depth + 1);
+    if (module === undefined) return;
+    if (!isPlainRecord(module)) return stop(UNREADABLE);
+    if (depth > MAX_MODULE_DEPTH) return stop("PROVIDER_PLAN_TOO_DEEP");
+    for (const found of listOf(module.resources)) add(found, (entry) => byKey(entry.provider_config_key));
+    for (const call of Object.values(recordOf(module.module_calls))) configured(recordOf(call).module, depth + 1);
   };
   const valued = (module: unknown, depth: number): void => {
-    if (!isPlainRecord(module) || depth > MAX_MODULE_DEPTH) return;
-    for (const found of Array.isArray(module.resources) ? module.resources : []) add(found, { full_name: isPlainRecord(found) && typeof found.provider_name === "string" ? found.provider_name : undefined });
-    for (const child of Array.isArray(module.child_modules) ? module.child_modules : []) valued(child, depth + 1);
+    if (module === undefined) return;
+    if (!isPlainRecord(module)) return stop(UNREADABLE);
+    if (depth > MAX_MODULE_DEPTH) return stop("PROVIDER_PLAN_TOO_DEEP");
+    for (const found of listOf(module.resources)) add(found, byName);
+    for (const child of listOf(module.child_modules)) valued(child, depth + 1);
   };
   configured(document.configuration?.root_module, 0);
-  for (const found of Array.isArray(document.resource_changes) ? document.resource_changes : []) add(found, { full_name: typeof found?.provider_name === "string" ? found.provider_name : undefined });
+  for (const found of listOf(document.resource_changes)) add(found, byName);
   valued(document.prior_state?.values?.root_module, 0);
   valued(document.planned_values?.root_module, 0);
   return uses;

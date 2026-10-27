@@ -69,6 +69,9 @@ All with Terraform 1.16.4 and the S3 backend over moto. Exit codes are from the 
 
 ## Other observations
 
+- **Provisioners (open owner question, unchanged by this work).** `terraform_data` can carry a `local-exec` or `remote-exec` provisioner, exactly as `null_resource` (an allowed provider) already could, and the kill-during-apply scenario above uses one. `src/apply` has no provisioner control: the plan JSON does not show provisioners, so nothing in the seal judges them, and a provisioner's command runs on the apply host as the APPLY identity's process. Allowing `terraform_data` therefore adds no new provisioner exposure beyond `null_resource`, but the provisioner policy itself (refuse, allow, or allow with review) is still the owner's to decide.
+- The walker that reads the plan's resource uses fails closed (#279 review B1, N1): a module tree nested past 64 levels is `PROVIDER_PLAN_TOO_DEEP`, and a tree that is present but not the documented shape is `PROVIDER_PLAN_UNREADABLE`; neither seals or applies, and nothing is spent.
+
 - Terraform contacts `checkpoint-api.hashicorp.com` on every run (version check). The runner profile does not set `CHECKPOINT_DISABLE`; in the simulation the proxy refused it. Unchanged from the Azure run.
 - With the proxy variables handed to the child, the AWS SDK honored `HTTPS_PROXY` and `SSL_CERT_FILE` as the runner delivers them; no `AWS_CA_BUNDLE` or endpoint override was needed, and none is injectable in the apply profile.
 - moto treats an unsigned object request as anonymous and refuses it, and files every unregistered or STS-issued access key under its default account, so Terraform's signed requests and the test's direct reads see one bucket.
