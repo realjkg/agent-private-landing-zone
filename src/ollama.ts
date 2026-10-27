@@ -69,6 +69,8 @@ export async function invokeLocalModel(
   try {
     const response = await fetch(`${baseUrl}/api/chat`, {
       method: "POST",
+      // A redirect could move the prompt to a non-loopback origin; it is an error, never followed.
+      redirect: "error",
       headers: {
         "content-type": "application/json",
       },
@@ -168,6 +170,7 @@ export async function getLocalModelMetadata(
   assertLoopbackModelEndpoint(baseUrl);
   const response = await fetch(
     `${baseUrl}/api/tags`,
+    { redirect: "error" },
   );
 
   if (!response.ok) {

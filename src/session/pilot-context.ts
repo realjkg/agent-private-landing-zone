@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { lstatSync, readdirSync, readFileSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -68,6 +68,8 @@ const STAGE_STATUS = new Set(["PASS", "FAIL", "NOT_RUN", "INCONCLUSIVE"]);
 const MAX_TEXT = 300;
 const MAX_ITEMS = 50;
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
+/** At most this many records of one kind are parsed, newest first. */
+export const MAX_RECORD_FILES = 200;
 
 type Json = Record<string, unknown>;
 const isObject = (value: unknown): value is Json => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -76,7 +78,9 @@ const isObject = (value: unknown): value is Json => typeof value === "object" &&
 export function cleanText(value: unknown, max: number = MAX_TEXT): string {
   if (typeof value !== "string") return "";
   // eslint-disable-next-line no-control-regex
-  const flat = value.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, " ").trim();
+  // Control, line-separator and format characters (Unicode Cc, Cf: bidi overrides U+202A-U+202E, isolates U+2066-U+2069,
+  // zero-width characters) are removed, so a record cannot reorder or hide what a person reads.
+  const flat = value.replace(/[\p{Cf}]+/gu, "").replace(/[\p{Cc}\u2028\u2029]+/gu, " ").trim();
   return flat.length > max ? flat.slice(0, max) + "…" : flat;
 }
 
@@ -95,18 +99,31 @@ function listJson(directory: string, accept: (name: string) => boolean): Found[]
   } catch {
     return [];
   }
-  const found: Found[] = [];
+  // lstat, never stat: a symlink (which could point outside the checkout) is not a record and is never read.
+  const candidates: { path: string; mtimeMs: number; regular: boolean; size: number }[] = [];
   for (const name of names.filter(accept)) {
     const path = join(directory, name);
     try {
-      const stat = statSync(path);
-      if (!stat.isFile() || stat.size > MAX_FILE_BYTES) continue;
-      found.push({ path, mtimeMs: stat.mtimeMs, value: JSON.parse(readFileSync(path, "utf8")) as unknown });
+      const stat = lstatSync(path);
+      candidates.push({ path, mtimeMs: stat.mtimeMs, regular: stat.isFile() && !stat.isSymbolicLink(), size: stat.size });
     } catch {
-      found.push({ path, mtimeMs: 0, value: undefined });
+      candidates.push({ path, mtimeMs: 0, regular: false, size: 0 });
     }
   }
-  return found.sort((a, b) => b.mtimeMs - a.mtimeMs || a.path.localeCompare(b.path));
+  candidates.sort((a, b) => b.mtimeMs - a.mtimeMs || a.path.localeCompare(b.path));
+  const found: Found[] = [];
+  for (const candidate of candidates.slice(0, MAX_RECORD_FILES)) {
+    if (!candidate.regular || candidate.size > MAX_FILE_BYTES) {
+      found.push({ path: candidate.path, mtimeMs: candidate.mtimeMs, value: undefined });
+      continue;
+    }
+    try {
+      found.push({ path: candidate.path, mtimeMs: candidate.mtimeMs, value: JSON.parse(readFileSync(candidate.path, "utf8")) as unknown });
+    } catch {
+      found.push({ path: candidate.path, mtimeMs: candidate.mtimeMs, value: undefined });
+    }
+  }
+  return found;
 }
 
 const refusal = (query: PilotQuery, code: PilotReadCode, message: string, nextStep: string): PilotToolResult =>
@@ -143,7 +160,7 @@ type Preparation = {
   provider: string; engine: string; path: string; environment: string; account: string; region?: string; backend: string;
   workspace: string; fileCount: number; engineVersion: string; engineVersionSource: string;
   providers: string[]; inputs: string[]; unitTags: string[]; gaps: string[];
-  next: { step: string; reason: string; blocker?: string }; requestFile: string; manifestFile: string; manifestHash: string;
+  next: { step: string; reason: string; blocker?: string }; manifestHash: string;
 };
 
 function parsePreparation(value: unknown): Preparation | undefined {
@@ -166,7 +183,8 @@ function parsePreparation(value: unknown): Preparation | undefined {
     providers, inputs, unitTags: Object.keys(unit).slice(0, MAX_ITEMS).map((key) => cleanText(key, 80) + "=" + cleanText(unit[key], 120)),
     gaps: Array.isArray(value.gaps) ? value.gaps.slice(0, 10).map((gap) => cleanText(gap)) : [],
     next: { step: next.step as string, reason: cleanText(next.reason), ...(typeof next.blocker === "string" ? { blocker: cleanText(next.blocker, 20) } : {}) },
-    requestFile: cleanText(value.requestFile, 400), manifestFile: cleanText(value.manifestFile, 400), manifestHash: value.manifestHash,
+    // requestFile and manifestFile are never read: the printed command rebuilds both paths from the file name (preparedPaths).
+    manifestHash: value.manifestHash,
   };
 }
 
@@ -249,6 +267,31 @@ function nextStepForStages(report: Report): string {
   return "Nothing more to run for this run. Retiring the environment stays a separate, reviewed owner action.";
 }
 
+/**
+ * The request and manifest paths for a preparation, rebuilt from the layout `writePreparation` uses
+ * (`.runs/pilot/<ENV>/{request,manifest}-<tag>.json`, tag = the first 16 hex characters of the manifest hash) and the
+ * validated name of the preparation file. Nothing from the record's own text is echoed into a command: the result is
+ * hex, a fixed environment name and fixed words, relative to the repository root, so it has no space or shell character.
+ */
+function preparedPaths(root: string, preparationPath: string, prep: Preparation): { request: string; manifest: string } | { why: string } {
+  const tag = basename(preparationPath).match(/^preparation-([0-9a-f]{16})\.json$/)?.[1];
+  const environment = basename(dirname(preparationPath));
+  if (!tag || tag !== prep.manifestHash.slice(0, 16) || environment !== prep.environment || !ENVIRONMENTS.includes(environment as never)) {
+    return { why: "the preparation's name does not match its manifest, so its file paths are not printed; prepare again" };
+  }
+  const request = ".runs/pilot/" + environment + "/request-" + tag + ".json";
+  const manifest = ".runs/pilot/" + environment + "/manifest-" + tag + ".json";
+  for (const path of [request, manifest]) {
+    try {
+      const stat = lstatSync(join(root, path));
+      if (!stat.isFile() || stat.isSymbolicLink()) return { why: path + " is not a regular file; prepare again" };
+    } catch {
+      return { why: path + " is missing; prepare again" };
+    }
+  }
+  return { request, manifest };
+}
+
 // ---------------------------------------------------------------------------------------------------------------------
 
 /** Reads the record a read-only pilot query needs and states its facts. Never writes, runs or signs anything. */
@@ -263,10 +306,14 @@ export function readPilotContext(query: PilotQuery, options: PilotContextOptions
     const picked = pick(query, found, parsePreparation, (record) => record.manifestHash, { ...options, runId: undefined }, "pilot preparation", PREPARE_STEP);
     if ("ok" in picked) return picked;
     const prep = picked.record;
+    const files = preparedPaths(root, picked.path, prep);
+    const request = "request" in files ? files.request : "REQUEST.json";
+    const manifest = "manifest" in files ? files.manifest : "MANIFEST.json";
+    const pathNote = "why" in files ? " (" + files.why + ")" : "";
     const nextStep = prep.next.step === "seal"
-      ? SEAL_STEP.replace("REQUEST.json", prep.requestFile || "REQUEST.json").replace("MANIFEST.json", prep.manifestFile || "MANIFEST.json")
+      ? SEAL_STEP.replace("REQUEST.json", request).replace("MANIFEST.json", manifest) + pathNote
       : prep.next.step === "qualify"
-        ? "./alz apply qualify --request " + (prep.requestFile || "REQUEST.json") + " --manifest " + (prep.manifestFile || "MANIFEST.json") + " (the owner watches the cloud logs in DEV)"
+        ? "./alz apply qualify --request " + request + " --manifest " + manifest + " (the owner watches the cloud logs in DEV)" + pathNote
         : "Owner step (" + (prep.next.blocker ?? "OWNER") + "): " + prep.next.reason;
     if (query === "PILOT_READINESS") {
       return {

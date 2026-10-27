@@ -34,32 +34,51 @@ export type GuardCode =
 export type GuardResult = { ok: true; text: string } | { ok: false; code: GuardCode; reason: string };
 
 const MAX_EXPLANATION = 1200;
-const ACTION_CLAIM =
-  /\bI\s+(?:have\s+|'ve\s+|just\s+|already\s+|now\s+)?(?:approved|applied|executed|ran|started|launched|deployed|deleted|destroyed|cleaned|removed|signed|sealed|edited|modified|changed|updated|enabled|disabled|authori[sz]ed|wrote|written|created|provisioned|qualified)\b/i;
-const SUCCESS_CLAIM =
-  /\b(?:succeeded|successful(?:ly)?|completed?|passed|pass(?:es)?|worked|is done|went well|all (?:set|good)|verified|deployed|(?:was|were|been|got) (?:built|created|deleted|cleaned up|removed)|fully (?:built|deleted|cleaned))\b/i;
-const NEGATION = /\b(?:not|no|never|none|nothing|without|cannot|isn't|wasn't|weren't|hasn't|haven't|didn't|doesn't|failed|unverified|unresolved|yet)\b|n't\b/i;
+/**
+ * First-person (or "we") action claims, after any few words, and "gone/went ahead". Withheld always: the model only reads.
+ * Deliberately broad, so "I cannot run commands" is withheld too; the record above is the answer either way.
+ */
+const ACTION_VERBS =
+  "approv\\w*|appl(?:y|ied|ying)|execut\\w*|ran|run|running|start(?:ed)?|launch\\w*|deploy\\w*|delet\\w*|destroy\\w*|clean\\w*|remov\\w*|sign\\w*|seal\\w*|edit\\w*|modif\\w*|chang\\w*|updat\\w*|enabl\\w*|disabl\\w*|authori[sz]\\w*|wr(?:ote|itten|ite)|creat\\w*|provision\\w*|qualif\\w*|torn|tear\\w*|push\\w*|trigger\\w*|kick\\w* off|fix\\w*";
+const ACTION_CLAIM = new RegExp("\\b(?:I|we)(?:'ve|'ll|'d|'m)?\\b[^.!?\\n]{0,40}?\\b(?:" + ACTION_VERBS + ")\\b|\\b(?:gone|went|go) ahead\\b", "i");
+
+/** Success vocabulary. While the record does not show a verified success, any sentence carrying it is withheld, whatever negation it has. */
+const SUCCESS_LEXICON =
+  /\b(?:succe\w*|complet\w*|done|finish\w*|worked|works|deploy(?:ed|ment is)\b|created|built|in place|ok(?:ay)?|no (?:errors?|issues?|problems?|failures?)|without (?:any )?(?:errors?|issues?|problems?|failures?)|nothing (?:is |was )?left|all (?:good|set|clear|fine)|fine|healthy|passed|pass(?:es|ing)?|verified|green|ready|cleaned|deleted|removed|gone|resolved|fixed)\b/i;
+
+/** Text a person could paste into a shell. Withheld always: only the product prints a command. */
+const SHELL_TOKENS = "\\.\\/|alz|terraform|tofu|pulumi|aws|az|gcloud|cdk|kubectl|npm|npx|node|curl|wget|sh|bash|zsh|rm|sudo|chmod|git|ollama|docker";
+const COMMAND_PATTERNS: readonly RegExp[] = [
+  /`/, // code spans and fences
+  /\$\(|\$\{|\$[A-Za-z_]/, // command and variable substitution
+  /(?:^|\s)--?[a-z][a-z0-9]*(?:-[a-z0-9]+)*(?=[\s.,;:)]|$)/im, // CLI flags, single or double dash (for example --force)
+  new RegExp("^\\s*(?:(?:[Pp]lease\\s+)?(?:[Rr]un|[Tt]ype|[Ee]xecute|[Ee]nter|[Uu]se)\\s+)?(?:" + SHELL_TOKENS + ")(?:\\s|$)", "m"), // a line led by a shell or CLI token (commands are lowercase; "AWS" in prose is not one)
+  /\.\/[\w.-]|\balz\s+\w|(?:^|\s)(?:\||&&|;)\s*\w/m, // ./path, alz subcommands, pipes and chains
+];
 
 /** Splits text into sentences for the success check. */
 const sentences = (text: string): string[] => text.split(/(?<=[.!?])\s+|\n+/).map((part) => part.trim()).filter(Boolean);
 
-/** Decides whether the model's explanation may be shown beside the record. Fails closed: when in doubt, the record alone is shown. */
+/**
+ * Decides whether the model's explanation may be shown beside the record. Fails closed: when in doubt, the record alone
+ * is shown. A shown explanation is still labeled unverified; the record is the answer.
+ */
 export function guardExplanation(raw: string, result: PilotToolResult): GuardResult {
   const text = raw.trim();
   if (!text) return { ok: false, code: "MODEL_EXPLANATION_EMPTY", reason: "the model returned nothing" };
   if (text.length > MAX_EXPLANATION) return { ok: false, code: "MODEL_EXPLANATION_TOO_LONG", reason: "the explanation exceeded " + MAX_EXPLANATION + " characters" };
-  if (/\.\/alz\b|\balz\s+apply\b|```|\$\s*\w/.test(text)) {
+  if (/\b(?:https?|ftp|s3|gs|file):\/\/|\bwww\./i.test(text)) return { ok: false, code: "MODEL_EXPLANATION_HAS_LINK", reason: "the explanation may not carry a link" };
+  if (COMMAND_PATTERNS.some((pattern) => pattern.test(text))) {
     return { ok: false, code: "MODEL_EXPLANATION_HAS_COMMAND", reason: "only the product names a command; the model's text may not carry one" };
   }
-  if (/\b(?:https?|ftp):\/\/|\bwww\./i.test(text)) return { ok: false, code: "MODEL_EXPLANATION_HAS_LINK", reason: "the explanation may not carry a link" };
-  if (ACTION_CLAIM.test(text)) return { ok: false, code: "MODEL_CLAIMED_ACTION", reason: "the model claimed to have acted; it can only read records" };
+  if (ACTION_CLAIM.test(text)) return { ok: false, code: "MODEL_CLAIMED_ACTION", reason: "the model claimed to have acted, or spoke of acting; it can only read records" };
   if (!result.ok && !text.includes(result.code)) {
     return { ok: false, code: "MODEL_OMITTED_REFUSAL_CODE", reason: "an explanation of a refusal must quote its code (" + result.code + ")" };
   }
-  const succeeded = result.ok && result.succeeded;
-  if (!succeeded) {
-    const claim = sentences(text).find((sentence) => SUCCESS_CLAIM.test(sentence) && !NEGATION.test(sentence));
-    if (claim) return { ok: false, code: "MODEL_FABRICATED_SUCCESS", reason: "the explanation states success that the record does not show" };
+  // Only a status read that shows verified success lets success words through. Negation is not trusted to cancel them.
+  const verifiedSuccess = result.ok && result.succeeded;
+  if (!verifiedSuccess && sentences(text).some((sentence) => SUCCESS_LEXICON.test(sentence))) {
+    return { ok: false, code: "MODEL_FABRICATED_SUCCESS", reason: "the record does not show a verified success, and the explanation uses success wording" };
   }
   return { ok: true, text };
 }
@@ -112,7 +131,7 @@ export async function answerPilotQuery(query: PilotQuery, request: string, optio
       const guarded = guardExplanation(raw, result);
       lines.push("");
       lines.push(guarded.ok
-        ? label + ", from the record above only:\n" + guarded.text
+        ? label + ", UNVERIFIED (the model's words; the record above is authoritative):\n" + guarded.text
         : label + " withheld (" + guarded.code + "): " + guarded.reason + ". The record above is the answer.");
     } catch (error) {
       lines.push("");

@@ -156,3 +156,28 @@ test("loopback only: the model client refuses a non-loopback OLLAMA_BASE_URL bef
   }
   for (const baseUrl of ["http://127.0.0.1:11434", "http://localhost:11435", "http://[::1]:11434"]) assert.ok(isLoopbackModelEndpoint(baseUrl), baseUrl);
 });
+
+test("review N1: a loopback server that redirects (307) to another origin is never followed; nothing reaches 127.0.0.2", async () => {
+  let reachedOther = 0;
+  const other = createServer((_request, response) => { reachedOther += 1; response.end(JSON.stringify({ message: { content: "from 127.0.0.2" }, models: [] })); });
+  await new Promise<void>((resolve) => other.listen(0, "127.0.0.2", resolve));
+  const otherAddress = other.address();
+  if (!otherAddress || typeof otherAddress === "string") throw new Error("no address");
+  const redirector = createServer((request, response) => {
+    response.statusCode = 307;
+    response.setHeader("location", "http://127.0.0.2:" + otherAddress.port + (request.url ?? "/"));
+    response.end();
+  });
+  await new Promise<void>((resolve) => redirector.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = redirector.address();
+    if (!address || typeof address === "string") throw new Error("no address");
+    const baseUrl = "http://127.0.0.1:" + address.port;
+    await assert.rejects(invokeLocalModel(baseUrl, "qwen3:4b", [{ role: "user", content: "secret prompt" }], { timeoutMs: 5000 }));
+    await assert.rejects(getLocalModelMetadata(baseUrl, "qwen3:4b"));
+    assert.equal(reachedOther, 0, "the redirect target was never contacted");
+  } finally {
+    await new Promise<void>((resolve) => redirector.close(() => resolve()));
+    await new Promise<void>((resolve) => other.close(() => resolve()));
+  }
+});
