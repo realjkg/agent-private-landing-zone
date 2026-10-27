@@ -3,8 +3,8 @@ import test from "node:test";
 
 import { codeOf } from "../src/apply/engine.js";
 import type { ProviderBlock, ProviderUse } from "../src/apply/provider.js";
-import { AWS, AWS_DATA_SOURCES } from "../src/apply/providers/aws.js";
-import { AZURE, AZURE_DATA_SOURCES } from "../src/apply/providers/azure.js";
+import { AWS, AWS_DATA_SOURCES, AWS_DENIED_TYPES } from "../src/apply/providers/aws.js";
+import { AZURE, AZURE_DATA_SOURCES, AZURE_DENIED_TYPES } from "../src/apply/providers/azure.js";
 import { AWS_DEV_TARGET, AWS_REGION, DEV_TARGET, TENANT, awsIdentityEnv, awsRoleArn, identityEnv } from "./helpers/apply-fixtures.js";
 
 // Review of #320 (6451892239), N1, N2, N3 and N7. SYNTHETIC: the specs' functions are driven with the `show -json` and saved-backend
@@ -88,14 +88,12 @@ test("N7: only the reviewed Azure data sources are read; SAS minting, Key Vault 
   assert.equal(judge([managed("azurerm_storage_account", azurerm), managed("azurerm_key_vault_secret", azurerm)]), "OK", "managed resources are not judged by this rule");
 });
 
-test("RB2: every Azure use is judged against the provider allowlist by exact source, a lookalike, an unnamed provider and another cloud refused, and azapi's resource action too", () => {
+test("RB2: every Azure use is judged against the provider allowlist by exact source, a lookalike, an unnamed provider and another cloud refused; azapi and azuread are not admitted (review of #327, B2)", () => {
   const azurerm = { name: "azurerm", full_name: "registry.terraform.io/hashicorp/azurerm" };
   const AZURERM_BLOCK: ProviderBlock = { ...azurerm, expressions: { subscription_id: { references: ["var.subscription_id"] } } };
   const judge = (uses: ProviderUse[], blocks: ProviderBlock[] = [AZURERM_BLOCK]) => codeFrom(() => AZURE.assertProviderConfig(blocks, AZURE_PINNED, identityEnv("DEV"), uses));
   for (const [label, use] of [
     ["azurerm", managed("azurerm_resource_group", azurerm)],
-    ["azapi, Microsoft's ARM provider", managed("azapi_resource", { full_name: "registry.terraform.io/azure/azapi" })],
-    ["azuread, the directory", managed("azuread_application", { full_name: "registry.terraform.io/hashicorp/azuread" })],
     ["random", managed("random_string", { full_name: "registry.terraform.io/hashicorp/random" })],
     ["the built-in value holder", managed("terraform_data", { name: "terraform" })],
   ] as const) assert.equal(judge([use]), "OK", label);
@@ -111,10 +109,30 @@ test("RB2: every Azure use is judged against the provider allowlist by exact sou
     ["a resource with no provider named", managed("azurerm_resource_group", {})],
     ["a module-nested resource with no provider named", { address: "module.app.azurerm_resource_group.x", mode: "managed", type: "azurerm_resource_group", provider: {} }],
     ["a module-nested lookalike", { address: "module.app.module.deep.azurerm_resource_group.x", mode: "managed", type: "azurerm_resource_group", provider: { full_name: "registry.terraform.io/attacker/azurerm" } }],
-    ["azapi's resource action, an ARM POST at apply", managed("azapi_resource_action", { full_name: "registry.terraform.io/azure/azapi" })],
   ] as const) assert.equal(judge([managed("azurerm_resource_group", azurerm), use as ProviderUse]), use.mode === "data" ? "PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT" : "PROVIDER_CONFIG_NOT_IN_CONTRACT", label);
-  // An allowed reader's data source is still judged by N7, and an unreviewed provider's data source is refused either way.
-  assert.equal(judge([data("azapi_resource", { full_name: "registry.terraform.io/azure/azapi" })]), "PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT");
+  // B2: azapi and azuread are not admitted in this release, by any use or block, with their own code. The reviewer's probes: an
+  // azapi resource (any ARM type under any parent), azapi_update_resource (a PATCH of anything), azapi_data_plane_resource,
+  // azapi_resource_action, a minted directory credential and a Graph grant, in the root module or nested.
+  const azapi = { full_name: "registry.terraform.io/azure/azapi" };
+  const azuread = { full_name: "registry.terraform.io/hashicorp/azuread" };
+  for (const [label, use] of [
+    ["azapi_resource", managed("azapi_resource", azapi)], ["azapi_update_resource", managed("azapi_update_resource", azapi)],
+    ["azapi_data_plane_resource", managed("azapi_data_plane_resource", azapi)], ["azapi_resource_action", managed("azapi_resource_action", azapi)],
+    ["azuread_application_password", managed("azuread_application_password", azuread)], ["azuread_app_role_assignment", managed("azuread_app_role_assignment", azuread)],
+    ["azuread by its local name", managed("azuread_application", { name: "azuread" })],
+    ["azapi nested two modules down", { address: "module.a.module.b.azapi_resource.x", mode: "managed", type: "azapi_resource", provider: azapi }],
+  ] as const) assert.equal(judge([managed("azurerm_resource_group", azurerm), use as ProviderUse]), "PROVIDER_NOT_ADMITTED", label);
+  // A local name alone resolves to hashicorp/azapi, which is not Microsoft's provider: an unreviewed one, refused as such.
+  assert.equal(judge([managed("azapi_resource", { name: "azapi" })]), "PROVIDER_CONFIG_NOT_IN_CONTRACT");
+  // Their data sources stay outside N7's reviewed list, refused first by that rule.
+  assert.equal(judge([data("azapi_resource", azapi)]), "PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT");
+  assert.equal(judge([data("azuread_client_config", azuread)]), "PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT");
+  // A provider block of either, whatever subscription or tenant it names (the reviewer's probe: another subscription, another tenant).
+  for (const block of [
+    { name: "azapi", full_name: "registry.terraform.io/azure/azapi", expressions: { subscription_id: { constant_value: "00000000-0000-0000-0000-00000000beef" } } },
+    { name: "azuread", full_name: "registry.terraform.io/hashicorp/azuread", expressions: { tenant_id: { constant_value: "00000000-0000-0000-0000-00000000beef" } } },
+    { name: "azapi", full_name: "registry.terraform.io/azure/azapi" }, { name: "azuread" },
+  ]) assert.equal(judge([], [AZURERM_BLOCK, block]), "PROVIDER_NOT_ADMITTED", JSON.stringify(block));
   // The built-in provider: `terraform_data` only, judged by its provider and by its prefix when the provider is unnamed or forged.
   assert.equal(judge([managed("terraform_unknown", { name: "terraform" })]), "PROVIDER_BUILTIN_TYPE_NOT_IN_CONTRACT");
   assert.equal(judge([managed("terraform_unknown", azurerm)]), "PROVIDER_BUILTIN_TYPE_NOT_IN_CONTRACT", "a built-in type under another provider's name");
@@ -123,7 +141,28 @@ test("RB2: every Azure use is judged against the provider allowlist by exact sou
     { name: "aws", full_name: "registry.terraform.io/hashicorp/aws" }, { name: "http", full_name: "registry.terraform.io/hashicorp/http" },
     { name: "azurerm", full_name: "registry.terraform.io/attacker/azurerm" }, { name: "external" },
   ]) assert.equal(judge([], [AZURERM_BLOCK, block]), "PROVIDER_CONFIG_NOT_IN_CONTRACT", JSON.stringify(block));
-  assert.equal(judge([], [AZURERM_BLOCK, { name: "azapi", full_name: "registry.terraform.io/azure/azapi" }]), "OK");
   // The constant subscription check still holds for the azurerm block.
   assert.equal(judge([], [{ ...azurerm, expressions: { subscription_id: { constant_value: "00000000-0000-0000-0000-00000000dead" } } }]), "PROVIDER_SUBSCRIPTION_NOT_IN_CONTRACT");
+});
+
+test("N1 (review of #327): a managed type that runs code instead of holding a resource is refused on both providers, in any module", () => {
+  const azurerm = { name: "azurerm", full_name: "registry.terraform.io/hashicorp/azurerm" };
+  const azureJudge = (uses: ProviderUse[]) => codeFrom(() => AZURE.assertProviderConfig([], AZURE_PINNED, identityEnv("DEV"), uses));
+  assert.deepEqual([...AZURE_DENIED_TYPES].sort(), [
+    "azurerm_arc_machine_extension", "azurerm_resource_deployment_script_azure_cli", "azurerm_resource_deployment_script_azure_power_shell", "azurerm_stack_hci_extension",
+    "azurerm_virtual_machine_extension", "azurerm_virtual_machine_run_command", "azurerm_virtual_machine_scale_set_extension",
+  ]);
+  for (const type of AZURE_DENIED_TYPES) {
+    assert.equal(azureJudge([managed(type, azurerm)]), "PROVIDER_TYPE_NOT_ALLOWED", type);
+    assert.equal(azureJudge([{ address: "module.app." + type + ".x", mode: "managed", type, provider: azurerm }]), "PROVIDER_TYPE_NOT_ALLOWED", type + " nested");
+  }
+  assert.equal(azureJudge([managed("azurerm_virtual_machine", azurerm), managed("azurerm_kubernetes_cluster", azurerm)]), "OK", "the machines themselves are resources");
+  assert.deepEqual([...AWS_DENIED_TYPES].sort(), ["aws_lambda_invocation", "aws_ssm_association"]);
+  for (const type of AWS_DENIED_TYPES) {
+    assert.equal(awsJudge([managed(type, aws)]), "PROVIDER_TYPE_NOT_ALLOWED", type);
+    assert.equal(awsJudge([{ address: "module.app." + type + ".x", mode: "managed", type, provider: aws }]), "PROVIDER_TYPE_NOT_ALLOWED", type + " nested");
+  }
+  // The data source keeps its own refusal (review of #322): it is not on the reviewed list.
+  assert.equal(awsJudge([data("aws_lambda_invocation", aws)]), "PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT");
+  assert.equal(awsJudge([managed("aws_lambda_function", aws), managed("aws_ssm_document", aws)]), "OK", "the function and the document themselves are resources");
 });

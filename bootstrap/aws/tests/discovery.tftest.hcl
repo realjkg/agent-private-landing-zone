@@ -44,7 +44,7 @@ run "default_is_view_only_with_the_deny" {
     error_message = "No exception: one allow, the blanket deny, the API key deny and the function invocation deny."
   }
   assert {
-    condition     = jsondecode(aws_iam_role_policy.discovery_scope.policy).Statement[3].Sid == "DenyAlwaysFunctionInvocation" && jsondecode(aws_iam_role_policy.discovery_scope.policy).Statement[3].Effect == "Deny" && jsondecode(aws_iam_role_policy.discovery_scope.policy).Statement[3].Resource == "*" && jsonencode(sort(jsondecode(aws_iam_role_policy.discovery_scope.policy).Statement[3].Action)) == jsonencode(["lambda:InvokeAsync", "lambda:InvokeFunction", "lambda:InvokeWithResponseStream"])
+    condition     = jsondecode(aws_iam_role_policy.discovery_scope.policy).Statement[3].Sid == "DenyAlwaysFunctionInvocation" && jsondecode(aws_iam_role_policy.discovery_scope.policy).Statement[3].Effect == "Deny" && jsondecode(aws_iam_role_policy.discovery_scope.policy).Statement[3].Resource == "*" && jsonencode(sort(jsondecode(aws_iam_role_policy.discovery_scope.policy).Statement[3].Action)) == jsonencode(["lambda:InvokeAsync", "lambda:InvokeFunction", "lambda:InvokeFunctionUrl", "lambda:InvokeWithResponseStream"])
     error_message = "Running a function is denied everywhere (review 6453264963 of #322, N4)."
   }
   assert {
@@ -70,7 +70,7 @@ run "the_deny_holds_for_an_override" {
     error_message = "The deny stays with ReadOnlyAccess."
   }
   assert {
-    condition     = contains(jsondecode(aws_iam_role_policy.discovery_scope.policy).Statement[3].Action, "lambda:InvokeFunction") && jsondecode(aws_iam_role_policy.discovery_scope.policy).Statement[3].Effect == "Deny"
+    condition     = contains(jsondecode(aws_iam_role_policy.discovery_scope.policy).Statement[3].Action, "lambda:InvokeFunction") && contains(jsondecode(aws_iam_role_policy.discovery_scope.policy).Statement[3].Action, "lambda:InvokeFunctionUrl") && jsondecode(aws_iam_role_policy.discovery_scope.policy).Statement[3].Effect == "Deny"
     error_message = "The function invocation deny stays with ReadOnlyAccess."
   }
   expect_failures = [check.discovery_managed_policy_scope]
@@ -141,6 +141,15 @@ run "exception_for_function_invocation_refused" {
   variables {
     # Review 6453264963 of #322, N4: running a function is denied always; an exact ARN does not lift it.
     discovery_data_read_exceptions = [{ actions = ["lambda:InvokeFunction"], resources = ["arn:aws:lambda:us-east-1:111111111111:function:example-pilot"], purpose = "Not a data read; must be refused." }]
+  }
+  expect_failures = [aws_iam_role_policy.discovery_scope]
+}
+
+run "exception_for_function_url_invocation_refused" {
+  command = plan
+  variables {
+    # Review of #327, N2: a function URL invocation is denied always too.
+    discovery_data_read_exceptions = [{ actions = ["lambda:InvokeFunctionUrl"], resources = ["arn:aws:lambda:us-east-1:111111111111:function:example-pilot"], purpose = "Not a data read; must be refused." }]
   }
   expect_failures = [aws_iam_role_policy.discovery_scope]
 }

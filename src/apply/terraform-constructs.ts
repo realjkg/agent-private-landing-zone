@@ -31,11 +31,18 @@ import { stop } from "./engine.js";
  * `show -json` starts listing them.
  *
  * The limit of the source rule: it is a lexical rule, not an HCL parser. In a `.tf` file it refuses the words `provisioner` and
- * `ephemeral` anywhere (a block, a reference, a comment or a string) unless an `=` follows them. `ephemeral = true` on a variable or
- * an output is an ephemeral VALUE, not a resource, so it stays allowed. A word in a comment or a string is therefore refused too.
- * That fails closed: rename the comment or the string. In a `.tf.json` file it parses the JSON and refuses a top-level `ephemeral`
- * key and a `provisioner` key at any depth. A file that does not parse is refused. Terraform loads `.tf` and `.tf.json` files only
- * for a plan or an apply. `.tftest.hcl` and `.tfquery.hcl` are not loaded, and the suffix is compared without regard to case.
+ * `ephemeral` anywhere (a block, a reference, a comment or a string) unless an `=` follows them (`*_WORD_IN_SOURCE`, a code that
+ * says the match is lexical). `ephemeral = true` on a variable or an output is an ephemeral VALUE, not a resource, so it stays
+ * allowed. A word in a comment or a string is therefore refused too. That fails closed: rename the comment or the string.
+ *
+ * A `.tf.json` file is read by `strictJson`, never `JSON.parse`: JSON.parse keeps only the last of two keys with the same name,
+ * while Terraform's JSON reader keeps every block under a repeated block-type key, so two `"removed"` keys, the first carrying a
+ * destroy-time `local-exec`, hid the command from both halves of the judge and Terraform ran it (review of #327, B1, reproduced
+ * with real Terraform 1.16.4: test/fixtures/live/terraform/removed-duplicate-key.*). An object that repeats a key, compared after
+ * escapes are decoded, is refused (`TERRAFORM_CONFIGURATION_DUPLICATE_KEY`), and so is anything that is not strict JSON. Then a
+ * `provisioner` key at any depth and a top-level `ephemeral` key are refused, and the `provisioner` word rule also runs over the
+ * raw text (the `ephemeral` one cannot: `"ephemeral": true` on a variable is a value). Terraform loads `.tf` and `.tf.json` files
+ * only for a plan or an apply. `.tftest.hcl` and `.tfquery.hcl` are not loaded, and the suffix is compared without regard to case.
  * Codes only: nothing here quotes the project.
  */
 
@@ -44,6 +51,16 @@ export const ACTION_NOT_ALLOWED = "TERRAFORM_ACTION_NOT_ALLOWED";
 export const EPHEMERAL_NOT_ALLOWED = "TERRAFORM_EPHEMERAL_RESOURCE_NOT_ALLOWED";
 export const CONSTRUCTS_UNREADABLE = "TERRAFORM_CONFIGURATION_UNREADABLE";
 export const CONSTRUCTS_TOO_DEEP = "TERRAFORM_CONFIGURATION_TOO_DEEP";
+export const CONSTRUCTS_DUPLICATE_KEY = "TERRAFORM_CONFIGURATION_DUPLICATE_KEY";
+/** The source rule's lexical matches (review of #327, N3): the word may be in a comment or a string, which `sourceRuleHint` says. */
+export const PROVISIONER_WORD_IN_SOURCE = "TERRAFORM_PROVISIONER_WORD_IN_SOURCE";
+export const EPHEMERAL_WORD_IN_SOURCE = "TERRAFORM_EPHEMERAL_WORD_IN_SOURCE";
+
+/** The operator's hint for a refusal code of the source rule, or "" for any other code. */
+export const sourceRuleHint = (code: string): string =>
+  code === PROVISIONER_WORD_IN_SOURCE || code === EPHEMERAL_WORD_IN_SOURCE
+    ? " The rule is lexical: the word may be in a comment or a string, which is refused too; rename it (docs/act-pilot-apply.md, \"Provisioners, actions and ephemeral resources\")."
+    : code === CONSTRUCTS_DUPLICATE_KEY ? " A .tf.json object repeats a key, which Terraform would read as two blocks; write each block once." : "";
 
 /** Module nesting followed, as the provider walker does; past it the configuration is refused, never read partially. */
 const MAX_DEPTH = 64;
@@ -97,6 +114,89 @@ const wordRule = (word: string): RegExp => new RegExp("(?<![A-Za-z0-9_-])" + wor
 const EPHEMERAL_WORD = wordRule("ephemeral");
 const PROVISIONER_WORD = wordRule("provisioner");
 
+/** JSON nesting read before the configuration is refused as too deep, never read partially. */
+const MAX_JSON_DEPTH = 256;
+const ESCAPES: Readonly<Record<string, string>> = { '"': '"', "\\": "\\", "/": "/", b: "\b", f: "\f", n: "\n", r: "\r", t: "\t" };
+const NUMBER_OR_LITERAL = /-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?|true|false|null/y;
+
+/**
+ * Strict JSON (RFC 8259) as Terraform's JSON reader sees it: every key of every object is kept, so an object that repeats a key,
+ * compared after escapes are decoded, is refused (`TERRAFORM_CONFIGURATION_DUPLICATE_KEY`) rather than silently reduced to its
+ * last value as JSON.parse does. Anything else that is not strict JSON is `TERRAFORM_CONFIGURATION_UNREADABLE`. Objects have no
+ * prototype, so a `__proto__` key is an ordinary key.
+ */
+export function strictJson(text: string): unknown {
+  let at = 0;
+  const unreadable = (): never => stop(CONSTRUCTS_UNREADABLE);
+  const space = (): void => { while (at < text.length && (text[at] === " " || text[at] === "\t" || text[at] === "\n" || text[at] === "\r")) at++; };
+  const string = (): string => {
+    if (text[at] !== '"') unreadable();
+    at++;
+    let out = "";
+    for (;;) {
+      if (at >= text.length) unreadable();
+      const char = text[at++]!;
+      if (char === '"') return out;
+      if (char < " ") unreadable();
+      if (char !== "\\") { out += char; continue; }
+      const escape = text[at++] ?? "";
+      if (escape === "u") {
+        const hex = text.slice(at, at + 4);
+        if (!/^[0-9A-Fa-f]{4}$/.test(hex)) unreadable();
+        out += String.fromCharCode(parseInt(hex, 16));
+        at += 4;
+      } else if (Object.hasOwn(ESCAPES, escape)) out += ESCAPES[escape];
+      else unreadable();
+    }
+  };
+  const value = (depth: number): unknown => {
+    if (depth > MAX_JSON_DEPTH) return stop(CONSTRUCTS_TOO_DEEP);
+    space();
+    const char = text[at];
+    if (char === "{") {
+      at++;
+      const object: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+      space();
+      if (text[at] === "}") { at++; return object; }
+      for (;;) {
+        space();
+        const key = string();
+        if (Object.hasOwn(object, key)) stop(CONSTRUCTS_DUPLICATE_KEY);
+        space();
+        if (text[at++] !== ":") unreadable();
+        object[key] = value(depth + 1);
+        space();
+        const next = text[at++];
+        if (next === "}") return object;
+        if (next !== ",") unreadable();
+      }
+    }
+    if (char === "[") {
+      at++;
+      const list: unknown[] = [];
+      space();
+      if (text[at] === "]") { at++; return list; }
+      for (;;) {
+        list.push(value(depth + 1));
+        space();
+        const next = text[at++];
+        if (next === "]") return list;
+        if (next !== ",") unreadable();
+      }
+    }
+    if (char === '"') return string();
+    NUMBER_OR_LITERAL.lastIndex = at;
+    const match = NUMBER_OR_LITERAL.exec(text);
+    if (!match) return unreadable();
+    at += match[0].length;
+    return match[0] === "true" ? true : match[0] === "false" ? false : match[0] === "null" ? null : Number(match[0]);
+  };
+  const result = value(0);
+  space();
+  if (at !== text.length) unreadable();
+  return result;
+}
+
 /** True when `provisioner` is a key anywhere in the JSON tree. A resource and a `removed` block both carry it below the top level. */
 const hasProvisionerKey = (value: unknown, depth: number): boolean => {
   if (depth > MAX_DEPTH) return stop(CONSTRUCTS_TOO_DEEP);
@@ -129,14 +229,15 @@ export function assertNoRefusedSourceConstructs(work: string, depth = 0): void {
     let text: string;
     try { text = readFileSync(path, "utf8"); } catch { return stop(CONSTRUCTS_UNREADABLE); }
     if (lower.endsWith(".tf")) {
-      if (PROVISIONER_WORD.test(text)) stop(PROVISIONER_NOT_ALLOWED);
-      if (EPHEMERAL_WORD.test(text)) stop(EPHEMERAL_NOT_ALLOWED);
+      if (PROVISIONER_WORD.test(text)) stop(PROVISIONER_WORD_IN_SOURCE);
+      if (EPHEMERAL_WORD.test(text)) stop(EPHEMERAL_WORD_IN_SOURCE);
       continue;
     }
-    let body: unknown;
-    try { body = JSON.parse(text.replace(/^﻿/, "")); } catch { return stop(CONSTRUCTS_UNREADABLE); }
+    // Strict JSON first, so a repeated key cannot hide a block (B1); then the decoded keys; then the raw text's words.
+    const body = strictJson(text.replace(/^\uFEFF/, ""));
     if (!isRecord(body)) return stop(CONSTRUCTS_UNREADABLE);
     if (hasProvisionerKey(body, 0)) stop(PROVISIONER_NOT_ALLOWED);
     if (Object.hasOwn(body, "ephemeral")) stop(EPHEMERAL_NOT_ALLOWED);
+    if (PROVISIONER_WORD.test(text)) stop(PROVISIONER_WORD_IN_SOURCE);
   }
 }

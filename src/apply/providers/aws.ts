@@ -158,13 +158,22 @@ export const AWS_DATA_SOURCES: ReadonlySet<string> = new Set([
 ]);
 const isDataUse = (use: ProviderUse): boolean => use.mode !== "managed" || DATA_ADDRESS.test(use.address);
 /**
- * Every use's provider is an allowed one, and a use whose provider the plan does not name is refused (review N2 of #320: a resource
+ * Types of an allowed provider that run code instead of holding a resource (review of #327, N1; the same reason Terraform actions
+ * and provisioners are refused): `aws_lambda_invocation` invokes a function at apply, as APPLY, and `aws_ssm_association` runs a
+ * document (commands) on instances. Both are in hashicorp/aws 6.68.0's schema (checked 2026-10-27). A managed use is refused
+ * (`PROVIDER_TYPE_NOT_ALLOWED`); a data source of the first is refused as outside `AWS_DATA_SOURCES`.
+ */
+export const AWS_DENIED_TYPES: ReadonlySet<string> = new Set(["aws_lambda_invocation", "aws_ssm_association"]);
+/**
+ * Every use's provider is an allowed one, no managed use is of a denied type (`AWS_DENIED_TYPES`), and a use whose provider the plan
+ * does not name is refused (review N2 of #320: a resource
  * or data source of a provider with no configuration block, `data.http.x` among them, is still judged); every data source is reviewed.
  */
 function assertUses(uses: readonly ProviderUse[]): void {
   for (const use of uses) {
     const id = providerIdOf(use.provider);
     if (id === undefined || !ALLOWED_PROVIDERS.includes(id)) stop("PROVIDER_CONFIG_NOT_IN_CONTRACT");
+    if (!isDataUse(use) && AWS_DENIED_TYPES.has(use.type)) stop("PROVIDER_TYPE_NOT_ALLOWED");
     if (id !== BUILTIN_PROVIDER && isDataUse(use) && !AWS_DATA_SOURCES.has(use.type)) stop("PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT");
   }
 }

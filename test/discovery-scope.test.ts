@@ -80,9 +80,9 @@ test("the deny also names the data and secret reads ReadOnlyAccess grants beyond
   assert.ok(!deny.includes("apigateway:GET"), "API Gateway configuration stays readable");
 });
 
-test("running a function is denied always, beside the reads, and no exception or allow can lift it (review 6453264963 of #322, N4)", () => {
+test("running a function is denied always, by URL too, beside the reads, and no exception or allow can lift it (review 6453264963 of #322, N4; review of #327, N2)", () => {
   const always = [...new Set(Object.values(policy.denyAlways).flatMap((group) => group.actions))];
-  assert.deepEqual([...policy.denyAlways.functionInvocation!.actions].sort(), ["lambda:InvokeAsync", "lambda:InvokeFunction", "lambda:InvokeWithResponseStream"]);
+  assert.deepEqual([...policy.denyAlways.functionInvocation!.actions].sort(), ["lambda:InvokeAsync", "lambda:InvokeFunction", "lambda:InvokeFunctionUrl", "lambda:InvokeWithResponseStream"]);
   for (const action of always) {
     assert.ok(!allow.some((allowed) => matches(allowed, action) || matches(action, allowed)), "never allowed: " + action);
     // Not in the blanket deny, so discovery_data_read_exceptions (which may name only blanket-deny actions) cannot lift it.

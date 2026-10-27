@@ -138,35 +138,44 @@ const AZURERM_PROVIDER = HASHICORP + "azurerm";
 /** Terraform's built-in provider, which `show -json` names whenever a project uses one of its types. Only `terraform_data` of it. */
 const BUILTIN_PROVIDER = "terraform.io/builtin/terraform";
 /**
- * The providers an Azure pilot project may use (RB2, review N3 of #322), by exact source: Azure's own control plane and directory
- * (azurerm; `azure/azapi`, the ARM provider Microsoft publishes; `hashicorp/azuread`, the directory, which AWS keeps inside its one
- * provider as IAM), the built-in provider (one type of it) and ones that reach no cloud, as AWS lists them. The cleanup proposal
- * already keeps whatever azapi or azuread creates by its id or type (../cleanup-proposal.ts). Any other provider (aws, google, a
- * second cloud, an `http` or `external` reader, a lookalike namespace or host such as `registry.terraform.io/hashicorpp/azurerm` or
- * `example.com/hashicorp/azurerm`, or a provider the plan leaves unnamed) is refused, in every module. A provider joins by review.
+ * The providers an Azure pilot project may use (RB2, review N3 of #322; narrowed by the review of #327, B2): azurerm, the built-in
+ * provider (one type of it) and ones that reach no cloud, by exact source, as AWS lists them. Any other provider (aws, google, an
+ * `http` or `external` reader, a lookalike namespace or host such as `registry.terraform.io/hashicorpp/azurerm` or
+ * `example.com/hashicorp/azurerm`, or a provider the plan leaves unnamed) is refused, in every module (`PROVIDER_CONFIG_NOT_IN_CONTRACT`).
  */
-const ALLOWED_PROVIDERS: readonly string[] = [
-  AZURERM_PROVIDER, "registry.terraform.io/azure/azapi", HASHICORP + "azuread", BUILTIN_PROVIDER, ...["random", "null", "time", "tls"].map((name) => HASHICORP + name),
-];
+const ALLOWED_PROVIDERS: readonly string[] = [AZURERM_PROVIDER, BUILTIN_PROVIDER, ...["random", "null", "time", "tls"].map((name) => HASHICORP + name)];
 /**
- * Managed types of an allowed provider that are not resources: `azapi_resource_action` sends any ARM POST at apply (a VM's
- * `runCommand`, an account's `listKeys`), which is an invocation like a Terraform action block, not a reviewed resource change.
+ * Azure providers this release does not admit (`PROVIDER_NOT_ADMITTED`, review of #327, B2). `azure/azapi` writes any ARM type,
+ * under any parent and subscription, while the change list shows only `azapi_resource`; `hashicorp/azuread` mints directory
+ * credentials and grants. Admitting either is the owner's reviewed decision, with its own subscription and tenant binding.
  */
-const DENIED_TYPES: ReadonlySet<string> = new Set(["azapi_resource_action"]);
+const NOT_ADMITTED_PROVIDERS: readonly string[] = ["registry.terraform.io/azure/azapi", HASHICORP + "azuread"];
+/**
+ * Types of an allowed provider that run code instead of holding a resource (review of #327, N1; the same reason Terraform actions
+ * and provisioners are refused): a VM, scale set, Arc machine or Azure Stack HCI extension (CustomScript) and a VM run command
+ * execute commands on the machine, and a deployment script runs a script in a container, at apply. All are in hashicorp/azurerm
+ * 4.81.0's schema (checked 2026-10-27). Refused in any mode (`PROVIDER_TYPE_NOT_ALLOWED`).
+ */
+export const AZURE_DENIED_TYPES: ReadonlySet<string> = new Set([
+  "azurerm_virtual_machine_extension", "azurerm_virtual_machine_scale_set_extension", "azurerm_virtual_machine_run_command", "azurerm_arc_machine_extension",
+  "azurerm_stack_hci_extension", "azurerm_resource_deployment_script_azure_cli", "azurerm_resource_deployment_script_azure_power_shell",
+]);
 const BUILTIN_ALLOWED_TYPE = "terraform_data";
 const BUILTIN_TYPE = /^terraform_/;
 /** A use's provider: its full name, or from its local name alone the built-in provider for `terraform` and a hashicorp one otherwise. */
 const providerIdOf = (provider: ProviderUse["provider"]): string | undefined =>
   provider.full_name ?? (provider.name === "terraform" ? BUILTIN_PROVIDER : provider.name !== undefined ? HASHICORP + provider.name : undefined);
 /**
- * Every use's provider is an allowed one, no use is of a denied type, and a use whose provider the plan does not name is refused,
- * in the root module and in every module below it (`providerUsesOf` reads them all); of the built-in provider only `terraform_data`
+ * Every use's provider is an allowed one (azapi and azuread are not admitted), no use is of a denied type (`AZURE_DENIED_TYPES`),
+ * and a use whose provider the plan does not name is refused, in the root module and in every module below it (`providerUsesOf` reads them all); of the built-in provider only `terraform_data`
  * resources, judged by the provider and, failing closed, by the type's `terraform_` prefix, which no allowed registry provider owns.
  */
 function assertUses(uses: readonly ProviderUse[]): void {
   for (const use of uses) {
     const id = providerIdOf(use.provider);
-    if (id === undefined || !ALLOWED_PROVIDERS.includes(id) || DENIED_TYPES.has(use.type)) stop("PROVIDER_CONFIG_NOT_IN_CONTRACT");
+    if (id !== undefined && NOT_ADMITTED_PROVIDERS.includes(id)) stop("PROVIDER_NOT_ADMITTED");
+    if (id === undefined || !ALLOWED_PROVIDERS.includes(id)) stop("PROVIDER_CONFIG_NOT_IN_CONTRACT");
+    if (AZURE_DENIED_TYPES.has(use.type)) stop("PROVIDER_TYPE_NOT_ALLOWED");
     if ((id === BUILTIN_PROVIDER || BUILTIN_TYPE.test(use.type)) && (use.mode !== "managed" || DATA_ADDRESS.test(use.address) || use.type !== BUILTIN_ALLOWED_TYPE)) {
       stop("PROVIDER_BUILTIN_TYPE_NOT_IN_CONTRACT");
     }
@@ -185,6 +194,7 @@ function assertProviderConfig(blocks: readonly ProviderBlock[], pinned: AzureTar
   assertUses(uses);
   for (const provider of blocks) {
     const id = provider?.full_name ?? HASHICORP + provider?.name;
+    if (NOT_ADMITTED_PROVIDERS.includes(id)) stop("PROVIDER_NOT_ADMITTED");
     if (!ALLOWED_PROVIDERS.includes(id)) stop("PROVIDER_CONFIG_NOT_IN_CONTRACT");
     if (id !== AZURERM_PROVIDER) continue;
     for (const [field, want, code] of [["subscription_id", pinned.subscriptionId, "PROVIDER_SUBSCRIPTION_NOT_IN_CONTRACT"], ["tenant_id", pinned.tenantId, "PROVIDER_TENANT_NOT_IN_CONTRACT"]] as const) {

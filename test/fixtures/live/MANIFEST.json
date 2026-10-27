@@ -247,6 +247,24 @@
       "capturedAt": "2026-10-27",
       "mode": "REAL_TOOL_OFFLINE",
       "note": "Construct-judge fixture (RB1, src/apply/terraform-constructs.ts), read by test/apply-terraform-constructs.test.ts."
+    },
+    {
+      "file": "terraform/removed-duplicate-key.main.tf.json",
+      "engine": "TERRAFORM",
+      "tool": "terraform 1.16.4 linux_amd64 (built-in terraform_data; no provider)",
+      "command": "source of removed-duplicate-key.plan.json: two \"removed\" keys in one object, the first with a destroy-time local-exec. Kept byte for byte: a JSON.parse rewrite would drop the first key",
+      "capturedAt": "2026-10-27",
+      "mode": "REAL_TOOL_OFFLINE",
+      "note": "Construct-judge fixture (RB1; review of #327, B1), read by test/apply-terraform-constructs.test.ts."
+    },
+    {
+      "file": "terraform/removed-duplicate-key.plan.json",
+      "engine": "TERRAFORM",
+      "tool": "terraform 1.16.4 linux_amd64 (built-in terraform_data; no provider)",
+      "command": "terraform apply (local state: terraform_data.x and terraform_data.y); then the duplicate-key configuration: terraform plan -input=false -out=P; terraform show -json P; shows two plain deletes and no provisioner, while terraform apply P ran the local-exec",
+      "capturedAt": "2026-10-27",
+      "mode": "REAL_TOOL_OFFLINE",
+      "note": "Construct-judge fixture (RB1; review of #327, B1), read by test/apply-terraform-constructs.test.ts."
     }
   ],
   "stillNeeded": [

@@ -59,6 +59,8 @@ export const FIXTURE_OWNERS = {
   "test/fixtures/live/terraform/removed-provisioner.child.tf": ["test/apply-terraform-constructs.test.ts"],
   "test/fixtures/live/terraform/removed-provisioner.main.tf": ["test/apply-terraform-constructs.test.ts"],
   "test/fixtures/live/terraform/removed-provisioner.plan.json": ["test/apply-terraform-constructs.test.ts"],
+  "test/fixtures/live/terraform/removed-duplicate-key.main.tf.json": ["test/apply-terraform-constructs.test.ts"],
+  "test/fixtures/live/terraform/removed-duplicate-key.plan.json": ["test/apply-terraform-constructs.test.ts"],
 };
 
 // Source-scan guards read a source tree from disk (a forbidden literal, import or call anywhere under it) instead of

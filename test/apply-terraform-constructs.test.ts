@@ -10,7 +10,8 @@ import { codeOf } from "../src/apply/engine.js";
 import { openNonceStore } from "../src/apply/nonces.js";
 import { loadSealedPlan } from "../src/apply/seal.js";
 import {
-  ACTION_NOT_ALLOWED, CONSTRUCTS_TOO_DEEP, CONSTRUCTS_UNREADABLE, EPHEMERAL_NOT_ALLOWED, PROVISIONER_NOT_ALLOWED,
+  ACTION_NOT_ALLOWED, CONSTRUCTS_DUPLICATE_KEY, CONSTRUCTS_TOO_DEEP, CONSTRUCTS_UNREADABLE, EPHEMERAL_NOT_ALLOWED, EPHEMERAL_WORD_IN_SOURCE, PROVISIONER_NOT_ALLOWED,
+  PROVISIONER_WORD_IN_SOURCE, sourceRuleHint, strictJson,
   assertNoRefusedSourceConstructs, assertNoRefusedPlanConstructs,
 } from "../src/apply/terraform-constructs.js";
 import type { ApplyEnvironment, SignedApproval } from "../src/apply/types.js";
@@ -122,9 +123,62 @@ test("real Terraform 1.16.4 output does not list a removed block or its destroy-
   assert.deepEqual(document.resource_changes.map((c) => [c.address, c.change.actions, c.action_reason]), [["terraform_data.gone", ["delete"], "delete_because_no_resource_config"]]);
   assert.equal(planCode(document), "OK", "the limit, recorded");
   assert.match(fixture("removed-provisioner.main.tf"), /^removed \{[\s\S]*provisioner "local-exec"/m);
-  assert.equal(sourceCode({ "main.tf": fixture("removed-provisioner.main.tf"), "child/main.tf": fixture("removed-provisioner.child.tf") }), PROVISIONER_NOT_ALLOWED);
-  assert.equal(sourceCode({ "main.tf": 'module "child" {\n  source = "./child"\n}\n', "child/main.tf": fixture("removed-provisioner.child.tf") }), PROVISIONER_NOT_ALLOWED, "nested module only");
+  assert.equal(sourceCode({ "main.tf": fixture("removed-provisioner.main.tf"), "child/main.tf": fixture("removed-provisioner.child.tf") }), PROVISIONER_WORD_IN_SOURCE);
+  assert.equal(sourceCode({ "main.tf": 'module "child" {\n  source = "./child"\n}\n', "child/main.tf": fixture("removed-provisioner.child.tf") }), PROVISIONER_WORD_IN_SOURCE, "nested module only");
   assert.equal(sourceCode({ "main.tf.json": JSON.stringify({ removed: [{ from: "terraform_data.gone", lifecycle: { destroy: true }, provisioner: [{ "local-exec": { when: "destroy", command: "id" } }] }] }) }), PROVISIONER_NOT_ALLOWED, "the JSON syntax");
+});
+
+test("B1 (review of #327): a duplicate key in .tf.json cannot hide a removed block's provisioner; real Terraform 1.16.4 ran it, the judge refuses it", () => {
+  const text = fixture("removed-duplicate-key.main.tf.json");
+  // The fixture is the reviewer's shape, byte for byte: two "removed" keys in one object, the first with a destroy-time local-exec.
+  assert.equal(text.match(/"removed"/g)?.length, 2);
+  assert.match(text, /"provisioner": \{"local-exec"/);
+  // What JSON.parse makes of it: the first block, and its provisioner, are gone. That is the bypass.
+  assert.equal(JSON.stringify(JSON.parse(text)).includes("provisioner"), false, "JSON.parse keeps only the last key");
+  // Real Terraform planned two plain deletes and listed no provisioner, so the plan half cannot see it; Terraform's apply then ran it.
+  const plan = fixture("removed-duplicate-key.plan.json");
+  assert.doesNotMatch(plan, /provisioner|local-exec|REMOVED-DUPLICATE-KEY|"removed"/);
+  assert.deepEqual((JSON.parse(plan) as { resource_changes: { address: string; action_reason: string }[] }).resource_changes.map((c) => [c.address, c.action_reason]),
+    [["terraform_data.x", "delete_because_no_resource_config"], ["terraform_data.y", "delete_because_no_resource_config"]]);
+  assert.equal(planCode(JSON.parse(plan)), "OK", "the limit, recorded");
+  // The source half refuses the file for its repeated key, before any key or word is judged, in the root module or a nested one.
+  assert.equal(sourceCode({ "main.tf.json": text }), CONSTRUCTS_DUPLICATE_KEY);
+  assert.equal(sourceCode({ "main.tf": 'module "child" {\n  source = "./child"\n}\n', "child/main.tf.json": text }), CONSTRUCTS_DUPLICATE_KEY, "nested module only");
+  // Even with the repeated key removed, the provisioner is refused.
+  assert.equal(sourceCode({ "main.tf.json": text.replace(/,\n\s*"removed": \{"from": "terraform_data\.y"[^\n]*\n/, "\n") }), PROVISIONER_NOT_ALLOWED);
+});
+
+test("strictJson reads strict JSON as Terraform does: a repeated key anywhere, escaped or not, is refused; anything not strict JSON is unreadable", () => {
+  const code = (text: string): string => codeFrom(() => strictJson(text));
+  for (const [label, text] of [
+    ["top level", '{"a": 1, "a": 2}'],
+    ["nested", '{"resource": {"t": {"n": {}, "n": {}}}}'],
+    ["in a list", '[{"x": 1}, {"y": 1, "y": 2}]'],
+    ["an escaped duplicate", '{"removed": {}, "\\u0072emoved": {}}'],
+    ["a solidus escape", '{"a/b": 1, "a\\/b": 2}'],
+    ["__proto__ twice", '{"__proto__": {}, "__proto__": {}}'],
+  ] as const) assert.equal(code(text), CONSTRUCTS_DUPLICATE_KEY, label);
+  for (const [label, text] of [
+    ["trailing comma", '{"a": 1,}'], ["a comment", '{"a": 1 /* x */}'], ["single quotes", "{'a': 1}"], ["a bare word", "{a: 1}"],
+    ["a raw control character", '{"a": "x\ny"}'], ["a bad escape", '{"a": "\\x"}'], ["a short unicode escape", '{"a": "\\u12"}'],
+    ["trailing text", '{"a": 1} x'], ["two values", "{} {}"], ["empty", ""], ["a leading zero", '{"a": 01}'], ["NaN", '{"a": NaN}'],
+    ["unterminated", '{"a": "x'], ["a missing colon", '{"a" 1}'],
+  ] as const) assert.equal(code(text), CONSTRUCTS_UNREADABLE, label);
+  // What it accepts it reads exactly as JSON.parse does, with every object free of a prototype.
+  const sample = '{"a": [1, -2.5e3, true, false, null, "x\\u00e9\\n\\"y"], "b": {"c": {}}, "__proto__": {"d": 1}, "e": []}';
+  const read = strictJson(sample) as Record<string, unknown>;
+  assert.equal(JSON.stringify(read), JSON.stringify(JSON.parse(sample)));
+  assert.equal(Object.getPrototypeOf(read), null);
+  assert.deepEqual(Object.keys(read), ["a", "b", "__proto__", "e"], "a __proto__ key is an ordinary key");
+  let deep = "";
+  for (let level = 0; level < 300; level++) deep += "[";
+  assert.equal(code(deep), CONSTRUCTS_TOO_DEEP);
+});
+
+test("N3 (review of #327): a source-rule refusal tells the operator that the word may be in a comment or a string; a duplicate key says what to fix", () => {
+  for (const code of [PROVISIONER_WORD_IN_SOURCE, EPHEMERAL_WORD_IN_SOURCE]) assert.match(sourceRuleHint(code), /may be in a comment or a string/);
+  assert.match(sourceRuleHint(CONSTRUCTS_DUPLICATE_KEY), /repeats a key/);
+  for (const code of [PROVISIONER_NOT_ALLOWED, EPHEMERAL_NOT_ALLOWED, ACTION_NOT_ALLOWED, "PROVIDER_CONFIG_NOT_IN_CONTRACT"]) assert.equal(sourceRuleHint(code), "", code);
 });
 
 test("the source half refuses a provisioner block in any form, and fails closed on the word", () => {
@@ -136,7 +190,9 @@ test("the source half refuses a provisioner block in any form, and fails closed 
     ["a comment (fails closed)", { "main.tf": "# no provisioner here\n" }],
     ["JSON, on a resource", { "main.tf.json": JSON.stringify({ resource: { terraform_data: { t: { provisioner: [{ "local-exec": { command: "id" } }] } } } }) }],
     ["JSON, escaped key, in a module", { "m/main.tf.json": '{"resource": {"null_resource": {"n": {"\\u0070rovisioner": {"local-exec": {"command": "id"}}}}}}' }],
-  ] as const) assert.equal(sourceCode(files), PROVISIONER_NOT_ALLOWED, label);
+  ] as const) assert.equal(sourceCode(files), (Object.keys(files) as string[]).some((name) => name.endsWith(".json")) ? PROVISIONER_NOT_ALLOWED : PROVISIONER_WORD_IN_SOURCE, label);
+  // In JSON the word rule also runs over the raw text: a string value naming it is refused, lexically.
+  assert.equal(sourceCode({ "main.tf.json": JSON.stringify({ locals: { note: "no provisioner here" } }) }), PROVISIONER_WORD_IN_SOURCE, "a JSON string (fails closed)");
   assert.equal(sourceCode({ "main.tf": 'locals {\n  provisioners = 1\n}\n' }), "OK", "a longer identifier");
   assert.equal(sourceCode({ "main.tf.json": JSON.stringify({ locals: { provisioners: 1 } }) }), "OK", "a longer key");
 });
@@ -183,12 +239,12 @@ test("the plan half fails closed: a malformed tree is unreadable and a tree past
 
 test("the source half refuses an ephemeral block in any Terraform file, in the root module, a nested module or a directory the manifest does not capture", () => {
   const real = { "main.tf": fixture("aws-ephemeral.main.tf"), "child/main.tf": fixture("aws-ephemeral.child.tf") };
-  assert.equal(sourceCode(real), EPHEMERAL_NOT_ALLOWED, "the real fixture's sources");
-  assert.equal(sourceCode({ "main.tf": 'module "child" {\n  source = "./child"\n}\n', "child/main.tf": fixture("aws-ephemeral.child.tf") }), EPHEMERAL_NOT_ALLOWED, "nested module only");
-  assert.equal(sourceCode({ "main.tf": "", "a/b/c/d/main.tf": 'ephemeral "aws_kms_secrets" "k" {}\n' }), EPHEMERAL_NOT_ALLOWED, "four directories down");
-  assert.equal(sourceCode({ "main.tf": "", "node_modules/m/main.tf": 'ephemeral "aws_eks_cluster_auth" "a" {}\n' }), EPHEMERAL_NOT_ALLOWED, "a directory the manifest skips");
-  assert.equal(sourceCode({ "main.tf": "", ".git/m/main.tf": 'ephemeral "aws_eks_cluster_auth" "a" {}\n' }), EPHEMERAL_NOT_ALLOWED);
-  assert.equal(sourceCode({ "main.tf": 'module "child" {\n  source = "./child"\n}\n', "child/main.tf": fixture("aws-ephemeral.child.tf") }), EPHEMERAL_NOT_ALLOWED);
+  assert.equal(sourceCode(real), EPHEMERAL_WORD_IN_SOURCE, "the real fixture's sources");
+  assert.equal(sourceCode({ "main.tf": 'module "child" {\n  source = "./child"\n}\n', "child/main.tf": fixture("aws-ephemeral.child.tf") }), EPHEMERAL_WORD_IN_SOURCE, "nested module only");
+  assert.equal(sourceCode({ "main.tf": "", "a/b/c/d/main.tf": 'ephemeral "aws_kms_secrets" "k" {}\n' }), EPHEMERAL_WORD_IN_SOURCE, "four directories down");
+  assert.equal(sourceCode({ "main.tf": "", "node_modules/m/main.tf": 'ephemeral "aws_eks_cluster_auth" "a" {}\n' }), EPHEMERAL_WORD_IN_SOURCE, "a directory the manifest skips");
+  assert.equal(sourceCode({ "main.tf": "", ".git/m/main.tf": 'ephemeral "aws_eks_cluster_auth" "a" {}\n' }), EPHEMERAL_WORD_IN_SOURCE);
+  assert.equal(sourceCode({ "main.tf": 'module "child" {\n  source = "./child"\n}\n', "child/main.tf": fixture("aws-ephemeral.child.tf") }), EPHEMERAL_WORD_IN_SOURCE);
   for (const [label, text] of [
     ["unquoted labels", "ephemeral aws_ssm_parameter p {\n}\n"],
     ["after a comment on the same line", '/* x */ ephemeral "aws_ssm_parameter" "p" {}\n'],
@@ -199,9 +255,9 @@ test("the source half refuses an ephemeral block in any Terraform file, in the r
     ["a comment (fails closed)", "# an ephemeral thing\n"],
     ["a string (fails closed)", 'locals {\n  x = "ephemeral"\n}\n'],
     ["a block in an override file", 'ephemeral "aws_ssm_parameter" "p" {}\n'],
-  ] as const) assert.equal(sourceCode({ [label.includes("override") ? "x_override.tf" : "main.tf"]: text }), EPHEMERAL_NOT_ALLOWED, label);
+  ] as const) assert.equal(sourceCode({ [label.includes("override") ? "x_override.tf" : "main.tf"]: text }), EPHEMERAL_WORD_IN_SOURCE, label);
   // The suffix is compared without regard to case.
-  assert.equal(sourceCode({ "MAIN.TF": 'ephemeral "aws_ssm_parameter" "p" {}\n' }), EPHEMERAL_NOT_ALLOWED);
+  assert.equal(sourceCode({ "MAIN.TF": 'ephemeral "aws_ssm_parameter" "p" {}\n' }), EPHEMERAL_WORD_IN_SOURCE);
 });
 
 test("the source half allows ephemeral values, longer identifiers and files Terraform does not load for a plan", () => {
@@ -339,11 +395,12 @@ for (const provider of PROVIDERS) {
 
   test(provider.name + ": an ephemeral block or a removed block's provisioner in the project, root or nested module, stops the seal before init or any plan runs", async () => {
     for (const [label, code, extra, mainTf] of [
-      ["root module", EPHEMERAL_NOT_ALLOWED, {}, provider.mainTf + 'ephemeral "aws_ssm_parameter" "p" {\n  arn = "x"\n}\n'],
-      ["nested module", EPHEMERAL_NOT_ALLOWED, { "modules/app/main.tf": 'ephemeral "azurerm_key_vault_secret" "s" {\n  name = "x"\n}\n' }, provider.mainTf + 'module "app" {\n  source = "./modules/app"\n}\n'],
+      ["root module", EPHEMERAL_WORD_IN_SOURCE, {}, provider.mainTf + 'ephemeral "aws_ssm_parameter" "p" {\n  arn = "x"\n}\n'],
+      ["nested module", EPHEMERAL_WORD_IN_SOURCE, { "modules/app/main.tf": 'ephemeral "azurerm_key_vault_secret" "s" {\n  name = "x"\n}\n' }, provider.mainTf + 'module "app" {\n  source = "./modules/app"\n}\n'],
       ["JSON configuration in a nested module", EPHEMERAL_NOT_ALLOWED, { "modules/app/main.tf.json": JSON.stringify({ ephemeral: { random_password: { p: { length: 16 } } } }) }, provider.mainTf],
-      ["a removed block's destroy-time local-exec", PROVISIONER_NOT_ALLOWED, {}, provider.mainTf + fixture("removed-provisioner.child.tf")],
-      ["a removed block's provisioner in a nested module", PROVISIONER_NOT_ALLOWED, { "modules/app/main.tf": fixture("removed-provisioner.child.tf") }, provider.mainTf + 'module "app" {\n  source = "./modules/app"\n}\n'],
+      ["a removed block's destroy-time local-exec", PROVISIONER_WORD_IN_SOURCE, {}, provider.mainTf + fixture("removed-provisioner.child.tf")],
+      ["a .tf.json with a repeated key hiding a removed block's provisioner (B1)", CONSTRUCTS_DUPLICATE_KEY, { "modules/app/main.tf.json": fixture("removed-duplicate-key.main.tf.json") }, provider.mainTf + 'module "app" {\n  source = "./modules/app"\n}\n'],
+      ["a removed block's provisioner in a nested module", PROVISIONER_WORD_IN_SOURCE, { "modules/app/main.tf": fixture("removed-provisioner.child.tf") }, provider.mainTf + 'module "app" {\n  source = "./modules/app"\n}\n'],
     ] as const) {
       const h = harness(provider);
       const before = h.plans();
@@ -351,6 +408,9 @@ for (const provider of PROVIDERS) {
       const refusedSeal = await h.sealWith(h.project(extra, mainTf));
       assert.equal(refusedSeal.ok, false, label);
       assert.match((refusedSeal as { message: string }).message, new RegExp(code), label);
+      // N3: the operator is told what the lexical rule matched, and how to fix a repeated key.
+      if (code === PROVISIONER_WORD_IN_SOURCE || code === EPHEMERAL_WORD_IN_SOURCE) assert.match((refusedSeal as { message: string }).message, /may be in a comment or a string/, label);
+      if (code === CONSTRUCTS_DUPLICATE_KEY) assert.match((refusedSeal as { message: string }).message, /repeats a key/, label);
       assert.equal(h.plans(), before, "no plan ran: " + label);
       assert.equal(callsOf(toolDir).filter((c) => c.args[0] === "init").length, initsBefore, "no init ran: " + label);
       assert.deepEqual(readdirSync(h.dirs.scratch), [], "no scratch directory survives: " + label);
