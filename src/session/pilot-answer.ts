@@ -192,9 +192,16 @@ export function localModelExplainer(): { explain: PilotExplainer; modelName: str
 export type HandoffKind = "APPROVE" | "APPLY" | "CLEANUP" | "CONTRACT" | "HOSTED_INFERENCE";
 
 const HOSTED = /\b(?:openai|chat ?gpt|gpt-?\d|anthropic|claude|gemini|bedrock|vertex ai|azure openai|mistral\.ai|hosted (?:model|inference|llm|ai)|cloud (?:model|llm|inference|ai)|remote (?:model|llm|inference)|api key for (?:a|the) model)\b/i;
-const CONTRACT = /\b(?:edit|change|modify|update|write|rewrite|add|remove|delete|empty|clear|set|bypass|lift|disable|turn off)\b.{0,40}\b(?:pilot contract|act-pilot-contract|contract|authori[sz]e (?:entry|list)|authori[sz]ation|approver allowlist|allowlist|kill ?switch)\b|\b(?:enable|turn on|activate|unlock)\b.{0,20}\bact\b|\bauthori[sz]e\b.{0,30}\b(?:act|apply|cleanup|myself|me)\b/i;
+const CONTRACT = /\b(?:edit|change|modify|update|write|rewrite|add|remove|delete|empty|clear|set|bypass|lift|disable|turn off)\b.{0,40}\b(?:pilot contract|act-pilot-contract|contract|authori[sz]e (?:entry|list)|(?:pilot|act) authori[sz]ation|approver allow ?-?list|kill ?-?switch)\b|\b(?:enable|turn on|activate|unlock)\b.{0,20}\bact\b|\bauthori[sz]e\b.{0,30}\b(?:act|apply|cleanup|myself|me)\b/i;
 /** The owner's pilot controls, named in any form ("flip the kill switch", "is the kill switch on?", "approval history please"). */
-const PILOT_AUTHORITY = /\b(?:kill ?-?switch|allow ?-?list|approvers?|approvals? (?:history|log|list|record|records|ledger|status)|approval ledger|authori[sz]e (?:entry|list)|pilot contract|act-pilot-contract|act (?:switch|toggle|flag))\b/i;
+const PILOT_TERM = "(?:pilot|act|contract|apply|approv\\w*)";
+const PILOT_AUTHORITY = new RegExp(
+  "\\b(?:kill ?-?switch|approver allow ?-?list|pilot approvers?|who (?:are|is) the approvers?|approvals? (?:history|log|list|record|records|ledger|status)" +
+    "|approval ledger|authori[sz]e (?:entry|list)|pilot contract|act-pilot-contract|act (?:switch|toggle|flag)|(?:add|remove|put) me (?:to|on|from|off) the allow ?-?list)\\b" +
+    // A bare "allowlist" or "approver" is a pilot control only beside a pilot word; "the ip allowlist in the design" is design work.
+    "|\\b(?:allow ?-?list|approvers?)\\b.{0,30}\\b" + PILOT_TERM + "\\b|\\b" + PILOT_TERM + "\\b.{0,30}\\b(?:allow ?-?list|approvers?)\\b",
+  "i",
+);
 const VERB_LEAD = /^(?:please\s+|ok(?:ay)?,?\s+|now\s+|go ahead and\s+|just\s+)?/;
 const ASK = /\b(?:can you|could you|would you|will you|please|go ahead and|i want you to|you should|you can|for me|yourself|on my behalf)\b/i;
 const APPROVE = /\b(?:approve|sign|co-?sign|countersign)\b/i;

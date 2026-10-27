@@ -462,6 +462,15 @@ test("review N7: wider operator scope sends apply, approve, contract and hosted 
     assert.deepEqual(evaluateOperatorRequest(phrase, false), { allowed: true }, phrase);
     assert.equal(classifySessionCommand(phrase), "PILOT_HANDOFF", phrase);
   }
+  // Round 3: design work that names an allowlist or approvers is not a pilot control; it routes exactly as on main.
+  for (const phrase of ["show the ip allowlist in the design", "add an allowlist for outbound https in the network design",
+    "update the firewall allowlist for the hub vnet", "list the change approvers in the governance design", "update the authorization rules for the api gateway design"]) {
+    assert.equal(pilotHandoffKind(phrase), undefined, phrase);
+    assert.equal(classifySessionCommand(phrase), "RUN", phrase);
+  }
+  for (const phrase of ["add me to the allowlist", "who can approve the pilot? show the approvers", "is my key on the act allowlist?"]) {
+    assert.equal(classifySessionCommand(phrase), "PILOT_HANDOFF", phrase);
+  }
   for (const phrase of ["flip the kill switch", "is the kill switch on?", "what is in the approver allowlist?", "approval history please"]) {
     const response = pilotHandoffResponse(pilotHandoffKind(phrase)!);
     assert.match(response, /^REFUSED \(PILOT_AUTHORITY_OWNER_ONLY\)/, phrase);
