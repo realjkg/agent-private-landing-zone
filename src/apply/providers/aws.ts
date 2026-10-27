@@ -102,8 +102,14 @@ const isSet = (expression: unknown): boolean => !(isRecord(expression) && expres
 
 const HASHICORP = "registry.terraform.io/hashicorp/";
 const AWS_PROVIDER = HASHICORP + "aws";
-/** The providers a project may use besides aws: ones that reach no cloud. Any other (azurerm, a second cloud, a lookalike namespace) is refused. */
-const ALLOWED_PROVIDERS: readonly string[] = [AWS_PROVIDER, ...["random", "null", "time", "tls"].map((name) => HASHICORP + name)];
+/**
+ * Terraform's built-in provider (`terraform_data`, `terraform_remote_state`), which `show -json` lists under this name whenever a
+ * project uses one of them. The real engine exposed its absence (docs/act-pilot-simulation-aws.md): the built-in-only fixture the
+ * emulated simulation runs could not be sealed. It is not a registry provider and reaches no cloud of its own.
+ */
+const BUILTIN_PROVIDER = "terraform.io/builtin/terraform";
+/** The providers a project may use besides aws: the built-in one and ones that reach no cloud. Any other (azurerm, a second cloud, a lookalike namespace) is refused. */
+const ALLOWED_PROVIDERS: readonly string[] = [AWS_PROVIDER, BUILTIN_PROVIDER, ...["random", "null", "time", "tls"].map((name) => HASHICORP + name)];
 /**
  * What the aws provider takes from the APPLY identity's environment and nowhere else: static or shared credentials and
  * config files, endpoints, proxies, a trust store, the metadata service, and the `skip_*` switches that turn off the account

@@ -503,6 +503,9 @@ test("a provider block that names another account, role, credential, file, desti
     ["explicit nulls and an empty list", provider({ allowed_account_ids: { constant_value: [] }, forbidden_account_ids: { constant_value: null } })],
     ["explicit nulls for the denied attributes", provider({ profile: { constant_value: null }, access_key: { constant_value: null }, endpoints: { constant_value: null } })],
     ["another provider's constants", { random: { name: "random", full_name: "registry.terraform.io/hashicorp/random", expressions: { allowed_account_ids: { constant_value: [other] } } } }],
+    // Terraform 1.16.4 lists its built-in provider exactly so for a project with a `terraform_data` resource (docs/act-pilot-simulation-aws.md); the aws block beside it is still judged.
+    ["the built-in provider beside a matching aws block", { terraform: { name: "terraform", full_name: "terraform.io/builtin/terraform" }, ...provider({ allowed_account_ids: { constant_value: [mine] } }) }],
+    ["the built-in provider alone", { terraform: { name: "terraform", full_name: "terraform.io/builtin/terraform" } }],
   ];
   for (const [label, showProviderConfig, code = "PROVIDER_ACCOUNT_NOT_IN_CONTRACT"] of refusing) {
     const w = world();
