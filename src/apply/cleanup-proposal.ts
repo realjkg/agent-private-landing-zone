@@ -10,7 +10,7 @@ import type { AwsTarget } from "./providers/aws.js";
 import type { AzureTarget } from "./providers/azure.js";
 import { armPathSafe, isArmGroupId, isArmRegistrationId, isArmScopeId, parseArmId, type ArmType } from "../observe/azure-rest.js";
 import { awsContainerFamilyOf } from "../observe/aws-containers.js";
-import { awsLeafEntryOf, awsParentIdOf, isAwsLeafType, isWellFormedResourceType } from "../observe/aws-leaf-types.js";
+import { awsLeafConditionProblem, awsLeafEntryOf, awsParentIdOf, isAwsLeafType, isWellFormedResourceType } from "../observe/aws-leaf-types.js";
 
 /**
  * The cleanup proposal (docs/act-pilot-plan.md, "Cleanup of pilot-created resources"): the reviewable, hash-identified list
@@ -338,7 +338,8 @@ function protectionOf(entry: { type: string; id: string | null; arn: string | nu
   // A custom resource runs code of its own on removal, and what that code holds no listing here accounts for: never proposed (the CDK engine refuses one at the seal too).
   if (entry.type.startsWith("Custom::") || entry.type === "AWS::CloudFormation::CustomResource") return "CONTAINS_OTHERS";
   if (!isWellFormedResourceType(entry.type)) return UNCLASSIFIABLE;
-  return isAwsLeafType(entry.type) ? undefined : "TYPE_UNREVIEWED";
+  // An allowlisted type whose entry admits only some objects (an Organizations policy: service control policies only) holds the rest.
+  return isAwsLeafType(entry.type) && awsLeafConditionProblem(entry) === undefined ? undefined : "TYPE_UNREVIEWED";
 }
 
 type ProposalFields = Omit<CleanupProposal, "proposalSha256">;
@@ -413,7 +414,7 @@ export function buildCleanupProposal(input: ProposalInput): { ok: true; proposal
     if (change.action === "REPLACE" || change.action === "REPLACE_CONDITIONAL") { keep("REPLACED_PRE_EXISTING", "the plan replaced a resource that existed before this run"); continue; }
     if (change.action !== "CREATE") { keep("PRE_EXISTING", "the plan left or changed a resource that existed before this run (" + change.action + ")"); continue; }
     // Created by this run, but of a type nobody reviewed as a leaf: kept and named, never deleted; the rest of the run is still cleaned up.
-    if (protection === "TYPE_UNREVIEWED") { keep("TYPE_UNREVIEWED", unreviewedTypeReason(entry.type)); continue; }
+    if (protection === "TYPE_UNREVIEWED") { keep("TYPE_UNREVIEWED", awsLeafConditionProblem(entry) ?? unreviewedTypeReason(entry.type)); continue; }
     const seen: ObservedResource | undefined = observed.get(entry.address);
     if (seen === undefined || seen.result === "NOT_YET_OBSERVABLE" || seen.result === "DIFFERENT_FROM_DESIRED") {
       return refuse("OBSERVATION_INCONCLUSIVE", "The observation could not decide about " + entry.address + " (" + (seen?.reason ?? "not observed") + "). Observe this run again before proposing a cleanup.");
@@ -564,6 +565,8 @@ export function protectedDeletionIn(planned: readonly PlanChange[], entries: rea
     const protection = protectionOf(entry, contract, backendGroups);
     if (protection === undefined) continue;
     if (protection === UNCLASSIFIABLE) return "The destroy plan would " + change.action.toLowerCase() + " " + stripInvisible(change.address) + ", whose identifier does not parse as an ARM id (or is a URL its type does not record, or an identity's ARN under another type, or an attribute set the blueprint could not scan in full, or its type is not a well-formed resource type), so what it protects is unknown and a pilot cleanup never deletes it (OWNERSHIP_AMBIGUOUS).";
+    const condition = protection === "TYPE_UNREVIEWED" ? awsLeafConditionProblem(entry) : undefined;
+    if (condition !== undefined) return "The destroy plan would " + change.action.toLowerCase() + " " + stripInvisible(change.address) + " (" + stripInvisible(change.type) + "), which a pilot cleanup never deletes, directly or as a dependent: " + condition + " (TYPE_UNREVIEWED).";
     if (protection === "TYPE_UNREVIEWED") return "The destroy plan would " + change.action.toLowerCase() + " " + stripInvisible(change.address) + ", whose type (" + stripInvisible(change.type) + ") is not on the reviewed leaf allowlist, so what deleting it would take with it is unknown and a pilot cleanup never deletes it, directly or as a dependent (TYPE_UNREVIEWED).";
     const what = protection === "RETAINED_GROUP" ? "a resource group" : protection === "PROTECTED_IDENTITY" ? "an identity or authorization object" : protection === "PROTECTED_DEPLOYMENT" ? "deployment history"
       : protection === "PROTECTED_BACKEND" ? "the state backend" : contract.provider === "AWS" ? "a stack container (" + (awsContainerFamilyOf(entry.type)?.what ?? "a type that deploys a CloudFormation stack") + ") holding resources the state does not list"
