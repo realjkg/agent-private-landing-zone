@@ -53,7 +53,17 @@ The backend block and its settings follow `docs/act-pilot-apply.md`. The seal re
 
 1. **APPLY stays on one resource group.** The bootstrap gives APPLY Contributor, and DISCOVERY Reader, on the pilot group alone. Contributor on a group cannot create a group (`bootstrap/azure/modules/environment/main.tf`), so a workload that created its own group would need both identities on the whole subscription. Keep `apply_resource_group_name` set.
 2. **The governed cleanup removes everything the run created.** The cleanup never deletes a resource group (`RETAINED_GROUP`, `src/apply/cleanup-proposal.ts`; `docs/act-pilot-apply.md`, "Cleanup"). Because the run creates none, `verify-cleanup` can confirm the virtual network gone. The pilot group itself belongs to the bootstrap, and its teardown (`docs/act-pilot-bootstrap.md`, "Teardown") removes it.
-3. **`resource_provider_registrations = "none"` is required.** The azurerm provider (4.x) registers a set of resource providers when it starts unless this is set. The plan runs as DISCOVERY, which holds Reader and cannot register anything. Registration is a one-time prerequisite of the bootstrap: the owner registers `Microsoft.Network` (and `Microsoft.Storage`, Step 1 of the bootstrap) in the DEV subscription beforehand. UNVERIFIED: the exact startup behavior of the pinned azurerm version, and whether Reader alone covers the provider's other startup reads.
+3. **`resource_provider_registrations = "none"` is required.** The azurerm provider (4.x) registers a set of resource providers when it starts unless this is set. The plan runs as DISCOVERY, which holds Reader and cannot register anything. Registration is therefore a one-time prerequisite: the owner registers, once, in the DEV subscription, every resource provider namespace the bootstrap and the workload use:
+
+   | Namespace | Used by | Note |
+   | --- | --- | --- |
+   | `Microsoft.Storage` | bootstrap: the state storage account and container | `docs/act-pilot-bootstrap.md`, Step 1 |
+   | `Microsoft.Network` | workload: the virtual network | the only namespace the workload adds |
+   | `Microsoft.Consumption` | bootstrap: the subscription budget | only when `budget_monthly_amount` is set |
+   | `Microsoft.Resources` | bootstrap: the state and pilot resource groups | registered by default in every subscription; check, do not register |
+   | `Microsoft.Authorization` | bootstrap: the four role assignments | registered by default in every subscription; check, do not register |
+
+   The app registrations, service principals and federated credentials are Entra (Microsoft Graph) objects, not resource providers. Check with `az provider show --namespace <namespace> --query registrationState`; register with `az provider register --namespace <namespace> --wait`. The bootstrap's own azurerm provider keeps its default registration behavior, because it runs as the administrator. Only the pilot project sets `"none"`. UNVERIFIED: the exact startup behavior of the pinned azurerm version, and whether Reader alone covers the provider's other startup reads.
 4. **The reader's subscription-scope reads are a live-evidence item.** The observation lists unit-tagged resources and groups, and reads provider API versions, at subscription scope (`src/observe/azure-rest.ts`). It does this while DISCOVERY's Reader is on the pilot group only. Whether Azure answers those reads, or refuses them, is UNVERIFIED and is not claimed here. It is recorded for the owner-supervised DEV run (issue #39, comment 6444382695, item 3). A refused read fails closed: it is `UNKNOWN` or an incomplete listing, never absence.
 
 The pilot therefore does not exercise the creation of a container. That is accepted for DEV.
@@ -201,7 +211,7 @@ These steps are in order. Each is done by the owner or by a person the owner nam
 
 1. Assign the roles. Choose the execution host. Confirm the workload. Name the cleanup owner.
 2. Provide a DEV subscription dedicated to the pilot, with a budget and alerts (`docs/act-dev-enablement.md`).
-3. Run `bootstrap/azure` in DEV-only mode (`docs/act-pilot-bootstrap.md`, Step 1) with `apply_resource_group_name` set, using a separately held administrative identity. Register `Microsoft.Network`. Place the four token files on the execution host.
+3. Run `bootstrap/azure` in DEV-only mode (`docs/act-pilot-bootstrap.md`, Step 1) with `apply_resource_group_name` set, using a separately held administrative identity. Register the namespaces listed under "The minimal workload", item 3 (`Microsoft.Network`, `Microsoft.Storage`, and `Microsoft.Consumption` with a budget). Place the four token files on the execution host.
 4. Copy `config/act-pilot-contract.azure-dev.example.json` to `config/act-pilot-contract.json`. Fill it from `terraform output -json` and the table above, keeping `enabled: false`. Run `./alz apply contract-check --file config/act-pilot-contract.json` until it reports COMPLETE.
 5. Set the twenty `ALZ_<IDENTITY>_ARM_*` variables on the execution host. Run `./alz apply preflight --environment DEV`: every item except qualification should be READY.
 6. Wait for the Entra-only G1b (engineering's, not the owner's).
