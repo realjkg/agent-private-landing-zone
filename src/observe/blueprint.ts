@@ -6,6 +6,8 @@
  * some by the other. No other attribute value is ever copied out, so the blueprint can go into reviewable evidence.
  */
 
+import { isAwsContainerType } from "./aws-containers.js";
+
 /** A planned change, as the sealed plan's redacted summary lists it (src/apply/types.ts PlanChange, structurally). */
 export type PlannedChange = { address: string; type: string; action: string };
 
@@ -18,6 +20,13 @@ export type BlueprintEntry = {
   id: string | null;
   /** IN_PLAN: the sealed plan names it. NOT_IN_PLAN: the state holds it and the plan never mentioned it. */
   origin: "IN_PLAN" | "NOT_IN_PLAN";
+  /**
+   * Set when a wrapper type (`terraform_data`, `null_resource`, `aws_cloudformation_stack`, a CloudFormation custom resource)
+   * holds an IAM ARN in any attribute the state recorded, as a whole value or an element of a list, or when its attributes nest
+   * past the depth the scan reads (`SCAN_DEPTH`), so one could not be ruled out: an identity may be in disguise, so the cleanup
+   * refuses to classify it. Judged in place; the attribute itself is never copied.
+   */
+  holdsIdentityArn?: true;
 };
 export type Blueprint = {
   entries: BlueprintEntry[];
@@ -46,6 +55,30 @@ function* managedResources(module: StateModule, depth = 0): Generator<StateResou
 
 /** Types whose provider id is a credential identifier (an access key id, for example). Their id is never copied. */
 const CREDENTIAL_ID_TYPES = new Set(["aws_iam_access_key", "aws_iam_service_specific_credential"]);
+/**
+ * Wrapper types that can carry anything, an identity's ARN among it (review 6412488764, N2): the generic wrappers here, and every
+ * stack container of the one family table (src/observe/aws-containers.ts; review 6432262110 B1). Their attributes are judged for one.
+ */
+const WRAPPER_TYPE = /^(?:terraform_data|null_resource|AWS::CloudFormation::CustomResource|Custom::)/;
+const isWrapperType = (type: string): boolean => WRAPPER_TYPE.test(type) || isAwsContainerType(type);
+/** An IAM ARN as a whole string value, or as one element of a separated list, in any partition. */
+const IAM_ARN_ELEMENT = /(?:^|[\s,;|])arn:aws(?:-[a-z]+)*:iam::[^\s,;|]*/;
+/**
+ * How many nested objects or lists the scan enters, the attribute set itself being the first. A container nested deeper
+ * than that is not entered: the scan cannot finish, so it reports that an IAM ARN could not be ruled out (fail closed, review
+ * 6412896598 B2), and the entry is unclassifiable rather than ordinary. Width is unbounded; the scan is linear in the input.
+ */
+export const SCAN_DEPTH = 32;
+/**
+ * Whether any string anywhere in a value (an attribute, a nested object, a list) is or contains an IAM ARN element, or the
+ * value nests too deep for the scan to say. Reads in place, copies nothing. `depth` is how many containers enclose `value`.
+ */
+function holdsIamArn(value: unknown, depth = 0): boolean {
+  if (typeof value === "string") return IAM_ARN_ELEMENT.test(value);
+  if (!Array.isArray(value) && !isRecord(value)) return false;
+  if (depth >= SCAN_DEPTH) return true;
+  return (Array.isArray(value) ? value : Object.values(value)).some((item) => holdsIamArn(item, depth + 1));
+}
 
 /** One managed instance as either state format names it: its address, type and attribute values (read for identifiers only). */
 type Instance = { address: string; type: string; values: Record<string, unknown> };
@@ -74,6 +107,7 @@ function blueprintOf(instances: Iterable<Instance>, planned: readonly PlannedCha
       arn: text(values.arn) && values.arn.startsWith("arn:") ? values.arn : null,
       id: text(values.id) && !CREDENTIAL_ID_TYPES.has(resource.type) ? values.id : null,
       origin: plannedAddresses.has(resource.address) ? "IN_PLAN" : "NOT_IN_PLAN",
+      ...(isWrapperType(resource.type) && holdsIamArn(values) ? { holdsIdentityArn: true as const } : {}),
     });
   }
   // Code-point order, as the sealed plan sorts its changes: the same on every machine, whatever its locale.

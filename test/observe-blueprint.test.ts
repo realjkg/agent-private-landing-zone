@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { blueprintFromTerraformState } from "../src/observe/blueprint.js";
+import { AWS_CONTAINER_PREFIXES } from "../src/observe/aws-containers.js";
+import { SCAN_DEPTH, blueprintFromTerraformState } from "../src/observe/blueprint.js";
 import { cleanupDisposition, retentionProblems } from "../src/observe/disposition.js";
 import { CLOUD_CONTROL_TYPES, observeBlueprint, type AwsCli } from "../src/observe/verify.js";
 
@@ -252,4 +253,57 @@ test("the CloudFormation blueprint maps logical ids to physical ids, derives the
   assert.equal(unplaced.entries.find((e) => e.address === "PilotTopic")!.arn, "arn:aws:sns:us-east-1:111111111111:PilotStack-PilotTopic-X");
   for (const bad of ["", "not json", "[]", JSON.stringify({ Stacks: [] }), JSON.stringify({ StackResources: {} })]) assert.throws(() => blueprintFromCloudFormationResources(bad, planned, place), /STATE_JSON_INVALID/, bad);
   assert.deepEqual(blueprintFromCloudFormationResources(JSON.stringify({ StackResources: [] }), planned, place), { entries: [], missing: ["Dynamic", "PilotBucket", "PilotTopic", "Planned", "Unjudged"] }, "code-point order");
+});
+
+test("a wrapper type that holds an identity's ARN anywhere in its attributes is flagged in place (holdsIdentityArn), as a whole value or a list element, in any partition; the attribute is never copied, an ordinary type with the same attribute is not flagged, and a wrapper without one is not", () => {
+  const ROLE = "arn:aws:iam::000000000000:role/alz-apply-dev";
+  const show = (type: string, values: Record<string, unknown>) => JSON.stringify({ format_version: "1.0", values: { root_module: { resources: [{ address: type + ".x", mode: "managed", type, values: { id: "x-id", ...values } }] } } });
+  const flagged = (type: string, values: Record<string, unknown>) => blueprintFromTerraformState(show(type, values), []).entries[0].holdsIdentityArn === true;
+  assert.ok(flagged("terraform_data", { input: ROLE }), "a whole value");
+  assert.ok(flagged("terraform_data", { input: { nested: { deeper: [1, { role: ROLE }] } } }), "nested in objects and lists");
+  assert.ok(flagged("null_resource", { triggers: { roles: "reader," + ROLE + ",writer" } }), "an element of a comma list");
+  assert.ok(flagged("null_resource", { triggers: { roles: "a;" + ROLE } }), "an element of a semicolon list");
+  assert.ok(flagged("aws_cloudformation_stack", { outputs: { RoleArn: ROLE } }), "a stack output");
+  assert.ok(flagged("terraform_data", { input: "arn:aws-us-gov:iam::000000000000:role/x" }), "another partition");
+  assert.ok(!flagged("terraform_data", { input: "not an arn", output: ["arn:aws:s3:::bucket"] }), "no IAM ARN");
+  assert.ok(!flagged("terraform_data", { input: "prefixarn:aws:iam::000000000000:role/x" }), "not anchored as a value or an element");
+  assert.ok(!flagged("aws_s3_bucket", { policy: ROLE }), "an ordinary type is judged by its own identifier, not its attributes");
+  // Every stack container of the one family table is a wrapper too (review 6432262110 B1): an identity's ARN in its outputs is flagged, whatever the family.
+  for (const prefix of AWS_CONTAINER_PREFIXES) assert.ok(flagged(prefix, { outputs: { RoleArn: ROLE } }) && !flagged(prefix, { outputs: { Name: "plain" } }), prefix);
+  const blueprint = blueprintFromTerraformState(show("terraform_data", { input: { secret: "CANARY_WRAPPER_VALUE", roles: ROLE } }), []);
+  assert.deepEqual(blueprint.entries[0], { address: "terraform_data.x", type: "terraform_data", id: "x-id", arn: null, origin: "NOT_IN_PLAN", holdsIdentityArn: true });
+  assert.ok(!JSON.stringify(blueprint).includes("CANARY_WRAPPER_VALUE") && !JSON.stringify(blueprint).includes(ROLE), "nothing of the attributes is copied");
+});
+
+test("the wrapper scan fails closed past its depth (SCAN_DEPTH): a leaf at the boundary is read exactly, a container one level deeper is not entered and flags the entry whether or not an ARN is there, very deep and cyclic-looking input are flagged, and very wide input is read in full (review 6412896598 B2)", () => {
+  const ROLE = "arn:aws:iam::000000000000:role/alz-apply-dev";
+  const show = (type: string, values: Record<string, unknown>) => JSON.stringify({ format_version: "1.0", values: { root_module: { resources: [{ address: type + ".x", mode: "managed", type, values: { id: "x-id", ...values } }] } } });
+  const flagged = (values: Record<string, unknown>, type = "terraform_data") => blueprintFromTerraformState(show(type, values), []).entries[0].holdsIdentityArn === true;
+  /** `leaf` under `containers` nested objects, the attribute set itself not counted: `{ input: { l: { l: ... leaf } } }` with `containers` objects below the attribute set. */
+  const nested = (leaf: unknown, containers: number, key = "l"): Record<string, unknown> => { let value = leaf; for (let i = 0; i < containers; i++) value = { [key]: value }; return { input: value }; };
+  assert.equal(SCAN_DEPTH, 32);
+  // The attribute set is the first container; `input`'s value is the second. A leaf under SCAN_DEPTH containers in all is read; one more container is not entered.
+  const deepest = SCAN_DEPTH - 1;
+  assert.ok(flagged(nested(ROLE, deepest)), "an ARN at the deepest scanned level is found");
+  assert.ok(!flagged(nested("plain", deepest)), "a plain leaf at the deepest scanned level is read exactly: not flagged");
+  assert.ok(!flagged(nested(["plain", 1, null], deepest - 1)), "a list at the deepest scanned level is read exactly: not flagged");
+  assert.ok(flagged(nested("plain", deepest + 1)), "one container deeper cannot be entered: flagged without any ARN (fail closed)");
+  assert.ok(flagged(nested([], deepest + 1)), "an empty container one level too deep is not entered either");
+  assert.ok(flagged(nested(ROLE, 40)), "an ARN 40 levels deep is never passed over");
+  assert.ok(flagged(nested("plain", 5_000)), "very deep input");
+  assert.ok(flagged(nested("plain", 50, "self")), "cyclic-looking input (an object naming itself at every level) is flagged, not followed");
+  // Width is read in full: the scan is linear and has no element limit.
+  const wide = Array.from({ length: 200_000 }, (_, i) => "element-" + i);
+  assert.ok(!flagged({ input: wide }), "a very wide list without an ARN is read in full and not flagged");
+  assert.ok(flagged({ input: [...wide, ROLE] }), "an ARN as the last of 200,000 elements is found");
+  assert.ok(flagged({ input: Object.fromEntries(wide.map((v, i) => [v, i === 199_999 ? ROLE : v])) }), "an ARN as the last of 200,000 keys is found");
+  assert.ok(!flagged({ input: Object.fromEntries(wide.map((v) => [v, v])) }), "a very wide object without an ARN is not flagged");
+  // A wide-and-deep structure stays under the bound by width and over it by depth, independently.
+  assert.ok(!flagged({ input: Array.from({ length: 1000 }, () => nested("plain", deepest - 2).input) }), "1000 subtrees each within the depth are read exactly");
+  assert.ok(flagged({ input: Array.from({ length: 1000 }, (_, i) => (i === 999 ? nested("plain", deepest + 1).input : "plain")) }), "one subtree past the depth among 1000 flags the entry");
+  // The rule is the wrapper's, not every type's: an ordinary type too deep to scan is not judged by its attributes at all.
+  assert.ok(!flagged(nested("plain", 100), "aws_s3_bucket"), "an ordinary type is never flagged, however deep");
+  const blueprint = blueprintFromTerraformState(show("terraform_data", nested("CANARY_DEEP_VALUE", 100)), []);
+  assert.deepEqual(blueprint.entries[0], { address: "terraform_data.x", type: "terraform_data", id: "x-id", arn: null, origin: "NOT_IN_PLAN", holdsIdentityArn: true });
+  assert.ok(!JSON.stringify(blueprint).includes("CANARY_DEEP_VALUE"), "nothing of the attributes is copied");
 });

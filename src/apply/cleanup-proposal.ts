@@ -1,5 +1,4 @@
 import { cloudControlMappingOf } from "../observe/verify.js";
-import { iamRoleIdentity, identityVariables } from "../tools/identity.js";
 import { canonicalJson } from "../teardown/manifest.js";
 import type { ResolvedTarget } from "../teardown/driver/types.js";
 import { sha256 } from "../util/sha256.js";
@@ -10,6 +9,8 @@ import { isResourceAddress } from "./terraform.js";
 import type { AwsTarget } from "./providers/aws.js";
 import type { AzureTarget } from "./providers/azure.js";
 import { armPathSafe, isArmGroupId, isArmRegistrationId, isArmScopeId, parseArmId, type ArmType } from "../observe/azure-rest.js";
+import { awsContainerFamilyOf } from "../observe/aws-containers.js";
+import { awsLeafEntryOf, awsParentIdOf, isAwsLeafType, isWellFormedResourceType } from "../observe/aws-leaf-types.js";
 
 /**
  * The cleanup proposal (docs/act-pilot-plan.md, "Cleanup of pilot-created resources"): the reviewable, hash-identified list
@@ -33,7 +34,14 @@ import { armPathSafe, isArmGroupId, isArmRegistrationId, isArmScopeId, parseArmI
  * Approvers sign the proposal's hash under the cleanup domain (src/apply/approval.ts); the cleanup driver destroys the
  * proposal's addresses and nothing else, and refuses when the engine's destroy plan differs from them.
  */
-export type Ownership = "RUN_CREATED" | "PRE_EXISTING" | "REPLACED_PRE_EXISTING" | "IMPORTED" | "NOT_IN_PLAN" | "PROTECTED_BACKEND" | "PROTECTED_IDENTITY" | "PROTECTED_DEPLOYMENT" | "RETAINED_GROUP" | "CONTAINS_OTHERS";
+/**
+ * TYPE_UNREVIEWED (AWS; delegated owner decision 6433391052, item 1): the run created it, but its type is not on the reviewed leaf
+ * allowlist (src/observe/aws-leaf-types.ts), so the cleanup cannot tell what deleting it would take with it. It is kept, listed with
+ * its type, and left to the environment's owner; it is never deleted, directly or as a dependent, and the leftover check cannot
+ * report COMPLETE while one remains. The same class holds an allowlisted attachment or setting whose parent this proposal does not
+ * delete (design review 6434540427, B3), with its own reason (`parentKeptReason`).
+ */
+export type Ownership = "RUN_CREATED" | "PRE_EXISTING" | "REPLACED_PRE_EXISTING" | "IMPORTED" | "NOT_IN_PLAN" | "TYPE_UNREVIEWED" | "PROTECTED_BACKEND" | "PROTECTED_IDENTITY" | "PROTECTED_DEPLOYMENT" | "RETAINED_GROUP" | "CONTAINS_OTHERS";
 /** The ownership classes a pilot cleanup never deletes, whoever created the resource and whatever the plan said. */
 export const PROTECTED_OWNERSHIPS: readonly Ownership[] = ["PROTECTED_BACKEND", "PROTECTED_IDENTITY", "PROTECTED_DEPLOYMENT", "RETAINED_GROUP", "CONTAINS_OTHERS"];
 /**
@@ -45,12 +53,14 @@ export type RetentionOwner = "PILOT_OWNER" | "ENVIRONMENT_OWNER";
 export const RETENTION_OWNERS: readonly RetentionOwner[] = ["PILOT_OWNER", "ENVIRONMENT_OWNER"];
 export const retentionOwnerOf = (ownership: Exclude<Ownership, "RUN_CREATED">): RetentionOwner => PROTECTED_OWNERSHIPS.includes(ownership) ? "PILOT_OWNER" : "ENVIRONMENT_OWNER";
 /** Why a resource of a protected class is kept, in the words the proposal, the leftover check and the report use. */
-export const PROTECTION_REASONS: Readonly<Record<Exclude<Ownership, "RUN_CREATED" | "PRE_EXISTING" | "REPLACED_PRE_EXISTING" | "IMPORTED" | "NOT_IN_PLAN">, string>> = {
+export const PROTECTION_REASONS: Readonly<Record<Exclude<Ownership, "RUN_CREATED" | "PRE_EXISTING" | "REPLACED_PRE_EXISTING" | "IMPORTED" | "NOT_IN_PLAN" | "TYPE_UNREVIEWED">, string>> = {
   PROTECTED_BACKEND: "the state backend the pilot itself runs on is never deleted by a cleanup",
-  PROTECTED_IDENTITY: "an identity or authorization object (an identity, a trust, a role or policy assignment, a role definition, a policy exemption or a lock: anything under Microsoft.Authorization or Microsoft.ManagedIdentity) is never deleted by a cleanup, directly or as a dependent",
+  // Under 512 characters: a proposal's reason text has that limit.
+  PROTECTED_IDENTITY: "an identity or authorization object (on Azure anything under Microsoft.Authorization or Microsoft.ManagedIdentity: an identity, a trust, a role or policy assignment, a role definition, a policy exemption or a lock; on AWS anything in the IAM, IAM Identity Center or Identity Store services, including attachments, access keys and other credentials of those identities) is never deleted by a cleanup, directly or as a dependent",
   PROTECTED_DEPLOYMENT: "deployment history (Microsoft.Resources/deployments) records what was deployed and is never deleted by a cleanup",
   RETAINED_GROUP: "a resource group is never deleted by a pilot cleanup, whatever it holds; the pilot owner retains it, and its deletion is a separate, reviewed action (environment retirement, outstanding)",
-  CONTAINS_OTHERS: "a subscription or management group holds deployments no listing here accounts for, and a provider or feature registration is a subscription-wide setting other deployments rely on; neither is ever deleted by a cleanup",
+  // Under 512 characters: a proposal's reason text has that limit.
+  CONTAINS_OTHERS: "a container is never deleted by a cleanup: on Azure a subscription or management group holds other deployments, and a provider or feature registration is a setting others rely on; on AWS anything that deploys a CloudFormation stack or a provisioned product (CloudFormation, Service Catalog, Serverless Application Repository, SageMaker, Proton, Elastic Beanstalk, SSM Quick Setup, DataZone, Control Tower) is kept: deleting it deletes all the stack holds, identities among it, which the state does not list",
 };
 
 export type ProposedDeletion = {
@@ -111,17 +121,26 @@ const refuse = (code: ApplyRefusalCode, message: string): Refusal => ({ ok: fals
 const HAS_INVISIBLE = new RegExp(INVISIBLE.source);
 
 /** What deleting a resource of this type can cost, said before approval. Types not listed carry no note, not a promise of safety. */
-const MATERIAL_RISKS: Readonly<Record<string, string>> = {
+export const MATERIAL_RISKS: Readonly<Record<string, string>> = {
   aws_s3_bucket: "deletes stored objects and versions, which cannot be recovered",
-  aws_dynamodb_table: "deletes stored items, which cannot be recovered",
-  aws_kms_key: "schedules the key for deletion (a waiting period of at least seven days) and makes anything it encrypted unreadable afterward",
+  awscc_s3_bucket: "deletes stored objects and versions, which cannot be recovered",
+  aws_dynamodb_table: "deletes the table, its stored items and any replicas in other Regions, which cannot be recovered",
+  awscc_dynamodb_table: "deletes the table, its stored items and any replicas in other Regions, which cannot be recovered",
+  aws_kms_key: "schedules the key for deletion (a waiting period of at least seven days); after it, anything encrypted under the key becomes unreadable, including data in resources outside the state and resources this cleanup keeps",
+  awscc_kms_key: "schedules the key for deletion (a waiting period of at least seven days); after it, anything encrypted under the key becomes unreadable, including data in resources outside the state and resources this cleanup keeps",
   aws_cloudwatch_log_group: "deletes retained log events",
+  awscc_logs_log_group: "deletes retained log events",
   aws_secretsmanager_secret: "schedules the secret for deletion; its value is unrecoverable after the recovery window",
+  awscc_secretsmanager_secret: "schedules the secret for deletion; its value is unrecoverable after the recovery window",
   aws_efs_file_system: "deletes stored files, which cannot be recovered",
+  awscc_efs_file_system: "deletes stored files, which cannot be recovered",
   aws_rds_cluster: "deletes the database and its data unless a final snapshot was configured",
   aws_rds_instance: "deletes the database and its data unless a final snapshot was configured",
   aws_db_instance: "deletes the database and its data unless a final snapshot was configured",
+  awscc_rds_db_instance: "deletes the database and its data unless a final snapshot was configured",
+  awscc_rds_db_cluster: "deletes the database and its data unless a final snapshot was configured",
   aws_ebs_volume: "deletes the volume and its data",
+  awscc_ec2_volume: "deletes the volume and its data",
   azurerm_storage_account: "deletes stored blobs, tables, queues and files, which cannot be recovered",
   azurerm_storage_container: "deletes stored blobs, which cannot be recovered",
   azurerm_key_vault: "soft-deletes the vault; purge protection or the retention window decides when its secrets are gone for good",
@@ -132,8 +151,9 @@ const MATERIAL_RISKS: Readonly<Record<string, string>> = {
   // The same risks by CloudFormation type, for the CDK engine's logical ids.
   "AWS::S3::Bucket": "deletes stored objects, which cannot be recovered (CloudFormation refuses to delete a bucket that still holds objects)",
   "AWS::Logs::LogGroup": "deletes retained log data, which cannot be recovered",
-  "AWS::KMS::Key": "schedules the key for deletion; data encrypted under it becomes unreadable after the waiting period",
-  "AWS::DynamoDB::Table": "deletes the table and its data unless a backup was kept",
+  "AWS::KMS::Key": "schedules the key for deletion (a waiting period of at least seven days); after it, anything encrypted under the key becomes unreadable, including data in resources outside the state and resources this cleanup keeps",
+  "AWS::DynamoDB::Table": "deletes the table, its data and any replicas in other Regions unless a backup was kept",
+  "AWS::SecretsManager::Secret": "schedules the secret for deletion; its value is unrecoverable after the recovery window",
   "AWS::RDS::DBInstance": "deletes the database and its data unless a final snapshot was configured",
   "AWS::RDS::DBCluster": "deletes the database and its data unless a final snapshot was configured",
   "AWS::EFS::FileSystem": "deletes stored files, which cannot be recovered",
@@ -266,25 +286,57 @@ function azureProtectionOf(entry: { type: string; id: string | null }, contract:
   return undefined;
 }
 
-const IDENTITY_TYPES = new Set(["aws_iam_openid_connect_provider", "aws_iam_role", "aws_iam_role_policy", "aws_iam_role_policy_attachment", "aws_iam_policy"]);
+/**
+ * AWS identity and access objects (owner's standing policy, #39: identities and access are never deleted; reviews 6411551942 B2,
+ * 6412182848 and 6412488764): anything in the IAM, IAM Identity Center (SSO) or Identity Store services, by an anchored prefix
+ * and nothing else, so no hand-picked list can miss an attachment, a credential, a setting or a workforce identity. The full
+ * identity family across the four namespaces (docs/observe-and-cleanup.md lists it): Terraform `aws_iam_` (roles, policies,
+ * attachments of every kind, users, groups, instance profiles, identity providers, service-linked roles, access keys, login
+ * profiles, SSH keys, signing certificates, MFA devices, the account password policy and alias), `aws_ssoadmin_` (Identity
+ * Center assignments, permission sets and their policies) and `aws_identitystore_` (workforce users, groups, memberships); the
+ * Cloud Control provider's `awscc_iam_`, `awscc_sso_` and `awscc_identitystore_`; and CloudFormation `AWS::IAM::`, `AWS::SSO::`
+ * and `AWS::IdentityStore::` (case-exact, as CloudFormation names them). A `Custom::` resource has no namespace of its own; one
+ * that carries an identity's ARN is refused below. All are PROTECTED_IDENTITY, kept by the pilot owner, never deleted directly
+ * or as a dependent. Credentials are kept with the identity they belong to, in both engines.
+ */
+const AWS_IDENTITY_PREFIXES: readonly string[] = ["aws_iam_", "aws_ssoadmin_", "aws_identitystore_", "awscc_iam_", "awscc_sso_", "awscc_identitystore_", "AWS::IAM::", "AWS::SSO::", "AWS::IdentityStore::"];
+export const isAwsIdentityType = (type: string): boolean => AWS_IDENTITY_PREFIXES.some((prefix) => type.startsWith(prefix));
+/** An IAM ARN recorded under a type outside the identity service (a custom resource, a stack, `terraform_data`): unclassifiable, so refused. */
+const IAM_ARN = /^arn:aws(?:-[a-z]+)*:iam::/;
+/**
+ * AWS stack containers (reviews 6412896598 B1 and 6432262110 B1, owner decision 6431744115): anything whose deletion tears
+ * down a CloudFormation stack or a provisioned product, by the one family table in src/observe/aws-containers.ts (`isAwsContainerType`).
+ * CONTAINS_OTHERS: never deleted, directly or as a dependent, whoever created it; the CDK engine refuses a nested stack at
+ * the seal, and one that appears in the stack anyway is never proposed.
+ */
+export { isAwsContainerType } from "../observe/aws-containers.js";
 
-/** The bootstrap the pilot runs on, which a cleanup never touches: the state backend and the identities that run it. */
-function protectionOf(entry: { type: string; id: string | null; arn: string | null }, contract: PilotContract, env: NodeJS.ProcessEnv, backendGroups: Set<string>): AzureProtection | undefined {
+/** Why a run-created resource of an unreviewed type is kept, naming its type; under the 512-character limit of a proposal's reason. */
+export const unreviewedTypeReason = (type: string): string => "its type (" + stripInvisible(type).slice(0, 128) + ") is not on the reviewed leaf allowlist (src/observe/aws-leaf-types.ts), so the cleanup cannot tell what deleting it would take with it; it is left in place for the environment's owner to delete or keep by hand, and the type joins the allowlist only by review";
+
+/** Why an attachment or setting whose parent this proposal does not delete is held; under the 512-character limit of a proposal's reason. */
+export const parentKeptReason = (type: string): string => "it is an attachment or setting (" + stripInvisible(type).slice(0, 128) + ") that modifies another resource, and this proposal does not delete that resource with it; a planned create can overwrite what the resource already had, so deleting it would change a resource the cleanup keeps. It is left in place for the environment's owner to remove or keep by hand";
+
+/**
+ * The bootstrap the pilot runs on and the identities of the account, which a cleanup never touches: the state backend, every stack
+ * container and everything in the identity service. Then the allowlist (delegated owner decision 6433391052, item 1): on AWS a type
+ * is ordinary only when it is on the reviewed leaf allowlist; every other well-formed type is TYPE_UNREVIEWED, and a type field
+ * that is not a well-formed type at all is unclassifiable. The deny rules come first and stay as defense in depth.
+ */
+function protectionOf(entry: { type: string; id: string | null; arn: string | null; holdsIdentityArn?: true }, contract: PilotContract, backendGroups: Set<string>): AzureProtection | undefined {
   if (contract.provider === "AZURE") return azureProtectionOf(entry, contract, backendGroups);
   if (contract.provider !== "AWS") return undefined;
-  const pinned = contract.targets[contract.enabledEnvironments?.[0] ?? "DEV"] as AwsTarget | undefined;
   const buckets = new Set(Object.values(contract.targets).map((target) => (target as AwsTarget).backend.split("/")[0]));
   if (/^aws_s3_bucket(_|$)/.test(entry.type) && entry.id !== null && buckets.has(entry.id)) return "PROTECTED_BACKEND";
-  // A nested stack holds resources no listing here accounts for; the CDK engine refuses one at the seal, and one that appears in the stack anyway is never proposed.
-  if (entry.type === "AWS::CloudFormation::Stack") return "CONTAINS_OTHERS";
-  if (pinned === undefined) return undefined;
-  if (entry.type === "aws_iam_openid_connect_provider" || entry.type === "AWS::IAM::OIDCProvider") return "PROTECTED_IDENTITY";
-  const roles = new Set((["DISCOVERY", "STATE", "STATE_WRITE", "APPLY"] as const).map((identity) => iamRoleIdentity(identityVariables(env, identity).get("AWS_ROLE_ARN") ?? "")).filter((x): x is string => x !== undefined));
-  if (IDENTITY_TYPES.has(entry.type) && entry.arn !== null && roles.has(iamRoleIdentity(entry.arn) ?? "")) return "PROTECTED_IDENTITY";
-  // By CloudFormation type (the CDK engine): a role whose physical id is one of the pilot's role names, or its ARN; a policy attached to one.
-  if (/^AWS::IAM::(?:Role|Policy|ManagedPolicy|RolePolicy)$/.test(entry.type) && [entry.arn, entry.id].some((value) => value !== null && (roles.has(iamRoleIdentity(value) ?? "") || [...roles].some((role) => role.split("/").pop() === value)))) return "PROTECTED_IDENTITY";
-  if (entry.type === "aws_iam_role_policy" && entry.id !== null && [...roles].some((role) => entry.id!.toLowerCase().startsWith(role.split("/").pop() ?? "\u0000"))) return "PROTECTED_IDENTITY";
-  return undefined;
+  // By type first, as on Azure: a container or an identity type is protected whatever its identifier says, and a dependent the state does not hold has only a type.
+  if (awsContainerFamilyOf(entry.type) !== undefined) return "CONTAINS_OTHERS";
+  if (isAwsIdentityType(entry.type)) return "PROTECTED_IDENTITY";
+  // Fail closed: an identity's ARN under a type that is not an identity type (a custom resource, `terraform_data`) may be a pilot role in disguise, whether it
+  // is the recorded identifier or sits in any attribute the state holds (`holdsIdentityArn`, judged in place by the blueprint, which also sets it when the
+  // attributes nest past the depth it scans, so an entry it could not scan in full is never ordinary either).
+  if ([entry.arn, entry.id].some((value) => value !== null && IAM_ARN.test(value)) || entry.holdsIdentityArn === true) return UNCLASSIFIABLE;
+  if (!isWellFormedResourceType(entry.type)) return UNCLASSIFIABLE;
+  return isAwsLeafType(entry.type) ? undefined : "TYPE_UNREVIEWED";
 }
 
 type ProposalFields = Omit<CleanupProposal, "proposalSha256">;
@@ -348,16 +400,18 @@ export function buildCleanupProposal(input: ProposalInput): { ok: true; proposal
       return refuse("OWNERSHIP_AMBIGUOUS", "The state holds an identifier for " + entry.address + " that cannot be read exactly as written. A person reviews it by hand; no cleanup proposal is made.");
     }
     const keep = (ownership: Exclude<Ownership, "RUN_CREATED">, reason: string): void => { excluded.push({ ...base, ownership, reason, retainedBy: retentionOwnerOf(ownership) }); };
-    const protection = protectionOf(entry, contract, input.env, backendGroups);
+    const protection = protectionOf(entry, contract, backendGroups);
     if (protection === UNCLASSIFIABLE) {
-      return refuse("OWNERSHIP_AMBIGUOUS", "The state holds an identifier for " + entry.address + " that is not a resource id the cleanup can classify exactly (it does not parse as an ARM id, so what it protects is unknown). A person reviews it by hand; no cleanup proposal is made.");
+      return refuse("OWNERSHIP_AMBIGUOUS", "The state holds an identifier for " + entry.address + " that is not a resource id the cleanup can classify exactly (it does not parse as an ARM id, is a URL its type does not record, or is an identity's ARN under another type, so what it protects is unknown). A person reviews it by hand; no cleanup proposal is made.");
     }
-    if (protection) { keep(protection, PROTECTION_REASONS[protection as keyof typeof PROTECTION_REASONS]); continue; }
+    if (protection && protection !== "TYPE_UNREVIEWED") { keep(protection, PROTECTION_REASONS[protection as keyof typeof PROTECTION_REASONS]); continue; }
     const change = byAddress.get(entry.address);
     if (entry.origin === "NOT_IN_PLAN" || change === undefined) { keep("NOT_IN_PLAN", "the state holds it but the sealed plan never mentioned it, so this run did not create it"); continue; }
     if (change.importing) { keep("IMPORTED", "the plan imported an existing resource; it was not created by this run"); continue; }
     if (change.action === "REPLACE" || change.action === "REPLACE_CONDITIONAL") { keep("REPLACED_PRE_EXISTING", "the plan replaced a resource that existed before this run"); continue; }
     if (change.action !== "CREATE") { keep("PRE_EXISTING", "the plan left or changed a resource that existed before this run (" + change.action + ")"); continue; }
+    // Created by this run, but of a type nobody reviewed as a leaf: kept and named, never deleted; the rest of the run is still cleaned up.
+    if (protection === "TYPE_UNREVIEWED") { keep("TYPE_UNREVIEWED", unreviewedTypeReason(entry.type)); continue; }
     const seen: ObservedResource | undefined = observed.get(entry.address);
     if (seen === undefined || seen.result === "NOT_YET_OBSERVABLE" || seen.result === "DIFFERENT_FROM_DESIRED") {
       return refuse("OBSERVATION_INCONCLUSIVE", "The observation could not decide about " + entry.address + " (" + (seen?.reason ?? "not observed") + "). Observe this run again before proposing a cleanup.");
@@ -373,10 +427,28 @@ export function buildCleanupProposal(input: ProposalInput): { ok: true; proposal
     if (risk) risks.add(entry.type + ": " + risk);
     deletes.push({ ...base, ownership: "RUN_CREATED", observed: seen.result === "VERIFIED" ? "VERIFIED" : "UNVERIFIABLE", ...(risk ? { risk } : {}) });
   }
+  // The one parent rule (design review 6434540427, B3): an allowlisted attachment or setting (`parent` in src/observe/aws-leaf-types.ts) is deleted only
+  // when the resource it modifies, read from its own identifier, is a run-created resource this proposal deletes (or one already gone). Otherwise it is
+  // held as TYPE_UNREVIEWED with its own reason: a pre-existing bucket keeps its public access block, ownership controls and policy.
+  if (contract.provider === "AWS") {
+    const gone = new Set([...deletes, ...alreadyAbsent].map((x) => x.address));
+    const entryOf = new Map(record.blueprint.entries.map((entry) => [entry.address, entry]));
+    for (const item of [...deletes]) {
+      const parent = awsLeafEntryOf(item.type)?.parent;
+      if (parent === undefined) continue;
+      const parentId = awsParentIdOf(parent.key, entryOf.get(item.address)?.id ?? null);
+      if (parentId !== undefined && record.blueprint.entries.some((p) => parent.types.includes(p.type) && p.id === parentId && gone.has(p.address))) continue;
+      deletes.splice(deletes.indexOf(item), 1);
+      excluded.push({ address: item.address, type: item.type, identifier: item.identifier, ownership: "TYPE_UNREVIEWED", reason: parentKeptReason(item.type), retainedBy: retentionOwnerOf("TYPE_UNREVIEWED") });
+    }
+  }
   if (deletes.some((x) => x.observed === "UNVERIFIABLE")) risks.add("some listed resources are settings the independent reader cannot read alone; their deletion is proved through the resource they belong to");
   risks.add("the engine destroys a listed resource together with anything in the state that depends on it; a dependent outside this list stops the cleanup before anything is destroyed");
   if (contract.engine === "CDK") {
     risks.add("the CloudFormation stack itself is never deleted by a cleanup: approved resources are removed from it, the stack stays with whatever it still holds, and retiring the stack is a separate, reviewed action that remains outstanding");
+  }
+  if (excluded.some((x) => x.ownership === "TYPE_UNREVIEWED")) {
+    risks.add("resources of a type not on the reviewed leaf allowlist, and attachments or settings on a resource this cleanup keeps, are held, named and never deleted; the leftover check stays INCOMPLETE until a person deletes or keeps them by hand");
   }
   if (excluded.some((x) => PROTECTED_OWNERSHIPS.includes(x.ownership))) {
     risks.add("protected objects (resource groups, identities and grants, deployment history, the state backend) are intentionally retained and never on this list; retiring the environment itself is a separate, reviewed action and stays outstanding after this cleanup");
@@ -401,7 +473,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 const text = (value: unknown, max = 512): value is string => typeof value === "string" && value.length > 0 && value.length <= max && !HAS_INVISIBLE.test(value);
 const hashText = (value: unknown): value is string => typeof value === "string" && HASH.test(value);
 const idText = (value: unknown): boolean => value === null || text(value, 2048);
-const OWNERSHIPS: readonly Ownership[] = ["RUN_CREATED", "PRE_EXISTING", "REPLACED_PRE_EXISTING", "IMPORTED", "NOT_IN_PLAN", ...PROTECTED_OWNERSHIPS];
+const OWNERSHIPS: readonly Ownership[] = ["RUN_CREATED", "PRE_EXISTING", "REPLACED_PRE_EXISTING", "IMPORTED", "NOT_IN_PLAN", "TYPE_UNREVIEWED", ...PROTECTED_OWNERSHIPS];
 const KEYS = ["schemaVersion", "kind", "proposalSha256", "artifactSha256", "applyEvidenceSha256", "blueprintSha256", "observationSha256", "provider", "engine", "environment", "target", "unitId",
   "channel", "contractSha256", "sourceCommit", "engineVersion", "createdAt", "deletes", "alreadyAbsent", "excluded", "risks", "authorization"];
 
@@ -476,22 +548,24 @@ export function proposalLines(proposal: CleanupProposal): string[] {
 
 /**
  * The first planned change a pilot cleanup must never execute, or undefined: a delete (or any other action) of a resource
- * group, an identity or authorization object, deployment history, the state backend, or a subscription or management group,
- * whether the proposal named it or the engine added it as a dependent. Each planned address is classified by its blueprint
+ * group, an identity or authorization object, deployment history, the state backend, a subscription or management group, or
+ * (on AWS) a stack container or any type not on the reviewed leaf allowlist, whether the proposal named it or the engine added it as a dependent. Each planned address is classified by its blueprint
  * entry (type and recorded id) when the state holds one, else by its type alone, with the same rules the proposal applies.
  * The cleanup driver runs this on the engine's destroy plan before any approval is consumed.
  */
-export function protectedDeletionIn(planned: readonly PlanChange[], entries: readonly { address: string; type: string; id: string | null; arn: string | null }[], contract: PilotContract, env: NodeJS.ProcessEnv): string | undefined {
+export function protectedDeletionIn(planned: readonly PlanChange[], entries: readonly { address: string; type: string; id: string | null; arn: string | null; holdsIdentityArn?: true }[], contract: PilotContract, env: NodeJS.ProcessEnv): string | undefined {
   const byAddress = new Map(entries.map((entry) => [entry.address, entry]));
   const backendGroups = contract.provider === "AZURE" ? azureBackendGroups(entries, azureBackendAccounts(contract)) : new Set<string>();
   for (const change of planned) {
     if (change.type === "output") continue;
     const entry = byAddress.get(change.address) ?? { address: change.address, type: change.type, id: null, arn: null };
-    const protection = protectionOf(entry, contract, env, backendGroups);
+    const protection = protectionOf(entry, contract, backendGroups);
     if (protection === undefined) continue;
-    if (protection === UNCLASSIFIABLE) return "The destroy plan would " + change.action.toLowerCase() + " " + stripInvisible(change.address) + ", whose identifier does not parse as an ARM id (or is a URL its type does not record), so what it protects is unknown and a pilot cleanup never deletes it (OWNERSHIP_AMBIGUOUS).";
+    if (protection === UNCLASSIFIABLE) return "The destroy plan would " + change.action.toLowerCase() + " " + stripInvisible(change.address) + ", whose identifier does not parse as an ARM id (or is a URL its type does not record, or an identity's ARN under another type, or an attribute set the blueprint could not scan in full, or its type is not a well-formed resource type), so what it protects is unknown and a pilot cleanup never deletes it (OWNERSHIP_AMBIGUOUS).";
+    if (protection === "TYPE_UNREVIEWED") return "The destroy plan would " + change.action.toLowerCase() + " " + stripInvisible(change.address) + ", whose type (" + stripInvisible(change.type) + ") is not on the reviewed leaf allowlist, so what deleting it would take with it is unknown and a pilot cleanup never deletes it, directly or as a dependent (TYPE_UNREVIEWED).";
     const what = protection === "RETAINED_GROUP" ? "a resource group" : protection === "PROTECTED_IDENTITY" ? "an identity or authorization object" : protection === "PROTECTED_DEPLOYMENT" ? "deployment history"
-      : protection === "PROTECTED_BACKEND" ? "the state backend" : "a subscription, management group, provider scope or registration";
+      : protection === "PROTECTED_BACKEND" ? "the state backend" : contract.provider === "AWS" ? "a stack container (" + (awsContainerFamilyOf(entry.type)?.what ?? "a type that deploys a CloudFormation stack") + ") holding resources the state does not list"
+      : "a subscription, management group, provider scope or registration";
     return "The destroy plan would " + change.action.toLowerCase() + " " + stripInvisible(change.address) + ", " + what + ", which a pilot cleanup never deletes, directly or as a dependent (" + protection + ").";
   }
   return undefined;
