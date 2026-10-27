@@ -2,9 +2,10 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import { type CheckContext, type DepCheck, allRequiredPass, appInstalledVersions, installedPath, runDependencyChecks } from "../deps/checks.js";
-import { InstallError, installTool, type InstalledTool, removeInstalledTool } from "../deps/install.js";
+import { type CheckContext, type DepCheck, allRequiredPass, appInstallStates, appInstalledVersions, INSTALL_STATE_WORDS, type InstallState, installedPath, installState, runDependencyChecks } from "../deps/checks.js";
+import { InstallError, installTool, type InstalledTool, removeInstalledTool, sweepLeftovers } from "../deps/install.js";
 import { loadToolPins, DEFAULT_PINS, platformKey, type Platform, type ToolId, type ToolPins } from "../deps/pins.js";
+import { interceptStopSignals } from "../tools/process.js";
 import { EXIT, processTerminal, type HumanTerminal } from "./teardown-driver.js";
 
 /**
@@ -24,6 +25,10 @@ export type DepsDeps = {
   probe?: CheckContext["probe"];
   download?: Parameters<typeof installTool>[1]["download"];
   out?: (text: string) => void;
+  /** Decides whether a pid is still running, for the sweep of leftovers. Tests inject it; the default asks the kernel. */
+  pidAlive?: (pid: number) => boolean;
+  /** Ends the process on a second stop signal during an install. Tests inject it; the default is process.exit. */
+  exit?: (code: number) => void;
 };
 
 /** What `./alz deps` itself needs. The AWS CLI and the isolated service are reported but do not block it. */
@@ -70,6 +75,9 @@ const FAILURE_TEXT: Record<InstallError["code"], string> = {
   INSTALL_CHECKSUM_MISMATCH: "The file that arrived did not match the checksum this app expects, so nothing was installed.",
   INSTALL_UNPACK_FAILED: "The download could not be unpacked, so nothing was installed. Run ./alz deps again.",
   INSTALL_BINARY_MISSING: "The download did not contain the expected program, so nothing was installed.",
+  INSTALL_VERIFY_FAILED: "The downloaded program still failed verification after installation, so it is not used. The new copy was removed again.",
+  INSTALL_SWAP_FAILED: "The checked copy could not be put in place, so nothing changed; the earlier copy was kept. Run ./alz deps again.",
+  INSTALL_INTERRUPTED: "Stopped. Nothing was installed, and the unfinished download was removed. Run ./alz deps again to start the install over.",
   INSTALL_REMOVE_REFUSED: "That folder is not an app-installed copy, so nothing was removed.",
 };
 
@@ -132,18 +140,43 @@ export async function askChoice(terminal: HumanTerminal, title: string, options:
   return safe;
 }
 
-/** Every copy of a pinned tool the app installed in its own folder, the tested version and any earlier one, so each can be removed. */
-export function removableTools(pins: ToolPins, home: string, platform: string): Array<{ tool: ToolId; version: string; path: string }> {
-  const found: Array<{ tool: ToolId; version: string; path: string }> = [];
+/**
+ * Every version folder of a pinned tool in the app's own folder, the tested version and any earlier one, so each can be
+ * removed: a checked install, a copy from before completion checks, or an unfinished install or removal (removing one
+ * of those finishes what was interrupted).
+ */
+export function removableTools(pins: ToolPins, home: string, platform: string): Array<{ tool: ToolId; version: string; path: string; state: Exclude<InstallState, "ABSENT"> }> {
+  const found: Array<{ tool: ToolId; version: string; path: string; state: Exclude<InstallState, "ABSENT"> }> = [];
   for (const tool of ["terraform", "ollama"] as const) {
     const pin = pins.tools[tool];
     const artifact = pin.artifacts[platform as keyof typeof pin.artifacts];
     if (!artifact) continue;
-    for (const version of appInstalledVersions(home, tool, artifact.binary)) {
-      found.push({ tool, version, path: installedPath(home, tool, version, artifact.binary) });
+    for (const { version, state } of appInstallStates(home, tool, artifact.binary)) {
+      found.push({ tool, version, path: installedPath(home, tool, version, artifact.binary), state });
     }
   }
   return found;
+}
+
+/** The words after a removable item's path: nothing for a checked install, the plain state for anything else. */
+const stateSuffix = (state: Exclude<InstallState, "ABSENT">): string => state === "INSTALLED" ? "" : " — " + INSTALL_STATE_WORDS[state];
+
+/**
+ * Removes the leftovers of earlier `./alz deps` runs whose process died (an unpack or download in progress, a copy
+ * renamed aside during a swap) and says what was removed. A folder whose pid may still be running is left alone.
+ */
+function sweepAndReport(pins: ToolPins, home: string, deps: DepsDeps, out: (text: string) => void, log: (text: string) => void): void {
+  for (const tool of Object.keys(pins.tools) as ToolId[]) {
+    const swept = sweepLeftovers(home, tool, deps.pidAlive ? { pidAlive: deps.pidAlive } : {});
+    for (const line of swept.recovered) {
+      log("recover " + tool);
+      out("Finished an interrupted earlier run: " + line + ".\n");
+    }
+    for (const path of swept.removed) {
+      log("sweep " + tool);
+      out("Removed a leftover of an earlier run that did not finish: " + path + "\n");
+    }
+  }
 }
 
 /** Earlier versions of `tool` the app installed, newest first: what an update replaces. */
@@ -153,6 +186,14 @@ function previousVersions(pins: ToolPins, home: string, platform: string, tool: 
   return artifact ? appInstalledVersions(home, tool, artifact.binary).filter((version) => version !== pin.version) : [];
 }
 
+/** What stands at the pinned version's own folder when it is not a checked install, so the dialog can say what a repair replaces. */
+function repairState(pins: ToolPins, home: string, platform: string, tool: ToolId): "LEGACY" | "UNFINISHED" | "REMOVING" | undefined {
+  const pin = pins.tools[tool];
+  const artifact = pin.artifacts[platform as keyof typeof pin.artifacts];
+  const state = artifact ? installState(home, tool, pin.version, artifact.binary) : "ABSENT";
+  return state === "LEGACY" || state === "UNFINISHED" || state === "REMOVING" ? state : undefined;
+}
+
 /** The install dialog as a menu: what, where, from where and how it is checked, then a numbered choice. */
 function menuDialogFor(check: DepCheck, pins: ToolPins, platform: string, home: string): string {
   const tool = check.installable as ToolId;
@@ -160,9 +201,13 @@ function menuDialogFor(check: DepCheck, pins: ToolPins, platform: string, home: 
   const artifact = pin.artifacts[platform as keyof typeof pin.artifacts];
   const host = artifact ? new URL(artifact.url).host : "no pinned source";
   const previous = previousVersions(pins, home, platform, tool);
+  const repair = repairState(pins, home, platform, tool);
   return [
     "",
-    ...(previous.length > 0 ? [
+    ...(repair ? [
+      TOOL_NAME[tool] + " " + pin.version + " is in the app's folder, but " + INSTALL_STATE_WORDS[repair] + ".",
+      "  Repair: the tested version is installed beside that folder and replaces it only after the new copy passes its check. Nothing else changes.",
+    ] : previous.length > 0 ? [
       TOOL_NAME[tool] + " " + pin.version + " is the tested version. This app installed " + TOOL_NAME[tool] + " " + previous.join(", ") + " before.",
       "  Previous: " + previous.join(", ") + " stays exactly as it is until " + pin.version + " is installed and checked. Then you choose whether to remove it.",
     ] : [TOOL_NAME[tool] + " " + pin.version + " is needed and is not installed."]),
@@ -174,26 +219,58 @@ function menuDialogFor(check: DepCheck, pins: ToolPins, platform: string, home: 
   ].join("\n");
 }
 
-/** The question before a download: an update when the app installed an earlier version, an install otherwise. */
-function installQuestion(previous: readonly string[]): { title: string; options: [string, string] } {
+/** The question before a download: a repair when the pinned version's folder is there but not a checked install, an update when the app installed an earlier version, an install otherwise. */
+function installQuestion(previous: readonly string[], repair: boolean): { title: string; options: [string, string] } {
+  if (repair) return { title: "Repair it now?", options: ["Repair it", "Skip it"] };
   return previous.length > 0 ? { title: "Update it now?", options: ["Update it", "Skip it"] } : { title: "Install it now?", options: ["Install it", "Skip it"] };
 }
 
-type Verified = { ok: true; installed: InstalledTool } | { ok: false; step: string; text: string };
+type Verified = { ok: true; installed: InstalledTool } | { ok: false; step: string; text: string; stopped?: boolean };
+
+/**
+ * Takes over the stop signals for one install. The first signal says what happens next and aborts the download, so
+ * installTool's own cleanup runs and nothing is installed; the second ends the process at once with the blocked code.
+ * `release` gives the signals back; it is called in every outcome. Exported for its test only.
+ */
+export function installStopGuard(tool: ToolId, terminal: HumanTerminal, exit: (code: number) => void): { signal: AbortSignal; onSignal: () => void; release: () => void } {
+  const stop = new AbortController();
+  let signals = 0;
+  const onSignal = (): void => {
+    signals += 1;
+    if (signals === 1) {
+      terminal.write("\nStopping the " + TOOL_NAME[tool] + " install. Nothing is installed; the unfinished download is being removed. Running ./alz deps again starts over. Press Ctrl-C again to leave at once.\n");
+      stop.abort();
+      return;
+    }
+    exit(EXIT.BLOCKED);
+  };
+  return { signal: stop.signal, onSignal, release: interceptStopSignals(onSignal) };
+}
 
 /**
  * Installs the pinned version through installTool, then checks it the way every command does: the app's copy must report
  * the pinned version. A copy installed in this run that fails the check is removed again, so the next run downloads a
- * fresh one instead of reusing it. Earlier versions are never touched here.
+ * fresh one instead of reusing it. Earlier versions are never touched here. While the install runs, a stop signal
+ * (Ctrl-C, kill, the terminal closing) stops the download and runs the install's own cleanup, so nothing is installed and a
+ * rerun starts over; a second signal ends the process at once.
  */
-async function installAndVerify(tool: ToolId, ctx: CheckContext, pins: ToolPins, platform: Platform, deps: DepsDeps): Promise<Verified> {
+async function installAndVerify(tool: ToolId, ctx: CheckContext, pins: ToolPins, platform: Platform, deps: DepsDeps, terminal: HumanTerminal): Promise<Verified> {
   let installed: InstalledTool;
+  const guard = installStopGuard(tool, terminal, deps.exit ?? ((code: number) => { process.exit(code); }));
   try {
-    installed = await installTool(tool, { pins, home: ctx.home, platform, ...(deps.download ? { download: deps.download } : {}) });
+    installed = await installTool(tool, {
+      pins, home: ctx.home, platform, signal: guard.signal,
+      ...(deps.download ? { download: deps.download } : {}), ...(deps.pidAlive ? { pidAlive: deps.pidAlive } : {}),
+    });
   } catch (error) {
     const code = error instanceof InstallError ? error.code : "INSTALL_DOWNLOAD_FAILED";
-    return { ok: false, step: "failed " + code, text: FAILURE_TEXT[code] };
+    return { ok: false, step: "failed " + code, text: FAILURE_TEXT[code], ...(code === "INSTALL_INTERRUPTED" ? { stopped: true } : {}) };
+  } finally {
+    guard.release();
   }
+  for (const line of installed.recovered) terminal.write("Finished an interrupted earlier run: " + line + ".\n");
+  for (const path of installed.swept) terminal.write("Removed a leftover of an earlier run that did not finish: " + path + "\n");
+  if (installed.replaced) terminal.write("Replaced the copy at " + join(installed.path, "..") + " (" + INSTALL_STATE_WORDS[installed.replaced] + ") after the new copy passed its check.\n");
   const checked = await runDependencyChecks(ctx, new Set<DepCheck["id"]>([tool]));
   if (checked.find((item) => item.id === tool)?.ok === true) return { ok: true, installed };
   const version = pins.tools[tool].version;
@@ -253,6 +330,7 @@ export async function runDepsCommand(args: string[], deps: DepsDeps = {}): Promi
   const ctx = context(deps, pins);
   const home = ctx.home;
   const log = depsLog(home);
+  sweepAndReport(pins, home, deps, out, log.line);
   let checks = await runDependencyChecks(ctx, REQUIRED_FOR_DEPS);
   log.line("check " + checks.map((check) => check.label + "=" + (check.ok ? "ok" : "missing")).join(" "));
   out("Dependency check\n\n");
@@ -281,8 +359,10 @@ export async function runDepsCommand(args: string[], deps: DepsDeps = {}): Promi
   const options: string[] = [];
   const actions: Array<"install" | "remove" | "none"> = [];
   const updates = installable.filter((check) => previousVersions(pins, home, platform, check.installable!).length > 0).length;
+  const repairs = installable.filter((check) => repairState(pins, home, platform, check.installable!) !== undefined).length;
   if (installable.length > 0) {
-    options.push(updates === 0 ? "Install what is missing" : updates === installable.length ? "Update to the tested versions" : "Install or update what is missing");
+    options.push(repairs === installable.length ? "Repair the app's own copies" : repairs > 0 ? "Install, update or repair what is missing"
+      : updates === 0 ? "Install what is missing" : updates === installable.length ? "Update to the tested versions" : "Install or update what is missing");
     actions.push("install");
   }
   if (removable.length > 0) { options.push("Remove a tool this app installed"); actions.push("remove"); }
@@ -302,17 +382,21 @@ export async function runDepsCommand(args: string[], deps: DepsDeps = {}): Promi
       const version = pins.tools[tool].version;
       const previous = previousVersions(pins, home, platform, tool);
       terminal.write(menuDialogFor(check, pins, platform, home));
-      const question = installQuestion(previous);
+      const question = installQuestion(previous, repairState(pins, home, platform, tool) !== undefined);
       if (await askChoice(terminal, question.title, question.options, 2) !== 1) {
         out("Skipped " + check.label + ". Commands that need it stay blocked until it is installed.\n");
         continue;
       }
       if (previous.length > 0) log.line("update " + tool + " " + previous.join(",") + " to " + version);
-      const result = await installAndVerify(tool, ctx, pins, platform, deps);
+      const result = await installAndVerify(tool, ctx, pins, platform, deps, terminal);
       if (!result.ok) {
         log.line("install " + tool + " " + version + " " + result.step);
         out(result.text + "\n");
         if (previous.length > 0) out(previousKept(tool, version, previous));
+        if (result.stopped) {
+          out("The remaining installs were not started.\n");
+          break;
+        }
         continue;
       }
       log.line("install " + tool + " " + version + " " + (result.installed.reused ? "already-installed" : "installed") + " verified");
@@ -320,7 +404,7 @@ export async function runDepsCommand(args: string[], deps: DepsDeps = {}): Promi
       await offerPreviousRemoval(tool, version, previous, terminal, home, log.line);
     }
   } else if (action === "remove") {
-    const labels = removable.map((item) => TOOL_NAME[item.tool] + " " + item.version + " (" + item.path + ")");
+    const labels = removable.map((item) => TOOL_NAME[item.tool] + " " + item.version + " (" + item.path + ")" + stateSuffix(item.state));
     const pick = await askChoice(terminal, "Which one should be removed?", [...labels, "Cancel"], labels.length + 1);
     if (pick <= labels.length) {
       const item = removable[pick - 1];
@@ -427,17 +511,23 @@ export async function installSelectedPinnedTools(
     result.attempted.push(tool);
     const previous = previousVersions(pins, ctx.home, platform, tool);
     terminal.write(menuDialogFor(check, pins, platform, ctx.home));
-    const question = installQuestion(previous);
+    const question = installQuestion(previous, repairState(pins, ctx.home, platform, tool) !== undefined);
     if (await askChoice(terminal, question.title, question.options, 2) !== 1) {
       terminal.write("Skipped " + tool + ". Commands that need it stay blocked until it is installed.\n");
       result.skipped.push(tool);
       continue;
     }
     // A cached binary at the pinned location that no longer reports the pinned version is never called ready.
-    const verified = await installAndVerify(tool, ctx, pins, platform, deps);
+    const verified = await installAndVerify(tool, ctx, pins, platform, deps, terminal);
     if (!verified.ok) {
       terminal.write(verified.text + "\n" + (previous.length > 0 ? previousKept(tool, pins.tools[tool].version, previous) : ""));
       result.skipped.push(tool);
+      if (verified.stopped) {
+        // A stop ends the whole selection: the tools after this one are skipped, not asked about.
+        for (const rest of unique.slice(unique.indexOf(tool) + 1)) if (!result.skipped.includes(rest)) result.skipped.push(rest);
+        terminal.write("The remaining installs were not started.\n");
+        break;
+      }
       continue;
     }
     terminal.write("Verified pinned " + tool + " installed at " + verified.installed.path + "\n");

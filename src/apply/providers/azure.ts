@@ -100,5 +100,6 @@ export const AZURE: ProviderSpec = {
   // Simulation finding (docs/act-pilot-simulation.md): the plan embeds the backend block's settings; the rest is filled from the apply process's ARM_* variables.
   filledAtApply: ["use_oidc", "client_id", "tenant_id", "subscription_id", "oidc_token_file_path"],
   tagAttributes: ["tags"],
+  // The plan's resource uses are not judged here: the Azure allowlist is open, and the built-in provider is not singled out (as it is for AWS).
   assertProviderConfig: (blocks, target) => assertProviderConfig(blocks, target as AzureTarget),
 };
