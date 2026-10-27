@@ -15,7 +15,7 @@ import type { ToolResult } from "../../tools/types.js";
 import { sha256 } from "../../util/sha256.js";
 import { isAwsIdentityType } from "../cleanup-proposal.js";
 import { stripInvisible } from "../constants.js";
-import { assertUsable, checkedOutput, stop, withoutIdentities } from "../engine.js";
+import { assertUsable, checkedOutput, markLeftBehind, stop, withoutIdentities } from "../engine.js";
 import type { ApplyEnd, EngineApplyRun, EngineCleanupRun, EngineContext, EngineRunInput, EngineSpec, StateDocument, StopControl } from "../engine-spec.js";
 import type { AwsTarget } from "../providers/aws.js";
 import { isRecord } from "../providers/shared.js";
@@ -738,7 +738,13 @@ const isStackType = (type: string): boolean => type === "AWS::CloudFormation::St
  * written retain policy is.
  */
 const keepsBySnapshotDefault = (type: string, properties: unknown): boolean =>
-  type === "AWS::RDS::DBCluster" || (type === "AWS::RDS::DBInstance" && !(isRecord(properties) && properties.DBClusterIdentifier !== undefined));
+  type === "AWS::RDS::DBCluster" || (type === "AWS::RDS::DBInstance" && !(isRecord(properties) && namesCluster(properties.DBClusterIdentifier)));
+/**
+ * Whether a `DBClusterIdentifier` names a cluster: a non-empty string or a `Ref` to a logical id. `null`, an empty string, `AWS::NoValue`
+ * (CloudFormation drops the property) or any other intrinsic is not one, so the instance is standalone and its default policy is Snapshot
+ * (review 6432294529, N2: fail closed on what cannot be read as a name).
+ */
+const namesCluster = (value: unknown): boolean => (typeof value === "string" && value.trim() !== "") || (isRecord(value) && typeof value.Ref === "string" && value.Ref !== "" && value.Ref !== "AWS::NoValue");
 const isCustomResourceType = (type: string): boolean => type.startsWith("Custom::") || type === "AWS::CloudFormation::CustomResource" || type === "AWS::CloudFormation::Macro";
 
 /** Every logical id a template value refers to: `Ref`, `Fn::GetAtt` (as a list or `"X.Attr"`), `DependsOn`, and `${X}` or `${X.Attr}` inside `Fn::Sub`. */
@@ -842,31 +848,37 @@ function openCleanup(input: EngineRunInput): EngineCleanupRun {
       // would do beyond the list is known only after CloudFormation computes it. When the driver then refuses the removal (a wider change
       // list, a protected object CloudFormation would take along), this change set stays in CloudFormation, unexecuted and AVAILABLE,
       // for a person to clear: no surface here may delete a change set, and the pilot's authority is not widened to do so.
-      const created = parse(session.ok("CHANGESET", createArgv({ stack: assembly.stackName, name, type: "UPDATE", template: CLEANUP_TEMPLATE_FILE, capabilities, tags, region })), "CHANGE_SET_UNREADABLE");
-      const id = isRecord(created) ? str(created.Id, "CHANGE_SET_UNREADABLE") : stop("CHANGE_SET_UNREADABLE");
-      const base = "^arn:aws:cloudformation:" + region + ":" + pinned.accountId + ":";
-      if (!new RegExp(base + "changeSet/" + name + "/[0-9a-f-]{36}$").test(id) || (isRecord(created) ? str(created.StackId, "CHANGE_SET_UNREADABLE") : "") !== before.id) stop("CHANGESET_NOT_IN_CONTRACT");
-      const waited = session.run("CHANGESET", waitArgv(id, region));
-      if (waited.exitCode !== 0) {
-        const failed = session.run("CHANGESET", describeChangeSetArgv(id, region));
-        const reason = failed.exitCode === 0 ? parse(failed.stdout, "CHANGE_SET_UNREADABLE") : undefined;
-        if (isRecord(reason) && reason.Status === "FAILED") stop(/didn't contain changes|No updates are to be performed/i.test(String(reason.StatusReason ?? "")) ? "CLEANUP_NO_CHANGES" : "CHANGE_SET_CREATION_FAILED");
-        checkedOutput(waited);
+      const createdRaw = session.ok("CHANGESET", createArgv({ stack: assembly.stackName, name, type: "UPDATE", template: CLEANUP_TEMPLATE_FILE, capabilities, tags, region }));
+      // From here on CloudFormation holds the change set (AVAILABLE, or FAILED when creation failed): every refusal below is marked so the driver says it was left behind (N1).
+      try {
+        const created = parse(createdRaw, "CHANGE_SET_UNREADABLE");
+        const id = isRecord(created) ? str(created.Id, "CHANGE_SET_UNREADABLE") : stop("CHANGE_SET_UNREADABLE");
+        const base = "^arn:aws:cloudformation:" + region + ":" + pinned.accountId + ":";
+        if (!new RegExp(base + "changeSet/" + name + "/[0-9a-f-]{36}$").test(id) || (isRecord(created) ? str(created.StackId, "CHANGE_SET_UNREADABLE") : "") !== before.id) stop("CHANGESET_NOT_IN_CONTRACT");
+        const waited = session.run("CHANGESET", waitArgv(id, region));
+        if (waited.exitCode !== 0) {
+          const failed = session.run("CHANGESET", describeChangeSetArgv(id, region));
+          const reason = failed.exitCode === 0 ? parse(failed.stdout, "CHANGE_SET_UNREADABLE") : undefined;
+          if (isRecord(reason) && reason.Status === "FAILED") stop(/didn't contain changes|No updates are to be performed/i.test(String(reason.StatusReason ?? "")) ? "CLEANUP_NO_CHANGES" : "CHANGE_SET_CREATION_FAILED");
+          checkedOutput(waited);
+        }
+        const view = readChangeSet(session, id, region);
+        if (view.id !== id || view.stackId !== before.id || view.stackName !== assembly.stackName) stop("CHANGE_SET_MISMATCH");
+        if (view.status !== "CREATE_COMPLETE" || view.execution !== "AVAILABLE") stop("CHANGE_SET_NOT_CREATED");
+        if (view.capabilities.some((capability) => !capabilities.includes(capability))) stop("CAPABILITY_NOT_IN_CONTRACT");
+        if (view.tags.map((tag) => "Key=" + tag.key + ",Value=" + tag.value).join("\n") !== [...tags].sort().join("\n")) stop("CHANGE_SET_TAGS_MISMATCH");
+        // The change set holds exactly the removal template, whatever its change list says.
+        if (changeSetTemplateSha256(session, id, region) !== sha256(canonicalJson(removal))) stop("CHANGE_SET_TEMPLATE_MISMATCH");
+        changeSetId = id;
+        changeSetFingerprint = view.changesSha256;
+        // The stack as the change set was made against it; the execution requires it unchanged.
+        const against = stackNow("CHANGESET");
+        if (against.id !== before.id) stop("CHANGE_SET_MISMATCH");
+        before = against;
+        return view.changes;
+      } catch (error) {
+        throw markLeftBehind(error, "CHANGE_SET");
       }
-      const view = readChangeSet(session, id, region);
-      if (view.id !== id || view.stackId !== before.id || view.stackName !== assembly.stackName) stop("CHANGE_SET_MISMATCH");
-      if (view.status !== "CREATE_COMPLETE" || view.execution !== "AVAILABLE") stop("CHANGE_SET_NOT_CREATED");
-      if (view.capabilities.some((capability) => !capabilities.includes(capability))) stop("CAPABILITY_NOT_IN_CONTRACT");
-      if (view.tags.map((tag) => "Key=" + tag.key + ",Value=" + tag.value).join("\n") !== [...tags].sort().join("\n")) stop("CHANGE_SET_TAGS_MISMATCH");
-      // The change set holds exactly the removal template, whatever its change list says.
-      if (changeSetTemplateSha256(session, id, region) !== sha256(canonicalJson(removal))) stop("CHANGE_SET_TEMPLATE_MISMATCH");
-      changeSetId = id;
-      changeSetFingerprint = view.changesSha256;
-      // The stack as the change set was made against it; the execution requires it unchanged.
-      const against = stackNow("CHANGESET");
-      if (against.id !== before.id) stop("CHANGE_SET_MISMATCH");
-      before = against;
-      return view.changes;
     },
     async execute(control) {
       if (changeSetId === undefined || before === undefined || changeSetFingerprint === undefined) return stop("ENGINE_NOT_PREPARED");

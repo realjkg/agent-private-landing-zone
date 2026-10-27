@@ -18,6 +18,17 @@ export function codeOf(error: unknown): string {
   return adapter ? adapter[1] : "UNEXPECTED";
 }
 
+/**
+ * A refusal thrown after the engine created something no surface here removes (a CDK removal change set, which stays in
+ * CloudFormation unexecuted): marked so the driver says so in the refusal, whatever code it carries (review 6432294529, N1).
+ */
+export type LeftBehind = "CHANGE_SET";
+export function markLeftBehind<T>(error: T, what: LeftBehind): T {
+  if (error instanceof Error) (error as Error & { leftBehind?: LeftBehind }).leftBehind = what;
+  return error;
+}
+export const leftBehindOf = (error: unknown): LeftBehind | undefined => error instanceof Error ? (error as Error & { leftBehind?: LeftBehind }).leftBehind : undefined;
+
 /** A step that needs no credentials is given none. */
 export const withoutIdentities = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv =>
   Object.fromEntries(Object.entries(env).filter(([key]) => !ANY_IDENTITY_VARIABLE.test(key)));

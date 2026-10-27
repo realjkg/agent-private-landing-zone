@@ -1349,20 +1349,76 @@ test("a stack, a stack set, a custom resource or a macro is never in a removal, 
       Cluster: { Type: "AWS::RDS::DBCluster", Properties: { Engine: "aurora-postgresql" } },
       Standalone: { Type: "AWS::RDS::DBInstance", Properties: { Engine: "postgres" } },
       Member: { Type: "AWS::RDS::DBInstance", Properties: { Engine: "aurora-postgresql", DBClusterIdentifier: { Ref: "Cluster" } } },
+      Named: { Type: "AWS::RDS::DBInstance", Properties: { Engine: "aurora-postgresql", DBClusterIdentifier: "my-cluster" } },
+      // A cluster identifier that names no cluster (review 6432294529, N2): the instance is standalone, so its default policy is Snapshot.
+      NullMember: { Type: "AWS::RDS::DBInstance", Properties: { Engine: "postgres", DBClusterIdentifier: null } },
+      BlankMember: { Type: "AWS::RDS::DBInstance", Properties: { Engine: "postgres", DBClusterIdentifier: " " } },
+      NoValueMember: { Type: "AWS::RDS::DBInstance", Properties: { Engine: "postgres", DBClusterIdentifier: { Ref: "AWS::NoValue" } } },
+      IntrinsicMember: { Type: "AWS::RDS::DBInstance", Properties: { Engine: "postgres", DBClusterIdentifier: { "Fn::If": ["c", { Ref: "Cluster" }, { Ref: "AWS::NoValue" }] } } },
       Dropped: { Type: "AWS::RDS::DBCluster", DeletionPolicy: "Delete", Properties: { Engine: "aurora-postgresql" } },
     },
   };
   for (const [address, code] of [["Nested", "ASSEMBLY_NESTED_STACK"], ["Fleet", "ASSEMBLY_NESTED_STACK"], ["Hook", "ASSEMBLY_CUSTOM_RESOURCE"], ["Legacy", "ASSEMBLY_CUSTOM_RESOURCE"], ["Expander", "ASSEMBLY_CUSTOM_RESOURCE"],
     ["PilotRole", "CLEANUP_PROTECTED_IDENTITY"], ["PilotPolicy", "CLEANUP_PROTECTED_IDENTITY"], ["PilotKey", "CLEANUP_PROTECTED_IDENTITY"], ["Assignment", "CLEANUP_PROTECTED_IDENTITY"], ["Workforce", "CLEANUP_PROTECTED_IDENTITY"],
-    ["Judged", "CLEANUP_RETAIN_POLICY"], ["Cluster", "CLEANUP_RETAIN_POLICY"], ["Standalone", "CLEANUP_RETAIN_POLICY"]] as const) {
+    ["Judged", "CLEANUP_RETAIN_POLICY"], ["Cluster", "CLEANUP_RETAIN_POLICY"], ["Standalone", "CLEANUP_RETAIN_POLICY"],
+    ["NullMember", "CLEANUP_RETAIN_POLICY"], ["BlankMember", "CLEANUP_RETAIN_POLICY"], ["NoValueMember", "CLEANUP_RETAIN_POLICY"], ["IntrinsicMember", "CLEANUP_RETAIN_POLICY"]] as const) {
     assert.throws(() => removalTemplateOf(template, [address]), (error: unknown) => codeOf(error) === code, address);
     assert.throws(() => removalTemplateOf(template, ["PilotBucket", address]), (error: unknown) => codeOf(error) === code, "with an ordinary resource beside it: " + address);
   }
   const removal = removalTemplateOf(template, ["PilotBucket"]);
-  assert.deepEqual(Object.keys((removal as { Resources: Record<string, unknown> }).Resources).sort(), ["Assignment", "Cluster", "Dropped", "Expander", "Fleet", "Hook", "Judged", "Legacy", "Member", "Nested", "PilotKey", "PilotPolicy", "PilotRole", "PilotTopic", "Standalone", "Workforce"]);
+  assert.deepEqual(Object.keys((removal as { Resources: Record<string, unknown> }).Resources).sort(), ["Assignment", "BlankMember", "Cluster", "Dropped", "Expander", "Fleet", "Hook", "IntrinsicMember", "Judged", "Legacy", "Member", "Named", "Nested", "NoValueMember", "NullMember", "PilotKey", "PilotPolicy", "PilotRole", "PilotTopic", "Standalone", "Workforce"]);
   // A cluster member names its cluster, so its default policy is not Snapshot; a cluster whose policy is written Delete is judged by the word. Both may be removed (with the cluster's member and dependents accounted for).
   assert.ok(removalTemplateOf(template, ["Member"]));
+  assert.ok(removalTemplateOf(template, ["Named"]), "a cluster named by a non-empty string is a member too");
   assert.ok(removalTemplateOf({ Resources: { PilotBucket: template.Resources.PilotBucket, Dropped: template.Resources.Dropped } }, ["Dropped"]));
+});
+
+test("every CDK refusal after CHANGESET created the removal change set says it was left unexecuted for a person to clear, whatever the code (review 6432294529, N1): a capability or a tag check that fails after creation (TARGET_NOT_IN_CONTRACT, APPLY_FAILED) says so, and a refusal before creation does not", async () => {
+  const LEFT = /The removal change set created to plan this is left unexecuted in CloudFormation for a person to clear; nothing here deletes a change set\.$/;
+  // CloudFormation reports a capability the removal never asked for: refused after creation as not in the contract.
+  const capabilityWorld = world({}, cdkContractJson(KILL), { diffChanges: true, protectAfterCreate: true });
+  const capability = await proposedCdk(capabilityWorld);
+  patchAws(toolDir, { echoCapabilities: ["CAPABILITY_NAMED_IAM"] });
+  const notInContract = await cleanupCdk(capabilityWorld, capability.s, capability.proposal);
+  refused(notInContract as never, "TARGET_NOT_IN_CONTRACT");
+  assert.match((notInContract as { message: string }).message, /CAPABILITY_NOT_IN_CONTRACT/);
+  assert.match((notInContract as { message: string }).message, LEFT);
+  assert.equal(removalCreates().length, 1, "the change set exists");
+  assert.equal(calls().filter((call) => call.args[1] === "execute-change-set").length, 1, "only the apply executed; the removal did not");
+  // The change set comes back with other tags than the stack's: an engine failure after creation.
+  const tagWorld = world({}, cdkContractJson(KILL), { diffChanges: true, protectAfterCreate: true });
+  const tagged = await proposedCdk(tagWorld);
+  patchAws(toolDir, { swapTags: ["Key=alz-managed-by,Value=someone-else"] });
+  const mismatch = await cleanupCdk(tagWorld, tagged.s, tagged.proposal);
+  refused(mismatch as never, "APPLY_FAILED");
+  assert.match((mismatch as { message: string }).message, /CHANGE_SET_TAGS_MISMATCH/);
+  assert.match((mismatch as { message: string }).message, LEFT);
+  assert.equal(removalCreates().length, 1);
+  assert.ok(!calls().some((call) => /delete-change-set|delete-stack/.test(call.args[1] ?? "")), "no delete surface exists");
+  // A refusal before any change set exists carries no such sentence.
+  const earlyWorld = world({}, cdkContractJson(KILL), { diffChanges: true, protectAfterCreate: true });
+  const early = await proposedCdk(earlyWorld, { resources: { PilotBucket: { Type: "AWS::S3::Bucket", DeletionPolicy: "Retain" } } });
+  const retained = await cleanupCdk(earlyWorld, early.s, early.proposal);
+  refused(retained as never, "CLEANUP_RETAIN_POLICY");
+  assert.doesNotMatch((retained as { message: string }).message, /left unexecuted/);
+  assert.equal(removalCreates().length, 0);
+});
+
+test("the engine's identity check is the driver's second line (review 6432294529, N3): a stack listing that reports the pilot's role under an ordinary type gets it proposed, and the removal template still refuses CLEANUP_PROTECTED_IDENTITY, reported as PROPOSAL_SCOPE_MISMATCH before any change set exists and with no approval consumed", async () => {
+  // The listing says PilotRole is a topic (a drifted or lying listing), so the proposal's type rule cannot see an identity and lists it.
+  // The plan creates the whole stack (bucket, topic, role), so every resource is this run's; the identity check runs per address, before the emptiness check.
+  const w = world({}, cdkContractJson(KILL, ["CAPABILITY_IAM"]), { changesAllAdd: true, diffChanges: true, protectAfterCreate: true, physicalIds: { PilotRole: "arn:aws:sns:us-east-1:111111111111:PilotStack-PilotRole-FAKE1" }, resourceTypes: { PilotRole: "AWS::SNS::Topic" } });
+  const run = await proposedCdk(w, { iam: true });
+  assert.deepEqual(run.proposal.deletes.map((d) => [d.address, d.type]), [["PilotBucket", "AWS::S3::Bucket"], ["PilotRole", "AWS::SNS::Topic"], ["PilotTopic", "AWS::SNS::Topic"]], "the listing's type, not the template's, reached the proposal");
+  const taken = await cleanupCdk(w, run.s, run.proposal);
+  refused(taken as never, "PROPOSAL_SCOPE_MISMATCH");
+  assert.match((taken as { message: string }).message, /names an identity or access object, which is never deleted by a cleanup\. Refused before any change set exists\. Nothing was destroyed and no approval was consumed/);
+  assert.doesNotMatch((taken as { message: string }).message, /left unexecuted/);
+  assert.equal(removalCreates().length, 0, "no removal change set was created");
+  assert.equal(calls().filter((call) => call.args[1] === "execute-change-set").length, 1, "only the apply executed");
+  // The same approval is not spent: the honest proposal of a listing that tells the truth still runs once.
+  const retry = await cleanupCdk(w, run.s, run.proposal);
+  refused(retry as never, "PROPOSAL_SCOPE_MISMATCH");
 });
 
 test("no IAM object is ever in a removal change set (owner policy #39; review 6411896219 B1 and B2): the pilot's CHANGESET role under its real name, an inline policy on it, a managed policy, a user and an access key the stack created are all kept as PROTECTED_IDENTITY by the pilot owner, the access key id is never recorded, the removal takes out only the ordinary resources, and the leftover check is COMPLETE with every identity intentionally retained", async () => {
