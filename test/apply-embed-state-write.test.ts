@@ -17,7 +17,7 @@ import { targetString } from "../src/cli/teardown-driver.js";
 import { removeTree } from "../src/teardown/driver/cleanup.js";
 import { INIT_ARGV } from "../src/teardown/driver/adapters/terraform.js";
 import { SOURCE_COMMIT,
-  AWS_REGION, DEV_TARGET, NOW, POLICY, awsContractJson, awsIdentityEnv, awsRoleArn, awsTargetOf, approvalFor as approval, behave as behaveIn, callsOf, contractJson,
+  AWS_REGION, AZURE_MAIN_TF, DEV_TARGET, NOW, POLICY, awsContractJson, awsIdentityEnv, awsRoleArn, awsTargetOf, approvalFor as approval, behave as behaveIn, callsOf, contractJson,
   human, identityEnv, installFakeTerraform, pinPathOf, testFixtureForgeQualificationEvidence, writePinnedContract, writeProject, type Behavior, type Call,
 } from "./helpers/apply-fixtures.js";
 import { cdkContractJson } from "./helpers/cdk-fixtures.js";
@@ -69,7 +69,7 @@ function world(contract: unknown, provider: "AZURE" | "AWS" = "AZURE", environme
     },
   };
 }
-const azureTf = 'resource "azurerm_resource_group" "pilot" {}\n';
+const azureTf = AZURE_MAIN_TF;
 async function seal(w: World, provider: "AZURE" | "AWS" = "AZURE") {
   const target = provider === "AWS" ? awsTargetOf("DEV") : DEV_TARGET;
   const p = writeProject(fresh("project"), target, provider === "AWS" ? 'resource "aws_s3_bucket" "pilot" {}\n' : azureTf);
@@ -149,6 +149,7 @@ test("on (Azure): the seal init uses the backend-config file with STATE_WRITE's 
   assert.equal(inits[0].backendMode, 0o600);
   const file = inits[0].backendConfig ?? "";
   assert.match(file, /client_id = "statewrite-client-3"/);
+  assert.match(file, /^use_azuread_auth = true$/m, "state access is Entra ID only");
   assert.ok(file.includes(DEV_TARGET.account) && file.includes("/run/fixture/statewrite-oidc-token"));
   for (const secret of SECRETS) assert.ok(!file.includes(secret), "no secret in the backend file");
   assert.ok(!file.includes("apply-client-4") && !file.includes("state-client-2"), "only STATE_WRITE's settings");

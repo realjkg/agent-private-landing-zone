@@ -133,7 +133,7 @@ function prepareWorkspace(session: Session, input: WorkspaceInput): void {
   }
   if (reported !== input.engineVersion) stop("ENGINE_VERSION_MISMATCH");
 
-  if (input.backendBlock) assertBackendBlock(session.work, input.backendBlock);
+  if (input.backendBlock) assertBackendBlock(session.work, input.backendBlock, input.target.backend);
   input.beforeInit?.();
   try { session.step(input.initArgv, input.stateIdentity); } finally { input.afterInit?.(); }
   session.assertBound();

@@ -22,7 +22,7 @@ import { removeTree, runCleanups } from "../src/teardown/driver/cleanup.js";
 import { runBoundedProcess, runStoppableProcess } from "../src/tools/process.js";
 import { TERRAFORM_APPLY_PROFILE } from "../src/tools/profiles.js";
 import { SOURCE_COMMIT,
-  CANARIES, DEV_TARGET, approvers, ENV, H, NOW, OPERATOR, OUTPUT_CANARY, PLAN_CANARY, POLICY, PROD_TARGET, QA_TARGET, STATE_CANARY, TENANT, VALUE_CANARY,
+  AZURE_BACKEND_TF, AZURE_MAIN_TF, CANARIES, DEV_TARGET, approvers, ENV, H, NOW, OPERATOR, OUTPUT_CANARY, PLAN_CANARY, POLICY, PROD_TARGET, QA_TARGET, STATE_CANARY, TENANT, VALUE_CANARY,
   approvalFor as approval, behave as behaveIn, callsOf, contractJson, human, identityEnv, installFakeTerraform, keys, pinPathOf,
   testFixtureForgeQualificationEvidence, recordApplied, sha, signalsOf, targetOf, writePinnedContract, writeProject, type Behavior, type Call, type Project,
 } from "./helpers/apply-fixtures.js";
@@ -103,7 +103,7 @@ async function seal(w: World, environment: ApplyEnvironment, p: Project = writeP
 type Sealed = Awaited<ReturnType<typeof seal>>;
 
 /** One release, sealed for each environment: the same project files, so the same releaseIdentity. */
-const SHARED_TF = 'resource "azurerm_resource_group" "pilot" {}\n';
+const SHARED_TF = AZURE_MAIN_TF;
 const sealShared = (w: World, environment: ApplyEnvironment, mainTf: string = SHARED_TF) => seal(w, environment, writeProject(fresh("project"), targetOf(environment), mainTf));
 /** The approvals a stage needs from the fixture contract: one for DEV and QA, two for PROD. */
 const approvalsFor = (s: Sealed): SignedApproval[] => (s.sealed.environment === "PROD"
@@ -181,6 +181,7 @@ test("a DEV apply runs the pinned steps with the right identity at each step and
   assert.match(backend, /client_id = "statewrite-client-3"/);
   assert.ok(backend.includes(`tenant_id = "${TENANT}"`) && backend.includes(`subscription_id = "${DEV_TARGET.account}"`));
   assert.ok(backend.includes('oidc_token_file_path = "/run/fixture/statewrite-oidc-token"') && backend.includes("use_oidc = true"));
+  assert.ok(backend.includes("use_azuread_auth = true"), "state access is Entra ID only (owner decision, 2026-10-27)");
   assert.ok(!backend.includes("statewrite-secret") && !backend.includes("apply-"), "no secret and no other identity in the backend configuration");
 
   const apply = steps[5];
@@ -1117,7 +1118,7 @@ test("fixture path: seal and apply DEV, then QA, then PROD, each a separate plan
 test("QA of a different release than the one DEV applied is refused, and so is PROD of a different release than the one QA applied", async () => {
   const w = world();
   behave({ applyAdvance: true });
-  const other = 'resource "azurerm_resource_group" "different" {}\n';
+  const other = AZURE_BACKEND_TF + 'resource "azurerm_resource_group" "different" {}\n';
   await promoteTo(w, "DEV");
   const qa = await sealShared(w, "QA", other);
   assert.notEqual(qa.sealed.releaseIdentity, (await sealShared(w, "DEV")).sealed.releaseIdentity);
@@ -1128,7 +1129,7 @@ test("QA of a different release than the one DEV applied is refused, and so is P
   await promoteTo(w, "QA");
   const prodOther = await sealShared(w, "PROD", other);
   refused(await run(w, prodOther, approvalsFor(prodOther)), "PROMOTION_EVIDENCE_MISSING"); // QA applied the shared release, not this one
-  const prodThird = await sealShared(w, "PROD", 'resource "azurerm_resource_group" "third" {}\n');
+  const prodThird = await sealShared(w, "PROD", AZURE_BACKEND_TF + 'resource "azurerm_resource_group" "third" {}\n');
   refused(await run(w, prodThird, approvalsFor(prodThird)), "PROMOTION_EVIDENCE_MISSING");
   assert.equal(applyCalls().length, 2);
 });
@@ -1294,6 +1295,10 @@ test("the backend init saved must be the contract's storage account, container a
     ["a different backend type", saved({}, "local")],
     ["a non-string field", saved({ key: 7 })],
     ["no config", { type: "azurerm" }],
+    // State access is Entra ID only: a saved backend without `use_azuread_auth`, or with anything but `true`, is not the contract's.
+    ["Entra ID authorization not saved", saved({ use_azuread_auth: null })],
+    ["Entra ID authorization off (a shared key or SAS would be used)", saved({ use_azuread_auth: false })],
+    ["Entra ID authorization as a string", saved({ use_azuread_auth: "true" })],
   ] as const) {
     const w = world();
     const s = await seal(w, "DEV");
@@ -1319,7 +1324,7 @@ test("the backend init saved must be the contract's storage account, container a
 test("PROD is bound to the PROD backend: the DEV backend is refused there", async () => {
   const w = world();
   behave({ applyAdvance: true });
-  const shared = 'resource "azurerm_resource_group" "pilot" {}\n';
+  const shared = AZURE_BACKEND_TF + 'resource "azurerm_resource_group" "pilot" {}\n';
   const prod = await seal(w, "PROD", writeProject(fresh("project"), PROD_TARGET, shared));
   await promoteTo(w, "DEV", shared);
   await promoteTo(w, "QA", shared);
@@ -1339,6 +1344,54 @@ test("qualify refuses a backend that is not the contract's DEV backend", async (
   behave({ savedBackend: { type: "azurerm", config: { storage_account_name: "attackerstore", container_name: "tfstate", key: "dev.tfstate" } } });
   const result = await qualifyApply({ invocation: human(DEV_TARGET), environment: "DEV", target: DEV_TARGET, manifest: p.manifest, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved }, w.deps);
   assert.ok(!result.ok && /BACKEND_NOT_IN_CONTRACT/.test(result.message), JSON.stringify(result));
+});
+
+test("the project's own azurerm backend block is judged before init: a shared key or SAS, another auth path or endpoint, another storage account, Entra ID off or any other attribute is refused and no init runs", async () => {
+  const [account, container, key] = DEV_TARGET.backend.split("/");
+  const backend = (body: string) => `terraform {\n  backend "azurerm" {\n    storage_account_name = "${account}"\n    container_name = "${container}"\n    key = "${key}"\n    use_oidc = true\n    use_azuread_auth = true\n${body}\n  }\n}\n` + 'resource "azurerm_resource_group" "pilot" {}\n';
+  const sealOf = (w: World, mainTf: string) => {
+    const p = writeProject(fresh("project"), DEV_TARGET, mainTf);
+    return sealPreview({ invocation: human(DEV_TARGET), environment: "DEV", target: DEV_TARGET, manifest: p.manifest, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved }, forEnv(w, "DEV"));
+  };
+  const w = world();
+  behave({ applyAdvance: true });
+  const fine = await seal(w, "DEV", writeProject(fresh("project"), DEV_TARGET, backend("")));
+  assert.ok((await run(w, fine, [approval(fine.sealed, "alice")])).ok, "exactly the contract's settings seal and apply");
+  for (const body of [
+    '    access_key = "fakekey"', '    sas_token = "?sv=fake"', "    use_msi = true", '    client_secret = "fake"', '    client_certificate_path = "/x.pfx"',
+    '    endpoint = "https://attacker.example"', '    metadata_host = "attacker.example"', '    environment = "usgovernment"', '    resource_group_name = "rg"',
+    '    oidc_token_file_path = "/run/other-token"', '    client_id = "other-client"',
+  ]) {
+    behave();
+    const result = await sealOf(w, backend(body));
+    refused(result, "ARTIFACT_INVALID");
+    assert.match((result as { message: string }).message, /BACKEND_BLOCK_NOT_IN_CONTRACT/, body);
+    assert.deepEqual(calls().map((c) => c.args[0]), ["version"], "init never ran, so no credential was sent anywhere: " + body);
+  }
+  // The literals: another storage account, container or key than the contract's, Entra ID or OIDC off, or an expression.
+  const other = (mainTf: string) => `terraform {\n  backend "azurerm" {\n${mainTf}\n  }\n}\n` + 'resource "azurerm_resource_group" "pilot" {}\n';
+  for (const body of [
+    '    storage_account_name = "attackerstore"', '    storage_account_name = "fixtureprodstore"\n    key = "prod.tfstate"', '    container_name = "other"', '    key = "qa.tfstate"',
+    "    use_azuread_auth = false", "    use_oidc = false", "    storage_account_name = var.store", '    key = "${var.key}"',
+  ]) {
+    behave();
+    const result = await sealOf(w, other(body));
+    refused(result, "ARTIFACT_INVALID");
+    assert.match((result as { message: string }).message, /BACKEND_BLOCK_NOT_IN_CONTRACT/, body);
+    assert.deepEqual(calls().map((c) => c.args[0]), ["version"], body);
+  }
+  // A block that leaves Entra ID to the environment is not refused before init, but what init saved is then not the contract's (nothing from the environment is saved).
+  behave();
+  const unset = await sealOf(w, 'terraform {\n  backend "azurerm" {\n  }\n}\n' + 'resource "azurerm_resource_group" "pilot" {}\n');
+  refused(unset, "ARTIFACT_INVALID");
+  assert.match((unset as { message: string }).message, /BACKEND_NOT_IN_CONTRACT/);
+  assert.ok(calls().some((c) => c.args[0] === "init"), "judged after init, from what init saved");
+  // Qualifying walks the same init, so it refuses the same block.
+  behave();
+  const p = writeProject(fresh("project"), DEV_TARGET, backend('    sas_token = "?sv=fake"'));
+  const qualified = await qualifyApply({ invocation: human(DEV_TARGET), environment: "DEV", target: DEV_TARGET, manifest: p.manifest, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved }, w.deps);
+  assert.ok(!qualified.ok && /BACKEND_BLOCK_NOT_IN_CONTRACT/.test(qualified.message), JSON.stringify(qualified));
+  assert.deepEqual(calls().map((c) => c.args[0]), ["version"]);
 });
 
 test("a hard-coded provider subscription_id or tenant_id that is not the contract's refuses at seal and at apply; an expression is not judged", async () => {

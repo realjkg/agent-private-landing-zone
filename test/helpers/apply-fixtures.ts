@@ -108,6 +108,8 @@ if (b.failOn === cmd) { log({}); process.stderr.write(b.failStderr || "boom ${VA
 if (cmd === "version") { log({}); process.stdout.write(JSON.stringify({ terraform_version: b.version })); }
 else if (cmd === "init") {
   fs.mkdirSync(".terraform", { recursive: true });
+  // Entra ID is saved only when the backend-config file or the project's own block sets it, as the real engine does (docs/act-pilot-simulation.md (a): nothing from the environment is saved).
+  const entra = /use_azuread_auth\\s*=\\s*true/.test((backend() || "") + fs.readdirSync(".").filter((n) => n.endsWith(".tf")).map((n) => fs.readFileSync(n, "utf8")).join("\\n"));
   if (b.savedBackend !== null) {
     const def = (${JSON.stringify({ [DEV_TARGET.account]: DEV_TARGET.backend, [QA_TARGET.account]: QA_TARGET.backend, [PROD_TARGET.account]: PROD_TARGET.backend })})[process.env.ARM_SUBSCRIPTION_ID];
     const [account, container, ...key] = (def || "").split("/");
@@ -115,7 +117,7 @@ else if (cmd === "init") {
     const [bucket, ...s3key] = ((${JSON.stringify(Object.fromEntries([AWS_DEV_TARGET, AWS_QA_TARGET, AWS_PROD_TARGET].map((t) => [t.account, t.backend])))})[(process.env.AWS_ROLE_ARN || "").split(":")[4]] || "").split("/");
     const backend = b.savedBackend || (process.env.AWS_ROLE_ARN
       ? { type: "s3", config: { bucket, key: s3key.join("/"), region: process.env.AWS_REGION, use_lockfile: true } }
-      : { type: "azurerm", config: { storage_account_name: account, container_name: container, key: key.join("/") } });
+      : { type: "azurerm", config: { storage_account_name: account, container_name: container, key: key.join("/"), use_azuread_auth: entra ? true : null } });
     fs.writeFileSync(path.join(".terraform", "terraform.tfstate"), JSON.stringify({ version: 3, backend }));
   }
   for (const w of b.initWrites || []) { fs.mkdirSync(path.dirname(w.path), { recursive: true }); fs.writeFileSync(w.path, w.content); }
@@ -477,7 +479,11 @@ export async function testFixtureForgeQualificationEvidence(vaultDir: string, on
 // --- projects and approvals ----------------------------------------------------------------------
 
 export type Project = { projectRoot: string; manifest: ArtifactManifest; resolved: SealRequest["resolved"] };
-export function writeProject(projectRoot: string, target: ResolvedTarget, mainTf = 'resource "azurerm_resource_group" "pilot" {}\n'): Project {
+/** The Azure project's own backend block: Entra ID on, nothing else set (the partial configuration and the identity's `ARM_*` variables fill the rest). */
+export const AZURE_BACKEND_TF = 'terraform {\n  backend "azurerm" {\n    use_azuread_auth = true\n  }\n}\n';
+/** The default Azure project: the backend block above and one resource. */
+export const AZURE_MAIN_TF = AZURE_BACKEND_TF + 'resource "azurerm_resource_group" "pilot" {}\n';
+export function writeProject(projectRoot: string, target: ResolvedTarget, mainTf = AZURE_MAIN_TF): Project {
   writeFileSync(join(projectRoot, "main.tf"), mainTf);
   writeFileSync(join(projectRoot, ".terraform.lock.hcl"), LOCK);
   const resolved: SealRequest["resolved"] = {

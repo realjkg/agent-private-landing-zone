@@ -1,3 +1,4 @@
+import type { BackendBlockRule } from "../backend-block.js";
 import { SAFE_VALUE, TOKEN_FILE } from "../constants.js";
 import { stop } from "../engine.js";
 import type { ProviderBlock, ProviderSpec } from "../provider.js";
@@ -34,20 +35,28 @@ function backendOk(value: string): boolean {
  */
 const FALLBACK_VARIABLE = /^(AZURE_.*|ARM_USE_(?!OIDC$).*|ARM_MSI_.*|ARM_CLIENT_CERTIFICATE.*|AWS_.*)$/;
 
+/**
+ * State access is Entra ID only (owner decision of 2026-10-27, issue #39): the backend's `use_azuread_auth`, which the
+ * partial configuration sets and the project's own block may set. Shared keys and SAS tokens never reach a child
+ * (`ARM_ACCESS_KEY` and `ARM_SAS_TOKEN` are not injectable), and the bootstrap disables shared-key access on the storage
+ * account. The environment form of the switch (`ARM_STORAGE_USE_AZUREAD`) is not on the runner profile yet.
+ */
 const ambient = (env: NodeJS.ProcessEnv) => ambientRefusal(env, {
   fallback: FALLBACK_VARIABLE, ambient: /^(AZURE|ARM)_/, fallbackTo: "the az CLI, ambient or another cloud's credentials",
   advice: "The apply identities use ARM_* with an OIDC token file only.",
 });
 
 /**
- * The partial backend configuration init saves: the STATE_WRITE principal's
- * client id, tenant, subscription and token file path. Never a secret value, and
- * every value is checked against a strict pattern before it is written into
- * HCL. The apply process then needs only the APPLY identity for the provider.
+ * The partial backend configuration init saves: Entra ID authorization for the
+ * state blob, and the STATE_WRITE principal's client id, tenant, subscription and
+ * token file path. Never a secret value, and every value is checked against a
+ * strict pattern before it is written into HCL. The apply process then needs
+ * only the APPLY identity for the provider.
  */
 function backendConfig(env: NodeJS.ProcessEnv): string {
   const pick = (name: string, ok: RegExp): string => pickIdentityValue(env, "STATE_WRITE", name, ok);
   return [
+    "use_azuread_auth = true",
     "use_oidc = true",
     `client_id = "${pick("ARM_CLIENT_ID", SAFE_VALUE)}"`,
     `tenant_id = "${pick("ARM_TENANT_ID", GUID)}"`,
@@ -57,12 +66,35 @@ function backendConfig(env: NodeJS.ProcessEnv): string {
   ].join("\n");
 }
 
-/** The storage account, container and key init saved must be the contract's `<storage-account>/<container>/<key>`. */
+/**
+ * The storage account, container and key init saved must be the contract's `<storage-account>/<container>/<key>`, and Entra ID
+ * authorization must be on (`use_azuread_auth` saved as `true`: the partial configuration sets it, and without one the project's
+ * own block must, since init saves nothing from the environment). The plan embeds what init saved, so this is what the apply uses.
+ */
 function savedBackendMatches(backend: Record<string, unknown>, target: AzureTarget): boolean {
   const config = isRecord(backend.config) ? backend.config : {};
   const parts = [config.storage_account_name, config.container_name, config.key];
-  return backend.type === "azurerm" && parts.every((part) => typeof part === "string") && parts.join("/") === target.backend;
+  return backend.type === "azurerm" && parts.every((part) => typeof part === "string") && parts.join("/") === target.backend &&
+    config.use_azuread_auth === true;
 }
+
+/**
+ * What the project's own `backend "azurerm"` block may set, judged before init reads it: the contract's storage account,
+ * container and key (each, when set, exactly the contract's), `use_oidc` and `use_azuread_auth` (each, when set, `true`).
+ * Everything else is refused as such: a shared key or SAS token (`access_key`, `sas_token`), another credential or auth
+ * path (`client_secret`, `client_certificate*`, `use_msi`, `msi_endpoint`, `use_cli`), another endpoint or cloud
+ * (`endpoint`, `metadata_host`, `environment`), the key-based lookup through ARM (`resource_group_name`), a snapshot
+ * setting, or a `cloud` block. What init needs beyond the block comes from the partial configuration and the identity's own
+ * `ARM_*` variables.
+ */
+const BACKEND_BLOCK: BackendBlockRule = {
+  type: "azurerm",
+  attributes: ["storage_account_name", "container_name", "key", "use_oidc", "use_azuread_auth"],
+  literals: (backend) => {
+    const [storage_account_name, container_name, ...key] = backend.split("/");
+    return { storage_account_name, container_name, key: key.join("/"), use_oidc: true, use_azuread_auth: true };
+  },
+};
 
 /**
  * The provider half of the contract binding: a constant `subscription_id` or `tenant_id` in any azurerm provider block
@@ -97,8 +129,10 @@ export const AZURE: ProviderSpec = {
   ambientRefusal: ambient,
   backendConfig,
   savedBackendMatches: (saved, target) => savedBackendMatches(saved, target as AzureTarget),
-  // Simulation finding (docs/act-pilot-simulation.md): the plan embeds the backend block's settings; the rest is filled from the apply process's ARM_* variables.
-  filledAtApply: ["use_oidc", "client_id", "tenant_id", "subscription_id", "oidc_token_file_path"],
+  backendBlock: BACKEND_BLOCK,
+  // Simulation finding (docs/act-pilot-simulation.md): the plan embeds the backend block's settings; the rest is filled from the apply
+  // process's ARM_* variables. `use_azuread_auth` is embedded as true whenever init saved it (above).
+  filledAtApply: ["use_azuread_auth", "use_oidc", "client_id", "tenant_id", "subscription_id", "oidc_token_file_path"],
   tagAttributes: ["tags"],
   assertProviderConfig: (blocks, target) => assertProviderConfig(blocks, target as AzureTarget),
 };

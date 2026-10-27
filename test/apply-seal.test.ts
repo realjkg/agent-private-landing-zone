@@ -13,7 +13,7 @@ import { canonicalJson } from "../src/teardown/manifest.js";
 import { createImmutableSnapshot } from "../src/teardown/snapshot.js";
 import { createPrivateDirectory } from "../src/tools/private-workdir.js";
 import { SOURCE_COMMIT,
-  DEV_TARGET, ENGINE_VERSION, ENV, identityEnv, TENANT, H, PLAN_CANARY, POLICY, PROD_TARGET, QA_TARGET, VALUE_CANARY, behave as behaveIn, callsOf, installFakeTerraform, sha,
+  AZURE_BACKEND_TF, DEV_TARGET, ENGINE_VERSION, ENV, identityEnv, TENANT, H, PLAN_CANARY, POLICY, PROD_TARGET, QA_TARGET, VALUE_CANARY, behave as behaveIn, callsOf, installFakeTerraform, sha,
   writeProject, type Behavior,
 } from "./helpers/apply-fixtures.js";
 import { AZURE } from "../src/apply/providers/azure.js";
@@ -199,7 +199,7 @@ test("release identity is target-independent; the artifact hash is not", async (
   const bogus = await loadSealedPlan(qa.path);
   assert.ok(!bogus.ok, "an unknown environment is refused");
 
-  const changed = (await sealed({ mainTf: 'resource "azurerm_resource_group" "other" {}\n' })).result as Extract<Awaited<ReturnType<typeof sealPlan>>, { ok: true }>;
+  const changed = (await sealed({ mainTf: AZURE_BACKEND_TF + 'resource "azurerm_resource_group" "other" {}\n' })).result as Extract<Awaited<ReturnType<typeof sealPlan>>, { ok: true }>;
   assert.notEqual(changed.sealed.releaseIdentity, dev.sealed.releaseIdentity, "different project files are a different release");
 });
 
