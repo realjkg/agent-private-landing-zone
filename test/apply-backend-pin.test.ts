@@ -74,7 +74,7 @@ test("each provider pins its own type, and its backend file holds the contract's
   assert.equal(AWS.backendLocation({ accountId: "111111111111", region: "us-east-1", backend: "examplefake-dev-state/pilot/dev.tfstate", workspace: "default" } as never),
     'bucket = "examplefake-dev-state"\nkey = "pilot/dev.tfstate"\nregion = "us-east-1"\nuse_lockfile = true\n');
   assert.equal(AZURE.backendLocation({ tenantId: "x", subscriptionId: "y", backend: "acct01/tfstate/pilot/dev.tfstate", workspace: "default" } as never),
-    'storage_account_name = "acct01"\ncontainer_name = "tfstate"\nkey = "pilot/dev.tfstate"\n');
+    'storage_account_name = "acct01"\ncontainer_name = "tfstate"\nkey = "pilot/dev.tfstate"\nuse_azuread_auth = true\n');
   for (const backend of ['bucket"/x', "a/../b", ""]) {
     assert.throws(() => AWS.backendLocation({ accountId: "111111111111", region: "us-east-1", backend, workspace: "default" } as never), /BACKEND_NOT_IN_CONTRACT/, backend);
     assert.throws(() => AZURE.backendLocation({ tenantId: "x", subscriptionId: "y", backend, workspace: "default" } as never), /BACKEND_NOT_IN_CONTRACT/, backend);
