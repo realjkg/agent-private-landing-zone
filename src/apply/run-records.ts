@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import { encryptEvidence, ensureEvidenceKey, readEncryptedEvidence } from "../evidence/vault.js";
 import type { Blueprint, BlueprintEntry } from "../observe/blueprint.js";
+import { isPolicyLinkType, policyLinkOk } from "../observe/run-created-policies.js";
 import type { ObserveReport } from "../observe/verify.js";
 import { VERIFIERS, type VerifierId } from "../observe/verify.js";
 import { canonicalJson } from "../teardown/manifest.js";
@@ -140,8 +141,12 @@ const RAW_KEY = /^(values|attributes|properties|state|plan|stdout|stderr|output|
 const ENVIRONMENTS = ["DEV", "QA", "PROD"];
 
 function entryOk(value: unknown): value is BlueprintEntry {
-  return isRecord(value) && ["address,arn,id,origin,type", "address,arn,holdsIdentityArn,id,origin,type"].includes(Object.keys(value).sort().join()) && typeof value.address === "string" && value.address.length > 0 &&
-    typeof value.type === "string" && idText(value.arn) && idText(value.id) && (value.origin === "IN_PLAN" || value.origin === "NOT_IN_PLAN") && (value.holdsIdentityArn === undefined || value.holdsIdentityArn === true);
+  if (!isRecord(value)) return false;
+  // The optional keys are holdsIdentityArn and policyLink (a reviewed run-created policy type's principal names and policy ARN, src/observe/run-created-policies.ts).
+  const keys = Object.keys(value).filter((key) => key !== "holdsIdentityArn" && key !== "policyLink").sort().join();
+  return keys === "address,arn,id,origin,type" && typeof value.address === "string" && value.address.length > 0 &&
+    typeof value.type === "string" && idText(value.arn) && idText(value.id) && (value.origin === "IN_PLAN" || value.origin === "NOT_IN_PLAN") && (value.holdsIdentityArn === undefined || value.holdsIdentityArn === true) &&
+    (value.policyLink === undefined || (isPolicyLinkType(value.type) && policyLinkOk(value.policyLink)));
 }
 
 /** Every reason this is not a blueprint record. Empty means it is. Checks every key, so a raw state value cannot ride along. */

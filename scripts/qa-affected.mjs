@@ -203,6 +203,13 @@ export function planChanged(changedPaths, files) {
     if (/^src\/lifecycle\//.test(path)) {
       addExisting(selected, files, ["test/lifecycle-runner.test.ts", "test/lifecycle-cli.test.ts", "test/release-admission.test.ts"]);
     }
+    // The Azure pilot bootstrap is Terraform no import reaches: its owner reads the files and, opt-in, runs their own
+    // offline `terraform test` (mocked providers). Any file under it selects that owner; nothing else under bootstrap/ does.
+    if (/^bootstrap\/azure\//.test(path)) {
+      addExisting(selected, files, ["test/bootstrap-azure.test.ts"]);
+      if (!hasFile(files, "test/bootstrap-azure.test.ts")) gaps.push("The Azure bootstrap has no focused test owner.");
+      continue;
+    }
     if (/^src\/operator-ui\/app\/.*\.(?:css|svg)$/.test(path)) {
       buildUi = true;
       addExisting(selected, files, ["test/operator-ui-react.test.tsx",
@@ -244,6 +251,13 @@ export function planChanged(changedPaths, files) {
       if (!hasFile(files, "test/act-dev1-automation.test.py")) {
         gaps.push("ACT-DEV-1 Terraform canary has no focused test owner.");
       }
+      continue;
+    }
+    // The GCP bootstrap package (HCL, its mocked `terraform test` suite, the config template) is owned by one focused static test.
+    if (/^bootstrap\/(?:gcp\/.+|config\.gcp\.template\.json)$/.test(path)) {
+      addExisting(selected, files, ["test/bootstrap-gcp.test.ts"]);
+      const gap = "The GCP bootstrap has no focused test owner.";
+      if (!hasFile(files, "test/bootstrap-gcp.test.ts") && !gaps.includes(gap)) gaps.push(gap);
       continue;
     }
     if (/^(?:config|policy|security)\//.test(path)) {
