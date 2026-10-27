@@ -1,7 +1,344 @@
 {
   "schemaVersion": 1,
-  "updated": "2026-10-26",
+  "updated": "2026-10-27",
   "nodes": [
+    {
+      "id": "path-aws-terraform",
+      "title": "ACT-DEV path 1: AWS Terraform",
+      "owner": "OWNER",
+      "status": "BLOCKED",
+      "dependsOn": [
+        "aws-terraform-lifecycle",
+        "aws-terraform-g0",
+        "aws-g1b-emulated",
+        "shared-approvals",
+        "backend-pinning",
+        "discovery-control-plane-scope",
+        "aws-g1b-rerun-backend-pinned"
+      ],
+      "gates": [
+        "act:aws-terraform"
+      ],
+      "blockedBy": "engineering predecessors not DONE: backend pinning (#297), DISCOVERY control-plane scope (#293) and the G1b rerun; then the owner's bootstrap, federated identity, contract, authorization and G2",
+      "acceptance": "Authentic, owner-run: `./alz apply qualify` (SEPARATED attestation bound to the DEV target), one supervised DEV apply, and `./alz apply record-live` writing config/acceptance/evidence/aws-terraform-execute-dev-<artifact>.json for gate act:aws-terraform. Synthetic or emulated evidence never counts.",
+      "next": "Merge #297 and #293 after review, rerun G1b on the backend-pinned path, then hand the owner the steps in docs/act-dev-enablement.md (AWS Terraform DEV)."
+    },
+    {
+      "id": "path-aws-cdk-cloudformation",
+      "title": "ACT-DEV path 2: AWS CDK / CloudFormation",
+      "owner": "OWNER",
+      "status": "BLOCKED",
+      "dependsOn": [
+        "aws-cdk-lifecycle",
+        "shared-approvals",
+        "shared-authorization"
+      ],
+      "gates": [
+        "act:aws-cdk"
+      ],
+      "blockedBy": "the DEV-only contract scope admits AWS Terraform (and, with #298, Azure Terraform) only, so CDK needs its own DEV authorization entry; its G0, G1b and real-engine qualification are not recorded",
+      "acceptance": "Authentic, owner-run: real-engine CDK qualification on a host that has it, one supervised DEV apply of the sealed change set, and `./alz apply record-live` evidence for gate act:aws-cdk. Separate from the Terraform paths: one never implies the other.",
+      "next": "Fill in from the six-path baseline (docs/act-dev-paths.md): minimal workload, missing execution code, DEV prerequisites, authorization, failing tests."
+    },
+    {
+      "id": "path-azure-terraform",
+      "title": "ACT-DEV path 3: Azure Terraform",
+      "owner": "OWNER",
+      "status": "BLOCKED",
+      "dependsOn": [
+        "azure-terraform-lifecycle",
+        "azure-preview-and-cleanup-policy",
+        "shared-approvals",
+        "backend-pinning",
+        "azure-dev-contract-scope",
+        "azure-entra-state-auth",
+        "azure-g1b-emulated",
+        "azure-g0-package",
+        "azure-discovery-scope-review"
+      ],
+      "gates": [
+        "act:azure-terraform"
+      ],
+      "blockedBy": "engineering predecessors not DONE: #298 (DEV-only scope), #297 (backend pinning), #287/#289 (Entra-only state auth), Azure G1b, G0 package and DISCOVERY scope review; then the owner's steps",
+      "acceptance": "Authentic, owner-run: `./alz apply qualify` bound to the Azure DEV target, one supervised DEV apply, and `./alz apply record-live` evidence for gate act:azure-terraform. Separate qualification from AWS Terraform.",
+      "next": "Review #298 and #297; rebase #287/#289 onto backend pinning; then Z1, Z2 and Z4 from docs/act-dev-enablement.md."
+    },
+    {
+      "id": "path-azure-bicep-arm",
+      "title": "ACT-DEV path 4: Azure Bicep / ARM",
+      "owner": "OWNER",
+      "status": "BLOCKED",
+      "dependsOn": [
+        "shared-authorization",
+        "shared-approvals"
+      ],
+      "gates": [],
+      "blockedBy": "no Bicep/ARM engine spec in src/apply/engines (Terraform and CDK only) and no release gate; the six-path baseline lists the missing code",
+      "acceptance": "Authentic, owner-run DEV apply recorded from its own ledger. No release gate exists for this path yet (ACT_RELEASE_PATHS in src/qualification/release-admission.ts); adding one is part of the path's work.",
+      "next": "Fill in from the six-path baseline (docs/act-dev-paths.md): minimal workload, missing execution code, DEV prerequisites, authorization, failing tests."
+    },
+    {
+      "id": "path-gcp-terraform",
+      "title": "ACT-DEV path 5: GCP Terraform",
+      "owner": "OWNER",
+      "status": "BLOCKED",
+      "dependsOn": [
+        "gcp-plan-s0",
+        "shared-authorization",
+        "shared-approvals"
+      ],
+      "gates": [],
+      "blockedBy": "no GCP provider spec in src/apply/providers, no bootstrap/gcp, and the GCP G1b emulated test is not built (docs/act-pilot-simulation-gcp.md)",
+      "acceptance": "Authentic, owner-run DEV apply under the full gates (docs/act-pilot-plan.md, G0 to G2 for GCP). No release gate exists for this path yet; adding one is part of the path's work.",
+      "next": "Fill in from the six-path baseline (docs/act-dev-paths.md); P1, P2 and P4 are adopted as fail-closed defaults, P3 and P5 stay owner bootstrap items."
+    },
+    {
+      "id": "path-gcp-api-native",
+      "title": "ACT-DEV path 6: GCP API-native provisioning",
+      "owner": "OWNER",
+      "status": "BLOCKED",
+      "dependsOn": [
+        "shared-authorization",
+        "shared-approvals"
+      ],
+      "gates": [],
+      "blockedBy": "no API-native execution code or provider spec exists; the six-path baseline lists the missing code",
+      "acceptance": "Authentic, owner-run DEV apply recorded from its own ledger. No release gate exists for this path yet; adding one is part of the path's work.",
+      "next": "Fill in from the six-path baseline (docs/act-dev-paths.md): minimal workload, missing execution code, DEV prerequisites, authorization, failing tests."
+    },
+    {
+      "id": "shared-authorization",
+      "title": "Shared: one reviewed authorization contract (default deny, per provider, engine, account, environment and operation)",
+      "owner": "LANE",
+      "status": "IN_PROGRESS",
+      "dependsOn": [],
+      "gates": [],
+      "branch": "act-policy-file",
+      "acceptance": "One reviewed PR evolving the existing contract (no separate manually synchronized file): default deny, policy digest bound into the sealed plan, approvals, release admission and execution evidence, Terraform and CDK authorized separately, migration tests showing no existing check is weakened, and the old pin path deleted only after equivalent enforcement passes.",
+      "next": "Finish the ACT-policy lane (check-in 6443140604) under the consolidation rule of 6443232624, then independent review."
+    },
+    {
+      "id": "authorization-pin-prep-fallback",
+      "title": "Shared: read-only pin-preparation helper (temporary compatibility path)",
+      "owner": "LANE",
+      "status": "IN_PROGRESS",
+      "dependsOn": [],
+      "gates": [],
+      "branch": "pin-prep-helper",
+      "acceptance": "test/apply-pin-prep.test.ts: `./alz apply pin` computes and verifies the pin for the reviewed contract and prints the commit step; it never writes the pin, and the console gains no pin route.",
+      "next": "Open the PR (check-in 6443178182); whichever of this and shared-authorization lands second removes or migrates the helper."
+    },
+    {
+      "id": "shared-approvals",
+      "title": "Shared: signed requester and approvals, production quorum for apply and cleanup",
+      "owner": "LANE",
+      "status": "DONE",
+      "dependsOn": [],
+      "gates": [],
+      "prs": [
+        286,
+        295
+      ],
+      "merges": [
+        "cbf19a6e71493b7fe056b8d5c9ce7b828d9eedc5",
+        "b58352979ea1d707e056b22325ef0d38797d62f3"
+      ],
+      "acceptance": "test/apply-requester.test.ts and test/apply-cleanup-requester.test.ts on main: the requester signs the sealed request, production needs three distinct people, and cleanup uses the production apply quorum."
+    },
+    {
+      "id": "shared-readiness-ui",
+      "title": "Shared: one generated readiness view; the console separates authorization, readiness and per-run approval",
+      "owner": "LANE",
+      "status": "QUEUED",
+      "dependsOn": [
+        "shared-authorization"
+      ],
+      "gates": [],
+      "acceptance": "Console and `./alz apply status` tests showing authorization (policy), readiness (prerequisites) and approval (requester and quorum) as three separate states, generated from the code gates, with no new console route into src/apply (test/apply-boundary.test.ts).",
+      "next": "Start after shared-authorization merges; the ACT-policy lane already claims one status block in src/operator-ui/app/pilot."
+    },
+    {
+      "id": "release-evidence-producers",
+      "title": "Shared evidence: product-owned producers and validators for CI, recovery, lifecycle and ACT evidence",
+      "owner": "LANE",
+      "status": "IN_PROGRESS",
+      "dependsOn": [
+        "baseline-repair"
+      ],
+      "gates": [
+        "act-run-recovery"
+      ],
+      "prs": [
+        269,
+        273,
+        281,
+        291,
+        292,
+        274
+      ],
+      "merges": [
+        "461863f583574c81ff86ac2b7c1e9a4375d21057",
+        "afcd7214026b2a0c36f87f2d8f2d5a8672856204",
+        "7040fde76b356d0772b7dd5078ef34b0a45bcfd2",
+        "e4b80e9c8190079363633c2c9a993b61837cb136",
+        "39f6e26f6ff4eaa958b51d485f14c31a57641b09"
+      ],
+      "acceptance": "Merged producers with tests (#269 act-run-recovery from the ledger, #273 admission bound to the pinned contract, #281 lifecycle runner C1, #291/#292 `./alz evidence` S1) plus #274 merged with NO_BLOCKING_ISSUES on its head.",
+      "next": "#274: repair review 6414765589 (B1 source-ci only from workflow_dispatch, B2 artifact layout) on its own head. Evidence runner S2 stays parked on the owner's A/B/C choice; it does not block any path."
+    },
+    {
+      "id": "removal-run-created-policies",
+      "title": "Shared removal: run-created policies go through cleanup (PR A)",
+      "owner": "LANE",
+      "status": "IN_PROGRESS",
+      "dependsOn": [
+        "aws-cleanup-allowlist-quorum"
+      ],
+      "gates": [],
+      "branch": "removal/run-created-policies",
+      "acceptance": "test/apply-cleanup-policies.test.ts and test/apply-cleanup-azure.test.ts: an explicit allowlist of run-created policy types (AWS IAM managed and inline policies, SCPs, Azure policy definitions and assignments) is proposed and removed through the cleanup quorum and kill switch; identity principals stay protected.",
+      "next": "Open PR A (check-in 6443222492) and get an independent review."
+    },
+    {
+      "id": "removal-workspace-artifacts",
+      "title": "Shared removal: generated Terraform files, plans and local state with a removal record (PR B)",
+      "owner": "LANE",
+      "status": "IN_PROGRESS",
+      "dependsOn": [],
+      "gates": [],
+      "branch": "removal/workspace-artifacts",
+      "acceptance": "test/apply-workspace-removal.test.ts: a person-initiated `remove-workspace` deletes only the product-generated files of one run, writes a removal record, and passes one authorization call site the ACT-policy lane wires.",
+      "next": "Open PR B (check-in 6443222492) and get an independent review."
+    },
+    {
+      "id": "backend-pinning",
+      "title": "Terraform backend pinned by a product-owned override file (replaces the backend block reader)",
+      "owner": "LANE",
+      "status": "IN_PROGRESS",
+      "dependsOn": [],
+      "gates": [
+        "act:aws-terraform",
+        "act:azure-terraform"
+      ],
+      "branch": "backend-pin-override",
+      "prs": [
+        297
+      ],
+      "acceptance": "#297 independent review NO_BLOCKING_ISSUES on its exact head; test/apply-backend-pin*.test.ts green; every reported test failure resolved or reproduced on the exact candidate commit, never waived as unrelated; supply-chain.yml green on the head (src/apply change).",
+      "next": "Independent review of #297 at df61614 continues; #287 then rebases onto it."
+    },
+    {
+      "id": "discovery-control-plane-scope",
+      "title": "AWS DISCOVERY reads control-plane metadata only (#293)",
+      "owner": "LANE",
+      "status": "IN_PROGRESS",
+      "dependsOn": [
+        "aws-cleanup-allowlist-quorum"
+      ],
+      "gates": [
+        "act:aws-terraform"
+      ],
+      "branch": "fix/discovery-control-plane-scope",
+      "prs": [
+        293
+      ],
+      "acceptance": "The failing acceptance test from review 6442107608 passes on the exact head: `test/discovery-scope.test.ts` in supply-chain.yml \"Build, test and scan Linux ARM64 Docker image\" (it failed with ENOENT in run 40504219413 on 5772f2f, B1). The wildcard exception ARN validation refuses `*` and `?` anywhere in the resource part (`arn:aws:s3:::*/*`, `...:secret:*`, B2) in bootstrap/aws `terraform test` and test/discovery-scope.test.ts. Round 2 review NO_BLOCKING_ISSUES on the head.",
+      "next": "Round 2 independent review of 794ad76 (repair 6443249781) and a supply-chain.yml dispatch on that head. Predecessor: aws-cleanup-allowlist-quorum (#264, #294, #295 at b583529), whose cleanup proposal and leftovers code it extends and which its head merges. s3:ListBucket and sns:ListSubscriptionsByTopic are accepted for DEV only (6443275458)."
+    },
+    {
+      "id": "aws-g1b-rerun-backend-pinned",
+      "title": "AWS G1b emulated simulation rerun on the backend-pinned path (A1)",
+      "owner": "LANE",
+      "status": "QUEUED",
+      "dependsOn": [
+        "backend-pinning"
+      ],
+      "gates": [
+        "act:aws-terraform"
+      ],
+      "acceptance": "test/apply-emulated-aws.test.ts passes (opt-in, real Terraform 1.16.4 against moto, SYNTHETIC) on a main that contains backend pinning, recorded in docs/act-pilot-simulation-aws.md.",
+      "next": "Run after #297 merges, unless the backend-pin PR closes A1 itself."
+    },
+    {
+      "id": "azure-dev-contract-scope",
+      "title": "DEV-only contract scope extended to Azure Terraform (#298)",
+      "owner": "LANE",
+      "status": "IN_PROGRESS",
+      "dependsOn": [],
+      "gates": [
+        "act:azure-terraform"
+      ],
+      "branch": "azure-dev-act-exception",
+      "prs": [
+        298
+      ],
+      "acceptance": "#298 independent review NO_BLOCKING_ISSUES on its exact head; test/apply-contract.test.ts accepts an Azure DEV-only contract and still refuses CDK and GCP; reported failures resolved or reproduced on the exact commit.",
+      "next": "Independent review of #298 at 65e782e continues."
+    },
+    {
+      "id": "azure-entra-state-auth",
+      "title": "Azure Entra ID only state auth (#287, #289)",
+      "owner": "LANE",
+      "status": "BLOCKED",
+      "dependsOn": [
+        "backend-pinning"
+      ],
+      "gates": [
+        "act:azure-terraform"
+      ],
+      "prs": [
+        287,
+        289
+      ],
+      "blockedBy": "#297 (backend pinning) must merge first; both PRs touch src/apply/providers/azure.ts",
+      "acceptance": "#287 and #289 rebased onto backend pinning with their own backend-block reader dropped, reviewed NO_BLOCKING_ISSUES on their heads, and the runner profile sets Entra-only state auth.",
+      "next": "Rebase #287 onto #297 once it merges, drop its reader, then #289."
+    },
+    {
+      "id": "azure-g1b-emulated",
+      "title": "Azure G1b emulated simulation on the Entra-only, backend-pinned path (Z2)",
+      "owner": "LANE",
+      "status": "QUEUED",
+      "dependsOn": [
+        "backend-pinning",
+        "azure-entra-state-auth"
+      ],
+      "gates": [],
+      "acceptance": "test/apply-emulated.test.ts passes with the pinned Terraform and Azurite (SYNTHETIC), with the SAS allowance in test code only and a test showing emulator-only credentials cannot enter production paths; recorded in docs/act-pilot-simulation.md.",
+      "next": "Push the drafted harness (6443146890, PR 2) after backend pinning and #287/#289 merge."
+    },
+    {
+      "id": "azure-g0-package",
+      "title": "Azure Terraform G0 package and DEV-only example contract (Z1)",
+      "owner": "LANE",
+      "status": "QUEUED",
+      "dependsOn": [
+        "azure-dev-contract-scope"
+      ],
+      "gates": [],
+      "acceptance": "docs/act-pilot-azure-terraform-g0.md and config/act-pilot-contract.azure-dev.example.json exist; test/apply-contract-check.test.ts shows the example is never COMPLETE and its shape is accepted.",
+      "next": "Start after #298 merges (it owns src/apply/contract.ts)."
+    },
+    {
+      "id": "azure-discovery-scope-review",
+      "title": "Azure DISCOVERY scope review against control-plane metadata only (Z4)",
+      "owner": "LANE",
+      "status": "QUEUED",
+      "dependsOn": [],
+      "gates": [],
+      "acceptance": "A recorded review in docs/act-pilot-bootstrap.md that Reader on the pilot resource group exposes no listKeys, secret or data reads, or a narrowed custom role with its test.",
+      "next": "Assign a lane; docs-only if Reader already holds."
+    },
+    {
+      "id": "azure-bootstrap-dev-only",
+      "title": "bootstrap/azure DEV-only mode (Z3)",
+      "owner": "LANE",
+      "status": "QUEUED",
+      "dependsOn": [],
+      "gates": [],
+      "acceptance": "bootstrap/azure accepts DEV alone and keeps the three-environment form; an offline terraform validate or test covers both.",
+      "next": "Assign a lane. Until then the owner supplies three subscriptions; it does not block path 3."
+    },
     {
       "id": "release-gate-matrix",
       "title": "Release scope, gate status and release view",
@@ -9,8 +346,13 @@
       "status": "DONE",
       "dependsOn": [],
       "gates": [],
-      "prs": [233],
-      "merges": ["6b4cc53e261555ec5ee4e82d65f62b9ca94254d1"]
+      "prs": [
+        233
+      ],
+      "merges": [
+        "6b4cc53e261555ec5ee4e82d65f62b9ca94254d1"
+      ],
+      "acceptance": "The release view and gate status on main (docs/release-status.md, test/release-status.test.ts)."
     },
     {
       "id": "pilot-readiness-provenance",
@@ -19,8 +361,15 @@
       "status": "DONE",
       "dependsOn": [],
       "gates": [],
-      "prs": [232, 236],
-      "merges": ["19924f105a83b909bcf90908b4385c6bf6722cc6", "f8ffc1127ddbdc05c65fb8c2a261a7ba1932dbbb"]
+      "prs": [
+        232,
+        236
+      ],
+      "merges": [
+        "19924f105a83b909bcf90908b4385c6bf6722cc6",
+        "f8ffc1127ddbdc05c65fb8c2a261a7ba1932dbbb"
+      ],
+      "acceptance": "Pilot readiness, guided preparation and preview provenance tests on main."
     },
     {
       "id": "installer-menus-update",
@@ -29,17 +378,34 @@
       "status": "DONE",
       "dependsOn": [],
       "gates": [],
-      "prs": [225, 234],
-      "merges": ["04ab8c705d737a68b133a4e8508dc9034e7d3a7b", "7909cf0ab1aae885b8bf495d42912ffd47946666"]
+      "prs": [
+        225,
+        234
+      ],
+      "merges": [
+        "04ab8c705d737a68b133a4e8508dc9034e7d3a7b",
+        "7909cf0ab1aae885b8bf495d42912ffd47946666"
+      ],
+      "acceptance": "Install, uninstall and update menu tests on main."
     },
     {
       "id": "aws-terraform-lifecycle",
       "title": "AWS Terraform observe, cleanup proposal, governed cleanup, leftovers and lifecycle report",
       "owner": "LANE",
       "status": "DONE",
-      "dependsOn": ["pilot-readiness-provenance"],
+      "dependsOn": [
+        "pilot-readiness-provenance"
+      ],
       "gates": [],
-      "prs": [235, 237, 238, 240, 241, 239, 242],
+      "prs": [
+        235,
+        237,
+        238,
+        240,
+        241,
+        239,
+        242
+      ],
       "merges": [
         "3194edec74b670eae43c3824d295f859e7c40603",
         "64cc32abef090822f640da78a8fc8825e477df71",
@@ -48,17 +414,25 @@
         "8ee724fd9cc50d201cbf193f1e73c6a8197da894",
         "1121f896ca220d02f8832d9c2c3151edc1421a3c",
         "fffb60ca66eed0e70e932be0f09a0584c68dd32d"
-      ]
+      ],
+      "acceptance": "AWS Terraform observe, cleanup and leftovers tests on main (test/apply-cleanup.test.ts and the journey matrix rows)."
     },
     {
       "id": "azure-terraform-lifecycle",
       "title": "Azure Terraform observe and cleanup through the in-process ARM reader",
       "owner": "LANE",
       "status": "DONE",
-      "dependsOn": ["aws-terraform-lifecycle"],
+      "dependsOn": [
+        "aws-terraform-lifecycle"
+      ],
       "gates": [],
-      "prs": [243],
-      "merges": ["a12a7035187c52cf588e8d2f448eb99b03245cdd"]
+      "prs": [
+        243
+      ],
+      "merges": [
+        "a12a7035187c52cf588e8d2f448eb99b03245cdd"
+      ],
+      "acceptance": "Azure Terraform observe and cleanup tests on main (test/apply-cleanup-azure.test.ts)."
     },
     {
       "id": "baseline-repair",
@@ -66,83 +440,305 @@
       "owner": "COORDINATOR",
       "status": "DONE",
       "dependsOn": [],
-      "gates": ["source-ci"],
+      "gates": [
+        "source-ci"
+      ],
       "branch": "fix/terraform-destroy-plan-test-contract",
-      "prs": [253],
-      "merges": ["13e83b26553b401ec5b79aa13d3b1115ae76912b"]
+      "prs": [
+        253
+      ],
+      "merges": [
+        "13e83b26553b401ec5b79aa13d3b1115ae76912b"
+      ],
+      "acceptance": "The destroy-literal invariant test passes on main and every source-scanning test is selected."
     },
     {
       "id": "release-work-graph",
       "title": "The release work graph record and its validator",
       "owner": "COORDINATOR",
-      "status": "IN_PROGRESS",
+      "status": "DONE",
       "dependsOn": [],
       "gates": [],
-      "branch": "feat/release-work-graph",
-      "next": "Open the PR, get an independent review, merge under the release mandate."
+      "prs": [
+        254
+      ],
+      "merges": [
+        "017272a2ec6c1e64fd5055e60f9895b46fb1dace"
+      ],
+      "acceptance": "test/release-status.test.ts checks the graph, its page and the scheduler."
     },
     {
       "id": "dependency-updates",
       "title": "Dependency updates queued behind the baseline repair",
       "owner": "DEPENDABOT",
-      "status": "QUEUED",
-      "dependsOn": ["baseline-repair"],
+      "status": "DONE",
+      "dependsOn": [
+        "baseline-repair"
+      ],
       "gates": [],
-      "prs": [244, 245, 246, 247, 248, 249, 250, 251, 252],
-      "next": "Refresh each PR against main (#253 merged as 13e83b2) and validate it on its own head; no PR stands in for another."
+      "prs": [
+        244,
+        245,
+        246,
+        247,
+        248,
+        249,
+        250,
+        251
+      ],
+      "merges": [
+        "9d377daff3c38870da2ca144b821abb26145b45a",
+        "df494d79f8afcf2a13ef006e3e0b41a0bc76d34e",
+        "3e067f02ffe2a0f9a8f8cf27320a23170c931292",
+        "e52eb20302ec0f830fd960452347570bd694d376",
+        "7f91b9d8fb1bf0f396e236d2b4bc01ae1f0160a4",
+        "830e926988946075f999ec483b6a32d1d140e8eb",
+        "6cd07ca65798c4e9f3f871e9a72902f9d89a9ff9",
+        "9d1af63be1a85a6913867689b53b52ed8f7f3eba"
+      ],
+      "acceptance": "Each Dependabot PR validated on its own head and merged; #252 closed unmerged."
     },
     {
       "id": "azure-preview-and-cleanup-policy",
       "title": "Azure Terraform brownfield preview producer and the pilot cleanup restrictions",
       "owner": "LANE",
-      "status": "IN_PROGRESS",
-      "dependsOn": ["azure-terraform-lifecycle"],
-      "gates": ["preview:terraform-azure-brownfield", "act:azure-terraform"],
-      "next": "Implement the preview producer and retain resource groups, protect identities and grants, exclude deployment history; open PRs for review."
+      "status": "DONE",
+      "dependsOn": [
+        "azure-terraform-lifecycle"
+      ],
+      "gates": [
+        "preview:terraform-azure-brownfield",
+        "act:azure-terraform"
+      ],
+      "prs": [
+        255,
+        257,
+        262
+      ],
+      "merges": [
+        "e8211bda063f62a07a418aad264c0cbf56494c86",
+        "d51ee9263a541850a203ffbfc141e4c848e6277f",
+        "d794f1ce80523a1ffb94a4bab61e44d4446f11dd"
+      ],
+      "acceptance": "Azure brownfield preview producer and cleanup restrictions merged with tests (#255, #257, #262)."
     },
     {
       "id": "aws-cdk-lifecycle",
       "title": "AWS CDK console lifecycle from preparation through verified leftovers",
       "owner": "LANE",
-      "status": "QUEUED",
-      "dependsOn": ["azure-preview-and-cleanup-policy"],
-      "gates": ["preview:cdk-aws-brownfield", "act:aws-cdk"],
-      "next": "Start after the Azure policy slice; escalate if stack deletion needs more than the pilot APPLY role."
-    },
-    {
-      "id": "release-evidence-producers",
-      "title": "Product-owned producers and validators for platform, recovery and disposition gates",
-      "owner": "LANE",
-      "status": "QUEUED",
-      "dependsOn": ["baseline-repair"],
-      "gates": ["act-run-recovery"],
-      "next": "Build the producers and validators the admission gates accept, deriving PASS from verified assertions."
+      "status": "DONE",
+      "dependsOn": [
+        "azure-preview-and-cleanup-policy"
+      ],
+      "gates": [
+        "preview:cdk-aws-brownfield",
+        "act:aws-cdk"
+      ],
+      "prs": [
+        263,
+        265,
+        266,
+        267,
+        282,
+        288
+      ],
+      "merges": [
+        "74f68367b1165e00ddc4e045c625f8fcc5d1c9db",
+        "5edcded36f41b608f9f465a27fac435e8788b907",
+        "3a37a323c9cf5841decfb744575b1c0df6881d5c",
+        "78a5c2050887dddfd6d1f49a2997cc114e562e6a",
+        "ab637cef1aa83cd6447a83797df0345e6bea0452",
+        "8fd5a70eb2c8eb823479af6eea95a4cf511b76c3"
+      ],
+      "acceptance": "CDK tags, blueprint, cleanup engine and console journey merged with tests (#263, #265 to #267), the CDK DISCOVERY scope (#282) and the AWS CLI pin (#288)."
     },
     {
       "id": "installer-interruption-defects",
       "title": "Install, update and uninstall interruption recovery and temp-file ownership",
       "owner": "LANE",
-      "status": "QUEUED",
-      "dependsOn": ["installer-menus-update"],
-      "gates": ["lifecycle:clean-install", "lifecycle:upgrade", "lifecycle:rollback", "lifecycle:uninstall"],
-      "next": "Recover interrupted installs and updates, clean app-owned temp files at the next startup, guard the update path's removal."
+      "status": "DONE",
+      "dependsOn": [
+        "installer-menus-update"
+      ],
+      "gates": [
+        "lifecycle:clean-install",
+        "lifecycle:upgrade",
+        "lifecycle:rollback",
+        "lifecycle:uninstall"
+      ],
+      "prs": [
+        276,
+        278,
+        280,
+        283,
+        284
+      ],
+      "merges": [
+        "6b89277d9f8980d51ed00565a88025a9c1d51e1e",
+        "9f3d4682db2639116800022cb33cddc5595558ad",
+        "46b3d117e482832893ba1f341666aea1d6ef9677",
+        "02012bd0c7f86886bff92206d8e27ee01b64e049",
+        "b837186d5ac0474476b0609d9234f05771da3c85"
+      ],
+      "acceptance": "Interrupted install, update, uninstall and bootstrap recovery merged with tests (#276, #278, #280, #283, #284)."
+    },
+    {
+      "id": "aws-cleanup-allowlist-quorum",
+      "title": "AWS cleanup closed allowlist, SCP-only policy cleanup, production cleanup quorum",
+      "owner": "LANE",
+      "status": "DONE",
+      "dependsOn": [
+        "aws-terraform-lifecycle"
+      ],
+      "gates": [],
+      "prs": [
+        264,
+        294,
+        295
+      ],
+      "merges": [
+        "84e51ecb22fd95275a9d5e0144c5f251a5a0fa62",
+        "41f7132a2c1538092b000fa444dc7377dbf62bec",
+        "b58352979ea1d707e056b22325ef0d38797d62f3"
+      ],
+      "acceptance": "test/apply-cleanup.test.ts and test/apply-cleanup-requester.test.ts on main."
+    },
+    {
+      "id": "preview-gate-hardening",
+      "title": "Preview gates refuse deletes, replacements, unjudged modifies and unreviewed actions",
+      "owner": "LANE",
+      "status": "DONE",
+      "dependsOn": [],
+      "gates": [],
+      "prs": [
+        268,
+        270,
+        271,
+        275
+      ],
+      "merges": [
+        "77a61244a3503c60ae1efc98ff39c05586eb5a98",
+        "d8e08fb1b530dc34d7996e8fb83bed35937bb693",
+        "bfc3a60d00918453d91fa2aa7a873487010c8f53",
+        "77f7bbf778f98d20cdeaa53d8166d60b802a1c40"
+      ],
+      "acceptance": "The preview gate tests on main (#268, #270, #271, #275)."
+    },
+    {
+      "id": "aws-terraform-g0",
+      "title": "AWS Terraform pilot G0 package and the offline contract check",
+      "owner": "LANE",
+      "status": "DONE",
+      "dependsOn": [],
+      "gates": [],
+      "prs": [
+        277
+      ],
+      "merges": [
+        "8fb945e3199d8356ba8250b802238cec5823ef16"
+      ],
+      "acceptance": "docs/act-pilot-aws-terraform-g0.md and test/apply-contract-check.test.ts on main."
+    },
+    {
+      "id": "aws-g1b-emulated",
+      "title": "AWS emulated-backend simulation for G1b (before backend pinning)",
+      "owner": "LANE",
+      "status": "DONE",
+      "dependsOn": [
+        "aws-terraform-g0"
+      ],
+      "gates": [],
+      "prs": [
+        279
+      ],
+      "merges": [
+        "df7708a0ae406887434833d413d8b8cf521fa601"
+      ],
+      "acceptance": "test/apply-emulated-aws.test.ts (opt-in, SYNTHETIC) and docs/act-pilot-simulation-aws.md on main."
+    },
+    {
+      "id": "terraform-state-write-readiness",
+      "title": "The STATE_WRITE embedding readiness item is shown for Terraform only",
+      "owner": "LANE",
+      "status": "DONE",
+      "dependsOn": [],
+      "gates": [],
+      "prs": [
+        285
+      ],
+      "merges": [
+        "1648451e47c4bc07255cb6a4ecc8b9a94133a587"
+      ],
+      "acceptance": "The readiness tests on main (#285)."
+    },
+    {
+      "id": "gcp-plan-s0",
+      "title": "GCP S0: G0 package, PLAN section and G-7 emulator spike (docs)",
+      "owner": "LANE",
+      "status": "DONE",
+      "dependsOn": [],
+      "gates": [],
+      "prs": [
+        290
+      ],
+      "merges": [
+        "31db02069aa1999d7b3fe0f8cfd88a285ba1d8d8"
+      ],
+      "acceptance": "docs/act-pilot-gcp-terraform-g0.md and the GCP section of docs/act-pilot-plan.md on main."
+    },
+    {
+      "id": "act-dev-enablement-checklist",
+      "title": "ACT DEV enablement checklist for AWS and Azure (docs)",
+      "owner": "LANE",
+      "status": "DONE",
+      "dependsOn": [],
+      "gates": [],
+      "prs": [
+        296
+      ],
+      "merges": [
+        "0b0aa2bb1dfa1fa88df6a2ec2318e89d5ee6c9d8"
+      ],
+      "acceptance": "docs/act-dev-enablement.md on main."
+    },
+    {
+      "id": "governance-hardening",
+      "title": "Governance: agent skills, pre-merge command, canonical work graph",
+      "owner": "LANE",
+      "status": "IN_PROGRESS",
+      "dependsOn": [],
+      "gates": [],
+      "branch": "governance/hardening",
+      "acceptance": "This PR merged with NO_BLOCKING_ISSUES on its head: .claude/skills (steward, review, act-pilot), scripts/premerge.sh with test/premerge.test.ts, and this graph checked by test/release-status.test.ts.",
+      "next": "Independent review of the governance PR."
     },
     {
       "id": "integrated-synthetic-acceptance",
       "title": "Integrated synthetic acceptance across the declared paths and platforms",
       "owner": "LANE",
       "status": "QUEUED",
-      "dependsOn": ["azure-preview-and-cleanup-policy", "aws-cdk-lifecycle", "release-evidence-producers", "installer-interruption-defects"],
+      "dependsOn": [
+        "azure-preview-and-cleanup-policy",
+        "aws-cdk-lifecycle",
+        "release-evidence-producers",
+        "installer-interruption-defects"
+      ],
       "gates": [],
-      "next": "Run the declared synthetic matrix across AWS Terraform, Azure Terraform, AWS CDK and the six platforms."
+      "acceptance": "The declared synthetic matrix passes for every path that reached readiness, labeled SYNTHETIC.",
+      "next": "Run the declared synthetic matrix across the ready paths and the six platforms once the evidence producers merge."
     },
     {
       "id": "candidate-freeze",
       "title": "Freeze one candidate commit and its packaged artifact digests",
       "owner": "COORDINATOR",
       "status": "QUEUED",
-      "dependsOn": ["integrated-synthetic-acceptance", "baseline-repair", "release-work-graph"],
+      "dependsOn": [
+        "integrated-synthetic-acceptance",
+        "baseline-repair",
+        "release-work-graph"
+      ],
       "gates": [],
+      "acceptance": "One candidate commit and its packaged artifact digests recorded in config/release/scope.json.",
       "next": "Freeze when the synthetic matrix passes, reviews are resolved, producers work and qualification environments are available."
     },
     {
@@ -150,9 +746,15 @@
       "title": "Live qualification of the frozen candidate on real hosts and sandboxes",
       "owner": "OWNER",
       "status": "BLOCKED",
-      "dependsOn": ["candidate-freeze"],
-      "gates": ["aws-provider", "azure-provider", "act:aws-terraform", "act:azure-terraform", "act:aws-cdk"],
+      "dependsOn": [
+        "candidate-freeze"
+      ],
+      "gates": [
+        "aws-provider",
+        "azure-provider"
+      ],
       "blockedBy": "the owner's qualification environments: disposable hosts for the six platforms, sandbox accounts and subscriptions, pilot contract inputs and approver keys",
+      "acceptance": "Live read-only provider evidence for the frozen candidate on the owner's hosts and sandboxes (aws-provider, azure-provider).",
       "next": "Present one consolidated execution brief once the candidate is frozen and the environments exist."
     },
     {
@@ -160,8 +762,11 @@
       "title": "One machine-validated admission report for the frozen candidate",
       "owner": "COORDINATOR",
       "status": "QUEUED",
-      "dependsOn": ["live-qualification"],
+      "dependsOn": [
+        "live-qualification"
+      ],
       "gates": [],
+      "acceptance": "`./alz qualify admission` reports ready for independent review on the candidate manifest.",
       "next": "Run the admission review against the candidate manifest once every required gate has evidence."
     },
     {
@@ -169,8 +774,11 @@
       "title": "Publish the exact admitted artifact",
       "owner": "OWNER",
       "status": "QUEUED",
-      "dependsOn": ["release-admission"],
+      "dependsOn": [
+        "release-admission"
+      ],
       "gates": [],
+      "acceptance": "The exact admitted artifact is published, or the run stops at READY_FOR_PUBLICATION.",
       "next": "Stop at READY_FOR_PUBLICATION with the artifact and admission report unless publication authority is established."
     },
     {
@@ -180,8 +788,11 @@
       "status": "HOLD",
       "dependsOn": [],
       "gates": [],
-      "prs": [228],
+      "prs": [
+        228
+      ],
       "blockedBy": "the owner's explicit hold on #228",
+      "acceptance": "The owner releases the hold on #228.",
       "next": "Nothing until the owner releases the hold."
     }
   ]
