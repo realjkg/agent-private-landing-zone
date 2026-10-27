@@ -216,12 +216,12 @@ export function ownershipWord(ownership: string): string {
     case "REPLACED_PRE_EXISTING": return "replaced something that existed before";
     case "IMPORTED": return "brought under management, not created";
     case "NOT_IN_PLAN": return "not part of this change";
-    case "TYPE_UNREVIEWED": return "created by this change, but of a kind not yet reviewed as safe to remove alone, so it is left for you to remove or keep by hand";
+    case "TYPE_UNREVIEWED": return "created by this change, but of a kind not yet reviewed as safe to remove alone (or a setting on something that stays), so it is left for you to remove or keep by hand";
     case "PROTECTED_BACKEND": return "the storage the pilot itself runs on";
     case "PROTECTED_IDENTITY": return "an identity or access object (a role, a role or policy assignment, a role or policy definition, a managed identity, a sign-in trust, an exemption or a lock)";
     case "PROTECTED_DEPLOYMENT": return "deployment history";
     case "RETAINED_GROUP": return "a resource group, kept whole (a pilot cleanup removes only approved things inside it)";
-    case "CONTAINS_OTHERS": return "a subscription, management group or provider registration holding or serving others' things";
+    case "CONTAINS_OTHERS": return "a container that holds or serves other things (a subscription, management group or provider registration, or a deployment that creates a whole set of other resources)";
     default: return "unknown";
   }
 }

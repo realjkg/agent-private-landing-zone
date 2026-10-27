@@ -10,7 +10,7 @@ import type { AwsTarget } from "./providers/aws.js";
 import type { AzureTarget } from "./providers/azure.js";
 import { armPathSafe, isArmGroupId, isArmRegistrationId, isArmScopeId, parseArmId, type ArmType } from "../observe/azure-rest.js";
 import { awsContainerFamilyOf } from "../observe/aws-containers.js";
-import { isAwsLeafType, isWellFormedResourceType } from "../observe/aws-leaf-types.js";
+import { awsLeafEntryOf, awsParentIdOf, isAwsLeafType, isWellFormedResourceType } from "../observe/aws-leaf-types.js";
 
 /**
  * The cleanup proposal (docs/act-pilot-plan.md, "Cleanup of pilot-created resources"): the reviewable, hash-identified list
@@ -38,7 +38,8 @@ import { isAwsLeafType, isWellFormedResourceType } from "../observe/aws-leaf-typ
  * TYPE_UNREVIEWED (AWS; delegated owner decision 6433391052, item 1): the run created it, but its type is not on the reviewed leaf
  * allowlist (src/observe/aws-leaf-types.ts), so the cleanup cannot tell what deleting it would take with it. It is kept, listed with
  * its type, and left to the environment's owner; it is never deleted, directly or as a dependent, and the leftover check cannot
- * report COMPLETE while one remains.
+ * report COMPLETE while one remains. The same class holds an allowlisted attachment or setting whose parent this proposal does not
+ * delete (design review 6434540427, B3), with its own reason (`parentKeptReason`).
  */
 export type Ownership = "RUN_CREATED" | "PRE_EXISTING" | "REPLACED_PRE_EXISTING" | "IMPORTED" | "NOT_IN_PLAN" | "TYPE_UNREVIEWED" | "PROTECTED_BACKEND" | "PROTECTED_IDENTITY" | "PROTECTED_DEPLOYMENT" | "RETAINED_GROUP" | "CONTAINS_OTHERS";
 /** The ownership classes a pilot cleanup never deletes, whoever created the resource and whatever the plan said. */
@@ -120,17 +121,26 @@ const refuse = (code: ApplyRefusalCode, message: string): Refusal => ({ ok: fals
 const HAS_INVISIBLE = new RegExp(INVISIBLE.source);
 
 /** What deleting a resource of this type can cost, said before approval. Types not listed carry no note, not a promise of safety. */
-const MATERIAL_RISKS: Readonly<Record<string, string>> = {
+export const MATERIAL_RISKS: Readonly<Record<string, string>> = {
   aws_s3_bucket: "deletes stored objects and versions, which cannot be recovered",
-  aws_dynamodb_table: "deletes stored items, which cannot be recovered",
-  aws_kms_key: "schedules the key for deletion (a waiting period of at least seven days) and makes anything it encrypted unreadable afterward",
+  awscc_s3_bucket: "deletes stored objects and versions, which cannot be recovered",
+  aws_dynamodb_table: "deletes the table, its stored items and any replicas in other Regions, which cannot be recovered",
+  awscc_dynamodb_table: "deletes the table, its stored items and any replicas in other Regions, which cannot be recovered",
+  aws_kms_key: "schedules the key for deletion (a waiting period of at least seven days); after it, anything encrypted under the key becomes unreadable, including data in resources outside the state and resources this cleanup keeps",
+  awscc_kms_key: "schedules the key for deletion (a waiting period of at least seven days); after it, anything encrypted under the key becomes unreadable, including data in resources outside the state and resources this cleanup keeps",
   aws_cloudwatch_log_group: "deletes retained log events",
+  awscc_logs_log_group: "deletes retained log events",
   aws_secretsmanager_secret: "schedules the secret for deletion; its value is unrecoverable after the recovery window",
+  awscc_secretsmanager_secret: "schedules the secret for deletion; its value is unrecoverable after the recovery window",
   aws_efs_file_system: "deletes stored files, which cannot be recovered",
+  awscc_efs_file_system: "deletes stored files, which cannot be recovered",
   aws_rds_cluster: "deletes the database and its data unless a final snapshot was configured",
   aws_rds_instance: "deletes the database and its data unless a final snapshot was configured",
   aws_db_instance: "deletes the database and its data unless a final snapshot was configured",
+  awscc_rds_db_instance: "deletes the database and its data unless a final snapshot was configured",
+  awscc_rds_db_cluster: "deletes the database and its data unless a final snapshot was configured",
   aws_ebs_volume: "deletes the volume and its data",
+  awscc_ec2_volume: "deletes the volume and its data",
   azurerm_storage_account: "deletes stored blobs, tables, queues and files, which cannot be recovered",
   azurerm_storage_container: "deletes stored blobs, which cannot be recovered",
   azurerm_key_vault: "soft-deletes the vault; purge protection or the retention window decides when its secrets are gone for good",
@@ -141,8 +151,9 @@ const MATERIAL_RISKS: Readonly<Record<string, string>> = {
   // The same risks by CloudFormation type, for the CDK engine's logical ids.
   "AWS::S3::Bucket": "deletes stored objects, which cannot be recovered (CloudFormation refuses to delete a bucket that still holds objects)",
   "AWS::Logs::LogGroup": "deletes retained log data, which cannot be recovered",
-  "AWS::KMS::Key": "schedules the key for deletion; data encrypted under it becomes unreadable after the waiting period",
-  "AWS::DynamoDB::Table": "deletes the table and its data unless a backup was kept",
+  "AWS::KMS::Key": "schedules the key for deletion (a waiting period of at least seven days); after it, anything encrypted under the key becomes unreadable, including data in resources outside the state and resources this cleanup keeps",
+  "AWS::DynamoDB::Table": "deletes the table, its data and any replicas in other Regions unless a backup was kept",
+  "AWS::SecretsManager::Secret": "schedules the secret for deletion; its value is unrecoverable after the recovery window",
   "AWS::RDS::DBInstance": "deletes the database and its data unless a final snapshot was configured",
   "AWS::RDS::DBCluster": "deletes the database and its data unless a final snapshot was configured",
   "AWS::EFS::FileSystem": "deletes stored files, which cannot be recovered",
@@ -303,6 +314,9 @@ export { isAwsContainerType } from "../observe/aws-containers.js";
 /** Why a run-created resource of an unreviewed type is kept, naming its type; under the 512-character limit of a proposal's reason. */
 export const unreviewedTypeReason = (type: string): string => "its type (" + stripInvisible(type).slice(0, 128) + ") is not on the reviewed leaf allowlist (src/observe/aws-leaf-types.ts), so the cleanup cannot tell what deleting it would take with it; it is left in place for the environment's owner to delete or keep by hand, and the type joins the allowlist only by review";
 
+/** Why an attachment or setting whose parent this proposal does not delete is held; under the 512-character limit of a proposal's reason. */
+export const parentKeptReason = (type: string): string => "it is an attachment or setting (" + stripInvisible(type).slice(0, 128) + ") that modifies another resource, and this proposal does not delete that resource with it; a planned create can overwrite what the resource already had, so deleting it would change a resource the cleanup keeps. It is left in place for the environment's owner to remove or keep by hand";
+
 /**
  * The bootstrap the pilot runs on and the identities of the account, which a cleanup never touches: the state backend, every stack
  * container and everything in the identity service. Then the allowlist (delegated owner decision 6433391052, item 1): on AWS a type
@@ -415,13 +429,28 @@ export function buildCleanupProposal(input: ProposalInput): { ok: true; proposal
     if (risk) risks.add(entry.type + ": " + risk);
     deletes.push({ ...base, ownership: "RUN_CREATED", observed: seen.result === "VERIFIED" ? "VERIFIED" : "UNVERIFIABLE", ...(risk ? { risk } : {}) });
   }
+  // The one parent rule (design review 6434540427, B3): an allowlisted attachment or setting (`parent` in src/observe/aws-leaf-types.ts) is deleted only
+  // when the resource it modifies, read from its own identifier, is a run-created resource this proposal deletes (or one already gone). Otherwise it is
+  // held as TYPE_UNREVIEWED with its own reason: a pre-existing bucket keeps its public access block, ownership controls and policy.
+  if (contract.provider === "AWS") {
+    const gone = new Set([...deletes, ...alreadyAbsent].map((x) => x.address));
+    const entryOf = new Map(record.blueprint.entries.map((entry) => [entry.address, entry]));
+    for (const item of [...deletes]) {
+      const parent = awsLeafEntryOf(item.type)?.parent;
+      if (parent === undefined) continue;
+      const parentId = awsParentIdOf(parent.key, entryOf.get(item.address)?.id ?? null);
+      if (parentId !== undefined && record.blueprint.entries.some((p) => parent.types.includes(p.type) && p.id === parentId && gone.has(p.address))) continue;
+      deletes.splice(deletes.indexOf(item), 1);
+      excluded.push({ address: item.address, type: item.type, identifier: item.identifier, ownership: "TYPE_UNREVIEWED", reason: parentKeptReason(item.type), retainedBy: retentionOwnerOf("TYPE_UNREVIEWED") });
+    }
+  }
   if (deletes.some((x) => x.observed === "UNVERIFIABLE")) risks.add("some listed resources are settings the independent reader cannot read alone; their deletion is proved through the resource they belong to");
   risks.add("the engine destroys a listed resource together with anything in the state that depends on it; a dependent outside this list stops the cleanup before anything is destroyed");
   if (contract.engine === "CDK") {
     risks.add("the CloudFormation stack itself is never deleted by a cleanup: approved resources are removed from it, the stack stays with whatever it still holds, and retiring the stack is a separate, reviewed action that remains outstanding");
   }
   if (excluded.some((x) => x.ownership === "TYPE_UNREVIEWED")) {
-    risks.add("resources of a type not on the reviewed leaf allowlist are kept, named and never deleted; the leftover check stays INCOMPLETE until a person deletes or keeps them by hand");
+    risks.add("resources of a type not on the reviewed leaf allowlist, and attachments or settings on a resource this cleanup keeps, are held, named and never deleted; the leftover check stays INCOMPLETE until a person deletes or keeps them by hand");
   }
   if (excluded.some((x) => PROTECTED_OWNERSHIPS.includes(x.ownership))) {
     risks.add("protected objects (resource groups, identities and grants, deployment history, the state backend) are intentionally retained and never on this list; retiring the environment itself is a separate, reviewed action and stays outstanding after this cleanup");
