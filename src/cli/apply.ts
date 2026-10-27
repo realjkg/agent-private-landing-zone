@@ -23,6 +23,7 @@ import { buildRecoveryEvidence, recoveryAdmissionRecordOf } from "../apply/recov
 import { assessReadiness } from "../apply/readiness.js";
 import { checkDraftContract, contractCheckLines } from "../apply/contract-check.js";
 import { prepareApply, writePreparation, type Prepared, type PrepareRefusal } from "../apply/prepare.js";
+import { previewWorkspaceRemoval, removeWorkspace, type RemovalRefusal, type WorkspaceRemovalInput } from "../apply/workspace-removal.js";
 import { qualifyApply, runApply, runCleanup, sealPreview, type ApplyDeps, type SealRequest } from "../apply/driver.js";
 import { RECOVERY_FILE_NAMES, engineOf, engineSpec, type EngineNotices } from "../apply/engine-spec.js";
 import { assertApplyEvidence } from "../apply/evidence.js";
@@ -71,6 +72,7 @@ const APPLY_USAGE = [
   "  ./alz apply verify-cleanup --proposal PROPOSAL.json",
   "  ./alz apply preview-evidence --sealed SEALED_PLAN --gate preview:terraform-azure-brownfield --target-hardware-id HOST",
   "  ./alz apply report --sealed SEALED_PLAN [--proposal PROPOSAL.json]",
+  "  ./alz apply remove-workspace --sealed SEALED_PLAN",
   "      A person at the terminal (or a person in the console wizard, which has its own session token). A workflow runs wholly in one of them. Identities come from the contract's engine: ALZ_DISCOVERY_*, ALZ_STATE_*, ALZ_STATE_WRITE_* and ALZ_APPLY_* (Terraform),",
   "      or ALZ_DISCOVERY_*, ALZ_CHANGESET_* and ALZ_APPLY_* (CDK). No flag names an engine; the pinned contract does.",
   "      Exit 0 done, 1 error (nothing spent), 2 BLOCKED (refused before any action), 3 SPENT (approvals consumed or an apply started; read the message before any retry).",
@@ -138,6 +140,7 @@ const SUBCOMMANDS: Readonly<Record<string, Flags>> = {
   "propose-cleanup": { single: ["sealed", "requester", "key"] },
   cleanup: { single: ["proposal", "request", "manifest", "sealed"], repeated: ["approval"] },
   "verify-cleanup": { single: ["proposal"] },
+  "remove-workspace": { single: ["sealed"] },
   report: { single: ["sealed"], optional: ["proposal"] },
   "preview-evidence": { single: ["sealed", "gate", "target-hardware-id"] },
 };
@@ -639,6 +642,52 @@ const cleanupCommand: Command = async (flags, terminal, deps, out) => {
   return EXIT.PASS;
 };
 
+/** A removal refusal: BLOCKED before anything was removed, or an error when it stopped part-way (the record says what remains). */
+function removalBlocked(refusal: RemovalRefusal, out: Out): number {
+  out.complain("BLOCKED " + refusal.code + ": " + refusal.message + "\n");
+  out.report({ code: refusal.code, message: refusal.message });
+  return refusal.code === "REMOVAL_FAILED" ? EXIT.ERROR : EXIT.BLOCKED;
+}
+
+/**
+ * Removes one run's generated working files (docs/act-pilot-apply.md, "Removing a run's working files"): its preparation files and the
+ * driver's abandoned scratch directories, never evidence, records, logs or the project. Local files only, so no approval quorum; a
+ * person types the phrase, and `authorizeRemoval` (src/apply/workspace-removal.ts) is the one AUTHORIZED check.
+ */
+const removeWorkspaceCommand: Command = async (flags, terminal, deps, out) => {
+  const opened = await openSealed(flags.sealed[0]);
+  if (!("sealed" in opened)) return blocked(opened, out);
+  const { sealed } = opened;
+  if (sealed.channel !== (deps.channel ?? "CLI")) return blocked({ ok: false, code: "CHANNEL_MISMATCH", message: channelMismatchMessage(sealed.channel) }, out);
+  const contract = contractFor(deps);
+  if ("reason" in contract) return blocked(contractRefusal(contract), out);
+  const now = (deps.now ?? (() => new Date()))();
+  const input: WorkspaceRemovalInput = {
+    contract, environment: sealed.environment, artifactSha256: sealed.artifactSha256, manifestHash: sealed.manifestHash, operatorId: operatorId(deps), now,
+    preparationDir: deps.preparationDir ?? join(repoPaths().root, ".runs", "pilot"), scratchParent: deps.scratchParent ?? tmpdir(), evidenceDir: deps.evidenceDir ?? repoPaths().evidence,
+  };
+  const preview = previewWorkspaceRemoval(input);
+  if (!preview.ok) return removalBlocked(preview, out);
+  const phrase = "REMOVE WORKSPACE " + sealed.environment + " " + sealed.artifactSha256.slice(0, 12);
+  terminal.write([
+    "", "REMOVE THIS RUN'S WORKING FILES (local files only; no cloud resource is touched)",
+    "  run             " + sealed.artifactSha256 + " in " + sealed.environment,
+    ...(preview.items.length === 0 ? ["  removes         nothing found now (an interrupted removal still resumes from its record)"]
+      : preview.items.map((item) => "  removes         " + printable(item.path) + " (" + item.kind + ", " + item.files + " file(s), " + item.bytes + " bytes" + (item.plans.length > 0 ? ", " + item.plans.length + " plan file(s)" : "") + ")")),
+    ...preview.heldForReview.map((path) => "  held           " + printable(path) + " (holds errored.tfstate or crash.log; a person reviews it first)"),
+    "  keeps           evidence, the ledger, sealed plans, run records, proposals, reports, logs and the project folder",
+    "Type this line exactly to remove them (anything else stops here):", "  " + phrase, "",
+  ].join("\n"));
+  await confirm(terminal, phrase, "remove> ", "APPLY_CONFIRMATION_MISMATCH", "CLEANUP");
+  const result = await removeWorkspace(input);
+  if (!result.ok) return removalBlocked(result, out);
+  const removed = result.removal.items.filter((item) => item.removed);
+  out.say(JSON.stringify({ status: result.removal.status, resumed: result.resumed, record: result.recordPath, authorization: result.removal.authorization,
+    removed: removed.map((item) => ({ path: item.path, kind: item.kind, bytes: item.bytes, sha256: item.sha256, plans: item.plans })), heldForReview: result.removal.heldForReview }, null, 2) + "\n");
+  out.report({ code: "WORKSPACE_REMOVED", message: "Removed " + removed.length + " working path(s) of this run" + (result.resumed ? ", resuming an interrupted removal" : "") + ". The removal record is " + result.recordPath + ".", data: result.removal });
+  return EXIT.PASS;
+};
+
 /** Read-only: every proposed resource against the cloud, before or after the cleanup. Completion is reported only when every deletion is confirmed. */
 const verifyCleanupCommand: Command = async (flags, _terminal, deps, out) => {
   const opened = verifyCleanupProposal(readInput(flags.proposal[0], "--proposal"));
@@ -1089,6 +1138,7 @@ const COMMANDS: Readonly<Record<string, Command>> = {
   qualify: qualifyCommand, seal: sealCommand, approve: approveCommand, apply: applyCommand, status: statusCommand, pin: pinCommand, "contract-check": contractCheckCommand,
   preflight: preflightCommand, prepare: prepareCommand, "record-live": recordLiveCommand, "record-recovery": recordRecoveryCommand,
   observe: observeCommand, "propose-cleanup": proposeCleanupCommand, cleanup: cleanupCommand, "verify-cleanup": verifyCleanupCommand, report: reportCommand, "preview-evidence": previewEvidenceCommand,
+  "remove-workspace": removeWorkspaceCommand,
 };
 
 /** Where `alz-preview-*` directories live and what a crashed apply leaves in them. */
@@ -1106,7 +1156,7 @@ function scratchHoldsRecovery(parent: string): boolean {
  * them first (docs/act-pilot-apply.md).
  */
 async function sweepUnlessHeld(sub: string, deps: ApplyCliDeps, out: Out): Promise<void> {
-  if (["status", "approve", "pin", "contract-check", "preflight", "prepare", "record-live", "record-recovery", "observe", "propose-cleanup", "verify-cleanup", "report", "preview-evidence"].includes(sub)) return;
+  if (["status", "approve", "pin", "contract-check", "preflight", "prepare", "record-live", "record-recovery", "observe", "propose-cleanup", "verify-cleanup", "report", "preview-evidence", "remove-workspace"].includes(sub)) return;
   const parent = deps.scratchParent ?? tmpdir();
   const held = scratchHoldsRecovery(parent) ? "a scratch directory holds errored.tfstate or crash.log"
     : await holdsReservation(deps.evidenceDir ?? repoPaths().evidence) ? "the apply ledger holds a reservation" : undefined;
