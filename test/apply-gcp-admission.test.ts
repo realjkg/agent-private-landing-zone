@@ -43,28 +43,10 @@ import {
 // Admission in code only: the repository ships no contract, so ACT stays DISABLED.
 
 const root = mkdtempSync(join(tmpdir(), "alz-gcp-admission-"));
-/** The shared fake engine (test/helpers/apply-fixtures.ts) lives in `fakeDir`; `toolDir` holds the program the driver runs. */
-const fakeDir = mkdtempSync(join(tmpdir(), "alz-gcp-admission-fake-"));
 const toolDir = mkdtempSync(join(tmpdir(), "alz-gcp-admission-tf-"));
-test.after(() => { removeTree(root); removeTree(fakeDir); removeTree(toolDir); });
-installFakeTerraform(fakeDir);
-/**
- * The shared fake's destroy plan lists each target with no `provider_name`, which real Terraform always reports (and which the GCP
- * spec now requires, review N4 of #305). This wrapper runs the shared fake and adds the google provider to exactly those entries.
- */
-writeFileSync(join(toolDir, "terraform"), `#!${process.execPath}
-const { spawnSync } = require("child_process");
-const r = spawnSync(${JSON.stringify(join(fakeDir, "terraform"))}, process.argv.slice(2), { stdio: ["inherit", "pipe", "inherit"] });
-let out = r.stdout.toString("utf8");
-const args = process.argv.slice(2);
-if (args[0] === "show" && args[2] && args[2].endsWith("alz-cleanup.tfplan")) {
-  const doc = JSON.parse(out);
-  doc.resource_changes = doc.resource_changes.map((c) => c.provider_name ? c : { ...c, mode: "managed", provider_name: "registry.terraform.io/hashicorp/google" });
-  out = JSON.stringify(doc);
-}
-process.stdout.write(out);
-process.exit(r.status === null ? 1 : r.status);
-`, { mode: 0o755 });
+const fakeDir = toolDir;
+test.after(() => { removeTree(root); removeTree(toolDir); });
+installFakeTerraform(toolDir);
 let counter = 0;
 const fresh = (label: string): string => { const path = join(root, label + "-" + (counter += 1)); mkdirSync(path, { recursive: true, mode: 0o700 }); return path; };
 const KILL = join(root, "KILL");

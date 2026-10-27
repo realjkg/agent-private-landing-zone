@@ -541,7 +541,7 @@ test("Terraform's built-in provider is allowed for terraform_data resources only
   // Exactly what Terraform 1.16.4 emits for a project with a terraform_data resource: no expressions key.
   const BUILTIN = { terraform: { name: "terraform", full_name: BUILTIN_NAME } };
   const CODE = "PROVIDER_BUILTIN_TYPE_NOT_IN_CONTRACT";
-  const change = (address: string, type: string, mode = "managed", provider_name: string | undefined = BUILTIN_NAME) =>
+  const change = (address: string, type: string, mode = "managed", provider_name: string | null | undefined = BUILTIN_NAME) =>
     ({ address, mode, type, ...(provider_name === undefined ? {} : { provider_name }), change: { actions: ["create"], before: null, after: {} } });
   const configured = (address: string, type: string, mode: string, provider_config_key = "terraform") => ({ address, mode, type, provider_config_key });
   const pilot = { showResources: [change("terraform_data.pilot", "terraform_data")], showConfigurationExtra: { root_module: { resources: [configured("terraform_data.pilot", "terraform_data", "managed")] } } };
@@ -552,7 +552,6 @@ test("Terraform's built-in provider is allowed for terraform_data resources only
       prior_state: { values: { root_module: { resources: [{ address: "terraform_data.pilot", mode: "managed", type: "terraform_data", provider_name: BUILTIN_NAME }] } } },
       planned_values: { root_module: { resources: [{ address: "terraform_data.pilot", mode: "managed", type: "terraform_data", provider_name: BUILTIN_NAME }] } },
     } }],
-    ["terraform_data with no provider named in the changes (the fake engine's shape)", { showProviderConfig: BUILTIN, showResources: [change("terraform_data.pilot", "terraform_data", "managed", undefined)] }],
   ];
   const refusing: Array<[string, Behavior]> = [
     ["a terraform_remote_state data source configured in the root module (as 1.16.4 lists one whose read failed: nowhere else)", { ...pilot, showProviderConfig: BUILTIN,
@@ -590,6 +589,14 @@ test("Terraform's built-in provider is allowed for terraform_data resources only
     refused(result, "TARGET_NOT_IN_CONTRACT");
     assert.match((result as { message: string }).message, new RegExp(CODE), label);
     await nothingSpent(w, s, approvals);
+  }
+  // Review N2 of #320: a use whose provider the plan does not name is refused, even of the allowed type (Terraform always names it).
+  {
+    const w = world();
+    behave({ showProviderConfig: BUILTIN, showResources: [change("terraform_data.pilot", "terraform_data", "managed", null)] });
+    const atSeal = await sealRefusal(w, "DEV");
+    refused(atSeal, "ARTIFACT_INVALID");
+    assert.match((atSeal as { message: string }).message, /PROVIDER_CONFIG_NOT_IN_CONTRACT/);
   }
 });
 
