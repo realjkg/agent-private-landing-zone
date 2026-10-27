@@ -216,6 +216,7 @@ export function ownershipWord(ownership: string): string {
     case "REPLACED_PRE_EXISTING": return "replaced something that existed before";
     case "IMPORTED": return "brought under management, not created";
     case "NOT_IN_PLAN": return "not part of this change";
+    case "TYPE_UNREVIEWED": return "created by this change, but of a kind not yet reviewed as safe to remove alone, so it is left for you to remove or keep by hand";
     case "PROTECTED_BACKEND": return "the storage the pilot itself runs on";
     case "PROTECTED_IDENTITY": return "an identity or access object (a role, a role or policy assignment, a role or policy definition, a managed identity, a sign-in trust, an exemption or a lock)";
     case "PROTECTED_DEPLOYMENT": return "deployment history";

@@ -136,13 +136,14 @@ function stagesOf(input: LifecycleReportInput, applyEvidenceSha256: string): { s
 }
 
 /** The ownership classes a kept resource can carry: the protected ones and the environment owner's. */
-const KEPT_OWNERSHIPS: readonly string[] = ["PRE_EXISTING", "REPLACED_PRE_EXISTING", "IMPORTED", "NOT_IN_PLAN", ...PROTECTED_OWNERSHIPS];
+const KEPT_OWNERSHIPS: readonly string[] = ["PRE_EXISTING", "REPLACED_PRE_EXISTING", "IMPORTED", "NOT_IN_PLAN", "TYPE_UNREVIEWED", ...PROTECTED_OWNERSHIPS];
 /** The resource-cleanup state the leftovers stage derives. */
 const resourceCleanupOf = (leftovers: StageResult): AcceptanceDisposition["resourceCleanup"] => leftovers.status === "PASS" ? "COMPLETED" : leftovers.status === "NOT_RUN" ? "NOT_RUN" : "INCOMPLETE";
 /** The one sentence, a pure function of the two derived facts: the validator recomputes it, so no stored text can say more. */
 export function acceptanceStatement(resourceCleanup: AcceptanceDisposition["resourceCleanup"], retained: AcceptanceDisposition["retained"]): string {
   return (resourceCleanup === "COMPLETED" ? "approved resources deleted" : resourceCleanup === "NOT_RUN" ? "resource cleanup not run" : "resource cleanup incomplete") +
     "; " + (retained.total > 0 ? retained.total + " protected or pre-existing object(s) intentionally retained (" + Object.entries(retained.byOwner).sort(([a], [b]) => (a < b ? -1 : 1)).map(([owner, n]) => n + " kept by " + owner).join(", ") + ")" : "nothing retained by this run") +
+    ((retained.byOwnership.TYPE_UNREVIEWED ?? 0) > 0 ? "; " + retained.byOwnership.TYPE_UNREVIEWED + " of them of a type not on the reviewed leaf allowlist, awaiting a person's decision" : "") +
     "; environment retirement outstanding (a separate, reviewed action; this report does not claim the environment retired)";
 }
 /** The three-state end of the run, from the stages and the proposal's kept list. */

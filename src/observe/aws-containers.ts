@@ -10,7 +10,10 @@
  *
  * This is the one list. A family is a Terraform `aws_` type, the Cloud Control provider's `awscc_` type and the
  * CloudFormation type of the same object; a prefix that is a namespace (`aws_proton_`) keeps every type in it, the
- * fail-safe direction. The test table (test/apply-cleanup.test.ts) iterates this table, so an addition cannot miss it.
+ * fail-safe direction. The test table (test/apply-cleanup.test.ts) iterates this table, so an entry added here is always tested;
+ * the test is only as complete as the table, and this table is not a completeness proof. Completeness comes from the reviewed
+ * leaf allowlist (./aws-leaf-types.ts, delegated owner decision 6433391052): a type that is neither here nor on that list is
+ * held for a person (TYPE_UNREVIEWED), never deleted. A family here carries a named reason instead of that generic one.
  */
 export type AwsContainerFamily = {
   /** What the type is, in the words the proposal and the destroy-plan guard use. */
@@ -52,6 +55,21 @@ export const AWS_CONTAINER_FAMILIES: readonly AwsContainerFamily[] = [
     what: "an Elastic Beanstalk environment",
     reason: "it runs on a generated CloudFormation stack; kept as a fail-safe although that stack does not normally create IAM",
     prefixes: ["aws_elastic_beanstalk_environment", "awscc_elasticbeanstalk_environment", "AWS::ElasticBeanstalk::Environment"],
+  },
+  {
+    what: "an SSM Quick Setup configuration",
+    reason: "Quick Setup deploys its configurations as CloudFormation stack sets and stacks that create IAM roles and instance profiles, which deleting it deletes (the whole Quick Setup namespace is kept)",
+    prefixes: ["aws_ssmquicksetup_", "awscc_ssmquicksetup_", "AWS::SSMQuickSetup::"],
+  },
+  {
+    what: "a DataZone environment",
+    reason: "it is provisioned as a CloudFormation stack that includes the environment's IAM user role, which deleting it tears down",
+    prefixes: ["aws_datazone_environment", "awscc_datazone_environment", "AWS::DataZone::Environment"],
+  },
+  {
+    what: "a Control Tower landing zone, control or baseline",
+    reason: "decommissioning or disabling it deletes Control Tower's stack sets, the aws-controltower-* role stacks in member accounts among them (the whole Control Tower namespace is kept)",
+    prefixes: ["aws_controltower_", "awscc_controltower_", "AWS::ControlTower::"],
   },
 ];
 

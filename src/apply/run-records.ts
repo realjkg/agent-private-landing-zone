@@ -118,7 +118,7 @@ export type LeftoversRecord = {
   resources: LeftoverResource[];
   /**
    * COMPLETE only when every proposed deletion is CONFIRMED_DELETED, every excluded resource is INTENTIONALLY_RETAINED, and a
-   * COMPLETE sweep by the run's deletion-unit tag found nothing else. KNOWN_ADDRESSES_CONFIRMED: the named resources are
+   * COMPLETE sweep by the run's deletion-unit tag found nothing else, and nothing was kept only because its type is unreviewed. KNOWN_ADDRESSES_CONFIRMED: the named resources are
    * settled but no sweep was possible (the run carries no unit tag), so resources outside the state were not searched for;
    * it is not completion. INCOMPLETE otherwise.
    */
@@ -198,8 +198,9 @@ export function observationRecordProblems(value: unknown): string[] {
 }
 
 const DISPOSITIONS: readonly LeftoverDisposition[] = ["CONFIRMED_DELETED", "INTENTIONALLY_RETAINED", "STILL_PRESENT", "DELETION_PENDING", "UNKNOWN"];
-export type LeftoverBasis = "CLOUD_CONTROL_ABSENT" | "CLOUD_CONTROL_PRESENT" | "ARM_ABSENT" | "ARM_PRESENT" | "PARENT_ABSENT" | "RETENTION_DECISION" | "CLEANUP_NOT_FINISHED" | "NOT_INDEPENDENTLY_CHECKABLE" | "CHECK_FAILED";
-const BASES: readonly LeftoverBasis[] = ["CLOUD_CONTROL_ABSENT", "CLOUD_CONTROL_PRESENT", "ARM_ABSENT", "ARM_PRESENT", "PARENT_ABSENT", "RETENTION_DECISION", "CLEANUP_NOT_FINISHED", "NOT_INDEPENDENTLY_CHECKABLE", "CHECK_FAILED"];
+/** UNREVIEWED_TYPE: kept because its type is not on the reviewed AWS leaf allowlist (TYPE_UNREVIEWED); a person still decides about it, so a record holding one is never COMPLETE. */
+export type LeftoverBasis = "CLOUD_CONTROL_ABSENT" | "CLOUD_CONTROL_PRESENT" | "ARM_ABSENT" | "ARM_PRESENT" | "PARENT_ABSENT" | "RETENTION_DECISION" | "UNREVIEWED_TYPE" | "CLEANUP_NOT_FINISHED" | "NOT_INDEPENDENTLY_CHECKABLE" | "CHECK_FAILED";
+const BASES: readonly LeftoverBasis[] = ["CLOUD_CONTROL_ABSENT", "CLOUD_CONTROL_PRESENT", "ARM_ABSENT", "ARM_PRESENT", "PARENT_ABSENT", "RETENTION_DECISION", "UNREVIEWED_TYPE", "CLEANUP_NOT_FINISHED", "NOT_INDEPENDENTLY_CHECKABLE", "CHECK_FAILED"];
 /** The read API's absent and present bases for a verifier, so a record never names a service that did not answer. */
 export const basesOf = (verifier: VerifierId): { absent: LeftoverBasis; present: LeftoverBasis } =>
   verifier === "AZURE_RESOURCE_MANAGER" ? { absent: "ARM_ABSENT", present: "ARM_PRESENT" } : { absent: "CLOUD_CONTROL_ABSENT", present: "CLOUD_CONTROL_PRESENT" };
@@ -230,6 +231,7 @@ export function leftoversRecordProblems(value: unknown): string[] {
   else {
     const settled = resources.every((x) => x.disposition === "CONFIRMED_DELETED" || x.disposition === "INTENTIONALLY_RETAINED");
     if ((value.disposition === "COMPLETE" || value.disposition === "KNOWN_ADDRESSES_CONFIRMED") && (!settled || resources.length === 0)) problems.push("leftovers record: COMPLETE needs every resource confirmed deleted or intentionally retained");
+    if ((value.disposition === "COMPLETE" || value.disposition === "KNOWN_ADDRESSES_CONFIRMED") && resources.some((x) => x.basis === "UNREVIEWED_TYPE")) problems.push("leftovers record: a resource kept because its type is unreviewed still needs a person's decision, so the record is INCOMPLETE");
     if (value.disposition === "COMPLETE" && value.sweep !== "COMPLETE") problems.push("leftovers record: COMPLETE needs a complete deletion-unit sweep; without one the most a record says is KNOWN_ADDRESSES_CONFIRMED");
     if (value.disposition === "KNOWN_ADDRESSES_CONFIRMED" && value.sweep !== "NOT_AVAILABLE") problems.push("leftovers record: KNOWN_ADDRESSES_CONFIRMED is for a run with no unit tag; with a sweep the record is COMPLETE or INCOMPLETE");
     if (!["COMPLETE", "KNOWN_ADDRESSES_CONFIRMED", "INCOMPLETE"].includes(value.disposition as string)) problems.push("leftovers record: disposition is unknown");
