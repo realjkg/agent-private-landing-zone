@@ -113,7 +113,7 @@ test("the shipped AWS examples are refused as placeholders and example values, e
   }
 });
 
-test("the Azure Terraform DEV example (docs/act-pilot-azure-terraform-g0.md) names every owner input, and a filled copy meets only the DEV-only rule on main", () => {
+test("the Azure Terraform DEV example (docs/act-pilot-azure-terraform-g0.md) names every owner input, and a filled copy is COMPLETE for Azure Terraform DEV", () => {
   const example = JSON.parse(readFileSync(join(ROOT, "config", "act-pilot-contract.azure-dev.example.json"), "utf8")) as Record<string, unknown>;
   const report = checkDraftContract(example);
   assert.deepEqual([report.provider, report.engine, report.enabledAsWritten, report.scope], ["AZURE", "TERRAFORM", false, ["DEV"]]);
@@ -125,43 +125,35 @@ test("the Azure Terraform DEV example (docs/act-pilot-azure-terraform-g0.md) nam
     "maxApprovalAgeMinutes", "approvers[0].id", "approvers[0].publicKeyPem", "approvers[0].environments", "killSwitchPath",
   ]);
   // Every value that only the owner can supply is refused as a placeholder or the example's fake backend, each by its field.
-  // On main enabledEnvironments is INVALID as well: the validator approves the DEV-only scope for AWS Terraform alone. #298
-  // extends it to Azure Terraform (owner decision 6442856302); when it merges, enabledEnvironments leaves this list.
-  assert.deepEqual(notReady(report), ["policyVersion", "enabledEnvironments", "targets.DEV.tenantId", "targets.DEV.subscriptionId", "targets.DEV.backend", "approvers[0].id", "approvers[0].publicKeyPem"]);
+  // The DEV-only scope itself is accepted for Azure Terraform (#298, owner decision 6442856302).
+  assert.deepEqual(notReady(report), ["policyVersion", "targets.DEV.tenantId", "targets.DEV.subscriptionId", "targets.DEV.backend", "approvers[0].id", "approvers[0].publicKeyPem"]);
+  assert.equal(statusOf(report, "enabledEnvironments"), "PRESENT");
   assert.equal(statusOf(report, "targets.DEV.tenantId"), "PLACEHOLDER");
   assert.equal(statusOf(report, "targets.DEV.subscriptionId"), "PLACEHOLDER");
   assert.equal(statusOf(report, "targets.DEV.backend"), "EXAMPLE");
   assert.match(report.outsideContract[0].input, /DISCOVERY, STATE, STATE_WRITE, APPLY/);
 
-  // A copy filled with fixture values (fake ids, a fixture storage account, a freshly generated test key).
+  // A copy filled with fixture values (fake ids, a fixture storage account, a freshly generated test key) passes the
+  // offline check as Azure Terraform DEV: every input present, the validator's shape accepted, COMPLETE. It enables nothing.
   const filled = {
     ...example, policyVersion: "2026-10-11.1",
     targets: { DEV: { tenantId: "4b1d7c2e-9a3f-4e6b-8c5d-2f7a9e1b3c4d", subscriptionId: "7e8f9a0b-1c2d-4e3f-9a5b-6c7d8e9f0a1b", backend: "fixturedevstate/tfstate/dev.tfstate", workspace: "pilot-dev" } },
     approvers: [{ id: "pilot-owner", publicKeyPem: keys.alice.pub, environments: ["DEV"] }], killSwitchPath: ".runs/apply/STOP-DEV",
   };
   const draft = checkDraftContract(filled);
-  // On main the DEV-only rule is the one refusal, attached to its field. When #298 merges this flips: no input is left,
-  // the shape is { ok: true } and the draft is COMPLETE.
-  assert.deepEqual(notReady(draft), ["enabledEnvironments"], "every owner input is present; only the scope rule refuses");
-  assert.match(draft.inputs.find((x) => x.field === "enabledEnvironments")!.detail!, /DEV-only scope is approved only for AWS Terraform/);
-  assert.deepEqual(draft.shape, { ok: false, reason: "enabledEnvironments: DEV-only scope is approved only for AWS Terraform ACT-DEV-1" });
-  assert.equal(draft.complete, false);
-  // Proof that it is the only refusal: the same Azure values in the three-stage chain are accepted and COMPLETE.
-  const chain = checkDraftContract({
-    ...filled, enabledEnvironments: undefined,
-    targets: {
-      DEV: filled.targets.DEV,
-      QA: { tenantId: filled.targets.DEV.tenantId, subscriptionId: "8f9a0b1c-2d3e-4f5a-8b6c-7d8e9f0a1b2c", backend: "fixtureqastate/tfstate/qa.tfstate", workspace: "pilot-qa" },
-      PROD: { tenantId: filled.targets.DEV.tenantId, subscriptionId: "9a0b1c2d-3e4f-4a5b-9c7d-8e9f0a1b2c3d", backend: "fixtureprodstate/tfstate/prod.tfstate", workspace: "pilot-prod" },
-    },
-    requiredApprovals: { DEV: 1, QA: 1, PROD: 2 },
-    approvers: [
-      { id: "release-approver-1", publicKeyPem: keys.alice.pub, environments: ["DEV", "QA", "PROD"] },
-      { id: "release-approver-2", publicKeyPem: keys.bob.pub, environments: ["DEV", "QA", "PROD"] },
-    ],
-  });
-  assert.deepEqual(chain.shape, { ok: true });
-  assert.equal(chain.complete, true, JSON.stringify(notReady(chain)));
+  assert.deepEqual(notReady(draft), [], "every owner input is present");
+  assert.deepEqual(draft.shape, { ok: true });
+  assert.equal(draft.complete, true);
+  assert.deepEqual(draft.scope, ["DEV"]);
+  assert.equal(draft.enabledAsWritten, false, "a draft is reported as written, never flipped");
+  // The DEV-only scope stays exactly DEV: a QA target beside it is refused by the validator, not ignored.
+  const extra = checkDraftContract({ ...filled, targets: { ...filled.targets, QA: { ...filled.targets.DEV, subscriptionId: "8f9a0b1c-2d3e-4f5a-8b6c-7d8e9f0a1b2c", backend: "fixtureqastate/tfstate/qa.tfstate" } } });
+  assert.equal(extra.shape.ok, false);
+  assert.equal(extra.complete, false);
+  // A tenant or subscription that is not a GUID is INVALID on its field, in the validator's words.
+  const notGuid = checkDraftContract({ ...filled, targets: { DEV: { ...filled.targets.DEV, subscriptionId: "dev-subscription" } } });
+  assert.equal(statusOf(notGuid, "targets.DEV.subscriptionId"), "INVALID");
+  assert.equal(notGuid.complete, false);
 });
 
 test("each missing owner input is reported by its field in plain words, and the validator's refusal is attached to its field", () => {
