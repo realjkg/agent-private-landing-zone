@@ -396,3 +396,18 @@ test("a fixture a test reads from disk is owned by its declared test, an unowned
   files.set("src/apply/orphan.ts", "export const x = 1;");
   assert.match(planChanged(["src/apply/orphan.ts"], files).gaps.join(" "), /src\/apply\/orphan\.ts has no importing test/);
 });
+
+test("the construct judge's real Terraform fixtures are owned by its focused test, never a gap", () => {
+  const files = fixture();
+  const owner = "test/apply-terraform-constructs.test.ts";
+  for (const path of Object.keys(FIXTURE_OWNERS).filter((p) => p.startsWith("test/fixtures/live/terraform/"))) {
+    assert.deepEqual(FIXTURE_OWNERS[path], [owner], path);
+    const plan = planChanged([path], new Map([...files, [owner, ""], [path, ""]]));
+    assert.deepEqual(plan.gaps, [], path);
+    assert.ok(plan.nodeTests.includes(owner), path);
+  }
+  const manifest = "test/fixtures/live/MANIFEST.json", manifestOwner = "test/teardown-live-fixtures.test.ts";
+  const plan = planChanged([manifest], new Map([...files, [manifestOwner, ""], [manifest, "{}"]]));
+  assert.deepEqual(plan.gaps, []);
+  assert.ok(plan.nodeTests.includes(manifestOwner));
+});
