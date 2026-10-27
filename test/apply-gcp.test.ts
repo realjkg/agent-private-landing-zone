@@ -9,7 +9,7 @@ import test from "node:test";
 import { codeOf } from "../src/apply/engine.js";
 import { checkApplyIdentities, verifyIdentityTargets } from "../src/apply/identities.js";
 import { PROVIDER_IDS, providerSpec, type ProviderBlock, type ProviderSpec, type ProviderUse } from "../src/apply/provider.js";
-import { GCP, GCP_IDENTITY_VARIABLES, backendBucketForms, checkCredentialConfiguration, gcpParentOk, namesBackendBucket, type GcpTarget } from "../src/apply/providers/gcp.js";
+import { GCP, GCP_DATA_SOURCES, GCP_IDENTITY_VARIABLES, backendBucketForms, checkCredentialConfiguration, gcpParentOk, namesBackendBucket, type GcpTarget } from "../src/apply/providers/gcp.js";
 import { APPLY_IDENTITIES, type PilotContract, type PilotTarget } from "../src/apply/types.js";
 import { TOKEN_FILE } from "../src/apply/constants.js";
 import { CREDENTIAL_FILE, readTokenFile } from "../src/tools/gcp-credentials.js";
@@ -347,6 +347,9 @@ test("review N2 and the STATE_WRITE binding: the saved gcs backend is an allowli
   ] as const) {
     assert.equal(GCP.savedBackendMatches(saved({ ...own, ...change }), target(DEV), writer), false, label);
   }
+  // Review N5 of #320: bucket and prefix are compared on their own, never joined.
+  assert.equal(GCP.savedBackendMatches(saved({ ...own, bucket: "alz-pilot-dev-state/pilot", prefix: "dev" }), target(DEV), writer), false, "the slash moved into the bucket");
+  assert.equal(GCP.savedBackendMatches(saved({ ...own, prefix: ["pilot", "dev"] }), target(DEV), writer), false, "a prefix that is not a string");
   const noWriter = { ...writer };
   delete noWriter.ALZ_STATE_WRITE_GOOGLE_APPLICATION_CREDENTIALS;
   delete noWriter.ALZ_STATE_WRITE_GOOGLE_IMPERSONATE_SERVICE_ACCOUNT;
@@ -393,12 +396,13 @@ test("review N4: a use whose provider the plan does not name is refused, whereve
   assert.equal(judge([GOOGLE()], [use("google_pubsub_topic", { name: "google" })]), "OK", "named by its local name only (a configuration key with no block)");
 });
 
-test("review N3: data sources that mint a token or read a secret are refused in any module and whatever the mode says; the managed secret version is not a data source", () => {
+test("review N3 of #305, an allowlist since review N1 of #320: only the reviewed data sources are read; token and secret readers and every other data source are refused in any module and whatever the mode says; managed resources are not data sources", () => {
   const google = { name: "google", full_name: "registry.terraform.io/hashicorp/google" };
   for (const type of [
     "google_client_config", "google_service_account_access_token", "google_service_account_id_token", "google_service_account_jwt",
     "google_secret_manager_secret_version", "google_secret_manager_secret_version_access", "google_secret_manager_regional_secret_version",
     "google_secret_manager_regional_secret_version_access", "google_kms_secret", "google_kms_secret_asymmetric",
+    "google_storage_object_signed_url", "google_storage_bucket_object_content", "google_container_cluster", "google_service_account", "google_storage_bucket",
   ]) {
     assert.equal(judge([GOOGLE()], [use(type, google, "data")]), "PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT", type);
     assert.equal(judge([GOOGLE()], [{ address: "module.app.data." + type + ".x", mode: "managed", type, provider: google }]), "PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT", type + " under a data address");
@@ -406,7 +410,9 @@ test("review N3: data sources that mint a token or read a secret are refused in 
   }
   // A resource holds only what the project configures; a data source of an ordinary type is not judged by this rule.
   assert.equal(judge([GOOGLE()], [use("google_secret_manager_secret_version", google)]), "OK");
-  assert.equal(judge([GOOGLE()], [use("google_project", google, "data"), use("google_service_account", google, "data")]), "OK");
+  for (const type of GCP_DATA_SOURCES) assert.equal(judge([GOOGLE()], [use(type, google, "data")]), "OK", type);
+  assert.equal(judge([GOOGLE()], [use("terraform_remote_state", { name: "terraform" }, "data")]), "PROVIDER_BUILTIN_TYPE_NOT_IN_CONTRACT", "the built-in remote state, by its local name");
+  assert.equal(judge([GOOGLE()], [use("http", { full_name: "registry.terraform.io/hashicorp/http" }, "data")]), "PROVIDER_CONFIG_NOT_IN_CONTRACT", "another provider's data source");
   // A refused data source names no value: the code is all the driver reports (TARGET_NOT_IN_CONTRACT, nothing spent).
   assert.match("PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT", /_NOT_IN_CONTRACT$/);
 });

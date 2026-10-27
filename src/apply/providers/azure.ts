@@ -101,12 +101,13 @@ const SAVED_SETTINGS = new Set(["storage_account_name", "container_name", "key",
  */
 function savedBackendMatches(backend: Record<string, unknown>, target: AzureTarget, env: NodeJS.ProcessEnv): boolean {
   const config = isRecord(backend.config) ? backend.config : {};
-  const parts = [config.storage_account_name, config.container_name, config.key];
+  const [account, container, ...key] = target.backend.split("/");
   const unsetOr = (name: string, ok: (value: string) => boolean): boolean =>
     config[name] === undefined || config[name] === null || (typeof config[name] === "string" && ok(config[name] as string));
   const stateWrite = identityVariables(env, "STATE_WRITE");
   const isStateWrite = (name: string) => (v: string): boolean => stateWrite.get(name) === v;
-  return backend.type === "azurerm" && parts.every((part) => typeof part === "string") && parts.join("/") === target.backend &&
+  // Each part on its own (review N5 of #320): parts joined differently cannot name the same "<account>/<container>/<key>".
+  return backend.type === "azurerm" && config.storage_account_name === account && config.container_name === container && config.key === key.join("/") &&
     config.use_azuread_auth === true && (config.use_oidc === undefined || config.use_oidc === null || config.use_oidc === true) &&
     unsetOr("tenant_id", (v) => GUID.test(v) && v.toLowerCase() === target.tenantId.toLowerCase()) &&
     unsetOr("subscription_id", (v) => GUID.test(v) && v.toLowerCase() === target.subscriptionId.toLowerCase()) &&

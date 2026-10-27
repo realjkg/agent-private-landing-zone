@@ -111,6 +111,7 @@ describe("Azure state auth is Entra ID only: the backend init saved (the plan em
     for (const [label, change] of [
       ["storage account", { storage_account_name: "attackerstore" }], ["container", { container_name: "other" }], ["key", { key: "prod.tfstate" }],
       ["key prefix", { key: KEY.join("/") + "x" }], ["deeper key", { key: "a/" + KEY.join("/") }], ["account case", { storage_account_name: ACCOUNT.toUpperCase() }],
+
     ] as const) {
       assert.equal(AZURE.savedBackendMatches(SAVED(change), PINNED, WRITER_ENV), false, label);
     }
@@ -149,6 +150,14 @@ describe("Azure state auth is Entra ID only: the backend init saved (the plan em
     assert.equal(AZURE.savedBackendMatches(SAVED(), PINNED, noWriter), true, "nothing saved, nothing to bind (the seal's location-only init)");
     // The operator's own variables are not the STATE_WRITE identity's.
     assert.equal(AZURE.savedBackendMatches(SAVED({ client_id: "operator-client" }), PINNED, { ...noWriter, ARM_CLIENT_ID: "operator-client" }), false, "the operator's client id");
+  });
+
+  it("compares the storage account, container and key each on its own, never joined (review N5 of #320)", () => {
+    const deep = { ...PINNED, backend: ACCOUNT + "/" + CONTAINER + "/env/dev.tfstate" };
+    const at = (account: string, container: string, key: string) => AZURE.savedBackendMatches(SAVED({ storage_account_name: account, container_name: container, key }), deep, WRITER_ENV);
+    assert.equal(at(ACCOUNT, CONTAINER, "env/dev.tfstate"), true, "control");
+    assert.equal(at(ACCOUNT, CONTAINER + "/env", "dev.tfstate"), false, "the slash moved into the container");
+    assert.equal(at(ACCOUNT + "/" + CONTAINER, "env", "dev.tfstate"), false, "the slash moved into the account");
   });
 
   it("still binds the contract's location and the azurerm type", () => {

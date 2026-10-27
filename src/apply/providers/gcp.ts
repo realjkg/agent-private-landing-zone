@@ -198,11 +198,12 @@ const SAVED_SETTINGS: ReadonlySet<string> = new Set(["bucket", "prefix", CREDENT
  */
 function savedBackendMatches(backend: Record<string, unknown>, target: GcpTarget, env: NodeJS.ProcessEnv): boolean {
   const config = isRecord(backend.config) ? backend.config : {};
-  const parts = [config.bucket, config.prefix];
+  const [bucket, ...prefix] = target.backend.split("/");
   const stateWrite = identityVariables(env, "STATE_WRITE");
   const unsetOr = (name: string, variable: string, ok: RegExp): boolean =>
     config[name] === undefined || config[name] === null || (typeof config[name] === "string" && ok.test(config[name] as string) && stateWrite.get(variable) === config[name]);
-  return backend.type === "gcs" && parts.every((part) => typeof part === "string") && parts.join("/") === target.backend &&
+  // Each part on its own (review N5 of #320): a bucket and prefix joined differently cannot name the same "<bucket>/<prefix>".
+  return backend.type === "gcs" && config.bucket === bucket && config.prefix === prefix.join("/") &&
     unsetOr(CREDENTIALS_SETTING, CREDENTIALS, TOKEN_FILE) && unsetOr(IMPERSONATE_SETTING, IMPERSONATE, SERVICE_ACCOUNT) &&
     Object.entries(config).every(([name, value]) => SAVED_SETTINGS.has(name) || value === null);
 }
@@ -230,30 +231,29 @@ function assertBuiltinUses(uses: readonly ProviderUse[]): void {
   }
 }
 
+/** A provider's id: its full name, or from its local name alone the built-in provider for `terraform` and a hashicorp one otherwise. */
 const providerIdOf = (provider: Pick<ProviderBlock, "name" | "full_name">): string | undefined =>
-  provider.full_name ?? (provider.name !== undefined ? HASHICORP + provider.name : undefined);
+  provider.full_name ?? (provider.name === "terraform" ? BUILTIN_PROVIDER : provider.name !== undefined ? HASHICORP + provider.name : undefined);
 const isSet = (expression: unknown): boolean => expression !== undefined && !(isRecord(expression) && expression.constant_value === null);
 
 /**
- * Data sources that mint a token or read a secret into the plan (review N3 of #305): the running identity's own OAuth access token
- * (`google_client_config`), a token, ID token or signed JWT minted for a service account, a Secret Manager secret's payload, and
- * KMS-decrypted plaintext. A data source is read at plan time, so its result sits in the sealed plan every approver handles and,
- * after the apply, in the state. Refused unless the plan names the use as a managed resource outside any `data.` address (a secret
- * version is also a resource, which holds only what the project itself configures), so a use whose mode is unsaid is refused too.
- * UNVERIFIED: the type names are from memory, as the rest of this file; checked against the provider's documentation before live use.
+ * The reviewed data sources a GCP pilot project may read (review N3 of #305, made an allowlist by review N1 of #320): the project
+ * (metadata) and the minimal workload's own type. A data source is read at plan time, as the identity that plans, so its result
+ * sits in the sealed plan every approver handles and, after the apply, in the state: any other one, of any provider, is refused
+ * (PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT). That keeps out the running identity's OAuth access token (`google_client_config`), tokens,
+ * ID tokens and signed JWTs minted for a service account, Secret Manager payloads, KMS-decrypted plaintext, signed URLs
+ * (`google_storage_object_signed_url`), object contents (`google_storage_bucket_object_content`), cluster credentials
+ * (`google_container_cluster`) and Terraform's `terraform_remote_state`. A type joins the list by review. The refusal keeps the
+ * result out of the sealed plan; it cannot undo the read, which DISCOVERY's IAM bounds. A use whose mode is unsaid is judged as a
+ * data source. UNVERIFIED: the type names are from memory, as the rest of this file.
  */
-const SECRET_DATA_SOURCES: ReadonlySet<string> = new Set([
-  "google_client_config", "google_service_account_access_token", "google_service_account_id_token", "google_service_account_jwt",
-  "google_secret_manager_secret_version", "google_secret_manager_secret_version_access",
-  "google_secret_manager_regional_secret_version", "google_secret_manager_regional_secret_version_access",
-  "google_kms_secret", "google_kms_secret_asymmetric",
-]);
+export const GCP_DATA_SOURCES: ReadonlySet<string> = new Set(["google_project", "google_pubsub_topic"]);
 const DATA_ADDRESS = /(^|\.)data\./;
 
 /**
  * The provider half of the contract binding. Only the allowed providers may appear, in a provider block or as the provider
  * of anything the plan names, and a use whose provider the plan does not name is refused (review N4 of #305); of the built-in
- * provider only `terraform_data` resources; and no data source of `SECRET_DATA_SOURCES` (PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT). In
+ * provider only `terraform_data` resources; and only the reviewed data sources (`GCP_DATA_SOURCES`, PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT). In
  * a google block no attribute of `DENIED_ATTRIBUTE` is set, `default_labels` is set (the unit labels come from it), and a constant
  * `project` is the contract's. An expression for the project is not judged; the runbook says so. `region` and `zone` are not judged.
  */
@@ -262,7 +262,7 @@ function assertProviderConfig(blocks: readonly ProviderBlock[], target: GcpTarge
   for (const use of uses) {
     const id = providerIdOf(use.provider);
     if (id === undefined || !ALLOWED_PROVIDERS.includes(id)) stop("PROVIDER_CONFIG_NOT_IN_CONTRACT");
-    if (SECRET_DATA_SOURCES.has(use.type) && (use.mode !== "managed" || DATA_ADDRESS.test(use.address))) stop("PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT");
+    if ((use.mode !== "managed" || DATA_ADDRESS.test(use.address)) && !GCP_DATA_SOURCES.has(use.type)) stop("PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT");
   }
   for (const provider of blocks) {
     const id = providerIdOf(provider ?? {});
