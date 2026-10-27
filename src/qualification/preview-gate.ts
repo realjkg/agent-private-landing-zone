@@ -107,7 +107,7 @@ export const LIVE_CONDITION_REASONS: Readonly<Record<keyof PreviewLiveConditions
  * dropped from state unreviewed), a dynamic or unknown action, or anything else never is, whatever the label says. The list is
  * closed: an action not named here is refused, so a new engine vocabulary fails closed until it is reviewed here.
  */
-export const PREVIEW_GATE_ACTIONS: readonly string[] = ["CREATE", "UPDATE", "IMPORT", "READ", "SAME"];
+export const PREVIEW_GATE_ACTIONS: readonly string[] = Object.freeze(["CREATE", "UPDATE", "IMPORT", "READ", "SAME"]);
 /** The actions in a counted change list that a preview gate never admits, with their counts, as "DELETE: 2"; empty when every action is admitted. */
 export function unauthorizedPreviewActions(byAction: Readonly<Record<string, number>>): string[] {
   return Object.entries(byAction).filter(([action, count]) => count > 0 && !PREVIEW_GATE_ACTIONS.includes(action)).map(([action, count]) => action + ": " + count).sort();
