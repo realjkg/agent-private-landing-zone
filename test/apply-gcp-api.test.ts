@@ -128,7 +128,7 @@ function assertClean(google: ReturnType<typeof fakeGoogle>, ...results: unknown[
 test("SYNTHETIC: seal, apply, observe and cleanup one labeled Pub/Sub topic", async () => {
   const { deps, google } = setup();
   const plan = await seal(deps);
-  assert.equal(plan.requesterId, "carol");
+  assert.equal(plan.requesterId, "dana");
   assert.equal(plan.create.method, "PUT");
   assert.equal(plan.create.url, TOPIC_URL);
   assert.deepEqual(plan.create.body, { labels: LABELS });

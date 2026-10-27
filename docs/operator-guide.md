@@ -208,7 +208,7 @@ Runs the operator regression suite without requiring the operator to know indivi
 
 ### apply (pilot)
 
-`./alz apply` is the owner-approved internal pilot: prepare a reviewed change, collect signed approvals, apply exactly that change, in DEV, then QA, then PROD. It does nothing unless the owner's pinned pilot contract switches the pilot on. A person runs it either at the terminal or in the console's **Pilot apply** wizard (paste the session token `./alz workspace` prints in your terminal); one change runs wholly in one of the two and the other refuses it. The plain-language walkthrough, with the same words as the screen, is `docs/act-pilot-walkthrough.md`; the engineer's runbook is `docs/act-pilot-apply.md`.
+`./alz apply` is the owner-approved internal pilot: prepare a reviewed change, collect signed approvals, apply exactly that change, in DEV, then QA, then PROD. It does nothing unless the owner's reviewed, committed pilot contract authorizes the step for that environment in its `authorize` entry. A person runs it either at the terminal or in the console's **Pilot apply** wizard (paste the session token `./alz workspace` prints in your terminal); one change runs wholly in one of the two and the other refuses it. The plain-language walkthrough, with the same words as the screen, is `docs/act-pilot-walkthrough.md`; the engineer's runbook is `docs/act-pilot-apply.md`.
 
 ### sbom
 

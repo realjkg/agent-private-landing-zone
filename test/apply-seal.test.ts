@@ -131,11 +131,11 @@ test("the sealed record binds plan, manifest, release identity, environment, tar
     authorizationSha256: s.authorizationSha256, changesSha256: sha(canonicalJson(s.changes)), channel: s.channel, contractSha256: s.contractSha256, engineVersion: s.engineVersion, environment: s.environment, manifestHash: s.manifestHash,
     planSha256: s.planSha256, policyVersion: s.policyVersion,
     provenance: { engineBinarySha256: PROVENANCE.engineBinarySha256, qualification: { reason: "Fixture: no qualification evidence is in this test's vault.", state: "UNQUALIFIED" } },
-    releaseIdentity: s.releaseIdentity, requesterId: "carol", sourceCommit: s.sourceCommit,
+    releaseIdentity: s.releaseIdentity, requesterId: "dana", sourceCommit: s.sourceCommit,
     target: { account: s.target.account, backend: s.target.backend, workspace: s.target.workspace }, targetSha256: s.targetSha256,
     unit: { tags: { "alz-build": s.unit!.tags["alz-build"], "alz-managed-by": "alz", "alz-unit": s.unit!.unitId }, unitId: s.unit!.unitId, untagged: s.unit!.untagged },
   })), "canonical JSON of exactly these sixteen fields (the requester id, the authorization and the full target among them), the change list through its own hash");
-  assert.equal(s.requesterId, "carol");
+  assert.equal(s.requesterId, "dana");
   assert.deepEqual(Object.keys(s.request!).sort(), ["signatureBase64", "statement"]);
   assert.deepEqual(s.request!.statement, { schemaVersion: 1, requesterId: "carol", artifactSha256: s.artifactSha256, environment: "DEV", nonce: s.request!.statement.nonce });
   assert.deepEqual(s.provenance, PROVENANCE, "the seal keeps the provenance the driver observed, unchanged");

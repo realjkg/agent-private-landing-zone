@@ -15,11 +15,13 @@ import {
   loadPilotContract,
   loadQualificationRecords,
   pilotContractSha256,
+  pilotTargetSha256,
   repoPaths,
   requireNotApplied,
   requireActAuthorized,
   requirePromotionEvidence,
   targetForEnvironment,
+  targetMoved,
   verifyApplyQualification,
   writeQualificationEvidence,
 } from "../src/apply/contract.js";
@@ -793,4 +795,26 @@ test("loadQualificationRecords: records come only from valid vault evidence, nev
   assert.deepEqual(records.find((r) => r.evidenceHash === (a.ok ? a.evidenceHash : ""))!, recordFor(a.ok ? a.evidenceHash : ""));
   // Each record passes the apply gate it was derived for.
   assert.deepEqual(await verifyApplyQualification(records.find((r) => r.adapterVersion === ADAPTER.adapterVersion)!, dir, ADAPTER, BOUND, AZURE), { ok: true });
+});
+
+test("#313 F3: an Azure tenant or subscription GUID hashes the same in any letter case, so a contract writing the run's GUIDs in uppercase still states the run's target; any other change still moves it", () => {
+  const TENANT = "4b1d7c2e-9a3f-4e6b-8c5d-2f7a9e1b3c4d";
+  const SUBSCRIPTION = "7e8f9a0b-1c2d-4e3f-9a5b-6c7d8e9f0a1b";
+  const withDev = (dev: Record<string, string>) => {
+    const loaded = load(mutate((c) => { c.targets.DEV = { ...c.targets.DEV, tenantId: TENANT, subscriptionId: SUBSCRIPTION, ...dev }; }));
+    assert.ok(!("reason" in loaded), JSON.stringify(loaded));
+    return loaded as PilotContract;
+  };
+  const run = pilotTargetSha256(withDev({}), "DEV")!;
+  assert.match(run, /^[a-f0-9]{64}$/);
+  const upper = withDev({ tenantId: TENANT.toUpperCase(), subscriptionId: SUBSCRIPTION.toUpperCase() });
+  assert.equal(upper.targets.DEV!.subscriptionId, SUBSCRIPTION.toUpperCase(), "the validator accepts the uppercase GUIDs as written");
+  assert.equal(pilotTargetSha256(upper, "DEV"), run, "the uppercase variant of the same GUIDs is the same target");
+  assert.equal(pilotTargetSha256(withDev({ tenantId: "4B1D7C2E-9a3f-4E6B-8c5d-2F7A9E1B3C4D" }), "DEV"), run, "mixed case too");
+  assert.equal(targetMoved(run, upper, "DEV"), undefined, "a cleanup or removal of the run passes the target check under the uppercase contract");
+  // Another GUID, or another backend, is another target.
+  const other = withDev({ subscriptionId: "8f9a0b1c-2d3e-4f5a-8b6c-7d8e9f0a1b2c" });
+  assert.notEqual(pilotTargetSha256(other, "DEV"), run);
+  assert.equal(targetMoved(run, other, "DEV")?.code, "TARGET_NOT_IN_CONTRACT");
+  assert.notEqual(pilotTargetSha256(withDev({ backend: "fixtureotherstore/tfstate/dev.tfstate" }), "DEV"), run);
 });

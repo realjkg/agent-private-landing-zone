@@ -289,8 +289,17 @@ export type Authorization = { operation: ActOperation; contractSha256: string; a
 export function pilotTargetSha256(contract: PilotContract, env: ApplyEnvironment): string | undefined {
   const target = Object.hasOwn(contract.targets, env) ? contract.targets[env] : undefined;
   if (!target) return undefined;
-  return sha256(canonicalJson({ provider: contract.provider, ...accountFieldsOf(specOf(contract), target), backend: target.backend, workspace: target.workspace } as never));
+  const account = Object.fromEntries(Object.entries(accountFieldsOf(specOf(contract), target)).map(([key, value]) => [key, canonicalGuid(value)]));
+  return sha256(canonicalJson({ provider: contract.provider, ...account, backend: target.backend, workspace: target.workspace } as never));
 }
+
+const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/**
+ * An Azure GUID (tenant, subscription) names the same directory or subscription in any letter case (review of #313, F3), so the
+ * target hash reads it in lowercase: a contract that writes the run's GUID in another case still states the run's target. Any
+ * other account value (an AWS account id, a region, a GCP project) is hashed exactly as written.
+ */
+const canonicalGuid = (value: string): string => (typeof value === "string" && GUID.test(value) ? value.toLowerCase() : value);
 
 /** The run's target, as the contract committed now states it, is exactly the run's own; otherwise nothing is consumed. */
 export function targetMoved(runTargetSha256: string, contract: PilotContract, env: ApplyEnvironment): Refusal | undefined {
