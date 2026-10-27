@@ -11,7 +11,7 @@ import { isRecord } from "./providers/shared.js";
  * every `backend` block must be the spec's type with attributes from its allowlist, and an attribute the rule pins must be
  * that literal value for the contract's backend (`literals`: the storage names, a switch that must be on). A `cloud` block
  * is another backend and is refused. Anything that cannot be parsed is refused: this is a reader of the block only, not an
- * HCL implementation.
+ * HCL implementation, but it tokenizes as hclsyntax does and refuses whatever it cannot follow (`tokenize`).
  */
 export type BackendBlockRule = {
   type: string;
@@ -26,9 +26,15 @@ export type BackendBlockRule = {
 
 const CODE = "BACKEND_BLOCK_NOT_IN_CONTRACT";
 const MAX_FILE_BYTES = 1_048_576;
+/** Template sequences inside template sequences beyond this are refused rather than followed. */
+const MAX_NESTING = 32;
 
-type Token = { kind: "id" | "str" | "sym" | "nl"; text: string };
-/** An attribute's value: a string or boolean literal, or `EXPRESSION` for anything else (a reference, a template, a number, a nested block). */
+/**
+ * `expr` is a value that is never a literal (a heredoc). Templates in quoted strings stay in the `str` token's text, so a
+ * string holding one is an expression too (`literalOf`).
+ */
+type Token = { kind: "id" | "str" | "expr" | "sym" | "nl"; text: string };
+/** An attribute's value: a string or boolean literal, or `EXPRESSION` for anything else (a reference, a template, a heredoc, a number, a nested block). */
 const EXPRESSION = Symbol("expression");
 type Literal = string | boolean | typeof EXPRESSION;
 type Found = { type: string; keys: string[]; values: Map<string, Literal> } | "cloud";
@@ -42,49 +48,110 @@ function literalOf(tokens: readonly Token[]): Literal {
   return EXPRESSION;
 }
 
-/** Comments, strings (with `${ }` templates, which may hold strings), heredocs and everything else as single symbols. */
+/** HCL's single-character tokens that a valid configuration can hold outside strings (hclsyntax `SelfToken`, less `^ ; \` '`). */
+const SYMBOLS = "[]().,*/%+-=<>!?:&|{}";
+const IDENT = /[A-Za-z_][A-Za-z0-9_-]*/y;
+const HEREDOC = /<<-?([A-Za-z_][A-Za-z0-9_-]*)\r?\n/y;
+/** Go's `bytes.TrimSpace`, which hclsyntax applies to a heredoc line to find its closing marker: Unicode White_Space at both ends. */
+const trimSpace = (line: string): string => line.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, "");
+
+/**
+ * The tokens of an HCL native-syntax file, following hclsyntax's scanner (`scan_tokens.rl`, hashicorp/hcl v2) for every mode
+ * that can hide or reveal a block: comments, quoted templates (with `${ }` and `%{ }` sequences, whose expressions may hold
+ * strings, heredocs and braces, and the `$${` and `%%{` escapes), heredocs (`<<` or `<<-` and an identifier that may contain
+ * `-`, closed by a line that is only that identifier), and braces. It refuses rather than guesses: a character or sequence
+ * outside that model (a non-ASCII identifier, a `<<` that is not a heredoc opener, a `$` outside a template, a raw newline in a
+ * quoted string, a lone carriage return, invalid UTF-8, an unterminated string, comment, heredoc or template) is
+ * BACKEND_BLOCK_NOT_IN_CONTRACT, never skipped. hclsyntax rejects each of them too, so a valid configuration is not refused
+ * for them, except one with a non-ASCII identifier or heredoc marker, or with template sequences nested beyond `MAX_NESTING`.
+ */
 function tokenize(source: string): Token[] {
   const out: Token[] = [];
-  let i = 0;
-  const string = (from: number): number => {
-    for (let at = from; at < source.length; at++) {
+  /** At a `$` or `%` in a template: the index after an interpolation or directive it opens, or after the literal text it is. */
+  let nesting = 0;
+  const sequence = (at: number): number => {
+    const c = source[at];
+    if (source[at + 1] === "{") {
+      if (++nesting > MAX_NESTING) return stop(CODE);
+      const end = code(at + 2, true);
+      nesting--;
+      return end;
+    }
+    return source[at + 1] === c && source[at + 2] === "{" ? at + 3 : at + 1;
+  };
+  /** A quoted template's text after its opening `"`; returns the index after its closing `"`. */
+  const quoted = (from: number): number => {
+    for (let at = from; at < source.length;) {
       const c = source[at];
-      if (c === "\\") at++;
-      else if (c === '"') return at + 1;
-      else if ((c === "$" || c === "%") && source[at + 1] === "{") at = template(at + 2) - 1;
-      else if (c === "$" && source.startsWith("${", at + 1)) at += 2;
+      if (c === '"') return at + 1;
+      if (c === "\n" || c === "\r") return stop(CODE);
+      if (c === "\\") {
+        if (at + 1 >= source.length || source[at + 1] === "\n" || source[at + 1] === "\r") return stop(CODE);
+        at += 2;
+      } else at = c === "$" || c === "%" ? sequence(at) : at + 1;
     }
     return stop(CODE);
   };
-  const template = (from: number): number => {
-    let depth = 1;
-    for (let at = from; at < source.length; at++) {
-      const c = source[at];
-      if (c === '"') at = string(at + 1) - 1;
-      else if (c === "{") depth++;
-      else if (c === "}" && --depth === 0) return at + 1;
+  /**
+   * A heredoc's lines from the one after its opener; returns the index of the closing marker line's terminator (`\r\n` or `\n`),
+   * which is the attribute's newline. A line closes it only when no template sequence started on it.
+   */
+  const heredoc = (from: number, marker: string): number => {
+    for (let at = from; ;) {
+      const end = source.indexOf("\n", at);
+      if (end < 0) return stop(CODE);
+      const line = source.slice(at, end);
+      if (line.slice(0, -1).includes("\r")) return stop(CODE);
+      if (trimSpace(line) === marker) return line.endsWith("\r") ? end - 1 : end;
+      let p = at;
+      while (p < source.length && source[p] !== "\n") {
+        const c = source[p];
+        if (c === "\r" && source[p + 1] !== "\n") return stop(CODE);
+        p = c === "$" || c === "%" ? sequence(p) : p + 1;
+      }
+      if (p >= source.length) return stop(CODE);
+      at = p + 1;
     }
-    return stop(CODE);
   };
-  while (i < source.length) {
-    const c = source[i];
-    const heredoc = c === "<" && /^<<-?([A-Za-z_][A-Za-z0-9_]*)\r?\n/.exec(source.slice(i, i + 140));
-    if (c === "\n") { out.push({ kind: "nl", text: c }); i++; }
-    else if (/\s/.test(c)) i++;
-    else if (c === "#" || source.startsWith("//", i)) { while (i < source.length && source[i] !== "\n") i++; }
-    else if (source.startsWith("/*", i)) { const end = source.indexOf("*/", i + 2); i = end < 0 ? stop(CODE) : end + 2; }
-    else if (heredoc) {
-      const end = new RegExp("^[ \\t]*" + heredoc[1] + "[ \\t]*\\r?$", "m").exec(source.slice(i + heredoc[0].length));
-      if (!end) return stop(CODE);
-      out.push({ kind: "str", text: "" });
-      i += heredoc[0].length + end.index + end[0].length;
-    } else if (c === '"') { const end = string(i + 1); out.push({ kind: "str", text: source.slice(i + 1, end - 1) }); i = end; }
-    else {
-      const id = /^[A-Za-z_][A-Za-z0-9_-]*/.exec(source.slice(i, i + 128));
-      out.push(id ? { kind: "id", text: id[0] } : { kind: "sym", text: c });
-      i += id ? id[0].length : 1;
+  /**
+   * Code from `from`. At the top level, every token is kept and the end of the file ends it. Inside a template sequence
+   * (`nested`), the tokens are only followed, and the `}` (or `~}`) that closes the sequence ends it; returns the index after it.
+   */
+  const code = (from: number, nested: boolean): number => {
+    let depth = 0;
+    const emit = (token: Token): void => { if (!nested) out.push(token); };
+    for (let i = from; i < source.length;) {
+      const c = source[i];
+      if (c === "\n" || (c === "\r" && source[i + 1] === "\n")) { emit({ kind: "nl", text: "\n" }); i += c === "\n" ? 1 : 2; }
+      else if (c === " " || c === "\t") i++;
+      else if (c === "#" || source.startsWith("//", i)) { while (i < source.length && source[i] !== "\n") i++; }
+      else if (source.startsWith("/*", i)) { const end = source.indexOf("*/", i + 2); i = end < 0 ? stop(CODE) : end + 2; }
+      else if (c === '"') { const end = quoted(i + 1); emit({ kind: "str", text: source.slice(i + 1, end - 1) }); i = end; }
+      else if (source.startsWith("<<", i)) {
+        HEREDOC.lastIndex = i;
+        const opener = HEREDOC.exec(source);
+        if (!opener) return stop(CODE);
+        i = heredoc(i + opener[0].length, opener[1]);
+        emit({ kind: "expr", text: "<<" + opener[1] });
+      } else if (source.startsWith("~}", i) || c === "}") {
+        if (nested && depth === 0) return i + (c === "~" ? 2 : 1);
+        if (c === "~") return stop(CODE);
+        depth--;
+        emit({ kind: "sym", text: c });
+        i++;
+      } else if (c === "{") { depth++; emit({ kind: "sym", text: c }); i++; }
+      else if (c === "~" && nested) i++;
+      else if (/[A-Za-z_]/.test(c)) {
+        IDENT.lastIndex = i;
+        const id = (IDENT.exec(source) as RegExpExecArray)[0];
+        emit({ kind: "id", text: id });
+        i += id.length;
+      } else if (/[0-9]/.test(c) || SYMBOLS.includes(c)) { emit({ kind: "sym", text: c }); i++; }
+      else return stop(CODE);
     }
-  }
+    return nested ? stop(CODE) : source.length;
+  };
+  code(0, false);
   return out;
 }
 
@@ -187,7 +254,9 @@ export function assertBackendBlock(directory: string, rule: BackendBlockRule, ba
     const file = join(directory, name);
     const stat = lstatSync(file);
     if (!stat.isFile() || stat.size > MAX_FILE_BYTES) stop(CODE);
-    const source = readFileSync(file, "utf8");
+    let source: string;
+    // Invalid UTF-8 is refused (hclsyntax rejects it too); a leading byte order mark is dropped, as hclsyntax drops it.
+    try { source = new TextDecoder("utf-8", { fatal: true }).decode(readFileSync(file)); } catch { return stop(CODE); }
     const blocks = name.endsWith(".json") ? blocksOfJson(source) : blocksOf(tokenize(source));
     for (const block of blocks) {
       if (block === "cloud" || block.type !== rule.type || block.keys.some((key) => !rule.attributes.includes(key))) return stop(CODE);

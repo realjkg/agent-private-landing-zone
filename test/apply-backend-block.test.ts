@@ -111,3 +111,110 @@ test("azurerm: another storage account, container or key than the contract's, En
   // The s3 rule pins no literal, so its values stay unjudged here (the saved backend is judged after init).
   assert.equal(verdict({ "main.tf": block('bucket = "attacker"\nkey = var.k') }), "ok");
 });
+
+// --- the reader follows HCL's own scanner (review #287, B1) -------------------------------------------------------------------
+// Each layout below parses with hashicorp/hcl v2.23.0 (hclsyntax.ParseConfig), which sees the backend block after the decoy. The
+// reader must see that block too: with the rule's allowed settings the file passes, and with a credential, auth path or endpoint
+// it is refused. A reader that took the decoy for code would skip the real `terraform` block and pass both.
+
+const RULES = [
+  { name: "s3", rule: ALLOWED, backend: S3_BACKEND, allowed: 'bucket = "b"', forbidden: ['access_key = "K"', 'endpoints = {\n  s3 = "https://attacker.example"\n}'] },
+  { name: "azurerm", rule: AZURERM, backend: AZURE_BACKEND, allowed: "use_azuread_auth = true", forbidden: ['access_key = "SHARED-KEY"', 'sas_token = "SAS"', "use_msi = true", "use_cli = true", 'endpoint = "https://evil.example"'] },
+] as const;
+const terraformBlock = (type: string, body: string) => `terraform {\n  backend "${type}" {\n    ${body}\n  }\n}\n`;
+const crlf = (text: string) => text.replace(/\r?\n/g, "\r\n");
+const longMarker = (n: number) => "E".repeat(n);
+/** Decoys around the block: [label, before, after]. Each is valid HCL that a reader misreading strings or heredocs would desynchronize on. */
+const DECOYS: readonly (readonly [string, string, string])[] = [
+  ["the %%{ escape in a quoted string (the review's case)", 'locals {\n  a = "%%{"\n}\n', 'locals {\n  b = "}"\n}\n'],
+  ["the $${ escape in a quoted string", 'locals {\n  a = "$${"\n}\n', 'locals {\n  b = "}"\n}\n'],
+  ["%%{ after other text, and a $ or % that opens nothing", 'locals {\n  a = "x %%{ y $ z % w"\n}\n', 'locals {\n  b = "}"\n}\n'],
+  ["%%{ inside an interpolation's string", 'locals {\n  a = "${"%%{"}"\n}\n', 'locals {\n  b = "}"\n}\n'],
+  ["a heredoc marker with a hyphen (the review's case)", "locals {\n  x = <<EO-T\n/*\nEO-T\n}\n", "# */ }\n"],
+  ["<<-EOT", "locals {\n  x = <<-EOT\n    /*\n    EOT\n}\n", "# */ }\n"],
+  ["<<EOT-X", "locals {\n  x = <<EOT-X\n/*\nEOT\nEOT-X\n}\n", "# */ }\n"],
+  ["a 140-character heredoc marker (the review's case)", `locals {\n  x = <<${longMarker(140)}\n/*\n${longMarker(140)}\n}\n`, "# */ }\n"],
+  ["a 5000-character heredoc marker", `locals {\n  x = <<-${longMarker(5000)}\n"\n  ${longMarker(5000)}\n}\n`, 'locals {\n  b = "x"\n}\n'],
+  ["%%{ and ${ } inside a heredoc", 'locals {\n  x = <<EOT\n%%{ "\n${ "}" }\nEOT\n}\n', "# }\n"],
+  ["a heredoc line that only ends in its marker after an interpolation", 'locals {\n  x = <<EOT\n${1}EOT\n"\nEOT\n}\n', "# }\n"],
+  ["an identifier longer than 128 characters before terraform", `locals {\n  ${"a".repeat(140)} = 1\n}\n`, ""],
+];
+
+test("B1: the backend block is found after %%{, $${, hyphenated, prefixed and long heredoc markers, for the s3 and azurerm rules", () => {
+  for (const { name, rule, backend, allowed, forbidden } of RULES) {
+    for (const [label, before, after] of DECOYS) {
+      for (const eol of [(t: string) => t, crlf]) {
+        const file = (body: string) => ({ "main.tf": eol(before + terraformBlock(name, body) + after) });
+        const where = `${name}, ${label}${eol === crlf ? ", CRLF" : ""}`;
+        assert.equal(verdict(file(allowed), rule, backend), "ok", where + ": the allowed block is read");
+        for (const body of forbidden) assert.equal(verdict(file(allowed + "\n    " + body), rule, backend), NOT_ALLOWED, `${where}: ${body}`);
+      }
+    }
+  }
+});
+
+test("B1: a construct the reader does not follow is refused, never skipped", () => {
+  const ok = terraformBlock("s3", 'bucket = "b"');
+  assert.equal(verdict({ "main.tf": ok }), "ok");
+  for (const [label, text] of [
+    ["a raw newline in a quoted string", 'locals {\n  a = "x\ny"\n}\n'],
+    ["a raw carriage return in a quoted string", 'locals {\n  a = "x\ry"\n}\n'],
+    ["a backslash before a newline", 'locals {\n  a = "x\\\ny"\n}\n'],
+    ["a << that is not a heredoc opener", "locals {\n  a = <<EOT x\nEOT\n}\n"],
+    ["a heredoc marker that does not start with a letter", "locals {\n  a = <<-1X\n1X\n}\n"],
+    ["an unterminated heredoc", "locals {\n  a = <<EOT\nEOTX\n"],
+    ["a heredoc closed at the end of the file with no newline", "locals {\n  a = <<EOT\nEOT"],
+    ["a lone carriage return", "locals {\r  a = 1\n}\n"],
+    ["a lone carriage return in a heredoc", "locals {\n  a = <<EOT\nx\ry\nEOT\n}\n"],
+    ["a $ outside a template", "locals {\n  a = ${x}\n}\n"],
+    ["~} outside a template", "locals {\n  a = { b = 1 ~}\n}\n"],
+    ["a non-ASCII identifier", "locals {\n  é = 1\n}\n"],
+    ["a non-ASCII heredoc marker", "locals {\n  a = <<É\nÉ\n}\n"],
+    ["whitespace HCL does not allow between tokens", "locals {\n  a = 1\n}\n"],
+    ["a semicolon", "locals {\n  a = 1;\n}\n"],
+    ["an unterminated interpolation", 'locals {\n  a = "${x"\n}\n'],
+    ["an unterminated block comment", "/* x\n"],
+    ["template sequences nested beyond the limit", `locals {\n  a = ${'"${'.repeat(40)}1${'}"'.repeat(40)}\n}\n`],
+  ] as const) assert.equal(verdict({ "main.tf": text + ok }), NOT_ALLOWED, label);
+  const dir = mkdtempSync(join(tmpdir(), "alz-backend-block-"));
+  try {
+    writeFileSync(join(dir, "main.tf"), Buffer.concat([Buffer.from('locals {\n  a = "'), Buffer.from([0xff]), Buffer.from('"\n}\n' + ok)]));
+    assert.throws(() => assertBackendBlock(dir, ALLOWED, S3_BACKEND), (error) => codeOf(error) === NOT_ALLOWED, "invalid UTF-8");
+    writeFileSync(join(dir, "main.tf"), "﻿" + ok);
+    assert.doesNotThrow(() => assertBackendBlock(dir, ALLOWED, S3_BACKEND), "a leading byte order mark is dropped, as hclsyntax drops it");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+  // Nested templates within the limit, with strings, heredocs, braces, comments and `~` strip markers inside, are followed.
+  const nested = 'locals {\n  a = "${~ {\n    b = "${"}"}" # }\n    c = <<EOT\n  ${"{"}\nEOT\n  }["b"] ~}"\n}\n';
+  assert.equal(verdict({ "main.tf": nested + ok }), "ok");
+  assert.equal(verdict({ "main.tf": nested + terraformBlock("s3", 'access_key = "K"') }), NOT_ALLOWED);
+});
+
+test("N2: a heredoc is an expression, refused for a pinned attribute even when its text is the contract's", () => {
+  for (const [name, value] of [["storage_account_name", "fixturedevstore"], ["key", "dev.tfstate"], ["container_name", "tfstate"]]) {
+    for (const opener of ["<<EOT", "<<-EOT"]) {
+      assert.equal(azureVerdict({ "main.tf": azure(`${name} = ${opener}\n${value}\nEOT\n`) }), NOT_ALLOWED, `${name} ${opener}`);
+    }
+    assert.equal(azureVerdict({ "main.tf": azure(`${name} = "${value}"`) }), "ok", name);
+  }
+  assert.equal(azureVerdict({ "main.tf": azure("use_azuread_auth = <<EOT\ntrue\nEOT\n") }), NOT_ALLOWED);
+});
+
+// --- what init saved (review #287, N1) ----------------------------------------------------------------------------------------
+
+test("N1: the saved azurerm backend may hold a value only in the contract's settings and the partial configuration's identifiers", () => {
+  const target = { tenantId: "11111111-1111-4111-8111-111111111111", subscriptionId: "22222222-2222-4222-8222-222222222222", backend: AZURE_BACKEND, workspace: "default" };
+  const config = (extra: Record<string, unknown> = {}) => ({
+    storage_account_name: "fixturedevstore", container_name: "tfstate", key: "dev.tfstate", use_azuread_auth: true, use_oidc: true,
+    client_id: "33333333-3333-4333-8333-333333333333", tenant_id: target.tenantId, subscription_id: target.subscriptionId, oidc_token_file_path: "/run/alz/token",
+    access_key: null, sas_token: null, endpoint: null, environment: null, use_msi: null, ...extra,
+  });
+  const matches = (saved: Record<string, unknown>) => AZURE.savedBackendMatches({ type: "azurerm", config: saved }, target);
+  assert.equal(matches(config()), true, "the partial configuration's settings, every other attribute null");
+  assert.equal(matches({ storage_account_name: "fixturedevstore", container_name: "tfstate", key: "dev.tfstate", use_azuread_auth: true }), true, "only the block's own");
+  for (const [name, value] of [
+    ["access_key", "SHARED-KEY"], ["sas_token", "?sv=fake"], ["client_secret", "fake"], ["client_certificate_path", "/x.pfx"], ["client_certificate_password", "x"],
+    ["client_certificate", "base64"], ["use_msi", true], ["use_msi", false], ["msi_endpoint", "http://169.254.169.254"], ["use_cli", true], ["endpoint", "https://evil.example"],
+    ["metadata_host", "evil.example"], ["environment", "usgovernment"], ["environment", "public"], ["snapshot", true], ["resource_group_name", "rg"],
+    ["oidc_request_url", "https://evil.example"], ["oidc_token", "x"], ["an_attribute_this_code_does_not_name", ""], ["use_oidc", false], ["use_oidc", "true"],
+  ] as const) assert.equal(matches(config({ [name]: value })), false, `${name} = ${JSON.stringify(value)}`);
+});

@@ -1299,6 +1299,9 @@ test("the backend init saved must be the contract's storage account, container a
     ["Entra ID authorization not saved", saved({ use_azuread_auth: null })],
     ["Entra ID authorization off (a shared key or SAS would be used)", saved({ use_azuread_auth: false })],
     ["Entra ID authorization as a string", saved({ use_azuread_auth: "true" })],
+    // Every other setting must be saved as null (review #287, N1): a key or another endpoint beside Entra ID is not the contract's.
+    ["a shared key saved beside Entra ID", saved({ use_azuread_auth: true, access_key: "SHARED-KEY" })],
+    ["another endpoint saved beside Entra ID", saved({ use_azuread_auth: true, endpoint: "https://evil.example" })],
   ] as const) {
     const w = world();
     const s = await seal(w, "DEV");
