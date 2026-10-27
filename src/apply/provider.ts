@@ -16,6 +16,12 @@ type AccountFields = Readonly<Record<string, string>>;
 
 /** A provider block from `terraform show -json` `configuration.provider_config`. */
 export type ProviderBlock = { name?: string; full_name?: string; expressions?: Record<string, unknown> };
+/**
+ * One resource or data source the plan names, with the provider that serves it, from `terraform show -json`: the
+ * configuration tree (every module; the only place a data source read at plan time is sure to appear), the changes, the
+ * prior state and the planned values. `mode` is `managed` or `data` as Terraform reports it (empty when it did not).
+ */
+export type ProviderUse = { address: string; mode: string; type: string; provider: Pick<ProviderBlock, "name" | "full_name"> };
 
 /** A refusal the identity checks raise; the driver maps it to the apply refusal of the same code. */
 export type IdentityRefusal = { ok: false; code: "IDENTITY_NOT_CONFIGURED" | "IDENTITY_COLLAPSED"; message: string };
@@ -57,8 +63,12 @@ export type ProviderSpec = {
   backendBlock?: BackendBlockRule;
   /** The backend settings the plan leaves null for the apply process to fill from its own environment, the APPLY identity's. `terraform apply <planfile>` ignores the apply-time init (docs/act-pilot-simulation.md). */
   filledAtApply: readonly string[];
-  /** Throws a code if a provider block names another account than the contract's, or (AWS) credentials, files, destinations or providers the pilot does not allow. `env` holds the APPLY identity. */
-  assertProviderConfig(blocks: readonly ProviderBlock[], target: PilotTarget, env: NodeJS.ProcessEnv): void;
+  /**
+   * Throws a code if a provider block names another account than the contract's, or (AWS) credentials, files, destinations or providers
+   * the pilot does not allow, or (AWS) a resource or data source of Terraform's built-in provider other than `terraform_data` (`uses`:
+   * everything the plan names, with its provider). `env` holds the APPLY identity.
+   */
+  assertProviderConfig(blocks: readonly ProviderBlock[], target: PilotTarget, env: NodeJS.ProcessEnv, uses: readonly ProviderUse[]): void;
   /** The plan attributes that hold a resource's tags, most complete first (AWS: `tags_all`, then `tags`; Azure: `tags`). A created resource with none of them is untaggable. */
   tagAttributes: readonly string[];
 };
