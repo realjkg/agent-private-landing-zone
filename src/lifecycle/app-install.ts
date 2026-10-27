@@ -17,7 +17,7 @@ import { pidProvenDead } from "../deps/install.js";
  */
 export class AppInstallError extends Error {
   constructor(
-    readonly code: "APP_ARTIFACT_UNREADABLE" | "APP_CHECKSUM_MISMATCH" | "APP_UNPACK_FAILED" | "APP_ARTIFACT_INCOMPLETE" | "APP_REMOVE_REFUSED",
+    readonly code: "APP_ARTIFACT_UNREADABLE" | "APP_CHECKSUM_MISMATCH" | "APP_UNPACK_FAILED" | "APP_ARTIFACT_INCOMPLETE" | "APP_ROOT_NOT_A_FOLDER" | "APP_REMOVE_REFUSED",
     message: string,
   ) {
     super(message);
@@ -130,6 +130,10 @@ export type InstallAppOptions = {
 export async function installApp(opts: InstallAppOptions): Promise<InstalledApp> {
   const root = appRoot(opts.home);
   mkdirSync(root, { recursive: true, mode: 0o700 });
+  // Nothing is written through a link: the app folder, and every folder above it under the home, must be a real folder.
+  if (realFolder(opts.home, [".alz", "app"]) === undefined) {
+    throw new AppInstallError("APP_ROOT_NOT_A_FOLDER", "The app folder under the user folder (~/.alz/app) is a link or not a folder, so nothing was installed. Remove it by hand first.");
+  }
   const swept = sweepAppLeftovers(opts.home, opts.pidAlive);
   let sha256: string;
   try { sha256 = await fileSha256(opts.artifact); } catch { throw new AppInstallError("APP_ARTIFACT_UNREADABLE", "The release archive could not be read."); }
@@ -184,6 +188,9 @@ export function removeApp(home: string, version: string): "removed" | "absent" {
   }
   const expected = join(realpathSync(home), ...components);
   if (realpathSync(path) !== expected) refuse();
+  // Only a copy this runner installed (its marker for this version) or a removal it already started is removed.
+  const state = appState(home, version);
+  if (state !== "INSTALLED" && state !== "REMOVING") refuse();
   writeFileSync(join(expected, REMOVING_MARKER), new Date().toISOString() + "\n", { mode: 0o600 });
   rmSync(join(expected, INSTALL_MARKER), { force: true });
   rmSync(expected, { recursive: true, force: true });

@@ -225,13 +225,17 @@ function observedLivePayload(value: unknown, gate: ReleaseGate, record: ReleaseG
     return typeof report.reviewer === "string" && report.reviewer.trim() !== "" &&
       report.reviewerIsAuthor === false && report.blockingFindingsOpen === 0;
   }
+  // A lifecycle or platform report must call itself LIVE, as the live ACT and preview branches require: a synthetic report
+  // (label SYNTHETIC, or `synthetic: true`) is refused even when its `fixture` field was dropped by hand.
+  const live = report.label === "LIVE" && report.synthetic !== true;
   if (gate.id.startsWith("platform:")) {
     const names = new Set((report.checks as Json[]).map((x) => x.name));
-    return report.platform === gate.id.slice("platform:".length) && typeof report.osVersion === "string" &&
+    return live && report.platform === gate.id.slice("platform:".length) && typeof report.osVersion === "string" &&
       report.osVersion.trim() !== "" && typeof report.artifactSha256 === "string" && sha64.test(report.artifactSha256) &&
       PLATFORM_LIFECYCLE_CHECKS.every((name) => names.has(name));
   }
-  return gate.mode === "LIFECYCLE" || gate.mode === "CI";
+  if (gate.mode === "LIFECYCLE") return live;
+  return gate.mode === "CI";
 }
 
 async function readEvidence(root: string, path: string): Promise<Buffer> {

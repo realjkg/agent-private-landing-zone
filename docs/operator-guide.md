@@ -238,6 +238,8 @@ Runs the package dependency audit. If Trivy is installed locally it also scans t
 
 `./alz lifecycle` runs the packaged release's lifecycle journeys on a disposable host and writes the evidence the `platform:<os-arch>` release gate needs. A person runs it at that host's Terminal; the console never runs it. It produces evidence and never submits or admits it.
 
+**A live run belongs on a disposable host only, never on a working machine.** It installs the release into that host's own `~/.alz/app` and removes it again, so it asks you to type `LIFECYCLE LIVE <host>` first, naming the host the report will carry; anything else stops it with nothing run. `--home` is for rehearsals only and is refused without `--synthetic`. The report and the journal record the user folder the run used, the host, the platform and the label, and a journal continues only a run with the same artifact, commit, label, home, host and platform: a synthetic rehearsal can never continue as a live run. One run per evidence folder at a time (`<evidence>/lifecycle/run.lock`).
+
 ```bash
 ./alz lifecycle all --artifact agent-private-landing-zone.tar.gz --evidence ./evidence --host disposable-01 --commit <release source commit>
 ```

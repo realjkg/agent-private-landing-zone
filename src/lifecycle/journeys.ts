@@ -4,6 +4,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 
 import { AppInstallError, appState, appFolder, appVersions, currentVersion, installApp, removeApp, APP_LAUNCHER } from "./app-install.js";
+import { pidProvenDead } from "../deps/install.js";
 import { Journal, type JourneyId, type StepOutcome } from "./journal.js";
 
 /**
@@ -19,6 +20,7 @@ export type StepContext = {
   artifact: string;
   artifactSha256: string;
   evidenceDir: string;
+  /** Decides whether a pid is still running (the sweep, and an interrupted step's recorded pid). Tests inject it. */
   pidAlive?: (pid: number) => boolean;
   /** Runs the installed launcher and returns its stdout; injected by tests. Defaults to `bash <folder>/alz help` (node on Windows). */
   launch?: (folder: string) => string;
@@ -169,7 +171,16 @@ export async function runJourney(journey: Journey, opts: RunOptions): Promise<Ru
       report.steps.push({ name: step.name, check: step.check === true, status: "BLOCKED", code: "LIFECYCLE_STOPPED" });
       break;
     }
-    if (previous.status === "INTERRUPTED") opts.out?.("  " + step.name + ": an earlier run stopped here (pid " + previous.pid + "); running it again");
+    if (previous.status === "INTERRUPTED") {
+      // The run that started this step may still be running it: only a proven-dead pid is rerun.
+      const alive = opts.pidAlive ? opts.pidAlive(previous.pid) : !pidProvenDead(previous.pid);
+      if (alive) {
+        report.steps.push({ name: step.name, check: step.check === true, status: "BLOCKED", code: "LIFECYCLE_RUN_IN_PROGRESS" });
+        opts.out?.("  " + step.name + ": an earlier run started this step and may still be running it (pid " + previous.pid + "); nothing was run");
+        break;
+      }
+      opts.out?.("  " + step.name + ": an earlier run stopped here (pid " + previous.pid + "); running it again");
+    }
     const at = (opts.now?.() ?? new Date()).toISOString();
     opts.journal.start(journey.id, step.name, at);
     const result = await step.run(opts);

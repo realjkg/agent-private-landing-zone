@@ -1,11 +1,11 @@
 import { existsSync, lstatSync, mkdirSync } from "node:fs";
-import { homedir, release, type as osType } from "node:os";
+import { homedir, release as osRelease, type as osType } from "node:os";
 import { join, resolve } from "node:path";
 
 import { platformKey } from "../deps/pins.js";
 import { fileSha256 } from "../lifecycle/app-install.js";
 import { buildPlatformEvidence, type EvidenceOutcome } from "../lifecycle/evidence.js";
-import { Journal, JournalError, type JourneyId } from "../lifecycle/journal.js";
+import { acquireRunLock, Journal, JournalError, type JourneyId } from "../lifecycle/journal.js";
 import { JOURNEY_IDS, JOURNEYS, runJourney, type RunReport, type StepContext } from "../lifecycle/journeys.js";
 import { interceptStopSignals } from "../tools/process.js";
 import { EXIT, processTerminal, type HumanTerminal } from "./teardown-driver.js";
@@ -35,8 +35,10 @@ export type LifecycleDeps = {
 export const LIFECYCLE_USAGE = [
   "  ./alz lifecycle <clean-install|uninstall|partial-install-recovery|all> --artifact FILE.tgz --evidence DIR --host ID --commit SHA [--home DIR] [--synthetic]",
   "      runs the packaged release lifecycle journeys on this host and writes the platform gate report under DIR;",
-  "      a person at a terminal, on a disposable host; it produces evidence and never submits it; --synthetic labels the",
-  "      report SYNTHETIC, which is never submittable. Exit 0 when every step passed, 2 when one did not or the run was stopped.",
+  "      a live run belongs on a disposable host only: it installs into and removes from that host's own ~/.alz/app, and it",
+  "      asks you to type LIFECYCLE LIVE <host> first; it produces evidence and never submits it. --synthetic labels the",
+  "      report SYNTHETIC, which is never submittable, and only then may --home point at a throwaway folder.",
+  "      Exit 0 when every step passed, 2 when one did not or the run was stopped.",
 ];
 
 type Parsed = { journeys: JourneyId[]; artifact: string; evidence: string; host: string; commit: string; home?: string; synthetic: boolean };
@@ -67,6 +69,8 @@ function parse(args: string[]): { ok: true; value: Parsed } | { ok: false; reaso
   if (!sha40.test(commit)) return { ok: false, reason: "--commit must be the release's full 40-character source commit." };
   if (host.trim() === "" || host === "UNKNOWN") return { ok: false, reason: "--host must name the disposable host (not UNKNOWN)." };
   const home = options.get("home");
+  // A live report describes the host's own user folder. A throwaway folder is a rehearsal, which is what --synthetic is for.
+  if (home !== undefined && !synthetic) return { ok: false, reason: "--home is for rehearsals only: add --synthetic, or leave --home out so the live run uses this host's own user folder." };
   return { ok: true, value: { journeys, artifact: resolve(artifact), evidence: resolve(evidence), host, commit, ...(home ? { home: resolve(home) } : {}), synthetic } };
 }
 
@@ -96,23 +100,43 @@ export async function runLifecycleCommand(args: string[], deps: LifecycleDeps = 
     out("The release archive could not be read: " + input.artifact + "\n");
     return EXIT.ERROR;
   }
-  const home = input.home ?? deps.home ?? homedir();
+  const home = resolve(input.home ?? deps.home ?? homedir());
+  const label = input.synthetic ? "SYNTHETIC" : "LIVE";
+  if (!input.synthetic) {
+    // A live run changes this host's own user folder. The person at the terminal confirms the host by name before anything runs.
+    const phrase = "LIFECYCLE LIVE " + input.host;
+    terminal.write("\nThis is a LIVE lifecycle run on host " + input.host + ". It installs the release into " + join(home, ".alz", "app") +
+      " and removes it again, and its report names this host. Run it on a disposable host only, never on a working machine.\n" +
+      "Type " + phrase + " to continue, or anything else to stop.\n");
+    const typed = (await terminal.ask("> ")).trim();
+    if (typed !== phrase) {
+      out("Stopped: the confirmation was not typed. Nothing was run.\n");
+      return EXIT.BLOCKED;
+    }
+  }
   mkdirSync(input.evidence, { recursive: true, mode: 0o700 });
   let journal: Journal;
+  let unlock: () => void;
   try {
-    journal = new Journal(join(input.evidence, "lifecycle", "journal.jsonl"), { artifactSha256, sourceCommit: input.commit });
+    unlock = acquireRunLock(join(input.evidence, "lifecycle", "run.lock"), deps.pidAlive);
   } catch (error) {
+    out((error instanceof JournalError ? error.message : "The evidence folder could not be locked.") + "\n");
+    return EXIT.BLOCKED;
+  }
+  try {
+    journal = new Journal(join(input.evidence, "lifecycle", "journal.jsonl"), { artifactSha256, sourceCommit: input.commit, label, home, host: input.host, platform });
+  } catch (error) {
+    unlock();
     out((error instanceof JournalError ? error.message : "The journal could not be opened.") + "\n");
     return EXIT.BLOCKED;
   }
-  const label = input.synthetic ? "SYNTHETIC" : "LIVE";
-  out("Packaged release lifecycle (" + label + ") on " + platform + ", artifact " + artifactSha256.slice(0, 12) + ", commit " + input.commit.slice(0, 12) + "\n");
+  out("Packaged release lifecycle (" + label + ") on " + platform + ", artifact " + artifactSha256.slice(0, 12) + ", commit " + input.commit.slice(0, 12) + ", host " + input.host + ", home " + home + "\n");
   if (input.synthetic) out("SYNTHETIC: this run qualifies nothing and its report is never submittable.\n");
   if (journal.entries().length > 0) out("Continuing the journal at " + journal.file + " (" + journal.entries().length + " lines).\n");
 
   let stopped = false;
   let signals = 0;
-  const release = interceptStopSignals(() => {
+  const releaseSignals = interceptStopSignals(() => {
     signals += 1;
     if (signals === 1) {
       stopped = true;
@@ -137,17 +161,20 @@ export async function runLifecycleCommand(args: string[], deps: LifecycleDeps = 
       if (run.stopped || stopped) { allPassed = false; break; }
     }
   } finally {
-    release();
+    releaseSignals();
   }
   let evidence: EvidenceOutcome;
   try {
     evidence = await buildPlatformEvidence({
-      evidenceDir: input.evidence, platform, osVersion: deps.osVersion ?? osType() + " " + release(), sourceCommit: input.commit,
-      targetHardwareId: input.host, artifactSha256, synthetic: input.synthetic, runs, ...(deps.now ? { now: deps.now } : {}),
+      evidenceDir: input.evidence, platform, osVersion: deps.osVersion ?? osType() + " " + osRelease(), sourceCommit: input.commit,
+      targetHardwareId: input.host, artifactSha256, synthetic: input.synthetic, home, runs, ...(deps.now ? { now: deps.now } : {}),
     });
   } catch {
+    unlock();
     out("The platform gate report could not be written under " + input.evidence + "\n");
     return EXIT.ERROR;
+  } finally {
+    unlock();
   }
   out("\nReport: " + evidence.reportFile + " (" + evidence.label + ")\n");
   out("Admission review (src/qualification/release-admission.ts): " + evidence.reviewStatus + (evidence.reviewBlockers.length > 0 ? " — " + evidence.reviewBlockers.join("; ") : "") + "\n");

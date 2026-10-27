@@ -21,6 +21,8 @@ export type EvidenceInput = {
   targetHardwareId: string;
   artifactSha256: string;
   synthetic: boolean;
+  /** The resolved user folder the journeys installed into and removed from, recorded so a report never hides where it ran. */
+  home: string;
   runs: readonly RunReport[];
   now?: () => Date;
 };
@@ -58,7 +60,7 @@ export async function buildPlatformEvidence(input: EvidenceInput): Promise<Evide
   const report = {
     schemaVersion: 1, gateId, executionMode: "LIFECYCLE", label,
     sourceCommit: input.sourceCommit, targetHardwareId: input.targetHardwareId,
-    platform: input.platform, osVersion: input.osVersion, artifactSha256: input.artifactSha256,
+    platform: input.platform, osVersion: input.osVersion, artifactSha256: input.artifactSha256, home: input.home,
     passed: missingChecks.length === 0 && checks.every((check) => check.passed),
     actEnabled: false, mutationObserved: false,
     // A synthetic report says so in the field the admission review refuses on, so it can never pass as live by mistake.

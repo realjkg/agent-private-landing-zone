@@ -29,14 +29,18 @@ function artifact(label: string): { file: string; sha256: string } {
   return { file, sha256: createHash("sha256").update(readFileSync(file)).digest("hex") };
 }
 
-function terminal(interactive: boolean): HumanTerminal & { shown: string[] } {
+const CONFIRM = "LIFECYCLE LIVE disposable-01";
+
+function terminal(interactive: boolean, answers: string[] = []): HumanTerminal & { shown: string[]; asked: number } {
   const shown: string[] = [];
-  return { stdinIsTTY: interactive, stdoutIsTTY: interactive, shown, write: (text) => { shown.push(text); }, ask: async () => "" };
+  const term = { stdinIsTTY: interactive, stdoutIsTTY: interactive, shown, asked: 0, write: (text: string) => { shown.push(text); }, ask: async () => { term.asked += 1; return answers.shift() ?? ""; } };
+  return term;
 }
 
+/** A live run's terminal types the confirmation; a synthetic run is never asked. */
 function deps(label: string, lines: string[], extra: Partial<LifecycleDeps> = {}): LifecycleDeps {
   return {
-    terminal: terminal(true), out: (text) => { lines.push(text); }, home: join(root, "home-" + label),
+    terminal: terminal(true, [CONFIRM]), out: (text) => { lines.push(text); }, home: join(root, "home-" + label),
     platform: "linux", arch: "x64", osVersion: "Ubuntu 24.04", pidAlive: () => false, exit: () => undefined, ...extra,
   };
 }
@@ -56,6 +60,7 @@ test("usage: a missing or unknown journey, a missing option, a short commit or a
     ["unknown host", ["all", "--artifact", good.file, "--evidence", evidence, "--host", "UNKNOWN", "--commit", COMMIT]],
     ["unknown option", args("all", good.file, evidence, ["--force"])],
     ["dangling option", args("all", good.file, evidence, ["--home"])],
+    ["--home without --synthetic", args("all", good.file, evidence, ["--home", join(root, "home-usage-live")])],
   ] as const) {
     const lines: string[] = [];
     assert.equal(await runLifecycleCommand([...argv], deps("usage", lines)), 1, label);
@@ -66,12 +71,84 @@ test("usage: a missing or unknown journey, a missing option, a short commit or a
   const lines: string[] = [];
   assert.equal(await runLifecycleCommand(args("all", join(root, "missing.tgz"), evidence), deps("usage", lines)), 1);
   assert.match(lines.join(""), /could not be read/);
+  const homeLive: string[] = [];
+  assert.equal(await runLifecycleCommand(args("all", good.file, evidence, ["--home", join(root, "home-usage-live")]), deps("usage", homeLive)), 1);
+  assert.match(homeLive.join(""), /--home is for rehearsals only: add --synthetic, or leave --home out/);
+});
+
+test("a live run asks the person to type LIFECYCLE LIVE <host> first; anything else stops it with nothing run, and the typed run records its home", async () => {
+  const good = artifact("confirm");
+  const evidence = join(root, "evidence-confirm");
+  const lines: string[] = [];
+  const term = terminal(true, ["lifecycle live disposable-01"]);
+  const code = await runLifecycleCommand(args("clean-install", good.file, evidence), deps("confirm", lines, { terminal: term }));
+  assert.equal(code, 2);
+  assert.equal(term.asked, 1);
+  assert.match(term.shown.join(""), /This is a LIVE lifecycle run on host disposable-01\. It installs the release into .*home-confirm\/\.alz\/app and removes it again.*Run it on a disposable host only, never on a working machine\.\nType LIFECYCLE LIVE disposable-01 to continue, or anything else to stop\./s);
+  assert.match(lines.join(""), /Stopped: the confirmation was not typed\. Nothing was run\./);
+  assert.ok(!existsSync(evidence), "nothing is written, not even the evidence folder");
+  assert.ok(!existsSync(join(root, "home-confirm", ".alz")));
+  const ok: string[] = [];
+  assert.equal(await runLifecycleCommand(args("clean-install", good.file, evidence), deps("confirm", ok)), 0, ok.join(""));
+  const report = JSON.parse(readFileSync(join(evidence, "platform-linux-x64.json"), "utf8")) as { home: string; label: string };
+  assert.equal(report.home, join(root, "home-confirm"), "the report names the user folder the run installed into");
+  assert.equal(report.label, "LIVE");
+  const journal = readFileSync(join(evidence, "lifecycle", "journal.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
+  assert.ok(journal.every((line) => line.label === "LIVE" && line.home === join(root, "home-confirm") && line.host === "disposable-01" && line.platform === "linux-x64"));
+  // A synthetic run is never asked to confirm.
+  const synth = terminal(true, []);
+  assert.equal(await runLifecycleCommand(args("clean-install", good.file, join(root, "evidence-confirm-synth"), ["--synthetic"]), deps("confirm-synth", [], { terminal: synth })), 0);
+  assert.equal(synth.asked, 0);
+});
+
+test("a synthetic run never continues as a live one: the same evidence folder refuses a run with another label, home, host or platform", async () => {
+  const good = artifact("relabel");
+  const evidence = join(root, "evidence-relabel");
+  assert.equal(await runLifecycleCommand(args("all", good.file, evidence, ["--synthetic"]), deps("relabel-a", [])), 0);
+  const live: string[] = [];
+  assert.equal(await runLifecycleCommand(args("all", good.file, evidence), deps("relabel-b", live)), 2);
+  assert.match(live.join(""), /The journal belongs to another run: it differs in label, home.*Start a new evidence folder/);
+  assert.ok(!existsSync(join(root, "home-relabel-b", ".alz")), "the live run installed nothing");
+  assert.ok(!existsSync(join(evidence, "platform-linux-x64.json")) || (JSON.parse(readFileSync(join(evidence, "platform-linux-x64.json"), "utf8")) as { label: string }).label === "SYNTHETIC", "no LIVE report appeared");
+  const host: string[] = [];
+  assert.equal(await runLifecycleCommand([...args("all", good.file, evidence, ["--synthetic"]).map((item) => item === "disposable-01" ? "another-host" : item)], deps("relabel-a", host)), 2);
+  assert.match(host.join(""), /differs in host/);
+  const platform: string[] = [];
+  assert.equal(await runLifecycleCommand(args("all", good.file, evidence, ["--synthetic"]), deps("relabel-a", platform, { platform: "darwin", arch: "arm64" })), 2);
+  assert.match(platform.join(""), /differs in platform/);
+  assert.equal(await runLifecycleCommand(args("all", good.file, evidence, ["--synthetic"]), deps("relabel-a", [])), 0, "the same synthetic run continues");
+});
+
+test("the report's osVersion comes from the host when none is injected, and never reads undefined", async () => {
+  const good = artifact("osv");
+  const evidence = join(root, "evidence-osv");
+  const lines: string[] = [];
+  const base = deps("osv", lines, { terminal: terminal(true, []) });
+  delete (base as { osVersion?: string }).osVersion;
+  assert.equal(await runLifecycleCommand(args("clean-install", good.file, evidence, ["--synthetic"]), base), 0, lines.join(""));
+  const report = JSON.parse(readFileSync(join(evidence, "platform-linux-x64.json"), "utf8")) as { osVersion: string };
+  assert.doesNotMatch(report.osVersion, /undefined/);
+  assert.match(report.osVersion, /^\S+ \S+/, "type and release, both present");
+});
+
+test("one run per evidence folder: a second run finds the lock and changes nothing, and a dead run's lock is replaced", async () => {
+  const good = artifact("runlock");
+  const evidence = join(root, "evidence-runlock");
+  mkdirSync(join(evidence, "lifecycle"), { recursive: true });
+  writeFileSync(join(evidence, "lifecycle", "run.lock"), JSON.stringify({ pid: 4242 }) + "\n");
+  const lines: string[] = [];
+  assert.equal(await runLifecycleCommand(args("clean-install", good.file, evidence, ["--synthetic"]), deps("runlock", lines, { pidAlive: (pid) => pid === 4242 })), 2);
+  assert.match(lines.join(""), /Another lifecycle run is using this evidence folder right now, so this run changed nothing/);
+  assert.ok(!existsSync(join(root, "home-runlock", ".alz")));
+  assert.equal(await runLifecycleCommand(args("clean-install", good.file, evidence, ["--synthetic"]), deps("runlock", [])), 0, "the dead run's lock is replaced");
+  assert.ok(!existsSync(join(evidence, "lifecycle", "run.lock")), "released afterwards");
 });
 
 test("without an interactive terminal a live run is refused, an unsupported computer type is refused, and --synthetic may run anywhere", async () => {
   const good = artifact("tty");
   let lines: string[] = [];
   assert.equal(await runLifecycleCommand(args("clean-install", good.file, join(root, "evidence-tty")), deps("tty", lines, { terminal: terminal(false) })), 2);
+  assert.equal(await runLifecycleCommand(args("clean-install", good.file, join(root, "evidence-tty")), deps("tty", lines, { terminal: terminal(false, [CONFIRM]) })), 2, "a typed phrase on a non-TTY is not a person at the terminal");
   assert.match(lines.join(""), /needs a person at an interactive Terminal window on the disposable host\. Nothing was run\./);
   assert.ok(!existsSync(join(root, "home-tty", ".alz")));
   lines = [];
@@ -117,7 +194,7 @@ test("all, synthetic: every C1 step passes, the evidence folder holds the journa
   const other = artifact("all-other");
   const refused: string[] = [];
   assert.equal(await runLifecycleCommand(args("all", other.file, evidence, ["--synthetic"]), deps("all", refused)), 2);
-  assert.match(refused.join(""), /The journal belongs to another candidate/);
+  assert.match(refused.join(""), /The journal belongs to another run: it differs in artifactSha256 .*Start a new evidence folder/);
 });
 
 test("a live run on a disposable host: the report is LIVE, the C1 checks leave it not yet submittable, and the real launcher is run from the installed copy", async () => {

@@ -9,7 +9,7 @@ import test from "node:test";
 import { INSTALL_MARKER, REMOVING_MARKER } from "../src/deps/checks.js";
 import { AppInstallError, appState, appVersions, currentVersion, installApp, removeApp, sweepAppLeftovers } from "../src/lifecycle/app-install.js";
 import { buildPlatformEvidence } from "../src/lifecycle/evidence.js";
-import { Journal, JournalError } from "../src/lifecycle/journal.js";
+import { acquireRunLock, Journal, JournalError } from "../src/lifecycle/journal.js";
 import { JOURNEYS, runJourney, type RunReport } from "../src/lifecycle/journeys.js";
 
 // The lifecycle runner's parts against a fake release archive in temporary homes. Synthetic: nothing here qualifies a
@@ -20,6 +20,8 @@ test.after(() => rmSync(root, { recursive: true, force: true }));
 const COMMIT = "a".repeat(40);
 const DEAD = () => false;
 const ALIVE = () => true;
+/** The identity every journal in this file belongs to, unless a test says otherwise. */
+const IDENTITY = { sourceCommit: COMMIT, label: "SYNTHETIC" as const, home: "/tmp/home", host: "disposable-01", platform: "linux-x64" };
 
 /** A release archive: the launcher (a script that prints the help's first line) and package.json at its root. */
 function artifact(label: string, version = "1.2.3", launcherBody = "echo './alz help'"): { file: string; sha256: string } {
@@ -38,7 +40,7 @@ const launch = (folder: string): string => execFileSync("bash", [join(folder, "a
 
 test("the journal: lines before and after a step, the latest state of each step, and a refusal for another candidate or a torn line", () => {
   const file = join(root, "journal", "lifecycle", "journal.jsonl");
-  const journal = new Journal(file, { artifactSha256: "1".repeat(64), sourceCommit: COMMIT });
+  const journal = new Journal(file, { artifactSha256: "1".repeat(64), ...IDENTITY });
   assert.deepEqual(journal.record("clean-install", "install"), { status: "NOT_RUN" });
   journal.start("clean-install", "install", "2026-10-27T00:00:00.000Z", 4242);
   assert.deepEqual(journal.record("clean-install", "install"), { status: "INTERRUPTED", pid: 4242 });
@@ -49,15 +51,23 @@ test("the journal: lines before and after a step, the latest state of each step,
   assert.deepEqual(journal.record("clean-install", "launch"), { status: "FINISHED", outcome: "FAIL", code: "APP_LAUNCH_FAILED" });
   const lines = readFileSync(file, "utf8").trim().split("\n").map((line) => JSON.parse(line) as { event: string; step: string });
   assert.deepEqual(lines.map((line) => line.event + ":" + line.step), ["start:install", "finish:install", "start:launch", "finish:launch"]);
-  // Reopened for the same candidate: the same records. For another artifact or commit: refused.
-  assert.deepEqual(new Journal(file, { artifactSha256: "1".repeat(64), sourceCommit: COMMIT }).record("clean-install", "launch"), { status: "FINISHED", outcome: "FAIL", code: "APP_LAUNCH_FAILED" });
-  assert.throws(() => new Journal(file, { artifactSha256: "2".repeat(64), sourceCommit: COMMIT }), (error: unknown) => error instanceof JournalError && error.code === "LIFECYCLE_JOURNAL_ARTIFACT_MISMATCH");
-  assert.throws(() => new Journal(file, { artifactSha256: "1".repeat(64), sourceCommit: "b".repeat(40) }), (error: unknown) => error instanceof JournalError && error.code === "LIFECYCLE_JOURNAL_ARTIFACT_MISMATCH");
-  // A torn last line (the process died mid-write) is never guessed around.
+  // Reopened for the same run: the same records. For another artifact, commit, label, home, host or platform: refused, naming what differs.
+  assert.deepEqual(new Journal(file, { artifactSha256: "1".repeat(64), ...IDENTITY }).record("clean-install", "launch"), { status: "FINISHED", outcome: "FAIL", code: "APP_LAUNCH_FAILED" });
+  const mismatch = (change: Record<string, string>, differs: RegExp) => assert.throws(() => new Journal(file, { artifactSha256: "1".repeat(64), ...IDENTITY, ...change }),
+    (error: unknown) => error instanceof JournalError && error.code === "LIFECYCLE_JOURNAL_ARTIFACT_MISMATCH" && differs.test(error.message) && /Start a new evidence folder/.test(error.message), JSON.stringify(change));
+  mismatch({ artifactSha256: "2".repeat(64) }, /differs in artifactSha256/);
+  mismatch({ sourceCommit: "b".repeat(40) }, /differs in sourceCommit/);
+  mismatch({ label: "LIVE" }, /differs in label .*that run: SYNTHETIC/);
+  mismatch({ home: "/tmp/other-home" }, /differs in home/);
+  mismatch({ host: "another-host" }, /differs in host/);
+  mismatch({ platform: "darwin-arm64" }, /differs in platform/);
+  // A torn last line (the process died mid-write) is never guessed around, and the message says to start a new folder.
   writeFileSync(file, readFileSync(file, "utf8") + '{"schemaVersion":1,"journey":"clean-ins');
-  assert.throws(() => new Journal(file, { artifactSha256: "1".repeat(64), sourceCommit: COMMIT }), (error: unknown) => error instanceof JournalError && error.code === "LIFECYCLE_JOURNAL_UNREADABLE");
-  writeFileSync(file, '{"schemaVersion":1,"journey":"clean-install","step":"install","event":"finish","at":"x","pid":1,"artifactSha256":"' + "1".repeat(64) + '","sourceCommit":"' + COMMIT + '"}\n');
-  assert.throws(() => new Journal(file, { artifactSha256: "1".repeat(64), sourceCommit: COMMIT }), (error: unknown) => error instanceof JournalError && error.code === "LIFECYCLE_JOURNAL_UNREADABLE", "a finish without an outcome");
+  assert.throws(() => new Journal(file, { artifactSha256: "1".repeat(64), ...IDENTITY }), (error: unknown) => error instanceof JournalError && error.code === "LIFECYCLE_JOURNAL_UNREADABLE" && /last line is incomplete.*Start a new evidence folder/.test(error.message));
+  writeFileSync(file, '{"schemaVersion":1,"journey":"clean-install","step":"install","event":"finish","at":"x","pid":1,"artifactSha256":"' + "1".repeat(64) + '","sourceCommit":"' + COMMIT + '","label":"SYNTHETIC","home":"/tmp/home","host":"disposable-01","platform":"linux-x64"}\n');
+  assert.throws(() => new Journal(file, { artifactSha256: "1".repeat(64), ...IDENTITY }), (error: unknown) => error instanceof JournalError && error.code === "LIFECYCLE_JOURNAL_UNREADABLE", "a finish without an outcome");
+  writeFileSync(file, '{"schemaVersion":1,"journey":"clean-install","step":"install","event":"start","at":"x","pid":1,"artifactSha256":"' + "1".repeat(64) + '","sourceCommit":"' + COMMIT + '"}\n');
+  assert.throws(() => new Journal(file, { artifactSha256: "1".repeat(64), ...IDENTITY }), (error: unknown) => error instanceof JournalError && error.code === "LIFECYCLE_JOURNAL_UNREADABLE", "a line without the run's label, home, host and platform is not this journal's");
 });
 
 test("the app install: marker last, current by rename, reuse of the same artifact, replacement of an unfinished folder, and nothing left on failure", async () => {
@@ -97,6 +107,15 @@ test("the app install: marker last, current by rename, reuse of the same artifac
   assert.equal(replaced.replaced, "UNFINISHED");
   assert.ok(!existsSync(join(home2, ".alz", "app", "1.2.3", "half")));
   assert.equal(appState(home2, "1.2.3"), "INSTALLED");
+  // A linked ~/.alz/app is refused before anything is unpacked or renamed (#281 review N3): the link target stays empty.
+  const linkedHome = join(root, "home-linked-app");
+  const target = join(root, "linked-app-target");
+  mkdirSync(join(linkedHome, ".alz"), { recursive: true });
+  mkdirSync(target, { recursive: true });
+  symlinkSync(target, join(linkedHome, ".alz", "app"));
+  await assert.rejects(installApp({ home: linkedHome, artifact: good.file, artifactSha256: good.sha256 }),
+    (error: unknown) => error instanceof AppInstallError && error.code === "APP_ROOT_NOT_A_FOLDER");
+  assert.deepEqual(readdirSync(target), [], "nothing was written through the link");
   // A different artifact of the same version replaces a complete one too (the marker names the artifact).
   const other = artifact("other", "1.2.3", "echo './alz help other'");
   const swapped = await installApp({ home: home2, artifact: other.file, artifactSha256: other.sha256 });
@@ -133,6 +152,16 @@ test("the app removal: marker first, current cleared, a second removal is absent
     assert.throws(() => removeApp(home, bad), (error: unknown) => error instanceof AppInstallError && error.code === "APP_REMOVE_REFUSED", JSON.stringify(bad));
   }
   assert.ok(existsSync(join(home, ".alz", "app")), "the app folder itself is never removed");
+  // A folder this runner did not install (no marker, or someone else's shape) is never removed (#281 review N4).
+  const foreign = join(home, ".alz", "app", "1.0.0");
+  mkdirSync(foreign, { recursive: true });
+  writeFileSync(join(foreign, "alz"), "not ours");
+  writeFileSync(join(foreign, "keep"), "a person's file");
+  assert.throws(() => removeApp(home, "1.0.0"), (error: unknown) => error instanceof AppInstallError && error.code === "APP_REMOVE_REFUSED");
+  assert.ok(existsSync(join(foreign, "keep")), "untouched");
+  mkdirSync(join(home, ".alz", "app", "1.0.1"), { recursive: true });
+  writeFileSync(join(home, ".alz", "app", "1.0.1", INSTALL_MARKER), "not a marker");
+  assert.throws(() => removeApp(home, "1.0.1"), (error: unknown) => error instanceof AppInstallError && error.code === "APP_REMOVE_REFUSED", "an invalid marker is not ours either");
 });
 
 test("the app sweep: dead-pid partial and replaced folders go, a live pid and this process's folders stay, links are never followed, final folders are never targets", () => {
@@ -164,7 +193,7 @@ test("the journeys through the journal: clean install, uninstall, partial-instal
   const home = join(root, "home-journeys");
   const evidenceDir = join(root, "evidence-journeys");
   const good = artifact("journeys");
-  const journal = new Journal(join(evidenceDir, "lifecycle", "journal.jsonl"), { artifactSha256: good.sha256, sourceCommit: COMMIT });
+  const journal = new Journal(join(evidenceDir, "lifecycle", "journal.jsonl"), { artifactSha256: good.sha256, ...IDENTITY, home });
   const lines: string[] = [];
   const ctx = { home, artifact: good.file, artifactSha256: good.sha256, evidenceDir, journal, pidAlive: DEAD, launch, out: (line: string) => { lines.push(line); } };
   const clean = await runJourney(JOURNEYS[0]!, ctx);
@@ -188,12 +217,16 @@ test("the journeys through the journal: clean install, uninstall, partial-instal
   // An interrupted step (started, never finished) is run again from its own state; the step before it is kept.
   const home2 = join(root, "home-resume");
   const evidence2 = join(root, "evidence-resume");
-  const journal2 = new Journal(join(evidence2, "lifecycle", "journal.jsonl"), { artifactSha256: good.sha256, sourceCommit: COMMIT });
+  const journal2 = new Journal(join(evidence2, "lifecycle", "journal.jsonl"), { artifactSha256: good.sha256, ...IDENTITY, home: home2 });
   journal2.start("clean-install", "install", "2026-10-27T00:00:00.000Z", 4242);
   journal2.finish("clean-install", "install", "PASS", "2026-10-27T00:00:01.000Z", undefined, 4242);
   journal2.start("clean-install", "launch", "2026-10-27T00:00:02.000Z", 4242);
   await installApp({ home: home2, artifact: good.file, artifactSha256: good.sha256 });
-  const resumed = await runJourney(JOURNEYS[0]!, { ...ctx, home: home2, evidenceDir: evidence2, journal: journal2, lines: undefined } as never);
+  // While the run that started the step may still be running it (its pid alive), nothing is rerun (#281 review N2).
+  const busy = await runJourney(JOURNEYS[0]!, { ...ctx, home: home2, evidenceDir: evidence2, journal: journal2, pidAlive: (pid) => pid === 4242 });
+  assert.deepEqual(statuses(busy), ["install:SKIPPED_ALREADY_PASSED", "launch:BLOCKED(LIFECYCLE_RUN_IN_PROGRESS)"]);
+  assert.deepEqual(journal2.record("clean-install", "launch"), { status: "INTERRUPTED", pid: 4242 }, "no new line was written");
+  const resumed = await runJourney(JOURNEYS[0]!, { ...ctx, home: home2, evidenceDir: evidence2, journal: journal2 });
   assert.deepEqual(statuses(resumed), ["install:SKIPPED_ALREADY_PASSED", "launch:PASS"]);
   assert.ok(lines.some((line) => line.includes("already passed")));
 });
@@ -202,21 +235,21 @@ test("a failing step ends its journey with its code, a stop request leaves the n
   const home = join(root, "home-fail");
   const evidenceDir = join(root, "evidence-fail");
   const bad = artifact("fail", "1.2.3", "echo 'something else'; exit 0");
-  const journal = new Journal(join(evidenceDir, "lifecycle", "journal.jsonl"), { artifactSha256: bad.sha256, sourceCommit: COMMIT });
+  const journal = new Journal(join(evidenceDir, "lifecycle", "journal.jsonl"), { artifactSha256: bad.sha256, ...IDENTITY, home });
   const ctx = { home, artifact: bad.file, artifactSha256: bad.sha256, evidenceDir, journal, pidAlive: DEAD, launch };
   const run = await runJourney(JOURNEYS[0]!, ctx);
   assert.deepEqual(statuses(run), ["install:PASS", "launch:FAIL(APP_LAUNCH_UNEXPECTED_OUTPUT)"]);
   assert.deepEqual(journal.record("clean-install", "launch"), { status: "FINISHED", outcome: "FAIL", code: "APP_LAUNCH_FAILED" === "x" ? undefined : "APP_LAUNCH_UNEXPECTED_OUTPUT" });
   // Uninstall with nothing installed fails plainly; the second step is not reached.
   const none = await runJourney(JOURNEYS[1]!, { ...ctx, home: join(root, "home-none"), evidenceDir: join(root, "evidence-none"),
-    journal: new Journal(join(root, "evidence-none", "lifecycle", "journal.jsonl"), { artifactSha256: bad.sha256, sourceCommit: COMMIT }) });
+    journal: new Journal(join(root, "evidence-none", "lifecycle", "journal.jsonl"), { artifactSha256: bad.sha256, ...IDENTITY, home: join(root, "home-none") }) });
   assert.deepEqual(statuses(none), ["uninstall:FAIL(APP_NOT_INSTALLED)"]);
   // A stop requested before a step: that step is BLOCKED and the journey ends; the journal has no start line for it.
   let stop = false;
   const stopHome = join(root, "home-stop");
   const stopEvidence = join(root, "evidence-stop");
   const good = artifact("stop");
-  const stopJournal = new Journal(join(stopEvidence, "lifecycle", "journal.jsonl"), { artifactSha256: good.sha256, sourceCommit: COMMIT });
+  const stopJournal = new Journal(join(stopEvidence, "lifecycle", "journal.jsonl"), { artifactSha256: good.sha256, ...IDENTITY, home: stopHome });
   const stopped = await runJourney(JOURNEYS[0]!, {
     home: stopHome, artifact: good.file, artifactSha256: good.sha256, evidenceDir: stopEvidence, journal: stopJournal, pidAlive: DEAD,
     launch: (folder) => { stop = true; return launch(folder); }, stopRequested: () => stop,
@@ -243,7 +276,7 @@ test("the evidence builder: the real admission review judges the report; a live 
       return { name, check: true, status, detailFile: file };
     }),
   });
-  const common = { evidenceDir, platform: "linux-x64", osVersion: "Ubuntu 24.04", sourceCommit: COMMIT, targetHardwareId: "disposable-01", artifactSha256: "4".repeat(64) };
+  const common = { evidenceDir, platform: "linux-x64", osVersion: "Ubuntu 24.04", sourceCommit: COMMIT, targetHardwareId: "disposable-01", artifactSha256: "4".repeat(64), home: "/home/disposable" };
   const live = await buildPlatformEvidence({ ...common, synthetic: false, runs: [runOf(names)] });
   assert.equal(live.label, "LIVE");
   assert.equal(live.reviewStatus, "EVIDENCE_PRESENT");
@@ -253,6 +286,8 @@ test("the evidence builder: the real admission review judges the report; a live 
   assert.equal(report.gateId, "platform:linux-x64");
   assert.equal(report.actEnabled, false);
   assert.equal(report.fixture, undefined);
+  assert.equal(report.label, "LIVE");
+  assert.equal(report.home, "/home/disposable", "the report says which user folder it ran in");
   assert.equal(createHash("sha256").update(readFileSync(live.reportFile)).digest("hex"), live.record.evidenceSha256, "the record binds the file's bytes");
   // The same checks labeled synthetic: the review refuses it (fixture: true) and it is never submittable.
   const synthetic = await buildPlatformEvidence({ ...common, synthetic: true, runs: [runOf(names)] });
@@ -276,4 +311,23 @@ test("the evidence builder: the real admission review judges the report; a live 
   const wrong = await buildPlatformEvidence({ ...common, sourceCommit: "b".repeat(40), synthetic: false, runs: [runOf(names)] });
   assert.equal(wrong.reviewStatus, "EVIDENCE_PRESENT", "the report is consistent with its own commit; identity is bound at submission, not here");
   void wrong;
+});
+
+test("the run lock: a second run on the same evidence folder is refused while the first may be alive, a dead run's lock is replaced, and it is released", () => {
+  const file = join(root, "evidence-lock", "lifecycle", "run.lock");
+  const release = acquireRunLock(file);
+  assert.ok(existsSync(file));
+  assert.throws(() => acquireRunLock(file), (error: unknown) => error instanceof JournalError && error.code === "LIFECYCLE_RUN_IN_PROGRESS", "this process holds it");
+  release();
+  assert.ok(!existsSync(file));
+  writeFileSync(file, JSON.stringify({ pid: 4242 }) + "\n");
+  assert.throws(() => acquireRunLock(file, (pid) => pid === 4242), (error: unknown) => error instanceof JournalError && error.code === "LIFECYCLE_RUN_IN_PROGRESS");
+  assert.equal(readFileSync(file, "utf8").trim(), JSON.stringify({ pid: 4242 }), "another run's lock is untouched");
+  writeFileSync(file, "not json");
+  assert.throws(() => acquireRunLock(file, DEAD), (error: unknown) => error instanceof JournalError && error.code === "LIFECYCLE_RUN_IN_PROGRESS", "an unreadable lock is somebody's");
+  writeFileSync(file, JSON.stringify({ pid: 4242 }) + "\n");
+  const taken = acquireRunLock(file, DEAD);
+  assert.equal((JSON.parse(readFileSync(file, "utf8")) as { pid: number }).pid, process.pid, "a dead run's lock is replaced");
+  taken();
+  assert.ok(!existsSync(file));
 });
