@@ -503,9 +503,6 @@ test("a provider block that names another account, role, credential, file, desti
     ["explicit nulls and an empty list", provider({ allowed_account_ids: { constant_value: [] }, forbidden_account_ids: { constant_value: null } })],
     ["explicit nulls for the denied attributes", provider({ profile: { constant_value: null }, access_key: { constant_value: null }, endpoints: { constant_value: null } })],
     ["another provider's constants", { random: { name: "random", full_name: "registry.terraform.io/hashicorp/random", expressions: { allowed_account_ids: { constant_value: [other] } } } }],
-    // Terraform 1.16.4 lists its built-in provider exactly so for a project with a `terraform_data` resource (docs/act-pilot-simulation-aws.md); the aws block beside it is still judged.
-    ["the built-in provider beside a matching aws block", { terraform: { name: "terraform", full_name: "terraform.io/builtin/terraform" }, ...provider({ allowed_account_ids: { constant_value: [mine] } }) }],
-    ["the built-in provider alone", { terraform: { name: "terraform", full_name: "terraform.io/builtin/terraform" } }],
   ];
   for (const [label, showProviderConfig, code = "PROVIDER_ACCOUNT_NOT_IN_CONTRACT"] of refusing) {
     const w = world();
@@ -529,6 +526,63 @@ test("a provider block that names another account, role, credential, file, desti
     behave({ showProviderConfig, applyAdvance: true });
     const s = await seal(w, "DEV");
     assert.ok((await run(w, s, approvalsFor(s))).ok, label);
+  }
+});
+
+test("Terraform's built-in provider is allowed for terraform_data resources only (docs/act-pilot-simulation-aws.md): the exact provider_config entry 1.16.4 emits seals and applies with a terraform_data resource; a terraform_remote_state data source (configured in the root module or a nested one, read into the prior state, or planned), an unknown built-in type and a built-in data source are refused at seal and at apply with PROVIDER_BUILTIN_TYPE_NOT_IN_CONTRACT, whether the plan names the provider or not", async () => {
+  const BUILTIN_NAME = "terraform.io/builtin/terraform";
+  // Exactly what Terraform 1.16.4 emits for a project with a terraform_data resource: no expressions key.
+  const BUILTIN = { terraform: { name: "terraform", full_name: BUILTIN_NAME } };
+  const CODE = "PROVIDER_BUILTIN_TYPE_NOT_IN_CONTRACT";
+  const change = (address: string, type: string, mode = "managed", provider_name: string | undefined = BUILTIN_NAME) =>
+    ({ address, mode, type, ...(provider_name === undefined ? {} : { provider_name }), change: { actions: ["create"], before: null, after: {} } });
+  const configured = (address: string, type: string, mode: string, provider_config_key = "terraform") => ({ address, mode, type, provider_config_key });
+  const pilot = { showResources: [change("terraform_data.pilot", "terraform_data")], showConfigurationExtra: { root_module: { resources: [configured("terraform_data.pilot", "terraform_data", "managed")] } } };
+  const fine: Array<[string, Behavior]> = [
+    ["terraform_data beside a matching aws block", { ...pilot, showProviderConfig: { ...BUILTIN, aws: { ...AWS_PROVIDER, expressions: { allowed_account_ids: { constant_value: [AWS_DEV_TARGET.account] } } } } }],
+    ["terraform_data alone, with the built-in provider as the only one", { ...pilot, showProviderConfig: BUILTIN, showOnlyConfigured: true }],
+    ["terraform_data planned and in the prior state too", { ...pilot, showProviderConfig: BUILTIN, showDocumentExtra: {
+      prior_state: { values: { root_module: { resources: [{ address: "terraform_data.pilot", mode: "managed", type: "terraform_data", provider_name: BUILTIN_NAME }] } } },
+      planned_values: { root_module: { resources: [{ address: "terraform_data.pilot", mode: "managed", type: "terraform_data", provider_name: BUILTIN_NAME }] } },
+    } }],
+    ["terraform_data with no provider named in the changes (the fake engine's shape)", { showProviderConfig: BUILTIN, showResources: [change("terraform_data.pilot", "terraform_data", "managed", undefined)] }],
+  ];
+  const refusing: Array<[string, Behavior]> = [
+    ["a terraform_remote_state data source configured in the root module (as 1.16.4 lists one whose read failed: nowhere else)", { ...pilot, showProviderConfig: BUILTIN,
+      showConfigurationExtra: { root_module: { resources: [configured("terraform_data.pilot", "terraform_data", "managed"), configured("data.terraform_remote_state.other", "terraform_remote_state", "data")] } } }],
+    ["a terraform_remote_state data source configured in a nested module, under a provider key with no block", { ...pilot, showProviderConfig: BUILTIN,
+      showConfigurationExtra: { root_module: { module_calls: { net: { source: "./net", module: { resources: [configured("module.net.data.terraform_remote_state.x", "terraform_remote_state", "data", "module.net:terraform")] } } } } } }],
+    ["a terraform_remote_state data source read into the prior state of a child module", { ...pilot, showProviderConfig: BUILTIN,
+      showDocumentExtra: { prior_state: { values: { root_module: { child_modules: [{ address: "module.net", resources: [{ address: "module.net.data.terraform_remote_state.x", mode: "data", type: "terraform_remote_state", provider_name: BUILTIN_NAME }] }] } } } } }],
+    ["a terraform_remote_state data source in the planned values", { ...pilot, showProviderConfig: BUILTIN,
+      showDocumentExtra: { planned_values: { root_module: { resources: [{ address: "data.terraform_remote_state.x", mode: "data", type: "terraform_remote_state", provider_name: BUILTIN_NAME }] } } } }],
+    ["a terraform_remote_state data source with no provider named anywhere", { showProviderConfig: BUILTIN, showConfigurationExtra: { root_module: { resources: [{ address: "data.terraform_remote_state.x", mode: "data", type: "terraform_remote_state" }] } } }],
+    ["an unknown built-in type among the changes", { showProviderConfig: BUILTIN, showResources: [change("terraform_future.x", "terraform_future")] }],
+    ["an unknown built-in type with no provider named", { showProviderConfig: BUILTIN, showResources: [change("terraform_future.x", "terraform_future", "managed", undefined)] }],
+    ["a data source of the built-in provider, even of the allowed type", { showProviderConfig: BUILTIN, showDocumentExtra: { planned_values: { root_module: { resources: [{ address: "data.terraform_data.x", mode: "data", type: "terraform_data", provider_name: BUILTIN_NAME }] } } } }],
+    ["a built-in type reported under a lookalike registry name", { showProviderConfig: BUILTIN, showResources: [change("terraform_remote_state.x", "terraform_remote_state", "managed", "registry.terraform.io/hashicorp/terraform")] }],
+  ];
+  for (const [label, behavior] of fine) {
+    const w = world();
+    behave({ ...behavior, applyAdvance: true });
+    const s = await seal(w, "DEV");
+    assert.ok((await run(w, s, approvalsFor(s))).ok, label);
+  }
+  for (const [label, behavior] of refusing) {
+    const w = world();
+    behave(behavior);
+    const atSeal = await sealRefusal(w, "DEV");
+    refused(atSeal, "ARTIFACT_INVALID");
+    assert.match((atSeal as { message: string }).message, new RegExp(CODE), label);
+    // Applying: the plan is shown again, and what it shows is judged again.
+    behave({});
+    const s = await seal(w, "DEV");
+    const approvals = approvalsFor(s);
+    behave(behavior);
+    const result = await run(w, s, approvals);
+    refused(result, "TARGET_NOT_IN_CONTRACT");
+    assert.match((result as { message: string }).message, new RegExp(CODE), label);
+    await nothingSpent(w, s, approvals);
   }
 });
 

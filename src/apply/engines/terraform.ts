@@ -18,7 +18,7 @@ import { assertBackendBlock, type BackendBlockRule } from "../backend-block.js";
 import { stripInvisible } from "../constants.js";
 import { checkedOutput, codeOf, stop, withoutIdentities } from "../engine.js";
 import type { EngineApplyRun, EngineCleanupRun, EngineContext, EngineSpec } from "../engine-spec.js";
-import type { ProviderBlock, ProviderSpec } from "../provider.js";
+import type { ProviderBlock, ProviderSpec, ProviderUse } from "../provider.js";
 import { isRecord } from "../providers/shared.js";
 import {
   APPLY_ADAPTER, APPLY_ARGV, APPLY_BACKEND_CONFIG_FILE, APPLY_INIT_ARGV, CLEANUP_ADAPTER, CLEANUP_APPLY_ARGV, CLEANUP_PLAN_FILE, CLEANUP_SHOW_ARGV, RECOVERY_FILES,
@@ -162,10 +162,55 @@ const APPLY_PLAN_FILE = "alz-apply.tfplan";
 
 type Shown = {
   format_version?: unknown; errored?: unknown;
-  resource_changes?: { address?: string; type?: string; mode?: unknown; previous_address?: unknown; change?: { actions?: string[]; importing?: unknown; after?: unknown; after_unknown?: unknown } }[];
+  resource_changes?: { address?: string; type?: string; mode?: unknown; provider_name?: unknown; previous_address?: unknown; change?: { actions?: string[]; importing?: unknown; after?: unknown; after_unknown?: unknown } }[];
   output_changes?: Record<string, { actions?: string[] }>;
-  configuration?: { provider_config?: Record<string, ProviderBlock> };
+  configuration?: { provider_config?: Record<string, ProviderBlock>; root_module?: unknown };
+  prior_state?: { values?: { root_module?: unknown } };
+  planned_values?: { root_module?: unknown };
 };
+
+const MAX_MODULE_DEPTH = 64;
+
+/**
+ * Every resource and data source the plan names, each with the provider that serves it (`ProviderUse`), for the provider half
+ * of the contract binding. Four places are read, because none alone is complete: the configuration tree (every module through
+ * `module_calls`; a data source read at plan time appears here even when its read fails and nothing else mentions it), the
+ * changes, the prior state and the planned values (both with `child_modules`). A `provider_config_key` resolves through
+ * `provider_config`; a key with no block is named by its last segment (`module.net:aws` is `aws`), the way a block without
+ * `full_name` is named. Addresses and types are read as text only; no value leaves this function.
+ */
+function providerUsesOf(document: Shown): ProviderUse[] {
+  const blocks = document.configuration?.provider_config ?? {};
+  const byKey = (key: unknown): ProviderUse["provider"] => {
+    if (typeof key !== "string") return {};
+    const block = blocks[key];
+    if (isPlainRecord(block)) return { name: typeof block.name === "string" ? block.name : undefined, full_name: typeof block.full_name === "string" ? block.full_name : undefined };
+    return { name: key.slice(key.lastIndexOf(":") + 1).split(".")[0] };
+  };
+  const uses: ProviderUse[] = [];
+  const add = (found: unknown, provider: ProviderUse["provider"]): void => {
+    if (!isPlainRecord(found)) return;
+    uses.push({
+      address: stripInvisible(typeof found.address === "string" ? found.address : ""), mode: typeof found.mode === "string" ? found.mode : "",
+      type: stripInvisible(typeof found.type === "string" ? found.type : ""), provider,
+    });
+  };
+  const configured = (module: unknown, depth: number): void => {
+    if (!isPlainRecord(module) || depth > MAX_MODULE_DEPTH) return;
+    for (const found of Array.isArray(module.resources) ? module.resources : []) add(found, byKey(isPlainRecord(found) ? found.provider_config_key : undefined));
+    for (const call of Object.values(isPlainRecord(module.module_calls) ? module.module_calls : {})) if (isPlainRecord(call)) configured(call.module, depth + 1);
+  };
+  const valued = (module: unknown, depth: number): void => {
+    if (!isPlainRecord(module) || depth > MAX_MODULE_DEPTH) return;
+    for (const found of Array.isArray(module.resources) ? module.resources : []) add(found, { full_name: isPlainRecord(found) && typeof found.provider_name === "string" ? found.provider_name : undefined });
+    for (const child of Array.isArray(module.child_modules) ? module.child_modules : []) valued(child, depth + 1);
+  };
+  configured(document.configuration?.root_module, 0);
+  for (const found of Array.isArray(document.resource_changes) ? document.resource_changes : []) add(found, { full_name: typeof found?.provider_name === "string" ? found.provider_name : undefined });
+  valued(document.prior_state?.values?.root_module, 0);
+  valued(document.planned_values?.root_module, 0);
+  return uses;
+}
 
 /** What the provider half of the contract binding is judged against: the contract's target and provider, and the environment that holds the APPLY role (sealing hides it from its children, not from this check). */
 type Judge = Pick<EngineContext, "pinned" | "spec" | "env">;
@@ -181,7 +226,7 @@ function changesOf(shown: string, judge: Judge): PlanChange[] {
   let document: Shown;
   try { document = JSON.parse(shown); } catch { return stop("PLAN_JSON_INVALID"); }
   if (typeof document?.format_version !== "string" || document.errored === true) return stop("PLAN_JSON_UNUSABLE");
-  judge.spec.assertProviderConfig(Object.values(document.configuration?.provider_config ?? {}), judge.pinned, judge.env);
+  judge.spec.assertProviderConfig(Object.values(document.configuration?.provider_config ?? {}), judge.pinned, judge.env, providerUsesOf(document));
   const resources = (Array.isArray(document.resource_changes) ? document.resource_changes : []).map((found, index): PlanChange => {
     const actions = found?.change?.actions ?? [];
     const previous = found?.previous_address;

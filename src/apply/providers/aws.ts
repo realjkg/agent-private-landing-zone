@@ -1,7 +1,7 @@
 import { EXECUTION_IDENTITIES, iamRoleIdentity, identityVariables } from "../../tools/identity.js";
 import { TOKEN_FILE } from "../constants.js";
 import { stop } from "../engine.js";
-import type { ProviderBlock, ProviderSpec } from "../provider.js";
+import type { ProviderBlock, ProviderSpec, ProviderUse } from "../provider.js";
 import { KEY_SEGMENT, ambientRefusal, isRecord, pickIdentityValue } from "./shared.js";
 
 /**
@@ -103,13 +103,29 @@ const isSet = (expression: unknown): boolean => !(isRecord(expression) && expres
 const HASHICORP = "registry.terraform.io/hashicorp/";
 const AWS_PROVIDER = HASHICORP + "aws";
 /**
- * Terraform's built-in provider (`terraform_data`, `terraform_remote_state`), which `show -json` lists under this name whenever a
- * project uses one of them. The real engine exposed its absence (docs/act-pilot-simulation-aws.md): the built-in-only fixture the
- * emulated simulation runs could not be sealed. It is not a registry provider and reaches no cloud of its own.
+ * Terraform's built-in provider, which `show -json` lists under this name whenever a project uses one of its types. The real engine
+ * exposed its absence from the allowlist (docs/act-pilot-simulation-aws.md): the built-in-only fixture the emulated simulation runs
+ * could not be sealed. It is allowed for exactly one type, `BUILTIN_ALLOWED_TYPE` (`assertBuiltinUses`), never as a whole.
  */
 const BUILTIN_PROVIDER = "terraform.io/builtin/terraform";
-/** The providers a project may use besides aws: the built-in one and ones that reach no cloud. Any other (azurerm, a second cloud, a lookalike namespace) is refused. */
+/** The providers a project may use besides aws: the built-in one (one type of it) and ones that reach no cloud. Any other (azurerm, a second cloud, a lookalike namespace) is refused. */
 const ALLOWED_PROVIDERS: readonly string[] = [AWS_PROVIDER, BUILTIN_PROVIDER, ...["random", "null", "time", "tls"].map((name) => HASHICORP + name)];
+/**
+ * The one built-in type a pilot project may use: a managed value holder that reaches nothing. `terraform_remote_state` is a data
+ * source that reads another backend with the running identity's credentials, and any built-in type this file does not name is
+ * unknown; both are refused (`PROVIDER_BUILTIN_TYPE_NOT_IN_CONTRACT`). Judged by the provider the plan names and, failing closed, by the
+ * type's `terraform_` prefix, which no allowed registry provider owns, so a use whose provider the plan left unnamed is still judged.
+ */
+const BUILTIN_ALLOWED_TYPE = "terraform_data";
+const BUILTIN_TYPE = /^terraform_/;
+const DATA_ADDRESS = /(^|\.)data\./;
+function assertBuiltinUses(uses: readonly ProviderUse[]): void {
+  for (const use of uses) {
+    const id = use.provider.full_name ?? (use.provider.name !== undefined ? HASHICORP + use.provider.name : undefined);
+    if (id !== BUILTIN_PROVIDER && !BUILTIN_TYPE.test(use.type) && use.provider.name !== "terraform") continue;
+    if (use.mode === "data" || DATA_ADDRESS.test(use.address) || use.type !== BUILTIN_ALLOWED_TYPE) stop("PROVIDER_BUILTIN_TYPE_NOT_IN_CONTRACT");
+  }
+}
 /**
  * What the aws provider takes from the APPLY identity's environment and nowhere else: static or shared credentials and
  * config files, endpoints, proxies, a trust store, the metadata service, and the `skip_*` switches that turn off the account
@@ -120,7 +136,8 @@ const DENIED_ATTRIBUTE = /^(access_key|secret_key|token|profile|shared_credentia
 const DENIED_ROLE_ATTRIBUTE = /^web_identity_token(_file)?$/;
 
 /**
- * The provider half of the contract binding. Only the allowed providers may appear (`ALLOWED_PROVIDERS`). In an aws
+ * The provider half of the contract binding. Only the allowed providers may appear (`ALLOWED_PROVIDERS`), and of the built-in
+ * provider only `terraform_data` resources (`assertBuiltinUses`, over every resource and data source the plan names). In an aws
  * provider block no attribute of `DENIED_ATTRIBUTE` is set; a constant `allowed_account_ids` must include the contract's
  * account, a constant `forbidden_account_ids` must not; and a constant `role_arn` in `assume_role` or
  * `assume_role_with_web_identity` must be the APPLY identity's own role (any role in another account is refused as such),
@@ -128,7 +145,8 @@ const DENIED_ROLE_ATTRIBUTE = /^web_identity_token(_file)?$/;
  * plan and is not judged; the runbook says so. A block's `region` is not judged: a second region is ordinary, and the
  * account is what the credentials bound.
  */
-function assertProviderConfig(blocks: readonly ProviderBlock[], target: AwsTarget, env: NodeJS.ProcessEnv): void {
+function assertProviderConfig(blocks: readonly ProviderBlock[], target: AwsTarget, env: NodeJS.ProcessEnv, uses: readonly ProviderUse[]): void {
+  assertBuiltinUses(uses);
   const applyRole = iamRoleIdentity(identityVariables(env, "APPLY").get("AWS_ROLE_ARN") ?? "");
   for (const provider of blocks) {
     const id = provider?.full_name ?? HASHICORP + provider?.name;
@@ -172,5 +190,5 @@ export const AWS: ProviderSpec = {
   backendBlock: { type: "s3", attributes: ["bucket", "key", "region", "use_lockfile"] },
   filledAtApply: ["assume_role_with_web_identity"],
   tagAttributes: ["tags_all", "tags"],
-  assertProviderConfig: (blocks, target, env) => assertProviderConfig(blocks, target as AwsTarget, env),
+  assertProviderConfig: (blocks, target, env, uses) => assertProviderConfig(blocks, target as AwsTarget, env, uses),
 };
