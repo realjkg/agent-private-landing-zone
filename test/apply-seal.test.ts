@@ -148,7 +148,11 @@ test("the sealed record binds plan, manifest, release identity, environment, tar
 
 test("Azure too: the backend the seal-time init saved must be the contract's, because the plan embeds it", async () => {
   for (const savedBackend of [
-    { type: "azurerm", config: { storage_account_name: "attackerstore", container_name: "tfstate", key: "dev.tfstate" } }, { type: "s3", config: {} }, null,
+    // Entra ID authorization is on, so the first is refused for its storage account alone.
+    { type: "azurerm", config: { storage_account_name: "attackerstore", container_name: "tfstate", key: "dev.tfstate", use_azuread_auth: true } },
+    { type: "azurerm", config: { storage_account_name: "fixturedevstore", container_name: "other", key: "dev.tfstate", use_azuread_auth: true } },
+    { type: "azurerm", config: { storage_account_name: "fixturedevstore", container_name: "tfstate", key: "prod.tfstate", use_azuread_auth: true } },
+    { type: "s3", config: {} }, null,
   ]) {
     const f = fixture();
     try {

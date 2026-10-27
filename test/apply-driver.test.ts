@@ -1292,7 +1292,8 @@ async function nothingSpent(w: World, s: Sealed, approvals: SignedApproval[]): P
 
 test("the backend init saved must be the contract's storage account, container and key; anything else is TARGET_NOT_IN_CONTRACT before the approvals are consumed", async () => {
   const [account, container, key] = DEV_TARGET.backend.split("/");
-  const saved = (config: Record<string, unknown>, type = "azurerm") => ({ type, config: { storage_account_name: account, container_name: container, key, ...config } });
+  // Entra ID authorization is on in every case, so each one is refused for its location (or type, or shape) alone.
+  const saved = (config: Record<string, unknown>, type = "azurerm") => ({ type, config: { storage_account_name: account, container_name: container, key, use_azuread_auth: true, ...config } });
   for (const [label, savedBackend] of [
     ["another storage account", saved({ storage_account_name: "attackerstore" })],
     ["another container", saved({ container_name: "other" })],
@@ -1332,7 +1333,7 @@ test("PROD is bound to the PROD backend: the DEV backend is refused there", asyn
   await promoteTo(w, "QA", shared);
   const approvals = [approval(prod.sealed, "alice"), approval(prod.sealed, "bob")];
   const [account, container, key] = DEV_TARGET.backend.split("/");
-  behave({ savedBackend: { type: "azurerm", config: { storage_account_name: account, container_name: container, key } } });
+  behave({ savedBackend: { type: "azurerm", config: { storage_account_name: account, container_name: container, key, use_azuread_auth: true } } });
   const before = applyCalls().length;
   refused(await run(w, prod, approvals), "TARGET_NOT_IN_CONTRACT");
   assert.equal(applyCalls().length, before);
@@ -1343,7 +1344,7 @@ test("PROD is bound to the PROD backend: the DEV backend is refused there", asyn
 test("qualify refuses a backend that is not the contract's DEV backend", async () => {
   const w = world();
   const p = writeProject(fresh("project"), DEV_TARGET);
-  behave({ savedBackend: { type: "azurerm", config: { storage_account_name: "attackerstore", container_name: "tfstate", key: "dev.tfstate" } } });
+  behave({ savedBackend: { type: "azurerm", config: { storage_account_name: "attackerstore", container_name: "tfstate", key: "dev.tfstate", use_azuread_auth: true } } });
   const result = await qualifyApply({ invocation: human(DEV_TARGET), environment: "DEV", target: DEV_TARGET, manifest: p.manifest, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved }, w.deps);
   assert.ok(!result.ok && /BACKEND_NOT_IN_CONTRACT/.test(result.message), JSON.stringify(result));
 });

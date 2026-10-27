@@ -120,7 +120,7 @@ test("true with the CDK engine is an invalid contract", () => {
 
 // --- default off: unchanged -------------------------------------------------------------------------
 
-test("default off: the seal init reads the contract's backend location only (the pinned backend has no settings of its own), never STATE_WRITE settings", async () => {
+test("default off: the seal init reads the contract's backend location and the Entra ID switch only (the pinned backend has no settings of its own), never STATE_WRITE settings", async () => {
   const [account, container, ...key] = DEV_TARGET.backend.split("/");
   for (const over of [{}, { embedStateWrite: false }]) {
     const w = world(contractJson(KILL, over));
@@ -129,7 +129,7 @@ test("default off: the seal init reads the contract's backend location only (the
     const inits = initCalls();
     assert.equal(inits.length, 1);
     assert.deepEqual(inits[0].args, [...APPLY_INIT_ARGV]);
-    assert.equal(inits[0].backendConfig, `storage_account_name = "${account}"\ncontainer_name = "${container}"\nkey = "${key.join("/")}"\n`);
+    assert.equal(inits[0].backendConfig, `storage_account_name = "${account}"\ncontainer_name = "${container}"\nkey = "${key.join("/")}"\nuse_azuread_auth = true\n`);
     assert.equal(inits[0].backendOverride, 'terraform {\n  backend "azurerm" {}\n}\n', "Azure is pinned the same way, with type azurerm");
     assert.ok(calls().filter((c) => c.args[0] !== "init").every((c) => c.backendFileExists === false), "the backend file is gone right after init");
   }

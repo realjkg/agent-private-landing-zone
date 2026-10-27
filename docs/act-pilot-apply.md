@@ -206,7 +206,15 @@ The generic modules (contract, identities, driver, seal, evidence, the CLI) hold
 
 Target: `tenantId`, `subscriptionId`, `backend` (`<storage-account>/<container>/<key>`), `workspace`; `account` is the subscription id. Variables: `ARM_CLIENT_ID`, `ARM_TENANT_ID`, `ARM_SUBSCRIPTION_ID`, `ARM_USE_OIDC` and `ARM_OIDC_TOKEN_FILE`, for example `ALZ_APPLY_ARM_CLIENT_ID`. The tenant and subscription must be the contract's. Refused as fallbacks: `AZURE_*`, `ARM_USE_*` other than `ARM_USE_OIDC`, `ARM_MSI_*`, `ARM_CLIENT_CERTIFICATE*`. A per-identity `ARM_CLIENT_SECRET` is accepted (it is that identity's own explicit credential), so "OIDC token file only" is the recommended setup and is not enforced for secrets. Qualification attests the client ids, and the same client ids must be used in every environment.
 
-State prerequisites (owner supplies): a storage account and container per environment, with blob versioning and soft delete on, Entra ID authorization for the backend (`use_azuread_auth` or `ARM_STORAGE_USE_AZUREAD`; it is not yet on the runner profile), and role assignments scoped to that container for STATE and STATE_WRITE and to the target subscription for APPLY. Exact roles are the owner's least-privilege decision.
+State prerequisites (owner supplies): a storage account and container per environment, with blob versioning and soft delete on, shared-key and SAS access disabled (`bootstrap/azure` does this), and role assignments scoped to that container for STATE and STATE_WRITE and to the target subscription for APPLY. Exact roles are the owner's least-privilege decision.
+
+State authentication is Entra ID only:
+- The product's backend file sets `use_azuread_auth = true` for every init (seal, qualification, apply). Init saves the setting and the sealed plan embeds it, so the apply uses it too.
+- A saved backend is refused (`BACKEND_NOT_IN_CONTRACT`) when that setting is not `true`, or when it holds any setting the product did not write: a shared key, a SAS token, `resource_group_name`, `lookup_blob_endpoint`, or another endpoint, cloud or credential.
+- `ARM_ACCESS_KEY`, `ARM_SAS_TOKEN` and the environment forms of the switch never reach a Terraform child. `ARM_USE_AZUREAD` on an identity is refused as a fallback. `ARM_STORAGE_USE_AZUREAD` is the azurerm provider's variable, and the Terraform 1.16.4 backend never reads it.
+- No resource group is configured. The backend needs one only to list shared keys through ARM, or for `lookup_blob_endpoint`. With Entra ID it builds the blob endpoint from the storage account name, so the contract's `<storage-account>/<container>/<key>` is the whole location.
+
+The emulated G1b run (`docs/act-pilot-simulation.md`, SYNTHETIC/EMULATED) shows what real init saves. Entra ID token exchange against Azure is proven only in the supervised DEV qualification.
 
 ### AWS (`AWS`, Terraform with the S3 backend)
 
