@@ -126,7 +126,7 @@ jobs:
         run: |
           ollama pull qwen3:1.7b
           ollama pull qwen3:4b
-          ollama pull mistral-nemo:latest
+          ollama pull mistral-nemo:12b
 
       - name: Qualify required models and stack
         run: ./alz models verify
@@ -229,7 +229,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for model in qwen3:1.7b qwen3:4b mistral-nemo:latest; do
+          for model in qwen3:1.7b qwen3:4b mistral-nemo:12b; do
             if ! ollama show "${model}" >/dev/null 2>&1; then
               echo "Required local model is not pre-staged: ${model}"
               exit 1

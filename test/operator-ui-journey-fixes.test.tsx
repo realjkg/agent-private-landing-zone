@@ -37,7 +37,7 @@ const matrixPass: JobState = {
 const noServer: ModelAvailability = {
   status: "UNAVAILABLE",
   reason: "NO_LOCAL_MODEL_SERVER",
-  required: ["qwen3:1.7b", "qwen3:4b", "mistral-nemo:latest"],
+  required: ["qwen3:1.7b", "qwen3:4b", "mistral-nemo:12b"],
   missing: [],
 };
 
@@ -128,14 +128,14 @@ describe("private-model workflows reflect this machine", () => {
     expect(option("chaos")?.disabled).toBe(false);
     const note = screen.getByTestId("model-note").textContent ?? "";
     expect(note).toContain("no local model server answered");
-    expect(note).toContain("qwen3:1.7b, qwen3:4b, mistral-nemo:latest");
+    expect(note).toContain("qwen3:1.7b, qwen3:4b, mistral-nemo:12b");
   });
 
   test("missing models are named from the server's answer", async () => {
-    stub(idleState, { ...noServer, reason: "MODELS_NOT_INSTALLED", missing: ["mistral-nemo:latest"] });
+    stub(idleState, { ...noServer, reason: "MODELS_NOT_INSTALLED", missing: ["mistral-nemo:12b"] });
     renderApp("ADVANCED");
     const note = await waitFor(() => screen.getByTestId("model-note"));
-    expect(note.textContent).toContain("not installed — mistral-nemo:latest");
+    expect(note.textContent).toContain("not installed — mistral-nemo:12b");
   });
 
   test("available models, or an unknown answer, leave every workflow offered", async () => {

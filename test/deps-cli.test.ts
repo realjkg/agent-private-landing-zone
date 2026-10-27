@@ -97,7 +97,7 @@ test("the isolated service: not running is fine; a listener that is not Ollama, 
   const partial = await runDependencyChecks(ctx("partial", { probe: async () => ({ listening: true, apiOk: true, models: ["qwen3:1.7b", "qwen3:4b"] }) }), REQUIRED);
   const service = byId(partial, "isolated-service");
   assert.equal(service.ok, false);
-  assert.match(service.detail, /mistral-nemo:latest/);
+  assert.match(service.detail, /mistral-nemo:12b/);
   assert.match(service.fix!, /dry run/i);
 });
 

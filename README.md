@@ -274,7 +274,7 @@ Example setup:
 ```bash
 ollama pull qwen3:1.7b
 ollama pull qwen3:4b
-ollama pull mistral-nemo
+ollama pull mistral-nemo:12b
 
 ./alz bootstrap
 ./alz verify

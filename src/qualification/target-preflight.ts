@@ -4,7 +4,7 @@ import { hostname, totalmem } from "node:os";
 import { PRODUCTION_OLLAMA_VERSION } from "./model-production.js";
 
 export const REQUIRED_PRIVATE_MODELS = [
-  "qwen3:1.7b", "qwen3:4b", "mistral-nemo:latest",
+  "qwen3:1.7b", "qwen3:4b", "mistral-nemo:12b",
 ] as const;
 
 export type TargetPreflight = {

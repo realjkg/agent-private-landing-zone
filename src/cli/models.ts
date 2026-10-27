@@ -20,8 +20,10 @@ import {
   qualifyDefaultModelStack,
 } from "../models/stack-qualification.js";
 import {
-  getLocalModelMetadata,
-} from "../ollama.js";
+  loadModelDigestPins,
+  verifyPinnedModel,
+  type ModelDigestPins,
+} from "../models/digest-pins.js";
 import {
   collectProductionQualificationContext,
   qualifyProductionModelRuntime,
@@ -148,15 +150,66 @@ if (command === "list") {
   let failed = false;
   const records: unknown[] = [];
 
+  // Exact versions first: a model whose installed digest is not its committed pin is never qualified.
+  let pins: ModelDigestPins | undefined;
+  let pinsError = "";
+  try {
+    pins = loadModelDigestPins();
+  } catch (error) {
+    pinsError =
+      error instanceof Error
+        ? error.message
+        : "MODEL_PINS_INVALID";
+  }
+
   for (
     const target of targets
   ) {
     try {
-      const metadata =
-        await getLocalModelMetadata(
+      if (!pins) {
+        throw new Error(pinsError);
+      }
+      const { metadata, check } =
+        await verifyPinnedModel(
           cfg.ollamaBaseUrl,
           target.model,
+          pins,
         );
+
+      if (!check.ok) {
+        failed = true;
+        console.log(
+          "FAIL " +
+            target.model +
+            " — " +
+            check.code +
+            ": " +
+            check.message,
+        );
+        records.push({
+          model: target.model,
+          role: target.role,
+          required:
+            target.required,
+          digest:
+            metadata.digest,
+          pinnedDigest:
+            check.pinned ?? null,
+          digestCheck:
+            check.code,
+          policyVersion:
+            PROMPT_POLICY_VERSION,
+          policyHash:
+            promptPolicyHash(),
+          passed: false,
+          error:
+            check.code +
+            ": " +
+            check.message,
+        });
+        continue;
+      }
+
       const result =
         await qualifyModel(
           cfg.ollamaBaseUrl,
@@ -199,6 +252,9 @@ if (command === "list") {
           target.required,
         digest:
           metadata.digest,
+        pinnedDigest:
+          check.digest,
+        digestCheck: "PINNED",
         size:
           metadata.size,
         modifiedAt:

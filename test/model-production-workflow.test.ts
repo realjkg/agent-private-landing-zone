@@ -221,7 +221,7 @@ test("an incorrect Ollama version stops the job; the pinned one is recorded", as
 test("a missing pre-staged model stops the job, naming the model, and nothing is pulled", async () => {
   const bin = toolDir("bin-models");
   assert.equal((await run("Verify pre-staged model weights", job("models-ok", bin))).code, 0);
-  for (const model of ["qwen3:1.7b", "qwen3:4b", "mistral-nemo:latest"]) {
+  for (const model of ["qwen3:1.7b", "qwen3:4b", "mistral-nemo:12b"]) {
     const result = await run("Verify pre-staged model weights", job("models-missing", bin), { FAKE_MISSING_MODEL: model });
     assert.equal(result.code, 1, model);
     assert.ok(result.out.includes(model), model);

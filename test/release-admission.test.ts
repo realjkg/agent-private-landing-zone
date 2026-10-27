@@ -181,7 +181,7 @@ test("existing target model qualification report is recognized only when source,
   const h = harness();
   try {
     const id = "private-model-runtime";
-    const records = ["qwen3:1.7b", "qwen3:4b", "mistral-nemo:latest"].map(
+    const records = ["qwen3:1.7b", "qwen3:4b", "mistral-nemo:12b"].map(
       (model) => ({ model, digest: "b".repeat(64), passed: true }));
     const value = {
       records,

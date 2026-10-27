@@ -44,6 +44,13 @@ import {
   evaluateOperatorRequest,
 } from "./operator-policy.js";
 import { disableHostedTracing } from "./hosted-tracing.js";
+import {
+  answerPilotQuery,
+  localModelExplainer,
+  pilotHandoffKind,
+  pilotHandoffResponse,
+} from "./pilot-answer.js";
+import { PILOT_QUERIES, type PilotQuery } from "./pilot-context.js";
 import { routeSessionRequest } from "./router.js";
 import {
   isRecoveryCommand,
@@ -125,6 +132,49 @@ async function sessionNode(
     state.fixture,
     progress,
   );
+
+  // The pilot: the session reads the records a person's runs left and refuses to act. Nothing here imports src/apply.
+  if (command === "PILOT_HANDOFF") {
+    const response = pilotHandoffResponse(
+      pilotHandoffKind(state.request) ?? "APPLY",
+    );
+
+    return {
+      response,
+      history: [
+        {
+          at: new Date().toISOString(),
+          request: state.request,
+          command,
+          response,
+        },
+      ],
+    };
+  }
+
+  if (
+    (PILOT_QUERIES as readonly string[]).includes(command)
+  ) {
+    progress("Reading the pilot records (read-only)…");
+
+    const { response } = await answerPilotQuery(
+      command as PilotQuery,
+      state.request,
+      state.fixture ? {} : localModelExplainer(),
+    );
+
+    return {
+      response,
+      history: [
+        {
+          at: new Date().toISOString(),
+          request: state.request,
+          command,
+          response,
+        },
+      ],
+    };
+  }
 
   if (
     command === "USE_TERRAFORM" ||
@@ -245,7 +295,7 @@ async function sessionNode(
             lastGuardrail.response,
           ].join("\n")
         : answerStateQuery(
-            command,
+            command as Parameters<typeof answerStateQuery>[0],
             state.agentState,
             state.engine,
           );

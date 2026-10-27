@@ -149,7 +149,7 @@ function observedLivePayload(value: unknown, gate: ReleaseGate, record: ReleaseG
       models.add(x.model);
     }
     return value.passed === true &&
-      ["qwen3:1.7b", "qwen3:4b", "mistral-nemo:latest"].every((m) => models.has(m));
+      ["qwen3:1.7b", "qwen3:4b", "mistral-nemo:12b"].every((m) => models.has(m));
   }
   if (gate.mode === "LIVE_PROVIDER") {
     if (value.sourceCommit !== commit || value.actEnabled !== false ||

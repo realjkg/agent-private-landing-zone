@@ -88,6 +88,35 @@ test("the evidence runner (./alz evidence) reaches no module of the apply path, 
   assert.ok(!reached.has(UI_CHANNEL) && !reached.has(CONSOLE_SERVER), "the evidence runner reaches the console adapter or server");
 });
 
+// RB3: the local model's session, its model plumbing and the agent loop read pilot records as files. They never load the
+// apply path, its CLI door, the console adapter or server, or the teardown driver, so no mutation entry point is reachable.
+const MODEL_FACING_ROOTS = (): string[] => [...walk("src/session"), ...walk("src/models"), "src/ollama.ts", "src/loop.ts"];
+
+test("the local model's session, models, client and loop reach no module of the apply path, the CLI door, the console adapter or server, or the teardown driver", () => {
+  const roots = MODEL_FACING_ROOTS();
+  assert.ok(roots.includes("src/session/pilot-context.ts") && roots.includes("src/session/pilot-answer.ts"), "the walk found the pilot context modules");
+  assert.ok(roots.length > 12, "the walk found the model-facing modules");
+  const reached = reachableFrom(roots);
+  assert.deepEqual([...reached].filter(isApplyPath).sort(), [], "a model-facing module reaches the apply path");
+  for (const forbidden of [UI_CHANNEL, CONSOLE_SERVER, "src/cli/teardown-driver.ts"]) {
+    assert.ok(!reached.has(forbidden), "a model-facing module reaches " + forbidden);
+  }
+  // And nothing reached by them names a mutation entry point of the apply path, even as text.
+  for (const file of reached) {
+    assert.doesNotMatch(readFileSync(file, "utf8"), /\brun(?:Apply|ApplyCommand|Cleanup)\s*\(|\b(?:sealPlan|sealPreview|qualifyApply|signApproval|signRequest|consumeApprovals|reserveArtifact|finalizeArtifact|finalizeCleanup)\s*\(/, file);
+  }
+});
+
+test("negative: the model-facing roots import no apply module directly, and the pilot context reads files under .runs only", () => {
+  for (const file of MODEL_FACING_ROOTS()) {
+    const forbidden = importsOf(file).filter((dep) => isApplyPath(dep) || dep === UI_CHANNEL || dep === CONSOLE_SERVER || dep.startsWith("src/cli/"));
+    assert.deepEqual(forbidden, [], file);
+  }
+  const context = readFileSync("src/session/pilot-context.ts", "utf8");
+  assert.doesNotMatch(context, /\b(?:writeFile|writeFileSync|appendFile|rename|rm|rmSync|unlink|mkdir|spawn|exec|execFile|fork)\w*\s*\(/, "the pilot context only reads");
+  assert.doesNotMatch(readFileSync("src/session/pilot-answer.ts", "utf8"), /node:child_process|node:fs/, "the pilot answer neither runs nor writes anything");
+});
+
 test("negative: the agent-facing directories still cannot import the adapter, the CLI door or the driver, by any path", () => {
   for (const directory of ["src/tools", "src/agent", "src/orchestration", "src/a2a", "src/delegation", "src/operations"]) {
     for (const file of walk(directory)) {

@@ -263,7 +263,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          for model in qwen3:1.7b qwen3:4b mistral-nemo:latest; do
+          for model in qwen3:1.7b qwen3:4b mistral-nemo:12b; do
             if ! ollama show "${model}" >/dev/null 2>&1; then
               echo "::error::Required pre-staged model missing: ${model}"
               exit 1
