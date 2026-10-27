@@ -61,8 +61,8 @@ export const INSTALL_STATE_WORDS: Readonly<Record<Exclude<InstallState, "INSTALL
   REMOVING: "an earlier removal did not finish",
 };
 
-/** The real folder at home/<components...>, or undefined when any step is missing, a link or not a folder. */
-function realFolder(home: string, components: readonly string[]): string | undefined {
+/** The real folder at home/<components...>, or undefined when any step below the home is missing, a link or not a folder. */
+export function realFolder(home: string, components: readonly string[]): string | undefined {
   let dir = home;
   for (const component of components) {
     dir = join(dir, component);

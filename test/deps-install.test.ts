@@ -9,8 +9,8 @@ import { pipeline } from "node:stream/promises";
 import test from "node:test";
 import { createZstdCompress } from "node:zlib";
 
-import { installedPath } from "../src/deps/checks.js";
-import { InstallError, installTool, removeInstalledTool } from "../src/deps/install.js";
+import { INSTALL_MARKER, installedPath, installState, readInstallMarker, REMOVING_MARKER } from "../src/deps/checks.js";
+import { InstallError, installTool, pidProvenDead, removeInstalledTool, sweepLeftovers, writeInstallMarker } from "../src/deps/install.js";
 import { loadToolPins, platformKey, type ToolPins } from "../src/deps/pins.js";
 
 // Installs run against a local archive the test builds, never the network. A wrong checksum must leave no install behind.
@@ -45,6 +45,14 @@ test("a download that matches its pinned checksum is installed into the user fol
   assert.equal(installed.path, installedPath(home, "ollama", "0.40.0", "ollama"));
   assert.ok(existsSync(installed.path));
   assert.ok(existsSync(join(home, ".alz/tools/ollama/0.40.0/libggml.so")), "the library beside the binary is kept");
+  // The completion marker is the install's last step; it names exactly what was installed and checked.
+  const marker = readInstallMarker(join(home, ".alz/tools/ollama/0.40.0"), "ollama", "0.40.0", "ollama");
+  assert.ok(marker, "a finished install carries its completion marker");
+  assert.deepEqual({ tool: marker!.tool, version: marker!.version, binary: marker!.binary, sha256: marker!.sha256 }, { tool: "ollama", version: "0.40.0", binary: "ollama", sha256: good.sha256 });
+  assert.ok(Date.parse(marker!.completedAt) > 0);
+  assert.equal(installState(home, "ollama", "0.40.0", "ollama"), "INSTALLED");
+  assert.deepEqual(installed.swept, []);
+  assert.equal(installed.replaced, undefined);
   // Scratch files are gone, and the partial folder never survives a successful install.
   assert.deepEqual(readdirSync(join(home, ".alz/tools/ollama")), ["0.40.0"]);
   assert.deepEqual(readdirSync(join(home, ".alz/tmp")), []);
@@ -188,7 +196,10 @@ test("uninstall removes one pinned version folder, leaves other versions alone, 
   mkdirSync(kept, { recursive: true });
   writeFileSync(join(removed, "terraform"), "installed");
   writeFileSync(join(kept, "terraform"), "other version");
+  writeInstallMarker(removed, { tool: "terraform", version: "1.16.4", binary: "terraform", sha256: "b".repeat(64), completedAt: "2026-10-27T00:00:00.000Z" });
+  writeInstallMarker(kept, { tool: "terraform", version: "1.15.0", binary: "terraform", sha256: "c".repeat(64), completedAt: "2026-10-27T00:00:00.000Z" });
   assert.equal(removeInstalledTool(home, "terraform", "1.16.4"), "removed");
+  assert.equal(installState(home, "terraform", "1.15.0", "terraform"), "INSTALLED", "the other version keeps its marker");
   assert.ok(!existsSync(removed), "the pinned version folder is gone");
   assert.ok(existsSync(join(kept, "terraform")), "other versions are untouched");
   assert.equal(removeInstalledTool(home, "terraform", "1.16.4"), "absent", "a second removal changes nothing");
@@ -255,4 +266,203 @@ test("uninstall refuses a file where a folder belongs, and still works under a h
   assert.equal(removeInstalledTool(linkedHome, "ollama", "0.40.0"), "removed");
   assert.ok(!existsSync(join(realHome, ".alz", "tools", "ollama", "0.40.0")));
   assert.ok(existsSync(join(realHome, ".alz", "tools", "ollama")));
+});
+
+// --- completion states, interruption and the sweep ---------------------------------------------------------------
+
+const PINNED_OLLAMA = "0.40.0";
+const toolDir = (home: string) => join(home, ".alz", "tools", "ollama");
+const marker = (sha256 = "d".repeat(64)) => ({ tool: "ollama" as const, version: PINNED_OLLAMA, binary: "ollama", sha256, completedAt: "2026-10-27T00:00:00.000Z" });
+const DEAD = () => false;
+const ALIVE = () => true;
+
+test("a marker without the program, or the program without a marker, is never an install: unfinished and legacy are told apart", () => {
+  const home = join(root, "home-states");
+  const folder = join(toolDir(home), PINNED_OLLAMA);
+  mkdirSync(folder, { recursive: true });
+  writeInstallMarker(folder, marker());
+  assert.equal(installState(home, "ollama", PINNED_OLLAMA, "ollama"), "UNFINISHED", "a marker alone is an unfinished folder");
+  rmSync(join(folder, INSTALL_MARKER));
+  writeFileSync(join(folder, "ollama"), "#!/bin/sh\necho 'ollama version is 0.40.0'\n");
+  assert.equal(installState(home, "ollama", PINNED_OLLAMA, "ollama"), "LEGACY", "the program alone was installed before completion checks");
+  // A marker that names another tool, version, program or checksum shape is not this install's marker.
+  for (const wrong of [{ tool: "terraform" }, { version: "0.39.0" }, { binary: "bin/ollama" }, { sha256: "short" }, { completedAt: "yesterday" }]) {
+    writeFileSync(join(folder, INSTALL_MARKER), JSON.stringify({ schemaVersion: 1, ...marker(), ...wrong }));
+    assert.equal(installState(home, "ollama", PINNED_OLLAMA, "ollama"), "UNFINISHED", JSON.stringify(wrong));
+  }
+  writeFileSync(join(folder, INSTALL_MARKER), "not json");
+  assert.equal(installState(home, "ollama", PINNED_OLLAMA, "ollama"), "UNFINISHED");
+  assert.equal(installState(home, "ollama", "0.39.0", "ollama"), "ABSENT");
+});
+
+test("a copy from before completion checks is repaired beside itself and replaced only after the new copy passes its check", async () => {
+  const home = join(root, "home-legacy");
+  const folder = join(toolDir(home), PINNED_OLLAMA);
+  mkdirSync(folder, { recursive: true });
+  writeFileSync(join(folder, "ollama"), "#!/bin/sh\necho 'ollama version is 0.40.0 legacy'\n");
+  chmodSync(join(folder, "ollama"), 0o755);
+  writeFileSync(join(folder, "keepsake"), "from the legacy install");
+  // A repair whose new copy reports the wrong version leaves the legacy copy exactly as it was.
+  const wrong = (() => {
+    const dir = join(root, "src-wrong-version");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "ollama"), "#!/bin/sh\necho 'ollama version is 0.39.9'\n");
+    const file = join(root, "wrong-version.tgz");
+    execFileSync("tar", ["-czf", file, "-C", dir, "ollama"]);
+    return { file, sha256: createHash("sha256").update(readFileSync(file)).digest("hex") };
+  })();
+  await assert.rejects(
+    installTool("ollama", { pins: pinsWith(wrong.sha256), home, platform: "darwin-arm64", download: fetchFrom(wrong.file) }),
+    (error: unknown) => error instanceof InstallError && error.code === "INSTALL_VERIFY_FAILED",
+  );
+  assert.equal(installState(home, "ollama", PINNED_OLLAMA, "ollama"), "LEGACY", "the legacy copy is untouched after a failed repair");
+  assert.equal(readFileSync(join(folder, "keepsake"), "utf8"), "from the legacy install");
+  assert.deepEqual(readdirSync(toolDir(home)), [PINNED_OLLAMA], "no partial or replaced folder is left");
+  // A repair whose new copy passes replaces it, and says what it replaced.
+  const good = archive("legacy-repair");
+  const installed = await installTool("ollama", { pins: pinsWith(good.sha256), home, platform: "darwin-arm64", download: fetchFrom(good.file) });
+  assert.equal(installed.reused, false);
+  assert.equal(installed.replaced, "LEGACY");
+  assert.equal(installState(home, "ollama", PINNED_OLLAMA, "ollama"), "INSTALLED");
+  assert.match(readFileSync(installed.path, "utf8"), /legacy-repair/, "the new copy is in place");
+  assert.ok(!existsSync(join(folder, "keepsake")), "the replaced folder is gone");
+  assert.deepEqual(readdirSync(toolDir(home)), [PINNED_OLLAMA]);
+});
+
+test("a download stopped by a signal installs nothing, leaves no download or partial folder, and the rerun starts over", async () => {
+  const home = join(root, "home-stopped");
+  const good = archive("stopped");
+  const stop = new AbortController();
+  const stalled = async (_url: string, signal: AbortSignal) => Readable.from((async function* () {
+    yield readFileSync(good.file).subarray(0, 10);
+    stop.abort();
+    if (!signal.aborted) await new Promise<void>((done) => { signal.addEventListener("abort", () => done(), { once: true }); });
+  })());
+  await assert.rejects(
+    installTool("ollama", { pins: pinsWith(good.sha256), home, platform: "darwin-arm64", download: stalled, signal: stop.signal }),
+    (error: unknown) => error instanceof InstallError && error.code === "INSTALL_INTERRUPTED" && /nothing was installed/.test(error.message),
+  );
+  assert.equal(installState(home, "ollama", PINNED_OLLAMA, "ollama"), "ABSENT");
+  assert.deepEqual(readdirSync(toolDir(home)), []);
+  assert.deepEqual(readdirSync(join(home, ".alz", "tmp")), [], "the unfinished download is removed");
+  // A signal that arrives before the download starts is honored too, and an already-stopped signal never downloads.
+  let fetches = 0;
+  await assert.rejects(
+    installTool("ollama", { pins: pinsWith(good.sha256), home, platform: "darwin-arm64", download: async () => { fetches += 1; return Readable.from([]); }, signal: stop.signal }),
+    (error: unknown) => error instanceof InstallError && error.code === "INSTALL_INTERRUPTED",
+  );
+  assert.equal(fetches, 0);
+  const rerun = await installTool("ollama", { pins: pinsWith(good.sha256), home, platform: "darwin-arm64", download: fetchFrom(good.file) });
+  assert.equal(rerun.reused, false, "the rerun installs from the start");
+  assert.equal(installState(home, "ollama", PINNED_OLLAMA, "ollama"), "INSTALLED");
+});
+
+test("leftovers of a dead process (a partial folder, a download, a copy renamed aside mid-swap) are swept and reported; a live pid is left alone", async () => {
+  const home = join(root, "home-sweep");
+  const dir = toolDir(home);
+  const tmp = join(home, ".alz", "tmp");
+  mkdirSync(join(dir, PINNED_OLLAMA + ".partial-1111"), { recursive: true });
+  writeFileSync(join(dir, PINNED_OLLAMA + ".partial-1111", "ollama"), "half unpacked");
+  mkdirSync(join(dir, PINNED_OLLAMA + ".replaced-1111"), { recursive: true });
+  mkdirSync(join(dir, PINNED_OLLAMA + ".partial-2222"), { recursive: true });
+  mkdirSync(join(dir, "0.39.0"), { recursive: true });
+  writeFileSync(join(dir, "0.39.0", "ollama"), "an earlier version, never a sweep target");
+  writeFileSync(join(dir, "notes.txt"), "a person's file, never a sweep target");
+  mkdirSync(tmp, { recursive: true });
+  writeFileSync(join(tmp, "ollama-0.40.0-1111.tgz"), "half a download");
+  writeFileSync(join(tmp, "ollama-0.40.0-1111.tar.zst.tar"), "half unpacked");
+  writeFileSync(join(tmp, "ollama-0.40.0-2222.tgz"), "another run's download");
+  writeFileSync(join(tmp, "terraform-1.16.4-1111.zip"), "another tool's download");
+  writeFileSync(join(tmp, "unrelated-1111.txt"), "never a sweep target");
+  const removed = sweepLeftovers(home, "ollama", { pidAlive: (pid) => pid === 2222 });
+  assert.deepEqual(removed.map((path) => path.slice(home.length)).sort(), [
+    "/.alz/tmp/ollama-0.40.0-1111.tar.zst.tar", "/.alz/tmp/ollama-0.40.0-1111.tgz",
+    "/.alz/tools/ollama/0.40.0.partial-1111", "/.alz/tools/ollama/0.40.0.replaced-1111",
+  ]);
+  assert.deepEqual(readdirSync(dir).sort(), ["0.39.0", "0.40.0.partial-2222", "notes.txt"]);
+  assert.deepEqual(readdirSync(tmp).sort(), ["ollama-0.40.0-2222.tgz", "terraform-1.16.4-1111.zip", "unrelated-1111.txt"]);
+  // The install itself sweeps first and reports what it removed, so a crash between the two renames of a swap recovers on the rerun.
+  const good = archive("sweep-install");
+  mkdirSync(join(dir, PINNED_OLLAMA + ".replaced-3333"), { recursive: true });
+  const installed = await installTool("ollama", { pins: pinsWith(good.sha256), home, platform: "darwin-arm64", download: fetchFrom(good.file), pidAlive: (pid) => pid === 2222 });
+  assert.deepEqual(installed.swept.map((path) => path.slice(home.length)), ["/.alz/tools/ollama/0.40.0.replaced-3333"]);
+  assert.equal(installState(home, "ollama", PINNED_OLLAMA, "ollama"), "INSTALLED");
+  assert.ok(existsSync(join(dir, PINNED_OLLAMA + ".partial-2222")), "a folder whose pid is alive is left alone by the install too");
+  // The kernel decides by default: this process is alive, and a pid the kernel does not know is dead.
+  assert.equal(pidProvenDead(process.pid), false);
+  assert.equal(pidProvenDead(0), false);
+  assert.equal(pidProvenDead(-1), false);
+  assert.equal(pidProvenDead(2 ** 22 + 1), true, "a pid above the kernel's range is proven dead");
+  const own = join(dir, PINNED_OLLAMA + ".partial-" + process.pid);
+  mkdirSync(own, { recursive: true });
+  assert.ok(!sweepLeftovers(home, "ollama").includes(own), "this run's own folder is never swept");
+  assert.ok(existsSync(own));
+});
+
+test("the sweep never follows a link, never reads outside ~/.alz/tools and ~/.alz/tmp, and never removes a final version folder", () => {
+  const home = join(root, "home-sweep-links");
+  const dir = toolDir(home);
+  const tmp = join(home, ".alz", "tmp");
+  mkdirSync(dir, { recursive: true });
+  mkdirSync(tmp, { recursive: true });
+  const outside = join(root, "sweep-outside");
+  mkdirSync(outside, { recursive: true });
+  writeFileSync(join(outside, "keep"), "not ours");
+  symlinkSync(outside, join(dir, PINNED_OLLAMA + ".partial-1111"));
+  symlinkSync(join(outside, "keep"), join(tmp, "ollama-0.40.0-1111.tgz"));
+  mkdirSync(join(dir, PINNED_OLLAMA), { recursive: true });
+  writeFileSync(join(dir, PINNED_OLLAMA, "ollama"), "a final version folder, whatever its state");
+  assert.deepEqual(sweepLeftovers(home, "ollama", { pidAlive: DEAD }), []);
+  assert.ok(existsSync(join(outside, "keep")), "the link target is untouched");
+  assert.ok(existsSync(join(dir, PINNED_OLLAMA, "ollama")));
+  // A linked tools folder, or a linked tool folder, is skipped as a whole.
+  const linkedHome = join(root, "home-sweep-linked-tools");
+  mkdirSync(join(linkedHome, ".alz"), { recursive: true });
+  const elsewhere = join(root, "sweep-elsewhere");
+  mkdirSync(join(elsewhere, "ollama", PINNED_OLLAMA + ".partial-1111"), { recursive: true });
+  writeFileSync(join(elsewhere, "ollama", PINNED_OLLAMA + ".partial-1111", "keep"), "not ours");
+  symlinkSync(elsewhere, join(linkedHome, ".alz", "tools"));
+  symlinkSync(elsewhere, join(linkedHome, ".alz", "tmp"));
+  assert.deepEqual(sweepLeftovers(linkedHome, "ollama", { pidAlive: DEAD }), []);
+  assert.ok(existsSync(join(elsewhere, "ollama", PINNED_OLLAMA + ".partial-1111", "keep")));
+  assert.deepEqual(sweepLeftovers(join(root, "no-such-home"), "ollama", { pidAlive: DEAD }), [], "a missing home sweeps nothing");
+  void ALIVE;
+});
+
+test("an interrupted removal reads as unfinished, never as installed, and repeating the removal completes it", () => {
+  const home = join(root, "home-half-removed");
+  const folder = join(toolDir(home), PINNED_OLLAMA);
+  mkdirSync(folder, { recursive: true });
+  writeFileSync(join(folder, "ollama"), "#!/bin/sh\necho 'ollama version is 0.40.0'\n");
+  writeInstallMarker(folder, marker());
+  assert.equal(installState(home, "ollama", PINNED_OLLAMA, "ollama"), "INSTALLED");
+  // What an interrupted removal leaves: its marker written first, the completion marker gone, the program still there.
+  writeFileSync(join(folder, REMOVING_MARKER), "2026-10-27T00:00:00.000Z\n");
+  rmSync(join(folder, INSTALL_MARKER));
+  assert.equal(installState(home, "ollama", PINNED_OLLAMA, "ollama"), "REMOVING");
+  // Even with the completion marker still there, the removal marker wins: the removal had started.
+  writeInstallMarker(folder, marker());
+  assert.equal(installState(home, "ollama", PINNED_OLLAMA, "ollama"), "REMOVING");
+  assert.equal(removeInstalledTool(home, "ollama", PINNED_OLLAMA), "removed");
+  assert.ok(!existsSync(folder));
+  assert.equal(removeInstalledTool(home, "ollama", PINNED_OLLAMA), "absent");
+  // A folder with the program and nothing else (the old half-removed shape) is replaced by an install, never reused.
+  mkdirSync(folder, { recursive: true });
+  writeFileSync(join(folder, "libggml.so"), "library only");
+  assert.equal(installState(home, "ollama", PINNED_OLLAMA, "ollama"), "UNFINISHED");
+});
+
+test("an update installs beside the earlier version, which keeps its own marker and files", async () => {
+  const home = join(root, "home-beside");
+  const old = join(toolDir(home), "0.39.0");
+  mkdirSync(old, { recursive: true });
+  writeFileSync(join(old, "ollama"), "earlier version");
+  writeInstallMarker(old, { ...marker(), version: "0.39.0" });
+  const good = archive("beside");
+  const installed = await installTool("ollama", { pins: pinsWith(good.sha256), home, platform: "darwin-arm64", download: fetchFrom(good.file) });
+  assert.equal(installed.replaced, undefined, "nothing stood at the pinned version's folder");
+  assert.deepEqual(readdirSync(toolDir(home)).sort(), ["0.39.0", PINNED_OLLAMA]);
+  assert.equal(readFileSync(join(old, "ollama"), "utf8"), "earlier version");
+  assert.equal(installState(home, "ollama", "0.39.0", "ollama"), "INSTALLED");
+  assert.equal(installState(home, "ollama", PINNED_OLLAMA, "ollama"), "INSTALLED");
 });
