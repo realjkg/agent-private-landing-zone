@@ -102,6 +102,7 @@ export function ChangeList(props: { review: ReviewSummary }) {
         <dt>Place</dt><dd><code>{review.target.account} | {review.target.backend} | {review.target.workspace}</code></dd>
         <dt>Change ID (first 12 characters)</dt><dd><code>{review.shortId}</code></dd>
         <dt>App version that prepared it</dt><dd><code>{review.sourceCommit.slice(0, 12)}</code></dd>
+        <dt>{COPY.reviewRequestedBy}</dt><dd><code>{review.requestedBy}</code></dd>
         <dt>{COPY.reviewToolLabel}</dt><dd>{COPY.reviewToolVersion} <code>{review.preview.engineVersion}</code>, {COPY.reviewToolProgram} <code>{review.preview.programId}</code></dd>
         <dt>{COPY.reviewUnitLabel}</dt>
         <dd data-unit={review.unit?.unitId ?? "none"}>{review.unit === null ? COPY.reviewUnitNone : (
@@ -223,6 +224,8 @@ export default function PilotWizard(props: PilotWizardProps) {
   const [prepared, setPrepared] = useState<PreparedFiles | null>(null);
   const [requestPath, setRequestPath] = useState("");
   const [manifestPath, setManifestPath] = useState("");
+  const [requesterId, setRequesterId] = useState("");
+  const [requesterKeyPath, setRequesterKeyPath] = useState("");
   const [sealedPath, setSealedPath] = useState("");
   const [bundlePath, setBundlePath] = useState("");
   const [review, setReview] = useState<ReviewSummary | null>(null);
@@ -543,9 +546,15 @@ export default function PilotWizard(props: PilotWizardProps) {
                 <label htmlFor="pilot-manifest">{COPY.sealManifestLabel}</label>
                 <input id="pilot-manifest" type="text" autoComplete="off" spellCheck={false} value={manifestPath} aria-describedby="pilot-manifest-help" onChange={(event) => setManifestPath(event.target.value)} />
                 <Help id="pilot-manifest-help" text={COPY.sealManifestHelp} example={COPY.egManifest} />
-                {(requestPath.trim() === "" || manifestPath.trim() === "") && <BlockedNotice state="FIELDS_MISSING" />}
-                <button type="button" disabled={serverPath !== "UI" || active || requestPath.trim() === "" || manifestPath.trim() === ""}
-                  onClick={() => void begin(() => startSeal({ environment, requestPath: requestPath.trim(), manifestPath: manifestPath.trim() }))}>
+                <label htmlFor="pilot-requester">{COPY.sealRequesterLabel}</label>
+                <input id="pilot-requester" type="text" autoComplete="off" spellCheck={false} value={requesterId} aria-describedby="pilot-requester-help" onChange={(event) => setRequesterId(event.target.value)} />
+                <Help id="pilot-requester-help" text={COPY.sealRequesterHelp} example={COPY.egRequester} />
+                <label htmlFor="pilot-requester-key">{COPY.sealKeyLabel}</label>
+                <input id="pilot-requester-key" type="text" autoComplete="off" spellCheck={false} value={requesterKeyPath} aria-describedby="pilot-requester-key-help" onChange={(event) => setRequesterKeyPath(event.target.value)} />
+                <Help id="pilot-requester-key-help" text={COPY.sealKeyHelp} example={COPY.egKey} />
+                {(requestPath.trim() === "" || manifestPath.trim() === "" || requesterId.trim() === "" || requesterKeyPath.trim() === "") && <BlockedNotice state="FIELDS_MISSING" />}
+                <button type="button" disabled={serverPath !== "UI" || active || requestPath.trim() === "" || manifestPath.trim() === "" || requesterId.trim() === "" || requesterKeyPath.trim() === ""}
+                  onClick={() => void begin(() => startSeal({ environment, requestPath: requestPath.trim(), manifestPath: manifestPath.trim(), requesterId: requesterId.trim(), keyPath: requesterKeyPath.trim() }))}>
                   {COPY.sealRun}
                 </button>
                 {failureFor("seal") && (

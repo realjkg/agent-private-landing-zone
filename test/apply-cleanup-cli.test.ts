@@ -16,6 +16,7 @@ import { removeTree } from "../src/teardown/driver/cleanup.js";
 import {
   AWS_DEV_TARGET, NOW, POLICY, SOURCE_COMMIT, STATE_CANARY, VALUE_CANARY, awsContractJson, awsIdentityEnv, awsReadCallsOf, awsRoleArn, awsTargetOf, behave as behaveIn, behaveAwsReads, callsOf,
   installFakeAwsReads, installFakeTerraform, keys, pinPathOf, stateResource, testFixtureForgeQualificationEvidence, writePinnedContract, writeProject, type Behavior, type Project,
+  requesterArgs,
 } from "./helpers/apply-fixtures.js";
 
 // The terminal half of the observe and cleanup steps (docs/observe-and-cleanup.md): `./alz apply observe`, `propose-cleanup`,
@@ -116,7 +117,7 @@ async function appliedRun(w: World, mainTf = 'resource "aws_s3_bucket" "logs" {}
   const project: Project = writeProject(fresh("project"), target, mainTf);
   const request = json({ environment: "DEV", target, projectRoot: project.projectRoot, policyVersion: POLICY, resolved: project.resolved }, "request");
   const manifest = json(project.manifest, "manifest");
-  const sealed = await cli(w, ["seal", "--request", request, "--manifest", manifest], [targetString(target), PHRASE]);
+  const sealed = await cli(w, ["seal", "--request", request, "--manifest", manifest, ...requesterArgs()], [targetString(target), PHRASE]);
   assert.equal(sealed.code, 0, sealed.stderr);
   const { sealedPlanPath, reviewBundlePath, artifactSha256 } = sealed.data as { sealedPlanPath: string; reviewBundlePath: string; artifactSha256: string };
   const approved = await cli(w, ["approve", "--bundle", reviewBundlePath, "--key", keyFile("alice"), "--approver", "alice"], ["APPROVE DEV " + artifactSha256.slice(0, 12)]);

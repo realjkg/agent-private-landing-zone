@@ -21,7 +21,7 @@ import { buildManifest } from "../src/teardown/manifest.js";
 import { captureProjectFiles } from "../src/teardown/snapshot.js";
 import { removeTree } from "../src/teardown/driver/cleanup.js";
 import {
-  DEV_TARGET, NOW, POLICY, QA_TARGET, SOURCE_COMMIT, TENANT, approvalFor, contractJson, human, identityEnv, pinPathOf, sha, writePinnedContract,
+  DEV_TARGET, NOW, POLICY, QA_TARGET, REQUESTER, SOURCE_COMMIT, TENANT, approvalFor, contractJson, human, identityEnv, pinPathOf, sha, writePinnedContract,
 } from "./helpers/apply-fixtures.js";
 import { AZURE } from "../src/apply/providers/azure.js";
 
@@ -308,7 +308,7 @@ describe("emulated backend simulation: real Terraform, Azurite, built-in resourc
     const p = project(input, extra);
     const result = await sealPreview({
       invocation: human(DEV_TARGET_EMULATED), environment: "DEV", target: DEV_TARGET_EMULATED, manifest: p.manifest, projectRoot: p.projectRoot,
-      policyVersion: POLICY, resolved: p.resolved,
+      policyVersion: POLICY, resolved: p.resolved, requester: REQUESTER,
     }, deps);
     assert.ok(result.ok, JSON.stringify(result));
     const loaded = await loadSealedPlan(result.path);
