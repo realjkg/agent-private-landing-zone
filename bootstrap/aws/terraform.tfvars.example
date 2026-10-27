@@ -16,6 +16,19 @@ oidc_subjects = {
 # Required: the owner's least-privilege decision for what APPLY may change.
 apply_managed_policy_arns = ["arn:aws:iam::111111111111:policy/example-pilot-apply"]
 
+# DISCOVERY reads control-plane metadata only (default: ViewOnlyAccess plus the inline act-pilot-discovery-scope policy).
+# An override or an exception is outside the owner's decision until its scope and purpose are written down. For example:
+# discovery_managed_policy_arns = [
+#   "arn:aws:iam::aws:policy/job-function/ViewOnlyAccess",
+#   # scope: aws_sns_topic_subscription reads in this account; purpose: the plan refreshes the project's subscriptions.
+#   "arn:aws:iam::111111111111:policy/example-discovery-sns-reads",
+# ]
+# discovery_data_read_exceptions = [{
+#   actions   = ["ssm:GetParameter"]
+#   resources = ["arn:aws:ssm:us-east-1:111111111111:parameter/example/pilot/version"]
+#   purpose   = "The plan refreshes a non-secret version parameter the project manages."
+# }]
+
 # Terraform engine
 state_bucket_name          = "examplefake-dev-state"
 state_admin_principal_arns = ["arn:aws:iam::111111111111:role/example-bootstrap-admin"]

@@ -420,7 +420,7 @@ export function buildCleanupProposal(input: ProposalInput): { ok: true; proposal
     }
     // A type the reader cannot address (no Cloud Control mapping; an Azure id that is not an ARM resource id) is named, not refused; a denied or failed read is refused.
     // On Azure an entry with no id cannot be classified at all (a container, a scope, a backend?), so it is refused rather than proposed.
-    const accepted = contract.provider === "AZURE" ? ["NOT_AN_ARM_RESOURCE_ID"] : ["NO_CLOUD_CONTROL_MAPPING", "NO_IDENTIFIER_IN_STATE", "NOT_INDEPENDENTLY_CHECKABLE"];
+    const accepted = contract.provider === "AZURE" ? ["NOT_AN_ARM_RESOURCE_ID"] : ["NO_CLOUD_CONTROL_MAPPING", "DATA_BEARING_READ_EXCLUDED", "NO_IDENTIFIER_IN_STATE", "NOT_INDEPENDENTLY_CHECKABLE"];
     if (seen.result === "UNVERIFIABLE" && !accepted.includes(seen.reason ?? "")) {
       return refuse("OBSERVATION_INCONCLUSIVE", "The observation was refused for " + entry.address + " (" + seen.reason + "). Fix the DISCOVERY identity's access and observe again.");
     }

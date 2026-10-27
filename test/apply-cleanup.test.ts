@@ -323,6 +323,10 @@ test("a proposal is refused on ambiguous ownership (a partial apply, a planned r
   refused(build({ observation: { ...records.observation, unexpected: ["arn:aws:sqs:us-east-1:111111111111:tagged-but-not-in-state"] } }), "OBSERVATION_INCONCLUSIVE");
   refused(build({ observation: { ...records.observation, resources: records.observation.resources.map((r) => r.address === "aws_s3_bucket.logs" ? { ...r, result: "NOT_YET_OBSERVABLE" as const, reason: "THROTTLED" } : r) } }), "OBSERVATION_INCONCLUSIVE");
   refused(build({ observation: { ...records.observation, resources: records.observation.resources.map((r) => r.address === "aws_s3_bucket.logs" ? { ...r, result: "UNVERIFIABLE" as const, reason: "ACCESS_DENIED" } : r) } }), "OBSERVATION_INCONCLUSIVE");
+  // A read the verifier declines by design (its answer would carry data or secrets) is named as unverifiable, not refused like a denied read.
+  const declined = build({ observation: { ...records.observation, resources: records.observation.resources.map((r) => r.address === "aws_s3_bucket.logs" ? { ...r, result: "UNVERIFIABLE" as const, reason: "DATA_BEARING_READ_EXCLUDED" } : r) } });
+  assert.ok(declined.ok, JSON.stringify(declined));
+  assert.equal(declined.proposal.deletes.find((d) => d.address === "aws_s3_bucket.logs")?.observed, "UNVERIFIABLE");
   refused(build({ observation: { ...records.observation, observedAt: new Date(NOW.getTime() - 60_000).toISOString() } }), "RUN_RECORD_MISSING");
   refused(build({ blueprint: { ...records.blueprint, applyEvidenceSha256: "c".repeat(64) } }), "RUN_RECORD_MISSING");
   // An address the cleanup cannot name exactly (a bidi character) is never proposed.

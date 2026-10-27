@@ -87,9 +87,33 @@ variable "apply_permissions_boundary_arn" {
 }
 
 variable "discovery_managed_policy_arns" {
-  description = "Read permissions for DISCOVERY, both engines: the preview's reads, and after an apply the independent observation (describe-stack-resources, cloudcontrol get-resource, tag get-resources). The CDK role also keeps its inline DescribeStacks on the stack. Override the default with a scoped read policy once the pilot's resource types are fixed."
+  description = "Managed policies for DISCOVERY, both engines. The default, ViewOnlyAccess, lists and describes control-plane metadata; the inline act-pilot-discovery-scope policy adds exactly the reads the product makes (discovery-policy.json) and denies data-plane and secret reads whatever this list names. An override is an exception to the owner's control-plane-only decision: record its scope (which resource types and resources) and its purpose (which DISCOVERY read needs it) beside the value. Broad policies are refused; ReadOnlyAccess draws a plan warning."
   type        = list(string)
-  default     = ["arn:aws:iam::aws:policy/ReadOnlyAccess"]
+  default     = ["arn:aws:iam::aws:policy/job-function/ViewOnlyAccess"]
+  validation {
+    condition = alltrue([for arn in var.discovery_managed_policy_arns : !can(regex(
+      "^arn:aws[a-z-]*:iam::aws:policy/(.*/)?(AdministratorAccess.*|PowerUserAccess|[A-Za-z0-9]*FullAccess[A-Za-z0-9-]*|SystemAdministrator|DatabaseAdministrator|NetworkAdministrator|DataScientist)$", arn
+    ))])
+    error_message = "DISCOVERY is read-only and limited to control-plane metadata: AdministratorAccess, PowerUserAccess, *FullAccess and the administrator job-function policies are refused. Name a scoped read policy and record its scope and purpose."
+  }
+}
+
+variable "discovery_data_read_exceptions" {
+  description = "Exceptions to the DISCOVERY deny on data-plane and secret reads. Each names actions the deny lists (discovery-policy.json), the exact resource ARNs they apply to, and the purpose. The action stays denied on every other resource. Empty by default: the owner's decision is control-plane metadata only."
+  type = list(object({
+    actions   = list(string)
+    resources = list(string)
+    purpose   = string
+  }))
+  default = []
+  validation {
+    condition = alltrue([for e in var.discovery_data_read_exceptions :
+      length(e.actions) > 0 && length(e.resources) > 0 && length(trimspace(e.purpose)) >= 20 &&
+      alltrue([for r in e.resources : can(regex("^arn:aws[a-z-]*:[a-z0-9-]+:", r)) && !can(regex("^arn:aws[a-z-]*:[a-z0-9-]+:[^:]*:[^:]*:\\*$", r))]) &&
+      alltrue([for a in e.actions : can(regex("^[a-z0-9-]+:[A-Za-z0-9*]+$", a))])
+    ])
+    error_message = "Each DISCOVERY data-read exception needs at least one action, at least one specific resource ARN (not \"*\" or a whole-service wildcard), and a purpose of at least 20 characters."
+  }
 }
 
 variable "state_bucket_name" {

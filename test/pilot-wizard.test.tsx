@@ -944,7 +944,7 @@ describe("step 7: the cleanup lists say only what the records say", () => {
     expect(ownershipWord("CONTAINS_OTHERS")).not.toMatch(/nested stack/);
     expect(dispositionWord("UNKNOWN")).toBe("Unresolved: not confirmed gone");
     // Every reason code the records can carry has words, and the fallback is honest.
-    for (const code of ["ACCESS_DENIED", "CREDENTIALS", "THROTTLED", "TYPE_NOT_SUPPORTED", "CLI_ERROR", "NOT_INDEPENDENTLY_CHECKABLE", "NO_IDENTIFIER_IN_STATE", "NOT_AN_ARM_RESOURCE_ID", "OUTSIDE_TARGET_SUBSCRIPTION", "UNEXPECTED_RESPONSE", "HOST_REFUSED"]) {
+    for (const code of ["ACCESS_DENIED", "CREDENTIALS", "THROTTLED", "TYPE_NOT_SUPPORTED", "CLI_ERROR", "NOT_INDEPENDENTLY_CHECKABLE", "DATA_BEARING_READ_EXCLUDED", "NO_IDENTIFIER_IN_STATE", "NOT_AN_ARM_RESOURCE_ID", "OUTSIDE_TARGET_SUBSCRIPTION", "UNEXPECTED_RESPONSE", "HOST_REFUSED"]) {
       expect(reasonWord(code), code).not.toMatch(/\b[A-Z]{2,}(?:_[A-Z0-9]+)+\b/);
       expect(reasonWord(code).length, code).toBeGreaterThan(10);
     }

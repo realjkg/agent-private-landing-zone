@@ -54,6 +54,8 @@ The federated principal holds no role of its own. It only impersonates the ident
 | STATE_WRITE | `alz-pilot-<env>-state-write@...` | `roles/storage.objectUser` on the state bucket only. Used only by apply |
 | APPLY | `alz-pilot-<env>-apply@...` | the owner's named roles on the project; `roles/owner` refused. No state-bucket access unless the blueprint itself writes there |
 
+**Alignment with the owner's read-only discovery decision (not a PROPOSAL).** On 2026-10-27 the owner decided that every provider's read-only identity defaults to control-plane metadata and excludes application data and secret contents; any exception needs an explicit scope and purpose (issue #39, comment 6440801434, item 2). For GCP this means: DISCOVERY's viewer roles are metadata viewers (`roles/cloudasset.viewer`, `roles/browser` and service `*.viewer` roles that list and get configuration), not data readers such as `roles/secretmanager.secretAccessor`, `roles/bigquery.dataViewer` or `roles/storage.objectViewer` on application buckets. The row above also gives DISCOVERY `roles/storage.objectViewer` on the state bucket, and Terraform state can hold secret values; under the decision that grant is an exception that needs its own written scope and purpose, or the read moves to STATE as on AWS, where the bucket policy denies DISCOVERY the state bucket. This note records the alignment only. It changes nothing in P1 to P5 or O1, which stay with the owner, and S1 stays held.
+
 The rules carry over from the plan's authority item 4:
 
 - none inherits operator credentials, and none falls back to another;

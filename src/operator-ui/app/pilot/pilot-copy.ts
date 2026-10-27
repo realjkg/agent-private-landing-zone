@@ -249,6 +249,7 @@ export function reasonWord(reason: string): string {
     case "CLI_ERROR": case "HTTP_ERROR": case "UNEXPECTED_RESPONSE": return "the read failed or answered in an unexpected way";
     case "CLI_NOT_RUN": case "HOST_REFUSED": case "READER_CLOSED": return "the read could not be sent";
     case "NOT_INDEPENDENTLY_CHECKABLE": case "NO_CLOUD_CONTROL_MAPPING": return "it cannot be checked on its own; only the thing it belongs to can be";
+    case "DATA_BEARING_READ_EXCLUDED": return "reading it would return its data or secret settings, which discovery never reads; a person confirms it by hand";
     case "NO_IDENTIFIER_IN_STATE": return "the project's records hold no identifier for it";
     case "NOT_AN_ARM_RESOURCE_ID": return "its identifier is not one the cloud can be asked about";
     case "OUTSIDE_TARGET_SUBSCRIPTION": return "it is outside the subscription this pilot works in";
