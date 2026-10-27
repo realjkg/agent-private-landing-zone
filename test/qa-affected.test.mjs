@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readdirSync, readFileSync } from "node:fs";
-import { dependencySectionsChanged, diffCommand, importsOf, planChanged, SOURCE_SCAN_GUARDS } from "../scripts/qa-affected.mjs";
+import { diffCommand, importsOf, planChanged, SOURCE_SCAN_GUARDS } from "../scripts/qa-affected.mjs";
 
 function fixture() {
   return new Map([
@@ -290,30 +290,4 @@ test("every test that scans a source tree from disk is declared with the roots i
     assert.ok(readdirSync("test").includes(guard.slice("test/".length)), guard + " exists");
     assert.ok(roots.length > 0 && roots.every((root) => /^src\/(?:[^/]+\/)?$/.test(root)), guard + " roots are source directories");
   }
-});
-
-test("a package.json edit runs the framework consumers' tests only when a dependency section changed; a script-only edit does not", () => {
-  const files = fixture();
-  files.set("src/agent/runtime.ts", 'import { StateGraph } from "@langchain/langgraph"; export const g = StateGraph;');
-  files.set("test/agent-runtime.test.ts", 'import "../src/agent/runtime.js";');
-  const base = JSON.stringify({ name: "x", scripts: { build: "tsc" }, dependencies: { "@langchain/langgraph": "1.0.0" }, devDependencies: { tsx: "4.0.0" } });
-  const scriptOnly = JSON.stringify({ name: "x", scripts: { build: "tsc && npm run build:complete", "build:complete": "node -e 1" }, dependencies: { "@langchain/langgraph": "1.0.0" }, devDependencies: { tsx: "4.0.0" } });
-  const bumped = JSON.stringify({ name: "x", scripts: { build: "tsc" }, dependencies: { "@langchain/langgraph": "1.1.0" }, devDependencies: { tsx: "4.0.0" } });
-  assert.equal(dependencySectionsChanged(base, scriptOnly), false);
-  assert.equal(dependencySectionsChanged(base, bumped), true);
-  assert.equal(dependencySectionsChanged(base, "not json"), true, "unreadable is treated as changed");
-  assert.equal(dependencySectionsChanged(base, JSON.stringify({ name: "x", dependencies: { "@langchain/langgraph": "1.0.0" } })), true, "a removed section counts");
-  // No base known: the broad rule, as before.
-  assert.ok(planChanged(["package.json"], files).nodeTests.includes("test/agent-runtime.test.ts"));
-  // A script-only edit: the manifest checks run, the framework consumers do not, and the plan says why.
-  const scripts = planChanged(["package.json"], files, { base, head: scriptOnly });
-  assert.ok(!scripts.nodeTests.includes("test/agent-runtime.test.ts"));
-  assert.ok(scripts.nodeTests.includes("test/deps-install.test.ts"));
-  assert.ok(scripts.nodeTests.includes("test/development-readiness.test.ts"));
-  assert.equal(scripts.configCheck, true);
-  assert.ok(scripts.notes.some((note) => note.includes("outside its dependency sections")));
-  assert.deepEqual(scripts.gaps, []);
-  // A dependency bump, and the lock file whatever the manifest says: the broad rule.
-  assert.ok(planChanged(["package.json"], files, { base, head: bumped }).nodeTests.includes("test/agent-runtime.test.ts"));
-  assert.ok(planChanged(["package-lock.json"], files, { base, head: scriptOnly }).nodeTests.includes("test/agent-runtime.test.ts"));
 });

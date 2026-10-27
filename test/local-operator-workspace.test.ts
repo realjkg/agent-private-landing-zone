@@ -311,8 +311,11 @@ test("workspace readiness names the console build and every job script", () => {
 test("bootstrap builds the console UI as well as the runtime", () => {
   const launcher = readFileSync("alz", "utf8");
   const bootstrap = launcher.slice(launcher.indexOf('"bootstrap"'), launcher.indexOf("exit 0"));
-  assert.match(bootstrap, /npm run build\n/);
+  // The runtime step is the compile alone (`build:runtime`, no marker); bootstrap writes the marker itself after the UI build.
+  assert.match(bootstrap, /npm run build:runtime\n/);
   assert.match(bootstrap, /npm run build:ui\n/);
+  assert.match(bootstrap, /write_build_marker\n/);
+  assert.doesNotMatch(bootstrap, /^\s+npm run build\n|^\s+npm run build:complete\b/m, "no step inside bootstrap writes the marker before the last one");
 });
 
 // --- the launcher, executed --------------------------------------------------------------------------------------
@@ -329,9 +332,11 @@ function launcher(label: string, npmScript: string): Launcher {
   chmodSync(join(root, "alz"), 0o755);
   // The fake git answers only `rev-parse HEAD`, with the commit the test chooses through FAKE_COMMIT.
   writeFileSync(join(bin, "git"), "#!/bin/sh\necho \"${FAKE_COMMIT:-unknown}\"\n");
-  // The fake npm's `run build` writes dist/ and the marker like the real build, then the test's own script runs.
+  // The fake npm's `run build:runtime` writes dist/ like the real compile (no marker), and `run build` adds the marker like the
+  // real build does after a successful compile; then the test's own script runs.
   writeFileSync(join(bin, "npm"), "#!/bin/sh\necho \"npm $*\"\n" +
-    'case "$*" in "run build") mkdir -p dist/cli; echo "console.log(\'operator ran \' + process.argv.slice(2).join(\' \'))" > dist/cli/operator.js; printf \'{"schemaVersion":1,"sourceCommit":"%s","completedAt":"2026-10-27T00:00:00Z"}\\n\' "${FAKE_COMMIT:-unknown}" > dist/.alz-build-complete ;; esac\n' +
+    'case "$*" in "run build:runtime"|"run build") rm -f dist/.alz-build-complete; mkdir -p dist/cli; echo "console.log(\'operator ran \' + process.argv.slice(2).join(\' \'))" > dist/cli/operator.js ;; esac\n' +
+    'case "$*" in "run build") printf \'{"schemaVersion":1,"sourceCommit":"%s"}\\n\' "${FAKE_COMMIT:-unknown}" > dist/.alz-build-complete ;; esac\n' +
     npmScript + "\nexit 0\n");
   chmodSync(join(bin, "git"), 0o755);
   chmodSync(join(bin, "npm"), 0o755);
@@ -345,7 +350,7 @@ function launcher(label: string, npmScript: string): Launcher {
 function fakeDist(root: string, marker = true): void {
   mkdirSync(join(root, "dist", "cli"), { recursive: true });
   writeFileSync(join(root, "dist", "cli", "operator.js"), "console.log('operator ran ' + process.argv.slice(2).join(' '));\n");
-  if (marker) writeFileSync(join(root, "dist", ".alz-build-complete"), JSON.stringify({ schemaVersion: 1, sourceCommit: "c0ffee", completedAt: "2026-10-27T00:05:00Z" }) + "\n");
+  if (marker) writeFileSync(join(root, "dist", ".alz-build-complete"), JSON.stringify({ schemaVersion: 1, sourceCommit: "c0ffee" }) + "\n");
   else rmSync(join(root, "dist", ".alz-build-complete"), { force: true });
 }
 
@@ -368,15 +373,19 @@ test("./alz refuses to run dist/ while the bootstrap state is unfinished or from
     assert.equal(result.status, 2);
     assert.doesNotMatch(result.stdout, /operator ran/);
     assert.match(result.stdout, REFUSAL);
-    assert.equal(result.stdout.split("\n").filter(Boolean).length, 2, "no third line without the source dev tools");
-    // With the source dev tools (tsx) present, a third line points at the source copies of help and doctor.
-    mkdirSync(join(root, "node_modules", ".bin"), { recursive: true });
-    writeFileSync(join(root, "node_modules", ".bin", "tsx"), "#!/bin/sh\nexit 0\n");
-    chmodSync(join(root, "node_modules", ".bin", "tsx"), 0o755);
+    assert.equal(result.stdout.split("\n").filter(Boolean).length, 2, "exactly two lines, whatever tools exist");
+    // A marker from another commit than the checkout's is a stale build: refused. An archive (no checkout) says "unknown" and runs.
+    fakeDist(root);
+    result = run(["help"], { FAKE_COMMIT: "deadbeef" });
+    assert.equal(result.status, 2, "the marker names c0ffee, the checkout is at deadbeef");
+    assert.match(result.stdout, REFUSAL);
+    result = run(["help"], { FAKE_COMMIT: "unknown" });
+    assert.equal(result.status, 0, "no checkout: the marker's commit cannot be compared, so the build runs");
+    writeFileSync(join(root, "dist", ".alz-build-complete"), JSON.stringify({ schemaVersion: 1, sourceCommit: "unknown" }) + "\n");
     result = run(["help"]);
-    assert.equal(result.status, 2);
-    assert.match(result.stdout, /Run: \.\/alz bootstrap\nUntil then, \.\/alz debug help and \.\/alz debug doctor run from the source files\.\n$/);
-    rmSync(join(root, "node_modules"), { recursive: true, force: true });
+    assert.equal(result.status, 0, "an archive's marker says unknown and runs in a checkout too");
+    writeFileSync(join(root, "dist", ".alz-build-complete"), "not json");
+    assert.equal(run(["help"]).status, 2, "an unreadable marker is refused");
     fakeDist(root);
     mkdirSync(join(root, ".runs", "bootstrap"), { recursive: true });
     const state = join(root, ".runs", "bootstrap", "state.json");
@@ -408,7 +417,7 @@ test("./alz refuses to run dist/ while the bootstrap state is unfinished or from
 
 test("./alz bootstrap records its state before the first step, completes it only at the end, and keeps the log when it fails or is stopped", () => {
   // A fake npm that stops the bootstrap at the build step the way Ctrl-C or a closed terminal would: a stop signal to the launcher.
-  const stopped = launcher("stopped", 'case "$*" in "run build") kill -TERM $PPID ;; esac\nexit 0');
+  const stopped = launcher("stopped", 'case "$*" in "run build:runtime") kill -TERM $PPID ;; esac\nexit 0');
   try {
     const result = stopped.run(["bootstrap"]);
     assert.notEqual(result.status, 0, "a stopped bootstrap never reports success");
@@ -421,7 +430,7 @@ test("./alz bootstrap records its state before the first step, completes it only
     assert.equal(state.sourceCommit, "c0ffee");
     assert.match(state.startedAt, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
     const latest = readFileSync(join(stopped.root, ".runs", "bootstrap", "latest.log"), "utf8");
-    assert.match(latest, /npm ci\nnpm run build\n/, "the detailed log is kept even when the run is stopped");
+    assert.match(latest, /npm ci\nnpm run build:runtime\n/, "the detailed log is kept even when the run is stopped");
     fakeDist(stopped.root);
     const refused = stopped.run(["help"]);
     assert.equal(refused.status, 2, "a partial dist/ left by the stopped bootstrap is refused");
@@ -449,12 +458,12 @@ test("./alz bootstrap records its state before the first step, completes it only
     assert.match(result.stdout, /Preparing Sovereign ALZ local model interface\.\.\.\nReady\. Open the private local workspace with \.\/alz\nDetailed build log: \.runs\/bootstrap\/latest\.log\n/);
     const state = stateOf(finished.root);
     assert.equal(state.step, "done");
-    const marker = JSON.parse(readFileSync(join(finished.root, "dist", ".alz-build-complete"), "utf8")) as { sourceCommit: string; completedAt: string };
-    assert.equal(marker.sourceCommit, "c0ffee", "the build marker is written last, for the bootstrapped commit");
-    assert.match(marker.completedAt, /^\d{4}-\d{2}-\d{2}T/);
+    const marker = JSON.parse(readFileSync(join(finished.root, "dist", ".alz-build-complete"), "utf8")) as Record<string, unknown>;
+    assert.deepEqual(marker, { schemaVersion: 1, sourceCommit: "c0ffee" }, "the build marker is written last, for the bootstrapped commit, with no timestamp");
+    assert.match(readFileSync(join(finished.root, ".runs", "bootstrap", "latest.log"), "utf8"), /npm ci\nnpm run build:runtime\nnpm run build:ui\n/, "bootstrap compiles without a marker and writes it itself at the end");
     assert.match(state.completedAt!, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
     assert.equal(state.sourceCommit, "c0ffee");
-    assert.match(readFileSync(join(finished.root, ".runs", "bootstrap", "latest.log"), "utf8"), /npm ci\nnpm run build\nnpm run build:ui\n/);
+    assert.match(readFileSync(join(finished.root, ".runs", "bootstrap", "latest.log"), "utf8"), /npm ci\nnpm run build:runtime\nnpm run build:ui\n/);
     fakeDist(finished.root);
     const ran = finished.run(["help"]);
     assert.equal(ran.status, 0);
@@ -485,5 +494,56 @@ test("a build whose .runs/ was deleted while it was half done is still refused: 
     assert.match(half.run(["help"]).stdout, /operator ran help/);
   } finally {
     rmSync(half.root, { recursive: true, force: true });
+  }
+});
+
+test("bootstrap killed between its compile and its UI build leaves no marker, even with .runs/ deleted: the next ./alz is refused", () => {
+  // The fake npm's compile step has finished (dist/ exists), and the launcher is stopped before the UI step starts.
+  const gap = launcher("gap", 'case "$*" in "run build:ui") mv .runs .runs-moved; kill -TERM $PPID ;; esac\nexit 0');
+  try {
+    const result = gap.run(["bootstrap"]);
+    assert.notEqual(result.status, 0);
+    assert.ok(existsSync(join(gap.root, "dist", "cli", "operator.js")), "the compile's output is there");
+    assert.ok(!existsSync(join(gap.root, "dist", ".alz-build-complete")), "the compile wrote no marker");
+    assert.ok(!existsSync(join(gap.root, ".runs", "bootstrap", "state.json")), "and the state is gone");
+    const refused = gap.run(["help"]);
+    assert.equal(refused.status, 2);
+    assert.match(refused.stdout, REFUSAL);
+  } finally {
+    rmSync(gap.root, { recursive: true, force: true });
+  }
+});
+
+test("a stale marker never survives a failed build: npm run build removes it before compiling, and a failing compile writes none", () => {
+  // The real package.json scripts, run against a temporary checkout copy with a fake tsc that fails, so nothing real is built.
+  const root = mkdtempSync(join(tmpdir(), "alz-build-fail-"));
+  try {
+    const pkg = JSON.parse(readFileSync("package.json", "utf8")) as { scripts: Record<string, string> };
+    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "fake", version: "0.0.0", scripts: { build: pkg.scripts.build, "build:runtime": pkg.scripts["build:runtime"], "build:complete": pkg.scripts["build:complete"], "build:ui": pkg.scripts["build:ui"] } }));
+    mkdirSync(join(root, "dist"), { recursive: true });
+    writeFileSync(join(root, "dist", ".alz-build-complete"), JSON.stringify({ schemaVersion: 1, sourceCommit: "stale" }) + "\n");
+    const bin = join(root, "fake-bin");
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(bin, "tsc"), "#!/bin/sh\nmkdir -p dist; echo partial > dist/partial.js; exit 2\n");
+    chmodSync(join(bin, "tsc"), 0o755);
+    // The fake bin comes first, so its tsc and vite shadow the real ones; npm itself comes from this test's own PATH.
+    const env = { ...process.env, PATH: bin + ":" + (process.env.PATH ?? ""), HOME: root };
+    const failed = spawnSync("npm", ["run", "build"], { cwd: root, encoding: "utf8", env });
+    assert.notEqual(failed.status, 0, failed.stdout + failed.stderr);
+    assert.ok(existsSync(join(root, "dist", "partial.js")), "the failing compile still emitted");
+    assert.ok(!existsSync(join(root, "dist", ".alz-build-complete")), "the stale marker is gone and no new one was written");
+    // A compile that succeeds writes the marker, for this checkout's commit ("unknown" outside git), with no timestamp.
+    writeFileSync(join(bin, "tsc"), "#!/bin/sh\nexit 0\n");
+    const ok = spawnSync("npm", ["run", "build"], { cwd: root, encoding: "utf8", env });
+    assert.equal(ok.status, 0, ok.stdout + ok.stderr);
+    assert.deepEqual(JSON.parse(readFileSync(join(root, "dist", ".alz-build-complete"), "utf8")), { schemaVersion: 1, sourceCommit: "unknown" });
+    // The UI build removes it before it starts, so a partial UI never carries one; a fake vite that fails leaves none.
+    writeFileSync(join(bin, "vite"), "#!/bin/sh\nexit 3\n");
+    chmodSync(join(bin, "vite"), 0o755);
+    const ui = spawnSync("npm", ["run", "build:ui"], { cwd: root, encoding: "utf8", env });
+    assert.notEqual(ui.status, 0);
+    assert.ok(!existsSync(join(root, "dist", ".alz-build-complete")));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });
