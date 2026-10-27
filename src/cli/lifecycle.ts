@@ -1,6 +1,6 @@
 import { existsSync, lstatSync, mkdirSync } from "node:fs";
 import { homedir, release as osRelease, type as osType } from "node:os";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 
 import { platformKey } from "../deps/pins.js";
 import { fileSha256 } from "../lifecycle/app-install.js";
@@ -100,7 +100,15 @@ export async function runLifecycleCommand(args: string[], deps: LifecycleDeps = 
     out("The release archive could not be read: " + input.artifact + "\n");
     return EXIT.ERROR;
   }
-  const home = resolve(input.home ?? deps.home ?? homedir());
+  const rawHome = input.home ?? deps.home ?? homedir();
+  // A live run uses the host's own user folder. An empty or relative HOME would resolve against the current folder instead,
+  // and the report would describe that folder as the user's.
+  if (!input.synthetic && (rawHome === "" || !isAbsolute(rawHome))) {
+    out("The user folder (HOME) is " + (rawHome === "" ? "empty" : "not an absolute path (" + rawHome + ")") +
+      ", so a live run cannot tell which folder is this host's own. Set HOME to the user's absolute folder path and run it again. Nothing was run.\n");
+    return EXIT.BLOCKED;
+  }
+  const home = resolve(rawHome);
   const label = input.synthetic ? "SYNTHETIC" : "LIVE";
   if (!input.synthetic) {
     // A live run changes this host's own user folder. The person at the terminal confirms the host by name before anything runs.

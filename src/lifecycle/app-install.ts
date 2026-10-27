@@ -65,16 +65,22 @@ export function appState(home: string, version: string): AppState {
   return has(APP_LAUNCHER) && marker !== undefined && marker.version === version ? "INSTALLED" : "UNFINISHED";
 }
 
-/** The version the `current` file names, when it names an installed one. */
-export function currentVersion(home: string): string | undefined {
+/** The version name the `current` file holds, whatever state that version is in: a real file (never a link) holding one valid name. */
+export function currentName(home: string): string | undefined {
   const root = realFolder(home, [".alz", "app"]);
   if (root === undefined) return undefined;
   try {
     const entry = lstatSync(join(root, "current"));
     if (!entry.isFile()) return undefined;
     const version = readFileSync(join(root, "current"), "utf8").trim();
-    return VERSION.test(version) && appState(home, version) === "INSTALLED" ? version : undefined;
+    return VERSION.test(version) ? version : undefined;
   } catch { return undefined; }
+}
+
+/** The version the `current` file names, when it names an installed one. */
+export function currentVersion(home: string): string | undefined {
+  const version = currentName(home);
+  return version !== undefined && appState(home, version) === "INSTALLED" ? version : undefined;
 }
 
 /** Every version-named folder under `~/.alz/app` with its state, newest name first. */
@@ -129,11 +135,18 @@ export type InstallAppOptions = {
  */
 export async function installApp(opts: InstallAppOptions): Promise<InstalledApp> {
   const root = appRoot(opts.home);
-  mkdirSync(root, { recursive: true, mode: 0o700 });
-  // Nothing is written through a link: the app folder, and every folder above it under the home, must be a real folder.
-  if (realFolder(opts.home, [".alz", "app"]) === undefined) {
-    throw new AppInstallError("APP_ROOT_NOT_A_FOLDER", "The app folder under the user folder (~/.alz/app) is a link or not a folder, so nothing was installed. Remove it by hand first.");
+  // Nothing is written through a link: `~/.alz` and `~/.alz/app` must each be a real folder or not exist yet. Checked before
+  // the folders are created, so nothing is made inside a link's target, and again after, before anything is unpacked.
+  const notAFolder = (): never => { throw new AppInstallError("APP_ROOT_NOT_A_FOLDER", "The app folder under the user folder (~/.alz or ~/.alz/app) is a link or not a folder, so nothing was installed. Remove it by hand first."); };
+  let dir = opts.home;
+  for (const component of [".alz", "app"]) {
+    dir = join(dir, component);
+    let entry: ReturnType<typeof lstatSync>;
+    try { entry = lstatSync(dir); } catch { break; }
+    if (entry.isSymbolicLink() || !entry.isDirectory()) notAFolder();
   }
+  mkdirSync(root, { recursive: true, mode: 0o700 });
+  if (realFolder(opts.home, [".alz", "app"]) === undefined) notAFolder();
   const swept = sweepAppLeftovers(opts.home, opts.pidAlive);
   let sha256: string;
   try { sha256 = await fileSha256(opts.artifact); } catch { throw new AppInstallError("APP_ARTIFACT_UNREADABLE", "The release archive could not be read."); }
@@ -170,33 +183,56 @@ export async function installApp(opts: InstallAppOptions): Promise<InstalledApp>
   }
 }
 
+/** The points inside a removal, in order; a test stops the process at each one to prove a rerun finishes what was started. */
+export type RemovalPoint = "marked" | "unmarked" | "moved-aside" | "current-cleared" | "removed";
+
+/** Deletes the `current` file when it names `version`. */
+function clearCurrent(home: string, version: string): void {
+  if (currentName(home) !== version) return;
+  try { unlinkSync(join(realpathSync(home), ".alz", "app", "current")); } catch { /* already gone */ }
+}
+
 /**
- * Removes `~/.alz/app/<version>`: the removal marker first, the completion marker second, the folder last, and the `current`
- * file when it named this version. Refuses a version that is not one safe path component, a link anywhere on the way, or a
- * folder that does not resolve under the real app folder. "absent" when there is nothing to remove.
+ * Removes `~/.alz/app/<version>`, which must be the version the `current` file names: the removal marker first, the completion
+ * marker second, then the folder is renamed aside to `<version>.replaced-<pid>` (so the version reads ABSENT at once), the
+ * `current` file is cleared, and the renamed copy is deleted last. A process killed at any point leaves either the version
+ * REMOVING and still named by `current` (a repeat finishes it), the version ABSENT with `current` still naming it (a repeat
+ * clears `current` and says "absent"), or a `.replaced-<pid>` copy that the dead-pid sweep removes. Refuses a version that is not
+ * one safe path component, a link anywhere on the way, a folder that does not resolve under the real app folder, a version
+ * `current` does not name, and a folder that is neither this runner's install nor a removal it started.
  */
-export function removeApp(home: string, version: string): "removed" | "absent" {
+export function removeApp(home: string, version: string, opts: { at?: (point: RemovalPoint) => void } = {}): "removed" | "absent" {
   const refuse = (): never => { throw new AppInstallError("APP_REMOVE_REFUSED", "That folder is not an installed copy of the app, so nothing was removed."); };
   if (!VERSION.test(version)) refuse();
   const components = [".alz", "app", version];
   let path = home;
-  for (const component of components) {
+  for (const [index, component] of components.entries()) {
     path = join(path, component);
     let entry: ReturnType<typeof lstatSync>;
-    try { entry = lstatSync(path); } catch { return "absent"; }
+    try { entry = lstatSync(path); } catch {
+      // The version folder is gone: a removal killed after it moved the folder aside leaves `current` naming nothing.
+      if (index === components.length - 1) clearCurrent(home, version);
+      return "absent";
+    }
     if (entry.isSymbolicLink() || !entry.isDirectory()) refuse();
   }
   const expected = join(realpathSync(home), ...components);
   if (realpathSync(path) !== expected) refuse();
-  // Only a copy this runner installed (its marker for this version) or a removal it already started is removed.
+  // Only the version `current` names, and only a copy this runner installed (its marker) or a removal it already started.
+  if (currentName(home) !== version) refuse();
   const state = appState(home, version);
   if (state !== "INSTALLED" && state !== "REMOVING") refuse();
   writeFileSync(join(expected, REMOVING_MARKER), new Date().toISOString() + "\n", { mode: 0o600 });
+  opts.at?.("marked");
   rmSync(join(expected, INSTALL_MARKER), { force: true });
-  rmSync(expected, { recursive: true, force: true });
-  const current = join(realpathSync(home), ".alz", "app", "current");
-  try {
-    if (lstatSync(current).isFile() && readFileSync(current, "utf8").trim() === version) unlinkSync(current);
-  } catch { /* no current file */ }
+  opts.at?.("unmarked");
+  const aside = join(realpathSync(home), ".alz", "app", version + ".replaced-" + process.pid);
+  rmSync(aside, { recursive: true, force: true });
+  renameSync(expected, aside);
+  opts.at?.("moved-aside");
+  clearCurrent(home, version);
+  opts.at?.("current-cleared");
+  rmSync(aside, { recursive: true, force: true });
+  opts.at?.("removed");
   return "removed";
 }

@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 
-import { AppInstallError, appState, appFolder, appVersions, currentVersion, installApp, removeApp, APP_LAUNCHER } from "./app-install.js";
+import { AppInstallError, appState, appFolder, appVersions, currentName, currentVersion, installApp, removeApp, sweepAppLeftovers, APP_LAUNCHER, type RemovalPoint } from "./app-install.js";
 import { pidProvenDead } from "../deps/install.js";
 import { Journal, type JourneyId, type StepOutcome } from "./journal.js";
 
@@ -25,8 +25,11 @@ export type StepContext = {
   /** Runs the installed launcher and returns its stdout; injected by tests. Defaults to `bash <folder>/alz help` (node on Windows). */
   launch?: (folder: string) => string;
   now?: () => Date;
+  /** Called at each point inside an app removal; tests stop the process there. */
+  removalPoint?: (point: RemovalPoint) => void;
 };
-export type Step = { name: string; check?: boolean; run(ctx: StepContext): Promise<StepResult> };
+/** `resume` is true when the journal shows this step started by a run that died before finishing it. */
+export type Step = { name: string; check?: boolean; run(ctx: StepContext, resume: boolean): Promise<StepResult> };
 export type Journey = { id: JourneyId; steps: readonly Step[] };
 
 const DEAD_PID = 2 ** 22 + 7;
@@ -70,16 +73,31 @@ const launch: Step = {
   },
 };
 
+/**
+ * Removes the installed version `current` names. Resumed after a run that died inside it, it finishes that removal instead:
+ * a version `current` names that is REMOVING is removed, one that is ABSENT has its stale `current` cleared, and the copy the
+ * dead run had moved aside is swept; with no `current` and no version folder left, the dead run had already finished. Every
+ * other state fails closed. The post-condition is the same either way: the version ABSENT and nothing current.
+ */
 const uninstall: Step = {
   name: "uninstall", check: true,
-  async run(ctx) {
-    const version = currentVersion(ctx.home);
-    if (version === undefined) return fail("APP_NOT_INSTALLED");
+  async run(ctx, resume) {
+    let version = currentVersion(ctx.home);
+    const swept = resume ? sweepAppLeftovers(ctx.home, ctx.pidAlive) : [];
+    if (version === undefined && resume) {
+      const named = currentName(ctx.home);
+      const state = named === undefined ? undefined : appState(ctx.home, named);
+      if (named !== undefined && (state === "REMOVING" || state === "ABSENT")) version = named;
+      else if (named === undefined && appVersions(ctx.home).length === 0) {
+        return { outcome: "PASS", detail: { outcome: "absent", resumed: true, finishedBy: "earlier run", swept, state: "ABSENT" } };
+      }
+    }
+    if (version === undefined) return fail("APP_NOT_INSTALLED", resume ? { resumed: true } : {});
     try {
-      const outcome = removeApp(ctx.home, version);
+      const outcome = removeApp(ctx.home, version, ctx.removalPoint ? { at: ctx.removalPoint } : {});
       const state = appState(ctx.home, version);
-      if (state !== "ABSENT" || currentVersion(ctx.home) !== undefined) return fail("APP_STATE_AFTER_UNINSTALL", { state });
-      return { outcome: "PASS", detail: { version, outcome, state } };
+      if (state !== "ABSENT" || currentName(ctx.home) !== undefined) return fail("APP_STATE_AFTER_UNINSTALL", { state });
+      return { outcome: "PASS", detail: { version, outcome, state, ...(resume ? { resumed: true, swept } : {}) } };
     } catch (error) {
       return fail(error instanceof AppInstallError ? error.code : "APP_REMOVE_FAILED", { version });
     }
@@ -92,7 +110,7 @@ const repeatUninstall: Step = {
   async run(ctx) {
     const versions = appVersions(ctx.home);
     if (versions.length > 0) return fail("APP_STILL_PRESENT", { versions });
-    const current = currentVersion(ctx.home);
+    const current = currentName(ctx.home);
     if (current !== undefined) return fail("APP_STILL_CURRENT", { current });
     return { outcome: "PASS", detail: { outcome: "absent", versions: [] } };
   },
@@ -116,7 +134,7 @@ const plantInterruption: Step = {
 const recover: Step = {
   name: "partial-install-recovery", check: true,
   async run(ctx) {
-    const result = await install.run(ctx);
+    const result = await install.run(ctx, false);
     if (result.outcome !== "PASS") return result;
     const swept = result.detail.swept as string[];
     const expected = ["install.partial-" + DEAD_PID, "0.0.0-planted.replaced-" + DEAD_PID];
@@ -183,7 +201,7 @@ export async function runJourney(journey: Journey, opts: RunOptions): Promise<Ru
     }
     const at = (opts.now?.() ?? new Date()).toISOString();
     opts.journal.start(journey.id, step.name, at);
-    const result = await step.run(opts);
+    const result = await step.run(opts, previous.status === "INTERRUPTED");
     const detailFile = join(checksDir, journey.id + "." + step.name + ".json");
     writeFileSync(detailFile, JSON.stringify({ journey: journey.id, step: step.name, outcome: result.outcome, at, ...result.detail }, null, 2) + "\n", { mode: 0o600 });
     opts.journal.finish(journey.id, step.name, result.outcome, (opts.now?.() ?? new Date()).toISOString(), result.code);

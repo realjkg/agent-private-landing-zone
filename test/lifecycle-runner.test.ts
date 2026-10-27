@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import test from "node:test";
 
 import { INSTALL_MARKER, REMOVING_MARKER } from "../src/deps/checks.js";
-import { AppInstallError, appState, appVersions, currentVersion, installApp, removeApp, sweepAppLeftovers } from "../src/lifecycle/app-install.js";
+import { AppInstallError, appState, appVersions, currentName, currentVersion, installApp, removeApp, sweepAppLeftovers, type RemovalPoint } from "../src/lifecycle/app-install.js";
 import { buildPlatformEvidence } from "../src/lifecycle/evidence.js";
 import { acquireRunLock, Journal, JournalError } from "../src/lifecycle/journal.js";
 import { JOURNEYS, runJourney, type RunReport } from "../src/lifecycle/journeys.js";
@@ -116,6 +117,15 @@ test("the app install: marker last, current by rename, reuse of the same artifac
   await assert.rejects(installApp({ home: linkedHome, artifact: good.file, artifactSha256: good.sha256 }),
     (error: unknown) => error instanceof AppInstallError && error.code === "APP_ROOT_NOT_A_FOLDER");
   assert.deepEqual(readdirSync(target), [], "nothing was written through the link");
+  // A linked ~/.alz is refused before `app` is created inside its target (#281 review round 2, N2).
+  const linkedAlzHome = join(root, "home-linked-alz");
+  const alzTarget = join(root, "linked-alz-target");
+  mkdirSync(linkedAlzHome, { recursive: true });
+  mkdirSync(alzTarget, { recursive: true });
+  symlinkSync(alzTarget, join(linkedAlzHome, ".alz"));
+  await assert.rejects(installApp({ home: linkedAlzHome, artifact: good.file, artifactSha256: good.sha256 }),
+    (error: unknown) => error instanceof AppInstallError && error.code === "APP_ROOT_NOT_A_FOLDER");
+  assert.deepEqual(readdirSync(alzTarget), [], "no app folder was created in the link's target");
   // A different artifact of the same version replaces a complete one too (the marker names the artifact).
   const other = artifact("other", "1.2.3", "echo './alz help other'");
   const swapped = await installApp({ home: home2, artifact: other.file, artifactSha256: other.sha256 });
@@ -137,10 +147,28 @@ test("the app removal: marker first, current cleared, a second removal is absent
   mkdirSync(folder, { recursive: true });
   writeFileSync(join(folder, "alz"), "x");
   writeFileSync(join(folder, REMOVING_MARKER), "2026-10-27T00:00:00.000Z\n");
+  writeFileSync(join(home, ".alz", "app", "current"), "1.2.3\n");
   assert.equal(appState(home, "1.2.3"), "REMOVING");
   assert.deepEqual(appVersions(home), [{ version: "1.2.3", state: "REMOVING" }]);
   assert.equal(removeApp(home, "1.2.3"), "removed", "repeating the removal completes it");
   assert.equal(appState(home, "1.2.3"), "ABSENT");
+  assert.equal(currentName(home), undefined);
+  // A version `current` does not name is never removed, even one that reads REMOVING (#281 review round 2, N4).
+  const planted = join(home, ".alz", "app", "9.9.8");
+  mkdirSync(planted, { recursive: true });
+  writeFileSync(join(planted, REMOVING_MARKER), "2026-10-27T00:00:00.000Z\n");
+  writeFileSync(join(planted, "keep"), "a person's file");
+  assert.throws(() => removeApp(home, "9.9.8"), (error: unknown) => error instanceof AppInstallError && error.code === "APP_REMOVE_REFUSED");
+  assert.ok(existsSync(join(planted, "keep")), "a REMOVING folder that current does not name is untouched");
+  await installApp({ home, artifact: good.file, artifactSha256: good.sha256 });
+  assert.throws(() => removeApp(home, "9.9.8"), (error: unknown) => error instanceof AppInstallError && error.code === "APP_REMOVE_REFUSED", "current names another version");
+  assert.ok(existsSync(join(planted, "keep")));
+  assert.equal(removeApp(home, "1.2.3"), "removed");
+  rmSync(planted, { recursive: true, force: true });
+  // A version folder already gone while `current` still names it: "absent", and the stale `current` is cleared.
+  writeFileSync(join(home, ".alz", "app", "current"), "1.2.3\n");
+  assert.equal(removeApp(home, "1.2.3"), "absent");
+  assert.equal(currentName(home), undefined);
   // A linked version folder, or a bad version, is refused and the link target kept.
   const outside = join(root, "remove-outside");
   mkdirSync(outside, { recursive: true });
@@ -330,4 +358,112 @@ test("the run lock: a second run on the same evidence folder is refused while th
   assert.equal((JSON.parse(readFileSync(file, "utf8")) as { pid: number }).pid, process.pid, "a dead run's lock is replaced");
   taken();
   assert.ok(!existsSync(file));
+});
+
+/** A home with 1.2.3 installed and current, and an evidence folder whose journal shows the uninstall step started by a dead pid. */
+async function interruptedUninstall(label: string): Promise<{ home: string; app: string; ctx: Parameters<typeof runJourney>[1] }> {
+  const home = join(root, "home-kill-" + label);
+  const evidenceDir = join(root, "evidence-kill-" + label);
+  const good = artifact("kill-" + label);
+  await installApp({ home, artifact: good.file, artifactSha256: good.sha256 });
+  const journal = new Journal(join(evidenceDir, "lifecycle", "journal.jsonl"), { artifactSha256: good.sha256, ...IDENTITY, home });
+  journal.start("uninstall", "uninstall", "2026-10-27T00:00:00.000Z", 4242);
+  return { home, app: join(home, ".alz", "app"), ctx: { home, artifact: good.file, artifactSha256: good.sha256, evidenceDir, journal, pidAlive: DEAD, launch } };
+}
+
+test("an uninstall killed partway is finished by the rerun: each state a kill leaves resumes to nothing installed (#281 review round 2, B1)", async () => {
+  // The two states the review reproduced under the earlier removal order, and the states the current order can leave.
+  const states: Record<string, (app: string) => void> = {
+    "marker written": (app) => { writeFileSync(join(app, "1.2.3", REMOVING_MARKER), "x\n"); },
+    "install marker deleted": (app) => { writeFileSync(join(app, "1.2.3", REMOVING_MARKER), "x\n"); rmSync(join(app, "1.2.3", INSTALL_MARKER)); },
+    "folder removed, current left": (app) => { rmSync(join(app, "1.2.3"), { recursive: true }); },
+    "moved aside, current left": (app) => { renameSync(join(app, "1.2.3"), join(app, "1.2.3.replaced-4242")); },
+    "current cleared, copy aside": (app) => { renameSync(join(app, "1.2.3"), join(app, "1.2.3.replaced-4242")); rmSync(join(app, "current")); },
+    "all removed, journal not finished": (app) => { rmSync(join(app, "1.2.3"), { recursive: true }); rmSync(join(app, "current")); },
+  };
+  for (const [label, leave] of Object.entries(states)) {
+    const { home, app, ctx } = await interruptedUninstall(label.replace(/\W+/g, "-"));
+    leave(app);
+    const run = await runJourney(JOURNEYS[1]!, ctx);
+    assert.deepEqual(statuses(run), ["uninstall:PASS", "repeat-uninstall:PASS"], label);
+    assert.deepEqual(readdirSync(app), [], label + ": nothing is left, not even a copy moved aside or a stale current");
+    assert.equal(currentName(home), undefined, label);
+    const detail = JSON.parse(readFileSync(run.steps[0]!.detailFile!, "utf8")) as { resumed?: boolean };
+    assert.equal(detail.resumed, true, label + ": the check file says the step finished an earlier run's removal");
+  }
+});
+
+test("an uninstall resume stays fail-closed: no resume without an interrupted journal line, and no state a removal never leaves", async () => {
+  // A REMOVING version on a fresh step (not interrupted) is not taken over.
+  const fresh = await interruptedUninstall("fresh");
+  writeFileSync(join(fresh.app, "1.2.3", REMOVING_MARKER), "x\n");
+  const freshJournal = new Journal(join(root, "evidence-kill-fresh-2", "lifecycle", "journal.jsonl"), { ...fresh.ctx.journal.identity });
+  const notResumed = await runJourney(JOURNEYS[1]!, { ...fresh.ctx, evidenceDir: join(root, "evidence-kill-fresh-2"), journal: freshJournal });
+  assert.deepEqual(statuses(notResumed), ["uninstall:FAIL(APP_NOT_INSTALLED)"]);
+  assert.equal(appState(fresh.home, "1.2.3"), "REMOVING", "left as it was");
+  // Resumed, but current names an UNFINISHED folder (no removal writes that): refused, untouched.
+  const unfinished = await interruptedUninstall("unfinished");
+  rmSync(join(unfinished.app, "1.2.3", INSTALL_MARKER));
+  writeFileSync(join(unfinished.app, "1.2.3", "keep"), "x");
+  assert.deepEqual(statuses(await runJourney(JOURNEYS[1]!, unfinished.ctx)), ["uninstall:FAIL(APP_NOT_INSTALLED)"]);
+  assert.ok(existsSync(join(unfinished.app, "1.2.3", "keep")));
+  // Resumed, no current, but a version folder remains: refused, untouched.
+  const stray = await interruptedUninstall("stray");
+  rmSync(join(stray.app, "current"));
+  assert.deepEqual(statuses(await runJourney(JOURNEYS[1]!, stray.ctx)), ["uninstall:FAIL(APP_NOT_INSTALLED)"]);
+  assert.equal(appState(stray.home, "1.2.3"), "INSTALLED");
+  // While the run that started the step may still be alive, nothing is resumed.
+  const alive = await interruptedUninstall("alive");
+  writeFileSync(join(alive.app, "1.2.3", REMOVING_MARKER), "x\n");
+  assert.deepEqual(statuses(await runJourney(JOURNEYS[1]!, { ...alive.ctx, pidAlive: ALIVE })), ["uninstall:BLOCKED(LIFECYCLE_RUN_IN_PROGRESS)"]);
+  assert.equal(appState(alive.home, "1.2.3"), "REMOVING");
+});
+
+test("SIGKILL at each point of an uninstall: the rerun of the same journal ends with nothing installed and both uninstall checks passed", async () => {
+  const points: RemovalPoint[] = ["marked", "unmarked", "moved-aside", "current-cleared", "removed"];
+  const appModule = pathToFileURL(join(process.cwd(), "src", "lifecycle", "app-install.ts")).href;
+  const journalModule = pathToFileURL(join(process.cwd(), "src", "lifecycle", "journal.ts")).href;
+  for (const point of points) {
+    const home = join(root, "home-sigkill-" + point);
+    const evidenceDir = join(root, "evidence-sigkill-" + point);
+    const good = artifact("sigkill-" + point);
+    await installApp({ home, artifact: good.file, artifactSha256: good.sha256 });
+    const identity = { artifactSha256: good.sha256, ...IDENTITY, home };
+    const journalFile = join(evidenceDir, "lifecycle", "journal.jsonl");
+    // The child does what the uninstall step does (journal the start, then remove) and kills itself at the chosen point.
+    const script = join(root, "sigkill-" + point + ".mts");
+    writeFileSync(script, [
+      "import { removeApp } from " + JSON.stringify(appModule) + ";",
+      "import { Journal } from " + JSON.stringify(journalModule) + ";",
+      "new Journal(" + JSON.stringify(journalFile) + ", " + JSON.stringify(identity) + ").start(\"uninstall\", \"uninstall\", new Date().toISOString());",
+      "removeApp(" + JSON.stringify(home) + ", \"1.2.3\", { at: (p) => { if (p === " + JSON.stringify(point) + ") process.kill(process.pid, \"SIGKILL\"); } });",
+      "",
+    ].join("\n"));
+    const child = spawnSync(process.execPath, ["--import", "tsx", script], { encoding: "utf8", cwd: process.cwd() });
+    assert.equal(child.signal, "SIGKILL", point + ": " + child.stderr);
+    const journal = new Journal(journalFile, identity);
+    assert.equal(journal.record("uninstall", "uninstall").status, "INTERRUPTED", point);
+    const run = await runJourney(JOURNEYS[1]!, { home, artifact: good.file, artifactSha256: good.sha256, evidenceDir, journal, launch });
+    assert.deepEqual(statuses(run), ["uninstall:PASS", "repeat-uninstall:PASS"], point);
+    assert.deepEqual(readdirSync(join(home, ".alz", "app")), [], point + ": clean");
+  }
+});
+
+test("a stale lock is taken over by one run only: a run that finds another's new lock under the takeover token leaves it alone", () => {
+  const file = join(root, "lock-race", "lifecycle", "run.lock");
+  mkdirSync(join(root, "lock-race", "lifecycle"), { recursive: true });
+  // Run A replaces the dead run's lock between this run reading the dead pid and taking the token.
+  writeFileSync(file, JSON.stringify({ pid: 4242 }) + "\n");
+  const pidAlive = (pid: number): boolean => {
+    if (pid === 4242) { writeFileSync(file, JSON.stringify({ pid: 5555 }) + "\n"); return false; }
+    return pid === 5555;
+  };
+  assert.throws(() => acquireRunLock(file, pidAlive), (error: unknown) => error instanceof JournalError && error.code === "LIFECYCLE_RUN_IN_PROGRESS");
+  assert.equal((JSON.parse(readFileSync(file, "utf8")) as { pid: number }).pid, 5555, "run A's new lock is kept");
+  assert.deepEqual(readdirSync(join(root, "lock-race", "lifecycle")), ["run.lock"], "the takeover token is gone");
+  // Another run already holds the takeover token for that dead pid: this run waits its turn (busy), deleting nothing.
+  writeFileSync(file, JSON.stringify({ pid: 4242 }) + "\n");
+  writeFileSync(file + ".takeover-4242", JSON.stringify({ pid: 6666 }) + "\n");
+  assert.throws(() => acquireRunLock(file, DEAD), (error: unknown) => error instanceof JournalError && error.code === "LIFECYCLE_RUN_IN_PROGRESS");
+  assert.equal((JSON.parse(readFileSync(file, "utf8")) as { pid: number }).pid, 4242);
 });

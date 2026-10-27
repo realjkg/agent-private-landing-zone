@@ -101,6 +101,21 @@ test("a live run asks the person to type LIFECYCLE LIVE <host> first; anything e
   assert.equal(synth.asked, 0);
 });
 
+test("a live run refuses an empty or relative HOME before it asks or writes anything (#281 review round 2, N1)", async () => {
+  const good = artifact("homecheck");
+  for (const [home, said] of [["", /The user folder \(HOME\) is empty/], ["relative-home", /is not an absolute path \(relative-home\)/]] as const) {
+    const evidence = join(root, "evidence-homecheck-" + (home || "empty"));
+    const lines: string[] = [];
+    const term = terminal(true, [CONFIRM]);
+    assert.equal(await runLifecycleCommand(args("clean-install", good.file, evidence), deps("homecheck", lines, { terminal: term, home })), 2);
+    assert.match(lines.join(""), said);
+    assert.match(lines.join(""), /Set HOME to the user's absolute folder path and run it again\. Nothing was run\./);
+    assert.equal(term.asked, 0, "the confirmation is not even asked");
+    assert.ok(!existsSync(evidence), "no evidence folder");
+    assert.ok(!existsSync(join(process.cwd(), ".alz", "app", "2.0.0")) && !existsSync(join(process.cwd(), "relative-home")), "nothing under the current folder");
+  }
+});
+
 test("a synthetic run never continues as a live one: the same evidence folder refuses a run with another label, home, host or platform", async () => {
   const good = artifact("relabel");
   const evidence = join(root, "evidence-relabel");

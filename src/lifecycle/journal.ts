@@ -123,12 +123,14 @@ export class Journal {
  * One run of the lifecycle runner per evidence folder at a time: `<evidence>/lifecycle/run.lock`, created exclusively and
  * holding this pid. A lock whose pid is proven dead is stale and replaced; one whose pid may be alive means another run is
  * using the folder, and this one refuses before it reads or writes anything. Released by the run that holds it, only while
- * it still holds it. The same rule the pinned-tool installer's lock follows.
+ * it still holds it. The same rule the pinned-tool installer's lock follows. Taking over a stale lock is itself exclusive:
+ * only the run that creates `run.lock.takeover-<dead pid>` may delete a lock, and only after reading it again under that
+ * token and finding the same dead pid, so two runs that both saw the stale lock can never delete each other's new one.
  */
 export function acquireRunLock(file: string, pidAlive?: (pid: number) => boolean): () => void {
   const busy = (): never => { throw new JournalError("LIFECYCLE_RUN_IN_PROGRESS", "Another lifecycle run is using this evidence folder right now, so this run changed nothing. Wait for it to finish, or start a new evidence folder."); };
   mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
       const fd = openSync(file, "wx", 0o600);
       writeSync(fd, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }) + "\n");
@@ -145,7 +147,22 @@ export function acquireRunLock(file: string, pidAlive?: (pid: number) => boolean
       try { pid = (JSON.parse(readFileSync(file, "utf8")) as { pid?: unknown }).pid; } catch { pid = undefined; }
       const dead = typeof pid === "number" && Number.isInteger(pid) && pid >= 1 && pid !== process.pid && (pidAlive ? !pidAlive(pid) : pidProvenDead(pid));
       if (!dead) busy();
-      rmSync(file, { force: true });
+      const token = file + ".takeover-" + String(pid);
+      let tokenFd: number;
+      try { tokenFd = openSync(token, "wx", 0o600); } catch (tokenError) {
+        if ((tokenError as NodeJS.ErrnoException).code === "EEXIST") busy();
+        throw tokenError;
+      }
+      try {
+        writeSync(tokenFd, JSON.stringify({ pid: process.pid }) + "\n");
+        closeSync(tokenFd);
+        let still: unknown;
+        try { still = (JSON.parse(readFileSync(file, "utf8")) as { pid?: unknown }).pid; } catch { still = undefined; }
+        // Another run may have replaced the stale lock already; then the next attempt meets that run's lock instead.
+        if (still === pid) rmSync(file, { force: true });
+      } finally {
+        rmSync(token, { force: true });
+      }
     }
   }
   return busy();
