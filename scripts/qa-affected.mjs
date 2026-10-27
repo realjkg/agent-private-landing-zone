@@ -24,6 +24,13 @@ const INVENTORY_GUARDS = ["test/operations-parity.test.ts", "test/operations-cor
   "test/cli-ui-journey-map.test.ts"];
 const INVENTORY_INPUT = /^(?:src\/cli\/[^/]+\.ts|src\/operations\/.+\.ts|alz|package\.json|docs\/operator-console\.md|docs\/cli-ui-journey-map\.md)$/;
 
+// The ./alz dispatcher runs its command switch at module top level, so no test can import it; its owners are the guards that
+// read its text (operations-parity checks every `command === "x"` branch against the catalog and the help text) and the
+// operator CLI test that runs it.
+export const UNIMPORTABLE_OWNERS = {
+  "src/cli/operator.ts": ["test/operations-parity.test.ts", "test/operator-cli.test.ts"],
+};
+
 // Source-scan guards read a source tree from disk (a forbidden literal, import or call anywhere under it) instead of
 // importing what they check, so the import closure never selects them. Each is declared with the roots it scans and
 // runs for any source change under one of them; test/qa-affected.test.mjs fails if a test scans source without an
@@ -209,7 +216,9 @@ export function planChanged(changedPaths, files) {
       }
       if (directlyImpacted.length === 0) {
         // Do not mask missing test ownership with a blanket full-suite run.
-        gaps.push(path + " has no importing test. Add a focused test.");
+        const owners = UNIMPORTABLE_OWNERS[path];
+        if (owners) addExisting(selected, files, owners);
+        else gaps.push(path + " has no importing test. Add a focused test.");
       }
       continue;
     }
