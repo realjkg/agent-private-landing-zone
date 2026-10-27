@@ -2,7 +2,7 @@
 
 Status: run on 2026-10-11, and again on 2026-10-27 (same Terraform 1.16.4 binary, Azurite 3.37.0, all seven scenarios passing after the test's fixture and proxy-helper fixes recorded in `docs/act-pilot-simulation-aws.md`, the AWS counterpart for gate G1b), in a Linux sandbox. It runs the **real Terraform engine** against an **emulated Azure Storage backend (Azurite)** with Terraform's built-in `terraform_data` resource only. No Azure account, no real cloud resource and no registry access was used. It answers part of the open G2 questions in `docs/act-pilot-apply.md` and exercises the apply driver (`src/apply`) with the real binary. It does not replace the supervised DEV qualification.
 
-**Gate G1b for Azure Terraform DEV** (owner decision of 2026-10-27, issue #39, comment 6442856302, and the test-only emulator allowance, comment 6432984515). Rerun on 2026-10-27 on top of backend pinning (`docs/act-pilot-backend-pinning.md`): the product writes its own `zzzz_alz_backend_override.tf` with an empty `backend "azurerm" {}` block and supplies every backend setting itself, so the project's own backend block no longer carries the emulator's settings. All nine real-engine scenarios pass, and so do the seven default-CI guard tests (below). This is **emulated evidence, labeled as such**. **Entra ID authentication to the state backend is proven only in the supervised DEV qualification (G2)**, never here.
+**Gate G1b for Azure Terraform DEV: SYNTHETIC/EMULATED evidence** (owner decision of 2026-10-27, issue #39, comment 6442856302, and the test-only emulator allowance, comment 6432984515). Rerun on 2026-10-27 on top of backend pinning (`docs/act-pilot-backend-pinning.md`) and Entra-only state authentication. The product writes its own `zzzz_alz_backend_override.tf` with an empty `backend "azurerm" {}` block and supplies every backend setting itself, including `use_azuread_auth = true` (see "G1b on the Entra-only backend" below). The project's own backend block therefore no longer carries the emulator's settings. All ten real-engine scenarios pass, and so do the seven default-CI guard tests (below). This is **emulated evidence, labeled as such**: it is not live provider qualification and not release approval. **Entra ID authentication to the state backend is proven only in the supervised DEV qualification (G2)**, never here.
 
 ## What was run
 
@@ -12,7 +12,7 @@ Status: run on 2026-10-11, and again on 2026-10-27 (same Terraform 1.16.4 binary
 | Zip sha256 | `dc94af0eef1147718ad7c8daea792ed199e3e0492eec180d0adafa2a65a879df` (matches `terraform_1.16.4_SHA256SUMS` from the same host) |
 | Extracted binary sha256 | `44d3683c2ac9d72b6ca8ad880a2df8dd956dd5e019b1d111cb6a5d914d576b73` |
 | Azurite | 3.37.0 (blob service only), installed from the npm registry |
-| Node | 22.22.0 |
+| Node | 22.22.0 (2026-10-11); 26.11.1 (2026-10-27 Entra-only rerun) |
 
 The checksum file's GPG signature was not verified (uncertain: only the sha256 match against the file fetched from the same host was checked).
 
@@ -54,7 +54,37 @@ The default-CI guard block (no emulator, fake engine) proves the same boundary e
 - a project block carrying them is replaced by the product's pinned empty block before init;
 - the harness and the emulator's markers appear in no file outside this test and its documentation.
 
-No defect was found in `src/apply` by this run: argv, init flags, backend-config handling, profile environment, `show -json` shape and stderr classification all worked against the real binary. No source file was changed.
+No defect was found in `src/apply` by the backend-pinning rerun: argv, init flags, backend-config handling, profile environment, `show -json` shape and stderr classification all worked against the real binary. No source file was changed. The Entra-only rerun below changed `src/apply/providers/azure.ts`.
+
+## G1b on the Entra-only backend (SYNTHETIC/EMULATED, 2026-10-27)
+
+**The change.** `src/apply/providers/azure.ts` adds `use_azuread_auth = true` to the backend file the product writes for every init. That includes the seal's location-only file, because the STATE identity's init also has to reach a key-disabled account. Init saves the setting, and the sealed plan embeds it. `savedBackendMatches` now requires it to be `true`, and requires every setting the product did not write to be absent or `null`. Issues #287 and #289 proposed this before backend pinning; this change supersedes both.
+
+**Why the backend setting, not an environment variable.**
+- Under backend pinning, the product's `-backend-config` file is already the only source of backend settings.
+- A setting in that file is saved by init, so the product can check it before planning and again at apply. An environment default is not saved (finding (a)), so nothing could check it.
+- In the Terraform 1.16.4 binary, the backend's environment default for this setting is `ARM_USE_AZUREAD`. `ARM_STORAGE_USE_AZUREAD`, which #289 put on the runner profile, does not occur in the binary at all; it is the azurerm provider's variable.
+- `ARM_USE_AZUREAD` on an identity is already refused as a fallback (`ARM_USE_*` other than `ARM_USE_OIDC`), and no Terraform profile injects it. No profile change is needed.
+
+**Why no `resource_group_name`.** The 1.16.4 backend's own messages are: "One of `access_key`, `sas_token`, `use_azuread_auth` and `resource_group_name` must be specified", and "`resource_group_name` is required when `lookup_blob_endpoint` is set". A resource group is therefore needed only to list the account's shared keys through ARM, which `bootstrap/azure` disables, or to look up the blob endpoint. With Entra ID authorization, the contract's `<storage-account>/<container>/<key>` is the whole location. No contract field is added, nothing is defaulted, and a saved `resource_group_name` or `lookup_blob_endpoint` is refused.
+
+**Empirical results (Terraform 1.16.4 over Azurite, through the test-only harness unless noted):**
+- **What real init saves from the product's file.** `use_azuread_auth` is saved as `true`. `sas_token`, `access_key`, `resource_group_name`, `lookup_blob_endpoint`, `metadata_host`, `endpoint`, `client_secret`, `use_msi` and `use_cli` are all `null`. The harness's `ARM_SAS_TOKEN` and `ARM_METADATA_HOSTNAME` reached init through its environment only and were not saved. The product accepts this saved backend.
+- **A SAS token or resource group in the file is saved and refused.** When the file also sets `sas_token` or `resource_group_name`, init saves it, and the product refuses that saved backend.
+- **A shared key in the file was not probed.** With `access_key` in the file, init used the key ahead of the harness's environment SAS and got 403 from Azurite behind the custom host, so it saved nothing. The default-CI test refuses a saved `access_key`.
+- **Precedence with both set.** With `use_azuread_auth = true` saved and `ARM_SAS_TOKEN` in the environment, the backend authenticated with the SAS token: seal, apply, stale plan, lock and kill all passed, and `login.microsoftonline.com` was never contacted. This is how the harness reaches the emulator, and it is why `ARM_SAS_TOKEN` and `ARM_ACCESS_KEY` must never reach a child (they do not; see below).
+- **The production path.** A production seal used the real binary without the harness, with the emulator's SAS and metadata host in the project's block and in the operator's environment. Init asked `login.microsoftonline.com` for an Entra ID token, which the proxy refused, and retried for about 15 seconds. The seal was then refused (`ARTIFACT_INVALID`). The emulator's storage and metadata hosts were never contacted, and the state was unchanged.
+
+**Test-harness defect fixed (test code only).** The test's own Azurite client used Node's keep-alive agent. After the 15-second production seal, it reused a socket that Azurite had already closed, and failed with `ECONNRESET`. It now opens a fresh connection per call. Before this change the seal failed in under a second, which hid the race.
+
+**Default CI.** `test/apply-azure-state-auth.test.ts` (fake engine) proves the switch and the refusals on every product path:
+- both backend files carry `use_azuread_auth = true` once, and nothing else that authenticates;
+- the saved-backend check refuses a missing, `null`, `false` or non-boolean switch, and any shared key, SAS token, resource group, lookup, endpoint, cloud, credential or unknown attribute;
+- no Terraform profile injects `ARM_ACCESS_KEY`, `ARM_SAS_TOKEN`, `ARM_USE_AZUREAD` or `ARM_STORAGE_USE_AZUREAD`, and every identity's copy of them is refused;
+- `ARM_USE_AZUREAD` on any identity is refused before a child runs;
+- a seal whose init saves a SAS token, a shared key, a resource group or no switch is refused before planning.
+
+The SAS allowance stays in `test/apply-emulated.test.ts` only. Its last guard test fails if any other file names the harness or the emulator's settings.
 
 ## What it proves, and what it does not
 

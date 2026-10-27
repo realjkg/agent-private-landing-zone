@@ -40,7 +40,21 @@ const ambient = (env: NodeJS.ProcessEnv) => ambientRefusal(env, {
 });
 
 /**
- * The partial backend configuration init saves: the contract's storage account, container and key
+ * State access is Entra ID only (owner decision of 2026-10-27, issue #39; `bootstrap/azure` disables shared keys and SAS on the
+ * state accounts). The switch is the backend's own `use_azuread_auth = true`, written into the product's backend file for every
+ * init (seal, qualification, apply), so init saves it and the sealed plan embeds it. It is not taken from the environment:
+ * Terraform 1.16.4's azurerm backend reads `ARM_USE_AZUREAD` only as a default when the setting is absent, init does not save an
+ * environment default, and `ARM_USE_*` other than `ARM_USE_OIDC` is refused as a fallback (`FALLBACK_VARIABLE`).
+ * (`ARM_STORAGE_USE_AZUREAD` is the azurerm *provider's* variable; the 1.16.4 backend never reads it.)
+ *
+ * `resource_group_name` is never written and is refused if saved (`savedBackendMatches`). The backend needs it only to list the
+ * account's shared keys through ARM, or for `lookup_blob_endpoint`. With Entra ID authorization it builds the blob endpoint from
+ * the storage account name, so the contract's `<storage-account>/<container>/<key>` is the whole location and nothing is defaulted.
+ */
+const ENTRA_ONLY = "use_azuread_auth = true";
+
+/**
+ * The partial backend configuration init saves: the contract's storage account, container and key and the Entra ID switch
  * (`backendLocation`; the product override pins the azurerm type, so no project setting survives), and
  * the STATE_WRITE principal's client id, tenant, subscription and token file path. Never a secret value, and
  * every value is checked against a strict pattern before it is written into
@@ -49,7 +63,7 @@ const ambient = (env: NodeJS.ProcessEnv) => ambientRefusal(env, {
 function backendLocation(target: AzureTarget): string {
   if (!backendOk(target.backend)) return stop("BACKEND_NOT_IN_CONTRACT");
   const [account, container, ...key] = target.backend.split("/");
-  return [`storage_account_name = "${account}"`, `container_name = "${container}"`, `key = "${key.join("/")}"`, ""].join("\n");
+  return [`storage_account_name = "${account}"`, `container_name = "${container}"`, `key = "${key.join("/")}"`, ENTRA_ONLY, ""].join("\n");
 }
 
 function backendConfig(env: NodeJS.ProcessEnv, target: AzureTarget): string {
@@ -64,11 +78,26 @@ function backendConfig(env: NodeJS.ProcessEnv, target: AzureTarget): string {
   ].join("\n");
 }
 
-/** The storage account, container and key init saved must be the contract's `<storage-account>/<container>/<key>`. */
+/**
+ * The settings init may save with a value: exactly what `backendLocation` and `backendConfig` write. Init saves every other
+ * attribute of the backend's schema as `null` (docs/act-pilot-simulation.md, (a)), and an environment default is not saved.
+ */
+const SAVED_SETTINGS = new Set(["storage_account_name", "container_name", "key", "use_azuread_auth", "use_oidc", "client_id", "tenant_id", "subscription_id", "oidc_token_file_path"]);
+
+/**
+ * The backend init saved, which the sealed plan embeds and the apply uses: the azurerm type, the contract's
+ * `<storage-account>/<container>/<key>`, `use_azuread_auth` saved as `true`, `use_oidc` absent, `null` or `true`, and every other
+ * setting absent or `null`. That refuses a shared key or SAS token (`access_key`, `sas_token`), another credential or auth path
+ * (`client_secret`, `client_certificate*`, `use_msi`, `msi_endpoint`, `use_cli`, `use_aks_workload_identity`), another endpoint or
+ * cloud (`endpoint`, `metadata_host`, `environment`, `use_dns_zone_endpoint`), the ARM lookups (`resource_group_name`,
+ * `lookup_blob_endpoint`), `snapshot`, and any attribute a later backend version adds.
+ */
 function savedBackendMatches(backend: Record<string, unknown>, target: AzureTarget): boolean {
   const config = isRecord(backend.config) ? backend.config : {};
   const parts = [config.storage_account_name, config.container_name, config.key];
-  return backend.type === "azurerm" && parts.every((part) => typeof part === "string") && parts.join("/") === target.backend;
+  return backend.type === "azurerm" && parts.every((part) => typeof part === "string") && parts.join("/") === target.backend &&
+    config.use_azuread_auth === true && (config.use_oidc === undefined || config.use_oidc === null || config.use_oidc === true) &&
+    Object.entries(config).every(([name, value]) => SAVED_SETTINGS.has(name) || value === null);
 }
 
 /**

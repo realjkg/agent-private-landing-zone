@@ -114,6 +114,8 @@ if (b.failOn === cmd) { log({}); process.stderr.write(b.failStderr || "boom ${VA
 if (cmd === "version") { log({}); process.stdout.write(JSON.stringify({ terraform_version: b.version })); }
 else if (cmd === "init") {
   fs.mkdirSync(".terraform", { recursive: true });
+  // Like the real init: a setting the -backend-config file sets is saved with its value; the backend's Entra ID switch is otherwise null.
+  const entra = /^use_azuread_auth = true$/m.test(backend() || "") ? true : null;
   if (b.savedBackend !== null) {
     const def = (${JSON.stringify({ [DEV_TARGET.account]: DEV_TARGET.backend, [QA_TARGET.account]: QA_TARGET.backend, [PROD_TARGET.account]: PROD_TARGET.backend })})[process.env.ARM_SUBSCRIPTION_ID];
     const [account, container, ...key] = (def || "").split("/");
@@ -121,7 +123,7 @@ else if (cmd === "init") {
     const [bucket, ...s3key] = ((${JSON.stringify(Object.fromEntries([AWS_DEV_TARGET, AWS_QA_TARGET, AWS_PROD_TARGET].map((t) => [t.account, t.backend])))})[(process.env.AWS_ROLE_ARN || "").split(":")[4]] || "").split("/");
     const backend = b.savedBackend || (process.env.AWS_ROLE_ARN
       ? { type: "s3", config: { bucket, key: s3key.join("/"), region: process.env.AWS_REGION, use_lockfile: true } }
-      : { type: "azurerm", config: { storage_account_name: account, container_name: container, key: key.join("/") } });
+      : { type: "azurerm", config: { storage_account_name: account, container_name: container, key: key.join("/"), use_azuread_auth: entra } });
     fs.writeFileSync(path.join(".terraform", "terraform.tfstate"), JSON.stringify({ version: 3, backend }));
   }
   for (const w of b.initWrites || []) { fs.mkdirSync(path.dirname(w.path), { recursive: true }); fs.writeFileSync(w.path, w.content); }

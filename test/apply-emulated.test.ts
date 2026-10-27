@@ -15,6 +15,7 @@ import { runApply, sealPreview, type ApplyDeps, type ApplyRequest } from "../src
 import { openNonceStore } from "../src/apply/nonces.js";
 import { loadSealedPlan, reviewBundleOf, sealPlan, verifyReviewBundle } from "../src/apply/seal.js";
 import { TERRAFORM as TERRAFORM_ENGINE } from "../src/apply/engines/terraform.js";
+import { writeBackendOverride } from "../src/apply/backend-pin.js";
 import { pilotUnitOf } from "../src/apply/unit.js";
 import { buildChildEnvironment } from "../src/tools/child-env.js";
 import { TERRAFORM_APPLY_PROFILE } from "../src/tools/profiles.js";
@@ -139,8 +140,9 @@ async function startEmulator(dir: string): Promise<Emulator> {
   });
 
   const blob: Emulator["blob"] = (method, path, headers = {}) => new Promise((resolve, reject) => {
+    // A fresh connection per call (no keep-alive pool): Azurite closes idle sockets, and a reused one fails with ECONNRESET after a long engine step.
     const request = https.request({
-      host: "127.0.0.1", port: blobPort, servername: BLOB_HOST, ca: tls.cert, method,
+      agent: false, host: "127.0.0.1", port: blobPort, servername: BLOB_HOST, ca: tls.cert, method,
       path, headers: { host: BLOB_HOST, "x-ms-version": API_VERSION, ...headers },
     }, (response) => {
       const chunks: Buffer[] = [];
@@ -384,6 +386,48 @@ describe("emulated backend simulation: real Terraform, Azurite, built-in resourc
 
   // --- the path, against the real engine ------------------------------------------------------------
 
+  /**
+   * Real `terraform init` (through the harness, as the STATE identity's child would run it) in a directory holding the product's backend
+   * override and the product's backend file, plus `extra` lines a test appends to that file. Returns the backend init saved.
+   */
+  function realInitSaved(extra: readonly string[]): Record<string, unknown> {
+    const work = fresh("init");
+    writeFileSync(join(work, "main.tf"), 'resource "terraform_data" "probe" {}\n');
+    writeBackendOverride(work, "azurerm");
+    const pinned = { tenantId: TENANT, subscriptionId: DEV_TARGET.account, backend: BACKEND, workspace: "default" };
+    const backendFile = join(fresh("backend"), "alz-backend.tfbackend");
+    writeFileSync(backendFile, AZURE.backendLocation(pinned) + extra.map((line) => line + "\n").join(""), { mode: 0o600 });
+    const child = buildChildEnvironment({ profile: TERRAFORM_APPLY_PROFILE, base: env, toolDirs: [toolDir, "/usr/bin", "/bin"], home: fresh("home"), tmp: fresh("tmp"), identity: "STATE" });
+    try {
+      execFileSync(join(toolDir, "terraform"), ["init", "-input=false", "-no-color", "-backend-config=" + backendFile], { cwd: work, env: child.env, stdio: ["ignore", "ignore", "pipe"] });
+    } catch (error) {
+      // The emulator's own error text: it can quote only the harness's SAS, signed with Azurite's published development key.
+      throw new Error("real init failed with " + JSON.stringify(extra.map((line) => line.split(" ")[0])) + ": " + String((error as { stderr?: Buffer }).stderr ?? "").slice(0, 2000));
+    }
+    return (JSON.parse(readFileSync(join(work, ".terraform", "terraform.tfstate"), "utf8")) as { backend: Record<string, unknown> }).backend;
+  }
+
+  it("real init saves the product's Entra-only backend exactly: use_azuread_auth true, and no SAS, key, resource group or endpoint", () => {
+    const pinned = { tenantId: TENANT, subscriptionId: DEV_TARGET.account, backend: BACKEND, workspace: "default" };
+    const saved = realInitSaved([]);
+    const config = saved.config as Record<string, unknown>;
+    assert.equal(saved.type, "azurerm");
+    assert.equal(config.use_azuread_auth, true, "the product's backend file turns Entra ID authorization on, and init saves it (so the plan embeds it)");
+    // The harness's ARM_SAS_TOKEN and ARM_METADATA_HOSTNAME reached init through its environment only, and init does not save them.
+    for (const name of ["sas_token", "access_key", "resource_group_name", "lookup_blob_endpoint", "metadata_host", "endpoint", "client_secret", "use_msi", "use_cli"]) {
+      assert.ok(config[name] === null || config[name] === undefined, name + " is not saved");
+    }
+    assert.equal(AZURE.savedBackendMatches(saved, pinned), true, "the product accepts what real init saved from its own file");
+    // Had a SAS token or a resource group reached the saved backend, the product refuses it (and so the plan that embeds it). A shared
+    // key cannot be probed here (init with `access_key` gets 403 from Azurite behind the custom host and saves nothing); the default-CI
+    // test in test/apply-azure-state-auth.test.ts refuses a saved `access_key`.
+    for (const line of [`sas_token = "${containerSas()}"`, 'resource_group_name = "rg-alz-sim"']) {
+      const tainted = realInitSaved([line]);
+      assert.notEqual((tainted.config as Record<string, unknown>)[line.split(" ")[0]], null, line.split(" ")[0] + " is saved when the file sets it");
+      assert.equal(AZURE.savedBackendMatches(tainted, pinned), false, line.split(" ")[0] + " is refused");
+    }
+  });
+
   it("seals with the real engine, the review bundle verifies, and the plan is the real show -json shape", async () => {
     const s = await seal("first");
     assert.deepEqual(s.sealed.changes.map((c) => [c.address, c.type, c.action]), [["terraform_data.pilot", "terraform_data", "CREATE"]]);
@@ -494,6 +538,7 @@ describe("emulated backend simulation: real Terraform, Azurite, built-in resourc
   it("a production seal without the harness is refused even when the project and the operator's environment carry the emulator's SAS and metadata host", async () => {
     const before = await stateBlob();
     const contacts = emulatorHosts();
+    const seen = emulator.connects().length;
     const projectRoot = fresh("project");
     // The project's own backend block names the emulator's credential and endpoint; the product's pinned override replaces the block.
     writeFileSync(join(projectRoot, "main.tf"), [
@@ -522,10 +567,12 @@ describe("emulated backend simulation: real Terraform, Azurite, built-in resourc
       invocation: human(DEV_TARGET_EMULATED), environment: "DEV", target: DEV_TARGET_EMULATED, manifest, projectRoot, policyVersion: POLICY, resolved, requester: REQUESTER,
     }, production);
     assert.equal(result.ok, false, "a production seal never reaches the emulator's state");
-    // Init ran with the product's pinned backend and the STATE identity's OIDC settings only, and failed: the proxy refuses Entra ID.
+    // Init ran with the product's pinned backend (use_azuread_auth = true) and the STATE identity's OIDC settings only, and failed: the
+    // backend asked Entra ID for a token, which the proxy refuses. That is the production path: Entra ID, never the emulator's SAS.
     assert.equal((result as { code: string }).code, "ARTIFACT_INVALID", JSON.stringify(result));
     noSecrets(result);
     assert.equal(emulatorHosts(), contacts, "neither the emulator's storage host nor its metadata host was contacted");
+    assert.ok(emulator.connects().slice(seen).includes("login.microsoftonline.com:443"), "the production backend went to Entra ID for its token");
     assert.deepEqual(await stateBlob(), before);
   });
 
