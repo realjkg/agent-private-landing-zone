@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readdirSync, readFileSync } from "node:fs";
-import { diffCommand, importsOf, planChanged, SOURCE_SCAN_GUARDS } from "../scripts/qa-affected.mjs";
+import { diffCommand, importsOf, planChanged, SOURCE_SCAN_GUARDS, UNIMPORTABLE_OWNERS } from "../scripts/qa-affected.mjs";
 
 function fixture() {
   return new Map([
@@ -290,4 +290,27 @@ test("every test that scans a source tree from disk is declared with the roots i
     assert.ok(readdirSync("test").includes(guard.slice("test/".length)), guard + " exists");
     assert.ok(roots.length > 0 && roots.every((root) => /^src\/(?:[^/]+\/)?$/.test(root)), guard + " roots are source directories");
   }
+});
+
+test("a change under src/lifecycle runs the runner's tests and the release admission review's test it reuses", () => {
+  const files = fixture();
+  files.set("src/lifecycle/evidence.ts", 'import "../qualification/release-admission.js"; export const e = 1;');
+  files.set("src/qualification/release-admission.ts", "export const r = 1;");
+  files.set("test/lifecycle-runner.test.ts", 'import "../src/lifecycle/evidence.js";');
+  files.set("test/lifecycle-cli.test.ts", "test()");
+  files.set("test/release-admission.test.ts", 'import "../src/qualification/release-admission.js";');
+  const plan = planChanged(["src/lifecycle/evidence.ts"], files);
+  for (const owner of ["test/lifecycle-runner.test.ts", "test/lifecycle-cli.test.ts", "test/release-admission.test.ts"]) assert.ok(plan.nodeTests.includes(owner), owner);
+  assert.deepEqual(plan.gaps, []);
+});
+
+test("the ./alz dispatcher, which no test can import, is owned by the guards that read it, and an unowned unimportable source is still a gap", () => {
+  const files = fixture();
+  files.set("src/cli/operator.ts", "const command = process.argv[2]; if (command === \"deps\") {}");
+  files.set("test/operator-cli.test.ts", "test()");
+  const plan = planChanged(["src/cli/operator.ts"], files);
+  assert.deepEqual(plan.gaps, []);
+  for (const owner of UNIMPORTABLE_OWNERS["src/cli/operator.ts"]) assert.ok(plan.nodeTests.includes(owner), owner);
+  files.set("src/cli/orphan.ts", "export const x = 1;");
+  assert.match(planChanged(["src/cli/orphan.ts"], files).gaps.join(" "), /src\/cli\/orphan\.ts has no importing test/);
 });

@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import { signRequest } from "../src/apply/approval.js";
 import { computeArtifactSha256, engineBinaryChange, loadSealedPlan, planWithoutStoring, reviewBundleOf, sealPlan, verifyReviewBundle, verifySealedPlan, type SealInput } from "../src/apply/seal.js";
 import type { PreviewProvenance, SealedPlan } from "../src/apply/types.js";
 import { decryptEvidence, encryptEvidence, ensureEvidenceKey, type EvidenceEnvelope } from "../src/evidence/vault.js";
@@ -13,8 +14,10 @@ import { canonicalJson } from "../src/teardown/manifest.js";
 import { createImmutableSnapshot } from "../src/teardown/snapshot.js";
 import { createPrivateDirectory } from "../src/tools/private-workdir.js";
 import { SOURCE_COMMIT,
+  keys,
   AZURE_BACKEND_TF, DEV_TARGET, ENGINE_VERSION, ENV, identityEnv, TENANT, H, PLAN_CANARY, POLICY, PROD_TARGET, QA_TARGET, VALUE_CANARY, behave as behaveIn, callsOf, installFakeTerraform, sha,
   writeProject, type Behavior,
+  REQUESTER,
 } from "./helpers/apply-fixtures.js";
 import { AZURE } from "../src/apply/providers/azure.js";
 import { TERRAFORM } from "../src/apply/engines/terraform.js";
@@ -60,7 +63,7 @@ function fixture(options: { target?: typeof DEV_TARGET; environment?: "DEV" | "Q
     engine: TERRAFORM, environment: options.environment ?? "DEV", target, manifest, snapshotPath: snapshot.path, scratchDir: scratch.path,
     env: options.env ?? identityEnv(options.environment ?? "DEV"), policyVersion: POLICY, engineVersion: ENGINE_VERSION, toolDirs: [toolDir],
     pinned: { tenantId: TENANT, subscriptionId: target.account, backend: target.backend, workspace: target.workspace }, spec: AZURE, contractSha256: H("9"), sourceCommit: SOURCE_COMMIT,
-    provenance: PROVENANCE, now: () => new Date("2026-10-11T10:00:00.000Z"),
+    provenance: PROVENANCE, requester: REQUESTER, now: () => new Date("2026-10-11T10:00:00.000Z"),
     unit: pilotUnitOf({ provider: "AZURE", contractSha256: H("9"), environment: options.environment ?? "DEV", target }),
   };
   return { input, scratch, cleanup: () => { snapshot.remove(); scratch.remove(); } };
@@ -112,7 +115,7 @@ test("sealing runs the pinned init/workspace/plan/show sequence, with STATE for 
 test("the sealed record binds plan, manifest, release identity, environment, target, engine, policy and pinned contract; the artifact hash recomputes from them", async () => {
   const { result } = await sealed();
   const { sealed: s } = result as Extract<typeof result, { ok: true }>;
-  assert.equal(s.schemaVersion, 1);
+  assert.equal(s.schemaVersion, 2, "schema 2: the requester signs the sealed request");
   assert.equal(s.environment, "DEV");
   assert.deepEqual(s.target, DEV_TARGET);
   assert.equal(s.engineVersion, "1.9.5");
@@ -126,10 +129,13 @@ test("the sealed record binds plan, manifest, release identity, environment, tar
     changesSha256: sha(canonicalJson(s.changes)), channel: s.channel, contractSha256: s.contractSha256, engineVersion: s.engineVersion, environment: s.environment, manifestHash: s.manifestHash,
     planSha256: s.planSha256, policyVersion: s.policyVersion,
     provenance: { engineBinarySha256: PROVENANCE.engineBinarySha256, qualification: { reason: "Fixture: no qualification evidence is in this test's vault.", state: "UNQUALIFIED" } },
-    releaseIdentity: s.releaseIdentity, sourceCommit: s.sourceCommit,
+    releaseIdentity: s.releaseIdentity, requesterId: "carol", sourceCommit: s.sourceCommit,
     target: { account: s.target.account, backend: s.target.backend, workspace: s.target.workspace },
     unit: { tags: { "alz-build": s.unit!.tags["alz-build"], "alz-managed-by": "alz", "alz-unit": s.unit!.unitId }, unitId: s.unit!.unitId, untagged: s.unit!.untagged },
-  })), "canonical JSON of exactly these thirteen fields, the change list through its own hash");
+  })), "canonical JSON of exactly these fourteen fields (the requester id among them), the change list through its own hash");
+  assert.equal(s.requesterId, "carol");
+  assert.deepEqual(Object.keys(s.request!).sort(), ["signatureBase64", "statement"]);
+  assert.deepEqual(s.request!.statement, { schemaVersion: 1, requesterId: "carol", artifactSha256: s.artifactSha256, environment: "DEV", nonce: s.request!.statement.nonce });
   assert.deepEqual(s.provenance, PROVENANCE, "the seal keeps the provenance the driver observed, unchanged");
   assert.deepEqual(s.changes, [
     { address: "azurerm_log_analytics_workspace.pilot", type: "azurerm_log_analytics_workspace", action: "UPDATE" },
@@ -486,8 +492,12 @@ test("the change list carries an import, a move, a forget and output changes, st
     assert.ok(!checked.ok && checked.code === "ARTIFACT_TAMPERED");
   }
   // A QA bundle verifies once its hashes are recomputed for QA, and an unknown environment never does.
+  // The requester signed the DEV artifact, so a relabeled record needs the requester's own new signature over the QA hash (a copied one is tampering).
   const qaRecord = { ...s, environment: "QA" as const };
-  const qaBundle = { ...reviewBundleOf({ ...qaRecord, artifactSha256: computeArtifactSha256(qaRecord) }) };
+  const qaHash = computeArtifactSha256(qaRecord);
+  const qaBundle = { ...reviewBundleOf({ ...qaRecord, artifactSha256: qaHash, request: signRequest({ schemaVersion: 1, requesterId: s.requesterId, artifactSha256: qaHash, environment: "QA", nonce: s.request!.statement.nonce }, keys.carol.priv) }) };
+  const relabeledOnly = verifyReviewBundle({ ...reviewBundleOf({ ...qaRecord, artifactSha256: qaHash }) });
+  assert.ok(!relabeledOnly.ok && relabeledOnly.code === "ARTIFACT_TAMPERED", "the DEV request signature does not carry over to a QA relabel");
   assert.ok(verifyReviewBundle(qaBundle).ok && qaBundle.environment === "QA");
   assert.ok(!verifyReviewBundle({ ...qaBundle, environment: "STAGING" }).ok);
   assert.ok(!verifyReviewBundle({ ...qaBundle, environment: "DEV" }).ok, "relabeling a QA bundle breaks its hash");

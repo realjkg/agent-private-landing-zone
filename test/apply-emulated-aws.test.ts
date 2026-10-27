@@ -22,7 +22,7 @@ import { removeTree } from "../src/teardown/driver/cleanup.js";
 import { buildManifest } from "../src/teardown/manifest.js";
 import { captureProjectFiles } from "../src/teardown/snapshot.js";
 import {
-  AWS_DEV_TARGET, AWS_REGION, NOW, POLICY, SOURCE_COMMIT, approvalFor, awsContractJson, awsIdentityEnv, awsRoleArn, human, pinPathOf, sha, writePinnedContract,
+  AWS_DEV_TARGET, AWS_REGION, NOW, POLICY, REQUESTER, SOURCE_COMMIT, approvalFor, awsContractJson, awsIdentityEnv, awsRoleArn, human, pinPathOf, sha, writePinnedContract,
 } from "./helpers/apply-fixtures.js";
 
 /**
@@ -275,7 +275,7 @@ describe("AWS emulated backend simulation: real Terraform, moto S3 with use_lock
     const p = project(input, extra);
     const result = await sealPreview({
       invocation: human(AWS_DEV_TARGET), environment: "DEV", target: AWS_DEV_TARGET, manifest: p.manifest, projectRoot: p.projectRoot,
-      policyVersion: POLICY, resolved: p.resolved,
+      policyVersion: POLICY, resolved: p.resolved, requester: REQUESTER,
     }, deps);
     assert.ok(result.ok, JSON.stringify(result));
     const loaded = await loadSealedPlan(result.path);

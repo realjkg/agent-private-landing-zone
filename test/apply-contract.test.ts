@@ -320,6 +320,7 @@ const evidenceFor = (over: Partial<ApplyEvidence> = {}): ApplyEvidence => ({
   releaseIdentity: RELEASE,
   contractSha256: "c".repeat(64), sourceCommit: "5ec0de0000000000000000000000000000c0ffee",
   approvals: [{ approverId: "alice", issuedAt: "2026-10-11T12:00:00.000Z" }],
+  requester: { requesterId: "carol", nonce: "0".repeat(32) },
   adapter: { adapterVersion: "terraform-apply-1", argvDigest: "e".repeat(64) },
   toolVersions: { engine: "1.9.8" },
   outcome: "SUCCEEDED",

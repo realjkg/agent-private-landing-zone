@@ -5,9 +5,16 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 DIST="$ROOT/dist/cli/operator.js"
 TSX="$ROOT/node_modules/.bin/tsx"
 STATE="$ROOT/.runs/bootstrap/state.json"
+# Written into dist/ as a build's last step ({schemaVersion, sourceCommit}: npm run build:complete after tsc, or bootstrap below after
+# every step); without it dist/ is an unfinished build, and with another commit than the checkout's it is a stale one.
+BUILD_MARKER="$ROOT/dist/.alz-build-complete"
 
-# The commit this checkout is at, or "unknown" outside a git checkout. A build is only trusted for the commit it was made from.
+# The commit this checkout is at, or "unknown" when $ROOT is not itself the top of a git checkout: an archive extracted inside
+# some other repository must not be judged by that repository's commit. A build is only trusted for the commit it was made from.
 source_commit() {
+  local top
+  top="$(git -C "$ROOT" rev-parse --show-toplevel 2>/dev/null)" || { echo unknown; return; }
+  if [[ -z "$top" || ! -d "$top" || "$(cd "$top" && pwd -P)" != "$(cd "$ROOT" && pwd -P)" ]]; then echo unknown; return; fi
   git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown
 }
 
@@ -25,6 +32,13 @@ if [[ "${1:-}" == "bootstrap" ]]; then
     printf '{\n  "startedAt": "%s",\n  "step": "%s",\n  "completedAt": %s,\n  "sourceCommit": "%s"\n}\n' \
       "$STARTED_AT" "$1" "$2" "$COMMIT" >"$STATE.tmp"
     mv -f "$STATE.tmp" "$STATE"
+  }
+  # The build's own completion marker, the same two fields `npm run build:complete` writes, for the bootstrapped commit. No
+  # timestamp: two builds of one commit stay byte-identical.
+  write_build_marker() {
+    mkdir -p "$ROOT/dist"
+    printf '{\n  "schemaVersion": 1,\n  "sourceCommit": "%s"\n}\n' "$COMMIT" >"$BUILD_MARKER.tmp"
+    mv -f "$BUILD_MARKER.tmp" "$BUILD_MARKER"
   }
   DONE=0
   # The terminal, kept on its own descriptor: a stop signal arrives while the build's output is redirected to the log.
@@ -45,11 +59,17 @@ if [[ "${1:-}" == "bootstrap" ]]; then
   build_local() {
     npm ci || return $?
     write_state "npm run build" null
-    npm run build
+    # The marker goes before the first build step and comes back only after the last one: the runtime step here is the
+    # compile alone (no marker), so no moment between the steps has a marker, even if .runs/ is deleted meanwhile.
+    rm -f "$BUILD_MARKER"
+    npm run build:runtime
     local build_exit=$?
     if (( build_exit != 0 )); then return "$build_exit"; fi
     write_state "npm run build:ui" null
     npm run build:ui
+    local ui_exit=$?
+    if (( ui_exit != 0 )); then return "$ui_exit"; fi
+    write_build_marker
   }
   if build_local >"$LOG_FILE" 2>&1; then
     write_state "done" "\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\""
@@ -71,9 +91,16 @@ if [[ "${1:-}" == "debug" && -x "$TSX" ]]; then
   exec "$TSX" "$ROOT/src/cli/operator.ts" "$@"
 fi
 
+refuse_build() {
+  echo "The local build is not ready: ./alz bootstrap did not finish, or the source changed after it ran."
+  echo "Run: ./alz bootstrap"
+  exit 2
+}
+
 if [[ -f "$DIST" ]]; then
   # A build made by ./alz bootstrap is run only when that bootstrap finished and the source has not moved since.
-  # A build made another way (no state file, for example CI's own npm steps) is run as before.
+  # A build made another way (no state file: a released archive, CI's own npm steps) is run when it carries the build's
+  # own completion marker, which every finished build writes last and an interrupted one never has.
   if [[ -f "$STATE" ]]; then
     if ! node -e '
       const fs = require("node:fs");
@@ -82,11 +109,22 @@ if [[ -f "$DIST" ]]; then
       const finished = typeof state.completedAt === "string" && state.completedAt.length > 0;
       process.exit(finished && state.sourceCommit === process.argv[2] ? 0 : 1);
     ' "$STATE" "$(source_commit)"; then
-      echo "The local build is not ready: ./alz bootstrap did not finish, or the source changed after it ran."
-      echo "Run: ./alz bootstrap"
-      exit 2
+      refuse_build
     fi
   fi
+  if [[ ! -f "$BUILD_MARKER" ]]; then refuse_build; fi
+  # In a checkout, the marker must name the checkout's commit; a marker for another commit, or one that says "unknown", is not
+  # a build of this source (the same rule npm run build:ui applies when it keeps a marker). Only when this launcher cannot read
+  # a commit itself (an archive, no checkout) is any well-formed marker accepted.
+  if ! node -e '
+    const fs = require("node:fs");
+    let marker;
+    try { marker = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); } catch { process.exit(1); }
+    const built = marker && typeof marker.sourceCommit === "string" ? marker.sourceCommit : "";
+    if (built === "") process.exit(1);
+    const head = process.argv[2];
+    process.exit(head === "unknown" || built === head ? 0 : 1);
+  ' "$BUILD_MARKER" "$(source_commit)"; then refuse_build; fi
   exec node "$DIST" "$@"
 fi
 

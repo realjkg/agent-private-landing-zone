@@ -25,6 +25,8 @@ import { SOURCE_COMMIT,
   AWS_DEV_TARGET, AWS_PROD_TARGET, AWS_QA_TARGET, AWS_REGION, ENGINE_VERSION, NOW, POLICY, awsContractJson, awsIdentityEnv, awsRoleArn, awsTargetOf,
   behave as behaveIn, callsOf, human, installFakeTerraform, keys, pinPathOf, sha, testFixtureForgeQualificationEvidence, writePinnedContract, writeProject,
   approvalFor as approval, type Behavior, type Call, type Project,
+  REQUESTER,
+  requesterArgs,
 } from "./helpers/apply-fixtures.js";
 
 // docs/act-pilot-apply.md, "Providers". The AWS spec mirrors the Azure denial matrix. The engine is a fake executable, so
@@ -300,7 +302,7 @@ const SHARED_TF = 'resource "aws_s3_bucket" "pilot" {}\n';
 async function seal(w: World, environment: ApplyEnvironment, mainTf = SHARED_TF) {
   const target = awsTargetOf(environment);
   const p = writeProject(fresh("project"), target, mainTf);
-  const result = await sealPreview({ invocation: human(target), environment, target, manifest: p.manifest, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved }, forEnv(w, environment));
+  const result = await sealPreview({ invocation: human(target), environment, target, manifest: p.manifest, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved, requester: REQUESTER }, forEnv(w, environment));
   assert.ok(result.ok, JSON.stringify(result));
   const loadedPlan = await loadSealedPlan(result.path);
   assert.ok(loadedPlan.ok);
@@ -319,7 +321,7 @@ const refused = (result: { ok: boolean }, code: string) => {
 const sealRefusal = async (w: World, environment: ApplyEnvironment, deps: ApplyDeps = forEnv(w, environment), mainTf = SHARED_TF) => {
   const target = awsTargetOf(environment);
   const p = writeProject(fresh("project"), target, mainTf);
-  return sealPreview({ invocation: human(target), environment, target, manifest: p.manifest, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved }, deps);
+  return sealPreview({ invocation: human(target), environment, target, manifest: p.manifest, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved, requester: REQUESTER }, deps);
 };
 /** A refusal before the approvals were consumed leaves nothing spent: no apply ran, and the same approvals work once the cause is fixed. */
 async function nothingSpent(w: World, s: Sealed, approvals: SignedApproval[]): Promise<void> {
@@ -790,7 +792,7 @@ test("./alz apply qualify, seal, approve and apply work for an AWS contract with
   for (const environment of ["DEV", "QA", "PROD"] as const) {
     const target = awsTargetOf(environment);
     const p = writeProject(fresh("project"), target, SHARED_TF);
-    const sealed = await cli(["seal", "--request", requestFor(p, environment), "--manifest", json(p.manifest)], [targetString(target), "RUN PROJECT CODE"], environment);
+    const sealed = await cli(["seal", "--request", requestFor(p, environment), "--manifest", json(p.manifest), ...requesterArgs()], [targetString(target), "RUN PROJECT CODE"], environment);
     assert.equal(sealed.code, 0, sealed.stderr);
     const result = JSON.parse(sealed.stdout) as { artifactSha256: string; sealedPlanPath: string; reviewBundlePath: string };
     const signers = environment === "PROD" ? ["alice", "bob"] as const : ["alice"] as const;

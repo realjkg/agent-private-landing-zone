@@ -1,5 +1,6 @@
 import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
-import { chmodSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { signApproval } from "../../src/apply/approval.js";
@@ -504,6 +505,26 @@ export function writeProject(projectRoot: string, target: ResolvedTarget, mainTf
 export const human = (target: ResolvedTarget, operatorId = OPERATOR) => ({
   operatorId, interactiveSession: true as const, confirmedTarget: { ...target }, confirmedAt: NOW.toISOString(),
 });
+
+/**
+ * The default requester of every fixture seal: carol, allowlisted for DEV only, which the request does not need (any
+ * allowlisted key may request for any environment). She approves nothing in the PROD fixtures, so alice and bob stay valid
+ * PROD approvers; in DEV one person may request and approve, so a DEV test may still approve as carol.
+ */
+export const REQUESTER = { requesterId: "carol", privateKeyPem: keys.carol.priv } as const;
+let requesterKeyPath: string | undefined;
+/** Carol's private key as a file only this user can read, for `./alz apply seal --requester carol --key FILE`. Written once per process. */
+export function requesterKeyFile(): string {
+  if (requesterKeyPath === undefined) {
+    const dir = mkdtempSync(join(tmpdir(), "alz-requester-key-"));
+    requesterKeyPath = join(dir, "carol.pem");
+    writeFileSync(requesterKeyPath, keys.carol.priv, { mode: 0o600 });
+    chmodSync(requesterKeyPath, 0o600);
+  }
+  return requesterKeyPath;
+}
+/** The seal flags that name the default requester and her key file. */
+export const requesterArgs = (): string[] => ["--requester", REQUESTER.requesterId, "--key", requesterKeyFile()];
 
 export const approvalFor = (sealed: SealedPlan, who: keyof typeof keys, over: Partial<SignedApproval["statement"]> = {}): SignedApproval =>
   signApproval({

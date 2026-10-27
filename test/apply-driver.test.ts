@@ -25,6 +25,7 @@ import { SOURCE_COMMIT,
   AZURE_BACKEND_TF, AZURE_MAIN_TF, CANARIES, DEV_TARGET, approvers, ENV, H, NOW, OPERATOR, OUTPUT_CANARY, PLAN_CANARY, POLICY, PROD_TARGET, QA_TARGET, STATE_CANARY, TENANT, VALUE_CANARY,
   approvalFor as approval, behave as behaveIn, callsOf, contractJson, human, identityEnv, installFakeTerraform, keys, pinPathOf,
   testFixtureForgeQualificationEvidence, recordApplied, sha, signalsOf, targetOf, writePinnedContract, writeProject, type Behavior, type Call, type Project,
+  REQUESTER,
 } from "./helpers/apply-fixtures.js";
 
 // docs/act-pilot-plan.md. The engine is a fake executable, so these tests pin
@@ -93,7 +94,7 @@ test.before(async () => {
 async function seal(w: World, environment: ApplyEnvironment, p: Project = writeProject(fresh("project"), targetOf(environment))) {
   const target = targetOf(environment);
   const result = await sealPreview({
-    invocation: human(target), environment, target, manifest: p.manifest, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved,
+    invocation: human(target), environment, target, manifest: p.manifest, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved, requester: REQUESTER,
   }, forEnv(w, environment));
   assert.ok(result.ok, JSON.stringify(result));
   const loaded = await loadSealedPlan(result.path);
@@ -931,7 +932,7 @@ test("every refusal comes in the specified order, and the apply argv is never ex
   const evidence: ApplyEvidence = {
     schemaVersion: 1, environment: "PROD", target: prodSeal.sealed.target, artifactSha256: prodSeal.sealed.artifactSha256,
     manifestHash: prodSeal.sealed.manifestHash, releaseIdentity: prodSeal.sealed.releaseIdentity, contractSha256: prodSeal.sealed.contractSha256, sourceCommit: prodSeal.sealed.sourceCommit,
-    approvals: [{ approverId: "alice", issuedAt: NOW.toISOString() }],
+    approvals: [{ approverId: "alice", issuedAt: NOW.toISOString() }], requester: { requesterId: "carol", nonce: "0".repeat(32) },
     adapter: { adapterVersion: APPLY_ADAPTER.adapterVersion, argvDigest: APPLY_ADAPTER.argvDigest },
     toolVersions: { engine: "1.9.5" }, outcome: "SUCCEEDED", exitCode: 0, startedAt: NOW.toISOString(), finishedAt: NOW.toISOString(), authority: APPLY_AUTHORITY,
   };
@@ -1163,7 +1164,7 @@ test("a contract where QA shares a subscription or a backend with DEV or PROD is
       const bad = world({}, shared(key, from));
       refused(await runApply(requestFor(s, approvalsFor(s)), forEnv(bad, "QA")), "CONTRACT_INVALID");
       const p = writeProject(fresh("project"), QA_TARGET);
-      const sealResult = await sealPreview({ invocation: human(QA_TARGET), environment: "QA", target: QA_TARGET, manifest: p.manifest, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved }, forEnv(bad, "QA"));
+      const sealResult = await sealPreview({ invocation: human(QA_TARGET), environment: "QA", target: QA_TARGET, manifest: p.manifest, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved, requester: REQUESTER }, forEnv(bad, "QA"));
       assert.ok(!sealResult.ok && sealResult.code === "CONTRACT_INVALID", key + " shared with " + from);
     }
   }
@@ -1178,7 +1179,7 @@ test("sealing refuses in order: contract, kill switch, human, target, then manif
   const p = writeProject(fresh("project"), DEV_TARGET);
   const req = (over: Partial<SealRequest> = {}): SealRequest => ({
     invocation: human(DEV_TARGET), environment: "DEV", target: DEV_TARGET, manifest: p.manifest, projectRoot: p.projectRoot,
-    policyVersion: POLICY, resolved: p.resolved, ...over,
+    policyVersion: POLICY, resolved: p.resolved, requester: REQUESTER, ...over,
   });
   const refuse = async (code: string, r: SealRequest = req(), deps = w.deps) => {
     const result = await sealPreview(r, deps);
@@ -1268,7 +1269,7 @@ test("seal and apply take their records from the vault: valid evidence qualifies
   const empty = world({ qualificationDir: fresh("empty-vault") });
   const p = writeProject(fresh("project"), DEV_TARGET);
   const refused = await sealPreview({
-    invocation: human(DEV_TARGET), environment: "DEV", target: DEV_TARGET, manifest: p.manifest, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved,
+    invocation: human(DEV_TARGET), environment: "DEV", target: DEV_TARGET, manifest: p.manifest, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved, requester: REQUESTER,
   }, empty.deps);
   assert.ok(!refused.ok && refused.code === "ENGINE_NOT_QUALIFIED");
 });
@@ -1354,7 +1355,7 @@ test("the project's own azurerm backend block is judged before init: a shared ke
   const backend = (body: string) => `terraform {\n  backend "azurerm" {\n    storage_account_name = "${account}"\n    container_name = "${container}"\n    key = "${key}"\n    use_oidc = true\n    use_azuread_auth = true\n${body}\n  }\n}\n` + 'resource "azurerm_resource_group" "pilot" {}\n';
   const sealOf = (w: World, mainTf: string) => {
     const p = writeProject(fresh("project"), DEV_TARGET, mainTf);
-    return sealPreview({ invocation: human(DEV_TARGET), environment: "DEV", target: DEV_TARGET, manifest: p.manifest, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved }, forEnv(w, "DEV"));
+    return sealPreview({ invocation: human(DEV_TARGET), environment: "DEV", target: DEV_TARGET, manifest: p.manifest, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved, requester: REQUESTER }, forEnv(w, "DEV"));
   };
   const w = world();
   behave({ applyAdvance: true });
@@ -1438,7 +1439,7 @@ test("a hard-coded provider subscription_id or tenant_id that is not the contrac
   const w = world();
   behave({ showProviderConfig: provider({ subscription_id: { constant_value: other } }) });
   const p = writeProject(fresh("project"), DEV_TARGET);
-  const sealRefused = await sealPreview({ invocation: human(DEV_TARGET), environment: "DEV", target: DEV_TARGET, manifest: p.manifest, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved }, forEnv(w, "DEV"));
+  const sealRefused = await sealPreview({ invocation: human(DEV_TARGET), environment: "DEV", target: DEV_TARGET, manifest: p.manifest, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved, requester: REQUESTER }, forEnv(w, "DEV"));
   assert.ok(!sealRefused.ok && /PROVIDER_SUBSCRIPTION_NOT_IN_CONTRACT/.test(sealRefused.message), JSON.stringify(sealRefused));
   // Applying: the plan is shown again, and what it shows is judged again.
   for (const [config, code] of [

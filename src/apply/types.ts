@@ -77,8 +77,28 @@ export type PilotContract = {
 export type ApproverEntry = { id: string; publicKeyPem: string; environments: ApplyEnvironment[] };
 
 /** The kinds of action an approval can authorize: an apply of a sealed plan, or a cleanup of an approved proposal. Signatures are domain-separated by kind (src/apply/approval.ts). */
-export type ApprovalSubject = "APPLY" | "CLEANUP";
-export const APPROVAL_SUBJECTS: readonly ApprovalSubject[] = ["APPLY", "CLEANUP"];
+/** What a signature is for: an apply approval, a cleanup approval, or the requester's signature on a sealed request. Each has its own domain and none verifies as another. */
+export type ApprovalSubject = "APPLY" | "CLEANUP" | "REQUEST";
+export const APPROVAL_SUBJECTS: readonly ApprovalSubject[] = ["APPLY", "CLEANUP", "REQUEST"];
+
+/**
+ * What the requester signs at seal (docs/act-pilot-plan.md, authority item 3; owner decisions on issue #39, 2026-10-27):
+ * the artifact hash, the environment and a one-time nonce, under the REQUEST domain, with an allowlisted key. The
+ * artifact hash binds the requester id, so every approver signs who requested, and in PROD no approval may come from
+ * the requester's key or id.
+ */
+export type RequestStatement = {
+  schemaVersion: 1;
+  requesterId: string;
+  artifactSha256: string;
+  environment: ApplyEnvironment;
+  /**
+   * 128-bit random value, recorded (not consumed) when the plan is applied. Replay is prevented by the artifact ledger: an
+   * artifact applies once, and a second apply of it is refused as ARTIFACT_ALREADY_APPLIED.
+   */
+  nonce: string;
+};
+export type SealedRequest = { statement: RequestStatement; signatureBase64: string };
 
 /** What an approver signs. It binds one approval to one artifact (a sealed plan, or a cleanup proposal by its hash), one target and one moment. */
 export type ApprovalStatement = {
@@ -100,7 +120,8 @@ export type SignedApproval = { statement: ApprovalStatement; signatureBase64: st
  * artifact the driver applies.
  */
 export type SealedPlan = {
-  schemaVersion: 1;
+  /** 2 since the requester signs the sealed request; a schema 1 record (no requester) is refused everywhere. */
+  schemaVersion: 2;
   artifactSha256: string;
   planSha256: string;
   manifestHash: string;
@@ -123,6 +144,10 @@ export type SealedPlan = {
   provenance: PreviewProvenance;
   /** The deletion unit the plan stamps on what it creates, verified in the plan at sealing. Bound by the artifact hash. */
   unit: SealedUnit | null;
+  /** Who requested this change, by allowlist id. Bound by the artifact hash, so every approver signs it; in PROD no approval may come from this id or its key. */
+  requesterId: string;
+  /** The requester's signature over the artifact hash, environment and a nonce (REQUEST domain). Beside the hashed fields, since it signs the hash. Null only for a throwaway plan, which is never stored. */
+  request: SealedRequest | null;
 };
 
 /**
@@ -176,6 +201,18 @@ export type ApplyRefusalCode =
   | "APPROVAL_REPLAYED"
   | "APPROVAL_MISBOUND"
   | "SAME_APPROVER_TWICE"
+  /** PROD: an approval comes from the requester's id or key. The requester and the approvers must be three distinct people. Nothing was consumed. */
+  | "APPROVER_IS_REQUESTER"
+  /** The requester named at seal is not on the contract's allowlist. Nothing ran. */
+  | "REQUESTER_NOT_ALLOWED"
+  /** The key handed to seal is not the allowlisted key of the requester named. Nothing ran. */
+  | "REQUESTER_KEY_MISMATCH"
+  /** The sealed plan carries no requester signature. Nothing was consumed. */
+  | "REQUESTER_SIGNATURE_MISSING"
+  /** The requester signature does not verify against the allowlisted key, or was made for another kind of action. Nothing was consumed. */
+  | "REQUESTER_SIGNATURE_UNVERIFIED"
+  /** The requester signature names another artifact, environment or requester than the sealed plan. Nothing was consumed. */
+  | "REQUESTER_MISBOUND"
   | "ARTIFACT_ALREADY_APPLIED"
   | "ENGINE_NOT_QUALIFIED"
   | "PROMOTION_EVIDENCE_MISSING"
@@ -216,6 +253,11 @@ export type ApplyEvidence = {
   /** The product source commit that sealed the plan and ran the apply (they must be the same). */
   sourceCommit: string;
   approvals: { approverId: string; issuedAt: string }[];
+  /**
+   * Who requested the change (the verified requester signature's id) and the nonce that signature carried. The nonce is
+   * recorded, not consumed; the artifact ledger prevents replay (ARTIFACT_ALREADY_APPLIED).
+   */
+  requester: { requesterId: string; nonce: string };
   adapter: { adapterVersion: string; argvDigest: string };
   toolVersions: { engine: string };
   outcome: ApplyOutcome;
