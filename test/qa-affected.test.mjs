@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readdirSync, readFileSync } from "node:fs";
-import { diffCommand, importsOf, planChanged, SOURCE_SCAN_GUARDS, UNIMPORTABLE_OWNERS } from "../scripts/qa-affected.mjs";
+import { diffCommand, FIXTURE_OWNERS, importsOf, planChanged, SOURCE_SCAN_GUARDS, UNIMPORTABLE_OWNERS } from "../scripts/qa-affected.mjs";
 
 function fixture() {
   return new Map([
@@ -340,4 +340,22 @@ test("the ./alz dispatcher, which no test can import, is owned by the guards tha
   for (const owner of UNIMPORTABLE_OWNERS["src/cli/operator.ts"]) assert.ok(plan.nodeTests.includes(owner), owner);
   files.set("src/cli/orphan.ts", "export const x = 1;");
   assert.match(planChanged(["src/cli/orphan.ts"], files).gaps.join(" "), /src\/cli\/orphan\.ts has no importing test/);
+});
+
+test("a fixture a test reads from disk is owned by its declared test, an unowned fixture is still a gap, and a deleted module is a note", () => {
+  const files = fixture();
+  for (const [path, owners] of Object.entries(FIXTURE_OWNERS)) {
+    files.set(path, "{}");
+    for (const owner of owners) files.set(owner, "test()");
+    const plan = planChanged([path], files);
+    assert.deepEqual(plan.gaps, [], path);
+    for (const owner of owners) assert.ok(plan.nodeTests.includes(owner), owner);
+  }
+  files.set("test/fixtures/orphan.json", "{}");
+  assert.match(planChanged(["test/fixtures/orphan.json"], files).gaps.join(" "), /orphan\.json has no known test owner/);
+  const deleted = planChanged(["src/apply/gone.ts"], files);
+  assert.deepEqual(deleted.gaps, []);
+  assert.match(deleted.notes.join(" "), /src\/apply\/gone\.ts was deleted/);
+  files.set("src/apply/orphan.ts", "export const x = 1;");
+  assert.match(planChanged(["src/apply/orphan.ts"], files).gaps.join(" "), /src\/apply\/orphan\.ts has no importing test/);
 });

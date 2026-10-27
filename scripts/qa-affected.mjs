@@ -31,6 +31,11 @@ export const UNIMPORTABLE_OWNERS = {
   "src/cli/operator.ts": ["test/operations-parity.test.ts", "test/operator-cli.test.ts"],
 };
 
+// Fixtures a test reads from disk (not imported), so the import closure never selects their owner.
+export const FIXTURE_OWNERS = {
+  "test/fixtures/backend-pin/cases.json": ["test/apply-backend-pin-real.test.ts"],
+};
+
 // Source-scan guards read a source tree from disk (a forbidden literal, import or call anywhere under it) instead of
 // importing what they check, so the import closure never selects them. Each is declared with the roots it scans and
 // runs for any source change under one of them; test/qa-affected.test.mjs fails if a test scans source without an
@@ -225,12 +230,14 @@ export function planChanged(changedPaths, files) {
         // Do not mask missing test ownership with a blanket full-suite run.
         const owners = UNIMPORTABLE_OWNERS[path];
         if (owners) addExisting(selected, files, owners);
+        // A deleted module has no importer left to select; the type check (npm run check) proves none still imports it.
+        else if (!files.has(path)) notes.push(path + " was deleted; the type check proves no importer remains.");
         else gaps.push(path + " has no importing test. Add a focused test.");
       }
       continue;
     }
     if (/^test\/(?:fixtures|helpers)\//.test(path)) {
-      const dependent = impactedBy(path);
+      const dependent = [...impactedBy(path), ...(FIXTURE_OWNERS[path] ?? []).filter((owner) => files.has(owner))];
       addExisting(selected, files, dependent);
       if (!dependent.length) gaps.push(path + " has no known test owner; add an explicit focused test.");
       continue;
