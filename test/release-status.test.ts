@@ -149,6 +149,13 @@ test("the shipped work graph checks, its page is current, and what runs next is 
     assert.equal(runnable.has(node.id), ready, node.id + " runs exactly when it is open and its dependencies are DONE");
   }
   assert.ok(!runnable.has("guided-journey-ui"), "a held task never runs");
+  // The six ACT-DEV execution paths (#39 6443352284) are separate capabilities, each with its own acceptance evidence.
+  const paths = graph.nodes.filter((n) => n.id.startsWith("path-"));
+  assert.deepEqual(paths.map((n) => n.id).sort(), ["path-aws-cdk-cloudformation", "path-aws-terraform", "path-azure-bicep-arm",
+    "path-azure-terraform", "path-gcp-api-native", "path-gcp-terraform"]);
+  assert.equal(new Set(paths.map((n) => n.acceptance)).size, paths.length, "no path shares another's acceptance evidence");
+  for (const n of paths) assert.ok(n.gates.every((g) => g.startsWith("act:")) && n.gates.length <= 1, n.id + " advances at most its own ACT gate");
+  assert.match(view.workGraph ?? "", /## Execution paths\n\n\*\*Paths completed:\*\* \d+ of 6\./);
   assert.ok(!runnable.has("candidate-freeze"), "the freeze waits on the integrated synthetic matrix");
 });
 
@@ -163,6 +170,8 @@ test("the work graph refuses a cycle, an unknown dependency or gate, a DONE task
     ["short sha", (g) => { g.nodes.find((x) => x.id === "release-gate-matrix")!.merges = ["6b4cc53"]; }, /full commit SHAs/],
     ["DONE before dependency", (g) => { const n = g.nodes.find((x) => x.id === "candidate-freeze")!; n.status = "DONE"; n.merges = ["a".repeat(40)]; delete n.next; }, /DONE before its dependency/],
     ["blocked without reason", (g) => { delete g.nodes.find((x) => x.id === "live-qualification")!.blockedBy; }, /needs blockedBy/],
+    ["no acceptance evidence", (g) => { delete (g.nodes.find((x) => x.id === "candidate-freeze") as Partial<WorkNode>).acceptance; }, /acceptance must name the evidence/],
+    ["blank acceptance evidence on a DONE task", (g) => { g.nodes.find((x) => x.id === "release-gate-matrix")!.acceptance = " "; }, /acceptance must name the evidence/],
     ["no next action", (g) => { delete g.nodes.find((x) => x.id === "candidate-freeze")!.next; }, /next must say/],
     ["duplicate", (g) => { g.nodes.push({ ...(g.nodes[0] as WorkNode) }); }, /listed twice/],
     ["unknown field", (g) => { (g.nodes[0] as Record<string, unknown>).approvedBy = "agent"; }, /unknown field/],
@@ -178,7 +187,7 @@ test("the work graph refuses a cycle, an unknown dependency or gate, a DONE task
 // The scheduler's decision step (src/release/scheduler.ts), on a small graph.
 const sha = (c: string) => c.repeat(40);
 const node = (id: string, change: Partial<WorkNode> = {}): WorkNode =>
-  ({ id, title: "Task " + id, owner: "LANE", status: "QUEUED", dependsOn: [], gates: [], next: "Do the task " + id, ...change });
+  ({ id, title: "Task " + id, owner: "LANE", status: "QUEUED", dependsOn: [], gates: [], acceptance: "Evidence for " + id, next: "Do the task " + id, ...change });
 const facts = (pr: number, change: Partial<PrFacts> = {}): PrFacts => ({
   pr, head: sha("a"), open: true, merged: false, inScope: true, checksGreen: true, checksFailed: false, qaPassed: true,
   verdict: { result: "NO_BLOCKING_ISSUES", head: sha("a"), commentId: 1 }, laterBlocking: false, compatibleWithMain: true,

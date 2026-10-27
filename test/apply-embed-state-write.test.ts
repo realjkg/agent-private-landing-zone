@@ -15,7 +15,6 @@ import type { ApplyEnvironment, PilotContract } from "../src/apply/types.js";
 import { runApplyCommand, type ApplyCliDeps } from "../src/cli/apply.js";
 import { targetString } from "../src/cli/teardown-driver.js";
 import { removeTree } from "../src/teardown/driver/cleanup.js";
-import { INIT_ARGV } from "../src/teardown/driver/adapters/terraform.js";
 import { SOURCE_COMMIT,
   AWS_REGION, DEV_TARGET, NOW, POLICY, awsContractJson, awsIdentityEnv, awsRoleArn, awsTargetOf, approvalFor as approval, behave as behaveIn, callsOf, contractJson,
   human, identityEnv, installFakeTerraform, pinPathOf, testFixtureForgeQualificationEvidence, writePinnedContract, writeProject, type Behavior, type Call,
@@ -121,16 +120,18 @@ test("true with the CDK engine is an invalid contract", () => {
 
 // --- default off: unchanged -------------------------------------------------------------------------
 
-test("default off: the seal init is the preview adapter's own, with no backend file and no STATE_WRITE settings", async () => {
+test("default off: the seal init reads the contract's backend location and the Entra ID switch only (the pinned backend has no settings of its own), never STATE_WRITE settings", async () => {
+  const [account, container, ...key] = DEV_TARGET.backend.split("/");
   for (const over of [{}, { embedStateWrite: false }]) {
     const w = world(contractJson(KILL, over));
     const { result } = await seal(w);
     assert.ok(result.ok, JSON.stringify(result));
     const inits = initCalls();
     assert.equal(inits.length, 1);
-    assert.deepEqual(inits[0].args, [...INIT_ARGV]);
-    assert.equal(inits[0].backendConfig, undefined);
-    assert.ok(calls().every((c) => c.backendFileExists === false));
+    assert.deepEqual(inits[0].args, [...APPLY_INIT_ARGV]);
+    assert.equal(inits[0].backendConfig, `storage_account_name = "${account}"\ncontainer_name = "${container}"\nkey = "${key.join("/")}"\nuse_azuread_auth = true\n`);
+    assert.equal(inits[0].backendOverride, 'terraform {\n  backend "azurerm" {}\n}\n', "Azure is pinned the same way, with type azurerm");
+    assert.ok(calls().filter((c) => c.args[0] !== "init").every((c) => c.backendFileExists === false), "the backend file is gone right after init");
   }
 });
 

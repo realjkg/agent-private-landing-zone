@@ -2,12 +2,18 @@
 tenant_id = "00000000-0000-0000-0000-000000000000"
 location  = "eastus2"
 
+# The three-stage chain (the default). For the DEV-only pilot (the contract's "enabledEnvironments": ["DEV"]) write
+#   enabled_environments = ["DEV"]
+# and delete the QA and PROD entries below, in environments and in every oidc_subjects block: they are refused, not ignored.
+# DEV-only mode also requires DEV's apply_resource_group_name, so APPLY and DISCOVERY stay on that pilot resource group.
+enabled_environments = ["DEV", "QA", "PROD"]
+
 environments = {
   DEV = {
     subscription_id            = "00000000-0000-0000-0000-000000000001"
     state_resource_group_name  = "rg-alz-pilot-state-dev"
     state_storage_account_name = "examplealzstatedev"
-    apply_resource_group_name  = "rg-alz-pilot-dev" # omit to scope APPLY and DISCOVERY to the whole subscription
+    apply_resource_group_name  = "rg-alz-pilot-dev" # required in DEV-only mode; in the chain, omitting it scopes APPLY and DISCOVERY to the whole subscription
   }
   QA = {
     subscription_id            = "00000000-0000-0000-0000-000000000002"
@@ -47,7 +53,7 @@ oidc_subjects = {
   }
 }
 
-# Optional budget (one per subscription). The start date must be the first day of a month.
+# Optional budget (one per enabled subscription). The start date must be the first day of a month.
 # budget_monthly_amount = 100
 # budget_start_date     = "2026-11-01T00:00:00Z"
 # alert_emails          = ["owner@example.invalid"]

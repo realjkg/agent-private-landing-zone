@@ -31,6 +31,11 @@ export const UNIMPORTABLE_OWNERS = {
   "src/cli/operator.ts": ["test/operations-parity.test.ts", "test/operator-cli.test.ts"],
 };
 
+// Fixtures a test reads from disk (not imported), so the import closure never selects their owner.
+export const FIXTURE_OWNERS = {
+  "test/fixtures/backend-pin/cases.json": ["test/apply-backend-pin-real.test.ts"],
+};
+
 // Source-scan guards read a source tree from disk (a forbidden literal, import or call anywhere under it) instead of
 // importing what they check, so the import closure never selects them. Each is declared with the roots it scans and
 // runs for any source change under one of them; test/qa-affected.test.mjs fails if a test scans source without an
@@ -198,6 +203,13 @@ export function planChanged(changedPaths, files) {
     if (/^src\/lifecycle\//.test(path)) {
       addExisting(selected, files, ["test/lifecycle-runner.test.ts", "test/lifecycle-cli.test.ts", "test/release-admission.test.ts"]);
     }
+    // The Azure pilot bootstrap is Terraform no import reaches: its owner reads the files and, opt-in, runs their own
+    // offline `terraform test` (mocked providers). Any file under it selects that owner; nothing else under bootstrap/ does.
+    if (/^bootstrap\/azure\//.test(path)) {
+      addExisting(selected, files, ["test/bootstrap-azure.test.ts"]);
+      if (!hasFile(files, "test/bootstrap-azure.test.ts")) gaps.push("The Azure bootstrap has no focused test owner.");
+      continue;
+    }
     if (/^src\/operator-ui\/app\/.*\.(?:css|svg)$/.test(path)) {
       buildUi = true;
       addExisting(selected, files, ["test/operator-ui-react.test.tsx",
@@ -218,23 +230,34 @@ export function planChanged(changedPaths, files) {
         // Do not mask missing test ownership with a blanket full-suite run.
         const owners = UNIMPORTABLE_OWNERS[path];
         if (owners) addExisting(selected, files, owners);
+        // A deleted module has no importer left to select; the type check (npm run check) proves none still imports it.
+        else if (!files.has(path)) notes.push(path + " was deleted; the type check proves no importer remains.");
         else gaps.push(path + " has no importing test. Add a focused test.");
       }
       continue;
     }
     if (/^test\/(?:fixtures|helpers)\//.test(path)) {
-      const dependent = impactedBy(path);
+      const dependent = [...impactedBy(path), ...(FIXTURE_OWNERS[path] ?? []).filter((owner) => files.has(owner))];
       addExisting(selected, files, dependent);
       if (!dependent.length) gaps.push(path + " has no known test owner; add an explicit focused test.");
       continue;
     }
     if (/^qualification\/aws\/act-dev1-canary\/(?:.+\.tf|terraform\.tfvars\.example\.json)$/.test(path) ||
-        /^bootstrap\/aws\/(?:main|variables)\.tf$/.test(path) ||
+        /^bootstrap\/aws\/(?:(?:main|variables|discovery)\.tf|discovery-policy\.json|terraform\.tfvars\.example|tests\/discovery\.tftest\.hcl)$/.test(path) ||
         path === "tests_python/test_aws_dev_terraform_handoff.py") {
       addExisting(pythonTests, files, ["test/act-dev1-automation.test.py"]);
+      // The DISCOVERY scope (owner decision 6440801434, item 2): its policy content is asserted by a focused node test.
+      if (/^bootstrap\/aws\/(?:discovery|variables)\b|^bootstrap\/aws\/tests\/discovery\./.test(path)) addExisting(selected, files, ["test/discovery-scope.test.ts"]);
       if (!hasFile(files, "test/act-dev1-automation.test.py")) {
         gaps.push("ACT-DEV-1 Terraform canary has no focused test owner.");
       }
+      continue;
+    }
+    // The GCP bootstrap package (HCL, its mocked `terraform test` suite, the config template) is owned by one focused static test.
+    if (/^bootstrap\/(?:gcp\/.+|config\.gcp\.template\.json)$/.test(path)) {
+      addExisting(selected, files, ["test/bootstrap-gcp.test.ts"]);
+      const gap = "The GCP bootstrap has no focused test owner.";
+      if (!hasFile(files, "test/bootstrap-gcp.test.ts") && !gaps.includes(gap)) gaps.push(gap);
       continue;
     }
     if (/^(?:config|policy|security)\//.test(path)) {

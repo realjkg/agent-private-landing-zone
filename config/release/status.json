@@ -85,6 +85,20 @@
       "nextAction": "The owner provides the Azure sandbox identifiers (account or subscription IDs and role names, never credentials); then run the read-only Azure inventory and governed preview on the candidate."
     },
     {
+      "gate": "gcp-provider",
+      "candidate": null,
+      "owner": "OWNER",
+      "status": "BLOCKED",
+      "evidenceMode": null,
+      "evidenceRefs": [],
+      "testedScope": "Live authenticated read-only GCP inventory and governed preview.",
+      "invalidatedBy": [
+        "the candidate commit changes",
+        "the provider adapter or its pinned tool changes"
+      ],
+      "nextAction": "GCP is not yet an admitted provider: the authorization lane adds it to the pilot contract first, and the live read-only GCP inventory producer is the ./alz evidence runner's (path 6 lane). Then the owner provides the GCP sandbox identifiers (the DEV project id and the service account emails, never credentials) and runs the read-only GCP inventory and governed preview on the candidate."
+    },
+    {
       "gate": "preview:terraform-aws-brownfield",
       "candidate": null,
       "owner": "OWNER",
@@ -242,6 +256,20 @@
         "the owner adds the path to the release scope"
       ],
       "nextAction": ""
+    },
+    {
+      "gate": "preview:terraform-gcp-brownfield",
+      "candidate": null,
+      "owner": "OWNER",
+      "status": "BLOCKED",
+      "evidenceMode": null,
+      "evidenceRefs": [],
+      "testedScope": "Real Terraform plan output against the GCP brownfield sandbox, with no infrastructure applied, produced by ./alz apply preview-evidence from a sealed preview and bound to the candidate commit, the pinned engine program and the plan bytes.",
+      "invalidatedBy": [
+        "the candidate commit changes",
+        "the Terraform pin or the GCP provider spec changes"
+      ],
+      "nextAction": "Waits on GCP admission (no GCP contract can seal a plan yet, so ./alz apply preview-evidence refuses this gate for any AWS or Azure plan) and on the gcp-provider gate's sandbox. Then the producer, run from the candidate commit with the pinned, qualified Terraform against the GCP sandbox, writes LIVE evidence that the admission review accepts. Synthetic evidence is labeled SYNTHETIC and is refused by the gate."
     },
     {
       "gate": "isolated-recovery",
@@ -446,7 +474,7 @@
         "the pilot contract or its pin changes",
         "src/apply or the Terraform pin changes"
       ],
-      "nextAction": "The Azure Terraform row now passes synthetically end to end (prepare, preview, approve, execute, observe, cleanup, leftovers; the Azure reader exchanges the DISCOVERY federated token in process and reads Azure Resource Manager). Waits on the AWS Terraform row going live first; then the owner supplies the pinned Azure contract inputs (identifiers, the OIDC token files on the execution host and public keys only) and supervises one DEV apply."
+      "nextAction": "The Azure Terraform row passes synthetically end to end (prepare, preview, approve, execute, observe, cleanup, leftovers; the Azure reader exchanges the DISCOVERY federated token in process and reads Azure Resource Manager). The owner decision of 2026-10-27 (issue #39, comment 6442856302) extends the DEV-only contract scope to Azure Terraform, so this row no longer waits on AWS going live. Engineering still owes the Azure G1b emulated simulation and Entra ID only state auth (#287, #289) before the pin commit. Then the owner fills a DEV-only Azure contract (tenant, subscription, state backend, public keys only) until ./alz apply contract-check --file reports COMPLETE, places the four OIDC token files on the execution host, commits the contract and its pin in one reviewed change (./alz apply pin), has a person run ./alz apply qualify against the real Terraform, and supervises one DEV apply recorded with ./alz apply record-live."
     },
     {
       "gate": "act:aws-cdk",

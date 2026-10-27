@@ -236,7 +236,7 @@ Run these in order. Steps marked "not `./alz`" use a vendor tool.
    ./alz apply preflight --environment DEV --contract config/act-pilot-contract.json
    ```
 
-   Do not export `AZURE_*`, `ARM_USE_MSI` or any `ARM_CLIENT_CERTIFICATE*` variable. The Entra state-auth variable that #289 adds (the `ARM_STORAGE_USE_AZUREAD` form) is documented by that PR when it merges. Do not set it from this page.
+   Do not export `AZURE_*`, `ARM_USE_*` other than `ARM_USE_OIDC` (including `ARM_USE_MSI` and `ARM_USE_AZUREAD`), or any `ARM_CLIENT_CERTIFICATE*` variable. Entra ID state authentication needs no variable: the product turns it on in its own backend file (`use_azuread_auth = true`; `docs/act-pilot-apply.md`, Azure). `ARM_STORAGE_USE_AZUREAD` is the azurerm provider's variable and the Terraform backend never reads it.
 9. **Wait for engineering:** the Azure DEV-only exception, backend pinning, #287/#289, Z2, and Z3 if you bootstrap with one subscription.
 10. **Pin commit.** As for AWS step 11, with branch name `act-dev-azure-pin`. If the AWS contract is pinned at the time, this replaces it (see "One contract, one cloud at a time").
 11. **G2 qualification.** As for AWS step 12. The attestation is `SEPARATED <STATE_WRITE client id> <APPLY client id>`, checked in the Entra sign-in logs and the storage logs.
