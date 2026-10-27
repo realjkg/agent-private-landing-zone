@@ -495,6 +495,12 @@ export const CODE_COPY: Readonly<Record<string, Reason>> = {
   CLEANED_UP: { why: "The removal finished.", next: "Check that everything is gone." },
   CLEANUP_COMPLETE: { why: "Everything on the list is confirmed gone; kept items were left in place and were not checked.", next: "Nothing further for this change's listed resources. The environment itself is not retired; that is the pilot owner's separate, reviewed action." },
   CLEANUP_INCOMPLETE: { why: "Something on the list is not confirmed gone yet.", next: "Follow the next step shown with the list." },
+  WORKSPACE_REMOVED: { why: "This change's working files on this computer were removed; its records were kept.", next: "Nothing further. The removal record sits with the change's records." },
+  REMOVAL_NOT_AUTHORIZED: { why: "Removing this change's working files is not allowed right now (for example, the stop switch is on).", next: "Ask the pilot owner, then try again." },
+  REMOVAL_RUN_IN_PROGRESS: { why: "A change or a cleanup is still running, and its working files may be in use.", next: "Wait for it to end, then try again." },
+  REMOVAL_PATH_REFUSED: { why: "A working file is a link or is outside the folders this product owns, so nothing was removed.", next: "Ask the pilot owner to look at the path shown." },
+  REMOVAL_RECORD_INVALID: { why: "The record of an earlier removal cannot be read, so nothing was removed.", next: "Ask the pilot owner to look at the removal record." },
+  REMOVAL_FAILED: { why: "The removal stopped part-way; the record says what is left.", next: "Run the removal again; it picks up where it stopped." },
   CLEANUP_KNOWN_CONFIRMED: { why: "Everything on the list is confirmed gone, but the change carried no cleanup marker, so things outside its records could not be searched for.", next: "Ask the pilot owner to confirm by hand that nothing else of this change remains, or apply with the cleanup marker so the search can run." },
   // the command line's own errors, as the wizard reaches them
   APPLY_FLAG_UNKNOWN: { why: "The wizard sent something the command did not understand. This should not happen.", next: "Reload the page and try again. If it repeats, tell the pilot owner." },
