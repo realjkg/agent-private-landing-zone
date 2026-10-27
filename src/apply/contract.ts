@@ -13,7 +13,7 @@ import { ENVIRONMENTS, HASH } from "./constants.js";
 import { ENGINE_IDS, engineSpec, type EngineSpec } from "./engine-spec.js";
 import { applyEvidenceProblems, qualificationEvidenceProblems, type QualificationEvidence } from "./evidence.js";
 import { accountFieldsOf, PROVIDER_IDS, providerSpec, specOf, type ProviderSpec } from "./provider.js";
-import type { ApplyEnvironment, ApplyEvidence, ApplyRefusalCode, ApplyResult, ApproverEntry, PilotContract, PilotTarget } from "./types.js";
+import type { ApplyEnvironment, ApplyEvidence, ApplyRefusalCode, ApplyResult, ApproverEntry, PilotContract, PilotTarget, ProviderId } from "./types.js";
 
 /**
  * The pilot release contract (docs/act-pilot-plan.md, authority model 9). This
@@ -120,6 +120,9 @@ function approvers(value: unknown, path: string): ApproverEntry[] {
   });
 }
 
+/** The providers whose Terraform pilot may carry the DEV-only scope (docs/act-pilot-plan.md, "DEV-only scope"). */
+const DEV_ONLY_PROVIDERS: readonly ProviderId[] = ["AWS", "AZURE"];
+
 function validate(raw: unknown): PilotContract {
   const r = object(raw, "contract", ["schemaVersion", "enabled", "provider", "engine", "targets", "requiredApprovals", "maxApprovalAgeMinutes", "approvers", "killSwitchPath"], ["embedStateWrite", "enabledEnvironments", "policyVersion"]);
   if (r.schemaVersion !== 1) bad("schemaVersion: expected 1");
@@ -133,8 +136,9 @@ function validate(raw: unknown): PilotContract {
   if (scoped !== undefined && (!Array.isArray(scoped) || scoped.length !== 1 || scoped[0] !== "DEV")) {
     bad("enabledEnvironments: only the explicit DEV-only pilot is supported; omit for the legacy three-stage contract");
   }
-  if (scoped !== undefined && (spec.id !== "AWS" || engine.id !== "TERRAFORM")) {
-    bad("enabledEnvironments: DEV-only scope is approved only for AWS Terraform ACT-DEV-1");
+  // Owner decisions: AWS Terraform (ACT-DEV-1, 2026-10-23) and Azure Terraform (2026-10-27, issue #39, comment 6442856302).
+  if (scoped !== undefined && (!DEV_ONLY_PROVIDERS.includes(spec.id) || engine.id !== "TERRAFORM")) {
+    bad("enabledEnvironments: DEV-only scope is approved only for AWS Terraform and Azure Terraform");
   }
   const active: ApplyEnvironment[] = scoped === undefined ? [...ENVIRONMENTS] : ["DEV"];
   const targets = object(r.targets, "targets", active);

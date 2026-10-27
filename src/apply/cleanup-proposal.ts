@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 
-import { cloudControlMappingOf } from "../observe/verify.js";
+import { DATA_BEARING_TYPES, cloudControlMappingOf } from "../observe/verify.js";
 import { canonicalJson } from "../teardown/manifest.js";
 import type { ResolvedTarget } from "../teardown/driver/types.js";
 import { sha256 } from "../util/sha256.js";
@@ -506,7 +506,7 @@ export function buildCleanupProposal(input: ProposalInput): { ok: true; proposal
     }
     // A type the reader cannot address (no Cloud Control mapping; an Azure id that is not an ARM resource id) is named, not refused; a denied or failed read is refused.
     // On Azure an entry with no id cannot be classified at all (a container, a scope, a backend?), so it is refused rather than proposed.
-    const accepted = contract.provider === "AZURE" ? ["NOT_AN_ARM_RESOURCE_ID"] : ["NO_CLOUD_CONTROL_MAPPING", "NO_IDENTIFIER_IN_STATE", "NOT_INDEPENDENTLY_CHECKABLE"];
+    const accepted = contract.provider === "AZURE" ? ["NOT_AN_ARM_RESOURCE_ID"] : ["NO_CLOUD_CONTROL_MAPPING", "DATA_BEARING_READ_EXCLUDED", "NO_IDENTIFIER_IN_STATE", "NOT_INDEPENDENTLY_CHECKABLE"];
     if (seen.result === "UNVERIFIABLE" && !accepted.includes(seen.reason ?? "")) {
       return refuse("OBSERVATION_INCONCLUSIVE", "The observation was refused for " + entry.address + " (" + seen.reason + "). Fix the DISCOVERY identity's access and observe again.");
     }
@@ -563,7 +563,11 @@ export function buildCleanupProposal(input: ProposalInput): { ok: true; proposal
     }
     for (const item of deletes) if (awsPolicyEntryOf(item.type) && MATERIAL_RISKS[item.type]) risks.add(item.type + ": " + MATERIAL_RISKS[item.type]);
   }
-  if (deletes.some((x) => x.observed === "UNVERIFIABLE")) risks.add("some listed resources are settings the independent reader cannot read alone; their deletion is proved through the resource they belong to");
+  if (deletes.some((x) => x.observed === "UNVERIFIABLE" && !DATA_BEARING_TYPES.has(x.type))) risks.add("some listed resources are settings the independent reader cannot read alone; their deletion is proved through the resource they belong to");
+  // A data-bearing type is not a setting: it is never read (DATA_BEARING_READ_EXCLUDED), so nothing in the product confirms its deletion.
+  if (deletes.some((x) => x.observed === "UNVERIFIABLE" && DATA_BEARING_TYPES.has(x.type))) {
+    risks.add("some listed resources (a Lambda function, an SSM parameter or a Secrets Manager secret) are never read by the independent reader, because their only read returns application data or secret contents: they are proposed as UNVERIFIABLE, they still need the contract's human approvals, and after the cleanup the leftover check reports them UNKNOWN, so it stays INCOMPLETE");
+  }
   risks.add("the engine destroys a listed resource together with anything in the state that depends on it; a dependent outside this list stops the cleanup before anything is destroyed");
   if (contract.engine === "CDK") {
     risks.add("the CloudFormation stack itself is never deleted by a cleanup: approved resources are removed from it, the stack stays with whatever it still holds, and retiring the stack is a separate, reviewed action that remains outstanding");
