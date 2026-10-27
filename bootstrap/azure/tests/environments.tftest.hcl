@@ -182,7 +182,7 @@ run "dev_only_refuses_a_qa_or_prod_subject" {
   variables {
     enabled_environments = ["DEV"]
     environments = {
-      DEV = { subscription_id = "00000000-0000-0000-0000-000000000001", state_resource_group_name = "rg-state-dev", state_storage_account_name = "examplestatedev" }
+      DEV = { subscription_id = "00000000-0000-0000-0000-000000000001", state_resource_group_name = "rg-state-dev", state_storage_account_name = "examplestatedev", apply_resource_group_name = "rg-pilot-dev" }
     }
   }
   expect_failures = [var.oidc_subjects]
@@ -193,7 +193,7 @@ run "dev_only_refuses_a_shared_dev_subject" {
   variables {
     enabled_environments = ["DEV"]
     environments = {
-      DEV = { subscription_id = "00000000-0000-0000-0000-000000000001", state_resource_group_name = "rg-state-dev", state_storage_account_name = "examplestatedev" }
+      DEV = { subscription_id = "00000000-0000-0000-0000-000000000001", state_resource_group_name = "rg-state-dev", state_storage_account_name = "examplestatedev", apply_resource_group_name = "rg-pilot-dev" }
     }
     oidc_subjects = {
       DISCOVERY   = { DEV = "repo:o/r:environment:dev-apply" }
@@ -227,4 +227,55 @@ run "a_repeated_environment_is_refused" {
     enabled_environments = ["DEV", "DEV"]
   }
   expect_failures = [var.enabled_environments]
+}
+
+run "dev_only_refuses_a_missing_pilot_group" {
+  command = plan
+  variables {
+    enabled_environments = ["DEV"]
+    environments = {
+      DEV = { subscription_id = "00000000-0000-0000-0000-000000000001", state_resource_group_name = "rg-state-dev", state_storage_account_name = "examplestatedev" }
+    }
+    oidc_subjects = {
+      DISCOVERY   = { DEV = "repo:o/r:environment:dev-discovery" }
+      STATE       = { DEV = "repo:o/r:environment:dev-state" }
+      STATE_WRITE = { DEV = "repo:o/r:environment:dev-state-write" }
+      APPLY       = { DEV = "repo:o/r:environment:dev-apply" }
+    }
+  }
+  expect_failures = [var.environments]
+}
+
+run "dev_only_refuses_a_blank_pilot_group" {
+  command = plan
+  variables {
+    enabled_environments = ["DEV"]
+    environments = {
+      DEV = { subscription_id = "00000000-0000-0000-0000-000000000001", state_resource_group_name = "rg-state-dev", state_storage_account_name = "examplestatedev", apply_resource_group_name = "  " }
+    }
+    oidc_subjects = {
+      DISCOVERY   = { DEV = "repo:o/r:environment:dev-discovery" }
+      STATE       = { DEV = "repo:o/r:environment:dev-state" }
+      STATE_WRITE = { DEV = "repo:o/r:environment:dev-state-write" }
+      APPLY       = { DEV = "repo:o/r:environment:dev-apply" }
+    }
+  }
+  expect_failures = [var.environments]
+}
+
+# The chain keeps its existing behavior: a missing pilot group is still accepted there (APPLY at subscription scope).
+run "chain_still_accepts_a_missing_pilot_group" {
+  command = plan
+  variables {
+    environments = {
+      DEV  = { subscription_id = "00000000-0000-0000-0000-000000000001", state_resource_group_name = "rg-state-dev", state_storage_account_name = "examplestatedev" }
+      QA   = { subscription_id = "00000000-0000-0000-0000-000000000002", state_resource_group_name = "rg-state-qa", state_storage_account_name = "examplestateqa" }
+      PROD = { subscription_id = "00000000-0000-0000-0000-000000000003", state_resource_group_name = "rg-state-prod", state_storage_account_name = "examplestateprod" }
+    }
+  }
+
+  assert {
+    condition     = output.apply_scopes.DEV == "/subscriptions/00000000-0000-0000-0000-000000000001"
+    error_message = "Without a pilot group the chain's scope is the subscription, as before."
+  }
 }

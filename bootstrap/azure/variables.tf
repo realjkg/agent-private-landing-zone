@@ -50,6 +50,13 @@ variable "environments" {
     error_message = "DEV, QA and PROD must use three different state storage accounts."
   }
 
+  # DEV-only mode keeps APPLY's Contributor and DISCOVERY's Reader on the pilot resource group: without it they would fall back
+  # to the whole subscription. The chain keeps its existing behavior (a group is optional there), so this rule is DEV-only.
+  validation {
+    condition     = toset(var.enabled_environments) != toset(["DEV"]) || try(trimspace(var.environments.DEV.apply_resource_group_name), "") != ""
+    error_message = "DEV-only mode needs environments.DEV.apply_resource_group_name (a non-empty name): APPLY and DISCOVERY are scoped to that pilot resource group, never to the whole subscription."
+  }
+
   validation {
     condition     = alltrue([for e in values(var.environments) : can(regex("^[a-z0-9]{3,24}$", e.state_storage_account_name)) if e != null])
     error_message = "A storage account name is 3 to 24 lowercase letters and digits."

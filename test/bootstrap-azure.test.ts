@@ -30,6 +30,9 @@ test("the default stays the three-stage chain; DEV-only is explicit and is the o
   // An entry or a subject for an environment that is not enabled is refused, never silently ignored.
   assert.match(block(read("variables.tf"), 'variable "environments" {'), /toset\(\[for name, e in var\.environments : name if e != null\]\) == toset\(var\.enabled_environments\)/);
   assert.match(block(read("variables.tf"), 'variable "oidc_subjects" {'), /contains\(var\.enabled_environments, e\)/);
+  // DEV-only mode requires the pilot resource group, so APPLY and DISCOVERY never fall back to the whole subscription.
+  assert.match(block(read("variables.tf"), 'variable "environments" {'),
+    /toset\(var\.enabled_environments\) != toset\(\["DEV"\]\) \|\| try\(trimspace\(var\.environments\.DEV\.apply_resource_group_name\), ""\) != ""/);
   // Only QA and PROD are conditional; DEV is always created. Federated credentials follow the enabled environments.
   const environments = read("environments.tf");
   assert.doesNotMatch(block(environments, 'module "environment_dev" {'), /count/);
@@ -58,7 +61,8 @@ test("the offline Terraform tests cover both modes and every refusal", () => {
   for (const provider of ['mock_provider "azuread"', 'alias = "dev"', 'alias = "qa"', 'alias = "prod"']) assert.ok(tests.includes(provider), provider);
   for (const run of ["chain_is_the_default", "chain_refuses_a_shared_subscription", "chain_refuses_a_shared_state_account", "chain_refuses_a_missing_environment",
     "dev_only_creates_dev_alone_with_the_same_controls", "dev_only_refuses_a_qa_or_prod_entry", "dev_only_refuses_a_qa_or_prod_subject",
-    "dev_only_refuses_a_shared_dev_subject", "only_dev_or_the_full_chain_is_accepted", "qa_alone_is_refused", "a_repeated_environment_is_refused"]) {
+    "dev_only_refuses_a_shared_dev_subject", "only_dev_or_the_full_chain_is_accepted", "qa_alone_is_refused", "a_repeated_environment_is_refused",
+    "dev_only_refuses_a_missing_pilot_group", "dev_only_refuses_a_blank_pilot_group", "chain_still_accepts_a_missing_pilot_group"]) {
     assert.match(block(tests, 'run "' + run + '" {'), /command = plan/, run);
   }
   // Plan only, with mocked providers: no run may apply.
@@ -81,7 +85,7 @@ test("opt-in: terraform init, validate and test pass offline (mocked providers)"
     run("fmt", "-recursive", "-check");
     run("init", "-backend=false", "-input=false", "-no-color");
     run("validate", "-no-color");
-    assert.match(run("test", "-no-color"), /Success! 11 passed, 0 failed/);
+    assert.match(run("test", "-no-color"), /Success! 14 passed, 0 failed/);
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
