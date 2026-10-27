@@ -36,9 +36,9 @@
       "gates": [
         "act:aws-cdk"
       ],
-      "blockedBy": "the DEV-only contract scope admits AWS Terraform (and, with #298, Azure Terraform) only, so CDK needs its own DEV authorization entry; its G0, G1b and real-engine qualification are not recorded",
-      "acceptance": "Authentic, owner-run: real-engine CDK qualification on a host that has it, one supervised DEV apply of the sealed change set, and `./alz apply record-live` evidence for gate act:aws-cdk. Separate from the Terraform paths: one never implies the other.",
-      "next": "Fill in from the six-path baseline (docs/act-dev-paths.md): minimal workload, missing execution code, DEV prerequisites, authorization, failing tests."
+      "blockedBy": "C1: the DEV-only contract scope refuses CDK (src/apply/contract.ts validate), so without it the path needs three AWS accounts; C2: every AWS/CloudFormation fact in src/apply/engines/cdk.ts is UNVERIFIED (only a fake aws ran) and no emulated harness exists; then the owner's C3",
+      "acceptance": "Authentic, owner-run: bootstrap/aws with engine = \"CDK\", real-engine CDK qualification, one supervised DEV apply of the sealed change set for the minimal workload (one pre-synthesized stack holding the path 1 canary log group), cleanup, and `./alz apply record-live` evidence for gate act:aws-cdk, plus preview:cdk-aws-brownfield. Separate from the Terraform paths: one never implies the other.",
+      "next": "C2: the emulated CDK/CloudFormation harness lane (real AWS CLI against local moto CloudFormation) verifies the UNVERIFIED facts and updates docs/act-pilot-apply.md (\"CDK\"). C1: DEV-only scope for CDK lands in shared-authorization. Remove (PR B) covers cdk.out copies and change-set files (docs/act-dev-paths.md, #300; coordinator defaults 6443800275)."
     },
     {
       "id": "path-azure-terraform",
@@ -73,9 +73,9 @@
         "shared-approvals"
       ],
       "gates": [],
-      "blockedBy": "no Bicep/ARM engine spec in src/apply/engines (Terraform and CDK only) and no release gate; the six-path baseline lists the missing code",
-      "acceptance": "Authentic, owner-run DEV apply recorded from its own ledger. No release gate exists for this path yet (ACT_RELEASE_PATHS in src/qualification/release-admission.ts); adding one is part of the path's work.",
-      "next": "Fill in from the six-path baseline (docs/act-dev-paths.md): minimal workload, missing execution code, DEV prerequisites, authorization, failing tests."
+      "blockedBy": "NOT STARTED: only the read-only what-if and the teardown tag reader exist. Missing: BICEP engine spec (B1, deployment-stack engine), az and bicep pins and bootstrap identities (B2), classifier, address and console parity (B3), a recorded-output check of deployment-stack behavior (B4), the act:azure-bicep gate, and the owner's choices on deny settings (B0)",
+      "acceptance": "Authentic, owner-run: one supervised DEV apply of the sealed ARM template as a resource-group deployment stack (`az stack group create`) for the minimal workload (one empty tagged virtual network in a run-created resource group), cleanup by stack update scoped to the run's resources, and evidence for the new gate act:azure-bicep plus preview:bicep-azure-brownfield back in scope. The gates are added only by this path's reviewed PRs.",
+      "next": "B1: the Bicep lane builds src/apply/engines/bicep.ts (seal what-if and template bytes, apply a deployment stack, state from managed resources, cleanup by stack update, never a stack delete) after shared-authorization; B2 to B4 follow (docs/act-dev-paths.md, #300; coordinator defaults 6443800275)."
     },
     {
       "id": "path-gcp-terraform",
@@ -88,9 +88,9 @@
         "shared-approvals"
       ],
       "gates": [],
-      "blockedBy": "no GCP provider spec in src/apply/providers, no bootstrap/gcp, and the GCP G1b emulated test is not built (docs/act-pilot-simulation-gcp.md)",
-      "acceptance": "Authentic, owner-run DEV apply under the full gates (docs/act-pilot-plan.md, G0 to G2 for GCP). No release gate exists for this path yet; adding one is part of the path's work.",
-      "next": "Fill in from the six-path baseline (docs/act-dev-paths.md); P1, P2 and P4 are adopted as fail-closed defaults, P3 and P5 stay owner bootstrap items."
+      "blockedBy": "NOT STARTED in code: S1 to S7 are unbuilt (no GCP provider spec, no gcs rule in backend pinning, no reader, classifier, gates, emulated G1b or console parity), no bootstrap/gcp, and contract.ts still refuses GCP DEV-only scope; P3 and P5 stay owner bootstrap items",
+      "acceptance": "Authentic, owner-run under the full gates: bootstrap/gcp with WIF and four impersonated service accounts, one supervised DEV apply of one labeled Pub/Sub topic, cleanup, and evidence for the new gates act:gcp-terraform, gcp-provider and preview:terraform-gcp-brownfield. The gates are added only by this path's reviewed PRs.",
+      "next": "G1: the GCP Terraform S1 lane builds the provider spec and identities (src/apply/providers/gcp.ts), after #297 adds a gcs backend rule; then G2 bootstrap/gcp (offline-validated) and G3 (S3 to S7). P1, P2 and P4 are fail-closed defaults (docs/act-dev-paths.md, #300; coordinator defaults 6443800275)."
     },
     {
       "id": "path-gcp-api-native",
@@ -102,9 +102,9 @@
         "shared-approvals"
       ],
       "gates": [],
-      "blockedBy": "no API-native execution code or provider spec exists; the six-path baseline lists the missing code",
-      "acceptance": "Authentic, owner-run DEV apply recorded from its own ledger. No release gate exists for this path yet; adding one is part of the path's work.",
-      "next": "Fill in from the six-path baseline (docs/act-dev-paths.md): minimal workload, missing execution code, DEV prerequisites, authorization, failing tests."
+      "blockedBy": "NOT STARTED: no engine spec. The coordinator default (6443800275) is a typed request engine over the GCP REST API for an allowlisted kind; it reuses path 5's provider spec, identities, reader, classifier and bootstrap (G1, G3), which are not built",
+      "acceptance": "Authentic, owner-run: one supervised DEV apply of one labeled Pub/Sub topic through a sealed, allowlisted typed request (`topics.create`), verified by read-back and removed by `topics.delete`, with evidence for the new gates act:gcp-api and gcp-provider (shared with path 5). The gates are added only by this path's reviewed PRs.",
+      "next": "N1: the GCP API lane builds the typed request engine (closed create/delete table sealed verbatim, ownership by labels, state from API responses) on top of path 5's provider spec; then N2 gates, tests and console parity (docs/act-dev-paths.md, #300; coordinator defaults 6443800275)."
     },
     {
       "id": "shared-authorization",
