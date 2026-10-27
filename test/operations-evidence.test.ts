@@ -47,6 +47,7 @@ test("the family is registered once, with the safety classes it claims", () => {
   ]);
   assert.deepEqual(handoffs.map((item) => item.id), [
     "inspect", "session", "session-fixture", "real-private-build", "lz-live-journey", "qualify-terraform-validate", "qualify-terraform-plan",
+    "evidence-init", "evidence-run", "evidence-status",
   ]);
   for (const item of evidenceOperations) assert.equal(OPERATIONS.filter((other) => other.id === item.id).length, 1);
 });
