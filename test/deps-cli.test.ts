@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
@@ -559,4 +559,39 @@ test("an unfinished install or removal in the app's folder is reported, offered 
   assert.equal(await runDepsCommand([], deps("unfinished-remove", again, { home, env: { PATH: pathWith("cli-unfinished-remove", { ...GOOD_TOOLS, terraform: "" }) } })), 2);
   assert.match(again.shown.join(""), /Terraform 1\.16\.4 \(.*\) — an earlier removal did not finish/);
   assert.ok(!existsSync(folder), "the repeated removal completes it");
+});
+
+test("the ./alz deps report says in plain words when a leftover is left alone or cannot be checked, instead of ending with an error", async () => {
+  const home = join(root, "home-cli-refused");
+  const toolDir = join(home, ".alz", "tools", "terraform");
+  mkdirSync(join(toolDir, "1.16.4.replaced-4242"), { recursive: true });
+  writeFileSync(join(toolDir, "1.16.4.replaced-4242", "terraform"), "the earlier copy");
+  symlinkSync(join(root, "nowhere-cli-" + Date.now()), join(toolDir, "1.16.4"));
+  const lines: string[] = [];
+  const code = await runDepsCommand([], deps("refused", terminal(false, []), {
+    home, out: (text) => { lines.push(text); }, pidAlive: () => false, env: { PATH: pathWith("refused-good", GOOD_TOOLS) },
+  }));
+  assert.equal(code, 0, lines.join(""));
+  assert.match(lines.join(""), /Left alone: something that is not a folder \(a link or a file\) stands at .*1\.16\.4, so the earlier terraform 1\.16\.4 copy beside it was left alone; remove it by hand, then run \.\/alz deps again\./);
+  assert.ok(existsSync(join(toolDir, "1.16.4.replaced-4242", "terraform")), "the copy aside is kept");
+  assert.ok(lstatSync(join(toolDir, "1.16.4")).isSymbolicLink(), "the link is untouched");
+  // A second ./alz deps run while another is installing the same tool: the install is refused with the plain reason, and the
+  // other run's lock stays.
+  const archive = fakeArchive("locked");
+  const lockHome = join(root, "home-cli-locked");
+  mkdirSync(join(lockHome, ".alz", "tmp"), { recursive: true });
+  writeFileSync(join(lockHome, ".alz", "tmp", "terraform.install.lock"), JSON.stringify({ pid: 4343, startedAt: "2026-10-27T00:00:00.000Z" }) + "\n");
+  const out: string[] = [];
+  let downloads = 0;
+  const locked = await runDepsCommand([], {
+    ...deps("locked", terminal(true, ["1", "", "1"]), { home: lockHome, out: (text) => { out.push(text); }, pidAlive: (pid) => pid === 4343, download: async () => { downloads += 1; return Readable.from([archive.body]); } }),
+    pinsPath: fakePins("locked", archive.sha256),
+  });
+  assert.equal(locked, 2);
+  assert.equal(downloads, 0);
+  assert.match(out.join(""), /Another \.\/alz deps run \(pid 4343\) is installing or removing terraform right now, so this run changed nothing\. Wait for it to finish, then run \.\/alz deps again\. If no other \.\/alz deps run is open in any window, .*: delete \S+\/\.alz\/tmp\/terraform\.install\.lock, then run \.\/alz deps again\./);
+  // The report's own sweep takes the same lock, so it does not touch the tool's leftovers while the other run holds it.
+  assert.match(out.join(""), /^Did not check the leftovers of earlier Terraform runs\. Another \.\/alz deps run \(pid 4343\)/m);
+  assert.ok(existsSync(join(lockHome, ".alz", "tmp", "terraform.install.lock")), "the other run's lock stays");
+  assert.ok(!existsSync(installedPath(lockHome, "terraform", "1.16.4", "terraform")));
 });

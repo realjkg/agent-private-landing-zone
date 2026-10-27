@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import { type CheckContext, type DepCheck, allRequiredPass, appInstallStates, appInstalledVersions, INSTALL_STATE_WORDS, type InstallState, installedPath, installState, runDependencyChecks } from "../deps/checks.js";
-import { InstallError, installTool, type InstalledTool, removeInstalledTool, sweepLeftovers } from "../deps/install.js";
+import { InstallError, installTool, type InstalledTool, removeInstalledTool, sweepToolLeftovers } from "../deps/install.js";
 import { loadToolPins, DEFAULT_PINS, platformKey, type Platform, type ToolId, type ToolPins } from "../deps/pins.js";
 import { interceptStopSignals } from "../tools/process.js";
 import { EXIT, processTerminal, type HumanTerminal } from "./teardown-driver.js";
@@ -77,6 +77,8 @@ const FAILURE_TEXT: Record<InstallError["code"], string> = {
   INSTALL_BINARY_MISSING: "The download did not contain the expected program, so nothing was installed.",
   INSTALL_VERIFY_FAILED: "The downloaded program still failed verification after installation, so it is not used. The new copy was removed again.",
   INSTALL_SWAP_FAILED: "The checked copy could not be put in place, so nothing changed; the earlier copy was kept. Run ./alz deps again.",
+  // Shown only if the lock's own message (which names the lock file and how to clear it) is missing.
+  INSTALL_IN_PROGRESS: "Another ./alz deps run is installing or removing this tool right now, so this run changed nothing. Wait for it to finish, then run ./alz deps again.",
   INSTALL_INTERRUPTED: "Stopped. Nothing was installed, and the unfinished download was removed. Run ./alz deps again to start the install over.",
   INSTALL_REMOVE_REFUSED: "That folder is not an app-installed copy, so nothing was removed.",
 };
@@ -167,7 +169,22 @@ const stateSuffix = (state: Exclude<InstallState, "ABSENT">): string => state ==
  */
 function sweepAndReport(pins: ToolPins, home: string, deps: DepsDeps, out: (text: string) => void, log: (text: string) => void): void {
   for (const tool of Object.keys(pins.tools) as ToolId[]) {
-    const swept = sweepLeftovers(home, tool, deps.pidAlive ? { pidAlive: deps.pidAlive } : {});
+    let swept: ReturnType<typeof sweepToolLeftovers>;
+    try {
+      swept = sweepToolLeftovers(home, tool, deps.pidAlive ? { pidAlive: deps.pidAlive } : {});
+    } catch (error) {
+      if (error instanceof InstallError && error.code === "INSTALL_IN_PROGRESS") {
+        // Another run holds this tool's lock: its leftovers are not checked now, and the lock's message says what to do.
+        log("sweep " + tool + " skipped " + error.code);
+        out("Did not check the leftovers of earlier " + TOOL_NAME[tool] + " runs. " + error.message + "\n");
+        continue;
+      }
+      // The sweep fails closed: whatever stopped it is reported in plain words, and the report goes on.
+      const code = (error as NodeJS.ErrnoException).code ?? "UNKNOWN";
+      log("sweep " + tool + " failed " + code);
+      out("Could not check the leftovers of earlier " + TOOL_NAME[tool] + " runs (" + code + "); nothing was changed. Look at " + join(home, ".alz", "tools", tool) + " by hand.\n");
+      continue;
+    }
     for (const line of swept.recovered) {
       log("recover " + tool);
       out("Finished an interrupted earlier run: " + line + ".\n");
@@ -175,6 +192,10 @@ function sweepAndReport(pins: ToolPins, home: string, deps: DepsDeps, out: (text
     for (const path of swept.removed) {
       log("sweep " + tool);
       out("Removed a leftover of an earlier run that did not finish: " + path + "\n");
+    }
+    for (const line of swept.refused) {
+      log("sweep " + tool + " refused");
+      out("Left alone: " + line + ".\n");
     }
   }
 }
@@ -225,6 +246,12 @@ function installQuestion(previous: readonly string[], repair: boolean): { title:
   return previous.length > 0 ? { title: "Update it now?", options: ["Update it", "Skip it"] } : { title: "Install it now?", options: ["Install it", "Skip it"] };
 }
 
+/** The plain text for a failed install or removal: a busy lock's own message names the lock and how to clear it; every other code has one fixed text. */
+function failureText(error: unknown, fallback: InstallError["code"]): { code: InstallError["code"]; text: string } {
+  const code = error instanceof InstallError ? error.code : fallback;
+  return { code, text: error instanceof InstallError && code === "INSTALL_IN_PROGRESS" ? error.message : FAILURE_TEXT[code] };
+}
+
 type Verified = { ok: true; installed: InstalledTool } | { ok: false; step: string; text: string; stopped?: boolean };
 
 /**
@@ -248,9 +275,9 @@ export function installStopGuard(tool: ToolId, terminal: HumanTerminal, exit: (c
 }
 
 /**
- * Installs the pinned version through installTool, then checks it the way every command does: the app's copy must report
- * the pinned version. A copy installed in this run that fails the check is removed again, so the next run downloads a
- * fresh one instead of reusing it. Earlier versions are never touched here. While the install runs, a stop signal
+ * Installs the pinned version through installTool, which checks it the way every command does while it still holds the
+ * tool's lock: the app's copy must report the pinned version. A copy installed in this run that fails the check is removed
+ * again under that lock, so the next run downloads a fresh one and no other run can have reused it meanwhile. Earlier versions are never touched here. While the install runs, a stop signal
  * (Ctrl-C, kill, the terminal closing) stops the download and runs the install's own cleanup, so nothing is installed and a
  * rerun starts over; a second signal ends the process at once.
  */
@@ -261,20 +288,21 @@ async function installAndVerify(tool: ToolId, ctx: CheckContext, pins: ToolPins,
     installed = await installTool(tool, {
       pins, home: ctx.home, platform, signal: guard.signal,
       ...(deps.download ? { download: deps.download } : {}), ...(deps.pidAlive ? { pidAlive: deps.pidAlive } : {}),
+      // Checked while the install still holds the tool's lock; a new copy that fails is removed under that same lock.
+      verify: async () => (await runDependencyChecks(ctx, new Set<DepCheck["id"]>([tool]))).find((item) => item.id === tool)?.ok === true,
     });
   } catch (error) {
-    const code = error instanceof InstallError ? error.code : "INSTALL_DOWNLOAD_FAILED";
-    return { ok: false, step: "failed " + code, text: FAILURE_TEXT[code], ...(code === "INSTALL_INTERRUPTED" ? { stopped: true } : {}) };
+    const { code, text } = failureText(error, "INSTALL_DOWNLOAD_FAILED");
+    return { ok: false, step: "failed " + code, text, ...(code === "INSTALL_INTERRUPTED" ? { stopped: true } : {}) };
   } finally {
     guard.release();
   }
   for (const line of installed.recovered) terminal.write("Finished an interrupted earlier run: " + line + ".\n");
+  for (const line of installed.refused) terminal.write("Left alone: " + line + ".\n");
   for (const path of installed.swept) terminal.write("Removed a leftover of an earlier run that did not finish: " + path + "\n");
   if (installed.replaced) terminal.write("Replaced the copy at " + join(installed.path, "..") + " (" + INSTALL_STATE_WORDS[installed.replaced] + ") after the new copy passed its check.\n");
-  const checked = await runDependencyChecks(ctx, new Set<DepCheck["id"]>([tool]));
-  if (checked.find((item) => item.id === tool)?.ok === true) return { ok: true, installed };
+  if (installed.verified === true) return { ok: true, installed };
   const version = pins.tools[tool].version;
-  if (!installed.reused) removeInstalledTool(ctx.home, tool, version);
   return {
     ok: false, step: "failed INSTALL_VERIFY_FAILED",
     text: TOOL_NAME[tool] + " " + version + " still failed verification after installation, so it is not used. " +
@@ -290,7 +318,7 @@ function previousKept(tool: ToolId, version: string, previous: readonly string[]
 
 /** After a checked update: offers to remove each earlier version, keeping it unless the person chooses removal. */
 async function offerPreviousRemoval(tool: ToolId, version: string, previous: readonly string[], terminal: HumanTerminal, home: string,
-  log?: (text: string) => void): Promise<void> {
+  log?: (text: string) => void, pidAlive?: (pid: number) => boolean): Promise<void> {
   for (const old of previous) {
     terminal.write("\n" + TOOL_NAME[tool] + " " + version + " is installed and checked. " + TOOL_NAME[tool] + " " + old + " is still in your user folder. " +
       "This app no longer uses it. Keep it only if you may go back to an earlier version of this app, which uses it again without a download.\n");
@@ -300,13 +328,13 @@ async function offerPreviousRemoval(tool: ToolId, version: string, previous: rea
       continue;
     }
     try {
-      const outcome = removeInstalledTool(home, tool, old);
+      const outcome = removeInstalledTool(home, tool, old, pidAlive ? { pidAlive } : {});
       log?.("remove " + tool + " " + old + " " + outcome);
       terminal.write((outcome === "removed" ? "Removed " : "Already removed ") + TOOL_NAME[tool] + " " + old + ".\n");
     } catch (error) {
-      const code = error instanceof InstallError ? error.code : "INSTALL_REMOVE_REFUSED";
+      const { code, text } = failureText(error, "INSTALL_REMOVE_REFUSED");
       log?.("remove " + tool + " " + old + " failed " + code);
-      terminal.write(FAILURE_TEXT[code as InstallError["code"]] + "\n");
+      terminal.write(text + "\n");
     }
   }
 }
@@ -401,7 +429,7 @@ export async function runDepsCommand(args: string[], deps: DepsDeps = {}): Promi
       }
       log.line("install " + tool + " " + version + " " + (result.installed.reused ? "already-installed" : "installed") + " verified");
       out((result.installed.reused ? "Already installed: " : "Installed: ") + result.installed.path + "\n");
-      await offerPreviousRemoval(tool, version, previous, terminal, home, log.line);
+      await offerPreviousRemoval(tool, version, previous, terminal, home, log.line, deps.pidAlive);
     }
   } else if (action === "remove") {
     const labels = removable.map((item) => TOOL_NAME[item.tool] + " " + item.version + " (" + item.path + ")" + stateSuffix(item.state));
@@ -412,13 +440,13 @@ export async function runDepsCommand(args: string[], deps: DepsDeps = {}): Promi
       const decision = await askChoice(terminal, "Remove it now?", ["Remove it", "Keep it"], 2);
       if (decision === 1) {
         try {
-          const outcome = removeInstalledTool(home, item.tool, item.version);
+          const outcome = removeInstalledTool(home, item.tool, item.version, deps.pidAlive ? { pidAlive: deps.pidAlive } : {});
           log.line("remove " + item.tool + " " + item.version + " " + outcome);
           out(outcome === "removed" ? "Removed: " + item.path + "\n" : "Already removed: " + item.path + "\n");
         } catch (error) {
-          const code = error instanceof InstallError ? error.code : "INSTALL_REMOVE_REFUSED";
+          const { code, text } = failureText(error, "INSTALL_REMOVE_REFUSED");
           log.line("remove " + item.tool + " " + item.version + " failed " + code);
-          out(FAILURE_TEXT[code as InstallError["code"]] + "\n");
+          out(text + "\n");
         }
       } else {
         out("Kept. Nothing was removed.\n");
