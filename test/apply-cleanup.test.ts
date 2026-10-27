@@ -21,6 +21,8 @@ import {
   recordSha256, writeBlueprintRecord, type BlueprintRecord,
 } from "../src/apply/run-records.js";
 import { AWS_CONTAINER_FAMILIES, AWS_CONTAINER_PREFIXES, awsContainerFamilyOf, isAwsContainerType } from "../src/observe/aws-containers.js";
+import { AWS_LEAF_TYPES, AWS_LEAF_TYPE_NAMES, awsLeafEntryOf, isAwsLeafType, isWellFormedResourceType } from "../src/observe/aws-leaf-types.js";
+import { acceptanceOf, acceptanceStatement } from "../src/apply/lifecycle-report.js";
 import { CLEANUP_ADAPTER, CLEANUP_APPLY_ARGV, CLEANUP_SHOW_ARGV, cleanupPlanArgv, isAllowedCleanupArgv } from "../src/apply/terraform.js";
 import type { ApplyEnvironment, PilotContract, SignedApproval } from "../src/apply/types.js";
 import { blueprintFromTerraformStatePull } from "../src/observe/blueprint.js";
@@ -746,9 +748,14 @@ test("anything in the IAM or identity service is PROTECTED_IDENTITY by an anchor
     // By type alone, for a dependent the state does not hold.
     assert.ok(protectedDeletionIn(change("x.y", type), [], IDENTITY_FIXTURE_CONTRACT, awsIdentityEnv("DEV"))?.includes("(PROTECTED_IDENTITY)"), type + " by type alone");
   }
-  for (const type of ["aws_iamx", "aws_iam", "aws_s3_bucket", "aws_cloudwatch_log_group", "AWS::IAMX::Foo", "AWS::Iam::Role", "aws::iam::role", "AWS::IAM:Role", "aws_sso_admin", "awscc_s3_bucket", "aws_ssoadminx"]) {
+  // Not identity types. Since the leaf allowlist (delegated owner decision 6433391052), only an allowlisted one is ordinary; any other well-formed
+  // type is held as TYPE_UNREVIEWED and a malformed type field is unclassifiable, so none of them is ever deletable by resemblance either.
+  for (const [type, expected] of [["aws_iamx", "TYPE_UNREVIEWED"], ["aws_iam", "TYPE_UNREVIEWED"], ["aws_s3_bucket", undefined], ["aws_cloudwatch_log_group", undefined], ["AWS::IAMX::Foo", "TYPE_UNREVIEWED"], ["AWS::Iam::Role", "TYPE_UNREVIEWED"],
+    ["aws::iam::role", "TYPE_UNREVIEWED"], ["AWS::IAM:Role", "OWNERSHIP_AMBIGUOUS"], ["aws_sso_admin", "TYPE_UNREVIEWED"], ["awscc_s3_bucket", undefined], ["aws_ssoadminx", "TYPE_UNREVIEWED"]] as const) {
     assert.ok(!isAwsIdentityType(type), type + " is not an identity type");
-    assert.equal(protectedDeletionIn(change("x.y", type), [entry("x.y", type, "x", "arn:aws:s3:::x")], IDENTITY_FIXTURE_CONTRACT, awsIdentityEnv("DEV")), undefined, type);
+    const refusal = protectedDeletionIn(change("x.y", type), [entry("x.y", type, "x", "arn:aws:s3:::x")], IDENTITY_FIXTURE_CONTRACT, awsIdentityEnv("DEV"));
+    if (expected === undefined) assert.equal(refusal, undefined, type + " is an allowlisted leaf");
+    else assert.ok(refusal !== undefined && refusal.includes("(" + expected + ")") && !refusal.includes("(PROTECTED_IDENTITY)"), type + ": " + refusal);
   }
   // A pilot role's ARN recorded under a type outside the identity service: fail closed, never ordinary.
   const pilot = awsRoleArn("APPLY", "DEV");
@@ -756,7 +763,8 @@ test("anything in the IAM or identity service is PROTECTED_IDENTITY by an anchor
     const refusal = protectedDeletionIn(change("x.y", type), [entry("x.y", type, id, arn)], IDENTITY_FIXTURE_CONTRACT, awsIdentityEnv("DEV"));
     assert.ok(refusal !== undefined && refusal.includes("(OWNERSHIP_AMBIGUOUS)") && refusal.includes("an identity's ARN under another type"), type + ": " + refusal);
   }
-  assert.equal(protectedDeletionIn(change("x.y", "terraform_data"), [entry("x.y", "terraform_data", "not-an-arn", null)], IDENTITY_FIXTURE_CONTRACT, awsIdentityEnv("DEV")), undefined, "terraform_data without an IAM ARN stays ordinary");
+  // terraform_data without an IAM ARN is not an identity question, and it is not on the leaf allowlist (a destroy-time provisioner is still the owner's question): held, never deleted.
+  assert.ok(protectedDeletionIn(change("x.y", "terraform_data"), [entry("x.y", "terraform_data", "not-an-arn", null)], IDENTITY_FIXTURE_CONTRACT, awsIdentityEnv("DEV"))?.includes("(TYPE_UNREVIEWED)"), "terraform_data without an IAM ARN is held as unreviewed");
   // A wrapper whose attributes held an identity's ARN, or nested past what the blueprint could scan (judged by the blueprint, N2 of 6412488764, B2 of 6412896598), is refused the same way.
   const flagged = protectedDeletionIn(change("x.y", "terraform_data"), [{ ...entry("x.y", "terraform_data", "plain", null), holdsIdentityArn: true }], IDENTITY_FIXTURE_CONTRACT, awsIdentityEnv("DEV"));
   assert.ok(flagged !== undefined && flagged.includes("(OWNERSHIP_AMBIGUOUS)") && flagged.includes("could not scan in full"), flagged);
@@ -771,9 +779,13 @@ const AWS_CONTAINER_TYPES = ["aws_cloudformation_stack", "aws_cloudformation_sta
   "aws_serverlessapplicationrepository_cloudformation_stack", "awscc_serverlessapplicationrepository_cloudformation_stack", "AWS::Serverless::Application", "AWS::ServerlessRepo::Application",
   "aws_sagemaker_project", "awscc_sagemaker_project", "AWS::SageMaker::Project",
   "aws_proton_environment", "aws_proton_service", "awscc_proton_environment", "awscc_proton_service", "AWS::Proton::Environment", "AWS::Proton::Service",
-  "aws_elastic_beanstalk_environment", "awscc_elasticbeanstalk_environment", "AWS::ElasticBeanstalk::Environment"];
+  "aws_elastic_beanstalk_environment", "awscc_elasticbeanstalk_environment", "AWS::ElasticBeanstalk::Environment",
+  // Review 6433014148 B1, through the delegated owner decision 6433391052 item 4: SSM Quick Setup, DataZone environments and Control Tower.
+  "aws_ssmquicksetup_configuration_manager", "awscc_ssmquicksetup_configuration_manager", "AWS::SSMQuickSetup::ConfigurationManager",
+  "aws_datazone_environment", "awscc_datazone_environment", "AWS::DataZone::Environment",
+  "aws_controltower_landing_zone", "aws_controltower_control", "aws_controltower_baseline", "awscc_controltower_landing_zone", "awscc_controltower_enabled_control", "AWS::ControlTower::LandingZone", "AWS::ControlTower::EnabledControl", "AWS::ControlTower::EnabledBaseline"];
 
-test("anything that deploys a CloudFormation stack or a provisioned product (a stack, stack set or stack instance, a Service Catalog provisioned product, a Serverless Application Repository application, a SageMaker project, a Proton environment or service, an Elastic Beanstalk environment) is CONTAINS_OTHERS by the one family table: never deleted, directly or as a dependent, whatever it carries, because what the stack holds (IAM roles among it) is not in the state (reviews 6412896598 B1, 6432262110 B1)", () => {
+test("anything that deploys a CloudFormation stack or a provisioned product (a stack, stack set or stack instance, a Service Catalog provisioned product, a Serverless Application Repository application, a SageMaker project, a Proton environment or service, an Elastic Beanstalk environment, an SSM Quick Setup configuration, a DataZone environment, Control Tower) is CONTAINS_OTHERS by the one family table: never deleted, directly or as a dependent, whatever it carries, because what the stack holds (IAM roles among it) is not in the state (reviews 6412896598 B1, 6432262110 B1)", () => {
   const entry = (address: string, type: string, id: string | null = "x", arn: string | null = null) => ({ address, type, id, arn });
   const change = (address: string, type: string, action = "DELETE") => [{ address, type, action }];
   const pilot = awsRoleArn("APPLY", "DEV");
@@ -799,7 +811,7 @@ test("anything that deploys a CloudFormation stack or a provisioned product (a s
     assert.ok(protectedDeletionIn(change("x.y", type), [{ ...entry("x.y", type), holdsIdentityArn: true }], IDENTITY_FIXTURE_CONTRACT, awsIdentityEnv("DEV"))?.includes("(CONTAINS_OTHERS)"), type + " with a flagged attribute");
   }
   for (const type of ["aws_cloudformation_type", "aws_cloudformation_export", "aws_cloudformationx_stack", "AWS::CloudFormation::CustomResource", "AWS::CloudFormation::WaitCondition", "aws_servicecatalog_product", "aws_servicecatalog_portfolio", "AWS::ServiceCatalog::Portfolio",
-    "aws_serverlessapplicationrepository_application", "aws_sagemaker_model", "aws_sagemaker_domain", "AWS::SageMaker::Model", "aws_elastic_beanstalk_application", "aws_elastic_beanstalk_application_version", "AWS::ElasticBeanstalk::Application", "aws_s3_bucket", "AWS_CLOUDFORMATION_STACK", " aws_cloudformation_stack", "module.m.aws_cloudformation_stack"]) {
+    "aws_serverlessapplicationrepository_application", "aws_sagemaker_model", "aws_sagemaker_domain", "AWS::SageMaker::Model", "aws_elastic_beanstalk_application", "aws_elastic_beanstalk_application_version", "AWS::ElasticBeanstalk::Application", "aws_datazone_project", "aws_datazone_domain", "aws_ssm_parameter", "aws_s3_bucket", "AWS_CLOUDFORMATION_STACK", " aws_cloudformation_stack", "module.m.aws_cloudformation_stack"]) {
     assert.ok(!isAwsContainerType(type), type + " is not a container");
   }
   assert.ok(PROTECTION_REASONS.CONTAINS_OTHERS.length <= 512 && /anything that deploys a CloudFormation stack or a provisioned product/.test(PROTECTION_REASONS.CONTAINS_OTHERS), "the reason states the class within a proposal's limit");
@@ -948,4 +960,141 @@ test("AWS identities the run created are never deleted (owner policy #39): an ap
   for (const address of ["aws_iam_role.app", "aws_iam_role_policy.app_inline", "aws_iam_policy_attachment.shared", "aws_iam_access_key.app", "aws_iam_role.apply", "aws_identitystore_user.ops", "aws_identitystore_group.ops", "aws_identitystore_group_membership.ops"]) assert.deepEqual(dispositions.get(address), ["INTENTIONALLY_RETAINED", "PILOT_OWNER"], address);
   assert.deepEqual(dispositions.get("aws_s3_bucket.logs"), ["CONFIRMED_DELETED", undefined]);
   assert.ok(!JSON.stringify(leftovers.record).includes("AKIAFAKEAPPKEY000000"));
+});
+
+/**
+ * The reviewed AWS leaf allowlist by name (delegated owner decision 6433391052, item 1): the test list and the table are checked against each other
+ * both ways, so an entry added to the table without a test row, or a test row the table lost, fails here.
+ */
+const AWS_LEAF_TYPES_BY_NAME = [
+  "aws_s3_bucket", "awscc_s3_bucket", "AWS::S3::Bucket",
+  "aws_s3_bucket_versioning", "aws_s3_bucket_server_side_encryption_configuration", "aws_s3_bucket_public_access_block", "aws_s3_bucket_ownership_controls", "aws_s3_bucket_lifecycle_configuration",
+  "aws_cloudwatch_log_group", "awscc_logs_log_group", "AWS::Logs::LogGroup",
+  "aws_sqs_queue", "awscc_sqs_queue", "AWS::SQS::Queue",
+  "aws_sns_topic", "awscc_sns_topic", "AWS::SNS::Topic",
+  "aws_ssm_parameter", "awscc_ssm_parameter", "AWS::SSM::Parameter",
+  "aws_dynamodb_table", "awscc_dynamodb_table", "AWS::DynamoDB::Table",
+  "aws_kms_key", "awscc_kms_key", "AWS::KMS::Key",
+  "aws_lambda_function", "awscc_lambda_function", "AWS::Lambda::Function",
+  "aws_cloudwatch_metric_alarm", "awscc_cloudwatch_alarm", "AWS::CloudWatch::Alarm",
+  "aws_budgets_budget", "AWS::Budgets::Budget",
+  "AWS::CDK::Metadata",
+  // The owner's decision 6431744115, item 3.
+  "aws_organizations_policy", "aws_organizations_policy_attachment", "aws_organizations_delegated_administrator", "awscc_organizations_policy", "AWS::Organizations::Policy",
+  "aws_lakeformation_permissions", "awscc_lakeformation_principal_permissions", "AWS::LakeFormation::Permissions", "AWS::LakeFormation::PrincipalPermissions",
+  "aws_kms_grant",
+  "aws_s3_bucket_policy", "awscc_s3_bucket_policy", "AWS::S3::BucketPolicy", "aws_sqs_queue_policy", "AWS::SQS::QueuePolicy", "aws_lambda_permission", "awscc_lambda_permission", "AWS::Lambda::Permission",
+  "aws_rolesanywhere_trust_anchor", "aws_rolesanywhere_profile", "awscc_rolesanywhere_trust_anchor", "awscc_rolesanywhere_profile", "AWS::RolesAnywhere::TrustAnchor", "AWS::RolesAnywhere::Profile",
+  "aws_rds_cluster_role_association", "aws_db_instance_role_association", "aws_redshift_cluster_iam_roles",
+  "aws_cognito_user", "awscc_cognito_user_pool_user", "AWS::Cognito::UserPoolUser",
+  // Common leaves with a material-risk note.
+  "aws_secretsmanager_secret", "awscc_secretsmanager_secret", "AWS::SecretsManager::Secret",
+  "aws_db_instance", "aws_rds_cluster", "awscc_rds_db_instance", "awscc_rds_db_cluster", "AWS::RDS::DBInstance", "AWS::RDS::DBCluster",
+  "aws_efs_file_system", "awscc_efs_file_system", "AWS::EFS::FileSystem", "aws_ebs_volume", "awscc_ec2_volume", "AWS::EC2::Volume",
+  "aws_kms_alias", "awscc_kms_alias", "AWS::KMS::Alias",
+];
+/** Well-formed types that are on no list: held as TYPE_UNREVIEWED. The round-5 fail-safes, the owner's open questions, and near misses of allowlisted names. */
+const AWS_UNREVIEWED_TYPES = [
+  "aws_cloud9_environment_ec2", "aws_config_conformance_pack", "aws_config_organization_conformance_pack", "awscc_launchwizard_deployment", "AWS::LaunchWizard::Deployment", "aws_amplify_app", "aws_amplify_branch", "aws_amplify_backend_environment",
+  "aws_eks_access_entry", "aws_eks_access_policy_association", "aws_eks_pod_identity_association", "AWS::EKS::AccessEntry", "aws_verifiedpermissions_policy_store", "aws_verifiedpermissions_policy",
+  "terraform_data", "null_resource", "random_id", "aws_datazone_project", "aws_vpc", "aws_instance",
+  "aws_s3_bucketx", "aws_s3_bucket_notification", "aws_s3_object", "aws_sqs_queue_redrive_policy", "AWS::S3::BucketX", "AWS::S3::Bucket::Thing", "AWS::s3::Bucket", "Custom::Anything", "AWS::CloudFormation::CustomResource", "AWS::CloudFormation::WaitCondition",
+];
+
+test("the reviewed AWS leaf allowlist is closed (delegated owner decision 6433391052): only a type listed by exact name is ordinary, every other well-formed type is TYPE_UNREVIEWED, a malformed type is unclassifiable, and the identity and container rules still come first", () => {
+  const entry = (address: string, type: string, id: string | null = "x", arn: string | null = null) => ({ address, type, id, arn });
+  const change = (address: string, type: string, action = "DELETE") => [{ address, type, action }];
+  const env = awsIdentityEnv("DEV");
+  // The table and the test list, both ways; every entry carries what it is, why it is a leaf and its basis.
+  assert.deepEqual([...AWS_LEAF_TYPE_NAMES].sort(), [...AWS_LEAF_TYPES_BY_NAME].sort(), "the allowlist and the test list are the same set");
+  assert.equal(new Set(AWS_LEAF_TYPE_NAMES).size, AWS_LEAF_TYPE_NAMES.length, "no type is listed twice");
+  for (const leaf of AWS_LEAF_TYPES) {
+    assert.ok(leaf.what.length > 0 && leaf.reason.length > 0 && leaf.types.length > 0 && ["PILOT_JOURNEY", "OWNER_DECISION", "COMMON_LEAF"].includes(leaf.basis), "an entry has a description, a reason, a basis and types");
+  }
+  for (const type of AWS_LEAF_TYPE_NAMES) {
+    assert.ok(isWellFormedResourceType(type) && isAwsLeafType(type) && awsLeafEntryOf(type) !== undefined, type);
+    // A leaf is never an identity or a container: the deny tables would win, and the allowlist must not pretend otherwise.
+    assert.ok(!isAwsIdentityType(type) && !isAwsContainerType(type), type + " is neither an identity nor a container");
+    assert.equal(protectedDeletionIn(change("x.y", type), [entry("x.y", type)], IDENTITY_FIXTURE_CONTRACT, env), undefined, type + " is ordinary by entry");
+    assert.equal(protectedDeletionIn(change("x.y", type), [], IDENTITY_FIXTURE_CONTRACT, env), undefined, type + " is ordinary by type alone");
+  }
+  // The owner's open questions are not seeded (round 3, N2 and N4).
+  for (const type of ["aws_eks_access_entry", "aws_eks_access_policy_association", "AWS::EKS::AccessEntry", "aws_verifiedpermissions_policy_store", "terraform_data", "null_resource"]) assert.ok(!isAwsLeafType(type), type + " is not seeded");
+  // Every other well-formed type is held, by entry and by type alone, on delete and on update.
+  for (const type of AWS_UNREVIEWED_TYPES) {
+    assert.ok(isWellFormedResourceType(type) && !isAwsLeafType(type), type);
+    for (const [planned, entries] of [[change("x.y", type), [entry("x.y", type)]], [change("x.y", type), []], [change("x.y", type, "UPDATE"), []]] as const) {
+      const refusal = protectedDeletionIn(planned, entries, IDENTITY_FIXTURE_CONTRACT, env);
+      assert.ok(refusal !== undefined && refusal.includes("whose type (" + type + ") is not on the reviewed leaf allowlist") && refusal.endsWith("never deletes it, directly or as a dependent (TYPE_UNREVIEWED)."), type + ": " + refusal);
+    }
+  }
+  // A type field that is not a well-formed type names nothing the cleanup can judge: unclassifiable, the whole proposal refused.
+  for (const type of ["", " aws_s3_bucket", "aws_s3_bucket ", "AWS_S3_BUCKET", "module.m.aws_s3_bucket", "AWS::S3:Bucket", "aws-s3-bucket", "s3", "AWS::S3::Bucket::A::B"]) {
+    assert.ok(!isWellFormedResourceType(type), JSON.stringify(type));
+    assert.ok(protectedDeletionIn(change("x.y", type), [entry("x.y", type)], IDENTITY_FIXTURE_CONTRACT, env)?.includes("(OWNERSHIP_AMBIGUOUS)"), JSON.stringify(type));
+  }
+  // The deny rules stay first: an allowlisted type holding an identity's ARN is still refused, and the backend bucket is still the backend.
+  assert.ok(protectedDeletionIn(change("x.y", "aws_lambda_function"), [entry("x.y", "aws_lambda_function", "fn", awsRoleArn("APPLY", "DEV"))], IDENTITY_FIXTURE_CONTRACT, env)?.includes("(OWNERSHIP_AMBIGUOUS)"));
+  assert.ok(protectedDeletionIn(change("x.y", "aws_s3_bucket"), [entry("x.y", "aws_s3_bucket", STATE_BUCKET)], IDENTITY_FIXTURE_CONTRACT, env)?.includes("(PROTECTED_BACKEND)"));
+});
+
+test("a run that created an allowlisted resource and one of an unreviewed type cleans up the first and keeps the second, named, for the environment's owner: a dependent destroy of it is refused before any approval is consumed, a forged proposal naming it never executes, and the leftover check is never COMPLETE while it remains (delegated owner decision 6433391052)", async () => {
+  const UNREVIEWED = "aws_cloud9_environment_ec2";
+  const address = UNREVIEWED + ".dev";
+  const creates = [...CREATES, { address, type: UNREVIEWED, change: { actions: ["create"], before: null, after: {} } }];
+  const state = [...STATE, stateResource(UNREVIEWED, "dev", "0123456789abcdef0123456789abcdef", "arn:aws:cloud9:us-east-1:111111111111:environment:0123456789abcdef0123456789abcdef")];
+  const w = world();
+  behave({ showResources: creates, stateResources: state });
+  const run = await proposed(w);
+  assert.deepEqual(run.proposal.deletes.map((d) => d.address), ["aws_cloudwatch_log_group.canary", "aws_s3_bucket.logs", "aws_s3_bucket_versioning.logs"], "the allowlisted resources are proposed, the unreviewed one is not");
+  const kept = run.proposal.excluded.find((x) => x.address === address);
+  assert.equal(kept?.ownership, "TYPE_UNREVIEWED");
+  assert.equal(kept?.retainedBy, "ENVIRONMENT_OWNER");
+  assert.ok(kept!.reason.includes("its type (" + UNREVIEWED + ") is not on the reviewed leaf allowlist") && kept!.reason.length <= 512, kept!.reason);
+  assert.ok(run.proposal.risks.some((r) => r.includes("not on the reviewed leaf allowlist are kept, named and never deleted")), "the proposal says so before approval");
+  // The other classes are unchanged: the pilot role is an identity, the backend is the backend, the old queue is outside the plan.
+  assert.equal(run.proposal.excluded.find((x) => x.address === "aws_iam_role.apply")?.ownership, "PROTECTED_IDENTITY");
+  assert.equal(run.proposal.excluded.find((x) => x.address === "aws_s3_bucket.state")?.ownership, "PROTECTED_BACKEND");
+  assert.equal(run.proposal.excluded.find((x) => x.address === "aws_sqs_queue.preexisting")?.ownership, "NOT_IN_PLAN");
+  // A destroy plan that would take it along stops before any approval is consumed.
+  const approval = cleanupApproval(run.proposal, "alice");
+  behave({ showResources: creates, stateResources: state, destroyExtra: [{ address, type: UNREVIEWED, change: { actions: ["delete"], before: {}, after: null } }] });
+  const taken = await cleanup(w, run, [approval]);
+  refused(taken, "PROPOSAL_SCOPE_MISMATCH");
+  assert.ok((taken as { message: string }).message.includes("would delete " + address + ", whose type (" + UNREVIEWED + ") is not on the reviewed leaf allowlist"), (taken as { message: string }).message);
+  assert.equal(applyCalls().length, 0);
+  // A forged, re-hashed proposal that lists it never executes: the list is derived again.
+  const fields = { ...run.proposal, deletes: [...run.proposal.deletes, { address, type: UNREVIEWED, identifier: kept!.identifier, ownership: "RUN_CREATED" as const, observed: "UNVERIFIABLE" as const }].sort((a, b) => (a.address < b.address ? -1 : 1)), excluded: run.proposal.excluded.filter((x) => x.address !== address) };
+  const forged = { ...fields, proposalSha256: computeProposalSha256(fields) };
+  assert.ok(verifyCleanupProposal(forged).ok);
+  behave({ showResources: creates, stateResources: state });
+  refused(await cleanup(w, { ...run, proposal: forged }, [cleanupApproval(forged, "alice")]), "PROPOSAL_INVALID");
+  assert.equal(applyCalls().length, 0);
+  // The honest cleanup removes the allowlisted resources and never targets the unreviewed one.
+  behave({ showResources: creates, stateResources: state });
+  const done = await cleanup(w, run, [approval]);
+  assert.ok(done.ok, JSON.stringify(done));
+  assert.deepEqual(destroyPlans()[0]!.args.filter((a) => a.startsWith("-target=")).sort(), run.proposal.deletes.map((d) => "-target=" + d.address).sort());
+  assert.ok(destroyPlans().every((c) => !c.args.join(" ").includes(UNREVIEWED)), "the unreviewed resource is never targeted");
+  // Leftovers: every listed resource is gone and the sweep is complete, yet the record is INCOMPLETE and names the type for a person.
+  cloud({ existing: [STATE_BUCKET, OLD_QUEUE, "alz-apply-dev"], tagged: [] });
+  const leftovers = await verifyProposalLeftovers(run.proposal, observeDeps(w, new Date(NOW.getTime() + 600_000)));
+  assert.ok(leftovers.ok, JSON.stringify(leftovers));
+  assert.equal(leftovers.record.sweep, "COMPLETE");
+  assert.equal(leftovers.record.disposition, "INCOMPLETE");
+  const held = leftovers.record.resources.find((r) => r.address === address)!;
+  assert.deepEqual([held.disposition, held.basis, held.owner], ["INTENTIONALLY_RETAINED", "UNREVIEWED_TYPE", "ENVIRONMENT_OWNER"]);
+  assert.ok(leftovers.record.nextAction.includes(UNREVIEWED) && leftovers.record.nextAction.includes("a person deletes or keeps them by hand"), leftovers.record.nextAction);
+  assert.deepEqual(leftovers.record.resources.find((r) => r.address === "aws_s3_bucket.logs")?.disposition, "CONFIRMED_DELETED");
+  // A record that claims completion while one is held is refused as a record.
+  for (const claimed of ["COMPLETE", "KNOWN_ADDRESSES_CONFIRMED"] as const) {
+    const problems = leftoversRecordProblems({ ...leftovers.record, disposition: claimed, sweep: claimed === "COMPLETE" ? "COMPLETE" : "NOT_AVAILABLE" });
+    assert.ok(problems.some((p) => p.includes("its type is unreviewed")), claimed + ": " + problems.join("; "));
+  }
+  // The acceptance statement names them, and stays as it was when none is held.
+  const acceptance = acceptanceOf({ leftovers: { status: "INCONCLUSIVE" } } as never, run.proposal.excluded);
+  assert.equal(acceptance.resourceCleanup, "INCOMPLETE");
+  assert.equal(acceptance.retained.byOwnership.TYPE_UNREVIEWED, 1);
+  assert.match(acceptance.statement, /; 1 of them of a type not on the reviewed leaf allowlist, awaiting a person's decision; environment retirement outstanding/);
+  assert.ok(!acceptanceStatement("COMPLETED", { total: 1, byOwnership: { PROTECTED_IDENTITY: 1 }, byOwner: { PILOT_OWNER: 1 } }).includes("leaf allowlist"));
 });
