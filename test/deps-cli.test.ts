@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { Readable } from "node:stream";
 import test from "node:test";
 
-import { allRequiredPass, installedPath, runDependencyChecks, type CheckContext, AWS_CLI_VERSION_PATTERN } from "../src/deps/checks.js";
+import { allRequiredPass, installedPath, runDependencyChecks, type CheckContext, AWS_CLI_VERSION_PATTERN, AZURE_CLI_VERSION_PATTERN, AZ_PROBE_ENVIRONMENT } from "../src/deps/checks.js";
 import { writeInstallMarker } from "../src/deps/install.js";
 import { loadToolPins } from "../src/deps/pins.js";
 import { blockedByDependencies, runDepsCommand, type DepsDeps } from "../src/cli/deps.js";
@@ -134,6 +134,62 @@ test("the AWS CLI is pinned to a tested version, check only: the pin's own versi
   }
   assert.equal(AWS_CLI_VERSION_PATTERN.exec("aws-cli/2.38.6")?.[1], "2.38.6", "the version alone, as the CDK engine reads it");
   for (const text of ["", "aws-cli/2.38 Python/3.13.11", "awscli 2.38.6", "AWS CLI 2.38.6", "Python/3.13.11 aws-cli/2.38.6", "aws-cli/2.38.6.1 Python/3.13.11", "aws-cli/2.38.6-dev0 Python/3.13.11"]) assert.equal(AWS_CLI_VERSION_PATTERN.exec(text), null, text);
+});
+
+test("the Azure CLI is pinned to a tested version, check only and never required by default: the pin passes, another version or none is named with the install step", async () => {
+  const pin = pins.azureCli.version;
+  // `az version --output json` prints the installed distributions as JSON; the engine and this check read the same key.
+  const json = (version: string) => "echo '{\"azure-cli\": \"" + version + "\", \"azure-cli-core\": \"" + version + "\", \"extensions\": {}}'";
+  const tested = await runDependencyChecks(ctx("azok", { env: { PATH: pathWith("azok", { ...GOOD_TOOLS, az: json(pin) }) } }), REQUIRED);
+  const az = byId(tested, "azure-cli");
+  assert.equal(az.ok, true);
+  assert.equal(az.required, false, "only the Bicep path needs it, so it never blocks another command");
+  assert.equal(az.label, "Azure CLI " + pin);
+  assert.ok(az.detail.startsWith("version " + pin + " at "), az.detail);
+  assert.equal(az.installable, undefined, "the Azure CLI is check-only");
+  const older = await runDependencyChecks(ctx("azold", { env: { PATH: pathWith("azold", { ...GOOD_TOOLS, az: json("2.60.0") }) } }), REQUIRED);
+  assert.equal(byId(older, "azure-cli").ok, false);
+  assert.ok(byId(older, "azure-cli").detail.endsWith(", tested " + pin), byId(older, "azure-cli").detail);
+  assert.ok(byId(older, "azure-cli").fix!.includes("Install Azure CLI version " + pin + ", the tested version"), byId(older, "azure-cli").fix);
+  const missing = await runDependencyChecks(ctx("aznone"), REQUIRED);
+  assert.equal(byId(missing, "azure-cli").ok, false);
+  assert.equal(byId(missing, "azure-cli").detail, "not found");
+  assert.equal(allRequiredPass(missing), true, "a missing Azure CLI does not fail the default checks");
+  assert.equal(AZURE_CLI_VERSION_PATTERN.exec('{"azure-cli": "2.91.0", "azure-cli-core": "2.91.0"}')?.[1], "2.91.0");
+  for (const text of ["", "azure-cli                         2.91.0", '{"azure-cli-core": "2.91.0"}', '{"azure-cli": "2.91"}']) assert.equal(AZURE_CLI_VERSION_PATTERN.exec(text), null, text);
+});
+
+test("the Azure CLI probe never runs with the person's own az configuration: a private, empty config directory (so auto-upgrade stays at its default, off), removed afterward, and telemetry off", async () => {
+  const seen = join(root, "az-probe-env.txt");
+  // The fake az records what it was given, then answers like `az version --output json`.
+  const az = "printf '%s|%s|%s\\n' \"$AZURE_CONFIG_DIR\" \"$AZURE_CORE_COLLECT_TELEMETRY\" \"$(ls -A \"$AZURE_CONFIG_DIR\" | wc -l | tr -d ' ')\" > " + seen +
+    "; env | grep -c '^AZURE_CORE_OUTPUT=' >> " + seen + "; echo '{\"azure-cli\": \"" + pins.azureCli.version + "\"}'";
+  const before = process.env.AZURE_CORE_OUTPUT;
+  process.env.AZURE_CORE_OUTPUT = "table";
+  let checks;
+  try {
+    checks = await runDependencyChecks(ctx("azprobe", { env: { PATH: pathWith("azprobe", { ...GOOD_TOOLS, az }), AZURE_CONFIG_DIR: "/home/person/.azure" } }), REQUIRED);
+  } finally {
+    if (before === undefined) delete process.env.AZURE_CORE_OUTPUT; else process.env.AZURE_CORE_OUTPUT = before;
+  }
+  assert.equal(byId(checks, "azure-cli").ok, true);
+  const [line, ownSetting] = readFileSync(seen, "utf8").trim().split("\n");
+  const [configDir, telemetry, entries] = line.split("|");
+  assert.notEqual(configDir, "/home/person/.azure", "never the person's own az configuration");
+  assert.match(configDir, /alz-az-probe-/);
+  assert.equal(entries, "0", "the probe's configuration directory is empty, so auto-upgrade is at its default, off");
+  assert.equal(existsSync(configDir), false, "and removed afterward");
+  assert.equal(telemetry, "no");
+  assert.equal(ownSetting, "0", "no AZURE_* setting of the person's own reaches the probe");
+  assert.deepEqual(AZ_PROBE_ENVIRONMENT, { AZURE_CORE_COLLECT_TELEMETRY: "no" });
+});
+
+test("the Bicep pin is the version the Bicep preview adapter records as tested, so the preview's lint/build step and the apply engine run the same Bicep version", async () => {
+  const { PLUGIN_CATALOG } = await import("../src/plugins/catalog.js");
+  const bicep = PLUGIN_CATALOG.find((plugin) => plugin.executable === "bicep");
+  assert.ok(bicep);
+  assert.equal(pins.bicep.version, bicep!.testedVersion);
+  assert.equal(pins.bicep.versionCommand, "bicep --version");
 });
 
 // --- the guided command -------------------------------------------------------------------------------------

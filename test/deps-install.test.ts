@@ -153,6 +153,15 @@ test("the shipped pins match the vendors' published checksums, and a malformed p
   good.tools.ollama.artifacts["darwin-arm64"].url = "http://example.invalid/ollama.tgz";
   writeFileSync(bad, JSON.stringify(good));
   assert.throws(() => loadToolPins(bad), /TOOL_PIN_INVALID/);
+  // The check-only pins of the Bicep path: a version of the wrong shape or another version command is refused.
+  for (const [key, field, value] of [["azureCli", "version", "3.0"], ["azureCli", "versionCommand", "az --version"], ["bicep", "version", "1.0"], ["bicep", "versionCommand", "bicep version"]] as const) {
+    const pinned = JSON.parse(readFileSync("config/tool-pins.json", "utf8"));
+    pinned[key][field] = value;
+    writeFileSync(bad, JSON.stringify(pinned));
+    assert.throws(() => loadToolPins(bad), new RegExp("TOOL_PIN_INVALID: " + key), key + "." + field);
+  }
+  assert.equal(pins.azureCli.version, "2.91.0");
+  assert.equal(pins.bicep.version, "0.47.16");
   chmodSync(bad, 0o600);
 });
 

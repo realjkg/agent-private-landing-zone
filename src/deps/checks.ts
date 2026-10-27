@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
-import { lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { lstatSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { createConnection } from "node:net";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { PLUGIN_CATALOG } from "../plugins/catalog.js";
@@ -12,7 +13,7 @@ import { platformKey, type Platform, type ToolId, type ToolPins } from "./pins.j
  */
 export type DepCheck = {
   /** A fixed id for the pilot checks, or `product:<executable>` for a product tool derived from the plugin catalog. */
-  id: "node" | ToolId | "isolated-service" | "aws-cli" | "git" | `product:${string}`;
+  id: "node" | ToolId | "isolated-service" | "aws-cli" | "azure-cli" | "git" | `product:${string}`;
   label: string;
   /** Needed for the command being run. Optional checks are reported but never block it. */
   required: boolean;
@@ -139,9 +140,9 @@ function onPath(name: string, env: NodeJS.ProcessEnv): string | undefined {
 }
 
 /** Runs `<binary> <args>` with a short timeout and returns its text, or undefined when it cannot run. */
-function versionText(binary: string, args: string[]): string | undefined {
+function versionText(binary: string, args: string[], env?: NodeJS.ProcessEnv): string | undefined {
   try {
-    return execFileSync(binary, args, { encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "pipe"] });
+    return execFileSync(binary, args, { encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "pipe"], ...(env ? { env } : {}) });
   } catch {
     return undefined;
   }
@@ -211,13 +212,41 @@ function toolCheck(tool: ToolId, ctx: CheckContext, required: boolean, platform:
  * config/tool-pins.json `awsCli`), the found version must be exactly it, as for the installable tools: the CDK path's
  * qualification binds the program that ran, so another version is not the tested one.
  */
-function presenceCheck(id: "aws-cli" | "git", label: string, args: string[], pattern: RegExp, required: boolean, fix: string, env: NodeJS.ProcessEnv, pinned?: string): DepCheck {
-  const found = onPath(id === "aws-cli" ? "aws" : "git", env);
-  const reported = found ? pattern.exec((versionText(found, args) ?? "").trim())?.[1] : undefined;
+function presenceCheck(id: "aws-cli" | "azure-cli" | "git", label: string, args: string[], pattern: RegExp, required: boolean, fix: string, env: NodeJS.ProcessEnv, pinned?: string): DepCheck {
+  const found = onPath(PRESENCE_EXECUTABLE[id], env);
+  const reported = found ? pattern.exec(((id === "azure-cli" ? azVersionText(found, args) : versionText(found, args)) ?? "").trim())?.[1] : undefined;
   if (!reported) return { id, label, required, ok: false, detail: found ? "found, but its version could not be read" : "not found", fix };
   if (pinned !== undefined && reported !== pinned) return { id, label, required, ok: false, detail: "found " + reported + " at " + found + ", tested " + pinned, fix };
   return { id, label, required, ok: true, detail: "version " + reported + " at " + found };
 }
+
+/**
+ * The az probe never runs with the person's own az configuration: a configuration with `auto-upgrade.enable=yes` and
+ * `auto-upgrade.prompt=no` makes az run `az upgrade` after any successful command (azure-cli 2.91.0 `__main__.py`), which would
+ * break "never installs". So the probe gets a private, empty `AZURE_CONFIG_DIR` (removed afterward): with no configuration file,
+ * `auto-upgrade.enable` falls back to its default, false (`az_cli.config.getboolean('auto-upgrade', 'enable', False)`), and telemetry
+ * is off. knack's environment form of that setting would be `AZURE_AUTO-UPGRADE_ENABLE`, a name a shell wrapper such as az's own
+ * launcher may drop, so it is not relied on.
+ */
+export const AZ_PROBE_ENVIRONMENT: Readonly<Record<string, string>> = { AZURE_CORE_COLLECT_TELEMETRY: "no" };
+function azVersionText(binary: string, args: string[]): string | undefined {
+  const configDir = mkdtempSync(join(tmpdir(), "alz-az-probe-"));
+  try {
+    // No AZURE_* setting of the person's own reaches the probe either (an environment variable overrides the configuration file).
+    const own = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^AZURE_/i.test(key)));
+    return versionText(binary, args, { ...own, ...AZ_PROBE_ENVIRONMENT, AZURE_CONFIG_DIR: configDir });
+  } finally {
+    rmSync(configDir, { recursive: true, force: true });
+  }
+}
+
+const PRESENCE_EXECUTABLE: Readonly<Record<"aws-cli" | "azure-cli" | "git", string>> = { "aws-cli": "aws", "azure-cli": "az", git: "git" };
+
+/**
+ * The Azure CLI's own version as `az version --output json` prints it (`"azure-cli": "x.y.z"`, read from the installed
+ * distributions; unlike `az --version` it asks no server for the newest release). The Bicep engine reads the same key.
+ */
+export const AZURE_CLI_VERSION_PATTERN = /"azure-cli"\s*:\s*"(\d+\.\d+\.\d+)"/;
 
 /** The AWS CLI v2 version line, as the vendor prints it: `aws-cli/2.x.y Python/... <os>/... <source>/<arch> ...`. Read from trimmed text, the same rule the CDK engine applies before it runs, so `./alz deps` and qualification agree. */
 export const AWS_CLI_VERSION_PATTERN = /^aws-cli\/(\d+\.\d+\.\d+)(?:\s|$)/;
@@ -330,6 +359,8 @@ export async function runDependencyChecks(ctx: CheckContext, required: ReadonlyS
     await serviceCheck(ctx, required.has("isolated-service")),
     presenceCheck("aws-cli", "AWS CLI " + ctx.pins.awsCli.version, ["--version"], AWS_CLI_VERSION_PATTERN, required.has("aws-cli"),
       "Install AWS CLI version " + ctx.pins.awsCli.version + ", the tested version, from docs.aws.amazon.com (macOS installer; it asks for your administrator password), then open a new Terminal window.", ctx.env, ctx.pins.awsCli.version),
+    presenceCheck("azure-cli", "Azure CLI " + ctx.pins.azureCli.version, ["version", "--output", "json"], AZURE_CLI_VERSION_PATTERN, required.has("azure-cli"),
+      "Install Azure CLI version " + ctx.pins.azureCli.version + ", the tested version, from learn.microsoft.com/cli/azure (it is needed only for the Azure Bicep path), then open a new Terminal window.", ctx.env, ctx.pins.azureCli.version),
     presenceCheck("git", "Git", ["--version"], /git version (\d+\.\d+\.\d+)/, required.has("git"),
       "Install Git (run xcode-select --install in Terminal), then open a new Terminal window.", ctx.env),
   ];
