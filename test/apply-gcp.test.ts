@@ -196,7 +196,7 @@ test("identity targets: each service account's project, the project and the regi
 // --- the credential configuration (P1) -------------------------------------------------------------
 
 test("a WIF file-source credential configuration is accepted; a key file, an authorized-user file, P1's own impersonation and every other source are refused without quoting the file", () => {
-  assert.deepEqual(checkCredentialConfiguration(configuration({}, "/run/alz/dev/apply.jwt")), { ok: true, tokenFile: "/run/alz/dev/apply.jwt" });
+  assert.deepEqual(checkCredentialConfiguration(configuration({}, "/run/alz/dev/apply.jwt")), { ok: true, tokenFile: "/run/alz/dev/apply.jwt", audience: AUDIENCE, subjectTokenType: "urn:ietf:params:oauth:token-type:jwt" });
   assert.equal(checkCredentialConfiguration(configuration({ token_url: undefined, credential_source: { file: "/run/t", format: { type: "text" } } })).ok, true);
   const SECRET = "FAKE-SECRET-VALUE-0001";
   const refused: [string, Record<string, unknown> | string][] = [

@@ -57,7 +57,7 @@ const BUCKET = /^(?!goog)(?!.*google)[a-z0-9][a-z0-9_-]{1,61}[a-z0-9]$/;
 const PARENT = /^(organizations|folders)\/[1-9][0-9]{0,24}$/;
 const SERVICE_ACCOUNT = /^[a-z][a-z0-9-]{4,28}[a-z0-9]@([a-z][a-z0-9-]{4,28}[a-z0-9])\.iam\.gserviceaccount\.com$/;
 /** The project a service account email names, or undefined if it is not a user-managed service account email. */
-const projectOfServiceAccount = (email: string): string | undefined => SERVICE_ACCOUNT.exec(email)?.[1];
+export const projectOfServiceAccount = (email: string): string | undefined => SERVICE_ACCOUNT.exec(email)?.[1];
 
 /** The variables each identity carries, and nothing else under a Google prefix. The suffix is what the engine's child receives. */
 const CREDENTIALS = "GOOGLE_APPLICATION_CREDENTIALS";
@@ -95,7 +95,7 @@ const CONFIGURATION_KEYS = new Set(["type", "audience", "subject_token_type", "t
 const SOURCE_KEYS = new Set(["file", "format"]);
 
 /** The failure class of a credential configuration. The file's contents are never put in a message. */
-type ConfigurationResult = { ok: true; tokenFile: string } | { ok: false; reason: string };
+export type ConfigurationResult = { ok: true; tokenFile: string; audience: string; subjectTokenType: string } | { ok: false; reason: string };
 
 function readConfiguration(path: string): unknown {
   const fd = openSync(path, "r");
@@ -132,7 +132,7 @@ export function checkCredentialConfiguration(path: string): ConfigurationResult 
   if (!isRecord(source) || Object.keys(source).some((key) => !SOURCE_KEYS.has(key))) return { ok: false, reason: "does not read its token from a file only" };
   if (typeof source.file !== "string" || !TOKEN_FILE.test(source.file)) return { ok: false, reason: "does not name an absolute token file path" };
   if (source.format !== undefined && !(isRecord(source.format) && source.format.type === "text" && Object.keys(source.format).length === 1)) return { ok: false, reason: "reads its token in a format other than plain text" };
-  return { ok: true, tokenFile: source.file };
+  return { ok: true, tokenFile: source.file, audience: parsed.audience, subjectTokenType: parsed.subject_token_type };
 }
 
 const notConfigured = (message: string): IdentityRefusal => ({ ok: false, code: "IDENTITY_NOT_CONFIGURED", message });
