@@ -178,8 +178,12 @@ const CLOUDFORMATION_ARNS: Readonly<Record<string, (physicalId: string, place: {
   "AWS::EC2::SecurityGroup": (id, p) => "arn:aws:ec2:" + p.region + ":" + p.account + ":security-group/" + id,
 };
 
-/** Change-set actions after which a successful execution leaves the resource in the stack (the sealed change list's own vocabulary, src/apply/engines/cdk.ts). */
-const LEAVES_IN_STACK = new Set(["CREATE", "UPDATE", "REPLACE", "REPLACE_CONDITIONAL", "IMPORT", "DYNAMIC", "SAME"]);
+/**
+ * Change-set actions after which a successful execution leaves the resource in the stack (the sealed change list's own vocabulary,
+ * src/apply/engines/cdk.ts). UNKNOWN, a Modify whose replacement the reader could not judge, leaves it too: a resource the plan
+ * named that the stack no longer holds is reported missing, never silently dropped (#270 review N3).
+ */
+const LEAVES_IN_STACK = new Set(["CREATE", "UPDATE", "REPLACE", "REPLACE_CONDITIONAL", "IMPORT", "DYNAMIC", "SAME", "UNKNOWN"]);
 const LOGICAL_ID = /^[A-Za-z0-9]{1,255}$/;
 const CFN_TYPE = /^(?:AWS|Alexa)::[A-Za-z0-9]+::[A-Za-z0-9]+$/;
 
