@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { AWS_CONTAINER_PREFIXES } from "../src/observe/aws-containers.js";
 import { SCAN_DEPTH, blueprintFromTerraformState } from "../src/observe/blueprint.js";
 import { cleanupDisposition, retentionProblems } from "../src/observe/disposition.js";
 import { CLOUD_CONTROL_TYPES, observeBlueprint, type AwsCli } from "../src/observe/verify.js";
@@ -251,7 +252,9 @@ test("the CloudFormation blueprint maps logical ids to physical ids, derives the
     { LogicalResourceId: "bad id!", ResourceType: "AWS::S3::Bucket", PhysicalResourceId: "x" }, { LogicalResourceId: "BadType", ResourceType: "Bucket", PhysicalResourceId: "x" }, { LogicalResourceId: "BadCustom", ResourceType: "Custom::", PhysicalResourceId: "x" }, { LogicalResourceId: "LongCustom", ResourceType: "Custom::" + "a".repeat(61), PhysicalResourceId: "x" }, "garbage", null,
   ] });
   const planned = [{ address: "PilotBucket", type: "AWS::S3::Bucket", action: "CREATE" }, { address: "PilotTopic", type: "AWS::SNS::Topic", action: "REPLACE" }, { address: "Planned", type: "AWS::SQS::Queue", action: "CREATE" },
-    { address: "Removed", type: "AWS::SQS::Queue", action: "DELETE" }, { address: "Dynamic", type: "AWS::S3::Bucket", action: "DYNAMIC" }];
+    { address: "Removed", type: "AWS::SQS::Queue", action: "DELETE" }, { address: "Dynamic", type: "AWS::S3::Bucket", action: "DYNAMIC" },
+    // A Modify whose replacement the reader could not judge (UNKNOWN) still leaves the resource in the stack: gone from the stack, it is missing (#270 review N3).
+    { address: "Unjudged", type: "AWS::SQS::Queue", action: "UNKNOWN" }];
   const blueprint = blueprintFromCloudFormationResources(document, planned, place);
   assert.deepEqual(blueprint.entries, [
     // A credential's id is never copied (the access key id); a user's ARN follows from its name.
@@ -272,7 +275,7 @@ test("the CloudFormation blueprint maps logical ids to physical ids, derives the
     { address: "PilotTopic", type: "AWS::SNS::Topic", id: "arn:aws:sns:us-east-1:111111111111:PilotStack-PilotTopic-X", arn: "arn:aws:sns:us-east-1:111111111111:PilotStack-PilotTopic-X", origin: "IN_PLAN" },
   ]);
   // Planned to exist and not in the stack (a created queue, a dynamic change); a planned delete is not expected.
-  assert.deepEqual(blueprint.missing, ["Dynamic", "Planned"]);
+  assert.deepEqual(blueprint.missing, ["Dynamic", "Planned", "Unjudged"]);
   assert.ok(!JSON.stringify(blueprint).includes("AKIAFAKEDEPLOYERKEY0"), "the access key id is never copied");
   // The stack itself is the unit's container, recorded by the pinned stack's id and never as an entry; another stack's id, or no pinned stack, records none.
   assert.deepEqual(blueprint.container, { type: "AWS::CloudFormation::Stack", identifier: STACK_ID });
@@ -285,7 +288,7 @@ test("the CloudFormation blueprint maps logical ids to physical ids, derives the
   assert.equal(unplaced.entries.find((e) => e.address === "PilotBucket")!.arn, null);
   assert.equal(unplaced.entries.find((e) => e.address === "PilotTopic")!.arn, "arn:aws:sns:us-east-1:111111111111:PilotStack-PilotTopic-X");
   for (const bad of ["", "not json", "[]", JSON.stringify({ Stacks: [] }), JSON.stringify({ StackResources: {} })]) assert.throws(() => blueprintFromCloudFormationResources(bad, planned, place), /STATE_JSON_INVALID/, bad);
-  assert.deepEqual(blueprintFromCloudFormationResources(JSON.stringify({ StackResources: [] }), planned, place), { entries: [], missing: ["Dynamic", "PilotBucket", "PilotTopic", "Planned"] }, "code-point order; no rows, no container");
+  assert.deepEqual(blueprintFromCloudFormationResources(JSON.stringify({ StackResources: [] }), planned, place), { entries: [], missing: ["Dynamic", "PilotBucket", "PilotTopic", "Planned", "Unjudged"] }, "code-point order; no rows, no container");
 });
 
 test("a wrapper type that holds an identity's ARN anywhere in its attributes is flagged in place (holdsIdentityArn), as a whole value or a list element, in any partition; the attribute is never copied, an ordinary type with the same attribute is not flagged, and a wrapper without one is not", () => {
@@ -301,6 +304,8 @@ test("a wrapper type that holds an identity's ARN anywhere in its attributes is 
   assert.ok(!flagged("terraform_data", { input: "not an arn", output: ["arn:aws:s3:::bucket"] }), "no IAM ARN");
   assert.ok(!flagged("terraform_data", { input: "prefixarn:aws:iam::000000000000:role/x" }), "not anchored as a value or an element");
   assert.ok(!flagged("aws_s3_bucket", { policy: ROLE }), "an ordinary type is judged by its own identifier, not its attributes");
+  // Every stack container of the one family table is a wrapper too (review 6432262110 B1): an identity's ARN in its outputs is flagged, whatever the family.
+  for (const prefix of AWS_CONTAINER_PREFIXES) assert.ok(flagged(prefix, { outputs: { RoleArn: ROLE } }) && !flagged(prefix, { outputs: { Name: "plain" } }), prefix);
   const blueprint = blueprintFromTerraformState(show("terraform_data", { input: { secret: "CANARY_WRAPPER_VALUE", roles: ROLE } }), []);
   assert.deepEqual(blueprint.entries[0], { address: "terraform_data.x", type: "terraform_data", id: "x-id", arn: null, origin: "NOT_IN_PLAN", holdsIdentityArn: true });
   assert.ok(!JSON.stringify(blueprint).includes("CANARY_WRAPPER_VALUE") && !JSON.stringify(blueprint).includes(ROLE), "nothing of the attributes is copied");

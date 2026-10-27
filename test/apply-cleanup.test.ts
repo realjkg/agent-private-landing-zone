@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { signApproval } from "../src/apply/approval.js";
-import { PROTECTION_REASONS, buildCleanupProposal, computeProposalSha256, isAwsContainerType, isAwsIdentityType, proposalProblems, protectedDeletionIn, verifyCleanupProposal, type CleanupProposal } from "../src/apply/cleanup-proposal.js";
+import { PROTECTION_REASONS, buildCleanupProposal, computeProposalSha256, isAwsIdentityType, proposalProblems, protectedDeletionIn, verifyCleanupProposal, type CleanupProposal } from "../src/apply/cleanup-proposal.js";
 import { CLEANUP_SUFFIX, SUFFIX, loadPilotContract, pilotContractSha256 } from "../src/apply/contract.js";
 import { pilotUnitOf } from "../src/apply/unit.js";
 import { cleanupScopeProblem, runApply, runCleanup, sealPreview, type ApplyDeps, type ApplyRequest, type CleanupRequest } from "../src/apply/driver.js";
@@ -20,6 +20,7 @@ import {
   BLUEPRINT_SUFFIX, OBSERVATION_SUFFIX, blueprintRecordProblems, leftoversRecordProblems, observationRecordProblems, readBlueprintRecord, readObservationRecord,
   recordSha256, writeBlueprintRecord, type BlueprintRecord,
 } from "../src/apply/run-records.js";
+import { AWS_CONTAINER_FAMILIES, AWS_CONTAINER_PREFIXES, awsContainerFamilyOf, isAwsContainerType } from "../src/observe/aws-containers.js";
 import { CLEANUP_ADAPTER, CLEANUP_APPLY_ARGV, CLEANUP_SHOW_ARGV, cleanupPlanArgv, isAllowedCleanupArgv } from "../src/apply/terraform.js";
 import type { ApplyEnvironment, PilotContract, SignedApproval } from "../src/apply/types.js";
 import { blueprintFromTerraformStatePull } from "../src/observe/blueprint.js";
@@ -761,68 +762,98 @@ test("anything in the IAM or identity service is PROTECTED_IDENTITY by an anchor
   assert.ok(flagged !== undefined && flagged.includes("(OWNERSHIP_AMBIGUOUS)") && flagged.includes("could not scan in full"), flagged);
 });
 
-/** Every stack container type in the three namespaces (review 6412896598 B1; owner decision 6431744115): CONTAINS_OTHERS, never deleted, whatever its identifier says. */
+/**
+ * Every stack container type by name, each of which must fall in a family of the one table (reviews 6412896598 B1 and 6432262110 B1; owner
+ * decision 6431744115): CONTAINS_OTHERS, never deleted, whatever its identifier says. The table itself is iterated too, so a family added to it is tested.
+ */
 const AWS_CONTAINER_TYPES = ["aws_cloudformation_stack", "aws_cloudformation_stack_set", "aws_cloudformation_stack_set_instance", "aws_cloudformation_stack_instances", "awscc_cloudformation_stack", "awscc_cloudformation_stack_set",
-  "aws_servicecatalog_provisioned_product", "awscc_servicecatalog_cloud_formation_provisioned_product", "AWS::CloudFormation::Stack", "AWS::CloudFormation::StackSet", "AWS::ServiceCatalog::CloudFormationProvisionedProduct"];
+  "aws_servicecatalog_provisioned_product", "awscc_servicecatalog_cloud_formation_provisioned_product", "AWS::CloudFormation::Stack", "AWS::CloudFormation::StackSet", "AWS::ServiceCatalog::CloudFormationProvisionedProduct",
+  "aws_serverlessapplicationrepository_cloudformation_stack", "awscc_serverlessapplicationrepository_cloudformation_stack", "AWS::Serverless::Application", "AWS::ServerlessRepo::Application",
+  "aws_sagemaker_project", "awscc_sagemaker_project", "AWS::SageMaker::Project",
+  "aws_proton_environment", "aws_proton_service", "awscc_proton_environment", "awscc_proton_service", "AWS::Proton::Environment", "AWS::Proton::Service",
+  "aws_elastic_beanstalk_environment", "awscc_elasticbeanstalk_environment", "AWS::ElasticBeanstalk::Environment"];
 
-test("a CloudFormation stack container (a stack, stack set, stack instance, the awscc stack, a Service Catalog provisioned product, the CloudFormation-typed nested stack) is CONTAINS_OTHERS: never deleted, directly or as a dependent, whatever it carries, because what its template holds (IAM roles among it) is not in the state (review 6412896598 B1)", () => {
+test("anything that deploys a CloudFormation stack or a provisioned product (a stack, stack set or stack instance, a Service Catalog provisioned product, a Serverless Application Repository application, a SageMaker project, a Proton environment or service, an Elastic Beanstalk environment) is CONTAINS_OTHERS by the one family table: never deleted, directly or as a dependent, whatever it carries, because what the stack holds (IAM roles among it) is not in the state (reviews 6412896598 B1, 6432262110 B1)", () => {
   const entry = (address: string, type: string, id: string | null = "x", arn: string | null = null) => ({ address, type, id, arn });
   const change = (address: string, type: string, action = "DELETE") => [{ address, type, action }];
   const pilot = awsRoleArn("APPLY", "DEV");
-  for (const type of AWS_CONTAINER_TYPES) {
+  // Every named type belongs to a family, and every prefix of every family is a container; the two lists are checked against each other.
+  for (const type of AWS_CONTAINER_TYPES) assert.ok(awsContainerFamilyOf(type) !== undefined, type + " is in no family of AWS_CONTAINER_FAMILIES");
+  for (const family of AWS_CONTAINER_FAMILIES) {
+    assert.ok(family.what.length > 0 && family.reason.length > 0 && family.prefixes.length > 0, "a family has a description, a reason and prefixes");
+    for (const prefix of family.prefixes) assert.ok(AWS_CONTAINER_TYPES.some((type) => type.startsWith(prefix)), prefix + " of family '" + family.what + "' names no type in the test list: add one");
+  }
+  assert.equal(new Set(AWS_CONTAINER_PREFIXES).size, AWS_CONTAINER_PREFIXES.length, "no prefix is listed twice");
+  for (const type of [...AWS_CONTAINER_TYPES, ...AWS_CONTAINER_PREFIXES]) {
+    const family = awsContainerFamilyOf(type)!;
     assert.ok(isAwsContainerType(type), type);
     assert.ok(!isAwsIdentityType(type), type + " is a container, not an identity");
     for (const [id, arn] of [["stack-id", null], ["arn:aws:cloudformation:us-east-1:111111111111:stack/s/1", "arn:aws:cloudformation:us-east-1:111111111111:stack/s/1"], ["stack", pilot]] as const) {
       const refusal = protectedDeletionIn(change("x.y", type), [entry("x.y", type, id, arn)], IDENTITY_FIXTURE_CONTRACT, awsIdentityEnv("DEV"));
-      assert.ok(refusal !== undefined && refusal.includes("a stack container") && refusal.includes("never deletes, directly or as a dependent (CONTAINS_OTHERS)"), type + " " + id + ": " + refusal);
+      assert.ok(refusal !== undefined && refusal.includes("a stack container (" + family.what + ")") && refusal.includes("never deletes, directly or as a dependent (CONTAINS_OTHERS)"), type + " " + id + ": " + refusal);
     }
     // By type alone, for a dependent the state does not hold, and for an update as much as a delete.
     assert.ok(protectedDeletionIn(change("x.y", type), [], IDENTITY_FIXTURE_CONTRACT, awsIdentityEnv("DEV"))?.includes("(CONTAINS_OTHERS)"), type + " by type alone");
     assert.ok(protectedDeletionIn(change("x.y", type, "UPDATE"), [], IDENTITY_FIXTURE_CONTRACT, awsIdentityEnv("DEV"))?.includes("would update x.y, a stack container"), type + " on update");
-    // A stack whose attributes hold an identity's ARN is still a container: kept with its reason, not a refusal of the whole proposal.
+    // A container whose attributes hold an identity's ARN is still a container: kept with its reason, not a refusal of the whole proposal.
     assert.ok(protectedDeletionIn(change("x.y", type), [{ ...entry("x.y", type), holdsIdentityArn: true }], IDENTITY_FIXTURE_CONTRACT, awsIdentityEnv("DEV"))?.includes("(CONTAINS_OTHERS)"), type + " with a flagged attribute");
   }
-  for (const type of ["aws_cloudformation_type", "aws_cloudformation_export", "aws_cloudformationx_stack", "AWS::CloudFormation::CustomResource", "AWS::CloudFormation::WaitCondition", "aws_servicecatalog_product", "aws_servicecatalog_portfolio", "AWS::ServiceCatalog::Portfolio", "aws_s3_bucket"]) {
+  for (const type of ["aws_cloudformation_type", "aws_cloudformation_export", "aws_cloudformationx_stack", "AWS::CloudFormation::CustomResource", "AWS::CloudFormation::WaitCondition", "aws_servicecatalog_product", "aws_servicecatalog_portfolio", "AWS::ServiceCatalog::Portfolio",
+    "aws_serverlessapplicationrepository_application", "aws_sagemaker_model", "aws_sagemaker_domain", "AWS::SageMaker::Model", "aws_elastic_beanstalk_application", "aws_elastic_beanstalk_application_version", "AWS::ElasticBeanstalk::Application", "aws_s3_bucket", "AWS_CLOUDFORMATION_STACK", " aws_cloudformation_stack", "module.m.aws_cloudformation_stack"]) {
     assert.ok(!isAwsContainerType(type), type + " is not a container");
   }
-  assert.ok(PROTECTION_REASONS.CONTAINS_OTHERS.length <= 512 && /CloudFormation stack, stack set, stack instance or Service Catalog provisioned product/.test(PROTECTION_REASONS.CONTAINS_OTHERS), "the reason names the AWS containers within a proposal's limit");
+  assert.ok(PROTECTION_REASONS.CONTAINS_OTHERS.length <= 512 && /anything that deploys a CloudFormation stack or a provisioned product/.test(PROTECTION_REASONS.CONTAINS_OTHERS), "the reason states the class within a proposal's limit");
 });
 
-test("a run that created a CloudFormation stack whose template holds an IAM role (no ARN in the state) keeps the stack as CONTAINS_OTHERS by the pilot owner, never targets it, refuses a destroy plan that would take it along before any approval is consumed, and cleans up the run's other resources; a wrapper nested past the scan depth refuses the whole proposal (reviews 6412896598 B1 and B2)", async () => {
-  const STACK_ID = "arn:aws:cloudformation:us-east-1:111111111111:stack/app-iam/11111111-2222-4333-8444-555555555555";
-  const TEMPLATE = JSON.stringify({ Resources: { AppRole: { Type: "AWS::IAM::Role", Properties: { AssumeRolePolicyDocument: {} } } } });
-  const creates = [...CREATES, { address: "aws_cloudformation_stack.app_iam", type: "aws_cloudformation_stack", change: { actions: ["create"], before: null, after: {} } }];
-  const stack = { mode: "managed", type: "aws_cloudformation_stack", name: "app_iam", provider: 'provider["registry.terraform.io/hashicorp/aws"]',
-    instances: [{ schema_version: 0, attributes: { id: STACK_ID, name: "app-iam", template_body: TEMPLATE, template_url: null, capabilities: ["CAPABILITY_NAMED_IAM"], outputs: {}, iam_role_arn: null, secret_value: STATE_CANARY } }] };
-  const state = [...STATE, stack];
-  const w = world();
-  behave({ showResources: creates, stateResources: state });
-  const run = await proposed(w);
-  assert.deepEqual(run.proposal.deletes.map((d) => d.address), ["aws_cloudwatch_log_group.canary", "aws_s3_bucket.logs", "aws_s3_bucket_versioning.logs"], "the stack is never proposed");
-  const kept = run.proposal.excluded.find((x) => x.address === "aws_cloudformation_stack.app_iam");
-  assert.equal(kept?.ownership, "CONTAINS_OTHERS");
-  assert.equal(kept?.retainedBy, "PILOT_OWNER");
-  assert.match(kept!.reason, /deleting a CloudFormation stack, stack set, stack instance or Service Catalog provisioned product deletes everything its template holds, identities among it/);
-  assert.ok(!JSON.stringify([run.proposal, run.records.blueprint, run.records.observation]).includes("AWS::IAM::Role"), "no template text reaches a record");
-  assert.equal(run.records.blueprint.blueprint.entries.find((e) => e.address === "aws_cloudformation_stack.app_iam")?.holdsIdentityArn, undefined, "a template names types, not ARNs: the container rule, not the ARN scan, keeps it");
-  // A destroy plan that would take the stack along (and its role with it) stops before any approval is consumed, naming the policy.
-  const approval = cleanupApproval(run.proposal, "alice");
-  behave({ showResources: creates, stateResources: state, destroyExtra: [{ address: "aws_cloudformation_stack.app_iam", type: "aws_cloudformation_stack", change: { actions: ["delete"], before: {}, after: null } }] });
-  const taken = await cleanup(w, run, [approval]);
-  refused(taken, "PROPOSAL_SCOPE_MISMATCH");
-  assert.match((taken as { message: string }).message, /would delete aws_cloudformation_stack\.app_iam, a stack container \(a CloudFormation stack, stack set, stack instance or provisioned product\) holding resources the state does not list, which a pilot cleanup never deletes, directly or as a dependent \(CONTAINS_OTHERS\)/);
-  assert.equal(applyCalls().length, 0);
-  // A forged proposal that lists the stack never executes: the list is derived again and the stack is a container.
-  const fields = { ...run.proposal, deletes: [{ address: "aws_cloudformation_stack.app_iam", type: "aws_cloudformation_stack", identifier: STACK_ID, ownership: "RUN_CREATED" as const, observed: "UNVERIFIABLE" as const }, ...run.proposal.deletes], excluded: run.proposal.excluded.filter((x) => x.address !== "aws_cloudformation_stack.app_iam") };
-  const forged = { ...fields, proposalSha256: computeProposalSha256(fields) };
-  assert.ok(verifyCleanupProposal(forged).ok);
-  behave({ showResources: creates, stateResources: state });
-  refused(await cleanup(w, { ...run, proposal: forged }, [cleanupApproval(forged, "alice")]), "PROPOSAL_INVALID");
-  assert.equal(applyCalls().length, 0);
-  // The honest cleanup targets only the run's other resources and the stack stays.
-  const done = await cleanup(w, run, [approval]);
-  assert.ok(done.ok, JSON.stringify(done));
-  assert.ok(destroyPlans().every((c) => !c.args.join(" ").includes("aws_cloudformation_stack")), "the stack is never targeted");
+/** One run per container family: the container holds an IAM role the state cannot show (a template names types; a repository application or a product has no template in the state at all). */
+const CONTAINER_RUNS: readonly { type: string; name: string; attributes: Record<string, unknown> }[] = [
+  { type: "aws_cloudformation_stack", name: "app_iam", attributes: { id: "arn:aws:cloudformation:us-east-1:111111111111:stack/app-iam/11111111-2222-4333-8444-555555555555", name: "app-iam",
+    template_body: JSON.stringify({ Resources: { AppRole: { Type: "AWS::IAM::Role", Properties: { AssumeRolePolicyDocument: {} } } } }), template_url: null, capabilities: ["CAPABILITY_NAMED_IAM"], outputs: {}, iam_role_arn: null } },
+  { type: "aws_serverlessapplicationrepository_cloudformation_stack", name: "app_iam", attributes: { id: "arn:aws:cloudformation:us-east-1:111111111111:stack/serverlessrepo-app-iam/22222222-2222-4333-8444-555555555555", name: "app-iam",
+    application_id: "arn:aws:serverlessrepo:us-east-1:222222222222:applications/app-iam", semantic_version: "1.0.0", capabilities: ["CAPABILITY_IAM", "CAPABILITY_NAMED_IAM"], parameters: {}, outputs: {} } },
+  { type: "aws_sagemaker_project", name: "app_iam", attributes: { id: "app-iam", project_name: "app-iam", project_id: "p-abcdefghijkl", arn: "arn:aws:sagemaker:us-east-1:111111111111:project/app-iam",
+    service_catalog_provisioning_details: [{ product_id: "prod-abcdefghijklm", provisioning_artifact_id: "pa-abcdefghijklm" }] } },
+];
+
+for (const { type, name, attributes } of CONTAINER_RUNS) {
+  test("a run that created " + type + " (" + awsContainerFamilyOf(type)!.what + ", holding an IAM role the state cannot show) keeps it as CONTAINS_OTHERS by the pilot owner, never targets it, refuses a destroy plan that would take it along before any approval is consumed, and cleans up the run's other resources (reviews 6412896598 B1, 6432262110 B1)", async () => {
+    const address = type + "." + name;
+    const family = awsContainerFamilyOf(type)!;
+    const creates = [...CREATES, { address, type, change: { actions: ["create"], before: null, after: {} } }];
+    const container = { mode: "managed", type, name, provider: 'provider["registry.terraform.io/hashicorp/aws"]', instances: [{ schema_version: 0, attributes: { ...attributes, secret_value: STATE_CANARY } }] };
+    const state = [...STATE, container];
+    const w = world();
+    behave({ showResources: creates, stateResources: state });
+    const run = await proposed(w);
+    assert.deepEqual(run.proposal.deletes.map((d) => d.address), ["aws_cloudwatch_log_group.canary", "aws_s3_bucket.logs", "aws_s3_bucket_versioning.logs"], "the container is never proposed");
+    const kept = run.proposal.excluded.find((x) => x.address === address);
+    assert.equal(kept?.ownership, "CONTAINS_OTHERS");
+    assert.equal(kept?.retainedBy, "PILOT_OWNER");
+    assert.match(kept!.reason, /anything that deploys a CloudFormation stack or a provisioned product .* is kept: deleting it deletes all the stack holds, identities among it/);
+    assert.ok(!JSON.stringify([run.proposal, run.records.blueprint, run.records.observation]).includes("AWS::IAM::Role") && !JSON.stringify([run.proposal, run.records.blueprint]).includes(STATE_CANARY), "no attribute text reaches a record");
+    assert.equal(run.records.blueprint.blueprint.entries.find((e) => e.address === address)?.holdsIdentityArn, undefined, "no ARN is in the state: the container rule, not the ARN scan, keeps it");
+    // A destroy plan that would take the container along (and its role with it) stops before any approval is consumed, naming the policy and the family.
+    const approval = cleanupApproval(run.proposal, "alice");
+    behave({ showResources: creates, stateResources: state, destroyExtra: [{ address, type, change: { actions: ["delete"], before: {}, after: null } }] });
+    const taken = await cleanup(w, run, [approval]);
+    refused(taken, "PROPOSAL_SCOPE_MISMATCH");
+    assert.ok((taken as { message: string }).message.includes("would delete " + address + ", a stack container (" + family.what + ") holding resources the state does not list, which a pilot cleanup never deletes, directly or as a dependent (CONTAINS_OTHERS)"), (taken as { message: string }).message);
+    assert.equal(applyCalls().length, 0);
+    // A forged proposal that lists the container never executes: the list is derived again and the type is a container.
+    const fields = { ...run.proposal, deletes: [...run.proposal.deletes, { address, type, identifier: kept!.identifier, ownership: "RUN_CREATED" as const, observed: "UNVERIFIABLE" as const }].sort((a, b) => (a.address < b.address ? -1 : 1)), excluded: run.proposal.excluded.filter((x) => x.address !== address) };
+    const forged = { ...fields, proposalSha256: computeProposalSha256(fields) };
+    assert.ok(verifyCleanupProposal(forged).ok);
+    behave({ showResources: creates, stateResources: state });
+    refused(await cleanup(w, { ...run, proposal: forged }, [cleanupApproval(forged, "alice")]), "PROPOSAL_INVALID");
+    assert.equal(applyCalls().length, 0);
+    // The honest cleanup targets only the run's other resources and the container stays.
+    const done = await cleanup(w, run, [approval]);
+    assert.ok(done.ok, JSON.stringify(done));
+    assert.ok(destroyPlans().length > 0 && destroyPlans().every((c) => !c.args.join(" ").includes(type)), "the container is never targeted");
+  });
+}
+
+test("a wrapper nested past the scan depth refuses the whole proposal, and the execution guard stops a plan that touches it (review 6412896598 B2)", async () => {
   // B2: a terraform_data whose input nests deeper than the scan reads (no ARN anywhere) is unclassifiable: the proposal is refused for a person to review, and the execution guard stops a plan that touches it.
   let deep: unknown = "plain";
   for (let i = 0; i < 40; i++) deep = { level: deep };
