@@ -114,3 +114,16 @@ test("every release gate is mapped, read as data without the registry; gates wit
   assert.equal(gateModeOf("future-gate"), "UNKNOWN");
   assert.equal(gatePlan(["future-gate"], new Set())[0].mode, "NO_PRODUCER", "an unknown gate id fails closed");
 });
+
+test("the Bicep preview gate is in scope but not admitted: reported as NO_PRODUCER with its own reason, never planned as the pinned path's GUIDED S5 stage", () => {
+  const { ids, outOfScope } = releaseGates(".");
+  assert.ok(ids.includes("preview:bicep-azure-brownfield") && !outOfScope.has("preview:bicep-azure-brownfield"), "back in scope (owner rebaseline 6443352284)");
+  assert.equal(gateModeOf("preview:bicep-azure-brownfield"), "LIVE_PREVIEW");
+  const bicep = gatePlan(ids, outOfScope).find((gate) => gate.id === "preview:bicep-azure-brownfield")!;
+  assert.equal(bicep.mode, "NO_PRODUCER");
+  assert.equal(bicep.slice, undefined);
+  assert.match(bicep.note, /BICEP engine is not an admitted engine/);
+  assert.doesNotMatch(bicep.note, /GCP/, "the reason is the path's own");
+  // The other Azure preview gate keeps its producer.
+  assert.equal(gatePlan(ids, outOfScope).find((gate) => gate.id === "preview:terraform-azure-brownfield")!.mode, "GUIDED");
+});
