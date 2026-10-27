@@ -51,6 +51,13 @@ const AZURE = [
   "ARM_CLIENT_ID", "ARM_CLIENT_SECRET", "ARM_TENANT_ID", "ARM_SUBSCRIPTION_ID", "ARM_USE_OIDC",
   "ARM_OIDC_TOKEN_FILE",
 ];
+/**
+ * The Entra ID switch of the azurerm state backend (`use_azuread_auth`), for the Terraform engines only: the pilot's Azure
+ * state access is Entra ID only (docs/act-pilot-apply.md, Azure), so the state identities may carry it. The Azure apply spec
+ * accepts it on STATE and STATE_WRITE with the value `true` and nothing else (`src/apply/providers/azure.ts`); under an AWS
+ * contract every `ARM_*` variable is refused. It names no credential, file or endpoint.
+ */
+const AZURE_STATE_AUTH = ["ARM_STORAGE_USE_AZUREAD"];
 
 const AWS_HOSTS = ["*.amazonaws.com", "*.amazonaws.com.cn"];
 const AZURE_HOSTS = ["*.microsoftonline.com", "*.microsoft.com", "*.azure.com", "*.windows.net", "*.azure.net"];
@@ -77,12 +84,12 @@ export const PROFILES: Readonly<Record<string, ProcessProfile>> = {
     approvedHosts: AZURE_HOSTS, suppressExcerpts: false, ...base,
   },
   terraform: {
-    injectable: [...AWS, ...AZURE, "TF_CLI_CONFIG_FILE", "TF_PLUGIN_CACHE_DIR", "TF_IN_AUTOMATION"],
+    injectable: [...AWS, ...AZURE, ...AZURE_STATE_AUTH, "TF_CLI_CONFIG_FILE", "TF_PLUGIN_CACHE_DIR", "TF_IN_AUTOMATION"],
     injectablePrefixes: ["TF_VAR_", "TF_TOKEN_"], urlVariables: ["AWS_ENDPOINT_URL"],
     approvedHosts: [...AWS_HOSTS, ...AZURE_HOSTS, ...TERRAFORM_HOSTS], suppressExcerpts: true, ...base,
   },
   tofu: {
-    injectable: [...AWS, ...AZURE, "TF_CLI_CONFIG_FILE", "TF_PLUGIN_CACHE_DIR", "TF_IN_AUTOMATION"],
+    injectable: [...AWS, ...AZURE, ...AZURE_STATE_AUTH, "TF_CLI_CONFIG_FILE", "TF_PLUGIN_CACHE_DIR", "TF_IN_AUTOMATION"],
     injectablePrefixes: ["TF_VAR_", "TF_TOKEN_"], urlVariables: ["AWS_ENDPOINT_URL"],
     approvedHosts: [...AWS_HOSTS, ...AZURE_HOSTS, ...TERRAFORM_HOSTS], suppressExcerpts: true, ...base,
   },

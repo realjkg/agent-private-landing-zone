@@ -1394,6 +1394,40 @@ test("the project's own azurerm backend block is judged before init: a shared ke
   assert.deepEqual(calls().map((c) => c.args[0]), ["version"]);
 });
 
+test("the Entra ID state auth switch reaches the STATE and STATE_WRITE children only; on APPLY, or with any value but true, nothing runs; the operator's own is never read", async () => {
+  const w = world();
+  const env = { ...ENV, ALZ_STATE_ARM_STORAGE_USE_AZUREAD: "true", ALZ_STATE_WRITE_ARM_STORAGE_USE_AZUREAD: "true", ARM_STORAGE_USE_AZUREAD: "false" };
+  behave({ applyAdvance: true });
+  const s = await seal(w, "DEV");
+  const before = calls().length;
+  const result = await runApply(requestFor(s, [approval(s.sealed, "alice")]), { ...w.deps, env });
+  assert.ok(result.ok, JSON.stringify(result));
+  const steps = calls().slice(before);
+  const switchOf = (c: Call) => c.env.ARM_STORAGE_USE_AZUREAD;
+  assert.equal(switchOf(steps[1]), "true", "init as STATE_WRITE");
+  assert.equal(switchOf(steps[3]), "true", "state pull as STATE");
+  assert.equal(switchOf(steps[4]), undefined, "the change list is derived with no identity");
+  assert.equal(switchOf(steps[5]), undefined, "the apply as APPLY fills its backend settings from the plan, which embeds Entra ID");
+  assert.equal(steps[1].env.ARM_CLIENT_ID, "statewrite-client-3");
+  assert.equal(steps[5].env.ARM_CLIENT_ID, "apply-client-4");
+  for (const [label, over] of [
+    ["on APPLY", { ALZ_APPLY_ARM_STORAGE_USE_AZUREAD: "true" }], ["on DISCOVERY", { ALZ_DISCOVERY_ARM_STORAGE_USE_AZUREAD: "true" }],
+    ["off on STATE", { ALZ_STATE_ARM_STORAGE_USE_AZUREAD: "false" }], ["another value on STATE_WRITE", { ALZ_STATE_WRITE_ARM_STORAGE_USE_AZUREAD: "1" }],
+  ] as const) {
+    const bad = world();
+    behave({ applyAdvance: true });
+    const sealed = await seal(bad, "DEV");
+    const approvals = [approval(sealed.sealed, "alice")];
+    const count = calls().length;
+    refused(await runApply(requestFor(sealed, approvals), { ...bad.deps, env: { ...ENV, ...over } }), "IDENTITY_NOT_CONFIGURED");
+    assert.equal(calls().length, count, label + ": no engine step ran");
+    const p = writeProject(fresh("project"), DEV_TARGET);
+    const sealRefused = await sealPreview({ invocation: human(DEV_TARGET), environment: "DEV", target: DEV_TARGET, manifest: p.manifest, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved }, { ...bad.deps, env: { ...ENV, ...over } });
+    refused(sealRefused as ApplyResult, "IDENTITY_NOT_CONFIGURED");
+    assert.ok((await run(bad, sealed, approvals)).ok, label + ": the approvals were not consumed");
+  }
+});
+
 test("a hard-coded provider subscription_id or tenant_id that is not the contract's refuses at seal and at apply; an expression is not judged", async () => {
   const other = "99999999-9999-4999-8999-999999999999";
   const provider = (expressions: Record<string, unknown>) => ({ azurerm: { name: "azurerm", full_name: "registry.terraform.io/hashicorp/azurerm", expressions } });

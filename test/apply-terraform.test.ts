@@ -180,6 +180,10 @@ test("the apply profile drops provider-installation overrides, AZURE_* (az CLI /
   ]);
   assert.ok(removed.includes("AZURE_CONFIG_DIR") && TERRAFORM_APPLY_PROFILE.injectable.every((name) => !name.startsWith("AZURE_")));
   assert.ok(TERRAFORM_APPLY_PROFILE.injectable.includes("ARM_OIDC_TOKEN_FILE"));
+  // The Entra ID state auth switch (docs/act-pilot-apply.md, Azure) is on the Terraform engines' profiles and nowhere else.
+  for (const profile of [TERRAFORM_APPLY_PROFILE, PROFILES.terraform, PROFILES.tofu]) assert.ok(profile.injectable.includes("ARM_STORAGE_USE_AZUREAD"));
+  for (const name of ["az", "aws", "cdk", "pulumi", "bicep"]) assert.ok(!PROFILES[name].injectable.includes("ARM_STORAGE_USE_AZUREAD"), name);
+  assert.ok(!TERRAFORM_APPLY_PROFILE.injectable.some((name) => /^ARM_(ACCESS_KEY|SAS_TOKEN|USE_MSI|USE_CLI)$/.test(name)), "no shared key, SAS token or other auth path");
   for (const name of ["AWS_ROLE_ARN", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_REGION"]) assert.ok(TERRAFORM_APPLY_PROFILE.injectable.includes(name), name);
   assert.deepEqual(TERRAFORM_APPLY_PROFILE.fixedEnvironment, { AWS_EC2_METADATA_DISABLED: "true" }, "the instance metadata fallback is off for every apply child");
   assert.equal(PROFILES.terraform.fixedEnvironment, undefined);

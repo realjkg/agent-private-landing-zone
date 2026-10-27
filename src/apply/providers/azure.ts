@@ -1,7 +1,8 @@
+import { EXECUTION_IDENTITIES, identityVariables, type ExecutionIdentity } from "../../tools/identity.js";
 import type { BackendBlockRule } from "../backend-block.js";
 import { SAFE_VALUE, TOKEN_FILE } from "../constants.js";
 import { stop } from "../engine.js";
-import type { ProviderBlock, ProviderSpec } from "../provider.js";
+import type { IdentityRefusal, ProviderBlock, ProviderSpec } from "../provider.js";
 import { KEY_SEGMENT, ambientRefusal, isRecord, pickIdentityValue } from "./shared.js";
 
 /**
@@ -37,14 +38,34 @@ const FALLBACK_VARIABLE = /^(AZURE_.*|ARM_USE_(?!OIDC$).*|ARM_MSI_.*|ARM_CLIENT_
 
 /**
  * State access is Entra ID only (owner decision of 2026-10-27, issue #39): the backend's `use_azuread_auth`, which the
- * partial configuration sets and the project's own block may set. Shared keys and SAS tokens never reach a child
- * (`ARM_ACCESS_KEY` and `ARM_SAS_TOKEN` are not injectable), and the bootstrap disables shared-key access on the storage
- * account. The environment form of the switch (`ARM_STORAGE_USE_AZUREAD`) is not on the runner profile yet.
+ * partial configuration sets, the project's own block may set, and the environment can set through this variable. Shared
+ * keys and SAS tokens never reach a child (`ARM_ACCESS_KEY` and `ARM_SAS_TOKEN` are not injectable), and the bootstrap
+ * disables shared-key access on the storage account.
  */
-const ambient = (env: NodeJS.ProcessEnv) => ambientRefusal(env, {
-  fallback: FALLBACK_VARIABLE, ambient: /^(AZURE|ARM)_/, fallbackTo: "the az CLI, ambient or another cloud's credentials",
-  advice: "The apply identities use ARM_* with an OIDC token file only.",
-});
+const STATE_AUTH_VARIABLE = "ARM_STORAGE_USE_AZUREAD";
+/** The identities that reach the state blob: the seal's reader and the apply's writer. APPLY fills its backend settings from the plan. */
+const STATE_IDENTITIES: readonly ExecutionIdentity[] = ["STATE", "STATE_WRITE"];
+
+/**
+ * The shared refusals, then the state auth switch: an identity other than STATE or STATE_WRITE may not carry it, and the only
+ * value it may hold is `true`. An operator's own ambient `ARM_STORAGE_USE_AZUREAD` is never read: a child starts from an
+ * empty environment, and this check reads identity variables only.
+ */
+function ambient(env: NodeJS.ProcessEnv): IdentityRefusal | undefined {
+  const refusal = ambientRefusal(env, {
+    fallback: FALLBACK_VARIABLE, ambient: /^(AZURE|ARM)_/, fallbackTo: "the az CLI, ambient or another cloud's credentials",
+    advice: "The apply identities use ARM_* with an OIDC token file only.",
+  });
+  if (refusal) return refusal;
+  const wrong = EXECUTION_IDENTITIES.filter((identity) => {
+    const value = identityVariables(env, identity).get(STATE_AUTH_VARIABLE);
+    return value !== undefined && (!STATE_IDENTITIES.includes(identity) || value !== "true");
+  }).map((identity) => "ALZ_" + identity + "_" + STATE_AUTH_VARIABLE);
+  return wrong.length === 0 ? undefined : {
+    ok: false, code: "IDENTITY_NOT_CONFIGURED",
+    message: "These variables are not the Entra ID state auth switch as the pilot allows it (STATE or STATE_WRITE, set to true): " + wrong.join(", ") + ".",
+  };
+}
 
 /**
  * The partial backend configuration init saves: Entra ID authorization for the
@@ -131,7 +152,7 @@ export const AZURE: ProviderSpec = {
   savedBackendMatches: (saved, target) => savedBackendMatches(saved, target as AzureTarget),
   backendBlock: BACKEND_BLOCK,
   // Simulation finding (docs/act-pilot-simulation.md): the plan embeds the backend block's settings; the rest is filled from the apply
-  // process's ARM_* variables. `use_azuread_auth` is embedded as true whenever init saved it (above).
+  // process's ARM_* variables. `use_azuread_auth` is embedded as true whenever init saved it (above), and `ARM_STORAGE_USE_AZUREAD` is its variable.
   filledAtApply: ["use_azuread_auth", "use_oidc", "client_id", "tenant_id", "subscription_id", "oidc_token_file_path"],
   tagAttributes: ["tags"],
   assertProviderConfig: (blocks, target) => assertProviderConfig(blocks, target as AzureTarget),

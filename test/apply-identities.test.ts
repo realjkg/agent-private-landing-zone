@@ -178,6 +178,33 @@ test("Azure variables map through ALZ_<IDENTITY>_ for each of the four identitie
   }
 });
 
+test("the Entra ID state auth switch: STATE and STATE_WRITE may set ARM_STORAGE_USE_AZUREAD to true and nothing else; no other identity may carry it; the operator's own is never read", () => {
+  const env = fixture();
+  env.ALZ_STATE_ARM_STORAGE_USE_AZUREAD = "true";
+  env.ALZ_STATE_WRITE_ARM_STORAGE_USE_AZUREAD = "true";
+  env.ARM_STORAGE_USE_AZUREAD = "false"; // the operator's own: not an identity variable, never a child's
+  assert.deepEqual(checkApplyIdentities(env, AZURE, APPLY_IDENTITIES), { ok: true });
+  for (const identity of ["STATE", "STATE_WRITE"] as const) {
+    const child = childFor(env, identity);
+    assert.equal(child.env.ARM_STORAGE_USE_AZUREAD, "true", identity);
+    assert.deepEqual(child.refused, [], identity);
+  }
+  for (const identity of ["DISCOVERY", "APPLY"] as const) assert.equal(childFor(env, identity).env.ARM_STORAGE_USE_AZUREAD, undefined, identity + " never carries it");
+  for (const [identity, value] of [["STATE", "false"], ["STATE_WRITE", "1"], ["STATE", "TRUE"], ["STATE", " true"], ["APPLY", "true"], ["DISCOVERY", "true"]] as const) {
+    const bad = fixture();
+    bad[`ALZ_${identity}_ARM_STORAGE_USE_AZUREAD`] = value;
+    const message = refusedWith(bad, "IDENTITY_NOT_CONFIGURED", `ALZ_${identity}_ARM_STORAGE_USE_AZUREAD`);
+    assert.equal(/ALZ_(STATE|STATE_WRITE|APPLY|DISCOVERY)_ARM_STORAGE_USE_AZUREAD/.exec(message)?.[0], `ALZ_${identity}_ARM_STORAGE_USE_AZUREAD`, "only the wrong one is named");
+  }
+  // An empty value is no value to the identity check, as for every identity variable: the identity does not set the switch.
+  assert.deepEqual(checkApplyIdentities({ ...fixture(), ALZ_STATE_WRITE_ARM_STORAGE_USE_AZUREAD: "" }, AZURE, APPLY_IDENTITIES), { ok: true });
+  // A shared key, SAS token or another auth path is not injectable at all: it never reaches a child, with or without the switch.
+  for (const name of ["ARM_ACCESS_KEY", "ARM_SAS_TOKEN", "ARM_USE_MSI"]) {
+    const child = childFor({ ...env, [`ALZ_STATE_WRITE_${name}`]: "x" }, "STATE_WRITE");
+    assert.equal(child.env[name], undefined, name);
+  }
+});
+
 test("STATE does not receive STATE_WRITE variables, in either direction", () => {
   const env = { ALZ_STATE_WRITE_ARM_CLIENT_ID: "writer", ALZ_STATE_ARM_CLIENT_ID: "reader" };
   const state = childFor(env, "STATE");
