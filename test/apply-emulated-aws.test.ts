@@ -245,7 +245,7 @@ describe("AWS emulated backend simulation: real Terraform, moto S3 with use_lock
   // --- fixtures ---------------------------------------------------------------------------------
 
   const LOCK = "# This file is maintained automatically by \"terraform init\".\n# The pilot fixture uses only the built-in terraform provider.\n";
-  /** The pinned project: an s3 backend with exactly the attributes the spec allows (`backendBlock`) and one built-in resource. No credential anywhere in it. */
+  /** The pinned project: an s3 backend with the contract's location (the product override replaces it; `backendLocation` supplies the same settings) and one built-in resource. No credential anywhere in it. */
   function project(input: string, extra = "") {
     const projectRoot = fresh("project");
     writeFileSync(join(projectRoot, "main.tf"), [

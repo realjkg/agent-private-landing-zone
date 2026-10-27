@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readdirSync, readFileSync } from "node:fs";
-import { diffCommand, importsOf, planChanged, SOURCE_SCAN_GUARDS, UNIMPORTABLE_OWNERS } from "../scripts/qa-affected.mjs";
+import { diffCommand, FIXTURE_OWNERS, importsOf, planChanged, SOURCE_SCAN_GUARDS, UNIMPORTABLE_OWNERS } from "../scripts/qa-affected.mjs";
 
 function fixture() {
   return new Map([
@@ -169,6 +169,20 @@ test("GCP bootstrap changes select their one focused test, and its absence is a 
   assert.match(planChanged(["bootstrap/gcpx/main.tf"], fixture()).gaps.join(), /no QA ownership rule/);
 });
 
+test("DISCOVERY scope bootstrap files select the synthetic checks and the policy-content test", () => {
+  const files = fixture();
+  for (const path of ["bootstrap/aws/discovery.tf", "bootstrap/aws/discovery-policy.json", "bootstrap/aws/tests/discovery.tftest.hcl", "bootstrap/aws/terraform.tfvars.example"]) files.set(path, "x");
+  files.set("test/act-dev1-automation.test.py", "bootstrap/aws/discovery.tf");
+  files.set("test/discovery-scope.test.ts", "bootstrap/aws/discovery-policy.json");
+  const plan = planChanged(["bootstrap/aws/discovery.tf", "bootstrap/aws/discovery-policy.json", "bootstrap/aws/tests/discovery.tftest.hcl", "bootstrap/aws/terraform.tfvars.example"], files);
+  assert.deepEqual(plan.pythonTests, ["test/act-dev1-automation.test.py"]);
+  assert.deepEqual(plan.nodeTests, ["test/discovery-scope.test.ts"]);
+  assert.deepEqual(plan.gaps, []);
+  // A bootstrap file with no owner is still a gap.
+  files.set("bootstrap/aws/outputs.tf", "x");
+  assert.ok(planChanged(["bootstrap/aws/outputs.tf"], files).gaps.length > 0);
+});
+
 test("ACT-DEV-1 tfvars and Python handoff changes map to targeted synthetic tests", () => {
   const files=fixture();
   files.set("qualification/aws/act-dev1-canary/terraform.tfvars.example.json",'{"region":"us-east-2"}');
@@ -326,4 +340,22 @@ test("the ./alz dispatcher, which no test can import, is owned by the guards tha
   for (const owner of UNIMPORTABLE_OWNERS["src/cli/operator.ts"]) assert.ok(plan.nodeTests.includes(owner), owner);
   files.set("src/cli/orphan.ts", "export const x = 1;");
   assert.match(planChanged(["src/cli/orphan.ts"], files).gaps.join(" "), /src\/cli\/orphan\.ts has no importing test/);
+});
+
+test("a fixture a test reads from disk is owned by its declared test, an unowned fixture is still a gap, and a deleted module is a note", () => {
+  const files = fixture();
+  for (const [path, owners] of Object.entries(FIXTURE_OWNERS)) {
+    files.set(path, "{}");
+    for (const owner of owners) files.set(owner, "test()");
+    const plan = planChanged([path], files);
+    assert.deepEqual(plan.gaps, [], path);
+    for (const owner of owners) assert.ok(plan.nodeTests.includes(owner), owner);
+  }
+  files.set("test/fixtures/orphan.json", "{}");
+  assert.match(planChanged(["test/fixtures/orphan.json"], files).gaps.join(" "), /orphan\.json has no known test owner/);
+  const deleted = planChanged(["src/apply/gone.ts"], files);
+  assert.deepEqual(deleted.gaps, []);
+  assert.match(deleted.notes.join(" "), /src\/apply\/gone\.ts was deleted/);
+  files.set("src/apply/orphan.ts", "export const x = 1;");
+  assert.match(planChanged(["src/apply/orphan.ts"], files).gaps.join(" "), /src\/apply\/orphan\.ts has no importing test/);
 });

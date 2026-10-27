@@ -57,8 +57,8 @@ export type AwsBehavior = {
   modifyReplacement?: string | null;
   /** describe-stacks prints more than the runner keeps. */
   bigOutput?: boolean;
-  /** describe-change-set reports these capabilities whatever was passed. */
-  echoCapabilities?: string[];
+  /** describe-change-set reports these capabilities whatever was passed, or exactly this value for the key (a malformed answer). */
+  echoCapabilities?: string[]; rawCapabilities?: unknown;
   /** Statuses describe-stacks answers with, one per poll after execute (the last repeats), and after a cancel. */
   pollStatuses?: string[]; afterCancel?: string[];
   /** describe-stack-events reports a resource event after the execution began. */
@@ -244,11 +244,14 @@ else if (cmd === "describe-change-set") {
   ];
   // What the change set reports about its execution follows the stack the fake last described.
   const execution = !a.executing ? "AVAILABLE" : /ROLLBACK|FAILED/.test(a.stack.status) ? "EXECUTE_FAILED" : /_COMPLETE$/.test(a.stack.status) ? "EXECUTE_COMPLETE" : "EXECUTE_IN_PROGRESS";
+  // As the real AWS CLI v2 prints it (2.38.6, docs/act-pilot-simulation-cdk.md): it follows the change list's pages itself and prints each of the
+  // paginator's other keys, null where CloudFormation sent none (a change set made without capabilities has "Capabilities": null).
+  const capabilities = b.echoCapabilities || a.changeSet.capabilities;
   process.stdout.write(JSON.stringify({
     ChangeSetName: a.changeSet.name, ChangeSetId: b.swapChangeSetId || a.changeSet.id, StackId: b.swapStackId || a.changeSet.stackId, StackName: a.changeSet.stackName,
-    Status: b.changeSetStatus || "CREATE_COMPLETE", ExecutionStatus: b.executionStatus || execution,
-    ...(b.statusReason ? { StatusReason: b.statusReason } : {}), ...(b.nextToken ? { NextToken: "page-2" } : {}),
-    Capabilities: b.echoCapabilities || a.changeSet.capabilities, Parameters: [{ ParameterKey: "DbPassword", ParameterValue: "****", ResolvedValue: ${JSON.stringify(PARAMETER_CANARY)} }], Changes: changes,
+    Description: null, Status: b.changeSetStatus || "CREATE_COMPLETE", ExecutionStatus: b.executionStatus || execution,
+    StatusReason: b.statusReason || null, ...(b.nextToken ? { NextToken: "page-2" } : {}), RollbackConfiguration: null, ParentChangeSetId: null,
+    Capabilities: "rawCapabilities" in b ? b.rawCapabilities : capabilities.length > 0 ? capabilities : null, Parameters: [{ ParameterKey: "DbPassword", ParameterValue: "****", ResolvedValue: ${JSON.stringify(PARAMETER_CANARY)} }], Changes: changes,
     Tags: (b.swapTags || a.changeSet.tags || []).map((tag) => { const m = /^Key=([^,]*),Value=(.*)$/.exec(tag); return { Key: m[1], Value: m[2] }; }),
   }));
 }
@@ -365,6 +368,8 @@ export type AssemblyOptions = {
   templateExtra?: Record<string, unknown>; resources?: Record<string, unknown>;
   /** Edits the files before they are written, and replaces files with these exact bytes. */
   mutate?: (files: Record<string, any>) => void; raw?: Record<string, string>;
+  /** The AWS CLI version the manifest binds (default the fake's); the opt-in emulated harness passes the real CLI's. */
+  engineVersion?: string;
 };
 
 /** Writes a pre-synthesized cloud assembly (cdk.out) the way a synthesis would leave it, and the manifest that binds it. */
@@ -414,7 +419,7 @@ export function writeAssembly(root: string, target: ResolvedTarget, options: Ass
   files["cdk.out"] = { version: "36.0.0" };
   options.mutate?.(files);
   for (const [name, content] of Object.entries(files)) writeFileSync(join(root, name), options.raw?.[name] ?? JSON.stringify(content));
-  const resolved: Project["resolved"] = { engineVersion: AWS_CLI_VERSION, providers: [], lockFileSha256: undefined, dependencies: [], inputs: [] };
+  const resolved: Project["resolved"] = { engineVersion: options.engineVersion ?? AWS_CLI_VERSION, providers: [], lockFileSha256: undefined, dependencies: [], inputs: [] };
   const manifest = buildManifest({
     engine: "CDK", mode: "PROJECT", target, unitHash: H("1"), files: captureProjectFiles(root), policyVersion: POLICY, ...resolved,
   });

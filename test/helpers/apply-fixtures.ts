@@ -126,7 +126,9 @@ else if (cmd === "init") {
   }
   for (const w of b.initWrites || []) { fs.mkdirSync(path.dirname(w.path), { recursive: true }); fs.writeFileSync(w.path, w.content); }
   const bc = args.find((x) => x.startsWith("-backend-config="));
-  log({ backendConfig: backend(), backendMode: bc ? fs.statSync(path.resolve(process.cwd(), bc.slice(16))).mode & 0o777 : undefined });
+  const pin = path.join(process.cwd(), "zzzz_alz_backend_override.tf");
+  log({ backendConfig: backend(), backendMode: bc ? fs.statSync(path.resolve(process.cwd(), bc.slice(16))).mode & 0o777 : undefined,
+    backendOverride: fs.existsSync(pin) ? fs.readFileSync(pin, "utf8") : undefined, workEntries: fs.readdirSync(process.cwd()).sort() });
 }
 else if (cmd === "workspace") { log({}); if (sub === "show") process.stdout.write(b.workspace + "\\n"); }
 else if (cmd === "state" && sub === "pull") {
@@ -362,6 +364,8 @@ export function fakeArmHttp(behavior: ArmBehavior = {}): { http: (request: ArmCa
 export type Call = {
   args: string[]; cwd: string; env: Record<string, string>; backendConfig?: string; planPath?: string;
   planSha?: string; planMode?: number; backendMode?: number; backendFileExists?: boolean; planText?: string; planDir?: string; pid?: number;
+  /** At init: the product-owned backend override in the work copy, and the copy's root entries. */
+  backendOverride?: string; workEntries?: string[];
 };
 export const callsOf = (toolDir: string): Call[] => existsSync(join(toolDir, "calls.jsonl"))
   ? readFileSync(join(toolDir, "calls.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line) as Call)

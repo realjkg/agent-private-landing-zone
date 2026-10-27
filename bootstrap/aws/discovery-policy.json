@@ -1,0 +1,214 @@
+{
+  "decision": "Owner decision 2026-10-27 (issue #39, comment 6440801434, item 2): read-only discovery defaults to control-plane metadata; application data and secret contents are excluded; any exception needs an explicit scope and purpose.",
+  "allow": {
+    "cdkStackReads": {
+      "why": "CDK engine: describe-stacks in the preview and qualification, describe-stack-resources for the blueprint after an apply (src/apply/engines/cdk.ts).",
+      "actions": [
+        "cloudformation:DescribeStacks",
+        "cloudformation:DescribeStackResources"
+      ]
+    },
+    "independentObservation": {
+      "why": "The verifier after an apply and after a cleanup: cloudcontrol get-resource and resourcegroupstaggingapi get-resources (src/observe/aws-cli.ts, src/observe/verify.ts).",
+      "actions": [
+        "cloudformation:GetResource",
+        "tag:GetResources"
+      ]
+    },
+    "previewDiscovery": {
+      "why": "The Preview discovery reads under DISCOVERY (src/providers/aws/discover.ts, src/tools/broker.ts). sts get-caller-identity needs no permission.",
+      "actions": [
+        "organizations:DescribeOrganization",
+        "organizations:ListPolicies",
+        "controltower:ListLandingZones",
+        "controltower:ListLandingZoneOperations",
+        "controltower:GetLandingZoneOperation",
+        "config:DescribeConfigurationRecorders",
+        "cloudtrail:DescribeTrails"
+      ]
+    },
+    "cloudControlReadHandlers": {
+      "why": "The read-handler permissions of each type the verifier reads through Cloud Control (CLOUD_CONTROL_TYPES in src/observe/verify.ts), from the CloudFormation resource provider schemas. AWS::Lambda::Function is excluded: its read handler returns environment variables and needs kms:Decrypt.",
+      "actions": [
+        "logs:DescribeLogGroups",
+        "logs:ListTagsForResource",
+        "logs:GetDataProtectionPolicy",
+        "logs:DescribeIndexPolicies",
+        "logs:DescribeResourcePolicies",
+        "s3:GetAccelerateConfiguration",
+        "s3:GetLifecycleConfiguration",
+        "s3:GetBucketPublicAccessBlock",
+        "s3:GetAnalyticsConfiguration",
+        "s3:GetBucketCORS",
+        "s3:GetEncryptionConfiguration",
+        "s3:GetInventoryConfiguration",
+        "s3:GetBucketLogging",
+        "s3:GetMetricsConfiguration",
+        "s3:GetBucketNotification",
+        "s3:GetBucketVersioning",
+        "s3:GetReplicationConfiguration",
+        "s3:GetBucketWebsite",
+        "s3:GetBucketObjectLockConfiguration",
+        "s3:GetBucketTagging",
+        "s3:ListTagsForResource",
+        "s3:GetBucketAbac",
+        "s3:GetBucketOwnershipControls",
+        "s3:GetIntelligentTieringConfiguration",
+        "s3:GetBucketMetadataTableConfiguration",
+        "iam:GetRole",
+        "iam:ListAttachedRolePolicies",
+        "iam:ListRolePolicies",
+        "iam:GetRolePolicy",
+        "iam:GetOpenIDConnectProvider",
+        "sns:GetTopicAttributes",
+        "sns:ListTagsForResource",
+        "sns:GetDataProtectionPolicy",
+        "sqs:GetQueueAttributes",
+        "sqs:ListQueueTags",
+        "kms:DescribeKey",
+        "kms:GetKeyPolicy",
+        "kms:GetKeyRotationStatus",
+        "kms:ListResourceTags",
+        "dynamodb:DescribeTable",
+        "dynamodb:DescribeContinuousBackups",
+        "dynamodb:DescribeContributorInsights",
+        "dynamodb:DescribeKinesisStreamingDestination",
+        "dynamodb:ListTagsOfResource",
+        "dynamodb:GetResourcePolicy",
+        "dynamodb:DescribeTimeToLive",
+        "ec2:DescribeNetworkAcls",
+        "ec2:DescribeSecurityGroups",
+        "ec2:DescribeVpcAttribute",
+        "ec2:DescribeVpcEncryptionControls",
+        "ec2:DescribeVpcs",
+        "ec2:DescribeSubnets"
+      ]
+    },
+    "recordedExceptions": {
+      "why": "Two read-handler permissions that return more than configuration. They cannot be scoped to the pilot's own resources: a blueprint names its buckets and topics freely, and the pilot apply sets no unit tag yet. They are recorded here as exceptions to the owner decision, with scope and purpose, for the owner to accept.",
+      "scope": "Every S3 bucket and SNS topic in the account (Resource \"*\"). s3:ListBucket returns object key names, never object contents. sns:ListSubscriptionsByTopic returns subscription endpoints (email addresses, phone numbers, HTTPS URLs), never messages.",
+      "purpose": "The Cloud Control read handlers of AWS::S3::Bucket and AWS::SNS::Topic require them, so the verifier cannot confirm that a run-created bucket or topic exists or is gone without them; s3:ListBucket also authorizes HeadBucket.",
+      "actions": [
+        "s3:ListBucket",
+        "sns:ListSubscriptionsByTopic"
+      ]
+    }
+  },
+  "deny": {
+    "objectContents": {
+      "why": "Object, archive and image contents.",
+      "actions": [
+        "s3:GetObject*",
+        "s3-object-lambda:GetObject*",
+        "s3express:CreateSession",
+        "glacier:GetJobOutput",
+        "ecr:BatchGetImage",
+        "ecr:GetDownloadUrlForLayer",
+        "codecommit:GetBlob",
+        "codecommit:GetFile",
+        "codecommit:GitPull",
+        "kinesisvideo:GetMedia",
+        "kinesisvideo:GetClip",
+        "kinesisvideo:GetMediaForFragmentList",
+        "kinesisvideo:GetImages"
+      ]
+    },
+    "tableAndQueryResults": {
+      "why": "Items, records and query results.",
+      "actions": [
+        "dynamodb:GetItem",
+        "dynamodb:BatchGetItem",
+        "dynamodb:Query",
+        "dynamodb:Scan",
+        "dynamodb:PartiQLSelect",
+        "dynamodb:GetRecords",
+        "rds-data:*",
+        "redshift-data:GetStatementResult",
+        "athena:GetQueryResults",
+        "athena:GetQueryResultsStream",
+        "dax:GetItem",
+        "dax:BatchGetItem",
+        "dax:Query",
+        "dax:Scan",
+        "cassandra:Select",
+        "es:ESHttpGet"
+      ]
+    },
+    "logEvents": {
+      "why": "Log events, query results and database log files.",
+      "actions": [
+        "logs:GetLogEvents",
+        "logs:FilterLogEvents",
+        "logs:StartQuery",
+        "logs:GetQueryResults",
+        "logs:StartLiveTail",
+        "logs:GetLogRecord",
+        "logs:Unmask",
+        "rds:DownloadDBLogFilePortion",
+        "rds:DownloadCompleteDBLogFile"
+      ]
+    },
+    "messagesAndStreams": {
+      "why": "Queue messages and stream records.",
+      "actions": [
+        "sqs:ReceiveMessage",
+        "kinesis:GetRecords",
+        "kinesis:GetShardIterator",
+        "kinesis:SubscribeToShard"
+      ]
+    },
+    "secretsAndParameters": {
+      "why": "Secret values, parameter values, decryption, connection passwords, and settings that carry environment variables, user data or code.",
+      "actions": [
+        "secretsmanager:GetSecretValue",
+        "secretsmanager:BatchGetSecretValue",
+        "ssm:GetParameter",
+        "ssm:GetParameters",
+        "ssm:GetParametersByPath",
+        "ssm:GetParameterHistory",
+        "kms:Decrypt",
+        "lambda:GetFunction",
+        "lambda:GetFunctionConfiguration",
+        "lambda:ListFunctions",
+        "lambda:ListVersionsByFunction",
+        "lambda:GetLayerVersion",
+        "ec2:GetPasswordData",
+        "ec2:GetConsoleOutput",
+        "ec2:GetConsoleScreenshot",
+        "glue:GetConnection",
+        "glue:GetConnections",
+        "ec2:DescribeInstanceAttribute",
+        "ec2:DescribeLaunchTemplateVersions",
+        "ecs:DescribeTaskDefinition",
+        "codebuild:BatchGetProjects",
+        "elasticbeanstalk:DescribeConfigurationSettings"
+      ]
+    },
+    "executionData": {
+      "why": "Workflow input and output, command output, and user records (PII).",
+      "actions": [
+        "states:DescribeExecution",
+        "states:GetExecutionHistory",
+        "ssm:GetCommandInvocation",
+        "ssm:ListCommandInvocations",
+        "cognito-idp:ListUsers",
+        "cognito-idp:ListUsersInGroup",
+        "cognito-idp:AdminGetUser"
+      ]
+    }
+  },
+  "denyOnResources": {
+    "apiKeyValues": {
+      "why": "API Gateway API key values. apigateway:GET is one action for every API Gateway read, so the deny names the key paths only; the rest of API Gateway configuration stays readable.",
+      "actions": [
+        "apigateway:GET"
+      ],
+      "resources": [
+        "arn:aws:apigateway:*::/apikeys",
+        "arn:aws:apigateway:*::/apikeys/*",
+        "arn:aws:apigateway:*::/usageplans/*/keys",
+        "arn:aws:apigateway:*::/usageplans/*/keys/*"
+      ]
+    }
+  }
+}

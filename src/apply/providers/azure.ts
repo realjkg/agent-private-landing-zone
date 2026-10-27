@@ -40,14 +40,21 @@ const ambient = (env: NodeJS.ProcessEnv) => ambientRefusal(env, {
 });
 
 /**
- * The partial backend configuration init saves: the STATE_WRITE principal's
- * client id, tenant, subscription and token file path. Never a secret value, and
+ * The partial backend configuration init saves: the contract's storage account, container and key
+ * (`backendLocation`; the product override pins the azurerm type, so no project setting survives), and
+ * the STATE_WRITE principal's client id, tenant, subscription and token file path. Never a secret value, and
  * every value is checked against a strict pattern before it is written into
  * HCL. The apply process then needs only the APPLY identity for the provider.
  */
-function backendConfig(env: NodeJS.ProcessEnv): string {
+function backendLocation(target: AzureTarget): string {
+  if (!backendOk(target.backend)) return stop("BACKEND_NOT_IN_CONTRACT");
+  const [account, container, ...key] = target.backend.split("/");
+  return [`storage_account_name = "${account}"`, `container_name = "${container}"`, `key = "${key.join("/")}"`, ""].join("\n");
+}
+
+function backendConfig(env: NodeJS.ProcessEnv, target: AzureTarget): string {
   const pick = (name: string, ok: RegExp): string => pickIdentityValue(env, "STATE_WRITE", name, ok);
-  return [
+  return backendLocation(target) + [
     "use_oidc = true",
     `client_id = "${pick("ARM_CLIENT_ID", SAFE_VALUE)}"`,
     `tenant_id = "${pick("ARM_TENANT_ID", GUID)}"`,
@@ -95,9 +102,11 @@ export const AZURE: ProviderSpec = {
     ARM_SUBSCRIPTION_ID: (v, t) => v.toLowerCase() === (t as AzureTarget).subscriptionId.toLowerCase(),
   },
   ambientRefusal: ambient,
-  backendConfig,
+  backendConfig: (env, target) => backendConfig(env, target as AzureTarget),
+  backendType: "azurerm",
+  backendLocation: (target) => backendLocation(target as AzureTarget),
   savedBackendMatches: (saved, target) => savedBackendMatches(saved, target as AzureTarget),
-  // Simulation finding (docs/act-pilot-simulation.md): the plan embeds the backend block's settings; the rest is filled from the apply process's ARM_* variables.
+  // Simulation finding (docs/act-pilot-simulation.md): the plan embeds the seal-time backend settings (now the product's backend file, under the azurerm pin); the rest is filled from the apply process's ARM_* variables.
   filledAtApply: ["use_oidc", "client_id", "tenant_id", "subscription_id", "oidc_token_file_path"],
   tagAttributes: ["tags"],
   // The plan's resource uses are not judged here: the Azure allowlist is open, and the built-in provider is not singled out (as it is for AWS).
