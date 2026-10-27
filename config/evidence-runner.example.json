@@ -3,7 +3,6 @@
   "candidateCommit": "REPLACE-WITH-THE-40-CHARACTER-CANDIDATE-COMMIT",
   "targetHardwareId": "REPLACE-WITH-THIS-HOST-HARDWARE-ID",
   "evidenceDir": ".runs/evidence",
-  "modelHost": false,
   "aws": {
     "expectedAccountId": "REPLACE-WITH-THE-12-DIGIT-ACCOUNT-ID",
     "region": "REPLACE-WITH-THE-REGION",

@@ -1,7 +1,7 @@
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, unlinkSync, writeSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 
-import { pidProvenDead } from "../deps/install.js";
+import { JournalError as LifecycleJournalError, acquireRunLock as acquireLifecycleLock } from "../lifecycle/journal.js";
 import { STAGES, type RunLabel, type StageId, type StepOutcome } from "./types.js";
 
 /**
@@ -31,7 +31,7 @@ export type JournalLine = JournalIdentity & {
 };
 export type StepRecord = { status: "NOT_RUN" } | { status: "FINISHED"; outcome: StepOutcome; code?: string } | { status: "INTERRUPTED"; pid: number };
 
-export type JournalErrorCode = "EVIDENCE_JOURNAL_MISMATCH" | "EVIDENCE_JOURNAL_UNREADABLE" | "EVIDENCE_RUN_IN_PROGRESS";
+export type JournalErrorCode = "EVIDENCE_JOURNAL_MISMATCH" | "EVIDENCE_JOURNAL_UNREADABLE" | "EVIDENCE_RUN_IN_PROGRESS" | "EVIDENCE_LOCK_UNREADABLE";
 export class JournalError extends Error {
   constructor(readonly code: JournalErrorCode, message: string) { super(message); }
 }
@@ -115,34 +115,26 @@ export class Journal {
 }
 
 /**
- * One run per evidence folder at a time: `run.lock`, created exclusively and holding this pid. A lock whose pid is proven
- * dead is stale and replaced; one whose pid may be alive means another run is using the folder, and this one refuses
- * before it reads or writes anything else. Released only by the run that holds it.
+ * One run per evidence folder at a time: `run.lock`, holding the pid. This reuses the lifecycle runner's lock
+ * (`src/lifecycle/journal.ts`, `acquireRunLock`) rather than a copy of it, so both runners share one takeover rule: a lock
+ * whose pid is proven dead is replaced only by the run that creates the exclusive `run.lock.takeover-<pid>` token and
+ * then reads the same dead pid again, so two runs that both saw a stale lock can never both hold the folder.
+ *
+ * A refusal is reported in the evidence runner's terms. A lock with no readable pid (a run stopped between creating the
+ * file and writing it) is never guessed stale; the refusal names the file and how to recover instead of asking the
+ * person to wait for a run that does not exist.
  */
 export function acquireRunLock(file: string, pidAlive?: (pid: number) => boolean): () => void {
-  const busy = (): never => {
-    throw new JournalError("EVIDENCE_RUN_IN_PROGRESS", "Another evidence run is using this folder right now, so this run changed nothing. Wait for it to finish.");
-  };
-  mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      const fd = openSync(file, "wx", 0o600);
-      writeSync(fd, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }) + "\n");
-      closeSync(fd);
-      return () => {
-        try {
-          const held = JSON.parse(readFileSync(file, "utf8")) as { pid?: unknown };
-          if (held.pid === process.pid) unlinkSync(file);
-        } catch { /* already gone, or not ours */ }
-      };
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      let pid: unknown;
-      try { pid = (JSON.parse(readFileSync(file, "utf8")) as { pid?: unknown }).pid; } catch { pid = undefined; }
-      const dead = typeof pid === "number" && Number.isInteger(pid) && pid >= 1 && pid !== process.pid && (pidAlive ? !pidAlive(pid) : pidProvenDead(pid));
-      if (!dead) busy();
-      rmSync(file, { force: true });
+  try {
+    return acquireLifecycleLock(file, pidAlive);
+  } catch (error) {
+    if (!(error instanceof LifecycleJournalError) || error.code !== "LIFECYCLE_RUN_IN_PROGRESS") throw error;
+    let pid: unknown;
+    try { pid = (JSON.parse(readFileSync(file, "utf8")) as { pid?: unknown }).pid; } catch { pid = undefined; }
+    if (typeof pid === "number" && Number.isInteger(pid) && pid >= 1) {
+      throw new JournalError("EVIDENCE_RUN_IN_PROGRESS", "Another evidence run (pid " + pid + ") is using this folder right now, so this run changed nothing. Wait for it to finish.");
     }
+    throw new JournalError("EVIDENCE_LOCK_UNREADABLE",
+      "The run lock " + file + " names no process (a run stopped while taking it), so this run changed nothing. If no ./alz evidence run is active on this host, remove that file and rerun.");
   }
-  return busy();
 }

@@ -2,10 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { parseConfig, type EvidenceRunnerConfig } from "../src/evidence-runner/config.js";
-import { gatePlan } from "../src/evidence-runner/gates.js";
+import { gateModeOf, gatePlan, releaseGates } from "../src/evidence-runner/gates.js";
 import { compareIdentity, identityHash, ownerInputs, runPreflight, unbuiltProbe } from "../src/evidence-runner/preflight.js";
 import { PRODUCTION_RELEASE_GATES } from "../src/qualification/release-admission.js";
-import { loadReleaseScope } from "../src/release/status.js";
 import { ACCOUNT, CANDIDATE, SUBSCRIPTION, TENANT, fakeProbe, fixtureRoot, observedAws, observedAzure, validConfig } from "./helpers/evidence-fixtures.js";
 
 // SYNTHETIC: the runner's preflight. No probe here reaches a cloud; the identity comparison is tested with fakes.
@@ -60,7 +59,7 @@ test("a dirty checkout, another HEAD or a mutation identity in the environment b
   for (const result of [dirty, other, mutation]) assert.equal(result.blocked, true);
 });
 
-test("the pin's presence decides whether ACT is reported disabled; nothing loads the apply path", async () => {
+test("the pin file's presence alone decides whether ACT is reported disabled (the contract itself is checked by ./alz apply preflight in S5)", async () => {
   const probe = fakeProbe({ aws: observedAws, azure: observedAzure });
   const empty = await runPreflight({ root: fixtureRoot(""), env: {}, config: config(), source: clean, probe });
   assert.equal(empty.checks.find((check) => check.id === "act")?.code, "SKIPPED_ACT_DISABLED");
@@ -86,19 +85,24 @@ test("the identity hash binds the expected ids and changes with any of them", ()
   assert.ok(!base.includes(ACCOUNT));
 });
 
-test("every release gate is mapped; gates with no producer report NO_PRODUCER; the scope's exclusions are OUT_OF_SCOPE", () => {
-  const outOfScope = new Set(loadReleaseScope(".").outOfScope.map((entry) => entry.gate));
-  const plan = gatePlan(outOfScope);
-  assert.deepEqual(plan.map((gate) => gate.id), PRODUCTION_RELEASE_GATES.map((gate) => gate.id));
+test("every release gate is mapped, read as data without the registry; gates with no producer report NO_PRODUCER", () => {
+  // The runner reads the ids from config/release/status.json and derives each mode itself (it never imports the
+  // registry, which loads the apply path). This test, which may import the registry, pins both against it.
+  const { ids, outOfScope } = releaseGates(".");
+  assert.deepEqual(ids, PRODUCTION_RELEASE_GATES.map((gate) => gate.id), "status.json lists every registry gate, in order");
+  for (const gate of PRODUCTION_RELEASE_GATES) assert.equal(gateModeOf(gate.id), gate.mode, gate.id);
+  const plan = gatePlan(ids, outOfScope);
   const mode = (id: string) => plan.find((gate) => gate.id === id)?.mode;
-  for (const id of ["arm64-final-image", "isolated-recovery", "security-review:independent", "pillar:security", "lifecycle:upgrade", "lifecycle:rollback", "lifecycle:configuration-migration", "source-ci", "release-archive", "platform:linux-x64"]) {
+  for (const id of ["arm64-final-image", "isolated-recovery", "security-review:independent", "pillar:security", "lifecycle:clean-install", "lifecycle:upgrade", "lifecycle:rollback", "lifecycle:configuration-migration", "source-ci", "release-archive"]) {
     assert.equal(mode(id), "NO_PRODUCER", id);
   }
+  assert.equal(mode("platform:linux-x64"), "OWNER", "the merged lifecycle runner produces the platform gates on each host");
   assert.equal(mode("aws-provider"), "AUTO");
   assert.equal(mode("azure-provider"), "AUTO");
   assert.equal(mode("private-model-runtime"), "OWNER");
   assert.equal(mode("act:aws-terraform"), "GUIDED");
   assert.match(plan.find((gate) => gate.id === "act:aws-cdk")!.note, /CDK_CLEANUP_NOT_IMPLEMENTED/);
   for (const id of outOfScope) assert.equal(mode(id), "OUT_OF_SCOPE", id);
-  assert.equal(gatePlan(new Set(), [{ id: "future", mode: "NEW_MODE" as never, why: "x" }])[0].mode, "NO_PRODUCER", "an unmapped mode fails closed");
+  assert.equal(gateModeOf("future-gate"), "UNKNOWN");
+  assert.equal(gatePlan(["future-gate"], new Set())[0].mode, "NO_PRODUCER", "an unknown gate id fails closed");
 });

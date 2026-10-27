@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { lstatSync, readFileSync, realpathSync } from "node:fs";
+import { isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 
 /**
  * The runner's configuration, `config/evidence-runner.json` (git-ignored; `config/evidence-runner.example.json` is the
@@ -14,10 +14,8 @@ export type EvidenceRunnerConfig = {
   schemaVersion: 1;
   candidateCommit: string;
   targetHardwareId: string;
-  /** Relative to the repository, and inside it. */
+  /** `.runs/evidence` or a folder under it (git-ignored), with no symbolic link anywhere on the path. */
   evidenceDir: string;
-  /** True only when this host is the private-model target host (the model stage runs here). */
-  modelHost: boolean;
   aws?: AwsTarget;
   azure?: AzureTarget;
 };
@@ -38,7 +36,9 @@ const LOCATION = /^[a-z][a-z0-9]{1,31}$/;
 /** Values that look like a credential even inside an allowed pattern: an AWS key id, a JWT, a long unbroken opaque run. */
 const SECRET_LIKE = /^(AKIA|ASIA)[A-Z0-9]{16}$|^eyJ|[A-Za-z0-9+/=]{40,}/;
 
-const TOP_KEYS = new Set(["schemaVersion", "candidateCommit", "targetHardwareId", "evidenceDir", "modelHost", "aws", "azure"]);
+const TOP_KEYS = new Set(["schemaVersion", "candidateCommit", "targetHardwareId", "evidenceDir", "aws", "azure"]);
+/** The only place evidence may go: git-ignored, so a run never dirties the checkout it is bound to. */
+export const EVIDENCE_ROOT = ".runs/evidence";
 const AWS_KEYS = new Set(["expectedAccountId", "region", "qualificationStack"]);
 const AZURE_KEYS = new Set(["expectedTenantId", "expectedSubscriptionId", "location"]);
 
@@ -74,11 +74,7 @@ export function parseConfig(value: unknown): ConfigResult {
   if (typeof value.candidateCommit !== "string" || !COMMIT.test(value.candidateCommit)) problems.push("config.candidateCommit: must be a full 40-character commit");
   field("config.targetHardwareId", value.targetHardwareId, HARDWARE_ID, "1-64 letters, digits, '.', '_' or '-'");
   const evidenceDir = value.evidenceDir ?? ".runs/evidence";
-  if (typeof evidenceDir !== "string" || evidenceDir === "" || isAbsolute(evidenceDir) || evidenceDir.split(/[\\/]/).includes("..") || evidenceDir.includes("\u0000")) {
-    problems.push("config.evidenceDir: must be a relative path inside the repository");
-  }
-  const modelHost = value.modelHost ?? false;
-  if (typeof modelHost !== "boolean") problems.push("config.modelHost: must be true or false");
+  if (!evidenceDirAllowed(evidenceDir)) problems.push("config.evidenceDir: must be " + EVIDENCE_ROOT + " or a folder under it");
   if (value.aws !== undefined) {
     if (!isRecord(value.aws)) problems.push("config.aws: must be an object");
     else {
@@ -102,12 +98,20 @@ export function parseConfig(value: unknown): ConfigResult {
     schemaVersion: 1,
     candidateCommit: value.candidateCommit as string,
     targetHardwareId: value.targetHardwareId as string,
-    evidenceDir: evidenceDir as string,
-    modelHost: modelHost as boolean,
+    evidenceDir: normalize(evidenceDir as string).replace(/[\\/]+$/, ""),
     ...(value.aws ? { aws: value.aws as AwsTarget } : {}),
     ...(value.azure ? { azure: value.azure as AzureTarget } : {}),
   };
   return { ok: true, config };
+}
+
+/** `.runs/evidence` or a relative folder under it, with no `..`, backslash or empty component. */
+function evidenceDirAllowed(value: unknown): value is string {
+  if (typeof value !== "string" || value === "" || isAbsolute(value) || value.includes("\u0000") || value.includes("\\")) return false;
+  const parts = value.replace(/\/+$/, "").split("/");
+  if (parts.some((part) => part === "" || part === "." || part === "..")) return false;
+  const path = parts.join("/");
+  return path === EVIDENCE_ROOT || path.startsWith(EVIDENCE_ROOT + "/");
 }
 
 /** A path the operator named, resolved inside the repository, or undefined when it escapes it. */
@@ -115,6 +119,31 @@ export function insideRoot(root: string, path: string): string | undefined {
   const full = resolve(root, path);
   const rel = relative(root, full);
   return rel === "" || rel.startsWith("..") || isAbsolute(rel) || rel.split(sep).includes("..") ? undefined : full;
+}
+
+export class EvidencePathError extends Error {
+  readonly code = "EVIDENCE_PATH_REFUSED";
+}
+
+/**
+ * The folder `parts` names under the repository, refused when any existing component below the repository root is a
+ * symbolic link, or when the result does not resolve under the repository's real `.runs/evidence`. Called before any
+ * write, so evidence can never be redirected outside the git-ignored evidence folder.
+ */
+export function evidencePath(root: string, ...parts: string[]): string {
+  const realRoot = realpathSync(root);
+  const relativeParts = join(...parts).split(sep).filter(Boolean);
+  if (!evidenceDirAllowed(relativeParts.join("/"))) throw new EvidencePathError("Evidence may only be written under " + EVIDENCE_ROOT + ".");
+  let current = realRoot;
+  for (const part of relativeParts) {
+    current = join(current, part);
+    let isLink = false;
+    try { isLink = lstatSync(current).isSymbolicLink(); } catch { break; /* not created yet: nothing below it exists */ }
+    if (isLink) throw new EvidencePathError(relative(realRoot, current) + " is a symbolic link; evidence is never written through one. Replace it with a real folder.");
+  }
+  const full = join(realRoot, ...relativeParts);
+  if (!full.startsWith(join(realRoot, EVIDENCE_ROOT))) throw new EvidencePathError("Evidence may only be written under " + EVIDENCE_ROOT + ".");
+  return full;
 }
 
 export type LoadedConfig = { ok: true; config: EvidenceRunnerConfig; sha256: string; path: string } | { ok: false; problems: string[] };
@@ -131,6 +160,9 @@ export function loadConfig(root: string, path: string = DEFAULT_CONFIG_PATH): Lo
   try { parsed = JSON.parse(bytes.toString("utf8")); } catch { return { ok: false, problems: [path + ": not valid JSON"] }; }
   const result = parseConfig(parsed);
   if (!result.ok) return result;
-  if (!insideRoot(root, result.config.evidenceDir)) return { ok: false, problems: ["config.evidenceDir: must be a relative path inside the repository"] };
+  try { evidencePath(root, result.config.evidenceDir); } catch (error) {
+    if (error instanceof EvidencePathError) return { ok: false, problems: ["config.evidenceDir: " + error.message] };
+    throw error;
+  }
   return { ok: true, config: result.config, sha256: createHash("sha256").update(bytes).digest("hex"), path: full };
 }

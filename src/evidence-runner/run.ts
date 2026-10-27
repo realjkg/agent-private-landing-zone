@@ -1,10 +1,9 @@
-import { copyFileSync, constants as fsConstants, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { copyFileSync, constants as fsConstants, existsSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 
-import { loadReleaseScope } from "../release/status.js";
 import type { SourceCommit } from "../util/source-commit.js";
-import { EXAMPLE_CONFIG_PATH, insideRoot, loadConfig, type EvidenceRunnerConfig } from "./config.js";
-import { gatePlan, type GatePlan, type GateRunnerMode } from "./gates.js";
+import { EXAMPLE_CONFIG_PATH, EvidencePathError, evidencePath, insideRoot, loadConfig, type EvidenceRunnerConfig } from "./config.js";
+import { gatePlan, releaseGates, type GatePlan, type GateRunnerMode } from "./gates.js";
 import { Journal, JournalError, acquireRunLock, readJournal, stepRecord } from "./journal.js";
 import { identityHash, ownerInputs, pinState, runPreflight, type IdentityProbe, type Preflight } from "./preflight.js";
 import { BUILT_STAGES, DEFAULT_STAGES, EXIT, STAGES, STAGE_SLICE, type RunLabel, type StageId, type StepOutcome } from "./types.js";
@@ -54,9 +53,19 @@ export function writeRunnerDocument(path: string, label: RunLabel | "UNLABELED",
 
 /** Where one candidate's run lives. Synthetic runs never share a folder with live ones. */
 export function runDirectory(root: string, config: EvidenceRunnerConfig, synthetic: boolean): string {
-  const base = insideRoot(root, config.evidenceDir)!;
-  return join(base, ...(synthetic ? ["synthetic"] : []), config.candidateCommit.slice(0, 12));
+  return evidencePath(root, config.evidenceDir, ...(synthetic ? ["synthetic"] : []), config.candidateCommit.slice(0, 12));
 }
+
+/**
+ * Where a dry run's plan goes: `<evidenceDir>/dry-run/`, a folder no run or index ever reads, so a plan (`evidence:
+ * false`) never sits beside a run's journal or evidence.
+ */
+export function dryRunDirectory(root: string, config: EvidenceRunnerConfig, synthetic: boolean): string {
+  return evidencePath(root, config.evidenceDir, "dry-run", ...(synthetic ? ["synthetic"] : []), config.candidateCommit.slice(0, 12));
+}
+
+/** A path for the terminal, relative to the repository. */
+const shown = (root: string, path: string): string => relative(realpathSync(root), path);
 
 type StagePlan = { stage: StageId; outcome: StepOutcome; code: string; detail: string };
 
@@ -125,8 +134,8 @@ export async function evidenceRun(options: RunOptions, deps: RunnerDeps): Promis
     return EXIT.BLOCKED;
   }
   const { config, sha256: configSha256 } = loaded;
-  const outOfScope = new Set(loadReleaseScope(deps.root).outOfScope.map((entry) => entry.gate));
-  const gates = gatePlan(outOfScope);
+  const release = releaseGates(deps.root);
+  const gates = gatePlan(release.ids, release.outOfScope);
   out("Evidence runner — candidate " + config.candidateCommit.slice(0, 12) + " on " + config.targetHardwareId + (options.dryRun ? " (dry run)" : "") + ". ACT stays disabled.");
   out("Preflight");
   const preflight = await runPreflight({ root: deps.root, env: deps.env, config, source: deps.source(), probe: deps.probe });
@@ -135,16 +144,15 @@ export async function evidenceRun(options: RunOptions, deps: RunnerDeps): Promis
   out("Gates: " + gateCounts(gates) + ".");
 
   if (options.dryRun) {
-    const dir = runDirectory(deps.root, config, options.synthetic);
-    const file = join(dir, "dry-run.json");
+    const file = join(dryRunDirectory(deps.root, config, options.synthetic), "dry-run.json");
     writeRunnerDocument(file, options.synthetic ? "SYNTHETIC" : "UNLABELED", {
       schemaVersion: 1, kind: "EVIDENCE_RUNNER_DRY_RUN", evidence: false, candidateCommit: config.candidateCommit, configSha256,
       targetHardwareId: config.targetHardwareId, host: deps.host, at: deps.now().toISOString(), preflight, stages, gates,
     });
     out("Plan");
     for (const stage of stages.slice(1)) out("  " + mark(stage.outcome) + "  " + stage.stage + ": " + stage.code + " — " + stage.detail);
-    out("Dry run: nothing ran and no evidence was written. Plan: " + relative(deps.root, file));
-    return preflight.blocked || stages.some((stage) => stage.outcome === "BLOCKED") ? EXIT.BLOCKED : EXIT.OK;
+    out("Dry run: nothing ran and no evidence was written. Plan: " + shown(deps.root, file));
+    return preflight.blocked || stages.slice(1).some((stage) => stage.outcome !== "PASS") ? EXIT.BLOCKED : EXIT.OK;
   }
   if (preflight.blocked) {
     out("BLOCKED: preflight refused the run. Nothing was written. Fix the lines marked BLOCKED, then rerun.");
@@ -153,10 +161,10 @@ export async function evidenceRun(options: RunOptions, deps: RunnerDeps): Promis
   const label = await attest(config, options, deps);
   if (typeof label !== "string") { out(label.refused); return EXIT.BLOCKED; }
 
-  const dir = runDirectory(deps.root, config, label === "SYNTHETIC");
-  let release: (() => void) | undefined;
+  let unlock: (() => void) | undefined;
   try {
-    release = acquireRunLock(join(dir, "run.lock"), deps.pidAlive);
+    const dir = runDirectory(deps.root, config, label === "SYNTHETIC");
+    unlock = acquireRunLock(join(dir, "run.lock"), deps.pidAlive);
     const journal = new Journal(join(dir, "journal.jsonl"), {
       sourceCommit: config.candidateCommit, configSha256, targetHardwareId: config.targetHardwareId, label, host: deps.host, identityHash: identityHash(config),
     });
@@ -169,22 +177,28 @@ export async function evidenceRun(options: RunOptions, deps: RunnerDeps): Promis
     });
     journal.finish("preflight", "preflight", "PASS", at());
     out("Stages (" + label + ")");
+    // Exit 0 only when every requested stage produced its evidence. A stage that was skipped, held, not built yet or
+    // blocked produced nothing, so the run is BLOCKED; a preflight alone produces no evidence either.
+    let produced = 0;
     let blocked = false;
     for (const stage of stages.slice(1)) {
       const previous = journal.record(stage.stage, stage.stage);
-      if (previous.status === "FINISHED" && previous.outcome === "PASS") { out("  ok       " + stage.stage + ": already produced in this run, skipped."); continue; }
+      if (previous.status === "FINISHED" && previous.outcome === "PASS") { produced += 1; out("  ok       " + stage.stage + ": already produced in this run, skipped."); continue; }
       journal.start(stage.stage, stage.stage, at());
       journal.finish(stage.stage, stage.stage, stage.outcome, at(), stage.code);
       out("  " + mark(stage.outcome) + "  " + stage.stage + ": " + stage.code + " — " + stage.detail);
-      if (stage.outcome === "BLOCKED" || stage.outcome === "FAIL") blocked = true;
+      if (stage.outcome === "PASS") produced += 1;
+      else blocked = true;
     }
-    out((blocked ? "BLOCKED" : "DONE") + ": journal " + relative(deps.root, join(dir, "journal.jsonl")) + ". ./alz evidence status shows where the run stands.");
-    return blocked ? EXIT.BLOCKED : EXIT.OK;
+    const done = !blocked && produced > 0;
+    out((done ? "DONE" : produced === 0 ? "BLOCKED: no evidence was produced" : "BLOCKED") + ". Journal " + shown(deps.root, join(dir, "journal.jsonl")) +
+      "; ./alz evidence status shows where the run stands.");
+    return done ? EXIT.OK : EXIT.BLOCKED;
   } catch (error) {
-    if (error instanceof JournalError || error instanceof EvidenceWriteError) { out(error.code + ": " + error.message); return EXIT.BLOCKED; }
+    if (error instanceof JournalError || error instanceof EvidenceWriteError || error instanceof EvidencePathError) { out(error.code + ": " + error.message); return EXIT.BLOCKED; }
     throw error;
   } finally {
-    release?.();
+    unlock?.();
   }
 }
 
@@ -198,15 +212,18 @@ export async function evidenceStatus(options: Pick<RunOptions, "configPath" | "s
     return EXIT.BLOCKED;
   }
   const { config } = loaded;
-  const file = join(runDirectory(deps.root, config, options.synthetic), "journal.jsonl");
+  let file: string;
   let lines;
-  try { lines = readJournal(file); } catch (error) {
-    if (error instanceof JournalError) { out(error.code + ": " + error.message); return EXIT.BLOCKED; }
+  try {
+    file = join(runDirectory(deps.root, config, options.synthetic), "journal.jsonl");
+    lines = readJournal(file);
+  } catch (error) {
+    if (error instanceof JournalError || error instanceof EvidencePathError) { out(error.code + ": " + error.message); return EXIT.BLOCKED; }
     throw error;
   }
   out("Evidence runner status — candidate " + config.candidateCommit.slice(0, 12) + (options.synthetic ? " (synthetic runs)" : "") + ".");
   if (lines.length === 0) out("  No run has been journaled yet. Start with ./alz evidence run --dry-run.");
-  else out("  Journal: " + relative(deps.root, file) + " (" + lines[0].label + ", host " + lines[0].host + ").");
+  else out("  Journal: " + shown(deps.root, file) + " (" + lines[0].label + ", host " + lines[0].host + ").");
   let next: StageId | undefined;
   for (const stage of STAGES) {
     const record = stepRecord(lines, stage, stage);
@@ -218,8 +235,8 @@ export async function evidenceStatus(options: Pick<RunOptions, "configPath" | "s
   out("Owner inputs");
   for (const input of ownerInputs(config, pinState(deps.root))) out("  " + input.code + " — " + input.detail);
   out("Gates");
-  const outOfScope = new Set(loadReleaseScope(deps.root).outOfScope.map((entry) => entry.gate));
-  for (const gate of gatePlan(outOfScope)) out("  " + gate.mode.padEnd(12) + " " + gate.id + (gate.slice ? " (" + gate.slice + ")" : "") + " — " + gate.note);
+  const release = releaseGates(deps.root);
+  for (const gate of gatePlan(release.ids, release.outOfScope)) out("  " + gate.mode.padEnd(12) + " " + gate.id + (gate.slice ? " (" + gate.slice + ")" : "") + " — " + gate.note);
   return EXIT.OK;
 }
 

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { appendFileSync, existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -55,11 +55,38 @@ test("a torn last line or a malformed line is refused, never repaired", () => {
 test("the run lock refuses a live holder and replaces one whose pid is proven dead", () => {
   const lock = join(folder(), "run.lock");
   writeFileSync(lock, JSON.stringify({ pid: 999_999 }) + "\n");
-  assert.throws(() => acquireRunLock(lock, () => true), refusal("EVIDENCE_RUN_IN_PROGRESS"));
+  assert.throws(() => acquireRunLock(lock, () => true), (error: unknown) => refusal("EVIDENCE_RUN_IN_PROGRESS")(error) && (error as Error).message.includes("999999"));
   const release = acquireRunLock(lock, () => false);
   assert.equal((JSON.parse(readFileSync(lock, "utf8")) as { pid: number }).pid, process.pid);
   release();
   assert.equal(existsSync(lock), false);
-  writeFileSync(lock, "not json");
-  assert.throws(() => acquireRunLock(lock, () => false), refusal("EVIDENCE_RUN_IN_PROGRESS"), "an unreadable lock is never guessed stale");
+});
+
+test("two runs that both find a stale lock: only one holds the folder", () => {
+  // Run B reads the dead pid; before B takes over, run A takes the stale lock over completely. B must then refuse and
+  // leave A's new lock alone (the takeover-token rule shared with the lifecycle runner), never delete it and hold too.
+  const dir = folder();
+  const lock = join(dir, "run.lock");
+  writeFileSync(lock, JSON.stringify({ pid: 4242 }) + "\n");
+  let releaseA: (() => void) | undefined;
+  const pidAliveForB = (pid: number): boolean => {
+    if (pid === 4242 && !releaseA) { releaseA = acquireRunLock(lock, () => false); return false; }
+    return true;
+  };
+  assert.throws(() => acquireRunLock(lock, pidAliveForB), refusal("EVIDENCE_RUN_IN_PROGRESS"), "run B refuses");
+  assert.ok(releaseA, "run A took the stale lock over");
+  assert.equal((JSON.parse(readFileSync(lock, "utf8")) as { pid: number }).pid, process.pid, "run A's lock is kept");
+  assert.deepEqual(readdirSync(dir), ["run.lock"], "no takeover token is left behind");
+  releaseA!();
+  assert.equal(existsSync(lock), false);
+});
+
+test("an empty or torn lock is refused with the file named and how to recover, never as a run to wait for", () => {
+  for (const content of ["", "{\"pid\":"]) {
+    const lock = join(folder(), "run.lock");
+    writeFileSync(lock, content);
+    assert.throws(() => acquireRunLock(lock, () => false), (error: unknown) => refusal("EVIDENCE_LOCK_UNREADABLE")(error) &&
+      (error as Error).message.includes(lock) && (error as Error).message.includes("remove that file") && !(error as Error).message.includes("Wait for it"));
+    assert.equal(readFileSync(lock, "utf8"), content, "the lock is left as it was");
+  }
 });

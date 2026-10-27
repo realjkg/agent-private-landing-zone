@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import test from "node:test";
 
@@ -47,14 +48,15 @@ test("the unedited example configuration is refused and nothing is written", asy
   assert.deepEqual(written(root), []);
 });
 
-test("dry run: preflight and the plan, only dry-run.json is written, nothing is spawned or journaled", async () => {
+test("dry run: preflight and the plan, only dry-run.json is written, under dry-run/ and never in a run folder", async () => {
   const root = fixtureRoot();
   writeConfig(root, validConfig());
   const probe = fakeProbe({});
   const deps = fixtureDeps(root, { probe });
   assert.equal(await runEvidenceCommand(["run", "--dry-run"], deps), 2, "BLOCKED: no identity probe is built in this slice");
-  assert.deepEqual(written(root), [".runs/evidence/" + C12 + "/dry-run.json"]);
-  const plan = JSON.parse(readFileSync(join(root, ".runs/evidence", C12, "dry-run.json"), "utf8")) as Record<string, unknown>;
+  assert.deepEqual(written(root), [".runs/evidence/dry-run/" + C12 + "/dry-run.json"]);
+  assert.equal(existsSync(join(root, ".runs/evidence", C12)), false, "the live run folder is not created by a dry run");
+  const plan = JSON.parse(readFileSync(join(root, ".runs/evidence/dry-run", C12, "dry-run.json"), "utf8")) as Record<string, unknown>;
   assert.equal(plan.evidence, false);
   assert.equal(plan.label, "UNLABELED");
   const text = deps.lines.join("\n");
@@ -128,7 +130,7 @@ test("a rerun with another configuration or label refuses the journal; a lock he
   const root = fixtureRoot();
   writeConfig(root, validConfig());
   await runEvidenceCommand(["run", "--synthetic"], fixtureDeps(root));
-  writeConfig(root, validConfig({ modelHost: true }));
+  writeConfig(root, validConfig({ targetHardwareId: "owner-mac-02" }));
   const changed = fixtureDeps(root);
   assert.equal(await runEvidenceCommand(["run", "--synthetic"], changed), 2);
   assert.match(changed.lines.join("\n"), /EVIDENCE_JOURNAL_MISMATCH: .*configSha256/);
@@ -150,6 +152,34 @@ test("cleanup and recovery run only when named, and report ACT disabled while th
   const guided = fixtureDeps(pinned);
   await runEvidenceCommand(["run", "--synthetic", "--stage", "act"], guided);
   assert.match(guided.lines.join("\n"), /act: NOT_BUILT — Slice S5/);
+});
+
+test("a run that produced no evidence is BLOCKED: every --stage with the pin empty and no provider configured exits 2", async () => {
+  for (const stage of ["preflight", "aws-readonly", "azure-readonly", "gcp-readonly", "act", "recovery", "cleanup", "summary"]) {
+    for (const label of ["LIVE", "SYNTHETIC"] as const) {
+      const root = fixtureRoot("");
+      writeConfig(root, validConfig({ aws: undefined, azure: undefined }));
+      const deps = label === "LIVE"
+        ? fixtureDeps(root, { terminal: scriptedTerminal(["EVIDENCE LIVE owner-mac-01"]) })
+        : fixtureDeps(root);
+      const code = await runEvidenceCommand(["run", "--stage", stage, ...(label === "SYNTHETIC" ? ["--synthetic"] : [])], deps);
+      assert.equal(code, 2, stage + " " + label);
+      assert.match(deps.lines.at(-1)!, /^BLOCKED: no evidence was produced/, stage + " " + label);
+      assert.doesNotMatch(deps.lines.join("\n"), /^DONE/m, stage + " " + label);
+    }
+  }
+});
+
+test("a symbolic link in the run folder's path refuses the run", async () => {
+  const root = fixtureRoot();
+  writeConfig(root, validConfig({ aws: undefined, azure: undefined }));
+  const outside = mkdtempSync(join(tmpdir(), "alz-evidence-outside-"));
+  mkdirSync(join(root, ".runs/evidence"), { recursive: true });
+  symlinkSync(outside, join(root, ".runs/evidence/synthetic"));
+  const deps = fixtureDeps(root);
+  assert.equal(await runEvidenceCommand(["run", "--synthetic"], deps), 2);
+  assert.match(deps.lines.join("\n"), /EVIDENCE_PATH_REFUSED: .*synthetic is a symbolic link/);
+  assert.deepEqual(readdirSync(outside), []);
 });
 
 test("documents with a credential-shaped key are refused before writing", () => {

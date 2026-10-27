@@ -23,6 +23,7 @@ export function fixtureRoot(pin = ""): string {
   const root = mkdtempSync(join(tmpdir(), "alz-evidence-"));
   mkdirSync(join(root, "config", "release"), { recursive: true });
   copyFileSync("config/release/scope.json", join(root, "config", "release", "scope.json"));
+  copyFileSync("config/release/status.json", join(root, "config", "release", "status.json"));
   copyFileSync("config/evidence-runner.example.json", join(root, "config", "evidence-runner.example.json"));
   writeFileSync(join(root, "config", "act-pilot-contract.sha256"), pin);
   return root;
@@ -30,7 +31,7 @@ export function fixtureRoot(pin = ""): string {
 
 export function validConfig(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
-    schemaVersion: 1, candidateCommit: CANDIDATE, targetHardwareId: "owner-mac-01", evidenceDir: ".runs/evidence", modelHost: false,
+    schemaVersion: 1, candidateCommit: CANDIDATE, targetHardwareId: "owner-mac-01", evidenceDir: ".runs/evidence",
     aws: { expectedAccountId: ACCOUNT, region: "eu-west-1", qualificationStack: "alz-qualification-noop" },
     azure: { expectedTenantId: TENANT, expectedSubscriptionId: SUBSCRIPTION, location: "westeurope" },
     ...overrides,
