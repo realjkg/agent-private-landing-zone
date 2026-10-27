@@ -160,9 +160,16 @@ export function blueprintRecordProblems(value: unknown): string[] {
   if (!["TERRAFORM_STATE_PULL", "CLOUDFORMATION_STACK_RESOURCES"].includes(value.source as string) || !isoText(value.readAt)) problems.push("blueprint record: source or readAt is malformed");
   if (value.unitId !== null && !(typeof value.unitId === "string" && /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(value.unitId))) problems.push("blueprint record: unitId is not a tag-safe unit id or null");
   const blueprint = value.blueprint;
-  if (!isRecord(blueprint) || Object.keys(blueprint).sort().join() !== "entries,missing" || !Array.isArray(blueprint.entries) || !blueprint.entries.every(entryOk) ||
-    !Array.isArray(blueprint.missing) || !blueprint.missing.every((x) => typeof x === "string")) {
-    problems.push("blueprint record.blueprint: entries must carry address, type, arn, id and origin only");
+  // The container is accepted only from a CloudFormation read, for the stack type, with the pinned stack's own ARN shape (its account and the
+  // target's backend, which is the stack name); any other source, type or identifier is not this run's container (review of #265, N1).
+  const target = value.target as ResolvedTarget;
+  const stackArn = value.source === "CLOUDFORMATION_STACK_RESOURCES" && targetOk(target) && /^[0-9]{12}$/.test(target.account) && /^[A-Za-z][A-Za-z0-9-]{0,127}$/.test(target.backend)
+    ? new RegExp("^arn:aws:cloudformation:[a-z0-9-]{1,32}:" + target.account + ":stack/" + target.backend + "/[0-9a-f-]{36}$") : undefined;
+  const containerOk = (value: unknown): boolean => isRecord(value) && Object.keys(value).sort().join() === "identifier,type" && value.type === "AWS::CloudFormation::Stack" &&
+    typeof value.identifier === "string" && stackArn !== undefined && stackArn.test(value.identifier);
+  if (!isRecord(blueprint) || !["entries,missing", "container,entries,missing"].includes(Object.keys(blueprint).sort().join()) || !Array.isArray(blueprint.entries) || !blueprint.entries.every(entryOk) ||
+    !Array.isArray(blueprint.missing) || !blueprint.missing.every((x) => typeof x === "string") || (blueprint.container !== undefined && !containerOk(blueprint.container))) {
+    problems.push("blueprint record.blueprint: entries must carry address, type, arn, id and origin only, and a container only from a CloudFormation read, of the stack type, with the pinned stack's own id");
   }
   return problems;
 }

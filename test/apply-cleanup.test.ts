@@ -230,6 +230,18 @@ test("observe refuses a run with no apply evidence, a blueprint that is not this
   assert.equal(await readBlueprintRecord(s.sealed.artifactSha256, "b".repeat(64), w.dirs.evidence), undefined, "a blueprint stands only for the evidence it names");
   assert.match(blueprintRecordProblems({ ...genuine, state: { secret: 1 } }).join(), /raw state or output field/);
   assert.match(blueprintRecordProblems({ ...genuine, blueprint: { entries: [{ address: "a", type: "t", arn: null, id: "x", origin: "IN_PLAN", values: {} }], missing: [] } }).join(), /entries must carry/);
+  // The container (a CloudFormation stack) is accepted only from a CloudFormation read, for the stack type, with the pinned stack's own id (review of #265, N1).
+  const stacked = { ...genuine, target: { ...genuine.target, backend: "PilotStack" } };
+  const stackId = "arn:aws:cloudformation:us-east-1:" + stacked.target.account + ":stack/PilotStack/11111111-2222-3333-4444-555555555555";
+  const withContainer = (container: unknown, source = "CLOUDFORMATION_STACK_RESOURCES", record = stacked) => blueprintRecordProblems({ ...record, source, blueprint: { ...record.blueprint, container } }).join();
+  assert.equal(withContainer({ type: "AWS::CloudFormation::Stack", identifier: stackId }), "");
+  assert.match(withContainer({ type: "AWS::CloudFormation::Stack", identifier: stackId }, "TERRAFORM_STATE_PULL"), /a container only from a CloudFormation read/, "a Terraform read has no container");
+  assert.match(withContainer({ type: "AWS::CloudFormation::StackSet", identifier: stackId }), /a container only from a CloudFormation read/, "the stack type only");
+  assert.match(withContainer({ type: "AWS::CloudFormation::Stack", identifier: stackId.replace(genuine.target.account, "222222222222") }), /a container only from a CloudFormation read/, "another account");
+  assert.match(withContainer({ type: "AWS::CloudFormation::Stack", identifier: stackId.replace("stack/PilotStack/", "stack/OtherStack/") }), /a container only from a CloudFormation read/, "another stack");
+  assert.match(withContainer({ type: "AWS::CloudFormation::Stack", identifier: stackId }, "CLOUDFORMATION_STACK_RESOURCES", genuine), /a container only from a CloudFormation read/, "a backend that is not a stack name has no container");
+  assert.match(withContainer({ type: "AWS::CloudFormation::Stack", identifier: "arn:aws:cloudformation:us-east-1:" + stacked.target.account + ":stack/PilotStack" }), /a container only from a CloudFormation read/, "no stack guid");
+  assert.match(withContainer({ type: "AWS::CloudFormation::Stack", identifier: stackId, extra: 1 }), /a container only from a CloudFormation read/, "closed shape");
   assert.equal(await writeBlueprintRecord(genuine, w.dirs.evidence), "EXISTS", "a blueprint is written once");
   // A run whose state could not be read leaves no blueprint, and observe says so instead of guessing.
   const other = world();

@@ -41,8 +41,9 @@ const CLOUD_CONTROL_TYPE_NAMES = new Map(Object.values(CLOUD_CONTROL_TYPES).map(
 export function cloudControlMappingOf(type: string): { typeName: string; identifier: "id" | "arn"; pendingDeletion?: { property: string; value: string } } | undefined {
   const byTerraformType = CLOUD_CONTROL_TYPES[type];
   if (byTerraformType) return byTerraformType;
-  const byTypeName = CLOUD_CONTROL_TYPE_NAMES.get(type);
-  return byTypeName ? { typeName: byTypeName.typeName, identifier: "id", ...(byTypeName.pendingDeletion ? { pendingDeletion: byTypeName.pendingDeletion } : {}) } : undefined;
+  // A CloudFormation-typed entry: the physical id is the primary identifier; for a type whose primary identifier is an ARN (an SNS topic, an
+  // OIDC provider) the physical id is that ARN, and the blueprint holds it as both `id` and `arn`.
+  return CLOUD_CONTROL_TYPE_NAMES.get(type);
 }
 
 /** One AWS CLI call. The caller supplies it, bound to the DISCOVERY identity and the bounded runner. */
@@ -126,7 +127,11 @@ export async function checkResource(entry: BlueprintEntry, region: string, aws: 
   const base = { address: entry.address, type: entry.type };
   const mapping = cloudControlMappingOf(entry.type);
   if (!mapping) return { ...base, identifier: entry.arn ?? entry.id, existence: "NOT_CHECKABLE", reason: "NO_CLOUD_CONTROL_MAPPING" };
-  const identifier = mapping.identifier === "arn" ? entry.arn : entry.id;
+  // For a type Cloud Control identifies by ARN (an SNS topic, an OIDC provider) a CloudFormation physical id is that ARN, and a proposal
+  // files it as `id` or `arn` depending on which field held it, so either field serves when it is an ARN. For a type identified by its
+  // id, only `id` serves: an ARN is never read as the id (review of #265, N2).
+  const cloudFormation = /^AWS::/.test(entry.type);
+  const identifier = mapping.identifier === "arn" ? entry.arn ?? (cloudFormation && entry.id?.startsWith("arn:") ? entry.id : null) : entry.id;
   if (identifier === null) return { ...base, identifier: null, existence: "NOT_CHECKABLE", reason: "NO_IDENTIFIER_IN_STATE" };
   let result: Awaited<ReturnType<AwsCli>>;
   try {
@@ -162,7 +167,7 @@ export async function unexpectedTagged(blueprint: Blueprint, unitId: string, reg
       "--region", region, "--output", "json"]);
     if (result.code !== 0) return { unexpected: [], complete: false };
     const inventory = parseAwsTaggedResources(result.stdout);
-    const known = new Set(blueprint.entries.flatMap((entry) => [entry.arn, entry.id]).filter((x): x is string => x !== null));
+    const known = new Set([...blueprint.entries.flatMap((entry) => [entry.arn, entry.id]), blueprint.container?.identifier ?? null].filter((x): x is string => x !== null));
     const unexpected = inventory.resources.map((resource) => resource.resourceId).filter((arn) => !known.has(arn)).sort();
     return { unexpected, complete: inventory.complete };
   } catch {
@@ -203,6 +208,7 @@ export async function observeBlueprint(blueprint: Blueprint, input: { unitId: st
 export function unexpectedOf(blueprint: Blueprint, listed: { identifiers: string[]; complete: boolean } | undefined, verifier: VerifierId): { unexpected: string[]; complete: boolean } {
   if (!listed) return { unexpected: [], complete: false };
   const fold = (x: string): string => verifier === "AZURE_RESOURCE_MANAGER" ? x.toLowerCase() : x;
-  const known = new Set(blueprint.entries.flatMap((entry) => [entry.arn, entry.id]).filter((x): x is string => x !== null).map(fold));
+  // The unit's container (a CloudFormation stack) carries the tags too: known, never a stray.
+  const known = new Set([...blueprint.entries.flatMap((entry) => [entry.arn, entry.id]), blueprint.container?.identifier ?? null].filter((x): x is string => x !== null).map(fold));
   return { unexpected: listed.identifiers.filter((identifier) => !known.has(fold(identifier))).sort(), complete: listed.complete };
 }

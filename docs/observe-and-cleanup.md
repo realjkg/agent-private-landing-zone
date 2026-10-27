@@ -33,6 +33,7 @@ Every result in this repository is **synthetic**: the tests run a fake `terrafor
 - **`missing`:** every logical id the change set created, updated, replaced, imported or left dynamic that the stack does not hold.
 - **The unit** comes from the stack tags the change set carried (UNVERIFIED (8)); the blueprint record names it so the sweep can run.
 - **A nested stack** (`AWS::CloudFormation::Stack`) that appears in the stack is `CONTAINS_OTHERS`: never proposed, and the engine refuses one at the seal. The same rule covers every stack container under the Terraform engine (below).
+- **The stack itself** is the unit's container (`blueprint.container`, by the pinned stack's id in the pinned account and region): it carries the unit's tags, so the tag sweep lists its ARN, and the observation and the leftover check know it as the container, never as a stray or a leftover. It is never a proposal entry.
 
 ## Independent verification
 
