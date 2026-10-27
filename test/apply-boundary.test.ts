@@ -78,6 +78,16 @@ test("from the console side exactly src/cli/ui-channel.ts reaches the apply path
   assert.deepEqual(outside.filter((file) => file.startsWith("src/operator-ui/")), [], "no console module imports src/apply directly");
 });
 
+test("the evidence runner (./alz evidence) reaches no module of the apply path, the CLI door or the console adapter, by any import", () => {
+  // Delegated decision 5.2 (issue #39): the runner is read-only and orchestration-only. A guided ACT step is a child
+  // process of ./alz apply, never an import, so nothing the runner loads may be src/apply, src/cli/apply.ts or the adapter.
+  const roots = ["src/cli/evidence.ts", ...walk("src/evidence-runner")];
+  assert.ok(roots.length > 5, "the walk found the runner's modules");
+  const reached = reachableFrom(roots);
+  assert.deepEqual([...reached].filter(isApplyPath).sort(), [], "the evidence runner reaches the apply path");
+  assert.ok(!reached.has(UI_CHANNEL) && !reached.has(CONSOLE_SERVER), "the evidence runner reaches the console adapter or server");
+});
+
 test("negative: the agent-facing directories still cannot import the adapter, the CLI door or the driver, by any path", () => {
   for (const directory of ["src/tools", "src/agent", "src/orchestration", "src/a2a", "src/delegation", "src/operations"]) {
     for (const file of walk(directory)) {

@@ -21,7 +21,7 @@ const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
 const FORBIDDEN_ARGUMENT = /destroy|preview-only|apply|auto-approve|preview-run|teardown-driver/i;
 
 /** Job scripts a catalog entry may never run: the drivers, the dispatcher and the console host. */
-const FORBIDDEN_JOB_SCRIPT = /^cli\/(teardown-driver|apply|ui-channel|operator|operator-web|session|evidence-migrate)\.js$/;
+const FORBIDDEN_JOB_SCRIPT = /^cli\/(teardown-driver|apply|ui-channel|operator|operator-web|session|evidence-migrate|evidence)\.js$/;
 
 /**
  * Validates raw inputs against a schema. Refusals are stable codes that never
