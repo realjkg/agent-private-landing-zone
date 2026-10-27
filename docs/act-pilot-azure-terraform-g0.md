@@ -83,24 +83,24 @@ Azure specifics:
 
 ## DISCOVERY scope review (Z4)
 
-The owner decided that read-only discovery defaults to control-plane metadata. It excludes application data and secret contents, and any exception needs an explicit scope and purpose (issue #39, comment 6440801434, item 2). This review checks the Azure DISCOVERY identity against that decision. It was done offline, from the role's documented definition and the product's code. **It was not checked on a live subscription.**
+The owner decided that read-only discovery defaults to control-plane metadata. It excludes application data and secret contents, and any exception needs an explicit scope and purpose (issue #39, comment 6440801434, item 2). The authoritative statement for Azure is the **Azure** paragraph of `docs/act-pilot-bootstrap.md`, "Read-only discovery scope" (#293): DISCOVERY holds the built-in Reader role on the pilot scope and no role on the state container; Reader grants control-plane `*/read` actions and no data actions; ARM still returns resource configuration. This section expands that paragraph for path 3, in the same terms. It was done offline, from the role's definition and the product's code. **It was not checked on a live subscription.**
 
 **What DISCOVERY holds.** `bootstrap/azure` assigns the built-in **Reader** role at the pilot scope: the pilot resource group, or the subscription when `apply_resource_group_name` is omitted. DISCOVERY has no role on the state container. Reader's definition is `actions: ["*/read"]`, with no `notActions`, no `dataActions` and no `notDataActions`.
 
-**What the decision asks, confirmed.**
+**No data actions, confirmed.**
 
-- **No data actions.** Reader cannot read blob, queue, table or file contents, which are data actions. It cannot read Key Vault secret, key or certificate values either: those are data actions on the vault's own endpoint. Reading a secret's ARM resource returns its attributes, never its value.
+- **No data actions.** Reader cannot read blob, queue or table data, or Key Vault secret, key or certificate values (reading a secret's ARM resource returns its attributes, not its value).
 - **No `listKeys` or SAS.** `listKeys`, `listAccountSas` and the other `.../list*/action` operations are actions, not reads. So Reader cannot obtain a storage key or SAS, and the state accounts allow neither anyway.
 - **Token audience.** The product's own reads as DISCOVERY use a token for `management.azure.com`, and no data plane accepts it (`src/observe/azure-rest.ts`).
 
-**Where Reader is broader than "control-plane metadata only".** `*/read` matches every read action of every resource provider. A few of those read actions return more than metadata. Per the published operation lists, these include:
+**What control-plane reads still return.** `*/read` matches every read action of every resource provider, and ARM still returns resource configuration. A few of those control-plane reads return content beyond names and settings. Per the published operation lists, these include:
 
 1. **Log and telemetry contents.**
    - `Microsoft.OperationalInsights/workspaces/query/*/read` lets the holder query a Log Analytics workspace (application and audit logs) through Azure Resource Manager.
    - `Microsoft.Insights/components/query/read` does the same for Application Insights.
    - `Microsoft.Insights/eventtypes/values/read` reads the activity log, with caller identities and client IP addresses.
 2. **Configuration values that can carry data.**
-   - Deployment history (`Microsoft.Resources/deployments/read`) returns the non-secure parameter values and the outputs of past deployments.
+   - Deployment history (`Microsoft.Resources/deployments/read`) records non-secure parameter values and the outputs of past deployments; a `secureString` parameter is not returned.
    - Automation reads return unencrypted variable values.
    - Container instance reads return non-secure environment variables.
    - API Management reads return non-secret named values.
@@ -116,11 +116,11 @@ The owner decided that read-only discovery defaults to control-plane metadata. I
 
    UNVERIFIED: whether the two subscription-scope listings and the provider read succeed with Reader on the resource group only, or are refused. A refused read surfaces as `UNKNOWN` or an incomplete listing, never as absence, so it fails closed. It is a live-evidence item for the owner-supervised DEV run ("The minimal workload", item 4).
 
-**Finding.** Reader meets the decision's two named exclusions: there is no data action, so there are no blob contents and no Key Vault secret values. It is still broader than control-plane metadata, through items 1 and 2. The exposure is bounded by the scope. In a dedicated DEV subscription, or the pilot resource group, that holds only the pilot's own resources, there are no application logs or workload configuration to read. If DISCOVERY is placed at subscription scope in a shared subscription, the exposure is real.
+**Finding.** Reader is control-plane only: it has no data actions, so it reads no blob data and no Key Vault secret values. Within the control plane, items 1 and 2 can return content, and the scope bounds that. In the pilot resource group, which holds only the pilot's own resources, there are no application logs or workload configuration to read. At subscription scope in a shared subscription, there would be.
 
-**Decision for DEV (issue #39, comment 6444382695, item 4).** For DEV the built-in Reader stays, on the pilot resource group, and is treated as control-plane metadata under the owner decision of 6440801434. The pilot group holds only the pilot's own resources, so items 1 and 2 have nothing to expose there. The narrower role below is a documented decision for QA and PROD, not a DEV blocker. This text will be aligned with the Azure wording in `docs/act-pilot-bootstrap.md` ("Read-only discovery scope", #293) once #293 merges.
+**Decision for DEV (issue #39, comment 6444382695, item 4).** For DEV the built-in Reader stays, on the pilot resource group, and is treated as control-plane metadata under the owner decision of 6440801434, as `docs/act-pilot-bootstrap.md` states. The pilot group holds only the pilot's own resources, so items 1 and 2 have nothing to expose there. The narrower role below is a documented decision for QA and PROD, not a DEV blocker.
 
-**Proposal for QA and PROD (documented only; nothing in the bootstrap changes).** Replace Reader with a custom role that allows exactly the reads the product makes as DISCOVERY. This mirrors the AWS inline allow in #293:
+**Proposal for QA and PROD (documented only; nothing in the bootstrap changes).** Replace Reader with a custom role that allows exactly the reads the product makes as DISCOVERY. This mirrors the AWS inline allow (`bootstrap/aws/discovery-policy.json`):
 
 ```json
 {

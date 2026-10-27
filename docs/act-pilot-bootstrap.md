@@ -187,15 +187,7 @@ az role assignment list --all --assignee 00000000-0000-0000-0000-0000000000d4 -o
 
 Repeat the login for each identity. STATE listing the container works and an upload fails with an authorization error; APPLY and DISCOVERY listing the container fail. A failure where success is expected is a trust or scope problem (see below).
 
-**Azure DISCOVERY scope (review of 2026-10-27, offline).** This review checks DISCOVERY against the owner's decision that read-only discovery is control-plane metadata only (issue #39, comment 6440801434, item 2).
-- **What Reader excludes.** The Reader role DISCOVERY holds has no data actions, so it cannot read blob contents or Key Vault secret values, and it cannot call `listKeys`.
-- **Where Reader is broader.** Its `*/read` is still broader than metadata in a few places:
-  - Log Analytics and Application Insights queries;
-  - the activity log;
-  - deployment-history parameters and outputs;
-  - non-secure configuration values (Automation variables, container environment variables, API Management named values).
-- **What bounds it.** The exposure is bounded by the scope, so keep DISCOVERY on the pilot resource group, or on a subscription that holds nothing but the pilot.
-- **Where the full review is.** `docs/act-pilot-azure-terraform-g0.md`, "DISCOVERY scope review", has the full review, the reads the product makes, and a proposed narrower custom role, which is documented only and not created here.
+**Azure DISCOVERY scope.** What DISCOVERY may read is stated in "Read-only discovery scope" above (**Azure**): Reader on the pilot scope, control-plane `*/read` actions and no data actions, nothing on the state container. Within the control plane, a few reads return more than names and settings: Log Analytics and Application Insights queries, the activity log, deployment-history non-secure parameters and outputs, and non-secure configuration values. The scope bounds them, so keep DISCOVERY on the pilot resource group (`apply_resource_group_name`). For DEV that is the accepted setup (issue #39, comment 6444382695, item 4); a narrower custom role for QA and PROD is documented in `docs/act-pilot-azure-terraform-g0.md`, "DISCOVERY scope review".
 
 To check what was assigned, run as the owner:
 
