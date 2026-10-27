@@ -29,6 +29,19 @@ const INVENTORY_INPUT = /^(?:src\/cli\/[^/]+\.ts|src\/operations\/.+\.ts|alz|pac
 // operator CLI test that runs it.
 export const UNIMPORTABLE_OWNERS = {
   "src/cli/operator.ts": ["test/operations-parity.test.ts", "test/operator-cli.test.ts"],
+  // The console launcher starts the server at module top level; the console tests read its text (loopback bind, session token, the ACT banner).
+  "src/cli/operator-web.ts": ["test/ui-channel.test.ts"],
+};
+
+// Owner-facing templates no code imports: a focused test reads each from disk and checks what it tells the owner.
+export const TEMPLATE_OWNERS = {
+  "bootstrap/config.aws.template.json": ["test/apply-contract.test.ts"],
+  "bootstrap/config.azure.template.json": ["test/apply-contract.test.ts"],
+};
+
+// Fixtures a test reads from disk (not imported), so the import closure never selects their owner.
+export const FIXTURE_OWNERS = {
+  "test/fixtures/backend-pin/cases.json": ["test/apply-backend-pin-real.test.ts"],
 };
 
 // Source-scan guards read a source tree from disk (a forbidden literal, import or call anywhere under it) instead of
@@ -37,6 +50,8 @@ export const UNIMPORTABLE_OWNERS = {
 // entry here. Without this, a governed -destroy builder added under src/apply merged with the destroy-literal scan red.
 export const SOURCE_SCAN_GUARDS = {
   "test/apply-boundary.test.ts": ["src/"],
+  // No product code names the retired pin file or writes the pilot contract (the contract is the ACT authorization).
+  "test/apply-contract.test.ts": ["src/"],
   "test/policy-path.test.ts": ["src/"],
   "test/teardown-adapter-terraform.test.ts": ["src/"],
   "test/teardown-driver-denials.test.ts": ["src/"],
@@ -218,20 +233,24 @@ export function planChanged(changedPaths, files) {
         // Do not mask missing test ownership with a blanket full-suite run.
         const owners = UNIMPORTABLE_OWNERS[path];
         if (owners) addExisting(selected, files, owners);
+        // A deleted module has no importer left to select; the type check (npm run check) proves none still imports it.
+        else if (!files.has(path)) notes.push(path + " was deleted; the type check proves no importer remains.");
         else gaps.push(path + " has no importing test. Add a focused test.");
       }
       continue;
     }
     if (/^test\/(?:fixtures|helpers)\//.test(path)) {
-      const dependent = impactedBy(path);
+      const dependent = [...impactedBy(path), ...(FIXTURE_OWNERS[path] ?? []).filter((owner) => files.has(owner))];
       addExisting(selected, files, dependent);
       if (!dependent.length) gaps.push(path + " has no known test owner; add an explicit focused test.");
       continue;
     }
     if (/^qualification\/aws\/act-dev1-canary\/(?:.+\.tf|terraform\.tfvars\.example\.json)$/.test(path) ||
-        /^bootstrap\/aws\/(?:main|variables)\.tf$/.test(path) ||
+        /^bootstrap\/aws\/(?:(?:main|variables|discovery)\.tf|discovery-policy\.json|terraform\.tfvars\.example|tests\/discovery\.tftest\.hcl)$/.test(path) ||
         path === "tests_python/test_aws_dev_terraform_handoff.py") {
       addExisting(pythonTests, files, ["test/act-dev1-automation.test.py"]);
+      // The DISCOVERY scope (owner decision 6440801434, item 2): its policy content is asserted by a focused node test.
+      if (/^bootstrap\/aws\/(?:discovery|variables)\b|^bootstrap\/aws\/tests\/discovery\./.test(path)) addExisting(selected, files, ["test/discovery-scope.test.ts"]);
       if (!hasFile(files, "test/act-dev1-automation.test.py")) {
         gaps.push("ACT-DEV-1 Terraform canary has no focused test owner.");
       }
@@ -256,6 +275,10 @@ export function planChanged(changedPaths, files) {
     if (/^(?:Dockerfile|compose(?:\.production)?\.yaml|\.dockerignore|alz)$/.test(path)) {
       addExisting(selected, files, ["test/container-security.test.ts", "test/deps-cli.test.ts"]);
       notes.push("Release-sensitive artifact changed: dedicated qualification remains independent.");
+      continue;
+    }
+    if (Object.hasOwn(TEMPLATE_OWNERS, path)) {
+      addExisting(selected, files, TEMPLATE_OWNERS[path]);
       continue;
     }
     // Unknown executable or deployment configuration: do not silently pass.

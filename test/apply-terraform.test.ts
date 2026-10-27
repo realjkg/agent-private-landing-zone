@@ -181,7 +181,7 @@ test("the apply profile drops provider-installation overrides, AZURE_* (az CLI /
   assert.ok(removed.includes("AZURE_CONFIG_DIR") && TERRAFORM_APPLY_PROFILE.injectable.every((name) => !name.startsWith("AZURE_")));
   assert.ok(TERRAFORM_APPLY_PROFILE.injectable.includes("ARM_OIDC_TOKEN_FILE"));
   for (const name of ["AWS_ROLE_ARN", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_REGION"]) assert.ok(TERRAFORM_APPLY_PROFILE.injectable.includes(name), name);
-  assert.deepEqual(TERRAFORM_APPLY_PROFILE.fixedEnvironment, { AWS_EC2_METADATA_DISABLED: "true" }, "the instance metadata fallback is off for every apply child");
+  assert.deepEqual(TERRAFORM_APPLY_PROFILE.fixedEnvironment, { AWS_EC2_METADATA_DISABLED: "true", TF_DATA_DIR: ".terraform" }, "the instance metadata fallback is off and the data directory is init's own for every apply child");
   assert.equal(PROFILES.terraform.fixedEnvironment, undefined);
   assert.deepEqual({ ...TERRAFORM_APPLY_PROFILE, injectable: [], fixedEnvironment: undefined }, { ...PROFILES.terraform, injectable: [], fixedEnvironment: undefined });
   assert.ok(PROFILES.terraform.injectable.includes("TF_CLI_CONFIG_FILE"), "the preview adapter keeps its reviewed profile");

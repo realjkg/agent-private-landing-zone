@@ -344,6 +344,16 @@ test("the repository ships no contract and no pin file: ACT is disabled and no p
   }
 });
 
+test("the bootstrap templates tell the owner to leave ACT unauthorized, and never name the retired pin", () => {
+  const root = resolve(import.meta.dirname, "..");
+  for (const name of ["config.aws.template.json", "config.azure.template.json"]) {
+    const text = readFileSync(join(root, "bootstrap", name), "utf8");
+    const template = JSON.parse(text) as Record<string, unknown>;
+    assert.doesNotMatch(text, /act-pilot-contract\.sha256|\bpin(ning)?\b/i, name);
+    assert.match(String(template.NOTE), /add no authorize entry/, name);
+  }
+});
+
 function sourceFiles(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((e) => e.isDirectory() ? sourceFiles(join(dir, e.name)) : /\.tsx?$/.test(e.name) ? [join(dir, e.name)] : []);
 }

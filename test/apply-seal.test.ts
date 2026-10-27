@@ -93,7 +93,8 @@ test("sealing runs the pinned init/workspace/plan/show sequence, with STATE for 
     assert.ok((await sealPlan(f.input)).ok);
     assert.deepEqual(calls().map((c) => c.args), [
       ["version", "-json"],
-      ["init", "-input=false", "-no-color", "-lockfile=readonly"],
+      // The pinned backend has no settings of its own: the seal's init reads the contract's location from the product's backend file.
+      ["init", "-input=false", "-no-color", "-lockfile=readonly", "-backend-config=../alz-backend.tfbackend"],
       ["workspace", "select", "pilot"],
       ["workspace", "show"],
       ["plan", "-input=false", "-no-color", "-out=../alz-preview.tfplan"],

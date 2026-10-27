@@ -1,5 +1,5 @@
 {
-  "NOTE": "TEMPLATE, NOT A CONTRACT. Identifiers and file paths only; no secret belongs here. Every value below is an obviously fake placeholder. Fill from `terraform output` in bootstrap/azure (docs/act-pilot-bootstrap.md, step 5). Copy `contractTargets` into config/act-pilot-contract.json by hand. Leave enabled false and config/act-pilot-contract.sha256 empty; enabling and pinning are a separate reviewed change, not part of bootstrap.",
+  "NOTE": "TEMPLATE, NOT A CONTRACT. Identifiers and file paths only; no secret belongs here. Every value below is an obviously fake placeholder. Fill from `terraform output` in bootstrap/azure (docs/act-pilot-bootstrap.md, step 5). Copy `contractTargets` into config/act-pilot-contract.json by hand. Leave enabled false and add no authorize entry; enabling and authorizing are a separate reviewed change, not part of bootstrap.",
   "provider": "AZURE",
   "engine": "TERRAFORM",
   "contractTargets": {

