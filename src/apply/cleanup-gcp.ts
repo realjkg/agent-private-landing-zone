@@ -67,7 +67,7 @@ export function gcpIdentityIn(value: unknown, depth = 0): boolean {
 
 /**
  * Why a pilot cleanup never deletes this entry, or undefined for an ordinary leaf. `backendBuckets` are every environment's state
- * buckets from the pinned contract. `holdsIdentity` is the wrapper scan's verdict (`gcpIdentityIn`) for the entry's attributes.
+ * buckets from the reviewed contract. `holdsIdentity` is the wrapper scan's verdict (`gcpIdentityIn`) for the entry's attributes.
  */
 export function gcpProtectionOf(entry: { type: string; id: string | null; holdsIdentity?: true }, backendBuckets: readonly string[]): GcpProtection | undefined {
   if (entry.id !== null && namesBackendBucket(entry.id, backendBuckets)) return "PROTECTED_BACKEND";

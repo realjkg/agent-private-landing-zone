@@ -45,7 +45,7 @@ import { PILOT_CHANNELS, type ApplyEnvironment, type PilotChannel, type PilotCon
  */
 
 export type RemovalAuthorizationRequest = { operation: "REMOVE"; contract: PilotContract; environment: ApplyEnvironment; artifactSha256: string };
-export type RemovalAuthorization = { authorized: true; basis: string } | { authorized: false; reason: string };
+export type RemovalAuthorization = { authorized: true; basis: string; contractSha256: string; authorizationSha256: string } | { authorized: false; reason: string };
 
 /**
  * THE ONE CALL SITE for the AUTHORIZED check (owner decisions, #39: the reviewed contract's `authorize` entry authorizes each
@@ -58,7 +58,8 @@ export function authorizeRemoval(request: RemovalAuthorizationRequest): RemovalA
   if (!authorized.ok) return { authorized: false, reason: authorized.message };
   if (isKillSwitchActive(request.contract)) return { authorized: false, reason: "the kill switch is active" };
   const { contractSha256, authorizationSha256 } = authorized.authorization;
-  return { authorized: true, basis: "AUTHORIZED: REMOVE in " + request.environment + " by contract " + contractSha256.slice(0, 12) + ", entry " + authorizationSha256.slice(0, 12) + "; the kill switch is not active" };
+  return { authorized: true, basis: "AUTHORIZED: REMOVE in " + request.environment + " by contract " + contractSha256.slice(0, 12) + ", entry " + authorizationSha256.slice(0, 12) + "; the kill switch is not active",
+    contractSha256, authorizationSha256 };
 }
 
 export type RemovedPlan = { path: string; bytes: number; sha256: string };
@@ -105,6 +106,8 @@ export type WorkspaceRemoval = {
   finishedAt: string | null;
   status: "IN_PROGRESS" | "COMPLETE" | "STOPPED";
   authorization: string;
+  /** AUTHORIZED (the contract and its REMOVE entry, by hash) and EXECUTE (requester and approvers), as apply and cleanup evidence record them. */
+  decisions: { authorized: { operation: "REMOVE"; contractSha256: string; authorizationSha256: string }; execute: { requesterId: string; approverIds: string[] } };
   items: RemovalRecordItem[];
   heldForReview: string[];
   skipped: SkippedEntry[];
@@ -287,6 +290,16 @@ export function verifyRemovalProposal(value: unknown): { ok: true; proposal: Wor
 
 // --- the record ---------------------------------------------------------------------------------------------------------------
 
+/** The record's AUTHORIZED and EXECUTE decisions, with exactly their fields. */
+function decisionsOk(value: unknown): boolean {
+  if (!isRecord(value) || Object.keys(value).sort().join() !== "authorized,execute") return false;
+  const { authorized: a, execute: e } = value;
+  return isRecord(a) && Object.keys(a).sort().join() === "authorizationSha256,contractSha256,operation" && a.operation === "REMOVE" &&
+    [a.contractSha256, a.authorizationSha256].every((h) => typeof h === "string" && HASH.test(h)) &&
+    isRecord(e) && Object.keys(e).sort().join() === "approverIds,requesterId" && typeof e.requesterId === "string" && REQUESTER_ID.test(e.requesterId) &&
+    Array.isArray(e.approverIds) && e.approverIds.every((x) => typeof x === "string");
+}
+
 /** Undefined when there is none; INVALID for anything that is not exactly a removal record of this run (never a TypeError). */
 function readRecord(path: string, run: RemovalRun): WorkspaceRemovalRecord | undefined | "INVALID" {
   let stat;
@@ -297,7 +310,8 @@ function readRecord(path: string, run: RemovalRun): WorkspaceRemovalRecord | und
   if (!isRecord(value) || value.schemaVersion !== 1 || value.kind !== "WORKSPACE_REMOVAL" || value.artifactSha256 !== run.artifactSha256 || value.environment !== run.environment ||
     typeof value.kept !== "string" || !Array.isArray(value.removals)) return "INVALID";
   const removalOk = (r: unknown): boolean => isRecord(r) && typeof r.proposalSha256 === "string" && HASH.test(r.proposalSha256) && ["IN_PROGRESS", "COMPLETE", "STOPPED"].includes(r.status as string) &&
-    Array.isArray(r.items) && r.items.every((i) => itemOk(i) && typeof (i as { removed?: unknown }).removed === "boolean") && Array.isArray(r.approvers) && Array.isArray(r.heldForReview) && Array.isArray(r.skipped);
+    Array.isArray(r.items) && r.items.every((i) => itemOk(i) && typeof (i as { removed?: unknown }).removed === "boolean") && Array.isArray(r.approvers) && Array.isArray(r.heldForReview) && Array.isArray(r.skipped) &&
+    decisionsOk(r.decisions);
   return value.removals.every(removalOk) ? value as WorkspaceRemovalRecord : "INVALID";
 }
 
@@ -324,7 +338,8 @@ export type RemovalInput = {
 /** TEST-ONLY SEAMS: function parameters only, never reachable from the command line, a file or the environment. */
 export type RemovalTestSeams = { removePath?: (path: string) => void };
 
-export type RemovalReady = { ok: true; proposal: WorkspaceRemovalProposal; approvers: string[]; requesterId: string; deletes: RemovalItem[]; resumed: boolean; recordPath: string; plan: RemovalPlan };
+export type RemovalReady = { ok: true; proposal: WorkspaceRemovalProposal; approvers: string[]; requesterId: string; deletes: RemovalItem[]; resumed: boolean; recordPath: string; plan: RemovalPlan;
+  authorized: { contractSha256: string; authorizationSha256: string } };
 
 /** Same file, same content: a preparation file by its hash; a scratch directory by its path (its contents are measured again and recorded). */
 const sameItem = (a: RemovalItem, b: RemovalItem): boolean => a.path === b.path && a.kind === b.kind && (a.kind === "SCRATCH_DIRECTORY" || a.sha256 === b.sha256);
@@ -369,7 +384,8 @@ export async function prepareRemoval(input: RemovalInput): Promise<RemovalReady 
   const planned = planWorkspaceRemoval(run, input.where, input.now);
   if (!planned.ok) return planned;
   const deletes = planned.plan.items.filter((item) => proposal.items.some((p) => sameItem(p, item)) && (!resumed || last!.items.some((r) => !r.removed && sameItem(r, item))));
-  return { ok: true, proposal, approvers: verdict.approvers.map((a) => a.approverId), requesterId: requested.requesterId, deletes, resumed, recordPath, plan: planned.plan };
+  return { ok: true, proposal, approvers: verdict.approvers.map((a) => a.approverId), requesterId: requested.requesterId, deletes, resumed, recordPath, plan: planned.plan,
+    authorized: { contractSha256: decision.contractSha256, authorizationSha256: decision.authorizationSha256 } };
 }
 
 /**
@@ -392,6 +408,7 @@ export async function removeWorkspace(input: RemovalInput & { expected: readonly
   const removal: WorkspaceRemoval = {
     proposalSha256: ready.proposal.proposalSha256, operatorId: input.operatorId, approvers: ready.approvers, startedAt: input.now.toISOString(), finishedAt: null, status: "IN_PROGRESS",
     authorization: "requester " + ready.requesterId + "; " + ready.approvers.length + " approval(s) (" + ready.approvers.join(", ") + ") under the cleanup domain; kill switch inactive",
+    decisions: { authorized: { operation: "REMOVE", ...ready.authorized }, execute: { requesterId: ready.requesterId, approverIds: [...ready.approvers] } },
     items: ready.deletes.map((item) => ({ ...item, removed: false })), heldForReview: ready.plan.heldForReview, skipped: ready.plan.skipped,
   };
   // A resumed removal of the same proposal ends its predecessor: the new entry carries on with what is left.

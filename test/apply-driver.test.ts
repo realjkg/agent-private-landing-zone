@@ -971,7 +971,7 @@ test("every refusal comes in the specified order, and the apply argv is never ex
   assert.equal(applyCalls().length, baseline + 1);
 });
 
-test("ACT stays disabled without an enabling contract: a missing file, enabled=false, an unknown field, garbage, an unpinned or tampered contract, or an environment flag", async () => {
+test("ACT stays disabled without an enabling contract: a missing file, enabled=false, an unknown field, garbage, an unauthorized or tampered contract, or an environment flag", async () => {
   const w = world({ env: { ...ENV, ALZ_ACT_ENABLED: "true", ACT_ENABLED: "1" } as NodeJS.ProcessEnv });
   const s = await seal(w, "DEV");
   process.env.ALZ_ACT_ENABLED = "true";

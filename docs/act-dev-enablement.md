@@ -125,7 +125,7 @@ Run these in order. Steps marked "not `./alz`" use a vendor tool.
     ./alz apply status --environment DEV               # "act": "PILOT_ENABLED"; AUTHORIZED lists DEV with its entry hash
     ```
 
-    Open it as a PR and merge it through review. Every pilot command refuses a checkout with uncommitted changes, so the edit runs only once committed. An absent or empty `authorize` stays `ACT_DISABLED`; an operation it does not list is `ACT_NOT_AUTHORIZED`.
+    Open it as a PR and merge it through review. Every command that seals, proposes or runs a change (seal, qualify, apply, propose-cleanup, cleanup, propose-removal, remove-workspace) refuses a checkout with uncommitted changes, and also one whose contract bytes differ from the committed file (a skip-worktree, assume-unchanged or locally excluded edit), so the edit runs only once committed. An absent or empty `authorize` stays `ACT_DISABLED`; an operation it does not list is `ACT_NOT_AUTHORIZED`.
 12. **G2 qualification** on the execution host, DEV only. The qualifier watches CloudTrail (STS and S3 data events):
 
     ```bash

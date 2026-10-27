@@ -71,7 +71,7 @@ function planFor(id: string): GatePlan {
         ? { id, mode: "GUIDED", slice: "S5", note: "CDK_CLEANUP_NOT_IMPLEMENTED until the CDK cleanup slices land; only for the pinned path." }
         : { id, mode: "GUIDED", slice: "S5", note: "A person runs the DEV apply after the owner's pin; only for the pinned path." };
     case "ACT_RECOVERY":
-      return { id, mode: "GUIDED", slice: "S5", note: "Optional recovery stage after the pin (./alz apply record-recovery)." };
+      return { id, mode: "GUIDED", slice: "S5", note: "Optional recovery stage after the authorization commit (./alz apply record-recovery)." };
     case "LIFECYCLE":
       return id.startsWith("platform:")
         ? { id, mode: "OWNER", note: "The owner runs ./alz lifecycle on a disposable host of this platform; the runner does not ingest its report yet." }

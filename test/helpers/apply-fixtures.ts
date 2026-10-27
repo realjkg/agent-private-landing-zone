@@ -402,7 +402,7 @@ export const awsIdentityEnv = (environment: ApplyEnvironment): NodeJS.ProcessEnv
   return env;
 };
 
-// --- approvers and the pinned contract ----------------------------------------------------------
+// --- approvers and the reviewed contract ----------------------------------------------------------
 
 const newKey = () => {
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");

@@ -745,7 +745,7 @@ test("the identity checks also refuse the other cloud's credentials, a role spel
   assert.deepEqual(checkApplyIdentities(env("DEV", { ALZ_APPLY_AWS_ROLE_ARN: awsRoleArn("APPLY", "DEV").replace("role/", "role/ci/") }), AWS, APPLY_IDENTITIES), { ok: true }, "a path alone is not a collision with another name");
 });
 
-test("a sealed plan applies only under the pinned contract it was sealed under; the evidence names that contract", async () => {
+test("a sealed plan applies only under the reviewed contract it was sealed under; the evidence names that contract", async () => {
   const w = world();
   const s = await seal(w, "DEV");
   const pinned = loadPilotContract(w.contractPath) as PilotContract;
@@ -806,7 +806,7 @@ test("qualification evidence binds the DEV account, region, backend, workspace, 
   assert.deepEqual(qualificationEvidenceProblems(qualification(), AWS), []);
 });
 
-// --- the CLI: the pinned contract names the provider ----------------------------------------------
+// --- the CLI: the reviewed contract names the provider ----------------------------------------------
 
 type Terminal = NonNullable<ApplyCliDeps["terminal"]> & { out: string[] };
 const terminal = (answers: string[]): Terminal => {

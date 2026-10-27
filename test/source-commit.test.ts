@@ -17,7 +17,7 @@ let counter = 0;
 function repository(): { dir: string; head: string } {
   const dir = join(root, "repo-" + ++counter);
   mkdirSync(dir);
-  const git = (...args: string[]) => execFileSync("git", ["-C", dir, "-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", ...args], { encoding: "utf8" }).trim();
+  const git = (...args: string[]) => execFileSync("git", ["-C", dir, "-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", ...args], { encoding: "utf8" }).trim();
   git("init", "-q");
   writeFileSync(join(dir, ".gitignore"), ".runs/\n");
   writeFileSync(join(dir, "app.ts"), "export const x = 1;\n");
@@ -60,4 +60,43 @@ test("a checkout with no commit yet is refused", () => {
   mkdirSync(dir);
   execFileSync("git", ["-C", dir, "init", "-q"]);
   assert.equal(resolveSourceCommit(dir, { ALZ_SOURCE_COMMIT: STAMP }).ok, false);
+});
+
+test("the committed contract is the authorization: an uncommitted edit adding REMOVE is refused, also when git status cannot see it", () => {
+  const CONTRACT = "config/act-pilot-contract.json";
+  const committed = JSON.stringify({ enabled: true, authorize: { DEV: ["APPLY", "CLEANUP"] } });
+  const edited = JSON.stringify({ enabled: true, authorize: { DEV: ["APPLY", "CLEANUP", "REMOVE"] } });
+  const withContract = () => {
+    const repo = repository();
+    const git = (...args: string[]) => execFileSync("git", ["-C", repo.dir, "-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", ...args], { encoding: "utf8" }).trim();
+    mkdirSync(join(repo.dir, "config"));
+    writeFileSync(join(repo.dir, CONTRACT), committed);
+    git("add", "-A");
+    git("commit", "-q", "-m", "contract");
+    return { ...repo, git };
+  };
+  // Committed and unchanged, or absent: the checkout is the commit.
+  const clean = withContract();
+  assert.equal(resolveSourceCommit(clean.dir, {}, [CONTRACT]).ok, true);
+  assert.equal(resolveSourceCommit(repository().dir, {}, [CONTRACT]).ok, true, "no contract at all is not an edit");
+  // A plain uncommitted edit: git status sees it.
+  const plain = withContract();
+  writeFileSync(join(plain.dir, CONTRACT), edited);
+  assert.equal(resolveSourceCommit(plain.dir, {}, [CONTRACT]).ok, false);
+  // Hidden from git status: skip-worktree, assume-unchanged, or an untracked contract excluded locally.
+  for (const flag of ["--skip-worktree", "--assume-unchanged"]) {
+    const hidden = withContract();
+    hidden.git("update-index", flag, CONTRACT);
+    writeFileSync(join(hidden.dir, CONTRACT), edited);
+    assert.equal(resolveSourceCommit(hidden.dir, {}).ok, true, flag + ": git status alone reads this as clean");
+    const refused = resolveSourceCommit(hidden.dir, {}, [CONTRACT]);
+    assert.equal(refused.ok, false, flag);
+    assert.match(refused.ok ? "" : refused.reason, /not exactly the committed file/);
+  }
+  const excluded = repository();
+  writeFileSync(join(excluded.dir, ".git", "info", "exclude"), "config/\n");
+  mkdirSync(join(excluded.dir, "config"));
+  writeFileSync(join(excluded.dir, CONTRACT), edited);
+  assert.equal(resolveSourceCommit(excluded.dir, {}).ok, true, "an excluded untracked file reads as clean to git status");
+  assert.equal(resolveSourceCommit(excluded.dir, {}, [CONTRACT]).ok, false, "but it is not the committed contract");
 });

@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { signApproval } from "../src/apply/approval.js";
-import { loadPilotContract } from "../src/apply/contract.js";
+import { authorizeContract, loadPilotContract } from "../src/apply/contract.js";
 import { reserveArtifact } from "../src/apply/ledger.js";
 import { openNonceStore } from "../src/apply/nonces.js";
 import type { ApplyEnvironment, PilotContract, SignedApproval } from "../src/apply/types.js";
@@ -134,7 +134,9 @@ test("B1: a forged IN_PROGRESS record, and a requester-signed proposal, that nam
   const widened = signRemovalProposal({ ...fields, proposalSha256: removalProposalSha256(fields) }, REQUESTER.privateKeyPem);
   // And a forged record for that proposal that says a removal of them is in progress.
   writeFileSync(join(l.evidence, ARTIFACT + REMOVAL_RECORD_SUFFIX), JSON.stringify({ schemaVersion: 1, kind: "WORKSPACE_REMOVAL", artifactSha256: ARTIFACT, environment: "DEV", kept: "x",
-    removals: [{ proposalSha256: widened.proposalSha256, operatorId: "x", approvers: [], startedAt: NOW.toISOString(), finishedAt: null, status: "IN_PROGRESS", authorization: "x", items: forgedItems, heldForReview: [], skipped: [] }] }));
+    removals: [{ proposalSha256: widened.proposalSha256, operatorId: "x", approvers: [], startedAt: NOW.toISOString(), finishedAt: null, status: "IN_PROGRESS", authorization: "x",
+      decisions: { authorized: { operation: "REMOVE", contractSha256: "c".repeat(64), authorizationSha256: "a".repeat(64) }, execute: { requesterId: "carol", approverIds: [] } },
+      items: forgedItems, heldForReview: [], skipped: [] }] }));
   const i = input(l, widened, [approve(widened, "alice")]);
   const ready = await prepareRemoval(i);
   assert.ok(ready.ok, JSON.stringify(ready));
@@ -300,11 +302,11 @@ test("at the terminal: propose-removal, approve (APPROVE REMOVAL, cleanup domain
   await testFixtureForgeQualificationEvidence(vault, undefined, "AWS");
   const [scratch, evidenceDir, preparationDir, proposalsDir] = [fresh("scratch"), fresh("evidence"), fresh("pilot"), fresh("proposals")];
   const nonces = openNonceStore(fresh("nonces"));
-  const cli = async (args: string[], answers: string[] = []) => {
+  const cli = async (args: string[], answers: string[] = [], sourceCommit: string = SOURCE_COMMIT) => {
     const term = terminal(answers);
     const stdout: string[] = [];
     const stderr: string[] = [];
-    const code = await runApplyCommand(args, { sourceCommit: SOURCE_COMMIT, terminal: term, env: awsIdentityEnv("DEV"), now: () => NOW, operatorId: "operator.fixture", contractPath,
+    const code = await runApplyCommand(args, { sourceCommit, terminal: term, env: awsIdentityEnv("DEV"), now: () => NOW, operatorId: "operator.fixture", contractPath,
       qualificationDir: vault, evidenceDir, nonces, scratchParent: scratch, toolDirs: [toolDir, awsToolDir], preparationDir, proposalsDir, stdout: (t) => { stdout.push(t); }, stderr: (t) => { stderr.push(t); } });
     let data: unknown;
     try { data = JSON.parse(stdout.join("")); } catch { data = undefined; }
@@ -327,6 +329,13 @@ test("at the terminal: propose-removal, approve (APPROVE REMOVAL, cleanup domain
   for (const name of ["request", "manifest", "preparation"]) writeFileSync(join(preparationDir, "DEV", name + "-" + tag + ".json"), "{}\n");
   const evidenceBefore = readdirSync(evidenceDir).sort();
 
+  // B3: removal has the pilot commands' uncommitted-checkout refusal. A checkout whose contract (or anything else) is not
+  // committed has no product commit, so an uncommitted edit adding REMOVE never proposes or removes (the committed-bytes
+  // check behind it is test/source-commit.test.ts).
+  const dirty = await cli(["propose-removal", "--sealed", sealedPlanPath, ...requesterArgs()], [], "uncommitted");
+  assert.equal(dirty.code, 2, dirty.stderr);
+  assert.match(dirty.stderr, /BLOCKED SOURCE_UNVERIFIED/);
+  assert.deepEqual(readdirSync(proposalsDir), [], "no proposal was written");
   const proposed = await cli(["propose-removal", "--sealed", sealedPlanPath, ...requesterArgs()]);
   assert.equal(proposed.code, 0, proposed.stderr);
   assert.deepEqual(proposed.term.asked, [], "a proposal asks no phrase: it authorizes nothing");
@@ -349,6 +358,10 @@ test("at the terminal: propose-removal, approve (APPROVE REMOVAL, cleanup domain
   assert.match(forced.stderr, /APPLY_FLAG_UNKNOWN/, "no flag forces it");
   assert.equal(readdirSync(join(preparationDir, "DEV")).length, 3);
 
+  const unverified = await cli(args, [phrase], "uncommitted");
+  assert.equal(unverified.code, 2);
+  assert.match(unverified.stderr, /BLOCKED SOURCE_UNVERIFIED/);
+  assert.equal(readdirSync(join(preparationDir, "DEV")).length, 3, "nothing is removed from an uncommitted checkout");
   const done = await cli(args, [phrase]);
   assert.equal(done.code, 0, done.stderr);
   assert.deepEqual(readdirSync(join(preparationDir, "DEV")), []);
@@ -383,4 +396,14 @@ test("AUTHORIZED: a removal runs only when the reviewed contract lists REMOVE fo
   const ok = proposal(l);
   const ready = await prepareRemoval(input(l, ok, [approve(ok, "alice")]));
   assert.equal(ready.ok, true, JSON.stringify(ready));
+  // N4: the removal record carries the AUTHORIZED decision with the contract and entry hashes, and who executed it.
+  const removed = await confirmAndRemove(input(l, ok, [approve(ok, "alice")]));
+  assert.ok(removed.ok, JSON.stringify(removed));
+  const expected = authorizeContract(CONTRACT, "DEV", "REMOVE");
+  assert.ok(expected.ok);
+  assert.deepEqual(removed.removal.decisions, {
+    authorized: { operation: "REMOVE", contractSha256: expected.authorization.contractSha256, authorizationSha256: expected.authorization.authorizationSha256 },
+    execute: { requesterId: REQUESTER.requesterId, approverIds: ["alice"] },
+  });
+  assert.deepEqual(JSON.parse(readFileSync(removed.recordPath, "utf8")).removals.at(-1).decisions, removed.removal.decisions, "and the record on disk says the same");
 });

@@ -10,6 +10,7 @@ import {
   authorizationSha256Of,
   authorizeContract,
   canonicalPublicKey,
+  duplicateKeyOf,
   isKillSwitchActive,
   loadPilotContract,
   loadQualificationRecords,
@@ -271,6 +272,26 @@ test("authorize: a malformed authorization is refused, never ignored", () => {
     c.enabledEnvironments = ["DEV"]; c.provider = "AWS"; c.targets = { DEV: { accountId: "123456789012", region: "us-east-2", backend: "fixture-dev-state/pilot/dev.tfstate", workspace: "default" } };
     c.requiredApprovals = { DEV: 1 }; c.authorize = { DEV: ["APPLY"], QA: ["APPLY"] };
   }), /authorize\.QA: unknown field/, "CONTRACT_INVALID");
+});
+
+test("N1: a contract that states a key twice, at any depth, is CONTRACT_INVALID rather than last-one-wins", () => {
+  const text = JSON.stringify(fixtureContract());
+  const cases: [string, string][] = [
+    [text.replace('"authorize":', '"authorize":{"DEV":["APPLY"]},"authorize":'), "authorize"],
+    [text.replace('"enabled":true', '"enabled":false,"enabled":true'), "enabled"],
+    [text.replace('"authorize":{', '"authorize":{"DEV":["APPLY"],'), "DEV"],
+    [text.replace('"authorize":{', '"authorize":{"\\u0044EV":["APPLY"],'), "DEV"],
+    [text.replace('"maxApprovalAgeMinutes":60', '"maxApprovalAgeMinutes":60,"maxApprovalAgeMinutes":600'), "maxApprovalAgeMinutes"],
+    [text.replace('"workspace":"default"', '"workspace":"default","workspace":"other"'), "workspace"],
+  ];
+  for (const [source, key] of cases) {
+    assert.notEqual(source, text, "the fixture replacement applied for " + key);
+    assert.doesNotThrow(() => JSON.parse(source), "it is valid JSON, which JSON.parse alone would accept");
+    disabled(write(source), new RegExp("duplicate key \"" + key + "\""), "CONTRACT_INVALID");
+  }
+  // The same key in different objects, or a key-like string value, is not a duplicate.
+  assert.equal(duplicateKeyOf('{"a":{"b":1},"c":{"b":2},"d":["b","b"],"e":"\\"b\\""}'), undefined);
+  assert.equal(load(write(text)).enabled, true);
 });
 
 test("authorizeContract: default deny per environment and operation, bound to the contract's provider, engine and account", () => {

@@ -549,7 +549,7 @@
             "positive": [
               {
                 "file": "test/apply-cdk.test.ts",
-                "title": "./alz apply works for the engine the pinned contract names, with no engine flag: qualify, seal, approve and apply, and no project code is run"
+                "title": "./alz apply works for the engine the reviewed contract names, with no engine flag: qualify, seal, approve and apply, and no project code is run"
               }
             ],
             "denied": [

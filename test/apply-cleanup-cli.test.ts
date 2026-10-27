@@ -352,6 +352,10 @@ test("propose-cleanup and approve of a proposal are AUTHORIZED by the current co
   assert.equal((await cli(w, ["observe", "--sealed", run.sealedPlanPath])).code, 0);
   const withAuthorize = (authorize: Record<string, string[]>, over: Record<string, unknown> = {}) =>
     writeReviewedContract(w.contractPath, awsContractJson(KILL, { authorize: { QA: ["APPLY", "CLEANUP"], PROD: ["APPLY", "CLEANUP"], ...authorize }, ...over }));
+  // From an uncommitted checkout (the contract included) nothing is proposed: the committed contract is the authorization.
+  const dirty = await cli(w, ["propose-cleanup", "--sealed", run.sealedPlanPath, ...requesterArgs()], [], { sourceCommit: "uncommitted" });
+  assert.equal(dirty.code, 2, dirty.stderr);
+  assert.match(dirty.stderr, /BLOCKED SOURCE_UNVERIFIED/);
   // No CLEANUP for DEV: propose-cleanup refuses before anything is built, and writes no proposal.
   withAuthorize({ DEV: ["APPLY"] });
   const denied = await cli(w, ["propose-cleanup", "--sealed", run.sealedPlanPath, ...requesterArgs()]);

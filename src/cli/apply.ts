@@ -390,7 +390,8 @@ const driverPaths = (deps: ApplyCliDeps, sourceCommit: string | undefined = sour
 /** The product commit this command runs from, or undefined (the driver then refuses with SOURCE_UNVERIFIED). The reason goes to stderr. */
 function sourceCommitFor(deps: ApplyCliDeps): string | undefined {
   if (deps.sourceCommit !== undefined) return COMMIT.test(deps.sourceCommit) ? deps.sourceCommit : undefined;
-  const found = resolveSourceCommit(repoPaths().root);
+  // The committed contract is the ACT authorization: its bytes must be HEAD's, not only "clean" to git status.
+  const found = resolveSourceCommit(repoPaths().root, process.env, [relative(repoPaths().root, repoPaths().contract)]);
   if (found.ok) return found.commit;
   (deps.stderr ?? ((text: string) => { process.stderr.write(text); }))("NOTICE " + found.reason + "\n");
   return undefined;
@@ -582,6 +583,8 @@ const proposalPath = (deps: ApplyCliDeps, proposal: CleanupProposal): string =>
  * that entry's own key, checked before anything is built or written; their id is hashed into the proposal every approver signs.
  */
 const proposeCleanupCommand: Command = async (flags, _terminal, deps, out) => {
+  const unverified = committedSource(deps, out);
+  if (unverified !== undefined) return unverified;
   const requesterId = flags.requester[0];
   if (!SAFE_OPERATOR.test(requesterId)) fail("APPLY_INPUT_INVALID", "--requester is not a usable requester id");
   const requesterKey = readApproverKey(flags.key[0]);
@@ -682,7 +685,16 @@ const removalPath = (deps: ApplyCliDeps, proposal: WorkspaceRemovalProposal): st
  * requester signature, approval quorum and kill-switch path as a cleanup (owner decision 6443062568, item 2). Asks no phrase: a proposal
  * authorizes nothing by itself.
  */
+/** The pilot commands' uncommitted-checkout refusal, for the proposal and removal commands: the contract that authorizes CLEANUP or REMOVE is the committed one. */
+function committedSource(deps: ApplyCliDeps, out: Out): number | undefined {
+  return sourceCommitFor(deps) === undefined
+    ? blocked({ ok: false, code: "SOURCE_UNVERIFIED", message: "The product source commit could not be established, or the checkout (the contract included) has uncommitted changes. Nothing was proposed, removed or cleaned up. Commit your changes, or run the packaged image." }, out)
+    : undefined;
+}
+
 const proposeRemovalCommand: Command = async (flags, _terminal, deps, out) => {
+  const unverified = committedSource(deps, out);
+  if (unverified !== undefined) return unverified;
   const requesterId = flags.requester[0];
   if (!SAFE_OPERATOR.test(requesterId)) fail("APPLY_INPUT_INVALID", "--requester is not a usable requester id");
   const requesterKey = readApproverKey(flags.key[0]);
@@ -757,6 +769,8 @@ async function approveRemoval(raw: unknown, approverId: string, privateKeyPem: s
  * fresh plan produces and the signed proposal lists is shown, and exactly that list is removed after the person types the phrase.
  */
 const removeWorkspaceCommand: Command = async (flags, terminal, deps, out) => {
+  const unverified = committedSource(deps, out);
+  if (unverified !== undefined) return unverified;
   const approvals = flags.approval.map((path) => {
     const value = readInput(path, "--approval");
     return isRecord(value) ? value as unknown as SignedApproval : fail("APPLY_INPUT_INVALID", "--approval must be a JSON object");

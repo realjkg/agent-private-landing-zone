@@ -302,7 +302,7 @@ test("under a PILOT release a live ACT record and a recovery record must name th
   };
   const status = async (id: string, mode: ReleaseGateSubmission["mode"], payload: object, manifest: ReleaseAdmissionInput = { ...pilotInput(scope), records: [attach(id, mode, payload)] }) =>
     (await review({ ...manifest, records: manifest.records.length > 0 ? manifest.records : [attach(id, mode, payload)] }, pinned)).gates.find((g) => g.id === id)?.status;
-  // The live ACT record: the pinned contract's hash is admitted, another contract's is not.
+  // The live ACT record: the reviewed contract's hash is admitted, another contract's is not.
   const live = {
     schemaVersion: 1, label: "LIVE", step: "execute", cloud: "AZURE", engine: "TERRAFORM", environment: "DEV", target: { account: "a", backend: "b", workspace: "default" },
     sourceCommit: commit, artifactSha256: "1".repeat(64), outcome: "SUCCEEDED", evidenceSha256: "2".repeat(64), contractSha256: scope.contractSha256,
@@ -315,7 +315,7 @@ test("under a PILOT release a live ACT record and a recovery record must name th
   assert.equal(await status("act:azure-terraform", "LIVE_ACT", { ...live, authorizationSha256: "3".repeat(64) }), "BLOCKED", "another authorization");
   assert.equal(await status("act:azure-terraform", "LIVE_ACT", { ...live, environment: "QA" }), "BLOCKED", "DEV's authorization named for QA");
   assert.equal(await status("act:azure-terraform", "LIVE_ACT", { ...live, authorizationSha256: undefined }), "BLOCKED", "no authorization");
-  // The recovery record, built by the producer under the pinned contract: DEV with the one approval the contract requires is admitted.
+  // The recovery record, built by the producer under the reviewed contract: DEV with the one approval the contract requires is admitted.
   const at = (minutes: number): string => new Date(Date.UTC(2026, 9, 12, 12, minutes)).toISOString();
   const apply = (over: Partial<ApplyEvidence>): ApplyEvidence => ({
     schemaVersion: 1, environment: "DEV", target: { account: "a", backend: "b", workspace: "default" }, artifactSha256: "5".repeat(64), manifestHash: "2".repeat(64), releaseIdentity: "3".repeat(64),
@@ -330,7 +330,7 @@ test("under a PILOT release a live ACT record and a recovery record must name th
   const recovery = built.evidence;
   assert.equal(recovery.requiredApprovals, 1);
   assert.equal(await status("act-run-recovery", "ACT_RECOVERY", recovery), "EVIDENCE_PRESENT");
-  // The same document relabeled to PROD with its one approval is internally consistent (the validator alone admits it) but the pinned contract requires two for PROD: refused.
+  // The same document relabeled to PROD with its one approval is internally consistent (the validator alone admits it) but the reviewed contract requires two for PROD: refused.
   const prod = { ...recovery, environment: "PROD", interrupted: { ...recovery.interrupted, environment: "PROD" }, resumed: { ...recovery.resumed, environment: "PROD" } };
   assert.equal(await status("act-run-recovery", "ACT_RECOVERY", prod), "BLOCKED", "PROD claiming one approval under a contract that requires two");
   // Another contract than the pinned one, consistently cited, is refused too.

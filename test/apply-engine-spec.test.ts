@@ -22,7 +22,7 @@ test("the Terraform spec needs the four identities and attests the state writer 
   assert.deepEqual([...(terraform?.attests ?? [])], ["STATE_WRITE", "APPLY"]);
 });
 
-test("a pinned contract naming an engine with no spec is CONTRACT_INVALID, not a pilot", () => {
+test("a reviewed contract naming an engine with no spec is CONTRACT_INVALID, not a pilot", () => {
   const dir = mkdtempSync(join(tmpdir(), "apply-engine-spec-"));
   try {
     for (const engine of ["PULUMI", "OPENTOFU", "terraform", "toString"]) {

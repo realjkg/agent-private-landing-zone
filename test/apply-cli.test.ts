@@ -72,7 +72,7 @@ const terminal = (answers: string[], tty = true): Terminal => {
 type Run = { code: number; stdout: string; stderr: string; term: Terminal };
 type World = { deps: (term: Terminal, over?: Partial<ApplyCliDeps>) => ApplyCliDeps; contractPath: string; vault: string; evidenceDir: string };
 
-/** A pinned contract, a vault holding qualification evidence (none when `qualified` is false), and fresh ledgers. */
+/** A reviewed contract, a vault holding qualification evidence (none when `qualified` is false), and fresh ledgers. */
 async function world(contract: unknown = contractJson(KILL), qualified = true): Promise<World> {
   behave();
   const contractPath = join(fresh("contract"), "act-pilot-contract.json");
@@ -178,7 +178,7 @@ test("an unknown subcommand or flag, a repeated or missing flag, or a flag for w
     ["seal", "--request", "r", "--manifest", "m", "--qualifications", "q"], // qualification is verified from vault evidence
     ["qualify", "--request", "r"], ["qualify", "--request", "r", "--manifest", "m", "--approval", "a"],
     ["approve", "--sealed", "s", "--key", "k"], ["apply", "--approval", "p"],
-    ["apply", "--request", "r", "--manifest", "m", "--sealed", "s", "--approval", "p", "--allowlist", "l"], // the allowlist is in the pinned contract
+    ["apply", "--request", "r", "--manifest", "m", "--sealed", "s", "--approval", "p", "--allowlist", "l"], // the allowlist is in the reviewed contract
     ["apply", "--request", "r", "--manifest", "m", "--sealed", "s", "--approval", "p", "--qualifications", "q"],
   ]) {
     const run = await cli(w, args, []);

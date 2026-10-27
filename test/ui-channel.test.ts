@@ -874,7 +874,7 @@ test("prepare in the console reports the owner prerequisite with its blocker and
 type Cloud = "AWS" | "AZURE";
 const AWS_PROVIDER_CONFIG = { aws: { name: "aws", full_name: "registry.terraform.io/hashicorp/aws", expressions: { region: { references: ["var.region"] } } } };
 
-/** A pinned contract with a policy version for the cloud, its identities and qualification, and a Terraform project for its DEV target. */
+/** A reviewed contract with a policy version for the cloud, its identities and qualification, and a Terraform project for its DEV target. */
 async function consoleJourney(cloud: Cloud, sourceCommit = SOURCE_COMMIT) {
   // The same fake engine as every test here (logic only, NOT real cloud behavior); the contract, identities and project are the cloud's own.
   behave(cloud === "AWS" ? { showProviderConfig: AWS_PROVIDER_CONFIG } : {});

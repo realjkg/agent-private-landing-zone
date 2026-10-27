@@ -445,7 +445,7 @@ test("an assembly that needs asset publishing, a second stack, a nested stack or
   clean(w);
 });
 
-test("capabilities are granted only when the pinned contract lists them for the environment", async () => {
+test("capabilities are granted only when the reviewed contract lists them for the environment", async () => {
   const w = world();
   const refusal = await sealRefused(w, "DEV", { iam: true });
   assert.match(refusal.message, /EXIT_254/);
@@ -974,7 +974,7 @@ test("qualify runs describe-stacks as each identity and nothing that creates, ex
 
 // --- the CLI --------------------------------------------------------------------------------------------------
 
-test("./alz apply works for the engine the pinned contract names, with no engine flag: qualify, seal, approve and apply, and no project code is run", async () => {
+test("./alz apply works for the engine the reviewed contract names, with no engine flag: qualify, seal, approve and apply, and no project code is run", async () => {
   const w = world();
   const vault = fresh("cli-vault");
   const write = (value: unknown, label: string): string => { const path = join(fresh(label), label + ".json"); writeFileSync(path, JSON.stringify(value)); return path; };

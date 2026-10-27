@@ -24,7 +24,8 @@ import type { ApplyEnvironment, ApplyEvidence, ApplyRefusalCode, ApplyResult, Ap
  *
  * The contract is also the default-deny authorization: its `authorize` lists, per environment, the operations ACT may run
  * (APPLY, CLEANUP, REMOVE) for the contract's provider, engine and that environment's account. Absent or empty means
- * disabled. The contract is a tracked file and every pilot command refuses a checkout with uncommitted changes, so enabling
+ * disabled. The contract is a tracked file and every command that seals, proposes or runs a change refuses a checkout with
+ * uncommitted changes or a contract that differs from the committed file (`resolveSourceCommit`), so enabling
  * ACT, or changing a target, an operation or an approver, is a reviewed commit; the contract's hash and the authorizing
  * entry's hash are derived here and bound into the sealed plan, the approvals, the evidence and release admission. There is
  * no hash file to maintain. Every path is anchored to the repository root found from this module, never to process.cwd().
@@ -222,6 +223,33 @@ export function inspectPilotContract(raw: unknown): { ok: true; contract: PilotC
 /** The identity a release, a sealed plan and its evidence name to say which pilot contract they were made under. */
 export const pilotContractSha256 = (contract: PilotContract): string => sha256(canonicalJson(contract));
 
+/**
+ * The first key that appears twice in one object, at any depth, compared after JSON unescaping (so "\u0041PPLY" and "APPLY"
+ * are one key), or undefined. Only called on text JSON.parse accepted, so the scan can rely on its syntax.
+ */
+export function duplicateKeyOf(source: string): string | undefined {
+  const stack: ({ keys: Set<string>; expectKey: boolean } | null)[] = [];
+  for (let i = 0; i < source.length; i++) {
+    const c = source[i];
+    if (c === "\"") {
+      let j = i + 1;
+      while (j < source.length && source[j] !== "\"") j += source[j] === "\\" ? 2 : 1;
+      const top = stack[stack.length - 1];
+      if (top && top.expectKey) {
+        const key = JSON.parse(source.slice(i, j + 1)) as string;
+        if (top.keys.has(key)) return key;
+        top.keys.add(key);
+        top.expectKey = false;
+      }
+      i = j;
+    } else if (c === "{") stack.push({ keys: new Set(), expectKey: true });
+    else if (c === "[") stack.push(null);
+    else if (c === "}" || c === "]") stack.pop();
+    else if (c === ",") { const top = stack[stack.length - 1]; if (top) top.expectKey = true; }
+  }
+  return undefined;
+}
+
 /** The validated contract when it authorizes at least one operation, or a disabled result with the reason and the refusal code it maps to. Never throws. */
 export function loadPilotContract(path: string = repoPaths().contract): PilotContract | DisabledContract {
   const off = (code: DisabledContract["code"], reason: string): DisabledContract => ({ enabled: false, reason, code });
@@ -235,6 +263,9 @@ export function loadPilotContract(path: string = repoPaths().contract): PilotCon
   }
   let parsed: unknown;
   try { parsed = JSON.parse(source); } catch { return off("CONTRACT_INVALID", "contract could not be parsed as JSON"); }
+  // The reviewed text is the authorization, so it states each field once: JSON.parse keeps the last of two keys silently.
+  const duplicate = duplicateKeyOf(source);
+  if (duplicate !== undefined) return off("CONTRACT_INVALID", "duplicate key " + JSON.stringify(duplicate) + ": a reviewed contract states each field once");
   if ((parsed as { enabled?: unknown } | null)?.enabled === false) return off("ACT_DISABLED", "enabled: the contract does not enable ACT");
   let contract: PilotContract;
   try {
