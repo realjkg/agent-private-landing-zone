@@ -4,6 +4,12 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 DIST="$ROOT/dist/cli/operator.js"
 TSX="$ROOT/node_modules/.bin/tsx"
+STATE="$ROOT/.runs/bootstrap/state.json"
+
+# The commit this checkout is at, or "unknown" outside a git checkout. A build is only trusted for the commit it was made from.
+source_commit() {
+  git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown
+}
 
 if [[ "${1:-}" == "bootstrap" ]]; then
   cd "$ROOT"
@@ -11,24 +17,48 @@ if [[ "${1:-}" == "bootstrap" ]]; then
   LOG_DIR="$ROOT/.runs/bootstrap"
   mkdir -p "$LOG_DIR"
   LOG_FILE="$LOG_DIR/$(date -u +%Y%m%dT%H%M%SZ).log"
+  STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  COMMIT="$(source_commit)"
+  # The state file is written before the first step and rewritten at every step. Until completedAt is set, ./alz refuses
+  # to run dist/, because an interrupted bootstrap leaves a partial build that must not be mistaken for a finished one.
+  write_state() {
+    printf '{\n  "startedAt": "%s",\n  "step": "%s",\n  "completedAt": %s,\n  "sourceCommit": "%s"\n}\n' \
+      "$STARTED_AT" "$1" "$2" "$COMMIT" >"$STATE.tmp"
+    mv -f "$STATE.tmp" "$STATE"
+  }
+  DONE=0
+  # The terminal, kept on its own descriptor: a stop signal arrives while the build's output is redirected to the log.
+  exec 3>&1
+  # The detailed log is kept whatever happens: a stop signal or a failure still copies it to latest.log.
+  finish() {
+    cp -f "$LOG_FILE" "$LOG_DIR/latest.log" 2>/dev/null || true
+    if (( DONE == 0 )); then
+      echo "Local setup did not finish. Review .runs/bootstrap/latest.log, then run ./alz bootstrap again." >&3
+      echo "No infrastructure changes were made." >&3
+    fi
+  }
+  trap finish EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM HUP
+  write_state "npm ci" null
   echo "Preparing Sovereign ALZ local model interface..."
   build_local() {
     npm ci || return $?
+    write_state "npm run build" null
     npm run build
     local build_exit=$?
     if (( build_exit != 0 )); then return "$build_exit"; fi
+    write_state "npm run build:ui" null
     npm run build:ui
   }
   if build_local >"$LOG_FILE" 2>&1; then
-    cp "$LOG_FILE" "$LOG_DIR/latest.log"
+    write_state "done" "\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\""
+    DONE=1
     echo "Ready. Open the private local workspace with ./alz"
     echo "Detailed build log: .runs/bootstrap/latest.log"
     exit 0
   else
     code=$?
-    cp "$LOG_FILE" "$LOG_DIR/latest.log"
-    echo "Local setup failed. Review .runs/bootstrap/latest.log"
-    echo "No infrastructure changes were made."
     exit "$code"
   fi
 fi
@@ -42,6 +72,21 @@ if [[ "${1:-}" == "debug" && -x "$TSX" ]]; then
 fi
 
 if [[ -f "$DIST" ]]; then
+  # A build made by ./alz bootstrap is run only when that bootstrap finished and the source has not moved since.
+  # A build made another way (no state file, for example CI's own npm steps) is run as before.
+  if [[ -f "$STATE" ]]; then
+    if ! node -e '
+      const fs = require("node:fs");
+      let state;
+      try { state = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); } catch { process.exit(1); }
+      const finished = typeof state.completedAt === "string" && state.completedAt.length > 0;
+      process.exit(finished && state.sourceCommit === process.argv[2] ? 0 : 1);
+    ' "$STATE" "$(source_commit)"; then
+      echo "The local build is not ready: ./alz bootstrap did not finish, or the source changed after it ran."
+      echo "Run: ./alz bootstrap"
+      exit 2
+    fi
+  fi
   exec node "$DIST" "$@"
 fi
 
