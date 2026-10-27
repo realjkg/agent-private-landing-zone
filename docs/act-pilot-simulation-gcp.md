@@ -102,7 +102,7 @@ All with Terraform 1.16.4, the `gcs` backend and fake-gcs-server v1.53.1. Exit c
 - **G3: the same impersonation plus a dummy `access_token`.**
   - `init` and `plan` exit 0;
   - no outbound host was reachable, so no token exchange or impersonation call can have happened. With the emulator variable set, the backend does not authenticate;
-  - both values are saved in `.terraform/terraform.tfstate`, and the service account email is embedded in the plan. This supports a GCP analog of `embedStateWrite`, an email rather than a secret. Whether a real apply then writes state as that account is not shown here.
+  - both values are saved in `.terraform/terraform.tfstate`, and the service account email is embedded in the plan. This is consistent with the PLAN's `backendConfig`, which gives `init` STATE_WRITE's email and credential-configuration path (no secret). Whether a real apply then writes state as that account is not shown here (UNVERIFIED until G2).
 
 **G4. Unreachable Google endpoints.** The G3 configuration with the emulator variable unset ran a `plan` that did not end. Every host was refused at the closed proxy port. `timeout 60` sent SIGTERM, and Terraform printed `Interrupt received ... Gracefully shutting down...` but had not exited about four minutes later. A SIGKILL ended it (exit 137). Which Google host it was retrying was not recorded (uncertain). The driver's run limit and process-group SIGKILL are what bound such a run.
 
@@ -110,9 +110,9 @@ All with Terraform 1.16.4, the `gcs` backend and fake-gcs-server v1.53.1. Exit c
 
 ## What the GCP G1b gate becomes
 
-G1b for GCP is an opt-in emulated test, built in a later slice, of the real Terraform binary and fake-gcs-server **through the driver**. It mirrors `test/apply-emulated.test.ts`: seal, approve with a test key, apply, refuse a second apply, refuse a stale plan, refuse on a held lock, and the kill switch before and during the engine.
+G1b for GCP is an opt-in emulated test, built in slice S6 as `test/apply-emulated-gcp.test.ts` (opt-in through `ALZ_SIM_TERRAFORM` and `ALZ_SIM_FAKE_GCS`), of the real Terraform binary and fake-gcs-server **through the driver**. It mirrors `test/apply-emulated.test.ts`: seal, approve with a test key, apply, refuse a second apply, refuse a stale plan, refuse on a held lock, and the kill switch before and during the engine.
 
-`STORAGE_EMULATOR_HOST` is set by that test harness only, on the same terms the owner set for Azurite's SAS auth (6432984515). It is a clearly labeled, test-only allowance that no product path can reach. Product code refuses the variable and `storage_custom_endpoint`.
+`STORAGE_EMULATOR_HOST` is set by that test harness only, on the same terms the owner set for Azurite's SAS auth (owner decision 6432984515 on issue #39: a clearly labeled, test-only emulator allowance that no product path can reach). Product code refuses the variable and `storage_custom_endpoint`.
 
 The test proves the engine, lock, stale-plan and kill-switch behavior. It does not prove WIF, impersonation or state-write separation; those stay with G2.
 
