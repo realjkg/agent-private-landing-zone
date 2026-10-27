@@ -452,16 +452,23 @@ test("a platform gate needs its own host, version, artifact digest and all seven
     const id = "platform:linux-x64";
     const names = ["install", "launch", "uninstall", "repeat-uninstall", "partial-install-recovery", "unusual-paths", "unrelated-files-preserved"];
     const report = {
-      ...generic(id, "LIFECYCLE"), platform: "linux-x64", osVersion: "Ubuntu 24.04", artifactSha256: "4".repeat(64),
+      ...generic(id, "LIFECYCLE"), label: "LIVE", platform: "linux-x64", osVersion: "Ubuntu 24.04", artifactSha256: "4".repeat(64),
       checks: names.map((name) => ({ name, passed: true, evidenceSha256: "b".repeat(64) })),
     };
-    const status = async (payload: object) => (await reviewProductionRelease({
-      manifest: input([h.attach(id, "LIFECYCLE", payload)]), expectedCommit: commit, root: h.root,
-    })).gates.find((g) => g.id === id)?.status;
+    const status = async (payload: object, gate = id) => (await reviewProductionRelease({
+      manifest: input([h.attach(gate, "LIFECYCLE", payload)]), expectedCommit: commit, root: h.root,
+    })).gates.find((g) => g.id === gate)?.status;
     assert.equal(await status(report), "EVIDENCE_PRESENT");
-    for (const change of [{ platform: "linux-arm64" }, { osVersion: "" }, { artifactSha256: undefined }, { checks: report.checks.slice(1) }]) {
+    for (const change of [{ platform: "linux-arm64" }, { osVersion: "" }, { artifactSha256: undefined }, { checks: report.checks.slice(1) },
+      // A report must call itself LIVE: a SYNTHETIC label, a `synthetic` flag with no `fixture`, or no label at all is refused (#281 review N1).
+      { label: "SYNTHETIC" }, { label: undefined }, { synthetic: true }, { label: "SYNTHETIC", synthetic: true }]) {
       assert.equal(await status({ ...report, ...change }), "BLOCKED", JSON.stringify(change));
     }
+    // The lifecycle:* gates follow the same rule.
+    const lifecycle = { ...generic("lifecycle:clean-install", "LIFECYCLE"), label: "LIVE" };
+    assert.equal(await status(lifecycle, "lifecycle:clean-install"), "EVIDENCE_PRESENT");
+    assert.equal(await status({ ...lifecycle, label: "SYNTHETIC" }, "lifecycle:clean-install"), "BLOCKED");
+    assert.equal(await status(generic("lifecycle:clean-install", "LIFECYCLE"), "lifecycle:clean-install"), "BLOCKED", "no label is not LIVE");
   } finally { h.cleanup(); }
 });
 
@@ -475,7 +482,7 @@ test("independent review refuses self-review and open blocking findings; ACT rec
     const at = (minutes: number): string => new Date(Date.UTC(2026, 9, 12, 12, minutes)).toISOString();
     const apply = (over: Partial<ApplyEvidence>): ApplyEvidence => ({
       schemaVersion: 1, environment: "DEV", target: { account: "111111111111", backend: "b", workspace: "default" }, artifactSha256: "5".repeat(64), manifestHash: "2".repeat(64),
-      releaseIdentity: "3".repeat(64), contractSha256: pilotContractSha256(contract), sourceCommit: commit, approvals: [{ approverId: "alice", issuedAt: at(-30) }],
+      releaseIdentity: "3".repeat(64), contractSha256: pilotContractSha256(contract), sourceCommit: commit, approvals: [{ approverId: "alice", issuedAt: at(-30) }], requester: { requesterId: "carol", nonce: "0".repeat(32) }, 
       adapter: { adapterVersion: "a", argvDigest: "4".repeat(64) }, toolVersions: { engine: "1.9.5" }, outcome: "SUCCEEDED", exitCode: 0, startedAt: at(-10), finishedAt: at(0), authority: APPLY_AUTHORITY, ...over,
     });
     const built = buildRecoveryEvidence({

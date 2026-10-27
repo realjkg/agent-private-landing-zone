@@ -24,6 +24,7 @@ import { sha256 } from "../src/util/sha256.js";
 import {
   ARM_ACCESS_TOKEN_CANARY, ARM_FEDERATED_TOKEN_CANARY, CANARIES, DEV_TARGET, NOW, POLICY, SOURCE_COMMIT, STATE_CANARY, approvalFor, azureStateResource, behave as behaveIn, callsOf, contractJson,
   fakeArmHttp, human, identityEnv, installFakeTerraform, keys, pinPathOf, targetOf, testFixtureForgeQualificationEvidence, writePinnedContract, writeProject, type ArmBehavior, type Behavior,
+  REQUESTER,
 } from "./helpers/apply-fixtures.js";
 
 // The Azure Terraform observe and cleanup steps (docs/observe-and-cleanup.md; docs/act-pilot-plan.md "Cleanup of pilot-created
@@ -122,7 +123,7 @@ const cloud = (w: World, behavior: ArmBehavior) => w.arm.behave(behavior);
 async function seal(w: World) {
   const target = targetOf("DEV");
   const p = writeProject(fresh("project"), target);
-  const result = await sealPreview({ invocation: human(target), environment: "DEV", target, manifest: p.manifest, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved }, w.deps);
+  const result = await sealPreview({ invocation: human(target), environment: "DEV", target, manifest: p.manifest, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved, requester: REQUESTER }, w.deps);
   assert.ok(result.ok, JSON.stringify(result));
   const loaded = await loadSealedPlan(result.path);
   assert.ok(loaded.ok);

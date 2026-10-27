@@ -19,6 +19,8 @@ import { INIT_ARGV } from "../src/teardown/driver/adapters/terraform.js";
 import { SOURCE_COMMIT,
   AWS_REGION, AZURE_MAIN_TF, DEV_TARGET, NOW, POLICY, awsContractJson, awsIdentityEnv, awsRoleArn, awsTargetOf, approvalFor as approval, behave as behaveIn, callsOf, contractJson,
   human, identityEnv, installFakeTerraform, pinPathOf, testFixtureForgeQualificationEvidence, writePinnedContract, writeProject, type Behavior, type Call,
+  REQUESTER,
+  requesterArgs,
 } from "./helpers/apply-fixtures.js";
 import { cdkContractJson } from "./helpers/cdk-fixtures.js";
 
@@ -73,7 +75,7 @@ const azureTf = AZURE_MAIN_TF;
 async function seal(w: World, provider: "AZURE" | "AWS" = "AZURE") {
   const target = provider === "AWS" ? awsTargetOf("DEV") : DEV_TARGET;
   const p = writeProject(fresh("project"), target, provider === "AWS" ? 'resource "aws_s3_bucket" "pilot" {}\n' : azureTf);
-  const result = await sealPreview({ invocation: human(target), environment: "DEV", target, manifest: p.manifest, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved }, w.deps);
+  const result = await sealPreview({ invocation: human(target), environment: "DEV", target, manifest: p.manifest, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved, requester: REQUESTER }, w.deps);
   return { result, project: p, target };
 }
 const loadedContract = (w: World) => loadPilotContract(w.contractPath, pinPathOf(w.contractPath));
@@ -246,7 +248,7 @@ const RUN_CODE = "RUN PROJECT CODE";
 const PHRASE = "EMBED STATE_WRITE DEV";
 const request = (kind: "seal" | "qualify") => {
   const p = writeProject(fresh("project"), DEV_TARGET);
-  return [kind, "--request", json({ environment: "DEV", target: DEV_TARGET, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved }), "--manifest", json(p.manifest)];
+  return [kind, "--request", json({ environment: "DEV", target: DEV_TARGET, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved }), "--manifest", json(p.manifest), ...(kind === "seal" ? requesterArgs() : [])];
 };
 
 for (const kind of ["seal", "qualify"] as const) {
