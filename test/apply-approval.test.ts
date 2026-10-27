@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { consumeApprovals, signApproval, verifyApprovalSet, type VerifyApprovalsInput } from "../src/apply/approval.js";
-import { targetForEnvironment } from "../src/apply/contract.js";
+import { canonicalPublicKey, targetForEnvironment } from "../src/apply/contract.js";
 import { openNonceStore } from "../src/apply/nonces.js";
 import type { ApprovalStatement, ApproverEntry, PilotContract, SignedApproval } from "../src/apply/types.js";
 
@@ -26,6 +26,8 @@ const newKey = () => {
   };
 };
 const keys = { alice: newKey(), bob: newKey(), carol: newKey(), mallory: newKey() };
+/** Every approval set has a verified requester (src/apply/approval.ts); here a person who approves nothing, so the requester rule never fires by accident. */
+const REQUESTER = { requesterId: "requester-fixture", publicKeyCanonical: canonicalPublicKey(newKey().pub) };
 const allowlist: ApproverEntry[] = [
   { id: "alice", publicKeyPem: keys.alice.pub, environments: ["DEV", "QA", "PROD"] },
   { id: "bob", publicKeyPem: keys.bob.pub, environments: ["DEV", "QA", "PROD"] },
@@ -59,7 +61,7 @@ function fixture() {
   made.push(dir);
   const nonces = openNonceStore(dir);
   const input = (approvals: SignedApproval[], over: Partial<VerifyApprovalsInput> = {}): VerifyApprovalsInput => ({
-    approvals, artifactSha256: ARTIFACT, environment: "DEV", target: TARGET, contract: contractFor(), now: NOW, nonces, ...over,
+    approvals, artifactSha256: ARTIFACT, environment: "DEV", target: TARGET, contract: contractFor(), now: NOW, nonces, requester: REQUESTER, ...over,
   });
   return { dir, nonces, input };
 }

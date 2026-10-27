@@ -64,6 +64,8 @@ export type CleanupSummary = {
   target: { account: string; backend: string; workspace: string };
   sourceCommit: string;
   artifactShortId: string;
+  /** Who requested this cleanup (their listed name): part of the proposal ID every approver signs. In PROD the requester cannot approve it. */
+  requestedBy: string;
   requiredApprovals: number;
   deletes: { address: string; type: string; identifier: string | null; ownership: string; observed: string; risk?: string }[];
   alreadyAbsent: { address: string; type: string; identifier: string | null }[];
@@ -154,6 +156,6 @@ export const loadReview = (bundlePath: string): Promise<PilotReply<ReviewReply>>
 export type CleanupReviewReply = { ok: true; cleanup: CleanupSummary } | { ok: false; code: string; message: string };
 export const loadCleanupReview = (proposalPath: string): Promise<PilotReply<CleanupReviewReply>> => send<CleanupReviewReply>("POST", "/review-cleanup", { proposalPath });
 export const startObserve = (sealedPath: string): Promise<PilotReply> => send<PilotState>("POST", "/observe", { sealedPath });
-export const startProposeCleanup = (sealedPath: string): Promise<PilotReply> => send<PilotState>("POST", "/propose-cleanup", { sealedPath });
+export const startProposeCleanup = (input: { sealedPath: string; requesterId: string; keyPath: string }): Promise<PilotReply> => send<PilotState>("POST", "/propose-cleanup", input);
 export const startCleanup = (input: { environment: PilotEnvironment; requestPath: string; manifestPath: string; sealedPath: string; proposalPath: string; approvalPaths: string[] }): Promise<PilotReply> => send<PilotState>("POST", "/cleanup", input);
 export const startVerifyCleanup = (proposalPath: string): Promise<PilotReply> => send<PilotState>("POST", "/verify-cleanup", { proposalPath });

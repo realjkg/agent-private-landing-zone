@@ -147,13 +147,13 @@ export const reviewBundleOf = (s: SealedPlan): ReviewBundle => ({
   provenance: s.provenance, unit: s.unit, requesterId: s.requesterId, request: s.request,
 });
 
-const REQUESTER_ID = /^[A-Za-z0-9._@+-]{1,64}$/;
+export const REQUESTER_ID = /^[A-Za-z0-9._@+-]{1,64}$/;
 const REQUEST_NONCE = /^[a-f0-9]{32}$/;
 /**
  * A requester signature with exactly its fields, naming this record's own artifact, environment and requester. Whether it
  * verifies against the allowlist is the driver's and the approver's check (`verifyRequestSignature`), which needs the contract.
  */
-function wellFormedRequest(value: unknown): value is SealedRequest {
+export function wellFormedRequest(value: unknown): value is SealedRequest {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const r = value as Record<string, unknown>;
   const st = r.statement as Record<string, unknown> | undefined;

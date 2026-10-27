@@ -1,10 +1,14 @@
+import { randomBytes } from "node:crypto";
+
 import { DATA_BEARING_TYPES, cloudControlMappingOf } from "../observe/verify.js";
 import { canonicalJson } from "../teardown/manifest.js";
 import type { ResolvedTarget } from "../teardown/driver/types.js";
 import { sha256 } from "../util/sha256.js";
 import { COMMIT, ENVIRONMENTS, HASH, INVISIBLE, stripInvisible } from "./constants.js";
 import type { BlueprintRecord, ObservationRecord, ObservedResource } from "./run-records.js";
-import { PILOT_CHANNELS, type ApplyEnvironment, type ApplyEvidence, type ApplyRefusalCode, type EngineId, type PilotChannel, type PilotContract, type PlanChange, type ProviderId } from "./types.js";
+import { PILOT_CHANNELS, type ApplyEnvironment, type ApplyEvidence, type ApplyRefusalCode, type EngineId, type PilotChannel, type PilotContract, type PlanChange, type ProviderId, type SealedRequest } from "./types.js";
+import { REQUESTER_MAY_APPROVE, signRequest } from "./approval.js";
+import { REQUESTER_ID, wellFormedRequest } from "./seal.js";
 import { isResourceAddress } from "./terraform.js";
 import type { AwsTarget } from "./providers/aws.js";
 import type { AzureTarget } from "./providers/azure.js";
@@ -33,6 +37,13 @@ import { awsLeafConditionProblem, awsLeafEntryOf, awsParentIdOf, isAwsLeafType, 
  * never mapped, from an observation that could not decide, or from an observation that found something unexpected.
  * Approvers sign the proposal's hash under the cleanup domain (src/apply/approval.ts); the cleanup driver destroys the
  * proposal's addresses and nothing else, and refuses when the engine's destroy plan differs from them.
+ *
+ * A cleanup has a requester, as an apply does (owner decision 6440801434, item 1: production cleanup approvals use the same
+ * quorum as production apply). The requester's id is part of the proposal's hash, so every approver signs who requested;
+ * the requester signs that hash under the cleanup request domain with their allowlisted key (`signCleanupProposal`), and
+ * the signature sits beside the hashed fields. In PROD no cleanup approval may come from the requester's id or key, and two
+ * distinct approvals are required, through the same check as an apply (`verifyApprovalSet`, `REQUESTER_MAY_APPROVE`).
+ * A proposal made before cleanup requesters existed (schema 1) is refused everywhere.
  */
 /**
  * TYPE_UNREVIEWED (AWS; delegated owner decision 6433391052, item 1): the run created it, but its type is not on the reviewed leaf
@@ -77,7 +88,8 @@ export type ExcludedResource = { address: string; type: string; identifier: stri
 export type AbsentResource = { address: string; type: string; identifier: string | null };
 
 export type CleanupProposal = {
-  schemaVersion: 1;
+  /** 2 since a cleanup has a requester; a schema 1 proposal (no requester) is refused everywhere. */
+  schemaVersion: 2;
   kind: "CLEANUP_PROPOSAL";
   /** The proposal's own identity: the hash approvers sign, and what the cleanup driver and its evidence name. */
   proposalSha256: string;
@@ -106,6 +118,13 @@ export type CleanupProposal = {
   excluded: ExcludedResource[];
   /** Material risks a person reads before approving: data loss, deletion windows, dependents the engine may add. */
   risks: string[];
+  /** Who requested this cleanup, by allowlist id. Bound by the proposal's hash, so every approver signs it; in PROD no approval may come from this id or its key. */
+  requesterId: string;
+  /**
+   * The requester's signature over the proposal's hash, environment and a nonce (CLEANUP_REQUEST domain). Beside the hashed
+   * fields, since it signs the hash. Null only while the proposal is being built, before it is signed; never in a stored proposal.
+   */
+  request: SealedRequest | null;
   authorization: {
     /** Signatures are made under the cleanup domain; an apply approval never verifies here. */
     subject: "CLEANUP";
@@ -344,10 +363,24 @@ function protectionOf(entry: { type: string; id: string | null; arn: string | nu
 
 type ProposalFields = Omit<CleanupProposal, "proposalSha256">;
 
-/** The proposal's identity: every field but itself, canonically. The one definition; building and verifying both use it. */
+/**
+ * The proposal's identity: every field but itself and the requester's signature (which signs this hash), canonically. The
+ * requester's id is hashed. The one definition; building and verifying both use it.
+ */
 export function computeProposalSha256(fields: ProposalFields): string {
-  const { proposalSha256: _ignored, ...rest } = fields as CleanupProposal;
+  const { proposalSha256: _ignored, request: _signature, ...rest } = fields as CleanupProposal;
   return sha256(canonicalJson(rest as never));
+}
+
+/**
+ * Signs a built proposal for its requester under the cleanup request domain. The caller has already checked that the id is on
+ * the allowlist and the key is that entry's own (`requesterKeyRefusal`); the driver and `approve` verify the signature again.
+ */
+export function signCleanupProposal(proposal: CleanupProposal, privateKeyPem: string): CleanupProposal {
+  const request = signRequest({
+    schemaVersion: 1, requesterId: proposal.requesterId, artifactSha256: proposal.proposalSha256, environment: proposal.environment, nonce: randomBytes(16).toString("hex"),
+  }, privateKeyPem, "CLEANUP_REQUEST");
+  return { ...proposal, request };
 }
 
 export type ProposalInput = {
@@ -364,6 +397,8 @@ export type ProposalInput = {
   engineVersion: string;
   env: NodeJS.ProcessEnv;
   now: Date;
+  /** Who requests this cleanup, by allowlist id: hashed into the proposal. The signature is added by `signCleanupProposal`. */
+  requesterId: string;
 };
 
 /** Builds the proposal for one run, or says why none can be made. Nothing here reads a cloud or runs an engine. */
@@ -463,10 +498,11 @@ export function buildCleanupProposal(input: ProposalInput): { ok: true; proposal
   const required = contract.requiredApprovals[evidence.environment];
   if (required === undefined) return refuse("TARGET_NOT_IN_CONTRACT", "The pilot contract does not enable " + evidence.environment + ".");
   const fields: ProposalFields = {
-    schemaVersion: 1, kind: "CLEANUP_PROPOSAL", artifactSha256: evidence.artifactSha256, applyEvidenceSha256: input.applyEvidenceSha256, blueprintSha256: input.blueprintSha256,
+    schemaVersion: 2, kind: "CLEANUP_PROPOSAL", artifactSha256: evidence.artifactSha256, applyEvidenceSha256: input.applyEvidenceSha256, blueprintSha256: input.blueprintSha256,
     observationSha256: input.observationSha256, provider: contract.provider, engine: contract.engine, environment: evidence.environment, target: { ...evidence.target }, channel: input.channel,
     contractSha256: evidence.contractSha256, sourceCommit: evidence.sourceCommit, engineVersion: input.engineVersion, createdAt: input.now.toISOString(), unitId: record.unitId,
     deletes, alreadyAbsent, excluded, risks: [...risks].sort(), authorization: { subject: "CLEANUP", requiredApprovals: required, executesAs: "APPLY" },
+    requesterId: input.requesterId, request: null,
   };
   return { ok: true, proposal: { ...fields, proposalSha256: computeProposalSha256(fields) } };
 }
@@ -482,16 +518,20 @@ const hashText = (value: unknown): value is string => typeof value === "string" 
 const idText = (value: unknown): boolean => value === null || text(value, 2048);
 const OWNERSHIPS: readonly Ownership[] = ["RUN_CREATED", "PRE_EXISTING", "REPLACED_PRE_EXISTING", "IMPORTED", "NOT_IN_PLAN", "TYPE_UNREVIEWED", ...PROTECTED_OWNERSHIPS];
 const KEYS = ["schemaVersion", "kind", "proposalSha256", "artifactSha256", "applyEvidenceSha256", "blueprintSha256", "observationSha256", "provider", "engine", "environment", "target", "unitId",
-  "channel", "contractSha256", "sourceCommit", "engineVersion", "createdAt", "deletes", "alreadyAbsent", "excluded", "risks", "authorization"];
+  "channel", "contractSha256", "sourceCommit", "engineVersion", "createdAt", "deletes", "alreadyAbsent", "excluded", "risks", "authorization", "requesterId", "request"];
 
 /** Every reason a value is not a well-formed cleanup proposal (shape only; the hash is checked by `verifyCleanupProposal`). */
 export function proposalProblems(value: unknown): string[] {
   if (!isRecord(value)) return ["proposal: expected an object"];
+  // A proposal made before a cleanup had a requester (schema 1) is refused everywhere, as a schema 1 sealed plan is (#286; owner decision 6440801434, item 1).
+  if (value.schemaVersion === 1 && value.kind === "CLEANUP_PROPOSAL") return ["proposal: made before cleanup requesters existed (schema 1); propose the cleanup again with the requester's key"];
   const problems: string[] = [];
   for (const key of Object.keys(value)) if (!KEYS.includes(key)) problems.push("proposal." + key + ": not part of a proposal");
   for (const key of KEYS) if (!Object.hasOwn(value, key)) problems.push("proposal." + key + ": missing");
   if (problems.length > 0) return problems;
-  if (value.schemaVersion !== 1 || value.kind !== "CLEANUP_PROPOSAL") problems.push("proposal: not a schemaVersion 1 CLEANUP_PROPOSAL");
+  if (value.schemaVersion !== 2 || value.kind !== "CLEANUP_PROPOSAL") problems.push("proposal: not a schemaVersion 2 CLEANUP_PROPOSAL");
+  if (typeof value.requesterId !== "string" || !REQUESTER_ID.test(value.requesterId)) problems.push("proposal.requesterId: not an allowlist id");
+  if (!wellFormedRequest(value.request)) problems.push("proposal.request: the requester's signature is missing or malformed");
   if (![value.proposalSha256, value.artifactSha256, value.applyEvidenceSha256, value.blueprintSha256, value.observationSha256, value.contractSha256].every(hashText)) problems.push("proposal: a hash is not a SHA-256 digest");
   if (!["AWS", "AZURE"].includes(value.provider as string) || !["TERRAFORM", "CDK"].includes(value.engine as string)) problems.push("proposal: provider or engine is unknown");
   if (!ENVIRONMENTS.includes(value.environment as ApplyEnvironment) || !PILOT_CHANNELS.includes(value.channel as PilotChannel)) problems.push("proposal: environment or channel is unknown");
@@ -533,6 +573,12 @@ export function verifyCleanupProposal(value: unknown): { ok: true; proposal: Cle
   if (computeProposalSha256(proposal) !== proposal.proposalSha256) {
     return refuse("PROPOSAL_INVALID", "The cleanup proposal does not match its own hash; it was altered after it was made. Propose the cleanup again.");
   }
+  // The request names this proposal's own hash, environment and requester; anything else was moved or edited. Whether the signature verifies against the
+  // allowlist needs the contract: the driver and `approve` check it (`verifyRequestSignature`, CLEANUP_REQUEST).
+  const statement = (proposal.request as SealedRequest).statement;
+  if (statement.artifactSha256 !== proposal.proposalSha256 || statement.environment !== proposal.environment || statement.requesterId !== proposal.requesterId) {
+    return refuse("PROPOSAL_INVALID", "The cleanup proposal's requester signature names another proposal, environment or requester; it was moved or edited. Propose the cleanup again.");
+  }
   return { ok: true, proposal };
 }
 
@@ -542,6 +588,7 @@ export function proposalLines(proposal: CleanupProposal): string[] {
   return [
     "  proposal        " + proposal.proposalSha256,
     "  cleans up       apply artifact " + proposal.artifactSha256.slice(0, 12) + " in " + proposal.environment + " (" + proposal.provider + " " + proposal.engine + ")",
+    "  requested by    " + stripInvisible(proposal.requesterId) + (REQUESTER_MAY_APPROVE[proposal.environment] === true ? "" : " (in " + proposal.environment + " the requester cannot approve this cleanup)"),
     "  executes as     the " + proposal.authorization.executesAs + " identity, bound to exactly the list below; " + proposal.authorization.requiredApprovals + " cleanup approval(s) required",
     "  deletes (" + proposal.deletes.length + ")",
     ...(proposal.deletes.length === 0 ? ["    (nothing: every resource this run created is already gone)"] : proposal.deletes.map((x) =>

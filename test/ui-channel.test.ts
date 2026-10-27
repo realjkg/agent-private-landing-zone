@@ -393,6 +393,35 @@ test("/seal refuses a missing or unusable requester id, a missing key path and a
   await call(port, "POST", "/pilot/cancel", { body: {} });
 });
 
+test("/propose-cleanup refuses a missing or unusable requester id, a missing key path and any extra field before a job exists (owner decision 6440801434, item 1)", async () => {
+  const w = await world();
+  const { port } = await serve(w);
+  await choose(port);
+  const valid = { sealedPath: join(fresh("sealed"), "sealed-plan.json"), requesterId: REQUESTER.requesterId, keyPath: requesterKeyFile() };
+  const { requesterId: _requesterId, ...withoutRequester } = valid;
+  const { keyPath: _keyPath, ...withoutKey } = valid;
+  const refused: [string, Record<string, unknown>][] = [
+    ["missing requesterId", withoutRequester],
+    ["empty requesterId", { ...valid, requesterId: "" }],
+    ["requesterId with a space", { ...valid, requesterId: "car ol" }],
+    ["requesterId with a newline", { ...valid, requesterId: "carol\nalice" }],
+    ["requesterId as an array", { ...valid, requesterId: [REQUESTER.requesterId] }],
+    ["missing keyPath", withoutKey],
+    ["empty keyPath", { ...valid, keyPath: "" }],
+    ["keyPath as a flag", { ...valid, keyPath: "--yes" }],
+    ["extra privateKeyPem field", { ...valid, privateKeyPem: REQUESTER.privateKeyPem }],
+  ];
+  for (const [label, body] of refused) {
+    const reply = await call(port, "POST", "/pilot/propose-cleanup", { body });
+    assert.equal(reply.status, 400, label + " -> " + reply.status);
+    assert.equal((await stateOf(port)).run, null, label + ": no job was started");
+  }
+  // The same body with every field valid starts the step (which then stops on the missing prepared change file), so each refusal above came from the one field it changed.
+  assert.equal((await call(port, "POST", "/pilot/propose-cleanup", { body: valid })).status, 202);
+  const done = (await finished(port)).run!.result!;
+  assert.notEqual(done.exit, 0);
+});
+
 test("the job route still refuses the pilot: the catalog's apply card is a handoff, and a job for it is not accepted", async () => {
   const w = await world();
   let ran = 0;
@@ -1083,7 +1112,7 @@ async function observeAndProposeInConsole(port: number, sealed: Sealed) {
   const observed = (await finished(port)).run!.result!;
   assert.equal(observed.exit, 0, JSON.stringify(observed));
   const observation = observed.data as { verdict: string; resources: { address: string; result: string }[]; inventory: string };
-  assert.equal((await call(port, "POST", "/pilot/propose-cleanup", { body: { sealedPath: sealed.path } })).status, 202);
+  assert.equal((await call(port, "POST", "/pilot/propose-cleanup", { body: { sealedPath: sealed.path, requesterId: REQUESTER.requesterId, keyPath: requesterKeyFile() } })).status, 202);
   const proposed = (await finished(port)).run!.result!;
   assert.equal(proposed.exit, 0, JSON.stringify(proposed));
   const data = proposed.data as { path: string; proposal: { proposalSha256: string } };

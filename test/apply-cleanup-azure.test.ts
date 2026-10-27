@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { signApproval } from "../src/apply/approval.js";
-import { buildCleanupProposal, computeProposalSha256, protectedDeletionIn, verifyCleanupProposal, type CleanupProposal } from "../src/apply/cleanup-proposal.js";
+import { buildCleanupProposal, protectedDeletionIn, signCleanupProposal, verifyCleanupProposal, type CleanupProposal } from "../src/apply/cleanup-proposal.js";
 import { CLEANUP_SUFFIX, loadPilotContract, pilotContractSha256 } from "../src/apply/contract.js";
 import { runApply, runCleanup, sealPreview, type ApplyDeps, type ApplyRequest } from "../src/apply/driver.js";
 import { readCleanupEvidence } from "../src/apply/ledger.js";
@@ -24,7 +24,7 @@ import { sha256 } from "../src/util/sha256.js";
 import {
   ARM_ACCESS_TOKEN_CANARY, ARM_FEDERATED_TOKEN_CANARY, CANARIES, DEV_TARGET, NOW, POLICY, SOURCE_COMMIT, STATE_CANARY, approvalFor, azureStateResource, behave as behaveIn, callsOf, contractJson,
   fakeArmHttp, human, identityEnv, installFakeTerraform, keys, pinPathOf, targetOf, testFixtureForgeQualificationEvidence, writePinnedContract, writeProject, type ArmBehavior, type Behavior,
-  REQUESTER,
+  REQUESTER, reHashedProposal,
 } from "./helpers/apply-fixtures.js";
 
 // The Azure Terraform observe and cleanup steps (docs/observe-and-cleanup.md; docs/act-pilot-plan.md "Cleanup of pilot-created
@@ -139,7 +139,7 @@ async function applied(w: World) {
   assert.ok(result.ok, JSON.stringify(result));
   return { s, evidence: result.evidence };
 }
-const build = (w: World, s: Sealed, records: Awaited<ReturnType<typeof loadRunRecords>> & { ok: true }) => buildCleanupProposal({
+const build = (w: World, s: Sealed, records: Awaited<ReturnType<typeof loadRunRecords>> & { ok: true }) => buildCleanupProposal({ requesterId: REQUESTER.requesterId,
   ...records, changes: s.sealed.changes, channel: "CLI", contract: contractJson(KILL) as never, engineVersion: s.sealed.engineVersion, env: w.deps.env!, now: new Date(NOW.getTime() + 120_000),
 });
 async function proposed(w: World) {
@@ -150,7 +150,7 @@ async function proposed(w: World) {
   assert.ok(records.ok, JSON.stringify(records));
   const built = build(w, run.s, records);
   assert.ok(built.ok, JSON.stringify(built));
-  return { ...run, observation, records, proposal: built.proposal };
+  return { ...run, observation, records, proposal: signCleanupProposal(built.proposal, REQUESTER.privateKeyPem) };
 }
 const cleanupApproval = (proposal: CleanupProposal, who: keyof typeof keys): SignedApproval => signApproval({
   schemaVersion: 1, artifactSha256: proposal.proposalSha256, environment: proposal.environment, target: proposal.target, approverId: who,
@@ -488,7 +488,7 @@ test("Azure resource groups are never deleted: a group this run created, through
   const row = (address: string, type: string, identifier: string) => ({ address, type, identifier, ownership: "RUN_CREATED" as const, observed: "VERIFIED" as const });
   for (const [address, type, id] of [["azurerm_resource_group.pilot", "azurerm_resource_group", RG], ["azapi_resource.rg", "azapi_resource", AZAPI_RG], ["azurerm_subscription.vended", "azurerm_subscription", ALIAS], ["azurerm_management_group.platform", "azurerm_management_group", MG]] as const) {
     const fields = { ...run.proposal, deletes: [...run.proposal.deletes, row(address, type, id)].sort((a, b) => (a.address < b.address ? -1 : 1)), excluded: run.proposal.excluded.filter((x) => x.address !== address) };
-    const forged = { ...fields, proposalSha256: computeProposalSha256(fields) };
+    const forged = reHashedProposal(fields);
     assert.ok(verifyCleanupProposal(forged).ok, address + ": self-consistent");
     refused(await cleanup(w, run, [cleanupApproval(forged, "alice")], forged), "PROPOSAL_INVALID");
   }
@@ -513,7 +513,7 @@ test("Azure cleanup denied: a forged, re-hashed proposal naming the backend acco
   const honest = run.proposal;
   const rehashed = (edit: Partial<CleanupProposal>): CleanupProposal => {
     const fields = { ...honest, ...edit, deletes: [...(edit.deletes ?? honest.deletes)].sort((a, b) => (a.address < b.address ? -1 : 1)) };
-    return { ...fields, proposalSha256: computeProposalSha256(fields) };
+    return reHashedProposal(fields);
   };
   const row = (address: string, type: string, identifier: string) => ({ address, type, identifier, ownership: "RUN_CREATED" as const, observed: "VERIFIED" as const });
   const without = (address: string) => honest.excluded.filter((x) => x.address !== address);
@@ -690,7 +690,7 @@ test("Azure identity, authorization and deployment-history objects are never del
     ["azapi_resource.mg_deploy", "azapi_resource", MG_DEPLOYMENT], ["azurerm_resource_group_policy_assignment.pilot", "azurerm_resource_group_policy_assignment", POLICY_ASSIGNED],
     ["azurerm_management_lock.pilot", "azurerm_management_lock", LOCK], ["azapi_resource.exemption", "azapi_resource", AZAPI_POLICY]] as const) {
     const fields = { ...run.proposal, deletes: [...run.proposal.deletes, row(address, type, id)].sort((a, b) => (a.address < b.address ? -1 : 1)), excluded: run.proposal.excluded.filter((x) => x.address !== address) };
-    const forged = { ...fields, proposalSha256: computeProposalSha256(fields) };
+    const forged = reHashedProposal(fields);
     assert.ok(verifyCleanupProposal(forged).ok, address);
     refused(await cleanup(w, run, [cleanupApproval(forged, "alice")], forged), "PROPOSAL_INVALID");
   }
@@ -891,7 +891,7 @@ test("ARM ids are classified by position (review 6410149770, B3): an authorizati
   // A forged proposal naming one never executes.
   for (const [address, type, id] of [["azapi_resource.role_in_providers", "azapi_resource", ROLE_P], ["azapi_resource.lock_on_providers", "azapi_resource", LOCK_P], ["azapi_resource.deploy_in_providers", "azapi_resource", DEPLOY_P], ["azurerm_resource_group.providers", "azurerm_resource_group", RG_P]] as const) {
     const fields = { ...run.proposal, deletes: [...run.proposal.deletes, { address, type, identifier: id, ownership: "RUN_CREATED" as const, observed: "VERIFIED" as const }].sort((a, b) => (a.address < b.address ? -1 : 1)), excluded: run.proposal.excluded.filter((x) => x.address !== address) };
-    const forged = { ...fields, proposalSha256: computeProposalSha256(fields) };
+    const forged = reHashedProposal(fields);
     assert.ok(verifyCleanupProposal(forged).ok, address);
     behave({ showResources: creates, stateResources: state });
     refused(await cleanup(w, run, [cleanupApproval(forged, "alice")], forged), "PROPOSAL_INVALID");

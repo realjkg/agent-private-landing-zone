@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import PilotWizard, { BlockedNotice, ChangeList } from "../src/operator-ui/app/pilot/PilotWizard";
-import { CleanupList, LeftoversTable } from "../src/operator-ui/app/pilot/CleanupStep";
+import CleanupStep, { CleanupList, LeftoversTable } from "../src/operator-ui/app/pilot/CleanupStep";
 import { forgetPilotToken, type PilotPath, type PilotRun, type PreflightCheck, type PreparedFiles, type ReviewSummary } from "../src/operator-ui/app/pilot/pilot-api";
 import {
   BLOCKED, CLI_COMMANDS, CODE_COPY, COPY, RESULT_COPY, STEP_TITLES, classifyResult, describeCheck, describeCounts, describeMismatch, dialogCopy, dispositionWord, ownershipWord, reasonFor, reasonWord, retentionOwnerWord,
@@ -911,6 +911,27 @@ describe("the words are plain", () => {
   });
 });
 
+describe("step 7: the cleanup requester signs the proposal", () => {
+  test("the proposal is written only with the requester's name and key file, and the page sends both with the prepared change file", async () => {
+    const fake = install({ path: "UI" });
+    const observation = { verdict: "VERIFIED", inventory: "COMPLETE", observedAt: "2026-10-12T00:00:00.000Z", resources: [], missingFromState: [], unexpected: [] };
+    const begin = async (action: () => Promise<unknown>) => { await action(); };
+    render(<CleanupStep level="BEGINNER" environment="PROD" serverPath="UI" active={false} run={doneRun("observe", { exit: 0, data: observation })} sealedPath="/runs/sealed.json"
+      setSealedPath={() => undefined} requestPath="/r.json" manifestPath="/m.json" begin={begin as never} />);
+    const write = await screen.findByRole("button", { name: COPY.proposeRun });
+    expect((write as HTMLButtonElement).disabled, "no requester yet").toBe(true);
+    typeInto(COPY.proposeRequesterLabel, "carol");
+    expect((write as HTMLButtonElement).disabled, "no key file yet").toBe(true);
+    typeInto(COPY.proposeKeyLabel, "/home/carol/.keys/carol.pem");
+    expect((write as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(write);
+    await waitFor(() => expect(posts(fake, "/propose-cleanup")).toHaveLength(1));
+    expect(posts(fake, "/propose-cleanup")[0].body).toEqual({ sealedPath: "/runs/sealed.json", requesterId: "carol", keyPath: "/home/carol/.keys/carol.pem" });
+    expect(COPY.proposeRequesterHelp).toMatch(/cannot also approve it/);
+    expect(jargonIn(COPY.proposeRequesterHelp + " " + COPY.proposeKeyHelp)).toEqual([]);
+  });
+});
+
 describe("step 7: the cleanup lists say only what the records say", () => {
   /** The ownership classes and retention owners the backend can emit, read from its one definition (src/apply/cleanup-proposal.ts). */
   const union = (name: string): string[] => [...read("src/apply/cleanup-proposal.ts").split("export type " + name + " =")[1].split(";")[0].matchAll(/"([A-Z_]+)"/g)].map((m) => m[1]);
@@ -920,7 +941,7 @@ describe("step 7: the cleanup lists say only what the records say", () => {
   const PILOT_KEPT = ["PROTECTED_BACKEND", "PROTECTED_IDENTITY", "PROTECTED_DEPLOYMENT", "RETAINED_GROUP", "CONTAINS_OTHERS"];
   const ownerOf = (ownership: string) => (PILOT_KEPT.includes(ownership) ? "PILOT_OWNER" : "ENVIRONMENT_OWNER");
   const summary = (deletes: { address: string; type: string; identifier: string; ownership: string; observed: string }[], excluded: { address: string; type: string; identifier: string; ownership: string; reason: string; retainedBy: string }[]) => ({
-    shortId: "0123456789ab", proposalSha256: "0".repeat(64), environment: "DEV" as const, target: { account: "acct", backend: "b", workspace: "default" }, sourceCommit: "c".repeat(40), artifactShortId: "0123456789ab", requiredApprovals: 1,
+    shortId: "0123456789ab", proposalSha256: "0".repeat(64), environment: "DEV" as const, target: { account: "acct", backend: "b", workspace: "default" }, sourceCommit: "c".repeat(40), artifactShortId: "0123456789ab", requestedBy: "carol", requiredApprovals: 1,
     deletes, alreadyAbsent: [], excluded, risks: ["a risk"], lines: ["line"],
   });
   const NEVER = /never (?:removes|removed|deletes|deleted)|were never on the list|whatever this change did/;
@@ -956,6 +977,8 @@ describe("step 7: the cleanup lists say only what the records say", () => {
     const all = summary([{ address: "thing.one", type: "a_thing", identifier: "id-1", ownership: "RUN_CREATED", observed: "VERIFIED" }],
       KEPT.map((ownership, index) => ({ address: "kept.k" + index, type: "a_kind", identifier: "id-k" + index, ownership, reason: "because " + index, retainedBy: ownerOf(ownership) })));
     const everything = render(<CleanupList cleanup={all} />);
+    // Who requested the cleanup is shown with the proposal: their id is part of the proposal every approver signs.
+    expect(everything.container.textContent).toContain(COPY.proposeRequestedBy + "carol");
     const note = everything.container.querySelector("[data-retained-note]")!.textContent ?? "";
     expect(note).toContain(COPY.proposeWillDelete);
     for (const ownership of KEPT) {

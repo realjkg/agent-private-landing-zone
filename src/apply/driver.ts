@@ -604,7 +604,7 @@ async function requireProposalDerivedFromRecords(
   }
   const rebuilt = buildCleanupProposal({
     applyEvidence: applied, applyEvidenceSha256: proposal.applyEvidenceSha256, blueprint, blueprintSha256: proposal.blueprintSha256, observation, observationSha256: proposal.observationSha256,
-    changes, channel: proposal.channel, contract, engineVersion: proposal.engineVersion, env, now: new Date(proposal.createdAt),
+    changes, channel: proposal.channel, contract, engineVersion: proposal.engineVersion, env, now: new Date(proposal.createdAt), requesterId: proposal.requesterId,
   });
   if (!rebuilt.ok) return rebuilt;
   if (computeProposalSha256(rebuilt.proposal) !== proposal.proposalSha256) {
@@ -624,7 +624,9 @@ const LEFT_CHANGE_SET = " The removal change set created to plan this is left un
  * resources"). In order and fail closed: the pilot contract enables ACT, the kill switch is off, a person invoked it, the
  * target is the contract's, the proposal verifies against its own hash and names this environment, target, contract,
  * channel and the running source commit, the apply it cleans up is recorded as SUCCEEDED and is the one the proposal names,
- * the proposal was not executed before, the approvals verify under the cleanup domain (an apply approval never does), the
+ * the proposal was not executed before, the cleanup requester's signature verifies under the cleanup request domain against
+ * the allowlist, the approvals verify under the cleanup domain (an apply approval never does) with the same requester rule
+ * and quorum as an apply (in PROD two distinct approvers, neither the requester, by id or key), the
  * cleanup adapter is qualified by real-engine evidence and the identities are configured, the proposal is reserved in the
  * ledger, the engine plans a destroy of exactly the proposal's addresses, that plan would delete no protected object (a
  * resource group, an identity or authorization object, deployment history, the state backend, a subscription or management
@@ -689,9 +691,16 @@ export async function runCleanup(request: CleanupRequest, deps: ApplyDeps): Prom
   const fresh = requireNotExecuted(proposal.proposalSha256, evidenceDir);
   if (!fresh.ok) return fresh;
 
+  // The cleanup's requester (owner decision 6440801434, item 1): their signature over the proposal's hash verifies against the allowlist under the
+  // cleanup request domain, and the approval set is judged with them as requester, by the same check an apply uses.
+  const requested = verifyRequestSignature({
+    request: proposal.request, artifactSha256: proposal.proposalSha256, environment: proposal.environment, requesterId: proposal.requesterId, contract, subject: "CLEANUP_REQUEST",
+  });
+  if (!requested.ok) return refuse(requested.code, requested.message + " Nothing was run or consumed.");
   const nonces = deps.nonces ?? openNonceStore();
   const verdict = verifyApprovalSet({
     approvals: request.approvals, artifactSha256: proposal.proposalSha256, environment: proposal.environment, target: proposal.target, contract, now: now(), nonces, subject: "CLEANUP",
+    requester: { requesterId: requested.requesterId, publicKeyCanonical: requested.publicKeyCanonical },
   });
   if (!verdict.ok) return refuse(verdict.code, verdict.message);
   if (verdict.approvers.length < proposal.authorization.requiredApprovals) {
@@ -767,8 +776,14 @@ export async function runCleanup(request: CleanupRequest, deps: ApplyDeps): Prom
     if (late) return late;
     const readmitted = admit(deps, request);
     if (!readmitted.ok) return readmitted;
+    // The requester again, against the re-admitted contract, right before the approvals are consumed.
+    const reconfirmedRequest = verifyRequestSignature({
+      request: proposal.request, artifactSha256: proposal.proposalSha256, environment: proposal.environment, requesterId: proposal.requesterId, contract: readmitted.contract, subject: "CLEANUP_REQUEST",
+    });
+    if (!reconfirmedRequest.ok) return refuse(reconfirmedRequest.code, reconfirmedRequest.message + " Nothing was destroyed and no approval was consumed.");
     const confirmed = verifyApprovalSet({
       approvals: request.approvals, artifactSha256: proposal.proposalSha256, environment: proposal.environment, target: proposal.target, contract: readmitted.contract, now: now(), nonces, subject: "CLEANUP",
+      requester: { requesterId: reconfirmedRequest.requesterId, publicKeyCanonical: reconfirmedRequest.publicKeyCanonical },
     });
     if (!confirmed.ok) return refuse(confirmed.code, confirmed.message);
     const consumed = consumeApprovals(nonces, request.approvals);
@@ -792,6 +807,7 @@ export async function runCleanup(request: CleanupRequest, deps: ApplyDeps): Prom
     const evidence: CleanupEvidence = {
       schemaVersion: 1, kind: "CLEANUP", environment: proposal.environment, target: { ...proposal.target }, proposalSha256: proposal.proposalSha256, artifactSha256: proposal.artifactSha256,
       applyEvidenceSha256: proposal.applyEvidenceSha256, contractSha256: proposal.contractSha256, sourceCommit: proposal.sourceCommit, approvals: confirmed.approvers,
+      requester: { requesterId: reconfirmedRequest.requesterId, nonce: (proposal.request as NonNullable<CleanupProposal["request"]>).statement.nonce },
       adapter: { adapterVersion: engine.cleanupAdapter.adapterVersion, argvDigest: engine.cleanupAdapter.argvDigest }, toolVersions: { engine: proposal.engineVersion }, deletes: addresses,
       outcome, exitCode: destroyed.exitCode, startedAt, finishedAt: now().toISOString(),
       authority: { infrastructureAct: "PILOT_ENABLED", mutation: engine.cleanupMutation, executedAs: "APPLY", agentInitiated: false }, ...(kept.recovery ? { recovery: kept.recovery } : {}),
