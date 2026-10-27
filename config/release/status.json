@@ -142,14 +142,15 @@
       "gate": "preview:bicep-azure-brownfield",
       "candidate": null,
       "owner": "OWNER",
-      "status": "OUT_OF_SCOPE",
+      "status": "BLOCKED",
       "evidenceMode": null,
       "evidenceRefs": [],
-      "testedScope": "Not tested for this release; excluded by the owner's scope decision.",
+      "testedScope": "Real Bicep what-if output against the Azure brownfield sandbox, with no deployment and no infrastructure change, produced from the candidate commit and bound to the candidate commit, the pinned programs and the what-if bytes.",
       "invalidatedBy": [
-        "the owner adds the path to the release scope"
+        "the candidate commit changes",
+        "the Bicep or Azure CLI version or the Bicep path's engine changes"
       ],
-      "nextAction": ""
+      "nextAction": "Back in scope by the owner's rebaseline of the narrow ACT-DEV release (#39, 6443352284: Azure Bicep / ARM is path 4). Waits on three pieces that are not on main: the check-only az and bicep pins (#309), the BICEP deployment-stack engine (#316), and the BICEP engine id with its admission (after #313); until then no contract can name the engine, so the evidence runner reports this gate as NO_PRODUCER. Then it waits on the azure-provider gate's sandbox, and closes only when a run from the candidate commit with the pinned programs writes LIVE evidence that the admission review accepts. Synthetic evidence is labeled SYNTHETIC and is refused by the gate."
     },
     {
       "gate": "preview:cloudformation-aws-existing",
