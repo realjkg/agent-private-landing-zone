@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, readdirSync, statSync } from "node:fs";
+import { lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { createConnection } from "node:net";
 import { join } from "node:path";
 
@@ -44,32 +44,85 @@ export function installedPath(home: string, tool: ToolId, version: string, binar
 }
 
 /**
- * The versions of `tool` this app installed, newest first: `~/.alz/tools/<tool>/<version>` folders that hold the binary.
- * Only real folders count (no link on the way from the home folder), named like a pinned version, so an unfinished
- * `<version>.partial-<pid>` folder or anything a person put there is never mistaken for an install.
+ * The completion marker an install writes as its last step before the version folder is put in place, and the marker a
+ * removal writes first. A version folder is an install only with a valid completion marker beside its program; a folder
+ * with the program and no marker was installed before completion checks existed (reported, never read as verified and never
+ * removed on its own); any other folder is unfinished (an interrupted install or removal) and is replaced or finished, never
+ * read as an install.
  */
-export function appInstalledVersions(home: string, tool: ToolId, binary: string): string[] {
+export const INSTALL_MARKER = ".alz-installed.json";
+export const REMOVING_MARKER = ".alz-removing";
+export type InstallMarker = { schemaVersion: 1; tool: ToolId; version: string; binary: string; sha256: string; completedAt: string };
+export type InstallState = "INSTALLED" | "LEGACY" | "UNFINISHED" | "REMOVING" | "ABSENT";
+/** The plain words for a state that is not an install, as every check and menu says them. */
+export const INSTALL_STATE_WORDS: Readonly<Record<Exclude<InstallState, "INSTALLED" | "ABSENT">, string>> = {
+  LEGACY: "installed before completion checks, not verified",
+  UNFINISHED: "an earlier install did not finish",
+  REMOVING: "an earlier removal did not finish",
+};
+
+/** The real folder at home/<components...>, or undefined when any step below the home is missing, a link or not a folder. */
+export function realFolder(home: string, components: readonly string[]): string | undefined {
   let dir = home;
-  for (const component of [".alz", "tools", tool]) {
+  for (const component of components) {
     dir = join(dir, component);
     try {
       const entry = lstatSync(dir);
-      if (entry.isSymbolicLink() || !entry.isDirectory()) return [];
-    } catch { return []; }
+      if (entry.isSymbolicLink() || !entry.isDirectory()) return undefined;
+    } catch { return undefined; }
   }
-  const versions = readdirSync(dir).filter((name) => {
-    if (!/^\d+\.\d+\.\d+$/.test(name)) return false;
-    try {
-      const folder = lstatSync(join(dir, name));
-      const file = lstatSync(join(dir, name, binary));
-      return folder.isDirectory() && !folder.isSymbolicLink() && file.isFile();
-    } catch { return false; }
-  });
+  return dir;
+}
+
+/** The completion marker in `folder`, when it is valid for this tool, version and program. */
+export function readInstallMarker(folder: string, tool: ToolId, version: string, binary: string): InstallMarker | undefined {
+  try {
+    const value = JSON.parse(readFileSync(join(folder, INSTALL_MARKER), "utf8")) as unknown;
+    if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+    const marker = value as Record<string, unknown>;
+    if (marker.schemaVersion !== 1 || marker.tool !== tool || marker.version !== version || marker.binary !== binary ||
+      typeof marker.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(marker.sha256) || typeof marker.completedAt !== "string" || Number.isNaN(Date.parse(marker.completedAt))) return undefined;
+    return marker as InstallMarker;
+  } catch { return undefined; }
+}
+
+/** What the version folder of `tool` holds, read without following links. */
+export function installState(home: string, tool: ToolId, version: string, binary: string): InstallState {
+  const folder = realFolder(home, [".alz", "tools", tool, version]);
+  if (folder === undefined) return "ABSENT";
+  const has = (name: string): boolean => { try { return lstatSync(join(folder, name)).isFile(); } catch { return false; } };
+  if (has(REMOVING_MARKER)) return "REMOVING";
+  const program = has(binary);
+  if (program && readInstallMarker(folder, tool, version, binary) !== undefined) return "INSTALLED";
+  if (program && !has(INSTALL_MARKER)) return "LEGACY";
+  return "UNFINISHED";
+}
+
+/** Every version-named folder of `tool` the app's folder holds, newest first, with what each is. */
+export function appInstallStates(home: string, tool: ToolId, binary: string): { version: string; state: Exclude<InstallState, "ABSENT"> }[] {
+  const dir = realFolder(home, [".alz", "tools", tool]);
+  if (dir === undefined) return [];
   const parts = (version: string) => version.split(".").map(Number);
-  return versions.sort((a, b) => {
-    const [x, y] = [parts(a), parts(b)];
-    return (y[0]! - x[0]!) || (y[1]! - x[1]!) || (y[2]! - x[2]!);
-  });
+  return readdirSync(dir).filter((name) => /^\d+\.\d+\.\d+$/.test(name))
+    .map((version) => ({ version, state: installState(home, tool, version, binary) }))
+    .filter((item): item is { version: string; state: Exclude<InstallState, "ABSENT"> } => item.state !== "ABSENT")
+    .sort((a, b) => { const [x, y] = [parts(a.version), parts(b.version)]; return (y[0]! - x[0]!) || (y[1]! - x[1]!) || (y[2]! - x[2]!); });
+}
+
+/** Reads the version `binary` reports, through the same command every check uses, or undefined when it cannot run or does not say. */
+export function reportedVersion(tool: ToolId, binary: string): string | undefined {
+  const version = TOOL_VERSION_ARGS[tool];
+  return version.pattern.exec(versionText(binary, version.args) ?? "")?.[1];
+}
+
+/**
+ * The versions of `tool` this app installed, newest first: `~/.alz/tools/<tool>/<version>` folders that hold the program,
+ * installed (with a completion marker) or installed before completion checks existed. Only real folders count (no link on
+ * the way from the home folder), named like a pinned version, so an unfinished `<version>.partial-<pid>` folder, an
+ * interrupted install or removal, or anything a person put there is never mistaken for an install.
+ */
+export function appInstalledVersions(home: string, tool: ToolId, binary: string): string[] {
+  return appInstallStates(home, tool, binary).filter((item) => item.state === "INSTALLED" || item.state === "LEGACY").map((item) => item.version);
 }
 
 /** The first executable named `name` on PATH, but never inside the app's own folder (that copy is checked separately). */
@@ -106,12 +159,28 @@ function toolCheck(tool: ToolId, ctx: CheckContext, required: boolean, platform:
   const artifact = platform ? pin.artifacts[platform] : undefined;
   const label = TOOL_LABEL[tool] + " " + pin.version;
   const own = artifact ? installedPath(ctx.home, tool, pin.version, artifact.binary) : undefined;
-  const found = own && existsSync(own) ? own : onPath(tool, ctx.env);
+  const ownState = artifact ? installState(ctx.home, tool, pin.version, artifact.binary) : "ABSENT";
   const installable = artifact ? tool : undefined;
   const previous = artifact ? appInstalledVersions(ctx.home, tool, artifact.binary).filter((version) => version !== pin.version) : [];
   const update = previous.length > 0
     ? "Run ./alz deps and choose Update to replace the app's " + TOOL_LABEL[tool] + " " + previous[0] + " with the tested " + pin.version + "."
     : undefined;
+  // The app's own folder for the pinned version, when it is there but not a finished, checked install: said plainly, with the one
+  // step that repairs it. A legacy copy is never read as verified and never removed on its own; an unfinished one is replaced.
+  if (ownState === "LEGACY") {
+    return {
+      id: tool, label, required, ok: false, installable, detail: INSTALL_STATE_WORDS.LEGACY + " (" + own + ")",
+      fix: "Run ./alz deps and choose Repair: it installs the tested " + TOOL_LABEL[tool] + " " + pin.version + " beside this copy and switches to it only after the check passes.",
+    };
+  }
+  if (ownState === "UNFINISHED" || ownState === "REMOVING") {
+    return {
+      id: tool, label, required, ok: false, installable, detail: INSTALL_STATE_WORDS[ownState] + " (" + own + ")",
+      fix: ownState === "REMOVING" ? "Run ./alz deps and choose Remove to finish removing it, or Install to replace it."
+        : "Run ./alz deps and choose Install: it replaces the unfinished folder with a checked copy.",
+    };
+  }
+  const found = own && ownState === "INSTALLED" ? own : onPath(tool, ctx.env);
   if (!found) {
     return {
       id: tool, label, required, ok: false, installable,
