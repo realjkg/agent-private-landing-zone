@@ -5,16 +5,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { signApproval } from "../src/apply/approval.js";
+import { consumeApprovals, signApproval } from "../src/apply/approval.js";
 import { MATERIAL_RISKS, PROTECTION_REASONS, buildCleanupProposal, computeProposalSha256, isAwsIdentityType, signCleanupProposal, proposalProblems, protectedDeletionIn, verifyCleanupProposal, type CleanupProposal } from "../src/apply/cleanup-proposal.js";
-import { CLEANUP_SUFFIX, SUFFIX, loadPilotContract, pilotContractSha256 } from "../src/apply/contract.js";
+import { CLEANUP_SUFFIX, SUFFIX, authorizeContract, loadPilotContract, pilotContractSha256 } from "../src/apply/contract.js";
 import { pilotUnitOf } from "../src/apply/unit.js";
 import { cleanupScopeProblem, runApply, runCleanup, sealPreview, type ApplyDeps, type ApplyRequest, type CleanupRequest } from "../src/apply/driver.js";
 import { cleanupEvidenceProblems } from "../src/apply/evidence.js";
 import { readCleanupEvidence, reserveArtifact } from "../src/apply/ledger.js";
 import { verifyLeftovers } from "../src/apply/leftovers.js";
 import { loadRunRecords, observeRun, verifyProposalLeftovers } from "../src/apply/observe.js";
-import { openNonceStore } from "../src/apply/nonces.js";
+import { openNonceStore, type NonceStore } from "../src/apply/nonces.js";
 import { loadSealedPlan } from "../src/apply/seal.js";
 import {
   BLUEPRINT_SUFFIX, OBSERVATION_SUFFIX, blueprintRecordProblems, leftoversRecordProblems, observationRecordProblems, readBlueprintRecord, readObservationRecord,
@@ -1306,4 +1306,100 @@ test("an attachment or setting is deleted only with its parent (design review 64
   assert.ok(done.ok, JSON.stringify(done));
   assert.deepEqual(destroyPlans()[0]!.args.filter((a) => a.startsWith("-target=")).sort(), run.proposal.deletes.map((d) => "-target=" + d.address).sort());
   assert.ok(destroyPlans().every((c) => !c.args.join(" ").includes(".team") && !c.args.join(" ").includes("aws_sqs_queue_policy")), "nothing on a kept parent is targeted");
+});
+
+// --- AUTHORIZED for CLEANUP (review 6448347933, B2 and N3) ---------------------------------------------------
+
+/** A nonce store that runs `afterFirstHas` once the gate's approval check has read it, then lets everything through unchanged. */
+function watchedNonces(real: NonceStore, afterFirstHas: () => void): NonceStore {
+  let first = true;
+  return {
+    has: (nonce) => { const seen = real.has(nonce); if (first) { first = false; afterFirstHas(); } return seen; },
+    consumeAll: (entries) => real.consumeAll(entries),
+  };
+}
+/** The proposal for an applied, observed run, built under `contract` (as `./alz apply propose-cleanup` builds it under the committed one). */
+async function proposedUnder(w: World, contract: unknown) {
+  const run = await observed(w);
+  const records = await loadRunRecords(run.s.sealed.artifactSha256, w.dirs.evidence);
+  assert.ok(records.ok, JSON.stringify(records));
+  const built = buildCleanupProposal({ requesterId: REQUESTER.requesterId, ...records, changes: run.s.sealed.changes, channel: "CLI", contract: contract as never,
+    engineVersion: run.s.sealed.engineVersion, env: w.deps.env!, now: new Date(NOW.getTime() + 120_000) });
+  return { run, records, built };
+}
+const NO_CLEANUP = { authorize: { DEV: ["APPLY"], QA: ["APPLY", "CLEANUP"], PROD: ["APPLY", "CLEANUP"] } };
+const CLEANUP_ONLY = { authorize: { DEV: ["CLEANUP"], QA: ["APPLY", "CLEANUP"], PROD: ["APPLY", "CLEANUP"] } };
+
+test("a cleanup proposal needs a CLEANUP entry: APPLY alone for DEV refuses ACT_NOT_AUTHORIZED, and the proposal binds the current contract and entry", async () => {
+  const w = world();
+  const { built } = await proposedUnder(w, awsContractJson(KILL, NO_CLEANUP));
+  refused(built, "ACT_NOT_AUTHORIZED");
+  assert.match((built as { message: string }).message, /CLEANUP for AWS TERRAFORM DEV/);
+  const ok = await proposedUnder(world(), awsContractJson(KILL));
+  assert.ok(ok.built.ok, JSON.stringify(ok.built));
+  const current = authorizeContract(awsContractJson(KILL) as never, "DEV", "CLEANUP");
+  assert.ok(current.ok);
+  assert.equal(ok.built.proposal.authorizingContractSha256, current.authorization.contractSha256);
+  assert.equal(ok.built.proposal.authorizationSha256, current.authorization.authorizationSha256);
+  assert.equal(ok.built.proposal.contractSha256, ok.run.evidence.contractSha256, "the run itself stays bound to the contract the apply ran under");
+});
+
+test("cleanup refuses before any approval is consumed when CLEANUP is revoked after the proposal, or the contract or entry changed since it", async () => {
+  const w = world();
+  const run = await proposed(w);
+  const nothingConsumed = (approvals: SignedApproval[]) => {
+    assert.equal(destroyPlans().length, 0, "no destroy plan ran");
+    assert.deepEqual(consumeApprovals(openNonceStore(w.dirs.nonces), approvals), { ok: true }, "nothing was consumed");
+  };
+  // CLEANUP revoked for DEV after the proposal: not authorized (the operation is judged, not only the contract hash).
+  writeReviewedContract(w.contractPath, awsContractJson(KILL, NO_CLEANUP));
+  let approvals = [cleanupApproval(run.proposal, "alice")];
+  refused(await cleanup(w, run, approvals), "ACT_NOT_AUTHORIZED");
+  nothingConsumed(approvals);
+  // Any other edit since the proposal (here the approval lifetime): the contract the approvals cover is not the one now.
+  writeReviewedContract(w.contractPath, awsContractJson(KILL, { maxApprovalAgeMinutes: 61 }));
+  approvals = [cleanupApproval(run.proposal, "alice")];
+  refused(await cleanup(w, run, approvals), "ACT_AUTHORIZATION_CHANGED");
+  nothingConsumed(approvals);
+});
+
+test("the late re-check: a contract edited between the cleanup gate and approval consumption is ACT_AUTHORIZATION_CHANGED, nothing consumed or destroyed", async () => {
+  const w = world();
+  const run = await proposed(w);
+  const approvals = [cleanupApproval(run.proposal, "alice")];
+  const nonces = watchedNonces(openNonceStore(w.dirs.nonces), () => writeReviewedContract(w.contractPath, awsContractJson(KILL, { maxApprovalAgeMinutes: 61 })));
+  const result = await runCleanup({
+    invocation: human(run.s.sealed.target), environment: "DEV", target: { ...run.s.sealed.target }, proposal: run.proposal, sealedPlan: run.s.loaded,
+    manifest: run.s.project.manifest, projectRoot: run.s.project.projectRoot, approvals,
+  }, { ...w.deps, nonces });
+  refused(result, "ACT_AUTHORIZATION_CHANGED");
+  assert.equal(calls().filter((c) => c.args[0] === "apply").length, 1, "only the original apply ran; the destroy never applied");
+  assert.deepEqual(consumeApprovals(openNonceStore(w.dirs.nonces), approvals), { ok: true }, "nothing was consumed");
+  assert.deepEqual(readdirSync(w.dirs.evidence).filter((n) => n.endsWith(CLEANUP_SUFFIX)), [], "no cleanup entry exists");
+});
+
+test("revoking APPLY does not strand a cleanup (N3): under a contract that now authorizes only CLEANUP for DEV, the run is proposed and cleaned up, and the evidence names both contracts", async () => {
+  const w = world();
+  const { run, built } = await (async () => {
+    const r = await observed(w);
+    writeReviewedContract(w.contractPath, awsContractJson(KILL, CLEANUP_ONLY));
+    const records = await loadRunRecords(r.s.sealed.artifactSha256, w.dirs.evidence);
+    assert.ok(records.ok);
+    return { run: r, built: buildCleanupProposal({ requesterId: REQUESTER.requesterId, ...records, changes: r.s.sealed.changes, channel: "CLI", contract: awsContractJson(KILL, CLEANUP_ONLY) as never,
+      engineVersion: r.s.sealed.engineVersion, env: w.deps.env!, now: new Date(NOW.getTime() + 120_000) }) };
+  })();
+  assert.ok(built.ok, JSON.stringify(built));
+  const proposal = signCleanupProposal(built.proposal, REQUESTER.privateKeyPem);
+  assert.notEqual(proposal.authorizingContractSha256, proposal.contractSha256, "authorized by the current contract, bound to the apply's");
+  const done = await runCleanup({
+    invocation: human(run.s.sealed.target), environment: "DEV", target: { ...run.s.sealed.target }, proposal, sealedPlan: run.s.loaded,
+    manifest: run.s.project.manifest, projectRoot: run.s.project.projectRoot, approvals: [cleanupApproval(proposal, "alice")],
+  }, w.deps);
+  assert.ok(done.ok, JSON.stringify(done));
+  assert.equal(done.evidence.contractSha256, run.evidence.contractSha256, "the cleanup evidence names the run's contract");
+  assert.equal(done.evidence.decisions.authorized.contractSha256, proposal.authorizingContractSha256, "and the contract that authorized the cleanup");
+  assert.equal(done.evidence.decisions.authorized.operation, "CLEANUP");
+  // A new APPLY under that contract is refused: revoking APPLY still revokes it.
+  const again = await seal(world(awsContractJson(KILL, CLEANUP_ONLY))).catch((error: Error) => error);
+  assert.ok(again instanceof Error && /ACT_NOT_AUTHORIZED/.test(again.message), String(again));
 });

@@ -520,10 +520,10 @@ async function approveCleanup(raw: unknown, approverId: string, privateKeyPem: s
   if (proposal.channel !== (deps.channel ?? "CLI")) return blocked({ ok: false, code: "CHANNEL_MISMATCH", message: channelMismatchMessage(proposal.channel) }, out);
   const pinned = targetForEnvironment(contract, proposal.environment, proposal.target);
   if (!pinned.ok) return blocked(pinned, out);
-  if (proposal.contractSha256 !== pilotContractSha256(contract)) return blocked({ ok: false, code: "PROPOSAL_INVALID", message: "The proposal was made under another pilot contract." }, out);
+  // AUTHORIZED by the current committed contract the proposal bound; the run itself is bound by its records (driver).
   const authorized = authorizeContract(contract, proposal.environment, "CLEANUP");
   if (!authorized.ok) return blocked(authorized, out);
-  const changed = authorizationChanged(proposal, authorized.authorization);
+  const changed = authorizationChanged({ contractSha256: proposal.authorizingContractSha256, authorizationSha256: proposal.authorizationSha256 }, authorized.authorization);
   if (changed) return blocked(changed, out);
   // The cleanup requester's signature verifies against the allowlist before the approver is shown anything, and in PROD this approver's id or key must
   // not be the requester's: the same rule and the same check as an apply (owner decision 6440801434, item 1). The driver checks both again.

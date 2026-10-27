@@ -345,3 +345,43 @@ test("the lifecycle report validator refuses a declared pass, a live claim witho
   assert.match(wrongSeal.stderr, /PROPOSAL_INVALID/);
   assert.deepEqual(wrongSeal.term.asked, [], "refused before the phrase");
 });
+
+test("propose-cleanup and approve of a proposal are AUTHORIZED by the current contract's CLEANUP entry: refused without it or after an edit, and a revoked APPLY does not strand the cleanup", async () => {
+  const w = await world();
+  const run = await appliedRun(w);
+  assert.equal((await cli(w, ["observe", "--sealed", run.sealedPlanPath])).code, 0);
+  const withAuthorize = (authorize: Record<string, string[]>, over: Record<string, unknown> = {}) =>
+    writeReviewedContract(w.contractPath, awsContractJson(KILL, { authorize: { QA: ["APPLY", "CLEANUP"], PROD: ["APPLY", "CLEANUP"], ...authorize }, ...over }));
+  // No CLEANUP for DEV: propose-cleanup refuses before anything is built, and writes no proposal.
+  withAuthorize({ DEV: ["APPLY"] });
+  const denied = await cli(w, ["propose-cleanup", "--sealed", run.sealedPlanPath, ...requesterArgs()]);
+  assert.equal(denied.code, 2, denied.stderr);
+  assert.match(denied.stderr, /BLOCKED ACT_NOT_AUTHORIZED: .*CLEANUP for AWS TERRAFORM DEV.* No proposal was written\./);
+  // APPLY revoked, CLEANUP kept: the run is still proposed (N3), under the contract committed now.
+  withAuthorize({ DEV: ["CLEANUP"] });
+  const proposed = await cli(w, ["propose-cleanup", "--sealed", run.sealedPlanPath, ...requesterArgs()]);
+  assert.equal(proposed.code, 0, proposed.stderr);
+  const proposalPath = /Saved \(private to this account\): (\S+)/.exec(proposed.stdout)![1];
+  const proposal = JSON.parse(readFileSync(proposalPath, "utf8")) as { proposalSha256: string; contractSha256: string; authorizingContractSha256: string };
+  assert.notEqual(proposal.authorizingContractSha256, proposal.contractSha256);
+  const approveArgs = ["approve", "--bundle", proposalPath, "--key", keyFile("alice"), "--approver", "alice"];
+  const phrase = "APPROVE CLEANUP DEV " + proposal.proposalSha256.slice(0, 12);
+  // An approver never signs under a contract or entry other than the one the proposal bound, nor without CLEANUP.
+  withAuthorize({ DEV: ["CLEANUP"] }, { maxApprovalAgeMinutes: 61 });
+  const changed = await cli(w, approveArgs, [phrase]);
+  assert.equal(changed.code, 2);
+  assert.match(changed.stderr, /BLOCKED ACT_AUTHORIZATION_CHANGED/);
+  assert.equal(changed.stdout, "", "nothing was signed");
+  withAuthorize({ DEV: ["APPLY"] });
+  const revoked = await cli(w, approveArgs, [phrase]);
+  assert.equal(revoked.code, 2);
+  assert.match(revoked.stderr, /BLOCKED ACT_NOT_AUTHORIZED/);
+  // Back to the contract the proposal bound: approve, then clean up.
+  withAuthorize({ DEV: ["CLEANUP"] });
+  const signed = await cli(w, approveArgs, [phrase]);
+  assert.equal(signed.code, 0, signed.stderr);
+  const removed = await cli(w, ["cleanup", "--proposal", proposalPath, "--request", run.applyRequest, "--manifest", run.manifest, "--sealed", run.sealedPlanPath, "--approval", json(signed.data, "cleanup-approval")],
+    ["CLEANUP DEV " + proposal.proposalSha256.slice(0, 12) + " " + targetString(run.target)]);
+  assert.equal(removed.code, 0, removed.stderr);
+  assert.equal((removed.data as { decisions: { authorized: { operation: string; contractSha256: string } } }).decisions.authorized.contractSha256, proposal.authorizingContractSha256);
+});

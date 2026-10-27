@@ -677,11 +677,13 @@ export async function runCleanup(request: CleanupRequest, deps: ApplyDeps): Prom
     return refuse("SOURCE_CHANGED", "This cleanup was proposed from product commit " + proposal.sourceCommit.slice(0, 12) + ", but " + running.slice(0, 12) +
       " is running. Nothing was consumed. Run from that commit, or propose and approve the cleanup again.");
   }
-  if (proposal.environment !== request.environment || !sameTarget(proposal.target, request.target) || proposal.contractSha256 !== pilotContractSha256(contract) ||
+  // The run is bound by its own records (the apply evidence's contract hash and target, below); the cleanup is AUTHORIZED by the
+  // current committed contract the proposal bound (owner question N3 of #313's review: revoking APPLY must not strand a cleanup).
+  if (proposal.environment !== request.environment || !sameTarget(proposal.target, request.target) ||
     proposal.provider !== contract.provider || proposal.engine !== contract.engine) {
     return refuse("PROPOSAL_INVALID", "The cleanup proposal was made for another environment, target, engine or pilot contract.");
   }
-  const changedPolicy = authorizationChanged(proposal, admitted.authorization);
+  const changedPolicy = authorizationChanged({ contractSha256: proposal.authorizingContractSha256, authorizationSha256: proposal.authorizationSha256 }, admitted.authorization);
   if (changedPolicy) return changedPolicy;
   if (proposal.deletes.length === 0) return refuse("PROPOSAL_INVALID", "The proposal lists nothing to delete: every resource this run created is already gone. Verify leftovers instead; nothing was run.");
   // The run it cleans up: recorded, successful, and exactly the evidence the proposal hashed.
@@ -797,7 +799,7 @@ export async function runCleanup(request: CleanupRequest, deps: ApplyDeps): Prom
     if (late) return late;
     const readmitted = admit(deps, request, "CLEANUP");
     if (!readmitted.ok) return readmitted;
-    const lateChange = authorizationChanged(proposal, readmitted.authorization);
+    const lateChange = authorizationChanged({ contractSha256: proposal.authorizingContractSha256, authorizationSha256: proposal.authorizationSha256 }, readmitted.authorization);
     if (lateChange) return lateChange;
     // The requester again, against the re-admitted contract, right before the approvals are consumed.
     const reconfirmedRequest = verifyRequestSignature({
