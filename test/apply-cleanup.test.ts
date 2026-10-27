@@ -1203,7 +1203,7 @@ test("a run that created an SCP and a tag policy, each attached, cleans up the S
   // A forged, re-hashed proposal that lists the tag policy never executes: the list is derived again from the records.
   const address = "aws_organizations_policy.tags";
   const fields = { ...run.proposal, deletes: [...run.proposal.deletes, { address, type: "aws_organizations_policy", identifier: kept.get(address)!.identifier, ownership: "RUN_CREATED" as const, observed: "UNVERIFIABLE" as const }].sort((a, b) => (a.address < b.address ? -1 : 1)), excluded: run.proposal.excluded.filter((x) => x.address !== address) };
-  const forged = { ...fields, proposalSha256: computeProposalSha256(fields) };
+  const forged = reHashedProposal(fields);
   assert.ok(verifyCleanupProposal(forged).ok, "the forgery is self-consistent");
   behave({ showResources: creates, stateResources: state });
   refused(await cleanup(w, { ...run, proposal: forged }, [cleanupApproval(forged, "alice")]), "PROPOSAL_INVALID");
