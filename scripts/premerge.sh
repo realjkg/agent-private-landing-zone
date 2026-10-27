@@ -5,13 +5,16 @@
 # changed since their merge base, runs the affected QA (scripts/qa-affected.mjs) and `npm run check` on the merge
 # result, and removes the worktree. When the affected set is over the selector's cap, it runs the full quiet suite
 # (`npm run test:quiet`) instead, after checking that the shared Ollama test port 11435 is free and no other quiet suite
-# is running. It never pushes, merges or edits a branch. Logs are kept under .runs/premerge/<head>/.
+# is running. It never pushes, merges or edits a branch. The head must be reachable from a fetched branch of the remote
+# (a pushed commit), not only a local one. Logs are kept under .runs/premerge/<head>/, cleared at the start of each run.
 #
-# Exit codes: 0 every check passed; 1 a check failed or the merge conflicts; 2 usage; 3 a full suite cannot run now.
+# Exit codes: 0 every check passed; 1 a check failed, the selector failed or the merge conflicts; 2 usage; 3 a full
+# suite cannot run now.
 #
 # Settings (environment): PREMERGE_REMOTE (default origin), PREMERGE_BRANCH (default main), PREMERGE_PROC_TCP (the
 # socket tables read for the port check, default "/proc/net/tcp /proc/net/tcp6"), PREMERGE_SUITE_PATTERN (the process
-# that marks a running quiet suite, default "scripts/test-quiet.mjs").
+# that marks a running quiet suite, default "scripts/test-quiet.mjs"). The suite check matches any command line that
+# contains the pattern, a parent shell that only mentions it included: a false BUSY fails safe (exit 3).
 set -uo pipefail
 
 usage() { echo "usage: scripts/premerge.sh <head-sha>   (a full 40-character commit SHA)" >&2; exit 2; }
@@ -28,10 +31,15 @@ OLLAMA_TEST_PORT_HEX="2CAB" # 11435
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && git rev-parse --show-toplevel)" || { echo "premerge: not in a git checkout" >&2; exit 2; }
 cd "$ROOT" || exit 2
 LOGS="$ROOT/.runs/premerge/$HEAD_SHA"
+# One run per log folder: an earlier run's logs never nest into or sit beside this run's.
+rm -rf "$LOGS"
 mkdir -p "$LOGS"
 
 git fetch -q "$REMOTE" || { echo "premerge: git fetch $REMOTE failed" >&2; exit 1; }
 git cat-file -e "$HEAD_SHA^{commit}" 2>/dev/null || { echo "premerge: $HEAD_SHA is not a commit fetched from $REMOTE" >&2; exit 1; }
+# A local-only commit is not a PR head: require a fetched branch of the remote that contains it.
+[ -n "$(git for-each-ref --contains "$HEAD_SHA" --count=1 --format='%(refname)' "refs/remotes/$REMOTE/")" ] ||
+  { echo "premerge: $HEAD_SHA is not reachable from any fetched $REMOTE branch (push it first)" >&2; exit 1; }
 BASE="$(git rev-parse "$REMOTE/$BRANCH")" || exit 1
 MERGE_BASE="$(git merge-base "$BASE" "$HEAD_SHA")" || { echo "premerge: no merge base between $BRANCH and the head" >&2; exit 1; }
 echo "premerge: base $REMOTE/$BRANCH=$BASE head=$HEAD_SHA merge-base=$MERGE_BASE"
@@ -78,8 +86,11 @@ full_suite_free() {
 }
 
 QA=FAIL
-node scripts/qa-affected.mjs plan --base "$BASE" --out .runs/qa/plan.json >"$LOGS/qa-plan.log" 2>&1
-GAPS="$(node -e 'const p=JSON.parse(require("node:fs").readFileSync(".runs/qa/plan.json","utf8"));const cap=/^Affected test count \d+ exceeds \d+/;const g=p.gaps||[];console.log(g.length===0?"none":g.every(x=>cap.test(x))?"cap":"gaps")' 2>>"$LOGS/qa-plan.log")"
+PLAN_EXIT=0
+node scripts/qa-affected.mjs plan --base "$BASE" --out .runs/qa/plan.json >"$LOGS/qa-plan.log" 2>&1 || PLAN_EXIT=$?
+# No readable plan, or a failing selector that reports no gap, is a selector error, not a coverage result.
+GAPS="$(node -e 'const p=JSON.parse(require("node:fs").readFileSync(".runs/qa/plan.json","utf8"));const cap=/^Affected test count \d+ exceeds \d+/;const g=p.gaps||[];console.log(g.length===0?"none":g.every(x=>cap.test(x))?"cap":"gaps")' 2>"$LOGS/qa-plan-read.log")" || GAPS=error
+[ "$PLAN_EXIT" -ne 0 ] && [ "$GAPS" = none ] && GAPS=error
 case "$GAPS" in
   none)
     if node scripts/qa-affected.mjs local --base "$BASE" >"$LOGS/qa.log" 2>&1; then QA=PASS; fi
@@ -89,7 +100,10 @@ case "$GAPS" in
     if ! full_suite_free; then echo "premerge: FULL_SUITE_BUSY; serialize and rerun"; exit 3; fi
     if npm run test:quiet >"$LOGS/test-quiet.log" 2>&1; then QA=FULL_SUITE_PASS; else QA=FULL_SUITE_FAIL; fi
     echo "premerge: full suite $QA ($(tail -3 "$LOGS/test-quiet.log" | tr '\n' ' '))" ;;
-  *)
+  error)
+    echo "premerge: SELECTOR_ERROR: the affected-QA selector failed (exit $PLAN_EXIT; log $LOGS/qa-plan.log):"
+    tail -5 "$LOGS/qa-plan.log" | sed 's/^/  /' ;;
+  gaps)
     echo "premerge: affected QA has coverage gaps (blocking):"; sed -n '/QA requires focused coverage/,$p' "$LOGS/qa-plan.log" | sed 's/^/  /' ;;
 esac
 
@@ -99,6 +113,7 @@ echo "premerge: npm run check $CHECK"
 [ -d .runs/tests ] && cp -R .runs/tests "$LOGS/tests"
 [ -d .runs/qa ] && cp -R .runs/qa "$LOGS/qa"
 
+[ "$GAPS" = error ] && QA=SELECTOR_ERROR
 echo "premerge: RESULT head=$HEAD_SHA base=$BASE qa=$QA check=$CHECK logs=$LOGS"
 case "$QA:$CHECK" in
   PASS:PASS|FULL_SUITE_PASS:PASS) exit 0 ;;

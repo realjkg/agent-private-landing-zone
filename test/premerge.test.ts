@@ -16,11 +16,16 @@ let counter = 0;
 const QA_STUB = `import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 const mode = process.argv[2];
 appendFileSync(process.env.QA_LOG, mode + "\\n");
-if (mode === "plan") {
+if (mode === "plan" && process.env.STUB_PLAN_CRASH) {
+  // As the real selector reports a thrown error: its message on stderr, exit 1, no plan written.
+  console.error("selector crashed: cannot read the import graph");
+  process.exitCode = 1;
+} else if (mode === "plan") {
   const gaps = JSON.parse(process.env.STUB_GAPS || "[]");
   mkdirSync(".runs/qa", { recursive: true });
   writeFileSync(".runs/qa/plan.json", JSON.stringify({ gaps }));
   if (gaps.length) { console.error("QA requires focused coverage:\\n" + gaps.join("\\n")); process.exitCode = 1; }
+  else if (process.env.STUB_PLAN_EXIT) process.exitCode = Number(process.env.STUB_PLAN_EXIT);
 } else if (mode === "local") {
   console.log("QA scope: 2 affected test files; 3 changed paths.");
   process.exitCode = Number(process.env.STUB_QA_EXIT || 0);
@@ -157,6 +162,51 @@ test("a head that conflicts with main reports MERGE_CONFLICT and runs nothing", 
   const { status, out } = run(f, [f.head]);
   assert.equal(status, 1, out);
   assert.match(out, /MERGE_CONFLICT\n {2}shared\.txt/);
+  assert.deepEqual(lines(f.qaLog), []);
+  assert.deepEqual(lines(f.npmLog), []);
+  assertCleaned(f);
+});
+
+test("a selector that crashes or fails without a gap is reported as SELECTOR_ERROR, never as a coverage gap", () => {
+  for (const env of [{ STUB_PLAN_CRASH: "1" }, { STUB_PLAN_EXIT: "2" }]) {
+    const f = fixture();
+    const { status, out } = run(f, [f.head], env);
+    assert.equal(status, 1, out);
+    assert.match(out, /SELECTOR_ERROR: the affected-QA selector failed \(exit [12];/);
+    if ("STUB_PLAN_CRASH" in env) assert.match(out, /selector crashed: cannot read the import graph/);
+    assert.doesNotMatch(out, /coverage gaps/);
+    assert.deepEqual(lines(f.qaLog), ["plan"], "no affected run after a selector error");
+    assert.ok(!lines(f.npmLog).includes("run test:quiet"), "a selector error is never masked by the full suite");
+    assert.match(out, /qa=SELECTOR_ERROR check=PASS/);
+    assertCleaned(f);
+  }
+});
+
+test("a rerun for the same head starts from an empty log folder", () => {
+  const f = fixture();
+  const logs = join(f.work, ".runs", "premerge", f.head);
+  assert.equal(run(f, [f.head], { STUB_GAPS: JSON.stringify(["Affected test count 52 exceeds 45. Split it."]) }).status, 0);
+  assert.ok(existsSync(join(logs, "test-quiet.log")) && existsSync(join(logs, "qa", "plan.json")));
+  const second = run(f, [f.head]);
+  assert.equal(second.status, 0, second.out);
+  assert.ok(!existsSync(join(logs, "test-quiet.log")), "an earlier run's suite log does not survive beside the new result");
+  assert.ok(!existsSync(join(logs, "qa", "qa")), "copied folders do not nest");
+  assert.ok(existsSync(join(logs, "qa", "plan.json")) && existsSync(join(logs, "qa.log")));
+  assertCleaned(f);
+});
+
+test("a commit that exists only locally is refused: the head must be on a fetched origin branch", () => {
+  const f = fixture();
+  const git = (...args: string[]) => execFileSync("git", ["-C", f.work, "-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", ...args], { encoding: "utf8" }).trim();
+  git("checkout", "-q", "-b", "local-only", f.head);
+  writeFileSync(join(f.work, "local.txt"), "unpushed\n");
+  git("add", "local.txt");
+  git("commit", "-q", "-m", "local only");
+  const local = git("rev-parse", "HEAD");
+  git("checkout", "-q", "main");
+  const { status, out } = run(f, [local]);
+  assert.equal(status, 1, out);
+  assert.match(out, /is not reachable from any fetched origin branch \(push it first\)/);
   assert.deepEqual(lines(f.qaLog), []);
   assert.deepEqual(lines(f.npmLog), []);
   assertCleaned(f);
