@@ -4,15 +4,15 @@
 
 **Candidate:** none frozen yet.
 
-**Golden release:** not ready. 0 of 32 in-scope gates pass.
+**Golden release:** not ready. 0 of 33 in-scope gates pass.
 
-**Scope:** darwin-arm64, darwin-x64, linux-x64, linux-arm64, win32-arm64, win32-x64; ACT paths act:aws-terraform, act:azure-terraform, act:aws-cdk; full lifecycle. Decided by the owner (https://github.com/realjkg/agent-private-landing-zone/issues/39#issuecomment-6403630201, recorded 2026-10-25).
+**Scope:** darwin-arm64, darwin-x64, linux-x64, linux-arm64, win32-arm64, win32-x64; ACT paths act:aws-terraform, act:azure-terraform, act:aws-cdk; full lifecycle. Decided by the owner (https://github.com/realjkg/agent-private-landing-zone/issues/39#issuecomment-6443352284, recorded 2026-10-27).
 
 ## Ready (0)
 
 None.
 
-## Needs attention (22)
+## Needs attention (23)
 
 | Gate | Kind | Status | Owner | Next action |
 | --- | --- | --- | --- | --- |
@@ -20,6 +20,7 @@ None.
 | `aws-provider` | live provider | BLOCKED | OWNER | The owner provides the AWS sandbox identifiers (account or subscription IDs and role names, never credentials); then run the read-only AWS inventory and governed preview on the candidate. |
 | `azure-provider` | live provider | BLOCKED | OWNER | The owner provides the Azure sandbox identifiers (account or subscription IDs and role names, never credentials); then run the read-only Azure inventory and governed preview on the candidate. |
 | `preview:terraform-aws-brownfield` | live preview | BLOCKED | OWNER | Waits on the AWS provider gate's sandbox; then run this preview scenario on the candidate. |
+| `preview:bicep-azure-brownfield` | live preview | BLOCKED | OWNER | Back in scope by the owner's rebaseline of the narrow ACT-DEV release (#39, 6443352284: Azure Bicep / ARM is path 4). The scenario (src/qualification/phase-e.ts bicep-azure-brownfield) exists; the gate waits on the azure-provider gate's sandbox and closes only when the scenario, run from the candidate commit with the pinned bicep and Azure CLI, writes LIVE evidence that the admission review accepts. Synthetic evidence is labeled SYNTHETIC and is refused by the gate. |
 | `preview:cdk-aws-brownfield` | live preview | BLOCKED | OWNER | Waits on the AWS provider gate's sandbox; then run this preview scenario on the candidate. |
 | `preview:terraform-azure-brownfield` | live preview | BLOCKED | OWNER | The scenario (src/qualification/phase-e.ts terraform-azure-brownfield) and its producer (./alz apply preview-evidence --gate preview:terraform-azure-brownfield) exist and are qualified synthetically; the gate closes only when the producer, run from the candidate commit with the pinned, qualified Terraform against the Azure sandbox (it waits on the azure-provider gate's sandbox), writes LIVE evidence that the admission review accepts. Synthetic evidence from a fake engine is labeled SYNTHETIC and is refused by the gate. |
 | `isolated-recovery` | isolated recovery | BLOCKED | OWNER | The owner names an isolated restore target; then run the restore on the candidate and measure RPO and RTO. |
@@ -54,11 +55,10 @@ None.
 | `platform:linux-x64` | lifecycle | ENGINEERING | Lane A: run install, launch, uninstall, repeat uninstall, partial-install recovery, unusual paths and unrelated-file preservation in a disposable linux-x64 container; this counts for linux-x64 only. |
 | `act:aws-cdk` | live ACT | ENGINEERING | The AWS CDK row is implemented end to end in the console with synthetic tests (stack tags carry the unit; CloudFormation's resource list is the blueprint; Cloud Control reads by CloudFormation type; cleanup is a removal change set that never deletes the stack). Qualify the three adapters on the real DEV account, then run the supervised DEV lifecycle. |
 
-## Out of scope (9)
+## Out of scope (8)
 
 - `preview:pulumi-azure-greenfield`: Pulumi is not one of the three release paths the owner selected (AWS Terraform, Azure Terraform, AWS CDK).
 - `preview:opentofu-aws-brownfield`: OpenTofu is not one of the three release paths the owner selected (AWS Terraform, Azure Terraform, AWS CDK).
-- `preview:bicep-azure-brownfield`: Bicep is not one of the three release paths the owner selected (AWS Terraform, Azure Terraform, AWS CDK).
 - `preview:cloudformation-aws-existing`: Existing CloudFormation stacks are not one of the three release paths the owner selected; CDK is qualified through its own preview gate.
 - `preview:ansible-existing-hosts`: Ansible is not one of the three release paths the owner selected (AWS Terraform, Azure Terraform, AWS CDK).
 - `preview:crossplane-local-render`: Crossplane is not one of the three release paths the owner selected (AWS Terraform, Azure Terraform, AWS CDK).

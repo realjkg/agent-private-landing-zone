@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "decision": {
     "by": "OWNER",
-    "ref": "https://github.com/realjkg/agent-private-landing-zone/issues/39#issuecomment-6403630201",
-    "recorded": "2026-10-25"
+    "ref": "https://github.com/realjkg/agent-private-landing-zone/issues/39#issuecomment-6443352284",
+    "recorded": "2026-10-27"
   },
   "candidate": null,
   "manifest": null,
@@ -41,10 +41,6 @@
     {
       "gate": "preview:opentofu-aws-brownfield",
       "reason": "OpenTofu is not one of the three release paths the owner selected (AWS Terraform, Azure Terraform, AWS CDK)."
-    },
-    {
-      "gate": "preview:bicep-azure-brownfield",
-      "reason": "Bicep is not one of the three release paths the owner selected (AWS Terraform, Azure Terraform, AWS CDK)."
     },
     {
       "gate": "preview:cloudformation-aws-existing",
