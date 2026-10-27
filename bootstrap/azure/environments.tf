@@ -2,6 +2,10 @@ locals {
   principal_ids = { for key, sp in azuread_service_principal.identity : key => sp.object_id }
 }
 
+# DEV is always created. QA and PROD exist only in the three-stage chain; in DEV-only mode they have no instance, so
+# no resource, role assignment or budget is created in (or aimed at) another subscription. Every instance uses the same
+# module, so the state-account and role properties are identical in both modes.
+
 module "environment_dev" {
   source = "./modules/environment"
   providers = {
@@ -21,6 +25,7 @@ module "environment_dev" {
 }
 
 module "environment_qa" {
+  count  = contains(var.enabled_environments, "QA") ? 1 : 0
   source = "./modules/environment"
   providers = {
     azurerm = azurerm.qa
@@ -39,6 +44,7 @@ module "environment_qa" {
 }
 
 module "environment_prod" {
+  count  = contains(var.enabled_environments, "PROD") ? 1 : 0
   source = "./modules/environment"
   providers = {
     azurerm = azurerm.prod
@@ -54,4 +60,15 @@ module "environment_prod" {
   tags           = var.tags
 
   state_allowed_ip_ranges = var.state_allowed_ip_ranges
+}
+
+# The chain's QA and PROD modules gained a count; existing state keeps its addresses.
+moved {
+  from = module.environment_qa
+  to   = module.environment_qa[0]
+}
+
+moved {
+  from = module.environment_prod
+  to   = module.environment_prod[0]
 }

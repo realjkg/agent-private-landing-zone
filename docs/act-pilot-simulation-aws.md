@@ -1,6 +1,6 @@
 # Pilot apply: AWS emulated-backend simulation
 
-Status: run on 2026-10-27, in a Linux sandbox, as gate **G1b** of `docs/act-pilot-plan.md` for the first live ACT path, AWS Terraform (owner decision, issue #39, comment 6431744115). It runs the **real Terraform engine** against an **emulated S3 state backend (moto)** with Terraform's built-in `terraform_data` resource only, and the backend's native lock file (`use_lockfile`, the locking mode `src/apply/providers/aws.ts` pins; no DynamoDB). No AWS account, no real bucket, role, token or cloud resource and no registry access was used. It mirrors the Azure precedent in `docs/act-pilot-simulation.md` and exercises the apply driver (`src/apply`) with the real binary. It is **emulated evidence, labeled as such**: it does not replace the supervised DEV qualification (G2), and it is not live provider qualification.
+Status: **SYNTHETIC / EMULATED.** First run on 2026-10-27, in a Linux sandbox, as gate **G1b** of `docs/act-pilot-plan.md` for the first live ACT path, AWS Terraform (owner decision, issue #39, comment 6431744115). **Re-run on 2026-10-27 on main `d6df394377fb9854b2140988b96132d54392387d` (the #297 merge), with the backend now product-pinned: 7 of 7 scenarios pass** (see "Re-run with the product-pinned backend" below). It runs the **real Terraform engine** against an **emulated S3 state backend (moto)** with Terraform's built-in `terraform_data` resource only, and the backend's native lock file (`use_lockfile`, the locking mode `src/apply/providers/aws.ts` pins; no DynamoDB). No AWS account, no real bucket, role, token or cloud resource and no registry access was used. It mirrors the Azure precedent in `docs/act-pilot-simulation.md` and exercises the apply driver (`src/apply`) with the real binary. It is **emulated evidence, labeled as such**: it does not replace the supervised DEV qualification (G2), it is not live provider qualification, and it does not enable ACT (ACT stays DISABLED; the shipped pin stays empty).
 
 ## What was run
 
@@ -30,6 +30,38 @@ How the emulator is reached (no operator or product change): moto serves TLS wit
 
 How the backend authenticates: through the product's own identity path and nothing else. The four identities are configured as `ALZ_<IDENTITY>_AWS_ROLE_ARN`, `ALZ_<IDENTITY>_AWS_WEB_IDENTITY_TOKEN_FILE` and `ALZ_<IDENTITY>_AWS_REGION` with the fixture's fake role ARNs (account `111111111111`) and four distinct dummy token files. The driver writes the STATE_WRITE role into the partial backend configuration at apply-time init, and each child's SDK exchanges its own token at `sts.us-east-1.amazonaws.com` (`AssumeRoleWithWebIdentity`); moto accepts any token and issues throwaway credentials. No static key, session token, profile, endpoint override or trust-store variable was added, and no identity was given anything the product does not already inject. The test's own direct reads of the emulator (state, lock object) carry a fixture `Authorization` header that is not a credential of anything: moto checks that an object request is signed, not the signature.
 
+## Re-run with the product-pinned backend (SYNTHETIC / EMULATED)
+
+Task A1 of `docs/act-dev-enablement.md`. **Emulated evidence only; nothing live; ACT stays DISABLED.**
+
+| Item | Value |
+| --- | --- |
+| Date | 2026-10-27 |
+| Source | main `d6df394377fb9854b2140988b96132d54392387d` (Merge #297: pin the Terraform backend with a product-owned override file), which includes #293 |
+| Terraform | 1.16.4 `linux_amd64`, binary sha256 `44d3683c2ac9d72b6ca8ad880a2df8dd956dd5e019b1d111cb6a5d914d576b73`, enforced with `ALZ_SIM_TERRAFORM_SHA256` |
+| moto | 5.2.4 (`moto[server]`), Python 3.13.16, in a scratch virtual environment outside the repository |
+| Node | 26.11.1 |
+| Network | a private network namespace with loopback only (no outbound route); the test's CONNECT proxy is the only path out of Terraform, as before |
+| Changes to product code, the test or its fixtures | none |
+
+What changed since the first run: #297 replaced the hand-written backend block reader with a product-owned override file. The driver now refuses any project override file or saved state by name, writes `zzzz_alz_backend_override.tf` (`terraform { backend "s3" {} }`) into the frozen work copy, and takes every backend setting from its own `-backend-config` file (`bucket`, `key`, `region`, `use_lockfile = true`, and at apply-time init the STATE_WRITE `assume_role_with_web_identity`). The fixture's own `backend "s3"` block is still present but is no longer read or judged; the override replaces it (`docs/act-pilot-backend-pinning.md`).
+
+Results, `test/apply-emulated-aws.test.ts`, run twice, identical both times (exit 0; 7 pass, 0 fail, 0 skipped):
+
+| Scenario | Result |
+| --- | --- |
+| Seal with the real engine; the review bundle verifies; the plan is the real `show -json` shape | PASS (emulated) |
+| Apply a sealed plan end to end: state lands in the emulator, the lock is released, evidence and ledger are written, nothing leaks | PASS (emulated) |
+| A second apply of the same artifact, with a fresh approval, is refused (`ARTIFACT_ALREADY_APPLIED`) | PASS (emulated) |
+| A stale plan is refused (`PLAN_STALE`): nothing applied, serial unmoved | PASS (emulated) |
+| A held native lock is `FAILED_NO_CHANGE`, and the other holder's lock object is untouched | PASS (emulated) |
+| The kill switch refuses before the engine runs | PASS (emulated) |
+| The kill switch stops a running apply: Terraform is interrupted, the lock is released, the outcome is `KILLED` | PASS (emulated) |
+
+The host assertions held unchanged: with the pinned backend, Terraform still reached only the virtual-hosted S3 host and the regional STS host the backend builds for the fixture, plus the refused version check. The empirical answers (a) to (f) below were recorded on the first run and are consistent with this re-run; they were not separately re-measured beyond what the test asserts.
+
+The "What it does not prove" list below is unchanged by this re-run. In particular it is not real STS, IAM, S3 or the aws provider, and it does not settle which role AWS sees on the state write during `apply <planfile>`.
+
 ## What the test covers
 
 `test/apply-emulated-aws.test.ts` drives the real driver (`sealPreview`, `runApply`) through: seal with the real engine (the review bundle verifies; the built-in resource is listed as untagged by the deletion unit, not refused); an Ed25519 test approval over a fixture AWS contract with fake 12-digit account ids; apply (state lands in the emulator, the lock file is gone, evidence and ledger written, no secret in any result); a second apply of the same artifact refused (`ARTIFACT_ALREADY_APPLIED`); a stale plan refused (`PLAN_STALE`, outcome `FAILED_NO_CHANGE`, state unchanged, no lock left behind); a held native lock (`FAILED_NO_CHANGE`, the other holder's lock object and its content untouched); the kill switch before the engine; and the kill switch while Terraform runs (`KILLED`, lock released, the interrupted resource recorded in state). All seven pass. The qualification attestation is forged in the test (labeled as such) because no person can attest an emulator.
@@ -41,7 +73,7 @@ How the backend authenticates: through the product's own identity path and nothi
 
 ## What it proves, and what it does not
 
-Proves, for Terraform 1.16.4 and the S3 **backend** with `use_lockfile` only: the allowlisted argument lists run; the built-in provider's `terraform_data` passes the narrowed provider rule while its `terraform_remote_state` is refused (the latter checked against the real `show -json` shape by unit test, not by an emulated run); the project's backend block with exactly `bucket`, `key`, `region` and `use_lockfile` passes the pre-init block check and `init` with the partial `-backend-config` file (the STATE_WRITE role and token file) succeeds; the stale-plan and lock-refusal text matches in `classifyApply` match the real engine's first `Error:` line for this backend too; `terraform show -json` has the shape `engines/terraform.ts` and the AWS spec read (`configuration.provider_config` with the built-in provider only); a graceful stop releases the native lock; the driver's ordering, ledger and evidence work with a real process.
+Proves, for Terraform 1.16.4 and the S3 **backend** with `use_lockfile` only: the allowlisted argument lists run; the built-in provider's `terraform_data` passes the narrowed provider rule while its `terraform_remote_state` is refused (the latter checked against the real `show -json` shape by unit test, not by an emulated run); `init` with the product-pinned backend (the `zzzz_alz_backend_override.tf` override naming `s3` only, and the product's `-backend-config` file with `bucket`, `key`, `region`, `use_lockfile` and the STATE_WRITE role and token file) succeeds (on the first run, before #297, this was the project's own backend block passing the pre-init block check, which #297 removed); the stale-plan and lock-refusal text matches in `classifyApply` match the real engine's first `Error:` line for this backend too; `terraform show -json` has the shape `engines/terraform.ts` and the AWS spec read (`configuration.provider_config` with the built-in provider only); a graceful stop releases the native lock; the driver's ordering, ledger and evidence work with a real process.
 
 Does **not** prove:
 
