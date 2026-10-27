@@ -161,7 +161,8 @@ test("every subcommand needs a terminal on stdin and stdout, and refuses before 
 });
 
 test("pin prints the contract hash and whether the contract is valid, and writes nothing", async () => {
-  const w = await world(contractJson(KILL));
+  // A complete contract (contract-check needs policyVersion); NOT-READY cases are in test/apply-pin-prep.test.ts.
+  const w = await world(contractJson(KILL, { policyVersion: POLICY }));
   const run = await cli(w, ["pin"], []);
   assert.equal(run.code, 0);
   const report = JSON.parse(run.stdout) as { sha256: string; valid: boolean };

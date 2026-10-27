@@ -1,7 +1,7 @@
 import { createPrivateKey, randomBytes } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { REQUESTER_MAY_APPROVE, approverIsRequester, requesterKeyRefusal, requesterPublicKey, signApproval, verifyRequestSignature } from "../apply/approval.js";
@@ -13,7 +13,7 @@ import { readCleanupEvidence } from "../apply/ledger.js";
 import { actGateId } from "../qualification/release-admission.js";
 import { COMMIT, ENVIRONMENTS, stripInvisible } from "../apply/constants.js";
 import {
-  contractRefusal, isKillSwitchActive, loadPilotContract, pilotContractSha256, repoPaths, requireNotApplied, targetForEnvironment, writeQualificationEvidence, type Refusal,
+  contractRefusal, inspectPilotContract, isKillSwitchActive, loadPilotContract, pilotContractSha256, repoPaths, requireNotApplied, targetForEnvironment, writeQualificationEvidence, type Refusal,
 } from "../apply/contract.js";
 import { channelMismatchMessage } from "../apply/channel.js";
 import { tagLine } from "../apply/unit.js";
@@ -60,7 +60,8 @@ const APPLY_USAGE = [
   "  ./alz apply approve --bundle REVIEW_BUNDLE.json --key APPROVER_KEY.pem --approver ID",
   "  ./alz apply apply --request REQUEST.json --manifest MANIFEST.json --sealed SEALED_PLAN --approval APPROVAL.json [--approval APPROVAL.json ...]",
   "  ./alz apply status [--sealed SEALED_PLAN]",
-  "  ./alz apply pin",
+  "  ./alz apply pin [--environment DEV|QA|PROD] [--out PIN_FILE_OUTSIDE_THE_REPOSITORY]",
+  "      TEMPORARY, until contract-based authorization replaces the pin. Read-only pin preparation: validates the contract as admission does, prints its hash, each gate READY or NOT-READY, and the owner's exact pin commit.",
   "  ./alz apply contract-check --file DRAFT.json",
   "  ./alz apply record-live --sealed SEALED_PLAN",
   "  ./alz apply record-recovery --sealed INTERRUPTED_SEALED_PLAN --resumed RESUMED_SEALED_PLAN --target-hardware-id HOST",
@@ -128,7 +129,7 @@ const SUBCOMMANDS: Readonly<Record<string, Flags>> = {
   approve: { single: ["bundle", "key", "approver"] },
   apply: { single: ["request", "manifest", "sealed"], repeated: ["approval"] },
   status: { single: [], optional: ["sealed"] },
-  pin: { single: [] },
+  pin: { single: [], optional: ["environment", "out"] },
   "contract-check": { single: ["file"] },
   preflight: { single: ["environment"], optional: ["contract"] },
   prepare: { single: ["environment", "project"], optional: ["aws-cli-version"] },
@@ -784,22 +785,129 @@ const statusCommand: Command = async (flags, _terminal, deps, out) => {
 
 // --- pin -----------------------------------------------------------------------------------------------------
 
+/** One gate the pin preparation checks, as the owner reads it. PENDING is reported but does not decide READY. */
+type PinGate = { gate: string; state: "READY" | "NOT-READY" | "PENDING"; detail: string };
+
+/** Inside the repository holding this module: the path itself, or the real path of its parent once links are resolved. */
+function insideRepository(path: string): boolean {
+  const root = realpathSync(repoPaths().root);
+  const within = (candidate: string): boolean => {
+    const rel = relative(root, candidate);
+    return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+  };
+  let parent: string;
+  try { parent = realpathSync(dirname(path)); } catch { return fail("PIN_OUT_INVALID", "the --out directory must already exist"); }
+  return within(resolve(path)) || within(join(parent, basename(path)));
+}
+
 /**
- * Read-only: the SHA-256 an operator writes to config/act-pilot-contract.sha256 to pin the contract file, and whether
- * that contract is valid. It writes nothing, so pinning stays a reviewed change (docs/act-pilot-apply.md).
+ * Pin preparation (docs/act-pilot-apply.md, docs/act-dev-enablement.md). TEMPORARY compatibility path: the owner's
+ * decision on #39 replaces the hash pin with contract-based authorization, and this helper is removed when that lands.
+ * Read-only: it validates the contract with the admission check (`loadPilotContract` against a candidate pin in a
+ * private temporary directory, the same check `seal`, `apply` and release admission run), computes the hash exactly as
+ * admission does (`pilotContractSha256` of the validated contract), and reports the gates from the existing readiness
+ * definitions, `checkDraftContract` and `assessReadiness` (the latter run under the candidate pin), with no parallel
+ * readiness logic. When every gate is READY it prints the exact pin file content and the git commands for the owner to
+ * review and run. It never writes config/act-pilot-contract.sha256 or any other repository file and never enables ACT:
+ * the owner's reviewed commit does. `--out` writes the candidate pin file only to a new path outside the repository,
+ * and only when READY.
  */
-const pinCommand: Command = async (_flags, _terminal, deps, out) => {
+const pinCommand: Command = async (flags, terminal, deps, out) => {
+  const environment = flags.environment?.[0] ?? "DEV";
+  if (!(ENVIRONMENTS as readonly string[]).includes(environment)) fail("APPLY_ARGUMENT_INVALID", "--environment must be DEV, QA or PROD");
+  const outPath = flags.out?.[0] === undefined ? undefined : resolve(flags.out[0]);
+  if (outPath !== undefined && insideRepository(outPath)) {
+    fail("PIN_OUT_INSIDE_REPOSITORY", "--out must name a file outside the repository; the pin file is written only by the owner's reviewed commit");
+  }
   const path = deps.contractPath ?? repoPaths().contract;
-  const raw = readInput(path, "the pilot contract") as PilotContract;
-  const sha256 = pilotContractSha256(raw);
+  const raw = readInput(path, "the pilot contract");
+  const inspected = inspectPilotContract(raw);
+  if (!inspected.ok) return blocked({ ok: false, code: "CONTRACT_INVALID", message: "The pilot contract is not valid (" + inspected.reason + "). No pin was computed." }, out);
+  const { contract } = inspected;
+  const engine = engineOf(contract);
+  const gates: PinGate[] = [];
+
+  const check = checkDraftContract(raw);
+  const open = check.inputs.filter((item) => item.status !== "PRESENT").map((item) => item.field + " " + item.status);
+  gates.push({ gate: "contract-check: every owner input present", state: check.complete ? "READY" : "NOT-READY", detail: check.complete
+    ? "./alz apply contract-check reports the draft complete."
+    : "Inputs remain: " + (open.length > 0 ? open.join(", ") : "the shape is not valid") + ". Run ./alz apply contract-check --file " + path + "." });
+
+  // Admission and readiness under a candidate pin that holds the contract's hash, in a private directory outside the
+  // repository. enabled:false is ACT_DISABLED there, so no hash is offered for it.
+  const candidate = pilotContractSha256(contract);
+  let sha256: string | null = null;
   const scratch = mkdtempSync(join(tmpdir(), "alz-pin-"));
   try {
     const pin = join(scratch, "pin");
-    writeFileSync(pin, sha256 + "\n", { mode: 0o600 });
+    writeFileSync(pin, candidate + "\n", { mode: 0o600 });
     const loaded = loadPilotContract(path, pin);
-    out.say(JSON.stringify("reason" in loaded ? { sha256, valid: false, reason: loaded.reason } : { sha256, valid: true }, null, 2) + "\n");
-    return EXIT.PASS;
+    if (!("reason" in loaded)) sha256 = pilotContractSha256(loaded);
+    else if (loaded.code === "CONTRACT_INVALID") return blocked({ ok: false, code: "CONTRACT_INVALID", message: "Admission refuses this contract under its own hash (" + loaded.reason + "). No pin was computed." }, out);
+    const readiness = await assessReadiness({
+      environment: environment as ApplyEnvironment, contractPath: path, contractPinPath: pin,
+      qualificationDir: deps.qualificationDir, toolDirs: deps.toolDirs, env: deps.env ?? process.env, now: deps.now,
+    });
+    for (const item of readiness.checks) {
+      // Qualification needs a pinned contract (`qualify` is admitted like `seal`), so the first DEV pin precedes G2. There, and
+      // only there, a missing record and the attestation it carries are PENDING. Evidence that no longer matches stays NOT-READY.
+      const pending = environment === "DEV" && ((item.check.startsWith("engine qualified") && item.state === "MISSING") ||
+        (item.check.startsWith("identity separation attested") && item.state === "UNVERIFIED" && readiness.checks.some((c) => c.check.startsWith("engine qualified") && c.state === "MISSING")));
+      const name = item.check.startsWith("pilot contract pinned") ? "contract admission under this hash: valid and enabled: true" : item.check;
+      gates.push({ gate: name, state: item.ok ? "READY" : pending ? "PENDING" : "NOT-READY",
+        detail: pending ? "G2: ./alz apply qualify needs the pinned contract, so it runs after this pin commit; seal refuses until it has." : item.detail ?? item.state });
+    }
   } finally { rmSync(scratch, { recursive: true, force: true }); }
+
+  const pinPath = deps.contractPinPath ?? repoPaths().pin;
+  let current = "";
+  try { current = readFileSync(pinPath, "utf8").trim(); } catch { current = ""; }
+  const pinNow = current === "" ? "empty (ACT disabled)" : sha256 !== null && current.toLowerCase() === sha256 ? "already this contract's hash" : "another value (this commit would replace it)";
+
+  const ready = sha256 !== null && gates.every((g) => g.state !== "NOT-READY");
+  const rel = (file: string): string => { const r = relative(repoPaths().root, file); return r.startsWith("..") || isAbsolute(r) ? file : r; };
+  const pinFile = rel(pinPath);
+  const contractFile = rel(path);
+  const pinContent = sha256 === null ? null : sha256 + "\n";
+  const commands = ready && sha256 !== null ? [
+    "git switch -c act-" + environment.toLowerCase() + "-" + contract.provider.toLowerCase() + "-pin",
+    "printf '%s\\n' " + sha256 + " > " + pinFile,
+    "./alz apply status",
+    "git add " + contractFile + " " + pinFile,
+    "git diff --cached",
+    "git commit -m \"Pin the reviewed ACT pilot contract (" + contract.provider + " " + engine.id + " " + environment + ")\"",
+  ] : [];
+
+  if (ready && outPath !== undefined) {
+    try { writeFileSync(outPath, pinContent!, { flag: "wx", mode: 0o600 }); } catch {
+      fail("PIN_OUT_INVALID", "--out could not be created as a new file; it is never overwritten");
+    }
+  }
+
+  terminal.write([
+    "PIN PREPARATION, temporary until contract-based authorization replaces the pin (read-only: nothing in the repository was written; ACT is not enabled by this command)",
+    "  contract   " + contractFile,
+    "  sha256     " + (sha256 ?? "(none: admission does not accept this contract yet)"),
+    "  pin now    " + pinFile + ": " + pinNow,
+    "",
+    "RESULT " + (ready ? "READY" : "NOT-READY"),
+    ...gates.map((g) => "  [" + g.state + "] " + printable(g.gate) + ": " + printable(g.detail)),
+    "",
+    ...(ready ? [
+      "Pin file " + pinFile + " content (exactly one line):",
+      "  " + sha256,
+      ...(outPath === undefined ? [] : ["Candidate pin file written outside the repository: " + outPath]),
+      "",
+      "Owner commands. Review them, then run them yourself; ACT is enabled only when this commit merges through review:",
+      ...commands.map((c) => "  " + c),
+    ] : ["The pin content and commit commands are shown once every gate is READY (PENDING does not block)." +
+      (outPath === undefined ? "" : " Nothing was written to --out.")]),
+    "",
+  ].join("\n"));
+  const result = { sha256, valid: sha256 !== null, ready, environment, gates, pinFile, pinNow, pinContent: ready ? pinContent : null, commands, ...(ready && outPath !== undefined ? { out: outPath } : {}) };
+  out.say(JSON.stringify(result, null, 2) + "\n");
+  out.report({ code: ready ? "PIN_READY" : "PIN_NOT_READY", message: ready ? "Every gate is READY; the owner reviews and commits the pin." : "One or more gates are NOT-READY; no pin commit is offered.", data: result });
+  return ready ? EXIT.PASS : EXIT.BLOCKED;
 };
 
 // --- contract-check ----------------------------------------------------------------------------------------

@@ -118,15 +118,21 @@ Run these in order. Steps marked "not `./alz`" use a vendor tool.
 
     ```bash
     # edit config/act-pilot-contract.json: "enabled": true
-    ./alz apply pin                                    # prints {"sha256": ..., "valid": true}; writes nothing
-    printf '%s\n' <sha256-from-above> > config/act-pilot-contract.sha256
-    ./alz apply status                                 # "act": "PILOT_ENABLED"
-    git switch -c act-dev-aws-pin                      # git, not ./alz
-    git add config/act-pilot-contract.json config/act-pilot-contract.sha256
-    git commit                                         # one reviewed change; reviewers check target and each key
+    ./alz apply pin --environment DEV                  # read-only; prints RESULT READY or NOT-READY, each gate, and when READY the pin content and commands
     ```
 
-    Open it as a PR and merge it through review. A wrong or mismatched pin is `CONTRACT_INVALID`, and an empty pin stays `ACT_DISABLED`.
+    `./alz apply pin` is a temporary helper, removed when contract-based authorization replaces the pin. It validates the contract with the admission check, computes the hash exactly as admission does, and names each gate: `contract-check`, then the `preflight` readiness items run under the candidate pin (admission, identities, tools, kill switch, and qualification, which is PENDING before G2 because G2 needs the pin). It writes no repository file and never enables ACT. When it says `RESULT READY`, review the commands it printed and run them yourself. They have this form, with the hash filled in:
+
+    ```bash
+    git switch -c act-dev-aws-pin                      # git, not ./alz
+    printf '%s\n' <sha256> > config/act-pilot-contract.sha256
+    ./alz apply status                                 # "act": "PILOT_ENABLED"
+    git add config/act-pilot-contract.json config/act-pilot-contract.sha256
+    git diff --cached
+    git commit -m "Pin the reviewed ACT pilot contract (AWS TERRAFORM DEV)"   # one reviewed change; reviewers check target and each key
+    ```
+
+    `--out PATH` also writes the candidate pin file outside the repository for you to copy; a path inside the repository is refused. Open the commit as a PR and merge it through review. A wrong or mismatched pin is `CONTRACT_INVALID`, and an empty pin stays `ACT_DISABLED`.
 12. **G2 qualification** on the execution host, DEV only. The qualifier watches CloudTrail (STS and S3 data events):
 
     ```bash
@@ -275,7 +281,7 @@ Owner, in order, up to and including the pin commit:
 6. Generate the Ed25519 keys and collect the public keys.
 7. Draft `config/act-pilot-contract.json` from the AWS DEV example until `./alz apply contract-check --file config/act-pilot-contract.json` is COMPLETE.
 8. Set the twelve `ALZ_*_AWS_*` variables; `./alz apply preflight --environment DEV` is READY but for qualification.
-9. Set `enabled: true`, run `./alz apply pin`, write the hash to `config/act-pilot-contract.sha256`, and commit both in one reviewed change.
+9. Set `enabled: true`, run `./alz apply pin --environment DEV` until it says `RESULT READY`, then review and run the commit commands it prints (one reviewed change).
 
 ### Azure Terraform DEV
 
@@ -299,6 +305,6 @@ Owner, in order, up to and including the pin commit:
 6. Generate the Ed25519 keys and collect the public keys.
 7. Draft the Azure DEV contract until `./alz apply contract-check --file config/act-pilot-contract.json` is COMPLETE.
 8. Set the twenty `ALZ_*_ARM_*` variables, plus #289's state-auth variable once documented; `./alz apply preflight --environment DEV` is READY but for qualification.
-9. Decide whether this replaces a pinned AWS contract. Set `enabled: true`, run `./alz apply pin`, write the hash to `config/act-pilot-contract.sha256`, and commit both in one reviewed change.
+9. Decide whether this replaces a pinned AWS contract. Set `enabled: true`, run `./alz apply pin --environment DEV` until it says `RESULT READY`, then review and run the commit commands it prints (one reviewed change).
 
 For both clouds, G2 starts after the pin commit: `./alz apply qualify` with the `SEPARATED` attestation, one supervised DEV apply, then `./alz apply record-live`.

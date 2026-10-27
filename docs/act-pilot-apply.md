@@ -155,8 +155,13 @@ The optional boolean `embedStateWrite` (default off, `TERRAFORM` only) is descri
 To enable the pilot, or to change a target or an approver:
 
 1. Edit `config/act-pilot-contract.json`.
-2. Compute its hash with `./alz apply pin`. It prints the SHA-256 and whether the contract is valid, and writes nothing.
-3. Write that hash to `config/act-pilot-contract.sha256`.
+2. Prepare the pin with `./alz apply pin [--environment DEV|QA|PROD]` (default DEV). This helper is a **temporary compatibility path**: it is removed when contract-based authorization replaces the pin (owner decision on #39). It is read-only:
+   - It validates the contract with the admission check `seal`, `apply` and release admission run, and refuses an invalid contract (`CONTRACT_INVALID`, exit 2) without printing a hash.
+   - It computes the hash as admission does: the SHA-256 of the validated contract's canonical JSON.
+   - It reports each gate, READY or NOT-READY, from the existing definitions: `contract-check` complete, then every `./alz apply preflight` readiness item for the environment, run under the candidate pin (admission with `enabled: true`, identities and their account, tools, the kill switch absent, and qualification evidence for the contract's engine). Qualification needs a pinned contract, so for the first DEV pin a missing record is PENDING (G2 follows the pin commit) and does not block. Evidence that exists but no longer matches is NOT-READY.
+   - It prints `RESULT READY` or `RESULT NOT-READY` (exit 0 or 2). Only when READY does it print the exact pin file content and the git commands for the owner.
+   - It never writes `config/act-pilot-contract.sha256` or any other repository file, and it never enables ACT. With `--out PATH` it writes the candidate pin file to a new file outside the repository, only when READY; a path inside the repository, through any spelling or link, is refused (`PIN_OUT_INSIDE_REPOSITORY`).
+3. Review the printed commands, then run them yourself: they write the hash to `config/act-pilot-contract.sha256` on a new branch and stage it with the contract.
 4. Commit both in one reviewed change. Reviewers check the targets and each approver's key against what the owner supplied.
 
 Paths are anchored to the repository root found from the module, never to the working directory. The pin makes a change reviewable; it does not stop the operator described above.
