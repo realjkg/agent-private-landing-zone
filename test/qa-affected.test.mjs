@@ -291,3 +291,15 @@ test("every test that scans a source tree from disk is declared with the roots i
     assert.ok(roots.length > 0 && roots.every((root) => /^src\/(?:[^/]+\/)?$/.test(root)), guard + " roots are source directories");
   }
 });
+
+test("a change under src/lifecycle runs the runner's tests and the release admission review's test it reuses", () => {
+  const files = fixture();
+  files.set("src/lifecycle/evidence.ts", 'import "../qualification/release-admission.js"; export const e = 1;');
+  files.set("src/qualification/release-admission.ts", "export const r = 1;");
+  files.set("test/lifecycle-runner.test.ts", 'import "../src/lifecycle/evidence.js";');
+  files.set("test/lifecycle-cli.test.ts", "test()");
+  files.set("test/release-admission.test.ts", 'import "../src/qualification/release-admission.js";');
+  const plan = planChanged(["src/lifecycle/evidence.ts"], files);
+  for (const owner of ["test/lifecycle-runner.test.ts", "test/lifecycle-cli.test.ts", "test/release-admission.test.ts"]) assert.ok(plan.nodeTests.includes(owner), owner);
+  assert.deepEqual(plan.gaps, []);
+});

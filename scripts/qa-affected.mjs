@@ -186,6 +186,11 @@ export function planChanged(changedPaths, files) {
     if (/^src\/plugins\/|^config\/plugins/.test(path)) {
       pluginCheck = true;
     }
+    // The lifecycle runner's evidence is judged by the release admission review it reuses: a change under src/lifecycle runs
+    // the runner's own tests and the admission review's, so a report shape the review would refuse never merges unnoticed.
+    if (/^src\/lifecycle\//.test(path)) {
+      addExisting(selected, files, ["test/lifecycle-runner.test.ts", "test/lifecycle-cli.test.ts", "test/release-admission.test.ts"]);
+    }
     if (/^src\/operator-ui\/app\/.*\.(?:css|svg)$/.test(path)) {
       buildUi = true;
       addExisting(selected, files, ["test/operator-ui-react.test.tsx",

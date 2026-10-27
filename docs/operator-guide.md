@@ -234,6 +234,22 @@ Runs the package dependency audit. If Trivy is installed locally it also scans t
 
 **Limits.** Installs are available for macOS (Apple silicon and Intel) only. The model downloads (`ollama pull`) are a manual dry-run step on your Mac, and the target hardware never downloads models. The model digests are not yet pinned, so a check can confirm that a model is present but not that it is the qualified build. The Terraform and Ollama archives are checked against published checksums; the Terraform checksum file itself is fetched over HTTPS, not verified with HashiCorp's signature.
 
+## Packaged release lifecycle: `./alz lifecycle`
+
+`./alz lifecycle` runs the packaged release's lifecycle journeys on a disposable host and writes the evidence the `platform:<os-arch>` release gate needs. A person runs it at that host's Terminal; the console never runs it. It produces evidence and never submits or admits it.
+
+```bash
+./alz lifecycle all --artifact agent-private-landing-zone.tar.gz --evidence ./evidence --host disposable-01 --commit <release source commit>
+```
+
+**Journeys in this slice.** `clean-install` (install the archive under `~/.alz/app/<version>`, then launch it), `uninstall` (remove it, then remove it again: the second run must find nothing and change nothing), and `partial-install-recovery` (plant what a crashed install leaves, then install: the leftovers must be swept and reported, the copy launched and removed). `all` runs the three in that order. Upgrade, rollback, configuration migration, unusual paths and unrelated-file preservation are later slices; until they exist the report says which of the seven platform checks it does not yet carry.
+
+**The journal.** Every step is written to `<evidence>/lifecycle/journal.jsonl` before it runs and after it finishes. Press Ctrl-C once and the run stops after the current step; running the same command again continues from there, skipping every step that already passed and rerunning one that was started and never finished. A journal belongs to one archive and one commit; the same evidence folder refuses another candidate.
+
+**The report.** `<evidence>/platform-<os-arch>.json` is the gate report (the seven check names, each with the SHA-256 of its own detail file under `<evidence>/lifecycle/checks/`). The runner then judges it with the release admission review itself (`src/qualification/release-admission.ts`), never a copy of its rules, and writes the verdict beside it as `platform-<os-arch>.review.json`. A report is submittable only when that review says EVIDENCE_PRESENT and the run was live. `--synthetic` labels the report SYNTHETIC: the review refuses it and it is never submittable, whatever its checks say; use it for rehearsals on your own machine.
+
+**Install discipline.** The archive's SHA-256 is checked first, it is unpacked beside the final folder, the completion marker is written last, and the folder is put in place by renames alone; a removal writes its own marker first. Leftovers of a process that died are swept only under `~/.alz/app`, never through a link, never a final version folder.
+
 ## Agent-assisted build sequence
 
 The simulated landing-zone build program has been qualified through chat and direct kernel invocation across all eight registered adapters.
