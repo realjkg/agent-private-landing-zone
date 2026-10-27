@@ -5,8 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import { verifyModelTarget } from "../src/cli/models.js";
 import { loadConfig } from "../src/config.js";
-import { requiredModels } from "../src/models/catalog.js";
+import { MODEL_CATALOG, requiredModels } from "../src/models/catalog.js";
 import { checkModelDigest, isExactModelTag, loadModelDigestPins, MODEL_PINS_PATH, normalizeDigest, verifyPinnedModel } from "../src/models/digest-pins.js";
 import { getLocalModelMetadata, invokeLocalModel, isLoopbackModelEndpoint } from "../src/ollama.js";
 
@@ -96,13 +97,46 @@ test("verify reads the installed digest from the loopback model server and refus
   }
 });
 
-test("the models CLI checks the digest pin before it qualifies a model", () => {
-  const cli = readFileSync("src/cli/models.ts", "utf8");
-  const pinCheck = cli.indexOf("verifyPinnedModel(");
-  const qualify = cli.indexOf("await qualifyModel(");
-  assert.ok(pinCheck > 0 && qualify > pinCheck, "verifyPinnedModel runs before qualifyModel");
-  assert.match(cli.slice(pinCheck, qualify), /if \(!check\.ok\) \{[\s\S]*failed = true;[\s\S]*continue;/);
-  assert.doesNotMatch(cli, /getLocalModelMetadata/, "no unpinned metadata path remains");
+test("./alz models verify: an unpinned or different digest fails the model and it is never qualified; a pinned one is", async () => {
+  const server = createServer((_request, response) => {
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify({ models: [
+      { name: "qwen3:4b", model: "qwen3:4b", digest: "a".repeat(64), size: 10 },
+      { name: "mistral-nemo:12b", model: "mistral-nemo:12b", digest: "c".repeat(64), size: 20 },
+      { name: "qwen3:1.7b", model: "qwen3:1.7b", digest: "e".repeat(64), size: 5 },
+    ] }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("no address");
+    const baseUrl = "http://127.0.0.1:" + address.port;
+    const pins = { models: ["qwen3:1.7b", "qwen3:4b", "mistral-nemo:12b"], digests: new Map<string, string | null>([
+      ["qwen3:1.7b", null], ["qwen3:4b", "a".repeat(64)], ["mistral-nemo:12b", "b".repeat(64)]]) };
+    const qualified: string[] = [];
+    const qualify = (async (_url: string, model: string) => {
+      qualified.push(model);
+      return { model, policyVersion: "p", policyHash: "h", passed: true, checks: [] };
+    }) as unknown as Parameters<typeof verifyModelTarget>[3];
+    const target = (model: string) => MODEL_CATALOG.find((item) => item.model === model)!;
+
+    const pinned = await verifyModelTarget(baseUrl, target("qwen3:4b"), pins, qualify);
+    assert.equal(pinned.passed, true);
+    assert.equal(pinned.record.digestCheck, "PINNED");
+    const drifted = await verifyModelTarget(baseUrl, target("mistral-nemo:12b"), pins, qualify);
+    assert.deepEqual([drifted.passed, drifted.record.digestCheck], [false, "MODEL_DIGEST_MISMATCH"]);
+    assert.match(drifted.lines[0], /^FAIL mistral-nemo:12b — MODEL_DIGEST_MISMATCH: /);
+    const open = await verifyModelTarget(baseUrl, target("qwen3:1.7b"), pins, qualify);
+    assert.deepEqual([open.passed, open.record.digestCheck], [false, "MODEL_DIGEST_UNPINNED"]);
+    const broken = await verifyModelTarget(baseUrl, target("qwen3:4b"), new Error("MODEL_PINS_INVALID: x"), qualify);
+    assert.deepEqual([broken.passed, broken.record.error], [false, "MODEL_PINS_INVALID: x"]);
+    const hosted = await verifyModelTarget("https://api.openai.com", target("qwen3:4b"), pins, qualify);
+    assert.equal(hosted.passed, false);
+    assert.match(String(hosted.record.error), /^MODEL_ENDPOINT_NOT_LOOPBACK: BLOCKED/);
+    assert.deepEqual(qualified, ["qwen3:4b"], "only the pinned model reached qualification");
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
 });
 
 test("loopback only: the model client refuses a non-loopback OLLAMA_BASE_URL before any request, with no fallback", async () => {
