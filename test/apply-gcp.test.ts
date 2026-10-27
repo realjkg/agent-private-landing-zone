@@ -9,6 +9,8 @@ import { checkApplyIdentities, verifyIdentityTargets } from "../src/apply/identi
 import { PROVIDER_IDS, providerSpec, type ProviderBlock, type ProviderSpec, type ProviderUse } from "../src/apply/provider.js";
 import { GCP, GCP_IDENTITY_VARIABLES, backendBucketForms, checkCredentialConfiguration, gcpParentOk, namesBackendBucket, type GcpTarget } from "../src/apply/providers/gcp.js";
 import { APPLY_IDENTITIES, type PilotContract, type PilotTarget } from "../src/apply/types.js";
+import { TOKEN_FILE } from "../src/apply/constants.js";
+import { CREDENTIAL_FILE } from "../src/tools/gcp-credentials.js";
 import { TERRAFORM_APPLY_PROFILE } from "../src/tools/profiles.js";
 
 // docs/act-pilot-gcp-terraform-g0.md, slice S1 of the GCP release-path PLAN (owner approval 6433121154 on issue #39).
@@ -196,7 +198,7 @@ test("identity targets: each service account's project, the project and the regi
 // --- the credential configuration (P1) -------------------------------------------------------------
 
 test("a WIF file-source credential configuration is accepted; a key file, an authorized-user file, P1's own impersonation and every other source are refused without quoting the file", () => {
-  assert.deepEqual(checkCredentialConfiguration(configuration({}, "/run/alz/dev/apply.jwt")), { ok: true, tokenFile: "/run/alz/dev/apply.jwt" });
+  assert.deepEqual(checkCredentialConfiguration(configuration({}, "/run/alz/dev/apply.jwt")), { ok: true, tokenFile: "/run/alz/dev/apply.jwt", audience: AUDIENCE, subjectTokenType: "urn:ietf:params:oauth:token-type:jwt" });
   assert.equal(checkCredentialConfiguration(configuration({ token_url: undefined, credential_source: { file: "/run/t", format: { type: "text" } } })).ok, true);
   const SECRET = "FAKE-SECRET-VALUE-0001";
   const refused: [string, Record<string, unknown> | string][] = [
@@ -226,6 +228,7 @@ test("a WIF file-source credential configuration is accepted; a key file, an aut
     assert.equal(result.ok, false, label);
     if (!result.ok) assert.equal(result.reason.includes(SECRET) || result.reason.includes("example.invalid"), false, label + ": no contents in the reason");
   }
+  assert.equal(CREDENTIAL_FILE.source, TOKEN_FILE.source, "the credential module's path pattern is the apply path's TOKEN_FILE");
   const p1 = checkCredentialConfiguration(configuration({ service_account_impersonation_url: "https://x" }));
   assert.ok(!p1.ok && p1.reason.includes("impersonation"), "P1 is named");
   // Not a file of the right kind.

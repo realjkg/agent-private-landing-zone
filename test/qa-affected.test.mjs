@@ -183,6 +183,23 @@ test("DISCOVERY scope bootstrap files select the synthetic checks and the policy
   assert.ok(planChanged(["bootstrap/aws/outputs.tf"], files).gaps.length > 0);
 });
 
+test("GCP bootstrap changes select their one focused test, and its absence is a gap", () => {
+  const files = fixture();
+  files.set("bootstrap/gcp/main.tf", 'resource "google_service_account" "identity" {}');
+  files.set("test/bootstrap-gcp.test.ts", "test()");
+  const changed = ["bootstrap/gcp/main.tf", "bootstrap/gcp/tests/bootstrap.tftest.hcl", "bootstrap/config.gcp.template.json"];
+  const plan = planChanged(changed, files);
+  // The template is also read by the contract test (TEMPLATE_OWNERS), which the fixture does not ship.
+  assert.deepEqual(plan.nodeTests, ["test/bootstrap-gcp.test.ts"]);
+  files.set("test/apply-contract.test.ts", "test()");
+  assert.deepEqual(planChanged(changed, files).nodeTests, ["test/apply-contract.test.ts", "test/bootstrap-gcp.test.ts"]);
+  files.delete("test/apply-contract.test.ts");
+  assert.deepEqual(plan.gaps, []);
+  files.delete("test/bootstrap-gcp.test.ts");
+  assert.deepEqual(planChanged(changed, files).gaps, ["The GCP bootstrap has no focused test owner."]);
+  assert.match(planChanged(["bootstrap/gcpx/main.tf"], fixture()).gaps.join(), /no QA ownership rule/);
+});
+
 test("ACT-DEV-1 tfvars and Python handoff changes map to targeted synthetic tests", () => {
   const files=fixture();
   files.set("qualification/aws/act-dev1-canary/terraform.tfvars.example.json",'{"region":"us-east-2"}');
@@ -349,6 +366,7 @@ test("the console launcher is owned by the console tests that read it, and the b
   const launcher = planChanged(["src/cli/operator-web.ts"], files);
   assert.deepEqual(launcher.gaps, []);
   assert.ok(launcher.nodeTests.includes("test/ui-channel.test.ts"));
+  files.set("test/bootstrap-gcp.test.ts", "test()"); // the GCP template's own package owner, beside the contract test
   for (const [path, owners] of Object.entries(TEMPLATE_OWNERS)) {
     files.set(path, "{}");
     for (const owner of owners) files.set(owner, "test()");
@@ -356,8 +374,9 @@ test("the console launcher is owned by the console tests that read it, and the b
     assert.deepEqual(plan.gaps, [], path);
     for (const owner of owners) assert.ok(plan.nodeTests.includes(owner), owner);
   }
-  files.set("bootstrap/config.gcp.template.json", "{}");
-  assert.match(planChanged(["bootstrap/config.gcp.template.json"], files).gaps.join(" "), /config\.gcp\.template\.json has no QA ownership rule/);
+  // A template nothing owns is still a gap (an invented name: every shipped template has an owner).
+  files.set("bootstrap/config.unowned.template.json", "{}");
+  assert.match(planChanged(["bootstrap/config.unowned.template.json"], files).gaps.join(" "), /config\.unowned\.template\.json has no QA ownership rule/);
 });
 
 test("a fixture a test reads from disk is owned by its declared test, an unowned fixture is still a gap, and a deleted module is a note", () => {

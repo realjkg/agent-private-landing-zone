@@ -33,10 +33,12 @@ export const UNIMPORTABLE_OWNERS = {
   "src/cli/operator-web.ts": ["test/ui-channel.test.ts"],
 };
 
-// Owner-facing templates no code imports: a focused test reads each from disk and checks what it tells the owner.
+// Owner-facing templates no code imports: a focused test reads each from disk and checks what it tells the owner (that it
+// never names the retired pin and leaves ACT unauthorized). Selected in addition to any other rule that owns the path.
 export const TEMPLATE_OWNERS = {
   "bootstrap/config.aws.template.json": ["test/apply-contract.test.ts"],
   "bootstrap/config.azure.template.json": ["test/apply-contract.test.ts"],
+  "bootstrap/config.gcp.template.json": ["test/apply-contract.test.ts"],
 };
 
 // Fixtures a test reads from disk (not imported), so the import closure never selects their owner.
@@ -152,6 +154,7 @@ export function planChanged(changedPaths, files) {
 
   const cited = acceptanceCited(files);
   for (const path of changed) {
+    if (Object.hasOwn(TEMPLATE_OWNERS, path)) addExisting(selected, files, TEMPLATE_OWNERS[path]);
     if (INVENTORY_INPUT.test(path)) addExisting(selected, files, INVENTORY_GUARDS);
     if (cited.has(path)) addExisting(selected, files, [ACCEPTANCE_TEST]);
     if (RELEASE_STATUS_INPUT.test(path)) {
@@ -263,6 +266,13 @@ export function planChanged(changedPaths, files) {
       }
       continue;
     }
+    // The GCP bootstrap package (HCL, its mocked `terraform test` suite, the config template) is owned by one focused static test.
+    if (/^bootstrap\/(?:gcp\/.+|config\.gcp\.template\.json)$/.test(path)) {
+      addExisting(selected, files, ["test/bootstrap-gcp.test.ts"]);
+      const gap = "The GCP bootstrap has no focused test owner.";
+      if (!hasFile(files, "test/bootstrap-gcp.test.ts") && !gaps.includes(gap)) gaps.push(gap);
+      continue;
+    }
     if (/^(?:config|policy|security)\//.test(path)) {
       const family = path.startsWith("policy/") ? ["test/security-policy.test.ts", "test/policy-path.test.ts"]
         : path.startsWith("security/") ? ["test/security-boundaries.test.ts", "test/security-policy.test.ts"]
@@ -284,10 +294,8 @@ export function planChanged(changedPaths, files) {
       notes.push("Release-sensitive artifact changed: dedicated qualification remains independent.");
       continue;
     }
-    if (Object.hasOwn(TEMPLATE_OWNERS, path)) {
-      addExisting(selected, files, TEMPLATE_OWNERS[path]);
-      continue;
-    }
+    // Selected at the top of the loop; a template with no other rule needs nothing more.
+    if (Object.hasOwn(TEMPLATE_OWNERS, path)) continue;
     // Unknown executable or deployment configuration: do not silently pass.
     gaps.push(path + " has no QA ownership rule.");
   }

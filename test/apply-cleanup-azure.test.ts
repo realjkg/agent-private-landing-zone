@@ -620,7 +620,10 @@ test("Azure identity, authorization and deployment-history objects are never del
   const PIM = DATA + "/providers/Microsoft.Authorization/roleEligibilityScheduleRequests/77777777-aaaa-4aaa-8aaa-777777777777";
   const RES_DEPLOYMENT = DATA + "/providers/Microsoft.Resources/deployments/alz-pilot-resource-deploy";
   const MG_DEPLOYMENT = "/providers/Microsoft.Management/managementGroups/mg-platform/providers/Microsoft.Resources/deployments/alz-pilot-mg-deploy";
-  const POLICY_ASSIGNED = RG + "/providers/Microsoft.Authorization/policyAssignments/alz-pilot-policy";
+  // A policy assignment at a management group: never a scope the pilot contract owns, so it stays an authorization object the cleanup keeps.
+  // (A run-created assignment at the target subscription's own scopes is a reviewed run-created policy since owner decision item 2 (c);
+  // test/apply-cleanup-policies.test.ts proves it is deleted and every other policy object kept.)
+  const POLICY_ASSIGNED = "/providers/Microsoft.Management/managementGroups/mg-platform/providers/Microsoft.Authorization/policyAssignments/alz-pilot-policy";
   const LOCK = RG + "/providers/Microsoft.Authorization/locks/alz-pilot-lock";
   const AZAPI_POLICY = DATA + "/providers/Microsoft.Authorization/policyExemptions/alz-pilot-exemption";
   const creates = [...withoutSecret(CREATES),
@@ -630,14 +633,14 @@ test("Azure identity, authorization and deployment-history objects are never del
     change("azurerm_storage_account.data", "azurerm_storage_account", ["create"]),
     change("azapi_resource.ext_grant", "azapi_resource", ["create"]), change("azurerm_pim_eligible_role_assignment.pilot", "azurerm_pim_eligible_role_assignment", ["create"]),
     change("azapi_resource.res_deploy", "azapi_resource", ["create"]), change("azapi_resource.mg_deploy", "azapi_resource", ["create"]),
-    change("azurerm_resource_group_policy_assignment.pilot", "azurerm_resource_group_policy_assignment", ["create"]), change("azurerm_management_lock.pilot", "azurerm_management_lock", ["create"]),
+    change("azurerm_management_group_policy_assignment.pilot", "azurerm_management_group_policy_assignment", ["create"]), change("azurerm_management_lock.pilot", "azurerm_management_lock", ["create"]),
     change("azapi_resource.exemption", "azapi_resource", ["create"])];
   const state = [...withoutSecret(STATE as { type: string }[]),
     azureStateResource("azurerm_role_assignment", "pilot", NEW_ROLE), azureStateResource("azurerm_role_definition", "pilot", ROLE_DEF), azureStateResource("azurerm_user_assigned_identity", "pilot", UAI),
     azureStateResource("azuread_service_principal", "pilot", SP), azureStateResource("azapi_resource", "grant", AZAPI_GRANT),
     azureStateResource("azurerm_resource_group_template_deployment", "pilot", DEPLOYMENT), azureStateResource("azapi_resource", "deploy", AZAPI_DEPLOYMENT), azureStateResource("azurerm_storage_account", "data", DATA),
     azureStateResource("azapi_resource", "ext_grant", EXT_GRANT), azureStateResource("azurerm_pim_eligible_role_assignment", "pilot", PIM), azureStateResource("azapi_resource", "res_deploy", RES_DEPLOYMENT),
-    azureStateResource("azapi_resource", "mg_deploy", MG_DEPLOYMENT), azureStateResource("azurerm_resource_group_policy_assignment", "pilot", POLICY_ASSIGNED), azureStateResource("azurerm_management_lock", "pilot", LOCK),
+    azureStateResource("azapi_resource", "mg_deploy", MG_DEPLOYMENT), azureStateResource("azurerm_management_group_policy_assignment", "pilot", POLICY_ASSIGNED), azureStateResource("azurerm_management_lock", "pilot", LOCK),
     azureStateResource("azapi_resource", "exemption", AZAPI_POLICY)];
   const existing = [...EXISTING, NEW_ROLE, ROLE_DEF, UAI, AZAPI_GRANT, DEPLOYMENT, AZAPI_DEPLOYMENT, DATA, EXT_GRANT, PIM, RES_DEPLOYMENT, POLICY_ASSIGNED, LOCK, AZAPI_POLICY];
   const w = world({ existing, tagged: [...TAGGED, UAI, DATA] });
@@ -646,7 +649,7 @@ test("Azure identity, authorization and deployment-history objects are never del
   assert.deepEqual(run.proposal.deletes.map((d) => d.address), ["azurerm_log_analytics_workspace.pilot", "azurerm_storage_account.data"], "only plain run-owned resources are proposed");
   const kept = new Map(run.proposal.excluded.map((x) => [x.address, x]));
   for (const address of ["azurerm_role_assignment.pilot", "azurerm_role_definition.pilot", "azurerm_user_assigned_identity.pilot", "azuread_service_principal.pilot", "azapi_resource.grant",
-    "azapi_resource.ext_grant", "azurerm_pim_eligible_role_assignment.pilot", "azurerm_resource_group_policy_assignment.pilot", "azurerm_management_lock.pilot", "azapi_resource.exemption"]) {
+    "azapi_resource.ext_grant", "azurerm_pim_eligible_role_assignment.pilot", "azurerm_management_group_policy_assignment.pilot", "azurerm_management_lock.pilot", "azapi_resource.exemption"]) {
     assert.equal(kept.get(address)?.ownership, "PROTECTED_IDENTITY", address);
     assert.equal(kept.get(address)?.retainedBy, "PILOT_OWNER", address);
     assert.match(kept.get(address)!.reason, /never deleted by a cleanup, directly or as a dependent/, address);
@@ -668,7 +671,7 @@ test("Azure identity, authorization and deployment-history objects are never del
     ["azurerm_pim_eligible_role_assignment.pilot", "azurerm_pim_eligible_role_assignment", "an identity or authorization object", "PROTECTED_IDENTITY"],
     ["azapi_resource.res_deploy", "azapi_resource", "deployment history", "PROTECTED_DEPLOYMENT"],
     ["azapi_resource.mg_deploy", "azapi_resource", "deployment history", "PROTECTED_DEPLOYMENT"],
-    ["azurerm_resource_group_policy_assignment.pilot", "azurerm_resource_group_policy_assignment", "an identity or authorization object", "PROTECTED_IDENTITY"],
+    ["azurerm_management_group_policy_assignment.pilot", "azurerm_management_group_policy_assignment", "an identity or authorization object", "PROTECTED_IDENTITY"],
     ["azurerm_management_lock.pilot", "azurerm_management_lock", "an identity or authorization object", "PROTECTED_IDENTITY"],
     ["azapi_resource.exemption", "azapi_resource", "an identity or authorization object", "PROTECTED_IDENTITY"],
     // A dependent the state does not even hold is classified by its type alone.
@@ -687,7 +690,7 @@ test("Azure identity, authorization and deployment-history objects are never del
   for (const [address, type, id] of [["azurerm_role_assignment.pilot", "azurerm_role_assignment", NEW_ROLE], ["azurerm_role_definition.pilot", "azurerm_role_definition", ROLE_DEF], ["azurerm_user_assigned_identity.pilot", "azurerm_user_assigned_identity", UAI],
     ["azapi_resource.grant", "azapi_resource", AZAPI_GRANT], ["azurerm_resource_group_template_deployment.pilot", "azurerm_resource_group_template_deployment", DEPLOYMENT], ["azapi_resource.deploy", "azapi_resource", AZAPI_DEPLOYMENT],
     ["azapi_resource.ext_grant", "azapi_resource", EXT_GRANT], ["azurerm_pim_eligible_role_assignment.pilot", "azurerm_pim_eligible_role_assignment", PIM], ["azapi_resource.res_deploy", "azapi_resource", RES_DEPLOYMENT],
-    ["azapi_resource.mg_deploy", "azapi_resource", MG_DEPLOYMENT], ["azurerm_resource_group_policy_assignment.pilot", "azurerm_resource_group_policy_assignment", POLICY_ASSIGNED],
+    ["azapi_resource.mg_deploy", "azapi_resource", MG_DEPLOYMENT], ["azurerm_management_group_policy_assignment.pilot", "azurerm_management_group_policy_assignment", POLICY_ASSIGNED],
     ["azurerm_management_lock.pilot", "azurerm_management_lock", LOCK], ["azapi_resource.exemption", "azapi_resource", AZAPI_POLICY]] as const) {
     const fields = { ...run.proposal, deletes: [...run.proposal.deletes, row(address, type, id)].sort((a, b) => (a.address < b.address ? -1 : 1)), excluded: run.proposal.excluded.filter((x) => x.address !== address) };
     const forged = reHashedProposal(fields);
@@ -707,7 +710,7 @@ test("Azure identity, authorization and deployment-history objects are never del
       ["azurerm_role_assignment.pilot", "INTENTIONALLY_RETAINED", "PILOT_OWNER"], ["azurerm_role_definition.pilot", "INTENTIONALLY_RETAINED", "PILOT_OWNER"], ["azurerm_user_assigned_identity.pilot", "INTENTIONALLY_RETAINED", "PILOT_OWNER"],
       ["azapi_resource.grant", "INTENTIONALLY_RETAINED", "PILOT_OWNER"], ["azurerm_resource_group_template_deployment.pilot", "INTENTIONALLY_RETAINED", "PILOT_OWNER"], ["azapi_resource.deploy", "INTENTIONALLY_RETAINED", "PILOT_OWNER"],
       ["azapi_resource.ext_grant", "INTENTIONALLY_RETAINED", "PILOT_OWNER"], ["azurerm_pim_eligible_role_assignment.pilot", "INTENTIONALLY_RETAINED", "PILOT_OWNER"], ["azapi_resource.res_deploy", "INTENTIONALLY_RETAINED", "PILOT_OWNER"],
-      ["azapi_resource.mg_deploy", "INTENTIONALLY_RETAINED", "PILOT_OWNER"], ["azurerm_resource_group_policy_assignment.pilot", "INTENTIONALLY_RETAINED", "PILOT_OWNER"], ["azurerm_management_lock.pilot", "INTENTIONALLY_RETAINED", "PILOT_OWNER"],
+      ["azapi_resource.mg_deploy", "INTENTIONALLY_RETAINED", "PILOT_OWNER"], ["azurerm_management_group_policy_assignment.pilot", "INTENTIONALLY_RETAINED", "PILOT_OWNER"], ["azurerm_management_lock.pilot", "INTENTIONALLY_RETAINED", "PILOT_OWNER"],
       ["azapi_resource.exemption", "INTENTIONALLY_RETAINED", "PILOT_OWNER"], ["azurerm_subscription_policy_assignment.shared", "INTENTIONALLY_RETAINED", "PILOT_OWNER"]]));
   noTokenIn(w, run.proposal, leftovers.record);
 });

@@ -8,7 +8,8 @@ This is an owner-run, one-time provisioning package. It is separate from the pil
 | --- | --- |
 | `azure/` | Four Entra app registrations (DISCOVERY, STATE, STATE_WRITE, APPLY) with subject-bound federated credentials, the state storage account and container per environment, and the role assignments |
 | `aws/` | Per account: the OIDC provider, the web-identity roles for the chosen engine (Terraform: four, CDK: three), and for Terraform the state bucket and its policy |
-| `config.azure.template.json`, `config.aws.template.json` | Where each output goes in the contract and in the `ALZ_<IDENTITY>_<VAR>` variables. Identifiers and paths only |
+| `gcp/` | Per project and engine (TERRAFORM: DEV, QA and PROD; GCP_API: DEV only): a workload identity pool and OIDC provider, the engine's service accounts with one federated subject each and no key, the minimal Pub/Sub workload grants, for TERRAFORM the state bucket and its bucket-level grants, and the key-creation org policy and deny guardrails. Runbook: `docs/act-pilot-bootstrap-gcp.md` |
+| `config.azure.template.json`, `config.aws.template.json`, `config.gcp.template.json` | Where each output goes in the contract and in the `ALZ_<IDENTITY>_<VAR>` variables. Identifiers and paths only |
 
 ## Why Terraform for both clouds
 
