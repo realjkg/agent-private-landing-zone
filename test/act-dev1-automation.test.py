@@ -65,6 +65,20 @@ class ACTDev1Synthetic(unittest.TestCase):
             apply_policy.build("111111111111","/unbounded/log-group","qa")
         self.assertIn("permissions_boundary",(ROOT/"bootstrap/aws/main.tf").read_text())
         self.assertIn('variable "apply_permissions_boundary_arn"',(ROOT/"bootstrap/aws/variables.tf").read_text())
+    def test_discovery_reads_control_plane_metadata_only(self):
+        # Owner decision 6440801434, item 2: ViewOnlyAccess by default, and an inline deny on data and secret reads that
+        # does not depend on the managed policy list. Synthetic: the text as written, not AWS's evaluation of it.
+        variables=(ROOT/"bootstrap/aws/variables.tf").read_text()
+        self.assertIn('default     = ["arn:aws:iam::aws:policy/job-function/ViewOnlyAccess"]',variables)
+        self.assertNotIn('default     = ["arn:aws:iam::aws:policy/ReadOnlyAccess"]',variables)
+        self.assertIn('variable "discovery_data_read_exceptions"',variables)
+        policy=json.loads((ROOT/"bootstrap/aws/discovery-policy.json").read_text())
+        denied={a for group in policy["deny"].values() for a in group["actions"]}
+        for action in ("s3:GetObject*","secretsmanager:GetSecretValue","ssm:GetParameter","kms:Decrypt","dynamodb:Scan","logs:GetLogEvents"):
+            self.assertIn(action,denied)
+        discovery=(ROOT/"bootstrap/aws/discovery.tf").read_text()
+        self.assertIn('role   = aws_iam_role.identity["DISCOVERY"].name',discovery)
+        self.assertIn('Effect = "Deny"',discovery)
     def test_canary_is_exactly_one_additive_create(self):
         accepted=plan.validate(canary(),expected_name="/alz/act-dev-1/canary-01",expected_owner="qa")
         self.assertEqual(accepted["verdict"],"STRUCTURALLY_ACCEPTABLE")

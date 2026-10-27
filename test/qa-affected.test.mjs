@@ -169,6 +169,20 @@ test("Azure bootstrap changes select its focused owner, and a missing owner is a
   assert.deepEqual(planChanged(["bootstrap/azure/variables.tf"], files).gaps, ["The Azure bootstrap has no focused test owner."]);
 });
 
+test("DISCOVERY scope bootstrap files select the synthetic checks and the policy-content test", () => {
+  const files = fixture();
+  for (const path of ["bootstrap/aws/discovery.tf", "bootstrap/aws/discovery-policy.json", "bootstrap/aws/tests/discovery.tftest.hcl", "bootstrap/aws/terraform.tfvars.example"]) files.set(path, "x");
+  files.set("test/act-dev1-automation.test.py", "bootstrap/aws/discovery.tf");
+  files.set("test/discovery-scope.test.ts", "bootstrap/aws/discovery-policy.json");
+  const plan = planChanged(["bootstrap/aws/discovery.tf", "bootstrap/aws/discovery-policy.json", "bootstrap/aws/tests/discovery.tftest.hcl", "bootstrap/aws/terraform.tfvars.example"], files);
+  assert.deepEqual(plan.pythonTests, ["test/act-dev1-automation.test.py"]);
+  assert.deepEqual(plan.nodeTests, ["test/discovery-scope.test.ts"]);
+  assert.deepEqual(plan.gaps, []);
+  // A bootstrap file with no owner is still a gap.
+  files.set("bootstrap/aws/outputs.tf", "x");
+  assert.ok(planChanged(["bootstrap/aws/outputs.tf"], files).gaps.length > 0);
+});
+
 test("ACT-DEV-1 tfvars and Python handoff changes map to targeted synthetic tests", () => {
   const files=fixture();
   files.set("qualification/aws/act-dev1-canary/terraform.tfvars.example.json",'{"region":"us-east-2"}');

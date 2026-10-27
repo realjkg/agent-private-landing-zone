@@ -98,6 +98,60 @@ test("contract fails closed: missing, unparseable, not an object, disabled, unkn
   disabled(mutate((c) => { c.engine = "PULUMI"; }));
 });
 
+// Owner decision of 2026-10-27 (issue #39, comment 6442856302): the DEV-only exception extends to Azure Terraform, DEV only.
+const azureDevOnly = (): any => {
+  const c = fixtureContract() as any;
+  c.enabledEnvironments = ["DEV"];
+  c.targets = { DEV: c.targets.DEV };
+  c.requiredApprovals = { DEV: 1 };
+  c.approvers = c.approvers.map((entry: any) => ({ ...entry, environments: ["DEV"] }));
+  return c;
+};
+
+test("an Azure Terraform DEV-only contract loads with no QA or PROD target, and resolves only the DEV target", () => {
+  const loaded = load(write(azureDevOnly()));
+  assert.equal(loaded.enabled, true);
+  if (!loaded.enabled) return;
+  assert.equal(loaded.provider, "AZURE");
+  assert.equal(loaded.engine, "TERRAFORM");
+  assert.deepEqual(loaded.enabledEnvironments, ["DEV"]);
+  assert.deepEqual(Object.keys(loaded.targets), ["DEV"]);
+  assert.deepEqual(loaded.requiredApprovals, { DEV: 1 });
+  const dev = { account: "22222222-2222-4222-8222-222222222222", backend: "fixturedevstore/tfstate/dev.tfstate", workspace: "default" };
+  assert.equal(targetForEnvironment(loaded, "DEV", dev).ok, true);
+  assert.equal(targetForEnvironment(loaded, "QA", dev).ok, false, "QA is outside a DEV-only contract");
+  assert.equal(targetForEnvironment(loaded, "PROD", dev).ok, false, "PROD is outside a DEV-only contract");
+});
+
+test("an Azure DEV-only contract cannot name QA or PROD, and QA and PROD still need the full three-stage contract", () => {
+  for (const scope of [["QA"], ["PROD"], ["DEV", "QA"], ["DEV", "PROD"], ["DEV", "QA", "PROD"], ["DEV", "DEV"], [], "DEV"]) {
+    disabled(write({ ...azureDevOnly(), enabledEnvironments: scope }), /enabledEnvironments/, "CONTRACT_INVALID");
+  }
+  // A QA-only or PROD-only contract shaped around that one stage is refused the same way.
+  for (const stage of ["QA", "PROD"] as const) {
+    const base = fixtureContract() as any;
+    disabled(write({ ...azureDevOnly(), enabledEnvironments: [stage], targets: { [stage]: base.targets[stage] }, requiredApprovals: { [stage]: 2 } }), /enabledEnvironments/, "CONTRACT_INVALID");
+  }
+  const base = fixtureContract() as any;
+  disabled(write({ ...azureDevOnly(), targets: { DEV: base.targets.DEV, QA: base.targets.QA } }), /QA/, "CONTRACT_INVALID");
+  disabled(write({ ...azureDevOnly(), requiredApprovals: { DEV: 1, PROD: 2 } }), /PROD/, "CONTRACT_INVALID");
+  disabled(write({ ...azureDevOnly(), targets: {} }), /DEV/, "CONTRACT_INVALID");
+  disabled(write({ ...azureDevOnly(), requiredApprovals: { DEV: 0 } }), /DEV/, "CONTRACT_INVALID");
+  disabled(write({ ...azureDevOnly(), approvers: azureDevOnly().approvers.map((entry: any) => ({ ...entry, environments: ["QA"] })) }), /DEV approver/, "CONTRACT_INVALID");
+  // Without the DEV-only field, the Azure contract is the three-stage chain: every stage, distinct targets, two PROD approvals.
+  disabled(mutate((c) => { delete c.targets.QA; delete c.requiredApprovals.QA; }), /QA/, "CONTRACT_INVALID");
+  disabled(mutate((c) => { c.requiredApprovals.PROD = 1; }), /PROD/, "CONTRACT_INVALID");
+});
+
+test("the DEV-only scope stays Terraform on AWS and Azure: GCP and any other provider or engine are refused", () => {
+  for (const provider of ["GCP", "gcp", "OCI"]) {
+    disabled(write({ ...azureDevOnly(), provider }), /provider and engine/, "CONTRACT_INVALID");
+  }
+  for (const engine of ["CDK", "PULUMI"]) {
+    disabled(write({ ...azureDevOnly(), engine }), /engine/, "CONTRACT_INVALID");
+  }
+});
+
 test("a flag in the environment alone never enables ACT", () => {
   process.env.ALZ_ACT = "true";
   process.env.ACT_ENABLED = "true";
