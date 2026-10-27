@@ -7,6 +7,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { assessReadiness, type ReadinessInput, type ReadinessReport } from "../src/apply/readiness.js";
+import { cdkContractJson, cdkIdentityEnv } from "./helpers/cdk-fixtures.js";
 import {
   awsContractJson, awsIdentityEnv, contractJson, identityEnv, installFakeTerraform, NOW, pinPathOf, testFixtureForgeQualificationEvidence, writePinnedContract,
 } from "./helpers/apply-fixtures.js";
@@ -45,6 +46,20 @@ test("a qualified machine is ready for both clouds, with nothing next and no res
     assert.equal(report.next, null);
     assert.ok(report.checks.every((c) => c.state === "READY" && c.responsible === undefined));
   }
+});
+
+test("the STATE_WRITE embedding item is Terraform's only: a Terraform contract lists it (yes or no), a CDK contract never does, and nothing else differs in what is judged", async () => {
+  const embed = (report: ReadinessReport) => report.checks.filter((c) => c.check.startsWith("plan will embed STATE_WRITE settings"));
+  const terraform = await assessReadiness((await world((k) => awsContractJson(k), "AWS")).input);
+  assert.deepEqual(embed(terraform).map((c) => [c.check, c.state]), [["plan will embed STATE_WRITE settings: no", "READY"]]);
+  const optedIn = await assessReadiness((await world((k) => awsContractJson(k, { embedStateWrite: true }), "AWS")).input);
+  assert.deepEqual(embed(optedIn).map((c) => c.check), ["plan will embed STATE_WRITE settings: yes"]);
+  const cdk = await world((k) => cdkContractJson(k), false);
+  const report = await assessReadiness({ ...cdk.input, env: cdkIdentityEnv("DEV") });
+  assert.deepEqual(embed(report), [], "the CDK engine has no state backend and no STATE_WRITE identity, so the item is not shown");
+  // The other checks are the same list for both engines, in the same order: the contract, the identities, their target, the tool, the stop, the qualification.
+  const names = (r: ReadinessReport) => r.checks.map((c) => c.check.replace(/\(.*\)/, "").replace(/aws|terraform/, "<tool>").trim());
+  assert.deepEqual(names(report), names(terraform).filter((n) => !n.startsWith("plan will embed")));
 });
 
 test("an absent contract is MISSING and an unreadable one INVALID, both the owner's, and nothing else is judged", async () => {
