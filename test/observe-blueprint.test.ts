@@ -227,7 +227,9 @@ test("the CloudFormation blueprint maps logical ids to physical ids, derives the
     { LogicalResourceId: "bad id!", ResourceType: "AWS::S3::Bucket", PhysicalResourceId: "x" }, { LogicalResourceId: "BadType", ResourceType: "Bucket", PhysicalResourceId: "x" }, "garbage", null,
   ] });
   const planned = [{ address: "PilotBucket", type: "AWS::S3::Bucket", action: "CREATE" }, { address: "PilotTopic", type: "AWS::SNS::Topic", action: "REPLACE" }, { address: "Planned", type: "AWS::SQS::Queue", action: "CREATE" },
-    { address: "Removed", type: "AWS::SQS::Queue", action: "DELETE" }, { address: "Dynamic", type: "AWS::S3::Bucket", action: "DYNAMIC" }];
+    { address: "Removed", type: "AWS::SQS::Queue", action: "DELETE" }, { address: "Dynamic", type: "AWS::S3::Bucket", action: "DYNAMIC" },
+    // A Modify whose replacement the reader could not judge (UNKNOWN) still leaves the resource in the stack: gone from the stack, it is missing (#270 review N3).
+    { address: "Unjudged", type: "AWS::SQS::Queue", action: "UNKNOWN" }];
   const blueprint = blueprintFromCloudFormationResources(document, planned, place);
   assert.deepEqual(blueprint.entries, [
     { address: "Nested", type: "AWS::CloudFormation::Stack", id: "arn:aws:cloudformation:us-east-1:111111111111:stack/nested/0000", arn: "arn:aws:cloudformation:us-east-1:111111111111:stack/nested/0000", origin: "NOT_IN_PLAN" },
@@ -242,12 +244,12 @@ test("the CloudFormation blueprint maps logical ids to physical ids, derives the
     { address: "PilotTopic", type: "AWS::SNS::Topic", id: "arn:aws:sns:us-east-1:111111111111:PilotStack-PilotTopic-X", arn: "arn:aws:sns:us-east-1:111111111111:PilotStack-PilotTopic-X", origin: "IN_PLAN" },
   ]);
   // Planned to exist and not in the stack (a created queue, a dynamic change); a planned delete is not expected.
-  assert.deepEqual(blueprint.missing, ["Dynamic", "Planned"]);
+  assert.deepEqual(blueprint.missing, ["Dynamic", "Planned", "Unjudged"]);
   assert.ok(!JSON.stringify(blueprint).includes("CANARY_STATUS_REASON_r1"), "no status text is copied");
   // Without a region no ARN is derived; a physical ARN still stands.
   const unplaced = blueprintFromCloudFormationResources(document, planned, { account: "111111111111", region: undefined });
   assert.equal(unplaced.entries.find((e) => e.address === "PilotBucket")!.arn, null);
   assert.equal(unplaced.entries.find((e) => e.address === "PilotTopic")!.arn, "arn:aws:sns:us-east-1:111111111111:PilotStack-PilotTopic-X");
   for (const bad of ["", "not json", "[]", JSON.stringify({ Stacks: [] }), JSON.stringify({ StackResources: {} })]) assert.throws(() => blueprintFromCloudFormationResources(bad, planned, place), /STATE_JSON_INVALID/, bad);
-  assert.deepEqual(blueprintFromCloudFormationResources(JSON.stringify({ StackResources: [] }), planned, place), { entries: [], missing: ["Dynamic", "PilotBucket", "PilotTopic", "Planned"] }, "code-point order");
+  assert.deepEqual(blueprintFromCloudFormationResources(JSON.stringify({ StackResources: [] }), planned, place), { entries: [], missing: ["Dynamic", "PilotBucket", "PilotTopic", "Planned", "Unjudged"] }, "code-point order");
 });

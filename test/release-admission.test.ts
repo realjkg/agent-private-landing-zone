@@ -260,6 +260,52 @@ const review = (manifest: ReleaseAdmissionInput, pilotContract?: ReturnType<type
   reviewProductionRelease({ manifest, expectedCommit: commit, root: pilotRoot, pilotContract, pilotPinPath: pinPath });
 const actBlockers = (r: { blockers: string[] }) => r.blockers.filter((b) => /^ACT_PILOT|^RELEASE_MANIFEST/.test(b));
 
+test("under a PILOT release a live ACT record and a recovery record must name the pinned contract, and the recovery record the approval count that contract requires for its environment (#269 review N2); a release with no pilot scope binds neither", async () => {
+  writeContract(true);
+  const pinned = loadPinned() as PilotContract;
+  const scope = { provider: "AZURE", engine: "TERRAFORM", contractSha256: pilotContractSha256(pinned) };
+  const attach = (id: string, mode: ReleaseGateSubmission["mode"], payload: object): ReleaseGateSubmission => {
+    const name = id.replaceAll(":", "-") + "-" + hash(JSON.stringify(payload)).slice(0, 8) + ".json";
+    const bytes = JSON.stringify(payload) + "\n";
+    mkdirSync(join(pilotRoot, "evidence"), { recursive: true });
+    writeFileSync(join(pilotRoot, "evidence", name), bytes);
+    return { id, mode, sourceCommit: commit, targetHardwareId: target, evidencePath: "evidence/" + name, evidenceSha256: hash(bytes) };
+  };
+  const status = async (id: string, mode: ReleaseGateSubmission["mode"], payload: object, manifest: ReleaseAdmissionInput = { ...pilotInput(scope), records: [attach(id, mode, payload)] }) =>
+    (await review({ ...manifest, records: manifest.records.length > 0 ? manifest.records : [attach(id, mode, payload)] }, pinned)).gates.find((g) => g.id === id)?.status;
+  // The live ACT record: the pinned contract's hash is admitted, another contract's is not.
+  const live = {
+    schemaVersion: 1, label: "LIVE", step: "execute", cloud: "AZURE", engine: "TERRAFORM", environment: "DEV", target: { account: "a", backend: "b", workspace: "default" },
+    sourceCommit: commit, artifactSha256: "1".repeat(64), outcome: "SUCCEEDED", evidenceSha256: "2".repeat(64), contractSha256: scope.contractSha256, attestedBy: "owner", attestedAt: "2026-10-25T00:00:00.000Z",
+  };
+  assert.equal(await status("act:azure-terraform", "LIVE_ACT", live), "EVIDENCE_PRESENT");
+  assert.equal(await status("act:azure-terraform", "LIVE_ACT", { ...live, contractSha256: "3".repeat(64) }), "BLOCKED", "another contract");
+  // The recovery record, built by the producer under the pinned contract: DEV with the one approval the contract requires is admitted.
+  const at = (minutes: number): string => new Date(Date.UTC(2026, 9, 12, 12, minutes)).toISOString();
+  const apply = (over: Partial<ApplyEvidence>): ApplyEvidence => ({
+    schemaVersion: 1, environment: "DEV", target: { account: "a", backend: "b", workspace: "default" }, artifactSha256: "5".repeat(64), manifestHash: "2".repeat(64), releaseIdentity: "3".repeat(64),
+    contractSha256: scope.contractSha256, sourceCommit: commit, approvals: [{ approverId: "approver-1", issuedAt: at(-30) }], adapter: { adapterVersion: "a", argvDigest: "4".repeat(64) },
+    toolVersions: { engine: "1.9.5" }, outcome: "SUCCEEDED", exitCode: 0, startedAt: at(-10), finishedAt: at(0), authority: APPLY_AUTHORITY, ...over,
+  });
+  const built = buildRecoveryEvidence({
+    interrupted: apply({ outcome: "KILLED", exitCode: null }), resumed: apply({ artifactSha256: "6".repeat(64), approvals: [{ approverId: "approver-1", issuedAt: at(15) }], startedAt: at(20), finishedAt: at(25) }),
+    contract: pinned, sourceCommit: commit, targetHardwareId: target, attestedBy: "operator", now: new Date(Date.UTC(2026, 9, 12, 13)),
+  });
+  assert.ok(built.ok);
+  const recovery = built.evidence;
+  assert.equal(recovery.requiredApprovals, 1);
+  assert.equal(await status("act-run-recovery", "ACT_RECOVERY", recovery), "EVIDENCE_PRESENT");
+  // The same document relabeled to PROD with its one approval is internally consistent (the validator alone admits it) but the pinned contract requires two for PROD: refused.
+  const prod = { ...recovery, environment: "PROD", interrupted: { ...recovery.interrupted, environment: "PROD" }, resumed: { ...recovery.resumed, environment: "PROD" } };
+  assert.equal(await status("act-run-recovery", "ACT_RECOVERY", prod), "BLOCKED", "PROD claiming one approval under a contract that requires two");
+  // Another contract than the pinned one, consistently cited, is refused too.
+  const other = { ...recovery, contractSha256: "9".repeat(64), interrupted: { ...recovery.interrupted, contractSha256: "9".repeat(64) }, resumed: { ...recovery.resumed, contractSha256: "9".repeat(64) },
+    checks: recovery.checks.map((c) => (c.name === "pilot-contract" ? { ...c, evidenceSha256: "9".repeat(64) } : c)) };
+  assert.equal(await status("act-run-recovery", "ACT_RECOVERY", other), "BLOCKED", "another contract");
+  // A release with no pilot scope binds neither (the existing non-pilot checks stand): the same PROD document is admitted by the validator alone.
+  assert.equal(await status("act-run-recovery", "ACT_RECOVERY", prod, { ...input([]), records: [] }), "EVIDENCE_PRESENT", "no pilot scope, no binding");
+});
+
 test("a PILOT release with no contract, or a disabled one, is rejected", async () => {
   writeContract(true);
   const enabled = loadPinned();

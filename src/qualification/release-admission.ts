@@ -3,7 +3,7 @@ import { readFile, realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 
 import { loadPilotContract, pilotContractPinned, pilotContractSha256 } from "../apply/contract.js";
-import type { EngineId, PilotContract, ProviderId } from "../apply/types.js";
+import type { ApplyEnvironment, EngineId, PilotContract, ProviderId } from "../apply/types.js";
 import { PREVIEW_GATE_SCENARIOS, previewGateEvidenceProblems, previewScenarioOf } from "./preview-gate.js";
 import { recoveryGateEvidenceProblems } from "./recovery-gate.js";
 export { PREVIEW_GATE_SCENARIOS, previewScenarioOf, type PreviewGateScenario } from "./preview-gate.js";
@@ -111,7 +111,10 @@ function isObject(value: unknown): value is Json {
 function digest(value: Buffer | string): string {
   return createHash("sha256").update(value).digest("hex");
 }
-function observedLivePayload(value: unknown, gate: ReleaseGate, record: ReleaseGateSubmission, commit: string): boolean {
+/** What a PILOT release binds a live ACT or recovery record to: the pinned contract's hash and its required approvals per environment. Null for a release with no pilot scope. */
+type PilotBinding = { contractSha256: string; requiredApprovals: PilotContract["requiredApprovals"] } | null;
+
+function observedLivePayload(value: unknown, gate: ReleaseGate, record: ReleaseGateSubmission, commit: string, pilot: PilotBinding): boolean {
   if (!isObject(value)) return false;
   if (value.mutationObserved === true ||
       value.mock === true || value.fixture === true ||
@@ -161,10 +164,13 @@ function observedLivePayload(value: unknown, gate: ReleaseGate, record: ReleaseG
   if (gate.mode === "LIVE_ACT") {
     // The live record `./alz apply record-live` writes from the apply's own ledger evidence (src/apply/live-record.ts).
     const path = ACT_RELEASE_PATHS.find((x) => actGateId(x) === gate.id);
+    // Under a PILOT release the record must name the pinned contract the release is bound to (#269 review N2): a record of an apply
+    // under another contract is not this release's live evidence.
     return path !== undefined && value.schemaVersion === 1 && value.label === "LIVE" && value.step === "execute" &&
       value.cloud === path.provider && value.engine === path.engine && value.sourceCommit === commit &&
       value.outcome === "SUCCEEDED" && typeof value.attestedBy === "string" && value.attestedBy.trim() !== "" &&
-      [value.artifactSha256, value.evidenceSha256, value.contractSha256].every((x) => typeof x === "string" && sha64.test(x));
+      [value.artifactSha256, value.evidenceSha256, value.contractSha256].every((x) => typeof x === "string" && sha64.test(x)) &&
+      (pilot === null || value.contractSha256 === pilot.contractSha256);
   }
   // These statements must be produced by real target/CI tools. The checker
   // validates provenance and content, not the honesty of an external machine.
@@ -216,10 +222,13 @@ function observedLivePayload(value: unknown, gate: ReleaseGate, record: ReleaseG
     // The evidence is a valid recovery-gate document of this commit (src/qualification/recovery-gate.ts): the four gate fields,
     // the conditions, the label and `passed` are recomputed from the cited ledger records, so a hand-written document, or one
     // relabeled over records that show no interruption or an approval carried over, is refused here as well as by the producer.
+    // Under a PILOT release the record must name the pinned contract and the approval count that contract requires for the record's
+    // environment (#269 review N2): a PROD record claiming one approval under a contract that requires two is refused.
     return recoveryGateEvidenceProblems(report, { sourceCommit: commit }).length === 0 &&
       typeof report.interruptedArtifactSha256 === "string" && sha64.test(report.interruptedArtifactSha256) &&
       (report.interruptedOutcome === "PARTIAL_REQUIRES_REVIEW" || report.interruptedOutcome === "KILLED") &&
-      report.reconciledFromLedger === true && report.resumedWithoutApproval === false;
+      report.reconciledFromLedger === true && report.resumedWithoutApproval === false &&
+      (pilot === null || (report.contractSha256 === pilot.contractSha256 && report.requiredApprovals === pilot.requiredApprovals[report.environment as ApplyEnvironment]));
   }
   if (gate.mode === "INDEPENDENT_REVIEW") {
     return typeof report.reviewer === "string" && report.reviewer.trim() !== "" &&
@@ -299,6 +308,7 @@ export async function reviewProductionRelease(input: {
   }
   const pilot = reviewPilot(manifest, input.pilotContract?.enabled === true ? input.pilotContract : undefined, input.pilotPinPath);
   blockers.push(...pilot.blockers);
+  const binding: PilotBinding = pilot.scope && input.pilotContract?.enabled === true ? { contractSha256: pilot.scope.contractSha256, requiredApprovals: input.pilotContract.requiredApprovals } : null;
   if (!Array.isArray(manifest.records)) {
     blockers.push("RELEASE_RECORDS_REQUIRED");
   }
@@ -342,7 +352,7 @@ export async function reviewProductionRelease(input: {
           reasons.push("EVIDENCE_DIGEST_MISMATCH");
         } else {
           const value = JSON.parse(bytes.toString("utf8")) as unknown;
-          if (!observedLivePayload(value, gate, record, expectedCommit)) {
+          if (!observedLivePayload(value, gate, record, expectedCommit, binding)) {
             reasons.push("EVIDENCE_GATE_CONTRACT_FAILED");
           }
         }
