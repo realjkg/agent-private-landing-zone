@@ -333,7 +333,7 @@ export function fakeArmHttp(behavior: ArmBehavior = {}): { http: (request: ArmCa
     if (providers) {
       const namespace = providers[1];
       // The real provider lists every type it offers whether or not a resource exists; the fake knows a few common ones plus whatever the scenario names.
-      const KNOWN_TYPES = ["Microsoft.OperationalInsights/workspaces", "Microsoft.Storage/storageAccounts", "Microsoft.Storage/storageAccounts/blobServices/containers", "Microsoft.Authorization/roleAssignments", "Microsoft.Authorization/locks", "Microsoft.Resources/deployments", "Microsoft.Compute/virtualMachines", "Microsoft.KeyVault/vaults"];
+      const KNOWN_TYPES = ["Microsoft.OperationalInsights/workspaces", "Microsoft.Storage/storageAccounts", "Microsoft.Storage/storageAccounts/blobServices/containers", "Microsoft.Authorization/roleAssignments", "Microsoft.Authorization/locks", "Microsoft.Authorization/policyDefinitions", "Microsoft.Authorization/policySetDefinitions", "Microsoft.Authorization/policyAssignments", "Microsoft.Resources/deployments", "Microsoft.Compute/virtualMachines", "Microsoft.KeyVault/vaults"];
       const types = new Set([...KNOWN_TYPES, ...[...(b.existing ?? []), ...Object.keys(b.fail ?? {}), ...(b.tagged ?? [])].map(typeOf)].filter((t) => t.toLowerCase().startsWith(namespace.toLowerCase() + "/")).map((t) => t.slice(namespace.length + 1)));
       const resourceTypes = [...types].filter((t) => !(b.unknownTypes ?? []).includes(namespace + "/" + t))
         .map((t) => ({ resourceType: t, apiVersions: (b.previewOnlyTypes ?? []).includes(namespace + "/" + t) ? ["2024-01-01-preview"] : ["2024-01-01-preview", "2023-05-01"] }));
