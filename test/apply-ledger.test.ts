@@ -31,6 +31,7 @@ const hashOf = (char: string): string => H(char);
 const evidenceFor = (artifactSha256: string): ApplyEvidence => ({
   schemaVersion: 1, environment: "DEV", target: DEV_TARGET, artifactSha256, manifestHash: H("1"), releaseIdentity: H("2"), contractSha256: H("3"), sourceCommit: "5ec0de0000000000000000000000000000c0ffee",
   approvals: [{ approverId: "alice", issuedAt: NOW.toISOString() }],
+  requester: { requesterId: "carol", nonce: "0".repeat(32) },
   adapter: { adapterVersion: APPLY_ADAPTER.adapterVersion, argvDigest: APPLY_ADAPTER.argvDigest }, toolVersions: { engine: "1.9.5" },
   outcome: "SUCCEEDED", exitCode: 0, startedAt: NOW.toISOString(), finishedAt: NOW.toISOString(), authority: APPLY_AUTHORITY,
 });
