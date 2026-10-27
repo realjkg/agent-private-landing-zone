@@ -10,11 +10,15 @@ export type ToolId = "terraform" | "ollama";
 export type Platform = "darwin-arm64" | "darwin-x64" | "linux-x64" | "linux-arm64" | "win32-x64" | "win32-arm64";
 export type Artifact = { url: string; sha256: string; archive: "zip" | "tgz" | "tar.zst"; binary: string };
 export type ToolPin = { version: string; checksumSource: string; tested: string[]; artifacts: Partial<Record<Platform, Artifact>> };
+/** A check-only pin: a tested version `./alz deps` compares against and never installs (no artifact, no checksum). */
+export type CheckOnlyPin = { version: string; versionCommand: string; tested: string[] };
 export type ToolPins = {
   schemaVersion: 1;
   tools: Record<ToolId, ToolPin>;
   node: { major: number };
   isolatedOllama: { host: string; port: number; models: string[] };
+  /** The AWS CLI v2 the CDK path is tested with: check only (the vendor's installer needs an administrator password on macOS). */
+  awsCli: CheckOnlyPin;
 };
 
 const HEX64 = /^[0-9a-f]{64}$/;
@@ -36,6 +40,7 @@ export function loadToolPins(path: string = DEFAULT_PINS): ToolPins {
     }
   }
   if (raw.node?.major !== 26) throw new Error("TOOL_PIN_INVALID: node");
+  if (!/^2\.\d+\.\d+$/.test(raw.awsCli?.version ?? "") || raw.awsCli.versionCommand !== "aws --version" || !Array.isArray(raw.awsCli.tested)) throw new Error("TOOL_PIN_INVALID: awsCli");
   return raw;
 }
 

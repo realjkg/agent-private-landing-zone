@@ -140,6 +140,12 @@ export const governanceOperations: readonly OperationSpec[] = [
     cli: "./alz deps", evidenceBasis: "LOCAL CHECK — installs or updates only after you choose \"Install it\" or \"Update it\" for each tool, into your user folder; an earlier version stays until the new one is checked; no cloud, no infrastructure change",
   }, "Installs need a person at an interactive Terminal window, choosing from a menu for each tool, which the console never has.", "./alz deps"),
   handoff({
+    id: "lifecycle", title: "Packaged release lifecycle runner", cliScript: "src/cli/lifecycle.ts",
+    summary: "Runs the packaged release's lifecycle journeys on a disposable host, journaled and resumable, and writes the platform gate report with the admission review's verdict.",
+    cli: "./alz lifecycle <clean-install|uninstall|partial-install-recovery|all> --artifact FILE.tgz --evidence DIR --host ID --commit SHA [--home DIR] [--synthetic]",
+    evidenceBasis: "LOCAL LIFECYCLE EVIDENCE — installs and removes the app under the user folder of a disposable host only; the report is judged by the release admission review and is never submitted or admitted here; --synthetic is labeled and never submittable; no cloud, no infrastructure change",
+  }, "It installs and removes the packaged app on a disposable host and needs a person at that host's Terminal; the console never runs it, and it never submits evidence.", "./alz lifecycle all --artifact FILE.tgz --evidence DIR --host ID --commit SHA"),
+  handoff({
     id: "security-check", title: "Security preflight", cliScript: "src/cli/security.ts",
     summary: "Checks the local session security controls and states whether a secured session may start.",
     cli: "npm run security:check", evidenceBasis: NO_CHANGE,
