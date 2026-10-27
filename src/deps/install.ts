@@ -1,14 +1,16 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, closeSync, createReadStream, createWriteStream, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
+import { chmodSync, createReadStream, createWriteStream, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { createZstdDecompress } from "node:zlib";
 
-import { acquireRunLock, type RunLockBusy } from "../lifecycle/journal.js";
+import { acquireRunLock, pidProvenDead, type RunLockBusy } from "../lifecycle/run-lock.js";
 import { INSTALL_MARKER, type InstallMarker, installedPath, installState, readInstallMarker, realFolder, REMOVING_MARKER, reportedVersion } from "./checks.js";
 import { type Artifact, type Platform, type ToolId, type ToolPins } from "./pins.js";
+
+export { pidProvenDead };
 
 /**
  * Installs one pinned tool into ~/.alz/tools/<tool>/<version>/ (docs/operator-guide.md). The archive is downloaded to a
@@ -153,16 +155,6 @@ async function unpack(archive: Artifact["archive"], file: string, into: string, 
   }
 }
 
-/** True only when the kernel says no such process. Permission denied, or any other answer, means alive: pids get reused. */
-export function pidProvenDead(pid: number): boolean {
-  if (!Number.isInteger(pid) || pid < 1 || pid === process.pid) return false;
-  try {
-    process.kill(pid, 0);
-    return false;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "ESRCH";
-  }
-}
 
 /** The leftover folders of a run under the tool folder: an unpack in progress, the copy renamed aside during a swap, or a removal in progress. */
 const LEFTOVER_FOLDER = /^(\d+\.\d+\.\d+)\.(partial|replaced|removing)-(\d+)$/;
