@@ -1,4 +1,4 @@
-import { copyFileSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -20,7 +20,7 @@ export const SUBSCRIPTION = "11111111-2222-4333-8444-555555555555";
 export const CANARY = "AKIAEVIDENCECANARY00";
 
 export function fixtureRoot(pin = ""): string {
-  const root = mkdtempSync(join(tmpdir(), "alz-evidence-"));
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "alz-evidence-")));
   mkdirSync(join(root, "config", "release"), { recursive: true });
   copyFileSync("config/release/scope.json", join(root, "config", "release", "scope.json"));
   copyFileSync("config/release/status.json", join(root, "config", "release", "status.json"));

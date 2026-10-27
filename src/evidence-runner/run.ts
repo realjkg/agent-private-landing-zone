@@ -1,9 +1,10 @@
-import { copyFileSync, constants as fsConstants, existsSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import { copyFileSync, constants as fsConstants, existsSync, realpathSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 
 import type { SourceCommit } from "../util/source-commit.js";
 import { EXAMPLE_CONFIG_PATH, EvidencePathError, evidencePath, insideRoot, loadConfig, type EvidenceRunnerConfig } from "./config.js";
-import { gatePlan, releaseGates, type GatePlan, type GateRunnerMode } from "./gates.js";
+import { assertRealFolder, ensureRealFolder, replaceNoFollow } from "./safe-write.js";
+import { ReleaseGatesError, gatePlan, releaseGates, type GatePlan, type GateRunnerMode } from "./gates.js";
 import { Journal, JournalError, acquireRunLock, readJournal, stepRecord } from "./journal.js";
 import { identityHash, ownerInputs, pinState, runPreflight, type IdentityProbe, type Preflight } from "./preflight.js";
 import { BUILT_STAGES, DEFAULT_STAGES, EXIT, STAGES, STAGE_SLICE, type RunLabel, type StageId, type StepOutcome } from "./types.js";
@@ -47,8 +48,8 @@ export function writeRunnerDocument(path: string, label: RunLabel | "UNLABELED",
   const stamped = { ...document, label, ...(label === "SYNTHETIC" ? { fixture: true } : {}) };
   const bad = forbiddenKeys(stamped);
   if (bad.length > 0) throw new EvidenceWriteError("Refused to write a document with credential-shaped keys: " + bad.join(", "));
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  writeFileSync(path, JSON.stringify(stamped, null, 2) + "\n", { mode: 0o600 });
+  ensureRealFolder(dirname(path));
+  replaceNoFollow(path, JSON.stringify(stamped, null, 2) + "\n");
 }
 
 /** Where one candidate's run lives. Synthetic runs never share a folder with live ones. */
@@ -134,7 +135,11 @@ export async function evidenceRun(options: RunOptions, deps: RunnerDeps): Promis
     return EXIT.BLOCKED;
   }
   const { config, sha256: configSha256 } = loaded;
-  const release = releaseGates(deps.root);
+  let release: ReturnType<typeof releaseGates>;
+  try { release = releaseGates(deps.root); } catch (error) {
+    if (error instanceof ReleaseGatesError) { out(error.code + ": " + error.message); return EXIT.BLOCKED; }
+    throw error;
+  }
   const gates = gatePlan(release.ids, release.outOfScope);
   out("Evidence runner — candidate " + config.candidateCommit.slice(0, 12) + " on " + config.targetHardwareId + (options.dryRun ? " (dry run)" : "") + ". ACT stays disabled.");
   out("Preflight");
@@ -164,7 +169,10 @@ export async function evidenceRun(options: RunOptions, deps: RunnerDeps): Promis
   let unlock: (() => void) | undefined;
   try {
     const dir = runDirectory(deps.root, config, label === "SYNTHETIC");
+    ensureRealFolder(dir);
     unlock = acquireRunLock(join(dir, "run.lock"), deps.pidAlive);
+    // Re-checked after the lock: a folder swapped for a link while this run waited is refused before anything is written.
+    assertRealFolder(dir);
     const journal = new Journal(join(dir, "journal.jsonl"), {
       sourceCommit: config.candidateCommit, configSha256, targetHardwareId: config.targetHardwareId, label, host: deps.host, identityHash: identityHash(config),
     });
@@ -235,7 +243,11 @@ export async function evidenceStatus(options: Pick<RunOptions, "configPath" | "s
   out("Owner inputs");
   for (const input of ownerInputs(config, pinState(deps.root))) out("  " + input.code + " — " + input.detail);
   out("Gates");
-  const release = releaseGates(deps.root);
+  let release: ReturnType<typeof releaseGates>;
+  try { release = releaseGates(deps.root); } catch (error) {
+    if (error instanceof ReleaseGatesError) { out(error.code + ": " + error.message); return EXIT.BLOCKED; }
+    throw error;
+  }
   for (const gate of gatePlan(release.ids, release.outOfScope)) out("  " + gate.mode.padEnd(12) + " " + gate.id + (gate.slice ? " (" + gate.slice + ")" : "") + " — " + gate.note);
   return EXIT.OK;
 }

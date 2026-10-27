@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { appendFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdtempSync, realpathSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -12,7 +12,7 @@ import { CANDIDATE } from "./helpers/evidence-fixtures.js";
 const identity: JournalIdentity = {
   sourceCommit: CANDIDATE, configSha256: "a".repeat(64), targetHardwareId: "owner-mac-01", label: "SYNTHETIC", host: "fixture-host", identityHash: "b".repeat(64),
 };
-const folder = () => mkdtempSync(join(tmpdir(), "alz-evidence-journal-"));
+const folder = () => realpathSync(mkdtempSync(join(tmpdir(), "alz-evidence-journal-")));
 const refusal = (code: string) => (error: unknown) => error instanceof JournalError && error.code === code;
 
 test("start and finish lines record each step; a start without a finish reads as interrupted", () => {

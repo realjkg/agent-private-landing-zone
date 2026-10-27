@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { RELEASE_GATE_IDS } from "./gate-ids.js";
+
 /**
  * How the runner relates to each production release gate (the PLAN on issue #39, section C).
  *
@@ -79,15 +81,40 @@ export function gatePlan(ids: readonly string[], outOfScope: ReadonlySet<string>
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
-/** The release gate ids (config/release/status.json) and the scope's exclusions (config/release/scope.json), read as data. */
+export class ReleaseGatesError extends Error {
+  readonly code = "EVIDENCE_RELEASE_GATES_MISMATCH";
+}
+
+/**
+ * The release gate ids (config/release/status.json) and the scope's exclusions (config/release/scope.json), read as data
+ * and checked against the committed registry copy (`RELEASE_GATE_IDS`): a missing, extra or reordered gate, or an
+ * exclusion naming no gate, refuses the run with the ids named, so the plan and `status` never silently shrink.
+ */
 export function releaseGates(root: string): { ids: string[]; outOfScope: Set<string> } {
-  const read = (name: string): unknown => JSON.parse(readFileSync(join(root, "config", "release", name), "utf8")) as unknown;
+  const read = (name: string): unknown => {
+    try { return JSON.parse(readFileSync(join(root, "config", "release", name), "utf8")) as unknown; } catch {
+      throw new ReleaseGatesError("config/release/" + name + " is missing or not valid JSON.");
+    }
+  };
   const status = read("status.json");
   const scope = read("scope.json");
   if (!isRecord(status) || !Array.isArray(status.gates) || !isRecord(scope) || !Array.isArray(scope.outOfScope)) {
-    throw new Error("config/release/status.json or scope.json is not in the expected shape.");
+    throw new ReleaseGatesError("config/release/status.json or scope.json is not in the expected shape.");
   }
   const ids = status.gates.map((entry) => isRecord(entry) && typeof entry.gate === "string" ? entry.gate : "");
-  if (ids.some((id) => id === "")) throw new Error("config/release/status.json names a gate without an id.");
-  return { ids, outOfScope: new Set(scope.outOfScope.flatMap((entry) => isRecord(entry) && typeof entry.gate === "string" ? [entry.gate] : [])) };
+  const missing = RELEASE_GATE_IDS.filter((id) => !ids.includes(id));
+  const extra = ids.filter((id) => !RELEASE_GATE_IDS.includes(id));
+  const duplicated = ids.filter((id, index) => ids.indexOf(id) !== index);
+  if (missing.length > 0 || extra.length > 0 || duplicated.length > 0) {
+    throw new ReleaseGatesError("config/release/status.json does not list the release gates this runner knows" +
+      (missing.length ? "; missing: " + missing.join(", ") : "") + (extra.length ? "; unknown: " + extra.map((id) => id || "(no id)").join(", ") : "") +
+      (duplicated.length ? "; listed twice: " + duplicated.join(", ") : "") + ". Update status.json, or this runner if the registry changed.");
+  }
+  if (ids.some((id, index) => id !== RELEASE_GATE_IDS[index])) {
+    throw new ReleaseGatesError("config/release/status.json lists the release gates in another order than the registry.");
+  }
+  const outOfScope = scope.outOfScope.map((entry) => isRecord(entry) && typeof entry.gate === "string" ? entry.gate : "");
+  const unknown = outOfScope.filter((id) => !RELEASE_GATE_IDS.includes(id));
+  if (unknown.length > 0) throw new ReleaseGatesError("config/release/scope.json excludes gates that do not exist: " + unknown.map((id) => id || "(no id)").join(", ") + ".");
+  return { ids, outOfScope: new Set(outOfScope) };
 }
