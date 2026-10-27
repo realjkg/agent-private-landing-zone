@@ -1,7 +1,8 @@
 locals {
   identities   = toset(["DISCOVERY", "STATE", "STATE_WRITE", "APPLY"])
-  environments = toset(["DEV", "QA", "PROD"])
+  environments = toset(var.enabled_environments)
   # One client per identity for every subscription: the Azure provider spec expects the same client ids in every environment.
+  # Federated credentials exist only for the enabled environments: DEV-only mode creates four, the chain twelve.
   federated_credentials = {
     for pair in setproduct(local.identities, local.environments) :
     "${pair[0]}/${pair[1]}" => { identity = pair[0], environment = pair[1] }
