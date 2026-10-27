@@ -166,8 +166,12 @@ test("verifyApprovalSet refuses the requester's key under any id in PROD, and ac
   assert.equal((byKey as { code: string }).code, "APPROVER_IS_REQUESTER", "the requester's key under another id is the requester");
   // DEV and QA: the requester approves.
   for (const environment of ["DEV", "QA"] as const) assert.equal(verdict(environment, [signApproval(statement("alice", environment), keys.alice.priv)]).ok, true, environment);
-  // Without a requester (a cleanup approval set) the rule does not apply.
-  assert.equal(verifyApprovalSet({ approvals: [signApproval(statement("alice", "PROD"), keys.alice.priv), signApproval(statement("bob", "PROD"), keys.bob.priv)], artifactSha256, environment: "PROD", target: targetOf("PROD"), contract, now: NOW, nonces }).ok, true);
+  // A set with no verified requester is refused in every environment: every apply and every cleanup has one, so no caller can skip
+  // the rule by leaving it out (owner decision 6440801434, item 1; this closes #286 N5, which pinned the opposite for cleanup).
+  for (const environment of ["DEV", "QA", "PROD"] as const) {
+    const noRequester = verifyApprovalSet({ approvals: [signApproval(statement("bob", environment), keys.bob.priv), signApproval(statement("alice-again", environment), keys.mallory.priv)], artifactSha256, environment, target: targetOf(environment), contract, now: NOW, nonces } as never);
+    assert.equal((noRequester as { code: string }).code, "REQUESTER_SIGNATURE_MISSING", environment);
+  }
 });
 
 // --- forged, reused and missing requester signatures ----------------------------------------------------------

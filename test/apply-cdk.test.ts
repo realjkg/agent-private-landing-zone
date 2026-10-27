@@ -17,7 +17,7 @@ import { AWS } from "../src/apply/providers/aws.js";
 import { loadSealedPlan, reviewBundleOf } from "../src/apply/seal.js";
 import { APPLY_IDENTITIES, type ApplyEnvironment, type ApplyEvidence, type ApplyResult, type PilotContract, type SignedApproval } from "../src/apply/types.js";
 import { signApproval } from "../src/apply/approval.js";
-import { buildCleanupProposal, computeProposalSha256, verifyCleanupProposal, type CleanupProposal } from "../src/apply/cleanup-proposal.js";
+import { buildCleanupProposal, signCleanupProposal, verifyCleanupProposal, type CleanupProposal } from "../src/apply/cleanup-proposal.js";
 import { loadRunRecords, observeRun, verifyProposalLeftovers, type ObserveDeps } from "../src/apply/observe.js";
 import { readBlueprintRecord } from "../src/apply/run-records.js";
 import { runCleanup } from "../src/apply/driver.js";
@@ -31,7 +31,7 @@ import { codeOf } from "../src/apply/engine.js";
 import { buildChildEnvironment } from "../src/tools/child-env.js";
 import { AWS_CFN_APPLY_PROFILE } from "../src/tools/profiles.js";
 import { EXECUTION_IDENTITIES } from "../src/tools/identity.js";
-import { requesterArgs, REQUESTER, SOURCE_COMMIT, NOW, POLICY, approvalFor as approval, contractJson, human, keys, pinPathOf, writePinnedContract, type Project } from "./helpers/apply-fixtures.js";
+import { reHashedProposal, requesterArgs, REQUESTER, SOURCE_COMMIT, NOW, POLICY, approvalFor as approval, contractJson, human, keys, pinPathOf, writePinnedContract, type Project } from "./helpers/apply-fixtures.js";
 import {
   AWS_CLI_VERSION, CDK_CANARIES, FAKE_AWS_SHA256, STACK, STDERR_CANARY, awsCallsOf, behaveAws, cdkContractJson, cdkIdentityEnv, cdkRoleArn, cdkTargetOf,
   forgeCdkQualification, installFakeAws, patchAws, subcommandsOf, writeAssembly, type AssemblyOptions, type AwsBehavior, type AwsCall,
@@ -1068,9 +1068,10 @@ test("after a CDK apply the blueprint is CloudFormation's own resource list, rea
   const records = await loadRunRecords(s.sealed.artifactSha256, w.dirs.evidence);
   assert.ok(records.ok, JSON.stringify(records));
   const contract = loadPilotContract(w.contractPath, pinPathOf(w.contractPath)) as PilotContract;
-  const built = buildCleanupProposal({ ...records, changes: s.sealed.changes, channel: "CLI", contract, engineVersion: AWS_CLI_VERSION, env: cdkIdentityEnv("DEV"), now: new Date(NOW.getTime() + 120_000) });
+  const built = buildCleanupProposal({ requesterId: REQUESTER.requesterId, ...records, changes: s.sealed.changes, channel: "CLI", contract, engineVersion: AWS_CLI_VERSION, env: cdkIdentityEnv("DEV"), now: new Date(NOW.getTime() + 120_000) });
   assert.ok(built.ok, JSON.stringify(built));
-  assert.ok(verifyCleanupProposal(built.proposal).ok);
+  const signed = signCleanupProposal(built.proposal, REQUESTER.privateKeyPem);
+  assert.ok(verifyCleanupProposal(signed).ok);
   // The change set created the bucket and replaced the topic (the fake's change list), so only the bucket is this run's to delete.
   assert.deepEqual(built.proposal.deletes.map((d) => [d.address, d.type, d.identifier, d.observed]), [["PilotBucket", "AWS::S3::Bucket", BUCKET_ID, "VERIFIED"]]);
   assert.match(built.proposal.deletes[0].risk ?? "", /deletes stored objects/);
@@ -1080,7 +1081,7 @@ test("after a CDK apply the blueprint is CloudFormation's own resource list, rea
   assert.equal(built.proposal.engine, "CDK");
   noCanary(built.proposal);
   // A cleanup without a cleanup approval is refused before the engine runs (the removal itself is the next test's).
-  const cleanup = await runCleanup({ invocation: human(s.sealed.target), environment: "DEV", target: { ...s.sealed.target }, proposal: built.proposal, sealedPlan: s.loaded, manifest: s.project.manifest, projectRoot: s.project.projectRoot, approvals: [] }, forEnv(w, "DEV"));
+  const cleanup = await runCleanup({ invocation: human(s.sealed.target), environment: "DEV", target: { ...s.sealed.target }, proposal: signed, sealedPlan: s.loaded, manifest: s.project.manifest, projectRoot: s.project.projectRoot, approvals: [] }, forEnv(w, "DEV"));
   assert.equal(cleanup.ok, false);
   assert.equal((cleanup as { code: string }).code, "APPROVAL_INSUFFICIENT");
   assert.ok(!calls().some((call) => call.args[1] === "create-change-set" && call.args.includes("file://alz-cleanup-template.json")), "no removal change set was created");
@@ -1123,7 +1124,7 @@ test("CDK observe denied and interrupted: a resource Cloud Control no longer ret
   const records2 = await loadRunRecords(s2.sealed.artifactSha256, w2.dirs.evidence);
   assert.ok(records2.ok);
   const contract2 = loadPilotContract(w2.contractPath, pinPathOf(w2.contractPath)) as PilotContract;
-  const built2 = buildCleanupProposal({ ...records2, changes: s2.sealed.changes, channel: "CLI", contract: contract2, engineVersion: AWS_CLI_VERSION, env: cdkIdentityEnv("DEV"), now: new Date(NOW.getTime() + 120_000) });
+  const built2 = buildCleanupProposal({ requesterId: REQUESTER.requesterId, ...records2, changes: s2.sealed.changes, channel: "CLI", contract: contract2, engineVersion: AWS_CLI_VERSION, env: cdkIdentityEnv("DEV"), now: new Date(NOW.getTime() + 120_000) });
   assert.ok(built2.ok, JSON.stringify(built2));
   assert.deepEqual(built2.proposal.excluded.map((x) => [x.address, x.ownership]), [["NestedHook", "CONTAINS_OTHERS"], ["NestedLater", "CONTAINS_OTHERS"], ["NestedSet", "CONTAINS_OTHERS"], ["PilotTopic", "REPLACED_PRE_EXISTING"]]);
   assert.ok(built2.proposal.excluded.filter((x) => x.ownership === "CONTAINS_OTHERS").every((x) => x.retainedBy === "PILOT_OWNER"));
@@ -1181,9 +1182,9 @@ async function proposedCdk(w: World, options: AssemblyOptions = {}) {
   const records = await loadRunRecords(s.sealed.artifactSha256, w.dirs.evidence);
   assert.ok(records.ok, JSON.stringify(records));
   const contract = loadPilotContract(w.contractPath, pinPathOf(w.contractPath)) as PilotContract;
-  const built = buildCleanupProposal({ ...records, changes: s.sealed.changes, channel: "CLI", contract, engineVersion: AWS_CLI_VERSION, env: cdkIdentityEnv("DEV"), now: new Date(NOW.getTime() + 120_000) });
+  const built = buildCleanupProposal({ requesterId: REQUESTER.requesterId, ...records, changes: s.sealed.changes, channel: "CLI", contract, engineVersion: AWS_CLI_VERSION, env: cdkIdentityEnv("DEV"), now: new Date(NOW.getTime() + 120_000) });
   assert.ok(built.ok, JSON.stringify(built));
-  return { s, proposal: built.proposal, observed };
+  return { s, proposal: signCleanupProposal(built.proposal, REQUESTER.privateKeyPem), observed };
 }
 const cleanupCdk = (w: World, s: Sealed, proposal: CleanupProposal, approvals: SignedApproval[] = [cdkCleanupApproval(proposal, "alice")]) => runCleanup({
   invocation: human(s.sealed.target), environment: "DEV", target: { ...s.sealed.target }, proposal, sealedPlan: s.loaded, manifest: s.project.manifest, projectRoot: s.project.projectRoot, approvals,
@@ -1271,7 +1272,7 @@ test("a CDK cleanup is refused before any change set exists when the stack is un
   const forgedWorld = world({}, cdkContractJson(KILL, ["CAPABILITY_IAM"]), { diffChanges: true, protectAfterCreate: true, physicalIds: { PilotRole: "alz-apply-dev" } });
   const honest = await proposedCdk(forgedWorld, { iam: true });
   const fields = { ...honest.proposal, deletes: [...honest.proposal.deletes, { address: "PilotRole", type: "AWS::IAM::Role", identifier: "alz-apply-dev", ownership: "RUN_CREATED" as const, observed: "VERIFIED" as const }].sort((a, b) => (a.address < b.address ? -1 : 1)), excluded: honest.proposal.excluded.filter((x) => x.address !== "PilotRole") };
-  const forged = { ...fields, proposalSha256: computeProposalSha256(fields) };
+  const forged = reHashedProposal(fields);
   assert.ok(verifyCleanupProposal(forged).ok);
   refused(await cleanupCdk(forgedWorld, honest.s, forged, [cdkCleanupApproval(forged, "alice")]) as never, "PROPOSAL_INVALID");
   assert.equal(removalCreates().length, 0);

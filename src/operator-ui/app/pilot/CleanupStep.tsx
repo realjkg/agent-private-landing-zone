@@ -41,6 +41,7 @@ export function CleanupList(props: { cleanup: CleanupSummary }) {
         <dt>Proposal ID (first 12 characters)</dt><dd><code>{cleanup.shortId}</code></dd>
         <dt>Change it cleans up</dt><dd><code>{cleanup.artifactShortId}</code></dd>
         <dt>App version that prepared it</dt><dd><code>{cleanup.sourceCommit.slice(0, 12)}</code></dd>
+        <dt>{COPY.proposeRequestedBy}</dt><dd><code>{cleanup.requestedBy}</code></dd>
         <dt>{COPY.proposeApprovalsNeeded}</dt><dd>{cleanup.requiredApprovals}</dd>
       </dl>
       <h3>{COPY.proposeDeletes} ({cleanup.deletes.length})</h3>
@@ -144,6 +145,8 @@ export default function CleanupStep(props: CleanupStepProps) {
   const [observation, setObservation] = useState<ObservationData | null>(null);
   const [cleanup, setCleanup] = useState<CleanupSummary | null>(null);
   const [proposalPath, setProposalPath] = useState("");
+  const [requesterId, setRequesterId] = useState("");
+  const [requesterKeyPath, setRequesterKeyPath] = useState("");
   const [approvalsText, setApprovalsText] = useState("");
   const [removal, setRemoval] = useState<RunResult | null>(null);
   const [leftovers, setLeftovers] = useState<LeftoversData | null>(null);
@@ -190,7 +193,15 @@ export default function CleanupStep(props: CleanupStepProps) {
       {observation && <ObservationTable observation={observation} />}
 
       <h4>{COPY.proposeRun}</h4>
-      <button type="button" disabled={off || sealedPath.trim() === "" || !observation} onClick={() => void begin(() => startProposeCleanup(sealedPath.trim()))}>{COPY.proposeRun}</button>
+      <label htmlFor="pilot-cleanup-requester">{COPY.proposeRequesterLabel}</label>
+      <input id="pilot-cleanup-requester" type="text" autoComplete="off" spellCheck={false} value={requesterId} aria-describedby="pilot-cleanup-requester-help" onChange={(event) => setRequesterId(event.target.value)} />
+      <p id="pilot-cleanup-requester-help"><small>{COPY.proposeRequesterHelp} Example: <code>{COPY.egRequester}</code></small></p>
+      <label htmlFor="pilot-cleanup-requester-key">{COPY.proposeKeyLabel}</label>
+      <input id="pilot-cleanup-requester-key" type="text" autoComplete="off" spellCheck={false} value={requesterKeyPath} aria-describedby="pilot-cleanup-requester-key-help" onChange={(event) => setRequesterKeyPath(event.target.value)} />
+      <p id="pilot-cleanup-requester-key-help"><small>{COPY.proposeKeyHelp} Example: <code>{COPY.egKey}</code></small></p>
+      {observation && (requesterId.trim() === "" || requesterKeyPath.trim() === "") && <BlockedNotice state="FIELDS_MISSING" />}
+      <button type="button" disabled={off || sealedPath.trim() === "" || !observation || requesterId.trim() === "" || requesterKeyPath.trim() === ""}
+        onClick={() => void begin(() => startProposeCleanup({ sealedPath: sealedPath.trim(), requesterId: requesterId.trim(), keyPath: requesterKeyPath.trim() }))}>{COPY.proposeRun}</button>
       {!observation && <p><small>Look at what was created first; the proposal is written from that look.</small></p>}
       {failureFor("propose-cleanup") && <Reasoned step="write the cleanup proposal" code={failureFor("propose-cleanup")?.result?.code} message={failureFor("propose-cleanup")?.result?.message} level={level} transcript={failureFor("propose-cleanup")?.transcript} />}
       {cleanup && (
