@@ -87,3 +87,43 @@ test("N7: only the reviewed Azure data sources are read; SAS minting, Key Vault 
   assert.equal(judge([data("http", { full_name: "registry.terraform.io/hashicorp/http" })]), "PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT");
   assert.equal(judge([managed("azurerm_storage_account", azurerm), managed("azurerm_key_vault_secret", azurerm)]), "OK", "managed resources are not judged by this rule");
 });
+
+test("RB2: every Azure use is judged against the provider allowlist by exact source, a lookalike, an unnamed provider and another cloud refused, and azapi's resource action too", () => {
+  const azurerm = { name: "azurerm", full_name: "registry.terraform.io/hashicorp/azurerm" };
+  const AZURERM_BLOCK: ProviderBlock = { ...azurerm, expressions: { subscription_id: { references: ["var.subscription_id"] } } };
+  const judge = (uses: ProviderUse[], blocks: ProviderBlock[] = [AZURERM_BLOCK]) => codeFrom(() => AZURE.assertProviderConfig(blocks, AZURE_PINNED, identityEnv("DEV"), uses));
+  for (const [label, use] of [
+    ["azurerm", managed("azurerm_resource_group", azurerm)],
+    ["azapi, Microsoft's ARM provider", managed("azapi_resource", { full_name: "registry.terraform.io/azure/azapi" })],
+    ["azuread, the directory", managed("azuread_application", { full_name: "registry.terraform.io/hashicorp/azuread" })],
+    ["random", managed("random_string", { full_name: "registry.terraform.io/hashicorp/random" })],
+    ["the built-in value holder", managed("terraform_data", { name: "terraform" })],
+  ] as const) assert.equal(judge([use]), "OK", label);
+  for (const [label, use] of [
+    ["data.http with no block", data("http", { full_name: "registry.terraform.io/hashicorp/http" })],
+    ["a managed resource of an unreviewed provider", managed("external_thing", { full_name: "registry.terraform.io/hashicorp/external" })],
+    ["an aws resource in an Azure plan", managed("aws_s3_bucket", { full_name: "registry.terraform.io/hashicorp/aws" })],
+    ["a google resource", managed("google_storage_bucket", { name: "google" })],
+    ["a lookalike namespace", managed("azurerm_resource_group", { full_name: "registry.terraform.io/hashicorpp/azurerm" })],
+    ["a lookalike host", managed("azurerm_resource_group", { full_name: "example.com/hashicorp/azurerm" })],
+    ["a lookalike suffix", managed("azurerm_resource_group", { full_name: "registry.terraform.io/attacker/azurerm" })],
+    ["azapi under hashicorp, which is not Microsoft's", managed("azapi_resource", { full_name: "registry.terraform.io/hashicorp/azapi" })],
+    ["a resource with no provider named", managed("azurerm_resource_group", {})],
+    ["a module-nested resource with no provider named", { address: "module.app.azurerm_resource_group.x", mode: "managed", type: "azurerm_resource_group", provider: {} }],
+    ["a module-nested lookalike", { address: "module.app.module.deep.azurerm_resource_group.x", mode: "managed", type: "azurerm_resource_group", provider: { full_name: "registry.terraform.io/attacker/azurerm" } }],
+    ["azapi's resource action, an ARM POST at apply", managed("azapi_resource_action", { full_name: "registry.terraform.io/azure/azapi" })],
+  ] as const) assert.equal(judge([managed("azurerm_resource_group", azurerm), use as ProviderUse]), use.mode === "data" ? "PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT" : "PROVIDER_CONFIG_NOT_IN_CONTRACT", label);
+  // An allowed reader's data source is still judged by N7, and an unreviewed provider's data source is refused either way.
+  assert.equal(judge([data("azapi_resource", { full_name: "registry.terraform.io/azure/azapi" })]), "PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT");
+  // The built-in provider: `terraform_data` only, judged by its provider and by its prefix when the provider is unnamed or forged.
+  assert.equal(judge([managed("terraform_unknown", { name: "terraform" })]), "PROVIDER_BUILTIN_TYPE_NOT_IN_CONTRACT");
+  assert.equal(judge([managed("terraform_unknown", azurerm)]), "PROVIDER_BUILTIN_TYPE_NOT_IN_CONTRACT", "a built-in type under another provider's name");
+  // Provider blocks: only allowed providers may be configured, and a lookalike block is not judged as azurerm, it is refused.
+  for (const block of [
+    { name: "aws", full_name: "registry.terraform.io/hashicorp/aws" }, { name: "http", full_name: "registry.terraform.io/hashicorp/http" },
+    { name: "azurerm", full_name: "registry.terraform.io/attacker/azurerm" }, { name: "external" },
+  ]) assert.equal(judge([], [AZURERM_BLOCK, block]), "PROVIDER_CONFIG_NOT_IN_CONTRACT", JSON.stringify(block));
+  assert.equal(judge([], [AZURERM_BLOCK, { name: "azapi", full_name: "registry.terraform.io/azure/azapi" }]), "OK");
+  // The constant subscription check still holds for the azurerm block.
+  assert.equal(judge([], [{ ...azurerm, expressions: { subscription_id: { constant_value: "00000000-0000-0000-0000-00000000dead" } } }]), "PROVIDER_SUBSCRIPTION_NOT_IN_CONTRACT");
+});

@@ -210,5 +210,15 @@
         "arn:aws:apigateway:*::/usageplans/*/keys/*"
       ]
     }
+  },
+  "denyAlways": {
+    "functionInvocation": {
+      "why": "Running a function is not a read. An aws_lambda_invocation data source or ephemeral resource invokes a function while terraform plan runs as DISCOVERY (review 6453264963 of #322, N4). None of the accepted managed policies is meant to grant these, and this deny holds even if one does. No exception lifts it: discovery_data_read_exceptions may only name actions the blanket deny lists.",
+      "actions": [
+        "lambda:InvokeFunction",
+        "lambda:InvokeAsync",
+        "lambda:InvokeWithResponseStream"
+      ]
+    }
   }
 }

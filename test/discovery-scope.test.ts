@@ -15,6 +15,7 @@ const read = (path: string): string => readFileSync(new URL(path, root), "utf8")
 type Group = { why: string; actions: string[]; scope?: string; purpose?: string };
 const policy = JSON.parse(read("bootstrap/aws/discovery-policy.json")) as {
   decision: string; allow: Record<string, Group>; deny: Record<string, Group>; denyOnResources: Record<string, Group & { resources: string[] }>;
+  denyAlways: Record<string, Group>;
 };
 const allow = [...new Set(Object.values(policy.allow).flatMap((group) => group.actions))];
 const deny = [...new Set(Object.values(policy.deny).flatMap((group) => group.actions))];
@@ -77,6 +78,21 @@ test("the deny also names the data and secret reads ReadOnlyAccess grants beyond
   assert.deepEqual(apiKeys.actions, ["apigateway:GET"]);
   for (const resource of ["arn:aws:apigateway:*::/apikeys", "arn:aws:apigateway:*::/apikeys/*", "arn:aws:apigateway:*::/usageplans/*/keys/*"]) assert.ok(apiKeys.resources.includes(resource), resource);
   assert.ok(!deny.includes("apigateway:GET"), "API Gateway configuration stays readable");
+});
+
+test("running a function is denied always, beside the reads, and no exception or allow can lift it (review 6453264963 of #322, N4)", () => {
+  const always = [...new Set(Object.values(policy.denyAlways).flatMap((group) => group.actions))];
+  assert.deepEqual([...policy.denyAlways.functionInvocation!.actions].sort(), ["lambda:InvokeAsync", "lambda:InvokeFunction", "lambda:InvokeWithResponseStream"]);
+  for (const action of always) {
+    assert.ok(!allow.some((allowed) => matches(allowed, action) || matches(action, allowed)), "never allowed: " + action);
+    // Not in the blanket deny, so discovery_data_read_exceptions (which may name only blanket-deny actions) cannot lift it.
+    assert.ok(!deny.some((pattern) => matches(pattern, action)), "not liftable through the blanket deny: " + action);
+  }
+  const discovery = read("bootstrap/aws/discovery.tf");
+  assert.match(discovery, /\[for name, group in local\.discovery_policy\.denyAlways : \{ Sid = "DenyAlways\$\{title\(name\)\}", Effect = "Deny", Action = group\.actions, Resource = "\*" \}\]/,
+    "rendered as a Deny on every resource, with no NotResource and no condition");
+  assert.match(discovery, /unknown_exception_actions = setsubtract\(toset\(local\.excepted_actions\), toset\(local\.discovery_deny\)\)/, "an exception may lift blanket-deny actions only");
+  assert.match(discovery, /discovery_deny\s+= sort\(distinct\(flatten\(\[for group in values\(local\.discovery_policy\.deny\) : group\.actions\]\)\)\)/, "the blanket deny is read from deny only");
 });
 
 test("the two reads that return more than configuration are recorded exceptions with a scope and a purpose", () => {

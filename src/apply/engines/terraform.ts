@@ -20,6 +20,7 @@ import { checkedOutput, codeOf, stop, withoutIdentities } from "../engine.js";
 import type { EngineApplyRun, EngineCleanupRun, EngineContext, EngineSpec } from "../engine-spec.js";
 import type { ProviderBlock, ProviderSpec, ProviderUse } from "../provider.js";
 import { isRecord } from "../providers/shared.js";
+import { assertNoRefusedPlanConstructs, assertNoRefusedSourceConstructs } from "../terraform-constructs.js";
 import {
   APPLY_ADAPTER, APPLY_ARGV, APPLY_BACKEND_CONFIG_FILE, APPLY_INIT_ARGV, CLEANUP_ADAPTER, CLEANUP_APPLY_ARGV, CLEANUP_PLAN_FILE, CLEANUP_SHOW_ARGV, RECOVERY_FILES,
   classifyApply, cleanupPlanArgv, isAllowedApplyArgv, isAllowedCleanupArgv, parseStateSerial,
@@ -135,6 +136,9 @@ function prepareWorkspace(session: Session, input: WorkspaceInput): void {
   // directory (init could reuse or migrate it). The data directory init builds is therefore always fresh and empty.
   assertNoBackendOverrideOrState(session.work);
   session.assertBound();
+  // No provisioner or ephemeral block in any Terraform file: `show -json` never lists an ephemeral resource or a `removed`
+  // block's provisioner, and a plan or an apply would run them (../terraform-constructs.ts).
+  assertNoRefusedSourceConstructs(session.work);
   // The project's own backend, cloud or state_store block is replaced: init builds only this type, with only the product's settings.
   session.pinBackend(input.backendType);
   session.assertBound();
@@ -255,7 +259,10 @@ function changesOf(shown: string, judge: Judge): PlanChange[] {
   let document: Shown;
   try { document = JSON.parse(shown); } catch { return stop("PLAN_JSON_INVALID"); }
   if (typeof document?.format_version !== "string" || document.errored === true) return stop("PLAN_JSON_UNUSABLE");
-  judge.spec.assertProviderConfig(Object.values(document.configuration?.provider_config ?? {}), judge.pinned, judge.env, providerUsesOf(document));
+  // The walker refuses a tree too deep or malformed first; then no provisioner, action or ephemeral resource (../terraform-constructs.ts); then the provider judge.
+  const uses = providerUsesOf(document);
+  assertNoRefusedPlanConstructs(document);
+  judge.spec.assertProviderConfig(Object.values(document.configuration?.provider_config ?? {}), judge.pinned, judge.env, uses);
   const resources = (Array.isArray(document.resource_changes) ? document.resource_changes : []).map((found, index): PlanChange => {
     const actions = found?.change?.actions ?? [];
     const previous = found?.previous_address;

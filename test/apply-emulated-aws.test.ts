@@ -172,6 +172,8 @@ describe("AWS emulated backend simulation: real Terraform, moto S3 with use_lock
   const KILL = join(root, "KILL");
   const fresh = (label: string): string => { const dir = join(root, label + "-" + ++counter); mkdirSync(dir, { recursive: true }); return dir; };
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  /** Built-in values in the kill-during fixture: enough that the real apply runs for seconds after it takes the native lock. */
+  const SLOW_COUNT = 2000;
 
   let vault = "";
   let evidence = "";
@@ -189,7 +191,7 @@ describe("AWS emulated backend simulation: real Terraform, moto S3 with use_lock
     assert.ok(existsSync(binary), "ALZ_SIM_TERRAFORM does not exist");
     const binarySha = createHash("sha256").update(readFileSync(binary)).digest("hex");
     if (process.env.ALZ_SIM_TERRAFORM_SHA256) assert.equal(binarySha, process.env.ALZ_SIM_TERRAFORM_SHA256.toLowerCase(), "the terraform binary is not the verified one");
-    // The runner finds `terraform` by name in approved directories; /usr/bin and /bin keep sh, touch and sleep reachable for the local-exec fixture.
+    // The runner finds `terraform` by name in approved directories. /usr/bin and /bin stay approved, although no fixture runs a command any more (RB1).
     toolDir = fresh("tools");
     symlinkSync(binary, join(toolDir, "terraform"));
     engineVersion = (JSON.parse(execFileSync(binary, ["version", "-json"], { env: { PATH: "/usr/bin:/bin" }, encoding: "utf8" })) as { terraform_version: string }).terraform_version;
@@ -401,13 +403,15 @@ describe("AWS emulated backend simulation: real Terraform, moto S3 with use_lock
   });
 
   it("stops a running apply when the kill switch appears: Terraform is interrupted, the lock is released, the outcome is KILLED", async () => {
-    const flag = join(root, "slow-started");
-    const s = await seal("kill-during", `resource "terraform_data" "slow" {\n  provisioner "local-exec" {\n    command = "touch ${flag}; sleep 120"\n  }\n}`);
+    // Provisioner-free (RB1: the judge refuses every provisioner). A wide count of built-in values keeps the real apply busy for
+    // seconds; only the apply takes the native lock, so once it is held the apply is running, and the kill switch lands part-way.
+    const s = await seal("kill-during", `resource "terraform_data" "slow" {\n  count = ${SLOW_COUNT}\n  input = count.index\n}`);
+    assert.equal(s.sealed.changes.length, SLOW_COUNT + 1, "the pilot value and every slow one are in the sealed change list");
     const before = await stateObject();
     let settled: ApplyResult | undefined;
     const running = run(s).then((r) => (settled = r));
-    for (let waited = 0; !existsSync(flag); waited += 100) {
-      if (settled || waited > 60_000) throw new Error("the apply never reached the provisioner: " + JSON.stringify(settled));
+    for (let waited = 0; !(await lockHeld()); waited += 100) {
+      if (settled || waited > 60_000) throw new Error("the apply never took the native lock: " + JSON.stringify(settled));
       await sleep(100);
     }
     assert.equal(await lockHeld(), true, "Terraform holds the native lock while it applies");
@@ -420,6 +424,8 @@ describe("AWS emulated backend simulation: real Terraform, moto S3 with use_lock
       noSecrets(result);
     } finally { rmSync(KILL, { force: true }); }
     assert.equal(await lockHeld(), false, "a graceful interrupt releases the lock");
-    assert.ok((await stateObject()).serial > before.serial, "the interrupted resource was recorded in state");
+    const after = await stateObject();
+    assert.ok(after.serial > before.serial, "the interrupted resources were recorded in state");
+    assert.ok(after.inputs.length < before.inputs.length + SLOW_COUNT + 1, "interrupted part-way: not every planned value was created");
   });
 });

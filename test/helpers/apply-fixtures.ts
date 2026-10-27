@@ -111,6 +111,7 @@ const backend = () => { const a = args.find((x) => x.startsWith("-backend-config
 // Like Terraform's show -json, every resource_changes entry names its mode and its provider: a fixture entry that leaves one out gets
 // it from its address and type prefix. An entry that sets provider_name to null keeps no provider (an unnamed use, which is refused).
 const PROVIDERS = { aws: "registry.terraform.io/hashicorp/aws", azurerm: "registry.terraform.io/hashicorp/azurerm", google: "registry.terraform.io/hashicorp/google",
+  azapi: "registry.terraform.io/azure/azapi", azuread: "registry.terraform.io/hashicorp/azuread",
   terraform: "terraform.io/builtin/terraform", random: "registry.terraform.io/hashicorp/random", null: "registry.terraform.io/hashicorp/null", time: "registry.terraform.io/hashicorp/time", tls: "registry.terraform.io/hashicorp/tls" };
 const named = (r) => {
   if (!r || typeof r !== "object" || Array.isArray(r)) return r;

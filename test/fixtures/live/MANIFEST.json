@@ -136,6 +136,117 @@
       "capturedAt": "2026-10-10",
       "mode": "REAL_TOOL_OFFLINE",
       "note": "Deliberately contains a fake secret in plaintext: it documents that `show -json` of a destroy plan exposes sensitive values (before_sensitive only flags them). See docs/teardown-broker-review.md."
+    },
+    {
+      "file": "terraform/aws-constructs.main.tf",
+      "engine": "TERRAFORM",
+      "tool": "terraform 1.16.4 linux_amd64 + hashicorp/aws 6.68.0",
+      "command": "source of aws-constructs.plan.json (module child = ./child): local-exec and remote-exec provisioners, action blocks, action_trigger invocations and an ephemeral resource",
+      "capturedAt": "2026-10-27",
+      "mode": "REAL_TOOL_OFFLINE",
+      "note": "Construct-judge fixture (RB1, src/apply/terraform-constructs.ts), read by test/apply-terraform-constructs.test.ts."
+    },
+    {
+      "file": "terraform/aws-constructs.child.tf",
+      "engine": "TERRAFORM",
+      "tool": "terraform 1.16.4 linux_amd64 + hashicorp/aws 6.68.0",
+      "command": "source of aws-constructs.plan.json (module child = ./child): local-exec and remote-exec provisioners, action blocks, action_trigger invocations and an ephemeral resource",
+      "capturedAt": "2026-10-27",
+      "mode": "REAL_TOOL_OFFLINE",
+      "note": "Construct-judge fixture (RB1, src/apply/terraform-constructs.ts), read by test/apply-terraform-constructs.test.ts."
+    },
+    {
+      "file": "terraform/aws-constructs.plan.json",
+      "engine": "TERRAFORM",
+      "tool": "terraform 1.16.4 linux_amd64 + hashicorp/aws 6.68.0",
+      "command": "terraform init (local filesystem provider mirror, no registry); terraform plan -input=false -out=P; terraform show -json P  (config: aws-constructs.main.tf, child/aws-constructs.child.tf)",
+      "capturedAt": "2026-10-27",
+      "mode": "REAL_TOOL_OFFLINE",
+      "note": "Construct-judge fixture (RB1, src/apply/terraform-constructs.ts), read by test/apply-terraform-constructs.test.ts.",
+      "credentials": "fake static keys; no AWS API was contacted"
+    },
+    {
+      "file": "terraform/aws-ephemeral.main.tf",
+      "engine": "TERRAFORM",
+      "tool": "terraform 1.16.4 linux_amd64 + hashicorp/aws 6.68.0",
+      "command": "source of aws-ephemeral.plan.json (module child = ./child): ephemeral resources in the root and the child module",
+      "capturedAt": "2026-10-27",
+      "mode": "REAL_TOOL_OFFLINE",
+      "note": "Construct-judge fixture (RB1, src/apply/terraform-constructs.ts), read by test/apply-terraform-constructs.test.ts."
+    },
+    {
+      "file": "terraform/aws-ephemeral.child.tf",
+      "engine": "TERRAFORM",
+      "tool": "terraform 1.16.4 linux_amd64 + hashicorp/aws 6.68.0",
+      "command": "source of aws-ephemeral.plan.json (module child = ./child): ephemeral resources in the root and the child module",
+      "capturedAt": "2026-10-27",
+      "mode": "REAL_TOOL_OFFLINE",
+      "note": "Construct-judge fixture (RB1, src/apply/terraform-constructs.ts), read by test/apply-terraform-constructs.test.ts."
+    },
+    {
+      "file": "terraform/aws-ephemeral.plan.json",
+      "engine": "TERRAFORM",
+      "tool": "terraform 1.16.4 linux_amd64 + hashicorp/aws 6.68.0",
+      "command": "terraform init (local filesystem provider mirror, no registry); terraform plan -input=false -out=P; terraform show -json P  (config: aws-ephemeral.main.tf, child/aws-ephemeral.child.tf); shows that show -json lists no ephemeral resource",
+      "capturedAt": "2026-10-27",
+      "mode": "REAL_TOOL_OFFLINE",
+      "note": "Construct-judge fixture (RB1, src/apply/terraform-constructs.ts), read by test/apply-terraform-constructs.test.ts.",
+      "credentials": "fake static keys; no AWS API was contacted"
+    },
+    {
+      "file": "terraform/azure-constructs.main.tf.json",
+      "engine": "TERRAFORM",
+      "tool": "terraform 1.16.4 linux_amd64 + hashicorp/azurerm 4.81.0 + hashicorp/null 3.2.4",
+      "command": "source of azure-constructs.plan.json in the JSON syntax (module child = ./child): local-exec on terraform_data, file and remote-exec on null_resource",
+      "capturedAt": "2026-10-27",
+      "mode": "REAL_TOOL_OFFLINE",
+      "note": "Construct-judge fixture (RB1, src/apply/terraform-constructs.ts), read by test/apply-terraform-constructs.test.ts."
+    },
+    {
+      "file": "terraform/azure-constructs.child.tf.json",
+      "engine": "TERRAFORM",
+      "tool": "terraform 1.16.4 linux_amd64 + hashicorp/azurerm 4.81.0 + hashicorp/null 3.2.4",
+      "command": "source of azure-constructs.plan.json in the JSON syntax (module child = ./child): local-exec on terraform_data, file and remote-exec on null_resource",
+      "capturedAt": "2026-10-27",
+      "mode": "REAL_TOOL_OFFLINE",
+      "note": "Construct-judge fixture (RB1, src/apply/terraform-constructs.ts), read by test/apply-terraform-constructs.test.ts."
+    },
+    {
+      "file": "terraform/azure-constructs.plan.json",
+      "engine": "TERRAFORM",
+      "tool": "terraform 1.16.4 linux_amd64 + hashicorp/azurerm 4.81.0 + hashicorp/null 3.2.4",
+      "command": "terraform init (local filesystem provider mirror, no registry); terraform plan -input=false -out=P; terraform show -json P  (config: azure-constructs.main.tf.json, child/azure-constructs.child.tf.json)",
+      "capturedAt": "2026-10-27",
+      "mode": "REAL_TOOL_OFFLINE",
+      "note": "Construct-judge fixture (RB1, src/apply/terraform-constructs.ts), read by test/apply-terraform-constructs.test.ts.",
+      "credentials": "a zero subscription id; no Azure API was contacted"
+    },
+    {
+      "file": "terraform/removed-provisioner.main.tf",
+      "engine": "TERRAFORM",
+      "tool": "terraform 1.16.4 linux_amd64 (built-in terraform_data; no provider)",
+      "command": "source of removed-provisioner.plan.json (module child = ./child): removed blocks with a destroy-time local-exec provisioner",
+      "capturedAt": "2026-10-27",
+      "mode": "REAL_TOOL_OFFLINE",
+      "note": "Construct-judge fixture (RB1, src/apply/terraform-constructs.ts), read by test/apply-terraform-constructs.test.ts."
+    },
+    {
+      "file": "terraform/removed-provisioner.child.tf",
+      "engine": "TERRAFORM",
+      "tool": "terraform 1.16.4 linux_amd64 (built-in terraform_data; no provider)",
+      "command": "source of removed-provisioner.plan.json (module child = ./child): removed blocks with a destroy-time local-exec provisioner",
+      "capturedAt": "2026-10-27",
+      "mode": "REAL_TOOL_OFFLINE",
+      "note": "Construct-judge fixture (RB1, src/apply/terraform-constructs.ts), read by test/apply-terraform-constructs.test.ts."
+    },
+    {
+      "file": "terraform/removed-provisioner.plan.json",
+      "engine": "TERRAFORM",
+      "tool": "terraform 1.16.4 linux_amd64 (built-in terraform_data; no provider)",
+      "command": "terraform apply (local state, resource \"terraform_data\" \"gone\" {}); then the removed-block configuration: terraform init (local filesystem provider mirror, no registry); terraform plan -input=false -out=P; terraform show -json P; shows that show -json lists neither the removed block nor its provisioner",
+      "capturedAt": "2026-10-27",
+      "mode": "REAL_TOOL_OFFLINE",
+      "note": "Construct-judge fixture (RB1, src/apply/terraform-constructs.ts), read by test/apply-terraform-constructs.test.ts."
     }
   ],
   "stillNeeded": [

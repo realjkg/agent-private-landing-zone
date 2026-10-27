@@ -133,15 +133,60 @@ function assertDataSources(uses: readonly ProviderUse[]): void {
   }
 }
 
+const HASHICORP = "registry.terraform.io/hashicorp/";
+const AZURERM_PROVIDER = HASHICORP + "azurerm";
+/** Terraform's built-in provider, which `show -json` names whenever a project uses one of its types. Only `terraform_data` of it. */
+const BUILTIN_PROVIDER = "terraform.io/builtin/terraform";
 /**
- * The provider half of the contract binding: a constant `subscription_id` or `tenant_id` in any azurerm provider block
- * must be the contract's. An expression (a variable, a data source) is not checkable from the plan and is not judged;
- * the runbook says so. The identity checks and the cloud-side role assignments still bound what the credentials reach.
+ * The providers an Azure pilot project may use (RB2, review N3 of #322), by exact source: Azure's own control plane and directory
+ * (azurerm; `azure/azapi`, the ARM provider Microsoft publishes; `hashicorp/azuread`, the directory, which AWS keeps inside its one
+ * provider as IAM), the built-in provider (one type of it) and ones that reach no cloud, as AWS lists them. The cleanup proposal
+ * already keeps whatever azapi or azuread creates by its id or type (../cleanup-proposal.ts). Any other provider (aws, google, a
+ * second cloud, an `http` or `external` reader, a lookalike namespace or host such as `registry.terraform.io/hashicorpp/azurerm` or
+ * `example.com/hashicorp/azurerm`, or a provider the plan leaves unnamed) is refused, in every module. A provider joins by review.
+ */
+const ALLOWED_PROVIDERS: readonly string[] = [
+  AZURERM_PROVIDER, "registry.terraform.io/azure/azapi", HASHICORP + "azuread", BUILTIN_PROVIDER, ...["random", "null", "time", "tls"].map((name) => HASHICORP + name),
+];
+/**
+ * Managed types of an allowed provider that are not resources: `azapi_resource_action` sends any ARM POST at apply (a VM's
+ * `runCommand`, an account's `listKeys`), which is an invocation like a Terraform action block, not a reviewed resource change.
+ */
+const DENIED_TYPES: ReadonlySet<string> = new Set(["azapi_resource_action"]);
+const BUILTIN_ALLOWED_TYPE = "terraform_data";
+const BUILTIN_TYPE = /^terraform_/;
+/** A use's provider: its full name, or from its local name alone the built-in provider for `terraform` and a hashicorp one otherwise. */
+const providerIdOf = (provider: ProviderUse["provider"]): string | undefined =>
+  provider.full_name ?? (provider.name === "terraform" ? BUILTIN_PROVIDER : provider.name !== undefined ? HASHICORP + provider.name : undefined);
+/**
+ * Every use's provider is an allowed one, no use is of a denied type, and a use whose provider the plan does not name is refused,
+ * in the root module and in every module below it (`providerUsesOf` reads them all); of the built-in provider only `terraform_data`
+ * resources, judged by the provider and, failing closed, by the type's `terraform_` prefix, which no allowed registry provider owns.
+ */
+function assertUses(uses: readonly ProviderUse[]): void {
+  for (const use of uses) {
+    const id = providerIdOf(use.provider);
+    if (id === undefined || !ALLOWED_PROVIDERS.includes(id) || DENIED_TYPES.has(use.type)) stop("PROVIDER_CONFIG_NOT_IN_CONTRACT");
+    if ((id === BUILTIN_PROVIDER || BUILTIN_TYPE.test(use.type)) && (use.mode !== "managed" || DATA_ADDRESS.test(use.address) || use.type !== BUILTIN_ALLOWED_TYPE)) {
+      stop("PROVIDER_BUILTIN_TYPE_NOT_IN_CONTRACT");
+    }
+  }
+}
+
+/**
+ * The provider half of the contract binding. Only the allowed providers may appear (`ALLOWED_PROVIDERS`), in a provider block and as
+ * the provider of every resource and data source the plan names; only the reviewed data sources (`AZURE_DATA_SOURCES`). A constant
+ * `subscription_id` or `tenant_id` in the azurerm provider block must be the contract's. An expression (a variable, a data source)
+ * is not checkable from the plan and is not judged; the runbook says so. The identity checks and the cloud-side role assignments
+ * still bound what the credentials reach.
  */
 function assertProviderConfig(blocks: readonly ProviderBlock[], pinned: AzureTarget, uses: readonly ProviderUse[]): void {
   assertDataSources(uses);
+  assertUses(uses);
   for (const provider of blocks) {
-    if (provider?.name !== "azurerm" && !/\/azurerm$/.test(provider?.full_name ?? "")) continue;
+    const id = provider?.full_name ?? HASHICORP + provider?.name;
+    if (!ALLOWED_PROVIDERS.includes(id)) stop("PROVIDER_CONFIG_NOT_IN_CONTRACT");
+    if (id !== AZURERM_PROVIDER) continue;
     for (const [field, want, code] of [["subscription_id", pinned.subscriptionId, "PROVIDER_SUBSCRIPTION_NOT_IN_CONTRACT"], ["tenant_id", pinned.tenantId, "PROVIDER_TENANT_NOT_IN_CONTRACT"]] as const) {
       const constant = (provider.expressions?.[field] as { constant_value?: unknown } | undefined)?.constant_value;
       if (constant !== undefined && constant !== null && String(constant).toLowerCase() !== want.toLowerCase()) stop(code);
@@ -172,7 +217,7 @@ export const AZURE: ProviderSpec = {
   // Simulation finding (docs/act-pilot-simulation.md): the plan embeds the seal-time backend settings (now the product's backend file, under the azurerm pin); the rest is filled from the apply process's ARM_* variables.
   filledAtApply: ["use_oidc", "client_id", "tenant_id", "subscription_id", "oidc_token_file_path"],
   tagAttributes: ["tags"],
-  // The plan's managed resources are not judged here: the Azure provider list is open, and the built-in provider is not singled out
-  // (as it is for AWS). Its data sources are: only the reviewed ones (`AZURE_DATA_SOURCES`).
+  // Every use is judged: an allowed provider (`ALLOWED_PROVIDERS`), of the built-in one `terraform_data` only, and only the reviewed
+  // data sources (`AZURE_DATA_SOURCES`).
   assertProviderConfig: (blocks, target, _env, uses) => assertProviderConfig(blocks, target as AzureTarget, uses),
 };

@@ -156,6 +156,42 @@ test("the Azure Terraform DEV example (docs/act-pilot-azure-terraform-g0.md) nam
   assert.equal(notGuid.complete, false);
 });
 
+test("RB6: the AWS CDK DEV example names every owner input, is never COMPLETE as shipped, carries no authorization, and a filled copy is COMPLETE for AWS CDK DEV", () => {
+  const text = readFileSync(join(ROOT, "config", "act-pilot-contract.aws-cdk-dev.example.json"), "utf8");
+  const example = JSON.parse(text) as Record<string, unknown> & { targets: { DEV: Record<string, unknown> } };
+  assert.equal(example.enabled, false);
+  assert.equal(Object.hasOwn(example, "authorize"), false, "the example authorizes nothing");
+  assert.deepEqual(example.targets.DEV.capabilities, [], "no IAM capability without an explicit owner decision");
+  assert.match(String(example.EXAMPLE), /CLEANUP_WOULD_EMPTY_STACK/, "the retained empty stack is named where the owner reads it");
+  const report = checkDraftContract(example);
+  assert.deepEqual([report.provider, report.engine, report.enabledAsWritten, report.scope], ["AWS", "CDK", false, ["DEV"]]);
+  assert.equal(report.complete, false);
+  assert.equal(report.shape.ok, false, "the example marker alone keeps the validator from accepting it");
+  // Every value that only the owner can supply is refused as a placeholder or the example's fake account, each by its field.
+  assert.deepEqual(notReady(report), ["EXAMPLE", "policyVersion", "targets.DEV.accountId", "targets.DEV.backend", "approvers[0].id", "approvers[0].publicKeyPem"]);
+  assert.equal(statusOf(report, "targets.DEV.accountId"), "EXAMPLE");
+  assert.equal(statusOf(report, "targets.DEV.backend"), "PLACEHOLDER");
+  assert.equal(statusOf(report, "enabledEnvironments"), "PRESENT");
+  // Flipping the flag on the shipped bytes never yields a valid contract.
+  assert.equal(checkDraftContract({ ...example, enabled: true }).shape.ok, false);
+  const { EXAMPLE: _marker, ...unmarked } = example;
+  assert.equal(checkDraftContract({ ...unmarked, enabled: true }).complete, false, "without the marker the placeholders still block");
+
+  // A copy filled with fixture values (a fake account, a fixture stack name, a freshly generated test key) passes the offline
+  // check as AWS CDK DEV: every input present, the validator's shape accepted, COMPLETE. It enables nothing.
+  const filled = {
+    ...unmarked, policyVersion: "2026-10-11.1",
+    targets: { DEV: { ...example.targets.DEV, accountId: "123456789012", region: "eu-central-1", backend: "FixturePilotStack" } },
+    approvers: [{ id: "pilot-owner", publicKeyPem: keys.alice.pub, environments: ["DEV"] }], killSwitchPath: ".runs/apply/STOP-DEV",
+  };
+  const draft = checkDraftContract(filled);
+  assert.deepEqual(notReady(draft), [], "every owner input is present");
+  assert.deepEqual(draft.shape, { ok: true });
+  assert.equal(draft.complete, true);
+  assert.deepEqual(draft.scope, ["DEV"]);
+  assert.equal(draft.enabledAsWritten, false, "a draft is reported as written, never flipped");
+});
+
 test("a repeated-digit GUID tenant or subscription (11111111-1111-…, 00000000-…-0000) is an example value, never COMPLETE; a real-looking GUID stays PRESENT", () => {
   const example = JSON.parse(readFileSync(join(ROOT, "config", "act-pilot-contract.azure-dev.example.json"), "utf8")) as Record<string, unknown>;
   const dev = { tenantId: "4b1d7c2e-9a3f-4e6b-8c5d-2f7a9e1b3c4d", subscriptionId: "7e8f9a0b-1c2d-4e3f-9a5b-6c7d8e9f0a1b", backend: "fixturedevstate/tfstate/dev.tfstate", workspace: "pilot-dev" };
