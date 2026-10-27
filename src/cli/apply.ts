@@ -4,7 +4,7 @@ import { tmpdir, userInfo } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { signApproval } from "../apply/approval.js";
+import { REQUESTER_MAY_APPROVE, requesterPublicKey, signApproval, verifyRequestSignature } from "../apply/approval.js";
 import { buildCleanupProposal, proposalLines, verifyCleanupProposal, type CleanupProposal } from "../apply/cleanup-proposal.js";
 import { buildLifecycleReport, lifecycleReportProblems } from "../apply/lifecycle-report.js";
 import { loadRunRecords, observeRun, verifyProposalLeftovers } from "../apply/observe.js";
@@ -56,7 +56,7 @@ import { EXIT, installSignalCleanup, processTerminal, targetString, type HumanTe
 const APPLY_USAGE = [
   "  ./alz apply prepare --environment DEV|QA|PROD --project PROJECT_DIR [--aws-cli-version X.Y.Z]",
   "  ./alz apply qualify --request REQUEST.json --manifest MANIFEST.json",
-  "  ./alz apply seal --request REQUEST.json --manifest MANIFEST.json",
+  "  ./alz apply seal --request REQUEST.json --manifest MANIFEST.json --requester ID --key REQUESTER_KEY.pem",
   "  ./alz apply approve --bundle REVIEW_BUNDLE.json --key APPROVER_KEY.pem --approver ID",
   "  ./alz apply apply --request REQUEST.json --manifest MANIFEST.json --sealed SEALED_PLAN --approval APPROVAL.json [--approval APPROVAL.json ...]",
   "  ./alz apply status [--sealed SEALED_PLAN]",
@@ -124,7 +124,7 @@ export type ApplyReport = { code: string; message: string; outcome?: ApplyOutcom
 type Flags = { single: readonly string[]; repeated?: readonly string[]; optional?: readonly string[] };
 const SUBCOMMANDS: Readonly<Record<string, Flags>> = {
   qualify: { single: ["request", "manifest"] },
-  seal: { single: ["request", "manifest"] },
+  seal: { single: ["request", "manifest", "requester", "key"] },
   approve: { single: ["bundle", "key", "approver"] },
   apply: { single: ["request", "manifest", "sealed"], repeated: ["approval"] },
   status: { single: [], optional: ["sealed"] },
@@ -292,6 +292,7 @@ type Command = (flags: Record<string, string[]>, terminal: HumanTerminal, deps: 
 /** What `seal` and `qualify` share: the request, the manifest, the target typed, and project code allowed. Returns what the driver needs. */
 async function confirmProjectCode(
   flags: Record<string, string[]>, terminal: HumanTerminal, deps: ApplyCliDeps, out: Out, heading: (notices: EngineNotices) => string, reads: (notices: EngineNotices) => string,
+  requester?: NonNullable<SealRequest["requester"]>,
 ): Promise<{ request: SealRequest; target: ResolvedTarget; who: string; sourceCommit: string } | number> {
   const file = readRequest("seal", flags.request[0]);
   const manifest = readManifest(flags.manifest[0]);
@@ -310,7 +311,8 @@ async function confirmProjectCode(
   terminal.write([
     "", heading(notices),
     "  account         " + file.target.account, "  backend         " + file.target.backend, "  workspace       " + file.target.workspace,
-    "  manifest hash   " + manifest.manifestHash, "  product commit  " + sourceCommit, reads(notices),
+    "  manifest hash   " + manifest.manifestHash, "  product commit  " + sourceCommit,
+    ...(requester ? ["  requester       " + requester.requesterId + " (signs this request with their allowlisted key; every approver signs who requested)"] : []), reads(notices),
     "", notices.projectCode ?? "THIS RUNS NO PROJECT CODE: the pilot reads the pre-synthesized assembly and calls the AWS CLI with fixed arguments.",
     "  project root    " + file.projectRoot, "  files bound     " + manifest.files.length,
     "", "Type the target exactly to continue (anything else stops here):", "  " + targetString(file.target), "",
@@ -342,12 +344,21 @@ async function confirmProjectCode(
     request: {
       invocation: { operatorId: who, interactiveSession: true, confirmedTarget: { ...file.target }, confirmedAt: now().toISOString() },
       environment: file.environment, target: file.target, channel: deps.channel ?? "CLI", manifest, projectRoot: file.projectRoot, policyVersion, resolved: resolved as never,
+      ...(requester ? { requester } : {}),
     },
   };
 }
 
+/**
+ * A seal is requested by a person with an allowlisted key (docs/act-pilot-plan.md, authority item 3): the id and the key
+ * file are read before any phrase, the key as an approver's is read (mode 0600, Ed25519, never the environment), and the
+ * driver checks the id is on the contract's allowlist and the key is that entry's own before any engine runs.
+ */
 const sealCommand: Command = async (flags, terminal, deps, out) => {
-  const gate = await confirmProjectCode(flags, terminal, deps, out, (n) => n.sealHeading, (n) => n.sealReads);
+  const requesterId = flags.requester[0];
+  if (!SAFE_OPERATOR.test(requesterId)) fail("APPLY_INPUT_INVALID", "--requester is not a usable requester id");
+  const requester = { requesterId, privateKeyPem: readApproverKey(flags.key[0]) };
+  const gate = await confirmProjectCode(flags, terminal, deps, out, (n) => n.sealHeading, (n) => n.sealReads, requester);
   if (typeof gate === "number") return gate;
   const result = await sealPreview(gate.request, { env: deps.env ?? process.env, now: deps.now, ...driverPaths(deps, gate.sourceCommit) });
   if (!result.ok) return blocked(result, out);
@@ -358,7 +369,7 @@ const sealCommand: Command = async (flags, terminal, deps, out) => {
   out.say(JSON.stringify({
     artifactSha256: sealed.artifactSha256, environment: sealed.environment, target: sealed.target, releaseIdentity: sealed.releaseIdentity,
     manifestHash: sealed.manifestHash, sourceCommit: sealed.sourceCommit, engineVersion: sealed.engineVersion, provenance: sealed.provenance,
-    sealedPlanPath: result.path, reviewBundlePath, changes: sealed.changes, unit: sealed.unit,
+    requesterId: sealed.requesterId, sealedPlanPath: result.path, reviewBundlePath, changes: sealed.changes, unit: sealed.unit,
   }, null, 2) + "\n");
   return EXIT.PASS;
 };
@@ -458,6 +469,13 @@ const approveCommand: Command = async (flags, terminal, deps, out) => {
   }
   const pinned = targetForEnvironment(contract, bundle.environment, bundle.target);
   if (!pinned.ok) return blocked(pinned, out);
+  // The requester's signature verifies against the allowlist before the approver is shown anything, and where the environment
+  // forbids a requester-approver (PROD) this approver's id or key must not be the requester's. The driver checks both again.
+  const requested = verifyRequestSignature({ request: bundle.request, artifactSha256: bundle.artifactSha256, environment: bundle.environment, requesterId: bundle.requesterId, contract });
+  if (!requested.ok) return blocked(requested, out);
+  if (!REQUESTER_MAY_APPROVE[bundle.environment] && (approverId.toLowerCase() === requested.requesterId.toLowerCase() || requesterPublicKey(privateKeyPem) === requested.publicKeyCanonical)) {
+    return blocked({ ok: false, code: "APPROVER_IS_REQUESTER", message: "You requested this change (" + requested.requesterId + "), so you cannot approve it in " + bundle.environment + ": the requester and the approvers must be distinct people. Nothing was signed." }, out);
+  }
 
   const now = (deps.now ?? (() => new Date()))();
   const expiresAt = new Date(now.getTime() + contract.maxApprovalAgeMinutes * 60_000);
@@ -465,7 +483,8 @@ const approveCommand: Command = async (flags, terminal, deps, out) => {
   terminal.write([
     "", "APPROVE AN APPLY OF THIS EXACT PLAN TO " + bundle.environment + " (your signature, valid until " + expiresAt.toISOString() + ", usable once)",
     "  artifact        " + bundle.artifactSha256, "  manifest hash   " + bundle.manifestHash,
-    "  target          " + targetString(bundle.target), "  approver        " + approverId, ...provenanceLines(bundle), ...unitLines(bundle), "  changes",
+    "  target          " + targetString(bundle.target), "  requested by    " + requested.requesterId + " (signature verified against the allowlist)", "  approver        " + approverId,
+    ...provenanceLines(bundle), ...unitLines(bundle), "  changes",
     ...changeLines(bundle), "", "The bundle's hashes match the artifact above (recomputed here, not trusted).",
     "Type " + phrase + " to sign (anything else stops here):", "",
   ].join("\n"));
@@ -702,6 +721,7 @@ const applyCommand: Command = async (flags, terminal, deps, out) => {
     "", "APPLY A SEALED PLAN TO " + request.environment + " (this changes real infrastructure; there is no undo here)",
     "  account         " + request.target.account, "  backend         " + request.target.backend, "  workspace       " + request.target.workspace,
     "  artifact        " + sealedPlan.sealed.artifactSha256, "  manifest hash   " + manifest.manifestHash, "  product commit  " + sealedPlan.sealed.sourceCommit,
+    "  requested by    " + printable(sealedPlan.sealed.requesterId) + " (the driver verifies the requester's signature)",
     "  approvals       " + approvals.map((a) => printable(String(a.statement?.approverId))).join(", ") + " (the driver verifies each signature)",
     ...provenanceLines(sealedPlan.sealed), ...unitLines(sealedPlan.sealed), "  changes", ...changeLines(sealedPlan.sealed),
     "", engineNotices(deps).applyNote,

@@ -18,6 +18,7 @@ import { SOURCE_COMMIT,
   DEV_TARGET, ENGINE_VERSION, NOW, OUTPUT_CANARY, PLAN_CANARY, POLICY, PROD_TARGET, QA_TARGET, STATE_CANARY, VALUE_CANARY, targetOf,
   behave as behaveIn, callsOf, contractJson, identityEnv, installFakeTerraform, keys, pinPathOf, testFixtureForgeQualificationEvidence, writePinnedContract,
   writeProject, type Behavior, type Project,
+  requesterArgs,
 } from "./helpers/apply-fixtures.js";
 import { AZURE } from "../src/apply/providers/azure.js";
 
@@ -106,7 +107,7 @@ const requestFile = (p: Project, target: ResolvedTarget, environment: string, ex
   json({ environment, target, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved, ...extra }, "request");
 const manifestFile = (p: Project) => json(p.manifest, "manifest");
 const sealArgs = (p: Project, target: ResolvedTarget, environment: string, extra: Record<string, unknown> = {}) =>
-  ["seal", "--request", requestFile(p, target, environment, extra), "--manifest", manifestFile(p)];
+  ["seal", "--request", requestFile(p, target, environment, extra), "--manifest", manifestFile(p), ...requesterArgs()];
 const PHRASE = "RUN PROJECT CODE";
 
 type Sealed = { project: Project; target: ResolvedTarget; environment: ApplyEnvironment; path: string; bundle: string; artifactSha256: string };
@@ -196,7 +197,9 @@ test("request files cannot carry the invocation, the manifest or approvals: the 
   const p = writeProject(fresh("project"), DEV_TARGET);
   for (const extra of [{ invocation: { operatorId: "x" } }, { manifest: {} }, { approvals: [] }, { capabilities: {} }, { unknownField: 1 }]) {
     for (const sub of ["seal", "qualify"]) {
-      const run = await cli(w, [sub, ...sealArgs(p, DEV_TARGET, "DEV", extra).slice(1)], [targetString(DEV_TARGET), PHRASE]);
+      // qualify takes no requester: it stores no plan, so nothing is requested.
+      const args = sealArgs(p, DEV_TARGET, "DEV", extra).slice(1);
+      const run = await cli(w, [sub, ...(sub === "qualify" ? args.slice(0, 4) : args)], [targetString(DEV_TARGET), PHRASE]);
       assert.equal(run.code, 1, sub + JSON.stringify(extra));
       assert.match(run.stderr, /APPLY_INPUT_INVALID/);
       assert.deepEqual(run.term.asked, [], "nothing was asked before the input was valid");
@@ -369,8 +372,9 @@ test("seal writes a non-secret review bundle: the artifact's own fields and the 
   const text = readFileSync(s.bundle, "utf8");
   const bundle = JSON.parse(text) as Record<string, unknown>;
   assert.deepEqual(Object.keys(bundle).sort(), [
-    "artifactSha256", "changes", "changesSha256", "channel", "contractSha256", "createdAt", "engineVersion", "environment", "manifestHash", "planSha256", "policyVersion", "provenance", "releaseIdentity", "sourceCommit", "target", "unit",
+    "artifactSha256", "changes", "changesSha256", "channel", "contractSha256", "createdAt", "engineVersion", "environment", "manifestHash", "planSha256", "policyVersion", "provenance", "releaseIdentity", "request", "requesterId", "sourceCommit", "target", "unit",
   ]);
+  assert.equal(bundle.requesterId, "carol", "approvers see who requested; it is part of the hash they sign");
   assert.equal(bundle.artifactSha256, s.artifactSha256);
   assert.equal(bundle.environment, "DEV");
   assert.equal(bundle.channel, "CLI", "the terminal CLI seals into the CLI channel, and the approvers' bundle says so");
@@ -572,7 +576,7 @@ function staleScratch() {
   utimesSync(dirs.other, longAgo, longAgo);
   return { scratch, ...dirs };
 }
-const sweepingCommand = ["seal", "--request", "/nonexistent/request", "--manifest", "/nonexistent/manifest"];
+const sweepingCommand = ["seal", "--request", "/nonexistent/request", "--manifest", "/nonexistent/manifest", ...requesterArgs()];
 
 test("qualify, seal and apply sweep stale scratch directories at startup, as the teardown CLI does, and leave young ones and other names alone", async () => {
   const w = await world();
@@ -907,7 +911,7 @@ test("prepare writes the request and manifest from the contract and project, and
   assert.doesNotMatch(run.stdout, /westeurope/, "a value is never printed");
   assert.equal(readdirSync(join(outDir, "DEV")).length, 3);
 
-  const seal = await cli(w, ["seal", "--request", request, "--manifest", manifest], [targetString(target), PHRASE]);
+  const seal = await cli(w, ["seal", "--request", request, "--manifest", manifest, ...requesterArgs()], [targetString(target), PHRASE]);
   assert.equal(seal.code, 0, seal.stderr);
   assert.match(JSON.parse(seal.stdout).artifactSha256, /^[0-9a-f]{64}$/);
 });
