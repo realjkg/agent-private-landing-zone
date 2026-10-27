@@ -127,8 +127,8 @@ export class EvidencePathError extends Error {
 
 /**
  * The folder `parts` names under the repository, refused when any existing component below the repository root is a
- * symbolic link, or when the result does not resolve under the repository's real `.runs/evidence`. Called before any
- * write, so evidence can never be redirected outside the git-ignored evidence folder.
+ * symbolic link, or when the result does not resolve under the repository's real `.runs/evidence`. Every write then
+ * re-checks its folder and refuses a link at the file name (`safe-write.ts`), and its limits are written there.
  */
 export function evidencePath(root: string, ...parts: string[]): string {
   const realRoot = realpathSync(root);

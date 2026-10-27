@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { parseConfig, type EvidenceRunnerConfig } from "../src/evidence-runner/config.js";
+import { RELEASE_GATE_IDS } from "../src/evidence-runner/gate-ids.js";
 import { gateModeOf, gatePlan, releaseGates } from "../src/evidence-runner/gates.js";
 import { compareIdentity, identityHash, ownerInputs, runPreflight, unbuiltProbe } from "../src/evidence-runner/preflight.js";
 import { PRODUCTION_RELEASE_GATES } from "../src/qualification/release-admission.js";
@@ -90,6 +91,7 @@ test("every release gate is mapped, read as data without the registry; gates wit
   // registry, which loads the apply path). This test, which may import the registry, pins both against it.
   const { ids, outOfScope } = releaseGates(".");
   assert.deepEqual(ids, PRODUCTION_RELEASE_GATES.map((gate) => gate.id), "status.json lists every registry gate, in order");
+  assert.deepEqual(RELEASE_GATE_IDS, PRODUCTION_RELEASE_GATES.map((gate) => gate.id), "the runner's committed copy of the gate ids follows the registry");
   for (const gate of PRODUCTION_RELEASE_GATES) assert.equal(gateModeOf(gate.id), gate.mode, gate.id);
   const plan = gatePlan(ids, outOfScope);
   const mode = (id: string) => plan.find((gate) => gate.id === id)?.mode;

@@ -1,7 +1,8 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 
 import { JournalError as LifecycleJournalError, acquireRunLock as acquireLifecycleLock } from "../lifecycle/journal.js";
+import { appendNoFollow, ensureRealFolder } from "./safe-write.js";
 import { STAGES, type RunLabel, type StageId, type StepOutcome } from "./types.js";
 
 /**
@@ -58,9 +59,12 @@ function parseLine(text: string, index: number): JournalLine {
   return line as JournalLine;
 }
 
+const isLink = (file: string): boolean => { try { return lstatSync(file).isSymbolicLink(); } catch { return false; } };
+
 /** Reads a journal file without binding it to an identity (for `./alz evidence status`). A torn or malformed line is refused. */
 export function readJournal(file: string): JournalLine[] {
-  if (!existsSync(file)) return [];
+  if (!existsSync(file) && !isLink(file)) return [];
+  if (isLink(file)) throw new JournalError("EVIDENCE_JOURNAL_UNREADABLE", "The journal is a symbolic link; it is never read or written through one." + NEW_FOLDER);
   let text: string;
   try { text = readFileSync(file, "utf8"); } catch { throw new JournalError("EVIDENCE_JOURNAL_UNREADABLE", "The journal could not be read." + NEW_FOLDER); }
   if (text === "") return [];
@@ -98,8 +102,8 @@ export class Journal {
   entries(): readonly JournalLine[] { return this.lines; }
 
   private append(line: JournalLine): void {
-    mkdirSync(dirname(this.file), { recursive: true, mode: 0o700 });
-    appendFileSync(this.file, JSON.stringify(line) + "\n", { mode: 0o600 });
+    ensureRealFolder(dirname(this.file));
+    appendNoFollow(this.file, JSON.stringify(line) + "\n");
     this.lines.push(line);
   }
 
