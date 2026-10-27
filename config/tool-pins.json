@@ -119,7 +119,7 @@
     "versionCommand": "bicep --version",
     "tested": [
       "Check only: ./alz deps compares the installed `bicep --version` against this version and never installs Bicep; no artifact or checksum is pinned.",
-      "0.47.16 is the version the Bicep preview adapter already records as tested (src/plugins/catalog.ts); a test requires the two to agree, and ./alz deps reports it on the product row for bicep, so the preview and the apply engine compile with the same Bicep. It was published on 2026-09-08 (NuGet Azure.Bicep.CommandLine.linux-x64 0.47.16, package SHA-256 ff48ef8a1f868ddefc822434621c018acfd67730da9fd8cf0c3765af97576fb4) and was downloaded but not run. The newest release, 0.48.1, printed `Bicep CLI version 0.48.1 (cec7951cf6)` in a sandbox, the version line the engine reads; no template was compiled and no Azure call was made."
+      "0.47.16 is the version the Bicep preview adapter already records as tested (src/plugins/catalog.ts); a test requires the two to agree, and ./alz deps reports it on the product row for bicep, so the preview's lint/build step and the apply engine run the same Bicep version (the preview's what-if hands az the .bicep file, and outside CI az may use a Bicep of its own; the engine hands az only compiled JSON). It was published on 2026-09-08 (NuGet Azure.Bicep.CommandLine.linux-x64 0.47.16, package SHA-256 ff48ef8a1f868ddefc822434621c018acfd67730da9fd8cf0c3765af97576fb4) and was downloaded but not run. The newest release, 0.48.1, printed `Bicep CLI version 0.48.1 (cec7951cf6)` in a sandbox, the version line the engine reads; no template was compiled and no Azure call was made."
     ]
   },
   "isolatedOllama": {

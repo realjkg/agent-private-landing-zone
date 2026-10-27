@@ -2,14 +2,16 @@
 
 Status: **design and engine spec. ACT stays DISABLED.** Nothing in this note enables infrastructure mutation, and no run on Azure has happened. There is no emulator for Azure Resource Manager, so every Azure fact below is either checked against the vendor's own source (the az CLI 2.91.0 wheel) or marked UNVERIFIED. Live verification is the owner-supervised **G2** DEV run.
 
+**Path 4 cannot run on the `bootstrap/azure` that is on main today.** Its two identities need two actions that the merged bootstrap does not grant. See [Prerequisites not yet on main](#prerequisites-not-yet-on-main-owner-decision-required).
+
 This note covers path 4 of the narrow ACT-DEV release (`docs/act-dev-paths.md`; owner decision on issue #39, comment 6443352284). It follows the coordinator's defaults (comment 6443800275) and the shared Azure workload that the coordinator set for paths 3 and 4.
 
 ## Scope
 
 - **Minimal workload:** one empty, tagged virtual network, deployed into the **existing pilot resource group** that the `bootstrap/azure` DEV mode creates (#304). The run never creates, adopts or deletes a resource group.
 - **Engine:** one Azure **deployment stack scoped to that resource group** (`az stack group ...`), with deny settings on.
-- **No provider registration:** the engine runs no `az provider register`, and none of its identities needs registration rights. If a namespace is not registered, the what-if fails and the seal is refused before anything is created.
-- **Reuse:** the shared seal, driver, approval, ledger, evidence, readiness and console modules are unchanged. The engine is one `EngineSpec` (`src/apply/engines/bicep.ts`), modeled on the CDK engine (`src/apply/engines/cdk.ts`). These shared pieces are reused as they are:
+- **No provider registration:** the engine runs no `az provider register`, and none of its identities needs registration rights. UNVERIFIED (A5): if `Microsoft.Network` or `Microsoft.Resources` is not registered in the subscription, the what-if fails, so the seal is refused before anything is created.
+- **Reuse:** the shared seal, driver, approval, ledger, evidence, readiness and console modules are unchanged. The engine is one `EngineSpec` (`src/apply/engines/bicep.ts`, added in #316), modeled on the CDK engine (`src/apply/engines/cdk.ts`). These shared pieces are reused as they are:
   - the unit tags (`src/apply/unit.ts`);
   - the Bicep what-if tag reader (`readBicepWhatIfTags`, `src/teardown/readers.ts`);
   - the ARM id parser (`src/observe/arm-id.ts`);
@@ -22,9 +24,9 @@ az 2.91.0 has `az stack-whatif group create`, but it **creates a persistent what
 
 ## Identities
 
-The engine uses two principals. They are configured exactly like the Azure Terraform identities (`ALZ_<IDENTITY>_ARM_CLIENT_ID`, `_ARM_TENANT_ID`, `_ARM_SUBSCRIPTION_ID`, `_ARM_USE_OIDC=true`, `_ARM_OIDC_TOKEN_FILE`), so the Azure provider spec (`src/apply/providers/azure.ts`) and `checkApplyIdentities` need no change.
+The engine uses two principals. Their variables have the same form as the Azure Terraform identities' (`ALZ_<IDENTITY>_ARM_CLIENT_ID`, `_ARM_TENANT_ID`, `_ARM_SUBSCRIPTION_ID`, `_ARM_USE_OIDC=true`, `_ARM_OIDC_TOKEN_FILE`), so the Azure provider spec's variable checks (`src/apply/providers/azure.ts`) and `checkApplyIdentities` read them as they are. **Their Azure roles are not the bootstrap's.** The roles that `bootstrap/azure` grants on main (DISCOVERY Reader, APPLY Contributor) do not cover this engine. The table below is what the engine needs; [Prerequisites not yet on main](#prerequisites-not-yet-on-main-owner-decision-required) states the gap and the change it needs.
 
-| Identity | Does | Azure role (proposal, for `bootstrap/azure`) |
+| Identity | Does | Azure permissions the engine needs (not granted on main; see the prerequisites) |
 |---|---|---|
 | DISCOVERY | `az account show`, `az group show`, the what-if, `az stack group show`; the independent read-back | Reader on the pilot resource group, plus `Microsoft.Resources/deployments/whatIf/action` on it |
 | APPLY | `az account show`, `az stack group create`, `az stack group show`, `az stack group delete` | On the pilot resource group only: `Microsoft.Resources/deploymentStacks/*`, `Microsoft.Resources/deploymentStacks/manageDenySetting/action`, `Microsoft.Resources/deployments/*`, `Microsoft.Network/virtualNetworks/*` |
@@ -40,12 +42,33 @@ az login --service-principal --username <ARM_CLIENT_ID> --tenant <ARM_TENANT_ID>
 ```
 
 - **No token in argv.** The `@<path>` form is az's own file expansion (`_expand_file_prefixed_files` in azure-cli-core 2.91.0): az reads the token from the file, so the token is never a process argument.
+- **az never compiles Bicep.** The engine compiles with the pinned `bicep` itself and hands az only the compiled `.json` template, written to a private file in the run's scratch directory, with the identity's private `AZURE_CONFIG_DIR`. az therefore never compiles a `.bicep` file, and never downloads or runs a Bicep of its own (its `bicep.use_binary_from_path` setting never comes into play).
 - **Nothing ambient in the child's environment.** It holds only `AZURE_CONFIG_DIR` (that private directory) and fixed, non-secret settings: telemetry off, no color, and no dynamic extension install. No `ARM_*`, `AZURE_*` or ambient credential reaches it.
 - **Explicit subscription.** Every later step for that identity names `--subscription <contract subscription>`.
 - **Sign-in checks.** `az account show` must report the contract's tenant and subscription, and the identity's own client id as a service principal (otherwise `ACCOUNT_NOT_IN_CONTRACT`). DISCOVERY and APPLY must report different client ids (otherwise `IDENTITY_COLLAPSED`).
 - **Clean-up.** `removeSecrets()` deletes the directories, which hold az's token cache.
 
 The `@` expansion applies to every az argument. Each argument list is therefore matched exactly against an allowlist (`isAllowedBicepArgv`) before it runs. Only the token slot may start with `@`, and only as `@` followed by an absolute token-file path.
+
+## Prerequisites not yet on main (owner decision required)
+
+`bootstrap/azure` DEV-only mode, as merged, gives DISCOVERY **Reader** and APPLY **Contributor** on the pilot resource group (`bootstrap/azure/modules/environment/main.tf`; `docs/act-pilot-azure-terraform-g0.md`). Neither covers this engine, so **path 4 cannot run on the current bootstrap**:
+
+- **APPLY cannot create the stack.** The built-in Contributor role lists `Microsoft.Resources/deploymentStacks/manageDenySetting/action` among its NotActions, and Microsoft's deployment-stacks documentation says creating a stack's deny assignment needs that action. So `az stack group create --deny-settings-mode denyWriteAndDelete` fails for APPLY as bootstrapped. The engine does not fall back to `none`: deny settings are never off.
+- **DISCOVERY cannot run the plan of record.** Reader is `*/read` only and does not include `Microsoft.Resources/deployments/whatIf/action`, which seal step 7 runs as DISCOVERY. Microsoft's template-permissions page says what-if has the same permission requirements as a deployment. How far `--validation-level ProviderNoRbac` relaxes that is unverified.
+
+**Proposed change (the narrowest):** one custom role per identity, assigned **at the pilot resource group only, in DEV only**, that adds exactly one action to what the bootstrap grants today:
+
+| Identity | Keeps | Adds (UNVERIFIED action names, checked at G2) |
+|---|---|---|
+| APPLY | Contributor on the pilot resource group | `Microsoft.Resources/deploymentStacks/manageDenySetting/action` |
+| DISCOVERY | Reader on the pilot resource group | `Microsoft.Resources/deployments/whatIf/action` |
+
+Nothing is added at subscription scope, in QA or PROD, or for any other identity. If G2 shows the what-if needs more under `ProviderNoRbac`, that is a new finding for the owner, not a silent widening.
+
+- **Status:** a permission expansion, so it needs an **owner decision**. The coordinator has put the question to the owner. No PR in this lane changes `bootstrap/azure` roles.
+- **Owner:** the owner's decision, then the `bootstrap/azure` lane implements it.
+- **Until then:** path 4's G0 and G2 cannot start. The engine and its tests (#316) are synthetic and do not depend on it.
 
 ## Contract target
 
@@ -175,6 +198,7 @@ az stack group delete --name <stack> --resource-group <group> --action-on-unmana
 - **The group stays.** `deleteResources` deletes managed resources and detaches resource groups (`_prepare_stacks_action_on_unmanage` in az 2.91.0). The stack manages no group, so the pilot resource group is never deleted.
 - **Stopping.** az 2.91.0 offers no `--no-wait` for a delete, so the call runs as a stoppable process. A stop ends the local call (KILLED), and Azure may still finish the delete.
 - **Outcome.** `settle` returns SUCCEEDED only when the delete exited 0 and the stack is gone. A person then confirms each id is gone with the independent read-back.
+- **Order with the bootstrap teardown.** The stack cleanup (or `az stack group delete`) must run **before** the bootstrap teardown removes the pilot resource group. A stack left behind keeps its `denyWriteAndDelete` assignment on its resources, applied to child scopes, and that blocks the group's deletion.
 
 ## Engine-id admission (not in this lane)
 
@@ -188,7 +212,7 @@ The engine is written against `EngineSpec`, but it is **not registered**. Regist
 These belong to the authorization lane (`src/apply/types.ts`, `src/apply/contract.ts`). Until they land:
 
 - `BICEP` is exported with its own narrow type. Registering it is one entry in `SPECS` (`src/apply/engine-spec.ts`).
-- Its tests drive the engine's steps directly with a fake `az` and `bicep` (`test/apply-bicep.test.ts`). They do not go through the driver, so the ledger, approvals, requester signature and evidence are not yet exercised for this engine. These shared modules are unchanged and are tested for the other engines.
+- Its tests (`test/apply-bicep.test.ts`, added in #316) drive the engine's steps directly with a fake `az` and `bicep`. They do not go through the driver, so the ledger, approvals, requester signature and evidence are not yet exercised for this engine. These shared modules are unchanged and are tested for the other engines.
 - The blueprint (`src/observe/blueprint.ts`) and the cleanup proposal's address form (`src/apply/cleanup-proposal.ts`, ARM ids) are wired when the engine is registered.
 
 ## Assumptions to verify at G2
@@ -198,6 +222,8 @@ These belong to the authorization lane (`src/apply/types.ts`, `src/apply/contrac
 - UNVERIFIED (A3): the stack's final states (`succeeded`, `failed`, `canceled`) and its in-progress states.
 - UNVERIFIED (A4): that Bicep's output for a resource-group file with one virtual network has the shape described in seal step 4. bicep 0.47.16 was not run here, and the tests use a hand-written template of that shape.
 - D1 above.
+- UNVERIFIED (A5): that an unregistered `Microsoft.Network` or `Microsoft.Resources` namespace fails the what-if, so the seal is refused.
+- UNVERIFIED (P1): the action names in [Prerequisites not yet on main](#prerequisites-not-yet-on-main-owner-decision-required), that Contributor's NotActions block the stack's deny assignment, and which permissions the what-if needs under `ProviderNoRbac`.
 
 ## Tool pins
 
@@ -207,7 +233,8 @@ These belong to the authorization lane (`src/apply/types.ts`, `src/apply/contrac
   - The wheel (`azure_cli-2.91.0-py3-none-any.whl`, SHA-256 `998f2b78…5e0b6`) was downloaded, and only its source was read. The stack, what-if, login and `@file` facts above come from it.
   - It was not run, and no Azure call was made.
 - **`bicep` 0.47.16:** the version that the Bicep preview adapter already records as tested (`src/plugins/catalog.ts`), published 2026-09-08.
-  - A test requires the pin and the catalog to agree, so the preview and the engine compile with the same Bicep. `./alz deps` already reports Bicep on its product row against that version.
+  - A test requires the pin and the catalog to agree, so the preview's lint/build step and the engine both run the same Bicep version from PATH. The preview's what-if is different: it hands az the `.bicep` file, and outside CI az uses (and may install) a Bicep of its own (`bicep.use_binary_from_path=if_found_in_ci`, `_bicep.py` in az 2.91.0). The engine avoids that by giving az only compiled JSON. `./alz deps` already reports Bicep on its product row against that version.
+  - `./alz deps` probes az with a private, empty `AZURE_CONFIG_DIR` and telemetry off. With no configuration file, az's `auto-upgrade.enable` stays at its default (off), so a person's own az settings can never make the probe run `az upgrade`.
   - bicep 0.48.1 (the newest) printed its version in a sandbox; 0.47.16 was downloaded but not run.
 
 The pins name the tested version only after the engine's qualification run against DEV binds the exact programs that ran.
