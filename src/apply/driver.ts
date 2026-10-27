@@ -30,6 +30,7 @@ import { openNonceStore, type NonceStore } from "./nonces.js";
 import { specOf, type ProviderSpec } from "./provider.js";
 import { engineBinaryChange, planWithoutStoring, releaseIdentityOf, sealPlan, verifySealedPlan, type LoadedPlan, type SealResult } from "./seal.js";
 import { sha256 } from "../util/sha256.js";
+import { isBackendPinRefusal } from "./backend-pin.js";
 import type { ApplyEnvironment, ApplyEvidence, ApplyOutcome, ApplyRefusalCode, ApplyResult, CleanupEvidence, CleanupResult, PilotChannel, PilotContract, PlanChange, PreviewProvenance, SealedPlan, SignedApproval } from "./types.js";
 
 /**
@@ -472,7 +473,7 @@ export async function runApply(request: ApplyRequest, deps: ApplyDeps): Promise<
           ? "The sealed plan is stale: what it was sealed against has changed. Nothing was applied and no approval was consumed. Seal a new preview and obtain new approvals."
           : "What the sealed plan names is not what the engine finds. Nothing was applied and no approval was consumed. Seal and approve a new plan.");
       }
-      if (/_NOT_IN_CONTRACT$/.test(code)) {
+      if (/_NOT_IN_CONTRACT$/.test(code) || isBackendPinRefusal(code)) {
         return refuse("TARGET_NOT_IN_CONTRACT", "The backend or provider the project configures is not the contract's target (" + code +
           "). Nothing was applied and no approval was consumed. Engine output is withheld.");
       }
@@ -740,7 +741,7 @@ export async function runCleanup(request: CleanupRequest, deps: ApplyDeps): Prom
       const code = codeOf(error);
       // A CDK refusal after CHANGESET created the removal change set leaves it in CloudFormation, whatever the code (review 6432294529, N1): said in every such refusal.
       const left = leftBehindOf(error) === "CHANGE_SET" ? LEFT_CHANGE_SET : "";
-      if (/_NOT_IN_CONTRACT$/.test(code)) {
+      if (/_NOT_IN_CONTRACT$/.test(code) || isBackendPinRefusal(code)) {
         return refuse("TARGET_NOT_IN_CONTRACT", "The backend, provider or change set is not the contract's target (" + code + "). Nothing was destroyed and no approval was consumed." + left);
       }
       // A CDK removal that would leave the stack empty, keep a resource under its deletion policy, or break what stays: refused by name (docs/observe-and-cleanup.md, "CloudFormation").
@@ -763,7 +764,7 @@ export async function runCleanup(request: CleanupRequest, deps: ApplyDeps): Prom
     // Residual risk, stated plainly: for CDK the destroy plan is a change set CloudFormation has already created by now, and a refusal
     // here leaves it unexecuted and AVAILABLE in CloudFormation for a person to clear; no surface deletes a change set (docs/observe-and-cleanup.md).
     const leftBehind = contract.engine === "CDK" ? LEFT_CHANGE_SET : "";
-    const protectedDeletion = protectedDeletionIn(planned, blueprint.blueprint.entries, contract, env);
+    const protectedDeletion = protectedDeletionIn(planned, blueprint.blueprint.entries, contract, env, { account: proposal.target.account, addresses: new Set(proposal.deletes.map((d) => d.address)) });
     if (protectedDeletion) return refuse("PROPOSAL_SCOPE_MISMATCH", protectedDeletion + " Nothing was destroyed and no approval was consumed. The protected object is intentionally retained; a person reviews what depends on it." + leftBehind);
     // The scope check: the destroy plan deletes exactly the approved addresses and does nothing else. A dependent the engine
     // added, a resource it would leave, an update or a create means the state is not what the proposal was made from.

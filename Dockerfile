@@ -33,6 +33,9 @@ COPY compose.yaml ./compose.yaml
 # test/gitignore-secrets.test.ts reads the repository's ignore rules as text.
 COPY .gitignore ./.gitignore
 COPY docs/ ./docs/
+# The bootstrap tests (discovery-scope, bootstrap-azure, bootstrap-gcp) read the bootstrap packages as text. Test stage
+# only; .dockerignore keeps local state, tfvars and .terraform out of the build context.
+COPY bootstrap/ ./bootstrap/
 COPY alz ./alz
 COPY .github/workflows/model-qualification.yml ./.github/workflows/model-qualification.yml
 COPY .github/workflows/model-production-qualification.yml ./.github/workflows/model-production-qualification.yml

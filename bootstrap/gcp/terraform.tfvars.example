@@ -1,0 +1,40 @@
+# Copy to <env>.tfvars (ignored by git), one per project and engine. All values below are placeholders.
+environment = "DEV"
+engine      = "TERRAFORM" # or "GCP_API" (DEV only; DISCOVERY and APPLY only; no state_bucket_name)
+project_id  = "examplefake-dev"
+region      = "europe-west4"
+
+# GitHub OIDC with one GitHub environment per identity and stage. Replace OWNER/REPO.
+oidc_subjects = {
+  DISCOVERY   = "repo:OWNER/REPO:environment:dev-discovery"
+  STATE       = "repo:OWNER/REPO:environment:dev-state"
+  STATE_WRITE = "repo:OWNER/REPO:environment:dev-state-write"
+  APPLY       = "repo:OWNER/REPO:environment:dev-apply"
+}
+
+# Where each identity's OIDC token file lives on the runner. Only the output credential configurations name them.
+token_files = {
+  DISCOVERY   = "/var/run/alz/dev/discovery.jwt"
+  STATE       = "/var/run/alz/dev/state.jwt"
+  STATE_WRITE = "/var/run/alz/dev/state-write.jwt"
+  APPLY       = "/var/run/alz/dev/apply.jwt"
+}
+
+# TERRAFORM engine
+state_bucket_name = "examplefake-dev-state"
+# state_prefix    = "pilot/dev"
+
+# Optional: extra predefined roles for APPLY, from the reviewed allowlist only (roles/pubsub.publisher, roles/pubsub.subscriber,
+# roles/pubsub.viewer, roles/logging.viewer, roles/monitoring.viewer). Anything else needs a reviewed change to this package.
+# apply_additional_roles = []
+
+# Recommended for GitHub: pin the numeric repository and owner ids, so a recreated or transferred repository name is refused.
+# oidc_required_claims = { repository_id = "000000000", repository_owner_id = "000000000" }
+
+# Owner items P3 and P5, off until decided
+# lock_version_retention_days     = 7
+# enable_storage_data_access_logs = true
+
+# Optional budget
+# billing_account_id = "000000-000000-000000"
+# budget_monthly_usd = 50

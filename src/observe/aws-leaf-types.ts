@@ -21,7 +21,7 @@
  * owner's), Organizations delegated administrators and Lake Formation permissions (not on the owner's list; a delegated
  * administrator has organization-wide effects and a Lake Formation grant may have existed before the run; design review
  * 6434540427, B1), the Redshift cluster IAM role set (it manages the cluster's whole role set; N5), and every type of the identity
- * services (always PROTECTED_IDENTITY).
+ * services (PROTECTED_IDENTITY; the one exception, run-created policies, is ./run-created-policies.ts, judged by the classifier, not here).
  */
 export type AwsLeafBasis =
   /** The pilot's own journeys create it: the bootstrap project, the pilot fixtures and the synthetic journeys' stacks. */

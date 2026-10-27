@@ -8,35 +8,33 @@ output "identity_client_ids" {
   value       = { for key, app in azuread_application.identity : key => app.client_id }
 }
 
+locals {
+  # The module instance of each enabled environment (one() is null for a QA or PROD module with no instance).
+  environment_modules = {
+    DEV  = module.environment_dev
+    QA   = one(module.environment_qa)
+    PROD = one(module.environment_prod)
+  }
+}
+
+output "enabled_environments" {
+  description = "The environments this bootstrap created: the contract's enabledEnvironments is [\"DEV\"] exactly when this is [\"DEV\"]."
+  value       = var.enabled_environments
+}
+
 output "contract_targets" {
-  description = "The targets block of config/act-pilot-contract.json (provider AZURE, engine TERRAFORM)."
+  description = "The targets block of config/act-pilot-contract.json (provider AZURE, engine TERRAFORM), one entry per enabled environment."
   value = {
-    DEV = {
+    for env in var.enabled_environments : env => {
       tenantId       = var.tenant_id
-      subscriptionId = var.environments.DEV.subscription_id
-      backend        = "${var.environments.DEV.state_storage_account_name}/${module.environment_dev.container_name}/dev.tfstate"
-      workspace      = "default"
-    }
-    QA = {
-      tenantId       = var.tenant_id
-      subscriptionId = var.environments.QA.subscription_id
-      backend        = "${var.environments.QA.state_storage_account_name}/${module.environment_qa.container_name}/qa.tfstate"
-      workspace      = "default"
-    }
-    PROD = {
-      tenantId       = var.tenant_id
-      subscriptionId = var.environments.PROD.subscription_id
-      backend        = "${var.environments.PROD.state_storage_account_name}/${module.environment_prod.container_name}/prod.tfstate"
+      subscriptionId = var.environments[env].subscription_id
+      backend        = "${var.environments[env].state_storage_account_name}/${local.environment_modules[env].container_name}/${lower(env)}.tfstate"
       workspace      = "default"
     }
   }
 }
 
 output "apply_scopes" {
-  description = "Where APPLY holds Contributor and DISCOVERY holds Reader, per environment."
-  value = {
-    DEV  = module.environment_dev.apply_scope
-    QA   = module.environment_qa.apply_scope
-    PROD = module.environment_prod.apply_scope
-  }
+  description = "Where APPLY holds Contributor and DISCOVERY holds Reader, per enabled environment."
+  value       = { for env in var.enabled_environments : env => local.environment_modules[env].apply_scope }
 }

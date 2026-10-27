@@ -17,3 +17,11 @@ coverage
 !.env.example
 *.log
 .DS_Store
+# Bootstrap state and variable files hold account identifiers (mirrors bootstrap/.gitignore).
+bootstrap/**/.terraform
+bootstrap/**/terraform.tfstate
+bootstrap/**/terraform.tfstate.*
+bootstrap/**/terraform.tfstate.d
+bootstrap/**/*.tfvars
+!bootstrap/**/*.tfvars.example
+bootstrap/**/crash.log

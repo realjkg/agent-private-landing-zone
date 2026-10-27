@@ -114,6 +114,8 @@ if (b.failOn === cmd) { log({}); process.stderr.write(b.failStderr || "boom ${VA
 if (cmd === "version") { log({}); process.stdout.write(JSON.stringify({ terraform_version: b.version })); }
 else if (cmd === "init") {
   fs.mkdirSync(".terraform", { recursive: true });
+  // Like the real init: a setting the -backend-config file sets is saved with its value; the backend's Entra ID switch is otherwise null.
+  const entra = /^use_azuread_auth = true$/m.test(backend() || "") ? true : null;
   if (b.savedBackend !== null) {
     const def = (${JSON.stringify({ [DEV_TARGET.account]: DEV_TARGET.backend, [QA_TARGET.account]: QA_TARGET.backend, [PROD_TARGET.account]: PROD_TARGET.backend })})[process.env.ARM_SUBSCRIPTION_ID];
     const [account, container, ...key] = (def || "").split("/");
@@ -121,12 +123,14 @@ else if (cmd === "init") {
     const [bucket, ...s3key] = ((${JSON.stringify(Object.fromEntries([AWS_DEV_TARGET, AWS_QA_TARGET, AWS_PROD_TARGET].map((t) => [t.account, t.backend])))})[(process.env.AWS_ROLE_ARN || "").split(":")[4]] || "").split("/");
     const backend = b.savedBackend || (process.env.AWS_ROLE_ARN
       ? { type: "s3", config: { bucket, key: s3key.join("/"), region: process.env.AWS_REGION, use_lockfile: true } }
-      : { type: "azurerm", config: { storage_account_name: account, container_name: container, key: key.join("/") } });
+      : { type: "azurerm", config: { storage_account_name: account, container_name: container, key: key.join("/"), use_azuread_auth: entra } });
     fs.writeFileSync(path.join(".terraform", "terraform.tfstate"), JSON.stringify({ version: 3, backend }));
   }
   for (const w of b.initWrites || []) { fs.mkdirSync(path.dirname(w.path), { recursive: true }); fs.writeFileSync(w.path, w.content); }
   const bc = args.find((x) => x.startsWith("-backend-config="));
-  log({ backendConfig: backend(), backendMode: bc ? fs.statSync(path.resolve(process.cwd(), bc.slice(16))).mode & 0o777 : undefined });
+  const pin = path.join(process.cwd(), "zzzz_alz_backend_override.tf");
+  log({ backendConfig: backend(), backendMode: bc ? fs.statSync(path.resolve(process.cwd(), bc.slice(16))).mode & 0o777 : undefined,
+    backendOverride: fs.existsSync(pin) ? fs.readFileSync(pin, "utf8") : undefined, workEntries: fs.readdirSync(process.cwd()).sort() });
 }
 else if (cmd === "workspace") { log({}); if (sub === "show") process.stdout.write(b.workspace + "\\n"); }
 else if (cmd === "state" && sub === "pull") {
@@ -333,7 +337,7 @@ export function fakeArmHttp(behavior: ArmBehavior = {}): { http: (request: ArmCa
     if (providers) {
       const namespace = providers[1];
       // The real provider lists every type it offers whether or not a resource exists; the fake knows a few common ones plus whatever the scenario names.
-      const KNOWN_TYPES = ["Microsoft.OperationalInsights/workspaces", "Microsoft.Storage/storageAccounts", "Microsoft.Storage/storageAccounts/blobServices/containers", "Microsoft.Authorization/roleAssignments", "Microsoft.Authorization/locks", "Microsoft.Resources/deployments", "Microsoft.Compute/virtualMachines", "Microsoft.KeyVault/vaults"];
+      const KNOWN_TYPES = ["Microsoft.OperationalInsights/workspaces", "Microsoft.Storage/storageAccounts", "Microsoft.Storage/storageAccounts/blobServices/containers", "Microsoft.Authorization/roleAssignments", "Microsoft.Authorization/locks", "Microsoft.Authorization/policyDefinitions", "Microsoft.Authorization/policySetDefinitions", "Microsoft.Authorization/policyAssignments", "Microsoft.Resources/deployments", "Microsoft.Compute/virtualMachines", "Microsoft.KeyVault/vaults"];
       const types = new Set([...KNOWN_TYPES, ...[...(b.existing ?? []), ...Object.keys(b.fail ?? {}), ...(b.tagged ?? [])].map(typeOf)].filter((t) => t.toLowerCase().startsWith(namespace.toLowerCase() + "/")).map((t) => t.slice(namespace.length + 1)));
       const resourceTypes = [...types].filter((t) => !(b.unknownTypes ?? []).includes(namespace + "/" + t))
         .map((t) => ({ resourceType: t, apiVersions: (b.previewOnlyTypes ?? []).includes(namespace + "/" + t) ? ["2024-01-01-preview"] : ["2024-01-01-preview", "2023-05-01"] }));
@@ -362,6 +366,8 @@ export function fakeArmHttp(behavior: ArmBehavior = {}): { http: (request: ArmCa
 export type Call = {
   args: string[]; cwd: string; env: Record<string, string>; backendConfig?: string; planPath?: string;
   planSha?: string; planMode?: number; backendMode?: number; backendFileExists?: boolean; planText?: string; planDir?: string; pid?: number;
+  /** At init: the product-owned backend override in the work copy, and the copy's root entries. */
+  backendOverride?: string; workEntries?: string[];
 };
 export const callsOf = (toolDir: string): Call[] => existsSync(join(toolDir, "calls.jsonl"))
   ? readFileSync(join(toolDir, "calls.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line) as Call)
