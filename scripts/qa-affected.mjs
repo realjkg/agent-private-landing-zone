@@ -237,6 +237,13 @@ export function planChanged(changedPaths, files) {
       }
       continue;
     }
+    // The GCP bootstrap package (HCL, its mocked `terraform test` suite, the config template) is owned by one focused static test.
+    if (/^bootstrap\/(?:gcp\/.+|config\.gcp\.template\.json)$/.test(path)) {
+      addExisting(selected, files, ["test/bootstrap-gcp.test.ts"]);
+      const gap = "The GCP bootstrap has no focused test owner.";
+      if (!hasFile(files, "test/bootstrap-gcp.test.ts") && !gaps.includes(gap)) gaps.push(gap);
+      continue;
+    }
     if (/^(?:config|policy|security)\//.test(path)) {
       const family = path.startsWith("policy/") ? ["test/security-policy.test.ts", "test/policy-path.test.ts"]
         : path.startsWith("security/") ? ["test/security-boundaries.test.ts", "test/security-policy.test.ts"]
