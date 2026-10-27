@@ -48,7 +48,7 @@ az login --service-principal --username <ARM_CLIENT_ID> --tenant <ARM_TENANT_ID>
 - **Sign-in checks.** `az account show` must report the contract's tenant and subscription, and the identity's own client id as a service principal (otherwise `ACCOUNT_NOT_IN_CONTRACT`). DISCOVERY and APPLY must report different client ids (otherwise `IDENTITY_COLLAPSED`).
 - **Clean-up.** `removeSecrets()` deletes the directories, which hold az's token cache.
 
-The `@` expansion applies to every az argument. Each argument list is therefore matched exactly against an allowlist (`isAllowedBicepArgv`) before it runs. Only the token slot may start with `@`, and only as `@` followed by an absolute token-file path.
+The `@` expansion applies to every az argument, and not only at its start: az splits each argument on its first `=` and reads the part after it as a file when it starts with `@`, so `key=@/path` (the shape of a `--tags` value) is a file read too. Each argument list is therefore matched exactly against an allowlist (`isAllowedBicepArgv`) before it runs. No argument may contain `@`, or be one az would expand (`@x` or `key=@x`), except the login's own token slot, which must be `@` followed by an absolute token-file path.
 
 ## Prerequisites not yet on main (owner decision required)
 
@@ -74,7 +74,7 @@ Nothing is added at subscription scope, in QA or PROD, or for any other identity
 
 The contract names `provider: AZURE` and `engine: BICEP`. Each environment's target holds the provider's `tenantId` and `subscriptionId`, plus:
 
-- `backend`: the deployment stack's name (`^[A-Za-z0-9][A-Za-z0-9._-]{0,89}$`). The same name may repeat across environments, because the subscription already differs.
+- `backend`: the deployment stack's name (`^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,88}[A-Za-z0-9_-])?$`: a letter or digit first, so a value never reads as an option, and no trailing `.`). The same name may repeat across environments, because the subscription already differs.
 - `workspace`: `default`.
 - `resourceGroup`: the existing pilot resource group (#304) that the stack is scoped to.
 
@@ -84,13 +84,16 @@ The contract names `provider: AZURE` and `engine: BICEP`. Each environment's tar
 2. **Check the tool versions.** `bicep --version` and `az version --output json` must report the pinned versions (`config/tool-pins.json`, `bicep` and `azureCli`). The pinned az version is the manifest's `engineVersion`.
 3. **Compile** `main.bicep` with the pinned bicep: `bicep build main.bicep --stdout --no-restore`. No identity is given. With `--no-restore` and an empty home directory, no registry or template-spec module can be fetched, so only local files compile.
 4. **Read the compiled ARM JSON** and refuse anything outside the minimal workload:
-   - the schema must be the resource-group deployment template;
-   - every resource must have the type `Microsoft.Network/virtualNetworks`;
+   - the schema must be exactly `https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#`, the host included;
+   - there must be exactly one resource, of type `Microsoft.Network/virtualNetworks`, holding only `type`, `apiVersion`, `name`, `location`, `tags` and `properties`;
+   - its properties must be only `addressSpace.addressPrefixes`: the network is empty, so no subnet (and so no delegation), no peering and no `ddosProtectionPlan`;
+   - the template may hold only `$schema`, `languageVersion`, `contentVersion`, `metadata`, `parameters`, `variables` and `resources`: no `outputs` and no user `functions`;
+   - no `list*` function call (`listKeys` and the like) appears anywhere in the template;
    - there may be no module (`Microsoft.Resources/deployments`), no `existing` resource and no extension resource (`scope`).
 
    Any other type is `RESOURCE_TYPE_NOT_ALLOWED`, and any other shape is `TEMPLATE_SHAPE_NOT_ALLOWED`. A `Microsoft.Resources/resourceGroups` resource is refused like any other type: the run must not create a group.
 5. **Check the resource group** as DISCOVERY (`az group show`). It must already exist (otherwise `RESOURCE_GROUP_NOT_FOUND`). The engine never creates it.
-6. **Read the stack** as DISCOVERY (`az stack group show`). If the stack exists, it must be in a final state, carry the deny settings below, and carry exactly the deletion unit's three tags. Its fingerprint (id, state, last modification, deployment id, managed resources and deny settings) is bound into the seal.
+6. **Read the stack** as DISCOVERY (`az stack group show`). If the stack exists, it must be in a final state, carry the deny settings below, and carry exactly the deletion unit's three tags, keys and values (a cleanup, which is given no unit, requires the three keys). Its fingerprint (id, state, last modification, deployment id, managed resources and deny settings) is bound into the seal.
 7. **Run the what-if** as DISCOVERY. This is the plan of record:
 
    ```text
@@ -155,7 +158,7 @@ az stack group create --name <stack> --resource-group <group> --template-file <s
 | Outcome | When |
 |---|---|
 | SUCCEEDED | The create exited 0, the stack moved (new deployment id or last-modified time), its state is `succeeded`, it lists no failed resources, and it reports the sealed deny settings. All five must hold. |
-| FAILED_NO_CHANGE | The create was refused and the stack did not move. |
+| FAILED_NO_CHANGE | Positive evidence only: az ran to completion and gave a definite non-zero exit, and at least three reads over the poll window show the stack unmoved. A create with no exit code (a timeout, the output cap or a spawn error) may have reached ARM, so it is never this outcome. |
 | KILLED | A stop arrived. |
 | PARTIAL_REQUIRES_REVIEW | Everything else. |
 
@@ -197,7 +200,7 @@ az stack group delete --name <stack> --resource-group <group> --action-on-unmana
 - **Last check.** Just before the call, the engine checks once more that the stack fingerprint is unchanged.
 - **The group stays.** `deleteResources` deletes managed resources and detaches resource groups (`_prepare_stacks_action_on_unmanage` in az 2.91.0). The stack manages no group, so the pilot resource group is never deleted.
 - **Stopping.** az 2.91.0 offers no `--no-wait` for a delete, so the call runs as a stoppable process. A stop ends the local call (KILLED), and Azure may still finish the delete.
-- **Outcome.** `settle` returns SUCCEEDED only when the delete exited 0 and the stack is gone. A person then confirms each id is gone with the independent read-back.
+- **Outcome.** `settle` returns SUCCEEDED only when the delete exited 0 with nothing cut off and the stack is gone. It returns FAILED_NO_CHANGE only after a definite non-zero exit and at least three reads over the poll window that show the stack unchanged. A delete stopped by the kill switch or the time limit is KILLED, and any other result is PARTIAL_REQUIRES_REVIEW. A person then confirms each id is gone with the independent read-back.
 - **Order with the bootstrap teardown.** The stack cleanup (or `az stack group delete`) must run **before** the bootstrap teardown removes the pilot resource group. A stack left behind keeps its `denyWriteAndDelete` assignment on its resources, applied to child scopes, and that blocks the group's deletion.
 
 ## Engine-id admission (not in this lane)

@@ -1020,6 +1020,8 @@ const DRIVER_IMPORT = /(from\s+["'])((?:\.{1,2}\/)+(?:[a-z-]+\/)*teardown\/drive
 const APPLY_MAY_IMPORT: Readonly<Record<string, { modules: string[]; names?: string[] }>> = {
   "src/apply/driver.ts": { modules: ["cleanup.js", "human.js", "qualification.js", "types.js"] },
   "src/apply/engines/cdk.ts": { modules: ["adapters/project-copy.js", "cleanup.js", "qualification.js", "types.js"] },
+  // The Bicep engine (path 4) reuses exactly what the CDK engine does: the project copy, scratch removal, the argv digest and the adapter type.
+  "src/apply/engines/bicep.ts": { modules: ["adapters/project-copy.js", "cleanup.js", "qualification.js", "types.js"] },
   "src/apply/engines/terraform.ts": { modules: ["adapters/terraform.js", "adapters/project-copy.js", "cleanup.js", "types.js"], names: ["createTerraformAdapter"] },
   "src/apply/engine-spec.ts": { modules: ["types.js"] },
   "src/apply/seal.ts": { modules: ["types.js"] },
