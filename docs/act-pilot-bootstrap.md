@@ -193,7 +193,7 @@ To check what was assigned, run as the owner:
 
 ```bash
 az role definition list --name Reader --query '[].permissions[].{actions:actions, dataActions:dataActions}' -o json   # expect ["*/read"] and []
-az role assignment list --all --assignee 00000000-0000-0000-0000-0000000000d1 --query '[].{role:roleDefinitionName, scope:scope}' -o table
+az role assignment list --all --assignee 00000000-0000-0000-0000-0000000000d1 --query '[].{role:roleDefinitionName, scope:scope}' -o table   # the DISCOVERY client id (identity_client_ids.DISCOVERY)
 ```
 
 **AWS** (token exchange, role assumption, policy check):

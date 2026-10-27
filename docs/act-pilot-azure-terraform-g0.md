@@ -16,11 +16,11 @@ People are never named here. Where a person is needed, the text uses a role and 
 | Engine | `TERRAFORM` | the contract's `engine`, validated against `src/apply/engines/terraform.ts`, with its pinned argument lists in `src/apply/terraform.ts` (Terraform 1.16.4 only) |
 | Pilot scope | the DEV-only pilot (`"enabledEnvironments": ["DEV"]`), one additive change (the workload below), in one DEV subscription | the contract: a DEV-only contract carries exactly `targets.DEV` and `requiredApprovals.DEV`. The validator accepts this scope for AWS Terraform and Azure Terraform (#298; `src/apply/contract.ts`). The sealed plan's change list is what the approver signs |
 | Identities | four Entra app registrations used through federated credentials, with no client secret or certificate: DISCOVERY, STATE, STATE_WRITE, APPLY. Each identity uses the same client in every environment (`principalPerEnvironment: false`) | `ALZ_<IDENTITY>_ARM_CLIENT_ID`, `_ARM_TENANT_ID`, `_ARM_SUBSCRIPTION_ID`, `_ARM_USE_OIDC=true`, `_ARM_OIDC_TOKEN_FILE` on the execution host. These are checked by `./alz apply preflight` and attested by `./alz apply qualify` from the Entra sign-in logs and the storage logs |
-| State | one storage account and container per environment, with versioning and soft delete on. Shared keys and SAS are disabled, so only Entra ID authorization works. The lock is a lease on the state blob | the contract's `backend` (`<storage-account>/<container>/<key>`) and the STATE_WRITE partial backend configuration at `init`. The Entra-only backend settings are #287/#289, and backend pinning is #297; neither is on `main` |
+| State | one storage account and container per environment, with versioning and soft delete on. Shared keys and SAS are disabled, so only Entra ID authorization works. The lock is a lease on the state blob | the contract's `backend` (`<storage-account>/<container>/<key>`) and the STATE_WRITE partial backend configuration at `init`. Backend pinning is on `main` (#297, `docs/act-pilot-backend-pinning.md`): the product writes its own `azurerm` backend override and every setting comes from its `-backend-config` file. Still owed: the Entra-only state authentication setting, which a new lane is delivering as one PR on top of the backend pinning (it replaces #287/#289) |
 | Bootstrap | `bootstrap/azure` in DEV-only mode (`enabled_environments = ["DEV"]`, #304), or the three-subscription chain | `docs/act-pilot-bootstrap.md`, Step 1 |
 | Channel | the terminal or the console wizard, chosen when the workflow starts and sealed into the plan, never mixed | `docs/act-pilot-apply.md`, "Channels" |
 
-The contract shape for this decision is `config/act-pilot-contract.azure-dev.example.json`. It is an example only: the loader reads `config/act-pilot-contract.json` and nothing else, and the example is deliberately incomplete (placeholders and the `examplefake` backend), so it can never enable ACT. The owner's copy lives at `config/act-pilot-contract.json`, which is not committed until the reviewed pin commit.
+The contract shape for this decision is `config/act-pilot-contract.azure-dev.example.json`. It is an example only: the loader reads `config/act-pilot-contract.json` and nothing else, and it can never enable ACT: `enabled` is false; `policyVersion`, the tenant ID, the subscription ID, and the approver's id and public key are `REPLACE-WITH-...` placeholders; and the backend names the fake `examplefakedevstate` storage account. Its workspace (`default`), `requiredApprovals.DEV` (1), `maxApprovalAgeMinutes` (30) and kill switch path (`.runs/apply/KILL`) are usable defaults that the owner confirms. The owner's copy lives at `config/act-pilot-contract.json`, which is not committed until the reviewed pin commit.
 
 ### The minimal workload
 
@@ -124,8 +124,8 @@ The owner decided that read-only discovery defaults to control-plane metadata. I
 
 ```json
 {
-  "Name": "ALZ Pilot Discovery (DEV)",
-  "Description": "Control-plane reads the ALZ pilot makes as DISCOVERY. No data actions.",
+  "Name": "ALZ Pilot Discovery",
+  "Description": "Control-plane reads the ALZ pilot makes as DISCOVERY (proposed for QA and PROD). No data actions.",
   "Actions": [
     "Microsoft.Resources/subscriptions/read",
     "Microsoft.Resources/subscriptions/resourceGroups/read",
@@ -138,7 +138,7 @@ The owner decided that read-only discovery defaults to control-plane metadata. I
   "NotActions": [],
   "DataActions": [],
   "NotDataActions": [],
-  "AssignableScopes": ["/subscriptions/<DEV subscription id>"]
+  "AssignableScopes": ["/subscriptions/<QA subscription id>", "/subscriptions/<PROD subscription id>"]
 }
 ```
 
@@ -157,7 +157,7 @@ This lists what exists for Azure Terraform today, what engineering still owes, a
 | --- | --- | --- | --- |
 | G0 | this page; the provider and engine specs; `config/act-pilot-contract.azure-dev.example.json`; `bootstrap/azure` | #304 (`bootstrap/azure` DEV-only mode). The DEV-only contract scope for Azure Terraform is on `main` (#298) | assign the roles; choose the execution host; confirm or override the workload; name the cleanup owner |
 | G1 | the denial paths with a fake engine (`docs/act-pilot-aws-terraform-g0.md`, G1, which are shared by both providers); `test/apply-cli.test.ts` drives the Azure path end to end | none known | none |
-| G1b | `test/apply-emulated.test.ts`: real Terraform against Azurite. It passed on 2026-10-27 with SAS and account keys, which the Entra-only backend refuses | #297 (backend pinning; on `main` the azurerm backend block is not judged), #287/#289 (Entra-only state auth), then the Entra-only G1b re-run (Z2) | none; the reviewed pin commit comes after it |
+| G1b | `test/apply-emulated.test.ts`: real Terraform against Azurite. It passed on 2026-10-27 with SAS and account keys, which the Entra-only backend refuses | backend pinning is on `main` (#297; the emulated run's SAS settings must move to a test-only backend file, `docs/act-pilot-backend-pinning.md`). Still owed: the Entra-only state authentication PR (a new lane replacing #287/#289), then the Entra-only G1b re-run (Z2) | none; the reviewed pin commit comes after it |
 | G2 | `./alz apply preflight`, `prepare`, `qualify`, `record-live`; the Azure reader (`src/observe/azure-rest.ts`) | none known in the product after the items above. The open real-Azure questions in `docs/act-pilot-apply.md` are answered by the run, not by code | the DEV subscription, the bootstrap, four token files on the execution host, a person to qualify and attest from the sign-in and storage logs, one supervised DEV apply recorded with `record-live` |
 | G3 | release admission reads the same pin; `config/release/status.json` carries `act:azure-terraform`, `azure-provider` and `preview:terraform-azure-brownfield` | none for the DEV pilot | the pin commit; `./alz qualify admission` after the live record |
 | G4 | the promotion chain and the PROD quorum, with a fake engine | none for the DEV-only pilot | out of scope for the DEV-only pilot |
@@ -197,7 +197,7 @@ These are identifiers and public keys only. No private key, token, client secret
 
 ### The owner's checklist to enable ACT on Azure Terraform DEV
 
-These steps are in order. Each is done by the owner or by a person the owner names. No agent performs any of them. Engineering prerequisites: #297, #287/#289, the Entra-only G1b, and #304 for the DEV-only bootstrap. The DEV-only contract scope (#298) is on `main`.
+These steps are in order. Each is done by the owner or by a person the owner names. No agent performs any of them. Engineering prerequisites still owed: the Entra-only state authentication PR (a new lane replacing #287/#289), the Entra-only G1b re-run, and #304 for the DEV-only bootstrap. Backend pinning (#297) and the DEV-only contract scope (#298) are on `main`.
 
 1. Assign the roles. Choose the execution host. Confirm the workload. Name the cleanup owner.
 2. Provide a DEV subscription dedicated to the pilot, with a budget and alerts (`docs/act-dev-enablement.md`).
