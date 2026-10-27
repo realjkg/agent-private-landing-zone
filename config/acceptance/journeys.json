@@ -467,7 +467,7 @@
             "positive": [
               {
                 "file": "test/apply-prepare.test.ts",
-                "title": "CDK is the AWS secondary path: no lock file, no providers, and the AWS CLI version is asked only until it is qualified"
+                "title": "CDK is the AWS secondary path: no lock file, no providers, and the engine version is the tested AWS CLI pin until it is qualified; nobody is asked, and a version that is not the pin is refused"
               }
             ],
             "denied": [
