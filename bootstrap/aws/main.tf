@@ -9,7 +9,7 @@ locals {
   managed_policies = merge(
     { for arn in var.apply_managed_policy_arns : "APPLY/${arn}" => { identity = "APPLY", arn = arn } },
     # Both engines: the independent observation after an apply reads as DISCOVERY (CloudFormation's resource list, Cloud Control, the tag API), so the CDK role needs the same read scope.
-    # Control-plane metadata only: discovery.tf adds the product's exact reads and denies data-plane and secret reads whatever this list names.
+    # Control-plane metadata only: discovery.tf adds the product's exact reads and denies the data-plane and secret reads it lists, whatever this list names.
     { for arn in var.discovery_managed_policy_arns : "DISCOVERY/${arn}" => { identity = "DISCOVERY", arn = arn } },
   )
 }

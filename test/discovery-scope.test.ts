@@ -12,8 +12,10 @@ import { CLOUD_CONTROL_TYPES, DATA_BEARING_TYPES, checkResource, cloudControlMap
 
 const root = new URL("../", import.meta.url);
 const read = (path: string): string => readFileSync(new URL(path, root), "utf8");
-type Group = { why: string; actions: string[] };
-const policy = JSON.parse(read("bootstrap/aws/discovery-policy.json")) as { decision: string; allow: Record<string, Group>; deny: Record<string, Group> };
+type Group = { why: string; actions: string[]; scope?: string; purpose?: string };
+const policy = JSON.parse(read("bootstrap/aws/discovery-policy.json")) as {
+  decision: string; allow: Record<string, Group>; deny: Record<string, Group>; denyOnResources: Record<string, Group & { resources: string[] }>;
+};
 const allow = [...new Set(Object.values(policy.allow).flatMap((group) => group.actions))];
 const deny = [...new Set(Object.values(policy.deny).flatMap((group) => group.actions))];
 /** IAM action matching: case-insensitive, `*` matches any run of characters. */
@@ -60,6 +62,35 @@ test("the DISCOVERY deny names every data-plane and secret read the owner decisi
   assert.match(policy.decision, /6440801434/);
 });
 
+test("the deny also names the data and secret reads ReadOnlyAccess grants beyond the first list (review 6442107608, N1)", () => {
+  // None of these is a read the product makes as DISCOVERY: the allow inventory below names every one it makes.
+  for (const action of ["glue:GetConnection", "glue:GetConnections", "codecommit:GitPull", "rds:DownloadDBLogFilePortion", "rds:DownloadCompleteDBLogFile",
+    "dax:GetItem", "dax:BatchGetItem", "dax:Query", "dax:Scan", "es:ESHttpGet", "cassandra:Select", "kinesisvideo:GetMedia", "kinesisvideo:GetClip",
+    "states:DescribeExecution", "states:GetExecutionHistory", "ssm:GetCommandInvocation", "ssm:ListCommandInvocations", "cognito-idp:ListUsers",
+    "cognito-idp:AdminGetUser", "ec2:DescribeInstanceAttribute", "ec2:DescribeLaunchTemplateVersions", "ecs:DescribeTaskDefinition",
+    "codebuild:BatchGetProjects", "elasticbeanstalk:DescribeConfigurationSettings"]) {
+    assert.ok(deny.includes(action), "denied: " + action);
+    assert.ok(!allow.some((allowed) => matches(action, allowed)), "not an allowed DISCOVERY read: " + action);
+  }
+  // apigateway:GET is the one action for every API Gateway read, so it is denied on the key paths only.
+  const apiKeys = policy.denyOnResources.apiKeyValues!;
+  assert.deepEqual(apiKeys.actions, ["apigateway:GET"]);
+  for (const resource of ["arn:aws:apigateway:*::/apikeys", "arn:aws:apigateway:*::/apikeys/*", "arn:aws:apigateway:*::/usageplans/*/keys/*"]) assert.ok(apiKeys.resources.includes(resource), resource);
+  assert.ok(!deny.includes("apigateway:GET"), "API Gateway configuration stays readable");
+});
+
+test("the two reads that return more than configuration are recorded exceptions with a scope and a purpose", () => {
+  const recorded = policy.allow.recordedExceptions!;
+  assert.deepEqual([...recorded.actions].sort(), ["s3:ListBucket", "sns:ListSubscriptionsByTopic"]);
+  assert.match(recorded.scope ?? "", /object key names/);
+  assert.match(recorded.scope ?? "", /subscription endpoints/);
+  assert.match(recorded.purpose ?? "", /read handlers/);
+  for (const [name, group] of Object.entries(policy.allow)) {
+    if (name === "recordedExceptions") continue;
+    for (const action of recorded.actions) assert.ok(!group.actions.includes(action), action + " is listed only as a recorded exception");
+  }
+});
+
 test("no allowed read is a denied read, and every allowed action is a read", () => {
   for (const action of allow) {
     assert.ok(!deny.some((pattern) => matches(pattern, action)), "allowed and denied at once: " + action);
@@ -95,19 +126,49 @@ test("bootstrap: the default is ViewOnlyAccess, the deny is inline and independe
   const code = discovery.split("\n").filter((line) => !/^\s*#/.test(line)).join("\n");
   assert.doesNotMatch(code.split("check \"discovery_managed_policy_scope\"")[0]!, /discovery_managed_policy_arns/, "the deny never depends on the managed list");
   assert.match(discovery, /check "discovery_managed_policy_scope"[\s\S]*ReadOnlyAccess/, "ReadOnlyAccess draws a plan warning");
-  // The refusal pattern, as Terraform's regex reads it (RE2; the same syntax in JavaScript for this pattern).
-  const source = /regex\(\s*"([^"]+)", arn/.exec(variables)?.[1]?.replace(/\\\\/g, "\\");
-  assert.ok(source);
-  const broad = new RegExp(source);
+  // An allowlist of exact AWS-managed ARNs, compared as Terraform's contains() does: exact string equality.
+  const listed = /contains\(\[([^\]]+)\], arn\)/.exec(variables)?.[1];
+  assert.ok(listed, "the managed-policy check is an allowlist");
+  const accepted = [...listed.matchAll(/"([^"]+)"/g)].map((match) => match[1]!);
+  assert.deepEqual([...accepted].sort(), ["arn:aws:iam::aws:policy/ReadOnlyAccess", "arn:aws:iam::aws:policy/SecurityAudit", "arn:aws:iam::aws:policy/job-function/ViewOnlyAccess"]);
   for (const arn of ["arn:aws:iam::aws:policy/AdministratorAccess", "arn:aws:iam::aws:policy/PowerUserAccess", "arn:aws:iam::aws:policy/AmazonS3FullAccess",
-    "arn:aws:iam::aws:policy/job-function/SystemAdministrator", "arn:aws:iam::aws:policy/job-function/DatabaseAdministrator", "arn:aws-us-gov:iam::aws:policy/AdministratorAccess"]) {
-    assert.ok(broad.test(arn), "refused: " + arn);
+    "arn:aws:iam::aws:policy/SecretsManagerReadWrite", "arn:aws:iam::aws:policy/administratoraccess", "arn:aws:iam::aws:policy/readonlyaccess",
+    "arn:aws:iam::aws:policy/job-function/viewonlyaccess", "arn:aws:iam::aws:policy/ReadOnlyAccess ", " arn:aws:iam::aws:policy/SecurityAudit",
+    "arn:aws:iam::aws:policy/ReadOnlyAccess\n", "arn:aws:iam::111111111111:policy/AdministratorAccess", "arn:aws:iam::111111111111:policy/job-function/ViewOnlyAccess",
+    "arn:aws:iam::111111111111:policy/pilot-discovery-reads", "arn:aws-us-gov:iam::aws:policy/ReadOnlyAccess", "arn:aws:iam::aws:policy/job-function/SystemAdministrator"]) {
+    assert.ok(!accepted.includes(arn), "refused: " + JSON.stringify(arn));
   }
-  for (const arn of ["arn:aws:iam::aws:policy/job-function/ViewOnlyAccess", "arn:aws:iam::aws:policy/ReadOnlyAccess", "arn:aws:iam::aws:policy/SecurityAudit",
-    "arn:aws:iam::111111111111:policy/pilot-discovery-reads"]) {
-    assert.ok(!broad.test(arn), "accepted: " + arn);
-  }
+  assert.match(discovery, /!contains\(var\.discovery_managed_policy_arns, "arn:aws:iam::aws:policy\/ReadOnlyAccess"\)/, "the warning compares exactly too");
   assert.match(variables, /variable "discovery_data_read_exceptions"[\s\S]*purpose\s+=\s+string/);
+});
+
+test("bootstrap: a data-read exception names exact resource ARNs only (review 6442107608, B2)", () => {
+  // The rule as variables.tf writes it, read from the file and applied as Terraform applies it (RE2; the same syntax in JavaScript for these patterns).
+  const variables = read("bootstrap/aws/variables.tf");
+  const block = variables.slice(variables.indexOf('variable "discovery_data_read_exceptions"'));
+  const unescape = (text: string): string => text.replace(/\\\\/g, "\\");
+  const shape = new RegExp(unescape(/can\(regex\("(\^arn:aws:[^"]+)", r\)\)/.exec(block)?.[1] ?? "(?!)"));
+  const emptySegment = new RegExp(unescape(/!can\(regex\("([^"]+)", join\(":", slice\(split\(":", r\), 5/.exec(block)?.[1] ?? "(?!)"));
+  assert.match(block, /length\(regexall\("\[\*\?\]", r\)\) == 0/, "no * or ? anywhere");
+  assert.match(block, /split\(":", r\)\[3\] != "" \|\| contains\(\["s3"\], split\(":", r\)\[2\]\)/, "a region unless the service has none");
+  assert.match(block, /split\(":", r\)\[4\] != "" \|\| contains\(\["s3", "apigateway"\], split\(":", r\)\[2\]\)/, "an account unless the service has none");
+  const exact = (arn: string): boolean => {
+    const parts = arn.split(":");
+    return !/[*?]/.test(arn) && shape.test(arn) && (parts[3] !== "" || parts[2] === "s3") && (parts[4] !== "" || ["s3", "apigateway"].includes(parts[2]!))
+      && !emptySegment.test(parts.slice(5).join(":"));
+  };
+  for (const arn of ["arn:aws:s3:::*/*", "arn:aws:s3:::examplefake-bucket/*", "arn:aws:secretsmanager:us-east-1:111111111111:secret:*", "arn:aws:ssm:*:*:parameter/*",
+    "arn:aws:kms:*:*:key/*", "arn:aws:dynamodb:us-east-1:111111111111:table/*", "arn:aws:ssm:us-east-1:111111111111:parameter/alz/pilot/versio?", "*",
+    "arn:aws:s3:::*", "arn:aws:logs:*:*:*", "arn:*:s3:::examplefake-bucket/key", "arn:aws-cn:s3:::examplefake-bucket/key", "arn:aws:ssm::111111111111:parameter/alz/pilot/version",
+    "arn:aws:kms:us-east-1::key/1234abcd-12ab-34cd-56ef-1234567890ab", "arn:aws:dynamodb:us-east-1:111111111111:table/", "arn:aws:secretsmanager:us-east-1:111111111111:secret:",
+    "arn:aws:s3:::examplefake-bucket//key", "arn:aws:s3:::", "key/1234abcd-12ab-34cd-56ef-1234567890ab", "arn:aws:kms:us-east-1:11111111111:key/abc"]) {
+    assert.equal(exact(arn), false, "refused: " + arn);
+  }
+  for (const arn of ["arn:aws:s3:::examplefake-pilot-config/settings.json", "arn:aws:secretsmanager:us-east-1:111111111111:secret:alz/pilot/token-AbCdEf",
+    "arn:aws:ssm:us-east-1:111111111111:parameter/alz/pilot/version", "arn:aws:kms:us-east-1:111111111111:key/1234abcd-12ab-34cd-56ef-1234567890ab",
+    "arn:aws:dynamodb:us-east-1:111111111111:table/pilot-table", "arn:aws:apigateway:us-east-1::/apikeys/abc123"]) {
+    assert.equal(exact(arn), true, "accepted: " + arn);
+  }
 });
 
 test("observe: a type whose read returns data or secrets is never read, and is named, not assumed", async () => {

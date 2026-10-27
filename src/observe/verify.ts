@@ -34,7 +34,9 @@ export const CLOUD_CONTROL_TYPES: Readonly<Record<string, { typeName: string; id
  * Types whose only Cloud Control read returns application data or secret contents, so the verifier never asks for them
  * (owner decision 2026-10-27, issue #39 comment 6440801434, item 2: DISCOVERY reads control-plane metadata only). The
  * Lambda function read handler returns the environment variables and needs kms:Decrypt. Each is NOT_CHECKABLE with
- * DATA_BEARING_READ_EXCLUDED: named, never assumed present or absent, and a person confirms it by hand.
+ * DATA_BEARING_READ_EXCLUDED: named, never assumed present or absent. A cleanup proposal lists a run-created one as
+ * UNVERIFIABLE (it still needs the contract's human approvals), and the leftover check reports it UNKNOWN, so the record
+ * stays INCOMPLETE.
  */
 export const DATA_BEARING_TYPES: ReadonlySet<string> = new Set([
   "aws_lambda_function", "awscc_lambda_function", "AWS::Lambda::Function",

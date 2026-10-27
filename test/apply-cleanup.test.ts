@@ -693,6 +693,46 @@ test("leftovers are COMPLETE only with a complete deletion-unit sweep, and a che
   assert.deepEqual(stray.resources.filter((r) => r.address === "(not in state)").map((r) => [r.identifier, r.disposition]), [["arn:aws:sqs:us-east-1:111111111111:stray", "STILL_PRESENT"]]);
 });
 
+test("a data-bearing resource the run created (owner decision 6440801434, item 2) is proposed as UNVERIFIABLE with its own risk sentence, is never read, never borrows another resource's absence, and keeps the leftover record INCOMPLETE (review 6442107608, N3)", async () => {
+  // The function shares the bucket's name on purpose: a setting is settled by an absent resource with its identifier, a data-bearing type never is.
+  const FN_ARN = "arn:aws:lambda:us-east-1:111111111111:function:" + BUCKET;
+  const creates = [...CREATES, { address: "aws_lambda_function.fn", type: "aws_lambda_function", change: { actions: ["create"], before: null, after: {} } }];
+  const state = [...STATE, stateResource("aws_lambda_function", "fn", BUCKET, FN_ARN)];
+  const w = world();
+  behave({ showResources: creates, stateResources: state });
+  const run = await proposed(w);
+  const fn = run.proposal.deletes.find((d) => d.address === "aws_lambda_function.fn");
+  assert.equal(fn?.observed, "UNVERIFIABLE", JSON.stringify(run.proposal.deletes));
+  const dataRisk = run.proposal.risks.find((r) => r.includes("never read by the independent reader"));
+  assert.ok(dataRisk?.includes("still need the contract's human approvals") && dataRisk.includes("UNKNOWN") && dataRisk.includes("INCOMPLETE"), dataRisk);
+  assert.ok(!dataRisk.includes("a setting") && !dataRisk.includes("belong to"), "a data-bearing type is not described as a setting");
+  assert.equal(run.proposal.authorization.requiredApprovals, 1, "the contract's approvals still apply");
+  assert.ok(verifyCleanupProposal(run.proposal).ok);
+  // The leftover check: the bucket is gone, and the function, which was never read, stays UNKNOWN.
+  const argvs: string[][] = [];
+  const aws = async (argv: readonly string[]) => {
+    argvs.push([...argv]);
+    if (argv[0] === "resourcegroupstaggingapi") return { code: 0, stdout: JSON.stringify({ ResourceTagMappingList: [] }), stderr: "" };
+    return { code: 254, stdout: "", stderr: "An error occurred (ResourceNotFoundException) when calling the GetResource operation: not found" };
+  };
+  const bucket = run.proposal.deletes.find((d) => d.address === "aws_s3_bucket.logs")!;
+  const absentFn = { address: "aws_lambda_function.gone", type: "aws_lambda_function", identifier: BUCKET };
+  const proposal: CleanupProposal = { ...run.proposal, deletes: [bucket, fn!], alreadyAbsent: [absentFn], excluded: [] };
+  const record = await verifyLeftovers({ proposal, cleanup: undefined, cleanupEvidenceSha256: null, unitId: "unit-1", knownIdentifiers: [BUCKET, BUCKET_ARN, FN_ARN], region: "us-east-1", aws, verifierBinarySha256: null, now: NOW });
+  const byAddress = new Map(record.resources.map((r) => [r.address, r]));
+  assert.equal(byAddress.get("aws_s3_bucket.logs")?.disposition, "CONFIRMED_DELETED");
+  for (const address of ["aws_lambda_function.fn", "aws_lambda_function.gone"]) {
+    const item = byAddress.get(address);
+    assert.deepEqual([item?.disposition, item?.basis], ["UNKNOWN", "NOT_INDEPENDENTLY_CHECKABLE"], address);
+    assert.match(item?.reason ?? "", /^DATA_BEARING_READ_EXCLUDED: its only read returns application data or secret contents/, address);
+    assert.ok(!(item?.reason ?? "").includes("setting"), address);
+  }
+  assert.equal(record.sweep, "COMPLETE");
+  assert.equal(record.disposition, "INCOMPLETE", "a complete sweep does not settle a resource nothing could read");
+  assert.deepEqual(leftoversRecordProblems(record), []);
+  assert.ok(argvs.every((argv) => !argv.includes("AWS::Lambda::Function")), "no read is sent for the function");
+});
+
 test("the cleanup adapter's surface: targeted destroy plan, its show and its apply, and the shared pinned steps; nothing else, and no bare destroy", () => {
   assert.ok(isAllowedCleanupArgv("terraform", cleanupPlanArgv(["aws_s3_bucket.logs", "module.m.aws_sqs_queue.q[0]", 'aws_iam_role.r["key"]'])));
   assert.ok(isAllowedCleanupArgv("terraform", CLEANUP_SHOW_ARGV) && isAllowedCleanupArgv("terraform", CLEANUP_APPLY_ARGV));

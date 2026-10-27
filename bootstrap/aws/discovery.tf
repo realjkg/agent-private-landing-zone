@@ -1,6 +1,7 @@
 # DISCOVERY, both engines: control-plane metadata only (owner decision 2026-10-27, issue #39 comment 6440801434, item 2).
 # The allow and deny lists live in discovery-policy.json so a test can read them exactly. The deny is an inline policy on the
-# role, so it holds whatever discovery_managed_policy_arns names. A data read is lifted only by an entry in
+# role, so it applies whatever discovery_managed_policy_arns names, but only to the actions it lists: a managed policy that
+# grants another data read (ReadOnlyAccess does) still grants it. A data read is lifted only by an entry in
 # discovery_data_read_exceptions, which names the denied actions, the exact resources and the purpose.
 locals {
   discovery_policy = jsondecode(file("${path.module}/discovery-policy.json"))
@@ -19,6 +20,8 @@ locals {
   discovery_scope_policy = jsonencode({ Version = "2012-10-17", Statement = concat(
     [{ Sid = "ControlPlaneMetadataReads", Effect = "Allow", Action = local.discovery_allow, Resource = "*" }],
     [{ Sid = "DenyDataPlaneAndSecretReads", Effect = "Deny", Action = setsubtract(local.discovery_deny, local.excepted_actions), Resource = "*" }],
+    # Actions that also read configuration (apigateway:GET) are denied on their data-bearing resources only. No exception lifts these.
+    [for name, group in local.discovery_policy.denyOnResources : { Sid = "DenyDataReadOn${title(name)}", Effect = "Deny", Action = group.actions, Resource = group.resources }],
     # A lifted action stays denied everywhere except the resources its exceptions name.
     [for i, action in local.excepted_actions : { Sid = "DenyDataReadOutsideException${i}", Effect = "Deny", Action = action, NotResource = local.excepted_resources[action] }],
     [for i, e in var.discovery_data_read_exceptions : { Sid = "DataReadException${i}", Effect = "Allow", Action = e.actions, Resource = e.resources }],
@@ -38,11 +41,11 @@ resource "aws_iam_role_policy" "discovery_scope" {
   }
 }
 
-# ReadOnlyAccess allows data reads (object contents, items, log events, parameter values). The inline deny above still
-# blocks the listed ones, but the managed policy is broader than control-plane metadata: plan shows this warning.
+# ReadOnlyAccess allows data reads (object contents, items, log events, parameter values and more). The inline deny above
+# blocks the ones it lists, and only those: the managed policy is broader than control-plane metadata, so plan shows this warning.
 check "discovery_managed_policy_scope" {
   assert {
-    condition     = !anytrue([for arn in var.discovery_managed_policy_arns : can(regex("^arn:aws[a-z-]*:iam::aws:policy/ReadOnlyAccess$", arn))])
-    error_message = "DISCOVERY has ReadOnlyAccess, which allows data reads beyond control-plane metadata. The inline deny still applies; prefer ViewOnlyAccess plus a scoped policy whose scope and purpose are recorded."
+    condition     = !contains(var.discovery_managed_policy_arns, "arn:aws:iam::aws:policy/ReadOnlyAccess")
+    error_message = "DISCOVERY has ReadOnlyAccess, which allows data reads beyond control-plane metadata. The inline deny blocks only the data reads it lists; record the scope and purpose of this exception, or keep ViewOnlyAccess."
   }
 }
