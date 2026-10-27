@@ -7,6 +7,7 @@
  */
 
 import { isAwsContainerType } from "./aws-containers.js";
+import { policyLinkOf, type PolicyLink } from "./run-created-policies.js";
 
 /** A planned change, as the sealed plan's redacted summary lists it (src/apply/types.ts PlanChange, structurally). */
 export type PlannedChange = { address: string; type: string; action: string };
@@ -27,6 +28,12 @@ export type BlueprintEntry = {
    * refuses to classify it. Judged in place; the attribute itself is never copied.
    */
   holdsIdentityArn?: true;
+  /**
+   * For a reviewed run-created policy type (./run-created-policies.ts): the principals it is on and the policy ARN it names, read
+   * from the state's attributes (names and one ARN only, never a document). Absent when the type is not one, or the state does not give
+   * a link the cleanup can match exactly; the identity rule then keeps the entry.
+   */
+  policyLink?: PolicyLink;
 };
 export type Blueprint = {
   entries: BlueprintEntry[];
@@ -85,6 +92,11 @@ function holdsIamArn(value: unknown, depth = 0): boolean {
   return (Array.isArray(value) ? value : Object.values(value)).some((item) => holdsIamArn(item, depth + 1));
 }
 
+const withPolicyLink = (type: string, values: Record<string, unknown>): { policyLink?: PolicyLink } => {
+  const link = policyLinkOf(type, values);
+  return link === undefined ? {} : { policyLink: link };
+};
+
 /** One managed instance as either state format names it: its address, type and attribute values (read for identifiers only). */
 type Instance = { address: string; type: string; values: Record<string, unknown> };
 
@@ -113,6 +125,7 @@ function blueprintOf(instances: Iterable<Instance>, planned: readonly PlannedCha
       id: text(values.id) && !CREDENTIAL_ID_TYPES.has(resource.type) ? values.id : null,
       origin: plannedAddresses.has(resource.address) ? "IN_PLAN" : "NOT_IN_PLAN",
       ...(isWrapperType(resource.type) && holdsIamArn(values) ? { holdsIdentityArn: true as const } : {}),
+      ...withPolicyLink(resource.type, values),
     });
   }
   // Code-point order, as the sealed plan sorts its changes: the same on every machine, whatever its locale.

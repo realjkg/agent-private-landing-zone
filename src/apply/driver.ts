@@ -764,7 +764,7 @@ export async function runCleanup(request: CleanupRequest, deps: ApplyDeps): Prom
     // Residual risk, stated plainly: for CDK the destroy plan is a change set CloudFormation has already created by now, and a refusal
     // here leaves it unexecuted and AVAILABLE in CloudFormation for a person to clear; no surface deletes a change set (docs/observe-and-cleanup.md).
     const leftBehind = contract.engine === "CDK" ? LEFT_CHANGE_SET : "";
-    const protectedDeletion = protectedDeletionIn(planned, blueprint.blueprint.entries, contract, env);
+    const protectedDeletion = protectedDeletionIn(planned, blueprint.blueprint.entries, contract, env, { account: proposal.target.account, addresses: new Set(proposal.deletes.map((d) => d.address)) });
     if (protectedDeletion) return refuse("PROPOSAL_SCOPE_MISMATCH", protectedDeletion + " Nothing was destroyed and no approval was consumed. The protected object is intentionally retained; a person reviews what depends on it." + leftBehind);
     // The scope check: the destroy plan deletes exactly the approved addresses and does nothing else. A dependent the engine
     // added, a resource it would leave, an update or a create means the state is not what the proposal was made from.

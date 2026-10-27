@@ -15,6 +15,8 @@ import type { AzureTarget } from "./providers/azure.js";
 import { armPathSafe, isArmGroupId, isArmRegistrationId, isArmScopeId, parseArmId, type ArmType } from "../observe/azure-rest.js";
 import { awsContainerFamilyOf } from "../observe/aws-containers.js";
 import { awsLeafConditionProblem, awsLeafEntryOf, awsParentIdOf, isAwsLeafType, isWellFormedResourceType } from "../observe/aws-leaf-types.js";
+import { AWS_PRINCIPAL_TYPES, AWS_RUN_CREATED_POLICY_TYPES, AZURE_RUN_CREATED_POLICY_TYPES, CUSTOMER_POLICY_ARN, awsPolicyEntryOf, azurePolicyProblem, type PolicyLink } from "../observe/run-created-policies.js";
+import { EXECUTION_IDENTITIES, identityVariables } from "../tools/identity.js";
 
 /**
  * The cleanup proposal (docs/act-pilot-plan.md, "Cleanup of pilot-created resources"): the reviewable, hash-identified list
@@ -67,7 +69,7 @@ export const retentionOwnerOf = (ownership: Exclude<Ownership, "RUN_CREATED">): 
 export const PROTECTION_REASONS: Readonly<Record<Exclude<Ownership, "RUN_CREATED" | "PRE_EXISTING" | "REPLACED_PRE_EXISTING" | "IMPORTED" | "NOT_IN_PLAN" | "TYPE_UNREVIEWED">, string>> = {
   PROTECTED_BACKEND: "the state backend the pilot itself runs on is never deleted by a cleanup",
   // Under 512 characters: a proposal's reason text has that limit.
-  PROTECTED_IDENTITY: "an identity or authorization object (on Azure anything under Microsoft.Authorization or Microsoft.ManagedIdentity: an identity, a trust, a role or policy assignment, a role definition, a policy exemption or a lock; on AWS anything in the IAM, IAM Identity Center or Identity Store services, including attachments, access keys and other credentials of those identities) is never deleted by a cleanup, directly or as a dependent",
+  PROTECTED_IDENTITY: "an identity or authorization object (on Azure anything under Microsoft.Authorization or Microsoft.ManagedIdentity: an identity, a trust, a role or policy assignment, a role definition, a policy exemption or a lock; on AWS anything in the IAM, IAM Identity Center or Identity Store services, including attachments, access keys and other credentials of those identities) is never deleted by a cleanup, directly or as a dependent (sole exception: run-created policies, src/observe/run-created-policies.ts)",
   PROTECTED_DEPLOYMENT: "deployment history (Microsoft.Resources/deployments) records what was deployed and is never deleted by a cleanup",
   RETAINED_GROUP: "a resource group is never deleted by a pilot cleanup, whatever it holds; the pilot owner retains it, and its deletion is a separate, reviewed action (environment retirement, outstanding)",
   // Under 512 characters: a proposal's reason text has that limit.
@@ -167,6 +169,15 @@ export const MATERIAL_RISKS: Readonly<Record<string, string>> = {
   azurerm_mssql_database: "deletes the database and its data unless a backup was kept",
   azurerm_postgresql_flexible_server: "deletes the server and its databases unless a backup was kept",
   azurerm_kubernetes_cluster: "deletes the cluster and every workload running in it",
+  // Run-created policies (owner decision "Unpin the ACT decision", item 2 (c); src/observe/run-created-policies.ts): every reviewed type carries one, a test enforces it.
+  ...Object.fromEntries(AWS_RUN_CREATED_POLICY_TYPES.map((entry) => [entry.type, entry.role === "MANAGED_POLICY"
+    ? "deletes the customer-managed policy and every version of it; a workload that still relied on the permissions it granted loses them at once"
+    : entry.role === "INLINE_POLICY" ? "removes the permissions this inline policy grants its principal; a workload running as that principal loses them at once"
+    : "detaches the policy from its principal; a workload running as that principal loses the permissions it granted at once"])),
+  azurerm_policy_definition: "deletes the custom definition; Azure refuses while an assignment still uses it, and compliance results that named it are no longer reported",
+  azurerm_policy_set_definition: "deletes the custom initiative; Azure refuses while an assignment still uses it, and compliance results that named it are no longer reported",
+  ...Object.fromEntries(AZURE_RUN_CREATED_POLICY_TYPES.filter((entry) => entry.armType === "policyAssignments").map((entry) => [entry.type,
+    "stops the policy at its scope at once: deny effects lift and audits stop; a system-assigned identity the assignment holds is deleted with it, and role assignments made for that identity are kept and left orphaned"])),
   // The same risks by CloudFormation type, for the CDK engine's logical ids.
   "AWS::S3::Bucket": "deletes stored objects, which cannot be recovered (CloudFormation refuses to delete a bucket that still holds objects)",
   "AWS::Logs::LogGroup": "deletes retained log data, which cannot be recovered",
@@ -361,6 +372,42 @@ function protectionOf(entry: { type: string; id: string | null; arn: string | nu
   return isAwsLeafType(entry.type) && awsLeafConditionProblem(entry) === undefined ? undefined : "TYPE_UNREVIEWED";
 }
 
+/**
+ * The pilot's own roles (DISCOVERY, STATE, STATE_WRITE, APPLY, CHANGESET), by lowercase name, from the identity variables in the
+ * environment. A policy link to any of them is never carved out. Defense in depth: a pilot role is never one this run created, so
+ * its policies are held by the principal rule below whether or not its variable is set where the cleanup is proposed.
+ */
+function pilotRoleNames(env: NodeJS.ProcessEnv): Set<string> {
+  const names = new Set<string>();
+  for (const identity of EXECUTION_IDENTITIES) {
+    const arn = identityVariables(env, identity).get("AWS_ROLE_ARN");
+    const name = arn === undefined ? undefined : /^arn:aws(?:-[a-z]+)*:iam::[0-9]{12}:role\/(?:[^/]+\/)*([^/]+)$/.exec(arn.trim())?.[1];
+    if (name !== undefined) names.add(name.toLowerCase());
+  }
+  return names;
+}
+
+const NO_ROLES: ReadonlySet<string> = new Set();
+type PolicyEntry = { type: string; id: string | null; arn: string | null; holdsIdentityArn?: true; policyLink?: PolicyLink };
+
+/**
+ * Whether an entry the identity rule kept is a reviewed run-created policy object the cleanup may consider at all (owner decision
+ * "Unpin the ACT decision", item 2 (c); src/observe/run-created-policies.ts). It says nothing about who created it: the caller also
+ * requires a planned CREATE, and on AWS the principal and attachment rules (`heldPolicyReason`) run after. `account` is the target's
+ * account (the Azure subscription the contract owns for this environment).
+ */
+function policyCarveOut(entry: PolicyEntry, contract: PilotContract, account: string, pilotRoles: ReadonlySet<string>): boolean {
+  if (contract.provider === "AZURE") return azurePolicyProblem(entry.type, entry.id, account) === undefined;
+  if (contract.provider !== "AWS") return false;
+  const reviewed = awsPolicyEntryOf(entry.type);
+  const link = entry.policyLink;
+  if (reviewed?.read === undefined || link === undefined || entry.holdsIdentityArn === true) return false;
+  if (link.principals.some((p) => p.kind === "ROLE" && pilotRoles.has(p.name.toLowerCase()))) return false;
+  // A managed policy is the account's own (never AWS-managed), and the ARN the state records for it is the one its link names.
+  if (reviewed.role === "MANAGED_POLICY") return link.policyArn !== null && CUSTOMER_POLICY_ARN.test(link.policyArn) && (entry.arn === null || entry.arn === link.policyArn);
+  return true;
+}
+
 type ProposalFields = Omit<CleanupProposal, "proposalSha256">;
 
 /**
@@ -425,6 +472,7 @@ export function buildCleanupProposal(input: ProposalInput): { ok: true; proposal
   const excluded: ExcludedResource[] = [];
   const risks = new Set<string>();
   const backendGroups = contract.provider === "AZURE" ? azureBackendGroups(record.blueprint.entries, azureBackendAccounts(contract)) : new Set<string>();
+  const pilotRoles = pilotRoleNames(input.env);
   for (const entry of record.blueprint.entries) {
     // The identifier the independent verifier uses for this type (the one it will be asked about again after the cleanup), else whatever the state had.
     const mapping = cloudControlMappingOf(entry.type);
@@ -438,12 +486,14 @@ export function buildCleanupProposal(input: ProposalInput): { ok: true; proposal
       return refuse("OWNERSHIP_AMBIGUOUS", "The state holds an identifier for " + entry.address + " that cannot be read exactly as written. A person reviews it by hand; no cleanup proposal is made.");
     }
     const keep = (ownership: Exclude<Ownership, "RUN_CREATED">, reason: string): void => { excluded.push({ ...base, ownership, reason, retainedBy: retentionOwnerOf(ownership) }); };
-    const protection = protectionOf(entry, contract, backendGroups);
+    let protection = protectionOf(entry, contract, backendGroups);
+    const change = byAddress.get(entry.address);
+    // A reviewed run-created policy (item 2 (c)): carved out of the identity rule only when this run created it and every condition holds.
+    if (protection === "PROTECTED_IDENTITY" && change?.action === "CREATE" && !change.importing && entry.origin === "IN_PLAN" && policyCarveOut(entry, contract, evidence.target.account, NO_ROLES)) protection = undefined;
     if (protection === UNCLASSIFIABLE) {
       return refuse("OWNERSHIP_AMBIGUOUS", "The state holds an identifier for " + entry.address + " that is not a resource id the cleanup can classify exactly (it does not parse as an ARM id, is a URL its type does not record, or is an identity's ARN under another type, so what it protects is unknown). A person reviews it by hand; no cleanup proposal is made.");
     }
     if (protection && protection !== "TYPE_UNREVIEWED") { keep(protection, PROTECTION_REASONS[protection as keyof typeof PROTECTION_REASONS]); continue; }
-    const change = byAddress.get(entry.address);
     if (entry.origin === "NOT_IN_PLAN" || change === undefined) { keep("NOT_IN_PLAN", "the state holds it but the sealed plan never mentioned it, so this run did not create it"); continue; }
     if (change.importing) { keep("IMPORTED", "the plan imported an existing resource; it was not created by this run"); continue; }
     if (change.action === "REPLACE" || change.action === "REPLACE_CONDITIONAL") { keep("REPLACED_PRE_EXISTING", "the plan replaced a resource that existed before this run"); continue; }
@@ -462,7 +512,8 @@ export function buildCleanupProposal(input: ProposalInput): { ok: true; proposal
     }
     if (seen.result === "MISSING") { alreadyAbsent.push(base); continue; }
     const risk = MATERIAL_RISKS[entry.type];
-    if (risk) risks.add(entry.type + ": " + risk);
+    // A run-created AWS policy's risk is named once the principal and attachment rules below have kept it on the list.
+    if (risk && !(contract.provider === "AWS" && awsPolicyEntryOf(entry.type))) risks.add(entry.type + ": " + risk);
     deletes.push({ ...base, ownership: "RUN_CREATED", observed: seen.result === "VERIFIED" ? "VERIFIED" : "UNVERIFIABLE", ...(risk ? { risk } : {}) });
   }
   // The one parent rule (design review 6434540427, B3): an allowlisted attachment or setting (`parent` in src/observe/aws-leaf-types.ts) is deleted only
@@ -479,6 +530,38 @@ export function buildCleanupProposal(input: ProposalInput): { ok: true; proposal
       deletes.splice(deletes.indexOf(item), 1);
       excluded.push({ address: item.address, type: item.type, identifier: item.identifier, ownership: "TYPE_UNREVIEWED", reason: parentKeptReason(item.type), retainedBy: retentionOwnerOf("TYPE_UNREVIEWED") });
     }
+  }
+  // The run-created policy rules (item 2 (c)), to a fixed point: an inline policy or an attachment goes only from principals this run
+  // created; an attachment goes only with the run-created customer-managed policy it attaches; a managed policy goes only when nothing
+  // this cleanup keeps still attaches it. What fails is kept by the identity rule, with its reason, so the result never depends on
+  // which pilot role variables were set where the proposal was made.
+  if (contract.provider === "AWS") {
+    const entryOf = new Map(record.blueprint.entries.map((entry) => [entry.address, entry]));
+    const createdPrincipals = new Set(record.blueprint.entries.filter((p) => {
+      const planned = byAddress.get(p.address);
+      return p.origin === "IN_PLAN" && planned?.action === "CREATE" && !planned.importing && p.id !== null;
+    }).flatMap((p) => (Object.entries(AWS_PRINCIPAL_TYPES) as [string, readonly string[]][]).filter(([, types]) => types.includes(p.type)).map(([kind]) => kind + ":" + p.id!.toLowerCase())));
+    for (let changed = true; changed;) {
+      changed = false;
+      const gone = new Set([...deletes, ...alreadyAbsent].map((x) => x.address));
+      for (const item of [...deletes]) {
+        const reviewed = awsPolicyEntryOf(item.type);
+        const entry = entryOf.get(item.address);
+        if (reviewed === undefined || entry === undefined) continue;
+        const link = entry.policyLink!;
+        // A pilot role is never one this run created; it is named here too, so a link to one is held whichever variables are set.
+        const principalsOk = link.principals.every((p) => createdPrincipals.has(p.kind + ":" + p.name.toLowerCase()) && !(p.kind === "ROLE" && pilotRoles.has(p.name.toLowerCase())));
+        const ok = reviewed.role === "INLINE_POLICY" ? principalsOk
+          : reviewed.role === "ATTACHMENT" ? principalsOk && link.policyArn !== null && CUSTOMER_POLICY_ARN.test(link.policyArn) &&
+            record.blueprint.entries.some((m) => awsPolicyEntryOf(m.type)?.role === "MANAGED_POLICY" && m.policyLink?.policyArn === link.policyArn && gone.has(m.address))
+          : principalsOk && !record.blueprint.entries.some((other) => other.address !== entry.address && other.policyLink?.policyArn === link.policyArn && !gone.has(other.address));
+        if (ok) continue;
+        deletes.splice(deletes.indexOf(item), 1);
+        excluded.push({ address: item.address, type: item.type, identifier: item.identifier, ownership: "PROTECTED_IDENTITY", reason: PROTECTION_REASONS.PROTECTED_IDENTITY, retainedBy: retentionOwnerOf("PROTECTED_IDENTITY") });
+        changed = true;
+      }
+    }
+    for (const item of deletes) if (awsPolicyEntryOf(item.type) && MATERIAL_RISKS[item.type]) risks.add(item.type + ": " + MATERIAL_RISKS[item.type]);
   }
   if (deletes.some((x) => x.observed === "UNVERIFIABLE" && !DATA_BEARING_TYPES.has(x.type))) risks.add("some listed resources are settings the independent reader cannot read alone; their deletion is proved through the resource they belong to");
   // A data-bearing type is not a setting: it is never read (DATA_BEARING_READ_EXCLUDED), so nothing in the product confirms its deletion.
@@ -606,15 +689,23 @@ export function proposalLines(proposal: CleanupProposal): string[] {
  * (on AWS) a stack container or any type not on the reviewed leaf allowlist, whether the proposal named it or the engine added it as a dependent. Each planned address is classified by its blueprint
  * entry (type and recorded id) when the state holds one, else by its type alone, with the same rules the proposal applies.
  * The cleanup driver runs this on the engine's destroy plan before any approval is consumed.
+ *
+ * `approved` is the verified proposal's own deletion list and target account: a reviewed run-created policy the identity rule keeps
+ * passes here only when the proposal lists it (the proposal was derived again from the run's records) and its blueprint entry still meets
+ * the carve-out, with the pilot's own roles from `env` refused. Without it, every policy object stays protected, as before.
  */
-export function protectedDeletionIn(planned: readonly PlanChange[], entries: readonly { address: string; type: string; id: string | null; arn: string | null; holdsIdentityArn?: true }[], contract: PilotContract, env: NodeJS.ProcessEnv): string | undefined {
+export function protectedDeletionIn(planned: readonly PlanChange[], entries: readonly { address: string; type: string; id: string | null; arn: string | null; holdsIdentityArn?: true; policyLink?: PolicyLink }[], contract: PilotContract, env: NodeJS.ProcessEnv,
+  approved?: { account: string; addresses: ReadonlySet<string> }): string | undefined {
   const byAddress = new Map(entries.map((entry) => [entry.address, entry]));
   const backendGroups = contract.provider === "AZURE" ? azureBackendGroups(entries, azureBackendAccounts(contract)) : new Set<string>();
+  const pilotRoles = pilotRoleNames(env);
   for (const change of planned) {
     if (change.type === "output") continue;
-    const entry = byAddress.get(change.address) ?? { address: change.address, type: change.type, id: null, arn: null };
+    const known = byAddress.get(change.address);
+    const entry = known ?? { address: change.address, type: change.type, id: null, arn: null };
     const protection = protectionOf(entry, contract, backendGroups);
     if (protection === undefined) continue;
+    if (protection === "PROTECTED_IDENTITY" && approved !== undefined && known !== undefined && change.action === "DELETE" && approved.addresses.has(change.address) && policyCarveOut(known, contract, approved.account, pilotRoles)) continue;
     if (protection === UNCLASSIFIABLE) return "The destroy plan would " + change.action.toLowerCase() + " " + stripInvisible(change.address) + ", whose identifier does not parse as an ARM id (or is a URL its type does not record, or an identity's ARN under another type, or an attribute set the blueprint could not scan in full, or its type is not a well-formed resource type), so what it protects is unknown and a pilot cleanup never deletes it (OWNERSHIP_AMBIGUOUS).";
     const condition = protection === "TYPE_UNREVIEWED" ? awsLeafConditionProblem(entry) : undefined;
     if (condition !== undefined) return "The destroy plan would " + change.action.toLowerCase() + " " + stripInvisible(change.address) + " (" + stripInvisible(change.type) + "), which a pilot cleanup never deletes, directly or as a dependent: " + condition + " (TYPE_UNREVIEWED).";
