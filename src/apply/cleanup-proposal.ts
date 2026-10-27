@@ -52,7 +52,7 @@ export const PROTECTION_REASONS: Readonly<Record<Exclude<Ownership, "RUN_CREATED
   PROTECTED_DEPLOYMENT: "deployment history (Microsoft.Resources/deployments) records what was deployed and is never deleted by a cleanup",
   RETAINED_GROUP: "a resource group is never deleted by a pilot cleanup, whatever it holds; the pilot owner retains it, and its deletion is a separate, reviewed action (environment retirement, outstanding)",
   // Under 512 characters: a proposal's reason text has that limit.
-  CONTAINS_OTHERS: "a container is never deleted by a cleanup: on Azure a subscription or management group holds other deployments, and a registration is a setting others rely on; on AWS anything that deploys a CloudFormation stack or a provisioned product (CloudFormation, Service Catalog, Serverless Application Repository, SageMaker, Proton, Elastic Beanstalk) is kept: deleting it deletes all the stack holds, identities among it, which the state does not list; a custom resource runs its own code on removal",
+  CONTAINS_OTHERS: "a container is never deleted by a cleanup: on Azure a subscription or management group holds other deployments, and a provider or feature registration is a setting others rely on; on AWS anything that deploys a CloudFormation stack or a provisioned product (Service Catalog, Serverless Application Repository, SageMaker, Proton, Elastic Beanstalk) is kept: deleting it deletes all the stack holds, identities among it, which the state does not list; a custom resource runs its own code on removal",
 };
 
 export type ProposedDeletion = {
