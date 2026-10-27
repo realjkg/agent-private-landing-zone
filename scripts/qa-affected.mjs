@@ -198,6 +198,13 @@ export function planChanged(changedPaths, files) {
     if (/^src\/lifecycle\//.test(path)) {
       addExisting(selected, files, ["test/lifecycle-runner.test.ts", "test/lifecycle-cli.test.ts", "test/release-admission.test.ts"]);
     }
+    // The Azure pilot bootstrap is Terraform no import reaches: its owner reads the files and, opt-in, runs their own
+    // offline `terraform test` (mocked providers). Any file under it selects that owner; nothing else under bootstrap/ does.
+    if (/^bootstrap\/azure\//.test(path)) {
+      addExisting(selected, files, ["test/bootstrap-azure.test.ts"]);
+      if (!hasFile(files, "test/bootstrap-azure.test.ts")) gaps.push("The Azure bootstrap has no focused test owner.");
+      continue;
+    }
     if (/^src\/operator-ui\/app\/.*\.(?:css|svg)$/.test(path)) {
       buildUi = true;
       addExisting(selected, files, ["test/operator-ui-react.test.tsx",

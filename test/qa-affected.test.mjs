@@ -156,6 +156,19 @@ test("AWS bootstrap boundary changes select ACT-DEV-1 synthetic checks", () => {
   assert.deepEqual(plan.gaps, []);
 });
 
+test("Azure bootstrap changes select its focused owner, and a missing owner is a gap", () => {
+  const files = fixture();
+  const changed = ["bootstrap/azure/variables.tf", "bootstrap/azure/modules/environment/outputs.tf", "bootstrap/azure/tests/environments.tftest.hcl", "bootstrap/azure/terraform.tfvars.example"];
+  for (const path of changed) files.set(path, "x");
+  files.set("test/bootstrap-azure.test.ts", "bootstrap/azure");
+  const plan = planChanged(changed, files);
+  assert.deepEqual(plan.nodeTests, ["test/bootstrap-azure.test.ts"]);
+  assert.deepEqual(plan.pythonTests, []);
+  assert.deepEqual(plan.gaps, []);
+  files.delete("test/bootstrap-azure.test.ts");
+  assert.deepEqual(planChanged(["bootstrap/azure/variables.tf"], files).gaps, ["The Azure bootstrap has no focused test owner."]);
+});
+
 test("ACT-DEV-1 tfvars and Python handoff changes map to targeted synthetic tests", () => {
   const files=fixture();
   files.set("qualification/aws/act-dev1-canary/terraform.tfvars.example.json",'{"region":"us-east-2"}');

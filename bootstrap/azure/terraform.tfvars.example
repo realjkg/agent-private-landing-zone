@@ -2,6 +2,11 @@
 tenant_id = "00000000-0000-0000-0000-000000000000"
 location  = "eastus2"
 
+# The three-stage chain (the default). For the DEV-only pilot (the contract's "enabledEnvironments": ["DEV"]) write
+#   enabled_environments = ["DEV"]
+# and delete the QA and PROD entries below, in environments and in every oidc_subjects block: they are refused, not ignored.
+enabled_environments = ["DEV", "QA", "PROD"]
+
 environments = {
   DEV = {
     subscription_id            = "00000000-0000-0000-0000-000000000001"
@@ -47,7 +52,7 @@ oidc_subjects = {
   }
 }
 
-# Optional budget (one per subscription). The start date must be the first day of a month.
+# Optional budget (one per enabled subscription). The start date must be the first day of a month.
 # budget_monthly_amount = 100
 # budget_start_date     = "2026-11-01T00:00:00Z"
 # alert_emails          = ["owner@example.invalid"]
