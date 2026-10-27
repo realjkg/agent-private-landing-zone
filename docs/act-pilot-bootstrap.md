@@ -77,17 +77,17 @@ If the contract sets `embedStateWrite` (opt-in, Terraform engine only, `docs/act
 
 Other properties:
 
-- **Azure:** four app registrations, one client per identity for all three subscriptions (the Azure provider spec requires the same client ids everywhere). Each has one federated credential per environment, bound to the issuer, the audience and one exact subject. No client secret or certificate is created. The storage accounts have versioning, 30 day blob and container soft delete, TLS 1.2, no public blob access, and account keys and SAS disabled, so only Entra authorization works. The accounts also deny every network except the runner's egress IPs or CIDRs, which you list in `state_allowed_ip_ranges` (required; an empty list would lock the runner out). The AWS state bucket uses SSE-S3; a customer-managed key is your choice and needs key-policy access for the STATE and STATE_WRITE roles.
+- **Azure:** four app registrations, one client per identity for every subscription in scope (the Azure provider spec requires the same client ids everywhere). Each has one federated credential per enabled environment (twelve for the chain, four in DEV-only mode), bound to the issuer, the audience and one exact subject. No client secret or certificate is created. The storage accounts have versioning, 30 day blob and container soft delete, TLS 1.2, no public blob access, and account keys and SAS disabled, so only Entra authorization works. The accounts also deny every network except the runner's egress IPs or CIDRs, which you list in `state_allowed_ip_ranges` (required; an empty list would lock the runner out). The AWS state bucket uses SSE-S3; a customer-managed key is your choice and needs key-policy access for the STATE and STATE_WRITE roles.
 - **AWS:** one OIDC provider per account (or your existing one), roles with `sts:AssumeRoleWithWebIdentity` trust conditioned on `<issuer>:aud` and `<issuer>:sub`. The bucket has versioning, SSE-S3, all four public access blocks, owner-enforced ownership, TLS-only access, and a policy that denies every principal except STATE, STATE_WRITE and the administrators you list. Role names are lowercase because the pilot requires lowercase role ARNs.
 - Every identity needs its own subject in each environment. With GitHub that means one GitHub environment per identity and stage, for example `dev-state-write` and `dev-apply`.
 
 ## Prerequisites: what the account owner needs
 
 - Terraform 1.10 or later, the Azure CLI (`az`) for Azure, the AWS CLI v2 for AWS, `jq`, and `node` (to read token claims).
-- **Azure:** in the tenant, the Entra role Application Administrator or Cloud Application Administrator (to create app registrations, service principals and federated credentials). On each of the three subscriptions, Owner, or Contributor plus Role Based Access Control Administrator (to create the resource groups, storage accounts, role assignments and budget). The storage resource provider registered in each subscription.
+- **Azure:** in the tenant, the Entra role Application Administrator or Cloud Application Administrator (to create app registrations, service principals and federated credentials). On each pilot subscription (three for the chain, the DEV subscription alone in DEV-only mode), Owner, or Contributor plus Role Based Access Control Administrator (to create the resource groups, storage accounts, role assignments and budget). The storage resource provider registered in each subscription.
 - **AWS:** in each of the three accounts, an administrator role that can create IAM roles, role policies and an OIDC provider, create and configure S3 buckets and bucket policies, and create budgets. In a member account of an organization, IAM access to Billing must be activated for the budget. Name that role in `state_admin_principal_arns`, or the bucket policy locks the bootstrap out of its own bucket.
 - The values the owner supplies in `docs/act-pilot-apply.md`: tenant and subscription IDs or the 12 digit account IDs, the region, the GitHub repository and environment names (or the issuer and subjects of your self-hosted runner), the APPLY policy decision, and the budget.
-- Three separate subscriptions or accounts. The contract refuses a chain that does not differ in account and backend.
+- Three separate subscriptions or accounts for the DEV, QA and PROD chain. The contract refuses a chain that does not differ in account and backend. The DEV-only pilot (`"enabledEnvironments": ["DEV"]`) needs only the DEV one: `bootstrap/aws` is run once, and `bootstrap/azure` has an explicit DEV-only mode (Step 1). The contract accepts the DEV-only scope for AWS Terraform and Azure Terraform.
 
 ## Step 1: Azure
 
@@ -96,7 +96,7 @@ az login --tenant 00000000-0000-0000-0000-000000000000
 az account show --query '{tenant:tenantId, subscription:id, user:user.name}' -o table
 az ad signed-in-user show --query id -o tsv
 
-# For each of the three subscriptions:
+# For each pilot subscription (the DEV one alone in DEV-only mode):
 az account set --subscription 00000000-0000-0000-0000-000000000001
 az provider register --namespace Microsoft.Storage --wait
 az role assignment list --assignee "$(az ad signed-in-user show --query id -o tsv)" \
@@ -106,10 +106,13 @@ cd bootstrap/azure
 cp terraform.tfvars.example terraform.tfvars   # replace every fake value
 terraform init
 terraform fmt -check && terraform validate
-terraform plan -out=bootstrap.plan             # read it: three environments, four apps, twelve federated credentials
+terraform test                                  # offline: mocked providers, plan only; both modes and every refusal
+terraform plan -out=bootstrap.plan             # read it: the chain is three environments, four apps, twelve federated credentials
 terraform apply bootstrap.plan
-terraform output -json                          # tenant, client ids, contract_targets, apply_scopes
+terraform output -json                          # tenant, client ids, enabled_environments, contract_targets, apply_scopes
 ```
+
+**DEV-only mode.** Set `enabled_environments = ["DEV"]` in `terraform.tfvars` and give `environments` and every `oidc_subjects` block a DEV entry only. DEV must name its pilot resource group (`apply_resource_group_name`, non-empty): DEV-only mode refuses to run without it, so APPLY's Contributor and DISCOVERY's Reader stay on that group and never fall back to the whole subscription. The Azure G0 workload goes in that group (`docs/act-pilot-azure-terraform-g0.md`). The three-subscription chain is unchanged: there the group is still optional, and omitting it still scopes both identities to the subscription. The plan is then one environment, four apps and four federated credentials: no resource, role assignment or budget exists for QA or PROD, and the provider never names another subscription. A QA or PROD entry, or a subject for either, is refused rather than ignored, and the only accepted values are `["DEV"]` and the default `["DEV", "QA", "PROD"]`. Nothing else changes: the four identities stay separate app registrations with their own subjects, and DEV uses the same environment module as the chain, so the state account (Entra ID authorization only, shared keys and SAS disabled, deny-by-default network, versioning and soft delete) and the role separation are identical. `contract_targets` then holds `DEV` alone, which is the contract's `targets` for `"enabledEnvironments": ["DEV"]`. Moving from DEV-only to the chain later is the same configuration with QA and PROD added; the existing DEV resources are unchanged. **The reverse is not supported.** Switching an applied chain to DEV-only would make the plan destroy QA's and PROD's state accounts (with their state), resource groups, role assignments, budgets and federated credentials. Do not apply a plan that deletes anything in QA or PROD. Retiring those environments is the Teardown below, done as its own reviewed action after their pilot resources are gone. Offline evidence (synthetic): `terraform fmt -check`, `init -backend=false`, `validate` and `terraform test` (`bootstrap/azure/tests/environments.tftest.hcl`, 14 runs) passed on 2026-10-27 with Terraform 1.16.4, hashicorp/azurerm 4.81.0 and hashicorp/azuread 3.10.0 from a local mirror; `test/bootstrap-azure.test.ts` reads the configuration and, opt-in (`ALZ_BOOTSTRAP_TERRAFORM`), runs the same Terraform test. None of it shows how Azure or Entra behave.
 
 The `.gitignore` in `bootstrap/` keeps state, `.terraform/` and `*.tfvars` out of version control.
 
@@ -161,7 +164,7 @@ A job can request a token for any audience, so inside one job the identities are
 
 Copy the `terraform output` values into the template that matches your provider (`bootstrap/config.azure.template.json`, `bootstrap/config.aws.template.json`) to keep your own record, and then:
 
-1. Copy the `contractTargets` block into `config/act-pilot-contract.json` by hand, starting from the matching `config/act-pilot-contract*.example.json`. Add the approvers per `docs/act-pilot-apply.md`. Leave `enabled: false`.
+1. Copy the `contractTargets` block into `config/act-pilot-contract.json` by hand, starting from the matching `config/act-pilot-contract*.example.json` (for the Azure Terraform DEV-only pilot, `config/act-pilot-contract.azure-dev.example.json`; see `docs/act-pilot-azure-terraform-g0.md`). Add the approvers per `docs/act-pilot-apply.md`. Leave `enabled: false`.
 2. Set the `ALZ_<IDENTITY>_<VAR>` variables on the execution host from `identityVariables` (client ids or role ARNs, tenant and subscription or region, token file paths).
 3. Do **not** write the pin. Enabling the pilot and committing the hash is a separate reviewed change (`docs/act-pilot-apply.md`, "The contract is the authorization").
 
@@ -186,6 +189,15 @@ az role assignment list --all --assignee 00000000-0000-0000-0000-0000000000d4 -o
 ```
 
 Repeat the login for each identity. STATE listing the container works and an upload fails with an authorization error; APPLY and DISCOVERY listing the container fail. A failure where success is expected is a trust or scope problem (see below).
+
+**Azure DISCOVERY scope.** What DISCOVERY may read is stated in "Read-only discovery scope" above (**Azure**): Reader on the pilot scope, control-plane `*/read` actions and no data actions, nothing on the state container. Within the control plane, a few reads return more than names and settings: Log Analytics and Application Insights queries, the activity log, deployment-history non-secure parameters and outputs, and non-secure configuration values. The scope bounds them, so keep DISCOVERY on the pilot resource group (`apply_resource_group_name`). For DEV that is the accepted setup (issue #39, comment 6444382695, item 4); a narrower custom role for QA and PROD is documented in `docs/act-pilot-azure-terraform-g0.md`, "DISCOVERY scope review".
+
+To check what was assigned, run as the owner:
+
+```bash
+az role definition list --name Reader --query '[].permissions[].{actions:actions, dataActions:dataActions}' -o json   # expect ["*/read"] and []
+az role assignment list --all --assignee 00000000-0000-0000-0000-0000000000d1 --query '[].{role:roleDefinitionName, scope:scope}' -o table   # the DISCOVERY client id (identity_client_ids.DISCOVERY)
+```
 
 **AWS** (token exchange, role assumption, policy check):
 
