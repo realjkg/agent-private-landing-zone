@@ -10,7 +10,9 @@ From the repository root:
 ./alz bootstrap
 ```
 
-This installs the locked runtime dependencies. After bootstrap, use `./alz` for day-to-day operation.
+This installs the locked runtime dependencies and builds the runtime and the console UI. After bootstrap, use `./alz` for day-to-day operation.
+
+Bootstrap records its progress in `.runs/bootstrap/state.json` (`startedAt`, `step`, `completedAt`, `sourceCommit`) and keeps its detailed log in `.runs/bootstrap/latest.log`, even when the run is stopped with Ctrl-C or fails. `./alz` refuses to run a build whose bootstrap did not finish, or that was made from a different commit than the checkout is at now, and says so in one line: run `./alz bootstrap` again. A build made another way (for example CI's own `npm run build`) has no state file and runs as before.
 
 ## Common commands
 
