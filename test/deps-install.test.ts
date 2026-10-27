@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, createReadStream, createWriteStream, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, createReadStream, createWriteStream, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
@@ -447,7 +447,7 @@ test("a crash between the two renames of a swap is rolled forward when the new c
   // A live pid: the swap may still be running, so nothing is touched, and the copy aside is never removed while the final folder is absent.
   const live = plantSwap("live", "complete");
   swept = sweepLeftovers(live.home, "ollama", { pidAlive: ALIVE });
-  assert.deepEqual(swept, { removed: [], recovered: [] });
+  assert.deepEqual(swept, { removed: [], recovered: [], refused: [] });
   assert.deepEqual(readdirSync(live.dir).sort(), [PINNED_OLLAMA + ".partial-1111", PINNED_OLLAMA + ".replaced-1111"]);
   // A dead pid's copy aside with the final folder present is a finished swap's leftover, removed as before.
   mkdirSync(join(live.dir, PINNED_OLLAMA), { recursive: true });
@@ -566,7 +566,7 @@ test("the sweep never follows a link, never reads outside ~/.alz/tools and ~/.al
   symlinkSync(join(outside, "keep"), join(tmp, "ollama-0.40.0-1111.tgz"));
   mkdirSync(join(dir, PINNED_OLLAMA), { recursive: true });
   writeFileSync(join(dir, PINNED_OLLAMA, "ollama"), "a final version folder, whatever its state");
-  assert.deepEqual(sweepLeftovers(home, "ollama", { pidAlive: DEAD }), { removed: [], recovered: [] });
+  assert.deepEqual(sweepLeftovers(home, "ollama", { pidAlive: DEAD }), { removed: [], recovered: [], refused: [] });
   assert.ok(existsSync(join(outside, "keep")), "the link target is untouched");
   assert.ok(existsSync(join(dir, PINNED_OLLAMA, "ollama")));
   // A linked tools folder, or a linked tool folder, is skipped as a whole.
@@ -577,9 +577,9 @@ test("the sweep never follows a link, never reads outside ~/.alz/tools and ~/.al
   writeFileSync(join(elsewhere, "ollama", PINNED_OLLAMA + ".partial-1111", "keep"), "not ours");
   symlinkSync(elsewhere, join(linkedHome, ".alz", "tools"));
   symlinkSync(elsewhere, join(linkedHome, ".alz", "tmp"));
-  assert.deepEqual(sweepLeftovers(linkedHome, "ollama", { pidAlive: DEAD }), { removed: [], recovered: [] });
+  assert.deepEqual(sweepLeftovers(linkedHome, "ollama", { pidAlive: DEAD }), { removed: [], recovered: [], refused: [] });
   assert.ok(existsSync(join(elsewhere, "ollama", PINNED_OLLAMA + ".partial-1111", "keep")));
-  assert.deepEqual(sweepLeftovers(join(root, "no-such-home"), "ollama", { pidAlive: DEAD }), { removed: [], recovered: [] }, "a missing home sweeps nothing");
+  assert.deepEqual(sweepLeftovers(join(root, "no-such-home"), "ollama", { pidAlive: DEAD }), { removed: [], recovered: [], refused: [] }, "a missing home sweeps nothing");
 });
 
 test("an interrupted removal reads as unfinished, never as installed, and repeating the removal completes it", () => {
@@ -619,4 +619,131 @@ test("an update installs beside the earlier version, which keeps its own marker 
   assert.equal(readFileSync(join(old, "ollama"), "utf8"), "earlier version");
   assert.equal(installState(home, "ollama", "0.39.0", "ollama"), "INSTALLED");
   assert.equal(installState(home, "ollama", PINNED_OLLAMA, "ollama"), "INSTALLED");
+});
+
+test("the recovery checks: a marker-only partial copy rolls back, a complete partial copy of another pid is never adopted, and a copy aside behind a link at the final path is kept", () => {
+  // A partial copy with the marker but without the program it names is not complete: the earlier copy comes back.
+  const markerOnly = plantSwap("marker-only", "incomplete");
+  writeInstallMarker(join(markerOnly.dir, PINNED_OLLAMA + ".partial-1111"), marker());
+  rmSync(join(markerOnly.dir, PINNED_OLLAMA + ".partial-1111", "ollama"));
+  let swept = sweepLeftovers(markerOnly.home, "ollama", { pidAlive: DEAD });
+  assert.deepEqual(swept.recovered, ["put the earlier ollama 0.40.0 copy back after an interrupted run (pid 1111)"]);
+  assert.equal(readFileSync(join(markerOnly.final, "ollama"), "utf8"), "the earlier copy");
+  assert.deepEqual(readdirSync(markerOnly.dir), [PINNED_OLLAMA]);
+  // A complete partial copy left by another run (another pid) is not this swap's new copy: the earlier copy comes back, and
+  // that partial copy is removed as the dead leftover it is.
+  const otherPid = plantSwap("other-pid", "none");
+  mkdirSync(join(otherPid.dir, PINNED_OLLAMA + ".partial-2222"), { recursive: true });
+  writeFileSync(join(otherPid.dir, PINNED_OLLAMA + ".partial-2222", "ollama"), "another run's checked copy");
+  writeInstallMarker(join(otherPid.dir, PINNED_OLLAMA + ".partial-2222"), marker());
+  swept = sweepLeftovers(otherPid.home, "ollama", { pidAlive: DEAD });
+  assert.deepEqual(swept.recovered, ["put the earlier ollama 0.40.0 copy back after an interrupted run (pid 1111)"]);
+  assert.equal(readFileSync(join(otherPid.final, "ollama"), "utf8"), "the earlier copy", "never adopted from another pid");
+  assert.deepEqual(swept.removed.map((path) => path.slice(otherPid.home.length)), ["/.alz/tools/ollama/0.40.0.partial-2222"]);
+  // A dangling link (or any non-folder) at the final path: nothing is renamed over it, the copy aside is kept, and the sweep
+  // says so in plain words instead of throwing.
+  const linked = plantSwap("linked-final", "complete");
+  symlinkSync(join(root, "nowhere-" + Date.now()), linked.final);
+  swept = sweepLeftovers(linked.home, "ollama", { pidAlive: DEAD });
+  assert.deepEqual(swept.recovered, []);
+  assert.deepEqual(swept.removed.map((path) => path.slice(linked.home.length)), ["/.alz/tools/ollama/0.40.0.partial-1111"], "only the partial copy goes; the copy aside stays");
+  assert.equal(swept.refused.length, 1);
+  assert.match(swept.refused[0]!, /something that is not a folder \(a link or a file\) stands at .*0\.40\.0, so the earlier ollama 0\.40\.0 copy beside it was left alone; remove it by hand/);
+  assert.ok(existsSync(join(linked.dir, PINNED_OLLAMA + ".replaced-1111", "ollama")), "the earlier copy is still aside");
+  assert.ok(lstatSync(linked.final).isSymbolicLink(), "the link is untouched");
+  // A regular file at the final path is treated the same way.
+  const filed = plantSwap("file-final", "none");
+  writeFileSync(filed.final, "a file where the folder belongs");
+  swept = sweepLeftovers(filed.home, "ollama", { pidAlive: DEAD });
+  assert.equal(swept.refused.length, 1);
+  assert.ok(existsSync(join(filed.dir, PINNED_OLLAMA + ".replaced-1111", "ollama")));
+  assert.equal(readFileSync(filed.final, "utf8"), "a file where the folder belongs");
+});
+
+test("one install of a tool at a time: a second run finds the lock and changes nothing, a dead run's lock is replaced, and the lock is released in every outcome", async () => {
+  const home = join(root, "home-lock");
+  const good = archive("lock");
+  const tmp = join(home, ".alz", "tmp");
+  mkdirSync(tmp, { recursive: true });
+  const lock = join(tmp, "ollama.install.lock");
+  // Another run's lock, whose pid may be alive: this run stops before any download, and the lock is left as it was.
+  writeFileSync(lock, JSON.stringify({ pid: 4242, startedAt: "2026-10-27T00:00:00.000Z" }) + "\n");
+  let fetches = 0;
+  await assert.rejects(
+    installTool("ollama", { pins: pinsWith(good.sha256), home, platform: "darwin-arm64", download: async () => { fetches += 1; return Readable.from([]); }, pidAlive: (pid) => pid === 4242 }),
+    (error: unknown) => error instanceof InstallError && error.code === "INSTALL_IN_PROGRESS" && /Another \.\/alz deps run is installing ollama right now, so this run changed nothing/.test(error.message),
+  );
+  assert.equal(fetches, 0);
+  assert.equal(readFileSync(lock, "utf8").trim(), JSON.stringify({ pid: 4242, startedAt: "2026-10-27T00:00:00.000Z" }), "the other run's lock is untouched");
+  assert.deepEqual(readdirSync(join(home, ".alz", "tools", "ollama")), [], "nothing was swept or installed under the lock");
+  // An unreadable lock is somebody's too.
+  writeFileSync(lock, "not json");
+  await assert.rejects(installTool("ollama", { pins: pinsWith(good.sha256), home, platform: "darwin-arm64", download: fetchFrom(good.file), pidAlive: DEAD }),
+    (error: unknown) => error instanceof InstallError && error.code === "INSTALL_IN_PROGRESS");
+  assert.equal(readFileSync(lock, "utf8"), "not json");
+  // A dead run's lock is stale: it is replaced and the install goes ahead; afterwards the lock is gone.
+  writeFileSync(lock, JSON.stringify({ pid: 4242, startedAt: "2026-10-27T00:00:00.000Z" }) + "\n");
+  const installed = await installTool("ollama", { pins: pinsWith(good.sha256), home, platform: "darwin-arm64", download: fetchFrom(good.file), pidAlive: DEAD });
+  assert.equal(installed.reused, false);
+  assert.ok(!existsSync(lock), "the lock is released after a finished install");
+  assert.deepEqual(readdirSync(tmp), [], "no download and no lock are left");
+  // Released after a failure too, and never released for another run: a lock this run does not own stays.
+  await assert.rejects(installTool("ollama", { pins: pinsWith("0".repeat(64)), home: join(root, "home-lock-fail"), platform: "darwin-arm64", download: fetchFrom(good.file) }),
+    (error: unknown) => error instanceof InstallError && error.code === "INSTALL_CHECKSUM_MISMATCH");
+  assert.ok(!existsSync(join(root, "home-lock-fail", ".alz", "tmp", "ollama.install.lock")), "the lock is released after a failed install");
+  // While this process holds the lock (its own pid), a second call in the same process is refused: the pid is alive.
+  writeFileSync(lock, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }) + "\n");
+  await assert.rejects(installTool("ollama", { pins: pinsWith(good.sha256), home, platform: "darwin-arm64", download: fetchFrom(good.file) }),
+    (error: unknown) => error instanceof InstallError && error.code === "INSTALL_IN_PROGRESS");
+  rmSync(lock);
+});
+
+test("a stop that arrives before the unpack never reaches the archive: with zstd the decompression stream itself is stopped, so tar is never run", async () => {
+  const source = join(root, "src-zst-abort");
+  mkdirSync(source, { recursive: true });
+  writeFileSync(join(source, "ollama"), "#!/bin/sh\necho 'ollama version is 0.40.0'\n");
+  const tarFile = join(root, "zst-abort.tar");
+  execFileSync("tar", ["-cf", tarFile, "-C", source, "ollama"]);
+  const file = join(root, "zst-abort.tar.zst");
+  await pipeline(createReadStream(tarFile), createZstdCompress(), createWriteStream(file));
+  const sha256 = createHash("sha256").update(readFileSync(file)).digest("hex");
+  const pins = loadToolPins();
+  pins.tools.ollama.artifacts["darwin-arm64"] = { url: "https://github.com/ollama/ollama/releases/download/v0.40.0/zst-abort.tar.zst", sha256, archive: "tar.zst", binary: "ollama" };
+  // A fake tar on PATH that records every call: with the signal honored by the zstd pipeline, the stop ends the decompression
+  // before the plain tar exists, so tar never runs. Without it, the decompression would finish and tar would be called.
+  const bin = join(root, "bin-recording-tar");
+  mkdirSync(bin, { recursive: true });
+  const calls = join(root, "tar-calls.log");
+  writeFileSync(join(bin, "tar"), "#!/bin/sh\necho \"$*\" >> " + JSON.stringify(calls) + "\nexit 0\n");
+  chmodSync(join(bin, "tar"), 0o755);
+  const stop = new AbortController();
+  const path = process.env.PATH;
+  process.env.PATH = bin + ":" + path;
+  try {
+    await assert.rejects(
+      installTool("ollama", { pins, home: join(root, "home-zst-abort"), platform: "darwin-arm64", download: fetchFrom(file), signal: stop.signal, onUnpackStart: () => { stop.abort(); } }),
+      (error: unknown) => error instanceof InstallError && error.code === "INSTALL_INTERRUPTED",
+    );
+  } finally {
+    process.env.PATH = path;
+  }
+  assert.ok(!existsSync(calls), "tar was never run: the stopped decompression produced nothing to extract");
+  assert.deepEqual(readdirSync(join(root, "home-zst-abort", ".alz", "tools", "ollama")), []);
+  assert.deepEqual(readdirSync(join(root, "home-zst-abort", ".alz", "tmp")), [], "no download, no plain tar and no lock are left");
+});
+
+test("a removal that stops after the folder is renamed aside leaves the final path absent, never a copy to keep", () => {
+  const home = join(root, "home-remove-hook");
+  const folder = join(toolDir(home), PINNED_OLLAMA);
+  mkdirSync(join(folder, "lib"), { recursive: true });
+  writeFileSync(join(folder, "ollama"), "program");
+  writeFileSync(join(folder, "lib", "libggml.so"), "library");
+  writeInstallMarker(folder, marker());
+  assert.throws(() => removeInstalledTool(home, "ollama", PINNED_OLLAMA, { afterRenameAside: () => { throw new Error("killed here"); } }), /killed here/);
+  assert.equal(installState(home, "ollama", PINNED_OLLAMA, "ollama"), "ABSENT", "the final path is empty once the folder is aside");
+  assert.deepEqual(readdirSync(toolDir(home)), [PINNED_OLLAMA + ".removing-" + process.pid], "the folder waits aside under this pid");
+  assert.ok(existsSync(join(toolDir(home), PINNED_OLLAMA + ".removing-" + process.pid, "ollama")), "renamed, not deleted in place");
+  assert.equal(removeInstalledTool(home, "ollama", PINNED_OLLAMA), "absent");
+  assert.deepEqual(sweepLeftovers(home, "ollama", { pidAlive: DEAD }).removed.map((path) => path.slice(home.length)), ["/.alz/tools/ollama/0.40.0.removing-" + process.pid]);
+  assert.deepEqual(readdirSync(toolDir(home)), []);
 });

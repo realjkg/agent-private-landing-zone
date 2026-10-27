@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, createReadStream, createWriteStream, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, createReadStream, createWriteStream, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -24,7 +24,7 @@ import { type Artifact, type Platform, type ToolId, type ToolPins } from "./pins
 export class InstallError extends Error {
   constructor(
     readonly code: "INSTALL_NO_ARTIFACT" | "INSTALL_DOWNLOAD_FAILED" | "INSTALL_CHECKSUM_MISMATCH" | "INSTALL_UNPACK_FAILED"
-      | "INSTALL_BINARY_MISSING" | "INSTALL_VERIFY_FAILED" | "INSTALL_SWAP_FAILED" | "INSTALL_INTERRUPTED" | "INSTALL_REMOVE_REFUSED",
+      | "INSTALL_BINARY_MISSING" | "INSTALL_VERIFY_FAILED" | "INSTALL_SWAP_FAILED" | "INSTALL_INTERRUPTED" | "INSTALL_IN_PROGRESS" | "INSTALL_REMOVE_REFUSED",
     message: string,
   ) {
     super(message);
@@ -45,6 +45,8 @@ export type InstallOptions = {
   pidAlive?: (pid: number) => boolean;
   /** Test hook only: runs between the two renames of the swap, so a test can make that step fail like a crash would. */
   betweenRenames?: () => void;
+  /** Test hook only: runs right before the archive is unpacked, after the download and its checksum, so a test can stop there. */
+  onUnpackStart?: () => void;
 };
 
 export type InstalledTool = {
@@ -53,6 +55,8 @@ export type InstalledTool = {
   swept: string[];
   /** Interrupted swaps of earlier runs finished before this install started: each line says what was put where. */
   recovered: string[];
+  /** Leftovers left alone on purpose before this install started, in plain words (see SweepResult.refused). */
+  refused: string[];
   /** What stood at the final folder before this install replaced it: a copy from before completion checks, or an unfinished install or removal. */
   replaced?: "LEGACY" | "UNFINISHED" | "REMOVING";
 };
@@ -74,6 +78,38 @@ async function fetchTo(file: string, source: Readable, signal: AbortSignal): Pro
   });
   await pipeline(source, digest, createWriteStream(file, { mode: 0o600 }), { signal });
   return hash.digest("hex");
+}
+
+/**
+ * The per-tool install lock, `<scratch>/<tool>.install.lock`, created exclusively and holding this pid. A lock whose pid is
+ * proven dead is stale and is replaced; one whose pid may be alive means another `./alz deps` run is installing this tool,
+ * and this run does nothing. Released by the run that holds it, only while it still holds it.
+ */
+function acquireInstallLock(scratch: string, tool: ToolId, pidAlive?: (pid: number) => boolean): () => void {
+  const file = join(scratch, tool + ".install.lock");
+  const busy = (): never => { throw new InstallError("INSTALL_IN_PROGRESS", "Another ./alz deps run is installing " + tool + " right now, so this run changed nothing. Wait for it to finish."); };
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const fd = openSync(file, "wx", 0o600);
+      writeSync(fd, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }) + "\n");
+      closeSync(fd);
+      return () => {
+        try {
+          const held = JSON.parse(readFileSync(file, "utf8")) as { pid?: unknown };
+          if (held.pid === process.pid) unlinkSync(file);
+        } catch { /* already gone, or not ours */ }
+      };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      let pid: unknown;
+      try { pid = (JSON.parse(readFileSync(file, "utf8")) as { pid?: unknown }).pid; } catch { pid = undefined; }
+      const dead = typeof pid === "number" && Number.isInteger(pid) && pid >= 1 && pid !== process.pid && (pidAlive ? !pidAlive(pid) : pidProvenDead(pid));
+      // An unreadable lock, or one whose pid may be alive, is somebody's: never removed. Only a proven-dead pid's lock is stale.
+      if (!dead) busy();
+      rmSync(file, { force: true });
+    }
+  }
+  return busy();
 }
 
 const aborted = (signal: AbortSignal | undefined): never | void => {
@@ -134,7 +170,17 @@ export type SweepResult = {
   removed: string[];
   /** Interrupted swaps finished, one line each: the checked copy put in place (rolled forward) or the earlier copy put back (rolled back). */
   recovered: string[];
+  /** Leftovers left alone on purpose, one plain line each: something that is not a folder (a link, a file) stands at the final path, so nothing beside it is touched. */
+  refused: string[];
 };
+
+/** What stands at `path` without following links: nothing, a real folder, or something else (a link, dangling or not, or a file). */
+function entryKind(path: string): "ABSENT" | "FOLDER" | "OTHER" {
+  try {
+    const entry = lstatSync(path);
+    return entry.isDirectory() && !entry.isSymbolicLink() ? "FOLDER" : "OTHER";
+  } catch { return "ABSENT"; }
+}
 
 /** The marker in `folder` when it is a complete install of `tool` `version`: the marker names the program and the program is there. */
 function completeCopy(folder: string, tool: ToolId, version: string): InstallMarker | undefined {
@@ -161,7 +207,7 @@ export function sweepLeftovers(home: string, tool: ToolId, opts: { scratch?: str
     if (!Number.isInteger(pid) || pid < 1 || pid === process.pid) return false;
     return opts.pidAlive ? !opts.pidAlive(pid) : pidProvenDead(pid);
   };
-  const result: SweepResult = { removed: [], recovered: [] };
+  const result: SweepResult = { removed: [], recovered: [], refused: [] };
   const toolDir = realFolder(home, [".alz", "tools", tool]);
   if (toolDir !== undefined) {
     const anchor = realpathSync(toolDir);
@@ -177,7 +223,13 @@ export function sweepLeftovers(home: string, tool: ToolId, opts: { scratch?: str
     // copy is complete, otherwise roll back. Either way the final path is filled by one rename before anything is removed.
     for (const aside of leftovers.filter((item) => item.kind === "replaced")) {
       const finalDir = join(toolDir, aside.version);
-      if (realFolder(home, [".alz", "tools", tool, aside.version]) !== undefined || existsSync(finalDir)) continue;
+      const atFinal = entryKind(finalDir);
+      if (atFinal === "FOLDER") continue;
+      if (atFinal === "OTHER") {
+        // A link (dangling or not) or a file at the final path: never renamed over, never followed, and the copy aside stays.
+        result.refused.push("something that is not a folder (a link or a file) stands at " + finalDir + ", so the earlier " + tool + " " + aside.version + " copy beside it was left alone; remove it by hand, then run ./alz deps again");
+        continue;
+      }
       const partial = leftovers.find((item) => item.kind === "partial" && item.version === aside.version && item.pid === aside.pid);
       if (partial && completeCopy(partial.path, tool, aside.version) !== undefined) {
         renameSync(partial.path, finalDir);
@@ -189,7 +241,7 @@ export function sweepLeftovers(home: string, tool: ToolId, opts: { scratch?: str
     }
     for (const item of leftovers) {
       if (!existsSync(item.path)) continue;
-      if (item.kind === "replaced" && !existsSync(join(toolDir, item.version))) continue;
+      if (item.kind === "replaced" && entryKind(join(toolDir, item.version)) !== "FOLDER") continue;
       rmSync(item.path, { recursive: true, force: true });
       result.removed.push(item.path);
     }
@@ -227,15 +279,27 @@ export async function installTool(tool: ToolId, opts: InstallOptions): Promise<I
   if (!artifact) throw new InstallError("INSTALL_NO_ARTIFACT", "No pinned " + tool + " download exists for this computer type.");
   const finalBinary = installedPath(opts.home, tool, pin.version, artifact.binary);
   const sweepOptions = { ...(opts.scratch !== undefined ? { scratch: opts.scratch } : {}), ...(opts.pidAlive ? { pidAlive: opts.pidAlive } : {}) };
-  const { removed: swept, recovered } = sweepLeftovers(opts.home, tool, sweepOptions);
+  const scratch = opts.scratch ?? join(opts.home, ".alz", "tmp");
+  mkdirSync(scratch, { recursive: true, mode: 0o700 });
+  // One install of a tool at a time: the lock is taken before the sweep and the state are read, so two runs never swap at once.
+  const unlock = acquireInstallLock(scratch, tool, opts.pidAlive);
+  try {
+    return await installLocked(tool, opts, pin.version, artifact, finalBinary, scratch, sweepOptions);
+  } finally {
+    unlock();
+  }
+}
+
+async function installLocked(tool: ToolId, opts: InstallOptions, version: string, artifact: Artifact, finalBinary: string, scratch: string,
+  sweepOptions: { scratch?: string; pidAlive?: (pid: number) => boolean }): Promise<InstalledTool> {
+  const pin = { version };
+  const { removed: swept, recovered, refused } = sweepLeftovers(opts.home, tool, sweepOptions);
   const before = installState(opts.home, tool, pin.version, artifact.binary);
   if (before === "INSTALLED") {
-    return { tool, version: pin.version, path: finalBinary, sha256: artifact.sha256, reused: true, swept, recovered };
+    return { tool, version: pin.version, path: finalBinary, sha256: artifact.sha256, reused: true, swept, recovered, refused };
   }
 
   const toolRoot = join(opts.home, ".alz", "tools", tool);
-  const scratch = opts.scratch ?? join(opts.home, ".alz", "tmp");
-  mkdirSync(scratch, { recursive: true, mode: 0o700 });
   mkdirSync(toolRoot, { recursive: true, mode: 0o700 });
   const archiveFile = join(scratch, tool + "-" + pin.version + "-" + process.pid + "." + artifact.archive);
   const partial = join(toolRoot, pin.version + ".partial-" + process.pid);
@@ -259,6 +323,7 @@ export async function installTool(tool: ToolId, opts: InstallOptions): Promise<I
     }
     aborted(signal);
     mkdirSync(partial, { recursive: true, mode: 0o700 });
+    opts.onUnpackStart?.();
     await unpack(artifact.archive, archiveFile, partial, signal);
     aborted(signal);
     const partialBinary = join(partial, artifact.binary);
@@ -284,7 +349,7 @@ export async function installTool(tool: ToolId, opts: InstallOptions): Promise<I
       throw new InstallError("INSTALL_SWAP_FAILED", "The checked copy could not be put in place, so nothing changed; the earlier copy was kept.");
     }
     rmSync(replaced, { recursive: true, force: true });
-    return { tool, version: pin.version, path: finalBinary, sha256, reused: false, swept, recovered, ...(before !== "ABSENT" ? { replaced: before } : {}) };
+    return { tool, version: pin.version, path: finalBinary, sha256, reused: false, swept, recovered, refused, ...(before !== "ABSENT" ? { replaced: before } : {}) };
   } finally {
     rmSync(archiveFile, { force: true });
     rmSync(partial, { recursive: true, force: true });
@@ -304,7 +369,7 @@ const VERSION_COMPONENT = /^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$/;
  * (the marker) or as absent with a leftover the next run sweeps, never as a copy to keep, and running the removal again
  * completes it. Returns "absent" when the version is not there, so a second removal of a finished one does nothing.
  */
-export function removeInstalledTool(home: string, tool: ToolId, version: string): "removed" | "absent" {
+export function removeInstalledTool(home: string, tool: ToolId, version: string, hooks: { /** Test hook only: runs after the folder is renamed aside and before it is deleted. */ afterRenameAside?: () => void } = {}): "removed" | "absent" {
   const refuse = (): never => {
     throw new InstallError("INSTALL_REMOVE_REFUSED", "That folder is not an app-installed copy, so nothing was removed.");
   };
@@ -324,6 +389,7 @@ export function removeInstalledTool(home: string, tool: ToolId, version: string)
   rmSync(join(expected, INSTALL_MARKER), { force: true });
   const aside = join(dirname(expected), version + ".removing-" + process.pid);
   renameSync(expected, aside);
+  hooks.afterRenameAside?.();
   rmSync(aside, { recursive: true, force: true });
   return "removed";
 }

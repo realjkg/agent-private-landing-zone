@@ -77,6 +77,7 @@ const FAILURE_TEXT: Record<InstallError["code"], string> = {
   INSTALL_BINARY_MISSING: "The download did not contain the expected program, so nothing was installed.",
   INSTALL_VERIFY_FAILED: "The downloaded program still failed verification after installation, so it is not used. The new copy was removed again.",
   INSTALL_SWAP_FAILED: "The checked copy could not be put in place, so nothing changed; the earlier copy was kept. Run ./alz deps again.",
+  INSTALL_IN_PROGRESS: "Another ./alz deps run is installing this tool right now, so this run changed nothing. Wait for it to finish, then run ./alz deps again.",
   INSTALL_INTERRUPTED: "Stopped. Nothing was installed, and the unfinished download was removed. Run ./alz deps again to start the install over.",
   INSTALL_REMOVE_REFUSED: "That folder is not an app-installed copy, so nothing was removed.",
 };
@@ -167,7 +168,16 @@ const stateSuffix = (state: Exclude<InstallState, "ABSENT">): string => state ==
  */
 function sweepAndReport(pins: ToolPins, home: string, deps: DepsDeps, out: (text: string) => void, log: (text: string) => void): void {
   for (const tool of Object.keys(pins.tools) as ToolId[]) {
-    const swept = sweepLeftovers(home, tool, deps.pidAlive ? { pidAlive: deps.pidAlive } : {});
+    let swept: ReturnType<typeof sweepLeftovers>;
+    try {
+      swept = sweepLeftovers(home, tool, deps.pidAlive ? { pidAlive: deps.pidAlive } : {});
+    } catch (error) {
+      // The sweep fails closed: whatever stopped it is reported in plain words, and the report goes on.
+      const code = (error as NodeJS.ErrnoException).code ?? "UNKNOWN";
+      log("sweep " + tool + " failed " + code);
+      out("Could not check the leftovers of earlier " + TOOL_NAME[tool] + " runs (" + code + "); nothing was changed. Look at " + join(home, ".alz", "tools", tool) + " by hand.\n");
+      continue;
+    }
     for (const line of swept.recovered) {
       log("recover " + tool);
       out("Finished an interrupted earlier run: " + line + ".\n");
@@ -175,6 +185,10 @@ function sweepAndReport(pins: ToolPins, home: string, deps: DepsDeps, out: (text
     for (const path of swept.removed) {
       log("sweep " + tool);
       out("Removed a leftover of an earlier run that did not finish: " + path + "\n");
+    }
+    for (const line of swept.refused) {
+      log("sweep " + tool + " refused");
+      out("Left alone: " + line + ".\n");
     }
   }
 }
@@ -269,6 +283,7 @@ async function installAndVerify(tool: ToolId, ctx: CheckContext, pins: ToolPins,
     guard.release();
   }
   for (const line of installed.recovered) terminal.write("Finished an interrupted earlier run: " + line + ".\n");
+  for (const line of installed.refused) terminal.write("Left alone: " + line + ".\n");
   for (const path of installed.swept) terminal.write("Removed a leftover of an earlier run that did not finish: " + path + "\n");
   if (installed.replaced) terminal.write("Replaced the copy at " + join(installed.path, "..") + " (" + INSTALL_STATE_WORDS[installed.replaced] + ") after the new copy passed its check.\n");
   const checked = await runDependencyChecks(ctx, new Set<DepCheck["id"]>([tool]));
