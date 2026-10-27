@@ -14,7 +14,7 @@ The GCP release-path PLAN (owner approval 6433121154 on issue #39) and the G0 pa
 - nothing under `src/` references it;
 - `./alz apply` never runs it;
 - it never enables ACT;
-- the contract stays `enabled: false`, and its pin stays empty.
+- the contract stays `enabled: false`, with no `authorize` entry (the contract's `authorize` entry is the ACT switch; there is no pin).
 
 GCP is not yet an admitted provider: until the authorization lane adds it, a contract naming GCP is refused.
 
@@ -142,7 +142,7 @@ Set no other `GOOGLE_*`, `GCLOUD_*`, `CLOUDSDK_*` or `GCE_*` variable, and never
 - `contract_target` goes into the contract's `targets`;
 - the service account emails and file paths go into the `ALZ_<IDENTITY>_*` variables.
 
-Identifiers and paths only. Leave `enabled: false` and the pin empty.
+Identifiers and paths only. Leave `enabled: false` and add no `authorize` entry.
 
 ## Step 5: Credential preflight
 

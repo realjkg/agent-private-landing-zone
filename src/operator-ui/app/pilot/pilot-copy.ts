@@ -428,7 +428,10 @@ export const CODE_COPY: Readonly<Record<string, Reason>> = {
   AWS_ACCOUNT_NOT_VERIFIED: { why: "The DEV account, its enrollment, or its AWS connection could not be confirmed.", next: "Ask your AWS administrator to check the saved connection, Workloads enrollment and account status. Then check again." },
   // the driver's refusals
   ACT_DISABLED: { why: "The pilot is switched off. It only works while the owner's pilot rules are switched on and approved.", next: "Ask the pilot owner to switch on and approve the pilot rules. You cannot do this from here." },
-  CONTRACT_INVALID: { why: "The pilot rules file has a mistake, or it was changed after the owner approved it.", next: "Ask the pilot owner to fix it and approve it again. Nothing was changed." },
+  CONTRACT_INVALID: { why: "The pilot rules file has a mistake.", next: "Ask the pilot owner to fix it in a reviewed change. Nothing was changed." },
+  ACT_NOT_AUTHORIZED: { why: "The owner's reviewed pilot rules do not allow this kind of change in this environment.", next: "Ask the pilot owner whether to allow it. Only their reviewed change to the rules can. Nothing was changed." },
+  ACT_AUTHORIZATION_CHANGED: { why: "The owner's pilot rules changed after this change was prepared and approved, so the approvals no longer cover it.", next: "Prepare the change again under the current rules and collect new approvals. Nothing was used up." },
+  NOT_IMPLEMENTED: { why: "The pilot rules name a cloud and tool combination that this version cannot run yet.", next: "Ask the pilot owner which supported combination to use. Nothing was changed." },
   IDENTITY_TARGET_MISMATCH: { why: "One of the separate sign-ins points at a different account than the pilot rules name for this environment.", next: "Correct that sign-in's account in the terminal where you started the console, restart the console, then run the readiness check again." },
   KILL_SWITCH_ACTIVE: { why: "The emergency stop is on, so every change is blocked.", next: "Only the pilot owner turns it off. Ask them, and do not remove the stop file yourself." },
   KILL_SWITCH_AFTER_APPROVALS: { why: "The emergency stop was turned on just as the change was about to start. Nothing was changed, but the approvals were used up.", next: "Wait until the owner says the stop is off, then collect new approvals for the same prepared change." },
@@ -591,8 +594,11 @@ export function describeCheck(item: PreflightCheck, environment: PilotEnvironmen
   if (name.startsWith("contract shape")) {
     return { known: true, label: "The pilot rules file is complete and well formed", wrong: "The pilot rules file is missing, unreadable, or has a mistake.", fix: "Ask the pilot owner to correct the pilot rules file, then check again." };
   }
-  if (name.startsWith("pilot contract pinned and enabled")) {
-    return { known: true, label: "The pilot is switched on and approved by the owner", wrong: "The pilot is switched off, or the rules file was changed after the owner approved it. This is the normal state until the owner switches the pilot on.", fix: "Ask the pilot owner to review the rules and switch the pilot on. Nothing you do here can switch it on." };
+  if (name.startsWith("pilot contract enabled and authorizes APPLY")) {
+    return { known: true, label: "The owner's reviewed rules allow changes in " + environment, wrong: "The pilot is switched off, or the owner's reviewed rules do not allow changes in " + environment + ". This is the normal state until the owner allows it.", fix: "Ask the pilot owner to review the rules and allow this environment. Nothing you do here can allow it." };
+  }
+  if (name.startsWith("financial controls")) {
+    return { known: true, informational: true, label: "Spending limits are not checked here: the owner confirms the budget alert or cost limit separately", wrong: "", fix: "" };
   }
   if (name.startsWith("identities configured")) {
     return { known: true, label: "Each separate sign-in is set up on its own", wrong: "A sign-in is missing, two are the same, or one could fall back to your own account.", fix: "In the terminal where you started the console, set the missing sign-in details (the walkthrough lists them), restart the console, and check again." };

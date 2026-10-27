@@ -30,7 +30,11 @@ export type EngineContext = {
   /** The contract's opt-in `embedStateWrite` (`PilotContract`), sealing and qualifying only. Absent or false: the seal-time init is the preview adapter's own. */
   embedStateWrite?: boolean;
 };
-export type EngineRunInput = EngineContext & { target: ResolvedTarget; engineVersion: string };
+export type EngineRunInput = EngineContext & {
+  target: ResolvedTarget; engineVersion: string;
+  /** Cleanup only, CDK: the id (ARN) of the stack the run created, from its blueprint; the cleanup refuses any other stack. */
+  runStackId?: string;
+};
 /** A read-only snapshot of the project the manifest describes is what sealing starts from. */
 export type EnginePlanInput = EngineRunInput & {
   snapshotPath: string;
@@ -120,7 +124,7 @@ export type EngineSpec = {
    * What a contract target holds besides the provider's account fields. Absent: the provider's own backend and a free
    * workspace name (Terraform). `backendOk` judges the `backend` field when the engine has no state backend (CDK: the stack
    * name), and `backendMayRepeat` lets it be the same in every environment because the account already differs.
-   * `fields` are extra per-environment fields, each judged by its validator and part of the pinned contract.
+   * `fields` are extra per-environment fields, each judged by its validator and part of the reviewed contract.
    */
   target?: {
     backendOk(value: string): boolean;

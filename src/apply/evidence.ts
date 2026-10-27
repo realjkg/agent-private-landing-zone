@@ -31,6 +31,7 @@ const optionalShapes = new WeakSet<object>();
 const optional = <S extends { [key: string]: Shape }>(shape: S): S => { optionalShapes.add(shape); return shape; };
 const count: Check = (v) => typeof v === "number" && Number.isSafeInteger(v) && v > 0 && v <= 16;
 
+const nullableHash: Check = (v) => v === null || hash(v);
 const SHAPE: Shape = {
   schemaVersion: oneOf(1),
   environment: oneOf("DEV", "QA", "PROD"),
@@ -39,6 +40,13 @@ const SHAPE: Shape = {
   manifestHash: hash,
   releaseIdentity: text,
   contractSha256: hash,
+  targetSha256: hash,
+  // The three decisions (owner decisions, #39): AUTHORIZED (the contract's and its authorizing entry's hashes), READY, EXECUTE.
+  decisions: {
+    authorized: { operation: oneOf("APPLY"), contractSha256: hash, authorizationSha256: hash },
+    ready: { engineBinarySha256: nullableHash, qualificationEvidenceHash: nullableHash },
+    execute: { requesterId: text, approverIds: [text] },
+  },
   sourceCommit: (v) => typeof v === "string" && COMMIT.test(v),
   approvals: [{ approverId: text, issuedAt: iso }],
   // Who requested the change (the verified requester signature's id) and the nonce it carried: identifiers only, never the signature.
@@ -96,6 +104,12 @@ const CLEANUP_SHAPE: Shape = {
   artifactSha256: hash,
   applyEvidenceSha256: hash,
   contractSha256: hash,
+  // The three decisions (owner decisions, #39): AUTHORIZED (the contract's and its authorizing entry's hashes), READY, EXECUTE.
+  decisions: {
+    authorized: { operation: oneOf("CLEANUP"), contractSha256: hash, authorizationSha256: hash },
+    ready: { engineBinarySha256: nullableHash, qualificationEvidenceHash: nullableHash },
+    execute: { requesterId: text, approverIds: [text] },
+  },
   sourceCommit: (v) => typeof v === "string" && COMMIT.test(v),
   approvals: [{ approverId: text, issuedAt: iso }],
   // Who requested the cleanup (the verified cleanup request signature's id) and the nonce it carried: identifiers only, never the signature.

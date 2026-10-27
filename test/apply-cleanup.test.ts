@@ -5,16 +5,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { signApproval } from "../src/apply/approval.js";
+import { consumeApprovals, signApproval } from "../src/apply/approval.js";
 import { MATERIAL_RISKS, PROTECTION_REASONS, buildCleanupProposal, computeProposalSha256, isAwsIdentityType, signCleanupProposal, proposalProblems, protectedDeletionIn, verifyCleanupProposal, type CleanupProposal } from "../src/apply/cleanup-proposal.js";
-import { CLEANUP_SUFFIX, SUFFIX, loadPilotContract, pilotContractSha256 } from "../src/apply/contract.js";
+import { CLEANUP_SUFFIX, SUFFIX, authorizeContract, loadPilotContract, pilotContractSha256, pilotTargetSha256, targetMoved } from "../src/apply/contract.js";
 import { pilotUnitOf } from "../src/apply/unit.js";
 import { cleanupScopeProblem, runApply, runCleanup, sealPreview, type ApplyDeps, type ApplyRequest, type CleanupRequest } from "../src/apply/driver.js";
 import { cleanupEvidenceProblems } from "../src/apply/evidence.js";
 import { readCleanupEvidence, reserveArtifact } from "../src/apply/ledger.js";
 import { verifyLeftovers } from "../src/apply/leftovers.js";
 import { loadRunRecords, observeRun, verifyProposalLeftovers } from "../src/apply/observe.js";
-import { openNonceStore } from "../src/apply/nonces.js";
+import { openNonceStore, type NonceStore } from "../src/apply/nonces.js";
 import { loadSealedPlan } from "../src/apply/seal.js";
 import {
   BLUEPRINT_SUFFIX, OBSERVATION_SUFFIX, blueprintRecordProblems, leftoversRecordProblems, observationRecordProblems, readBlueprintRecord, readObservationRecord,
@@ -33,8 +33,8 @@ import { canonicalJson } from "../src/teardown/manifest.js";
 import { sha256 } from "../src/util/sha256.js";
 import {
   AWS_DEV_TARGET, AWS_REGION, CANARIES, NOW, POLICY, SOURCE_COMMIT, STATE_CANARY, VALUE_CANARY, awsContractJson, awsIdentityEnv, awsReadCallsOf, awsRoleArn, awsTargetOf,
-  approvalFor, behave as behaveIn, behaveAwsReads, callsOf, human, installFakeAwsReads, installFakeTerraform, keys, pinPathOf, stateResource, testFixtureForgeQualificationEvidence,
-  writePinnedContract, writeProject, type AwsReadBehavior, type Behavior,
+  approvalFor, behave as behaveIn, behaveAwsReads, callsOf, human, installFakeAwsReads, installFakeTerraform, keys, stateResource, testFixtureForgeQualificationEvidence,
+  writeReviewedContract, writeProject, type AwsReadBehavior, type Behavior,
   REQUESTER, reHashedProposal,
 } from "./helpers/apply-fixtures.js";
 
@@ -87,8 +87,8 @@ const STATE = [
 // What the fake cloud holds, by the identifier Cloud Control names each type by: a role by its name, a queue by its URL.
 const EXISTING = [BUCKET, LOG, STATE_BUCKET, OLD_QUEUE, "alz-apply-dev"];
 /** The deletion unit of the DEV state container under the fixture contract: what the sealed plan must stamp and the fake cloud lists by. */
-const fixtureContractPath = (() => { const path = join(fresh("contract"), "act-pilot-contract.json"); writePinnedContract(path, awsContractJson(KILL)); return path; })();
-const UNIT = pilotUnitOf({ provider: "AWS", contractSha256: pilotContractSha256(loadPilotContract(fixtureContractPath, pinPathOf(fixtureContractPath)) as PilotContract), environment: "DEV", target: awsTargetOf("DEV") });
+const fixtureContractPath = (() => { const path = join(fresh("contract"), "act-pilot-contract.json"); writeReviewedContract(path, awsContractJson(KILL)); return path; })();
+const UNIT = pilotUnitOf({ provider: "AWS", contractSha256: pilotContractSha256(loadPilotContract(fixtureContractPath) as PilotContract), environment: "DEV", target: awsTargetOf("DEV") });
 const behave = (behavior: Behavior = {}) => behaveIn(toolDir, KILL, { applyAdvance: true, showOnlyConfigured: true, showResources: CREATES, showProviderConfig: AWS_PROVIDER_CONFIG, stateResources: STATE, unitTags: { ...UNIT.tags }, ...behavior });
 /** The ARNs the fake tagging API lists for this unit: what the plan created and nothing else, unless a test says otherwise. */
 const TAGGED = [BUCKET_ARN, LOG_ARN];
@@ -107,17 +107,17 @@ function world(contract: unknown = awsContractJson(KILL)): World {
   cloud();
   const dirs = { scratch: fresh("scratch"), evidence: fresh("evidence"), nonces: fresh("nonces") };
   const contractPath = join(fresh("contract"), "act-pilot-contract.json");
-  writePinnedContract(contractPath, contract);
+  writeReviewedContract(contractPath, contract);
   return {
     dirs, contractPath,
     deps: {
-      sourceCommit: SOURCE_COMMIT, contractPath, contractPinPath: pinPathOf(contractPath), qualificationDir: vaultDir, evidenceDir: dirs.evidence, nonces: openNonceStore(dirs.nonces),
+      sourceCommit: SOURCE_COMMIT, contractPath, qualificationDir: vaultDir, evidenceDir: dirs.evidence, nonces: openNonceStore(dirs.nonces),
       env: awsIdentityEnv("DEV"), now: () => NOW, scratchParent: dirs.scratch, toolDirs: [toolDir, awsToolDir], killPollMs: 40, killGraceMs: 400,
     },
   };
 }
 const observeDeps = (w: World, now: Date = new Date(NOW.getTime() + 60_000)) => ({
-  contractPath: w.contractPath, contractPinPath: pinPathOf(w.contractPath), evidenceDir: w.dirs.evidence, env: w.deps.env, toolDirs: w.deps.toolDirs, scratchParent: w.dirs.scratch, now: () => now,
+  contractPath: w.contractPath, evidenceDir: w.dirs.evidence, env: w.deps.env, toolDirs: w.deps.toolDirs, scratchParent: w.dirs.scratch, now: () => now,
 });
 
 async function seal(w: World, environment: ApplyEnvironment = "DEV", mainTf = 'resource "aws_s3_bucket" "logs" {}\n') {
@@ -771,7 +771,7 @@ test("the raw state parser maps every managed instance, with module paths and in
   assert.throws(() => blueprintFromTerraformStatePull("{" + STATE_CANARY, []), (error: Error) => /STATE_JSON_INVALID/.test(error.message) && !error.message.includes(STATE_CANARY));
 });
 
-const IDENTITY_FIXTURE_CONTRACT = loadPilotContract(fixtureContractPath, pinPathOf(fixtureContractPath)) as PilotContract;
+const IDENTITY_FIXTURE_CONTRACT = loadPilotContract(fixtureContractPath) as PilotContract;
 /** Every type the reviewer named (6412182848), and the account-wide settings: all in the identity service, all kept. */
 const AWS_IAM_TYPES = ["aws_iam_role", "aws_iam_policy", "aws_iam_policy_attachment", "aws_iam_role_policy", "aws_iam_role_policy_attachment", "aws_iam_role_policies_exclusive", "aws_iam_role_policy_attachments_exclusive",
   "aws_iam_user", "aws_iam_user_policy", "aws_iam_user_policy_attachment", "aws_iam_user_login_profile", "aws_iam_user_ssh_key", "aws_iam_user_group_membership", "aws_iam_group", "aws_iam_group_policy", "aws_iam_group_policy_attachment",
@@ -1306,4 +1306,163 @@ test("an attachment or setting is deleted only with its parent (design review 64
   assert.ok(done.ok, JSON.stringify(done));
   assert.deepEqual(destroyPlans()[0]!.args.filter((a) => a.startsWith("-target=")).sort(), run.proposal.deletes.map((d) => "-target=" + d.address).sort());
   assert.ok(destroyPlans().every((c) => !c.args.join(" ").includes(".team") && !c.args.join(" ").includes("aws_sqs_queue_policy")), "nothing on a kept parent is targeted");
+});
+
+// --- AUTHORIZED for CLEANUP (review 6448347933, B2 and N3) ---------------------------------------------------
+
+/** A nonce store that runs `afterFirstHas` once the gate's approval check has read it, then lets everything through unchanged. */
+function watchedNonces(real: NonceStore, afterFirstHas: () => void): NonceStore {
+  let first = true;
+  return {
+    has: (nonce) => { const seen = real.has(nonce); if (first) { first = false; afterFirstHas(); } return seen; },
+    consumeAll: (entries) => real.consumeAll(entries),
+  };
+}
+/** The proposal for an applied, observed run, built under `contract` (as `./alz apply propose-cleanup` builds it under the committed one). */
+async function proposedUnder(w: World, contract: unknown) {
+  const run = await observed(w);
+  const records = await loadRunRecords(run.s.sealed.artifactSha256, w.dirs.evidence);
+  assert.ok(records.ok, JSON.stringify(records));
+  const built = buildCleanupProposal({ requesterId: REQUESTER.requesterId, ...records, changes: run.s.sealed.changes, channel: "CLI", contract: contract as never,
+    engineVersion: run.s.sealed.engineVersion, env: w.deps.env!, now: new Date(NOW.getTime() + 120_000) });
+  return { run, records, built };
+}
+const NO_CLEANUP = { authorize: { DEV: ["APPLY"], QA: ["APPLY", "CLEANUP"], PROD: ["APPLY", "CLEANUP"] } };
+const CLEANUP_ONLY = { authorize: { DEV: ["CLEANUP"], QA: ["APPLY", "CLEANUP"], PROD: ["APPLY", "CLEANUP"] } };
+
+test("a cleanup proposal needs a CLEANUP entry: APPLY alone for DEV refuses ACT_NOT_AUTHORIZED, and the proposal binds the current contract and entry", async () => {
+  const w = world();
+  const { built } = await proposedUnder(w, awsContractJson(KILL, NO_CLEANUP));
+  refused(built, "ACT_NOT_AUTHORIZED");
+  assert.match((built as { message: string }).message, /CLEANUP for AWS TERRAFORM DEV/);
+  const ok = await proposedUnder(world(), awsContractJson(KILL));
+  assert.ok(ok.built.ok, JSON.stringify(ok.built));
+  const current = authorizeContract(awsContractJson(KILL) as never, "DEV", "CLEANUP");
+  assert.ok(current.ok);
+  assert.equal(ok.built.proposal.authorizingContractSha256, current.authorization.contractSha256);
+  assert.equal(ok.built.proposal.authorizationSha256, current.authorization.authorizationSha256);
+  assert.equal(ok.built.proposal.contractSha256, ok.run.evidence.contractSha256, "the run itself stays bound to the contract the apply ran under");
+});
+
+test("cleanup refuses before any approval is consumed when CLEANUP is revoked after the proposal, or the contract or entry changed since it", async () => {
+  const w = world();
+  const run = await proposed(w);
+  const nothingConsumed = (approvals: SignedApproval[]) => {
+    assert.equal(destroyPlans().length, 0, "no destroy plan ran");
+    assert.deepEqual(consumeApprovals(openNonceStore(w.dirs.nonces), approvals), { ok: true }, "nothing was consumed");
+  };
+  // CLEANUP revoked for DEV after the proposal: not authorized (the operation is judged, not only the contract hash).
+  writeReviewedContract(w.contractPath, awsContractJson(KILL, NO_CLEANUP));
+  let approvals = [cleanupApproval(run.proposal, "alice")];
+  refused(await cleanup(w, run, approvals), "ACT_NOT_AUTHORIZED");
+  nothingConsumed(approvals);
+  // Any other edit since the proposal (here the approval lifetime): the contract the approvals cover is not the one now.
+  writeReviewedContract(w.contractPath, awsContractJson(KILL, { maxApprovalAgeMinutes: 61 }));
+  approvals = [cleanupApproval(run.proposal, "alice")];
+  refused(await cleanup(w, run, approvals), "ACT_AUTHORIZATION_CHANGED");
+  nothingConsumed(approvals);
+});
+
+test("the late re-check: a contract edited between the cleanup gate and approval consumption is ACT_AUTHORIZATION_CHANGED, nothing consumed or destroyed", async () => {
+  const w = world();
+  const run = await proposed(w);
+  const approvals = [cleanupApproval(run.proposal, "alice")];
+  const nonces = watchedNonces(openNonceStore(w.dirs.nonces), () => writeReviewedContract(w.contractPath, awsContractJson(KILL, { maxApprovalAgeMinutes: 61 })));
+  const result = await runCleanup({
+    invocation: human(run.s.sealed.target), environment: "DEV", target: { ...run.s.sealed.target }, proposal: run.proposal, sealedPlan: run.s.loaded,
+    manifest: run.s.project.manifest, projectRoot: run.s.project.projectRoot, approvals,
+  }, { ...w.deps, nonces });
+  refused(result, "ACT_AUTHORIZATION_CHANGED");
+  assert.equal(calls().filter((c) => c.args[0] === "apply").length, 1, "only the original apply ran; the destroy never applied");
+  assert.deepEqual(consumeApprovals(openNonceStore(w.dirs.nonces), approvals), { ok: true }, "nothing was consumed");
+  assert.deepEqual(readdirSync(w.dirs.evidence).filter((n) => n.endsWith(CLEANUP_SUFFIX)), [], "no cleanup entry exists");
+});
+
+test("revoking APPLY does not strand a cleanup (N3): under a contract that now authorizes only CLEANUP for DEV, the run is proposed and cleaned up, and the evidence names both contracts", async () => {
+  const w = world();
+  const { run, built } = await (async () => {
+    const r = await observed(w);
+    writeReviewedContract(w.contractPath, awsContractJson(KILL, CLEANUP_ONLY));
+    const records = await loadRunRecords(r.s.sealed.artifactSha256, w.dirs.evidence);
+    assert.ok(records.ok);
+    return { run: r, built: buildCleanupProposal({ requesterId: REQUESTER.requesterId, ...records, changes: r.s.sealed.changes, channel: "CLI", contract: awsContractJson(KILL, CLEANUP_ONLY) as never,
+      engineVersion: r.s.sealed.engineVersion, env: w.deps.env!, now: new Date(NOW.getTime() + 120_000) }) };
+  })();
+  assert.ok(built.ok, JSON.stringify(built));
+  const proposal = signCleanupProposal(built.proposal, REQUESTER.privateKeyPem);
+  assert.notEqual(proposal.authorizingContractSha256, proposal.contractSha256, "authorized by the current contract, bound to the apply's");
+  const done = await runCleanup({
+    invocation: human(run.s.sealed.target), environment: "DEV", target: { ...run.s.sealed.target }, proposal, sealedPlan: run.s.loaded,
+    manifest: run.s.project.manifest, projectRoot: run.s.project.projectRoot, approvals: [cleanupApproval(proposal, "alice")],
+  }, w.deps);
+  assert.ok(done.ok, JSON.stringify(done));
+  assert.equal(done.evidence.contractSha256, run.evidence.contractSha256, "the cleanup evidence names the run's contract");
+  assert.equal(done.evidence.decisions.authorized.contractSha256, proposal.authorizingContractSha256, "and the contract that authorized the cleanup");
+  assert.equal(done.evidence.decisions.authorized.operation, "CLEANUP");
+  // A new APPLY under that contract is refused: revoking APPLY still revokes it.
+  const again = await seal(world(awsContractJson(KILL, CLEANUP_ONLY))).catch((error: Error) => error);
+  assert.ok(again instanceof Error && /ACT_NOT_AUTHORIZED/.test(again.message), String(again));
+});
+
+// --- R1 (#313 re-review 6449717457): a cleanup runs only where the run ran -------------------------------------------
+
+/** The fixture contract with DEV moved to another region, authorizing only CLEANUP there: a later contract, not the run's place. */
+const movedRegion = () => {
+  const c = awsContractJson(KILL, CLEANUP_ONLY) as { targets: Record<string, Record<string, unknown>> };
+  return { ...c, targets: { ...c.targets, DEV: { ...c.targets.DEV, region: "eu-west-2" } } };
+};
+
+test("R1: a region move refuses the cleanup at propose, at the gate and at the late re-check, nothing consumed; the run's full target is sealed and recorded", async () => {
+  const w = world();
+  const run = await proposed(w);
+  const runTarget = pilotTargetSha256(awsContractJson(KILL) as never, "DEV");
+  assert.equal(run.s.sealed.targetSha256, runTarget, "the sealed plan binds the run's full target");
+  assert.equal(run.evidence.targetSha256, runTarget, "and the apply evidence records it");
+  assert.equal(run.proposal.targetSha256, runTarget);
+  assert.notEqual(pilotTargetSha256(movedRegion() as never, "DEV"), runTarget, "the region is part of the target");
+  // Propose under the moved contract: refused, whatever it authorizes.
+  const records = await loadRunRecords(run.s.sealed.artifactSha256, w.dirs.evidence);
+  assert.ok(records.ok);
+  const proposeMoved = buildCleanupProposal({ requesterId: REQUESTER.requesterId, ...records, changes: run.s.sealed.changes, channel: "CLI", contract: movedRegion() as never,
+    engineVersion: run.s.sealed.engineVersion, env: w.deps.env!, now: new Date(NOW.getTime() + 120_000) });
+  refused(proposeMoved, "TARGET_NOT_IN_CONTRACT");
+  // At the gate: a proposal that names the moved contract as its authority (re-hashed and re-signed) is still held to the run's target.
+  writeReviewedContract(w.contractPath, movedRegion());
+  const moved = authorizeContract(movedRegion() as never, "DEV", "CLEANUP");
+  assert.ok(moved.ok);
+  const forged = reHashedProposal({ ...run.proposal, authorizingContractSha256: moved.authorization.contractSha256, authorizationSha256: moved.authorization.authorizationSha256 });
+  const approvals = [cleanupApproval(forged, "alice")];
+  refused(await cleanup(w, { ...run, proposal: forged }, approvals), "TARGET_NOT_IN_CONTRACT");
+  assert.deepEqual(consumeApprovals(openNonceStore(w.dirs.nonces), approvals), { ok: true }, "nothing was consumed");
+  assert.equal(destroyPlans().length, 0);
+});
+
+test("R1: a region move between the cleanup gate and approval consumption refuses before anything is consumed (late re-check)", async () => {
+  const w = world();
+  const run = await proposed(w);
+  const approvals = [cleanupApproval(run.proposal, "alice")];
+  // A region-only move keeps the authorizing entry (it names the account, not the region) but changes the contract's hash, so the late
+  // authorization re-check refuses first; the late target re-check behind it is defense in depth for the same move.
+  const c = awsContractJson(KILL) as { targets: Record<string, Record<string, unknown>> };
+  const regionOnly = { ...c, targets: { ...c.targets, DEV: { ...c.targets.DEV, region: "eu-west-2" } } };
+  const nonces = watchedNonces(openNonceStore(w.dirs.nonces), () => writeReviewedContract(w.contractPath, regionOnly));
+  const result = await runCleanup({
+    invocation: human(run.s.sealed.target), environment: "DEV", target: { ...run.s.sealed.target }, proposal: run.proposal, sealedPlan: run.s.loaded,
+    manifest: run.s.project.manifest, projectRoot: run.s.project.projectRoot, approvals,
+  }, { ...w.deps, nonces });
+  refused(result, "ACT_AUTHORIZATION_CHANGED");
+  assert.deepEqual(consumeApprovals(openNonceStore(w.dirs.nonces), approvals), { ok: true }, "nothing was consumed");
+  assert.equal(calls().filter((c2) => c2.args[0] === "apply").length, 1, "the destroy never applied");
+});
+
+test("R1: targetMoved is the one comparison: the run's target hash against the contract committed now, for any account field, backend or workspace", () => {
+  const base = awsContractJson(KILL) as { targets: Record<string, Record<string, unknown>> };
+  const run = pilotTargetSha256(base as never, "DEV")!;
+  assert.equal(targetMoved(run, base as never, "DEV"), undefined);
+  assert.equal(targetMoved(run, { ...base, authorize: { DEV: ["CLEANUP"] } } as never, "DEV"), undefined, "only the authorize entry may differ");
+  for (const change of [{ region: "eu-west-2" }, { accountId: "999999999999" }, { backend: "other-bucket/key" }, { workspace: "other" }]) {
+    const moved = { ...base, targets: { ...base.targets, DEV: { ...base.targets.DEV, ...change } } };
+    assert.equal(targetMoved(run, moved as never, "DEV")?.code, "TARGET_NOT_IN_CONTRACT", JSON.stringify(change));
+  }
+  assert.equal(targetMoved(run, { ...base, provider: "AZURE" } as never, "DEV")?.code, "TARGET_NOT_IN_CONTRACT", "another provider");
 });

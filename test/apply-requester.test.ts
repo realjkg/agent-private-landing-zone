@@ -16,8 +16,7 @@ import { removeTree } from "../src/teardown/driver/cleanup.js";
 import { canonicalJson } from "../src/teardown/manifest.js";
 import { readEncryptedEvidence } from "../src/evidence/vault.js";
 import { SOURCE_COMMIT,
-  DEV_TARGET, ENV, NOW, POLICY, REQUESTER, approvalFor, behave as behaveIn, callsOf, contractJson, human, identityEnv, installFakeTerraform, keys, pinPathOf,
-  requesterArgs, targetOf, testFixtureForgeQualificationEvidence, writePinnedContract, writeProject, type Project,
+  DEV_TARGET, ENV, NOW, POLICY, REQUESTER, approvalFor, behave as behaveIn, callsOf, contractJson, human, identityEnv, installFakeTerraform, keys, requesterArgs, targetOf, testFixtureForgeQualificationEvidence, writeReviewedContract, writeProject, type Project,
 } from "./helpers/apply-fixtures.js";
 
 // The requester signs the sealed request (docs/act-pilot-plan.md, authority item 3; owner decisions on issue #39 of
@@ -45,13 +44,13 @@ test.before(async () => { vaultDir = fresh("qualification"); await testFixtureFo
 function world(contract: unknown = contractJson(KILL)): World {
   behave();
   const contractPath = join(fresh("contract"), "act-pilot-contract.json");
-  writePinnedContract(contractPath, contract);
+  writeReviewedContract(contractPath, contract);
   const evidenceDir = fresh("evidence");
   const nonces = fresh("nonces");
   const scratch = fresh("scratch");
   return {
     contractPath, evidenceDir, vault: vaultDir, nonces, scratch,
-    deps: { sourceCommit: SOURCE_COMMIT, contractPath, contractPinPath: pinPathOf(contractPath), qualificationDir: vaultDir, evidenceDir, nonces: openNonceStore(nonces), env: ENV, now: () => NOW, scratchParent: scratch, toolDirs: [toolDir], killPollMs: 40, killGraceMs: 400 },
+    deps: { sourceCommit: SOURCE_COMMIT, contractPath, qualificationDir: vaultDir, evidenceDir, nonces: openNonceStore(nonces), env: ENV, now: () => NOW, scratchParent: scratch, toolDirs: [toolDir], killPollMs: 40, killGraceMs: 400 },
   };
 }
 const forEnv = (w: World, environment: ApplyEnvironment): ApplyDeps => ({ ...w.deps, env: identityEnv(environment) });
@@ -135,7 +134,7 @@ test("PROD: three distinct people. The requester plus two other approvers apply;
   // carol is DEV-only in the fixture allowlist, so this is APPROVER_NOT_ALLOWED; the real second approver needs PROD rights.
   refused(ok, "APPROVER_NOT_ALLOWED");
   const widened = contractJson(KILL, { approvers: contractOf(w).approvers.map((a) => ({ ...a, environments: ["DEV", "QA", "PROD"] })) });
-  writePinnedContract(w.contractPath, widened);
+  writeReviewedContract(w.contractPath, widened);
   const prod2 = await seal(w, "PROD", { requesterId: "alice", privateKeyPem: keys.alice.priv }) as Sealed;
   const applied = await run(w, prod2, [approvalFor(prod2.sealed, "bob"), approvalFor(prod2.sealed, "carol")]);
   assert.ok(applied.ok, JSON.stringify(applied));
@@ -258,7 +257,7 @@ async function cli(w: World, args: string[], answers: string[], environment: App
   const stderr: string[] = [];
   const term = terminal(answers);
   const code = await runApplyCommand(args, {
-    sourceCommit: SOURCE_COMMIT, terminal: term, env: identityEnv(environment), now: () => NOW, operatorId: "operator.fixture", contractPath: w.contractPath, contractPinPath: pinPathOf(w.contractPath),
+    sourceCommit: SOURCE_COMMIT, terminal: term, env: identityEnv(environment), now: () => NOW, operatorId: "operator.fixture", contractPath: w.contractPath,
     qualificationDir: w.vault, evidenceDir: w.evidenceDir, nonces: w.deps.nonces, scratchParent: w.scratch, toolDirs: [toolDir], stdout: (t) => { stdout.push(t); }, stderr: (t) => { stderr.push(t); },
   });
   return { code, stdout: stdout.join(""), stderr: stderr.join(""), term };

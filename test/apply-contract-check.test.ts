@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -70,7 +70,7 @@ test("a complete draft with fake ids and test keys is COMPLETE, maps every owner
   // The inputs that are not contract fields are listed with where they are checked instead, naming the engine's four identities.
   assert.match(report.outsideContract[0].input, /DISCOVERY, STATE, STATE_WRITE, APPLY/);
   assert.ok(report.outsideContract.some((x) => /execution host/.test(x.input)) && report.outsideContract.some((x) => /cleanup owner/.test(x.input)));
-  assert.ok(report.guarantees.some((line) => /never enables ACT and never writes config\/act-pilot-contract.sha256/.test(line)));
+  assert.ok(report.guarantees.some((line) => /never enables ACT and never writes the contract/.test(line)));
   // The report and its lines carry no key material: a public key is reported by field, never printed.
   const text = contractCheckLines(report, "draft.json").join("\n") + JSON.stringify(report);
   assert.ok(!text.includes(keys.alice.pub.split("\n")[1]), "no key material in the report");
@@ -293,7 +293,7 @@ test("./alz apply contract-check reads one draft file offline: exit 0 complete, 
   assert.match(piped.stderr, /HUMAN_TERMINAL_REQUIRED/);
 });
 
-test("the command enables nothing: the repository's shipped pin stays empty, no file is written beside the draft, and the draft is unchanged", async () => {
+test("the command enables nothing: the repository still ships no contract and no pin, no file is written beside the draft, and the draft is unchanged", async () => {
   const path = file(completeDraft());
   const before = readFileSync(path, "utf8");
   const dir = join(path, "..");
@@ -302,5 +302,6 @@ test("the command enables nothing: the repository's shipped pin stays empty, no 
   await cli(["contract-check", "--file", path]);
   assert.equal(listing(), first, "nothing written in the draft's folder");
   assert.equal(readFileSync(path, "utf8"), before);
-  assert.equal(readFileSync(join(ROOT, "config", "act-pilot-contract.sha256"), "utf8").trim(), "", "the shipped pin is empty and the check never writes it");
+  assert.equal(existsSync(join(ROOT, "config", "act-pilot-contract.json")), false, "the check never writes the contract");
+  assert.equal(existsSync(join(ROOT, "config", "act-pilot-contract.sha256")), false, "the retired pin is never recreated");
 });

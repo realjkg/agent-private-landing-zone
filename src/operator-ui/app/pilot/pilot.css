@@ -364,3 +364,7 @@
     padding: 16px;
   }
 }
+
+.pilot-decisions { display: grid; grid-template-columns: max-content 1fr; gap: 0.25rem 0.75rem; margin: 0.5rem 0; }
+.pilot-decisions dt { font-weight: 600; }
+.pilot-decisions dd { margin: 0; }

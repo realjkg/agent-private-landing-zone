@@ -23,7 +23,7 @@ import { readEncryptedEvidence } from "../src/evidence/vault.js";
 import { removeTree } from "../src/teardown/driver/cleanup.js";
 import { canonicalJson } from "../src/teardown/manifest.js";
 import { sha256 } from "../src/util/sha256.js";
-import { AWS_REGION, NOW, POLICY, REQUESTER, SOURCE_COMMIT, approvalFor, human, keys, pinPathOf, writePinnedContract } from "./helpers/apply-fixtures.js";
+import { AWS_REGION, NOW, POLICY, REQUESTER, SOURCE_COMMIT, approvalFor, human, keys, writeReviewedContract } from "./helpers/apply-fixtures.js";
 import { CDK_CANARIES, STACK, cdkContractJson, cdkIdentityEnv, cdkTargetOf, forgeCdkQualification, writeAssembly } from "./helpers/cdk-fixtures.js";
 
 /**
@@ -312,12 +312,12 @@ describe("CDK emulated simulation: the real pinned AWS CLI against moto CloudFor
   type World = { deps: ApplyDeps; contractPath: string; evidence: string; scratch: string };
   function world(): World {
     const contractPath = join(fresh("contract"), "act-pilot-contract.json");
-    writePinnedContract(contractPath, cdkContractJson(KILL));
+    writeReviewedContract(contractPath, cdkContractJson(KILL));
     const evidence = fresh("evidence"), scratch = fresh("scratch");
     return {
       contractPath, evidence, scratch,
       deps: {
-        sourceCommit: SOURCE_COMMIT, contractPath, contractPinPath: pinPathOf(contractPath), qualificationDir: vault, evidenceDir: evidence,
+        sourceCommit: SOURCE_COMMIT, contractPath, qualificationDir: vault, evidenceDir: evidence,
         nonces: openNonceStore(fresh("nonces")), env, now: () => NOW, scratchParent: scratch, toolDirs: [toolDir], killPollMs: 100, killGraceMs: 5_000,
       },
     };
@@ -489,7 +489,7 @@ describe("CDK emulated simulation: the real pinned AWS CLI against moto CloudFor
     const s = await sealed(w);
     const applied = await run(w, s);
     assert.ok(applied.ok, JSON.stringify(applied));
-    const observeDeps: ObserveDeps = { contractPath: w.contractPath, contractPinPath: pinPathOf(w.contractPath), evidenceDir: w.evidence, env, toolDirs: [toolDir], scratchParent: w.scratch, now: () => new Date(NOW.getTime() + 60_000) };
+    const observeDeps: ObserveDeps = { contractPath: w.contractPath, evidenceDir: w.evidence, env, toolDirs: [toolDir], scratchParent: w.scratch, now: () => new Date(NOW.getTime() + 60_000) };
     const observed = await observeRun(s.sealed.artifactSha256, observeDeps);
     assert.ok(observed.ok, JSON.stringify(observed));
     assert.deepEqual(observed.record.resources.map((r) => [r.address, r.result]), [[CANARY, "VERIFIED"], [HELD, "UNVERIFIABLE"]]);
@@ -499,7 +499,7 @@ describe("CDK emulated simulation: the real pinned AWS CLI against moto CloudFor
 
     const records = await loadRunRecords(s.sealed.artifactSha256, w.evidence);
     assert.ok(records.ok, JSON.stringify(records));
-    const contract = loadPilotContract(w.contractPath, pinPathOf(w.contractPath)) as PilotContract;
+    const contract = loadPilotContract(w.contractPath) as PilotContract;
     const built = buildCleanupProposal({ requesterId: REQUESTER.requesterId, ...records, changes: s.sealed.changes, channel: "CLI", contract, engineVersion, env, now: new Date(NOW.getTime() + 120_000) });
     assert.ok(built.ok, JSON.stringify(built));
     assert.deepEqual(built.proposal.deletes.map((d) => d.address), [CANARY], "only the run-created leaf is proposed");

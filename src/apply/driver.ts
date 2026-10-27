@@ -14,8 +14,8 @@ import { canonicalPublicKey } from "./contract.js";
 import { buildCleanupProposal, computeProposalSha256, protectedDeletionIn, verifyCleanupProposal, type CleanupProposal } from "./cleanup-proposal.js";
 import { pilotUnitOf } from "./unit.js";
 import {
-  DEFAULT_EVIDENCE_DIR, contractRefusal, isKillSwitchActive, loadPilotContract, loadQualificationRecords, pilotContractSha256, repoPaths, requireNotApplied, requireNotExecuted,
-  requirePromotionEvidence, targetForEnvironment, verifyApplyQualification, type Refusal,
+  DEFAULT_EVIDENCE_DIR, authorizationChanged, authorizeContract, pilotTargetSha256, targetMoved, contractRefusal, isKillSwitchActive, loadPilotContract, loadQualificationRecords, pilotContractSha256, repoPaths, requireNotApplied, requireNotExecuted,
+  requirePromotionEvidence, targetForEnvironment, verifyApplyQualification, type Authorization, type Refusal,
 } from "./contract.js";
 import { COMMIT } from "./constants.js";
 import { codeOf, leftBehindOf } from "./engine.js";
@@ -45,9 +45,8 @@ import type { ApplyEnvironment, ApplyEvidence, ApplyOutcome, ApplyRefusalCode, A
 export type ApplyDeps = {
   /** Where qualification evidence is read. Defaults to the repository's vault. Apply needs a record for the apply adapter, sealing one for the preview adapter. */
   qualificationDir?: string;
-  /** Where the pilot release contract and its committed pin are read. Default: the repository's (src/apply/contract.ts). */
+  /** Where the pilot release contract, which carries the authorization, is read. Default: the repository's (src/apply/contract.ts). */
   contractPath?: string;
-  contractPinPath?: string;
   /** The apply ledger and encrypted evidence. */
   evidenceDir?: string;
   nonces?: NonceStore;
@@ -67,7 +66,7 @@ export type ApplyDeps = {
    */
   sourceCommit?: string;
 };
-type SealDeps = Pick<ApplyDeps, "qualificationDir" | "contractPath" | "contractPinPath" | "env" | "now" | "scratchParent" | "toolDirs" | "sourceCommit">;
+type SealDeps = Pick<ApplyDeps, "qualificationDir" | "contractPath" | "env" | "now" | "scratchParent" | "toolDirs" | "sourceCommit">;
 
 const SOURCE_UNVERIFIED = "The product source commit could not be established, so nothing was run or consumed. Run from a git checkout with every change committed, or from the packaged image built from a commit.";
 /** The caller's source commit when it is a full commit id, else undefined. */
@@ -111,10 +110,13 @@ const refuse = (code: ApplyRefusalCode, message: string): Refusal => ({ ok: fals
 const sameTarget = (a: ResolvedTarget, b: ResolvedTarget): boolean =>
   a.account === b.account && a.backend === b.backend && a.workspace === b.workspace;
 
-/** Contract enabled, kill switch off, a human, and the contract's own target: the first four gates, shared by sealing and applying. */
-function admit(deps: Pick<ApplyDeps, "contractPath" | "contractPinPath">, request: { invocation: unknown; environment: ApplyEnvironment; target: ResolvedTarget }):
-  { ok: true; contract: PilotContract; spec: ProviderSpec } | Refusal {
-  const contract = loadPilotContract(deps.contractPath, deps.contractPinPath);
+/**
+ * Contract enabled, kill switch off, a human, the contract's own target, and AUTHORIZED by the contract for this operation:
+ * the first gates, shared by sealing, applying and cleaning up.
+ */
+function admit(deps: Pick<ApplyDeps, "contractPath">, request: { invocation: unknown; environment: ApplyEnvironment; target: ResolvedTarget }, operation: "APPLY" | "CLEANUP"):
+  { ok: true; contract: PilotContract; spec: ProviderSpec; authorization: Authorization } | Refusal {
+  const contract = loadPilotContract(deps.contractPath);
   if ("reason" in contract) return contractRefusal(contract);
   if (isKillSwitchActive(contract)) {
     return refuse("KILL_SWITCH_ACTIVE", "The kill switch is active. Nothing runs until the owner removes it.");
@@ -122,7 +124,9 @@ function admit(deps: Pick<ApplyDeps, "contractPath" | "contractPinPath">, reques
   const human = checkHumanInvocation(request, "A pilot apply, seal or qualification run");
   if (human) return refuse("HUMAN_INVOCATION_REQUIRED", human.message);
   const pinned = targetForEnvironment(contract, request.environment, request.target);
-  return pinned.ok ? { ok: true, contract, spec: specOf(contract) } : pinned;
+  if (!pinned.ok) return pinned;
+  const authorized = authorizeContract(contract, request.environment, operation);
+  return authorized.ok ? { ok: true, contract, spec: specOf(contract), authorization: authorized.authorization } : authorized;
 }
 
 /**
@@ -160,6 +164,7 @@ async function backedQualification(
 async function checkEngineAndIdentities(
   adapter: AdapterDescriptor, deps: SealDeps, engineVersion: string,
   contract: PilotContract, spec: ProviderSpec, environment: ApplyEnvironment, kind: "seal" | "apply" | "qualify" | "cleanup",
+  ready?: { qualificationEvidenceHash: string | null },
 ): Promise<Refusal | undefined> {
   const engine = engineOf(contract);
   // Qualifying is how a record comes to exist, so it is the one run that needs none. Identities and targets are judged the same.
@@ -170,6 +175,7 @@ async function checkEngineAndIdentities(
   } else if (kind === "apply") {
     const attested = await backedQualification(adapter, deps, engineVersion, engine.binarySha256(deps.toolDirs, deps.env ?? process.env), contract, spec, environment);
     if (!attested.ok) return attested;
+    if (ready) ready.qualificationEvidenceHash = attested.record.evidenceHash;
   }
   const env = deps.env ?? process.env;
   const identities = checkApplyIdentities(env, spec, engine.identities);
@@ -199,7 +205,7 @@ export async function sealPreview(request: SealRequest, deps: SealDeps): Promise
 function planAgainstTarget(request: SealRequest, deps: SealDeps, kind: "seal"): Promise<SealResult | Refusal>;
 function planAgainstTarget(request: SealRequest, deps: SealDeps, kind: "qualify"): Promise<{ ok: true; engine: EngineSpec } | Refusal>;
 async function planAgainstTarget(request: SealRequest, deps: SealDeps, kind: "seal" | "qualify"): Promise<SealResult | { ok: true; engine: EngineSpec } | Refusal> {
-  const admitted = admit(deps, request);
+  const admitted = admit(deps, request, "APPLY");
   if (!admitted.ok) return admitted;
   const engine = engineOf(admitted.contract);
   const sourceCommit = knownSource(deps);
@@ -258,7 +264,7 @@ async function planAgainstTarget(request: SealRequest, deps: SealDeps, kind: "se
     const input = {
       engine, environment: request.environment, target: { ...request.target }, manifest, snapshotPath: snapshot.path, scratchDir: scratch.path,
       channel: request.channel ?? "CLI", env: deps.env ?? process.env, policyVersion: request.policyVersion, engineVersion: manifest.engineVersion,
-      pinned: admitted.contract.targets[request.environment]!, spec: admitted.spec, contractSha256: pilotContractSha256(admitted.contract), sourceCommit, provenance, toolDirs: deps.toolDirs, now: deps.now,
+      pinned: admitted.contract.targets[request.environment]!, spec: admitted.spec, contractSha256: pilotContractSha256(admitted.contract), authorizationSha256: admitted.authorization.authorizationSha256, targetSha256: pilotTargetSha256(admitted.contract, request.environment)!, sourceCommit, provenance, toolDirs: deps.toolDirs, now: deps.now,
       embedStateWrite: admitted.contract.embedStateWrite === true,
       unit: pilotUnitOf({ provider: admitted.contract.provider, contractSha256: pilotContractSha256(admitted.contract), environment: request.environment, target: request.target }),
       ...(kind === "seal" && request.requester ? { requester: { requesterId: request.requester.requesterId, privateKeyPem: request.requester.privateKeyPem } } : {}),
@@ -377,7 +383,7 @@ export async function runApply(request: ApplyRequest, deps: ApplyDeps): Promise<
 
   // 1-4. Contract, kill switch, a human, the contract's target.
   if (!isRecord(request)) return refuse("HUMAN_INVOCATION_REQUIRED", "An apply is run by a person.");
-  const admitted = admit(deps, request);
+  const admitted = admit(deps, request, "APPLY");
   if (!admitted.ok) return admitted;
   const { contract, spec } = admitted;
   const engine = engineOf(contract);
@@ -399,6 +405,11 @@ export async function runApply(request: ApplyRequest, deps: ApplyDeps): Promise<
   if (sealed.environment !== request.environment || !sameTarget(sealed.target, request.target) || sealed.contractSha256 !== pilotContractSha256(contract)) {
     return refuse("ARTIFACT_INVALID", "The sealed plan was sealed for another environment or target, or under another pilot contract.");
   }
+  const movedTarget = targetMoved(sealed.targetSha256, contract, sealed.environment);
+  if (movedTarget) return movedTarget;
+  // AUTHORIZED is the one the approvers signed: the same contract and the same authorizing entry, or nothing is consumed.
+  const changedPolicy = authorizationChanged(sealed, admitted.authorization);
+  if (changedPolicy) return changedPolicy;
   let manifest: ArtifactManifest;
   try { manifest = verifyManifest(request.manifest); } catch { return refuse("ARTIFACT_INVALID", "The manifest is not valid or not sealed."); }
   if (!acceptsManifest(engine, manifest) || manifest.manifestHash !== sealed.manifestHash ||
@@ -425,7 +436,8 @@ export async function runApply(request: ApplyRequest, deps: ApplyDeps): Promise<
   if (!verdict.ok) return refuse(verdict.code, verdict.message);
 
   // 9-10. The apply adapter is qualified by real-engine evidence; the engine's separate identities aimed at this target.
-  const gate = await checkEngineAndIdentities(engine.applyAdapter, deps, sealed.engineVersion, contract, spec, sealed.environment, "apply");
+  const ready = { qualificationEvidenceHash: null as string | null };
+  const gate = await checkEngineAndIdentities(engine.applyAdapter, deps, sealed.engineVersion, contract, spec, sealed.environment, "apply", ready);
   if (gate) return gate;
 
   let holding = false;
@@ -485,13 +497,15 @@ export async function runApply(request: ApplyRequest, deps: ApplyDeps): Promise<
     }
 
     // 12. Everything that can change while the engine is prepared is read again immediately before the approvals are
-    // consumed: a signal that arrived during the blocking steps, the contract and its pin, the kill switch, the
+    // consumed: a signal that arrived during the blocking steps, the contract and the ACT policy, the kill switch, the
     // allowlist and each approval's expiry.
     await yieldToSignals();
     const late = interruptedBeforeEngine();
     if (late) return late;
-    const readmitted = admit(deps, request);
+    const readmitted = admit(deps, request, "APPLY");
     if (!readmitted.ok) return readmitted;
+    const lateChange = authorizationChanged(sealed, readmitted.authorization);
+    if (lateChange) return lateChange;
     const reconfirmedRequest = verifyRequestSignature({ request: sealed.request, artifactSha256: sealed.artifactSha256, environment: sealed.environment, requesterId: sealed.requesterId, contract: readmitted.contract });
     if (!reconfirmedRequest.ok) return refuse(reconfirmedRequest.code, reconfirmedRequest.message);
     const confirmed = verifyApprovalSet({
@@ -529,7 +543,13 @@ export async function runApply(request: ApplyRequest, deps: ApplyDeps): Promise<
     // 15. Evidence replaces the reservation, whatever the outcome.
     const evidence: ApplyEvidence = {
       schemaVersion: 1, environment: sealed.environment, target: { ...sealed.target }, artifactSha256: sealed.artifactSha256,
-      manifestHash: sealed.manifestHash, releaseIdentity: sealed.releaseIdentity, contractSha256: sealed.contractSha256, sourceCommit: sealed.sourceCommit, approvals: confirmed.approvers,
+      manifestHash: sealed.manifestHash, releaseIdentity: sealed.releaseIdentity, contractSha256: sealed.contractSha256, targetSha256: sealed.targetSha256,
+      decisions: {
+        authorized: { operation: "APPLY", contractSha256: readmitted.authorization.contractSha256, authorizationSha256: readmitted.authorization.authorizationSha256 },
+        ready: { engineBinarySha256: sealed.provenance.engineBinarySha256, qualificationEvidenceHash: ready.qualificationEvidenceHash },
+        execute: { requesterId: reconfirmedRequest.requesterId, approverIds: confirmed.approvers.map((a) => a.approverId) },
+      },
+      sourceCommit: sealed.sourceCommit, approvals: confirmed.approvers,
       requester: { requesterId: reconfirmedRequest.requesterId, nonce: sealed.request!.statement.nonce },
       adapter: { adapterVersion: engine.applyAdapter.adapterVersion, argvDigest: engine.applyAdapter.argvDigest },
       toolVersions: { engine: sealed.engineVersion }, outcome, exitCode: applied.exitCode, startedAt, finishedAt: now().toISOString(),
@@ -587,7 +607,7 @@ const CLEANUP_PURPOSE = "cleanup-recovery";
 /**
  * The proposal must be exactly what this run's records derive. The blueprint and the observation are read back from the
  * ledger and must hash to what the proposal names; the proposal is then rebuilt from them, the sealed plan's change list
- * and the pinned contract (the same ownership classes and protections `buildCleanupProposal` applies, with the identities
+ * and the reviewed contract (the same ownership classes and protections `buildCleanupProposal` applies, with the identities
  * configured now) and must hash to the proposal handed in. A list that names a resource this run did not create, a
  * protected backend or identity, or a resource of another run, or that leaves one out, is refused before anything is
  * reserved or consumed. A proposal's self-hash alone proves only that its own fields agree with each other.
@@ -642,7 +662,7 @@ export async function runCleanup(request: CleanupRequest, deps: ApplyDeps): Prom
   const env = deps.env ?? process.env;
 
   if (!isRecord(request)) return refuse("HUMAN_INVOCATION_REQUIRED", "A cleanup is run by a person.");
-  const admitted = admit(deps, request);
+  const admitted = admit(deps, request, "CLEANUP");
   if (!admitted.ok) return admitted;
   const { contract, spec } = admitted;
   const engine = engineOf(contract);
@@ -659,17 +679,24 @@ export async function runCleanup(request: CleanupRequest, deps: ApplyDeps): Prom
     return refuse("SOURCE_CHANGED", "This cleanup was proposed from product commit " + proposal.sourceCommit.slice(0, 12) + ", but " + running.slice(0, 12) +
       " is running. Nothing was consumed. Run from that commit, or propose and approve the cleanup again.");
   }
-  if (proposal.environment !== request.environment || !sameTarget(proposal.target, request.target) || proposal.contractSha256 !== pilotContractSha256(contract) ||
+  // The run is bound by its own records (the apply evidence's contract hash and target, below); the cleanup is AUTHORIZED by the
+  // current committed contract the proposal bound (owner question N3 of #313's review: revoking APPLY must not strand a cleanup).
+  if (proposal.environment !== request.environment || !sameTarget(proposal.target, request.target) ||
     proposal.provider !== contract.provider || proposal.engine !== contract.engine) {
     return refuse("PROPOSAL_INVALID", "The cleanup proposal was made for another environment, target, engine or pilot contract.");
   }
+  const changedPolicy = authorizationChanged({ contractSha256: proposal.authorizingContractSha256, authorizationSha256: proposal.authorizationSha256 }, admitted.authorization);
+  if (changedPolicy) return changedPolicy;
+  // The run's full target (region and tenant included) is still the contract's: authorized by a later contract, never moved (R1).
+  const moved = targetMoved(proposal.targetSha256, contract, proposal.environment);
+  if (moved) return moved;
   if (proposal.deletes.length === 0) return refuse("PROPOSAL_INVALID", "The proposal lists nothing to delete: every resource this run created is already gone. Verify leftovers instead; nothing was run.");
   // The run it cleans up: recorded, successful, and exactly the evidence the proposal hashed.
   const applied = await readAppliedEvidence(proposal.artifactSha256, evidenceDir);
   if (!applied || sha256(canonicalJson(applied as never)) !== proposal.applyEvidenceSha256 || applied.outcome !== "SUCCEEDED") {
     return refuse("RUN_RECORD_MISSING", "The apply this proposal cleans up is not recorded as a successful apply with this evidence. Nothing was run.");
   }
-  if (applied.environment !== proposal.environment || !sameTarget(applied.target, proposal.target) || applied.contractSha256 !== proposal.contractSha256) {
+  if (applied.environment !== proposal.environment || !sameTarget(applied.target, proposal.target) || applied.contractSha256 !== proposal.contractSha256 || applied.targetSha256 !== proposal.targetSha256) {
     return refuse("PROPOSAL_INVALID", "The apply evidence and the proposal name different environments, targets or contracts.");
   }
   // The sealed plan that apply ran from, verified against its own hashes as runApply does, and the one the proposal names.
@@ -719,6 +746,8 @@ export async function runCleanup(request: CleanupRequest, deps: ApplyDeps): Prom
   const scratch = createPrivateDirectory("alz-preview-", deps.scratchParent);
   const run: EngineCleanupRun = engine.openCleanup({
     scratchDir: scratch.path, env, toolDirs: deps.toolDirs, manifest, pinned: contract.targets[proposal.environment]!, spec, target: proposal.target, engineVersion: proposal.engineVersion,
+    // CDK: the stack the run created, by its id (blueprint container), so a same-named stack is never cleaned up in its place.
+    runStackId: blueprint.blueprint.container?.identifier,
   });
   const unregisterSecrets = registerCleanup(run.removeSecrets);
   let snapshot: ImmutableSnapshot | undefined;
@@ -775,8 +804,12 @@ export async function runCleanup(request: CleanupRequest, deps: ApplyDeps): Prom
     await yieldToSignals();
     const late = interruptedBeforeEngine();
     if (late) return late;
-    const readmitted = admit(deps, request);
+    const readmitted = admit(deps, request, "CLEANUP");
     if (!readmitted.ok) return readmitted;
+    const lateChange = authorizationChanged({ contractSha256: proposal.authorizingContractSha256, authorizationSha256: proposal.authorizationSha256 }, readmitted.authorization);
+    if (lateChange) return lateChange;
+    const lateMove = targetMoved(proposal.targetSha256, readmitted.contract, proposal.environment);
+    if (lateMove) return lateMove;
     // The requester again, against the re-admitted contract, right before the approvals are consumed.
     const reconfirmedRequest = verifyRequestSignature({
       request: proposal.request, artifactSha256: proposal.proposalSha256, environment: proposal.environment, requesterId: proposal.requesterId, contract: readmitted.contract, subject: "CLEANUP_REQUEST",
@@ -807,7 +840,13 @@ export async function runCleanup(request: CleanupRequest, deps: ApplyDeps): Prom
     const kept = outcome === "SUCCEEDED" ? {} : await keepCleanupRecoveryFiles(run.recoveryFiles(), proposal.proposalSha256);
     const evidence: CleanupEvidence = {
       schemaVersion: 1, kind: "CLEANUP", environment: proposal.environment, target: { ...proposal.target }, proposalSha256: proposal.proposalSha256, artifactSha256: proposal.artifactSha256,
-      applyEvidenceSha256: proposal.applyEvidenceSha256, contractSha256: proposal.contractSha256, sourceCommit: proposal.sourceCommit, approvals: confirmed.approvers,
+      applyEvidenceSha256: proposal.applyEvidenceSha256, contractSha256: proposal.contractSha256,
+      decisions: {
+        authorized: { operation: "CLEANUP", contractSha256: readmitted.authorization.contractSha256, authorizationSha256: readmitted.authorization.authorizationSha256 },
+        ready: { engineBinarySha256: engine.binarySha256(deps.toolDirs, env) ?? null, qualificationEvidenceHash: null },
+        execute: { requesterId: reconfirmedRequest.requesterId, approverIds: confirmed.approvers.map((a) => a.approverId) },
+      },
+      sourceCommit: proposal.sourceCommit, approvals: confirmed.approvers,
       requester: { requesterId: reconfirmedRequest.requesterId, nonce: (proposal.request as NonNullable<CleanupProposal["request"]>).statement.nonce },
       adapter: { adapterVersion: engine.cleanupAdapter.adapterVersion, argvDigest: engine.cleanupAdapter.argvDigest }, toolVersions: { engine: proposal.engineVersion }, deletes: addresses,
       outcome, exitCode: destroyed.exitCode, startedAt, finishedAt: now().toISOString(),

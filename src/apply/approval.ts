@@ -7,7 +7,7 @@ import { NonceStoreError, type NonceStore } from "./nonces.js";
 
 /**
  * The single place approvals are verified (docs/act-pilot-plan.md, item 3).
- * An approval is an Ed25519 signature by a key on the pinned contract's
+ * An approval is an Ed25519 signature by a key on the reviewed contract's
  * approver allowlist over a statement binding artifact, environment, exact
  * target, expiry and a one-time nonce. A typed name is never proof, and neither
  * is the operator's OS username. Who requested is established by the requester's
@@ -118,7 +118,7 @@ export type RequestVerdict =
 
 /**
  * Verifies the requester signature a sealed plan (subject REQUEST, the default) or a cleanup proposal (CLEANUP_REQUEST) carries
- * against the pinned contract's allowlist (any allowlisted key may request for any environment: the entry's `environments`
+ * against the reviewed contract's allowlist (any allowlisted key may request for any environment: the entry's `environments`
  * governs approving, and a request authorizes nothing). The statement must name exactly this artifact (the plan's artifact
  * hash, or the proposal's own hash), environment and the record's own requester id.
  */
@@ -174,7 +174,7 @@ export type VerifyApprovalsInput = {
   artifactSha256: string;
   environment: ApplyEnvironment;
   target: ResolvedTarget;
-  /** The pinned contract: the allowlist, the counts and the age limit are read from it. The caller has already checked `target` against the contract (targetForEnvironment); approvals are bound to exactly this target. */
+  /** The reviewed contract: the allowlist, the counts and the age limit are read from it. The caller has already checked `target` against the contract (targetForEnvironment); approvals are bound to exactly this target. */
   contract: PilotContract;
   now: Date;
   nonces: NonceStore;

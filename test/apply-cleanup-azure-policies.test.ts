@@ -17,7 +17,7 @@ import { pilotUnitOf } from "../src/apply/unit.js";
 import { removeTree } from "../src/teardown/driver/cleanup.js";
 import {
   ARM_FEDERATED_TOKEN_CANARY, DEV_TARGET, NOW, POLICY, SOURCE_COMMIT, approvalFor, azureStateResource, behave as behaveIn, callsOf, contractJson, fakeArmHttp, human, identityEnv,
-  installFakeTerraform, keys, pinPathOf, targetOf, testFixtureForgeQualificationEvidence, writePinnedContract, writeProject, REQUESTER, reHashedProposal, type ArmBehavior, type Behavior,
+  installFakeTerraform, keys, targetOf, testFixtureForgeQualificationEvidence, writeReviewedContract, writeProject, REQUESTER, reHashedProposal, type ArmBehavior, type Behavior,
 } from "./helpers/apply-fixtures.js";
 
 // Azure Terraform DEV removal, end to end with the fake engine and the fake Resource Manager (owner decision "Unpin the ACT decision",
@@ -71,8 +71,8 @@ const DELETED = ["azurerm_log_analytics_workspace.pilot", "azurerm_policy_defini
   "azurerm_resource_policy_assignment.pilot", "azurerm_subscription_policy_assignment.pilot"];
 const PROTECTED = ["azurerm_management_group_policy_assignment.mg", "azurerm_policy_definition.other", "azurerm_resource_group_policy_exemption.pilot", "azurerm_role_assignment.pilot", "azurerm_subscription_policy_assignment.shared"];
 
-const fixtureContractPath = (() => { const path = join(fresh("contract"), "act-pilot-contract.json"); writePinnedContract(path, contractJson(KILL)); return path; })();
-const UNIT = pilotUnitOf({ provider: "AZURE", contractSha256: pilotContractSha256(loadPilotContract(fixtureContractPath, pinPathOf(fixtureContractPath)) as PilotContract), environment: "DEV", target: targetOf("DEV") });
+const fixtureContractPath = (() => { const path = join(fresh("contract"), "act-pilot-contract.json"); writeReviewedContract(path, contractJson(KILL)); return path; })();
+const UNIT = pilotUnitOf({ provider: "AZURE", contractSha256: pilotContractSha256(loadPilotContract(fixtureContractPath) as PilotContract), environment: "DEV", target: targetOf("DEV") });
 const behave = (behavior: Behavior = {}) => behaveIn(toolDir, KILL, { applyAdvance: true, showOnlyConfigured: true, showResources: CREATES, stateResources: STATE, unitTags: { ...UNIT.tags }, unitTagAttribute: "tags", ...behavior });
 const calls = () => callsOf(toolDir);
 const applyCalls = () => calls().filter((c) => c.args[0] === "apply");
@@ -88,18 +88,18 @@ function world(cloud: ArmBehavior = { existing: EXISTING, tagged: [RG, LAW] }): 
   behave();
   const dirs = { scratch: fresh("scratch"), evidence: fresh("evidence"), nonces: fresh("nonces") };
   const contractPath = join(fresh("contract"), "act-pilot-contract.json");
-  writePinnedContract(contractPath, contractJson(KILL));
+  writeReviewedContract(contractPath, contractJson(KILL));
   const arm = fakeArmHttp(cloud);
   return {
     dirs, contractPath, arm,
     deps: {
-      sourceCommit: SOURCE_COMMIT, contractPath, contractPinPath: pinPathOf(contractPath), qualificationDir: vaultDir, evidenceDir: dirs.evidence, nonces: openNonceStore(dirs.nonces),
+      sourceCommit: SOURCE_COMMIT, contractPath, qualificationDir: vaultDir, evidenceDir: dirs.evidence, nonces: openNonceStore(dirs.nonces),
       env: { ...identityEnv("DEV"), ALZ_DISCOVERY_ARM_OIDC_TOKEN_FILE: tokenFile }, now: () => NOW, scratchParent: dirs.scratch, toolDirs: [toolDir], killPollMs: 40, killGraceMs: 400, arm: arm.http,
     },
   };
 }
 const observeDeps = (w: World, now: Date = new Date(NOW.getTime() + 60_000)): ObserveDeps => ({
-  contractPath: w.contractPath, contractPinPath: pinPathOf(w.contractPath), evidenceDir: w.dirs.evidence, env: w.deps.env, toolDirs: w.deps.toolDirs, scratchParent: w.dirs.scratch, now: () => now, arm: w.arm.http,
+  contractPath: w.contractPath, evidenceDir: w.dirs.evidence, env: w.deps.env, toolDirs: w.deps.toolDirs, scratchParent: w.dirs.scratch, now: () => now, arm: w.arm.http,
 });
 async function proposed(w: World) {
   const target = targetOf("DEV");

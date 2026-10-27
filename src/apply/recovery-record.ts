@@ -11,7 +11,7 @@ import type { ApplyEvidence, PilotContract } from "./types.js";
  * The product-owned producer of the `act-run-recovery` release gate's evidence (src/qualification/release-admission.ts, mode
  * ACT_RECOVERY; the contract in src/qualification/recovery-gate.ts), following `record-live`: it reads the interrupted apply's
  * evidence and the evidence of the apply that followed it from the encrypted ledger, derives the gate's fields from those
- * records and the pinned contract, and writes identifiers, hashes and times only, after the person who ran them attests.
+ * records and the reviewed contract, and writes identifiers, hashes and times only, after the person who ran them attests.
  * Nothing is taken as typed input but the attestation and the host name; a run that does not show a recovery is refused by
  * name and nothing is written, so no SYNTHETIC recovery record exists to relabel. It starts no engine and reads no cloud.
  */

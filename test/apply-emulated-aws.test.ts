@@ -22,7 +22,7 @@ import { removeTree } from "../src/teardown/driver/cleanup.js";
 import { buildManifest } from "../src/teardown/manifest.js";
 import { captureProjectFiles } from "../src/teardown/snapshot.js";
 import {
-  AWS_DEV_TARGET, AWS_REGION, NOW, POLICY, REQUESTER, SOURCE_COMMIT, approvalFor, awsContractJson, awsIdentityEnv, awsRoleArn, human, pinPathOf, sha, writePinnedContract,
+  AWS_DEV_TARGET, AWS_REGION, NOW, POLICY, REQUESTER, SOURCE_COMMIT, approvalFor, awsContractJson, awsIdentityEnv, awsRoleArn, human, sha, writeReviewedContract,
 } from "./helpers/apply-fixtures.js";
 
 /**
@@ -200,7 +200,7 @@ describe("AWS emulated backend simulation: real Terraform, moto S3 with use_lock
 
     // The DEV contract names the fixture bucket and an obviously fake 12-digit account; QA and PROD are the fixture's other fakes.
     contractPath = join(fresh("contract"), "act-pilot-contract.json");
-    writePinnedContract(contractPath, awsContractJson(KILL));
+    writeReviewedContract(contractPath, awsContractJson(KILL));
 
     // TEST FIXTURE: the qualification attestation is forged here because no person can attest an emulator run. It records the REAL
     // binary hash and version. It is not evidence of identity separation and must never be copied into production code.
@@ -229,7 +229,7 @@ describe("AWS emulated backend simulation: real Terraform, moto S3 with use_lock
     env.ALZ_NETWORK_HTTPS_PROXY = emulator.proxyUrl;
     env.ALZ_NETWORK_SSL_CERT_FILE = emulator.caFile;
     deps = {
-      contractPath, contractPinPath: pinPathOf(contractPath), qualificationDir: vault, evidenceDir: evidence, nonces: openNonceStore(nonces), env,
+      contractPath, qualificationDir: vault, evidenceDir: evidence, nonces: openNonceStore(nonces), env,
       // The product commit a seal binds (a fixture value: the test runs from a temporary directory, not from a checkout).
       now: () => NOW, scratchParent: scratch, toolDirs: [toolDir, "/usr/bin", "/bin"], killPollMs: 100, killGraceMs: 30_000, sourceCommit: SOURCE_COMMIT,
     };

@@ -1,6 +1,6 @@
 # ACT DEV release: six-path baseline
 
-Status: written 2026-10-27 against `origin/main` at `0b0aa2b` (merge of #296) and the open PRs #287, #289, #293, #297 and #298, for the owner decision "rebaseline of the narrow ACT-DEV release" (issue #39, comment 6443352284). It is the input to the canonical work graph (`config/release/work-graph.json`, owned by the governance lane). This page enables nothing: ACT stays DISABLED, `config/act-pilot-contract.sha256` ships empty, and no agent writes a pin or policy, holds an approver key or initiates an apply.
+Status: written 2026-10-27 against `origin/main` at `0b0aa2b` (merge of #296) and the open PRs #287, #289, #293, #297 and #298, for the owner decision "rebaseline of the narrow ACT-DEV release" (issue #39, comment 6443352284). It is the input to the canonical work graph (`config/release/work-graph.json`, owned by the governance lane). This page enables nothing: ACT stays DISABLED, the repository ships no pilot contract (#313 retires the old `config/act-pilot-contract.sha256` pin; the contract's `authorize` entry is the switch), and no agent writes the contract, holds an approver key or initiates an apply.
 
 Every status on this page is read from code, tests and config, not from chat. **No live evidence exists for any path.** SYNTHETIC means a fake engine or fake cloud CLI; EMULATED means a real engine against a local emulator. Neither is live provider qualification (`AGENTS.md`).
 
@@ -21,7 +21,7 @@ The apply path already separates generic modules from per-provider and per-engin
 
 | Component | Module(s) | Shared by | Fork point |
 |---|---|---|---|
-| Contract (authorization today) | `src/apply/contract.ts`, `contract-check.ts` | all | `validate` DEV-only rule: AWS+TERRAFORM on `main`, +AZURE in #298. Contract-based authorization lane (no PR yet) replaces the pin with default-deny entries |
+| Contract (authorization today) | `src/apply/contract.ts`, `contract-check.ts` | all | `validate` DEV-only rule: AWS+TERRAFORM on `main`, +AZURE in #298. Contract-based authorization (#313) replaces the pin with the contract's default-deny `authorize` entry and folds #298 into one DEV-only rule for every implemented path |
 | Requester signing, approvals, quorum | `src/apply/approval.ts`, `seal.ts`, `nonces.ts` | all | none |
 | Seal, driver, ledger, kill switch | `src/apply/seal.ts`, `driver.ts`, `ledger.ts`, `run-records.ts` | all | engine spec `plan` / `openApply` / `openCleanup` |
 | Readiness and preflight | `src/apply/readiness.ts`, `identities.ts` | all | spec `identities`, `identityTargetVariables`, `ambientRefusal` |
@@ -112,14 +112,14 @@ Sizes: S (under a day), M (one to three days), L (more than three days). OWNER i
 
 | Path | # | Item | Who | Size | Depends on |
 |---|---|---|---|---|---|
-| shared | X1 | Contract-based authorization (default-deny entries by provider, engine, account, environment, operation; digest bound at seal, approval, admission, execution; tested migration from the pin) | ENGINEERING | L | before any path's enablement commit; pin fallback (pin-prep lane) if it would delay path 1 |
+| shared | X1 | Contract-based authorization (default-deny entries by provider, engine, account, environment, operation; digest bound at seal, approval, admission, execution; tested migration from the pin; #313) | ENGINEERING | L | before any path's enablement commit; pin fallback (pin-prep lane) if it would delay path 1 |
 | shared | X2 | Removal lane PR A (run-created policy allowlist incl. Azure) and PR B (generated-artifact removal) | ENGINEERING | M + M | X1's authorized call site for PR B |
 | shared | X3 | Release wiring for new paths: `ACT_RELEASE_PATHS`, `scope.json` `actPaths`, `status.json` rows, `preview-gate.ts` `PROVIDERS` | ENGINEERING | S per path | the path's engine or provider spec |
 | 1 | A0 | Merge #297 (backend pinning) and #293 (DISCOVERY scope) | ENGINEERING | S (review) | none |
 | 1 | A1 | Re-run `test/apply-emulated-aws.test.ts` on the pinned path; record it | ENGINEERING | S | A0 |
 | 1 | A2 | Correct `act:aws-terraform` `nextAction` and the G0 page (G1b is done) | ENGINEERING | S | `status.json` owner |
 | 1 | A3 | G0 roles, DEV account, issuer, bootstrap, keys, contract, preflight | OWNER | M | A0 (#293) |
-| 1 | A4 | Enablement commit, `qualify`, one supervised apply, `record-live`, cleanup, admission | OWNER | M | A1, A3, X1 or pin |
+| 1 | A4 | Enablement commit, `qualify`, one supervised apply, `record-live`, cleanup, admission | OWNER | M | A1, A3, X1 |
 | 2 | C1 | DEV-only exception for AWS CDK (owner decision, then `contract.ts` and tests) | OWNER + ENGINEERING | S | X1 (the entry shape) |
 | 2 | C2 | Verify the UNVERIFIED CDK/CloudFormation facts: an emulated or recorded-output harness, then the doc list in `docs/act-pilot-apply.md` ("CDK") | ENGINEERING | M | none |
 | 2 | C3 | Bootstrap `engine = "CDK"`, contract, qualify, supervised apply and cleanup | OWNER | M | C1, C2, path 1 live first (journey row) |
@@ -128,7 +128,7 @@ Sizes: S (under a day), M (one to three days), L (more than three days). OWNER i
 | 3 | Z1 | Azure G0 page and DEV-only example contract | ENGINEERING | S | #298 |
 | 3 | Z3 | DEV-only mode for `bootstrap/azure` | ENGINEERING | M | none (workaround: three subscriptions) |
 | 3 | Z4 | DISCOVERY scope review (Reader) | ENGINEERING | S | none |
-| 3 | Z5 | Bootstrap, contract, qualify, supervised apply and cleanup | OWNER | M | Z0 to Z4, X1 or pin |
+| 3 | Z5 | Bootstrap, contract, qualify, supervised apply and cleanup | OWNER | M | Z0 to Z4, X1 |
 | 4 | B0 | Owner choices: deny settings, DEV-only exception for Bicep | OWNER | S | none |
 | 4 | B1 | `BICEP` engine spec: seal (what-if, template bytes), apply (deployment stack), state document, removal-by-update cleanup | ENGINEERING | L | X1 |
 | 4 | B2 | `az` and `bicep` pins; bootstrap identities for the engine | ENGINEERING | M | B0 |

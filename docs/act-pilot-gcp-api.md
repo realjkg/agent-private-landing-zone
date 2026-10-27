@@ -1,6 +1,6 @@
 # ACT pilot path 6: GCP API-native provisioning (`GCP_API`)
 
-Status: engineering only. **ACT = DISABLED**, the pin stays empty, and nothing in this path has run against Google Cloud. All evidence is **SYNTHETIC**. The engine is not admitted: `src/apply/contract.ts` has no `GCP_API` engine or `GCP` provider, so admission refuses any contract that names it, and nothing in the product can reach the engine. The authorization lane admits it later, under the same gates as every path.
+Status: engineering only. **ACT = DISABLED**, the repository ships no pilot contract (the contract's `authorize` entry is the switch; there is no pin), and nothing in this path has run against Google Cloud. All evidence is **SYNTHETIC**. The engine is not admitted: `src/apply/contract.ts` names GCP API-native only as a planned path, so admission refuses a contract that names it with `NOT_IMPLEMENTED`, and nothing in the product can reach the engine. The authorization lane admits it later, under the same gates as every path.
 
 Owner decision 6443352284 names six paths for the narrow ACT-DEV release. The coordinator default in 6443800275 picks the engine for path 6: a small typed request engine, chosen over Infrastructure Manager, which is Terraform underneath and would duplicate path 5.
 

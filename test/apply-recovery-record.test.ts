@@ -18,9 +18,9 @@ import { INTERRUPTED_OUTCOMES, RECOVERY_GATE_ID, recoveryConditionsOf } from "..
 import { PRODUCTION_RELEASE_GATES, reviewProductionRelease, type ReleaseGateSubmission } from "../src/qualification/release-admission.js";
 import { removeTree } from "../src/teardown/driver/cleanup.js";
 import {
-  NOW, POLICY, SOURCE_COMMIT, behave as behaveIn, contractJson, identityEnv, installFakeTerraform, pinPathOf, targetOf, testFixtureForgeQualificationEvidence,
-  writePinnedContract, writeProject, type Behavior, type Project,
-  requesterArgs,
+  NOW, POLICY, SOURCE_COMMIT, behave as behaveIn, contractJson, identityEnv, installFakeTerraform, targetOf, testFixtureForgeQualificationEvidence,
+  writeReviewedContract, writeProject, type Behavior, type Project,
+  requesterArgs, decisionsFor,
 } from "./helpers/apply-fixtures.js";
 
 // The product-owned producer of the `act-run-recovery` release gate's evidence (src/apply/recovery-record.ts, `./alz apply
@@ -58,15 +58,15 @@ type World = { deps: (term: Terminal, over?: Partial<ApplyCliDeps>) => ApplyCliD
 async function world(): Promise<World> {
   behave();
   const contractPath = join(fresh("contract"), "act-pilot-contract.json");
-  writePinnedContract(contractPath, contractJson(KILL));
+  writeReviewedContract(contractPath, contractJson(KILL));
   const vault = fresh("vault");
   await testFixtureForgeQualificationEvidence(vault);
   const releaseEvidenceDir = join(root, "evidence-" + (counter += 1));
   const ledger = fresh("ledger");
   return {
-    contractPath, releaseEvidenceDir, ledger, contract: loadPilotContract(contractPath, pinPathOf(contractPath)) as PilotContract,
+    contractPath, releaseEvidenceDir, ledger, contract: loadPilotContract(contractPath) as PilotContract,
     deps: (term, over = {}) => ({
-      sourceCommit: SOURCE_COMMIT, terminal: term, env: identityEnv("DEV"), now: () => NOW, operatorId: "operator.fixture", contractPath, contractPinPath: pinPathOf(contractPath),
+      sourceCommit: SOURCE_COMMIT, terminal: term, env: identityEnv("DEV"), now: () => NOW, operatorId: "operator.fixture", contractPath,
       qualificationDir: vault, evidenceDir: ledger, nonces: openNonceStore(fresh("nonces")), scratchParent: fresh("scratch"), toolDirs: [toolDir], releaseEvidenceDir, ...over,
     }),
   };
@@ -95,7 +95,7 @@ async function seal(w: World, salt: string): Promise<Sealed> {
 /** Apply evidence for a sealed plan, as the driver would have recorded it; `over` shapes the outcome, the times and the approvals. */
 const evidenceFor = (w: World, s: Sealed, over: Partial<ApplyEvidence>): ApplyEvidence => ({
   schemaVersion: 1, environment: s.sealed.environment, target: { ...s.sealed.target }, artifactSha256: s.sealed.artifactSha256, manifestHash: s.sealed.manifestHash,
-  releaseIdentity: s.sealed.releaseIdentity, contractSha256: pilotContractSha256(w.contract), sourceCommit: SOURCE_COMMIT,
+  releaseIdentity: s.sealed.releaseIdentity, contractSha256: pilotContractSha256(w.contract), targetSha256: s.sealed.targetSha256, decisions: decisionsFor(pilotContractSha256(w.contract)), sourceCommit: SOURCE_COMMIT,
   approvals: [{ approverId: "alice", issuedAt: minutes(-30) }], requester: { requesterId: "carol", nonce: "0".repeat(32) }, adapter: { adapterVersion: "terraform-apply-1.0.0", argvDigest: "4".repeat(64) }, toolVersions: { engine: "1.9.5" },
   outcome: "SUCCEEDED", exitCode: 0, startedAt: minutes(-10), finishedAt: minutes(0), authority: APPLY_AUTHORITY, ...over,
 });

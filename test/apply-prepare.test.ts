@@ -16,8 +16,8 @@ import { LOCK_FILE } from "../src/teardown/driver/adapters/project-copy.js";
 import { validateManifestForRequest, verifyManifest } from "../src/teardown/manifest.js";
 import { captureProjectFiles } from "../src/teardown/snapshot.js";
 import {
-  awsContractJson, awsTargetOf, contractJson, ENGINE_VERSION, installFakeTerraform, LOCK, pinPathOf, sha, targetOf,
-  testFixtureForgeQualificationEvidence, writePinnedContract, writeProject,
+  awsContractJson, awsTargetOf, contractJson, ENGINE_VERSION, installFakeTerraform, LOCK, sha, targetOf,
+  testFixtureForgeQualificationEvidence, writeReviewedContract, writeProject,
 } from "./helpers/apply-fixtures.js";
 import { cdkContractJson, cdkTargetOf, installFakeAws, PARAMETER_CANARY, writeAssembly } from "./helpers/cdk-fixtures.js";
 
@@ -39,8 +39,8 @@ function setup(contract: (killPath: string) => Record<string, unknown>, tools: "
   if (tools === "aws") installFakeAws(toolDir);
   const killPath = join(dir, "kill-switch");
   const contractPath = join(dir, "contract.json");
-  writePinnedContract(contractPath, contract(killPath));
-  return { dir, killPath, toolDir, deps: { contractPath, pinPath: pinPathOf(contractPath), qualificationDir: join(dir, "vault"), toolDirs: [toolDir] } };
+  writeReviewedContract(contractPath, contract(killPath));
+  return { dir, killPath, toolDir, deps: { contractPath, qualificationDir: join(dir, "vault"), toolDirs: [toolDir] } };
 }
 
 const awsTf = (over: Record<string, unknown> = {}) => (kill: string) => awsContractJson(kill, { policyVersion: POLICY, ...over });
@@ -145,7 +145,7 @@ test("owner prerequisites stop preparation with the owner named, and never offer
   const noPolicy = setup((kill) => awsContractJson(kill));
   assert.equal(refused(await prepareApply({ environment: "DEV", projectRoot: terraformProject(noPolicy) }, noPolicy.deps), "POLICY_VERSION_MISSING", "OWNER").alternative, undefined);
 
-  const devOnly = setup(awsTf({ enabledEnvironments: ["DEV"], targets: { DEV: { accountId: awsTargetOf("DEV").account, region: "us-east-1", backend: awsTargetOf("DEV").backend, workspace: "default" } }, requiredApprovals: { DEV: 1 } }));
+  const devOnly = setup(awsTf({ enabledEnvironments: ["DEV"], targets: { DEV: { accountId: awsTargetOf("DEV").account, region: "us-east-1", backend: awsTargetOf("DEV").backend, workspace: "default" } }, requiredApprovals: { DEV: 1 }, authorize: { DEV: ["APPLY", "CLEANUP"] } }));
   refused(await prepareApply({ environment: "PROD", projectRoot: terraformProject(devOnly, "PROD") }, devOnly.deps), "TARGET_NOT_IN_CONTRACT", "OWNER");
   refused(await prepareApply({ environment: "STAGING", projectRoot: terraformProject(devOnly) }, devOnly.deps), "ENVIRONMENT_INVALID", "OPERATOR");
 });
@@ -153,7 +153,7 @@ test("owner prerequisites stop preparation with the owner named, and never offer
 test("a missing engine tool explains the supported alternative for that provider and says what it requires", async () => {
   const aws = setup(awsTf(), "none");
   const awsRefusal = refused(await prepareApply({ environment: "DEV", projectRoot: terraformProject(aws) }, aws.deps), "TOOL_UNAVAILABLE", "TOOL");
-  assert.match(awsRefusal.alternative ?? "", /pin a contract for CDK/);
+  assert.match(awsRefusal.alternative ?? "", /commit a contract for CDK/);
   assert.match(awsRefusal.alternative ?? "", /own reviewed contract, its own preview and its own approvals/);
 
   const azure = setup(azureTf(), "none");
@@ -260,11 +260,11 @@ test("the contract's policyVersion is optional, kept exactly, and refused when i
   const dir = join(root, "policy");
   mkdirSync(dir);
   const path = join(dir, "contract.json");
-  writePinnedContract(path, awsContractJson(join(dir, "kill"), { policyVersion: POLICY }));
-  const loaded = loadPilotContract(path, pinPathOf(path));
+  writeReviewedContract(path, awsContractJson(join(dir, "kill"), { policyVersion: POLICY }));
+  const loaded = loadPilotContract(path);
   assert.equal("reason" in loaded ? "" : loaded.policyVersion, POLICY);
-  writePinnedContract(path, awsContractJson(join(dir, "kill"), { policyVersion: "bad\nvalue" }));
-  const bad = loadPilotContract(path, pinPathOf(path));
+  writeReviewedContract(path, awsContractJson(join(dir, "kill"), { policyVersion: "bad\nvalue" }));
+  const bad = loadPilotContract(path);
   assert.equal("reason" in bad && bad.code, "CONTRACT_INVALID");
 });
 

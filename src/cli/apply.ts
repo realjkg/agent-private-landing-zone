@@ -1,5 +1,5 @@
 import { createPrivateKey, randomBytes } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -13,14 +13,14 @@ import { readCleanupEvidence } from "../apply/ledger.js";
 import { actGateId } from "../qualification/release-admission.js";
 import { COMMIT, ENVIRONMENTS, stripInvisible } from "../apply/constants.js";
 import {
-  contractRefusal, isKillSwitchActive, loadPilotContract, pilotContractSha256, repoPaths, requireNotApplied, targetForEnvironment, writeQualificationEvidence, type Refusal,
+  authorizationChanged, authorizeContract, contractRefusal, targetMoved, loadPilotContract, pilotContractSha256, repoPaths, requireNotApplied, targetForEnvironment, writeQualificationEvidence, type Refusal,
 } from "../apply/contract.js";
 import { channelMismatchMessage } from "../apply/channel.js";
 import { tagLine } from "../apply/unit.js";
 import { liveRecordOf, readAppliedEvidence, type LiveAcceptanceRecord } from "../apply/live-record.js";
 import { admissionRecordOf, buildPreviewGateEvidence } from "../apply/preview-evidence.js";
 import { buildRecoveryEvidence, recoveryAdmissionRecordOf } from "../apply/recovery-record.js";
-import { assessReadiness } from "../apply/readiness.js";
+import { actDecisions } from "../apply/readiness.js";
 import { checkDraftContract, contractCheckLines } from "../apply/contract-check.js";
 import { prepareApply, writePreparation, type Prepared, type PrepareRefusal } from "../apply/prepare.js";
 import { openNonceStore } from "../apply/nonces.js";
@@ -54,7 +54,7 @@ import { EXIT, installSignalCleanup, processTerminal, targetString, type HumanTe
 // src/agent, src/operations or src/operator-ui imports this module except
 // src/cli/ui-channel.ts, the console's one bridge (test/apply-boundary.test.ts).
 // A workflow runs in ONE channel, CLI or UI, bound into the sealed plan.
-// ACT stays DISABLED unless a valid, pinned pilot contract enables it.
+// ACT stays DISABLED unless a valid, committed pilot contract authorizes it (its authorize entry).
 // The approver allowlist is in that contract and qualification is verified from
 // vault evidence, so neither is a file an operator names.
 
@@ -64,8 +64,7 @@ const APPLY_USAGE = [
   "  ./alz apply seal --request REQUEST.json --manifest MANIFEST.json --requester ID --key REQUESTER_KEY.pem",
   "  ./alz apply approve --bundle REVIEW_BUNDLE.json --key APPROVER_KEY.pem --approver ID",
   "  ./alz apply apply --request REQUEST.json --manifest MANIFEST.json --sealed SEALED_PLAN --approval APPROVAL.json [--approval APPROVAL.json ...]",
-  "  ./alz apply status [--sealed SEALED_PLAN]",
-  "  ./alz apply pin",
+  "  ./alz apply status [--environment DEV|QA|PROD] [--sealed SEALED_PLAN]",
   "  ./alz apply contract-check --file DRAFT.json",
   "  ./alz apply record-live --sealed SEALED_PLAN",
   "  ./alz apply record-recovery --sealed INTERRUPTED_SEALED_PLAN --resumed RESUMED_SEALED_PLAN --target-hardware-id HOST",
@@ -79,7 +78,7 @@ const APPLY_USAGE = [
   "  ./alz apply propose-removal --sealed SEALED_PLAN --requester ID --key REQUESTER_KEY.pem",
   "  ./alz apply remove-workspace --proposal REMOVAL_PROPOSAL.json --sealed SEALED_PLAN --approval APPROVAL.json [--approval APPROVAL.json ...]",
   "      A person at the terminal (or a person in the console wizard, which has its own session token). A workflow runs wholly in one of them. Identities come from the contract's engine: ALZ_DISCOVERY_*, ALZ_STATE_*, ALZ_STATE_WRITE_* and ALZ_APPLY_* (Terraform),",
-  "      or ALZ_DISCOVERY_*, ALZ_CHANGESET_* and ALZ_APPLY_* (CDK). No flag names an engine; the pinned contract does.",
+  "      or ALZ_DISCOVERY_*, ALZ_CHANGESET_* and ALZ_APPLY_* (CDK). No flag names an engine; the reviewed contract does, and its authorize entry is the only switch.",
   "      Exit 0 done, 1 error (nothing spent), 2 BLOCKED (refused before any action), 3 SPENT (approvals consumed or an apply started; read the message before any retry).",
   "      No flag forces, skips, ignores, overrides or pre-answers anything.",
 ].join("\n");
@@ -109,6 +108,11 @@ export type ApplyCliDeps = {
   report?: (event: ApplyReport) => void;
   /** Where `prepare` saves its files; defaults to `.runs/pilot` in the repository. */
   preparationDir?: string;
+  /**
+   * TEST-ONLY SEAM: what resolves the source commit when `sourceCommit` is not given. Production is `resolveSourceCommit`, called with
+   * the repository root and the contract as a file that must equal HEAD's bytes; a test passes a recorder to prove that wiring.
+   */
+  sourceResolver?: typeof resolveSourceCommit;
   /** The product source commit. Production reads it from the checkout or the image's build stamp (`resolveSourceCommit`). */
   sourceCommit?: string;
   /** Where `record-live` writes its record; defaults to config/acceptance/evidence in the repository. */
@@ -123,7 +127,7 @@ export type ApplyCliDeps = {
   observeAws?: AwsCli;
   /** Test seam: the Azure reader's HTTP client (src/observe/azure-rest.ts). Production uses fetch against the two Azure hosts. */
   observeArm?: ArmHttp;
-} & Pick<ApplyDeps, "contractPath" | "contractPinPath" | "qualificationDir" | "evidenceDir" | "nonces" | "scratchParent" | "toolDirs">;
+} & Pick<ApplyDeps, "contractPath" | "qualificationDir" | "evidenceDir" | "nonces" | "scratchParent" | "toolDirs">;
 
 /** Why a command ended, without parsing text: a refusal's code and outcome, or a CLI error's code. */
 export type ApplyReport = { code: string; message: string; outcome?: ApplyOutcome; data?: unknown };
@@ -134,8 +138,7 @@ const SUBCOMMANDS: Readonly<Record<string, Flags>> = {
   seal: { single: ["request", "manifest", "requester", "key"] },
   approve: { single: ["bundle", "key", "approver"] },
   apply: { single: ["request", "manifest", "sealed"], repeated: ["approval"] },
-  status: { single: [], optional: ["sealed"] },
-  pin: { single: [] },
+  status: { single: [], optional: ["sealed", "environment"] },
   "contract-check": { single: ["file"] },
   preflight: { single: ["environment"], optional: ["contract"] },
   prepare: { single: ["environment", "project"], optional: ["aws-cli-version"] },
@@ -286,7 +289,7 @@ async function openSealed(path: string): Promise<LoadedPlan | Refusal> {
   return loaded.ok ? { sealed: loaded.sealed, planBytes: loaded.planBytes } : loaded;
 }
 
-const contractFor = (deps: ApplyCliDeps) => loadPilotContract(deps.contractPath, deps.contractPinPath);
+const contractFor = (deps: ApplyCliDeps) => loadPilotContract(deps.contractPath);
 /** What the contract's engine tells a person. A contract that does not load is refused by the driver after the prompts, so the prompts are the first engine's. */
 const engineNotices = (deps: ApplyCliDeps): EngineNotices => {
   const loaded = contractFor(deps);
@@ -385,14 +388,15 @@ const sealCommand: Command = async (flags, terminal, deps, out) => {
 
 /** The locations and seams the CLI hands the driver; everything else the driver defaults from the repository. */
 const driverPaths = (deps: ApplyCliDeps, sourceCommit: string | undefined = sourceCommitFor(deps)) => ({
-  contractPath: deps.contractPath, contractPinPath: deps.contractPinPath, qualificationDir: deps.qualificationDir,
+  contractPath: deps.contractPath, qualificationDir: deps.qualificationDir,
   scratchParent: deps.scratchParent, toolDirs: deps.toolDirs, sourceCommit,
 });
 
 /** The product commit this command runs from, or undefined (the driver then refuses with SOURCE_UNVERIFIED). The reason goes to stderr. */
 function sourceCommitFor(deps: ApplyCliDeps): string | undefined {
   if (deps.sourceCommit !== undefined) return COMMIT.test(deps.sourceCommit) ? deps.sourceCommit : undefined;
-  const found = resolveSourceCommit(repoPaths().root);
+  // The committed contract is the ACT authorization: its bytes must be HEAD's, not only "clean" to git status.
+  const found = (deps.sourceResolver ?? resolveSourceCommit)(repoPaths().root, process.env, [relative(repoPaths().root, repoPaths().contract)]);
   if (found.ok) return found.commit;
   (deps.stderr ?? ((text: string) => { process.stderr.write(text); }))("NOTICE " + found.reason + "\n");
   return undefined;
@@ -480,6 +484,11 @@ const approveCommand: Command = async (flags, terminal, deps, out) => {
   }
   const pinned = targetForEnvironment(contract, bundle.environment, bundle.target);
   if (!pinned.ok) return blocked(pinned, out);
+  // AUTHORIZED now, and the very authorization the bundle carries: an approver never signs under a changed contract or entry.
+  const authorized = authorizeContract(contract, bundle.environment, "APPLY");
+  if (!authorized.ok) return blocked(authorized, out);
+  const changed = authorizationChanged(bundle, authorized.authorization);
+  if (changed) return blocked(changed, out);
   // The requester's signature verifies against the allowlist before the approver is shown anything, and where the environment
   // forbids a requester-approver (PROD) this approver's id or key must not be the requester's. The driver checks both again.
   const requested = verifyRequestSignature({ request: bundle.request, artifactSha256: bundle.artifactSha256, environment: bundle.environment, requesterId: bundle.requesterId, contract });
@@ -494,7 +503,8 @@ const approveCommand: Command = async (flags, terminal, deps, out) => {
   terminal.write([
     "", "APPROVE AN APPLY OF THIS EXACT PLAN TO " + bundle.environment + " (your signature, valid until " + expiresAt.toISOString() + ", usable once)",
     "  artifact        " + bundle.artifactSha256, "  manifest hash   " + bundle.manifestHash,
-    "  target          " + targetString(bundle.target), "  requested by    " + requested.requesterId + " (signature verified against the allowlist)", "  approver        " + approverId,
+    "  target          " + targetString(bundle.target), targetFieldsLine(contract, bundle.environment), "  requested by    " + requested.requesterId + " (signature verified against the allowlist)", "  approver        " + approverId,
+    "  authorized      APPLY in " + bundle.environment + " by contract " + bundle.contractSha256.slice(0, 12) + ", entry " + bundle.authorizationSha256.slice(0, 12) + " (both signed)",
     ...provenanceLines(bundle), ...unitLines(bundle), "  changes",
     ...changeLines(bundle), "", "The bundle's hashes match the artifact above (recomputed here, not trusted).",
     "Type " + phrase + " to sign (anything else stops here):", "",
@@ -516,7 +526,14 @@ async function approveCleanup(raw: unknown, approverId: string, privateKeyPem: s
   if (proposal.channel !== (deps.channel ?? "CLI")) return blocked({ ok: false, code: "CHANNEL_MISMATCH", message: channelMismatchMessage(proposal.channel) }, out);
   const pinned = targetForEnvironment(contract, proposal.environment, proposal.target);
   if (!pinned.ok) return blocked(pinned, out);
-  if (proposal.contractSha256 !== pilotContractSha256(contract)) return blocked({ ok: false, code: "PROPOSAL_INVALID", message: "The proposal was made under another pilot contract." }, out);
+  // AUTHORIZED by the current committed contract the proposal bound; the run itself is bound by its records (driver).
+  const authorized = authorizeContract(contract, proposal.environment, "CLEANUP");
+  if (!authorized.ok) return blocked(authorized, out);
+  const changed = authorizationChanged({ contractSha256: proposal.authorizingContractSha256, authorizationSha256: proposal.authorizationSha256 }, authorized.authorization);
+  if (changed) return blocked(changed, out);
+  // The run's full target (region and tenant included) is still the contract's; only the authorize entry may differ (R1).
+  const moved = targetMoved(proposal.targetSha256, contract, proposal.environment);
+  if (moved) return blocked(moved, out);
   // The cleanup requester's signature verifies against the allowlist before the approver is shown anything, and in PROD this approver's id or key must
   // not be the requester's: the same rule and the same check as an apply (owner decision 6440801434, item 1). The driver checks both again.
   const requested = verifyRequestSignature({
@@ -531,7 +548,7 @@ async function approveCleanup(raw: unknown, approverId: string, privateKeyPem: s
   const phrase = "APPROVE CLEANUP " + proposal.environment + " " + proposal.proposalSha256.slice(0, 12);
   terminal.write([
     "", "APPROVE A CLEANUP OF EXACTLY THESE RESOURCES IN " + proposal.environment + " (your signature, valid until " + expiresAt.toISOString() + ", usable once, and never valid for an apply)",
-    "  target          " + targetString(proposal.target), "  approver        " + approverId, "  product commit  " + proposal.sourceCommit,
+    "  target          " + targetString(proposal.target), targetFieldsLine(contract, proposal.environment), "  approver        " + approverId, "  product commit  " + proposal.sourceCommit,
     "  requester       " + requested.requesterId + " (signature verified against the allowlist)", ...proposalLines(proposal), "",
     "The proposal's hash was recomputed here and matches. Type " + phrase + " to sign (anything else stops here):", "",
   ].join("\n"));
@@ -547,7 +564,7 @@ async function approveCleanup(raw: unknown, approverId: string, privateKeyPem: s
 
 /** Where the observe steps read and write: the ledger directory and the contract, as the driver has them. */
 const observeDeps = (deps: ApplyCliDeps) => ({
-  contractPath: deps.contractPath, contractPinPath: deps.contractPinPath, evidenceDir: deps.evidenceDir ?? repoPaths().evidence, env: deps.env ?? process.env,
+  contractPath: deps.contractPath, evidenceDir: deps.evidenceDir ?? repoPaths().evidence, env: deps.env ?? process.env,
   toolDirs: deps.toolDirs, scratchParent: deps.scratchParent, now: deps.now, aws: deps.observeAws, arm: deps.observeArm,
 });
 
@@ -574,6 +591,8 @@ const proposalPath = (deps: ApplyCliDeps, proposal: CleanupProposal): string =>
  * that entry's own key, checked before anything is built or written; their id is hashed into the proposal every approver signs.
  */
 const proposeCleanupCommand: Command = async (flags, _terminal, deps, out) => {
+  const unverified = committedSource(deps, out);
+  if (unverified !== undefined) return unverified;
   const requesterId = flags.requester[0];
   if (!SAFE_OPERATOR.test(requesterId)) fail("APPLY_INPUT_INVALID", "--requester is not a usable requester id");
   const requesterKey = readApproverKey(flags.key[0]);
@@ -585,6 +604,9 @@ const proposeCleanupCommand: Command = async (flags, _terminal, deps, out) => {
   if ("reason" in contract) return blocked(contractRefusal(contract), out);
   const keyRefusal = requesterKeyRefusal(contract, requesterId, requesterKey);
   if (keyRefusal) return blocked({ ...keyRefusal, message: keyRefusal.message + " No proposal was written." }, out);
+  // AUTHORIZED for CLEANUP in this environment, before anything is built; the entry's hash is bound into the proposal.
+  const authorized = authorizeContract(contract, sealed.environment, "CLEANUP");
+  if (!authorized.ok) return blocked({ ...authorized, message: authorized.message + " No proposal was written." }, out);
   const records = await loadRunRecords(sealed.artifactSha256, deps.evidenceDir ?? repoPaths().evidence);
   if (!records.ok) return blocked(records, out);
   const built = buildCleanupProposal({
@@ -597,7 +619,7 @@ const proposeCleanupCommand: Command = async (flags, _terminal, deps, out) => {
   const path = proposalPath(deps, proposal);
   mkdirSync(join(path, ".."), { recursive: true, mode: 0o700 });
   writeFileSync(path, JSON.stringify(proposal, null, 2) + "\n", { mode: 0o600 });
-  out.say(["", "CLEANUP PROPOSED (nothing is deleted until it is approved and run)", ...proposalLines(proposal), "", "Saved (private to this account): " + path,
+  out.say(["", "CLEANUP PROPOSED (nothing is deleted until it is approved and run)", ...proposalLines(proposal), targetFieldsLine(contract, proposal.environment), "", "Saved (private to this account): " + path,
     "Next: each approver runs ./alz apply approve --bundle " + path + " --key THEIR_KEY.pem --approver THEIR_ID" +
       (REQUESTER_MAY_APPROVE[proposal.environment] === true ? "" : " (" + proposal.authorization.requiredApprovals + " distinct approvers, none of them the requester " + proposal.requesterId + ")") + "; then ./alz apply cleanup --proposal " + path + " ...", ""].join("\n"));
   out.report({ code: "CLEANUP_PROPOSED", message: "Proposed the deletion of " + proposal.deletes.length + " resource(s); " + proposal.excluded.length + " kept.", data: { path, proposal } });
@@ -658,7 +680,7 @@ function removalBlocked(refusal: RemovalRefusal, out: Out): number {
 }
 
 /** The run a removal is for, from its sealed plan, and where its working files live. */
-const removalRunOf = (sealed: SealedPlan): RemovalRun => ({ artifactSha256: sealed.artifactSha256, manifestHash: sealed.manifestHash, environment: sealed.environment, target: { ...sealed.target }, channel: sealed.channel });
+const removalRunOf = (sealed: SealedPlan): RemovalRun => ({ artifactSha256: sealed.artifactSha256, manifestHash: sealed.manifestHash, environment: sealed.environment, target: { ...sealed.target }, channel: sealed.channel, targetSha256: sealed.targetSha256 });
 const removalLocations = (deps: ApplyCliDeps): RemovalLocations => ({
   preparationDir: deps.preparationDir ?? join(repoPaths().root, ".runs", "pilot"), scratchParent: deps.scratchParent ?? tmpdir(), evidenceDir: deps.evidenceDir ?? repoPaths().evidence,
 });
@@ -671,7 +693,22 @@ const removalPath = (deps: ApplyCliDeps, proposal: WorkspaceRemovalProposal): st
  * requester signature, approval quorum and kill-switch path as a cleanup (owner decision 6443062568, item 2). Asks no phrase: a proposal
  * authorizes nothing by itself.
  */
+/** The run's target fields beyond account, backend and workspace (tenant, region, project), as the contract states them for `env`. */
+function targetFieldsLine(contract: PilotContract, env: ApplyEnvironment): string {
+  const target = Object.hasOwn(contract.targets, env) ? contract.targets[env] : undefined;
+  return "  target fields   " + (target ? Object.entries(accountFieldsOf(specOf(contract), target)).map(([k, v]) => k + "=" + v).join(", ") : "(none)");
+}
+
+/** The pilot commands' uncommitted-checkout refusal, for the proposal and removal commands: the contract that authorizes CLEANUP or REMOVE is the committed one. */
+function committedSource(deps: ApplyCliDeps, out: Out): number | undefined {
+  return sourceCommitFor(deps) === undefined
+    ? blocked({ ok: false, code: "SOURCE_UNVERIFIED", message: "The product source commit could not be established, or the checkout (the contract included) has uncommitted changes. Nothing was proposed, removed or cleaned up. Commit your changes, or run the packaged image." }, out)
+    : undefined;
+}
+
 const proposeRemovalCommand: Command = async (flags, _terminal, deps, out) => {
+  const unverified = committedSource(deps, out);
+  if (unverified !== undefined) return unverified;
   const requesterId = flags.requester[0];
   if (!SAFE_OPERATOR.test(requesterId)) fail("APPLY_INPUT_INVALID", "--requester is not a usable requester id");
   const requesterKey = readApproverKey(flags.key[0]);
@@ -730,7 +767,7 @@ async function approveRemoval(raw: unknown, approverId: string, privateKeyPem: s
   const phrase = "APPROVE REMOVAL " + proposal.environment + " " + proposal.proposalSha256.slice(0, 12);
   terminal.write([
     "", "APPROVE THE REMOVAL OF EXACTLY THESE WORKING FILES IN " + proposal.environment + " (your signature, valid until " + expiresAt.toISOString() + ", usable once, and never valid for an apply)",
-    "  target          " + targetString(proposal.target), "  approver        " + approverId, "  requester       " + requested.requesterId + " (signature verified against the allowlist)", ...removalLines(proposal), "",
+    "  target          " + targetString(proposal.target), targetFieldsLine(contract, proposal.environment), "  approver        " + approverId, "  requester       " + requested.requesterId + " (signature verified against the allowlist)", ...removalLines(proposal), "",
     "The proposal's hash was recomputed here and matches. Type " + phrase + " to sign (anything else stops here):", "",
   ].join("\n"));
   await confirm(terminal, phrase, "approve> ", "APPLY_CONFIRMATION_MISMATCH", "APPROVE_CLEANUP");
@@ -746,6 +783,8 @@ async function approveRemoval(raw: unknown, approverId: string, privateKeyPem: s
  * fresh plan produces and the signed proposal lists is shown, and exactly that list is removed after the person types the phrase.
  */
 const removeWorkspaceCommand: Command = async (flags, terminal, deps, out) => {
+  const unverified = committedSource(deps, out);
+  if (unverified !== undefined) return unverified;
   const approvals = flags.approval.map((path) => {
     const value = readInput(path, "--approval");
     return isRecord(value) ? value as unknown as SignedApproval : fail("APPLY_INPUT_INVALID", "--approval must be a JSON object");
@@ -911,38 +950,21 @@ const applyCommand: Command = async (flags, terminal, deps, out) => {
 
 /** Read-only: the contract, the kill switch and, for a sealed plan, whether it was applied. It never starts an engine. */
 const statusCommand: Command = async (flags, _terminal, deps, out) => {
-  const contract = contractFor(deps);
-  const report: Record<string, unknown> = "reason" in contract
-    ? { act: "DISABLED", code: contract.code, reason: contract.reason }
-    : { act: "PILOT_ENABLED", killSwitch: isKillSwitchActive(contract) };
+  const environment = flags.environment?.[0];
+  if (environment !== undefined && !(ENVIRONMENTS as readonly string[]).includes(environment)) fail("APPLY_ARGUMENT_INVALID", "--environment must be DEV, QA or PROD");
+  // AUTHORIZED, READY and APPROVED/EXECUTE from the one generated view the console shows too.
+  const report: Record<string, unknown> = { ...await actDecisions({
+    contractPath: deps.contractPath, environment: environment as ApplyEnvironment | undefined, qualificationDir: deps.qualificationDir, toolDirs: deps.toolDirs,
+    env: deps.env ?? process.env, now: deps.now,
+  }) };
   if (flags.sealed) {
     const opened = await openSealed(flags.sealed[0]);
     if (!("sealed" in opened)) return blocked(opened, out);
-    const { artifactSha256, environment } = opened.sealed;
-    report.artifact = { artifactSha256, environment, applied: !requireNotApplied(artifactSha256, deps.evidenceDir ?? repoPaths().evidence).ok };
+    const { artifactSha256, environment: sealedFor, contractSha256, authorizationSha256 } = opened.sealed;
+    report.artifact = { artifactSha256, environment: sealedFor, contractSha256, authorizationSha256, applied: !requireNotApplied(artifactSha256, deps.evidenceDir ?? repoPaths().evidence).ok };
   }
   out.say(JSON.stringify(report, null, 2) + "\n");
   return EXIT.PASS;
-};
-
-// --- pin -----------------------------------------------------------------------------------------------------
-
-/**
- * Read-only: the SHA-256 an operator writes to config/act-pilot-contract.sha256 to pin the contract file, and whether
- * that contract is valid. It writes nothing, so pinning stays a reviewed change (docs/act-pilot-apply.md).
- */
-const pinCommand: Command = async (_flags, _terminal, deps, out) => {
-  const path = deps.contractPath ?? repoPaths().contract;
-  const raw = readInput(path, "the pilot contract") as PilotContract;
-  const sha256 = pilotContractSha256(raw);
-  const scratch = mkdtempSync(join(tmpdir(), "alz-pin-"));
-  try {
-    const pin = join(scratch, "pin");
-    writeFileSync(pin, sha256 + "\n", { mode: 0o600 });
-    const loaded = loadPilotContract(path, pin);
-    out.say(JSON.stringify("reason" in loaded ? { sha256, valid: false, reason: loaded.reason } : { sha256, valid: true }, null, 2) + "\n");
-    return EXIT.PASS;
-  } finally { rmSync(scratch, { recursive: true, force: true }); }
 };
 
 // --- contract-check ----------------------------------------------------------------------------------------
@@ -950,15 +972,15 @@ const pinCommand: Command = async (_flags, _terminal, deps, out) => {
 /**
  * The owner-input kit (docs/act-pilot-aws-terraform-g0.md): which owner inputs a DRAFT contract still lacks, each named
  * in plain words by its field, with the contract validator's own verdict on the shape (src/apply/contract-check.ts). It
- * reads the one file named and nothing else: no pin, no identity variable, no cloud, no network. It never enables ACT
- * and never writes the pin; exit 0 says the draft is complete, exit 2 that inputs remain, and neither grants anything.
+ * reads the one file named and nothing else: no identity variable, no cloud, no network. It never enables ACT
+ * and never writes the contract; exit 0 says the draft is complete, exit 2 that inputs remain, and neither grants anything.
  */
 const contractCheckCommand: Command = async (flags, terminal, _deps, out) => {
   const file = flags.file[0];
   const report = checkDraftContract(readInput(file, "--file"));
   terminal.write(contractCheckLines(report, file).join("\n"));
   out.say(JSON.stringify({ file, ...report }, null, 2) + "\n");
-  out.report({ code: report.complete ? "CONTRACT_DRAFT_COMPLETE" : "CONTRACT_DRAFT_INCOMPLETE", message: report.complete ? "The draft carries every owner input; the owner's reviewed pin commit is the next step." : "The draft is not complete; the report names each input that remains.", data: report });
+  out.report({ code: report.complete ? "CONTRACT_DRAFT_COMPLETE" : "CONTRACT_DRAFT_INCOMPLETE", message: report.complete ? "The draft carries every owner input; the owner's reviewed commit with the authorize entry is the next step." : "The draft is not complete; the report names each input that remains.", data: report });
   return report.complete ? EXIT.PASS : EXIT.BLOCKED;
 };
 
@@ -972,11 +994,13 @@ const contractCheckCommand: Command = async (flags, terminal, _deps, out) => {
 const preflightCommand: Command = async (flags, _terminal, deps, out) => {
   const environment = flags.environment[0];
   if (!(ENVIRONMENTS as readonly string[]).includes(environment)) fail("APPLY_ARGUMENT_INVALID", "--environment must be DEV, QA or PROD");
-  const report = await assessReadiness({
-    environment: environment as ApplyEnvironment, contractPath: flags.contract?.[0] ?? deps.contractPath, contractPinPath: deps.contractPinPath,
+  const decisions = await actDecisions({
+    environment: environment as ApplyEnvironment, contractPath: flags.contract?.[0] ?? deps.contractPath,
     qualificationDir: deps.qualificationDir, toolDirs: deps.toolDirs, env: deps.env ?? process.env, now: deps.now,
   });
-  out.say(JSON.stringify(report, null, 2) + "\n");
+  const report = decisions.ready!;
+  // The readiness report, with the AUTHORIZED and APPROVED/EXECUTE parts of the same view beside it for the console's status block.
+  out.say(JSON.stringify({ ...report, decisions: { act: decisions.act, contract: decisions.contract, authorized: decisions.authorized, approved: decisions.approved } }, null, 2) + "\n");
   return report.ready ? EXIT.PASS : EXIT.BLOCKED;
 };
 
@@ -1011,14 +1035,14 @@ function preparationReview(prepared: Prepared): string {
 }
 
 /**
- * Writes the seal request and artifact manifest for one project from the pinned contract, so an operator never authors them
+ * Writes the seal request and artifact manifest for one project from the reviewed contract, so an operator never authors them
  * by hand (docs/act-pilot-apply.md). Local and offline: it reads the contract, the project folder, the lock file and
  * qualification records, runs no engine, assumes no role, seals nothing, approves nothing and enables nothing. The engine
  * is the contract's; a missing value is asked for only when the person can supply it, and never invented.
  */
 const prepareCommand: Command = async (flags, terminal, deps, out) => {
   const prepDeps = {
-    contractPath: deps.contractPath, pinPath: deps.contractPinPath, qualificationDir: deps.qualificationDir, toolDirs: deps.toolDirs,
+    contractPath: deps.contractPath, qualificationDir: deps.qualificationDir, toolDirs: deps.toolDirs,
     env: deps.env ?? process.env,
   };
   const input = { environment: flags.environment[0], projectRoot: flags.project[0], awsCliVersion: flags["aws-cli-version"]?.[0] };
@@ -1229,7 +1253,7 @@ const previewEvidenceCommand: Command = async (flags, terminal, deps, out) => {
 };
 
 const COMMANDS: Readonly<Record<string, Command>> = {
-  qualify: qualifyCommand, seal: sealCommand, approve: approveCommand, apply: applyCommand, status: statusCommand, pin: pinCommand, "contract-check": contractCheckCommand,
+  qualify: qualifyCommand, seal: sealCommand, approve: approveCommand, apply: applyCommand, status: statusCommand, "contract-check": contractCheckCommand,
   preflight: preflightCommand, prepare: prepareCommand, "record-live": recordLiveCommand, "record-recovery": recordRecoveryCommand,
   observe: observeCommand, "propose-cleanup": proposeCleanupCommand, cleanup: cleanupCommand, "verify-cleanup": verifyCleanupCommand, report: reportCommand, "preview-evidence": previewEvidenceCommand,
   "propose-removal": proposeRemovalCommand, "remove-workspace": removeWorkspaceCommand,
@@ -1250,7 +1274,7 @@ function scratchHoldsRecovery(parent: string): boolean {
  * them first (docs/act-pilot-apply.md).
  */
 async function sweepUnlessHeld(sub: string, deps: ApplyCliDeps, out: Out): Promise<void> {
-  if (["status", "approve", "pin", "contract-check", "preflight", "prepare", "record-live", "record-recovery", "observe", "propose-cleanup", "verify-cleanup", "report", "preview-evidence", "propose-removal", "remove-workspace"].includes(sub)) return;
+  if (["status", "approve", "contract-check", "preflight", "prepare", "record-live", "record-recovery", "observe", "propose-cleanup", "verify-cleanup", "report", "preview-evidence", "propose-removal", "remove-workspace"].includes(sub)) return;
   const parent = deps.scratchParent ?? tmpdir();
   const held = scratchHoldsRecovery(parent) ? "a scratch directory holds errored.tfstate or crash.log"
     : await holdsReservation(deps.evidenceDir ?? repoPaths().evidence) ? "the apply ledger holds a reservation" : undefined;

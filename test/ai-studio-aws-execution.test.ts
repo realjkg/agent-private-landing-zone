@@ -10,7 +10,7 @@ const eligible: ExecutionRequest = {
   nativePlan: {engine:"TERRAFORM",payload:{resource_changes:[{type:"aws_cloudwatch_log_group",change:{actions:["create"]}}]}},
   blueprint: {state:"APPROVED",blueprintSha256:"a".repeat(64),approvedBlueprintSha256:"a".repeat(64),reviewEvidenceRef:"evidence://blueprint/approval",releaseIdentity:"release-01",devVerifiedReleaseIdentity:"release-01",nonProdVerifiedReleaseIdentity:"release-01"},
   resourceActions: [{ resourceType: "aws_cloudwatch_log_group", action: "CREATE" }],
-  pilotContractPinned: true, engineQualified: true,
+  pilotContractAuthorized: true, engineQualified: true,
   targetIdentityVerified: true, sealedArtifactVerified: true,
   signedApprovalsVerified: true
 };
@@ -38,7 +38,7 @@ test("CloudFormation and Pulumi may not use Terraform/CDK pilot apply contract",
 });
 
 test("missing any gate fails closed", () => {
-  const keys = ["pilotContractPinned", "engineQualified", "targetIdentityVerified", "sealedArtifactVerified", "signedApprovalsVerified"] as const;
+  const keys = ["pilotContractAuthorized", "engineQualified", "targetIdentityVerified", "sealedArtifactVerified", "signedApprovalsVerified"] as const;
   for (const key of keys) {
     const result = assessEarlyAwsExecution({ ...eligible, [key]: false });
     assert.equal(result.status, "BLOCKED");
@@ -53,7 +53,7 @@ test("customer targets blocked; promoted environments depend on blueprint", () =
 test("preview eligibility is distinct from apply authorization", () => {
   const result = assessEarlyAwsExecution({
     ...eligible, caller: "AI_STUDIO_AGENT", engine: "PULUMI",
-    operation: "PREVIEW", pilotContractPinned: false,
+    operation: "PREVIEW", pilotContractAuthorized: false,
     engineQualified: false, signedApprovalsVerified: false
   });
   assert.equal(result.status, "PILOT_ELIGIBLE");

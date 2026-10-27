@@ -20,7 +20,7 @@ export type PilotUnit = { unitId: string; buildId: string; tags: Readonly<Record
 
 const BACKEND_KIND: Readonly<Record<ProviderId, "s3" | "azurerm">> = { AWS: "s3", AZURE: "azurerm" };
 
-/** The unit of one environment's state container under one pinned contract. Deterministic: the same inputs name the same unit. */
+/** The unit of one environment's state container under one reviewed contract. Deterministic: the same inputs name the same unit. */
 export function pilotUnitOf(input: { provider: ProviderId; contractSha256: string; environment: ApplyEnvironment; target: ResolvedTarget }): PilotUnit {
   const buildId = "alz-pilot-" + input.environment.toLowerCase() + "-" + input.contractSha256.slice(0, 12);
   const unitId = deletionUnitId(buildId, { engine: "TERRAFORM", backend: BACKEND_KIND[input.provider], location: input.target.backend, workspace: input.target.workspace });

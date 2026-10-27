@@ -56,7 +56,7 @@ Some inputs only the owner can supply (delegated decision 3). The runner lists e
 
 - `OWNER_INPUT_NOOP_STACK`: the AWS no-op qualification stack (default `alz-qualification-noop`), created by hand from `qualification/provider/aws-noop-stack.yaml`. The runner only verifies it, read-only, and never creates, updates or deletes it.
 - `OWNER_INPUT_FEDERATED_IDENTITY`: the federated qualification identity the provider gates run under.
-- `OWNER_INPUT_PIN`: the owner's reviewed pin commit. The `preview:*` gates are produced at seal after it, and the `act:*` gates by the DEV apply after it.
+- `OWNER_INPUT_AUTHORIZATION`: the owner's reviewed commit of the pilot contract with its `authorize` entry (the runner reads only whether `enabled` is true and `authorize` is non-empty; `AUTHORIZATION_PRESENT` once it is). The `preview:*` gates are produced at seal after it, and the `act:*` gates by the DEV apply after it.
 
 ## Gates with no producer
 

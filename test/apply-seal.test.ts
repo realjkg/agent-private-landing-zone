@@ -62,7 +62,7 @@ function fixture(options: { target?: typeof DEV_TARGET; environment?: "DEV" | "Q
   const input: SealInput = {
     engine: TERRAFORM, environment: options.environment ?? "DEV", target, manifest, snapshotPath: snapshot.path, scratchDir: scratch.path,
     env: options.env ?? identityEnv(options.environment ?? "DEV"), policyVersion: POLICY, engineVersion: ENGINE_VERSION, toolDirs: [toolDir],
-    pinned: { tenantId: TENANT, subscriptionId: target.account, backend: target.backend, workspace: target.workspace }, spec: AZURE, contractSha256: H("9"), sourceCommit: SOURCE_COMMIT,
+    pinned: { tenantId: TENANT, subscriptionId: target.account, backend: target.backend, workspace: target.workspace }, spec: AZURE, contractSha256: H("9"), authorizationSha256: H("a"), targetSha256: H("b"), sourceCommit: SOURCE_COMMIT,
     provenance: PROVENANCE, requester: REQUESTER, now: () => new Date("2026-10-11T10:00:00.000Z"),
     unit: pilotUnitOf({ provider: "AZURE", contractSha256: H("9"), environment: options.environment ?? "DEV", target }),
   };
@@ -113,7 +113,7 @@ test("sealing runs the pinned init/workspace/plan/show sequence, with STATE for 
   } finally { f.cleanup(); }
 });
 
-test("the sealed record binds plan, manifest, release identity, environment, target, engine, policy and pinned contract; the artifact hash recomputes from them", async () => {
+test("the sealed record binds plan, manifest, release identity, environment, target, engine, policy, the reviewed contract and its authorizing entry; the artifact hash recomputes from them", async () => {
   const { result } = await sealed();
   const { sealed: s } = result as Extract<typeof result, { ok: true }>;
   assert.equal(s.schemaVersion, 2, "schema 2: the requester signs the sealed request");
@@ -126,14 +126,15 @@ test("the sealed record binds plan, manifest, release identity, environment, tar
   assert.match(s.releaseIdentity, /^[a-f0-9]{64}$/);
   assert.equal(s.artifactSha256, computeArtifactSha256(s));
   assert.equal(s.channel, "CLI");
+  assert.equal(s.authorizationSha256, H("a"));
   assert.equal(s.artifactSha256, sha(JSON.stringify({
-    changesSha256: sha(canonicalJson(s.changes)), channel: s.channel, contractSha256: s.contractSha256, engineVersion: s.engineVersion, environment: s.environment, manifestHash: s.manifestHash,
+    authorizationSha256: s.authorizationSha256, changesSha256: sha(canonicalJson(s.changes)), channel: s.channel, contractSha256: s.contractSha256, engineVersion: s.engineVersion, environment: s.environment, manifestHash: s.manifestHash,
     planSha256: s.planSha256, policyVersion: s.policyVersion,
     provenance: { engineBinarySha256: PROVENANCE.engineBinarySha256, qualification: { reason: "Fixture: no qualification evidence is in this test's vault.", state: "UNQUALIFIED" } },
     releaseIdentity: s.releaseIdentity, requesterId: "carol", sourceCommit: s.sourceCommit,
-    target: { account: s.target.account, backend: s.target.backend, workspace: s.target.workspace },
+    target: { account: s.target.account, backend: s.target.backend, workspace: s.target.workspace }, targetSha256: s.targetSha256,
     unit: { tags: { "alz-build": s.unit!.tags["alz-build"], "alz-managed-by": "alz", "alz-unit": s.unit!.unitId }, unitId: s.unit!.unitId, untagged: s.unit!.untagged },
-  })), "canonical JSON of exactly these fourteen fields (the requester id among them), the change list through its own hash");
+  })), "canonical JSON of exactly these sixteen fields (the requester id, the authorization and the full target among them), the change list through its own hash");
   assert.equal(s.requesterId, "carol");
   assert.deepEqual(Object.keys(s.request!).sort(), ["signatureBase64", "statement"]);
   assert.deepEqual(s.request!.statement, { schemaVersion: 1, requesterId: "carol", artifactSha256: s.artifactSha256, environment: "DEV", nonce: s.request!.statement.nonce });
@@ -171,7 +172,7 @@ test("any change to a bound field changes the artifact hash", async () => {
     { target: { ...s.target, workspace: "other" } }, { target: { ...s.target, account: "sub-other" } },
     { target: { ...s.target, backend: "x/y/z" } }, { engineVersion: "1.9.6" }, { policyVersion: "2026-10-12.1" },
     { changes: [] }, { changes: s.changes.slice(1) }, { changes: s.changes.map((c) => ({ ...c, action: "DELETE" })) },
-    { changes: s.changes.map((c) => ({ ...c, address: c.address + "x" })) }, { changes: [...s.changes].reverse() }, { contractSha256: H("8") }, { sourceCommit: "1".repeat(40) },
+    { changes: s.changes.map((c) => ({ ...c, address: c.address + "x" })) }, { changes: [...s.changes].reverse() }, { contractSha256: H("8") }, { authorizationSha256: H("7") }, { sourceCommit: "1".repeat(40) },
     { provenance: { ...s.provenance, engineBinarySha256: H("7") } },
     { provenance: { ...s.provenance, qualification: { state: "QUALIFIED", evidenceHash: H("6"), qualifiedAt: "2026-10-10T10:00:00.000Z" } } },
     { provenance: { ...s.provenance, qualification: { state: "UNQUALIFIED", reason: "Another reason." } } },

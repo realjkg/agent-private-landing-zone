@@ -19,7 +19,7 @@ import type { AskExpectation, HumanTerminal, PhraseKind } from "./teardown-drive
 // A pilot workflow runs wholly in the terminal (channel CLI) or wholly in the console wizard (channel UI), chosen when it is
 // started. This module is the UI channel. It adds no authority: it runs the same `runApplyCommand` the terminal runs, with the
 // channel set to "UI" by THIS module (the caller, never a user flag), through a terminal whose prompts are dialogs the person
-// answers in the browser. Every gate (contract pin, qualification evidence, approvals, ledger, kill switch, typed phrases) is
+// answers in the browser. Every gate (contract authorization, qualification evidence, approvals, ledger, kill switch, typed phrases) is
 // the CLI's, unchanged; a wrong phrase, a timeout or a cancel ends the command before the engine runs.
 //
 // Only this module may import src/cli/apply.ts from the console side, and only src/operator-ui/server.ts may import this module
@@ -469,7 +469,7 @@ export function createPilotRouter(options: PilotRouterOptions): PilotRouter {
         return;
       }
       case "/prepare": {
-        // Local files only: the command writes the request and manifest from the pinned contract and the project folder,
+        // Local files only: the command writes the request and manifest from the reviewed contract and the project folder,
         // runs no engine and enables nothing. The one value a person may add is the AWS CLI version, when no record has it.
         const input = fields(body, ["environment", "projectPath", "awsCliVersion"]);
         requirePath();

@@ -29,6 +29,16 @@ const INVENTORY_INPUT = /^(?:src\/cli\/[^/]+\.ts|src\/operations\/.+\.ts|alz|pac
 // operator CLI test that runs it.
 export const UNIMPORTABLE_OWNERS = {
   "src/cli/operator.ts": ["test/operations-parity.test.ts", "test/operator-cli.test.ts"],
+  // The console launcher starts the server at module top level; the console tests read its text (loopback bind, session token, the ACT banner).
+  "src/cli/operator-web.ts": ["test/ui-channel.test.ts"],
+};
+
+// Owner-facing templates no code imports: a focused test reads each from disk and checks what it tells the owner (that it
+// never names the retired pin and leaves ACT unauthorized). Selected in addition to any other rule that owns the path.
+export const TEMPLATE_OWNERS = {
+  "bootstrap/config.aws.template.json": ["test/apply-contract.test.ts"],
+  "bootstrap/config.azure.template.json": ["test/apply-contract.test.ts"],
+  "bootstrap/config.gcp.template.json": ["test/apply-contract.test.ts"],
 };
 
 // Fixtures a test reads from disk (not imported), so the import closure never selects their owner.
@@ -42,6 +52,8 @@ export const FIXTURE_OWNERS = {
 // entry here. Without this, a governed -destroy builder added under src/apply merged with the destroy-literal scan red.
 export const SOURCE_SCAN_GUARDS = {
   "test/apply-boundary.test.ts": ["src/"],
+  // No product code names the retired pin file or writes the pilot contract (the contract is the ACT authorization).
+  "test/apply-contract.test.ts": ["src/"],
   "test/policy-path.test.ts": ["src/"],
   "test/teardown-adapter-terraform.test.ts": ["src/"],
   "test/teardown-driver-denials.test.ts": ["src/"],
@@ -142,6 +154,7 @@ export function planChanged(changedPaths, files) {
 
   const cited = acceptanceCited(files);
   for (const path of changed) {
+    if (Object.hasOwn(TEMPLATE_OWNERS, path)) addExisting(selected, files, TEMPLATE_OWNERS[path]);
     if (INVENTORY_INPUT.test(path)) addExisting(selected, files, INVENTORY_GUARDS);
     if (cited.has(path)) addExisting(selected, files, [ACCEPTANCE_TEST]);
     if (RELEASE_STATUS_INPUT.test(path)) {
@@ -281,6 +294,8 @@ export function planChanged(changedPaths, files) {
       notes.push("Release-sensitive artifact changed: dedicated qualification remains independent.");
       continue;
     }
+    // Selected at the top of the loop; a template with no other rule needs nothing more.
+    if (Object.hasOwn(TEMPLATE_OWNERS, path)) continue;
     // Unknown executable or deployment configuration: do not silently pass.
     gaps.push(path + " has no QA ownership rule.");
   }

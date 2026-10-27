@@ -549,7 +549,7 @@
             "positive": [
               {
                 "file": "test/apply-cdk.test.ts",
-                "title": "./alz apply works for the engine the pinned contract names, with no engine flag: qualify, seal, approve and apply, and no project code is run"
+                "title": "./alz apply works for the engine the reviewed contract names, with no engine flag: qualify, seal, approve and apply, and no project code is run"
               }
             ],
             "denied": [
@@ -904,7 +904,7 @@
             "denied": [
               {
                 "file": "test/apply-cli.test.ts",
-                "title": "approve refuses without the typed phrase, with an open key file, a non-Ed25519 key, a tampered bundle or a contract that is disabled or does not match its pin"
+                "title": "approve refuses without the typed phrase, with an open key file, a non-Ed25519 key, a tampered bundle, a disabled contract, or a contract or authorization other than the sealed one"
               }
             ],
             "interrupted": [

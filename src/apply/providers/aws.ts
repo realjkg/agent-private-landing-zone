@@ -25,7 +25,7 @@ export type AwsTarget = {
   /** The S3 backend, written as `<bucket>/<key>`. State locking is the backend's native lock file (`use_lockfile`); no DynamoDB table. */
   backend: string;
   workspace: string;
-  /** CDK engine only (`engines/cdk.ts`): the CloudFormation capabilities a change set may use in this environment. Part of the pinned contract. */
+  /** CDK engine only (`engines/cdk.ts`): the CloudFormation capabilities a change set may use in this environment. Part of the reviewed contract. */
   capabilities?: string[];
 };
 

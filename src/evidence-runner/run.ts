@@ -6,14 +6,14 @@ import { EXAMPLE_CONFIG_PATH, EvidencePathError, evidencePath, insideRoot, loadC
 import { assertRealFolder, ensureRealFolder, replaceNoFollow } from "./safe-write.js";
 import { ReleaseGatesError, gatePlan, releaseGates, type GatePlan, type GateRunnerMode } from "./gates.js";
 import { Journal, JournalError, acquireRunLock, readJournal, stepRecord } from "./journal.js";
-import { identityHash, ownerInputs, pinState, runPreflight, type IdentityProbe, type Preflight } from "./preflight.js";
+import { identityHash, ownerInputs, authorizationState, runPreflight, type IdentityProbe, type Preflight } from "./preflight.js";
 import { BUILT_STAGES, DEFAULT_STAGES, EXIT, STAGES, STAGE_SLICE, type RunLabel, type StageId, type StepOutcome } from "./types.js";
 
 /** The terminal the person types the start attestation into. The runner only asks; it never answers for them. */
 export type Terminal = { stdinIsTTY: boolean; stdoutIsTTY: boolean; ask: (question: string) => Promise<string> };
 
 export type RunnerDeps = {
-  /** The repository root: configuration, pin and release scope are read from here, evidence written under it. */
+  /** The repository root: configuration, the pilot contract and release scope are read from here, evidence written under it. */
   root: string;
   env: NodeJS.ProcessEnv;
   terminal: Terminal;
@@ -71,7 +71,7 @@ const shown = (root: string, path: string): string => relative(realpathSync(root
 type StagePlan = { stage: StageId; outcome: StepOutcome; code: string; detail: string };
 
 /** What each later stage will do in this build. Nothing here runs a provider tool or a child process. */
-function planStage(stage: StageId, config: EvidenceRunnerConfig, pin: "EMPTY" | "PRESENT"): StagePlan {
+function planStage(stage: StageId, config: EvidenceRunnerConfig, authorization: "EMPTY" | "PRESENT"): StagePlan {
   const notBuilt = (detail: string): StagePlan => ({ stage, outcome: "BLOCKED", code: "NOT_BUILT", detail: "Slice " + STAGE_SLICE[stage] + " builds this stage. " + detail });
   switch (stage) {
     case "preflight":
@@ -87,8 +87,8 @@ function planStage(stage: StageId, config: EvidenceRunnerConfig, pin: "EMPTY" | 
     case "act":
     case "recovery":
     case "cleanup":
-      return pin === "EMPTY"
-        ? { stage, outcome: "SKIPPED", code: "SKIPPED_ACT_DISABLED", detail: "The pilot pin is empty: ACT is disabled." }
+      return authorization === "EMPTY"
+        ? { stage, outcome: "SKIPPED", code: "SKIPPED_ACT_DISABLED", detail: "No committed contract authorizes ACT: ACT is disabled." }
         : notBuilt("A person at this terminal will run each existing ./alz apply step and type every phrase.");
     case "summary":
       return notBuilt("It will index the evidence and run the release admission review.");
@@ -145,7 +145,7 @@ export async function evidenceRun(options: RunOptions, deps: RunnerDeps): Promis
   out("Preflight");
   const preflight = await runPreflight({ root: deps.root, env: deps.env, config, source: deps.source(), probe: deps.probe });
   printPreflight(out, preflight);
-  const stages = selectedStages(options).map((stage) => planStage(stage, config, preflight.pin));
+  const stages = selectedStages(options).map((stage) => planStage(stage, config, preflight.actScope));
   out("Gates: " + gateCounts(gates) + ".");
 
   if (options.dryRun) {
@@ -177,7 +177,7 @@ export async function evidenceRun(options: RunOptions, deps: RunnerDeps): Promis
       sourceCommit: config.candidateCommit, configSha256, targetHardwareId: config.targetHardwareId, label, host: deps.host, identityHash: identityHash(config),
     });
     const at = () => deps.now().toISOString();
-    // Preflight runs every time: the identities and the pin are re-checked before any stage.
+    // Preflight runs every time: the identities and the contract authorization are re-checked before any stage.
     journal.start("preflight", "preflight", at());
     writeRunnerDocument(join(dir, "preflight.json"), label, {
       schemaVersion: 1, kind: "EVIDENCE_RUNNER_PREFLIGHT", sourceCommit: config.candidateCommit, configSha256, targetHardwareId: config.targetHardwareId,
@@ -241,7 +241,7 @@ export async function evidenceStatus(options: Pick<RunOptions, "configPath" | "s
   }
   out("  Next: " + (next ? next + " (slice " + STAGE_SLICE[next] + (BUILT_STAGES.has(next) ? ", built" : ", not built yet") + ")" : "nothing; every default stage is done"));
   out("Owner inputs");
-  for (const input of ownerInputs(config, pinState(deps.root))) out("  " + input.code + " — " + input.detail);
+  for (const input of ownerInputs(config, authorizationState(deps.root))) out("  " + input.code + " — " + input.detail);
   out("Gates");
   let release: ReturnType<typeof releaseGates>;
   try { release = releaseGates(deps.root); } catch (error) {

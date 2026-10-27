@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readdirSync, readFileSync } from "node:fs";
-import { diffCommand, FIXTURE_OWNERS, importsOf, planChanged, SOURCE_SCAN_GUARDS, UNIMPORTABLE_OWNERS } from "../scripts/qa-affected.mjs";
+import { diffCommand, FIXTURE_OWNERS, importsOf, planChanged, SOURCE_SCAN_GUARDS, TEMPLATE_OWNERS, UNIMPORTABLE_OWNERS } from "../scripts/qa-affected.mjs";
 
 function fixture() {
   return new Map([
@@ -189,7 +189,11 @@ test("GCP bootstrap changes select their one focused test, and its absence is a 
   files.set("test/bootstrap-gcp.test.ts", "test()");
   const changed = ["bootstrap/gcp/main.tf", "bootstrap/gcp/tests/bootstrap.tftest.hcl", "bootstrap/config.gcp.template.json"];
   const plan = planChanged(changed, files);
+  // The template is also read by the contract test (TEMPLATE_OWNERS), which the fixture does not ship.
   assert.deepEqual(plan.nodeTests, ["test/bootstrap-gcp.test.ts"]);
+  files.set("test/apply-contract.test.ts", "test()");
+  assert.deepEqual(planChanged(changed, files).nodeTests, ["test/apply-contract.test.ts", "test/bootstrap-gcp.test.ts"]);
+  files.delete("test/apply-contract.test.ts");
   assert.deepEqual(plan.gaps, []);
   files.delete("test/bootstrap-gcp.test.ts");
   assert.deepEqual(planChanged(changed, files).gaps, ["The GCP bootstrap has no focused test owner."]);
@@ -353,6 +357,26 @@ test("the ./alz dispatcher, which no test can import, is owned by the guards tha
   for (const owner of UNIMPORTABLE_OWNERS["src/cli/operator.ts"]) assert.ok(plan.nodeTests.includes(owner), owner);
   files.set("src/cli/orphan.ts", "export const x = 1;");
   assert.match(planChanged(["src/cli/orphan.ts"], files).gaps.join(" "), /src\/cli\/orphan\.ts has no importing test/);
+});
+
+test("the console launcher is owned by the console tests that read it, and the bootstrap templates by the test that reads them; an unowned template is still a gap", () => {
+  const files = fixture();
+  files.set("src/cli/operator-web.ts", "console.log(1);");
+  files.set("test/ui-channel.test.ts", "test()");
+  const launcher = planChanged(["src/cli/operator-web.ts"], files);
+  assert.deepEqual(launcher.gaps, []);
+  assert.ok(launcher.nodeTests.includes("test/ui-channel.test.ts"));
+  files.set("test/bootstrap-gcp.test.ts", "test()"); // the GCP template's own package owner, beside the contract test
+  for (const [path, owners] of Object.entries(TEMPLATE_OWNERS)) {
+    files.set(path, "{}");
+    for (const owner of owners) files.set(owner, "test()");
+    const plan = planChanged([path], files);
+    assert.deepEqual(plan.gaps, [], path);
+    for (const owner of owners) assert.ok(plan.nodeTests.includes(owner), owner);
+  }
+  // A template nothing owns is still a gap (an invented name: every shipped template has an owner).
+  files.set("bootstrap/config.unowned.template.json", "{}");
+  assert.match(planChanged(["bootstrap/config.unowned.template.json"], files).gaps.join(" "), /config\.unowned\.template\.json has no QA ownership rule/);
 });
 
 test("a fixture a test reads from disk is owned by its declared test, an unowned fixture is still a gap, and a deleted module is a note", () => {

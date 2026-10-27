@@ -35,7 +35,14 @@ export type ReviewSummary = {
 export type ReadinessState = "READY" | "MISSING" | "INVALID" | "UNVERIFIED" | "UNAVAILABLE" | "BLOCKED";
 /** Who can make an item ready. */
 export type ReadinessParty = "OWNER" | "OPERATOR" | "TOOL";
-export type PreflightCheck = { check: string; ok: boolean; state: ReadinessState; responsible?: ReadinessParty; detail?: string };
+export type PreflightCheck = { check: string; ok: boolean; state: ReadinessState; responsible?: ReadinessParty; detail?: string; advisory?: true };
+/** AUTHORIZED and APPROVED/EXECUTE from the CLI's one decision view (src/apply/readiness.ts `actDecisions`), beside the READY checks. */
+export type PilotDecisions = {
+  act: "DISABLED" | "PILOT_ENABLED";
+  contract: { code?: string; reason?: string; contractSha256?: string; provider?: string; engine?: string };
+  authorized: { environment: PilotEnvironment; operations: string[]; authorizationSha256: string }[];
+  approved: { environment: PilotEnvironment; requiredApprovals: number }[];
+};
 
 /** What `prepare` saved and bound (src/apply/prepare.ts): local files, never proof that anything works in the cloud. */
 export type PreparedFiles = {

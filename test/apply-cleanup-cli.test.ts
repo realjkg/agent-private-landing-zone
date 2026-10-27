@@ -15,7 +15,7 @@ import { openNonceStore } from "../src/apply/nonces.js";
 import { removeTree } from "../src/teardown/driver/cleanup.js";
 import {
   AWS_DEV_TARGET, NOW, POLICY, SOURCE_COMMIT, STATE_CANARY, VALUE_CANARY, awsContractJson, awsIdentityEnv, awsReadCallsOf, awsRoleArn, awsTargetOf, behave as behaveIn, behaveAwsReads, callsOf,
-  installFakeAwsReads, installFakeTerraform, keys, pinPathOf, stateResource, testFixtureForgeQualificationEvidence, writePinnedContract, writeProject, type Behavior, type Project,
+  installFakeAwsReads, installFakeTerraform, keys, stateResource, testFixtureForgeQualificationEvidence, writeReviewedContract, writeProject, type Behavior, type Project,
   requesterArgs,
 } from "./helpers/apply-fixtures.js";
 
@@ -56,7 +56,7 @@ const EXISTING = [BUCKET, LOG, STATE_BUCKET];
 const BUCKET_ARN = "arn:aws:s3:::" + BUCKET;
 const LOG_ARN = "arn:aws:logs:us-east-1:111111111111:log-group:" + LOG;
 /** The deletion unit of the DEV state container under the fixture contract: what every created resource is stamped with, and what the fake tagging API lists by. */
-const UNIT = (() => { const path = join(fresh("unit-contract"), "act-pilot-contract.json"); writePinnedContract(path, awsContractJson(KILL)); return pilotUnitOf({ provider: "AWS", contractSha256: pilotContractSha256(loadPilotContract(path, pinPathOf(path)) as PilotContract), environment: "DEV", target: awsTargetOf("DEV") }); })();
+const UNIT = (() => { const path = join(fresh("unit-contract"), "act-pilot-contract.json"); writeReviewedContract(path, awsContractJson(KILL)); return pilotUnitOf({ provider: "AWS", contractSha256: pilotContractSha256(loadPilotContract(path) as PilotContract), environment: "DEV", target: awsTargetOf("DEV") }); })();
 /** The run's own resources, as the tagging API lists them: the listing is not empty, and it matches the records. */
 const TAGGED = [BUCKET_ARN, LOG_ARN];
 const behave = (behavior: Behavior = {}) => behaveIn(toolDir, KILL, { applyAdvance: true, showOnlyConfigured: true, showResources: CREATES, showProviderConfig: AWS_PROVIDER_CONFIG, stateResources: STATE, unitTags: { ...UNIT.tags }, ...behavior });
@@ -86,7 +86,7 @@ async function world(): Promise<World> {
   behave();
   behaveAwsReads(awsToolDir, { existing: EXISTING, tagged: TAGGED });
   const contractPath = join(fresh("contract"), "act-pilot-contract.json");
-  writePinnedContract(contractPath, awsContractJson(KILL));
+  writeReviewedContract(contractPath, awsContractJson(KILL));
   const vault = fresh("vault");
   await testFixtureForgeQualificationEvidence(vault, undefined, "AWS");
   const [scratch, evidenceDir, acceptanceDir, reportsDir, proposalsDir] = [fresh("scratch"), fresh("evidence"), fresh("acceptance"), fresh("reports"), fresh("proposals")];
@@ -94,7 +94,7 @@ async function world(): Promise<World> {
   return {
     contractPath, evidenceDir, acceptanceDir, reportsDir,
     deps: (term, over = {}) => ({
-      sourceCommit: SOURCE_COMMIT, terminal: term, env: awsIdentityEnv("DEV"), now: () => NOW, operatorId: "operator.fixture", contractPath, contractPinPath: pinPathOf(contractPath),
+      sourceCommit: SOURCE_COMMIT, terminal: term, env: awsIdentityEnv("DEV"), now: () => NOW, operatorId: "operator.fixture", contractPath,
       qualificationDir: vault, evidenceDir, nonces, scratchParent: scratch, toolDirs: [toolDir, awsToolDir], acceptanceDir, reportsDir, proposalsDir, ...over,
     }),
   };
@@ -344,4 +344,48 @@ test("the lifecycle report validator refuses a declared pass, a live claim witho
   assert.equal(wrongSeal.code, 2);
   assert.match(wrongSeal.stderr, /PROPOSAL_INVALID/);
   assert.deepEqual(wrongSeal.term.asked, [], "refused before the phrase");
+});
+
+test("propose-cleanup and approve of a proposal are AUTHORIZED by the current contract's CLEANUP entry: refused without it or after an edit, and a revoked APPLY does not strand the cleanup", async () => {
+  const w = await world();
+  const run = await appliedRun(w);
+  assert.equal((await cli(w, ["observe", "--sealed", run.sealedPlanPath])).code, 0);
+  const withAuthorize = (authorize: Record<string, string[]>, over: Record<string, unknown> = {}) =>
+    writeReviewedContract(w.contractPath, awsContractJson(KILL, { authorize: { QA: ["APPLY", "CLEANUP"], PROD: ["APPLY", "CLEANUP"], ...authorize }, ...over }));
+  // From an uncommitted checkout (the contract included) nothing is proposed: the committed contract is the authorization.
+  const dirty = await cli(w, ["propose-cleanup", "--sealed", run.sealedPlanPath, ...requesterArgs()], [], { sourceCommit: "uncommitted" });
+  assert.equal(dirty.code, 2, dirty.stderr);
+  assert.match(dirty.stderr, /BLOCKED SOURCE_UNVERIFIED/);
+  // No CLEANUP for DEV: propose-cleanup refuses before anything is built, and writes no proposal.
+  withAuthorize({ DEV: ["APPLY"] });
+  const denied = await cli(w, ["propose-cleanup", "--sealed", run.sealedPlanPath, ...requesterArgs()]);
+  assert.equal(denied.code, 2, denied.stderr);
+  assert.match(denied.stderr, /BLOCKED ACT_NOT_AUTHORIZED: .*CLEANUP for AWS TERRAFORM DEV.* No proposal was written\./);
+  // APPLY revoked, CLEANUP kept: the run is still proposed (N3), under the contract committed now.
+  withAuthorize({ DEV: ["CLEANUP"] });
+  const proposed = await cli(w, ["propose-cleanup", "--sealed", run.sealedPlanPath, ...requesterArgs()]);
+  assert.equal(proposed.code, 0, proposed.stderr);
+  const proposalPath = /Saved \(private to this account\): (\S+)/.exec(proposed.stdout)![1];
+  const proposal = JSON.parse(readFileSync(proposalPath, "utf8")) as { proposalSha256: string; contractSha256: string; authorizingContractSha256: string };
+  assert.notEqual(proposal.authorizingContractSha256, proposal.contractSha256);
+  const approveArgs = ["approve", "--bundle", proposalPath, "--key", keyFile("alice"), "--approver", "alice"];
+  const phrase = "APPROVE CLEANUP DEV " + proposal.proposalSha256.slice(0, 12);
+  // An approver never signs under a contract or entry other than the one the proposal bound, nor without CLEANUP.
+  withAuthorize({ DEV: ["CLEANUP"] }, { maxApprovalAgeMinutes: 61 });
+  const changed = await cli(w, approveArgs, [phrase]);
+  assert.equal(changed.code, 2);
+  assert.match(changed.stderr, /BLOCKED ACT_AUTHORIZATION_CHANGED/);
+  assert.equal(changed.stdout, "", "nothing was signed");
+  withAuthorize({ DEV: ["APPLY"] });
+  const revoked = await cli(w, approveArgs, [phrase]);
+  assert.equal(revoked.code, 2);
+  assert.match(revoked.stderr, /BLOCKED ACT_NOT_AUTHORIZED/);
+  // Back to the contract the proposal bound: approve, then clean up.
+  withAuthorize({ DEV: ["CLEANUP"] });
+  const signed = await cli(w, approveArgs, [phrase]);
+  assert.equal(signed.code, 0, signed.stderr);
+  const removed = await cli(w, ["cleanup", "--proposal", proposalPath, "--request", run.applyRequest, "--manifest", run.manifest, "--sealed", run.sealedPlanPath, "--approval", json(signed.data, "cleanup-approval")],
+    ["CLEANUP DEV " + proposal.proposalSha256.slice(0, 12) + " " + targetString(run.target)]);
+  assert.equal(removed.code, 0, removed.stderr);
+  assert.equal((removed.data as { decisions: { authorized: { operation: string; contractSha256: string } } }).decisions.authorized.contractSha256, proposal.authorizingContractSha256);
 });

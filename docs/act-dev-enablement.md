@@ -2,7 +2,7 @@
 
 Status: written 2026-10-27 against `origin/main` at `b583529` (merge of #295), for the owner decision "Clear paths to ACT enablement in both Azure and AWS for dev" (issue #39, comment 6442856302). That decision extends the DEV-only pilot exception from AWS Terraform to Azure Terraform, DEV only, under the same PLAN (`docs/act-pilot-plan.md`), release contract and gates. QA, PROD and GCP stay outside it.
 
-This page is a checklist, not an authority. It enables nothing. ACT stays DISABLED, `config/act-pilot-contract.sha256` ships empty, and no agent writes the pin, holds an approver key or initiates an apply. Every OWNER step below is done by a person. Every command on this page was checked against `src/cli/apply.ts` (`APPLY_USAGE` and `SUBCOMMANDS`), `src/cli/evidence.ts`, `src/operations/families/qualification.ts` and `bootstrap/`. Where a step uses a tool that is not `./alz` (Terraform, the AWS CLI, the Azure CLI, OpenSSL, git), this page says so.
+This page is a checklist, not an authority. It enables nothing. ACT stays DISABLED, the repository ships no pilot contract, and no agent writes the contract, holds an approver key or initiates an apply. Every OWNER step below is done by a person. Every command on this page was checked against `src/cli/apply.ts` (`APPLY_USAGE` and `SUBCOMMANDS`), `src/cli/evidence.ts`, `src/operations/families/qualification.ts` and `bootstrap/`. Where a step uses a tool that is not `./alz` (Terraform, the AWS CLI, the Azure CLI, OpenSSL, git), this page says so.
 
 Status words:
 
@@ -15,7 +15,7 @@ Evidence from a fake engine or an emulator is SYNTHETIC. It never counts as live
 
 ## One contract, one cloud at a time
 
-The product reads exactly one pilot contract, `config/act-pilot-contract.json`, pinned by exactly one hash, `config/act-pilot-contract.sha256` (`repoPaths()` in `src/apply/contract.ts`). A contract names one `provider`. So AWS DEV and Azure DEV are two separate enablements, one after the other, never both at once. Re-pinning to switch clouds changes the contract hash, which every sealed plan binds. Plans sealed under the other contract are refused, and the other cloud's qualification evidence no longer matches the DEV target. Running both clouds live at the same time would need more than one pinned contract, which is a change to the authority model and so a new PLAN, not a task on this page.
+The product reads exactly one pilot contract, `config/act-pilot-contract.json` (`repoPaths()` in `src/apply/contract.ts`). The contract is the authorization: its `authorize` entry lists, per environment, the operations ACT may run (owner decisions of 2026-10-27, issue #39, "Unpin the ACT decision"; the old `config/act-pilot-contract.sha256` pin and `./alz apply pin` are removed). A contract names one `provider`. So AWS DEV and Azure DEV are still two separate enablements, one after the other. Switching clouds changes the contract hash and its authorizing entry, which every sealed plan binds. Plans sealed under the other contract are refused (`ACT_AUTHORIZATION_CHANGED` or `ARTIFACT_INVALID`), and the other cloud's qualification evidence no longer matches the DEV target. Running both clouds live at the same time needs the product to select between more than one committed contract, which is an open follow-up, not a task on this page.
 
 The owner decision does not set the order. `config/release/status.json` currently says Azure "waits on the AWS Terraform row going live first". The Azure lane is updating that line (check-in 6442903960).
 
@@ -33,16 +33,16 @@ The owner decision does not set the order. `config/release/status.json` currentl
 | CDK cleanup stack | **DONE** (#265, `5edcded`; #266, `3a37a32`; #267, `78a5c20`) | Not on the Terraform path; listed for completeness |
 | AWS CLI pin | **DONE** (#288, merge `8fd5a70`) | `config/tool-pins.json` `awsCli`. Used by the CDK path (`prepare --aws-cli-version`), not by Terraform DEV |
 | G1b: emulated simulation | **DONE** (#279, merge `df7708a`) | `docs/act-pilot-simulation-aws.md`; `test/apply-emulated-aws.test.ts` (real Terraform 1.16.4 against moto, opt-in, SYNTHETIC/emulated) |
-| Backend-redirection fix (backend pinning) | **IN PROGRESS** (lane `backend-pin-override`, check-in 6442419794; no PR yet) | Replaces the hand-written reader in `src/apply/backend-block.ts`, whose s3 rule `main` still passes for the reviewer's reproduction (escalation 6437189291). Design adopted in 6442530013: a product-written `zzzz_alz_backend_override.tf`. **Blocks the pin commit** |
+| Backend-redirection fix (backend pinning) | **IN PROGRESS** (lane `backend-pin-override`, check-in 6442419794; no PR yet) | Replaces the hand-written reader in `src/apply/backend-block.ts`, whose s3 rule `main` still passes for the reviewer's reproduction (escalation 6437189291). Design adopted in 6442530013: a product-written `zzzz_alz_backend_override.tf`. **Blocks the authorization commit** |
 | G1b re-run on the backend-pinned path | **MISSING** (A1 below) | `test/apply-emulated-aws.test.ts` passing on a `main` that contains backend pinning, recorded in `docs/act-pilot-simulation-aws.md` |
 | DISCOVERY control-plane scope | **IN PROGRESS** (#293, head `5772f2f`) | `bootstrap/aws/discovery.tf`, `bootstrap/aws/discovery-policy.json`; `test/discovery-scope.test.ts`. Changes what the DEV bootstrap creates, so the owner bootstraps after it merges |
 | Release status and G0 page are current | **MISSING** (A2 below) | `config/release/status.json` `act:aws-terraform` `nextAction` still says "Engineering still owes G1b"; `docs/act-pilot-aws-terraform-g0.md` (G1b row and checklist step 6) still says the AWS simulation does not exist |
-| Evidence runner | **DONE** for S1 (#291, `e4b80e9`; hardening #292, `39f6e26`) | `./alz evidence init`, `run --stage preflight`, `status`. Stages `aws-readonly` (S2, held on an owner decision) and `act` (S5) report `NOT_BUILT`. Not required for the pin commit |
+| Evidence runner | **DONE** for S1 (#291, `e4b80e9`; hardening #292, `39f6e26`) | `./alz evidence init`, `run --stage preflight`, `status`. Stages `aws-readonly` (S2, held on an owner decision) and `act` (S5) report `NOT_BUILT`. Not required for the authorization commit |
 | G0 owner items: roles, host, scope, cleanup owner | **OWNER** | Written down by the owner; `docs/act-pilot-aws-terraform-g0.md`, "Approver roles" |
 | Bootstrap and federated identity | **OWNER** | `bootstrap/aws`; `docs/act-pilot-bootstrap.md`, Steps 2 to 6 |
 | Contract draft complete | **OWNER** | `./alz apply contract-check --file config/act-pilot-contract.json` exits 0 (COMPLETE) |
 | Preflight ready but for qualification | **OWNER** | `./alz apply preflight --environment DEV` |
-| Pin commit (enables the DEV pilot) | **OWNER** | `config/act-pilot-contract.json` and `config/act-pilot-contract.sha256` in one reviewed commit |
+| Authorization commit (enables the DEV pilot) | **OWNER** | `config/act-pilot-contract.json` with `enabled: true` and `"authorize": { "DEV": [...] }` in one reviewed commit |
 | G2: qualification and first DEV apply | **OWNER** | `./alz apply qualify` with the `SEPARATED` attestation (encrypted under `.runs/apply/qualification`); one supervised apply; `./alz apply record-live` writes `config/acceptance/evidence/<cloud>-<engine>-execute-dev-<artifact>.json` |
 | G3: admission | **OWNER** | `./alz qualify admission --manifest <evidence-index-file>` after the live record |
 | G4: QA and PROD promotion | Out of scope | The DEV-only contract has no QA or PROD target |
@@ -114,19 +114,18 @@ Run these in order. Steps marked "not `./alz`" use a vendor tool.
    Every item must be READY except qualification. Do not export `AWS_PROFILE`, `AWS_ACCESS_KEY_ID` or the other fallback variables on this host (`docs/act-pilot-apply.md`, "AWS").
 9. **Optional: the evidence runner's journal** (`./alz evidence init [--config FILE]`, then `./alz evidence run --stage preflight`, then `./alz evidence status`). It records the preflight and reports later stages `NOT_BUILT`. Not required for the pin.
 10. **Wait for engineering:** backend pinning merged, A1 done, #293 merged. If #293 merges after step 4, plan and apply the bootstrap again so DISCOVERY gets the new scope.
-11. **Pin commit.** This is the step that enables the pilot, and only the owner takes it:
+11. **Authorization commit.** This is the step that enables the pilot, and only the owner takes it. There is no hash to compute: the product derives the contract and entry hashes and binds them into every plan and approval.
 
     ```bash
-    # edit config/act-pilot-contract.json: "enabled": true
-    ./alz apply pin                                    # prints {"sha256": ..., "valid": true}; writes nothing
-    printf '%s\n' <sha256-from-above> > config/act-pilot-contract.sha256
-    ./alz apply status                                 # "act": "PILOT_ENABLED"
-    git switch -c act-dev-aws-pin                      # git, not ./alz
-    git add config/act-pilot-contract.json config/act-pilot-contract.sha256
-    git commit                                         # one reviewed change; reviewers check target and each key
+    # edit config/act-pilot-contract.json: "enabled": true, "authorize": { "DEV": ["APPLY", "CLEANUP"] }
+    ./alz apply contract-check --file config/act-pilot-contract.json   # COMPLETE; writes nothing
+    git switch -c act-dev-aws-enable                    # git, not ./alz
+    git add config/act-pilot-contract.json
+    git commit                                         # one reviewed change; reviewers check the target, authorize and each key
+    ./alz apply status --environment DEV               # "act": "PILOT_ENABLED"; AUTHORIZED lists DEV with its entry hash
     ```
 
-    Open it as a PR and merge it through review. A wrong or mismatched pin is `CONTRACT_INVALID`, and an empty pin stays `ACT_DISABLED`.
+    Open it as a PR and merge it through review. Every command that seals, proposes or runs a change (seal, qualify, apply, propose-cleanup, cleanup, propose-removal, remove-workspace) refuses a checkout with uncommitted changes, and also one whose contract bytes differ from the committed file (a skip-worktree, assume-unchanged or locally excluded edit), so the edit runs only once committed. An absent or empty `authorize` stays `ACT_DISABLED`; an operation it does not list is `ACT_NOT_AUTHORIZED`.
 12. **G2 qualification** on the execution host, DEV only. The qualifier watches CloudTrail (STS and S3 data events):
 
     ```bash
@@ -166,7 +165,7 @@ Run these in order. Steps marked "not `./alz`" use a vendor tool.
 
 | Gate | Status | What proves it |
 | --- | --- | --- |
-| DEV-only contract scope for Azure | **IN PROGRESS** (lane `azure-dev-act-exception`, check-in 6442903960; no PR yet) | `src/apply/contract.ts` `validate` today refuses `enabledEnvironments` for anything but `AWS` + `TERRAFORM` ("DEV-only scope is approved only for AWS Terraform ACT-DEV-1"). Done when `test/apply-contract.test.ts` accepts an Azure DEV-only contract |
+| DEV-only contract scope for Azure | **DONE** (#298, merge `5e99385`; generalized by the contract-authorization PR to one DEV-only rule for every implemented path) | `src/apply/contract.ts` `validate`; `test/apply-contract.test.ts` accepts an Azure Terraform DEV-only contract and refuses QA and PROD in it |
 | G0: provider, engine, roles, rollback | **MISSING** (Z1 below) | No Azure G0 page and no Azure DEV-only example contract. The provider facts are in `docs/act-pilot-apply.md` ("Azure"). The rollback and partial-failure behavior is generic (`docs/act-pilot-aws-terraform-g0.md`) |
 | G1: denial paths | **DONE** | The same generic tests as AWS, plus `test/apply-cleanup-azure.test.ts` and `test/ui-channel.test.ts` (Azure in the console); `config/acceptance/journeys.json` AZURE TERRAFORM rows are SYNTHETIC_PASS |
 | Requester signing; PROD cleanup quorum | **DONE** (#286, #295) | Provider-independent; same tests as AWS |
@@ -176,7 +175,7 @@ Run these in order. Steps marked "not `./alz`" use a vendor tool.
 | Bootstrap supports a DEV-only run | **MISSING** (Z3 below) | `bootstrap/azure/variables.tf` requires exactly three distinct subscriptions and storage accounts; `providers.tf`, `environments.tf` and `identities.tf` hard-code DEV, QA and PROD |
 | DISCOVERY read scope (owner decision 6440801434, item 2) | **MISSING** check (Z4 below) | #293 covers AWS only. Azure DISCOVERY is Reader (`docs/act-pilot-bootstrap.md`), which has not been reviewed against "control-plane metadata only" |
 | Release status line | **IN PROGRESS** (the same Azure lane) | `config/release/status.json` `act:azure-terraform` `nextAction` |
-| Bootstrap, federated identity, contract, preflight, pin, G2, G3, G5 | **OWNER** | As for AWS, with the Azure commands below |
+| Bootstrap, federated identity, contract, preflight, authorization commit, G2, G3, G5 | **OWNER** | As for AWS, with the Azure commands below |
 
 ### MISSING engineering tasks (Azure)
 
@@ -218,7 +217,7 @@ Run these in order. Steps marked "not `./alz`" use a vendor tool.
 
 5. **Credential preflight** in a separate shell (`docs/act-pilot-bootstrap.md`, Step 6, Azure): `az login --service-principal ... --federated-token` per identity in a throwaway `AZURE_CONFIG_DIR`. Check that STATE lists the container and cannot upload, and that APPLY and DISCOVERY cannot list it.
 6. **Approver and requester keys.** As for AWS step 6.
-7. **Draft the contract.** Start from `config/act-pilot-contract.azure-dev.example.json` once Z1 lands. Until then, start from `config/act-pilot-contract.example.json` and reduce it to `enabledEnvironments: ["DEV"]`, `targets.DEV` and `requiredApprovals.DEV`. `contract-check` reports INVALID for that shape until the Azure DEV-only exception merges.
+7. **Draft the contract.** Start from `config/act-pilot-contract.azure-dev.example.json` once Z1 lands. Until then, start from `config/act-pilot-contract.example.json` and reduce it to `enabledEnvironments: ["DEV"]`, `targets.DEV` and `requiredApprovals.DEV`. Add `"authorize": { "DEV": ["APPLY", "CLEANUP"] }` only in the owner's enabling commit (step 10).
 
    ```bash
    ./alz apply contract-check --file config/act-pilot-contract.json   # repeat until exit 0 (COMPLETE)
@@ -237,8 +236,8 @@ Run these in order. Steps marked "not `./alz`" use a vendor tool.
    ```
 
    Do not export `AZURE_*`, `ARM_USE_*` other than `ARM_USE_OIDC` (including `ARM_USE_MSI` and `ARM_USE_AZUREAD`), or any `ARM_CLIENT_CERTIFICATE*` variable. Entra ID state authentication needs no variable: the product turns it on in its own backend file (`use_azuread_auth = true`; `docs/act-pilot-apply.md`, Azure). `ARM_STORAGE_USE_AZUREAD` is the azurerm provider's variable and the Terraform backend never reads it.
-9. **Wait for engineering:** the Azure DEV-only exception, backend pinning, #287/#289, Z2, and Z3 if you bootstrap with one subscription.
-10. **Pin commit.** As for AWS step 11, with branch name `act-dev-azure-pin`. If the AWS contract is pinned at the time, this replaces it (see "One contract, one cloud at a time").
+9. **Wait for engineering:** backend pinning, #287/#289, Z2, and Z3 if you bootstrap with one subscription.
+10. **Authorization commit.** As for AWS step 11, with branch name `act-dev-azure-enable`. If the AWS contract is committed at the time, this replaces it (see "One contract, one cloud at a time").
 11. **G2 qualification.** As for AWS step 12. The attestation is `SEPARATED <STATE_WRITE client id> <APPLY client id>`, checked in the Entra sign-in logs and the storage logs.
 12. **DEV apply, cleanup, G3 and G5.** The same commands as AWS steps 13 to 15. Cleanup never deletes a resource group, an identity, the state backend or deployment history (`docs/act-pilot-plan.md`, "Cleanup of pilot-created resources").
 
@@ -248,7 +247,7 @@ The contract's `killSwitchPath` names a file. A relative path is resolved under 
 
 ```bash
 touch .runs/apply/KILL       # stop: seal, qualify and apply refuse; a running apply is stopped (SIGINT, then SIGKILL after 60 s)
-./alz apply status           # reports killSwitch: true while a pinned contract is enabled
+./alz apply status           # reports contract.killSwitch: true while an authorized contract is enabled
 rm .runs/apply/KILL          # the owner removes it; the code never does
 ```
 
@@ -265,7 +264,7 @@ Engineering, in order:
 3. #293 DISCOVERY control-plane scope merges (IN PROGRESS).
 4. A2: correct `act:aws-terraform` in `config/release/status.json` and the G1b lines in `docs/act-pilot-aws-terraform-g0.md` (after the Azure lane releases `status.json`).
 
-Owner, in order, up to and including the pin commit:
+Owner, in order, up to and including the authorization commit:
 
 1. Assign roles; choose the execution host, the change and the cleanup owner.
 2. Verify the DEV account and budget.
@@ -275,7 +274,7 @@ Owner, in order, up to and including the pin commit:
 6. Generate the Ed25519 keys and collect the public keys.
 7. Draft `config/act-pilot-contract.json` from the AWS DEV example until `./alz apply contract-check --file config/act-pilot-contract.json` is COMPLETE.
 8. Set the twelve `ALZ_*_AWS_*` variables; `./alz apply preflight --environment DEV` is READY but for qualification.
-9. Set `enabled: true`, run `./alz apply pin`, write the hash to `config/act-pilot-contract.sha256`, and commit both in one reviewed change.
+9. Set `enabled: true` and `"authorize": { "DEV": ["APPLY", "CLEANUP"] }`, and commit the contract in one reviewed change.
 
 ### Azure Terraform DEV
 
@@ -289,7 +288,7 @@ Engineering, in order:
 6. Z3: DEV-only mode for `bootstrap/azure`. Skip it if the owner bootstraps with three subscriptions.
 7. Z4: Azure DISCOVERY scope review.
 
-Owner, in order, up to and including the pin commit:
+Owner, in order, up to and including the authorization commit:
 
 1. Assign roles; choose the execution host, the change and the cleanup owner.
 2. Confirm the tenant and subscription permissions; register `Microsoft.Storage`.
@@ -299,6 +298,6 @@ Owner, in order, up to and including the pin commit:
 6. Generate the Ed25519 keys and collect the public keys.
 7. Draft the Azure DEV contract until `./alz apply contract-check --file config/act-pilot-contract.json` is COMPLETE.
 8. Set the twenty `ALZ_*_ARM_*` variables, plus #289's state-auth variable once documented; `./alz apply preflight --environment DEV` is READY but for qualification.
-9. Decide whether this replaces a pinned AWS contract. Set `enabled: true`, run `./alz apply pin`, write the hash to `config/act-pilot-contract.sha256`, and commit both in one reviewed change.
+9. Decide whether this replaces a committed AWS contract. Set `enabled: true` and `"authorize": { "DEV": ["APPLY", "CLEANUP"] }`, and commit the contract in one reviewed change.
 
-For both clouds, G2 starts after the pin commit: `./alz apply qualify` with the `SEPARATED` attestation, one supervised DEV apply, then `./alz apply record-live`.
+For both clouds, G2 starts after the authorization commit: `./alz apply qualify` with the `SEPARATED` attestation, one supervised DEV apply, then `./alz apply record-live`.

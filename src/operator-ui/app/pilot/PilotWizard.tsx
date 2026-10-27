@@ -6,7 +6,7 @@ import { ActDev1Setup } from "./ActDev1Setup";
 import CleanupStep, { CleanupList } from "./CleanupStep";
 import {
   answerDialog, cancelDialog, choosePath, fetchPilotState, forgetPilotToken, loadCleanupReview, loadReview, startApply, startApprove, startPreflight, startPrepare, startSeal, setPilotToken, startOver,
-  type CleanupSummary, type PilotEnvironment, type PilotPath, type PilotReply, type PilotRun, type PilotState, type PreflightCheck, type PreparedFiles, type PrepareStop, type ReviewSummary, type RunResult,
+  type CleanupSummary, type PilotEnvironment, type PilotPath, type PilotReply, type PilotRun, type PilotDecisions, type PilotState, type PreflightCheck, type PreparedFiles, type PrepareStop, type ReviewSummary, type RunResult,
 } from "./pilot-api";
 import {
   APPROVER_STEPS, BLOCKED, CLEANUP_CLI_COMMANDS, CLI_COMMANDS, COPY, RESULT_COPY, STEP_TITLES, SUPPORT_NOTE, actionWord, changeNotes, classifyResult, describeCheck, describeCounts, dialogCopy, reasonFor,
@@ -16,7 +16,29 @@ import {
 const POLL_MS = 600;
 const ENVIRONMENTS: readonly PilotEnvironment[] = ["DEV", "QA", "PROD"];
 type Role = "OPERATOR" | "APPROVER";
-type Readiness = { environment: PilotEnvironment; ready: boolean; checks: PreflightCheck[] };
+type Readiness = { environment: PilotEnvironment; ready: boolean; checks: PreflightCheck[]; decisions?: PilotDecisions };
+
+/**
+ * The three separate decisions for this environment, from the readiness check's own output: AUTHORIZED (the owner's reviewed
+ * contract, with its hash), READY (the checks below) and APPROVED (the requester and approvers each run still needs).
+ */
+export function DecisionStatus(props: { readiness: Readiness; environment: PilotEnvironment }) {
+  const { decisions, ready } = props.readiness;
+  const entry = decisions?.authorized.find((item) => item.environment === props.environment);
+  const quorum = decisions?.approved.find((item) => item.environment === props.environment);
+  return (
+    <dl className="pilot-decisions" data-testid="pilot-decisions">
+      <dt>Authorized</dt>
+      <dd data-state={entry ? "yes" : "no"}>{entry
+        ? <>Yes: {entry.operations.join(", ")} in {props.environment}, by the owner's reviewed rules (version <code>{decisions!.contract.contractSha256?.slice(0, 12)}</code>, entry <code>{entry.authorizationSha256.slice(0, 12)}</code>)</>
+        : <>No: the owner's reviewed rules do not allow changes in {props.environment}{decisions?.contract.reason ? " (" + decisions.contract.reason + ")" : ""}.</>}</dd>
+      <dt>Ready</dt>
+      <dd data-state={ready ? "yes" : "no"}>{ready ? "Yes: every check below passed." : "Not yet: see the checks below."}</dd>
+      <dt>Approved</dt>
+      <dd>For each change: the requester signs it, then {quorum ? quorum.requiredApprovals : "the required number of"} approver(s) sign the same reviewed change before it can run.</dd>
+    </dl>
+  );
+}
 
 // --- small shared pieces ------------------------------------------------------------------------------------
 
@@ -290,8 +312,9 @@ export default function PilotWizard(props: PilotWizardProps) {
     setStarting(false);
     const result = run.result;
     if (run.step === "preflight") {
-      const data = result.data as { ready?: boolean; checks?: PreflightCheck[] } | undefined;
-      setReadiness({ environment, ready: result.exit === 0 && data?.ready === true, checks: Array.isArray(data?.checks) ? data.checks : [] });
+      const data = result.data as { ready?: boolean; checks?: PreflightCheck[]; decisions?: PilotDecisions } | undefined;
+      setReadiness({ environment, ready: result.exit === 0 && data?.ready === true, checks: Array.isArray(data?.checks) ? data.checks : [],
+        ...(data?.decisions && Array.isArray(data.decisions.authorized) && Array.isArray(data.decisions.approved) ? { decisions: data.decisions } : {}) });
     } else if (run.step === "prepare") {
       const data = result.exit === 0 ? result.data as PreparedFiles | undefined : undefined;
       setPrepared(data ?? null);
@@ -470,6 +493,7 @@ export default function PilotWizard(props: PilotWizardProps) {
                 </button>
                 {readiness && readiness.environment === environment && (
                   <div aria-live="polite">
+                    <DecisionStatus readiness={readiness} environment={environment} />
                     <p className={readiness.ready ? "pilot-good" : "pilot-error"}><strong>{readiness.ready ? COPY.readyAllGreen : COPY.readySomeRed}</strong></p>
                     <ul className="pilot-checks">
                       {readiness.checks.map((item) => {

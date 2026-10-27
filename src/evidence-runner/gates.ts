@@ -43,7 +43,7 @@ const NO_PRODUCER_PLAN = "A new PLAN names this gate's producer (delegated decis
  * Gates whose path is not admitted yet, so no producer can run them and the runner reports them and writes nothing, whatever
  * their mode would otherwise plan. GCP's gates are required before GCP is an admitted provider (path 5; owner approval
  * 6433121154 on issue #39). The Bicep preview gate is back in scope (path 4; owner rebaseline 6443352284), but no contract can
- * name the BICEP engine until its id is admitted, so it is never planned as the GUIDED S5 stage of the pinned path.
+ * name the BICEP engine until its id is admitted, so it is never planned as the GUIDED S5 stage of the authorized path.
  */
 const GCP_NOT_ADMITTED = "GCP is not an admitted provider yet, so no producer can run this gate. ";
 const NOT_ADMITTED: Readonly<Record<string, string>> = {
@@ -72,13 +72,13 @@ function planFor(id: string): GatePlan {
         ? { id, mode: "AUTO", slice: "S3", note: "Needs the federated qualification identity; BLOCKED until it exists." }
         : { id, mode: "NO_PRODUCER", note: NO_PRODUCER_PLAN };
     case "LIVE_PREVIEW":
-      return { id, mode: "GUIDED", slice: "S5", note: "Produced at seal after the owner's reviewed pin (owner input); only for the pinned path." };
+      return { id, mode: "GUIDED", slice: "S5", note: "Produced at seal after the owner's reviewed authorization commit (owner input); only for the authorized path." };
     case "LIVE_ACT":
       return id === "act:aws-cdk"
-        ? { id, mode: "GUIDED", slice: "S5", note: "CDK_CLEANUP_NOT_IMPLEMENTED until the CDK cleanup slices land; only for the pinned path." }
-        : { id, mode: "GUIDED", slice: "S5", note: "A person runs the DEV apply after the owner's pin; only for the pinned path." };
+        ? { id, mode: "GUIDED", slice: "S5", note: "CDK_CLEANUP_NOT_IMPLEMENTED until the CDK cleanup slices land; only for the authorized path." }
+        : { id, mode: "GUIDED", slice: "S5", note: "A person runs the DEV apply after the owner's authorization commit; only for the authorized path." };
     case "ACT_RECOVERY":
-      return { id, mode: "GUIDED", slice: "S5", note: "Optional recovery stage after the pin (./alz apply record-recovery)." };
+      return { id, mode: "GUIDED", slice: "S5", note: "Optional recovery stage after the authorization commit (./alz apply record-recovery)." };
     case "LIFECYCLE":
       return id.startsWith("platform:")
         ? { id, mode: "OWNER", note: "The owner runs ./alz lifecycle on a disposable host of this platform; the runner does not ingest its report yet." }

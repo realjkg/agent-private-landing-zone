@@ -7,7 +7,7 @@ import type { ResolvedTarget } from "../teardown/driver/types.js";
 import { canonicalJson } from "../teardown/manifest.js";
 import { consumeApprovals, signRequest, verifyApprovalSet, verifyRequestSignature } from "./approval.js";
 import { ENVIRONMENTS, HASH } from "./constants.js";
-import { isKillSwitchActive, pilotContractSha256, targetForEnvironment } from "./contract.js";
+import { isKillSwitchActive, pilotContractSha256, requireActAuthorized, targetForEnvironment, targetMoved } from "./contract.js";
 import { RECOVERY_FILE_NAMES } from "./engine-spec.js";
 import { holdsReservation } from "./ledger.js";
 import type { NonceStore } from "./nonces.js";
@@ -38,25 +38,28 @@ import { PILOT_CHANNELS, type ApplyEnvironment, type PilotChannel, type PilotCon
  *  - REMOVED: scratch directories the driver left behind after a crash or a SIGKILL (`alz-preview-*`, `alz-snapshot-*`, `alz-child-*` in
  *    its scratch parent, owned by this account and older than an hour, as the stale sweep judges them). They hold the work copy with
  *    `.terraform`, the decrypted plan files and local state copies. Their names do not say which run made them.
- *  - KEPT, always: the evidence directory and everything in it, cleanup and removal proposals, lifecycle reports, logs, the contract and
- *    its pin, and the operator's own project folder. A stale scratch directory holding errored.tfstate or crash.log is held for review.
+ *  - KEPT, always: the evidence directory and everything in it, cleanup and removal proposals, lifecycle reports, logs, the contract,
+ *    and the operator's own project folder. A stale scratch directory holding errored.tfstate or crash.log is held for review.
  *  - SKIPPED and reported, never followed or deleted: a link, or a directory with a link anywhere inside it (a planted entry, a plugin
  *    cache link under `.terraform`), and anything another account owns. Such an entry never blocks the rest of the removal.
  */
 
 export type RemovalAuthorizationRequest = { operation: "REMOVE"; contract: PilotContract; environment: ApplyEnvironment; artifactSha256: string };
-export type RemovalAuthorization = { authorized: true; basis: string } | { authorized: false; reason: string };
+export type RemovalAuthorization = { authorized: true; basis: string; contractSha256: string; authorizationSha256: string } | { authorized: false; reason: string };
 
 /**
- * THE ONE CALL SITE for the AUTHORIZED check (owner decision, refinement: the reviewed ACT policy authorizes each operation, APPLY,
- * CLEANUP or REMOVE). When the contract-based check lands (#313, `requireActAuthorized("REMOVE", environment)`), its call replaces this
- * body; nothing else in this module decides authority. Until then: refused while the contract's kill switch is active. The approval
- * quorum and the requester signature are checked separately, by the cleanup machinery, in `removeWorkspace`.
+ * THE ONE CALL SITE for the AUTHORIZED check (owner decisions, #39: the reviewed contract's `authorize` entry authorizes each
+ * operation, APPLY, CLEANUP or REMOVE). Refused unless the contract lists REMOVE for the environment (`requireActAuthorized`), and
+ * while the contract's kill switch is active; nothing else in this module decides authority. The approval quorum and the requester
+ * signature are checked separately, by the cleanup machinery, in `removeWorkspace`.
  */
 export function authorizeRemoval(request: RemovalAuthorizationRequest): RemovalAuthorization {
-  return isKillSwitchActive(request.contract)
-    ? { authorized: false, reason: "the kill switch is active" }
-    : { authorized: true, basis: "INTERIM_KILL_SWITCH_ONLY: the ACT policy's REMOVE check is not wired yet; the kill switch is not active" };
+  const authorized = requireActAuthorized(request.operation, request.environment, request.contract);
+  if (!authorized.ok) return { authorized: false, reason: authorized.message };
+  if (isKillSwitchActive(request.contract)) return { authorized: false, reason: "the kill switch is active" };
+  const { contractSha256, authorizationSha256 } = authorized.authorization;
+  return { authorized: true, basis: "AUTHORIZED: REMOVE in " + request.environment + " by contract " + contractSha256.slice(0, 12) + ", entry " + authorizationSha256.slice(0, 12) + "; the kill switch is not active",
+    contractSha256, authorizationSha256 };
 }
 
 export type RemovedPlan = { path: string; bytes: number; sha256: string };
@@ -84,6 +87,8 @@ export type WorkspaceRemovalProposal = {
   target: ResolvedTarget;
   channel: PilotChannel;
   contractSha256: string;
+  /** The run's full target, bound by the proposal's hash (R1). */
+  targetSha256: string;
   createdAt: string;
   items: RemovalItem[];
   heldForReview: string[];
@@ -103,6 +108,8 @@ export type WorkspaceRemoval = {
   finishedAt: string | null;
   status: "IN_PROGRESS" | "COMPLETE" | "STOPPED";
   authorization: string;
+  /** AUTHORIZED (the contract and its REMOVE entry, by hash) and EXECUTE (requester and approvers), as apply and cleanup evidence record them. */
+  decisions: { authorized: { operation: "REMOVE"; contractSha256: string; authorizationSha256: string }; execute: { requesterId: string; approverIds: string[] } };
   items: RemovalRecordItem[];
   heldForReview: string[];
   skipped: SkippedEntry[];
@@ -130,9 +137,10 @@ export type RemovalLocations = {
   staleAfterMs?: number;
 };
 /** The run, from its sealed plan. */
-export type RemovalRun = { artifactSha256: string; manifestHash: string; environment: ApplyEnvironment; target: ResolvedTarget; channel: PilotChannel };
+/** `targetSha256`: the run's full target from its sealed plan (`pilotTargetSha256`); the contract committed now must state exactly it. */
+export type RemovalRun = { artifactSha256: string; manifestHash: string; environment: ApplyEnvironment; target: ResolvedTarget; channel: PilotChannel; targetSha256: string };
 
-const KEPT = "the evidence directory and everything in it (apply and cleanup evidence, the ledger, sealed plans, run records, the recovery record), cleanup and removal proposals, lifecycle reports, logs, the contract and its pin, and the operator's project folder";
+const KEPT = "the evidence directory and everything in it (apply and cleanup evidence, the ledger, sealed plans, run records, the recovery record), cleanup and removal proposals, lifecycle reports, logs, the contract, and the operator's project folder";
 const SCRATCH_PREFIXES = ["alz-preview-", "alz-snapshot-", "alz-child-"] as const;
 export const REMOVAL_RECORD_SUFFIX = ".workspace-removal.json";
 /** The refusals that come after the approvals were consumed: the approvals are spent, and the record says what remains. */
@@ -224,7 +232,7 @@ export function planWorkspaceRemoval(run: Pick<RemovalRun, "environment" | "mani
 
 // --- the proposal -------------------------------------------------------------------------------------------------------------
 
-const PROPOSAL_KEYS = ["schemaVersion", "kind", "proposalSha256", "artifactSha256", "manifestHash", "environment", "target", "channel", "contractSha256", "createdAt", "items", "heldForReview", "skipped", "requesterId", "request", "authorization"];
+const PROPOSAL_KEYS = ["schemaVersion", "kind", "proposalSha256", "artifactSha256", "manifestHash", "environment", "target", "channel", "contractSha256", "targetSha256", "createdAt", "items", "heldForReview", "skipped", "requesterId", "request", "authorization"];
 
 /** The proposal's identity: every field but itself and the requester's signature, canonically. */
 export function removalProposalSha256(proposal: Omit<WorkspaceRemovalProposal, "proposalSha256"> | WorkspaceRemovalProposal): string {
@@ -237,11 +245,13 @@ export function buildRemovalProposal(input: { run: RemovalRun; where: RemovalLoc
   const { run, contract } = input;
   const required = contract.requiredApprovals[run.environment];
   if (required === undefined) return refuse("TARGET_NOT_IN_CONTRACT", "The pilot contract does not enable " + run.environment + ".");
+  const moved = targetMoved(run.targetSha256, contract, run.environment);
+  if (moved) return moved;
   const planned = planWorkspaceRemoval(run, input.where, input.now);
   if (!planned.ok) return planned;
   const fields: Omit<WorkspaceRemovalProposal, "proposalSha256"> = {
     schemaVersion: 1, kind: "WORKSPACE_REMOVAL_PROPOSAL", artifactSha256: run.artifactSha256, manifestHash: run.manifestHash, environment: run.environment, target: { ...run.target },
-    channel: run.channel, contractSha256: pilotContractSha256(contract), createdAt: input.now.toISOString(), ...planned.plan, requesterId: input.requesterId, request: null,
+    channel: run.channel, contractSha256: pilotContractSha256(contract), targetSha256: run.targetSha256, createdAt: input.now.toISOString(), ...planned.plan, requesterId: input.requesterId, request: null,
     authorization: { operation: "REMOVE", subject: "CLEANUP", requiredApprovals: required },
   };
   return { ok: true, proposal: { ...fields, proposalSha256: removalProposalSha256(fields) } };
@@ -265,7 +275,7 @@ export function verifyRemovalProposal(value: unknown): { ok: true; proposal: Wor
   if (Object.keys(value).sort().join() !== [...PROPOSAL_KEYS].sort().join()) return bad("its fields are not a removal proposal's");
   const p = value as Record<string, unknown>;
   if (p.schemaVersion !== 1 || p.kind !== "WORKSPACE_REMOVAL_PROPOSAL") return bad("not a schemaVersion 1 WORKSPACE_REMOVAL_PROPOSAL");
-  if (![p.proposalSha256, p.artifactSha256, p.manifestHash, p.contractSha256].every((h) => typeof h === "string" && HASH.test(h))) return bad("a hash is not a SHA-256 digest");
+  if (![p.proposalSha256, p.artifactSha256, p.manifestHash, p.contractSha256, p.targetSha256].every((h) => typeof h === "string" && HASH.test(h))) return bad("a hash is not a SHA-256 digest");
   if (!ENVIRONMENTS.includes(p.environment as ApplyEnvironment) || !PILOT_CHANNELS.includes(p.channel as PilotChannel)) return bad("environment or channel is unknown");
   const target = p.target;
   if (!isRecord(target) || Object.keys(target).sort().join() !== "account,backend,workspace" || !["account", "backend", "workspace"].every((k) => text(target[k], 512))) return bad("target");
@@ -285,6 +295,16 @@ export function verifyRemovalProposal(value: unknown): { ok: true; proposal: Wor
 
 // --- the record ---------------------------------------------------------------------------------------------------------------
 
+/** The record's AUTHORIZED and EXECUTE decisions, with exactly their fields. */
+function decisionsOk(value: unknown): boolean {
+  if (!isRecord(value) || Object.keys(value).sort().join() !== "authorized,execute") return false;
+  const { authorized: a, execute: e } = value;
+  return isRecord(a) && Object.keys(a).sort().join() === "authorizationSha256,contractSha256,operation" && a.operation === "REMOVE" &&
+    [a.contractSha256, a.authorizationSha256].every((h) => typeof h === "string" && HASH.test(h)) &&
+    isRecord(e) && Object.keys(e).sort().join() === "approverIds,requesterId" && typeof e.requesterId === "string" && REQUESTER_ID.test(e.requesterId) &&
+    Array.isArray(e.approverIds) && e.approverIds.every((x) => typeof x === "string");
+}
+
 /** Undefined when there is none; INVALID for anything that is not exactly a removal record of this run (never a TypeError). */
 function readRecord(path: string, run: RemovalRun): WorkspaceRemovalRecord | undefined | "INVALID" {
   let stat;
@@ -295,7 +315,8 @@ function readRecord(path: string, run: RemovalRun): WorkspaceRemovalRecord | und
   if (!isRecord(value) || value.schemaVersion !== 1 || value.kind !== "WORKSPACE_REMOVAL" || value.artifactSha256 !== run.artifactSha256 || value.environment !== run.environment ||
     typeof value.kept !== "string" || !Array.isArray(value.removals)) return "INVALID";
   const removalOk = (r: unknown): boolean => isRecord(r) && typeof r.proposalSha256 === "string" && HASH.test(r.proposalSha256) && ["IN_PROGRESS", "COMPLETE", "STOPPED"].includes(r.status as string) &&
-    Array.isArray(r.items) && r.items.every((i) => itemOk(i) && typeof (i as { removed?: unknown }).removed === "boolean") && Array.isArray(r.approvers) && Array.isArray(r.heldForReview) && Array.isArray(r.skipped);
+    Array.isArray(r.items) && r.items.every((i) => itemOk(i) && typeof (i as { removed?: unknown }).removed === "boolean") && Array.isArray(r.approvers) && Array.isArray(r.heldForReview) && Array.isArray(r.skipped) &&
+    decisionsOk(r.decisions);
   return value.removals.every(removalOk) ? value as WorkspaceRemovalRecord : "INVALID";
 }
 
@@ -322,7 +343,8 @@ export type RemovalInput = {
 /** TEST-ONLY SEAMS: function parameters only, never reachable from the command line, a file or the environment. */
 export type RemovalTestSeams = { removePath?: (path: string) => void };
 
-export type RemovalReady = { ok: true; proposal: WorkspaceRemovalProposal; approvers: string[]; requesterId: string; deletes: RemovalItem[]; resumed: boolean; recordPath: string; plan: RemovalPlan };
+export type RemovalReady = { ok: true; proposal: WorkspaceRemovalProposal; approvers: string[]; requesterId: string; deletes: RemovalItem[]; resumed: boolean; recordPath: string; plan: RemovalPlan;
+  authorized: { contractSha256: string; authorizationSha256: string } };
 
 /** Same file, same content: a preparation file by its hash; a scratch directory by its path (its contents are measured again and recorded). */
 const sameItem = (a: RemovalItem, b: RemovalItem): boolean => a.path === b.path && a.kind === b.kind && (a.kind === "SCRATCH_DIRECTORY" || a.sha256 === b.sha256);
@@ -343,9 +365,11 @@ export async function prepareRemoval(input: RemovalInput): Promise<RemovalReady 
   if (proposal.contractSha256 !== pilotContractSha256(contract)) return refuse("PROPOSAL_INVALID", "The removal proposal was made under another pilot contract. Nothing was removed.");
   const pinned = targetForEnvironment(contract, proposal.environment, proposal.target);
   if (!pinned.ok) return refuse(pinned.code, pinned.message);
-  if (proposal.target.account !== run.target.account || proposal.target.backend !== run.target.backend || proposal.target.workspace !== run.target.workspace) {
+  if (proposal.target.account !== run.target.account || proposal.target.backend !== run.target.backend || proposal.target.workspace !== run.target.workspace || proposal.targetSha256 !== run.targetSha256) {
     return refuse("PROPOSAL_INVALID", "The removal proposal names another target than the run. Nothing was removed.");
   }
+  const moved = targetMoved(run.targetSha256, contract, run.environment);
+  if (moved) return refuse(moved.code, moved.message);
   const decision = authorizeRemoval({ operation: "REMOVE", contract, environment: run.environment, artifactSha256: run.artifactSha256 });
   if (!decision.authorized) return refuse("REMOVAL_NOT_AUTHORIZED", "Removing this run's working files is not authorized: " + decision.reason + ". Nothing was removed.");
   if (await holdsReservation(input.where.evidenceDir)) {
@@ -367,7 +391,8 @@ export async function prepareRemoval(input: RemovalInput): Promise<RemovalReady 
   const planned = planWorkspaceRemoval(run, input.where, input.now);
   if (!planned.ok) return planned;
   const deletes = planned.plan.items.filter((item) => proposal.items.some((p) => sameItem(p, item)) && (!resumed || last!.items.some((r) => !r.removed && sameItem(r, item))));
-  return { ok: true, proposal, approvers: verdict.approvers.map((a) => a.approverId), requesterId: requested.requesterId, deletes, resumed, recordPath, plan: planned.plan };
+  return { ok: true, proposal, approvers: verdict.approvers.map((a) => a.approverId), requesterId: requested.requesterId, deletes, resumed, recordPath, plan: planned.plan,
+    authorized: { contractSha256: decision.contractSha256, authorizationSha256: decision.authorizationSha256 } };
 }
 
 /**
@@ -390,6 +415,7 @@ export async function removeWorkspace(input: RemovalInput & { expected: readonly
   const removal: WorkspaceRemoval = {
     proposalSha256: ready.proposal.proposalSha256, operatorId: input.operatorId, approvers: ready.approvers, startedAt: input.now.toISOString(), finishedAt: null, status: "IN_PROGRESS",
     authorization: "requester " + ready.requesterId + "; " + ready.approvers.length + " approval(s) (" + ready.approvers.join(", ") + ") under the cleanup domain; kill switch inactive",
+    decisions: { authorized: { operation: "REMOVE", ...ready.authorized }, execute: { requesterId: ready.requesterId, approverIds: [...ready.approvers] } },
     items: ready.deletes.map((item) => ({ ...item, removed: false })), heldForReview: ready.plan.heldForReview, skipped: ready.plan.skipped,
   };
   // A resumed removal of the same proposal ends its predecessor: the new entry carries on with what is left.

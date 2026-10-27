@@ -19,13 +19,16 @@ export const SUBSCRIPTION = "11111111-2222-4333-8444-555555555555";
 /** A credential-shaped value placed in the environment of every test run; it must never appear in anything written. */
 export const CANARY = "AKIAEVIDENCECANARY00";
 
-export function fixtureRoot(pin = ""): string {
+/** The shape the evidence runner reads to say ACT is authorized: an enabled contract with a non-empty authorize (the full check is ./alz apply preflight). */
+export const AUTHORIZING_CONTRACT = { schemaVersion: 1, enabled: true, authorize: { DEV: ["APPLY"] } };
+
+export function fixtureRoot(contract?: unknown): string {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "alz-evidence-")));
   mkdirSync(join(root, "config", "release"), { recursive: true });
   copyFileSync("config/release/scope.json", join(root, "config", "release", "scope.json"));
   copyFileSync("config/release/status.json", join(root, "config", "release", "status.json"));
   copyFileSync("config/evidence-runner.example.json", join(root, "config", "evidence-runner.example.json"));
-  writeFileSync(join(root, "config", "act-pilot-contract.sha256"), pin);
+  if (contract !== undefined) writeFileSync(join(root, "config", "act-pilot-contract.json"), typeof contract === "string" ? contract : JSON.stringify(contract));
   return root;
 }
 

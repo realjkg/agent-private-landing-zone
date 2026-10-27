@@ -13,9 +13,9 @@ import type { ApplyEnvironment } from "./types.js";
  * inputs are still missing, still the shipped example's placeholder, or not accepted, each named in plain words.
  *
  * It reads the draft and the shipped example contracts (to recognize values copied from them) and nothing else: no
- * pin, no identity variable, no tool directory, no cloud, no network. It never enables ACT and never writes the pin; a
- * complete draft still needs the owner's reviewed commit of the contract and its pin (docs/act-pilot-apply.md, "The
- * contract and its pin"). The shape verdict is the contract validator's own (`inspectPilotContract`,
+ * identity variable, no tool directory, no cloud, no network. It never enables ACT and never writes a contract; a
+ * complete draft still needs the owner's reviewed commit of the contract with its `authorize` entry (docs/act-pilot-apply.md,
+ * "The contract is the authorization"). The shape verdict is the contract validator's own (`inspectPilotContract`,
  * src/apply/contract.ts). The kit is stricter than the validator in exactly three ways: it requires enough approvers
  * allowed for PROD to reach `requiredApprovals.PROD` (the validator checks the number, not the list); it refuses values
  * that are not inputs at all (REPLACE-WITH placeholders, the examples' fake account ids and `examplefake` buckets, and
@@ -39,7 +39,7 @@ export type ContractCheckItem = {
 export type ContractCheckReport = {
   provider: string | null;
   engine: string | null;
-  /** The `enabled` flag as the draft writes it. A draft normally says false; the reviewed pin commit is where it becomes true. */
+  /** The `enabled` flag as the draft writes it. A draft normally says false; the owner's reviewed commit that authorizes ACT is where it becomes true. */
   enabledAsWritten: boolean | null;
   /** The environments the draft puts in scope: the DEV-only pilot or the DEV, QA, PROD chain. */
   scope: ApplyEnvironment[];
@@ -56,8 +56,8 @@ export type ContractCheckReport = {
 };
 
 export const CONTRACT_CHECK_GUARANTEES: readonly string[] = [
-  "This check read the draft file and the shipped example contracts (to recognize copied example values) and nothing else: no pin, no credential, no identity variable, no cloud and no network.",
-  "It never enables ACT and never writes config/act-pilot-contract.sha256. ACT stays disabled until the owner's reviewed commit of the contract and its pin.",
+  "This check read the draft file and the shipped example contracts (to recognize copied example values) and nothing else: no credential, no identity variable, no cloud and no network.",
+  "It never enables ACT and never writes the contract. ACT stays disabled until the owner's reviewed commit of the contract with enabled true and an authorize entry.",
   "A complete draft is information for the owner, not approval: seal and apply run their own gates.",
 ];
 
@@ -157,11 +157,11 @@ export function checkDraftContract(raw: unknown, examples: ReturnType<typeof shi
   }
   // The loader refuses a missing or non-boolean `enabled` (src/apply/contract.ts); inspectPilotContract overrides it, so it is judged here.
   items.push(typeof raw.enabled === "boolean"
-    ? { field: "enabled", input: "the enabled flag, written explicitly (false in a draft; true only in the owner's reviewed pin commit)", status: "PRESENT" }
-    : { field: "enabled", input: "the enabled flag, written explicitly (false in a draft; true only in the owner's reviewed pin commit)", status: raw.enabled === undefined ? "MISSING" : "INVALID", detail: "the contract loader refuses a contract whose enabled flag is not exactly true or false" });
+    ? { field: "enabled", input: "the enabled flag, written explicitly (false in a draft; true only in the owner's reviewed commit that authorizes ACT)", status: "PRESENT" }
+    : { field: "enabled", input: "the enabled flag, written explicitly (false in a draft; true only in the owner's reviewed commit that authorizes ACT)", status: raw.enabled === undefined ? "MISSING" : "INVALID", detail: "the contract loader refuses a contract whose enabled flag is not exactly true or false" });
   add("provider", "the chosen provider (G0 decision)", provider);
   add("engine", "the chosen engine (G0 decision)", engine);
-  add("policyVersion", "the reviewed policy version, which prepare copies into every request and manifest (the pin accepts its absence; prepare then stops with an owner prerequisite)", raw.policyVersion);
+  add("policyVersion", "the reviewed policy version, which prepare copies into every request and manifest (the loader accepts its absence; prepare then stops with an owner prerequisite)", raw.policyVersion);
   add("enabledEnvironments", "the pilot scope: exactly [\"DEV\"] for the DEV-only pilot, or absent for the DEV, QA, PROD chain", raw.enabledEnvironments === undefined ? "absent (DEV, QA, PROD chain)" : raw.enabledEnvironments);
 
   const targets = isRecord(raw.targets) ? raw.targets : {};
@@ -232,7 +232,7 @@ export function contractCheckLines(report: ContractCheckReport, file: string): s
     "", "DRAFT CONTRACT CHECK (offline; enables nothing, writes nothing)",
     "  file            " + file,
     "  provider        " + (report.provider ?? "missing") + "   engine  " + (report.engine ?? "missing") + "   scope  " + report.scope.join(", "),
-    "  enabled         " + (report.enabledAsWritten === null ? "missing" : String(report.enabledAsWritten)) + " as written (a draft stays false; the reviewed pin commit is where it becomes true)",
+    "  enabled         " + (report.enabledAsWritten === null ? "missing" : String(report.enabledAsWritten)) + " as written (a draft stays false; the owner's reviewed commit that authorizes ACT is where it becomes true)",
     "  shape           " + (report.shape.ok ? "valid (the contract validator accepts it as if it were enabled)" : "not accepted: " + report.shape.reason),
     "", "OWNER INPUTS",
     ...report.inputs.map((item) => "  " + pad(item.status) + item.field + ": " + item.input + (item.detail ? " [" + item.detail + "]" : "") + (item.notice ? " [NOTICE: " + item.notice + "]" : "")),
@@ -240,7 +240,7 @@ export function contractCheckLines(report: ContractCheckReport, file: string): s
     ...report.outsideContract.map((item) => "  " + item.input + ": " + item.where),
     "",
     report.complete
-      ? "COMPLETE: every input is present and the shape is valid" + (report.notices > 0 ? ", with " + report.notices + " notice(s) above for a person to confirm" : "") + ". Next: the owner reviews the values, runs ./alz apply pin, and commits the contract and its pin in one reviewed change. Nothing here did that."
+      ? "COMPLETE: every input is present and the shape is valid" + (report.notices > 0 ? ", with " + report.notices + " notice(s) above for a person to confirm" : "") + ". Next: the owner reviews the values, sets enabled to true and writes the authorize entry (per environment, APPLY, CLEANUP or REMOVE), and commits the contract in one reviewed change. Nothing here did that."
       : "INCOMPLETE: " + report.inputs.filter((item) => item.status !== "PRESENT").length + " input(s) above are not ready. Fill them in and run this check again.",
     ...report.guarantees.map((line) => "  " + line),
     "",

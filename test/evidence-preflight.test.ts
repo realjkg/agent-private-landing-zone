@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 import { parseConfig, type EvidenceRunnerConfig } from "../src/evidence-runner/config.js";
 import { RELEASE_GATE_IDS } from "../src/evidence-runner/gate-ids.js";
 import { gateModeOf, gatePlan, releaseGates } from "../src/evidence-runner/gates.js";
 import { compareIdentity, identityHash, ownerInputs, runPreflight, unbuiltProbe } from "../src/evidence-runner/preflight.js";
 import { PRODUCTION_RELEASE_GATES } from "../src/qualification/release-admission.js";
-import { ACCOUNT, CANDIDATE, SUBSCRIPTION, TENANT, fakeProbe, fixtureRoot, observedAws, observedAzure, validConfig } from "./helpers/evidence-fixtures.js";
+import { AUTHORIZING_CONTRACT, ACCOUNT, CANDIDATE, SUBSCRIPTION, TENANT, fakeProbe, fixtureRoot, observedAws, observedAzure, validConfig } from "./helpers/evidence-fixtures.js";
 
 // SYNTHETIC: the runner's preflight. No probe here reaches a cloud; the identity comparison is tested with fakes.
 
@@ -60,22 +62,29 @@ test("a dirty checkout, another HEAD or a mutation identity in the environment b
   for (const result of [dirty, other, mutation]) assert.equal(result.blocked, true);
 });
 
-test("the pin file's presence alone decides whether ACT is reported disabled (the contract itself is checked by ./alz apply preflight in S5)", async () => {
+test("the committed contract's authorize decides whether ACT is reported disabled (the contract itself is checked by ./alz apply preflight in S5)", async () => {
   const probe = fakeProbe({ aws: observedAws, azure: observedAzure });
-  const empty = await runPreflight({ root: fixtureRoot(""), env: {}, config: config(), source: clean, probe });
-  assert.equal(empty.checks.find((check) => check.id === "act")?.code, "SKIPPED_ACT_DISABLED");
-  const pinned = await runPreflight({ root: fixtureRoot("c".repeat(64) + "\n"), env: {}, config: config(), source: clean, probe });
-  assert.equal(pinned.checks.find((check) => check.id === "act")?.code, "PIN_PRESENT");
-  assert.equal(pinned.ownerInputs.find((input) => input.id === "pilot-pin")?.code, "PIN_PRESENT");
+  for (const contract of [undefined, "not json", { ...AUTHORIZING_CONTRACT, enabled: false }, { ...AUTHORIZING_CONTRACT, authorize: {} }, { enabled: true }, { ...AUTHORIZING_CONTRACT, authorize: ["DEV"] }]) {
+    const off = await runPreflight({ root: fixtureRoot(contract), env: {}, config: config(), source: clean, probe });
+    assert.equal(off.checks.find((check) => check.id === "act")?.code, "SKIPPED_ACT_DISABLED", JSON.stringify(contract));
+    assert.equal(off.actScope, "EMPTY");
+  }
+  const authorized = await runPreflight({ root: fixtureRoot(AUTHORIZING_CONTRACT), env: {}, config: config(), source: clean, probe });
+  assert.equal(authorized.checks.find((check) => check.id === "act")?.code, "AUTHORIZATION_PRESENT");
+  assert.equal(authorized.ownerInputs.find((input) => input.id === "pilot-authorization")?.code, "AUTHORIZATION_PRESENT");
+  // The retired pin file is never read: one beside an unauthorized contract changes nothing.
+  const root = fixtureRoot();
+  writeFileSync(join(root, "config", "act-pilot-contract.sha256"), "c".repeat(64) + "\n");
+  assert.equal((await runPreflight({ root, env: {}, config: config(), source: clean, probe })).actScope, "EMPTY");
 });
 
-test("owner inputs: the no-op stack, the federated qualification identity and the pin, each with its BLOCKED reason", () => {
+test("owner inputs: the no-op stack, the federated qualification identity and the contract's authorization, each with its BLOCKED reason", () => {
   const inputs = ownerInputs(config(), "EMPTY");
-  assert.deepEqual(inputs.map((input) => input.code), ["OWNER_INPUT_NOOP_STACK", "OWNER_INPUT_FEDERATED_IDENTITY", "OWNER_INPUT_PIN"]);
+  assert.deepEqual(inputs.map((input) => input.code), ["OWNER_INPUT_NOOP_STACK", "OWNER_INPUT_FEDERATED_IDENTITY", "OWNER_INPUT_AUTHORIZATION"]);
   assert.ok(inputs.every((input) => input.status === "BLOCKED"));
   assert.match(inputs[0].detail, /never creates, updates or deletes it/);
   assert.match(inputs[1].detail, /never under your CLI login/);
-  assert.deepEqual(ownerInputs(config({ aws: undefined, azure: undefined }), "EMPTY").map((input) => input.code), ["OWNER_INPUT_PIN"]);
+  assert.deepEqual(ownerInputs(config({ aws: undefined, azure: undefined }), "EMPTY").map((input) => input.code), ["OWNER_INPUT_AUTHORIZATION"]);
 });
 
 test("the identity hash binds the expected ids and changes with any of them", () => {

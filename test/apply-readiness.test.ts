@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { assessReadiness, type ReadinessInput, type ReadinessReport } from "../src/apply/readiness.js";
 import { cdkContractJson, cdkIdentityEnv } from "./helpers/cdk-fixtures.js";
 import {
-  awsContractJson, awsIdentityEnv, contractJson, identityEnv, installFakeTerraform, NOW, pinPathOf, testFixtureForgeQualificationEvidence, writePinnedContract,
+  awsContractJson, awsIdentityEnv, contractJson, identityEnv, installFakeTerraform, NOW, testFixtureForgeQualificationEvidence, writeReviewedContract,
 } from "./helpers/apply-fixtures.js";
 
 // The one readiness definition (src/apply/readiness.ts). Fake tools and fixture qualification evidence only: it reads, never runs.
@@ -26,12 +26,12 @@ async function world(contract: (kill: string) => unknown = (kill) => contractJso
   const dir = fresh("world");
   const kill = join(dir, "KILL");
   const contractPath = join(dir, "contract.json");
-  writePinnedContract(contractPath, contract(kill));
+  writeReviewedContract(contractPath, contract(kill));
   const vault = join(dir, "vault");
   mkdirSync(vault);
   if (qualified) await testFixtureForgeQualificationEvidence(vault, undefined, qualified);
   const input: ReadinessInput = {
-    environment: "DEV", contractPath, contractPinPath: pinPathOf(contractPath), qualificationDir: vault, toolDirs: [toolDir],
+    environment: "DEV", contractPath, qualificationDir: vault, toolDirs: [toolDir],
     env: qualified === "AWS" ? awsIdentityEnv("DEV") : identityEnv("DEV"), now: () => NOW,
   };
   return { input, kill, contractPath };
@@ -44,7 +44,9 @@ test("a qualified machine is ready for both clouds, with nothing next and no res
     const report = await assessReadiness(input);
     assert.equal(report.ready, true, cloud + ": " + JSON.stringify(report.checks.filter((c) => !c.ok)));
     assert.equal(report.next, null);
-    assert.ok(report.checks.every((c) => c.state === "READY" && c.responsible === undefined));
+    // Every item is READY except the advisory financial controls item, which reports honestly that nothing checks a budget and never stops a run.
+    assert.ok(report.checks.every((c) => c.responsible === undefined && (c.state === "READY" || (c.advisory === true && c.ok))));
+    assert.deepEqual(report.checks.filter((c) => c.advisory).map((c) => [c.check, c.state]), [["financial controls (budget alerts or cost cap)", "UNVERIFIED"]]);
   }
 });
 

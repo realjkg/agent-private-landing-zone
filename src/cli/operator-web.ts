@@ -45,7 +45,7 @@ server.listen(port, "127.0.0.1", () => {
         " (loopback-only /healthz /readyz /metrics)",
     );
   }
-  console.log("ACT DISABLED unless the pinned pilot contract enables it; synthetic scenarios require no cloud access.");
+  console.log("ACT DISABLED unless the committed pilot contract authorizes it; synthetic scenarios require no cloud access.");
   // The pilot apply wizard (docs/act-pilot-walkthrough.md) runs in this console only for a person who pastes this session token.
   // It is printed here, in your terminal, and nowhere else: not in the page, a link or a log. It changes at every start.
   console.log("Pilot apply session token (paste it into the wizard once; keep it private; it ends when this console stops):");

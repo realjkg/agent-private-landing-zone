@@ -20,7 +20,7 @@ import { AWS_PRINCIPAL_TYPES, AWS_RUN_CREATED_POLICY_TYPES, AZURE_RUN_CREATED_PO
 import { removeTree } from "../src/teardown/driver/cleanup.js";
 import {
   NOW, POLICY, SOURCE_COMMIT, approvalFor, awsContractJson, awsIdentityEnv, awsRoleArn, awsTargetOf, behave as behaveIn, behaveAwsReads, callsOf, human, installFakeAwsReads, installFakeTerraform,
-  keys, pinPathOf, stateResource, testFixtureForgeQualificationEvidence, writePinnedContract, writeProject, REQUESTER, reHashedProposal, type Behavior,
+  keys, stateResource, testFixtureForgeQualificationEvidence, writeReviewedContract, writeProject, REQUESTER, reHashedProposal, type Behavior,
 } from "./helpers/apply-fixtures.js";
 
 // Run-created policies on AWS (owner decision "Unpin the ACT decision", item 2 (c), #39; src/observe/run-created-policies.ts): a
@@ -85,8 +85,8 @@ const DELETED = ["aws_cloudwatch_log_group.canary", "aws_iam_policy.app", "aws_i
 const HELD = ["aws_iam_policy.pilot_extra", "aws_iam_policy.shared", "aws_iam_role.apply", "aws_iam_role.app", "aws_iam_role_policy_attachment.aws_managed",
   "aws_iam_role_policy_attachment.pilot", "aws_iam_role_policy_attachment.preexisting", "aws_iam_user_policy.old_user"];
 
-const fixtureContractPath = (() => { const path = join(fresh("contract"), "act-pilot-contract.json"); writePinnedContract(path, awsContractJson(KILL)); return path; })();
-const CONTRACT = loadPilotContract(fixtureContractPath, pinPathOf(fixtureContractPath)) as PilotContract;
+const fixtureContractPath = (() => { const path = join(fresh("contract"), "act-pilot-contract.json"); writeReviewedContract(path, awsContractJson(KILL)); return path; })();
+const CONTRACT = loadPilotContract(fixtureContractPath) as PilotContract;
 const UNIT = pilotUnitOf({ provider: "AWS", contractSha256: pilotContractSha256(CONTRACT), environment: "DEV", target: awsTargetOf("DEV") });
 const behave = (behavior: Behavior = {}) => behaveIn(toolDir, KILL, {
   applyAdvance: true, showOnlyConfigured: true, showResources: CREATES, stateResources: STATE, unitTags: { ...UNIT.tags },
@@ -106,17 +106,17 @@ function world(): World {
   cloud();
   const dirs = { scratch: fresh("scratch"), evidence: fresh("evidence"), nonces: fresh("nonces") };
   const contractPath = join(fresh("contract"), "act-pilot-contract.json");
-  writePinnedContract(contractPath, awsContractJson(KILL));
+  writeReviewedContract(contractPath, awsContractJson(KILL));
   return {
     dirs, contractPath,
     deps: {
-      sourceCommit: SOURCE_COMMIT, contractPath, contractPinPath: pinPathOf(contractPath), qualificationDir: vaultDir, evidenceDir: dirs.evidence, nonces: openNonceStore(dirs.nonces),
+      sourceCommit: SOURCE_COMMIT, contractPath, qualificationDir: vaultDir, evidenceDir: dirs.evidence, nonces: openNonceStore(dirs.nonces),
       env: awsIdentityEnv("DEV"), now: () => NOW, scratchParent: dirs.scratch, toolDirs: [toolDir, awsToolDir], killPollMs: 40, killGraceMs: 400,
     },
   };
 }
 const observeDeps = (w: World, now: Date = new Date(NOW.getTime() + 60_000)) => ({
-  contractPath: w.contractPath, contractPinPath: pinPathOf(w.contractPath), evidenceDir: w.dirs.evidence, env: w.deps.env, toolDirs: w.deps.toolDirs, scratchParent: w.dirs.scratch, now: () => now,
+  contractPath: w.contractPath, evidenceDir: w.dirs.evidence, env: w.deps.env, toolDirs: w.deps.toolDirs, scratchParent: w.dirs.scratch, now: () => now,
 });
 async function proposed(w: World, env: NodeJS.ProcessEnv = w.deps.env!) {
   const target = awsTargetOf("DEV");

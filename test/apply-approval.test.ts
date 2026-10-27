@@ -34,7 +34,7 @@ const allowlist: ApproverEntry[] = [
   { id: "carol", publicKeyPem: keys.carol.pub, environments: ["DEV"] },
 ];
 
-// The approval check reads the allowlist, the counts and the age from the pinned contract. All environments use
+// The approval check reads the allowlist, the counts and the age from the reviewed contract. All environments use
 // TARGET here; the contract loader (not this check) is what keeps DEV, QA and PROD apart.
 const contractFor = (over: Partial<PilotContract> = {}): PilotContract => ({
   schemaVersion: 1, enabled: true, provider: "AZURE", engine: "TERRAFORM",

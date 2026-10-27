@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
-import PilotWizard, { BlockedNotice, ChangeList } from "../src/operator-ui/app/pilot/PilotWizard";
+import PilotWizard, { BlockedNotice, ChangeList, DecisionStatus } from "../src/operator-ui/app/pilot/PilotWizard";
 import CleanupStep, { CleanupList, LeftoversTable } from "../src/operator-ui/app/pilot/CleanupStep";
 import { forgetPilotToken, type PilotPath, type PilotRun, type PreflightCheck, type PreparedFiles, type ReviewSummary } from "../src/operator-ui/app/pilot/pilot-api";
 import {
@@ -193,7 +193,7 @@ describe("step 1: the path is chosen once", () => {
 describe("step 2: readiness in plain words", () => {
   const checks: PreflightCheck[] = [
     { check: "contract shape (provider, engine, targets, approvals, approvers)", ok: true, state: "READY" },
-    { check: "pilot contract pinned and enabled (required before seal)", ok: false, state: "MISSING", responsible: "OWNER", detail: "enabled: the contract does not enable ACT" },
+    { check: "pilot contract enabled and authorizes APPLY in DEV (required before seal)", ok: false, state: "MISSING", responsible: "OWNER", detail: "enabled: the contract does not enable ACT" },
     { check: "identities configured, distinct, no fallback (DISCOVERY, STATE, STATE_WRITE, APPLY)", ok: false, state: "INVALID", responsible: "OPERATOR", detail: "IDENTITY_COLLAPSED" },
     { check: "identities aimed at the DEV account", ok: true, state: "READY" },
     { check: "plan will embed STATE_WRITE settings: no", ok: true, state: "READY" },
@@ -259,14 +259,40 @@ describe("step 2: readiness in plain words", () => {
     const source = read("src/apply/readiness.ts");
     const names = [...source.matchAll(/\badd\("((?:[^"\\]|\\.)*)"/g)].map((match) => match[1]);
     const dynamic = [
-      "contract shape (provider, engine, targets, approvals, approvers)", "pilot contract pinned and enabled (required before seal)",
+      "contract shape (provider, engine, targets, approvals, approvers)", "pilot contract enabled and authorizes APPLY in DEV (required before seal)",
       "identities configured, distinct, no fallback (A, B)", "identities aimed at the QA account", "plan will embed STATE_WRITE settings: yes",
       "tool terraform installed in an approved directory", "tool aws installed in an approved directory", "kill switch absent",
-      "engine qualified in DEV for seal and apply (TERRAFORM)", "identity separation attested on the real DEV backend",
+      "engine qualified in DEV for seal and apply (TERRAFORM)", "identity separation attested on the real DEV backend", "financial controls (budget alerts or cost cap)",
     ];
     expect(names.length).toBeGreaterThanOrEqual(6);
     for (const name of dynamic) expect(describeCheck({ check: name, ok: false, state: "MISSING" }, "QA").known, name).toBe(true);
     expect(describeCheck({ check: "something new", ok: false, state: "MISSING" }, "DEV").known).toBe(false);
+  });
+});
+
+describe("the Authorized, Ready and Approved status block", () => {
+  const decisions = {
+    act: "PILOT_ENABLED" as const, contract: { contractSha256: "c".repeat(64), provider: "AWS", engine: "TERRAFORM" },
+    authorized: [{ environment: "DEV" as const, operations: ["APPLY", "CLEANUP"], authorizationSha256: "a".repeat(64) }],
+    approved: [{ environment: "DEV" as const, requiredApprovals: 1 }, { environment: "PROD" as const, requiredApprovals: 2 }],
+  };
+  test("it shows the three decisions separately, from the readiness check's own output", () => {
+    const { container } = render(<DecisionStatus readiness={{ environment: "DEV", ready: false, checks: [], decisions }} environment="DEV" />);
+    const block = within(container).getByTestId("pilot-decisions");
+    expect(block.textContent).toContain("Authorized");
+    expect(block.textContent).toContain("APPLY, CLEANUP in DEV");
+    expect(block.textContent).toContain("c".repeat(12));
+    expect(block.textContent).toContain("a".repeat(12));
+    expect(block.textContent).toContain("Not yet");
+    expect(block.textContent).toContain("1 approver(s)");
+  });
+  test("an environment the contract does not authorize, or a disabled contract, reads No", () => {
+    const { container } = render(<DecisionStatus readiness={{ environment: "PROD", ready: true, checks: [], decisions }} environment="PROD" />);
+    const block = within(container).getByTestId("pilot-decisions");
+    expect(block.querySelector("dd")?.getAttribute("data-state")).toBe("no");
+    expect(block.textContent).toContain("2 approver(s)");
+    const off = render(<DecisionStatus readiness={{ environment: "DEV", ready: false, checks: [], decisions: { ...decisions, act: "DISABLED", contract: { reason: "contract file is missing" }, authorized: [], approved: [] } }} environment="DEV" />);
+    expect(within(off.container).getByTestId("pilot-decisions").textContent).toContain("contract file is missing");
   });
 });
 
@@ -867,9 +893,9 @@ describe("the words are plain", () => {
     for (const title of STEP_TITLES) strings.push(["STEP." + title, title]);
     for (const item of CLI_COMMANDS) strings.push(["CLI." + item.command, item.who + " " + item.what]);
     for (const environment of ["DEV", "QA", "PROD"] as const) {
-      for (const name of ["contract shape (x)", "pilot contract pinned and enabled (x)", "identities configured, distinct, no fallback (x)", "identities aimed at the " + environment + " account",
+      for (const name of ["contract shape (x)", "pilot contract enabled and authorizes APPLY in " + environment + " (x)", "identities configured, distinct, no fallback (x)", "identities aimed at the " + environment + " account",
         "plan will embed STATE_WRITE settings: yes", "plan will embed STATE_WRITE settings: no", "tool terraform installed in an approved directory", "kill switch absent",
-        "engine qualified in DEV for seal and apply (x)", "identity separation attested on the real DEV backend"]) {
+        "engine qualified in DEV for seal and apply (x)", "identity separation attested on the real DEV backend", "financial controls (budget alerts or cost cap)"]) {
         const words = describeCheck({ check: name, ok: false, state: "MISSING" }, environment);
         strings.push(["CHECK." + name, words.label + " " + words.wrong + " " + words.fix]);
       }

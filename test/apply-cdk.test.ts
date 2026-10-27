@@ -31,7 +31,7 @@ import { codeOf } from "../src/apply/engine.js";
 import { buildChildEnvironment } from "../src/tools/child-env.js";
 import { AWS_CFN_APPLY_PROFILE } from "../src/tools/profiles.js";
 import { EXECUTION_IDENTITIES } from "../src/tools/identity.js";
-import { reHashedProposal, requesterArgs, REQUESTER, SOURCE_COMMIT, NOW, POLICY, approvalFor as approval, contractJson, human, keys, pinPathOf, writePinnedContract, type Project } from "./helpers/apply-fixtures.js";
+import { reHashedProposal, requesterArgs, REQUESTER, SOURCE_COMMIT, NOW, POLICY, approvalFor as approval, contractJson, human, keys, writeReviewedContract, type Project } from "./helpers/apply-fixtures.js";
 import {
   AWS_CLI_VERSION, CDK_CANARIES, FAKE_AWS_SHA256, STACK, STDERR_CANARY, awsCallsOf, behaveAws, cdkContractJson, cdkIdentityEnv, cdkRoleArn, cdkTargetOf,
   forgeCdkQualification, installFakeAws, patchAws, subcommandsOf, writeAssembly, type AssemblyOptions, type AwsBehavior, type AwsCall,
@@ -66,12 +66,12 @@ function world(over: Partial<ApplyDeps> = {}, contract: unknown = cdkContractJso
   behave(behavior);
   const dirs = { scratch: fresh("scratch"), evidence: fresh("evidence"), nonces: fresh("nonces") };
   const contractPath = join(fresh("contract"), "act-pilot-contract.json");
-  writePinnedContract(contractPath, contract);
+  writeReviewedContract(contractPath, contract);
   return {
     dirs, contractPath,
     deps: {
       sourceCommit: SOURCE_COMMIT,
-      contractPath, contractPinPath: pinPathOf(contractPath), qualificationDir: vaultDir, evidenceDir: dirs.evidence,
+      contractPath, qualificationDir: vaultDir, evidenceDir: dirs.evidence,
       nonces: openNonceStore(dirs.nonces), env: cdkIdentityEnv("DEV"), now: () => NOW, scratchParent: dirs.scratch,
       toolDirs: [toolDir], killPollMs: 40, killGraceMs: 400, ...over,
     },
@@ -146,10 +146,10 @@ test("the CDK engine is registered, needs DISCOVERY, CHANGESET and APPLY, and is
 
 const writeContract = (contract: unknown): string => {
   const path = join(fresh("contract"), "act-pilot-contract.json");
-  writePinnedContract(path, contract);
+  writeReviewedContract(path, contract);
   return path;
 };
-const loaded = (contract: unknown) => { const path = writeContract(contract); return loadPilotContract(path, pinPathOf(path)); };
+const loaded = (contract: unknown) => { const path = writeContract(contract); return loadPilotContract(path); };
 const reasonOf = (contract: unknown): string => { const l = loaded(contract); assert.equal(l.enabled, false); return (l as { reason: string }).reason; };
 const editTargets = (edit: (targets: Record<string, Record<string, unknown>>) => void, capabilities: string[] = []) => {
   const contract = cdkContractJson(KILL, capabilities) as { targets: Record<string, Record<string, unknown>> };
@@ -445,7 +445,7 @@ test("an assembly that needs asset publishing, a second stack, a nested stack or
   clean(w);
 });
 
-test("capabilities are granted only when the pinned contract lists them for the environment", async () => {
+test("capabilities are granted only when the reviewed contract lists them for the environment", async () => {
   const w = world();
   const refusal = await sealRefused(w, "DEV", { iam: true });
   assert.match(refusal.message, /EXIT_254/);
@@ -974,7 +974,7 @@ test("qualify runs describe-stacks as each identity and nothing that creates, ex
 
 // --- the CLI --------------------------------------------------------------------------------------------------
 
-test("./alz apply works for the engine the pinned contract names, with no engine flag: qualify, seal, approve and apply, and no project code is run", async () => {
+test("./alz apply works for the engine the reviewed contract names, with no engine flag: qualify, seal, approve and apply, and no project code is run", async () => {
   const w = world();
   const vault = fresh("cli-vault");
   const write = (value: unknown, label: string): string => { const path = join(fresh(label), label + ".json"); writeFileSync(path, JSON.stringify(value)); return path; };
@@ -984,7 +984,7 @@ test("./alz apply works for the engine the pinned contract names, with no engine
     const err: string[] = [];
     const deps: ApplyCliDeps = {
       terminal: { stdinIsTTY: true, stdoutIsTTY: true, write: (t) => { out.push(t); }, ask: async (q) => { asked.push(q); return answers.shift() ?? ""; } },
-      env: cdkIdentityEnv(environment), now: () => NOW, operatorId: "operator.fixture", contractPath: w.contractPath, contractPinPath: pinPathOf(w.contractPath),
+      env: cdkIdentityEnv(environment), now: () => NOW, operatorId: "operator.fixture", contractPath: w.contractPath,
       qualificationDir: vault, evidenceDir: w.dirs.evidence, nonces: w.deps.nonces, scratchParent: w.dirs.scratch, toolDirs: [toolDir], sourceCommit: SOURCE_COMMIT,
       stdout: (t) => { out.push(t); }, stderr: (t) => { err.push(t); },
     };
@@ -1034,7 +1034,7 @@ test("./alz apply works for the engine the pinned contract names, with no engine
 
 /** The observe step's dependencies for a world: the same contract, ledger and fake `aws`, read as DISCOVERY through the runner. */
 const observeDepsOf = (w: World, environment: ApplyEnvironment = "DEV"): ObserveDeps => ({
-  contractPath: w.contractPath, contractPinPath: pinPathOf(w.contractPath), evidenceDir: w.dirs.evidence, env: cdkIdentityEnv(environment), toolDirs: [toolDir], scratchParent: w.dirs.scratch, now: () => new Date(NOW.getTime() + 60_000),
+  contractPath: w.contractPath, evidenceDir: w.dirs.evidence, env: cdkIdentityEnv(environment), toolDirs: [toolDir], scratchParent: w.dirs.scratch, now: () => new Date(NOW.getTime() + 60_000),
 });
 const BUCKET_ID = "pilotstack-pilotbucket-fake1";
 const TOPIC_ARN = "arn:aws:sns:us-east-1:111111111111:PilotStack-PilotTopic-FAKE1";
@@ -1082,7 +1082,7 @@ test("after a CDK apply the blueprint is CloudFormation's own resource list, rea
   // The proposal: run-created resources by logical id; the pilot's role kept as PROTECTED_IDENTITY; the stack never deleted.
   const records = await loadRunRecords(s.sealed.artifactSha256, w.dirs.evidence);
   assert.ok(records.ok, JSON.stringify(records));
-  const contract = loadPilotContract(w.contractPath, pinPathOf(w.contractPath)) as PilotContract;
+  const contract = loadPilotContract(w.contractPath) as PilotContract;
   const built = buildCleanupProposal({ requesterId: REQUESTER.requesterId, ...records, changes: s.sealed.changes, channel: "CLI", contract, engineVersion: AWS_CLI_VERSION, env: cdkIdentityEnv("DEV"), now: new Date(NOW.getTime() + 120_000) });
   assert.ok(built.ok, JSON.stringify(built));
   const signed = signCleanupProposal(built.proposal, REQUESTER.privateKeyPem);
@@ -1138,7 +1138,7 @@ test("CDK observe denied and interrupted: a resource Cloud Control no longer ret
   assert.equal(observed2.record.resources.find((r) => r.address === "NestedLater")?.result, "UNVERIFIABLE");
   const records2 = await loadRunRecords(s2.sealed.artifactSha256, w2.dirs.evidence);
   assert.ok(records2.ok);
-  const contract2 = loadPilotContract(w2.contractPath, pinPathOf(w2.contractPath)) as PilotContract;
+  const contract2 = loadPilotContract(w2.contractPath) as PilotContract;
   const built2 = buildCleanupProposal({ requesterId: REQUESTER.requesterId, ...records2, changes: s2.sealed.changes, channel: "CLI", contract: contract2, engineVersion: AWS_CLI_VERSION, env: cdkIdentityEnv("DEV"), now: new Date(NOW.getTime() + 120_000) });
   assert.ok(built2.ok, JSON.stringify(built2));
   assert.deepEqual(built2.proposal.excluded.map((x) => [x.address, x.ownership]), [["NestedHook", "CONTAINS_OTHERS"], ["NestedLater", "CONTAINS_OTHERS"], ["NestedSet", "CONTAINS_OTHERS"], ["PilotTopic", "REPLACED_PRE_EXISTING"]]);
@@ -1196,10 +1196,10 @@ async function proposedCdk(w: World, options: AssemblyOptions = {}) {
   assert.ok(observed.ok, JSON.stringify(observed));
   const records = await loadRunRecords(s.sealed.artifactSha256, w.dirs.evidence);
   assert.ok(records.ok, JSON.stringify(records));
-  const contract = loadPilotContract(w.contractPath, pinPathOf(w.contractPath)) as PilotContract;
+  const contract = loadPilotContract(w.contractPath) as PilotContract;
   const built = buildCleanupProposal({ requesterId: REQUESTER.requesterId, ...records, changes: s.sealed.changes, channel: "CLI", contract, engineVersion: AWS_CLI_VERSION, env: cdkIdentityEnv("DEV"), now: new Date(NOW.getTime() + 120_000) });
   assert.ok(built.ok, JSON.stringify(built));
-  return { s, proposal: signCleanupProposal(built.proposal, REQUESTER.privateKeyPem), observed };
+  return { s, proposal: signCleanupProposal(built.proposal, REQUESTER.privateKeyPem), observed, records };
 }
 const cleanupCdk = (w: World, s: Sealed, proposal: CleanupProposal, approvals: SignedApproval[] = [cdkCleanupApproval(proposal, "alice")]) => runCleanup({
   invocation: human(s.sealed.target), environment: "DEV", target: { ...s.sealed.target }, proposal, sealedPlan: s.loaded, manifest: s.project.manifest, projectRoot: s.project.projectRoot, approvals,
@@ -1469,4 +1469,24 @@ test("no IAM object is ever in a removal change set (owner policy #39; review 64
   assert.deepEqual(after.record.resources.filter((r) => /^Pilot(?:Role|RolePolicy|Managed|User|UserKey)$/.test(r.address)).map((r) => r.address).sort(), ["PilotManaged", "PilotRole", "PilotRolePolicy", "PilotUser", "PilotUserKey"]);
   assert.equal(after.record.resources.find((r) => r.address === "PilotRole")?.result, "VERIFIED", "the pilot role is still there");
   noCanary(leftovers.record);
+});
+
+test("R1 (CDK): the cleanup acts only on the run's own stack, by its id: a same-named stack (another id) is refused before any change set exists, and a region move is refused at propose", async () => {
+  const behavior = { diffChanges: true, protectAfterCreate: true };
+  const w = world({}, cdkContractJson(KILL), behavior);
+  const { s, proposal, records } = await proposedCdk(w);
+  const runStack = records.blueprint.blueprint.container?.identifier;
+  assert.match(runStack ?? "", /^arn:aws:cloudformation:[a-z0-9-]+:\d{12}:stack\/[A-Za-z0-9-]+\/[0-9a-f-]{36}$/, "the blueprint names the run's stack by its id");
+  // The stack of the same name is now another stack (re-created, or in another place): the unit-tag keys alone would match.
+  patchAws(toolDir, { describedStackId: runStack!.replace(/[0-9a-f-]{36}$/, "99999999-9999-4999-8999-999999999999") });
+  const other = await cleanupCdk(w, s, proposal);
+  refused(other as never, "TARGET_NOT_IN_CONTRACT");
+  assert.match((other as { message: string }).message, /CLEANUP_STACK_NOT_IN_CONTRACT/);
+  assert.equal(removalCreates().length, 0, "no removal change set was created");
+  // A region move in the contract committed now: the run's full target no longer matches, so no proposal is made.
+  const c = cdkContractJson(KILL) as { targets: Record<string, Record<string, unknown>> };
+  const moved = { ...c, targets: { ...c.targets, DEV: { ...c.targets.DEV, region: "eu-west-2" } } };
+  const reproposed = buildCleanupProposal({ requesterId: REQUESTER.requesterId, ...records, changes: s.sealed.changes, channel: "CLI", contract: moved as never,
+    engineVersion: s.sealed.engineVersion, env: cdkIdentityEnv("DEV"), now: new Date(NOW.getTime() + 120_000) });
+  refused(reproposed as never, "TARGET_NOT_IN_CONTRACT");
 });

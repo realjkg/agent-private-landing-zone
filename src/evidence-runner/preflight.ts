@@ -9,7 +9,7 @@ import { STAGE_SLICE, type Provider } from "./types.js";
 
 /**
  * The runner's preflight: everything checked before a stage starts. In slice S1 every check is offline: the source
- * checkout, the mutation identities, the pilot pin's presence, and the comparison of each provider's observed identity
+ * checkout, the mutation identities, whether the committed pilot contract authorizes ACT, and the comparison of each provider's observed identity
  * with the expected one. The identity probes themselves ship with their provider's slice (S2 AWS, S3 Azure), so until
  * then a configured provider reports IDENTITY_NOT_VERIFIED and the run stops BLOCKED.
  *
@@ -70,15 +70,22 @@ export function identityHash(config: EvidenceRunnerConfig): string {
   })).digest("hex");
 }
 
-/** The pilot pin's presence, read without loading the apply path. The full contract check is `./alz apply preflight` (slice S5). */
-export function pinState(root: string): "EMPTY" | "PRESENT" {
-  try { return readFileSync(join(root, "config", "act-pilot-contract.sha256"), "utf8").trim() === "" ? "EMPTY" : "PRESENT"; } catch { return "EMPTY"; }
+/**
+ * Whether the committed pilot contract says enabled and carries a non-empty `authorize`, read without loading the apply path.
+ * The full contract check is `./alz apply preflight` (slice S5); anything unreadable counts as EMPTY (ACT disabled).
+ */
+export function authorizationState(root: string): "EMPTY" | "PRESENT" {
+  try {
+    const contract = JSON.parse(readFileSync(join(root, "config", "act-pilot-contract.json"), "utf8")) as { enabled?: unknown; authorize?: unknown };
+    const authorize = contract?.authorize;
+    return contract?.enabled === true && !!authorize && typeof authorize === "object" && !Array.isArray(authorize) && Object.keys(authorize).length > 0 ? "PRESENT" : "EMPTY";
+  } catch { return "EMPTY"; }
 }
 
 /** An input only the owner can supply (delegated decision 3), with the reason the runner prints while it is missing. */
 export type OwnerInput = { id: string; status: "BLOCKED" | "INFO"; code: string; detail: string };
 
-export function ownerInputs(config: EvidenceRunnerConfig, pin: "EMPTY" | "PRESENT"): OwnerInput[] {
+export function ownerInputs(config: EvidenceRunnerConfig, authorization: "EMPTY" | "PRESENT"): OwnerInput[] {
   const inputs: OwnerInput[] = [];
   if (config.aws) {
     inputs.push({ id: "aws-noop-stack", status: "BLOCKED", code: "OWNER_INPUT_NOOP_STACK",
@@ -89,11 +96,11 @@ export function ownerInputs(config: EvidenceRunnerConfig, pin: "EMPTY" | "PRESEN
     inputs.push({ id: "federated-qualification-identity", status: "BLOCKED", code: "OWNER_INPUT_FEDERATED_IDENTITY",
       detail: "The aws-provider and azure-provider gates run ./alz qualify provider-aws|provider-azure under the federated qualification identity, never under your CLI login; the runner reports them BLOCKED until it is configured (checked in slices S2 and S3)." });
   }
-  inputs.push(pin === "EMPTY"
-    ? { id: "pilot-pin", status: "BLOCKED", code: "OWNER_INPUT_PIN",
-      detail: "The preview:* and act:* gates are produced after the owner's reviewed pin commit (docs/act-pilot-plan.md). ACT is disabled; the act stage is skipped." }
-    : { id: "pilot-pin", status: "INFO", code: "PIN_PRESENT",
-      detail: "A pin is present. ./alz apply preflight checks the contract and the kill switch before any guided step (slice S5)." });
+  inputs.push(authorization === "EMPTY"
+    ? { id: "pilot-authorization", status: "BLOCKED", code: "OWNER_INPUT_AUTHORIZATION",
+      detail: "The preview:* and act:* gates are produced after the owner's reviewed commit of the pilot contract with its authorize entry (docs/act-pilot-plan.md). ACT is disabled; the act stage is skipped." }
+    : { id: "pilot-authorization", status: "INFO", code: "AUTHORIZATION_PRESENT",
+      detail: "The committed contract says enabled and has an authorize entry (read for shape only, not validated). ./alz apply preflight checks the contract in full, and the kill switch, before any guided step (slice S5)." });
   return inputs;
 }
 
@@ -104,7 +111,7 @@ export type PreflightInputs = {
   source: SourceCommit;
   probe: IdentityProbe;
 };
-export type Preflight = { checks: Check[]; identities: IdentityCheck[]; ownerInputs: OwnerInput[]; pin: "EMPTY" | "PRESENT"; blocked: boolean };
+export type Preflight = { checks: Check[]; identities: IdentityCheck[]; ownerInputs: OwnerInput[]; actScope: "EMPTY" | "PRESENT"; blocked: boolean };
 
 export async function runPreflight({ root, env, config, source, probe }: PreflightInputs): Promise<Preflight> {
   const checks: Check[] = [];
@@ -118,9 +125,9 @@ export async function runPreflight({ root, env, config, source, probe }: Preflig
     ? { id: "mutation-identities", status: "BLOCKED", code: "MUTATION_IDENTITY_PRESENT",
       detail: "Unset " + mutation.join(", ") + " first: read-only stages never run beside an identity that can write." }
     : { id: "mutation-identities", status: "PASS", code: "NONE", detail: "No apply, state-write or change-set identity is set." });
-  const pin = pinState(root);
-  checks.push({ id: "act", status: "INFO", code: pin === "EMPTY" ? "SKIPPED_ACT_DISABLED" : "PIN_PRESENT",
-    detail: pin === "EMPTY" ? "The pilot pin is empty: ACT is disabled and the act stage is skipped." : "A pin is present; the contract is checked by ./alz apply preflight (slice S5)." });
+  const authorization = authorizationState(root);
+  checks.push({ id: "act", status: "INFO", code: authorization === "EMPTY" ? "SKIPPED_ACT_DISABLED" : "AUTHORIZATION_PRESENT",
+    detail: authorization === "EMPTY" ? "No committed contract authorizes ACT: ACT is disabled and the act stage is skipped." : "The committed contract says enabled and has an authorize entry (shape only, not validated); ./alz apply preflight checks it in full (slice S5)." });
   const identities: IdentityCheck[] = [];
   for (const provider of ["aws", "azure"] as const) {
     const configured = provider === "aws" ? config.aws : config.azure;
@@ -128,5 +135,5 @@ export async function runPreflight({ root, env, config, source, probe }: Preflig
     identities.push(compareIdentity(provider, config, configured ? await probe(provider, config) : { status: "PROBE_NOT_BUILT" }));
   }
   const blocked = [...checks, ...identities].some((check) => check.status === "BLOCKED");
-  return { checks, identities, ownerInputs: ownerInputs(config, pin), pin, blocked };
+  return { checks, identities, ownerInputs: ownerInputs(config, authorization), actScope: authorization, blocked };
 }

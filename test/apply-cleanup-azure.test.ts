@@ -5,9 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { signApproval } from "../src/apply/approval.js";
+import { consumeApprovals, signApproval } from "../src/apply/approval.js";
 import { buildCleanupProposal, protectedDeletionIn, signCleanupProposal, verifyCleanupProposal, type CleanupProposal } from "../src/apply/cleanup-proposal.js";
-import { CLEANUP_SUFFIX, loadPilotContract, pilotContractSha256 } from "../src/apply/contract.js";
+import { CLEANUP_SUFFIX, authorizeContract, loadPilotContract, pilotContractSha256, pilotTargetSha256, targetMoved } from "../src/apply/contract.js";
 import { runApply, runCleanup, sealPreview, type ApplyDeps, type ApplyRequest } from "../src/apply/driver.js";
 import { readCleanupEvidence } from "../src/apply/ledger.js";
 import { loadRunRecords, observeRun, verifyProposalLeftovers, type ObserveDeps } from "../src/apply/observe.js";
@@ -23,7 +23,7 @@ import { canonicalJson } from "../src/teardown/manifest.js";
 import { sha256 } from "../src/util/sha256.js";
 import {
   ARM_ACCESS_TOKEN_CANARY, ARM_FEDERATED_TOKEN_CANARY, CANARIES, DEV_TARGET, NOW, POLICY, SOURCE_COMMIT, STATE_CANARY, approvalFor, azureStateResource, behave as behaveIn, callsOf, contractJson,
-  fakeArmHttp, human, identityEnv, installFakeTerraform, keys, pinPathOf, targetOf, testFixtureForgeQualificationEvidence, writePinnedContract, writeProject, type ArmBehavior, type Behavior,
+  fakeArmHttp, human, identityEnv, installFakeTerraform, keys, targetOf, testFixtureForgeQualificationEvidence, writeReviewedContract, writeProject, type ArmBehavior, type Behavior,
   REQUESTER, reHashedProposal,
 } from "./helpers/apply-fixtures.js";
 
@@ -82,8 +82,8 @@ const TAGGED = [RG, LAW];
 const CLOUD: ArmBehavior = { existing: EXISTING, tagged: TAGGED };
 /** What stays after a cleanup: everything the proposal keeps, the run's own resource group among them (a pilot cleanup never deletes a group). */
 const RETAINED = [RG, STATE_ACCOUNT, RG_STATE, OLD_ROLE, POLICY_ASSIGNMENT, REUSED_VAULT, UNRELATED_VNET];
-const fixtureContractPath = (() => { const path = join(fresh("contract"), "act-pilot-contract.json"); writePinnedContract(path, contractJson(KILL)); return path; })();
-const UNIT = pilotUnitOf({ provider: "AZURE", contractSha256: pilotContractSha256(loadPilotContract(fixtureContractPath, pinPathOf(fixtureContractPath)) as PilotContract), environment: "DEV", target: targetOf("DEV") });
+const fixtureContractPath = (() => { const path = join(fresh("contract"), "act-pilot-contract.json"); writeReviewedContract(path, contractJson(KILL)); return path; })();
+const UNIT = pilotUnitOf({ provider: "AZURE", contractSha256: pilotContractSha256(loadPilotContract(fixtureContractPath) as PilotContract), environment: "DEV", target: targetOf("DEV") });
 const behave = (behavior: Behavior = {}) => behaveIn(toolDir, KILL, { applyAdvance: true, showOnlyConfigured: true, showResources: CREATES, stateResources: STATE, unitTags: { ...UNIT.tags }, unitTagAttribute: "tags", ...behavior });
 const calls = () => callsOf(toolDir);
 const applyCalls = () => calls().filter((c) => c.args[0] === "apply");
@@ -105,18 +105,18 @@ function world(cloudBehavior: ArmBehavior = CLOUD): World {
   behave();
   const dirs = { scratch: fresh("scratch"), evidence: fresh("evidence"), nonces: fresh("nonces") };
   const contractPath = join(fresh("contract"), "act-pilot-contract.json");
-  writePinnedContract(contractPath, contractJson(KILL));
+  writeReviewedContract(contractPath, contractJson(KILL));
   const arm = fakeArmHttp(cloudBehavior);
   return {
     dirs, contractPath, arm,
     deps: {
-      sourceCommit: SOURCE_COMMIT, contractPath, contractPinPath: pinPathOf(contractPath), qualificationDir: vaultDir, evidenceDir: dirs.evidence, nonces: openNonceStore(dirs.nonces),
+      sourceCommit: SOURCE_COMMIT, contractPath, qualificationDir: vaultDir, evidenceDir: dirs.evidence, nonces: openNonceStore(dirs.nonces),
       env: env(), now: () => NOW, scratchParent: dirs.scratch, toolDirs: [toolDir], killPollMs: 40, killGraceMs: 400, arm: arm.http,
     },
   };
 }
 const observeDeps = (w: World, now: Date = new Date(NOW.getTime() + 60_000)): ObserveDeps => ({
-  contractPath: w.contractPath, contractPinPath: pinPathOf(w.contractPath), evidenceDir: w.dirs.evidence, env: w.deps.env, toolDirs: w.deps.toolDirs, scratchParent: w.dirs.scratch, now: () => now, arm: w.arm.http,
+  contractPath: w.contractPath, evidenceDir: w.dirs.evidence, env: w.deps.env, toolDirs: w.deps.toolDirs, scratchParent: w.dirs.scratch, now: () => now, arm: w.arm.http,
 });
 const cloud = (w: World, behavior: ArmBehavior) => w.arm.behave(behavior);
 
@@ -716,7 +716,7 @@ test("Azure identity, authorization and deployment-history objects are never del
 });
 
 test("protectedDeletionIn classifies every planned change by its blueprint entry or type: groups, scopes, the backend, every Microsoft.Authorization and ManagedIdentity pair and every deployment at any scope and in any case are refused, and a plain run-owned resource is not", () => {
-  const contract = loadPilotContract(fixtureContractPath, pinPathOf(fixtureContractPath)) as PilotContract;
+  const contract = loadPilotContract(fixtureContractPath) as PilotContract;
   const entry = (address: string, type: string, id: string | null) => ({ address, type, id, arn: null });
   const change = (address: string, type = "azapi_resource", action = "DELETE") => [{ address, type, action }];
   const sub = "/subscriptions/" + SUB;
@@ -1136,4 +1136,32 @@ test("provider and feature registrations a run made are kept, never proposed (re
   assert.deepEqual(dispositions.get("azurerm_resource_provider_feature_registration.ext"), ["INTENTIONALLY_RETAINED", "PILOT_OWNER"]);
   assert.deepEqual(dispositions.get("azurerm_log_analytics_workspace.pilot"), ["CONFIRMED_DELETED", undefined]);
   noTokenIn(w, run.proposal, leftovers.record);
+});
+
+test("R1 (Azure): a tenant move refuses the cleanup at propose and at the gate, nothing consumed; the run's full target is bound", async () => {
+  const w = world();
+  const run = await proposed(w);
+  const base = contractJson(KILL) as { targets: Record<string, Record<string, unknown>> };
+  const authorizeOnlyCleanup = { DEV: ["CLEANUP"], QA: ["APPLY", "CLEANUP"], PROD: ["APPLY", "CLEANUP"] };
+  const moved = { ...base, authorize: authorizeOnlyCleanup, targets: { ...base.targets, DEV: { ...base.targets.DEV, tenantId: "99999999-9999-4999-8999-999999999999" } } };
+  assert.equal(run.proposal.targetSha256, pilotTargetSha256(base as never, "DEV"));
+  assert.notEqual(pilotTargetSha256(moved as never, "DEV"), run.proposal.targetSha256, "the tenant is part of the target");
+  // Propose under the moved contract: refused.
+  const reproposed = buildCleanupProposal({ requesterId: REQUESTER.requesterId, ...run.records, changes: run.s.sealed.changes, channel: "CLI", contract: moved as never,
+    engineVersion: run.s.sealed.engineVersion, env: w.deps.env!, now: new Date(NOW.getTime() + 120_000) });
+  assert.equal(reproposed.ok, false);
+  assert.equal((reproposed as { code: string }).code, "TARGET_NOT_IN_CONTRACT");
+  // At the gate, with the moved contract committed and named as the proposal's authority: refused, nothing consumed or destroyed.
+  writeReviewedContract(w.contractPath, moved);
+  const authorized = authorizeContract(moved as never, "DEV", "CLEANUP");
+  assert.ok(authorized.ok);
+  const forged = reHashedProposal({ ...run.proposal, authorizingContractSha256: authorized.authorization.contractSha256, authorizationSha256: authorized.authorization.authorizationSha256 });
+  const approvals = [cleanupApproval(forged, "alice")];
+  const result = await cleanup(w, run, approvals, forged);
+  assert.equal(result.ok, false);
+  assert.equal((result as { code: string }).code, "TARGET_NOT_IN_CONTRACT", JSON.stringify(result));
+  assert.deepEqual(consumeApprovals(w.deps.nonces!, approvals), { ok: true }, "nothing was consumed");
+  // A subscription move is the same refusal (targetMoved, one comparison for every account field).
+  const subscriptionMoved = { ...base, targets: { ...base.targets, DEV: { ...base.targets.DEV, subscriptionId: "88888888-8888-4888-8888-888888888888" } } };
+  assert.equal(targetMoved(run.proposal.targetSha256, subscriptionMoved as never, "DEV")?.code, "TARGET_NOT_IN_CONTRACT");
 });

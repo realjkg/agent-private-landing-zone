@@ -25,7 +25,6 @@ import type { ApplyEvidence, ApplyRefusalCode } from "./types.js";
  */
 export type ObserveDeps = {
   contractPath?: string;
-  contractPinPath?: string;
   evidenceDir: string;
   env?: NodeJS.ProcessEnv;
   toolDirs?: readonly string[];
@@ -47,7 +46,7 @@ type OpenReader = { ok: true; reader: ResourceReader; binarySha256: string | nul
  * The Terraform engine is the only one with a cleanup path, and both of its providers read here.
  */
 export function openReader(deps: ObserveDeps, environment: ApplyEvidence["environment"]): OpenReader | Refusal {
-  const contract = loadPilotContract(deps.contractPath, deps.contractPinPath);
+  const contract = loadPilotContract(deps.contractPath);
   if ("reason" in contract) return contractRefusal(contract);
   const target = contract.targets[environment];
   if (!target) return refuse("TARGET_NOT_IN_CONTRACT", "The contract does not enable " + environment + ".");

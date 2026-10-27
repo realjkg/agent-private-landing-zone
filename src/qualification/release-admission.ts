@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { readFile, realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 
-import { loadPilotContract, pilotContractPinned, pilotContractSha256 } from "../apply/contract.js";
+import { authorizeContract, loadPilotContract, pilotContractSha256 } from "../apply/contract.js";
 import type { ApplyEnvironment, EngineId, PilotContract, ProviderId } from "../apply/types.js";
 import { PREVIEW_GATE_SCENARIOS, previewGateEvidenceProblems, previewScenarioOf } from "./preview-gate.js";
 import { recoveryGateEvidenceProblems } from "./recovery-gate.js";
@@ -114,8 +114,11 @@ function isObject(value: unknown): value is Json {
 function digest(value: Buffer | string): string {
   return createHash("sha256").update(value).digest("hex");
 }
-/** What a PILOT release binds a live ACT or recovery record to: the pinned contract's hash and its required approvals per environment. Null for a release with no pilot scope. */
-type PilotBinding = { contractSha256: string; requiredApprovals: PilotContract["requiredApprovals"] } | null;
+/**
+ * What a PILOT release binds a live ACT or recovery record to: the reviewed contract's hash, its required approvals per
+ * environment, and the hash of its APPLY authorization per environment. Null for a release with no pilot scope.
+ */
+type PilotBinding = { contractSha256: string; requiredApprovals: PilotContract["requiredApprovals"]; applyAuthorizationSha256: Partial<Record<ApplyEnvironment, string>> } | null;
 
 function observedLivePayload(value: unknown, gate: ReleaseGate, record: ReleaseGateSubmission, commit: string, pilot: PilotBinding): boolean {
   if (!isObject(value)) return false;
@@ -167,13 +170,14 @@ function observedLivePayload(value: unknown, gate: ReleaseGate, record: ReleaseG
   if (gate.mode === "LIVE_ACT") {
     // The live record `./alz apply record-live` writes from the apply's own ledger evidence (src/apply/live-record.ts).
     const path = ACT_RELEASE_PATHS.find((x) => actGateId(x) === gate.id);
-    // Under a PILOT release the record must name the pinned contract the release is bound to (#269 review N2): a record of an apply
+    // Under a PILOT release the record must name the reviewed contract the release is bound to (#269 review N2), and that contract's APPLY authorization: a record of an apply
     // under another contract is not this release's live evidence.
     return path !== undefined && value.schemaVersion === 1 && value.label === "LIVE" && value.step === "execute" &&
       value.cloud === path.provider && value.engine === path.engine && value.sourceCommit === commit &&
       value.outcome === "SUCCEEDED" && typeof value.attestedBy === "string" && value.attestedBy.trim() !== "" &&
-      [value.artifactSha256, value.evidenceSha256, value.contractSha256].every((x) => typeof x === "string" && sha64.test(x)) &&
-      (pilot === null || value.contractSha256 === pilot.contractSha256);
+      [value.artifactSha256, value.evidenceSha256, value.contractSha256, value.authorizationSha256].every((x) => typeof x === "string" && sha64.test(x)) &&
+      (pilot === null || (value.contractSha256 === pilot.contractSha256 &&
+        value.authorizationSha256 === pilot.applyAuthorizationSha256[value.environment as ApplyEnvironment]));
   }
   // These statements must be produced by real target/CI tools. The checker
   // validates provenance and content, not the honesty of an external machine.
@@ -225,7 +229,7 @@ function observedLivePayload(value: unknown, gate: ReleaseGate, record: ReleaseG
     // The evidence is a valid recovery-gate document of this commit (src/qualification/recovery-gate.ts): the four gate fields,
     // the conditions, the label and `passed` are recomputed from the cited ledger records, so a hand-written document, or one
     // relabeled over records that show no interruption or an approval carried over, is refused here as well as by the producer.
-    // Under a PILOT release the record must name the pinned contract and the approval count that contract requires for the record's
+    // Under a PILOT release the record must name the reviewed contract and the approval count that contract requires for the record's
     // environment (#269 review N2): a PROD record claiming one approval under a contract that requires two is refused.
     return recoveryGateEvidenceProblems(report, { sourceCommit: commit }).length === 0 &&
       typeof report.interruptedArtifactSha256 === "string" && sha64.test(report.interruptedArtifactSha256) &&
@@ -265,13 +269,13 @@ async function readEvidence(root: string, path: string): Promise<Buffer> {
 
 /**
  * The pilot exception: a release declares PILOT only together with an enabled
- * pilot contract that the committed pin names (the loader checks the same pin),
+ * pilot contract that authorizes at least one operation (the loader checks the same),
  * and names it (and the one pilot scope) by hash. An enabled contract beside a
  * release that does not declare the pilot is rejected, and so is a stray
  * actPilot object on any release that is not PILOT, so neither the contract file
  * nor the manifest can quietly enable ACT for an ordinary release.
  */
-function reviewPilot(manifest: ReleaseAdmissionInput, contract: PilotContract | undefined, pinPath: string | undefined): { scope: ActPilotScope | null; blockers: string[] } {
+function reviewPilot(manifest: ReleaseAdmissionInput, contract: PilotContract | undefined): { scope: ActPilotScope | null; blockers: string[] } {
   if (manifest.infrastructureAct !== "PILOT") {
     return {
       scope: null,
@@ -282,12 +286,22 @@ function reviewPilot(manifest: ReleaseAdmissionInput, contract: PilotContract | 
     };
   }
   if (!contract) return { scope: null, blockers: ["ACT_PILOT_CONTRACT_MISSING_OR_DISABLED"] };
-  if (!pilotContractPinned(contract, pinPath)) return { scope: null, blockers: ["ACT_PILOT_CONTRACT_NOT_PINNED"] };
+  if (Object.keys(contract.authorize ?? {}).length === 0) return { scope: null, blockers: ["ACT_PILOT_CONTRACT_NOT_AUTHORIZED"] };
   if (!pilotCombinationListed(contract.provider, contract.engine)) return { scope: null, blockers: ["ACT_PILOT_COMBINATION_NOT_ALLOWED"] };
   const claimed = manifest.actPilot as unknown;
   const bound = isObject(claimed) && Object.keys(claimed).length === 3 && claimed.provider === contract.provider &&
     claimed.engine === contract.engine && claimed.contractSha256 === pilotContractSha256(contract);
   return bound ? { scope: claimed as ActPilotScope, blockers: [] } : { scope: null, blockers: ["ACT_PILOT_SCOPE_MISMATCH"] };
+}
+
+/** The hash of each environment's APPLY authorization in the candidate contract: a live record must name the same one. */
+function applyAuthorizations(contract: PilotContract): Partial<Record<ApplyEnvironment, string>> {
+  const out: Partial<Record<ApplyEnvironment, string>> = {};
+  for (const env of ["DEV", "QA", "PROD"] as const) {
+    const authorized = authorizeContract(contract, env, "APPLY");
+    if (authorized.ok) out[env] = authorized.authorization.authorizationSha256;
+  }
+  return out;
 }
 
 export async function reviewProductionRelease(input: {
@@ -296,8 +310,6 @@ export async function reviewProductionRelease(input: {
   expectedCommit: string;
   /** The loaded pilot contract (loadPilotContract). Absent, or not enabled, means there is no pilot. */
   pilotContract?: PilotContract | { enabled: false };
-  /** The committed pin the contract must match. Defaults to config/act-pilot-contract.sha256 in the repository. */
-  pilotPinPath?: string;
   /** Gates the owner's release scope excludes (config/release/scope.json). They are reported, and do not block; a record for one is refused. */
   outOfScope?: readonly string[];
 }): Promise<ReleaseAdmissionReport> {
@@ -309,9 +321,12 @@ export async function reviewProductionRelease(input: {
       PRODUCTION_DEPLOYMENT_CONTRACT.spec.release.actEnabled !== false) {
     blockers.push("RELEASE_MANIFEST_CONTRACT_OR_COMMIT_INVALID");
   }
-  const pilot = reviewPilot(manifest, input.pilotContract?.enabled === true ? input.pilotContract : undefined, input.pilotPinPath);
+  const pilot = reviewPilot(manifest, input.pilotContract?.enabled === true ? input.pilotContract : undefined);
   blockers.push(...pilot.blockers);
-  const binding: PilotBinding = pilot.scope && input.pilotContract?.enabled === true ? { contractSha256: pilot.scope.contractSha256, requiredApprovals: input.pilotContract.requiredApprovals } : null;
+  const binding: PilotBinding = pilot.scope && input.pilotContract?.enabled === true ? {
+    contractSha256: pilot.scope.contractSha256, requiredApprovals: input.pilotContract.requiredApprovals,
+    applyAuthorizationSha256: applyAuthorizations(input.pilotContract),
+  } : null;
   if (!Array.isArray(manifest.records)) {
     blockers.push("RELEASE_RECORDS_REQUIRED");
   }
@@ -390,10 +405,10 @@ export async function reviewProductionRelease(input: {
 }
 
 /**
- * The admission review of a release from this repository: the pilot contract and pin it ships (config/act-pilot-contract.json),
+ * The admission review of a release from this repository: the pilot contract it ships (config/act-pilot-contract.json),
  * and the gates the owner's scope excludes. The one entry both the admission CLI and the release status view use.
  */
 export function reviewRepositoryRelease(input: { manifest: ReleaseAdmissionInput; root: string; expectedCommit: string; outOfScope: readonly string[] }): Promise<ReleaseAdmissionReport> {
-  // ACT is off unless the release declares PILOT and the shipped contract is valid, enabled and pinned.
+  // ACT is off unless the release declares PILOT and the shipped contract is valid, enabled and authorizes an operation.
   return reviewProductionRelease({ ...input, pilotContract: loadPilotContract() });
 }

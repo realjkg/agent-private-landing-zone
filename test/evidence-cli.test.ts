@@ -9,7 +9,7 @@ import { readJournal } from "../src/evidence-runner/journal.js";
 import { EvidenceWriteError, writeRunnerDocument } from "../src/evidence-runner/run.js";
 import { OPERATIONS } from "../src/operations/registry.js";
 import { validateCatalog } from "../src/operations/schema.js";
-import { CANARY, CANDIDATE, fakeProbe, fixtureDeps, fixtureRoot, observedAws, scriptedTerminal, validConfig, writeConfig } from "./helpers/evidence-fixtures.js";
+import { AUTHORIZING_CONTRACT, CANARY, CANDIDATE, fakeProbe, fixtureDeps, fixtureRoot, observedAws, scriptedTerminal, validConfig, writeConfig } from "./helpers/evidence-fixtures.js";
 
 // SYNTHETIC: `./alz evidence init | run | status` against a temporary repository root, injected source commit and fake
 // identity probes. Nothing here reaches a cloud, spawns a provider tool or produces release evidence.
@@ -140,24 +140,24 @@ test("a rerun with another configuration or label refuses the journal; a lock he
   assert.match(busy.lines.join("\n"), /EVIDENCE_RUN_IN_PROGRESS/);
 });
 
-test("cleanup and recovery run only when named, and report ACT disabled while the pin is empty", async () => {
+test("cleanup and recovery run only when named, and report ACT disabled while no committed contract authorizes it", async () => {
   const root = fixtureRoot();
   writeConfig(root, validConfig());
   const deps = fixtureDeps(root);
   await runEvidenceCommand(["run", "--synthetic", "--stage", "cleanup"], deps);
   const stages = readJournal(join(root, ".runs/evidence/synthetic", C12, "journal.jsonl")).filter((line) => line.event === "finish").map((line) => line.stage + ":" + line.code);
   assert.deepEqual(stages, ["preflight:undefined", "cleanup:SKIPPED_ACT_DISABLED"]);
-  const pinned = fixtureRoot("d".repeat(64) + "\n");
+  const pinned = fixtureRoot(AUTHORIZING_CONTRACT);
   writeConfig(pinned, validConfig());
   const guided = fixtureDeps(pinned);
   await runEvidenceCommand(["run", "--synthetic", "--stage", "act"], guided);
   assert.match(guided.lines.join("\n"), /act: NOT_BUILT — Slice S5/);
 });
 
-test("a run that produced no evidence is BLOCKED: every --stage with the pin empty and no provider configured exits 2", async () => {
+test("a run that produced no evidence is BLOCKED: every --stage with no authorizing contract and no provider configured exits 2", async () => {
   for (const stage of ["preflight", "aws-readonly", "azure-readonly", "gcp-readonly", "act", "recovery", "cleanup", "summary"]) {
     for (const label of ["LIVE", "SYNTHETIC"] as const) {
-      const root = fixtureRoot("");
+      const root = fixtureRoot();
       writeConfig(root, validConfig({ aws: undefined, azure: undefined }));
       const deps = label === "LIVE"
         ? fixtureDeps(root, { terminal: scriptedTerminal(["EVIDENCE LIVE owner-mac-01"]) })
