@@ -20,8 +20,9 @@ export type BlueprintEntry = {
   origin: "IN_PLAN" | "NOT_IN_PLAN";
   /**
    * Set when a wrapper type (`terraform_data`, `null_resource`, `aws_cloudformation_stack`, a CloudFormation custom resource)
-   * holds an IAM ARN in any attribute the state recorded, as a whole value or an element of a list: an identity may be in
-   * disguise, so the cleanup refuses to classify it. Judged in place; the attribute itself is never copied.
+   * holds an IAM ARN in any attribute the state recorded, as a whole value or an element of a list, or when its attributes nest
+   * past the depth the scan reads (`SCAN_DEPTH`), so one could not be ruled out: an identity may be in disguise, so the cleanup
+   * refuses to classify it. Judged in place; the attribute itself is never copied.
    */
   holdsIdentityArn?: true;
 };
@@ -61,13 +62,21 @@ const CREDENTIAL_ID_TYPES = new Set(["aws_iam_access_key", "aws_iam_service_spec
 const WRAPPER_TYPE = /^(?:terraform_data|null_resource|aws_cloudformation_stack|AWS::CloudFormation::CustomResource|Custom::)/;
 /** An IAM ARN as a whole string value, or as one element of a separated list, in any partition. */
 const IAM_ARN_ELEMENT = /(?:^|[\s,;|])arn:aws(?:-[a-z]+)*:iam::[^\s,;|]*/;
-/** Whether any string anywhere in a value (an attribute, a nested object, a list) is or contains an IAM ARN element. Reads in place, copies nothing. */
+/**
+ * How many nested objects or lists the scan enters, the attribute set itself being the first. A container nested deeper
+ * than that is not entered: the scan cannot finish, so it reports that an IAM ARN could not be ruled out (fail closed, review
+ * 6412896598 B2), and the entry is unclassifiable rather than ordinary. Width is unbounded; the scan is linear in the input.
+ */
+export const SCAN_DEPTH = 32;
+/**
+ * Whether any string anywhere in a value (an attribute, a nested object, a list) is or contains an IAM ARN element, or the
+ * value nests too deep for the scan to say. Reads in place, copies nothing. `depth` is how many containers enclose `value`.
+ */
 function holdsIamArn(value: unknown, depth = 0): boolean {
-  if (depth > 32) return false;
   if (typeof value === "string") return IAM_ARN_ELEMENT.test(value);
-  if (Array.isArray(value)) return value.some((item) => holdsIamArn(item, depth + 1));
-  if (isRecord(value)) return Object.values(value).some((item) => holdsIamArn(item, depth + 1));
-  return false;
+  if (!Array.isArray(value) && !isRecord(value)) return false;
+  if (depth >= SCAN_DEPTH) return true;
+  return (Array.isArray(value) ? value : Object.values(value)).some((item) => holdsIamArn(item, depth + 1));
 }
 
 /** One managed instance as either state format names it: its address, type and attribute values (read for identifiers only). */

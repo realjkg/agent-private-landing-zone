@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { signApproval } from "../src/apply/approval.js";
-import { buildCleanupProposal, computeProposalSha256, isAwsIdentityType, proposalProblems, protectedDeletionIn, verifyCleanupProposal, type CleanupProposal } from "../src/apply/cleanup-proposal.js";
+import { PROTECTION_REASONS, buildCleanupProposal, computeProposalSha256, isAwsContainerType, isAwsIdentityType, proposalProblems, protectedDeletionIn, verifyCleanupProposal, type CleanupProposal } from "../src/apply/cleanup-proposal.js";
 import { CLEANUP_SUFFIX, SUFFIX, loadPilotContract, pilotContractSha256 } from "../src/apply/contract.js";
 import { pilotUnitOf } from "../src/apply/unit.js";
 import { cleanupScopeProblem, runApply, runCleanup, sealPreview, type ApplyDeps, type ApplyRequest, type CleanupRequest } from "../src/apply/driver.js";
@@ -751,14 +751,95 @@ test("anything in the IAM or identity service is PROTECTED_IDENTITY by an anchor
   }
   // A pilot role's ARN recorded under a type outside the identity service: fail closed, never ordinary.
   const pilot = awsRoleArn("APPLY", "DEV");
-  for (const [type, id, arn] of [["terraform_data", pilot, null], ["aws_cloudformation_stack", "stack", pilot], ["AWS::CloudFormation::CustomResource", pilot, null], ["Custom::PilotRole", "x", pilot], ["aws_lambda_function", "fn", "arn:aws-us-gov:iam::111111111111:role/x"]] as const) {
+  for (const [type, id, arn] of [["terraform_data", pilot, null], ["AWS::CloudFormation::CustomResource", pilot, null], ["Custom::PilotRole", "x", pilot], ["aws_lambda_function", "fn", "arn:aws-us-gov:iam::111111111111:role/x"]] as const) {
     const refusal = protectedDeletionIn(change("x.y", type), [entry("x.y", type, id, arn)], IDENTITY_FIXTURE_CONTRACT, awsIdentityEnv("DEV"));
     assert.ok(refusal !== undefined && refusal.includes("(OWNERSHIP_AMBIGUOUS)") && refusal.includes("an identity's ARN under another type"), type + ": " + refusal);
   }
   assert.equal(protectedDeletionIn(change("x.y", "terraform_data"), [entry("x.y", "terraform_data", "not-an-arn", null)], IDENTITY_FIXTURE_CONTRACT, awsIdentityEnv("DEV")), undefined, "terraform_data without an IAM ARN stays ordinary");
-  // A wrapper whose attributes held an identity's ARN (judged by the blueprint, N2 of 6412488764) is refused the same way.
+  // A wrapper whose attributes held an identity's ARN, or nested past what the blueprint could scan (judged by the blueprint, N2 of 6412488764, B2 of 6412896598), is refused the same way.
   const flagged = protectedDeletionIn(change("x.y", "terraform_data"), [{ ...entry("x.y", "terraform_data", "plain", null), holdsIdentityArn: true }], IDENTITY_FIXTURE_CONTRACT, awsIdentityEnv("DEV"));
-  assert.ok(flagged !== undefined && flagged.includes("(OWNERSHIP_AMBIGUOUS)"), flagged);
+  assert.ok(flagged !== undefined && flagged.includes("(OWNERSHIP_AMBIGUOUS)") && flagged.includes("could not scan in full"), flagged);
+});
+
+/** Every stack container type in the three namespaces (review 6412896598 B1; owner decision 6431744115): CONTAINS_OTHERS, never deleted, whatever its identifier says. */
+const AWS_CONTAINER_TYPES = ["aws_cloudformation_stack", "aws_cloudformation_stack_set", "aws_cloudformation_stack_set_instance", "aws_cloudformation_stack_instances", "awscc_cloudformation_stack", "awscc_cloudformation_stack_set",
+  "aws_servicecatalog_provisioned_product", "awscc_servicecatalog_cloud_formation_provisioned_product", "AWS::CloudFormation::Stack", "AWS::CloudFormation::StackSet", "AWS::ServiceCatalog::CloudFormationProvisionedProduct"];
+
+test("a CloudFormation stack container (a stack, stack set, stack instance, the awscc stack, a Service Catalog provisioned product, the CloudFormation-typed nested stack) is CONTAINS_OTHERS: never deleted, directly or as a dependent, whatever it carries, because what its template holds (IAM roles among it) is not in the state (review 6412896598 B1)", () => {
+  const entry = (address: string, type: string, id: string | null = "x", arn: string | null = null) => ({ address, type, id, arn });
+  const change = (address: string, type: string, action = "DELETE") => [{ address, type, action }];
+  const pilot = awsRoleArn("APPLY", "DEV");
+  for (const type of AWS_CONTAINER_TYPES) {
+    assert.ok(isAwsContainerType(type), type);
+    assert.ok(!isAwsIdentityType(type), type + " is a container, not an identity");
+    for (const [id, arn] of [["stack-id", null], ["arn:aws:cloudformation:us-east-1:111111111111:stack/s/1", "arn:aws:cloudformation:us-east-1:111111111111:stack/s/1"], ["stack", pilot]] as const) {
+      const refusal = protectedDeletionIn(change("x.y", type), [entry("x.y", type, id, arn)], IDENTITY_FIXTURE_CONTRACT, awsIdentityEnv("DEV"));
+      assert.ok(refusal !== undefined && refusal.includes("a stack container") && refusal.includes("never deletes, directly or as a dependent (CONTAINS_OTHERS)"), type + " " + id + ": " + refusal);
+    }
+    // By type alone, for a dependent the state does not hold, and for an update as much as a delete.
+    assert.ok(protectedDeletionIn(change("x.y", type), [], IDENTITY_FIXTURE_CONTRACT, awsIdentityEnv("DEV"))?.includes("(CONTAINS_OTHERS)"), type + " by type alone");
+    assert.ok(protectedDeletionIn(change("x.y", type, "UPDATE"), [], IDENTITY_FIXTURE_CONTRACT, awsIdentityEnv("DEV"))?.includes("would update x.y, a stack container"), type + " on update");
+    // A stack whose attributes hold an identity's ARN is still a container: kept with its reason, not a refusal of the whole proposal.
+    assert.ok(protectedDeletionIn(change("x.y", type), [{ ...entry("x.y", type), holdsIdentityArn: true }], IDENTITY_FIXTURE_CONTRACT, awsIdentityEnv("DEV"))?.includes("(CONTAINS_OTHERS)"), type + " with a flagged attribute");
+  }
+  for (const type of ["aws_cloudformation_type", "aws_cloudformation_export", "aws_cloudformationx_stack", "AWS::CloudFormation::CustomResource", "AWS::CloudFormation::WaitCondition", "aws_servicecatalog_product", "aws_servicecatalog_portfolio", "AWS::ServiceCatalog::Portfolio", "aws_s3_bucket"]) {
+    assert.ok(!isAwsContainerType(type), type + " is not a container");
+  }
+  assert.ok(PROTECTION_REASONS.CONTAINS_OTHERS.length <= 512 && /CloudFormation stack, stack set, stack instance or Service Catalog provisioned product/.test(PROTECTION_REASONS.CONTAINS_OTHERS), "the reason names the AWS containers within a proposal's limit");
+});
+
+test("a run that created a CloudFormation stack whose template holds an IAM role (no ARN in the state) keeps the stack as CONTAINS_OTHERS by the pilot owner, never targets it, refuses a destroy plan that would take it along before any approval is consumed, and cleans up the run's other resources; a wrapper nested past the scan depth refuses the whole proposal (reviews 6412896598 B1 and B2)", async () => {
+  const STACK_ID = "arn:aws:cloudformation:us-east-1:111111111111:stack/app-iam/11111111-2222-4333-8444-555555555555";
+  const TEMPLATE = JSON.stringify({ Resources: { AppRole: { Type: "AWS::IAM::Role", Properties: { AssumeRolePolicyDocument: {} } } } });
+  const creates = [...CREATES, { address: "aws_cloudformation_stack.app_iam", type: "aws_cloudformation_stack", change: { actions: ["create"], before: null, after: {} } }];
+  const stack = { mode: "managed", type: "aws_cloudformation_stack", name: "app_iam", provider: 'provider["registry.terraform.io/hashicorp/aws"]',
+    instances: [{ schema_version: 0, attributes: { id: STACK_ID, name: "app-iam", template_body: TEMPLATE, template_url: null, capabilities: ["CAPABILITY_NAMED_IAM"], outputs: {}, iam_role_arn: null, secret_value: STATE_CANARY } }] };
+  const state = [...STATE, stack];
+  const w = world();
+  behave({ showResources: creates, stateResources: state });
+  const run = await proposed(w);
+  assert.deepEqual(run.proposal.deletes.map((d) => d.address), ["aws_cloudwatch_log_group.canary", "aws_s3_bucket.logs", "aws_s3_bucket_versioning.logs"], "the stack is never proposed");
+  const kept = run.proposal.excluded.find((x) => x.address === "aws_cloudformation_stack.app_iam");
+  assert.equal(kept?.ownership, "CONTAINS_OTHERS");
+  assert.equal(kept?.retainedBy, "PILOT_OWNER");
+  assert.match(kept!.reason, /deleting a CloudFormation stack, stack set, stack instance or Service Catalog provisioned product deletes everything its template holds, identities among it/);
+  assert.ok(!JSON.stringify([run.proposal, run.records.blueprint, run.records.observation]).includes("AWS::IAM::Role"), "no template text reaches a record");
+  assert.equal(run.records.blueprint.blueprint.entries.find((e) => e.address === "aws_cloudformation_stack.app_iam")?.holdsIdentityArn, undefined, "a template names types, not ARNs: the container rule, not the ARN scan, keeps it");
+  // A destroy plan that would take the stack along (and its role with it) stops before any approval is consumed, naming the policy.
+  const approval = cleanupApproval(run.proposal, "alice");
+  behave({ showResources: creates, stateResources: state, destroyExtra: [{ address: "aws_cloudformation_stack.app_iam", type: "aws_cloudformation_stack", change: { actions: ["delete"], before: {}, after: null } }] });
+  const taken = await cleanup(w, run, [approval]);
+  refused(taken, "PROPOSAL_SCOPE_MISMATCH");
+  assert.match((taken as { message: string }).message, /would delete aws_cloudformation_stack\.app_iam, a stack container \(a CloudFormation stack, stack set, stack instance or provisioned product\) holding resources the state does not list, which a pilot cleanup never deletes, directly or as a dependent \(CONTAINS_OTHERS\)/);
+  assert.equal(applyCalls().length, 0);
+  // A forged proposal that lists the stack never executes: the list is derived again and the stack is a container.
+  const fields = { ...run.proposal, deletes: [{ address: "aws_cloudformation_stack.app_iam", type: "aws_cloudformation_stack", identifier: STACK_ID, ownership: "RUN_CREATED" as const, observed: "UNVERIFIABLE" as const }, ...run.proposal.deletes], excluded: run.proposal.excluded.filter((x) => x.address !== "aws_cloudformation_stack.app_iam") };
+  const forged = { ...fields, proposalSha256: computeProposalSha256(fields) };
+  assert.ok(verifyCleanupProposal(forged).ok);
+  behave({ showResources: creates, stateResources: state });
+  refused(await cleanup(w, { ...run, proposal: forged }, [cleanupApproval(forged, "alice")]), "PROPOSAL_INVALID");
+  assert.equal(applyCalls().length, 0);
+  // The honest cleanup targets only the run's other resources and the stack stays.
+  const done = await cleanup(w, run, [approval]);
+  assert.ok(done.ok, JSON.stringify(done));
+  assert.ok(destroyPlans().every((c) => !c.args.join(" ").includes("aws_cloudformation_stack")), "the stack is never targeted");
+  // B2: a terraform_data whose input nests deeper than the scan reads (no ARN anywhere) is unclassifiable: the proposal is refused for a person to review, and the execution guard stops a plan that touches it.
+  let deep: unknown = "plain";
+  for (let i = 0; i < 40; i++) deep = { level: deep };
+  const wrapper = { mode: "managed", type: "terraform_data", name: "deep", provider: 'provider["terraform.io/builtin/terraform"]', instances: [{ schema_version: 0, attributes: { id: "d1b2d3e4-0000-4000-8000-000000000000", input: deep, output: null, triggers_replace: null } }] };
+  const w2 = world();
+  behave({ showResources: [...CREATES, { address: "terraform_data.deep", type: "terraform_data", change: { actions: ["create"], before: null, after: {} } }], stateResources: [...STATE, wrapper] });
+  const applied2 = await observed(w2);
+  const records2 = await loadRunRecords(applied2.s.sealed.artifactSha256, w2.dirs.evidence);
+  assert.ok(records2.ok);
+  const built2 = buildCleanupProposal({ ...records2, changes: applied2.s.sealed.changes, channel: "CLI", contract: { ...(JSON.parse(JSON.stringify(awsContractJson(KILL))) as object), enabled: true } as never, engineVersion: applied2.s.sealed.engineVersion, env: w2.deps.env!, now: new Date(NOW.getTime() + 120_000) });
+  refused(built2, "OWNERSHIP_AMBIGUOUS");
+  assert.match((built2 as { message: string }).message, /terraform_data\.deep that is not a resource id the cleanup can classify exactly/);
+  const entry2 = records2.blueprint.blueprint.entries.find((e) => e.address === "terraform_data.deep");
+  assert.equal(entry2?.holdsIdentityArn, true, "the blueprint could not scan the attribute in full, so it fails closed");
+  assert.ok(!JSON.stringify(records2.blueprint).includes("level"), "no attribute value was copied into the blueprint");
+  const guard = protectedDeletionIn([{ address: "terraform_data.deep", type: "terraform_data", action: "DELETE" }], records2.blueprint.blueprint.entries, { ...(JSON.parse(JSON.stringify(awsContractJson(KILL))) as object), enabled: true } as never, w2.deps.env!);
+  assert.ok(guard !== undefined && guard.includes("(OWNERSHIP_AMBIGUOUS)") && guard.includes("could not scan in full"), guard);
 });
 
 test("AWS identities the run created are never deleted (owner policy #39): an application role, its inline policy, a policy attachment and an access key are kept as PROTECTED_IDENTITY by the pilot owner, a destroy plan that would take any of them along stops before any approval is consumed, a pilot role's ARN under terraform_data refuses the proposal, the run's other resources are cleaned up, and the leftover check is COMPLETE with the identities intentionally retained", async () => {

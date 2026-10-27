@@ -475,7 +475,7 @@
         "the candidate commit changes",
         "the driver, ledger or kill-switch code changes"
       ],
-      "nextAction": "Waits on a live ACT path; then interrupt one owner-supervised DEV apply and show it reconciled from the ledger without resuming unapproved."
+      "nextAction": "Waits on a live ACT path; then interrupt one owner-supervised DEV apply, review it from its ledger evidence, seal and approve a new plan that finishes, and record both with ./alz apply record-recovery (the gate's fields are derived from the ledger, never typed)."
     },
     {
       "gate": "security-review:independent",

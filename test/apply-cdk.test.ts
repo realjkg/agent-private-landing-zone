@@ -1141,6 +1141,15 @@ test("CDK observe denied and interrupted: a resource Cloud Control no longer ret
   assert.equal((await loadRunRecords(s3.sealed.artifactSha256, w3.dirs.evidence)).ok, false);
 });
 
+test("a Modify's Replacement is read exactly (#268 review N1): False is an UPDATE, True a REPLACE, Conditional a REPLACE_CONDITIONAL, and a missing, lowercase, empty or unexpected value is UNKNOWN, never the harmless case", async () => {
+  const cases: [string | null, string][] = [["False", "UPDATE"], ["True", "REPLACE"], ["Conditional", "REPLACE_CONDITIONAL"], [null, "UNKNOWN"], ["false", "UNKNOWN"], ["", "UNKNOWN"], ["Maybe", "UNKNOWN"], ["true", "UNKNOWN"]];
+  for (const [replacement, action] of cases) {
+    const w = world({}, cdkContractJson(KILL), { modifyReplacement: replacement });
+    const s = await seal(w, "DEV");
+    assert.deepEqual(s.sealed.changes, [{ address: "PilotBucket", type: "AWS::S3::Bucket", action: "CREATE" }, { address: "PilotTopic", type: "AWS::SNS::Topic", action }], JSON.stringify(replacement));
+  }
+});
+
 test("the stack tags are bound: a change set whose tags are not the unit's is refused at the seal, and one whose tags changed after sealing is ARTIFACT_TAMPERED before any approval is consumed", async () => {
   const w = world({}, cdkContractJson(KILL), { swapTags: ["Key=alz-managed-by,Value=alz", "Key=alz-unit,Value=alzu-someone-elses-unit00", "Key=alz-build,Value=alzb-0123456789abcdef0123"] });
   const refusedSeal = await sealRefused(w, "DEV");

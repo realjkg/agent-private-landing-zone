@@ -312,3 +312,13 @@ test("Crossplane render normalizes resources as unknown until reconciliation is 
   assert.equal(result.updates, 0);
   assert.equal(result.destructive, false);
 });
+
+test("a CloudFormation Modify is an UPDATE only with an exact Replacement of False; True and Conditional are replacements, and a missing, lowercase, empty or unexpected value is UNKNOWN (#268 review N1)", () => {
+  const modify = (replacement: string | undefined) => normalizeCloudFormationChangeSet(JSON.stringify({
+    Changes: [{ ResourceChange: { Action: "Modify", LogicalResourceId: "Thing", ResourceType: "AWS::SNS::Topic", ...(replacement === undefined ? {} : { Replacement: replacement }) } }],
+  })).resources[0]!.operation;
+  assert.equal(modify("False"), "UPDATE");
+  assert.equal(modify("True"), "REPLACE");
+  assert.equal(modify("Conditional"), "REPLACE");
+  for (const value of [undefined, "false", "true", "", "Maybe", "FALSE"]) assert.equal(modify(value), "UNKNOWN", JSON.stringify(value));
+});

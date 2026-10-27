@@ -192,7 +192,9 @@ export const COPY = {
   verifyRun: "Check that everything is gone",
   verifyRerun: "Check again",
   verifyRunning: "Looking at the cloud for anything left. This reads and changes nothing.",
-  verifyComplete: "Everything on the list is confirmed gone, and everything kept is still there.",
+  verifyKeptNotChecked: "Kept items were left in place and were not checked.",
+  verifyRetirementTail: "Retiring the environment itself is a separate, reviewed action by the pilot owner, and it is still outstanding.",
+  proposeWillDelete: "If approved, everything on the delete list above will be deleted, and nothing else.",
   verifyIncomplete: "Not finished yet. Nothing is reported as complete until every listed thing is confirmed gone.",
   verifyKnownConfirmed: "Everything on the list is confirmed gone, but this change carried no cleanup marker, so nothing outside its records could be searched for. This is not complete.",
   verifyNextLabel: "What to do now:",
@@ -215,10 +217,78 @@ export function ownershipWord(ownership: string): string {
     case "IMPORTED": return "brought under management, not created";
     case "NOT_IN_PLAN": return "not part of this change";
     case "PROTECTED_BACKEND": return "the storage the pilot itself runs on";
-    case "PROTECTED_IDENTITY": return "a pilot sign-in or trust";
-    case "CONTAINS_OTHERS": return "a group holding things this change did not create";
+    case "PROTECTED_IDENTITY": return "an identity or access object (a role, a role or policy assignment, a role or policy definition, a managed identity, a sign-in trust, an exemption or a lock)";
+    case "PROTECTED_DEPLOYMENT": return "deployment history";
+    case "RETAINED_GROUP": return "a resource group, kept whole (a pilot cleanup removes only approved things inside it)";
+    case "CONTAINS_OTHERS": return "a subscription, management group or provider registration holding or serving others' things";
     default: return "unknown";
   }
+}
+/** Who keeps a thing the cleanup leaves, in words. */
+export function retentionOwnerWord(owner: string): string {
+  switch (owner) {
+    case "PILOT_OWNER": return "kept by the pilot owner";
+    case "ENVIRONMENT_OWNER": return "kept by the environment's owner";
+    default: return "kept by an unknown owner";
+  }
+}
+/** Why a check could not decide, in words: the record's reason code, never shown raw. */
+export function reasonWord(reason: string): string {
+  switch (reason) {
+    case "ACCESS_DENIED": return "the discovery sign-in was not allowed to read it";
+    case "CREDENTIALS": return "the discovery sign-in could not sign in";
+    case "THROTTLED": return "the cloud asked us to slow down; check again later";
+    case "TYPE_NOT_SUPPORTED": return "the cloud's read service does not know this kind of thing";
+    case "CLI_ERROR": case "HTTP_ERROR": case "UNEXPECTED_RESPONSE": return "the read failed or answered in an unexpected way";
+    case "CLI_NOT_RUN": case "HOST_REFUSED": case "READER_CLOSED": return "the read could not be sent";
+    case "NOT_INDEPENDENTLY_CHECKABLE": case "NO_CLOUD_CONTROL_MAPPING": return "it cannot be checked on its own; only the thing it belongs to can be";
+    case "NO_IDENTIFIER_IN_STATE": return "the project's records hold no identifier for it";
+    case "NOT_AN_ARM_RESOURCE_ID": return "its identifier is not one the cloud can be asked about";
+    case "OUTSIDE_TARGET_SUBSCRIPTION": return "it is outside the subscription this pilot works in";
+    default: return "the check gave no usable answer";
+  }
+}
+
+/** The distinct ownership classes present in a kept list, each in words with who keeps it, in list order. */
+function keptClassWords(kept: readonly { ownership: string; retainedBy: string }[]): string[] {
+  const seen = new Set<string>();
+  const words: string[] = [];
+  for (const item of kept) {
+    const key = item.ownership + "|" + item.retainedBy;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    words.push(ownershipWord(item.ownership) + " (" + retentionOwnerWord(item.retainedBy) + ")");
+  }
+  return words;
+}
+/**
+ * The note under a cleanup proposal, built from this proposal's own lists: what the delete list will do if approved, and which
+ * kinds of thing this proposal keeps, with their owner. It promises nothing about kinds that are not in the records.
+ */
+export function retainedNoteFor(cleanup: { deletes: readonly unknown[]; excluded: readonly { ownership: string; retainedBy: string }[] }): string {
+  const head = cleanup.deletes.length === 0 ? "Nothing is on the delete list, so an approval would delete nothing." : COPY.proposeWillDelete;
+  const kept = keptClassWords(cleanup.excluded);
+  const tail = kept.length === 0 ? "Nothing else from this change's records is kept." : "Kept, and never on that list: " + kept.join("; ") + ".";
+  return head + " " + tail + " Retiring the environment itself is a separate, reviewed decision for the pilot owner.";
+}
+/** A kept leftover row's ownership class, from the record's reason (`CLASS: sentence`), and its owner. */
+const keptClassOf = (item: { reason?: string; owner?: string }): { ownership: string; retainedBy: string } => ({ ownership: /^([A-Z][A-Z_]+): /.exec(item.reason ?? "")?.[1] ?? "UNKNOWN", retainedBy: item.owner ?? "UNKNOWN" });
+/**
+ * The headline of a COMPLETE leftover check, from the record: how many listed things are confirmed gone, whether an approved
+ * cleanup ran at all (a record with no cleanup evidence means none did), and that kept things were left in place and not checked.
+ */
+export function completeHeadlineFor(leftovers: { resources: readonly { disposition: string }[]; cleanupEvidenceSha256?: string | null }): string {
+  const gone = leftovers.resources.filter((item) => item.disposition === "CONFIRMED_DELETED").length;
+  const head = gone === 0 ? "Nothing was on the delete list, so nothing was deleted."
+    : leftovers.cleanupEvidenceSha256 === null ? "No cleanup ran; the " + gone + " listed thing(s) are confirmed gone anyway."
+    : "Approved things deleted: " + gone + " listed thing(s) confirmed gone.";
+  return head + " " + COPY.verifyKeptNotChecked;
+}
+/** The retirement line of a COMPLETE leftover check: which kinds this record kept, with their owner, and that the environment is not retired. */
+export function retirementOutstandingFor(leftovers: { resources: readonly { disposition: string; reason?: string; owner?: string }[] }): string {
+  const kept = keptClassWords(leftovers.resources.filter((item) => item.disposition === "INTENTIONALLY_RETAINED").map(keptClassOf));
+  const body = kept.length === 0 ? "Nothing from this change's records was kept." : "Kept and left in place, not checked: " + kept.join("; ") + ".";
+  return "The environment itself is not retired. " + body + " " + COPY.verifyRetirementTail;
 }
 /** What the independent check found, in words. */
 export function verificationWord(result: string): string {
@@ -238,7 +308,7 @@ export function dispositionWord(disposition: string): string {
     case "INTENTIONALLY_RETAINED": return "Kept on purpose";
     case "STILL_PRESENT": return "Still there";
     case "DELETION_PENDING": return "Removal pending";
-    default: return "Unknown";
+    default: return "Unresolved: not confirmed gone";
   }
 }
 /** The origin words for a thing the check looked at. */
@@ -359,7 +429,15 @@ export const CODE_COPY: Readonly<Record<string, Reason>> = {
   PREVIEW_EVIDENCE_SYNTHETIC: { why: "The preview evidence is recorded as synthetic: at least one condition failed, or it was not attested. It never passes the release check.", next: "Read the reasons in the evidence. Seal the preview with the approved, checked build tool against the real account from the release commit, then record it again." },
   GATE_UNKNOWN: { why: "The release check named is not a preview check. Nothing was written.", next: "Use one of the preview checks listed in the release status." },
   SCENARIO_MISMATCH: { why: "The release check is about another cloud or build tool than this prepared change. Evidence of one never stands for another. Nothing was written.", next: "Record this change against its own release check, or seal a change of the kind the check is about." },
+  RECOVERY_RECORD_UNAVAILABLE: { why: "One of the two prepared changes named has no finished run on record, so there is nothing recorded to make a recovery record from. Nothing was written.", next: "Name the prepared change whose run was interrupted and the later one that finished; both must have run and been recorded." },
+  RECOVERY_NOT_INTERRUPTED: { why: "The first run named was not interrupted; it finished on its own. A recovery record is about a run that stopped part way and was reviewed from its records. Nothing was written.", next: "Name the prepared change whose run stopped part way as the first one." },
+  RECOVERY_RESUME_MISMATCH: { why: "The later run named is not a fresh continuation of the interrupted one: it is the same prepared change, it ran against another account or environment, or it did not finish. Nothing was written.", next: "Name the new prepared change that was sealed, approved and finished after the interruption, for the same account and environment." },
+  RECOVERY_APPROVAL_REUSED: { why: "The later run used an approval given before the interruption ended, or fewer approvals than required. A continuation after an interruption needs fresh approvals. Nothing was written.", next: "A recovery record cannot be made from these runs. Tell the pilot owner; a continuation must be approved anew." },
+  RECOVERY_ATTESTATION_MISMATCH: { why: "What was typed is not the attestation shown. Nothing was written.", next: "Type the attestation exactly as shown, only if both runs reached the real account." },
+  RECOVERY_RECORD_EXISTS: { why: "A recovery record for this interrupted change is already written. It is never overwritten.", next: "Review the existing record; keep it with the release candidate." },
+  RECOVERY_EVIDENCE_RECORDED: { why: "The recovery record is written.", next: "Review it, keep it with the release candidate, and list it in the release admission file." },
   CONTRACT_MISMATCH: { why: "The prepared change was sealed under other pilot settings than the ones in force now. Nothing was written.", next: "Seal the change again under the current settings, then record it." },
+  CHANGES_UNAUTHORIZED: { why: "The prepared change would remove or replace something, or holds a change the release check cannot review. A release check is about a preview that creates, updates or adopts only. Nothing was written.", next: "Ask the pilot owner to review that change on its own. Record a prepared change that only creates, updates or adopts." },
   SOURCE_UNVERIFIED: { why: "This copy of the app has changes that are not saved in its history, or its version cannot be read, so a record could not say which version ran. Nothing ran or was used up.", next: "Save (commit) or remove the local changes, or use the packaged app, then try again." },
   ENGINE_BINARY_CHANGED: { why: "The build tool program on this computer is not the one that made the preview the approvers signed. A change only runs with that exact program. Nothing was used up.", next: "Put the same build tool version back, or prepare the change again with this one and collect new approvals." },
   SOURCE_CHANGED: { why: "The app was updated after this change was prepared. A change only runs on the exact app version that prepared it. Nothing was used up.", next: "Run it from the app version shown on the review, or prepare the change again and collect new approvals." },
@@ -397,7 +475,7 @@ export const CODE_COPY: Readonly<Record<string, Reason>> = {
   OBSERVED: { why: "The console looked at each thing the change left behind.", next: "Read the list, then write the cleanup proposal if everything is as expected." },
   CLEANUP_PROPOSED: { why: "The cleanup proposal is written.", next: "Send it to the approvers, collect their cleanup approval files, then remove the listed things." },
   CLEANED_UP: { why: "The removal finished.", next: "Check that everything is gone." },
-  CLEANUP_COMPLETE: { why: "Everything on the list is confirmed gone.", next: "Nothing further for this change." },
+  CLEANUP_COMPLETE: { why: "Everything on the list is confirmed gone; kept items were left in place and were not checked.", next: "Nothing further for this change's listed resources. The environment itself is not retired; that is the pilot owner's separate, reviewed action." },
   CLEANUP_INCOMPLETE: { why: "Something on the list is not confirmed gone yet.", next: "Follow the next step shown with the list." },
   CLEANUP_KNOWN_CONFIRMED: { why: "Everything on the list is confirmed gone, but the change carried no cleanup marker, so things outside its records could not be searched for.", next: "Ask the pilot owner to confirm by hand that nothing else of this change remains, or apply with the cleanup marker so the search can run." },
   // the command line's own errors, as the wizard reaches them

@@ -19,6 +19,7 @@ import { channelMismatchMessage } from "../apply/channel.js";
 import { tagLine } from "../apply/unit.js";
 import { liveRecordOf, readAppliedEvidence, type LiveAcceptanceRecord } from "../apply/live-record.js";
 import { admissionRecordOf, buildPreviewGateEvidence } from "../apply/preview-evidence.js";
+import { buildRecoveryEvidence, recoveryAdmissionRecordOf } from "../apply/recovery-record.js";
 import { assessReadiness } from "../apply/readiness.js";
 import { prepareApply, writePreparation, type Prepared, type PrepareRefusal } from "../apply/prepare.js";
 import { qualifyApply, runApply, runCleanup, sealPreview, type ApplyDeps, type SealRequest } from "../apply/driver.js";
@@ -60,6 +61,7 @@ const APPLY_USAGE = [
   "  ./alz apply status [--sealed SEALED_PLAN]",
   "  ./alz apply pin",
   "  ./alz apply record-live --sealed SEALED_PLAN",
+  "  ./alz apply record-recovery --sealed INTERRUPTED_SEALED_PLAN --resumed RESUMED_SEALED_PLAN --target-hardware-id HOST",
   "  ./alz apply preflight --environment DEV|QA|PROD [--contract CONTRACT.json]",
   "  ./alz apply observe --sealed SEALED_PLAN",
   "  ./alz apply propose-cleanup --sealed SEALED_PLAN",
@@ -128,6 +130,7 @@ const SUBCOMMANDS: Readonly<Record<string, Flags>> = {
   preflight: { single: ["environment"], optional: ["contract"] },
   prepare: { single: ["environment", "project"], optional: ["aws-cli-version"] },
   "record-live": { single: ["sealed"] },
+  "record-recovery": { single: ["sealed", "resumed", "target-hardware-id"] },
   observe: { single: ["sealed"] },
   "propose-cleanup": { single: ["sealed"] },
   cleanup: { single: ["proposal", "request", "manifest", "sealed"], repeated: ["approval"] },
@@ -881,6 +884,68 @@ const recordLiveCommand: Command = async (flags, terminal, deps, out) => {
   return EXIT.PASS;
 };
 
+// --- record-recovery -------------------------------------------------------------------------------------
+
+/**
+ * The product-owned producer of the `act-run-recovery` release gate's evidence (src/apply/recovery-record.ts): from the ledger's
+ * own evidence of an interrupted apply and of the apply that followed it under new approvals, bound to the product commit, with
+ * every gate field derived and nothing typed but the attestation. A pair of runs that does not show a recovery is refused by
+ * name before any phrase is asked for, and nothing is written. It starts no engine, reads no cloud and never overwrites a file.
+ */
+const recordRecoveryCommand: Command = async (flags, terminal, deps, out) => {
+  const contract = contractFor(deps);
+  if ("reason" in contract) return blocked(contractRefusal(contract), out);
+  const openedInterrupted = await openSealed(flags.sealed[0]);
+  if (!("sealed" in openedInterrupted)) return blocked(openedInterrupted, out);
+  const openedResumed = await openSealed(flags.resumed[0]);
+  if (!("sealed" in openedResumed)) return blocked(openedResumed, out);
+  const hardware = flags["target-hardware-id"][0];
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(hardware)) fail("APPLY_INPUT_INVALID", "--target-hardware-id must name the host these applies ran on (letters, digits, dots, dashes), as the admission manifest names it");
+  const ledger = deps.evidenceDir ?? repoPaths().evidence;
+  const interrupted = await readAppliedEvidence(openedInterrupted.sealed.artifactSha256, ledger);
+  if (!interrupted) fail("RECOVERY_RECORD_UNAVAILABLE", "the interrupted plan has no finished apply evidence in the ledger. A record is made only from runs the ledger recorded");
+  const resumed = await readAppliedEvidence(openedResumed.sealed.artifactSha256, ledger);
+  if (!resumed) fail("RECOVERY_RECORD_UNAVAILABLE", "the resumed plan has no finished apply evidence in the ledger. A record is made only from runs the ledger recorded");
+  const who = operatorId(deps);
+  const now = (deps.now ?? (() => new Date()))();
+  const common = { interrupted: interrupted!, resumed: resumed!, contract, sourceCommit: sourceCommitFor(deps), targetHardwareId: hardware, now };
+  const dry = buildRecoveryEvidence({ ...common, attestedBy: who });
+  if (!dry.ok) {
+    out.complain("BLOCKED " + dry.code + ": " + dry.message + "\n");
+    out.report({ code: dry.code, message: dry.message });
+    return EXIT.BLOCKED;
+  }
+  const { evidence } = dry;
+  const phrase = "RECOVERY LIVE " + evidence.environment + " " + evidence.interrupted.artifactSha256.slice(0, 12) + " " + evidence.resumed.artifactSha256.slice(0, 12);
+  terminal.write([
+    "", "RECORD ACT RUN RECOVERY EVIDENCE (" + evidence.cloud + " " + evidence.engine + ")",
+    "  environment     " + evidence.environment, "  account         " + evidence.target.account, "  backend         " + evidence.target.backend, "  workspace       " + evidence.target.workspace,
+    "  interrupted     " + evidence.interrupted.artifactSha256 + " ended " + evidence.interrupted.outcome + " at " + evidence.interrupted.finishedAt +
+      (evidence.interrupted.recovery ? " (" + evidence.interrupted.recovery.files + " recovery file(s) kept in the vault)" : ""),
+    "  resumed         " + evidence.resumed.artifactSha256 + " SUCCEEDED, " + evidence.resumed.approvals.length + " approval(s) issued after the interruption (" + evidence.requiredApprovals + " required)",
+    "  product commit  " + evidence.sourceCommit,
+    "", "Type this only if the interrupted apply and the one that followed both ran against the real " + evidence.cloud + " account above, not a test or a fake engine,",
+    "and the interrupted run was reviewed from its ledger evidence before the new plan was sealed and approved.",
+    "It is your attestation, as in record-live, and it is written into the evidence with your name:", "  " + phrase, "",
+  ].join("\n"));
+  await confirm(terminal, phrase, "recovery> ", "RECOVERY_ATTESTATION_MISMATCH", "ATTEST");
+  const dir = deps.releaseEvidenceDir ?? join(repoPaths().root, ".runs", "release", "preview");
+  const path = join(dir, evidence.gateId + "-" + evidence.interrupted.artifactSha256.slice(0, 12) + ".json");
+  const bytes = JSON.stringify(evidence, null, 2) + "\n";
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  try {
+    writeFileSync(path, bytes, { mode: 0o600, flag: "wx" });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") fail("RECOVERY_RECORD_EXISTS", "evidence for this interrupted artifact is already written at " + path + "; it is never overwritten");
+    throw error;
+  }
+  const rel = relative(repoPaths().root, path);
+  const record = recoveryAdmissionRecordOf(evidence, rel.startsWith("..") || isAbsolute(rel) ? path : rel, bytes);
+  out.say(JSON.stringify({ written: path, record, next: "Review the evidence, keep it with the release candidate, and add the record above to the admission manifest (node dist/cli/release-admission.js --manifest ...); the gate closes only when that review accepts it." }, null, 2) + "\n");
+  out.report({ code: "RECOVERY_EVIDENCE_RECORDED", message: "Recorded ACT run recovery evidence for " + evidence.gateId + ".", data: { path, evidence, record } });
+  return EXIT.PASS;
+};
+
 // --- preview-evidence ------------------------------------------------------------------------------------
 
 /**
@@ -958,7 +1023,7 @@ const previewEvidenceCommand: Command = async (flags, terminal, deps, out) => {
 
 const COMMANDS: Readonly<Record<string, Command>> = {
   qualify: qualifyCommand, seal: sealCommand, approve: approveCommand, apply: applyCommand, status: statusCommand, pin: pinCommand,
-  preflight: preflightCommand, prepare: prepareCommand, "record-live": recordLiveCommand,
+  preflight: preflightCommand, prepare: prepareCommand, "record-live": recordLiveCommand, "record-recovery": recordRecoveryCommand,
   observe: observeCommand, "propose-cleanup": proposeCleanupCommand, cleanup: cleanupCommand, "verify-cleanup": verifyCleanupCommand, report: reportCommand, "preview-evidence": previewEvidenceCommand,
 };
 
@@ -977,7 +1042,7 @@ function scratchHoldsRecovery(parent: string): boolean {
  * them first (docs/act-pilot-apply.md).
  */
 async function sweepUnlessHeld(sub: string, deps: ApplyCliDeps, out: Out): Promise<void> {
-  if (["status", "approve", "pin", "preflight", "prepare", "record-live", "observe", "propose-cleanup", "verify-cleanup", "report", "preview-evidence"].includes(sub)) return;
+  if (["status", "approve", "pin", "preflight", "prepare", "record-live", "record-recovery", "observe", "propose-cleanup", "verify-cleanup", "report", "preview-evidence"].includes(sub)) return;
   const parent = deps.scratchParent ?? tmpdir();
   const held = scratchHoldsRecovery(parent) ? "a scratch directory holds errored.tfstate or crash.log"
     : await holdsReservation(deps.evidenceDir ?? repoPaths().evidence) ? "the apply ledger holds a reservation" : undefined;
