@@ -40,13 +40,20 @@ export function gateModeOf(id: string): GateMode {
 const NO_PRODUCER_PLAN = "A new PLAN names this gate's producer (delegated decision 4); the runner writes nothing for it.";
 
 /**
- * GCP's gates, required before GCP is an admitted provider (path 5; owner approval 6433121154 on issue #39): no producer can run
- * them until a GCP contract exists, so the runner reports them and writes nothing, whatever their mode would otherwise plan.
+ * Gates whose path is not admitted yet, so no producer can run them and the runner reports them and writes nothing, whatever
+ * their mode would otherwise plan. GCP's gates are required before GCP is an admitted provider (path 5; owner approval
+ * 6433121154 on issue #39). The Bicep preview gate is back in scope (path 4; owner rebaseline 6443352284), but no contract can
+ * name the BICEP engine until its id is admitted, so it is never planned as the GUIDED S5 stage of the authorized path.
  */
-const NOT_ADMITTED: ReadonlySet<string> = new Set(["gcp-provider", "preview:terraform-gcp-brownfield"]);
+const GCP_NOT_ADMITTED = "GCP is not an admitted provider yet, so no producer can run this gate. ";
+const NOT_ADMITTED: Readonly<Record<string, string>> = {
+  "gcp-provider": GCP_NOT_ADMITTED,
+  "preview:terraform-gcp-brownfield": GCP_NOT_ADMITTED,
+  "preview:bicep-azure-brownfield": "The BICEP engine is not an admitted engine yet (path 4), so no producer can run this gate. ",
+};
 
 function planFor(id: string): GatePlan {
-  if (NOT_ADMITTED.has(id)) return { id, mode: "NO_PRODUCER", note: "GCP is not an admitted provider yet, so no producer can run this gate. " + NO_PRODUCER_PLAN };
+  if (Object.hasOwn(NOT_ADMITTED, id)) return { id, mode: "NO_PRODUCER", note: NOT_ADMITTED[id] + NO_PRODUCER_PLAN };
   const mode = gateModeOf(id);
   switch (mode) {
     case "CI":
