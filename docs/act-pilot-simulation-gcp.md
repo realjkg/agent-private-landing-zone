@@ -116,6 +116,31 @@ G1b for GCP is an opt-in emulated test, built in slice S6 as `test/apply-emulate
 
 The test proves the engine, lock, stale-plan and kill-switch behavior. It does not prove WIF, impersonation or state-write separation; those stay with G2.
 
+## S6a: the automated, opt-in emulated test (SYNTHETIC)
+
+`test/apply-emulated-gcp.test.ts` turns the spike into a repeatable test. It is opt-in: it is skipped unless both `ALZ_SIM_TERRAFORM` and `ALZ_SIM_FAKE_GCS` are set, so default CI is unaffected.
+
+It runs the real Terraform engine against fake-gcs-server on loopback, using the provider spec's own functions (`src/apply/providers/gcp.ts`):
+- the product's backend override file;
+- `backendLocation`, and the STATE_WRITE `backendConfig` as the seal renders it;
+- `savedBackendMatches` on what `init` really saved;
+- the product's `classifyApply` on the engine's real errors.
+
+Every proxy variable points at a closed local port. `STORAGE_EMULATOR_HOST` is set only in the engine children the test starts.
+
+**It does not run through the driver yet.** GCP is not an admitted provider, so seal, approve, apply, the ledger and the kill switch cannot run a GCP contract. That journey, S6b, follows admission in the shape of `test/apply-emulated.test.ts`. It is the remaining half of the GCP G1b gate.
+
+Run on 2026-10-27 with Terraform 1.16.4 (the binary above) and the fake-gcs-server v1.53.1 local build above (sha256 `dca268fc…`). It passed 4 of 4, three runs in a row:
+
+| Test | What the real engine showed |
+| --- | --- |
+| The pin and the saved backend | The project's own `backend "gcs"` block, naming another bucket and a `storage_custom_endpoint`, did not survive the product override. `init` saved exactly the contract's bucket and prefix plus STATE_WRITE's credential path and service account, and `savedBackendMatches` accepts that. A location-only seal saves `credentials` as null, and that is accepted too |
+| Refused saved settings | `access_token` (stored in plaintext; finding G1 again) and `storage_custom_endpoint` (finding H) in the saved backend are both refused by `savedBackendMatches` |
+| The plan and the apply | The plan's `tfplan` entry carries the bucket, the prefix and STATE_WRITE's service account (finding G3), never the emulator address (finding F). `apply <planfile>` leaves exactly `<prefix>/default.tfstate` and no lock object |
+| Lock and stale plan | While one apply holds `<prefix>/default.tflock`, another apply is refused, and `classifyApply` reads it as `FAILED_NO_CHANGE`. Once the lock is released, that plan is stale, and `classifyApply` reads `{ stale: true }`. No `errored.tfstate` |
+
+What it does not prove is unchanged: the emulator skips authentication, so workload identity federation, impersonation, IAM and which principal writes state remain G2 questions.
+
 ## What this spike did not do
 
 - It did not run the driver (`src/apply`). There is no GCP provider spec yet, so this was raw `terraform` only.

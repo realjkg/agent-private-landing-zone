@@ -1,6 +1,6 @@
 import { AWS } from "./providers/aws.js";
 import { AZURE } from "./providers/azure.js";
-import type { BackendBlockRule } from "./backend-block.js";
+import type { BackendType } from "./backend-pin.js";
 import type { PilotContract, PilotTarget, ProviderId } from "./types.js";
 
 /**
@@ -56,11 +56,12 @@ export type ProviderSpec = {
   /** Whether the backend `init` saved (`.terraform/terraform.tfstate`) is the contract target's. Checked after the seal-time init, whose settings the plan embeds, and after the apply-time init. */
   savedBackendMatches(saved: Record<string, unknown>, target: PilotTarget): boolean;
   /**
-   * The backend type and attributes the project's own backend block may set, judged before init reads it: init
-   * sends credentials to whatever the block names, so the block cannot be judged after. The plan embeds exactly
-   * these settings (`savedBackendMatches` checks the contract's among them). Absent: the block is not judged before init.
+   * The backend type the product-owned override file pins (src/apply/backend-pin.ts). The project's own backend block is never
+   * read: the override replaces it, and every setting comes from `backendConfig` or `backendLocation`.
    */
-  backendBlock?: BackendBlockRule;
+  backendType: BackendType;
+  /** The contract target's backend location only (no identity setting): the `-backend-config` file of a seal that does not embed STATE_WRITE. */
+  backendLocation(target: PilotTarget): string;
   /** The backend settings the plan leaves null for the apply process to fill from its own environment, the APPLY identity's. `terraform apply <planfile>` ignores the apply-time init (docs/act-pilot-simulation.md). */
   filledAtApply: readonly string[];
   /**

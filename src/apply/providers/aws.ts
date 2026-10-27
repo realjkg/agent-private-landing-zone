@@ -12,7 +12,7 @@ import { KEY_SEGMENT, ambientRefusal, isRecord, pickIdentityValue } from "./shar
  * was written, so none was checked against them. Account id: 12 digits. Region: like us-east-1. S3 bucket
  * name: 3 to 63 characters, lowercase letters, digits, hyphens and dots, starting and ending with a letter or
  * digit (no ".." is this file's own extra caution). IAM role ARN: arn:aws:iam::<12 digits>:role/<name>,
- * standard "aws" partition only. The attribute names in `backendBlock` and `DENIED_ATTRIBUTE`, the S3 backend settings
+ * standard "aws" partition only. The attribute names in `backendLocation` and `DENIED_ATTRIBUTE`, the S3 backend settings
  * `use_lockfile` (native locking, Terraform 1.10 and later) and `assume_role_with_web_identity` are likewise from
  * memory, and no real Terraform ran them. A wrong validator refuses a good value (fails closed). A wrong or missing name
  * in `DENIED_ATTRIBUTE` would miss a bad one, so that list is checked against the provider's documentation before live use.
@@ -69,14 +69,15 @@ function ambient(env: NodeJS.ProcessEnv) {
  * STATE_WRITE role's web-identity settings (role ARN and token file path, neither a secret). Every value is
  * checked against a strict pattern before it is written into HCL.
  */
+function backendLocation(target: AwsTarget): string {
+  if (!backendOk(target.backend) || !REGION.test(target.region)) return stop("BACKEND_NOT_IN_CONTRACT");
+  const [bucket, ...key] = target.backend.split("/");
+  return [`bucket = "${bucket}"`, `key = "${key.join("/")}"`, `region = "${target.region}"`, "use_lockfile = true", ""].join("\n");
+}
+
 function backendConfig(env: NodeJS.ProcessEnv, target: AwsTarget): string {
   const pick = (name: string, ok: RegExp): string => pickIdentityValue(env, "STATE_WRITE", name, ok);
-  const [bucket, ...key] = target.backend.split("/");
-  return [
-    `bucket = "${bucket}"`,
-    `key = "${key.join("/")}"`,
-    `region = "${target.region}"`,
-    "use_lockfile = true",
+  return backendLocation(target) + [
     "assume_role_with_web_identity = {",
     `  role_arn = "${pick("AWS_ROLE_ARN", ROLE_ARN)}"`,
     `  web_identity_token_file = "${pick("AWS_WEB_IDENTITY_TOKEN_FILE", TOKEN_FILE)}"`,
@@ -186,8 +187,9 @@ export const AWS: ProviderSpec = {
   ambientRefusal: ambient,
   backendConfig: (env, target) => backendConfig(env, target as AwsTarget),
   savedBackendMatches: (saved, target) => savedBackendMatches(saved, target as AwsTarget),
-  // The plan embeds what the seal-time init saved from the project's backend block: nothing but the contract's settings may be set there. The apply process fills the rest (docs/act-pilot-simulation.md, Azure; assumed the same here).
-  backendBlock: { type: "s3", attributes: ["bucket", "key", "region", "use_lockfile"] },
+  // The product override pins the s3 backend; the plan embeds what the seal-time init saved from the product's own backend file.
+  backendType: "s3",
+  backendLocation: (target) => backendLocation(target as AwsTarget),
   filledAtApply: ["assume_role_with_web_identity"],
   tagAttributes: ["tags_all", "tags"],
   assertProviderConfig: (blocks, target, env, uses) => assertProviderConfig(blocks, target as AwsTarget, env, uses),

@@ -9,6 +9,7 @@ locals {
   managed_policies = merge(
     { for arn in var.apply_managed_policy_arns : "APPLY/${arn}" => { identity = "APPLY", arn = arn } },
     # Both engines: the independent observation after an apply reads as DISCOVERY (CloudFormation's resource list, Cloud Control, the tag API), so the CDK role needs the same read scope.
+    # Control-plane metadata only: discovery.tf adds the product's exact reads and denies the data-plane and secret reads it lists, whatever this list names.
     { for arn in var.discovery_managed_policy_arns : "DISCOVERY/${arn}" => { identity = "DISCOVERY", arn = arn } },
   )
 }
@@ -50,7 +51,7 @@ resource "aws_iam_role" "identity" {
   name                 = local.role_names[each.key]
   assume_role_policy   = data.aws_iam_policy_document.trust[each.key].json
   max_session_duration = 3600
-  permissions_boundary  = each.key == "APPLY" ? var.apply_permissions_boundary_arn : null
+  permissions_boundary = each.key == "APPLY" ? var.apply_permissions_boundary_arn : null
 }
 
 resource "aws_iam_role_policy_attachment" "managed" {

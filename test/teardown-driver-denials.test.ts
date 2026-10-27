@@ -1036,6 +1036,8 @@ const APPLY_MAY_IMPORT: Readonly<Record<string, { modules: string[]; names?: str
   "src/apply/unit.ts": { modules: ["types.js"] },
   "src/apply/run-records.ts": { modules: ["types.js"] },
   "src/apply/lifecycle-report.ts": { modules: ["types.js"] },
+  // Removing a run's working files (item 2 (b)) uses the driver's own tree remover, which makes read-only directories writable and never follows a link, and the ResolvedTarget type.
+  "src/apply/workspace-removal.ts": { modules: ["cleanup.js", "types.js"] },
   "src/cli/apply.ts": { modules: ["human.js", "cleanup.js"] },
 };
 

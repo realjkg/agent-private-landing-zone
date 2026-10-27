@@ -8,7 +8,7 @@ import type { CleanupEvidence } from "./types.js";
  * listed, what the cloud says now, read through the same read-only boundary the observation used (Cloud Control, the
  * DISCOVERY identity) and never through the engine. It deletes nothing and never trusts the cleanup's own exit code:
  * a resource is CONFIRMED_DELETED only when the cloud no longer returns it (or, for a setting Cloud Control cannot read
- * alone, when the resource it belongs to is gone). COMPLETE is reported only when every proposed deletion is confirmed
+ * alone, when the resource it belongs to is gone; a data-bearing type is never read and never confirmed this way). COMPLETE is reported only when every proposed deletion is confirmed
  * and a complete deletion-unit sweep found nothing else of this run outside the state: the per-resource checks can only
  * speak for the addresses the state named. When the run carries no unit tag the sweep is NOT_AVAILABLE and the most the
  * record says is KNOWN_ADDRESSES_CONFIRMED, which is not completion (docs/observe-and-cleanup.md; #39, the #235 handoff).
@@ -32,13 +32,24 @@ type Checked = ResourceCheck;
 
 const finished = (cleanup: CleanupEvidence | undefined): boolean => cleanup !== undefined && cleanup.outcome === "SUCCEEDED";
 
+/**
+ * A resource the independent reader did not read. A setting (a bucket's versioning) is settled by its parent's confirmed
+ * absence. A data-bearing type (a Lambda function, an SSM parameter, a Secrets Manager secret: DATA_BEARING_READ_EXCLUDED)
+ * is not a setting and has no parent: its only read returns application data or secret contents, so it is never read, and
+ * nothing here confirms its deletion. It stays UNKNOWN, and the record stays INCOMPLETE.
+ */
+function notCheckableDisposition(check: Checked, parentAbsent: boolean): Pick<LeftoverResource, "disposition" | "basis" | "reason"> {
+  if (check.reason === "DATA_BEARING_READ_EXCLUDED") {
+    return { disposition: "UNKNOWN", basis: "NOT_INDEPENDENTLY_CHECKABLE", reason: "DATA_BEARING_READ_EXCLUDED: its only read returns application data or secret contents, so the independent reader never reads it, and nothing confirms its deletion" };
+  }
+  return parentAbsent ? { disposition: "CONFIRMED_DELETED", basis: "PARENT_ABSENT" }
+    : { disposition: "UNKNOWN", basis: "NOT_INDEPENDENTLY_CHECKABLE", reason: "a setting the independent reader cannot read alone, and the resource it belongs to is not confirmed gone" };
+}
+
 /** One proposed deletion's disposition from its own check and, for a setting, its parent's. */
 function dispositionOf(check: Checked, parentAbsent: boolean, cleanup: CleanupEvidence | undefined, bases: { absent: LeftoverBasis; present: LeftoverBasis }): Pick<LeftoverResource, "disposition" | "basis" | "reason"> {
   if (check.existence === "ABSENT") return { disposition: "CONFIRMED_DELETED", basis: bases.absent };
-  if (check.existence === "NOT_CHECKABLE") {
-    return parentAbsent ? { disposition: "CONFIRMED_DELETED", basis: "PARENT_ABSENT" }
-      : { disposition: "UNKNOWN", basis: "NOT_INDEPENDENTLY_CHECKABLE", reason: "a setting the independent reader cannot read alone, and the resource it belongs to is not confirmed gone" };
-  }
+  if (check.existence === "NOT_CHECKABLE") return notCheckableDisposition(check, parentAbsent);
   if (check.existence === "PRESENT") {
     if (check.pendingDeletion) return { disposition: "DELETION_PENDING", basis: bases.present, reason: "the cloud reports the resource scheduled for deletion; it is removed after its waiting period" };
     return finished(cleanup)
@@ -73,8 +84,7 @@ export async function verifyLeftovers(input: LeftoversInput): Promise<LeftoversR
       id: item.identifier !== null && !item.identifier.startsWith("arn:") ? item.identifier : null, origin: "IN_PLAN" });
     const parentAbsent = item.identifier !== null && absentIdentifiers.has(item.identifier);
     resources.push({ address: item.address, type: item.type, identifier: item.identifier, ...(check.existence === "ABSENT" ? { disposition: "CONFIRMED_DELETED" as const, basis: bases.absent }
-      : check.existence === "NOT_CHECKABLE" ? (parentAbsent ? { disposition: "CONFIRMED_DELETED" as const, basis: "PARENT_ABSENT" as const }
-        : { disposition: "UNKNOWN" as const, basis: "NOT_INDEPENDENTLY_CHECKABLE" as const, reason: "a setting the independent reader cannot read alone, and the resource it belongs to is not confirmed gone" })
+      : check.existence === "NOT_CHECKABLE" ? notCheckableDisposition(check, parentAbsent)
       : check.existence === "PRESENT" ? { disposition: "STILL_PRESENT" as const, basis: bases.present, reason: "it was absent when the cleanup was proposed and exists again" }
       : { disposition: "UNKNOWN" as const, basis: "CHECK_FAILED" as const, reason: check.reason ?? "CLI_ERROR" }) });
   }
