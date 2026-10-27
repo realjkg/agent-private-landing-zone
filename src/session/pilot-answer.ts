@@ -1,19 +1,26 @@
+import { z } from "zod";
+
 import { loadConfig } from "../config.js";
 import { invokeLocalModel, type OllamaMessage } from "../ollama.js";
 import { governedUserRequest, wrapUntrustedEvidence } from "../security/prompt-governance.js";
-import { readPilotContext, runIdFromRequest, type PilotContextOptions, type PilotQuery, type PilotToolResult } from "./pilot-context.js";
+import { readPilotContext, runIdFromRequest, type CauseCode, type PilotContextOptions, type PilotQuery, type PilotToolResult } from "./pilot-context.js";
 
 /**
- * The local model's part in the pilot journey (RB3): it explains what the read-only pilot records say. It never acts.
+ * The local model's part in the pilot journey (RB3). The model never authors displayed prose here.
  *
- * 1. A deterministic read (src/session/pilot-context.ts) returns the facts or a refusal with its code and message.
+ * 1. A deterministic read (src/session/pilot-context.ts) returns the facts, or a refusal with its code and message, and
+ *    the closed causes the record shows.
  * 2. The facts are always printed as read. They are the answer.
- * 3. The local model (loopback only, src/ollama.ts) may add a short explanation, built from those facts alone. The guard
- *    below withholds an explanation that claims success the record does not show, claims the model did something,
- *    leaves out a refusal code, or carries a command or a link. Nothing falls back to another model or endpoint.
- * 4. The exact next step for the person is printed by this code, never by the model, and is never run.
+ * 3. The local model (loopback only, src/ollama.ts) may return a structured selection, and nothing else:
+ *    `{ "focus": ["F2", …], "cause"?: "<one of the record's causes>" }`. It is validated against a strict schema
+ *    built from this record (fact ids that exist, causes the record carries). The product renders the selected facts
+ *    verbatim and a fixed, product-authored sentence for the cause. Free text from the model is never shown, so it
+ *    cannot state success, claim an action or carry a command. Invalid, empty or unknown output shows the facts only,
+ *    with a fixed note. There is no retry and no fallback to another model or endpoint.
+ * 4. Success wording comes only from the record, through a fixed product sentence tied to a verified-success state.
+ * 5. The exact next step for the person is printed by this code, never by the model, and is never run.
  */
-export type PilotExplainer = (messages: OllamaMessage[]) => Promise<string>;
+export type PilotExplainer = (messages: OllamaMessage[], format: Record<string, unknown>) => Promise<string>;
 
 export type PilotAnswerOptions = PilotContextOptions & {
   /** The local model call. Omitted (fixture sessions), no model is asked. */
@@ -22,65 +29,80 @@ export type PilotAnswerOptions = PilotContextOptions & {
   modelName?: string;
 };
 
-export type GuardCode =
-  | "MODEL_EXPLANATION_EMPTY"
-  | "MODEL_EXPLANATION_TOO_LONG"
-  | "MODEL_EXPLANATION_HAS_COMMAND"
-  | "MODEL_EXPLANATION_HAS_LINK"
-  | "MODEL_CLAIMED_ACTION"
-  | "MODEL_FABRICATED_SUCCESS"
-  | "MODEL_OMITTED_REFUSAL_CODE";
+/** The largest raw model reply that is parsed at all. */
+export const MAX_SELECTION_BYTES = 2048;
+const MAX_FOCUS = 5;
 
-export type GuardResult = { ok: true; text: string } | { ok: false; code: GuardCode; reason: string };
+/** A fixed, product-authored sentence for each cause. The model only picks the code. */
+export const CAUSE_SENTENCES: Readonly<Record<CauseCode, string>> = {
+  PILOT_RECORD_NOT_FOUND: "No record for this question exists yet in this checkout, so nothing can be reported for it.",
+  PILOT_RECORD_INVALID: "A record was found but did not have the expected shape, so it was not read.",
+  PILOT_RUN_AMBIGUOUS: "The run id matches more than one run; more characters of the artifact hash are needed.",
+  PREPARATION_BLOCKED_OWNER: "The preparation is blocked on an owner step.",
+  PREPARATION_BLOCKED_OPERATOR: "The preparation is blocked on an operator step.",
+  PREPARATION_BLOCKED_TOOL: "The preparation is blocked on a missing local tool.",
+  PREPARATION_BLOCKED: "The preparation is blocked.",
+  QUALIFY_FIRST: "The engine path is not qualified yet, so qualification in DEV comes before sealing.",
+  EXECUTE_FAIL: "The apply stage did not succeed.",
+  EXECUTE_NOT_RUN: "The apply stage has not run.",
+  EXECUTE_INCONCLUSIVE: "The apply stage is undecided.",
+  OBSERVE_FAIL: "The independent observation found a planned resource missing or something unexpected.",
+  OBSERVE_NOT_RUN: "The run has not been independently observed yet.",
+  OBSERVE_INCONCLUSIVE: "The independent observation could not decide every resource.",
+  PROPOSE_FAIL: "The cleanup proposal does not belong to this run.",
+  PROPOSE_NOT_RUN: "No cleanup has been proposed for this run yet.",
+  PROPOSE_INCONCLUSIVE: "The cleanup proposal is undecided.",
+  CLEANUP_FAIL: "The cleanup did not succeed; a person reviews it.",
+  CLEANUP_NOT_RUN: "The approved cleanup has not run yet.",
+  CLEANUP_INCONCLUSIVE: "The cleanup is undecided.",
+  LEFTOVERS_FAIL: "The leftover check failed.",
+  LEFTOVERS_NOT_RUN: "Leftovers have not been verified for this run yet.",
+  LEFTOVERS_INCONCLUSIVE: "The leftover check is not complete, so the cleanup is not confirmed complete.",
+};
 
-const MAX_EXPLANATION = 1200;
-/**
- * First-person (or "we") action claims, after any few words, and "gone/went ahead". Withheld always: the model only reads.
- * Deliberately broad, so "I cannot run commands" is withheld too; the record above is the answer either way.
- */
-const ACTION_VERBS =
-  "approv\\w*|appl(?:y|ied|ying)|execut\\w*|ran|run|running|start(?:ed)?|launch\\w*|deploy\\w*|delet\\w*|destroy\\w*|clean\\w*|remov\\w*|sign\\w*|seal\\w*|edit\\w*|modif\\w*|chang\\w*|updat\\w*|enabl\\w*|disabl\\w*|authori[sz]\\w*|wr(?:ote|itten|ite)|creat\\w*|provision\\w*|qualif\\w*|torn|tear\\w*|push\\w*|trigger\\w*|kick\\w* off|fix\\w*";
-const ACTION_CLAIM = new RegExp("\\b(?:I|we)(?:'ve|'ll|'d|'m)?\\b[^.!?\\n]{0,40}?\\b(?:" + ACTION_VERBS + ")\\b|\\b(?:gone|went|go) ahead\\b", "i");
+/** The facts the model may point at, with stable ids F1…Fn in printed order. A refusal is one fact. */
+export function factsOf(result: PilotToolResult): { id: string; text: string }[] {
+  const texts = result.ok ? result.lines : ["Refused: " + result.code + ": " + result.message];
+  return texts.map((text, index) => ({ id: "F" + (index + 1), text }));
+}
 
-/** Success vocabulary. While the record does not show a verified success, any sentence carrying it is withheld, whatever negation it has. */
-const SUCCESS_LEXICON =
-  /\b(?:succe\w*|complet\w*|done|finish\w*|worked|works|deploy(?:ed|ment is)\b|created|built|in place|ok(?:ay)?|no (?:errors?|issues?|problems?|failures?)|without (?:any )?(?:errors?|issues?|problems?|failures?)|nothing (?:is |was )?left|all (?:good|set|clear|fine)|fine|healthy|passed|pass(?:es|ing)?|verified|green|ready|cleaned|deleted|removed|gone|resolved|fixed)\b/i;
+/** The strict schema for one record: only its fact ids, only its causes, no other key. */
+export function selectionSchema(result: PilotToolResult) {
+  const ids = factsOf(result).map((fact) => fact.id);
+  const focus = z.array(z.enum(ids as [string, ...string[]])).min(1).max(Math.min(MAX_FOCUS, ids.length))
+    .refine((items) => new Set(items).size === items.length, "duplicate fact id");
+  return result.causes.length > 0
+    ? z.object({ focus, cause: z.enum(result.causes as [CauseCode, ...CauseCode[]]).optional() }).strict()
+    : z.object({ focus }).strict();
+}
 
-/** Text a person could paste into a shell. Withheld always: only the product prints a command. */
-const SHELL_TOKENS = "\\.\\/|alz|terraform|tofu|pulumi|aws|az|gcloud|cdk|kubectl|npm|npx|node|curl|wget|sh|bash|zsh|rm|sudo|chmod|git|ollama|docker";
-const COMMAND_PATTERNS: readonly RegExp[] = [
-  /`/, // code spans and fences
-  /\$\(|\$\{|\$[A-Za-z_]/, // command and variable substitution
-  /(?:^|\s)--?[a-z][a-z0-9]*(?:-[a-z0-9]+)*(?=[\s.,;:)]|$)/im, // CLI flags, single or double dash (for example --force)
-  new RegExp("^\\s*(?:(?:[Pp]lease\\s+)?(?:[Rr]un|[Tt]ype|[Ee]xecute|[Ee]nter|[Uu]se)\\s+)?(?:" + SHELL_TOKENS + ")(?:\\s|$)", "m"), // a line led by a shell or CLI token (commands are lowercase; "AWS" in prose is not one)
-  /\.\/[\w.-]|\balz\s+\w|(?:^|\s)(?:\||&&|;)\s*\w/m, // ./path, alz subcommands, pipes and chains
-];
+/** The same constraints as JSON Schema, for Ollama's structured-output `format`. */
+export function selectionJsonSchema(result: PilotToolResult): Record<string, unknown> {
+  const ids = factsOf(result).map((fact) => fact.id);
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: ["focus"],
+    properties: {
+      focus: { type: "array", items: { type: "string", enum: ids }, minItems: 1, maxItems: Math.min(MAX_FOCUS, ids.length), uniqueItems: true },
+      ...(result.causes.length > 0 ? { cause: { type: "string", enum: result.causes } } : {}),
+    },
+  };
+}
 
-/** Splits text into sentences for the success check. */
-const sentences = (text: string): string[] => text.split(/(?<=[.!?])\s+|\n+/).map((part) => part.trim()).filter(Boolean);
+export type Selection = { focus: string[]; cause?: CauseCode };
 
-/**
- * Decides whether the model's explanation may be shown beside the record. Fails closed: when in doubt, the record alone
- * is shown. A shown explanation is still labeled unverified; the record is the answer.
- */
-export function guardExplanation(raw: string, result: PilotToolResult): GuardResult {
-  const text = raw.trim();
-  if (!text) return { ok: false, code: "MODEL_EXPLANATION_EMPTY", reason: "the model returned nothing" };
-  if (text.length > MAX_EXPLANATION) return { ok: false, code: "MODEL_EXPLANATION_TOO_LONG", reason: "the explanation exceeded " + MAX_EXPLANATION + " characters" };
-  if (/\b(?:https?|ftp|s3|gs|file):\/\/|\bwww\./i.test(text)) return { ok: false, code: "MODEL_EXPLANATION_HAS_LINK", reason: "the explanation may not carry a link" };
-  if (COMMAND_PATTERNS.some((pattern) => pattern.test(text))) {
-    return { ok: false, code: "MODEL_EXPLANATION_HAS_COMMAND", reason: "only the product names a command; the model's text may not carry one" };
+/** Parses and validates the model's raw reply. Anything but a strict, record-bound selection is refused. */
+export function parseSelection(raw: string, result: PilotToolResult): { ok: true; selection: Selection } | { ok: false; code: "MODEL_SELECTION_INVALID" } {
+  if (typeof raw !== "string" || raw.length === 0 || Buffer.byteLength(raw, "utf8") > MAX_SELECTION_BYTES) return { ok: false, code: "MODEL_SELECTION_INVALID" };
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    return { ok: false, code: "MODEL_SELECTION_INVALID" };
   }
-  if (ACTION_CLAIM.test(text)) return { ok: false, code: "MODEL_CLAIMED_ACTION", reason: "the model claimed to have acted, or spoke of acting; it can only read records" };
-  if (!result.ok && !text.includes(result.code)) {
-    return { ok: false, code: "MODEL_OMITTED_REFUSAL_CODE", reason: "an explanation of a refusal must quote its code (" + result.code + ")" };
-  }
-  // Only a status read that shows verified success lets success words through. Negation is not trusted to cancel them.
-  const verifiedSuccess = result.ok && result.succeeded;
-  if (!verifiedSuccess && sentences(text).some((sentence) => SUCCESS_LEXICON.test(sentence))) {
-    return { ok: false, code: "MODEL_FABRICATED_SUCCESS", reason: "the record does not show a verified success, and the explanation uses success wording" };
-  }
-  return { ok: true, text };
+  const parsed = selectionSchema(result).safeParse(value);
+  return parsed.success ? { ok: true, selection: parsed.data as Selection } : { ok: false, code: "MODEL_SELECTION_INVALID" };
 }
 
 const TITLES: Readonly<Record<PilotQuery, string>> = {
@@ -93,19 +115,19 @@ const TITLES: Readonly<Record<PilotQuery, string>> = {
 };
 
 const SYSTEM_PROMPT = [
-  "You explain records from a governed infrastructure pilot to the person running it.",
-  "Use only the facts inside the UNTRUSTED_EVIDENCE block. Never add a fact, a number, a resource or an outcome that is not there.",
-  "If the record shows a refusal, quote its code exactly and explain it in one or two sentences.",
-  "If a stage failed, is NOT_RUN or is INCONCLUSIVE, say so plainly; never call the run successful unless every stage shows PASS.",
-  "You cannot approve, apply, clean up, sign, seal, edit the pilot contract, change authorization or run any command, and you never say that you did.",
-  "Do not write commands, code blocks or links. The product prints the person's next step itself.",
-  "Answer in at most five short sentences of plain U.S. English.",
+  "You help a person read records from a governed infrastructure pilot.",
+  "Reply with JSON only, exactly this shape: {\"focus\": [fact ids], \"cause\": cause code}.",
+  "focus: the one to five fact ids (F1, F2, …) from the FACTS list that best answer the person's question, most important first.",
+  "cause: only if the question is about a failure or a blocker, one code from the CAUSES list; otherwise leave it out.",
+  "Use no other keys and write no other text. Your reply is validated, and anything else is discarded.",
 ].join("\n");
 
-function factsOf(result: PilotToolResult): string {
-  return JSON.stringify(result.ok
-    ? { query: result.query, source: result.source, succeeded: result.succeeded, facts: result.lines, failures: result.failures }
-    : { query: result.query, refused: true, code: result.code, message: result.message });
+/** A fixed state line tied to the record's verified state; the only place success wording appears. */
+function recordState(result: PilotToolResult): string | undefined {
+  if (!result.ok || !result.succeeded) return undefined;
+  if (result.query === "PILOT_OBSERVED") return "Record state: the independent observation is VERIFIED (as recorded in the report, not re-verified now).";
+  if (result.query === "PILOT_STATUS" || result.query === "PILOT_FAILURE") return "Record state: every lifecycle stage is PASS (as recorded in the report, not re-verified now).";
+  return undefined;
 }
 
 /** The model's failure reason, by code only: an error message is never echoed (it could carry an address). */
@@ -114,35 +136,45 @@ function failureCode(error: unknown): string {
   return /^[A-Z][A-Z0-9_]{2,}/.exec(text)?.[0] ?? "MODEL_UNAVAILABLE";
 }
 
-/** Answers one read-only pilot question: the record's facts, a guarded local-model explanation, and the person's next step. */
-export async function answerPilotQuery(query: PilotQuery, request: string, options: PilotAnswerOptions = {}): Promise<{ response: string; result: PilotToolResult }> {
+/** Answers one read-only pilot question: the record's facts, the local model's validated selection rendered by the product, and the person's next step. */
+export async function answerPilotQuery(query: PilotQuery, request: string, options: PilotAnswerOptions = {}): Promise<{ response: string; result: PilotToolResult; selection?: Selection }> {
   const result = readPilotContext(query, { root: options.root, runId: options.runId ?? runIdFromRequest(request) });
-  const lines: string[] = [TITLES[query] + " — read-only" + (result.ok ? ", from " + result.source : "")];
-  if (result.ok) lines.push(...result.lines);
-  else lines.push("Refused: " + result.code + ": " + result.message);
+  const facts = factsOf(result);
+  const lines: string[] = [TITLES[query] + " — read-only" + (result.ok ? ", from " + result.source : ""), ...facts.map((fact) => fact.text)];
+  const state = recordState(result);
+  if (state) lines.push(state);
 
+  let selection: Selection | undefined;
   if (options.explain) {
-    const label = "Local model explanation" + (options.modelName ? " (" + options.modelName + ")" : "");
+    const label = "Local model selection" + (options.modelName ? " (" + options.modelName + ")" : "");
+    lines.push("");
     try {
       const raw = await options.explain([
         { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: [wrapUntrustedEvidence(factsOf(result)), governedUserRequest(request)].join("\n\n") },
-      ]);
-      const guarded = guardExplanation(raw, result);
-      lines.push("");
-      lines.push(guarded.ok
-        ? label + ", UNVERIFIED (the model's words; the record above is authoritative):\n" + guarded.text
-        : label + " withheld (" + guarded.code + "): " + guarded.reason + ". The record above is the answer.");
+        { role: "user", content: [
+          wrapUntrustedEvidence(JSON.stringify({ FACTS: facts, CAUSES: result.causes })),
+          governedUserRequest(request),
+        ].join("\n\n") },
+      ], selectionJsonSchema(result));
+      const parsed = parseSelection(raw, result);
+      if (parsed.ok) {
+        selection = parsed.selection;
+        const byId = new Map(facts.map((fact) => [fact.id, fact.text]));
+        lines.push(label + ": the facts that answer your question (quoted from the record; the model wrote none of this text):");
+        for (const id of parsed.selection.focus) lines.push("  " + id + ". " + (byId.get(id) ?? "").trim());
+        if (parsed.selection.cause) lines.push("  Cause (" + parsed.selection.cause + "): " + CAUSE_SENTENCES[parsed.selection.cause]);
+      } else {
+        lines.push(label + ": the model gave no usable selection (" + parsed.code + "). The facts above are the answer.");
+      }
     } catch (error) {
-      lines.push("");
-      lines.push(label + " unavailable (" + failureCode(error) + "). The record above is the answer; no other model or endpoint was tried.");
+      lines.push(label + " unavailable (" + failureCode(error) + "). The facts above are the answer; no other model or endpoint was tried.");
     }
   }
 
   lines.push("");
   lines.push("Your next step (a person runs it; this session never does): " + result.nextStep);
   lines.push("The model cannot approve, apply, clean up or change the pilot contract.");
-  return { response: lines.join("\n"), result };
+  return { response: lines.join("\n"), result, ...(selection ? { selection } : {}) };
 }
 
 /** The default explainer: the configured PRIMARY model on the loopback model server. */
@@ -150,7 +182,7 @@ export function localModelExplainer(): { explain: PilotExplainer; modelName: str
   const cfg = loadConfig();
   return {
     modelName: cfg.primaryModel,
-    explain: (messages) => invokeLocalModel(cfg.ollamaBaseUrl, cfg.primaryModel, messages, { think: false, timeoutMs: 60_000 }),
+    explain: (messages, format) => invokeLocalModel(cfg.ollamaBaseUrl, cfg.primaryModel, messages, { format, think: false, timeoutMs: 60_000 }),
   };
 }
 
@@ -161,6 +193,8 @@ export type HandoffKind = "APPROVE" | "APPLY" | "CLEANUP" | "CONTRACT" | "HOSTED
 
 const HOSTED = /\b(?:openai|chat ?gpt|gpt-?\d|anthropic|claude|gemini|bedrock|vertex ai|azure openai|mistral\.ai|hosted (?:model|inference|llm|ai)|cloud (?:model|llm|inference|ai)|remote (?:model|llm|inference)|api key for (?:a|the) model)\b/i;
 const CONTRACT = /\b(?:edit|change|modify|update|write|rewrite|add|remove|delete|empty|clear|set|bypass|lift|disable|turn off)\b.{0,40}\b(?:pilot contract|act-pilot-contract|contract|authori[sz]e (?:entry|list)|authori[sz]ation|approver allowlist|allowlist|kill ?switch)\b|\b(?:enable|turn on|activate|unlock)\b.{0,20}\bact\b|\bauthori[sz]e\b.{0,30}\b(?:act|apply|cleanup|myself|me)\b/i;
+/** The owner's pilot controls, named in any form ("flip the kill switch", "is the kill switch on?", "approval history please"). */
+const PILOT_AUTHORITY = /\b(?:kill ?-?switch|allow ?-?list|approvers?|approvals? (?:history|log|list|record|records|ledger|status)|approval ledger|authori[sz]e (?:entry|list)|pilot contract|act-pilot-contract|act (?:switch|toggle|flag))\b/i;
 const VERB_LEAD = /^(?:please\s+|ok(?:ay)?,?\s+|now\s+|go ahead and\s+|just\s+)?/;
 const ASK = /\b(?:can you|could you|would you|will you|please|go ahead and|i want you to|you should|you can|for me|yourself|on my behalf)\b/i;
 const APPROVE = /\b(?:approve|sign|co-?sign|countersign)\b/i;
@@ -171,7 +205,8 @@ const APPLY = /\b(?:apply|execute|run the (?:plan|apply|change)|start the (?:app
 export function pilotHandoffKind(request: string): HandoffKind | undefined {
   const value = request.trim().toLowerCase();
   if (HOSTED.test(value) && /\b(?:use|switch|fall ?back|send|route|call|ask|try|connect)\b/.test(value)) return "HOSTED_INFERENCE";
-  if (CONTRACT.test(value)) return "CONTRACT";
+  // Anything about the owner's controls, read or write, gets the owner-authority answer: the session neither reads nor changes them.
+  if (CONTRACT.test(value) || PILOT_AUTHORITY.test(value)) return "CONTRACT";
   const imperative = (verb: RegExp) => new RegExp(VERB_LEAD.source + verb.source, "i").test(value) || (ASK.test(value) && verb.test(value));
   if (imperative(APPROVE)) return "APPROVE";
   if (imperative(CLEANUP)) return "CLEANUP";
@@ -200,7 +235,8 @@ const HANDOFF: Readonly<Record<HandoffKind, { code: string; lines: string[] }>> 
   CONTRACT: { code: "PILOT_AUTHORITY_OWNER_ONLY", lines: [
     "The pilot contract, its authorize entry, the approver allowlist and the kill switch belong to the owner.",
     "The owner edits config/act-pilot-contract.json by hand in a reviewed commit. No product code path, flag, variable, agent or model writes it.",
-    "I can show what the latest preparation and preflight say: ask \"am I ready to seal?\"",
+    "To read their current state yourself: ./alz apply preflight --environment DEV (authorization, approvers and the kill switch) and ./alz apply status --environment DEV (runs and approvals).",
+    "I can show what the latest preparation says: ask \"am I ready to seal?\"",
   ] },
   HOSTED_INFERENCE: { code: "HOSTED_INFERENCE_REFUSED", lines: [
     "Inference stays on this machine. The model client only calls a credential-free http loopback address (OLLAMA_BASE_URL), and there is no hosted fallback.",

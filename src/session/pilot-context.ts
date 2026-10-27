@@ -34,6 +34,21 @@ export const PILOT_QUERIES: readonly PilotQuery[] = [
 
 export type PilotReadCode = "PILOT_RECORD_NOT_FOUND" | "PILOT_RECORD_INVALID" | "PILOT_RUN_AMBIGUOUS";
 
+/**
+ * The closed set of causes a record can show. The model may only point at one the record actually carries
+ * (`causes`); the product renders a fixed sentence for each (src/session/pilot-answer.ts).
+ */
+export const CAUSE_CODES = [
+  "PILOT_RECORD_NOT_FOUND", "PILOT_RECORD_INVALID", "PILOT_RUN_AMBIGUOUS",
+  "PREPARATION_BLOCKED_OWNER", "PREPARATION_BLOCKED_OPERATOR", "PREPARATION_BLOCKED_TOOL", "PREPARATION_BLOCKED", "QUALIFY_FIRST",
+  "EXECUTE_FAIL", "EXECUTE_NOT_RUN", "EXECUTE_INCONCLUSIVE",
+  "OBSERVE_FAIL", "OBSERVE_NOT_RUN", "OBSERVE_INCONCLUSIVE",
+  "PROPOSE_FAIL", "PROPOSE_NOT_RUN", "PROPOSE_INCONCLUSIVE",
+  "CLEANUP_FAIL", "CLEANUP_NOT_RUN", "CLEANUP_INCONCLUSIVE",
+  "LEFTOVERS_FAIL", "LEFTOVERS_NOT_RUN", "LEFTOVERS_INCONCLUSIVE",
+] as const;
+export type CauseCode = (typeof CAUSE_CODES)[number];
+
 export type PilotToolResult =
   | {
       ok: true;
@@ -48,8 +63,10 @@ export type PilotToolResult =
       failures: string[];
       /** The exact command or console step for the person. Never run by the session. */
       nextStep: string;
+      /** The causes this record shows, from the closed set. Empty when nothing is failing or blocked. */
+      causes: CauseCode[];
     }
-  | { ok: false; query: PilotQuery; code: PilotReadCode; message: string; nextStep: string };
+  | { ok: false; query: PilotQuery; code: PilotReadCode; message: string; nextStep: string; causes: CauseCode[] };
 
 export type PilotContextOptions = {
   /** The repository root the records live under. Defaults to this checkout's root. */
@@ -127,7 +144,7 @@ function listJson(directory: string, accept: (name: string) => boolean): Found[]
 }
 
 const refusal = (query: PilotQuery, code: PilotReadCode, message: string, nextStep: string): PilotToolResult =>
-  ({ ok: false, query, code, message, nextStep });
+  ({ ok: false, query, code, message, nextStep, causes: [code] });
 
 /** Picks the record for the run asked about, or the newest valid one. */
 function pick<T>(query: PilotQuery, found: Found[], parse: (value: unknown) => T | undefined, artifactOf: (record: T) => string,
@@ -256,6 +273,21 @@ const PREPARE_STEP = "./alz apply prepare --environment DEV --project PROJECT_DI
 const SEAL_STEP = "./alz apply seal --request REQUEST.json --manifest MANIFEST.json --requester YOUR_ID --key YOUR_REQUESTER_KEY.pem";
 const REPORT_STEP = "./alz apply report --sealed SEALED_PLAN [--proposal PROPOSAL.json]";
 
+/** The preparation's blocker, as a closed cause. */
+const BLOCKER_CAUSE: Readonly<Record<string, CauseCode>> = {
+  OWNER: "PREPARATION_BLOCKED_OWNER", OPERATOR: "PREPARATION_BLOCKED_OPERATOR", TOOL: "PREPARATION_BLOCKED_TOOL",
+};
+
+/** A blocked preparation's next step: a fixed sentence per blocker code. The record's own reason is never part of it. */
+export function blockedStep(blocker: string | undefined): string {
+  switch (blocker) {
+    case "OWNER": return "Owner step: the owner clears this blocker (contract, qualification or authorization), then a person runs ./alz apply prepare again.";
+    case "OPERATOR": return "Operator step: fix the project or its inputs as the preparation's reason above says, then run ./alz apply prepare again.";
+    case "TOOL": return "Tool step: install the missing pinned tool (./alz deps), then run ./alz apply prepare again.";
+    default: return "Blocked (code " + ((blocker ?? "").toUpperCase().replace(/[^A-Z0-9_]/g, "").slice(0, 40) || "UNKNOWN") + "): read the preparation's reason above, then run ./alz apply prepare again.";
+  }
+}
+
 function nextStepForStages(report: Report): string {
   const sealed = sealedPlanOf(report.artifactSha256);
   const { execute, observe, propose, cleanup, leftovers } = report.stages;
@@ -314,19 +346,23 @@ export function readPilotContext(query: PilotQuery, options: PilotContextOptions
       ? SEAL_STEP.replace("REQUEST.json", request).replace("MANIFEST.json", manifest) + pathNote
       : prep.next.step === "qualify"
         ? "./alz apply qualify --request " + request + " --manifest " + manifest + " (the owner watches the cloud logs in DEV)" + pathNote
-        : "Owner step (" + (prep.next.blocker ?? "OWNER") + "): " + prep.next.reason;
+        : blockedStep(prep.next.blocker);
+    const causes: CauseCode[] = prep.next.step === "qualify" ? ["QUALIFY_FIRST"]
+      : prep.next.step === "blocked" ? [BLOCKER_CAUSE[prep.next.blocker ?? ""] ?? "PREPARATION_BLOCKED"] : [];
     if (query === "PILOT_READINESS") {
       return {
-        ok: true, query, source: shown(picked.path), succeeded: false, failures: prep.next.step === "blocked" ? ["blocked: " + prep.next.reason] : [],
+        ok: true, query, source: shown(picked.path), succeeded: false, causes,
+        failures: prep.next.step === "blocked" ? ["blocked (record text): \u201c" + prep.next.reason + "\u201d"] : [],
         lines: [
-          "Readiness from the latest preparation (" + prep.environment + ", " + prep.provider + " " + prep.engine + "): next step " + prep.next.step + ". " + prep.next.reason,
+          "Readiness from the latest preparation (" + prep.environment + ", " + prep.provider + " " + prep.engine + "): next step " + prep.next.step + ".",
+          "The preparation's reason (record text): \u201c" + prep.next.reason + "\u201d",
           "Authorized, Ready and Approved are decided by ./alz apply preflight --environment " + prep.environment + " when a person runs it; that output is not saved, so I do not restate it.",
         ],
         nextStep: "./alz apply preflight --environment " + prep.environment + ", then: " + nextStep,
       };
     }
     return {
-      ok: true, query, source: shown(picked.path), succeeded: false, failures: [],
+      ok: true, query, source: shown(picked.path), succeeded: false, failures: [], causes,
       lines: [
         "Blueprint (local preparation, not cloud evidence): " + prep.provider + " " + prep.engine + " (" + prep.path + " path), environment " + prep.environment + ".",
         "Target: account " + prep.account + (prep.region ? ", region " + prep.region : "") + ", backend " + prep.backend + ", workspace " + prep.workspace + ".",
@@ -335,7 +371,8 @@ export function readPilotContext(query: PilotQuery, options: PilotContextOptions
         "Inputs (names and sources only, never values): " + (prep.inputs.join(", ") || "none") + ".",
         "Deletion-unit tags the plan must carry: " + (prep.unitTags.join(", ") || "none") + ".",
         ...prep.gaps.map((gap) => "Known limit: " + gap),
-        "Next step from the preparation: " + prep.next.step + ". " + prep.next.reason,
+        "Next step from the preparation: " + prep.next.step + ".",
+        "The preparation's reason (record text): \u201c" + prep.next.reason + "\u201d",
       ],
       nextStep,
     };
@@ -349,7 +386,7 @@ export function readPilotContext(query: PilotQuery, options: PilotContextOptions
     const counts = new Map<string, number>();
     for (const change of bundle.changes) counts.set(change.action, (counts.get(change.action) ?? 0) + 1);
     return {
-      ok: true, query, source: shown(picked.path), succeeded: false, failures: [],
+      ok: true, query, source: shown(picked.path), succeeded: false, failures: [], causes: [],
       lines: [
         "Sealed preview for run " + bundle.artifactSha256.slice(0, 12) + " (" + bundle.environment + "; " + bundle.target + "), sealed " + bundle.createdAt +
           " from commit " + bundle.sourceCommit.slice(0, 12) + " by requester " + bundle.requesterId + " (channel " + bundle.channel + ").",
@@ -372,10 +409,12 @@ export function readPilotContext(query: PilotQuery, options: PilotContextOptions
   const failures = [...failing, ...report.unresolved.map((item) => "unresolved: " + item)];
   const header = "Run " + report.artifactSha256.slice(0, 12) + " (" + report.environment + ", " + report.provider + " " + report.engine + "), evidence mode " + report.mode + ".";
   const nextStep = nextStepForStages(report);
+  const causes = STAGES.filter((name) => report.stages[name].status !== "PASS")
+    .map((name) => (name.toUpperCase() + "_" + report.stages[name].status) as CauseCode);
 
   if (query === "PILOT_STATUS") {
     return {
-      ok: true, query, source: shown(picked.path), succeeded: report.passed, failures, nextStep,
+      ok: true, query, source: shown(picked.path), succeeded: report.passed, failures, nextStep, causes,
       lines: [header, ...stageLines, report.passed ? "Every stage passed in this report." : "Not every stage passed in this report.",
         ...report.unresolved.map((item) => "Unresolved: " + item), ...(report.statement ? ["Acceptance: " + report.statement] : [])],
     };
@@ -384,7 +423,7 @@ export function readPilotContext(query: PilotQuery, options: PilotContextOptions
     const observation = report.observation;
     const leftovers = report.dispositions;
     return {
-      ok: true, query, source: shown(picked.path), succeeded: observation?.verdict === "VERIFIED", failures, nextStep,
+      ok: true, query, source: shown(picked.path), succeeded: observation?.verdict === "VERIFIED", failures, nextStep, causes,
       lines: [
         header,
         observation
@@ -402,7 +441,7 @@ export function readPilotContext(query: PilotQuery, options: PilotContextOptions
   }
   // PILOT_FAILURE
   return {
-    ok: true, query, source: shown(picked.path), succeeded: report.passed, failures, nextStep,
+    ok: true, query, source: shown(picked.path), succeeded: report.passed, failures, nextStep, causes,
     lines: [header, ...(failures.length > 0 ? failures.map((item) => "  " + item) : ["No stage failed or is undecided in this report, and nothing is unresolved."])],
   };
 }
