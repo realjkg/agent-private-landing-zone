@@ -1259,7 +1259,7 @@ test("Azure Terraform in the console: observe what the apply created, propose an
     ["azurerm_log_analytics_workspace.pilot", "CONFIRMED_DELETED", undefined], ["azurerm_resource_group.pilot", "INTENTIONALLY_RETAINED", "PILOT_OWNER"],
     ["azurerm_role_assignment.old", "INTENTIONALLY_RETAINED", "PILOT_OWNER"], ["azurerm_storage_account.state", "INTENTIONALLY_RETAINED", "PILOT_OWNER"],
   ]);
-  assert.match(leftovers.nextAction, /Approved resources deleted.*Protected objects intentionally retained \(3, kept by PILOT_OWNER\).*environment retirement.*remains outstanding/);
+  assert.match(leftovers.nextAction, /Approved resources deleted: every listed resource \(\d+\) is confirmed gone.*Protected or pre-existing objects intentionally retained \(3, kept by PILOT_OWNER\).*were left in place and were not read.*environment retirement is a separate, reviewed action and remains outstanding/);
   assert.ok(!/environment (is |was )?deleted|entire environment/.test(leftovers.nextAction), "the environment is never reported deleted");
   noAzureTokenIn(arm, verified);
   // Something else still carrying the change's cleanup marker keeps it incomplete.

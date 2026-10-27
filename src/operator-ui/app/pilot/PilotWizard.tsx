@@ -264,11 +264,15 @@ export default function PilotWizard(props: PilotWizardProps) {
 
   useEffect(() => { if (serverPath) setPathChoice(serverPath); }, [serverPath]);
 
-  // Move focus to the heading of the step that opened, so a keyboard or screen reader user lands on it.
-  useEffect(() => { headingRef.current?.focus(); }, [step, unlocked]);
-
   // The page behind a dialog is inert: no focus, no clicks, hidden from a screen reader.
   const dialog = run?.status === "WAITING" && run.dialog ? run.dialog : null;
+  const dialogOpen = useRef(false);
+  dialogOpen.current = dialog !== null;
+
+  // Move focus to the heading of the step that opened, so a keyboard or screen reader user lands on it. Never while a dialog is
+  // open: the dialog holds focus (PilotDialog), and a step or unlock change that lands in the same commit as, or after, the
+  // dialog must not pull focus out of the modal. Read through a ref so closing the dialog does not re-run this effect either.
+  useEffect(() => { if (!dialogOpen.current) headingRef.current?.focus(); }, [step, unlocked]);
   useEffect(() => {
     const element = contentRef.current;
     if (!element) return;

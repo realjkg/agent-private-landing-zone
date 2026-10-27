@@ -119,8 +119,8 @@ test("the gate's scenario is bound: every preview gate names one provider, engin
   assert.deepEqual(previewGateScenarioOf({ id: "x", provider: "AWS", engine: "TERRAFORM", mock: "greenfield" }), { provider: "AWS", engine: "TERRAFORM", estate: "greenfield" });
   assert.throws(() => previewGateScenarioOf({ id: "x", provider: "AWS", engine: "TERRAFORM", mock: "unknown" }), /PREVIEW_GATE_ESTATE_UNKNOWN: x has mock unknown/);
   assert.throws(() => previewGateScenarioOf({ id: "x", provider: "GCP", engine: "TERRAFORM", mock: "brownfield" }), /PREVIEW_GATE_PROVIDER_UNKNOWN/);
-  assert.deepEqual(countChanges([{ address: "a.b", type: "x", action: "CREATE" }, { address: "a.c", type: "x", action: "UPDATE" }, { address: "output.o", type: "output", action: "UPDATE" }]),
-    { total: 2, create: 1, preExistingTouched: 1, byAction: { CREATE: 1, UPDATE: 1 } });
+  const counted = countChanges([{ address: "a.b", type: "x", action: "CREATE" }, { address: "a.c", type: "x", action: "UPDATE" }, { address: "output.o", type: "output", action: "UPDATE" }]);
+  assert.deepEqual({ ...counted, byAction: { ...counted.byAction } }, { total: 2, create: 1, preExistingTouched: 1, byAction: { CREATE: 1, UPDATE: 1 } });
 });
 
 test("preview-evidence writes LIVE evidence only from a qualified sealed preview of the gate's estate, made from this commit by the engine program on this machine, after the person attests the real target; the admission review accepts exactly that document (fixture attestation: synthetic evidence of the producer's contract, not of the gate)", async () => {
@@ -264,6 +264,13 @@ test("a change set with a delete, a replacement, a forget or an unreviewed actio
   const w = await world();
   assert.deepEqual([...PREVIEW_GATE_ACTIONS], ["CREATE", "UPDATE", "IMPORT", "READ", "SAME"], "the admitted actions are a closed list");
   assert.deepEqual(unauthorizedPreviewActions({ CREATE: 2, UPDATE: 1, IMPORT: 1, READ: 1, SAME: 3, DELETE: 0 }), []);
+  assert.ok(Object.isFrozen(PREVIEW_GATE_ACTIONS), "the admitted list cannot be widened at run time");
+  assert.throws(() => { (PREVIEW_GATE_ACTIONS as string[]).push("DELETE"); }, TypeError);
+  // Counts live on a null-prototype object: an action named like an inherited property is counted as itself and refused, never read through the chain.
+  const odd = countChanges([{ address: "a.b", type: "x", action: "constructor" }, { address: "a.c", type: "x", action: "__proto__" }, { address: "a.d", type: "x", action: "toString" }]);
+  assert.equal(Object.getPrototypeOf(odd.byAction), null);
+  assert.deepEqual(Object.entries(odd.byAction).sort(), [["__proto__", 1], ["constructor", 1], ["toString", 1]]);
+  assert.deepEqual(unauthorizedPreviewActions(odd.byAction), ["__proto__: 1", "constructor: 1", "toString: 1"]);
   assert.deepEqual(unauthorizedPreviewActions({ UPDATE: 1, REPLACE: 2, DELETE: 1, FORGET: 1, REPLACE_CONDITIONAL: 1, DYNAMIC: 1, UNKNOWN: 1, EXOTIC: 1 }),
     ["DELETE: 1", "DYNAMIC: 1", "EXOTIC: 1", "FORGET: 1", "REPLACE: 2", "REPLACE_CONDITIONAL: 1", "UNKNOWN: 1"]);
   // Negative, through the command: a brownfield plan that also deletes, replaces or forgets a pre-existing resource is refused with the
