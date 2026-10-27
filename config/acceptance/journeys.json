@@ -461,7 +461,7 @@
             "ui": [
               {
                 "file": "test/ui-channel.test.ts",
-                "title": "AWS CDK in the console: prepare from the cdk.out folder, preview the change set, approve and execute it, observe what the stack created through Cloud Control and the unit sweep, and propose and review the cleanup, through the real router, service and adapter"
+                "title": "AWS CDK in the console: prepare from the cdk.out folder, preview the change set, approve and execute it, observe what the stack created through Cloud Control and the unit sweep, propose and approve the cleanup, remove exactly that list through a removal change set that never deletes the stack, and verify it is gone, through the real router, service and adapter"
               }
             ],
             "positive": [
@@ -500,7 +500,7 @@
             "ui": [
               {
                 "file": "test/ui-channel.test.ts",
-                "title": "AWS CDK in the console: prepare from the cdk.out folder, preview the change set, approve and execute it, observe what the stack created through Cloud Control and the unit sweep, and propose and review the cleanup, through the real router, service and adapter"
+                "title": "AWS CDK in the console: prepare from the cdk.out folder, preview the change set, approve and execute it, observe what the stack created through Cloud Control and the unit sweep, propose and approve the cleanup, remove exactly that list through a removal change set that never deletes the stack, and verify it is gone, through the real router, service and adapter"
               }
             ],
             "positive": [
@@ -543,7 +543,7 @@
             "ui": [
               {
                 "file": "test/ui-channel.test.ts",
-                "title": "AWS CDK in the console: prepare from the cdk.out folder, preview the change set, approve and execute it, observe what the stack created through Cloud Control and the unit sweep, and propose and review the cleanup, through the real router, service and adapter"
+                "title": "AWS CDK in the console: prepare from the cdk.out folder, preview the change set, approve and execute it, observe what the stack created through Cloud Control and the unit sweep, propose and approve the cleanup, remove exactly that list through a removal change set that never deletes the stack, and verify it is gone, through the real router, service and adapter"
               }
             ],
             "positive": [
@@ -582,7 +582,7 @@
             "ui": [
               {
                 "file": "test/ui-channel.test.ts",
-                "title": "AWS CDK in the console: prepare from the cdk.out folder, preview the change set, approve and execute it, observe what the stack created through Cloud Control and the unit sweep, and propose and review the cleanup, through the real router, service and adapter"
+                "title": "AWS CDK in the console: prepare from the cdk.out folder, preview the change set, approve and execute it, observe what the stack created through Cloud Control and the unit sweep, propose and approve the cleanup, remove exactly that list through a removal change set that never deletes the stack, and verify it is gone, through the real router, service and adapter"
               }
             ],
             "positive": [
@@ -627,7 +627,7 @@
             "ui": [
               {
                 "file": "test/ui-channel.test.ts",
-                "title": "AWS CDK in the console: prepare from the cdk.out folder, preview the change set, approve and execute it, observe what the stack created through Cloud Control and the unit sweep, and propose and review the cleanup, through the real router, service and adapter"
+                "title": "AWS CDK in the console: prepare from the cdk.out folder, preview the change set, approve and execute it, observe what the stack created through Cloud Control and the unit sweep, propose and approve the cleanup, remove exactly that list through a removal change set that never deletes the stack, and verify it is gone, through the real router, service and adapter"
               }
             ],
             "positive": [
@@ -657,20 +657,54 @@
           }
         },
         "cleanup": {
-          "status": "NOT_IMPLEMENTED",
+          "status": "SYNTHETIC_PASS",
           "code": [
-            "src/apply/cleanup-proposal.ts"
+            "src/apply/engines/cdk.ts",
+            "src/apply/cleanup-proposal.ts",
+            "src/apply/driver.ts",
+            "src/apply/leftovers.ts"
           ],
-          "missing": "The proposal and its review exist for CDK (logical ids; the stack itself is never deleted), but the CDK engine has no cleanup path: `./alz apply cleanup` is refused with CLEANUP_NOT_SUPPORTED and no leftover check follows. Slice 3b adds the removal change set.",
           "tests": {
-            "positive": [
+            "ui": [
               {
                 "file": "test/ui-channel.test.ts",
-                "title": "AWS CDK in the console: prepare from the cdk.out folder, preview the change set, approve and execute it, observe what the stack created through Cloud Control and the unit sweep, and propose and review the cleanup, through the real router, service and adapter"
+                "title": "AWS CDK in the console: prepare from the cdk.out folder, preview the change set, approve and execute it, observe what the stack created through Cloud Control and the unit sweep, propose and approve the cleanup, remove exactly that list through a removal change set that never deletes the stack, and verify it is gone, through the real router, service and adapter"
+              }
+            ],
+            "positive": [
+              {
+                "file": "test/apply-cdk.test.ts",
+                "title": "a CDK cleanup removes exactly the approved logical ids through one UPDATE change set the CHANGESET identity creates from the sealed template and the APPLY identity executes, never deletes the stack or a change set, keeps the stack's tags, and the leftover check reads the removed resources gone through Cloud Control, the kept ones intentionally retained, and the environment's retirement outstanding"
               },
               {
                 "file": "test/apply-cdk.test.ts",
-                "title": "after a CDK apply the blueprint is CloudFormation's own resource list, read once as DISCOVERY: logical ids, physical ids, ARNs derived for the known types, the stack tags' unit, and nothing else; observe reads each resource back through Cloud Control and sweeps by the unit; the proposal lists exactly the run-created resources by logical id, keeps the pilot's role and a nested stack, and says the stack itself is never deleted"
+                "title": "no IAM object is ever in a removal change set (owner policy #39; review 6411896219 B1 and B2): the pilot's CHANGESET role under its real name, an inline policy on it, a managed policy, a user and an access key the stack created are all kept as PROTECTED_IDENTITY by the pilot owner, the access key id is never recorded, the removal takes out only the ordinary resources, and the leftover check is COMPLETE with every identity intentionally retained"
+              }
+            ],
+            "denied": [
+              {
+                "file": "test/apply-cdk.test.ts",
+                "title": "a CDK cleanup is refused before any change set exists when the stack is unprotected, when the removal would empty the stack, when an approved resource's deletion policy would keep it, when something that stays still refers to an approved resource, and when a forged proposal names a protected object; a change set that would touch anything beyond the approved list is refused after CloudFormation computed it, before any approval is consumed, and is disclosed as left behind; a stop during the removal cancels the update once and spends the proposal"
+              },
+              {
+                "file": "test/apply-cdk.test.ts",
+                "title": "the cleanup surface may create only an UPDATE change set from the removal template as CHANGESET and execute it as APPLY: sealing and applying cannot name the removal template, a cleanup cannot name the assembly's, and nothing deletes"
+              }
+            ],
+            "interrupted": [
+              {
+                "file": "test/apply-cdk.test.ts",
+                "title": "a CDK cleanup is refused before any change set exists when the stack is unprotected, when the removal would empty the stack, when an approved resource's deletion policy would keep it, when something that stays still refers to an approved resource, and when a forged proposal names a protected object; a change set that would touch anything beyond the approved list is refused after CloudFormation computed it, before any approval is consumed, and is disclosed as left behind; a stop during the removal cancels the update once and spends the proposal"
+              }
+            ],
+            "recovery": [
+              {
+                "file": "test/apply-cdk.test.ts",
+                "title": "a CDK cleanup is refused before any change set exists when the stack is unprotected, when the removal would empty the stack, when an approved resource's deletion policy would keep it, when something that stays still refers to an approved resource, and when a forged proposal names a protected object; a change set that would touch anything beyond the approved list is refused after CloudFormation computed it, before any approval is consumed, and is disclosed as left behind; a stop during the removal cancels the update once and spends the proposal"
+              },
+              {
+                "file": "test/ui-channel.test.ts",
+                "title": "AWS CDK in the console: prepare from the cdk.out folder, preview the change set, approve and execute it, observe what the stack created through Cloud Control and the unit sweep, propose and approve the cleanup, remove exactly that list through a removal change set that never deletes the stack, and verify it is gone, through the real router, service and adapter"
               }
             ]
           }
@@ -702,7 +736,7 @@
           "tests": [
             {
               "file": "test/ui-channel.test.ts",
-              "title": "AWS CDK in the console: prepare from the cdk.out folder, preview the change set, approve and execute it, observe what the stack created through Cloud Control and the unit sweep, and propose and review the cleanup, through the real router, service and adapter"
+              "title": "AWS CDK in the console: prepare from the cdk.out folder, preview the change set, approve and execute it, observe what the stack created through Cloud Control and the unit sweep, propose and approve the cleanup, remove exactly that list through a removal change set that never deletes the stack, and verify it is gone, through the real router, service and adapter"
             },
             {
               "file": "test/apply-cdk.test.ts",
@@ -715,8 +749,25 @@
           ]
         },
         "cleanupDisposition": {
-          "status": "NOT_IMPLEMENTED",
-          "missing": "No per-resource disposition (deleted, or retained with an owner and reason) is recorded after a journey."
+          "status": "SYNTHETIC_PASS",
+          "code": [
+            "src/apply/leftovers.ts",
+            "src/apply/engines/cdk.ts"
+          ],
+          "tests": [
+            {
+              "file": "test/apply-cdk.test.ts",
+              "title": "a CDK cleanup removes exactly the approved logical ids through one UPDATE change set the CHANGESET identity creates from the sealed template and the APPLY identity executes, never deletes the stack or a change set, keeps the stack's tags, and the leftover check reads the removed resources gone through Cloud Control, the kept ones intentionally retained, and the environment's retirement outstanding"
+            },
+            {
+              "file": "test/apply-cdk.test.ts",
+              "title": "no IAM object is ever in a removal change set (owner policy #39; review 6411896219 B1 and B2): the pilot's CHANGESET role under its real name, an inline policy on it, a managed policy, a user and an access key the stack created are all kept as PROTECTED_IDENTITY by the pilot owner, the access key id is never recorded, the removal takes out only the ordinary resources, and the leftover check is COMPLETE with every identity intentionally retained"
+            },
+            {
+              "file": "test/ui-channel.test.ts",
+              "title": "AWS CDK in the console: prepare from the cdk.out folder, preview the change set, approve and execute it, observe what the stack created through Cloud Control and the unit sweep, propose and approve the cleanup, remove exactly that list through a removal change set that never deletes the stack, and verify it is gone, through the real router, service and adapter"
+            }
+          ]
         },
         "sourceBoundEvidence": {
           "status": "SYNTHETIC_PASS",
@@ -727,14 +778,14 @@
           "tests": [
             {
               "file": "test/ui-channel.test.ts",
-              "title": "AWS CDK in the console: prepare from the cdk.out folder, preview the change set, approve and execute it, observe what the stack created through Cloud Control and the unit sweep, and propose and review the cleanup, through the real router, service and adapter"
+              "title": "AWS CDK in the console: prepare from the cdk.out folder, preview the change set, approve and execute it, observe what the stack created through Cloud Control and the unit sweep, propose and approve the cleanup, remove exactly that list through a removal change set that never deletes the stack, and verify it is gone, through the real router, service and adapter"
             }
           ]
         }
       },
       "live": {
         "status": "BLOCKED",
-        "blockedBy": "AWS Terraform must pass live first (focus row), then owner inputs for CDK: a pinned CDK contract, the stack name, the DISCOVERY, CHANGESET and APPLY roles per account, a synthesized cdk.out with no assets, and a person to qualify it. The cleanup step (Slice 3b) is not implemented yet."
+        "blockedBy": "AWS Terraform must pass live first (focus row), then owner inputs for CDK: a pinned CDK contract, the stack name, the DISCOVERY, CHANGESET and APPLY roles per account (CHANGESET and APPLY also need the removal change set's permissions, the same as an update), a synthesized cdk.out with no assets, and a person to qualify it. Every step and proof of this row passes synthetically (fake AWS CLI). A live cleanup of what a live apply created needs the owner's separate authorization (docs/act-pilot-plan.md, Cleanup of pilot-created resources); the lifecycle report (./alz apply report) is SYNTHETIC until then and MIXED after it, never LIVE by declaration."
       }
     },
     {
