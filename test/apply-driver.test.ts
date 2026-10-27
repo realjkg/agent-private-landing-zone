@@ -1426,7 +1426,7 @@ test("the Entra ID state auth switch reaches the STATE and STATE_WRITE children 
     refused(await runApply(requestFor(sealed, approvals), { ...bad.deps, env: { ...ENV, ...over } }), "IDENTITY_NOT_CONFIGURED");
     assert.equal(calls().length, count, label + ": no engine step ran");
     const p = writeProject(fresh("project"), DEV_TARGET);
-    const sealRefused = await sealPreview({ invocation: human(DEV_TARGET), environment: "DEV", target: DEV_TARGET, manifest: p.manifest, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved }, { ...bad.deps, env: { ...ENV, ...over } });
+    const sealRefused = await sealPreview({ invocation: human(DEV_TARGET), environment: "DEV", target: DEV_TARGET, manifest: p.manifest, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved, requester: REQUESTER }, { ...bad.deps, env: { ...ENV, ...over } });
     refused(sealRefused as ApplyResult, "IDENTITY_NOT_CONFIGURED");
     assert.ok((await run(bad, sealed, approvals)).ok, label + ": the approvals were not consumed");
   }
