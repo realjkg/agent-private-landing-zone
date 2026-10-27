@@ -40,6 +40,7 @@ const SHAPE: Shape = {
   manifestHash: hash,
   releaseIdentity: text,
   contractSha256: hash,
+  targetSha256: hash,
   // The three decisions (owner decisions, #39): AUTHORIZED (the contract's and its authorizing entry's hashes), READY, EXECUTE.
   decisions: {
     authorized: { operation: oneOf("APPLY"), contractSha256: hash, authorizationSha256: hash },

@@ -65,11 +65,11 @@ function planFor(id: string): GatePlan {
         ? { id, mode: "AUTO", slice: "S3", note: "Needs the federated qualification identity; BLOCKED until it exists." }
         : { id, mode: "NO_PRODUCER", note: NO_PRODUCER_PLAN };
     case "LIVE_PREVIEW":
-      return { id, mode: "GUIDED", slice: "S5", note: "Produced at seal after the owner's reviewed pin (owner input); only for the pinned path." };
+      return { id, mode: "GUIDED", slice: "S5", note: "Produced at seal after the owner's reviewed authorization commit (owner input); only for the authorized path." };
     case "LIVE_ACT":
       return id === "act:aws-cdk"
-        ? { id, mode: "GUIDED", slice: "S5", note: "CDK_CLEANUP_NOT_IMPLEMENTED until the CDK cleanup slices land; only for the pinned path." }
-        : { id, mode: "GUIDED", slice: "S5", note: "A person runs the DEV apply after the owner's pin; only for the pinned path." };
+        ? { id, mode: "GUIDED", slice: "S5", note: "CDK_CLEANUP_NOT_IMPLEMENTED until the CDK cleanup slices land; only for the authorized path." }
+        : { id, mode: "GUIDED", slice: "S5", note: "A person runs the DEV apply after the owner's authorization commit; only for the authorized path." };
     case "ACT_RECOVERY":
       return { id, mode: "GUIDED", slice: "S5", note: "Optional recovery stage after the authorization commit (./alz apply record-recovery)." };
     case "LIFECYCLE":

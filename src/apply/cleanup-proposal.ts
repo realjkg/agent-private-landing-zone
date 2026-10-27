@@ -8,7 +8,7 @@ import { COMMIT, ENVIRONMENTS, HASH, INVISIBLE, stripInvisible } from "./constan
 import type { BlueprintRecord, ObservationRecord, ObservedResource } from "./run-records.js";
 import { PILOT_CHANNELS, type ApplyEnvironment, type ApplyEvidence, type ApplyRefusalCode, type EngineId, type PilotChannel, type PilotContract, type PlanChange, type ProviderId, type SealedRequest } from "./types.js";
 import { REQUESTER_MAY_APPROVE, signRequest } from "./approval.js";
-import { authorizeContract } from "./contract.js";
+import { authorizeContract, targetMoved } from "./contract.js";
 import { REQUESTER_ID, wellFormedRequest } from "./seal.js";
 import { isResourceAddress } from "./terraform.js";
 import type { AwsTarget } from "./providers/aws.js";
@@ -116,6 +116,8 @@ export type CleanupProposal = {
    */
   authorizingContractSha256: string;
   authorizationSha256: string;
+  /** The run's full target (from its apply evidence): the contract committed now must state exactly it (provider, account, tenant, region, backend, workspace). */
+  targetSha256: string;
   sourceCommit: string;
   engineVersion: string;
   createdAt: string;
@@ -592,10 +594,12 @@ export function buildCleanupProposal(input: ProposalInput): { ok: true; proposal
   // AUTHORIZED for CLEANUP by this contract, derived here (never taken from a caller), so a rebuild under a changed contract differs.
   const authorized = authorizeContract(contract, evidence.environment, "CLEANUP");
   if (!authorized.ok) return authorized;
+  const moved = targetMoved(evidence.targetSha256, contract, evidence.environment);
+  if (moved) return moved;
   const fields: ProposalFields = {
     schemaVersion: 2, kind: "CLEANUP_PROPOSAL", artifactSha256: evidence.artifactSha256, applyEvidenceSha256: input.applyEvidenceSha256, blueprintSha256: input.blueprintSha256,
     observationSha256: input.observationSha256, provider: contract.provider, engine: contract.engine, environment: evidence.environment, target: { ...evidence.target }, channel: input.channel,
-    contractSha256: evidence.contractSha256, authorizingContractSha256: authorized.authorization.contractSha256, authorizationSha256: authorized.authorization.authorizationSha256,
+    contractSha256: evidence.contractSha256, authorizingContractSha256: authorized.authorization.contractSha256, authorizationSha256: authorized.authorization.authorizationSha256, targetSha256: evidence.targetSha256,
     sourceCommit: evidence.sourceCommit, engineVersion: input.engineVersion, createdAt: input.now.toISOString(), unitId: record.unitId,
     deletes, alreadyAbsent, excluded, risks: [...risks].sort(), authorization: { subject: "CLEANUP", requiredApprovals: required, executesAs: "APPLY" },
     requesterId: input.requesterId, request: null,
@@ -614,7 +618,7 @@ const hashText = (value: unknown): value is string => typeof value === "string" 
 const idText = (value: unknown): boolean => value === null || text(value, 2048);
 const OWNERSHIPS: readonly Ownership[] = ["RUN_CREATED", "PRE_EXISTING", "REPLACED_PRE_EXISTING", "IMPORTED", "NOT_IN_PLAN", "TYPE_UNREVIEWED", ...PROTECTED_OWNERSHIPS];
 const KEYS = ["schemaVersion", "kind", "proposalSha256", "artifactSha256", "applyEvidenceSha256", "blueprintSha256", "observationSha256", "provider", "engine", "environment", "target", "unitId",
-  "channel", "contractSha256", "authorizingContractSha256", "authorizationSha256", "sourceCommit", "engineVersion", "createdAt", "deletes", "alreadyAbsent", "excluded", "risks", "authorization", "requesterId", "request"];
+  "channel", "contractSha256", "authorizingContractSha256", "authorizationSha256", "targetSha256", "sourceCommit", "engineVersion", "createdAt", "deletes", "alreadyAbsent", "excluded", "risks", "authorization", "requesterId", "request"];
 
 /** Every reason a value is not a well-formed cleanup proposal (shape only; the hash is checked by `verifyCleanupProposal`). */
 export function proposalProblems(value: unknown): string[] {
@@ -628,7 +632,7 @@ export function proposalProblems(value: unknown): string[] {
   if (value.schemaVersion !== 2 || value.kind !== "CLEANUP_PROPOSAL") problems.push("proposal: not a schemaVersion 2 CLEANUP_PROPOSAL");
   if (typeof value.requesterId !== "string" || !REQUESTER_ID.test(value.requesterId)) problems.push("proposal.requesterId: not an allowlist id");
   if (!wellFormedRequest(value.request)) problems.push("proposal.request: the requester's signature is missing or malformed");
-  if (![value.proposalSha256, value.artifactSha256, value.applyEvidenceSha256, value.blueprintSha256, value.observationSha256, value.contractSha256, value.authorizingContractSha256, value.authorizationSha256].every(hashText)) problems.push("proposal: a hash is not a SHA-256 digest");
+  if (![value.proposalSha256, value.artifactSha256, value.applyEvidenceSha256, value.blueprintSha256, value.observationSha256, value.contractSha256, value.authorizingContractSha256, value.authorizationSha256, value.targetSha256].every(hashText)) problems.push("proposal: a hash is not a SHA-256 digest");
   if (!["AWS", "AZURE"].includes(value.provider as string) || !["TERRAFORM", "CDK"].includes(value.engine as string)) problems.push("proposal: provider or engine is unknown");
   if (!ENVIRONMENTS.includes(value.environment as ApplyEnvironment) || !PILOT_CHANNELS.includes(value.channel as PilotChannel)) problems.push("proposal: environment or channel is unknown");
   const target = value.target;

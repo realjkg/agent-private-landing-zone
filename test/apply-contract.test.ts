@@ -455,6 +455,7 @@ const evidenceFor = (over: Partial<ApplyEvidence> = {}): ApplyEvidence => ({
   manifestHash: "d".repeat(64),
   releaseIdentity: RELEASE,
   contractSha256: "c".repeat(64), sourceCommit: "5ec0de0000000000000000000000000000c0ffee",
+  targetSha256: "b".repeat(64),
   decisions: { authorized: { operation: "APPLY", contractSha256: "c".repeat(64), authorizationSha256: "a".repeat(64) }, ready: { engineBinarySha256: null, qualificationEvidenceHash: null }, execute: { requesterId: "carol", approverIds: ["alice"] } },
   approvals: [{ approverId: "alice", issuedAt: "2026-10-11T12:00:00.000Z" }],
   requester: { requesterId: "carol", nonce: "0".repeat(32) },

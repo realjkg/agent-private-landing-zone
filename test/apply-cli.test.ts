@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { runApplyCommand, type ApplyCliDeps } from "../src/cli/apply.js";
-import { loadQualificationRecords } from "../src/apply/contract.js";
+import { loadQualificationRecords, repoPaths } from "../src/apply/contract.js";
 import { reserveArtifact } from "../src/apply/ledger.js";
 import { openNonceStore, type NonceStore } from "../src/apply/nonces.js";
 import { APPLY_ADAPTER, APPLY_ARGV, APPLY_INIT_ARGV } from "../src/apply/terraform.js";
@@ -374,7 +374,7 @@ test("seal writes a non-secret review bundle: the artifact's own fields and the 
   const text = readFileSync(s.bundle, "utf8");
   const bundle = JSON.parse(text) as Record<string, unknown>;
   assert.deepEqual(Object.keys(bundle).sort(), [
-    "artifactSha256", "authorizationSha256", "changes", "changesSha256", "channel", "contractSha256", "createdAt", "engineVersion", "environment", "manifestHash", "planSha256", "policyVersion", "provenance", "releaseIdentity", "request", "requesterId", "sourceCommit", "target", "unit",
+    "artifactSha256", "authorizationSha256", "changes", "changesSha256", "channel", "contractSha256", "createdAt", "engineVersion", "environment", "manifestHash", "planSha256", "policyVersion", "provenance", "releaseIdentity", "request", "requesterId", "sourceCommit", "target", "targetSha256", "unit",
   ]);
   assert.equal(bundle.requesterId, "carol", "approvers see who requested; it is part of the hash they sign");
   assert.equal(bundle.artifactSha256, s.artifactSha256);
@@ -1048,4 +1048,24 @@ test("record-live makes the execute step's live record only from a recorded succ
   assert.equal(again.code, 1);
   assert.match(again.stderr, /^LIVE_RECORD_EXISTS/);
   assert.equal(readdirSync(acceptanceDir).length, 1);
+});
+
+test("M22: without an injected commit, the CLI resolves the source commit from the repository root with the contract as a file that must equal HEAD's bytes", async () => {
+  const w = await world();
+  const seen: { root: string; committed: readonly string[] }[] = [];
+  const recorder = (root: string, _env?: NodeJS.ProcessEnv, committed: readonly string[] = []) => {
+    seen.push({ root, committed });
+    return { ok: false as const, reason: "recorded by the test" };
+  };
+  for (const args of [["propose-cleanup", "--sealed", "/nonexistent/s", ...requesterArgs()], ["propose-removal", "--sealed", "/nonexistent/s", ...requesterArgs()]]) {
+    const run = await cli(w, args, [], { sourceCommit: undefined, sourceResolver: recorder });
+    assert.equal(run.code, 2, run.stderr);
+    assert.match(run.stderr, /BLOCKED SOURCE_UNVERIFIED/);
+    assert.match(run.stderr, /recorded by the test/, "the resolver's own reason is shown");
+  }
+  assert.equal(seen.length, 2);
+  for (const call of seen) {
+    assert.equal(call.root, repoPaths().root);
+    assert.deepEqual(call.committed, ["config/act-pilot-contract.json"], "the contract must be exactly the committed file");
+  }
 });

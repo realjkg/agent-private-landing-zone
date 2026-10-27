@@ -95,7 +95,7 @@ async function seal(w: World, salt: string): Promise<Sealed> {
 /** Apply evidence for a sealed plan, as the driver would have recorded it; `over` shapes the outcome, the times and the approvals. */
 const evidenceFor = (w: World, s: Sealed, over: Partial<ApplyEvidence>): ApplyEvidence => ({
   schemaVersion: 1, environment: s.sealed.environment, target: { ...s.sealed.target }, artifactSha256: s.sealed.artifactSha256, manifestHash: s.sealed.manifestHash,
-  releaseIdentity: s.sealed.releaseIdentity, contractSha256: pilotContractSha256(w.contract), decisions: decisionsFor(pilotContractSha256(w.contract)), sourceCommit: SOURCE_COMMIT,
+  releaseIdentity: s.sealed.releaseIdentity, contractSha256: pilotContractSha256(w.contract), targetSha256: s.sealed.targetSha256, decisions: decisionsFor(pilotContractSha256(w.contract)), sourceCommit: SOURCE_COMMIT,
   approvals: [{ approverId: "alice", issuedAt: minutes(-30) }], requester: { requesterId: "carol", nonce: "0".repeat(32) }, adapter: { adapterVersion: "terraform-apply-1.0.0", argvDigest: "4".repeat(64) }, toolVersions: { engine: "1.9.5" },
   outcome: "SUCCEEDED", exitCode: 0, startedAt: minutes(-10), finishedAt: minutes(0), authority: APPLY_AUTHORITY, ...over,
 });

@@ -1199,7 +1199,7 @@ async function proposedCdk(w: World, options: AssemblyOptions = {}) {
   const contract = loadPilotContract(w.contractPath) as PilotContract;
   const built = buildCleanupProposal({ requesterId: REQUESTER.requesterId, ...records, changes: s.sealed.changes, channel: "CLI", contract, engineVersion: AWS_CLI_VERSION, env: cdkIdentityEnv("DEV"), now: new Date(NOW.getTime() + 120_000) });
   assert.ok(built.ok, JSON.stringify(built));
-  return { s, proposal: signCleanupProposal(built.proposal, REQUESTER.privateKeyPem), observed };
+  return { s, proposal: signCleanupProposal(built.proposal, REQUESTER.privateKeyPem), observed, records };
 }
 const cleanupCdk = (w: World, s: Sealed, proposal: CleanupProposal, approvals: SignedApproval[] = [cdkCleanupApproval(proposal, "alice")]) => runCleanup({
   invocation: human(s.sealed.target), environment: "DEV", target: { ...s.sealed.target }, proposal, sealedPlan: s.loaded, manifest: s.project.manifest, projectRoot: s.project.projectRoot, approvals,
@@ -1469,4 +1469,24 @@ test("no IAM object is ever in a removal change set (owner policy #39; review 64
   assert.deepEqual(after.record.resources.filter((r) => /^Pilot(?:Role|RolePolicy|Managed|User|UserKey)$/.test(r.address)).map((r) => r.address).sort(), ["PilotManaged", "PilotRole", "PilotRolePolicy", "PilotUser", "PilotUserKey"]);
   assert.equal(after.record.resources.find((r) => r.address === "PilotRole")?.result, "VERIFIED", "the pilot role is still there");
   noCanary(leftovers.record);
+});
+
+test("R1 (CDK): the cleanup acts only on the run's own stack, by its id: a same-named stack (another id) is refused before any change set exists, and a region move is refused at propose", async () => {
+  const behavior = { diffChanges: true, protectAfterCreate: true };
+  const w = world({}, cdkContractJson(KILL), behavior);
+  const { s, proposal, records } = await proposedCdk(w);
+  const runStack = records.blueprint.blueprint.container?.identifier;
+  assert.match(runStack ?? "", /^arn:aws:cloudformation:[a-z0-9-]+:\d{12}:stack\/[A-Za-z0-9-]+\/[0-9a-f-]{36}$/, "the blueprint names the run's stack by its id");
+  // The stack of the same name is now another stack (re-created, or in another place): the unit-tag keys alone would match.
+  patchAws(toolDir, { describedStackId: runStack!.replace(/[0-9a-f-]{36}$/, "99999999-9999-4999-8999-999999999999") });
+  const other = await cleanupCdk(w, s, proposal);
+  refused(other as never, "TARGET_NOT_IN_CONTRACT");
+  assert.match((other as { message: string }).message, /CLEANUP_STACK_NOT_IN_CONTRACT/);
+  assert.equal(removalCreates().length, 0, "no removal change set was created");
+  // A region move in the contract committed now: the run's full target no longer matches, so no proposal is made.
+  const c = cdkContractJson(KILL) as { targets: Record<string, Record<string, unknown>> };
+  const moved = { ...c, targets: { ...c.targets, DEV: { ...c.targets.DEV, region: "eu-west-2" } } };
+  const reproposed = buildCleanupProposal({ requesterId: REQUESTER.requesterId, ...records, changes: s.sealed.changes, channel: "CLI", contract: moved as never,
+    engineVersion: s.sealed.engineVersion, env: cdkIdentityEnv("DEV"), now: new Date(NOW.getTime() + 120_000) });
+  refused(reproposed as never, "TARGET_NOT_IN_CONTRACT");
 });

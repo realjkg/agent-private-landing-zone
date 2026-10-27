@@ -153,6 +153,8 @@ export type SealedPlan = {
    * from the contract it loads and refuses, with nothing consumed, if it changed.
    */
   authorizationSha256: string;
+  /** The run's full target (`pilotTargetSha256`: provider, account fields incl. tenant and region, backend, workspace), bound by the artifact hash. */
+  targetSha256: string;
   /** The pilot contract (its canonical sha256) the plan was sealed under: it fixes the provider and every account field, region and tenant included, and the approver allowlist. An apply under another contract is refused. */
   contractSha256: string;
   /** The product source commit that made this plan, bound by the artifact hash: approvers sign it, and only the same commit can apply it. */
@@ -293,6 +295,8 @@ export type ApplyEvidence = {
   releaseIdentity: string;
   /** The contract the apply ran under, and so the provider, account, region or tenant it ran against. */
   contractSha256: string;
+  /** The run's full target (`pilotTargetSha256`), from the sealed plan: what its cleanup and removal must find unchanged. */
+  targetSha256: string;
   decisions: RunDecisions;
   /** The product source commit that sealed the plan and ran the apply (they must be the same). */
   sourceCommit: string;

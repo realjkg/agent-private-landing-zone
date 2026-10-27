@@ -7,7 +7,7 @@ import type { ResolvedTarget } from "../teardown/driver/types.js";
 import { canonicalJson } from "../teardown/manifest.js";
 import { consumeApprovals, signRequest, verifyApprovalSet, verifyRequestSignature } from "./approval.js";
 import { ENVIRONMENTS, HASH } from "./constants.js";
-import { isKillSwitchActive, pilotContractSha256, requireActAuthorized, targetForEnvironment } from "./contract.js";
+import { isKillSwitchActive, pilotContractSha256, requireActAuthorized, targetForEnvironment, targetMoved } from "./contract.js";
 import { RECOVERY_FILE_NAMES } from "./engine-spec.js";
 import { holdsReservation } from "./ledger.js";
 import type { NonceStore } from "./nonces.js";
@@ -87,6 +87,8 @@ export type WorkspaceRemovalProposal = {
   target: ResolvedTarget;
   channel: PilotChannel;
   contractSha256: string;
+  /** The run's full target, bound by the proposal's hash (R1). */
+  targetSha256: string;
   createdAt: string;
   items: RemovalItem[];
   heldForReview: string[];
@@ -135,7 +137,8 @@ export type RemovalLocations = {
   staleAfterMs?: number;
 };
 /** The run, from its sealed plan. */
-export type RemovalRun = { artifactSha256: string; manifestHash: string; environment: ApplyEnvironment; target: ResolvedTarget; channel: PilotChannel };
+/** `targetSha256`: the run's full target from its sealed plan (`pilotTargetSha256`); the contract committed now must state exactly it. */
+export type RemovalRun = { artifactSha256: string; manifestHash: string; environment: ApplyEnvironment; target: ResolvedTarget; channel: PilotChannel; targetSha256: string };
 
 const KEPT = "the evidence directory and everything in it (apply and cleanup evidence, the ledger, sealed plans, run records, the recovery record), cleanup and removal proposals, lifecycle reports, logs, the contract, and the operator's project folder";
 const SCRATCH_PREFIXES = ["alz-preview-", "alz-snapshot-", "alz-child-"] as const;
@@ -229,7 +232,7 @@ export function planWorkspaceRemoval(run: Pick<RemovalRun, "environment" | "mani
 
 // --- the proposal -------------------------------------------------------------------------------------------------------------
 
-const PROPOSAL_KEYS = ["schemaVersion", "kind", "proposalSha256", "artifactSha256", "manifestHash", "environment", "target", "channel", "contractSha256", "createdAt", "items", "heldForReview", "skipped", "requesterId", "request", "authorization"];
+const PROPOSAL_KEYS = ["schemaVersion", "kind", "proposalSha256", "artifactSha256", "manifestHash", "environment", "target", "channel", "contractSha256", "targetSha256", "createdAt", "items", "heldForReview", "skipped", "requesterId", "request", "authorization"];
 
 /** The proposal's identity: every field but itself and the requester's signature, canonically. */
 export function removalProposalSha256(proposal: Omit<WorkspaceRemovalProposal, "proposalSha256"> | WorkspaceRemovalProposal): string {
@@ -242,11 +245,13 @@ export function buildRemovalProposal(input: { run: RemovalRun; where: RemovalLoc
   const { run, contract } = input;
   const required = contract.requiredApprovals[run.environment];
   if (required === undefined) return refuse("TARGET_NOT_IN_CONTRACT", "The pilot contract does not enable " + run.environment + ".");
+  const moved = targetMoved(run.targetSha256, contract, run.environment);
+  if (moved) return moved;
   const planned = planWorkspaceRemoval(run, input.where, input.now);
   if (!planned.ok) return planned;
   const fields: Omit<WorkspaceRemovalProposal, "proposalSha256"> = {
     schemaVersion: 1, kind: "WORKSPACE_REMOVAL_PROPOSAL", artifactSha256: run.artifactSha256, manifestHash: run.manifestHash, environment: run.environment, target: { ...run.target },
-    channel: run.channel, contractSha256: pilotContractSha256(contract), createdAt: input.now.toISOString(), ...planned.plan, requesterId: input.requesterId, request: null,
+    channel: run.channel, contractSha256: pilotContractSha256(contract), targetSha256: run.targetSha256, createdAt: input.now.toISOString(), ...planned.plan, requesterId: input.requesterId, request: null,
     authorization: { operation: "REMOVE", subject: "CLEANUP", requiredApprovals: required },
   };
   return { ok: true, proposal: { ...fields, proposalSha256: removalProposalSha256(fields) } };
@@ -270,7 +275,7 @@ export function verifyRemovalProposal(value: unknown): { ok: true; proposal: Wor
   if (Object.keys(value).sort().join() !== [...PROPOSAL_KEYS].sort().join()) return bad("its fields are not a removal proposal's");
   const p = value as Record<string, unknown>;
   if (p.schemaVersion !== 1 || p.kind !== "WORKSPACE_REMOVAL_PROPOSAL") return bad("not a schemaVersion 1 WORKSPACE_REMOVAL_PROPOSAL");
-  if (![p.proposalSha256, p.artifactSha256, p.manifestHash, p.contractSha256].every((h) => typeof h === "string" && HASH.test(h))) return bad("a hash is not a SHA-256 digest");
+  if (![p.proposalSha256, p.artifactSha256, p.manifestHash, p.contractSha256, p.targetSha256].every((h) => typeof h === "string" && HASH.test(h))) return bad("a hash is not a SHA-256 digest");
   if (!ENVIRONMENTS.includes(p.environment as ApplyEnvironment) || !PILOT_CHANNELS.includes(p.channel as PilotChannel)) return bad("environment or channel is unknown");
   const target = p.target;
   if (!isRecord(target) || Object.keys(target).sort().join() !== "account,backend,workspace" || !["account", "backend", "workspace"].every((k) => text(target[k], 512))) return bad("target");
@@ -360,9 +365,11 @@ export async function prepareRemoval(input: RemovalInput): Promise<RemovalReady 
   if (proposal.contractSha256 !== pilotContractSha256(contract)) return refuse("PROPOSAL_INVALID", "The removal proposal was made under another pilot contract. Nothing was removed.");
   const pinned = targetForEnvironment(contract, proposal.environment, proposal.target);
   if (!pinned.ok) return refuse(pinned.code, pinned.message);
-  if (proposal.target.account !== run.target.account || proposal.target.backend !== run.target.backend || proposal.target.workspace !== run.target.workspace) {
+  if (proposal.target.account !== run.target.account || proposal.target.backend !== run.target.backend || proposal.target.workspace !== run.target.workspace || proposal.targetSha256 !== run.targetSha256) {
     return refuse("PROPOSAL_INVALID", "The removal proposal names another target than the run. Nothing was removed.");
   }
+  const moved = targetMoved(run.targetSha256, contract, run.environment);
+  if (moved) return refuse(moved.code, moved.message);
   const decision = authorizeRemoval({ operation: "REMOVE", contract, environment: run.environment, artifactSha256: run.artifactSha256 });
   if (!decision.authorized) return refuse("REMOVAL_NOT_AUTHORIZED", "Removing this run's working files is not authorized: " + decision.reason + ". Nothing was removed.");
   if (await holdsReservation(input.where.evidenceDir)) {

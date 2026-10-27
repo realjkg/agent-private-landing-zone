@@ -30,7 +30,11 @@ export type EngineContext = {
   /** The contract's opt-in `embedStateWrite` (`PilotContract`), sealing and qualifying only. Absent or false: the seal-time init is the preview adapter's own. */
   embedStateWrite?: boolean;
 };
-export type EngineRunInput = EngineContext & { target: ResolvedTarget; engineVersion: string };
+export type EngineRunInput = EngineContext & {
+  target: ResolvedTarget; engineVersion: string;
+  /** Cleanup only, CDK: the id (ARN) of the stack the run created, from its blueprint; the cleanup refuses any other stack. */
+  runStackId?: string;
+};
 /** A read-only snapshot of the project the manifest describes is what sealing starts from. */
 export type EnginePlanInput = EngineRunInput & {
   snapshotPath: string;

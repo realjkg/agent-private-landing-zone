@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { signApproval } from "../src/apply/approval.js";
-import { authorizeContract, loadPilotContract } from "../src/apply/contract.js";
+import { authorizeContract, loadPilotContract, pilotTargetSha256 } from "../src/apply/contract.js";
 import { reserveArtifact } from "../src/apply/ledger.js";
 import { openNonceStore } from "../src/apply/nonces.js";
 import type { ApplyEnvironment, PilotContract, SignedApproval } from "../src/apply/types.js";
@@ -48,7 +48,7 @@ const sha = (text: string) => createHash("sha256").update(text).digest("hex");
 const WITH_REMOVE = { authorize: { DEV: ["APPLY", "CLEANUP", "REMOVE"], QA: ["APPLY", "CLEANUP", "REMOVE"], PROD: ["APPLY", "CLEANUP", "REMOVE"] } };
 const contractWith = (over: Record<string, unknown>): PilotContract => { const path = join(fresh("contract"), "act-pilot-contract.json"); writeReviewedContract(path, awsContractJson(KILL, over)); return loadPilotContract(path) as PilotContract; };
 const CONTRACT = contractWith(WITH_REMOVE);
-const runOf = (environment: ApplyEnvironment = "DEV"): RemovalRun => ({ artifactSha256: ARTIFACT, manifestHash: MANIFEST, environment, target: awsTargetOf(environment), channel: "CLI" });
+const runOf = (environment: ApplyEnvironment = "DEV"): RemovalRun => ({ artifactSha256: ARTIFACT, manifestHash: MANIFEST, environment, target: awsTargetOf(environment), channel: "CLI", targetSha256: pilotTargetSha256(CONTRACT, environment)! });
 
 /** One run's leftovers: its preparation files, another run's, a stale scratch directory with a plan, .terraform and a state copy, a young one, and the evidence. */
 function layout(environment: ApplyEnvironment = "DEV") {
@@ -406,4 +406,41 @@ test("AUTHORIZED: a removal runs only when the reviewed contract lists REMOVE fo
     execute: { requesterId: REQUESTER.requesterId, approverIds: ["alice"] },
   });
   assert.deepEqual(JSON.parse(readFileSync(removed.recordPath, "utf8")).removals.at(-1).decisions, removed.removal.decisions, "and the record on disk says the same");
+});
+
+test("R1: a removal is held to the run's full target: a run whose target the contract no longer states exactly is refused at propose and at removal", async () => {
+  const l = layout();
+  const movedRun: RemovalRun = { ...runOf(), targetSha256: "e".repeat(64) };
+  const built = buildRemovalProposal({ run: movedRun, where: l.where, contract: CONTRACT, requesterId: REQUESTER.requesterId, now: NOW });
+  assert.equal(codeOf(built), "TARGET_NOT_IN_CONTRACT");
+  const p = proposal(l);
+  assert.equal(p.targetSha256, runOf().targetSha256, "the proposal binds the run's full target");
+  // The same proposal judged for a run whose sealed target differs: refused, nothing removed.
+  const refusedRun = await prepareRemoval({ ...input(l, p, [approve(p, "alice")]), run: movedRun });
+  assert.equal(codeOf(refusedRun), "PROPOSAL_INVALID");
+  // A contract committed now with the DEV region moved: the run is no longer where the contract says.
+  const c = awsContractJson(KILL, WITH_REMOVE) as { targets: Record<string, Record<string, unknown>> };
+  const moved = contractWith({ ...WITH_REMOVE, targets: { ...c.targets, DEV: { ...c.targets.DEV, region: "eu-west-2" } } });
+  const movedProposal = buildRemovalProposal({ run: runOf(), where: l.where, contract: moved, requesterId: REQUESTER.requesterId, now: NOW });
+  assert.equal(codeOf(movedProposal), "TARGET_NOT_IN_CONTRACT");
+  assert.ok(existsSync(l.where.preparationDir), "nothing was removed");
+});
+
+test("M24: a removal record whose decisions are missing, forged or malformed is not a removal record of this run, and nothing is removed", async () => {
+  const p0 = proposal(layout());
+  const good = { authorized: { operation: "REMOVE", contractSha256: "c".repeat(64), authorizationSha256: "a".repeat(64) }, execute: { requesterId: "carol", approverIds: ["alice"] } };
+  for (const [label, decisions] of [
+    ["missing", undefined], ["APPLY instead of REMOVE", { ...good, authorized: { ...good.authorized, operation: "APPLY" } }],
+    ["a short hash", { ...good, authorized: { ...good.authorized, contractSha256: "c" } }], ["an extra field", { ...good, extra: 1 }],
+    ["no execute", { authorized: good.authorized }], ["a bad requester id", { ...good, execute: { requesterId: "carol smith; rm", approverIds: [] } }],
+  ] as const) {
+    const l = layout();
+    const p = proposal(l);
+    const entry = { proposalSha256: p0.proposalSha256, operatorId: "x", approvers: [], startedAt: NOW.toISOString(), finishedAt: null, status: "COMPLETE", authorization: "x",
+      ...(decisions === undefined ? {} : { decisions }), items: [], heldForReview: [], skipped: [] };
+    writeFileSync(join(l.evidence, ARTIFACT + REMOVAL_RECORD_SUFFIX), JSON.stringify({ schemaVersion: 1, kind: "WORKSPACE_REMOVAL", artifactSha256: ARTIFACT, environment: "DEV", kept: "x", removals: [entry] }));
+    const before = readdirSync(join(l.where.preparationDir, "DEV")).sort();
+    assert.equal(codeOf(await confirmAndRemove(input(l, p, [approve(p, "alice")]))), "REMOVAL_RECORD_INVALID", label);
+    assert.deepEqual(readdirSync(join(l.where.preparationDir, "DEV")).sort(), before, label + ": nothing removed");
+  }
 });

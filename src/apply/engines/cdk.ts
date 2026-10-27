@@ -840,6 +840,8 @@ function openCleanup(input: EngineRunInput): EngineCleanupRun {
       if (!stack.protection) stop("TERMINATION_PROTECTION_OFF");
       // The stack's tags are the deletion unit's own three, passed back unchanged; any other set is not a stack this pilot made.
       if (stack.tags.map((tag) => tag.key).sort().join() !== [...UNIT_TAG_KEYS].sort().join()) stop("CLEANUP_STACK_TAGS_UNKNOWN");
+      // The run's own stack, by its id (the blueprint's container): a same-named stack re-created since, or elsewhere, is not this run's (#313 review R1).
+      if (input.runStackId === undefined || stack.id !== input.runStackId) stop("CLEANUP_STACK_NOT_IN_CONTRACT");
       before = stack;
     },
     planDestroy(addresses) {

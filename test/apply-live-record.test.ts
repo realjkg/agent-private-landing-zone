@@ -14,7 +14,7 @@ const devAuthorization = (authorizeContract(contract, "DEV", "APPLY") as { ok: t
 const evidence = (over: Partial<ApplyEvidence> = {}): ApplyEvidence => ({
   schemaVersion: 1, environment: "DEV", target: { account: "111111111111", backend: "b", workspace: "default" }, artifactSha256: "1".repeat(64),
   manifestHash: "2".repeat(64), releaseIdentity: "3".repeat(64), contractSha256: pilotContractSha256(contract), sourceCommit: SOURCE_COMMIT,
-  decisions: decisionsFor(pilotContractSha256(contract), "APPLY", devAuthorization), requester: { requesterId: "carol", nonce: "0".repeat(32) },
+  targetSha256: "7".repeat(64), decisions: decisionsFor(pilotContractSha256(contract), "APPLY", devAuthorization), requester: { requesterId: "carol", nonce: "0".repeat(32) },
   approvals: [{ approverId: "alice", issuedAt: NOW.toISOString() }], adapter: { adapterVersion: "a", argvDigest: "4".repeat(64) },
   toolVersions: { engine: "1.9.5" }, outcome: "SUCCEEDED", exitCode: 0, startedAt: NOW.toISOString(), finishedAt: NOW.toISOString(), authority: APPLY_AUTHORITY,
   ...over,

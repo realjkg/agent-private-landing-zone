@@ -932,7 +932,7 @@ test("every refusal comes in the specified order, and the apply argv is never ex
   await step("SOURCE_CHANGED", request, { ...prodDeps, sourceCommit: "1".repeat(40) }); // 5. another commit than the one that sealed it
   const evidence: ApplyEvidence = {
     schemaVersion: 1, environment: "PROD", target: prodSeal.sealed.target, artifactSha256: prodSeal.sealed.artifactSha256,
-    manifestHash: prodSeal.sealed.manifestHash, releaseIdentity: prodSeal.sealed.releaseIdentity, contractSha256: prodSeal.sealed.contractSha256, decisions: decisionsFor(prodSeal.sealed.contractSha256, "APPLY", prodSeal.sealed.authorizationSha256), sourceCommit: prodSeal.sealed.sourceCommit,
+    manifestHash: prodSeal.sealed.manifestHash, releaseIdentity: prodSeal.sealed.releaseIdentity, contractSha256: prodSeal.sealed.contractSha256, targetSha256: prodSeal.sealed.targetSha256, decisions: decisionsFor(prodSeal.sealed.contractSha256, "APPLY", prodSeal.sealed.authorizationSha256), sourceCommit: prodSeal.sealed.sourceCommit,
     approvals: [{ approverId: "alice", issuedAt: NOW.toISOString() }], requester: { requesterId: "carol", nonce: "0".repeat(32) },
     adapter: { adapterVersion: APPLY_ADAPTER.adapterVersion, argvDigest: APPLY_ADAPTER.argvDigest },
     toolVersions: { engine: "1.9.5" }, outcome: "SUCCEEDED", exitCode: 0, startedAt: NOW.toISOString(), finishedAt: NOW.toISOString(), authority: APPLY_AUTHORITY,

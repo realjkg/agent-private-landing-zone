@@ -7,7 +7,7 @@ import test from "node:test";
 
 import { consumeApprovals, signApproval } from "../src/apply/approval.js";
 import { MATERIAL_RISKS, PROTECTION_REASONS, buildCleanupProposal, computeProposalSha256, isAwsIdentityType, signCleanupProposal, proposalProblems, protectedDeletionIn, verifyCleanupProposal, type CleanupProposal } from "../src/apply/cleanup-proposal.js";
-import { CLEANUP_SUFFIX, SUFFIX, authorizeContract, loadPilotContract, pilotContractSha256 } from "../src/apply/contract.js";
+import { CLEANUP_SUFFIX, SUFFIX, authorizeContract, loadPilotContract, pilotContractSha256, pilotTargetSha256, targetMoved } from "../src/apply/contract.js";
 import { pilotUnitOf } from "../src/apply/unit.js";
 import { cleanupScopeProblem, runApply, runCleanup, sealPreview, type ApplyDeps, type ApplyRequest, type CleanupRequest } from "../src/apply/driver.js";
 import { cleanupEvidenceProblems } from "../src/apply/evidence.js";
@@ -1402,4 +1402,67 @@ test("revoking APPLY does not strand a cleanup (N3): under a contract that now a
   // A new APPLY under that contract is refused: revoking APPLY still revokes it.
   const again = await seal(world(awsContractJson(KILL, CLEANUP_ONLY))).catch((error: Error) => error);
   assert.ok(again instanceof Error && /ACT_NOT_AUTHORIZED/.test(again.message), String(again));
+});
+
+// --- R1 (#313 re-review 6449717457): a cleanup runs only where the run ran -------------------------------------------
+
+/** The fixture contract with DEV moved to another region, authorizing only CLEANUP there: a later contract, not the run's place. */
+const movedRegion = () => {
+  const c = awsContractJson(KILL, CLEANUP_ONLY) as { targets: Record<string, Record<string, unknown>> };
+  return { ...c, targets: { ...c.targets, DEV: { ...c.targets.DEV, region: "eu-west-2" } } };
+};
+
+test("R1: a region move refuses the cleanup at propose, at the gate and at the late re-check, nothing consumed; the run's full target is sealed and recorded", async () => {
+  const w = world();
+  const run = await proposed(w);
+  const runTarget = pilotTargetSha256(awsContractJson(KILL) as never, "DEV");
+  assert.equal(run.s.sealed.targetSha256, runTarget, "the sealed plan binds the run's full target");
+  assert.equal(run.evidence.targetSha256, runTarget, "and the apply evidence records it");
+  assert.equal(run.proposal.targetSha256, runTarget);
+  assert.notEqual(pilotTargetSha256(movedRegion() as never, "DEV"), runTarget, "the region is part of the target");
+  // Propose under the moved contract: refused, whatever it authorizes.
+  const records = await loadRunRecords(run.s.sealed.artifactSha256, w.dirs.evidence);
+  assert.ok(records.ok);
+  const proposeMoved = buildCleanupProposal({ requesterId: REQUESTER.requesterId, ...records, changes: run.s.sealed.changes, channel: "CLI", contract: movedRegion() as never,
+    engineVersion: run.s.sealed.engineVersion, env: w.deps.env!, now: new Date(NOW.getTime() + 120_000) });
+  refused(proposeMoved, "TARGET_NOT_IN_CONTRACT");
+  // At the gate: a proposal that names the moved contract as its authority (re-hashed and re-signed) is still held to the run's target.
+  writeReviewedContract(w.contractPath, movedRegion());
+  const moved = authorizeContract(movedRegion() as never, "DEV", "CLEANUP");
+  assert.ok(moved.ok);
+  const forged = reHashedProposal({ ...run.proposal, authorizingContractSha256: moved.authorization.contractSha256, authorizationSha256: moved.authorization.authorizationSha256 });
+  const approvals = [cleanupApproval(forged, "alice")];
+  refused(await cleanup(w, { ...run, proposal: forged }, approvals), "TARGET_NOT_IN_CONTRACT");
+  assert.deepEqual(consumeApprovals(openNonceStore(w.dirs.nonces), approvals), { ok: true }, "nothing was consumed");
+  assert.equal(destroyPlans().length, 0);
+});
+
+test("R1: a region move between the cleanup gate and approval consumption refuses before anything is consumed (late re-check)", async () => {
+  const w = world();
+  const run = await proposed(w);
+  const approvals = [cleanupApproval(run.proposal, "alice")];
+  // A region-only move keeps the authorizing entry (it names the account, not the region) but changes the contract's hash, so the late
+  // authorization re-check refuses first; the late target re-check behind it is defense in depth for the same move.
+  const c = awsContractJson(KILL) as { targets: Record<string, Record<string, unknown>> };
+  const regionOnly = { ...c, targets: { ...c.targets, DEV: { ...c.targets.DEV, region: "eu-west-2" } } };
+  const nonces = watchedNonces(openNonceStore(w.dirs.nonces), () => writeReviewedContract(w.contractPath, regionOnly));
+  const result = await runCleanup({
+    invocation: human(run.s.sealed.target), environment: "DEV", target: { ...run.s.sealed.target }, proposal: run.proposal, sealedPlan: run.s.loaded,
+    manifest: run.s.project.manifest, projectRoot: run.s.project.projectRoot, approvals,
+  }, { ...w.deps, nonces });
+  refused(result, "ACT_AUTHORIZATION_CHANGED");
+  assert.deepEqual(consumeApprovals(openNonceStore(w.dirs.nonces), approvals), { ok: true }, "nothing was consumed");
+  assert.equal(calls().filter((c2) => c2.args[0] === "apply").length, 1, "the destroy never applied");
+});
+
+test("R1: targetMoved is the one comparison: the run's target hash against the contract committed now, for any account field, backend or workspace", () => {
+  const base = awsContractJson(KILL) as { targets: Record<string, Record<string, unknown>> };
+  const run = pilotTargetSha256(base as never, "DEV")!;
+  assert.equal(targetMoved(run, base as never, "DEV"), undefined);
+  assert.equal(targetMoved(run, { ...base, authorize: { DEV: ["CLEANUP"] } } as never, "DEV"), undefined, "only the authorize entry may differ");
+  for (const change of [{ region: "eu-west-2" }, { accountId: "999999999999" }, { backend: "other-bucket/key" }, { workspace: "other" }]) {
+    const moved = { ...base, targets: { ...base.targets, DEV: { ...base.targets.DEV, ...change } } };
+    assert.equal(targetMoved(run, moved as never, "DEV")?.code, "TARGET_NOT_IN_CONTRACT", JSON.stringify(change));
+  }
+  assert.equal(targetMoved(run, { ...base, provider: "AZURE" } as never, "DEV")?.code, "TARGET_NOT_IN_CONTRACT", "another provider");
 });

@@ -280,6 +280,25 @@ export function loadPilotContract(path: string = repoPaths().contract): PilotCon
 export type AuthorizationEntry = { provider: PilotContract["provider"]; engine: PilotContract["engine"]; environment: ApplyEnvironment; account: string; operations: ActOperation[] };
 export type Authorization = { operation: ActOperation; contractSha256: string; authorizationSha256: string; entry: AuthorizationEntry };
 
+/**
+ * The canonical hash of one environment's full target (review of #313, R1): provider, every account field (account or
+ * subscription, tenant, region, project), backend and workspace. Sealed into the plan and recorded in the apply evidence, so a
+ * cleanup or removal runs only where the run ran, even when it is authorized by a later contract. Undefined when the contract
+ * has no target for the environment.
+ */
+export function pilotTargetSha256(contract: PilotContract, env: ApplyEnvironment): string | undefined {
+  const target = Object.hasOwn(contract.targets, env) ? contract.targets[env] : undefined;
+  if (!target) return undefined;
+  return sha256(canonicalJson({ provider: contract.provider, ...accountFieldsOf(specOf(contract), target), backend: target.backend, workspace: target.workspace } as never));
+}
+
+/** The run's target, as the contract committed now states it, is exactly the run's own; otherwise nothing is consumed. */
+export function targetMoved(runTargetSha256: string, contract: PilotContract, env: ApplyEnvironment): Refusal | undefined {
+  return pilotTargetSha256(contract, env) === runTargetSha256 ? undefined
+    : refuse("TARGET_NOT_IN_CONTRACT", "The contract committed now does not state this run's exact " + env + " target (account, tenant or region, backend or workspace). " +
+      "A cleanup or removal runs only where the run ran. Nothing was consumed. Restore the run's target in the contract, or clean up by hand.");
+}
+
 /** The canonical hash of an authorizing entry: what a seal, a proposal, an approval and evidence bind. */
 export const authorizationSha256Of = (entry: AuthorizationEntry): string => sha256(canonicalJson(entry as never));
 
