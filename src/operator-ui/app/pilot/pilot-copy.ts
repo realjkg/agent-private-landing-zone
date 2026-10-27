@@ -500,7 +500,12 @@ export const CODE_COPY: Readonly<Record<string, Reason>> = {
   REMOVAL_RUN_IN_PROGRESS: { why: "A change or a cleanup is still running, and its working files may be in use.", next: "Wait for it to end, then try again." },
   REMOVAL_PATH_REFUSED: { why: "A working file is a link or is outside the folders this product owns, so nothing was removed.", next: "Ask the pilot owner to look at the path shown." },
   REMOVAL_RECORD_INVALID: { why: "The record of an earlier removal cannot be read, so nothing was removed.", next: "Ask the pilot owner to look at the removal record." },
-  REMOVAL_FAILED: { why: "The removal stopped part-way; the record says what is left.", next: "Run the removal again; it picks up where it stopped." },
+  REMOVAL_FAILED: { why: "The removal stopped part-way; the record says what is left, and the approvals are used up.", next: "Get new approvals for the same proposal and run the removal again; it picks up where it stopped." },
+  WORKSPACE_REMOVAL_PROPOSED: { why: "The list of this change's working files to remove is ready; nothing is removed yet.", next: "Ask the approvers to approve the removal, then run it." },
+  REMOVAL_SCOPE_CHANGED: { why: "What would be removed changed after it was shown, so nothing was removed and no approval was used.", next: "Run the removal again to see the current list." },
+  REMOVAL_STOPPED: { why: "The stop switch was turned on during the removal; the record says what is left, and the approvals are used up.", next: "When the pilot owner clears the stop switch, get new approvals for the same proposal and run it again." },
+  REMOVAL_PATH_CHANGED: { why: "A working file changed into a link or moved during the removal, so it was left alone; the approvals are used up.", next: "Ask the pilot owner to look at the path the record names." },
+  REMOVAL_RECORD_CHANGED: { why: "The removal record changed while the removal was being prepared, so nothing was removed; the approvals are used up.", next: "Ask the pilot owner to look at the removal record." },
   CLEANUP_KNOWN_CONFIRMED: { why: "Everything on the list is confirmed gone, but the change carried no cleanup marker, so things outside its records could not be searched for.", next: "Ask the pilot owner to confirm by hand that nothing else of this change remains, or apply with the cleanup marker so the search can run." },
   // the command line's own errors, as the wizard reaches them
   APPLY_FLAG_UNKNOWN: { why: "The wizard sent something the command did not understand. This should not happen.", next: "Reload the page and try again. If it repeats, tell the pilot owner." },

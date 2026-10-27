@@ -23,7 +23,11 @@ import { buildRecoveryEvidence, recoveryAdmissionRecordOf } from "../apply/recov
 import { assessReadiness } from "../apply/readiness.js";
 import { checkDraftContract, contractCheckLines } from "../apply/contract-check.js";
 import { prepareApply, writePreparation, type Prepared, type PrepareRefusal } from "../apply/prepare.js";
-import { previewWorkspaceRemoval, removeWorkspace, type RemovalRefusal, type WorkspaceRemovalInput } from "../apply/workspace-removal.js";
+import { openNonceStore } from "../apply/nonces.js";
+import {
+  REMOVAL_SPENT_CODES, buildRemovalProposal, prepareRemoval, removeWorkspace, signRemovalProposal, verifyRemovalProposal,
+  type RemovalInput, type RemovalItem, type RemovalLocations, type RemovalRefusal, type RemovalRun, type WorkspaceRemovalProposal,
+} from "../apply/workspace-removal.js";
 import { qualifyApply, runApply, runCleanup, sealPreview, type ApplyDeps, type SealRequest } from "../apply/driver.js";
 import { RECOVERY_FILE_NAMES, engineOf, engineSpec, type EngineNotices } from "../apply/engine-spec.js";
 import { assertApplyEvidence } from "../apply/evidence.js";
@@ -72,7 +76,8 @@ const APPLY_USAGE = [
   "  ./alz apply verify-cleanup --proposal PROPOSAL.json",
   "  ./alz apply preview-evidence --sealed SEALED_PLAN --gate preview:terraform-azure-brownfield --target-hardware-id HOST",
   "  ./alz apply report --sealed SEALED_PLAN [--proposal PROPOSAL.json]",
-  "  ./alz apply remove-workspace --sealed SEALED_PLAN",
+  "  ./alz apply propose-removal --sealed SEALED_PLAN --requester ID --key REQUESTER_KEY.pem",
+  "  ./alz apply remove-workspace --proposal REMOVAL_PROPOSAL.json --sealed SEALED_PLAN --approval APPROVAL.json [--approval APPROVAL.json ...]",
   "      A person at the terminal (or a person in the console wizard, which has its own session token). A workflow runs wholly in one of them. Identities come from the contract's engine: ALZ_DISCOVERY_*, ALZ_STATE_*, ALZ_STATE_WRITE_* and ALZ_APPLY_* (Terraform),",
   "      or ALZ_DISCOVERY_*, ALZ_CHANGESET_* and ALZ_APPLY_* (CDK). No flag names an engine; the pinned contract does.",
   "      Exit 0 done, 1 error (nothing spent), 2 BLOCKED (refused before any action), 3 SPENT (approvals consumed or an apply started; read the message before any retry).",
@@ -140,7 +145,8 @@ const SUBCOMMANDS: Readonly<Record<string, Flags>> = {
   "propose-cleanup": { single: ["sealed", "requester", "key"] },
   cleanup: { single: ["proposal", "request", "manifest", "sealed"], repeated: ["approval"] },
   "verify-cleanup": { single: ["proposal"] },
-  "remove-workspace": { single: ["sealed"] },
+  "propose-removal": { single: ["sealed", "requester", "key"] },
+  "remove-workspace": { single: ["proposal", "sealed"], repeated: ["approval"] },
   report: { single: ["sealed"], optional: ["proposal"] },
   "preview-evidence": { single: ["sealed", "gate", "target-hardware-id"] },
 };
@@ -463,6 +469,8 @@ const approveCommand: Command = async (flags, terminal, deps, out) => {
   const raw = readInput(flags.bundle[0], "--bundle");
   // A cleanup proposal is approved by the same person, key and allowlist, under its own signature domain: the phrase, the review and the signature all say "cleanup".
   if (isRecord(raw) && raw.kind === "CLEANUP_PROPOSAL") return approveCleanup(raw, approverId, privateKeyPem, contract, terminal, deps, out);
+  // A removal of a run's working files goes through the same approval as a cleanup (owner decision 6443062568, item 2): same key, same allowlist, same domain.
+  if (isRecord(raw) && raw.kind === "WORKSPACE_REMOVAL_PROPOSAL") return approveRemoval(raw, approverId, privateKeyPem, contract, terminal, deps, out);
   const opened = verifyReviewBundle(raw);
   if (!opened.ok) return blocked(opened, out);
   const { bundle } = opened;
@@ -642,19 +650,107 @@ const cleanupCommand: Command = async (flags, terminal, deps, out) => {
   return EXIT.PASS;
 };
 
-/** A removal refusal: BLOCKED before anything was removed, or an error when it stopped part-way (the record says what remains). */
+/** A removal refusal: BLOCKED before anything was removed or consumed; SPENT once the approvals were consumed (the record says what remains). */
 function removalBlocked(refusal: RemovalRefusal, out: Out): number {
   out.complain("BLOCKED " + refusal.code + ": " + refusal.message + "\n");
   out.report({ code: refusal.code, message: refusal.message });
-  return refusal.code === "REMOVAL_FAILED" ? EXIT.ERROR : EXIT.BLOCKED;
+  return REMOVAL_SPENT_CODES.includes(refusal.code) ? SPENT : EXIT.BLOCKED;
+}
+
+/** The run a removal is for, from its sealed plan, and where its working files live. */
+const removalRunOf = (sealed: SealedPlan): RemovalRun => ({ artifactSha256: sealed.artifactSha256, manifestHash: sealed.manifestHash, environment: sealed.environment, target: { ...sealed.target }, channel: sealed.channel });
+const removalLocations = (deps: ApplyCliDeps): RemovalLocations => ({
+  preparationDir: deps.preparationDir ?? join(repoPaths().root, ".runs", "pilot"), scratchParent: deps.scratchParent ?? tmpdir(), evidenceDir: deps.evidenceDir ?? repoPaths().evidence,
+});
+const itemLine = (item: RemovalItem): string => printable(item.path) + " (" + item.kind + ", " + item.files + " file(s), " + item.bytes + " bytes" + (item.plans.length > 0 ? ", " + item.plans.length + " plan file(s)" : "") + ")";
+const removalPath = (deps: ApplyCliDeps, proposal: WorkspaceRemovalProposal): string =>
+  join(deps.proposalsDir ?? join(repoPaths().root, ".runs", "apply", "cleanup"), proposal.proposalSha256.slice(0, 12) + ".removal-proposal.json");
+
+/**
+ * Proposes the removal of one run's generated working files (docs/act-pilot-apply.md, "Removing a run's working files"): the same proposal,
+ * requester signature, approval quorum and kill-switch path as a cleanup (owner decision 6443062568, item 2). Asks no phrase: a proposal
+ * authorizes nothing by itself.
+ */
+const proposeRemovalCommand: Command = async (flags, _terminal, deps, out) => {
+  const requesterId = flags.requester[0];
+  if (!SAFE_OPERATOR.test(requesterId)) fail("APPLY_INPUT_INVALID", "--requester is not a usable requester id");
+  const requesterKey = readApproverKey(flags.key[0]);
+  const opened = await openSealed(flags.sealed[0]);
+  if (!("sealed" in opened)) return blocked(opened, out);
+  const { sealed } = opened;
+  if (sealed.channel !== (deps.channel ?? "CLI")) return blocked({ ok: false, code: "CHANNEL_MISMATCH", message: channelMismatchMessage(sealed.channel) }, out);
+  const contract = contractFor(deps);
+  if ("reason" in contract) return blocked(contractRefusal(contract), out);
+  const keyRefusal = requesterKeyRefusal(contract, requesterId, requesterKey);
+  if (keyRefusal) return blocked({ ...keyRefusal, message: keyRefusal.message + " No proposal was written." }, out);
+  const built = buildRemovalProposal({ run: removalRunOf(sealed), where: removalLocations(deps), contract, requesterId, now: (deps.now ?? (() => new Date()))() });
+  if (!built.ok) return removalBlocked(built, out);
+  const proposal = signRemovalProposal(built.proposal, requesterKey);
+  const path = removalPath(deps, proposal);
+  mkdirSync(join(path, ".."), { recursive: true, mode: 0o700 });
+  writeFileSync(path, JSON.stringify(proposal, null, 2) + "\n", { mode: 0o600 });
+  out.say(["", "REMOVAL PROPOSED (nothing is removed until it is approved and run)", ...removalLines(proposal), "", "Saved (private to this account): " + path,
+    "Next: each approver runs ./alz apply approve --bundle " + path + " --key THEIR_KEY.pem --approver THEIR_ID" +
+      (REQUESTER_MAY_APPROVE[proposal.environment] === true ? "" : " (" + proposal.authorization.requiredApprovals + " distinct approvers, none of them the requester " + proposal.requesterId + ")") +
+      "; then ./alz apply remove-workspace --proposal " + path + " --sealed ... --approval ...", ""].join("\n"));
+  out.report({ code: "WORKSPACE_REMOVAL_PROPOSED", message: "Proposed the removal of " + proposal.items.length + " working path(s) of this run.", data: { path, proposal } });
+  return EXIT.PASS;
+};
+
+/** The lines a person reads before approving or running a removal. */
+function removalLines(proposal: WorkspaceRemovalProposal): string[] {
+  return [
+    "  proposal        " + proposal.proposalSha256,
+    "  run             " + proposal.artifactSha256 + " in " + proposal.environment + " (local files only; no cloud resource is touched)",
+    "  requested by    " + stripInvisible(proposal.requesterId) + (REQUESTER_MAY_APPROVE[proposal.environment] === true ? "" : " (in " + proposal.environment + " the requester cannot approve this removal)"),
+    "  approvals       " + proposal.authorization.requiredApprovals + " cleanup approval(s) required",
+    ...(proposal.items.length === 0 ? ["  removes         nothing"] : proposal.items.map((item) => "  removes         " + itemLine(item))),
+    ...proposal.heldForReview.map((path) => "  held            " + printable(path) + " (holds errored.tfstate or crash.log; a person reviews it first)"),
+    ...proposal.skipped.map((x) => "  skipped         " + printable(x.path) + " (" + printable(x.reason) + ")"),
+    "  keeps           evidence, the ledger, sealed plans, run records, proposals, reports, logs and the project folder",
+  ];
+}
+
+/** The removal half of `approve`: the proposal is verified against its own hash and its requester, shown in full, and signed under the cleanup domain. */
+async function approveRemoval(raw: unknown, approverId: string, privateKeyPem: string, contract: PilotContract, terminal: HumanTerminal, deps: ApplyCliDeps, out: Out): Promise<number> {
+  const opened = verifyRemovalProposal(raw);
+  if (!opened.ok) return removalBlocked(opened, out);
+  const { proposal } = opened;
+  if (proposal.channel !== (deps.channel ?? "CLI")) return blocked({ ok: false, code: "CHANNEL_MISMATCH", message: channelMismatchMessage(proposal.channel) }, out);
+  const pinned = targetForEnvironment(contract, proposal.environment, proposal.target);
+  if (!pinned.ok) return blocked(pinned, out);
+  if (proposal.contractSha256 !== pilotContractSha256(contract)) return blocked({ ok: false, code: "PROPOSAL_INVALID", message: "The removal proposal was made under another pilot contract." }, out);
+  const requested = verifyRequestSignature({ request: proposal.request, artifactSha256: proposal.proposalSha256, environment: proposal.environment, requesterId: proposal.requesterId, contract, subject: "CLEANUP_REQUEST" });
+  if (!requested.ok) return blocked(requested, out);
+  if (approverIsRequester(proposal.environment, approverId, requesterPublicKey(privateKeyPem), requested)) {
+    return blocked({ ok: false, code: "APPROVER_IS_REQUESTER", message: "You requested this removal (" + requested.requesterId + "), so you cannot approve it in " + proposal.environment + ": the requester and the approvers must be distinct people. Nothing was signed." }, out);
+  }
+  const now = (deps.now ?? (() => new Date()))();
+  const expiresAt = new Date(now.getTime() + contract.maxApprovalAgeMinutes * 60_000);
+  const phrase = "APPROVE REMOVAL " + proposal.environment + " " + proposal.proposalSha256.slice(0, 12);
+  terminal.write([
+    "", "APPROVE THE REMOVAL OF EXACTLY THESE WORKING FILES IN " + proposal.environment + " (your signature, valid until " + expiresAt.toISOString() + ", usable once, and never valid for an apply)",
+    "  target          " + targetString(proposal.target), "  approver        " + approverId, "  requester       " + requested.requesterId + " (signature verified against the allowlist)", ...removalLines(proposal), "",
+    "The proposal's hash was recomputed here and matches. Type " + phrase + " to sign (anything else stops here):", "",
+  ].join("\n"));
+  await confirm(terminal, phrase, "approve> ", "APPLY_CONFIRMATION_MISMATCH", "APPROVE_CLEANUP");
+  out.say(JSON.stringify(signApproval({
+    schemaVersion: 1, artifactSha256: proposal.proposalSha256, environment: proposal.environment, target: proposal.target, approverId,
+    issuedAt: now.toISOString(), expiresAt: expiresAt.toISOString(), nonce: randomBytes(16).toString("hex"),
+  }, privateKeyPem, "CLEANUP"), null, 2) + "\n");
+  return EXIT.PASS;
 }
 
 /**
- * Removes one run's generated working files (docs/act-pilot-apply.md, "Removing a run's working files"): its preparation files and the
- * driver's abandoned scratch directories, never evidence, records, logs or the project. Local files only, so no approval quorum; a
- * person types the phrase, and `authorizeRemoval` (src/apply/workspace-removal.ts) is the one AUTHORIZED check.
+ * Removes one run's generated working files under an approved removal proposal. The run is planned again from scratch; only what that
+ * fresh plan produces and the signed proposal lists is shown, and exactly that list is removed after the person types the phrase.
  */
 const removeWorkspaceCommand: Command = async (flags, terminal, deps, out) => {
+  const approvals = flags.approval.map((path) => {
+    const value = readInput(path, "--approval");
+    return isRecord(value) ? value as unknown as SignedApproval : fail("APPLY_INPUT_INVALID", "--approval must be a JSON object");
+  });
+  const raw = readInput(flags.proposal[0], "--proposal");
   const opened = await openSealed(flags.sealed[0]);
   if (!("sealed" in opened)) return blocked(opened, out);
   const { sealed } = opened;
@@ -662,28 +758,26 @@ const removeWorkspaceCommand: Command = async (flags, terminal, deps, out) => {
   const contract = contractFor(deps);
   if ("reason" in contract) return blocked(contractRefusal(contract), out);
   const now = (deps.now ?? (() => new Date()))();
-  const input: WorkspaceRemovalInput = {
-    contract, environment: sealed.environment, artifactSha256: sealed.artifactSha256, manifestHash: sealed.manifestHash, operatorId: operatorId(deps), now,
-    preparationDir: deps.preparationDir ?? join(repoPaths().root, ".runs", "pilot"), scratchParent: deps.scratchParent ?? tmpdir(), evidenceDir: deps.evidenceDir ?? repoPaths().evidence,
-  };
-  const preview = previewWorkspaceRemoval(input);
-  if (!preview.ok) return removalBlocked(preview, out);
-  const phrase = "REMOVE WORKSPACE " + sealed.environment + " " + sealed.artifactSha256.slice(0, 12);
+  const input: RemovalInput = { proposal: raw, approvals, run: removalRunOf(sealed), contract, where: removalLocations(deps), nonces: deps.nonces ?? openNonceStore(), operatorId: operatorId(deps), now };
+  const ready = await prepareRemoval(input);
+  if (!ready.ok) return removalBlocked(ready, out);
+  const phrase = "REMOVE WORKSPACE " + sealed.environment + " " + ready.proposal.proposalSha256.slice(0, 12);
   terminal.write([
-    "", "REMOVE THIS RUN'S WORKING FILES (local files only; no cloud resource is touched)",
+    "", "REMOVE EXACTLY THESE WORKING FILES OF THIS RUN (local files only; no cloud resource is touched)" + (ready.resumed ? ", resuming an interrupted removal" : ""),
     "  run             " + sealed.artifactSha256 + " in " + sealed.environment,
-    ...(preview.items.length === 0 ? ["  removes         nothing found now (an interrupted removal still resumes from its record)"]
-      : preview.items.map((item) => "  removes         " + printable(item.path) + " (" + item.kind + ", " + item.files + " file(s), " + item.bytes + " bytes" + (item.plans.length > 0 ? ", " + item.plans.length + " plan file(s)" : "") + ")")),
-    ...preview.heldForReview.map((path) => "  held           " + printable(path) + " (holds errored.tfstate or crash.log; a person reviews it first)"),
+    "  proposal        " + ready.proposal.proposalSha256 + " requested by " + stripInvisible(ready.requesterId) + ", approved by " + ready.approvers.join(", "),
+    ...(ready.deletes.length === 0 ? ["  removes         nothing: no path the proposal lists is still there and still this run's"] : ready.deletes.map((item) => "  removes         " + itemLine(item))),
+    ...ready.plan.heldForReview.map((path) => "  held            " + printable(path) + " (holds errored.tfstate or crash.log; a person reviews it first)"),
+    ...ready.plan.skipped.map((x) => "  skipped         " + printable(x.path) + " (" + printable(x.reason) + ")"),
     "  keeps           evidence, the ledger, sealed plans, run records, proposals, reports, logs and the project folder",
-    "Type this line exactly to remove them (anything else stops here):", "  " + phrase, "",
+    "The approvals are consumed when you confirm. Type this line exactly to remove the listed paths (anything else stops here):", "  " + phrase, "",
   ].join("\n"));
   await confirm(terminal, phrase, "remove> ", "APPLY_CONFIRMATION_MISMATCH", "CLEANUP");
-  const result = await removeWorkspace(input);
+  const result = await removeWorkspace({ ...input, expected: ready.deletes.map((item) => item.path) });
   if (!result.ok) return removalBlocked(result, out);
   const removed = result.removal.items.filter((item) => item.removed);
-  out.say(JSON.stringify({ status: result.removal.status, resumed: result.resumed, record: result.recordPath, authorization: result.removal.authorization,
-    removed: removed.map((item) => ({ path: item.path, kind: item.kind, bytes: item.bytes, sha256: item.sha256, plans: item.plans })), heldForReview: result.removal.heldForReview }, null, 2) + "\n");
+  out.say(JSON.stringify({ status: result.removal.status, resumed: result.resumed, record: result.recordPath, proposal: result.removal.proposalSha256, authorization: result.removal.authorization,
+    removed: removed.map((item) => ({ path: item.path, kind: item.kind, bytes: item.bytes, sha256: item.sha256, plans: item.plans })), heldForReview: result.removal.heldForReview, skipped: result.removal.skipped }, null, 2) + "\n");
   out.report({ code: "WORKSPACE_REMOVED", message: "Removed " + removed.length + " working path(s) of this run" + (result.resumed ? ", resuming an interrupted removal" : "") + ". The removal record is " + result.recordPath + ".", data: result.removal });
   return EXIT.PASS;
 };
@@ -1138,7 +1232,7 @@ const COMMANDS: Readonly<Record<string, Command>> = {
   qualify: qualifyCommand, seal: sealCommand, approve: approveCommand, apply: applyCommand, status: statusCommand, pin: pinCommand, "contract-check": contractCheckCommand,
   preflight: preflightCommand, prepare: prepareCommand, "record-live": recordLiveCommand, "record-recovery": recordRecoveryCommand,
   observe: observeCommand, "propose-cleanup": proposeCleanupCommand, cleanup: cleanupCommand, "verify-cleanup": verifyCleanupCommand, report: reportCommand, "preview-evidence": previewEvidenceCommand,
-  "remove-workspace": removeWorkspaceCommand,
+  "propose-removal": proposeRemovalCommand, "remove-workspace": removeWorkspaceCommand,
 };
 
 /** Where `alz-preview-*` directories live and what a crashed apply leaves in them. */
@@ -1156,7 +1250,7 @@ function scratchHoldsRecovery(parent: string): boolean {
  * them first (docs/act-pilot-apply.md).
  */
 async function sweepUnlessHeld(sub: string, deps: ApplyCliDeps, out: Out): Promise<void> {
-  if (["status", "approve", "pin", "contract-check", "preflight", "prepare", "record-live", "record-recovery", "observe", "propose-cleanup", "verify-cleanup", "report", "preview-evidence", "remove-workspace"].includes(sub)) return;
+  if (["status", "approve", "pin", "contract-check", "preflight", "prepare", "record-live", "record-recovery", "observe", "propose-cleanup", "verify-cleanup", "report", "preview-evidence", "propose-removal", "remove-workspace"].includes(sub)) return;
   const parent = deps.scratchParent ?? tmpdir();
   const held = scratchHoldsRecovery(parent) ? "a scratch directory holds errored.tfstate or crash.log"
     : await holdsReservation(deps.evidenceDir ?? repoPaths().evidence) ? "the apply ledger holds a reservation" : undefined;
