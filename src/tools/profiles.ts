@@ -53,9 +53,11 @@ const AZURE = [
 ];
 /**
  * The Entra ID switch of the azurerm state backend (`use_azuread_auth`), for the Terraform engines only: the pilot's Azure
- * state access is Entra ID only (docs/act-pilot-apply.md, Azure), so the state identities may carry it. The Azure apply spec
- * accepts it on STATE and STATE_WRITE with the value `true` and nothing else (`src/apply/providers/azure.ts`); under an AWS
- * contract every `ARM_*` variable is refused. It names no credential, file or endpoint.
+ * state access is Entra ID only (docs/act-pilot-apply.md, Azure), so the state identities may carry it. A profile passes a
+ * variable by name, not by value, so outside the pilot these profiles pass it with whatever value the caller set; it can only
+ * turn Entra ID authorization on or leave the backend's default. The value is constrained in the pilot only: the Azure apply
+ * spec accepts it on STATE and STATE_WRITE with the value `true` and nothing else (`src/apply/providers/azure.ts`), and under
+ * an AWS contract every `ARM_*` variable is refused. It names no credential, file or endpoint.
  */
 const AZURE_STATE_AUTH = ["ARM_STORAGE_USE_AZUREAD"];
 
