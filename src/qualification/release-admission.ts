@@ -29,6 +29,8 @@ export const PLATFORM_LIFECYCLE_CHECKS = [
 export const ACT_RELEASE_PATHS: readonly { provider: ProviderId; engine: EngineId }[] = [
   { provider: "AWS", engine: "TERRAFORM" }, { provider: "AZURE", engine: "TERRAFORM" }, { provider: "AWS", engine: "CDK" },
 ];
+/** Which cloud each live-provider gate's report must name. A gate missing here admits no report (never a default cloud). */
+const LIVE_PROVIDER_CLOUD: Readonly<Record<string, string>> = { "aws-provider": "AWS", "azure-provider": "AZURE", "gcp-provider": "GCP" };
 export const actGateId = (path: { provider: string; engine: string }): string => "act:" + path.provider.toLowerCase() + "-" + path.engine.toLowerCase();
 export const PRODUCTION_RELEASE_GATES: readonly ReleaseGate[] = [
   { id: "source-ci", mode: "CI", why: "Type check and functional regression on exact release source" },
@@ -37,6 +39,7 @@ export const PRODUCTION_RELEASE_GATES: readonly ReleaseGate[] = [
   { id: "private-model-runtime", mode: "PRIVATE_MODEL", why: "Target-host Qwen/Mistral models, digests, restart and long-session recovery" },
   { id: "aws-provider", mode: "LIVE_PROVIDER", why: "Live authenticated read-only AWS inventory and governed preview" },
   { id: "azure-provider", mode: "LIVE_PROVIDER", why: "Live authenticated read-only Azure inventory and governed preview" },
+  { id: "gcp-provider", mode: "LIVE_PROVIDER", why: "Live authenticated read-only GCP inventory and governed preview" },
   ...previewScenarioIds.map((id) => ({
     id: "preview:" + id,
     mode: "LIVE_PREVIEW" as const,
@@ -154,8 +157,8 @@ function observedLivePayload(value: unknown, gate: ReleaseGate, record: ReleaseG
         !Array.isArray(value.blockers) || value.blockers.length !== 0 ||
         !isObject(value.discovery) || !isObject(value.validation) ||
         !isObject(value.preview)) return false;
-    const provider = gate.id === "aws-provider" ? "AWS" : "AZURE";
-    return value.provider === provider &&
+    const provider = Object.hasOwn(LIVE_PROVIDER_CLOUD, gate.id) ? LIVE_PROVIDER_CLOUD[gate.id] : undefined;
+    return provider !== undefined && value.provider === provider &&
       value.validation.passed === true &&
       typeof value.discovery.snapshotSha256 === "string" &&
       sha64.test(value.discovery.snapshotSha256) &&

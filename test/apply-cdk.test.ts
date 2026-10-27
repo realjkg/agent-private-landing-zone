@@ -493,6 +493,21 @@ test("a change set the CHANGESET role did not create in the contract's account, 
   clean(w);
 });
 
+test("the real AWS CLI prints null for a list CloudFormation left out of describe-change-set: a change set made without capabilities seals with none, and a value that is not a list is still unreadable", async () => {
+  // Found by the emulated run (docs/act-pilot-simulation-cdk.md): AWS CLI 2.38.6 follows the change list's pages and prints each of the
+  // paginator's other keys, so a change set without capabilities answers "Capabilities": null. Before the fix every such seal was CHANGE_SET_UNREADABLE.
+  const w = world();
+  const s = await seal(w, "DEV");
+  assert.deepEqual(recordOf(s).capabilities, []);
+  const described = calls().filter((call) => call.args[1] === "describe-change-set");
+  assert.ok(described.length > 0);
+  for (const [raw, pattern] of [["CAPABILITY_IAM", /CHANGE_SET_UNREADABLE/], [{}, /CHANGE_SET_UNREADABLE/], [[7], /CHANGE_SET_UNREADABLE/]] as const) {
+    behave({ rawCapabilities: raw });
+    assert.match((await sealRefused(w, "DEV")).message, pattern, JSON.stringify(raw));
+  }
+  clean(w);
+});
+
 // --- applying ------------------------------------------------------------------------------------------
 
 /** Seals DEV, changes the cloud, and applies: the refusal must come before any approval is consumed and any execution. */

@@ -13,7 +13,12 @@ import { PHASE_E_SCENARIOS } from "./phase-e.js";
  * scenarios (src/qualification/phase-e.ts) and the Pulumi permutations that have no Phase E lane. Terraform evidence never
  * qualifies the CDK gate, an AWS preview never the Azure one, a greenfield plan never a brownfield gate.
  */
-export type PreviewGateScenario = { provider: ProviderId; engine: string; estate: "brownfield" | "greenfield" };
+/**
+ * `provider` may also be "GCP", which is a release gate before it is an admitted provider (path 5; owner approval 6433121154 on issue
+ * #39): its scenario is a requirement that no evidence can meet until a GCP contract can seal a plan (`buildPreviewGateEvidence`
+ * refuses any other provider's plan as SCENARIO_MISMATCH).
+ */
+export type PreviewGateScenario = { provider: ProviderId | "GCP"; engine: string; estate: "brownfield" | "greenfield" };
 const ESTATES: readonly PreviewGateScenario["estate"][] = ["brownfield", "greenfield"];
 const PROVIDERS: readonly ProviderId[] = ["AWS", "AZURE"];
 /** A Phase E scenario's estate and provider, checked: a scenario with any other mock or provider is not a preview gate and throws, so nothing binds silently. */
@@ -27,6 +32,7 @@ export const PREVIEW_GATE_SCENARIOS: Readonly<Record<string, PreviewGateScenario
   "pulumi-aws-greenfield": { provider: "AWS", engine: "PULUMI", estate: "greenfield" },
   "pulumi-aws-brownfield": { provider: "AWS", engine: "PULUMI", estate: "brownfield" },
   "pulumi-azure-brownfield": { provider: "AZURE", engine: "PULUMI", estate: "brownfield" },
+  "terraform-gcp-brownfield": { provider: "GCP", engine: "TERRAFORM", estate: "brownfield" },
 };
 /** The scenario a `preview:<id>` gate is about, or undefined for any other gate id. */
 export const previewScenarioOf = (gateId: string): PreviewGateScenario | undefined => gateId.startsWith("preview:") ? PREVIEW_GATE_SCENARIOS[gateId.slice("preview:".length)] : undefined;

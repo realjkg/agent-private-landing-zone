@@ -4,7 +4,7 @@
 
 **Candidate:** none frozen yet.
 
-**Golden release:** not ready. 0 of 32 in-scope gates pass.
+**Golden release:** not ready. 0 of 34 in-scope gates pass.
 
 **Scope:** darwin-arm64, darwin-x64, linux-x64, linux-arm64, win32-arm64, win32-x64; ACT paths act:aws-terraform, act:azure-terraform, act:aws-cdk; full lifecycle. Decided by the owner (https://github.com/realjkg/agent-private-landing-zone/issues/39#issuecomment-6403630201, recorded 2026-10-25).
 
@@ -12,16 +12,18 @@
 
 None.
 
-## Needs attention (22)
+## Needs attention (24)
 
 | Gate | Kind | Status | Owner | Next action |
 | --- | --- | --- | --- | --- |
 | `private-model-runtime` | private model | BLOCKED | OWNER | The owner names the target model host; then run model qualification there on the candidate. |
 | `aws-provider` | live provider | BLOCKED | OWNER | The owner provides the AWS sandbox identifiers (account or subscription IDs and role names, never credentials); then run the read-only AWS inventory and governed preview on the candidate. |
 | `azure-provider` | live provider | BLOCKED | OWNER | The owner provides the Azure sandbox identifiers (account or subscription IDs and role names, never credentials); then run the read-only Azure inventory and governed preview on the candidate. |
+| `gcp-provider` | live provider | BLOCKED | OWNER | GCP is not yet an admitted provider: the authorization lane adds it to the pilot contract first, and the live read-only GCP inventory producer is the ./alz evidence runner's (path 6 lane). Then the owner provides the GCP sandbox identifiers (the DEV project id and the service account emails, never credentials) and runs the read-only GCP inventory and governed preview on the candidate. |
 | `preview:terraform-aws-brownfield` | live preview | BLOCKED | OWNER | Waits on the AWS provider gate's sandbox; then run this preview scenario on the candidate. |
 | `preview:cdk-aws-brownfield` | live preview | BLOCKED | OWNER | Waits on the AWS provider gate's sandbox; then run this preview scenario on the candidate. |
 | `preview:terraform-azure-brownfield` | live preview | BLOCKED | OWNER | The scenario (src/qualification/phase-e.ts terraform-azure-brownfield) and its producer (./alz apply preview-evidence --gate preview:terraform-azure-brownfield) exist and are qualified synthetically; the gate closes only when the producer, run from the candidate commit with the pinned, qualified Terraform against the Azure sandbox (it waits on the azure-provider gate's sandbox), writes LIVE evidence that the admission review accepts. Synthetic evidence from a fake engine is labeled SYNTHETIC and is refused by the gate. |
+| `preview:terraform-gcp-brownfield` | live preview | BLOCKED | OWNER | Waits on GCP admission (no GCP contract can seal a plan yet, so ./alz apply preview-evidence refuses this gate for any AWS or Azure plan) and on the gcp-provider gate's sandbox. Then the producer, run from the candidate commit with the pinned, qualified Terraform against the GCP sandbox, writes LIVE evidence that the admission review accepts. Synthetic evidence is labeled SYNTHETIC and is refused by the gate. |
 | `isolated-recovery` | isolated recovery | BLOCKED | OWNER | The owner names an isolated restore target; then run the restore on the candidate and measure RPO and RTO. |
 | `platform:darwin-arm64` | lifecycle | BLOCKED | OWNER | The owner provides a disposable darwin-arm64 host (never the owner's working machine); then run the seven lifecycle checks there. |
 | `platform:darwin-x64` | lifecycle | BLOCKED | OWNER | The owner provides a disposable darwin-x64 host (never the owner's working machine); then run the seven lifecycle checks there. |

@@ -273,10 +273,13 @@ export function authorizeContract(contract: PilotContract, env: ApplyEnvironment
   return { ok: true, authorization: { operation, contractSha256: pilotContractSha256(contract), authorizationSha256: authorizationSha256Of(entry), entry } };
 }
 
-/** The same check from the contract on disk, for a caller that holds no loaded contract (the removal lane's REMOVE). */
-export function requireActAuthorized(operation: ActOperation, env: ApplyEnvironment, contractPath: string = repoPaths().contract): { ok: true; authorization: Authorization } | Refusal {
-  const contract = loadPilotContract(contractPath);
-  return "reason" in contract ? contractRefusal(contract) : authorizeContract(contract, env, operation);
+/**
+ * The AUTHORIZED check for any operation (the removal lane's REMOVE among them): against a contract the caller already loaded, or
+ * one read from a path (default the repository's). Same rule as `authorizeContract`.
+ */
+export function requireActAuthorized(operation: ActOperation, env: ApplyEnvironment, contract: PilotContract | string = repoPaths().contract): { ok: true; authorization: Authorization } | Refusal {
+  const loaded = typeof contract === "string" ? loadPilotContract(contract) : contract;
+  return "reason" in loaded ? contractRefusal(loaded) : authorizeContract(loaded, env, operation);
 }
 
 /** The contract hash and authorizing entry a seal or proposal bound are still the ones that authorize now; otherwise nothing is consumed. */

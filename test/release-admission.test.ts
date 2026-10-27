@@ -11,7 +11,9 @@ import { buildRecoveryEvidence } from "../src/apply/recovery-record.js";
 import type { ApplyEvidence, PilotContract } from "../src/apply/types.js";
 import { awsContractJson } from "./helpers/apply-fixtures.js";
 import {
+  ACT_RELEASE_PATHS,
   PRODUCTION_RELEASE_GATES,
+  previewScenarioOf,
   reviewProductionRelease,
   type ReleaseAdmissionInput,
   type ReleaseGateSubmission,
@@ -69,7 +71,35 @@ test("release gate registry covers actual AWS, Azure, Pulumi and production obli
     "platform:darwin-arm64", "platform:darwin-x64", "platform:linux-x64", "platform:linux-arm64", "platform:win32-arm64", "platform:win32-x64",
     "act:aws-terraform", "act:azure-terraform", "act:aws-cdk", "act-run-recovery", "security-review:independent",
     "preview:terraform-azure-brownfield",
+    "gcp-provider", "preview:terraform-gcp-brownfield",
   ]) assert.ok(keys.includes(id), id);
+});
+
+test("the GCP gates are unmet requirements: they block an empty release, and no AWS or Azure report ever stands in for them", async () => {
+  assert.deepEqual(previewScenarioOf("preview:terraform-gcp-brownfield"), { provider: "GCP", engine: "TERRAFORM", estate: "brownfield" });
+  // act:gcp-terraform waits for a Phase E GCP scenario (test/phase-e-simulated-builds.test.ts requires one per ACT path).
+  assert.equal(ACT_RELEASE_PATHS.some((path) => (path.provider as string) === "GCP"), false);
+  const h = harness();
+  try {
+    const empty = await reviewProductionRelease({ manifest: input([]), expectedCommit: commit, root: h.root });
+    for (const id of ["gcp-provider", "preview:terraform-gcp-brownfield"]) {
+      assert.equal(empty.gates.find((g) => g.id === id)?.status, "BLOCKED", id);
+      assert.ok(empty.blockers.some((m) => m.includes(id)), id);
+    }
+    const report = (provider: string) => ({
+      schemaVersion: 1, sourceCommit: commit, provider, ready: true, actEnabled: false, blockers: [],
+      discovery: { evidenceSources: ["cloud-api"], snapshotSha256: "d".repeat(64) }, validation: { passed: true }, preview: { outputSha256: "e".repeat(64) },
+    });
+    const providerStatus = async (gate: string, provider: string) => (await reviewProductionRelease({
+      manifest: input([h.attach(gate, "LIVE_PROVIDER", report(provider))]), expectedCommit: commit, root: h.root,
+    })).gates.find((g) => g.id === gate)?.status;
+    // Before this gate existed, every live-provider gate other than aws-provider read its report as Azure's.
+    assert.equal(await providerStatus("gcp-provider", "AZURE"), "BLOCKED");
+    assert.equal(await providerStatus("gcp-provider", "AWS"), "BLOCKED");
+    assert.equal(await providerStatus("azure-provider", "GCP"), "BLOCKED");
+    assert.equal(await providerStatus("azure-provider", "AZURE"), "EVIDENCE_PRESENT", "the existing gates are unchanged");
+    assert.equal(await providerStatus("aws-provider", "AWS"), "EVIDENCE_PRESENT");
+  } finally { h.cleanup(); }
 });
 
 test("empty manifest is BLOCKED; no missing evidence can imply release approval", async () => {

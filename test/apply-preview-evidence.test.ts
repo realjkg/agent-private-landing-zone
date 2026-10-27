@@ -111,8 +111,11 @@ test("the gate's scenario is bound: every preview gate names one provider, engin
   for (const gate of PRODUCTION_RELEASE_GATES.filter((g) => g.mode === "LIVE_PREVIEW")) {
     const scenario = previewScenarioOf(gate.id);
     assert.ok(scenario, gate.id);
-    assert.ok(["AWS", "AZURE"].includes(scenario.provider) && ["brownfield", "greenfield"].includes(scenario.estate), gate.id);
+    // GCP names one gate before it is an admitted provider (a requirement no plan can meet yet); every other gate is AWS's or Azure's.
+    const providers = gate.id === "preview:terraform-gcp-brownfield" ? ["GCP"] : ["AWS", "AZURE"];
+    assert.ok(providers.includes(scenario.provider) && ["brownfield", "greenfield"].includes(scenario.estate), gate.id);
   }
+  assert.deepEqual(PREVIEW_GATE_SCENARIOS["terraform-gcp-brownfield"], { provider: "GCP", engine: "TERRAFORM", estate: "brownfield" });
   assert.deepEqual(PREVIEW_GATE_SCENARIOS["terraform-azure-brownfield"], { provider: "AZURE", engine: "TERRAFORM", estate: "brownfield" });
   assert.deepEqual(PREVIEW_GATE_SCENARIOS["cdk-aws-brownfield"], { provider: "AWS", engine: "AWS_CDK", estate: "brownfield" });
   assert.equal(previewScenarioOf("act:azure-terraform"), undefined);
@@ -249,13 +252,13 @@ test("preview-evidence labels SYNTHETIC, and the gate refuses, a preview recorde
     assert.deepEqual(previewGateEvidenceProblems(built.evidence), [], label);
   }
   // The gate and the plan must belong together: another engine's or provider's gate, or an unknown gate, writes nothing.
-  for (const [gate, code] of [["preview:cdk-aws-brownfield", "SCENARIO_MISMATCH"], ["preview:terraform-aws-brownfield", "SCENARIO_MISMATCH"], ["preview:pulumi-azure-brownfield", "SCENARIO_MISMATCH"], ["preview:nonexistent", "GATE_UNKNOWN"], ["act:azure-terraform", "GATE_UNKNOWN"]] as const) {
+  for (const [gate, code] of [["preview:cdk-aws-brownfield", "SCENARIO_MISMATCH"], ["preview:terraform-aws-brownfield", "SCENARIO_MISMATCH"], ["preview:pulumi-azure-brownfield", "SCENARIO_MISMATCH"], ["preview:terraform-gcp-brownfield", "SCENARIO_MISMATCH"], ["preview:nonexistent", "GATE_UNKNOWN"], ["act:azure-terraform", "GATE_UNKNOWN"]] as const) {
     const refused = await produce(w, s2, [phraseFor(s2, gate)], gate);
     assert.equal(refused.code, 2, gate);
     assert.match(refused.stderr, new RegExp("^BLOCKED " + code), gate);
     assert.deepEqual(refused.term.asked, [], gate + ": refused before any phrase");
   }
-  assert.ok(!readdirSync(w.releaseEvidenceDir).some((n) => n.includes("cdk") || n.includes("aws") || n.includes("pulumi")));
+  assert.ok(!readdirSync(w.releaseEvidenceDir).some((n) => n.includes("cdk") || n.includes("aws") || n.includes("pulumi") || n.includes("gcp")));
   // A host identity that is not a short name is an input error; the flag set is closed.
   assert.match((await produce(w, s2, [phraseFor(s2)], GATE, "UNKNOWN host")).stderr, /^APPLY_INPUT_INVALID/);
   assert.match((await cli(w, ["preview-evidence", "--sealed", s2.path, "--gate", GATE, "--target-hardware-id", HOST, "--live", "yes"], [])).stderr, /^APPLY_FLAG_UNKNOWN/);
