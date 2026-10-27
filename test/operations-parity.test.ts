@@ -23,7 +23,7 @@ const EXEMPT_COMMANDS: Readonly<Record<string, string>> = {
 const EXEMPT_SCRIPTS: Readonly<Record<string, string>> = {
   operator: "alias of the ./alz dispatcher",
   test: "developer test run", "test:quiet": "developer test runner with full logs", "test:node": "developer test run", "test:ui": "developer test run",
-  build: "developer build", "build:ui": "developer build", check: "developer type-check and build",
+  build: "developer build", "build:ui": "developer build", "build:complete": "developer build step: writes the dist/ completion marker ./alz checks", check: "developer type-check and build",
   verify: "release-wide developer gate (the ./alz verify entry covers operator verification)",
   "ci:actions-pinned": "CI workflow pin check", "deps:review": "developer install-script listing",
   "docs:ops": "developer generator for the operations table in docs/operator-console.md",

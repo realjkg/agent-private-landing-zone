@@ -5,6 +5,8 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 DIST="$ROOT/dist/cli/operator.js"
 TSX="$ROOT/node_modules/.bin/tsx"
 STATE="$ROOT/.runs/bootstrap/state.json"
+# Written into dist/ as a build's last step (npm run build:complete, or bootstrap below); without it dist/ is an unfinished build.
+BUILD_MARKER="$ROOT/dist/.alz-build-complete"
 
 # The commit this checkout is at, or "unknown" outside a git checkout. A build is only trusted for the commit it was made from.
 source_commit() {
@@ -26,6 +28,12 @@ if [[ "${1:-}" == "bootstrap" ]]; then
       "$STARTED_AT" "$1" "$2" "$COMMIT" >"$STATE.tmp"
     mv -f "$STATE.tmp" "$STATE"
   }
+  # The build's own completion marker, the same three fields `npm run build:complete` writes, for the bootstrapped commit.
+  write_build_marker() {
+    mkdir -p "$ROOT/dist"
+    printf '{\n  "schemaVersion": 1,\n  "sourceCommit": "%s",\n  "completedAt": "%s"\n}\n' "$COMMIT" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$BUILD_MARKER.tmp"
+    mv -f "$BUILD_MARKER.tmp" "$BUILD_MARKER"
+  }
   DONE=0
   # The terminal, kept on its own descriptor: a stop signal arrives while the build's output is redirected to the log.
   exec 3>&1
@@ -45,11 +53,18 @@ if [[ "${1:-}" == "bootstrap" ]]; then
   build_local() {
     npm ci || return $?
     write_state "npm run build" null
+    # The marker goes before every build step and comes back only after the last one, so dist/ carries its own state
+    # even if .runs/ is deleted while a build is half done.
+    rm -f "$BUILD_MARKER"
     npm run build
     local build_exit=$?
     if (( build_exit != 0 )); then return "$build_exit"; fi
     write_state "npm run build:ui" null
+    rm -f "$BUILD_MARKER"
     npm run build:ui
+    local ui_exit=$?
+    if (( ui_exit != 0 )); then return "$ui_exit"; fi
+    write_build_marker
   }
   if build_local >"$LOG_FILE" 2>&1; then
     write_state "done" "\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\""
@@ -71,9 +86,18 @@ if [[ "${1:-}" == "debug" && -x "$TSX" ]]; then
   exec "$TSX" "$ROOT/src/cli/operator.ts" "$@"
 fi
 
+refuse_build() {
+  echo "The local build is not ready: ./alz bootstrap did not finish, or the source changed after it ran."
+  echo "Run: ./alz bootstrap"
+  # dist/ is not trusted, so neither help nor doctor runs from it; the source copies do, where the dev tools exist.
+  if [[ -x "$TSX" ]]; then echo "Until then, ./alz debug help and ./alz debug doctor run from the source files."; fi
+  exit 2
+}
+
 if [[ -f "$DIST" ]]; then
   # A build made by ./alz bootstrap is run only when that bootstrap finished and the source has not moved since.
-  # A build made another way (no state file, for example CI's own npm steps) is run as before.
+  # A build made another way (no state file: a released archive, CI's own npm steps) is run when it carries the build's
+  # own completion marker, which every finished build writes last and an interrupted one never has.
   if [[ -f "$STATE" ]]; then
     if ! node -e '
       const fs = require("node:fs");
@@ -82,11 +106,10 @@ if [[ -f "$DIST" ]]; then
       const finished = typeof state.completedAt === "string" && state.completedAt.length > 0;
       process.exit(finished && state.sourceCommit === process.argv[2] ? 0 : 1);
     ' "$STATE" "$(source_commit)"; then
-      echo "The local build is not ready: ./alz bootstrap did not finish, or the source changed after it ran."
-      echo "Run: ./alz bootstrap"
-      exit 2
+      refuse_build
     fi
   fi
+  if [[ ! -f "$BUILD_MARKER" ]]; then refuse_build; fi
   exec node "$DIST" "$@"
 fi
 

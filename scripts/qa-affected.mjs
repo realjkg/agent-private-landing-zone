@@ -92,7 +92,23 @@ export function importsOf(text, path, files) {
   }
   return found;
 }
-export function planChanged(changedPaths, files) {
+/** The package.json sections whose change can alter what installed code does. A script edit is not one of them. */
+const DEPENDENCY_SECTIONS = ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies", "overrides", "engines", "packageManager"];
+/**
+ * True when the dependency sections of package.json differ between base and head, or when either side cannot be read
+ * (unknown is treated as changed, so the broad rule stays the default). A change to `scripts` alone never counts.
+ */
+export function dependencySectionsChanged(baseText, headText) {
+  try {
+    const pick = (text) => { const value = JSON.parse(text); return JSON.stringify(DEPENDENCY_SECTIONS.map((key) => [key, value[key] ?? null])); };
+    return pick(baseText) !== pick(headText);
+  } catch { return true; }
+}
+/**
+ * `manifest` carries the base and head text of package.json when the caller knows them; without it a package.json change
+ * is treated as a dependency change.
+ */
+export function planChanged(changedPaths, files, manifest = {}) {
   const changed = uniq(changedPaths);
   const selected = new Set();
   const gaps = [];
@@ -176,8 +192,13 @@ export function planChanged(changedPaths, files) {
       if (/^package(?:-lock)?\.json$/.test(path)) {
         // A dependency bump changes code no import edge in this repo points at. The agent runtime's framework is the
         // dependency whose behavior tests can observe (graph execution, checkpoints, no tracing egress), so its
-        // consumers' tests run. zod is left to the typecheck: it is imported almost everywhere.
-        for (const [file, content] of files) {
+        // consumers' tests run. zod is left to the typecheck: it is imported almost everywhere. A package.json edit that
+        // leaves every dependency section as it was (a script line) changes no installed code, so it runs only the
+        // manifest checks above; the lock file, and an unknown base, keep the broad rule.
+        const scriptsOnly = path === "package.json" && typeof manifest.base === "string" && typeof manifest.head === "string" &&
+          !dependencySectionsChanged(manifest.base, manifest.head);
+        if (scriptsOnly) notes.push("package.json changed outside its dependency sections: the framework consumers' tests are not selected.");
+        else for (const [file, content] of files) {
           if (SOURCE.test(file) && RUNTIME_FRAMEWORK_IMPORT.test(content)) addExisting(selected, files, impactedBy(file));
         }
       }
@@ -363,7 +384,13 @@ function main() {
       if (existsSync(file)) files.set(file, readFileSync(file, "utf8"));
     } else files.set(file, "");
   }
-  const plan = planChanged(changed, files);
+  // The base package.json, so a script-only edit is told apart from a dependency change; unreadable means unknown.
+  const manifest = {};
+  try {
+    manifest.base = git(["show", git(["merge-base", base, compareHead]).trim() + ":package.json"]);
+    manifest.head = readFileSync("package.json", "utf8");
+  } catch { /* no base manifest: the broad rule applies */ }
+  const plan = planChanged(changed, files, manifest);
   const file = arg("--out", ".runs/qa/plan.json");
   mkdirSync(dirname(file), {recursive: true});
   writeFileSync(file, JSON.stringify(plan, null, 2) + "\n");

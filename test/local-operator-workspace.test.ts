@@ -329,7 +329,10 @@ function launcher(label: string, npmScript: string): Launcher {
   chmodSync(join(root, "alz"), 0o755);
   // The fake git answers only `rev-parse HEAD`, with the commit the test chooses through FAKE_COMMIT.
   writeFileSync(join(bin, "git"), "#!/bin/sh\necho \"${FAKE_COMMIT:-unknown}\"\n");
-  writeFileSync(join(bin, "npm"), "#!/bin/sh\necho \"npm $*\"\n" + npmScript + "\n");
+  // The fake npm's `run build` writes dist/ and the marker like the real build, then the test's own script runs.
+  writeFileSync(join(bin, "npm"), "#!/bin/sh\necho \"npm $*\"\n" +
+    'case "$*" in "run build") mkdir -p dist/cli; echo "console.log(\'operator ran \' + process.argv.slice(2).join(\' \'))" > dist/cli/operator.js; printf \'{"schemaVersion":1,"sourceCommit":"%s","completedAt":"2026-10-27T00:00:00Z"}\\n\' "${FAKE_COMMIT:-unknown}" > dist/.alz-build-complete ;; esac\n' +
+    npmScript + "\nexit 0\n");
   chmodSync(join(bin, "git"), 0o755);
   chmodSync(join(bin, "npm"), 0o755);
   const run: Launcher["run"] = (args, env = {}) => spawnSync("bash", [join(root, "alz"), ...args], {
@@ -339,10 +342,14 @@ function launcher(label: string, npmScript: string): Launcher {
   return { root, bin, run };
 }
 
-function fakeDist(root: string): void {
+function fakeDist(root: string, marker = true): void {
   mkdirSync(join(root, "dist", "cli"), { recursive: true });
   writeFileSync(join(root, "dist", "cli", "operator.js"), "console.log('operator ran ' + process.argv.slice(2).join(' '));\n");
+  if (marker) writeFileSync(join(root, "dist", ".alz-build-complete"), JSON.stringify({ schemaVersion: 1, sourceCommit: "c0ffee", completedAt: "2026-10-27T00:05:00Z" }) + "\n");
+  else rmSync(join(root, "dist", ".alz-build-complete"), { force: true });
 }
+
+const REFUSAL = /^The local build is not ready: \.\/alz bootstrap did not finish, or the source changed after it ran\.\nRun: \.\/alz bootstrap\n/;
 
 const stateOf = (root: string): { startedAt: string; step: string; completedAt: string | null; sourceCommit: string } =>
   JSON.parse(readFileSync(join(root, ".runs", "bootstrap", "state.json"), "utf8"));
@@ -351,10 +358,26 @@ test("./alz refuses to run dist/ while the bootstrap state is unfinished or from
   const { root, run } = launcher("gate", "exit 0");
   try {
     fakeDist(root);
-    // No state file: a build made another way (CI's own npm steps, an older bootstrap) runs as before.
+    // No state file but the build's own marker: a released archive or CI's own npm build runs as before.
     let result = run(["help"]);
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /operator ran help/);
+    // No state file and no marker: an unfinished build whose .runs/ was deleted is refused, in two lines.
+    fakeDist(root, false);
+    result = run(["help"]);
+    assert.equal(result.status, 2);
+    assert.doesNotMatch(result.stdout, /operator ran/);
+    assert.match(result.stdout, REFUSAL);
+    assert.equal(result.stdout.split("\n").filter(Boolean).length, 2, "no third line without the source dev tools");
+    // With the source dev tools (tsx) present, a third line points at the source copies of help and doctor.
+    mkdirSync(join(root, "node_modules", ".bin"), { recursive: true });
+    writeFileSync(join(root, "node_modules", ".bin", "tsx"), "#!/bin/sh\nexit 0\n");
+    chmodSync(join(root, "node_modules", ".bin", "tsx"), 0o755);
+    result = run(["help"]);
+    assert.equal(result.status, 2);
+    assert.match(result.stdout, /Run: \.\/alz bootstrap\nUntil then, \.\/alz debug help and \.\/alz debug doctor run from the source files\.\n$/);
+    rmSync(join(root, "node_modules"), { recursive: true, force: true });
+    fakeDist(root);
     mkdirSync(join(root, ".runs", "bootstrap"), { recursive: true });
     const state = join(root, ".runs", "bootstrap", "state.json");
     const unfinished = { startedAt: "2026-10-27T00:00:00Z", step: "npm run build", completedAt: null, sourceCommit: "c0ffee" };
@@ -368,7 +391,7 @@ test("./alz refuses to run dist/ while the bootstrap state is unfinished or from
       result = run(["help"]);
       assert.equal(result.status, 2, label);
       assert.doesNotMatch(result.stdout, /operator ran/, label + ": dist/ is never run");
-      assert.match(result.stdout, /The local build is not ready: \.\/alz bootstrap did not finish, or the source changed after it ran\.\nRun: \.\/alz bootstrap\n/, label);
+      assert.match(result.stdout, REFUSAL, label);
     }
     writeFileSync(state, JSON.stringify({ ...unfinished, completedAt: "2026-10-27T00:05:00Z" }));
     result = run(["help"]);
@@ -426,6 +449,9 @@ test("./alz bootstrap records its state before the first step, completes it only
     assert.match(result.stdout, /Preparing Sovereign ALZ local model interface\.\.\.\nReady\. Open the private local workspace with \.\/alz\nDetailed build log: \.runs\/bootstrap\/latest\.log\n/);
     const state = stateOf(finished.root);
     assert.equal(state.step, "done");
+    const marker = JSON.parse(readFileSync(join(finished.root, "dist", ".alz-build-complete"), "utf8")) as { sourceCommit: string; completedAt: string };
+    assert.equal(marker.sourceCommit, "c0ffee", "the build marker is written last, for the bootstrapped commit");
+    assert.match(marker.completedAt, /^\d{4}-\d{2}-\d{2}T/);
     assert.match(state.completedAt!, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
     assert.equal(state.sourceCommit, "c0ffee");
     assert.match(readFileSync(join(finished.root, ".runs", "bootstrap", "latest.log"), "utf8"), /npm ci\nnpm run build\nnpm run build:ui\n/);
@@ -435,5 +461,29 @@ test("./alz bootstrap records its state before the first step, completes it only
     assert.match(ran.stdout, /operator ran help/);
   } finally {
     rmSync(finished.root, { recursive: true, force: true });
+  }
+});
+
+test("a build whose .runs/ was deleted while it was half done is still refused: dist/ carries its own completion marker", () => {
+  // The fake npm's build step writes dist/ and its marker (as the real one does); bootstrap removes the marker again before the
+  // UI step, which moves .runs/ away and fails, as an operator clearing logs mid-build and a failing build would.
+  const half = launcher("half", 'case "$*" in "run build:ui") mv .runs .runs-moved; exit 1 ;; esac');
+  try {
+    const result = half.run(["bootstrap"]);
+    assert.equal(result.status, 1);
+    assert.match(result.stdout, /Local setup did not finish/);
+    assert.ok(existsSync(join(half.root, "dist", "cli", "operator.js")), "the partial dist/ is there");
+    assert.ok(!existsSync(join(half.root, "dist", ".alz-build-complete")), "its marker is not");
+    assert.ok(!existsSync(join(half.root, ".runs", "bootstrap", "state.json")), "and the state file is gone");
+    const refused = half.run(["help"]);
+    assert.equal(refused.status, 2, "no state and no marker: refused, never run");
+    assert.doesNotMatch(refused.stdout, /operator ran/);
+    assert.match(refused.stdout, REFUSAL);
+    // A new bootstrap that finishes writes both again, and ./alz runs.
+    writeFileSync(join(half.bin, "npm"), readFileSync(join(half.bin, "npm"), "utf8").replace('mv .runs .runs-moved; exit 1', "exit 0"));
+    assert.equal(half.run(["bootstrap"]).status, 0);
+    assert.match(half.run(["help"]).stdout, /operator ran help/);
+  } finally {
+    rmSync(half.root, { recursive: true, force: true });
   }
 });
