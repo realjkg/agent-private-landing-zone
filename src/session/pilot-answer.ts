@@ -192,7 +192,7 @@ export function localModelExplainer(): { explain: PilotExplainer; modelName: str
 export type HandoffKind = "APPROVE" | "APPLY" | "CLEANUP" | "CONTRACT" | "HOSTED_INFERENCE";
 
 const HOSTED = /\b(?:openai|chat ?gpt|gpt-?\d|anthropic|claude|gemini|bedrock|vertex ai|azure openai|mistral\.ai|hosted (?:model|inference|llm|ai)|cloud (?:model|llm|inference|ai)|remote (?:model|llm|inference)|api key for (?:a|the) model)\b/i;
-const CONTRACT = /\b(?:edit|change|modify|update|write|rewrite|add|remove|delete|empty|clear|set|bypass|lift|disable|turn off)\b.{0,40}\b(?:pilot contract|act-pilot-contract|contract|authori[sz]e (?:entry|list)|(?:pilot|act) authori[sz]ation|approver allow ?-?list|kill ?-?switch)\b|\b(?:enable|turn on|activate|unlock)\b.{0,20}\bact\b|\bauthori[sz]e\b.{0,30}\b(?:act|apply|cleanup|myself|me)\b/i;
+const CONTRACT = /\b(?:edit|change|modify|update|write|rewrite|add|remove|delete|empty|clear|set|bypass|lift|disable|turn off)\b.{0,40}\b(?:pilot contract|act-pilot-contract|contract(?![-\w])|authori[sz]e (?:entry|list)|(?:pilot|act) authori[sz]ation|approver allow ?-?list|kill ?-?switch)\b|\b(?:enable|turn on|activate|unlock)\b.{0,20}\bact\b|\bauthori[sz]e\b.{0,30}\b(?:act|apply|cleanup|myself|me)\b/i;
 /** The owner's pilot controls, named in any form ("flip the kill switch", "is the kill switch on?", "approval history please"). */
 const PILOT_TERM = "(?:pilot|act|contract|apply|approv\\w*)";
 const PILOT_AUTHORITY = new RegExp(
@@ -202,6 +202,16 @@ const PILOT_AUTHORITY = new RegExp(
     "|\\b(?:allow ?-?list|approvers?)\\b.{0,30}\\b" + PILOT_TERM + "\\b|\\b" + PILOT_TERM + "\\b.{0,30}\\b(?:allow ?-?list|approvers?)\\b",
   "i",
 );
+/**
+ * Deny by default for pilot authority: a request that leads with a change or ask verb and names an approval, the ledger,
+ * the kill switch, an apply right or a signing key, or that switches ACT on or off. These only ever choose the refusal
+ * text; they never admit a request the operator gate refuses (src/session/graph.ts).
+ */
+const ASK_LEAD = "^(?:(?:please|ok(?:ay)?|now|just|so|go ahead and|can you|could you|would you|will you|i want you to|i need you to|you should)[,\\s]+)*";
+const AUTHORITY_CHANGE = new RegExp(ASK_LEAD +
+  "(?:make|add|put|register|enroll|remove|drop|grant|give|assign|appoint|set|lower|raise|reduce|increase|change|skip|bypass|waive|override|let me|allow me|turn|switch|flip|toggle|reset|delete|edit|enable|disable|unlock)\\b" +
+  ".{0,60}\\b(?:approv\\w*|ledger|kill ?-?switch|apply (?:rights?|permissions?|access|role)|signing key|requester key|(?:pilot|act) authori[sz]\\w*)\\b", "i");
+const ACT_SWITCH = /\b(?:turn|switch|flip|toggle|set|put)\s+act\b|\bact\b(?: mode| switch)?\s+(?:on|off)\b(?=\s*(?:$|[.!?,;]|please\b|now\b|for\b|in\b|again\b))/i;
 const VERB_LEAD = /^(?:please\s+|ok(?:ay)?,?\s+|now\s+|go ahead and\s+|just\s+)?/;
 const ASK = /\b(?:can you|could you|would you|will you|please|go ahead and|i want you to|you should|you can|for me|yourself|on my behalf)\b/i;
 const APPROVE = /\b(?:approve|sign|co-?sign|countersign)\b/i;
@@ -213,7 +223,7 @@ export function pilotHandoffKind(request: string): HandoffKind | undefined {
   const value = request.trim().toLowerCase();
   if (HOSTED.test(value) && /\b(?:use|switch|fall ?back|send|route|call|ask|try|connect)\b/.test(value)) return "HOSTED_INFERENCE";
   // Anything about the owner's controls, read or write, gets the owner-authority answer: the session neither reads nor changes them.
-  if (CONTRACT.test(value) || PILOT_AUTHORITY.test(value)) return "CONTRACT";
+  if (CONTRACT.test(value) || PILOT_AUTHORITY.test(value) || AUTHORITY_CHANGE.test(value) || ACT_SWITCH.test(value)) return "CONTRACT";
   const imperative = (verb: RegExp) => new RegExp(VERB_LEAD.source + verb.source, "i").test(value) || (ASK.test(value) && verb.test(value));
   if (imperative(APPROVE)) return "APPROVE";
   if (imperative(CLEANUP)) return "CLEANUP";

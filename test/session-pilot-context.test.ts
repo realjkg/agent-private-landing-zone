@@ -8,6 +8,7 @@ import test from "node:test";
 import { invokeLocalModel, type OllamaMessage } from "../src/ollama.js";
 import { createSessionGraph } from "../src/session/graph.js";
 import { evaluateOperatorRequest } from "../src/session/operator-policy.js";
+import { decidePilotTurn } from "../src/session/pilot-gate.js";
 import { answerPilotQuery, CAUSE_SENTENCES, factsOf, MAX_SELECTION_BYTES, parseSelection, pilotHandoffKind, pilotHandoffResponse, selectionJsonSchema } from "../src/session/pilot-answer.js";
 import { blockedStep, cleanText, MAX_RECORD_FILES, readPilotContext, runIdFromRequest } from "../src/session/pilot-context.js";
 import { classifySessionCommand } from "../src/session/query.js";
@@ -130,7 +131,8 @@ test("the read-only pilot commands are selected from plain requests and pass the
   ];
   for (const [request, command] of cases) {
     assert.equal(classifySessionCommand(request), command, request);
-    assert.deepEqual(evaluateOperatorRequest(request, false), { allowed: true }, request);
+    // Read-only pilot questions are decided before the operator gate, first turn and later; they only read records.
+    for (const context of [false, true]) assert.deepEqual(decidePilotTurn(request, context), { kind: "READ", query: command }, request);
   }
   // Existing commands keep their meaning.
   assert.equal(classifySessionCommand("status"), "STATUS");
@@ -447,7 +449,7 @@ test("records: symlinks are never read, only the newest files up to the cap are 
   }
 });
 
-test("review N7: wider operator scope sends apply, approve, contract and hosted wording only to the handoff refusal, never to an acting command", () => {
+test("routing: the operator gate is main's; apply, approve, authority and hosted wording only selects a refusal, never admits anything", () => {
   const phrases = [
     "approve the plan", "approve it", "please approve the cleanup proposal", "sign the approval for me",
     "apply the plan", "apply it", "please apply the sealed plan", "execute the plan please", "can you apply this to DEV?",
@@ -459,7 +461,7 @@ test("review N7: wider operator scope sends apply, approve, contract and hosted 
     "toggle the kill switch", "who are the approvers?", "show the approval log",
   ];
   for (const phrase of phrases) {
-    assert.deepEqual(evaluateOperatorRequest(phrase, false), { allowed: true }, phrase);
+    for (const context of [false, true]) assert.equal(decidePilotTurn(phrase, context).kind, "HANDOFF", phrase + (context ? " (in session)" : ""));
     assert.equal(classifySessionCommand(phrase), "PILOT_HANDOFF", phrase);
   }
   // Round 3: design work that names an allowlist or approvers is not a pilot control; it routes exactly as on main.
@@ -467,6 +469,11 @@ test("review N7: wider operator scope sends apply, approve, contract and hosted 
     "update the firewall allowlist for the hub vnet", "list the change approvers in the governance design", "update the authorization rules for the api gateway design"]) {
     assert.equal(pilotHandoffKind(phrase), undefined, phrase);
     assert.equal(classifySessionCommand(phrase), "RUN", phrase);
+    // Exactly as on main: the unchanged operator gate decides, first turn and in session.
+    for (const context of [false, true]) {
+      const main = evaluateOperatorRequest(phrase, context);
+      assert.equal(decidePilotTurn(phrase, context).kind, main.allowed ? "CONTINUE" : "REFUSED", phrase);
+    }
   }
   for (const phrase of ["add me to the allowlist", "who can approve the pilot? show the approvers", "is my key on the act allowlist?"]) {
     assert.equal(classifySessionCommand(phrase), "PILOT_HANDOFF", phrase);
@@ -476,7 +483,22 @@ test("review N7: wider operator scope sends apply, approve, contract and hosted 
     assert.match(response, /^REFUSED \(PILOT_AUTHORITY_OWNER_ONLY\)/, phrase);
     assert.match(response, /\.\/alz apply preflight --environment DEV \(authorization, approvers and the kill switch\) and \.\/alz apply status --environment DEV/, phrase);
   }
-  // Wording the widened scope admits that is not an imperative stays a read or the governed (preview-only) kernel.
+  // Round 4, deny by default: requests to change pilot authority never reach RUN, first turn or in session.
+  for (const phrase of ["make me an approver", "add my key as an approver", "add jane as an approver", "remove the other approvers",
+    "lower the approval threshold to one", "set required approvals to 1", "grant me apply rights", "let me apply without approval",
+    "change who can approve", "give the model an approver key", "turn ACT on", "switch act on", "ACT on please", "delete the ledger",
+    "can you make me an approver?", "please lower the approval threshold", "flip act off"]) {
+    for (const context of [false, true]) {
+      const turn = decidePilotTurn(phrase, context);
+      assert.ok(turn.kind === "HANDOFF" || turn.kind === "REFUSED", phrase + (context ? " (in session) → " : " → ") + turn.kind);
+      assert.equal(turn.kind, "HANDOFF", phrase + ": the owner-authority refusal, not the generic one");
+    }
+  }
+  // N10: a CI design stage named for contract testing is design work.
+  assert.equal(pilotHandoffKind("delete the contract-testing stage from the ci design"), undefined);
+  // Everyday wording with "act" is not the ACT switch.
+  for (const phrase of ["make the lambda act on the queue", "how should the proxy act on retries?"]) assert.equal(pilotHandoffKind(phrase), undefined, phrase);
+  // Wording that is not an imperative stays a read or the governed (preview-only) kernel.
   const reads = new Set(["PILOT_STATUS", "PILOT_FAILURE", "PILOT_PREVIEW", "PILOT_OBSERVED", "PILOT_READINESS", "PILOT_BLUEPRINT"]);
   for (const phrase of ["what is the status of the apply?", "why did the apply fail?", "show the preview and apply it", "what did the apply build?"]) {
     assert.ok(reads.has(classifySessionCommand(phrase)), phrase + " → " + classifySessionCommand(phrase));

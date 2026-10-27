@@ -40,9 +40,7 @@ import {
 import {
   blockedPromptHelp,
 } from "./help.js";
-import {
-  evaluateOperatorRequest,
-} from "./operator-policy.js";
+import { decidePilotTurn } from "./pilot-gate.js";
 import { disableHostedTracing } from "./hosted-tracing.js";
 import {
   answerPilotQuery,
@@ -56,7 +54,7 @@ import {
   isRecoveryCommand,
   runRecoveryCommand,
 } from "./recovery.js";
-import type { SessionTurn } from "./types.js";
+import type { SessionCommand, SessionTurn } from "./types.js";
 
 const SessionAnnotation = Annotation.Root({
   request: Annotation<string>,
@@ -100,18 +98,20 @@ async function sessionNode(
   recoveryInspectionProvider:
     RecoveryAutomationInspectionProvider,
 ): Promise<Partial<LangGraphSessionState>> {
-  const policy = evaluateOperatorRequest(
+  // Every turn, first or later: read-only pilot questions, then the pilot handoff refusals, then the operator gate
+  // unchanged from main (src/session/pilot-gate.ts). Handoff patterns only choose refusal text; they never admit anything.
+  const turn = decidePilotTurn(
     state.request,
     (state.history?.length ?? 0) > 0,
   );
 
-  if (!policy.allowed) {
+  if (turn.kind === "REFUSED") {
     progress(
       "Request stopped by operator safety boundary.",
     );
 
     const response =
-      blockedPromptHelp(policy);
+      blockedPromptHelp(turn.decision);
 
     return {
       response,
@@ -126,15 +126,34 @@ async function sessionNode(
     };
   }
 
-  const command = await routeSessionRequest(
-    state.request,
-    state.history ?? [],
-    state.fixture,
-    progress,
-  );
-
   // The pilot: the session reads the records a person's runs left and refuses to act. Nothing here imports src/apply.
+  if (turn.kind === "HANDOFF") {
+    const response = pilotHandoffResponse(turn.handoff);
+
+    return {
+      response,
+      history: [
+        {
+          at: new Date().toISOString(),
+          request: state.request,
+          command: "PILOT_HANDOFF",
+          response,
+        },
+      ],
+    };
+  }
+
+  const command: SessionCommand = turn.kind === "READ"
+    ? turn.query
+    : await routeSessionRequest(
+        state.request,
+        state.history ?? [],
+        state.fixture,
+        progress,
+      );
+
   if (command === "PILOT_HANDOFF") {
+    // Only reachable if the router named it; the deterministic handoff above already refused every matching request.
     const response = pilotHandoffResponse(
       pilotHandoffKind(state.request) ?? "APPLY",
     );
