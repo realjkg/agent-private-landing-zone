@@ -122,7 +122,8 @@ test("CDK is the AWS secondary path: no lock file, no providers, and the engine 
   // The pin named explicitly (an older caller) is the same preparation; any other version, or a non-version, is refused with the tested version named.
   assert.equal(ok(await prepareApply({ environment: "DEV", projectRoot: assembly, awsCliVersion: pin }, s.deps)).summary.engineVersion, pin);
   const other = refused(await prepareApply({ environment: "DEV", projectRoot: assembly, awsCliVersion: "2.15.0" }, s.deps), "ENGINE_VERSION_REQUIRED", "OPERATOR");
-  assert.match(other.message, new RegExp("tested with AWS CLI " + pin.replace(/\./g, "\\.") + ".*2\\.15\\.0 is not it"));
+  const at = other.message.indexOf("tested with AWS CLI " + pin);
+  assert.ok(at >= 0 && other.message.indexOf("2.15.0 is not it", at) > at, other.message);
   assert.match(refused(await prepareApply({ environment: "DEV", projectRoot: assembly, awsCliVersion: "two" }, s.deps), "ENGINE_VERSION_REQUIRED", "OPERATOR").message, /not an AWS CLI version/);
   assert.equal(prepared.summary.engine, "CDK");
   assert.equal(prepared.summary.path, "SECONDARY");

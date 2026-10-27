@@ -213,14 +213,14 @@ function toolCheck(tool: ToolId, ctx: CheckContext, required: boolean, platform:
  */
 function presenceCheck(id: "aws-cli" | "git", label: string, args: string[], pattern: RegExp, required: boolean, fix: string, env: NodeJS.ProcessEnv, pinned?: string): DepCheck {
   const found = onPath(id === "aws-cli" ? "aws" : "git", env);
-  const reported = found ? pattern.exec(versionText(found, args) ?? "")?.[1] : undefined;
+  const reported = found ? pattern.exec((versionText(found, args) ?? "").trim())?.[1] : undefined;
   if (!reported) return { id, label, required, ok: false, detail: found ? "found, but its version could not be read" : "not found", fix };
   if (pinned !== undefined && reported !== pinned) return { id, label, required, ok: false, detail: "found " + reported + " at " + found + ", tested " + pinned, fix };
   return { id, label, required, ok: true, detail: "version " + reported + " at " + found };
 }
 
-/** The AWS CLI v2 version line, as the vendor prints it: `aws-cli/2.x.y Python/... <os>/... <source>/<arch> ...`. */
-export const AWS_CLI_VERSION_PATTERN = /^aws-cli\/(\d+\.\d+\.\d+)\b/;
+/** The AWS CLI v2 version line, as the vendor prints it: `aws-cli/2.x.y Python/... <os>/... <source>/<arch> ...`. Read from trimmed text, the same rule the CDK engine applies before it runs, so `./alz deps` and qualification agree. */
+export const AWS_CLI_VERSION_PATTERN = /^aws-cli\/(\d+\.\d+\.\d+)(?:\s|$)/;
 
 /** Looks at the isolated service's port: nothing listening is fine, a listener that is not Ollama is a blocker. */
 async function serviceCheck(ctx: CheckContext, required: boolean): Promise<DepCheck> {
