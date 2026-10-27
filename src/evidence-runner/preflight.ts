@@ -100,7 +100,7 @@ export function ownerInputs(config: EvidenceRunnerConfig, authorization: "EMPTY"
     ? { id: "pilot-authorization", status: "BLOCKED", code: "OWNER_INPUT_AUTHORIZATION",
       detail: "The preview:* and act:* gates are produced after the owner's reviewed commit of the pilot contract with its authorize entry (docs/act-pilot-plan.md). ACT is disabled; the act stage is skipped." }
     : { id: "pilot-authorization", status: "INFO", code: "AUTHORIZATION_PRESENT",
-      detail: "The committed contract authorizes ACT. ./alz apply preflight checks the contract and the kill switch before any guided step (slice S5)." });
+      detail: "The committed contract says enabled and has an authorize entry (read for shape only, not validated). ./alz apply preflight checks the contract in full, and the kill switch, before any guided step (slice S5)." });
   return inputs;
 }
 
@@ -127,7 +127,7 @@ export async function runPreflight({ root, env, config, source, probe }: Preflig
     : { id: "mutation-identities", status: "PASS", code: "NONE", detail: "No apply, state-write or change-set identity is set." });
   const authorization = authorizationState(root);
   checks.push({ id: "act", status: "INFO", code: authorization === "EMPTY" ? "SKIPPED_ACT_DISABLED" : "AUTHORIZATION_PRESENT",
-    detail: authorization === "EMPTY" ? "No committed contract authorizes ACT: ACT is disabled and the act stage is skipped." : "The committed contract authorizes ACT; it is checked by ./alz apply preflight (slice S5)." });
+    detail: authorization === "EMPTY" ? "No committed contract authorizes ACT: ACT is disabled and the act stage is skipped." : "The committed contract says enabled and has an authorize entry (shape only, not validated); ./alz apply preflight checks it in full (slice S5)." });
   const identities: IdentityCheck[] = [];
   for (const provider of ["aws", "azure"] as const) {
     const configured = provider === "aws" ? config.aws : config.azure;
