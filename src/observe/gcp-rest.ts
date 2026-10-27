@@ -1,6 +1,5 @@
-import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 
-import { checkCredentialConfiguration, projectOfServiceAccount } from "../tools/gcp-credentials.js";
+import { checkCredentialConfiguration, projectOfServiceAccount, readTokenFile } from "../tools/gcp-credentials.js";
 import { identityVariables } from "../tools/identity.js";
 import { ALZ_TAG_KEYS } from "../teardown/unit.js";
 import type { BlueprintEntry } from "./blueprint.js";
@@ -51,7 +50,6 @@ const ASSET_HOST = "cloudasset.googleapis.com";
 const READ_HOSTS: ReadonlySet<string> = new Set([PUBSUB_HOST, ASSET_HOST]);
 const SCOPE = "https://www.googleapis.com/auth/cloud-platform.read-only";
 const PROJECT_ID = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
-const MAX_TOKEN_FILE = 16 * 1024;
 const MAX_PAGES = 50;
 
 /**
@@ -91,23 +89,6 @@ const sentAsWritten = (url: string): boolean => {
   const raw = rawPathOf(url);
   try { return raw !== undefined && !/[\\%\s\u0000-\u001f\u007f]/.test(raw) && new URL(url).pathname === raw; } catch { return false; }
 };
-
-function readTokenFile(path: string): string | undefined {
-  let fd: number | undefined;
-  try {
-    fd = openSync(path, "r");
-    const stat = fstatSync(fd);
-    if (!stat.isFile() || stat.size > MAX_TOKEN_FILE) return undefined;
-    const buffer = Buffer.alloc(MAX_TOKEN_FILE + 1);
-    const length = readSync(fd, buffer, 0, buffer.length, 0);
-    const token = buffer.subarray(0, length).toString("utf8").trim();
-    return length <= MAX_TOKEN_FILE && token !== "" && !/\s/.test(token) ? token : undefined;
-  } catch {
-    return undefined;
-  } finally {
-    if (fd !== undefined) closeSync(fd);
-  }
-}
 
 /** DISCOVERY's facts, checked as the provider spec checks them, or the class of why none can be used. */
 function discoveryIdentity(env: NodeJS.ProcessEnv, projectId: string):

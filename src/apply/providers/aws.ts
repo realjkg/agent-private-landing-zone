@@ -128,6 +128,27 @@ function assertBuiltinUses(uses: readonly ProviderUse[]): void {
   }
 }
 /**
+ * Data sources that mint a credential or read a secret into the plan (review N3 of #305, "check the AWS spec for equivalents"): a
+ * registry or cluster token, a CodeArtifact token, a Secrets Manager value or generated password, a parameter value (SecureString
+ * parameters are decrypted by default), KMS-decrypted plaintext, or a Cognito app client (its secret). A data source is read at plan
+ * time, so its result sits in the sealed plan every approver handles and, after the apply, in the state. Refused unless the plan
+ * names the use as a managed resource outside any `data.` address (some of these names are also resources, which hold only what the
+ * project itself configures), so a use whose mode the plan left unsaid is refused too.
+ * UNVERIFIED: the type names are from memory, as the rest of this file; a missing name would let one through, so the list is
+ * checked against the provider's documentation before live use.
+ */
+const SECRET_DATA_SOURCES: ReadonlySet<string> = new Set([
+  "aws_ecr_authorization_token", "aws_ecrpublic_authorization_token", "aws_eks_cluster_auth", "aws_codeartifact_authorization_token",
+  "aws_secretsmanager_secret_version", "aws_secretsmanager_random_password",
+  "aws_ssm_parameter", "aws_ssm_parameters_by_path", "aws_kms_secrets", "aws_kms_secret", "aws_cognito_user_pool_client",
+]);
+function assertNoSecretDataSources(uses: readonly ProviderUse[]): void {
+  for (const use of uses) {
+    if (SECRET_DATA_SOURCES.has(use.type) && (use.mode !== "managed" || DATA_ADDRESS.test(use.address))) stop("PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT");
+  }
+}
+
+/**
  * What the aws provider takes from the APPLY identity's environment and nowhere else: static or shared credentials and
  * config files, endpoints, proxies, a trust store, the metadata service, and the `skip_*` switches that turn off the account
  * check. Refused whether constant or an expression, because an expression resolves to the same thing.
@@ -137,8 +158,9 @@ const DENIED_ATTRIBUTE = /^(access_key|secret_key|token|profile|shared_credentia
 const DENIED_ROLE_ATTRIBUTE = /^web_identity_token(_file)?$/;
 
 /**
- * The provider half of the contract binding. Only the allowed providers may appear (`ALLOWED_PROVIDERS`), and of the built-in
- * provider only `terraform_data` resources (`assertBuiltinUses`, over every resource and data source the plan names). In an aws
+ * The provider half of the contract binding. Only the allowed providers may appear (`ALLOWED_PROVIDERS`), of the built-in
+ * provider only `terraform_data` resources (`assertBuiltinUses`, over every resource and data source the plan names), and no data
+ * source that mints a credential or reads a secret (`SECRET_DATA_SOURCES`, PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT). In an aws
  * provider block no attribute of `DENIED_ATTRIBUTE` is set; a constant `allowed_account_ids` must include the contract's
  * account, a constant `forbidden_account_ids` must not; and a constant `role_arn` in `assume_role` or
  * `assume_role_with_web_identity` must be the APPLY identity's own role (any role in another account is refused as such),
@@ -148,6 +170,7 @@ const DENIED_ROLE_ATTRIBUTE = /^web_identity_token(_file)?$/;
  */
 function assertProviderConfig(blocks: readonly ProviderBlock[], target: AwsTarget, env: NodeJS.ProcessEnv, uses: readonly ProviderUse[]): void {
   assertBuiltinUses(uses);
+  assertNoSecretDataSources(uses);
   const applyRole = iamRoleIdentity(identityVariables(env, "APPLY").get("AWS_ROLE_ARN") ?? "");
   for (const provider of blocks) {
     const id = provider?.full_name ?? HASHICORP + provider?.name;

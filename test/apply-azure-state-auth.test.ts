@@ -28,6 +28,8 @@ import {
  */
 
 const PINNED = { tenantId: TENANT, subscriptionId: DEV_TARGET.account, backend: DEV_TARGET.backend, workspace: "default" };
+/** The environment init's backend configuration was written from: STATE_WRITE is `statewrite-client-3` with `/run/fixture/statewrite-oidc-token`. */
+const WRITER_ENV = identityEnv("DEV");
 const [ACCOUNT, CONTAINER, ...KEY] = DEV_TARGET.backend.split("/");
 /** A fake SAS token and a fake shared key: shaped like the real ones, valid nowhere. */
 const SAS = "sv=2023-11-03&sp=racwdl&sr=c&sig=ZmFrZS1ub3QtYS1zaWduYXR1cmU%3D";
@@ -82,26 +84,26 @@ describe("Azure state auth is Entra ID only: the product's backend file", () => 
 
 describe("Azure state auth is Entra ID only: the backend init saved (the plan embeds it and the apply uses it)", () => {
   it("accepts exactly what init saves from the product's file, with or without the STATE_WRITE settings", () => {
-    assert.equal(AZURE.savedBackendMatches(SAVED(), PINNED), true);
-    assert.equal(AZURE.savedBackendMatches(SAVED({ use_oidc: true, client_id: "statewrite-client-3", tenant_id: TENANT, subscription_id: DEV_TARGET.account, oidc_token_file_path: "/run/t" }), PINNED), true);
+    assert.equal(AZURE.savedBackendMatches(SAVED(), PINNED, WRITER_ENV), true);
+    assert.equal(AZURE.savedBackendMatches(SAVED({ use_oidc: true, client_id: "statewrite-client-3", tenant_id: TENANT, subscription_id: DEV_TARGET.account, oidc_token_file_path: "/run/fixture/statewrite-oidc-token" }), PINNED, WRITER_ENV), true);
     const sparse = { type: "azurerm", config: { storage_account_name: ACCOUNT, container_name: CONTAINER, key: KEY.join("/"), use_azuread_auth: true } };
-    assert.equal(AZURE.savedBackendMatches(sparse, PINNED), true, "an attribute init did not save at all is the same as null");
+    assert.equal(AZURE.savedBackendMatches(sparse, PINNED, WRITER_ENV), true, "an attribute init did not save at all is the same as null");
   });
 
   it("refuses a backend without Entra ID authorization on: missing, null, false, or a string", () => {
     for (const value of [undefined, null, false, "true", 1]) {
       const saved = SAVED({ use_azuread_auth: value });
       if (value === undefined) delete (saved.config as Record<string, unknown>).use_azuread_auth;
-      assert.equal(AZURE.savedBackendMatches(saved, PINNED), false, String(value));
+      assert.equal(AZURE.savedBackendMatches(saved, PINNED, WRITER_ENV), false, String(value));
     }
-    assert.equal(AZURE.savedBackendMatches(SAVED({ use_oidc: false }), PINNED), false, "use_oidc may only be on");
+    assert.equal(AZURE.savedBackendMatches(SAVED({ use_oidc: false }), PINNED, WRITER_ENV), false, "use_oidc may only be on");
   });
 
   it("refuses a shared key, a SAS token, a resource group, a lookup, another endpoint or cloud, another credential, or an unknown attribute", () => {
     for (const [name, value] of Object.entries(OTHER_PATHS)) {
-      assert.equal(AZURE.savedBackendMatches(SAVED({ [name]: value }), PINNED), false, name);
+      assert.equal(AZURE.savedBackendMatches(SAVED({ [name]: value }), PINNED, WRITER_ENV), false, name);
       // Even a falsy value that is not null is a setting someone made.
-      assert.equal(AZURE.savedBackendMatches(SAVED({ [name]: typeof value === "boolean" ? false : "" }), PINNED), false, name + " (falsy)");
+      assert.equal(AZURE.savedBackendMatches(SAVED({ [name]: typeof value === "boolean" ? false : "" }), PINNED, WRITER_ENV), false, name + " (falsy)");
     }
   });
 
@@ -110,28 +112,49 @@ describe("Azure state auth is Entra ID only: the backend init saved (the plan em
       ["storage account", { storage_account_name: "attackerstore" }], ["container", { container_name: "other" }], ["key", { key: "prod.tfstate" }],
       ["key prefix", { key: KEY.join("/") + "x" }], ["deeper key", { key: "a/" + KEY.join("/") }], ["account case", { storage_account_name: ACCOUNT.toUpperCase() }],
     ] as const) {
-      assert.equal(AZURE.savedBackendMatches(SAVED(change), PINNED), false, label);
+      assert.equal(AZURE.savedBackendMatches(SAVED(change), PINNED, WRITER_ENV), false, label);
     }
   });
 
   it("binds the saved STATE_WRITE tenant and subscription to the contract's, and the client id and token path to their strict shapes", () => {
     const writer = { use_oidc: true, client_id: "statewrite-client-3", tenant_id: TENANT, subscription_id: DEV_TARGET.account, oidc_token_file_path: "/run/fixture/statewrite-oidc-token" };
-    assert.equal(AZURE.savedBackendMatches(SAVED(writer), PINNED), true, "control");
-    assert.equal(AZURE.savedBackendMatches(SAVED({ ...writer, tenant_id: TENANT.toUpperCase(), subscription_id: DEV_TARGET.account.toUpperCase() }), PINNED), true, "GUIDs compare case-insensitively");
+    assert.equal(AZURE.savedBackendMatches(SAVED(writer), PINNED, WRITER_ENV), true, "control");
+    assert.equal(AZURE.savedBackendMatches(SAVED({ ...writer, tenant_id: TENANT.toUpperCase(), subscription_id: DEV_TARGET.account.toUpperCase() }), PINNED, WRITER_ENV), true, "GUIDs compare case-insensitively");
     const other = "99999999-9999-4999-8999-999999999999";
     for (const [label, change] of [
       ["another tenant", { tenant_id: other }], ["another subscription", { subscription_id: other }], ["a tenant name", { tenant_id: "contoso.onmicrosoft.com" }],
       ["a numeric subscription", { subscription_id: 7 }], ["a quoted client id", { client_id: 'x" y' }], ["an empty client id", { client_id: "" }],
       ["a relative token path", { oidc_token_file_path: "token" }], ["a token path with a newline", { oidc_token_file_path: "/run/t\nx" }],
     ] as const) {
-      assert.equal(AZURE.savedBackendMatches(SAVED({ ...writer, ...change }), PINNED), false, label);
+      assert.equal(AZURE.savedBackendMatches(SAVED({ ...writer, ...change }), PINNED, WRITER_ENV), false, label);
     }
   });
 
+  it("binds the saved client id and token path to the STATE_WRITE identity's own values, not merely their shapes (review N3 of #318)", () => {
+    const writer = { use_oidc: true, client_id: "statewrite-client-3", tenant_id: TENANT, subscription_id: DEV_TARGET.account, oidc_token_file_path: "/run/fixture/statewrite-oidc-token" };
+    assert.equal(AZURE.savedBackendMatches(SAVED(writer), PINNED, WRITER_ENV), true, "control");
+    for (const [label, change] of [
+      ["the APPLY client id", { client_id: "apply-client-4" }], ["the STATE client id", { client_id: "state-client-2" }], ["a client id of no identity", { client_id: "someone-else-9" }],
+      ["a client id in another case", { client_id: "STATEWRITE-CLIENT-3" }], ["another token path", { oidc_token_file_path: "/run/fixture/apply-oidc-token" }],
+      ["a token path prefix", { oidc_token_file_path: "/run/fixture/statewrite-oidc-token/x" }],
+    ] as const) {
+      assert.equal(AZURE.savedBackendMatches(SAVED({ ...writer, ...change }), PINNED, WRITER_ENV), false, label);
+    }
+    // A saved value with no STATE_WRITE value to match: refused, whatever its shape.
+    const noWriter = { ...WRITER_ENV };
+    delete noWriter.ALZ_STATE_WRITE_ARM_CLIENT_ID;
+    delete noWriter.ALZ_STATE_WRITE_ARM_OIDC_TOKEN_FILE;
+    assert.equal(AZURE.savedBackendMatches(SAVED({ client_id: "statewrite-client-3" }), PINNED, noWriter), false, "client id, no STATE_WRITE client id");
+    assert.equal(AZURE.savedBackendMatches(SAVED({ oidc_token_file_path: "/run/fixture/statewrite-oidc-token" }), PINNED, noWriter), false, "token path, no STATE_WRITE token path");
+    assert.equal(AZURE.savedBackendMatches(SAVED(), PINNED, noWriter), true, "nothing saved, nothing to bind (the seal's location-only init)");
+    // The operator's own variables are not the STATE_WRITE identity's.
+    assert.equal(AZURE.savedBackendMatches(SAVED({ client_id: "operator-client" }), PINNED, { ...noWriter, ARM_CLIENT_ID: "operator-client" }), false, "the operator's client id");
+  });
+
   it("still binds the contract's location and the azurerm type", () => {
-    assert.equal(AZURE.savedBackendMatches(SAVED({ storage_account_name: "attackerstore" }), PINNED), false);
-    assert.equal(AZURE.savedBackendMatches({ ...SAVED(), type: "s3" }, PINNED), false);
-    assert.equal(AZURE.savedBackendMatches({ type: "azurerm" }, PINNED), false);
+    assert.equal(AZURE.savedBackendMatches(SAVED({ storage_account_name: "attackerstore" }), PINNED, WRITER_ENV), false);
+    assert.equal(AZURE.savedBackendMatches({ ...SAVED(), type: "s3" }, PINNED, WRITER_ENV), false);
+    assert.equal(AZURE.savedBackendMatches({ type: "azurerm" }, PINNED, WRITER_ENV), false);
   });
 });
 

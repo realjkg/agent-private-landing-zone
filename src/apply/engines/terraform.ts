@@ -153,8 +153,11 @@ function prepareWorkspace(session: Session, input: WorkspaceInput): void {
   if (session.step(WORKSPACE_SHOW_ARGV, input.stateIdentity).trim() !== input.target.workspace) stop("WORKSPACE_MISMATCH");
 }
 
-/** The backend binding: the backend init saved must be the contract's, so the project's own backend block cannot aim state somewhere else. */
-function assertBackendInContract(work: string, pinned: PilotTarget, spec: ProviderSpec): void {
+/**
+ * The backend binding: the backend init saved must be the contract's, so the project's own backend block cannot aim state somewhere
+ * else, and any identity setting it saved must be the STATE_WRITE identity's own in `env`, the environment init's configuration came from.
+ */
+function assertBackendInContract(work: string, pinned: PilotTarget, spec: ProviderSpec, env: NodeJS.ProcessEnv): void {
   let saved: unknown;
   try {
     const file = join(work, ".terraform", "terraform.tfstate");
@@ -162,7 +165,7 @@ function assertBackendInContract(work: string, pinned: PilotTarget, spec: Provid
     saved = JSON.parse(readFileSync(file, "utf8"));
   } catch { return stop("BACKEND_UNREADABLE"); }
   const backend = (saved as { backend?: unknown } | null)?.backend;
-  if (!spec.savedBackendMatches(isRecord(backend) ? backend : {}, pinned)) stop("BACKEND_NOT_IN_CONTRACT");
+  if (!spec.savedBackendMatches(isRecord(backend) ? backend : {}, pinned, env)) stop("BACKEND_NOT_IN_CONTRACT");
 }
 
 // --- the change list -----------------------------------------------------------------------------------------
@@ -359,7 +362,7 @@ function openApply(input: EngineContext & { target: ResolvedTarget; engineVersio
         beforeInit: () => writeFileSync(backendConfigPath, spec.backendConfig(env, pinned), { mode: 0o600, flag: "wx" }),
         afterInit: () => rmSync(backendConfigPath, { force: true }),
       });
-      assertBackendInContract(session.work, pinned, spec);
+      assertBackendInContract(session.work, pinned, spec, env);
       serialBefore = parseStateSerial(session.step(STATE_PULL_ARGV, "STATE", true)) ?? stop("STATE_SERIAL_UNREADABLE");
       if (session.refused("APPLY", APPLY_PROFILE).length > 0) stop("ENVIRONMENT_REFUSED");
     },
@@ -426,7 +429,7 @@ function openCleanup(input: EngineContext & { target: ResolvedTarget; engineVers
         beforeInit: () => writeFileSync(backendConfigPath, spec.backendConfig(env, pinned), { mode: 0o600, flag: "wx" }),
         afterInit: () => rmSync(backendConfigPath, { force: true }),
       });
-      assertBackendInContract(session.work, pinned, spec);
+      assertBackendInContract(session.work, pinned, spec, env);
       serialBefore = parseStateSerial(session.step(STATE_PULL_ARGV, "STATE", true)) ?? stop("STATE_SERIAL_UNREADABLE");
       if (session.refused("APPLY", APPLY_PROFILE).length > 0) stop("ENVIRONMENT_REFUSED");
     },
@@ -515,7 +518,7 @@ export const TERRAFORM: EngineSpec = {
         afterInit: () => rmSync(backendConfigPath, { force: true }),
       });
       // The plan embeds the backend this init saved (docs/act-pilot-simulation.md), so it is judged here as well as at apply.
-      assertBackendInContract(session.work, input.pinned, input.spec);
+      assertBackendInContract(session.work, input.pinned, input.spec, nonSecretStateWrite(input.env));
       session.assertBound();
       session.step(PREVIEW_PLAN_ARGV, "DISCOVERY");
       session.assertBound();

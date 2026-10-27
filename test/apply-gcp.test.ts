@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import { execFileSync, spawnSync } from "node:child_process";
 import { linkSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import test from "node:test";
 
 import { codeOf } from "../src/apply/engine.js";
@@ -10,7 +12,7 @@ import { PROVIDER_IDS, providerSpec, type ProviderBlock, type ProviderSpec, type
 import { GCP, GCP_IDENTITY_VARIABLES, backendBucketForms, checkCredentialConfiguration, gcpParentOk, namesBackendBucket, type GcpTarget } from "../src/apply/providers/gcp.js";
 import { APPLY_IDENTITIES, type PilotContract, type PilotTarget } from "../src/apply/types.js";
 import { TOKEN_FILE } from "../src/apply/constants.js";
-import { CREDENTIAL_FILE } from "../src/tools/gcp-credentials.js";
+import { CREDENTIAL_FILE, readTokenFile } from "../src/tools/gcp-credentials.js";
 import { TERRAFORM_APPLY_PROFILE } from "../src/tools/profiles.js";
 
 // docs/act-pilot-gcp-terraform-g0.md, slice S1 of the GCP release-path PLAN (owner approval 6433121154 on issue #39).
@@ -252,6 +254,31 @@ test("a WIF file-source credential configuration is accepted; a key file, an aut
   }
 });
 
+test("review N1: a FIFO, a device or a directory in place of a credential configuration or a token file is refused at once, never waited on", () => {
+  const dir = mkdtempSync(join(root, "fifo-"));
+  const fifo = join(dir, "config.json");
+  execFileSync("mkfifo", [fifo]);
+  // In a child with a deadline: a read that blocks on the FIFO (no writer ever comes) would hang this process, not fail it.
+  const module = (name: string) => JSON.stringify(pathToFileURL(join(process.cwd(), "src", name)).href);
+  const script = join(dir, "probe.ts");
+  writeFileSync(script, [
+    "import { checkCredentialConfiguration, readTokenFile } from " + module("tools/gcp-credentials.ts") + ";",
+    "const paths = process.argv.slice(2);",
+    "console.log(JSON.stringify(paths.map((p) => [checkCredentialConfiguration(p).ok, readTokenFile(p) === undefined])));",
+  ].join("\n"));
+  const probe = spawnSync(process.execPath, ["--import", "tsx", script, fifo, "/dev/zero", dir], { encoding: "utf8", timeout: 20_000, killSignal: "SIGKILL" });
+  assert.equal(probe.signal, null, "the probe was killed at its deadline: a read blocked");
+  assert.equal(probe.status, 0, probe.stderr);
+  assert.deepEqual(JSON.parse(probe.stdout), [[false, true], [false, true], [false, true]]);
+  // The control: a regular token file is read.
+  const token = join(dir, "token");
+  writeFileSync(token, "header.payload.signature\n");
+  assert.equal(readTokenFile(token), "header.payload.signature");
+  writeFileSync(token, "two words\n");
+  assert.equal(readTokenFile(token), undefined);
+  assert.equal(readTokenFile(join(dir, "missing")), undefined);
+});
+
 // --- the backend ----------------------------------------------------------------------------------
 
 test("the spec pins the gcs backend type, and the driver-built backend configuration carries only bucket, prefix, a credential path and a service account email", () => {
@@ -278,6 +305,7 @@ test("the spec pins the gcs backend type, and the driver-built backend configura
 });
 
 test("the saved backend must be the contract's gcs bucket and prefix with no token, endpoint, encryption key or delegates (the spike's saved shape, finding B)", () => {
+  const writer = env();
   // `.terraform/terraform.tfstate` as Terraform 1.16.4 saved it in the S0 spike: every credential attribute null.
   const saved = (config: Record<string, unknown> = {}, type = "gcs") => ({
     type, config: {
@@ -285,8 +313,8 @@ test("the saved backend must be the contract's gcs bucket and prefix with no tok
       impersonate_service_account_delegates: null, kms_encryption_key: null, storage_custom_endpoint: null, ...config,
     },
   });
-  assert.equal(GCP.savedBackendMatches(saved(), target(DEV)), true);
-  assert.equal(GCP.savedBackendMatches(saved({ credentials: "/run/alz/sw.json", impersonate_service_account: email("STATE_WRITE") }), target(DEV)), true, "the seal-time STATE_WRITE settings");
+  assert.equal(GCP.savedBackendMatches(saved(), target(DEV), writer), true);
+  assert.equal(GCP.savedBackendMatches(saved({ credentials: writer.ALZ_STATE_WRITE_GOOGLE_APPLICATION_CREDENTIALS, impersonate_service_account: email("STATE_WRITE") }), target(DEV), writer), true, "the seal-time STATE_WRITE settings");
   for (const [label, backend] of [
     ["another type", saved({}, "s3")], ["another bucket", saved({ bucket: "alz-pilot-qa-state" })], ["another prefix", saved({ prefix: "pilot/qa" })],
     ["no prefix", saved({ prefix: null })], ["QA target", saved()],
@@ -294,8 +322,36 @@ test("the saved backend must be the contract's gcs bucket and prefix with no tok
     ["encryption key", saved({ encryption_key: "fake" })], ["KMS key", saved({ kms_encryption_key: "projects/x/locations/y/keyRings/z/cryptoKeys/k" })],
     ["delegates", saved({ impersonate_service_account_delegates: [email("APPLY")] })], ["no config", { type: "gcs" }],
   ] as const) {
-    assert.equal(GCP.savedBackendMatches(backend as Record<string, unknown>, target(label === "QA target" ? QA : DEV)), false, label);
+    assert.equal(GCP.savedBackendMatches(backend as Record<string, unknown>, target(label === "QA target" ? QA : DEV), writer), false, label);
   }
+});
+
+test("review N2 and the STATE_WRITE binding: the saved gcs backend is an allowlist, and its credential path and service account are STATE_WRITE's own values", () => {
+  const writer = env();
+  const own = { credentials: writer.ALZ_STATE_WRITE_GOOGLE_APPLICATION_CREDENTIALS, impersonate_service_account: email("STATE_WRITE") };
+  const saved = (config: Record<string, unknown> = {}) => ({ type: "gcs", config: { bucket: "alz-pilot-dev-state", prefix: "pilot/dev", ...config } });
+  assert.equal(GCP.savedBackendMatches(saved(own), target(DEV), writer), true, "control");
+  // Any setting outside the four the product writes, with any value but null: a later backend version's attribute is refused too.
+  for (const name of ["a_future_attribute", "universe_domain", "client_certificate", "request_reason", "storage_custom_endpoint"]) {
+    assert.equal(GCP.savedBackendMatches(saved({ ...own, [name]: "x" }), target(DEV), writer), false, name);
+    assert.equal(GCP.savedBackendMatches(saved({ ...own, [name]: false }), target(DEV), writer), false, name + " (falsy)");
+    assert.equal(GCP.savedBackendMatches(saved({ ...own, [name]: null }), target(DEV), writer), true, name + " null is unset");
+  }
+  // Another identity's values, a lookalike, or a value with no STATE_WRITE value to match.
+  for (const [label, change] of [
+    ["APPLY's credential configuration", { credentials: writer.ALZ_APPLY_GOOGLE_APPLICATION_CREDENTIALS }],
+    ["APPLY's service account", { impersonate_service_account: email("APPLY") }],
+    ["the service account in another case", { impersonate_service_account: email("STATE_WRITE").toUpperCase() }],
+    ["a relative credential path", { credentials: "sw.json" }], ["a credential path of no identity", { credentials: "/run/alz/sw.json" }],
+    ["a non-string service account", { impersonate_service_account: 7 }],
+  ] as const) {
+    assert.equal(GCP.savedBackendMatches(saved({ ...own, ...change }), target(DEV), writer), false, label);
+  }
+  const noWriter = { ...writer };
+  delete noWriter.ALZ_STATE_WRITE_GOOGLE_APPLICATION_CREDENTIALS;
+  delete noWriter.ALZ_STATE_WRITE_GOOGLE_IMPERSONATE_SERVICE_ACCOUNT;
+  assert.equal(GCP.savedBackendMatches(saved(own), target(DEV), noWriter), false, "saved settings with no STATE_WRITE values");
+  assert.equal(GCP.savedBackendMatches(saved(), target(DEV), noWriter), true, "the seal's location-only init binds no identity");
 });
 
 // --- the provider configuration -------------------------------------------------------------------
@@ -327,6 +383,32 @@ test("provider config: hashicorp/google with default_labels and the contract's p
   assert.equal(judge([GOOGLE()], [use("google_pubsub_topic", { name: "google-beta", full_name: "registry.terraform.io/hashicorp/google-beta" })]), "PROVIDER_CONFIG_NOT_IN_CONTRACT", "a google-beta use with no block of its own");
   assert.equal(judge([GOOGLE()], [use("terraform_data", { name: "terraform", full_name: "terraform.io/builtin/terraform" })]), "OK");
   assert.equal(judge([GOOGLE()], [use("terraform_remote_state", { name: "terraform", full_name: "terraform.io/builtin/terraform" }, "data")]), "PROVIDER_BUILTIN_TYPE_NOT_IN_CONTRACT");
+});
+
+test("review N4: a use whose provider the plan does not name is refused, wherever it appears", () => {
+  for (const provider of [{}, { name: undefined, full_name: undefined }] as Pick<ProviderBlock, "name" | "full_name">[]) {
+    assert.equal(judge([GOOGLE()], [use("google_pubsub_topic", provider)]), "PROVIDER_CONFIG_NOT_IN_CONTRACT", "managed");
+    assert.equal(judge([GOOGLE()], [use("google_storage_bucket", provider, "data")]), "PROVIDER_CONFIG_NOT_IN_CONTRACT", "data");
+  }
+  assert.equal(judge([GOOGLE()], [use("google_pubsub_topic", { name: "google" })]), "OK", "named by its local name only (a configuration key with no block)");
+});
+
+test("review N3: data sources that mint a token or read a secret are refused in any module and whatever the mode says; the managed secret version is not a data source", () => {
+  const google = { name: "google", full_name: "registry.terraform.io/hashicorp/google" };
+  for (const type of [
+    "google_client_config", "google_service_account_access_token", "google_service_account_id_token", "google_service_account_jwt",
+    "google_secret_manager_secret_version", "google_secret_manager_secret_version_access", "google_secret_manager_regional_secret_version",
+    "google_secret_manager_regional_secret_version_access", "google_kms_secret", "google_kms_secret_asymmetric",
+  ]) {
+    assert.equal(judge([GOOGLE()], [use(type, google, "data")]), "PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT", type);
+    assert.equal(judge([GOOGLE()], [{ address: "module.app.data." + type + ".x", mode: "managed", type, provider: google }]), "PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT", type + " under a data address");
+    assert.equal(judge([GOOGLE()], [{ address: type + ".x", mode: "", type, provider: google }]), "PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT", type + " with no mode");
+  }
+  // A resource holds only what the project configures; a data source of an ordinary type is not judged by this rule.
+  assert.equal(judge([GOOGLE()], [use("google_secret_manager_secret_version", google)]), "OK");
+  assert.equal(judge([GOOGLE()], [use("google_project", google, "data"), use("google_service_account", google, "data")]), "OK");
+  // A refused data source names no value: the code is all the driver reports (TARGET_NOT_IN_CONTRACT, nothing spent).
+  assert.match("PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT", /_NOT_IN_CONTRACT$/);
 });
 
 test("provider config: credentials, tokens, impersonation, scopes, endpoints, universe and billing overrides are refused as constants and as expressions; default_labels must be set", () => {

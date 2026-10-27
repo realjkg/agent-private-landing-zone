@@ -174,28 +174,41 @@ function backendLocation(target: GcpTarget): string {
  * configuration path and service account email (neither a secret). Every value is checked against a strict pattern before
  * it is written into HCL, and the email must be of the target's project.
  */
+const CREDENTIALS_SETTING = "credentials";
+const IMPERSONATE_SETTING = "impersonate_service_account";
+
 function backendConfig(env: NodeJS.ProcessEnv, target: GcpTarget): string {
   const email = pickIdentityValue(env, "STATE_WRITE", IMPERSONATE, SERVICE_ACCOUNT);
   if (projectOfServiceAccount(email) !== target.projectId) return stop("STATE_WRITE_BACKEND_CONFIG_INVALID");
   return backendLocation(target) + [
-    `credentials = "${pickIdentityValue(env, "STATE_WRITE", CREDENTIALS, TOKEN_FILE)}"`,
-    `impersonate_service_account = "${email}"`,
+    `${CREDENTIALS_SETTING} = "${pickIdentityValue(env, "STATE_WRITE", CREDENTIALS, TOKEN_FILE)}"`,
+    `${IMPERSONATE_SETTING} = "${email}"`,
     "",
   ].join("\n");
 }
 
 /**
- * Saved backend settings that must stay unset: a token or encryption key would be stored in plaintext and embedded in the
- * plan (spike finding G1), an endpoint redirects state (finding H), and delegates add an impersonation chain.
+ * The settings init may save with a value: exactly what `backendLocation` and `backendConfig` write (review N2 of #305: an
+ * allowlist). Init saves every other attribute of the backend's schema as `null` (the S0 spike's saved shape, finding B), and an
+ * environment default is not saved. So a token or encryption key (stored in plaintext and embedded in the plan, spike finding G1),
+ * an endpoint (finding H), delegates (an impersonation chain) and any attribute a later backend version adds are all refused.
  */
-const SAVED_MUST_BE_UNSET = ["access_token", "storage_custom_endpoint", "encryption_key", "kms_encryption_key", "impersonate_service_account_delegates"];
+const SAVED_SETTINGS: ReadonlySet<string> = new Set(["bucket", "prefix", CREDENTIALS_SETTING, IMPERSONATE_SETTING]);
 
-/** The bucket and prefix init saved must be the contract's, under the gcs type, with none of `SAVED_MUST_BE_UNSET` set. */
-function savedBackendMatches(backend: Record<string, unknown>, target: GcpTarget): boolean {
+/**
+ * The bucket and prefix init saved must be the contract's, under the gcs type; `credentials` and `impersonate_service_account`,
+ * when saved, must be exactly the STATE_WRITE identity's own `GOOGLE_APPLICATION_CREDENTIALS` and `GOOGLE_IMPERSONATE_SERVICE_ACCOUNT`
+ * in `env` (the environment init's configuration was written from); and every other setting must be absent or `null`.
+ */
+function savedBackendMatches(backend: Record<string, unknown>, target: GcpTarget, env: NodeJS.ProcessEnv): boolean {
   const config = isRecord(backend.config) ? backend.config : {};
   const parts = [config.bucket, config.prefix];
+  const stateWrite = identityVariables(env, "STATE_WRITE");
+  const unsetOr = (name: string, variable: string, ok: RegExp): boolean =>
+    config[name] === undefined || config[name] === null || (typeof config[name] === "string" && ok.test(config[name] as string) && stateWrite.get(variable) === config[name]);
   return backend.type === "gcs" && parts.every((part) => typeof part === "string") && parts.join("/") === target.backend &&
-    SAVED_MUST_BE_UNSET.every((name) => config[name] === undefined || config[name] === null);
+    unsetOr(CREDENTIALS_SETTING, CREDENTIALS, TOKEN_FILE) && unsetOr(IMPERSONATE_SETTING, IMPERSONATE, SERVICE_ACCOUNT) &&
+    Object.entries(config).every(([name, value]) => SAVED_SETTINGS.has(name) || value === null);
 }
 
 const HASHICORP = "registry.terraform.io/hashicorp/";
@@ -226,16 +239,34 @@ const providerIdOf = (provider: Pick<ProviderBlock, "name" | "full_name">): stri
 const isSet = (expression: unknown): boolean => expression !== undefined && !(isRecord(expression) && expression.constant_value === null);
 
 /**
+ * Data sources that mint a token or read a secret into the plan (review N3 of #305): the running identity's own OAuth access token
+ * (`google_client_config`), a token, ID token or signed JWT minted for a service account, a Secret Manager secret's payload, and
+ * KMS-decrypted plaintext. A data source is read at plan time, so its result sits in the sealed plan every approver handles and,
+ * after the apply, in the state. Refused unless the plan names the use as a managed resource outside any `data.` address (a secret
+ * version is also a resource, which holds only what the project itself configures), so a use whose mode is unsaid is refused too.
+ * UNVERIFIED: the type names are from memory, as the rest of this file; checked against the provider's documentation before live use.
+ */
+const SECRET_DATA_SOURCES: ReadonlySet<string> = new Set([
+  "google_client_config", "google_service_account_access_token", "google_service_account_id_token", "google_service_account_jwt",
+  "google_secret_manager_secret_version", "google_secret_manager_secret_version_access",
+  "google_secret_manager_regional_secret_version", "google_secret_manager_regional_secret_version_access",
+  "google_kms_secret", "google_kms_secret_asymmetric",
+]);
+const DATA_ADDRESS = /(^|\.)data\./;
+
+/**
  * The provider half of the contract binding. Only the allowed providers may appear, in a provider block or as the provider
- * of anything the plan names; of the built-in provider only `terraform_data` resources. In a google block no attribute of
- * `DENIED_ATTRIBUTE` is set, `default_labels` is set (the unit labels come from it), and a constant `project` is the
- * contract's. An expression for the project is not judged; the runbook says so. `region` and `zone` are not judged.
+ * of anything the plan names, and a use whose provider the plan does not name is refused (review N4 of #305); of the built-in
+ * provider only `terraform_data` resources; and no data source of `SECRET_DATA_SOURCES` (PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT). In
+ * a google block no attribute of `DENIED_ATTRIBUTE` is set, `default_labels` is set (the unit labels come from it), and a constant
+ * `project` is the contract's. An expression for the project is not judged; the runbook says so. `region` and `zone` are not judged.
  */
 function assertProviderConfig(blocks: readonly ProviderBlock[], target: GcpTarget, uses: readonly ProviderUse[]): void {
   assertBuiltinUses(uses);
   for (const use of uses) {
     const id = providerIdOf(use.provider);
-    if (id !== undefined && !ALLOWED_PROVIDERS.includes(id)) stop("PROVIDER_CONFIG_NOT_IN_CONTRACT");
+    if (id === undefined || !ALLOWED_PROVIDERS.includes(id)) stop("PROVIDER_CONFIG_NOT_IN_CONTRACT");
+    if (SECRET_DATA_SOURCES.has(use.type) && (use.mode !== "managed" || DATA_ADDRESS.test(use.address))) stop("PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT");
   }
   for (const provider of blocks) {
     const id = providerIdOf(provider ?? {});
@@ -293,11 +324,11 @@ export const GCP: GcpProviderSpec = {
   },
   ambientRefusal: ambient,
   backendConfig: (env, target) => backendConfig(env, asGcp(target)),
-  savedBackendMatches: (saved, target) => savedBackendMatches(saved, asGcp(target)),
+  savedBackendMatches: (saved, target, env) => savedBackendMatches(saved, asGcp(target), env),
   backendType: "gcs",
   backendLocation: (target) => backendLocation(asGcp(target)),
   // Spike finding F: `apply <planfile>` takes the backend's connection and credentials from the apply process's environment.
-  filledAtApply: ["credentials", "impersonate_service_account"],
+  filledAtApply: [CREDENTIALS_SETTING, IMPERSONATE_SETTING],
   tagAttributes: ["effective_labels", "labels"],
   assertProviderConfig: (blocks, target, _env, uses) => assertProviderConfig(blocks, asGcp(target), uses),
 };

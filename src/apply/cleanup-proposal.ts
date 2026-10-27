@@ -13,6 +13,8 @@ import { REQUESTER_ID, wellFormedRequest } from "./seal.js";
 import { isResourceAddress } from "./terraform.js";
 import type { AwsTarget } from "./providers/aws.js";
 import type { AzureTarget } from "./providers/azure.js";
+import type { GcpTarget } from "./providers/gcp.js";
+import { gcpProtectionOf } from "./cleanup-gcp.js";
 import { armPathSafe, isArmGroupId, isArmRegistrationId, isArmScopeId, parseArmId, type ArmType } from "../observe/azure-rest.js";
 import { awsContainerFamilyOf } from "../observe/aws-containers.js";
 import { awsLeafConditionProblem, awsLeafEntryOf, awsParentIdOf, isAwsLeafType, isWellFormedResourceType } from "../observe/aws-leaf-types.js";
@@ -362,11 +364,16 @@ export const parentKeptReason = (type: string): string => "it is an attachment o
  * The bootstrap the pilot runs on and the identities of the account, which a cleanup never touches: the state backend, every stack
  * container and everything in the identity service. Then the allowlist (delegated owner decision 6433391052, item 1): on AWS a type
  * is ordinary only when it is on the reviewed leaf allowlist; every other well-formed type is TYPE_UNREVIEWED, and a type field
- * that is not a well-formed type at all is unclassifiable. The deny rules come first and stay as defense in depth.
+ * that is not a well-formed type at all is unclassifiable. The deny rules come first and stay as defense in depth. GCP has its own
+ * branch (src/apply/cleanup-gcp.ts), and any other provider fails closed: every entry is unclassifiable (review N5 of #310).
  */
 function protectionOf(entry: { type: string; id: string | null; arn: string | null; holdsIdentityArn?: true }, contract: PilotContract, backendGroups: Set<string>): AzureProtection | undefined {
-  if (contract.provider === "AZURE") return azureProtectionOf(entry, contract, backendGroups);
-  if (contract.provider !== "AWS") return undefined;
+  // Read as text, so a provider id the types do not (yet) name is still judged here: never "ordinary" (review N5 of #310).
+  const provider: string = contract.provider;
+  if (provider === "AZURE") return azureProtectionOf(entry, contract, backendGroups);
+  if (provider === "GCP") return gcpProtectionOf({ type: entry.type, id: entry.id, ...(entry.holdsIdentityArn ? { holdsIdentity: true as const } : {}) }, gcpBackendBuckets(contract));
+  // Fail closed: a provider with no branch of its own here has no classifier, so nothing of it is ever proposed or deleted.
+  if (provider !== "AWS") return UNCLASSIFIABLE;
   const buckets = new Set(Object.values(contract.targets).map((target) => (target as AwsTarget).backend.split("/")[0]));
   if (/^aws_s3_bucket(_|$)/.test(entry.type) && entry.id !== null && buckets.has(entry.id)) return "PROTECTED_BACKEND";
   // By type first, as on Azure: a container or an identity type is protected whatever its identifier says, and a dependent the state does not hold has only a type.
@@ -382,6 +389,9 @@ function protectionOf(entry: { type: string; id: string | null; arn: string | nu
   // An allowlisted type whose entry admits only some objects (an Organizations policy: service control policies only) holds the rest.
   return isAwsLeafType(entry.type) && awsLeafConditionProblem(entry) === undefined ? undefined : "TYPE_UNREVIEWED";
 }
+
+/** Every environment's state bucket from the reviewed contract (a GCP target's backend is `<bucket>/<prefix>`): each is protected under every form (P4). */
+const gcpBackendBuckets = (contract: PilotContract): string[] => Object.values(contract.targets).map((target) => (target as unknown as GcpTarget).backend.split("/")[0]);
 
 /**
  * The pilot's own roles (DISCOVERY, STATE, STATE_WRITE, APPLY, CHANGESET), by lowercase name, from the identity variables in the

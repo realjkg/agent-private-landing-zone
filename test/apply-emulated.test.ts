@@ -417,14 +417,14 @@ describe("emulated backend simulation: real Terraform, Azurite, built-in resourc
     for (const name of ["sas_token", "access_key", "resource_group_name", "lookup_blob_endpoint", "metadata_host", "endpoint", "client_secret", "use_msi", "use_cli"]) {
       assert.ok(config[name] === null || config[name] === undefined, name + " is not saved");
     }
-    assert.equal(AZURE.savedBackendMatches(saved, pinned), true, "the product accepts what real init saved from its own file");
+    assert.equal(AZURE.savedBackendMatches(saved, pinned, {}), true, "the product accepts what real init saved from its own file (the location file names no identity)");
     // Had a SAS token or a resource group reached the saved backend, the product refuses it (and so the plan that embeds it). A shared
     // key cannot be probed here (init with `access_key` gets 403 from Azurite behind the custom host and saves nothing); the default-CI
     // test in test/apply-azure-state-auth.test.ts refuses a saved `access_key`.
     for (const line of [`sas_token = "${containerSas()}"`, 'resource_group_name = "rg-alz-sim"']) {
       const tainted = realInitSaved([line]);
       assert.notEqual((tainted.config as Record<string, unknown>)[line.split(" ")[0]], null, line.split(" ")[0] + " is saved when the file sets it");
-      assert.equal(AZURE.savedBackendMatches(tainted, pinned), false, line.split(" ")[0] + " is refused");
+      assert.equal(AZURE.savedBackendMatches(tainted, pinned, {}), false, line.split(" ")[0] + " is refused");
     }
   });
 

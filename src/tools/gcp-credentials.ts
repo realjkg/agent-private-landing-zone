@@ -1,4 +1,4 @@
-import { closeSync, fstatSync, openSync, readSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readSync, statSync } from "node:fs";
 
 /**
  * Google workload identity federation credentials, judged the one way the pilot judges them (docs/act-pilot-gcp-terraform-g0.md).
@@ -34,18 +34,46 @@ const SOURCE_KEYS = new Set(["file", "format"]);
 /** The failure class of a credential configuration. The file's contents are never put in a message. */
 export type ConfigurationResult = { ok: true; tokenFile: string; audience: string; subjectTokenType: string } | { ok: false; reason: string };
 
-function readConfiguration(path: string): unknown {
-  const fd = openSync(path, "r");
+/**
+ * At most `max` bytes of a regular file, read without ever blocking (review N1 of #305), or undefined: a path that is not a regular
+ * file is refused by `stat` before it is opened, and the open itself is non-blocking, so a FIFO swapped in between the two cannot
+ * hang the read waiting for a writer (the descriptor's own `fstat` then refuses it). A device, a socket or a directory is refused
+ * the same way, and so is a file larger than `max`. Throws only what `stat` or `open` throws (a missing file, a denied read).
+ */
+export function readRegularFile(path: string, max: number): Buffer | undefined {
+  if (!statSync(path).isFile()) return undefined;
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
   try {
     const stat = fstatSync(fd);
-    if (!stat.isFile() || stat.size > MAX_CREDENTIAL_CONFIGURATION) return undefined;
-    const buffer = Buffer.alloc(MAX_CREDENTIAL_CONFIGURATION + 1);
+    if (!stat.isFile() || stat.size > max) return undefined;
+    const buffer = Buffer.alloc(max + 1);
     const length = readSync(fd, buffer, 0, buffer.length, 0);
-    if (length > MAX_CREDENTIAL_CONFIGURATION) return undefined;
-    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, length)));
+    return length > max ? undefined : buffer.subarray(0, length);
   } finally {
     closeSync(fd);
   }
+}
+
+/** The most an OIDC subject token file may be; a real one is a few KiB. */
+export const MAX_TOKEN_FILE = 16 * 1024;
+
+/**
+ * The OIDC subject token a credential configuration's file source names: one word of at most `MAX_TOKEN_FILE` bytes from a regular
+ * file, read without blocking (`readRegularFile`), or undefined for anything else. The token is never put in a message.
+ */
+export function readTokenFile(path: string): string | undefined {
+  try {
+    const bytes = readRegularFile(path, MAX_TOKEN_FILE);
+    const token = bytes?.toString("utf8").trim();
+    return token !== undefined && token !== "" && !/\s/.test(token) ? token : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function readConfiguration(path: string): unknown {
+  const bytes = readRegularFile(path, MAX_CREDENTIAL_CONFIGURATION);
+  return bytes === undefined ? undefined : JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
 }
 
 /** Judges one identity's credential configuration file: a workload identity federation file source, and nothing else. */
