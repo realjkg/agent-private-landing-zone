@@ -1,6 +1,6 @@
 # Pilot apply: emulated-backend simulation
 
-Status: run once, on 2026-10-11, in a Linux sandbox. It runs the **real Terraform engine** against an **emulated Azure Storage backend (Azurite)** with Terraform's built-in `terraform_data` resource only. No Azure account, no real cloud resource and no registry access was used. It answers part of the open G2 questions in `docs/act-pilot-apply.md` and exercises the apply driver (`src/apply`) with the real binary. It does not replace the supervised DEV qualification.
+Status: run on 2026-10-11, and again on 2026-10-27 (same Terraform 1.16.4 binary, Azurite 3.37.0, all seven scenarios passing after the test's fixture and proxy-helper fixes recorded in `docs/act-pilot-simulation-aws.md`, the AWS counterpart for gate G1b), in a Linux sandbox. It runs the **real Terraform engine** against an **emulated Azure Storage backend (Azurite)** with Terraform's built-in `terraform_data` resource only. No Azure account, no real cloud resource and no registry access was used. It answers part of the open G2 questions in `docs/act-pilot-apply.md` and exercises the apply driver (`src/apply`) with the real binary. It does not replace the supervised DEV qualification.
 
 ## What was run
 

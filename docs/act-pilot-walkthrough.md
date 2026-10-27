@@ -176,6 +176,7 @@ Every stop shows "Why it stopped" and "What to do next". At the Advanced and Exp
 
 The commands, in order. Operators run 1, 2, 3 and 5. Each approver runs 4 on their own computer with their own key.
 
+0. `./alz apply contract-check --file DRAFT.json` (the pilot owner, once, while filling in the contract: names every owner input the draft still lacks, reads only that file, and enables nothing; `docs/act-pilot-aws-terraform-g0.md`)
 1. `./alz apply preflight --environment DEV`
 2. `./alz apply prepare --environment DEV --project PROJECT_FOLDER` (prints the request and manifest locations to use next)
 3. `./alz apply seal --request REQUEST.json --manifest MANIFEST.json`

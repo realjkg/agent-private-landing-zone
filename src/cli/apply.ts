@@ -21,6 +21,7 @@ import { liveRecordOf, readAppliedEvidence, type LiveAcceptanceRecord } from "..
 import { admissionRecordOf, buildPreviewGateEvidence } from "../apply/preview-evidence.js";
 import { buildRecoveryEvidence, recoveryAdmissionRecordOf } from "../apply/recovery-record.js";
 import { assessReadiness } from "../apply/readiness.js";
+import { checkDraftContract, contractCheckLines } from "../apply/contract-check.js";
 import { prepareApply, writePreparation, type Prepared, type PrepareRefusal } from "../apply/prepare.js";
 import { qualifyApply, runApply, runCleanup, sealPreview, type ApplyDeps, type SealRequest } from "../apply/driver.js";
 import { RECOVERY_FILE_NAMES, engineOf, engineSpec, type EngineNotices } from "../apply/engine-spec.js";
@@ -60,6 +61,7 @@ const APPLY_USAGE = [
   "  ./alz apply apply --request REQUEST.json --manifest MANIFEST.json --sealed SEALED_PLAN --approval APPROVAL.json [--approval APPROVAL.json ...]",
   "  ./alz apply status [--sealed SEALED_PLAN]",
   "  ./alz apply pin",
+  "  ./alz apply contract-check --file DRAFT.json",
   "  ./alz apply record-live --sealed SEALED_PLAN",
   "  ./alz apply record-recovery --sealed INTERRUPTED_SEALED_PLAN --resumed RESUMED_SEALED_PLAN --target-hardware-id HOST",
   "  ./alz apply preflight --environment DEV|QA|PROD [--contract CONTRACT.json]",
@@ -127,6 +129,7 @@ const SUBCOMMANDS: Readonly<Record<string, Flags>> = {
   apply: { single: ["request", "manifest", "sealed"], repeated: ["approval"] },
   status: { single: [], optional: ["sealed"] },
   pin: { single: [] },
+  "contract-check": { single: ["file"] },
   preflight: { single: ["environment"], optional: ["contract"] },
   prepare: { single: ["environment", "project"], optional: ["aws-cli-version"] },
   "record-live": { single: ["sealed"] },
@@ -759,6 +762,23 @@ const pinCommand: Command = async (_flags, _terminal, deps, out) => {
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 };
 
+// --- contract-check ----------------------------------------------------------------------------------------
+
+/**
+ * The owner-input kit (docs/act-pilot-aws-terraform-g0.md): which owner inputs a DRAFT contract still lacks, each named
+ * in plain words by its field, with the contract validator's own verdict on the shape (src/apply/contract-check.ts). It
+ * reads the one file named and nothing else: no pin, no identity variable, no cloud, no network. It never enables ACT
+ * and never writes the pin; exit 0 says the draft is complete, exit 2 that inputs remain, and neither grants anything.
+ */
+const contractCheckCommand: Command = async (flags, terminal, _deps, out) => {
+  const file = flags.file[0];
+  const report = checkDraftContract(readInput(file, "--file"));
+  terminal.write(contractCheckLines(report, file).join("\n"));
+  out.say(JSON.stringify({ file, ...report }, null, 2) + "\n");
+  out.report({ code: report.complete ? "CONTRACT_DRAFT_COMPLETE" : "CONTRACT_DRAFT_INCOMPLETE", message: report.complete ? "The draft carries every owner input; the owner's reviewed pin commit is the next step." : "The draft is not complete; the report names each input that remains.", data: report });
+  return report.complete ? EXIT.PASS : EXIT.BLOCKED;
+};
+
 // --- preflight ---------------------------------------------------------------------------------------------
 
 /**
@@ -1022,7 +1042,7 @@ const previewEvidenceCommand: Command = async (flags, terminal, deps, out) => {
 };
 
 const COMMANDS: Readonly<Record<string, Command>> = {
-  qualify: qualifyCommand, seal: sealCommand, approve: approveCommand, apply: applyCommand, status: statusCommand, pin: pinCommand,
+  qualify: qualifyCommand, seal: sealCommand, approve: approveCommand, apply: applyCommand, status: statusCommand, pin: pinCommand, "contract-check": contractCheckCommand,
   preflight: preflightCommand, prepare: prepareCommand, "record-live": recordLiveCommand, "record-recovery": recordRecoveryCommand,
   observe: observeCommand, "propose-cleanup": proposeCleanupCommand, cleanup: cleanupCommand, "verify-cleanup": verifyCleanupCommand, report: reportCommand, "preview-evidence": previewEvidenceCommand,
 };
@@ -1042,7 +1062,7 @@ function scratchHoldsRecovery(parent: string): boolean {
  * them first (docs/act-pilot-apply.md).
  */
 async function sweepUnlessHeld(sub: string, deps: ApplyCliDeps, out: Out): Promise<void> {
-  if (["status", "approve", "pin", "preflight", "prepare", "record-live", "record-recovery", "observe", "propose-cleanup", "verify-cleanup", "report", "preview-evidence"].includes(sub)) return;
+  if (["status", "approve", "pin", "contract-check", "preflight", "prepare", "record-live", "record-recovery", "observe", "propose-cleanup", "verify-cleanup", "report", "preview-evidence"].includes(sub)) return;
   const parent = deps.scratchParent ?? tmpdir();
   const held = scratchHoldsRecovery(parent) ? "a scratch directory holds errored.tfstate or crash.log"
     : await holdsReservation(deps.evidenceDir ?? repoPaths().evidence) ? "the apply ledger holds a reservation" : undefined;
