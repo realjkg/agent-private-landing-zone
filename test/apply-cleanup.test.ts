@@ -21,7 +21,7 @@ import {
   recordSha256, writeBlueprintRecord, type BlueprintRecord,
 } from "../src/apply/run-records.js";
 import { AWS_CONTAINER_FAMILIES, AWS_CONTAINER_PREFIXES, awsContainerFamilyOf, isAwsContainerType } from "../src/observe/aws-containers.js";
-import { AWS_LEAF_TYPES, AWS_LEAF_TYPE_NAMES, awsLeafEntryOf, awsParentIdOf, isAwsLeafType, isWellFormedResourceType } from "../src/observe/aws-leaf-types.js";
+import { AWS_LEAF_TYPES, AWS_LEAF_TYPE_NAMES, awsLeafConditionProblem, awsLeafEntryOf, awsParentIdOf, isAwsLeafType, isWellFormedResourceType, serviceControlPolicyProblem } from "../src/observe/aws-leaf-types.js";
 import { acceptanceOf, acceptanceStatement } from "../src/apply/lifecycle-report.js";
 import { CLEANUP_ADAPTER, CLEANUP_APPLY_ARGV, CLEANUP_SHOW_ARGV, cleanupPlanArgv, isAllowedCleanupArgv } from "../src/apply/terraform.js";
 import type { ApplyEnvironment, PilotContract, SignedApproval } from "../src/apply/types.js";
@@ -1018,9 +1018,16 @@ test("the reviewed AWS leaf allowlist is closed (delegated owner decision 643339
     assert.ok(isWellFormedResourceType(type) && isAwsLeafType(type) && awsLeafEntryOf(type) !== undefined, type);
     // A leaf is never an identity or a container: the deny tables would win, and the allowlist must not pretend otherwise.
     assert.ok(!isAwsIdentityType(type) && !isAwsContainerType(type), type + " is neither an identity nor a container");
+    if (awsLeafEntryOf(type)!.condition !== undefined) {
+      // An entry that admits only some objects (Organizations policies: service control policies only) holds an object it cannot judge, by entry and by type alone.
+      assert.ok(protectedDeletionIn(change("x.y", type), [entry("x.y", type)], IDENTITY_FIXTURE_CONTRACT, env)?.endsWith("(TYPE_UNREVIEWED)."), type + " with no recorded kind is held");
+      assert.ok(protectedDeletionIn(change("x.y", type), [], IDENTITY_FIXTURE_CONTRACT, env)?.endsWith("(TYPE_UNREVIEWED)."), type + " by type alone is held");
+      continue;
+    }
     assert.equal(protectedDeletionIn(change("x.y", type), [entry("x.y", type)], IDENTITY_FIXTURE_CONTRACT, env), undefined, type + " is ordinary by entry");
     assert.equal(protectedDeletionIn(change("x.y", type), [], IDENTITY_FIXTURE_CONTRACT, env), undefined, type + " is ordinary by type alone");
   }
+  assert.deepEqual(AWS_LEAF_TYPES.filter((leaf) => leaf.condition).flatMap((leaf) => leaf.types), ["aws_organizations_policy", "awscc_organizations_policy", "AWS::Organizations::Policy"], "only the Organizations policy entry is conditional");
   // Every data-bearing entry's types carry a material-risk note, and every allowlisted type with a note is in a data-bearing entry, so the two lists cannot drift apart (design review 6434540427, B2).
   for (const leaf of AWS_LEAF_TYPES) for (const type of leaf.types) {
     if (leaf.dataBearing) assert.ok((MATERIAL_RISKS[type] ?? "").length > 0, type + " (" + leaf.what + ") holds data but has no material-risk note");
@@ -1125,6 +1132,96 @@ test("a run that created an allowlisted resource and one of an unreviewed type c
   assert.equal(acceptanceStatement("NOT_RUN", { total: 2, byOwnership: { TYPE_UNREVIEWED: 2 }, byOwner: { ENVIRONMENT_OWNER: 2 } }),
     "resource cleanup not run; 2 object(s) held for a person's decision (a type not on the reviewed leaf allowlist, or a setting on a resource this cleanup keeps; kept by ENVIRONMENT_OWNER); environment retirement outstanding (a separate, reviewed action; this report does not claim the environment retired)");
   assert.ok(!acceptanceStatement("COMPLETED", { total: 1, byOwnership: { PROTECTED_IDENTITY: 1 }, byOwner: { PILOT_OWNER: 1 } }).includes("leaf allowlist"));
+});
+
+// Owner decision 6440801434, item 3: an Organizations policy is a leaf only when it is a service control policy, judged from the policy ARN the state recorded.
+const ORG = "o-exampleorg1";
+const policyArn = (kind: string, id: string) => "arn:aws:organizations::999999999999:policy/" + ORG + "/" + kind + "/" + id;
+const POLICY_KINDS = ["resource_control_policy", "tag_policy", "backup_policy", "aiservices_opt_out_policy", "chatbot_policy", "declarative_policy_ec2", "security_hub_policy", "some_future_policy"];
+
+test("Organizations policies: only a service control policy is a leaf; every other kind, a missing or unreadable ARN, and an id that is not the ARN's are held with a named reason (owner decision 6440801434, item 3)", () => {
+  const env = awsIdentityEnv("DEV");
+  const change = (address: string, type: string) => [{ address, type, action: "DELETE" }];
+  for (const type of ["aws_organizations_policy", "awscc_organizations_policy"]) {
+    const scp = { type, id: "p-scp00001", arn: policyArn("service_control_policy", "p-scp00001") };
+    assert.equal(serviceControlPolicyProblem(scp), undefined, type);
+    assert.equal(awsLeafConditionProblem(scp), undefined, type);
+    assert.equal(awsLeafConditionProblem({ ...scp, id: null }), undefined, type + ": the ARN alone names the kind");
+    assert.equal(protectedDeletionIn(change("x.y", type), [{ address: "x.y", ...scp }], IDENTITY_FIXTURE_CONTRACT, env), undefined, type + ": an SCP is ordinary");
+    for (const kind of POLICY_KINDS) {
+      const other = { type, id: "p-other0001", arn: policyArn(kind, "p-other0001") };
+      const reason = awsLeafConditionProblem(other);
+      assert.ok(reason?.includes("of kind " + kind.toUpperCase() + ", not a service control policy") && reason.includes("owner decision 6440801434, item 3") && reason.length <= 512, kind + ": " + reason);
+      const refusal = protectedDeletionIn(change("x.y", type), [{ address: "x.y", ...other }], IDENTITY_FIXTURE_CONTRACT, env);
+      assert.ok(refusal?.includes(kind.toUpperCase()) && refusal.endsWith("(TYPE_UNREVIEWED)."), kind + ": " + refusal);
+    }
+    for (const [label, arn, id, words] of [
+      ["no ARN", null, "p-scp00001", "the state records no policy ARN"],
+      ["another service's ARN", "arn:aws:s3:::examplefake-bucket", "p-scp00001", "not an Organizations policy ARN"],
+      ["a truncated ARN", "arn:aws:organizations::999999999999:policy/service_control_policy/p-scp00001", "p-scp00001", "not an Organizations policy ARN"],
+      ["an AWS managed policy", "arn:aws:organizations::aws:policy/service_control_policy/p-FullAWSAccess", "p-FullAWSAccess", "not an Organizations policy ARN"],
+      ["a kind in capitals", policyArn("SERVICE_CONTROL_POLICY", "p-scp00001"), "p-scp00001", "not an Organizations policy ARN"],
+      ["an id the ARN does not name", policyArn("service_control_policy", "p-scp00001"), "p-other0001", "does not match the policy its ARN names"],
+    ] as const) {
+      const reason = awsLeafConditionProblem({ type, id, arn });
+      assert.ok(reason?.includes(words), label + ": " + reason);
+      assert.ok(protectedDeletionIn(change("x.y", type), [{ address: "x.y", type, id, arn }], IDENTITY_FIXTURE_CONTRACT, env)?.endsWith("(TYPE_UNREVIEWED)."), label);
+    }
+  }
+  // The CloudFormation physical id of a policy is its id alone: a CDK-created policy's kind cannot be read, so it is always held.
+  assert.match(awsLeafConditionProblem({ type: "AWS::Organizations::Policy", id: "p-scp00001", arn: null }) ?? "", /cannot be read/);
+  // Types without a condition are untouched by it.
+  assert.equal(awsLeafConditionProblem({ type: "aws_s3_bucket", id: "b", arn: null }), undefined);
+  assert.equal(awsLeafConditionProblem({ type: "aws_cloud9_environment_ec2", id: "x", arn: null }), undefined);
+});
+
+test("a run that created an SCP and a tag policy, each attached, cleans up the SCP and its attachment and holds the tag policy and its attachment: a forged proposal naming the tag policy never executes, and a destroy that would take it along stops before any approval is consumed", async () => {
+  const SCP = "p-scp00001";
+  const TAGS = "p-tags0001";
+  const OU = "ou-abcd-12345678";
+  const resources = [
+    ["aws_organizations_policy", "scp", SCP, policyArn("service_control_policy", SCP)],
+    ["aws_organizations_policy", "tags", TAGS, policyArn("tag_policy", TAGS)],
+    ["aws_organizations_policy_attachment", "scp", OU + ":" + SCP, null],
+    ["aws_organizations_policy_attachment", "tags", OU + ":" + TAGS, null],
+  ] as const;
+  const creates = [...CREATES, ...resources.map(([type, name]) => ({ address: type + "." + name, type, change: { actions: ["create"], before: null, after: {} } }))];
+  const state = [...STATE, ...resources.map(([type, name, id, arn]) => arn === null ? stateResource(type, name, id) : stateResource(type, name, id, arn))];
+  const w = world();
+  behave({ showResources: creates, stateResources: state });
+  const run = await proposed(w);
+  const deleted = run.proposal.deletes.map((d) => d.address);
+  assert.ok(deleted.includes("aws_organizations_policy.scp") && deleted.includes("aws_organizations_policy_attachment.scp"), deleted.join(", "));
+  assert.ok(!deleted.includes("aws_organizations_policy.tags") && !deleted.includes("aws_organizations_policy_attachment.tags"), deleted.join(", "));
+  const kept = new Map(run.proposal.excluded.map((x) => [x.address, x]));
+  assert.equal(kept.get("aws_organizations_policy.tags")?.ownership, "TYPE_UNREVIEWED");
+  assert.equal(kept.get("aws_organizations_policy.tags")?.retainedBy, "ENVIRONMENT_OWNER");
+  assert.match(kept.get("aws_organizations_policy.tags")!.reason, /of kind TAG_POLICY, not a service control policy/);
+  assert.equal(kept.get("aws_organizations_policy_attachment.tags")?.ownership, "TYPE_UNREVIEWED");
+  assert.match(kept.get("aws_organizations_policy_attachment.tags")!.reason, /an attachment or setting .* that modifies another resource, and this proposal does not delete that resource with it/);
+  assert.ok(verifyCleanupProposal(run.proposal).ok);
+  // A forged, re-hashed proposal that lists the tag policy never executes: the list is derived again from the records.
+  const address = "aws_organizations_policy.tags";
+  const fields = { ...run.proposal, deletes: [...run.proposal.deletes, { address, type: "aws_organizations_policy", identifier: kept.get(address)!.identifier, ownership: "RUN_CREATED" as const, observed: "UNVERIFIABLE" as const }].sort((a, b) => (a.address < b.address ? -1 : 1)), excluded: run.proposal.excluded.filter((x) => x.address !== address) };
+  const forged = { ...fields, proposalSha256: computeProposalSha256(fields) };
+  assert.ok(verifyCleanupProposal(forged).ok, "the forgery is self-consistent");
+  behave({ showResources: creates, stateResources: state });
+  refused(await cleanup(w, { ...run, proposal: forged }, [cleanupApproval(forged, "alice")]), "PROPOSAL_INVALID");
+  assert.equal(applyCalls().length, 0);
+  // A destroy plan that would take the tag policy along as a dependent stops before any approval is consumed.
+  const approval = cleanupApproval(run.proposal, "alice");
+  behave({ showResources: creates, stateResources: state, destroyExtra: [{ address, type: "aws_organizations_policy", change: { actions: ["delete"], before: {}, after: null } }] });
+  const taken = await cleanup(w, run, [approval]);
+  refused(taken, "PROPOSAL_SCOPE_MISMATCH");
+  assert.match((taken as { message: string }).message, /would delete aws_organizations_policy\.tags \(aws_organizations_policy\), which a pilot cleanup never deletes.*TAG_POLICY/);
+  assert.equal(applyCalls().length, 0);
+  // The honest cleanup removes the SCP and its attachment and never targets the tag policy or its attachment.
+  behave({ showResources: creates, stateResources: state });
+  const done = await cleanup(w, run, [approval]);
+  assert.ok(done.ok, JSON.stringify(done));
+  const targets = destroyPlans()[0]!.args.filter((a) => a.startsWith("-target=")).sort();
+  assert.deepEqual(targets, run.proposal.deletes.map((d) => "-target=" + d.address).sort());
+  assert.ok(destroyPlans().every((c) => !c.args.join(" ").includes(".tags")), "the tag policy and its attachment are never targeted");
 });
 
 test("an attachment or setting is deleted only with its parent (design review 6434540427, B3): a pre-existing bucket kept for its owner keeps the public access block, ownership controls and policy the plan 'created' on it, a pre-existing queue keeps its policy, and the run's own bucket loses its settings with it", async () => {
