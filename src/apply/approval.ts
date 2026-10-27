@@ -88,8 +88,10 @@ export function signRequest(statement: RequestStatement, privateKeyPem: string, 
 }
 
 /**
- * The check before anything is signed or run on a requester's behalf: the id is on the contract's allowlist (any environment:
- * the entry's environments govern approving) and the key handed in is that entry's own. Undefined when both hold.
+ * The key half of the requester check: the id is on the contract's allowlist and the key handed in is that entry's own.
+ * Undefined when both hold. It does not judge the environment: seal, propose-cleanup and propose-removal call `requesterRefusal`,
+ * which does. The GCP_API engine (not admitted) still calls this half when it signs; its request is judged for the environment
+ * where it is verified (`verifyRequestSignature`), and passing the environment at its signing is the admission lane's change.
  */
 export function requesterKeyRefusal(contract: PilotContract, requesterId: string, privateKeyPem: string): { ok: false; code: "REQUESTER_NOT_ALLOWED" | "REQUESTER_KEY_MISMATCH"; message: string } | undefined {
   const entry = contract.approvers.find((a) => a.id === requesterId);
@@ -98,6 +100,24 @@ export function requesterKeyRefusal(contract: PilotContract, requesterId: string
   if (offered === undefined || offered !== canonicalPublicKey(entry.publicKeyPem)) {
     return { ok: false, code: "REQUESTER_KEY_MISMATCH", message: "The key given is not the allowlisted key of requester " + entry.id + ". Nothing ran." };
   }
+  return undefined;
+}
+
+/** Why a requester may not request in this environment: their allowlist entry does not name it. */
+const requesterEnvironmentMessage = (requesterId: string, environment: ApplyEnvironment): string =>
+  "The requester " + requesterId + " is not allowed to request in " + environment + ": their allowlist entry in the contract does not name " + environment + ".";
+
+/**
+ * The check before anything is signed or run on a requester's behalf, at seal, propose-cleanup and propose-removal: the id is on
+ * the contract's allowlist, the entry's own `environments` name this environment (a requester allowed only in DEV cannot
+ * request a QA or PROD change, cleanup or removal), and the key handed in is that entry's own. Undefined when all hold.
+ * `verifyRequestSignature` applies the same environment rule wherever a request is verified.
+ */
+export function requesterRefusal(contract: PilotContract, environment: ApplyEnvironment, requesterId: string, privateKeyPem: string): { ok: false; code: "REQUESTER_NOT_ALLOWED" | "REQUESTER_KEY_MISMATCH"; message: string } | undefined {
+  const keyRefusal = requesterKeyRefusal(contract, requesterId, privateKeyPem);
+  if (keyRefusal) return keyRefusal;
+  const entry = contract.approvers.find((a) => a.id === requesterId) as ApproverEntry;
+  if (!entry.environments.includes(environment)) return { ok: false, code: "REQUESTER_NOT_ALLOWED", message: requesterEnvironmentMessage(requesterId, environment) + " Nothing ran." };
   return undefined;
 }
 
@@ -118,9 +138,10 @@ export type RequestVerdict =
 
 /**
  * Verifies the requester signature a sealed plan (subject REQUEST, the default) or a cleanup proposal (CLEANUP_REQUEST) carries
- * against the reviewed contract's allowlist (any allowlisted key may request for any environment: the entry's `environments`
- * governs approving, and a request authorizes nothing). The statement must name exactly this artifact (the plan's artifact
- * hash, or the proposal's own hash), environment and the record's own requester id.
+ * against the reviewed contract's allowlist. The requester's entry must name the environment (`environments` governs requesting as
+ * it governs approving), so a request signed under a contract that allowed it is refused once the committed contract no longer
+ * does. The statement must name exactly this artifact (the plan's artifact hash, or the proposal's own hash), environment and
+ * the record's own requester id.
  */
 export function verifyRequestSignature(input: { request: unknown; artifactSha256: string; environment: ApplyEnvironment; requesterId: string; contract: PilotContract; subject?: RequestSubject }): RequestVerdict {
   const subject: RequestSubject = input.subject ?? "REQUEST";
@@ -146,6 +167,7 @@ export function verifyRequestSignature(input: { request: unknown; artifactSha256
   if (s.artifactSha256 !== input.artifactSha256 || s.environment !== input.environment || s.requesterId !== input.requesterId) {
     return refuse("REQUESTER_MISBOUND", "The requester signature names another artifact, environment or requester than this " + what + ".");
   }
+  if (!entry.environments.includes(input.environment)) return refuse("REQUESTER_NOT_ALLOWED", requesterEnvironmentMessage(s.requesterId, input.environment));
   return { ok: true, requesterId: s.requesterId, publicKeyCanonical: canonicalPublicKey(entry.publicKeyPem) };
 }
 

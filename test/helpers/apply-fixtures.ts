@@ -410,11 +410,12 @@ const newKey = () => {
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
   return { priv: privateKey.export({ type: "pkcs8", format: "pem" }).toString(), pub: publicKey.export({ type: "spki", format: "pem" }).toString() };
 };
-export const keys = { alice: newKey(), bob: newKey(), carol: newKey(), mallory: newKey() };
+export const keys = { alice: newKey(), bob: newKey(), carol: newKey(), dana: newKey(), mallory: newKey() };
 export const approvers = [
   { id: "alice", publicKeyPem: keys.alice.pub, environments: ["DEV", "QA", "PROD"] },
   { id: "bob", publicKeyPem: keys.bob.pub, environments: ["DEV", "QA", "PROD"] },
   { id: "carol", publicKeyPem: keys.carol.pub, environments: ["DEV"] },
+  { id: "dana", publicKeyPem: keys.dana.pub, environments: ["DEV", "QA", "PROD"] },
 ];
 
 export const contractJson = (killPath: string, over: Record<string, unknown> = {}) => ({
@@ -508,18 +509,18 @@ export const human = (target: ResolvedTarget, operatorId = OPERATOR) => ({
 });
 
 /**
- * The default requester of every fixture seal: carol, allowlisted for DEV only, which the request does not need (any
- * allowlisted key may request for any environment). She approves nothing in the PROD fixtures, so alice and bob stay valid
- * PROD approvers; in DEV one person may request and approve, so a DEV test may still approve as carol.
+ * The default requester of every fixture seal, cleanup and removal proposal: dana, allowlisted for DEV, QA and PROD, because a
+ * requester's allowlist entry must name the environment requested. The PROD fixtures approve with alice and bob, never dana,
+ * so the requester and the approvers stay distinct people. carol stays a DEV-only approver.
  */
-export const REQUESTER = { requesterId: "carol", privateKeyPem: keys.carol.priv } as const;
+export const REQUESTER = { requesterId: "dana", privateKeyPem: keys.dana.priv } as const;
 let requesterKeyPath: string | undefined;
-/** Carol's private key as a file only this user can read, for `./alz apply seal --requester carol --key FILE`. Written once per process. */
+/** Dana's private key as a file only this user can read, for `./alz apply seal --requester dana --key FILE`. Written once per process. */
 export function requesterKeyFile(): string {
   if (requesterKeyPath === undefined) {
     const dir = mkdtempSync(join(tmpdir(), "alz-requester-key-"));
-    requesterKeyPath = join(dir, "carol.pem");
-    writeFileSync(requesterKeyPath, keys.carol.priv, { mode: 0o600 });
+    requesterKeyPath = join(dir, "dana.pem");
+    writeFileSync(requesterKeyPath, keys.dana.priv, { mode: 0o600 });
     chmodSync(requesterKeyPath, 0o600);
   }
   return requesterKeyPath;

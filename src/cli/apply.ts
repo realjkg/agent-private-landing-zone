@@ -4,7 +4,7 @@ import { tmpdir, userInfo } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { REQUESTER_MAY_APPROVE, approverIsRequester, requesterKeyRefusal, requesterPublicKey, signApproval, verifyRequestSignature } from "../apply/approval.js";
+import { REQUESTER_MAY_APPROVE, approverIsRequester, requesterPublicKey, requesterRefusal, signApproval, verifyRequestSignature } from "../apply/approval.js";
 import { buildCleanupProposal, proposalLines, signCleanupProposal, verifyCleanupProposal, type CleanupProposal } from "../apply/cleanup-proposal.js";
 import { buildLifecycleReport, lifecycleReportProblems } from "../apply/lifecycle-report.js";
 import { loadRunRecords, observeRun, verifyProposalLeftovers } from "../apply/observe.js";
@@ -602,7 +602,7 @@ const proposeCleanupCommand: Command = async (flags, _terminal, deps, out) => {
   if (sealed.channel !== (deps.channel ?? "CLI")) return blocked({ ok: false, code: "CHANNEL_MISMATCH", message: channelMismatchMessage(sealed.channel) }, out);
   const contract = contractFor(deps);
   if ("reason" in contract) return blocked(contractRefusal(contract), out);
-  const keyRefusal = requesterKeyRefusal(contract, requesterId, requesterKey);
+  const keyRefusal = requesterRefusal(contract, sealed.environment, requesterId, requesterKey);
   if (keyRefusal) return blocked({ ...keyRefusal, message: keyRefusal.message + " No proposal was written." }, out);
   // AUTHORIZED for CLEANUP in this environment, before anything is built; the entry's hash is bound into the proposal.
   const authorized = authorizeContract(contract, sealed.environment, "CLEANUP");
@@ -718,7 +718,7 @@ const proposeRemovalCommand: Command = async (flags, _terminal, deps, out) => {
   if (sealed.channel !== (deps.channel ?? "CLI")) return blocked({ ok: false, code: "CHANNEL_MISMATCH", message: channelMismatchMessage(sealed.channel) }, out);
   const contract = contractFor(deps);
   if ("reason" in contract) return blocked(contractRefusal(contract), out);
-  const keyRefusal = requesterKeyRefusal(contract, requesterId, requesterKey);
+  const keyRefusal = requesterRefusal(contract, sealed.environment, requesterId, requesterKey);
   if (keyRefusal) return blocked({ ...keyRefusal, message: keyRefusal.message + " No proposal was written." }, out);
   const built = buildRemovalProposal({ run: removalRunOf(sealed), where: removalLocations(deps), contract, requesterId, now: (deps.now ?? (() => new Date()))() });
   if (!built.ok) return removalBlocked(built, out);

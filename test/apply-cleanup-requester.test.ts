@@ -379,3 +379,39 @@ test("./alz apply approve of a PROD cleanup shows who requested it and refuses t
   const devSelf = await cli(w, "DEV", ["approve", "--bundle", devPath, "--key", keyFile("alice"), "--approver", "alice"], ["APPROVE CLEANUP DEV " + dev.proposalSha256.slice(0, 12)]);
   assert.equal(devSelf.code, 0, devSelf.stderr);
 });
+
+test("a cleanup requester's allowlist entry must name the environment: a DEV-only requester is refused at propose-cleanup, at approve and at the cleanup gate in PROD, with nothing written, signed, consumed or destroyed; DEV still proceeds", async () => {
+  const w = world();
+  const runs = await promoted(w);
+  // The owner's committed contract now allows carol to request and approve in DEV only. A cleanup is authorized by the
+  // contract committed now, so every check below reads this one.
+  writeReviewedContract(w.contractPath, awsContractJson(KILL, { approvers: (CONTRACT.approvers as { id: string }[]).map((a) => (a.id === "carol" ? { ...a, environments: ["DEV"] } : a)) }));
+  const run = runs.PROD;
+  shape(w, "PROD");
+  assert.equal((await cli(w, "PROD", ["observe", "--sealed", run.sealedPath])).code, 0);
+  const proposed = await cli(w, "PROD", ["propose-cleanup", "--sealed", run.sealedPath, "--requester", "carol", "--key", keyFile("carol")]);
+  assert.equal(proposed.code, 2);
+  assert.match(proposed.stderr, /REQUESTER_NOT_ALLOWED/);
+  assert.match(proposed.stderr, /not allowed to request in PROD/);
+  assert.deepEqual(proposalFiles(w), [], "no proposal was written");
+  // The same proposal built and signed with carol's own key outside the command: refused at approve and at the gate.
+  const forged = await proposedIn(w, run, "carol");
+  const forgedPath = join(fresh("proposal"), "forged.json");
+  writeFileSync(forgedPath, JSON.stringify(forged));
+  const phrase = "APPROVE CLEANUP PROD " + forged.proposalSha256.slice(0, 12);
+  const approve = await cli(w, "PROD", ["approve", "--bundle", forgedPath, "--key", keyFile("bob"), "--approver", "bob"], [phrase]);
+  assert.equal(approve.code, 2);
+  assert.match(approve.stderr, /REQUESTER_NOT_ALLOWED/);
+  assert.deepEqual(approve.term.asked, [], "refused before the phrase was asked");
+  const before = destroyPlans();
+  const approvals = [by(forged, "alice"), by(forged, "bob")];
+  refused(await cleanUp(w, run, forged, approvals), "REQUESTER_NOT_ALLOWED");
+  assert.equal(destroyPlans(), before, "no destroy was planned");
+  assert.ok(approvals.every((a) => !w.nonces.has(a.statement.nonce)), "no approval was consumed");
+  assert.equal(await readCleanupEvidence(forged.proposalSha256, w.evidenceDir), undefined, "nothing was recorded as executed");
+  // In DEV, the environment carol's entry names, her cleanup proceeds.
+  const dev = await proposedIn(w, runs.DEV, "carol");
+  const done = await cleanUp(w, runs.DEV, dev, [by(dev, "alice")]);
+  assert.ok(done.ok, JSON.stringify(done));
+  assert.equal(done.evidence.requester.requesterId, "carol");
+});

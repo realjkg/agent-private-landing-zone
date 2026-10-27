@@ -376,7 +376,7 @@ test("seal writes a non-secret review bundle: the artifact's own fields and the 
   assert.deepEqual(Object.keys(bundle).sort(), [
     "artifactSha256", "authorizationSha256", "changes", "changesSha256", "channel", "contractSha256", "createdAt", "engineVersion", "environment", "manifestHash", "planSha256", "policyVersion", "provenance", "releaseIdentity", "request", "requesterId", "sourceCommit", "target", "targetSha256", "unit",
   ]);
-  assert.equal(bundle.requesterId, "carol", "approvers see who requested; it is part of the hash they sign");
+  assert.equal(bundle.requesterId, "dana", "approvers see who requested; it is part of the hash they sign");
   assert.equal(bundle.artifactSha256, s.artifactSha256);
   assert.equal(bundle.environment, "DEV");
   assert.equal(bundle.channel, "CLI", "the terminal CLI seals into the CLI channel, and the approvers' bundle says so");

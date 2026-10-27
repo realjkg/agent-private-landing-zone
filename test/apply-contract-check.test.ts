@@ -156,6 +156,23 @@ test("the Azure Terraform DEV example (docs/act-pilot-azure-terraform-g0.md) nam
   assert.equal(notGuid.complete, false);
 });
 
+test("a repeated-digit GUID tenant or subscription (11111111-1111-…, 00000000-…-0000) is an example value, never COMPLETE; a real-looking GUID stays PRESENT", () => {
+  const example = JSON.parse(readFileSync(join(ROOT, "config", "act-pilot-contract.azure-dev.example.json"), "utf8")) as Record<string, unknown>;
+  const dev = { tenantId: "4b1d7c2e-9a3f-4e6b-8c5d-2f7a9e1b3c4d", subscriptionId: "7e8f9a0b-1c2d-4e3f-9a5b-6c7d8e9f0a1b", backend: "fixturedevstate/tfstate/dev.tfstate", workspace: "pilot-dev" };
+  const filled = { ...example, policyVersion: "2026-10-11.1", targets: { DEV: dev }, approvers: [{ id: "pilot-owner", publicKeyPem: keys.alice.pub, environments: ["DEV"] }], killSwitchPath: ".runs/apply/STOP-DEV" };
+  assert.equal(checkDraftContract(filled).complete, true, "the control: a filled draft with real-looking GUIDs is COMPLETE");
+  for (const [field, value] of [
+    ["tenantId", "11111111-1111-1111-1111-111111111111"], ["subscriptionId", "00000000-0000-0000-0000-000000000000"],
+    ["tenantId", "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA"], ["subscriptionId", "ffffffff-ffff-ffff-ffff-ffffffffffff"],
+  ] as const) {
+    const report = checkDraftContract({ ...filled, targets: { DEV: { ...dev, [field]: value } } });
+    assert.deepEqual(report.shape, { ok: true }, value + " is a well-formed GUID, so only the example rule can catch it");
+    assert.equal(statusOf(report, "targets.DEV." + field), "EXAMPLE", value);
+    assert.match(report.inputs.find((x) => x.field === "targets.DEV." + field)!.detail!, /shipped example's fake identifier/);
+    assert.equal(report.complete, false, value + " is never COMPLETE");
+  }
+});
+
 test("each missing owner input is reported by its field in plain words, and the validator's refusal is attached to its field", () => {
   const missing = checkDraftContract({ ...completeDraft(), policyVersion: undefined, killSwitchPath: undefined, approvers: [] });
   assert.deepEqual(notReady(missing), ["policyVersion", "approvers", "killSwitchPath"]);

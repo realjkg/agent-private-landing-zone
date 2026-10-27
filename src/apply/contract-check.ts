@@ -62,8 +62,13 @@ export const CONTRACT_CHECK_GUARANTEES: readonly string[] = [
 ];
 
 const PLACEHOLDER = /REPLACE-WITH/i;
-/** The shipped examples' deliberately fake values: a repeated single character as an account identifier, and the `examplefake` buckets. */
+/**
+ * The shipped examples' deliberately fake values: a repeated single character as an account identifier (an AWS account id, or a
+ * GUID such as 11111111-1111-1111-1111-111111111111 or 00000000-0000-0000-0000-000000000000 once its hyphens are set aside),
+ * and the `examplefake` buckets.
+ */
 const REPEATED_CHARACTER = /^(.)\1+$/;
+const repeatedCharacter = (value: string): boolean => REPEATED_CHARACTER.test(value.replace(/-/g, ""));
 const EXAMPLE_BACKEND = /^examplefake/i;
 const EXAMPLE_KEY = "EXAMPLE";
 
@@ -113,9 +118,9 @@ function walker(examples: ReturnType<typeof shippedExampleValues>): Walk {
     } else if (typeof value === "string" && PLACEHOLDER.test(value)) {
       status = "PLACEHOLDER";
       detail = "still the shipped example's REPLACE-WITH placeholder";
-    } else if (kind === "account" && typeof value === "string" && REPEATED_CHARACTER.test(value)) {
+    } else if (kind === "account" && typeof value === "string" && repeatedCharacter(value)) {
       status = "EXAMPLE";
-      detail = "a repeated single character is the shipped example's fake identifier, not an account";
+      detail = "a repeated single character (a GUID's hyphens aside) is the shipped example's fake identifier, not an account";
     } else if (kind === "backend" && typeof value === "string" && EXAMPLE_BACKEND.test(value)) {
       status = "EXAMPLE";
       detail = "the shipped example's examplefake bucket, not a state bucket the owner provisioned";

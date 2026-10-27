@@ -1,6 +1,6 @@
 # The evidence runner: `./alz evidence`
 
-`./alz evidence` is the owner's local runner for the live evidence that blocks a release. It runs on the owner's own machine, against the owner's own accounts, and orchestrates the evidence producers that already exist. It never produces a document a producer did not write, never declares a LIVE label for the person, never initiates an apply, and never reads, stores or forwards a credential. ACT stays disabled: the runner does not change the pilot contract, the pin or any approval.
+`./alz evidence` is the owner's local runner for the live evidence that blocks a release. It runs on the owner's own machine, against the owner's own accounts, and orchestrates the evidence producers that already exist. It never produces a document a producer did not write, never declares a LIVE label for the person, never initiates an apply, and never reads, stores or forwards a credential. ACT stays disabled: the runner does not change the pilot contract, its `authorize` entry or any approval.
 
 The PLAN is on the coordination ledger (issue #39), with the owner's decisions it follows (6432901333) and the delegated decisions 2 to 5 (6433391052).
 
@@ -10,11 +10,11 @@ This is slice S1: the command, configuration, journal, preflight, status and dry
 
 | Stage | Slice | What it does |
 | --- | --- | --- |
-| `preflight` | S1 (built) | Clean checkout of the candidate, no mutation identity in the environment, the pilot pin's presence, each provider's identity against the expected one, the owner inputs, then the start attestation. |
+| `preflight` | S1 (built) | Clean checkout of the candidate, no mutation identity in the environment, whether the committed pilot contract carries an `authorize` entry, each provider's identity against the expected one, the owner inputs, then the start attestation. |
 | `aws-readonly` | S2 | Verify the account, check the owner's no-op stack read-only, run the AWS provider qualification under the federated qualification identity. |
 | `azure-readonly` | S3 | Verify the tenant and subscription, run the Azure provider qualification under the federated qualification identity. |
 | `gcp-readonly` | S4 | Held until the GCP lane's PLAN lands its gate and producer. |
-| `act`, `recovery`, `cleanup` | S5 | After the owner's pin only: a person at the terminal runs each existing `./alz apply` step and types every phrase. `recovery` and `cleanup` run only when named with `--stage`. |
+| `act`, `recovery`, `cleanup` | S5 | Only after the owner commits a reviewed contract with its `authorize` entry: a person at the terminal runs each existing `./alz apply` step and types every phrase. `recovery` and `cleanup` run only when named with `--stage`. |
 | `summary` | S6 | Index the evidence and run the release admission review. |
 
 ## Commands
