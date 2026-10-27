@@ -20,6 +20,7 @@ import { removeTree } from "../src/teardown/driver/cleanup.js";
 import {
   NOW, POLICY, SOURCE_COMMIT, behave as behaveIn, contractJson, identityEnv, installFakeTerraform, pinPathOf, targetOf, testFixtureForgeQualificationEvidence,
   writePinnedContract, writeProject, type Behavior, type Project,
+  requesterArgs,
 } from "./helpers/apply-fixtures.js";
 
 // The product-owned producer of the `act-run-recovery` release gate's evidence (src/apply/recovery-record.ts, `./alz apply
@@ -84,7 +85,7 @@ async function seal(w: World, salt: string): Promise<Sealed> {
   const target = targetOf("DEV");
   const project = writeProject(fresh("project"), target);
   const request = json({ environment: "DEV", target, projectRoot: project.projectRoot, policyVersion: POLICY, resolved: project.resolved }, "request");
-  const run = await cli(w, ["seal", "--request", request, "--manifest", json(project.manifest, "manifest")], [targetString(target), "RUN PROJECT CODE"]);
+  const run = await cli(w, ["seal", "--request", request, "--manifest", json(project.manifest, "manifest"), ...requesterArgs()], [targetString(target), "RUN PROJECT CODE"]);
   assert.equal(run.code, 0, run.stderr);
   const { sealedPlanPath } = JSON.parse(run.stdout) as { sealedPlanPath: string };
   const loaded = await loadSealedPlan(sealedPlanPath);
@@ -95,7 +96,7 @@ async function seal(w: World, salt: string): Promise<Sealed> {
 const evidenceFor = (w: World, s: Sealed, over: Partial<ApplyEvidence>): ApplyEvidence => ({
   schemaVersion: 1, environment: s.sealed.environment, target: { ...s.sealed.target }, artifactSha256: s.sealed.artifactSha256, manifestHash: s.sealed.manifestHash,
   releaseIdentity: s.sealed.releaseIdentity, contractSha256: pilotContractSha256(w.contract), sourceCommit: SOURCE_COMMIT,
-  approvals: [{ approverId: "alice", issuedAt: minutes(-30) }], adapter: { adapterVersion: "terraform-apply-1.0.0", argvDigest: "4".repeat(64) }, toolVersions: { engine: "1.9.5" },
+  approvals: [{ approverId: "alice", issuedAt: minutes(-30) }], requester: { requesterId: "carol", nonce: "0".repeat(32) }, adapter: { adapterVersion: "terraform-apply-1.0.0", argvDigest: "4".repeat(64) }, toolVersions: { engine: "1.9.5" },
   outcome: "SUCCEEDED", exitCode: 0, startedAt: minutes(-10), finishedAt: minutes(0), authority: APPLY_AUTHORITY, ...over,
 });
 /** Writes finished apply evidence into the ledger the way the driver does: a reservation, replaced by the evidence. */

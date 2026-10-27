@@ -35,6 +35,7 @@ import {
   AWS_DEV_TARGET, AWS_REGION, CANARIES, NOW, POLICY, SOURCE_COMMIT, STATE_CANARY, VALUE_CANARY, awsContractJson, awsIdentityEnv, awsReadCallsOf, awsRoleArn, awsTargetOf,
   approvalFor, behave as behaveIn, behaveAwsReads, callsOf, human, installFakeAwsReads, installFakeTerraform, keys, pinPathOf, stateResource, testFixtureForgeQualificationEvidence,
   writePinnedContract, writeProject, type AwsReadBehavior, type Behavior,
+  REQUESTER,
 } from "./helpers/apply-fixtures.js";
 
 // The AWS Terraform observe and cleanup steps (docs/observe-and-cleanup.md, docs/act-pilot-plan.md "Cleanup of pilot-created
@@ -122,7 +123,7 @@ const observeDeps = (w: World, now: Date = new Date(NOW.getTime() + 60_000)) => 
 async function seal(w: World, environment: ApplyEnvironment = "DEV", mainTf = 'resource "aws_s3_bucket" "logs" {}\n') {
   const target = awsTargetOf(environment);
   const p = writeProject(fresh("project"), target, mainTf);
-  const result = await sealPreview({ invocation: human(target), environment, target, manifest: p.manifest, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved }, w.deps);
+  const result = await sealPreview({ invocation: human(target), environment, target, manifest: p.manifest, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved, requester: REQUESTER }, w.deps);
   assert.ok(result.ok, JSON.stringify(result));
   const loaded = await loadSealedPlan(result.path);
   assert.ok(loaded.ok);

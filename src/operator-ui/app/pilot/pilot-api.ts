@@ -20,6 +20,8 @@ export type ReviewSummary = {
   shortId: string;
   /** The product version (source commit) that made the preview; approvers sign it with the change. */
   sourceCommit: string;
+  /** Who requested the change (their listed name): part of the change ID every approver signs. In PROD the requester cannot be an approver. */
+  requestedBy: string;
   createdAt: string;
   counts: ChangeCounts;
   changes: PlanChange[];
@@ -141,7 +143,7 @@ export const choosePath = (path: PilotPath): Promise<PilotReply> => send<PilotSt
 export const startOver = (): Promise<PilotReply> => send<PilotState>("POST", "/reset", {});
 export const startPreflight = (environment: PilotEnvironment): Promise<PilotReply> => send<PilotState>("POST", "/preflight", { environment });
 export const startPrepare = (input: { environment: PilotEnvironment; projectPath: string; awsCliVersion?: string }): Promise<PilotReply> => send<PilotState>("POST", "/prepare", input);
-export const startSeal = (input: { environment: PilotEnvironment; requestPath: string; manifestPath: string }): Promise<PilotReply> => send<PilotState>("POST", "/seal", input);
+export const startSeal = (input: { environment: PilotEnvironment; requestPath: string; manifestPath: string; requesterId: string; keyPath: string }): Promise<PilotReply> => send<PilotState>("POST", "/seal", input);
 export const startApprove = (input: { bundlePath: string; keyPath: string; approverId: string }): Promise<PilotReply> => send<PilotState>("POST", "/approve", input);
 export const startApply = (input: { environment: PilotEnvironment; requestPath: string; manifestPath: string; sealedPath: string; approvalPaths: string[] }): Promise<PilotReply> => send<PilotState>("POST", "/apply", input);
 export const answerDialog = (dialogId: string, answer: string): Promise<PilotReply> => send<PilotState>("POST", "/answer", { dialogId, answer });

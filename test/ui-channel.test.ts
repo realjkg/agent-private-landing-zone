@@ -22,6 +22,9 @@ import { SOURCE_COMMIT,
   installFakeAwsReads, installFakeTerraform, keys, pinPathOf, stateResource, targetOf, testFixtureForgeQualificationEvidence,
   writePinnedContract, writeProject, type Behavior, type Project,
   ARM_ACCESS_TOKEN_CANARY, ARM_FEDERATED_TOKEN_CANARY, DEV_TARGET, azureStateResource, fakeArmHttp,
+  REQUESTER,
+  requesterArgs,
+  requesterKeyFile,
 } from "./helpers/apply-fixtures.js";
 import { AWS_CLI_VERSION, CDK_CANARIES, awsCallsOf as cdkCallsOf, behaveAws, cdkContractJson, cdkIdentityEnv, cdkRoleArn, cdkTargetOf, forgeCdkQualification, installFakeAws, writeAssembly } from "./helpers/cdk-fixtures.js";
 
@@ -167,13 +170,13 @@ async function sealViaCli(w: World, environment: ApplyEnvironment = "DEV"): Prom
   const target = targetOf(environment);
   const project = writeProject(fresh("project"), target);
   const run = await cliRun({ ...w, cli: { ...w.cli, env: identityEnv(environment) } },
-    ["seal", "--request", requestFile(project, target, environment), "--manifest", json(project.manifest, "manifest")], [targetString(target), PHRASE]);
+    ["seal", "--request", requestFile(project, target, environment), "--manifest", json(project.manifest, "manifest"), ...requesterArgs()], [targetString(target), PHRASE]);
   assert.equal(run.code, 0, run.stderr);
   const result = JSON.parse(run.stdout) as { artifactSha256: string; sealedPlanPath: string; reviewBundlePath: string };
   return { project, target, environment, path: result.sealedPlanPath, bundle: result.reviewBundlePath, artifactSha256: result.artifactSha256 };
 }
 async function sealViaUi(port: number, project: Project, target: ResolvedTarget, environment: ApplyEnvironment = "DEV"): Promise<Sealed> {
-  const started = await call(port, "POST", "/pilot/seal", { body: { environment, requestPath: requestFile(project, target, environment), manifestPath: json(project.manifest, "manifest") } });
+  const started = await call(port, "POST", "/pilot/seal", { body: { environment, requestPath: requestFile(project, target, environment), manifestPath: json(project.manifest, "manifest"), requesterId: REQUESTER.requesterId, keyPath: requesterKeyFile() } });
   assert.equal(started.status, 202, started.text);
   const first = await waiting(port);
   assert.equal(first.run!.dialog!.kind, "TARGET");
@@ -357,6 +360,39 @@ test("the console starts only the nine named steps, from values the router turns
   assert.match(adapter, /channel: "UI"/);
 });
 
+test("/seal refuses a missing or unusable requester id, a missing key path and any extra field before a job exists", async () => {
+  const w = await world();
+  const { port } = await serve(w);
+  await choose(port);
+  const target = targetOf("DEV");
+  const project = writeProject(fresh("project"), target);
+  const valid = { environment: "DEV", requestPath: requestFile(project, target, "DEV"), manifestPath: json(project.manifest, "manifest"), requesterId: REQUESTER.requesterId, keyPath: requesterKeyFile() };
+  const { requesterId: _requesterId, ...withoutRequester } = valid;
+  const { keyPath: _keyPath, ...withoutKey } = valid;
+  const refused: [string, Record<string, unknown>][] = [
+    ["missing requesterId", withoutRequester],
+    ["empty requesterId", { ...valid, requesterId: "" }],
+    ["requesterId with a space", { ...valid, requesterId: "car ol" }],
+    ["requesterId with a newline", { ...valid, requesterId: "carol\nalice" }],
+    ["requesterId as an array", { ...valid, requesterId: [REQUESTER.requesterId] }],
+    ["requesterId as a number", { ...valid, requesterId: 7 }],
+    ["missing keyPath", withoutKey],
+    ["empty keyPath", { ...valid, keyPath: "" }],
+    ["keyPath as a flag", { ...valid, keyPath: "--yes" }],
+    ["extra privateKeyPem field", { ...valid, privateKeyPem: REQUESTER.privateKeyPem }],
+  ];
+  for (const [label, body] of refused) {
+    const reply = await call(port, "POST", "/pilot/seal", { body });
+    assert.equal(reply.status, 400, label + " -> " + reply.status);
+    assert.equal((await stateOf(port)).run, null, label + ": no job was started");
+  }
+  assert.deepEqual(engineCalls(), [], "no engine ran");
+  // The same body with every field valid is accepted, so each refusal above came from the one field it changed.
+  assert.equal((await call(port, "POST", "/pilot/seal", { body: valid })).status, 202);
+  await waiting(port);
+  await call(port, "POST", "/pilot/cancel", { body: {} });
+});
+
 test("the job route still refuses the pilot: the catalog's apply card is a handoff, and a job for it is not accepted", async () => {
   const w = await world();
   let ran = 0;
@@ -496,7 +532,7 @@ test("the same contract opt-in asks for the STATE_WRITE phrase in the console, a
   const target = targetOf("DEV");
   const project = writeProject(fresh("project"), target);
   const before = mutating().length;
-  await call(port, "POST", "/pilot/seal", { body: { environment: "DEV", requestPath: requestFile(project, target, "DEV"), manifestPath: json(project.manifest, "manifest") } });
+  await call(port, "POST", "/pilot/seal", { body: { environment: "DEV", requestPath: requestFile(project, target, "DEV"), manifestPath: json(project.manifest, "manifest"), requesterId: REQUESTER.requesterId, keyPath: requesterKeyFile() } });
   let state = await waiting(port);
   await call(port, "POST", "/pilot/answer", { body: { dialogId: state.run!.dialog!.id, answer: targetString(target) } });
   state = await until(port, (s) => s.run?.dialog?.kind === "RUN_PROJECT_CODE");
@@ -518,7 +554,7 @@ test("a wrong phrase in any dialog runs no engine and spends nothing; the right 
   await choose(port);
   const target = targetOf("DEV");
   const project = writeProject(fresh("project"), target);
-  const seal = { environment: "DEV", requestPath: requestFile(project, target, "DEV"), manifestPath: json(project.manifest, "manifest") };
+  const seal = { environment: "DEV", requestPath: requestFile(project, target, "DEV"), manifestPath: json(project.manifest, "manifest"), requesterId: REQUESTER.requesterId, keyPath: requesterKeyFile() };
   for (const wrong of ["", "nope", targetString(target).toUpperCase(), targetString(target) + " ", " " + targetString(target), targetString({ ...target, workspace: "other" })]) {
     await call(port, "POST", "/pilot/seal", { body: seal });
     const done = await answer(port, wrong);
@@ -562,7 +598,7 @@ test("a dialog that times out, or is canceled, ends the command with nothing run
   await choose(port);
   const target = targetOf("DEV");
   const project = writeProject(fresh("project"), target);
-  const seal = { environment: "DEV", requestPath: requestFile(project, target, "DEV"), manifestPath: json(project.manifest, "manifest") };
+  const seal = { environment: "DEV", requestPath: requestFile(project, target, "DEV"), manifestPath: json(project.manifest, "manifest"), requesterId: REQUESTER.requesterId, keyPath: requesterKeyFile() };
   await call(port, "POST", "/pilot/seal", { body: seal });
   const timedOut = await finished(port);
   assert.equal(timedOut.run!.result!.exit, 1);
@@ -590,7 +626,7 @@ test("one run at a time, and a stale answer is refused", async () => {
   await choose(port);
   const target = targetOf("DEV");
   const project = writeProject(fresh("project"), target);
-  const seal = { environment: "DEV", requestPath: requestFile(project, target, "DEV"), manifestPath: json(project.manifest, "manifest") };
+  const seal = { environment: "DEV", requestPath: requestFile(project, target, "DEV"), manifestPath: json(project.manifest, "manifest"), requesterId: REQUESTER.requesterId, keyPath: requesterKeyFile() };
   assert.equal((await call(port, "POST", "/pilot/seal", { body: seal })).status, 202);
   const first = await waiting(port);
   assert.equal((await call(port, "POST", "/pilot/seal", { body: seal })).status, 409);
@@ -610,7 +646,7 @@ test("a change set to run on the command line turns the console buttons off, and
   const { port } = await serve(w);
   const target = targetOf("DEV");
   const project = writeProject(fresh("project"), target);
-  const seal = { environment: "DEV", requestPath: requestFile(project, target, "DEV"), manifestPath: json(project.manifest, "manifest") };
+  const seal = { environment: "DEV", requestPath: requestFile(project, target, "DEV"), manifestPath: json(project.manifest, "manifest"), requesterId: REQUESTER.requesterId, keyPath: requesterKeyFile() };
   const before = await call(port, "POST", "/pilot/seal", { body: seal });
   assert.equal(before.status, 409);
   assert.equal(before.body.error, "PILOT_PATH_NOT_CHOSEN");
@@ -635,7 +671,7 @@ test("a request file for another environment than the one picked is stopped befo
   await choose(port);
   const target = targetOf("QA");
   const project = writeProject(fresh("project"), target);
-  const reply = await call(port, "POST", "/pilot/seal", { body: { environment: "DEV", requestPath: requestFile(project, target, "QA"), manifestPath: json(project.manifest, "manifest") } });
+  const reply = await call(port, "POST", "/pilot/seal", { body: { environment: "DEV", requestPath: requestFile(project, target, "QA"), manifestPath: json(project.manifest, "manifest"), requesterId: REQUESTER.requesterId, keyPath: requesterKeyFile() } });
   assert.equal(reply.status, 422);
   assert.equal(reply.body.error, "PILOT_ENVIRONMENT_MISMATCH");
   assert.equal((await stateOf(port)).run, null);
@@ -775,7 +811,7 @@ test("prepare in the console writes the request and manifest from the contract a
   assert.ok(data.files.request.startsWith(preparationDir) && data.files.manifest.startsWith(preparationDir));
   assert.deepEqual(engineCalls(), [], "preparation starts no engine");
 
-  const sealing = await call(port, "POST", "/pilot/seal", { body: { environment: "DEV", requestPath: data.files.request, manifestPath: data.files.manifest } });
+  const sealing = await call(port, "POST", "/pilot/seal", { body: { environment: "DEV", requestPath: data.files.request, manifestPath: data.files.manifest, requesterId: REQUESTER.requesterId, keyPath: requesterKeyFile() } });
   assert.equal(sealing.status, 202, sealing.text);
   const first = await waiting(port);
   await call(port, "POST", "/pilot/answer", { body: { dialogId: first.run!.dialog!.id, answer: targetString(target) } });
@@ -835,7 +871,7 @@ async function prepareAndSealInConsole(port: number, project: Project, target: R
   const prepared = (await finished(port)).run!.result!;
   assert.equal(prepared.exit, 0, JSON.stringify(prepared));
   const data = prepared.data as { files: { request: string; manifest: string }; summary: { provider: string; engine: string; account: string } };
-  assert.equal((await call(port, "POST", "/pilot/seal", { body: { environment: "DEV", requestPath: data.files.request, manifestPath: data.files.manifest } })).status, 202);
+  assert.equal((await call(port, "POST", "/pilot/seal", { body: { environment: "DEV", requestPath: data.files.request, manifestPath: data.files.manifest, requesterId: REQUESTER.requesterId, keyPath: requesterKeyFile() } })).status, 202);
   const first = await waiting(port);
   assert.equal(first.run!.dialog!.phrase, targetString(target));
   await call(port, "POST", "/pilot/answer", { body: { dialogId: first.run!.dialog!.id, answer: targetString(target) } });
@@ -1367,7 +1403,7 @@ async function prepareAndSealCdkInConsole(port: number, project: Project, target
   assert.equal(data.summary.engine, "CDK");
   assert.equal(data.summary.provider, "AWS");
   assert.equal(data.summary.account, target.account);
-  assert.equal((await call(port, "POST", "/pilot/seal", { body: { environment: "DEV", requestPath: data.files.request, manifestPath: data.files.manifest } })).status, 202);
+  assert.equal((await call(port, "POST", "/pilot/seal", { body: { environment: "DEV", requestPath: data.files.request, manifestPath: data.files.manifest, requesterId: REQUESTER.requesterId, keyPath: requesterKeyFile() } })).status, 202);
   const first = await waiting(port);
   assert.equal(first.run!.dialog!.kind, "TARGET");
   assert.equal(first.run!.dialog!.phrase, targetString(target));

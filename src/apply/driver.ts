@@ -9,7 +9,8 @@ import { writeEncryptedEvidence } from "../evidence/vault.js";
 import { interceptStopSignals } from "../tools/process.js";
 import { createPrivateDirectory } from "../tools/private-workdir.js";
 import { blueprintFromCloudFormationResources, blueprintFromTerraformStatePull } from "../observe/blueprint.js";
-import { consumeApprovals, verifyApprovalSet } from "./approval.js";
+import { consumeApprovals, requesterPublicKey, verifyApprovalSet, verifyRequestSignature } from "./approval.js";
+import { canonicalPublicKey } from "./contract.js";
 import { buildCleanupProposal, computeProposalSha256, protectedDeletionIn, verifyCleanupProposal, type CleanupProposal } from "./cleanup-proposal.js";
 import { pilotUnitOf } from "./unit.js";
 import {
@@ -93,6 +94,12 @@ export type SealRequest = {
   target: ResolvedTarget;
   /** Sealed into the plan and its hash (default `CLI`). The caller sets it, never a user flag. */
   channel?: PilotChannel;
+  /**
+   * Who requests the change: an allowlisted id and the private key of that very entry (the CLI reads the key file the
+   * person names; never the environment). Required to seal; a qualification run has none. The id is bound into the
+   * artifact hash and the key signs it, so every approver signs who requested (docs/act-pilot-plan.md, authority item 3).
+   */
+  requester?: { requesterId: string; privateKeyPem: string };
   manifest: ArtifactManifest;
   projectRoot: string;
   policyVersion: string;
@@ -196,6 +203,20 @@ async function planAgainstTarget(request: SealRequest, deps: SealDeps, kind: "se
   const engine = engineOf(admitted.contract);
   const sourceCommit = knownSource(deps);
   if (!sourceCommit) return refuse("SOURCE_UNVERIFIED", SOURCE_UNVERIFIED);
+  // A seal is requested by an allowlisted key, checked before any engine runs: the id must be on the contract's allowlist (any
+  // environment: the entry's environments govern approving) and the key handed in must be that entry's own.
+  if (kind === "seal") {
+    const requester = request.requester;
+    if (!requester || typeof requester.requesterId !== "string" || typeof requester.privateKeyPem !== "string") {
+      return refuse("REQUESTER_SIGNATURE_MISSING", "A plan is sealed by a requester: give the requester's allowlisted id and key file. Nothing ran.");
+    }
+    const entry = admitted.contract.approvers.find((a) => a.id === requester.requesterId);
+    if (!entry) return refuse("REQUESTER_NOT_ALLOWED", "The requester is not on the contract's allowlist. Nothing ran.");
+    const offered = requesterPublicKey(requester.privateKeyPem);
+    if (offered === undefined || offered !== canonicalPublicKey(entry.publicKeyPem)) {
+      return refuse("REQUESTER_KEY_MISMATCH", "The key given is not the allowlisted key of requester " + entry.id + ". Nothing ran.");
+    }
+  }
 
   let manifest: ArtifactManifest;
   try { manifest = verifyManifest(request.manifest); } catch { return refuse("ARTIFACT_INVALID", "The manifest is not valid or not sealed."); }
@@ -239,6 +260,7 @@ async function planAgainstTarget(request: SealRequest, deps: SealDeps, kind: "se
       pinned: admitted.contract.targets[request.environment]!, spec: admitted.spec, contractSha256: pilotContractSha256(admitted.contract), sourceCommit, provenance, toolDirs: deps.toolDirs, now: deps.now,
       embedStateWrite: admitted.contract.embedStateWrite === true,
       unit: pilotUnitOf({ provider: admitted.contract.provider, contractSha256: pilotContractSha256(admitted.contract), environment: request.environment, target: request.target }),
+      ...(kind === "seal" && request.requester ? { requester: { requesterId: request.requester.requesterId, privateKeyPem: request.requester.privateKeyPem } } : {}),
     };
     // An engine with its own qualification run (CDK: read-only steps, no change set) does that and nothing else.
     if (kind === "qualify" && engine.qualify) {
@@ -390,11 +412,14 @@ export async function runApply(request: ApplyRequest, deps: ApplyDeps): Promise<
   const promoted = await requirePromotionEvidence(request.environment, sealed.releaseIdentity, evidenceDir);
   if (!promoted.ok) return promoted;
 
-  // 8. Authenticated approvals bound to this artifact, environment and target. Verifying consumes nothing.
+  // 8. The requester signature verifies against the allowlist, then the authenticated approvals bound to this artifact, environment
+  // and target, none from the requester where the environment forbids it (PROD). Verifying consumes nothing.
   const nonces = deps.nonces ?? openNonceStore();
+  const requested = verifyRequestSignature({ request: sealed.request, artifactSha256: sealed.artifactSha256, environment: sealed.environment, requesterId: sealed.requesterId, contract });
+  if (!requested.ok) return refuse(requested.code, requested.message);
   const verdict = verifyApprovalSet({
     approvals: request.approvals, artifactSha256: sealed.artifactSha256, environment: sealed.environment, target: sealed.target,
-    contract, now: now(), nonces,
+    contract, now: now(), nonces, requester: requested,
   });
   if (!verdict.ok) return refuse(verdict.code, verdict.message);
 
@@ -466,13 +491,15 @@ export async function runApply(request: ApplyRequest, deps: ApplyDeps): Promise<
     if (late) return late;
     const readmitted = admit(deps, request);
     if (!readmitted.ok) return readmitted;
+    const reconfirmedRequest = verifyRequestSignature({ request: sealed.request, artifactSha256: sealed.artifactSha256, environment: sealed.environment, requesterId: sealed.requesterId, contract: readmitted.contract });
+    if (!reconfirmedRequest.ok) return refuse(reconfirmedRequest.code, reconfirmedRequest.message);
     const confirmed = verifyApprovalSet({
       approvals: request.approvals, artifactSha256: sealed.artifactSha256, environment: sealed.environment, target: sealed.target,
-      contract: readmitted.contract, now: now(), nonces,
+      contract: readmitted.contract, now: now(), nonces, requester: reconfirmedRequest,
     });
     if (!confirmed.ok) return refuse(confirmed.code, confirmed.message);
 
-    // 13. Approvals are consumed before the engine runs.
+    // 13. Approvals are consumed before the engine runs (the request signature is bound to the artifact, which the ledger applies once).
     const consumed = consumeApprovals(nonces, request.approvals);
     if (!consumed.ok) return refuse(consumed.code, consumed.message);
 
@@ -502,6 +529,7 @@ export async function runApply(request: ApplyRequest, deps: ApplyDeps): Promise<
     const evidence: ApplyEvidence = {
       schemaVersion: 1, environment: sealed.environment, target: { ...sealed.target }, artifactSha256: sealed.artifactSha256,
       manifestHash: sealed.manifestHash, releaseIdentity: sealed.releaseIdentity, contractSha256: sealed.contractSha256, sourceCommit: sealed.sourceCommit, approvals: confirmed.approvers,
+      requester: { requesterId: reconfirmedRequest.requesterId, nonce: sealed.request!.statement.nonce },
       adapter: { adapterVersion: engine.applyAdapter.adapterVersion, argvDigest: engine.applyAdapter.argvDigest },
       toolVersions: { engine: sealed.engineVersion }, outcome, exitCode: applied.exitCode, startedAt, finishedAt: now().toISOString(),
       authority: { ...APPLY_AUTHORITY, mutation: engine.mutation }, ...(kept.recovery ? { recovery: kept.recovery } : {}),

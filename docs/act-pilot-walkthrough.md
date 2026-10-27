@@ -83,7 +83,7 @@ The check always ends with a heads-up: whether the separate sign-ins really stay
 
 Start with **Get the files ready**: enter your **Project folder** (your Terraform folder, or the `cdk.out` folder) and choose the button. The console reads the owner's pilot rules and your project, and writes the two files the preview needs. It runs nothing and changes nothing. It shows what it found in plain words: the cloud, the build tool, the environment, the account, the place, the project folder, the tool version and the policy version, then fills in both boxes below. It also shows the **cleanup marker**: three labels your project's provider settings must put on everything the change creates (for AWS, `default_tags` in the provider block), so that a later check can find everything the change made. The preview step refuses a change whose created things do not carry them. These files are made on this computer only; they are not proof that anything works in the cloud. If the AWS CLI version is needed and no earlier check recorded it, a box appears to ask for it. If something is missing that only the owner can supply, the page says so and does not offer a way around it. The raw files are under **Advanced**.
 
-If you already have the files, enter two file locations instead, each with an example under the box: the **Request file** (names the environment, the place to change, and the project folder) and the **Project fingerprint file** (fingerprints the project so it cannot change after you prepare it). Choose **Prepare the change**. This makes a preview of exactly what would change and keeps it locked. It changes nothing yet.
+If you already have the files, enter two file locations instead, each with an example under the box: the **Request file** (names the environment, the place to change, and the project folder) and the **Project fingerprint file** (fingerprints the project so it cannot change after you prepare it). Then enter **Your requester name** (the name the owner listed for you) and **Your requester key file** (your own private key file on this computer, never uploaded or shown): the request is signed with it, and your name becomes part of the change ID every approver signs. Choose **Prepare the change**. This makes a preview of exactly what would change and keeps it locked. It changes nothing yet.
 
 Confirmations you may be asked, one at a time, each in a window that must be answered before you can go on:
 
@@ -100,6 +100,8 @@ Every window shows the phrase and a **Copy** button. The box starts empty. The c
 **What will change** is shown in plain words ("2 things will be created", "1 thing will be changed in place", and so on), then the full list. You see names and kinds of things, never values. If anything will be deleted, replaced, or stop being tracked, a note says so, and approvers must have read those lines before signing.
 
 How many approvals: DEV and QA need at least one. PROD needs two different people. The owner's pilot rules can require more.
+
+**Who may approve:** in DEV and QA the person who requested the change may also approve it. In production the requester and the two approvers must be three different people: an approval from the requester's name or key is refused.
 
 **Operator:** send each approver the review file whose location is shown. It holds no secrets. Each approver signs on their own computer and sends you back an approval file. Enter the locations of the approval files you receive, one per line, then choose **Continue to apply**.
 
@@ -179,7 +181,7 @@ The commands, in order. Operators run 1, 2, 3 and 5. Each approver runs 4 on the
 0. `./alz apply contract-check --file DRAFT.json` (the pilot owner, once, while filling in the contract: names every owner input the draft still lacks, reads only that file, and enables nothing; `docs/act-pilot-aws-terraform-g0.md`)
 1. `./alz apply preflight --environment DEV`
 2. `./alz apply prepare --environment DEV --project PROJECT_FOLDER` (prints the request and manifest locations to use next)
-3. `./alz apply seal --request REQUEST.json --manifest MANIFEST.json`
+3. `./alz apply seal --request REQUEST.json --manifest MANIFEST.json --requester NAME --key REQUESTER_KEY.pem` (the requester's listed name and own key file: the request is signed, and every approver signs who requested)
 4. `./alz apply approve --bundle REVIEW_FILE.json --key APPROVER_KEY.pem --approver NAME`
 5. `./alz apply apply --request REQUEST.json --manifest MANIFEST.json --sealed LOCKED_CHANGE --approval APPROVAL.json`
 6. `./alz apply status --sealed LOCKED_CHANGE` (anyone, afterward)

@@ -41,6 +41,8 @@ const SHAPE: Shape = {
   contractSha256: hash,
   sourceCommit: (v) => typeof v === "string" && COMMIT.test(v),
   approvals: [{ approverId: text, issuedAt: iso }],
+  // Who requested the change (the verified requester signature's id) and the nonce it carried: identifiers only, never the signature.
+  requester: { requesterId: text, nonce: (v) => typeof v === "string" && /^[a-f0-9]{32}$/.test(v) },
   adapter: { adapterVersion: text, argvDigest: hash },
   toolVersions: { engine: text },
   outcome: oneOf("SUCCEEDED", "FAILED_NO_CHANGE", "PARTIAL_REQUIRES_REVIEW", "KILLED"),

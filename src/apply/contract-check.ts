@@ -195,7 +195,7 @@ export function checkDraftContract(raw: unknown, examples: ReturnType<typeof shi
     items.push({
       field: "approvers (PROD quorum)", input: "enough approvers allowed for PROD to reach requiredApprovals.PROD (the second production approver)",
       status: prodApprovers >= needed ? "PRESENT" : "MISSING",
-      detail: prodApprovers + " approver(s) may sign for PROD; " + needed + " distinct approval(s) are required. The plan also says the requester cannot be one of them (docs/act-pilot-plan.md, authority item 3): not yet enforced in code, and required before G4",
+      detail: prodApprovers + " approver(s) may sign for PROD; " + needed + " distinct approval(s) are required, and none may come from the requester's key or id (docs/act-pilot-plan.md, authority item 3; refused at approve and at apply as APPROVER_IS_REQUESTER)",
     });
   }
   add("killSwitchPath", "the kill switch file path the pilot owner controls", raw.killSwitchPath, "killSwitchPath");
@@ -216,7 +216,7 @@ export function checkDraftContract(raw: unknown, examples: ReturnType<typeof shi
     { input: "the least-privilege scope of each principal, the budget, the retention and the tags", where: "the owner's bootstrap and policy decisions (docs/act-pilot-bootstrap.md, docs/act-dev-1.md); the deletion-unit tags are declared in the project's provider configuration and verified at seal (docs/act-pilot-plan.md, \"Deletion unit\")" },
     { input: "the execution host", where: "named in the G0 package (docs/act-pilot-aws-terraform-g0.md) and in the owner's live records (./alz apply record-live, ./alz apply preview-evidence --target-hardware-id)" },
     { input: "the pilot scope (what the one change creates) and the cleanup owner", where: "the G0 package; the sealed plan's change list is what approvers sign, and cleanup is proposed from the run's own records (./alz apply propose-cleanup)" },
-    { input: "the second production approver, when PROD is in scope", where: "the approvers list above, and requiredApprovals.PROD of at least 2; verified at apply as two distinct signatures. That neither is the requester's is the plan's rule, not yet enforced in code, and required before G4" },
+    { input: "the second production approver, when PROD is in scope", where: "the approvers list above, and requiredApprovals.PROD of at least 2; verified at apply as two distinct signatures, neither from the requester's key or id (the requester signs the sealed request with their own allowlisted key)" },
   ];
   const complete = shape.ok && items.every((item) => item.status === "PRESENT");
   return {
