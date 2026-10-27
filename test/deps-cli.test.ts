@@ -360,6 +360,70 @@ test("guided installer never calls a cached but wrong-version binary ready: it o
   assert.deepEqual(readdirSync(join(installed, "..", "..")), ["1.16.4"], "no partial or replaced folder is left beside it");
 });
 
+/** A download that sends one chunk, then waits until it is stopped, like a stalled connection. */
+function stalledDownload(onStart: () => void): DepsDeps["download"] {
+  return async (_url, signal) => Readable.from((async function* () {
+    yield Buffer.from("partial");
+    onStart();
+    await new Promise<void>((done) => { signal.addEventListener("abort", () => done(), { once: true }); });
+  })());
+}
+
+test("a cached copy with its completion marker whose program reports the wrong version is never ready: no download, a plain message, and the copy is kept", async () => {
+  const { installSelectedPinnedTools } = await import("../src/cli/deps.js");
+  const home = join(root, "home-cli-marked-wrong");
+  const installed = installedPath(home, "terraform", "1.16.4", "terraform");
+  fakeTool(join(installed, ".."), "terraform", "echo 'Terraform v0.0.1'");
+  writeInstallMarker(join(installed, ".."), { tool: "terraform", version: "1.16.4", binary: "terraform", sha256: "a".repeat(64), completedAt: new Date().toISOString() });
+  const before = readFileSync(installed, "utf8");
+  let downloaded = 0;
+  const term = terminal(true, ["1"]);
+  const result = await installSelectedPinnedTools(["terraform"], {
+    ...deps("marked-wrong", term, { download: async () => { downloaded++; return Readable.from([]); } }),
+  });
+  assert.deepEqual(result.installed, [], "a marked copy that reports the wrong version is never ready");
+  assert.deepEqual(result.skipped, ["terraform"]);
+  assert.equal(downloaded, 0, "no download for a copy that is already installed");
+  assert.match(term.shown.join(""), /still failed verification after installation, so it is not used\. Remove it from the \.\/alz deps menu, then install it again\./);
+  assert.equal(readFileSync(installed, "utf8"), before, "the copy is kept, not removed on its own");
+  assert.ok(existsSync(join(installed, "..", ".alz-installed.json")), "its marker is kept too");
+});
+
+test("a stop during one install ends the remaining selected installs instead of asking about the next tool", async () => {
+  const { installSelectedPinnedTools } = await import("../src/cli/deps.js");
+  const archive = fakeArchive("stop-rest");
+  const home = join(root, "home-cli-stop-rest");
+  const term = terminal(true, ["1", "1"]);
+  const exits: number[] = [];
+  const result = await installSelectedPinnedTools(["terraform", "ollama"], {
+    ...deps("stop-rest", term, {
+      home, env: { PATH: pathWith("stop-rest", { git: "echo 'git version 2.55.0'", terraform: "", ollama: "" }) },
+      download: stalledDownload(() => { process.kill(process.pid, "SIGINT"); }),
+      exit: (code) => { exits.push(code); },
+    }),
+    pinsPath: fakePins("stop-rest", archive.sha256),
+  });
+  assert.deepEqual(result.installed, []);
+  assert.deepEqual(result.skipped, ["terraform", "ollama"], "the tool after the stopped one is skipped, not asked about");
+  assert.equal(term.asked, 1, "only the first tool's menu was asked");
+  assert.match(term.shown.join(""), /The remaining installs were not started\./);
+  assert.deepEqual(exits, []);
+  assert.ok(!existsSync(join(home, ".alz", "tools", "ollama")), "the second tool's install never started");
+  // The same through ./alz deps: the second selected tool is not asked about either.
+  const menu = terminal(true, ["1", "", "1"]);
+  const lines: string[] = [];
+  const code = await runDepsCommand([], {
+    ...deps("stop-rest-menu", menu, {
+      home: join(root, "home-cli-stop-rest-menu"), env: { PATH: pathWith("stop-rest-menu", { git: "echo 'git version 2.55.0'", terraform: "", ollama: "" }) },
+      out: (text) => { lines.push(text); }, download: stalledDownload(() => { process.kill(process.pid, "SIGINT"); }), exit: () => undefined,
+    }),
+    pinsPath: fakePins("stop-rest-menu", archive.sha256),
+  });
+  assert.equal(code, 2);
+  assert.equal(menu.asked, 3, "the action, the selection and the first tool's question; the second tool is never asked");
+  assert.match(lines.join(""), /The remaining installs were not started\./);
+});
+
 test("each ./alz deps run leaves a private diagnostic log of its steps, with no paths, URLs or downloads in it", async () => {
   const archive = fakeArchive("logged");
   const term = terminal(true, ["1", "", "1"]);
@@ -383,15 +447,6 @@ test("each ./alz deps run leaves a private diagnostic log of its steps, with no 
   assert.match(text, /after /);
   assert.doesNotMatch(text, /https?:\/\/|\/home|\.alz\/tools/, "no URLs or paths in the log");
 });
-
-/** A download that sends one chunk, then waits until it is stopped, like a stalled connection. */
-function stalledDownload(onStart: () => void): DepsDeps["download"] {
-  return async (_url, signal) => Readable.from((async function* () {
-    yield Buffer.from("partial");
-    onStart();
-    await new Promise<void>((done) => { signal.addEventListener("abort", () => done(), { once: true }); });
-  })());
-}
 
 test("a stop signal during an install stops the download, removes what was started and says a rerun starts over; a second signal leaves at once", async () => {
   const archive = fakeArchive("signal");
