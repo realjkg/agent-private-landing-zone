@@ -79,7 +79,7 @@ For least privilege, APPLY needs `pubsub.topics.create` and `pubsub.topics.delet
 
 The engine uses the lighter of the two options: a minimal STS and IAM Credentials exchange, done in process. `gcloud` is not used, so no tool pin is added. The exchange follows the Azure reader's pattern (`src/observe/azure-rest.ts`):
 
-1. Read the identity's credential configuration with path 5's validator, `checkCredentialConfiguration` in `src/apply/providers/gcp.ts`, so one file has one verdict on both paths. It is accepted only when all of the following hold:
+1. Read the identity's credential configuration with path 5's validator, the shared `checkCredentialConfiguration` in `src/tools/gcp-credentials.ts` (re-exported by `src/apply/providers/gcp.ts`), so one file has one verdict on both paths. It is accepted only when all of the following hold:
    - it is a JSON object of at most 64 KiB;
    - its keys are within the allowlist `type`, `audience`, `subject_token_type`, `token_url`, `credential_source` and `universe_domain`;
    - it has no `service_account_impersonation_url` of its own, even one naming the same service account (P1). Impersonation is the identity's `GOOGLE_IMPERSONATE_SERVICE_ACCOUNT` only;

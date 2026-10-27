@@ -4,9 +4,10 @@ import { join } from "node:path";
 
 import { canonicalJson } from "../../teardown/manifest.js";
 import { ALZ_TAG_KEYS } from "../../teardown/unit.js";
+import { checkCredentialConfiguration } from "../../tools/gcp-credentials.js";
 import { identityVariables, type ExecutionIdentity } from "../../tools/identity.js";
 import { sha256 } from "../../util/sha256.js";
-import { GCP, checkCredentialConfiguration } from "../providers/gcp.js";
+import { GCP } from "../providers/gcp.js";
 import { requesterKeyRefusal, signRequest, verifyRequestSignature } from "../approval.js";
 import { HASH, TOKEN_FILE } from "../constants.js";
 import type { ApplyEnvironment, ApproverEntry, PilotContract, SealedRequest } from "../types.js";
@@ -211,7 +212,7 @@ function allowed(request: GcpHttpRequest, topic: string): boolean {
 type GoogleIdentity = { audience: string; subjectTokenType: string; tokenFile: string; serviceAccount: string };
 
 /**
- * The identity's credential configuration, judged by path 5's rules (src/apply/providers/gcp.ts), so one file has one verdict:
+ * The identity's credential configuration, judged by path 5's rules (src/apply/providers/gcp.ts and the shared src/tools/gcp-credentials.ts), so one file has one verdict:
  * first every identity in the environment together (no fallback variable, no identity carrying the operator's own
  * credentials, and no two identities sharing a service account, a credential configuration or a token file:
  * `IDENTITY_COLLAPSED`), then this identity's file (a workload identity federation file source by key allowlist, with no

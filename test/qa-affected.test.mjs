@@ -183,6 +183,19 @@ test("DISCOVERY scope bootstrap files select the synthetic checks and the policy
   assert.ok(planChanged(["bootstrap/aws/outputs.tf"], files).gaps.length > 0);
 });
 
+test("GCP bootstrap changes select their one focused test, and its absence is a gap", () => {
+  const files = fixture();
+  files.set("bootstrap/gcp/main.tf", 'resource "google_service_account" "identity" {}');
+  files.set("test/bootstrap-gcp.test.ts", "test()");
+  const changed = ["bootstrap/gcp/main.tf", "bootstrap/gcp/tests/bootstrap.tftest.hcl", "bootstrap/config.gcp.template.json"];
+  const plan = planChanged(changed, files);
+  assert.deepEqual(plan.nodeTests, ["test/bootstrap-gcp.test.ts"]);
+  assert.deepEqual(plan.gaps, []);
+  files.delete("test/bootstrap-gcp.test.ts");
+  assert.deepEqual(planChanged(changed, files).gaps, ["The GCP bootstrap has no focused test owner."]);
+  assert.match(planChanged(["bootstrap/gcpx/main.tf"], fixture()).gaps.join(), /no QA ownership rule/);
+});
+
 test("ACT-DEV-1 tfvars and Python handoff changes map to targeted synthetic tests", () => {
   const files=fixture();
   files.set("qualification/aws/act-dev1-canary/terraform.tfvars.example.json",'{"region":"us-east-2"}');

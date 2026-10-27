@@ -164,7 +164,7 @@ A job can request a token for any audience, so inside one job the identities are
 
 Copy the `terraform output` values into the template that matches your provider (`bootstrap/config.azure.template.json`, `bootstrap/config.aws.template.json`) to keep your own record, and then:
 
-1. Copy the `contractTargets` block into `config/act-pilot-contract.json` by hand, starting from the matching `config/act-pilot-contract*.example.json`. Add the approvers per `docs/act-pilot-apply.md`. Leave `enabled: false`.
+1. Copy the `contractTargets` block into `config/act-pilot-contract.json` by hand, starting from the matching `config/act-pilot-contract*.example.json` (for the Azure Terraform DEV-only pilot, `config/act-pilot-contract.azure-dev.example.json`; see `docs/act-pilot-azure-terraform-g0.md`). Add the approvers per `docs/act-pilot-apply.md`. Leave `enabled: false`.
 2. Set the `ALZ_<IDENTITY>_<VAR>` variables on the execution host from `identityVariables` (client ids or role ARNs, tenant and subscription or region, token file paths).
 3. Do **not** write the pin. Enabling the pilot and committing the hash is a separate reviewed change (`docs/act-pilot-apply.md`, "The contract and its pin").
 
@@ -189,6 +189,15 @@ az role assignment list --all --assignee 00000000-0000-0000-0000-0000000000d4 -o
 ```
 
 Repeat the login for each identity. STATE listing the container works and an upload fails with an authorization error; APPLY and DISCOVERY listing the container fail. A failure where success is expected is a trust or scope problem (see below).
+
+**Azure DISCOVERY scope.** What DISCOVERY may read is stated in "Read-only discovery scope" above (**Azure**): Reader on the pilot scope, control-plane `*/read` actions and no data actions, nothing on the state container. Within the control plane, a few reads return more than names and settings: Log Analytics and Application Insights queries, the activity log, deployment-history non-secure parameters and outputs, and non-secure configuration values. The scope bounds them, so keep DISCOVERY on the pilot resource group (`apply_resource_group_name`). For DEV that is the accepted setup (issue #39, comment 6444382695, item 4); a narrower custom role for QA and PROD is documented in `docs/act-pilot-azure-terraform-g0.md`, "DISCOVERY scope review".
+
+To check what was assigned, run as the owner:
+
+```bash
+az role definition list --name Reader --query '[].permissions[].{actions:actions, dataActions:dataActions}' -o json   # expect ["*/read"] and []
+az role assignment list --all --assignee 00000000-0000-0000-0000-0000000000d1 --query '[].{role:roleDefinitionName, scope:scope}' -o table   # the DISCOVERY client id (identity_client_ids.DISCOVERY)
+```
 
 **AWS** (token exchange, role assumption, policy check):
 
