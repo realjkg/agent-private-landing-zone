@@ -212,7 +212,7 @@ test("--out inside the repository is refused before anything is read, through an
   for (const out of [repoPaths().pin, join(repoPaths().root, "candidate.sha256"), join(repoPaths().root, "config", "..", "x.sha256"), join(link, "config", "candidate.sha256")]) {
     const run = await pin(w, ["--out", out]);
     assert.equal(run.code, 1, out);
-    assert.match(run.stderr, /^PIN_OUT_INSIDE_REPOSITORY/, out);
+    assert.match(run.stderr, /^APPLY_ARGUMENT_INVALID: --out must name a file outside the repository/, out);
     assert.equal(run.stdout, "", out);
     assert.equal(run.screen, "", out);
   }
@@ -232,10 +232,10 @@ test("--out outside the repository writes the candidate pin once, mode 0600, and
   assert.equal(statSync(out).mode & 0o777, 0o600);
   const again = await pin(w, ["--out", out]);
   assert.equal(again.code, 1);
-  assert.match(again.stderr, /^PIN_OUT_INVALID/);
+  assert.match(again.stderr, /^APPLY_ARGUMENT_INVALID: --out could not be created as a new file/);
   const missingDir = await pin(w, ["--out", join(root, "no-such-dir", "pin")]);
   assert.equal(missingDir.code, 1);
-  assert.match(missingDir.stderr, /^PIN_OUT_INVALID/);
+  assert.match(missingDir.stderr, /^APPLY_ARGUMENT_INVALID: --out: its directory must already exist/);
 });
 
 test("preparing a pin writes no repository file and leaves the shipped pin empty, READY or not", async () => {

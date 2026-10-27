@@ -796,7 +796,7 @@ function insideRepository(path: string): boolean {
     return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
   };
   let parent: string;
-  try { parent = realpathSync(dirname(path)); } catch { return fail("PIN_OUT_INVALID", "the --out directory must already exist"); }
+  try { parent = realpathSync(dirname(path)); } catch { return fail("APPLY_ARGUMENT_INVALID", "--out: its directory must already exist"); }
   return within(resolve(path)) || within(join(parent, basename(path)));
 }
 
@@ -817,7 +817,7 @@ const pinCommand: Command = async (flags, terminal, deps, out) => {
   if (!(ENVIRONMENTS as readonly string[]).includes(environment)) fail("APPLY_ARGUMENT_INVALID", "--environment must be DEV, QA or PROD");
   const outPath = flags.out?.[0] === undefined ? undefined : resolve(flags.out[0]);
   if (outPath !== undefined && insideRepository(outPath)) {
-    fail("PIN_OUT_INSIDE_REPOSITORY", "--out must name a file outside the repository; the pin file is written only by the owner's reviewed commit");
+    fail("APPLY_ARGUMENT_INVALID", "--out must name a file outside the repository; the pin file is written only by the owner's reviewed commit");
   }
   const path = deps.contractPath ?? repoPaths().contract;
   const raw = readInput(path, "the pilot contract");
@@ -880,7 +880,7 @@ const pinCommand: Command = async (flags, terminal, deps, out) => {
 
   if (ready && outPath !== undefined) {
     try { writeFileSync(outPath, pinContent!, { flag: "wx", mode: 0o600 }); } catch {
-      fail("PIN_OUT_INVALID", "--out could not be created as a new file; it is never overwritten");
+      fail("APPLY_ARGUMENT_INVALID", "--out could not be created as a new file; it is never overwritten");
     }
   }
 
