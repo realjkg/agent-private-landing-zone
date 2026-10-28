@@ -4,7 +4,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, w
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { diffCommand, EXIT_OVER_CAP, FIXTURE_OWNERS, importsOf, planChanged, routeOf, SOURCE_SCAN_GUARDS, TEMPLATE_OWNERS, UNIMPORTABLE_OWNERS } from "../scripts/qa-affected.mjs";
+import { CANARY_OWNERS, TERRAFORM_CANARY_UNIT_TEST, diffCommand, EXIT_OVER_CAP, FIXTURE_OWNERS, importsOf, planChanged, routeOf, SOURCE_SCAN_GUARDS, TEMPLATE_OWNERS, UNIMPORTABLE_OWNERS } from "../scripts/qa-affected.mjs";
 
 function fixture() {
   return new Map([
@@ -165,6 +165,47 @@ test("the ACT-DEV-1 canary's committed lock file is owned by the canary's synthe
   const plan = planChanged(["qualification/aws/act-dev1-canary/.terraform.lock.hcl"], files);
   assert.deepEqual(plan.pythonTests, ["test/act-dev1-automation.test.py"]);
   assert.deepEqual(plan.gaps, []);
+});
+
+test("each committed ACT-DEV-1 canary folder selects only its own focused test, and a missing owner is a gap", () => {
+  const cases = [
+    ["qualification/aws/act-dev1-cdk-canary/cdk.out/ActDev1CdkCanary.template.json", "test/act-dev1-cdk-canary.test.ts"],
+    ["qualification/aws/act-dev1-cdk-canary/package-lock.json", "test/act-dev1-cdk-canary.test.ts"],
+    ["qualification/azure/act-dev1-canary/.terraform.lock.hcl", "test/act-dev1-azure-canary.test.ts"],
+    ["qualification/azure/act-dev1-canary/main.tf", "test/act-dev1-azure-canary.test.ts"],
+    ["qualification/azure/act-dev1-bicep-canary/main.json", "test/act-dev1-bicep-canary.test.ts"],
+    ["qualification/azure/act-dev1-bicep-canary/main.bicep", "test/act-dev1-bicep-canary.test.ts"],
+  ];
+  for (const [path, owner] of cases) {
+    const files = fixture();
+    files.set(path, "{}");
+    for (const [, test] of CANARY_OWNERS) files.set(test, "test()");
+    const plan = planChanged([path], files);
+    assert.deepEqual(plan.nodeTests, [owner], path);
+    assert.deepEqual(plan.pythonTests, [], path);
+    assert.deepEqual(plan.gaps, [], path);
+    files.delete(owner);
+    assert.deepEqual(planChanged([path], files).gaps, [path + " has no focused canary test (" + owner + ")."], path);
+  }
+  // The Terraform AWS canary keeps its own Python owner; the CDK folder is not mistaken for it.
+  assert.ok(!CANARY_OWNERS.some(([folder]) => "qualification/aws/act-dev1-canary/main.tf".startsWith(folder)));
+});
+
+test("either Terraform canary also selects the seal-time unit-tag test beside its own owner", () => {
+  for (const [path, owner, python] of [
+    ["qualification/aws/act-dev1-canary/main.tf", undefined, ["test/act-dev1-automation.test.py"]],
+    ["qualification/azure/act-dev1-canary/main.tf", "test/act-dev1-azure-canary.test.ts", []],
+  ]) {
+    const files = fixture();
+    files.set(path, "{}");
+    files.set("test/act-dev1-automation.test.py", "main.tf");
+    files.set(TERRAFORM_CANARY_UNIT_TEST, "test()");
+    for (const [, test] of CANARY_OWNERS) files.set(test, "test()");
+    const plan = planChanged([path], files);
+    assert.deepEqual(plan.nodeTests, [owner, TERRAFORM_CANARY_UNIT_TEST].filter(Boolean).sort(), path);
+    assert.deepEqual(plan.pythonTests, python, path);
+    assert.deepEqual(plan.gaps, [], path);
+  }
 });
 
 test("AWS bootstrap boundary changes select ACT-DEV-1 synthetic checks", () => {

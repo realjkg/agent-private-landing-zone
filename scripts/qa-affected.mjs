@@ -119,6 +119,14 @@ export function acceptanceCited(files) {
 const RELEASE_STATUS_INPUT = /^(?:config\/release\/.+\.json|docs\/release-status\.md|config\/acceptance\/journeys\.json)$/;
 const RELEASE_STATUS_TEST = "test/release-status.test.ts";
 
+// The committed canary folders and the one focused test that owns each (see planChanged).
+/** Seals both Terraform canaries through the engine's unit-tag check; selected with either canary's own owner. */
+export const TERRAFORM_CANARY_UNIT_TEST = "test/act-dev1-terraform-unit-tags.test.ts";
+export const CANARY_OWNERS = Object.freeze([
+  ["qualification/aws/act-dev1-cdk-canary/", "test/act-dev1-cdk-canary.test.ts"],
+  ["qualification/azure/act-dev1-canary/", "test/act-dev1-azure-canary.test.ts"],
+  ["qualification/azure/act-dev1-bicep-canary/", "test/act-dev1-bicep-canary.test.ts"],
+]);
 function uniq(values) { return [...new Set(values)].sort(); }
 function hasFile(files, name) { return files.has(name); }
 function matching(files, re) { return [...files.keys()].filter(p => re.test(p)); }
@@ -289,11 +297,22 @@ export function planChanged(changedPaths, files) {
         /^bootstrap\/aws\/(?:(?:main|variables|discovery)\.tf|discovery-policy\.json|terraform\.tfvars\.example|tests\/discovery\.tftest\.hcl)$/.test(path) ||
         path === "tests_python/test_aws_dev_terraform_handoff.py") {
       addExisting(pythonTests, files, ["test/act-dev1-automation.test.py"]);
+      // The canary's seal-time unit-tag check (UNIT_TAG_MISSING) runs through the Terraform engine in a node test.
+      if (path.startsWith("qualification/aws/act-dev1-canary/")) addExisting(selected, files, [TERRAFORM_CANARY_UNIT_TEST]);
       // The DISCOVERY scope (owner decision 6440801434, item 2): its policy content is asserted by a focused node test.
       if (/^bootstrap\/aws\/(?:discovery|variables)\b|^bootstrap\/aws\/tests\/discovery\./.test(path)) addExisting(selected, files, ["test/discovery-scope.test.ts"]);
       if (!hasFile(files, "test/act-dev1-automation.test.py")) {
         gaps.push("ACT-DEV-1 Terraform canary has no focused test owner.");
       }
+      continue;
+    }
+    // The committed ACT-DEV-1 canaries (owner decision E3): project files no import reaches (a CDK app and its synthesized
+    // cdk.out, Terraform, Bicep and its compiled template, lock files). Each folder is owned by one focused test that reads it.
+    const canary = CANARY_OWNERS.find(([folder]) => path.startsWith(folder));
+    if (canary) {
+      addExisting(selected, files, [canary[1]]);
+      if (path.startsWith("qualification/azure/act-dev1-canary/")) addExisting(selected, files, [TERRAFORM_CANARY_UNIT_TEST]);
+      if (!hasFile(files, canary[1])) gaps.push(path + " has no focused canary test (" + canary[1] + ").");
       continue;
     }
     // The GCP bootstrap package (HCL, its mocked `terraform test` suite, the config template) is owned by one focused static test.
