@@ -2,6 +2,7 @@ import { lstatSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { stop } from "./engine.js";
+import { REVIEWED_PROVIDER_VERSIONS } from "./lockfile.js";
 
 /**
  * Terraform constructs the pilot refuses on every Terraform path (seal, apply and cleanup), whatever the provider, because each one
@@ -52,6 +53,8 @@ export const EPHEMERAL_NOT_ALLOWED = "TERRAFORM_EPHEMERAL_RESOURCE_NOT_ALLOWED";
 export const CONSTRUCTS_UNREADABLE = "TERRAFORM_CONFIGURATION_UNREADABLE";
 export const CONSTRUCTS_TOO_DEEP = "TERRAFORM_CONFIGURATION_TOO_DEEP";
 export const CONSTRUCTS_DUPLICATE_KEY = "TERRAFORM_CONFIGURATION_DUPLICATE_KEY";
+/** A bound lock pins aws or azurerm at a version the denied-type lists were not reviewed against (../lockfile.ts; review of #327, round 4). */
+export const PROVIDER_VERSION_NOT_REVIEWED = "PROVIDER_VERSION_NOT_REVIEWED";
 /** The source rule's lexical matches (review of #327, N3): the word may be in a comment or a string, which `sourceRuleHint` says. */
 export const PROVISIONER_WORD_IN_SOURCE = "TERRAFORM_PROVISIONER_WORD_IN_SOURCE";
 export const EPHEMERAL_WORD_IN_SOURCE = "TERRAFORM_EPHEMERAL_WORD_IN_SOURCE";
@@ -60,7 +63,10 @@ export const EPHEMERAL_WORD_IN_SOURCE = "TERRAFORM_EPHEMERAL_WORD_IN_SOURCE";
 export const sourceRuleHint = (code: string): string =>
   code === PROVISIONER_WORD_IN_SOURCE || code === EPHEMERAL_WORD_IN_SOURCE
     ? " The rule is lexical: the word may be in a comment or a string, which is refused too; rename it (docs/act-pilot-apply.md, \"Provisioners, actions and ephemeral resources\")."
-    : code === CONSTRUCTS_DUPLICATE_KEY ? " A .tf.json object repeats a key, which Terraform would read as two blocks; write each block once." : "";
+    : code === CONSTRUCTS_DUPLICATE_KEY ? " A .tf.json object repeats a key, which Terraform would read as two blocks; write each block once."
+    : code === PROVIDER_VERSION_NOT_REVIEWED ? " The lock file pins a provider version the denied-type lists were not reviewed against (reviewed: " +
+      Object.entries(REVIEWED_PROVIDER_VERSIONS).map(([source, version]) => source + " " + version).join(", ") +
+      "). Lock the reviewed version, or re-review the denied types against the new schema and change the reviewed version in a reviewed commit." : "";
 
 /**
  * What the plan judge's own refusal means, for the driver to surface at apply and cleanup instead of a generic engine failure
@@ -72,6 +78,7 @@ export function planJudgeRefusal(code: string): { refusal: "TARGET_NOT_IN_CONTRA
   const said = (refusal: "TARGET_NOT_IN_CONTRACT" | "ARTIFACT_INVALID", why: string) => ({ refusal, message: why + " (" + code + ")." + sourceRuleHint(code) });
   if (code === "PROVIDER_NOT_ADMITTED") return said("TARGET_NOT_IN_CONTRACT", "The plan uses a provider this release does not admit (azure/azapi or hashicorp/azuread)");
   if (code === "PROVIDER_TYPE_NOT_ALLOWED") return said("TARGET_NOT_IN_CONTRACT", "The plan uses a resource type that runs code or deploys a template instead of holding a resource, which the pilot refuses");
+  if (code === PROVIDER_VERSION_NOT_REVIEWED) return said("ARTIFACT_INVALID", "The lock file pins a provider version the pilot's denied-type lists were not reviewed against");
   if ([PROVISIONER_NOT_ALLOWED, ACTION_NOT_ALLOWED, EPHEMERAL_NOT_ALLOWED, PROVISIONER_WORD_IN_SOURCE, EPHEMERAL_WORD_IN_SOURCE, CONSTRUCTS_DUPLICATE_KEY, CONSTRUCTS_UNREADABLE, CONSTRUCTS_TOO_DEEP].includes(code)) {
     return said("ARTIFACT_INVALID", "The project uses a Terraform construct the pilot refuses (a provisioner, an action, an ephemeral resource, or a .tf.json file it cannot read exactly)");
   }

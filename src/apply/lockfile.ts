@@ -3,6 +3,9 @@
  * `./alz apply prepare` records what the lock file pins instead of asking the operator. Only the `provider "..."`
  * blocks and their `version = "..."` line are read; anything unexpected is refused rather than guessed.
  */
+import { AWS_DENIED_TYPES_REVIEWED_AGAINST } from "./providers/aws.js";
+import { AZURE_DENIED_TYPES_REVIEWED_AGAINST } from "./providers/azure.js";
+
 export type LockedProvider = { source: string; version: string };
 
 const SOURCE = /^[a-z0-9.-]+\/[a-z0-9_-]+\/[a-z0-9_-]+$/;
@@ -31,3 +34,33 @@ export function lockedProviders(text: string): LockedProvider[] {
   if (found.length === 0) throw new LockFileError("LOCK_FILE_EMPTY", "The lock file pins no providers. Run terraform init once in the project and commit the lock file.");
   return found.sort((a, b) => a.source.localeCompare(b.source));
 }
+
+/**
+ * The provider versions the pilot's denied-type lists were reviewed against, in full (review of #327, round 4): read from the
+ * one source of truth beside each list (`AWS_DENIED_TYPES_REVIEWED_AGAINST`, `AZURE_DENIED_TYPES_REVIEWED_AGAINST`). A newer
+ * schema can add a type that deploys a template or runs code at apply, which the lists would not name, so a lock file that pins
+ * either provider at any other version is refused (`PROVIDER_VERSION_NOT_REVIEWED`). Bumping a provider means re-reviewing the
+ * denied types against the new schema and changing the constant, in a reviewed commit. Other providers are not judged here.
+ */
+const reviewedVersionOf = (reviewed: string): [string, string] => {
+  const match = /^hashicorp\/([a-z0-9_-]+) (\d+\.\d+\.\d+)$/.exec(reviewed);
+  if (!match) throw new Error("A reviewed provider version is not of the form hashicorp/<name> <x.y.z>: " + reviewed);
+  return ["registry.terraform.io/hashicorp/" + match[1], match[2]];
+};
+export const REVIEWED_PROVIDER_VERSIONS: Readonly<Record<string, string>> = Object.freeze(Object.fromEntries(
+  [AWS_DENIED_TYPES_REVIEWED_AGAINST, AZURE_DENIED_TYPES_REVIEWED_AGAINST].map(reviewedVersionOf),
+));
+
+/** The first locked aws or azurerm provider whose version is not the reviewed one, or undefined. */
+export function unreviewedProviderVersion(providers: readonly LockedProvider[]): { source: string; locked: string; reviewed: string } | undefined {
+  for (const { source, version } of providers) {
+    const reviewed = REVIEWED_PROVIDER_VERSIONS[source];
+    if (reviewed !== undefined && version !== reviewed) return { source, locked: version, reviewed };
+  }
+  return undefined;
+}
+
+/** The operator's sentence for a refused version, naming both versions. */
+export const unreviewedVersionMessage = (found: { source: string; locked: string; reviewed: string }): string =>
+  "The lock file pins " + found.source + " " + found.locked + ", but the pilot's denied-type lists were reviewed against " + found.reviewed +
+  ". Lock " + found.reviewed + ", or re-review the denied types against the new schema and change the reviewed version in a reviewed commit before this version can be used.";

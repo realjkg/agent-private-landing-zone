@@ -21,6 +21,7 @@ import type { EngineApplyRun, EngineCleanupRun, EngineContext, EngineSpec } from
 import type { ProviderBlock, ProviderSpec, ProviderUse } from "../provider.js";
 import { isRecord } from "../providers/shared.js";
 import { assertNoRefusedPlanConstructs, assertNoRefusedSourceConstructs } from "../terraform-constructs.js";
+import { LockFileError, lockedProviders, unreviewedProviderVersion, type LockedProvider } from "../lockfile.js";
 import {
   APPLY_ADAPTER, APPLY_ARGV, APPLY_BACKEND_CONFIG_FILE, APPLY_INIT_ARGV, CLEANUP_ADAPTER, CLEANUP_APPLY_ARGV, CLEANUP_PLAN_FILE, CLEANUP_SHOW_ARGV, RECOVERY_FILES,
   classifyApply, cleanupPlanArgv, isAllowedApplyArgv, isAllowedCleanupArgv, parseStateSerial,
@@ -129,6 +130,22 @@ type WorkspaceInput = {
  * workspace. Locking stays on: there is no -lock flag in any argument list.
  * Nothing here changes state.
  */
+/**
+ * Refuses a bound lock file that pins hashicorp/aws or hashicorp/azurerm at any version but the reviewed one
+ * (`PROVIDER_VERSION_NOT_REVIEWED`, ../lockfile.ts). A lock with no provider block (a built-in-only project) has nothing to judge;
+ * one this reader cannot parse is refused. With no lock at all, init (-lockfile=readonly) installs no provider it does not pin.
+ */
+function assertReviewedProviderVersions(work: string): void {
+  let text: string;
+  try { text = readFileSync(join(work, ".terraform.lock.hcl"), "utf8"); } catch { return; }
+  let providers: LockedProvider[];
+  try { providers = lockedProviders(text); } catch (error) {
+    if (error instanceof LockFileError && error.code === "LOCK_FILE_EMPTY") return;
+    return stop("LOCK_FILE_UNREADABLE");
+  }
+  if (unreviewedProviderVersion(providers)) stop("PROVIDER_VERSION_NOT_REVIEWED");
+}
+
 function prepareWorkspace(session: Session, input: WorkspaceInput): void {
   const copyProblem = copyTree(input.snapshotPath, session.work);
   if (copyProblem) stop(copyProblem);
@@ -139,6 +156,9 @@ function prepareWorkspace(session: Session, input: WorkspaceInput): void {
   // No provisioner or ephemeral block in any Terraform file: `show -json` never lists an ephemeral resource or a `removed`
   // block's provisioner, and a plan or an apply would run them (../terraform-constructs.ts).
   assertNoRefusedSourceConstructs(session.work);
+  // The aws and azurerm versions the bound lock pins are the ones the denied-type lists were reviewed against (review of #327,
+  // round 4). Init runs with -lockfile=readonly, so this lock is exactly what it installs; at seal, apply and cleanup alike.
+  assertReviewedProviderVersions(session.work);
   // The project's own backend, cloud or state_store block is replaced: init builds only this type, with only the product's settings.
   session.pinBackend(input.backendType);
   session.assertBound();

@@ -17,6 +17,7 @@ import type { QualificationRecord } from "../../src/teardown/driver/qualificatio
 import type { ResolvedTarget } from "../../src/teardown/driver/types.js";
 import { buildManifest, canonicalJson, type ArtifactManifest } from "../../src/teardown/manifest.js";
 import { captureProjectFiles } from "../../src/teardown/snapshot.js";
+import { lockedProviders } from "../../src/apply/lockfile.js";
 
 // Shared by test/apply-driver, apply-seal and apply-terraform. Explicit fixtures
 // only: no real tenant, subscription, approver or credential. The engine is a
@@ -30,7 +31,7 @@ export const CANARIES = [PLAN_CANARY, VALUE_CANARY, STATE_CANARY, OUTPUT_CANARY]
 
 export const sha = (value: string | Buffer): string => createHash("sha256").update(value).digest("hex");
 export const H = (char: string): string => char.repeat(64);
-export const LOCK = '# lock\nprovider "registry.terraform.io/hashicorp/azurerm" {\n  version = "4.10.0"\n}\n';
+export const LOCK = '# lock\nprovider "registry.terraform.io/hashicorp/azurerm" {\n  version = "4.81.0"\n}\n';
 export const TENANT = "11111111-1111-4111-8111-111111111111";
 export const DEV_TARGET: ResolvedTarget = { account: "22222222-2222-4222-8222-222222222222", backend: "fixturedevstore/tfstate/dev.tfstate", workspace: "default" };
 export const QA_TARGET: ResolvedTarget = { account: "44444444-4444-4444-8444-444444444444", backend: "fixtureqastore/tfstate/qa.tfstate", workspace: "default" };
@@ -509,12 +510,13 @@ export async function testFixtureForgeQualificationEvidence(vaultDir: string, on
 // --- projects and approvals ----------------------------------------------------------------------
 
 export type Project = { projectRoot: string; manifest: ArtifactManifest; resolved: SealRequest["resolved"] };
-export function writeProject(projectRoot: string, target: ResolvedTarget, mainTf = 'resource "azurerm_resource_group" "pilot" {}\n'): Project {
+/** A project with `mainTf` and a lock file (`lock`, default `LOCK`), whose providers are read from the lock as prepare reads them. */
+export function writeProject(projectRoot: string, target: ResolvedTarget, mainTf = 'resource "azurerm_resource_group" "pilot" {}\n', lock = LOCK): Project {
   writeFileSync(join(projectRoot, "main.tf"), mainTf);
-  writeFileSync(join(projectRoot, ".terraform.lock.hcl"), LOCK);
+  writeFileSync(join(projectRoot, ".terraform.lock.hcl"), lock);
   const resolved: SealRequest["resolved"] = {
-    engineVersion: ENGINE_VERSION, providers: [{ source: "registry.terraform.io/hashicorp/azurerm", version: "4.10.0" }],
-    lockFileSha256: sha(LOCK), dependencies: [], inputs: [{ name: "region", identity: H("f") }],
+    engineVersion: ENGINE_VERSION, providers: lockedProviders(lock),
+    lockFileSha256: sha(lock), dependencies: [], inputs: [{ name: "region", identity: H("f") }],
   };
   const manifest = buildManifest({
     engine: "TERRAFORM", mode: "PROJECT", target, unitHash: H("1"), files: captureProjectFiles(projectRoot), policyVersion: POLICY, ...resolved,

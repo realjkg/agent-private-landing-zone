@@ -1,11 +1,10 @@
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync } from "node:fs";
 import test from "node:test";
 
 import { codeOf } from "../src/apply/engine.js";
 import type { ProviderBlock, ProviderUse } from "../src/apply/provider.js";
-import { AWS, AWS_DATA_SOURCES, AWS_DENIED_TYPES, AWS_DENIED_TYPES_REVIEWED_AGAINST } from "../src/apply/providers/aws.js";
-import { AZURE, AZURE_DATA_SOURCES, AZURE_DENIED_TYPES, AZURE_DENIED_TYPES_REVIEWED_AGAINST } from "../src/apply/providers/azure.js";
+import { AWS, AWS_DATA_SOURCES, AWS_DENIED_TYPES } from "../src/apply/providers/aws.js";
+import { AZURE, AZURE_DATA_SOURCES, AZURE_DENIED_TYPES } from "../src/apply/providers/azure.js";
 import { AWS_DEV_TARGET, AWS_REGION, DEV_TARGET, TENANT, awsIdentityEnv, awsRoleArn, identityEnv } from "./helpers/apply-fixtures.js";
 
 // Review of #320 (6451892239), N1, N2, N3 and N7. SYNTHETIC: the specs' functions are driven with the `show -json` and saved-backend
@@ -210,43 +209,4 @@ test("round 3 B1 (review of #327): one row per type the full-schema sweep found,
   // Their reviewed neighbors stay resources.
   assert.equal(azureJudge([managed("azurerm_kubernetes_cluster", azurerm), managed("azurerm_kusto_database", azurerm), managed("azurerm_policy_definition", azurerm)]), "OK");
   assert.equal(awsJudge([managed("aws_imagebuilder_image_recipe", aws), managed("aws_sagemaker_model", aws)]), "OK");
-});
-
-test("the denied types were reviewed against the full pinned schemas; a change of either pin fails until they are reviewed again", () => {
-  const STALE = "re-review the denied types against the new schema";
-  assert.equal(AWS_DENIED_TYPES_REVIEWED_AGAINST, "hashicorp/aws 6.68.0", STALE);
-  assert.equal(AZURE_DENIED_TYPES_REVIEWED_AGAINST, "hashicorp/azurerm 4.81.0", STALE);
-  const root = new URL("../", import.meta.url);
-  const read = (path: string): string => readFileSync(new URL(path, root), "utf8");
-  // The provider versions the repository's real-tool evidence was captured with (test/fixtures/live/MANIFEST.json) are the reviewed ones.
-  const manifest = read("test/fixtures/live/MANIFEST.json");
-  for (const [name, reviewed] of [["aws", AWS_DENIED_TYPES_REVIEWED_AGAINST], ["azurerm", AZURE_DENIED_TYPES_REVIEWED_AGAINST]] as const) {
-    const recorded = new Set([...manifest.matchAll(new RegExp("hashicorp/" + name + " (\\d+\\.\\d+\\.\\d+)", "g"))].map((m) => "hashicorp/" + name + " " + m[1]));
-    assert.deepEqual([...recorded], [reviewed], name + ": the evidence names another version; " + STALE);
-  }
-  // Every version constraint the repository commits for either provider, in Terraform files and in generated configuration, is the
-  // one recorded with the review. A widened or moved constraint admits another schema.
-  const found: string[] = [];
-  const walk = (dir: string): void => {
-    for (const entry of readdirSync(new URL(dir, root), { withFileTypes: true })) {
-      const path = dir + entry.name;
-      if (entry.isDirectory()) { if (!entry.name.startsWith(".") && entry.name !== "node_modules") walk(path + "/"); continue; }
-      if (!/\.(tf|ts)$/.test(entry.name)) continue;
-      const lines = read(path).split("\n");
-      lines.forEach((line, index) => {
-        const provider = /source\s*=\s*\\?"hashicorp\/(aws|azurerm)\\?"/.exec(line)?.[1];
-        const version = provider ? /version\s*=\s*\\?"([^"\\]+)\\?"/.exec(lines.slice(index + 1, index + 3).join("\n"))?.[1] : undefined;
-        if (provider) found.push(path + " " + provider + " " + (version ?? "UNCONSTRAINED"));
-      });
-    }
-  };
-  for (const dir of ["bootstrap/", "qualification/", "src/", "config/"]) walk(dir);
-  assert.deepEqual(found.sort(), [
-    "bootstrap/aws/versions.tf aws >= 5.0, < 7.0",
-    "bootstrap/azure/modules/environment/versions.tf azurerm ~> 4.0",
-    "bootstrap/azure/versions.tf azurerm ~> 4.0",
-    "qualification/aws/act-dev1-canary/main.tf aws >= 5.0.0, < 7.0.0",
-    "src/build/azure-terraform.ts azurerm >= 4.0, < 5.0",
-    "src/qualification/aws-terraform-agent.ts aws >= 5.0, < 7.0",
-  ], "a provider version constraint changed; " + STALE);
 });

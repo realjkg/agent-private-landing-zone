@@ -11,7 +11,7 @@ import { openNonceStore } from "../src/apply/nonces.js";
 import { loadSealedPlan } from "../src/apply/seal.js";
 import {
   ACTION_NOT_ALLOWED, CONSTRUCTS_DUPLICATE_KEY, CONSTRUCTS_TOO_DEEP, CONSTRUCTS_UNREADABLE, EPHEMERAL_NOT_ALLOWED, EPHEMERAL_WORD_IN_SOURCE, PROVISIONER_NOT_ALLOWED,
-  PROVISIONER_WORD_IN_SOURCE, sourceRuleHint, strictJson,
+  PROVISIONER_WORD_IN_SOURCE, planJudgeRefusal, sourceRuleHint, strictJson,
   assertNoRefusedSourceConstructs, assertNoRefusedPlanConstructs,
 } from "../src/apply/terraform-constructs.js";
 import type { ApplyEnvironment, SignedApproval } from "../src/apply/types.js";
@@ -443,4 +443,47 @@ test("AZURE (RB2): a module-nested use of an unreviewed or lookalike provider st
   h.behave(nested({ address: "azurerm_resource_group.g", mode: "managed", type: "azurerm_resource_group", name: "g", provider_config_key: "app.deep:azurerm" }));
   const ok = await h.sealWith(h.project());
   assert.ok(ok.ok, JSON.stringify(ok));
+});
+
+/**
+ * Real `terraform init` lock-file syntax (Terraform 1.16.4, offline mirror, 2026-10-27): the reviewed hashicorp/aws 6.68.0 and
+ * hashicorp/azurerm 4.81.0 entries as init wrote them, and hashicorp/null 3.2.4. `lockWith` swaps a version in place.
+ */
+const REAL_LOCK_SEAL = [
+  '# This file is maintained automatically by "terraform init".', "# Manual edits may be lost in future updates.", "",
+  'provider "registry.terraform.io/hashicorp/aws" {', '  version     = "6.68.0"', '  constraints = ">= 5.0.0, < 7.0.0"', "  hashes = [",
+  '    "h1:79hHQtjGSCiXBZK+VDiNUdI2SLXbNaHf+CHySvKFnvA=",', "  ]", "}", "",
+  'provider "registry.terraform.io/hashicorp/azurerm" {', '  version     = "4.81.0"', '  constraints = "4.81.0"', "  hashes = [",
+  '    "h1:olVprUWhmFTARlydw/r7VIx4fata2gy3zsAWfPGRrhg=",', "  ]", "}", "",
+  'provider "registry.terraform.io/hashicorp/null" {', '  version     = "3.2.4"', "}", "",
+].join("\n");
+const sealLockWith = (source: "aws" | "azurerm" | "null", version: string): string =>
+  REAL_LOCK_SEAL.replace(new RegExp('(provider "registry\\.terraform\\.io/hashicorp/' + source + '" \\{\\n  version     = ")[^"]+"'), "$1" + version + '"');
+
+for (const provider of PROVIDERS) {
+  test(provider.name + ": the seal refuses a bound lock that pins aws or azurerm at a version the denied types were not reviewed against, before init (review of #327, round 4)", async () => {
+    for (const [source, version] of [["aws", "6.69.0"], ["aws", "6.67.0"], ["azurerm", "4.82.0"], ["azurerm", "4.80.0"]] as const) {
+      const h = harness(provider);
+      const initsBefore = callsOf(toolDir).filter((c) => c.args[0] === "init").length;
+      const p = writeProject(fresh("project"), provider.target("DEV"), provider.mainTf, sealLockWith(source, version));
+      const refusedSeal = await h.sealWith(p);
+      assert.equal(refusedSeal.ok, false, source + " " + version);
+      assert.match((refusedSeal as { message: string }).message, /PROVIDER_VERSION_NOT_REVIEWED/, source + " " + version);
+      assert.match((refusedSeal as { message: string }).message, /reviewed: registry\.terraform\.io\/hashicorp\/aws 6\.68\.0, registry\.terraform\.io\/hashicorp\/azurerm 4\.81\.0\)/);
+      assert.equal(callsOf(toolDir).filter((c) => c.args[0] === "init").length, initsBefore, "no init ran");
+      assert.deepEqual(readdirSync(h.dirs.scratch), [], "no scratch directory survives");
+    }
+    // The exact reviewed versions seal, and another provider's version is not judged.
+    for (const lock of [REAL_LOCK_SEAL, sealLockWith("null", "3.2.5")]) {
+      const h = harness(provider);
+      const sealed = await h.sealWith(writeProject(fresh("project"), provider.target("DEV"), provider.mainTf, lock));
+      assert.ok(sealed.ok, JSON.stringify(sealed));
+    }
+  });
+}
+
+test("at apply and cleanup the same refusal surfaces by the judge's code and the reviewed versions (review of #327, round 4)", () => {
+  const judged = planJudgeRefusal("PROVIDER_VERSION_NOT_REVIEWED");
+  assert.equal(judged?.refusal, "ARTIFACT_INVALID");
+  assert.match(judged!.message, /\(PROVIDER_VERSION_NOT_REVIEWED\)\. The lock file pins a provider version the denied-type lists were not reviewed against \(reviewed: registry\.terraform\.io\/hashicorp\/aws 6\.68\.0, registry\.terraform\.io\/hashicorp\/azurerm 4\.81\.0\)/);
 });
