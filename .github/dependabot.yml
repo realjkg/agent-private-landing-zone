@@ -1,15 +1,17 @@
 version: 2
+# Release freeze (issue #39): version-update PRs are paused for every ecosystem.
+# Alerts and security scanning are unaffected. To restore, set each limit back to 5.
 updates:
   - package-ecosystem: npm
     directory: /
     schedule:
       interval: weekly
       day: monday
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 0
 
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
       day: monday
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 0

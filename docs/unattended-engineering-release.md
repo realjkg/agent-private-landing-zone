@@ -8,7 +8,7 @@ This document defines the implementation and acceptance contract for an unattend
 2. **Build:** A coding agent operates on an isolated branch with an explicit path allowlist, limited GitHub permissions and a bounded attempt budget.
 3. **Prove:** Run `node scripts/qa-affected.mjs local --base origin/main` before pushing, then use the repository's affected-code PR validation. Never treat a full regression as the normal iteration loop.
 4. **Review:** An independent identity inspects the exact-head diff and submits a qualifying review where required. The coding identity never self-approves.
-5. **Merge:** Native GitHub auto-merge waits for branch-required checks. The supersession veto and `automerge:approved-scope` gate remain effective.
+5. **Merge:** Native GitHub auto-merge waits for branch-required checks. The supersession veto and `automerge:approved-scope` gate remain effective. During the release freeze (issue #39) the workflow that enforced them is removed, so nothing is auto-merged; merges are manual.
 6. **Release:** Perform consolidated qualification against an immutable candidate; retain authentic evidence for any provider or packaged-install claim.
 
 ## Runner acceptance requirements
@@ -30,7 +30,7 @@ Use a disposable code-only issue with a small, deterministic test change. Captur
 ## Current status
 
 - Agent instruction profiles: present in `.github/agents/`.
-- Protected merge admission: present in `.github/workflows/reviewed-auto-merge.yml`.
+- Protected merge admission: `.github/workflows/reviewed-auto-merge.yml` is **removed for the release freeze** (issue #39). Restore it by reverting the freeze-control commit that removed it.
 - Hosted unattended coding runner: **not yet installed or qualified**.
 - Separate coding/reviewer identity: **not yet configured or qualified**.
 - AWS ACT: **not enabled by this contract**.
