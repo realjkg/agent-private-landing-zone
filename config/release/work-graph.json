@@ -91,7 +91,7 @@
       ],
       "gates": [],
       "blockedBy": "NOT STARTED in code: S1 to S7 are unbuilt (no GCP provider spec, no gcs rule in backend pinning, no reader, classifier, gates, emulated G1b or console parity), no bootstrap/gcp, and contract.ts still refuses GCP DEV-only scope; P3 and P5 stay owner bootstrap items",
-      "acceptance": "Authentic, owner-run under the full gates: bootstrap/gcp with WIF and four impersonated service accounts, one supervised DEV apply of one labeled Pub/Sub topic, cleanup, and evidence for the new gates act:gcp-terraform and gcp-provider. The gates are added only by this path's reviewed PRs.",
+      "acceptance": "Authentic, owner-run under the full gates: bootstrap/gcp with WIF and four impersonated service accounts, one supervised DEV apply of one labeled Pub/Sub topic, cleanup, and evidence for the new gate act:gcp-terraform and the existing gate gcp-provider. The gates are added only by this path's reviewed PRs.",
       "next": "G1: the GCP Terraform S1 lane builds the provider spec and identities (src/apply/providers/gcp.ts), after #297 adds a gcs backend rule; then G2 bootstrap/gcp (offline-validated) and G3 (S3 to S7). P1, P2 and P4 are fail-closed defaults (docs/act-dev-paths.md; coordinator defaults 6443800275)."
     },
     {
@@ -105,7 +105,7 @@
       ],
       "gates": [],
       "blockedBy": "NOT STARTED: no engine spec. The coordinator default (6443800275) is a typed request engine over the GCP REST API for an allowlisted kind; it reuses path 5's provider spec, identities, reader, classifier and bootstrap (G1, G3), which are not built",
-      "acceptance": "Authentic, owner-run: one supervised DEV apply of one labeled Pub/Sub topic through a sealed, allowlisted typed request (`topics.create`), verified by read-back and removed by `topics.delete`, with evidence for the new gates act:gcp-api and gcp-provider (shared with path 5). The gates are added only by this path's reviewed PRs.",
+      "acceptance": "Authentic, owner-run: one supervised DEV apply of one labeled Pub/Sub topic through a sealed, allowlisted typed request (`topics.create`), verified by read-back and removed by `topics.delete`, with evidence for the new gate act:gcp-api and the existing gate gcp-provider (shared with path 5). The gates are added only by this path's reviewed PRs.",
       "next": "N1: the GCP API lane builds the typed request engine (closed create/delete table sealed verbatim, ownership by labels, state from API responses) on top of path 5's provider spec; then N2 gates, tests and console parity (docs/act-dev-paths.md; coordinator defaults 6443800275)."
     },
     {
