@@ -25,3 +25,6 @@ bootstrap/**/terraform.tfstate.d
 bootstrap/**/*.tfvars
 !bootstrap/**/*.tfvars.example
 bootstrap/**/crash.log
+# A canary's local install and init folders (the committed canaries under qualification/ are copied for the tests).
+qualification/**/node_modules
+qualification/**/.terraform

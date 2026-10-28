@@ -1,0 +1,8 @@
+{
+  "/ActDev1CdkCanary/ActDev1": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "ActDev1"
+    }
+  ]
+}

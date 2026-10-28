@@ -1,0 +1,11 @@
+{
+  "app": "node app.js",
+  "versionReporting": false,
+  "pathMetadata": false,
+  "assetMetadata": false,
+  "context": {
+    "stackName": "alz-act-dev1-cdk-canary",
+    "canaryName": "/alz/act-dev-1/cdk-canary-01",
+    "owner": "REPLACE-WITH-APPROVED-OWNER"
+  }
+}

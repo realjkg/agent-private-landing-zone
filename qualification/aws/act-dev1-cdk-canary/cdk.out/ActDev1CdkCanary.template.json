@@ -1,0 +1,29 @@
+{
+ "Resources": {
+  "ActDev1": {
+   "Type": "AWS::Logs::LogGroup",
+   "Properties": {
+    "LogGroupName": "/alz/act-dev-1/cdk-canary-01",
+    "RetentionInDays": 30,
+    "Tags": [
+     {
+      "Key": "environment",
+      "Value": "DEV"
+     },
+     {
+      "Key": "managed-by",
+      "Value": "sovereign-alz"
+     },
+     {
+      "Key": "owner",
+      "Value": "REPLACE-WITH-APPROVED-OWNER"
+     },
+     {
+      "Key": "purpose",
+      "Value": "act-dev-1"
+     }
+    ]
+   }
+  }
+ }
+}
