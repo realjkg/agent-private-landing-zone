@@ -55,6 +55,8 @@ export type AwsBehavior = {
   badChange?: "unreadable" | "action"; describeGarbage?: boolean;
   /** The PilotTopic Modify's `Replacement` value instead of "True"; null leaves the field out. */
   modifyReplacement?: string | null;
+  /** Raw change rows describe-change-set appends to whatever list it reports (a Dynamic, an Import or a Remove of some resource). */
+  changeExtra?: unknown[];
   /** The fixed change list modifies the existing PilotTopic (Replacement per `modifyReplacement`) instead of adding it; the canary allowlist refuses a Modify. */
   topicModify?: boolean;
   /** describe-stacks prints more than the runner keeps. */
@@ -238,7 +240,7 @@ else if (cmd === "describe-change-set") {
   };
   // A CREATE change set adds every resource of its template, as CloudFormation's does (unless a test asks for the fixed list's Modify).
   const allAdd = () => Object.entries(a.changeSet.template.Resources || {}).map(([logical, resource]) => ({ Type: "Resource", ResourceChange: { Action: "Add", LogicalResourceId: logical, ResourceType: resource.Type } }));
-  const changes = b.noChanges ? [] : b.changesAllAdd && !a.stackTemplate ? allAdd()
+  const listed = b.noChanges ? [] : b.changesAllAdd && !a.stackTemplate ? allAdd()
     : b.diffChanges && a.stackTemplate && a.type === "UPDATE" ? diffed() : [
     ...(a.type === "CREATE" && !b.topicModify ? allAdd() : [
     { Type: "Resource", ResourceChange: { Action: "Add", LogicalResourceId: "PilotBucket", ResourceType: "AWS::S3::Bucket" } },
@@ -250,6 +252,7 @@ else if (cmd === "describe-change-set") {
     ...(b.badChange === "unreadable" ? [{ Type: "Hook" }] : []),
     ...(b.badChange === "action" ? [{ Type: "Resource", ResourceChange: { Action: "Teleport", LogicalResourceId: "Odd", ResourceType: "AWS::SQS::Queue" } }] : []),
   ];
+  const changes = [...listed, ...(b.changeExtra || [])];
   // What the change set reports about its execution follows the stack the fake last described.
   const execution = !a.executing ? "AVAILABLE" : /ROLLBACK|FAILED/.test(a.stack.status) ? "EXECUTE_FAILED" : /_COMPLETE$/.test(a.stack.status) ? "EXECUTE_COMPLETE" : "EXECUTE_IN_PROGRESS";
   // As the real AWS CLI v2 prints it (2.38.6, docs/act-pilot-simulation-cdk.md): it follows the change list's pages itself and prints each of the

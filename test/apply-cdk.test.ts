@@ -1352,6 +1352,44 @@ test("a CDK cleanup is refused before any change set exists when the stack is un
   assert.equal(after.record.resources.find((r) => r.address === "PilotBucket")?.disposition, "DELETION_PENDING", "the canceled update rolled back: the bucket is still there and the cleanup did not finish");
 });
 
+test("canary (CDK, owner decision E1): a change set that adds a Dynamic, an Import or a Remove beside the template's Adds is RESOURCE_NOT_IN_CANARY, each named; an AWS::CDK::Metadata resource the allowlist does not name is refused before any change set exists; and the apply's re-derivation judges the allowlist again", async () => {
+  const row = (Action: string, LogicalResourceId: string, ResourceType: string) => ({ Type: "Resource", ResourceChange: { Action, LogicalResourceId, ResourceType } });
+  for (const [label, extra, said] of [
+    ["Dynamic", row("Dynamic", "PilotBucket", "AWS::S3::Bucket"), /PilotBucket \(AWS::S3::Bucket\): the change set would dynamic it; the canary allows create only/],
+    ["Import", row("Import", "AdoptedTopic", "AWS::SNS::Topic"), /AdoptedTopic \(AWS::SNS::Topic\): the change set would import it; the canary allows create only/],
+    ["Remove", row("Remove", "OldQueue", "AWS::SQS::Queue"), /OldQueue \(AWS::SQS::Queue\): the change set would delete it; the canary allows create only/],
+  ] as const) {
+    const w = world({}, cdkContractJson(KILL), { changeExtra: [extra] });
+    const refusal = await sealRefused(w, "DEV");
+    assert.equal(refusal.code, "RESOURCE_NOT_IN_CANARY", label + ": " + JSON.stringify(refusal));
+    assert.match(refusal.message, said, label);
+    assert.ok(!calls().some((call) => call.args[1] === "execute-change-set"), label + ": nothing executed");
+  }
+  // The fixture's allowlist, written in its own order so the world keeps it (`autoCanary` follows only the fixture's exact allowlist).
+  const exact = cdkContractJson(KILL) as { targets: Record<string, Record<string, unknown>> };
+  for (const target of Object.values(exact.targets)) target.canary = { resources: [...CANARY_CDK.resources].reverse() };
+  const metadata = world({}, exact);
+  const refused = await sealRefused(metadata, "DEV", { resources: { CDKMetadata: { Type: "AWS::CDK::Metadata", Properties: { Analytics: "v2:deflate64:x" } } } });
+  assert.equal(refused.code, "RESOURCE_NOT_IN_CANARY", JSON.stringify(refused));
+  assert.match(refused.message, /CDKMetadata: type AWS::CDK::Metadata is not in the canary allowlist/);
+  assert.ok(!calls().some((call) => call.args[1] === "create-change-set"), "refused on the template, before any change set exists");
+  // The apply's re-derivation, directly on the engine: a change set sealed under one allowlist is judged again against the target it is applied to.
+  const w = world({}, undefined, { stackExists: true });
+  const s = await seal(w, "DEV");
+  const snapshot = createImmutableSnapshot(s.project.projectRoot, s.project.manifest, w.dirs.scratch);
+  try {
+    const narrow = cdkContractJson(KILL) as { targets: Record<string, Record<string, unknown>> };
+    narrow.targets.DEV.canary = { resources: [{ type: "AWS::S3::Bucket", count: 1 }] };
+    const engineRun = CDK.openApply({
+      scratchDir: fresh("direct"), env: cdkIdentityEnv("DEV"), toolDirs: [toolDir], manifest: s.project.manifest,
+      pinned: (loaded(narrow) as PilotContract).targets.DEV, spec: AWS, target: s.sealed.target, engineVersion: AWS_CLI_VERSION,
+    });
+    engineRun.prepare(snapshot.path);
+    assert.throws(() => engineRun.rederive(s.loaded.planBytes), (error: unknown) => codeOf(error) === "RESOURCE_NOT_IN_CANARY");
+    assert.ok(!calls().some((call) => call.args[1] === "execute-change-set"), "nothing executed");
+  } finally { snapshot.remove(); }
+});
+
 test("canary retain (owner decision E1): the CDK canary's WaitConditionHandle sentinel declared retain: true is kept as CANARY_RETAINED by the pilot owner, the cleanup removes the log group, and the lifecycle report passes showing the retention; without retain the sentinel is held TYPE_UNREVIEWED and the report does not pass; a retained count above the allowlist is never sealed; retain on any other type is refused", async () => {
   const CANARY_STACK = { CanaryLogGroup: { Type: "AWS::Logs::LogGroup", Properties: { RetentionInDays: 1 } }, Sentinel: { Type: "AWS::CloudFormation::WaitConditionHandle" } };
   const stack = (resources: Record<string, unknown>): AssemblyOptions => ({ mutate: (files) => { (files[STACK + ".template.json"] as { Resources: unknown }).Resources = resources; } });
@@ -1378,6 +1416,7 @@ test("canary retain (owner decision E1): the CDK canary's WaitConditionHandle se
   const kept = await journey({ type: "AWS::CloudFormation::WaitConditionHandle", count: 1, retain: true });
   assert.deepEqual(kept.proposal.excluded.map((x) => [x.address, x.ownership, x.retainedBy]), [["Sentinel", "CANARY_RETAINED", "PILOT_OWNER"]]);
   assert.match(kept.proposal.excluded[0]!.reason, /retain: true/);
+  assert.ok(kept.proposal.risks.some((r) => /sentinel the reviewed contract's canary allowlist marks retain: true is intentionally kept by the pilot owner/.test(r)), JSON.stringify(kept.proposal.risks));
   assert.equal(kept.leftovers.disposition, "COMPLETE");
   assert.deepEqual(kept.leftovers.resources.map((r) => [r.address, r.disposition, r.basis]), [["CanaryLogGroup", "CONFIRMED_DELETED", kept.leftovers.resources[0]!.basis], ["Sentinel", "INTENTIONALLY_RETAINED", "RETENTION_DECISION"]]);
   assert.equal(kept.report.passed, true, JSON.stringify(kept.report.stages));
@@ -1391,6 +1430,7 @@ test("canary retain (owner decision E1): the CDK canary's WaitConditionHandle se
   // Not declared: today's behavior, a type nobody reviewed as a leaf, held for a person, and the record never completes.
   const held = await journey({ type: "AWS::CloudFormation::WaitConditionHandle", count: 1 });
   assert.deepEqual(held.proposal.excluded.map((x) => [x.address, x.ownership]), [["Sentinel", "TYPE_UNREVIEWED"]]);
+  assert.ok(!held.proposal.risks.some((r) => /retain: true/.test(r)), "the sentinel risk is named only when one is retained");
   assert.equal(held.leftovers.disposition, "INCOMPLETE");
   assert.equal(held.report.passed, false);
   // More sentinels than the allowlist retains: never sealed (exact counts), so never created, and nothing to retain.

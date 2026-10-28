@@ -618,6 +618,10 @@ export function buildCleanupProposal(input: ProposalInput): { ok: true; proposal
   if (excluded.some((x) => PROTECTED_OWNERSHIPS.includes(x.ownership))) {
     risks.add("protected objects (resource groups, identities and grants, deployment history, the state backend) are intentionally retained and never on this list; retiring the environment itself is a separate, reviewed action and stays outstanding after this cleanup");
   }
+  // Owner decision E1: the protected objects above include a retained canary sentinel only by name here, so say so where one is kept.
+  if (excluded.some((x) => x.ownership === "CANARY_RETAINED")) {
+    risks.add("the no-cost sentinel the reviewed contract's canary allowlist marks retain: true is intentionally kept by the pilot owner and never on this list, so the cleanup never empties the stack; it is removed only when the environment is retired");
+  }
   const required = contract.requiredApprovals[evidence.environment];
   if (required === undefined) return refuse("TARGET_NOT_IN_CONTRACT", "The pilot contract does not enable " + evidence.environment + ".");
   // AUTHORIZED for CLEANUP by this contract, derived here (never taken from a caller), so a rebuild under a changed contract differs.

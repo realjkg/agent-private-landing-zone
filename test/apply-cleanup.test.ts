@@ -24,7 +24,7 @@ import { AWS_CONTAINER_FAMILIES, AWS_CONTAINER_PREFIXES, awsContainerFamilyOf, i
 import { AWS_LEAF_TYPES, AWS_LEAF_TYPE_NAMES, awsLeafConditionProblem, awsLeafEntryOf, awsParentIdOf, isAwsLeafType, isWellFormedResourceType, serviceControlPolicyProblem } from "../src/observe/aws-leaf-types.js";
 import { acceptanceOf, acceptanceStatement } from "../src/apply/lifecycle-report.js";
 import { CLEANUP_ADAPTER, CLEANUP_APPLY_ARGV, CLEANUP_SHOW_ARGV, cleanupPlanArgv, isAllowedCleanupArgv } from "../src/apply/terraform.js";
-import type { ApplyEnvironment, PilotContract, SignedApproval } from "../src/apply/types.js";
+import type { ApplyEnvironment, PilotContract, SealedPlan, SignedApproval } from "../src/apply/types.js";
 import { blueprintFromTerraformStatePull } from "../src/observe/blueprint.js";
 import { isAllowedReadArgv } from "../src/observe/aws-cli.js";
 import { readEncryptedEvidence } from "../src/evidence/vault.js";
@@ -1490,4 +1490,42 @@ test("R1: targetMoved is the one comparison: the run's target hash against the c
     assert.equal(targetMoved(run, moved as never, "DEV")?.code, "TARGET_NOT_IN_CONTRACT", JSON.stringify(change));
   }
   assert.equal(targetMoved(run, { ...base, provider: "AZURE" } as never, "DEV")?.code, "TARGET_NOT_IN_CONTRACT", "another provider");
+});
+
+test("a change list that names an update, a replace, a conditional replace, an import or a delete of a resource the plan named (a run sealed before the canary allowlist, or a CLEANUP of a target without one) never proposes deleting it: PRE_EXISTING, REPLACED_PRE_EXISTING or IMPORTED, kept by the environment's owner (review of #331, B1)", async () => {
+  // Five more log groups (a reviewed leaf type), each created by the plan the run sealed, so the blueprint holds them IN_PLAN with an identifier.
+  const NAMES = ["updated", "replaced", "conditional", "imported", "deleted"] as const;
+  const idOf = (name: string) => "/alz/pilot/" + name;
+  const arnOf = (name: string) => "arn:aws:logs:us-east-1:111111111111:log-group:" + idOf(name);
+  const creates = [...CREATES, ...NAMES.map((name) => ({ address: "aws_cloudwatch_log_group." + name, type: "aws_cloudwatch_log_group", change: { actions: ["create"], before: null, after: {} } }))];
+  const w = world(contractFor(creates));
+  behave({ showResources: creates, stateResources: [...STATE, ...NAMES.map((name) => stateResource("aws_cloudwatch_log_group", name, idOf(name), arnOf(name)))] });
+  cloud({ existing: [...EXISTING, ...NAMES.map(idOf)], tagged: [...TAGGED, ...NAMES.map(arnOf)] });
+  const run = await observed(w);
+  assert.ok(run.observation.record.resources.filter((r) => NAMES.some((name) => r.address.endsWith("." + name))).every((r) => r.result === "VERIFIED"), "each is present and verified");
+  const records = await loadRunRecords(run.s.sealed.artifactSha256, w.dirs.evidence);
+  assert.ok(records.ok, JSON.stringify(records));
+  assert.ok(records.blueprint.blueprint.entries.filter((e) => NAMES.some((name) => e.address.endsWith("." + name))).every((e) => e.origin === "IN_PLAN"));
+  // The change list a legacy record could carry for the same addresses.
+  const said: Record<(typeof NAMES)[number], Partial<SealedPlan["changes"][number]>> = {
+    updated: { action: "UPDATE" }, replaced: { action: "REPLACE" }, conditional: { action: "REPLACE_CONDITIONAL" }, imported: { action: "SAME", importing: true }, deleted: { action: "DELETE" },
+  };
+  const changes = run.s.sealed.changes.map((change) => {
+    const name = NAMES.find((n) => change.address === "aws_cloudwatch_log_group." + n);
+    return name ? { ...change, ...said[name] } : change;
+  });
+  const built = buildCleanupProposal({ requesterId: REQUESTER.requesterId, ...records, changes, channel: "CLI", contract: { ...(JSON.parse(JSON.stringify(w.contract)) as object), enabled: true } as never,
+    engineVersion: run.s.sealed.engineVersion, env: w.deps.env!, now: new Date(NOW.getTime() + 120_000) });
+  assert.ok(built.ok, JSON.stringify(built));
+  const kept = new Map(built.proposal.excluded.map((x) => [x.address, x]));
+  for (const [name, ownership] of [["updated", "PRE_EXISTING"], ["replaced", "REPLACED_PRE_EXISTING"], ["conditional", "REPLACED_PRE_EXISTING"], ["imported", "IMPORTED"], ["deleted", "PRE_EXISTING"]] as const) {
+    const address = "aws_cloudwatch_log_group." + name;
+    assert.equal(kept.get(address)?.ownership, ownership, address);
+    assert.equal(kept.get(address)?.retainedBy, "ENVIRONMENT_OWNER", address);
+    assert.ok(!built.proposal.deletes.some((d) => d.address === address), address + " is never proposed");
+  }
+  assert.match(kept.get("aws_cloudwatch_log_group.updated")!.reason, /existed before this run \(UPDATE\)/);
+  assert.match(kept.get("aws_cloudwatch_log_group.deleted")!.reason, /existed before this run \(DELETE\)/);
+  // What the run created and the change list says it created is still proposed.
+  assert.deepEqual(built.proposal.deletes.map((d) => d.address), ["aws_cloudwatch_log_group.canary", "aws_s3_bucket.logs", "aws_s3_bucket_versioning.logs"]);
 });
