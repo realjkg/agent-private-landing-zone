@@ -543,7 +543,7 @@
       "evidenceRefs": [],
       "testedScope": "Not tested for this release; excluded by the owner's scope decision.",
       "invalidatedBy": [
-        "the owner adds the path to the release scope"
+        "the owner returns the gate to the release scope"
       ],
       "nextAction": ""
     },
@@ -556,7 +556,7 @@
       "evidenceRefs": [],
       "testedScope": "Not tested for this release; excluded by the owner's scope decision.",
       "invalidatedBy": [
-        "the owner adds the path to the release scope"
+        "the owner returns the gate to the release scope"
       ],
       "nextAction": ""
     },
@@ -569,7 +569,7 @@
       "evidenceRefs": [],
       "testedScope": "Not tested for this release; excluded by the owner's scope decision.",
       "invalidatedBy": [
-        "the owner adds the path to the release scope"
+        "the owner returns the gate to the release scope"
       ],
       "nextAction": ""
     },
@@ -582,7 +582,7 @@
       "evidenceRefs": [],
       "testedScope": "Not tested for this release; excluded by the owner's scope decision.",
       "invalidatedBy": [
-        "the owner adds the path to the release scope"
+        "the owner returns the gate to the release scope"
       ],
       "nextAction": ""
     },
@@ -595,7 +595,7 @@
       "evidenceRefs": [],
       "testedScope": "Not tested for this release; excluded by the owner's scope decision.",
       "invalidatedBy": [
-        "the owner adds the path to the release scope"
+        "the owner returns the gate to the release scope"
       ],
       "nextAction": ""
     },
@@ -608,7 +608,7 @@
       "evidenceRefs": [],
       "testedScope": "Not tested for this release; excluded by the owner's scope decision.",
       "invalidatedBy": [
-        "the owner adds the path to the release scope"
+        "the owner returns the gate to the release scope"
       ],
       "nextAction": ""
     }

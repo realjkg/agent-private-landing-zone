@@ -92,7 +92,7 @@ The apply path already separates generic modules from per-provider and per-engin
 | DEV prerequisites | `bootstrap/gcp` (none exists): WIF pool and provider, four service accounts, versioned state bucket, budget, `iam.disableServiceAccountKeyCreation`. Pins: Terraform 1.16.4; `gcloud` only if the read-only evidence runner uses it. DEV-only exception: O1 is answered (6443352284: GCP Terraform DEV is in the DEV pilot scope, full gates), but `contract.ts` still refuses it; P1, P2 and P4 are adopted as fail-closed defaults. Owner items for the bootstrap: P3 (lock-version retention) and P5 (Data Access audit logs, may incur cost) |
 | Authorization | Contract names `provider: GCP`, `engine: TERRAFORM`, `projectId`, `region`, `backend "<bucket>/<prefix>"`, environment, operations. Identities: four WIF principals, each impersonating its own service account (the SA email is the attested principal); no key files; `google-beta` refused |
 | Failing tests | None (no tests in the repository). Matrix row `GCP TERRAFORM`: all NOT_IMPLEMENTED |
-| Authentic acceptance evidence | **Missing gates:** `act:gcp-terraform`, `gcp-provider` (LIVE_PROVIDER). `preview:terraform-gcp-brownfield` was dropped by the owner on 2026-10-28 (#39, 6480066863): OUT_OF_SCOPE, because GCP is out of this release |
+| Authentic acceptance evidence | **Missing gates:** `act:gcp-terraform`, `gcp-provider` (LIVE_PROVIDER). `preview:terraform-gcp-brownfield` was dropped by the owner on 2026-10-28 (#39, 6480066863): OUT_OF_SCOPE, because no GCP contract can seal a plan for it. The GCP brownfield preview is dropped; GCP Terraform ACT and GCP API-native ACT are in scope for this DEV release (#39, 6481421924) |
 
 ## Path 6: GCP API-native provisioning
 
