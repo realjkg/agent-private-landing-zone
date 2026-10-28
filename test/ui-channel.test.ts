@@ -24,7 +24,7 @@ import { SOURCE_COMMIT,
   ARM_ACCESS_TOKEN_CANARY, ARM_FEDERATED_TOKEN_CANARY, DEV_TARGET, azureStateResource, fakeArmHttp,
   REQUESTER,
   requesterArgs,
-  requesterKeyFile,
+  requesterKeyFile, canaryFor, withCanary,
 } from "./helpers/apply-fixtures.js";
 import { AWS_CLI_VERSION, CDK_CANARIES, awsCallsOf as cdkCallsOf, behaveAws, cdkContractJson, cdkIdentityEnv, cdkRoleArn, cdkTargetOf, forgeCdkQualification, installFakeAws, writeAssembly } from "./helpers/cdk-fixtures.js";
 
@@ -1060,8 +1060,9 @@ const CLEANUP_QUEUE = "https://sqs.us-east-1.amazonaws.com/111111111111/console-
 const CLEANUP_CREATES = [
   { address: "aws_s3_bucket.logs", type: "aws_s3_bucket", change: { actions: ["create"], before: null, after: {} } },
   { address: "aws_cloudwatch_log_group.canary", type: "aws_cloudwatch_log_group", change: { actions: ["create"], before: null, after: {} } },
-  { address: "aws_s3_bucket.state", type: "aws_s3_bucket", change: { actions: ["update"], before: {}, after: {} } },
 ];
+/** Owner decision E1: the run's contract names exactly the two creates; the state bucket is in the state only (a plan that updates it is never sealed). */
+const CLEANUP_CONTRACT = withCanary(awsContractJson(KILL, { policyVersion: POLICY }), canaryFor(CLEANUP_CREATES));
 const CLEANUP_STATE = [
   stateResource("aws_s3_bucket", "logs", CLEANUP_BUCKET, "arn:aws:s3:::" + CLEANUP_BUCKET), stateResource("aws_cloudwatch_log_group", "canary", CLEANUP_LOG, "arn:aws:logs:us-east-1:111111111111:log-group:" + CLEANUP_LOG),
   stateResource("aws_s3_bucket", "state", CLEANUP_STATE_BUCKET, "arn:aws:s3:::" + CLEANUP_STATE_BUCKET), stateResource("aws_sqs_queue", "preexisting", CLEANUP_QUEUE, "arn:aws:sqs:us-east-1:111111111111:console-preexisting"),
@@ -1073,13 +1074,14 @@ const CLEANUP_STRAY = "arn:aws:sqs:us-east-1:111111111111:stray-of-this-unit";
 /** The deletion unit of the DEV state container under the console's AWS contract: what the fake provider stamps on every created resource. */
 const CLEANUP_UNIT = (() => {
   const path = join(fresh("unit-contract"), "act-pilot-contract.json");
-  writeReviewedContract(path, awsContractJson(KILL, { policyVersion: POLICY }));
+  writeReviewedContract(path, CLEANUP_CONTRACT);
   return pilotUnitOf({ provider: "AWS", contractSha256: pilotContractSha256(loadPilotContract(path) as PilotContract), environment: "DEV", target: awsTargetOf("DEV") });
 })();
 
 /** An AWS console journey whose fake engine reports a state, with the fake AWS CLI the verifier reads through, in a second approved tool directory. */
 async function cleanupJourney() {
   const journey = await consoleJourney("AWS");
+  writeReviewedContract(journey.w.contractPath, CLEANUP_CONTRACT);
   behaveIn(toolDir, KILL, { applyAdvance: true, showProviderConfig: AWS_PROVIDER_CONFIG, showOnlyConfigured: true, showResources: CLEANUP_CREATES, stateResources: CLEANUP_STATE, unitTags: { ...CLEANUP_UNIT.tags } });
   behaveAwsReads(awsToolDir, { existing: CLEANUP_EXISTING, tagged: CLEANUP_TAGGED });
   // The same console, now able to find the aws program for the read-only verifier.
@@ -1252,8 +1254,9 @@ const AZ_STRAY = AZ_RG + "/providers/Microsoft.Storage/storageAccounts/strayofth
 const AZ_CREATES = [
   { address: "azurerm_resource_group.pilot", type: "azurerm_resource_group", change: { actions: ["create"], before: null, after: { tags: {} } } },
   { address: "azurerm_log_analytics_workspace.pilot", type: "azurerm_log_analytics_workspace", change: { actions: ["create"], before: null, after: { tags: {} } } },
-  { address: "azurerm_storage_account.state", type: "azurerm_storage_account", change: { actions: ["update"], before: {}, after: {} } },
 ];
+/** Owner decision E1: the run's contract names exactly the two creates; the state account is in the state only. */
+const AZ_CONTRACT = withCanary(contractJson(KILL, { policyVersion: POLICY }), canaryFor(AZ_CREATES));
 const AZ_STATE = [
   azureStateResource("azurerm_resource_group", "pilot", AZ_RG), azureStateResource("azurerm_log_analytics_workspace", "pilot", AZ_LAW),
   azureStateResource("azurerm_storage_account", "state", AZ_STATE_ACCOUNT), azureStateResource("azurerm_role_assignment", "old", AZ_OLD_ROLE),
@@ -1262,7 +1265,7 @@ const AZ_EXISTING = [AZ_RG, AZ_LAW, AZ_STATE_ACCOUNT, AZ_OLD_ROLE];
 const AZ_TAGGED = [AZ_RG, AZ_LAW];
 const AZ_UNIT = (() => {
   const path = join(fresh("unit-contract"), "act-pilot-contract.json");
-  writeReviewedContract(path, contractJson(KILL, { policyVersion: POLICY }));
+  writeReviewedContract(path, AZ_CONTRACT);
   return pilotUnitOf({ provider: "AZURE", contractSha256: pilotContractSha256(loadPilotContract(path) as PilotContract), environment: "DEV", target: targetOf("DEV") });
 })();
 /** The DISCOVERY identity's federated token, in a file as the owner's host provides it; its value is a canary that must never be seen again. */
@@ -1271,6 +1274,7 @@ const azTokenFile = (() => { const path = join(fresh("token"), "discovery-oidc-t
 /** An Azure console journey whose fake engine reports a state, with a scripted Azure Resource Manager the in-process reader reads through. */
 async function azureCleanupJourney() {
   const journey = await consoleJourney("AZURE");
+  writeReviewedContract(journey.w.contractPath, AZ_CONTRACT);
   behaveIn(toolDir, KILL, { applyAdvance: true, showOnlyConfigured: true, showResources: AZ_CREATES, stateResources: AZ_STATE, unitTags: { ...AZ_UNIT.tags }, unitTagAttribute: "tags" });
   const arm = fakeArmHttp({ existing: AZ_EXISTING, tagged: AZ_TAGGED });
   const w = { ...journey.w, cli: { ...journey.w.cli, env: { ...identityEnv("DEV"), ALZ_DISCOVERY_ARM_OIDC_TOKEN_FILE: azTokenFile }, observeArm: arm.http, proposalsDir: fresh("proposals") } };
@@ -1407,12 +1411,16 @@ test("the console refuses a cleanup proposal for the other channel, a malformed 
 
 // --- AWS CDK in the console (config/acceptance/journeys.json, the AWS/CDK row cites these titles exactly) -------------------
 
+const CDK_JOURNEY_CANARY = { resources: [{ type: "AWS::S3::Bucket", count: 1 }, { type: "AWS::SNS::Topic", count: 1 }, { type: "AWS::CloudFormation::WaitConditionHandle", count: 1, retain: true }] };
 /** A pinned CDK contract with a policy version, its three identities and qualification, a synthesized assembly for DEV, and the fake `aws` as the one tool. */
 async function cdkConsoleJourney() {
   // The fake derives an update's change list from the executed template (a removal shows as Remove), and a person protected the stack after its first create.
   behaveAws(cdkToolDir, KILL, { diffChanges: true, protectAfterCreate: true });
   const contractPath = join(fresh("contract"), "act-pilot-contract.json");
-  writeReviewedContract(contractPath, cdkContractJson(KILL, [], { policyVersion: POLICY }));
+  // Owner decision E1: the canary allowlist names the stack's three creates; the no-cost sentinel is retained at cleanup, so the removal never empties the stack.
+  const contract = cdkContractJson(KILL, [], { policyVersion: POLICY }) as { targets: Record<string, Record<string, unknown>> };
+  for (const t of Object.values(contract.targets)) t.canary = CDK_JOURNEY_CANARY;
+  writeReviewedContract(contractPath, contract);
   const vault = fresh("vault");
   await forgeCdkQualification(vault);
   const w: World = {
@@ -1425,7 +1433,7 @@ async function cdkConsoleJourney() {
   const { port } = await serve(w);
   await choose(port);
   const target = cdkTargetOf("DEV");
-  const project = writeAssembly(fresh("cdk.out"), target);
+  const project = writeAssembly(fresh("cdk.out"), target, { resources: { Sentinel: { Type: "AWS::CloudFormation::WaitConditionHandle" } } });
   return { w, port, target, project };
 }
 const cdkCalls = () => cdkCallsOf(cdkToolDir);
@@ -1464,7 +1472,7 @@ test("AWS CDK in the console: prepare from the cdk.out folder, preview the chang
   assert.deepEqual(reviewed.summary.target, target);
   assert.equal(reviewed.summary.sourceCommit, SOURCE_COMMIT, "approvers see the product commit they sign");
   assert.equal(reviewed.summary.preview.engineVersion, AWS_CLI_VERSION);
-  assert.deepEqual(reviewed.summary.changes.map((c: { address: string; action: string }) => [c.address, c.action]), [["PilotBucket", "CREATE"], ["PilotTopic", "REPLACE"]], "logical ids, types and actions: never a property");
+  assert.deepEqual(reviewed.summary.changes.map((c: { address: string; action: string }) => [c.address, c.action]), [["PilotBucket", "CREATE"], ["PilotTopic", "CREATE"], ["Sentinel", "CREATE"]], "logical ids, types and actions: never a property");
   noCdkCanary(reviewed);
   const approvalPath = await approveViaUi(port, sealed, "alice");
   const applied = await applyInConsole(port, prepared.files, sealed, [approvalPath], applyPhrase(sealed));
@@ -1484,15 +1492,16 @@ test("AWS CDK in the console: prepare from the cdk.out folder, preview the chang
   // Observe: the stack's resources under their CloudFormation types, the sweep by the unit the stack tags carry.
   const before = cdkCalls().length;
   const { observation, proposalPath, summary } = await observeAndProposeInConsole(port, sealed);
-  assert.equal(observation.verdict, "VERIFIED");
+  // The sentinel has no Cloud Control type, so it is named UNVERIFIABLE and the verdict is PARTIAL; the cleanup keeps it (CANARY_RETAINED) without reading it.
+  assert.equal(observation.verdict, "PARTIAL");
   assert.equal(observation.inventory, "COMPLETE");
-  assert.deepEqual(observation.resources.map((r) => [r.address, r.result]).sort(), [["PilotBucket", "VERIFIED"], ["PilotTopic", "VERIFIED"]]);
+  assert.deepEqual(observation.resources.map((r) => [r.address, r.result]).sort(), [["PilotBucket", "VERIFIED"], ["PilotTopic", "VERIFIED"], ["Sentinel", "UNVERIFIABLE"]]);
   const reads = cdkCalls().slice(before).filter((call) => call.args[0] !== "cloudformation");
   assert.ok(reads.length >= 3 && reads.every((read) => read.env.AWS_ROLE_ARN === cdkRoleArn("DISCOVERY", "DEV")), "the verifier read as DISCOVERY through the runner");
   assert.ok(reads.some((read) => read.args[0] === "resourcegroupstaggingapi" && read.args.includes("Key=alz-unit,Values=" + unit.unitId)), "the sweep asked for this change's own unit tag");
   // The proposal: the bucket this change created, by logical id; the replaced topic kept for the environment's owner; the stack itself never deleted.
-  assert.deepEqual(summary.deletes.map((d) => d.address), ["PilotBucket"]);
-  assert.deepEqual(summary.excluded.map((x) => [x.address, x.ownership, x.retainedBy]), [["PilotTopic", "REPLACED_PRE_EXISTING", "ENVIRONMENT_OWNER"]]);
+  assert.deepEqual(summary.deletes.map((d) => d.address), ["PilotBucket", "PilotTopic"]);
+  assert.deepEqual(summary.excluded.map((x) => [x.address, x.ownership, x.retainedBy]), [["Sentinel", "CANARY_RETAINED", "PILOT_OWNER"]]);
   assert.equal(summary.requiredApprovals, 1);
   const reviewedCleanup = (await call(port, "POST", "/pilot/review-cleanup", { body: { proposalPath } })).body;
   assert.equal(reviewedCleanup.ok, true, JSON.stringify(reviewedCleanup));
@@ -1507,7 +1516,7 @@ test("AWS CDK in the console: prepare from the cdk.out folder, preview the chang
   assert.equal(removed.run!.result!.exit, 0, JSON.stringify(removed.run!.result));
   const removal = removed.run!.result!.data as { outcome: string; deletes: string[]; authority: { executedAs: string; mutation: string }; artifactSha256: string };
   assert.equal(removal.outcome, "SUCCEEDED");
-  assert.deepEqual(removal.deletes, ["PilotBucket"]);
+  assert.deepEqual(removal.deletes, ["PilotBucket", "PilotTopic"]);
   assert.deepEqual(removal.authority, { infrastructureAct: "PILOT_ENABLED", mutation: "CLOUDFORMATION_EXECUTE_OF_REMOVAL_CHANGE_SET", executedAs: "APPLY", agentInitiated: false });
   assert.equal(removal.artifactSha256, sealed.artifactSha256);
   const steps = cdkCalls().slice(callsBefore).filter((call) => call.args[0] === "cloudformation");
@@ -1528,7 +1537,7 @@ test("AWS CDK in the console: prepare from the cdk.out folder, preview the chang
   assert.equal(verified.code, "CLEANUP_COMPLETE");
   const leftovers = verified.data as { disposition: string; nextAction: string; resources: { address: string; disposition: string; owner?: string }[] };
   assert.equal(leftovers.disposition, "COMPLETE");
-  assert.deepEqual(leftovers.resources.map((r) => [r.address, r.disposition, r.owner ?? null]), [["PilotBucket", "CONFIRMED_DELETED", null], ["PilotTopic", "INTENTIONALLY_RETAINED", "ENVIRONMENT_OWNER"]]);
+  assert.deepEqual(leftovers.resources.map((r) => [r.address, r.disposition, r.owner ?? null]), [["PilotBucket", "CONFIRMED_DELETED", null], ["PilotTopic", "CONFIRMED_DELETED", null], ["Sentinel", "INTENTIONALLY_RETAINED", "PILOT_OWNER"]]);
   assert.match(leftovers.nextAction, /environment retirement.*remains outstanding/);
   assert.ok(!/environment (is |was )?deleted|entire environment|stack (is |was )?deleted/.test(leftovers.nextAction), "the environment and the stack are never reported deleted");
   // A reconnect never removes twice.

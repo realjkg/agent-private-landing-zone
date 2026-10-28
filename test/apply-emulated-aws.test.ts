@@ -22,8 +22,7 @@ import { removeTree } from "../src/teardown/driver/cleanup.js";
 import { buildManifest } from "../src/teardown/manifest.js";
 import { captureProjectFiles } from "../src/teardown/snapshot.js";
 import {
-  AWS_DEV_TARGET, AWS_REGION, NOW, POLICY, REQUESTER, SOURCE_COMMIT, approvalFor, awsContractJson, awsIdentityEnv, awsRoleArn, human, sha, writeReviewedContract,
-} from "./helpers/apply-fixtures.js";
+  AWS_DEV_TARGET, AWS_REGION, NOW, POLICY, REQUESTER, SOURCE_COMMIT, approvalFor, awsContractJson, awsIdentityEnv, awsRoleArn, human, sha, writeReviewedContract, withCanary } from "./helpers/apply-fixtures.js";
 
 /**
  * OPT-IN SIMULATION (docs/act-pilot-simulation-aws.md), the AWS Terraform counterpart of test/apply-emulated.test.ts
@@ -182,6 +181,11 @@ describe("AWS emulated backend simulation: real Terraform, moto S3 with use_lock
   let env: NodeJS.ProcessEnv;
   let deps: ApplyDeps;
   let contractPath = "";
+  /**
+   * Owner decision E1: the contract names, as every target's canary allowlist, exactly the terraform_data resources the scenario's plan
+   * creates (the pilot resource, plus the kill test's slow ones), and each seal writes that allowlist before it plans.
+   */
+  const withTerraformDataCanary = (count: number) => withCanary(awsContractJson(KILL), { resources: [{ type: "terraform_data", count }] });
 
   before(async () => {
     process.env.AGENTIC_EVIDENCE_KEY = randomBytes(32).toString("base64");
@@ -202,7 +206,7 @@ describe("AWS emulated backend simulation: real Terraform, moto S3 with use_lock
 
     // The DEV contract names the fixture bucket and an obviously fake 12-digit account; QA and PROD are the fixture's other fakes.
     contractPath = join(fresh("contract"), "act-pilot-contract.json");
-    writeReviewedContract(contractPath, awsContractJson(KILL));
+    writeReviewedContract(contractPath, withTerraformDataCanary(1));
 
     // TEST FIXTURE: the qualification attestation is forged here because no person can attest an emulator run. It records the REAL
     // binary hash and version. It is not evidence of identity separation and must never be copied into production code.
@@ -273,8 +277,23 @@ describe("AWS emulated backend simulation: real Terraform, moto S3 with use_lock
     return { projectRoot, manifest, resolved };
   }
 
-  async function seal(input: string, extra = "") {
+  /**
+   * Owner decision E1: a canary run only creates, so every scenario starts from an empty workspace, as the owner's cleanup of the previous
+   * canary would leave it: what an earlier scenario applied is cleared from the state object (lineage kept, serial moved). The object stays.
+   */
+  async function emptyWorkspace(): Promise<void> {
+    const got = await emulator.s3("GET", "/" + STATE_KEY);
+    if (got.status !== 200) return;
+    const state = JSON.parse(got.body) as { serial: number; resources: unknown[] };
+    if (state.resources.length === 0) return;
+    const put = await emulator.s3("PUT", "/" + STATE_KEY, { "content-type": "application/json" }, JSON.stringify({ ...state, serial: state.serial + 1, resources: [], outputs: {} }));
+    assert.equal(put.status, 200, "the emptied state was written: " + put.body);
+  }
+
+  async function seal(input: string, extra = "", created = 1) {
+    await emptyWorkspace();
     const p = project(input, extra);
+    writeReviewedContract(contractPath, withTerraformDataCanary(created));
     const result = await sealPreview({
       invocation: human(AWS_DEV_TARGET), environment: "DEV", target: AWS_DEV_TARGET, manifest: p.manifest, projectRoot: p.projectRoot,
       policyVersion: POLICY, resolved: p.resolved, requester: REQUESTER,
@@ -405,7 +424,7 @@ describe("AWS emulated backend simulation: real Terraform, moto S3 with use_lock
   it("stops a running apply when the kill switch appears: Terraform is interrupted, the lock is released, the outcome is KILLED", async () => {
     // Provisioner-free (RB1: the judge refuses every provisioner). A wide count of built-in values keeps the real apply busy for
     // seconds; only the apply takes the native lock, so once it is held the apply is running, and the kill switch lands part-way.
-    const s = await seal("kill-during", `resource "terraform_data" "slow" {\n  count = ${SLOW_COUNT}\n  input = count.index\n}`);
+    const s = await seal("kill-during", `resource "terraform_data" "slow" {\n  count = ${SLOW_COUNT}\n  input = count.index\n}`, 1 + SLOW_COUNT);
     assert.equal(s.sealed.changes.length, SLOW_COUNT + 1, "the pilot value and every slow one are in the sealed change list");
     const before = await stateObject();
     let settled: ApplyResult | undefined;

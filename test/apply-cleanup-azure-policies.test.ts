@@ -17,8 +17,7 @@ import { pilotUnitOf } from "../src/apply/unit.js";
 import { removeTree } from "../src/teardown/driver/cleanup.js";
 import {
   ARM_FEDERATED_TOKEN_CANARY, DEV_TARGET, NOW, POLICY, SOURCE_COMMIT, approvalFor, azureStateResource, behave as behaveIn, callsOf, contractJson, fakeArmHttp, human, identityEnv,
-  installFakeTerraform, keys, targetOf, testFixtureForgeQualificationEvidence, writeReviewedContract, writeProject, REQUESTER, reHashedProposal, type ArmBehavior, type Behavior,
-} from "./helpers/apply-fixtures.js";
+  installFakeTerraform, keys, targetOf, testFixtureForgeQualificationEvidence, writeReviewedContract, writeProject, REQUESTER, reHashedProposal, type ArmBehavior, type Behavior, canaryFor, withCanary } from "./helpers/apply-fixtures.js";
 
 // Azure Terraform DEV removal, end to end with the fake engine and the fake Resource Manager (owner decision "Unpin the ACT decision",
 // item 2 (a) and (c), #39): the run's ordinary resources and its policy definitions, set definitions and assignments at the target
@@ -55,7 +54,7 @@ const CREATES = [
   change("azurerm_policy_definition.pilot"), change("azurerm_policy_set_definition.pilot"), change("azurerm_resource_group_policy_assignment.pilot"),
   change("azurerm_subscription_policy_assignment.pilot"), change("azurerm_resource_policy_assignment.pilot"),
   change("azurerm_management_group_policy_assignment.mg"), change("azurerm_policy_definition.other"), change("azurerm_resource_group_policy_exemption.pilot"), change("azurerm_role_assignment.pilot"),
-  change("azurerm_subscription_policy_assignment.shared", ["update"]),
+  // The shared assignment the run did not create is in the state only: a plan that updates it is never sealed (owner decision E1).
 ];
 const STATE = [
   azureStateResource("azurerm_resource_group", "pilot", RG), azureStateResource("azurerm_log_analytics_workspace", "pilot", LAW),
@@ -71,7 +70,9 @@ const DELETED = ["azurerm_log_analytics_workspace.pilot", "azurerm_policy_defini
   "azurerm_resource_policy_assignment.pilot", "azurerm_subscription_policy_assignment.pilot"];
 const PROTECTED = ["azurerm_management_group_policy_assignment.mg", "azurerm_policy_definition.other", "azurerm_resource_group_policy_exemption.pilot", "azurerm_role_assignment.pilot", "azurerm_subscription_policy_assignment.shared"];
 
-const fixtureContractPath = (() => { const path = join(fresh("contract"), "act-pilot-contract.json"); writeReviewedContract(path, contractJson(KILL)); return path; })();
+/** Owner decision E1: the run's contract names, as its canary allowlist, exactly what the plan creates. */
+const RUN_CONTRACT = withCanary(contractJson(KILL), canaryFor(CREATES));
+const fixtureContractPath = (() => { const path = join(fresh("contract"), "act-pilot-contract.json"); writeReviewedContract(path, RUN_CONTRACT); return path; })();
 const UNIT = pilotUnitOf({ provider: "AZURE", contractSha256: pilotContractSha256(loadPilotContract(fixtureContractPath) as PilotContract), environment: "DEV", target: targetOf("DEV") });
 const behave = (behavior: Behavior = {}) => behaveIn(toolDir, KILL, { applyAdvance: true, showOnlyConfigured: true, showResources: CREATES, stateResources: STATE, unitTags: { ...UNIT.tags }, unitTagAttribute: "tags", ...behavior });
 const calls = () => callsOf(toolDir);
@@ -88,7 +89,7 @@ function world(cloud: ArmBehavior = { existing: EXISTING, tagged: [RG, LAW] }): 
   behave();
   const dirs = { scratch: fresh("scratch"), evidence: fresh("evidence"), nonces: fresh("nonces") };
   const contractPath = join(fresh("contract"), "act-pilot-contract.json");
-  writeReviewedContract(contractPath, contractJson(KILL));
+  writeReviewedContract(contractPath, RUN_CONTRACT);
   const arm = fakeArmHttp(cloud);
   return {
     dirs, contractPath, arm,
@@ -115,7 +116,7 @@ async function proposed(w: World) {
   assert.ok(observation.ok, JSON.stringify(observation));
   const records = await loadRunRecords(s.sealed.artifactSha256, w.dirs.evidence);
   assert.ok(records.ok, JSON.stringify(records));
-  const built = buildCleanupProposal({ requesterId: REQUESTER.requesterId, ...records, changes: s.sealed.changes, channel: "CLI", contract: contractJson(KILL) as never, engineVersion: s.sealed.engineVersion, env: w.deps.env!, now: new Date(NOW.getTime() + 120_000) });
+  const built = buildCleanupProposal({ requesterId: REQUESTER.requesterId, ...records, changes: s.sealed.changes, channel: "CLI", contract: RUN_CONTRACT as never, engineVersion: s.sealed.engineVersion, env: w.deps.env!, now: new Date(NOW.getTime() + 120_000) });
   assert.ok(built.ok, JSON.stringify(built));
   return { s, proposal: signCleanupProposal(built.proposal, REQUESTER.privateKeyPem) };
 }

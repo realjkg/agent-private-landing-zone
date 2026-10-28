@@ -10,7 +10,8 @@
       "tenantId": "REPLACE-WITH-ENTRA-TENANT-ID",
       "subscriptionId": "REPLACE-WITH-DEV-SUBSCRIPTION-ID",
       "backend": "examplefakedevstate/tfstate/dev.tfstate",
-      "workspace": "default"
+      "workspace": "default",
+      "canary": { "resources": [{ "type": "azurerm_virtual_network", "count": 1 }] }
     }
   },
   "requiredApprovals": {

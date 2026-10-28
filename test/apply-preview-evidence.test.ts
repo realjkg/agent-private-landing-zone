@@ -6,7 +6,7 @@ import { join, relative } from "node:path";
 import test from "node:test";
 
 import { loadPilotContract } from "../src/apply/contract.js";
-import { buildPreviewGateEvidence, countChanges, previewGateEvidenceProblems, type PreviewGateEvidence } from "../src/apply/preview-evidence.js";
+import { admissionRecordOf, buildPreviewGateEvidence, countChanges, previewGateEvidenceProblems, type PreviewGateEvidence } from "../src/apply/preview-evidence.js";
 import { loadSealedPlan } from "../src/apply/seal.js";
 import type { PilotContract, SealedPlan } from "../src/apply/types.js";
 import { runApplyCommand, type ApplyCliDeps } from "../src/cli/apply.js";
@@ -81,8 +81,8 @@ async function cli(w: World, args: string[], answers: string[], over: Partial<Ap
   return { code, stdout: stdout.join(""), stderr: stderr.join(""), term };
 }
 type Sealed = { project: Project; path: string; sealed: SealedPlan };
-/** A sealed preview made by the fake engine; `behavior` shapes the plan the fake reports (brownfield by default). */
-async function seal(w: World, behavior: Behavior = BROWNFIELD): Promise<Sealed> {
+/** A sealed preview made by the fake engine; `behavior` shapes the plan the fake reports (greenfield by default: owner decision E1 seals creates only). */
+async function seal(w: World, behavior: Behavior = GREENFIELD): Promise<Sealed> {
   behave(behavior);
   const target = targetOf("DEV");
   const project = writeProject(fresh("project"), target);
@@ -93,6 +93,33 @@ async function seal(w: World, behavior: Behavior = BROWNFIELD): Promise<Sealed> 
   const loaded = await loadSealedPlan(sealedPlanPath);
   assert.ok(loaded.ok);
   return { project, path: sealedPlanPath, sealed: loaded.sealed };
+}
+/**
+ * Owner decision E1: a contract that authorizes APPLY seals creates only, and every seal is admitted as APPLY, so no brownfield plan can
+ * be sealed: the seal refuses it with RESOURCE_NOT_IN_CANARY. The brownfield preview gates are unsatisfiable until the owner decides
+ * (drop them from this release, or approve a separate non-appliable preview seal). The producer's own logic is still checked below on
+ * the record a brownfield seal would have made: a greenfield seal's record with one update of a pre-existing resource added (a test
+ * record, never sealed, so the CLI cannot read it from the vault; its checks go through the builder the CLI calls).
+ */
+async function brownfieldRefused(w: World, behavior: Behavior = BROWNFIELD, said: RegExp = /azurerm_virtual_network\.existing \(azurerm_virtual_network\): the plan would \["update"\] it/): Promise<void> {
+  behave(behavior);
+  const target = targetOf("DEV");
+  const project = writeProject(fresh("project"), target);
+  const request = json({ environment: "DEV", target, projectRoot: project.projectRoot, policyVersion: POLICY, resolved: project.resolved }, "request");
+  const run = await cli(w, ["seal", "--request", request, "--manifest", json(project.manifest, "manifest"), ...requesterArgs()], [targetString(target), "RUN PROJECT CODE"]);
+  assert.equal(run.code, 2, run.stdout);
+  assert.match(run.stderr, /^BLOCKED RESOURCE_NOT_IN_CANARY: /);
+  assert.match(run.stderr, said);
+}
+const UPDATE_EXISTING = { address: "azurerm_virtual_network.existing", type: "azurerm_virtual_network", action: "UPDATE" };
+const brownfieldOf = (s: Sealed, extra: SealedPlan["changes"] = [UPDATE_EXISTING]): Sealed => ({ ...s, sealed: { ...s.sealed, changes: [...s.sealed.changes, ...extra] } });
+/** Writes evidence the way the producer does (one file per gate and artifact) and returns its path and admission record. */
+function written(w: World, evidence: PreviewGateEvidence): { written: string; record: ReleaseGateSubmission } {
+  mkdirSync(w.releaseEvidenceDir, { recursive: true });
+  const path = join(w.releaseEvidenceDir, "record-" + evidence.gateId.replaceAll(":", "-") + "-" + evidence.artifactSha256.slice(0, 12) + "-" + (counter += 1) + ".json");
+  const bytes = JSON.stringify(evidence, null, 2) + "\n";
+  writeFileSync(path, bytes, { flag: "wx" });
+  return { written: path, record: admissionRecordOf(evidence, path, bytes) as ReleaseGateSubmission };
 }
 const phraseFor = (s: Sealed, gate = GATE): string => "PREVIEW LIVE " + gate.slice("preview:".length) + " " + s.sealed.artifactSha256.slice(0, 12);
 const produce = (w: World, s: Sealed, answers: string[], gate = GATE, host = HOST) => cli(w, ["preview-evidence", "--sealed", s.path, "--gate", gate, "--target-hardware-id", host], answers);
@@ -127,20 +154,30 @@ test("the gate's scenario is bound: every preview gate names one provider, engin
   assert.deepEqual({ ...counted, byAction: { ...counted.byAction } }, { total: 2, create: 1, preExistingTouched: 1, byAction: { CREATE: 1, UPDATE: 1 } });
 });
 
-test("preview-evidence writes LIVE evidence only from a qualified sealed preview of the gate's estate, made from this commit by the engine program on this machine, after the person attests the real target; the admission review accepts exactly that document (fixture attestation: synthetic evidence of the producer's contract, not of the gate)", async () => {
+test("preview-evidence writes LIVE evidence only from a qualified sealed preview of the gate's estate, made from this commit by the engine program on this machine, after the person attests the real target; the admission review accepts exactly that document (fixture attestation: synthetic evidence of the producer's contract, not of the gate); under owner decision E1 the brownfield preview itself is never sealed", async () => {
   const w = await world();
-  const s = await seal(w);
-  assert.equal(s.sealed.provenance.qualification.state, "QUALIFIED", "the fixture vault qualifies the preview adapter");
-  assert.ok(s.sealed.changes.some((c) => c.action !== "CREATE" && c.type !== "output"), "the plan touches a pre-existing resource: brownfield");
+  await brownfieldRefused(w);
+  // The CLI producer, on what can be sealed (a greenfield preview): it starts no engine and asks the attestation as a typed phrase, as record-live does.
+  const green = await seal(w);
+  assert.equal(green.sealed.provenance.qualification.state, "QUALIFIED", "the fixture vault qualifies the preview adapter");
   const before = engineCalls().length;
-  const run = await produce(w, s, [phraseFor(s)]);
+  const run = await produce(w, green, [phraseFor(green)]);
   assert.equal(run.code, 0, run.stderr);
   assert.equal(engineCalls().length, before, "recording evidence starts no engine");
-  assert.deepEqual(run.term.asked.map((a) => [a.kind, a.phrase]), [["ATTEST", phraseFor(s)]], "the attestation is asked as a typed phrase, as record-live does");
+  assert.deepEqual(run.term.asked.map((a) => [a.kind, a.phrase]), [["ATTEST", phraseFor(green)]]);
   assert.match(run.term.out.join(""), /Type this only if this preview ran the pinned, qualified TERRAFORM against the real AZURE target above/);
-  const { written, label, record } = JSON.parse(run.stdout) as { written: string; label: string; record: ReleaseGateSubmission };
-  const evidence = JSON.parse(readFileSync(written, "utf8")) as PreviewGateEvidence;
-  assert.equal(label, "LIVE");
+  // Written once: the same gate and artifact are never overwritten.
+  const again = await produce(w, green, [phraseFor(green)]);
+  assert.equal(again.code, 1);
+  assert.match(again.stderr, /^PREVIEW_EVIDENCE_EXISTS/);
+  assert.equal(readdirSync(w.releaseEvidenceDir).filter((n) => n.startsWith("preview-")).length, 1);
+  // The producer's builder on the record a brownfield seal would have made, attested.
+  const s = brownfieldOf(green);
+  assert.ok(s.sealed.changes.some((c) => c.action !== "CREATE" && c.type !== "output"), "the plan touches a pre-existing resource: brownfield");
+  const built = buildPreviewGateEvidence({ sealed: s.sealed, gateId: GATE, sourceCommit: SOURCE_COMMIT, targetHardwareId: HOST, engineProgramSha256Now: s.sealed.provenance.engineBinarySha256, contract: w.contract, attestedBy: "operator.fixture", now: NOW });
+  assert.ok(built.ok);
+  const evidence = built.evidence;
+  const { written: path, record } = written(w, evidence);
   assert.equal(evidence.label, "LIVE");
   assert.equal(evidence.executionMode, "LIVE_PREVIEW");
   assert.equal(evidence.passed, true);
@@ -156,19 +193,19 @@ test("preview-evidence writes LIVE evidence only from a qualified sealed preview
   assert.ok(evidence.changes.preExistingTouched >= 1 && evidence.changes.total === s.sealed.changes.filter((c) => c.type !== "output").length);
   assert.ok(evidence.checks.some((c) => c.name === "engine-qualification" && c.evidenceSha256 === (s.sealed.provenance.qualification as { evidenceHash: string }).evidenceHash));
   assert.deepEqual(previewGateEvidenceProblems(evidence, { sourceCommit: SOURCE_COMMIT, gateId: GATE }), []);
-  const text = readFileSync(written, "utf8");
+  const text = readFileSync(path, "utf8");
   for (const canary of CANARIES) assert.ok(!text.includes(canary), "no plan, state or output value reaches the evidence: " + canary);
   assert.ok(!text.includes(s.sealed.changes[0]!.address), "no address reaches the evidence: the change list is counted, not copied");
   // The record the owner adds to the admission manifest cites this very file, and the admission review finds the gate's evidence present.
-  assert.deepEqual(record, { id: GATE, mode: "LIVE_PREVIEW", sourceCommit: SOURCE_COMMIT, targetHardwareId: HOST, evidencePath: written, evidenceSha256: sha256(text) });
-  const reviewed = await admit(w, written, record);
+  assert.deepEqual(record, { id: GATE, mode: "LIVE_PREVIEW", sourceCommit: SOURCE_COMMIT, targetHardwareId: HOST, evidencePath: path, evidenceSha256: sha256(text) });
+  const reviewed = await admit(w, path, record);
   assert.deepEqual([reviewed.status, reviewed.blockers], ["EVIDENCE_PRESENT", []], "the producer's output is what the LIVE_PREVIEW gate accepts");
   // The same document never qualifies another gate: the CDK gate, the AWS Terraform gate, or a gate of another commit.
   for (const other of ["preview:cdk-aws-brownfield", "preview:terraform-aws-brownfield"]) {
-    const wrong = await admit(w, written, { ...record, id: other });
+    const wrong = await admit(w, path, { ...record, id: other });
     assert.deepEqual([wrong.status, wrong.blockers], ["BLOCKED", ["EVIDENCE_GATE_CONTRACT_FAILED"]], other + ": Terraform evidence for Azure never qualifies another provider or engine");
   }
-  assert.deepEqual((await admit(w, written, { ...record, sourceCommit: "f".repeat(40) })).blockers, ["EVIDENCE_IDENTITY_MISMATCH"]);
+  assert.deepEqual((await admit(w, path, { ...record, sourceCommit: "f".repeat(40) })).blockers, ["EVIDENCE_IDENTITY_MISMATCH"]);
   // The admission review runs the same validator as the producer: every document that is not a valid, LIVE preview-gate document of this
   // gate and commit is refused, not only one whose label disagrees with a present condition (review 6409586918, B1).
   const forge = async (label: string, document: unknown) => {
@@ -193,15 +230,12 @@ test("preview-evidence writes LIVE evidence only from a qualified sealed preview
   await forge("a relabeled synthetic document", relabeled);
   await forge("a LIVE document whose gate version is unknown", { ...evidence, gateVersion: 2 });
   await forge("a LIVE document of another commit", { ...evidence, sourceCommit: "0".repeat(40) });
-  // Written once: the same gate and artifact are never overwritten.
-  const again = await produce(w, s, [phraseFor(s)]);
-  assert.equal(again.code, 1);
-  assert.match(again.stderr, /^PREVIEW_EVIDENCE_EXISTS/);
-  assert.equal(readdirSync(w.releaseEvidenceDir).filter((n) => n.startsWith("preview-")).length, 1);
 });
 
 test("preview-evidence labels SYNTHETIC, and the gate refuses, a preview recorded without attestation, one whose plan is not the scenario's estate, one from another commit, an unqualified or changed engine program, or an unnamed host; a wrong phrase writes nothing", async () => {
   const w = await world();
+  // Owner decision E1: the brownfield preview is never sealed; the CLI paths below run on greenfield seals, the builder on the brownfield record.
+  await brownfieldRefused(w);
   const s = await seal(w);
   // Typing SYNTHETIC: the honest label for a fake engine, a test or a rehearsal.
   const synthetic = await produce(w, s, ["SYNTHETIC"]);
@@ -209,19 +243,20 @@ test("preview-evidence labels SYNTHETIC, and the gate refuses, a preview recorde
   const out = JSON.parse(synthetic.stdout) as { written: string; label: string; reasons: string[]; record: ReleaseGateSubmission; next: string };
   const evidence = JSON.parse(readFileSync(out.written, "utf8")) as PreviewGateEvidence;
   assert.deepEqual([out.label, evidence.label, evidence.executionMode, evidence.passed, evidence.simulation, evidence.attestation], ["SYNTHETIC", "SYNTHETIC", "SYNTHETIC_PREVIEW", false, true, null]);
-  assert.deepEqual(evidence.reasons, ["no person attested that this preview ran the pinned engine against the real target; a fake engine, a test or a rehearsal writes the same records"]);
+  assert.ok(evidence.reasons.includes("no person attested that this preview ran the pinned engine against the real target; a fake engine, a test or a rehearsal writes the same records"), JSON.stringify(evidence.reasons));
+  assert.equal(evidence.reasons.length, 2, "and the greenfield plan is not the brownfield estate");
   assert.match(out.next, /never passes the release gate/);
   assert.deepEqual(previewGateEvidenceProblems(evidence), []);
   assert.deepEqual((await admit(w, out.written, out.record)).blockers, ["EVIDENCE_GATE_CONTRACT_FAILED"], "synthetic evidence never closes the live gate");
   // A wrong phrase writes nothing (another plan, so another artifact: the fake's plan bytes are salted).
-  const s2 = await seal(w, { ...BROWNFIELD, planSalt: "second" });
+  const s2 = await seal(w, { ...GREENFIELD, planSalt: "second" });
   assert.notEqual(s2.sealed.artifactSha256, s.sealed.artifactSha256);
   const wrong = await produce(w, s2, ["PREVIEW LIVE terraform-azure-brownfield"]);
   assert.equal(wrong.code, 1);
   assert.match(wrong.stderr, /^PREVIEW_ATTESTATION_MISMATCH/);
   assert.ok(!existsSync(join(w.releaseEvidenceDir, "preview-terraform-azure-brownfield-" + s2.sealed.artifactSha256.slice(0, 12) + ".json")));
   // A greenfield plan (creates only) attested as live is still SYNTHETIC for a brownfield gate, and the person is told before typing.
-  const greenfield = await seal(w, GREENFIELD);
+  const greenfield = await seal(w, { ...GREENFIELD, planSalt: "third" });
   assert.ok(greenfield.sealed.changes.every((c) => c.action === "CREATE" || c.type === "output"));
   const estate = await produce(w, greenfield, [phraseFor(greenfield)]);
   assert.equal(estate.code, 0, estate.stderr);
@@ -231,13 +266,13 @@ test("preview-evidence labels SYNTHETIC, and the gate refuses, a preview recorde
   assert.match(estateOut.reasons.join(" | "), /estate is not the scenario's/);
   assert.deepEqual((await admit(w, estateOut.written, estateOut.record)).blockers, ["EVIDENCE_GATE_CONTRACT_FAILED"]);
   // The producer's conditions, one at a time, through the builder: each alone makes the evidence SYNTHETIC with its reason, and the validator agrees.
-  const base = { sealed: s.sealed, gateId: GATE, sourceCommit: SOURCE_COMMIT, targetHardwareId: HOST, engineProgramSha256Now: s.sealed.provenance.engineBinarySha256, contract: w.contract, attestedBy: "operator.fixture", now: NOW };
+  const base = { sealed: brownfieldOf(s).sealed, gateId: GATE, sourceCommit: SOURCE_COMMIT, targetHardwareId: HOST, engineProgramSha256Now: s.sealed.provenance.engineBinarySha256, contract: w.contract, attestedBy: "operator.fixture", now: NOW };
   const live = buildPreviewGateEvidence(base);
   assert.ok(live.ok && live.evidence.label === "LIVE");
   const cases: [string, Partial<typeof base>, RegExp][] = [
     ["another commit", { sourceCommit: "0".repeat(40) }, /another product commit/],
     ["no commit", { sourceCommit: undefined }, /another product commit/],
-    ["unqualified engine", { sealed: { ...s.sealed, provenance: { ...s.sealed.provenance, qualification: { state: "UNQUALIFIED", reason: "no evidence" } } } }, /no real-engine qualification evidence/],
+    ["unqualified engine", { sealed: { ...base.sealed, provenance: { ...base.sealed.provenance, qualification: { state: "UNQUALIFIED", reason: "no evidence" } } } }, /no real-engine qualification evidence/],
     ["changed program", { engineProgramSha256Now: "1".repeat(64) }, /not the one that made the preview/],
     ["unreadable program", { engineProgramSha256Now: undefined }, /not the one that made the preview/],
     ["unknown host", { targetHardwareId: "UNKNOWN" }, /host this preview ran on is not named/],
@@ -277,36 +312,32 @@ test("a change set with a delete, a replacement, a forget or an unreviewed actio
   assert.deepEqual(unauthorizedPreviewActions(odd.byAction), ["__proto__: 1", "constructor: 1", "toString: 1"]);
   assert.deepEqual(unauthorizedPreviewActions({ UPDATE: 1, REPLACE: 2, DELETE: 1, FORGET: 1, REPLACE_CONDITIONAL: 1, DYNAMIC: 1, UNKNOWN: 1, EXOTIC: 1 }),
     ["DELETE: 1", "DYNAMIC: 1", "EXOTIC: 1", "FORGET: 1", "REPLACE: 2", "REPLACE_CONDITIONAL: 1", "UNKNOWN: 1"]);
-  // Negative, through the command: a brownfield plan that also deletes, replaces or forgets a pre-existing resource is refused with the
-  // action named, before the phrase is asked for, and no file is written. The seal itself is not the gate's concern and still succeeds.
-  const cases: [string, unknown[], RegExp][] = [
-    ["delete", [change("azurerm_storage_account.old", "azurerm_storage_account", ["delete"])], /DELETE: 1/],
-    // A replacement is a delete and a create of the same address (a group, whose type carries no tags, so the seal's unit check is not what refuses it).
-    ["replace", [{ address: "azurerm_resource_group.old", type: "azurerm_resource_group", change: { actions: ["delete", "create"], before: {}, after: { location: "westeurope" } } }], /REPLACE: 1/],
-    ["forget", [{ address: "azurerm_storage_account.old", type: "azurerm_storage_account", change: { actions: ["forget"], before: {}, after: {} } }], /FORGET: 1/],
-    ["delete beside an update", [change("azurerm_virtual_network.existing", "azurerm_virtual_network", ["update"]), change("azurerm_storage_account.old", "azurerm_storage_account", ["delete"])], /DELETE: 1/],
+  // Owner decision E1: a plan that deletes, replaces or forgets a pre-existing resource is never sealed at all (RESOURCE_NOT_IN_CANARY), and
+  // neither is the update or adoption a brownfield preview needs. The producer's own refusal is checked on the record such a seal would have made.
+  const green = await seal(w);
+  const cases: [string, unknown[], SealedPlan["changes"], RegExp, RegExp][] = [
+    ["delete", [change("azurerm_storage_account.old", "azurerm_storage_account", ["delete"])], [{ address: "azurerm_storage_account.old", type: "azurerm_storage_account", action: "DELETE" }], /DELETE: 1/, /azurerm_storage_account\.old \(azurerm_storage_account\): the plan would \["delete"\] it/],
+    ["replace", [{ address: "azurerm_resource_group.old", type: "azurerm_resource_group", change: { actions: ["delete", "create"], before: {}, after: { location: "westeurope" } } }], [{ address: "azurerm_resource_group.old", type: "azurerm_resource_group", action: "REPLACE" }], /REPLACE: 1/, /azurerm_resource_group\.old \(azurerm_resource_group\): the plan would \["delete","create"\] it/],
+    ["forget", [{ address: "azurerm_storage_account.old", type: "azurerm_storage_account", change: { actions: ["forget"], before: {}, after: {} } }], [{ address: "azurerm_storage_account.old", type: "azurerm_storage_account", action: "FORGET" }], /FORGET: 1/, /azurerm_storage_account\.old \(azurerm_storage_account\): the plan would \["forget"\] it/],
+    ["delete beside an update", [change("azurerm_virtual_network.existing", "azurerm_virtual_network", ["update"]), change("azurerm_storage_account.old", "azurerm_storage_account", ["delete"])], [UPDATE_EXISTING, { address: "azurerm_storage_account.old", type: "azurerm_storage_account", action: "DELETE" }], /DELETE: 1/, /\(azurerm_[a-z_]+\): the plan would \["(update|delete)"\] it/],
   ];
-  for (const [label, resources, pattern] of cases) {
-    const s = await seal(w, { showResources: resources, planSalt: label });
-    const refused = await produce(w, s, [phraseFor(s)]);
-    assert.equal(refused.code, 2, label + ": " + refused.stderr);
-    assert.match(refused.stderr, /^BLOCKED CHANGES_UNAUTHORIZED: /, label);
-    assert.match(refused.stderr, pattern, label);
-    assert.match(refused.stderr, /Nothing was written/, label);
-    assert.deepEqual(refused.term.asked, [], label + ": refused before any phrase");
-    assert.ok(!existsSync(join(w.releaseEvidenceDir, "preview-terraform-azure-brownfield-" + s.sealed.artifactSha256.slice(0, 12) + ".json")), label);
-    // The builder refuses the same plan with the attestation given, so no caller can get a SYNTHETIC document out of it either.
+  for (const [label, resources, recorded, pattern, said] of cases) {
+    await brownfieldRefused(w, { showResources: resources, planSalt: label }, said);
+    const s = brownfieldOf(green, recorded);
+    // The builder refuses the same plan with the attestation given, so no caller can get a LIVE or SYNTHETIC document out of it.
     const built = buildPreviewGateEvidence({ sealed: s.sealed, gateId: GATE, sourceCommit: SOURCE_COMMIT, targetHardwareId: HOST, engineProgramSha256Now: s.sealed.provenance.engineBinarySha256, contract: w.contract, attestedBy: "operator.fixture", now: NOW });
     assert.equal(built.ok, false, label);
     assert.equal((built as { code: string }).code, "CHANGES_UNAUTHORIZED", label);
+    assert.match((built as { message: string }).message, pattern, label);
+    assert.match((built as { message: string }).message, /Nothing was written/, label);
   }
-  // Positive: an update of a pre-existing resource (the brownfield estate) and an adoption (import) are admitted, as before.
-  const adopted = await seal(w, { showResources: [change("azurerm_virtual_network.existing", "azurerm_virtual_network", ["update"]),
+  // Positive, on the record: an update of a pre-existing resource (the brownfield estate) and an adoption (import) are admitted by the gate, as before.
+  await brownfieldRefused(w, { showResources: [change("azurerm_virtual_network.existing", "azurerm_virtual_network", ["update"]),
     { address: "azurerm_storage_account.adopted", type: "azurerm_storage_account", change: { actions: ["update"], before: {}, after: { tags: {} }, importing: { id: "/subscriptions/x" } } }], planSalt: "adopted" });
-  assert.ok(adopted.sealed.changes.some((c) => c.importing === true), "the sealed plan records the adoption");
-  const live = await produce(w, adopted, [phraseFor(adopted)]);
-  assert.equal(live.code, 0, live.stderr);
-  const out = JSON.parse(live.stdout) as { written: string; label: string; record: ReleaseGateSubmission };
+  const adopted = brownfieldOf(green, [UPDATE_EXISTING, { address: "azurerm_storage_account.adopted", type: "azurerm_storage_account", action: "UPDATE", importing: true }]);
+  const builtLive = buildPreviewGateEvidence({ sealed: adopted.sealed, gateId: GATE, sourceCommit: SOURCE_COMMIT, targetHardwareId: HOST, engineProgramSha256Now: adopted.sealed.provenance.engineBinarySha256, contract: w.contract, attestedBy: "operator.fixture", now: NOW });
+  assert.ok(builtLive.ok);
+  const out = { ...written(w, builtLive.evidence), label: builtLive.evidence.label };
   assert.equal(out.label, "LIVE");
   const evidence = JSON.parse(readFileSync(out.written, "utf8")) as PreviewGateEvidence;
   assert.deepEqual(unauthorizedPreviewActions(evidence.changes.byAction), []);
@@ -326,7 +357,8 @@ test("a change set with a delete, a replacement, a forget or an unreviewed actio
 
 test("the preview evidence validator refuses an unknown gate, a mismatched scenario, a declared pass, a hidden raw field, counts that do not add up and a missing field", async () => {
   const w = await world();
-  const s = await seal(w);
+  // The record a brownfield seal would have made (owner decision E1 never seals one).
+  const s = brownfieldOf(await seal(w));
   const built = buildPreviewGateEvidence({ sealed: s.sealed, gateId: GATE, sourceCommit: SOURCE_COMMIT, targetHardwareId: HOST, engineProgramSha256Now: s.sealed.provenance.engineBinarySha256, contract: w.contract, attestedBy: "operator.fixture", now: NOW });
   assert.ok(built.ok);
   const evidence = built.evidence;

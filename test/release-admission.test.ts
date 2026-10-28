@@ -275,7 +275,9 @@ const pilotTarget = (n: string, store: string) => ({ tenantId: "11111111-1111-41
   backend: store + "/tfstate/x.tfstate", workspace: "default" });
 const contractJson = (enabled: boolean, age = 60) => ({
   schemaVersion: 1, enabled, provider: "AZURE", engine: "TERRAFORM",
-  targets: { DEV: pilotTarget("2", "fixturedevstore"), QA: pilotTarget("4", "fixtureqastore"), PROD: pilotTarget("3", "fixtureprodstore") },
+  // Owner decision E1: an environment authorized for APPLY names its canary allowlist.
+  targets: Object.fromEntries(Object.entries({ DEV: pilotTarget("2", "fixturedevstore"), QA: pilotTarget("4", "fixtureqastore"), PROD: pilotTarget("3", "fixtureprodstore") })
+    .map(([env, target]) => [env, { ...target, canary: { resources: [{ type: "azurerm_virtual_network", count: 1 }] } }])),
   requiredApprovals: { DEV: 1, QA: 1, PROD: 2 }, maxApprovalAgeMinutes: age, approvers, killSwitchPath: join(pilotRoot, "KILL"),
   authorize: { DEV: ["APPLY"], QA: ["APPLY"], PROD: ["APPLY"] },
 });

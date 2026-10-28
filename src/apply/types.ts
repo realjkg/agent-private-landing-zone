@@ -39,8 +39,15 @@ export type EngineId = "TERRAFORM" | "CDK";
 /** The providers the pilot has a spec for (src/apply/provider.ts). The contract's `provider` selects one; anything else is not a contract. */
 export type ProviderId = "AZURE" | "AWS";
 
-/** One environment's exact target, in the shape the contract's provider defines. Real values come from the owner; tests use explicit fixtures. */
-export type PilotTarget = AzureTarget | AwsTarget;
+/**
+ * The canary allowlist (owner decision E1, docs/act-pilot-apply.md, "Canary allowlist"): the exact resource types an APPLY in this
+ * environment may create, each with its exact count, in the engine's own type names (Terraform `aws_cloudwatch_log_group`,
+ * CloudFormation `AWS::Logs::LogGroup`). Part of the target, so it is in the target hash every seal, approval and evidence record binds.
+ */
+export type PilotCanary = { resources: { type: string; count: number; retain?: true }[] };
+
+/** One environment's exact target, in the shape the contract's provider defines, with its optional canary allowlist. Real values come from the owner; tests use explicit fixtures. */
+export type PilotTarget = (AzureTarget | AwsTarget) & { canary?: PilotCanary };
 
 /** What ACT can be authorized for: an apply, a cleanup of what a run created, or a removal of what the product generated. */
 export type ActOperation = "APPLY" | "CLEANUP" | "REMOVE";
@@ -201,6 +208,10 @@ export type ApplyRefusalCode =
   | "ACT_DISABLED"
   /** The reviewed contract's `authorize` does not list this operation for this environment. Nothing ran. */
   | "ACT_NOT_AUTHORIZED"
+  /** The contract authorizes APPLY for an environment whose target names no canary allowlist (`PilotCanary`). Nothing ran. */
+  | "CANARY_ALLOWLIST_MISSING"
+  /** The plan or change set does anything but create exactly the canary allowlist's types and counts. Nothing was sealed or applied. */
+  | "RESOURCE_NOT_IN_CANARY"
   /** The contract or its authorizing entry changed since the plan was sealed or the cleanup proposed. Nothing was consumed. */
   | "ACT_AUTHORIZATION_CHANGED"
   | "CONTRACT_INVALID"

@@ -31,8 +31,7 @@ import { captureProjectFiles } from "../src/teardown/snapshot.js";
 import { removeTree } from "../src/teardown/driver/cleanup.js";
 import {
   DEV_TARGET, ENGINE_VERSION, H, NOW, POLICY, QA_TARGET, REQUESTER, SOURCE_COMMIT, TENANT, approvalFor, behave as behaveFake, callsOf, contractJson, human, identityEnv,
-  installFakeTerraform, sha, writeReviewedContract, writeProject,
-} from "./helpers/apply-fixtures.js";
+  installFakeTerraform, sha, writeReviewedContract, writeProject, withCanary, CANARY_AZURE } from "./helpers/apply-fixtures.js";
 import { AZURE } from "../src/apply/providers/azure.js";
 
 /**
@@ -91,7 +90,7 @@ function containerSas(permissions = "racwdl"): string {
 
 type Emulator = {
   proxyUrl: string; caFile: string; connects(): string[];
-  blob(method: string, path: string, headers?: Record<string, string>): Promise<{ status: number; headers: http.IncomingHttpHeaders; body: string }>;
+  blob(method: string, path: string, headers?: Record<string, string>, body?: string): Promise<{ status: number; headers: http.IncomingHttpHeaders; body: string }>;
   stop(): Promise<void>;
 };
 
@@ -139,7 +138,7 @@ async function startEmulator(dir: string): Promise<Emulator> {
     helper.once("exit", () => reject(new Error("the proxy helper exited")));
   });
 
-  const blob: Emulator["blob"] = (method, path, headers = {}) => new Promise((resolve, reject) => {
+  const blob: Emulator["blob"] = (method, path, headers = {}, body) => new Promise((resolve, reject) => {
     // A fresh connection per call (no keep-alive pool): Azurite closes idle sockets, and a reused one fails with ECONNRESET after a long engine step.
     const request = https.request({
       agent: false, host: "127.0.0.1", port: blobPort, servername: BLOB_HOST, ca: tls.cert, method,
@@ -150,7 +149,7 @@ async function startEmulator(dir: string): Promise<Emulator> {
       response.on("end", () => resolve({ status: response.statusCode ?? 0, headers: response.headers, body: Buffer.concat(chunks).toString("utf8") }));
     });
     request.on("error", reject);
-    request.end();
+    request.end(body);
   });
 
   return {
@@ -251,6 +250,12 @@ describe("emulated backend simulation: real Terraform, Azurite, built-in resourc
   let env: NodeJS.ProcessEnv;
   let deps: ApplyDeps;
   let contractPath = "";
+  let baseContract: { targets: Record<string, unknown> } = { targets: {} };
+  /**
+   * Owner decision E1: the contract names, as every target's canary allowlist, exactly the terraform_data resources the scenario's plan
+   * creates (the pilot resource, plus the kill test's slow ones), and each seal writes that allowlist before it plans.
+   */
+  const withTerraformDataCanary = (count: number) => withCanary(baseContract, { resources: [{ type: "terraform_data", count }] });
 
   before(async () => {
     process.env.AGENTIC_EVIDENCE_KEY = randomBytes(32).toString("base64");
@@ -282,7 +287,8 @@ describe("emulated backend simulation: real Terraform, Azurite, built-in resourc
         PROD: { tenantId: TENANT, subscriptionId: "33333333-3333-4333-8333-333333333333", backend: "emulatedprod/tfstate/prod.tfstate", workspace: "default" },
       },
     });
-    writeReviewedContract(contractPath, contract);
+    baseContract = contract;
+    writeReviewedContract(contractPath, withTerraformDataCanary(1));
 
     // TEST FIXTURE: the qualification attestation is forged here because no person can attest an emulator run. It records the REAL
     // binary hash and version. It is not evidence of identity separation and must never be copied into production code.
@@ -350,8 +356,24 @@ describe("emulated backend simulation: real Terraform, Azurite, built-in resourc
   }
   const DEV_TARGET_EMULATED = { account: DEV_TARGET.account, backend: BACKEND, workspace: "default" };
 
-  async function seal(input: string, extra = "") {
+  /**
+   * Owner decision E1: a canary run only creates, so every scenario starts from an empty workspace, as the owner's cleanup of the previous
+   * canary would leave it: what an earlier scenario applied is cleared from the state blob (lineage kept, serial moved). The blob stays.
+   */
+  async function emptyWorkspace(): Promise<void> {
+    const got = await emulator.blob("GET", `/${CONTAINER}/${STATE_KEY}?${containerSas()}`);
+    if (got.status !== 200) return;
+    const state = JSON.parse(got.body) as { serial: number; resources: unknown[] };
+    if (state.resources.length === 0) return;
+    const body = JSON.stringify({ ...state, serial: state.serial + 1, resources: [], outputs: {} });
+    const put = await emulator.blob("PUT", `/${CONTAINER}/${STATE_KEY}?${containerSas()}`, { "x-ms-blob-type": "BlockBlob", "content-type": "application/json", "content-length": String(Buffer.byteLength(body)) }, body);
+    assert.equal(put.status, 201, "the emptied state was written: " + put.body);
+  }
+
+  async function seal(input: string, extra = "", created = 1) {
+    await emptyWorkspace();
     const p = project(input, extra);
+    writeReviewedContract(contractPath, withTerraformDataCanary(created));
     const result = await sealPreview({
       invocation: human(DEV_TARGET_EMULATED), environment: "DEV", target: DEV_TARGET_EMULATED, manifest: p.manifest, projectRoot: p.projectRoot,
       policyVersion: POLICY, resolved: p.resolved, requester: REQUESTER,
@@ -513,7 +535,7 @@ describe("emulated backend simulation: real Terraform, Azurite, built-in resourc
   it("stops a running apply when the kill switch appears: Terraform is interrupted, the lease is released, the outcome is KILLED", async () => {
     // Provisioner-free (RB1: the judge refuses every provisioner). A wide count of built-in values keeps the real apply busy for
     // seconds; only the apply takes the state lease, so once it is held the apply is running, and the kill switch lands part-way.
-    const s = await seal("kill-during", `resource "terraform_data" "slow" {\n  count = ${SLOW_COUNT}\n  input = count.index\n}`);
+    const s = await seal("kill-during", `resource "terraform_data" "slow" {\n  count = ${SLOW_COUNT}\n  input = count.index\n}`, 1 + SLOW_COUNT);
     assert.equal(s.sealed.changes.length, SLOW_COUNT + 1, "the pilot value and every slow one are in the sealed change list");
     const before = await stateBlob();
     let settled: ApplyResult | undefined;
@@ -637,7 +659,7 @@ describe("emulator-only credentials never enter a production path (default CI; n
   const KILL = join(root, "KILL");
   const toolDir = join(root, "fake-tools");
   // The fake engine saves the shared fixture's backend; the emulator's own location is checked in the contract test.
-  const pinned = { tenantId: TENANT, subscriptionId: DEV_TARGET.account, backend: DEV_TARGET.backend, workspace: "default" };
+  const pinned = { tenantId: TENANT, subscriptionId: DEV_TARGET.account, backend: DEV_TARGET.backend, workspace: "default", canary: CANARY_AZURE };
   const target = { ...DEV_TARGET };
 
   before(() => {

@@ -11,6 +11,7 @@ import {
   authorizeContract,
   canonicalPublicKey,
   duplicateKeyOf,
+  inspectPilotContract,
   isKillSwitchActive,
   loadPilotContract,
   loadQualificationRecords,
@@ -39,15 +40,17 @@ test.after(() => { rmSync(scratch, { recursive: true, force: true }); delete pro
 const KILL = join(scratch, "kill");
 const approverKey = () => generateKeyPairSync("ed25519").publicKey.export({ type: "spki", format: "pem" }).toString();
 const KEYS = { alice: approverKey(), bob: approverKey() };
+/** The fixture targets' canary allowlist (owner decision E1): an APPLY is authorized only for a target that names one. */
+const FIXTURE_CANARY = { resources: [{ type: "azurerm_virtual_network", count: 1 }] };
 const fixtureContract = (): PilotContract => ({
   schemaVersion: 1,
   enabled: true,
   provider: "AZURE",
   engine: "TERRAFORM",
   targets: {
-    DEV: { tenantId: "11111111-1111-4111-8111-111111111111", subscriptionId: "22222222-2222-4222-8222-222222222222", backend: "fixturedevstore/tfstate/dev.tfstate", workspace: "default" },
-    QA: { tenantId: "11111111-1111-4111-8111-111111111111", subscriptionId: "44444444-4444-4444-8444-444444444444", backend: "fixtureqastore/tfstate/qa.tfstate", workspace: "default" },
-    PROD: { tenantId: "11111111-1111-4111-8111-111111111111", subscriptionId: "33333333-3333-4333-8333-333333333333", backend: "fixtureprodstore/tfstate/prod.tfstate", workspace: "default" },
+    DEV: { tenantId: "11111111-1111-4111-8111-111111111111", subscriptionId: "22222222-2222-4222-8222-222222222222", backend: "fixturedevstore/tfstate/dev.tfstate", workspace: "default", canary: FIXTURE_CANARY },
+    QA: { tenantId: "11111111-1111-4111-8111-111111111111", subscriptionId: "44444444-4444-4444-8444-444444444444", backend: "fixtureqastore/tfstate/qa.tfstate", workspace: "default", canary: FIXTURE_CANARY },
+    PROD: { tenantId: "11111111-1111-4111-8111-111111111111", subscriptionId: "33333333-3333-4333-8333-333333333333", backend: "fixtureprodstore/tfstate/prod.tfstate", workspace: "default", canary: FIXTURE_CANARY },
   },
   requiredApprovals: { DEV: 1, QA: 1, PROD: 2 },
   maxApprovalAgeMinutes: 60,
@@ -817,4 +820,83 @@ test("#313 F3: an Azure tenant or subscription GUID hashes the same in any lette
   assert.notEqual(pilotTargetSha256(other, "DEV"), run);
   assert.equal(targetMoved(run, other, "DEV")?.code, "TARGET_NOT_IN_CONTRACT");
   assert.notEqual(pilotTargetSha256(withDev({ backend: "fixtureotherstore/tfstate/dev.tfstate" }), "DEV"), run);
+});
+
+// --- the canary allowlist (owner decision E1) ---------------------------------------------------------------------
+
+/** The fixture contract with `canary` as DEV's allowlist (undefined removes it). */
+const withDevCanary = (canary: unknown): PilotContract => {
+  const c = fixtureContract() as any;
+  if (canary === undefined) delete c.targets.DEV.canary; else c.targets.DEV.canary = canary;
+  return c;
+};
+const reasonFor = (contract: unknown): string => { const l = load(write(contract)); assert.equal(l.enabled, false); return (l as { reason: string }).reason; };
+
+test("canary: a target's allowlist is exact resource types, each once, each with a count of at least 1, and nothing else", () => {
+  const loaded = load(write(withDevCanary({ resources: [{ type: "azurerm_virtual_network", count: 1 }, { type: "azurerm_subnet", count: 2 }] }))) as PilotContract;
+  assert.deepEqual(loaded.targets.DEV.canary, { resources: [{ type: "azurerm_virtual_network", count: 1 }, { type: "azurerm_subnet", count: 2 }] });
+  for (const [label, canary, said] of [
+    ["a repeated type", { resources: [{ type: "azurerm_subnet", count: 1 }, { type: "azurerm_subnet", count: 1 }] }, /DEV\.canary\.resources\[1\]\.type: azurerm_subnet is listed twice/],
+    ["a wildcard", { resources: [{ type: "azurerm_*", count: 1 }] }, /DEV\.canary\.resources\[0\]\.type: invalid/],
+    ["a pattern", { resources: [{ type: "azurerm_.+", count: 1 }] }, /DEV\.canary\.resources\[0\]\.type: invalid/],
+    ["a CloudFormation type in a Terraform contract", { resources: [{ type: "AWS::Logs::LogGroup", count: 1 }] }, /DEV\.canary\.resources\[0\]\.type: invalid/],
+    ["an unknown key in an entry", { resources: [{ type: "azurerm_subnet", count: 1, max: 2 }] }, /DEV\.canary\.resources\[0\]\.max: unknown field/],
+    ["an unknown key in the allowlist", { resources: [{ type: "azurerm_subnet", count: 1 }], spend: 10 }, /DEV\.canary\.spend: unknown field/],
+    ["a count of 0", { resources: [{ type: "azurerm_subnet", count: 0 }] }, /DEV\.canary\.resources\[0\]\.count/],
+    ["a fractional count", { resources: [{ type: "azurerm_subnet", count: 1.5 }] }, /DEV\.canary\.resources\[0\]\.count/],
+    ["a count written as text", { resources: [{ type: "azurerm_subnet", count: "1" }] }, /DEV\.canary\.resources\[0\]\.count/],
+    ["a missing count", { resources: [{ type: "azurerm_subnet" }] }, /DEV\.canary\.resources\[0\]\.count: missing/],
+    ["an empty list", { resources: [] }, /DEV\.canary\.resources: expected a list of 1 to 50/],
+    ["no list", {}, /DEV\.canary\.resources: missing/],
+    ["a list instead of an object", [{ type: "azurerm_subnet", count: 1 }], /DEV\.canary: expected an object/],
+  ] as const) {
+    assert.match(reasonFor(withDevCanary(canary)), said, label);
+  }
+});
+
+test("canary: CANARY_ALLOWLIST_MISSING when authorize names APPLY for an environment whose target has none; CLEANUP and REMOVE need none", () => {
+  const contract = load(write(withDevCanary(undefined))) as PilotContract;
+  assert.equal(contract.enabled, true, "the contract itself is valid: the check is where authorize is evaluated");
+  const refused = authorizeContract(contract, "DEV", "APPLY");
+  assert.ok(!refused.ok && refused.code === "CANARY_ALLOWLIST_MISSING", JSON.stringify(refused));
+  assert.match((refused as { message: string }).message, /targets\.DEV\.canary.*Nothing ran/);
+  const viaPath = requireActAuthorized("APPLY", "DEV", write(withDevCanary(undefined)));
+  assert.ok(!viaPath.ok && viaPath.code === "CANARY_ALLOWLIST_MISSING");
+  assert.ok(authorizeContract(contract, "DEV", "CLEANUP").ok, "a cleanup of what a run created needs no allowlist");
+  assert.ok(authorizeContract(contract, "QA", "APPLY").ok, "QA names its own allowlist");
+});
+
+test("canary: the allowlist is part of the target hash (and so of every seal, approval and evidence record); a target without one hashes as before", () => {
+  const base = load(write(fixtureContract())) as PilotContract;
+  const changed = load(write(withDevCanary({ resources: [{ type: "azurerm_virtual_network", count: 2 }] }))) as PilotContract;
+  const retyped = load(write(withDevCanary({ resources: [{ type: "azurerm_subnet", count: 1 }] }))) as PilotContract;
+  const none = load(write(withDevCanary(undefined))) as PilotContract;
+  const hashes = [base, changed, retyped, none].map((c) => pilotTargetSha256(c, "DEV"));
+  assert.equal(new Set(hashes).size, 4, "a changed count, a changed type or a removed allowlist is a target change");
+  assert.ok(targetMoved(hashes[0]!, changed, "DEV"), "a run made under one allowlist is not cleaned up under another");
+  assert.equal(pilotTargetSha256(base, "QA"), pilotTargetSha256(changed, "QA"), "each environment's allowlist is its own");
+  // Without a canary the hash is the one #313 defined (provider, account fields, backend, workspace), so existing records keep their meaning.
+  const t = none.targets.DEV as { tenantId: string; subscriptionId: string; backend: string; workspace: string };
+  assert.equal(hashes[3], createHash("sha256").update(canonicalJson({ provider: "AZURE", tenantId: t.tenantId, subscriptionId: t.subscriptionId, backend: t.backend, workspace: t.workspace } as never)).digest("hex"));
+  assert.notEqual(pilotContractSha256(base), pilotContractSha256(changed), "and of the contract hash");
+});
+
+test("canary: every shipped example contract names its path's canary allowlist on every target", () => {
+  const expected: Record<string, { type: string; count: number }[]> = {
+    "act-pilot-contract.example.json": [{ type: "azurerm_virtual_network", count: 1 }],
+    "act-pilot-contract.azure-dev.example.json": [{ type: "azurerm_virtual_network", count: 1 }],
+    "act-pilot-contract.aws.example.json": [{ type: "aws_cloudwatch_log_group", count: 1 }],
+    "act-pilot-contract.aws-dev.example.json": [{ type: "aws_cloudwatch_log_group", count: 1 }],
+    "act-pilot-contract.aws-cdk.example.json": [{ type: "AWS::Logs::LogGroup", count: 1 }, { type: "AWS::CloudFormation::WaitConditionHandle", count: 1, retain: true }],
+    "act-pilot-contract.aws-cdk-dev.example.json": [{ type: "AWS::Logs::LogGroup", count: 1 }, { type: "AWS::CloudFormation::WaitConditionHandle", count: 1, retain: true }],
+  };
+  const config = join(repoPaths().root, "config");
+  assert.deepEqual(readdirSync(config).filter((name) => /^act-pilot-contract.*\.example\.json$/.test(name)).sort(), Object.keys(expected).sort());
+  for (const [name, resources] of Object.entries(expected)) {
+    const raw = JSON.parse(readFileSync(join(config, name), "utf8")) as { targets: Record<string, { canary?: unknown }> };
+    for (const [env, target] of Object.entries(raw.targets)) assert.deepEqual(target.canary, { resources }, name + " " + env);
+    // The canary shape is valid for the example's engine (placeholders aside, which the draft check reports).
+    const shape = inspectPilotContract(raw);
+    assert.ok(shape.ok || !/canary/.test(shape.reason), name + ": " + (shape.ok ? "" : shape.reason));
+  }
 });

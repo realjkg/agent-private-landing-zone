@@ -20,8 +20,7 @@ import { runApplyCommand, type ApplyCliDeps } from "../src/cli/apply.js";
 import { removeTree } from "../src/teardown/driver/cleanup.js";
 import {
   NOW, POLICY, SOURCE_COMMIT, approvalFor, awsContractJson, awsIdentityEnv, awsTargetOf, behave as behaveIn, behaveAwsReads, callsOf, human, installFakeAwsReads, installFakeTerraform, keys,
-  stateResource, testFixtureForgeQualificationEvidence, writeReviewedContract, writeProject, type Project,
-} from "./helpers/apply-fixtures.js";
+  stateResource, testFixtureForgeQualificationEvidence, writeReviewedContract, writeProject, type Project, withCanary } from "./helpers/apply-fixtures.js";
 
 // Production cleanup approvals use the production apply quorum (owner decision on issue #39, 6440801434, item 1; closes
 // #286 N5): a cleanup has a requester who signs the proposal with an allowlisted key under the cleanup request domain, and
@@ -44,11 +43,13 @@ const fresh = (label: string): string => { const dir = join(root, label + "-" + 
 const KILL = join(root, "KILL");
 
 // Every approver may approve every environment here, so PROD can have a requester and two other approvers.
-const CONTRACT = awsContractJson(KILL, { approvers: [
+/** Owner decision E1: the contract's canary allowlist is exactly what the plan (`CREATES`) creates. */
+const RUN_CANARY = { resources: [{ type: "aws_s3_bucket", count: 1 }, { type: "aws_cloudwatch_log_group", count: 1 }] };
+const CONTRACT = withCanaryOf(awsContractJson(KILL, { approvers: [
   { id: "alice", publicKeyPem: keys.alice.pub, environments: ["DEV", "QA", "PROD"] },
   { id: "bob", publicKeyPem: keys.bob.pub, environments: ["DEV", "QA", "PROD"] },
   { id: "carol", publicKeyPem: keys.carol.pub, environments: ["DEV", "QA", "PROD"] },
-] });
+] }));
 type Who = "alice" | "bob" | "carol";
 const person = (who: Who) => ({ requesterId: who, privateKeyPem: keys[who].priv });
 
@@ -60,6 +61,7 @@ const CREATES = [
   { address: "aws_cloudwatch_log_group.canary", type: "aws_cloudwatch_log_group", change: { actions: ["create"], before: null, after: {} } },
 ];
 const stateOf = (environment: ApplyEnvironment) => [stateResource("aws_s3_bucket", "logs", BUCKET, "arn:aws:s3:::" + BUCKET), stateResource("aws_cloudwatch_log_group", "canary", LOG, logArn(environment))];
+function withCanaryOf<T extends { targets: Record<string, unknown> }>(contract: T): T { return withCanary(contract, RUN_CANARY); }
 const AWS_PROVIDER_CONFIG = { aws: { name: "aws", full_name: "registry.terraform.io/hashicorp/aws", expressions: { region: { references: ["var.region"] } } } };
 const SHARED_TF = 'resource "aws_s3_bucket" "logs" {}\n';
 
@@ -385,7 +387,7 @@ test("a cleanup requester's allowlist entry must name the environment: a DEV-onl
   const runs = await promoted(w);
   // The owner's committed contract now allows carol to request and approve in DEV only. A cleanup is authorized by the
   // contract committed now, so every check below reads this one.
-  writeReviewedContract(w.contractPath, awsContractJson(KILL, { approvers: (CONTRACT.approvers as { id: string }[]).map((a) => (a.id === "carol" ? { ...a, environments: ["DEV"] } : a)) }));
+  writeReviewedContract(w.contractPath, withCanaryOf(awsContractJson(KILL, { approvers: (CONTRACT.approvers as { id: string }[]).map((a) => (a.id === "carol" ? { ...a, environments: ["DEV"] } : a)) })));
   const run = runs.PROD;
   shape(w, "PROD");
   assert.equal((await cli(w, "PROD", ["observe", "--sealed", run.sealedPath])).code, 0);

@@ -32,7 +32,7 @@ import { removeTree } from "../src/teardown/driver/cleanup.js";
 import { canonicalJson } from "../src/teardown/manifest.js";
 import { sha256 } from "../src/util/sha256.js";
 import {
-  AWS_DEV_TARGET, AWS_REGION, CANARIES, NOW, POLICY, SOURCE_COMMIT, STATE_CANARY, VALUE_CANARY, awsContractJson, awsIdentityEnv, awsReadCallsOf, awsRoleArn, awsTargetOf,
+  AWS_DEV_TARGET, AWS_REGION, CANARIES, canaryFor, withCanary, NOW, POLICY, SOURCE_COMMIT, STATE_CANARY, VALUE_CANARY, awsContractJson, awsIdentityEnv, awsReadCallsOf, awsRoleArn, awsTargetOf,
   approvalFor, behave as behaveIn, behaveAwsReads, callsOf, human, installFakeAwsReads, installFakeTerraform, keys, stateResource, testFixtureForgeQualificationEvidence,
   writeReviewedContract, writeProject, type AwsReadBehavior, type Behavior,
   REQUESTER, reHashedProposal,
@@ -74,8 +74,15 @@ const CREATES = [
   { address: "aws_s3_bucket.logs", type: "aws_s3_bucket", change: { actions: ["create"], before: null, after: { secret: VALUE_CANARY } } },
   { address: "aws_s3_bucket_versioning.logs", type: "aws_s3_bucket_versioning", change: { actions: ["create"], before: null, after: {} } },
   { address: "aws_cloudwatch_log_group.canary", type: "aws_cloudwatch_log_group", change: { actions: ["create"], before: null, after: {} } },
-  { address: "aws_s3_bucket.state", type: "aws_s3_bucket", change: { actions: ["update"], before: {}, after: {} } },
 ];
+/**
+ * The canary allowlist the run's contract names (owner decision E1): exactly the three creates. The plan cannot also touch the
+ * pre-existing state bucket: an update is refused at seal (RESOURCE_NOT_IN_CANARY), so the bucket is in the state only, never in the plan.
+ */
+const CLEANUP_CANARY = { resources: [{ type: "aws_s3_bucket", count: 1 }, { type: "aws_s3_bucket_versioning", count: 1 }, { type: "aws_cloudwatch_log_group", count: 1 }] };
+const runContract = (over: Record<string, unknown> = {}) => withCanary(awsContractJson(KILL, over), CLEANUP_CANARY);
+/** A scenario that creates more than the three: its contract names exactly what `creates` creates (and, with it, its own deletion unit). */
+const contractFor = (creates: readonly unknown[]) => withCanary(awsContractJson(KILL), canaryFor(creates));
 const STATE = [
   stateResource("aws_s3_bucket", "logs", BUCKET, BUCKET_ARN),
   stateResource("aws_s3_bucket_versioning", "logs", BUCKET),
@@ -87,29 +94,33 @@ const STATE = [
 // What the fake cloud holds, by the identifier Cloud Control names each type by: a role by its name, a queue by its URL.
 const EXISTING = [BUCKET, LOG, STATE_BUCKET, OLD_QUEUE, "alz-apply-dev"];
 /** The deletion unit of the DEV state container under the fixture contract: what the sealed plan must stamp and the fake cloud lists by. */
-const fixtureContractPath = (() => { const path = join(fresh("contract"), "act-pilot-contract.json"); writeReviewedContract(path, awsContractJson(KILL)); return path; })();
+const fixtureContractPath = (() => { const path = join(fresh("contract"), "act-pilot-contract.json"); writeReviewedContract(path, runContract()); return path; })();
 const UNIT = pilotUnitOf({ provider: "AWS", contractSha256: pilotContractSha256(loadPilotContract(fixtureContractPath) as PilotContract), environment: "DEV", target: awsTargetOf("DEV") });
-const behave = (behavior: Behavior = {}) => behaveIn(toolDir, KILL, { applyAdvance: true, showOnlyConfigured: true, showResources: CREATES, showProviderConfig: AWS_PROVIDER_CONFIG, stateResources: STATE, unitTags: { ...UNIT.tags }, ...behavior });
+/** The deletion unit of the world's contract (`world`): the contract's hash names it, and a scenario's own canary allowlist makes its own contract. */
+let worldUnitTags: Record<string, string> = { ...UNIT.tags };
+const behave = (behavior: Behavior = {}) => behaveIn(toolDir, KILL, { applyAdvance: true, showOnlyConfigured: true, showResources: CREATES, showProviderConfig: AWS_PROVIDER_CONFIG, stateResources: STATE, unitTags: { ...worldUnitTags }, ...behavior });
 /** The ARNs the fake tagging API lists for this unit: what the plan created and nothing else, unless a test says otherwise. */
 const TAGGED = [BUCKET_ARN, LOG_ARN];
 const cloud = (behavior: AwsReadBehavior = {}) => behaveAwsReads(awsToolDir, { existing: EXISTING, tagged: TAGGED, ...behavior });
 const calls = () => callsOf(toolDir);
 const applyCalls = () => calls().filter((c) => c.args[0] === "apply");
 
-type World = { deps: ApplyDeps; dirs: { scratch: string; evidence: string; nonces: string }; contractPath: string };
+type World = { deps: ApplyDeps; dirs: { scratch: string; evidence: string; nonces: string }; contractPath: string; contract: unknown };
 let vaultDir = "";
 test.before(async () => {
   vaultDir = fresh("qualification");
   await testFixtureForgeQualificationEvidence(vaultDir, undefined, "AWS");
 });
-function world(contract: unknown = awsContractJson(KILL)): World {
-  behave();
-  cloud();
+function world(contract: unknown = runContract()): World {
   const dirs = { scratch: fresh("scratch"), evidence: fresh("evidence"), nonces: fresh("nonces") };
   const contractPath = join(fresh("contract"), "act-pilot-contract.json");
   writeReviewedContract(contractPath, contract);
+  const loaded = loadPilotContract(contractPath);
+  worldUnitTags = "reason" in loaded ? { ...UNIT.tags } : { ...pilotUnitOf({ provider: "AWS", contractSha256: pilotContractSha256(loaded), environment: "DEV", target: awsTargetOf("DEV") }).tags };
+  behave();
+  cloud();
   return {
-    dirs, contractPath,
+    dirs, contractPath, contract,
     deps: {
       sourceCommit: SOURCE_COMMIT, contractPath, qualificationDir: vaultDir, evidenceDir: dirs.evidence, nonces: openNonceStore(dirs.nonces),
       env: awsIdentityEnv("DEV"), now: () => NOW, scratchParent: dirs.scratch, toolDirs: [toolDir, awsToolDir], killPollMs: 40, killGraceMs: 400,
@@ -151,7 +162,7 @@ async function proposed(w: World) {
   const run = await observed(w);
   const records = await loadRunRecords(run.s.sealed.artifactSha256, w.dirs.evidence);
   assert.ok(records.ok, JSON.stringify(records));
-  const contract = JSON.parse(JSON.stringify(awsContractJson(KILL))) as never;
+  const contract = JSON.parse(JSON.stringify(w.contract)) as never;
   const built = buildCleanupProposal({ requesterId: REQUESTER.requesterId,
     ...records, changes: run.s.sealed.changes, channel: "CLI", contract: { ...(contract as object), enabled: true } as never, engineVersion: run.s.sealed.engineVersion, env: w.deps.env!, now: new Date(NOW.getTime() + 120_000),
   });
@@ -181,7 +192,8 @@ test("AWS Terraform observe: after a successful apply the driver records the blu
   assert.ok(blueprint);
   assert.deepEqual(blueprint.blueprint.entries.map((e) => [e.address, e.origin, e.id, e.arn]), [
     ["aws_cloudwatch_log_group.canary", "IN_PLAN", LOG, LOG_ARN], ["aws_iam_role.apply", "NOT_IN_PLAN", "alz-apply-dev", awsRoleArn("APPLY", "DEV")],
-    ["aws_s3_bucket.logs", "IN_PLAN", BUCKET, BUCKET_ARN], ["aws_s3_bucket.state", "IN_PLAN", STATE_BUCKET, "arn:aws:s3:::" + STATE_BUCKET],
+    // The state bucket is in the state but never in the plan: the canary allowlist refuses a plan that updates it (owner decision E1).
+    ["aws_s3_bucket.logs", "IN_PLAN", BUCKET, BUCKET_ARN], ["aws_s3_bucket.state", "NOT_IN_PLAN", STATE_BUCKET, "arn:aws:s3:::" + STATE_BUCKET],
     ["aws_s3_bucket_versioning.logs", "IN_PLAN", BUCKET, null], ["aws_sqs_queue.preexisting", "NOT_IN_PLAN", OLD_QUEUE, "arn:aws:sqs:us-east-1:111111111111:pre-existing"],
   ]);
   assert.deepEqual(blueprint.blueprint.missing, []);
@@ -253,10 +265,10 @@ test("observe refuses a run with no apply evidence, a blueprint that is not this
   const empty = await observeRun(s2.sealed.artifactSha256, observeDeps(other));
   assert.ok(empty.ok);
   assert.equal(empty.record.verdict, "FAILED", "the plan created resources the state never recorded: a failed observation, never a pass");
-  assert.deepEqual(empty.record.missingFromState, ["aws_cloudwatch_log_group.canary", "aws_s3_bucket.logs", "aws_s3_bucket.state", "aws_s3_bucket_versioning.logs"]);
+  assert.deepEqual(empty.record.missingFromState, ["aws_cloudwatch_log_group.canary", "aws_s3_bucket.logs", "aws_s3_bucket_versioning.logs"]);
   assert.deepEqual(awsReadCallsOf(awsToolDir).map((r) => r.args[0]), ["resourcegroupstaggingapi"], "no resource to read; the unit listing still runs, so an orphan of this unit would be found");
   refused(await (async () => { const records = await loadRunRecords(s2.sealed.artifactSha256, other.dirs.evidence); assert.ok(records.ok); return buildCleanupProposal({ requesterId: REQUESTER.requesterId, ...records, changes: s2.sealed.changes, channel: "CLI",
-    contract: { ...awsContractJson(KILL), enabled: true } as never, engineVersion: s2.sealed.engineVersion, env: other.deps.env!, now: new Date(NOW.getTime() + 120_000) }); })(), "OWNERSHIP_AMBIGUOUS");
+    contract: { ...runContract(), enabled: true } as never, engineVersion: s2.sealed.engineVersion, env: other.deps.env!, now: new Date(NOW.getTime() + 120_000) }); })(), "OWNERSHIP_AMBIGUOUS");
 });
 
 test("observe records NOT_YET_OBSERVABLE on throttling and UNVERIFIABLE on access denial, never VERIFIED, and can be repeated without applying again", async () => {
@@ -314,7 +326,7 @@ test("a proposal is refused on ambiguous ownership (a partial apply, a planned r
   const run = await observed(w);
   const records = await loadRunRecords(run.s.sealed.artifactSha256, w.dirs.evidence);
   assert.ok(records.ok);
-  const contract = { ...awsContractJson(KILL), enabled: true } as never;
+  const contract = { ...runContract(), enabled: true } as never;
   const build = (over: Partial<Parameters<typeof buildCleanupProposal>[0]>) => buildCleanupProposal({ requesterId: REQUESTER.requesterId,
     ...records, changes: run.s.sealed.changes, channel: "CLI", contract, engineVersion: run.s.sealed.engineVersion, env: w.deps.env!, now: new Date(NOW.getTime() + 120_000), ...over,
   });
@@ -622,9 +634,10 @@ test("forged inventory and evidence are rejected: a blueprint, observation or le
 });
 
 test("a KMS key scheduled for deletion is DELETION_PENDING: not complete, not a leftover", async () => {
-  const w = world();
   const key = [stateResource("aws_kms_key", "logs", KMS, "arn:aws:kms:us-east-1:111111111111:key/" + KMS)];
-  behave({ stateResources: [...STATE, ...key], showResources: [...CREATES, { address: "aws_kms_key.logs", type: "aws_kms_key", change: { actions: ["create"], before: null, after: {} } }] });
+  const creates = [...CREATES, { address: "aws_kms_key.logs", type: "aws_kms_key", change: { actions: ["create"], before: null, after: {} } }];
+  const w = world(contractFor(creates));
+  behave({ stateResources: [...STATE, ...key], showResources: creates });
   cloud({ existing: [...EXISTING, KMS] });
   const run = await proposed(w);
   assert.ok(run.proposal.deletes.some((d) => d.address === "aws_kms_key.logs" && d.risk?.includes("waiting period")));
@@ -653,7 +666,7 @@ test("a run sealed without a unit (an engine with no tag reader) stays KNOWN_ADD
   assert.deepEqual(failed.record.unexpected, ["arn:aws:sqs:us-east-1:111111111111:orphan-of-this-unit"]);
   const records = await loadRunRecords(s.sealed.artifactSha256, w.dirs.evidence);
   assert.ok(records.ok);
-  refused(buildCleanupProposal({ requesterId: REQUESTER.requesterId, ...records, changes: s.sealed.changes, channel: "CLI", contract: { ...(awsContractJson(KILL) as object), enabled: true } as never, engineVersion: s.sealed.engineVersion, env: w.deps.env!, now: new Date(NOW.getTime() + 120_000) }), "OBSERVATION_INCONCLUSIVE");
+  refused(buildCleanupProposal({ requesterId: REQUESTER.requesterId, ...records, changes: s.sealed.changes, channel: "CLI", contract: { ...(runContract() as object), enabled: true } as never, engineVersion: s.sealed.engineVersion, env: w.deps.env!, now: new Date(NOW.getTime() + 120_000) }), "OBSERVATION_INCONCLUSIVE");
 });
 
 test("leftovers are COMPLETE only with a complete deletion-unit sweep, and a check that never ran proves nothing: an already-absent setting is UNKNOWN unless its parent is confirmed gone", async () => {
@@ -701,7 +714,7 @@ test("a data-bearing resource the run created (owner decision 6440801434, item 2
   const FN_ARN = "arn:aws:lambda:us-east-1:111111111111:function:" + BUCKET;
   const creates = [...CREATES, { address: "aws_lambda_function.fn", type: "aws_lambda_function", change: { actions: ["create"], before: null, after: {} } }];
   const state = [...STATE, stateResource("aws_lambda_function", "fn", BUCKET, FN_ARN)];
-  const w = world();
+  const w = world(contractFor(creates));
   behave({ showResources: creates, stateResources: state });
   const run = await proposed(w);
   const fn = run.proposal.deletes.find((d) => d.address === "aws_lambda_function.fn");
@@ -925,18 +938,19 @@ test("a wrapper nested past the scan depth refuses the whole proposal, and the e
   let deep: unknown = "plain";
   for (let i = 0; i < 40; i++) deep = { level: deep };
   const wrapper = { mode: "managed", type: "terraform_data", name: "deep", provider: 'provider["terraform.io/builtin/terraform"]', instances: [{ schema_version: 0, attributes: { id: "d1b2d3e4-0000-4000-8000-000000000000", input: deep, output: null, triggers_replace: null } }] };
-  const w2 = world();
-  behave({ showResources: [...CREATES, { address: "terraform_data.deep", type: "terraform_data", change: { actions: ["create"], before: null, after: {} } }], stateResources: [...STATE, wrapper] });
+  const creates2 = [...CREATES, { address: "terraform_data.deep", type: "terraform_data", change: { actions: ["create"], before: null, after: {} } }];
+  const w2 = world(contractFor(creates2));
+  behave({ showResources: creates2, stateResources: [...STATE, wrapper] });
   const applied2 = await observed(w2);
   const records2 = await loadRunRecords(applied2.s.sealed.artifactSha256, w2.dirs.evidence);
   assert.ok(records2.ok);
-  const built2 = buildCleanupProposal({ requesterId: REQUESTER.requesterId, ...records2, changes: applied2.s.sealed.changes, channel: "CLI", contract: { ...(JSON.parse(JSON.stringify(awsContractJson(KILL))) as object), enabled: true } as never, engineVersion: applied2.s.sealed.engineVersion, env: w2.deps.env!, now: new Date(NOW.getTime() + 120_000) });
+  const built2 = buildCleanupProposal({ requesterId: REQUESTER.requesterId, ...records2, changes: applied2.s.sealed.changes, channel: "CLI", contract: { ...(JSON.parse(JSON.stringify(contractFor(creates2))) as object), enabled: true } as never, engineVersion: applied2.s.sealed.engineVersion, env: w2.deps.env!, now: new Date(NOW.getTime() + 120_000) });
   refused(built2, "OWNERSHIP_AMBIGUOUS");
   assert.match((built2 as { message: string }).message, /terraform_data\.deep that is not a resource id the cleanup can classify exactly/);
   const entry2 = records2.blueprint.blueprint.entries.find((e) => e.address === "terraform_data.deep");
   assert.equal(entry2?.holdsIdentityArn, true, "the blueprint could not scan the attribute in full, so it fails closed");
   assert.ok(!JSON.stringify(records2.blueprint).includes("level"), "no attribute value was copied into the blueprint");
-  const guard = protectedDeletionIn([{ address: "terraform_data.deep", type: "terraform_data", action: "DELETE" }], records2.blueprint.blueprint.entries, { ...(JSON.parse(JSON.stringify(awsContractJson(KILL))) as object), enabled: true } as never, w2.deps.env!);
+  const guard = protectedDeletionIn([{ address: "terraform_data.deep", type: "terraform_data", action: "DELETE" }], records2.blueprint.blueprint.entries, { ...(JSON.parse(JSON.stringify(contractFor(creates2))) as object), enabled: true } as never, w2.deps.env!);
   assert.ok(guard !== undefined && guard.includes("(OWNERSHIP_AMBIGUOUS)") && guard.includes("could not scan in full"), guard);
 });
 
@@ -956,7 +970,7 @@ test("AWS identities the run created are never deleted (owner policy #39): an ap
     stateResource("aws_iam_policy_attachment", "shared", "shared-attachment"), stateResource("aws_iam_access_key", "app", "AKIAFAKEAPPKEY000000"),
     stateResource("aws_identitystore_user", "ops", "d-1234567890/11111111-aaaa-4aaa-8aaa-111111111111"), stateResource("aws_identitystore_group", "ops", "d-1234567890/22222222-bbbb-4bbb-8bbb-222222222222"),
     stateResource("aws_identitystore_group_membership", "ops", "d-1234567890/33333333-cccc-4ccc-8ccc-333333333333")];
-  const w = world();
+  const w = world(contractFor(creates));
   behave({ showResources: creates, stateResources: state });
   cloud({ existing: [...EXISTING, APP_ROLE], tagged: [...TAGGED, APP_ROLE_ARN] });
   const run = await proposed(w);
@@ -981,15 +995,16 @@ test("AWS identities the run created are never deleted (owner policy #39): an ap
     assert.equal(applyCalls().length, 0, address);
   }
   // A pilot role's ARN recorded under terraform_data, not as its identifier but inside an attribute (a list element): the whole proposal is refused for a person to review.
-  const disguised = world();
+  const creates2 = [...creates, { address: "terraform_data.pilot_role", type: "terraform_data", change: { actions: ["create"], before: null, after: {} } }];
+  const disguised = world(contractFor(creates2));
   const wrapper = { mode: "managed", type: "terraform_data", name: "pilot_role", provider: 'provider["terraform.io/builtin/terraform"]',
     instances: [{ schema_version: 0, attributes: { id: "c1b2d3e4-0000-4000-8000-000000000000", input: { roles: "reader," + awsRoleArn("APPLY", "DEV") + ",writer" }, output: null, triggers_replace: null } }] };
-  behave({ showResources: [...creates, { address: "terraform_data.pilot_role", type: "terraform_data", change: { actions: ["create"], before: null, after: {} } }], stateResources: [...state, wrapper] });
+  behave({ showResources: creates2, stateResources: [...state, wrapper] });
   cloud({ existing: [...EXISTING, APP_ROLE], tagged: [...TAGGED, APP_ROLE_ARN] });
   const applied2 = await observed(disguised);
   const records2 = await loadRunRecords(applied2.s.sealed.artifactSha256, disguised.dirs.evidence);
   assert.ok(records2.ok);
-  const built2 = buildCleanupProposal({ requesterId: REQUESTER.requesterId, ...records2, changes: applied2.s.sealed.changes, channel: "CLI", contract: { ...(JSON.parse(JSON.stringify(awsContractJson(KILL))) as object), enabled: true } as never, engineVersion: applied2.s.sealed.engineVersion, env: disguised.deps.env!, now: new Date(NOW.getTime() + 120_000) });
+  const built2 = buildCleanupProposal({ requesterId: REQUESTER.requesterId, ...records2, changes: applied2.s.sealed.changes, channel: "CLI", contract: { ...(JSON.parse(JSON.stringify(contractFor(creates2))) as object), enabled: true } as never, engineVersion: applied2.s.sealed.engineVersion, env: disguised.deps.env!, now: new Date(NOW.getTime() + 120_000) });
   refused(built2, "OWNERSHIP_AMBIGUOUS");
   assert.match((built2 as { message: string }).message, /terraform_data\.pilot_role that is not a resource id the cleanup can classify exactly/);
   assert.equal(records2.blueprint.blueprint.entries.find((e) => e.address === "terraform_data.pilot_role")?.holdsIdentityArn, true, "the blueprint judged the attribute in place");
@@ -1127,7 +1142,7 @@ test("a run that created an allowlisted resource and one of an unreviewed type c
   const address = UNREVIEWED + ".dev";
   const creates = [...CREATES, { address, type: UNREVIEWED, change: { actions: ["create"], before: null, after: {} } }];
   const state = [...STATE, stateResource(UNREVIEWED, "dev", "0123456789abcdef0123456789abcdef", "arn:aws:cloud9:us-east-1:111111111111:environment:0123456789abcdef0123456789abcdef")];
-  const w = world();
+  const w = world(contractFor(creates));
   behave({ showResources: creates, stateResources: state });
   const run = await proposed(w);
   assert.deepEqual(run.proposal.deletes.map((d) => d.address), ["aws_cloudwatch_log_group.canary", "aws_s3_bucket.logs", "aws_s3_bucket_versioning.logs"], "the allowlisted resources are proposed, the unreviewed one is not");
@@ -1241,7 +1256,7 @@ test("a run that created an SCP and a tag policy, each attached, cleans up the S
   ] as const;
   const creates = [...CREATES, ...resources.map(([type, name]) => ({ address: type + "." + name, type, change: { actions: ["create"], before: null, after: {} } }))];
   const state = [...STATE, ...resources.map(([type, name, id, arn]) => arn === null ? stateResource(type, name, id) : stateResource(type, name, id, arn))];
-  const w = world();
+  const w = world(contractFor(creates));
   behave({ showResources: creates, stateResources: state });
   const run = await proposed(w);
   const deleted = run.proposal.deletes.map((d) => d.address);
@@ -1288,7 +1303,7 @@ test("an attachment or setting is deleted only with its parent (design review 64
   ];
   const state = [...STATE, stateResource("aws_s3_bucket", "team", TEAM, "arn:aws:s3:::" + TEAM), ...settings.map(([type, name]) => stateResource(type, name, TEAM)),
     stateResource("aws_sqs_queue_policy", "preexisting", OLD_QUEUE), stateResource("aws_s3_bucket_policy", "logs", BUCKET)];
-  const w = world();
+  const w = world(contractFor(creates));
   behave({ showResources: creates, stateResources: state });
   cloud({ existing: [...EXISTING, TEAM] });
   const run = await proposed(w);
@@ -1345,9 +1360,9 @@ test("a cleanup proposal needs a CLEANUP entry: APPLY alone for DEV refuses ACT_
   const { built } = await proposedUnder(w, awsContractJson(KILL, NO_CLEANUP));
   refused(built, "ACT_NOT_AUTHORIZED");
   assert.match((built as { message: string }).message, /CLEANUP for AWS TERRAFORM DEV/);
-  const ok = await proposedUnder(world(), awsContractJson(KILL));
+  const ok = await proposedUnder(world(), runContract());
   assert.ok(ok.built.ok, JSON.stringify(ok.built));
-  const current = authorizeContract(awsContractJson(KILL) as never, "DEV", "CLEANUP");
+  const current = authorizeContract(runContract() as never, "DEV", "CLEANUP");
   assert.ok(current.ok);
   assert.equal(ok.built.proposal.authorizingContractSha256, current.authorization.contractSha256);
   assert.equal(ok.built.proposal.authorizationSha256, current.authorization.authorizationSha256);
@@ -1392,10 +1407,10 @@ test("revoking APPLY does not strand a cleanup (N3): under a contract that now a
   const w = world();
   const { run, built } = await (async () => {
     const r = await observed(w);
-    writeReviewedContract(w.contractPath, awsContractJson(KILL, CLEANUP_ONLY));
+    writeReviewedContract(w.contractPath, runContract(CLEANUP_ONLY));
     const records = await loadRunRecords(r.s.sealed.artifactSha256, w.dirs.evidence);
     assert.ok(records.ok);
-    return { run: r, built: buildCleanupProposal({ requesterId: REQUESTER.requesterId, ...records, changes: r.s.sealed.changes, channel: "CLI", contract: awsContractJson(KILL, CLEANUP_ONLY) as never,
+    return { run: r, built: buildCleanupProposal({ requesterId: REQUESTER.requesterId, ...records, changes: r.s.sealed.changes, channel: "CLI", contract: runContract(CLEANUP_ONLY) as never,
       engineVersion: r.s.sealed.engineVersion, env: w.deps.env!, now: new Date(NOW.getTime() + 120_000) }) };
   })();
   assert.ok(built.ok, JSON.stringify(built));
@@ -1410,7 +1425,7 @@ test("revoking APPLY does not strand a cleanup (N3): under a contract that now a
   assert.equal(done.evidence.decisions.authorized.contractSha256, proposal.authorizingContractSha256, "and the contract that authorized the cleanup");
   assert.equal(done.evidence.decisions.authorized.operation, "CLEANUP");
   // A new APPLY under that contract is refused: revoking APPLY still revokes it.
-  const again = await seal(world(awsContractJson(KILL, CLEANUP_ONLY))).catch((error: Error) => error);
+  const again = await seal(world(runContract(CLEANUP_ONLY))).catch((error: Error) => error);
   assert.ok(again instanceof Error && /ACT_NOT_AUTHORIZED/.test(again.message), String(again));
 });
 
@@ -1418,14 +1433,14 @@ test("revoking APPLY does not strand a cleanup (N3): under a contract that now a
 
 /** The fixture contract with DEV moved to another region, authorizing only CLEANUP there: a later contract, not the run's place. */
 const movedRegion = () => {
-  const c = awsContractJson(KILL, CLEANUP_ONLY) as { targets: Record<string, Record<string, unknown>> };
+  const c = runContract(CLEANUP_ONLY) as { targets: Record<string, Record<string, unknown>> };
   return { ...c, targets: { ...c.targets, DEV: { ...c.targets.DEV, region: "eu-west-2" } } };
 };
 
 test("R1: a region move refuses the cleanup at propose, at the gate and at the late re-check, nothing consumed; the run's full target is sealed and recorded", async () => {
   const w = world();
   const run = await proposed(w);
-  const runTarget = pilotTargetSha256(awsContractJson(KILL) as never, "DEV");
+  const runTarget = pilotTargetSha256(runContract() as never, "DEV");
   assert.equal(run.s.sealed.targetSha256, runTarget, "the sealed plan binds the run's full target");
   assert.equal(run.evidence.targetSha256, runTarget, "and the apply evidence records it");
   assert.equal(run.proposal.targetSha256, runTarget);
@@ -1453,7 +1468,7 @@ test("R1: a region move between the cleanup gate and approval consumption refuse
   const approvals = [cleanupApproval(run.proposal, "alice")];
   // A region-only move keeps the authorizing entry (it names the account, not the region) but changes the contract's hash, so the late
   // authorization re-check refuses first; the late target re-check behind it is defense in depth for the same move.
-  const c = awsContractJson(KILL) as { targets: Record<string, Record<string, unknown>> };
+  const c = runContract() as { targets: Record<string, Record<string, unknown>> };
   const regionOnly = { ...c, targets: { ...c.targets, DEV: { ...c.targets.DEV, region: "eu-west-2" } } };
   const nonces = watchedNonces(openNonceStore(w.dirs.nonces), () => writeReviewedContract(w.contractPath, regionOnly));
   const result = await runCleanup({
@@ -1466,7 +1481,7 @@ test("R1: a region move between the cleanup gate and approval consumption refuse
 });
 
 test("R1: targetMoved is the one comparison: the run's target hash against the contract committed now, for any account field, backend or workspace", () => {
-  const base = awsContractJson(KILL) as { targets: Record<string, Record<string, unknown>> };
+  const base = runContract() as { targets: Record<string, Record<string, unknown>> };
   const run = pilotTargetSha256(base as never, "DEV")!;
   assert.equal(targetMoved(run, base as never, "DEV"), undefined);
   assert.equal(targetMoved(run, { ...base, authorize: { DEV: ["CLEANUP"] } } as never, "DEV"), undefined, "only the authorize entry may differ");

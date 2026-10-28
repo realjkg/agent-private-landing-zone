@@ -17,7 +17,7 @@ import { targetString } from "../src/cli/teardown-driver.js";
 import { SOURCE_COMMIT,
   DEV_TARGET, ENGINE_VERSION, NOW, OUTPUT_CANARY, PLAN_CANARY, POLICY, PROD_TARGET, QA_TARGET, STATE_CANARY, VALUE_CANARY, targetOf,
   behave as behaveIn, callsOf, contractJson, identityEnv, installFakeTerraform, keys, testFixtureForgeQualificationEvidence, writeReviewedContract,
-  writeProject, type Behavior, type Project,
+  withPlannedCanary, writeProject, type Behavior, type Project,
   requesterArgs,
 } from "./helpers/apply-fixtures.js";
 import { AZURE } from "../src/apply/providers/azure.js";
@@ -215,7 +215,7 @@ test("seal shows the target, needs the exact target and the project code phrase,
   const result = JSON.parse(run.stdout) as { artifactSha256: string; sealedPlanPath: string; environment: string; changes: { address: string; action: string }[] };
   assert.match(result.artifactSha256, /^[a-f0-9]{64}$/);
   assert.equal(result.environment, "DEV");
-  assert.deepEqual(result.changes.map((c) => c.address).sort(), ["azurerm_log_analytics_workspace.pilot", "azurerm_resource_group.pilot"]);
+  assert.deepEqual(result.changes.map((c) => c.address).sort(), ["azurerm_resource_group.pilot"]);
   assert.ok(existsSync(result.sealedPlanPath));
   const shown = run.term.out.join("");
   assert.ok(shown.includes(targetString(DEV_TARGET)) && shown.includes(PHRASE));
@@ -779,24 +779,29 @@ test("a failure after the approvals were consumed and before the engine starts e
   assert.equal((await cli(w, applyArgs(s, [await approve(w, s, "bob")]), [applyPhrase(s)], applyIn(s))).code, 0);
 });
 
-test("approvers and the operator see an import, a move, a forget and output changes, and no bidi or zero-width character", async () => {
+test("approvers and the operator see a create and output changes, and no bidi or zero-width character; a plan that imports, moves or forgets is never sealed (owner decision E1)", async () => {
   const w = await world();
+  for (const [entry, said] of [
+    [{ address: "azurerm_x.imported", type: "azurerm_x", change: { actions: ["no-op"], importing: { id: "/x" } } }, /azurerm_x\.imported \(azurerm_x\): the plan would import \["no-op"\] it/],
+    [{ address: "azurerm_x.moved", type: "azurerm_x", previous_address: "azurerm_x.old", change: { actions: ["no-op"] } }, /azurerm_x\.moved \(azurerm_x\): the plan would move \["no-op"\] it/],
+    [{ address: "azurerm_x.gone", type: "azurerm_x", change: { actions: ["forget"] } }, /azurerm_x\.gone \(azurerm_x\): the plan would \["forget"\] it/],
+  ] as const) {
+    behave({ showResources: [entry] });
+    const target = targetOf("DEV");
+    const refused = await cli(w, sealArgs(writeProject(fresh("project"), target), target, "DEV"), [targetString(target), PHRASE], { env: identityEnv("DEV") });
+    assert.equal(refused.code, 2, refused.stdout);
+    assert.match(refused.stderr + refused.stdout, /RESOURCE_NOT_IN_CANARY/);
+    assert.match(refused.stderr + refused.stdout, said);
+  }
   behave({
-    showResources: [
-      { address: "azurerm_x.imported", type: "azurerm_x", change: { actions: ["no-op"], importing: { id: "/x" } } },
-      { address: "azurerm_x.moved", type: "azurerm_x", previous_address: "azurerm_x.old", change: { actions: ["no-op"] } },
-      { address: "azurerm_x.gone", type: "azurerm_x", change: { actions: ["forget"] } },
-      { address: "azurerm_x.safe\u202Egnp.exe\u200B", type: "azurerm_x", change: { actions: ["create"] } },
-    ],
+    showResources: [{ address: "azurerm_x.safe\u202Egnp.exe\u200B", type: "azurerm_x", change: { actions: ["create"] } }],
     showOutputChanges: { endpoint: { actions: ["update"] } },
   });
+  withPlannedCanary(w.contractPath, toolDir);
   const s = await sealed(w, "DEV");
   const shown = (text: string) => {
-    assert.match(text, /\[importing an existing resource\]/);
-    assert.match(text, /azurerm_x\.moved \(azurerm_x\) \[moved from azurerm_x\.old\]/);
-    assert.match(text, /FORGET\s+azurerm_x\.gone \(azurerm_x\) \[removed from state only; the real resource is left\]/);
+    assert.match(text, /CREATE\s+azurerm_x\.safegnp\.exe \(azurerm_x\)/);
     assert.match(text, /UPDATE\s+output\.endpoint \(output\)/);
-    assert.ok(text.includes("azurerm_x.safegnp.exe"));
     assert.ok(!/[\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF]/.test(text), "no hidden character reaches the screen");
   };
   const approving = await cli(w, ["approve", "--bundle", s.bundle, "--key", keyFile("alice"), "--approver", "alice"], [approvePhrase(s)]);

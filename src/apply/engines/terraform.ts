@@ -21,6 +21,7 @@ import { checkedOutput, codeOf, stop, withoutIdentities } from "../engine.js";
 import type { EngineApplyRun, EngineCleanupRun, EngineContext, EngineSpec } from "../engine-spec.js";
 import type { ProviderBlock, ProviderSpec, ProviderUse } from "../provider.js";
 import { isRecord } from "../providers/shared.js";
+import { assertCanary, type CanaryEntry } from "../canary.js";
 import { assertNoRefusedPlanConstructs, assertNoRefusedSourceConstructs } from "../terraform-constructs.js";
 import { LockFileError, REVIEWED_PROVIDER_VERSIONS, lockedProviders, unofficialProviderHash, unreviewedProviderVersion, type LockedProvider } from "../lockfile.js";
 import {
@@ -339,6 +340,36 @@ function providerUsesOf(document: Shown): ProviderUse[] {
 /** What the provider half of the contract binding is judged against: the contract's target and provider, and the environment that holds the APPLY role (sealing hides it from its children, not from this check). */
 type Judge = Pick<EngineContext, "pinned" | "spec" | "env">;
 
+/** A Terraform resource type as the provider schema names it: `<provider>_<name>`, lowercase letters, digits and underscores. Never a wildcard. */
+const TERRAFORM_TYPE = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$/;
+const DATA_ADDRESS = /(^|\.)data\./;
+const sameActions = (actions: unknown, expected: readonly string[]): boolean =>
+  Array.isArray(actions) && actions.length === expected.length && actions.every((action, index) => action === expected[index]);
+
+/**
+ * The canary allowlist on the plan itself (owner decision E1, ../canary.ts): every managed `resource_changes` entry must be exactly
+ * `["create"]` (not an import, not a move) of a listed type, and the managed entries must number exactly the listed count per type.
+ * A data source is read at plan time and creates nothing: its entry may be `["read"]` or `["no-op"]` and nothing else, and which data
+ * sources may be read at all stays the provider's reviewed list (`ProviderSpec.assertProviderConfig`, judged before this).
+ */
+function assertPlanInCanary(document: Shown, pinned: PilotTarget): void {
+  const entries: CanaryEntry[] = [];
+  for (const [index, found] of (Array.isArray(document.resource_changes) ? document.resource_changes : []).entries()) {
+    const address = stripInvisible(typeof found?.address === "string" ? found.address : "terraform:unknown:" + index);
+    const type = stripInvisible(typeof found?.type === "string" ? found.type : "unknown");
+    const actions: unknown = found?.change?.actions;
+    const shown = Array.isArray(actions) ? JSON.stringify(actions) : "[unreadable actions]";
+    if (found?.mode === "data" || (found?.mode === undefined && DATA_ADDRESS.test(address))) {
+      if (!sameActions(actions, ["read"]) && !sameActions(actions, ["no-op"])) entries.push({ address, type, action: shown, creates: false });
+      continue;
+    }
+    const moved = typeof found?.previous_address === "string" && found.previous_address !== "";
+    const creates = sameActions(actions, ["create"]) && !found?.change?.importing && !moved;
+    entries.push({ address, type, action: found?.change?.importing ? "import " + shown : moved ? "move " + shown : shown, creates });
+  }
+  assertCanary(pinned.canary, entries, "plan");
+}
+
 /**
  * The one extraction of the redacted change list (address, type, action, and
  * an import, a move, a forget or an output change; never a value) from
@@ -346,7 +377,7 @@ type Judge = Pick<EngineContext, "pinned" | "spec" | "env">;
  * again from the decrypted plan to prove the record describes it. It also
  * enforces the provider half of the contract binding.
  */
-function changesOf(shown: string, judge: Judge): PlanChange[] {
+function changesOf(shown: string, judge: Judge, purpose: "APPLY" | "CLEANUP"): PlanChange[] {
   let document: Shown;
   try { document = JSON.parse(shown); } catch { return stop("PLAN_JSON_INVALID"); }
   if (typeof document?.format_version !== "string" || document.errored === true) return stop("PLAN_JSON_UNUSABLE");
@@ -354,6 +385,8 @@ function changesOf(shown: string, judge: Judge): PlanChange[] {
   const uses = providerUsesOf(document);
   assertNoRefusedPlanConstructs(document);
   judge.spec.assertProviderConfig(Object.values(document.configuration?.provider_config ?? {}), judge.pinned, judge.env, uses);
+  // Then, for an APPLY (the seal, the qualification plan, and the apply's re-derivation), the canary allowlist. A cleanup's destroy plan keeps its own rules.
+  if (purpose === "APPLY") assertPlanInCanary(document, judge.pinned);
   const resources = (Array.isArray(document.resource_changes) ? document.resource_changes : []).map((found, index): PlanChange => {
     const actions = found?.change?.actions ?? [];
     const previous = found?.previous_address;
@@ -371,7 +404,7 @@ function changesOf(shown: string, judge: Judge): PlanChange[] {
 }
 
 /** The pinned `show` of the plan file at `../alz-preview.tfplan`, in an initialized work directory, with no identity at all. */
-const readChanges = (session: Session, judge: Judge): PlanChange[] => changesOf(session.step(SHOW_ARGV, null, true), judge);
+const readChanges = (session: Session, judge: Judge): PlanChange[] => changesOf(session.step(SHOW_ARGV, null, true), judge, "APPLY");
 
 /**
  * The deletion unit, verified in the plan (src/apply/unit.ts): every resource the plan creates and whose type carries
@@ -543,7 +576,7 @@ function openCleanup(input: EngineContext & { target: ResolvedTarget; engineVers
       planned = true;
       // The same redacted extraction as sealing, with the same provider-config judgment; the plan file stays for `execute`.
       const shown = session.step(CLEANUP_SHOW_ARGV, null, true);
-      return changesOf(shown, input);
+      return changesOf(shown, input, "CLEANUP");
     },
     async execute(control) {
       if (!planned || !existsSync(planPath)) return stop("ENGINE_NOT_PREPARED");
@@ -568,6 +601,7 @@ export const TERRAFORM: EngineSpec = {
   embedsStateWrite: true,
   mutation: "TERRAFORM_APPLY_OF_SEALED_PLAN",
   providers: ["AZURE", "AWS"],
+  canaryTypeOk: (value) => value.length <= 128 && TERRAFORM_TYPE.test(value),
   notices: {
     sealHeading: "SEAL A PREVIEW (this plans against the target and changes no infrastructure; the plan is kept encrypted)",
     sealReads: "  reads           state with the STATE identity, then plans with the DISCOVERY identity",
@@ -622,7 +656,7 @@ export const TERRAFORM: EngineSpec = {
       session.step(PREVIEW_PLAN_ARGV, "DISCOVERY");
       session.assertBound();
       const shown = session.step(SHOW_ARGV, null, true);
-      return { artifact: readFileSync(planFile), changes: changesOf(shown, input), unit: unitOfPlan(shown, input, input.unit) };
+      return { artifact: readFileSync(planFile), changes: changesOf(shown, input, "APPLY"), unit: unitOfPlan(shown, input, input.unit) };
     } finally {
       rmSync(planFile, { force: true });
       rmSync(backendConfigPath, { force: true });

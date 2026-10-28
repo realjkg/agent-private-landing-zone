@@ -102,6 +102,12 @@ async function seal(w: World, environment: ApplyEnvironment, p: Project = writeP
   return { sealed: result.sealed, path: result.path, project: p, loaded: { sealed: loaded.sealed, planBytes: loaded.planBytes } };
 }
 type Sealed = Awaited<ReturnType<typeof seal>>;
+/** A seal that is refused: its result. */
+const sealRefusal = (w: World, environment: ApplyEnvironment) => {
+  const target = targetOf(environment);
+  const p = writeProject(fresh("project"), target);
+  return sealPreview({ invocation: human(target), environment, target, manifest: p.manifest, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved, requester: REQUESTER }, forEnv(w, environment));
+};
 
 /** One release, sealed for each environment: the same project files, so the same releaseIdentity. */
 const SHARED_TF = 'resource "azurerm_resource_group" "pilot" {}\n';
@@ -758,7 +764,14 @@ test("the change list is derived again from the decrypted plan: a record that do
   const w = world();
   const s = await seal(w, "DEV");
   const approvals = [approval(s.sealed, "alice")];
-  behave({ showExtra: true }); // the plan now shows a resource the sealed record never listed
+  // The plan now shows a resource the sealed record never listed: the canary allowlist refuses its delete (owner decision E1), before anything is consumed.
+  behave({ showExtra: true });
+  const extra = await run(w, s, approvals);
+  refused(extra, "RESOURCE_NOT_IN_CANARY");
+  assert.match((extra as { message: string }).message, /azurerm_key_vault\.extra \(azurerm_key_vault\): the plan would \["delete"\] it.*Nothing was applied and no approval was consumed/);
+  assert.equal(applyCalls().length, 0);
+  // The plan now shows an output change the sealed record never listed: the canary allowlist judges resources only, the record comparison catches it.
+  behave({ showOutputChanges: { extra: { actions: ["create"] } } });
   const before = calls().length;
   const result = await run(w, s, approvals);
   refused(result, "ARTIFACT_TAMPERED");
@@ -1386,27 +1399,28 @@ test("a hard-coded provider subscription_id or tenant_id that is not the contrac
   assert.ok((await run(w3, s, [approval(s.sealed, "alice")])).ok);
 });
 
-test("an import, a move, a forget and an output change are sealed, re-derived at apply, and a plan that differs only in one of them is ARTIFACT_TAMPERED", async () => {
+test("an import, a move and a forget are never sealed or applied (owner decision E1); an output change is sealed, re-derived at apply, and a plan that differs only in it is ARTIFACT_TAMPERED", async () => {
   const w = world();
-  const extras = {
-    showResources: [
-      { address: "azurerm_x.imported", type: "azurerm_x", change: { actions: ["no-op"], importing: { id: "/x" } } },
-      { address: "azurerm_x.moved", type: "azurerm_x", previous_address: "azurerm_x.old", change: { actions: ["no-op"] } },
-    ],
-    showOutputChanges: { endpoint: { actions: ["update"] } },
-  };
+  const imported = { address: "azurerm_x.imported", type: "azurerm_x", change: { actions: ["no-op"], importing: { id: "/x" } } };
+  const moved = { address: "azurerm_x.moved", type: "azurerm_x", previous_address: "azurerm_x.old", change: { actions: ["no-op"] } };
+  const forgotten = { address: "azurerm_x.forgotten", type: "azurerm_x", change: { actions: ["forget"] } };
+  for (const [entry, said] of [[imported, /import \["no-op"\]/], [moved, /move \["no-op"\]/], [forgotten, /\["forget"\]/]] as const) {
+    behave({ showResources: [entry] });
+    const atSeal = await sealRefusal(w, "DEV");
+    refused(atSeal as never, "RESOURCE_NOT_IN_CANARY");
+    assert.match((atSeal as { message: string }).message, said);
+  }
+  const extras = { showOutputChanges: { endpoint: { actions: ["update"] } } };
   behave({ ...extras, applyAdvance: true });
   const s = await seal(w, "DEV");
-  assert.ok(s.sealed.changes.some((c) => c.importing) && s.sealed.changes.some((c) => c.previousAddress === "azurerm_x.old") && s.sealed.changes.some((c) => c.address === "output.endpoint"));
+  assert.ok(s.sealed.changes.some((c) => c.address === "output.endpoint"));
   const approvals = [approval(s.sealed, "alice")];
-  for (const edit of [
-    { showResources: [{ ...extras.showResources[0], change: { actions: ["no-op"] } }, extras.showResources[1]] },
-    { showResources: [extras.showResources[0], { ...extras.showResources[1], previous_address: undefined }] },
-    { showOutputChanges: {} },
-    { showResources: [...extras.showResources, { address: "azurerm_x.forgotten", type: "azurerm_x", change: { actions: ["forget"] } }] },
-  ]) {
+  for (const [edit, code] of [
+    [{ showOutputChanges: {} }, "ARTIFACT_TAMPERED"],
+    [{ showResources: [imported] }, "RESOURCE_NOT_IN_CANARY"], [{ showResources: [moved] }, "RESOURCE_NOT_IN_CANARY"], [{ showResources: [forgotten] }, "RESOURCE_NOT_IN_CANARY"],
+  ] as const) {
     behave({ ...extras, ...edit, applyAdvance: true });
-    refused(await run(w, s, approvals), "ARTIFACT_TAMPERED");
+    refused(await run(w, s, approvals), code);
     assert.equal(applyCalls().length, 0);
   }
   behave({ ...extras, applyAdvance: true });

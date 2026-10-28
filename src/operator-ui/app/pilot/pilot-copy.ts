@@ -232,6 +232,7 @@ export function ownershipWord(ownership: string): string {
     case "PROTECTED_IDENTITY": return "an identity or access object (a role, a role or policy assignment, a role or policy definition, a managed identity, a sign-in trust, an exemption or a lock)";
     case "PROTECTED_DEPLOYMENT": return "deployment history";
     case "RETAINED_GROUP": return "a resource group, kept whole (a pilot cleanup removes only approved things inside it)";
+    case "CANARY_RETAINED": return "a no-cost marker the owner's pilot rules keep on purpose (it keeps the stack from being emptied)";
     case "CONTAINS_OTHERS": return "a container that holds or serves other things (a subscription, management group or provider registration, or a deployment that creates a whole set of other resources)";
     default: return "unknown";
   }
@@ -430,6 +431,8 @@ export const CODE_COPY: Readonly<Record<string, Reason>> = {
   ACT_DISABLED: { why: "The pilot is switched off. It only works while the owner's pilot rules are switched on and approved.", next: "Ask the pilot owner to switch on and approve the pilot rules. You cannot do this from here." },
   CONTRACT_INVALID: { why: "The pilot rules file has a mistake.", next: "Ask the pilot owner to fix it in a reviewed change. Nothing was changed." },
   ACT_NOT_AUTHORIZED: { why: "The owner's reviewed pilot rules do not allow this kind of change in this environment.", next: "Ask the pilot owner whether to allow it. Only their reviewed change to the rules can. Nothing was changed." },
+  CANARY_ALLOWLIST_MISSING: { why: "The owner's pilot rules allow changes in this environment but do not list the exact resources a change may create there.", next: "Ask the pilot owner to add the list of resource types and counts to the reviewed pilot rules. Nothing was changed." },
+  RESOURCE_NOT_IN_CANARY: { why: "The plan would do more than create exactly the resources the owner's pilot rules list: an extra or missing resource, a wrong count, or a change to something that already exists.", next: "Read the reason shown, change the project so it creates exactly the listed resources and nothing else, then prepare a new preview. Nothing was changed." },
   ACT_AUTHORIZATION_CHANGED: { why: "The owner's pilot rules changed after this change was prepared and approved, so the approvals no longer cover it.", next: "Prepare the change again under the current rules and collect new approvals. Nothing was used up." },
   NOT_IMPLEMENTED: { why: "The pilot rules name a cloud and tool combination that this version cannot run yet.", next: "Ask the pilot owner which supported combination to use. Nothing was changed." },
   IDENTITY_TARGET_MISMATCH: { why: "One of the separate sign-ins points at a different account than the pilot rules name for this environment.", next: "Correct that sign-in's account in the terminal where you started the console, restart the console, then run the readiness check again." },

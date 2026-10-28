@@ -27,7 +27,7 @@ import {
  * Default CI, fake engine. The real engine's behavior is in the opt-in test/apply-emulated.test.ts (SYNTHETIC/EMULATED).
  */
 
-const PINNED = { tenantId: TENANT, subscriptionId: DEV_TARGET.account, backend: DEV_TARGET.backend, workspace: "default" };
+const PINNED = { tenantId: TENANT, subscriptionId: DEV_TARGET.account, backend: DEV_TARGET.backend, workspace: "default", canary: { resources: [{ type: "azurerm_resource_group", count: 1 }] } };
 /** The environment init's backend configuration was written from: STATE_WRITE is `statewrite-client-3` with `/run/fixture/statewrite-oidc-token`. */
 const WRITER_ENV = identityEnv("DEV");
 const [ACCOUNT, CONTAINER, ...KEY] = DEV_TARGET.backend.split("/");

@@ -9,12 +9,13 @@ import type { QualificationRecord } from "../teardown/driver/qualification.js";
 import type { ResolvedTarget } from "../teardown/driver/types.js";
 import { canonicalJson } from "../teardown/manifest.js";
 import { sha256 } from "../util/sha256.js";
+import { RETAINABLE_CANARY_TYPES } from "./canary.js";
 import { ENVIRONMENTS, HASH } from "./constants.js";
 import { ENGINE_IDS, engineSpec, type EngineSpec } from "./engine-spec.js";
 import { applyEvidenceProblems, qualificationEvidenceProblems, type QualificationEvidence } from "./evidence.js";
 import { accountFieldsOf, PROVIDER_IDS, providerSpec, specOf, type ProviderSpec } from "./provider.js";
 import { ACT_OPERATIONS, type ActOperation } from "./types.js";
-import type { ApplyEnvironment, ApplyEvidence, ApplyRefusalCode, ApplyResult, ApproverEntry, PilotContract, PilotTarget } from "./types.js";
+import type { ApplyEnvironment, ApplyEvidence, ApplyRefusalCode, ApplyResult, ApproverEntry, PilotCanary, PilotContract, PilotTarget } from "./types.js";
 
 /**
  * The pilot release contract (docs/act-pilot-plan.md, authority model 9). This
@@ -80,18 +81,51 @@ const text = (value: unknown, path: string, ok: (v: string) => boolean): string 
 const integer = (value: unknown, path: string, min: number, max: number): number =>
   typeof value === "number" && Number.isInteger(value) && value >= min && value <= max ? value : bad(path + ": expected an integer from " + min + " to " + max);
 
-/** A target in the contract's provider's shape: its account fields, then the backend and the workspace, and the engine's own fields (CDK: the capabilities it may use). */
+/** A target in the contract's provider's shape: its account fields, then the backend and the workspace, the engine's own fields (CDK: the capabilities it may use), and the optional canary allowlist. */
 function target(value: unknown, path: string, spec: ProviderSpec, engine: EngineSpec): PilotTarget {
   const fields = Object.entries(spec.accountFields);
   const extra = Object.entries(engine.target?.fields ?? {});
-  const r = object(value, path, [...fields.map(([name]) => name), "backend", "workspace", ...extra.map(([name]) => name)]);
+  const r = object(value, path, [...fields.map(([name]) => name), "backend", "workspace", ...extra.map(([name]) => name)], ["canary"]);
   const flag = (name: string, ok: (v: unknown) => boolean): unknown => ok(r[name]) ? r[name] : bad(path + "." + name + ": invalid");
   return {
     ...Object.fromEntries(fields.map(([name, ok]) => [name, text(r[name], path + "." + name, ok)])),
     backend: text(r.backend, path + ".backend", engine.target?.backendOk ?? spec.backendOk),
     workspace: text(r.workspace, path + ".workspace", engine.target?.workspaceOk ?? ((v) => WORKSPACE.test(v))),
     ...Object.fromEntries(extra.map(([name, ok]) => [name, flag(name, ok)])),
+    // Absent stays absent, so a target that never names one hashes as it always did; an APPLY for it is refused (`authorizeContract`).
+    ...(r.canary !== undefined ? { canary: canaryOf(r.canary, path + ".canary", engine) } : {}),
   } as PilotTarget;
+}
+
+/** At most this many types, and this many of one type, in one canary allowlist. */
+const MAX_CANARY_TYPES = 50;
+const MAX_CANARY_COUNT = 10_000;
+
+/**
+ * The canary allowlist (owner decision E1; docs/act-pilot-apply.md, "Canary allowlist"): `{ resources: [{ type, count }] }`, each
+ * type an exact resource type of the contract's engine (`EngineSpec.canaryTypeOk`: no wildcard, no pattern) named once, each count
+ * an integer of at least 1, and an optional `retain: true` for a reviewed sentinel type (`RETAINABLE_CANARY_TYPES`). No other key at any
+ * level. An engine with no canary type rule takes no canary.
+ */
+function canaryOf(value: unknown, path: string, engine: EngineSpec): PilotCanary {
+  const r = object(value, path, ["resources"]);
+  const typeOk = engine.canaryTypeOk ?? bad(path + ": the " + engine.id + " engine takes no canary allowlist");
+  const list = r.resources;
+  if (!Array.isArray(list) || list.length === 0 || list.length > MAX_CANARY_TYPES) return bad(path + ".resources: expected a list of 1 to " + MAX_CANARY_TYPES + " resource types");
+  const seen = new Set<string>();
+  return {
+    resources: list.map((item, index) => {
+      const p = path + ".resources[" + index + "]";
+      const entry = object(item, p, ["type", "count"], ["retain"]);
+      const type = text(entry.type, p + ".type", (v) => typeOk(v));
+      if (seen.has(type)) bad(p + ".type: " + type + " is listed twice");
+      seen.add(type);
+      // `retain: true` keeps the type at CLEANUP; only a reviewed, no-cost, inert sentinel type may carry it (`RETAINABLE_CANARY_TYPES`).
+      if (entry.retain !== undefined && entry.retain !== true) bad(p + ".retain: expected true when present");
+      if (entry.retain === true && !RETAINABLE_CANARY_TYPES.has(type)) bad(p + ".retain: " + type + " is not a reviewed sentinel type a cleanup may keep (" + [...RETAINABLE_CANARY_TYPES].join(", ") + ")");
+      return { type, count: integer(entry.count, p + ".count", 1, MAX_CANARY_COUNT), ...(entry.retain === true ? { retain: true as const } : {}) };
+    }),
+  };
 }
 
 /** The key itself, not its PEM text: the same Ed25519 key written two ways is one key. Throws for anything else. */
@@ -282,15 +316,18 @@ export type Authorization = { operation: ActOperation; contractSha256: string; a
 
 /**
  * The canonical hash of one environment's full target (review of #313, R1): provider, every account field (account or
- * subscription, tenant, region, project), backend and workspace. Sealed into the plan and recorded in the apply evidence, so a
- * cleanup or removal runs only where the run ran, even when it is authorized by a later contract. Undefined when the contract
- * has no target for the environment.
+ * subscription, tenant, region, project), backend, workspace and, when the target names one, its canary allowlist (owner
+ * decision E1), so changing the allowlist is a target change. Sealed into the plan and recorded in the apply evidence, so a
+ * cleanup or removal runs only where the run ran, under the allowlist it ran under, even when it is authorized by a later
+ * contract. Undefined when the contract has no target for the environment.
  */
 export function pilotTargetSha256(contract: PilotContract, env: ApplyEnvironment): string | undefined {
   const target = Object.hasOwn(contract.targets, env) ? contract.targets[env] : undefined;
   if (!target) return undefined;
   const account = Object.fromEntries(Object.entries(accountFieldsOf(specOf(contract), target)).map(([key, value]) => [key, canonicalGuid(value)]));
-  return sha256(canonicalJson({ provider: contract.provider, ...account, backend: target.backend, workspace: target.workspace } as never));
+  return sha256(canonicalJson({
+    provider: contract.provider, ...account, backend: target.backend, workspace: target.workspace, ...(target.canary !== undefined ? { canary: target.canary } : {}),
+  } as never));
 }
 
 const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -328,6 +365,12 @@ export function authorizeContract(contract: PilotContract, env: ApplyEnvironment
   if (!entry || !entry.operations.includes(operation)) {
     return refuse("ACT_NOT_AUTHORIZED", "Not AUTHORIZED: the reviewed pilot contract does not authorize " + operation + " for " + contract.provider + " " + contract.engine + " " + env +
       ". Nothing ran. Only the owner's reviewed commit of the contract's authorize entry can authorize it.");
+  }
+  // Owner decision E1: an APPLY names, in the same reviewed contract, exactly what it may create. No allowlist, no APPLY (fail closed).
+  if (operation === "APPLY" && contract.targets[env]?.canary === undefined) {
+    return refuse("CANARY_ALLOWLIST_MISSING", "The reviewed pilot contract authorizes APPLY for " + contract.provider + " " + contract.engine + " " + env +
+      ", but that target names no canary allowlist (targets." + env + ".canary: the exact resource types and counts the apply may create). Nothing ran. " +
+      "Only the owner's reviewed commit of the contract can add it.");
   }
   return { ok: true, authorization: { operation, contractSha256: pilotContractSha256(contract), authorizationSha256: authorizationSha256Of(entry), entry } };
 }

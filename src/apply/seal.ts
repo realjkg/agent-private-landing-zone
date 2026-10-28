@@ -6,6 +6,7 @@ import { canonicalJson, type ArtifactManifest } from "../teardown/manifest.js";
 import type { ResolvedTarget } from "../teardown/driver/types.js";
 import { COMMIT, ENVIRONMENTS, HASH, INVISIBLE } from "./constants.js";
 import { sha256 } from "../util/sha256.js";
+import { canaryRefusal } from "./canary.js";
 import { codeOf } from "./engine.js";
 import { sourceRuleHint } from "./terraform-constructs.js";
 import type { EnginePlanInput, EngineSpec } from "./engine-spec.js";
@@ -85,7 +86,7 @@ export type SealInput = EnginePlanInput & {
   now?: () => Date;
 };
 
-export type SealFailure = { ok: false; code: "ARTIFACT_INVALID"; message: string };
+export type SealFailure = { ok: false; code: "ARTIFACT_INVALID" | "RESOURCE_NOT_IN_CANARY" | "CANARY_ALLOWLIST_MISSING"; message: string };
 /** A stored seal: the encrypted vault file holds the record and the plan bytes. */
 export type SealResult = { ok: true; sealed: SealedPlan; path: string } | SealFailure;
 /** A qualification run's plan: made and checked, then dropped. Nothing is stored, so nothing can be approved or applied. */
@@ -118,6 +119,8 @@ function build(input: SealInput): { sealed: SealedPlan; planBytes: Buffer } | Se
   try {
     return runSeal(input);
   } catch (error) {
+    const canary = canaryRefusal(error, "Nothing was sealed.");
+    if (canary) return { ok: false, ...canary };
     return {
       ok: false, code: "ARTIFACT_INVALID",
       message: "The plan could not be sealed (" + codeOf(error) + ")." + sourceRuleHint(codeOf(error)) + " Engine output is withheld because plan and state output can hold secrets.",

@@ -10,19 +10,22 @@
       "accountId": "111111111111",
       "region": "us-east-1",
       "backend": "examplefake-dev-state/pilot/dev.tfstate",
-      "workspace": "default"
+      "workspace": "default",
+      "canary": { "resources": [{ "type": "aws_cloudwatch_log_group", "count": 1 }] }
     },
     "QA": {
       "accountId": "222222222222",
       "region": "us-east-1",
       "backend": "examplefake-qa-state/pilot/qa.tfstate",
-      "workspace": "default"
+      "workspace": "default",
+      "canary": { "resources": [{ "type": "aws_cloudwatch_log_group", "count": 1 }] }
     },
     "PROD": {
       "accountId": "333333333333",
       "region": "us-east-1",
       "backend": "examplefake-prod-state/pilot/prod.tfstate",
-      "workspace": "default"
+      "workspace": "default",
+      "canary": { "resources": [{ "type": "aws_cloudwatch_log_group", "count": 1 }] }
     }
   },
   "requiredApprovals": { "DEV": 1, "QA": 1, "PROD": 2 },

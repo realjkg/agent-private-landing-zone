@@ -16,8 +16,7 @@ import { removeTree } from "../src/teardown/driver/cleanup.js";
 import {
   AWS_DEV_TARGET, NOW, POLICY, SOURCE_COMMIT, STATE_CANARY, VALUE_CANARY, awsContractJson, awsIdentityEnv, awsReadCallsOf, awsRoleArn, awsTargetOf, behave as behaveIn, behaveAwsReads, callsOf,
   installFakeAwsReads, installFakeTerraform, keys, stateResource, testFixtureForgeQualificationEvidence, writeReviewedContract, writeProject, type Behavior, type Project,
-  requesterArgs,
-} from "./helpers/apply-fixtures.js";
+  requesterArgs, canaryFor, withCanary } from "./helpers/apply-fixtures.js";
 
 // The terminal half of the observe and cleanup steps (docs/observe-and-cleanup.md): `./alz apply observe`, `propose-cleanup`,
 // `approve` of a proposal, `cleanup`, `verify-cleanup` and `report`, each behind the same person-at-a-terminal gate as the
@@ -46,8 +45,9 @@ const AWS_PROVIDER_CONFIG = { aws: { name: "aws", full_name: "registry.terraform
 const CREATES = [
   { address: "aws_s3_bucket.logs", type: "aws_s3_bucket", change: { actions: ["create"], before: null, after: { secret: VALUE_CANARY } } },
   { address: "aws_cloudwatch_log_group.canary", type: "aws_cloudwatch_log_group", change: { actions: ["create"], before: null, after: {} } },
-  { address: "aws_s3_bucket.state", type: "aws_s3_bucket", change: { actions: ["update"], before: {}, after: {} } },
 ];
+/** Owner decision E1: the run's contract names exactly the two creates. The plan cannot also update the state bucket (RESOURCE_NOT_IN_CANARY): that bucket is in the state only. */
+const runContract = (over: Record<string, unknown> = {}) => withCanary(awsContractJson(KILL, over), canaryFor(CREATES));
 const STATE = [
   stateResource("aws_s3_bucket", "logs", BUCKET, "arn:aws:s3:::" + BUCKET), stateResource("aws_cloudwatch_log_group", "canary", LOG, "arn:aws:logs:us-east-1:111111111111:log-group:" + LOG),
   stateResource("aws_s3_bucket", "state", STATE_BUCKET, "arn:aws:s3:::" + STATE_BUCKET),
@@ -56,7 +56,7 @@ const EXISTING = [BUCKET, LOG, STATE_BUCKET];
 const BUCKET_ARN = "arn:aws:s3:::" + BUCKET;
 const LOG_ARN = "arn:aws:logs:us-east-1:111111111111:log-group:" + LOG;
 /** The deletion unit of the DEV state container under the fixture contract: what every created resource is stamped with, and what the fake tagging API lists by. */
-const UNIT = (() => { const path = join(fresh("unit-contract"), "act-pilot-contract.json"); writeReviewedContract(path, awsContractJson(KILL)); return pilotUnitOf({ provider: "AWS", contractSha256: pilotContractSha256(loadPilotContract(path) as PilotContract), environment: "DEV", target: awsTargetOf("DEV") }); })();
+const UNIT = (() => { const path = join(fresh("unit-contract"), "act-pilot-contract.json"); writeReviewedContract(path, runContract()); return pilotUnitOf({ provider: "AWS", contractSha256: pilotContractSha256(loadPilotContract(path) as PilotContract), environment: "DEV", target: awsTargetOf("DEV") }); })();
 /** The run's own resources, as the tagging API lists them: the listing is not empty, and it matches the records. */
 const TAGGED = [BUCKET_ARN, LOG_ARN];
 const behave = (behavior: Behavior = {}) => behaveIn(toolDir, KILL, { applyAdvance: true, showOnlyConfigured: true, showResources: CREATES, showProviderConfig: AWS_PROVIDER_CONFIG, stateResources: STATE, unitTags: { ...UNIT.tags }, ...behavior });
@@ -86,7 +86,7 @@ async function world(): Promise<World> {
   behave();
   behaveAwsReads(awsToolDir, { existing: EXISTING, tagged: TAGGED });
   const contractPath = join(fresh("contract"), "act-pilot-contract.json");
-  writeReviewedContract(contractPath, awsContractJson(KILL));
+  writeReviewedContract(contractPath, runContract());
   const vault = fresh("vault");
   await testFixtureForgeQualificationEvidence(vault, undefined, "AWS");
   const [scratch, evidenceDir, acceptanceDir, reportsDir, proposalsDir] = [fresh("scratch"), fresh("evidence"), fresh("acceptance"), fresh("reports"), fresh("proposals")];
@@ -351,7 +351,7 @@ test("propose-cleanup and approve of a proposal are AUTHORIZED by the current co
   const run = await appliedRun(w);
   assert.equal((await cli(w, ["observe", "--sealed", run.sealedPlanPath])).code, 0);
   const withAuthorize = (authorize: Record<string, string[]>, over: Record<string, unknown> = {}) =>
-    writeReviewedContract(w.contractPath, awsContractJson(KILL, { authorize: { QA: ["APPLY", "CLEANUP"], PROD: ["APPLY", "CLEANUP"], ...authorize }, ...over }));
+    writeReviewedContract(w.contractPath, runContract({ authorize: { QA: ["APPLY", "CLEANUP"], PROD: ["APPLY", "CLEANUP"], ...authorize }, ...over }));
   // From an uncommitted checkout (the contract included) nothing is proposed: the committed contract is the authorization.
   const dirty = await cli(w, ["propose-cleanup", "--sealed", run.sealedPlanPath, ...requesterArgs()], [], { sourceCommit: "uncommitted" });
   assert.equal(dirty.code, 2, dirty.stderr);
