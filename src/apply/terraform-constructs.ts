@@ -53,6 +53,33 @@ export const EPHEMERAL_NOT_ALLOWED = "TERRAFORM_EPHEMERAL_RESOURCE_NOT_ALLOWED";
 export const CONSTRUCTS_UNREADABLE = "TERRAFORM_CONFIGURATION_UNREADABLE";
 export const CONSTRUCTS_TOO_DEEP = "TERRAFORM_CONFIGURATION_TOO_DEEP";
 export const CONSTRUCTS_DUPLICATE_KEY = "TERRAFORM_CONFIGURATION_DUPLICATE_KEY";
+/**
+ * A project-shipped provider source or CLI configuration (review of #327, round 6): a `terraform.d` directory (an implicit local
+ * mirror, `terraform.d/plugins`), a `.terraform` data directory (installed providers), or a `.terraformrc` / `terraform.rc` CLI
+ * configuration, at any depth. The product's own CLI configuration already turns implicit mirrors off; these are refused besides,
+ * so no project-supplied package or configuration is ever next to the engine.
+ */
+export const LOCAL_PLUGIN_DIR_REFUSED = "TERRAFORM_LOCAL_PLUGIN_DIR_REFUSED";
+const LOCAL_PLUGIN_DIRECTORIES = new Set(["terraform.d", ".terraform"]);
+const LOCAL_CLI_CONFIG_FILES = new Set([".terraformrc", "terraform.rc"]);
+/** The first project-relative path that is a local plugin directory or CLI configuration, or undefined. Names are compared without regard to case. */
+export function localPluginPathIn(root: string, relative = "", depth = 0): string | undefined {
+  if (depth > MAX_DEPTH) return stop(CONSTRUCTS_TOO_DEEP);
+  let names: string[];
+  try { names = readdirSync(join(root, relative)).sort(); } catch { return stop(CONSTRUCTS_UNREADABLE); }
+  for (const name of names) {
+    const path = relative ? relative + "/" + name : name;
+    let directory: boolean;
+    try { directory = lstatSync(join(root, path)).isDirectory(); } catch { return stop(CONSTRUCTS_UNREADABLE); }
+    const lower = name.toLowerCase();
+    if (directory ? LOCAL_PLUGIN_DIRECTORIES.has(lower) : LOCAL_CLI_CONFIG_FILES.has(lower)) return path;
+    if (directory) {
+      const found = localPluginPathIn(root, path, depth + 1);
+      if (found) return found;
+    }
+  }
+  return undefined;
+}
 /** A bound lock pins aws or azurerm at a version the denied-type lists were not reviewed against (../lockfile.ts; review of #327, round 4). */
 export const PROVIDER_VERSION_NOT_REVIEWED = "PROVIDER_VERSION_NOT_REVIEWED";
 /** The source rule's lexical matches (review of #327, N3): the word may be in a comment or a string, which `sourceRuleHint` says. */
@@ -78,6 +105,8 @@ export function planJudgeRefusal(code: string): { refusal: "TARGET_NOT_IN_CONTRA
   const said = (refusal: "TARGET_NOT_IN_CONTRACT" | "ARTIFACT_INVALID", why: string) => ({ refusal, message: why + " (" + code + ")." + sourceRuleHint(code) });
   if (code === "PROVIDER_NOT_ADMITTED") return said("TARGET_NOT_IN_CONTRACT", "The plan uses a provider this release does not admit (azure/azapi or hashicorp/azuread)");
   if (code === "PROVIDER_TYPE_NOT_ALLOWED") return said("TARGET_NOT_IN_CONTRACT", "The plan uses a resource type that runs code or deploys a template instead of holding a resource, which the pilot refuses");
+  if (code === "PROVIDER_HASH_NOT_OFFICIAL") return said("ARTIFACT_INVALID", "The lock file's package hashes for a reviewed provider are missing or are not HashiCorp's published ones");
+  if (code === LOCAL_PLUGIN_DIR_REFUSED) return said("ARTIFACT_INVALID", "The project ships a local provider directory or Terraform CLI configuration (terraform.d, .terraform, .terraformrc or terraform.rc), which the pilot refuses");
   if (code === "PROVIDER_SELECTIONS_UNREADABLE") return said("ARTIFACT_INVALID", "Terraform's provider selections after init could not be read, so what the plan would run is unknown");
   if (code === PROVIDER_VERSION_NOT_REVIEWED) return said("ARTIFACT_INVALID", "The lock file pins a provider version the pilot's denied-type lists were not reviewed against");
   if ([PROVISIONER_NOT_ALLOWED, ACTION_NOT_ALLOWED, EPHEMERAL_NOT_ALLOWED, PROVISIONER_WORD_IN_SOURCE, EPHEMERAL_WORD_IN_SOURCE, CONSTRUCTS_DUPLICATE_KEY, CONSTRUCTS_UNREADABLE, CONSTRUCTS_TOO_DEEP].includes(code)) {
@@ -237,6 +266,7 @@ const hasProvisionerKey = (value: unknown, depth: number): boolean => {
  */
 export function assertNoRefusedSourceConstructs(work: string, depth = 0): void {
   if (depth > MAX_DEPTH) return stop(CONSTRUCTS_TOO_DEEP);
+  if (depth === 0 && localPluginPathIn(work) !== undefined) stop(LOCAL_PLUGIN_DIR_REFUSED);
   let names: string[];
   try { names = readdirSync(work).sort(); } catch { return stop(CONSTRUCTS_UNREADABLE); }
   for (const name of names) {

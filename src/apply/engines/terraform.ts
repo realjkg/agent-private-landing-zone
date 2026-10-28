@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -21,7 +22,7 @@ import type { EngineApplyRun, EngineCleanupRun, EngineContext, EngineSpec } from
 import type { ProviderBlock, ProviderSpec, ProviderUse } from "../provider.js";
 import { isRecord } from "../providers/shared.js";
 import { assertNoRefusedPlanConstructs, assertNoRefusedSourceConstructs } from "../terraform-constructs.js";
-import { LockFileError, REVIEWED_PROVIDER_VERSIONS, lockedProviders, unreviewedProviderVersion, type LockedProvider } from "../lockfile.js";
+import { LockFileError, REVIEWED_PROVIDER_VERSIONS, lockedProviders, unofficialProviderHash, unreviewedProviderVersion, type LockedProvider } from "../lockfile.js";
 import {
   APPLY_ADAPTER, APPLY_ARGV, APPLY_BACKEND_CONFIG_FILE, APPLY_INIT_ARGV, CLEANUP_ADAPTER, CLEANUP_APPLY_ARGV, CLEANUP_PLAN_FILE, CLEANUP_SHOW_ARGV, RECOVERY_FILES,
   classifyApply, cleanupPlanArgv, isAllowedApplyArgv, isAllowedCleanupArgv, parseStateSerial,
@@ -66,6 +67,8 @@ type Session = {
   assertBound(): void;
   /** Writes the product-owned backend override into the work copy and binds it: from then on `assertBound` expects it, byte for byte. */
   pinBackend(type: BackendType): void;
+  /** Removes this session's product CLI configuration file (each session has its own, so closing one never touches another's). */
+  close(): void;
 };
 
 type SessionInput = Pick<EngineContext, "scratchDir" | "env" | "toolDirs" | "manifest"> & {
@@ -74,10 +77,43 @@ type SessionInput = Pick<EngineContext, "scratchDir" | "env" | "toolDirs" | "man
 };
 
 /** The one way the pilot reaches Terraform: an allowlisted argument list, one identity (or none), the runner's own limits, and the project checked against the manifest after every process. */
+/**
+ * The product's own Terraform CLI configuration (review of #327, round 6). With no CLI configuration Terraform also installs
+ * providers from implicit local mirrors, `terraform.d/plugins` in the working directory among them, which is the project copy: a
+ * project could ship its own `hashicorp/aws 6.68.0` package, pass every version check, and run it with DISCOVERY's environment at
+ * plan and APPLY's at apply. An explicit `provider_installation` block turns every implicit mirror off; only the official registry
+ * is consulted, and only for hashicorp providers (each one still judged against the cloud path's allowlist after init). No
+ * plugin cache, no dev_overrides, no credentials, no checkpoint call. Written by the product into its private scratch directory,
+ * outside the project copy, and set for every step (`fixedEnvironment`, applied after anything injected, so neither the project
+ * nor an identity variable can point elsewhere).
+ */
+export const PRODUCT_CLI_CONFIG = [
+  "disable_checkpoint = true",
+  "provider_installation {",
+  "  direct {",
+  '    include = ["registry.terraform.io/hashicorp/*"]',
+  "  }",
+  "}",
+  "",
+].join("\n");
+/** The file name's prefix; each session adds a random part, so a second session in the same scratch directory has its own. */
+export const PRODUCT_CLI_CONFIG_PREFIX = "alz-terraform-cli-";
+
 function openSession(input: SessionInput): Session {
   const work = join(input.scratchDir, "work");
+  const cliConfig = join(input.scratchDir, PRODUCT_CLI_CONFIG_PREFIX + randomBytes(8).toString("hex") + ".rc");
+  writeFileSync(cliConfig, PRODUCT_CLI_CONFIG, { mode: 0o600, flag: "wx" });
+  // Before every step: the file is still exactly the product's (a missing one would let Terraform fall back to its defaults).
+  const assertCliConfig = (): void => {
+    let text: string | undefined;
+    try { text = lstatSync(cliConfig).isFile() ? readFileSync(cliConfig, "utf8") : undefined; } catch { text = undefined; }
+    if (text !== PRODUCT_CLI_CONFIG) stop("CLI_CONFIG_NOT_PRODUCT");
+  };
+  const productConfigured = (profile: ProcessProfile): ProcessProfile => ({
+    ...profile, fixedEnvironment: { ...profile.fixedEnvironment, TF_CLI_CONFIG_FILE: cliConfig, TF_PLUGIN_CACHE_DIR: "" },
+  });
   const options = (identity: StepIdentity, profile: ProcessProfile) => ({
-    profile, env: identity === null ? withoutIdentities(input.env) : input.env, toolDirs: input.toolDirs,
+    profile: productConfigured(profile), env: identity === null ? withoutIdentities(input.env) : input.env, toolDirs: input.toolDirs,
     identity: identity ?? "DISCOVERY", root: input.scratchDir, suppressDetail: true,
   });
   const guard = (args: readonly string[]): void => { if (!input.isAllowed(args)) stop("ARGV_NOT_ALLOWED"); };
@@ -86,11 +122,13 @@ function openSession(input: SessionInput): Session {
     work,
     step(args, identity, large = false) {
       guard(args);
+      assertCliConfig();
       const profile = large ? { ...input.profile, maxOutputBytes: LARGE_OUTPUT_BYTES } : input.profile;
       return checkedOutput(runBoundedProcess("terraform_plan", "terraform", [...args], work, options(identity, profile)));
     },
     stoppable(args, identity, profile, control) {
       guard(args);
+      assertCliConfig();
       return runStoppableProcess("terraform_plan", "terraform", [...args], work, { ...options(identity, profile), ...control });
     },
     refused(identity, profile) {
@@ -105,6 +143,9 @@ function openSession(input: SessionInput): Session {
       if (bound !== input.manifest) return stop("BACKEND_ALREADY_PINNED");
       const entry = writeBackendOverride(work, type);
       bound = { ...input.manifest, files: [...input.manifest.files, entry] };
+    },
+    close() {
+      rmSync(cliConfig, { force: true });
     },
   };
 }
@@ -146,6 +187,9 @@ function assertReviewedProviderVersions(work: string): void {
     return stop("LOCK_FILE_UNREADABLE");
   }
   if (unreviewedProviderVersion(providers)) stop("PROVIDER_VERSION_NOT_REVIEWED");
+  let unofficial: unknown;
+  try { unofficial = unofficialProviderHash(text); } catch { return stop("LOCK_FILE_UNREADABLE"); }
+  if (unofficial) stop("PROVIDER_HASH_NOT_OFFICIAL");
 }
 
 /**
@@ -381,6 +425,7 @@ function rederiveChanges(input: EngineContext & { artifact: Buffer }): PlanChang
     return readChanges(session, input);
   } finally {
     rmSync(planFile, { force: true });
+    session.close();
   }
 }
 
@@ -582,6 +627,7 @@ export const TERRAFORM: EngineSpec = {
       rmSync(planFile, { force: true });
       rmSync(backendConfigPath, { force: true });
       removeTree(session.work);
+      session.close();
     }
   },
   openApply,

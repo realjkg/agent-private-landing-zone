@@ -32,10 +32,21 @@ export const CANARIES = [PLAN_CANARY, VALUE_CANARY, STATE_CANARY, OUTPUT_CANARY]
 export const sha = (value: string | Buffer): string => createHash("sha256").update(value).digest("hex");
 export const H = (char: string): string => char.repeat(64);
 /** Text as a literal inside a RegExp: every metacharacter escaped (CodeQL js/incomplete-sanitization, review of #327, round 5). */
+/**
+ * Every Terraform step runs under the product's own CLI configuration (review of #327, round 6): `TF_CLI_CONFIG_FILE` names the
+ * session's file in the scratch directory, outside the work copy, whose text is exactly `PRODUCT_CLI_CONFIG`, and no plugin cache.
+ */
+export function assertProductCliConfig(call: Call, expected: string): void {
+  const file = call.env.TF_CLI_CONFIG_FILE ?? "";
+  if (!/\/alz-terraform-cli-[0-9a-f]{16}\.rc$/.test(file)) throw new Error(call.args[0] + ": TF_CLI_CONFIG_FILE is not the product's: " + file);
+  if (file.includes("/work/")) throw new Error(call.args[0] + ": the CLI configuration is inside the project copy");
+  if (call.cliConfig !== expected) throw new Error(call.args[0] + ": the CLI configuration is not the product's text");
+  if (call.env.TF_PLUGIN_CACHE_DIR !== "") throw new Error(call.args[0] + ": a plugin cache reaches the step");
+}
 export const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
-export const LOCK = '# lock\nprovider "registry.terraform.io/hashicorp/azurerm" {\n  version = "4.81.0"\n}\n';
-/** An AWS project's lock: hashicorp/aws at the reviewed version. */
-export const AWS_LOCK = '# lock\nprovider "registry.terraform.io/hashicorp/aws" {\n  version = "6.68.0"\n}\n';
+export const LOCK = '# lock\nprovider "registry.terraform.io/hashicorp/azurerm" {\n  version = "4.81.0"\n  hashes = [\n    "h1:olVprUWhmFTARlydw/r7VIx4fata2gy3zsAWfPGRrhg=",\n  ]\n}\n';
+/** An AWS project's lock: hashicorp/aws at the reviewed version, with its official linux_amd64 package hash (`LOCK`: azurerm likewise). */
+export const AWS_LOCK = '# lock\nprovider "registry.terraform.io/hashicorp/aws" {\n  version = "6.68.0"\n  hashes = [\n    "h1:79hHQtjGSCiXBZK+VDiNUdI2SLXbNaHf+CHySvKFnvA=",\n  ]\n}\n';
 export const TENANT = "11111111-1111-4111-8111-111111111111";
 export const DEV_TARGET: ResolvedTarget = { account: "22222222-2222-4222-8222-222222222222", backend: "fixturedevstore/tfstate/dev.tfstate", workspace: "default" };
 export const QA_TARGET: ResolvedTarget = { account: "44444444-4444-4444-8444-444444444444", backend: "fixtureqastore/tfstate/qa.tfstate", workspace: "default" };
@@ -113,7 +124,8 @@ const args = process.argv.slice(2);
 const [cmd, sub] = args;
 const serialFile = path.join(dir, "serial.txt");
 const serial = () => Number(fs.readFileSync(serialFile, "utf8"));
-const log = (extra) => fs.appendFileSync(path.join(dir, "calls.jsonl"), JSON.stringify({ args, cwd: process.cwd(), env: process.env, backendFileExists: fs.existsSync(path.resolve(process.cwd(), "../alz-backend.tfbackend")), ...extra }) + "\\n");
+const cliConfigText = () => { try { return process.env.TF_CLI_CONFIG_FILE ? fs.readFileSync(process.env.TF_CLI_CONFIG_FILE, "utf8") : undefined; } catch { return undefined; } };
+const log = (extra) => fs.appendFileSync(path.join(dir, "calls.jsonl"), JSON.stringify({ args, cwd: process.cwd(), env: process.env, cliConfig: cliConfigText(), backendFileExists: fs.existsSync(path.resolve(process.cwd(), "../alz-backend.tfbackend")), ...extra }) + "\\n");
 const backend = () => { const a = args.find((x) => x.startsWith("-backend-config=")); return a ? fs.readFileSync(path.resolve(process.cwd(), a.slice(16)), "utf8") : undefined; };
 // Like Terraform's show -json, every resource_changes entry names its mode and its provider: a fixture entry that leaves one out gets
 // it from its address and type prefix. An entry that sets provider_name to null keeps no provider (an unnamed use, which is refused).
@@ -395,6 +407,8 @@ export function fakeArmHttp(behavior: ArmBehavior = {}): { http: (request: ArmCa
 
 export type Call = {
   args: string[]; cwd: string; env: Record<string, string>; backendConfig?: string; planPath?: string;
+  /** The text of the CLI configuration file the step's `TF_CLI_CONFIG_FILE` named, read when the step ran. */
+  cliConfig?: string;
   planSha?: string; planMode?: number; backendMode?: number; backendFileExists?: boolean; planText?: string; planDir?: string; pid?: number;
   /** At init: the product-owned backend override in the work copy, and the copy's root entries. */
   backendOverride?: string; workEntries?: string[];

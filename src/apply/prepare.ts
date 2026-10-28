@@ -11,7 +11,8 @@ import { sha256 } from "../util/sha256.js";
 import { ENVIRONMENTS } from "./constants.js";
 import { isKillSwitchActive, loadPilotContract, loadQualificationRecords, pilotContractSha256, repoPaths, targetForEnvironment } from "./contract.js";
 import { acceptsManifest, engineOf } from "./engine-spec.js";
-import { LockFileError, lockedProviders, unreviewedProviderVersion, unreviewedVersionMessage } from "./lockfile.js";
+import { localPluginPathIn } from "./terraform-constructs.js";
+import { LockFileError, lockedProviders, unofficialProviderHash, unreviewedProviderVersion, unreviewedVersionMessage } from "./lockfile.js";
 import { checkModules, TerraformConfigError, variableSources } from "./terraform-inputs.js";
 import { specOf } from "./provider.js";
 import { pilotUnitOf, type PilotUnit } from "./unit.js";
@@ -39,8 +40,8 @@ const PATHS: Readonly<Record<ProviderId, { primary: EngineId; secondary: EngineI
 
 export type PrepareCode =
   | "CONTRACT_DISABLED" | "KILL_SWITCH_ACTIVE" | "POLICY_VERSION_MISSING" | "ENVIRONMENT_INVALID" | "TARGET_NOT_IN_CONTRACT"
-  | "PROJECT_INVALID" | "PROJECT_ENGINE_MISMATCH" | "PROJECT_NOT_CLEAN" | "PROJECT_SNAPSHOT_REFUSED"
-  | "LOCK_FILE_MISSING" | "LOCK_FILE_UNREADABLE" | "PROVIDER_VERSION_NOT_REVIEWED" | "PROVIDER_NOT_ADMITTED" | "ENGINE_VERSION_REQUIRED" | "TOOL_UNAVAILABLE" | "MANIFEST_INVALID"
+  | "PROJECT_INVALID" | "PROJECT_ENGINE_MISMATCH" | "PROJECT_NOT_CLEAN" | "TERRAFORM_LOCAL_PLUGIN_DIR_REFUSED" | "PROJECT_SNAPSHOT_REFUSED"
+  | "LOCK_FILE_MISSING" | "LOCK_FILE_UNREADABLE" | "PROVIDER_VERSION_NOT_REVIEWED" | "PROVIDER_HASH_NOT_OFFICIAL" | "PROVIDER_NOT_ADMITTED" | "ENGINE_VERSION_REQUIRED" | "TOOL_UNAVAILABLE" | "MANIFEST_INVALID"
   | "INPUT_UNSET" | "MODULE_REMOTE" | "MODULE_OUTSIDE_PROJECT" | "TERRAFORM_CONFIG_UNREADABLE";
 
 /** Who has to act to clear a refusal: the owner, the operator at this screen, or a missing local tool. */
@@ -163,6 +164,12 @@ function checkProjectShape(engine: EngineId, root: string): PrepareRefusal | und
     if (names.includes(".terraform")) {
       return refuse("PROJECT_NOT_CLEAN", "OPERATOR", "The project has a .terraform folder from an earlier init. Remove it; preparation and sealing run their own init.");
     }
+    // Providers install only from the official registry (review of #327, round 6): no project-shipped plugin directory or CLI configuration.
+    let local: string | undefined;
+    try { local = localPluginPathIn(root); } catch { return refuse("PROJECT_INVALID", "OPERATOR", "The project folder cannot be read."); }
+    if (local) {
+      return refuse("TERRAFORM_LOCAL_PLUGIN_DIR_REFUSED", "OPERATOR", "The project contains " + local + ", a local provider directory or Terraform CLI configuration. Providers install only from the official registry; remove it.");
+    }
     if (!names.includes(TERRAFORM_LOCK_FILE)) {
       return refuse("LOCK_FILE_MISSING", "OPERATOR", "The project has no " + TERRAFORM_LOCK_FILE + ". Run terraform init once, review the lock file, and keep it with the project.");
     }
@@ -246,6 +253,15 @@ export async function prepareApply(input: PrepareInput, deps: PrepareDeps = {}):
     }
     const unreviewed = unreviewedProviderVersion(providers);
     if (unreviewed) return refuse("PROVIDER_VERSION_NOT_REVIEWED", "OPERATOR", unreviewedVersionMessage(unreviewed));
+    // The reviewed version's package hashes are HashiCorp's own (review of #327, round 6).
+    let unofficial: { source: string; version: string } | undefined;
+    try { unofficial = unofficialProviderHash(lock.toString("utf8")); } catch (error) {
+      return refuse("LOCK_FILE_UNREADABLE", "OPERATOR", error instanceof LockFileError ? error.message : "The lock file cannot be read.");
+    }
+    if (unofficial) {
+      return refuse("PROVIDER_HASH_NOT_OFFICIAL", "OPERATOR", "The lock file's hashes for " + unofficial.source + " " + unofficial.version +
+        " are missing or are not HashiCorp's published package hashes. Rewrite the lock with terraform init against the official registry.");
+    }
   }
 
   // Inputs: each one's identity is a hash of where its value comes from (a fingerprinted file, a named environment variable

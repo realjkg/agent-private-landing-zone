@@ -13,14 +13,14 @@ import { decryptEvidence, encryptEvidence, ensureEvidenceKey, type EvidenceEnvel
 import { canonicalJson } from "../src/teardown/manifest.js";
 import { createImmutableSnapshot } from "../src/teardown/snapshot.js";
 import { createPrivateDirectory } from "../src/tools/private-workdir.js";
-import { SOURCE_COMMIT,
+import { assertProductCliConfig, SOURCE_COMMIT,
   keys,
   DEV_TARGET, ENGINE_VERSION, ENV, identityEnv, TENANT, H, PLAN_CANARY, POLICY, PROD_TARGET, QA_TARGET, VALUE_CANARY, behave as behaveIn, callsOf, installFakeTerraform, sha,
   writeProject, type Behavior,
   REQUESTER,
 } from "./helpers/apply-fixtures.js";
 import { AZURE } from "../src/apply/providers/azure.js";
-import { TERRAFORM } from "../src/apply/engines/terraform.js";
+import { PRODUCT_CLI_CONFIG, TERRAFORM } from "../src/apply/engines/terraform.js";
 
 // docs/act-pilot-plan.md, authority items 2 and 5. The engine is a fake
 // executable: these tests pin the sealing logic, not the real Terraform CLI.
@@ -369,7 +369,8 @@ test("sealing and qualifying run under the restricted terraform profile: a CLI c
         assert.ok(!result.ok, name + " " + mode);
         assert.match(result.message, /ENVIRONMENT_REFUSED/, name);
         for (const call of calls()) {
-          for (const variable of ["TF_CLI_CONFIG_FILE", "TF_PLUGIN_CACHE_DIR"]) assert.equal(call.env[variable], undefined, call.args[0] + " " + variable);
+          // Only the product's own CLI configuration reaches a child (review of #327, round 6), never the injected one.
+          assertProductCliConfig(call, PRODUCT_CLI_CONFIG);
           assert.ok(!JSON.stringify(call.env).includes("evil-mirror"), call.args[0]);
         }
         assert.deepEqual(readdirSync(f.scratch.path), []);
@@ -404,7 +405,8 @@ test("the change list an apply derives again comes from the same extraction as t
     assert.deepEqual(run.rederive(loaded.planBytes), ok.sealed.changes);
     const shown = calls().slice(before);
     assert.deepEqual(shown.map((c) => c.args), [["show", "-json", "../alz-preview.tfplan"]]);
-    assert.ok(!Object.keys(shown[0].env).some((name) => /^(ARM_|AZURE_|TF_CLI_CONFIG_FILE|TF_PLUGIN_CACHE_DIR)/.test(name)));
+    assert.ok(!Object.keys(shown[0].env).some((name) => /^(ARM_|AZURE_)/.test(name)));
+    assertProductCliConfig(shown[0], PRODUCT_CLI_CONFIG);
     assert.deepEqual(readdirSync(f.scratch.path).filter((name) => name.endsWith(".tfplan")), [], "the decrypted plan is removed");
     behave({ failOn: "show" });
     assert.throws(() => run.rederive(loaded.planBytes), /EXIT_1/);

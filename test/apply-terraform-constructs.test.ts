@@ -1,23 +1,26 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 
 import { runApply, sealPreview, type ApplyDeps } from "../src/apply/driver.js";
 import { codeOf } from "../src/apply/engine.js";
+import { PRODUCT_CLI_CONFIG } from "../src/apply/engines/terraform.js";
 import { openNonceStore } from "../src/apply/nonces.js";
 import { loadSealedPlan } from "../src/apply/seal.js";
 import {
   ACTION_NOT_ALLOWED, CONSTRUCTS_DUPLICATE_KEY, CONSTRUCTS_TOO_DEEP, CONSTRUCTS_UNREADABLE, EPHEMERAL_NOT_ALLOWED, EPHEMERAL_WORD_IN_SOURCE, PROVISIONER_NOT_ALLOWED,
-  PROVISIONER_WORD_IN_SOURCE, planJudgeRefusal, sourceRuleHint, strictJson,
+  LOCAL_PLUGIN_DIR_REFUSED, PROVISIONER_WORD_IN_SOURCE, planJudgeRefusal, sourceRuleHint, strictJson,
   assertNoRefusedSourceConstructs, assertNoRefusedPlanConstructs,
 } from "../src/apply/terraform-constructs.js";
 import type { ApplyEnvironment, SignedApproval } from "../src/apply/types.js";
 import { removeTree } from "../src/teardown/driver/cleanup.js";
 import type { ResolvedTarget } from "../src/teardown/driver/types.js";
 import {
+  assertProductCliConfig,
   escapeRegExp,
   NOW, POLICY, REQUESTER, SOURCE_COMMIT, approvalFor, awsContractJson, awsIdentityEnv, awsTargetOf, behave as behaveIn, callsOf, contractJson, human,
   identityEnv, installFakeTerraform, targetOf, testFixtureForgeQualificationEvidence, writeProject, writeReviewedContract, type Behavior,
@@ -521,3 +524,78 @@ for (const provider of PROVIDERS) {
     }
   });
 }
+
+for (const provider of PROVIDERS) {
+  test(provider.name + ": a project-shipped plugin directory or CLI configuration, or a lock without HashiCorp's own hashes, stops the seal before init; and only the product's CLI configuration reaches a step (review of #327, round 6)", async () => {
+    for (const [label, extra, code] of [
+      ["the reviewer's repro: a script provider in terraform.d/plugins", { "terraform.d/plugins/registry.terraform.io/hashicorp/aws/6.68.0/linux_amd64/terraform-provider-aws_v6.68.0_x5": "#!/bin/sh\necho PWNED\n" }, LOCAL_PLUGIN_DIR_REFUSED],
+      ["terraform.d in a module", { "modules/app/terraform.d/plugins/x": "x" }, LOCAL_PLUGIN_DIR_REFUSED],
+      ["a .terraformrc", { ".terraformrc": "provider_installation {}\n" }, LOCAL_PLUGIN_DIR_REFUSED],
+      ["a terraform.rc in a module", { "modules/app/terraform.rc": "provider_installation {}\n" }, LOCAL_PLUGIN_DIR_REFUSED],
+    ] as const) {
+      const h = harness(provider);
+      const inits = callsOf(toolDir).filter((c) => c.args[0] === "init").length;
+      const refusedSeal = await h.sealWith(h.project(extra));
+      assert.equal(refusedSeal.ok, false, label);
+      assert.match((refusedSeal as { message: string }).message, new RegExp("\\(" + escapeRegExp(code) + "\\)"), label);
+      assert.equal(callsOf(toolDir).filter((c) => c.args[0] === "init").length, inits, "no init ran: " + label);
+    }
+    // The seal's own lock check: the reviewed version with a hash HashiCorp did not publish.
+    const h = harness(provider);
+    const lock = provider.name === "AWS"
+      ? '# lock\nprovider "registry.terraform.io/hashicorp/aws" {\n  version = "6.68.0"\n  hashes = [\n    "h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",\n  ]\n}\n'
+      : '# lock\nprovider "registry.terraform.io/hashicorp/azurerm" {\n  version = "4.81.0"\n  hashes = [\n    "h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",\n  ]\n}\n';
+    const refusedHash = await h.sealWith(writeProject(fresh("project"), provider.target("DEV"), provider.mainTf, lock));
+    assert.equal(refusedHash.ok, false);
+    assert.match((refusedHash as { message: string }).message, /\(PROVIDER_HASH_NOT_OFFICIAL\)/);
+    // The operator's own TF_CLI_CONFIG_FILE and plugin cache never reach a step: every step runs under the product's file.
+    const before = callsOf(toolDir).length;
+    const ambient = harness(provider);
+    process.env.TF_CLI_CONFIG_FILE = "/tmp/operator-evil.tfrc";
+    process.env.TF_PLUGIN_CACHE_DIR = "/tmp/operator-cache";
+    try {
+      const sealed = await ambient.sealWith(ambient.project());
+      assert.ok(sealed.ok, JSON.stringify(sealed));
+    } finally { delete process.env.TF_CLI_CONFIG_FILE; delete process.env.TF_PLUGIN_CACHE_DIR; }
+    const steps = callsOf(toolDir).slice(before);
+    assert.ok(steps.length >= 4);
+    for (const step of steps) {
+      assertProductCliConfig(step, PRODUCT_CLI_CONFIG);
+      assert.ok(!JSON.stringify(step.env).includes("operator-evil") && !JSON.stringify(step.env).includes("operator-cache"), step.args[0]);
+    }
+  });
+}
+
+// Opt-in, real Terraform, offline (ALZ_SIM_TERRAFORM; the isolated runner has no network): the reviewer's repro without the scan.
+// Without a CLI configuration Terraform installs a script provider from the project's terraform.d/plugins; under the product's CLI
+// configuration it does not (it asks only the official registry, which is unreachable here, and installs nothing). linux_amd64 only.
+const REAL_TERRAFORM = process.env.ALZ_SIM_TERRAFORM;
+test("real Terraform: the product's CLI configuration never installs a provider from the project's terraform.d (review of #327, round 6)", {
+  skip: !REAL_TERRAFORM || process.platform !== "linux" || process.arch !== "x64" ? "set ALZ_SIM_TERRAFORM on linux_amd64 to run the real-Terraform repro" : false,
+}, () => {
+  const run = (dir: string, env: NodeJS.ProcessEnv) => spawnSync(REAL_TERRAFORM!, ["init", "-backend=false", "-input=false", "-no-color"], {
+    cwd: dir, env: { PATH: "/usr/bin:/bin", HOME: fresh("home"), ...env }, encoding: "utf8", timeout: 120_000,
+  });
+  const project = (): string => {
+    const dir = fresh("repro");
+    writeFileSync(join(dir, "main.tf"), 'terraform {\n  required_providers {\n    aws = { source = "hashicorp/aws" }\n  }\n}\n');
+    const plugin = join(dir, "terraform.d/plugins/registry.terraform.io/hashicorp/aws/6.68.0/linux_amd64");
+    mkdirSync(plugin, { recursive: true });
+    writeFileSync(join(plugin, "terraform-provider-aws_v6.68.0_x5"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+    return dir;
+  };
+  const installed = (dir: string): boolean => existsSync(join(dir, ".terraform/providers/registry.terraform.io/hashicorp/aws/6.68.0/linux_amd64/terraform-provider-aws_v6.68.0_x5"));
+  // The control: Terraform's implicit local mirror installs the project's own package.
+  const control = project();
+  const implicit = run(control, {});
+  assert.match(implicit.stdout + implicit.stderr, /Installed hashicorp\/aws v6\.68\.0/);
+  assert.ok(installed(control), "the implicit mirror installed the project's package (the hole)");
+  // Under the product's CLI configuration: nothing from the project is installed.
+  const guarded = project();
+  const config = join(fresh("cli"), "alz-terraform-cli-0000000000000000.rc");
+  writeFileSync(config, PRODUCT_CLI_CONFIG);
+  const product = run(guarded, { TF_CLI_CONFIG_FILE: config, TF_PLUGIN_CACHE_DIR: "" });
+  assert.notEqual(product.status, 0, "only the official registry is asked, and it is unreachable here");
+  assert.doesNotMatch(product.stdout + product.stderr, /Installed hashicorp\/aws/);
+  assert.ok(!installed(guarded), "the project's package is not installed");
+});

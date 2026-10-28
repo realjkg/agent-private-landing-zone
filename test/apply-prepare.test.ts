@@ -7,7 +7,7 @@ import test from "node:test";
 
 import { loadPilotContract } from "../src/apply/contract.js";
 import { loadToolPins } from "../src/deps/pins.js";
-import { lockedProviders, LockFileError, REVIEWED_PROVIDER_VERSIONS, unreviewedProviderVersion } from "../src/apply/lockfile.js";
+import { lockedProviders, LockFileError, OFFICIAL_PROVIDER_HASHES, REVIEWED_PROVIDER_VERSIONS, unreviewedProviderVersion } from "../src/apply/lockfile.js";
 import { AWS_DENIED_TYPES_REVIEWED_AGAINST } from "../src/apply/providers/aws.js";
 import { AZURE_DENIED_TYPES_REVIEWED_AGAINST } from "../src/apply/providers/azure.js";
 import {
@@ -321,6 +321,40 @@ test("round 5 (review of #327): the lock reader cannot be made to read less than
     refused(await prepareApply({ environment: "DEV", projectRoot: dir }, s.deps), expected, "OPERATOR");
     assert.ok(label.length > 0);
   }
+});
+
+test("round 6 (review of #327): a project-shipped plugin directory or CLI configuration is refused at prepare, and a reviewed version's lock must carry HashiCorp's own package hashes", async () => {
+  const s = setup(awsTf());
+  for (const [label, make] of [
+    ["terraform.d/plugins at the root", (dir: string) => { mkdirSync(join(dir, "terraform.d/plugins/registry.terraform.io/hashicorp/aws/6.68.0/linux_amd64"), { recursive: true }); writeFileSync(join(dir, "terraform.d/plugins/registry.terraform.io/hashicorp/aws/6.68.0/linux_amd64/terraform-provider-aws_v6.68.0_x5"), "#!/bin/sh\n"); }],
+    ["terraform.d in a module", (dir: string) => { mkdirSync(join(dir, "modules/app/terraform.d"), { recursive: true }); writeFileSync(join(dir, "modules/app/terraform.d/x"), "x"); }],
+    ["a .terraform data directory in a module", (dir: string) => { mkdirSync(join(dir, "modules/app/.terraform/providers"), { recursive: true }); writeFileSync(join(dir, "modules/app/.terraform/providers/x"), "x"); }],
+    ["a .terraformrc", (dir: string) => writeFileSync(join(dir, ".terraformrc"), "provider_installation {}\n")],
+    ["a terraform.rc, any case", (dir: string) => writeFileSync(join(dir, "Terraform.RC"), "provider_installation {}\n")],
+  ] as const) {
+    const dir = terraformProject(setup(awsTf()));
+    make(dir);
+    const refusal = refused(await prepareApply({ environment: "DEV", projectRoot: dir }, s.deps), "TERRAFORM_LOCAL_PLUGIN_DIR_REFUSED", "OPERATOR");
+    assert.ok(refusal.message.includes("only from the official registry"), label);
+  }
+  // Hashes: the official ones are admitted (h1 for linux_amd64 and darwin_arm64, zh for every platform); anything else is refused.
+  const lockWithHashes = (hashes: string[]) => '# lock\nprovider "registry.terraform.io/hashicorp/aws" {\n  version = "6.68.0"\n  hashes = [\n' + hashes.map((h) => '    "' + h + '",\n').join("") + "  ]\n}\n";
+  const official = [...OFFICIAL_PROVIDER_HASHES["registry.terraform.io/hashicorp/aws 6.68.0"]!];
+  const prep = async (lock: string) => {
+    const dir = terraformProject(setup(awsTf()));
+    writeFileSync(join(dir, TERRAFORM_LOCK_FILE), lock);
+    return prepareApply({ environment: "DEV", projectRoot: dir }, s.deps);
+  };
+  ok(await prep(lockWithHashes(official)));
+  ok(await prep(lockWithHashes(["zh:f292ad91c97ac7354a04a698f346c2a0c3866d9170ca45dda6a6bfab71180be0"])));
+  for (const [label, hashes] of [
+    ["no hashes", []],
+    ["an unofficial h1 (a rebuilt package)", ["h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="]],
+    ["an official h1 beside an unofficial zh", ["h1:79hHQtjGSCiXBZK+VDiNUdI2SLXbNaHf+CHySvKFnvA=", "zh:" + "0".repeat(64)]],
+    ["azurerm's official hash under aws", ["h1:olVprUWhmFTARlydw/r7VIx4fata2gy3zsAWfPGRrhg="]],
+  ] as const) refused(await prep(lockWithHashes([...hashes])), "PROVIDER_HASH_NOT_OFFICIAL", "OPERATOR");
+  // A hash list this reader cannot read exactly is unreadable, not skipped.
+  refused(await prep(lockWithHashes(["md5:abc"])), "LOCK_FILE_UNREADABLE", "OPERATOR");
 });
 
 test("the lock file reader returns sorted providers and refuses duplicates, missing versions and empty files", () => {
