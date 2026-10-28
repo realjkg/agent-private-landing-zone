@@ -67,9 +67,10 @@ test("BICEP is a registered engine admitted with Azure for DEV only: the DEV-onl
     targets: Object.fromEntries((["DEV", "QA", "PROD"] as const).map((env, i) => [env, { tenantId: TENANT_ID, subscriptionId: SUBSCRIPTION_ID.replace(/^2/, String(i + 3)), backend: STACK_NAME, workspace: "default", resourceGroup: RESOURCE_GROUP, location: LOCATION }])),
   });
   assert.match(reason(threeStage), /^enabledEnvironments: AZURE BICEP \(path 4\) is admitted for DEV only/);
-  // Wrong provider: BICEP is Azure's only (AWS is a provider the pilot has; GCP is not one yet).
+  // Wrong provider: BICEP is Azure's only (AWS and GCP are providers the pilot has).
   assert.match(reason(bicepContract({ provider: "AWS" })), /^engine: BICEP is valid only with AZURE/);
-  assert.match(reason(bicepContract({ provider: "GCP" })), /^provider and engine: the pilot supports/);
+  // GCP is an admitted provider (Terraform only, DEV only; owner decision 6481421924), so GCP with BICEP is refused by the engine's provider list.
+  assert.match(reason(bicepContract({ provider: "GCP" })), /^engine: BICEP is valid only with AZURE/);
   // QA or PROD under the DEV-only scope is not a contract either.
   assert.notEqual(reason(bicepContract({ enabledEnvironments: ["QA"] })), "OK");
   assert.notEqual(reason(bicepContract({ enabledEnvironments: ["DEV", "QA"] })), "OK");

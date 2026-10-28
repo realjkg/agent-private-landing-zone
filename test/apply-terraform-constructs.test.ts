@@ -473,7 +473,7 @@ for (const provider of PROVIDERS) {
       const refusedSeal = await h.sealWith(p);
       assert.equal(refusedSeal.ok, false, source + " " + version);
       assert.match((refusedSeal as { message: string }).message, /PROVIDER_VERSION_NOT_REVIEWED/, source + " " + version);
-      assert.match((refusedSeal as { message: string }).message, /reviewed: registry\.terraform\.io\/hashicorp\/aws 6\.68\.0, registry\.terraform\.io\/hashicorp\/azurerm 4\.81\.0\)/);
+      assert.match((refusedSeal as { message: string }).message, /reviewed: registry\.terraform\.io\/hashicorp\/aws 6\.68\.0, registry\.terraform\.io\/hashicorp\/azurerm 4\.81\.0, registry\.terraform\.io\/hashicorp\/google 8\.9\.0\)/);
       assert.equal(callsOf(toolDir).filter((c) => c.args[0] === "init").length, initsBefore, "no init ran");
       assert.deepEqual(readdirSync(h.dirs.scratch), [], "no scratch directory survives");
     }
@@ -489,7 +489,7 @@ for (const provider of PROVIDERS) {
 test("at apply and cleanup the same refusal surfaces by the judge's code and the reviewed versions (review of #327, round 4)", () => {
   const judged = planJudgeRefusal("PROVIDER_VERSION_NOT_REVIEWED");
   assert.equal(judged?.refusal, "ARTIFACT_INVALID");
-  assert.match(judged!.message, /\(PROVIDER_VERSION_NOT_REVIEWED\)\. The lock file pins a provider version the denied-type lists were not reviewed against \(reviewed: registry\.terraform\.io\/hashicorp\/aws 6\.68\.0, registry\.terraform\.io\/hashicorp\/azurerm 4\.81\.0\)/);
+  assert.match(judged!.message, /\(PROVIDER_VERSION_NOT_REVIEWED\)\. The lock file pins a provider version the denied-type lists were not reviewed against \(reviewed: registry\.terraform\.io\/hashicorp\/aws 6\.68\.0, registry\.terraform\.io\/hashicorp\/azurerm 4\.81\.0, registry\.terraform\.io\/hashicorp\/google 8\.9\.0\)/);
 });
 
 for (const provider of PROVIDERS) {
