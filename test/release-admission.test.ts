@@ -18,6 +18,7 @@ import {
   type ReleaseAdmissionInput,
   type ReleaseGateSubmission,
 } from "../src/qualification/release-admission.js";
+import { loadReleaseScope } from "../src/release/status.js";
 
 const commit = "a".repeat(40);
 const target = "private-lab-host-01";
@@ -556,5 +557,31 @@ test("a gate the owner's scope excludes is reported OUT_OF_SCOPE, and evidence o
     assert.ok(evidenced.blockers.includes("RELEASE_RECORD_FOR_OUT_OF_SCOPE_GATE:" + excluded));
     const unknown = await reviewProductionRelease({ manifest: input([]), expectedCommit: commit, root: h.root, outOfScope: ["preview:nope"] });
     assert.ok(unknown.blockers.includes("RELEASE_SCOPE_UNKNOWN_GATE:preview:nope"));
+  } finally { h.cleanup(); }
+});
+
+test("the shipped scope drops the brownfield preview gates (owner decision of 2026-10-28): each is OUT_OF_SCOPE, a record for one is refused, and GCP's provider gate still blocks", async () => {
+  const dropped = [
+    "preview:terraform-aws-brownfield", "preview:terraform-azure-brownfield", "preview:cdk-aws-brownfield", "preview:bicep-azure-brownfield", "preview:terraform-gcp-brownfield",
+  ];
+  // As ./alz qualify admission passes it (src/cli/release-admission.ts).
+  const outOfScope = loadReleaseScope(process.cwd()).outOfScope.map((x) => x.gate);
+  for (const id of dropped) assert.ok(outOfScope.includes(id), id);
+  const h = harness();
+  try {
+    const empty = await reviewProductionRelease({ manifest: input([]), expectedCommit: commit, root: h.root, outOfScope });
+    for (const id of dropped) {
+      assert.deepEqual([empty.gates.find((g) => g.id === id)?.status, empty.gates.find((g) => g.id === id)?.blockers], ["OUT_OF_SCOPE", []], id);
+      assert.ok(!empty.blockers.some((m) => m.includes(id)), id + " no longer blocks the release");
+    }
+    assert.equal(empty.gates.find((g) => g.id === "gcp-provider")?.status, "BLOCKED", "the scope drops the GCP preview gate only");
+    assert.equal(empty.readyForIndependentReleaseReview, false);
+    for (const id of dropped) {
+      const evidenced = await reviewProductionRelease({
+        manifest: input([h.attach(id, "LIVE_PREVIEW", generic(id, "LIVE_PREVIEW"))]), expectedCommit: commit, root: h.root, outOfScope,
+      });
+      assert.ok(evidenced.blockers.includes("RELEASE_RECORD_FOR_OUT_OF_SCOPE_GATE:" + id), id);
+      assert.equal(evidenced.gates.find((g) => g.id === id)?.status, "OUT_OF_SCOPE", id);
+    }
   } finally { h.cleanup(); }
 });
