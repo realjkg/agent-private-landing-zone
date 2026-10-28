@@ -18,7 +18,7 @@ const digest = sha256;
 const sha = /^[a-f0-9]{64}$/i;
 const sourceSha = /^[a-f0-9]{40}$/i;
 export const QUALIFIED_MODEL_TAGS = [
-  "qwen3:1.7b", "qwen3:4b", "mistral-nemo:latest",
+  "qwen3:1.7b", "qwen3:4b", "mistral-nemo:12b",
 ] as const;
 export type AdversarialScope = "first" | "all";
 type Expected = "REJECT_INSTRUCTION" | "ACCEPT_DATA";

@@ -26,7 +26,7 @@ async function reviewedState(): Promise<AgentState> {
   state.assessment.modelInvocations = ["ROUTER", "PRIMARY", "VALIDATOR", "ADJUDICATOR"]
     .map((role) => ({
       role: role as "ROUTER" | "PRIMARY" | "VALIDATOR" | "ADJUDICATOR",
-      model: role === "VALIDATOR" ? "mistral-nemo:latest" :
+      model: role === "VALIDATOR" ? "mistral-nemo:12b" :
         role === "PRIMARY" ? "qwen3:4b" : "qwen3:1.7b",
       durationMs: 0, structuredOutput: true as const, schemaValid: true as const,
     }));

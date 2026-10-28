@@ -39,7 +39,7 @@ function setup(engine: "TERRAFORM" | "AWS_CDK" = "TERRAFORM") {
 function state(engine: "TERRAFORM" | "AWS_CDK"): AgentState {
   const models = [
     ["ROUTER", "qwen3:1.7b"], ["PRIMARY", "qwen3:4b"],
-    ["VALIDATOR", "mistral-nemo:latest"], ["ADJUDICATOR", "qwen3:1.7b"],
+    ["VALIDATOR", "mistral-nemo:12b"], ["ADJUDICATOR", "qwen3:1.7b"],
   ];
   return {
     provider: "AWS", engine, phase: "COMPLETE",

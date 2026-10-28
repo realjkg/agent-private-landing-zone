@@ -17,6 +17,7 @@ import type { QualificationRecord } from "../../src/teardown/driver/qualificatio
 import type { ResolvedTarget } from "../../src/teardown/driver/types.js";
 import { buildManifest, canonicalJson, type ArtifactManifest } from "../../src/teardown/manifest.js";
 import { captureProjectFiles } from "../../src/teardown/snapshot.js";
+import { lockedProviders } from "../../src/apply/lockfile.js";
 
 // Shared by test/apply-driver, apply-seal and apply-terraform. Explicit fixtures
 // only: no real tenant, subscription, approver or credential. The engine is a
@@ -30,7 +31,22 @@ export const CANARIES = [PLAN_CANARY, VALUE_CANARY, STATE_CANARY, OUTPUT_CANARY]
 
 export const sha = (value: string | Buffer): string => createHash("sha256").update(value).digest("hex");
 export const H = (char: string): string => char.repeat(64);
-export const LOCK = '# lock\nprovider "registry.terraform.io/hashicorp/azurerm" {\n  version = "4.10.0"\n}\n';
+/** Text as a literal inside a RegExp: every metacharacter escaped (CodeQL js/incomplete-sanitization, review of #327, round 5). */
+/**
+ * Every Terraform step runs under the product's own CLI configuration (review of #327, round 6): `TF_CLI_CONFIG_FILE` names the
+ * session's file in the scratch directory, outside the work copy, whose text is exactly `PRODUCT_CLI_CONFIG`, and no plugin cache.
+ */
+export function assertProductCliConfig(call: Call, expected: string): void {
+  const file = call.env.TF_CLI_CONFIG_FILE ?? "";
+  if (!/\/alz-terraform-cli-[0-9a-f]{16}\.rc$/.test(file)) throw new Error(call.args[0] + ": TF_CLI_CONFIG_FILE is not the product's: " + file);
+  if (file.includes("/work/")) throw new Error(call.args[0] + ": the CLI configuration is inside the project copy");
+  if (call.cliConfig !== expected) throw new Error(call.args[0] + ": the CLI configuration is not the product's text");
+  if (call.env.TF_PLUGIN_CACHE_DIR !== "") throw new Error(call.args[0] + ": a plugin cache reaches the step");
+}
+export const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+export const LOCK = '# lock\nprovider "registry.terraform.io/hashicorp/azurerm" {\n  version = "4.81.0"\n  hashes = [\n    "h1:olVprUWhmFTARlydw/r7VIx4fata2gy3zsAWfPGRrhg=",\n  ]\n}\n';
+/** An AWS project's lock: hashicorp/aws at the reviewed version, with its official linux_amd64 package hash (`LOCK`: azurerm likewise). */
+export const AWS_LOCK = '# lock\nprovider "registry.terraform.io/hashicorp/aws" {\n  version = "6.68.0"\n  hashes = [\n    "h1:79hHQtjGSCiXBZK+VDiNUdI2SLXbNaHf+CHySvKFnvA=",\n  ]\n}\n';
 export const TENANT = "11111111-1111-4111-8111-111111111111";
 export const DEV_TARGET: ResolvedTarget = { account: "22222222-2222-4222-8222-222222222222", backend: "fixturedevstore/tfstate/dev.tfstate", workspace: "default" };
 export const QA_TARGET: ResolvedTarget = { account: "44444444-4444-4444-8444-444444444444", backend: "fixtureqastore/tfstate/qa.tfstate", workspace: "default" };
@@ -57,6 +73,8 @@ export const ENGINE_VERSION = "1.9.5";
 /** Behaviors are read from behavior.json beside the executable, so each test chooses how the engine acts. */
 export type Behavior = {
   version?: string; workspace?: string; failOn?: string; planSalt?: string;
+  /** `terraform version -json` `provider_selections` (default {}); null omits the key. */
+  providerSelections?: Record<string, unknown> | string | null;
   initWrites?: Array<{ path: string; content: string }>;
   applyExit?: number; applyStderr?: string; applyAdvance?: boolean; applyKill?: boolean;
   /** Creates this file as soon as the named subcommand starts (a kill switch appearing mid-run). */
@@ -106,11 +124,13 @@ const args = process.argv.slice(2);
 const [cmd, sub] = args;
 const serialFile = path.join(dir, "serial.txt");
 const serial = () => Number(fs.readFileSync(serialFile, "utf8"));
-const log = (extra) => fs.appendFileSync(path.join(dir, "calls.jsonl"), JSON.stringify({ args, cwd: process.cwd(), env: process.env, backendFileExists: fs.existsSync(path.resolve(process.cwd(), "../alz-backend.tfbackend")), ...extra }) + "\\n");
+const cliConfigText = () => { try { return process.env.TF_CLI_CONFIG_FILE ? fs.readFileSync(process.env.TF_CLI_CONFIG_FILE, "utf8") : undefined; } catch { return undefined; } };
+const log = (extra) => fs.appendFileSync(path.join(dir, "calls.jsonl"), JSON.stringify({ args, cwd: process.cwd(), env: process.env, cliConfig: cliConfigText(), backendFileExists: fs.existsSync(path.resolve(process.cwd(), "../alz-backend.tfbackend")), ...extra }) + "\\n");
 const backend = () => { const a = args.find((x) => x.startsWith("-backend-config=")); return a ? fs.readFileSync(path.resolve(process.cwd(), a.slice(16)), "utf8") : undefined; };
 // Like Terraform's show -json, every resource_changes entry names its mode and its provider: a fixture entry that leaves one out gets
 // it from its address and type prefix. An entry that sets provider_name to null keeps no provider (an unnamed use, which is refused).
 const PROVIDERS = { aws: "registry.terraform.io/hashicorp/aws", azurerm: "registry.terraform.io/hashicorp/azurerm", google: "registry.terraform.io/hashicorp/google",
+  azapi: "registry.terraform.io/azure/azapi", azuread: "registry.terraform.io/hashicorp/azuread",
   terraform: "terraform.io/builtin/terraform", random: "registry.terraform.io/hashicorp/random", null: "registry.terraform.io/hashicorp/null", time: "registry.terraform.io/hashicorp/time", tls: "registry.terraform.io/hashicorp/tls" };
 const named = (r) => {
   if (!r || typeof r !== "object" || Array.isArray(r)) return r;
@@ -123,7 +143,12 @@ const named = (r) => {
 if (b.touchKillOn === cmd) fs.writeFileSync(b.killPath, "stop");
 if (b.signalParentOn && b.signalParentOn.cmd === cmd) process.kill(process.ppid, b.signalParentOn.signal);
 if (b.failOn === cmd) { log({}); process.stderr.write(b.failStderr || "boom ${VALUE_CANARY}"); process.exit(1); }
-if (cmd === "version") { log({}); process.stdout.write(JSON.stringify({ terraform_version: b.version })); }
+if (cmd === "version") {
+  log({});
+  // provider_selections as real Terraform reports it after init: {} for a built-in-only project unless the behavior names some; null omits it.
+  const selections = b.providerSelections === undefined ? {} : b.providerSelections;
+  process.stdout.write(JSON.stringify({ terraform_version: b.version, ...(selections === null ? {} : { provider_selections: selections }) }));
+}
 else if (cmd === "init") {
   fs.mkdirSync(".terraform", { recursive: true });
   // Like the real init: a setting the -backend-config file sets is saved with its value; the backend's Entra ID switch is otherwise null.
@@ -382,6 +407,8 @@ export function fakeArmHttp(behavior: ArmBehavior = {}): { http: (request: ArmCa
 
 export type Call = {
   args: string[]; cwd: string; env: Record<string, string>; backendConfig?: string; planPath?: string;
+  /** The text of the CLI configuration file the step's `TF_CLI_CONFIG_FILE` named, read when the step ran. */
+  cliConfig?: string;
   planSha?: string; planMode?: number; backendMode?: number; backendFileExists?: boolean; planText?: string; planDir?: string; pid?: number;
   /** At init: the product-owned backend override in the work copy, and the copy's root entries. */
   backendOverride?: string; workEntries?: string[];
@@ -508,12 +535,13 @@ export async function testFixtureForgeQualificationEvidence(vaultDir: string, on
 // --- projects and approvals ----------------------------------------------------------------------
 
 export type Project = { projectRoot: string; manifest: ArtifactManifest; resolved: SealRequest["resolved"] };
-export function writeProject(projectRoot: string, target: ResolvedTarget, mainTf = 'resource "azurerm_resource_group" "pilot" {}\n'): Project {
+/** A project with `mainTf` and a lock file (`lock`, default `LOCK`), whose providers are read from the lock as prepare reads them. */
+export function writeProject(projectRoot: string, target: ResolvedTarget, mainTf = 'resource "azurerm_resource_group" "pilot" {}\n', lock = LOCK): Project {
   writeFileSync(join(projectRoot, "main.tf"), mainTf);
-  writeFileSync(join(projectRoot, ".terraform.lock.hcl"), LOCK);
+  writeFileSync(join(projectRoot, ".terraform.lock.hcl"), lock);
   const resolved: SealRequest["resolved"] = {
-    engineVersion: ENGINE_VERSION, providers: [{ source: "registry.terraform.io/hashicorp/azurerm", version: "4.10.0" }],
-    lockFileSha256: sha(LOCK), dependencies: [], inputs: [{ name: "region", identity: H("f") }],
+    engineVersion: ENGINE_VERSION, providers: lockedProviders(lock),
+    lockFileSha256: sha(lock), dependencies: [], inputs: [{ name: "region", identity: H("f") }],
   };
   const manifest = buildManifest({
     engine: "TERRAFORM", mode: "PROJECT", target, unitHash: H("1"), files: captureProjectFiles(projectRoot), policyVersion: POLICY, ...resolved,

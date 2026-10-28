@@ -3,6 +3,7 @@ import { TOKEN_FILE } from "../constants.js";
 import { stop } from "../engine.js";
 import type { ProviderBlock, ProviderSpec, ProviderUse } from "../provider.js";
 import { KEY_SEGMENT, ambientRefusal, isRecord, pickIdentityValue } from "./shared.js";
+import { awsContainerFamilyOf } from "../../observe/aws-containers.js";
 
 /**
  * Everything the pilot knows about AWS with the S3 backend (docs/act-pilot-apply.md,
@@ -158,13 +159,40 @@ export const AWS_DATA_SOURCES: ReadonlySet<string> = new Set([
 ]);
 const isDataUse = (use: ProviderUse): boolean => use.mode !== "managed" || DATA_ADDRESS.test(use.address);
 /**
- * Every use's provider is an allowed one, and a use whose provider the plan does not name is refused (review N2 of #320: a resource
+ * Types of an allowed provider that run code or deploy a template instead of holding a resource (review of #327, N1 and round 2 B1; the same reason Terraform actions
+ * and provisioners are refused): `aws_lambda_invocation` invokes a function at apply, as APPLY, and `aws_ssm_association` runs a
+ * document (commands) on instances. Both are in hashicorp/aws 6.68.0's schema (checked 2026-10-27). A managed use is refused
+ * (`PROVIDER_TYPE_NOT_ALLOWED`); a data source of the first is refused as outside `AWS_DATA_SOURCES`.
+ */
+export const AWS_DENIED_TYPES: ReadonlySet<string> = new Set([
+  "aws_lambda_invocation", "aws_ssm_association",
+  // Template deployments (review of #327, round 2, B1): one plan row hides a whole CloudFormation template, its custom resources
+  // and, for stack sets, other accounts and regions, none of it in the change list; a Service Catalog product provisions one the
+  // same way. All five are in hashicorp/aws 6.68.0's schema (checked 2026-10-28). The CDK engine is separate and has its own judge.
+  "aws_cloudformation_stack", "aws_cloudformation_stack_set", "aws_cloudformation_stack_set_instance", "aws_cloudformation_stack_instances",
+  "aws_servicecatalog_provisioned_product",
+  // Round 3 B1 (review of #327, a sweep of the full pinned schema): an Image Builder image runs its build and test components on
+  // an instance at apply; a SageMaker training, hyperparameter tuning or labeling job runs the job's code (or workers) at apply.
+  "aws_imagebuilder_image", "aws_sagemaker_training_job", "aws_sagemaker_hyper_parameter_tuning_job", "aws_sagemaker_labeling_job",
+]);
+/**
+ * The schema `AWS_DENIED_TYPES` (with the stack container families) was reviewed against, in full: hashicorp/aws 6.68.0.
+ * test/apply-data-sources.test.ts fails ("re-review the denied types against the new schema") when the version the repository's
+ * evidence records, or any aws version constraint it commits, changes.
+ */
+export const AWS_DENIED_TYPES_REVIEWED_AGAINST = "hashicorp/aws 6.68.0";
+/**
+ * Every use's provider is an allowed one, no managed use is of a denied type (`AWS_DENIED_TYPES`), and a use whose provider the plan
+ * does not name is refused (review N2 of #320: a resource
  * or data source of a provider with no configuration block, `data.http.x` among them, is still judged); every data source is reviewed.
  */
 function assertUses(uses: readonly ProviderUse[]): void {
   for (const use of uses) {
     const id = providerIdOf(use.provider);
     if (id === undefined || !ALLOWED_PROVIDERS.includes(id)) stop("PROVIDER_CONFIG_NOT_IN_CONTRACT");
+    // And every stack container family the cleanup already keeps (../../observe/aws-containers.ts): one plan row that deploys a
+    // template (a SAR application, a SageMaker project, Proton, Elastic Beanstalk, Quick Setup, DataZone, Control Tower).
+    if (!isDataUse(use) && (AWS_DENIED_TYPES.has(use.type) || awsContainerFamilyOf(use.type) !== undefined)) stop("PROVIDER_TYPE_NOT_ALLOWED");
     if (id !== BUILTIN_PROVIDER && isDataUse(use) && !AWS_DATA_SOURCES.has(use.type)) stop("PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT");
   }
 }
@@ -238,6 +266,8 @@ export const AWS: ProviderSpec = {
   backendType: "s3",
   backendLocation: (target) => backendLocation(target as AwsTarget),
   filledAtApply: ["assume_role_with_web_identity"],
+  // What init may select (review of #327, round 5): the allowed providers, by exact registry source. The built-in provider is never selected.
+  selectableProviders: ALLOWED_PROVIDERS.filter((source) => source !== BUILTIN_PROVIDER),
   tagAttributes: ["tags_all", "tags"],
   assertProviderConfig: (blocks, target, env, uses) => assertProviderConfig(blocks, target as AwsTarget, env, uses),
 };

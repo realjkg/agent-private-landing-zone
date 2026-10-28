@@ -38,7 +38,9 @@ export type ModelAvailability = {
     | "MODEL_ENDPOINT_NOT_LOOPBACK"
     | "NO_LOCAL_MODEL_SERVER"
     | "MODEL_INVENTORY_UNAVAILABLE"
-    | "MODELS_NOT_INSTALLED";
+    | "MODELS_NOT_INSTALLED"
+    | "MODEL_DIGEST_UNPINNED"
+    | "MODEL_DIGEST_MISMATCH";
   required: string[];
   missing: string[];
 };

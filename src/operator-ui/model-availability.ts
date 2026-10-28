@@ -1,4 +1,6 @@
 import { loadConfig } from "../config.js";
+import { checkModelDigest, loadModelDigestPins, type ModelDigestPins } from "../models/digest-pins.js";
+import { isLoopbackModelEndpoint } from "../ollama.js";
 
 /**
  * Local private-model availability for the operator console.
@@ -19,33 +21,32 @@ export type ModelAvailabilityReason =
   | "MODEL_ENDPOINT_NOT_LOOPBACK"
   | "NO_LOCAL_MODEL_SERVER"
   | "MODEL_INVENTORY_UNAVAILABLE"
-  | "MODELS_NOT_INSTALLED";
+  | "MODELS_NOT_INSTALLED"
+  | "MODEL_DIGEST_UNPINNED"
+  | "MODEL_DIGEST_MISMATCH";
 
 export type ModelAvailability = {
   status: ModelAvailabilityStatus;
   reason: ModelAvailabilityReason;
   /** Configured model tags the private-model workflows require. */
   required: string[];
-  /** Required tags not found in the local inventory. */
+  /**
+   * Required tags not found in the local inventory; for MODEL_DIGEST_UNPINNED and MODEL_DIGEST_MISMATCH, the installed
+   * tags whose digest is not the committed release pin (config/tool-pins.json modelDigests).
+   */
   missing: string[];
 };
 
-const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 const PROBE_TIMEOUT_MS = 1500;
 
-/** True only for a credential-free http address on this machine (localhost, 127.0.0.1 or [::1]). */
-export function isLoopbackModelEndpoint(baseUrl: string): boolean {
-  try {
-    const url = new URL(baseUrl);
-    return url.protocol === "http:" && LOOPBACK_HOSTS.has(url.hostname) && !url.username && !url.password;
-  } catch {
-    return false;
-  }
-}
+/** The same loopback rule the model client enforces on every call (src/ollama.ts). */
+export { isLoopbackModelEndpoint };
 
 export async function probeLocalModels(options: {
   env?: NodeJS.ProcessEnv;
   fetcher?: typeof fetch;
+  /** The release digest pins; defaults to config/tool-pins.json. */
+  pins?: ModelDigestPins;
 } = {}): Promise<ModelAvailability> {
   const env = options.env ?? process.env;
   const fetcher = options.fetcher ?? fetch;
@@ -87,7 +88,20 @@ export async function probeLocalModels(options: {
     typeof entry.digest === "string" && entry.digest.length > 0 &&
     [tag, tag + ":latest"].some((name) => entry.name === name || entry.model === name));
   const missing = required.filter((tag) => !installed(tag));
-  return missing.length > 0
-    ? result("UNAVAILABLE", "MODELS_NOT_INSTALLED", missing)
-    : result("AVAILABLE", "READY");
+  if (missing.length > 0) return result("UNAVAILABLE", "MODELS_NOT_INSTALLED", missing);
+  // Exact versions: each installed model's manifest digest must equal its committed pin. A pin that is missing (an
+  // owner input still open) or a pin file that cannot be read refuses, as a different digest does.
+  let pins: ModelDigestPins;
+  try {
+    pins = options.pins ?? loadModelDigestPins();
+  } catch {
+    return result("UNAVAILABLE", "MODEL_DIGEST_UNPINNED", required);
+  }
+  const digestOf = (tag: string) => models.find((entry) => entry.name === tag || entry.model === tag)?.digest;
+  const checks = required.map((tag) => checkModelDigest(tag, digestOf(tag), pins));
+  const mismatched = checks.filter((check) => !check.ok && check.code === "MODEL_DIGEST_MISMATCH").map((check) => check.model);
+  if (mismatched.length > 0) return result("UNAVAILABLE", "MODEL_DIGEST_MISMATCH", mismatched);
+  const unpinned = checks.filter((check) => !check.ok).map((check) => check.model);
+  if (unpinned.length > 0) return result("UNAVAILABLE", "MODEL_DIGEST_UNPINNED", unpinned);
+  return result("AVAILABLE", "READY");
 }

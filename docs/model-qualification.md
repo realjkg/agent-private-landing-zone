@@ -8,11 +8,20 @@ A qualification result is tied to the exact Ollama model digest and prompt-polic
 
 - `qwen3:1.7b` — routing and adjudication
 - `qwen3:4b` — primary engineering reasoning
-- `mistral-nemo:latest` — independent validation
+- `mistral-nemo:12b` — independent validation
 
 Optional larger model:
 
 - `qwen3:8b`
+
+## Exact versions
+
+A tag is not a version: `mistral-nemo:latest` names whatever the registry serves today. The release pins each required model by its exact tag (never `:latest`) and its Ollama manifest digest in `config/tool-pins.json` (`isolatedOllama.modelDigests`). The digest is the sha256 of the model's manifest. It is the `Docker-Content-Digest` that `https://registry.ollama.ai/v2/library/<name>/manifests/<tag>` returns, and the digest `ollama list` and `/api/tags` report for the installed copy.
+
+- `./alz models verify` refuses a model whose installed digest has no committed pin (`MODEL_DIGEST_UNPINNED`) or differs from it (`MODEL_DIGEST_MISMATCH`). It does so before any qualification check runs. `--all` includes `qwen3:8b`, which has no release pin, so `--all` fails by design.
+- The console's model readiness check reports the same two reasons and keeps the private-model workflows off.
+- A `null` digest is an open owner input. The owner records the value from the registry in a reviewed commit, checks that it equals the installed copy's digest, and never copies it from `ollama list` alone.
+- The model client sends requests only to a credential-free `http` loopback address (`localhost`, `127.0.0.1` or `[::1]`). Any other `OLLAMA_BASE_URL` is refused with `MODEL_ENDPOINT_NOT_LOOPBACK: BLOCKED`. Nothing is sent, and there is no hosted fallback.
 
 ## Run the checks
 

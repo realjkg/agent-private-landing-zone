@@ -128,7 +128,14 @@
     "models": [
       "qwen3:1.7b",
       "qwen3:4b",
-      "mistral-nemo:latest"
-    ]
+      "mistral-nemo:12b"
+    ],
+    "_modelDigestNote": "The exact Ollama manifest digest of each release model (sha256 of the manifest, which is the Docker-Content-Digest the registry returns and the digest `ollama list` and /api/tags report). `./alz models verify` and the console's model readiness check refuse a model whose installed digest is missing here (null) or differs. null is an explicit OWNER INPUT: the engineering container could not reach registry.ollama.ai on 2026-10-27 (egress proxy refused CONNECT with HTTP 403), so no digest was recorded and none was guessed. The owner records each value from the registry URL in modelDigestSource in a reviewed commit.",
+    "modelDigestSource": "https://registry.ollama.ai/v2/library/<name>/manifests/<tag> with Accept: application/vnd.docker.distribution.manifest.v2+json (response header Docker-Content-Digest)",
+    "modelDigests": {
+      "qwen3:1.7b": null,
+      "qwen3:4b": null,
+      "mistral-nemo:12b": null
+    }
   }
 }

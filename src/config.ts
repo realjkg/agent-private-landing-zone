@@ -16,7 +16,7 @@ export function loadConfig(): ModelConfig {
     ollamaBaseUrl: process.env.OLLAMA_BASE_URL ?? "http://127.0.0.1:11434",
     routerModel: process.env.ROUTER_MODEL ?? "qwen3:1.7b",
     primaryModel: process.env.PRIMARY_MODEL ?? "qwen3:4b",
-    validatorModel: process.env.VALIDATOR_MODEL ?? "mistral-nemo:latest",
+    validatorModel: process.env.VALIDATOR_MODEL ?? "mistral-nemo:12b",
     disagreementThreshold: Number(process.env.DISAGREEMENT_THRESHOLD ?? "0.35"),
   };
 }

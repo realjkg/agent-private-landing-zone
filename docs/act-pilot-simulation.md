@@ -131,6 +131,10 @@ Yes to both. A `sas_token` passed at `init` is written in plaintext to `.terrafo
 - A real run needs the OIDC token file to exist before `init` when the STATE_WRITE configuration sets it.
 - The apply identity variables never carry `ARM_SAS_TOKEN`, `ARM_METADATA_HOSTNAME` or `ARM_ACCESS_KEY`: the runner refuses them. Only the test-only harness supplies the emulator's SAS and metadata host, inside its own process.
 
+## Re-run with the provisioner-free kill fixture (EMULATED, 2026-10-27, #327)
+
+EMULATED, not live provider evidence. Real Terraform 1.16.4, Azurite. `test/apply-emulated.test.ts` passed **17 of 17**. The judge now refuses every provisioner (RB1, `src/apply/terraform-constructs.ts`), so the kill-during-apply fixture plans `count = 2000` built-in `terraform_data` values instead of a `local-exec` `sleep`. The test waits until Terraform holds the state lease, which only the apply takes, and then raises the kill switch. It still asserts `KILLED`, the lease released and the serial moved. It also asserts that the state records fewer values than were planned, which proves the interrupt landed part-way. The SIGKILL, SIGINT and Azurite-stopped observations under "Empirical answers" were made with the earlier `local-exec` fixture and are kept as recorded.
+
 ## Cleanup after a run
 
 The test removes its temporary directory and stops Azurite and its helper. Nothing is written to the repository. A manual run in a scratch directory should delete it. If you edited the hosts file for a manual experiment, remove that line; the test itself needs no hosts entry.

@@ -329,6 +329,8 @@ export const GCP: GcpProviderSpec = {
   backendLocation: (target) => backendLocation(asGcp(target)),
   // Spike finding F: `apply <planfile>` takes the backend's connection and credentials from the apply process's environment.
   filledAtApply: [CREDENTIALS_SETTING, IMPERSONATE_SETTING],
+  // What init may select (review of #327, round 5): the allowed providers, by exact registry source. The built-in provider is never selected.
+  selectableProviders: ALLOWED_PROVIDERS.filter((source) => source !== BUILTIN_PROVIDER),
   tagAttributes: ["effective_labels", "labels"],
   assertProviderConfig: (blocks, target, _env, uses) => assertProviderConfig(blocks, asGcp(target), uses),
 };

@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import tempfile
 import time
+import re
 import unittest
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -48,6 +49,13 @@ class ACTDev1Synthetic(unittest.TestCase):
         self.assertIn('backend "s3"',hcl)
         self.assertIn('retention_in_days = 30',hcl)
         self.assertNotIn('resource "aws_iam_',hcl)
+        # Review of #327, round 4: the provider is pinned to the version the pilot's denied types were reviewed against, and the
+        # committed lock pins exactly that version, with hashes for the owner's platforms (linux_amd64 and darwin_arm64).
+        self.assertIn('version = "= 6.68.0"',hcl)
+        lock=(ROOT/"qualification/aws/act-dev1-canary/.terraform.lock.hcl").read_text()
+        self.assertEqual(lock.count('provider "registry.terraform.io/'),1)
+        self.assertIn('provider "registry.terraform.io/hashicorp/aws" {\n  version     = "6.68.0"\n  constraints = "6.68.0"',lock)
+        self.assertEqual(len(re.findall(r'"h1:[A-Za-z0-9+/=]{44}",',lock)),2)
         result=handoff.prepare(account="111111111111",management_account="973471129135",
             identifier="adaptcloud-dev",repo="realjkg/agent-private-landing-zone")
         self.assertIsNone(result["terraformVarsCandidate"]["oidc_subjects"])

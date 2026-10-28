@@ -27,7 +27,7 @@ export const MODEL_CATALOG: ModelDefinition[] = [
       "Default primary engineering model.",
   },
   {
-    model: "mistral-nemo:latest",
+    model: "mistral-nemo:12b",
     role: "VALIDATOR",
     required: true,
     notes:

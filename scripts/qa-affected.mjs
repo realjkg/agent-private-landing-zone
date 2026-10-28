@@ -44,6 +44,23 @@ export const TEMPLATE_OWNERS = {
 // Fixtures a test reads from disk (not imported), so the import closure never selects their owner.
 export const FIXTURE_OWNERS = {
   "test/fixtures/backend-pin/cases.json": ["test/apply-backend-pin-real.test.ts"],
+  // The capture manifest is checked against every live fixture on disk.
+  "test/fixtures/live/MANIFEST.json": ["test/teardown-live-fixtures.test.ts"],
+  // Real Terraform 1.16.4 sources and `show -json` output for the construct judge (RB1): read by name from the fixture directory.
+  "test/fixtures/live/terraform/aws-constructs.child.tf": ["test/apply-terraform-constructs.test.ts"],
+  "test/fixtures/live/terraform/aws-constructs.main.tf": ["test/apply-terraform-constructs.test.ts"],
+  "test/fixtures/live/terraform/aws-constructs.plan.json": ["test/apply-terraform-constructs.test.ts"],
+  "test/fixtures/live/terraform/aws-ephemeral.child.tf": ["test/apply-terraform-constructs.test.ts"],
+  "test/fixtures/live/terraform/aws-ephemeral.main.tf": ["test/apply-terraform-constructs.test.ts"],
+  "test/fixtures/live/terraform/aws-ephemeral.plan.json": ["test/apply-terraform-constructs.test.ts"],
+  "test/fixtures/live/terraform/azure-constructs.child.tf.json": ["test/apply-terraform-constructs.test.ts"],
+  "test/fixtures/live/terraform/azure-constructs.main.tf.json": ["test/apply-terraform-constructs.test.ts"],
+  "test/fixtures/live/terraform/azure-constructs.plan.json": ["test/apply-terraform-constructs.test.ts"],
+  "test/fixtures/live/terraform/removed-provisioner.child.tf": ["test/apply-terraform-constructs.test.ts"],
+  "test/fixtures/live/terraform/removed-provisioner.main.tf": ["test/apply-terraform-constructs.test.ts"],
+  "test/fixtures/live/terraform/removed-provisioner.plan.json": ["test/apply-terraform-constructs.test.ts"],
+  "test/fixtures/live/terraform/removed-duplicate-key.main.tf.json": ["test/apply-terraform-constructs.test.ts"],
+  "test/fixtures/live/terraform/removed-duplicate-key.plan.json": ["test/apply-terraform-constructs.test.ts"],
 };
 
 // Source-scan guards read a source tree from disk (a forbidden literal, import or call anywhere under it) instead of
@@ -260,7 +277,7 @@ export function planChanged(changedPaths, files) {
       if (!dependent.length) gaps.push(path + " has no known test owner; add an explicit focused test.");
       continue;
     }
-    if (/^qualification\/aws\/act-dev1-canary\/(?:.+\.tf|terraform\.tfvars\.example\.json)$/.test(path) ||
+    if (/^qualification\/aws\/act-dev1-canary\/(?:.+\.tf|terraform\.tfvars\.example\.json|\.terraform\.lock\.hcl)$/.test(path) ||
         /^bootstrap\/aws\/(?:(?:main|variables|discovery)\.tf|discovery-policy\.json|terraform\.tfvars\.example|tests\/discovery\.tftest\.hcl)$/.test(path) ||
         path === "tests_python/test_aws_dev_terraform_handoff.py") {
       addExisting(pythonTests, files, ["test/act-dev1-automation.test.py"]);

@@ -38,6 +38,14 @@ export function unavailableNote(availability: ModelAvailability): string {
     case "MODELS_NOT_INSTALLED":
       return "Private-model workflows are off: these local models are not installed — " +
         availability.missing.join(", ") + ". Pull them with Ollama, then check again.";
+    case "MODEL_DIGEST_MISMATCH":
+      return "Private-model workflows are off: these local models are not the pinned release " +
+        "version — " + availability.missing.join(", ") + ". Their installed digest differs from " +
+        "config/tool-pins.json. Pull the pinned version, then check again.";
+    case "MODEL_DIGEST_UNPINNED":
+      return "Private-model workflows are off: no release digest is committed for " +
+        availability.missing.join(", ") + " in config/tool-pins.json, so their exact version " +
+        "cannot be confirmed. The owner records each digest in a reviewed commit.";
     case "MODEL_INVENTORY_UNAVAILABLE":
       return "Private-model workflows are off: the local model server did not return " +
         "its model list. Check Ollama, then check again.";

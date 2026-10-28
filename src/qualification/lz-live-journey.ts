@@ -244,7 +244,7 @@ export async function runLzLiveJourney(input: JourneyInput, deps: Deps = default
     requireGate(url.protocol === "http:" &&
       ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname) &&
       cfg.routerModel === "qwen3:1.7b" && cfg.primaryModel === "qwen3:4b" &&
-      cfg.validatorModel === "mistral-nemo:latest" &&
+      cfg.validatorModel === "mistral-nemo:12b" &&
       process.env.AGENT_SKIP_LOCAL_MODEL !== "1", "PRIVATE_MODEL_PROFILE_INVALID");
     for (const [role, tag] of [["ROUTER", cfg.routerModel], ["PRIMARY", cfg.primaryModel],
       ["VALIDATOR", cfg.validatorModel]] as const) {
