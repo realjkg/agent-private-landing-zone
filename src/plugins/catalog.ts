@@ -10,6 +10,7 @@ export type PluginStatus =
 export type PluginProvider =
   | "AWS"
   | "AZURE"
+  | "GCP"
   | "PRIVATE"
   | "KUBERNETES"
   | "EDGE";
@@ -49,7 +50,7 @@ export const PLUGIN_CATALOG: PluginDefinition[] = [
     id: "TERRAFORM",
     stage: ["BUILD"],
     status: "IMPLEMENTED",
-    providers: ["AWS", "AZURE", "PRIVATE"],
+    providers: ["AWS", "AZURE", "GCP", "PRIVATE"],
     capabilities: [
       "VERSION",
       "VALIDATE",

@@ -14,13 +14,13 @@ import { PHASE_E_SCENARIOS } from "./phase-e.js";
  * qualifies the CDK gate, an AWS preview never the Azure one, a greenfield plan never a brownfield gate.
  */
 /**
- * `provider` may also be "GCP" (path 5; owner approval 6433121154 on issue #39): GCP Terraform is admitted in code for DEV only, so a
- * GCP contract can seal a plan this gate's evidence is made from (`buildPreviewGateEvidence` refuses any other provider's plan as
- * SCENARIO_MISMATCH). It is not a Phase E scenario: Phase E has no GCP discovery yet (PLAN S5).
+ * `provider` may be "GCP" (path 5; owner decisions 6433121154 and 6481421924 on issue #39): GCP Terraform is admitted in code for DEV
+ * only, and its Phase E scenario (terraform-gcp-brownfield) runs on the offline GCP discovery mock. `buildPreviewGateEvidence` refuses
+ * any other provider's plan as SCENARIO_MISMATCH.
  */
-export type PreviewGateScenario = { provider: ProviderId | "GCP"; engine: string; estate: "brownfield" | "greenfield" };
+export type PreviewGateScenario = { provider: ProviderId; engine: string; estate: "brownfield" | "greenfield" };
 const ESTATES: readonly PreviewGateScenario["estate"][] = ["brownfield", "greenfield"];
-const PROVIDERS: readonly ProviderId[] = ["AWS", "AZURE"];
+const PROVIDERS: readonly ProviderId[] = ["AWS", "AZURE", "GCP"];
 /** A Phase E scenario's estate and provider, checked: a scenario with any other mock or provider is not a preview gate and throws, so nothing binds silently. */
 export function previewGateScenarioOf(scenario: { id: string; provider: string; engine: string; mock: string }): PreviewGateScenario {
   if (!(ESTATES as readonly string[]).includes(scenario.mock)) throw new Error("PREVIEW_GATE_ESTATE_UNKNOWN: " + scenario.id + " has mock " + scenario.mock + "; a preview gate is brownfield or greenfield");
@@ -32,7 +32,6 @@ export const PREVIEW_GATE_SCENARIOS: Readonly<Record<string, PreviewGateScenario
   "pulumi-aws-greenfield": { provider: "AWS", engine: "PULUMI", estate: "greenfield" },
   "pulumi-aws-brownfield": { provider: "AWS", engine: "PULUMI", estate: "brownfield" },
   "pulumi-azure-brownfield": { provider: "AZURE", engine: "PULUMI", estate: "brownfield" },
-  "terraform-gcp-brownfield": { provider: "GCP", engine: "TERRAFORM", estate: "brownfield" },
 };
 /** The scenario a `preview:<id>` gate is about, or undefined for any other gate id. */
 export const previewScenarioOf = (gateId: string): PreviewGateScenario | undefined => gateId.startsWith("preview:") ? PREVIEW_GATE_SCENARIOS[gateId.slice("preview:".length)] : undefined;

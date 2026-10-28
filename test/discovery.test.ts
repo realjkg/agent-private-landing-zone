@@ -136,3 +136,28 @@ test("existing CloudTrail evidence is sufficient to classify brownfield", () => 
     "BROWNFIELD",
   );
 });
+
+test("GCP brownfield mock (SYNTHETIC) classifies BROWNFIELD from organization evidence, keeps customer resources READ_ONLY and grants no delete authority", async () => {
+  const state = await discoverEnvironment({ provider: "GCP", mock: "brownfield" });
+  assert.equal(state.provider, "GCP");
+  assert.equal(state.classification, "BROWNFIELD");
+  assert.equal(state.safeBuildMode, "ADDITIVE_ONLY");
+  assert.ok(state.resources.length > 0 && state.resources.every((r) => r.provider === "GCP" && r.metadata?.mock === true));
+  assert.ok(state.resources.every((r) => r.mutationPolicy !== "DELETE_ALLOWED" && r.mutationPolicy !== "UPDATE_ALLOWED"));
+  assert.ok(state.resources.filter((r) => r.ownership === "MANAGED_BY_CUSTOMER").every((r) => r.mutationPolicy === "READ_ONLY"));
+  assert.ok(state.evidence.every((e) => e.source === "mock"), "every fact is labeled as the mock's");
+});
+
+test("GCP greenfield needs positive evidence, an unknown GCP estate stays UNKNOWN, and GCP discovery without a mock refuses rather than reading any cloud", async () => {
+  assert.equal((await discoverEnvironment({ provider: "GCP", mock: "greenfield" })).classification, "GREENFIELD");
+  const unknown = await discoverEnvironment({ provider: "GCP", mock: "unknown" });
+  assert.equal(unknown.classification, "UNKNOWN");
+  assert.equal(unknown.safeBuildMode, "READ_ONLY");
+  const realFetch = globalThis.fetch;
+  let fetched = 0;
+  globalThis.fetch = (async () => { fetched += 1; throw new Error("no network in this test"); }) as typeof fetch;
+  try {
+    await assert.rejects(discoverEnvironment({ provider: "GCP" }), /GCP_LIVE_DISCOVERY_UNAVAILABLE/);
+  } finally { globalThis.fetch = realFetch; }
+  assert.equal(fetched, 0, "nothing was requested");
+});

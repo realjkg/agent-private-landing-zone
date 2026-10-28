@@ -3,7 +3,6 @@ import { performance } from "node:perf_hooks";
 import { fixtureThinker } from "../agent/fixture.js";
 import { runAgentKernel } from "../agent/graph.js";
 import { sha256 } from "../build/provenance.js";
-import type { Provider } from "../discovery/types.js";
 import { PLUGIN_CATALOG } from "../plugins/catalog.js";
 import { runChaosPillarQualification } from "./chaos-pillars.js";
 import { PHASE_E_SCENARIOS, type PhaseEScenario } from "./phase-e.js";
@@ -78,7 +77,10 @@ export type PulumiPermutationReport = {
   evidenceHash: string;
 };
 
-function scenarioFor(provider: Provider, estate: "greenfield" | "brownfield"): PhaseEScenario {
+/** A Pulumi scenario on one of the two clouds Pulumi runs on here; a GCP Phase E scenario is never one. */
+type PulumiScenario = PhaseEScenario & { provider: (typeof PULUMI_CLOUD_PROVIDERS)[number] };
+
+function scenarioFor(provider: (typeof PULUMI_CLOUD_PROVIDERS)[number], estate: "greenfield" | "brownfield"): PulumiScenario {
   return {
     id: "pulumi-" + provider.toLowerCase() + "-" + estate,
     provider,
@@ -137,7 +139,7 @@ export async function runPulumiPermutations(input: {
   if (!prior) throw new Error("PULUMI_ESTABLISHED_BASELINE_MISSING");
   const originalIndex = validScenarios.findIndex((scenario) => scenario.id === prior.id);
   if (originalIndex < 0) throw new Error("PULUMI_BASELINE_NOT_ENUMERATED");
-  validScenarios[originalIndex] = prior;
+  validScenarios[originalIndex] = { ...prior, provider: "AZURE" };
   input.onProgress?.("Running four existing-provider Pulumi fixture workflows");
   const positives = await runPrivateAgentMatrix({
     sourceCommit: input.sourceCommit, mode: "OFFLINE_FIXTURE",
@@ -256,7 +258,7 @@ export async function runPulumiPermutations(input: {
         id: "pulumi-" + provider.toLowerCase() + "-" + estate,
         provider, estate,
         disposition: "PLAN_REQUIRED",
-        reason: "Pulumi plugin advertises this target but ALZ kernel/discovery Provider contract is AWS|AZURE only. PLAN approval required.",
+        reason: "Pulumi plugin advertises this target but ALZ kernel/discovery has no PRIVATE or KUBERNETES provider. PLAN approval required.",
         direct: "NOT_RUN", conversational: "NOT_RUN",
         buildOrigin: "NONE", chaos: "NOT_RUN",
         faultCount: 0, applicableFaultCount: 0, notApplicableFaultCount: 0,

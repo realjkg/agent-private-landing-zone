@@ -30,8 +30,8 @@ function report(environments: EnvironmentDecision[] = [decision("DEV", { ready: 
       row("AWS", "CDK", "AWS · CDK", { blockers: [{ party: "ENGINEERING", source: "GATE", text: "Qualify the three adapters. Then run it." }] }),
       row("AZURE", "TERRAFORM", "Azure · Terraform", { isContractPath: true, decisions: environments }),
       row("AZURE", "BICEP", "Azure · Bicep", { implemented: false, journeyStatus: "BLOCKED", blockers: [{ party: "ENGINEERING", source: "JOURNEY", text: "No console test drives it yet." }] }),
-      row("GCP", "TERRAFORM", "GCP · Terraform", { inRelease: false, journeyStatus: "NOT_IMPLEMENTED", liveStatus: "NOT_IMPLEMENTED", blockers: [{ party: "RELEASE_SCOPE", source: "SCOPE", text: "Not in this release: it is not one of the release's ACT paths." }] }),
-      row("GCP", "NATIVE_API", "GCP · API-native", { inRelease: false, journeyStatus: "NOT_IMPLEMENTED", liveStatus: "NOT_IMPLEMENTED", blockers: [{ party: "RELEASE_SCOPE", source: "SCOPE", text: "Not in this release: it is not one of the release's ACT paths." }] }),
+      row("GCP", "TERRAFORM", "GCP · Terraform", { implemented: false, journeyStatus: "BLOCKED", blockers: [{ party: "ENGINEERING", source: "JOURNEY", text: "No console test drives the GCP Terraform journey yet. More." }, { party: "OWNER", source: "GATE", text: "Run it live." }] }),
+      row("GCP", "GCP_API", "GCP · API-native", { inRelease: false, journeyStatus: "NOT_IMPLEMENTED", liveStatus: "NOT_IMPLEMENTED", blockers: [{ party: "RELEASE_SCOPE", source: "SCOPE", text: "Not in this release: it is not one of the release's ACT paths." }] }),
     ],
   };
 }
@@ -79,13 +79,15 @@ describe("the Deployment paths panel", () => {
     const groups = [...container.querySelectorAll("fieldset")];
     expect(groups.map((g) => g.querySelector("legend")?.textContent)).toEqual(["Azure", "AWS", "Google Cloud (GCP)"]);
     const rows = [...container.querySelectorAll<HTMLElement>(".paths-row")];
-    expect(rows.map((r) => r.dataset.path)).toEqual(["AZURE/TERRAFORM", "AZURE/BICEP", "AWS/TERRAFORM", "AWS/CDK", "GCP/TERRAFORM", "GCP/NATIVE_API"]);
+    expect(rows.map((r) => r.dataset.path)).toEqual(["AZURE/TERRAFORM", "AZURE/BICEP", "AWS/TERRAFORM", "AWS/CDK", "GCP/TERRAFORM", "GCP/GCP_API"]);
     const badge = (path: string) => container.querySelector(`[data-path="${path}"] .paths-badge`)?.textContent;
     expect(badge("AZURE/TERRAFORM")).toBe("Ready");
     expect(badge("AWS/TERRAFORM")).toBe("Waiting on owner inputs");
     expect(badge("AWS/CDK")).toBe("Blocked: engineering or qualification");
     expect(badge("AZURE/BICEP")).toBe("Blocked: engineering or qualification");
-    expect(badge("GCP/TERRAFORM")).toBe("Not in this release");
+    expect(badge("GCP/TERRAFORM")).toBe("Blocked: engineering or qualification");
+    expect(container.querySelector('[data-path="GCP/TERRAFORM"] .paths-reason')?.textContent).toBe("Waits on engineering: No console test drives the GCP Terraform journey yet.");
+    expect(badge("GCP/GCP_API")).toBe("Not in this release");
     expect(container.querySelector('[data-path="AZURE/TERRAFORM"]')?.textContent).toContain("The reviewed path");
     // READY is the last check's answer, shown with its time; an approval rule is configured, no approval is claimed.
     const readyText = container.querySelector('[data-path="AZURE/TERRAFORM"] .paths-reason')?.textContent ?? "";

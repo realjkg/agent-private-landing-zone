@@ -17,7 +17,7 @@ People are never named here. Where a person is needed, the text uses a role and 
 | Decision | Value | Source |
 | --- | --- | --- |
 | Provider | `GCP`, through the `hashicorp/google` Terraform provider | owner decision 1; PLAN section 1 |
-| Engine | `TERRAFORM` with the `gcs` state backend. Infrastructure Manager stays the candidate for the `GCP/NATIVE_API` row (`src/release/acceptance.ts`) and is not implemented | owner decision 1 |
+| Engine | `TERRAFORM` with the `gcs` state backend. Infrastructure Manager stays the candidate for the `GCP/GCP_API` row (`src/release/acceptance.ts`; named `NATIVE_API` before decision D18) and is not implemented | owner decision 1 |
 | `google-beta` | refused for the pilot. Only `hashicorp/google` and the cloud-free set (`random`, `null`, `time`, `tls`, the built-in `terraform`) are allowed providers | owner decision 4; PLAN section 2, "Provider-config rules" |
 | Layout | one GCP project per environment (DEV, QA, PROD), each with its own state bucket in that project | owner decision 2 |
 | Contract scope | the **three-stage contract**: no `enabledEnvironments` field, with targets and approvals for DEV, QA and PROD | PLAN section 2. See "Contract scope" below |

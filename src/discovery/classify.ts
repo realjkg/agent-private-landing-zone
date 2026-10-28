@@ -18,11 +18,14 @@ const BROWNFIELD_EVIDENCE = new Set([
   "azure.policy",
   "azure.existing_iac",
   "azure.platform_subscription",
+  "gcp.organization",
+  "gcp.org_policy",
 ]);
 
 const GREENFIELD_EVIDENCE = new Set([
   "aws.greenfield_confirmed",
   "azure.greenfield_confirmed",
+  "gcp.greenfield_confirmed",
 ]);
 
 export function classifyEnvironment(
