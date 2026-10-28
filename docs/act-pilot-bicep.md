@@ -267,6 +267,6 @@ The pins name the tested version only after the engine's qualification run again
 ## Release gates
 
 - `act:azure-bicep`: the full DEV lifecycle through this engine. It is added with the registration, because the release scope must equal `ACT_RELEASE_PATHS` (`src/release/status.ts`), whose rows are typed by `EngineId`.
-- `preview:bicep-azure-brownfield`: returns to scope, per the owner's rebaseline (#39, 6443352284).
+- `preview:bicep-azure-brownfield`: returned to scope by the owner's rebaseline (#39, 6443352284), then dropped from this release by the owner on 2026-10-28 (#39, 6480066863). It is OUT_OF_SCOPE because E1 makes APPLY seals create-only, so a brownfield what-if cannot be sealed.
 
 All evidence produced in this lane is **SYNTHETIC** (a fake `az` and `bicep`). It is not provider qualification and does not certify a release.
