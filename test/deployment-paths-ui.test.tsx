@@ -37,16 +37,20 @@ function report(environments: EnvironmentDecision[] = [decision("DEV", { ready: 
 }
 
 type Call = { url: string; method: string };
-type Fake = { run: unknown; pathsReplies: { status: number; body: unknown }[]; onPreflight?: (environment: string) => void };
-function install(paths: { status: number; body: unknown }, fake: Fake = { run: null, pathsReplies: [] }): Call[] {
+/** A paths reply; `hold` keeps it from arriving until the test releases it (a slow request). */
+type PathsReply = { status: number; body: unknown; hold?: Promise<void> };
+type Fake = { run: unknown; pathsReplies: PathsReply[]; onPreflight?: (environment: string) => void; tokenAccepted?: () => boolean };
+/** A promise the test resolves by hand. */
+const gate = (): { promise: Promise<void>; open: () => void } => { let open = () => {}; const promise = new Promise<void>((done) => { open = done; }); return { promise, open }; };
+function install(paths: PathsReply, fake: Fake = { run: null, pathsReplies: [] }): Call[] {
   const calls: Call[] = [];
   vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit = {}) => {
     const token = ((init.headers ?? {}) as Record<string, string>)["X-ALZ-Pilot-Token"];
     calls.push({ url, method: init.method ?? "GET" });
     const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
-    if (token !== TOKEN) return url === "/pilot/state" ? json({ unlocked: false }) : json({ error: "PILOT_TOKEN_REQUIRED", message: "no" }, 401);
+    if (token !== TOKEN || fake.tokenAccepted?.() === false) return url === "/pilot/state" ? json({ unlocked: false }) : json({ error: "PILOT_TOKEN_REQUIRED", message: "no" }, 401);
     const state = () => ({ unlocked: true, path: "UI", busy: false, run: fake.run });
-    if (url === "/pilot/paths") { const next = fake.pathsReplies.shift() ?? paths; return json(next.body, next.status); }
+    if (url === "/pilot/paths") { const next = fake.pathsReplies.shift() ?? paths; if (next.hold) await next.hold; return json(next.body, next.status); }
     if (url === "/pilot/state") return json(state());
     if (url === "/pilot/preflight") { fake.onPreflight?.(JSON.parse(String(init.body)).environment); return json(state(), 202); }
     return json({ error: "NOT_FOUND", message: "no" }, 404);
@@ -266,6 +270,69 @@ describe("an open page follows the records without a reload (review of #334 roun
       await waitFor(() => expect(calls.filter((c) => c.url === "/pilot/paths").length).toBe(before + 1));
       await waitFor(() => expect(badges()).not.toContain("Ready"));
     } finally { vi.useRealTimers(); }
+  });
+
+  test("P1: returning to the tab fires focus and visibilitychange together; one request is sent, not two", async () => {
+    const slow = gate();
+    const fake: Fake = { run: null, pathsReplies: [{ status: 200, body: report() }, { status: 200, body: stoppedReport(), hold: slow.promise }] };
+    const calls = await unlockWizard({ status: 200, body: stoppedReport() }, fake);
+    await waitFor(() => expect(badges()).toContain("Ready"));
+    const count = () => calls.filter((c) => c.url === "/pilot/paths").length;
+    const before = count();
+    await act(async () => { document.dispatchEvent(new Event("visibilitychange")); window.dispatchEvent(new Event("focus")); });
+    expect(count()).toBe(before + 1);
+    slow.open();
+    await waitFor(() => expect(document.querySelector(".paths-stop")).not.toBeNull());
+    expect(count()).toBe(before + 1);
+  });
+
+  test("P2: a slower, older Ready reply that arrives after a newer emergency-stop reply is dropped; the stop stays shown", async () => {
+    const slow = gate();
+    const fake: Fake = { run: null, pathsReplies: [{ status: 200, body: report() }, { status: 200, body: report(), hold: slow.promise }, { status: 200, body: stoppedReport() }] };
+    fake.onPreflight = (environment) => {
+      fake.run = { id: "pf-1", step: "preflight", status: "DONE", startedAt: CHECKED, transcript: "", result: { exit: 2, data: { environment, ready: false, checks: [], decisions: { act: "DISABLED", contract: {}, authorized: [], approved: [] } } } };
+    };
+    await unlockWizard({ status: 200, body: stoppedReport() }, fake);
+    await waitFor(() => expect(badges()).toContain("Ready"));
+    // The person returns to the tab: a request goes out and is slow (it would say Ready).
+    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    // A readiness check finishes meanwhile: its forced re-read returns the emergency stop first.
+    fireEvent.click(screen.getByRole("button", { name: COPY.pathContinue }));
+    fireEvent.click(await screen.findByRole("button", { name: COPY.readyRun }));
+    await waitFor(() => expect(document.querySelector(".paths-stop")?.textContent).toContain("The emergency stop is on"));
+    // The older reply arrives last. It is dropped: the stop note stays and Ready does not come back.
+    await act(async () => { slow.open(); await slow.promise; });
+    await act(async () => { await Promise.resolve(); });
+    expect(document.querySelector(".paths-stop")?.textContent).toContain("The emergency stop is on");
+    expect(badges()).not.toContain("Ready");
+  });
+
+  test("a refused session token re-reads the state, which locks the page and stops the refresh until it is unlocked again", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      let accepted = true;
+      const fake: Fake = { run: null, pathsReplies: [], tokenAccepted: () => accepted };
+      const calls = await unlockWizard({ status: 200, body: report() }, fake);
+      await waitFor(() => expect(badges()).toContain("Ready"));
+      accepted = false; // the console restarted: this page's token is no longer known
+      await act(async () => { vi.advanceTimersByTime(PATHS_REFRESH_MS); });
+      await screen.findByLabelText(COPY.unlockLabel);
+      expect(screen.queryByTestId("deployment-paths")).toBeNull();
+      const count = calls.filter((c) => c.url === "/pilot/paths").length;
+      await act(async () => { vi.advanceTimersByTime(PATHS_REFRESH_MS * 3); window.dispatchEvent(new Event("focus")); });
+      expect(calls.filter((c) => c.url === "/pilot/paths").length).toBe(count);
+    } finally { vi.useRealTimers(); }
+  });
+
+  test("the planning view follows an unlock that happens after it opened, at the next return to the page", async () => {
+    const calls = install({ status: 200, body: report([decision("DEV"), decision("QA"), decision("PROD", { ready: true })]) });
+    render(<DeploymentContext />);
+    expect(calls).toEqual([]);
+    setPilotToken(TOKEN);
+    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    const stage = screen.getByRole("combobox", { name: "Environment" }) as HTMLSelectElement;
+    await waitFor(() => expect([...stage.options].map((o) => o.value)).toEqual(["production", "development", "staging"]));
+    expect(calls.filter((c) => c.url === "/pilot/paths")).toHaveLength(1);
   });
 
   test("the planning view re-reads on focus too, and keeps its order in step", async () => {

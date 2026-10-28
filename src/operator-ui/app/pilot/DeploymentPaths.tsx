@@ -1,6 +1,6 @@
-import { forwardRef, useEffect, useState } from "react";
+import { forwardRef, useCallback, useEffect, useRef, useState } from "react";
 
-import type { DeploymentPath, EnvironmentDecision, PathParty, PathsReport } from "./pilot-api";
+import { fetchPilotPaths, type DeploymentPath, type EnvironmentDecision, type PathParty, type PathsReport, type PilotReply } from "./pilot-api";
 import { badgeOf, checkedTime, environmentReady, firstSentence, orderByReadiness, orderEnvironments, tierOf } from "./readiness-order";
 
 // The "Deployment paths" panel (owner decision E5): every cloud and build path, readiest first, from the release records and the
@@ -9,6 +9,32 @@ import { badgeOf, checkedTime, environmentReady, firstSentence, orderByReadiness
 
 /** How often an open Pilot view re-reads the paths: often enough that a stop or a rules change shows without a reload. */
 export const PATHS_REFRESH_MS = 15_000;
+
+/**
+ * One loader for GET /pilot/paths that applies only the reply to its latest request. A trigger (focus, the page becoming visible,
+ * the interval) while a request is still out is coalesced into it, so returning to the tab sends one request, not two. A forced
+ * load (after a readiness check) always sends a new request and supersedes the one out: a slower, older reply is then dropped,
+ * so it can never put back a "Ready" that a newer reply (an emergency stop, a rules change) replaced. Nothing is applied after
+ * the component unmounts.
+ */
+export function usePathsLoader(onReply: (reply: PilotReply<PathsReport>) => void): (force?: boolean) => void {
+  const latest = useRef(0);
+  const pending = useRef(false);
+  const alive = useRef(true);
+  const handler = useRef(onReply);
+  handler.current = onReply;
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
+  return useCallback((force = false) => {
+    if (pending.current && !force) return;
+    const mine = ++latest.current;
+    pending.current = true;
+    void fetchPilotPaths().then((reply) => {
+      if (mine !== latest.current) return;
+      pending.current = false;
+      if (alive.current) handler.current(reply);
+    });
+  }, []);
+}
 
 /**
  * Re-reads the paths while `enabled`: when the window regains focus or the page becomes visible again, and every
