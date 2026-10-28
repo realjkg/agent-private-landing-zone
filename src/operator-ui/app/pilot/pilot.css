@@ -368,3 +368,20 @@
 .pilot-decisions { display: grid; grid-template-columns: max-content 1fr; gap: 0.25rem 0.75rem; margin: 0.5rem 0; }
 .pilot-decisions dt { font-weight: 600; }
 .pilot-decisions dd { margin: 0; }
+
+/* Deployment paths (owner decision E5): readiest first, grouped by cloud. The badge carries the status in words, never color alone. */
+.paths { border: 1px solid var(--edge); padding: 10px 14px; margin: 12px 0; }
+.paths h3 { margin-top: 0; }
+.paths-group { border: 1px solid var(--edge); margin: 8px 0; padding: 6px 12px; }
+.paths-list { list-style: none; padding: 0; margin: 0; }
+.paths-row { padding: 6px 0; border-bottom: 1px solid var(--edge); }
+.paths-row:last-child { border-bottom: 0; }
+.paths-row[data-tier="1"] { border-left: 4px solid var(--pilot-ok); padding-left: 8px; }
+.paths-toggle { text-align: left; }
+.paths-label { font-weight: 600; }
+.paths-badge[data-tier="1"] { color: var(--pilot-ok); }
+.paths-badge[data-tier="3"] { color: var(--pilot-bad); }
+.paths-reason { margin: 4px 0; overflow-wrap: anywhere; }
+.paths-details { margin: 6px 0 4px; overflow-wrap: anywhere; }
+.paths-blockers { margin: 4px 0; padding-left: 18px; }
+.pilot-environments-off ul { margin: 6px 0; padding-left: 18px; }

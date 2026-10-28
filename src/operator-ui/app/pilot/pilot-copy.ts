@@ -565,6 +565,8 @@ export const CODE_COPY: Readonly<Record<string, Reason>> = {
   PILOT_NO_SUCH_QUESTION: { why: "That question is not waiting any more.", next: "Look at the screen for the current question." },
   PILOT_NOTHING_TO_CANCEL: { why: "No question is waiting, so there is nothing to cancel.", next: "Wait for the step to finish." },
   PILOT_FAILED: { why: "The console could not complete that request. Nothing was run.", next: "Try again. If it repeats, tell the pilot owner." },
+  PILOT_PATHS_UNAVAILABLE: { why: "The release records that list the deployment paths cannot be read on this computer.", next: "The pilot steps still work. Check that the console runs from a complete copy of the product, then reload this page." },
+  PILOT_PATHS_UNREADABLE: { why: "The list of deployment paths came back in a form this page cannot read.", next: "The pilot steps still work. Reload this page; if it stays, tell the pilot owner." },
   PILOT_UNREACHABLE: { why: "This page cannot reach the console.", next: "Make sure the console is still running in its terminal, then reload this page." },
   LOCAL_HOST_ONLY: { why: "The console only answers on this computer's own address.", next: "Open the address the console printed, exactly as printed." },
   NOT_FOUND: { why: "The console does not know that request.", next: "Reload the page and try again." },

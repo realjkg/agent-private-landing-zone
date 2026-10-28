@@ -6,11 +6,12 @@ import { join, resolve } from "node:path";
 
 import { checkDevAccount, validatedAccountRequest } from "./act-dev1-admin.js";
 import { channelMismatchMessage } from "../apply/channel.js";
-import { repoPaths } from "../apply/contract.js";
+import { authorizationEntryOf, isKillSwitchActive, loadPilotContract, pilotContractSha256, repoPaths } from "../apply/contract.js";
 import { proposalLines, verifyCleanupProposal, type CleanupProposal } from "../apply/cleanup-proposal.js";
 import { verifyReviewBundle } from "../apply/seal.js";
 import { ENVIRONMENTS, stripInvisible } from "../apply/constants.js";
 import type { ApplyEnvironment, PlanChange, PreviewProvenance, SealedPlan } from "../apply/types.js";
+import { deploymentPaths, rememberedReadiness, type CurrentContract, type PathEnvironment, type RememberedReadiness } from "../release/pilot-paths.js";
 import { runApplyCommand, type ApplyCliDeps, type ApplyReport } from "./apply.js";
 import type { AskExpectation, HumanTerminal, PhraseKind } from "./teardown-driver.js";
 
@@ -256,6 +257,28 @@ export function createPilotRouter(options: PilotRouterOptions): PilotRouter {
   const approvalsDir = options.approvalsDir ?? join(repoPaths().root, ".runs/apply/approvals");
   let chosen: PilotPath | null = null;
   let run: Run | undefined;
+  // The last readiness check per environment, exactly as `preflight` returned it: what GET /pilot/paths reports for the contract's
+  // path. Remembered, never assessed here; an environment with no check reads "not checked", never ready.
+  const readinessByEnvironment = new Map<PathEnvironment, RememberedReadiness>();
+  const rememberReadiness = (result: RunResult): void => {
+    const remembered = rememberedReadiness(result.data, new Date().toISOString());
+    if (remembered) readinessByEnvironment.set(remembered.environment, remembered);
+  };
+  /**
+   * The contract as it is now, read-only, for GET /pilot/paths: the same fields `actDecisions` (src/apply/readiness.ts) reports
+   * without an environment (hash, provider, engine, authorize entries, approval quorum, kill switch), from the same contract file
+   * `preflight` reads. Read again on every request, so a remembered readiness result is shown only while it still describes it.
+   */
+  const currentContract = (): CurrentContract => {
+    const loaded = loadPilotContract(options.cli?.contractPath ?? repoPaths().contract);
+    if ("reason" in loaded) return { act: "DISABLED", reason: loaded.reason };
+    const entries = ENVIRONMENTS.flatMap((environment) => { const entry = authorizationEntryOf(loaded, environment); return entry ? [{ environment, entry }] : []; });
+    return {
+      act: "PILOT_ENABLED", contractSha256: pilotContractSha256(loaded), provider: loaded.provider, engine: loaded.engine, killSwitch: isKillSwitchActive(loaded),
+      authorized: entries.map(({ environment, entry }) => ({ environment, operations: [...entry.operations] })),
+      approved: entries.map(({ environment }) => ({ environment, requiredApprovals: loaded.requiredApprovals[environment] ?? 0 })),
+    };
+  };
   const absolute = (path: string): string => resolve(options.root, path);
   const running = (): boolean => run !== undefined && run.done === undefined;
 
@@ -421,6 +444,16 @@ export function createPilotRouter(options: PilotRouterOptions): PilotRouter {
       send(res, context.headers, 200, authenticated ? stateOf() : { unlocked: false });
       return;
     }
+    if (req.method === "GET" && url === PILOT_BASE + "/paths") {
+      // Read-only: the deployment paths from the release records, with the readiness checks already run. It starts nothing and
+      // changes nothing; ordering and display are the page's. The session token is required, as for every pilot route with data.
+      if (!authenticated) throw new Bad(401, "PILOT_TOKEN_REQUIRED", "The session token is missing or wrong. Paste the token printed in the terminal where you started the console.");
+      let report: ReturnType<typeof deploymentPaths>;
+      try { report = deploymentPaths(options.root, [...readinessByEnvironment.values()], currentContract()); }
+      catch { throw new Bad(503, "PILOT_PATHS_UNAVAILABLE", "The release records for the deployment paths cannot be read on this computer."); }
+      send(res, context.headers, 200, report);
+      return;
+    }
     if (req.method !== "POST") throw new Bad(405, "PILOT_METHOD_NOT_ALLOWED", "That is not allowed here.");
     // Every pilot POST: same origin (and a browser always sends one), JSON, the session token, a size limit. No CORS header is ever sent.
     if (req.headers.origin !== context.expectedOrigin) throw new Bad(403, "PILOT_ORIGIN_REQUIRED", "This request did not come from the console page.");
@@ -464,7 +497,7 @@ export function createPilotRouter(options: PilotRouterOptions): PilotRouter {
       case "/preflight": {
         const input = fields(body, ["environment"]);
         requirePath();
-        start("preflight", ["preflight", "--environment", environmentOf(input.environment)]);
+        start("preflight", ["preflight", "--environment", environmentOf(input.environment)], rememberReadiness);
         send(res, context.headers, 202, stateOf());
         return;
       }
