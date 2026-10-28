@@ -216,7 +216,7 @@ test("model probe mirrors the live workflows' own preconditions", async () => {
   const env = {
     OLLAMA_BASE_URL: "http://127.0.0.1:11434",
     ROUTER_MODEL: "qwen3:1.7b", PRIMARY_MODEL: "qwen3:4b",
-    VALIDATOR_MODEL: "mistral-nemo:latest",
+    VALIDATOR_MODEL: "mistral-nemo:12b",
   };
   const digest = "a".repeat(64);
   const inventory = (names: string[]) => (async () => new Response(JSON.stringify({
@@ -226,13 +226,27 @@ test("model probe mirrors the live workflows' own preconditions", async () => {
     throw new Error("PROBE_MUST_NOT_FETCH");
   }) as unknown as typeof fetch;
 
-  const ready = await probeLocalModels({ env,
-    fetcher: inventory(["qwen3:1.7b", "qwen3:4b", "mistral-nemo:latest"]) });
+  const releaseModels = ["qwen3:1.7b", "qwen3:4b", "mistral-nemo:12b"];
+  const pins = { models: releaseModels, digests: new Map(releaseModels.map((model) => [model, digest] as [string, string | null])) };
+  const ready = await probeLocalModels({ env, pins,
+    fetcher: inventory(releaseModels) });
   assert.deepEqual([ready.status, ready.reason], ["AVAILABLE", "READY"]);
 
-  const partial = await probeLocalModels({ env, fetcher: inventory(["qwen3:4b"]) });
+  // Exact versions: a different installed digest, or a pin still missing, keeps the workflows off.
+  const other = { ...pins, digests: new Map(pins.digests).set("qwen3:4b", "b".repeat(64)) };
+  const mismatch = await probeLocalModels({ env, pins: other, fetcher: inventory(releaseModels) });
+  assert.deepEqual([mismatch.status, mismatch.reason, mismatch.missing], ["UNAVAILABLE", "MODEL_DIGEST_MISMATCH", ["qwen3:4b"]]);
+  const open = { ...pins, digests: new Map(pins.digests).set("mistral-nemo:12b", null) };
+  const unpinned = await probeLocalModels({ env, pins: open, fetcher: inventory(releaseModels) });
+  assert.deepEqual([unpinned.status, unpinned.reason, unpinned.missing], ["UNAVAILABLE", "MODEL_DIGEST_UNPINNED", ["mistral-nemo:12b"]]);
+  // A model the environment names that is not a release model has no pin at all.
+  const offList = await probeLocalModels({ env: { ...env, PRIMARY_MODEL: "qwen3:8b" }, pins,
+    fetcher: inventory([...releaseModels, "qwen3:8b"]) });
+  assert.deepEqual([offList.reason, offList.missing], ["MODEL_DIGEST_UNPINNED", ["qwen3:8b"]]);
+
+  const partial = await probeLocalModels({ env, pins, fetcher: inventory(["qwen3:4b"]) });
   assert.deepEqual([partial.status, partial.reason], ["UNAVAILABLE", "MODELS_NOT_INSTALLED"]);
-  assert.deepEqual(partial.missing, ["qwen3:1.7b", "mistral-nemo:latest"]);
+  assert.deepEqual(partial.missing, ["qwen3:1.7b", "mistral-nemo:12b"]);
 
   const down = await probeLocalModels({ env, fetcher: (async () => {
     throw new TypeError("fetch failed");

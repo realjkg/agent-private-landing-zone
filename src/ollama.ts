@@ -20,6 +20,32 @@ export type ModelInvocationOptions = {
   latencyDegradedMs?: number;
 };
 
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+/** True only for a credential-free http address on this machine (localhost, 127.0.0.1 or [::1]). */
+export function isLoopbackModelEndpoint(baseUrl: string): boolean {
+  try {
+    const url = new URL(baseUrl);
+    return url.protocol === "http:" && LOOPBACK_HOSTS.has(url.hostname) && !url.username && !url.password;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Private inference only: every call to a model server goes to this machine. A non-loopback OLLAMA_BASE_URL (another
+ * host, https to a hosted service, an address with credentials) is refused before any request is made, and nothing
+ * falls back to another endpoint. The message names the reason and never echoes the address, which could hold a secret.
+ */
+export function assertLoopbackModelEndpoint(baseUrl: string): void {
+  if (!isLoopbackModelEndpoint(baseUrl)) {
+    throw new Error(
+      "MODEL_ENDPOINT_NOT_LOOPBACK: BLOCKED. OLLAMA_BASE_URL must be a credential-free http address on this machine " +
+        "(localhost, 127.0.0.1 or [::1]). Private inference only: no request was sent and there is no hosted fallback.",
+    );
+  }
+}
+
 export const STRUCTURED_MODEL_OPTIONS =
   Object.freeze({
     format: "json" as const,
@@ -33,6 +59,8 @@ export async function invokeLocalModel(
   options: ModelInvocationOptions = {},
   emitter: Emitter = DISABLED_EMITTER,
 ): Promise<string> {
+  // Before the timer, the emitter or any request: a non-loopback endpoint is never contacted.
+  assertLoopbackModelEndpoint(baseUrl);
   const timeoutMs = options.timeoutMs ?? 120_000;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -41,6 +69,8 @@ export async function invokeLocalModel(
   try {
     const response = await fetch(`${baseUrl}/api/chat`, {
       method: "POST",
+      // A redirect could move the prompt to a non-loopback origin; it is an error, never followed.
+      redirect: "error",
       headers: {
         "content-type": "application/json",
       },
@@ -137,8 +167,10 @@ export async function getLocalModelMetadata(
   baseUrl: string,
   model: string,
 ): Promise<LocalModelMetadata> {
+  assertLoopbackModelEndpoint(baseUrl);
   const response = await fetch(
     `${baseUrl}/api/tags`,
+    { redirect: "error" },
   );
 
   if (!response.ok) {

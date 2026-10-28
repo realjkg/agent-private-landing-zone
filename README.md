@@ -274,7 +274,7 @@ Example setup:
 ```bash
 ollama pull qwen3:1.7b
 ollama pull qwen3:4b
-ollama pull mistral-nemo
+ollama pull mistral-nemo:12b
 
 ./alz bootstrap
 ./alz verify
@@ -282,6 +282,8 @@ ollama pull mistral-nemo
 ```
 
 `./alz verify` tests the model qualification harness with deterministic fixtures. `./alz models verify` tests the installed Qwen and Mistral weights against the local Ollama endpoint. Use `./alz models verify --all` to include the optional named models.
+
+The release pins each model's exact manifest digest in `config/tool-pins.json` (`isolatedOllama.modelDigests`). Until the owner commits those digests, `./alz models verify` and the console's model readiness check fail with `MODEL_DIGEST_UNPINNED`.
 
 See [docs/model-qualification.md](docs/model-qualification.md) for the exact checks. Additional private-model candidates are tracked separately for architecture fit; they are not part of the active runtime until they complete the same qualification contract.
 

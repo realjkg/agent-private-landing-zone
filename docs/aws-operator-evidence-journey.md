@@ -32,7 +32,7 @@ npm run build
 ./alz matrix --offline-fixture
 ```
 
-Required baseline Ollama tags: `qwen3:1.7b`, `qwen3:4b`, `mistral-nemo:latest`. Granite and Nemotron are optional comparison candidates, **not** replacement models for the D3 production gate. Select exact tags reported by `ollama list`; missing candidates are NOT_RUN, never assumed installed. For the dedicated production target, obey `docs/target-preflight.md` (pinned Ollama 0.40.0, model digests, host identity, and policy/source binding). An offline matrix is synthetic; `./alz matrix --live-models` uses real local inference but does not make the IaC preview live.
+Required baseline Ollama tags: `qwen3:1.7b`, `qwen3:4b`, `mistral-nemo:12b`. Granite and Nemotron are optional comparison candidates, **not** replacement models for the D3 production gate. Select exact tags reported by `ollama list`; missing candidates are NOT_RUN, never assumed installed. For the dedicated production target, obey `docs/target-preflight.md` (pinned Ollama 0.40.0, model digests, host identity, and policy/source binding). An offline matrix is synthetic; `./alz matrix --live-models` uses real local inference but does not make the IaC preview live.
 
 ## 2. Optional AWS SSO identity diagnostic — not the journey
 

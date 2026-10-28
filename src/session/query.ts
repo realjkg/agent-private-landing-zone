@@ -1,12 +1,47 @@
 import type { AgentState } from "../agent/types.js";
 import type { IaCEngine } from "../build/types.js";
 import { promptGuide } from "./help.js";
+import { pilotHandoffKind } from "./pilot-answer.js";
+import type { PilotQuery } from "./pilot-context.js";
 import type { SessionCommand } from "./types.js";
+
+/**
+ * Read-only questions about a pilot run, answered from the records the person's own `./alz apply` steps left
+ * (src/session/pilot-context.ts). Checked before the action handoff, so "why did the apply fail?" is a read.
+ */
+export function classifyPilotQuery(value: string): PilotQuery | undefined {
+  if (/\bblueprint\b/.test(value)) return "PILOT_BLUEPRINT";
+  if (/\bpreflight\b|\b(?:am i|are we|is the pilot|is act)\b.{0,20}\b(?:ready|authori[sz]ed|approved)\b|\bpilot readiness\b|\bready to (?:seal|qualify|apply)\b/.test(value)) {
+    return "PILOT_READINESS";
+  }
+  if (/\b(?:show|view|see|display|read)\b.{0,25}\b(?:preview|change summary|proposed changes|planned changes|sealed plan|review bundle)\b|\bwhat (?:will|would) (?:it|this|the plan|the apply|the sealed plan) change\b|^preview$/.test(value)) {
+    return "PILOT_PREVIEW";
+  }
+  if (/\bwhy (?:did|does|is|was|has)\b.{0,30}\b(?:fail|failed|failing|stop|stopped|incomplete|not finished|inconclusive|refused)\b|\bwhat (?:failed|went wrong)\b|\bwhy\b.{0,30}\b(?:fail|failed|stopped|refused)\b/.test(value)) {
+    return "PILOT_FAILURE";
+  }
+  if (/\bwhat (?:was|got|has been|did (?:the |this |my )?(?:run|apply|pilot) )\s*(?:built|created|deployed|build|create|deploy)\b|\bobserved (?:resources|result)|\bleft ?overs?\b|\bwhat (?:is |was )?left (?:over|behind)\b|\bwhat remains\b/.test(value)) {
+    return "PILOT_OBSERVED";
+  }
+  if (/\bstatus of (?:the |my |this )?(?:run|apply|pilot|cleanup|plan)\b|\b(?:run|apply|pilot|cleanup) status\b|\bhow did (?:the |my )?(?:run|apply|cleanup) go\b|\blifecycle report\b/.test(value)) {
+    return "PILOT_STATUS";
+  }
+  return undefined;
+}
 
 export function classifySessionCommand(
   request: string,
 ): SessionCommand {
   const value = request.trim().toLowerCase();
+
+  const pilotQuery = classifyPilotQuery(value);
+  if (pilotQuery) {
+    return pilotQuery;
+  }
+
+  if (pilotHandoffKind(value)) {
+    return "PILOT_HANDOFF";
+  }
 
   if (
     value === ":prompts" ||
@@ -362,7 +397,7 @@ export function formatAgentResponse(
 export function answerStateQuery(
   command: Exclude<
     SessionCommand,
-    "RUN" | "USE_TERRAFORM" | "USE_PULUMI" | "USE_OPENTOFU" | "GUARDRAIL"
+    "RUN" | "USE_TERRAFORM" | "USE_PULUMI" | "USE_OPENTOFU" | "GUARDRAIL" | PilotQuery | "PILOT_HANDOFF"
   >,
   state?: AgentState,
   engine?: IaCEngine,

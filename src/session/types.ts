@@ -32,7 +32,16 @@ export type SessionCommand =
   | "USE_OPENTOFU"
   | "PROMPT_GUIDE"
   | "GUARDRAIL"
-  | "HELP";
+  | "HELP"
+  // Read-only pilot context (src/session/pilot-context.ts): the session reads the records a person's pilot runs left.
+  | "PILOT_BLUEPRINT"
+  | "PILOT_PREVIEW"
+  | "PILOT_STATUS"
+  | "PILOT_OBSERVED"
+  | "PILOT_FAILURE"
+  | "PILOT_READINESS"
+  // A request to approve, apply, clean up, change the contract or use hosted inference: refused with the person's exact step.
+  | "PILOT_HANDOFF";
 
 export type SessionTurn = {
   at: string;
