@@ -30,17 +30,18 @@ const STACK_ID = "ActDev1CdkCanary";
 const EXAMPLE_STACK = "alz-act-dev1-cdk-canary";
 const json = (path: string): any => JSON.parse(readFileSync(path, "utf8"));
 
-test("the CDK canary pins aws-cdk-lib, constructs and the CDK CLI exactly, to the versions the repository already records", () => {
+test("the CDK canary pins aws-cdk-lib, constructs and the CDK CLI exactly, to the versions the repository's live CDK fixtures record", () => {
   const pkg = json(join(DIR, "package.json"));
   assert.equal(pkg.private, true);
-  assert.deepEqual(pkg.dependencies, { "aws-cdk-lib": "2.272.0", constructs: "10.8.1" });
-  assert.deepEqual(pkg.devDependencies, { "aws-cdk": "2.1144.0" });
-  // The same versions the CDK preview adapter records as tested (src/plugins/catalog.ts) and the adapter-runtime workflow installs.
-  const catalog = readFileSync(join(ROOT, "src", "plugins", "catalog.ts"), "utf8");
-  assert.ok(catalog.includes("AWS CDK CLI 2.1144.0; aws-cdk-lib 2.272.0"));
+  assert.deepEqual(pkg.dependencies, { "aws-cdk-lib": "2.273.0", constructs: "10.8.1" });
+  assert.deepEqual(pkg.devDependencies, { "aws-cdk": "2.1145.0" });
+  // The lowest aws-cdk-lib 2.x whose bundled brace-expansion is 5.0.12 or later (2.272.0 bundles 5.0.9: GHSA-q2hr-2g5m-vwhr,
+  // GHSA-qhr7-859c-m2p7, GHSA-6j4f-fj2g-mc7p), the same pair the repository's live CDK fixtures were synthesized with.
+  const live = readFileSync(join(ROOT, "test", "fixtures", "live", "MANIFEST.json"), "utf8");
+  assert.ok(live.includes("aws-cdk-lib 2.273.0 + aws-cdk CLI 2.1145.0"));
   const lock = json(join(DIR, "package-lock.json"));
   assert.equal(lock.lockfileVersion, 3);
-  for (const [name, version] of [["aws-cdk-lib", "2.272.0"], ["constructs", "10.8.1"], ["aws-cdk", "2.1144.0"]]) {
+  for (const [name, version] of [["aws-cdk-lib", "2.273.0"], ["constructs", "10.8.1"], ["aws-cdk", "2.1145.0"]]) {
     const entry = lock.packages["node_modules/" + name];
     assert.equal(entry.version, version, name);
     assert.equal(entry.resolved, "https://registry.npmjs.org/" + name + "/-/" + name + "-" + version + ".tgz", name);
@@ -52,6 +53,9 @@ test("the CDK canary pins aws-cdk-lib, constructs and the CDK CLI exactly, to th
     assert.match(entry.resolved ?? "", /^https:\/\/registry\.npmjs\.org\//, path);
     assert.ok(entry.integrity, path);
   }
+  // The bundled brace-expansion is past the advisories' affected range (4.0.0 to 5.0.11).
+  const brace = lock.packages["node_modules/aws-cdk-lib/node_modules/brace-expansion"];
+  assert.equal(brace.version, "5.0.12");
   // No install script and no network at synthesis: the app is plain JavaScript run by node.
   assert.equal(pkg.scripts.synth, "cdk synth --quiet --no-lookups --output cdk.out");
   assert.equal(json(join(DIR, "cdk.json")).app, "node app.js");
@@ -61,11 +65,12 @@ test("the app takes its three inputs from CDK context, validates them, and synth
   const app = readFileSync(join(DIR, "app.js"), "utf8");
   for (const key of ["stackName", "canaryName", "owner"]) assert.ok(app.includes('input("' + key + '"'), key);
   assert.ok(app.includes("/^\\/alz\\/act-dev-1\\/[a-z0-9][a-z0-9-]{2,48}$/"), "the Terraform canary's name rule");
-  assert.ok(app.includes("new BootstraplessSynthesizer()"));
+  assert.ok(app.includes("new LegacyStackSynthesizer()"));
+  assert.ok(app.includes('logGroupName: canaryName') && app.includes("  stackName,\n"), "both names come from context");
   assert.ok(app.includes("analyticsReporting: false"));
   assert.ok(app.includes("terminationProtection: true"));
   assert.ok(app.includes('"aws:cdk:disable-creation-stack-traces": true'));
-  assert.equal(app.match(/new Cfn[A-Za-z]+\(/g)?.length, 1, "one construct");
+  assert.deepEqual(app.match(/new Cfn[A-Za-z]+\(/g), ["new CfnLogGroup(", "new CfnWaitConditionHandle("], "the log group and the sentinel, nothing else");
   const cdkJson = json(join(DIR, "cdk.json"));
   assert.equal(cdkJson.versionReporting, false);
   assert.equal(cdkJson.pathMetadata, false);
@@ -74,13 +79,15 @@ test("the app takes its three inputs from CDK context, validates them, and synth
   assert.equal(cdkJson.context.owner, "REPLACE-WITH-APPROVED-OWNER", "the committed owner is an EXAMPLE placeholder");
 });
 
-test("the committed template is exactly one AWS::Logs::LogGroup, with the Terraform canary's name scheme, retention and tags", () => {
+test("the committed template is one AWS::Logs::LogGroup (the Terraform canary's name scheme, retention and tags) and one no-cost sentinel", () => {
   const files = readdirSync(OUT).sort();
   assert.deepEqual(files, ["ActDev1CdkCanary.metadata.json", "ActDev1CdkCanary.template.json", "cdk.out", "manifest.json", "tree.json", "validation-report.json"]);
   const template = json(join(OUT, STACK_ID + ".template.json"));
   // No Parameters (so no BootstrapVersion), no Rules (no CheckBootstrapVersion), no Conditions or Metadata (no AWS::CDK::Metadata), no Outputs.
   assert.deepEqual(Object.keys(template), ["Resources"]);
-  assert.deepEqual(Object.keys(template.Resources), ["ActDev1"]);
+  assert.deepEqual(Object.keys(template.Resources), ["ActDev1", "RetainedSentinel"]);
+  // The sentinel: a WaitConditionHandle with no properties and no DeletionPolicy, which costs nothing and stays in the stack.
+  assert.deepEqual(template.Resources.RetainedSentinel, { Type: "AWS::CloudFormation::WaitConditionHandle" });
   assert.deepEqual(template.Resources.ActDev1, {
     Type: "AWS::Logs::LogGroup",
     Properties: {
@@ -117,18 +124,25 @@ test("the committed manifest is one environment-agnostic, termination-protected 
   assert.equal(stack.properties.terminationProtection, true);
   assert.equal(stack.dependencies, undefined);
   assert.equal(stack.properties.requiresBootstrapStackVersion, undefined);
+  // No CDK bootstrap role is named, so nothing (the pilot or a `cdk deploy --app cdk.out`) would try to assume one.
+  assert.deepEqual(Object.keys(stack.properties).sort(), ["stackName", "templateFile", "terminationProtection", "validateOnSynth"]);
+  assert.ok(!readFileSync(join(OUT, "manifest.json"), "utf8").includes("hnb659fds"));
   assert.equal(stack.properties.bootstrapStackVersionSsmParameter, undefined);
-  assert.equal(manifest.minimumCliVersion, "2.1144.0");
+  assert.equal(manifest.minimumCliVersion, "2.1144.0", "the assembly schema the pinned CLI 2.1145.0 reads");
 });
 
-test("cleanup of the only resource is refused as CLEANUP_WOULD_EMPTY_STACK: the stack is retained for the owner's separate decision", () => {
+test("cleanup may remove the log group: the removal template keeps only the sentinel, and the sentinel itself is never removable", () => {
   const template = json(join(OUT, STACK_ID + ".template.json"));
-  let code = "";
-  try { removalTemplateOf(template, ["ActDev1"]); } catch (error) { code = codeOf(error); }
-  assert.equal(code, "CLEANUP_WOULD_EMPTY_STACK");
+  assert.deepEqual(removalTemplateOf(template, ["ActDev1"]), { Resources: { RetainedSentinel: { Type: "AWS::CloudFormation::WaitConditionHandle" } } });
+  // Removing both would empty the stack, which the engine refuses; the stack and the sentinel are the owner's to retire.
+  for (const addresses of [["ActDev1", "RetainedSentinel"], ["RetainedSentinel", "ActDev1"]]) {
+    let code = "";
+    try { removalTemplateOf(template, addresses); } catch (error) { code = codeOf(error); }
+    assert.equal(code, "CLEANUP_WOULD_EMPTY_STACK", addresses.join());
+  }
 });
 
-test("the committed cdk.out seals through the real CDK engine (fake aws): exactly one create, no assembly refusal", async () => {
+test("the committed cdk.out seals through the real CDK engine (fake aws): exactly two creates, no assembly refusal", async () => {
   const root = mkdtempSync(join(tmpdir(), "alz-cdk-canary-"));
   const toolDir = mkdtempSync(join(tmpdir(), "alz-cdk-canary-tools-"));
   const previous = { cwd: process.cwd(), key: process.env.AGENTIC_EVIDENCE_KEY };
@@ -158,7 +172,10 @@ test("the committed cdk.out seals through the real CDK engine (fake aws): exactl
       env: cdkIdentityEnv("DEV"), now: () => NOW, scratchParent: dir("scratch"), toolDirs: [toolDir], killPollMs: 40, killGraceMs: 400,
     });
     assert.ok(result.ok, JSON.stringify(result));
-    assert.deepEqual(result.sealed.changes, [{ address: "ActDev1", type: "AWS::Logs::LogGroup", action: "CREATE" }]);
+    assert.deepEqual(result.sealed.changes, [
+      { address: "ActDev1", type: "AWS::Logs::LogGroup", action: "CREATE" },
+      { address: "RetainedSentinel", type: "AWS::CloudFormation::WaitConditionHandle", action: "CREATE" },
+    ]);
   } finally {
     process.chdir(previous.cwd);
     if (previous.key === undefined) delete process.env.AGENTIC_EVIDENCE_KEY; else process.env.AGENTIC_EVIDENCE_KEY = previous.key;
@@ -177,6 +194,29 @@ test("re-synthesizing with the pinned packages yields the committed cdk.out byte
     assert.equal(run.status, 0, run.stderr);
     assert.deepEqual(readdirSync(out).sort(), readdirSync(OUT).sort());
     for (const name of readdirSync(OUT)) assert.ok(readFileSync(join(out, name)).equals(readFileSync(join(OUT, name))), name);
+  } finally {
+    removeTree(out);
+  }
+});
+
+test("each run's synth inputs change both the stack name and the log group name (opt-in)", { skip: SYNTH ? false : "set ALZ_CDK_CANARY_SYNTH=1 after npm ci in the canary folder" }, () => {
+  const out = mkdtempSync(join(tmpdir(), "alz-cdk-canary-run-"));
+  try {
+    const run = spawnSync(join(DIR, "node_modules", ".bin", "cdk"), ["synth", "--quiet", "--no-lookups", "--no-notices", "--output", out,
+      "-c", "stackName=alz-act-dev1-cdk-run-02", "-c", "canaryName=/alz/act-dev-1/cdk-run-02", "-c", "owner=qa"], {
+      cwd: DIR, encoding: "utf8", env: { ...process.env, CDK_DISABLE_CLI_TELEMETRY: "true" },
+    });
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(json(join(out, "manifest.json")).artifacts[STACK_ID].properties.stackName, "alz-act-dev1-cdk-run-02");
+    const template = json(join(out, STACK_ID + ".template.json"));
+    assert.equal(template.Resources.ActDev1.Properties.LogGroupName, "/alz/act-dev-1/cdk-run-02");
+    assert.ok(template.Resources.ActDev1.Properties.Tags.some((tag: { Key: string; Value: string }) => tag.Key === "owner" && tag.Value === "qa"));
+    assert.deepEqual(template.Resources.RetainedSentinel, { Type: "AWS::CloudFormation::WaitConditionHandle" });
+    // An input outside the name rule stops the synthesis.
+    const bad = spawnSync(join(DIR, "node_modules", ".bin", "cdk"), ["synth", "--quiet", "--no-lookups", "--no-notices", "--output", join(out, "bad"), "-c", "canaryName=/other/x"], {
+      cwd: DIR, encoding: "utf8", env: { ...process.env, CDK_DISABLE_CLI_TELEMETRY: "true" },
+    });
+    assert.notEqual(bad.status, 0);
   } finally {
     removeTree(out);
   }

@@ -4,5 +4,11 @@
       "type": "aws:cdk:logicalId",
       "data": "ActDev1"
     }
+  ],
+  "/ActDev1CdkCanary/RetainedSentinel": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "RetainedSentinel"
+    }
   ]
 }

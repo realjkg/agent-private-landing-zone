@@ -1,9 +1,12 @@
-// ACT-DEV-1 AWS CDK canary: exactly one AWS::Logs::LogGroup, the same name scheme, retention and tags as the Terraform canary
-// (qualification/aws/act-dev1-canary). The stack is environment-agnostic, synthesized without bootstrap (no BootstrapVersion
-// parameter or rule, no asset to publish) and without AWS::CDK::Metadata, so the pilot's CDK engine can read cdk.out as is.
+// ACT-DEV-1 AWS CDK canary: one AWS::Logs::LogGroup, with the same name scheme, retention and tags as the Terraform canary
+// (qualification/aws/act-dev1-canary), and one no-cost AWS::CloudFormation::WaitConditionHandle sentinel that stays in the stack.
+// The governed cleanup removes resources from a stack but never empties or deletes one (CLEANUP_WOULD_EMPTY_STACK), so the sentinel
+// is what lets it remove the log group. The stack is environment-agnostic, synthesized without bootstrap (no BootstrapVersion
+// parameter or rule, no asset to publish, no bootstrap role ARNs) and without AWS::CDK::Metadata, so the pilot's CDK engine can
+// read cdk.out as is.
 // Inputs are CDK context values (cdk.json holds EXAMPLE values): stackName, canaryName and owner. See README.md.
 "use strict";
-const { App, BootstraplessSynthesizer, Stack } = require("aws-cdk-lib");
+const { App, CfnWaitConditionHandle, LegacyStackSynthesizer, Stack } = require("aws-cdk-lib");
 const { CfnLogGroup } = require("aws-cdk-lib/aws-logs");
 
 const STACK_NAME = /^[A-Za-z][A-Za-z0-9-]{0,127}$/;
@@ -25,7 +28,8 @@ const stack = new Stack(app, "ActDev1CdkCanary", {
   stackName,
   terminationProtection: true,
   analyticsReporting: false,
-  synthesizer: new BootstraplessSynthesizer(),
+  // The legacy synthesizer with no assets writes no asset manifest, no bootstrap version rule and no bootstrap role ARNs.
+  synthesizer: new LegacyStackSynthesizer(),
 });
 
 // The L1 construct keeps CloudFormation's default deletion behavior (no DeletionPolicy), so a governed cleanup may remove it.
@@ -39,5 +43,8 @@ new CfnLogGroup(stack, "ActDev1", {
     { key: "owner", value: owner },
   ],
 });
+
+// The sentinel: no properties, no cost, never removed by a cleanup. Retiring it with the stack is the owner's separate decision.
+new CfnWaitConditionHandle(stack, "RetainedSentinel");
 
 app.synth();

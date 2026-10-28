@@ -13,7 +13,7 @@ This folder is an EXAMPLE. Nothing in it enables ACT. The reviewed pilot contrac
 
 ## Inputs the operator supplies
 
-Copy `terraform.tfvars.example.json` to `terraform.tfvars.json` and replace each EXAMPLE value:
+Copy `terraform.tfvars.example.json` to `terraform.tfvars.json` and replace each EXAMPLE value. Git and the image build ignore `terraform.tfvars.json`, state and plan files here.
 
 | Variable | Rule |
 | --- | --- |
