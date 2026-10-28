@@ -241,6 +241,8 @@ describe("emulated backend simulation: real Terraform, Azurite, built-in resourc
   const KILL = join(root, "KILL");
   const fresh = (label: string): string => { const dir = join(root, label + "-" + ++counter); mkdirSync(dir, { recursive: true }); return dir; };
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  /** Built-in values in the kill-during fixture: enough that the real apply runs for seconds after it takes the state lease. */
+  const SLOW_COUNT = 2000;
 
   let vault = "";
   let evidence = "";
@@ -263,7 +265,7 @@ describe("emulated backend simulation: real Terraform, Azurite, built-in resourc
     emulator = await startEmulator(fresh("emulator"));
     assert.equal(await createContainer(emulator), 201);
 
-    // The runner finds `terraform` by name in approved directories; /usr/bin and /bin keep sh, touch and sleep reachable for the local-exec fixture.
+    // The runner finds `terraform` by name in approved directories. /usr/bin and /bin stay approved, although no fixture runs a command any more (RB1).
     // The `terraform` it finds here is the test-only SAS harness around the real binary, so the engine hash the driver binds is the harness's.
     toolDir = fresh("tools");
     const binarySha = createHash("sha256").update(readFileSync(installAzuriteSasHarness(toolDir, binary, containerSas()))).digest("hex");
@@ -321,7 +323,7 @@ describe("emulated backend simulation: real Terraform, Azurite, built-in resourc
 
   // --- fixtures ---------------------------------------------------------------------------------
 
-  const LOCK = "# This file is maintained automatically by \"terraform init\".\n# The pilot fixture uses only the built-in terraform provider.\n";
+  const LOCK = "# This file is maintained automatically by \"terraform init\".\n# The pilot fixture locks nothing: it uses only the built-in terraform_data type.\n";
   /** The pinned project: an azurerm backend naming the contract's storage account, container and key, and one built-in resource. It carries no credential and no endpoint: the harness supplies the emulator's. */
   function project(input: string, extra = "") {
     const projectRoot = fresh("project");
@@ -509,13 +511,15 @@ describe("emulated backend simulation: real Terraform, Azurite, built-in resourc
   });
 
   it("stops a running apply when the kill switch appears: Terraform is interrupted, the lease is released, the outcome is KILLED", async () => {
-    const flag = join(root, "slow-started");
-    const s = await seal("kill-during", `resource "terraform_data" "slow" {\n  provisioner "local-exec" {\n    command = "touch ${flag}; sleep 120"\n  }\n}`);
+    // Provisioner-free (RB1: the judge refuses every provisioner). A wide count of built-in values keeps the real apply busy for
+    // seconds; only the apply takes the state lease, so once it is held the apply is running, and the kill switch lands part-way.
+    const s = await seal("kill-during", `resource "terraform_data" "slow" {\n  count = ${SLOW_COUNT}\n  input = count.index\n}`);
+    assert.equal(s.sealed.changes.length, SLOW_COUNT + 1, "the pilot value and every slow one are in the sealed change list");
     const before = await stateBlob();
     let settled: ApplyResult | undefined;
     const running = run(s).then((r) => (settled = r));
-    for (let waited = 0; !existsSync(flag); waited += 100) {
-      if (settled || waited > 60_000) throw new Error("the apply never reached the provisioner: " + JSON.stringify(settled));
+    for (let waited = 0; (await leaseState()) !== "leased"; waited += 100) {
+      if (settled || waited > 60_000) throw new Error("the apply never took the state lease: " + JSON.stringify(settled));
       await sleep(100);
     }
     assert.equal(await leaseState(), "leased", "Terraform holds the state lease while it applies");
@@ -528,7 +532,9 @@ describe("emulated backend simulation: real Terraform, Azurite, built-in resourc
       noSecrets(result);
     } finally { rmSync(KILL, { force: true }); }
     assert.equal(await leaseState(), "available", "a graceful interrupt releases the lease");
-    assert.ok((await stateBlob()).serial > before.serial, "the interrupted resource was recorded in state");
+    const after = await stateBlob();
+    assert.ok(after.serial > before.serial, "the interrupted resources were recorded in state");
+    assert.ok(after.inputs.length < before.inputs.length + SLOW_COUNT + 1, "interrupted part-way: not every planned value was created");
   });
 
   // --- emulator-only credentials never enter a production path, against the real engine -----------------

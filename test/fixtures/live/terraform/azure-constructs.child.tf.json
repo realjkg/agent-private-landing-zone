@@ -1,0 +1,6 @@
+{
+  "terraform": { "required_providers": { "null": { "source": "hashicorp/null" } } },
+  "resource": {
+    "null_resource": { "n": { "provisioner": [ { "file": { "content": "x", "destination": "/tmp/x", "connection": { "type": "ssh", "host": "127.0.0.1" } } }, { "remote-exec": { "inline": ["true"], "connection": { "type": "ssh", "host": "127.0.0.1" } } } ] } }
+  }
+}

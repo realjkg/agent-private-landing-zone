@@ -7,6 +7,7 @@ import type { ResolvedTarget } from "../teardown/driver/types.js";
 import { COMMIT, ENVIRONMENTS, HASH, INVISIBLE } from "./constants.js";
 import { sha256 } from "../util/sha256.js";
 import { codeOf } from "./engine.js";
+import { sourceRuleHint } from "./terraform-constructs.js";
 import type { EnginePlanInput, EngineSpec } from "./engine-spec.js";
 import { PILOT_CHANNELS, type ApplyEnvironment, type ApplyRefusalCode, type PilotChannel, type PreviewProvenance, type SealedPlan, type SealedRequest, type SealedUnit } from "./types.js";
 
@@ -119,7 +120,7 @@ function build(input: SealInput): { sealed: SealedPlan; planBytes: Buffer } | Se
   } catch (error) {
     return {
       ok: false, code: "ARTIFACT_INVALID",
-      message: "The plan could not be sealed (" + codeOf(error) + "). Engine output is withheld because plan and state output can hold secrets.",
+      message: "The plan could not be sealed (" + codeOf(error) + ")." + sourceRuleHint(codeOf(error)) + " Engine output is withheld because plan and state output can hold secrets.",
     };
   }
 }

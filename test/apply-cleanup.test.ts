@@ -360,8 +360,11 @@ test("AWS Terraform cleanup: approve under the cleanup domain, destroy exactly t
   assert.deepEqual(result.evidence.adapter, { adapterVersion: CLEANUP_ADAPTER.adapterVersion, argvDigest: CLEANUP_ADAPTER.argvDigest });
   assert.deepEqual(cleanupEvidenceProblems(result.evidence), []);
   const steps = calls().slice(before);
-  assert.deepEqual(steps.map((c) => c.args[0]), ["version", "init", "workspace", "state", "plan", "show", "apply", "state"]);
+  assert.deepEqual(steps.map((c) => c.args[0]), ["version", "init", "version", "workspace", "state", "plan", "show", "apply", "state"]);
   const roleOf = (index: number) => steps[index].env.AWS_ROLE_ARN;
+  // The post-init read of what init selected (review of #327, round 5) holds no identity; the steps below are the run's own.
+  assert.deepEqual([steps[2].args, roleOf(2)], [["version", "-json"], undefined]);
+  steps.splice(2, 1);
   assert.equal(roleOf(1), awsRoleArn("STATE_WRITE", "DEV"), "init as STATE_WRITE, as an apply");
   assert.equal(roleOf(3), awsRoleArn("STATE", "DEV"));
   assert.equal(roleOf(4), awsRoleArn("DISCOVERY", "DEV"), "the destroy plan reads providers as DISCOVERY");
@@ -876,7 +879,9 @@ for (const { type, name, attributes } of CONTAINER_RUNS) {
   test("a run that created " + type + " (" + awsContainerFamilyOf(type)!.what + ", holding an IAM role the state cannot show) keeps it as CONTAINS_OTHERS by the pilot owner, never targets it, refuses a destroy plan that would take it along before any approval is consumed, and cleans up the run's other resources (reviews 6412896598 B1, 6432262110 B1)", async () => {
     const address = type + "." + name;
     const family = awsContainerFamilyOf(type)!;
-    const creates = [...CREATES, { address, type, change: { actions: ["create"], before: null, after: {} } }];
+    // Review of #327, round 2, B1: a stack container is refused at plan judging (PROVIDER_TYPE_NOT_ALLOWED), so this release never
+    // seals one; it reaches the cleanup as STATE DATA only (the classifier's input), and the seal plans the run's other resources.
+    const creates = [...CREATES];
     const container = { mode: "managed", type, name, provider: 'provider["registry.terraform.io/hashicorp/aws"]', instances: [{ schema_version: 0, attributes: { ...attributes, secret_value: STATE_CANARY } }] };
     const state = [...STATE, container];
     const w = world();
@@ -891,10 +896,15 @@ for (const { type, name, attributes } of CONTAINER_RUNS) {
     assert.equal(run.records.blueprint.blueprint.entries.find((e) => e.address === address)?.holdsIdentityArn, undefined, "no ARN is in the state: the container rule, not the ARN scan, keeps it");
     // A destroy plan that would take the container along (and its role with it) stops before any approval is consumed, naming the policy and the family.
     const approval = cleanupApproval(run.proposal, "alice");
+    // The plan judge refuses that destroy plan first, by its own code; the policy check's own refusal is asserted on
+    // `protectedDeletionIn`, the function the driver runs next, with this run's blueprint.
     behave({ showResources: creates, stateResources: state, destroyExtra: [{ address, type, change: { actions: ["delete"], before: {}, after: null } }] });
     const taken = await cleanup(w, run, [approval]);
-    refused(taken, "PROPOSAL_SCOPE_MISMATCH");
-    assert.ok((taken as { message: string }).message.includes("would delete " + address + ", a stack container (" + family.what + ") holding resources the state does not list, which a pilot cleanup never deletes, directly or as a dependent (CONTAINS_OTHERS)"), (taken as { message: string }).message);
+    refused(taken, "TARGET_NOT_IN_CONTRACT");
+    assert.match((taken as { message: string }).message, /\(PROVIDER_TYPE_NOT_ALLOWED\)\. Nothing was destroyed and no approval was consumed/);
+    const policy = protectedDeletionIn([{ address, type, action: "DELETE" }], run.records.blueprint.blueprint.entries, loadPilotContract(fixtureContractPath) as PilotContract, w.deps.env!,
+      { account: run.proposal.target.account, addresses: new Set(run.proposal.deletes.map((d) => d.address)) });
+    assert.ok(policy?.includes("would delete " + address + ", a stack container (" + family.what + ") holding resources the state does not list, which a pilot cleanup never deletes, directly or as a dependent (CONTAINS_OTHERS)"), policy);
     assert.equal(applyCalls().length, 0);
     // A forged proposal that lists the container never executes: the list is derived again and the type is a container.
     const fields = { ...run.proposal, deletes: [...run.proposal.deletes, { address, type, identifier: kept!.identifier, ownership: "RUN_CREATED" as const, observed: "UNVERIFIABLE" as const }].sort((a, b) => (a.address < b.address ? -1 : 1)), excluded: run.proposal.excluded.filter((x) => x.address !== address) };

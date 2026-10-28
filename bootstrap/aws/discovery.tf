@@ -25,6 +25,9 @@ locals {
     # A lifted action stays denied everywhere except the resources its exceptions name.
     [for i, action in local.excepted_actions : { Sid = "DenyDataReadOutsideException${i}", Effect = "Deny", Action = action, NotResource = local.excepted_resources[action] }],
     [for i, e in var.discovery_data_read_exceptions : { Sid = "DataReadException${i}", Effect = "Allow", Action = e.actions, Resource = e.resources }],
+    # Actions that are not reads at all (running a function): denied everywhere, last. No exception lifts these either, because
+    # an exception may name only actions in the blanket deny above.
+    [for name, group in local.discovery_policy.denyAlways : { Sid = "DenyAlways${title(name)}", Effect = "Deny", Action = group.actions, Resource = "*" }],
   ) })
 }
 

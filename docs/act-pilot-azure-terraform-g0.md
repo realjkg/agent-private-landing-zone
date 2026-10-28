@@ -24,9 +24,18 @@ The contract shape for this decision is `config/act-pilot-contract.azure-dev.exa
 
 ### The minimal workload
 
-The workload is **one empty, tagged virtual network in the pilot resource group that `bootstrap/azure` creates** (`apply_resource_group_name`, for example `rg-alz-pilot-dev`). The run creates no resource group. This is the coordinator's default under "no deadlock on progress" (issue #39, comment 6444382695, items 1 and 2), and the owner may override it. Path 4 (Azure Bicep / ARM) uses the same workload. The project is a single root module with no data sources and no modules. The shape below is illustrative: the operator writes the real one, and `seal` judges it.
+The workload is **one empty, tagged virtual network in the pilot resource group that `bootstrap/azure` creates** (`apply_resource_group_name`, for example `rg-alz-pilot-dev`). The run creates no resource group. This is the coordinator's default under "no deadlock on progress" (issue #39, comment 6444382695, items 1 and 2), and the owner may override it. Path 4 (Azure Bicep / ARM) uses the same workload. The project is a single root module with no data sources and no modules. The shape below is illustrative: the operator writes the real one, and `seal` judges it. Its lock file must pin `hashicorp/azurerm` at exactly 4.81.0, the version the pilot's denied-type lists were reviewed against; `./alz apply prepare` and the seal refuse any other (`PROVIDER_VERSION_NOT_REVIEWED`, `docs/act-pilot-apply.md`, "Provider versions are bound to the review").
 
 ```hcl
+terraform {
+  required_providers {
+    azurerm = {
+      source  = "hashicorp/azurerm"
+      version = "= 4.81.0"                                              # exactly the reviewed version: prepare and seal refuse any other
+    }
+  }
+}
+
 provider "azurerm" {
   features {}
   tenant_id                       = "<the contract's tenantId>"        # constants: seal checks them against the contract

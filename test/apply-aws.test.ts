@@ -351,9 +351,12 @@ test("DEV, then QA, then PROD: each stage seals and applies with the right role 
     assert.deepEqual(result.evidence.target, target);
 
     const steps = calls().slice(before);
-    assert.deepEqual(steps.map((c) => c.args[0]), ["version", "init", "workspace", "state", "show", "apply", "state", "state"], "the last state read is the blueprint of what the run left");
+    assert.deepEqual(steps.map((c) => c.args[0]), ["version", "init", "version", "workspace", "state", "show", "apply", "state", "state"], "the last state read is the blueprint of what the run left");
     assert.deepEqual(steps[1].args, [...APPLY_INIT_ARGV]);
     const roleOf = (c: Call) => c.env.AWS_ROLE_ARN;
+    // The post-init read of what init selected (review of #327, round 5) holds no identity; the steps below are the run's own.
+    assert.deepEqual([steps[2].args, roleOf(steps[2])], [["version", "-json"], undefined]);
+    steps.splice(2, 1);
     assert.equal(roleOf(steps[0]), undefined, "version needs no credentials");
     assert.equal(roleOf(steps[1]), awsRoleArn("STATE_WRITE", environment), "init uses STATE_WRITE");
     assert.equal(roleOf(steps[2]), awsRoleArn("STATE_WRITE", environment));
