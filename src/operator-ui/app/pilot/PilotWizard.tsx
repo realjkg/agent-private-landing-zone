@@ -4,8 +4,10 @@ import type { ExperienceLevel } from "../../experience-level.js";
 import { PilotDialog } from "./PilotDialog";
 import { ActDev1Setup } from "./ActDev1Setup";
 import CleanupStep, { CleanupList } from "./CleanupStep";
+import { DeploymentPaths, type PathsLoad } from "./DeploymentPaths";
+import { orderEnvironments } from "./readiness-order";
 import {
-  answerDialog, cancelDialog, choosePath, fetchPilotState, forgetPilotToken, loadCleanupReview, loadReview, startApply, startApprove, startPreflight, startPrepare, startSeal, setPilotToken, startOver,
+  answerDialog, cancelDialog, choosePath, fetchPilotPaths, fetchPilotState, forgetPilotToken, loadCleanupReview, loadReview, startApply, startApprove, startPreflight, startPrepare, startSeal, setPilotToken, startOver,
   type CleanupSummary, type PilotEnvironment, type PilotPath, type PilotReply, type PilotRun, type PilotDecisions, type PilotState, type PreflightCheck, type PreparedFiles, type PrepareStop, type ReviewSummary, type RunResult,
 } from "./pilot-api";
 import {
@@ -14,7 +16,6 @@ import {
 } from "./pilot-copy";
 
 const POLL_MS = 600;
-const ENVIRONMENTS: readonly PilotEnvironment[] = ["DEV", "QA", "PROD"];
 type Role = "OPERATOR" | "APPROVER";
 type Readiness = { environment: PilotEnvironment; ready: boolean; checks: PreflightCheck[]; decisions?: PilotDecisions };
 
@@ -262,8 +263,10 @@ export default function PilotWizard(props: PilotWizardProps) {
   const [refusal, setRefusal] = useState<{ code: string; message: string } | null>(null);
   const [finalResult, setFinalResult] = useState<{ step: string; result: RunResult } | null>(null);
   const [starting, setStarting] = useState(false);
+  const [pathsLoad, setPathsLoad] = useState<PathsLoad>({ status: "loading" });
   const handled = useRef<string>("");
   const contentRef = useRef<HTMLDivElement | null>(null);
+  const pathsRef = useRef<HTMLElement | null>(null);
   const headingRef = useRef<HTMLHeadingElement | null>(null);
 
   const unlocked = state?.unlocked === true;
@@ -279,6 +282,13 @@ export default function PilotWizard(props: PilotWizardProps) {
 
   const refresh = useCallback(async () => { take(await fetchPilotState()); }, [take]);
   useEffect(() => { void refresh(); }, [refresh]);
+
+  // The deployment paths (read-only): loaded once the session is unlocked and again after each readiness check.
+  const loadPaths = useCallback(async () => {
+    const reply = await fetchPilotPaths();
+    setPathsLoad(reply.ok ? { status: "ready", report: reply.body } : { status: "error" });
+  }, []);
+  useEffect(() => { if (unlocked) void loadPaths(); }, [unlocked, loadPaths]);
 
   // Poll only while something is running or waiting for the person.
   useEffect(() => {
@@ -299,11 +309,12 @@ export default function PilotWizard(props: PilotWizardProps) {
   // dialog must not pull focus out of the modal. Read through a ref so closing the dialog does not re-run this effect either.
   useEffect(() => { if (!dialogOpen.current) headingRef.current?.focus(); }, [step, unlocked]);
   useEffect(() => {
-    const element = contentRef.current;
-    if (!element) return;
-    if (dialog) { element.setAttribute("inert", ""); element.setAttribute("aria-hidden", "true"); }
-    else { element.removeAttribute("inert"); element.removeAttribute("aria-hidden"); }
-  }, [dialog]);
+    for (const element of [contentRef.current, pathsRef.current]) {
+      if (!element) continue;
+      if (dialog) { element.setAttribute("inert", ""); element.setAttribute("aria-hidden", "true"); }
+      else { element.removeAttribute("inert"); element.removeAttribute("aria-hidden"); }
+    }
+  }, [dialog, unlocked]);
 
   // What each finished step leaves behind. A run is handled once.
   useEffect(() => {
@@ -315,6 +326,7 @@ export default function PilotWizard(props: PilotWizardProps) {
       const data = result.data as { ready?: boolean; checks?: PreflightCheck[]; decisions?: PilotDecisions } | undefined;
       setReadiness({ environment, ready: result.exit === 0 && data?.ready === true, checks: Array.isArray(data?.checks) ? data.checks : [],
         ...(data?.decisions && Array.isArray(data.decisions.authorized) && Array.isArray(data.decisions.approved) ? { decisions: data.decisions } : {}) });
+      void loadPaths();
     } else if (run.step === "prepare") {
       const data = result.exit === 0 ? result.data as PreparedFiles | undefined : undefined;
       setPrepared(data ?? null);
@@ -330,7 +342,16 @@ export default function PilotWizard(props: PilotWizardProps) {
       setFinalResult({ step: "apply", result });
       setStep(6);
     }
-  }, [run, environment]);
+  }, [run, environment, loadPaths]);
+
+  // DEV, QA and PROD, readiest first. Once the owner's rules are known, the ones they do not enable stay listed but cannot be chosen.
+  const environmentChoices = orderEnvironments(pathsLoad.status === "ready" && pathsLoad.report.contract.state !== "UNKNOWN" ? pathsLoad.report.environments : null);
+  const disabledEnvironments = environmentChoices.filter((choice) => !choice.enabled);
+  const firstEnabled = environmentChoices.find((choice) => choice.enabled)?.environment;
+  const chosenEnabled = environmentChoices.some((choice) => choice.environment === environment && choice.enabled);
+  useEffect(() => {
+    if (!chosenEnabled && firstEnabled !== undefined && !active) { setEnvironment(firstEnabled); setReadiness(null); }
+  }, [chosenEnabled, firstEnabled, active]);
 
   const unlock = async () => {
     setChecking(true);
@@ -386,6 +407,9 @@ export default function PilotWizard(props: PilotWizardProps) {
   }
 
   return (
+    <>
+    {/* The deployment paths, above the wizard once the session is unlocked (owner decision E5). Read-only. */}
+    {unlocked && <DeploymentPaths ref={pathsRef} load={pathsLoad} />}
     <section className="panel pilot" aria-labelledby="pilot-title" data-level={level}>
       <div ref={contentRef}>
         <h2 id="pilot-title" tabIndex={-1}>{COPY.heading}</h2>
@@ -486,8 +510,17 @@ export default function PilotWizard(props: PilotWizardProps) {
                 {locked && <BlockedNotice state="PATH_IS_CLI" />}
                 <label htmlFor="pilot-environment">{COPY.readyEnvironment}</label>
                 <select id="pilot-environment" value={environment} disabled={active} onChange={(event) => { setEnvironment(event.target.value as PilotEnvironment); setReadiness(null); }}>
-                  {ENVIRONMENTS.map((name) => <option key={name} value={name}>{name}</option>)}
+                  {environmentChoices.map((choice) => (
+                    <option key={choice.environment} value={choice.environment} disabled={!choice.enabled}>
+                      {choice.enabled ? choice.environment + (choice.ready ? " (ready)" : "") : choice.environment + " (not enabled)"}
+                    </option>
+                  ))}
                 </select>
+                {disabledEnvironments.length > 0 && (
+                  <div className="pilot-environments-off" role="note" aria-label="Environments you cannot choose">
+                    <ul>{disabledEnvironments.map((choice) => <li key={choice.environment} data-environment={choice.environment}>{choice.environment} is not enabled: {choice.reason}.</li>)}</ul>
+                  </div>
+                )}
                 <button type="button" disabled={serverPath !== "UI" || active} onClick={() => void begin(() => startPreflight(environment))}>
                   {readiness ? COPY.readyRerun : COPY.readyRun}
                 </button>
@@ -774,5 +807,6 @@ export default function PilotWizard(props: PilotWizardProps) {
         />
       )}
     </section>
+    </>
   );
 }

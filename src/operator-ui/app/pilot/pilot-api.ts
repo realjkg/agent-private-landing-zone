@@ -166,3 +166,61 @@ export const startObserve = (sealedPath: string): Promise<PilotReply> => send<Pi
 export const startProposeCleanup = (input: { sealedPath: string; requesterId: string; keyPath: string }): Promise<PilotReply> => send<PilotState>("POST", "/propose-cleanup", input);
 export const startCleanup = (input: { environment: PilotEnvironment; requestPath: string; manifestPath: string; sealedPath: string; proposalPath: string; approvalPaths: string[] }): Promise<PilotReply> => send<PilotState>("POST", "/cleanup", input);
 export const startVerifyCleanup = (proposalPath: string): Promise<PilotReply> => send<PilotState>("POST", "/verify-cleanup", { proposalPath });
+
+// --- deployment paths (GET /pilot/paths; src/release/pilot-paths.ts) ------------------------------------------------------------
+
+/** Who or what a path's blocker waits on (src/release/pilot-paths.ts PathParty). */
+export type PathParty = "OWNER" | "OPERATOR" | "ENGINEERING" | "QUALIFICATION" | "RELEASE_SCOPE";
+export type PathBlocker = { party: PathParty; source: string; text: string };
+/** The three decisions for one environment of the contract's path. `ready` is null when no readiness check has run for it. */
+export type EnvironmentDecision = {
+  environment: PilotEnvironment;
+  authorized: boolean;
+  operations: string[];
+  ready: boolean | null;
+  notReady: { check: string; responsible?: string }[];
+  approved: boolean;
+  requiredApprovals: number;
+  checkedAt: string | null;
+};
+export type DeploymentPath = {
+  cloud: string;
+  engine: string;
+  label: string;
+  inRelease: boolean;
+  liveStatus: string;
+  journeyStatus: string;
+  implemented: boolean;
+  actGate: { id: string; status: string; owner: string; nextAction: string } | null;
+  blockers: PathBlocker[];
+  isContractPath: boolean;
+  decisions?: EnvironmentDecision[];
+};
+export type PathsContract =
+  | { state: "UNKNOWN" }
+  | { state: "DISABLED"; reason: string }
+  | { state: "ENABLED"; provider: string; engine: string; contractSha256: string; killSwitch: boolean };
+export type PathsReport = { label: "RELEASE_RECORDS"; contract: PathsContract; environments: EnvironmentDecision[]; paths: DeploymentPath[] };
+
+const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+const isDecision = (value: unknown): value is EnvironmentDecision => isObject(value) && (value.environment === "DEV" || value.environment === "QA" || value.environment === "PROD") &&
+  typeof value.authorized === "boolean" && (value.ready === null || typeof value.ready === "boolean") && typeof value.approved === "boolean" &&
+  Array.isArray(value.operations) && Array.isArray(value.notReady) && typeof value.requiredApprovals === "number";
+const isPath = (value: unknown): value is DeploymentPath => isObject(value) && typeof value.cloud === "string" && typeof value.engine === "string" &&
+  typeof value.label === "string" && typeof value.inRelease === "boolean" && typeof value.implemented === "boolean" && typeof value.isContractPath === "boolean" &&
+  typeof value.liveStatus === "string" && typeof value.journeyStatus === "string" &&
+  Array.isArray(value.blockers) && value.blockers.every((b) => isObject(b) && typeof b.party === "string" && typeof b.text === "string") &&
+  (value.decisions === undefined || (Array.isArray(value.decisions) && value.decisions.every(isDecision)));
+
+/** True only for a reply with the paths report's shape. Anything else is treated as unavailable, never as readiness. */
+export function isPathsReport(value: unknown): value is PathsReport {
+  return isObject(value) && value.label === "RELEASE_RECORDS" && isObject(value.contract) && typeof value.contract.state === "string" &&
+    Array.isArray(value.environments) && value.environments.every(isDecision) && Array.isArray(value.paths) && value.paths.every(isPath);
+}
+
+/** Read-only: the deployment paths and the readiness checks already run. It starts nothing. */
+export async function fetchPilotPaths(): Promise<PilotReply<PathsReport>> {
+  const reply = await send<unknown>("GET", "/paths");
+  if (!reply.ok) return reply;
+  return isPathsReport(reply.body) ? { ok: true, body: reply.body } : { ok: false, code: "PILOT_PATHS_UNREADABLE", message: "" };
+}

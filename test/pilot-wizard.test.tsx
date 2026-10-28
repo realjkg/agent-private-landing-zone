@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
@@ -383,6 +383,10 @@ describe("step 3 and the confirmation dialogs", () => {
   });
 
   test("an open dialog keeps focus: a step change or a re-sent unlock while it is open never moves focus to the step heading, and focus is inside the dialog in the same commit that shows it", async () => {
+    // The poll is driven by hand, not by waiting on the clock: only the interval timer is faked, so the re-sent state below
+    // arrives when the test fires the next poll, whatever the machine's load (this test used to race the 600 ms poll).
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
     const { fake } = await atSeal();
     const phrase = "acct-1 | store/tfstate/dev.tfstate | default";
     fake.onPost["/seal"] = () => { fake.run = waitingRun("seal", "TARGET", phrase); };
@@ -397,14 +401,18 @@ describe("step 3 and the confirmation dialogs", () => {
     // (happy-dom) refuses focus under inert as a browser does; the attribute is lifted here to stand for a browser without inert
     // support and for the commit in which the dialog mounts, where the heading effect runs before the page is made inert. The
     // heading effect runs for the new step and must leave focus in the dialog either way.
-    expect(document.querySelector("[inert]")).toBeTruthy();
-    document.querySelector("[inert]")!.removeAttribute("inert");
+    // Everything behind the dialog is inert: the wizard and the deployment paths panel above it.
+    const behind = [...document.querySelectorAll("[inert]")];
+    expect(behind.length).toBe(2);
+    expect(behind.some((element) => element.closest('[data-testid="deployment-paths"]'))).toBe(true);
+    behind.forEach((element) => element.removeAttribute("inert"));
     fireEvent.click(screen.getByRole("button", { name: COPY.back, hidden: true }));
     expect(screen.getByRole("heading", { name: STEP_TITLES[1], hidden: true })).toBeTruthy();
     expect(screen.getByRole("dialog")).toBe(dialog);
     expect(document.activeElement).toBe(input);
     // The console re-sends its state (the poll while a run waits): focus stays in the dialog.
     const polls = fake.calls.filter((call) => call.url === "/pilot/state").length;
+    await act(async () => { vi.advanceTimersToNextTimer(); });
     await waitFor(() => expect(fake.calls.filter((call) => call.url === "/pilot/state").length).toBeGreaterThan(polls));
     expect(document.activeElement).toBe(input);
     // After the dialog closes, focus returns to where it was and the next step change moves it to the heading again.
@@ -414,6 +422,7 @@ describe("step 3 and the confirmation dialogs", () => {
     fireEvent.click(screen.getByRole("button", { name: COPY.back }));
     expect(screen.getByRole("heading", { name: STEP_TITLES[0] })).toBeTruthy();
     expect(document.activeElement).toBe(document.getElementById("pilot-step-title"));
+    } finally { vi.useRealTimers(); }
   });
 
   test("the target dialog shows the exact phrase and a copy button, starts empty, and cannot be confirmed by anything but the exact phrase", async () => {
