@@ -7,20 +7,28 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { sealPreview } from "../src/apply/driver.js";
+import { signApproval } from "../src/apply/approval.js";
+import { buildCleanupProposal, signCleanupProposal } from "../src/apply/cleanup-proposal.js";
+import { loadPilotContract } from "../src/apply/contract.js";
+import { runApply, runCleanup, sealPreview } from "../src/apply/driver.js";
 import { codeOf } from "../src/apply/engine.js";
 import { removalTemplateOf } from "../src/apply/engines/cdk.js";
+import { buildLifecycleReport, lifecycleReportProblems } from "../src/apply/lifecycle-report.js";
 import { openNonceStore } from "../src/apply/nonces.js";
+import { loadRunRecords, observeRun, verifyProposalLeftovers, type ObserveDeps } from "../src/apply/observe.js";
+import { loadSealedPlan } from "../src/apply/seal.js";
+import type { PilotContract } from "../src/apply/types.js";
 import { removeTree } from "../src/teardown/driver/cleanup.js";
 import type { ResolvedTarget } from "../src/teardown/driver/types.js";
 import { buildManifest } from "../src/teardown/manifest.js";
 import { captureProjectFiles } from "../src/teardown/snapshot.js";
-import { H, NOW, POLICY, REQUESTER, SOURCE_COMMIT, awsTargetOf, human, writeReviewedContract } from "./helpers/apply-fixtures.js";
+import { H, NOW, POLICY, REQUESTER, SOURCE_COMMIT, approvalFor, awsTargetOf, human, keys, writeReviewedContract } from "./helpers/apply-fixtures.js";
 import { AWS_CLI_VERSION, behaveAws, cdkContractJson, cdkIdentityEnv, forgeCdkQualification, installFakeAws } from "./helpers/cdk-fixtures.js";
 
 // The committed ACT-DEV-1 AWS CDK canary (qualification/aws/act-dev1-cdk-canary, owner decision E3). SYNTHETIC and offline:
-// the committed cdk.out is read as text, and sealed once through the real CDK engine with the FAKE `aws` of the CDK unit tests,
-// which pins the engine's own assembly checks, NOT CloudFormation's behavior. The opt-in run re-synthesizes the app with the
+// the committed cdk.out is read as text, and run once through the whole governed lifecycle (seal, apply, observe, proposal, cleanup,
+// leftovers, lifecycle report) with the real driver and CDK engine and the FAKE `aws` of the CDK unit tests. That pins the product's
+// own checks and dispositions, NOT CloudFormation's behavior. The opt-in run re-synthesizes the app with the
 // pinned packages (ALZ_CDK_CANARY_SYNTH=1, after `npm ci` in the canary folder) and requires the committed bytes.
 
 const ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -142,7 +150,7 @@ test("cleanup may remove the log group: the removal template keeps only the sent
   }
 });
 
-test("the committed cdk.out seals through the real CDK engine (fake aws): exactly two creates, no assembly refusal", async () => {
+test("the committed cdk.out through the whole governed lifecycle (fake aws): two creates; cleanup removes the log group, confirmed gone; the sentinel is held TYPE_UNREVIEWED, so leftovers are INCOMPLETE and the report does not pass", async () => {
   const root = mkdtempSync(join(tmpdir(), "alz-cdk-canary-"));
   const toolDir = mkdtempSync(join(tmpdir(), "alz-cdk-canary-tools-"));
   const previous = { cwd: process.cwd(), key: process.env.AGENTIC_EVIDENCE_KEY };
@@ -151,31 +159,90 @@ test("the committed cdk.out seals through the real CDK engine (fake aws): exactl
     process.chdir(root);
     installFakeAws(toolDir);
     const kill = join(root, "KILL");
-    behaveAws(toolDir, kill, { changesAllAdd: true });
+    // Every template resource is an Add, the removal change set is derived from the templates, and a person protected the stack after create.
+    behaveAws(toolDir, kill, { changesAllAdd: true, diffChanges: true, protectAfterCreate: true });
     const dir = (name: string): string => { const path = join(root, name); mkdirSync(path, { recursive: true }); return path; };
     const vault = dir("qualification");
-    await forgeCdkQualification(vault);
+    // TEST FIXTURE qualification, bound to the canary's stack as the contract's DEV backend.
+    await forgeCdkQualification(vault, undefined, { backend: EXAMPLE_STACK });
     // The contract's DEV backend is the canary's stack name; the fixture's fake account and region.
     const base = cdkContractJson(kill);
-    const contract = { ...base, targets: Object.fromEntries(Object.entries<any>(base.targets).map(([env, t]) => [env, { ...t, backend: EXAMPLE_STACK }])) };
+    const contractJson = { ...base, targets: Object.fromEntries(Object.entries<any>(base.targets).map(([env, t]) => [env, { ...t, backend: EXAMPLE_STACK }])) };
     const contractPath = join(dir("contract"), "act-pilot-contract.json");
-    writeReviewedContract(contractPath, contract);
+    writeReviewedContract(contractPath, contractJson);
     const project = dir("cdk.out");
     cpSync(OUT, project, { recursive: true });
     const target: ResolvedTarget = { account: awsTargetOf("DEV").account, backend: EXAMPLE_STACK, workspace: "default" };
     const resolved = { engineVersion: AWS_CLI_VERSION, providers: [], lockFileSha256: undefined, dependencies: [], inputs: [] };
     const manifest = buildManifest({ engine: "CDK", mode: "PROJECT", target, unitHash: H("1"), files: captureProjectFiles(project), policyVersion: POLICY, ...resolved });
-    const result = await sealPreview({
-      invocation: human(target), environment: "DEV", target, manifest, projectRoot: project, policyVersion: POLICY, resolved, requester: REQUESTER,
-    }, {
-      sourceCommit: SOURCE_COMMIT, contractPath, qualificationDir: vault, evidenceDir: dir("evidence"), nonces: openNonceStore(dir("nonces")),
-      env: cdkIdentityEnv("DEV"), now: () => NOW, scratchParent: dir("scratch"), toolDirs: [toolDir], killPollMs: 40, killGraceMs: 400,
-    });
-    assert.ok(result.ok, JSON.stringify(result));
-    assert.deepEqual(result.sealed.changes, [
+    const evidenceDir = dir("evidence");
+    const scratch = dir("scratch");
+    const deps = {
+      sourceCommit: SOURCE_COMMIT, contractPath, qualificationDir: vault, evidenceDir, nonces: openNonceStore(dir("nonces")),
+      env: cdkIdentityEnv("DEV"), now: () => NOW, scratchParent: scratch, toolDirs: [toolDir], killPollMs: 40, killGraceMs: 400,
+    };
+    const observeDeps: ObserveDeps = { contractPath, evidenceDir, env: cdkIdentityEnv("DEV"), toolDirs: [toolDir], scratchParent: scratch, now: () => new Date(NOW.getTime() + 60_000) };
+
+    // Seal: exactly the two creates.
+    const sealedResult = await sealPreview({ invocation: human(target), environment: "DEV", target, manifest, projectRoot: project, policyVersion: POLICY, resolved, requester: REQUESTER }, deps);
+    assert.ok(sealedResult.ok, JSON.stringify(sealedResult));
+    assert.deepEqual(sealedResult.sealed.changes, [
       { address: "ActDev1", type: "AWS::Logs::LogGroup", action: "CREATE" },
       { address: "RetainedSentinel", type: "AWS::CloudFormation::WaitConditionHandle", action: "CREATE" },
     ]);
+    const loaded = await loadSealedPlan(sealedResult.path);
+    assert.ok(loaded.ok);
+    const sealedPlan = { sealed: loaded.sealed, planBytes: loaded.planBytes };
+
+    // Apply with the DEV approval, then the independent observation.
+    const applied = await runApply({ invocation: human(target), environment: "DEV", target: { ...target }, sealedPlan, manifest, projectRoot: project, approvals: [approvalFor(sealedResult.sealed, "alice")] }, deps);
+    assert.ok(applied.ok, JSON.stringify(applied));
+    const observed = await observeRun(sealedResult.sealed.artifactSha256, observeDeps);
+    assert.ok(observed.ok, JSON.stringify(observed));
+    assert.deepEqual(observed.record.resources.map((r) => [r.address, r.result]), [["ActDev1", "VERIFIED"], ["RetainedSentinel", "UNVERIFIABLE"]]);
+    // The sentinel has no Cloud Control read mapping, so the observation is PARTIAL (which the lifecycle report counts as an observe PASS).
+    assert.equal(observed.record.verdict, "PARTIAL");
+
+    // The proposal, as the CLI builds it: the log group is deleted; the sentinel is held TYPE_UNREVIEWED (not on the reviewed leaf allowlist).
+    const records = await loadRunRecords(sealedResult.sealed.artifactSha256, evidenceDir);
+    assert.ok(records.ok, JSON.stringify(records));
+    const contract = loadPilotContract(contractPath) as PilotContract;
+    const built = buildCleanupProposal({ requesterId: REQUESTER.requesterId, ...records, changes: sealedResult.sealed.changes, channel: "CLI", contract, engineVersion: AWS_CLI_VERSION, env: cdkIdentityEnv("DEV"), now: new Date(NOW.getTime() + 120_000) });
+    assert.ok(built.ok, JSON.stringify(built));
+    assert.deepEqual(built.proposal.deletes.map((d) => [d.address, d.type]), [["ActDev1", "AWS::Logs::LogGroup"]]);
+    assert.deepEqual(built.proposal.excluded.map((x) => [x.address, x.type, x.ownership, x.retainedBy]), [["RetainedSentinel", "AWS::CloudFormation::WaitConditionHandle", "TYPE_UNREVIEWED", "ENVIRONMENT_OWNER"]]);
+    const proposal = signCleanupProposal(built.proposal, REQUESTER.privateKeyPem);
+
+    // The cleanup removes exactly the log group through the removal change set; the stack and the sentinel stay.
+    const cleanupApproval = signApproval({
+      schemaVersion: 1, artifactSha256: proposal.proposalSha256, environment: proposal.environment, target: proposal.target, approverId: "alice",
+      issuedAt: new Date(NOW.getTime() - 5 * 60_000).toISOString(), expiresAt: new Date(NOW.getTime() + 25 * 60_000).toISOString(), nonce: randomBytes(16).toString("hex"),
+    }, keys.alice.priv, "CLEANUP");
+    const cleaned = await runCleanup({ invocation: human(target), environment: "DEV", target: { ...target }, proposal, sealedPlan, manifest, projectRoot: project, approvals: [cleanupApproval] }, deps);
+    assert.ok(cleaned.ok, JSON.stringify(cleaned));
+    assert.equal(cleaned.evidence.outcome, "SUCCEEDED");
+    assert.deepEqual(cleaned.evidence.deletes, ["ActDev1"]);
+
+    // The independent leftover check on today's code: the log group CONFIRMED_DELETED, the sentinel retained as an unreviewed type, so INCOMPLETE.
+    const leftovers = await verifyProposalLeftovers(proposal, observeDeps);
+    assert.ok(leftovers.ok, JSON.stringify(leftovers));
+    assert.deepEqual(leftovers.record.resources.map((r) => [r.address, r.disposition, r.basis]), [
+      ["ActDev1", "CONFIRMED_DELETED", "CLOUD_CONTROL_ABSENT"],
+      ["RetainedSentinel", "INTENTIONALLY_RETAINED", "UNREVIEWED_TYPE"],
+    ]);
+    assert.equal(leftovers.record.disposition, "INCOMPLETE");
+
+    // The lifecycle report: resource cleanup INCOMPLETE and not passed, with the sentinel counted as held for a person's decision.
+    const report = buildLifecycleReport({
+      gateId: "act:aws-cdk", provider: "AWS", engine: "CDK", applyEvidence: applied.evidence, observation: observed.record, proposal, cleanup: cleaned.evidence,
+      leftovers: leftovers.record, live: undefined, now: new Date(NOW.getTime() + 300_000),
+    });
+    assert.equal(report.stages.cleanup.status, "PASS");
+    assert.equal(report.stages.leftovers.status, "INCONCLUSIVE");
+    assert.equal(report.acceptance.resourceCleanup, "INCOMPLETE");
+    assert.deepEqual(report.acceptance.retained.byOwnership, { TYPE_UNREVIEWED: 1 });
+    assert.equal(report.passed, false);
+    assert.deepEqual(lifecycleReportProblems(report), []);
   } finally {
     process.chdir(previous.cwd);
     if (previous.key === undefined) delete process.env.AGENTIC_EVIDENCE_KEY; else process.env.AGENTIC_EVIDENCE_KEY = previous.key;
