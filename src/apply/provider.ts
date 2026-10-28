@@ -25,12 +25,14 @@ export type ProviderBlock = { name?: string; full_name?: string; expressions?: R
 export type ProviderUse = {
   address: string; mode: string; type: string; provider: Pick<ProviderBlock, "name" | "full_name">;
   /**
-   * The configuration's expressions for this use, present only on a use read from the configuration tree, and the values a data
-   * source read, present only on a data-mode use read from the prior state or the planned values. Read in process by the provider
-   * judge (GCP: the project a `google_project` data source names, review N3 of #323) and never recorded.
+   * Read in process by the provider judge and never recorded (GCP: the project a resource or data source names, review N3 of #323
+   * and review N1 of #339). `expressions`: the configuration's, only on a use read from the configuration tree. `values`: a change's
+   * planned values (`after`), a planned use's values, or a data source's read values from the prior state. `unknown`: which planned
+   * values are unknown until apply (a change's `after_unknown`).
    */
   expressions?: Readonly<Record<string, unknown>>;
   values?: Readonly<Record<string, unknown>>;
+  unknown?: Readonly<Record<string, unknown>>;
 };
 
 /** A refusal the identity checks raise; the driver maps it to the apply refusal of the same code. */

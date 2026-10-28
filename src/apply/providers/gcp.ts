@@ -283,11 +283,41 @@ function assertDataSourceProjects(uses: readonly ProviderUse[], target: GcpTarge
 }
 
 /**
+ * The attributes that name the project a managed google resource lives in (review N1 of #339). Every google resource carries its
+ * own project, so the provider block's binding alone does not bind a resource. For each managed use of the google provider: a
+ * configured `project` or `project_id` must be absent (the provider block's, which `assertProviderConfig` requires to be the
+ * contract's constant) or a plain constant equal to the contract's project; a planned value of either must be the contract's
+ * project; and one the plan leaves unknown until apply is refused. Another project is PROVIDER_ACCOUNT_NOT_IN_CONTRACT; an
+ * expression, a value that is not text or an unknown one is PROVIDER_CONFIG_NOT_IN_CONTRACT, because it cannot be judged before the
+ * apply runs. Region and location are not judged here (the canary topic is global; a later reviewed type with a location adds it).
+ */
+const RESOURCE_PROJECT_ATTRIBUTES: readonly string[] = ["project", "project_id"];
+
+function assertResourceProjects(uses: readonly ProviderUse[], target: GcpTarget): void {
+  for (const use of uses) {
+    if (isDataUse(use) || providerIdOf(use.provider) !== GOOGLE_PROVIDER) continue;
+    for (const attribute of RESOURCE_PROJECT_ATTRIBUTES) {
+      if (use.expressions !== undefined && Object.hasOwn(use.expressions, attribute)) {
+        const expression = use.expressions[attribute];
+        const constant = isRecord(expression) && Object.keys(expression).length === 1 ? expression.constant_value : undefined;
+        if (typeof constant !== "string") stop("PROVIDER_CONFIG_NOT_IN_CONTRACT");
+        if (constant !== target.projectId) stop("PROVIDER_ACCOUNT_NOT_IN_CONTRACT");
+      }
+      if (use.unknown !== undefined && use.unknown[attribute] !== undefined && use.unknown[attribute] !== false) stop("PROVIDER_CONFIG_NOT_IN_CONTRACT");
+      if (use.values !== undefined && use.values[attribute] !== undefined && use.values[attribute] !== null) {
+        if (typeof use.values[attribute] !== "string") stop("PROVIDER_CONFIG_NOT_IN_CONTRACT");
+        if (use.values[attribute] !== target.projectId) stop("PROVIDER_ACCOUNT_NOT_IN_CONTRACT");
+      }
+    }
+  }
+}
+
+/**
  * Types of the google provider that run code, or deploy a template or another tool's configuration, at apply or on their own
  * schedule, instead of holding a resource (the same reason the AWS and Azure lists exist, review of #327, N1 and rounds 2 and 3, and
  * the reason Terraform actions and provisioners are refused): one plan row would hide what runs, as whom and where. A managed use is
  * refused (`PROVIDER_TYPE_NOT_ALLOWED`); a data source of one is already outside `GCP_DATA_SOURCES`. Each is in hashicorp/google
- * 8.9.0's schema (a sweep of the full pinned schema, 1392 resource types, checked 2026-10-28). The canary allowlist already refuses
+ * 8.9.0's schema (a sweep of the full pinned schema, 1392 resource types, checked 2026-10-28; seven added by review N2 of #339). The canary allowlist already refuses
  * any type it does not name; this list is defense in depth so a later allowlist can never name one of these.
  */
 export const GCP_DENIED_TYPES: ReadonlySet<string> = new Set([
@@ -314,6 +344,12 @@ export const GCP_DENIED_TYPES: ReadonlySet<string> = new Set([
   "google_os_config_patch_deployment", "google_os_config_os_policy_assignment", "google_os_config_v2_policy_orchestrator",
   "google_os_config_v2_policy_orchestrator_for_folder", "google_os_config_v2_policy_orchestrator_for_organization",
   "google_compute_global_vm_extension_policy", "google_compute_zone_vm_extension_policy", "google_gke_hub_feature", "google_gke_hub_feature_membership",
+  // Review N2 of #339, by this list's own criterion: a Dataproc cluster runs its initialization actions' scripts on every node at
+  // creation; a VM, an instance template's VMs and a Workbench instance run their startup scripts (and Workbench its post-startup
+  // script); a Cloud Scheduler job makes authenticated calls as a service account on its schedule; a Cloud Deploy automation promotes
+  // and deploys releases on its own; a Dataplex data scan runs its rules (SQL) on its schedule, the first at creation when on demand.
+  "google_dataproc_cluster", "google_compute_instance", "google_compute_instance_template", "google_workbench_instance",
+  "google_cloud_scheduler_job", "google_clouddeploy_automation", "google_dataplex_datascan",
 ]);
 /**
  * The schema `GCP_DENIED_TYPES` and `GCP_DATA_SOURCES` were reviewed against, in full: hashicorp/google 8.9.0 (released 2026-10-27).
@@ -327,9 +363,10 @@ export const GCP_DENIED_TYPES_REVIEWED_AGAINST = "hashicorp/google 8.9.0";
  * of anything the plan names, and a use whose provider the plan does not name is refused (review N4 of #305); of the built-in
  * provider only `terraform_data` resources; no managed use of a denied type (`GCP_DENIED_TYPES`, PROVIDER_TYPE_NOT_ALLOWED); only the
  * reviewed data sources (`GCP_DATA_SOURCES`, PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT), each naming the contract's project
- * (`assertDataSourceProjects`). In a google block no attribute of `DENIED_ATTRIBUTE` is set, `default_labels` is set (the unit labels
- * come from it), and a constant `project` is the contract's. An expression for the provider's project is not judged; the runbook says
- * so. `region` and `zone` are not judged.
+ * (`assertDataSourceProjects`); every managed google resource's project, configured or planned, is the contract's
+ * (`assertResourceProjects`); and a google use needs a google provider block. In every google block no attribute of `DENIED_ATTRIBUTE`
+ * is set, `default_labels` is set (the unit labels come from it), and `project` is a plain constant equal to the contract's project
+ * (review N1 of #339: an absent project or an expression is refused). `region` and `zone` are not judged.
  */
 function assertProviderConfig(blocks: readonly ProviderBlock[], target: GcpTarget, uses: readonly ProviderUse[]): void {
   assertBuiltinUses(uses);
@@ -340,6 +377,12 @@ function assertProviderConfig(blocks: readonly ProviderBlock[], target: GcpTarge
     if (id !== BUILTIN_PROVIDER && isDataUse(use) && !GCP_DATA_SOURCES.has(use.type)) stop("PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT");
   }
   assertDataSourceProjects(uses, target);
+  assertResourceProjects(uses, target);
+  // A google use needs a google provider block, whose project and default_labels are judged below (review N1 of #339): with none,
+  // the provider would take its project from the environment and its labels from nowhere the plan shows.
+  if (uses.some((use) => providerIdOf(use.provider) === GOOGLE_PROVIDER) && !blocks.some((block) => providerIdOf(block ?? {}) === GOOGLE_PROVIDER)) {
+    stop("PROVIDER_CONFIG_NOT_IN_CONTRACT");
+  }
   for (const provider of blocks) {
     const id = providerIdOf(provider ?? {});
     if (id === undefined || !ALLOWED_PROVIDERS.includes(id)) stop("PROVIDER_CONFIG_NOT_IN_CONTRACT");
@@ -347,8 +390,12 @@ function assertProviderConfig(blocks: readonly ProviderBlock[], target: GcpTarge
     const expressions = provider.expressions ?? {};
     if (Object.entries(expressions).some(([name, expression]) => DENIED_ATTRIBUTE.test(name) && isSet(expression))) stop("PROVIDER_CONFIG_NOT_IN_CONTRACT");
     if (!isSet(expressions.default_labels)) stop("PROVIDER_CONFIG_NOT_IN_CONTRACT");
-    const project = isRecord(expressions.project) ? expressions.project.constant_value : undefined;
-    if (project !== undefined && project !== null && String(project) !== target.projectId) stop("PROVIDER_ACCOUNT_NOT_IN_CONTRACT");
+    // Every google block, each alias included, names the contract's project as a plain constant (review N1 of #339): an absent
+    // project, an expression or a value that is not text cannot be judged from the plan, so it is refused, never assumed.
+    const project = expressions.project;
+    const constant = isRecord(project) && Object.keys(project).length === 1 ? project.constant_value : undefined;
+    if (typeof constant !== "string") stop("PROVIDER_CONFIG_NOT_IN_CONTRACT");
+    if (constant !== target.projectId) stop("PROVIDER_ACCOUNT_NOT_IN_CONTRACT");
   }
 }
 

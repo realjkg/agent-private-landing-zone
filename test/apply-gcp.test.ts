@@ -361,7 +361,7 @@ test("review N2 and the STATE_WRITE binding: the saved gcs backend is an allowli
 
 const GOOGLE = (expressions: Record<string, unknown> = {}): ProviderBlock => ({
   name: "google", full_name: "registry.terraform.io/hashicorp/google",
-  expressions: { region: { references: ["var.region"] }, default_labels: { references: ["local.unit_labels"] }, ...expressions },
+  expressions: { project: { constant_value: DEV.projectId }, region: { references: ["var.region"] }, default_labels: { references: ["local.unit_labels"] }, ...expressions },
 });
 const use = (type: string, provider: Pick<ProviderBlock, "name" | "full_name">, mode = "managed"): ProviderUse => ({ address: (mode === "data" ? "data." : "") + type + ".x", mode, type, provider });
 const judge = (blocks: ProviderBlock[], uses: ProviderUse[] = []) => codeFrom(() => GCP.assertProviderConfig(blocks, target(DEV), env(), uses));
@@ -370,7 +370,9 @@ test("provider config: hashicorp/google with default_labels and the contract's p
   const googleUse = use("google_pubsub_topic", { name: "google", full_name: "registry.terraform.io/hashicorp/google" });
   assert.equal(judge([GOOGLE()], [googleUse]), "OK");
   assert.equal(judge([GOOGLE({ project: { constant_value: DEV.projectId } })], [googleUse]), "OK");
-  assert.equal(judge([GOOGLE({ project: { references: ["var.project"] }, zone: { constant_value: "us-east1-b" } })]), "OK", "an expression, and the zone, are not judged");
+  assert.equal(judge([GOOGLE({ zone: { constant_value: "us-east1-b" } })]), "OK", "the zone is not judged");
+  // Review N1 of #339: the provider's project is a plain constant, the contract's; an expression or an absent project is refused.
+  assert.equal(judge([GOOGLE({ project: { references: ["var.project"] } })]), "PROVIDER_CONFIG_NOT_IN_CONTRACT", "an expression");
   assert.equal(judge([GOOGLE(), { name: "random", full_name: "registry.terraform.io/hashicorp/random" }]), "OK");
   assert.equal(judge([GOOGLE({ project: { constant_value: QA.projectId } })]), "PROVIDER_ACCOUNT_NOT_IN_CONTRACT");
   for (const [label, block] of [
@@ -386,6 +388,46 @@ test("provider config: hashicorp/google with default_labels and the contract's p
   assert.equal(judge([GOOGLE()], [use("google_pubsub_topic", { name: "google-beta", full_name: "registry.terraform.io/hashicorp/google-beta" })]), "PROVIDER_CONFIG_NOT_IN_CONTRACT", "a google-beta use with no block of its own");
   assert.equal(judge([GOOGLE()], [use("terraform_data", { name: "terraform", full_name: "terraform.io/builtin/terraform" })]), "OK");
   assert.equal(judge([GOOGLE()], [use("terraform_remote_state", { name: "terraform", full_name: "terraform.io/builtin/terraform" }, "data")]), "PROVIDER_BUILTIN_TYPE_NOT_IN_CONTRACT");
+});
+
+test("review N1 of #339: every google provider block and every managed google resource is bound to the contract's project, configured and planned", () => {
+  const google = { name: "google", full_name: "registry.terraform.io/hashicorp/google" };
+  const topic = (extra: Partial<ProviderUse> = {}): ProviderUse => ({ ...use("google_pubsub_topic", google), ...extra });
+  const configured = (project?: unknown): ProviderUse => topic({ expressions: { name: { constant_value: "t" }, ...(project === undefined ? {} : { project }) } });
+  const withoutProject = GOOGLE(); delete withoutProject.expressions!.project;
+  // The provider block: the contract's constant only, in every block and alias.
+  for (const [label, block, code] of [
+    ["provider project as an expression (var.p)", GOOGLE({ project: { references: ["var.p"] } }), "PROVIDER_CONFIG_NOT_IN_CONTRACT"],
+    ["provider project omitted", withoutProject, "PROVIDER_CONFIG_NOT_IN_CONTRACT"],
+    ["provider project constant and a reference", GOOGLE({ project: { constant_value: DEV.projectId, references: ["var.p"] } }), "PROVIDER_CONFIG_NOT_IN_CONTRACT"],
+    ["provider project not text", GOOGLE({ project: { constant_value: 42 } }), "PROVIDER_CONFIG_NOT_IN_CONTRACT"],
+    ["provider project of another project", GOOGLE({ project: { constant_value: "other-proj-123" } }), "PROVIDER_ACCOUNT_NOT_IN_CONTRACT"],
+  ] as const) assert.equal(judge([block], [topic()]), code, label);
+  assert.equal(judge([GOOGLE(), { ...GOOGLE({ project: { constant_value: "other-proj-123" } }), name: "google.x" }], [topic()]), "PROVIDER_ACCOUNT_NOT_IN_CONTRACT", "an alias of another project");
+  assert.equal(judge([GOOGLE(), { ...withoutProject, name: "google.x" }], [topic()]), "PROVIDER_CONFIG_NOT_IN_CONTRACT", "an alias with no project");
+  assert.equal(judge([], [topic()]), "PROVIDER_CONFIG_NOT_IN_CONTRACT", "a google use with no google provider block");
+  // The resource's own project, configured.
+  assert.equal(judge([GOOGLE()], [configured()]), "OK", "omitted: the provider block's constant");
+  assert.equal(judge([GOOGLE()], [configured({ constant_value: DEV.projectId })]), "OK", "the contract's project");
+  for (const [label, project, code] of [
+    ["RESOURCE topic project other constant", { constant_value: "victim-proj-123" }, "PROVIDER_ACCOUNT_NOT_IN_CONTRACT"],
+    ["another spelling", { constant_value: DEV.projectId.toUpperCase() }, "PROVIDER_ACCOUNT_NOT_IN_CONTRACT"],
+    ["RESOURCE topic project var", { references: ["var.p"] }, "PROVIDER_CONFIG_NOT_IN_CONTRACT"],
+    ["a constant and a reference", { constant_value: DEV.projectId, references: ["var.p"] }, "PROVIDER_CONFIG_NOT_IN_CONTRACT"],
+    ["not text", { constant_value: 7 }, "PROVIDER_CONFIG_NOT_IN_CONTRACT"],
+  ] as const) assert.equal(judge([GOOGLE()], [configured(project)]), code, label);
+  assert.equal(judge([GOOGLE()], [topic({ expressions: { project_id: { constant_value: "victim-proj-123" } } })]), "PROVIDER_ACCOUNT_NOT_IN_CONTRACT", "project_id");
+  // The resource's planned project: a change's after, a planned value, and an unknown one.
+  assert.equal(judge([GOOGLE()], [configured(), topic({ values: { name: "t", project: DEV.projectId }, unknown: { id: true, project: false } })]), "OK", "planned as the contract's project");
+  assert.equal(judge([GOOGLE()], [configured(), topic({ values: { name: "t" }, unknown: { id: true } })]), "OK", "no project attribute planned");
+  for (const [label, planned, code] of [
+    ["RESOURCE topic planned project other (VALUES)", { values: { project: "victim-proj-123" } }, "PROVIDER_ACCOUNT_NOT_IN_CONTRACT"],
+    ["planned project_id of another project", { values: { project_id: "victim-proj-123" } }, "PROVIDER_ACCOUNT_NOT_IN_CONTRACT"],
+    ["planned project unknown until apply", { values: { name: "t" }, unknown: { project: true } }, "PROVIDER_CONFIG_NOT_IN_CONTRACT"],
+    ["planned project not text", { values: { project: ["x"] } }, "PROVIDER_CONFIG_NOT_IN_CONTRACT"],
+  ] as const) assert.equal(judge([GOOGLE()], [configured(), topic(planned as Partial<ProviderUse>)]), code, label);
+  // Not google's: another allowed provider's resources carry no project.
+  assert.equal(judge([GOOGLE()], [{ ...use("random_id", { name: "random", full_name: "registry.terraform.io/hashicorp/random" }), values: { project: "x" } }]), "OK", "a random resource is not judged for a project");
 });
 
 test("review N4: a use whose provider the plan does not name is refused, wherever it appears", () => {
@@ -448,6 +490,9 @@ test("GCP_DENIED_TYPES: types that run code or deploy a template at apply are re
     "google_deployment_manager_deployment", "google_config_deployment", "google_cloudfunctions_function", "google_cloudfunctions2_function",
     "google_cloud_run_v2_job", "google_cloudbuild_trigger", "google_composer_environment", "google_dataflow_job", "google_dataflow_flex_template_job",
     "google_dataproc_job", "google_bigquery_job", "google_os_config_patch_deployment", "google_gke_hub_feature",
+    // Review N2 of #339.
+    "google_dataproc_cluster", "google_compute_instance", "google_compute_instance_template", "google_workbench_instance",
+    "google_cloud_scheduler_job", "google_clouddeploy_automation", "google_dataplex_datascan",
   ]) {
     assert.ok(GCP_DENIED_TYPES.has(type), type);
     assert.equal(judge([GOOGLE()], [use(type, google)]), "PROVIDER_TYPE_NOT_ALLOWED", type);
@@ -455,6 +500,7 @@ test("GCP_DENIED_TYPES: types that run code or deploy a template at apply are re
   }
   assert.equal(GCP_DENIED_TYPES_REVIEWED_AGAINST, "hashicorp/google 8.9.0", "re-review the denied types against the new schema when the reviewed version changes");
   for (const type of GCP_DENIED_TYPES) assert.match(type, /^google_[a-z0-9_]+$/, type);
+  assert.equal(GCP_DENIED_TYPES.size, 42, "the reviewed list: 35, and 7 from review N2 of #339; a change is a reviewed change");
   // The canary's own type and ordinary resources are not denied.
   for (const type of ["google_pubsub_topic", "google_storage_bucket", "google_cloud_run_v2_service"]) assert.equal(judge([GOOGLE()], [use(type, google)]), "OK", type);
 });

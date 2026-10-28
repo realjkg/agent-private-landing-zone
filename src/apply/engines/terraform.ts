@@ -297,8 +297,9 @@ const MAX_MODULE_DEPTH = 64;
  * present but not the shape `show -json` documents (a module, a call, a resource or a changes entry that is not an object;
  * `resources`, `child_modules` or `resource_changes` that is not a list; `module_calls` that is not an object) is
  * `PROVIDER_PLAN_UNREADABLE`, because a use that could not be read could be one of the built-in provider. A tree that is
- * absent is simply absent. Addresses and types are read as text only. A configured use carries its expressions and a data source read
- * from the state or planned values its values, for the provider judge in process; nothing from them is recorded.
+ * absent is simply absent. Addresses and types are read as text only. A configured use carries its expressions, a change its planned
+ * values and which are unknown, a planned use its values, and a data source in the prior state its read values, for the provider judge
+ * in process; nothing from them is recorded.
  */
 function providerUsesOf(document: Shown): ProviderUse[] {
   const UNREADABLE = "PROVIDER_PLAN_UNREADABLE";
@@ -310,16 +311,19 @@ function providerUsesOf(document: Shown): ProviderUse[] {
     return { name: key.slice(key.lastIndexOf(":") + 1).split(".")[0] };
   };
   const uses: ProviderUse[] = [];
-  type Read = "CONFIGURATION" | "CHANGES" | "VALUES";
+  type Read = "CONFIGURATION" | "CHANGES" | "PRIOR" | "PLANNED";
   const add = (found: unknown, provider: (entry: Record<string, unknown>) => ProviderUse["provider"], read: Read): void => {
     if (!isPlainRecord(found)) return stop(UNREADABLE);
     const mode = typeof found.mode === "string" ? found.mode : "";
     uses.push({
       address: stripInvisible(typeof found.address === "string" ? found.address : ""), mode,
       type: stripInvisible(typeof found.type === "string" ? found.type : ""), provider: provider(found),
-      // For the provider judge only, in process: a configured use's expressions (absent ones read as none) and a data source's read values.
+      // For the provider judge only, in process: a configured use's expressions (absent ones read as none); a change's planned values
+      // (`after`) and which of them are unknown until apply (`after_unknown`); a planned use's values; and a data source's read values.
       ...(read === "CONFIGURATION" ? { expressions: isPlainRecord(found.expressions) ? found.expressions : {} } : {}),
-      ...(read === "VALUES" && mode === "data" && isPlainRecord(found.values) ? { values: found.values } : {}),
+      ...(read === "CHANGES" && isPlainRecord(found.change) && isPlainRecord(found.change.after) ? { values: found.change.after } : {}),
+      ...(read === "CHANGES" && isPlainRecord(found.change) && isPlainRecord(found.change.after_unknown) ? { unknown: found.change.after_unknown } : {}),
+      ...((read === "PLANNED" || (read === "PRIOR" && mode === "data")) && isPlainRecord(found.values) ? { values: found.values } : {}),
     });
   };
   /** A list that is present must be a list; an object that is present must be an object. Absent is an empty list or object. */
@@ -333,17 +337,17 @@ function providerUsesOf(document: Shown): ProviderUse[] {
     for (const found of listOf(module.resources)) add(found, (entry) => byKey(entry.provider_config_key), "CONFIGURATION");
     for (const call of Object.values(recordOf(module.module_calls))) configured(recordOf(call).module, depth + 1);
   };
-  const valued = (module: unknown, depth: number): void => {
+  const valued = (module: unknown, depth: number, read: "PRIOR" | "PLANNED"): void => {
     if (module === undefined) return;
     if (!isPlainRecord(module)) return stop(UNREADABLE);
     if (depth > MAX_MODULE_DEPTH) return stop("PROVIDER_PLAN_TOO_DEEP");
-    for (const found of listOf(module.resources)) add(found, byName, "VALUES");
-    for (const child of listOf(module.child_modules)) valued(child, depth + 1);
+    for (const found of listOf(module.resources)) add(found, byName, read);
+    for (const child of listOf(module.child_modules)) valued(child, depth + 1, read);
   };
   configured(document.configuration?.root_module, 0);
   for (const found of listOf(document.resource_changes)) add(found, byName, "CHANGES");
-  valued(document.prior_state?.values?.root_module, 0);
-  valued(document.planned_values?.root_module, 0);
+  valued(document.prior_state?.values?.root_module, 0, "PRIOR");
+  valued(document.planned_values?.root_module, 0, "PLANNED");
   return uses;
 }
 

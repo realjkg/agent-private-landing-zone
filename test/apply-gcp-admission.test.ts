@@ -533,7 +533,7 @@ test("hashicorp/google is pinned to the reviewed 8.9.0 with HashiCorp's official
   ] as const) {
     const w = world();
     const refusal = await sealRefusal(w, gcpProject(lock));
-    assert.match(JSON.stringify(refusal), new RegExp(code), label);
+    assert.ok(JSON.stringify(refusal).includes(code), label + ": " + JSON.stringify(refusal));
     assert.ok(callsOf(fakeDir).every((c) => c.args[0] !== "init"), label + ": refused before init");
   }
   // After init, what Terraform actually selected: another google version, google-beta, or another registry host is refused before any plan.
@@ -546,7 +546,7 @@ test("hashicorp/google is pinned to the reviewed 8.9.0 with HashiCorp's official
     const w = world();
     rebehave({ providerSelections: selections });
     const refusal = await sealRefusal(w);
-    assert.match(JSON.stringify(refusal), new RegExp(code), label);
+    assert.ok(JSON.stringify(refusal).includes(code), label + ": " + JSON.stringify(refusal));
     assert.ok(callsOf(fakeDir).every((c) => c.args[0] !== "plan"), label + ": no plan ran");
   }
 });
@@ -580,4 +580,31 @@ test("review N3 of #323 through the seal: a google_project data source naming an
     showDocumentExtra: { prior_state: { values: { root_module: { resources: [{ address: "data.google_project.this", mode: "data", type: "google_project", name: "this", provider_name: GOOGLE, values: { project_id: "alz-other-project", number: "1" } }] } } } },
   });
   assert.ok((await sealRefusal(w)).message.includes("(PROVIDER_ACCOUNT_NOT_IN_CONTRACT)"));
+});
+
+test("review N1 of #339 through the seal: a topic planned in another project, unknown until apply, or configured by an expression, and a provider block without the contract's constant project, seal nothing", async () => {
+  const topicIn = (after: Record<string, unknown>, afterUnknown: Record<string, unknown> = {}) =>
+    [{ ...created("google_pubsub_topic.unit", "google_pubsub_topic"), change: { actions: ["create"], before: null, after: { name: "x", ...after }, after_unknown: afterUnknown } }];
+  const configured = (project: unknown) => ({
+    showConfigurationExtra: { root_module: { resources: [{ address: "google_pubsub_topic.unit", mode: "managed", type: "google_pubsub_topic", name: "unit", provider_config_key: "google", expressions: { name: { constant_value: "alz-unit-topic" }, project } }] } },
+  });
+  // The control: planned in the contract's project, configured with its constant.
+  const ok = world();
+  rebehave({ showResources: topicIn({ project: PROJECT }, { project: false }), ...configured({ constant_value: PROJECT }) });
+  const p = gcpProject();
+  const sealed = await sealPreview({ invocation: human(DEV), environment: "DEV", target: DEV, manifest: p.manifest, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved, requester: REQUESTER }, ok.deps);
+  assert.ok(sealed.ok, JSON.stringify(sealed));
+  for (const [label, behavior, code] of [
+    ["planned in another project", { showResources: topicIn({ project: "victim-proj-123" }) }, "PROVIDER_ACCOUNT_NOT_IN_CONTRACT"],
+    ["planned project unknown until apply", { showResources: topicIn({}, { project: true }) }, "PROVIDER_CONFIG_NOT_IN_CONTRACT"],
+    ["configured in another project", configured({ constant_value: "victim-proj-123" }), "PROVIDER_ACCOUNT_NOT_IN_CONTRACT"],
+    ["configured by an expression", configured({ references: ["var.p"] }), "PROVIDER_CONFIG_NOT_IN_CONTRACT"],
+    ["a provider block whose project is an expression", { showProviderConfig: { google: { ...PROVIDER_CONFIG.google, expressions: { ...PROVIDER_CONFIG.google.expressions, project: { references: ["var.p"] } } } } }, "PROVIDER_CONFIG_NOT_IN_CONTRACT"],
+  ] as const) {
+    const w = world();
+    rebehave(behavior as Behavior);
+    const refusal = await sealRefusal(w);
+    assert.ok(refusal.message.includes("(" + code + ")"), label + ": " + JSON.stringify(refusal));
+    assert.ok(!refusal.message.includes("victim-proj-123"), label + ": the refusal names the code, never the value");
+  }
 });
