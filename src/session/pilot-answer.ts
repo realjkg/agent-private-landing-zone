@@ -196,7 +196,7 @@ const CONTRACT = /\b(?:edit|change|modify|update|write|rewrite|add|remove|delete
 /** The owner's pilot controls, named in any form ("flip the kill switch", "is the kill switch on?", "approval history please"). */
 const PILOT_TERM = "(?:pilot|act|contract|apply|approv\\w*)";
 const PILOT_AUTHORITY = new RegExp(
-  "\\b(?:kill ?-?switch|approver allow ?-?list|pilot approvers?|who (?:are|is) the approvers?|approvals? (?:history|log|list|record|records|ledger|status)" +
+  "\\b(?:kill ?-?switch|approver allow ?-?list|pilot approvers?|who (?:are|is) the approvers?|approvals? (?:history|log|list|record|records|ledger|status(?! of (?:the |my |this )?(?:run|apply|pilot|cleanup|plan)\\b))" +
     "|approval ledger|authori[sz]e (?:entry|list)|pilot contract|act-pilot-contract|act (?:switch|toggle|flag)|(?:add|remove|put) me (?:to|on|from|off) the allow ?-?list)\\b" +
     // A bare "allowlist" or "approver" is a pilot control only beside a pilot word; "the ip allowlist in the design" is design work.
     "|\\b(?:allow ?-?list|approvers?)\\b.{0,30}\\b" + PILOT_TERM + "\\b|\\b" + PILOT_TERM + "\\b.{0,30}\\b(?:allow ?-?list|approvers?)\\b",

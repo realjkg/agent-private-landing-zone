@@ -545,6 +545,25 @@ test("review round 5: main's gate runs first; a secret, exfiltration or override
   assert.equal(decidePilotTurn("make me an approver", false).kind, "HANDOFF");
 });
 
+test("review N12: polite read questions about the apply or cleanup are reads; imperatives and authority wording stay refused", () => {
+  for (const [phrase, query] of [
+    ["can you show why the apply failed?", "PILOT_FAILURE"],
+    ["can you tell me the status of the apply?", "PILOT_STATUS"],
+    ["status of the cleanup please", "PILOT_STATUS"],
+    ["show the approval status of run abc123", "PILOT_STATUS"],
+  ] as const) {
+    for (const context of [false, true]) assert.deepEqual(decidePilotTurn(phrase, context), { kind: "READ", query }, phrase + (context ? " (in session)" : ""));
+  }
+  for (const context of [false, true]) {
+    assert.deepEqual(decidePilotTurn("approve it for me", context), { kind: "HANDOFF", handoff: "APPROVE" });
+    assert.deepEqual(decidePilotTurn("apply it", context), { kind: "HANDOFF", handoff: "APPLY" });
+    assert.deepEqual(decidePilotTurn("make me an approver", context), { kind: "HANDOFF", handoff: "CONTRACT" });
+    assert.deepEqual(decidePilotTurn("turn ACT on", context), { kind: "HANDOFF", handoff: "CONTRACT" });
+    assert.deepEqual(decidePilotTurn("approval status", context), { kind: "HANDOFF", handoff: "CONTRACT" });
+    assert.deepEqual(decidePilotTurn("use openai to explain the status of the apply", context), { kind: "HANDOFF", handoff: "HOSTED_INFERENCE" });
+  }
+});
+
 test("attempts to make the model approve, apply, clean up, edit the contract or reach hosted inference are refused with the person's step", () => {
   const cases: Array<[string, string, RegExp]> = [
     ["approve the plan for me", "APPROVE", /\.\/alz apply approve --bundle REVIEW_BUNDLE\.json --key YOUR_APPROVER_KEY\.pem --approver YOUR_ID/],
