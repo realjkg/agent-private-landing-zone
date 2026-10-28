@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { PROVIDERS, PROVIDER_HELP, STAGES, STAGE_HELP, type DeploymentStage, type LandingProvider } from "../../../onboarding/plan.js";
-import { fetchPilotPaths, hasPilotToken, type PathsReport, type PilotEnvironment } from "../pilot/pilot-api";
+import { hasPilotToken, type PathsReport, type PilotEnvironment, type PilotReply } from "../pilot/pilot-api";
+import { usePathsLoader, usePathsRefresh } from "../pilot/DeploymentPaths";
 import { orderByReadiness, orderEnvironments } from "../pilot/readiness-order";
 import { MockBoundaryLab } from "./MockBoundaryLab";
 
@@ -30,13 +31,16 @@ export function DeploymentContext() {
   const [stage, setStage] = useState<DeploymentStage>("development");
   const [provider, setProvider] = useState<LandingProvider>("aws");
   const [paths, setPaths] = useState<PathsReport | null>(null);
-  useEffect(() => {
-    // Read-only, and only with the pilot session already unlocked on this page; without it the order stays as it is.
-    if (!hasPilotToken()) return undefined;
-    let live = true;
-    void fetchPilotPaths().then((reply) => { if (live && reply.ok) setPaths(reply.body); });
-    return () => { live = false; };
-  }, []);
+  // Only the latest request's reply is applied, and nothing after this view unmounts (usePathsLoader).
+  const loadPaths = usePathsLoader(useCallback((reply: PilotReply<PathsReport>) => { if (reply.ok) setPaths(reply.body); }, []));
+  const load = useCallback(() => {
+    // Read-only, and only with the pilot session unlocked on this page; without it the order stays as it is. Checked at each
+    // trigger, so an unlock after this view opened is followed at the next return to the page.
+    if (hasPilotToken()) loadPaths();
+  }, [loadPaths]);
+  useEffect(() => { load(); }, [load]);
+  // Read again when the person comes back to the page, so the order does not keep a readiness that has since changed.
+  usePathsRefresh(load, true, null);
   const order = readinessOrder(paths);
   const stagePrompt = stage === "production"
     ? "Production requires dedicated identity, an approved inventory baseline, independent review, verified recovery and formal promotion."

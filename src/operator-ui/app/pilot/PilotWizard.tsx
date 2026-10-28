@@ -4,11 +4,11 @@ import type { ExperienceLevel } from "../../experience-level.js";
 import { PilotDialog } from "./PilotDialog";
 import { ActDev1Setup } from "./ActDev1Setup";
 import CleanupStep, { CleanupList } from "./CleanupStep";
-import { DeploymentPaths, type PathsLoad } from "./DeploymentPaths";
+import { DeploymentPaths, usePathsLoader, usePathsRefresh, type PathsLoad } from "./DeploymentPaths";
 import { checkedTime, orderEnvironments } from "./readiness-order";
 import {
-  answerDialog, cancelDialog, choosePath, fetchPilotPaths, fetchPilotState, forgetPilotToken, loadCleanupReview, loadReview, startApply, startApprove, startPreflight, startPrepare, startSeal, setPilotToken, startOver,
-  type CleanupSummary, type PilotEnvironment, type PilotPath, type PilotReply, type PilotRun, type PilotDecisions, type PilotState, type PreflightCheck, type PreparedFiles, type PrepareStop, type ReviewSummary, type RunResult,
+  answerDialog, cancelDialog, choosePath, fetchPilotState, forgetPilotToken, loadCleanupReview, loadReview, startApply, startApprove, startPreflight, startPrepare, startSeal, setPilotToken, startOver,
+  type CleanupSummary, type PilotEnvironment, type PathsReport, type PilotPath, type PilotReply, type PilotRun, type PilotDecisions, type PilotState, type PreflightCheck, type PreparedFiles, type PrepareStop, type ReviewSummary, type RunResult,
 } from "./pilot-api";
 import {
   APPROVER_STEPS, BLOCKED, CLEANUP_CLI_COMMANDS, CLI_COMMANDS, COPY, RESULT_COPY, STEP_TITLES, SUPPORT_NOTE, actionWord, changeNotes, classifyResult, describeCheck, describeCounts, dialogCopy, reasonFor,
@@ -283,12 +283,17 @@ export default function PilotWizard(props: PilotWizardProps) {
   const refresh = useCallback(async () => { take(await fetchPilotState()); }, [take]);
   useEffect(() => { void refresh(); }, [refresh]);
 
-  // The deployment paths (read-only): loaded once the session is unlocked and again after each readiness check.
-  const loadPaths = useCallback(async () => {
-    const reply = await fetchPilotPaths();
+  // The deployment paths (read-only): loaded once the session is unlocked, again after each readiness check (forced), and when
+  // the person returns to the page or on the interval. Only the latest request's reply is applied. A refused session token means
+  // the console no longer knows this page: the state is read again, which locks the page and so stops the refresh until unlocked.
+  const loadPaths = usePathsLoader(useCallback((reply: PilotReply<PathsReport>) => {
     setPathsLoad(reply.ok ? { status: "ready", report: reply.body } : { status: "error" });
-  }, []);
-  useEffect(() => { if (unlocked) void loadPaths(); }, [unlocked, loadPaths]);
+    if (!reply.ok && reply.code === "PILOT_TOKEN_REQUIRED") void refresh();
+  }, [refresh]));
+  useEffect(() => { if (unlocked) loadPaths(true); }, [unlocked, loadPaths]);
+  // An open page follows the records without a reload: a kill switch or a rules change shows on return or within the interval.
+  const reloadPaths = useCallback(() => { loadPaths(); }, [loadPaths]);
+  usePathsRefresh(reloadPaths, unlocked);
 
   // Poll only while something is running or waiting for the person.
   useEffect(() => {
@@ -326,7 +331,7 @@ export default function PilotWizard(props: PilotWizardProps) {
       const data = result.data as { ready?: boolean; checks?: PreflightCheck[]; decisions?: PilotDecisions } | undefined;
       setReadiness({ environment, ready: result.exit === 0 && data?.ready === true, checks: Array.isArray(data?.checks) ? data.checks : [],
         ...(data?.decisions && Array.isArray(data.decisions.authorized) && Array.isArray(data.decisions.approved) ? { decisions: data.decisions } : {}) });
-      void loadPaths();
+      loadPaths(true);
     } else if (run.step === "prepare") {
       const data = result.exit === 0 ? result.data as PreparedFiles | undefined : undefined;
       setPrepared(data ?? null);

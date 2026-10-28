@@ -98,7 +98,7 @@ test("the owner's decision of 2026-10-28 drops the brownfield preview gates: eac
     "preview:terraform-azure-brownfield": /E1 makes APPLY seals create-only/,
     "preview:cdk-aws-brownfield": /E1 makes APPLY seals create-only/,
     "preview:bicep-azure-brownfield": /E1 makes APPLY seals create-only/,
-    "preview:terraform-gcp-brownfield": /GCP is out of this release/,
+    "preview:terraform-gcp-brownfield": /GCP brownfield preview is dropped from this release.*GCP Terraform ACT and GCP API-native ACT are in scope for this DEV release/,
   };
   const excludedGate = (gate: string) => shippedStatus.gates.find((x) => x.gate === gate)!;
   const template = excludedGate("preview:opentofu-aws-brownfield");
@@ -122,11 +122,12 @@ test("the owner's decision of 2026-10-28 moves the six pillar gates to v1.1: eac
     const exclusion = shippedScope.outOfScope.find((x) => x.gate === gate);
     assert.ok(exclusion, gate);
     assert.equal(exclusion.reason, "Moved to v1.1 by the owner on 2026-10-28: requires a deployed greenfield landing zone (#39).", gate);
-    assert.deepEqual(excludedGate(gate), { ...template, gate }, gate + ": the same fields as the existing exclusions");
+    assert.deepEqual(excludedGate(gate), { ...template, gate, invalidatedBy: ["the owner returns the gate to the release scope"] },
+      gate + ": the same fields as the existing exclusions, with a gate (not a path) returning to the scope");
     assert.ok(statusProblems(withEntry(gate, { status: "BLOCKED", nextAction: "Measure this pillar on a deployed environment." }), { scope: shippedScope, journeys })
       .some((x) => x.includes(gate) && x.includes("excludes this gate")), gate);
   }
-  assert.ok(!shippedScope.outOfScope.some((x) => x.gate === "gcp-provider"), "GCP stays in scope to support greenfield");
+  assert.ok(!shippedScope.outOfScope.some((x) => x.gate === "gcp-provider"), "gcp-provider stays required: GCP Terraform and GCP API-native ACT are in scope (#39, 6481421924)");
   assert.notEqual(excludedGate("gcp-provider").status, "OUT_OF_SCOPE");
   assert.ok(statusProblems(withEntry("gcp-provider", { status: "OUT_OF_SCOPE" }), { scope: shippedScope, journeys })
     .some((x) => x.includes("gcp-provider") && x.includes("needs the owner's scope")));
