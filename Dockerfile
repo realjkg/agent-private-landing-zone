@@ -36,6 +36,9 @@ COPY docs/ ./docs/
 # The bootstrap tests (discovery-scope, bootstrap-azure, bootstrap-gcp) read the bootstrap packages as text. Test stage
 # only; .dockerignore keeps local state, tfvars and .terraform out of the build context.
 COPY bootstrap/ ./bootstrap/
+# The canary tests (act-dev1-cdk-canary, act-dev1-azure-canary, act-dev1-bicep-canary) read the committed canaries under
+# qualification/ as text. Test stage only; .dockerignore keeps a canary's local node_modules and .terraform out of the context.
+COPY qualification/ ./qualification/
 COPY alz ./alz
 COPY .github/workflows/model-qualification.yml ./.github/workflows/model-qualification.yml
 COPY .github/workflows/model-production-qualification.yml ./.github/workflows/model-production-qualification.yml

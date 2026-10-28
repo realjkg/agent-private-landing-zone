@@ -26,7 +26,7 @@ def build(account,group,owner):
          "Action":["logs:CreateLogGroup","logs:TagResource"],
          "Resource":arn,
          "Condition":{"StringEquals":{"aws:RequestedRegion":"us-east-2",**tags},
-                      "ForAllValues:StringEquals":{"aws:TagKeys":["environment","managed-by","purpose","owner"]}}},
+                      "ForAllValues:StringEquals":{"aws:TagKeys":["environment","managed-by","purpose","owner","alz-managed-by","alz-unit","alz-build"]}}},
         {"Sid":"AllowCanaryRetentionAndReadback","Effect":"Allow",
          "Action":["logs:PutRetentionPolicy","logs:ListTagsForResource"],
          "Resource":arn,
