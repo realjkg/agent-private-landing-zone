@@ -8,6 +8,7 @@ import test from "node:test";
 import { consumeApprovals, signApproval } from "../src/apply/approval.js";
 import { buildCleanupProposal, protectedDeletionIn, signCleanupProposal, verifyCleanupProposal, type CleanupProposal } from "../src/apply/cleanup-proposal.js";
 import { CLEANUP_SUFFIX, authorizeContract, loadPilotContract, pilotContractSha256, pilotTargetSha256, targetMoved } from "../src/apply/contract.js";
+import { AZURE_DENIED_TYPES } from "../src/apply/providers/azure.js";
 import { cleanupScopeProblem, runApply, runCleanup, sealPreview, type ApplyDeps, type ApplyRequest } from "../src/apply/driver.js";
 import { readCleanupEvidence } from "../src/apply/ledger.js";
 import { loadRunRecords, observeRun, verifyProposalLeftovers, type ObserveDeps } from "../src/apply/observe.js";
@@ -161,13 +162,17 @@ const cleanup = (w: World, run: Awaited<ReturnType<typeof proposed>>, approvals:
 }, w.deps);
 
 /**
- * Review of #327, B2. This release admits neither azapi nor azuread (`PROVIDER_NOT_ADMITTED`), so their objects reach the cleanup
- * as STATE DATA only (the classifier's input: `stateResources`), never as a sealed create: `admitted` drops them from what the seal
- * plans. The classifier reads protection before plan membership, so they are kept by the same rule. A destroy plan that names one is
- * refused by the plan judge first, with nothing destroyed and no approval consumed; for such an address the policy check's own
- * refusal is asserted on `protectedDeletionIn`, the function the driver runs next, with this run's blueprint and the driver's words.
+ * Review of #327, B2 and round 2 B1. This release admits neither azapi nor azuread (`PROVIDER_NOT_ADMITTED`) nor a template
+ * deployment (`PROVIDER_TYPE_NOT_ALLOWED`, `AZURE_DENIED_TYPES`), so their objects reach the cleanup as STATE DATA only (the
+ * classifier's input: `stateResources`), never as a sealed create: `admitted` drops them from what the seal plans. The classifier
+ * reads protection before plan membership, so they are kept by the same rule. A destroy plan that names one is refused by the plan
+ * judge first (`TARGET_NOT_IN_CONTRACT`, the judge's code in the message), with nothing destroyed and no approval consumed; for
+ * such an address the policy check's own refusal is asserted on `protectedDeletionIn`, the function the driver runs next, with this
+ * run's blueprint and the driver's words.
  */
-const notAdmitted = (type: string): boolean => /^(azapi|azuread)_/.test(type);
+const judgeCodeOf = (type: string): string | undefined =>
+  /^(azapi|azuread)_/.test(type) ? "PROVIDER_NOT_ADMITTED" : AZURE_DENIED_TYPES.has(type) ? "PROVIDER_TYPE_NOT_ALLOWED" : undefined;
+const notAdmitted = (type: string): boolean => judgeCodeOf(type) !== undefined;
 const admitted = <T extends { type?: string }>(items: readonly T[]): T[] => items.filter((item) => !notAdmitted(item.type ?? ""));
 async function destroyPlanRefused(w: World, run: Awaited<ReturnType<typeof proposed>>, approvals: SignedApproval[], show: { type?: string }[], state: unknown[], address: string, type: string, pattern: RegExp): Promise<{ ok: boolean }> {
   behave({ showResources: admitted(show), stateResources: state, destroyExtra: [{ address, type, change: { actions: ["delete"], before: {}, after: null } }] });
@@ -177,8 +182,8 @@ async function destroyPlanRefused(w: World, run: Awaited<ReturnType<typeof propo
     assert.match((taken as { message: string }).message, pattern, address);
     return taken;
   }
-  assert.equal(taken.ok, false, address);
-  assert.match((taken as { message: string }).message, /PROVIDER_NOT_ADMITTED/, address + ": the plan judge refuses the destroy plan first");
+  refused(taken, "TARGET_NOT_IN_CONTRACT");
+  assert.match((taken as { message: string }).message, new RegExp("\\(" + judgeCodeOf(type)! + "\\)\\. Nothing was destroyed and no approval was consumed"), address + ": the plan judge refuses the destroy plan first, by its own code");
   const policy = protectedDeletionIn([{ address, type, action: "DELETE" }], run.records.blueprint.blueprint.entries, loadPilotContract(fixtureContractPath) as PilotContract, w.deps.env!,
     { account: run.proposal.target.account, addresses: new Set(run.proposal.deletes.map((d) => d.address)) });
   assert.ok(policy, address + ": the policy check refuses it too");
@@ -952,8 +957,8 @@ test("ARM ids are classified by position (review 6410149770, B3): an authorizati
     const taken = await cleanup(w, run, [cleanupApproval(run.proposal, "bob")]);
     // Review of #327, B2: azapi is not admitted, so the plan judge refuses this destroy plan first, before the scope check; the scope
     // check's own refusal of the unlisted dependent is asserted on `cleanupScopeProblem`, the function the driver runs next.
-    assert.equal(taken.ok, false, label);
-    assert.match((taken as { message: string }).message, /PROVIDER_NOT_ADMITTED/, label);
+    refused(taken, "TARGET_NOT_IN_CONTRACT");
+    assert.match((taken as { message: string }).message, /does not admit \(azure\/azapi or hashicorp\/azuread\) \(PROVIDER_NOT_ADMITTED\)\. Nothing was destroyed and no approval was consumed/, label);
     const scope = cleanupScopeProblem([...run.proposal.deletes.map((d) => ({ address: d.address, type: d.type, action: "DELETE" as const })), { address: "azapi_resource.odd", type: "azapi_resource", action: "DELETE" as const }],
       run.proposal.deletes.map((d) => d.address));
     assert.match(scope + " Nothing was destroyed and no approval was consumed.", /the proposal does not list \(azapi_resource\.odd\).*Nothing was destroyed and no approval was consumed/, label);

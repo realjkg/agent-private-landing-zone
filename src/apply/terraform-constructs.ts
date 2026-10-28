@@ -62,6 +62,22 @@ export const sourceRuleHint = (code: string): string =>
     ? " The rule is lexical: the word may be in a comment or a string, which is refused too; rename it (docs/act-pilot-apply.md, \"Provisioners, actions and ephemeral resources\")."
     : code === CONSTRUCTS_DUPLICATE_KEY ? " A .tf.json object repeats a key, which Terraform would read as two blocks; write each block once." : "";
 
+/**
+ * What the plan judge's own refusal means, for the driver to surface at apply and cleanup instead of a generic engine failure
+ * (review of #327, round 2, N2). Provider refusals are the contract's target (`TARGET_NOT_IN_CONTRACT`), as every
+ * `*_NOT_IN_CONTRACT` code already is; a refused construct is an invalid artifact (`ARTIFACT_INVALID`), as at seal. Undefined for any
+ * other code. Fails closed either way: the caller refuses before anything runs or is consumed.
+ */
+export function planJudgeRefusal(code: string): { refusal: "TARGET_NOT_IN_CONTRACT" | "ARTIFACT_INVALID"; message: string } | undefined {
+  const said = (refusal: "TARGET_NOT_IN_CONTRACT" | "ARTIFACT_INVALID", why: string) => ({ refusal, message: why + " (" + code + ")." + sourceRuleHint(code) });
+  if (code === "PROVIDER_NOT_ADMITTED") return said("TARGET_NOT_IN_CONTRACT", "The plan uses a provider this release does not admit (azure/azapi or hashicorp/azuread)");
+  if (code === "PROVIDER_TYPE_NOT_ALLOWED") return said("TARGET_NOT_IN_CONTRACT", "The plan uses a resource type that runs code or deploys a template instead of holding a resource, which the pilot refuses");
+  if ([PROVISIONER_NOT_ALLOWED, ACTION_NOT_ALLOWED, EPHEMERAL_NOT_ALLOWED, PROVISIONER_WORD_IN_SOURCE, EPHEMERAL_WORD_IN_SOURCE, CONSTRUCTS_DUPLICATE_KEY, CONSTRUCTS_UNREADABLE, CONSTRUCTS_TOO_DEEP].includes(code)) {
+    return said("ARTIFACT_INVALID", "The project uses a Terraform construct the pilot refuses (a provisioner, an action, an ephemeral resource, or a .tf.json file it cannot read exactly)");
+  }
+  return undefined;
+}
+
 /** Module nesting followed, as the provider walker does; past it the configuration is refused, never read partially. */
 const MAX_DEPTH = 64;
 

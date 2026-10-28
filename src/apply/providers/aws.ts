@@ -3,6 +3,7 @@ import { TOKEN_FILE } from "../constants.js";
 import { stop } from "../engine.js";
 import type { ProviderBlock, ProviderSpec, ProviderUse } from "../provider.js";
 import { KEY_SEGMENT, ambientRefusal, isRecord, pickIdentityValue } from "./shared.js";
+import { awsContainerFamilyOf } from "../../observe/aws-containers.js";
 
 /**
  * Everything the pilot knows about AWS with the S3 backend (docs/act-pilot-apply.md,
@@ -158,12 +159,19 @@ export const AWS_DATA_SOURCES: ReadonlySet<string> = new Set([
 ]);
 const isDataUse = (use: ProviderUse): boolean => use.mode !== "managed" || DATA_ADDRESS.test(use.address);
 /**
- * Types of an allowed provider that run code instead of holding a resource (review of #327, N1; the same reason Terraform actions
+ * Types of an allowed provider that run code or deploy a template instead of holding a resource (review of #327, N1 and round 2 B1; the same reason Terraform actions
  * and provisioners are refused): `aws_lambda_invocation` invokes a function at apply, as APPLY, and `aws_ssm_association` runs a
  * document (commands) on instances. Both are in hashicorp/aws 6.68.0's schema (checked 2026-10-27). A managed use is refused
  * (`PROVIDER_TYPE_NOT_ALLOWED`); a data source of the first is refused as outside `AWS_DATA_SOURCES`.
  */
-export const AWS_DENIED_TYPES: ReadonlySet<string> = new Set(["aws_lambda_invocation", "aws_ssm_association"]);
+export const AWS_DENIED_TYPES: ReadonlySet<string> = new Set([
+  "aws_lambda_invocation", "aws_ssm_association",
+  // Template deployments (review of #327, round 2, B1): one plan row hides a whole CloudFormation template, its custom resources
+  // and, for stack sets, other accounts and regions, none of it in the change list; a Service Catalog product provisions one the
+  // same way. All five are in hashicorp/aws 6.68.0's schema (checked 2026-10-28). The CDK engine is separate and has its own judge.
+  "aws_cloudformation_stack", "aws_cloudformation_stack_set", "aws_cloudformation_stack_set_instance", "aws_cloudformation_stack_instances",
+  "aws_servicecatalog_provisioned_product",
+]);
 /**
  * Every use's provider is an allowed one, no managed use is of a denied type (`AWS_DENIED_TYPES`), and a use whose provider the plan
  * does not name is refused (review N2 of #320: a resource
@@ -173,7 +181,9 @@ function assertUses(uses: readonly ProviderUse[]): void {
   for (const use of uses) {
     const id = providerIdOf(use.provider);
     if (id === undefined || !ALLOWED_PROVIDERS.includes(id)) stop("PROVIDER_CONFIG_NOT_IN_CONTRACT");
-    if (!isDataUse(use) && AWS_DENIED_TYPES.has(use.type)) stop("PROVIDER_TYPE_NOT_ALLOWED");
+    // And every stack container family the cleanup already keeps (../../observe/aws-containers.ts): one plan row that deploys a
+    // template (a SAR application, a SageMaker project, Proton, Elastic Beanstalk, Quick Setup, DataZone, Control Tower).
+    if (!isDataUse(use) && (AWS_DENIED_TYPES.has(use.type) || awsContainerFamilyOf(use.type) !== undefined)) stop("PROVIDER_TYPE_NOT_ALLOWED");
     if (id !== BUILTIN_PROVIDER && isDataUse(use) && !AWS_DATA_SOURCES.has(use.type)) stop("PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT");
   }
 }

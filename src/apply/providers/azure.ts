@@ -151,7 +151,7 @@ const ALLOWED_PROVIDERS: readonly string[] = [AZURERM_PROVIDER, BUILTIN_PROVIDER
  */
 const NOT_ADMITTED_PROVIDERS: readonly string[] = ["registry.terraform.io/azure/azapi", HASHICORP + "azuread"];
 /**
- * Types of an allowed provider that run code instead of holding a resource (review of #327, N1; the same reason Terraform actions
+ * Types of an allowed provider that run code or deploy a template instead of holding a resource (review of #327, N1 and round 2 B1; the same reason Terraform actions
  * and provisioners are refused): a VM, scale set, Arc machine or Azure Stack HCI extension (CustomScript) and a VM run command
  * execute commands on the machine, and a deployment script runs a script in a container, at apply. All are in hashicorp/azurerm
  * 4.81.0's schema (checked 2026-10-27). Refused in any mode (`PROVIDER_TYPE_NOT_ALLOWED`).
@@ -159,6 +159,10 @@ const NOT_ADMITTED_PROVIDERS: readonly string[] = ["registry.terraform.io/azure/
 export const AZURE_DENIED_TYPES: ReadonlySet<string> = new Set([
   "azurerm_virtual_machine_extension", "azurerm_virtual_machine_scale_set_extension", "azurerm_virtual_machine_run_command", "azurerm_arc_machine_extension",
   "azurerm_stack_hci_extension", "azurerm_resource_deployment_script_azure_cli", "azurerm_resource_deployment_script_azure_power_shell",
+  // Template deployments (review of #327, round 2, B1): one plan row hides arbitrary ARM content, deployment scripts and resources
+  // in other subscriptions, none of it in the change list. All four are in hashicorp/azurerm 4.81.0's schema (checked 2026-10-28).
+  "azurerm_resource_group_template_deployment", "azurerm_subscription_template_deployment", "azurerm_management_group_template_deployment",
+  "azurerm_tenant_template_deployment",
 ]);
 const BUILTIN_ALLOWED_TYPE = "terraform_data";
 const BUILTIN_TYPE = /^terraform_/;

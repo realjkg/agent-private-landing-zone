@@ -385,6 +385,9 @@ for (const provider of PROVIDERS) {
       const result = await h.applyWith(p, sealed.path, approvals);
       assert.equal(result.ok, false, label);
       assert.match((result as { message: string }).message, new RegExp(code), label);
+      // Round 2 N2 (review of #327): the judge's own refusal surfaces, not a generic "could not start".
+      assert.equal((result as { code: string }).code, "ARTIFACT_INVALID", label);
+      assert.match((result as { message: string }).message, /Terraform construct the pilot refuses/, label);
       assert.equal(h.applies(), before, "no apply ran: " + label);
       assert.deepEqual(readdirSync(h.dirs.evidence), [], "nothing recorded: " + label);
       // Nothing was spent: the same approvals apply once the plan is clean again.

@@ -145,19 +145,24 @@ test("RB2: every Azure use is judged against the provider allowlist by exact sou
   assert.equal(judge([], [{ ...azurerm, expressions: { subscription_id: { constant_value: "00000000-0000-0000-0000-00000000dead" } } }]), "PROVIDER_SUBSCRIPTION_NOT_IN_CONTRACT");
 });
 
-test("N1 (review of #327): a managed type that runs code instead of holding a resource is refused on both providers, in any module", () => {
+test("N1 and round 2 B1 (review of #327): a managed type that runs code or deploys a template instead of holding a resource is refused on both providers, in any module and for any action", () => {
   const azurerm = { name: "azurerm", full_name: "registry.terraform.io/hashicorp/azurerm" };
   const azureJudge = (uses: ProviderUse[]) => codeFrom(() => AZURE.assertProviderConfig([], AZURE_PINNED, identityEnv("DEV"), uses));
   assert.deepEqual([...AZURE_DENIED_TYPES].sort(), [
-    "azurerm_arc_machine_extension", "azurerm_resource_deployment_script_azure_cli", "azurerm_resource_deployment_script_azure_power_shell", "azurerm_stack_hci_extension",
-    "azurerm_virtual_machine_extension", "azurerm_virtual_machine_run_command", "azurerm_virtual_machine_scale_set_extension",
+    "azurerm_arc_machine_extension", "azurerm_management_group_template_deployment", "azurerm_resource_deployment_script_azure_cli",
+    "azurerm_resource_deployment_script_azure_power_shell", "azurerm_resource_group_template_deployment", "azurerm_stack_hci_extension",
+    "azurerm_subscription_template_deployment", "azurerm_tenant_template_deployment", "azurerm_virtual_machine_extension", "azurerm_virtual_machine_run_command",
+    "azurerm_virtual_machine_scale_set_extension",
   ]);
   for (const type of AZURE_DENIED_TYPES) {
     assert.equal(azureJudge([managed(type, azurerm)]), "PROVIDER_TYPE_NOT_ALLOWED", type);
     assert.equal(azureJudge([{ address: "module.app." + type + ".x", mode: "managed", type, provider: azurerm }]), "PROVIDER_TYPE_NOT_ALLOWED", type + " nested");
   }
   assert.equal(azureJudge([managed("azurerm_virtual_machine", azurerm), managed("azurerm_kubernetes_cluster", azurerm)]), "OK", "the machines themselves are resources");
-  assert.deepEqual([...AWS_DENIED_TYPES].sort(), ["aws_lambda_invocation", "aws_ssm_association"]);
+  assert.deepEqual([...AWS_DENIED_TYPES].sort(), [
+    "aws_cloudformation_stack", "aws_cloudformation_stack_instances", "aws_cloudformation_stack_set", "aws_cloudformation_stack_set_instance", "aws_lambda_invocation",
+    "aws_servicecatalog_provisioned_product", "aws_ssm_association",
+  ]);
   for (const type of AWS_DENIED_TYPES) {
     assert.equal(awsJudge([managed(type, aws)]), "PROVIDER_TYPE_NOT_ALLOWED", type);
     assert.equal(awsJudge([{ address: "module.app." + type + ".x", mode: "managed", type, provider: aws }]), "PROVIDER_TYPE_NOT_ALLOWED", type + " nested");
@@ -165,4 +170,26 @@ test("N1 (review of #327): a managed type that runs code instead of holding a re
   // The data source keeps its own refusal (review of #322): it is not on the reviewed list.
   assert.equal(awsJudge([data("aws_lambda_invocation", aws)]), "PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT");
   assert.equal(awsJudge([managed("aws_lambda_function", aws), managed("aws_ssm_document", aws)]), "OK", "the function and the document themselves are resources");
+});
+
+test("round 2 B1 (review of #327): one row per template deployment, whatever the action, and every AWS stack container family the cleanup keeps", () => {
+  const azurerm = { name: "azurerm", full_name: "registry.terraform.io/hashicorp/azurerm" };
+  const azureJudge = (uses: ProviderUse[]) => codeFrom(() => AZURE.assertProviderConfig([], AZURE_PINNED, identityEnv("DEV"), uses));
+  // `providerUsesOf` lists a type from the configuration, the changes (create, update, delete or no-op alike) and the states, so
+  // the rule depends on the type alone; one row each.
+  for (const type of ["azurerm_resource_group_template_deployment", "azurerm_subscription_template_deployment", "azurerm_management_group_template_deployment", "azurerm_tenant_template_deployment"]) {
+    assert.equal(azureJudge([managed(type, azurerm)]), "PROVIDER_TYPE_NOT_ALLOWED", type);
+  }
+  for (const type of ["aws_cloudformation_stack", "aws_cloudformation_stack_set", "aws_cloudformation_stack_set_instance", "aws_cloudformation_stack_instances", "aws_servicecatalog_provisioned_product"]) {
+    assert.equal(awsJudge([managed(type, aws)]), "PROVIDER_TYPE_NOT_ALLOWED", type);
+  }
+  // The same class by the cleanup's one list of stack containers (src/observe/aws-containers.ts), so a family added there is refused here too.
+  for (const type of ["aws_serverlessapplicationrepository_cloudformation_stack", "aws_sagemaker_project", "aws_proton_service", "aws_elastic_beanstalk_environment",
+    "aws_ssmquicksetup_configuration_manager", "aws_datazone_environment", "aws_controltower_control"]) {
+    assert.equal(awsJudge([managed(type, aws)]), "PROVIDER_TYPE_NOT_ALLOWED", type);
+  }
+  // (aws_proton_service is not in hashicorp/aws 6.68.0; the family's `aws_proton_` namespace prefix refuses whatever a later version adds.)
+  // Ordinary resources stay resources.
+  assert.equal(awsJudge([managed("aws_cloudwatch_log_group", aws), managed("aws_s3_bucket", aws)]), "OK");
+  assert.equal(azureJudge([managed("azurerm_resource_group", azurerm), managed("azurerm_virtual_network", azurerm)]), "OK");
 });

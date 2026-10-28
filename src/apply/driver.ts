@@ -18,6 +18,7 @@ import {
 } from "./contract.js";
 import { COMMIT } from "./constants.js";
 import { codeOf, leftBehindOf } from "./engine.js";
+import { planJudgeRefusal } from "./terraform-constructs.js";
 import { acceptsManifest, engineOf, type EngineCleanupRun, type EngineSpec, type RecoveryFile, type StateDocument } from "./engine-spec.js";
 import { APPLY_AUTHORITY } from "./evidence.js";
 import { attestedClientId, checkApplyIdentities, verifyIdentityTargets } from "./identities.js";
@@ -480,6 +481,9 @@ export async function runApply(request: ApplyRequest, deps: ApplyDeps): Promise<
           ? "The sealed plan is stale: what it was sealed against has changed. Nothing was applied and no approval was consumed. Seal a new preview and obtain new approvals."
           : "What the sealed plan names is not what the engine finds. Nothing was applied and no approval was consumed. Seal and approve a new plan.");
       }
+      // The plan judge's own refusal, by its code and reason (review of #327, round 2, N2).
+      const judged = planJudgeRefusal(code);
+      if (judged) return refuse(judged.refusal, judged.message + " Nothing was applied and no approval was consumed. Engine output is withheld.");
       if (/_NOT_IN_CONTRACT$/.test(code) || isBackendPinRefusal(code)) {
         return refuse("TARGET_NOT_IN_CONTRACT", "The backend or provider the project configures is not the contract's target (" + code +
           "). Nothing was applied and no approval was consumed. Engine output is withheld.");
@@ -765,6 +769,9 @@ export async function runCleanup(request: CleanupRequest, deps: ApplyDeps): Prom
       const code = codeOf(error);
       // A CDK refusal after CHANGESET created the removal change set leaves it in CloudFormation, whatever the code (review 6432294529, N1): said in every such refusal.
       const left = leftBehindOf(error) === "CHANGE_SET" ? LEFT_CHANGE_SET : "";
+      // The plan judge's own refusal, by its code and reason (review of #327, round 2, N2), not "could not plan the destroy".
+      const judged = planJudgeRefusal(code);
+      if (judged) return refuse(judged.refusal, judged.message + " Nothing was destroyed and no approval was consumed." + left);
       if (/_NOT_IN_CONTRACT$/.test(code) || isBackendPinRefusal(code)) {
         return refuse("TARGET_NOT_IN_CONTRACT", "The backend, provider or change set is not the contract's target (" + code + "). Nothing was destroyed and no approval was consumed." + left);
       }
