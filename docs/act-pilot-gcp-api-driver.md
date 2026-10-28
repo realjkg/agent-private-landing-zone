@@ -4,8 +4,8 @@ Status: **PROPOSED, for review.** This record is design only. It changes no code
 
 - **Lane:** G2-D (#39, coordinator PLAN 6481447333 and its corrections 6481493381).
 - **Basis:** owner decision 6481421924 (GCP ACT is in the DEV release); the open questions in #323's body; review 6453205218 on #323; reviewer status 6453239887.
-- **Base inspected:** `main` at `55b8e6a`.
-- **Implemented by:** lane G2 (`src/apply/engines/gcp-api.ts`, the GCP read-back, their tests and docs), only after this record is approved. The shared files named below belong to the single integrator (INT), one step at a time.
+- **Base inspected:** `main` at `08716fa` (first drafted at `55b8e6a`; `55b8e6a..08716fa` touches none of the code cited here).
+- **Implemented by:** lane G2, engine-local only (`src/apply/engines/gcp-api.ts` and its tests and docs), only after this record is approved. The shared files named below, `src/teardown/manifest.ts`, `src/teardown/types.ts`, `src/apply/unit.ts`, `src/observe/blueprint.ts` and `src/tools/gcp-credentials.ts` included, belong to the single serialized integrator (INT), one step at a time (coordinator defaults, #39 6481739345). The `gcp-rest` scope fix (D15) belongs to G1 after INT-1a merges, or stays with INT-1a if its reviewed diff already makes it.
 
 ## How to read this record
 
@@ -75,7 +75,7 @@ canonicalJson({ kind: "IN_PROCESS_MODULE", engine: "GCP_API",
 
 **Decision.** The engine keeps no ledger. The driver's apply ledger reserves the artifact before the engine exists, refuses a second apply (`requireNotApplied`), releases the reservation when the engine never started, and replaces it with evidence whatever the outcome. Cleanup uses the driver's cleanup ledger under the proposal hash.
 
-**Why.** Two ledgers with different meanings for one run is parallel authority. The driver's ledger is encrypted, lives in the evidence directory, and is what `record-recovery`, `observe`, `propose-cleanup` and release admission already read. The engine's own ledger was the only thing deciding what its cleanup could delete; under D7 the run's records decide that instead.
+**Why.** Two ledgers with different meanings for one run is parallel authority. The driver's ledger is encrypted, lives in the evidence directory, and is what `record-recovery`, `observe`, `propose-cleanup` and release admission already read. The engine's own ledger was the only thing deciding what its cleanup could delete; under D6 the run's records decide that instead.
 
 **Kept from the reviewer's note** (6453205218, item 3): the `PUT` that creates the topic is sent once, after the approvals are consumed, and an `ALREADY_EXISTS` (409) answer is never success (D14).
 
@@ -115,7 +115,7 @@ canonicalJson({ kind: "IN_PROCESS_MODULE", engine: "GCP_API",
 
 **Why.** It is the reviewer's recommendation (6453205218, item 5), widened to every step that must read before consumption. The order of the gates stays deterministic because every call is awaited where it stands.
 
-**Interruption.** An await gives the signal handler a chance to run. The driver already reads `interrupted` after `prepare` and `rederive` and again right before consumption (`yieldToSignals`), so an interrupt during an awaited read stops the run with nothing consumed. A test covers it (section 5).
+**Interruption.** An await gives the signal handler a chance to run. In `runApply` the driver reads `interrupted` twice: once after the reservation and before `prepare`, and once after `rederive` and the change-list comparison, right before re-admission and consumption (after `yieldToSignals`). It does not read it between `prepare` and `rederive`. Because that second read follows every awaited read, an interrupt during an awaited `prepare` or `rederive` still stops the run with nothing consumed. `runCleanup` has the same two reads around `prepare` and `planDestroy`. A test covers it (section 5).
 
 ### D6. The cleanup hook: `stateDocument`, then the driver's own cleanup flow [REVIEWER, with D16 for the owner]
 
@@ -185,7 +185,7 @@ The committed typed-request example that PLAN 6481447333, section 2 asks for is 
 
 ### D9. Full target shape and the target hash [OWNER]
 
-The GCP provider spec and its account fields come from #323's port by INT-1a. GCP_API reuses them and adds `topicPrefix`. A DEV target:
+The GCP provider spec and its account fields come from #323's port by INT-1a. **This decision depends on that spec**, which is not on `main` yet. GCP_API reuses it and adds `topicPrefix`. `pilotTargetSha256` hashes only the provider's account fields and the engine's `locationFields`, so if INT-1a's reviewed spec does not make `region` or `parent` account fields (or optional account fields that the hash includes), each one that is missing joins GCP_API's `locationFields` instead. The section 5 test that a moved `region` or `parent` refuses cleanup catches the gap either way. A DEV target:
 
 ```json
 "DEV": {
@@ -221,13 +221,22 @@ Moving any of these is a target move: a run's cleanup is refused (`targetMoved`)
 
 **Name.** At seal, `plan` draws 6 random bytes (12 hex characters) and the topic id is `topicPrefix + suffix`. The suffix is inside the artifact, so every approver signs the exact topic name. A new seal is a new name and a new artifact. This also replaces #303's `sealNonce`, whose only job was to make each seal a new artifact.
 
-**Unit.** The unit stays the product's: one unit per contract target, from `pilotUnitOf`. Two changes are needed (INT, `src/apply/unit.ts`): its state reference names the contract's engine instead of the fixed `TERRAFORM`, and GCP gets a backend kind (`pubsub` for GCP_API). Every run under one target therefore carries the same `alz-unit` label, which is what makes the independent sweep useful: a topic from an earlier run that is still there shows up as `unexpected` in a later run's observation.
+**Unit.** The unit stays the product's: one unit per contract target, from `pilotUnitOf`. The change is **scoped to GCP_API only** (INT, `src/apply/unit.ts` and `DeletionUnitStateRef` in `src/teardown/types.ts`): for a GCP_API contract the state reference names engine `GCP_API` with backend kind `pubsub`, a new variant of that type. Every other engine keeps today's reference (`engine: "TERRAFORM"` and its provider's backend kind) byte for byte, so the unit id and the `alz-unit` tag of AWS and Azure Terraform, CDK and Bicep runs do not change; a regression test pins their unit ids. Every run under one target therefore carries the same `alz-unit` label, which is what makes the independent sweep useful: a topic from an earlier run that is still there shows up as `unexpected` in a later run's observation.
 
 **Ownership per run** comes from the run's records, as for every path: the sealed plan names the exact topic, the blueprint maps it to one id, the observation checks it, and the proposal is derived from those. A label alone never makes a topic deletable (`src/teardown/unit.ts`).
 
-**One open run per target.** Before it seals, `plan` asks the GCP reader's `listTagged(unit)` (DISCOVERY, Cloud Asset) for the unit's topics. Anything listed, or an incomplete listing, refuses the seal (`UNIT_NOT_EMPTY` or `UNIT_LISTING_INCOMPLETE`): the earlier run is cleaned up first. With the canary count of 1, at most one canary topic of the target exists at a time.
+**One open run per target: checked twice, not guaranteed.** The canary count of 1 limits one plan to one topic; it says nothing about topics earlier runs left. The target-wide rule is a separate check, run at two points with the GCP reader's `listTagged(unit)` (DISCOVERY, Cloud Asset):
 
-**Residual.** Cloud Asset Inventory is eventually consistent (minutes; UNVERIFIED G5), so a topic created moments before may not be listed yet. The earlier run's own records still cover it: its outcome is not `SUCCEEDED` only when a person must review it (D14), and its observation lists it.
+1. **At seal**, in `plan`: anything listed, or an incomplete listing, refuses the seal (`UNIT_NOT_EMPTY` or `UNIT_LISTING_INCOMPLETE`). The earlier run is cleaned up first.
+2. **At apply**, in the async `prepare` (D5), before any approval is consumed: the unit sweep runs again, and the apply is refused (`UNIT_NOT_EMPTY`, `UNIT_LISTING_INCOMPLETE`, with nothing consumed) if it lists any topic of the unit or is incomplete. The sealed topic itself must also read absent by its own `GET`. So two plans sealed back to back cannot both be applied once the first one's topic is indexed: the second apply sees it and stops.
+
+**Residual, stated plainly.** Cloud Asset Inventory is eventually consistent (minutes; UNVERIFIED G5). Neither check sees a topic created inside the indexing window, so two applies run within that window (two sealed plans applied back to back, or concurrently) can **both create a topic, and two canary topics of one target can briefly coexist**. The record does not claim otherwise. What bounds it:
+
+- each topic has its run-unique name and its own run records, so each is owned by exactly one run and cleaned up by that run's own proposal;
+- each run's observation sweeps the unit and lists the other run's topic as `unexpected`, so its verdict is `FAILED` and the overlap is visible in evidence;
+- the canary still limits each plan to one create, so the overlap is bounded by the number of applies in the window.
+
+Closing the window fully would need a target-wide lock in the driver's ledger (a per-target reservation alongside the per-artifact one), which does not exist today. That is a driver change outside this path; it is not proposed here.
 
 **Rejected.**
 - A per-run unit: the sweep could then never see an earlier run's topic.
@@ -241,7 +250,7 @@ Moving any of these is a target move: a run's cleanup is refused (`targetMoved`)
 
 **Why [OWNER].** It decides what the owner's location input means on this path, and it adds a field to the create call that #303's engine deliberately forbade (`messageStoragePolicy` was `FIELD_NOT_ALLOWED`). The requester still cannot set it: it comes from the contract only.
 
-**Fallback if the owner declines.** No storage policy is sent, `region` is only bound into the target hash, and this record says the location is not enforced by the path.
+**Fallback if the owner declines.** No storage policy is sent, `region` is only bound into the target hash, and this record says the location is not enforced by the path. D14's `SUCCEEDED` rows then stop comparing the storage policy, and D16's cleanup `prepare` stops requiring it; both compare the name and labels only.
 
 UNVERIFIED (G4): that `topics.create` accepts the field on `PUT` with no `updateMask`, and that `topics.get` returns it as sent.
 
@@ -262,7 +271,7 @@ UNVERIFIED (G4): that `topics.create` accepts the field on `PUT` with no `update
 
 **Why [OWNER].** Both are IAM or credential capability changes, which only the owner makes (decision 6481421924 authorizes no IAM change), and the bootstrap is the owner's to run. The bootstrap edit itself belongs to G1's `bootstrap/gcp`, with its outputs' contract-target template updated to D9's shape.
 
-**Fallback if the owner declines the Cloud Asset grant.** The observation for this path is `INCONCLUSIVE`, `act:gcp-gcp_api` cannot pass its observe step, and the one-open-run check falls back to the evidence ledger only.
+**Fallback if the owner declines the Cloud Asset grant.** The observation for this path is `INCONCLUSIVE`, `act:gcp-gcp_api` cannot pass its observe step, and **the one-open-run rule (D10) is not enforced at all**: the driver's ledger reserves per artifact, not per target, so nothing would stop a second run's topic. Enforcing it without Cloud Asset would need a per-target reservation in the driver's ledger, which would have to be built.
 
 ### D13. What the preview proves, with no dry-run API [REVIEWER]
 
@@ -270,7 +279,7 @@ Pub/Sub has no dry-run or what-if for `topics.create`. The sealed preview proves
 
 1. The request is the allowlisted kind with no other field, and every derived value comes from the reviewed contract (D7).
 2. The change is exactly one `CREATE` of `google_pubsub_topic`, within the canary (D8).
-3. Under DISCOVERY, the exact topic is absent (`GET` gives 404) and the unit sweep is complete and empty (D10).
+3. Under DISCOVERY, the exact topic is absent (`GET` gives 404) and the unit sweep is complete and empty (D10). Both are checked again at apply, before consumption; neither is a guarantee inside Cloud Asset's indexing window (D10, residual).
 4. The identities are configured, separate and of the target project; DISCOVERY's token was minted and used.
 5. The exact three calls, which approvers see in full.
 
@@ -298,7 +307,7 @@ Each of those can only fail as a definite refusal of the one `PUT`, which D14 re
 9. evidence.
 
 **GCP_API's own steps.**
-- **`prepare`** (async, D5): reads the target topic under DISCOVERY. If it exists, `rederive` throws `PLAN_STALE`, refused with nothing consumed.
+- **`prepare`** (async, D5): reads the target topic under DISCOVERY and runs the unit sweep again (D10). If the topic exists, `rederive` throws `PLAN_STALE`; if the sweep lists any topic of the unit or is incomplete, `prepare` throws `UNIT_NOT_EMPTY` or `UNIT_LISTING_INCOMPLETE`. Each is refused with nothing consumed.
 - **`rederive`**: D7's byte-for-byte re-derivation and the canary check.
 - **`execute(artifact, control)`**:
   - `control.stopWhen()` is read first; if the switch is on, the result is `notStarted` (the driver's `KILL_SWITCH_AFTER_APPROVALS`).
@@ -349,7 +358,7 @@ The reader therefore mints one token per host it reads:
 - `pubsub` for `pubsub.googleapis.com`;
 - for `cloudasset.googleapis.com`, `cloud-platform.read-only` if Cloud Asset accepts it, otherwise `cloud-platform` (UNVERIFIED G3).
 
-Each token is used only on its own host. The change belongs to the reader's owner (G1 holds `observe/` GCP_REST in the PLAN; the coordinator assigns it once). It is part of D12's owner decision, because it is a token scope change.
+Each token is used only on its own host. The change belongs to G1, after INT-1a merges, because path 5 needs it too; if INT-1a's reviewed diff already changes the scope, it stays with INT-1a (coordinator default, #39 6481739345). It is part of D12's owner decision, because it is a token scope change.
 
 **Rejected.** Keeping `observeGcpApiPlan` as the observation: the engine would verify its own work, and nothing would be independent.
 
@@ -365,7 +374,8 @@ Each token is used only on its own host. The change belongs to the reader's owne
 - **`planDestroy(addresses)`**: exactly one address, of the form `google_pubsub_topic.<topicPrefix><12 hex>`, whose project and prefix are the target's. It returns `[{ address, type: "google_pubsub_topic", action: "DELETE" }]`, and the driver's `cleanupScopeProblem` and `protectedDeletionIn` judge it as for every engine.
 - **`execute`**: reads `stopWhen()`, mints APPLY's token, reads `stopWhen()` again, and sends one `DELETE` to the exact sealed URL.
 - **`settle`**: reads under DISCOVERY.
-  - Absent after a 200 or a 404 is `SUCCEEDED`.
+  - Absent after a 200 is `SUCCEEDED`.
+  - Absent after a 404 is also `SUCCEEDED`, because absence is read back, but `prepare` saw the topic present, so something other than this run deleted it. The cleanup evidence records that the run's `DELETE` did not delete the topic (a `deletedByRun: false` field, or an equivalent the integrator names in the schema), so the evidence never claims a deletion the run did not make.
   - A definite refusal with the topic unchanged on every read is `FAILED_NO_CHANGE`.
   - Anything else is `PARTIAL_REQUIRES_REVIEW`.
 
@@ -389,9 +399,12 @@ Then `./alz apply verify-cleanup` reads the id and sweeps the unit, and records 
 | `ManifestEngine`, `MANIFEST_ENGINES` | add `GCP_API`; no lock file required, as for CDK and Bicep; excluded from `DriverEngine` | INT-2 |
 | `PLANNED_PATHS` and `DEV_ONLY_PATHS` | move GCP_API from the first to the second | INT-2 |
 | `ApplyEvidence.authority.mutation`, `CleanupEvidence.authority.mutation` | D16's two values | INT-2 |
-| `StateDocument.source` and the blueprint | `GCP_API_TOPIC` and `blueprintFromGcpApiTopic`, plus the branch in `keepBlueprint` | INT-2 (`engine-spec.ts`, `driver.ts`), G2 (the mapper in `observe/blueprint.ts`) |
+| `StateDocument.source` and the blueprint | `GCP_API_TOPIC` and `blueprintFromGcpApiTopic`, plus the branch in `keepBlueprint` | INT-2 (`engine-spec.ts`, `driver.ts`, and the mapper in `observe/blueprint.ts`) |
 | `VerifierId` and `openReader` | `GCP_REST` for the GCP provider | INT-1a |
-| `pilotUnitOf` | engine-aware state reference; GCP backend kind (D10) | INT-2 |
+| `pilotUnitOf` (`src/apply/unit.ts`) and `DeletionUnitStateRef` (`src/teardown/types.ts`) | a GCP_API-only state reference and backend kind `pubsub`; every other engine's unit id unchanged, pinned by a regression test (D10) | INT-2 |
+| `CleanupEvidence` | records whether the run's `DELETE` deleted the topic (D16) | INT-2 |
+| The shared STS exchange (`src/tools/gcp-credentials.ts`) | D20 | INT |
+| `gcp-rest` per-host token scope | D15 | G1 after INT-1a, or INT-1a if its diff already has it |
 | `ACT_RELEASE_PATHS` | add `{ provider: "GCP", engine: "GCP_API" }`; its gate id is generated as **`act:gcp-gcp_api`** | INT-2 |
 | `config/release/scope.json`, `status.json` | the `act:gcp-gcp_api` row, BLOCKED until live evidence exists | L7 with INT-2 |
 | `config/acceptance/journeys.json`, `src/release/acceptance.ts`, `src/release/pilot-paths.ts` | D18 | INT-1b |
@@ -421,7 +434,7 @@ With the row named `NATIVE_API` and the engine `GCP_API`, the row would never fi
 
 **Deleted:**
 - the exports `sealGcpApiPlan`, `verifyGcpApiPlan`, `applyGcpApiPlan`, `observeGcpApiPlan` and `cleanupGcpApiPlan`, replaced by the `GCP_API` spec's `plan`, `openApply` and `openCleanup`;
-- the parallel signature: the imports of `signRequest`, `verifyRequestSignature` and `requesterKeyRefusal`, `allowlistOf`, the plan's `requesterId` and `request` fields, and the `REQUESTER_*` paths;
+- the parallel signature: the imports of `signRequest`, `verifyRequestSignature` and `requesterKeyRefusal`, `allowlistOf`, the plan's `requesterId` and `request` fields, and the test cases in `test/apply-gcp-api.test.ts` that assert the engine's own `REQUESTER_*` refusals (such as `REQUESTER_KEY_MISMATCH` and `REQUESTER_MISBOUND`, which come from `requesterKeyRefusal` and `verifyRequestSignature`). The driver's tests already cover those refusals;
 - the parallel ledger: `ledgerDir`, `ledgerPrivate`, `claim`, `record`, `stateOf`, `LedgerState`, `LEDGER_NOT_PRIVATE`, `ALREADY_APPLIED` and `NOT_RUN_CREATED`;
 - the parallel target: `GcpApiTarget` and `GcpApiDeps.target`, replaced by `EngineContext.pinned` and `spec`;
 - the parallel kill switch: `GcpApiDeps.killSwitch`, replaced by `control.stopWhen` and the driver's gates;
@@ -445,14 +458,14 @@ With the row named `NATIVE_API` and the engine `GCP_API`, the row would never fi
 
 At most one of them is what Google documents for `sts.googleapis.com/v1/token` (UNVERIFIED G1).
 
-**Decision.** One exchange function, used by both, in the shared `src/tools/gcp-credentials.ts` (which already holds `checkCredentialConfiguration` and `readTokenFile` for both). The scope and lifetime stay parameters. Before G2 merges, its request shape is checked against Google's published STS and IAM Credentials references. The owner's live DEV run is what proves it.
+**Decision.** One exchange function, used by both, in the shared `src/tools/gcp-credentials.ts` (the serialized integrator's file) (which already holds `checkCredentialConfiguration` and `readTokenFile` for both). The scope and lifetime stay parameters. Before G2 merges, its request shape is checked against Google's published STS and IAM Credentials references. The owner's live DEV run is what proves it.
 
 ## 4. Lane order
 
 1. **This record**, reviewed; the owner decides D4, D9, D11, D12 (with D15's scope part) and D16 on #39.
 2. **INT-1a** (already running): the GCP provider spec, `GCP_REST` wiring, `canary` types.
 3. **INT, the D5 interface change**, in its own PR. No engine behavior changes.
-4. **G2** (`gcp-api.ts`, the blueprint mapper, the reader's per-host scope if assigned, tests and docs): the spec, not yet in `SPECS`.
+4. **G2**, engine-local (`gcp-api.ts`, its tests and docs): the spec, not yet in `SPECS`. The blueprint mapper, the shared exchange and the unit change are INT's; the reader's scope fix is G1's (after INT-1a).
 5. **INT-2**: `SPECS`, the ids and enums, the contract scope, `pilotUnitOf`, the release path; L7 adds its rows. **INT-1b**: D18 and the Phase E scenario.
 6. **G1**: the bootstrap change from D12, once the owner decides it, and its contract-target template.
 7. The evidence checklist, then the owner's inputs and the owner's DEV run.
@@ -478,7 +491,9 @@ All of these are SYNTHETIC: a fake for STS, IAM Credentials, Pub/Sub and Cloud A
 - A non-DEV target or a missing `enabledEnvironments`.
 - An edited artifact: another URL, body, label or storage policy gives `ARTIFACT_TAMPERED` with nothing consumed.
 - A topic that already exists at seal or at apply.
-- A unit sweep that is not empty, or incomplete.
+- A unit sweep that is not empty, or incomplete, at seal and again at apply. Two plans sealed back to back: once the first one's topic is listed, the second apply is refused in `prepare` with nothing consumed.
+- A cleanup `DELETE` answered 404: `SUCCEEDED`, with the evidence recording that the run did not delete the topic.
+- The unit ids of the AWS and Azure Terraform, CDK and Bicep paths are unchanged by the GCP_API unit change.
 - Identities: a third identity configured; DISCOVERY and APPLY collapsed; a key file; a service account outside the project.
 - A lookalike host, a redirect, or a request to any URL outside the sealed one.
 - The module hash changed between seal and apply (`ENGINE_BINARY_CHANGED`).
@@ -546,7 +561,7 @@ Each one is checked against Google's published API reference or discovery docume
 | D7 | Typed request of two keys; every other value derived; the artifact is the exact calls | REVIEWER |
 | D8 | Canary type `google_pubsub_topic`, count 1, create only | REVIEWER (the entry is the owner's) |
 | D9 | Full target shape and the fields in `pilotTargetSha256` | **OWNER** |
-| D10 | Run-unique names; unit per target; one open run per target | REVIEWER |
+| D10 | Run-unique names; unit per target (GCP_API-only change); unit sweep at seal and again at apply, not a guarantee inside the indexing window | REVIEWER |
 | D11 | Location bound by the sealed storage policy | **OWNER** |
 | D12 | DISCOVERY gains the Cloud Asset search; read-only rests on IAM | **OWNER** |
 | D13 | What the preview proves | REVIEWER |
