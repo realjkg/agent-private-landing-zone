@@ -49,6 +49,12 @@ class ACTDev1Synthetic(unittest.TestCase):
         self.assertIn('backend "s3"',hcl)
         self.assertIn('retention_in_days = 30',hcl)
         self.assertNotIn('resource "aws_iam_',hcl)
+        # The deletion unit's three tags come from the operator's unit_tags (the values ./alz apply prepare prints), merged into the
+        # log group's tags, so the Terraform engine's seal-time unit check (UNIT_TAG_MISSING) passes (test/act-dev1-terraform-unit-tags.test.ts).
+        self.assertIn('variable "unit_tags"',hcl)
+        self.assertIn('}, var.unit_tags)',hcl)
+        example=json.loads((ROOT/"qualification/aws/act-dev1-canary/terraform.tfvars.example.json").read_text())
+        self.assertEqual(sorted(example["unit_tags"]),["alz-build","alz-managed-by","alz-unit"])
         # Review of #327, round 4: the provider is pinned to the version the pilot's denied types were reviewed against, and the
         # committed lock pins exactly that version, with hashes for the owner's platforms (linux_amd64 and darwin_arm64).
         self.assertIn('version = "= 6.68.0"',hcl)
@@ -67,6 +73,26 @@ class ACTDev1Synthetic(unittest.TestCase):
         create=[x for x in policy["Statement"] if x["Sid"]=="AllowCanaryCreateWithReviewedTags"][0]
         self.assertEqual(create["Condition"]["StringEquals"]["aws:RequestTag/environment"],"DEV")
         self.assertNotIn("iam:*",create["Action"])
+        # The tag keys a create may carry: the canary's four plus exactly the deletion unit's three (src/apply/unit.ts), which the
+        # canary now stamps from unit_tags. An IAM policy change for the owner's review; nothing else in the statement moved.
+        self.assertEqual(create["Condition"]["ForAllValues:StringEquals"]["aws:TagKeys"],
+            ["environment","managed-by","purpose","owner","alz-managed-by","alz-unit","alz-build"])
+        self.assertEqual(create["Action"],["logs:CreateLogGroup","logs:TagResource"])
+        self.assertEqual(create["Resource"],"arn:aws:logs:us-east-2:111111111111:log-group:/alz/act-dev-1/canary-01")
+        self.assertEqual(create["Condition"]["StringEquals"],{"aws:RequestedRegion":"us-east-2","aws:RequestTag/environment":"DEV",
+            "aws:RequestTag/managed-by":"sovereign-alz","aws:RequestTag/purpose":"act-dev-1","aws:RequestTag/owner":"qa"})
+        self.assertEqual(sorted(create["Condition"]),["ForAllValues:StringEquals","StringEquals"])
+        # The rest of the policy is unchanged: the same statements, effects, actions and resources.
+        self.assertEqual([(x["Sid"],x["Effect"],x["Action"],x["Resource"]) for x in policy["Statement"]],[
+            ("AllowCanaryCreateWithReviewedTags","Allow",["logs:CreateLogGroup","logs:TagResource"],"arn:aws:logs:us-east-2:111111111111:log-group:/alz/act-dev-1/canary-01"),
+            ("AllowCanaryRetentionAndReadback","Allow",["logs:PutRetentionPolicy","logs:ListTagsForResource"],"arn:aws:logs:us-east-2:111111111111:log-group:/alz/act-dev-1/canary-01"),
+            ("AllowDescribeForTerraformOnly","Allow","logs:DescribeLogGroups","*"),
+            ("DenyCanaryDeleteAndUntags","Deny",["logs:DeleteLogGroup","logs:DeleteRetentionPolicy","logs:UntagResource","logs:UntagLogGroup"],"*"),
+            ("DenyBootstrapModificationAndStateByApply","Deny",["iam:*","s3:*","organizations:*","controltower:*"],"*")])
+        # Every tag key the canary's HCL can stamp is allowed, and no other.
+        hcl=(ROOT/"qualification/aws/act-dev1-canary/main.tf").read_text()
+        for key in ("environment","managed-by","purpose","owner"): self.assertIn(key,hcl)
+        self.assertIn('== "alz-build,alz-managed-by,alz-unit"',hcl)
         with self.assertRaises(ValueError):
             apply_policy.build(aws.MANAGEMENT,"/alz/act-dev-1/canary-01","qa")
         with self.assertRaises(ValueError):

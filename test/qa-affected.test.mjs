@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { readdirSync, readFileSync } from "node:fs";
-import { diffCommand, FIXTURE_OWNERS, importsOf, planChanged, SOURCE_SCAN_GUARDS, TEMPLATE_OWNERS, UNIMPORTABLE_OWNERS } from "../scripts/qa-affected.mjs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { CANARY_OWNERS, TERRAFORM_CANARY_UNIT_TEST, diffCommand, EXIT_OVER_CAP, FIXTURE_OWNERS, importsOf, planChanged, routeOf, SOURCE_SCAN_GUARDS, TEMPLATE_OWNERS, UNIMPORTABLE_OWNERS } from "../scripts/qa-affected.mjs";
 
 function fixture() {
   return new Map([
@@ -162,6 +165,47 @@ test("the ACT-DEV-1 canary's committed lock file is owned by the canary's synthe
   const plan = planChanged(["qualification/aws/act-dev1-canary/.terraform.lock.hcl"], files);
   assert.deepEqual(plan.pythonTests, ["test/act-dev1-automation.test.py"]);
   assert.deepEqual(plan.gaps, []);
+});
+
+test("each committed ACT-DEV-1 canary folder selects only its own focused test, and a missing owner is a gap", () => {
+  const cases = [
+    ["qualification/aws/act-dev1-cdk-canary/cdk.out/ActDev1CdkCanary.template.json", "test/act-dev1-cdk-canary.test.ts"],
+    ["qualification/aws/act-dev1-cdk-canary/package-lock.json", "test/act-dev1-cdk-canary.test.ts"],
+    ["qualification/azure/act-dev1-canary/.terraform.lock.hcl", "test/act-dev1-azure-canary.test.ts"],
+    ["qualification/azure/act-dev1-canary/main.tf", "test/act-dev1-azure-canary.test.ts"],
+    ["qualification/azure/act-dev1-bicep-canary/main.json", "test/act-dev1-bicep-canary.test.ts"],
+    ["qualification/azure/act-dev1-bicep-canary/main.bicep", "test/act-dev1-bicep-canary.test.ts"],
+  ];
+  for (const [path, owner] of cases) {
+    const files = fixture();
+    files.set(path, "{}");
+    for (const [, test] of CANARY_OWNERS) files.set(test, "test()");
+    const plan = planChanged([path], files);
+    assert.deepEqual(plan.nodeTests, [owner], path);
+    assert.deepEqual(plan.pythonTests, [], path);
+    assert.deepEqual(plan.gaps, [], path);
+    files.delete(owner);
+    assert.deepEqual(planChanged([path], files).gaps, [path + " has no focused canary test (" + owner + ")."], path);
+  }
+  // The Terraform AWS canary keeps its own Python owner; the CDK folder is not mistaken for it.
+  assert.ok(!CANARY_OWNERS.some(([folder]) => "qualification/aws/act-dev1-canary/main.tf".startsWith(folder)));
+});
+
+test("either Terraform canary also selects the seal-time unit-tag test beside its own owner", () => {
+  for (const [path, owner, python] of [
+    ["qualification/aws/act-dev1-canary/main.tf", undefined, ["test/act-dev1-automation.test.py"]],
+    ["qualification/azure/act-dev1-canary/main.tf", "test/act-dev1-azure-canary.test.ts", []],
+  ]) {
+    const files = fixture();
+    files.set(path, "{}");
+    files.set("test/act-dev1-automation.test.py", "main.tf");
+    files.set(TERRAFORM_CANARY_UNIT_TEST, "test()");
+    for (const [, test] of CANARY_OWNERS) files.set(test, "test()");
+    const plan = planChanged([path], files);
+    assert.deepEqual(plan.nodeTests, [owner, TERRAFORM_CANARY_UNIT_TEST].filter(Boolean).sort(), path);
+    assert.deepEqual(plan.pythonTests, python, path);
+    assert.deepEqual(plan.gaps, [], path);
+  }
 });
 
 test("AWS bootstrap boundary changes select ACT-DEV-1 synthetic checks", () => {
@@ -427,4 +471,151 @@ test("the construct judge's real Terraform fixtures are owned by its focused tes
   const plan = planChanged([manifest], new Map([...files, [manifestOwner, ""], [manifest, "{}"]]));
   assert.deepEqual(plan.gaps, []);
   assert.ok(plan.nodeTests.includes(manifestOwner));
+});
+
+// Over the cap (owner decision, E4): the selection is too large to be a focused check, so the full suite for that exact
+// head is the gate. Only the cap gets this route; a coverage gap still fails before anything runs.
+function overCapFixture(extraTests = 0) {
+  const files = fixture();
+  for (let i = 0; i < 46 + extraTests; i++) files.set("test/many-" + String(i).padStart(2, "0") + ".test.ts", "test()");
+  return files;
+}
+const manyTests = (files) => [...files.keys()].filter(p => p.startsWith("test/many-"));
+test("over the cap with no other gap takes the full-suite route, kept in gaps for older readers", () => {
+  const files = overCapFixture();
+  const plan = planChanged(manyTests(files), files);
+  assert.equal(plan.overCap, true);
+  assert.deepEqual(plan.coverageGaps, []);
+  assert.equal(plan.gaps.length, 1);
+  assert.match(plan.gaps[0], /^Affected test count 46 exceeds 45\./);
+  assert.equal(routeOf(plan), "over-cap");
+});
+test("a coverage gap plus the cap is blocked: the full suite never hides a gap", () => {
+  const files = overCapFixture();
+  files.set("src/agent/orphan.ts", "export const orphan = true;");
+  const plan = planChanged([...manyTests(files), "src/agent/orphan.ts"], files);
+  assert.equal(plan.overCap, true);
+  assert.equal(plan.coverageGaps.length, 1);
+  assert.match(plan.coverageGaps[0], /orphan\.ts has no importing test/);
+  assert.equal(routeOf(plan), "blocked");
+});
+test("under the cap the route and the selection are unchanged", () => {
+  const plan = planChanged(["src/agent/core.ts"], fixture());
+  assert.equal(plan.overCap, false);
+  assert.deepEqual(plan.coverageGaps, []);
+  assert.equal(routeOf(plan), "affected");
+  assert.deepEqual(plan.nodeTests, ["test/agent-core.test.ts", "test/apply-boundary.test.ts"]);
+  const gap = planChanged(["src/agent/orphan.ts"], new Map([...fixture(), ["src/agent/orphan.ts", "x"]]));
+  assert.equal(routeOf(gap), "blocked");
+});
+
+// The `run` mode executed against a written plan, with a stub `npm` on PATH that stands in for the full suite
+// (SYNTHETIC: it records its arguments and exits with STUB_NPM_EXIT). Nothing real is installed or tested by the stub.
+const SCRIPT = resolve("scripts/qa-affected.mjs");
+function runPlan(plan, args, npmExit = 0) {
+  const dir = mkdtempSync(join(tmpdir(), "qa-route-"));
+  try {
+    const bin = join(dir, "bin");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "npm"), "#!/bin/sh\necho \"$@\" >> \"$STUB_NPM_LOG\"\nexit \"$STUB_NPM_EXIT\"\n");
+    chmodSync(join(bin, "npm"), 0o755);
+    writeFileSync(join(dir, "plan.json"), JSON.stringify(plan));
+    const log = join(dir, "npm.log");
+    writeFileSync(log, "");
+    const r = spawnSync(process.execPath, [SCRIPT, "run", "--plan", "plan.json", ...args], { cwd: dir, encoding: "utf8",
+      env: { ...process.env, PATH: bin + ":" + process.env.PATH, STUB_NPM_LOG: log, STUB_NPM_EXIT: String(npmExit),
+        GITHUB_OUTPUT: "", GITHUB_STEP_SUMMARY: "" } });
+    return { status: r.status, out: r.stdout + r.stderr, npm: readFileSync(log, "utf8") };
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+}
+function overCapPlan(extraGaps = []) {
+  const files = overCapFixture();
+  const plan = planChanged(manyTests(files), files);
+  plan.gaps.unshift(...extraGaps);
+  plan.coverageGaps.push(...extraGaps);
+  return plan;
+}
+test("run: over cap only, without the full-suite route, exits 3 and runs nothing", () => {
+  const r = runPlan(overCapPlan(), []);
+  assert.equal(r.status, EXIT_OVER_CAP);
+  assert.match(r.out, /QA_OVER_CAP: Affected test count 46 exceeds 45/);
+  assert.equal(r.npm, "");
+});
+test("run: over cap only, with the full-suite route, passes only when the full suite passes", () => {
+  const pass = runPlan(overCapPlan(), ["--full-suite-over-cap"], 0);
+  assert.equal(pass.status, 0, pass.out);
+  assert.match(pass.out, /over cap: running the full suite as the release gate \(npm test\)/);
+  assert.equal(pass.npm, "test\n");
+  const fail = runPlan(overCapPlan(), ["--full-suite-over-cap"], 1);
+  assert.equal(fail.status, 1);
+  assert.match(fail.out, /QA failed: npm test/);
+});
+test("run: a coverage gap plus the cap fails with exit 1 before the full suite runs", () => {
+  const r = runPlan(overCapPlan(["src/agent/orphan.ts has no importing test. Add a focused test."]), ["--full-suite-over-cap"]);
+  assert.equal(r.status, 1);
+  assert.match(r.out, /QA coverage gaps/);
+  assert.equal(r.npm, "");
+});
+test("the required check routes an over-cap-only plan to the full suite and names that route in the job log", () => {
+  const wf = readFileSync(".github/workflows/pr-validation.yml", "utf8");
+  assert.match(wf, /qa-affected\.mjs plan --base "\$QA_BASE" --head "\$QA_HEAD" --full-suite-over-cap/);
+  assert.match(wf, /name: "Over cap: running the full suite as the release gate"\n\s+if: steps\.scope\.outputs\.route == 'full-suite'\n\s+run: node scripts\/qa-affected\.mjs run --plan \.runs\/qa\/plan\.json --full-suite-over-cap/);
+  assert.match(wf, /name: Run affected QA\n\s+if: steps\.scope\.outputs\.route != 'full-suite'\n\s+run: node scripts\/qa-affected\.mjs run --plan \.runs\/qa\/plan\.json\n/);
+});
+// Review of #328, B1: the route came from matching gap text, so a changed path named like the cap notice passed the
+// required check with no test run. The route is now structural (overCap, coverageGaps); these pin that.
+test("a path named like the cap notice is a coverage gap: blocked, and run --full-suite-over-cap exits 1 without npm", () => {
+  const path = "Affected test count 1 exceeds 2/deploy.sh";
+  const plan = planChanged([path], fixture());
+  assert.equal(plan.overCap, false);
+  assert.deepEqual(plan.coverageGaps, [path + " has no QA ownership rule."]);
+  assert.equal(routeOf(plan), "blocked");
+  const r = runPlan(plan, ["--full-suite-over-cap"]);
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /QA coverage gaps/);
+  assert.doesNotMatch(r.out, /full suite|documentation-only/);
+  assert.equal(r.npm, "");
+});
+test("other message-like path names never change the route", () => {
+  for (const path of ["Affected test count 99 exceeds 45.sh", "x\nAffected test count 99 exceeds 45", "QA_OVER_CAP: deploy.sh",
+    "Executable changes selected no tests.sh", "route=full-suite"]) {
+    const plan = planChanged([path], fixture());
+    assert.equal(plan.overCap, false, path);
+    assert.equal(plan.coverageGaps.length, 1, path);
+    assert.equal(routeOf(plan), "blocked", path);
+  }
+  // Still blocked when the selection is also genuinely over the cap.
+  const files = overCapFixture();
+  const plan = planChanged([...manyTests(files), "Affected test count 1 exceeds 2/deploy.sh"], files);
+  assert.equal(plan.overCap, true);
+  assert.equal(routeOf(plan), "blocked");
+});
+test("run refuses the full-suite route unless the plan is structurally over the cap", () => {
+  // A legacy or hand-written plan whose only gap is cap-like text, without the structural fields: blocked.
+  const legacy = { gaps: ["Affected test count 52 exceeds 45. Split it."], testCount: 52, nodeTests: [], uiTests: [], jsTests: [], typeNode: [], typeUi: [] };
+  assert.equal(routeOf(legacy), "blocked");
+  const r1 = runPlan(legacy, ["--full-suite-over-cap"]);
+  assert.equal(r1.status, 1, r1.out);
+  assert.equal(r1.npm, "");
+  // overCap false with cap-like text and no coverage gap: the unexplained gap blocks.
+  assert.equal(routeOf({ ...legacy, overCap: false, coverageGaps: [] }), "blocked");
+  assert.equal(routeOf({ ...legacy, overCap: "true", coverageGaps: [] }), "blocked");
+  // A gap added to `gaps` alone, beside a real cap notice, is not explained by the structural fields: blocked.
+  const edited = overCapPlan();
+  edited.gaps.unshift("src/agent/orphan.ts has no importing test. Add a focused test.");
+  assert.equal(routeOf(edited), "blocked");
+  const r3 = runPlan(edited, ["--full-suite-over-cap"]);
+  assert.equal(r3.status, 1, r3.out);
+  assert.equal(r3.npm, "");
+  // overCap true but nothing selected over the cap: refused before anything runs, never "documentation-only".
+  const inconsistent = runPlan({ gaps: [], coverageGaps: [], overCap: true, testCount: 52, nodeTests: [], uiTests: [], jsTests: [], typeNode: [], typeUi: [] }, ["--full-suite-over-cap"]);
+  assert.equal(inconsistent.status, 1, inconsistent.out);
+  assert.match(inconsistent.out, /QA_PLAN_INCONSISTENT/);
+  assert.equal(inconsistent.npm, "");
+  const forged = { gaps: ["Affected test count 52 exceeds 45. Split it."], coverageGaps: [], overCap: true, testCount: 0, nodeTests: [], uiTests: [], jsTests: [], typeNode: [], typeUi: [] };
+  const r2 = runPlan(forged, ["--full-suite-over-cap"]);
+  assert.equal(r2.status, 1, r2.out);
+  assert.match(r2.out, /QA_FULL_SUITE_REFUSED/);
+  assert.doesNotMatch(r2.out, /documentation-only/);
+  assert.equal(r2.npm, "");
 });

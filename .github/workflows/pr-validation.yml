@@ -40,12 +40,14 @@ jobs:
       # The scope planner uses only built-in Node modules. It runs before
       # npm ci, so docs-only and unknown-ownership changes cost no install.
       # Diff SHA values are environment variables, never interpolated in shell.
+      # A coverage gap fails here. A selection over the cap with no other gap
+      # sets route=full-suite: the full suite for this exact head is the gate.
       - name: Select affected tests
         id: scope
         env:
           QA_BASE: ${{ github.event.pull_request.base.sha }}
           QA_HEAD: ${{ github.event.pull_request.head.sha }}
-        run: node scripts/qa-affected.mjs plan --base "$QA_BASE" --head "$QA_HEAD"
+        run: node scripts/qa-affected.mjs plan --base "$QA_BASE" --head "$QA_HEAD" --full-suite-over-cap
 
       - name: Node
         if: steps.scope.outputs.needs_deps == 'true'
@@ -63,4 +65,11 @@ jobs:
       # The local coding-agent command uses this same runner. No full
       # regression, full-codebase typecheck, or release deploy on normal PRs.
       - name: Run affected QA
+        if: steps.scope.outputs.route != 'full-suite'
         run: node scripts/qa-affected.mjs run --plan .runs/qa/plan.json
+
+      # Over the cap only: the plan's pin, type, .mjs, Python and plugin
+      # checks still run, and npm test replaces the selected node/UI tests.
+      - name: "Over cap: running the full suite as the release gate"
+        if: steps.scope.outputs.route == 'full-suite'
+        run: node scripts/qa-affected.mjs run --plan .runs/qa/plan.json --full-suite-over-cap
