@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { DeploymentPath, EnvironmentDecision } from "../src/operator-ui/app/pilot/pilot-api.js";
-import { environmentReady, firstSentence, orderByReadiness, orderEnvironments, tierOf } from "../src/operator-ui/app/pilot/readiness-order.js";
+import { badgeOf, checkedTime, environmentReady, firstSentence, orderByReadiness, orderEnvironments, tierOf } from "../src/operator-ui/app/pilot/readiness-order.js";
 
 // The console's readiness-first ordering (owner decision E5). Pure functions over fixture data (SYNTHETIC); nothing here reads
 // a record, a contract or a cloud.
@@ -105,4 +105,22 @@ test("environments without decisions keep today's order, all selectable, none re
 test("a row shows the first sentence of its first blocker", () => {
   assert.equal(firstSentence("Owner inputs (docs/a.md, What): a contract. Then more."), "Owner inputs (docs/a.md, What): a contract.");
   assert.equal(firstSentence("  No full stop "), "No full stop");
+});
+
+test("a path waiting on another path's owner-run live step is still tier 2; a path with unreadable records is tier 3 and says readiness unknown", () => {
+  const sequenced = path("AZURE", "TERRAFORM", { blockers: [{ party: "SEQUENCED", source: "JOURNEY", text: "AWS Terraform goes live first." }, owner("Run it.")] });
+  assert.equal(tierOf(sequenced).tier, 2);
+  assert.equal(badgeOf(sequenced), "Waiting on owner inputs");
+  const unknown = path("AWS", "TERRAFORM", { blockers: [{ party: "UNKNOWN", source: "GATE", text: "Readiness unknown: the release status record cannot be read." }, owner("x")] });
+  assert.equal(tierOf(unknown).tier, 3);
+  assert.equal(badgeOf(unknown), "Readiness unknown");
+  assert.equal(badgeOf(path("GCP", "TERRAFORM", { inRelease: false })), "Not in this release");
+});
+
+test("a READY environment carries the time of the check that made it ready; others carry none", () => {
+  const choices = orderEnvironments([decision("DEV", { checkedAt: "2026-10-28T10:05:00.000Z" }), decision("QA", { ready: null, checkedAt: null })]);
+  assert.deepEqual(choices.map((c) => [c.environment, c.checkedAt]), [["DEV", "2026-10-28T10:05:00.000Z"], ["QA", null], ["PROD", null]]);
+  assert.match(checkedTime("2026-10-28T10:05:00.000Z"), /\d{1,2}:\d{2}/);
+  assert.equal(checkedTime("not a time"), "");
+  assert.equal(checkedTime(null), "");
 });

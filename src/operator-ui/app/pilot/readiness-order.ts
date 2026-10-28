@@ -5,8 +5,9 @@ import type { DeploymentPath, EnvironmentDecision, PilotEnvironment } from "./pi
 
 /**
  * 1 READY: the contract's path, with an environment that is Authorized, Ready and Approved.
- * 2 PARTIAL: implemented and in this release, waiting only on people's inputs (the owner's, or the operator's machine setup).
- * 3 BLOCKED: engineering or qualification work remains, or the data is incomplete.
+ * 2 PARTIAL: implemented and in this release, waiting only on people's inputs (the owner's, the operator's machine setup, or
+ *   another path's owner-run live step the record says must come first).
+ * 3 BLOCKED: engineering or qualification work remains, or the data is incomplete or unknown.
  * 4 OUT: not in this release, or not implemented.
  */
 export type ReadinessTier = 1 | 2 | 3 | 4;
@@ -22,7 +23,7 @@ const rank = (list: readonly string[], value: unknown): number => {
 };
 /** Terraform first, the native path second. */
 const engineRank = (engine: unknown): number => engine === "TERRAFORM" ? 0 : 1;
-const PEOPLE = new Set(["OWNER", "OPERATOR"]);
+const PEOPLE = new Set(["OWNER", "OPERATOR", "SEQUENCED"]);
 
 /** All three decisions are exactly true. Anything missing or unknown is not ready. */
 export const environmentReady = (decision: Partial<EnvironmentDecision> | undefined | null): boolean =>
@@ -36,6 +37,19 @@ export function tierOf(path: Partial<DeploymentPath> | undefined | null): { tier
   if (path.isContractPath === true && Array.isArray(path.decisions) && path.decisions.some(environmentReady)) return { tier: 1, outstanding };
   if (path.implemented === true && blockers !== undefined && blockers.every((b: { party?: unknown } | undefined) => PEOPLE.has(String(b?.party)))) return { tier: 2, outstanding };
   return { tier: 3, outstanding };
+}
+
+/** The badge words for a path: its tier, except that a path whose records cannot be read says so instead. */
+export function badgeOf(path: Partial<DeploymentPath> | undefined | null): string {
+  const { tier } = tierOf(path);
+  if (tier !== 1 && Array.isArray(path?.blockers) && path.blockers.some((b) => b?.party === "UNKNOWN")) return "Readiness unknown";
+  return TIER_WORDS[tier];
+}
+
+/** "HH:MM" of a readiness check, in the viewer's time, or "" when the time cannot be read. Shown beside every READY. */
+export function checkedTime(iso: string | null | undefined): string {
+  const date = typeof iso === "string" ? new Date(iso) : undefined;
+  return date && !Number.isNaN(date.getTime()) ? date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
 }
 
 /**
@@ -58,6 +72,8 @@ export type EnvironmentChoice = {
   /** False only when the contract is known and does not enable it. Unknown data leaves every environment selectable, in today's order. */
   enabled: boolean;
   ready: boolean;
+  /** When the readiness check that made it ready ran; null when not ready. */
+  checkedAt: string | null;
   /** Why it is disabled, in plain words; empty when enabled. */
   reason: string;
 };
@@ -67,7 +83,7 @@ export type EnvironmentChoice = {
  * after checked), then the ones the contract does not enable, kept visible but disabled. Without decisions, today's order.
  */
 export function orderEnvironments(decisions: readonly EnvironmentDecision[] | null | undefined, environments: readonly PilotEnvironment[] = ENVIRONMENT_RANK): EnvironmentChoice[] {
-  if (!Array.isArray(decisions) || decisions.length === 0) return environments.map((environment) => ({ environment, enabled: true, ready: false, reason: "" }));
+  if (!Array.isArray(decisions) || decisions.length === 0) return environments.map((environment) => ({ environment, enabled: true, ready: false, checkedAt: null, reason: "" }));
   const items = environments.map((environment, index) => {
     const decision = decisions.find((d) => d.environment === environment);
     const enabled = decision?.authorized === true;
@@ -75,7 +91,7 @@ export function orderEnvironments(decisions: readonly EnvironmentDecision[] | nu
     const tier = ready ? 1 : enabled ? 2 : 4;
     const outstanding = decision && decision.ready === false ? decision.notReady.length : Number.POSITIVE_INFINITY;
     const reason = enabled ? "" : "the owner's reviewed rules do not allow changes in " + environment;
-    return { choice: { environment, enabled, ready, reason }, tier, outstanding, index };
+    return { choice: { environment, enabled, ready, checkedAt: ready ? decision?.checkedAt ?? null : null, reason }, tier, outstanding, index };
   });
   return items
     .sort((a, b) => a.tier - b.tier || (a.tier === 2 ? (a.outstanding === b.outstanding ? 0 : a.outstanding < b.outstanding ? -1 : 1) : 0) ||

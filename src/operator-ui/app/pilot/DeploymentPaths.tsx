@@ -1,7 +1,7 @@
 import { forwardRef, useState } from "react";
 
 import type { DeploymentPath, EnvironmentDecision, PathParty, PathsReport } from "./pilot-api";
-import { TIER_WORDS, environmentReady, firstSentence, orderByReadiness, orderEnvironments, tierOf } from "./readiness-order";
+import { badgeOf, checkedTime, environmentReady, firstSentence, orderByReadiness, orderEnvironments, tierOf } from "./readiness-order";
 
 // The "Deployment paths" panel (owner decision E5): every cloud and build path, readiest first, from the release records and the
 // readiness checks already run. Read-only: a row only opens to show what that path still needs. It has no button that starts,
@@ -11,7 +11,8 @@ export type PathsLoad = { status: "loading" } | { status: "error" } | { status: 
 
 const CLOUD_TITLES: Readonly<Record<string, string>> = { AWS: "AWS", AZURE: "Azure", GCP: "Google Cloud (GCP)" };
 const PARTY_WORDS: Readonly<Record<PathParty, string>> = {
-  OWNER: "the owner", OPERATOR: "the operator", ENGINEERING: "engineering", QUALIFICATION: "qualification", RELEASE_SCOPE: "the release scope",
+  OWNER: "the owner", OPERATOR: "the operator", SEQUENCED: "another path going live first", ENGINEERING: "engineering", QUALIFICATION: "qualification",
+  RELEASE_SCOPE: "the release scope", UNKNOWN: "records that cannot be read",
 };
 const JOURNEY_WORDS: Readonly<Record<string, string>> = {
   LIVE_PASS: "Proven on the real cloud", SYNTHETIC_PASS: "Every step tested with stand-ins only (synthetic, not live)",
@@ -19,6 +20,8 @@ const JOURNEY_WORDS: Readonly<Record<string, string>> = {
 };
 const LIVE_WORDS: Readonly<Record<string, string>> = { LIVE_PASS: "Done", BLOCKED: "Not run yet", NOT_IMPLEMENTED: "Not possible yet" };
 const decisionWord = (value: boolean | null): string => value === true ? "Yes" : value === false ? "No" : "Not checked yet";
+/** Ready is always shown with the time of the check that said so: it is the last check's answer, not a live one. */
+const readyWords = (d: EnvironmentDecision): string => d.ready === true ? "Yes, at the last check" + (checkedTime(d.checkedAt) ? " (" + checkedTime(d.checkedAt) + ")" : "") : decisionWord(d.ready);
 
 /** Groups in the order their readiest path appears, so the first group holds the first path. */
 function groupsOf(paths: readonly DeploymentPath[]): { cloud: string; paths: DeploymentPath[] }[] {
@@ -36,14 +39,14 @@ function EnvironmentDecisions(props: { decisions: readonly EnvironmentDecision[]
   return (
     <table className="pilot-table paths-decisions">
       <caption className="pilot-caption">Per environment, from the readiness checks run in step 2.</caption>
-      <thead><tr><th scope="col">Environment</th><th scope="col">Authorized</th><th scope="col">Ready</th><th scope="col">Approved</th><th scope="col">Status</th></tr></thead>
+      <thead><tr><th scope="col">Environment</th><th scope="col">Authorized</th><th scope="col">Ready</th><th scope="col">Approval rule</th><th scope="col">Status</th></tr></thead>
       <tbody>
         {sorted.map((d) => (
           <tr key={d.environment} data-environment={d.environment}>
             <th scope="row">{d.environment}</th>
             <td>{decisionWord(d.authorized)}</td>
-            <td>{decisionWord(d.ready)}{d.ready === false && d.notReady.length > 0 ? " (" + d.notReady.length + " to fix)" : ""}</td>
-            <td>{d.approved ? "Yes: " + d.requiredApprovals + " approver(s) sign each change" : "No"}</td>
+            <td>{readyWords(d)}{d.ready === false && d.notReady.length > 0 ? " (" + d.notReady.length + " to fix)" : ""}</td>
+            <td>{d.approved ? "Rule set: each change needs " + d.requiredApprovals + " approval(s)" : "No rule"}</td>
             <td>{environmentReady(d) ? "Ready" : d.authorized ? "Waiting on inputs" : "Not enabled"}</td>
           </tr>
         ))}
@@ -58,14 +61,16 @@ function PathRow(props: { path: DeploymentPath }) {
   const { tier } = tierOf(path);
   const id = "path-" + path.cloud.toLowerCase() + "-" + path.engine.toLowerCase();
   const first = path.blockers[0];
+  const readyIn = (path.decisions ?? []).find(environmentReady);
   return (
     <li className="paths-row" data-tier={tier} data-path={path.cloud + "/" + path.engine}>
       <button type="button" className="paths-toggle" aria-expanded={open} aria-controls={id + "-details"} onClick={() => setOpen(!open)}>
         <span className="paths-label">{path.label}</span>{" "}
-        <span className={"pilot-badge paths-badge"} data-tier={tier}>{TIER_WORDS[tier]}</span>
+        <span className={"pilot-badge paths-badge"} data-tier={tier}>{badgeOf(path)}</span>
         {path.isContractPath && <span className="pilot-badge paths-badge">The reviewed path</span>}
       </button>
-      <p className="paths-reason">{tier === 1 ? "Authorized, ready and approved in at least one environment."
+      <p className="paths-reason">{tier === 1 && readyIn ? "Authorized and ready in " + readyIn.environment + " at the last check" +
+          (checkedTime(readyIn.checkedAt) ? " (" + checkedTime(readyIn.checkedAt) + ")" : "") + ". Each change still needs " + readyIn.requiredApprovals + " approval(s) before it can run."
         : first ? <>Waits on {PARTY_WORDS[first.party] ?? first.party}: {firstSentence(first.text)}</> : "No blocker is recorded, but readiness has not been confirmed."}</p>
       <div id={id + "-details"} hidden={!open} className="paths-details">
         <dl className="pilot-facts">
@@ -103,7 +108,10 @@ export const DeploymentPaths = forwardRef<HTMLElement, { load: PathsLoad }>(func
           <p role="note" className="paths-contract" data-contract={load.report.contract.state}>{
             load.report.contract.state === "ENABLED" ? "The path marked \"The reviewed path\" is the one the owner's reviewed rules allow."
               : load.report.contract.state === "DISABLED" ? "The owner's reviewed rules are not in place, so no path can run."
-                : "Readiness of the reviewed path is not checked yet: run the readiness check in step 2."}</p>
+                : "The owner's reviewed rules could not be read, so readiness is unknown."}</p>
+          {load.report.contract.state === "ENABLED" && load.report.contract.killSwitch && (
+            <p role="note" className="paths-stop">The emergency stop is on, so no environment is shown as ready.</p>
+          )}
           {groupsOf(load.report.paths).map((group) => (
             <fieldset key={group.cloud} className="paths-group" data-cloud={group.cloud}>
               <legend>{CLOUD_TITLES[group.cloud] ?? group.cloud}</legend>

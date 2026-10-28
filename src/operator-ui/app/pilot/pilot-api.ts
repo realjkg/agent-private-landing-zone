@@ -170,7 +170,7 @@ export const startVerifyCleanup = (proposalPath: string): Promise<PilotReply> =>
 // --- deployment paths (GET /pilot/paths; src/release/pilot-paths.ts) ------------------------------------------------------------
 
 /** Who or what a path's blocker waits on (src/release/pilot-paths.ts PathParty). */
-export type PathParty = "OWNER" | "OPERATOR" | "ENGINEERING" | "QUALIFICATION" | "RELEASE_SCOPE";
+export type PathParty = "OWNER" | "OPERATOR" | "SEQUENCED" | "ENGINEERING" | "QUALIFICATION" | "RELEASE_SCOPE" | "UNKNOWN";
 export type PathBlocker = { party: PathParty; source: string; text: string };
 /** The three decisions for one environment of the contract's path. `ready` is null when no readiness check has run for it. */
 export type EnvironmentDecision = {

@@ -8,15 +8,19 @@ import { loadReleaseStatus } from "./status.js";
  *
  * Read-only and information only. It reads the two records the release view reads, the way it reads them; it writes nothing,
  * starts nothing and grants nothing. Readiness of the contract's own path comes only from the readiness check the console already
- * ran (`preflight`), passed in by the caller: this module never assesses, guesses or defaults readiness, and a path or an
- * environment with missing or unreadable data is never reported ready.
+ * ran (`preflight`), passed in by the caller, and only while the contract as it is NOW (read again by the caller on every request)
+ * still matches it: same hash, APPLY still authorized for that environment, kill switch off. This module never assesses, guesses
+ * or defaults readiness, and a path or an environment with missing, stale or unreadable data is never reported ready.
  */
 
 export type PathEnvironment = "DEV" | "QA" | "PROD";
 const ENVIRONMENT_ORDER: readonly PathEnvironment[] = ["DEV", "QA", "PROD"];
 
-/** Who or what a blocker waits on. OWNER and OPERATOR are people supplying inputs; the rest is engineering, qualification or scope. */
-export type PathParty = "OWNER" | "OPERATOR" | "ENGINEERING" | "QUALIFICATION" | "RELEASE_SCOPE";
+/**
+ * Who or what a blocker waits on. OWNER and OPERATOR are people supplying inputs; SEQUENCED is another path's owner-run live step
+ * that the record says must come first; UNKNOWN is a record that cannot be read; the rest is engineering, qualification or scope.
+ */
+export type PathParty = "OWNER" | "OPERATOR" | "SEQUENCED" | "ENGINEERING" | "QUALIFICATION" | "RELEASE_SCOPE" | "UNKNOWN";
 export type PathBlocker = { party: PathParty; source: "SCOPE" | "JOURNEY" | "GATE"; text: string };
 
 /** What one readiness check (`./alz apply preflight`) returned, as the console's channel remembers it. */
@@ -32,6 +36,15 @@ export type RememberedReadiness = {
   };
   checkedAt: string;
 };
+
+/**
+ * The contract as it is when the paths are served: what `actDecisions` (src/apply/readiness.ts) reports without an environment,
+ * derived read-only by the console's channel (src/cli/ui-channel.ts) on every request.
+ */
+export type CurrentContract =
+  | { act: "DISABLED"; reason: string }
+  | { act: "PILOT_ENABLED"; contractSha256: string; provider: string; engine: string; killSwitch: boolean;
+      authorized: { environment: PathEnvironment; operations: string[] }[]; approved: { environment: PathEnvironment; requiredApprovals: number }[] };
 
 /** The three decisions for one environment of the contract's path. `ready` is null when no readiness check has run for it. */
 export type EnvironmentDecision = {
@@ -74,7 +87,7 @@ export type PathsReport = {
   /** These are release records and a remembered readiness check, never live provider evidence. */
   label: "RELEASE_RECORDS";
   contract: ContractView;
-  /** Per environment, what the contract enables; empty while the contract is UNKNOWN. */
+  /** Per environment, what the contract enables; empty while the contract is UNKNOWN. `approved` means an approval quorum is configured, never that a change was approved. */
   environments: EnvironmentDecision[];
   paths: DeploymentPath[];
 };
@@ -85,27 +98,26 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 const words = (value: unknown): string => typeof value === "string" ? value.trim() : "";
 const PASSING = new Set(["SYNTHETIC_PASS", "LIVE_PASS"]);
 
-/** The contract the latest readiness check saw, and only readiness results taken against that same contract. */
-function contractOf(remembered: readonly RememberedReadiness[]): { view: ContractView; current: RememberedReadiness[] } {
-  const latest = [...remembered].sort((a, b) => b.checkedAt.localeCompare(a.checkedAt))[0];
-  if (latest === undefined) return { view: { state: "UNKNOWN" }, current: [] };
-  const { decisions } = latest;
-  if (decisions.act !== "PILOT_ENABLED") {
-    return { view: { state: "DISABLED", reason: words(decisions.contract.reason) || "The owner's reviewed rules are not in place." }, current: [latest] };
-  }
-  const { provider, engine, contractSha256 } = decisions.contract;
-  if (typeof provider !== "string" || typeof engine !== "string" || typeof contractSha256 !== "string") return { view: { state: "UNKNOWN" }, current: [] };
-  const current = remembered.filter((r) => r.decisions.act === "PILOT_ENABLED" && r.decisions.contract.contractSha256 === contractSha256);
-  return { view: { state: "ENABLED", provider, engine, contractSha256, killSwitch: decisions.contract.killSwitch === true }, current };
+/**
+ * The contract view from the contract as it is now, and the remembered readiness results that still describe it. A result is
+ * dropped when the contract's hash changed, the kill switch is on, or APPLY is no longer authorized for its environment; a
+ * missing, disabled or unreadable contract keeps none. Without a current contract (none given) the view is UNKNOWN.
+ */
+function contractOf(now: CurrentContract | undefined, remembered: readonly RememberedReadiness[]): { view: ContractView; current: RememberedReadiness[] } {
+  if (now === undefined) return { view: { state: "UNKNOWN" }, current: [] };
+  if (now.act !== "PILOT_ENABLED") return { view: { state: "DISABLED", reason: words(now.reason) || "The owner's reviewed rules are not in place." }, current: [] };
+  const applies = (environment: PathEnvironment) => now.authorized.some((a) => a.environment === environment && a.operations.includes("APPLY"));
+  const current = now.killSwitch ? [] : remembered.filter((r) => r.decisions.act === "PILOT_ENABLED" && r.decisions.contract.contractSha256 === now.contractSha256 &&
+    r.decisions.contract.killSwitch !== true && applies(r.environment));
+  return { view: { state: "ENABLED", provider: now.provider, engine: now.engine, contractSha256: now.contractSha256, killSwitch: now.killSwitch }, current };
 }
 
-function environmentsOf(view: ContractView, current: readonly RememberedReadiness[]): EnvironmentDecision[] {
-  if (view.state === "UNKNOWN") return [];
-  const latest = [...current].sort((a, b) => b.checkedAt.localeCompare(a.checkedAt))[0];
+function environmentsOf(now: CurrentContract | undefined, current: readonly RememberedReadiness[]): EnvironmentDecision[] {
+  if (now === undefined) return [];
   return ENVIRONMENT_ORDER.map((environment) => {
-    const entry = view.state === "ENABLED" ? latest?.decisions.authorized.find((x) => x.environment === environment) : undefined;
-    const quorum = view.state === "ENABLED" ? latest?.decisions.approved.find((x) => x.environment === environment) : undefined;
-    const checked = view.state === "ENABLED" ? current.find((r) => r.environment === environment) : undefined;
+    const entry = now.act === "PILOT_ENABLED" ? now.authorized.find((x) => x.environment === environment && x.operations.includes("APPLY")) : undefined;
+    const quorum = now.act === "PILOT_ENABLED" ? now.approved.find((x) => x.environment === environment) : undefined;
+    const checked = current.find((r) => r.environment === environment);
     const requiredApprovals = typeof quorum?.requiredApprovals === "number" ? quorum.requiredApprovals : 0;
     return {
       environment,
@@ -120,10 +132,20 @@ function environmentsOf(view: ContractView, current: readonly RememberedReadines
   });
 }
 
+/**
+ * Whose step a row's live blocker is, from the record's own text: a named path that must go live first is SEQUENCED; a text
+ * that names the owner is OWNER; anything else stays with engineering.
+ */
+export function livePartyOf(text: string): PathParty {
+  if (/\b(?:goes|go|must pass|passes) live first\b/i.test(text)) return "SEQUENCED";
+  if (/\bowner\b/i.test(text)) return "OWNER";
+  return "ENGINEERING";
+}
+
 const GATE_PARTY: Readonly<Record<string, PathParty>> = { OWNER: "OWNER", ENGINEERING: "ENGINEERING" };
 
 /** Every deployment path, from the records at `root` and the readiness checks the console remembers. */
-export function deploymentPaths(root: string, remembered: readonly RememberedReadiness[]): PathsReport {
+export function deploymentPaths(root: string, remembered: readonly RememberedReadiness[], now?: CurrentContract): PathsReport {
   const matrix = loadJourneyMatrix(root);
   const checked = checkJourneyMatrix(matrix, root);
   const rows = isRecord(matrix) && Array.isArray(matrix.rows) ? matrix.rows : [];
@@ -132,8 +154,8 @@ export function deploymentPaths(root: string, remembered: readonly RememberedRea
     const status = loadReleaseStatus(root);
     gates = isRecord(status) && Array.isArray(status.gates) ? status.gates : undefined;
   } catch { gates = undefined; }
-  const { view, current } = contractOf(remembered);
-  const environments = environmentsOf(view, current);
+  const { view, current } = contractOf(now, remembered);
+  const environments = environmentsOf(now, current);
 
   const paths = checked.rows.map((report): DeploymentPath => {
     const raw = rows.find((row) => isRecord(row) && row.cloud === report.cloud && row.path === report.path) as Record<string, unknown> | undefined;
@@ -146,7 +168,9 @@ export function deploymentPaths(root: string, remembered: readonly RememberedRea
     const actGate = isRecord(entry) && typeof entry.status === "string"
       ? { id: gateId, status: entry.status, owner: words(entry.owner), nextAction: words(entry.nextAction) }
       : null;
-    const inRelease = released && actGate !== null && actGate.status !== "OUT_OF_SCOPE";
+    // Without a readable status entry the release scope is unknown, not out of scope: the path stays listed as in this release
+    // (it is one of the code's release paths) with an UNKNOWN blocker, so it is never ready and never called out of scope.
+    const inRelease = released && actGate?.status !== "OUT_OF_SCOPE";
 
     const blockers: PathBlocker[] = [];
     const add = (blocker: PathBlocker) => { if (blocker.text !== "" && !blockers.some((b) => b.text === blocker.text)) blockers.push(blocker); };
@@ -169,13 +193,18 @@ export function deploymentPaths(root: string, remembered: readonly RememberedRea
     }
     const live = isRecord(raw?.live) ? raw.live : {};
     if (report.live !== "LIVE_PASS") {
-      add({ party: implemented && report.live === "BLOCKED" ? "OWNER" : "ENGINEERING", source: "JOURNEY", text: words(live.blockedBy) || words(live.missing) });
+      const text = words(live.blockedBy) || words(live.missing);
+      add({ party: report.live === "BLOCKED" ? livePartyOf(text) : "ENGINEERING", source: "JOURNEY", text });
     }
-    if (released && actGate === null) add({ party: "ENGINEERING", source: "GATE", text: "The release status record has no readable entry for " + gateId + "." });
+    if (released && actGate === null) {
+      add({ party: "UNKNOWN", source: "GATE", text: gates === undefined
+        ? "Readiness unknown: the release status record cannot be read."
+        : "Readiness unknown: the release status record has no readable entry for " + gateId + "." });
+    }
     if (inRelease && actGate !== null && actGate.status !== "PASS") {
       add({ party: GATE_PARTY[actGate.owner] ?? "QUALIFICATION", source: "GATE", text: actGate.nextAction || "The " + gateId + " gate is " + actGate.status + "." });
     }
-    const order: PathParty[] = ["RELEASE_SCOPE", "ENGINEERING", "QUALIFICATION", "OWNER", "OPERATOR"];
+    const order: PathParty[] = ["RELEASE_SCOPE", "UNKNOWN", "ENGINEERING", "QUALIFICATION", "SEQUENCED", "OWNER", "OPERATOR"];
     blockers.sort((a, b) => order.indexOf(a.party) - order.indexOf(b.party));
 
     const isContractPath = view.state === "ENABLED" && view.provider === report.cloud && view.engine === report.path;

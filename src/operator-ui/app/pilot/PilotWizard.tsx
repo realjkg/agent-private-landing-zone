@@ -5,7 +5,7 @@ import { PilotDialog } from "./PilotDialog";
 import { ActDev1Setup } from "./ActDev1Setup";
 import CleanupStep, { CleanupList } from "./CleanupStep";
 import { DeploymentPaths, type PathsLoad } from "./DeploymentPaths";
-import { orderEnvironments } from "./readiness-order";
+import { checkedTime, orderEnvironments } from "./readiness-order";
 import {
   answerDialog, cancelDialog, choosePath, fetchPilotPaths, fetchPilotState, forgetPilotToken, loadCleanupReview, loadReview, startApply, startApprove, startPreflight, startPrepare, startSeal, setPilotToken, startOver,
   type CleanupSummary, type PilotEnvironment, type PilotPath, type PilotReply, type PilotRun, type PilotDecisions, type PilotState, type PreflightCheck, type PreparedFiles, type PrepareStop, type ReviewSummary, type RunResult,
@@ -349,9 +349,12 @@ export default function PilotWizard(props: PilotWizardProps) {
   const disabledEnvironments = environmentChoices.filter((choice) => !choice.enabled);
   const firstEnabled = environmentChoices.find((choice) => choice.enabled)?.environment;
   const chosenEnabled = environmentChoices.some((choice) => choice.environment === environment && choice.enabled);
+  // A readiness result the person just ran for the chosen environment is kept on screen, even when it turns out that environment is
+  // not enabled: the result and the note say why. Only an environment without a result moves to the first enabled one.
+  const hasResult = readiness !== null && readiness.environment === environment;
   useEffect(() => {
-    if (!chosenEnabled && firstEnabled !== undefined && !active) { setEnvironment(firstEnabled); setReadiness(null); }
-  }, [chosenEnabled, firstEnabled, active]);
+    if (!chosenEnabled && !hasResult && firstEnabled !== undefined && !active) { setEnvironment(firstEnabled); setReadiness(null); }
+  }, [chosenEnabled, hasResult, firstEnabled, active]);
 
   const unlock = async () => {
     setChecking(true);
@@ -512,7 +515,7 @@ export default function PilotWizard(props: PilotWizardProps) {
                 <select id="pilot-environment" value={environment} disabled={active} onChange={(event) => { setEnvironment(event.target.value as PilotEnvironment); setReadiness(null); }}>
                   {environmentChoices.map((choice) => (
                     <option key={choice.environment} value={choice.environment} disabled={!choice.enabled}>
-                      {choice.enabled ? choice.environment + (choice.ready ? " (ready)" : "") : choice.environment + " (not enabled)"}
+                      {choice.enabled ? choice.environment + (choice.ready ? " (ready at the last check" + (checkedTime(choice.checkedAt) ? ", " + checkedTime(choice.checkedAt) : "") + ")" : "") : choice.environment + " (not enabled)"}
                     </option>
                   ))}
                 </select>

@@ -402,8 +402,9 @@ describe("step 3 and the confirmation dialogs", () => {
     // support and for the commit in which the dialog mounts, where the heading effect runs before the page is made inert. The
     // heading effect runs for the new step and must leave focus in the dialog either way.
     // Everything behind the dialog is inert: the wizard and the deployment paths panel above it.
+    // The inert attributes are set by an effect after the dialog renders: wait for both before asserting on them.
+    await waitFor(() => expect(document.querySelectorAll("[inert]")).toHaveLength(2));
     const behind = [...document.querySelectorAll("[inert]")];
-    expect(behind.length).toBe(2);
     expect(behind.some((element) => element.closest('[data-testid="deployment-paths"]'))).toBe(true);
     behind.forEach((element) => element.removeAttribute("inert"));
     fireEvent.click(screen.getByRole("button", { name: COPY.back, hidden: true }));

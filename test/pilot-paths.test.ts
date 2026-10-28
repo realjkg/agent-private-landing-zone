@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, statSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { request, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,11 +11,11 @@ import { openNonceStore } from "../src/apply/nonces.js";
 import { PILOT_TOKEN_HEADER } from "../src/cli/ui-channel.js";
 import { createLocalOperatorServer } from "../src/operator-ui/server.js";
 import { checkJourneyMatrix, loadJourneyMatrix } from "../src/release/acceptance.js";
-import { deploymentPaths, rememberedReadiness, type RememberedReadiness } from "../src/release/pilot-paths.js";
+import { deploymentPaths, livePartyOf, rememberedReadiness, type CurrentContract, type RememberedReadiness } from "../src/release/pilot-paths.js";
 import { loadReleaseStatus } from "../src/release/status.js";
 import { removeTree } from "../src/teardown/driver/cleanup.js";
 import {
-  NOW, SOURCE_COMMIT, behave, callsOf, contractJson, identityEnv, installFakeTerraform, testFixtureForgeQualificationEvidence, writeReviewedContract,
+  NOW, SOURCE_COMMIT, awsContractJson, behave, callsOf, contractJson, identityEnv, installFakeTerraform, testFixtureForgeQualificationEvidence, writeReviewedContract,
 } from "./helpers/apply-fixtures.js";
 
 // GET /pilot/paths (owner decision E5, #39 6480066863): the deployment paths from the journey matrix and the release status, with
@@ -33,10 +33,12 @@ const TOKEN = "p".repeat(64);
 let counter = 0;
 const fresh = (label: string): string => { const dir = join(scratch, label + "-" + ++counter); mkdirSync(dir, { recursive: true }); return dir; };
 
-async function serve(env: NodeJS.ProcessEnv = identityEnv("DEV")): Promise<{ port: number; contractPath: string }> {
+async function serve(env: NodeJS.ProcessEnv = identityEnv("DEV")): Promise<{ port: number; contractPath: string; kill: string }> {
   behave(toolDir, KILL, { applyAdvance: true });
+  // Each console has its own kill switch file, so engaging one never touches another test's fixture.
+  const kill = join(fresh("kill"), "KILL");
   const contractPath = join(fresh("contract"), "act-pilot-contract.json");
-  writeReviewedContract(contractPath, contractJson(KILL));
+  writeReviewedContract(contractPath, contractJson(kill));
   const vault = fresh("vault");
   await testFixtureForgeQualificationEvidence(vault);
   const { server } = createLocalOperatorServer({
@@ -50,7 +52,7 @@ async function serve(env: NodeJS.ProcessEnv = identityEnv("DEV")): Promise<{ por
   servers.push(server);
   await new Promise<void>((done) => { server.listen(0, "127.0.0.1", done); });
   const address = server.address();
-  return { port: typeof address === "object" && address ? address.port : 0, contractPath };
+  return { port: typeof address === "object" && address ? address.port : 0, contractPath, kill };
 }
 
 type Reply = { status: number; body: any; text: string };
@@ -101,9 +103,9 @@ test("GET /pilot/paths: one entry per journey row, read from journeys.json and s
     const gate = gates.find((g) => g.gate === "act:" + path.cloud.toLowerCase() + "-" + path.engine.toLowerCase());
     assert.equal(path.actGate?.status, gate?.status, path.label);
     assert.equal(path.actGate?.owner, gate?.owner, path.label);
-    // Nothing is ready before a readiness check, and every path that is not live says why.
-    assert.equal(path.isContractPath, false);
-    assert.equal(path.decisions, undefined);
+    // Only the contract's path carries decisions, and nothing is ready before a readiness check. Every path that is not live says why.
+    assert.equal(path.isContractPath, path.label === "Azure · Terraform", path.label);
+    if (!path.isContractPath) assert.equal(path.decisions, undefined);
     if (path.liveStatus !== "LIVE_PASS") assert.ok(path.blockers.length > 0 && path.blockers.every((b: any) => typeof b.text === "string" && b.text.length > 10), path.label);
   }
   // GCP is not in this release; its rows say so first.
@@ -113,8 +115,15 @@ test("GET /pilot/paths: one entry per journey row, read from journeys.json and s
     assert.equal(gcp.blockers[0].party, "RELEASE_SCOPE");
   }
   assert.deepEqual(report.paths.filter((p: any) => p.inRelease).map((p: any) => p.label), ["AWS · Terraform", "AWS · CDK", "Azure · Terraform", "Azure · Bicep"]);
-  assert.deepEqual(report.contract, { state: "UNKNOWN" });
-  assert.deepEqual(report.environments, []);
+  // The contract is read as it is now, before any readiness check: known, but nothing ready.
+  assert.equal(report.contract.state, "ENABLED");
+  assert.equal(report.contract.provider, "AZURE");
+  assert.deepEqual(report.environments.map((d: any) => [d.environment, d.authorized, d.ready]), [["DEV", true, null], ["QA", true, null], ["PROD", true, null]]);
+  // A live blocker is attributed from the record's own words: Azure Terraform waits on AWS Terraform going live first.
+  const live = (label: string) => report.paths.find((p: any) => p.label === label).blockers.find((b: any) => b.source === "JOURNEY");
+  assert.equal(live("Azure · Terraform").party, "SEQUENCED");
+  assert.equal(live("AWS · CDK").party, "SEQUENCED");
+  assert.equal(live("AWS · Terraform").party, "OWNER");
 });
 
 test("GET /pilot/paths needs the session token and the console's own address, and answers only GET", async () => {
@@ -164,6 +173,7 @@ test("after a readiness check, the contract's path carries the three decisions p
   const decisions = contractPaths[0].decisions;
   assert.deepEqual(decisions.map((d: any) => [d.environment, d.authorized, d.ready, d.approved, d.requiredApprovals]),
     [["DEV", true, true, true, 1], ["QA", true, null, true, 1], ["PROD", true, null, true, 2]]);
+  assert.match(decisions[0].checkedAt, /^\d{4}-\d{2}-\d{2}T/, "a READY environment carries the time of the check that said so");
   assert.deepEqual(report.environments, decisions);
   assert.ok(report.paths.filter((p: any) => !p.isContractPath).every((p: any) => p.decisions === undefined));
   // A failed readiness check for an environment is remembered as not ready, with the items that did not pass.
@@ -174,6 +184,58 @@ test("after a readiness check, the contract's path carries the three decisions p
   const dev = redReport.environments.find((d: any) => d.environment === "DEV");
   assert.equal(dev.ready, false);
   assert.ok(dev.notReady.some((item: any) => /identities configured/.test(item.check)), JSON.stringify(dev.notReady));
+});
+
+// --- a remembered READY never outlives the contract it was checked against (review of #334, B1) ----------------------------
+
+/** Runs a READY readiness check for DEV, changes the world, and returns the paths report afterwards. */
+async function afterChange(change: (world: { contractPath: string; kill: string }) => void): Promise<any> {
+  const world = await serve();
+  const result = await preflight(world.port, "DEV");
+  assert.equal(result.data.ready, true, JSON.stringify(result));
+  const before = (await call(world.port, "GET", "/pilot/paths")).body;
+  assert.equal(before.environments.find((d: any) => d.environment === "DEV").ready, true, "READY before the change");
+  change(world);
+  const after = await call(world.port, "GET", "/pilot/paths");
+  assert.equal(after.status, 200, after.text);
+  return after.body;
+}
+const readyAnywhere = (report: any): boolean => report.environments.some((d: any) => d.ready === true) ||
+  report.paths.some((p: any) => (p.decisions ?? []).some((d: any) => d.ready === true));
+
+test("A: once the contract's authorize is emptied, the remembered READY is gone and the contract reads disabled", async () => {
+  const report = await afterChange(({ contractPath, kill }) => writeReviewedContract(contractPath, contractJson(kill, { authorize: {} })));
+  assert.equal(report.contract.state, "DISABLED");
+  assert.equal(readyAnywhere(report), false);
+  assert.ok(report.paths.every((p: any) => !p.isContractPath));
+  assert.ok(report.environments.every((d: any) => !d.authorized));
+});
+
+test("A': once APPLY is no longer authorized for DEV, DEV's remembered READY is dropped even though the hash also moved", async () => {
+  const report = await afterChange(({ contractPath, kill }) => writeReviewedContract(contractPath, contractJson(kill, { authorize: { QA: ["APPLY", "CLEANUP"] } })));
+  assert.equal(report.contract.state, "ENABLED");
+  assert.deepEqual(report.environments.map((d: any) => [d.environment, d.authorized, d.ready]), [["DEV", false, null], ["QA", true, null], ["PROD", false, null]]);
+});
+
+test("B: once the kill switch is engaged, no environment reads ready and the contract view says the stop is on", async () => {
+  const report = await afterChange(({ kill }) => writeFileSync(kill, ""));
+  assert.equal(report.contract.state, "ENABLED");
+  assert.equal(report.contract.killSwitch, true);
+  assert.equal(readyAnywhere(report), false);
+});
+
+test("C: once the contract switches provider, the old path loses its decisions and the new one reads not checked", async () => {
+  const report = await afterChange(({ contractPath, kill }) => writeReviewedContract(contractPath, awsContractJson(kill)));
+  assert.equal(report.contract.provider, "AWS");
+  assert.deepEqual(report.paths.filter((p: any) => p.isContractPath).map((p: any) => p.label), ["AWS · Terraform"]);
+  assert.equal(report.paths.find((p: any) => p.label === "Azure · Terraform").decisions, undefined);
+  assert.equal(readyAnywhere(report), false);
+});
+
+test("D: once the contract file is deleted, the contract reads disabled and nothing is ready", async () => {
+  const report = await afterChange(({ contractPath }) => rmSync(contractPath));
+  assert.deepEqual(report.contract, { state: "DISABLED", reason: "contract file is missing" });
+  assert.equal(readyAnywhere(report), false);
 });
 
 // --- the reader, directly -------------------------------------------------------------------------
@@ -187,9 +249,15 @@ const remembered = (over: Partial<RememberedReadiness> & { sha?: string } = {}):
   ...over,
 });
 
+const enabled = (over: Partial<Extract<CurrentContract, { act: "PILOT_ENABLED" }>> = {}): CurrentContract => ({
+  act: "PILOT_ENABLED", contractSha256: "a".repeat(64), provider: "AWS", engine: "TERRAFORM", killSwitch: false,
+  authorized: [{ environment: "DEV", operations: ["APPLY", "CLEANUP"] }], approved: [{ environment: "DEV", requiredApprovals: 1 }], ...over,
+});
+
 test("a readiness result taken against an older contract is not reused: that environment reads not checked", () => {
   const old = remembered({ environment: "QA", sha: "b".repeat(64), checkedAt: "2026-10-28T09:00:00.000Z" });
-  const report = deploymentPaths(ROOT, [old, remembered()]);
+  const report = deploymentPaths(ROOT, [old, remembered()], enabled());
+  assert.equal(report.environments.find((d) => d.environment === "DEV")!.ready, true);
   assert.equal(report.contract.state, "ENABLED");
   const qa = report.environments.find((d) => d.environment === "QA")!;
   assert.equal(qa.ready, null);
@@ -199,7 +267,7 @@ test("a readiness result taken against an older contract is not reused: that env
 
 test("a disabled contract enables no environment and marks no path; malformed readiness output is never remembered", () => {
   const disabled = remembered({ decisions: { act: "DISABLED", contract: { code: "CONTRACT_MISSING", reason: "The pilot contract has not been installed." }, authorized: [], approved: [] } });
-  const report = deploymentPaths(ROOT, [disabled]);
+  const report = deploymentPaths(ROOT, [disabled, remembered()], { act: "DISABLED", reason: "The pilot contract has not been installed." });
   assert.deepEqual(report.contract, { state: "DISABLED", reason: "The pilot contract has not been installed." });
   assert.ok(report.environments.every((d) => !d.authorized && !d.approved && d.ready === null));
   assert.ok(report.paths.every((p) => !p.isContractPath));
@@ -212,4 +280,40 @@ test("a disabled contract enables no environment and marks no path; malformed re
     next: { check: "c", responsible: "OWNER" }, decisions: { act: "PILOT_ENABLED", contract: { contractSha256: "c".repeat(64), provider: "AWS", engine: "CDK", extra: 1 }, authorized: [], approved: [] } }, "t");
   assert.deepEqual(kept, { environment: "QA", ready: false, checks: [{ check: "c", ok: false, responsible: "OWNER" }], checkedAt: "t",
     decisions: { act: "PILOT_ENABLED", contract: { contractSha256: "c".repeat(64), provider: "AWS", engine: "CDK" }, authorized: [], approved: [] } });
+});
+
+test("without the current contract the view is unknown, and a remembered READY alone is never shown", () => {
+  const report = deploymentPaths(ROOT, [remembered()]);
+  assert.deepEqual(report.contract, { state: "UNKNOWN" });
+  assert.deepEqual(report.environments, []);
+  assert.ok(report.paths.every((p) => !p.isContractPath && p.decisions === undefined));
+  // The kill switch in the contract as it is now drops every remembered result, whatever its own report said.
+  const stopped = deploymentPaths(ROOT, [remembered()], enabled({ killSwitch: true }));
+  assert.ok(stopped.environments.every((d) => d.ready === null));
+});
+
+test("a missing release status reads as readiness unknown, never as out of this release (review of #334, N5)", () => {
+  const bare = mkdtempSync(join(tmpdir(), "alz-paths-root-"));
+  try {
+    mkdirSync(join(bare, "config/acceptance"), { recursive: true });
+    copyFileSync(join(ROOT, "config/acceptance/journeys.json"), join(bare, "config/acceptance/journeys.json"));
+    const report = deploymentPaths(bare, [], enabled());
+    for (const label of ["AWS · Terraform", "AWS · CDK", "Azure · Terraform", "Azure · Bicep"]) {
+      const path = report.paths.find((p) => p.label === label)!;
+      assert.equal(path.inRelease, true, label);
+      assert.equal(path.actGate, null, label);
+      assert.ok(path.blockers.some((b) => b.party === "UNKNOWN" && /Readiness unknown/.test(b.text)), label);
+      assert.ok(!path.blockers.some((b) => b.party === "RELEASE_SCOPE"), label);
+    }
+    // GCP is outside the code's release paths, so it is still not in this release.
+    assert.ok(report.paths.filter((p) => p.cloud === "GCP").every((p) => !p.inRelease));
+  } finally { removeTree(bare); }
+});
+
+test("live blockers are attributed from the record's own words", () => {
+  assert.equal(livePartyOf("AWS Terraform goes live first. Then owner inputs for Azure."), "SEQUENCED");
+  assert.equal(livePartyOf("AWS Terraform must pass live first (focus row), then owner inputs."), "SEQUENCED");
+  assert.equal(livePartyOf("Owner supervision and inputs: a pinned contract."), "OWNER");
+  assert.equal(livePartyOf("The owner-authorized G2 DEV run."), "OWNER");
+  assert.equal(livePartyOf("No ARM emulator exists yet."), "ENGINEERING");
 });
