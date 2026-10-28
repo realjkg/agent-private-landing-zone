@@ -187,7 +187,7 @@ test("the owner moved the six pillar gates to v1.1 (2026-10-28): the runner repo
     assert.equal(gatePlan([id], new Set())[0].mode, "NO_PRODUCER", id);
   }
   assert.deepEqual(ids.filter((id) => id.startsWith("pillar:") && !outOfScope.has(id)), [], "no pillar gate is in this release's scope");
-  // GCP stays in scope to support greenfield: its provider gate is not excluded and is still reported NO_PRODUCER until GCP is admitted.
+  // gcp-provider stays required (#39, 6481421924): its provider gate is not excluded and is still reported NO_PRODUCER until GCP is admitted.
   assert.ok(!outOfScope.has("gcp-provider"));
   assert.equal(plan.find((gate) => gate.id === "gcp-provider")!.mode, "NO_PRODUCER");
 });

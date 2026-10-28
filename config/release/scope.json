@@ -73,7 +73,7 @@
     },
     {
       "gate": "preview:terraform-gcp-brownfield",
-      "reason": "The GCP brownfield preview is dropped from this release (owner decision of 2026-10-28, #39 6480066863): no GCP contract can seal a plan, so no producer can run this gate. GCP itself stays in scope to support greenfield (owner decision of 2026-10-28, #39 6481197218). The ./alz apply preview-evidence producer is unchanged."
+      "reason": "The GCP brownfield preview is dropped from this release (owner decision of 2026-10-28, #39 6480066863): no GCP contract can seal a plan, so no producer can run this gate. GCP Terraform ACT and GCP API-native ACT are in scope for this DEV release (#39, 6481421924). The ./alz apply preview-evidence producer is unchanged."
     },
     {
       "gate": "pillar:operational-excellence",

@@ -98,7 +98,7 @@ test("the owner's decision of 2026-10-28 drops the brownfield preview gates: eac
     "preview:terraform-azure-brownfield": /E1 makes APPLY seals create-only/,
     "preview:cdk-aws-brownfield": /E1 makes APPLY seals create-only/,
     "preview:bicep-azure-brownfield": /E1 makes APPLY seals create-only/,
-    "preview:terraform-gcp-brownfield": /GCP brownfield preview is dropped from this release.*GCP itself stays in scope to support greenfield/,
+    "preview:terraform-gcp-brownfield": /GCP brownfield preview is dropped from this release.*GCP Terraform ACT and GCP API-native ACT are in scope for this DEV release/,
   };
   const excludedGate = (gate: string) => shippedStatus.gates.find((x) => x.gate === gate)!;
   const template = excludedGate("preview:opentofu-aws-brownfield");
@@ -127,7 +127,7 @@ test("the owner's decision of 2026-10-28 moves the six pillar gates to v1.1: eac
     assert.ok(statusProblems(withEntry(gate, { status: "BLOCKED", nextAction: "Measure this pillar on a deployed environment." }), { scope: shippedScope, journeys })
       .some((x) => x.includes(gate) && x.includes("excludes this gate")), gate);
   }
-  assert.ok(!shippedScope.outOfScope.some((x) => x.gate === "gcp-provider"), "GCP stays in scope to support greenfield");
+  assert.ok(!shippedScope.outOfScope.some((x) => x.gate === "gcp-provider"), "gcp-provider stays required: GCP Terraform and GCP API-native ACT are in scope (#39, 6481421924)");
   assert.notEqual(excludedGate("gcp-provider").status, "OUT_OF_SCOPE");
   assert.ok(statusProblems(withEntry("gcp-provider", { status: "OUT_OF_SCOPE" }), { scope: shippedScope, journeys })
     .some((x) => x.includes("gcp-provider") && x.includes("needs the owner's scope")));

@@ -591,7 +591,7 @@ test("the shipped scope moves the six pillar gates to v1.1 (owner decision of 20
   // As ./alz qualify admission passes it (src/cli/release-admission.ts).
   const outOfScope = loadReleaseScope(process.cwd()).outOfScope.map((x) => x.gate);
   for (const id of pillars) assert.ok(outOfScope.includes(id), id);
-  assert.ok(!outOfScope.includes("gcp-provider"), "GCP stays in scope to support greenfield");
+  assert.ok(!outOfScope.includes("gcp-provider"), "gcp-provider stays required: GCP Terraform and GCP API-native ACT are in scope (#39, 6481421924)");
   const h = harness();
   try {
     const empty = await reviewProductionRelease({ manifest: input([]), expectedCommit: commit, root: h.root, outOfScope });
