@@ -420,7 +420,8 @@ describe("step 3 and the confirmation dialogs", () => {
     fake.onPost["/cancel"] = () => { fake.run = doneRun("seal", { exit: 1, code: "HUMAN_CONFIRMATION_MISMATCH", message: "canceled" }); };
     fireEvent.click(within(dialog).getByRole("button", { name: dialogCopy("TARGET", "DEV").cancel }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-    fireEvent.click(screen.getByRole("button", { name: COPY.back }));
+    // The page behind is made interactive again by an effect after the dialog unmounts: find the button once it is reachable.
+    fireEvent.click(await screen.findByRole("button", { name: COPY.back }));
     expect(screen.getByRole("heading", { name: STEP_TITLES[0] })).toBeTruthy();
     expect(document.activeElement).toBe(document.getElementById("pilot-step-title"));
     } finally { vi.useRealTimers(); }
