@@ -272,7 +272,7 @@ export function planChanged(changedPaths, files) {
       if (!dependent.length) gaps.push(path + " has no known test owner; add an explicit focused test.");
       continue;
     }
-    if (/^qualification\/aws\/act-dev1-canary\/(?:.+\.tf|terraform\.tfvars\.example\.json)$/.test(path) ||
+    if (/^qualification\/aws\/act-dev1-canary\/(?:.+\.tf|terraform\.tfvars\.example\.json|\.terraform\.lock\.hcl)$/.test(path) ||
         /^bootstrap\/aws\/(?:(?:main|variables|discovery)\.tf|discovery-policy\.json|terraform\.tfvars\.example|tests\/discovery\.tftest\.hcl)$/.test(path) ||
         path === "tests_python/test_aws_dev_terraform_handoff.py") {
       addExisting(pythonTests, files, ["test/act-dev1-automation.test.py"]);

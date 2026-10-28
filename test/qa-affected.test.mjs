@@ -147,6 +147,15 @@ test("ACT-DEV-1 Terraform source receives synthetic HCL ownership without broad 
   assert.equal(plan.needsDeps, false);
 });
 
+test("the ACT-DEV-1 canary's committed lock file is owned by the canary's synthetic checks (review of #327, round 4)", () => {
+  const files = fixture();
+  files.set("qualification/aws/act-dev1-canary/.terraform.lock.hcl", 'provider "registry.terraform.io/hashicorp/aws" {}');
+  files.set("test/act-dev1-automation.test.py", "lock");
+  const plan = planChanged(["qualification/aws/act-dev1-canary/.terraform.lock.hcl"], files);
+  assert.deepEqual(plan.pythonTests, ["test/act-dev1-automation.test.py"]);
+  assert.deepEqual(plan.gaps, []);
+});
+
 test("AWS bootstrap boundary changes select ACT-DEV-1 synthetic checks", () => {
   const files = fixture();
   files.set("bootstrap/aws/main.tf", "permissions_boundary");
