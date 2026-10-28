@@ -135,7 +135,7 @@ function stagesOf(input: LifecycleReportInput, applyEvidenceSha256: string): { s
   return { stages: { execute, observe, propose, cleanup: cleanupStage, leftovers: leftoversStage }, unresolved };
 }
 
-/** The ownership classes a kept resource can carry: the protected ones and the environment owner's. */
+/** The ownership classes a kept resource can carry: the protected ones (CANARY_RETAINED among them, owner decision E1) and the environment owner's. */
 const KEPT_OWNERSHIPS: readonly string[] = ["PRE_EXISTING", "REPLACED_PRE_EXISTING", "IMPORTED", "NOT_IN_PLAN", "TYPE_UNREVIEWED", ...PROTECTED_OWNERSHIPS];
 /** The resource-cleanup state the leftovers stage derives. */
 const resourceCleanupOf = (leftovers: StageResult): AcceptanceDisposition["resourceCleanup"] => leftovers.status === "PASS" ? "COMPLETED" : leftovers.status === "NOT_RUN" ? "NOT_RUN" : "INCOMPLETE";

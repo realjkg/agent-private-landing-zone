@@ -20,8 +20,7 @@ import { captureProjectFiles } from "../src/teardown/snapshot.js";
 import { sha256 } from "../src/util/sha256.js";
 import {
   ENGINE_VERSION, H, NOW, POLICY, REQUESTER, SOURCE_COMMIT, awsContractJson, awsIdentityEnv, awsTargetOf, behave, contractJson, human, identityEnv,
-  installFakeTerraform, targetOf, testFixtureForgeQualificationEvidence, writeReviewedContract,
-} from "./helpers/apply-fixtures.js";
+  installFakeTerraform, targetOf, testFixtureForgeQualificationEvidence, writeReviewedContract, withCanary } from "./helpers/apply-fixtures.js";
 
 // The committed ACT-DEV-1 Terraform canaries (qualification/aws/act-dev1-canary and qualification/azure/act-dev1-canary) against the
 // seal-time deletion-unit check of the Terraform engine (`unitOfPlan`, src/apply/engines/terraform.ts). SYNTHETIC: each canary is
@@ -50,7 +49,8 @@ const AWS_CLOUD: Cloud = {
   providerConfig: { aws: { name: "aws", full_name: AWS_SOURCE, expressions: { region: { references: ["var.region"] } } } },
 };
 const AZURE_CLOUD: Cloud = {
-  provider: "AZURE", dir: AZURE_DIR, contract: (kill) => contractJson(kill), target: targetOf, env: identityEnv,
+  // Owner decision E1: the contract's canary allowlist is the committed canary's one virtual network (the example contract's).
+  provider: "AZURE", dir: AZURE_DIR, contract: (kill) => withCanary(contractJson(kill), { resources: [{ type: "azurerm_virtual_network", count: 1 }] }), target: targetOf, env: identityEnv,
   vars: { resource_group_name: "rg-alz-pilot-dev", location: "eastus2", canary_name: "vnet-alz-act-dev-1-canary-01", owner: "qa" },
   address: "azurerm_virtual_network.act_dev1", type: "azurerm_virtual_network", tagAttributes: ["tags"],
   providerConfig: { azurerm: { name: "azurerm", full_name: AZURERM_SOURCE, expressions: { features: [{}], resource_provider_registrations: { constant_value: "none" } } } },

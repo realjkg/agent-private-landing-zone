@@ -1383,6 +1383,11 @@ test("canary retain (owner decision E1): the CDK canary's WaitConditionHandle se
   assert.equal(kept.report.passed, true, JSON.stringify(kept.report.stages));
   assert.deepEqual(kept.report.acceptance.retained.byOwnership, { CANARY_RETAINED: 1 });
   assert.match(kept.report.acceptance.statement, /^approved resources deleted; 1 protected or pre-existing object\(s\) intentionally retained \(1 kept by PILOT_OWNER\)/);
+  // The report's validator accepts CANARY_RETAINED as a kept ownership class (src/apply/lifecycle-report.ts, KEPT_OWNERSHIPS through
+  // PROTECTED_OWNERSHIPS), and still refuses a class it does not know.
+  assert.deepEqual(lifecycleReportProblems(kept.report), []);
+  const forged = { ...kept.report, acceptance: { ...kept.report.acceptance, retained: { ...kept.report.acceptance.retained, byOwnership: { CANARY_KEPT: 1 } } } };
+  assert.ok(lifecycleReportProblems(forged).some((p) => /byOwnership: a key is not an ownership class/.test(p)), JSON.stringify(lifecycleReportProblems(forged)));
   // Not declared: today's behavior, a type nobody reviewed as a leaf, held for a person, and the record never completes.
   const held = await journey({ type: "AWS::CloudFormation::WaitConditionHandle", count: 1 });
   assert.deepEqual(held.proposal.excluded.map((x) => [x.address, x.ownership]), [["Sentinel", "TYPE_UNREVIEWED"]]);
