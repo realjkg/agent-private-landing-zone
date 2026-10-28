@@ -39,10 +39,17 @@ export function tierOf(path: Partial<DeploymentPath> | undefined | null): { tier
   return { tier: 3, outstanding };
 }
 
-/** The badge words for a path: its tier, except that a path whose records cannot be read says so instead. */
+export const SEQUENCED_WORDS = "Waiting on another path to go live first";
+
+/**
+ * The badge words for a path: its tier, except that a path whose records cannot be read says so, and a partial path whose
+ * outstanding steps include another path's live run that must come first says that rather than "owner inputs".
+ */
 export function badgeOf(path: Partial<DeploymentPath> | undefined | null): string {
   const { tier } = tierOf(path);
-  if (tier !== 1 && Array.isArray(path?.blockers) && path.blockers.some((b) => b?.party === "UNKNOWN")) return "Readiness unknown";
+  const blockers = Array.isArray(path?.blockers) ? path.blockers : [];
+  if (tier !== 1 && blockers.some((b) => b?.party === "UNKNOWN")) return "Readiness unknown";
+  if (tier === 2 && blockers.some((b) => b?.party === "SEQUENCED")) return SEQUENCED_WORDS;
   return TIER_WORDS[tier];
 }
 

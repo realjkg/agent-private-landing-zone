@@ -1,11 +1,59 @@
-import { forwardRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useRef, useState } from "react";
 
-import type { DeploymentPath, EnvironmentDecision, PathParty, PathsReport } from "./pilot-api";
+import { fetchPilotPaths, type DeploymentPath, type EnvironmentDecision, type PathParty, type PathsReport, type PilotReply } from "./pilot-api";
 import { badgeOf, checkedTime, environmentReady, firstSentence, orderByReadiness, orderEnvironments, tierOf } from "./readiness-order";
 
 // The "Deployment paths" panel (owner decision E5): every cloud and build path, readiest first, from the release records and the
 // readiness checks already run. Read-only: a row only opens to show what that path still needs. It has no button that starts,
 // selects or enables anything; the path in the owner's reviewed rules stays the only one that can run, through the steps below.
+
+/** How often an open Pilot view re-reads the paths: often enough that a stop or a rules change shows without a reload. */
+export const PATHS_REFRESH_MS = 15_000;
+
+/**
+ * One loader for GET /pilot/paths that applies only the reply to its latest request. A trigger (focus, the page becoming visible,
+ * the interval) while a request is still out is coalesced into it, so returning to the tab sends one request, not two. A forced
+ * load (after a readiness check) always sends a new request and supersedes the one out: a slower, older reply is then dropped,
+ * so it can never put back a "Ready" that a newer reply (an emergency stop, a rules change) replaced. Nothing is applied after
+ * the component unmounts.
+ */
+export function usePathsLoader(onReply: (reply: PilotReply<PathsReport>) => void): (force?: boolean) => void {
+  const latest = useRef(0);
+  const pending = useRef(false);
+  const alive = useRef(true);
+  const handler = useRef(onReply);
+  handler.current = onReply;
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
+  return useCallback((force = false) => {
+    if (pending.current && !force) return;
+    const mine = ++latest.current;
+    pending.current = true;
+    void fetchPilotPaths().then((reply) => {
+      if (mine !== latest.current) return;
+      pending.current = false;
+      if (alive.current) handler.current(reply);
+    });
+  }, []);
+}
+
+/**
+ * Re-reads the paths while `enabled`: when the window regains focus or the page becomes visible again, and every
+ * PATHS_REFRESH_MS while it is visible. Read-only; it only calls `load`.
+ */
+export function usePathsRefresh(load: () => void, enabled: boolean, intervalMs: number | null = PATHS_REFRESH_MS): void {
+  useEffect(() => {
+    if (!enabled) return undefined;
+    const back = () => { if (!document.hidden) load(); };
+    window.addEventListener("focus", back);
+    document.addEventListener("visibilitychange", back);
+    const timer = intervalMs === null ? undefined : setInterval(() => { if (!document.hidden) load(); }, intervalMs);
+    return () => {
+      window.removeEventListener("focus", back);
+      document.removeEventListener("visibilitychange", back);
+      if (timer !== undefined) clearInterval(timer);
+    };
+  }, [load, enabled, intervalMs]);
+}
 
 export type PathsLoad = { status: "loading" } | { status: "error" } | { status: "ready"; report: PathsReport };
 

@@ -1,9 +1,9 @@
 // @vitest-environment happy-dom
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import { DeploymentContext } from "../src/operator-ui/app/components/DeploymentContext";
-import { DeploymentPaths } from "../src/operator-ui/app/pilot/DeploymentPaths";
+import { DeploymentPaths, PATHS_REFRESH_MS } from "../src/operator-ui/app/pilot/DeploymentPaths";
 import PilotWizard from "../src/operator-ui/app/pilot/PilotWizard";
 import { forgetPilotToken, setPilotToken, type DeploymentPath, type EnvironmentDecision, type PathsReport } from "../src/operator-ui/app/pilot/pilot-api";
 import { COPY, STEP_TITLES } from "../src/operator-ui/app/pilot/pilot-copy";
@@ -37,16 +37,20 @@ function report(environments: EnvironmentDecision[] = [decision("DEV", { ready: 
 }
 
 type Call = { url: string; method: string };
-type Fake = { run: unknown; pathsReplies: { status: number; body: unknown }[]; onPreflight?: (environment: string) => void };
-function install(paths: { status: number; body: unknown }, fake: Fake = { run: null, pathsReplies: [] }): Call[] {
+/** A paths reply; `hold` keeps it from arriving until the test releases it (a slow request). */
+type PathsReply = { status: number; body: unknown; hold?: Promise<void> };
+type Fake = { run: unknown; pathsReplies: PathsReply[]; onPreflight?: (environment: string) => void; tokenAccepted?: () => boolean };
+/** A promise the test resolves by hand. */
+const gate = (): { promise: Promise<void>; open: () => void } => { let open = () => {}; const promise = new Promise<void>((done) => { open = done; }); return { promise, open }; };
+function install(paths: PathsReply, fake: Fake = { run: null, pathsReplies: [] }): Call[] {
   const calls: Call[] = [];
   vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit = {}) => {
     const token = ((init.headers ?? {}) as Record<string, string>)["X-ALZ-Pilot-Token"];
     calls.push({ url, method: init.method ?? "GET" });
     const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
-    if (token !== TOKEN) return url === "/pilot/state" ? json({ unlocked: false }) : json({ error: "PILOT_TOKEN_REQUIRED", message: "no" }, 401);
+    if (token !== TOKEN || fake.tokenAccepted?.() === false) return url === "/pilot/state" ? json({ unlocked: false }) : json({ error: "PILOT_TOKEN_REQUIRED", message: "no" }, 401);
     const state = () => ({ unlocked: true, path: "UI", busy: false, run: fake.run });
-    if (url === "/pilot/paths") { const next = fake.pathsReplies.shift() ?? paths; return json(next.body, next.status); }
+    if (url === "/pilot/paths") { const next = fake.pathsReplies.shift() ?? paths; if (next.hold) await next.hold; return json(next.body, next.status); }
     if (url === "/pilot/state") return json(state());
     if (url === "/pilot/preflight") { fake.onPreflight?.(JSON.parse(String(init.body)).environment); return json(state(), 202); }
     return json({ error: "NOT_FOUND", message: "no" }, 404);
@@ -206,6 +210,142 @@ test("with the emergency stop on, the panel says so and shows nothing as ready",
   const { container } = render(<DeploymentPaths load={{ status: "ready", report: stopped }} />);
   expect(container.querySelector(".paths-stop")?.textContent).toContain("The emergency stop is on");
   expect([...container.querySelectorAll(".paths-badge")].map((b) => b.textContent)).not.toContain("Ready");
+});
+
+test("a SEQUENCED row has its own badge (review of #334 round 2, N3)", () => {
+  const sequenced = report();
+  sequenced.paths = sequenced.paths.map((p) => p.cloud === "AWS" && p.engine === "TERRAFORM"
+    ? { ...p, blockers: [{ party: "SEQUENCED", source: "JOURNEY", text: "Azure Terraform goes live first. Then more." }, ...p.blockers] } : p);
+  const { container } = render(<DeploymentPaths load={{ status: "ready", report: sequenced }} />);
+  expect(container.querySelector('[data-path="AWS/TERRAFORM"] .paths-badge')?.textContent).toBe("Waiting on another path to go live first");
+  expect(container.querySelector('[data-path="AWS/TERRAFORM"] .paths-reason')?.textContent).toBe("Waits on another path going live first: Azure Terraform goes live first.");
+});
+
+describe("an open page follows the records without a reload (review of #334 round 2, N2)", () => {
+  const stoppedReport = (): PathsReport => {
+    const stopped = report([decision("DEV"), decision("QA"), decision("PROD")]);
+    stopped.contract = { state: "ENABLED", provider: "AZURE", engine: "TERRAFORM", contractSha256: "c".repeat(64), killSwitch: true };
+    return stopped;
+  };
+  const badges = () => [...document.querySelectorAll('[data-testid="deployment-paths"] .paths-badge')].map((b) => b.textContent);
+
+  test("when the window regains focus, the panel re-reads the paths: a kill switch engaged meanwhile replaces Ready", async () => {
+    const fake: Fake = { run: null, pathsReplies: [{ status: 200, body: report() }] };
+    const calls = await unlockWizard({ status: 200, body: stoppedReport() }, fake);
+    await waitFor(() => expect(badges()).toContain("Ready"));
+    const before = calls.filter((c) => c.url === "/pilot/paths").length;
+    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    await waitFor(() => expect(document.querySelector(".paths-stop")?.textContent).toContain("The emergency stop is on"));
+    expect(badges()).not.toContain("Ready");
+    expect(calls.filter((c) => c.url === "/pilot/paths").length).toBe(before + 1);
+    expect(calls.filter((c) => c.url === "/pilot/paths").every((c) => c.method === "GET")).toBe(true);
+  });
+
+  test("when the page becomes visible again it re-reads; while it is hidden the interval does not", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      const fake: Fake = { run: null, pathsReplies: [{ status: 200, body: report() }] };
+      const calls = await unlockWizard({ status: 200, body: stoppedReport() }, fake);
+      await waitFor(() => expect(badges()).toContain("Ready"));
+      const count = () => calls.filter((c) => c.url === "/pilot/paths").length;
+      const before = count();
+      const hidden = vi.spyOn(document, "hidden", "get").mockReturnValue(true);
+      await act(async () => { vi.advanceTimersByTime(PATHS_REFRESH_MS); });
+      expect(count()).toBe(before);
+      hidden.mockReturnValue(false);
+      await act(async () => { document.dispatchEvent(new Event("visibilitychange")); });
+      await waitFor(() => expect(count()).toBe(before + 1));
+      await waitFor(() => expect(badges()).not.toContain("Ready"));
+    } finally { vi.useRealTimers(); }
+  });
+
+  test("while the Pilot view is open and visible, the paths are re-read on the interval", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      const fake: Fake = { run: null, pathsReplies: [{ status: 200, body: report() }] };
+      const calls = await unlockWizard({ status: 200, body: stoppedReport() }, fake);
+      await waitFor(() => expect(badges()).toContain("Ready"));
+      const before = calls.filter((c) => c.url === "/pilot/paths").length;
+      await act(async () => { vi.advanceTimersByTime(PATHS_REFRESH_MS); });
+      await waitFor(() => expect(calls.filter((c) => c.url === "/pilot/paths").length).toBe(before + 1));
+      await waitFor(() => expect(badges()).not.toContain("Ready"));
+    } finally { vi.useRealTimers(); }
+  });
+
+  test("P1: returning to the tab fires focus and visibilitychange together; one request is sent, not two", async () => {
+    const slow = gate();
+    const fake: Fake = { run: null, pathsReplies: [{ status: 200, body: report() }, { status: 200, body: stoppedReport(), hold: slow.promise }] };
+    const calls = await unlockWizard({ status: 200, body: stoppedReport() }, fake);
+    await waitFor(() => expect(badges()).toContain("Ready"));
+    const count = () => calls.filter((c) => c.url === "/pilot/paths").length;
+    const before = count();
+    await act(async () => { document.dispatchEvent(new Event("visibilitychange")); window.dispatchEvent(new Event("focus")); });
+    expect(count()).toBe(before + 1);
+    slow.open();
+    await waitFor(() => expect(document.querySelector(".paths-stop")).not.toBeNull());
+    expect(count()).toBe(before + 1);
+  });
+
+  test("P2: a slower, older Ready reply that arrives after a newer emergency-stop reply is dropped; the stop stays shown", async () => {
+    const slow = gate();
+    const fake: Fake = { run: null, pathsReplies: [{ status: 200, body: report() }, { status: 200, body: report(), hold: slow.promise }, { status: 200, body: stoppedReport() }] };
+    fake.onPreflight = (environment) => {
+      fake.run = { id: "pf-1", step: "preflight", status: "DONE", startedAt: CHECKED, transcript: "", result: { exit: 2, data: { environment, ready: false, checks: [], decisions: { act: "DISABLED", contract: {}, authorized: [], approved: [] } } } };
+    };
+    await unlockWizard({ status: 200, body: stoppedReport() }, fake);
+    await waitFor(() => expect(badges()).toContain("Ready"));
+    // The person returns to the tab: a request goes out and is slow (it would say Ready).
+    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    // A readiness check finishes meanwhile: its forced re-read returns the emergency stop first.
+    fireEvent.click(screen.getByRole("button", { name: COPY.pathContinue }));
+    fireEvent.click(await screen.findByRole("button", { name: COPY.readyRun }));
+    await waitFor(() => expect(document.querySelector(".paths-stop")?.textContent).toContain("The emergency stop is on"));
+    // The older reply arrives last. It is dropped: the stop note stays and Ready does not come back.
+    await act(async () => { slow.open(); await slow.promise; });
+    await act(async () => { await Promise.resolve(); });
+    expect(document.querySelector(".paths-stop")?.textContent).toContain("The emergency stop is on");
+    expect(badges()).not.toContain("Ready");
+  });
+
+  test("a refused session token re-reads the state, which locks the page and stops the refresh until it is unlocked again", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      let accepted = true;
+      const fake: Fake = { run: null, pathsReplies: [], tokenAccepted: () => accepted };
+      const calls = await unlockWizard({ status: 200, body: report() }, fake);
+      await waitFor(() => expect(badges()).toContain("Ready"));
+      accepted = false; // the console restarted: this page's token is no longer known
+      await act(async () => { vi.advanceTimersByTime(PATHS_REFRESH_MS); });
+      await screen.findByLabelText(COPY.unlockLabel);
+      expect(screen.queryByTestId("deployment-paths")).toBeNull();
+      const count = calls.filter((c) => c.url === "/pilot/paths").length;
+      await act(async () => { vi.advanceTimersByTime(PATHS_REFRESH_MS * 3); window.dispatchEvent(new Event("focus")); });
+      expect(calls.filter((c) => c.url === "/pilot/paths").length).toBe(count);
+    } finally { vi.useRealTimers(); }
+  });
+
+  test("the planning view follows an unlock that happens after it opened, at the next return to the page", async () => {
+    const calls = install({ status: 200, body: report([decision("DEV"), decision("QA"), decision("PROD", { ready: true })]) });
+    render(<DeploymentContext />);
+    expect(calls).toEqual([]);
+    setPilotToken(TOKEN);
+    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    const stage = screen.getByRole("combobox", { name: "Environment" }) as HTMLSelectElement;
+    await waitFor(() => expect([...stage.options].map((o) => o.value)).toEqual(["production", "development", "staging"]));
+    expect(calls.filter((c) => c.url === "/pilot/paths")).toHaveLength(1);
+  });
+
+  test("the planning view re-reads on focus too, and keeps its order in step", async () => {
+    setPilotToken(TOKEN);
+    const fake: Fake = { run: null, pathsReplies: [{ status: 200, body: report([decision("DEV"), decision("QA", { ready: true }), decision("PROD")]) }] };
+    const calls = install({ status: 200, body: report([decision("DEV"), decision("QA"), decision("PROD", { ready: true })]) }, fake);
+    render(<DeploymentContext />);
+    const stage = screen.getByRole("combobox", { name: "Environment" }) as HTMLSelectElement;
+    await waitFor(() => expect([...stage.options].map((o) => o.value)).toEqual(["staging", "development", "production"]));
+    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    await waitFor(() => expect([...stage.options].map((o) => o.value)).toEqual(["production", "development", "staging"]));
+    expect(calls.filter((c) => c.url === "/pilot/paths").length).toBe(2);
+  });
 });
 
 describe("the planning view (DeploymentContext)", () => {
