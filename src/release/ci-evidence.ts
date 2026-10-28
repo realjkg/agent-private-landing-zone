@@ -1,20 +1,24 @@
 import { createHash } from "node:crypto";
-import { readFileSync, statSync } from "node:fs";
+import { lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { CI_ARTIFACT_NAME, CI_CONDITION_REASONS, CI_EVIDENCE_VERSION, CI_GATES, CI_JOB_NAME, ciConditionsOf, isCiGateId, type CiConditions, type CiGateEvidence, type CiGateId, type CitedFile, type CitedRun } from "../qualification/ci-gate.js";
-import { canonicalJson } from "../teardown/manifest.js";
+import { CI_ARTIFACT_NAME, CI_ARTIFACT_PATHS, CI_CONDITION_REASONS, CI_EVIDENCE_VERSION, CI_GATES, CI_JOB_NAME, ciConditionsOf, ciRunFactsSha256, isCiGateId, type CiConditions, type CiGateEvidence, type CiGateId, type CitedFile, type CitedRun } from "../qualification/ci-gate.js";
 import { sha256 } from "../util/sha256.js";
 import { validateReleaseManifest, type PreviewOperateReleaseManifest } from "./manifest.js";
 
 /**
  * The product-owned producer of the CI release gates' evidence (`source-ci`, `release-archive`; the contract in
- * src/qualification/ci-gate.ts). It reads only files a person exported and downloaded beforehand into one directory:
+ * src/qualification/ci-gate.ts). It reads only files a person exported and downloaded beforehand into one directory, for a
+ * run of supply-chain.yml in this repository that the person dispatched (`gh workflow run supply-chain.yml --ref <candidate
+ * branch>`) on the frozen candidate commit:
  *
- *   gh api repos/{owner}/{repo}/actions/runs/{run_id}            > DIR/run.json
- *   gh api repos/{owner}/{repo}/actions/runs/{run_id}/jobs       > DIR/jobs.json
- *   gh api repos/{owner}/{repo}/actions/runs/{run_id}/artifacts  > DIR/artifacts.json
+ *   gh api repos/realjkg/agent-private-landing-zone/actions/runs/{run_id}            > DIR/run.json
+ *   gh api repos/realjkg/agent-private-landing-zone/actions/runs/{run_id}/jobs       > DIR/jobs.json
+ *   gh api repos/realjkg/agent-private-landing-zone/actions/runs/{run_id}/artifacts  > DIR/artifacts.json
  *   gh run download {run_id} --name agent-private-landing-zone-supply-chain --dir DIR
+ *
+ * The download keeps the artifact's own layout (CI_ARTIFACT_PATHS: `sbom.cdx.json` at the top, the release files under
+ * `.runs/release/`); each file is read only at its fixed path, and only as a regular file reached through no symbolic link.
  *
  * Nothing here reads a token or opens a connection; the run id a person types must be the one run.json names. Every gate
  * field is derived from those files and the frozen candidate commit; a run that does not show the gate passed is refused by
@@ -30,7 +34,7 @@ export type CiEvidenceInput = {
   /** The run id the person typed; it must be the run the facts describe. */
   runId: number;
   facts: ExportedRunFacts;
-  /** The downloaded artifact files by bare name, with their bytes. */
+  /** The downloaded artifact files by bare name (CI_ARTIFACT_PATHS), with their bytes. */
   files: Readonly<Record<string, Buffer>>;
   /** The frozen candidate commit from config/release/scope.json, or null while none is frozen. */
   candidate: string | null;
@@ -39,7 +43,7 @@ export type CiEvidenceInput = {
 };
 export type CiEvidenceRefusal = {
   ok: false;
-  code: "GATE_UNKNOWN" | "CANDIDATE_NOT_FROZEN" | "RUN_FACTS_UNREADABLE" | "RUN_ID_MISMATCH" | "CI_RUN_NOT_CANDIDATE" | "CI_RUN_NOT_PASSED" | "CI_ARTIFACT_MISSING" | "CI_ARTIFACT_INVALID";
+  code: "GATE_UNKNOWN" | "CANDIDATE_NOT_FROZEN" | "RUN_FACTS_UNREADABLE" | "RUN_ID_MISMATCH" | "CI_RUN_NOT_CANDIDATE" | "CI_RUN_NOT_PASSED" | "CI_ARTIFACT_MISSING" | "CI_ARTIFACT_INVALID" | "CI_CLOCK_BEFORE_RUN";
   message: string;
 };
 
@@ -96,17 +100,34 @@ export function citeRun(facts: ExportedRunFacts, runId: number): { ok: true; run
 }
 
 /** The artifact files in a directory, by the bare names the gates know; a name that is not there is simply absent. */
-export function readArtifactFiles(dir: string): Record<string, Buffer> {
-  const files: Record<string, Buffer> = {};
-  for (const name of new Set(Object.values(CI_GATES).flatMap((gate) => gate.files))) {
-    try {
-      const path = join(dir, name);
-      if (statSync(path).isFile()) files[name] = readFileSync(path);
-    } catch {
-      // absent: the gate's filesVerified condition says so
-    }
+/**
+ * Reads one file under `dir` at a fixed relative path, refusing anything but a regular file reached through real directories:
+ * a symbolic link at any step, or a directory, device or socket, is `NOT_REGULAR`, so nothing outside `dir` is ever read.
+ */
+export function readRegularFile(dir: string, relativePath: string): { ok: true; bytes: Buffer } | { ok: false; reason: "ABSENT" | "NOT_REGULAR" } {
+  const parts = relativePath.split("/");
+  let path = dir;
+  for (const [index, part] of parts.entries()) {
+    path = join(path, part);
+    let stat;
+    try { stat = lstatSync(path); } catch { return { ok: false, reason: "ABSENT" }; }
+    const last = index === parts.length - 1;
+    if (last ? !stat.isFile() : !stat.isDirectory()) return { ok: false, reason: "NOT_REGULAR" };
   }
-  return files;
+  return { ok: true, bytes: readFileSync(path) };
+}
+
+/** The artifact files in a directory, each at its fixed path in the artifact layout; a file that is not there is simply absent, and one that is not a regular file is named. */
+export function readArtifactFiles(dir: string): { files: Record<string, Buffer>; notRegular: string[] } {
+  const files: Record<string, Buffer> = {};
+  const notRegular: string[] = [];
+  for (const [name, relativePath] of Object.entries(CI_ARTIFACT_PATHS)) {
+    const read = readRegularFile(dir, relativePath);
+    if (read.ok) files[name] = read.bytes;
+    else if (read.reason === "NOT_REGULAR") notRegular.push(relativePath);
+    // ABSENT: the producer names it (CI_ARTIFACT_MISSING) for the gate that rests on it
+  }
+  return { files, notRegular };
 }
 
 /** Builds the gate evidence from the exported facts and the files, or says by name why they do not show the gate passed. Reads nothing itself. */
@@ -120,8 +141,9 @@ export function buildCiGateEvidence(input: CiEvidenceInput): { ok: true; evidenc
   const gate = CI_GATES[gateId];
   const files: CitedFile[] = gate.files.filter((name) => input.files[name] !== undefined).map((name) => ({ name, sha256: sha256(input.files[name]!), bytes: input.files[name]!.length }));
   const missing = gate.files.filter((name) => input.files[name] === undefined);
-  if (missing.length > 0) return fail("CI_ARTIFACT_MISSING", "The downloaded artifact lacks " + missing.join(", ") + " (gh run download " + run.id + " --name " + CI_ARTIFACT_NAME + ").");
+  if (missing.length > 0) return fail("CI_ARTIFACT_MISSING", "The downloaded artifact lacks " + missing.map((name) => CI_ARTIFACT_PATHS[name]).join(", ") + " (gh run download " + run.id + " --name " + CI_ARTIFACT_NAME + " --dir DIR).");
   let releaseManifest: CiGateEvidence["releaseManifest"] = null;
+  let archiveDigestLine: string | null = null;
   if (gateId === "release-archive") {
     let manifest: unknown;
     try { manifest = JSON.parse(input.files["release-manifest.json"]!.toString("utf8")); } catch { return fail("CI_ARTIFACT_INVALID", "release-manifest.json is not JSON."); }
@@ -132,25 +154,29 @@ export function buildCiGateEvidence(input: CiEvidenceInput): { ok: true; evidenc
     if (blockers.length > 0) return fail("CI_ARTIFACT_INVALID", "release-manifest.json does not validate: " + blockers.slice(0, 4).join("; ") + ".");
     const typed = manifest as PreviewOperateReleaseManifest;
     releaseManifest = { sourceCommit: typed.sourceCommit, productVersion: typed.productVersion, sbomSha256: typed.sbom.sha256 };
-    const digestLine = input.files["agent-private-landing-zone.tar.gz.sha256"]!.toString("utf8").trim().split(/\s+/)[0] ?? "";
+    // The digest file is recorded whole, so the validator can recheck both its hash and the archive hash it names.
+    archiveDigestLine = input.files["agent-private-landing-zone.tar.gz.sha256"]!.toString("utf8");
+    const named = /^([0-9a-f]{64}) [ *][^\n]{1,400}\n$/.exec(archiveDigestLine)?.[1];
+    if (named === undefined) return fail("CI_ARTIFACT_INVALID", "agent-private-landing-zone.tar.gz.sha256 is not one sha256sum line.");
     const archive = files.find((file) => file.name === "agent-private-landing-zone.tar.gz")!;
-    if (digestLine !== archive.sha256) return fail("CI_ARTIFACT_INVALID", "agent-private-landing-zone.tar.gz does not match its .sha256 file.");
+    if (named !== archive.sha256) return fail("CI_ARTIFACT_INVALID", "agent-private-landing-zone.tar.gz does not match its .sha256 file.");
   }
-  const conditions = ciConditionsOf(gateId, run, files, releaseManifest, input.candidate);
+  const conditions = ciConditionsOf(gateId, run, files, releaseManifest, input.candidate, archiveDigestLine);
   const refusal = (code: CiEvidenceRefusal["code"], keys: (keyof CiConditions)[]): CiEvidenceRefusal | undefined => {
     const failed = keys.filter((key) => !conditions[key]);
     return failed.length === 0 ? undefined : fail(code, failed.map((key) => CI_CONDITION_REASONS[key]).join("; ") + ".");
   };
-  const problem = refusal("CI_RUN_NOT_CANDIDATE", ["headShaIsCandidate", "workflowIsSupplyChain"]) ??
+  const problem = refusal("CI_RUN_NOT_CANDIDATE", ["headShaIsCandidate", "workflowIsSupplyChain", "runIsDispatched", "runIsThisRepository"]) ??
     refusal("CI_RUN_NOT_PASSED", ["runSucceeded", "jobSucceeded", "stepsSucceeded", "artifactListed"]) ??
     refusal("CI_ARTIFACT_INVALID", ["filesVerified"]);
   if (problem) return problem;
+  if (input.now.getTime() < Date.parse(run.startedAt)) return fail("CI_CLOCK_BEFORE_RUN", "This machine's clock (" + input.now.toISOString() + ") is before the run started (" + run.startedAt + "); evidence is never dated before its run.");
   const evidence: CiGateEvidence = {
     schemaVersion: 1, reportKind: "CI_GATE", gateVersion: CI_EVIDENCE_VERSION, gateId, executionMode: "CI", label: "LIVE", passed: true, actEnabled: false, mutationObserved: false,
-    sourceCommit: input.candidate, targetHardwareId: run.runner.name, run, files, releaseManifest, conditions,
+    sourceCommit: input.candidate, targetHardwareId: run.runner.name, run, files, releaseManifest, archiveDigestLine, conditions,
     attestation: { attestedBy: input.attestedBy, attestedAt: input.now.toISOString() },
     checks: [
-      { name: "run-facts", passed: true, evidenceSha256: sha256(canonicalJson(run as never)) },
+      { name: "run-facts", passed: true, evidenceSha256: ciRunFactsSha256(run) },
       ...files.map((file) => ({ name: "artifact:" + file.name, passed: true as const, evidenceSha256: file.sha256 })),
     ],
     generatedAt: input.now.toISOString(),

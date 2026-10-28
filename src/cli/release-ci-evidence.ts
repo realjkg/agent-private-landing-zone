@@ -1,8 +1,9 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { userInfo } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { buildCiGateEvidence, ciAdmissionRecordOf, readArtifactFiles, type ExportedRunFacts } from "../release/ci-evidence.js";
+import { buildCiGateEvidence, ciAdmissionRecordOf, readArtifactFiles, readRegularFile, type ExportedRunFacts } from "../release/ci-evidence.js";
 import { CI_ARTIFACT_NAME, CI_GATES } from "../qualification/ci-gate.js";
 import { loadReleaseScope } from "../release/status.js";
 import { EXIT, processTerminal, type HumanTerminal } from "./teardown-driver.js";
@@ -11,15 +12,17 @@ import { EXIT, processTerminal, type HumanTerminal } from "./teardown-driver.js"
  * `node dist/cli/release-ci-evidence.js --gate source-ci|release-archive --run RUN_ID --artifacts DIR`
  *
  * The product-owned producer of a CI release gate's evidence (src/release/ci-evidence.ts; the contract in
- * src/qualification/ci-gate.ts). It reads only files in DIR, which the person exported and downloaded beforehand:
+ * src/qualification/ci-gate.ts). It reads only regular files in DIR, which the person exported and downloaded beforehand
+ * for a supply-chain.yml run they dispatched in this repository on the frozen candidate commit:
  *
- *   gh api repos/OWNER/REPO/actions/runs/RUN_ID            > DIR/run.json
- *   gh api repos/OWNER/REPO/actions/runs/RUN_ID/jobs       > DIR/jobs.json
- *   gh api repos/OWNER/REPO/actions/runs/RUN_ID/artifacts  > DIR/artifacts.json
+ *   gh workflow run supply-chain.yml --ref <candidate branch>     (the run must be a workflow_dispatch run)
+ *   gh api repos/realjkg/agent-private-landing-zone/actions/runs/RUN_ID            > DIR/run.json
+ *   gh api repos/realjkg/agent-private-landing-zone/actions/runs/RUN_ID/jobs       > DIR/jobs.json
+ *   gh api repos/realjkg/agent-private-landing-zone/actions/runs/RUN_ID/artifacts  > DIR/artifacts.json
  *   gh run download RUN_ID --name agent-private-landing-zone-supply-chain --dir DIR
  *
- * Nothing here reads a token or opens a connection. The run must be of the frozen candidate commit (config/release/scope.json)
- * and must show every step the gate rests on succeeded; otherwise it is refused by name before the phrase is asked for and
+ * Nothing here reads a token or opens a connection. The run must be a dispatched run of this repository on the frozen
+ * candidate commit (config/release/scope.json) and must show every step the gate rests on succeeded; otherwise it is refused by name before the phrase is asked for and
  * nothing is written. The person then types the attestation, and the evidence is written once to .runs/release/ci/.
  */
 export type CiEvidenceCliDeps = {
@@ -36,9 +39,12 @@ export type CiEvidenceCliDeps = {
 const USAGE = "node dist/cli/release-ci-evidence.js --gate " + Object.keys(CI_GATES).join("|") + " --run RUN_ID --artifacts DIR";
 const FLAGS = ["--gate", "--run", "--artifacts"] as const;
 
+/** One exported run-facts file, read only as a regular file in DIR (never through a symbolic link); anything else is unreadable. */
 function readJson(dir: string, name: string): unknown {
+  const read = readRegularFile(dir, name);
+  if (!read.ok) return undefined;
   try {
-    return JSON.parse(readFileSync(join(dir, name), "utf8")) as unknown;
+    return JSON.parse(read.bytes.toString("utf8")) as unknown;
   } catch {
     return undefined;
   }
@@ -65,17 +71,20 @@ export async function releaseCiEvidence(args: string[], deps: CiEvidenceCliDeps 
   const root = deps.root ?? process.cwd();
   const dir = resolve(root, values.get("--artifacts")!);
   const facts: ExportedRunFacts = { run: readJson(dir, "run.json"), jobs: readJson(dir, "jobs.json"), artifacts: readJson(dir, "artifacts.json") };
-  for (const [name, value] of Object.entries(facts)) if (value === undefined) return blocked("RUN_FACTS_UNREADABLE", name + ".json is missing from " + dir + " or is not JSON. Export it with gh api (see --help). Nothing was written.");
+  for (const [name, value] of Object.entries(facts)) if (value === undefined) return blocked("RUN_FACTS_UNREADABLE", name + ".json is missing from " + dir + ", is not a regular file, or is not JSON. Export it with gh api (see --help). Nothing was written.");
   let candidate: string | null;
   try {
     candidate = loadReleaseScope(root).candidate;
   } catch (error) {
     return blocked("RELEASE_SCOPE_INVALID", (error as Error).message + " Nothing was written.");
   }
-  const who = deps.operatorId ?? process.env.USER ?? process.env.USERNAME ?? "";
-  if (who.trim() === "") return invalid("CI_EVIDENCE_OPERATOR_UNKNOWN", "no operator name: set USER or pass one through the deps");
+  // The operator is this machine's account, as the other attesting commands name it (src/cli/apply.ts, teardown-driver.ts).
+  const who = deps.operatorId ?? userInfo().username;
+  if (who.trim() === "") return invalid("CI_EVIDENCE_OPERATOR_UNKNOWN", "this machine's account has no user name");
   const now = (deps.now ?? (() => new Date()))();
-  const built = buildCiGateEvidence({ gateId, runId, facts, files: readArtifactFiles(dir), candidate, attestedBy: who, now });
+  const artifact = readArtifactFiles(dir);
+  if (artifact.notRegular.length > 0) return blocked("CI_ARTIFACT_INVALID", artifact.notRegular.join(", ") + " in " + dir + " is not a regular file (a symbolic link, directory or device is never read). Nothing was written.");
+  const built = buildCiGateEvidence({ gateId, runId, facts, files: artifact.files, candidate, attestedBy: who, now });
   if (!built.ok) return blocked(built.code, built.message);
   const { evidence } = built;
   const terminal = deps.terminal ?? processTerminal();
