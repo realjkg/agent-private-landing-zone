@@ -1,17 +1,17 @@
 # Decision record: GCP API-native ACT (path 6) on the pilot driver
 
-Status: **PROPOSED, for review.** This record is design only. It changes no code, enables nothing and authorizes nothing. **ACT = DISABLED**, the repository ships no pilot contract, and nothing here has run against Google Cloud.
+Status: **D4, D9, D11, D12, D16 ACCEPTED by the owner (#39 6483366237); the rest are reviewer-accepted (#338 review 6481933897).** The owner's constraints are written into each accepted decision below. This record is design only. It changes no code, and it authorizes no execution, spending, IAM change or publication. **ACT = DISABLED**: the repository ships no pilot contract, and nothing here has run against Google Cloud.
 
 - **Lane:** G2-D (#39, coordinator PLAN 6481447333 and its corrections 6481493381).
 - **Basis:** owner decision 6481421924 (GCP ACT is in the DEV release); the open questions in #323's body; review 6453205218 on #323; reviewer status 6453239887.
-- **Base inspected:** `main` at `08716fa` (first drafted at `55b8e6a`; `55b8e6a..08716fa` touches none of the code cited here).
+- **Base inspected:** `main` at `028e306`, after INT-1a (#339) merged. First drafted at `55b8e6a` and reviewed at `08716fa` (#338).
 - **Implemented by:** lane G2, engine-local only (`src/apply/engines/gcp-api.ts` and its tests and docs), only after this record is approved. The shared files named below, `src/teardown/manifest.ts`, `src/teardown/types.ts`, `src/apply/unit.ts`, `src/observe/blueprint.ts` and `src/tools/gcp-credentials.ts` included, belong to the single serialized integrator (INT), one step at a time (coordinator defaults, #39 6481739345). The `gcp-rest` scope fix (D15) belongs to G1 after INT-1a merges, or stays with INT-1a if its reviewed diff already makes it.
 
 ## How to read this record
 
 Each decision has a number (D1 to D20), the decision, why, and what was rejected. Each one is marked:
 
-- **[OWNER]**: the decision changes authority: what the reviewed contract authorizes, an identity's grants or token scope, a deletion authority, or a residual risk the owner accepts. The owner decides it on #39.
+- **[OWNER]**: the decision changes authority: what the reviewed contract authorizes, an identity's grants or token scope, a deletion authority, or a residual risk the owner accepts. The owner decides it on #39. All five (D4, D9, D11, D12, D16) are now **ACCEPTED** (6483366237), with the constraints each section states.
 - **[REVIEWER]**: engineering inside the authority the owner already granted. Independent review approves it.
 
 A short table of every decision and its mark is at the end ("Decision index").
@@ -79,7 +79,7 @@ canonicalJson({ kind: "IN_PROCESS_MODULE", engine: "GCP_API",
 
 **Kept from the reviewer's note** (6453205218, item 3): the `PUT` that creates the topic is sent once, after the approvals are consumed, and an `ALREADY_EXISTS` (409) answer is never success (D14).
 
-### D4. Target shape: a dedicated topic field, not `backend` [OWNER]
+### D4. Target shape: a dedicated topic field, not `backend` [OWNER: ACCEPTED, 6483366237]
 
 **Question.** #323 proposed `backend` = topic id and `workspace` = `default`. The reviewer (6453239887, 6453205218 item 4) disagreed: everywhere else `backend` means the state location, `gcpBackendBuckets` splits it on `/`, and the cleanup classifier protects it as `PROTECTED_BACKEND`. A topic id there would be protected as a backend or misparsed. The reviewer recommended a dedicated `topicId` field.
 
@@ -94,6 +94,13 @@ canonicalJson({ kind: "IN_PROCESS_MODULE", engine: "GCP_API",
 **Why a prefix and not `topicId`.** The reviewer's point is kept: a dedicated field, never `backend`. But owner decision 6481421924 (after the reviewer's note) requires **distinct names and ownership per run**. A fixed `topicId` in the contract would give every run the same name, so each new run would need a new reviewed contract commit. The prefix is the part the owner authorizes in a reviewed commit; the run-unique suffix is chosen by the product at seal, sealed into the artifact and signed by every approver.
 
 **Why [OWNER].** The target is the content of the owner's authorization. This decision sets what the owner's reviewed commit names for this path, and it departs from both the #323 proposal and the reviewer's `topicId` wording.
+
+**Owner's constraints (accepted, 6483366237).**
+- `topicPrefix` is bound into the target hash (D9).
+- The run-unique suffix is generated **once, at seal**. The approval preview (the change list and review bundle) shows the **full topic name**, so each approver signs one exact topic.
+- Apply, observation and cleanup reuse that exact sealed name. Nothing regenerates it on apply or on retry: `rederive` takes the suffix from the sealed artifact, the blueprint and the cleanup address come from the sealed change list, and a recovery after a stop is a new seal (a new name) with new approvals, never a renamed old plan.
+- `backend = GCP_API_NO_STATE` and `workspace = default` are validated compatibility values only. No code path reads them as a state location.
+- The prefix authorizes a namespace. Each approval authorizes one exact topic in it, never arbitrary topics in the project.
 
 **Rejected.**
 - `backend` = topic id: the reviewer's objection stands.
@@ -183,9 +190,9 @@ The committed typed-request example that PLAN 6481447333, section 2 asks for is 
 
 **Rejected.** `pubsub.googleapis.com/Topic`: more faithful to the API, but it would add a second name for the same resource to the reader, the classifier and the evidence, each needing review.
 
-### D9. Full target shape and the target hash [OWNER]
+### D9. Full target shape and the target hash [OWNER: ACCEPTED, 6483366237]
 
-The GCP provider spec and its account fields come from #323's port by INT-1a. **This decision depends on that spec**, which is not on `main` yet. GCP_API reuses it and adds `topicPrefix`. `pilotTargetSha256` hashes only the provider's account fields and the engine's `locationFields`, so if INT-1a's reviewed spec does not make `region` or `parent` account fields (or optional account fields that the hash includes), each one that is missing joins GCP_API's `locationFields` instead. The section 5 test that a moved `region` or `parent` refuses cleanup catches the gap either way. A DEV target:
+The GCP provider spec came from INT-1a (#339, on `main` at `028e306`). There, `projectId` and `region` are account fields (`accountFields`), and `parent` is an optional target field (`optionalTargetFields`). `pilotTargetSha256` hashes the account fields, the engine's `locationFields` and every optional field the target states, so all three are bound with no extra `locationFields` entry. GCP_API adds `topicPrefix`. A DEV target:
 
 ```json
 "DEV": {
@@ -203,19 +210,24 @@ The GCP provider spec and its account fields come from #323's port by INT-1a. **
 |---|---|---|---|
 | `projectId` | the GCP provider's project id rule | yes (account field) | every URL; each identity's service account must be of this project |
 | `region` | the GCP provider's region rule | yes (account field) | sealed as the topic's storage policy and read back (D11) |
-| `parent` | optional, `folders/<n>` or `organizations/<n>` | yes, when present (#323's optional field) | **not read by this path.** DISCOVERY holds no Resource Manager grant, so the owner's reviewed value is a binding the evidence carries, not an observation |
+| `parent` | optional, `folders/<n>` or `organizations/<n>` | yes, when present (`optionalTargetFields`) | **not read by this path.** DISCOVERY holds no Resource Manager grant. Wherever it appears (preview, evidence, reports) it is labeled **owner-declared, not observed**, and no evidence claims verified folder or organization placement |
 | `backend` | exactly `GCP_API_NO_STATE` | yes | the contract reader |
 | `workspace` | exactly `default` | yes | the contract reader |
 | `topicPrefix` | `^alz-[a-z0-9-]{1,40}-$` | yes (`locationFields`) | every derived topic id must start with it |
 | `canary` | D8 | yes | seal and apply |
 
-Moving any of these is a target move: a run's cleanup is refused (`targetMoved`) under a contract whose target no longer hashes the same.
+Moving any of these is a target move. Every field is preserved through apply, observation, cleanup proposals, approvals and evidence, because each of them carries the run's `targetSha256`.
+
+**A target change never redirects an earlier run's cleanup.** This was checked against `runCleanup` in `src/apply/driver.ts`:
+- The proposal binds the run's `targetSha256` from its apply evidence. The driver refuses with `TARGET_NOT_IN_CONTRACT` (`targetMoved`) unless the contract committed now hashes to exactly that target, once at admission and again right before consumption. A changed prefix, project, region, parent or canary stops the cleanup; it is never reinterpreted under the new values.
+- The topic to delete is not read from the current contract. It comes from the run's records: the sealed plan's change list (`google_pubsub_topic.<topicId>`) and the blueprint id, which `requireProposalDerivedFromRecords` rebuilds and compares by hash. The engine's `planDestroy` then checks that address against the pinned target, which matches the sealed one exactly (the hash check above).
+- So cleanup runs on the run's sealed target and sealed name. A run under an older target is cleaned up by restoring that target in a reviewed contract, or by a person by hand. Nothing silently follows a newer target.
 
 **Contract scope.** GCP_API joins `DEV_ONLY_PATHS`, so the contract must state `enabledEnvironments: ["DEV"]`, and it leaves `PLANNED_PATHS`. Both are INT-2's change, after G2 is reviewed.
 
 **For the cleanup classifier.** With GCP_API, the state-bucket list the classifier protects is empty (there is no state). The sentinel is never parsed as a bucket. This is INT's change to `gcpBackendBuckets` when the GCP provider lands.
 
-**Why [OWNER].** The same reason as D4: these fields are what the owner's reviewed commit authorizes. The owner inputs listed in decision 6481421924 fill them: the project, the location constraint and the target identifiers (here, the prefix).
+**Why [OWNER].** The same reason as D4: these fields are what the owner's reviewed commit authorizes. The owner inputs listed in decision 6481421924 fill them: the project, the location constraint and the target identifiers (here, the prefix). **Accepted** (6483366237), with the `parent` labeling and the no-redirect rule above.
 
 ### D10. Run-unique names and per-run ownership [REVIEWER]
 
@@ -233,7 +245,7 @@ Moving any of these is a target move: a run's cleanup is refused (`targetMoved`)
 **Residual, stated plainly.** Cloud Asset Inventory is eventually consistent (minutes; UNVERIFIED G5). Neither check sees a topic created inside the indexing window, so two applies run within that window (two sealed plans applied back to back, or concurrently) can **both create a topic, and two canary topics of one target can briefly coexist**. The record does not claim otherwise. What bounds it:
 
 - each topic has its run-unique name and its own run records, so each is owned by exactly one run and cleaned up by that run's own proposal;
-- each run's observation sweeps the unit and lists the other run's topic as `unexpected`, so its verdict is `FAILED` and the overlap is visible in evidence;
+- each run's observation sweeps the unit and lists the other run's topic as `unexpected`, so its verdict is `FAILED` and the overlap is visible in evidence. **This holds only once the other topic is indexed** by Cloud Asset: an observation inside the indexing window does not see it either, and the overlap shows up only in an observation made after indexing (review note N-A, 6481933897);
 - the canary still limits each plan to one create, so the overlap is bounded by the number of applies in the window.
 
 Closing the window fully would need a target-wide lock in the driver's ledger (a per-target reservation alongside the per-artifact one), which does not exist today. That is a driver change outside this path; it is not proposed here.
@@ -242,36 +254,57 @@ Closing the window fully would need a target-wide lock in the driver's ledger (a
 - A per-run unit: the sweep could then never see an earlier run's topic.
 - A requester-chosen run id in `request.json`: it would put naming back in the requester's hands, and a reused id would collide.
 
-### D11. Location constraint: the sealed storage policy [OWNER]
+### D11. Location constraint: the sealed storage policy [OWNER: ACCEPTED, enforced, 6483366237]
 
-**Decision.** The create body carries `messageStoragePolicy.allowedPersistenceRegions = [<target region>]`. The engine's DISCOVERY read-back in `settle` requires the topic to report exactly that policy. Otherwise the outcome is `PARTIAL_REQUIRES_REVIEW`, and the topic stays the run's for cleanup.
+**Decision (enforced).** The create body carries `messageStoragePolicy.allowedPersistenceRegions = [<target region>]`. The value is derived from the contract and sealed; the requester cannot set it.
 
-**Why.** Owner decision 6481421924 lists a location constraint among the owner's inputs. A topic has no location of its own; its storage policy is the only location it carries, and without one the topic follows whatever the project or organization policy allows. Binding it makes the constraint both enforced (Google refuses a region an organization policy forbids, which is a definite 4xx, so `FAILED_NO_CHANGE`) and observable. No messages are published, so nothing is stored either way.
+- The engine's DISCOVERY read-back in `settle` requires the topic to report exactly that policy. A mismatch is never `SUCCEEDED`; it is `PARTIAL_REQUIRES_REVIEW`, and the topic stays the run's for cleanup (D14).
+- It is read back independently as well: the blueprint entry carries the sealed policy, and the GCP reader's observation compares it (D15). A mismatch fails the check.
+- Evidence names the exact property verified, `messageStoragePolicy.allowedPersistenceRegions`, and its sealed value. It names nothing more.
+- **This is not a data-residency claim.** The record, the evidence and the console say only that this one Pub/Sub property was set and read back. They do not claim complete data-residency assurance for the topic, the project or Google's processing.
+- The canary does no publishing, has no subscriptions and processes no payloads. No identity of this path holds a publish, subscribe or consume permission (D12).
+
+**Why.** Owner decision 6481421924 lists a location constraint among the owner's inputs. A topic has no location of its own; its storage policy is the only location it carries, and without one the topic follows whatever the project or organization policy allows. Binding it makes the constraint both enforced (Google refuses a region an organization policy forbids, which is a definite 4xx, so `FAILED_NO_CHANGE` when the topic reads absent) and observable.
 
 **Why [OWNER].** It decides what the owner's location input means on this path, and it adds a field to the create call that #303's engine deliberately forbade (`messageStoragePolicy` was `FIELD_NOT_ALLOWED`). The requester still cannot set it: it comes from the contract only.
 
-**Fallback if the owner declines.** No storage policy is sent, `region` is only bound into the target hash, and this record says the location is not enforced by the path. D14's `SUCCEEDED` rows then stop comparing the storage policy, and D16's cleanup `prepare` stops requiring it; both compare the name and labels only.
+There is no fallback: the owner rejected sending no policy (6483366237), so D14 and D16 always compare the sealed storage policy.
 
 UNVERIFIED (G4): that `topics.create` accepts the field on `PUT` with no `updateMask`, and that `topics.get` returns it as sent.
 
-### D12. Identities and grants [OWNER]
+### D12. Identities and grants [OWNER: ACCEPTED, 6483366237]
 
-**Identities.** `identities: ["DISCOVERY", "APPLY"]` and `attests: ["DISCOVERY", "APPLY"]`. STATE, STATE_WRITE and CHANGESET are not used, and the driver refuses any other identity that is configured. The identity variables are path 5's: `ALZ_<IDENTITY>_GOOGLE_APPLICATION_CREDENTIALS` (a workload identity federation file source, checked by `checkCredentialConfiguration`) and `ALZ_<IDENTITY>_GOOGLE_IMPERSONATE_SERVICE_ACCOUNT` (a service account of the target project). The checks run through the driver (`checkApplyIdentities`, `verifyIdentityTargets` and `GCP.ambientRefusal`), not the engine. WIF only: no key file, no ambient metadata credential, no `gcloud`, and the two identities must not collapse (`IDENTITY_COLLAPSED`).
+**Identities.** `identities: ["DISCOVERY", "APPLY"]` and `attests: ["DISCOVERY", "APPLY"]`, two distinct runtime identities. **There is no STATE, STATE_WRITE or CHANGESET identity** on this path, and the driver refuses any other identity that is configured. The identity variables are path 5's: `ALZ_<IDENTITY>_GOOGLE_APPLICATION_CREDENTIALS` (a workload identity federation file source, checked by `checkCredentialConfiguration`) and `ALZ_<IDENTITY>_GOOGLE_IMPERSONATE_SERVICE_ACCOUNT` (a service account of the target project). The checks run through the driver (`checkApplyIdentities`, `verifyIdentityTargets` and `GCP.ambientRefusal`), not the engine. WIF only: no key file, no ambient metadata credential, no `gcloud`, and the two identities must not collapse (`IDENTITY_COLLAPSED`).
 
 **Grants.**
 
-| Identity | Today (`bootstrap/gcp`, `engine = "GCP_API"`) | Proposed | Change |
+| Identity | Today (`bootstrap/gcp`, `engine = "GCP_API"`) | Accepted | Change |
 |---|---|---|---|
-| DISCOVERY | `pubsub.topics.get` | `pubsub.topics.get`, `cloudasset.assets.searchAllResources`; enable `cloudasset.googleapis.com` | **adds** the Cloud Asset search |
-| APPLY | `pubsub.topics.create`, `pubsub.topics.delete` | unchanged | none |
+| DISCOVERY | `pubsub.topics.get` | `pubsub.topics.get`, plus `cloudasset.assets.searchAllResources` granted on the DEV project only (project-scoped, explicitly reviewed) | **adds** the Cloud Asset search |
+| APPLY | `pubsub.topics.create`, `pubsub.topics.delete` | unchanged: topic create and delete only | none |
+
+**Owner's constraints (accepted, 6483366237).**
+- APPLY has only topic create and delete. DISCOVERY has topic metadata reads and the project-scoped Cloud Asset search.
+- No identity may publish or consume messages, change IAM, or enable APIs at run time. There is **no runtime API enablement**: if the Cloud Asset API (`cloudasset.googleapis.com`) must be enabled, the owner enables it at bootstrap (`bootstrap/gcp`), never a runtime identity. No runtime identity holds `serviceusage.services.enable`.
+- No broad role is added: no Viewer, Editor or Owner, no `roles/cloudasset.viewer`, no `roles/pubsub.viewer` or other predefined Pub/Sub role, and no Service Account Token Creator. Impersonation stays the bootstrap's existing `roles/iam.workloadIdentityUser` binding of each identity's pool principal on its own service account. Every grant is a custom role listing exactly the permissions in the table.
+- **The Cloud Asset search sees more than the code asks for.** `searchAllResources` on the project returns metadata (names, types, labels, locations and similar fields) of every indexed resource in the DEV project, not only Pub/Sub topics. The code filters to the unit label, but IAM does not, so DISCOVERY's metadata visibility is broader than the code's topic filter. That is why the grant is project-scoped, on the DEV project only, and reviewed explicitly.
+
+**Checklist G1 verifies before bootstrap** (against Google's published IAM permissions reference, the custom-role supported-permissions list and the API discovery documents, with no live call). The results go into G1's `bootstrap/gcp` review:
+
+1. [ ] `pubsub.topics.get` is the only permission `topics.get` needs, and it is supported in custom roles.
+2. [ ] `pubsub.topics.create` alone permits `topics.create` with `labels` and `messageStoragePolicy`, and no other permission is needed for those fields (G4).
+3. [ ] `pubsub.topics.delete` alone permits `topics.delete`.
+4. [ ] `cloudasset.assets.searchAllResources` at project scope is the only permission `searchAllResources` needs, and it is supported in custom roles at project level.
+5. [ ] No custom role holds `pubsub.topics.publish`, `pubsub.topics.update`, `pubsub.topics.setIamPolicy`, any `pubsub.subscriptions.*`, any `*.setIamPolicy`, any `serviceusage.*`, or `iam.serviceAccounts.getAccessToken` beyond the existing `roles/iam.workloadIdentityUser` binding.
+6. [ ] The APIs the path calls (`pubsub`, `sts`, `iamcredentials`, `cloudasset`) are enabled by the owner's bootstrap, and no runtime identity can enable a service.
+7. [ ] The token scopes: the STS exchange scope (G1); `pubsub` for Pub/Sub `get`, `create` and `delete` (G2); the narrowest scope Cloud Asset `searchAllResources` accepts (G3).
+8. [ ] `bootstrap/gcp`'s contract-target output for GCP_API matches D9's shape (`projectId`, `region`, optional `parent`, `backend`, `workspace`, `topicPrefix`, `canary`).
 
 **Why the addition.** The independent observation's verdict depends on the unit sweep. Without it, `listTagged` fails, the inventory is `INCOMPLETE`, and the verdict can never be better than `INCONCLUSIVE`: the observe step could not pass. D10's one-open-run check needs the same read. Path 5's DISCOVERY already holds this permission, so the two GCP paths' DISCOVERY grants become alike.
 
 **Token scopes.** See D15. The DISCOVERY token used for Pub/Sub reads carries the `pubsub` scope, as #303's engine already does, because Pub/Sub does not accept `cloud-platform.read-only` (UNVERIFIED G2, but already the basis of #303). So DISCOVERY's read-only property rests on IAM, not on the OAuth scope.
 
-**Why [OWNER].** Both are IAM or credential capability changes, which only the owner makes (decision 6481421924 authorizes no IAM change), and the bootstrap is the owner's to run. The bootstrap edit itself belongs to G1's `bootstrap/gcp`, with its outputs' contract-target template updated to D9's shape.
-
-**Fallback if the owner declines the Cloud Asset grant.** The observation for this path is `INCONCLUSIVE`, `act:gcp-gcp_api` cannot pass its observe step, and **the one-open-run rule (D10) is not enforced at all**: the driver's ledger reserves per artifact, not per target, so nothing would stop a second run's topic. Enforcing it without Cloud Asset would need a per-target reservation in the driver's ledger, which would have to be built.
+**Why [OWNER].** Both are IAM or credential capability changes, which only the owner makes, and the bootstrap is the owner's to run. **Accepted** (6483366237), with the constraints above. The bootstrap edit and the checklist belong to G1's `bootstrap/gcp` review, with its outputs' contract-target template updated to D9's shape. This record changes no IAM.
 
 ### D13. What the preview proves, with no dry-run API [REVIEWER]
 
@@ -326,6 +359,8 @@ Each of those can only fail as a definite refusal of the one `PUT`, which D14 re
 | 5xx, or no answer | present with the sealed labels and policy | `SUCCEEDED` (the read is positive evidence the create landed) |
 | 5xx, or no answer | absent, or unreadable | `PARTIAL_REQUIRES_REVIEW`. A create may still land, so it is never `FAILED_NO_CHANGE` without a definite refusal |
 
+"Absent" in this table means the DISCOVERY `GET` answered 404 on every read. A read that fails (401, 403, 429, 5xx, no answer or an unexpected body) is unreadable, never absent, so it can only lead to `PARTIAL_REQUIRES_REVIEW`. "Present" with the wrong labels or the wrong storage policy is the "anything else" row, never `SUCCEEDED` (D11).
+
 There is no `KILLED` outcome: one short call has nothing to stop part way. A signal during the `PUT` is settled by the read-back like a lost answer.
 
 **Idempotency.** Each layer has one job:
@@ -350,7 +385,8 @@ Nothing is retried anywhere.
 
 **Decision.**
 - The independent observation is `src/observe/gcp-rest.ts`, wired as verifier `GCP_REST` (INT-1a wires it into `VerifierId` and `openReader` for the GCP provider). The engine's `observeGcpApiPlan` is deleted. The engine still reads the topic itself, in `prepare`, `settle` and the cleanup, but those reads are the engine's own and are never the observation of record.
-- `check` reads by id; `listTagged` sweeps by unit. Both exist today. The reader keeps its rule of one fact per answer (the name). Label ownership is the engine's read before a delete, and run ownership is the records'.
+- `check` reads by id; `listTagged` sweeps by unit. Both exist today. Label ownership is the engine's read before a delete, and run ownership is the records'.
+- **D11's independent read-back.** The reader learns one more fact for `google_pubsub_topic`, and only when the blueprint entry carries an expected value: `messageStoragePolicy.allowedPersistenceRegions`, compared exactly. A mismatch fails the check (`FAILED` verdict), and a missing field is `UNKNOWN`. The reader change is G1's (with the scope fix below); the blueprint entry's expected-policy field is INT's (`src/observe/blueprint.ts`).
 
 **Required correction (found in this review).** The reader requests `cloud-platform.read-only` for every GET, and its own header lists as UNVERIFIED whether Pub/Sub accepts that scope. #303 states that Pub/Sub refuses it with 403 (the v1 discovery document lists only `cloud-platform` and `pubsub` on `topics.get`). If so, every topic check reads `UNKNOWN` and every observation is `INCONCLUSIVE`, on path 5 as well as path 6.
 
@@ -362,34 +398,41 @@ Each token is used only on its own host. The change belongs to G1, after INT-1a 
 
 **Rejected.** Keeping `observeGcpApiPlan` as the observation: the engine would verify its own work, and nothing would be independent.
 
-### D16. Cleanup of the run-owned topic, with verified absence [OWNER for the deletion authority and the residual; REVIEWER for the mechanism]
+### D16. Cleanup of the run-owned topic, with verified absence [OWNER: ACCEPTED for the deletion authority and the residual, 6483366237; REVIEWER for the mechanism]
 
 **`openCleanup`:**
 
-- **`prepare`** (async): reads the topic under DISCOVERY. It must exist, carry exactly the unit's labels, and carry the sealed storage policy. Otherwise:
-  - absent is `CLEANUP_NO_CHANGES`;
-  - anything else is `OWNERSHIP_MISMATCH`.
+- **`prepare`** (async): reads the topic named by the run's sealed change list and blueprint under DISCOVERY. It must exist, carry exactly the unit's labels, and carry the sealed storage policy. Otherwise:
+  - absent (404) is `CLEANUP_NO_CHANGES`: already absent, not deleted by this run;
+  - a read that fails (401, 403, 429, 5xx, no answer) is `CLEANUP_READ_FAILED`. **A read or authorization failure is never evidence of absence**;
+  - present with other labels or another storage policy is `OWNERSHIP_MISMATCH`. **An ownership mismatch blocks deletion**, and the topic is kept.
 
-  Either way the refusal comes before any approval is consumed.
+  Each refusal comes before any approval is consumed.
 - **`planDestroy(addresses)`**: exactly one address, of the form `google_pubsub_topic.<topicPrefix><12 hex>`, whose project and prefix are the target's. It returns `[{ address, type: "google_pubsub_topic", action: "DELETE" }]`, and the driver's `cleanupScopeProblem` and `protectedDeletionIn` judge it as for every engine.
 - **`execute`**: reads `stopWhen()`, mints APPLY's token, reads `stopWhen()` again, and sends one `DELETE` to the exact sealed URL.
-- **`settle`**: reads under DISCOVERY.
-  - Absent after a 200 is `SUCCEEDED`.
-  - Absent after a 404 is also `SUCCEEDED`, because absence is read back, but `prepare` saw the topic present, so something other than this run deleted it. The cleanup evidence records that the run's `DELETE` did not delete the topic (a `deletedByRun: false` field, or an equivalent the integrator names in the schema), so the evidence never claims a deletion the run did not make.
-  - A definite refusal with the topic unchanged on every read is `FAILED_NO_CHANGE`.
-  - Anything else is `PARTIAL_REQUIRES_REVIEW`.
+- **`settle`**: reads under DISCOVERY, at most `N` reads. "Absent" means a 404 on the read; a failed read is unreadable, never absent.
 
-Then `./alz apply verify-cleanup` reads the id and sweeps the unit, and records verified absence.
+| `DELETE` answer | Read-back | Outcome | Evidence says |
+|---|---|---|---|
+| 200 | absent | `SUCCEEDED` | deleted by this run (`deletedByRun: true`) |
+| 404 | absent | `SUCCEEDED` | already absent, **not deleted by this run** (`deletedByRun: false`). A 404 never supports "this run deleted it" |
+| definite refusal (400, 401, 403, 429) | present and unchanged on every read | `FAILED_NO_CHANGE` | not deleted; topic retained |
+| timeout, 5xx or no answer | anything | `PARTIAL_REQUIRES_REVIEW`: reconciliation, **never "no change"** | uncertain; a person reconciles with `verify-cleanup` |
+| any | unreadable, or present after a 200 or 404 | `PARTIAL_REQUIRES_REVIEW` | unknown; recorded as such |
 
-**Nothing else is ever deleted.** No list, no search and no delete by label or prefix. The one URL is the sealed one, behind the same network gate as the apply.
+`deletedByRun` is a name for the integrator's schema field (D17); the rule is that the evidence never claims a deletion the run did not make.
+
+Then `./alz apply verify-cleanup` reads the id and sweeps the unit under DISCOVERY, independently of the APPLY call, and records the result. **Absence is confirmed only by that independent read.** Whatever is retained (an ownership mismatch, a refused delete) or unknown (an unreadable read, an uncertain delete, an `unexpected` unit topic) is recorded in that leftovers record, and all evidence is kept.
+
+**Nothing else is ever deleted.** Cleanup deletes only the exact topic named by the run's sealed artifact and recorded blueprint, after the target check (D9) and the ownership check. It never deletes by prefix, by label search, or because an inventory listing named something. It never extends to subscriptions (there are none), IAM bindings or any project resource. The one URL is the sealed one, behind the same network gate as the apply. It uses the driver's cleanup proposal, requester signature, approvals, cleanup ledger, authorization checks and kill switch, unchanged.
 
 **Evidence values (new enum members, INT):**
 - `mutation: "GCP_PUBSUB_TOPIC_CREATE_OF_SEALED_REQUEST"`;
 - `cleanupMutation: "GCP_PUBSUB_TOPIC_DELETE_OF_RUN_TOPIC"`.
 
 **Why [OWNER].**
-- The driver refuses a cleanup for an engine without one, stating that "its deletion authority needs its own owner decision". Owner decision 6481421924 lists verified cleanup among each GCP path's acceptance items. This record reads that as granting the deletion authority above (the run's one topic only), and asks the owner to confirm the reading.
-- The known gap from #303 remains: `topics.delete` takes no etag, so a label change between the `prepare` read and the `DELETE` is not caught. It is narrower now, because the name is run-unique and the window spans one token exchange. #303's lane accepted it for DEV in a document; acceptance of a residual risk is the owner's, so this record asks for it explicitly.
+- The driver refuses a cleanup for an engine without one, stating that "its deletion authority needs its own owner decision". The owner accepted the deletion authority above (the run's one exact topic only) under separate CLEANUP authorization (6483366237).
+- The known gap from #303 remains: `topics.delete` takes no etag, so a label change between the `prepare` read and the `DELETE` is not caught. It is narrower now, because the name is run-unique and the window spans one token exchange. The owner accepted this residual with D16.
 
 ### D17. Evidence and release wiring [REVIEWER; INT and L7 do it]
 
@@ -403,6 +446,11 @@ Then `./alz apply verify-cleanup` reads the id and sweeps the unit, and records 
 | `VerifierId` and `openReader` | `GCP_REST` for the GCP provider | INT-1a |
 | `pilotUnitOf` (`src/apply/unit.ts`) and `DeletionUnitStateRef` (`src/teardown/types.ts`) | a GCP_API-only state reference and backend kind `pubsub`; every other engine's unit id unchanged, pinned by a regression test (D10) | INT-2 |
 | `CleanupEvidence` | records whether the run's `DELETE` deleted the topic (D16) | INT-2 |
+| `ApplyEvidence` or the blueprint record | names the verified property `messageStoragePolicy.allowedPersistenceRegions` and its sealed value (D11) | INT-2 |
+| Blueprint entry expected storage policy | carried for `google_pubsub_topic` entries of GCP_API runs (D11, D15) | INT (`src/observe/blueprint.ts`) |
+| GCP reader storage-policy comparison | D15 | G1, with the scope fix |
+| `parent` labeling | shown as "owner-declared, not observed" wherever it appears (D9) | INT-2 and G2 |
+| `bootstrap/gcp` identity checklist and grants | D12's checklist, the project-scoped Cloud Asset grant, bootstrap-only API enablement, no broad roles | G1 |
 | The shared STS exchange (`src/tools/gcp-credentials.ts`) | D20 | INT |
 | `gcp-rest` per-host token scope | D15 | G1 after INT-1a, or INT-1a if its diff already has it |
 | `ACT_RELEASE_PATHS` | add `{ provider: "GCP", engine: "GCP_API" }`; its gate id is generated as **`act:gcp-gcp_api`** | INT-2 |
@@ -462,13 +510,16 @@ At most one of them is what Google documents for `sts.googleapis.com/v1/token` (
 
 ## 4. Lane order
 
-1. **This record**, reviewed; the owner decides D4, D9, D11, D12 (with D15's scope part) and D16 on #39.
-2. **INT-1a** (already running): the GCP provider spec, `GCP_REST` wiring, `canary` types.
-3. **INT, the D5 interface change**, in its own PR. No engine behavior changes.
-4. **G2**, engine-local (`gcp-api.ts`, its tests and docs): the spec, not yet in `SPECS`. The blueprint mapper, the shared exchange and the unit change are INT's; the reader's scope fix is G1's (after INT-1a).
-5. **INT-2**: `SPECS`, the ids and enums, the contract scope, `pilotUnitOf`, the release path; L7 adds its rows. **INT-1b**: D18 and the Phase E scenario.
-6. **G1**: the bootstrap change from D12, once the owner decides it, and its contract-target template.
-7. The evidence checklist, then the owner's inputs and the owner's DEV run.
+1. **This record**: merged (#338), and the owner's decisions are recorded (6483366237). Done.
+2. **INT-1a**: merged (#339): the GCP provider spec, `GCP_REST` in `VerifierId`, `canary` types.
+3. **INT-1b** (running): D18 and the Phase E scenario.
+4. **G1**: the `gcp-rest` scope fix and storage-policy comparison (D15), and the `bootstrap/gcp` identity review with D12's checklist and contract-target template.
+5. **INT, the D5 interface change**, in its own PR. No engine behavior changes.
+6. **G2**, engine-local (`gcp-api.ts`, its tests and docs): the spec, not yet in `SPECS`. The blueprint mapper, the shared exchange and the unit change are INT's.
+7. **INT-2**: `SPECS`, the ids and enums, the contract scope, `pilotUnitOf`, the evidence fields, the release path `act:gcp-gcp_api`; L7 adds its rows.
+8. The evidence checklist, then the owner's inputs and the owner's DEV run.
+
+This matches the coordinator's serialized order in 6483366237.
 
 ## 5. Tests G2 and INT must add
 
@@ -493,6 +544,11 @@ All of these are SYNTHETIC: a fake for STS, IAM Credentials, Pub/Sub and Cloud A
 - A topic that already exists at seal or at apply.
 - A unit sweep that is not empty, or incomplete, at seal and again at apply. Two plans sealed back to back: once the first one's topic is listed, the second apply is refused in `prepare` with nothing consumed.
 - A cleanup `DELETE` answered 404: `SUCCEEDED`, with the evidence recording that the run did not delete the topic.
+- Cleanup `prepare` with a read failure (403, 5xx, no answer) is refused as `CLEANUP_READ_FAILED`, never treated as absent; a cleanup `DELETE` that times out is `PARTIAL_REQUIRES_REVIEW`, never `FAILED_NO_CHANGE`.
+- An apply `settle` read that fails is never `FAILED_NO_CHANGE` or `SUCCEEDED`; a present topic with another storage policy is never `SUCCEEDED`.
+- A cleanup under a contract whose `topicPrefix`, `region` or `parent` changed is refused (`TARGET_NOT_IN_CONTRACT`), and no request is sent.
+- `parent` appears in evidence and reports only with the "owner-declared, not observed" label.
+- The topic name in the review bundle is the full sealed name, and `rederive` refuses a plan whose name differs from the sealed one.
 - The unit ids of the AWS and Azure Terraform, CDK and Bicep paths are unchanged by the GCP_API unit change.
 - Identities: a third identity configured; DISCOVERY and APPLY collapsed; a key file; a service account outside the project.
 - A lookalike host, a redirect, or a request to any URL outside the sealed one.
@@ -555,22 +611,22 @@ Each one is checked against Google's published API reference or discovery docume
 | D1 | READY hash: the `IN_PROCESS_MODULE` source-closure hash | REVIEWER |
 | D2 | Requester signature: the driver's only | REVIEWER |
 | D3 | Once-only ledger: the driver's only | REVIEWER |
-| D4 | Dedicated `topicPrefix` field; `backend` a fixed sentinel; `workspace` `default` | **OWNER** |
+| D4 | Dedicated `topicPrefix` field; suffix once at seal; `backend` and `workspace` compatibility values | **OWNER: ACCEPTED** (6483366237) |
 | D5 | `plan`, `qualify`, `prepare`, `rederive` and `planDestroy` may return a promise; one INT PR first | REVIEWER |
 | D6 | Cleanup through `stateDocument`, the blueprint and the driver's cleanup flow | REVIEWER |
 | D7 | Typed request of two keys; every other value derived; the artifact is the exact calls | REVIEWER |
 | D8 | Canary type `google_pubsub_topic`, count 1, create only | REVIEWER (the entry is the owner's) |
-| D9 | Full target shape and the fields in `pilotTargetSha256` | **OWNER** |
+| D9 | Full target shape and the fields in `pilotTargetSha256`; `parent` owner-declared; no cleanup redirect | **OWNER: ACCEPTED** (6483366237) |
 | D10 | Run-unique names; unit per target (GCP_API-only change); unit sweep at seal and again at apply, not a guarantee inside the indexing window | REVIEWER |
-| D11 | Location bound by the sealed storage policy | **OWNER** |
-| D12 | DISCOVERY gains the Cloud Asset search; read-only rests on IAM | **OWNER** |
+| D11 | Storage policy enforced and read back; no data-residency claim | **OWNER: ACCEPTED** (6483366237) |
+| D12 | Two identities; project-scoped Cloud Asset search; no runtime API enablement; checklist before bootstrap | **OWNER: ACCEPTED** (6483366237) |
 | D13 | What the preview proves | REVIEWER |
 | D14 | Execution, outcome table, idempotency, recovery | REVIEWER |
-| D15 | `gcp-rest` is the independent read-back; per-host token scope | REVIEWER (the scope is the owner's, with D12) |
-| D16 | Delete only the run's topic, verified absent; the no-etag residual | **OWNER** (authority and residual), REVIEWER (mechanism) |
+| D15 | `gcp-rest` is the independent read-back; per-host token scope; storage-policy comparison | REVIEWER (the scope accepted with D12) |
+| D16 | Delete only the run's exact topic; independent absence; no-etag residual | **OWNER: ACCEPTED** (authority and residual, 6483366237), REVIEWER (mechanism) |
 | D17 | Evidence and release wiring, `act:gcp-gcp_api` | REVIEWER |
 | D18 | `GCP_API` everywhere; "API-native" as the display word | REVIEWER |
 | D19 | Deletions from `gcp-api.ts` | REVIEWER |
 | D20 | One token exchange implementation | REVIEWER |
 
-None of these decisions enables ACT, runs anything, spends money or changes IAM. Approving this record lets lane G2 start once INT-1a and the D5 interface change have merged. The owner's decisions above are recorded on #39 before any part that depends on them merges.
+None of these decisions enables ACT, runs anything, spends money or changes IAM. The owner's acceptance (6483366237) authorizes no live execution or spending, and ACT stays DISABLED until a reviewed contract with `authorize` exists. Lane G2 starts in the serialized order of section 4, after the D5 interface change has merged.
