@@ -113,6 +113,27 @@ test("the owner's decision of 2026-10-28 drops the brownfield preview gates: eac
   }
 });
 
+test("the owner's decision of 2026-10-28 moves the six pillar gates to v1.1: each is excluded with its reason and OUT_OF_SCOPE in the status, listing one as in scope again is refused, and gcp-provider stays in scope", () => {
+  const journeys: RowReport[] = [];
+  const pillars = ["pillar:operational-excellence", "pillar:security", "pillar:reliability", "pillar:performance", "pillar:cost", "pillar:sustainability"];
+  const excludedGate = (gate: string) => shippedStatus.gates.find((x) => x.gate === gate)!;
+  const template = excludedGate("preview:opentofu-aws-brownfield");
+  for (const gate of pillars) {
+    const exclusion = shippedScope.outOfScope.find((x) => x.gate === gate);
+    assert.ok(exclusion, gate);
+    assert.equal(exclusion.reason, "Moved to v1.1 by the owner on 2026-10-28: requires a deployed greenfield landing zone (#39).", gate);
+    assert.deepEqual(excludedGate(gate), { ...template, gate }, gate + ": the same fields as the existing exclusions");
+    assert.ok(statusProblems(withEntry(gate, { status: "BLOCKED", nextAction: "Measure this pillar on a deployed environment." }), { scope: shippedScope, journeys })
+      .some((x) => x.includes(gate) && x.includes("excludes this gate")), gate);
+  }
+  assert.ok(!shippedScope.outOfScope.some((x) => x.gate === "gcp-provider"), "GCP stays in scope to support greenfield");
+  assert.notEqual(excludedGate("gcp-provider").status, "OUT_OF_SCOPE");
+  assert.ok(statusProblems(withEntry("gcp-provider", { status: "OUT_OF_SCOPE" }), { scope: shippedScope, journeys })
+    .some((x) => x.includes("gcp-provider") && x.includes("needs the owner's scope")));
+  assert.equal(shippedStatus.gates.filter((x) => x.status !== "OUT_OF_SCOPE").length, 25, "in-scope gates after the decision");
+  assert.match(renderReleaseStatus(shippedStatus, shippedScope), /0 of 25 in-scope gates pass/);
+});
+
 test("the scope must name the owner's decision and exactly the platforms and paths the admission gates define", () => {
   assert.deepEqual(scopeProblems(shippedScope), []);
   for (const change of [

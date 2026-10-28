@@ -74,6 +74,30 @@
     {
       "gate": "preview:terraform-gcp-brownfield",
       "reason": "GCP is out of this release (owner decision of 2026-10-28, #39 6480066863): no GCP contract can seal a plan, so no producer can run this gate. The ./alz apply preview-evidence producer is unchanged."
+    },
+    {
+      "gate": "pillar:operational-excellence",
+      "reason": "Moved to v1.1 by the owner on 2026-10-28: requires a deployed greenfield landing zone (#39)."
+    },
+    {
+      "gate": "pillar:security",
+      "reason": "Moved to v1.1 by the owner on 2026-10-28: requires a deployed greenfield landing zone (#39)."
+    },
+    {
+      "gate": "pillar:reliability",
+      "reason": "Moved to v1.1 by the owner on 2026-10-28: requires a deployed greenfield landing zone (#39)."
+    },
+    {
+      "gate": "pillar:performance",
+      "reason": "Moved to v1.1 by the owner on 2026-10-28: requires a deployed greenfield landing zone (#39)."
+    },
+    {
+      "gate": "pillar:cost",
+      "reason": "Moved to v1.1 by the owner on 2026-10-28: requires a deployed greenfield landing zone (#39)."
+    },
+    {
+      "gate": "pillar:sustainability",
+      "reason": "Moved to v1.1 by the owner on 2026-10-28: requires a deployed greenfield landing zone (#39)."
     }
   ]
 }

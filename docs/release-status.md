@@ -4,7 +4,7 @@
 
 **Candidate:** none frozen yet.
 
-**Golden release:** not ready. 0 of 31 in-scope gates pass.
+**Golden release:** not ready. 0 of 25 in-scope gates pass.
 
 **Scope:** darwin-arm64, darwin-x64, linux-x64, linux-arm64, win32-arm64, win32-x64; ACT paths act:aws-terraform, act:azure-terraform, act:aws-cdk, act:azure-bicep; full lifecycle. Decided by the owner (https://github.com/realjkg/agent-private-landing-zone/issues/39#issuecomment-6443352284, recorded 2026-10-27).
 
@@ -12,7 +12,7 @@
 
 None.
 
-## Needs attention (21)
+## Needs attention (15)
 
 | Gate | Kind | Status | Owner | Next action |
 | --- | --- | --- | --- | --- |
@@ -31,12 +31,6 @@ None.
 | `act:azure-bicep` | live ACT | BLOCKED | OWNER | Admitted in code for DEV only (owner decision E2, #39); the engine, the canary allowlist, its blueprint, observation and cleanup pass synthetically (SYNTHETIC: fake az and bicep; there is no ARM emulator, so no emulated run exists). Registration is not readiness. Under option A the seal-time what-if runs as APPLY, DISCOVERY keeps Reader, and bootstrap/azure (bicep_deployment_stacks, DEV only) adds a custom role at the pilot resource group, assigned to APPLY only, whose one new effective action beside Contributor is manageDenySetting. The owner runs that bootstrap, then fills a DEV-only Azure Bicep contract from config/act-pilot-contract.azure-bicep-dev.example.json (with resourceGroup, location and canary) until ./alz apply contract-check --file reports COMPLETE, commits it with its authorize entry in one reviewed change, has a person run ./alz apply qualify against the real az and bicep, and supervises one DEV apply recorded with ./alz apply record-live. Every ARM behavior the engine relies on is UNVERIFIED (A1 to A4, docs/act-pilot-bicep.md) until then. Synthetic progress only: test/apply-bicep.test.ts (fake az and bicep: seal, apply, cleanup and the follow-ups of #39 6450296103), test/apply-bicep-admission.test.ts (the BICEP engine admitted for DEV only: contract, seal with the what-if as APPLY, approvals, ledger and replay, kill switch, canary allowlist, template binding, apply, blueprint, observe, cleanup proposal and stack delete with deny settings on, through the driver; SYNTHETIC), bootstrap/azure/tests/environments.tftest.hcl (the pilot group's Bicep stack role: exact actions, group scope, APPLY only; offline, mocked providers). |
 | `act-run-recovery` | ACT recovery | BLOCKED | OWNER | Waits on a live ACT path; then interrupt one owner-supervised DEV apply, review it from its ledger evidence, seal and approve a new plan that finishes, and record both with ./alz apply record-recovery (the gate's fields are derived from the ledger, never typed). |
 | `security-review:independent` | independent review | BLOCKED | OWNER | The owner names an independent security reviewer who did not write the candidate; self-review does not count. |
-| `pillar:operational-excellence` | live metric | BLOCKED | OWNER | Waits on a deployed environment from a live ACT path; then measure this pillar there. |
-| `pillar:security` | live metric | BLOCKED | OWNER | Waits on a deployed environment from a live ACT path; then measure this pillar there. |
-| `pillar:reliability` | live metric | BLOCKED | OWNER | Waits on a deployed environment from a live ACT path; then measure this pillar there. |
-| `pillar:performance` | live metric | BLOCKED | OWNER | Waits on a deployed environment from a live ACT path; then measure this pillar there. |
-| `pillar:cost` | live metric | BLOCKED | OWNER | Waits on a deployed environment from a live ACT path; then measure this pillar there. |
-| `pillar:sustainability` | live metric | BLOCKED | OWNER | Waits on a deployed environment from a live ACT path; then measure this pillar there. |
 
 ## Not qualified (10)
 
@@ -53,7 +47,7 @@ None.
 | `platform:linux-x64` | lifecycle | ENGINEERING | Lane A: run install, launch, uninstall, repeat uninstall, partial-install recovery, unusual paths and unrelated-file preservation in a disposable linux-x64 container; this counts for linux-x64 only. |
 | `act:aws-cdk` | live ACT | ENGINEERING | The AWS CDK row is implemented end to end in the console with synthetic tests (stack tags carry the unit; CloudFormation's resource list is the blueprint; Cloud Control reads by CloudFormation type; cleanup is a removal change set that never deletes the stack). Qualify the three adapters on the real DEV account, then run the supervised DEV lifecycle. |
 
-## Out of scope (13)
+## Out of scope (19)
 
 - `preview:terraform-aws-brownfield`: Brownfield preview is dropped from this release (owner decision of 2026-10-28, #39 6480066863): owner decision E1 makes APPLY seals create-only, so a brownfield plan, one that updates or adopts a pre-existing resource, is refused at seal (RESOURCE_NOT_IN_CANARY) and ./alz apply preview-evidence cannot produce this gate's evidence. The producer is unchanged.
 - `preview:pulumi-azure-greenfield`: Pulumi is not one of the six paths of the narrow ACT-DEV release (owner rebaseline 6443352284: AWS Terraform, AWS CDK / CloudFormation, Azure Terraform, Azure Bicep / ARM, GCP Terraform, GCP API-native).
@@ -68,6 +62,12 @@ None.
 - `preview:pulumi-aws-brownfield`: Pulumi is not one of the six paths of the narrow ACT-DEV release (owner rebaseline 6443352284: AWS Terraform, AWS CDK / CloudFormation, Azure Terraform, Azure Bicep / ARM, GCP Terraform, GCP API-native).
 - `preview:pulumi-azure-brownfield`: Pulumi is not one of the six paths of the narrow ACT-DEV release (owner rebaseline 6443352284: AWS Terraform, AWS CDK / CloudFormation, Azure Terraform, Azure Bicep / ARM, GCP Terraform, GCP API-native).
 - `preview:terraform-gcp-brownfield`: GCP is out of this release (owner decision of 2026-10-28, #39 6480066863): no GCP contract can seal a plan, so no producer can run this gate. The ./alz apply preview-evidence producer is unchanged.
+- `pillar:operational-excellence`: Moved to v1.1 by the owner on 2026-10-28: requires a deployed greenfield landing zone (#39).
+- `pillar:security`: Moved to v1.1 by the owner on 2026-10-28: requires a deployed greenfield landing zone (#39).
+- `pillar:reliability`: Moved to v1.1 by the owner on 2026-10-28: requires a deployed greenfield landing zone (#39).
+- `pillar:performance`: Moved to v1.1 by the owner on 2026-10-28: requires a deployed greenfield landing zone (#39).
+- `pillar:cost`: Moved to v1.1 by the owner on 2026-10-28: requires a deployed greenfield landing zone (#39).
+- `pillar:sustainability`: Moved to v1.1 by the owner on 2026-10-28: requires a deployed greenfield landing zone (#39).
 
 ## Primary action
 

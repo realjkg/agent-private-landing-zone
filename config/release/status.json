@@ -538,85 +538,79 @@
       "gate": "pillar:operational-excellence",
       "candidate": null,
       "owner": "OWNER",
-      "status": "BLOCKED",
+      "status": "OUT_OF_SCOPE",
       "evidenceMode": null,
       "evidenceRefs": [],
-      "testedScope": "Actual deployed-environment operational-excellence measurement, not a synthetic fixture.",
+      "testedScope": "Not tested for this release; excluded by the owner's scope decision.",
       "invalidatedBy": [
-        "the candidate commit changes",
-        "the deployed blueprint changes"
+        "the owner adds the path to the release scope"
       ],
-      "nextAction": "Waits on a deployed environment from a live ACT path; then measure this pillar there."
+      "nextAction": ""
     },
     {
       "gate": "pillar:security",
       "candidate": null,
       "owner": "OWNER",
-      "status": "BLOCKED",
+      "status": "OUT_OF_SCOPE",
       "evidenceMode": null,
       "evidenceRefs": [],
-      "testedScope": "Actual deployed-environment security measurement, not a synthetic fixture.",
+      "testedScope": "Not tested for this release; excluded by the owner's scope decision.",
       "invalidatedBy": [
-        "the candidate commit changes",
-        "the deployed blueprint changes"
+        "the owner adds the path to the release scope"
       ],
-      "nextAction": "Waits on a deployed environment from a live ACT path; then measure this pillar there."
+      "nextAction": ""
     },
     {
       "gate": "pillar:reliability",
       "candidate": null,
       "owner": "OWNER",
-      "status": "BLOCKED",
+      "status": "OUT_OF_SCOPE",
       "evidenceMode": null,
       "evidenceRefs": [],
-      "testedScope": "Actual deployed-environment reliability measurement, not a synthetic fixture.",
+      "testedScope": "Not tested for this release; excluded by the owner's scope decision.",
       "invalidatedBy": [
-        "the candidate commit changes",
-        "the deployed blueprint changes"
+        "the owner adds the path to the release scope"
       ],
-      "nextAction": "Waits on a deployed environment from a live ACT path; then measure this pillar there."
+      "nextAction": ""
     },
     {
       "gate": "pillar:performance",
       "candidate": null,
       "owner": "OWNER",
-      "status": "BLOCKED",
+      "status": "OUT_OF_SCOPE",
       "evidenceMode": null,
       "evidenceRefs": [],
-      "testedScope": "Actual deployed-environment performance measurement, not a synthetic fixture.",
+      "testedScope": "Not tested for this release; excluded by the owner's scope decision.",
       "invalidatedBy": [
-        "the candidate commit changes",
-        "the deployed blueprint changes"
+        "the owner adds the path to the release scope"
       ],
-      "nextAction": "Waits on a deployed environment from a live ACT path; then measure this pillar there."
+      "nextAction": ""
     },
     {
       "gate": "pillar:cost",
       "candidate": null,
       "owner": "OWNER",
-      "status": "BLOCKED",
+      "status": "OUT_OF_SCOPE",
       "evidenceMode": null,
       "evidenceRefs": [],
-      "testedScope": "Actual deployed-environment cost measurement, not a synthetic fixture.",
+      "testedScope": "Not tested for this release; excluded by the owner's scope decision.",
       "invalidatedBy": [
-        "the candidate commit changes",
-        "the deployed blueprint changes"
+        "the owner adds the path to the release scope"
       ],
-      "nextAction": "Waits on a deployed environment from a live ACT path; then measure this pillar there."
+      "nextAction": ""
     },
     {
       "gate": "pillar:sustainability",
       "candidate": null,
       "owner": "OWNER",
-      "status": "BLOCKED",
+      "status": "OUT_OF_SCOPE",
       "evidenceMode": null,
       "evidenceRefs": [],
-      "testedScope": "Actual deployed-environment sustainability measurement, not a synthetic fixture.",
+      "testedScope": "Not tested for this release; excluded by the owner's scope decision.",
       "invalidatedBy": [
-        "the candidate commit changes",
-        "the deployed blueprint changes"
+        "the owner adds the path to the release scope"
       ],
-      "nextAction": "Waits on a deployed environment from a live ACT path; then measure this pillar there."
+      "nextAction": ""
     }
   ]
 }
