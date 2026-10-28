@@ -1,6 +1,6 @@
 # ALZ functional scenario matrix — existing adapters
 
-This milestone makes the existing nine Phase E application landing-zone scenarios measurable and reproducible (one per engine and provider; the Azure Terraform brownfield scenario was added for the `preview:terraform-azure-brownfield` release gate, owner decision 6408600057). It does **not** enable infrastructure ACT, install any model, introduce an adapter, change provider scope or loosen policy.
+This milestone makes the existing nine Phase E application landing-zone scenarios measurable and reproducible (one per engine and provider; the Azure Terraform brownfield scenario was added for the `preview:terraform-azure-brownfield` release gate, owner decision 6408600057; the owner dropped that gate and the other brownfield preview gates from this release on 2026-10-28, #39 6480066863, and the scenario stays). It does **not** enable infrastructure ACT, install any model, introduce an adapter, change provider scope or loosen policy.
 
 ## Coverage
 
