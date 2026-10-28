@@ -1,6 +1,6 @@
 # Decision record: GCP API-native ACT (path 6) on the pilot driver
 
-Status: **D4, D9, D11, D12, D16 ACCEPTED by the owner (#39 6483366237); the rest are reviewer-accepted (#338 review 6481933897).** The owner's constraints are written into each accepted decision below. This record is design only. It changes no code, and it authorizes no execution, spending, IAM change or publication. **ACT = DISABLED**: the repository ships no pilot contract, and nothing here has run against Google Cloud.
+Status: **D4, D9, D11, D12, D16 ACCEPTED by the owner (#39 6483366237); the rest are reviewer-recommended (#338 review 6481933897); the coordinator accepted them under the no-deadlock rule.** The owner's constraints are written into each accepted decision below. This record is design only. It changes no code, and it authorizes no execution, spending, IAM change or publication. **ACT = DISABLED**: the repository ships no pilot contract, and nothing here has run against Google Cloud.
 
 - **Lane:** G2-D (#39, coordinator PLAN 6481447333 and its corrections 6481493381).
 - **Basis:** owner decision 6481421924 (GCP ACT is in the DEV release); the open questions in #323's body; review 6453205218 on #323; reviewer status 6453239887.
@@ -98,7 +98,7 @@ canonicalJson({ kind: "IN_PROCESS_MODULE", engine: "GCP_API",
 **Owner's constraints (accepted, 6483366237).**
 - `topicPrefix` is bound into the target hash (D9).
 - The run-unique suffix is generated **once, at seal**. The approval preview (the change list and review bundle) shows the **full topic name**, so each approver signs one exact topic.
-- Apply, observation and cleanup reuse that exact sealed name. Nothing regenerates it on apply or on retry: `rederive` takes the suffix from the sealed artifact, the blueprint and the cleanup address come from the sealed change list, and a recovery after a stop is a new seal (a new name) with new approvals, never a renamed old plan.
+- Apply, observation and cleanup reuse that exact sealed name. Nothing regenerates it on apply or on retry: `rederive` takes the suffix from the sealed artifact, and the blueprint and the cleanup address come from the sealed change list. When the engine never started (`APPROVALS_SPENT`, `KILL_SWITCH_AFTER_APPROVALS`), the driver releases the reservation and recovery reapplies the same sealed plan (same name) with new approvals. After the plan is spent (`FAILED_NO_CHANGE`, `PARTIAL_REQUIRES_REVIEW`), recovery is a new seal (a new name) with new approvals. Nothing ever renames a sealed plan.
 - `backend = GCP_API_NO_STATE` and `workspace = default` are validated compatibility values only. No code path reads them as a state location.
 - The prefix authorizes a namespace. Each approval authorizes one exact topic in it, never arbitrary topics in the project.
 
@@ -258,7 +258,7 @@ Closing the window fully would need a target-wide lock in the driver's ledger (a
 
 **Decision (enforced).** The create body carries `messageStoragePolicy.allowedPersistenceRegions = [<target region>]`. The value is derived from the contract and sealed; the requester cannot set it.
 
-- The engine's DISCOVERY read-back in `settle` requires the topic to report exactly that policy. A mismatch is never `SUCCEEDED`; it is `PARTIAL_REQUIRES_REVIEW`, and the topic stays the run's for cleanup (D14).
+- The engine's DISCOVERY read-back in `settle` requires the topic to report exactly that policy. A mismatch is never `SUCCEEDED`; it is `PARTIAL_REQUIRES_REVIEW`. Such a run gets **no product cleanup**: the driver makes no cleanup proposal for a run that did not end `SUCCEEDED` (D14, "Runs that did not succeed").
 - It is read back independently as well: the blueprint entry carries the sealed policy, and the GCP reader's observation compares it (D15). A mismatch fails the check.
 - Evidence names the exact property verified, `messageStoragePolicy.allowedPersistenceRegions`, and its sealed value. It names nothing more.
 - **This is not a data-residency claim.** The record, the evidence and the console say only that this one Pub/Sub property was set and read back. They do not claim complete data-residency assurance for the topic, the project or Google's processing.
@@ -295,9 +295,9 @@ UNVERIFIED (G4): that `topics.create` accepts the field on `PUT` with no `update
 2. [ ] `pubsub.topics.create` alone permits `topics.create` with `labels` and `messageStoragePolicy`, and no other permission is needed for those fields (G4).
 3. [ ] `pubsub.topics.delete` alone permits `topics.delete`.
 4. [ ] `cloudasset.assets.searchAllResources` at project scope is the only permission `searchAllResources` needs, and it is supported in custom roles at project level.
-5. [ ] No custom role holds `pubsub.topics.publish`, `pubsub.topics.update`, `pubsub.topics.setIamPolicy`, any `pubsub.subscriptions.*`, any `*.setIamPolicy`, any `serviceusage.*`, or `iam.serviceAccounts.getAccessToken` beyond the existing `roles/iam.workloadIdentityUser` binding.
+5. [ ] (Subject to G7.) No custom role holds `pubsub.topics.publish`, `pubsub.topics.update`, `pubsub.topics.setIamPolicy`, any `pubsub.subscriptions.*`, any `*.setIamPolicy`, any `serviceusage.*`, or `iam.serviceAccounts.getAccessToken` beyond the existing `roles/iam.workloadIdentityUser` binding.
 6. [ ] The APIs the path calls (`pubsub`, `sts`, `iamcredentials`, `cloudasset`) are enabled by the owner's bootstrap, and no runtime identity can enable a service.
-7. [ ] The token scopes: the STS exchange scope (G1); `pubsub` for Pub/Sub `get`, `create` and `delete` (G2); the narrowest scope Cloud Asset `searchAllResources` accepts (G3).
+7. [ ] The token scopes: the scope the STS exchange requests (the engine sends `cloud-platform`; G8); `pubsub` for Pub/Sub `get`, `create` and `delete` (G2); the narrowest scope Cloud Asset `searchAllResources` accepts (G3).
 8. [ ] `bootstrap/gcp`'s contract-target output for GCP_API matches D9's shape (`projectId`, `region`, optional `parent`, `backend`, `workspace`, `topicPrefix`, `canary`).
 
 **Why the addition.** The independent observation's verdict depends on the unit sweep. Without it, `listTagged` fails, the inventory is `INCOMPLETE`, and the verdict can never be better than `INCONCLUSIVE`: the observe step could not pass. D10's one-open-run check needs the same read. Path 5's DISCOVERY already holds this permission, so the two GCP paths' DISCOVERY grants become alike.
@@ -366,20 +366,28 @@ There is no `KILLED` outcome: one short call has nothing to stop part way. A sig
 **Idempotency.** Each layer has one job:
 - The driver's ledger applies an artifact once.
 - The run-unique name means a new seal can never re-create an earlier run's topic.
-- D10's check means a new seal waits for the earlier run to be cleaned up.
+- D10's check means a new seal waits for the earlier run's topic to be gone, whether by product cleanup (a `SUCCEEDED` run) or by a person's manual resolution (any other run).
 - Pub/Sub's own 409 stops a duplicate name.
 
 Nothing is retried anywhere.
 
-**Interruption and recovery** use the driver's existing paths:
+**Interruption and recovery** use the driver's existing paths. Rows 1 and 2 reapply the same sealed plan (the same topic name); later rows need a new seal (D4):
 
 | Situation | What happens | Recovery |
 |---|---|---|
 | Stopped before the reservation, or before `execute` started | nothing reserved, or the reservation is released; no approval consumed | apply the same plan again |
 | `APPROVALS_SPENT` or `KILL_SWITCH_AFTER_APPROVALS` | nothing created; evidence or a refusal records it | new approvals for the same plan, as for every engine |
 | `FAILED_NO_CHANGE` | the plan and approvals are spent | seal a new plan (a new name), get new approvals |
-| `PARTIAL_REQUIRES_REVIEW` | the plan is spent; the blueprint is written from what `settle` read | `observe`, then a person reviews; if the topic exists, it is the run's to clean up through the normal proposal |
+| `PARTIAL_REQUIRES_REVIEW` | the plan is spent; the blueprint is written from what `settle` read | `observe`, then a person reviews and resolves it by hand (below). The product cannot clean it up |
 | The process killed after the reservation (SIGKILL, power loss) | the reservation stays, with no evidence | `./alz apply record-recovery` (the `act-run-recovery` gate), after the person reads the sealed name with `observe`; never resumed without new approval |
+
+**Runs that did not succeed: no product cleanup today.** `buildCleanupProposal` refuses any run whose apply did not end `SUCCEEDED` (`OWNERSHIP_AMBIGUOUS`, `src/apply/cleanup-proposal.ts`), and `runCleanup` refuses one too (`RUN_RECORD_MISSING`). So a topic left by a `PARTIAL_REQUIRES_REVIEW` run (a storage-policy or label mismatch, a 409, or an uncertain create that landed) **cannot be removed by the product's cleanup.** It also keeps D10's unit sweep non-empty, so every later seal and apply under the target is refused (`UNIT_NOT_EMPTY`) until it is gone.
+
+- **Who resolves it:** the owner, or a person the owner names as cleanup owner (an owner input of 6481421924). Never an agent.
+- **How:** the person runs `./alz apply observe` and reviews the run's records and the topic. If it is to go, they delete that one topic by hand in the DEV project, with their own credentials outside the product's runtime identities, by its exact sealed name only. Then they run `./alz apply verify-cleanup` to read its absence independently under DISCOVERY.
+- **Evidence:** the hand deletion is recorded as **MANUAL**, a person's action, with who did it, when, and the exact name. It is never presented as product cleanup, never carries a `CleanupEvidence` record or a `cleanupMutation`, and never counts toward the cleanup step of `act:gcp-gcp_api`. Only the independent DISCOVERY read is evidence of absence.
+
+**OPEN (not designed here).** A product cleanup path for runs that did not succeed would be a driver change to `buildCleanupProposal` and `runCleanup`. It changes deletion authority, so it needs its own owner decision under D16 before anyone designs it.
 
 ### D15. Independent read-back through `gcp-rest` [REVIEWER, scope part OWNER under D12]
 
@@ -407,7 +415,9 @@ Each token is used only on its own host. The change belongs to G1, after INT-1a 
   - a read that fails (401, 403, 429, 5xx, no answer) is `CLEANUP_READ_FAILED`. **A read or authorization failure is never evidence of absence**;
   - present with other labels or another storage policy is `OWNERSHIP_MISMATCH`. **An ownership mismatch blocks deletion**, and the topic is kept.
 
-  Each refusal comes before any approval is consumed.
+  Each refusal comes before any approval is consumed. These three codes are the engine's own: thrown from `prepare`, they reach the person through `runCleanup`'s generic catch as `APPLY_FAILED`, with the code inside the message. Mapping them to their own driver refusal codes is the integrator's choice (D17).
+
+  Cleanup is reached only for a run that ended `SUCCEEDED`; any other run has no cleanup proposal (D14, "Runs that did not succeed").
 - **`planDestroy(addresses)`**: exactly one address, of the form `google_pubsub_topic.<topicPrefix><12 hex>`, whose project and prefix are the target's. It returns `[{ address, type: "google_pubsub_topic", action: "DELETE" }]`, and the driver's `cleanupScopeProblem` and `protectedDeletionIn` judge it as for every engine.
 - **`execute`**: reads `stopWhen()`, mints APPLY's token, reads `stopWhen()` again, and sends one `DELETE` to the exact sealed URL.
 - **`settle`**: reads under DISCOVERY, at most `N` reads. "Absent" means a 404 on the read; a failed read is unreadable, never absent.
@@ -446,6 +456,7 @@ Then `./alz apply verify-cleanup` reads the id and sweeps the unit under DISCOVE
 | `VerifierId` and `openReader` | `GCP_REST` for the GCP provider | INT-1a |
 | `pilotUnitOf` (`src/apply/unit.ts`) and `DeletionUnitStateRef` (`src/teardown/types.ts`) | a GCP_API-only state reference and backend kind `pubsub`; every other engine's unit id unchanged, pinned by a regression test (D10) | INT-2 |
 | `CleanupEvidence` | records whether the run's `DELETE` deleted the topic (D16) | INT-2 |
+| Cleanup refusal codes `CLEANUP_NO_CHANGES`, `CLEANUP_READ_FAILED`, `OWNERSHIP_MISMATCH` | reach the person as `APPLY_FAILED` with the code in the message today; their own `ApplyRefusalCode` entries are optional | INT-2 (integrator's choice) |
 | `ApplyEvidence` or the blueprint record | names the verified property `messageStoragePolicy.allowedPersistenceRegions` and its sealed value (D11) | INT-2 |
 | Blueprint entry expected storage policy | carried for `google_pubsub_topic` entries of GCP_API runs (D11, D15) | INT (`src/observe/blueprint.ts`) |
 | GCP reader storage-policy comparison | D15 | G1, with the scope fix |
@@ -544,6 +555,8 @@ All of these are SYNTHETIC: a fake for STS, IAM Credentials, Pub/Sub and Cloud A
 - A topic that already exists at seal or at apply.
 - A unit sweep that is not empty, or incomplete, at seal and again at apply. Two plans sealed back to back: once the first one's topic is listed, the second apply is refused in `prepare` with nothing consumed.
 - A cleanup `DELETE` answered 404: `SUCCEEDED`, with the evidence recording that the run did not delete the topic.
+- A `PARTIAL_REQUIRES_REVIEW` run gets no cleanup proposal (`OWNERSHIP_AMBIGUOUS`), and its topic keeps a later seal refused (`UNIT_NOT_EMPTY`).
+- After `APPROVALS_SPENT` or `KILL_SWITCH_AFTER_APPROVALS`, the same sealed plan applies with new approvals, with the same topic name.
 - Cleanup `prepare` with a read failure (403, 5xx, no answer) is refused as `CLEANUP_READ_FAILED`, never treated as absent; a cleanup `DELETE` that times out is `PARTIAL_REQUIRES_REVIEW`, never `FAILED_NO_CHANGE`.
 - An apply `settle` read that fails is never `FAILED_NO_CHANGE` or `SUCCEEDED`; a present topic with another storage policy is never `SUCCEEDED`.
 - A cleanup under a contract whose `topicPrefix`, `region` or `parent` changed is refused (`TARGET_NOT_IN_CONTRACT`), and no request is sent.
@@ -603,6 +616,13 @@ Each one is checked against Google's published API reference or discovery docume
 - **G4:** that `topics.create` takes `messageStoragePolicy` on `PUT` and `topics.get` returns it as sent (D11).
 - **G5:** Cloud Asset Inventory's indexing delay (D10).
 - **G6:** the status and error code of a duplicate `topics.create` (409 `ALREADY_EXISTS`) and of a `DELETE` of an absent topic (404) (D14, D16).
+- **G7:** whether any call on this path, Cloud Asset `searchAllResources` most likely, needs a quota project or `serviceusage.services.use` when made by the impersonated service account. **It may conflict with D12 checklist item 5**, which forbids every `serviceusage.*` permission. If it is needed, the conflict goes back to the owner before bootstrap; it is not resolved by widening a grant silently.
+- **G8:** the scope the STS token exchange must request, and whether `cloud-platform` there is required (D12 item 7, D20).
+- **G9:** that `pubsub.topics.create` alone covers a create carrying `messageStoragePolicy` (D12 item 2; with G4).
+- **G10:** that `cloudasset.assets.searchAllResources` is supported in custom roles at project level (D12 item 4).
+- **G11:** that `roles/iam.workloadIdentityUser` carries `iam.serviceAccounts.getAccessToken` for federated principals, so no Token Creator role is needed (D12 items 5 and 7).
+
+G7 to G11 are checked by G1 before bootstrap, and all of G1 to G11 before G2 merges.
 
 ## Decision index
 
