@@ -19,7 +19,6 @@ const MAX_AFFECTED_TESTS = 45;
 // full-suite route not requested. With --full-suite-over-cap (the CI route) an over-cap-only plan runs the full suite,
 // and its result is the gate; a coverage gap still fails before anything runs.
 export const EXIT_OVER_CAP = 3;
-const OVER_CAP_GAP = /^Affected test count \d+ exceeds \d+/;
 export const FULL_SUITE = ["npm", ["test"]];
 class QaExit extends Error {
   constructor(message, code) { super(message); this.exitCode = code; }
@@ -330,13 +329,17 @@ export function planChanged(changedPaths, files) {
     // Unknown executable or deployment configuration: do not silently pass.
     gaps.push(path + " has no QA ownership rule.");
   }
+  // Every entry in `gaps` so far is a coverage gap, pushed where its rule fired. The cap is a separate structural fact
+  // (`overCap`, from the counts); its notice is appended to `gaps` only for display and for older readers
+  // (scripts/premerge.sh). The route never parses gap text, so no path name can pose as the cap notice.
   const overCap = selected.size + pythonTests.size > MAX_AFFECTED_TESTS;
+  if (!selected.size && !pythonTests.size && gaps.length === 0 && changed.some(p => !(/\.md$|^docs\//.test(p)))) {
+    gaps.push("Executable changes selected no tests.");
+  }
+  const coverageGaps = [...gaps];
   if (overCap) {
     gaps.push("Affected test count " + (selected.size + pythonTests.size) + " exceeds " + MAX_AFFECTED_TESTS +
       ". Split the change or qualify it through an explicit release gate.");
-  }
-  if (!selected.size && !pythonTests.size && gaps.length === 0 && changed.some(p => !(/\.md$|^docs\//.test(p)))) {
-    gaps.push("Executable changes selected no tests.");
   }
   const tests = uniq([...selected]);
   const nodeTests = tests.filter(p => p.endsWith(".test.ts"));
@@ -349,7 +352,7 @@ export function planChanged(changedPaths, files) {
     buildUi = true;
   }
   return {
-    changed, overCap, coverageGaps: coverageGapsOf(gaps), nodeTests, uiTests, jsTests, pythonTests: uniq([...pythonTests]),
+    changed, overCap, coverageGaps, nodeTests, uiTests, jsTests, pythonTests: uniq([...pythonTests]),
     pythonChanged: uniq([...pythonChanged]), pythonEntrypoints: uniq([...pythonEntrypoints]),
     gaps, notes, buildUi, pinCheck,
     pluginCheck, configCheck,
@@ -362,12 +365,17 @@ export function planChanged(changedPaths, files) {
     testCount: tests.length + pythonTests.size,
   };
 }
-// Every gap except the over-cap notice. The cap notice stays in `gaps` so older readers (scripts/premerge.sh) keep working.
-export function coverageGapsOf(gaps) { return gaps.filter(g => !OVER_CAP_GAP.test(g)); }
-// The route a plan takes: "blocked" on any coverage gap, "over-cap" when only the cap is exceeded, else "affected".
+// The route a plan takes, from its structural fields only: "blocked" on any coverage gap, "over-cap" when `overCap` is
+// true and nothing else is wrong, else "affected". A plan without `coverageGaps` (older or hand-written) treats every
+// gap as a coverage gap, and a `gaps` list longer than the structural fields explain (the coverage gaps plus one cap
+// notice) blocks, so an edited plan cannot hide a gap in `gaps` alone.
 export function routeOf(plan) {
-  if (coverageGapsOf(plan.gaps ?? []).length) return "blocked";
-  return (plan.gaps ?? []).some(g => OVER_CAP_GAP.test(g)) ? "over-cap" : "affected";
+  const gaps = Array.isArray(plan.gaps) ? plan.gaps : [];
+  const coverage = Array.isArray(plan.coverageGaps) ? plan.coverageGaps : gaps;
+  if (coverage.length) return "blocked";
+  const overCap = plan.overCap === true;
+  if (gaps.length !== (overCap ? 1 : 0)) return "blocked";
+  return overCap ? "over-cap" : "affected";
 }
 function git(args) {
   const r = spawnSync("git", args, {encoding: "utf8"});
@@ -407,11 +415,15 @@ function writeTsconfig(name, base, files) {
 }
 function execute(plan, fullSuiteOverCap) {
   const route = routeOf(plan);
-  if (route === "blocked") throw Error("QA coverage gaps:\n" + plan.gaps.join("\n"));
+  if (route === "blocked") throw Error("QA coverage gaps:\n" + ((plan.gaps ?? []).join("\n") ||
+    "QA_PLAN_INCONSISTENT: the plan's gaps do not match its overCap and coverageGaps fields."));
   if (route === "over-cap" && !fullSuiteOverCap) throw new QaExit("QA_OVER_CAP: " + plan.gaps.join("\n") +
     "\nNo coverage gap. Rerun with --full-suite-over-cap to qualify the change through the full suite.", EXIT_OVER_CAP);
   const fullSuite = route === "over-cap";
-  if (!plan.testCount && !plan.pinCheck) return console.log("QA: documentation-only; no tests needed.");
+  // The full-suite route needs a plan that is really over the cap, so a forged or inconsistent plan cannot reach it.
+  if (fullSuite && !(plan.overCap === true && Number(plan.testCount) > MAX_AFFECTED_TESTS)) throw Error(
+    "QA_FULL_SUITE_REFUSED: the full-suite route needs overCap true and more than " + MAX_AFFECTED_TESTS + " selected test files.");
+  if (!fullSuite && !plan.testCount && !plan.pinCheck) return console.log("QA: documentation-only; no tests needed.");
   mkdirSync(".runs/qa", {recursive: true});
   if (plan.pinCheck) runCmd("npm", ["run", "ci:actions-pinned"]);
   // Even manifest/compiler changes compile only representative entry points
