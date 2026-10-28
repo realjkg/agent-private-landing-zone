@@ -98,8 +98,8 @@ async function sessionNode(
   recoveryInspectionProvider:
     RecoveryAutomationInspectionProvider,
 ): Promise<Partial<LangGraphSessionState>> {
-  // Every turn, first or later: read-only pilot questions, then the pilot handoff refusals, then the operator gate
-  // unchanged from main (src/session/pilot-gate.ts). Handoff patterns only choose refusal text; they never admit anything.
+  // Every turn, first or later (src/session/pilot-gate.ts): main's operator gate first, unchanged; then the pilot handoff
+  // refusals; then read-only pilot questions. Handoff patterns only choose refusal text; they never admit anything.
   const turn = decidePilotTurn(
     state.request,
     (state.history?.length ?? 0) > 0,
