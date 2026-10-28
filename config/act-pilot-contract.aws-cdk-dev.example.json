@@ -1,0 +1,31 @@
+{
+  "EXAMPLE": "NOT A REAL CONTRACT. The DEV-only AWS CDK pilot (one stack, one account, DEV only). Copy to config/act-pilot-contract.json, replace the fake account id and every REPLACE-WITH value with an owner-supplied value, and set enabled to true and add an authorize entry (for example {\"DEV\": [\"APPLY\", \"CLEANUP\"]}) only when the owner authorizes the pilot, in one reviewed commit of the contract (an absent or empty authorize keeps ACT disabled; there is no hash file). The backend is the CloudFormation stack name. The capabilities list is empty, so a stack with IAM resources needs an explicit owner decision (CAPABILITY_IAM or CAPABILITY_NAMED_IAM). The pilot's cleanup never deletes the stack and refuses to leave it with no resource (CLEANUP_WOULD_EMPTY_STACK), so the stack and the canary's last resource stay, and the owner records them as a retained-resource disposition (docs/act-pilot-apply.md, CDK). There is no stack-delete authority. The account id is obviously fake and the approver placeholders are deliberately invalid, so this file can never enable ACT.",
+  "schemaVersion": 1,
+  "enabled": false,
+  "provider": "AWS",
+  "engine": "CDK",
+  "policyVersion": "REPLACE-WITH-REVIEWED-POLICY-VERSION",
+  "enabledEnvironments": ["DEV"],
+  "targets": {
+    "DEV": {
+      "accountId": "111111111111",
+      "region": "us-east-2",
+      "backend": "REPLACE-WITH-STACK-NAME",
+      "workspace": "default",
+      "capabilities": [],
+      "canary": { "resources": [{ "type": "AWS::Logs::LogGroup", "count": 1 }, { "type": "AWS::CloudFormation::WaitConditionHandle", "count": 1, "retain": true }] }
+    }
+  },
+  "requiredApprovals": {
+    "DEV": 1
+  },
+  "maxApprovalAgeMinutes": 30,
+  "approvers": [
+    {
+      "id": "REPLACE-WITH-OWNER-APPROVER",
+      "publicKeyPem": "REPLACE-WITH-ED25519-PUBLIC-KEY",
+      "environments": ["DEV"]
+    }
+  ],
+  "killSwitchPath": ".runs/apply/KILL"
+}

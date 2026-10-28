@@ -67,13 +67,54 @@ test("from the console side exactly src/cli/ui-channel.ts reaches the apply path
   const taken = importsOf(UI_CHANNEL).filter((file) => file.startsWith("src/apply/")).sort();
   assert.deepEqual(taken, ["src/apply/channel.ts", "src/apply/cleanup-proposal.ts", "src/apply/constants.ts", "src/apply/contract.ts", "src/apply/seal.ts", "src/apply/types.ts"]);
   // Outside src/apply, exactly these modules import it: the two CLI doors, the release-admission checks that read the same pin, and the
-  // preview-gate contract (src/qualification/preview-gate.ts), which takes only the sealed plan's types and the hash and commit patterns.
+  // preview-gate and recovery-gate contracts (src/qualification/preview-gate.ts, recovery-gate.ts), which take only the apply types and the hash and commit patterns.
   const outside = sources.filter((file) => !file.startsWith("src/apply/") && importsOf(file).some((dep) => dep.startsWith("src/apply/"))).sort();
-  assert.deepEqual(outside, ["src/cli/apply.ts", "src/cli/release-admission.ts", "src/cli/ui-channel.ts", "src/qualification/preview-gate.ts", "src/qualification/release-admission.ts", "src/tools/profiles.ts"]
+  assert.deepEqual(outside, ["src/cli/apply.ts", "src/cli/release-admission.ts", "src/cli/ui-channel.ts", "src/qualification/preview-gate.ts", "src/qualification/recovery-gate.ts", "src/qualification/release-admission.ts", "src/tools/profiles.ts"]
     .filter((file) => outside.includes(file)));
-  assert.deepEqual(importsOf("src/qualification/preview-gate.ts").filter((dep) => dep.startsWith("src/apply/")).sort(), ["src/apply/constants.ts", "src/apply/types.ts"], "the preview-gate contract reaches no driver, engine, ledger or approval");
+  for (const gate of ["src/qualification/preview-gate.ts", "src/qualification/recovery-gate.ts"]) {
+    assert.deepEqual(importsOf(gate).filter((dep) => dep.startsWith("src/apply/")).sort(), ["src/apply/constants.ts", "src/apply/types.ts"], gate + ": the gate contract reaches no driver, engine, ledger or approval");
+  }
   assert.ok(outside.includes(UI_CHANNEL) && outside.includes("src/cli/apply.ts"));
   assert.deepEqual(outside.filter((file) => file.startsWith("src/operator-ui/")), [], "no console module imports src/apply directly");
+});
+
+test("the evidence runner (./alz evidence) reaches no module of the apply path, the CLI door or the console adapter, by any import", () => {
+  // Delegated decision 5.2 (issue #39): the runner is read-only and orchestration-only. A guided ACT step is a child
+  // process of ./alz apply, never an import, so nothing the runner loads may be src/apply, src/cli/apply.ts or the adapter.
+  const roots = ["src/cli/evidence.ts", ...walk("src/evidence-runner")];
+  assert.ok(roots.length > 5, "the walk found the runner's modules");
+  const reached = reachableFrom(roots);
+  assert.deepEqual([...reached].filter(isApplyPath).sort(), [], "the evidence runner reaches the apply path");
+  assert.ok(!reached.has(UI_CHANNEL) && !reached.has(CONSOLE_SERVER), "the evidence runner reaches the console adapter or server");
+});
+
+// RB3: the local model's session, its model plumbing and the agent loop read pilot records as files. They never load the
+// apply path, its CLI door, the console adapter or server, or the teardown driver, so no mutation entry point is reachable.
+const MODEL_FACING_ROOTS = (): string[] => [...walk("src/session"), ...walk("src/models"), "src/ollama.ts", "src/loop.ts"];
+
+test("the local model's session, models, client and loop reach no module of the apply path, the CLI door, the console adapter or server, or the teardown driver", () => {
+  const roots = MODEL_FACING_ROOTS();
+  assert.ok(roots.includes("src/session/pilot-context.ts") && roots.includes("src/session/pilot-answer.ts"), "the walk found the pilot context modules");
+  assert.ok(roots.length > 12, "the walk found the model-facing modules");
+  const reached = reachableFrom(roots);
+  assert.deepEqual([...reached].filter(isApplyPath).sort(), [], "a model-facing module reaches the apply path");
+  for (const forbidden of [UI_CHANNEL, CONSOLE_SERVER, "src/cli/teardown-driver.ts"]) {
+    assert.ok(!reached.has(forbidden), "a model-facing module reaches " + forbidden);
+  }
+  // And nothing reached by them names a mutation entry point of the apply path, even as text.
+  for (const file of reached) {
+    assert.doesNotMatch(readFileSync(file, "utf8"), /\brun(?:Apply|ApplyCommand|Cleanup)\s*\(|\b(?:sealPlan|sealPreview|qualifyApply|signApproval|signRequest|consumeApprovals|reserveArtifact|finalizeArtifact|finalizeCleanup)\s*\(/, file);
+  }
+});
+
+test("negative: the model-facing roots import no apply module directly, and the pilot context reads files under .runs only", () => {
+  for (const file of MODEL_FACING_ROOTS()) {
+    const forbidden = importsOf(file).filter((dep) => isApplyPath(dep) || dep === UI_CHANNEL || dep === CONSOLE_SERVER || dep.startsWith("src/cli/"));
+    assert.deepEqual(forbidden, [], file);
+  }
+  const context = readFileSync("src/session/pilot-context.ts", "utf8");
+  assert.doesNotMatch(context, /\b(?:writeFile|writeFileSync|appendFile|rename|rm|rmSync|unlink|mkdir|spawn|exec|execFile|fork)\w*\s*\(/, "the pilot context only reads");
+  assert.doesNotMatch(readFileSync("src/session/pilot-answer.ts", "utf8"), /node:child_process|node:fs/, "the pilot answer neither runs nor writes anything");
 });
 
 test("negative: the agent-facing directories still cannot import the adapter, the CLI door or the driver, by any path", () => {

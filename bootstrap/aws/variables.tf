@@ -87,9 +87,46 @@ variable "apply_permissions_boundary_arn" {
 }
 
 variable "discovery_managed_policy_arns" {
-  description = "Read permissions for DISCOVERY (Terraform engine only; the CDK DISCOVERY role gets DescribeStacks on the stack and nothing else)."
+  description = "Managed policies for DISCOVERY, both engines. Only three AWS-managed policies are accepted, compared exactly: ViewOnlyAccess (the default; it lists and describes control-plane metadata), SecurityAudit, and ReadOnlyAccess, which draws a plan warning because it grants data reads the inline deny does not list. Every other ARN is refused, including customer-managed policies. The inline act-pilot-discovery-scope policy adds exactly the reads the product makes (discovery-policy.json) and denies the data-plane and secret reads it lists. A choice other than the default is an exception to the owner's control-plane-only decision: record its scope and purpose beside the value."
   type        = list(string)
-  default     = ["arn:aws:iam::aws:policy/ReadOnlyAccess"]
+  default     = ["arn:aws:iam::aws:policy/job-function/ViewOnlyAccess"]
+  validation {
+    # An allowlist, compared exactly: no case folding, no trimming, no pattern.
+    condition = alltrue([for arn in var.discovery_managed_policy_arns : contains([
+      "arn:aws:iam::aws:policy/job-function/ViewOnlyAccess",
+      "arn:aws:iam::aws:policy/SecurityAudit",
+      "arn:aws:iam::aws:policy/ReadOnlyAccess",
+    ], arn)])
+    error_message = "DISCOVERY is read-only and limited to control-plane metadata. Only these AWS-managed policies are accepted, exactly as written: arn:aws:iam::aws:policy/job-function/ViewOnlyAccess, arn:aws:iam::aws:policy/SecurityAudit and arn:aws:iam::aws:policy/ReadOnlyAccess (with a plan warning). Customer-managed and other policies are refused."
+  }
+}
+
+variable "discovery_data_read_exceptions" {
+  description = "Exceptions to the DISCOVERY deny on data-plane and secret reads. Each names actions the deny lists (discovery-policy.json), the exact resource ARNs they apply to, and the purpose. An exact ARN has no * or ? anywhere, no $ anywhere (an IAM policy variable such as $${aws:UserAgent} is substituted from the request, so it would act as a wildcard the caller chooses), no whitespace or control character, the aws partition, a region and a 12-digit account unless its service has none (S3 has neither; API Gateway has no account), and no empty resource segment. The action stays denied on every other resource. Empty by default: the owner's decision is control-plane metadata only."
+  type = list(object({
+    actions   = list(string)
+    resources = list(string)
+    purpose   = string
+  }))
+  default = []
+  # A resource is exact when it has no wildcard character and no policy variable ($) anywhere, no whitespace or control
+  # character (\p{Z}, \p{Cc}), the aws partition, a real region and account (empty only where the service has none), and a
+  # resource part with no empty segment (no "//" or "::", no trailing "/" or ":").
+  validation {
+    condition = alltrue([for e in var.discovery_data_read_exceptions :
+      length(e.actions) > 0 && length(e.resources) > 0 && length(trimspace(e.purpose)) >= 20 &&
+      alltrue([for a in e.actions : can(regex("^[a-z0-9-]+:[A-Za-z0-9*]+$", a))]) &&
+      alltrue([for r in e.resources : try(
+        length(regexall("[*?$\\p{Z}\\p{Cc}]", r)) == 0 &&
+        can(regex("^arn:aws:[a-z0-9-]+:([a-z]{2}(-[a-z]+)+-[0-9]+)?:([0-9]{12})?:.+$", r)) &&
+        (split(":", r)[3] != "" || contains(["s3"], split(":", r)[2])) &&
+        (split(":", r)[4] != "" || contains(["s3", "apigateway"], split(":", r)[2])) &&
+        !can(regex("(//|::|[/:]$)", join(":", slice(split(":", r), 5, length(split(":", r)))))),
+        false
+      )])
+    ])
+    error_message = "Each DISCOVERY data-read exception needs at least one action, at least one exact resource ARN (no * or ? anywhere; no $, so no IAM policy variable; no whitespace or control character; partition aws; a region and a 12-digit account unless the service has none; no empty resource segment), and a purpose of at least 20 characters."
+  }
 }
 
 variable "state_bucket_name" {

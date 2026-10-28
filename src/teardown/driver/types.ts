@@ -18,7 +18,7 @@ import type { DeletionUnit, DestroyPreview } from "../types.js";
  * is human-invoked only. It is not a broker tool, and nothing in this
  * directory is reachable from src/tools.
  */
-export type DriverEngine = Exclude<ManifestEngine, "CDK">;
+export type DriverEngine = Exclude<ManifestEngine, "CDK" | "BICEP">;
 export const DRIVER_ENGINES: readonly DriverEngine[] = ["TERRAFORM", "OPENTOFU", "PULUMI"];
 
 /** Ordinary preview and destroy preview are separate operations. */

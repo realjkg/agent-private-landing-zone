@@ -53,10 +53,16 @@ export type AwsBehavior = {
   templateDiffers?: boolean;
   /** describe-change-set lists a change that is not a resource, a change with an unknown action, or is not a change set document at all. */
   badChange?: "unreadable" | "action"; describeGarbage?: boolean;
+  /** The PilotTopic Modify's `Replacement` value instead of "True"; null leaves the field out. */
+  modifyReplacement?: string | null;
+  /** Raw change rows describe-change-set appends to whatever list it reports (a Dynamic, an Import or a Remove of some resource). */
+  changeExtra?: unknown[];
+  /** The fixed change list modifies the existing PilotTopic (Replacement per `modifyReplacement`) instead of adding it; the canary allowlist refuses a Modify. */
+  topicModify?: boolean;
   /** describe-stacks prints more than the runner keeps. */
   bigOutput?: boolean;
-  /** describe-change-set reports these capabilities whatever was passed. */
-  echoCapabilities?: string[];
+  /** describe-change-set reports these capabilities whatever was passed, or exactly this value for the key (a malformed answer). */
+  echoCapabilities?: string[]; rawCapabilities?: unknown;
   /** Statuses describe-stacks answers with, one per poll after execute (the last repeats), and after a cancel. */
   pollStatuses?: string[]; afterCancel?: string[];
   /** describe-stack-events reports a resource event after the execution began. */
@@ -72,10 +78,20 @@ export type AwsBehavior = {
   resourcesFail?: boolean; resourcesExtra?: boolean; resourcesNested?: boolean;
   /** Physical ids the stack reports for these logical ids, instead of the fake's derived ones. */
   physicalIds?: Record<string, string>;
+  /** The type the stack listing reports for a logical id, when it is not the template's (a drifted or lying listing). */
+  resourceTypes?: Record<string, string>;
   /** cloudcontrol get-resource: these identifiers are absent whatever the stack holds; these fail with the given stderr. */
   absent?: string[]; readFail?: Record<string, string>;
   /** resourcegroupstaggingapi lists these extra ARNs under the unit, or fails. */
   stray?: string[]; taggingFail?: boolean;
+  /** describe-change-set derives an UPDATE change set's changes from the executed template and the new one (Remove, Add, Modify), instead of the fixed list. */
+  diffChanges?: boolean;
+  /** describe-change-set lists every resource of the template as an Add (a greenfield stack). */
+  changesAllAdd?: boolean;
+  /** A person turned termination protection on after the first create (CreateChangeSet cannot), so a later update or cleanup is not refused. */
+  protectAfterCreate?: boolean;
+  /** The tagging API lists a made-up ARN for resource types the fake does not know (a type outside the product's ARN table). */
+  unknownTypeArns?: boolean;
 };
 
 const FAKE = `#!${process.execPath}
@@ -100,28 +116,38 @@ if (b.stackExists && !a.seeded) {
 }
 if (args[0] === "--version") { log({}); process.stdout.write("aws-cli/" + b.version + " Python/3.11.6 Linux/6.1.0 exe/x86_64.ubuntu.22\\n"); process.exit(0); }
 // What the stack holds once a change set was executed to completion: logical id, type, physical id (derived per type the way CloudFormation names them, from memory) and ARN.
+// A stack holds the resources of its last completed template: still during an update and after an update's rollback (which restores them); nothing after a failed create's rollback.
 const stackResources = () => {
-  if (!a.changeSet || !a.executing || !/_COMPLETE$/.test(a.stack.status) || /ROLLBACK/.test(a.stack.status)) return [];
+  if (!a.changeSet || !a.stackTemplate || /^ROLLBACK_/.test(a.stack.status)) return [];
   const rows = [];
-  for (const [logical, resource] of Object.entries(a.changeSet.template.Resources || {})) {
-    const type = resource.Type;
+  for (const [logical, resource] of Object.entries(a.stackTemplate.Resources || {})) {
+    const type = (b.resourceTypes || {})[logical] || resource.Type;
     const given = (b.physicalIds || {})[logical];
     const physical = given !== undefined ? given
       : type === "AWS::SNS::Topic" ? "arn:aws:sns:" + region + ":" + account + ":" + a.changeSet.stackName + "-" + logical + "-FAKE1"
       : type === "AWS::S3::Bucket" ? (a.changeSet.stackName + "-" + logical + "-fake1").toLowerCase()
-      : type === "AWS::IAM::Role" ? a.changeSet.stackName + "-" + logical + "-FAKE1"
+      : type === "AWS::IAM::Role" || type === "AWS::IAM::User" || type === "AWS::IAM::Policy" ? a.changeSet.stackName + "-" + logical + "-FAKE1"
+      : type === "AWS::IAM::ManagedPolicy" ? "arn:aws:iam::" + account + ":policy/" + a.changeSet.stackName + "-" + logical + "-FAKE1"
+      : type === "AWS::IAM::AccessKey" ? "AKIAFAKE" + logical.toUpperCase().slice(0, 12)
       : type === "AWS::SQS::Queue" ? "https://sqs." + region + ".amazonaws.com/" + account + "/" + a.changeSet.stackName + "-" + logical + "-FAKE1"
       : a.changeSet.stackName + "-" + logical + "-fake1";
+    // The ARN the tagging API would list, for the types that have one and take tags (an inline policy, an access key and an unknown type list nothing).
     const arn = physical.startsWith("arn:") ? physical
       : type === "AWS::S3::Bucket" ? "arn:aws:s3:::" + physical
       : type === "AWS::IAM::Role" ? "arn:aws:iam::" + account + ":role/" + physical
+      : type === "AWS::IAM::User" ? "arn:aws:iam::" + account + ":user/" + physical
       : type === "AWS::SQS::Queue" ? "arn:aws:sqs:" + region + ":" + account + ":" + physical.split("/").pop()
       : type === "AWS::Logs::LogGroup" ? "arn:aws:logs:" + region + ":" + account + ":log-group:" + physical
-      : "arn:aws:fake:" + region + ":" + account + ":" + type.split("::")[2].toLowerCase() + "/" + physical;
+      : b.unknownTypeArns ? "arn:aws:fake:" + region + ":" + account + ":" + type.split("::")[2].toLowerCase() + "/" + physical
+      : null;
     rows.push({ logical, type, physical, arn });
   }
   if (b.resourcesExtra) rows.push({ logical: "SomeoneElsesQueue", type: "AWS::SQS::Queue", physical: "https://sqs." + region + ".amazonaws.com/" + account + "/someone-elses", arn: "arn:aws:sqs:" + region + ":" + account + ":someone-elses" });
-  if (b.resourcesNested) rows.push({ logical: "NestedLater", type: "AWS::CloudFormation::Stack", physical: "arn:aws:cloudformation:" + region + ":" + account + ":stack/nested/0000", arn: "arn:aws:cloudformation:" + region + ":" + account + ":stack/nested/0000" });
+  if (b.resourcesNested) {
+    rows.push({ logical: "NestedLater", type: "AWS::CloudFormation::Stack", physical: "arn:aws:cloudformation:" + region + ":" + account + ":stack/nested/0000", arn: "arn:aws:cloudformation:" + region + ":" + account + ":stack/nested/0000" });
+    rows.push({ logical: "NestedSet", type: "AWS::CloudFormation::StackSet", physical: "nested-set:0000", arn: null });
+    rows.push({ logical: "NestedHook", type: "Custom::Thing", physical: "2026/10/26/hook0000", arn: null });
+  }
   return rows;
 };
 // The read-only verifier's two calls (src/observe/aws-cli.ts), so one fake serves the engine and the independent reader.
@@ -138,7 +164,8 @@ if (args[0] === "resourcegroupstaggingapi") {
   log({});
   if (b.taggingFail) fail("An error occurred (AccessDeniedException) when calling the GetResources operation: " + (b.failStderr || "not authorized"));
   const unit = /Values=(.*)$/.exec(arg("--tag-filters") || "")?.[1];
-  const tagged = a.changeSet && (a.changeSet.tags || []).includes("Key=alz-unit,Value=" + unit) ? stackResources().map((r) => r.arn) : [];
+  // The real tag:GetResources lists the stack itself (its tags are the unit's) and every tagged resource that has an ARN.
+  const tagged = a.changeSet && (a.changeSet.tags || []).includes("Key=alz-unit,Value=" + unit) ? [a.stack.id, ...stackResources().map((r) => r.arn).filter((arn) => arn !== null)] : [];
   process.stdout.write(JSON.stringify({ ResourceTagMappingList: [...tagged, ...(b.stray || [])].map((arn) => ({ ResourceARN: arn, Tags: [{ Key: "alz-unit", Value: unit }] })) }));
   process.exit(0);
 }
@@ -152,17 +179,25 @@ if (cmd === "describe-stacks") {
   if (b.bigOutput) process.stdout.write("x".repeat(9 * 1024 * 1024));
   if (b.describeStacksFail) fail("An error occurred (AccessDenied) when calling the DescribeStacks operation: " + (b.failStderr || "not authorized"));
   if (!a.stack) fail("An error occurred (ValidationError) when calling the DescribeStacks operation: Stack with id " + arg("--stack-name") + " does not exist");
-  if (a.executing) {
+  // An execution moves the stack through its sequence, one status per look, and settles at the last one; later looks (a cleanup's own, before its execute) see the settled stack.
+  if (a.executing && !a.settled) {
     const sequence = a.canceled ? (b.afterCancel || ["UPDATE_ROLLBACK_IN_PROGRESS", "UPDATE_ROLLBACK_COMPLETE"])
       : (b.pollStatuses || (a.type === "CREATE" ? ["CREATE_IN_PROGRESS", "CREATE_COMPLETE"] : ["UPDATE_IN_PROGRESS", "UPDATE_COMPLETE"]));
     const index = a.canceled ? a.cancelPolls++ : a.polls++;
     a.stack.status = sequence[Math.min(index, sequence.length - 1)];
+    if (index >= sequence.length - 1 && !/IN_PROGRESS$/.test(a.stack.status)) {
+      a.settled = true;
+      // The change set's template and tags reach the stack only when the execution completes; a rollback (a cancel, a failure) leaves the stack as it was.
+      if (/_COMPLETE$/.test(a.stack.status) && !/ROLLBACK/.test(a.stack.status) && a.pendingTemplate) { a.stackTemplate = a.pendingTemplate; a.stackTags = a.pendingTags; }
+      a.pendingTemplate = undefined; a.pendingTags = undefined;
+    }
     if (b.touchKillAtPoll !== undefined && !a.canceled && index === b.touchKillAtPoll) fs.writeFileSync(b.killPath, "stop");
     save();
   }
   process.stdout.write(JSON.stringify({ Stacks: [{
     StackId: b.describedStackId || a.stack.id, StackName: arg("--stack-name"), StackStatus: a.stack.status, EnableTerminationProtection: a.stack.protection,
     CreationTime: a.stack.created, LastUpdatedTime: b.stackUpdated || a.stack.updated, ...(b.stackRoleArn ? { RoleARN: b.stackRoleArn } : {}), Outputs: [{ OutputKey: "Secret", OutputValue: ${JSON.stringify(OUTPUT_CANARY)} }],
+    Tags: (a.stackTags || []).map((tag) => { const m = /^Key=([^,]*),Value=(.*)$/.exec(tag); return { Key: m[1], Value: m[2] }; }),
   }] }));
 }
 else if (cmd === "create-change-set") {
@@ -192,20 +227,42 @@ else if (cmd === "describe-change-set") {
   if (!a.changeSet || arg("--change-set-name") !== a.changeSet.id) fail("An error occurred (ChangeSetNotFound) when calling the DescribeChangeSet operation");
   if (b.changeSetReadFailsAfterExecute && a.attempted) fail("An error occurred (Throttling) when calling the DescribeChangeSet operation", 255);
   if (b.describeGarbage) { process.stdout.write("[]"); process.exit(0); }
-  const changes = b.noChanges ? [] : [
+  // The change list: fixed (a create and a replacement), every resource as an Add, or derived from the executed template and the new one.
+  const diffed = () => {
+    const was = (a.stackTemplate && a.stackTemplate.Resources) || {}, now = a.changeSet.template.Resources || {}, rows = [];
+    for (const [logical, resource] of Object.entries(was)) if (!(logical in now)) rows.push({ Type: "Resource", ResourceChange: { Action: "Remove", LogicalResourceId: logical, ResourceType: resource.Type } });
+    for (const [logical, resource] of Object.entries(now)) {
+      if (!(logical in was)) rows.push({ Type: "Resource", ResourceChange: { Action: "Add", LogicalResourceId: logical, ResourceType: resource.Type } });
+      else if (JSON.stringify(was[logical]) !== JSON.stringify(resource)) rows.push({ Type: "Resource", ResourceChange: { Action: "Modify", LogicalResourceId: logical, ResourceType: resource.Type, Replacement: "False" } });
+    }
+    if (b.extraChange) rows.push({ Type: "Resource", ResourceChange: { Action: "Remove", LogicalResourceId: "ExtraQueue", ResourceType: "AWS::SQS::Queue" } });
+    return rows;
+  };
+  // A CREATE change set adds every resource of its template, as CloudFormation's does (unless a test asks for the fixed list's Modify).
+  const allAdd = () => Object.entries(a.changeSet.template.Resources || {}).map(([logical, resource]) => ({ Type: "Resource", ResourceChange: { Action: "Add", LogicalResourceId: logical, ResourceType: resource.Type } }));
+  const listed = b.noChanges ? [] : b.changesAllAdd && !a.stackTemplate ? allAdd()
+    : b.diffChanges && a.stackTemplate && a.type === "UPDATE" ? diffed() : [
+    ...(a.type === "CREATE" && !b.topicModify ? allAdd() : [
     { Type: "Resource", ResourceChange: { Action: "Add", LogicalResourceId: "PilotBucket", ResourceType: "AWS::S3::Bucket" } },
-    { Type: "Resource", ResourceChange: { Action: "Modify", LogicalResourceId: "PilotTopic", ResourceType: "AWS::SNS::Topic", Replacement: "True" } },
+    // The topic is an Add (the fixture contracts' canary allowlist, CANARY_CDK), unless a test asks for a Modify of an existing one.
+    b.topicModify ? { Type: "Resource", ResourceChange: { Action: "Modify", LogicalResourceId: "PilotTopic", ResourceType: "AWS::SNS::Topic", ...(b.modifyReplacement === null ? {} : { Replacement: b.modifyReplacement === undefined ? "True" : b.modifyReplacement }) } }
+      : { Type: "Resource", ResourceChange: { Action: "Add", LogicalResourceId: "PilotTopic", ResourceType: "AWS::SNS::Topic" } },
+    ]),
     ...(b.extraChange ? [{ Type: "Resource", ResourceChange: { Action: "Remove", LogicalResourceId: "ExtraQueue", ResourceType: "AWS::SQS::Queue" } }] : []),
     ...(b.badChange === "unreadable" ? [{ Type: "Hook" }] : []),
     ...(b.badChange === "action" ? [{ Type: "Resource", ResourceChange: { Action: "Teleport", LogicalResourceId: "Odd", ResourceType: "AWS::SQS::Queue" } }] : []),
   ];
+  const changes = [...listed, ...(b.changeExtra || [])];
   // What the change set reports about its execution follows the stack the fake last described.
   const execution = !a.executing ? "AVAILABLE" : /ROLLBACK|FAILED/.test(a.stack.status) ? "EXECUTE_FAILED" : /_COMPLETE$/.test(a.stack.status) ? "EXECUTE_COMPLETE" : "EXECUTE_IN_PROGRESS";
+  // As the real AWS CLI v2 prints it (2.38.6, docs/act-pilot-simulation-cdk.md): it follows the change list's pages itself and prints each of the
+  // paginator's other keys, null where CloudFormation sent none (a change set made without capabilities has "Capabilities": null).
+  const capabilities = b.echoCapabilities || a.changeSet.capabilities;
   process.stdout.write(JSON.stringify({
     ChangeSetName: a.changeSet.name, ChangeSetId: b.swapChangeSetId || a.changeSet.id, StackId: b.swapStackId || a.changeSet.stackId, StackName: a.changeSet.stackName,
-    Status: b.changeSetStatus || "CREATE_COMPLETE", ExecutionStatus: b.executionStatus || execution,
-    ...(b.statusReason ? { StatusReason: b.statusReason } : {}), ...(b.nextToken ? { NextToken: "page-2" } : {}),
-    Capabilities: b.echoCapabilities || a.changeSet.capabilities, Parameters: [{ ParameterKey: "DbPassword", ParameterValue: "****", ResolvedValue: ${JSON.stringify(PARAMETER_CANARY)} }], Changes: changes,
+    Description: null, Status: b.changeSetStatus || "CREATE_COMPLETE", ExecutionStatus: b.executionStatus || execution,
+    StatusReason: b.statusReason || null, ...(b.nextToken ? { NextToken: "page-2" } : {}), RollbackConfiguration: null, ParentChangeSetId: null,
+    Capabilities: "rawCapabilities" in b ? b.rawCapabilities : capabilities.length > 0 ? capabilities : null, Parameters: [{ ParameterKey: "DbPassword", ParameterValue: "****", ResolvedValue: ${JSON.stringify(PARAMETER_CANARY)} }], Changes: changes,
     Tags: (b.swapTags || a.changeSet.tags || []).map((tag) => { const m = /^Key=([^,]*),Value=(.*)$/.exec(tag); return { Key: m[1], Value: m[2] }; }),
   }));
 }
@@ -217,7 +274,10 @@ else if (cmd === "execute-change-set") {
   if (!a.changeSet || arg("--change-set-name") !== a.changeSet.id) fail("An error occurred (ChangeSetNotFound) when calling the ExecuteChangeSet operation");
   if (b.executeNoop) process.exit(0);
   if (b.executeLost && !b.ranAnyway) fail("Connection was closed before we received a valid response", 255);
-  a.executing = true; a.polls = 0; a.canceled = false; a.cancelPolls = 0; a.stack.updated = "2026-10-11T12:00:30.000Z";
+  a.executing = true; a.settled = false; a.polls = 0; a.canceled = false; a.cancelPolls = 0; a.stack.updated = "2026-10-11T12:00:30.000Z";
+  // The change set's template and tags reach the stack when the execution settles complete (describe-stacks applies them), never on a rollback.
+  a.pendingTemplate = a.changeSet.template; a.pendingTags = a.changeSet.tags;
+  if (b.protectAfterCreate) a.stack.protection = true;
   save();
   if (b.executeLost) fail("Connection was closed before we received a valid response", 255);
 }
@@ -244,7 +304,7 @@ else if (cmd === "describe-stack-resources") {
 else if (cmd === "cancel-update-stack") {
   log({});
   if (!a.stack || a.stack.status !== "UPDATE_IN_PROGRESS") fail("An error occurred (ValidationError) when calling the CancelUpdateStack operation: cannot be canceled");
-  a.canceled = true; save();
+  a.canceled = true; a.settled = false; save();
 }
 else { log({ unexpected: true }); process.exit(2); }
 `;
@@ -294,13 +354,16 @@ export const cdkIdentityEnv = (environment: ApplyEnvironment): NodeJS.ProcessEnv
 
 // --- the contract ---------------------------------------------------------------------------------
 
+/** The CDK fixture contract's canary allowlist (owner decision E1): exactly the fixture template's two resources, each created once. */
+export const CANARY_CDK = { resources: [{ type: "AWS::S3::Bucket", count: 1 }, { type: "AWS::SNS::Topic", count: 1 }] };
+
 /** A CDK contract: the AWS provider, the same stack name in every account, and the capabilities each environment may use. */
 export const cdkContractJson = (killPath: string, capabilities: string[] = [], over: Record<string, unknown> = {}) => {
   const base = awsContractJson(killPath);
   return {
     ...base, engine: "CDK",
     targets: Object.fromEntries((["DEV", "QA", "PROD"] as const).map((e) => [e, {
-      accountId: awsTargetOf(e).account, region: AWS_REGION, backend: STACK, workspace: "default", capabilities,
+      accountId: awsTargetOf(e).account, region: AWS_REGION, backend: STACK, workspace: "default", capabilities, canary: CANARY_CDK,
     }])),
     ...over,
   };
@@ -319,6 +382,8 @@ export type AssemblyOptions = {
   templateExtra?: Record<string, unknown>; resources?: Record<string, unknown>;
   /** Edits the files before they are written, and replaces files with these exact bytes. */
   mutate?: (files: Record<string, any>) => void; raw?: Record<string, string>;
+  /** The AWS CLI version the manifest binds (default the fake's); the opt-in emulated harness passes the real CLI's. */
+  engineVersion?: string;
 };
 
 /** Writes a pre-synthesized cloud assembly (cdk.out) the way a synthesis would leave it, and the manifest that binds it. */
@@ -368,11 +433,29 @@ export function writeAssembly(root: string, target: ResolvedTarget, options: Ass
   files["cdk.out"] = { version: "36.0.0" };
   options.mutate?.(files);
   for (const [name, content] of Object.entries(files)) writeFileSync(join(root, name), options.raw?.[name] ?? JSON.stringify(content));
-  const resolved: Project["resolved"] = { engineVersion: AWS_CLI_VERSION, providers: [], lockFileSha256: undefined, dependencies: [], inputs: [] };
+  const resolved: Project["resolved"] = { engineVersion: options.engineVersion ?? AWS_CLI_VERSION, providers: [], lockFileSha256: undefined, dependencies: [], inputs: [] };
   const manifest = buildManifest({
     engine: "CDK", mode: "PROJECT", target, unitHash: H("1"), files: captureProjectFiles(root), policyVersion: POLICY, ...resolved,
   });
   return { projectRoot: root, manifest, resolved };
+}
+
+/**
+ * The canary allowlist of an assembly (owner decision E1): every resource its one stack's template declares, counted by type. Undefined
+ * when the assembly has no single readable stack template (a test of that refusal); the engine refuses such an assembly first anyway.
+ */
+export function templateCanaryOf(projectRoot: string): { resources: { type: string; count: number }[] } | undefined {
+  try {
+    const manifest = JSON.parse(readFileSync(join(projectRoot, "manifest.json"), "utf8")) as { artifacts: Record<string, { type?: string; properties?: { templateFile?: string } }> };
+    const stacks = Object.values(manifest.artifacts).filter((artifact) => artifact.type === "aws:cloudformation:stack");
+    if (stacks.length !== 1 || typeof stacks[0].properties?.templateFile !== "string") return undefined;
+    const template = JSON.parse(readFileSync(join(projectRoot, stacks[0].properties.templateFile), "utf8")) as { Resources?: Record<string, { Type?: unknown }> };
+    const counts = new Map<string, number>();
+    for (const resource of Object.values(template.Resources ?? {})) counts.set(String(resource?.Type), (counts.get(String(resource?.Type)) ?? 0) + 1);
+    return counts.size === 0 ? undefined : { resources: [...counts].map(([type, count]) => ({ type, count })) };
+  } catch {
+    return undefined;
+  }
 }
 
 // --- qualification ---------------------------------------------------------------------------------
@@ -383,7 +466,8 @@ export function writeAssembly(root: string, target: ResolvedTarget, options: Ass
  * lives under test/, which nothing in src/ imports. `only` leaves the other adapter unqualified.
  */
 export async function forgeCdkQualification(vaultDir: string, only?: "apply" | "preview", over: Record<string, unknown> = {}): Promise<void> {
-  for (const [kind, adapter] of [["apply", CDK.applyAdapter], ["preview", CDK.previewAdapter()]] as const) {
+  // The cleanup adapter is qualified with the apply adapter (`./alz apply qualify` records both from the same run).
+  for (const [kind, adapter] of [["apply", CDK.applyAdapter], ["apply", CDK.cleanupAdapter!], ["preview", CDK.previewAdapter()]] as const) {
     if (only !== undefined && only !== kind) continue;
     const written = await writeQualificationEvidence({
       schemaVersion: 1, engine: "CDK", realEngine: true, backendIdentitySeparated: true,

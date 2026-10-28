@@ -1,10 +1,11 @@
 import type { AdapterDescriptor, ResolvedTarget } from "../teardown/driver/types.js";
 import type { ArtifactManifest } from "../teardown/manifest.js";
 import type { StoppableProcessOptions, StoppableResult } from "../tools/process.js";
+import { BICEP } from "./engines/bicep.js";
 import { CDK } from "./engines/cdk.js";
 import { TERRAFORM } from "./engines/terraform.js";
 import type { ProviderSpec } from "./provider.js";
-import type { ApplyEvidence, ApplyIdentity, ApplyOutcome, EngineId, PilotContract, PilotTarget, PlanChange, ProviderId, SealedUnit } from "./types.js";
+import type { ApplyEvidence, ApplyIdentity, ApplyOutcome, CleanupEvidence, EngineId, PilotContract, PilotTarget, PlanChange, ProviderId, SealedUnit } from "./types.js";
 import type { PilotUnit } from "./unit.js";
 
 /**
@@ -30,7 +31,11 @@ export type EngineContext = {
   /** The contract's opt-in `embedStateWrite` (`PilotContract`), sealing and qualifying only. Absent or false: the seal-time init is the preview adapter's own. */
   embedStateWrite?: boolean;
 };
-export type EngineRunInput = EngineContext & { target: ResolvedTarget; engineVersion: string };
+export type EngineRunInput = EngineContext & {
+  target: ResolvedTarget; engineVersion: string;
+  /** Cleanup only, CDK: the id (ARN) of the stack the run created, from its blueprint; the cleanup refuses any other stack. */
+  runStackId?: string;
+};
 /** A read-only snapshot of the project the manifest describes is what sealing starts from. */
 export type EnginePlanInput = EngineRunInput & {
   snapshotPath: string;
@@ -43,7 +48,7 @@ export type EnginePlanInput = EngineRunInput & {
  * state (`terraform state pull`, read as STATE), or CloudFormation's logical-to-physical mapping of the stack
  * (`describe-stack-resources`, read as DISCOVERY). The driver maps either to identifiers and drops the document.
  */
-export type StateDocument = { source: "TERRAFORM_STATE_PULL" | "CLOUDFORMATION_STACK_RESOURCES"; document: string };
+export type StateDocument = { source: "TERRAFORM_STATE_PULL" | "CLOUDFORMATION_STACK_RESOURCES" | "AZURE_DEPLOYMENT_STACK_RESOURCES"; document: string };
 
 /** How an apply ended: an outcome, or a plan its state has outgrown (nothing applied). */
 export type ApplyEnd = { outcome: ApplyOutcome } | { stale: true };
@@ -106,6 +111,8 @@ export type EngineNotices = {
   /** What the person checks in the cloud's logs before attesting the two principals (`attests`), given as their client ids. */
   attestation(provider: ProviderSpec, first: string, second: string): string[];
   applyNote: string;
+  /** What the CLI tells a person before a cleanup, when the engine's cleanup is not a Terraform destroy. */
+  cleanupNote?: string;
 };
 
 export type EngineSpec = {
@@ -118,15 +125,27 @@ export type EngineSpec = {
    * What a contract target holds besides the provider's account fields. Absent: the provider's own backend and a free
    * workspace name (Terraform). `backendOk` judges the `backend` field when the engine has no state backend (CDK: the stack
    * name), and `backendMayRepeat` lets it be the same in every environment because the account already differs.
-   * `fields` are extra per-environment fields, each judged by its validator and part of the pinned contract.
+   * `fields` are extra per-environment fields, each judged by its validator and part of the reviewed contract.
    */
   target?: {
     backendOk(value: string): boolean;
     workspaceOk(value: string): boolean;
     backendMayRepeat: boolean;
     fields: Readonly<Record<string, (value: unknown) => boolean>>;
+    /**
+     * The `fields` that say where the run's resources are (Bicep: the resource group its stack lives in), so they join the run's
+     * target hash (`pilotTargetSha256`) and a cleanup or removal refuses a contract that moved them. Absent: none (CDK's
+     * `capabilities` limit what a change set may do, not where it is).
+     */
+    locationFields?: readonly string[];
   };
   notices: EngineNotices;
+  /**
+   * Whether a value is one exact resource type in this engine's own naming, for the target's canary allowlist (owner decision
+   * E1, `PilotCanary`; docs/act-pilot-apply.md, "Canary allowlist"): a pattern of plain names, so a wildcard or a pattern is never
+   * a type. Absent: the engine takes no canary allowlist yet, so a contract naming one is refused and no APPLY is authorized for it.
+   */
+  canaryTypeOk?(value: string): boolean;
   /** Whether the engine has a state backend whose settings the plan can embed, so a contract may set `embedStateWrite`. Absent: it has none (CDK). */
   embedsStateWrite?: boolean;
   /** The manifest mode sealing and applying accept; the manifest's engine must be this spec's. */
@@ -155,7 +174,7 @@ export type EngineSpec = {
   /** The cleanup run for this engine, present only with `cleanupAdapter`. */
   openCleanup?(input: EngineRunInput): EngineCleanupRun;
   /** What the evidence says a cleanup did (`CleanupEvidence.authority.mutation`), present only with `cleanupAdapter`. */
-  cleanupMutation?: "TERRAFORM_DESTROY_OF_APPROVED_PROPOSAL";
+  cleanupMutation?: CleanupEvidence["authority"]["mutation"];
   /** What a person is told for each way an apply can end unsuccessfully, and when recovery material could not be kept. */
   outcomeMessages: Readonly<Record<Exclude<ApplyOutcome, "SUCCEEDED">, string>>;
   recoveryLostNote: string;
@@ -163,7 +182,7 @@ export type EngineSpec = {
   recoveryFileNames: readonly string[];
 };
 
-const SPECS: Readonly<Record<EngineId, EngineSpec>> = { TERRAFORM, CDK };
+const SPECS: Readonly<Record<EngineId, EngineSpec>> = { TERRAFORM, CDK, BICEP };
 
 /** The spec for a contract's `engine`, or undefined for anything that is not an implemented engine id. */
 export const engineSpec = (id: unknown): EngineSpec | undefined =>

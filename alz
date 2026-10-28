@@ -4,6 +4,19 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 DIST="$ROOT/dist/cli/operator.js"
 TSX="$ROOT/node_modules/.bin/tsx"
+STATE="$ROOT/.runs/bootstrap/state.json"
+# Written into dist/ as a build's last step ({schemaVersion, sourceCommit}: npm run build:complete after tsc, or bootstrap below after
+# every step); without it dist/ is an unfinished build, and with another commit than the checkout's it is a stale one.
+BUILD_MARKER="$ROOT/dist/.alz-build-complete"
+
+# The commit this checkout is at, or "unknown" when $ROOT is not itself the top of a git checkout: an archive extracted inside
+# some other repository must not be judged by that repository's commit. A build is only trusted for the commit it was made from.
+source_commit() {
+  local top
+  top="$(git -C "$ROOT" rev-parse --show-toplevel 2>/dev/null)" || { echo unknown; return; }
+  if [[ -z "$top" || ! -d "$top" || "$(cd "$top" && pwd -P)" != "$(cd "$ROOT" && pwd -P)" ]]; then echo unknown; return; fi
+  git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown
+}
 
 if [[ "${1:-}" == "bootstrap" ]]; then
   cd "$ROOT"
@@ -11,24 +24,61 @@ if [[ "${1:-}" == "bootstrap" ]]; then
   LOG_DIR="$ROOT/.runs/bootstrap"
   mkdir -p "$LOG_DIR"
   LOG_FILE="$LOG_DIR/$(date -u +%Y%m%dT%H%M%SZ).log"
+  STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  COMMIT="$(source_commit)"
+  # The state file is written before the first step and rewritten at every step. Until completedAt is set, ./alz refuses
+  # to run dist/, because an interrupted bootstrap leaves a partial build that must not be mistaken for a finished one.
+  write_state() {
+    printf '{\n  "startedAt": "%s",\n  "step": "%s",\n  "completedAt": %s,\n  "sourceCommit": "%s"\n}\n' \
+      "$STARTED_AT" "$1" "$2" "$COMMIT" >"$STATE.tmp"
+    mv -f "$STATE.tmp" "$STATE"
+  }
+  # The build's own completion marker, the same two fields `npm run build:complete` writes, for the bootstrapped commit. No
+  # timestamp: two builds of one commit stay byte-identical.
+  write_build_marker() {
+    mkdir -p "$ROOT/dist"
+    printf '{\n  "schemaVersion": 1,\n  "sourceCommit": "%s"\n}\n' "$COMMIT" >"$BUILD_MARKER.tmp"
+    mv -f "$BUILD_MARKER.tmp" "$BUILD_MARKER"
+  }
+  DONE=0
+  # The terminal, kept on its own descriptor: a stop signal arrives while the build's output is redirected to the log.
+  exec 3>&1
+  # The detailed log is kept whatever happens: a stop signal or a failure still copies it to latest.log.
+  finish() {
+    cp -f "$LOG_FILE" "$LOG_DIR/latest.log" 2>/dev/null || true
+    if (( DONE == 0 )); then
+      echo "Local setup did not finish. Review .runs/bootstrap/latest.log, then run ./alz bootstrap again." >&3
+      echo "No infrastructure changes were made." >&3
+    fi
+  }
+  trap finish EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM HUP
+  write_state "npm ci" null
   echo "Preparing Sovereign ALZ local model interface..."
   build_local() {
     npm ci || return $?
-    npm run build
+    write_state "npm run build" null
+    # The marker goes before the first build step and comes back only after the last one: the runtime step here is the
+    # compile alone (no marker), so no moment between the steps has a marker, even if .runs/ is deleted meanwhile.
+    rm -f "$BUILD_MARKER"
+    npm run build:runtime
     local build_exit=$?
     if (( build_exit != 0 )); then return "$build_exit"; fi
+    write_state "npm run build:ui" null
     npm run build:ui
+    local ui_exit=$?
+    if (( ui_exit != 0 )); then return "$ui_exit"; fi
+    write_build_marker
   }
   if build_local >"$LOG_FILE" 2>&1; then
-    cp "$LOG_FILE" "$LOG_DIR/latest.log"
+    write_state "done" "\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\""
+    DONE=1
     echo "Ready. Open the private local workspace with ./alz"
     echo "Detailed build log: .runs/bootstrap/latest.log"
     exit 0
   else
     code=$?
-    cp "$LOG_FILE" "$LOG_DIR/latest.log"
-    echo "Local setup failed. Review .runs/bootstrap/latest.log"
-    echo "No infrastructure changes were made."
     exit "$code"
   fi
 fi
@@ -41,7 +91,40 @@ if [[ "${1:-}" == "debug" && -x "$TSX" ]]; then
   exec "$TSX" "$ROOT/src/cli/operator.ts" "$@"
 fi
 
+refuse_build() {
+  echo "The local build is not ready: ./alz bootstrap did not finish, or the source changed after it ran."
+  echo "Run: ./alz bootstrap"
+  exit 2
+}
+
 if [[ -f "$DIST" ]]; then
+  # A build made by ./alz bootstrap is run only when that bootstrap finished and the source has not moved since.
+  # A build made another way (no state file: a released archive, CI's own npm steps) is run when it carries the build's
+  # own completion marker, which every finished build writes last and an interrupted one never has.
+  if [[ -f "$STATE" ]]; then
+    if ! node -e '
+      const fs = require("node:fs");
+      let state;
+      try { state = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); } catch { process.exit(1); }
+      const finished = typeof state.completedAt === "string" && state.completedAt.length > 0;
+      process.exit(finished && state.sourceCommit === process.argv[2] ? 0 : 1);
+    ' "$STATE" "$(source_commit)"; then
+      refuse_build
+    fi
+  fi
+  if [[ ! -f "$BUILD_MARKER" ]]; then refuse_build; fi
+  # In a checkout, the marker must name the checkout's commit; a marker for another commit, or one that says "unknown", is not
+  # a build of this source (the same rule npm run build:ui applies when it keeps a marker). Only when this launcher cannot read
+  # a commit itself (an archive, no checkout) is any well-formed marker accepted.
+  if ! node -e '
+    const fs = require("node:fs");
+    let marker;
+    try { marker = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); } catch { process.exit(1); }
+    const built = marker && typeof marker.sourceCommit === "string" ? marker.sourceCommit : "";
+    if (built === "") process.exit(1);
+    const head = process.argv[2];
+    process.exit(head === "unknown" || built === head ? 0 : 1);
+  ' "$BUILD_MARKER" "$(source_commit)"; then refuse_build; fi
   exec node "$DIST" "$@"
 fi
 

@@ -6,6 +6,10 @@
  * some by the other. No other attribute value is ever copied out, so the blueprint can go into reviewable evidence.
  */
 
+import { parseArmId } from "./arm-id.js";
+import { isAwsContainerType } from "./aws-containers.js";
+import { policyLinkOf, type PolicyLink } from "./run-created-policies.js";
+
 /** A planned change, as the sealed plan's redacted summary lists it (src/apply/types.ts PlanChange, structurally). */
 export type PlannedChange = { address: string; type: string; action: string };
 
@@ -18,11 +22,29 @@ export type BlueprintEntry = {
   id: string | null;
   /** IN_PLAN: the sealed plan names it. NOT_IN_PLAN: the state holds it and the plan never mentioned it. */
   origin: "IN_PLAN" | "NOT_IN_PLAN";
+  /**
+   * Set when a wrapper type (`terraform_data`, `null_resource`, `aws_cloudformation_stack`, a CloudFormation custom resource)
+   * holds an IAM ARN in any attribute the state recorded, as a whole value or an element of a list, or when its attributes nest
+   * past the depth the scan reads (`SCAN_DEPTH`), so one could not be ruled out: an identity may be in disguise, so the cleanup
+   * refuses to classify it. Judged in place; the attribute itself is never copied.
+   */
+  holdsIdentityArn?: true;
+  /**
+   * For a reviewed run-created policy type (./run-created-policies.ts): the principals it is on and the policy ARN it names, read
+   * from the state's attributes (names and one ARN only, never a document). Absent when the type is not one, or the state does not give
+   * a link the cleanup can match exactly; the identity rule then keeps the entry.
+   */
+  policyLink?: PolicyLink;
 };
 export type Blueprint = {
   entries: BlueprintEntry[];
   /** Addresses the plan says should exist after the apply (created, updated, replaced or unchanged) that the state does not hold. */
   missing: string[];
+  /**
+   * The unit's own container when the engine has one (CloudFormation: the stack, by its ARN): it carries the unit's tags, so the
+   * tag sweep lists it, and it is never a leftover and never a proposal entry. Absent for Terraform, which has no container.
+   */
+  container?: { type: string; identifier: string };
 };
 
 /** Plan actions (src/iac/terraform-plan.ts mapTerraformActions) after which a successful apply leaves the resource in the state. */
@@ -45,7 +67,36 @@ function* managedResources(module: StateModule, depth = 0): Generator<StateResou
 }
 
 /** Types whose provider id is a credential identifier (an access key id, for example). Their id is never copied. */
-const CREDENTIAL_ID_TYPES = new Set(["aws_iam_access_key", "aws_iam_service_specific_credential"]);
+const CREDENTIAL_ID_TYPES = new Set(["aws_iam_access_key", "aws_iam_service_specific_credential", "AWS::IAM::AccessKey"]);
+/**
+ * Wrapper types that can carry anything, an identity's ARN among it (review 6412488764, N2): the generic wrappers here, and every
+ * stack container of the one family table (src/observe/aws-containers.ts; review 6432262110 B1). Their attributes are judged for one.
+ */
+const WRAPPER_TYPE = /^(?:terraform_data|null_resource|AWS::CloudFormation::CustomResource|Custom::)/;
+const isWrapperType = (type: string): boolean => WRAPPER_TYPE.test(type) || isAwsContainerType(type);
+/** An IAM ARN as a whole string value, or as one element of a separated list, in any partition. */
+const IAM_ARN_ELEMENT = /(?:^|[\s,;|])arn:aws(?:-[a-z]+)*:iam::[^\s,;|]*/;
+/**
+ * How many nested objects or lists the scan enters, the attribute set itself being the first. A container nested deeper
+ * than that is not entered: the scan cannot finish, so it reports that an IAM ARN could not be ruled out (fail closed, review
+ * 6412896598 B2), and the entry is unclassifiable rather than ordinary. Width is unbounded; the scan is linear in the input.
+ */
+export const SCAN_DEPTH = 32;
+/**
+ * Whether any string anywhere in a value (an attribute, a nested object, a list) is or contains an IAM ARN element, or the
+ * value nests too deep for the scan to say. Reads in place, copies nothing. `depth` is how many containers enclose `value`.
+ */
+function holdsIamArn(value: unknown, depth = 0): boolean {
+  if (typeof value === "string") return IAM_ARN_ELEMENT.test(value);
+  if (!Array.isArray(value) && !isRecord(value)) return false;
+  if (depth >= SCAN_DEPTH) return true;
+  return (Array.isArray(value) ? value : Object.values(value)).some((item) => holdsIamArn(item, depth + 1));
+}
+
+const withPolicyLink = (type: string, values: Record<string, unknown>): { policyLink?: PolicyLink } => {
+  const link = policyLinkOf(type, values);
+  return link === undefined ? {} : { policyLink: link };
+};
 
 /** One managed instance as either state format names it: its address, type and attribute values (read for identifiers only). */
 type Instance = { address: string; type: string; values: Record<string, unknown> };
@@ -74,6 +125,8 @@ function blueprintOf(instances: Iterable<Instance>, planned: readonly PlannedCha
       arn: text(values.arn) && values.arn.startsWith("arn:") ? values.arn : null,
       id: text(values.id) && !CREDENTIAL_ID_TYPES.has(resource.type) ? values.id : null,
       origin: plannedAddresses.has(resource.address) ? "IN_PLAN" : "NOT_IN_PLAN",
+      ...(isWrapperType(resource.type) && holdsIamArn(values) ? { holdsIdentityArn: true as const } : {}),
+      ...withPolicyLink(resource.type, values),
     });
   }
   // Code-point order, as the sealed plan sorts its changes: the same on every machine, whatever its locale.
@@ -139,8 +192,9 @@ export function blueprintFromTerraformStatePull(stateJson: string, planned: read
 const CLOUDFORMATION_ARNS: Readonly<Record<string, (physicalId: string, place: { account: string; region: string }) => string | null>> = {
   "AWS::S3::Bucket": (id) => "arn:aws:s3:::" + id,
   "AWS::Logs::LogGroup": (id, p) => "arn:aws:logs:" + p.region + ":" + p.account + ":log-group:" + id,
-  // The physical id is the role name; a role under a path has the path in its ARN, which the name alone does not show (UNVERIFIED (9)).
+  // The physical id is the role or user name; one under a path has the path in its ARN, which the name alone does not show (UNVERIFIED (9)).
   "AWS::IAM::Role": (id, p) => (id.includes("/") ? null : "arn:aws:iam::" + p.account + ":role/" + id),
+  "AWS::IAM::User": (id, p) => (id.includes("/") ? null : "arn:aws:iam::" + p.account + ":user/" + id),
   "AWS::SQS::Queue": (id, p) => { const name = /^https:\/\/sqs\.[a-z0-9-]+\.amazonaws\.com\/[0-9]{12}\/([A-Za-z0-9_-]+)$/.exec(id)?.[1]; return name === undefined ? null : "arn:aws:sqs:" + p.region + ":" + p.account + ":" + name; },
   "AWS::KMS::Key": (id, p) => "arn:aws:kms:" + p.region + ":" + p.account + ":key/" + id,
   "AWS::DynamoDB::Table": (id, p) => "arn:aws:dynamodb:" + p.region + ":" + p.account + ":table/" + id,
@@ -150,10 +204,15 @@ const CLOUDFORMATION_ARNS: Readonly<Record<string, (physicalId: string, place: {
   "AWS::EC2::SecurityGroup": (id, p) => "arn:aws:ec2:" + p.region + ":" + p.account + ":security-group/" + id,
 };
 
-/** Change-set actions after which a successful execution leaves the resource in the stack (the sealed change list's own vocabulary, src/apply/engines/cdk.ts). */
-const LEAVES_IN_STACK = new Set(["CREATE", "UPDATE", "REPLACE", "REPLACE_CONDITIONAL", "IMPORT", "DYNAMIC", "SAME"]);
+/**
+ * Change-set actions after which a successful execution leaves the resource in the stack (the sealed change list's own vocabulary,
+ * src/apply/engines/cdk.ts). UNKNOWN, a Modify whose replacement the reader could not judge, leaves it too: a resource the plan
+ * named that the stack no longer holds is reported missing, never silently dropped (#270 review N3).
+ */
+const LEAVES_IN_STACK = new Set(["CREATE", "UPDATE", "REPLACE", "REPLACE_CONDITIONAL", "IMPORT", "DYNAMIC", "SAME", "UNKNOWN"]);
 const LOGICAL_ID = /^[A-Za-z0-9]{1,255}$/;
-const CFN_TYPE = /^(?:AWS|Alexa)::[A-Za-z0-9]+::[A-Za-z0-9]+$/;
+/** A CloudFormation resource type name, including a custom resource's (`Custom::` and up to 60 of the characters CloudFormation allows): recorded so the proposal keeps it as CONTAINS_OTHERS, never dropped from the blueprint. */
+const CFN_TYPE = /^(?:(?:AWS|Alexa)::[A-Za-z0-9]+::[A-Za-z0-9]+|Custom::[A-Za-z0-9_@-]{1,60})$/;
 
 /**
  * The blueprint from `describe-stack-resources` (UNVERIFIED (9): `StackResources[].LogicalResourceId`, `PhysicalResourceId`,
@@ -163,10 +222,15 @@ const CFN_TYPE = /^(?:AWS|Alexa)::[A-Za-z0-9]+::[A-Za-z0-9]+$/;
  * status reason, no timestamp, no drift information. Throws on anything that is not a stack resource listing; a resource
  * row that is not well formed is skipped rather than guessed, and shows up as `missing` if the plan expected it.
  */
-export function blueprintFromCloudFormationResources(resourcesJson: string, planned: readonly PlannedChange[], place: { account: string; region: string | undefined }): Blueprint {
+export function blueprintFromCloudFormationResources(resourcesJson: string, planned: readonly PlannedChange[], place: { account: string; region: string | undefined; stack?: string }): Blueprint {
   const body = parseState(resourcesJson);
   if (!Array.isArray(body.StackResources)) throw new Error("STATE_JSON_INVALID: not a describe-stack-resources document");
   const rows = body.StackResources;
+  // The stack itself, by the id every row names (UNVERIFIED (9): `StackId`): the unit's container, which the tag sweep lists and which is never a leftover.
+  // Recorded only when it is the pinned stack in the pinned account and region; anything else is not this run's container and is not recorded.
+  const stackIds = new Set(rows.filter(isRecord).map((row) => row.StackId).filter((id): id is string => typeof id === "string"));
+  const stackArn = place.region !== undefined && place.stack !== undefined ? new RegExp("^arn:aws:cloudformation:" + place.region + ":" + place.account + ":stack/" + place.stack + "/[0-9a-f-]{36}$") : undefined;
+  const container = stackIds.size === 1 && stackArn !== undefined && stackArn.test([...stackIds][0]!) ? { type: "AWS::CloudFormation::Stack", identifier: [...stackIds][0]! } : undefined;
   function* instances(): Generator<Instance> {
     for (const row of rows) {
       if (!isRecord(row) || !text(row.LogicalResourceId) || !LOGICAL_ID.test(row.LogicalResourceId) || !text(row.ResourceType) || !CFN_TYPE.test(row.ResourceType)) continue;
@@ -179,5 +243,50 @@ export function blueprintFromCloudFormationResources(resourcesJson: string, plan
   }
   const leaving = new Set(planned.filter((change) => LEAVES_IN_STACK.has(change.action)).map((change) => change.address));
   const built = blueprintOf(instances(), planned);
-  return { entries: built.entries, missing: [...leaving].filter((address) => !built.entries.some((entry) => entry.address === address)).sort() };
+  return { entries: built.entries, missing: [...leaving].filter((address) => !built.entries.some((entry) => entry.address === address)).sort(), ...(container ? { container } : {}) };
+}
+
+/** The ARM type of a deployment stack: the unit's container for the Bicep engine. */
+export const DEPLOYMENT_STACK_TYPE = "Microsoft.Resources/deploymentStacks";
+/**
+ * Whether `id` is exactly the pinned deployment stack: a resource-group-scoped `Microsoft.Resources/deploymentStacks` id in the
+ * pinned subscription, with the pinned stack name and, when given, in the pinned resource group. Parsed with the ARM id parser and
+ * compared case-insensitively, as ARM compares ids; no pattern is built from data (review of #332, B2 and N4).
+ */
+export function isPinnedDeploymentStackId(id: unknown, pinned: { subscription: string; stack: string; resourceGroup?: string }): boolean {
+  if (typeof id !== "string") return false;
+  const parsed = parseArmId(id);
+  const segments = id.split("/");
+  const same = (a: string | undefined, b: string): boolean => a !== undefined && a.toLowerCase() === b.toLowerCase();
+  return parsed !== undefined && segments.length === 9 && parsed.pairs.length === 1 &&
+    same(parsed.pairs[0]!.namespace, "Microsoft.Resources") && same(parsed.pairs[0]!.typePath, "deploymentStacks") &&
+    same(parsed.subscription, pinned.subscription) && parsed.resourceGroup !== undefined &&
+    (pinned.resourceGroup === undefined || same(parsed.resourceGroup, pinned.resourceGroup)) && same(segments[8], pinned.stack);
+}
+
+/**
+ * The same blueprint from an Azure deployment stack (the Bicep engine, src/apply/engines/bicep.ts): the stack's managed resources,
+ * read as DISCOVERY after the run, as `{ "stackId": <id>, "managed": [<ARM id>, ...] }`. Each managed resource is its own address
+ * (the sealed change list names resources by ARM id), matched to the plan case-insensitively as ARM compares ids, with its ARM
+ * type as the type and its id as the identifier. The stack itself is the unit's container when it is the pinned stack in the
+ * pinned subscription. An id that does not parse in full is skipped, so it is never an entry the cleanup could name.
+ */
+export function blueprintFromDeploymentStackResources(json: string, planned: readonly PlannedChange[], place: { account: string; stack?: string; resourceGroup?: string }): Blueprint {
+  const body = parseState(json);
+  if (!Array.isArray(body.managed) || !body.managed.every((id) => typeof id === "string")) throw new Error("STATE_JSON_INVALID: not a deployment stack resource list");
+  const plannedByLower = new Map(planned.filter((change) => change.type !== "output").map((change) => [change.address.toLowerCase(), change.address]));
+  function* instances(): Generator<Instance> {
+    for (const id of body.managed as string[]) {
+      const parsed = parseArmId(id);
+      const pair = parsed?.pairs.at(-1);
+      if (parsed === undefined || pair === undefined || pair.typePath === "") continue;
+      yield { address: plannedByLower.get(id.toLowerCase()) ?? id, type: pair.namespace + "/" + pair.typePath, values: { id } };
+    }
+  }
+  const leaving = new Set(planned.filter((change) => change.type !== "output" && LEAVES_RESOURCE.has(change.action)).map((change) => change.address));
+  const built = blueprintOf(instances(), planned);
+  const stackId = typeof body.stackId === "string" ? body.stackId : undefined;
+  const container = stackId !== undefined && place.stack !== undefined && isPinnedDeploymentStackId(stackId, { subscription: place.account, stack: place.stack, resourceGroup: place.resourceGroup })
+    ? { type: DEPLOYMENT_STACK_TYPE, identifier: stackId } : undefined;
+  return { entries: built.entries, missing: [...leaving].filter((address) => !built.entries.some((entry) => entry.address === address)).sort(), ...(container ? { container } : {}) };
 }

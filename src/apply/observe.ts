@@ -1,5 +1,6 @@
 import { createDiscoveryAwsCli, verifierBinarySha256 } from "../observe/aws-cli.js";
 import { createDiscoveryArmReader, type ArmHttp } from "../observe/azure-rest.js";
+import { createDiscoveryGcpReader, type GcpHttp } from "../observe/gcp-rest.js";
 import { cloudControlReader, observeBlueprint, type AwsCli, type ObserveReport, type ResourceReader } from "../observe/verify.js";
 import { canonicalJson } from "../teardown/manifest.js";
 import { sha256 } from "../util/sha256.js";
@@ -10,6 +11,7 @@ import { verifyLeftovers } from "./leftovers.js";
 import { readAppliedEvidence } from "./live-record.js";
 import type { AwsTarget } from "./providers/aws.js";
 import type { AzureTarget } from "./providers/azure.js";
+import type { GcpTarget } from "./providers/gcp.js";
 import {
   readBlueprintRecord, readObservationRecord, recordSha256, verificationOf, writeLeftoversRecord, writeObservationRecord,
   type BlueprintRecord, type LeftoversRecord, type ObservationRecord, type ObservedResource,
@@ -21,11 +23,10 @@ import type { ApplyEvidence, ApplyRefusalCode } from "./types.js";
  * `./alz apply verify-cleanup` run them: both read the ledger for the run's own records, ask the cloud through the
  * read-only DISCOVERY boundary, and write a record of what they found. Neither runs an engine, consumes an approval or
  * changes anything, so either may be repeated: a reconnect observes again, it never applies or cleans up again.
- * The AWS Cloud Control verifier is the only one so far; another provider's verifier is another module behind `AwsCli`.
+ * Each provider's verifier is its own module behind `ResourceReader` (`openReader`).
  */
 export type ObserveDeps = {
   contractPath?: string;
-  contractPinPath?: string;
   evidenceDir: string;
   env?: NodeJS.ProcessEnv;
   toolDirs?: readonly string[];
@@ -35,6 +36,8 @@ export type ObserveDeps = {
   aws?: AwsCli;
   /** Test seam: the Azure reader's HTTP client. Production uses fetch against the two Azure hosts. */
   arm?: ArmHttp;
+  /** Test seam: the GCP reader's HTTP client. Production uses fetch against Google's token, IAM Credentials and read hosts only. */
+  gcp?: GcpHttp;
 };
 
 const refuse = (code: ApplyRefusalCode, message: string): Refusal => ({ ok: false, code, message });
@@ -43,11 +46,11 @@ type OpenReader = { ok: true; reader: ResourceReader; binarySha256: string | nul
 
 /**
  * The contract provider's independent reader, bound to the DISCOVERY identity and the environment's target: AWS Cloud
- * Control through the aws CLI in the target's region, or Azure Resource Manager in process in the target's subscription.
- * The Terraform engine is the only one with a cleanup path, and both of its providers read here.
+ * Control through the aws CLI in the target's region, Azure Resource Manager in process in the target's subscription, or
+ * Google's REST APIs in process in the target's project. Any other provider has no reader, and is refused.
  */
 export function openReader(deps: ObserveDeps, environment: ApplyEvidence["environment"]): OpenReader | Refusal {
-  const contract = loadPilotContract(deps.contractPath, deps.contractPinPath);
+  const contract = loadPilotContract(deps.contractPath);
   if ("reason" in contract) return contractRefusal(contract);
   const target = contract.targets[environment];
   if (!target) return refuse("TARGET_NOT_IN_CONTRACT", "The contract does not enable " + environment + ".");
@@ -65,7 +68,15 @@ export function openReader(deps: ObserveDeps, environment: ApplyEvidence["enviro
       return refuse("CONTRACT_INVALID", "The contract's Azure target does not name a subscription the reader can use. Nothing was run.");
     }
   }
-  return refuse("CLEANUP_NOT_SUPPORTED", "Independent observation exists for AWS and Azure; the " + String(contract.provider) + " verifier does not exist. Nothing was run.");
+  if (contract.provider === "GCP") {
+    try {
+      const opened = createDiscoveryGcpReader({ env: deps.env, projectId: (target as GcpTarget).projectId, http: deps.gcp });
+      return { ok: true, reader: opened.reader, binarySha256: null, close: opened.close };
+    } catch {
+      return refuse("CONTRACT_INVALID", "The contract's GCP target does not name a project the reader can use. Nothing was run.");
+    }
+  }
+  return refuse("CLEANUP_NOT_SUPPORTED", "Independent observation exists for AWS, Azure and GCP; the " + String(contract.provider) + " verifier does not exist. Nothing was run.");
 }
 
 export type ObservationOutcome = { ok: true; record: ObservationRecord; report: ObserveReport; blueprint: BlueprintRecord; applyEvidence: ApplyEvidence } | Refusal;
@@ -130,7 +141,7 @@ export async function verifyProposalLeftovers(proposal: CleanupProposal, deps: O
   // The blueprint the proposal was derived from: its identifiers tell a tag listing's known entries from leftovers.
   const blueprint = await readBlueprintRecord(proposal.artifactSha256, proposal.applyEvidenceSha256, deps.evidenceDir);
   if (!blueprint || recordSha256(blueprint) !== proposal.blueprintSha256) return refuse("RUN_RECORD_MISSING", "The blueprint this proposal names is not the one recorded for this apply.");
-  const knownIdentifiers = blueprint.blueprint.entries.flatMap((entry) => [entry.arn, entry.id]).filter((x): x is string => x !== null);
+  const knownIdentifiers = [...blueprint.blueprint.entries.flatMap((entry) => [entry.arn, entry.id]), blueprint.blueprint.container?.identifier ?? null].filter((x): x is string => x !== null);
   const cleanup = await readCleanupEvidence(proposal.proposalSha256, deps.evidenceDir);
   let record: LeftoversRecord;
   try {

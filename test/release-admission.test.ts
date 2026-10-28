@@ -5,14 +5,20 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { loadPilotContract, pilotContractSha256 } from "../src/apply/contract.js";
-import type { PilotContract } from "../src/apply/types.js";
+import { authorizeContract, loadPilotContract, pilotContractSha256 } from "../src/apply/contract.js";
+import { APPLY_AUTHORITY } from "../src/apply/evidence.js";
+import { buildRecoveryEvidence } from "../src/apply/recovery-record.js";
+import type { ApplyEvidence, PilotContract } from "../src/apply/types.js";
+import { awsContractJson } from "./helpers/apply-fixtures.js";
 import {
+  ACT_RELEASE_PATHS,
   PRODUCTION_RELEASE_GATES,
+  previewScenarioOf,
   reviewProductionRelease,
   type ReleaseAdmissionInput,
   type ReleaseGateSubmission,
 } from "../src/qualification/release-admission.js";
+import { loadReleaseScope } from "../src/release/status.js";
 
 const commit = "a".repeat(40);
 const target = "private-lab-host-01";
@@ -66,7 +72,35 @@ test("release gate registry covers actual AWS, Azure, Pulumi and production obli
     "platform:darwin-arm64", "platform:darwin-x64", "platform:linux-x64", "platform:linux-arm64", "platform:win32-arm64", "platform:win32-x64",
     "act:aws-terraform", "act:azure-terraform", "act:aws-cdk", "act-run-recovery", "security-review:independent",
     "preview:terraform-azure-brownfield",
+    "gcp-provider", "preview:terraform-gcp-brownfield",
   ]) assert.ok(keys.includes(id), id);
+});
+
+test("the GCP gates are unmet requirements: they block an empty release, and no AWS or Azure report ever stands in for them", async () => {
+  assert.deepEqual(previewScenarioOf("preview:terraform-gcp-brownfield"), { provider: "GCP", engine: "TERRAFORM", estate: "brownfield" });
+  // act:gcp-terraform waits for a Phase E GCP scenario (test/phase-e-simulated-builds.test.ts requires one per ACT path).
+  assert.equal(ACT_RELEASE_PATHS.some((path) => (path.provider as string) === "GCP"), false);
+  const h = harness();
+  try {
+    const empty = await reviewProductionRelease({ manifest: input([]), expectedCommit: commit, root: h.root });
+    for (const id of ["gcp-provider", "preview:terraform-gcp-brownfield"]) {
+      assert.equal(empty.gates.find((g) => g.id === id)?.status, "BLOCKED", id);
+      assert.ok(empty.blockers.some((m) => m.includes(id)), id);
+    }
+    const report = (provider: string) => ({
+      schemaVersion: 1, sourceCommit: commit, provider, ready: true, actEnabled: false, blockers: [],
+      discovery: { evidenceSources: ["cloud-api"], snapshotSha256: "d".repeat(64) }, validation: { passed: true }, preview: { outputSha256: "e".repeat(64) },
+    });
+    const providerStatus = async (gate: string, provider: string) => (await reviewProductionRelease({
+      manifest: input([h.attach(gate, "LIVE_PROVIDER", report(provider))]), expectedCommit: commit, root: h.root,
+    })).gates.find((g) => g.id === gate)?.status;
+    // Before this gate existed, every live-provider gate other than aws-provider read its report as Azure's.
+    assert.equal(await providerStatus("gcp-provider", "AZURE"), "BLOCKED");
+    assert.equal(await providerStatus("gcp-provider", "AWS"), "BLOCKED");
+    assert.equal(await providerStatus("azure-provider", "GCP"), "BLOCKED");
+    assert.equal(await providerStatus("azure-provider", "AZURE"), "EVIDENCE_PRESENT", "the existing gates are unchanged");
+    assert.equal(await providerStatus("aws-provider", "AWS"), "EVIDENCE_PRESENT");
+  } finally { h.cleanup(); }
 });
 
 test("empty manifest is BLOCKED; no missing evidence can imply release approval", async () => {
@@ -148,7 +182,7 @@ test("existing target model qualification report is recognized only when source,
   const h = harness();
   try {
     const id = "private-model-runtime";
-    const records = ["qwen3:1.7b", "qwen3:4b", "mistral-nemo:latest"].map(
+    const records = ["qwen3:1.7b", "qwen3:4b", "mistral-nemo:12b"].map(
       (model) => ({ model, digest: "b".repeat(64), passed: true }));
     const value = {
       records,
@@ -234,28 +268,81 @@ test("real recovery requires observed times and restore; scanner requires zero b
 const pilotRoot = mkdtempSync(join(tmpdir(), "alz-release-pilot-"));
 test.after(() => rmSync(pilotRoot, { recursive: true, force: true }));
 const contractPath = join(pilotRoot, "act-pilot-contract.json");
-const pinPath = join(pilotRoot, "act-pilot-contract.sha256");
 const publicKey = () => generateKeyPairSync("ed25519").publicKey.export({ type: "spki", format: "pem" }).toString();
 const approvers = [1, 2].map((n) => ({ id: "approver-" + n, publicKeyPem: publicKey(), environments: ["DEV", "QA", "PROD"] }));
-const loadPinned = (path: string = contractPath) => loadPilotContract(path, pinPath);
+const loadPinned = (path: string = contractPath) => loadPilotContract(path);
 const pilotTarget = (n: string, store: string) => ({ tenantId: "11111111-1111-4111-8111-111111111111",
   subscriptionId: n.repeat(8) + "-" + n.repeat(4) + "-4" + n.repeat(3) + "-8" + n.repeat(3) + "-" + n.repeat(12),
   backend: store + "/tfstate/x.tfstate", workspace: "default" });
 const contractJson = (enabled: boolean, age = 60) => ({
   schemaVersion: 1, enabled, provider: "AZURE", engine: "TERRAFORM",
-  targets: { DEV: pilotTarget("2", "fixturedevstore"), QA: pilotTarget("4", "fixtureqastore"), PROD: pilotTarget("3", "fixtureprodstore") },
+  // Owner decision E1: an environment authorized for APPLY names its canary allowlist.
+  targets: Object.fromEntries(Object.entries({ DEV: pilotTarget("2", "fixturedevstore"), QA: pilotTarget("4", "fixtureqastore"), PROD: pilotTarget("3", "fixtureprodstore") })
+    .map(([env, target]) => [env, { ...target, canary: { resources: [{ type: "azurerm_virtual_network", count: 1 }] } }])),
   requiredApprovals: { DEV: 1, QA: 1, PROD: 2 }, maxApprovalAgeMinutes: age, approvers, killSwitchPath: join(pilotRoot, "KILL"),
+  authorize: { DEV: ["APPLY"], QA: ["APPLY"], PROD: ["APPLY"] },
 });
-/** Writes the contract and, like a reviewed commit, its pin. */
+/** Writes the contract as a reviewed commit would: the contract carries its own authorization, there is no hash file. */
 const writeContract = (enabled: boolean, age = 60) => {
   writeFileSync(contractPath, JSON.stringify(contractJson(enabled, age)));
-  writeFileSync(pinPath, pilotContractSha256(contractJson(true, age) as unknown as PilotContract) + "\n");
 };
 const pilotInput = (actPilot: unknown, infrastructureAct: string = "PILOT") =>
   ({ ...input([]), infrastructureAct, ...(actPilot === undefined ? {} : { actPilot }) }) as unknown as ReleaseAdmissionInput;
 const review = (manifest: ReleaseAdmissionInput, pilotContract?: ReturnType<typeof loadPilotContract>) =>
-  reviewProductionRelease({ manifest, expectedCommit: commit, root: pilotRoot, pilotContract, pilotPinPath: pinPath });
+  reviewProductionRelease({ manifest, expectedCommit: commit, root: pilotRoot, pilotContract });
 const actBlockers = (r: { blockers: string[] }) => r.blockers.filter((b) => /^ACT_PILOT|^RELEASE_MANIFEST/.test(b));
+
+test("under a PILOT release a live ACT record and a recovery record must name the reviewed contract (and the live record its APPLY authorization), and the recovery record the approval count that contract requires for its environment (#269 review N2); a release with no pilot scope binds neither", async () => {
+  writeContract(true);
+  const pinned = loadPinned() as PilotContract;
+  const scope = { provider: "AZURE", engine: "TERRAFORM", contractSha256: pilotContractSha256(pinned) };
+  const attach = (id: string, mode: ReleaseGateSubmission["mode"], payload: object): ReleaseGateSubmission => {
+    const name = id.replaceAll(":", "-") + "-" + hash(JSON.stringify(payload)).slice(0, 8) + ".json";
+    const bytes = JSON.stringify(payload) + "\n";
+    mkdirSync(join(pilotRoot, "evidence"), { recursive: true });
+    writeFileSync(join(pilotRoot, "evidence", name), bytes);
+    return { id, mode, sourceCommit: commit, targetHardwareId: target, evidencePath: "evidence/" + name, evidenceSha256: hash(bytes) };
+  };
+  const status = async (id: string, mode: ReleaseGateSubmission["mode"], payload: object, manifest: ReleaseAdmissionInput = { ...pilotInput(scope), records: [attach(id, mode, payload)] }) =>
+    (await review({ ...manifest, records: manifest.records.length > 0 ? manifest.records : [attach(id, mode, payload)] }, pinned)).gates.find((g) => g.id === id)?.status;
+  // The live ACT record: the reviewed contract's hash is admitted, another contract's is not.
+  const live = {
+    schemaVersion: 1, label: "LIVE", step: "execute", cloud: "AZURE", engine: "TERRAFORM", environment: "DEV", target: { account: "a", backend: "b", workspace: "default" },
+    sourceCommit: commit, artifactSha256: "1".repeat(64), outcome: "SUCCEEDED", evidenceSha256: "2".repeat(64), contractSha256: scope.contractSha256,
+    authorizationSha256: (authorizeContract(pinned, "DEV", "APPLY") as { ok: true; authorization: { authorizationSha256: string } }).authorization.authorizationSha256,
+    attestedBy: "owner", attestedAt: "2026-10-25T00:00:00.000Z",
+  };
+  assert.equal(await status("act:azure-terraform", "LIVE_ACT", live), "EVIDENCE_PRESENT");
+  assert.equal(await status("act:azure-terraform", "LIVE_ACT", { ...live, contractSha256: "3".repeat(64) }), "BLOCKED", "another contract");
+  // The authorization the apply ran under must be the candidate contract's APPLY entry for that environment.
+  assert.equal(await status("act:azure-terraform", "LIVE_ACT", { ...live, authorizationSha256: "3".repeat(64) }), "BLOCKED", "another authorization");
+  assert.equal(await status("act:azure-terraform", "LIVE_ACT", { ...live, environment: "QA" }), "BLOCKED", "DEV's authorization named for QA");
+  assert.equal(await status("act:azure-terraform", "LIVE_ACT", { ...live, authorizationSha256: undefined }), "BLOCKED", "no authorization");
+  // The recovery record, built by the producer under the reviewed contract: DEV with the one approval the contract requires is admitted.
+  const at = (minutes: number): string => new Date(Date.UTC(2026, 9, 12, 12, minutes)).toISOString();
+  const apply = (over: Partial<ApplyEvidence>): ApplyEvidence => ({
+    schemaVersion: 1, environment: "DEV", target: { account: "a", backend: "b", workspace: "default" }, artifactSha256: "5".repeat(64), manifestHash: "2".repeat(64), releaseIdentity: "3".repeat(64),
+    contractSha256: scope.contractSha256, sourceCommit: commit, approvals: [{ approverId: "approver-1", issuedAt: at(-30) }], adapter: { adapterVersion: "a", argvDigest: "4".repeat(64) },
+    toolVersions: { engine: "1.9.5" }, outcome: "SUCCEEDED", exitCode: 0, startedAt: at(-10), finishedAt: at(0), authority: APPLY_AUTHORITY, ...over,
+  });
+  const built = buildRecoveryEvidence({
+    interrupted: apply({ outcome: "KILLED", exitCode: null }), resumed: apply({ artifactSha256: "6".repeat(64), approvals: [{ approverId: "approver-1", issuedAt: at(15) }], startedAt: at(20), finishedAt: at(25) }),
+    contract: pinned, sourceCommit: commit, targetHardwareId: target, attestedBy: "operator", now: new Date(Date.UTC(2026, 9, 12, 13)),
+  });
+  assert.ok(built.ok);
+  const recovery = built.evidence;
+  assert.equal(recovery.requiredApprovals, 1);
+  assert.equal(await status("act-run-recovery", "ACT_RECOVERY", recovery), "EVIDENCE_PRESENT");
+  // The same document relabeled to PROD with its one approval is internally consistent (the validator alone admits it) but the reviewed contract requires two for PROD: refused.
+  const prod = { ...recovery, environment: "PROD", interrupted: { ...recovery.interrupted, environment: "PROD" }, resumed: { ...recovery.resumed, environment: "PROD" } };
+  assert.equal(await status("act-run-recovery", "ACT_RECOVERY", prod), "BLOCKED", "PROD claiming one approval under a contract that requires two");
+  // Another contract than the pinned one, consistently cited, is refused too.
+  const other = { ...recovery, contractSha256: "9".repeat(64), interrupted: { ...recovery.interrupted, contractSha256: "9".repeat(64) }, resumed: { ...recovery.resumed, contractSha256: "9".repeat(64) },
+    checks: recovery.checks.map((c) => (c.name === "pilot-contract" ? { ...c, evidenceSha256: "9".repeat(64) } : c)) };
+  assert.equal(await status("act-run-recovery", "ACT_RECOVERY", other), "BLOCKED", "another contract");
+  // A release with no pilot scope binds neither (the existing non-pilot checks stand): the same PROD document is admitted by the validator alone.
+  assert.equal(await status("act-run-recovery", "ACT_RECOVERY", prod, { ...input([]), records: [] }), "EVIDENCE_PRESENT", "no pilot scope, no binding");
+});
 
 test("a PILOT release with no contract, or a disabled one, is rejected", async () => {
   writeContract(true);
@@ -298,23 +385,19 @@ test("a PILOT release must name this contract, this provider and this engine, an
   assert.deepEqual(actBlockers(await review(pilotInput(good), loadPinned())), ["ACT_PILOT_SCOPE_MISMATCH"]);
 });
 
-test("the release checks the same committed pin the loader does: a contract the pin does not name is rejected", async () => {
+test("the release checks the contract's authorization as the loader does: a contract that authorizes nothing is rejected", async () => {
   writeContract(true);
   const enabled = loadPinned() as PilotContract;
   const scope = { provider: "AZURE", engine: "TERRAFORM", contractSha256: pilotContractSha256(enabled) };
-  // A hand-built or stale contract object that was never loaded through the pin.
-  const edited = { ...enabled, maxApprovalAgeMinutes: 61 };
-  const editedScope = { ...scope, contractSha256: pilotContractSha256(edited) };
-  for (const [manifestScope, contract] of [[editedScope, edited], [scope, edited]] as const) {
-    const result = await review(pilotInput(manifestScope), contract);
-    assert.deepEqual(actBlockers(result), ["ACT_PILOT_CONTRACT_NOT_PINNED"]);
+  // A hand-built or stale contract object whose authorization is absent or empty, named by its own hash.
+  for (const contract of [{ ...enabled, authorize: {} }, (({ authorize: _dropped, ...rest }) => rest)(enabled)] as PilotContract[]) {
+    const result = await review(pilotInput({ ...scope, contractSha256: pilotContractSha256(contract) }), contract);
+    assert.deepEqual(actBlockers(result), ["ACT_PILOT_CONTRACT_NOT_AUTHORIZED"]);
     assert.equal(result.actPilot, null);
   }
-  // An absent, empty or malformed pin pins nothing.
-  for (const pin of [null, "", "\n", "not a hash", "0".repeat(64)]) {
-    if (pin === null) rmSync(pinPath, { force: true }); else writeFileSync(pinPath, pin);
-    assert.deepEqual(actBlockers(await review(pilotInput(scope), enabled)), ["ACT_PILOT_CONTRACT_NOT_PINNED"], JSON.stringify(pin));
-  }
+  // On disk, the loader refuses the same contract, so a repository release never sees it enabled.
+  writeFileSync(contractPath, JSON.stringify({ ...contractJson(true), authorize: {} }));
+  assert.equal(loadPinned().enabled, false);
   writeContract(true);
   assert.deepEqual(actBlockers(await review(pilotInput(scope), enabled)), []);
 });
@@ -359,12 +442,11 @@ test("any other infrastructureAct value is still rejected, with or without a con
   }
 });
 
-test("each listed provider/engine pair is admitted on its own; an unlisted pair is not, even when pinned and named", async () => {
+test("each listed provider/engine pair is admitted on its own; an unlisted pair is not, even when authorized and named", async () => {
   writeContract(true);
   const base = loadPinned() as PilotContract;
   const attempt = async (provider: string, engine: string) => {
     const contract = { ...base, provider, engine } as unknown as PilotContract;
-    writeFileSync(pinPath, pilotContractSha256(contract) + "\n");
     const scope = { provider, engine, contractSha256: pilotContractSha256(contract) };
     return actBlockers(await review(pilotInput(scope), contract));
   };
@@ -383,7 +465,7 @@ test("a live ACT gate admits only the record-live record of its own path, commit
     const record = {
       schemaVersion: 1, label: "LIVE", step: "execute", cloud: "AWS", engine: "TERRAFORM", environment: "DEV",
       target: { accountId: "000000000000" }, sourceCommit: commit, artifactSha256: "1".repeat(64), outcome: "SUCCEEDED",
-      evidenceSha256: "2".repeat(64), contractSha256: "3".repeat(64), attestedBy: "owner", attestedAt: "2026-10-25T00:00:00.000Z",
+      evidenceSha256: "2".repeat(64), contractSha256: "3".repeat(64), authorizationSha256: "4".repeat(64), attestedBy: "owner", attestedAt: "2026-10-25T00:00:00.000Z",
     };
     const status = async (payload: object, gate = id) => (await reviewProductionRelease({
       manifest: input([h.attach(gate, "LIVE_ACT", payload)]), expectedCommit: commit, root: h.root,
@@ -391,7 +473,7 @@ test("a live ACT gate admits only the record-live record of its own path, commit
     assert.equal(await status(record), "EVIDENCE_PRESENT");
     assert.equal(await status(record, "act:aws-cdk"), "BLOCKED");
     for (const change of [{ engine: "CDK" }, { sourceCommit: "c".repeat(40) }, { outcome: "PARTIAL_REQUIRES_REVIEW" },
-      { label: "SYNTHETIC" }, { attestedBy: " " }, { evidenceSha256: "short" }, { fixture: true }]) {
+      { label: "SYNTHETIC" }, { attestedBy: " " }, { evidenceSha256: "short" }, { authorizationSha256: undefined }, { fixture: true }]) {
       assert.equal(await status({ ...record, ...change }), "BLOCKED", JSON.stringify(change));
     }
   } finally { h.cleanup(); }
@@ -403,16 +485,23 @@ test("a platform gate needs its own host, version, artifact digest and all seven
     const id = "platform:linux-x64";
     const names = ["install", "launch", "uninstall", "repeat-uninstall", "partial-install-recovery", "unusual-paths", "unrelated-files-preserved"];
     const report = {
-      ...generic(id, "LIFECYCLE"), platform: "linux-x64", osVersion: "Ubuntu 24.04", artifactSha256: "4".repeat(64),
+      ...generic(id, "LIFECYCLE"), label: "LIVE", platform: "linux-x64", osVersion: "Ubuntu 24.04", artifactSha256: "4".repeat(64),
       checks: names.map((name) => ({ name, passed: true, evidenceSha256: "b".repeat(64) })),
     };
-    const status = async (payload: object) => (await reviewProductionRelease({
-      manifest: input([h.attach(id, "LIFECYCLE", payload)]), expectedCommit: commit, root: h.root,
-    })).gates.find((g) => g.id === id)?.status;
+    const status = async (payload: object, gate = id) => (await reviewProductionRelease({
+      manifest: input([h.attach(gate, "LIFECYCLE", payload)]), expectedCommit: commit, root: h.root,
+    })).gates.find((g) => g.id === gate)?.status;
     assert.equal(await status(report), "EVIDENCE_PRESENT");
-    for (const change of [{ platform: "linux-arm64" }, { osVersion: "" }, { artifactSha256: undefined }, { checks: report.checks.slice(1) }]) {
+    for (const change of [{ platform: "linux-arm64" }, { osVersion: "" }, { artifactSha256: undefined }, { checks: report.checks.slice(1) },
+      // A report must call itself LIVE: a SYNTHETIC label, a `synthetic` flag with no `fixture`, or no label at all is refused (#281 review N1).
+      { label: "SYNTHETIC" }, { label: undefined }, { synthetic: true }, { label: "SYNTHETIC", synthetic: true }]) {
       assert.equal(await status({ ...report, ...change }), "BLOCKED", JSON.stringify(change));
     }
+    // The lifecycle:* gates follow the same rule.
+    const lifecycle = { ...generic("lifecycle:clean-install", "LIFECYCLE"), label: "LIVE" };
+    assert.equal(await status(lifecycle, "lifecycle:clean-install"), "EVIDENCE_PRESENT");
+    assert.equal(await status({ ...lifecycle, label: "SYNTHETIC" }, "lifecycle:clean-install"), "BLOCKED");
+    assert.equal(await status(generic("lifecycle:clean-install", "LIFECYCLE"), "lifecycle:clean-install"), "BLOCKED", "no label is not LIVE");
   } finally { h.cleanup(); }
 });
 
@@ -420,8 +509,22 @@ test("independent review refuses self-review and open blocking findings; ACT rec
   const h = harness();
   try {
     const review = { ...generic("security-review:independent", "INDEPENDENT_REVIEW"), reviewer: "reviewer-1", reviewerIsAuthor: false, blockingFindingsOpen: 0 };
-    const recovery = { ...generic("act-run-recovery", "ACT_RECOVERY"), actEnabled: true, interruptedArtifactSha256: "5".repeat(64),
-      interruptedOutcome: "KILLED", reconciledFromLedger: true, resumedWithoutApproval: false };
+    // The recovery gate takes only the product's own record (src/apply/recovery-record.ts): the four fields are derived from two ledger
+    // evidences, so the fixture is built by the producer; a bare document that states the four fields is a hand-written one, refused.
+    const contract = awsContractJson("/nonexistent/kill") as unknown as PilotContract;
+    const at = (minutes: number): string => new Date(Date.UTC(2026, 9, 12, 12, minutes)).toISOString();
+    const apply = (over: Partial<ApplyEvidence>): ApplyEvidence => ({
+      schemaVersion: 1, environment: "DEV", target: { account: "111111111111", backend: "b", workspace: "default" }, artifactSha256: "5".repeat(64), manifestHash: "2".repeat(64),
+      releaseIdentity: "3".repeat(64), contractSha256: pilotContractSha256(contract), sourceCommit: commit, approvals: [{ approverId: "alice", issuedAt: at(-30) }], requester: { requesterId: "carol", nonce: "0".repeat(32) }, 
+      adapter: { adapterVersion: "a", argvDigest: "4".repeat(64) }, toolVersions: { engine: "1.9.5" }, outcome: "SUCCEEDED", exitCode: 0, startedAt: at(-10), finishedAt: at(0), authority: APPLY_AUTHORITY, ...over,
+    });
+    const built = buildRecoveryEvidence({
+      interrupted: apply({ outcome: "KILLED", exitCode: null }), resumed: apply({ artifactSha256: "6".repeat(64), approvals: [{ approverId: "alice", issuedAt: at(15) }], startedAt: at(20), finishedAt: at(25) }),
+      contract, sourceCommit: commit, targetHardwareId: target, attestedBy: "operator", now: new Date(Date.UTC(2026, 9, 12, 13)),
+    });
+    assert.ok(built.ok);
+    const recovery = built.evidence;
+    const bare = { ...generic("act-run-recovery", "ACT_RECOVERY"), actEnabled: true, interruptedArtifactSha256: "5".repeat(64), interruptedOutcome: "KILLED", reconciledFromLedger: true, resumedWithoutApproval: false };
     const status = async (id: string, mode: ReleaseGateSubmission["mode"], payload: object) => (await reviewProductionRelease({
       manifest: input([h.attach(id, mode, payload)]), expectedCommit: commit, root: h.root,
     })).gates.find((g) => g.id === id)?.status;
@@ -432,6 +535,9 @@ test("independent review refuses self-review and open blocking findings; ACT rec
     assert.equal(await status("act-run-recovery", "ACT_RECOVERY", recovery), "EVIDENCE_PRESENT");
     assert.equal(await status("act-run-recovery", "ACT_RECOVERY", { ...recovery, resumedWithoutApproval: true }), "BLOCKED");
     assert.equal(await status("act-run-recovery", "ACT_RECOVERY", { ...recovery, interruptedOutcome: "SUCCEEDED" }), "BLOCKED");
+    assert.equal(await status("act-run-recovery", "ACT_RECOVERY", { ...recovery, interrupted: { ...recovery.interrupted, outcome: "SUCCEEDED" } }), "BLOCKED", "relabeled over a run that was not interrupted");
+    assert.equal(await status("act-run-recovery", "ACT_RECOVERY", { ...recovery, resumed: { ...recovery.resumed, approvals: [{ approverId: "alice", issuedAt: at(-30) }] } }), "BLOCKED", "an approval carried over");
+    assert.equal(await status("act-run-recovery", "ACT_RECOVERY", bare), "BLOCKED", "a hand-written document is not the producer's");
   } finally { h.cleanup(); }
 });
 
@@ -451,5 +557,59 @@ test("a gate the owner's scope excludes is reported OUT_OF_SCOPE, and evidence o
     assert.ok(evidenced.blockers.includes("RELEASE_RECORD_FOR_OUT_OF_SCOPE_GATE:" + excluded));
     const unknown = await reviewProductionRelease({ manifest: input([]), expectedCommit: commit, root: h.root, outOfScope: ["preview:nope"] });
     assert.ok(unknown.blockers.includes("RELEASE_SCOPE_UNKNOWN_GATE:preview:nope"));
+  } finally { h.cleanup(); }
+});
+
+test("the shipped scope drops the brownfield preview gates (owner decision of 2026-10-28): each is OUT_OF_SCOPE, a record for one is refused, and GCP's provider gate still blocks", async () => {
+  const dropped = [
+    "preview:terraform-aws-brownfield", "preview:terraform-azure-brownfield", "preview:cdk-aws-brownfield", "preview:bicep-azure-brownfield", "preview:terraform-gcp-brownfield",
+  ];
+  // As ./alz qualify admission passes it (src/cli/release-admission.ts).
+  const outOfScope = loadReleaseScope(process.cwd()).outOfScope.map((x) => x.gate);
+  for (const id of dropped) assert.ok(outOfScope.includes(id), id);
+  const h = harness();
+  try {
+    const empty = await reviewProductionRelease({ manifest: input([]), expectedCommit: commit, root: h.root, outOfScope });
+    for (const id of dropped) {
+      assert.deepEqual([empty.gates.find((g) => g.id === id)?.status, empty.gates.find((g) => g.id === id)?.blockers], ["OUT_OF_SCOPE", []], id);
+      assert.ok(!empty.blockers.some((m) => m.includes(id)), id + " no longer blocks the release");
+    }
+    assert.equal(empty.gates.find((g) => g.id === "gcp-provider")?.status, "BLOCKED", "the scope drops the GCP preview gate only");
+    assert.equal(empty.readyForIndependentReleaseReview, false);
+    for (const id of dropped) {
+      const evidenced = await reviewProductionRelease({
+        manifest: input([h.attach(id, "LIVE_PREVIEW", generic(id, "LIVE_PREVIEW"))]), expectedCommit: commit, root: h.root, outOfScope,
+      });
+      assert.ok(evidenced.blockers.includes("RELEASE_RECORD_FOR_OUT_OF_SCOPE_GATE:" + id), id);
+      assert.equal(evidenced.gates.find((g) => g.id === id)?.status, "OUT_OF_SCOPE", id);
+    }
+  } finally { h.cleanup(); }
+});
+
+test("the shipped scope moves the six pillar gates to v1.1 (owner decision of 2026-10-28): each is OUT_OF_SCOPE, a record for one is refused, and gcp-provider still blocks", async () => {
+  const pillars = ["pillar:operational-excellence", "pillar:security", "pillar:reliability", "pillar:performance", "pillar:cost", "pillar:sustainability"];
+  // As ./alz qualify admission passes it (src/cli/release-admission.ts).
+  const outOfScope = loadReleaseScope(process.cwd()).outOfScope.map((x) => x.gate);
+  for (const id of pillars) assert.ok(outOfScope.includes(id), id);
+  assert.ok(!outOfScope.includes("gcp-provider"), "gcp-provider stays required: GCP Terraform and GCP API-native ACT are in scope (#39, 6481421924)");
+  const h = harness();
+  try {
+    const empty = await reviewProductionRelease({ manifest: input([]), expectedCommit: commit, root: h.root, outOfScope });
+    for (const id of pillars) {
+      assert.deepEqual([empty.gates.find((g) => g.id === id)?.status, empty.gates.find((g) => g.id === id)?.blockers], ["OUT_OF_SCOPE", []], id);
+      assert.ok(!empty.blockers.some((m) => m.includes(id)), id + " no longer blocks the release");
+    }
+    assert.equal(empty.gates.find((g) => g.id === "gcp-provider")?.status, "BLOCKED", "gcp-provider stays in scope and unmet");
+    assert.equal(empty.readyForIndependentReleaseReview, false);
+    // Without the exclusion each pillar gate is still required and blocks: its LIVE_METRIC check is unchanged.
+    const unscoped = await reviewProductionRelease({ manifest: input([]), expectedCommit: commit, root: h.root });
+    for (const id of pillars) assert.equal(unscoped.gates.find((g) => g.id === id)?.status, "BLOCKED", id);
+    for (const id of pillars) {
+      const evidenced = await reviewProductionRelease({
+        manifest: input([h.attach(id, "LIVE_METRIC", generic(id, "LIVE_METRIC"))]), expectedCommit: commit, root: h.root, outOfScope,
+      });
+      assert.ok(evidenced.blockers.includes("RELEASE_RECORD_FOR_OUT_OF_SCOPE_GATE:" + id), id);
+      assert.equal(evidenced.gates.find((g) => g.id === id)?.status, "OUT_OF_SCOPE", id);
+    }
   } finally { h.cleanup(); }
 });

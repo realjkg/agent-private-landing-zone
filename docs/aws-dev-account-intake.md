@@ -23,6 +23,6 @@ The output is a reviewable account-factory parameter candidate, not an account-c
 2. Configure budget notifications (advisory only). Independently confirm eligible credits and maintain the $80 **cumulative** pilot spending ceiling; proposed alerts alone cannot guarantee it.
 3. Account Factory uses its own authenticated provisioner / service catalog semantics, not a blanket `organizations:create-account` bypass; provision `adaptcloud-dev` only when approvals, unique account email, Identity Center owner, OU, and billing are verified.
 4. Once member account exists, execute the **existing** `bootstrap/aws` Terraform plan there after reviewer approval; generate separate OIDC roles for DISCOVERY / STATE / STATE_WRITE / APPLY. Never apply from management account or use root for builder runtime.
-5. No ACT until pinned contract and independently qualified human-authorized pilot gates.
+5. No ACT until the owner commits a reviewed contract with its authorize entry, and independently qualified human-authorized pilot gates.
 
 This PR implements only read-only preparation, not an actual account creation engine. Final production UX should put this in the existing Sovereign ALZ `./alz` console as a single authenticated wizard.

@@ -10,7 +10,8 @@
       "accountId": "111111111111",
       "region": "us-east-2",
       "backend": "examplefake-dev-state/pilot/dev.tfstate",
-      "workspace": "default"
+      "workspace": "default",
+      "canary": { "resources": [{ "type": "aws_cloudwatch_log_group", "count": 1 }] }
     }
   },
   "requiredApprovals": {

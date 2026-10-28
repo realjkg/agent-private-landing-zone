@@ -2,6 +2,7 @@ import type { ResolvedTarget } from "../teardown/driver/types.js";
 import type { ExecutionIdentity } from "../tools/identity.js";
 import type { AwsTarget } from "./providers/aws.js";
 import type { AzureTarget } from "./providers/azure.js";
+import type { GcpTarget } from "./providers/gcp.js";
 
 /**
  * The pilot apply contract (docs/act-pilot-plan.md).
@@ -34,13 +35,24 @@ export const APPLY_IDENTITIES = ["DISCOVERY", "STATE", "STATE_WRITE", "APPLY"] a
 export type ApplyIdentity = ExecutionIdentity;
 
 /** The engines the pilot has a spec for (src/apply/engine-spec.ts). The contract's `engine` selects one; anything else is not a contract. */
-export type EngineId = "TERRAFORM" | "CDK";
+export type EngineId = "TERRAFORM" | "CDK" | "BICEP";
 
 /** The providers the pilot has a spec for (src/apply/provider.ts). The contract's `provider` selects one; anything else is not a contract. */
-export type ProviderId = "AZURE" | "AWS";
+export type ProviderId = "AZURE" | "AWS" | "GCP";
 
-/** One environment's exact target, in the shape the contract's provider defines. Real values come from the owner; tests use explicit fixtures. */
-export type PilotTarget = AzureTarget | AwsTarget;
+/**
+ * The canary allowlist (owner decision E1, docs/act-pilot-apply.md, "Canary allowlist"): the exact resource types an APPLY in this
+ * environment may create, each with its exact count, in the engine's own type names (Terraform `aws_cloudwatch_log_group`,
+ * CloudFormation `AWS::Logs::LogGroup`). Part of the target, so it is in the target hash every seal, approval and evidence record binds.
+ */
+export type PilotCanary = { resources: { type: string; count: number; retain?: true }[] };
+
+/** One environment's exact target, in the shape the contract's provider defines, with its optional canary allowlist. Real values come from the owner; tests use explicit fixtures. */
+export type PilotTarget = (AzureTarget | AwsTarget | GcpTarget) & { canary?: PilotCanary };
+
+/** What ACT can be authorized for: an apply, a cleanup of what a run created, or a removal of what the product generated. */
+export type ActOperation = "APPLY" | "CLEANUP" | "REMOVE";
+export const ACT_OPERATIONS: readonly ActOperation[] = ["APPLY", "CLEANUP", "REMOVE"];
 
 export type PilotContract = {
   schemaVersion: 1;
@@ -52,6 +64,12 @@ export type PilotContract = {
   targets: Partial<Record<ApplyEnvironment, PilotTarget>> & { DEV: PilotTarget };
   /** Optional narrow pilot scope; absent preserves the original DEV/QA/PROD contract. */
   enabledEnvironments?: ApplyEnvironment[];
+  /**
+   * The default-deny ACT authorization (owner direction, #39): per environment, the operations ACT may run under this
+   * contract, for its provider, engine and that environment's account. The owner's reviewed commit of the contract is the
+   * authorization. Absent or empty means ACT is disabled; an environment or operation not listed is refused.
+   */
+  authorize?: Partial<Record<ApplyEnvironment, ActOperation[]>>;
   /** Distinct verified approvals required per environment. DEV and QA at least 1, PROD at least 2. */
   requiredApprovals: Partial<Record<ApplyEnvironment, number>> & { DEV: number };
   maxApprovalAgeMinutes: number;
@@ -68,7 +86,7 @@ export type PilotContract = {
   /**
    * Opt-in, default off (absent or false is today's behavior, byte for byte). Terraform engine only. When true, the seal-time `init`
    * embeds STATE_WRITE's non-secret backend settings, so the plan names the state writer (docs/act-pilot-apply.md, "Embedding STATE_WRITE
-   * in the plan"). It is part of the pinned contract, so the sealed plan binds the choice through `contractSha256`.
+   * in the plan"). It is part of the reviewed contract, so the sealed plan binds the choice through `contractSha256`.
    */
   embedStateWrite?: boolean;
 };
@@ -77,8 +95,32 @@ export type PilotContract = {
 export type ApproverEntry = { id: string; publicKeyPem: string; environments: ApplyEnvironment[] };
 
 /** The kinds of action an approval can authorize: an apply of a sealed plan, or a cleanup of an approved proposal. Signatures are domain-separated by kind (src/apply/approval.ts). */
-export type ApprovalSubject = "APPLY" | "CLEANUP";
-export const APPROVAL_SUBJECTS: readonly ApprovalSubject[] = ["APPLY", "CLEANUP"];
+/**
+ * What a signature is for: an apply approval, a cleanup approval, the requester's signature on a sealed request, or the
+ * requester's signature on a cleanup proposal. Each has its own domain and none verifies as another.
+ */
+export type ApprovalSubject = "APPLY" | "CLEANUP" | "REQUEST" | "CLEANUP_REQUEST";
+export const APPROVAL_SUBJECTS: readonly ApprovalSubject[] = ["APPLY", "CLEANUP", "REQUEST", "CLEANUP_REQUEST"];
+
+/**
+ * What the requester signs at seal (docs/act-pilot-plan.md, authority item 3; owner decisions on issue #39, 2026-10-27):
+ * the artifact hash, the environment and a one-time nonce, under the REQUEST domain, with an allowlisted key. The
+ * artifact hash binds the requester id, so every approver signs who requested, and in PROD no approval may come from
+ * the requester's key or id. A cleanup proposal carries the same statement over the proposal's own hash, under the
+ * CLEANUP_REQUEST domain (owner decision 6440801434, item 1).
+ */
+export type RequestStatement = {
+  schemaVersion: 1;
+  requesterId: string;
+  artifactSha256: string;
+  environment: ApplyEnvironment;
+  /**
+   * 128-bit random value, recorded (not consumed) when the plan is applied. Replay is prevented by the artifact ledger: an
+   * artifact applies once, and a second apply of it is refused as ARTIFACT_ALREADY_APPLIED.
+   */
+  nonce: string;
+};
+export type SealedRequest = { statement: RequestStatement; signatureBase64: string };
 
 /** What an approver signs. It binds one approval to one artifact (a sealed plan, or a cleanup proposal by its hash), one target and one moment. */
 export type ApprovalStatement = {
@@ -100,7 +142,8 @@ export type SignedApproval = { statement: ApprovalStatement; signatureBase64: st
  * artifact the driver applies.
  */
 export type SealedPlan = {
-  schemaVersion: 1;
+  /** 2 since the requester signs the sealed request; a schema 1 record (no requester) is refused everywhere. */
+  schemaVersion: 2;
   artifactSha256: string;
   planSha256: string;
   manifestHash: string;
@@ -112,7 +155,15 @@ export type SealedPlan = {
   channel: PilotChannel;
   engineVersion: string;
   policyVersion: string;
-  /** The pinned pilot contract (its canonical sha256) the plan was sealed under: it fixes the provider and every account field, region and tenant included, and the approver allowlist. An apply under another contract is refused. */
+  /**
+   * AUTHORIZED, as sealed: the canonical hash of the contract's authorizing entry for this APPLY (`authorizationEntryOf`). Bound
+   * by the artifact hash with `contractSha256`, so every approval covers the exact authorization; the apply derives it again
+   * from the contract it loads and refuses, with nothing consumed, if it changed.
+   */
+  authorizationSha256: string;
+  /** The run's full target (`pilotTargetSha256`: provider, account fields incl. tenant and region, backend, workspace), bound by the artifact hash. */
+  targetSha256: string;
+  /** The pilot contract (its canonical sha256) the plan was sealed under: it fixes the provider and every account field, region and tenant included, and the approver allowlist. An apply under another contract is refused. */
   contractSha256: string;
   /** The product source commit that made this plan, bound by the artifact hash: approvers sign it, and only the same commit can apply it. */
   sourceCommit: string;
@@ -123,6 +174,10 @@ export type SealedPlan = {
   provenance: PreviewProvenance;
   /** The deletion unit the plan stamps on what it creates, verified in the plan at sealing. Bound by the artifact hash. */
   unit: SealedUnit | null;
+  /** Who requested this change, by allowlist id. Bound by the artifact hash, so every approver signs it; in PROD no approval may come from this id or its key. */
+  requesterId: string;
+  /** The requester's signature over the artifact hash, environment and a nonce (REQUEST domain). Beside the hashed fields, since it signs the hash. Null only for a throwaway plan, which is never stored. */
+  request: SealedRequest | null;
 };
 
 /**
@@ -152,7 +207,17 @@ export type SealedUnit = { unitId: string; tags: Record<string, string>; untagge
 
 export type ApplyRefusalCode =
   | "ACT_DISABLED"
+  /** The reviewed contract's `authorize` does not list this operation for this environment. Nothing ran. */
+  | "ACT_NOT_AUTHORIZED"
+  /** The contract authorizes APPLY for an environment whose target names no canary allowlist (`PilotCanary`). Nothing ran. */
+  | "CANARY_ALLOWLIST_MISSING"
+  /** The plan or change set does anything but create exactly the canary allowlist's types and counts. Nothing was sealed or applied. */
+  | "RESOURCE_NOT_IN_CANARY"
+  /** The contract or its authorizing entry changed since the plan was sealed or the cleanup proposed. Nothing was consumed. */
+  | "ACT_AUTHORIZATION_CHANGED"
   | "CONTRACT_INVALID"
+  /** The contract names a planned provider and engine (GCP Terraform, GCP API-native) whose lane has not landed. ACT stays disabled. */
+  | "NOT_IMPLEMENTED"
   | "IDENTITY_TARGET_MISMATCH"
   | "KILL_SWITCH_ACTIVE"
   /** The kill switch appeared after the approvals were consumed and before the engine started: nothing applied, the approvals are spent. */
@@ -176,6 +241,18 @@ export type ApplyRefusalCode =
   | "APPROVAL_REPLAYED"
   | "APPROVAL_MISBOUND"
   | "SAME_APPROVER_TWICE"
+  /** PROD (an apply or a cleanup): an approval comes from the requester's id or key. The requester and the approvers must be three distinct people. Nothing was consumed. */
+  | "APPROVER_IS_REQUESTER"
+  /** The requester named at seal is not on the contract's allowlist. Nothing ran. */
+  | "REQUESTER_NOT_ALLOWED"
+  /** The key handed to seal is not the allowlisted key of the requester named. Nothing ran. */
+  | "REQUESTER_KEY_MISMATCH"
+  /** The sealed plan or the cleanup proposal carries no requester signature. Nothing was consumed. */
+  | "REQUESTER_SIGNATURE_MISSING"
+  /** The requester signature does not verify against the allowlisted key, or was made for another kind of action. Nothing was consumed. */
+  | "REQUESTER_SIGNATURE_UNVERIFIED"
+  /** The requester signature names another artifact, environment or requester than the sealed plan. Nothing was consumed. */
+  | "REQUESTER_MISBOUND"
   | "ARTIFACT_ALREADY_APPLIED"
   | "ENGINE_NOT_QUALIFIED"
   | "PROMOTION_EVIDENCE_MISSING"
@@ -199,9 +276,26 @@ export type ApplyRefusalCode =
   /** The proposal was already executed, or another run holds it. */
   | "PROPOSAL_ALREADY_EXECUTED"
   /** The contract's engine has no cleanup adapter (CDK stack deletion needs its own decision). */
-  | "CLEANUP_NOT_SUPPORTED";
+  | "CLEANUP_NOT_SUPPORTED"
+  /** A CDK removal would leave the stack with no resource. The stack is never deleted by a cleanup; retiring it with its last resources is the owner's separate decision. Nothing was consumed. */
+  | "CLEANUP_WOULD_EMPTY_STACK"
+  /** An approved resource's deletion policy keeps it when it is removed from the template, so the removal would not delete it. Nothing was consumed. */
+  | "CLEANUP_RETAIN_POLICY"
+  /** A resource or output that stays still refers to an approved one, so the removal would break or take along something not on the list. Nothing was consumed. */
+  | "CLEANUP_DEPENDENT_REFERENCED";
 
 export type ApplyOutcome = "SUCCEEDED" | "FAILED_NO_CHANGE" | "PARTIAL_REQUIRES_REVIEW" | "KILLED";
+
+/**
+ * The three decisions a run rests on, recorded in its evidence (owner decisions, #39): AUTHORIZED (the reviewed contract's
+ * hash and its authorizing entry's hash), READY (the engine program and the qualification evidence the run was admitted with; null where the
+ * operation has no qualification gate) and EXECUTE (the requester and the approvers, also in `requester` and `approvals`).
+ */
+export type RunDecisions = {
+  authorized: { operation: "APPLY" | "CLEANUP"; contractSha256: string; authorizationSha256: string };
+  ready: { engineBinarySha256: string | null; qualificationEvidenceHash: string | null };
+  execute: { requesterId: string; approverIds: string[] };
+};
 
 /** Encrypted at rest. Never carries plan values, state, or raw engine output. */
 export type ApplyEvidence = {
@@ -211,11 +305,19 @@ export type ApplyEvidence = {
   artifactSha256: string;
   manifestHash: string;
   releaseIdentity: string;
-  /** The pinned contract the apply ran under, and so the provider, account, region or tenant it ran against. */
+  /** The contract the apply ran under, and so the provider, account, region or tenant it ran against. */
   contractSha256: string;
+  /** The run's full target (`pilotTargetSha256`), from the sealed plan: what its cleanup and removal must find unchanged. */
+  targetSha256: string;
+  decisions: RunDecisions;
   /** The product source commit that sealed the plan and ran the apply (they must be the same). */
   sourceCommit: string;
   approvals: { approverId: string; issuedAt: string }[];
+  /**
+   * Who requested the change (the verified requester signature's id) and the nonce that signature carried. The nonce is
+   * recorded, not consumed; the artifact ledger prevents replay (ARTIFACT_ALREADY_APPLIED).
+   */
+  requester: { requesterId: string; nonce: string };
   adapter: { adapterVersion: string; argvDigest: string };
   toolVersions: { engine: string };
   outcome: ApplyOutcome;
@@ -225,7 +327,7 @@ export type ApplyEvidence = {
   authority: {
     infrastructureAct: "PILOT_ENABLED";
     /** What the engine did: Terraform applied the sealed plan, or CloudFormation executed the sealed change set. */
-    mutation: "TERRAFORM_APPLY_OF_SEALED_PLAN" | "CLOUDFORMATION_EXECUTE_OF_SEALED_CHANGE_SET";
+    mutation: "TERRAFORM_APPLY_OF_SEALED_PLAN" | "CLOUDFORMATION_EXECUTE_OF_SEALED_CHANGE_SET" | "AZURE_DEPLOYMENT_STACK_CREATE_OF_SEALED_TEMPLATE";
     agentInitiated: false;
   };
   /** Present when the engine left errored.tfstate or crash.log: kept encrypted in the vault, referenced here by count and hash only. */
@@ -250,8 +352,14 @@ export type CleanupEvidence = {
   artifactSha256: string;
   applyEvidenceSha256: string;
   contractSha256: string;
+  decisions: RunDecisions;
   sourceCommit: string;
   approvals: { approverId: string; issuedAt: string }[];
+  /**
+   * Who requested the cleanup (the verified cleanup request signature's id) and the nonce that signature carried. The nonce
+   * is recorded, not consumed; the cleanup ledger executes a proposal once (PROPOSAL_ALREADY_EXECUTED).
+   */
+  requester: { requesterId: string; nonce: string };
   adapter: { adapterVersion: string; argvDigest: string };
   toolVersions: { engine: string };
   /** The addresses the engine was told to destroy: the proposal's list, exactly. */
@@ -262,7 +370,7 @@ export type CleanupEvidence = {
   finishedAt: string;
   authority: {
     infrastructureAct: "PILOT_ENABLED";
-    mutation: "TERRAFORM_DESTROY_OF_APPROVED_PROPOSAL";
+    mutation: "TERRAFORM_DESTROY_OF_APPROVED_PROPOSAL" | "CLOUDFORMATION_EXECUTE_OF_REMOVAL_CHANGE_SET" | "AZURE_DEPLOYMENT_STACK_DELETE_OF_RUN_STACK";
     /** The identity that executed: the pilot's APPLY identity (owner decision, 2026-10-25), bound to `deletes`. */
     executedAs: "APPLY";
     agentInitiated: false;

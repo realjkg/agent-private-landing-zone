@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import { request as httpRequest } from "node:http";
 import test from "node:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -215,7 +216,7 @@ test("model probe mirrors the live workflows' own preconditions", async () => {
   const env = {
     OLLAMA_BASE_URL: "http://127.0.0.1:11434",
     ROUTER_MODEL: "qwen3:1.7b", PRIMARY_MODEL: "qwen3:4b",
-    VALIDATOR_MODEL: "mistral-nemo:latest",
+    VALIDATOR_MODEL: "mistral-nemo:12b",
   };
   const digest = "a".repeat(64);
   const inventory = (names: string[]) => (async () => new Response(JSON.stringify({
@@ -225,13 +226,27 @@ test("model probe mirrors the live workflows' own preconditions", async () => {
     throw new Error("PROBE_MUST_NOT_FETCH");
   }) as unknown as typeof fetch;
 
-  const ready = await probeLocalModels({ env,
-    fetcher: inventory(["qwen3:1.7b", "qwen3:4b", "mistral-nemo:latest"]) });
+  const releaseModels = ["qwen3:1.7b", "qwen3:4b", "mistral-nemo:12b"];
+  const pins = { models: releaseModels, digests: new Map(releaseModels.map((model) => [model, digest] as [string, string | null])) };
+  const ready = await probeLocalModels({ env, pins,
+    fetcher: inventory(releaseModels) });
   assert.deepEqual([ready.status, ready.reason], ["AVAILABLE", "READY"]);
 
-  const partial = await probeLocalModels({ env, fetcher: inventory(["qwen3:4b"]) });
+  // Exact versions: a different installed digest, or a pin still missing, keeps the workflows off.
+  const other = { ...pins, digests: new Map(pins.digests).set("qwen3:4b", "b".repeat(64)) };
+  const mismatch = await probeLocalModels({ env, pins: other, fetcher: inventory(releaseModels) });
+  assert.deepEqual([mismatch.status, mismatch.reason, mismatch.missing], ["UNAVAILABLE", "MODEL_DIGEST_MISMATCH", ["qwen3:4b"]]);
+  const open = { ...pins, digests: new Map(pins.digests).set("mistral-nemo:12b", null) };
+  const unpinned = await probeLocalModels({ env, pins: open, fetcher: inventory(releaseModels) });
+  assert.deepEqual([unpinned.status, unpinned.reason, unpinned.missing], ["UNAVAILABLE", "MODEL_DIGEST_UNPINNED", ["mistral-nemo:12b"]]);
+  // A model the environment names that is not a release model has no pin at all.
+  const offList = await probeLocalModels({ env: { ...env, PRIMARY_MODEL: "qwen3:8b" }, pins,
+    fetcher: inventory([...releaseModels, "qwen3:8b"]) });
+  assert.deepEqual([offList.reason, offList.missing], ["MODEL_DIGEST_UNPINNED", ["qwen3:8b"]]);
+
+  const partial = await probeLocalModels({ env, pins, fetcher: inventory(["qwen3:4b"]) });
   assert.deepEqual([partial.status, partial.reason], ["UNAVAILABLE", "MODELS_NOT_INSTALLED"]);
-  assert.deepEqual(partial.missing, ["qwen3:1.7b", "mistral-nemo:latest"]);
+  assert.deepEqual(partial.missing, ["qwen3:1.7b", "mistral-nemo:12b"]);
 
   const down = await probeLocalModels({ env, fetcher: (async () => {
     throw new TypeError("fetch failed");
@@ -310,6 +325,337 @@ test("workspace readiness names the console build and every job script", () => {
 test("bootstrap builds the console UI as well as the runtime", () => {
   const launcher = readFileSync("alz", "utf8");
   const bootstrap = launcher.slice(launcher.indexOf('"bootstrap"'), launcher.indexOf("exit 0"));
-  assert.match(bootstrap, /npm run build\n/);
+  // The runtime step is the compile alone (`build:runtime`, no marker); bootstrap writes the marker itself after the UI build.
+  assert.match(bootstrap, /npm run build:runtime\n/);
   assert.match(bootstrap, /npm run build:ui\n/);
+  assert.match(bootstrap, /write_build_marker\n/);
+  assert.doesNotMatch(bootstrap, /^\s+npm run build\n|^\s+npm run build:complete\b/m, "no step inside bootstrap writes the marker before the last one");
+});
+
+// --- the launcher, executed --------------------------------------------------------------------------------------
+// A copy of ./alz in a temporary checkout, with a fake dist/, a fake npm and a fake git on a private PATH. Nothing real
+// is built, and the real .runs folder is never touched. Synthetic: this qualifies the launcher's logic, not a platform.
+
+type Launcher = { root: string; bin: string; run: (args: string[], env?: Record<string, string>) => ReturnType<typeof spawnSync> };
+
+function launcher(label: string, npmScript: string): Launcher {
+  const root = mkdtempSync(join(tmpdir(), "alz-launcher-" + label + "-"));
+  const bin = join(root, "fake-bin");
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(join(root, "alz"), readFileSync("alz", "utf8"));
+  chmodSync(join(root, "alz"), 0o755);
+  // The fake git answers `rev-parse --show-toplevel` with FAKE_TOPLEVEL (the copy's root unless a test says otherwise) and
+  // `rev-parse HEAD` with FAKE_COMMIT; FAKE_COMMIT=unknown is no checkout at all, so git fails as it does outside one.
+  writeFileSync(join(bin, "git"), "#!/bin/sh\n[ \"${FAKE_COMMIT:-unknown}\" = unknown ] && exit 128\n" +
+    'case "$*" in *--show-toplevel*) echo "$FAKE_TOPLEVEL" ;; *) echo "$FAKE_COMMIT" ;; esac\n');
+  // The fake npm's `run build:runtime` writes dist/ like the real compile (no marker), and `run build` adds the marker like the
+  // real build does after a successful compile; then the test's own script runs.
+  writeFileSync(join(bin, "npm"), "#!/bin/sh\necho \"npm $*\"\n" +
+    'case "$*" in "run build:runtime"|"run build") rm -f dist/.alz-build-complete; mkdir -p dist/cli; echo "console.log(\'operator ran \' + process.argv.slice(2).join(\' \'))" > dist/cli/operator.js ;; esac\n' +
+    'case "$*" in "run build") printf \'{"schemaVersion":1,"sourceCommit":"%s"}\\n\' "${FAKE_COMMIT:-unknown}" > dist/.alz-build-complete ;; esac\n' +
+    npmScript + "\nexit 0\n");
+  chmodSync(join(bin, "git"), 0o755);
+  chmodSync(join(bin, "npm"), 0o755);
+  const run: Launcher["run"] = (args, env = {}) => spawnSync("bash", [join(root, "alz"), ...args], {
+    encoding: "utf8", cwd: root,
+    env: { PATH: bin + ":" + dirname(process.execPath) + ":/usr/bin:/bin", HOME: root, FAKE_COMMIT: "c0ffee", FAKE_TOPLEVEL: root, ...env },
+  });
+  return { root, bin, run };
+}
+
+function fakeDist(root: string, marker = true): void {
+  mkdirSync(join(root, "dist", "cli"), { recursive: true });
+  writeFileSync(join(root, "dist", "cli", "operator.js"), "console.log('operator ran ' + process.argv.slice(2).join(' '));\n");
+  if (marker) writeFileSync(join(root, "dist", ".alz-build-complete"), JSON.stringify({ schemaVersion: 1, sourceCommit: "c0ffee" }) + "\n");
+  else rmSync(join(root, "dist", ".alz-build-complete"), { force: true });
+}
+
+const REFUSAL = /^The local build is not ready: \.\/alz bootstrap did not finish, or the source changed after it ran\.\nRun: \.\/alz bootstrap\n/;
+
+const stateOf = (root: string): { startedAt: string; step: string; completedAt: string | null; sourceCommit: string } =>
+  JSON.parse(readFileSync(join(root, ".runs", "bootstrap", "state.json"), "utf8"));
+
+test("./alz refuses to run dist/ while the bootstrap state is unfinished or from another commit, and runs it when the state is finished or absent", () => {
+  const { root, run } = launcher("gate", "exit 0");
+  try {
+    fakeDist(root);
+    // No state file but the build's own marker: a released archive or CI's own npm build runs as before.
+    let result = run(["help"]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /operator ran help/);
+    // No state file and no marker: an unfinished build whose .runs/ was deleted is refused, in two lines.
+    fakeDist(root, false);
+    result = run(["help"]);
+    assert.equal(result.status, 2);
+    assert.doesNotMatch(result.stdout, /operator ran/);
+    assert.match(result.stdout, REFUSAL);
+    assert.equal(result.stdout.split("\n").filter(Boolean).length, 2, "exactly two lines, whatever tools exist");
+    // A marker from another commit than the checkout's is a stale build: refused. An archive (no checkout) says "unknown" and runs.
+    fakeDist(root);
+    result = run(["help"], { FAKE_COMMIT: "deadbeef" });
+    assert.equal(result.status, 2, "the marker names c0ffee, the checkout is at deadbeef");
+    assert.match(result.stdout, REFUSAL);
+    result = run(["help"], { FAKE_COMMIT: "unknown" });
+    assert.equal(result.status, 0, "no checkout: the marker's commit cannot be compared, so the build runs");
+    result = run(["help"], { FAKE_TOPLEVEL: dirname(root) });
+    assert.equal(result.status, 0, "the copy is not the top of the enclosing checkout: that checkout's commit is not its own, so it runs");
+    // A marker that says "unknown" is a build of no known commit: refused in a checkout (npm run build:ui drops it too), and
+    // run only where the launcher cannot read a commit itself.
+    writeFileSync(join(root, "dist", ".alz-build-complete"), JSON.stringify({ schemaVersion: 1, sourceCommit: "unknown" }) + "\n");
+    result = run(["help"]);
+    assert.equal(result.status, 2, "an unknown marker in a checkout at a known commit is refused");
+    assert.match(result.stdout, REFUSAL);
+    result = run(["help"], { FAKE_COMMIT: "unknown" });
+    assert.equal(result.status, 0, "no checkout and an unknown marker (a build with no git, as in the Docker stage): runs");
+    writeFileSync(join(root, "dist", ".alz-build-complete"), "not json");
+    assert.equal(run(["help"]).status, 2, "an unreadable marker is refused");
+    fakeDist(root);
+    mkdirSync(join(root, ".runs", "bootstrap"), { recursive: true });
+    const state = join(root, ".runs", "bootstrap", "state.json");
+    const unfinished = { startedAt: "2026-10-27T00:00:00Z", step: "npm run build", completedAt: null, sourceCommit: "c0ffee" };
+    for (const [label, content] of [
+      ["unfinished", JSON.stringify(unfinished)],
+      ["another commit", JSON.stringify({ ...unfinished, completedAt: "2026-10-27T00:05:00Z", sourceCommit: "0ld" })],
+      ["unreadable", "not json"],
+      ["empty completedAt", JSON.stringify({ ...unfinished, completedAt: "" })],
+    ] as const) {
+      writeFileSync(state, content);
+      result = run(["help"]);
+      assert.equal(result.status, 2, label);
+      assert.doesNotMatch(result.stdout, /operator ran/, label + ": dist/ is never run");
+      assert.match(result.stdout, REFUSAL, label);
+    }
+    writeFileSync(state, JSON.stringify({ ...unfinished, completedAt: "2026-10-27T00:05:00Z" }));
+    result = run(["help"]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /operator ran help/);
+    // The same finished state is stale once the checkout moves to another commit.
+    result = run(["help"], { FAKE_COMMIT: "deadbeef" });
+    assert.equal(result.status, 2);
+    assert.match(result.stdout, /Run: \.\/alz bootstrap/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("./alz bootstrap records its state before the first step, completes it only at the end, and keeps the log when it fails or is stopped", () => {
+  // A fake npm that stops the bootstrap at the build step the way Ctrl-C or a closed terminal would: a stop signal to the launcher.
+  const stopped = launcher("stopped", 'case "$*" in "run build:runtime") kill -TERM $PPID ;; esac\nexit 0');
+  try {
+    const result = stopped.run(["bootstrap"]);
+    assert.notEqual(result.status, 0, "a stopped bootstrap never reports success");
+    assert.match(result.stdout, /Local setup did not finish\. Review \.runs\/bootstrap\/latest\.log, then run \.\/alz bootstrap again\.\nNo infrastructure changes were made\.\n/);
+    assert.doesNotMatch(result.stdout, /Ready\./);
+    assert.equal(result.stdout.split("\n").filter(Boolean).length, 3, "the terminal output stays short: the banner and two lines");
+    const state = stateOf(stopped.root);
+    assert.equal(state.completedAt, null, "an interrupted bootstrap is never marked finished");
+    assert.equal(state.step, "npm run build", "the step that was running is recorded");
+    assert.equal(state.sourceCommit, "c0ffee");
+    assert.match(state.startedAt, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
+    const latest = readFileSync(join(stopped.root, ".runs", "bootstrap", "latest.log"), "utf8");
+    assert.match(latest, /npm ci\nnpm run build:runtime\n/, "the detailed log is kept even when the run is stopped");
+    fakeDist(stopped.root);
+    const refused = stopped.run(["help"]);
+    assert.equal(refused.status, 2, "a partial dist/ left by the stopped bootstrap is refused");
+    assert.match(refused.stdout, /did not finish/);
+  } finally {
+    rmSync(stopped.root, { recursive: true, force: true });
+  }
+
+  // A failing step is recorded the same way; a finished bootstrap completes the state and ./alz then runs dist/.
+  const failing = launcher("failing", 'case "$*" in "run build:ui") exit 7 ;; esac\nexit 0');
+  try {
+    const result = failing.run(["bootstrap"]);
+    assert.equal(result.status, 7, "the failing step's exit code is kept");
+    assert.match(result.stdout, /Local setup did not finish/);
+    assert.equal(stateOf(failing.root).step, "npm run build:ui");
+    assert.equal(stateOf(failing.root).completedAt, null);
+    assert.ok(existsSync(join(failing.root, ".runs", "bootstrap", "latest.log")));
+  } finally {
+    rmSync(failing.root, { recursive: true, force: true });
+  }
+  const finished = launcher("finished", "exit 0");
+  try {
+    const result = finished.run(["bootstrap"]);
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stdout, /Preparing Sovereign ALZ local model interface\.\.\.\nReady\. Open the private local workspace with \.\/alz\nDetailed build log: \.runs\/bootstrap\/latest\.log\n/);
+    const state = stateOf(finished.root);
+    assert.equal(state.step, "done");
+    const marker = JSON.parse(readFileSync(join(finished.root, "dist", ".alz-build-complete"), "utf8")) as Record<string, unknown>;
+    assert.deepEqual(marker, { schemaVersion: 1, sourceCommit: "c0ffee" }, "the build marker is written last, for the bootstrapped commit, with no timestamp");
+    assert.match(readFileSync(join(finished.root, ".runs", "bootstrap", "latest.log"), "utf8"), /npm ci\nnpm run build:runtime\nnpm run build:ui\n/, "bootstrap compiles without a marker and writes it itself at the end");
+    assert.match(state.completedAt!, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
+    assert.equal(state.sourceCommit, "c0ffee");
+    assert.match(readFileSync(join(finished.root, ".runs", "bootstrap", "latest.log"), "utf8"), /npm ci\nnpm run build:runtime\nnpm run build:ui\n/);
+    fakeDist(finished.root);
+    const ran = finished.run(["help"]);
+    assert.equal(ran.status, 0);
+    assert.match(ran.stdout, /operator ran help/);
+  } finally {
+    rmSync(finished.root, { recursive: true, force: true });
+  }
+});
+
+test("a build whose .runs/ was deleted while it was half done is still refused: dist/ carries its own completion marker", () => {
+  // The fake npm's build step writes dist/ and its marker (as the real one does); bootstrap removes the marker again before the
+  // UI step, which moves .runs/ away and fails, as an operator clearing logs mid-build and a failing build would.
+  const half = launcher("half", 'case "$*" in "run build:ui") mv .runs .runs-moved; exit 1 ;; esac');
+  try {
+    const result = half.run(["bootstrap"]);
+    assert.equal(result.status, 1);
+    assert.match(result.stdout, /Local setup did not finish/);
+    assert.ok(existsSync(join(half.root, "dist", "cli", "operator.js")), "the partial dist/ is there");
+    assert.ok(!existsSync(join(half.root, "dist", ".alz-build-complete")), "its marker is not");
+    assert.ok(!existsSync(join(half.root, ".runs", "bootstrap", "state.json")), "and the state file is gone");
+    const refused = half.run(["help"]);
+    assert.equal(refused.status, 2, "no state and no marker: refused, never run");
+    assert.doesNotMatch(refused.stdout, /operator ran/);
+    assert.match(refused.stdout, REFUSAL);
+    // A new bootstrap that finishes writes both again, and ./alz runs.
+    writeFileSync(join(half.bin, "npm"), readFileSync(join(half.bin, "npm"), "utf8").replace('mv .runs .runs-moved; exit 1', "exit 0"));
+    assert.equal(half.run(["bootstrap"]).status, 0);
+    assert.match(half.run(["help"]).stdout, /operator ran help/);
+  } finally {
+    rmSync(half.root, { recursive: true, force: true });
+  }
+});
+
+test("bootstrap killed between its compile and its UI build leaves no marker, even with .runs/ deleted: the next ./alz is refused", () => {
+  // The fake npm's compile step has finished (dist/ exists), and the launcher is stopped before the UI step starts.
+  const gap = launcher("gap", 'case "$*" in "run build:ui") mv .runs .runs-moved; kill -TERM $PPID ;; esac\nexit 0');
+  try {
+    const result = gap.run(["bootstrap"]);
+    assert.notEqual(result.status, 0);
+    assert.ok(existsSync(join(gap.root, "dist", "cli", "operator.js")), "the compile's output is there");
+    assert.ok(!existsSync(join(gap.root, "dist", ".alz-build-complete")), "the compile wrote no marker");
+    assert.ok(!existsSync(join(gap.root, ".runs", "bootstrap", "state.json")), "and the state is gone");
+    const refused = gap.run(["help"]);
+    assert.equal(refused.status, 2);
+    assert.match(refused.stdout, REFUSAL);
+  } finally {
+    rmSync(gap.root, { recursive: true, force: true });
+  }
+});
+
+test("a stale marker never survives a failed build: npm run build removes it before compiling, and a failing compile writes none", () => {
+  // The real package.json scripts, run against a temporary checkout copy with a fake tsc that fails, so nothing real is built.
+  const root = mkdtempSync(join(tmpdir(), "alz-build-fail-"));
+  try {
+    const pkg = JSON.parse(readFileSync("package.json", "utf8")) as { scripts: Record<string, string> };
+    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "fake", version: "0.0.0", scripts: { build: pkg.scripts.build, "build:runtime": pkg.scripts["build:runtime"], "build:complete": pkg.scripts["build:complete"], "build:ui": pkg.scripts["build:ui"] } }));
+    mkdirSync(join(root, "dist"), { recursive: true });
+    writeFileSync(join(root, "dist", ".alz-build-complete"), JSON.stringify({ schemaVersion: 1, sourceCommit: "stale" }) + "\n");
+    const bin = join(root, "fake-bin");
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(bin, "tsc"), "#!/bin/sh\nmkdir -p dist; echo partial > dist/partial.js; exit 2\n");
+    chmodSync(join(bin, "tsc"), 0o755);
+    // A fake git that fails as it does outside a checkout, so "unknown" below holds wherever the temporary folder is, even
+    // when TMPDIR is inside some git checkout.
+    writeFileSync(join(bin, "git"), "#!/bin/sh\nexit 128\n");
+    chmodSync(join(bin, "git"), 0o755);
+    // The fake bin comes first, so its tsc, vite and git shadow the real ones; npm itself comes from this test's own PATH.
+    const env = { ...process.env, PATH: bin + ":" + (process.env.PATH ?? ""), HOME: root };
+    const failed = spawnSync("npm", ["run", "build"], { cwd: root, encoding: "utf8", env });
+    assert.notEqual(failed.status, 0, failed.stdout + failed.stderr);
+    assert.ok(existsSync(join(root, "dist", "partial.js")), "the failing compile still emitted");
+    assert.ok(!existsSync(join(root, "dist", ".alz-build-complete")), "the stale marker is gone and no new one was written");
+    // A compile that succeeds writes the marker, for this checkout's commit ("unknown" outside git), with no timestamp.
+    writeFileSync(join(bin, "tsc"), "#!/bin/sh\nexit 0\n");
+    const ok = spawnSync("npm", ["run", "build"], { cwd: root, encoding: "utf8", env });
+    assert.equal(ok.status, 0, ok.stdout + ok.stderr);
+    assert.deepEqual(JSON.parse(readFileSync(join(root, "dist", ".alz-build-complete"), "utf8")), { schemaVersion: 1, sourceCommit: "unknown" });
+    // The UI build removes it before it starts, so a partial UI never carries one; a fake vite that fails leaves none.
+    writeFileSync(join(bin, "vite"), "#!/bin/sh\nexit 3\n");
+    chmodSync(join(bin, "vite"), 0o755);
+    const ui = spawnSync("npm", ["run", "build:ui"], { cwd: root, encoding: "utf8", env });
+    assert.notEqual(ui.status, 0);
+    assert.ok(!existsSync(join(root, "dist", ".alz-build-complete")));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a complete, current build stays runnable after a UI rebuild: npm run build, then npm run build:ui, then ./alz help exits 0", () => {
+  // The real package.json scripts and the real launcher in a temporary checkout copy, with fake tsc, vite, tsx and git on PATH:
+  // the order scripts/admin-check.sh, npm test, npm run check and qa-affected local use. Synthetic: nothing real is built.
+  const root = mkdtempSync(join(tmpdir(), "alz-build-ui-launch-"));
+  try {
+    const pkg = JSON.parse(readFileSync("package.json", "utf8")) as { scripts: Record<string, string> };
+    const scripts = Object.fromEntries(["build", "build:runtime", "build:complete", "build:ui"].map((name) => [name, pkg.scripts[name]]));
+    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "fake", version: "0.0.0", scripts }));
+    writeFileSync(join(root, "alz"), readFileSync("alz", "utf8"));
+    chmodSync(join(root, "alz"), 0o755);
+    const bin = join(root, "fake-bin");
+    mkdirSync(bin, { recursive: true });
+    const tool = (name: string, body: string) => { writeFileSync(join(bin, name), "#!/bin/sh\n" + body + "\n"); chmodSync(join(bin, name), 0o755); };
+    tool("git", 'case "$*" in *--show-toplevel*) echo "$FAKE_TOPLEVEL" ;; *) echo c0ffee ;; esac');
+    tool("tsc", "mkdir -p dist/cli; echo \"console.log('operator ran ' + process.argv.slice(2).join(' '))\" > dist/cli/operator.js");
+    tool("vite", "mkdir -p dist/operator-ui/app; echo ui > dist/operator-ui/app/index.html");
+    tool("tsx", "exit 0");
+    const env = { ...process.env, PATH: bin + ":" + (process.env.PATH ?? ""), HOME: root, FAKE_TOPLEVEL: root };
+    const step = (command: string, args: string[]) => spawnSync(command, args, { cwd: root, encoding: "utf8", env });
+    const help = () => step("bash", [join(root, "alz"), "help"]);
+    for (const script of ["build", "build:ui"]) {
+      const result = step("npm", ["run", script]);
+      assert.equal(result.status, 0, script + ": " + result.stdout + result.stderr);
+    }
+    let result = help();
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stdout, /operator ran help/);
+    // The same in a bootstrapped checkout (state finished at HEAD): another UI rebuild does not make ./alz refuse.
+    mkdirSync(join(root, ".runs", "bootstrap"), { recursive: true });
+    writeFileSync(join(root, ".runs", "bootstrap", "state.json"), JSON.stringify({ startedAt: "2026-10-27T00:00:00Z", step: "done", completedAt: "2026-10-27T00:05:00Z", sourceCommit: "c0ffee" }));
+    assert.equal(step("npm", ["run", "build:ui"]).status, 0);
+    result = help();
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stdout, /operator ran help/);
+    // A failing UI build still leaves a refused dist/.
+    tool("vite", "exit 3");
+    assert.notEqual(step("npm", ["run", "build:ui"]).status, 0);
+    result = help();
+    assert.equal(result.status, 2);
+    assert.match(result.stdout, REFUSAL);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a released archive extracted inside another git checkout is judged on its own marker, not that checkout's commit", () => {
+  // Real git: an enclosing repository with one commit, and an archive-like copy (launcher, dist/, marker naming the CI commit,
+  // no state, no .git) in a subfolder of it. Then the copy itself becomes a checkout, where its own commit counts again.
+  const outer = mkdtempSync(join(tmpdir(), "alz-archive-in-repo-"));
+  const env = { ...process.env, HOME: outer, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.invalid", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.invalid" };
+  const git = (cwd: string, ...args: string[]) => {
+    const result = spawnSync("git", args, { cwd, encoding: "utf8", env });
+    assert.equal(result.status, 0, "git " + args.join(" ") + ": " + result.stderr);
+    return result.stdout.trim();
+  };
+  try {
+    git(outer, "init", "-q");
+    writeFileSync(join(outer, "README"), "outer\n");
+    git(outer, "add", "README");
+    git(outer, "commit", "-q", "-m", "outer");
+    const archive = join(outer, "vendor", "alz");
+    mkdirSync(archive, { recursive: true });
+    writeFileSync(join(archive, "alz"), readFileSync("alz", "utf8"));
+    chmodSync(join(archive, "alz"), 0o755);
+    fakeDist(archive);
+    writeFileSync(join(archive, "dist", ".alz-build-complete"), JSON.stringify({ schemaVersion: 1, sourceCommit: "1234567890abcdef1234567890abcdef12345678" }) + "\n");
+    const help = () => spawnSync("bash", [join(archive, "alz"), "help"], { cwd: archive, encoding: "utf8", env });
+    let result = help();
+    assert.equal(result.status, 0, "the enclosing checkout's commit is not the archive's: " + result.stdout + result.stderr);
+    assert.match(result.stdout, /operator ran help/);
+    // Once the folder is a checkout of its own, its HEAD counts: the CI commit's marker is refused, a marker for HEAD runs.
+    git(archive, "init", "-q");
+    git(archive, "add", "alz");
+    git(archive, "commit", "-q", "-m", "inner");
+    result = help();
+    assert.equal(result.status, 2, "a marker for another commit than the copy's own checkout is refused");
+    assert.match(result.stdout, REFUSAL);
+    writeFileSync(join(archive, "dist", ".alz-build-complete"), JSON.stringify({ schemaVersion: 1, sourceCommit: git(archive, "rev-parse", "HEAD") }) + "\n");
+    result = help();
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+  } finally {
+    rmSync(outer, { recursive: true, force: true });
+  }
 });

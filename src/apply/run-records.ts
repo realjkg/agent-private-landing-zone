@@ -3,7 +3,8 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { encryptEvidence, ensureEvidenceKey, readEncryptedEvidence } from "../evidence/vault.js";
-import type { Blueprint, BlueprintEntry } from "../observe/blueprint.js";
+import { DEPLOYMENT_STACK_TYPE, isPinnedDeploymentStackId, type Blueprint, type BlueprintEntry } from "../observe/blueprint.js";
+import { isPolicyLinkType, policyLinkOk } from "../observe/run-created-policies.js";
 import type { ObserveReport } from "../observe/verify.js";
 import { VERIFIERS, type VerifierId } from "../observe/verify.js";
 import { canonicalJson } from "../teardown/manifest.js";
@@ -42,8 +43,8 @@ export type BlueprintRecord = {
   contractSha256: string;
   /** How the apply ended; a blueprint after anything but SUCCEEDED is for review, never for a cleanup proposal. */
   outcome: ApplyOutcome;
-  /** Where the identifiers came from: Terraform's state read as STATE, or CloudFormation's stack resources (logical to physical ids) read as DISCOVERY. */
-  source: "TERRAFORM_STATE_PULL" | "CLOUDFORMATION_STACK_RESOURCES";
+  /** Where the identifiers came from: Terraform's state read as STATE, CloudFormation's stack resources (logical to physical ids) read as DISCOVERY, or an Azure deployment stack's managed resources (ARM ids) read as DISCOVERY. */
+  source: "TERRAFORM_STATE_PULL" | "CLOUDFORMATION_STACK_RESOURCES" | "AZURE_DEPLOYMENT_STACK_RESOURCES";
   blueprint: Blueprint;
   /** The deletion unit the sealed plan stamped on what it created (src/apply/unit.ts), or null when the engine seals none. The observation sweeps by it. */
   unitId: string | null;
@@ -118,7 +119,7 @@ export type LeftoversRecord = {
   resources: LeftoverResource[];
   /**
    * COMPLETE only when every proposed deletion is CONFIRMED_DELETED, every excluded resource is INTENTIONALLY_RETAINED, and a
-   * COMPLETE sweep by the run's deletion-unit tag found nothing else. KNOWN_ADDRESSES_CONFIRMED: the named resources are
+   * COMPLETE sweep by the run's deletion-unit tag found nothing else, and nothing was kept only because its type is unreviewed. KNOWN_ADDRESSES_CONFIRMED: the named resources are
    * settled but no sweep was possible (the run carries no unit tag), so resources outside the state were not searched for;
    * it is not completion. INCOMPLETE otherwise.
    */
@@ -140,8 +141,12 @@ const RAW_KEY = /^(values|attributes|properties|state|plan|stdout|stderr|output|
 const ENVIRONMENTS = ["DEV", "QA", "PROD"];
 
 function entryOk(value: unknown): value is BlueprintEntry {
-  return isRecord(value) && Object.keys(value).sort().join() === "address,arn,id,origin,type" && typeof value.address === "string" && value.address.length > 0 &&
-    typeof value.type === "string" && idText(value.arn) && idText(value.id) && (value.origin === "IN_PLAN" || value.origin === "NOT_IN_PLAN");
+  if (!isRecord(value)) return false;
+  // The optional keys are holdsIdentityArn and policyLink (a reviewed run-created policy type's principal names and policy ARN, src/observe/run-created-policies.ts).
+  const keys = Object.keys(value).filter((key) => key !== "holdsIdentityArn" && key !== "policyLink").sort().join();
+  return keys === "address,arn,id,origin,type" && typeof value.address === "string" && value.address.length > 0 &&
+    typeof value.type === "string" && idText(value.arn) && idText(value.id) && (value.origin === "IN_PLAN" || value.origin === "NOT_IN_PLAN") && (value.holdsIdentityArn === undefined || value.holdsIdentityArn === true) &&
+    (value.policyLink === undefined || (isPolicyLinkType(value.type) && policyLinkOk(value.policyLink)));
 }
 
 /** Every reason this is not a blueprint record. Empty means it is. Checks every key, so a raw state value cannot ride along. */
@@ -157,12 +162,24 @@ export function blueprintRecordProblems(value: unknown): string[] {
   if (!ENVIRONMENTS.includes(value.environment as string) || !targetOk(value.target)) problems.push("blueprint record: environment or target is malformed");
   if (typeof value.sourceCommit !== "string" || !COMMIT.test(value.sourceCommit)) problems.push("blueprint record: sourceCommit is not a commit id");
   if (!["SUCCEEDED", "FAILED_NO_CHANGE", "PARTIAL_REQUIRES_REVIEW", "KILLED"].includes(value.outcome as string)) problems.push("blueprint record: outcome is unknown");
-  if (!["TERRAFORM_STATE_PULL", "CLOUDFORMATION_STACK_RESOURCES"].includes(value.source as string) || !isoText(value.readAt)) problems.push("blueprint record: source or readAt is malformed");
+  if (!["TERRAFORM_STATE_PULL", "CLOUDFORMATION_STACK_RESOURCES", "AZURE_DEPLOYMENT_STACK_RESOURCES"].includes(value.source as string) || !isoText(value.readAt)) problems.push("blueprint record: source or readAt is malformed");
   if (value.unitId !== null && !(typeof value.unitId === "string" && /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(value.unitId))) problems.push("blueprint record: unitId is not a tag-safe unit id or null");
   const blueprint = value.blueprint;
-  if (!isRecord(blueprint) || Object.keys(blueprint).sort().join() !== "entries,missing" || !Array.isArray(blueprint.entries) || !blueprint.entries.every(entryOk) ||
-    !Array.isArray(blueprint.missing) || !blueprint.missing.every((x) => typeof x === "string")) {
-    problems.push("blueprint record.blueprint: entries must carry address, type, arn, id and origin only");
+  // The container is accepted only from a CloudFormation read, for the stack type, with the pinned stack's own ARN shape (its account and the
+  // target's backend, which is the stack name); any other source, type or identifier is not this run's container (review of #265, N1).
+  const target = value.target as ResolvedTarget;
+  const stackArn = value.source === "CLOUDFORMATION_STACK_RESOURCES" && targetOk(target) && /^[0-9]{12}$/.test(target.account) && /^[A-Za-z][A-Za-z0-9-]{0,127}$/.test(target.backend)
+    ? new RegExp("^arn:aws:cloudformation:[a-z0-9-]{1,32}:" + target.account + ":stack/" + target.backend + "/[0-9a-f-]{36}$") : undefined;
+  // An Azure deployment stack (the Bicep engine): the pinned stack by name, in the target's subscription (the record's target names no
+  // group; the blueprint was built only for the contract's group, and the cleanup's target hash binds it).
+  const stackOk = value.source === "AZURE_DEPLOYMENT_STACK_RESOURCES" && targetOk(target)
+    ? (id: string) => isPinnedDeploymentStackId(id, { subscription: target.account, stack: target.backend }) : undefined;
+  const containerOk = (value: unknown): boolean => isRecord(value) && Object.keys(value).sort().join() === "identifier,type" && typeof value.identifier === "string" &&
+    ((value.type === "AWS::CloudFormation::Stack" && stackArn !== undefined && stackArn.test(value.identifier)) ||
+      (value.type === DEPLOYMENT_STACK_TYPE && stackOk !== undefined && stackOk(value.identifier)));
+  if (!isRecord(blueprint) || !["entries,missing", "container,entries,missing"].includes(Object.keys(blueprint).sort().join()) || !Array.isArray(blueprint.entries) || !blueprint.entries.every(entryOk) ||
+    !Array.isArray(blueprint.missing) || !blueprint.missing.every((x) => typeof x === "string") || (blueprint.container !== undefined && !containerOk(blueprint.container))) {
+    problems.push("blueprint record.blueprint: entries must carry address, type, arn, id and origin only, and a container only from a CloudFormation read (or, for the Bicep engine, a deployment stack read), of the stack type, with the pinned stack's own id");
   }
   return problems;
 }
@@ -198,11 +215,16 @@ export function observationRecordProblems(value: unknown): string[] {
 }
 
 const DISPOSITIONS: readonly LeftoverDisposition[] = ["CONFIRMED_DELETED", "INTENTIONALLY_RETAINED", "STILL_PRESENT", "DELETION_PENDING", "UNKNOWN"];
-export type LeftoverBasis = "CLOUD_CONTROL_ABSENT" | "CLOUD_CONTROL_PRESENT" | "ARM_ABSENT" | "ARM_PRESENT" | "PARENT_ABSENT" | "RETENTION_DECISION" | "CLEANUP_NOT_FINISHED" | "NOT_INDEPENDENTLY_CHECKABLE" | "CHECK_FAILED";
-const BASES: readonly LeftoverBasis[] = ["CLOUD_CONTROL_ABSENT", "CLOUD_CONTROL_PRESENT", "ARM_ABSENT", "ARM_PRESENT", "PARENT_ABSENT", "RETENTION_DECISION", "CLEANUP_NOT_FINISHED", "NOT_INDEPENDENTLY_CHECKABLE", "CHECK_FAILED"];
+/** UNREVIEWED_TYPE: kept because its type is not on the reviewed AWS leaf allowlist (TYPE_UNREVIEWED); a person still decides about it, so a record holding one is never COMPLETE. */
+export type LeftoverBasis = "CLOUD_CONTROL_ABSENT" | "CLOUD_CONTROL_PRESENT" | "ARM_ABSENT" | "ARM_PRESENT" | "GCP_REST_ABSENT" | "GCP_REST_PRESENT" | "PARENT_ABSENT" | "RETENTION_DECISION" | "UNREVIEWED_TYPE" | "CLEANUP_NOT_FINISHED" | "NOT_INDEPENDENTLY_CHECKABLE" | "CHECK_FAILED";
+const BASES: readonly LeftoverBasis[] = ["CLOUD_CONTROL_ABSENT", "CLOUD_CONTROL_PRESENT", "ARM_ABSENT", "ARM_PRESENT", "GCP_REST_ABSENT", "GCP_REST_PRESENT", "PARENT_ABSENT", "RETENTION_DECISION", "UNREVIEWED_TYPE", "CLEANUP_NOT_FINISHED", "NOT_INDEPENDENTLY_CHECKABLE", "CHECK_FAILED"];
 /** The read API's absent and present bases for a verifier, so a record never names a service that did not answer. */
-export const basesOf = (verifier: VerifierId): { absent: LeftoverBasis; present: LeftoverBasis } =>
-  verifier === "AZURE_RESOURCE_MANAGER" ? { absent: "ARM_ABSENT", present: "ARM_PRESENT" } : { absent: "CLOUD_CONTROL_ABSENT", present: "CLOUD_CONTROL_PRESENT" };
+const VERIFIER_BASES: Readonly<Record<VerifierId, { absent: LeftoverBasis; present: LeftoverBasis }>> = {
+  AWS_CLOUD_CONTROL: { absent: "CLOUD_CONTROL_ABSENT", present: "CLOUD_CONTROL_PRESENT" },
+  AZURE_RESOURCE_MANAGER: { absent: "ARM_ABSENT", present: "ARM_PRESENT" },
+  GCP_REST: { absent: "GCP_REST_ABSENT", present: "GCP_REST_PRESENT" },
+};
+export const basesOf = (verifier: VerifierId): { absent: LeftoverBasis; present: LeftoverBasis } => VERIFIER_BASES[verifier];
 function leftoverOk(value: unknown): value is LeftoverResource {
   return isRecord(value) && Object.keys(value).every((key) => ["address", "type", "identifier", "disposition", "basis", "reason", "owner"].includes(key)) &&
     typeof value.address === "string" && typeof value.type === "string" && idText(value.identifier) && DISPOSITIONS.includes(value.disposition as LeftoverDisposition) &&
@@ -230,6 +252,7 @@ export function leftoversRecordProblems(value: unknown): string[] {
   else {
     const settled = resources.every((x) => x.disposition === "CONFIRMED_DELETED" || x.disposition === "INTENTIONALLY_RETAINED");
     if ((value.disposition === "COMPLETE" || value.disposition === "KNOWN_ADDRESSES_CONFIRMED") && (!settled || resources.length === 0)) problems.push("leftovers record: COMPLETE needs every resource confirmed deleted or intentionally retained");
+    if ((value.disposition === "COMPLETE" || value.disposition === "KNOWN_ADDRESSES_CONFIRMED") && resources.some((x) => x.basis === "UNREVIEWED_TYPE")) problems.push("leftovers record: a resource kept because its type is unreviewed still needs a person's decision, so the record is INCOMPLETE");
     if (value.disposition === "COMPLETE" && value.sweep !== "COMPLETE") problems.push("leftovers record: COMPLETE needs a complete deletion-unit sweep; without one the most a record says is KNOWN_ADDRESSES_CONFIRMED");
     if (value.disposition === "KNOWN_ADDRESSES_CONFIRMED" && value.sweep !== "NOT_AVAILABLE") problems.push("leftovers record: KNOWN_ADDRESSES_CONFIRMED is for a run with no unit tag; with a sweep the record is COMPLETE or INCOMPLETE");
     if (!["COMPLETE", "KNOWN_ADDRESSES_CONFIRMED", "INCOMPLETE"].includes(value.disposition as string)) problems.push("leftovers record: disposition is unknown");

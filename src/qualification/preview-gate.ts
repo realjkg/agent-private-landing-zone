@@ -13,7 +13,12 @@ import { PHASE_E_SCENARIOS } from "./phase-e.js";
  * scenarios (src/qualification/phase-e.ts) and the Pulumi permutations that have no Phase E lane. Terraform evidence never
  * qualifies the CDK gate, an AWS preview never the Azure one, a greenfield plan never a brownfield gate.
  */
-export type PreviewGateScenario = { provider: ProviderId; engine: string; estate: "brownfield" | "greenfield" };
+/**
+ * `provider` may also be "GCP" (path 5; owner approval 6433121154 on issue #39): GCP Terraform is admitted in code for DEV only, so a
+ * GCP contract can seal a plan this gate's evidence is made from (`buildPreviewGateEvidence` refuses any other provider's plan as
+ * SCENARIO_MISMATCH). It is not a Phase E scenario: Phase E has no GCP discovery yet (PLAN S5).
+ */
+export type PreviewGateScenario = { provider: ProviderId | "GCP"; engine: string; estate: "brownfield" | "greenfield" };
 const ESTATES: readonly PreviewGateScenario["estate"][] = ["brownfield", "greenfield"];
 const PROVIDERS: readonly ProviderId[] = ["AWS", "AZURE"];
 /** A Phase E scenario's estate and provider, checked: a scenario with any other mock or provider is not a preview gate and throws, so nothing binds silently. */
@@ -27,6 +32,7 @@ export const PREVIEW_GATE_SCENARIOS: Readonly<Record<string, PreviewGateScenario
   "pulumi-aws-greenfield": { provider: "AWS", engine: "PULUMI", estate: "greenfield" },
   "pulumi-aws-brownfield": { provider: "AWS", engine: "PULUMI", estate: "brownfield" },
   "pulumi-azure-brownfield": { provider: "AZURE", engine: "PULUMI", estate: "brownfield" },
+  "terraform-gcp-brownfield": { provider: "GCP", engine: "TERRAFORM", estate: "brownfield" },
 };
 /** The scenario a `preview:<id>` gate is about, or undefined for any other gate id. */
 export const previewScenarioOf = (gateId: string): PreviewGateScenario | undefined => gateId.startsWith("preview:") ? PREVIEW_GATE_SCENARIOS[gateId.slice("preview:".length)] : undefined;
@@ -107,7 +113,7 @@ export const LIVE_CONDITION_REASONS: Readonly<Record<keyof PreviewLiveConditions
  * dropped from state unreviewed), a dynamic or unknown action, or anything else never is, whatever the label says. The list is
  * closed: an action not named here is refused, so a new engine vocabulary fails closed until it is reviewed here.
  */
-export const PREVIEW_GATE_ACTIONS: readonly string[] = ["CREATE", "UPDATE", "IMPORT", "READ", "SAME"];
+export const PREVIEW_GATE_ACTIONS: readonly string[] = Object.freeze(["CREATE", "UPDATE", "IMPORT", "READ", "SAME"]);
 /** The actions in a counted change list that a preview gate never admits, with their counts, as "DELETE: 2"; empty when every action is admitted. */
 export function unauthorizedPreviewActions(byAction: Readonly<Record<string, number>>): string[] {
   return Object.entries(byAction).filter(([action, count]) => count > 0 && !PREVIEW_GATE_ACTIONS.includes(action)).map(([action, count]) => action + ": " + count).sort();

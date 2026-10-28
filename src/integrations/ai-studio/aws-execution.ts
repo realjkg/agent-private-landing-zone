@@ -27,7 +27,7 @@ export type ExecutionRequest = {
   blueprint?: BlueprintRelease;
   /** Engine output, provided by trusted IaC adapter (never a model assertion). */
   nativePlan?: NativePlan;
-  pilotContractPinned: boolean;
+  pilotContractAuthorized: boolean;
   engineQualified: boolean;
   targetIdentityVerified: boolean;
   sealedArtifactVerified: boolean;
@@ -73,7 +73,7 @@ export function assessEarlyAwsExecution(input: ExecutionRequest): ExecutionDecis
       const assessment = assessNativeAwsPlan(input.nativePlan, input.governanceEvidence);
       if (!assessment.allowed) reasons.push(...assessment.reasons);
     }
-    if (!input.pilotContractPinned) reasons.push("PILOT_CONTRACT_NOT_PINNED");
+    if (!input.pilotContractAuthorized) reasons.push("PILOT_CONTRACT_NOT_AUTHORIZED");
     if (!input.engineQualified) reasons.push("ENGINE_NOT_QUALIFIED");
     if (!input.targetIdentityVerified) reasons.push("TARGET_IDENTITY_NOT_VERIFIED");
     if (!input.sealedArtifactVerified) reasons.push("SEALED_ARTIFACT_NOT_VERIFIED");

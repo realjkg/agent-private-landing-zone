@@ -4,9 +4,11 @@ import type { ExperienceLevel } from "../../experience-level.js";
 import { PilotDialog } from "./PilotDialog";
 import { ActDev1Setup } from "./ActDev1Setup";
 import CleanupStep, { CleanupList } from "./CleanupStep";
+import { DeploymentPaths, usePathsLoader, usePathsRefresh, type PathsLoad } from "./DeploymentPaths";
+import { checkedTime, orderEnvironments } from "./readiness-order";
 import {
   answerDialog, cancelDialog, choosePath, fetchPilotState, forgetPilotToken, loadCleanupReview, loadReview, startApply, startApprove, startPreflight, startPrepare, startSeal, setPilotToken, startOver,
-  type CleanupSummary, type PilotEnvironment, type PilotPath, type PilotReply, type PilotRun, type PilotState, type PreflightCheck, type PreparedFiles, type PrepareStop, type ReviewSummary, type RunResult,
+  type CleanupSummary, type PilotEnvironment, type PathsReport, type PilotPath, type PilotReply, type PilotRun, type PilotDecisions, type PilotState, type PreflightCheck, type PreparedFiles, type PrepareStop, type ReviewSummary, type RunResult,
 } from "./pilot-api";
 import {
   APPROVER_STEPS, BLOCKED, CLEANUP_CLI_COMMANDS, CLI_COMMANDS, COPY, RESULT_COPY, STEP_TITLES, SUPPORT_NOTE, actionWord, changeNotes, classifyResult, describeCheck, describeCounts, dialogCopy, reasonFor,
@@ -14,9 +16,30 @@ import {
 } from "./pilot-copy";
 
 const POLL_MS = 600;
-const ENVIRONMENTS: readonly PilotEnvironment[] = ["DEV", "QA", "PROD"];
 type Role = "OPERATOR" | "APPROVER";
-type Readiness = { environment: PilotEnvironment; ready: boolean; checks: PreflightCheck[] };
+type Readiness = { environment: PilotEnvironment; ready: boolean; checks: PreflightCheck[]; decisions?: PilotDecisions };
+
+/**
+ * The three separate decisions for this environment, from the readiness check's own output: AUTHORIZED (the owner's reviewed
+ * contract, with its hash), READY (the checks below) and APPROVED (the requester and approvers each run still needs).
+ */
+export function DecisionStatus(props: { readiness: Readiness; environment: PilotEnvironment }) {
+  const { decisions, ready } = props.readiness;
+  const entry = decisions?.authorized.find((item) => item.environment === props.environment);
+  const quorum = decisions?.approved.find((item) => item.environment === props.environment);
+  return (
+    <dl className="pilot-decisions" data-testid="pilot-decisions">
+      <dt>Authorized</dt>
+      <dd data-state={entry ? "yes" : "no"}>{entry
+        ? <>Yes: {entry.operations.join(", ")} in {props.environment}, by the owner's reviewed rules (version <code>{decisions!.contract.contractSha256?.slice(0, 12)}</code>, entry <code>{entry.authorizationSha256.slice(0, 12)}</code>)</>
+        : <>No: the owner's reviewed rules do not allow changes in {props.environment}{decisions?.contract.reason ? " (" + decisions.contract.reason + ")" : ""}.</>}</dd>
+      <dt>Ready</dt>
+      <dd data-state={ready ? "yes" : "no"}>{ready ? "Yes: every check below passed." : "Not yet: see the checks below."}</dd>
+      <dt>Approved</dt>
+      <dd>For each change: the requester signs it, then {quorum ? quorum.requiredApprovals : "the required number of"} approver(s) sign the same reviewed change before it can run.</dd>
+    </dl>
+  );
+}
 
 // --- small shared pieces ------------------------------------------------------------------------------------
 
@@ -102,6 +125,7 @@ export function ChangeList(props: { review: ReviewSummary }) {
         <dt>Place</dt><dd><code>{review.target.account} | {review.target.backend} | {review.target.workspace}</code></dd>
         <dt>Change ID (first 12 characters)</dt><dd><code>{review.shortId}</code></dd>
         <dt>App version that prepared it</dt><dd><code>{review.sourceCommit.slice(0, 12)}</code></dd>
+        <dt>{COPY.reviewRequestedBy}</dt><dd><code>{review.requestedBy}</code></dd>
         <dt>{COPY.reviewToolLabel}</dt><dd>{COPY.reviewToolVersion} <code>{review.preview.engineVersion}</code>, {COPY.reviewToolProgram} <code>{review.preview.programId}</code></dd>
         <dt>{COPY.reviewUnitLabel}</dt>
         <dd data-unit={review.unit?.unitId ?? "none"}>{review.unit === null ? COPY.reviewUnitNone : (
@@ -155,7 +179,7 @@ export function PreparedSummary(props: { prepared: PreparedFiles }) {
       <p><strong>{COPY.prepareDone}</strong></p>
       <dl className="pilot-facts">
         <dt>Cloud</dt><dd>{summary.provider}</dd>
-        <dt>Build tool</dt><dd>{summary.engine === "TERRAFORM" ? "Terraform" : summary.engine === "CDK" ? "AWS CDK" : summary.engine}{summary.path === "SECONDARY" ? " (the other supported way)" : ""}</dd>
+        <dt>Build tool</dt><dd>{summary.engine === "TERRAFORM" ? "Terraform" : summary.engine === "CDK" ? "AWS CDK" : summary.engine === "BICEP" ? "Azure Bicep" : summary.engine}{summary.path === "SECONDARY" ? " (the other supported way)" : ""}</dd>
         <dt>Environment</dt><dd>{summary.environment}</dd>
         <dt>Account</dt><dd><code>{summary.account}</code></dd>
         {summary.region && <><dt>Region</dt><dd><code>{summary.region}</code></dd></>}
@@ -223,6 +247,8 @@ export default function PilotWizard(props: PilotWizardProps) {
   const [prepared, setPrepared] = useState<PreparedFiles | null>(null);
   const [requestPath, setRequestPath] = useState("");
   const [manifestPath, setManifestPath] = useState("");
+  const [requesterId, setRequesterId] = useState("");
+  const [requesterKeyPath, setRequesterKeyPath] = useState("");
   const [sealedPath, setSealedPath] = useState("");
   const [bundlePath, setBundlePath] = useState("");
   const [review, setReview] = useState<ReviewSummary | null>(null);
@@ -237,8 +263,10 @@ export default function PilotWizard(props: PilotWizardProps) {
   const [refusal, setRefusal] = useState<{ code: string; message: string } | null>(null);
   const [finalResult, setFinalResult] = useState<{ step: string; result: RunResult } | null>(null);
   const [starting, setStarting] = useState(false);
+  const [pathsLoad, setPathsLoad] = useState<PathsLoad>({ status: "loading" });
   const handled = useRef<string>("");
   const contentRef = useRef<HTMLDivElement | null>(null);
+  const pathsRef = useRef<HTMLElement | null>(null);
   const headingRef = useRef<HTMLHeadingElement | null>(null);
 
   const unlocked = state?.unlocked === true;
@@ -255,6 +283,18 @@ export default function PilotWizard(props: PilotWizardProps) {
   const refresh = useCallback(async () => { take(await fetchPilotState()); }, [take]);
   useEffect(() => { void refresh(); }, [refresh]);
 
+  // The deployment paths (read-only): loaded once the session is unlocked, again after each readiness check (forced), and when
+  // the person returns to the page or on the interval. Only the latest request's reply is applied. A refused session token means
+  // the console no longer knows this page: the state is read again, which locks the page and so stops the refresh until unlocked.
+  const loadPaths = usePathsLoader(useCallback((reply: PilotReply<PathsReport>) => {
+    setPathsLoad(reply.ok ? { status: "ready", report: reply.body } : { status: "error" });
+    if (!reply.ok && reply.code === "PILOT_TOKEN_REQUIRED") void refresh();
+  }, [refresh]));
+  useEffect(() => { if (unlocked) loadPaths(true); }, [unlocked, loadPaths]);
+  // An open page follows the records without a reload: a kill switch or a rules change shows on return or within the interval.
+  const reloadPaths = useCallback(() => { loadPaths(); }, [loadPaths]);
+  usePathsRefresh(reloadPaths, unlocked);
+
   // Poll only while something is running or waiting for the person.
   useEffect(() => {
     if (!unlocked || !(active || starting)) return undefined;
@@ -264,17 +304,22 @@ export default function PilotWizard(props: PilotWizardProps) {
 
   useEffect(() => { if (serverPath) setPathChoice(serverPath); }, [serverPath]);
 
-  // Move focus to the heading of the step that opened, so a keyboard or screen reader user lands on it.
-  useEffect(() => { headingRef.current?.focus(); }, [step, unlocked]);
-
   // The page behind a dialog is inert: no focus, no clicks, hidden from a screen reader.
   const dialog = run?.status === "WAITING" && run.dialog ? run.dialog : null;
+  const dialogOpen = useRef(false);
+  dialogOpen.current = dialog !== null;
+
+  // Move focus to the heading of the step that opened, so a keyboard or screen reader user lands on it. Never while a dialog is
+  // open: the dialog holds focus (PilotDialog), and a step or unlock change that lands in the same commit as, or after, the
+  // dialog must not pull focus out of the modal. Read through a ref so closing the dialog does not re-run this effect either.
+  useEffect(() => { if (!dialogOpen.current) headingRef.current?.focus(); }, [step, unlocked]);
   useEffect(() => {
-    const element = contentRef.current;
-    if (!element) return;
-    if (dialog) { element.setAttribute("inert", ""); element.setAttribute("aria-hidden", "true"); }
-    else { element.removeAttribute("inert"); element.removeAttribute("aria-hidden"); }
-  }, [dialog]);
+    for (const element of [contentRef.current, pathsRef.current]) {
+      if (!element) continue;
+      if (dialog) { element.setAttribute("inert", ""); element.setAttribute("aria-hidden", "true"); }
+      else { element.removeAttribute("inert"); element.removeAttribute("aria-hidden"); }
+    }
+  }, [dialog, unlocked]);
 
   // What each finished step leaves behind. A run is handled once.
   useEffect(() => {
@@ -283,8 +328,10 @@ export default function PilotWizard(props: PilotWizardProps) {
     setStarting(false);
     const result = run.result;
     if (run.step === "preflight") {
-      const data = result.data as { ready?: boolean; checks?: PreflightCheck[] } | undefined;
-      setReadiness({ environment, ready: result.exit === 0 && data?.ready === true, checks: Array.isArray(data?.checks) ? data.checks : [] });
+      const data = result.data as { ready?: boolean; checks?: PreflightCheck[]; decisions?: PilotDecisions } | undefined;
+      setReadiness({ environment, ready: result.exit === 0 && data?.ready === true, checks: Array.isArray(data?.checks) ? data.checks : [],
+        ...(data?.decisions && Array.isArray(data.decisions.authorized) && Array.isArray(data.decisions.approved) ? { decisions: data.decisions } : {}) });
+      loadPaths(true);
     } else if (run.step === "prepare") {
       const data = result.exit === 0 ? result.data as PreparedFiles | undefined : undefined;
       setPrepared(data ?? null);
@@ -300,7 +347,19 @@ export default function PilotWizard(props: PilotWizardProps) {
       setFinalResult({ step: "apply", result });
       setStep(6);
     }
-  }, [run, environment]);
+  }, [run, environment, loadPaths]);
+
+  // DEV, QA and PROD, readiest first. Once the owner's rules are known, the ones they do not enable stay listed but cannot be chosen.
+  const environmentChoices = orderEnvironments(pathsLoad.status === "ready" && pathsLoad.report.contract.state !== "UNKNOWN" ? pathsLoad.report.environments : null);
+  const disabledEnvironments = environmentChoices.filter((choice) => !choice.enabled);
+  const firstEnabled = environmentChoices.find((choice) => choice.enabled)?.environment;
+  const chosenEnabled = environmentChoices.some((choice) => choice.environment === environment && choice.enabled);
+  // A readiness result the person just ran for the chosen environment is kept on screen, even when it turns out that environment is
+  // not enabled: the result and the note say why. Only an environment without a result moves to the first enabled one.
+  const hasResult = readiness !== null && readiness.environment === environment;
+  useEffect(() => {
+    if (!chosenEnabled && !hasResult && firstEnabled !== undefined && !active) { setEnvironment(firstEnabled); setReadiness(null); }
+  }, [chosenEnabled, hasResult, firstEnabled, active]);
 
   const unlock = async () => {
     setChecking(true);
@@ -356,6 +415,9 @@ export default function PilotWizard(props: PilotWizardProps) {
   }
 
   return (
+    <>
+    {/* The deployment paths, above the wizard once the session is unlocked (owner decision E5). Read-only. */}
+    {unlocked && <DeploymentPaths ref={pathsRef} load={pathsLoad} />}
     <section className="panel pilot" aria-labelledby="pilot-title" data-level={level}>
       <div ref={contentRef}>
         <h2 id="pilot-title" tabIndex={-1}>{COPY.heading}</h2>
@@ -456,13 +518,23 @@ export default function PilotWizard(props: PilotWizardProps) {
                 {locked && <BlockedNotice state="PATH_IS_CLI" />}
                 <label htmlFor="pilot-environment">{COPY.readyEnvironment}</label>
                 <select id="pilot-environment" value={environment} disabled={active} onChange={(event) => { setEnvironment(event.target.value as PilotEnvironment); setReadiness(null); }}>
-                  {ENVIRONMENTS.map((name) => <option key={name} value={name}>{name}</option>)}
+                  {environmentChoices.map((choice) => (
+                    <option key={choice.environment} value={choice.environment} disabled={!choice.enabled}>
+                      {choice.enabled ? choice.environment + (choice.ready ? " (ready at the last check" + (checkedTime(choice.checkedAt) ? ", " + checkedTime(choice.checkedAt) : "") + ")" : "") : choice.environment + " (not enabled)"}
+                    </option>
+                  ))}
                 </select>
+                {disabledEnvironments.length > 0 && (
+                  <div className="pilot-environments-off" role="note" aria-label="Environments you cannot choose">
+                    <ul>{disabledEnvironments.map((choice) => <li key={choice.environment} data-environment={choice.environment}>{choice.environment} is not enabled: {choice.reason}.</li>)}</ul>
+                  </div>
+                )}
                 <button type="button" disabled={serverPath !== "UI" || active} onClick={() => void begin(() => startPreflight(environment))}>
                   {readiness ? COPY.readyRerun : COPY.readyRun}
                 </button>
                 {readiness && readiness.environment === environment && (
                   <div aria-live="polite">
+                    <DecisionStatus readiness={readiness} environment={environment} />
                     <p className={readiness.ready ? "pilot-good" : "pilot-error"}><strong>{readiness.ready ? COPY.readyAllGreen : COPY.readySomeRed}</strong></p>
                     <ul className="pilot-checks">
                       {readiness.checks.map((item) => {
@@ -539,9 +611,15 @@ export default function PilotWizard(props: PilotWizardProps) {
                 <label htmlFor="pilot-manifest">{COPY.sealManifestLabel}</label>
                 <input id="pilot-manifest" type="text" autoComplete="off" spellCheck={false} value={manifestPath} aria-describedby="pilot-manifest-help" onChange={(event) => setManifestPath(event.target.value)} />
                 <Help id="pilot-manifest-help" text={COPY.sealManifestHelp} example={COPY.egManifest} />
-                {(requestPath.trim() === "" || manifestPath.trim() === "") && <BlockedNotice state="FIELDS_MISSING" />}
-                <button type="button" disabled={serverPath !== "UI" || active || requestPath.trim() === "" || manifestPath.trim() === ""}
-                  onClick={() => void begin(() => startSeal({ environment, requestPath: requestPath.trim(), manifestPath: manifestPath.trim() }))}>
+                <label htmlFor="pilot-requester">{COPY.sealRequesterLabel}</label>
+                <input id="pilot-requester" type="text" autoComplete="off" spellCheck={false} value={requesterId} aria-describedby="pilot-requester-help" onChange={(event) => setRequesterId(event.target.value)} />
+                <Help id="pilot-requester-help" text={COPY.sealRequesterHelp} example={COPY.egRequester} />
+                <label htmlFor="pilot-requester-key">{COPY.sealKeyLabel}</label>
+                <input id="pilot-requester-key" type="text" autoComplete="off" spellCheck={false} value={requesterKeyPath} aria-describedby="pilot-requester-key-help" onChange={(event) => setRequesterKeyPath(event.target.value)} />
+                <Help id="pilot-requester-key-help" text={COPY.sealKeyHelp} example={COPY.egKey} />
+                {(requestPath.trim() === "" || manifestPath.trim() === "" || requesterId.trim() === "" || requesterKeyPath.trim() === "") && <BlockedNotice state="FIELDS_MISSING" />}
+                <button type="button" disabled={serverPath !== "UI" || active || requestPath.trim() === "" || manifestPath.trim() === "" || requesterId.trim() === "" || requesterKeyPath.trim() === ""}
+                  onClick={() => void begin(() => startSeal({ environment, requestPath: requestPath.trim(), manifestPath: manifestPath.trim(), requesterId: requesterId.trim(), keyPath: requesterKeyPath.trim() }))}>
                   {COPY.sealRun}
                 </button>
                 {failureFor("seal") && (
@@ -737,5 +815,6 @@ export default function PilotWizard(props: PilotWizardProps) {
         />
       )}
     </section>
+    </>
   );
 }

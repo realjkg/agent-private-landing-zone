@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "candidateCommit": "REPLACE-WITH-THE-40-CHARACTER-CANDIDATE-COMMIT",
+  "targetHardwareId": "REPLACE-WITH-THIS-HOST-HARDWARE-ID",
+  "evidenceDir": ".runs/evidence",
+  "aws": {
+    "expectedAccountId": "REPLACE-WITH-THE-12-DIGIT-ACCOUNT-ID",
+    "region": "REPLACE-WITH-THE-REGION",
+    "qualificationStack": "alz-qualification-noop"
+  },
+  "azure": {
+    "expectedTenantId": "REPLACE-WITH-THE-TENANT-GUID",
+    "expectedSubscriptionId": "REPLACE-WITH-THE-SUBSCRIPTION-GUID",
+    "location": "REPLACE-WITH-THE-LOCATION"
+  }
+}

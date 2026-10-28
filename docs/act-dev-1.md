@@ -11,7 +11,7 @@
 | D2 Finances | Owner verifies credits or separately authorizes bounded expense; budget alerts with subscriber verification | approved cumulative ceiling, canary forecast, policy bounds | SPEND_NOT_AUTHORIZED |
 | D3 Bootstrap | Owner separately plans/applies `bootstrap/aws` | distinct IAM ARNs, exact OIDC trust, S3 policy/ownership/encryption/versioning/lock and outputs | BACKEND_UNVERIFIED |
 | D4 Identities | Prove four separate token subjects/paths and independent STS sessions on one approved execution host | issuer/audience/sub, short expiry, role/account, CloudTrail; no raw JWT in evidence | OIDC_SUBJECT_MISMATCH |
-| D5 Contract | Owner supplies authentic DEV target + Ed25519 public key; reviews and pins exact enabled contract | committed contract, SHA pin, DEV-only scope, kill switch | CONTRACT_UNPINNED |
+| D5 Contract | Owner supplies authentic DEV target + Ed25519 public key; reviews and commits the exact enabled contract with its `authorize` entry | committed contract, `authorize`, DEV-only scope, kill switch | ACT_DISABLED / ACT_NOT_AUTHORIZED |
 | D6 Qualify | Run no-apply real Terraform qualification | tool/provider digests, encrypted qualification record, independent CloudTrail/state evidence | QUALIFICATION_MISSING |
 | D7 Canary | A person seals, approves, and applies exactly one additive log group | immutable plan, approval, actual state and CloudTrail mutation | APPLY_BLOCKED |
 | D8 Verify | Independent read back, deny/replay tests and owner cleanup decision | resource, region, tags, 30-day retention, state serial, evidence, later billed cost | OBSERVATION_MISSING |
@@ -22,7 +22,7 @@ Never call `bootstrap/aws` from the ACT APPLY identity. The bootstrap needs a se
 
 A new contract may declare exactly `"enabledEnvironments":["DEV"]` and include only `targets.DEV` and `requiredApprovals.DEV`. Both **must** exist. QA and PROD are *disallowed*, not guessed or auto-created. The legacy contract without `enabledEnvironments` continues to require three distinct account/backend targets with two production approvers. Intermediate subsets are rejected. Merely writing `enabled:true` is insufficient: missing reviewed key, pin, identities, or qualification remain blocking.
 
-`config/act-pilot-contract.aws-dev.example.json` is intentionally invalid/disabled; never commit real account secrets or private keys. The operator creates `config/act-pilot-contract.json` with authentic values, uses the native contract inspection/preflight, then invokes the owner-reviewed `./alz apply pin` ceremony only after the target, identity delivery and finance gates are met. The SHA pin in `config/act-pilot-contract.sha256` ships **empty**.
+`config/act-pilot-contract.aws-dev.example.json` is intentionally invalid/disabled; never commit real account secrets or private keys. The operator creates `config/act-pilot-contract.json` with authentic values, uses the native contract inspection/preflight, then the owner adds the `authorize` entry and commits the contract in one reviewed change only after the target, identity delivery and finance gates are met. The repository ships **no** contract (the old SHA pin is removed; owner decisions of 2026-10-27, issue #39).
 
 ## OIDC subject delivery: unresolved engineering dependency
 

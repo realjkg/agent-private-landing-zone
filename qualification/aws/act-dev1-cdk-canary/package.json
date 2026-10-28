@@ -1,0 +1,17 @@
+{
+  "name": "alz-act-dev1-cdk-canary",
+  "version": "1.0.0",
+  "private": true,
+  "description": "ACT-DEV-1 AWS CDK canary: one CloudWatch Logs log group, synthesized without bootstrap or assets.",
+  "license": "UNLICENSED",
+  "scripts": {
+    "synth": "cdk synth --quiet --no-lookups --output cdk.out"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "2.273.0",
+    "constructs": "10.8.1"
+  },
+  "devDependencies": {
+    "aws-cdk": "2.1145.0"
+  }
+}

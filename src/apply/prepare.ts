@@ -11,7 +11,9 @@ import { sha256 } from "../util/sha256.js";
 import { ENVIRONMENTS } from "./constants.js";
 import { isKillSwitchActive, loadPilotContract, loadQualificationRecords, pilotContractSha256, repoPaths, targetForEnvironment } from "./contract.js";
 import { acceptsManifest, engineOf } from "./engine-spec.js";
-import { LockFileError, lockedProviders } from "./lockfile.js";
+import { BICEP_ENTRY } from "./engines/bicep.js";
+import { localPluginPathIn } from "./terraform-constructs.js";
+import { LockFileError, lockedProviders, unofficialProviderHash, unreviewedProviderVersion, unreviewedVersionMessage } from "./lockfile.js";
 import { checkModules, TerraformConfigError, variableSources } from "./terraform-inputs.js";
 import { specOf } from "./provider.js";
 import { pilotUnitOf, type PilotUnit } from "./unit.js";
@@ -19,7 +21,7 @@ import type { ApplyEnvironment, EngineId, PilotContract, ProviderId } from "./ty
 
 /**
  * `./alz apply prepare`: builds the request and the project fingerprint (manifest) that `qualify`, `seal` and
- * `apply` read, so nobody writes them by hand. Every value comes from the pinned contract, the project folder or an
+ * `apply` read, so nobody writes them by hand. Every value comes from the reviewed contract, the project folder or an
  * existing qualification record. A value with no source stops preparation with the exact owner or operator step.
  *
  * Preparing never enables ACT, assumes a role, starts a process, seals, approves, applies or creates a change set.
@@ -31,16 +33,17 @@ export const PREPARATION_LABEL = "LOCAL_PREPARATION" as const;
 export const TERRAFORM_LOCK_FILE = ".terraform.lock.hcl";
 const AWS_CLI_VERSION = /^\d+\.\d+\.\d+$/;
 
-/** The secondary path for each provider: what an owner could pin instead, and what is not yet supported. */
+/** The secondary path for each provider: what an owner could choose instead, and what is not yet supported. */
 const PATHS: Readonly<Record<ProviderId, { primary: EngineId; secondary: EngineId | null; secondaryGap: string }>> = {
   AWS: { primary: "TERRAFORM", secondary: "CDK", secondaryGap: "" },
-  AZURE: { primary: "TERRAFORM", secondary: null, secondaryGap: "Bicep is the planned secondary path for Azure and is not supported for apply yet." },
+  AZURE: { primary: "TERRAFORM", secondary: "BICEP", secondaryGap: "" },
+  GCP: { primary: "TERRAFORM", secondary: null, secondaryGap: "The GCP API-native path is planned and is not supported for apply yet." },
 };
 
 export type PrepareCode =
   | "CONTRACT_DISABLED" | "KILL_SWITCH_ACTIVE" | "POLICY_VERSION_MISSING" | "ENVIRONMENT_INVALID" | "TARGET_NOT_IN_CONTRACT"
-  | "PROJECT_INVALID" | "PROJECT_ENGINE_MISMATCH" | "PROJECT_NOT_CLEAN" | "PROJECT_SNAPSHOT_REFUSED"
-  | "LOCK_FILE_MISSING" | "LOCK_FILE_UNREADABLE" | "ENGINE_VERSION_REQUIRED" | "TOOL_UNAVAILABLE" | "MANIFEST_INVALID"
+  | "PROJECT_INVALID" | "PROJECT_ENGINE_MISMATCH" | "PROJECT_NOT_CLEAN" | "TERRAFORM_LOCAL_PLUGIN_DIR_REFUSED" | "PROJECT_SNAPSHOT_REFUSED"
+  | "LOCK_FILE_MISSING" | "LOCK_FILE_UNREADABLE" | "PROVIDER_VERSION_NOT_REVIEWED" | "PROVIDER_HASH_NOT_OFFICIAL" | "PROVIDER_NOT_ADMITTED" | "ENGINE_VERSION_REQUIRED" | "TOOL_UNAVAILABLE" | "MANIFEST_INVALID"
   | "INPUT_UNSET" | "MODULE_REMOTE" | "MODULE_OUTSIDE_PROJECT" | "TERRAFORM_CONFIG_UNREADABLE";
 
 /** Who has to act to clear a refusal: the owner, the operator at this screen, or a missing local tool. */
@@ -55,7 +58,6 @@ export type PrepareInput = {
 
 export type PrepareDeps = {
   contractPath?: string;
-  pinPath?: string;
   qualificationDir?: string;
   toolDirs?: readonly string[];
   pinsPath?: string;
@@ -133,7 +135,7 @@ function alternativeFor(provider: ProviderId, engine: EngineId): string {
   const paths = PATHS[provider];
   const other = engine === paths.primary ? paths.secondary : paths.primary;
   if (!other) return paths.secondaryGap + " Install the missing tool with ./alz deps.";
-  return "Install the missing tool with ./alz deps, or ask the owner to pin a contract for " + other + ". " +
+  return "Install the missing tool with ./alz deps, or ask the owner to commit a contract for " + other + ". " +
     "A different engine needs its own reviewed contract, its own preview and its own approvals.";
 }
 
@@ -164,10 +166,21 @@ function checkProjectShape(engine: EngineId, root: string): PrepareRefusal | und
     if (names.includes(".terraform")) {
       return refuse("PROJECT_NOT_CLEAN", "OPERATOR", "The project has a .terraform folder from an earlier init. Remove it; preparation and sealing run their own init.");
     }
+    // Providers install only from the official registry (review of #327, round 6): no project-shipped plugin directory or CLI configuration.
+    let local: string | undefined;
+    try { local = localPluginPathIn(root); } catch { return refuse("PROJECT_INVALID", "OPERATOR", "The project folder cannot be read."); }
+    if (local) {
+      return refuse("TERRAFORM_LOCAL_PLUGIN_DIR_REFUSED", "OPERATOR", "The project contains " + local + ", a local provider directory or Terraform CLI configuration. Providers install only from the official registry; remove it.");
+    }
     if (!names.includes(TERRAFORM_LOCK_FILE)) {
       return refuse("LOCK_FILE_MISSING", "OPERATOR", "The project has no " + TERRAFORM_LOCK_FILE + ". Run terraform init once, review the lock file, and keep it with the project.");
     }
     return undefined;
+  }
+  if (engine === "BICEP") {
+    // The engine compiles exactly main.bicep with the pinned bicep and no module restore; nothing else is an entry point.
+    return names.includes(BICEP_ENTRY) ? undefined
+      : refuse("PROJECT_ENGINE_MISMATCH", "OPERATOR", "This folder has no " + BICEP_ENTRY + ". Choose the folder that holds the Bicep project's " + BICEP_ENTRY + ".");
   }
   if (!hasAssembly) {
     return refuse("PROJECT_ENGINE_MISMATCH", "OPERATOR", hasTf
@@ -187,16 +200,16 @@ export function preparationUnitHash(input: { engine: EngineId; environment: Appl
 
 /** Prepares the request and manifest for one environment. Pure apart from reading the contract, records and project. */
 export async function prepareApply(input: PrepareInput, deps: PrepareDeps = {}): Promise<Prepared | PrepareRefusal> {
-  const loaded = loadPilotContract(deps.contractPath ?? repoPaths().contract, deps.pinPath ?? repoPaths().pin);
+  const loaded = loadPilotContract(deps.contractPath ?? repoPaths().contract);
   if ("reason" in loaded) {
-    return refuse("CONTRACT_DISABLED", "OWNER", "There is no pinned, enabled pilot contract (" + loaded.reason + "). The owner reviews the contract and records its pin first.");
+    return refuse("CONTRACT_DISABLED", "OWNER", "There is no enabled pilot contract that authorizes ACT (" + loaded.reason + "). The owner reviews the contract and commits its authorize entry first.");
   }
   const contract: PilotContract = loaded;
   if (isKillSwitchActive(contract)) {
     return refuse("KILL_SWITCH_ACTIVE", "OWNER", "The emergency stop is on, so nothing is prepared. The owner clears it when it is safe to continue.");
   }
   if (!contract.policyVersion) {
-    return refuse("POLICY_VERSION_MISSING", "OWNER", "The pinned contract has no policyVersion. The owner adds the reviewed policy version to the contract and records a new pin.");
+    return refuse("POLICY_VERSION_MISSING", "OWNER", "The reviewed contract has no policyVersion. The owner adds the reviewed policy version to the contract in a reviewed commit.");
   }
   if (!(ENVIRONMENTS as readonly string[]).includes(input.environment)) {
     return refuse("ENVIRONMENT_INVALID", "OPERATOR", "Choose DEV, QA or PROD.");
@@ -238,6 +251,24 @@ export async function prepareApply(input: PrepareInput, deps: PrepareDeps = {}):
     } catch (error) {
       return refuse("LOCK_FILE_UNREADABLE", "OPERATOR", error instanceof LockFileError ? error.message : "The lock file cannot be read.");
     }
+    // The aws and azurerm versions are the ones the denied-type lists were reviewed against (review of #327, round 4).
+    // Every locked source is one this cloud path may select (review of #327, round 5): the engine judges what init selects again.
+    const foreign = providers.find((provider) => !spec.selectableProviders.includes(provider.source));
+    if (foreign) {
+      return refuse("PROVIDER_NOT_ADMITTED", "OPERATOR", "The lock file pins " + foreign.source + ", which this pilot does not admit for " + spec.id +
+        ". Only these provider sources are allowed: " + spec.selectableProviders.join(", ") + ".");
+    }
+    const unreviewed = unreviewedProviderVersion(providers);
+    if (unreviewed) return refuse("PROVIDER_VERSION_NOT_REVIEWED", "OPERATOR", unreviewedVersionMessage(unreviewed));
+    // The reviewed version's package hashes are HashiCorp's own (review of #327, round 6).
+    let unofficial: { source: string; version: string } | undefined;
+    try { unofficial = unofficialProviderHash(lock.toString("utf8")); } catch (error) {
+      return refuse("LOCK_FILE_UNREADABLE", "OPERATOR", error instanceof LockFileError ? error.message : "The lock file cannot be read.");
+    }
+    if (unofficial) {
+      return refuse("PROVIDER_HASH_NOT_OFFICIAL", "OPERATOR", "The lock file's hashes for " + unofficial.source + " " + unofficial.version +
+        " are missing or are not HashiCorp's published package hashes. Rewrite the lock with terraform init against the official registry.");
+    }
   }
 
   // Inputs: each one's identity is a hash of where its value comes from (a fingerprinted file, a named environment variable
@@ -245,8 +276,9 @@ export async function prepareApply(input: PrepareInput, deps: PrepareDeps = {}):
   const derived = deriveInputs(engine.id, projectRoot, files, deps.env ?? process.env);
   if ("refusal" in derived) return derived.refusal;
 
-  // The engine version: a matching qualification record first; before one exists, the tested pin (Terraform) or
-  // the operator's installed AWS CLI version (CDK, which has no pin). qualify still checks the real binary.
+  // The engine version: a matching qualification record first; before one exists, the tested pin (Terraform's binary pin,
+  // or the AWS CLI's check-only pin for CDK). qualify still checks the real binary. A version the operator passes is
+  // accepted only when it is the pin: there is nothing to type any more, and a different version is not the tested one.
   const adapter = engine.previewAdapter() as unknown as EngineAdapter;
   const records = (await loadQualificationRecords(spec, deps.qualificationDir ?? repoPaths().qualifications))
     .filter((record) => record.engine === engine.id && record.adapterVersion === adapter.adapterVersion && record.argvDigest === adapter.argvDigest)
@@ -256,16 +288,16 @@ export async function prepareApply(input: PrepareInput, deps: PrepareDeps = {}):
   if (records.length > 0) {
     engineVersion = records[0].engineVersion;
     engineVersionSource = "QUALIFICATION_RECORD";
-  } else if (engine.id === "TERRAFORM") {
-    engineVersion = loadToolPins(deps.pinsPath).tools.terraform.version;
-    engineVersionSource = "TESTED_PIN";
-  } else if (input.awsCliVersion && AWS_CLI_VERSION.test(input.awsCliVersion)) {
-    engineVersion = input.awsCliVersion;
-    engineVersionSource = "OPERATOR";
   } else {
-    return refuse("ENGINE_VERSION_REQUIRED", "OPERATOR", input.awsCliVersion
-      ? "That is not an AWS CLI version. Enter the three-part version that `aws --version` prints, for example 2.37.0."
-      : "The CDK path is not qualified yet, so preparation needs the installed AWS CLI version (`aws --version`, for example 2.37.0).");
+    const pins = loadToolPins(deps.pinsPath);
+    // Bicep's engine version is the az CLI's (src/apply/engines/bicep.ts checks it, and the pinned bicep, before anything runs).
+    engineVersion = engine.id === "TERRAFORM" ? pins.tools.terraform.version : engine.id === "BICEP" ? pins.azureCli.version : pins.awsCli.version;
+    engineVersionSource = "TESTED_PIN";
+    if (engine.id === "CDK" && input.awsCliVersion !== undefined && input.awsCliVersion !== engineVersion) {
+      return refuse("ENGINE_VERSION_REQUIRED", "OPERATOR", AWS_CLI_VERSION.test(input.awsCliVersion)
+        ? "The CDK path is tested with AWS CLI " + engineVersion + ", and that is the version preparation records; " + input.awsCliVersion + " is not it. Install the tested version (./alz deps shows the step), then prepare again without naming a version."
+        : "That is not an AWS CLI version. The tested version is " + engineVersion + "; prepare again without naming one.");
+    }
   }
 
   const unitHash = preparationUnitHash({ engine: engine.id, environment, target, files });
@@ -349,6 +381,8 @@ function deriveInputs(engine: EngineId, projectRoot: string, files: ArtifactMani
       return { refusal: refuse("INPUT_UNSET", "OPERATOR", "These Terraform variables have no value: " + unset.join(", ") +
         ". Give each a default, an entry in terraform.tfvars, or set ALZ_DISCOVERY_TF_VAR_<name> where the console runs. Values are never read or stored here.") };
     }
+  } else if (engine === "BICEP") {
+    // Bicep: the stack is created from the compiled template with no parameters file, so every parameter takes its default; nothing passes another value.
   } else {
     // CDK: the change set takes each template parameter's default; nothing passes another value.
     for (const file of readdirSync(projectRoot).filter((name) => name.endsWith(".template.json")).sort()) {

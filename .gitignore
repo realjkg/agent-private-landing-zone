@@ -8,9 +8,19 @@ dist/
 coverage/
 .runs/
 
+# The owner's evidence-runner configuration (./alz evidence init); the committed template is config/evidence-runner.example.json
+config/evidence-runner.json
+
 # Private keys and certificates (for example a GitHub App private key): never commit
 *.pem
 *.key
 *.p12
 *.pfx
 *.jks
+
+# The committed canaries under qualification/: the operator's values and local Terraform files stay out (the *.example* files stay in).
+qualification/**/*.tfvars*
+!qualification/**/*.example*
+qualification/**/*.tfstate*
+qualification/**/*.tfplan
+qualification/**/.terraform/

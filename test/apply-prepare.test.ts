@@ -6,7 +6,11 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 
 import { loadPilotContract } from "../src/apply/contract.js";
-import { lockedProviders, LockFileError } from "../src/apply/lockfile.js";
+import { loadToolPins } from "../src/deps/pins.js";
+import { lockedProviders, LockFileError, OFFICIAL_PROVIDER_HASHES, REVIEWED_PROVIDER_VERSIONS, unreviewedProviderVersion } from "../src/apply/lockfile.js";
+import { AWS_DENIED_TYPES_REVIEWED_AGAINST } from "../src/apply/providers/aws.js";
+import { AZURE_DENIED_TYPES_REVIEWED_AGAINST } from "../src/apply/providers/azure.js";
+import { GCP_DENIED_TYPES_REVIEWED_AGAINST } from "../src/apply/providers/gcp.js";
 import {
   preparationIsCurrent, preparationUnitHash, prepareApply, PREPARATION_LABEL, TERRAFORM_LOCK_FILE, writePreparation,
   type PrepareDeps, type PrepareRefusal, type Prepared,
@@ -15,8 +19,8 @@ import { LOCK_FILE } from "../src/teardown/driver/adapters/project-copy.js";
 import { validateManifestForRequest, verifyManifest } from "../src/teardown/manifest.js";
 import { captureProjectFiles } from "../src/teardown/snapshot.js";
 import {
-  awsContractJson, awsTargetOf, contractJson, ENGINE_VERSION, installFakeTerraform, LOCK, pinPathOf, sha, targetOf,
-  testFixtureForgeQualificationEvidence, writePinnedContract, writeProject,
+  AWS_LOCK, awsContractJson, awsTargetOf, contractJson, ENGINE_VERSION, installFakeTerraform, LOCK, sha, targetOf,
+  testFixtureForgeQualificationEvidence, writeReviewedContract, writeProject,
 } from "./helpers/apply-fixtures.js";
 import { cdkContractJson, cdkTargetOf, installFakeAws, PARAMETER_CANARY, writeAssembly } from "./helpers/cdk-fixtures.js";
 
@@ -38,8 +42,8 @@ function setup(contract: (killPath: string) => Record<string, unknown>, tools: "
   if (tools === "aws") installFakeAws(toolDir);
   const killPath = join(dir, "kill-switch");
   const contractPath = join(dir, "contract.json");
-  writePinnedContract(contractPath, contract(killPath));
-  return { dir, killPath, toolDir, deps: { contractPath, pinPath: pinPathOf(contractPath), qualificationDir: join(dir, "vault"), toolDirs: [toolDir] } };
+  writeReviewedContract(contractPath, contract(killPath));
+  return { dir, killPath, toolDir, deps: { contractPath, qualificationDir: join(dir, "vault"), toolDirs: [toolDir] } };
 }
 
 const awsTf = (over: Record<string, unknown> = {}) => (kill: string) => awsContractJson(kill, { policyVersion: POLICY, ...over });
@@ -49,7 +53,9 @@ const awsCdk = (over: Record<string, unknown> = {}) => (kill: string) => cdkCont
 function terraformProject(s: Setup, environment: "DEV" | "QA" | "PROD" = "DEV"): string {
   const project = join(s.dir, "project");
   mkdirSync(project, { recursive: true });
-  writeProject(project, awsTargetOf(environment));
+  // Each cloud path locks its own provider at the reviewed version (an AWS project's lock names aws, an Azure one's azurerm).
+  const provider = (JSON.parse(readFileSync(s.deps.contractPath!, "utf8")) as { provider: string }).provider;
+  writeProject(project, awsTargetOf(environment), undefined, provider === "AWS" ? AWS_LOCK : LOCK);
   return project;
 }
 
@@ -73,8 +79,8 @@ test("Terraform on AWS: the request and manifest come from the contract and the 
     "exactly the keys the seal request accepts");
   assert.deepEqual(prepared.request.target, awsTargetOf("DEV"));
   assert.equal(prepared.request.policyVersion, POLICY, "policy version comes from the contract");
-  assert.deepEqual(prepared.request.resolved.providers, [{ source: "registry.terraform.io/hashicorp/azurerm", version: "4.10.0" }]);
-  assert.equal(prepared.request.resolved.lockFileSha256, sha(LOCK));
+  assert.deepEqual(prepared.request.resolved.providers, [{ source: "registry.terraform.io/hashicorp/aws", version: "6.68.0" }]);
+  assert.equal(prepared.request.resolved.lockFileSha256, sha(AWS_LOCK));
   assert.deepEqual(prepared.request.resolved.inputs, []);
   assert.deepEqual(prepared.request.resolved.dependencies, []);
   assert.equal(verifyManifest(prepared.manifest).manifestHash, prepared.manifest.manifestHash);
@@ -109,16 +115,23 @@ test("QA before DEV is qualified is prepared but blocked on the owner, with the 
   assert.deepEqual(prepared.next, { step: "blocked", blocker: "OWNER", reason: "The TERRAFORM path must be qualified in DEV before QA can be sealed." });
 });
 
-test("CDK is the AWS secondary path: no lock file, no providers, and the AWS CLI version is asked only until it is qualified", async () => {
+test("CDK is the AWS secondary path: no lock file, no providers, and the engine version is the tested AWS CLI pin until it is qualified; nobody is asked, and a version that is not the pin is refused", async () => {
   const s = setup(awsCdk(), "aws");
   const assembly = join(s.dir, "cdk.out");
   writeAssembly(assembly, cdkTargetOf("DEV"));
-  refused(await prepareApply({ environment: "DEV", projectRoot: assembly }, s.deps), "ENGINE_VERSION_REQUIRED", "OPERATOR");
-  refused(await prepareApply({ environment: "DEV", projectRoot: assembly, awsCliVersion: "two" }, s.deps), "ENGINE_VERSION_REQUIRED", "OPERATOR");
-  const prepared = ok(await prepareApply({ environment: "DEV", projectRoot: assembly, awsCliVersion: "2.15.0" }, s.deps));
+  const pin = loadToolPins().awsCli.version;
+  assert.match(pin, /^2\.\d+\.\d+$/);
+  const prepared = ok(await prepareApply({ environment: "DEV", projectRoot: assembly }, s.deps));
+  assert.equal(prepared.summary.engineVersion, pin);
+  assert.equal(prepared.summary.engineVersionSource, "TESTED_PIN");
+  // The pin named explicitly (an older caller) is the same preparation; any other version, or a non-version, is refused with the tested version named.
+  assert.equal(ok(await prepareApply({ environment: "DEV", projectRoot: assembly, awsCliVersion: pin }, s.deps)).summary.engineVersion, pin);
+  const other = refused(await prepareApply({ environment: "DEV", projectRoot: assembly, awsCliVersion: "2.15.0" }, s.deps), "ENGINE_VERSION_REQUIRED", "OPERATOR");
+  const at = other.message.indexOf("tested with AWS CLI " + pin);
+  assert.ok(at >= 0 && other.message.indexOf("2.15.0 is not it", at) > at, other.message);
+  assert.match(refused(await prepareApply({ environment: "DEV", projectRoot: assembly, awsCliVersion: "two" }, s.deps), "ENGINE_VERSION_REQUIRED", "OPERATOR").message, /not an AWS CLI version/);
   assert.equal(prepared.summary.engine, "CDK");
   assert.equal(prepared.summary.path, "SECONDARY");
-  assert.equal(prepared.summary.engineVersionSource, "OPERATOR");
   assert.deepEqual(prepared.request.resolved.providers, []);
   assert.equal(prepared.request.resolved.lockFileSha256, undefined);
   assert.equal(prepared.manifest.engine, "CDK");
@@ -137,7 +150,7 @@ test("owner prerequisites stop preparation with the owner named, and never offer
   const noPolicy = setup((kill) => awsContractJson(kill));
   assert.equal(refused(await prepareApply({ environment: "DEV", projectRoot: terraformProject(noPolicy) }, noPolicy.deps), "POLICY_VERSION_MISSING", "OWNER").alternative, undefined);
 
-  const devOnly = setup(awsTf({ enabledEnvironments: ["DEV"], targets: { DEV: { accountId: awsTargetOf("DEV").account, region: "us-east-1", backend: awsTargetOf("DEV").backend, workspace: "default" } }, requiredApprovals: { DEV: 1 } }));
+  const devOnly = setup(awsTf({ enabledEnvironments: ["DEV"], targets: { DEV: { accountId: awsTargetOf("DEV").account, region: "us-east-1", backend: awsTargetOf("DEV").backend, workspace: "default" } }, requiredApprovals: { DEV: 1 }, authorize: { DEV: ["APPLY", "CLEANUP"] } }));
   refused(await prepareApply({ environment: "PROD", projectRoot: terraformProject(devOnly, "PROD") }, devOnly.deps), "TARGET_NOT_IN_CONTRACT", "OWNER");
   refused(await prepareApply({ environment: "STAGING", projectRoot: terraformProject(devOnly) }, devOnly.deps), "ENVIRONMENT_INVALID", "OPERATOR");
 });
@@ -145,7 +158,7 @@ test("owner prerequisites stop preparation with the owner named, and never offer
 test("a missing engine tool explains the supported alternative for that provider and says what it requires", async () => {
   const aws = setup(awsTf(), "none");
   const awsRefusal = refused(await prepareApply({ environment: "DEV", projectRoot: terraformProject(aws) }, aws.deps), "TOOL_UNAVAILABLE", "TOOL");
-  assert.match(awsRefusal.alternative ?? "", /pin a contract for CDK/);
+  assert.match(awsRefusal.alternative ?? "", /commit a contract for CDK/);
   assert.match(awsRefusal.alternative ?? "", /own reviewed contract, its own preview and its own approvals/);
 
   const azure = setup(azureTf(), "none");
@@ -153,7 +166,35 @@ test("a missing engine tool explains the supported alternative for that provider
   mkdirSync(project);
   writeProject(project, targetOf("DEV"));
   const azureRefusal = refused(await prepareApply({ environment: "DEV", projectRoot: project }, azure.deps), "TOOL_UNAVAILABLE", "TOOL");
-  assert.match(azureRefusal.alternative ?? "", /Bicep .* not supported for apply yet/);
+  // Azure Bicep is admitted for DEV only (the admission-wiring lane, #39): the other supported Azure way, with its own contract.
+  assert.match(azureRefusal.alternative ?? "", /commit a contract for BICEP/);
+  assert.match(azureRefusal.alternative ?? "", /own reviewed contract, its own preview and its own approvals/);
+});
+
+test("Azure Bicep is the Azure secondary path: main.bicep is the project, no lock file and no providers, and the engine version is the tested az pin until it is qualified", async () => {
+  const bicep = (kill: string) => ({
+    ...contractJson(kill, { policyVersion: POLICY }), engine: "BICEP", enabledEnvironments: ["DEV"], requiredApprovals: { DEV: 1 }, authorize: { DEV: ["APPLY", "CLEANUP"] },
+    targets: { DEV: { tenantId: "11111111-1111-4111-8111-111111111111", subscriptionId: targetOf("DEV").account, backend: "alz-pilot-stack", workspace: "default", resourceGroup: "alz-pilot-dev", location: "eastus2" } },
+  });
+  const s = setup(bicep, "none");
+  for (const name of ["az", "bicep"]) writeFileSync(join(s.toolDir, name), "#!/bin/sh\nexit 9\n", { mode: 0o755 });
+  const project = join(s.dir, "bicep-project");
+  mkdirSync(project);
+  writeFileSync(join(project, "main.bicep"), "resource vnet 'Microsoft.Network/virtualNetworks@2024-05-01' = {}\n");
+  const prepared = ok(await prepareApply({ environment: "DEV", projectRoot: project }, s.deps));
+  assert.equal(prepared.summary.engine, "BICEP");
+  assert.equal(prepared.summary.path, "SECONDARY");
+  assert.equal(prepared.summary.engineVersion, loadToolPins().azureCli.version);
+  assert.equal(prepared.summary.engineVersionSource, "TESTED_PIN");
+  assert.deepEqual(prepared.request.resolved.providers, []);
+  assert.equal(prepared.request.resolved.lockFileSha256, undefined);
+  assert.equal(prepared.manifest.engine, "BICEP");
+  assert.equal(prepared.next.step, "qualify");
+  // A folder with no main.bicep is not this engine's project.
+  const empty = join(s.dir, "not-bicep");
+  mkdirSync(empty);
+  writeFileSync(join(empty, "main.tf"), "");
+  assert.match(refused(await prepareApply({ environment: "DEV", projectRoot: empty }, s.deps), "PROJECT_ENGINE_MISMATCH", "OPERATOR").message, /no main\.bicep/);
 });
 
 test("projects that do not match the engine, are not clean, or cannot be fingerprinted are refused, never patched up", async () => {
@@ -232,6 +273,122 @@ test("the preparation unit hash is reproducible and changes with the environment
   assert.notEqual(preparationUnitHash(base), preparationUnitHash({ ...base, files: [{ path: "main.tf", sha256: "b".repeat(64) }] }));
 });
 
+
+/**
+ * Real `terraform init` lock-file syntax (Terraform 1.16.4, offline mirror, 2026-10-27): the reviewed hashicorp/aws 6.68.0 and
+ * hashicorp/azurerm 4.81.0 entries as init wrote them, and hashicorp/null 3.2.4. Each test swaps a version as plain text.
+ */
+const REAL_LOCK = [
+  '# This file is maintained automatically by "terraform init".', "# Manual edits may be lost in future updates.", "",
+  'provider "registry.terraform.io/hashicorp/aws" {', '  version     = "6.68.0"', '  constraints = ">= 5.0.0, < 7.0.0"', "  hashes = [",
+  '    "h1:79hHQtjGSCiXBZK+VDiNUdI2SLXbNaHf+CHySvKFnvA=",', "  ]", "}", "",
+  'provider "registry.terraform.io/hashicorp/azurerm" {', '  version     = "4.81.0"', '  constraints = "4.81.0"', "  hashes = [",
+  '    "h1:olVprUWhmFTARlydw/r7VIx4fata2gy3zsAWfPGRrhg=",', "  ]", "}", "",
+  'provider "registry.terraform.io/hashicorp/null" {', '  version     = "3.2.4"', "}", "",
+].join("\n");
+
+test("a lock that pins aws or azurerm at any version but the one the denied types were reviewed against is refused at prepare, naming both versions (review of #327, round 4)", async () => {
+  // One source of truth: the reviewed versions are read from the constants beside the denied-type lists.
+  assert.deepEqual(REVIEWED_PROVIDER_VERSIONS, {
+    "registry.terraform.io/hashicorp/aws": "6.68.0", "registry.terraform.io/hashicorp/azurerm": "4.81.0", "registry.terraform.io/hashicorp/google": "8.9.0",
+  });
+  assert.equal(AWS_DENIED_TYPES_REVIEWED_AGAINST, "hashicorp/aws 6.68.0");
+  assert.equal(AZURE_DENIED_TYPES_REVIEWED_AGAINST, "hashicorp/azurerm 4.81.0");
+  assert.equal(GCP_DENIED_TYPES_REVIEWED_AGAINST, "hashicorp/google 8.9.0");
+  // Each cloud path locks its own provider (an AWS project locking azurerm is refused as not admitted, below).
+  const awsLock = REAL_LOCK.replace(/\nprovider "registry\.terraform\.io\/hashicorp\/azurerm" \{[\s\S]*?\n\}\n/, "\n");
+  const azureLock = REAL_LOCK.replace(/\nprovider "registry\.terraform\.io\/hashicorp\/aws" \{[\s\S]*?\n\}\n/, "\n");
+  assert.deepEqual(lockedProviders(awsLock).map((p) => p.source), ["registry.terraform.io/hashicorp/aws", "registry.terraform.io/hashicorp/null"]);
+  assert.deepEqual(lockedProviders(azureLock).map((p) => p.source), ["registry.terraform.io/hashicorp/azurerm", "registry.terraform.io/hashicorp/null"]);
+  const clouds = { aws: { contract: awsTf(), lock: awsLock }, azurerm: { contract: azureTf(), lock: azureLock } } as const;
+  const project = (cloud: keyof typeof clouds, lock: string): { dir: string; deps: PrepareDeps } => {
+    const s = setup(clouds[cloud].contract);
+    const dir = terraformProject(s);
+    writeFileSync(join(dir, TERRAFORM_LOCK_FILE), lock);
+    return { dir, deps: s.deps };
+  };
+  const prep = (p: { dir: string; deps: PrepareDeps }) => prepareApply({ environment: "DEV", projectRoot: p.dir }, p.deps);
+  // The exact reviewed versions are admitted, and so is any version of a provider that is neither aws nor azurerm.
+  assert.equal(unreviewedProviderVersion(lockedProviders(REAL_LOCK)), undefined);
+  for (const cloud of ["aws", "azurerm"] as const) {
+    ok(await prep(project(cloud, clouds[cloud].lock)));
+    ok(await prep(project(cloud, clouds[cloud].lock.replace('version     = "3.2.4"', 'version     = "3.2.5"'))));
+  }
+  for (const [source, version, reviewed] of [["aws", "6.69.0", "6.68.0"], ["aws", "6.67.0", "6.68.0"], ["aws", "7.0.0", "6.68.0"], ["aws", "6.68.1", "6.68.0"],
+    ["azurerm", "4.82.0", "4.81.0"], ["azurerm", "4.80.0", "4.81.0"], ["azurerm", "4.81.0-beta1", "4.81.0"]] as const) {
+    const lock = clouds[source].lock.replace('version     = "' + reviewed + '"', 'version     = "' + version + '"');
+    assert.ok(lock.includes('version     = "' + version + '"'), "the swap landed: " + source + " " + version);
+    const refusal = refused(await prep(project(source, lock)), "PROVIDER_VERSION_NOT_REVIEWED", "OPERATOR");
+    // Compared as plain text (no pattern built from the version).
+    const expected = "pins registry.terraform.io/hashicorp/" + source + " " + version + ", but the pilot's denied-type lists were reviewed against " + reviewed + ".";
+    assert.ok(refusal.message.includes(expected), source + " " + version + ": " + refusal.message);
+    assert.ok(refusal.message.includes("re-review the denied types against the new schema"));
+  }
+});
+
+test("round 5 (review of #327): the lock reader cannot be made to read less than Terraform: indented and CRLF blocks, an empty parse, and a foreign host or namespace are refused at prepare", async () => {
+  // The reviewer's probes (real lock syntax): Terraform still selects 6.70.0 from each, and the old line-anchored reader saw nothing.
+  const header = '# This file is maintained automatically by "terraform init".\n# Manual edits may be lost in future updates.\n\n';
+  const block = (source: string, version: string, indent = "") =>
+    indent + 'provider "' + source + '" {\n' + indent + '  version = "' + version + '"\n' + indent + "  hashes = [\n" + indent + '    "h1:79hHQtjGSCiXBZK+VDiNUdI2SLXbNaHf+CHySvKFnvA=",\n' + indent + "  ]\n" + indent + "}\n";
+  const AWS = "registry.terraform.io/hashicorp/aws";
+  const indented = header + block(AWS, "6.70.0", "  ");
+  const crlf = (header + block(AWS, "6.70.0")).replace(/\n/g, "\r\n");
+  const code = (text: string) => { try { lockedProviders(text); return "none"; } catch (error) { return (error as LockFileError).code; } };
+  assert.equal(code(indented), "LOCK_FILE_UNREADABLE", "an indented block");
+  assert.equal(code(crlf), "LOCK_FILE_UNREADABLE", "CRLF line endings");
+  assert.equal(code((header + block(AWS, "6.68.0")).replace(/\n/g, "\r\n")), "LOCK_FILE_UNREADABLE", "CRLF even at the reviewed version");
+  assert.equal(code(header + block(AWS, "6.68.0") + block(AWS, "6.70.0", "\t")), "LOCK_FILE_UNREADABLE", "a reviewed block beside an indented one");
+  assert.equal(code(header + "provider\n"), "LOCK_FILE_UNREADABLE", "a mention that parses to nothing");
+  assert.equal(code(header), "LOCK_FILE_EMPTY", "nothing locked");
+  const s = setup(awsTf());
+  for (const [label, lock, expected] of [
+    ["indented", indented, "LOCK_FILE_UNREADABLE"], ["CRLF", crlf, "LOCK_FILE_UNREADABLE"],
+    ["an OpenTofu registry host", header + block("registry.opentofu.org/hashicorp/aws", "6.68.0"), "PROVIDER_NOT_ADMITTED"],
+    ["another namespace for aws", header + block("registry.terraform.io/attacker/aws", "6.68.0"), "PROVIDER_NOT_ADMITTED"],
+    ["azurerm in an AWS project", header + block("registry.terraform.io/hashicorp/azurerm", "4.81.0"), "PROVIDER_NOT_ADMITTED"],
+  ] as const) {
+    const dir = terraformProject(setup(awsTf()));
+    writeFileSync(join(dir, TERRAFORM_LOCK_FILE), lock);
+    refused(await prepareApply({ environment: "DEV", projectRoot: dir }, s.deps), expected, "OPERATOR");
+    assert.ok(label.length > 0);
+  }
+});
+
+test("round 6 (review of #327): a project-shipped plugin directory or CLI configuration is refused at prepare, and a reviewed version's lock must carry HashiCorp's own package hashes", async () => {
+  const s = setup(awsTf());
+  for (const [label, make] of [
+    ["terraform.d/plugins at the root", (dir: string) => { mkdirSync(join(dir, "terraform.d/plugins/registry.terraform.io/hashicorp/aws/6.68.0/linux_amd64"), { recursive: true }); writeFileSync(join(dir, "terraform.d/plugins/registry.terraform.io/hashicorp/aws/6.68.0/linux_amd64/terraform-provider-aws_v6.68.0_x5"), "#!/bin/sh\n"); }],
+    ["terraform.d in a module", (dir: string) => { mkdirSync(join(dir, "modules/app/terraform.d"), { recursive: true }); writeFileSync(join(dir, "modules/app/terraform.d/x"), "x"); }],
+    ["a .terraform data directory in a module", (dir: string) => { mkdirSync(join(dir, "modules/app/.terraform/providers"), { recursive: true }); writeFileSync(join(dir, "modules/app/.terraform/providers/x"), "x"); }],
+    ["a .terraformrc", (dir: string) => writeFileSync(join(dir, ".terraformrc"), "provider_installation {}\n")],
+    ["a terraform.rc, any case", (dir: string) => writeFileSync(join(dir, "Terraform.RC"), "provider_installation {}\n")],
+  ] as const) {
+    const dir = terraformProject(setup(awsTf()));
+    make(dir);
+    const refusal = refused(await prepareApply({ environment: "DEV", projectRoot: dir }, s.deps), "TERRAFORM_LOCAL_PLUGIN_DIR_REFUSED", "OPERATOR");
+    assert.ok(refusal.message.includes("only from the official registry"), label);
+  }
+  // Hashes: the official ones are admitted (h1 for linux_amd64 and darwin_arm64, zh for every platform); anything else is refused.
+  const lockWithHashes = (hashes: string[]) => '# lock\nprovider "registry.terraform.io/hashicorp/aws" {\n  version = "6.68.0"\n  hashes = [\n' + hashes.map((h) => '    "' + h + '",\n').join("") + "  ]\n}\n";
+  const official = [...OFFICIAL_PROVIDER_HASHES["registry.terraform.io/hashicorp/aws 6.68.0"]!];
+  const prep = async (lock: string) => {
+    const dir = terraformProject(setup(awsTf()));
+    writeFileSync(join(dir, TERRAFORM_LOCK_FILE), lock);
+    return prepareApply({ environment: "DEV", projectRoot: dir }, s.deps);
+  };
+  ok(await prep(lockWithHashes(official)));
+  ok(await prep(lockWithHashes(["zh:f292ad91c97ac7354a04a698f346c2a0c3866d9170ca45dda6a6bfab71180be0"])));
+  for (const [label, hashes] of [
+    ["no hashes", []],
+    ["an unofficial h1 (a rebuilt package)", ["h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="]],
+    ["an official h1 beside an unofficial zh", ["h1:79hHQtjGSCiXBZK+VDiNUdI2SLXbNaHf+CHySvKFnvA=", "zh:" + "0".repeat(64)]],
+    ["azurerm's official hash under aws", ["h1:olVprUWhmFTARlydw/r7VIx4fata2gy3zsAWfPGRrhg="]],
+  ] as const) refused(await prep(lockWithHashes([...hashes])), "PROVIDER_HASH_NOT_OFFICIAL", "OPERATOR");
+  // A hash list this reader cannot read exactly is unreadable, not skipped.
+  refused(await prep(lockWithHashes(["md5:abc"])), "LOCK_FILE_UNREADABLE", "OPERATOR");
+});
+
 test("the lock file reader returns sorted providers and refuses duplicates, missing versions and empty files", () => {
   const lock = [
     'provider "registry.terraform.io/hashicorp/random" {', '  version     = "3.6.0"', '  constraints = ">= 3.0.0"', "  hashes = [", '    "h1:abc=",', "  ]", "}",
@@ -244,7 +401,9 @@ test("the lock file reader returns sorted providers and refuses duplicates, miss
   const code = (text: string) => { try { lockedProviders(text); return "none"; } catch (error) { return (error as LockFileError).code; } };
   assert.equal(code(lock + 'provider "registry.terraform.io/hashicorp/aws" {\n  version = "5.71.0"\n}\n'), "LOCK_FILE_DUPLICATE_PROVIDER");
   assert.equal(code('provider "registry.terraform.io/hashicorp/aws" {\n  constraints = ">= 5"\n}\n'), "LOCK_FILE_UNREADABLE");
-  assert.equal(code("# no providers\n"), "LOCK_FILE_EMPTY");
+  assert.equal(code("# nothing locked\n"), "LOCK_FILE_EMPTY");
+  // Strict (review of #327, round 5): a lock that mentions a provider but parses to none is unreadable, never empty.
+  assert.equal(code("# no providers\n"), "LOCK_FILE_UNREADABLE");
   assert.equal(TERRAFORM_LOCK_FILE, LOCK_FILE, "prepare checks the same lock file name the engines use");
 });
 
@@ -252,11 +411,11 @@ test("the contract's policyVersion is optional, kept exactly, and refused when i
   const dir = join(root, "policy");
   mkdirSync(dir);
   const path = join(dir, "contract.json");
-  writePinnedContract(path, awsContractJson(join(dir, "kill"), { policyVersion: POLICY }));
-  const loaded = loadPilotContract(path, pinPathOf(path));
+  writeReviewedContract(path, awsContractJson(join(dir, "kill"), { policyVersion: POLICY }));
+  const loaded = loadPilotContract(path);
   assert.equal("reason" in loaded ? "" : loaded.policyVersion, POLICY);
-  writePinnedContract(path, awsContractJson(join(dir, "kill"), { policyVersion: "bad\nvalue" }));
-  const bad = loadPilotContract(path, pinPathOf(path));
+  writeReviewedContract(path, awsContractJson(join(dir, "kill"), { policyVersion: "bad\nvalue" }));
+  const bad = loadPilotContract(path);
   assert.equal("reason" in bad && bad.code, "CONTRACT_INVALID");
 });
 
@@ -362,7 +521,7 @@ test("CDK template parameters become inputs from their defaults, without the def
   const s = setup(awsCdk(), "aws");
   const project = join(s.dir, "assembly");
   writeAssembly(project, cdkTargetOf("DEV"));
-  const prepared = ok(await prepareApply({ environment: "DEV", projectRoot: project, awsCliVersion: "2.37.0" }, s.deps));
+  const prepared = ok(await prepareApply({ environment: "DEV", projectRoot: project }, s.deps));
   assert.equal(prepared.summary.inputs.length, 1);
   assert.match(prepared.summary.inputs[0].name, /\/DbPassword$/);
   assert.equal(prepared.summary.inputs[0].source, "DEFAULT");
@@ -371,5 +530,5 @@ test("CDK template parameters become inputs from their defaults, without the def
   const body = JSON.parse(readFileSync(join(project, template), "utf8")) as { Parameters: Record<string, Record<string, unknown>> };
   delete body.Parameters.DbPassword.Default;
   writeFileSync(join(project, template), JSON.stringify(body));
-  refused(await prepareApply({ environment: "DEV", projectRoot: project, awsCliVersion: "2.37.0" }, s.deps), "INPUT_UNSET", "OPERATOR");
+  refused(await prepareApply({ environment: "DEV", projectRoot: project }, s.deps), "INPUT_UNSET", "OPERATOR");
 });

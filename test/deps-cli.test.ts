@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import test from "node:test";
 
-import { allRequiredPass, installedPath, runDependencyChecks, type CheckContext } from "../src/deps/checks.js";
+import { allRequiredPass, installedPath, runDependencyChecks, type CheckContext, AWS_CLI_VERSION_PATTERN, AZURE_CLI_VERSION_PATTERN, AZ_PROBE_ENVIRONMENT } from "../src/deps/checks.js";
+import { writeInstallMarker } from "../src/deps/install.js";
 import { loadToolPins } from "../src/deps/pins.js";
 import { blockedByDependencies, runDepsCommand, type DepsDeps } from "../src/cli/deps.js";
 import type { HumanTerminal } from "../src/cli/teardown-driver.js";
@@ -75,8 +76,15 @@ test("a tool that is missing or not the pinned version fails with a fix; the app
   const own = installedPath(home, "terraform", "1.16.4", "terraform");
   mkdirSync(join(own, ".."), { recursive: true });
   fakeTool(join(own, ".."), "terraform", "echo 'Terraform v1.16.4'");
+  // The program alone, with no completion marker, is a copy from before completion checks: reported, never read as verified.
+  const legacy = await runDependencyChecks(ctx("own-legacy", { home, env: { PATH: pathWith("own-legacy", { ...GOOD_TOOLS, terraform: "echo 'Terraform v1.5.0'" }) } }), REQUIRED);
+  assert.equal(byId(legacy, "terraform").ok, false, "a copy without a completion marker is never called installed");
+  assert.match(byId(legacy, "terraform").detail, /installed before completion checks, not verified/);
+  assert.match(byId(legacy, "terraform").fix!, /Run \.\/alz deps and choose Repair/);
+  assert.ok(existsSync(own), "the legacy copy is never removed by a check");
+  writeInstallMarker(join(own, ".."), { tool: "terraform", version: "1.16.4", binary: "terraform", sha256: "a".repeat(64), completedAt: new Date().toISOString() });
   const preferred = await runDependencyChecks(ctx("own", { home, env: { PATH: pathWith("own", { ...GOOD_TOOLS, terraform: "echo 'Terraform v1.5.0'" }) } }), REQUIRED);
-  assert.equal(byId(preferred, "terraform").ok, true, "the app's own copy wins over a wrong one on PATH");
+  assert.equal(byId(preferred, "terraform").ok, true, "the app's own checked copy wins over a wrong one on PATH");
 });
 
 test("the isolated service: not running is fine; a listener that is not Ollama, or a missing model, is a plain blocker", async () => {
@@ -89,7 +97,7 @@ test("the isolated service: not running is fine; a listener that is not Ollama, 
   const partial = await runDependencyChecks(ctx("partial", { probe: async () => ({ listening: true, apiOk: true, models: ["qwen3:1.7b", "qwen3:4b"] }) }), REQUIRED);
   const service = byId(partial, "isolated-service");
   assert.equal(service.ok, false);
-  assert.match(service.detail, /mistral-nemo:latest/);
+  assert.match(service.detail, /mistral-nemo:12b/);
   assert.match(service.fix!, /dry run/i);
 });
 
@@ -99,7 +107,89 @@ test("the AWS CLI and Git are reported with exact steps and never installed", as
   assert.equal(aws.ok, false);
   assert.equal(aws.installable, undefined, "the AWS CLI is check-only");
   assert.match(aws.fix!, /administrator password/);
+  assert.ok(aws.fix!.includes("AWS CLI version " + pins.awsCli.version + ", the tested version"), aws.fix);
   assert.ok(!("installable" in byId(checks, "git")) || byId(checks, "git").installable === undefined);
+});
+
+test("the AWS CLI is pinned to a tested version, check only: the pin's own version passes, any other is named with the tested one and the install step, and the version line is read in the vendor's format", async () => {
+  const pin = pins.awsCli.version;
+  const line = (version: string, rest = "Python/3.13.11 Linux/6.1.0 exe/x86_64") => "echo 'aws-cli/" + version + " " + rest + "'";
+  const tested = await runDependencyChecks(ctx("awsok", { env: { PATH: pathWith("awsok", { ...GOOD_TOOLS, aws: line(pin) }) } }), REQUIRED);
+  assert.equal(byId(tested, "aws-cli").ok, true);
+  assert.equal(byId(tested, "aws-cli").label, "AWS CLI " + pin);
+  assert.ok(byId(tested, "aws-cli").detail.startsWith("version " + pin + " at "), byId(tested, "aws-cli").detail);
+  const older = await runDependencyChecks(ctx("awsold", { env: { PATH: pathWith("awsold", { ...GOOD_TOOLS, aws: line("2.15.0", "Python/3.11.6 Darwin/23.0.0 exe/arm64") }) } }), REQUIRED);
+  assert.equal(byId(older, "aws-cli").ok, false);
+  assert.equal(byId(older, "aws-cli").installable, undefined, "still never installed by this app");
+  assert.match(byId(older, "aws-cli").detail, /^found 2\.15\.0 at .*, tested /);
+  assert.ok(byId(older, "aws-cli").detail.endsWith(", tested " + pin), byId(older, "aws-cli").detail);
+  assert.ok(byId(older, "aws-cli").fix!.includes("Install AWS CLI version " + pin), byId(older, "aws-cli").fix);
+  // A version 1 CLI prints the same shape with a 1.x version: read, then refused as not the tested version.
+  const v1 = await runDependencyChecks(ctx("awsv1", { env: { PATH: pathWith("awsv1", { ...GOOD_TOOLS, aws: line("1.32.0", "Python/3.11.6 Linux/6.1.0 botocore/1.34.0") }) } }), REQUIRED);
+  assert.equal(byId(v1, "aws-cli").ok, false);
+  assert.match(byId(v1, "aws-cli").detail, /^found 1\.32\.0 at /);
+  // The vendor's version line on each platform, and what is not one.
+  for (const text of ["aws-cli/2.38.6 Python/3.13.11 Linux/6.1.0 exe/x86_64", "aws-cli/2.38.6 Python/3.13.11 Darwin/24.6.0 exe/arm64", "aws-cli/2.38.6 Python/3.13.11 Windows/10 exe/AMD64 prompt/off", "aws-cli/2.38.6 Python/3.13.11 Linux/6.1.0 source/x86_64"]) {
+    assert.equal(AWS_CLI_VERSION_PATTERN.exec(text)?.[1], "2.38.6", text);
+  }
+  assert.equal(AWS_CLI_VERSION_PATTERN.exec("aws-cli/2.38.6")?.[1], "2.38.6", "the version alone, as the CDK engine reads it");
+  for (const text of ["", "aws-cli/2.38 Python/3.13.11", "awscli 2.38.6", "AWS CLI 2.38.6", "Python/3.13.11 aws-cli/2.38.6", "aws-cli/2.38.6.1 Python/3.13.11", "aws-cli/2.38.6-dev0 Python/3.13.11"]) assert.equal(AWS_CLI_VERSION_PATTERN.exec(text), null, text);
+});
+
+test("the Azure CLI is pinned to a tested version, check only and never required by default: the pin passes, another version or none is named with the install step", async () => {
+  const pin = pins.azureCli.version;
+  // `az version --output json` prints the installed distributions as JSON; the engine and this check read the same key.
+  const json = (version: string) => "echo '{\"azure-cli\": \"" + version + "\", \"azure-cli-core\": \"" + version + "\", \"extensions\": {}}'";
+  const tested = await runDependencyChecks(ctx("azok", { env: { PATH: pathWith("azok", { ...GOOD_TOOLS, az: json(pin) }) } }), REQUIRED);
+  const az = byId(tested, "azure-cli");
+  assert.equal(az.ok, true);
+  assert.equal(az.required, false, "only the Bicep path needs it, so it never blocks another command");
+  assert.equal(az.label, "Azure CLI " + pin);
+  assert.ok(az.detail.startsWith("version " + pin + " at "), az.detail);
+  assert.equal(az.installable, undefined, "the Azure CLI is check-only");
+  const older = await runDependencyChecks(ctx("azold", { env: { PATH: pathWith("azold", { ...GOOD_TOOLS, az: json("2.60.0") }) } }), REQUIRED);
+  assert.equal(byId(older, "azure-cli").ok, false);
+  assert.ok(byId(older, "azure-cli").detail.endsWith(", tested " + pin), byId(older, "azure-cli").detail);
+  assert.ok(byId(older, "azure-cli").fix!.includes("Install Azure CLI version " + pin + ", the tested version"), byId(older, "azure-cli").fix);
+  const missing = await runDependencyChecks(ctx("aznone"), REQUIRED);
+  assert.equal(byId(missing, "azure-cli").ok, false);
+  assert.equal(byId(missing, "azure-cli").detail, "not found");
+  assert.equal(allRequiredPass(missing), true, "a missing Azure CLI does not fail the default checks");
+  assert.equal(AZURE_CLI_VERSION_PATTERN.exec('{"azure-cli": "2.91.0", "azure-cli-core": "2.91.0"}')?.[1], "2.91.0");
+  for (const text of ["", "azure-cli                         2.91.0", '{"azure-cli-core": "2.91.0"}', '{"azure-cli": "2.91"}']) assert.equal(AZURE_CLI_VERSION_PATTERN.exec(text), null, text);
+});
+
+test("the Azure CLI probe never runs with the person's own az configuration: a private, empty config directory (so auto-upgrade stays at its default, off), removed afterward, and telemetry off", async () => {
+  const seen = join(root, "az-probe-env.txt");
+  // The fake az records what it was given, then answers like `az version --output json`.
+  const az = "printf '%s|%s|%s\\n' \"$AZURE_CONFIG_DIR\" \"$AZURE_CORE_COLLECT_TELEMETRY\" \"$(ls -A \"$AZURE_CONFIG_DIR\" | wc -l | tr -d ' ')\" > " + seen +
+    "; env | grep -c '^AZURE_CORE_OUTPUT=' >> " + seen + "; echo '{\"azure-cli\": \"" + pins.azureCli.version + "\"}'";
+  const before = process.env.AZURE_CORE_OUTPUT;
+  process.env.AZURE_CORE_OUTPUT = "table";
+  let checks;
+  try {
+    checks = await runDependencyChecks(ctx("azprobe", { env: { PATH: pathWith("azprobe", { ...GOOD_TOOLS, az }), AZURE_CONFIG_DIR: "/home/person/.azure" } }), REQUIRED);
+  } finally {
+    if (before === undefined) delete process.env.AZURE_CORE_OUTPUT; else process.env.AZURE_CORE_OUTPUT = before;
+  }
+  assert.equal(byId(checks, "azure-cli").ok, true);
+  const [line, ownSetting] = readFileSync(seen, "utf8").trim().split("\n");
+  const [configDir, telemetry, entries] = line.split("|");
+  assert.notEqual(configDir, "/home/person/.azure", "never the person's own az configuration");
+  assert.match(configDir, /alz-az-probe-/);
+  assert.equal(entries, "0", "the probe's configuration directory is empty, so auto-upgrade is at its default, off");
+  assert.equal(existsSync(configDir), false, "and removed afterward");
+  assert.equal(telemetry, "no");
+  assert.equal(ownSetting, "0", "no AZURE_* setting of the person's own reaches the probe");
+  assert.deepEqual(AZ_PROBE_ENVIRONMENT, { AZURE_CORE_COLLECT_TELEMETRY: "no" });
+});
+
+test("the Bicep pin is the version the Bicep preview adapter records as tested, so the preview's lint/build step and the apply engine run the same Bicep version", async () => {
+  const { PLUGIN_CATALOG } = await import("../src/plugins/catalog.js");
+  const bicep = PLUGIN_CATALOG.find((plugin) => plugin.executable === "bicep");
+  assert.ok(bicep);
+  assert.equal(pins.bicep.version, bicep!.testedVersion);
+  assert.equal(pins.bicep.versionCommand, "bicep --version");
 });
 
 // --- the guided command -------------------------------------------------------------------------------------
@@ -328,11 +418,12 @@ test("guided installer: explicit tool selection installs only checksum-verified 
   }), /INSTALL_TOOL_NOT_PINNED/);
 });
 
-test("guided installer never calls a cached but wrong-version binary ready", async () => {
+test("guided installer never calls a cached but wrong-version binary ready: it offers a repair, and a failed repair leaves that copy as it was", async () => {
   const { installSelectedPinnedTools } = await import("../src/cli/deps.js");
   const home = join(root, "home-cli-guided-cached-bad");
   const installed = installedPath(home, "terraform", "1.16.4", "terraform");
   fakeTool(join(installed, ".."), "terraform", "echo 'Terraform v0.0.1'");
+  const before = readFileSync(installed, "utf8");
   let downloaded = 0;
   const term = terminal(true, ["1"]);
   const result = await installSelectedPinnedTools(["terraform"], {
@@ -340,10 +431,79 @@ test("guided installer never calls a cached but wrong-version binary ready", asy
       download: async () => { downloaded++; return Readable.from([]); },
     }),
   });
-  assert.deepEqual(result.installed, [], "reused local file cannot be treated as a valid install");
+  assert.deepEqual(result.installed, [], "a cached copy without a completion marker is never treated as a valid install");
   assert.deepEqual(result.skipped, ["terraform"]);
-  assert.equal(downloaded, 0, "no download attempted for an already existing local binary");
-  assert.match(term.shown.join(""), /still failed verification/);
+  assert.equal(downloaded, 1, "the repair downloads the pinned version beside the unverified copy");
+  const shown = term.shown.join("");
+  assert.match(shown, /installed before completion checks, not verified/);
+  assert.match(shown, /Repair it now\?\n\s+1\s+Repair it\n\s+2\s+Skip it/);
+  assert.match(shown, /did not match the checksum this app expects, so nothing was installed/);
+  assert.equal(readFileSync(installed, "utf8"), before, "the unverified copy is untouched when the repair fails");
+  assert.deepEqual(readdirSync(join(installed, "..", "..")), ["1.16.4"], "no partial or replaced folder is left beside it");
+});
+
+/** A download that sends one chunk, then waits until it is stopped, like a stalled connection. */
+function stalledDownload(onStart: () => void): DepsDeps["download"] {
+  return async (_url, signal) => Readable.from((async function* () {
+    yield Buffer.from("partial");
+    onStart();
+    await new Promise<void>((done) => { signal.addEventListener("abort", () => done(), { once: true }); });
+  })());
+}
+
+test("a cached copy with its completion marker whose program reports the wrong version is never ready: no download, a plain message, and the copy is kept", async () => {
+  const { installSelectedPinnedTools } = await import("../src/cli/deps.js");
+  const home = join(root, "home-cli-marked-wrong");
+  const installed = installedPath(home, "terraform", "1.16.4", "terraform");
+  fakeTool(join(installed, ".."), "terraform", "echo 'Terraform v0.0.1'");
+  writeInstallMarker(join(installed, ".."), { tool: "terraform", version: "1.16.4", binary: "terraform", sha256: "a".repeat(64), completedAt: new Date().toISOString() });
+  const before = readFileSync(installed, "utf8");
+  let downloaded = 0;
+  const term = terminal(true, ["1"]);
+  const result = await installSelectedPinnedTools(["terraform"], {
+    ...deps("marked-wrong", term, { download: async () => { downloaded++; return Readable.from([]); } }),
+  });
+  assert.deepEqual(result.installed, [], "a marked copy that reports the wrong version is never ready");
+  assert.deepEqual(result.skipped, ["terraform"]);
+  assert.equal(downloaded, 0, "no download for a copy that is already installed");
+  assert.match(term.shown.join(""), /still failed verification after installation, so it is not used\. Remove it from the \.\/alz deps menu, then install it again\./);
+  assert.equal(readFileSync(installed, "utf8"), before, "the copy is kept, not removed on its own");
+  assert.ok(existsSync(join(installed, "..", ".alz-installed.json")), "its marker is kept too");
+});
+
+test("a stop during one install ends the remaining selected installs instead of asking about the next tool", async () => {
+  const { installSelectedPinnedTools } = await import("../src/cli/deps.js");
+  const archive = fakeArchive("stop-rest");
+  const home = join(root, "home-cli-stop-rest");
+  const term = terminal(true, ["1", "1"]);
+  const exits: number[] = [];
+  const result = await installSelectedPinnedTools(["terraform", "ollama"], {
+    ...deps("stop-rest", term, {
+      home, env: { PATH: pathWith("stop-rest", { git: "echo 'git version 2.55.0'", terraform: "", ollama: "" }) },
+      download: stalledDownload(() => { process.kill(process.pid, "SIGINT"); }),
+      exit: (code) => { exits.push(code); },
+    }),
+    pinsPath: fakePins("stop-rest", archive.sha256),
+  });
+  assert.deepEqual(result.installed, []);
+  assert.deepEqual(result.skipped, ["terraform", "ollama"], "the tool after the stopped one is skipped, not asked about");
+  assert.equal(term.asked, 1, "only the first tool's menu was asked");
+  assert.match(term.shown.join(""), /The remaining installs were not started\./);
+  assert.deepEqual(exits, []);
+  assert.ok(!existsSync(join(home, ".alz", "tools", "ollama")), "the second tool's install never started");
+  // The same through ./alz deps: the second selected tool is not asked about either.
+  const menu = terminal(true, ["1", "", "1"]);
+  const lines: string[] = [];
+  const code = await runDepsCommand([], {
+    ...deps("stop-rest-menu", menu, {
+      home: join(root, "home-cli-stop-rest-menu"), env: { PATH: pathWith("stop-rest-menu", { git: "echo 'git version 2.55.0'", terraform: "", ollama: "" }) },
+      out: (text) => { lines.push(text); }, download: stalledDownload(() => { process.kill(process.pid, "SIGINT"); }), exit: () => undefined,
+    }),
+    pinsPath: fakePins("stop-rest-menu", archive.sha256),
+  });
+  assert.equal(code, 2);
+  assert.equal(menu.asked, 3, "the action, the selection and the first tool's question; the second tool is never asked");
+  assert.match(lines.join(""), /The remaining installs were not started\./);
 });
 
 test("each ./alz deps run leaves a private diagnostic log of its steps, with no paths, URLs or downloads in it", async () => {
@@ -368,4 +528,126 @@ test("each ./alz deps run leaves a private diagnostic log of its steps, with no 
   assert.match(text, /install terraform 1\.16\.4 installed/);
   assert.match(text, /after /);
   assert.doesNotMatch(text, /https?:\/\/|\/home|\.alz\/tools/, "no URLs or paths in the log");
+});
+
+test("a stop signal during an install stops the download, removes what was started and says a rerun starts over; a second signal leaves at once", async () => {
+  const archive = fakeArchive("signal");
+  const home = join(root, "home-cli-signal");
+  const term = terminal(true, ["1", "", "1"]);
+  const lines: string[] = [];
+  const exits: number[] = [];
+  const code = await runDepsCommand([], {
+    ...deps("signal", term, {
+      out: (text) => { lines.push(text); },
+      download: stalledDownload(() => { process.kill(process.pid, "SIGINT"); }),
+      exit: (exitCode) => { exits.push(exitCode); },
+    }),
+    pinsPath: fakePins("signal", archive.sha256),
+  });
+  assert.equal(code, 2);
+  assert.match(term.shown.join(""), /Stopping the Terraform install\. Nothing is installed; the unfinished download is being removed\. Running \.\/alz deps again starts over\. Press Ctrl-C again to leave at once\./);
+  assert.match(lines.join(""), /Stopped\. Nothing was installed, and the unfinished download was removed\. Run \.\/alz deps again to start the install over\./);
+  assert.deepEqual(exits, [], "one signal never ends the process on its own");
+  assert.ok(!existsSync(installedPath(home, "terraform", "1.16.4", "terraform")));
+  assert.deepEqual(readdirSync(join(home, ".alz", "tools", "terraform")), [], "no partial folder survives the stop");
+  assert.deepEqual(readdirSync(join(home, ".alz", "tmp")), [], "the unfinished download is removed");
+  assert.equal(process.listenerCount("SIGINT"), 0, "the install's signal handler is released afterwards");
+  assert.match(readFileSync(join(home, ".alz", "logs", readdirSync(join(home, ".alz", "logs"))[0]), "utf8"), /install terraform 1\.16\.4 failed INSTALL_INTERRUPTED/);
+});
+
+test("the stop guard: the first signal says what happens and stops the download, the second leaves at once, and release gives the signals back", async () => {
+  const { installStopGuard } = await import("../src/cli/deps.js");
+  const term = terminal(true, []);
+  const exits: number[] = [];
+  const before = process.listenerCount("SIGINT");
+  const guard = installStopGuard("ollama", term, (code) => { exits.push(code); });
+  assert.equal(process.listenerCount("SIGINT"), before + 1);
+  assert.equal(guard.signal.aborted, false);
+  guard.onSignal();
+  assert.equal(guard.signal.aborted, true, "the first signal stops the download");
+  assert.deepEqual(exits, [], "the first signal never ends the process");
+  assert.match(term.shown.join(""), /Stopping the Ollama install\. Nothing is installed; the unfinished download is being removed\. Running \.\/alz deps again starts over\. Press Ctrl-C again to leave at once\./);
+  guard.onSignal();
+  assert.deepEqual(exits, [2], "the second signal ends the process with the blocked code");
+  guard.release();
+  guard.release();
+  assert.equal(process.listenerCount("SIGINT"), before, "released once, whatever the outcome");
+});
+
+test("the ./alz deps report sweeps leftovers whose process is dead, says so, and leaves a folder whose pid may be alive", async () => {
+  const home = join(root, "home-cli-sweep");
+  const toolDir = join(home, ".alz", "tools", "terraform");
+  const dead = join(toolDir, "1.16.4.partial-4242");
+  const live = join(toolDir, "1.16.4.partial-4343");
+  mkdirSync(dead, { recursive: true });
+  mkdirSync(live, { recursive: true });
+  mkdirSync(join(home, ".alz", "tmp"), { recursive: true });
+  writeFileSync(join(home, ".alz", "tmp", "terraform-1.16.4-4242.zip"), "half");
+  const lines: string[] = [];
+  const code = await runDepsCommand([], deps("sweep", terminal(false, []), {
+    home, out: (text) => { lines.push(text); }, pidAlive: (pid) => pid === 4343,
+    env: { PATH: pathWith("sweep-good", GOOD_TOOLS) },
+  }));
+  assert.equal(code, 0);
+  const text = lines.join("");
+  assert.match(text, /Removed a leftover of an earlier run that did not finish: .*1\.16\.4\.partial-4242/);
+  assert.match(text, /Removed a leftover of an earlier run that did not finish: .*terraform-1\.16\.4-4242\.zip/);
+  assert.doesNotMatch(text, /partial-4343/);
+  assert.ok(!existsSync(dead) && existsSync(live), "only the dead pid's folder is removed");
+  assert.deepEqual(readdirSync(join(home, ".alz", "tmp")), []);
+});
+
+test("an unfinished install or removal in the app's folder is reported, offered as a repair and as a removal, and never read as installed", async () => {
+  const home = join(root, "home-cli-unfinished");
+  const folder = join(home, ".alz", "tools", "terraform", "1.16.4");
+  fakeTool(folder, "terraform", "echo 'Terraform v1.16.4'");
+  writeFileSync(join(folder, ".alz-removing"), "2026-10-27T00:00:00.000Z\n");
+  const lines: string[] = [];
+  const term = terminal(true, ["3"]);
+  const code = await runDepsCommand([], deps("unfinished", term, { home, out: (text) => { lines.push(text); }, env: { PATH: pathWith("cli-unfinished", { ...GOOD_TOOLS, terraform: "" }) } }));
+  assert.equal(code, 0, "Do nothing leaves it");
+  assert.match(lines.join(""), /NEEDS ATTENTION\s+Terraform 1\.16\.4 — an earlier removal did not finish/);
+  assert.match(lines.join(""), /choose Remove to finish removing it, or Install to replace it/);
+  assert.match(term.shown.join(""), /1\s+Repair the app's own copies\n\s+2\s+Remove a tool this app installed\n\s+3\s+Do nothing/);
+  assert.ok(existsSync(join(folder, "terraform")), "Do nothing changes nothing");
+  // Choosing Remove finishes the interrupted removal.
+  const again = terminal(true, ["2", "1", "1"]);
+  assert.equal(await runDepsCommand([], deps("unfinished-remove", again, { home, env: { PATH: pathWith("cli-unfinished-remove", { ...GOOD_TOOLS, terraform: "" }) } })), 2);
+  assert.match(again.shown.join(""), /Terraform 1\.16\.4 \(.*\) — an earlier removal did not finish/);
+  assert.ok(!existsSync(folder), "the repeated removal completes it");
+});
+
+test("the ./alz deps report says in plain words when a leftover is left alone or cannot be checked, instead of ending with an error", async () => {
+  const home = join(root, "home-cli-refused");
+  const toolDir = join(home, ".alz", "tools", "terraform");
+  mkdirSync(join(toolDir, "1.16.4.replaced-4242"), { recursive: true });
+  writeFileSync(join(toolDir, "1.16.4.replaced-4242", "terraform"), "the earlier copy");
+  symlinkSync(join(root, "nowhere-cli-" + Date.now()), join(toolDir, "1.16.4"));
+  const lines: string[] = [];
+  const code = await runDepsCommand([], deps("refused", terminal(false, []), {
+    home, out: (text) => { lines.push(text); }, pidAlive: () => false, env: { PATH: pathWith("refused-good", GOOD_TOOLS) },
+  }));
+  assert.equal(code, 0, lines.join(""));
+  assert.match(lines.join(""), /Left alone: something that is not a folder \(a link or a file\) stands at .*1\.16\.4, so the earlier terraform 1\.16\.4 copy beside it was left alone; remove it by hand, then run \.\/alz deps again\./);
+  assert.ok(existsSync(join(toolDir, "1.16.4.replaced-4242", "terraform")), "the copy aside is kept");
+  assert.ok(lstatSync(join(toolDir, "1.16.4")).isSymbolicLink(), "the link is untouched");
+  // A second ./alz deps run while another is installing the same tool: the install is refused with the plain reason, and the
+  // other run's lock stays.
+  const archive = fakeArchive("locked");
+  const lockHome = join(root, "home-cli-locked");
+  mkdirSync(join(lockHome, ".alz", "tmp"), { recursive: true });
+  writeFileSync(join(lockHome, ".alz", "tmp", "terraform.install.lock"), JSON.stringify({ pid: 4343, startedAt: "2026-10-27T00:00:00.000Z" }) + "\n");
+  const out: string[] = [];
+  let downloads = 0;
+  const locked = await runDepsCommand([], {
+    ...deps("locked", terminal(true, ["1", "", "1"]), { home: lockHome, out: (text) => { out.push(text); }, pidAlive: (pid) => pid === 4343, download: async () => { downloads += 1; return Readable.from([archive.body]); } }),
+    pinsPath: fakePins("locked", archive.sha256),
+  });
+  assert.equal(locked, 2);
+  assert.equal(downloads, 0);
+  assert.match(out.join(""), /Another \.\/alz deps run \(pid 4343\) is installing or removing terraform right now, so this run changed nothing\. Wait for it to finish, then run \.\/alz deps again\. If no other \.\/alz deps run is open in any window, .*: delete \S+\/\.alz\/tmp\/terraform\.install\.lock, then run \.\/alz deps again\./);
+  // The report's own sweep takes the same lock, so it does not touch the tool's leftovers while the other run holds it.
+  assert.match(out.join(""), /^Did not check the leftovers of earlier Terraform runs\. Another \.\/alz deps run \(pid 4343\)/m);
+  assert.ok(existsSync(join(lockHome, ".alz", "tmp", "terraform.install.lock")), "the other run's lock stays");
+  assert.ok(!existsSync(installedPath(lockHome, "terraform", "1.16.4", "terraform")));
 });

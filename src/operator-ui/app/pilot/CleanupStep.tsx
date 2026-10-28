@@ -3,10 +3,10 @@ import { useEffect, useRef, useState } from "react";
 import type { ExperienceLevel } from "../../experience-level.js";
 import {
   startCleanup, startObserve, startProposeCleanup, startVerifyCleanup,
-  type CleanupSummary, type LeftoversData, type ObservationData, type PilotEnvironment, type PilotReply, type PilotRun, type RunResult,
+  type CleanupSummary, type LeftoverResource, type LeftoversData, type ObservationData, type PilotEnvironment, type PilotReply, type PilotRun, type RunResult,
 } from "./pilot-api";
 import { BlockedNotice, CopyButton, Reasoned } from "./PilotWizard";
-import { CLEANUP_RESULT_COPY, COPY, classifyResult, dispositionWord, originWord, ownershipWord, verificationWord } from "./pilot-copy";
+import { CLEANUP_RESULT_COPY, COPY, classifyResult, completeHeadlineFor, dispositionWord, originWord, ownershipWord, reasonWord, retainedNoteFor, retentionOwnerWord, retirementOutstandingFor, verificationWord } from "./pilot-copy";
 
 /**
  * Step 7 of the pilot wizard (docs/act-pilot-walkthrough.md, "Check and clean up"): look at what the change created,
@@ -41,6 +41,7 @@ export function CleanupList(props: { cleanup: CleanupSummary }) {
         <dt>Proposal ID (first 12 characters)</dt><dd><code>{cleanup.shortId}</code></dd>
         <dt>Change it cleans up</dt><dd><code>{cleanup.artifactShortId}</code></dd>
         <dt>App version that prepared it</dt><dd><code>{cleanup.sourceCommit.slice(0, 12)}</code></dd>
+        <dt>{COPY.proposeRequestedBy}</dt><dd><code>{cleanup.requestedBy}</code></dd>
         <dt>{COPY.proposeApprovalsNeeded}</dt><dd>{cleanup.requiredApprovals}</dd>
       </dl>
       <h3>{COPY.proposeDeletes} ({cleanup.deletes.length})</h3>
@@ -66,8 +67,9 @@ export function CleanupList(props: { cleanup: CleanupSummary }) {
       )}
       <h3>{COPY.proposeKept} ({cleanup.excluded.length})</h3>
       {cleanup.excluded.length === 0 ? <p>Nothing else is in the project's records.</p> : (
-        <ul>{cleanup.excluded.map((item) => <li key={item.address} data-kept={item.address}><code>{item.address}</code> ({ownershipWord(item.ownership)}): {item.reason}</li>)}</ul>
+        <ul>{cleanup.excluded.map((item) => <li key={item.address} data-kept={item.address}><code>{item.address}</code> ({ownershipWord(item.ownership)}; {retentionOwnerWord(item.retainedBy)}): {item.reason}</li>)}</ul>
       )}
+      <p role="note" data-retained-note><small>{retainedNoteFor(cleanup)}</small></p>
       <h3>{COPY.proposeRisks}</h3>
       <ul>{cleanup.risks.map((risk) => <li key={risk}>{risk}</li>)}</ul>
     </div>
@@ -101,14 +103,25 @@ function ObservationTable(props: { observation: ObservationData }) {
   );
 }
 
+/**
+ * A kept row's reason as the record writes it: the ownership class, a colon, then the sentence. Shown as words, never as the
+ * raw class, and with who keeps the item.
+ */
+function keptWords(item: LeftoverResource): string {
+  const match = /^([A-Z][A-Z_]+): (.*)$/s.exec(item.reason ?? "");
+  const reason = match ? ownershipWord(match[1]) + "; " + match[2] : item.reason ?? "";
+  return (item.owner ? retentionOwnerWord(item.owner) + ". " : "") + reason;
+}
+
 /** What the leftover check found for each thing on the proposal, and whether the cleanup is complete. */
-function LeftoversTable(props: { leftovers: LeftoversData }) {
+export function LeftoversTable(props: { leftovers: LeftoversData }) {
   const { leftovers } = props;
   const complete = leftovers.disposition === "COMPLETE";
   const known = leftovers.disposition === "KNOWN_ADDRESSES_CONFIRMED";
   return (
     <div role="status" aria-live="polite" className={complete ? "pilot-result pilot-result-good" : "pilot-result pilot-result-caution"} data-leftovers={leftovers.disposition}>
-      <h3>{complete ? COPY.verifyComplete : known ? COPY.verifyKnownConfirmed : COPY.verifyIncomplete}</h3>
+      <h3>{complete ? completeHeadlineFor(leftovers) : known ? COPY.verifyKnownConfirmed : COPY.verifyIncomplete}</h3>
+      {complete && <p data-retirement="OUTSTANDING">{retirementOutstandingFor(leftovers)}</p>}
       <p><strong>{COPY.verifyNextLabel}</strong> {leftovers.nextAction}</p>
       {leftovers.sweep === "NOT_AVAILABLE" && <p role="note"><small>{COPY.verifyNotSearched}</small></p>}
       <p role="note"><small>{COPY.observeSynthetic}</small></p>
@@ -118,7 +131,7 @@ function LeftoversTable(props: { leftovers: LeftoversData }) {
           {leftovers.resources.map((item) => (
             <tr key={item.address + "|" + (item.identifier ?? "")} data-disposition={item.disposition}>
               <td><code>{item.address}</code></td><td><code>{idOf(item.identifier)}</code></td>
-              <td>{dispositionWord(item.disposition)}{item.reason && <>: {item.reason}</>}</td>
+              <td>{dispositionWord(item.disposition)}{item.disposition === "INTENTIONALLY_RETAINED" ? <>: {keptWords(item)}</> : item.disposition === "UNKNOWN" ? <>: {reasonWord(item.reason ?? "")}</> : item.reason && <>: {item.reason}</>}</td>
             </tr>
           ))}
         </tbody>
@@ -132,6 +145,8 @@ export default function CleanupStep(props: CleanupStepProps) {
   const [observation, setObservation] = useState<ObservationData | null>(null);
   const [cleanup, setCleanup] = useState<CleanupSummary | null>(null);
   const [proposalPath, setProposalPath] = useState("");
+  const [requesterId, setRequesterId] = useState("");
+  const [requesterKeyPath, setRequesterKeyPath] = useState("");
   const [approvalsText, setApprovalsText] = useState("");
   const [removal, setRemoval] = useState<RunResult | null>(null);
   const [leftovers, setLeftovers] = useState<LeftoversData | null>(null);
@@ -178,7 +193,15 @@ export default function CleanupStep(props: CleanupStepProps) {
       {observation && <ObservationTable observation={observation} />}
 
       <h4>{COPY.proposeRun}</h4>
-      <button type="button" disabled={off || sealedPath.trim() === "" || !observation} onClick={() => void begin(() => startProposeCleanup(sealedPath.trim()))}>{COPY.proposeRun}</button>
+      <label htmlFor="pilot-cleanup-requester">{COPY.proposeRequesterLabel}</label>
+      <input id="pilot-cleanup-requester" type="text" autoComplete="off" spellCheck={false} value={requesterId} aria-describedby="pilot-cleanup-requester-help" onChange={(event) => setRequesterId(event.target.value)} />
+      <p id="pilot-cleanup-requester-help"><small>{COPY.proposeRequesterHelp} Example: <code>{COPY.egRequester}</code></small></p>
+      <label htmlFor="pilot-cleanup-requester-key">{COPY.proposeKeyLabel}</label>
+      <input id="pilot-cleanup-requester-key" type="text" autoComplete="off" spellCheck={false} value={requesterKeyPath} aria-describedby="pilot-cleanup-requester-key-help" onChange={(event) => setRequesterKeyPath(event.target.value)} />
+      <p id="pilot-cleanup-requester-key-help"><small>{COPY.proposeKeyHelp} Example: <code>{COPY.egKey}</code></small></p>
+      {observation && (requesterId.trim() === "" || requesterKeyPath.trim() === "") && <BlockedNotice state="FIELDS_MISSING" />}
+      <button type="button" disabled={off || sealedPath.trim() === "" || !observation || requesterId.trim() === "" || requesterKeyPath.trim() === ""}
+        onClick={() => void begin(() => startProposeCleanup({ sealedPath: sealedPath.trim(), requesterId: requesterId.trim(), keyPath: requesterKeyPath.trim() }))}>{COPY.proposeRun}</button>
       {!observation && <p><small>Look at what was created first; the proposal is written from that look.</small></p>}
       {failureFor("propose-cleanup") && <Reasoned step="write the cleanup proposal" code={failureFor("propose-cleanup")?.result?.code} message={failureFor("propose-cleanup")?.result?.message} level={level} transcript={failureFor("propose-cleanup")?.transcript} />}
       {cleanup && (

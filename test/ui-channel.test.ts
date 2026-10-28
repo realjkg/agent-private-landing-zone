@@ -19,9 +19,12 @@ import { pilotUnitOf } from "../src/apply/unit.js";
 import type { ResolvedTarget } from "../src/teardown/driver/types.js";
 import { SOURCE_COMMIT,
   AWS_DEV_TARGET, ENGINE_VERSION, NOW, POLICY, awsContractJson, awsIdentityEnv, awsReadCallsOf, awsRoleArn, awsTargetOf, behave as behaveIn, behaveAwsReads, callsOf, contractJson, identityEnv,
-  installFakeAwsReads, installFakeTerraform, keys, pinPathOf, stateResource, targetOf, testFixtureForgeQualificationEvidence,
-  writePinnedContract, writeProject, type Behavior, type Project,
+  installFakeAwsReads, installFakeTerraform, keys, stateResource, targetOf, testFixtureForgeQualificationEvidence,
+  AWS_LOCK, writeReviewedContract, writeProject, type Behavior, type Project,
   ARM_ACCESS_TOKEN_CANARY, ARM_FEDERATED_TOKEN_CANARY, DEV_TARGET, azureStateResource, fakeArmHttp,
+  REQUESTER,
+  requesterArgs,
+  requesterKeyFile, canaryFor, withCanary,
 } from "./helpers/apply-fixtures.js";
 import { AWS_CLI_VERSION, CDK_CANARIES, awsCallsOf as cdkCallsOf, behaveAws, cdkContractJson, cdkIdentityEnv, cdkRoleArn, cdkTargetOf, forgeCdkQualification, installFakeAws, writeAssembly } from "./helpers/cdk-fixtures.js";
 
@@ -60,7 +63,7 @@ type World = { cli: NonNullable<Parameters<typeof createLocalOperatorServer>[0][
 async function world(contract: unknown = contractJson(KILL), env: NodeJS.ProcessEnv = identityEnv("DEV")): Promise<World> {
   behave();
   const contractPath = join(fresh("contract"), "act-pilot-contract.json");
-  writePinnedContract(contractPath, contract);
+  writeReviewedContract(contractPath, contract);
   const vault = fresh("vault");
   await testFixtureForgeQualificationEvidence(vault);
   const scratchParent = fresh("scratch");
@@ -68,7 +71,7 @@ async function world(contract: unknown = contractJson(KILL), env: NodeJS.Process
     contractPath, vault, approvals: fresh("approvals"),
     cli: {
       sourceCommit: SOURCE_COMMIT,
-      env, now: () => NOW, operatorId: "operator.fixture", contractPath, contractPinPath: pinPathOf(contractPath), qualificationDir: vault,
+      env, now: () => NOW, operatorId: "operator.fixture", contractPath, qualificationDir: vault,
       evidenceDir: fresh("evidence"), nonces: openNonceStore(fresh("nonces")), scratchParent, toolDirs: [toolDir],
     },
   };
@@ -167,13 +170,13 @@ async function sealViaCli(w: World, environment: ApplyEnvironment = "DEV"): Prom
   const target = targetOf(environment);
   const project = writeProject(fresh("project"), target);
   const run = await cliRun({ ...w, cli: { ...w.cli, env: identityEnv(environment) } },
-    ["seal", "--request", requestFile(project, target, environment), "--manifest", json(project.manifest, "manifest")], [targetString(target), PHRASE]);
+    ["seal", "--request", requestFile(project, target, environment), "--manifest", json(project.manifest, "manifest"), ...requesterArgs()], [targetString(target), PHRASE]);
   assert.equal(run.code, 0, run.stderr);
   const result = JSON.parse(run.stdout) as { artifactSha256: string; sealedPlanPath: string; reviewBundlePath: string };
   return { project, target, environment, path: result.sealedPlanPath, bundle: result.reviewBundlePath, artifactSha256: result.artifactSha256 };
 }
 async function sealViaUi(port: number, project: Project, target: ResolvedTarget, environment: ApplyEnvironment = "DEV"): Promise<Sealed> {
-  const started = await call(port, "POST", "/pilot/seal", { body: { environment, requestPath: requestFile(project, target, environment), manifestPath: json(project.manifest, "manifest") } });
+  const started = await call(port, "POST", "/pilot/seal", { body: { environment, requestPath: requestFile(project, target, environment), manifestPath: json(project.manifest, "manifest"), requesterId: REQUESTER.requesterId, keyPath: requesterKeyFile() } });
   assert.equal(started.status, 202, started.text);
   const first = await waiting(port);
   assert.equal(first.run!.dialog!.kind, "TARGET");
@@ -357,6 +360,68 @@ test("the console starts only the nine named steps, from values the router turns
   assert.match(adapter, /channel: "UI"/);
 });
 
+test("/seal refuses a missing or unusable requester id, a missing key path and any extra field before a job exists", async () => {
+  const w = await world();
+  const { port } = await serve(w);
+  await choose(port);
+  const target = targetOf("DEV");
+  const project = writeProject(fresh("project"), target);
+  const valid = { environment: "DEV", requestPath: requestFile(project, target, "DEV"), manifestPath: json(project.manifest, "manifest"), requesterId: REQUESTER.requesterId, keyPath: requesterKeyFile() };
+  const { requesterId: _requesterId, ...withoutRequester } = valid;
+  const { keyPath: _keyPath, ...withoutKey } = valid;
+  const refused: [string, Record<string, unknown>][] = [
+    ["missing requesterId", withoutRequester],
+    ["empty requesterId", { ...valid, requesterId: "" }],
+    ["requesterId with a space", { ...valid, requesterId: "car ol" }],
+    ["requesterId with a newline", { ...valid, requesterId: "carol\nalice" }],
+    ["requesterId as an array", { ...valid, requesterId: [REQUESTER.requesterId] }],
+    ["requesterId as a number", { ...valid, requesterId: 7 }],
+    ["missing keyPath", withoutKey],
+    ["empty keyPath", { ...valid, keyPath: "" }],
+    ["keyPath as a flag", { ...valid, keyPath: "--yes" }],
+    ["extra privateKeyPem field", { ...valid, privateKeyPem: REQUESTER.privateKeyPem }],
+  ];
+  for (const [label, body] of refused) {
+    const reply = await call(port, "POST", "/pilot/seal", { body });
+    assert.equal(reply.status, 400, label + " -> " + reply.status);
+    assert.equal((await stateOf(port)).run, null, label + ": no job was started");
+  }
+  assert.deepEqual(engineCalls(), [], "no engine ran");
+  // The same body with every field valid is accepted, so each refusal above came from the one field it changed.
+  assert.equal((await call(port, "POST", "/pilot/seal", { body: valid })).status, 202);
+  await waiting(port);
+  await call(port, "POST", "/pilot/cancel", { body: {} });
+});
+
+test("/propose-cleanup refuses a missing or unusable requester id, a missing key path and any extra field before a job exists (owner decision 6440801434, item 1)", async () => {
+  const w = await world();
+  const { port } = await serve(w);
+  await choose(port);
+  const valid = { sealedPath: join(fresh("sealed"), "sealed-plan.json"), requesterId: REQUESTER.requesterId, keyPath: requesterKeyFile() };
+  const { requesterId: _requesterId, ...withoutRequester } = valid;
+  const { keyPath: _keyPath, ...withoutKey } = valid;
+  const refused: [string, Record<string, unknown>][] = [
+    ["missing requesterId", withoutRequester],
+    ["empty requesterId", { ...valid, requesterId: "" }],
+    ["requesterId with a space", { ...valid, requesterId: "car ol" }],
+    ["requesterId with a newline", { ...valid, requesterId: "carol\nalice" }],
+    ["requesterId as an array", { ...valid, requesterId: [REQUESTER.requesterId] }],
+    ["missing keyPath", withoutKey],
+    ["empty keyPath", { ...valid, keyPath: "" }],
+    ["keyPath as a flag", { ...valid, keyPath: "--yes" }],
+    ["extra privateKeyPem field", { ...valid, privateKeyPem: REQUESTER.privateKeyPem }],
+  ];
+  for (const [label, body] of refused) {
+    const reply = await call(port, "POST", "/pilot/propose-cleanup", { body });
+    assert.equal(reply.status, 400, label + " -> " + reply.status);
+    assert.equal((await stateOf(port)).run, null, label + ": no job was started");
+  }
+  // The same body with every field valid starts the step (which then stops on the missing prepared change file), so each refusal above came from the one field it changed.
+  assert.equal((await call(port, "POST", "/pilot/propose-cleanup", { body: valid })).status, 202);
+  const done = (await finished(port)).run!.result!;
+  assert.notEqual(done.exit, 0);
+});
+
 test("the job route still refuses the pilot: the catalog's apply card is a handoff, and a job for it is not accepted", async () => {
   const w = await world();
   let ran = 0;
@@ -440,7 +505,12 @@ test("readiness: the check runs the preflight logic and reports each item", asyn
   assert.match(JSON.stringify(result.data.checks), /kill switch absent/);
   // Every item reaches the page with its state, including qualification and the evidence-based attestation.
   const states = Object.fromEntries((result.data.checks as { check: string; state: string }[]).map((c) => [c.check.split(" (")[0], c.state]));
-  assert.ok(Object.values(states).every((state) => state === "READY"), JSON.stringify(states));
+  assert.ok(Object.entries(states).every(([check, state]) => state === "READY" || (check === "financial controls" && state === "UNVERIFIED")), JSON.stringify(states));
+  // The status block reads the same view: AUTHORIZED, with the contract and entry hashes, and the per-run approvals.
+  assert.equal(result.data.decisions.act, "PILOT_ENABLED");
+  assert.deepEqual(result.data.decisions.authorized.map((a: { environment: string; operations: string[] }) => [a.environment, a.operations]), [["DEV", ["APPLY", "CLEANUP"]], ["QA", ["APPLY", "CLEANUP"]], ["PROD", ["APPLY", "CLEANUP"]]]);
+  assert.match(result.data.decisions.contract.contractSha256, /^[0-9a-f]{64}$/);
+  assert.deepEqual(result.data.decisions.approved.map((a: { requiredApprovals: number }) => a.requiredApprovals), [1, 1, 2]);
   assert.equal(states["engine qualified in DEV for seal and apply"], "READY");
   assert.equal(states["identity separation attested on the real DEV backend"], "READY");
   // Missing identities: the same command, a red item per fact, still no engine.
@@ -496,7 +566,7 @@ test("the same contract opt-in asks for the STATE_WRITE phrase in the console, a
   const target = targetOf("DEV");
   const project = writeProject(fresh("project"), target);
   const before = mutating().length;
-  await call(port, "POST", "/pilot/seal", { body: { environment: "DEV", requestPath: requestFile(project, target, "DEV"), manifestPath: json(project.manifest, "manifest") } });
+  await call(port, "POST", "/pilot/seal", { body: { environment: "DEV", requestPath: requestFile(project, target, "DEV"), manifestPath: json(project.manifest, "manifest"), requesterId: REQUESTER.requesterId, keyPath: requesterKeyFile() } });
   let state = await waiting(port);
   await call(port, "POST", "/pilot/answer", { body: { dialogId: state.run!.dialog!.id, answer: targetString(target) } });
   state = await until(port, (s) => s.run?.dialog?.kind === "RUN_PROJECT_CODE");
@@ -518,7 +588,7 @@ test("a wrong phrase in any dialog runs no engine and spends nothing; the right 
   await choose(port);
   const target = targetOf("DEV");
   const project = writeProject(fresh("project"), target);
-  const seal = { environment: "DEV", requestPath: requestFile(project, target, "DEV"), manifestPath: json(project.manifest, "manifest") };
+  const seal = { environment: "DEV", requestPath: requestFile(project, target, "DEV"), manifestPath: json(project.manifest, "manifest"), requesterId: REQUESTER.requesterId, keyPath: requesterKeyFile() };
   for (const wrong of ["", "nope", targetString(target).toUpperCase(), targetString(target) + " ", " " + targetString(target), targetString({ ...target, workspace: "other" })]) {
     await call(port, "POST", "/pilot/seal", { body: seal });
     const done = await answer(port, wrong);
@@ -562,7 +632,7 @@ test("a dialog that times out, or is canceled, ends the command with nothing run
   await choose(port);
   const target = targetOf("DEV");
   const project = writeProject(fresh("project"), target);
-  const seal = { environment: "DEV", requestPath: requestFile(project, target, "DEV"), manifestPath: json(project.manifest, "manifest") };
+  const seal = { environment: "DEV", requestPath: requestFile(project, target, "DEV"), manifestPath: json(project.manifest, "manifest"), requesterId: REQUESTER.requesterId, keyPath: requesterKeyFile() };
   await call(port, "POST", "/pilot/seal", { body: seal });
   const timedOut = await finished(port);
   assert.equal(timedOut.run!.result!.exit, 1);
@@ -590,7 +660,7 @@ test("one run at a time, and a stale answer is refused", async () => {
   await choose(port);
   const target = targetOf("DEV");
   const project = writeProject(fresh("project"), target);
-  const seal = { environment: "DEV", requestPath: requestFile(project, target, "DEV"), manifestPath: json(project.manifest, "manifest") };
+  const seal = { environment: "DEV", requestPath: requestFile(project, target, "DEV"), manifestPath: json(project.manifest, "manifest"), requesterId: REQUESTER.requesterId, keyPath: requesterKeyFile() };
   assert.equal((await call(port, "POST", "/pilot/seal", { body: seal })).status, 202);
   const first = await waiting(port);
   assert.equal((await call(port, "POST", "/pilot/seal", { body: seal })).status, 409);
@@ -610,7 +680,7 @@ test("a change set to run on the command line turns the console buttons off, and
   const { port } = await serve(w);
   const target = targetOf("DEV");
   const project = writeProject(fresh("project"), target);
-  const seal = { environment: "DEV", requestPath: requestFile(project, target, "DEV"), manifestPath: json(project.manifest, "manifest") };
+  const seal = { environment: "DEV", requestPath: requestFile(project, target, "DEV"), manifestPath: json(project.manifest, "manifest"), requesterId: REQUESTER.requesterId, keyPath: requesterKeyFile() };
   const before = await call(port, "POST", "/pilot/seal", { body: seal });
   assert.equal(before.status, 409);
   assert.equal(before.body.error, "PILOT_PATH_NOT_CHOSEN");
@@ -635,7 +705,7 @@ test("a request file for another environment than the one picked is stopped befo
   await choose(port);
   const target = targetOf("QA");
   const project = writeProject(fresh("project"), target);
-  const reply = await call(port, "POST", "/pilot/seal", { body: { environment: "DEV", requestPath: requestFile(project, target, "QA"), manifestPath: json(project.manifest, "manifest") } });
+  const reply = await call(port, "POST", "/pilot/seal", { body: { environment: "DEV", requestPath: requestFile(project, target, "QA"), manifestPath: json(project.manifest, "manifest"), requesterId: REQUESTER.requesterId, keyPath: requesterKeyFile() } });
   assert.equal(reply.status, 422);
   assert.equal(reply.body.error, "PILOT_ENVIRONMENT_MISMATCH");
   assert.equal((await stateOf(port)).run, null);
@@ -775,7 +845,7 @@ test("prepare in the console writes the request and manifest from the contract a
   assert.ok(data.files.request.startsWith(preparationDir) && data.files.manifest.startsWith(preparationDir));
   assert.deepEqual(engineCalls(), [], "preparation starts no engine");
 
-  const sealing = await call(port, "POST", "/pilot/seal", { body: { environment: "DEV", requestPath: data.files.request, manifestPath: data.files.manifest } });
+  const sealing = await call(port, "POST", "/pilot/seal", { body: { environment: "DEV", requestPath: data.files.request, manifestPath: data.files.manifest, requesterId: REQUESTER.requesterId, keyPath: requesterKeyFile() } });
   assert.equal(sealing.status, 202, sealing.text);
   const first = await waiting(port);
   await call(port, "POST", "/pilot/answer", { body: { dialogId: first.run!.dialog!.id, answer: targetString(target) } });
@@ -804,20 +874,19 @@ test("prepare in the console reports the owner prerequisite with its blocker and
 type Cloud = "AWS" | "AZURE";
 const AWS_PROVIDER_CONFIG = { aws: { name: "aws", full_name: "registry.terraform.io/hashicorp/aws", expressions: { region: { references: ["var.region"] } } } };
 
-/** A pinned contract with a policy version for the cloud, its identities and qualification, and a Terraform project for its DEV target. */
+/** A reviewed contract with a policy version for the cloud, its identities and qualification, and a Terraform project for its DEV target. */
 async function consoleJourney(cloud: Cloud, sourceCommit = SOURCE_COMMIT) {
   // The same fake engine as every test here (logic only, NOT real cloud behavior); the contract, identities and project are the cloud's own.
   behave(cloud === "AWS" ? { showProviderConfig: AWS_PROVIDER_CONFIG } : {});
   const contractPath = join(fresh("contract"), "act-pilot-contract.json");
-  writePinnedContract(contractPath, cloud === "AWS" ? awsContractJson(KILL, { policyVersion: POLICY }) : contractJson(KILL, { policyVersion: POLICY }));
+  writeReviewedContract(contractPath, cloud === "AWS" ? awsContractJson(KILL, { policyVersion: POLICY }) : contractJson(KILL, { policyVersion: POLICY }));
   const vault = fresh("vault");
   await testFixtureForgeQualificationEvidence(vault, undefined, cloud);
   const w: World = {
     contractPath, vault, approvals: fresh("approvals"),
     cli: {
       sourceCommit: SOURCE_COMMIT,
-      env: cloud === "AWS" ? awsIdentityEnv("DEV") : identityEnv("DEV"), now: () => NOW, operatorId: "operator.fixture", contractPath,
-      contractPinPath: pinPathOf(contractPath), qualificationDir: vault, evidenceDir: fresh("evidence"), nonces: openNonceStore(fresh("nonces")),
+      env: cloud === "AWS" ? awsIdentityEnv("DEV") : identityEnv("DEV"), now: () => NOW, operatorId: "operator.fixture", contractPath, qualificationDir: vault, evidenceDir: fresh("evidence"), nonces: openNonceStore(fresh("nonces")),
       scratchParent: fresh("scratch"), toolDirs: [toolDir], preparationDir: fresh("prepared"),
     },
   };
@@ -825,7 +894,8 @@ async function consoleJourney(cloud: Cloud, sourceCommit = SOURCE_COMMIT) {
   const { port } = await serve(w);
   await choose(port);
   const target = cloud === "AWS" ? awsTargetOf("DEV") : targetOf("DEV");
-  const project = writeProject(fresh("project"), target, cloud === "AWS" ? 'resource "aws_s3_bucket" "pilot" {}\n' : undefined);
+  // Each cloud path locks its own provider at the reviewed version (review of #327, rounds 4 and 5).
+  const project = writeProject(fresh("project"), target, cloud === "AWS" ? 'resource "aws_s3_bucket" "pilot" {}\n' : undefined, cloud === "AWS" ? AWS_LOCK : undefined);
   return { w, port, target, project };
 }
 
@@ -835,7 +905,7 @@ async function prepareAndSealInConsole(port: number, project: Project, target: R
   const prepared = (await finished(port)).run!.result!;
   assert.equal(prepared.exit, 0, JSON.stringify(prepared));
   const data = prepared.data as { files: { request: string; manifest: string }; summary: { provider: string; engine: string; account: string } };
-  assert.equal((await call(port, "POST", "/pilot/seal", { body: { environment: "DEV", requestPath: data.files.request, manifestPath: data.files.manifest } })).status, 202);
+  assert.equal((await call(port, "POST", "/pilot/seal", { body: { environment: "DEV", requestPath: data.files.request, manifestPath: data.files.manifest, requesterId: REQUESTER.requesterId, keyPath: requesterKeyFile() } })).status, 202);
   const first = await waiting(port);
   assert.equal(first.run!.dialog!.phrase, targetString(target));
   await call(port, "POST", "/pilot/answer", { body: { dialogId: first.run!.dialog!.id, answer: targetString(target) } });
@@ -990,8 +1060,9 @@ const CLEANUP_QUEUE = "https://sqs.us-east-1.amazonaws.com/111111111111/console-
 const CLEANUP_CREATES = [
   { address: "aws_s3_bucket.logs", type: "aws_s3_bucket", change: { actions: ["create"], before: null, after: {} } },
   { address: "aws_cloudwatch_log_group.canary", type: "aws_cloudwatch_log_group", change: { actions: ["create"], before: null, after: {} } },
-  { address: "aws_s3_bucket.state", type: "aws_s3_bucket", change: { actions: ["update"], before: {}, after: {} } },
 ];
+/** Owner decision E1: the run's contract names exactly the two creates; the state bucket is in the state only (a plan that updates it is never sealed). */
+const CLEANUP_CONTRACT = withCanary(awsContractJson(KILL, { policyVersion: POLICY }), canaryFor(CLEANUP_CREATES));
 const CLEANUP_STATE = [
   stateResource("aws_s3_bucket", "logs", CLEANUP_BUCKET, "arn:aws:s3:::" + CLEANUP_BUCKET), stateResource("aws_cloudwatch_log_group", "canary", CLEANUP_LOG, "arn:aws:logs:us-east-1:111111111111:log-group:" + CLEANUP_LOG),
   stateResource("aws_s3_bucket", "state", CLEANUP_STATE_BUCKET, "arn:aws:s3:::" + CLEANUP_STATE_BUCKET), stateResource("aws_sqs_queue", "preexisting", CLEANUP_QUEUE, "arn:aws:sqs:us-east-1:111111111111:console-preexisting"),
@@ -1003,13 +1074,14 @@ const CLEANUP_STRAY = "arn:aws:sqs:us-east-1:111111111111:stray-of-this-unit";
 /** The deletion unit of the DEV state container under the console's AWS contract: what the fake provider stamps on every created resource. */
 const CLEANUP_UNIT = (() => {
   const path = join(fresh("unit-contract"), "act-pilot-contract.json");
-  writePinnedContract(path, awsContractJson(KILL, { policyVersion: POLICY }));
-  return pilotUnitOf({ provider: "AWS", contractSha256: pilotContractSha256(loadPilotContract(path, pinPathOf(path)) as PilotContract), environment: "DEV", target: awsTargetOf("DEV") });
+  writeReviewedContract(path, CLEANUP_CONTRACT);
+  return pilotUnitOf({ provider: "AWS", contractSha256: pilotContractSha256(loadPilotContract(path) as PilotContract), environment: "DEV", target: awsTargetOf("DEV") });
 })();
 
 /** An AWS console journey whose fake engine reports a state, with the fake AWS CLI the verifier reads through, in a second approved tool directory. */
 async function cleanupJourney() {
   const journey = await consoleJourney("AWS");
+  writeReviewedContract(journey.w.contractPath, CLEANUP_CONTRACT);
   behaveIn(toolDir, KILL, { applyAdvance: true, showProviderConfig: AWS_PROVIDER_CONFIG, showOnlyConfigured: true, showResources: CLEANUP_CREATES, stateResources: CLEANUP_STATE, unitTags: { ...CLEANUP_UNIT.tags } });
   behaveAwsReads(awsToolDir, { existing: CLEANUP_EXISTING, tagged: CLEANUP_TAGGED });
   // The same console, now able to find the aws program for the read-only verifier.
@@ -1047,7 +1119,7 @@ async function observeAndProposeInConsole(port: number, sealed: Sealed) {
   const observed = (await finished(port)).run!.result!;
   assert.equal(observed.exit, 0, JSON.stringify(observed));
   const observation = observed.data as { verdict: string; resources: { address: string; result: string }[]; inventory: string };
-  assert.equal((await call(port, "POST", "/pilot/propose-cleanup", { body: { sealedPath: sealed.path } })).status, 202);
+  assert.equal((await call(port, "POST", "/pilot/propose-cleanup", { body: { sealedPath: sealed.path, requesterId: REQUESTER.requesterId, keyPath: requesterKeyFile() } })).status, 202);
   const proposed = (await finished(port)).run!.result!;
   assert.equal(proposed.exit, 0, JSON.stringify(proposed));
   const data = proposed.data as { path: string; proposal: { proposalSha256: string } };
@@ -1096,6 +1168,9 @@ test("AWS Terraform in the console: observe what the apply created, propose and 
   assert.deepEqual(evidence.authority, { infrastructureAct: "PILOT_ENABLED", mutation: "TERRAFORM_DESTROY_OF_APPROVED_PROPOSAL", executedAs: "APPLY", agentInitiated: false });
   assert.equal(evidence.artifactSha256, sealed.artifactSha256);
   const steps = engineCalls().slice(before);
+  // The post-init read of what init selected (review of #327, round 5); the steps after it are the cleanup's own.
+  assert.deepEqual(steps[2], ["version", "-json"]);
+  steps.splice(2, 1);
   assert.deepEqual(steps.map((args) => args[0]), ["version", "init", "workspace", "state", "plan", "show", "apply", "state"]);
   assert.deepEqual(steps[4].filter((arg) => arg.startsWith("-target=")), ["-target=aws_cloudwatch_log_group.canary", "-target=aws_s3_bucket.logs"], "the destroy targets exactly the approved list");
 
@@ -1179,8 +1254,9 @@ const AZ_STRAY = AZ_RG + "/providers/Microsoft.Storage/storageAccounts/strayofth
 const AZ_CREATES = [
   { address: "azurerm_resource_group.pilot", type: "azurerm_resource_group", change: { actions: ["create"], before: null, after: { tags: {} } } },
   { address: "azurerm_log_analytics_workspace.pilot", type: "azurerm_log_analytics_workspace", change: { actions: ["create"], before: null, after: { tags: {} } } },
-  { address: "azurerm_storage_account.state", type: "azurerm_storage_account", change: { actions: ["update"], before: {}, after: {} } },
 ];
+/** Owner decision E1: the run's contract names exactly the two creates; the state account is in the state only. */
+const AZ_CONTRACT = withCanary(contractJson(KILL, { policyVersion: POLICY }), canaryFor(AZ_CREATES));
 const AZ_STATE = [
   azureStateResource("azurerm_resource_group", "pilot", AZ_RG), azureStateResource("azurerm_log_analytics_workspace", "pilot", AZ_LAW),
   azureStateResource("azurerm_storage_account", "state", AZ_STATE_ACCOUNT), azureStateResource("azurerm_role_assignment", "old", AZ_OLD_ROLE),
@@ -1189,8 +1265,8 @@ const AZ_EXISTING = [AZ_RG, AZ_LAW, AZ_STATE_ACCOUNT, AZ_OLD_ROLE];
 const AZ_TAGGED = [AZ_RG, AZ_LAW];
 const AZ_UNIT = (() => {
   const path = join(fresh("unit-contract"), "act-pilot-contract.json");
-  writePinnedContract(path, contractJson(KILL, { policyVersion: POLICY }));
-  return pilotUnitOf({ provider: "AZURE", contractSha256: pilotContractSha256(loadPilotContract(path, pinPathOf(path)) as PilotContract), environment: "DEV", target: targetOf("DEV") });
+  writeReviewedContract(path, AZ_CONTRACT);
+  return pilotUnitOf({ provider: "AZURE", contractSha256: pilotContractSha256(loadPilotContract(path) as PilotContract), environment: "DEV", target: targetOf("DEV") });
 })();
 /** The DISCOVERY identity's federated token, in a file as the owner's host provides it; its value is a canary that must never be seen again. */
 const azTokenFile = (() => { const path = join(fresh("token"), "discovery-oidc-token"); writeFileSync(path, ARM_FEDERATED_TOKEN_CANARY + "\n", { mode: 0o600 }); return path; })();
@@ -1198,6 +1274,7 @@ const azTokenFile = (() => { const path = join(fresh("token"), "discovery-oidc-t
 /** An Azure console journey whose fake engine reports a state, with a scripted Azure Resource Manager the in-process reader reads through. */
 async function azureCleanupJourney() {
   const journey = await consoleJourney("AZURE");
+  writeReviewedContract(journey.w.contractPath, AZ_CONTRACT);
   behaveIn(toolDir, KILL, { applyAdvance: true, showOnlyConfigured: true, showResources: AZ_CREATES, stateResources: AZ_STATE, unitTags: { ...AZ_UNIT.tags }, unitTagAttribute: "tags" });
   const arm = fakeArmHttp({ existing: AZ_EXISTING, tagged: AZ_TAGGED });
   const w = { ...journey.w, cli: { ...journey.w.cli, env: { ...identityEnv("DEV"), ALZ_DISCOVERY_ARM_OIDC_TOKEN_FILE: azTokenFile }, observeArm: arm.http, proposalsDir: fresh("proposals") } };
@@ -1259,7 +1336,7 @@ test("Azure Terraform in the console: observe what the apply created, propose an
     ["azurerm_log_analytics_workspace.pilot", "CONFIRMED_DELETED", undefined], ["azurerm_resource_group.pilot", "INTENTIONALLY_RETAINED", "PILOT_OWNER"],
     ["azurerm_role_assignment.old", "INTENTIONALLY_RETAINED", "PILOT_OWNER"], ["azurerm_storage_account.state", "INTENTIONALLY_RETAINED", "PILOT_OWNER"],
   ]);
-  assert.match(leftovers.nextAction, /Approved resources deleted.*Protected objects intentionally retained \(3, kept by PILOT_OWNER\).*environment retirement.*remains outstanding/);
+  assert.match(leftovers.nextAction, /Approved resources deleted: every listed resource \(\d+\) is confirmed gone.*Protected or pre-existing objects intentionally retained \(3, kept by PILOT_OWNER\).*were left in place and were not read.*environment retirement is a separate, reviewed action and remains outstanding/);
   assert.ok(!/environment (is |was )?deleted|entire environment/.test(leftovers.nextAction), "the environment is never reported deleted");
   noAzureTokenIn(arm, verified);
   // Something else still carrying the change's cleanup marker keeps it incomplete.
@@ -1334,24 +1411,29 @@ test("the console refuses a cleanup proposal for the other channel, a malformed 
 
 // --- AWS CDK in the console (config/acceptance/journeys.json, the AWS/CDK row cites these titles exactly) -------------------
 
+const CDK_JOURNEY_CANARY = { resources: [{ type: "AWS::S3::Bucket", count: 1 }, { type: "AWS::SNS::Topic", count: 1 }, { type: "AWS::CloudFormation::WaitConditionHandle", count: 1, retain: true }] };
 /** A pinned CDK contract with a policy version, its three identities and qualification, a synthesized assembly for DEV, and the fake `aws` as the one tool. */
 async function cdkConsoleJourney() {
-  behaveAws(cdkToolDir, KILL, {});
+  // The fake derives an update's change list from the executed template (a removal shows as Remove), and a person protected the stack after its first create.
+  behaveAws(cdkToolDir, KILL, { diffChanges: true, protectAfterCreate: true });
   const contractPath = join(fresh("contract"), "act-pilot-contract.json");
-  writePinnedContract(contractPath, cdkContractJson(KILL, [], { policyVersion: POLICY }));
+  // Owner decision E1: the canary allowlist names the stack's three creates; the no-cost sentinel is retained at cleanup, so the removal never empties the stack.
+  const contract = cdkContractJson(KILL, [], { policyVersion: POLICY }) as { targets: Record<string, Record<string, unknown>> };
+  for (const t of Object.values(contract.targets)) t.canary = CDK_JOURNEY_CANARY;
+  writeReviewedContract(contractPath, contract);
   const vault = fresh("vault");
   await forgeCdkQualification(vault);
   const w: World = {
     contractPath, vault, approvals: fresh("approvals"),
     cli: {
-      sourceCommit: SOURCE_COMMIT, env: cdkIdentityEnv("DEV"), now: () => NOW, operatorId: "operator.fixture", contractPath, contractPinPath: pinPathOf(contractPath), qualificationDir: vault,
+      sourceCommit: SOURCE_COMMIT, env: cdkIdentityEnv("DEV"), now: () => NOW, operatorId: "operator.fixture", contractPath, qualificationDir: vault,
       evidenceDir: fresh("evidence"), nonces: openNonceStore(fresh("nonces")), scratchParent: fresh("scratch"), toolDirs: [cdkToolDir], preparationDir: fresh("prepared"), proposalsDir: fresh("proposals"),
     },
   };
   const { port } = await serve(w);
   await choose(port);
   const target = cdkTargetOf("DEV");
-  const project = writeAssembly(fresh("cdk.out"), target);
+  const project = writeAssembly(fresh("cdk.out"), target, { resources: { Sentinel: { Type: "AWS::CloudFormation::WaitConditionHandle" } } });
   return { w, port, target, project };
 }
 const cdkCalls = () => cdkCallsOf(cdkToolDir);
@@ -1366,7 +1448,7 @@ async function prepareAndSealCdkInConsole(port: number, project: Project, target
   assert.equal(data.summary.engine, "CDK");
   assert.equal(data.summary.provider, "AWS");
   assert.equal(data.summary.account, target.account);
-  assert.equal((await call(port, "POST", "/pilot/seal", { body: { environment: "DEV", requestPath: data.files.request, manifestPath: data.files.manifest } })).status, 202);
+  assert.equal((await call(port, "POST", "/pilot/seal", { body: { environment: "DEV", requestPath: data.files.request, manifestPath: data.files.manifest, requesterId: REQUESTER.requesterId, keyPath: requesterKeyFile() } })).status, 202);
   const first = await waiting(port);
   assert.equal(first.run!.dialog!.kind, "TARGET");
   assert.equal(first.run!.dialog!.phrase, targetString(target));
@@ -1382,7 +1464,7 @@ async function prepareAndSealCdkInConsole(port: number, project: Project, target
   return { prepared: data, sealed, unit };
 }
 
-test("AWS CDK in the console: prepare from the cdk.out folder, preview the change set, approve and execute it, observe what the stack created through Cloud Control and the unit sweep, and propose and review the cleanup, through the real router, service and adapter", async () => {
+test("AWS CDK in the console: prepare from the cdk.out folder, preview the change set, approve and execute it, observe what the stack created through Cloud Control and the unit sweep, propose and approve the cleanup, remove exactly that list through a removal change set that never deletes the stack, and verify it is gone, through the real router, service and adapter", async () => {
   const { port, target, project } = await cdkConsoleJourney();
   const { prepared, sealed, unit } = await prepareAndSealCdkInConsole(port, project, target);
   const reviewed = (await call(port, "POST", "/pilot/review", { body: { bundlePath: sealed.bundle } })).body;
@@ -1390,7 +1472,7 @@ test("AWS CDK in the console: prepare from the cdk.out folder, preview the chang
   assert.deepEqual(reviewed.summary.target, target);
   assert.equal(reviewed.summary.sourceCommit, SOURCE_COMMIT, "approvers see the product commit they sign");
   assert.equal(reviewed.summary.preview.engineVersion, AWS_CLI_VERSION);
-  assert.deepEqual(reviewed.summary.changes.map((c: { address: string; action: string }) => [c.address, c.action]), [["PilotBucket", "CREATE"], ["PilotTopic", "REPLACE"]], "logical ids, types and actions: never a property");
+  assert.deepEqual(reviewed.summary.changes.map((c: { address: string; action: string }) => [c.address, c.action]), [["PilotBucket", "CREATE"], ["PilotTopic", "CREATE"], ["Sentinel", "CREATE"]], "logical ids, types and actions: never a property");
   noCdkCanary(reviewed);
   const approvalPath = await approveViaUi(port, sealed, "alice");
   const applied = await applyInConsole(port, prepared.files, sealed, [approvalPath], applyPhrase(sealed));
@@ -1410,30 +1492,58 @@ test("AWS CDK in the console: prepare from the cdk.out folder, preview the chang
   // Observe: the stack's resources under their CloudFormation types, the sweep by the unit the stack tags carry.
   const before = cdkCalls().length;
   const { observation, proposalPath, summary } = await observeAndProposeInConsole(port, sealed);
-  assert.equal(observation.verdict, "VERIFIED");
+  // The sentinel has no Cloud Control type, so it is named UNVERIFIABLE and the verdict is PARTIAL; the cleanup keeps it (CANARY_RETAINED) without reading it.
+  assert.equal(observation.verdict, "PARTIAL");
   assert.equal(observation.inventory, "COMPLETE");
-  assert.deepEqual(observation.resources.map((r) => [r.address, r.result]).sort(), [["PilotBucket", "VERIFIED"], ["PilotTopic", "VERIFIED"]]);
+  assert.deepEqual(observation.resources.map((r) => [r.address, r.result]).sort(), [["PilotBucket", "VERIFIED"], ["PilotTopic", "VERIFIED"], ["Sentinel", "UNVERIFIABLE"]]);
   const reads = cdkCalls().slice(before).filter((call) => call.args[0] !== "cloudformation");
   assert.ok(reads.length >= 3 && reads.every((read) => read.env.AWS_ROLE_ARN === cdkRoleArn("DISCOVERY", "DEV")), "the verifier read as DISCOVERY through the runner");
   assert.ok(reads.some((read) => read.args[0] === "resourcegroupstaggingapi" && read.args.includes("Key=alz-unit,Values=" + unit.unitId)), "the sweep asked for this change's own unit tag");
   // The proposal: the bucket this change created, by logical id; the replaced topic kept for the environment's owner; the stack itself never deleted.
-  assert.deepEqual(summary.deletes.map((d) => d.address), ["PilotBucket"]);
-  assert.deepEqual(summary.excluded.map((x) => [x.address, x.ownership, x.retainedBy]), [["PilotTopic", "REPLACED_PRE_EXISTING", "ENVIRONMENT_OWNER"]]);
+  assert.deepEqual(summary.deletes.map((d) => d.address), ["PilotBucket", "PilotTopic"]);
+  assert.deepEqual(summary.excluded.map((x) => [x.address, x.ownership, x.retainedBy]), [["Sentinel", "CANARY_RETAINED", "PILOT_OWNER"]]);
   assert.equal(summary.requiredApprovals, 1);
   const reviewedCleanup = (await call(port, "POST", "/pilot/review-cleanup", { body: { proposalPath } })).body;
   assert.equal(reviewedCleanup.ok, true, JSON.stringify(reviewedCleanup));
   assert.equal(reviewedCleanup.cleanup.shortId, summary.shortId);
   assert.ok(reviewedCleanup.cleanup.lines.some((line: string) => /stack itself is never deleted/.test(line)), "the review says the stack stays");
   noCdkCanary(reviewedCleanup);
-  // Until the CDK cleanup path exists, the cleanup step itself is refused before anything runs, and the approval is not spent.
+  // The approver signs under the cleanup domain; the removal is one UPDATE change set from the sealed template minus the bucket, created by CHANGESET and executed by APPLY.
   const signed = await approveCleanupViaUi(port, proposalPath, summary.shortId, "alice");
   assert.equal(signed.run!.result!.exit, 0, JSON.stringify(signed.run!.result));
-  const executesBefore = cdkCalls().filter((call) => call.args[1] === "execute-change-set").length;
+  const callsBefore = cdkCalls().length;
   const removed = await cleanupViaUi(port, prepared.files, sealed, proposalPath, summary.shortId, target, [signed.run!.result!.savedPath!]);
-  assert.notEqual(removed.run!.result!.exit, 0);
-  assert.equal(removed.run!.result!.code, "CLEANUP_NOT_SUPPORTED", JSON.stringify(removed.run!.result));
-  assert.equal(cdkCalls().filter((call) => call.args[1] === "execute-change-set").length, executesBefore, "nothing executed");
-  assert.ok(!cdkCalls().some((call) => /delete/.test(call.args[1] ?? "")), "nothing deleted");
+  assert.equal(removed.run!.result!.exit, 0, JSON.stringify(removed.run!.result));
+  const removal = removed.run!.result!.data as { outcome: string; deletes: string[]; authority: { executedAs: string; mutation: string }; artifactSha256: string };
+  assert.equal(removal.outcome, "SUCCEEDED");
+  assert.deepEqual(removal.deletes, ["PilotBucket", "PilotTopic"]);
+  assert.deepEqual(removal.authority, { infrastructureAct: "PILOT_ENABLED", mutation: "CLOUDFORMATION_EXECUTE_OF_REMOVAL_CHANGE_SET", executedAs: "APPLY", agentInitiated: false });
+  assert.equal(removal.artifactSha256, sealed.artifactSha256);
+  const steps = cdkCalls().slice(callsBefore).filter((call) => call.args[0] === "cloudformation");
+  const created = steps.filter((call) => call.args[1] === "create-change-set");
+  assert.equal(created.length, 1);
+  assert.equal(created[0].args[created[0].args.indexOf("--change-set-type") + 1], "UPDATE");
+  assert.equal(created[0].args[created[0].args.indexOf("--template-body") + 1], "file://alz-cleanup-template.json");
+  assert.equal(created[0].env.AWS_ROLE_ARN, cdkRoleArn("CHANGESET", "DEV"));
+  const executed = steps.filter((call) => call.args[1] === "execute-change-set");
+  assert.equal(executed.length, 1);
+  assert.equal(executed[0].env.AWS_ROLE_ARN, cdkRoleArn("APPLY", "DEV"));
+  assert.ok(!cdkCalls().some((call) => /delete/.test(call.args[1] ?? "")), "nothing deleted: the stack stands");
+  noCdkCanary(removed.run!.result);
+  // The independent check: the bucket is gone, the topic is kept for the environment's owner, nothing else carries the unit, and the environment is not retired.
+  assert.equal((await call(port, "POST", "/pilot/verify-cleanup", { body: { proposalPath } })).status, 202);
+  const verified = (await finished(port)).run!.result!;
+  assert.equal(verified.exit, 0, JSON.stringify(verified));
+  assert.equal(verified.code, "CLEANUP_COMPLETE");
+  const leftovers = verified.data as { disposition: string; nextAction: string; resources: { address: string; disposition: string; owner?: string }[] };
+  assert.equal(leftovers.disposition, "COMPLETE");
+  assert.deepEqual(leftovers.resources.map((r) => [r.address, r.disposition, r.owner ?? null]), [["PilotBucket", "CONFIRMED_DELETED", null], ["PilotTopic", "CONFIRMED_DELETED", null], ["Sentinel", "INTENTIONALLY_RETAINED", "PILOT_OWNER"]]);
+  assert.match(leftovers.nextAction, /environment retirement.*remains outstanding/);
+  assert.ok(!/environment (is |was )?deleted|entire environment|stack (is |was )?deleted/.test(leftovers.nextAction), "the environment and the stack are never reported deleted");
+  // A reconnect never removes twice.
+  const again = await cleanupViaUi(port, prepared.files, sealed, proposalPath, summary.shortId, target, [signed.run!.result!.savedPath!]);
+  assert.notEqual(again.run!.result!.exit, 0);
+  assert.equal(cdkCalls().filter((call) => call.args[1] === "execute-change-set").length, 2, "the apply and the removal, once each");
 });
 
 test("AWS CDK in the console: a wrong phrase or a cancel at approval or execution signs nothing and executes nothing, and the same approval still executes once", async () => {

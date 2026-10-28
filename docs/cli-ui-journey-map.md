@@ -32,6 +32,7 @@ alz teardown | test/teardown-traceability.test.ts
 alz apply | test/apply-cli.test.ts, test/apply-boundary.test.ts
 alz health | test/observability-health-server.test.ts
 alz deps | test/deps-cli.test.ts, test/deps-install.test.ts
+alz lifecycle | test/lifecycle-cli.test.ts, test/lifecycle-runner.test.ts
 alz doctor | test/operator-cli.test.ts
 alz verify | test/operator-cli.test.ts
 alz plugins | test/operator-cli.test.ts
@@ -43,6 +44,7 @@ alz scan | test/operator-cli.test.ts
 alz account-factory | test/account-factory.test.ts, test/operations-parity.test.ts
 alz enterprise | test/operations-core.test.ts, test/operations-parity.test.ts
 alz qualify | test/operations-qualification.test.ts, test/operations-parity.test.ts
+alz evidence | test/evidence-cli.test.ts, test/operations-parity.test.ts
 alz workspace | test/local-operator-workspace.test.ts, test/operator-ui-react.test.tsx
 alz matrix | test/local-operator-workspace.test.ts, test/operator-ui-react.test.tsx
 alz chaos | test/local-operator-workspace.test.ts, test/operator-ui-journey-fixes.test.tsx

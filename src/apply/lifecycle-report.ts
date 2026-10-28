@@ -135,14 +135,23 @@ function stagesOf(input: LifecycleReportInput, applyEvidenceSha256: string): { s
   return { stages: { execute, observe, propose, cleanup: cleanupStage, leftovers: leftoversStage }, unresolved };
 }
 
-/** The ownership classes a kept resource can carry: the protected ones and the environment owner's. */
-const KEPT_OWNERSHIPS: readonly string[] = ["PRE_EXISTING", "REPLACED_PRE_EXISTING", "IMPORTED", "NOT_IN_PLAN", ...PROTECTED_OWNERSHIPS];
+/** The ownership classes a kept resource can carry: the protected ones (CANARY_RETAINED among them, owner decision E1) and the environment owner's. */
+const KEPT_OWNERSHIPS: readonly string[] = ["PRE_EXISTING", "REPLACED_PRE_EXISTING", "IMPORTED", "NOT_IN_PLAN", "TYPE_UNREVIEWED", ...PROTECTED_OWNERSHIPS];
 /** The resource-cleanup state the leftovers stage derives. */
 const resourceCleanupOf = (leftovers: StageResult): AcceptanceDisposition["resourceCleanup"] => leftovers.status === "PASS" ? "COMPLETED" : leftovers.status === "NOT_RUN" ? "NOT_RUN" : "INCOMPLETE";
 /** The one sentence, a pure function of the two derived facts: the validator recomputes it, so no stored text can say more. */
 export function acceptanceStatement(resourceCleanup: AcceptanceDisposition["resourceCleanup"], retained: AcceptanceDisposition["retained"]): string {
+  // Held for review (TYPE_UNREVIEWED: an unreviewed type, or a setting on a resource the cleanup keeps) is counted under its own label, never as
+  // protected or pre-existing (design review 6434540427, N2); every one is kept by the environment's owner.
+  const held = retained.byOwnership.TYPE_UNREVIEWED ?? 0;
+  const kept = retained.total - held;
+  const keptOwners = Object.entries(retained.byOwner).map(([owner, n]) => [owner, owner === "ENVIRONMENT_OWNER" ? n - held : n] as const).filter(([, n]) => n > 0).sort(([a], [b]) => (a < b ? -1 : 1));
+  const parts = [
+    ...(kept > 0 ? [kept + " protected or pre-existing object(s) intentionally retained (" + keptOwners.map(([owner, n]) => n + " kept by " + owner).join(", ") + ")"] : []),
+    ...(held > 0 ? [held + " object(s) held for a person's decision (a type not on the reviewed leaf allowlist, or a setting on a resource this cleanup keeps; kept by ENVIRONMENT_OWNER)"] : []),
+  ];
   return (resourceCleanup === "COMPLETED" ? "approved resources deleted" : resourceCleanup === "NOT_RUN" ? "resource cleanup not run" : "resource cleanup incomplete") +
-    "; " + (retained.total > 0 ? retained.total + " protected or pre-existing object(s) intentionally retained (" + Object.entries(retained.byOwner).sort(([a], [b]) => (a < b ? -1 : 1)).map(([owner, n]) => n + " kept by " + owner).join(", ") + ")" : "nothing retained by this run") +
+    "; " + (parts.length > 0 ? parts.join("; ") : "nothing retained by this run") +
     "; environment retirement outstanding (a separate, reviewed action; this report does not claim the environment retired)";
 }
 /** The three-state end of the run, from the stages and the proposal's kept list. */
@@ -211,7 +220,7 @@ export function lifecycleReportProblems(value: unknown, expected: { sourceCommit
   if (problems.length > 0) return problems;
   if (value.schemaVersion !== 1 || value.reportKind !== "ACT_LIFECYCLE" || value.gateVersion !== LIFECYCLE_REPORT_VERSION) problems.push("report: not a schemaVersion 1 ACT_LIFECYCLE report of gate version " + LIFECYCLE_REPORT_VERSION);
   if (typeof value.gateId !== "string" || !/^act:[a-z]+-[a-z]+$/.test(value.gateId)) problems.push("report.gateId: not an ACT gate id");
-  if (!["AWS", "AZURE"].includes(value.provider as string) || !["TERRAFORM", "CDK"].includes(value.engine as string) || value.scenario !== "pilot-apply-observe-cleanup") problems.push("report: provider, engine or scenario is unknown");
+  if (!["AWS", "AZURE"].includes(value.provider as string) || !["TERRAFORM", "CDK", "BICEP"].includes(value.engine as string) || value.scenario !== "pilot-apply-observe-cleanup") problems.push("report: provider, engine or scenario is unknown");
   if (value.gateId === "act:" + String(value.provider).toLowerCase() + "-" + String(value.engine).toLowerCase() === false) problems.push("report.gateId: does not name the report's provider and engine");
   if (value.mode !== "SYNTHETIC" && value.mode !== "MIXED" && value.mode !== "LIVE") problems.push("report.mode: SYNTHETIC, MIXED or LIVE");
   if (typeof value.sourceCommit !== "string" || !COMMIT.test(value.sourceCommit)) problems.push("report.sourceCommit: not a commit id");

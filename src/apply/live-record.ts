@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { readEncryptedEvidence } from "../evidence/vault.js";
 import { canonicalJson } from "../teardown/manifest.js";
 import { sha256 } from "../util/sha256.js";
-import { pilotContractSha256, SUFFIX } from "./contract.js";
+import { authorizeContract, pilotContractSha256, SUFFIX } from "./contract.js";
 import { engineOf } from "./engine-spec.js";
 import { applyEvidenceProblems } from "./evidence.js";
 import { specOf } from "./provider.js";
@@ -31,6 +31,8 @@ export type LiveAcceptanceRecord = {
   /** The canonical sha256 of the apply evidence this record was made from. */
   evidenceSha256: string;
   contractSha256: string;
+  /** The hash of the contract's entry that authorized the apply, from the apply's evidence. Release admission compares it with the candidate's. */
+  authorizationSha256: string;
   attestedBy: string;
   attestedAt: string;
 };
@@ -48,17 +50,21 @@ export async function readAppliedEvidence(artifactSha256: string, evidenceDir: s
   }
 }
 
-/** The record for a successful apply under this pinned contract, or why there is none. */
+/** The record for a successful apply under this reviewed contract and its current authorization, or why there is none. */
 export function liveRecordOf(evidence: ApplyEvidence, contract: PilotContract, attestedBy: string, now: Date):
   { ok: true; record: LiveAcceptanceRecord } | { ok: false; reason: string } {
   if (evidence.outcome !== "SUCCEEDED") return { ok: false, reason: "The apply did not succeed (" + evidence.outcome + "), so it is not live acceptance of the execute step." };
-  if (evidence.contractSha256 !== pilotContractSha256(contract)) return { ok: false, reason: "The apply ran under another pilot contract than the one pinned now." };
+  if (evidence.contractSha256 !== pilotContractSha256(contract)) return { ok: false, reason: "The apply ran under another pilot contract than the one committed now." };
+  const authorized = authorizeContract(contract, evidence.environment, "APPLY");
+  if (!authorized.ok || authorized.authorization.authorizationSha256 !== evidence.decisions.authorized.authorizationSha256) {
+    return { ok: false, reason: "The apply ran under another authorization than the contract's current APPLY entry for " + evidence.environment + "." };
+  }
   return {
     ok: true,
     record: {
       schemaVersion: 1, label: "LIVE", step: "execute", cloud: specOf(contract).id, engine: engineOf(contract).id, environment: evidence.environment,
       target: { ...evidence.target }, sourceCommit: evidence.sourceCommit, artifactSha256: evidence.artifactSha256, outcome: "SUCCEEDED",
-      evidenceSha256: sha256(canonicalJson(evidence as never)), contractSha256: evidence.contractSha256, attestedBy, attestedAt: now.toISOString(),
+      evidenceSha256: sha256(canonicalJson(evidence as never)), contractSha256: evidence.contractSha256, authorizationSha256: evidence.decisions.authorized.authorizationSha256, attestedBy, attestedAt: now.toISOString(),
     },
   };
 }

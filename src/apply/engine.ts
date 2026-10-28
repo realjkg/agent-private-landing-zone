@@ -7,9 +7,16 @@ import type { ToolResult } from "../tools/types.js";
  * driver and sealing report only the code.
  */
 class EngineStop extends Error {
-  constructor(readonly code: string) { super(code); }
+  constructor(readonly code: string, readonly reason?: string) { super(code); }
 }
 export const stop = (code: string): never => { throw new EngineStop(code); };
+/**
+ * A stop with a reason the product wrote itself from the redacted change list (a resource address, its type and action, a count;
+ * never a value), for a refusal a person must be able to act on (the canary allowlist, ../canary.ts).
+ */
+export const stopBecause = (code: string, reason: string): never => { throw new EngineStop(code, reason); };
+/** The reason a `stopBecause` carried, or undefined. */
+export const reasonOf = (error: unknown): string | undefined => (error instanceof EngineStop ? error.reason : undefined);
 
 /** The code in a thrown error: ours, or one the preview adapter's shared helpers throw. Anything else is UNEXPECTED. */
 export function codeOf(error: unknown): string {
@@ -17,6 +24,17 @@ export function codeOf(error: unknown): string {
   const adapter = error instanceof Error ? /^TERRAFORM_ADAPTER:(.+)$/.exec(error.message) : null;
   return adapter ? adapter[1] : "UNEXPECTED";
 }
+
+/**
+ * A refusal thrown after the engine created something no surface here removes (a CDK removal change set, which stays in
+ * CloudFormation unexecuted): marked so the driver says so in the refusal, whatever code it carries (review 6432294529, N1).
+ */
+export type LeftBehind = "CHANGE_SET";
+export function markLeftBehind<T>(error: T, what: LeftBehind): T {
+  if (error instanceof Error) (error as Error & { leftBehind?: LeftBehind }).leftBehind = what;
+  return error;
+}
+export const leftBehindOf = (error: unknown): LeftBehind | undefined => error instanceof Error ? (error as Error & { leftBehind?: LeftBehind }).leftBehind : undefined;
 
 /** A step that needs no credentials is given none. */
 export const withoutIdentities = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv =>

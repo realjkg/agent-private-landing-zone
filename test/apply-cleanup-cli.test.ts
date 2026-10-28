@@ -15,8 +15,8 @@ import { openNonceStore } from "../src/apply/nonces.js";
 import { removeTree } from "../src/teardown/driver/cleanup.js";
 import {
   AWS_DEV_TARGET, NOW, POLICY, SOURCE_COMMIT, STATE_CANARY, VALUE_CANARY, awsContractJson, awsIdentityEnv, awsReadCallsOf, awsRoleArn, awsTargetOf, behave as behaveIn, behaveAwsReads, callsOf,
-  installFakeAwsReads, installFakeTerraform, keys, pinPathOf, stateResource, testFixtureForgeQualificationEvidence, writePinnedContract, writeProject, type Behavior, type Project,
-} from "./helpers/apply-fixtures.js";
+  installFakeAwsReads, installFakeTerraform, keys, stateResource, testFixtureForgeQualificationEvidence, writeReviewedContract, writeProject, type Behavior, type Project,
+  requesterArgs, canaryFor, withCanary } from "./helpers/apply-fixtures.js";
 
 // The terminal half of the observe and cleanup steps (docs/observe-and-cleanup.md): `./alz apply observe`, `propose-cleanup`,
 // `approve` of a proposal, `cleanup`, `verify-cleanup` and `report`, each behind the same person-at-a-terminal gate as the
@@ -45,8 +45,9 @@ const AWS_PROVIDER_CONFIG = { aws: { name: "aws", full_name: "registry.terraform
 const CREATES = [
   { address: "aws_s3_bucket.logs", type: "aws_s3_bucket", change: { actions: ["create"], before: null, after: { secret: VALUE_CANARY } } },
   { address: "aws_cloudwatch_log_group.canary", type: "aws_cloudwatch_log_group", change: { actions: ["create"], before: null, after: {} } },
-  { address: "aws_s3_bucket.state", type: "aws_s3_bucket", change: { actions: ["update"], before: {}, after: {} } },
 ];
+/** Owner decision E1: the run's contract names exactly the two creates. The plan cannot also update the state bucket (RESOURCE_NOT_IN_CANARY): that bucket is in the state only. */
+const runContract = (over: Record<string, unknown> = {}) => withCanary(awsContractJson(KILL, over), canaryFor(CREATES));
 const STATE = [
   stateResource("aws_s3_bucket", "logs", BUCKET, "arn:aws:s3:::" + BUCKET), stateResource("aws_cloudwatch_log_group", "canary", LOG, "arn:aws:logs:us-east-1:111111111111:log-group:" + LOG),
   stateResource("aws_s3_bucket", "state", STATE_BUCKET, "arn:aws:s3:::" + STATE_BUCKET),
@@ -55,7 +56,7 @@ const EXISTING = [BUCKET, LOG, STATE_BUCKET];
 const BUCKET_ARN = "arn:aws:s3:::" + BUCKET;
 const LOG_ARN = "arn:aws:logs:us-east-1:111111111111:log-group:" + LOG;
 /** The deletion unit of the DEV state container under the fixture contract: what every created resource is stamped with, and what the fake tagging API lists by. */
-const UNIT = (() => { const path = join(fresh("unit-contract"), "act-pilot-contract.json"); writePinnedContract(path, awsContractJson(KILL)); return pilotUnitOf({ provider: "AWS", contractSha256: pilotContractSha256(loadPilotContract(path, pinPathOf(path)) as PilotContract), environment: "DEV", target: awsTargetOf("DEV") }); })();
+const UNIT = (() => { const path = join(fresh("unit-contract"), "act-pilot-contract.json"); writeReviewedContract(path, runContract()); return pilotUnitOf({ provider: "AWS", contractSha256: pilotContractSha256(loadPilotContract(path) as PilotContract), environment: "DEV", target: awsTargetOf("DEV") }); })();
 /** The run's own resources, as the tagging API lists them: the listing is not empty, and it matches the records. */
 const TAGGED = [BUCKET_ARN, LOG_ARN];
 const behave = (behavior: Behavior = {}) => behaveIn(toolDir, KILL, { applyAdvance: true, showOnlyConfigured: true, showResources: CREATES, showProviderConfig: AWS_PROVIDER_CONFIG, stateResources: STATE, unitTags: { ...UNIT.tags }, ...behavior });
@@ -85,7 +86,7 @@ async function world(): Promise<World> {
   behave();
   behaveAwsReads(awsToolDir, { existing: EXISTING, tagged: TAGGED });
   const contractPath = join(fresh("contract"), "act-pilot-contract.json");
-  writePinnedContract(contractPath, awsContractJson(KILL));
+  writeReviewedContract(contractPath, runContract());
   const vault = fresh("vault");
   await testFixtureForgeQualificationEvidence(vault, undefined, "AWS");
   const [scratch, evidenceDir, acceptanceDir, reportsDir, proposalsDir] = [fresh("scratch"), fresh("evidence"), fresh("acceptance"), fresh("reports"), fresh("proposals")];
@@ -93,7 +94,7 @@ async function world(): Promise<World> {
   return {
     contractPath, evidenceDir, acceptanceDir, reportsDir,
     deps: (term, over = {}) => ({
-      sourceCommit: SOURCE_COMMIT, terminal: term, env: awsIdentityEnv("DEV"), now: () => NOW, operatorId: "operator.fixture", contractPath, contractPinPath: pinPathOf(contractPath),
+      sourceCommit: SOURCE_COMMIT, terminal: term, env: awsIdentityEnv("DEV"), now: () => NOW, operatorId: "operator.fixture", contractPath,
       qualificationDir: vault, evidenceDir, nonces, scratchParent: scratch, toolDirs: [toolDir, awsToolDir], acceptanceDir, reportsDir, proposalsDir, ...over,
     }),
   };
@@ -116,7 +117,7 @@ async function appliedRun(w: World, mainTf = 'resource "aws_s3_bucket" "logs" {}
   const project: Project = writeProject(fresh("project"), target, mainTf);
   const request = json({ environment: "DEV", target, projectRoot: project.projectRoot, policyVersion: POLICY, resolved: project.resolved }, "request");
   const manifest = json(project.manifest, "manifest");
-  const sealed = await cli(w, ["seal", "--request", request, "--manifest", manifest], [targetString(target), PHRASE]);
+  const sealed = await cli(w, ["seal", "--request", request, "--manifest", manifest, ...requesterArgs()], [targetString(target), PHRASE]);
   assert.equal(sealed.code, 0, sealed.stderr);
   const { sealedPlanPath, reviewBundlePath, artifactSha256 } = sealed.data as { sealedPlanPath: string; reviewBundlePath: string; artifactSha256: string };
   const approved = await cli(w, ["approve", "--bundle", reviewBundlePath, "--key", keyFile("alice"), "--approver", "alice"], ["APPROVE DEV " + artifactSha256.slice(0, 12)]);
@@ -144,7 +145,7 @@ test("observe, propose-cleanup, approve of the proposal, cleanup and verify-clea
   assert.ok(awsReadCallsOf(awsToolDir).some((read) => read.args[0] === "resourcegroupstaggingapi" && read.args.includes("Key=alz-unit,Values=" + UNIT.unitId)), "the sweep asked for this run's own unit tag");
   assert.deepEqual(observed.term.asked, [], "observing asks no phrase: it reads and changes nothing");
 
-  const proposed = await cli(w, ["propose-cleanup", "--sealed", run.sealedPlanPath]);
+  const proposed = await cli(w, ["propose-cleanup", "--sealed", run.sealedPlanPath, ...requesterArgs()]);
   assert.equal(proposed.code, 0, proposed.stderr);
   const proposalPath = /Saved \(private to this account\): (\S+)/.exec(proposed.stdout)![1];
   assert.ok(existsSync(proposalPath));
@@ -243,7 +244,7 @@ test("a wrong phrase at the cleanup approval or the removal signs nothing and ru
   const w = await world();
   const run = await appliedRun(w);
   assert.equal((await cli(w, ["observe", "--sealed", run.sealedPlanPath])).code, 0);
-  const proposed = await cli(w, ["propose-cleanup", "--sealed", run.sealedPlanPath]);
+  const proposed = await cli(w, ["propose-cleanup", "--sealed", run.sealedPlanPath, ...requesterArgs()]);
   const proposalPath = /Saved \(private to this account\): (\S+)/.exec(proposed.stdout)![1];
   const proposal = JSON.parse(readFileSync(proposalPath, "utf8")) as { proposalSha256: string; risks: string[] };
   const shortId = proposal.proposalSha256.slice(0, 12);
@@ -272,7 +273,7 @@ test("a wrong phrase at the cleanup approval or the removal signs nothing and ru
   assert.match(again.stderr, /PROPOSAL_ALREADY_EXECUTED/);
   assert.deepEqual([destroys(), applies()], [d0 + 1, a0 + 1], "a proposal runs once");
   // Every cleanup command needs a terminal, like the apply commands.
-  for (const args of [["observe", "--sealed", run.sealedPlanPath], ["propose-cleanup", "--sealed", run.sealedPlanPath], ["verify-cleanup", "--proposal", proposalPath], ["report", "--sealed", run.sealedPlanPath]]) {
+  for (const args of [["observe", "--sealed", run.sealedPlanPath], ["propose-cleanup", "--sealed", run.sealedPlanPath, ...requesterArgs()], ["verify-cleanup", "--proposal", proposalPath], ["report", "--sealed", run.sealedPlanPath]]) {
     const noTerminal = await cli(w, args, [], { terminal: { ...terminal([]), stdinIsTTY: false, stdoutIsTTY: false } });
     assert.equal(noTerminal.code, 1, args[0]);
     assert.match(noTerminal.stderr, /HUMAN_TERMINAL_REQUIRED/);
@@ -284,7 +285,7 @@ test("the lifecycle report validator refuses a declared pass, a live claim witho
   const w = await world();
   const run = await appliedRun(w);
   assert.equal((await cli(w, ["observe", "--sealed", run.sealedPlanPath])).code, 0);
-  const proposed = await cli(w, ["propose-cleanup", "--sealed", run.sealedPlanPath]);
+  const proposed = await cli(w, ["propose-cleanup", "--sealed", run.sealedPlanPath, ...requesterArgs()]);
   const proposalPath = /Saved \(private to this account\): (\S+)/.exec(proposed.stdout)![1];
   const reported = await cli(w, ["report", "--sealed", run.sealedPlanPath, "--proposal", proposalPath]);
   assert.equal(reported.code, 0, reported.stderr);
@@ -343,4 +344,48 @@ test("the lifecycle report validator refuses a declared pass, a live claim witho
   assert.equal(wrongSeal.code, 2);
   assert.match(wrongSeal.stderr, /PROPOSAL_INVALID/);
   assert.deepEqual(wrongSeal.term.asked, [], "refused before the phrase");
+});
+
+test("propose-cleanup and approve of a proposal are AUTHORIZED by the current contract's CLEANUP entry: refused without it or after an edit, and a revoked APPLY does not strand the cleanup", async () => {
+  const w = await world();
+  const run = await appliedRun(w);
+  assert.equal((await cli(w, ["observe", "--sealed", run.sealedPlanPath])).code, 0);
+  const withAuthorize = (authorize: Record<string, string[]>, over: Record<string, unknown> = {}) =>
+    writeReviewedContract(w.contractPath, runContract({ authorize: { QA: ["APPLY", "CLEANUP"], PROD: ["APPLY", "CLEANUP"], ...authorize }, ...over }));
+  // From an uncommitted checkout (the contract included) nothing is proposed: the committed contract is the authorization.
+  const dirty = await cli(w, ["propose-cleanup", "--sealed", run.sealedPlanPath, ...requesterArgs()], [], { sourceCommit: "uncommitted" });
+  assert.equal(dirty.code, 2, dirty.stderr);
+  assert.match(dirty.stderr, /BLOCKED SOURCE_UNVERIFIED/);
+  // No CLEANUP for DEV: propose-cleanup refuses before anything is built, and writes no proposal.
+  withAuthorize({ DEV: ["APPLY"] });
+  const denied = await cli(w, ["propose-cleanup", "--sealed", run.sealedPlanPath, ...requesterArgs()]);
+  assert.equal(denied.code, 2, denied.stderr);
+  assert.match(denied.stderr, /BLOCKED ACT_NOT_AUTHORIZED: .*CLEANUP for AWS TERRAFORM DEV.* No proposal was written\./);
+  // APPLY revoked, CLEANUP kept: the run is still proposed (N3), under the contract committed now.
+  withAuthorize({ DEV: ["CLEANUP"] });
+  const proposed = await cli(w, ["propose-cleanup", "--sealed", run.sealedPlanPath, ...requesterArgs()]);
+  assert.equal(proposed.code, 0, proposed.stderr);
+  const proposalPath = /Saved \(private to this account\): (\S+)/.exec(proposed.stdout)![1];
+  const proposal = JSON.parse(readFileSync(proposalPath, "utf8")) as { proposalSha256: string; contractSha256: string; authorizingContractSha256: string };
+  assert.notEqual(proposal.authorizingContractSha256, proposal.contractSha256);
+  const approveArgs = ["approve", "--bundle", proposalPath, "--key", keyFile("alice"), "--approver", "alice"];
+  const phrase = "APPROVE CLEANUP DEV " + proposal.proposalSha256.slice(0, 12);
+  // An approver never signs under a contract or entry other than the one the proposal bound, nor without CLEANUP.
+  withAuthorize({ DEV: ["CLEANUP"] }, { maxApprovalAgeMinutes: 61 });
+  const changed = await cli(w, approveArgs, [phrase]);
+  assert.equal(changed.code, 2);
+  assert.match(changed.stderr, /BLOCKED ACT_AUTHORIZATION_CHANGED/);
+  assert.equal(changed.stdout, "", "nothing was signed");
+  withAuthorize({ DEV: ["APPLY"] });
+  const revoked = await cli(w, approveArgs, [phrase]);
+  assert.equal(revoked.code, 2);
+  assert.match(revoked.stderr, /BLOCKED ACT_NOT_AUTHORIZED/);
+  // Back to the contract the proposal bound: approve, then clean up.
+  withAuthorize({ DEV: ["CLEANUP"] });
+  const signed = await cli(w, approveArgs, [phrase]);
+  assert.equal(signed.code, 0, signed.stderr);
+  const removed = await cli(w, ["cleanup", "--proposal", proposalPath, "--request", run.applyRequest, "--manifest", run.manifest, "--sealed", run.sealedPlanPath, "--approval", json(signed.data, "cleanup-approval")],
+    ["CLEANUP DEV " + proposal.proposalSha256.slice(0, 12) + " " + targetString(run.target)]);
+  assert.equal(removed.code, 0, removed.stderr);
+  assert.equal((removed.data as { decisions: { authorized: { operation: string; contractSha256: string } } }).decisions.authorized.contractSha256, proposal.authorizingContractSha256);
 });

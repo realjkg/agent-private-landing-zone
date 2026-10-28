@@ -53,7 +53,7 @@ export function AwsRolePreparation() {
       "Use the existing bootstrap/aws Terraform module and distinct OIDC subjects for four execution identities.",
       "Approve least-privilege APPLY policy, backend isolation, state writer and approver identities.",
       "Verify AWS credit eligibility and cumulative spending before allowing any chargeable operation.",
-      "Only a human may initiate a governed pilot apply after contract pin, qualification and approvals.",
+      "Only a human may initiate a governed pilot apply after contract authorization, qualification and approvals.",
     ],
   };
   const serialized = JSON.stringify(plan, null, 2);

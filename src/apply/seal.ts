@@ -1,11 +1,16 @@
+import { randomBytes } from "node:crypto";
+
 import { readEncryptedEvidence, writeEncryptedEvidence } from "../evidence/vault.js";
+import { signRequest } from "./approval.js";
 import { canonicalJson, type ArtifactManifest } from "../teardown/manifest.js";
 import type { ResolvedTarget } from "../teardown/driver/types.js";
 import { COMMIT, ENVIRONMENTS, HASH, INVISIBLE } from "./constants.js";
 import { sha256 } from "../util/sha256.js";
+import { canaryRefusal } from "./canary.js";
 import { codeOf } from "./engine.js";
+import { sourceRuleHint } from "./terraform-constructs.js";
 import type { EnginePlanInput, EngineSpec } from "./engine-spec.js";
-import { PILOT_CHANNELS, type ApplyEnvironment, type ApplyRefusalCode, type PilotChannel, type PreviewProvenance, type SealedPlan, type SealedUnit } from "./types.js";
+import { PILOT_CHANNELS, type ApplyEnvironment, type ApplyRefusalCode, type PilotChannel, type PreviewProvenance, type SealedPlan, type SealedRequest, type SealedUnit } from "./types.js";
 
 /**
  * Sealing (docs/act-pilot-plan.md, authority items 2 and 5). The engine spec
@@ -18,7 +23,7 @@ import { PILOT_CHANNELS, type ApplyEnvironment, type ApplyRefusalCode, type Pilo
 const SEAL_PURPOSE = "sealed-plan";
 
 type ArtifactFields = Pick<SealedPlan,
-  "planSha256" | "manifestHash" | "releaseIdentity" | "environment" | "target" | "channel" | "engineVersion" | "policyVersion" | "contractSha256" | "sourceCommit" | "changes" | "provenance" | "unit">;
+  "planSha256" | "manifestHash" | "releaseIdentity" | "environment" | "target" | "channel" | "engineVersion" | "policyVersion" | "authorizationSha256" | "targetSha256" | "contractSha256" | "sourceCommit" | "changes" | "provenance" | "unit" | "requesterId">;
 
 /**
  * The artifact hash an approver signs. The one definition; sealing and loading
@@ -31,7 +36,13 @@ export function computeArtifactSha256(fields: ArtifactFields): string {
     planSha256: fields.planSha256, manifestHash: fields.manifestHash, releaseIdentity: fields.releaseIdentity,
     environment: fields.environment, target: { account, backend, workspace }, channel: fields.channel,
     engineVersion: fields.engineVersion, policyVersion: fields.policyVersion, contractSha256: fields.contractSha256,
+    // AUTHORIZED: the contract's authorizing entry, by hash, beside the contract's own hash. Every approval signs both.
+    authorizationSha256: fields.authorizationSha256,
+    // The run's full target (region and tenant included), so a cleanup or removal can be held to it.
+    targetSha256: fields.targetSha256,
     sourceCommit: fields.sourceCommit, changesSha256: sha256(canonicalJson(fields.changes)), provenance: fields.provenance as never, unit: fields.unit as never,
+    // Who requested: every approver signs it, and swapping the requester invalidates every approval.
+    requesterId: fields.requesterId,
   }));
 }
 
@@ -57,16 +68,25 @@ export type SealInput = EnginePlanInput & {
   /** Who is sealing: the caller says (the terminal CLI or the console adapter), never a flag. Default `CLI`. */
   channel?: PilotChannel;
   policyVersion: string;
-  /** The pinned contract's canonical sha256: sealed, so the plan applies only under this contract. */
+  /** The contract's canonical sha256: sealed, so the plan applies only under this contract. */
   contractSha256: string;
+  /** The canonical hash of the contract's entry that authorized this APPLY (`authorizeContract`): sealed, so approvals cover it and the apply re-checks it. */
+  authorizationSha256: string;
+  /** The run's full target (`pilotTargetSha256`): sealed, so approvals cover it and a cleanup is held to it. */
+  targetSha256: string;
   /** The product source commit the driver was given by its caller: sealed, so only the same commit applies the plan. */
   sourceCommit: string;
   /** The engine program and its qualification, as the driver observed them before planning: sealed, so approvers see them and only that program applies. */
   provenance: PreviewProvenance;
+  /**
+   * The requester, already checked by the driver against the contract's allowlist: the id is bound into the artifact hash and
+   * the key signs that hash under the REQUEST domain. Absent only for a throwaway plan (qualify), which is never stored.
+   */
+  requester?: { requesterId: string; privateKeyPem: string };
   now?: () => Date;
 };
 
-export type SealFailure = { ok: false; code: "ARTIFACT_INVALID"; message: string };
+export type SealFailure = { ok: false; code: "ARTIFACT_INVALID" | "RESOURCE_NOT_IN_CANARY" | "CANARY_ALLOWLIST_MISSING"; message: string };
 /** A stored seal: the encrypted vault file holds the record and the plan bytes. */
 export type SealResult = { ok: true; sealed: SealedPlan; path: string } | SealFailure;
 /** A qualification run's plan: made and checked, then dropped. Nothing is stored, so nothing can be approved or applied. */
@@ -80,10 +100,16 @@ function runSeal(input: SealInput): { sealed: SealedPlan; planBytes: Buffer } {
   const fields: ArtifactFields = {
     planSha256: sha256(planBytes), manifestHash: manifest.manifestHash, releaseIdentity: releaseIdentityOf(manifest),
     environment: input.environment, target: { ...input.target }, channel: input.channel ?? "CLI", engineVersion: input.engineVersion,
-    policyVersion: input.policyVersion, contractSha256: input.contractSha256, sourceCommit: input.sourceCommit, changes, provenance: input.provenance, unit,
+    policyVersion: input.policyVersion, authorizationSha256: input.authorizationSha256, targetSha256: input.targetSha256, contractSha256: input.contractSha256, sourceCommit: input.sourceCommit, changes, provenance: input.provenance, unit,
+    requesterId: input.requester?.requesterId ?? "",
   };
+  const artifactSha256 = computeArtifactSha256(fields);
+  // The requester signs the artifact hash (which binds their id), the environment and a one-time nonce. A throwaway plan has no signature and can never be stored.
+  const request = input.requester
+    ? signRequest({ schemaVersion: 1, requesterId: input.requester.requesterId, artifactSha256, environment: input.environment, nonce: randomBytes(16).toString("hex") }, input.requester.privateKeyPem)
+    : null;
   const sealed: SealedPlan = {
-    schemaVersion: 1, artifactSha256: computeArtifactSha256(fields), ...fields,
+    schemaVersion: 2, artifactSha256, ...fields, request,
     createdAt: (input.now ?? (() => new Date()))().toISOString(),
   };
   return { sealed, planBytes };
@@ -93,15 +119,18 @@ function build(input: SealInput): { sealed: SealedPlan; planBytes: Buffer } | Se
   try {
     return runSeal(input);
   } catch (error) {
+    const canary = canaryRefusal(error, "Nothing was sealed.");
+    if (canary) return { ok: false, ...canary };
     return {
       ok: false, code: "ARTIFACT_INVALID",
-      message: "The plan could not be sealed (" + codeOf(error) + "). Engine output is withheld because plan and state output can hold secrets.",
+      message: "The plan could not be sealed (" + codeOf(error) + ")." + sourceRuleHint(codeOf(error)) + " Engine output is withheld because plan and state output can hold secrets.",
     };
   }
 }
 
 /** Plans the pinned project against the target, keeps the plan encrypted, and returns the record approvers sign. */
 export async function sealPlan(input: SealInput): Promise<SealResult> {
+  if (!input.requester) return { ok: false, code: "ARTIFACT_INVALID", message: "A plan is sealed by a requester with an allowlisted key; none was given, so nothing was stored." };
   const built = build(input);
   if ("ok" in built) return built;
   const path = await writeEncryptedEvidence(SEAL_PURPOSE, built.sealed.artifactSha256, {
@@ -126,9 +155,27 @@ export type ReviewBundle = Omit<SealedPlan, "schemaVersion"> & { changesSha256: 
 export const reviewBundleOf = (s: SealedPlan): ReviewBundle => ({
   artifactSha256: s.artifactSha256, planSha256: s.planSha256, manifestHash: s.manifestHash, releaseIdentity: s.releaseIdentity,
   environment: s.environment, target: { ...s.target }, channel: s.channel, engineVersion: s.engineVersion, policyVersion: s.policyVersion,
-  contractSha256: s.contractSha256, sourceCommit: s.sourceCommit, createdAt: s.createdAt, changes: s.changes, changesSha256: sha256(canonicalJson(s.changes)),
-  provenance: s.provenance, unit: s.unit,
+  authorizationSha256: s.authorizationSha256, targetSha256: s.targetSha256, contractSha256: s.contractSha256, sourceCommit: s.sourceCommit, createdAt: s.createdAt, changes: s.changes, changesSha256: sha256(canonicalJson(s.changes)),
+  provenance: s.provenance, unit: s.unit, requesterId: s.requesterId, request: s.request,
 });
+
+export const REQUESTER_ID = /^[A-Za-z0-9._@+-]{1,64}$/;
+const REQUEST_NONCE = /^[a-f0-9]{32}$/;
+/**
+ * A requester signature with exactly its fields, naming this record's own artifact, environment and requester. Whether it
+ * verifies against the allowlist is the driver's and the approver's check (`verifyRequestSignature`), which needs the contract.
+ */
+export function wellFormedRequest(value: unknown): value is SealedRequest {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const r = value as Record<string, unknown>;
+  const st = r.statement as Record<string, unknown> | undefined;
+  return Object.keys(r).sort().join() === "signatureBase64,statement" && text(r.signatureBase64) && !!st && typeof st === "object" && !Array.isArray(st) &&
+    Object.keys(st).sort().join() === "artifactSha256,environment,nonce,requesterId,schemaVersion" && st.schemaVersion === 1 &&
+    typeof st.artifactSha256 === "string" && typeof st.environment === "string" && typeof st.requesterId === "string" && typeof st.nonce === "string" && REQUEST_NONCE.test(st.nonce);
+}
+/** The request names this record's own artifact, environment and requester; anything else was edited after sealing. */
+const requestBound = (request: SealedRequest, s: Pick<SealedPlan, "artifactSha256" | "environment" | "requesterId">): boolean =>
+  request.statement.artifactSha256 === s.artifactSha256 && request.statement.environment === s.environment && request.statement.requesterId === s.requesterId;
 
 const TAG_SAFE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 /** The sealed unit with exactly its fields, or null for an engine without a tag reader. */
@@ -200,16 +247,19 @@ const wellFormedChange = (c: unknown): boolean => {
  */
 export function verifySealedPlan(value: unknown): LoadedSeal {
   const { sealed: s, planBytes } = (value && typeof value === "object" ? value : {}) as Partial<LoadedPlan>;
-  if (!s || typeof s !== "object" || !Buffer.isBuffer(planBytes) || s.schemaVersion !== 1 ||
-    !ENVIRONMENTS.includes(s.environment) || !PILOT_CHANNELS.includes(s.channel) || !s.target || typeof s.target !== "object" ||
+  if (!s || typeof s !== "object" || !Buffer.isBuffer(planBytes)) return invalid("The sealed plan record is malformed.");
+  // A record sealed before the requester signed (schema 1) is refused everywhere: every environment needs a requester (owner decision, #39).
+  if (s.schemaVersion !== 2) return invalid("The sealed plan was made before requester signatures existed (or is malformed). Seal and approve a new plan.");
+  if (!ENVIRONMENTS.includes(s.environment) || !PILOT_CHANNELS.includes(s.channel) || !s.target || typeof s.target !== "object" ||
     !Array.isArray(s.changes) || !s.changes.every(wellFormedChange) ||
-    ![s.artifactSha256, s.planSha256, s.manifestHash, s.releaseIdentity, s.contractSha256].every((h) => typeof h === "string" && HASH.test(h)) ||
-    typeof s.sourceCommit !== "string" || !COMMIT.test(s.sourceCommit) || !wellFormedProvenance(s.provenance) || !wellFormedUnit(s.unit)) {
+    ![s.artifactSha256, s.planSha256, s.manifestHash, s.releaseIdentity, s.contractSha256, s.authorizationSha256, s.targetSha256].every((h) => typeof h === "string" && HASH.test(h)) ||
+    typeof s.sourceCommit !== "string" || !COMMIT.test(s.sourceCommit) || !wellFormedProvenance(s.provenance) || !wellFormedUnit(s.unit) ||
+    typeof s.requesterId !== "string" || !REQUESTER_ID.test(s.requesterId) || !wellFormedRequest(s.request)) {
     return invalid("The sealed plan record is malformed.");
   }
   let recomputed: string;
   try { recomputed = computeArtifactSha256(s); } catch { return tampered(); }
-  if (sha256(planBytes) !== s.planSha256 || recomputed !== s.artifactSha256) return tampered();
+  if (sha256(planBytes) !== s.planSha256 || recomputed !== s.artifactSha256 || !requestBound(s.request, s)) return tampered();
   return { ok: true, sealed: s, planBytes };
 }
 
@@ -220,12 +270,13 @@ export function verifyReviewBundle(value: unknown): { ok: true; bundle: ReviewBu
   if (Object.keys(b).sort().join() !== BUNDLE_KEYS.join() || !ENVIRONMENTS.includes(b.environment as ApplyEnvironment) || !PILOT_CHANNELS.includes(b.channel as PilotChannel) ||
     !["account", "backend", "workspace"].every((key) => text((t as Record<string, unknown>)[key])) ||
     !Array.isArray(b.changes) || !b.changes.every(wellFormedChange) || !text(b.engineVersion) || !text(b.policyVersion) || !text(b.createdAt) ||
-    ![b.artifactSha256, b.planSha256, b.manifestHash, b.releaseIdentity, b.contractSha256, b.changesSha256].every((h) => typeof h === "string" && HASH.test(h)) ||
-    typeof b.sourceCommit !== "string" || !COMMIT.test(b.sourceCommit) || !wellFormedProvenance(b.provenance) || !wellFormedUnit(b.unit)) {
+    ![b.artifactSha256, b.planSha256, b.manifestHash, b.releaseIdentity, b.contractSha256, b.authorizationSha256, b.targetSha256, b.changesSha256].every((h) => typeof h === "string" && HASH.test(h)) ||
+    typeof b.sourceCommit !== "string" || !COMMIT.test(b.sourceCommit) || !wellFormedProvenance(b.provenance) || !wellFormedUnit(b.unit) ||
+    typeof b.requesterId !== "string" || !REQUESTER_ID.test(b.requesterId) || !wellFormedRequest(b.request)) {
     return invalid("The review bundle is malformed.");
   }
   const bundle = b as ReviewBundle;
-  if (sha256(canonicalJson(bundle.changes)) !== bundle.changesSha256 || computeArtifactSha256(bundle) !== bundle.artifactSha256) {
+  if (sha256(canonicalJson(bundle.changes)) !== bundle.changesSha256 || computeArtifactSha256(bundle) !== bundle.artifactSha256 || !requestBound(bundle.request!, bundle)) {
     return { ok: false, code: "ARTIFACT_TAMPERED", message: "The review bundle does not match its own hashes; it was altered after sealing. Ask for a new bundle from the operator." };
   }
   return { ok: true, bundle };

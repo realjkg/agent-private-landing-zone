@@ -5,10 +5,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { signApproval } from "../src/apply/approval.js";
-import { buildCleanupProposal, computeProposalSha256, protectedDeletionIn, verifyCleanupProposal, type CleanupProposal } from "../src/apply/cleanup-proposal.js";
-import { CLEANUP_SUFFIX, loadPilotContract, pilotContractSha256 } from "../src/apply/contract.js";
-import { runApply, runCleanup, sealPreview, type ApplyDeps, type ApplyRequest } from "../src/apply/driver.js";
+import { consumeApprovals, signApproval } from "../src/apply/approval.js";
+import { buildCleanupProposal, protectedDeletionIn, signCleanupProposal, verifyCleanupProposal, type CleanupProposal } from "../src/apply/cleanup-proposal.js";
+import { CLEANUP_SUFFIX, authorizeContract, loadPilotContract, pilotContractSha256, pilotTargetSha256, targetMoved } from "../src/apply/contract.js";
+import { AZURE_DENIED_TYPES } from "../src/apply/providers/azure.js";
+import { cleanupScopeProblem, runApply, runCleanup, sealPreview, type ApplyDeps, type ApplyRequest } from "../src/apply/driver.js";
 import { readCleanupEvidence } from "../src/apply/ledger.js";
 import { loadRunRecords, observeRun, verifyProposalLeftovers, type ObserveDeps } from "../src/apply/observe.js";
 import { openNonceStore } from "../src/apply/nonces.js";
@@ -22,8 +23,10 @@ import { removeTree } from "../src/teardown/driver/cleanup.js";
 import { canonicalJson } from "../src/teardown/manifest.js";
 import { sha256 } from "../src/util/sha256.js";
 import {
-  ARM_ACCESS_TOKEN_CANARY, ARM_FEDERATED_TOKEN_CANARY, CANARIES, DEV_TARGET, NOW, POLICY, SOURCE_COMMIT, STATE_CANARY, approvalFor, azureStateResource, behave as behaveIn, callsOf, contractJson,
-  fakeArmHttp, human, identityEnv, installFakeTerraform, keys, pinPathOf, targetOf, testFixtureForgeQualificationEvidence, writePinnedContract, writeProject, type ArmBehavior, type Behavior,
+  escapeRegExp,
+  ARM_ACCESS_TOKEN_CANARY, ARM_FEDERATED_TOKEN_CANARY, CANARIES, DEV_TARGET, NOW, POLICY, SOURCE_COMMIT, STATE_CANARY, approvalFor, azureStateResource, behave as behaveIn, callsOf, canaryFor, contractJson, withCanary,
+  fakeArmHttp, human, identityEnv, installFakeTerraform, keys, targetOf, testFixtureForgeQualificationEvidence, writeReviewedContract, writeProject, type ArmBehavior, type Behavior,
+  REQUESTER, reHashedProposal,
 } from "./helpers/apply-fixtures.js";
 
 // The Azure Terraform observe and cleanup steps (docs/observe-and-cleanup.md; docs/act-pilot-plan.md "Cleanup of pilot-created
@@ -62,11 +65,16 @@ const CREATES = [
   { address: "azurerm_key_vault_secret.canary", type: "azurerm_key_vault_secret", change: { actions: ["create"], before: null, after: { value: "CANARY_SECRET_VALUE" } } },
   // Created by this run and still never proposed: the state container of the backend the pilot itself runs on.
   change("azurerm_storage_container.state", "azurerm_storage_container", ["create"]),
-  // Pre-existing (the plan updates them), shared, or imported: not this run's to delete.
-  change("azurerm_storage_account.state", "azurerm_storage_account", ["update"]),
-  change("azurerm_resource_group.state", "azurerm_resource_group", ["update"]),
-  change("azurerm_subscription_policy_assignment.shared", "azurerm_subscription_policy_assignment", ["update"]),
-  change("azurerm_key_vault.reused", "azurerm_key_vault", ["no-op"], { importing: { id: REUSED_VAULT } }),
+  // The pre-existing, shared and imported resources (the state account and its group, a shared policy assignment, a reused vault) are in the
+  // state only: a plan that updates or imports them is never sealed (owner decision E1, RESOURCE_NOT_IN_CANARY), so they reach the cleanup as
+  // resources the plan never named. `LEGACY_CHANGES` checks how a change list that names them is still classified.
+];
+/** An update or an import in a change list (a record sealed before the canary allowlist): never this run's to delete. */
+const LEGACY_CHANGES = [
+  { address: "azurerm_storage_account.state", type: "azurerm_storage_account", action: "UPDATE" },
+  { address: "azurerm_resource_group.state", type: "azurerm_resource_group", action: "UPDATE" },
+  { address: "azurerm_subscription_policy_assignment.shared", type: "azurerm_subscription_policy_assignment", action: "UPDATE" },
+  { address: "azurerm_key_vault.reused", type: "azurerm_key_vault", action: "SAME", importing: true as const },
 ];
 const STATE = [
   azureStateResource("azurerm_resource_group", "pilot", RG), azureStateResource("azurerm_log_analytics_workspace", "pilot", LAW), azureStateResource("azurerm_key_vault_secret", "canary", SECRET),
@@ -81,9 +89,28 @@ const TAGGED = [RG, LAW];
 const CLOUD: ArmBehavior = { existing: EXISTING, tagged: TAGGED };
 /** What stays after a cleanup: everything the proposal keeps, the run's own resource group among them (a pilot cleanup never deletes a group). */
 const RETAINED = [RG, STATE_ACCOUNT, RG_STATE, OLD_ROLE, POLICY_ASSIGNMENT, REUSED_VAULT, UNRELATED_VNET];
-const fixtureContractPath = (() => { const path = join(fresh("contract"), "act-pilot-contract.json"); writePinnedContract(path, contractJson(KILL)); return path; })();
-const UNIT = pilotUnitOf({ provider: "AZURE", contractSha256: pilotContractSha256(loadPilotContract(fixtureContractPath, pinPathOf(fixtureContractPath)) as PilotContract), environment: "DEV", target: targetOf("DEV") });
-const behave = (behavior: Behavior = {}) => behaveIn(toolDir, KILL, { applyAdvance: true, showOnlyConfigured: true, showResources: CREATES, stateResources: STATE, unitTags: { ...UNIT.tags }, unitTagAttribute: "tags", ...behavior });
+/**
+ * The run's contract names, as its canary allowlist (owner decision E1), exactly what the plan the fake shows creates; a scenario that plans
+ * other creates gets its own contract (`behave` with `showResources` rewrites the current world's), and with it its own deletion unit.
+ */
+const contractFor = (creates: readonly unknown[]) => withCanary(contractJson(KILL), canaryFor(creates));
+const unitOf = (contract: unknown) => {
+  const path = join(fresh("contract"), "act-pilot-contract.json");
+  writeReviewedContract(path, contract);
+  return pilotUnitOf({ provider: "AZURE", contractSha256: pilotContractSha256(loadPilotContract(path) as PilotContract), environment: "DEV", target: targetOf("DEV") });
+};
+let UNIT = unitOf(contractFor(CREATES));
+/** The default run's contract, for the checks that read one without a run. */
+const fixtureContractPath = (() => { const path = join(fresh("contract"), "act-pilot-contract.json"); writeReviewedContract(path, contractFor(CREATES)); return path; })();
+let current: World | undefined;
+const behave = (behavior: Behavior = {}) => {
+  if (current && behavior.showResources !== undefined) {
+    current.contract = contractFor(behavior.showResources);
+    writeReviewedContract(current.contractPath, current.contract);
+    UNIT = unitOf(current.contract);
+  }
+  behaveIn(toolDir, KILL, { applyAdvance: true, showOnlyConfigured: true, showResources: CREATES, stateResources: STATE, unitTags: { ...UNIT.tags }, unitTagAttribute: "tags", ...behavior });
+};
 const calls = () => callsOf(toolDir);
 const applyCalls = () => calls().filter((c) => c.args[0] === "apply");
 const destroyPlans = () => calls().filter((c) => c.args[0] === "plan" && c.args[1] === "-destroy");
@@ -94,35 +121,37 @@ const tokenFile = join(fresh("token"), "discovery-oidc-token");
 writeFileSync(tokenFile, ARM_FEDERATED_TOKEN_CANARY + "\n", { mode: 0o600 });
 const env = (): NodeJS.ProcessEnv => ({ ...identityEnv("DEV"), ALZ_DISCOVERY_ARM_OIDC_TOKEN_FILE: tokenFile });
 
-type World = { deps: ApplyDeps; dirs: { scratch: string; evidence: string; nonces: string }; contractPath: string; arm: ReturnType<typeof fakeArmHttp> };
+type World = { deps: ApplyDeps; dirs: { scratch: string; evidence: string; nonces: string }; contractPath: string; contract: unknown; arm: ReturnType<typeof fakeArmHttp> };
 let vaultDir = "";
 test.before(async () => {
   vaultDir = fresh("qualification");
   await testFixtureForgeQualificationEvidence(vaultDir);
 });
 function world(cloudBehavior: ArmBehavior = CLOUD): World {
-  behave();
   const dirs = { scratch: fresh("scratch"), evidence: fresh("evidence"), nonces: fresh("nonces") };
   const contractPath = join(fresh("contract"), "act-pilot-contract.json");
-  writePinnedContract(contractPath, contractJson(KILL));
+  const contract = contractFor(CREATES);
+  writeReviewedContract(contractPath, contract);
+  UNIT = unitOf(contract);
+  behave();
   const arm = fakeArmHttp(cloudBehavior);
-  return {
-    dirs, contractPath, arm,
+  return current = {
+    dirs, contractPath, contract, arm,
     deps: {
-      sourceCommit: SOURCE_COMMIT, contractPath, contractPinPath: pinPathOf(contractPath), qualificationDir: vaultDir, evidenceDir: dirs.evidence, nonces: openNonceStore(dirs.nonces),
+      sourceCommit: SOURCE_COMMIT, contractPath, qualificationDir: vaultDir, evidenceDir: dirs.evidence, nonces: openNonceStore(dirs.nonces),
       env: env(), now: () => NOW, scratchParent: dirs.scratch, toolDirs: [toolDir], killPollMs: 40, killGraceMs: 400, arm: arm.http,
     },
   };
 }
 const observeDeps = (w: World, now: Date = new Date(NOW.getTime() + 60_000)): ObserveDeps => ({
-  contractPath: w.contractPath, contractPinPath: pinPathOf(w.contractPath), evidenceDir: w.dirs.evidence, env: w.deps.env, toolDirs: w.deps.toolDirs, scratchParent: w.dirs.scratch, now: () => now, arm: w.arm.http,
+  contractPath: w.contractPath, evidenceDir: w.dirs.evidence, env: w.deps.env, toolDirs: w.deps.toolDirs, scratchParent: w.dirs.scratch, now: () => now, arm: w.arm.http,
 });
 const cloud = (w: World, behavior: ArmBehavior) => w.arm.behave(behavior);
 
 async function seal(w: World) {
   const target = targetOf("DEV");
   const p = writeProject(fresh("project"), target);
-  const result = await sealPreview({ invocation: human(target), environment: "DEV", target, manifest: p.manifest, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved }, w.deps);
+  const result = await sealPreview({ invocation: human(target), environment: "DEV", target, manifest: p.manifest, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved, requester: REQUESTER }, w.deps);
   assert.ok(result.ok, JSON.stringify(result));
   const loaded = await loadSealedPlan(result.path);
   assert.ok(loaded.ok);
@@ -138,8 +167,8 @@ async function applied(w: World) {
   assert.ok(result.ok, JSON.stringify(result));
   return { s, evidence: result.evidence };
 }
-const build = (w: World, s: Sealed, records: Awaited<ReturnType<typeof loadRunRecords>> & { ok: true }) => buildCleanupProposal({
-  ...records, changes: s.sealed.changes, channel: "CLI", contract: contractJson(KILL) as never, engineVersion: s.sealed.engineVersion, env: w.deps.env!, now: new Date(NOW.getTime() + 120_000),
+const build = (w: World, s: Sealed, records: Awaited<ReturnType<typeof loadRunRecords>> & { ok: true }) => buildCleanupProposal({ requesterId: REQUESTER.requesterId,
+  ...records, changes: s.sealed.changes, channel: "CLI", contract: w.contract as never, engineVersion: s.sealed.engineVersion, env: w.deps.env!, now: new Date(NOW.getTime() + 120_000),
 });
 async function proposed(w: World) {
   const run = await applied(w);
@@ -149,7 +178,7 @@ async function proposed(w: World) {
   assert.ok(records.ok, JSON.stringify(records));
   const built = build(w, run.s, records);
   assert.ok(built.ok, JSON.stringify(built));
-  return { ...run, observation, records, proposal: built.proposal };
+  return { ...run, observation, records, proposal: signCleanupProposal(built.proposal, REQUESTER.privateKeyPem) };
 }
 const cleanupApproval = (proposal: CleanupProposal, who: keyof typeof keys): SignedApproval => signApproval({
   schemaVersion: 1, artifactSha256: proposal.proposalSha256, environment: proposal.environment, target: proposal.target, approverId: who,
@@ -158,6 +187,36 @@ const cleanupApproval = (proposal: CleanupProposal, who: keyof typeof keys): Sig
 const cleanup = (w: World, run: Awaited<ReturnType<typeof proposed>>, approvals: SignedApproval[] = [cleanupApproval(run.proposal, "alice")], proposal: CleanupProposal = run.proposal) => runCleanup({
   invocation: human(run.s.sealed.target), environment: "DEV", target: { ...run.s.sealed.target }, proposal, sealedPlan: run.s.loaded, manifest: run.s.project.manifest, projectRoot: run.s.project.projectRoot, approvals,
 }, w.deps);
+
+/**
+ * Review of #327, B2 and round 2 B1. This release admits neither azapi nor azuread (`PROVIDER_NOT_ADMITTED`) nor a template
+ * deployment (`PROVIDER_TYPE_NOT_ALLOWED`, `AZURE_DENIED_TYPES`), so their objects reach the cleanup as STATE DATA only (the
+ * classifier's input: `stateResources`), never as a sealed create: `admitted` drops them from what the seal plans. The classifier
+ * reads protection before plan membership, so they are kept by the same rule. A destroy plan that names one is refused by the plan
+ * judge first (`TARGET_NOT_IN_CONTRACT`, the judge's code in the message), with nothing destroyed and no approval consumed; for
+ * such an address the policy check's own refusal is asserted on `protectedDeletionIn`, the function the driver runs next, with this
+ * run's blueprint and the driver's words.
+ */
+const judgeCodeOf = (type: string): string | undefined =>
+  /^(azapi|azuread)_/.test(type) ? "PROVIDER_NOT_ADMITTED" : AZURE_DENIED_TYPES.has(type) ? "PROVIDER_TYPE_NOT_ALLOWED" : undefined;
+const notAdmitted = (type: string): boolean => judgeCodeOf(type) !== undefined;
+const admitted = <T extends { type?: string }>(items: readonly T[]): T[] => items.filter((item) => !notAdmitted(item.type ?? ""));
+async function destroyPlanRefused(w: World, run: Awaited<ReturnType<typeof proposed>>, approvals: SignedApproval[], show: { type?: string }[], state: unknown[], address: string, type: string, pattern: RegExp): Promise<{ ok: boolean }> {
+  behave({ showResources: admitted(show), stateResources: state, destroyExtra: [{ address, type, change: { actions: ["delete"], before: {}, after: null } }] });
+  const taken = await cleanup(w, run, approvals);
+  if (!notAdmitted(type)) {
+    refused(taken, "PROPOSAL_SCOPE_MISMATCH");
+    assert.match((taken as { message: string }).message, pattern, address);
+    return taken;
+  }
+  refused(taken, "TARGET_NOT_IN_CONTRACT");
+  assert.match((taken as { message: string }).message, new RegExp("\\(" + escapeRegExp(judgeCodeOf(type)!) + "\\)\\. Nothing was destroyed and no approval was consumed"), address + ": the plan judge refuses the destroy plan first, by its own code");
+  const policy = protectedDeletionIn([{ address, type, action: "DELETE" }], run.records.blueprint.blueprint.entries, loadPilotContract(fixtureContractPath) as PilotContract, w.deps.env!,
+    { account: run.proposal.target.account, addresses: new Set(run.proposal.deletes.map((d) => d.address)) });
+  assert.ok(policy, address + ": the policy check refuses it too");
+  assert.match(policy + " Nothing was destroyed and no approval was consumed.", pattern, address + ": in the driver's words");
+  return taken;
+}
 
 /** Every place a token could leak into: the recorded requests' URLs and headers other than the bearer, the records, the result. */
 function noTokenIn(w: World, ...texts: unknown[]): void {
@@ -184,10 +243,11 @@ test("Azure Terraform observe: after a successful apply the driver records the b
   const blueprint = await readBlueprintRecord(s.sealed.artifactSha256, sha256(canonicalJson(evidence as never)), w.dirs.evidence);
   assert.ok(blueprint);
   assert.deepEqual(sorted(blueprint.blueprint.entries.map((e) => [e.address, e.origin, e.id, e.arn])), sorted([
-    ["azuread_application.pilot", "NOT_IN_PLAN", APP, null], ["azurerm_key_vault.reused", "IN_PLAN", REUSED_VAULT, null], ["azurerm_key_vault_secret.canary", "IN_PLAN", SECRET, null],
-    ["azurerm_log_analytics_workspace.pilot", "IN_PLAN", LAW, null], ["azurerm_resource_group.pilot", "IN_PLAN", RG, null], ["azurerm_resource_group.state", "IN_PLAN", RG_STATE, null],
-    ["azurerm_role_assignment.old", "NOT_IN_PLAN", OLD_ROLE, null], ["azurerm_storage_account.state", "IN_PLAN", STATE_ACCOUNT, null], ["azurerm_storage_container.state", "IN_PLAN", STATE_CONTAINER, null],
-    ["azurerm_subscription_policy_assignment.shared", "IN_PLAN", POLICY_ASSIGNMENT, null], ["azurerm_virtual_network.unrelated", "NOT_IN_PLAN", UNRELATED_VNET, null],
+    // The pre-existing, shared and imported resources are in the state, never in the plan (owner decision E1).
+    ["azuread_application.pilot", "NOT_IN_PLAN", APP, null], ["azurerm_key_vault.reused", "NOT_IN_PLAN", REUSED_VAULT, null], ["azurerm_key_vault_secret.canary", "IN_PLAN", SECRET, null],
+    ["azurerm_log_analytics_workspace.pilot", "IN_PLAN", LAW, null], ["azurerm_resource_group.pilot", "IN_PLAN", RG, null], ["azurerm_resource_group.state", "NOT_IN_PLAN", RG_STATE, null],
+    ["azurerm_role_assignment.old", "NOT_IN_PLAN", OLD_ROLE, null], ["azurerm_storage_account.state", "NOT_IN_PLAN", STATE_ACCOUNT, null], ["azurerm_storage_container.state", "IN_PLAN", STATE_CONTAINER, null],
+    ["azurerm_subscription_policy_assignment.shared", "NOT_IN_PLAN", POLICY_ASSIGNMENT, null], ["azurerm_virtual_network.unrelated", "NOT_IN_PLAN", UNRELATED_VNET, null],
   ]));
   const raw = JSON.stringify(await readEncryptedEvidence(join(w.dirs.evidence, s.sealed.artifactSha256 + BLUEPRINT_SUFFIX)));
   for (const canary of [...CANARIES, STATE_CANARY]) assert.ok(!raw.includes(canary), "a state value reached the blueprint: " + canary);
@@ -364,8 +424,8 @@ test("the Azure reader sends nothing to a foreign host, a plaintext or login-hos
 const withoutSecret = <T extends { address?: string; type?: string }>(items: readonly T[]): T[] => items.filter((item) => !(item.address ?? item.type ?? "").includes("key_vault_secret"));
 /** The exclusions the fixture always produces: everything this run did not create, or must never delete. */
 const PROTECTED_EXCLUSIONS: [string, string][] = [
-  ["azuread_application.pilot", "PROTECTED_IDENTITY"], ["azurerm_key_vault.reused", "IMPORTED"], ["azurerm_resource_group.pilot", "RETAINED_GROUP"], ["azurerm_resource_group.state", "PROTECTED_BACKEND"], ["azurerm_role_assignment.old", "PROTECTED_IDENTITY"],
-  // The shared policy assignment the plan only updated is kept as an authorization object, not merely as pre-existing: the protection is judged first (review 6409512569, B2).
+  ["azuread_application.pilot", "PROTECTED_IDENTITY"], ["azurerm_key_vault.reused", "NOT_IN_PLAN"], ["azurerm_resource_group.pilot", "RETAINED_GROUP"], ["azurerm_resource_group.state", "PROTECTED_BACKEND"], ["azurerm_role_assignment.old", "PROTECTED_IDENTITY"],
+  // The shared policy assignment is kept as an authorization object, not merely as pre-existing: the protection is judged first (review 6409512569, B2).
   ["azurerm_storage_account.state", "PROTECTED_BACKEND"], ["azurerm_storage_container.state", "PROTECTED_BACKEND"], ["azurerm_subscription_policy_assignment.shared", "PROTECTED_IDENTITY"], ["azurerm_virtual_network.unrelated", "NOT_IN_PLAN"],
 ];
 /** Who keeps each kept resource: the pilot owner for a protected class, the environment's owner for a resource this run did not create. */
@@ -387,6 +447,17 @@ test("Azure Terraform cleanup: the proposal keeps the resource group this run cr
   assert.ok(run.proposal.risks.some((r) => /intentionally retained.*retiring the environment.*separate, reviewed action.*outstanding/.test(r)), "the approvers read that protected objects stay and the environment is not retired");
   assert.equal(run.proposal.unitId, UNIT.unitId);
   noTokenIn(w, run.proposal, run.observation.record);
+  // A change list that also names updates (a record sealed before the canary allowlist) still keeps each resource, and the shared policy
+  // assignment still as an authorization object: the protection is judged first (review 6409512569, B2). The vault the record says was
+  // imported is still a resource the blueprint found outside the plan, so it stays NOT_IN_PLAN.
+  const legacy = buildCleanupProposal({ requesterId: REQUESTER.requesterId, ...run.records, changes: [...run.s.sealed.changes, ...LEGACY_CHANGES], channel: "CLI",
+    contract: w.contract as never, engineVersion: run.s.sealed.engineVersion, env: w.deps.env!, now: new Date(NOW.getTime() + 120_000) });
+  assert.ok(legacy.ok, JSON.stringify(legacy));
+  assert.deepEqual(sorted(legacy.proposal.excluded.filter((x) => LEGACY_CHANGES.some((c) => c.address === x.address)).map((x) => [x.address, x.ownership])), sorted([
+    ["azurerm_key_vault.reused", "NOT_IN_PLAN"], ["azurerm_resource_group.state", "PROTECTED_BACKEND"], ["azurerm_storage_account.state", "PROTECTED_BACKEND"],
+    ["azurerm_subscription_policy_assignment.shared", "PROTECTED_IDENTITY"],
+  ]));
+  assert.deepEqual(legacy.proposal.deletes.map((d) => d.address), run.proposal.deletes.map((d) => d.address), "nothing an update or an import names is ever proposed");
 
   const result = await cleanup(w, run);
   assert.ok(result.ok, JSON.stringify(result));
@@ -427,7 +498,8 @@ test("Azure Terraform cleanup: the proposal keeps the resource group this run cr
   assert.deepEqual(sorted(leftovers.record.resources.filter((r) => r.disposition === "INTENTIONALLY_RETAINED").map((r) => [r.address, r.basis, r.owner])),
     sorted(PROTECTED_EXCLUSIONS.map(([address, ownership]) => [address, "RETENTION_DECISION", RETAINED_BY[ownership]])), "every kept resource has a named owner");
   assert.ok(leftovers.record.resources.filter((r) => r.disposition === "INTENTIONALLY_RETAINED").every((r) => /^[A-Z_]+: .{10,}/.test(r.reason ?? "")), "and a reason");
-  assert.match(leftovers.record.nextAction, /^Approved resources deleted.*Protected objects intentionally retained \(9, kept by ENVIRONMENT_OWNER and PILOT_OWNER\).*environment retirement.*separate, reviewed action and remains outstanding.*does not claim the environment retired/);
+  assert.match(leftovers.record.nextAction, /^Approved resources deleted: every listed resource \(1\) is confirmed gone.*Protected or pre-existing objects intentionally retained \(9, kept by ENVIRONMENT_OWNER and PILOT_OWNER\); they were never on the list, were left in place and were not read.*environment retirement is a separate, reviewed action and remains outstanding.*does not claim the environment retired/);
+  assert.ok(!/resource group|identities and grants|state backend/.test(leftovers.record.nextAction), "no cloud's list of protected kinds is recited");
   assert.ok(!/environment (is |was )?deleted|entire environment/.test(leftovers.record.nextAction));
   assert.ok(!JSON.stringify(leftovers.record).includes("CLOUD_CONTROL"), "no record of an Azure run names a service that did not answer");
   noTokenIn(w, leftovers.record, result.evidence);
@@ -455,7 +527,7 @@ test("Azure resource groups are never deleted: a group this run created, through
     azureStateResource("azurerm_subscription", "vended", ALIAS), azureStateResource("azurerm_management_group", "platform", MG)];
   const existing = [...EXISTING, AZAPI_RG, AZAPI_OWNED];
   const w = world({ existing, tagged: [...TAGGED, AZAPI_RG, AZAPI_OWNED] });
-  behave({ showResources: creates, stateResources: state });
+  behave({ showResources: admitted(creates), stateResources: state });
   const run = await proposed(w);
   // Both groups were created by this run, hold nothing foreign, and are still never proposed; what they hold is.
   assert.deepEqual(run.proposal.deletes.map((d) => d.address), ["azurerm_log_analytics_workspace.pilot", "azurerm_storage_account.azapi"]);
@@ -474,10 +546,8 @@ test("Azure resource groups are never deleted: a group this run created, through
   // Indirect deletion: the engine's destroy plan would take a group along (as a dependent of an approved resource). Refused before
   // anything is consumed, and the refusal names the policy, not just the extra address; the same for a group known only by its id.
   for (const [address, type] of [["azurerm_resource_group.pilot", "azurerm_resource_group"], ["azapi_resource.rg", "azapi_resource"]] as const) {
-    behave({ showResources: creates, stateResources: state, destroyExtra: [{ address, type, change: { actions: ["delete"], before: {}, after: null } }] });
-    const grown = await cleanup(w, run, [approval]);
-    refused(grown, "PROPOSAL_SCOPE_MISMATCH");
-    assert.match((grown as { message: string }).message, new RegExp("would delete " + address.replace(".", "\\.") + ", a resource group, which a pilot cleanup never deletes, directly or as a dependent \\(RETAINED_GROUP\\).*Nothing was destroyed and no approval was consumed"));
+    await destroyPlanRefused(w, run, [approval], creates, state, address, type,
+      new RegExp("would delete " + escapeRegExp(address) + ", a resource group, which a pilot cleanup never deletes, directly or as a dependent \\(RETAINED_GROUP\\).*Nothing was destroyed and no approval was consumed"));
     assert.equal(destroyPlans().length, 1, address + ": the destroy was planned and stopped there");
     assert.equal(applyCalls().length, 0, address + ": no destroy was applied");
   }
@@ -486,13 +556,13 @@ test("Azure resource groups are never deleted: a group this run created, through
   const row = (address: string, type: string, identifier: string) => ({ address, type, identifier, ownership: "RUN_CREATED" as const, observed: "VERIFIED" as const });
   for (const [address, type, id] of [["azurerm_resource_group.pilot", "azurerm_resource_group", RG], ["azapi_resource.rg", "azapi_resource", AZAPI_RG], ["azurerm_subscription.vended", "azurerm_subscription", ALIAS], ["azurerm_management_group.platform", "azurerm_management_group", MG]] as const) {
     const fields = { ...run.proposal, deletes: [...run.proposal.deletes, row(address, type, id)].sort((a, b) => (a.address < b.address ? -1 : 1)), excluded: run.proposal.excluded.filter((x) => x.address !== address) };
-    const forged = { ...fields, proposalSha256: computeProposalSha256(fields) };
+    const forged = reHashedProposal(fields);
     assert.ok(verifyCleanupProposal(forged).ok, address + ": self-consistent");
     refused(await cleanup(w, run, [cleanupApproval(forged, "alice")], forged), "PROPOSAL_INVALID");
   }
   assert.equal(destroyPlans().length, 1, "no forgery reached the engine");
   // With the honest destroy plan the same, unconsumed approval runs once: the groups stay, and the leftover check records them as retained.
-  behave({ showResources: creates, stateResources: state });
+  behave({ showResources: admitted(creates), stateResources: state });
   const done = await cleanup(w, run, [approval]);
   assert.ok(done.ok, JSON.stringify(done));
   assert.deepEqual(done.evidence.deletes, run.proposal.deletes.map((d) => d.address));
@@ -511,7 +581,7 @@ test("Azure cleanup denied: a forged, re-hashed proposal naming the backend acco
   const honest = run.proposal;
   const rehashed = (edit: Partial<CleanupProposal>): CleanupProposal => {
     const fields = { ...honest, ...edit, deletes: [...(edit.deletes ?? honest.deletes)].sort((a, b) => (a.address < b.address ? -1 : 1)) };
-    return { ...fields, proposalSha256: computeProposalSha256(fields) };
+    return reHashedProposal(fields);
   };
   const row = (address: string, type: string, identifier: string) => ({ address, type, identifier, ownership: "RUN_CREATED" as const, observed: "VERIFIED" as const });
   const without = (address: string) => honest.excluded.filter((x) => x.address !== address);
@@ -618,7 +688,10 @@ test("Azure identity, authorization and deployment-history objects are never del
   const PIM = DATA + "/providers/Microsoft.Authorization/roleEligibilityScheduleRequests/77777777-aaaa-4aaa-8aaa-777777777777";
   const RES_DEPLOYMENT = DATA + "/providers/Microsoft.Resources/deployments/alz-pilot-resource-deploy";
   const MG_DEPLOYMENT = "/providers/Microsoft.Management/managementGroups/mg-platform/providers/Microsoft.Resources/deployments/alz-pilot-mg-deploy";
-  const POLICY_ASSIGNED = RG + "/providers/Microsoft.Authorization/policyAssignments/alz-pilot-policy";
+  // A policy assignment at a management group: never a scope the pilot contract owns, so it stays an authorization object the cleanup keeps.
+  // (A run-created assignment at the target subscription's own scopes is a reviewed run-created policy since owner decision item 2 (c);
+  // test/apply-cleanup-policies.test.ts proves it is deleted and every other policy object kept.)
+  const POLICY_ASSIGNED = "/providers/Microsoft.Management/managementGroups/mg-platform/providers/Microsoft.Authorization/policyAssignments/alz-pilot-policy";
   const LOCK = RG + "/providers/Microsoft.Authorization/locks/alz-pilot-lock";
   const AZAPI_POLICY = DATA + "/providers/Microsoft.Authorization/policyExemptions/alz-pilot-exemption";
   const creates = [...withoutSecret(CREATES),
@@ -628,23 +701,23 @@ test("Azure identity, authorization and deployment-history objects are never del
     change("azurerm_storage_account.data", "azurerm_storage_account", ["create"]),
     change("azapi_resource.ext_grant", "azapi_resource", ["create"]), change("azurerm_pim_eligible_role_assignment.pilot", "azurerm_pim_eligible_role_assignment", ["create"]),
     change("azapi_resource.res_deploy", "azapi_resource", ["create"]), change("azapi_resource.mg_deploy", "azapi_resource", ["create"]),
-    change("azurerm_resource_group_policy_assignment.pilot", "azurerm_resource_group_policy_assignment", ["create"]), change("azurerm_management_lock.pilot", "azurerm_management_lock", ["create"]),
+    change("azurerm_management_group_policy_assignment.pilot", "azurerm_management_group_policy_assignment", ["create"]), change("azurerm_management_lock.pilot", "azurerm_management_lock", ["create"]),
     change("azapi_resource.exemption", "azapi_resource", ["create"])];
   const state = [...withoutSecret(STATE as { type: string }[]),
     azureStateResource("azurerm_role_assignment", "pilot", NEW_ROLE), azureStateResource("azurerm_role_definition", "pilot", ROLE_DEF), azureStateResource("azurerm_user_assigned_identity", "pilot", UAI),
     azureStateResource("azuread_service_principal", "pilot", SP), azureStateResource("azapi_resource", "grant", AZAPI_GRANT),
     azureStateResource("azurerm_resource_group_template_deployment", "pilot", DEPLOYMENT), azureStateResource("azapi_resource", "deploy", AZAPI_DEPLOYMENT), azureStateResource("azurerm_storage_account", "data", DATA),
     azureStateResource("azapi_resource", "ext_grant", EXT_GRANT), azureStateResource("azurerm_pim_eligible_role_assignment", "pilot", PIM), azureStateResource("azapi_resource", "res_deploy", RES_DEPLOYMENT),
-    azureStateResource("azapi_resource", "mg_deploy", MG_DEPLOYMENT), azureStateResource("azurerm_resource_group_policy_assignment", "pilot", POLICY_ASSIGNED), azureStateResource("azurerm_management_lock", "pilot", LOCK),
+    azureStateResource("azapi_resource", "mg_deploy", MG_DEPLOYMENT), azureStateResource("azurerm_management_group_policy_assignment", "pilot", POLICY_ASSIGNED), azureStateResource("azurerm_management_lock", "pilot", LOCK),
     azureStateResource("azapi_resource", "exemption", AZAPI_POLICY)];
   const existing = [...EXISTING, NEW_ROLE, ROLE_DEF, UAI, AZAPI_GRANT, DEPLOYMENT, AZAPI_DEPLOYMENT, DATA, EXT_GRANT, PIM, RES_DEPLOYMENT, POLICY_ASSIGNED, LOCK, AZAPI_POLICY];
   const w = world({ existing, tagged: [...TAGGED, UAI, DATA] });
-  behave({ showResources: creates, stateResources: state });
+  behave({ showResources: admitted(creates), stateResources: state });
   const run = await proposed(w);
   assert.deepEqual(run.proposal.deletes.map((d) => d.address), ["azurerm_log_analytics_workspace.pilot", "azurerm_storage_account.data"], "only plain run-owned resources are proposed");
   const kept = new Map(run.proposal.excluded.map((x) => [x.address, x]));
   for (const address of ["azurerm_role_assignment.pilot", "azurerm_role_definition.pilot", "azurerm_user_assigned_identity.pilot", "azuread_service_principal.pilot", "azapi_resource.grant",
-    "azapi_resource.ext_grant", "azurerm_pim_eligible_role_assignment.pilot", "azurerm_resource_group_policy_assignment.pilot", "azurerm_management_lock.pilot", "azapi_resource.exemption"]) {
+    "azapi_resource.ext_grant", "azurerm_pim_eligible_role_assignment.pilot", "azurerm_management_group_policy_assignment.pilot", "azurerm_management_lock.pilot", "azapi_resource.exemption"]) {
     assert.equal(kept.get(address)?.ownership, "PROTECTED_IDENTITY", address);
     assert.equal(kept.get(address)?.retainedBy, "PILOT_OWNER", address);
     assert.match(kept.get(address)!.reason, /never deleted by a cleanup, directly or as a dependent/, address);
@@ -666,17 +739,15 @@ test("Azure identity, authorization and deployment-history objects are never del
     ["azurerm_pim_eligible_role_assignment.pilot", "azurerm_pim_eligible_role_assignment", "an identity or authorization object", "PROTECTED_IDENTITY"],
     ["azapi_resource.res_deploy", "azapi_resource", "deployment history", "PROTECTED_DEPLOYMENT"],
     ["azapi_resource.mg_deploy", "azapi_resource", "deployment history", "PROTECTED_DEPLOYMENT"],
-    ["azurerm_resource_group_policy_assignment.pilot", "azurerm_resource_group_policy_assignment", "an identity or authorization object", "PROTECTED_IDENTITY"],
+    ["azurerm_management_group_policy_assignment.pilot", "azurerm_management_group_policy_assignment", "an identity or authorization object", "PROTECTED_IDENTITY"],
     ["azurerm_management_lock.pilot", "azurerm_management_lock", "an identity or authorization object", "PROTECTED_IDENTITY"],
     ["azapi_resource.exemption", "azapi_resource", "an identity or authorization object", "PROTECTED_IDENTITY"],
     // A dependent the state does not even hold is classified by its type alone.
     ["azurerm_role_assignment.appeared", "azurerm_role_assignment", "an identity or authorization object", "PROTECTED_IDENTITY"],
     ["azurerm_management_lock.appeared", "azurerm_management_lock", "an identity or authorization object", "PROTECTED_IDENTITY"],
   ] as const) {
-    behave({ showResources: creates, stateResources: state, destroyExtra: [{ address, type, change: { actions: ["delete"], before: {}, after: null } }] });
-    const taken = await cleanup(w, run, [approval]);
-    refused(taken, "PROPOSAL_SCOPE_MISMATCH");
-    assert.match((taken as { message: string }).message, new RegExp("would delete " + address.replace(".", "\\.") + ", " + what + ", which a pilot cleanup never deletes, directly or as a dependent \\(" + cls + "\\)"), address);
+    await destroyPlanRefused(w, run, [approval], creates, state, address, type,
+      new RegExp("would delete " + escapeRegExp(address) + ", " + what + ", which a pilot cleanup never deletes, directly or as a dependent \\(" + cls + "\\)"));
     assert.deepEqual([destroyPlans().length, applyCalls().length], [1, 0], address + ": planned, then stopped; no destroy was applied");
   }
   assert.deepEqual(readdirSync(w.dirs.evidence).filter((n) => n.endsWith(CLEANUP_SUFFIX)), []);
@@ -685,15 +756,15 @@ test("Azure identity, authorization and deployment-history objects are never del
   for (const [address, type, id] of [["azurerm_role_assignment.pilot", "azurerm_role_assignment", NEW_ROLE], ["azurerm_role_definition.pilot", "azurerm_role_definition", ROLE_DEF], ["azurerm_user_assigned_identity.pilot", "azurerm_user_assigned_identity", UAI],
     ["azapi_resource.grant", "azapi_resource", AZAPI_GRANT], ["azurerm_resource_group_template_deployment.pilot", "azurerm_resource_group_template_deployment", DEPLOYMENT], ["azapi_resource.deploy", "azapi_resource", AZAPI_DEPLOYMENT],
     ["azapi_resource.ext_grant", "azapi_resource", EXT_GRANT], ["azurerm_pim_eligible_role_assignment.pilot", "azurerm_pim_eligible_role_assignment", PIM], ["azapi_resource.res_deploy", "azapi_resource", RES_DEPLOYMENT],
-    ["azapi_resource.mg_deploy", "azapi_resource", MG_DEPLOYMENT], ["azurerm_resource_group_policy_assignment.pilot", "azurerm_resource_group_policy_assignment", POLICY_ASSIGNED],
+    ["azapi_resource.mg_deploy", "azapi_resource", MG_DEPLOYMENT], ["azurerm_management_group_policy_assignment.pilot", "azurerm_management_group_policy_assignment", POLICY_ASSIGNED],
     ["azurerm_management_lock.pilot", "azurerm_management_lock", LOCK], ["azapi_resource.exemption", "azapi_resource", AZAPI_POLICY]] as const) {
     const fields = { ...run.proposal, deletes: [...run.proposal.deletes, row(address, type, id)].sort((a, b) => (a.address < b.address ? -1 : 1)), excluded: run.proposal.excluded.filter((x) => x.address !== address) };
-    const forged = { ...fields, proposalSha256: computeProposalSha256(fields) };
+    const forged = reHashedProposal(fields);
     assert.ok(verifyCleanupProposal(forged).ok, address);
     refused(await cleanup(w, run, [cleanupApproval(forged, "alice")], forged), "PROPOSAL_INVALID");
   }
   // The honest plan runs once with the same approval; afterwards every protected object is recorded retained by the pilot owner, and the cleanup is COMPLETE.
-  behave({ showResources: creates, stateResources: state });
+  behave({ showResources: admitted(creates), stateResources: state });
   const done = await cleanup(w, run, [approval]);
   assert.ok(done.ok, JSON.stringify(done));
   cloud(w, { existing: [RG, NEW_ROLE, ROLE_DEF, UAI, AZAPI_GRANT, DEPLOYMENT, AZAPI_DEPLOYMENT, EXT_GRANT, PIM, RES_DEPLOYMENT, POLICY_ASSIGNED, LOCK, AZAPI_POLICY, ...RETAINED], tagged: [RG, UAI] });
@@ -705,13 +776,13 @@ test("Azure identity, authorization and deployment-history objects are never del
       ["azurerm_role_assignment.pilot", "INTENTIONALLY_RETAINED", "PILOT_OWNER"], ["azurerm_role_definition.pilot", "INTENTIONALLY_RETAINED", "PILOT_OWNER"], ["azurerm_user_assigned_identity.pilot", "INTENTIONALLY_RETAINED", "PILOT_OWNER"],
       ["azapi_resource.grant", "INTENTIONALLY_RETAINED", "PILOT_OWNER"], ["azurerm_resource_group_template_deployment.pilot", "INTENTIONALLY_RETAINED", "PILOT_OWNER"], ["azapi_resource.deploy", "INTENTIONALLY_RETAINED", "PILOT_OWNER"],
       ["azapi_resource.ext_grant", "INTENTIONALLY_RETAINED", "PILOT_OWNER"], ["azurerm_pim_eligible_role_assignment.pilot", "INTENTIONALLY_RETAINED", "PILOT_OWNER"], ["azapi_resource.res_deploy", "INTENTIONALLY_RETAINED", "PILOT_OWNER"],
-      ["azapi_resource.mg_deploy", "INTENTIONALLY_RETAINED", "PILOT_OWNER"], ["azurerm_resource_group_policy_assignment.pilot", "INTENTIONALLY_RETAINED", "PILOT_OWNER"], ["azurerm_management_lock.pilot", "INTENTIONALLY_RETAINED", "PILOT_OWNER"],
+      ["azapi_resource.mg_deploy", "INTENTIONALLY_RETAINED", "PILOT_OWNER"], ["azurerm_management_group_policy_assignment.pilot", "INTENTIONALLY_RETAINED", "PILOT_OWNER"], ["azurerm_management_lock.pilot", "INTENTIONALLY_RETAINED", "PILOT_OWNER"],
       ["azapi_resource.exemption", "INTENTIONALLY_RETAINED", "PILOT_OWNER"], ["azurerm_subscription_policy_assignment.shared", "INTENTIONALLY_RETAINED", "PILOT_OWNER"]]));
   noTokenIn(w, run.proposal, leftovers.record);
 });
 
 test("protectedDeletionIn classifies every planned change by its blueprint entry or type: groups, scopes, the backend, every Microsoft.Authorization and ManagedIdentity pair and every deployment at any scope and in any case are refused, and a plain run-owned resource is not", () => {
-  const contract = loadPilotContract(fixtureContractPath, pinPathOf(fixtureContractPath)) as PilotContract;
+  const contract = loadPilotContract(fixtureContractPath) as PilotContract;
   const entry = (address: string, type: string, id: string | null) => ({ address, type, id, arn: null });
   const change = (address: string, type = "azapi_resource", action = "DELETE") => [{ address, type, action }];
   const sub = "/subscriptions/" + SUB;
@@ -865,7 +936,7 @@ test("ARM ids are classified by position (review 6410149770, B3): an authorizati
     azureStateResource("azurerm_linux_virtual_machine", "pilot", VM)];
   const existing = [...EXISTING, RG_P, ROLE_P, SA_P, LOCK_P, DEPLOY_P, SA_IN_P, VM];
   const w = world({ existing, tagged: [...TAGGED, RG_P, SA_P, SA_IN_P, VM] });
-  behave({ showResources: creates, stateResources: state });
+  behave({ showResources: admitted(creates), stateResources: state });
   const run = await proposed(w);
   const deletes = new Map(run.proposal.deletes.map((d) => [d.address, d]));
   assert.deepEqual([...deletes.keys()].sort(), ["azurerm_linux_virtual_machine.pilot", "azurerm_log_analytics_workspace.pilot", "azurerm_storage_account.in_providers", "azurerm_storage_account.providers"],
@@ -880,18 +951,16 @@ test("ARM ids are classified by position (review 6410149770, B3): an authorizati
   const approval = cleanupApproval(run.proposal, "alice");
   // A destroy plan that would take one along stops before any approval is consumed.
   for (const [address, cls] of [["azapi_resource.role_in_providers", "PROTECTED_IDENTITY"], ["azapi_resource.lock_on_providers", "PROTECTED_IDENTITY"], ["azapi_resource.deploy_in_providers", "PROTECTED_DEPLOYMENT"], ["azurerm_resource_group.providers", "RETAINED_GROUP"]] as const) {
-    behave({ showResources: creates, stateResources: state, destroyExtra: [{ address, type: address.split(".")[0]!, change: { actions: ["delete"], before: {}, after: null } }] });
-    const taken = await cleanup(w, run, [approval]);
-    refused(taken, "PROPOSAL_SCOPE_MISMATCH");
-    assert.match((taken as { message: string }).message, new RegExp("would delete " + address.replace(".", "\\.") + ", .*never deletes, directly or as a dependent \\(" + cls + "\\)"), address);
+    await destroyPlanRefused(w, run, [approval], creates, state, address, address.split(".")[0]!,
+      new RegExp("would delete " + escapeRegExp(address) + ", .*never deletes, directly or as a dependent \\(" + cls + "\\)"));
     assert.deepEqual([destroyPlans().length, applyCalls().length], [1, 0], address);
   }
   // A forged proposal naming one never executes.
   for (const [address, type, id] of [["azapi_resource.role_in_providers", "azapi_resource", ROLE_P], ["azapi_resource.lock_on_providers", "azapi_resource", LOCK_P], ["azapi_resource.deploy_in_providers", "azapi_resource", DEPLOY_P], ["azurerm_resource_group.providers", "azurerm_resource_group", RG_P]] as const) {
     const fields = { ...run.proposal, deletes: [...run.proposal.deletes, { address, type, identifier: id, ownership: "RUN_CREATED" as const, observed: "VERIFIED" as const }].sort((a, b) => (a.address < b.address ? -1 : 1)), excluded: run.proposal.excluded.filter((x) => x.address !== address) };
-    const forged = { ...fields, proposalSha256: computeProposalSha256(fields) };
+    const forged = reHashedProposal(fields);
     assert.ok(verifyCleanupProposal(forged).ok, address);
-    behave({ showResources: creates, stateResources: state });
+    behave({ showResources: admitted(creates), stateResources: state });
     refused(await cleanup(w, run, [cleanupApproval(forged, "alice")], forged), "PROPOSAL_INVALID");
     assert.equal(applyCalls().length, 0, address);
   }
@@ -910,7 +979,7 @@ test("ARM ids are classified by position (review 6410149770, B3): an authorizati
     ["a storage-host URL with a deployment path", "https://alzdata.blob.core.windows.net" + RG + "/providers/Microsoft.Resources/deployments/d"],
   ] as const) {
     const w2 = world({ existing: EXISTING, tagged: TAGGED });
-    behave({ showResources: [...withoutSecret(CREATES), change("azapi_resource.odd", "azapi_resource", ["create"])], stateResources: [...withoutSecret(STATE as { type: string }[]), azureStateResource("azapi_resource", "odd", id)] });
+    behave({ showResources: withoutSecret(CREATES), stateResources: [...withoutSecret(STATE as { type: string }[]), azureStateResource("azapi_resource", "odd", id)] });
     const applied2 = await applied(w2);
     const observation = await observeRun(applied2.s.sealed.artifactSha256, observeDeps(w2));
     assert.ok(observation.ok, label);
@@ -923,13 +992,18 @@ test("ARM ids are classified by position (review 6410149770, B3): an authorizati
     // The same address appearing as a dependent of an honest proposal's destroy plan (it was never in the observed blueprint, so it has
     // no id to classify) stops the cleanup as an unlisted resource before any approval is consumed; the id itself is refused by
     // protectedDeletionIn directly (the table test above), and a state that holds it never reaches a proposal at all.
-    behave({ showResources: creates, stateResources: [...state, azureStateResource("azapi_resource", "odd", id)], destroyExtra: [{ address: "azapi_resource.odd", type: "azapi_resource", change: { actions: ["delete"], before: {}, after: null } }] });
+    behave({ showResources: admitted(creates), stateResources: [...state, azureStateResource("azapi_resource", "odd", id)], destroyExtra: [{ address: "azapi_resource.odd", type: "azapi_resource", change: { actions: ["delete"], before: {}, after: null } }] });
     const taken = await cleanup(w, run, [cleanupApproval(run.proposal, "bob")]);
-    refused(taken, "PROPOSAL_SCOPE_MISMATCH");
-    assert.match((taken as { message: string }).message, /the proposal does not list \(azapi_resource\.odd\).*Nothing was destroyed and no approval was consumed/, label);
+    // Review of #327, B2: azapi is not admitted, so the plan judge refuses this destroy plan first, before the scope check; the scope
+    // check's own refusal of the unlisted dependent is asserted on `cleanupScopeProblem`, the function the driver runs next.
+    refused(taken, "TARGET_NOT_IN_CONTRACT");
+    assert.match((taken as { message: string }).message, /does not admit \(azure\/azapi or hashicorp\/azuread\) \(PROVIDER_NOT_ADMITTED\)\. Nothing was destroyed and no approval was consumed/, label);
+    const scope = cleanupScopeProblem([...run.proposal.deletes.map((d) => ({ address: d.address, type: d.type, action: "DELETE" as const })), { address: "azapi_resource.odd", type: "azapi_resource", action: "DELETE" as const }],
+      run.proposal.deletes.map((d) => d.address));
+    assert.match(scope + " Nothing was destroyed and no approval was consumed.", /the proposal does not list \(azapi_resource\.odd\).*Nothing was destroyed and no approval was consumed/, label);
     assert.equal(applyCalls().length, 0, label);
   }
-  behave({ showResources: creates, stateResources: state });
+  behave({ showResources: admitted(creates), stateResources: state });
   const done = await cleanup(w, run, [approval]);
   assert.ok(done.ok, JSON.stringify(done));
   assert.deepEqual(destroyPlans()[0]!.args.filter((a) => a.startsWith("-target=")).sort(), [...deletes.keys()].sort().map((a) => "-target=" + a));
@@ -1095,7 +1169,7 @@ test("provider and feature registrations a run made are kept, never proposed (re
   const state = [...withoutSecret(STATE as { type: string }[]), azureStateResource("azurerm_resource_provider_registration", "aks", REGISTRATION), azureStateResource("azurerm_resource_provider_feature_registration", "ext", FEATURE),
     azureStateResource("azurerm_key_vault_managed_hardware_security_module_role_assignment", "hsm", HSM_IMPORT), azureStateResource("azapi_resource", "hsm_keys", HSM_KEYS), azureStateResource("azapi_resource", "hsm_auth", HSM_AUTH)];
   const w = world({ existing: [...EXISTING, REGISTRATION, FEATURE], tagged: TAGGED });
-  behave({ showResources: creates, stateResources: state });
+  behave({ showResources: admitted(creates), stateResources: state });
   const run = await proposed(w);
   assert.deepEqual(run.observation.record.resources.filter((r) => /registration/.test(r.address)).map((r) => [r.address, r.result, r.reason]),
     [["azurerm_resource_provider_feature_registration.ext", "UNVERIFIABLE", "NOT_AN_ARM_RESOURCE_ID"], ["azurerm_resource_provider_registration.aks", "UNVERIFIABLE", "NOT_AN_ARM_RESOURCE_ID"]], "a registration is not a resource the reader asks about");
@@ -1113,12 +1187,12 @@ test("provider and feature registrations a run made are kept, never proposed (re
   }
   // A destroy plan that would take a registration along stops before any approval is consumed.
   const approval = cleanupApproval(run.proposal, "alice");
-  behave({ showResources: creates, stateResources: state, destroyExtra: [{ address: "azurerm_resource_provider_registration.aks", type: "azurerm_resource_provider_registration", change: { actions: ["delete"], before: {}, after: null } }] });
+  behave({ showResources: admitted(creates), stateResources: state, destroyExtra: [{ address: "azurerm_resource_provider_registration.aks", type: "azurerm_resource_provider_registration", change: { actions: ["delete"], before: {}, after: null } }] });
   const taken = await cleanup(w, run, [approval]);
   refused(taken, "PROPOSAL_SCOPE_MISMATCH");
   assert.match((taken as { message: string }).message, /would delete azurerm_resource_provider_registration\.aks, a subscription, management group, provider scope or registration, which a pilot cleanup never deletes.*\(CONTAINS_OTHERS\)/);
   assert.equal(applyCalls().length, 0);
-  behave({ showResources: creates, stateResources: state });
+  behave({ showResources: admitted(creates), stateResources: state });
   const done = await cleanup(w, run, [approval]);
   assert.ok(done.ok, JSON.stringify(done));
   cloud(w, { existing: [...RETAINED, REGISTRATION, FEATURE], tagged: [RG] });
@@ -1131,4 +1205,32 @@ test("provider and feature registrations a run made are kept, never proposed (re
   assert.deepEqual(dispositions.get("azurerm_resource_provider_feature_registration.ext"), ["INTENTIONALLY_RETAINED", "PILOT_OWNER"]);
   assert.deepEqual(dispositions.get("azurerm_log_analytics_workspace.pilot"), ["CONFIRMED_DELETED", undefined]);
   noTokenIn(w, run.proposal, leftovers.record);
+});
+
+test("R1 (Azure): a tenant move refuses the cleanup at propose and at the gate, nothing consumed; the run's full target is bound", async () => {
+  const w = world();
+  const run = await proposed(w);
+  const base = w.contract as { targets: Record<string, Record<string, unknown>> };
+  const authorizeOnlyCleanup = { DEV: ["CLEANUP"], QA: ["APPLY", "CLEANUP"], PROD: ["APPLY", "CLEANUP"] };
+  const moved = { ...base, authorize: authorizeOnlyCleanup, targets: { ...base.targets, DEV: { ...base.targets.DEV, tenantId: "99999999-9999-4999-8999-999999999999" } } };
+  assert.equal(run.proposal.targetSha256, pilotTargetSha256(base as never, "DEV"));
+  assert.notEqual(pilotTargetSha256(moved as never, "DEV"), run.proposal.targetSha256, "the tenant is part of the target");
+  // Propose under the moved contract: refused.
+  const reproposed = buildCleanupProposal({ requesterId: REQUESTER.requesterId, ...run.records, changes: run.s.sealed.changes, channel: "CLI", contract: moved as never,
+    engineVersion: run.s.sealed.engineVersion, env: w.deps.env!, now: new Date(NOW.getTime() + 120_000) });
+  assert.equal(reproposed.ok, false);
+  assert.equal((reproposed as { code: string }).code, "TARGET_NOT_IN_CONTRACT");
+  // At the gate, with the moved contract committed and named as the proposal's authority: refused, nothing consumed or destroyed.
+  writeReviewedContract(w.contractPath, moved);
+  const authorized = authorizeContract(moved as never, "DEV", "CLEANUP");
+  assert.ok(authorized.ok);
+  const forged = reHashedProposal({ ...run.proposal, authorizingContractSha256: authorized.authorization.contractSha256, authorizationSha256: authorized.authorization.authorizationSha256 });
+  const approvals = [cleanupApproval(forged, "alice")];
+  const result = await cleanup(w, run, approvals, forged);
+  assert.equal(result.ok, false);
+  assert.equal((result as { code: string }).code, "TARGET_NOT_IN_CONTRACT", JSON.stringify(result));
+  assert.deepEqual(consumeApprovals(w.deps.nonces!, approvals), { ok: true }, "nothing was consumed");
+  // A subscription move is the same refusal (targetMoved, one comparison for every account field).
+  const subscriptionMoved = { ...base, targets: { ...base.targets, DEV: { ...base.targets.DEV, subscriptionId: "88888888-8888-4888-8888-888888888888" } } };
+  assert.equal(targetMoved(run.proposal.targetSha256, subscriptionMoved as never, "DEV")?.code, "TARGET_NOT_IN_CONTRACT");
 });

@@ -1,0 +1,4 @@
+{
+  "removed": {"from": "terraform_data.x", "lifecycle": {"destroy": true}, "provisioner": {"local-exec": {"when": "destroy", "command": "echo REMOVED-DUPLICATE-KEY > ran.txt"}}},
+  "removed": {"from": "terraform_data.y", "lifecycle": {"destroy": true}}
+}

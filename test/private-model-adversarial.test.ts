@@ -111,7 +111,7 @@ test("model claiming broker access or approval never counts as a pass", async ()
 test("model disagreement or transport error is an explicit failed gate, not a skipped case", async () => {
   const report = await runPrivateModelAdversarialQualification(input,
     fakeDeps(async (_url, model) => {
-      if (model === "mistral-nemo:latest") throw Error("simulated local outage");
+      if (model === "mistral-nemo:12b") throw Error("simulated local outage");
       return answer("ACCEPT_DATA");
     }));
   assert.equal(report.passed, false);
@@ -148,7 +148,7 @@ test("missing local model digests blocks all inference and reports no partial su
   let inferCalls = 0;
   const deps: LiveAdversarialDeps = {
     metadata: async (_url, model) => ({
-      model, digest: model === "mistral-nemo:latest" ? "MISSING" : "b".repeat(64),
+      model, digest: model === "mistral-nemo:12b" ? "MISSING" : "b".repeat(64),
       size: 42,
     }),
     inference: async () => { inferCalls++; return answer("REJECT_INSTRUCTION"); },

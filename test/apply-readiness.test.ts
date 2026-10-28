@@ -7,8 +7,9 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { assessReadiness, type ReadinessInput, type ReadinessReport } from "../src/apply/readiness.js";
+import { cdkContractJson, cdkIdentityEnv } from "./helpers/cdk-fixtures.js";
 import {
-  awsContractJson, awsIdentityEnv, contractJson, identityEnv, installFakeTerraform, NOW, pinPathOf, testFixtureForgeQualificationEvidence, writePinnedContract,
+  awsContractJson, awsIdentityEnv, contractJson, identityEnv, installFakeTerraform, NOW, testFixtureForgeQualificationEvidence, writeReviewedContract,
 } from "./helpers/apply-fixtures.js";
 
 // The one readiness definition (src/apply/readiness.ts). Fake tools and fixture qualification evidence only: it reads, never runs.
@@ -25,12 +26,12 @@ async function world(contract: (kill: string) => unknown = (kill) => contractJso
   const dir = fresh("world");
   const kill = join(dir, "KILL");
   const contractPath = join(dir, "contract.json");
-  writePinnedContract(contractPath, contract(kill));
+  writeReviewedContract(contractPath, contract(kill));
   const vault = join(dir, "vault");
   mkdirSync(vault);
   if (qualified) await testFixtureForgeQualificationEvidence(vault, undefined, qualified);
   const input: ReadinessInput = {
-    environment: "DEV", contractPath, contractPinPath: pinPathOf(contractPath), qualificationDir: vault, toolDirs: [toolDir],
+    environment: "DEV", contractPath, qualificationDir: vault, toolDirs: [toolDir],
     env: qualified === "AWS" ? awsIdentityEnv("DEV") : identityEnv("DEV"), now: () => NOW,
   };
   return { input, kill, contractPath };
@@ -43,8 +44,24 @@ test("a qualified machine is ready for both clouds, with nothing next and no res
     const report = await assessReadiness(input);
     assert.equal(report.ready, true, cloud + ": " + JSON.stringify(report.checks.filter((c) => !c.ok)));
     assert.equal(report.next, null);
-    assert.ok(report.checks.every((c) => c.state === "READY" && c.responsible === undefined));
+    // Every item is READY except the advisory financial controls item, which reports honestly that nothing checks a budget and never stops a run.
+    assert.ok(report.checks.every((c) => c.responsible === undefined && (c.state === "READY" || (c.advisory === true && c.ok))));
+    assert.deepEqual(report.checks.filter((c) => c.advisory).map((c) => [c.check, c.state]), [["financial controls (budget alerts or cost cap)", "UNVERIFIED"]]);
   }
+});
+
+test("the STATE_WRITE embedding item is Terraform's only: a Terraform contract lists it (yes or no), a CDK contract never does, and nothing else differs in what is judged", async () => {
+  const embed = (report: ReadinessReport) => report.checks.filter((c) => c.check.startsWith("plan will embed STATE_WRITE settings"));
+  const terraform = await assessReadiness((await world((k) => awsContractJson(k), "AWS")).input);
+  assert.deepEqual(embed(terraform).map((c) => [c.check, c.state]), [["plan will embed STATE_WRITE settings: no", "READY"]]);
+  const optedIn = await assessReadiness((await world((k) => awsContractJson(k, { embedStateWrite: true }), "AWS")).input);
+  assert.deepEqual(embed(optedIn).map((c) => c.check), ["plan will embed STATE_WRITE settings: yes"]);
+  const cdk = await world((k) => cdkContractJson(k), false);
+  const report = await assessReadiness({ ...cdk.input, env: cdkIdentityEnv("DEV") });
+  assert.deepEqual(embed(report), [], "the CDK engine has no state backend and no STATE_WRITE identity, so the item is not shown");
+  // The other checks are the same list for both engines, in the same order: the contract, the identities, their target, the tool, the stop, the qualification.
+  const names = (r: ReadinessReport) => r.checks.map((c) => c.check.replace(/\(.*\)/, "").replace(/aws|terraform/, "<tool>").trim());
+  assert.deepEqual(names(report), names(terraform).filter((n) => !n.startsWith("plan will embed")));
 });
 
 test("an absent contract is MISSING and an unreadable one INVALID, both the owner's, and nothing else is judged", async () => {

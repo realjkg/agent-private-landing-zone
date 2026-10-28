@@ -6,11 +6,12 @@ import { join, resolve } from "node:path";
 
 import { checkDevAccount, validatedAccountRequest } from "./act-dev1-admin.js";
 import { channelMismatchMessage } from "../apply/channel.js";
-import { repoPaths } from "../apply/contract.js";
+import { authorizationEntryOf, isKillSwitchActive, loadPilotContract, pilotContractSha256, repoPaths } from "../apply/contract.js";
 import { proposalLines, verifyCleanupProposal, type CleanupProposal } from "../apply/cleanup-proposal.js";
 import { verifyReviewBundle } from "../apply/seal.js";
 import { ENVIRONMENTS, stripInvisible } from "../apply/constants.js";
 import type { ApplyEnvironment, PlanChange, PreviewProvenance, SealedPlan } from "../apply/types.js";
+import { deploymentPaths, rememberedReadiness, type CurrentContract, type PathEnvironment, type RememberedReadiness } from "../release/pilot-paths.js";
 import { runApplyCommand, type ApplyCliDeps, type ApplyReport } from "./apply.js";
 import type { AskExpectation, HumanTerminal, PhraseKind } from "./teardown-driver.js";
 
@@ -19,7 +20,7 @@ import type { AskExpectation, HumanTerminal, PhraseKind } from "./teardown-drive
 // A pilot workflow runs wholly in the terminal (channel CLI) or wholly in the console wizard (channel UI), chosen when it is
 // started. This module is the UI channel. It adds no authority: it runs the same `runApplyCommand` the terminal runs, with the
 // channel set to "UI" by THIS module (the caller, never a user flag), through a terminal whose prompts are dialogs the person
-// answers in the browser. Every gate (contract pin, qualification evidence, approvals, ledger, kill switch, typed phrases) is
+// answers in the browser. Every gate (contract authorization, qualification evidence, approvals, ledger, kill switch, typed phrases) is
 // the CLI's, unchanged; a wrong phrase, a timeout or a cancel ends the command before the engine runs.
 //
 // Only this module may import src/cli/apply.ts from the console side, and only src/operator-ui/server.ts may import this module
@@ -125,6 +126,8 @@ export type ReviewSummary = {
   shortId: string;
   /** The product source commit that made the preview; approvers sign it with the change. */
   sourceCommit: string;
+  /** Who requested the change, by allowlist id: bound into the change ID every approver signs, and verified by the approver's own command. */
+  requestedBy: string;
   createdAt: string;
   counts: ChangeCounts;
   changes: PlanChange[];
@@ -135,14 +138,14 @@ export type ReviewSummary = {
   unit: { unitId: string; tags: Record<string, string>; untagged: string[] } | null;
 };
 
-type Sealed = { environment: ApplyEnvironment; target: ReviewSummary["target"]; artifactSha256: string; sourceCommit: string; createdAt: string; changes: PlanChange[];
+type Sealed = { environment: ApplyEnvironment; target: ReviewSummary["target"]; artifactSha256: string; sourceCommit: string; requesterId: string; createdAt: string; changes: PlanChange[];
   engineVersion: string; provenance: PreviewProvenance; unit: SealedPlan["unit"] };
 const previewOf = ({ engineVersion, provenance: { engineBinarySha256, qualification } }: Sealed): ReviewSummary["preview"] => ({
   engineVersion: stripInvisible(engineVersion), programId: engineBinarySha256.slice(0, 12), qualified: qualification.state === "QUALIFIED",
   ...(qualification.state === "QUALIFIED" ? { qualifiedAt: qualification.qualifiedAt } : { reason: stripInvisible(qualification.reason) }),
 });
 const summaryOf = (bundle: Sealed): ReviewSummary => ({
-  environment: bundle.environment, target: { ...bundle.target }, shortId: bundle.artifactSha256.slice(0, 12), sourceCommit: bundle.sourceCommit, createdAt: bundle.createdAt,
+  environment: bundle.environment, target: { ...bundle.target }, shortId: bundle.artifactSha256.slice(0, 12), sourceCommit: bundle.sourceCommit, requestedBy: stripInvisible(bundle.requesterId), createdAt: bundle.createdAt,
   counts: countChanges(bundle.changes),
   changes: bundle.changes.slice(0, MAX_LISTED_CHANGES).map((change) => ({ ...change, address: stripInvisible(change.address), type: stripInvisible(change.type) })),
   changesOmitted: Math.max(0, bundle.changes.length - MAX_LISTED_CHANGES),
@@ -161,6 +164,8 @@ export type CleanupSummary = {
   target: ReviewSummary["target"];
   sourceCommit: string;
   artifactShortId: string;
+  /** Who requested this cleanup, by allowlist id: bound into the proposal ID every approver signs. In PROD the requester cannot approve it. */
+  requestedBy: string;
   requiredApprovals: number;
   deletes: CleanupProposal["deletes"];
   alreadyAbsent: CleanupProposal["alreadyAbsent"];
@@ -170,7 +175,7 @@ export type CleanupSummary = {
 };
 const cleanupSummaryOf = (proposal: CleanupProposal): CleanupSummary => ({
   proposalSha256: proposal.proposalSha256, shortId: proposal.proposalSha256.slice(0, 12), environment: proposal.environment, target: { ...proposal.target }, sourceCommit: proposal.sourceCommit,
-  artifactShortId: proposal.artifactSha256.slice(0, 12), requiredApprovals: proposal.authorization.requiredApprovals,
+  artifactShortId: proposal.artifactSha256.slice(0, 12), requestedBy: stripInvisible(proposal.requesterId), requiredApprovals: proposal.authorization.requiredApprovals,
   deletes: proposal.deletes.map((x) => ({ ...x, address: stripInvisible(x.address), type: stripInvisible(x.type) })),
   alreadyAbsent: proposal.alreadyAbsent.map((x) => ({ ...x, address: stripInvisible(x.address) })), excluded: proposal.excluded.map((x) => ({ ...x, address: stripInvisible(x.address) })),
   risks: [...proposal.risks], lines: proposalLines(proposal).map((line) => line.replace(CONTROL, "?")),
@@ -252,6 +257,28 @@ export function createPilotRouter(options: PilotRouterOptions): PilotRouter {
   const approvalsDir = options.approvalsDir ?? join(repoPaths().root, ".runs/apply/approvals");
   let chosen: PilotPath | null = null;
   let run: Run | undefined;
+  // The last readiness check per environment, exactly as `preflight` returned it: what GET /pilot/paths reports for the contract's
+  // path. Remembered, never assessed here; an environment with no check reads "not checked", never ready.
+  const readinessByEnvironment = new Map<PathEnvironment, RememberedReadiness>();
+  const rememberReadiness = (result: RunResult): void => {
+    const remembered = rememberedReadiness(result.data, new Date().toISOString());
+    if (remembered) readinessByEnvironment.set(remembered.environment, remembered);
+  };
+  /**
+   * The contract as it is now, read-only, for GET /pilot/paths: the same fields `actDecisions` (src/apply/readiness.ts) reports
+   * without an environment (hash, provider, engine, authorize entries, approval quorum, kill switch), from the same contract file
+   * `preflight` reads. Read again on every request, so a remembered readiness result is shown only while it still describes it.
+   */
+  const currentContract = (): CurrentContract => {
+    const loaded = loadPilotContract(options.cli?.contractPath ?? repoPaths().contract);
+    if ("reason" in loaded) return { act: "DISABLED", reason: loaded.reason };
+    const entries = ENVIRONMENTS.flatMap((environment) => { const entry = authorizationEntryOf(loaded, environment); return entry ? [{ environment, entry }] : []; });
+    return {
+      act: "PILOT_ENABLED", contractSha256: pilotContractSha256(loaded), provider: loaded.provider, engine: loaded.engine, killSwitch: isKillSwitchActive(loaded),
+      authorized: entries.map(({ environment, entry }) => ({ environment, operations: [...entry.operations] })),
+      approved: entries.map(({ environment }) => ({ environment, requiredApprovals: loaded.requiredApprovals[environment] ?? 0 })),
+    };
+  };
   const absolute = (path: string): string => resolve(options.root, path);
   const running = (): boolean => run !== undefined && run.done === undefined;
 
@@ -294,10 +321,10 @@ export function createPilotRouter(options: PilotRouterOptions): PilotRouter {
       // The page shows these locations for the person to note, so they are absolute, whatever directory the command used.
       if (typeof data.sealedPlanPath === "string") data.sealedPlanPath = absolute(data.sealedPlanPath);
       if (typeof data.reviewBundlePath === "string") data.reviewBundlePath = absolute(data.reviewBundlePath);
-      if (data.environment && data.target && typeof data.artifactSha256 === "string" && typeof data.sourceCommit === "string" && Array.isArray(data.changes) &&
+      if (data.environment && data.target && typeof data.artifactSha256 === "string" && typeof data.sourceCommit === "string" && typeof data.requesterId === "string" && Array.isArray(data.changes) &&
         typeof data.engineVersion === "string" && data.provenance && (data.unit === null || (typeof data.unit === "object" && data.unit !== null))) {
         result.summary = summaryOf({
-          environment: data.environment, target: data.target, artifactSha256: data.artifactSha256, sourceCommit: data.sourceCommit, createdAt: "", changes: data.changes,
+          environment: data.environment, target: data.target, artifactSha256: data.artifactSha256, sourceCommit: data.sourceCommit, requesterId: data.requesterId, createdAt: "", changes: data.changes,
           engineVersion: data.engineVersion, provenance: data.provenance, unit: data.unit as SealedPlan["unit"],
         });
       }
@@ -417,6 +444,16 @@ export function createPilotRouter(options: PilotRouterOptions): PilotRouter {
       send(res, context.headers, 200, authenticated ? stateOf() : { unlocked: false });
       return;
     }
+    if (req.method === "GET" && url === PILOT_BASE + "/paths") {
+      // Read-only: the deployment paths from the release records, with the readiness checks already run. It starts nothing and
+      // changes nothing; ordering and display are the page's. The session token is required, as for every pilot route with data.
+      if (!authenticated) throw new Bad(401, "PILOT_TOKEN_REQUIRED", "The session token is missing or wrong. Paste the token printed in the terminal where you started the console.");
+      let report: ReturnType<typeof deploymentPaths>;
+      try { report = deploymentPaths(options.root, [...readinessByEnvironment.values()], currentContract()); }
+      catch { throw new Bad(503, "PILOT_PATHS_UNAVAILABLE", "The release records for the deployment paths cannot be read on this computer."); }
+      send(res, context.headers, 200, report);
+      return;
+    }
     if (req.method !== "POST") throw new Bad(405, "PILOT_METHOD_NOT_ALLOWED", "That is not allowed here.");
     // Every pilot POST: same origin (and a browser always sends one), JSON, the session token, a size limit. No CORS header is ever sent.
     if (req.headers.origin !== context.expectedOrigin) throw new Bad(403, "PILOT_ORIGIN_REQUIRED", "This request did not come from the console page.");
@@ -460,12 +497,12 @@ export function createPilotRouter(options: PilotRouterOptions): PilotRouter {
       case "/preflight": {
         const input = fields(body, ["environment"]);
         requirePath();
-        start("preflight", ["preflight", "--environment", environmentOf(input.environment)]);
+        start("preflight", ["preflight", "--environment", environmentOf(input.environment)], rememberReadiness);
         send(res, context.headers, 202, stateOf());
         return;
       }
       case "/prepare": {
-        // Local files only: the command writes the request and manifest from the pinned contract and the project folder,
+        // Local files only: the command writes the request and manifest from the reviewed contract and the project folder,
         // runs no engine and enables nothing. The one value a person may add is the AWS CLI version, when no record has it.
         const input = fields(body, ["environment", "projectPath", "awsCliVersion"]);
         requirePath();
@@ -487,13 +524,18 @@ export function createPilotRouter(options: PilotRouterOptions): PilotRouter {
         return;
       }
       case "/seal": {
-        const input = fields(body, ["environment", "requestPath", "manifestPath"]);
+        // The requester signs the sealed request with their own allowlisted key: a name and a key file on this machine, as for an approval.
+        const input = fields(body, ["environment", "requestPath", "manifestPath", "requesterId", "keyPath"]);
         requirePath();
         const environment = environmentOf(input.environment);
+        if (typeof input.requesterId !== "string" || !SAFE_APPROVER.test(input.requesterId)) {
+          throw new Bad(400, "PILOT_REQUEST_INVALID", "Your requester name may use letters, digits, dots, dashes and @ only.");
+        }
         const requestPath = absolute(plainPath(input.requestPath, "The request file"));
         const manifestPath = absolute(plainPath(input.manifestPath, "The manifest file"));
+        const keyPath = absolute(plainPath(input.keyPath, "Your key file"));
         checkRequestEnvironment(requestPath, environment);
-        start("seal", ["seal", "--request", requestPath, "--manifest", manifestPath]);
+        start("seal", ["seal", "--request", requestPath, "--manifest", manifestPath, "--requester", input.requesterId, "--key", keyPath]);
         send(res, context.headers, 202, stateOf());
         return;
       }
@@ -535,9 +577,15 @@ export function createPilotRouter(options: PilotRouterOptions): PilotRouter {
         return;
       }
       case "/propose-cleanup": {
-        const input = fields(body, ["sealedPath"]);
+        // The cleanup's requester signs the proposal with their own allowlisted key, as at /seal: a name and a key file on this machine.
+        const input = fields(body, ["sealedPath", "requesterId", "keyPath"]);
         requirePath();
-        start("propose-cleanup", ["propose-cleanup", "--sealed", absolute(plainPath(input.sealedPath, "The prepared change file"))]);
+        if (typeof input.requesterId !== "string" || !SAFE_APPROVER.test(input.requesterId)) {
+          throw new Bad(400, "PILOT_REQUEST_INVALID", "Your requester name may use letters, digits, dots, dashes and @ only.");
+        }
+        const sealedPath = absolute(plainPath(input.sealedPath, "The prepared change file"));
+        const keyPath = absolute(plainPath(input.keyPath, "Your key file"));
+        start("propose-cleanup", ["propose-cleanup", "--sealed", sealedPath, "--requester", input.requesterId, "--key", keyPath]);
         send(res, context.headers, 202, stateOf());
         return;
       }

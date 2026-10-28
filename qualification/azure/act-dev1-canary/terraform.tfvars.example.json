@@ -1,0 +1,11 @@
+{
+  "resource_group_name": "rg-alz-pilot-dev",
+  "location": "eastus2",
+  "canary_name": "vnet-alz-act-dev-1-canary-01",
+  "owner": "REPLACE-WITH-APPROVED-OWNER",
+  "unit_tags": {
+    "alz-managed-by": "REPLACE-WITH-PREPARE-OUTPUT",
+    "alz-unit": "REPLACE-WITH-PREPARE-OUTPUT",
+    "alz-build": "REPLACE-WITH-PREPARE-OUTPUT"
+  }
+}

@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { runApplyCommand, type ApplyCliDeps } from "../src/cli/apply.js";
-import { loadQualificationRecords } from "../src/apply/contract.js";
+import { loadQualificationRecords, repoPaths } from "../src/apply/contract.js";
 import { reserveArtifact } from "../src/apply/ledger.js";
 import { openNonceStore, type NonceStore } from "../src/apply/nonces.js";
 import { APPLY_ADAPTER, APPLY_ARGV, APPLY_INIT_ARGV } from "../src/apply/terraform.js";
@@ -16,8 +16,9 @@ import type { ResolvedTarget } from "../src/teardown/driver/types.js";
 import { targetString } from "../src/cli/teardown-driver.js";
 import { SOURCE_COMMIT,
   DEV_TARGET, ENGINE_VERSION, NOW, OUTPUT_CANARY, PLAN_CANARY, POLICY, PROD_TARGET, QA_TARGET, STATE_CANARY, VALUE_CANARY, targetOf,
-  behave as behaveIn, callsOf, contractJson, identityEnv, installFakeTerraform, keys, pinPathOf, testFixtureForgeQualificationEvidence, writePinnedContract,
-  writeProject, type Behavior, type Project,
+  behave as behaveIn, callsOf, contractJson, identityEnv, installFakeTerraform, keys, testFixtureForgeQualificationEvidence, writeReviewedContract,
+  withPlannedCanary, writeProject, type Behavior, type Project,
+  requesterArgs,
 } from "./helpers/apply-fixtures.js";
 import { AZURE } from "../src/apply/providers/azure.js";
 
@@ -71,11 +72,11 @@ const terminal = (answers: string[], tty = true): Terminal => {
 type Run = { code: number; stdout: string; stderr: string; term: Terminal };
 type World = { deps: (term: Terminal, over?: Partial<ApplyCliDeps>) => ApplyCliDeps; contractPath: string; vault: string; evidenceDir: string };
 
-/** A pinned contract, a vault holding qualification evidence (none when `qualified` is false), and fresh ledgers. */
+/** A reviewed contract, a vault holding qualification evidence (none when `qualified` is false), and fresh ledgers. */
 async function world(contract: unknown = contractJson(KILL), qualified = true): Promise<World> {
   behave();
   const contractPath = join(fresh("contract"), "act-pilot-contract.json");
-  if (contract !== undefined) writePinnedContract(contractPath, contract);
+  if (contract !== undefined) writeReviewedContract(contractPath, contract);
   const vault = fresh("vault");
   if (qualified) await testFixtureForgeQualificationEvidence(vault);
   const scratch = fresh("scratch");
@@ -85,7 +86,7 @@ async function world(contract: unknown = contractJson(KILL), qualified = true): 
     contractPath, vault, evidenceDir,
     deps: (term, over = {}) => ({
       sourceCommit: SOURCE_COMMIT,
-      terminal: term, env: ENV, now: () => NOW, operatorId: "operator.fixture", contractPath, contractPinPath: pinPathOf(contractPath),
+      terminal: term, env: ENV, now: () => NOW, operatorId: "operator.fixture", contractPath,
       qualificationDir: vault, evidenceDir, nonces, scratchParent: scratch, toolDirs: [toolDir], ...over,
     }),
   };
@@ -106,7 +107,7 @@ const requestFile = (p: Project, target: ResolvedTarget, environment: string, ex
   json({ environment, target, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved, ...extra }, "request");
 const manifestFile = (p: Project) => json(p.manifest, "manifest");
 const sealArgs = (p: Project, target: ResolvedTarget, environment: string, extra: Record<string, unknown> = {}) =>
-  ["seal", "--request", requestFile(p, target, environment, extra), "--manifest", manifestFile(p)];
+  ["seal", "--request", requestFile(p, target, environment, extra), "--manifest", manifestFile(p), ...requesterArgs()];
 const PHRASE = "RUN PROJECT CODE";
 
 type Sealed = { project: Project; target: ResolvedTarget; environment: ApplyEnvironment; path: string; bundle: string; artifactSha256: string };
@@ -159,15 +160,12 @@ test("every subcommand needs a terminal on stdin and stdout, and refuses before 
   assert.deepEqual(engineCalls(), []);
 });
 
-test("pin prints the contract hash and whether the contract is valid, and writes nothing", async () => {
+test("the retired pin subcommand is gone: there is no hash file to prepare, the contract's authorize entry is the switch", async () => {
   const w = await world(contractJson(KILL));
-  const run = await cli(w, ["pin"], []);
-  assert.equal(run.code, 0);
-  const report = JSON.parse(run.stdout) as { sha256: string; valid: boolean };
-  assert.match(report.sha256, /^[0-9a-f]{64}$/);
-  assert.equal(report.valid, true);
   const unchanged = readFileSync(w.contractPath, "utf8");
-  await cli(w, ["pin"], []);
+  const run = await cli(w, ["pin"], []);
+  assert.equal(run.code, 1);
+  assert.match(run.stderr, /APPLY_SUBCOMMAND_UNKNOWN/);
   assert.equal(readFileSync(w.contractPath, "utf8"), unchanged);
   assert.deepEqual(engineCalls(), []);
 });
@@ -180,7 +178,7 @@ test("an unknown subcommand or flag, a repeated or missing flag, or a flag for w
     ["seal", "--request", "r", "--manifest", "m", "--qualifications", "q"], // qualification is verified from vault evidence
     ["qualify", "--request", "r"], ["qualify", "--request", "r", "--manifest", "m", "--approval", "a"],
     ["approve", "--sealed", "s", "--key", "k"], ["apply", "--approval", "p"],
-    ["apply", "--request", "r", "--manifest", "m", "--sealed", "s", "--approval", "p", "--allowlist", "l"], // the allowlist is in the pinned contract
+    ["apply", "--request", "r", "--manifest", "m", "--sealed", "s", "--approval", "p", "--allowlist", "l"], // the allowlist is in the reviewed contract
     ["apply", "--request", "r", "--manifest", "m", "--sealed", "s", "--approval", "p", "--qualifications", "q"],
   ]) {
     const run = await cli(w, args, []);
@@ -196,7 +194,9 @@ test("request files cannot carry the invocation, the manifest or approvals: the 
   const p = writeProject(fresh("project"), DEV_TARGET);
   for (const extra of [{ invocation: { operatorId: "x" } }, { manifest: {} }, { approvals: [] }, { capabilities: {} }, { unknownField: 1 }]) {
     for (const sub of ["seal", "qualify"]) {
-      const run = await cli(w, [sub, ...sealArgs(p, DEV_TARGET, "DEV", extra).slice(1)], [targetString(DEV_TARGET), PHRASE]);
+      // qualify takes no requester: it stores no plan, so nothing is requested.
+      const args = sealArgs(p, DEV_TARGET, "DEV", extra).slice(1);
+      const run = await cli(w, [sub, ...(sub === "qualify" ? args.slice(0, 4) : args)], [targetString(DEV_TARGET), PHRASE]);
       assert.equal(run.code, 1, sub + JSON.stringify(extra));
       assert.match(run.stderr, /APPLY_INPUT_INVALID/);
       assert.deepEqual(run.term.asked, [], "nothing was asked before the input was valid");
@@ -215,7 +215,7 @@ test("seal shows the target, needs the exact target and the project code phrase,
   const result = JSON.parse(run.stdout) as { artifactSha256: string; sealedPlanPath: string; environment: string; changes: { address: string; action: string }[] };
   assert.match(result.artifactSha256, /^[a-f0-9]{64}$/);
   assert.equal(result.environment, "DEV");
-  assert.deepEqual(result.changes.map((c) => c.address).sort(), ["azurerm_log_analytics_workspace.pilot", "azurerm_resource_group.pilot"]);
+  assert.deepEqual(result.changes.map((c) => c.address).sort(), ["azurerm_resource_group.pilot"]);
   assert.ok(existsSync(result.sealedPlanPath));
   const shown = run.term.out.join("");
   assert.ok(shown.includes(targetString(DEV_TARGET)) && shown.includes(PHRASE));
@@ -328,7 +328,7 @@ test("approve shows the redacted changes, needs the artifact phrase, and signs w
   assert.ok(!run.stdout.includes("PRIVATE KEY"));
 });
 
-test("approve refuses without the typed phrase, with an open key file, a non-Ed25519 key, a tampered bundle or a contract that is disabled or does not match its pin", async () => {
+test("approve refuses without the typed phrase, with an open key file, a non-Ed25519 key, a tampered bundle, a disabled contract, or a contract or authorization other than the sealed one", async () => {
   const w = await world();
   const s = await sealed(w, "DEV");
   const base = (key: string) => ["approve", "--bundle", s.bundle, "--key", key, "--approver", "alice"];
@@ -357,10 +357,15 @@ test("approve refuses without the typed phrase, with an open key file, a non-Ed2
   const disabled = await cli(off, base(keyFile("alice")), [phrase]);
   assert.equal(disabled.code, 2);
   assert.match(disabled.stderr, /BLOCKED ACT_DISABLED/);
-  writeFileSync(w.contractPath, JSON.stringify(contractJson(KILL, { maxApprovalAgeMinutes: 600 }))); // edited after the pin
+  // An approver never signs under a contract or authorization other than the one the bundle was sealed under.
+  writeFileSync(w.contractPath, JSON.stringify(contractJson(KILL, { maxApprovalAgeMinutes: 600 }))); // edited after sealing
   const mismatched = await cli(w, base(keyFile("alice")), [phrase]);
   assert.equal(mismatched.code, 2);
-  assert.match(mismatched.stderr, /BLOCKED CONTRACT_INVALID/);
+  assert.match(mismatched.stderr, /BLOCKED ACT_AUTHORIZATION_CHANGED/);
+  writeFileSync(w.contractPath, JSON.stringify(contractJson(KILL, { authorize: { DEV: ["CLEANUP"], QA: ["APPLY"], PROD: ["APPLY"] } })));
+  const unauthorized = await cli(w, base(keyFile("alice")), [phrase]);
+  assert.equal(unauthorized.code, 2);
+  assert.match(unauthorized.stderr, /BLOCKED ACT_NOT_AUTHORIZED/);
 });
 
 test("seal writes a non-secret review bundle: the artifact's own fields and the redacted changes, with no plan bytes and no values", async () => {
@@ -369,8 +374,9 @@ test("seal writes a non-secret review bundle: the artifact's own fields and the 
   const text = readFileSync(s.bundle, "utf8");
   const bundle = JSON.parse(text) as Record<string, unknown>;
   assert.deepEqual(Object.keys(bundle).sort(), [
-    "artifactSha256", "changes", "changesSha256", "channel", "contractSha256", "createdAt", "engineVersion", "environment", "manifestHash", "planSha256", "policyVersion", "provenance", "releaseIdentity", "sourceCommit", "target", "unit",
+    "artifactSha256", "authorizationSha256", "changes", "changesSha256", "channel", "contractSha256", "createdAt", "engineVersion", "environment", "manifestHash", "planSha256", "policyVersion", "provenance", "releaseIdentity", "request", "requesterId", "sourceCommit", "target", "targetSha256", "unit",
   ]);
+  assert.equal(bundle.requesterId, "dana", "approvers see who requested; it is part of the hash they sign");
   assert.equal(bundle.artifactSha256, s.artifactSha256);
   assert.equal(bundle.environment, "DEV");
   assert.equal(bundle.channel, "CLI", "the terminal CLI seals into the CLI channel, and the approvers' bundle says so");
@@ -572,7 +578,7 @@ function staleScratch() {
   utimesSync(dirs.other, longAgo, longAgo);
   return { scratch, ...dirs };
 }
-const sweepingCommand = ["seal", "--request", "/nonexistent/request", "--manifest", "/nonexistent/manifest"];
+const sweepingCommand = ["seal", "--request", "/nonexistent/request", "--manifest", "/nonexistent/manifest", ...requesterArgs()];
 
 test("qualify, seal and apply sweep stale scratch directories at startup, as the teardown CLI does, and leave young ones and other names alone", async () => {
   const w = await world();
@@ -711,26 +717,39 @@ test("an apply is refused before anything is asked when the manifest is not vali
 
 // --- status ------------------------------------------------------------------------------
 
-test("status reports the contract, the kill switch and whether an artifact was applied, and never calls the engine", async () => {
+test("status reports AUTHORIZED, READY and APPROVED from the one decision view, the kill switch and whether an artifact was applied, and never calls the engine", async () => {
   const w = await world();
+  type Status = { act: string; contract: { code?: string; reason?: string; contractSha256?: string; killSwitch?: boolean }; authorized: { environment: string; operations: string[]; authorizationSha256: string }[];
+    ready: { environment: string; ready: boolean } | null; approved: { environment: string; requiredApprovals: number }[] };
   const off = await cli(await world(contractJson(KILL, { enabled: false })), ["status"], []);
   assert.equal(off.code, 0);
-  const disabled = JSON.parse(off.stdout) as { act: string; code: string; reason: string };
+  const disabled = JSON.parse(off.stdout) as Status;
   assert.equal(disabled.act, "DISABLED");
-  assert.equal(disabled.code, "ACT_DISABLED");
-  assert.ok(disabled.reason.length > 0);
-  // With no overrides the repository's own contract and pin decide: it ships with ACT disabled.
-  const shipped = await cli(w, ["status"], [], { contractPath: undefined, contractPinPath: undefined });
+  assert.equal(disabled.contract.code, "ACT_DISABLED");
+  assert.ok((disabled.contract.reason ?? "").length > 0);
+  assert.deepEqual(disabled.authorized, []);
+  const unauthorized = JSON.parse((await cli(await world(contractJson(KILL, { authorize: {} })), ["status"], [])).stdout) as Status;
+  assert.equal(unauthorized.act, "DISABLED");
+  assert.match(unauthorized.contract.reason ?? "", /authorize/);
+  const enabled = JSON.parse((await cli(w, ["status", "--environment", "DEV"], [])).stdout) as Status;
+  assert.deepEqual(enabled.authorized.map((a) => [a.environment, a.operations]), [["DEV", ["APPLY", "CLEANUP"]], ["QA", ["APPLY", "CLEANUP"]], ["PROD", ["APPLY", "CLEANUP"]]]);
+  assert.ok(enabled.authorized.every((a) => /^[0-9a-f]{64}$/.test(a.authorizationSha256)));
+  assert.equal(enabled.ready?.environment, "DEV");
+  assert.deepEqual(enabled.approved.map((a) => a.requiredApprovals), [1, 1, 2]);
+  assert.match((await cli(w, ["status", "--environment", "STAGE"], [])).stderr, /APPLY_ARGUMENT_INVALID/);
+  // With no overrides the repository's own contract decides: it ships with none, so ACT is disabled.
+  const shipped = await cli(w, ["status"], [], { contractPath: undefined });
   assert.equal((JSON.parse(shipped.stdout) as { act: string }).act, "DISABLED");
 
   const s = await sealed(w, "DEV");
-  const idle = JSON.parse((await cli(w, ["status", "--sealed", s.path], [])).stdout) as { act: string; killSwitch: boolean; artifact: { artifactSha256: string; applied: boolean; environment: string } };
+  const idle = JSON.parse((await cli(w, ["status", "--sealed", s.path], [])).stdout) as Status & { artifact: { artifactSha256: string; applied: boolean; environment: string } };
   assert.equal(idle.act, "PILOT_ENABLED");
-  assert.equal(idle.killSwitch, false);
-  assert.deepEqual(idle.artifact, { artifactSha256: s.artifactSha256, environment: "DEV", applied: false });
+  assert.equal(idle.contract.killSwitch, false);
+  const dev = idle.authorized.find((a) => a.environment === "DEV")!;
+  assert.deepEqual(idle.artifact, { artifactSha256: s.artifactSha256, environment: "DEV", contractSha256: idle.contract.contractSha256, authorizationSha256: dev.authorizationSha256, applied: false });
   const quiet = engineCalls().length;
   writeFileSync(KILL, "stop");
-  assert.equal((JSON.parse((await cli(w, ["status"], [])).stdout) as { killSwitch: boolean }).killSwitch, true);
+  assert.equal((JSON.parse((await cli(w, ["status"], [])).stdout) as Status).contract.killSwitch, true);
   rmSync(KILL);
   assert.equal(engineCalls().length, quiet, "status runs no engine");
 
@@ -760,24 +779,29 @@ test("a failure after the approvals were consumed and before the engine starts e
   assert.equal((await cli(w, applyArgs(s, [await approve(w, s, "bob")]), [applyPhrase(s)], applyIn(s))).code, 0);
 });
 
-test("approvers and the operator see an import, a move, a forget and output changes, and no bidi or zero-width character", async () => {
+test("approvers and the operator see a create and output changes, and no bidi or zero-width character; a plan that imports, moves or forgets is never sealed (owner decision E1)", async () => {
   const w = await world();
+  for (const [entry, said] of [
+    [{ address: "azurerm_x.imported", type: "azurerm_x", change: { actions: ["no-op"], importing: { id: "/x" } } }, /azurerm_x\.imported \(azurerm_x\): the plan would import \["no-op"\] it/],
+    [{ address: "azurerm_x.moved", type: "azurerm_x", previous_address: "azurerm_x.old", change: { actions: ["no-op"] } }, /azurerm_x\.moved \(azurerm_x\): the plan would move \["no-op"\] it/],
+    [{ address: "azurerm_x.gone", type: "azurerm_x", change: { actions: ["forget"] } }, /azurerm_x\.gone \(azurerm_x\): the plan would \["forget"\] it/],
+  ] as const) {
+    behave({ showResources: [entry] });
+    const target = targetOf("DEV");
+    const refused = await cli(w, sealArgs(writeProject(fresh("project"), target), target, "DEV"), [targetString(target), PHRASE], { env: identityEnv("DEV") });
+    assert.equal(refused.code, 2, refused.stdout);
+    assert.match(refused.stderr + refused.stdout, /RESOURCE_NOT_IN_CANARY/);
+    assert.match(refused.stderr + refused.stdout, said);
+  }
   behave({
-    showResources: [
-      { address: "azurerm_x.imported", type: "azurerm_x", change: { actions: ["no-op"], importing: { id: "/x" } } },
-      { address: "azurerm_x.moved", type: "azurerm_x", previous_address: "azurerm_x.old", change: { actions: ["no-op"] } },
-      { address: "azurerm_x.gone", type: "azurerm_x", change: { actions: ["forget"] } },
-      { address: "azurerm_x.safe\u202Egnp.exe\u200B", type: "azurerm_x", change: { actions: ["create"] } },
-    ],
+    showResources: [{ address: "azurerm_x.safe\u202Egnp.exe\u200B", type: "azurerm_x", change: { actions: ["create"] } }],
     showOutputChanges: { endpoint: { actions: ["update"] } },
   });
+  withPlannedCanary(w.contractPath, toolDir);
   const s = await sealed(w, "DEV");
   const shown = (text: string) => {
-    assert.match(text, /\[importing an existing resource\]/);
-    assert.match(text, /azurerm_x\.moved \(azurerm_x\) \[moved from azurerm_x\.old\]/);
-    assert.match(text, /FORGET\s+azurerm_x\.gone \(azurerm_x\) \[removed from state only; the real resource is left\]/);
+    assert.match(text, /CREATE\s+azurerm_x\.safegnp\.exe \(azurerm_x\)/);
     assert.match(text, /UPDATE\s+output\.endpoint \(output\)/);
-    assert.ok(text.includes("azurerm_x.safegnp.exe"));
     assert.ok(!/[\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF]/.test(text), "no hidden character reaches the screen");
   };
   const approving = await cli(w, ["approve", "--bundle", s.bundle, "--key", keyFile("alice"), "--approver", "alice"], [approvePhrase(s)]);
@@ -801,7 +825,7 @@ test("preflight is read-only and offline: every item says READY, MISSING, INVALI
   const report = JSON.parse(ok.stdout) as Readiness & { authentication?: unknown };
   assert.equal(report.ready, true);
   assert.equal(report.authentication, undefined, "there is no fixed authentication claim any more");
-  assert.ok(report.checks.length >= 7 && report.checks.every((c) => c.ok && c.state === "READY"));
+  assert.ok(report.checks.length >= 7 && report.checks.every((c) => c.ok && (c.state === "READY" || (c.advisory === true && c.state === "UNVERIFIED"))));
   assert.match(report.checks.find((c) => c.check.startsWith("engine qualified"))?.detail ?? "", /^Qualified in DEV/);
   assert.equal(stateOf(report, "identity separation attested"), "READY", "attested only because the qualification evidence records it");
   assert.equal(engineCalls().length, before, "no engine started");
@@ -812,11 +836,14 @@ test("preflight is read-only and offline: every item says READY, MISSING, INVALI
   assert.equal(stateOf(JSON.parse(noIdentity.stdout), "identities configured"), "MISSING");
   const secretValues = Object.values(ENV).filter((v): v is string => typeof v === "string" && v.length >= 8);
   for (const v of secretValues) assert.ok(!ok.stdout.includes(v) && !noIdentity.stdout.includes(v), "no identity value is printed");
-  // A draft that is not pinned or enabled is MISSING the owner's approval, though its shape is checked.
-  const draft = await world(contractJson(KILL, { enabled: false }));
-  const drafted = JSON.parse((await cli(draft, ["preflight", "--environment", "DEV"], [])).stdout) as Readiness;
-  assert.equal(drafted.checks[0].state, "READY", "a draft contract's shape is checked even though it is not enabled");
-  assert.equal(stateOf(drafted, "pilot contract pinned"), "MISSING");
+  // A draft that is not enabled, or does not authorize APPLY here, is MISSING the owner's authorization, though its shape is checked.
+  for (const over of [{ enabled: false }, { authorize: {} }, { authorize: { DEV: ["CLEANUP"], QA: ["APPLY"], PROD: ["APPLY"] } }]) {
+    const draft = await world(contractJson(KILL, over));
+    const drafted = JSON.parse((await cli(draft, ["preflight", "--environment", "DEV"], [])).stdout) as Readiness;
+    assert.equal(drafted.checks[0].state, "READY", "a draft contract's shape is checked even though it is not authorized");
+    assert.equal(stateOf(drafted, "pilot contract enabled and authorizes APPLY in DEV"), "MISSING", JSON.stringify(over));
+    assert.equal(drafted.ready, false);
+  }
   // A missing tool is UNAVAILABLE; the emergency stop, a stop put in place on purpose, is BLOCKED.
   assert.equal(stateOf(JSON.parse((await run(["--environment", "DEV"], { toolDirs: [fresh("empty-tools")] })).stdout), "tool terraform"), "UNAVAILABLE");
   writeFileSync(KILL, "stop");
@@ -839,7 +866,7 @@ test("preflight does not say ready before qualification: no record is MISSING an
   assert.equal(stateOf(report, "engine qualified"), "MISSING");
   assert.match(report.checks.find((c) => c.check.startsWith("engine qualified"))?.detail ?? "", /\.\/alz apply qualify/);
   assert.equal(stateOf(report, "identity separation attested"), "UNVERIFIED");
-  assert.ok(report.checks.filter((c) => !c.check.startsWith("engine qualified") && !c.check.startsWith("identity separation")).every((c) => c.state === "READY"));
+  assert.ok(report.checks.filter((c) => !c.check.startsWith("engine qualified") && !c.check.startsWith("identity separation") && !c.advisory).every((c) => c.state === "READY"));
   // What readiness reports is what seal does: the same machine cannot seal.
   const target = targetOf("DEV");
   const sealing = await cli(w, sealArgs(writeProject(fresh("project"), target), target, "DEV"), [targetString(target), PHRASE]);
@@ -902,12 +929,13 @@ test("prepare writes the request and manifest from the contract and project, and
   const request = /request {3}(\S+)/.exec(run.stdout)?.[1];
   const manifest = /manifest {2}(\S+)/.exec(run.stdout)?.[1];
   assert.ok(request && manifest && existsSync(request) && existsSync(manifest));
-  assert.match(run.stdout, /NEXT \.\/alz apply seal --request /);
+  assert.match(run.stdout, /NEXT \.\/alz apply seal --request \S+ --manifest \S+ --requester ID --key REQUESTER_KEY\.pem\n/,
+    "the hint names the requester flags seal requires, as placeholders");
   assert.match(run.stdout, /input {11}location from terraform\.tfvars/);
   assert.doesNotMatch(run.stdout, /westeurope/, "a value is never printed");
   assert.equal(readdirSync(join(outDir, "DEV")).length, 3);
 
-  const seal = await cli(w, ["seal", "--request", request, "--manifest", manifest], [targetString(target), PHRASE]);
+  const seal = await cli(w, ["seal", "--request", request, "--manifest", manifest, ...requesterArgs()], [targetString(target), PHRASE]);
   assert.equal(seal.code, 0, seal.stderr);
   assert.match(JSON.parse(seal.stdout).artifactSha256, /^[0-9a-f]{64}$/);
 });
@@ -1009,7 +1037,7 @@ test("record-live makes the execute step's live record only from a recorded succ
   const { written } = JSON.parse(done.stdout) as { written: string };
   const saved = JSON.parse(readFileSync(written, "utf8")) as Record<string, unknown>;
   const evidence = JSON.parse(applied.stdout) as { artifactSha256: string; sourceCommit: string; target: unknown };
-  assert.deepEqual(Object.keys(saved).sort(), ["artifactSha256", "attestedAt", "attestedBy", "cloud", "contractSha256", "engine", "environment",
+  assert.deepEqual(Object.keys(saved).sort(), ["artifactSha256", "attestedAt", "attestedBy", "authorizationSha256", "cloud", "contractSha256", "engine", "environment",
     "evidenceSha256", "label", "outcome", "schemaVersion", "sourceCommit", "step", "target"]);
   assert.equal(saved.label, "LIVE");
   assert.equal(saved.step, "execute");
@@ -1025,4 +1053,24 @@ test("record-live makes the execute step's live record only from a recorded succ
   assert.equal(again.code, 1);
   assert.match(again.stderr, /^LIVE_RECORD_EXISTS/);
   assert.equal(readdirSync(acceptanceDir).length, 1);
+});
+
+test("M22: without an injected commit, the CLI resolves the source commit from the repository root with the contract as a file that must equal HEAD's bytes", async () => {
+  const w = await world();
+  const seen: { root: string; committed: readonly string[] }[] = [];
+  const recorder = (root: string, _env?: NodeJS.ProcessEnv, committed: readonly string[] = []) => {
+    seen.push({ root, committed });
+    return { ok: false as const, reason: "recorded by the test" };
+  };
+  for (const args of [["propose-cleanup", "--sealed", "/nonexistent/s", ...requesterArgs()], ["propose-removal", "--sealed", "/nonexistent/s", ...requesterArgs()]]) {
+    const run = await cli(w, args, [], { sourceCommit: undefined, sourceResolver: recorder });
+    assert.equal(run.code, 2, run.stderr);
+    assert.match(run.stderr, /BLOCKED SOURCE_UNVERIFIED/);
+    assert.match(run.stderr, /recorded by the test/, "the resolver's own reason is shown");
+  }
+  assert.equal(seen.length, 2);
+  for (const call of seen) {
+    assert.equal(call.root, repoPaths().root);
+    assert.deepEqual(call.committed, ["config/act-pilot-contract.json"], "the contract must be exactly the committed file");
+  }
 });

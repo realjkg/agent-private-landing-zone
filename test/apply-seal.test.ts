@@ -6,18 +6,21 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import { signRequest } from "../src/apply/approval.js";
 import { computeArtifactSha256, engineBinaryChange, loadSealedPlan, planWithoutStoring, reviewBundleOf, sealPlan, verifyReviewBundle, verifySealedPlan, type SealInput } from "../src/apply/seal.js";
-import type { PreviewProvenance, SealedPlan } from "../src/apply/types.js";
+import type { PilotCanary, PreviewProvenance, SealedPlan } from "../src/apply/types.js";
 import { decryptEvidence, encryptEvidence, ensureEvidenceKey, type EvidenceEnvelope } from "../src/evidence/vault.js";
 import { canonicalJson } from "../src/teardown/manifest.js";
 import { createImmutableSnapshot } from "../src/teardown/snapshot.js";
 import { createPrivateDirectory } from "../src/tools/private-workdir.js";
-import { SOURCE_COMMIT,
-  DEV_TARGET, ENGINE_VERSION, ENV, identityEnv, TENANT, H, PLAN_CANARY, POLICY, PROD_TARGET, QA_TARGET, VALUE_CANARY, behave as behaveIn, callsOf, installFakeTerraform, sha,
+import { assertProductCliConfig, SOURCE_COMMIT,
+  keys,
+  CANARY_AZURE, DEV_TARGET, ENGINE_VERSION, ENV, identityEnv, TENANT, H, PLAN_CANARY, POLICY, PROD_TARGET, QA_TARGET, VALUE_CANARY, behave as behaveIn, callsOf, installFakeTerraform, sha,
   writeProject, type Behavior,
+  REQUESTER,
 } from "./helpers/apply-fixtures.js";
 import { AZURE } from "../src/apply/providers/azure.js";
-import { TERRAFORM } from "../src/apply/engines/terraform.js";
+import { PRODUCT_CLI_CONFIG, TERRAFORM } from "../src/apply/engines/terraform.js";
 
 // docs/act-pilot-plan.md, authority items 2 and 5. The engine is a fake
 // executable: these tests pin the sealing logic, not the real Terraform CLI.
@@ -49,7 +52,7 @@ const behave = (behavior: Behavior = {}) => behaveIn(toolDir, join(root, "KILL")
 const PROVENANCE: PreviewProvenance = { engineBinarySha256: H("e"), qualification: { state: "UNQUALIFIED", reason: "Fixture: no qualification evidence is in this test's vault." } };
 const calls = () => callsOf(toolDir);
 
-function fixture(options: { target?: typeof DEV_TARGET; environment?: "DEV" | "QA" | "PROD"; mainTf?: string; env?: NodeJS.ProcessEnv; workspace?: string } = {}) {
+function fixture(options: { target?: typeof DEV_TARGET; environment?: "DEV" | "QA" | "PROD"; mainTf?: string; env?: NodeJS.ProcessEnv; workspace?: string; canary?: PilotCanary } = {}) {
   const target = { ...(options.target ?? DEV_TARGET), ...(options.workspace ? { workspace: options.workspace } : {}) };
   behave({ workspace: target.workspace });
   const { projectRoot, manifest } = writeProject(fresh("project"), target, options.mainTf);
@@ -59,8 +62,8 @@ function fixture(options: { target?: typeof DEV_TARGET; environment?: "DEV" | "Q
   const input: SealInput = {
     engine: TERRAFORM, environment: options.environment ?? "DEV", target, manifest, snapshotPath: snapshot.path, scratchDir: scratch.path,
     env: options.env ?? identityEnv(options.environment ?? "DEV"), policyVersion: POLICY, engineVersion: ENGINE_VERSION, toolDirs: [toolDir],
-    pinned: { tenantId: TENANT, subscriptionId: target.account, backend: target.backend, workspace: target.workspace }, spec: AZURE, contractSha256: H("9"), sourceCommit: SOURCE_COMMIT,
-    provenance: PROVENANCE, now: () => new Date("2026-10-11T10:00:00.000Z"),
+    pinned: { tenantId: TENANT, subscriptionId: target.account, backend: target.backend, workspace: target.workspace, canary: options.canary ?? CANARY_AZURE }, spec: AZURE, contractSha256: H("9"), authorizationSha256: H("a"), targetSha256: H("b"), sourceCommit: SOURCE_COMMIT,
+    provenance: PROVENANCE, requester: REQUESTER, now: () => new Date("2026-10-11T10:00:00.000Z"),
     unit: pilotUnitOf({ provider: "AZURE", contractSha256: H("9"), environment: options.environment ?? "DEV", target }),
   };
   return { input, scratch, cleanup: () => { snapshot.remove(); scratch.remove(); } };
@@ -90,7 +93,10 @@ test("sealing runs the pinned init/workspace/plan/show sequence, with STATE for 
     assert.ok((await sealPlan(f.input)).ok);
     assert.deepEqual(calls().map((c) => c.args), [
       ["version", "-json"],
-      ["init", "-input=false", "-no-color", "-lockfile=readonly"],
+      // The pinned backend has no settings of its own: the seal's init reads the contract's location from the product's backend file.
+      ["init", "-input=false", "-no-color", "-lockfile=readonly", "-backend-config=../alz-backend.tfbackend"],
+      // What init selected, judged before any plan (review of #327, round 5).
+      ["version", "-json"],
       ["workspace", "select", "pilot"],
       ["workspace", "show"],
       ["plan", "-input=false", "-no-color", "-out=../alz-preview.tfplan"],
@@ -109,10 +115,10 @@ test("sealing runs the pinned init/workspace/plan/show sequence, with STATE for 
   } finally { f.cleanup(); }
 });
 
-test("the sealed record binds plan, manifest, release identity, environment, target, engine, policy and pinned contract; the artifact hash recomputes from them", async () => {
+test("the sealed record binds plan, manifest, release identity, environment, target, engine, policy, the reviewed contract and its authorizing entry; the artifact hash recomputes from them", async () => {
   const { result } = await sealed();
   const { sealed: s } = result as Extract<typeof result, { ok: true }>;
-  assert.equal(s.schemaVersion, 1);
+  assert.equal(s.schemaVersion, 2, "schema 2: the requester signs the sealed request");
   assert.equal(s.environment, "DEV");
   assert.deepEqual(s.target, DEV_TARGET);
   assert.equal(s.engineVersion, "1.9.5");
@@ -122,25 +128,30 @@ test("the sealed record binds plan, manifest, release identity, environment, tar
   assert.match(s.releaseIdentity, /^[a-f0-9]{64}$/);
   assert.equal(s.artifactSha256, computeArtifactSha256(s));
   assert.equal(s.channel, "CLI");
+  assert.equal(s.authorizationSha256, H("a"));
   assert.equal(s.artifactSha256, sha(JSON.stringify({
-    changesSha256: sha(canonicalJson(s.changes)), channel: s.channel, contractSha256: s.contractSha256, engineVersion: s.engineVersion, environment: s.environment, manifestHash: s.manifestHash,
+    authorizationSha256: s.authorizationSha256, changesSha256: sha(canonicalJson(s.changes)), channel: s.channel, contractSha256: s.contractSha256, engineVersion: s.engineVersion, environment: s.environment, manifestHash: s.manifestHash,
     planSha256: s.planSha256, policyVersion: s.policyVersion,
     provenance: { engineBinarySha256: PROVENANCE.engineBinarySha256, qualification: { reason: "Fixture: no qualification evidence is in this test's vault.", state: "UNQUALIFIED" } },
-    releaseIdentity: s.releaseIdentity, sourceCommit: s.sourceCommit,
-    target: { account: s.target.account, backend: s.target.backend, workspace: s.target.workspace },
+    releaseIdentity: s.releaseIdentity, requesterId: "dana", sourceCommit: s.sourceCommit,
+    target: { account: s.target.account, backend: s.target.backend, workspace: s.target.workspace }, targetSha256: s.targetSha256,
     unit: { tags: { "alz-build": s.unit!.tags["alz-build"], "alz-managed-by": "alz", "alz-unit": s.unit!.unitId }, unitId: s.unit!.unitId, untagged: s.unit!.untagged },
-  })), "canonical JSON of exactly these thirteen fields, the change list through its own hash");
+  })), "canonical JSON of exactly these sixteen fields (the requester id, the authorization and the full target among them), the change list through its own hash");
+  assert.equal(s.requesterId, "dana");
+  assert.deepEqual(Object.keys(s.request!).sort(), ["signatureBase64", "statement"]);
+  assert.deepEqual(s.request!.statement, { schemaVersion: 1, requesterId: "dana", artifactSha256: s.artifactSha256, environment: "DEV", nonce: s.request!.statement.nonce });
   assert.deepEqual(s.provenance, PROVENANCE, "the seal keeps the provenance the driver observed, unchanged");
-  assert.deepEqual(s.changes, [
-    { address: "azurerm_log_analytics_workspace.pilot", type: "azurerm_log_analytics_workspace", action: "UPDATE" },
-    { address: "azurerm_resource_group.pilot", type: "azurerm_resource_group", action: "CREATE" },
-  ]);
+  assert.deepEqual(s.changes, [{ address: "azurerm_resource_group.pilot", type: "azurerm_resource_group", action: "CREATE" }]);
   assert.ok(!JSON.stringify(s).includes(VALUE_CANARY) && !JSON.stringify(s).includes(PLAN_CANARY));
 });
 
 test("Azure too: the backend the seal-time init saved must be the contract's, because the plan embeds it", async () => {
   for (const savedBackend of [
-    { type: "azurerm", config: { storage_account_name: "attackerstore", container_name: "tfstate", key: "dev.tfstate" } }, { type: "s3", config: {} }, null,
+    // Entra ID authorization is on, so the first is refused for its storage account alone.
+    { type: "azurerm", config: { storage_account_name: "attackerstore", container_name: "tfstate", key: "dev.tfstate", use_azuread_auth: true } },
+    { type: "azurerm", config: { storage_account_name: "fixturedevstore", container_name: "other", key: "dev.tfstate", use_azuread_auth: true } },
+    { type: "azurerm", config: { storage_account_name: "fixturedevstore", container_name: "tfstate", key: "prod.tfstate", use_azuread_auth: true } },
+    { type: "s3", config: {} }, null,
   ]) {
     const f = fixture();
     try {
@@ -152,7 +163,10 @@ test("Azure too: the backend the seal-time init saved must be the contract's, be
 });
 
 test("any change to a bound field changes the artifact hash", async () => {
-  const { result } = await sealed();
+  // Two creates, so that dropping one and reversing the list are each a different list.
+  const result = await shownWith({ showResources: [{ address: "azurerm_resource_group.second", type: "azurerm_resource_group", change: { actions: ["create"], before: null, after: {} } }] },
+    { canary: { resources: [{ type: "azurerm_resource_group", count: 2 }] } });
+  assert.ok(result.ok && result.sealed.changes.length === 2, JSON.stringify(result));
   const s = (result as Extract<typeof result, { ok: true }>).sealed;
   const base = s.artifactSha256;
   const variants: Partial<SealedPlan>[] = [
@@ -160,7 +174,7 @@ test("any change to a bound field changes the artifact hash", async () => {
     { target: { ...s.target, workspace: "other" } }, { target: { ...s.target, account: "sub-other" } },
     { target: { ...s.target, backend: "x/y/z" } }, { engineVersion: "1.9.6" }, { policyVersion: "2026-10-12.1" },
     { changes: [] }, { changes: s.changes.slice(1) }, { changes: s.changes.map((c) => ({ ...c, action: "DELETE" })) },
-    { changes: s.changes.map((c) => ({ ...c, address: c.address + "x" })) }, { changes: [...s.changes].reverse() }, { contractSha256: H("8") }, { sourceCommit: "1".repeat(40) },
+    { changes: s.changes.map((c) => ({ ...c, address: c.address + "x" })) }, { changes: [...s.changes].reverse() }, { contractSha256: H("8") }, { authorizationSha256: H("7") }, { sourceCommit: "1".repeat(40) },
     { provenance: { ...s.provenance, engineBinarySha256: H("7") } },
     { provenance: { ...s.provenance, qualification: { state: "QUALIFIED", evidenceHash: H("6"), qualifiedAt: "2026-10-10T10:00:00.000Z" } } },
     { provenance: { ...s.provenance, qualification: { state: "UNQUALIFIED", reason: "Another reason." } } },
@@ -355,7 +369,8 @@ test("sealing and qualifying run under the restricted terraform profile: a CLI c
         assert.ok(!result.ok, name + " " + mode);
         assert.match(result.message, /ENVIRONMENT_REFUSED/, name);
         for (const call of calls()) {
-          for (const variable of ["TF_CLI_CONFIG_FILE", "TF_PLUGIN_CACHE_DIR"]) assert.equal(call.env[variable], undefined, call.args[0] + " " + variable);
+          // Only the product's own CLI configuration reaches a child (review of #327, round 6), never the injected one.
+          assertProductCliConfig(call, PRODUCT_CLI_CONFIG);
           assert.ok(!JSON.stringify(call.env).includes("evil-mirror"), call.args[0]);
         }
         assert.deepEqual(readdirSync(f.scratch.path), []);
@@ -390,7 +405,8 @@ test("the change list an apply derives again comes from the same extraction as t
     assert.deepEqual(run.rederive(loaded.planBytes), ok.sealed.changes);
     const shown = calls().slice(before);
     assert.deepEqual(shown.map((c) => c.args), [["show", "-json", "../alz-preview.tfplan"]]);
-    assert.ok(!Object.keys(shown[0].env).some((name) => /^(ARM_|AZURE_|TF_CLI_CONFIG_FILE|TF_PLUGIN_CACHE_DIR)/.test(name)));
+    assert.ok(!Object.keys(shown[0].env).some((name) => /^(ARM_|AZURE_)/.test(name)));
+    assertProductCliConfig(shown[0], PRODUCT_CLI_CONFIG);
     assert.deepEqual(readdirSync(f.scratch.path).filter((name) => name.endsWith(".tfplan")), [], "the decrypted plan is removed");
     behave({ failOn: "show" });
     assert.throws(() => run.rederive(loaded.planBytes), /EXIT_1/);
@@ -414,12 +430,11 @@ test("the deletion unit is verified in the plan and sealed: every created resour
   const unit = f.input.unit;
   f.cleanup();
   const created = (address: string, after: Record<string, unknown>, more: Record<string, unknown> = {}) => ({ address, type: address.split(".")[0], change: { actions: ["create"], before: null, after, ...more } });
-  // Tagged as required, one untaggable type, and a data source and an update that are not judged.
+  // Tagged as required, one untaggable type, and a data source that is not judged. (An update is never sealed: the canary allowlist refuses it.)
   const ok = await shownWith({ showResources: [
     created("azurerm_resource_group.a", { tags: { ...unit.tags, team: "CANARY_TEAM" } }), created("azurerm_role_assignment.b", { scope: "/x" }),
     { address: "data.azurerm_client_config.me", type: "azurerm_client_config", mode: "data", change: { actions: ["read"], after: { tags: {} } } },
-    { address: "azurerm_storage_account.old", type: "azurerm_storage_account", change: { actions: ["update"], before: { tags: {} }, after: { tags: {} } } },
-  ] });
+  ] }, { canary: { resources: [{ type: "azurerm_resource_group", count: 2 }, { type: "azurerm_role_assignment", count: 1 }] } });
   assert.ok(ok.ok, JSON.stringify(ok));
   assert.deepEqual(ok.sealed.unit, { unitId: unit.unitId, tags: { ...unit.tags }, untagged: ["azurerm_resource_group.pilot", "azurerm_role_assignment.b"] }, "the fixture's default resource group carries no tag attribute either");
   assert.ok(!JSON.stringify(ok.sealed).includes("CANARY_TEAM"), "only the unit's own tag keys are read; no other tag value is recorded");
@@ -436,7 +451,7 @@ test("the deletion unit is verified in the plan and sealed: every created resour
     ["tags computed at apply time", {}, { after_unknown: { tags: true } }, "UNIT_TAG_UNVERIFIABLE"],
     ["tags that are not a map", { tags: "alz" }, {}, "UNIT_TAG_MISSING"],
   ] as const) {
-    const result = await shownWith({ showResources: [created("azurerm_resource_group.a", after as Record<string, unknown>, more as Record<string, unknown>)] });
+    const result = await shownWith({ showResources: [created("azurerm_resource_group.a", after as Record<string, unknown>, more as Record<string, unknown>)] }, { canary: { resources: [{ type: "azurerm_resource_group", count: 2 }] } });
     assert.ok(!result.ok && result.code === "ARTIFACT_INVALID" && result.message.includes(code), label + ": " + JSON.stringify(result));
   }
   // A record whose unit was edited or malformed is refused, as any other bound field.
@@ -450,27 +465,42 @@ test("the deletion unit is verified in the plan and sealed: every created resour
 });
 
 test("the change list carries an import, a move, a forget and output changes, strips bidi and zero-width characters, and all of it is bound by the hashes", async () => {
+  // Owner decision E1: a plan that imports, moves, forgets or updates a resource is never sealed. Each is refused with its action named.
+  for (const [entry, said] of [
+    [{ address: "azurerm_x.imported", type: "azurerm_x", change: { actions: ["no-op"], importing: { id: "/subscriptions/x" } } }, /azurerm_x\.imported \(azurerm_x\): the plan would import \["no-op"\]/],
+    [WORKING, /azurerm_x\.moved \(azurerm_x\): the plan would move \["no-op"\]/],
+    [{ address: "azurerm_x.gone", type: "azurerm_x", change: { actions: ["forget"] } }, /azurerm_x\.gone \(azurerm_x\): the plan would \["forget"\]/],
+    [{ address: "azurerm_x.a\u202Eb\u200Bc\u2066d\uFEFF", type: "azurerm_x\u200F", previous_address: "azurerm_x.\u2060p", change: { actions: ["update"] } }, /azurerm_x\.abcd \(azurerm_x\): the plan would move \["update"\]/],
+  ] as const) {
+    const refused = await shownWith({ showResources: [entry] });
+    assert.ok(!refused.ok && refused.code === "RESOURCE_NOT_IN_CANARY" && said.test(refused.message), JSON.stringify(refused));
+    assert.ok(!/[\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF]/.test(refused.message), "no invisible character reaches the reason");
+  }
+  // What a seal carries: creates (no invisible character survives) and output changes, which are not resources.
   const result = await shownWith({
-    showResources: [
-      { address: "azurerm_x.imported", type: "azurerm_x", change: { actions: ["no-op"], importing: { id: "/subscriptions/x" } } },
-      WORKING,
-      { address: "azurerm_x.gone", type: "azurerm_x", change: { actions: ["forget"] } },
-      { address: "azurerm_x.a\u202Eb\u200Bc\u2066d\uFEFF", type: "azurerm_x\u200F", previous_address: "azurerm_x.\u2060p", change: { actions: ["update"] } },
-    ],
+    showResources: [{ address: "azurerm_x.a\u202Eb\u200Bc\u2066d\uFEFF", type: "azurerm_x\u200F", change: { actions: ["create"] } }],
     showOutputChanges: { endpoint: { actions: ["update"], before: "CANARY_OUT_1", after: "CANARY_OUT_2" }, unchanged: { actions: ["no-op"] }, gone: { actions: ["delete"] } },
-  });
+  }, { canary: { resources: [{ type: "azurerm_resource_group", count: 1 }, { type: "azurerm_x", count: 1 }] } });
   assert.ok(result.ok, JSON.stringify(result));
-  const { sealed: s } = result;
-  const byAddress = Object.fromEntries(s.changes.map((c) => [c.address, c]));
-  assert.deepEqual(byAddress["azurerm_x.imported"], { address: "azurerm_x.imported", type: "azurerm_x", action: "SAME", importing: true });
-  assert.deepEqual(byAddress["azurerm_x.moved"], { address: "azurerm_x.moved", type: "azurerm_x", action: "SAME", previousAddress: "azurerm_x.old" });
-  assert.equal(byAddress["azurerm_x.gone"].action, "FORGET");
-  assert.deepEqual(byAddress["azurerm_x.abcd"], { address: "azurerm_x.abcd", type: "azurerm_x", action: "UPDATE", previousAddress: "azurerm_x.p" }, "no invisible character survives");
+  const sealedOne = result.sealed;
+  const byAddress = Object.fromEntries(sealedOne.changes.map((c) => [c.address, c]));
+  assert.deepEqual(byAddress["azurerm_x.abcd"], { address: "azurerm_x.abcd", type: "azurerm_x", action: "CREATE" }, "no invisible character survives");
   assert.deepEqual(byAddress["output.endpoint"], { address: "output.endpoint", type: "output", action: "UPDATE" });
   assert.equal(byAddress["output.gone"].action, "DELETE");
   assert.equal(byAddress["output.unchanged"], undefined, "an unchanged output is not a change");
-  assert.ok(!JSON.stringify(s).includes("CANARY_OUT"), "output values are never recorded");
-  assert.ok(!/[\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF]/.test(JSON.stringify(s.changes)));
+  assert.ok(!JSON.stringify(sealedOne).includes("CANARY_OUT"), "output values are never recorded");
+  assert.ok(!/[\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF]/.test(JSON.stringify(sealedOne.changes)));
+
+  // The record's import, move and forget fields stay bound by the hashes: a record that carries them, re-hashed and signed again by its
+  // requester, verifies, and an edit of any of them is tampering.
+  const flagged = [...sealedOne.changes,
+    { address: "azurerm_x.gone", type: "azurerm_x", action: "FORGET" },
+    { address: "azurerm_x.imported", type: "azurerm_x", action: "SAME", importing: true as const },
+    { address: "azurerm_x.moved", type: "azurerm_x", action: "SAME", previousAddress: "azurerm_x.old" },
+  ].sort((a, b) => (a.address < b.address ? -1 : a.address > b.address ? 1 : 0));
+  const reHashed = computeArtifactSha256({ ...sealedOne, changes: flagged });
+  const s: SealedPlan = { ...sealedOne, changes: flagged, artifactSha256: reHashed,
+    request: signRequest({ schemaVersion: 1, requesterId: sealedOne.requesterId, artifactSha256: reHashed, environment: "DEV", nonce: sealedOne.request!.statement.nonce }, keys.dana.priv) };
 
   // The one hash covers every added field: the artifact, the review bundle and the apply's re-derivation agree.
   const bundle = reviewBundleOf(s);
@@ -486,8 +516,12 @@ test("the change list carries an import, a move, a forget and output changes, st
     assert.ok(!checked.ok && checked.code === "ARTIFACT_TAMPERED");
   }
   // A QA bundle verifies once its hashes are recomputed for QA, and an unknown environment never does.
+  // The requester signed the DEV artifact, so a relabeled record needs the requester's own new signature over the QA hash (a copied one is tampering).
   const qaRecord = { ...s, environment: "QA" as const };
-  const qaBundle = { ...reviewBundleOf({ ...qaRecord, artifactSha256: computeArtifactSha256(qaRecord) }) };
+  const qaHash = computeArtifactSha256(qaRecord);
+  const qaBundle = { ...reviewBundleOf({ ...qaRecord, artifactSha256: qaHash, request: signRequest({ schemaVersion: 1, requesterId: s.requesterId, artifactSha256: qaHash, environment: "QA", nonce: s.request!.statement.nonce }, keys.dana.priv) }) };
+  const relabeledOnly = verifyReviewBundle({ ...reviewBundleOf({ ...qaRecord, artifactSha256: qaHash }) });
+  assert.ok(!relabeledOnly.ok && relabeledOnly.code === "ARTIFACT_TAMPERED", "the DEV request signature does not carry over to a QA relabel");
   assert.ok(verifyReviewBundle(qaBundle).ok && qaBundle.environment === "QA");
   assert.ok(!verifyReviewBundle({ ...qaBundle, environment: "STAGING" }).ok);
   assert.ok(!verifyReviewBundle({ ...qaBundle, environment: "DEV" }).ok, "relabeling a QA bundle breaks its hash");
@@ -514,8 +548,11 @@ test("a constant subscription_id or tenant_id in any azurerm provider block must
     ["a second, aliased block in a module", { ...provider({ subscription_id: { constant_value: DEV_TARGET.account } }), "module.m:azurerm.other": { name: "azurerm", alias: "other", module_address: "module.m", expressions: { subscription_id: { constant_value: other } } } }, /PROVIDER_SUBSCRIPTION_NOT_IN_CONTRACT/],
     ["another provider's constant is not an azurerm block", { random: { name: "random", full_name: "registry.terraform.io/hashicorp/random", expressions: { subscription_id: { constant_value: other } } } }, undefined],
   ];
+  // With no azurerm block the fake plans no azurerm resource, so that plan creates one random_id, which its canary allowlist names.
+  const noAzurerm = { showResources: [{ address: "random_id.suffix", type: "random_id", change: { actions: ["create"], before: null, after: {} } }] };
   for (const [label, showProviderConfig, refusal] of cases) {
-    const result = await shownWith({ showProviderConfig });
+    const result = showProviderConfig.azurerm ? await shownWith({ showProviderConfig })
+      : await shownWith({ showProviderConfig, ...noAzurerm }, { canary: { resources: [{ type: "random_id", count: 1 }] } });
     if (refusal) {
       assert.ok(!result.ok && refusal.test(result.message), label + " " + JSON.stringify(result));
       assert.ok(!JSON.stringify(result).includes(other), "the refusal names a code, not the value");
@@ -524,4 +561,46 @@ test("a constant subscription_id or tenant_id in any azurerm provider block must
   // The binding is the contract's for the environment: the DEV subscription is not PROD's.
   const prod = await shownWith({ showProviderConfig: provider({ subscription_id: { constant_value: DEV_TARGET.account } }) }, { target: PROD_TARGET, environment: "PROD" });
   assert.ok(!prod.ok && /PROVIDER_SUBSCRIPTION_NOT_IN_CONTRACT/.test(prod.message));
+});
+
+// --- the canary allowlist on the plan (owner decision E1) ----------------------------------------------------------
+
+test("canary (Terraform): the plan must create exactly the allowlist's types and counts, create only; every other resource change is RESOURCE_NOT_IN_CANARY with its reason, and nothing is sealed", async () => {
+  const entry = (address: string, actions: unknown, more: Record<string, unknown> = {}) => ({ address, type: address.replace(/^data\./, "").split(".")[0], change: { actions, before: null, after: {} }, ...more });
+  const ONE_RG = { resources: [{ type: "azurerm_resource_group", count: 1 }] };
+  // The positive case: the fixture's one create, a data source read and a no-op data source, and an output change.
+  const ok = await shownWith({ showResources: [entry("data.azurerm_client_config.me", ["read"], { mode: "data" }), entry("data.azurerm_subscription.this", ["no-op"], { mode: "data" })], showOutputChanges: { id: { actions: ["create"] } } }, { canary: ONE_RG });
+  assert.ok(ok.ok, JSON.stringify(ok));
+  const refusals: [string, Behavior, RegExp, PilotCanary?][] = [
+    ["an extra resource of an unlisted type", { showResources: [entry("azurerm_storage_account.extra", ["create"])] }, /azurerm_storage_account\.extra: type azurerm_storage_account is not in the canary allowlist/],
+    ["a second resource of the listed type (count 2)", { showResources: [entry("azurerm_resource_group.second", ["create"])] }, /azurerm_resource_group: the plan creates 2, the canary allowlist names exactly 1/],
+    ["a missing resource (count 0 of a listed type)", { showOnlyConfigured: true, showResources: [entry("azurerm_storage_account.x", ["create"])] }, /azurerm_resource_group: the plan creates 0, the canary allowlist names exactly 1/, { resources: [{ type: "azurerm_resource_group", count: 1 }, { type: "azurerm_storage_account", count: 1 }] }],
+    ["an update", { showResources: [entry("azurerm_virtual_network.old", ["update"])] }, /azurerm_virtual_network\.old \(azurerm_virtual_network\): the plan would \["update"\] it; the canary allows create only/],
+    ["a replace, delete then create", { showResources: [entry("azurerm_virtual_network.old", ["delete", "create"])] }, /would \["delete","create"\] it/],
+    ["a replace, create then delete", { showResources: [entry("azurerm_virtual_network.old", ["create", "delete"])] }, /would \["create","delete"\] it/],
+    ["a delete", { showResources: [entry("azurerm_virtual_network.old", ["delete"])] }, /would \["delete"\] it/],
+    ["a managed no-op (a resource that already exists)", { showResources: [entry("azurerm_virtual_network.old", ["no-op"])] }, /would \["no-op"\] it/],
+    ["an unknown action", { showResources: [entry("azurerm_virtual_network.odd", ["teleport"])] }, /would \["teleport"\] it/],
+    ["create with an extra action", { showResources: [entry("azurerm_resource_group.odd", ["create", "update"])] }, /would \["create","update"\] it/],
+    ["no actions at all", { showResources: [entry("azurerm_resource_group.odd", undefined)] }, /would \[unreadable actions\] it/],
+    ["a role assignment", { showResources: [entry("azurerm_role_assignment.grant", ["create"])] }, /azurerm_role_assignment\.grant: type azurerm_role_assignment is not in the canary allowlist/],
+    ["a data source with a create action", { showResources: [entry("data.azurerm_client_config.me", ["create"], { mode: "data" })] }, /data\.azurerm_client_config\.me \(azurerm_client_config\): the plan would \["create"\] it/],
+  ];
+  for (const [label, behavior, said, canary] of refusals) {
+    const refused = await shownWith(behavior, { canary: canary ?? ONE_RG });
+    assert.ok(!refused.ok && refused.code === "RESOURCE_NOT_IN_CANARY", label + ": " + JSON.stringify(refused));
+    assert.match(refused.message, said, label);
+    assert.match(refused.message, /Nothing was sealed/, label);
+  }
+  // The data source allowlist stays the provider's (judged first): an unreviewed data source is refused as before, not by the canary.
+  const unreviewed = await shownWith({ showResources: [entry("data.azurerm_key_vault_secret.s", ["read"], { mode: "data" })] }, { canary: ONE_RG });
+  assert.ok(!unreviewed.ok && /PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT|ARTIFACT_INVALID/.test(unreviewed.code + unreviewed.message), JSON.stringify(unreviewed));
+  // A target without an allowlist reaching the engine (the authorization check refuses it first) is refused too: fail closed.
+  const none = fixture();
+  try {
+    behave({ workspace: none.input.target.workspace });
+    const { canary: _dropped, ...pinned } = none.input.pinned as { canary?: unknown };
+    const missing = await sealPlan({ ...none.input, pinned: pinned as never });
+    assert.ok(!missing.ok && missing.code === "CANARY_ALLOWLIST_MISSING", JSON.stringify(missing));
+  } finally { none.cleanup(); }
 });

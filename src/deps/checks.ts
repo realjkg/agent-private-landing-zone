@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, readdirSync, statSync } from "node:fs";
+import { lstatSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { createConnection } from "node:net";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { PLUGIN_CATALOG } from "../plugins/catalog.js";
@@ -12,7 +13,7 @@ import { platformKey, type Platform, type ToolId, type ToolPins } from "./pins.j
  */
 export type DepCheck = {
   /** A fixed id for the pilot checks, or `product:<executable>` for a product tool derived from the plugin catalog. */
-  id: "node" | ToolId | "isolated-service" | "aws-cli" | "git" | `product:${string}`;
+  id: "node" | ToolId | "isolated-service" | "aws-cli" | "azure-cli" | "git" | `product:${string}`;
   label: string;
   /** Needed for the command being run. Optional checks are reported but never block it. */
   required: boolean;
@@ -44,32 +45,85 @@ export function installedPath(home: string, tool: ToolId, version: string, binar
 }
 
 /**
- * The versions of `tool` this app installed, newest first: `~/.alz/tools/<tool>/<version>` folders that hold the binary.
- * Only real folders count (no link on the way from the home folder), named like a pinned version, so an unfinished
- * `<version>.partial-<pid>` folder or anything a person put there is never mistaken for an install.
+ * The completion marker an install writes as its last step before the version folder is put in place, and the marker a
+ * removal writes first. A version folder is an install only with a valid completion marker beside its program; a folder
+ * with the program and no marker was installed before completion checks existed (reported, never read as verified and never
+ * removed on its own); any other folder is unfinished (an interrupted install or removal) and is replaced or finished, never
+ * read as an install.
  */
-export function appInstalledVersions(home: string, tool: ToolId, binary: string): string[] {
+export const INSTALL_MARKER = ".alz-installed.json";
+export const REMOVING_MARKER = ".alz-removing";
+export type InstallMarker = { schemaVersion: 1; tool: ToolId; version: string; binary: string; sha256: string; completedAt: string };
+export type InstallState = "INSTALLED" | "LEGACY" | "UNFINISHED" | "REMOVING" | "ABSENT";
+/** The plain words for a state that is not an install, as every check and menu says them. */
+export const INSTALL_STATE_WORDS: Readonly<Record<Exclude<InstallState, "INSTALLED" | "ABSENT">, string>> = {
+  LEGACY: "installed before completion checks, not verified",
+  UNFINISHED: "an earlier install did not finish",
+  REMOVING: "an earlier removal did not finish",
+};
+
+/** The real folder at home/<components...>, or undefined when any step below the home is missing, a link or not a folder. */
+export function realFolder(home: string, components: readonly string[]): string | undefined {
   let dir = home;
-  for (const component of [".alz", "tools", tool]) {
+  for (const component of components) {
     dir = join(dir, component);
     try {
       const entry = lstatSync(dir);
-      if (entry.isSymbolicLink() || !entry.isDirectory()) return [];
-    } catch { return []; }
+      if (entry.isSymbolicLink() || !entry.isDirectory()) return undefined;
+    } catch { return undefined; }
   }
-  const versions = readdirSync(dir).filter((name) => {
-    if (!/^\d+\.\d+\.\d+$/.test(name)) return false;
-    try {
-      const folder = lstatSync(join(dir, name));
-      const file = lstatSync(join(dir, name, binary));
-      return folder.isDirectory() && !folder.isSymbolicLink() && file.isFile();
-    } catch { return false; }
-  });
+  return dir;
+}
+
+/** The completion marker in `folder`, when it is valid for this tool, version and program. */
+export function readInstallMarker(folder: string, tool: ToolId, version: string, binary: string): InstallMarker | undefined {
+  try {
+    const value = JSON.parse(readFileSync(join(folder, INSTALL_MARKER), "utf8")) as unknown;
+    if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+    const marker = value as Record<string, unknown>;
+    if (marker.schemaVersion !== 1 || marker.tool !== tool || marker.version !== version || marker.binary !== binary ||
+      typeof marker.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(marker.sha256) || typeof marker.completedAt !== "string" || Number.isNaN(Date.parse(marker.completedAt))) return undefined;
+    return marker as InstallMarker;
+  } catch { return undefined; }
+}
+
+/** What the version folder of `tool` holds, read without following links. */
+export function installState(home: string, tool: ToolId, version: string, binary: string): InstallState {
+  const folder = realFolder(home, [".alz", "tools", tool, version]);
+  if (folder === undefined) return "ABSENT";
+  const has = (name: string): boolean => { try { return lstatSync(join(folder, name)).isFile(); } catch { return false; } };
+  if (has(REMOVING_MARKER)) return "REMOVING";
+  const program = has(binary);
+  if (program && readInstallMarker(folder, tool, version, binary) !== undefined) return "INSTALLED";
+  if (program && !has(INSTALL_MARKER)) return "LEGACY";
+  return "UNFINISHED";
+}
+
+/** Every version-named folder of `tool` the app's folder holds, newest first, with what each is. */
+export function appInstallStates(home: string, tool: ToolId, binary: string): { version: string; state: Exclude<InstallState, "ABSENT"> }[] {
+  const dir = realFolder(home, [".alz", "tools", tool]);
+  if (dir === undefined) return [];
   const parts = (version: string) => version.split(".").map(Number);
-  return versions.sort((a, b) => {
-    const [x, y] = [parts(a), parts(b)];
-    return (y[0]! - x[0]!) || (y[1]! - x[1]!) || (y[2]! - x[2]!);
-  });
+  return readdirSync(dir).filter((name) => /^\d+\.\d+\.\d+$/.test(name))
+    .map((version) => ({ version, state: installState(home, tool, version, binary) }))
+    .filter((item): item is { version: string; state: Exclude<InstallState, "ABSENT"> } => item.state !== "ABSENT")
+    .sort((a, b) => { const [x, y] = [parts(a.version), parts(b.version)]; return (y[0]! - x[0]!) || (y[1]! - x[1]!) || (y[2]! - x[2]!); });
+}
+
+/** Reads the version `binary` reports, through the same command every check uses, or undefined when it cannot run or does not say. */
+export function reportedVersion(tool: ToolId, binary: string): string | undefined {
+  const version = TOOL_VERSION_ARGS[tool];
+  return version.pattern.exec(versionText(binary, version.args) ?? "")?.[1];
+}
+
+/**
+ * The versions of `tool` this app installed, newest first: `~/.alz/tools/<tool>/<version>` folders that hold the program,
+ * installed (with a completion marker) or installed before completion checks existed. Only real folders count (no link on
+ * the way from the home folder), named like a pinned version, so an unfinished `<version>.partial-<pid>` folder, an
+ * interrupted install or removal, or anything a person put there is never mistaken for an install.
+ */
+export function appInstalledVersions(home: string, tool: ToolId, binary: string): string[] {
+  return appInstallStates(home, tool, binary).filter((item) => item.state === "INSTALLED" || item.state === "LEGACY").map((item) => item.version);
 }
 
 /** The first executable named `name` on PATH, but never inside the app's own folder (that copy is checked separately). */
@@ -86,9 +140,9 @@ function onPath(name: string, env: NodeJS.ProcessEnv): string | undefined {
 }
 
 /** Runs `<binary> <args>` with a short timeout and returns its text, or undefined when it cannot run. */
-function versionText(binary: string, args: string[]): string | undefined {
+function versionText(binary: string, args: string[], env?: NodeJS.ProcessEnv): string | undefined {
   try {
-    return execFileSync(binary, args, { encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "pipe"] });
+    return execFileSync(binary, args, { encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "pipe"], ...(env ? { env } : {}) });
   } catch {
     return undefined;
   }
@@ -106,12 +160,28 @@ function toolCheck(tool: ToolId, ctx: CheckContext, required: boolean, platform:
   const artifact = platform ? pin.artifacts[platform] : undefined;
   const label = TOOL_LABEL[tool] + " " + pin.version;
   const own = artifact ? installedPath(ctx.home, tool, pin.version, artifact.binary) : undefined;
-  const found = own && existsSync(own) ? own : onPath(tool, ctx.env);
+  const ownState = artifact ? installState(ctx.home, tool, pin.version, artifact.binary) : "ABSENT";
   const installable = artifact ? tool : undefined;
   const previous = artifact ? appInstalledVersions(ctx.home, tool, artifact.binary).filter((version) => version !== pin.version) : [];
   const update = previous.length > 0
     ? "Run ./alz deps and choose Update to replace the app's " + TOOL_LABEL[tool] + " " + previous[0] + " with the tested " + pin.version + "."
     : undefined;
+  // The app's own folder for the pinned version, when it is there but not a finished, checked install: said plainly, with the one
+  // step that repairs it. A legacy copy is never read as verified and never removed on its own; an unfinished one is replaced.
+  if (ownState === "LEGACY") {
+    return {
+      id: tool, label, required, ok: false, installable, detail: INSTALL_STATE_WORDS.LEGACY + " (" + own + ")",
+      fix: "Run ./alz deps and choose Repair: it installs the tested " + TOOL_LABEL[tool] + " " + pin.version + " beside this copy and switches to it only after the check passes.",
+    };
+  }
+  if (ownState === "UNFINISHED" || ownState === "REMOVING") {
+    return {
+      id: tool, label, required, ok: false, installable, detail: INSTALL_STATE_WORDS[ownState] + " (" + own + ")",
+      fix: ownState === "REMOVING" ? "Run ./alz deps and choose Remove to finish removing it, or Install to replace it."
+        : "Run ./alz deps and choose Install: it replaces the unfinished folder with a checked copy.",
+    };
+  }
+  const found = own && ownState === "INSTALLED" ? own : onPath(tool, ctx.env);
   if (!found) {
     return {
       id: tool, label, required, ok: false, installable,
@@ -138,14 +208,48 @@ function toolCheck(tool: ToolId, ctx: CheckContext, required: boolean, platform:
 
 /**
  * Check-only tools: reported with exact steps, never installed. The AWS CLI's macOS installer needs an administrator
- * password and its checksum is not pinned here; Git is the operator's own.
+ * password and its checksum is not pinned here; Git is the operator's own. With `pinned` (the AWS CLI's tested version,
+ * config/tool-pins.json `awsCli`), the found version must be exactly it, as for the installable tools: the CDK path's
+ * qualification binds the program that ran, so another version is not the tested one.
  */
-function presenceCheck(id: "aws-cli" | "git", label: string, args: string[], pattern: RegExp, required: boolean, fix: string, env: NodeJS.ProcessEnv): DepCheck {
-  const found = onPath(id === "aws-cli" ? "aws" : "git", env);
-  const reported = found ? pattern.exec(versionText(found, args) ?? "")?.[1] : undefined;
+function presenceCheck(id: "aws-cli" | "azure-cli" | "git", label: string, args: string[], pattern: RegExp, required: boolean, fix: string, env: NodeJS.ProcessEnv, pinned?: string): DepCheck {
+  const found = onPath(PRESENCE_EXECUTABLE[id], env);
+  const reported = found ? pattern.exec(((id === "azure-cli" ? azVersionText(found, args) : versionText(found, args)) ?? "").trim())?.[1] : undefined;
   if (!reported) return { id, label, required, ok: false, detail: found ? "found, but its version could not be read" : "not found", fix };
+  if (pinned !== undefined && reported !== pinned) return { id, label, required, ok: false, detail: "found " + reported + " at " + found + ", tested " + pinned, fix };
   return { id, label, required, ok: true, detail: "version " + reported + " at " + found };
 }
+
+/**
+ * The az probe never runs with the person's own az configuration: a configuration with `auto-upgrade.enable=yes` and
+ * `auto-upgrade.prompt=no` makes az run `az upgrade` after any successful command (azure-cli 2.91.0 `__main__.py`), which would
+ * break "never installs". So the probe gets a private, empty `AZURE_CONFIG_DIR` (removed afterward): with no configuration file,
+ * `auto-upgrade.enable` falls back to its default, false (`az_cli.config.getboolean('auto-upgrade', 'enable', False)`), and telemetry
+ * is off. knack's environment form of that setting would be `AZURE_AUTO-UPGRADE_ENABLE`, a name a shell wrapper such as az's own
+ * launcher may drop, so it is not relied on.
+ */
+export const AZ_PROBE_ENVIRONMENT: Readonly<Record<string, string>> = { AZURE_CORE_COLLECT_TELEMETRY: "no" };
+function azVersionText(binary: string, args: string[]): string | undefined {
+  const configDir = mkdtempSync(join(tmpdir(), "alz-az-probe-"));
+  try {
+    // No AZURE_* setting of the person's own reaches the probe either (an environment variable overrides the configuration file).
+    const own = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^AZURE_/i.test(key)));
+    return versionText(binary, args, { ...own, ...AZ_PROBE_ENVIRONMENT, AZURE_CONFIG_DIR: configDir });
+  } finally {
+    rmSync(configDir, { recursive: true, force: true });
+  }
+}
+
+const PRESENCE_EXECUTABLE: Readonly<Record<"aws-cli" | "azure-cli" | "git", string>> = { "aws-cli": "aws", "azure-cli": "az", git: "git" };
+
+/**
+ * The Azure CLI's own version as `az version --output json` prints it (`"azure-cli": "x.y.z"`, read from the installed
+ * distributions; unlike `az --version` it asks no server for the newest release). The Bicep engine reads the same key.
+ */
+export const AZURE_CLI_VERSION_PATTERN = /"azure-cli"\s*:\s*"(\d+\.\d+\.\d+)"/;
+
+/** The AWS CLI v2 version line, as the vendor prints it: `aws-cli/2.x.y Python/... <os>/... <source>/<arch> ...`. Read from trimmed text, the same rule the CDK engine applies before it runs, so `./alz deps` and qualification agree. */
+export const AWS_CLI_VERSION_PATTERN = /^aws-cli\/(\d+\.\d+\.\d+)(?:\s|$)/;
 
 /** Looks at the isolated service's port: nothing listening is fine, a listener that is not Ollama is a blocker. */
 async function serviceCheck(ctx: CheckContext, required: boolean): Promise<DepCheck> {
@@ -253,8 +357,10 @@ export async function runDependencyChecks(ctx: CheckContext, required: ReadonlyS
     toolCheck("terraform", ctx, required.has("terraform"), platform),
     toolCheck("ollama", ctx, required.has("ollama"), platform),
     await serviceCheck(ctx, required.has("isolated-service")),
-    presenceCheck("aws-cli", "AWS CLI 2", ["--version"], /aws-cli\/(\d+\.\d+\.\d+)/, required.has("aws-cli"),
-      "Install AWS CLI version 2 from docs.aws.amazon.com (macOS installer; it asks for your administrator password), then open a new Terminal window.", ctx.env),
+    presenceCheck("aws-cli", "AWS CLI " + ctx.pins.awsCli.version, ["--version"], AWS_CLI_VERSION_PATTERN, required.has("aws-cli"),
+      "Install AWS CLI version " + ctx.pins.awsCli.version + ", the tested version, from docs.aws.amazon.com (macOS installer; it asks for your administrator password), then open a new Terminal window.", ctx.env, ctx.pins.awsCli.version),
+    presenceCheck("azure-cli", "Azure CLI " + ctx.pins.azureCli.version, ["version", "--output", "json"], AZURE_CLI_VERSION_PATTERN, required.has("azure-cli"),
+      "Install Azure CLI version " + ctx.pins.azureCli.version + ", the tested version, from learn.microsoft.com/cli/azure (it is needed only for the Azure Bicep path), then open a new Terminal window.", ctx.env, ctx.pins.azureCli.version),
     presenceCheck("git", "Git", ["--version"], /git version (\d+\.\d+\.\d+)/, required.has("git"),
       "Install Git (run xcode-select --install in Terminal), then open a new Terminal window.", ctx.env),
   ];

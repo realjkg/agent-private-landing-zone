@@ -31,6 +31,7 @@ const optionalShapes = new WeakSet<object>();
 const optional = <S extends { [key: string]: Shape }>(shape: S): S => { optionalShapes.add(shape); return shape; };
 const count: Check = (v) => typeof v === "number" && Number.isSafeInteger(v) && v > 0 && v <= 16;
 
+const nullableHash: Check = (v) => v === null || hash(v);
 const SHAPE: Shape = {
   schemaVersion: oneOf(1),
   environment: oneOf("DEV", "QA", "PROD"),
@@ -39,15 +40,24 @@ const SHAPE: Shape = {
   manifestHash: hash,
   releaseIdentity: text,
   contractSha256: hash,
+  targetSha256: hash,
+  // The three decisions (owner decisions, #39): AUTHORIZED (the contract's and its authorizing entry's hashes), READY, EXECUTE.
+  decisions: {
+    authorized: { operation: oneOf("APPLY"), contractSha256: hash, authorizationSha256: hash },
+    ready: { engineBinarySha256: nullableHash, qualificationEvidenceHash: nullableHash },
+    execute: { requesterId: text, approverIds: [text] },
+  },
   sourceCommit: (v) => typeof v === "string" && COMMIT.test(v),
   approvals: [{ approverId: text, issuedAt: iso }],
+  // Who requested the change (the verified requester signature's id) and the nonce it carried: identifiers only, never the signature.
+  requester: { requesterId: text, nonce: (v) => typeof v === "string" && /^[a-f0-9]{32}$/.test(v) },
   adapter: { adapterVersion: text, argvDigest: hash },
   toolVersions: { engine: text },
   outcome: oneOf("SUCCEEDED", "FAILED_NO_CHANGE", "PARTIAL_REQUIRES_REVIEW", "KILLED"),
   exitCode,
   startedAt: iso,
   finishedAt: iso,
-  authority: { infrastructureAct: oneOf("PILOT_ENABLED"), mutation: oneOf("TERRAFORM_APPLY_OF_SEALED_PLAN", "CLOUDFORMATION_EXECUTE_OF_SEALED_CHANGE_SET"), agentInitiated: oneOf(false) },
+  authority: { infrastructureAct: oneOf("PILOT_ENABLED"), mutation: oneOf("TERRAFORM_APPLY_OF_SEALED_PLAN", "CLOUDFORMATION_EXECUTE_OF_SEALED_CHANGE_SET", "AZURE_DEPLOYMENT_STACK_CREATE_OF_SEALED_TEMPLATE"), agentInitiated: oneOf(false) },
   // Files the engine left for a person to recover from (errored.tfstate, crash.log), encrypted in the vault: how many, and the hash of the encrypted record. Never their contents.
   recovery: optional({ files: count, sha256: hash }),
 };
@@ -94,8 +104,16 @@ const CLEANUP_SHAPE: Shape = {
   artifactSha256: hash,
   applyEvidenceSha256: hash,
   contractSha256: hash,
+  // The three decisions (owner decisions, #39): AUTHORIZED (the contract's and its authorizing entry's hashes), READY, EXECUTE.
+  decisions: {
+    authorized: { operation: oneOf("CLEANUP"), contractSha256: hash, authorizationSha256: hash },
+    ready: { engineBinarySha256: nullableHash, qualificationEvidenceHash: nullableHash },
+    execute: { requesterId: text, approverIds: [text] },
+  },
   sourceCommit: (v) => typeof v === "string" && COMMIT.test(v),
   approvals: [{ approverId: text, issuedAt: iso }],
+  // Who requested the cleanup (the verified cleanup request signature's id) and the nonce it carried: identifiers only, never the signature.
+  requester: { requesterId: text, nonce: (v) => typeof v === "string" && /^[a-f0-9]{32}$/.test(v) },
   adapter: { adapterVersion: text, argvDigest: hash },
   toolVersions: { engine: text },
   deletes: [address],
@@ -103,7 +121,7 @@ const CLEANUP_SHAPE: Shape = {
   exitCode,
   startedAt: iso,
   finishedAt: iso,
-  authority: { infrastructureAct: oneOf("PILOT_ENABLED"), mutation: oneOf("TERRAFORM_DESTROY_OF_APPROVED_PROPOSAL"), executedAs: oneOf("APPLY"), agentInitiated: oneOf(false) },
+  authority: { infrastructureAct: oneOf("PILOT_ENABLED"), mutation: oneOf("TERRAFORM_DESTROY_OF_APPROVED_PROPOSAL", "CLOUDFORMATION_EXECUTE_OF_REMOVAL_CHANGE_SET", "AZURE_DEPLOYMENT_STACK_DELETE_OF_RUN_STACK"), executedAs: oneOf("APPLY"), agentInitiated: oneOf(false) },
   recovery: optional({ files: count, sha256: hash }),
 };
 

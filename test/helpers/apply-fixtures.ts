@@ -1,8 +1,10 @@
 import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
-import { chmodSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { signApproval } from "../../src/apply/approval.js";
+import { computeProposalSha256, signCleanupProposal, type CleanupProposal } from "../../src/apply/cleanup-proposal.js";
 import { providerSpec } from "../../src/apply/provider.js";
 import { writeQualificationEvidence } from "../../src/apply/contract.js";
 import { finalizeArtifact, releaseReservation, reserveArtifact } from "../../src/apply/ledger.js";
@@ -15,6 +17,7 @@ import type { QualificationRecord } from "../../src/teardown/driver/qualificatio
 import type { ResolvedTarget } from "../../src/teardown/driver/types.js";
 import { buildManifest, canonicalJson, type ArtifactManifest } from "../../src/teardown/manifest.js";
 import { captureProjectFiles } from "../../src/teardown/snapshot.js";
+import { lockedProviders } from "../../src/apply/lockfile.js";
 
 // Shared by test/apply-driver, apply-seal and apply-terraform. Explicit fixtures
 // only: no real tenant, subscription, approver or credential. The engine is a
@@ -28,7 +31,22 @@ export const CANARIES = [PLAN_CANARY, VALUE_CANARY, STATE_CANARY, OUTPUT_CANARY]
 
 export const sha = (value: string | Buffer): string => createHash("sha256").update(value).digest("hex");
 export const H = (char: string): string => char.repeat(64);
-export const LOCK = '# lock\nprovider "registry.terraform.io/hashicorp/azurerm" {\n  version = "4.10.0"\n}\n';
+/** Text as a literal inside a RegExp: every metacharacter escaped (CodeQL js/incomplete-sanitization, review of #327, round 5). */
+/**
+ * Every Terraform step runs under the product's own CLI configuration (review of #327, round 6): `TF_CLI_CONFIG_FILE` names the
+ * session's file in the scratch directory, outside the work copy, whose text is exactly `PRODUCT_CLI_CONFIG`, and no plugin cache.
+ */
+export function assertProductCliConfig(call: Call, expected: string): void {
+  const file = call.env.TF_CLI_CONFIG_FILE ?? "";
+  if (!/\/alz-terraform-cli-[0-9a-f]{16}\.rc$/.test(file)) throw new Error(call.args[0] + ": TF_CLI_CONFIG_FILE is not the product's: " + file);
+  if (file.includes("/work/")) throw new Error(call.args[0] + ": the CLI configuration is inside the project copy");
+  if (call.cliConfig !== expected) throw new Error(call.args[0] + ": the CLI configuration is not the product's text");
+  if (call.env.TF_PLUGIN_CACHE_DIR !== "") throw new Error(call.args[0] + ": a plugin cache reaches the step");
+}
+export const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+export const LOCK = '# lock\nprovider "registry.terraform.io/hashicorp/azurerm" {\n  version = "4.81.0"\n  hashes = [\n    "h1:olVprUWhmFTARlydw/r7VIx4fata2gy3zsAWfPGRrhg=",\n  ]\n}\n';
+/** An AWS project's lock: hashicorp/aws at the reviewed version, with its official linux_amd64 package hash (`LOCK`: azurerm likewise). */
+export const AWS_LOCK = '# lock\nprovider "registry.terraform.io/hashicorp/aws" {\n  version = "6.68.0"\n  hashes = [\n    "h1:79hHQtjGSCiXBZK+VDiNUdI2SLXbNaHf+CHySvKFnvA=",\n  ]\n}\n';
 export const TENANT = "11111111-1111-4111-8111-111111111111";
 export const DEV_TARGET: ResolvedTarget = { account: "22222222-2222-4222-8222-222222222222", backend: "fixturedevstore/tfstate/dev.tfstate", workspace: "default" };
 export const QA_TARGET: ResolvedTarget = { account: "44444444-4444-4444-8444-444444444444", backend: "fixtureqastore/tfstate/qa.tfstate", workspace: "default" };
@@ -55,6 +73,8 @@ export const ENGINE_VERSION = "1.9.5";
 /** Behaviors are read from behavior.json beside the executable, so each test chooses how the engine acts. */
 export type Behavior = {
   version?: string; workspace?: string; failOn?: string; planSalt?: string;
+  /** `terraform version -json` `provider_selections` (default {}); null omits the key. */
+  providerSelections?: Record<string, unknown> | string | null;
   initWrites?: Array<{ path: string; content: string }>;
   applyExit?: number; applyStderr?: string; applyAdvance?: boolean; applyKill?: boolean;
   /** Creates this file as soon as the named subcommand starts (a kill switch appearing mid-run). */
@@ -71,6 +91,8 @@ export type Behavior = {
   applyWrites?: Array<{ path: string; content: string }>;
   /** `show` reports one more resource than the plan the seal listed. */
   showExtra?: boolean;
+  /** `show` adds an update of an existing resource of the configured cloud beside the default create (which the canary allowlist refuses at seal and at apply). */
+  showUpdate?: boolean;
   /** `show` lists only `showResources`, without the two default azurerm resources. */
   showOnlyConfigured?: boolean;
   /** Raw `resource_changes` entries (imports, moves, forgets, hostile addresses), `output_changes` and `configuration.provider_config` that `show` adds. */
@@ -80,6 +102,10 @@ export type Behavior = {
   unitTagAttribute?: string;
   showOutputChanges?: Record<string, unknown>;
   showProviderConfig?: Record<string, unknown>;
+  /** Merged into `show`'s `configuration` beside `provider_config` (a `root_module` tree, for resources and data sources the plan names). */
+  showConfigurationExtra?: Record<string, unknown>;
+  /** Merged into `show`'s top level (a `prior_state` or `planned_values` tree). */
+  showDocumentExtra?: Record<string, unknown>;
   /** What `init` saves in .terraform/terraform.tfstate. Default: the azurerm (or, under an AWS role, the s3) backend of the target whose subscription or account init runs under; null saves none. */
   savedBackend?: unknown;
   /** Raw state resources `state pull` reports (state format 4), so a blueprint can be read after an apply. Default: one resource with a canary attribute and no identifier. */
@@ -100,14 +126,35 @@ const args = process.argv.slice(2);
 const [cmd, sub] = args;
 const serialFile = path.join(dir, "serial.txt");
 const serial = () => Number(fs.readFileSync(serialFile, "utf8"));
-const log = (extra) => fs.appendFileSync(path.join(dir, "calls.jsonl"), JSON.stringify({ args, cwd: process.cwd(), env: process.env, backendFileExists: fs.existsSync(path.resolve(process.cwd(), "../alz-backend.tfbackend")), ...extra }) + "\\n");
+const cliConfigText = () => { try { return process.env.TF_CLI_CONFIG_FILE ? fs.readFileSync(process.env.TF_CLI_CONFIG_FILE, "utf8") : undefined; } catch { return undefined; } };
+const log = (extra) => fs.appendFileSync(path.join(dir, "calls.jsonl"), JSON.stringify({ args, cwd: process.cwd(), env: process.env, cliConfig: cliConfigText(), backendFileExists: fs.existsSync(path.resolve(process.cwd(), "../alz-backend.tfbackend")), ...extra }) + "\\n");
 const backend = () => { const a = args.find((x) => x.startsWith("-backend-config=")); return a ? fs.readFileSync(path.resolve(process.cwd(), a.slice(16)), "utf8") : undefined; };
+// Like Terraform's show -json, every resource_changes entry names its mode and its provider: a fixture entry that leaves one out gets
+// it from its address and type prefix. An entry that sets provider_name to null keeps no provider (an unnamed use, which is refused).
+const PROVIDERS = { aws: "registry.terraform.io/hashicorp/aws", azurerm: "registry.terraform.io/hashicorp/azurerm", google: "registry.terraform.io/hashicorp/google",
+  azapi: "registry.terraform.io/azure/azapi", azuread: "registry.terraform.io/hashicorp/azuread",
+  terraform: "terraform.io/builtin/terraform", random: "registry.terraform.io/hashicorp/random", null: "registry.terraform.io/hashicorp/null", time: "registry.terraform.io/hashicorp/time", tls: "registry.terraform.io/hashicorp/tls" };
+const named = (r) => {
+  if (!r || typeof r !== "object" || Array.isArray(r)) return r;
+  const out = { ...r };
+  if (!("mode" in out)) out.mode = /(^|\\.)data\\./.test(String(out.address || "")) ? "data" : "managed";
+  if (!("provider_name" in out)) { const p = PROVIDERS[String(out.type || "").split("_")[0]]; if (p) out.provider_name = p; }
+  else if (out.provider_name === null) delete out.provider_name;
+  return out;
+};
 if (b.touchKillOn === cmd) fs.writeFileSync(b.killPath, "stop");
 if (b.signalParentOn && b.signalParentOn.cmd === cmd) process.kill(process.ppid, b.signalParentOn.signal);
 if (b.failOn === cmd) { log({}); process.stderr.write(b.failStderr || "boom ${VALUE_CANARY}"); process.exit(1); }
-if (cmd === "version") { log({}); process.stdout.write(JSON.stringify({ terraform_version: b.version })); }
+if (cmd === "version") {
+  log({});
+  // provider_selections as real Terraform reports it after init: {} for a built-in-only project unless the behavior names some; null omits it.
+  const selections = b.providerSelections === undefined ? {} : b.providerSelections;
+  process.stdout.write(JSON.stringify({ terraform_version: b.version, ...(selections === null ? {} : { provider_selections: selections }) }));
+}
 else if (cmd === "init") {
   fs.mkdirSync(".terraform", { recursive: true });
+  // Like the real init: a setting the -backend-config file sets is saved with its value; the backend's Entra ID switch is otherwise null.
+  const entra = /^use_azuread_auth = true$/m.test(backend() || "") ? true : null;
   if (b.savedBackend !== null) {
     const def = (${JSON.stringify({ [DEV_TARGET.account]: DEV_TARGET.backend, [QA_TARGET.account]: QA_TARGET.backend, [PROD_TARGET.account]: PROD_TARGET.backend })})[process.env.ARM_SUBSCRIPTION_ID];
     const [account, container, ...key] = (def || "").split("/");
@@ -115,12 +162,14 @@ else if (cmd === "init") {
     const [bucket, ...s3key] = ((${JSON.stringify(Object.fromEntries([AWS_DEV_TARGET, AWS_QA_TARGET, AWS_PROD_TARGET].map((t) => [t.account, t.backend])))})[(process.env.AWS_ROLE_ARN || "").split(":")[4]] || "").split("/");
     const backend = b.savedBackend || (process.env.AWS_ROLE_ARN
       ? { type: "s3", config: { bucket, key: s3key.join("/"), region: process.env.AWS_REGION, use_lockfile: true } }
-      : { type: "azurerm", config: { storage_account_name: account, container_name: container, key: key.join("/") } });
+      : { type: "azurerm", config: { storage_account_name: account, container_name: container, key: key.join("/"), use_azuread_auth: entra } });
     fs.writeFileSync(path.join(".terraform", "terraform.tfstate"), JSON.stringify({ version: 3, backend }));
   }
   for (const w of b.initWrites || []) { fs.mkdirSync(path.dirname(w.path), { recursive: true }); fs.writeFileSync(w.path, w.content); }
   const bc = args.find((x) => x.startsWith("-backend-config="));
-  log({ backendConfig: backend(), backendMode: bc ? fs.statSync(path.resolve(process.cwd(), bc.slice(16))).mode & 0o777 : undefined });
+  const pin = path.join(process.cwd(), "zzzz_alz_backend_override.tf");
+  log({ backendConfig: backend(), backendMode: bc ? fs.statSync(path.resolve(process.cwd(), bc.slice(16))).mode & 0o777 : undefined,
+    backendOverride: fs.existsSync(pin) ? fs.readFileSync(pin, "utf8") : undefined, workEntries: fs.readdirSync(process.cwd()).sort() });
 }
 else if (cmd === "workspace") { log({}); if (sub === "show") process.stdout.write(b.workspace + "\\n"); }
 else if (cmd === "state" && sub === "pull") {
@@ -143,7 +192,7 @@ else if (cmd === "show" && args[2] && args[2].endsWith("alz-cleanup.tfplan")) {
   const typeOf = (address) => address.replace(/^(module\.[^.]+\.)*/, "").split(".")[0];
   process.stdout.write(JSON.stringify({
     format_version: "1.2", errored: false,
-    resource_changes: [...targets.map((address) => ({ address, type: typeOf(address), change: { actions: ["delete"], before: { secret: "${VALUE_CANARY}" }, after: null } })), ...(b.destroyExtra || [])],
+    resource_changes: [...targets.map((address) => ({ address, type: typeOf(address), change: { actions: ["delete"], before: { secret: "${VALUE_CANARY}" }, after: null } })), ...(b.destroyExtra || [])].map(named),
     output_changes: {},
     configuration: { provider_config: b.showProviderConfig || { azurerm: { name: "azurerm", full_name: "registry.terraform.io/hashicorp/azurerm", expressions: { subscription_id: { references: ["var.subscription_id"] } } } } },
   }));
@@ -153,16 +202,25 @@ else if (cmd === "show") {
   process.stdout.write(JSON.stringify({
     format_version: "1.2", errored: false, variables: { db_password: { value: "${VALUE_CANARY}" } },
     resource_changes: [
-      ...(b.showOnlyConfigured ? [] : [
+      // The two default changes are of the configured cloud: azurerm when the configuration names it (or is the default), aws when it
+      // names aws and not azurerm, and none when it names neither (a plan of providers that reach no cloud).
+      // The default change is one create of the configured cloud (the fixture contracts' canary allowlist, CANARY_AZURE and CANARY_AWS): azurerm when the
+      // configuration names it (or is the default), aws when it names aws and not azurerm, and none when it names neither (a plan of providers that reach
+      // no cloud). An update of an existing resource is added only on request (showUpdate), and an apply refuses it (RESOURCE_NOT_IN_CANARY).
+      ...(b.showOnlyConfigured || (b.showProviderConfig && !b.showProviderConfig.aws && !b.showProviderConfig.azurerm) ? [] : b.showProviderConfig && b.showProviderConfig.aws && !b.showProviderConfig.azurerm ? [
+        { address: "aws_cloudwatch_log_group.pilot", type: "aws_cloudwatch_log_group", change: { actions: ["create"], before: null, after: { name: "${VALUE_CANARY}" } } },
+        ...(b.showUpdate ? [{ address: "aws_cloudwatch_log_group.existing", type: "aws_cloudwatch_log_group", change: { actions: ["update"], before: {}, after: {} } }] : []),
+      ] : [
         { address: "azurerm_resource_group.pilot", type: "azurerm_resource_group", change: { actions: ["create"], before: null, after: { properties: { k: "${VALUE_CANARY}" } } } },
-        { address: "azurerm_log_analytics_workspace.pilot", type: "azurerm_log_analytics_workspace", change: { actions: ["update"], before: {}, after: {} } },
+        ...(b.showUpdate ? [{ address: "azurerm_log_analytics_workspace.pilot", type: "azurerm_log_analytics_workspace", change: { actions: ["update"], before: {}, after: {} } }] : []),
       ]),
       ...(b.showExtra ? [{ address: "azurerm_key_vault.extra", type: "azurerm_key_vault", change: { actions: ["delete"], before: {}, after: null } }] : []),
       ...(b.showResources || []).map((r) => (b.unitTags && r && r.change && (r.change.actions || []).includes("create"))
         ? { ...r, change: { ...r.change, after: { ...(r.change.after || {}), [b.unitTagAttribute || "tags_all"]: b.unitTags } } } : r),
-    ],
+    ].map(named),
     output_changes: b.showOutputChanges || {},
-    configuration: { provider_config: b.showProviderConfig || { azurerm: { name: "azurerm", full_name: "registry.terraform.io/hashicorp/azurerm", expressions: { subscription_id: { references: ["var.subscription_id"] } } } } },
+    configuration: { provider_config: b.showProviderConfig || { azurerm: { name: "azurerm", full_name: "registry.terraform.io/hashicorp/azurerm", expressions: { subscription_id: { references: ["var.subscription_id"] } } } }, ...(b.showConfigurationExtra || {}) },
+    ...(b.showDocumentExtra || {}),
   }));
 }
 else if (cmd === "apply") {
@@ -199,6 +257,26 @@ else { log({ unexpected: true }); process.exit(2); }
 export function installFakeTerraform(toolDir: string): void {
   writeFileSync(join(toolDir, "terraform"), FAKE, { mode: 0o755 });
   chmodSync(join(toolDir, "terraform"), 0o755);
+}
+
+/**
+ * The managed creates the fake's `show` lists for the behavior now in `toolDir` (the same rule as the fake: the configured cloud's default
+ * create, then `showResources`), as a canary allowlist, or undefined when the plan creates nothing.
+ */
+export function plannedCanaryOf(toolDir: string): { resources: { type: string; count: number }[] } | undefined {
+  const b = JSON.parse(readFileSync(join(toolDir, "behavior.json"), "utf8")) as Behavior;
+  const config = b.showProviderConfig as Record<string, unknown> | undefined;
+  const defaults = b.showOnlyConfigured || (config && !config.aws && !config.azurerm) ? []
+    : config && config.aws && !config.azurerm ? [{ address: "aws_cloudwatch_log_group.pilot", type: "aws_cloudwatch_log_group", change: { actions: ["create"] } }]
+    : [{ address: "azurerm_resource_group.pilot", type: "azurerm_resource_group", change: { actions: ["create"] } }];
+  const canary = canaryFor([...defaults, ...(b.showResources ?? [])]);
+  return canary.resources.length > 0 ? canary : undefined;
+}
+/** Rewrites the reviewed contract so every target's canary allowlist is what the fake's plan creates now (`plannedCanaryOf`); unchanged when it creates nothing. */
+export function withPlannedCanary(contractPath: string, toolDir: string): void {
+  const canary = plannedCanaryOf(toolDir);
+  if (!canary) return;
+  writeReviewedContract(contractPath, withCanary(JSON.parse(readFileSync(contractPath, "utf8")) as { targets: Record<string, unknown> }, canary));
 }
 
 export function behave(toolDir: string, killPath: string, behavior: Behavior = {}): void {
@@ -326,7 +404,7 @@ export function fakeArmHttp(behavior: ArmBehavior = {}): { http: (request: ArmCa
     if (providers) {
       const namespace = providers[1];
       // The real provider lists every type it offers whether or not a resource exists; the fake knows a few common ones plus whatever the scenario names.
-      const KNOWN_TYPES = ["Microsoft.OperationalInsights/workspaces", "Microsoft.Storage/storageAccounts", "Microsoft.Storage/storageAccounts/blobServices/containers", "Microsoft.Authorization/roleAssignments", "Microsoft.Authorization/locks", "Microsoft.Resources/deployments", "Microsoft.Compute/virtualMachines", "Microsoft.KeyVault/vaults"];
+      const KNOWN_TYPES = ["Microsoft.OperationalInsights/workspaces", "Microsoft.Storage/storageAccounts", "Microsoft.Storage/storageAccounts/blobServices/containers", "Microsoft.Authorization/roleAssignments", "Microsoft.Authorization/locks", "Microsoft.Authorization/policyDefinitions", "Microsoft.Authorization/policySetDefinitions", "Microsoft.Authorization/policyAssignments", "Microsoft.Resources/deployments", "Microsoft.Compute/virtualMachines", "Microsoft.KeyVault/vaults"];
       const types = new Set([...KNOWN_TYPES, ...[...(b.existing ?? []), ...Object.keys(b.fail ?? {}), ...(b.tagged ?? [])].map(typeOf)].filter((t) => t.toLowerCase().startsWith(namespace.toLowerCase() + "/")).map((t) => t.slice(namespace.length + 1)));
       const resourceTypes = [...types].filter((t) => !(b.unknownTypes ?? []).includes(namespace + "/" + t))
         .map((t) => ({ resourceType: t, apiVersions: (b.previewOnlyTypes ?? []).includes(namespace + "/" + t) ? ["2024-01-01-preview"] : ["2024-01-01-preview", "2023-05-01"] }));
@@ -354,7 +432,11 @@ export function fakeArmHttp(behavior: ArmBehavior = {}): { http: (request: ArmCa
 
 export type Call = {
   args: string[]; cwd: string; env: Record<string, string>; backendConfig?: string; planPath?: string;
+  /** The text of the CLI configuration file the step's `TF_CLI_CONFIG_FILE` named, read when the step ran. */
+  cliConfig?: string;
   planSha?: string; planMode?: number; backendMode?: number; backendFileExists?: boolean; planText?: string; planDir?: string; pid?: number;
+  /** At init: the product-owned backend override in the work copy, and the copy's root entries. */
+  backendOverride?: string; workEntries?: string[];
 };
 export const callsOf = (toolDir: string): Call[] => existsSync(join(toolDir, "calls.jsonl"))
   ? readFileSync(join(toolDir, "calls.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line) as Call)
@@ -391,39 +473,66 @@ export const awsIdentityEnv = (environment: ApplyEnvironment): NodeJS.ProcessEnv
   return env;
 };
 
-// --- approvers and the pinned contract ----------------------------------------------------------
+// --- approvers and the reviewed contract ----------------------------------------------------------
 
 const newKey = () => {
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
   return { priv: privateKey.export({ type: "pkcs8", format: "pem" }).toString(), pub: publicKey.export({ type: "spki", format: "pem" }).toString() };
 };
-export const keys = { alice: newKey(), bob: newKey(), carol: newKey(), mallory: newKey() };
+export const keys = { alice: newKey(), bob: newKey(), carol: newKey(), dana: newKey(), mallory: newKey() };
 export const approvers = [
   { id: "alice", publicKeyPem: keys.alice.pub, environments: ["DEV", "QA", "PROD"] },
   { id: "bob", publicKeyPem: keys.bob.pub, environments: ["DEV", "QA", "PROD"] },
   { id: "carol", publicKeyPem: keys.carol.pub, environments: ["DEV"] },
+  { id: "dana", publicKeyPem: keys.dana.pub, environments: ["DEV", "QA", "PROD"] },
 ];
+
+/**
+ * The fixture contracts' canary allowlists (owner decision E1): exactly what the fake engine's default plan creates, one resource of the
+ * configured cloud. A test whose plan creates something else names its own allowlist (`withCanary`).
+ */
+export const CANARY_AZURE = { resources: [{ type: "azurerm_resource_group", count: 1 }] };
+export const CANARY_AWS = { resources: [{ type: "aws_cloudwatch_log_group", count: 1 }] };
+/** The same contract with `canary` as every target's allowlist. */
+export const withCanary = <T extends { targets: Record<string, unknown> }>(contract: T, canary: unknown): T => ({
+  ...contract, targets: Object.fromEntries(Object.entries(contract.targets).map(([env, target]) => [env, { ...(target as object), canary }])),
+});
+
+/**
+ * The canary allowlist of a scenario's plan: the managed `resource_changes` entries whose actions are exactly ["create"], counted
+ * by type. Anything else in the plan (an update, a replace, a delete, an import) is not counted, so the seal still refuses it.
+ */
+export function canaryFor(changes: readonly unknown[]): { resources: { type: string; count: number }[] } {
+  const counts = new Map<string, number>();
+  for (const change of changes as { address?: string; type?: string; mode?: string; change?: { actions?: unknown } }[]) {
+    const data = change.mode === "data" || /(^|\.)data\./.test(String(change.address ?? ""));
+    const actions = change.change?.actions;
+    if (data || !Array.isArray(actions) || actions.length !== 1 || actions[0] !== "create" || typeof change.type !== "string") continue;
+    counts.set(change.type, (counts.get(change.type) ?? 0) + 1);
+  }
+  return { resources: [...counts].map(([type, count]) => ({ type, count })) };
+}
 
 export const contractJson = (killPath: string, over: Record<string, unknown> = {}) => ({
   schemaVersion: 1, enabled: true, provider: "AZURE", engine: "TERRAFORM",
   targets: {
-    DEV: { tenantId: TENANT, subscriptionId: DEV_TARGET.account, backend: DEV_TARGET.backend, workspace: "default" },
-    QA: { tenantId: TENANT, subscriptionId: QA_TARGET.account, backend: QA_TARGET.backend, workspace: "default" },
-    PROD: { tenantId: TENANT, subscriptionId: PROD_TARGET.account, backend: PROD_TARGET.backend, workspace: "default" },
+    DEV: { tenantId: TENANT, subscriptionId: DEV_TARGET.account, backend: DEV_TARGET.backend, workspace: "default", canary: CANARY_AZURE },
+    QA: { tenantId: TENANT, subscriptionId: QA_TARGET.account, backend: QA_TARGET.backend, workspace: "default", canary: CANARY_AZURE },
+    PROD: { tenantId: TENANT, subscriptionId: PROD_TARGET.account, backend: PROD_TARGET.backend, workspace: "default", canary: CANARY_AZURE },
   },
-  requiredApprovals: { DEV: 1, QA: 1, PROD: 2 }, maxApprovalAgeMinutes: 60, approvers, killSwitchPath: killPath, ...over,
+  requiredApprovals: { DEV: 1, QA: 1, PROD: 2 }, maxApprovalAgeMinutes: 60, approvers, killSwitchPath: killPath, authorize: AUTHORIZE_ALL, ...over,
 });
 
-/** The committed pin the contract is loaded against: its canonical sha256, in `<path>.sha256`. */
-export const pinPathOf = (contractPath: string): string => contractPath + ".sha256";
-export function writePinnedContract(contractPath: string, contract: unknown): void {
+/** The fixtures' default-deny authorization: APPLY and CLEANUP in every environment. A test that needs less says so. */
+export const AUTHORIZE_ALL = { DEV: ["APPLY", "CLEANUP"], QA: ["APPLY", "CLEANUP"], PROD: ["APPLY", "CLEANUP"] };
+/** The reviewed contract as a test writes it. The contract itself carries the authorization; there is no hash file. */
+export function writeReviewedContract(contractPath: string, contract: unknown): void {
   writeFileSync(contractPath, JSON.stringify(contract));
-  writeFileSync(pinPathOf(contractPath), sha(canonicalJson(contract as never)) + "\n");
 }
 
 export const awsContractJson = (killPath: string, over: Record<string, unknown> = {}) => ({
   ...contractJson(killPath), provider: "AWS",
-  targets: Object.fromEntries((["DEV", "QA", "PROD"] as const).map((e) => [e, { accountId: awsTargetOf(e).account, region: AWS_REGION, backend: awsTargetOf(e).backend, workspace: "default" }])),
+  targets: Object.fromEntries((["DEV", "QA", "PROD"] as const).map((e) => [e, { accountId: awsTargetOf(e).account, region: AWS_REGION, backend: awsTargetOf(e).backend, workspace: "default", canary: CANARY_AWS }])),
   ...over,
 });
 
@@ -477,12 +586,13 @@ export async function testFixtureForgeQualificationEvidence(vaultDir: string, on
 // --- projects and approvals ----------------------------------------------------------------------
 
 export type Project = { projectRoot: string; manifest: ArtifactManifest; resolved: SealRequest["resolved"] };
-export function writeProject(projectRoot: string, target: ResolvedTarget, mainTf = 'resource "azurerm_resource_group" "pilot" {}\n'): Project {
+/** A project with `mainTf` and a lock file (`lock`, default `LOCK`), whose providers are read from the lock as prepare reads them. */
+export function writeProject(projectRoot: string, target: ResolvedTarget, mainTf = 'resource "azurerm_resource_group" "pilot" {}\n', lock = LOCK): Project {
   writeFileSync(join(projectRoot, "main.tf"), mainTf);
-  writeFileSync(join(projectRoot, ".terraform.lock.hcl"), LOCK);
+  writeFileSync(join(projectRoot, ".terraform.lock.hcl"), lock);
   const resolved: SealRequest["resolved"] = {
-    engineVersion: ENGINE_VERSION, providers: [{ source: "registry.terraform.io/hashicorp/azurerm", version: "4.10.0" }],
-    lockFileSha256: sha(LOCK), dependencies: [], inputs: [{ name: "region", identity: H("f") }],
+    engineVersion: ENGINE_VERSION, providers: lockedProviders(lock),
+    lockFileSha256: sha(lock), dependencies: [], inputs: [{ name: "region", identity: H("f") }],
   };
   const manifest = buildManifest({
     engine: "TERRAFORM", mode: "PROJECT", target, unitHash: H("1"), files: captureProjectFiles(projectRoot), policyVersion: POLICY, ...resolved,
@@ -494,6 +604,33 @@ export const human = (target: ResolvedTarget, operatorId = OPERATOR) => ({
   operatorId, interactiveSession: true as const, confirmedTarget: { ...target }, confirmedAt: NOW.toISOString(),
 });
 
+/**
+ * The default requester of every fixture seal, cleanup and removal proposal: dana, allowlisted for DEV, QA and PROD, because a
+ * requester's allowlist entry must name the environment requested. The PROD fixtures approve with alice and bob, never dana,
+ * so the requester and the approvers stay distinct people. carol stays a DEV-only approver.
+ */
+export const REQUESTER = { requesterId: "dana", privateKeyPem: keys.dana.priv } as const;
+let requesterKeyPath: string | undefined;
+/** Dana's private key as a file only this user can read, for `./alz apply seal --requester dana --key FILE`. Written once per process. */
+export function requesterKeyFile(): string {
+  if (requesterKeyPath === undefined) {
+    const dir = mkdtempSync(join(tmpdir(), "alz-requester-key-"));
+    requesterKeyPath = join(dir, "dana.pem");
+    writeFileSync(requesterKeyPath, keys.dana.priv, { mode: 0o600 });
+    chmodSync(requesterKeyPath, 0o600);
+  }
+  return requesterKeyPath;
+}
+/** The seal flags that name the default requester and her key file. */
+export const requesterArgs = (): string[] => ["--requester", REQUESTER.requesterId, "--key", requesterKeyFile()];
+
+/**
+ * A cleanup proposal edited after it was made, re-hashed and re-signed by the default requester: what an insider who holds a
+ * requester key could forge. Its self-hash and request binding pass; the derivation from the run's records is what refuses it.
+ */
+export const reHashedProposal = (fields: Omit<CleanupProposal, "proposalSha256"> | CleanupProposal): CleanupProposal =>
+  signCleanupProposal({ ...fields, proposalSha256: computeProposalSha256(fields as CleanupProposal) } as CleanupProposal, REQUESTER.privateKeyPem);
+
 export const approvalFor = (sealed: SealedPlan, who: keyof typeof keys, over: Partial<SignedApproval["statement"]> = {}): SignedApproval =>
   signApproval({
     schemaVersion: 1, artifactSha256: sealed.artifactSha256, environment: sealed.environment, target: sealed.target, approverId: who,
@@ -502,6 +639,13 @@ export const approvalFor = (sealed: SealedPlan, who: keyof typeof keys, over: Pa
   }, keys[who].priv);
 
 /** Records an applied artifact the way a run does: reserve it, then replace the reservation with the evidence. A rejected record leaves nothing behind. */
+/** The three decisions an evidence fixture records (AUTHORIZED, READY, EXECUTE), for evidence built by hand in a test. */
+export const decisionsFor = (contractSha256: string, operation: "APPLY" | "CLEANUP" = "APPLY", authorizationSha256: string = "a".repeat(64)) => ({
+  authorized: { operation, contractSha256, authorizationSha256 },
+  ready: { engineBinarySha256: null, qualificationEvidenceHash: null },
+  execute: { requesterId: "carol", approverIds: ["alice"] },
+});
+
 export async function recordApplied(evidence: ApplyEvidence, evidenceDir: string): Promise<ApplyResult> {
   const reserved = await reserveArtifact(evidence.artifactSha256, evidenceDir, NOW);
   if (!reserved.ok) return reserved;

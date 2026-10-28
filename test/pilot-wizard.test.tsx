@@ -1,12 +1,13 @@
 // @vitest-environment happy-dom
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
-import PilotWizard, { BlockedNotice, ChangeList } from "../src/operator-ui/app/pilot/PilotWizard";
+import PilotWizard, { BlockedNotice, ChangeList, DecisionStatus } from "../src/operator-ui/app/pilot/PilotWizard";
+import CleanupStep, { CleanupList, LeftoversTable } from "../src/operator-ui/app/pilot/CleanupStep";
 import { forgetPilotToken, type PilotPath, type PilotRun, type PreflightCheck, type PreparedFiles, type ReviewSummary } from "../src/operator-ui/app/pilot/pilot-api";
 import {
-  BLOCKED, CLI_COMMANDS, CODE_COPY, COPY, RESULT_COPY, STEP_TITLES, classifyResult, describeCheck, describeCounts, describeMismatch, dialogCopy, reasonFor,
+  BLOCKED, CLI_COMMANDS, CODE_COPY, COPY, RESULT_COPY, STEP_TITLES, classifyResult, describeCheck, describeCounts, describeMismatch, dialogCopy, dispositionWord, ownershipWord, reasonFor, reasonWord, retentionOwnerWord,
   type BlockedState, type ResultKind,
 } from "../src/operator-ui/app/pilot/pilot-copy";
 
@@ -31,7 +32,7 @@ type Fake = {
 };
 const bundleReview = (over: Partial<ReviewSummary> = {}): ReviewSummary => ({
   environment: "DEV", target: { account: "acct-1", backend: "store/tfstate/dev.tfstate", workspace: "default" }, shortId: "0123456789ab", sourceCommit: "5ec0de0000000000000000000000000000c0ffee",
-  createdAt: "2026-10-12T00:00:00.000Z", counts: { create: 2, update: 1, replace: 0, delete: 0, forget: 0, other: 0 },
+  requestedBy: "carol", createdAt: "2026-10-12T00:00:00.000Z", counts: { create: 2, update: 1, replace: 0, delete: 0, forget: 0, other: 0 },
   changes: [
     { address: "azurerm_resource_group.pilot", type: "azurerm_resource_group", action: "CREATE" },
     { address: "azurerm_log_analytics_workspace.pilot", type: "azurerm_log_analytics_workspace", action: "UPDATE" },
@@ -77,6 +78,8 @@ async function unlocked(level: "BEGINNER" | "ADVANCED" | "EXPERT" = "BEGINNER", 
 }
 const clickButton = async (name: string | RegExp) => { fireEvent.click(await screen.findByRole("button", { name })); };
 const typeInto = (label: string | RegExp, value: string) => fireEvent.change(screen.getByLabelText(label), { target: { value } });
+/** The requester's name and key file the seal step needs besides the two files (the requester signs the sealed request). */
+const typeRequester = () => { typeInto(COPY.sealRequesterLabel, "carol"); typeInto(COPY.sealKeyLabel, "/k.pem"); };
 
 /** The text a person reads: everything except Details disclosures and the one dialog that explains an internal term in words. */
 function primaryText(root: ParentNode = document.body): string {
@@ -190,7 +193,7 @@ describe("step 1: the path is chosen once", () => {
 describe("step 2: readiness in plain words", () => {
   const checks: PreflightCheck[] = [
     { check: "contract shape (provider, engine, targets, approvals, approvers)", ok: true, state: "READY" },
-    { check: "pilot contract pinned and enabled (required before seal)", ok: false, state: "MISSING", responsible: "OWNER", detail: "enabled: the contract does not enable ACT" },
+    { check: "pilot contract enabled and authorizes APPLY in DEV (required before seal)", ok: false, state: "MISSING", responsible: "OWNER", detail: "enabled: the contract does not enable ACT" },
     { check: "identities configured, distinct, no fallback (DISCOVERY, STATE, STATE_WRITE, APPLY)", ok: false, state: "INVALID", responsible: "OPERATOR", detail: "IDENTITY_COLLAPSED" },
     { check: "identities aimed at the DEV account", ok: true, state: "READY" },
     { check: "plan will embed STATE_WRITE settings: no", ok: true, state: "READY" },
@@ -256,14 +259,40 @@ describe("step 2: readiness in plain words", () => {
     const source = read("src/apply/readiness.ts");
     const names = [...source.matchAll(/\badd\("((?:[^"\\]|\\.)*)"/g)].map((match) => match[1]);
     const dynamic = [
-      "contract shape (provider, engine, targets, approvals, approvers)", "pilot contract pinned and enabled (required before seal)",
+      "contract shape (provider, engine, targets, approvals, approvers)", "pilot contract enabled and authorizes APPLY in DEV (required before seal)",
       "identities configured, distinct, no fallback (A, B)", "identities aimed at the QA account", "plan will embed STATE_WRITE settings: yes",
       "tool terraform installed in an approved directory", "tool aws installed in an approved directory", "kill switch absent",
-      "engine qualified in DEV for seal and apply (TERRAFORM)", "identity separation attested on the real DEV backend",
+      "engine qualified in DEV for seal and apply (TERRAFORM)", "identity separation attested on the real DEV backend", "financial controls (budget alerts or cost cap)",
     ];
     expect(names.length).toBeGreaterThanOrEqual(6);
     for (const name of dynamic) expect(describeCheck({ check: name, ok: false, state: "MISSING" }, "QA").known, name).toBe(true);
     expect(describeCheck({ check: "something new", ok: false, state: "MISSING" }, "DEV").known).toBe(false);
+  });
+});
+
+describe("the Authorized, Ready and Approved status block", () => {
+  const decisions = {
+    act: "PILOT_ENABLED" as const, contract: { contractSha256: "c".repeat(64), provider: "AWS", engine: "TERRAFORM" },
+    authorized: [{ environment: "DEV" as const, operations: ["APPLY", "CLEANUP"], authorizationSha256: "a".repeat(64) }],
+    approved: [{ environment: "DEV" as const, requiredApprovals: 1 }, { environment: "PROD" as const, requiredApprovals: 2 }],
+  };
+  test("it shows the three decisions separately, from the readiness check's own output", () => {
+    const { container } = render(<DecisionStatus readiness={{ environment: "DEV", ready: false, checks: [], decisions }} environment="DEV" />);
+    const block = within(container).getByTestId("pilot-decisions");
+    expect(block.textContent).toContain("Authorized");
+    expect(block.textContent).toContain("APPLY, CLEANUP in DEV");
+    expect(block.textContent).toContain("c".repeat(12));
+    expect(block.textContent).toContain("a".repeat(12));
+    expect(block.textContent).toContain("Not yet");
+    expect(block.textContent).toContain("1 approver(s)");
+  });
+  test("an environment the contract does not authorize, or a disabled contract, reads No", () => {
+    const { container } = render(<DecisionStatus readiness={{ environment: "PROD", ready: true, checks: [], decisions }} environment="PROD" />);
+    const block = within(container).getByTestId("pilot-decisions");
+    expect(block.querySelector("dd")?.getAttribute("data-state")).toBe("no");
+    expect(block.textContent).toContain("2 approver(s)");
+    const off = render(<DecisionStatus readiness={{ environment: "DEV", ready: false, checks: [], decisions: { ...decisions, act: "DISABLED", contract: { reason: "contract file is missing" }, authorized: [], approved: [] } }} environment="DEV" />);
+    expect(within(off.container).getByTestId("pilot-decisions").textContent).toContain("contract file is missing");
   });
 });
 
@@ -289,6 +318,7 @@ describe("step 3 and the confirmation dialogs", () => {
     expect(document.body.textContent).toContain("Example: /home/you/pilot/request-dev.json");
     typeInto(COPY.sealRequestLabel, " /r.json ");
     typeInto(COPY.sealManifestLabel, "/m.json");
+    typeRequester();
     expect(screen.getByRole("button", { name: COPY.sealRun }).hasAttribute("disabled")).toBe(false);
   });
 
@@ -323,6 +353,7 @@ describe("step 3 and the confirmation dialogs", () => {
     expect(box.querySelector("details")?.hasAttribute("open")).toBe(false);
     expect(box.querySelector("details pre")?.textContent).toContain("schemaVersion");
     expect(jargonIn(primaryText())).toEqual([]);
+    typeRequester();
     expect(screen.getByRole("button", { name: COPY.sealRun }).hasAttribute("disabled")).toBe(false);
   });
 
@@ -351,11 +382,57 @@ describe("step 3 and the confirmation dialogs", () => {
     expect((screen.getByLabelText(COPY.sealRequestLabel) as HTMLInputElement).value).toBe("");
   });
 
+  test("an open dialog keeps focus: a step change or a re-sent unlock while it is open never moves focus to the step heading, and focus is inside the dialog in the same commit that shows it", async () => {
+    // The poll is driven by hand, not by waiting on the clock: only the interval timer is faked, so the re-sent state below
+    // arrives when the test fires the next poll, whatever the machine's load (this test used to race the 600 ms poll).
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+    const { fake } = await atSeal();
+    const phrase = "acct-1 | store/tfstate/dev.tfstate | default";
+    fake.onPost["/seal"] = () => { fake.run = waitingRun("seal", "TARGET", phrase); };
+    typeInto(COPY.sealRequestLabel, "/r.json");
+    typeRequester();
+    typeInto(COPY.sealManifestLabel, "/m.json");
+    await clickButton(COPY.sealRun);
+    const dialog = await screen.findByRole("dialog");
+    const input = within(dialog).getByLabelText(dialogCopy("TARGET", "DEV").inputLabel) as HTMLInputElement;
+    expect(document.activeElement).toBe(input);
+    // The step changes while the dialog is open. The page behind is inert and hidden from the accessibility tree, and this environment
+    // (happy-dom) refuses focus under inert as a browser does; the attribute is lifted here to stand for a browser without inert
+    // support and for the commit in which the dialog mounts, where the heading effect runs before the page is made inert. The
+    // heading effect runs for the new step and must leave focus in the dialog either way.
+    // Everything behind the dialog is inert: the wizard and the deployment paths panel above it.
+    // The inert attributes are set by an effect after the dialog renders: wait for both before asserting on them.
+    await waitFor(() => expect(document.querySelectorAll("[inert]")).toHaveLength(2));
+    const behind = [...document.querySelectorAll("[inert]")];
+    expect(behind.some((element) => element.closest('[data-testid="deployment-paths"]'))).toBe(true);
+    behind.forEach((element) => element.removeAttribute("inert"));
+    fireEvent.click(screen.getByRole("button", { name: COPY.back, hidden: true }));
+    expect(screen.getByRole("heading", { name: STEP_TITLES[1], hidden: true })).toBeTruthy();
+    expect(screen.getByRole("dialog")).toBe(dialog);
+    expect(document.activeElement).toBe(input);
+    // The console re-sends its state (the poll while a run waits): focus stays in the dialog.
+    const polls = fake.calls.filter((call) => call.url === "/pilot/state").length;
+    await act(async () => { vi.advanceTimersToNextTimer(); });
+    await waitFor(() => expect(fake.calls.filter((call) => call.url === "/pilot/state").length).toBeGreaterThan(polls));
+    expect(document.activeElement).toBe(input);
+    // After the dialog closes, focus returns to where it was and the next step change moves it to the heading again.
+    fake.onPost["/cancel"] = () => { fake.run = doneRun("seal", { exit: 1, code: "HUMAN_CONFIRMATION_MISMATCH", message: "canceled" }); };
+    fireEvent.click(within(dialog).getByRole("button", { name: dialogCopy("TARGET", "DEV").cancel }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    // The page behind is made interactive again by an effect after the dialog unmounts: find the button once it is reachable.
+    fireEvent.click(await screen.findByRole("button", { name: COPY.back }));
+    expect(screen.getByRole("heading", { name: STEP_TITLES[0] })).toBeTruthy();
+    expect(document.activeElement).toBe(document.getElementById("pilot-step-title"));
+    } finally { vi.useRealTimers(); }
+  });
+
   test("the target dialog shows the exact phrase and a copy button, starts empty, and cannot be confirmed by anything but the exact phrase", async () => {
     const { fake } = await atSeal();
     const phrase = "acct-1 | store/tfstate/dev.tfstate | default";
     fake.onPost["/seal"] = () => { fake.run = waitingRun("seal", "TARGET", phrase); };
     typeInto(COPY.sealRequestLabel, "/r.json");
+    typeRequester();
     typeInto(COPY.sealManifestLabel, "/m.json");
     await clickButton(COPY.sealRun);
     const dialog = await screen.findByRole("dialog");
@@ -403,6 +480,7 @@ describe("step 3 and the confirmation dialogs", () => {
     const { fake } = await atSeal();
     fake.onPost["/seal"] = () => { fake.run = waitingRun("seal", "TARGET", "acct | b | w"); };
     typeInto(COPY.sealRequestLabel, "/r.json");
+    typeRequester();
     typeInto(COPY.sealManifestLabel, "/m.json");
     const start = screen.getByRole("button", { name: COPY.sealRun });
     start.focus();
@@ -424,6 +502,7 @@ describe("step 3 and the confirmation dialogs", () => {
     const { fake } = await atSeal();
     fake.onPost["/seal"] = () => { fake.run = waitingRun("seal", "APPROVE", "APPROVE DEV 0123456789ab"); };
     typeInto(COPY.sealRequestLabel, "/r.json");
+    typeRequester();
     typeInto(COPY.sealManifestLabel, "/m.json");
     await clickButton(COPY.sealRun);
     const dialog = await screen.findByRole("dialog");
@@ -445,6 +524,7 @@ describe("step 3 and the confirmation dialogs", () => {
     const { fake } = await atSeal();
     fake.onPost["/seal"] = () => { fake.run = waitingRun("seal", "EMBED_STATE_WRITE", "EMBED STATE_WRITE DEV"); };
     typeInto(COPY.sealRequestLabel, "/r.json");
+    typeRequester();
     typeInto(COPY.sealManifestLabel, "/m.json");
     await clickButton(COPY.sealRun);
     const dialog = await screen.findByRole("dialog");
@@ -586,6 +666,7 @@ describe("step 5 and 6: apply and the result", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: COPY.readyContinue }).hasAttribute("disabled")).toBe(false));
     await clickButton(COPY.readyContinue);
     typeInto(COPY.sealRequestLabel, "/r.json");
+    typeRequester();
     typeInto(COPY.sealManifestLabel, "/m.json");
     ctx.fake.onPost["/seal"] = () => {
       ctx.fake.run = doneRun("seal", { exit: 0, data: { sealedPlanPath: "/s/sealed.json", reviewBundlePath: "/s/sealed.json.review.json", artifactSha256: "x".repeat(64) }, summary: bundleReview() });
@@ -676,6 +757,7 @@ describe("levels: details appear only where the level shows them", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: COPY.readyContinue }).hasAttribute("disabled")).toBe(false));
     await clickButton(COPY.readyContinue);
     typeInto(COPY.sealRequestLabel, "/r.json");
+    typeRequester();
     typeInto(COPY.sealManifestLabel, "/m.json");
     ctx.fake.onPost["/seal"] = () => { ctx.fake.run = doneRun("seal", { exit: 2, code: "ENGINE_NOT_QUALIFIED", message: "Qualification evidence is missing." }); };
     await clickButton(COPY.sealRun);
@@ -822,9 +904,9 @@ describe("the words are plain", () => {
     for (const title of STEP_TITLES) strings.push(["STEP." + title, title]);
     for (const item of CLI_COMMANDS) strings.push(["CLI." + item.command, item.who + " " + item.what]);
     for (const environment of ["DEV", "QA", "PROD"] as const) {
-      for (const name of ["contract shape (x)", "pilot contract pinned and enabled (x)", "identities configured, distinct, no fallback (x)", "identities aimed at the " + environment + " account",
+      for (const name of ["contract shape (x)", "pilot contract enabled and authorizes APPLY in " + environment + " (x)", "identities configured, distinct, no fallback (x)", "identities aimed at the " + environment + " account",
         "plan will embed STATE_WRITE settings: yes", "plan will embed STATE_WRITE settings: no", "tool terraform installed in an approved directory", "kill switch absent",
-        "engine qualified in DEV for seal and apply (x)", "identity separation attested on the real DEV backend"]) {
+        "engine qualified in DEV for seal and apply (x)", "identity separation attested on the real DEV backend", "financial controls (budget alerts or cost cap)"]) {
         const words = describeCheck({ check: name, ok: false, state: "MISSING" }, environment);
         strings.push(["CHECK." + name, words.label + " " + words.wrong + " " + words.fix]);
       }
@@ -863,6 +945,161 @@ describe("the words are plain", () => {
     await clickButton(COPY.approverLoad);
     await screen.findByText("What will change");
     expect(jargonIn(primaryText())).toEqual([]);
+  });
+});
+
+describe("step 7: the cleanup requester signs the proposal", () => {
+  test("the proposal is written only with the requester's name and key file, and the page sends both with the prepared change file", async () => {
+    const fake = install({ path: "UI" });
+    const observation = { verdict: "VERIFIED", inventory: "COMPLETE", observedAt: "2026-10-12T00:00:00.000Z", resources: [], missingFromState: [], unexpected: [] };
+    const begin = async (action: () => Promise<unknown>) => { await action(); };
+    render(<CleanupStep level="BEGINNER" environment="PROD" serverPath="UI" active={false} run={doneRun("observe", { exit: 0, data: observation })} sealedPath="/runs/sealed.json"
+      setSealedPath={() => undefined} requestPath="/r.json" manifestPath="/m.json" begin={begin as never} />);
+    const write = await screen.findByRole("button", { name: COPY.proposeRun });
+    expect((write as HTMLButtonElement).disabled, "no requester yet").toBe(true);
+    typeInto(COPY.proposeRequesterLabel, "carol");
+    expect((write as HTMLButtonElement).disabled, "no key file yet").toBe(true);
+    typeInto(COPY.proposeKeyLabel, "/home/carol/.keys/carol.pem");
+    expect((write as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(write);
+    await waitFor(() => expect(posts(fake, "/propose-cleanup")).toHaveLength(1));
+    expect(posts(fake, "/propose-cleanup")[0].body).toEqual({ sealedPath: "/runs/sealed.json", requesterId: "carol", keyPath: "/home/carol/.keys/carol.pem" });
+    expect(COPY.proposeRequesterHelp).toMatch(/cannot also approve it/);
+    expect(jargonIn(COPY.proposeRequesterHelp + " " + COPY.proposeKeyHelp)).toEqual([]);
+  });
+});
+
+describe("step 7: the cleanup lists say only what the records say", () => {
+  /** The ownership classes and retention owners the backend can emit, read from its one definition (src/apply/cleanup-proposal.ts). */
+  const union = (name: string): string[] => [...read("src/apply/cleanup-proposal.ts").split("export type " + name + " =")[1].split(";")[0].matchAll(/"([A-Z_]+)"/g)].map((m) => m[1]);
+  const OWNERSHIPS = union("Ownership");
+  const OWNERS = union("RetentionOwner");
+  const KEPT = OWNERSHIPS.filter((o) => o !== "RUN_CREATED");
+  const PILOT_KEPT = ["PROTECTED_BACKEND", "PROTECTED_IDENTITY", "PROTECTED_DEPLOYMENT", "RETAINED_GROUP", "CONTAINS_OTHERS"];
+  const ownerOf = (ownership: string) => (PILOT_KEPT.includes(ownership) ? "PILOT_OWNER" : "ENVIRONMENT_OWNER");
+  const summary = (deletes: { address: string; type: string; identifier: string; ownership: string; observed: string }[], excluded: { address: string; type: string; identifier: string; ownership: string; reason: string; retainedBy: string }[]) => ({
+    shortId: "0123456789ab", proposalSha256: "0".repeat(64), environment: "DEV" as const, target: { account: "acct", backend: "b", workspace: "default" }, sourceCommit: "c".repeat(40), artifactShortId: "0123456789ab", requestedBy: "carol", requiredApprovals: 1,
+    deletes, alreadyAbsent: [], excluded, risks: ["a risk"], lines: ["line"],
+  });
+  const NEVER = /never (?:removes|removed|deletes|deleted)|were never on the list|whatever this change did/;
+
+  test("every ownership class and retention owner the backend can emit has its own words, so a new class never shows as unknown", () => {
+    expect(OWNERSHIPS.length).toBeGreaterThanOrEqual(10);
+    expect(OWNERS).toEqual(["PILOT_OWNER", "ENVIRONMENT_OWNER"]);
+    for (const ownership of OWNERSHIPS) {
+      expect(ownershipWord(ownership), ownership).not.toBe("unknown");
+      expect(ownershipWord(ownership).length, ownership).toBeGreaterThan(10);
+      expect(jargonIn(ownershipWord(ownership)), ownership).toEqual([]);
+    }
+    for (const owner of OWNERS) expect(retentionOwnerWord(owner), owner).toMatch(/^kept by the (?:pilot owner|environment's owner)$/);
+    expect(ownershipWord("A_CLASS_NOBODY_HAS_SEEN")).toBe("unknown");
+    expect(retentionOwnerWord("NOBODY")).toBe("kept by an unknown owner");
+    // The identity class covers both clouds and names no cloud's namespace; the scope class names only what the backend emits today.
+    expect(ownershipWord("PROTECTED_IDENTITY")).toMatch(/role/);
+    expect(ownershipWord("PROTECTED_IDENTITY")).toMatch(/managed identity/);
+    expect(ownershipWord("PROTECTED_IDENTITY")).toMatch(/sign-in trust/);
+    expect(ownershipWord("PROTECTED_IDENTITY")).not.toMatch(/Microsoft|AWS|IAM/);
+    expect(ownershipWord("CONTAINS_OTHERS")).not.toMatch(/nested stack/);
+    expect(dispositionWord("UNKNOWN")).toBe("Unresolved: not confirmed gone");
+    // Every reason code the records can carry has words, and the fallback is honest.
+    for (const code of ["ACCESS_DENIED", "CREDENTIALS", "THROTTLED", "TYPE_NOT_SUPPORTED", "CLI_ERROR", "NOT_INDEPENDENTLY_CHECKABLE", "DATA_BEARING_READ_EXCLUDED", "NO_IDENTIFIER_IN_STATE", "NOT_AN_ARM_RESOURCE_ID", "OUTSIDE_TARGET_SUBSCRIPTION", "UNEXPECTED_RESPONSE", "HOST_REFUSED"]) {
+      expect(reasonWord(code), code).not.toMatch(/\b[A-Z]{2,}(?:_[A-Z0-9]+)+\b/);
+      expect(reasonWord(code).length, code).toBeGreaterThan(10);
+    }
+    expect(reasonWord("A_REASON_NOBODY_HAS_SEEN")).toBe("the check gave no usable answer");
+  });
+
+  test("the note under a proposal is built from that proposal: it says the delete list will be deleted if approved, names only the kept classes present with their owner, and promises nothing about absent classes", () => {
+    // Every kept class present: each is named once, with its owner.
+    const all = summary([{ address: "thing.one", type: "a_thing", identifier: "id-1", ownership: "RUN_CREATED", observed: "VERIFIED" }],
+      KEPT.map((ownership, index) => ({ address: "kept.k" + index, type: "a_kind", identifier: "id-k" + index, ownership, reason: "because " + index, retainedBy: ownerOf(ownership) })));
+    const everything = render(<CleanupList cleanup={all} />);
+    // Who requested the cleanup is shown with the proposal: their id is part of the proposal every approver signs.
+    expect(everything.container.textContent).toContain(COPY.proposeRequestedBy + "carol");
+    const note = everything.container.querySelector("[data-retained-note]")!.textContent ?? "";
+    expect(note).toContain(COPY.proposeWillDelete);
+    for (const ownership of KEPT) {
+      expect(note).toContain(ownershipWord(ownership) + " (" + retentionOwnerWord(ownerOf(ownership)) + ")");
+      const row = everything.container.querySelector('[data-kept="kept.k' + KEPT.indexOf(ownership) + '"]') as HTMLElement;
+      expect(row.textContent).toContain(ownershipWord(ownership));
+      expect(row.textContent).toContain(retentionOwnerWord(ownerOf(ownership)));
+      expect(row.textContent).not.toMatch(/\b[A-Z]{2,}(?:_[A-Z0-9]+)+\b/);
+    }
+    expect(note).toMatch(/Retiring the environment itself is a separate, reviewed decision/);
+    expect(note).not.toMatch(NEVER);
+    expect(jargonIn(note)).toEqual([]);
+    everything.unmount();
+    // An AWS proposal with a run-created role on the delete list and only the backend kept: the note names the backend and nothing about roles.
+    const aws = summary([{ address: "aws_iam_role.app", type: "aws_iam_role", identifier: "alz-app-role", ownership: "RUN_CREATED", observed: "VERIFIED" }, { address: "aws_s3_bucket.logs", type: "aws_s3_bucket", identifier: "logs", ownership: "RUN_CREATED", observed: "VERIFIED" }],
+      [{ address: "aws_s3_bucket.state", type: "aws_s3_bucket", identifier: "state", ownership: "PROTECTED_BACKEND", reason: "the state backend", retainedBy: "PILOT_OWNER" }]);
+    const partial = render(<CleanupList cleanup={aws} />);
+    const text = partial.container.textContent ?? "";
+    const awsNote = partial.container.querySelector("[data-retained-note]")!.textContent ?? "";
+    expect(awsNote).toContain(ownershipWord("PROTECTED_BACKEND") + " (" + retentionOwnerWord("PILOT_OWNER") + ")");
+    for (const absent of KEPT.filter((o) => o !== "PROTECTED_BACKEND")) expect(awsNote, absent).not.toContain(ownershipWord(absent));
+    expect(text).not.toMatch(/roles? (?:is|are) never|never removes? (?:a |an )?(?:identity|role|resource group|stack)/i);
+    expect(text).not.toMatch(NEVER);
+    expect(text).toContain("aws_iam_role.app");
+    partial.unmount();
+    // Nothing kept, nothing to delete: said plainly.
+    const empty = render(<CleanupList cleanup={summary([], [])} />);
+    const emptyNote = empty.container.querySelector("[data-retained-note]")!.textContent ?? "";
+    expect(emptyNote).toMatch(/Nothing is on the delete list, so an approval would delete nothing/);
+    expect(emptyNote).toMatch(/Nothing else from this change's records is kept/);
+    expect(emptyNote).not.toMatch(NEVER);
+    empty.unmount();
+  });
+
+  test("a complete leftover check says how many listed things are confirmed gone, whether a cleanup ran, that kept things were left in place and not checked, which kept kinds this record holds, and that the environment is not retired; an unresolved row shows words for its reason", () => {
+    const kept = ["PROTECTED_BACKEND", "PROTECTED_IDENTITY", "NOT_IN_PLAN"].map((ownership, index) => ({
+      address: "kept." + ownership.toLowerCase(), type: "a_kind", identifier: "id-" + index, disposition: "INTENTIONALLY_RETAINED", basis: "RETENTION_DECISION", reason: ownership + ": the record's own sentence for item " + index, owner: ownerOf(ownership),
+    }));
+    const gone = [{ address: "thing.one", type: "a_thing", identifier: "id-1", disposition: "CONFIRMED_DELETED", basis: "CLOUD_CONTROL_ABSENT" }, { address: "thing.two", type: "a_thing", identifier: "id-2", disposition: "CONFIRMED_DELETED", basis: "CLOUD_CONTROL_ABSENT" }];
+    const base = { disposition: "COMPLETE" as const, sweep: "COMPLETE", nextAction: "Approved resources deleted: every listed resource (2) is confirmed gone.", observedAt: "2026-10-26T00:00:00.000Z" };
+    // A cleanup ran and two listed things are gone.
+    const ran = render(<LeftoversTable leftovers={{ ...base, resources: [...gone, ...kept], cleanupEvidenceSha256: "a".repeat(64) }} />);
+    const headline = ran.container.querySelector("h3")!.textContent ?? "";
+    expect(headline).toBe("Approved things deleted: 2 listed thing(s) confirmed gone. " + COPY.verifyKeptNotChecked);
+    expect(headline).not.toMatch(/still there|verified|present\b/);
+    const retirement = ran.container.querySelector('[data-retirement="OUTSTANDING"]')!.textContent ?? "";
+    expect(retirement).toMatch(/^The environment itself is not retired\. Kept and left in place, not checked: /);
+    for (const item of kept) {
+      const ownership = item.reason.split(":")[0];
+      expect(retirement).toContain(ownershipWord(ownership) + " (" + retentionOwnerWord(item.owner) + ")");
+      const row = [...ran.container.querySelectorAll("tr")].find((tr) => tr.textContent?.includes(item.address))!;
+      expect(row.textContent).toContain(dispositionWord("INTENTIONALLY_RETAINED"));
+      expect(row.textContent).toContain(retentionOwnerWord(item.owner));
+      expect(row.textContent).toContain(ownershipWord(ownership));
+      expect(row.textContent?.replace(item.address, "").replace(item.identifier, "")).not.toMatch(/\b[A-Z]{2,}(?:_[A-Z0-9]+)+\b/);
+    }
+    for (const absent of KEPT.filter((o) => !["PROTECTED_BACKEND", "PROTECTED_IDENTITY", "NOT_IN_PLAN"].includes(o))) expect(retirement, absent).not.toContain(ownershipWord(absent));
+    expect(retirement).toMatch(/separate, reviewed action by the pilot owner, and it is still outstanding\.$/);
+    expect(retirement).not.toMatch(NEVER);
+    expect(retirement).not.toMatch(/resource group or a stack/);
+    expect(jargonIn(headline + " " + retirement)).toEqual([]);
+    ran.unmount();
+    // No cleanup ran, yet the listed things are gone: said so, never "approved things deleted".
+    const none = render(<LeftoversTable leftovers={{ ...base, resources: gone, cleanupEvidenceSha256: null }} />);
+    expect(none.container.querySelector("h3")!.textContent).toBe("No cleanup ran; the 2 listed thing(s) are confirmed gone anyway. " + COPY.verifyKeptNotChecked);
+    expect(none.container.querySelector('[data-retirement="OUTSTANDING"]')!.textContent).toBe("The environment itself is not retired. Nothing from this change's records was kept. " + COPY.verifyRetirementTail);
+    none.unmount();
+    // Nothing was on the delete list.
+    const nothing = render(<LeftoversTable leftovers={{ ...base, resources: kept, cleanupEvidenceSha256: null }} />);
+    expect(nothing.container.querySelector("h3")!.textContent).toBe("Nothing was on the delete list, so nothing was deleted. " + COPY.verifyKeptNotChecked);
+    nothing.unmount();
+    expect(CODE_COPY.CLEANUP_COMPLETE.why).not.toMatch(/Approved things deleted|still there/);
+    expect(CODE_COPY.CLEANUP_COMPLETE.next).not.toMatch(/resource group|identity|deployment history/);
+    expect(jargonIn(CODE_COPY.CLEANUP_COMPLETE.why + " " + CODE_COPY.CLEANUP_COMPLETE.next)).toEqual([]);
+    // Not complete: an unresolved row is "not confirmed gone" with its reason in words, and no retirement line is shown.
+    const incomplete = { disposition: "INCOMPLETE" as const, sweep: "COMPLETE", nextAction: "Fix the discovery sign-in's access, then check again.", observedAt: "2026-10-26T00:00:00.000Z", cleanupEvidenceSha256: "a".repeat(64),
+      resources: [{ address: "thing.two", type: "a_thing", identifier: "id-2", disposition: "UNKNOWN", basis: "CHECK_FAILED", reason: "ACCESS_DENIED" }] };
+    const second = render(<LeftoversTable leftovers={incomplete} />);
+    expect(second.container.querySelector("h3")!.textContent).toBe(COPY.verifyIncomplete);
+    expect(second.container.querySelector('[data-retirement="OUTSTANDING"]')).toBeNull();
+    const unresolved = second.container.querySelector('[data-disposition="UNKNOWN"]') as HTMLElement;
+    expect(unresolved.textContent).toContain("Unresolved: not confirmed gone: " + reasonWord("ACCESS_DENIED"));
+    expect(unresolved.textContent).not.toMatch(/ACCESS_DENIED|Confirmed gone|Kept on purpose/);
+    second.unmount();
   });
 });
 

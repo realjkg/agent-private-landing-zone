@@ -1,5 +1,5 @@
 {
-  "EXAMPLE": "NOT A REAL CONTRACT. Copy to config/act-pilot-contract.json, replace every fake target value and every REPLACE-WITH value with an owner-supplied value, and set enabled to true only when the owner authorizes the pilot. Then commit the contract's canonical sha256 to config/act-pilot-contract.sha256 (an empty or absent pin keeps ACT disabled). This is the CDK engine: the backend is the CloudFormation stack name (the same stack in each account is expected), and each environment's capabilities list is empty, so a stack with IAM resources needs an explicit owner decision per environment (CAPABILITY_IAM or CAPABILITY_NAMED_IAM). The AWS and CloudFormation facts behind this engine are from memory and unverified; the list is in docs/act-pilot-apply.md, CDK. Promotion runs DEV, then QA, then PROD, and the three must differ in account. The account ids and regions here are obviously fake, and the approver placeholders are deliberately invalid, so this file can never enable ACT.",
+  "EXAMPLE": "NOT A REAL CONTRACT. Copy to config/act-pilot-contract.json, replace every fake target value and every REPLACE-WITH value with an owner-supplied value, and set enabled to true and add an authorize entry (per environment, the operations ACT may run: APPLY, CLEANUP, REMOVE; for example {\"DEV\": [\"APPLY\", \"CLEANUP\"]}) only when the owner authorizes the pilot, in one reviewed commit of the contract (an absent or empty authorize keeps ACT disabled; there is no hash file). This is the CDK engine: the backend is the CloudFormation stack name (the same stack in each account is expected), and each environment's capabilities list is empty, so a stack with IAM resources needs an explicit owner decision per environment (CAPABILITY_IAM or CAPABILITY_NAMED_IAM). The AWS and CloudFormation facts behind this engine are from memory and unverified; the list is in docs/act-pilot-apply.md, CDK. Promotion runs DEV, then QA, then PROD, and the three must differ in account. The account ids and regions here are obviously fake, and the approver placeholders are deliberately invalid, so this file can never enable ACT.",
   "schemaVersion": 1,
   "enabled": false,
   "provider": "AWS",
@@ -11,21 +11,24 @@
       "region": "us-east-1",
       "backend": "ExamplePilotStack",
       "workspace": "default",
-      "capabilities": []
+      "capabilities": [],
+      "canary": { "resources": [{ "type": "AWS::Logs::LogGroup", "count": 1 }, { "type": "AWS::CloudFormation::WaitConditionHandle", "count": 1, "retain": true }] }
     },
     "QA": {
       "accountId": "222222222222",
       "region": "us-east-1",
       "backend": "ExamplePilotStack",
       "workspace": "default",
-      "capabilities": []
+      "capabilities": [],
+      "canary": { "resources": [{ "type": "AWS::Logs::LogGroup", "count": 1 }, { "type": "AWS::CloudFormation::WaitConditionHandle", "count": 1, "retain": true }] }
     },
     "PROD": {
       "accountId": "333333333333",
       "region": "us-east-1",
       "backend": "ExamplePilotStack",
       "workspace": "default",
-      "capabilities": []
+      "capabilities": [],
+      "canary": { "resources": [{ "type": "AWS::Logs::LogGroup", "count": 1 }, { "type": "AWS::CloudFormation::WaitConditionHandle", "count": 1, "retain": true }] }
     }
   },
   "requiredApprovals": { "DEV": 1, "QA": 1, "PROD": 2 },

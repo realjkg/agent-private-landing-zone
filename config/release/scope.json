@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "decision": {
     "by": "OWNER",
-    "ref": "https://github.com/realjkg/agent-private-landing-zone/issues/39#issuecomment-6403630201",
-    "recorded": "2026-10-25"
+    "ref": "https://github.com/realjkg/agent-private-landing-zone/issues/39#issuecomment-6443352284",
+    "recorded": "2026-10-27"
   },
   "candidate": null,
   "manifest": null,
@@ -18,45 +18,86 @@
   "actPaths": [
     "act:aws-terraform",
     "act:azure-terraform",
-    "act:aws-cdk"
+    "act:aws-cdk",
+    "act:azure-bicep"
   ],
   "journey": "FULL_LIFECYCLE",
   "outOfScope": [
     {
       "gate": "preview:pulumi-azure-greenfield",
-      "reason": "Pulumi is not one of the three release paths the owner selected (AWS Terraform, Azure Terraform, AWS CDK)."
+      "reason": "Pulumi is not one of the six paths of the narrow ACT-DEV release (owner rebaseline 6443352284: AWS Terraform, AWS CDK / CloudFormation, Azure Terraform, Azure Bicep / ARM, GCP Terraform, GCP API-native)."
     },
     {
       "gate": "preview:pulumi-aws-greenfield",
-      "reason": "Pulumi is not one of the three release paths the owner selected (AWS Terraform, Azure Terraform, AWS CDK)."
+      "reason": "Pulumi is not one of the six paths of the narrow ACT-DEV release (owner rebaseline 6443352284: AWS Terraform, AWS CDK / CloudFormation, Azure Terraform, Azure Bicep / ARM, GCP Terraform, GCP API-native)."
     },
     {
       "gate": "preview:pulumi-aws-brownfield",
-      "reason": "Pulumi is not one of the three release paths the owner selected (AWS Terraform, Azure Terraform, AWS CDK)."
+      "reason": "Pulumi is not one of the six paths of the narrow ACT-DEV release (owner rebaseline 6443352284: AWS Terraform, AWS CDK / CloudFormation, Azure Terraform, Azure Bicep / ARM, GCP Terraform, GCP API-native)."
     },
     {
       "gate": "preview:pulumi-azure-brownfield",
-      "reason": "Pulumi is not one of the three release paths the owner selected (AWS Terraform, Azure Terraform, AWS CDK)."
+      "reason": "Pulumi is not one of the six paths of the narrow ACT-DEV release (owner rebaseline 6443352284: AWS Terraform, AWS CDK / CloudFormation, Azure Terraform, Azure Bicep / ARM, GCP Terraform, GCP API-native)."
     },
     {
       "gate": "preview:opentofu-aws-brownfield",
-      "reason": "OpenTofu is not one of the three release paths the owner selected (AWS Terraform, Azure Terraform, AWS CDK)."
-    },
-    {
-      "gate": "preview:bicep-azure-brownfield",
-      "reason": "Bicep is not one of the three release paths the owner selected (AWS Terraform, Azure Terraform, AWS CDK)."
+      "reason": "OpenTofu is not one of the six paths of the narrow ACT-DEV release (owner rebaseline 6443352284: AWS Terraform, AWS CDK / CloudFormation, Azure Terraform, Azure Bicep / ARM, GCP Terraform, GCP API-native)."
     },
     {
       "gate": "preview:cloudformation-aws-existing",
-      "reason": "Existing CloudFormation stacks are not one of the three release paths the owner selected; CDK is qualified through its own preview gate."
+      "reason": "Existing CloudFormation stacks are not one of the six paths of the narrow ACT-DEV release (owner rebaseline 6443352284: AWS Terraform, AWS CDK / CloudFormation, Azure Terraform, Azure Bicep / ARM, GCP Terraform, GCP API-native); AWS CDK / CloudFormation path acceptance is through act:aws-cdk, and its brownfield preview gate (preview:cdk-aws-brownfield) was dropped by the owner on 2026-10-28 (#39 6480066863). Kept excluded pending the owner's confirmation."
     },
     {
       "gate": "preview:ansible-existing-hosts",
-      "reason": "Ansible is not one of the three release paths the owner selected (AWS Terraform, Azure Terraform, AWS CDK)."
+      "reason": "Ansible is not one of the six paths of the narrow ACT-DEV release (owner rebaseline 6443352284: AWS Terraform, AWS CDK / CloudFormation, Azure Terraform, Azure Bicep / ARM, GCP Terraform, GCP API-native)."
     },
     {
       "gate": "preview:crossplane-local-render",
-      "reason": "Crossplane is not one of the three release paths the owner selected (AWS Terraform, Azure Terraform, AWS CDK)."
+      "reason": "Crossplane is not one of the six paths of the narrow ACT-DEV release (owner rebaseline 6443352284: AWS Terraform, AWS CDK / CloudFormation, Azure Terraform, Azure Bicep / ARM, GCP Terraform, GCP API-native)."
+    },
+    {
+      "gate": "preview:terraform-aws-brownfield",
+      "reason": "Brownfield preview is dropped from this release (owner decision of 2026-10-28, #39 6480066863): owner decision E1 makes APPLY seals create-only, so a brownfield plan, one that updates or adopts a pre-existing resource, is refused at seal (RESOURCE_NOT_IN_CANARY) and ./alz apply preview-evidence cannot produce this gate's evidence. The producer is unchanged."
+    },
+    {
+      "gate": "preview:terraform-azure-brownfield",
+      "reason": "Brownfield preview is dropped from this release (owner decision of 2026-10-28, #39 6480066863): owner decision E1 makes APPLY seals create-only, so a brownfield plan, one that updates or adopts a pre-existing resource, is refused at seal (RESOURCE_NOT_IN_CANARY) and ./alz apply preview-evidence cannot produce this gate's evidence. The producer is unchanged."
+    },
+    {
+      "gate": "preview:cdk-aws-brownfield",
+      "reason": "Brownfield preview is dropped from this release (owner decision of 2026-10-28, #39 6480066863): owner decision E1 makes APPLY seals create-only, so a brownfield plan, one that updates or adopts a pre-existing resource, is refused at seal (RESOURCE_NOT_IN_CANARY) and ./alz apply preview-evidence cannot produce this gate's evidence. The producer is unchanged."
+    },
+    {
+      "gate": "preview:bicep-azure-brownfield",
+      "reason": "Brownfield preview is dropped from this release (owner decision of 2026-10-28, #39 6480066863): owner decision E1 makes APPLY seals create-only, so a brownfield plan, one that updates or adopts a pre-existing resource, is refused at seal (RESOURCE_NOT_IN_CANARY) and ./alz apply preview-evidence cannot produce this gate's evidence. The producer is unchanged."
+    },
+    {
+      "gate": "preview:terraform-gcp-brownfield",
+      "reason": "The GCP brownfield preview is dropped from this release (owner decision of 2026-10-28, #39 6480066863): no GCP contract can seal a plan, so no producer can run this gate. GCP Terraform ACT and GCP API-native ACT are in scope for this DEV release (#39, 6481421924). The ./alz apply preview-evidence producer is unchanged."
+    },
+    {
+      "gate": "pillar:operational-excellence",
+      "reason": "Moved to v1.1 by the owner on 2026-10-28: requires a deployed greenfield landing zone (#39)."
+    },
+    {
+      "gate": "pillar:security",
+      "reason": "Moved to v1.1 by the owner on 2026-10-28: requires a deployed greenfield landing zone (#39)."
+    },
+    {
+      "gate": "pillar:reliability",
+      "reason": "Moved to v1.1 by the owner on 2026-10-28: requires a deployed greenfield landing zone (#39)."
+    },
+    {
+      "gate": "pillar:performance",
+      "reason": "Moved to v1.1 by the owner on 2026-10-28: requires a deployed greenfield landing zone (#39)."
+    },
+    {
+      "gate": "pillar:cost",
+      "reason": "Moved to v1.1 by the owner on 2026-10-28: requires a deployed greenfield landing zone (#39)."
+    },
+    {
+      "gate": "pillar:sustainability",
+      "reason": "Moved to v1.1 by the owner on 2026-10-28: requires a deployed greenfield landing zone (#39)."
     }
   ]
 }

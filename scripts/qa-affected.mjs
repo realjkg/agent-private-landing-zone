@@ -15,6 +15,14 @@ const PY_SOURCE = /^scripts\/[^/]+\.py$/;
 const SOURCE = /^src\/.+\.(?:ts|tsx|js|mjs)$/;
 const QA_SELF_TEST = "test/qa-affected.test.mjs";
 const MAX_AFFECTED_TESTS = 45;
+// Exit codes: 0 passed (or nothing to run), 1 coverage gap or failed check, 3 over the cap with no other gap and the
+// full-suite route not requested. With --full-suite-over-cap (the CI route) an over-cap-only plan runs the full suite,
+// and its result is the gate; a coverage gap still fails before anything runs.
+export const EXIT_OVER_CAP = 3;
+export const FULL_SUITE = ["npm", ["test"]];
+class QaExit extends Error {
+  constructor(message, code) { super(message); this.exitCode = code; }
+}
 const RUNTIME_FRAMEWORK_IMPORT = /from\s+["']@langchain\//;
 // Inventory guards scan the filesystem (src/cli, ./alz, package.json scripts,
 // generated docs) instead of importing what they check, so the import closure
@@ -24,12 +32,53 @@ const INVENTORY_GUARDS = ["test/operations-parity.test.ts", "test/operations-cor
   "test/cli-ui-journey-map.test.ts"];
 const INVENTORY_INPUT = /^(?:src\/cli\/[^/]+\.ts|src\/operations\/.+\.ts|alz|package\.json|docs\/operator-console\.md|docs\/cli-ui-journey-map\.md)$/;
 
+// The ./alz dispatcher runs its command switch at module top level, so no test can import it; its owners are the guards that
+// read its text (operations-parity checks every `command === "x"` branch against the catalog and the help text) and the
+// operator CLI test that runs it.
+export const UNIMPORTABLE_OWNERS = {
+  "src/cli/operator.ts": ["test/operations-parity.test.ts", "test/operator-cli.test.ts"],
+  // The console launcher starts the server at module top level; the console tests read its text (loopback bind, session token, the ACT banner).
+  "src/cli/operator-web.ts": ["test/ui-channel.test.ts"],
+};
+
+// Owner-facing templates no code imports: a focused test reads each from disk and checks what it tells the owner (that it
+// never names the retired pin and leaves ACT unauthorized). Selected in addition to any other rule that owns the path.
+export const TEMPLATE_OWNERS = {
+  "bootstrap/config.aws.template.json": ["test/apply-contract.test.ts"],
+  "bootstrap/config.azure.template.json": ["test/apply-contract.test.ts"],
+  "bootstrap/config.gcp.template.json": ["test/apply-contract.test.ts"],
+};
+
+// Fixtures a test reads from disk (not imported), so the import closure never selects their owner.
+export const FIXTURE_OWNERS = {
+  "test/fixtures/backend-pin/cases.json": ["test/apply-backend-pin-real.test.ts"],
+  // The capture manifest is checked against every live fixture on disk.
+  "test/fixtures/live/MANIFEST.json": ["test/teardown-live-fixtures.test.ts"],
+  // Real Terraform 1.16.4 sources and `show -json` output for the construct judge (RB1): read by name from the fixture directory.
+  "test/fixtures/live/terraform/aws-constructs.child.tf": ["test/apply-terraform-constructs.test.ts"],
+  "test/fixtures/live/terraform/aws-constructs.main.tf": ["test/apply-terraform-constructs.test.ts"],
+  "test/fixtures/live/terraform/aws-constructs.plan.json": ["test/apply-terraform-constructs.test.ts"],
+  "test/fixtures/live/terraform/aws-ephemeral.child.tf": ["test/apply-terraform-constructs.test.ts"],
+  "test/fixtures/live/terraform/aws-ephemeral.main.tf": ["test/apply-terraform-constructs.test.ts"],
+  "test/fixtures/live/terraform/aws-ephemeral.plan.json": ["test/apply-terraform-constructs.test.ts"],
+  "test/fixtures/live/terraform/azure-constructs.child.tf.json": ["test/apply-terraform-constructs.test.ts"],
+  "test/fixtures/live/terraform/azure-constructs.main.tf.json": ["test/apply-terraform-constructs.test.ts"],
+  "test/fixtures/live/terraform/azure-constructs.plan.json": ["test/apply-terraform-constructs.test.ts"],
+  "test/fixtures/live/terraform/removed-provisioner.child.tf": ["test/apply-terraform-constructs.test.ts"],
+  "test/fixtures/live/terraform/removed-provisioner.main.tf": ["test/apply-terraform-constructs.test.ts"],
+  "test/fixtures/live/terraform/removed-provisioner.plan.json": ["test/apply-terraform-constructs.test.ts"],
+  "test/fixtures/live/terraform/removed-duplicate-key.main.tf.json": ["test/apply-terraform-constructs.test.ts"],
+  "test/fixtures/live/terraform/removed-duplicate-key.plan.json": ["test/apply-terraform-constructs.test.ts"],
+};
+
 // Source-scan guards read a source tree from disk (a forbidden literal, import or call anywhere under it) instead of
 // importing what they check, so the import closure never selects them. Each is declared with the roots it scans and
 // runs for any source change under one of them; test/qa-affected.test.mjs fails if a test scans source without an
 // entry here. Without this, a governed -destroy builder added under src/apply merged with the destroy-literal scan red.
 export const SOURCE_SCAN_GUARDS = {
   "test/apply-boundary.test.ts": ["src/"],
+  // No product code names the retired pin file or writes the pilot contract (the contract is the ACT authorization).
+  "test/apply-contract.test.ts": ["src/"],
   "test/policy-path.test.ts": ["src/"],
   "test/teardown-adapter-terraform.test.ts": ["src/"],
   "test/teardown-driver-denials.test.ts": ["src/"],
@@ -70,6 +119,14 @@ export function acceptanceCited(files) {
 const RELEASE_STATUS_INPUT = /^(?:config\/release\/.+\.json|docs\/release-status\.md|config\/acceptance\/journeys\.json)$/;
 const RELEASE_STATUS_TEST = "test/release-status.test.ts";
 
+// The committed canary folders and the one focused test that owns each (see planChanged).
+/** Seals both Terraform canaries through the engine's unit-tag check; selected with either canary's own owner. */
+export const TERRAFORM_CANARY_UNIT_TEST = "test/act-dev1-terraform-unit-tags.test.ts";
+export const CANARY_OWNERS = Object.freeze([
+  ["qualification/aws/act-dev1-cdk-canary/", "test/act-dev1-cdk-canary.test.ts"],
+  ["qualification/azure/act-dev1-canary/", "test/act-dev1-azure-canary.test.ts"],
+  ["qualification/azure/act-dev1-bicep-canary/", "test/act-dev1-bicep-canary.test.ts"],
+]);
 function uniq(values) { return [...new Set(values)].sort(); }
 function hasFile(files, name) { return files.has(name); }
 function matching(files, re) { return [...files.keys()].filter(p => re.test(p)); }
@@ -130,6 +187,7 @@ export function planChanged(changedPaths, files) {
 
   const cited = acceptanceCited(files);
   for (const path of changed) {
+    if (Object.hasOwn(TEMPLATE_OWNERS, path)) addExisting(selected, files, TEMPLATE_OWNERS[path]);
     if (INVENTORY_INPUT.test(path)) addExisting(selected, files, INVENTORY_GUARDS);
     if (cited.has(path)) addExisting(selected, files, [ACCEPTANCE_TEST]);
     if (RELEASE_STATUS_INPUT.test(path)) {
@@ -164,6 +222,11 @@ export function planChanged(changedPaths, files) {
       continue;
     }
     if (/^docs\/|\.md$|^\.github\/(ISSUE_TEMPLATE|PULL_REQUEST_TEMPLATE)\//.test(path)) continue;
+    // Dependabot's update settings are owned by the selector's own test, which reads the committed file.
+    if (path === ".github/dependabot.yml") {
+      addExisting(selected, files, [QA_SELF_TEST]);
+      continue;
+    }
     if (/^\.github\/workflows\/.+\.ya?ml$/.test(path)) {
       pinCheck = true;
       addExisting(selected, files, [QA_SELF_TEST]);
@@ -186,6 +249,18 @@ export function planChanged(changedPaths, files) {
     if (/^src\/plugins\/|^config\/plugins/.test(path)) {
       pluginCheck = true;
     }
+    // The lifecycle runner's evidence is judged by the release admission review it reuses: a change under src/lifecycle runs
+    // the runner's own tests and the admission review's, so a report shape the review would refuse never merges unnoticed.
+    if (/^src\/lifecycle\//.test(path)) {
+      addExisting(selected, files, ["test/lifecycle-runner.test.ts", "test/lifecycle-cli.test.ts", "test/release-admission.test.ts"]);
+    }
+    // The Azure pilot bootstrap is Terraform no import reaches: its owner reads the files and, opt-in, runs their own
+    // offline `terraform test` (mocked providers). Any file under it selects that owner; nothing else under bootstrap/ does.
+    if (/^bootstrap\/azure\//.test(path)) {
+      addExisting(selected, files, ["test/bootstrap-azure.test.ts"]);
+      if (!hasFile(files, "test/bootstrap-azure.test.ts")) gaps.push("The Azure bootstrap has no focused test owner.");
+      continue;
+    }
     if (/^src\/operator-ui\/app\/.*\.(?:css|svg)$/.test(path)) {
       buildUi = true;
       addExisting(selected, files, ["test/operator-ui-react.test.tsx",
@@ -204,23 +279,47 @@ export function planChanged(changedPaths, files) {
       }
       if (directlyImpacted.length === 0) {
         // Do not mask missing test ownership with a blanket full-suite run.
-        gaps.push(path + " has no importing test. Add a focused test.");
+        const owners = UNIMPORTABLE_OWNERS[path];
+        if (owners) addExisting(selected, files, owners);
+        // A deleted module has no importer left to select; the type check (npm run check) proves none still imports it.
+        else if (!files.has(path)) notes.push(path + " was deleted; the type check proves no importer remains.");
+        else gaps.push(path + " has no importing test. Add a focused test.");
       }
       continue;
     }
     if (/^test\/(?:fixtures|helpers)\//.test(path)) {
-      const dependent = impactedBy(path);
+      const dependent = [...impactedBy(path), ...(FIXTURE_OWNERS[path] ?? []).filter((owner) => files.has(owner))];
       addExisting(selected, files, dependent);
       if (!dependent.length) gaps.push(path + " has no known test owner; add an explicit focused test.");
       continue;
     }
-    if (/^qualification\/aws\/act-dev1-canary\/(?:.+\.tf|terraform\.tfvars\.example\.json)$/.test(path) ||
-        /^bootstrap\/aws\/(?:main|variables)\.tf$/.test(path) ||
+    if (/^qualification\/aws\/act-dev1-canary\/(?:.+\.tf|terraform\.tfvars\.example\.json|\.terraform\.lock\.hcl)$/.test(path) ||
+        /^bootstrap\/aws\/(?:(?:main|variables|discovery)\.tf|discovery-policy\.json|terraform\.tfvars\.example|tests\/discovery\.tftest\.hcl)$/.test(path) ||
         path === "tests_python/test_aws_dev_terraform_handoff.py") {
       addExisting(pythonTests, files, ["test/act-dev1-automation.test.py"]);
+      // The canary's seal-time unit-tag check (UNIT_TAG_MISSING) runs through the Terraform engine in a node test.
+      if (path.startsWith("qualification/aws/act-dev1-canary/")) addExisting(selected, files, [TERRAFORM_CANARY_UNIT_TEST]);
+      // The DISCOVERY scope (owner decision 6440801434, item 2): its policy content is asserted by a focused node test.
+      if (/^bootstrap\/aws\/(?:discovery|variables)\b|^bootstrap\/aws\/tests\/discovery\./.test(path)) addExisting(selected, files, ["test/discovery-scope.test.ts"]);
       if (!hasFile(files, "test/act-dev1-automation.test.py")) {
         gaps.push("ACT-DEV-1 Terraform canary has no focused test owner.");
       }
+      continue;
+    }
+    // The committed ACT-DEV-1 canaries (owner decision E3): project files no import reaches (a CDK app and its synthesized
+    // cdk.out, Terraform, Bicep and its compiled template, lock files). Each folder is owned by one focused test that reads it.
+    const canary = CANARY_OWNERS.find(([folder]) => path.startsWith(folder));
+    if (canary) {
+      addExisting(selected, files, [canary[1]]);
+      if (path.startsWith("qualification/azure/act-dev1-canary/")) addExisting(selected, files, [TERRAFORM_CANARY_UNIT_TEST]);
+      if (!hasFile(files, canary[1])) gaps.push(path + " has no focused canary test (" + canary[1] + ").");
+      continue;
+    }
+    // The GCP bootstrap package (HCL, its mocked `terraform test` suite, the config template) is owned by one focused static test.
+    if (/^bootstrap\/(?:gcp\/.+|config\.gcp\.template\.json)$/.test(path)) {
+      addExisting(selected, files, ["test/bootstrap-gcp.test.ts"]);
+      const gap = "The GCP bootstrap has no focused test owner.";
+      if (!hasFile(files, "test/bootstrap-gcp.test.ts") && !gaps.includes(gap)) gaps.push(gap);
       continue;
     }
     if (/^(?:config|policy|security)\//.test(path)) {
@@ -244,15 +343,22 @@ export function planChanged(changedPaths, files) {
       notes.push("Release-sensitive artifact changed: dedicated qualification remains independent.");
       continue;
     }
+    // Selected at the top of the loop; a template with no other rule needs nothing more.
+    if (Object.hasOwn(TEMPLATE_OWNERS, path)) continue;
     // Unknown executable or deployment configuration: do not silently pass.
     gaps.push(path + " has no QA ownership rule.");
   }
-  if (selected.size + pythonTests.size > MAX_AFFECTED_TESTS) {
-    gaps.push("Affected test count " + (selected.size + pythonTests.size) + " exceeds " + MAX_AFFECTED_TESTS +
-      ". Split the change or qualify it through an explicit release gate.");
-  }
+  // Every entry in `gaps` so far is a coverage gap, pushed where its rule fired. The cap is a separate structural fact
+  // (`overCap`, from the counts); its notice is appended to `gaps` only for display and for older readers
+  // (scripts/premerge.sh). The route never parses gap text, so no path name can pose as the cap notice.
+  const overCap = selected.size + pythonTests.size > MAX_AFFECTED_TESTS;
   if (!selected.size && !pythonTests.size && gaps.length === 0 && changed.some(p => !(/\.md$|^docs\//.test(p)))) {
     gaps.push("Executable changes selected no tests.");
+  }
+  const coverageGaps = [...gaps];
+  if (overCap) {
+    gaps.push("Affected test count " + (selected.size + pythonTests.size) + " exceeds " + MAX_AFFECTED_TESTS +
+      ". Split the change or qualify it through an explicit release gate.");
   }
   const tests = uniq([...selected]);
   const nodeTests = tests.filter(p => p.endsWith(".test.ts"));
@@ -265,7 +371,7 @@ export function planChanged(changedPaths, files) {
     buildUi = true;
   }
   return {
-    changed, nodeTests, uiTests, jsTests, pythonTests: uniq([...pythonTests]),
+    changed, overCap, coverageGaps, nodeTests, uiTests, jsTests, pythonTests: uniq([...pythonTests]),
     pythonChanged: uniq([...pythonChanged]), pythonEntrypoints: uniq([...pythonEntrypoints]),
     gaps, notes, buildUi, pinCheck,
     pluginCheck, configCheck,
@@ -277,6 +383,18 @@ export function planChanged(changedPaths, files) {
       changed.some(p => SOURCE.test(p))),
     testCount: tests.length + pythonTests.size,
   };
+}
+// The route a plan takes, from its structural fields only: "blocked" on any coverage gap, "over-cap" when `overCap` is
+// true and nothing else is wrong, else "affected". A plan without `coverageGaps` (older or hand-written) treats every
+// gap as a coverage gap, and a `gaps` list longer than the structural fields explain (the coverage gaps plus one cap
+// notice) blocks, so an edited plan cannot hide a gap in `gaps` alone.
+export function routeOf(plan) {
+  const gaps = Array.isArray(plan.gaps) ? plan.gaps : [];
+  const coverage = Array.isArray(plan.coverageGaps) ? plan.coverageGaps : gaps;
+  if (coverage.length) return "blocked";
+  const overCap = plan.overCap === true;
+  if (gaps.length !== (overCap ? 1 : 0)) return "blocked";
+  return overCap ? "over-cap" : "affected";
 }
 function git(args) {
   const r = spawnSync("git", args, {encoding: "utf8"});
@@ -314,9 +432,17 @@ function writeTsconfig(name, base, files) {
   }, null, 2) + "\n");
   return path;
 }
-function execute(plan) {
-  if (plan.gaps.length) throw Error("QA coverage gaps:\n" + plan.gaps.join("\n"));
-  if (!plan.testCount && !plan.pinCheck) return console.log("QA: documentation-only; no tests needed.");
+function execute(plan, fullSuiteOverCap) {
+  const route = routeOf(plan);
+  if (route === "blocked") throw Error("QA coverage gaps:\n" + ((plan.gaps ?? []).join("\n") ||
+    "QA_PLAN_INCONSISTENT: the plan's gaps do not match its overCap and coverageGaps fields."));
+  if (route === "over-cap" && !fullSuiteOverCap) throw new QaExit("QA_OVER_CAP: " + plan.gaps.join("\n") +
+    "\nNo coverage gap. Rerun with --full-suite-over-cap to qualify the change through the full suite.", EXIT_OVER_CAP);
+  const fullSuite = route === "over-cap";
+  // The full-suite route needs a plan that is really over the cap, so a forged or inconsistent plan cannot reach it.
+  if (fullSuite && !(plan.overCap === true && Number(plan.testCount) > MAX_AFFECTED_TESTS)) throw Error(
+    "QA_FULL_SUITE_REFUSED: the full-suite route needs overCap true and more than " + MAX_AFFECTED_TESTS + " selected test files.");
+  if (!fullSuite && !plan.testCount && !plan.pinCheck) return console.log("QA: documentation-only; no tests needed.");
   mkdirSync(".runs/qa", {recursive: true});
   if (plan.pinCheck) runCmd("npm", ["run", "ci:actions-pinned"]);
   // Even manifest/compiler changes compile only representative entry points
@@ -330,23 +456,32 @@ function execute(plan) {
   const uiConfig = writeTsconfig("ui-affected", "tsconfig.ui.json", uiInputs);
   if (nodeConfig) runCmd("./node_modules/.bin/tsc", ["-p", nodeConfig]);
   if (uiConfig) runCmd("./node_modules/.bin/tsc", ["-p", uiConfig]);
-  if (plan.buildUi) runCmd("npm", ["run", "build:ui"]);
-  if (plan.nodeTests.length) runCmd("./node_modules/.bin/tsx", ["--test", ...plan.nodeTests]);
-  if (plan.uiTests.length) runCmd("./node_modules/.bin/vitest", ["run", ...plan.uiTests]);
+  if (fullSuite) {
+    // The full suite (UI build, every node test, every UI test) replaces only the selected node and UI tests; the pin,
+    // type, .mjs, Python and plugin checks the plan selected still run.
+    console.log("QA: over cap: running the full suite as the release gate (" + FULL_SUITE[0] + " " + FULL_SUITE[1].join(" ") + ")");
+    runCmd(...FULL_SUITE);
+  } else {
+    if (plan.buildUi) runCmd("npm", ["run", "build:ui"]);
+    if (plan.nodeTests.length) runCmd("./node_modules/.bin/tsx", ["--test", ...plan.nodeTests]);
+    if (plan.uiTests.length) runCmd("./node_modules/.bin/vitest", ["run", ...plan.uiTests]);
+  }
   if (plan.jsTests.length) runCmd("node", ["--test", ...plan.jsTests]);
   if (plan.pythonChanged?.length) runCmd("python3", ["-m", "py_compile", ...plan.pythonChanged]);
   for (const testPath of plan.pythonTests ?? []) runCmd("python3", [testPath]);
   for (const entrypoint of plan.pythonEntrypoints ?? []) runCmd("python3", [entrypoint]);
   if (plan.pluginCheck) runCmd("npm", ["run", "plugins:check"]);
-  console.log("QA: passed " + plan.testCount + " affected test files.");
+  console.log(fullSuite ? "QA: over cap: the full suite passed as the release gate (" + plan.testCount + " affected test files)."
+    : "QA: passed " + plan.testCount + " affected test files.");
 }
 function main() {
   const mode = process.argv[2] ?? "plan";
+  const fullSuiteOverCap = process.argv.includes("--full-suite-over-cap");
   if (mode === "run") {
     const file = arg("--plan", ".runs/qa/plan.json");
-    return execute(JSON.parse(readFileSync(file, "utf8")));
+    return execute(JSON.parse(readFileSync(file, "utf8")), fullSuiteOverCap);
   }
-  if (mode !== "plan" && mode !== "local") throw Error("Usage: qa-affected.mjs plan|local [--base SHA] [--head SHA] [--out FILE]");
+  if (mode !== "plan" && mode !== "local") throw Error("Usage: qa-affected.mjs plan|local|run [--base SHA] [--head SHA] [--out FILE] [--plan FILE] [--full-suite-over-cap]");
   const base = arg("--base", process.env.QA_BASE ?? "origin/main");
   const head = arg("--head", process.env.QA_HEAD ?? "");
   // Local edits are based on the common ancestor, not the moving main tip.
@@ -373,11 +508,18 @@ function main() {
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY,
     "### Affected QA\n\nChanged paths: " + changed.length + "; test files: " + plan.testCount +
     "\n\n" + plan.nodeTests.concat(plan.uiTests, plan.jsTests, plan.pythonTests).map(p => "- " + p).join("\n") + "\n");
+  const route = routeOf(plan);
+  const fullSuite = route === "over-cap" && fullSuiteOverCap;
+  if (fullSuite) console.log("QA route: over cap: the full suite runs as the release gate.");
+  if (process.env.GITHUB_STEP_SUMMARY && fullSuite) appendFileSync(process.env.GITHUB_STEP_SUMMARY,
+    "\n**Route: over cap: running the full suite as the release gate.**\n");
   if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT,
-    "needs_deps=" + String(plan.needsDeps) + "\n");
-  if (plan.gaps.length) throw Error("QA requires focused coverage:\n" + plan.gaps.join("\n"));
-  if (mode === "local") return execute(plan);
+    "needs_deps=" + String(plan.needsDeps || fullSuite) + "\nroute=" + (fullSuite ? "full-suite" : route) + "\n");
+  if (route === "blocked") throw Error("QA requires focused coverage:\n" + plan.gaps.join("\n"));
+  if (route === "over-cap" && !fullSuiteOverCap) throw new QaExit("QA_OVER_CAP: " + plan.gaps.join("\n") +
+    "\nNo coverage gap. Rerun with --full-suite-over-cap to qualify the change through the full suite.", EXIT_OVER_CAP);
+  if (mode === "local") return execute(plan, fullSuiteOverCap);
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  try { main(); } catch (err) { console.error(err.message); process.exitCode = 1; }
+  try { main(); } catch (err) { console.error(err.message); process.exitCode = err instanceof QaExit ? err.exitCode : 1; }
 }

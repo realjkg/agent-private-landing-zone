@@ -4,6 +4,7 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFi
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { PRODUCT_CLI_CONFIG } from "../src/apply/engines/terraform.js";
 
 import { consumeApprovals } from "../src/apply/approval.js";
 import type { NonceStore } from "../src/apply/nonces.js";
@@ -21,10 +22,10 @@ import { readEncryptedEvidence } from "../src/evidence/vault.js";
 import { removeTree, runCleanups } from "../src/teardown/driver/cleanup.js";
 import { runBoundedProcess, runStoppableProcess } from "../src/tools/process.js";
 import { TERRAFORM_APPLY_PROFILE } from "../src/tools/profiles.js";
-import { SOURCE_COMMIT,
+import { assertProductCliConfig, SOURCE_COMMIT,
   CANARIES, DEV_TARGET, approvers, ENV, H, NOW, OPERATOR, OUTPUT_CANARY, PLAN_CANARY, POLICY, PROD_TARGET, QA_TARGET, STATE_CANARY, TENANT, VALUE_CANARY,
-  approvalFor as approval, behave as behaveIn, callsOf, contractJson, human, identityEnv, installFakeTerraform, keys, pinPathOf,
-  testFixtureForgeQualificationEvidence, recordApplied, sha, signalsOf, targetOf, writePinnedContract, writeProject, type Behavior, type Call, type Project,
+  approvalFor as approval, behave as behaveIn, callsOf, contractJson, human, identityEnv, installFakeTerraform, keys, testFixtureForgeQualificationEvidence, recordApplied, sha, signalsOf, targetOf, writeReviewedContract, writeProject, type Behavior, type Call, type Project,
+  REQUESTER, AUTHORIZE_ALL, decisionsFor,
 } from "./helpers/apply-fixtures.js";
 
 // docs/act-pilot-plan.md. The engine is a fake executable, so these tests pin
@@ -67,12 +68,12 @@ function world(over: Partial<ApplyDeps> = {}, contract: unknown = contractJson(K
   behave();
   const dirs = { scratch: fresh("scratch"), evidence: fresh("evidence"), nonces: fresh("nonces"), vault: fresh("vault") };
   const contractPath = join(fresh("contract"), "act-pilot-contract.json");
-  if (contract !== undefined) writePinnedContract(contractPath, contract);
+  if (contract !== undefined) writeReviewedContract(contractPath, contract);
   return {
     dirs, contractPath,
     deps: {
       sourceCommit: SOURCE_COMMIT,
-      contractPath, contractPinPath: pinPathOf(contractPath), qualificationDir: vaultDir,
+      contractPath, qualificationDir: vaultDir,
       evidenceDir: dirs.evidence, nonces: openNonceStore(dirs.nonces), env: ENV, now: () => NOW, scratchParent: dirs.scratch,
       toolDirs: [toolDir], killPollMs: 40, killGraceMs: 400, ...over,
     },
@@ -93,7 +94,7 @@ test.before(async () => {
 async function seal(w: World, environment: ApplyEnvironment, p: Project = writeProject(fresh("project"), targetOf(environment))) {
   const target = targetOf(environment);
   const result = await sealPreview({
-    invocation: human(target), environment, target, manifest: p.manifest, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved,
+    invocation: human(target), environment, target, manifest: p.manifest, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved, requester: REQUESTER,
   }, forEnv(w, environment));
   assert.ok(result.ok, JSON.stringify(result));
   const loaded = await loadSealedPlan(result.path);
@@ -101,6 +102,12 @@ async function seal(w: World, environment: ApplyEnvironment, p: Project = writeP
   return { sealed: result.sealed, path: result.path, project: p, loaded: { sealed: loaded.sealed, planBytes: loaded.planBytes } };
 }
 type Sealed = Awaited<ReturnType<typeof seal>>;
+/** A seal that is refused: its result. */
+const sealRefusal = (w: World, environment: ApplyEnvironment) => {
+  const target = targetOf(environment);
+  const p = writeProject(fresh("project"), target);
+  return sealPreview({ invocation: human(target), environment, target, manifest: p.manifest, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved, requester: REQUESTER }, forEnv(w, environment));
+};
 
 /** One release, sealed for each environment: the same project files, so the same releaseIdentity. */
 const SHARED_TF = 'resource "azurerm_resource_group" "pilot" {}\n';
@@ -150,6 +157,8 @@ test("a DEV apply runs the pinned steps with the right identity at each step and
   assert.deepEqual(steps.map((c) => c.args), [
     ["version", "-json"],
     [...APPLY_INIT_ARGV],
+    // What init selected, judged before any plan or apply (review of #327, round 5).
+    ["version", "-json"],
     ["workspace", "show"],
     ["state", "pull"],
     ["show", "-json", "../alz-preview.tfplan"],
@@ -159,19 +168,24 @@ test("a DEV apply runs the pinned steps with the right identity at each step and
     ["state", "pull"],
   ]);
   const clientOf = (c: Call) => c.env.ARM_CLIENT_ID;
+  // The post-init read of what init selected (review of #327, round 5) holds no identity; the steps below are the run's own.
+  assert.deepEqual([steps[2].args, clientOf(steps[2])], [["version", "-json"], undefined]);
+  assert.ok(!Object.keys(steps[2].env).some((name) => /^(ARM_|AZURE_)/.test(name)), "no credential reaches the selection read");
+  steps.splice(2, 1);
   assert.equal(clientOf(steps[0]), undefined, "version needs no credentials");
   assert.equal(clientOf(steps[1]), "statewrite-client-3", "init and workspace use STATE_WRITE");
   assert.equal(clientOf(steps[2]), "statewrite-client-3");
   assert.equal(clientOf(steps[3]), "state-client-2", "state reads use STATE");
   assert.equal(clientOf(steps[4]), undefined, "the change list is derived again from the plan with no identity at all");
-  assert.ok(!Object.keys(steps[4].env).some((name) => /^(ARM_|AZURE_|TF_CLI_CONFIG_FILE|TF_PLUGIN_CACHE_DIR)/.test(name)), "no credential and no provider-installation override reaches it");
+  assert.ok(!Object.keys(steps[4].env).some((name) => /^(ARM_|AZURE_)/.test(name)), "no credential reaches it");
   assert.equal(clientOf(steps[5]), "apply-client-4", "apply uses APPLY and never a state identity");
   assert.equal(clientOf(steps[6]), "state-client-2");
   for (const call of steps) {
     const text = JSON.stringify(call.env);
     for (const value of ["operator-ambient", "operator-azure"]) assert.ok(!text.includes(value), call.args[0] + " " + value);
     assert.ok(!call.args.some((a) => /^-(lock(=|-timeout|$)|refresh|target|replace|auto-approve|destroy)/.test(a)));
-    for (const name of ["TF_CLI_CONFIG_FILE", "TF_PLUGIN_CACHE_DIR"]) assert.equal(call.env[name], undefined, call.args[0] + " " + name);
+    // Only the product's own CLI configuration, never a provider-installation override (review of #327, round 6).
+    assertProductCliConfig(call, PRODUCT_CLI_CONFIG);
   }
   const applyEnv = JSON.stringify(steps[5].env);
   for (const other of ["discovery-", "state-client", "state-secret", "statewrite-"]) assert.ok(!applyEnv.includes(other), "apply env holds " + other);
@@ -604,13 +618,16 @@ test("the kill switch appearing after the approvals were consumed and before the
 
 // --- everything that can change while the engine is prepared is read again before the approvals are consumed
 
-const rewriteContract = (w: World, over: Record<string, unknown>) => writePinnedContract(w.contractPath, contractJson(KILL, over));
+const rewriteContract = (w: World, over: Record<string, unknown>) => writeReviewedContract(w.contractPath, contractJson(KILL, over));
 
 test("the contract, the allowlist and approval expiry are checked again right before the approvals are consumed", async () => {
   const cases: Array<[string, string, (w: World) => void]> = [
     ["ACT_DISABLED", "the contract stops enabling ACT", (w) => rewriteContract(w, { enabled: false })],
-    ["APPROVER_NOT_ALLOWED", "the approver leaves the allowlist", (w) => rewriteContract(w, { approvers: approvers.filter((entry) => entry.id !== "alice") })],
-    ["CONTRACT_INVALID", "the contract no longer matches its pin", (w) => writeFileSync(w.contractPath, JSON.stringify(contractJson(KILL, { maxApprovalAgeMinutes: 61 })))],
+    // Any edit to the reviewed contract (the allowlist included) is a different contract than the approvals signed.
+    ["ACT_AUTHORIZATION_CHANGED", "the approver leaves the allowlist", (w) => rewriteContract(w, { approvers: approvers.filter((entry) => entry.id !== "alice") })],
+    ["ACT_AUTHORIZATION_CHANGED", "the contract is edited after sealing", (w) => writeFileSync(w.contractPath, JSON.stringify(contractJson(KILL, { maxApprovalAgeMinutes: 61 })))],
+    ["ACT_NOT_AUTHORIZED", "the contract stops authorizing APPLY in DEV", (w) => rewriteContract(w, { authorize: { ...AUTHORIZE_ALL, DEV: ["CLEANUP"] } })],
+    ["ACT_DISABLED", "the contract's authorization is emptied", (w) => rewriteContract(w, { authorize: {} })],
     ["KILL_SWITCH_ACTIVE", "the kill switch appears", () => writeFileSync(KILL, "stop")],
   ];
   for (const [code, label, change] of cases) {
@@ -747,7 +764,14 @@ test("the change list is derived again from the decrypted plan: a record that do
   const w = world();
   const s = await seal(w, "DEV");
   const approvals = [approval(s.sealed, "alice")];
-  behave({ showExtra: true }); // the plan now shows a resource the sealed record never listed
+  // The plan now shows a resource the sealed record never listed: the canary allowlist refuses its delete (owner decision E1), before anything is consumed.
+  behave({ showExtra: true });
+  const extra = await run(w, s, approvals);
+  refused(extra, "RESOURCE_NOT_IN_CANARY");
+  assert.match((extra as { message: string }).message, /azurerm_key_vault\.extra \(azurerm_key_vault\): the plan would \["delete"\] it.*Nothing was applied and no approval was consumed/);
+  assert.equal(applyCalls().length, 0);
+  // The plan now shows an output change the sealed record never listed: the canary allowlist judges resources only, the record comparison catches it.
+  behave({ showOutputChanges: { extra: { actions: ["create"] } } });
   const before = calls().length;
   const result = await run(w, s, approvals);
   refused(result, "ARTIFACT_TAMPERED");
@@ -914,9 +938,9 @@ test("every refusal comes in the specified order, and the apply argv is never ex
   };
 
   await step("ACT_DISABLED"); // 1. no contract
-  writePinnedContract(w.contractPath, { ...contractJson(KILL), force: true });
+  writeReviewedContract(w.contractPath, { ...contractJson(KILL), force: true });
   await step("CONTRACT_INVALID"); // 1. a contract that is not one
-  writePinnedContract(w.contractPath, contractJson(KILL));
+  writeReviewedContract(w.contractPath, contractJson(KILL));
   writeFileSync(KILL, "stop");
   await step("KILL_SWITCH_ACTIVE"); // 2.
   rmSync(KILL);
@@ -929,8 +953,8 @@ test("every refusal comes in the specified order, and the apply argv is never ex
   await step("SOURCE_CHANGED", request, { ...prodDeps, sourceCommit: "1".repeat(40) }); // 5. another commit than the one that sealed it
   const evidence: ApplyEvidence = {
     schemaVersion: 1, environment: "PROD", target: prodSeal.sealed.target, artifactSha256: prodSeal.sealed.artifactSha256,
-    manifestHash: prodSeal.sealed.manifestHash, releaseIdentity: prodSeal.sealed.releaseIdentity, contractSha256: prodSeal.sealed.contractSha256, sourceCommit: prodSeal.sealed.sourceCommit,
-    approvals: [{ approverId: "alice", issuedAt: NOW.toISOString() }],
+    manifestHash: prodSeal.sealed.manifestHash, releaseIdentity: prodSeal.sealed.releaseIdentity, contractSha256: prodSeal.sealed.contractSha256, targetSha256: prodSeal.sealed.targetSha256, decisions: decisionsFor(prodSeal.sealed.contractSha256, "APPLY", prodSeal.sealed.authorizationSha256), sourceCommit: prodSeal.sealed.sourceCommit,
+    approvals: [{ approverId: "alice", issuedAt: NOW.toISOString() }], requester: { requesterId: "carol", nonce: "0".repeat(32) },
     adapter: { adapterVersion: APPLY_ADAPTER.adapterVersion, argvDigest: APPLY_ADAPTER.argvDigest },
     toolVersions: { engine: "1.9.5" }, outcome: "SUCCEEDED", exitCode: 0, startedAt: NOW.toISOString(), finishedAt: NOW.toISOString(), authority: APPLY_AUTHORITY,
   };
@@ -968,7 +992,7 @@ test("every refusal comes in the specified order, and the apply argv is never ex
   assert.equal(applyCalls().length, baseline + 1);
 });
 
-test("ACT stays disabled without an enabling contract: a missing file, enabled=false, an unknown field, garbage, an unpinned or tampered contract, or an environment flag", async () => {
+test("ACT stays disabled without an enabling contract: a missing file, enabled=false, an unknown field, garbage, an unauthorized or tampered contract, or an environment flag", async () => {
   const w = world({ env: { ...ENV, ALZ_ACT_ENABLED: "true", ACT_ENABLED: "1" } as NodeJS.ProcessEnv });
   const s = await seal(w, "DEV");
   process.env.ALZ_ACT_ENABLED = "true";
@@ -982,12 +1006,16 @@ test("ACT stays disabled without an enabling contract: a missing file, enabled=f
       if (contract !== undefined) writeFileSync(w.contractPath, contract);
       refused(await runApply(requestFor(s, [approval(s.sealed, "alice")]), w.deps), code);
     }
-    writePinnedContract(w.contractPath, contractJson(KILL));
-    rmSync(pinPathOf(w.contractPath));
-    refused(await runApply(requestFor(s, [approval(s.sealed, "alice")]), w.deps), "ACT_DISABLED"); // unpinned
-    writePinnedContract(w.contractPath, contractJson(KILL));
-    writeFileSync(w.contractPath, JSON.stringify(contractJson(KILL, { maxApprovalAgeMinutes: 600 }))); // edited after the pin
-    refused(await runApply(requestFor(s, [approval(s.sealed, "alice")]), w.deps), "CONTRACT_INVALID");
+    // The contract is the authorization: absent or empty authorize is disabled, an operation it does not list is refused,
+    // and any other edit after sealing no longer matches the contract hash the approvals signed.
+    writeReviewedContract(w.contractPath, contractJson(KILL, { authorize: undefined }));
+    refused(await runApply(requestFor(s, [approval(s.sealed, "alice")]), w.deps), "ACT_DISABLED");
+    writeReviewedContract(w.contractPath, contractJson(KILL, { authorize: {} }));
+    refused(await runApply(requestFor(s, [approval(s.sealed, "alice")]), w.deps), "ACT_DISABLED");
+    writeReviewedContract(w.contractPath, contractJson(KILL, { authorize: { ...AUTHORIZE_ALL, DEV: ["CLEANUP"] } }));
+    refused(await runApply(requestFor(s, [approval(s.sealed, "alice")]), w.deps), "ACT_NOT_AUTHORIZED");
+    writeReviewedContract(w.contractPath, contractJson(KILL, { maxApprovalAgeMinutes: 600 })); // edited after sealing
+    refused(await runApply(requestFor(s, [approval(s.sealed, "alice")]), w.deps), "ARTIFACT_INVALID");
   } finally { delete process.env.ALZ_ACT_ENABLED; }
   assert.equal(applyCalls().length, 0);
 });
@@ -1162,7 +1190,7 @@ test("a contract where QA shares a subscription or a backend with DEV or PROD is
       const bad = world({}, shared(key, from));
       refused(await runApply(requestFor(s, approvalsFor(s)), forEnv(bad, "QA")), "CONTRACT_INVALID");
       const p = writeProject(fresh("project"), QA_TARGET);
-      const sealResult = await sealPreview({ invocation: human(QA_TARGET), environment: "QA", target: QA_TARGET, manifest: p.manifest, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved }, forEnv(bad, "QA"));
+      const sealResult = await sealPreview({ invocation: human(QA_TARGET), environment: "QA", target: QA_TARGET, manifest: p.manifest, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved, requester: REQUESTER }, forEnv(bad, "QA"));
       assert.ok(!sealResult.ok && sealResult.code === "CONTRACT_INVALID", key + " shared with " + from);
     }
   }
@@ -1177,7 +1205,7 @@ test("sealing refuses in order: contract, kill switch, human, target, then manif
   const p = writeProject(fresh("project"), DEV_TARGET);
   const req = (over: Partial<SealRequest> = {}): SealRequest => ({
     invocation: human(DEV_TARGET), environment: "DEV", target: DEV_TARGET, manifest: p.manifest, projectRoot: p.projectRoot,
-    policyVersion: POLICY, resolved: p.resolved, ...over,
+    policyVersion: POLICY, resolved: p.resolved, requester: REQUESTER, ...over,
   });
   const refuse = async (code: string, r: SealRequest = req(), deps = w.deps) => {
     const result = await sealPreview(r, deps);
@@ -1187,7 +1215,7 @@ test("sealing refuses in order: contract, kill switch, human, target, then manif
     clean(w);
   };
   await refuse("ACT_DISABLED");
-  writePinnedContract(w.contractPath, contractJson(KILL));
+  writeReviewedContract(w.contractPath, contractJson(KILL));
   writeFileSync(KILL, "stop");
   await refuse("KILL_SWITCH_ACTIVE");
   rmSync(KILL);
@@ -1246,7 +1274,7 @@ test("qualifying refuses without a pinned enabling contract, in QA or PROD, with
   };
   await refused("ARTIFACT_INVALID", qualifyRequest(p, { environment: "PROD", target: PROD_TARGET, invocation: human(PROD_TARGET) }), w.deps);
   await refused("ARTIFACT_INVALID", qualifyRequest(p, { environment: "QA", target: QA_TARGET, invocation: human(QA_TARGET) }), w.deps);
-  rmSync(pinPathOf(w.contractPath));
+  writeReviewedContract(w.contractPath, contractJson(KILL, { authorize: undefined }));
   await refused("ACT_DISABLED", qualifyRequest(p), w.deps);
   const k = world();
   writeFileSync(KILL, "stop");
@@ -1267,7 +1295,7 @@ test("seal and apply take their records from the vault: valid evidence qualifies
   const empty = world({ qualificationDir: fresh("empty-vault") });
   const p = writeProject(fresh("project"), DEV_TARGET);
   const refused = await sealPreview({
-    invocation: human(DEV_TARGET), environment: "DEV", target: DEV_TARGET, manifest: p.manifest, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved,
+    invocation: human(DEV_TARGET), environment: "DEV", target: DEV_TARGET, manifest: p.manifest, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved, requester: REQUESTER,
   }, empty.deps);
   assert.ok(!refused.ok && refused.code === "ENGINE_NOT_QUALIFIED");
 });
@@ -1285,7 +1313,8 @@ async function nothingSpent(w: World, s: Sealed, approvals: SignedApproval[]): P
 
 test("the backend init saved must be the contract's storage account, container and key; anything else is TARGET_NOT_IN_CONTRACT before the approvals are consumed", async () => {
   const [account, container, key] = DEV_TARGET.backend.split("/");
-  const saved = (config: Record<string, unknown>, type = "azurerm") => ({ type, config: { storage_account_name: account, container_name: container, key, ...config } });
+  // Entra ID authorization is on in every case, so each one is refused for its location (or type, or shape) alone.
+  const saved = (config: Record<string, unknown>, type = "azurerm") => ({ type, config: { storage_account_name: account, container_name: container, key, use_azuread_auth: true, ...config } });
   for (const [label, savedBackend] of [
     ["another storage account", saved({ storage_account_name: "attackerstore" })],
     ["another container", saved({ container_name: "other" })],
@@ -1325,7 +1354,7 @@ test("PROD is bound to the PROD backend: the DEV backend is refused there", asyn
   await promoteTo(w, "QA", shared);
   const approvals = [approval(prod.sealed, "alice"), approval(prod.sealed, "bob")];
   const [account, container, key] = DEV_TARGET.backend.split("/");
-  behave({ savedBackend: { type: "azurerm", config: { storage_account_name: account, container_name: container, key } } });
+  behave({ savedBackend: { type: "azurerm", config: { storage_account_name: account, container_name: container, key, use_azuread_auth: true } } });
   const before = applyCalls().length;
   refused(await run(w, prod, approvals), "TARGET_NOT_IN_CONTRACT");
   assert.equal(applyCalls().length, before);
@@ -1336,7 +1365,7 @@ test("PROD is bound to the PROD backend: the DEV backend is refused there", asyn
 test("qualify refuses a backend that is not the contract's DEV backend", async () => {
   const w = world();
   const p = writeProject(fresh("project"), DEV_TARGET);
-  behave({ savedBackend: { type: "azurerm", config: { storage_account_name: "attackerstore", container_name: "tfstate", key: "dev.tfstate" } } });
+  behave({ savedBackend: { type: "azurerm", config: { storage_account_name: "attackerstore", container_name: "tfstate", key: "dev.tfstate", use_azuread_auth: true } } });
   const result = await qualifyApply({ invocation: human(DEV_TARGET), environment: "DEV", target: DEV_TARGET, manifest: p.manifest, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved }, w.deps);
   assert.ok(!result.ok && /BACKEND_NOT_IN_CONTRACT/.test(result.message), JSON.stringify(result));
 });
@@ -1348,7 +1377,7 @@ test("a hard-coded provider subscription_id or tenant_id that is not the contrac
   const w = world();
   behave({ showProviderConfig: provider({ subscription_id: { constant_value: other } }) });
   const p = writeProject(fresh("project"), DEV_TARGET);
-  const sealRefused = await sealPreview({ invocation: human(DEV_TARGET), environment: "DEV", target: DEV_TARGET, manifest: p.manifest, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved }, forEnv(w, "DEV"));
+  const sealRefused = await sealPreview({ invocation: human(DEV_TARGET), environment: "DEV", target: DEV_TARGET, manifest: p.manifest, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved, requester: REQUESTER }, forEnv(w, "DEV"));
   assert.ok(!sealRefused.ok && /PROVIDER_SUBSCRIPTION_NOT_IN_CONTRACT/.test(sealRefused.message), JSON.stringify(sealRefused));
   // Applying: the plan is shown again, and what it shows is judged again.
   for (const [config, code] of [
@@ -1370,27 +1399,28 @@ test("a hard-coded provider subscription_id or tenant_id that is not the contrac
   assert.ok((await run(w3, s, [approval(s.sealed, "alice")])).ok);
 });
 
-test("an import, a move, a forget and an output change are sealed, re-derived at apply, and a plan that differs only in one of them is ARTIFACT_TAMPERED", async () => {
+test("an import, a move and a forget are never sealed or applied (owner decision E1); an output change is sealed, re-derived at apply, and a plan that differs only in it is ARTIFACT_TAMPERED", async () => {
   const w = world();
-  const extras = {
-    showResources: [
-      { address: "azurerm_x.imported", type: "azurerm_x", change: { actions: ["no-op"], importing: { id: "/x" } } },
-      { address: "azurerm_x.moved", type: "azurerm_x", previous_address: "azurerm_x.old", change: { actions: ["no-op"] } },
-    ],
-    showOutputChanges: { endpoint: { actions: ["update"] } },
-  };
+  const imported = { address: "azurerm_x.imported", type: "azurerm_x", change: { actions: ["no-op"], importing: { id: "/x" } } };
+  const moved = { address: "azurerm_x.moved", type: "azurerm_x", previous_address: "azurerm_x.old", change: { actions: ["no-op"] } };
+  const forgotten = { address: "azurerm_x.forgotten", type: "azurerm_x", change: { actions: ["forget"] } };
+  for (const [entry, said] of [[imported, /import \["no-op"\]/], [moved, /move \["no-op"\]/], [forgotten, /\["forget"\]/]] as const) {
+    behave({ showResources: [entry] });
+    const atSeal = await sealRefusal(w, "DEV");
+    refused(atSeal as never, "RESOURCE_NOT_IN_CANARY");
+    assert.match((atSeal as { message: string }).message, said);
+  }
+  const extras = { showOutputChanges: { endpoint: { actions: ["update"] } } };
   behave({ ...extras, applyAdvance: true });
   const s = await seal(w, "DEV");
-  assert.ok(s.sealed.changes.some((c) => c.importing) && s.sealed.changes.some((c) => c.previousAddress === "azurerm_x.old") && s.sealed.changes.some((c) => c.address === "output.endpoint"));
+  assert.ok(s.sealed.changes.some((c) => c.address === "output.endpoint"));
   const approvals = [approval(s.sealed, "alice")];
-  for (const edit of [
-    { showResources: [{ ...extras.showResources[0], change: { actions: ["no-op"] } }, extras.showResources[1]] },
-    { showResources: [extras.showResources[0], { ...extras.showResources[1], previous_address: undefined }] },
-    { showOutputChanges: {} },
-    { showResources: [...extras.showResources, { address: "azurerm_x.forgotten", type: "azurerm_x", change: { actions: ["forget"] } }] },
-  ]) {
+  for (const [edit, code] of [
+    [{ showOutputChanges: {} }, "ARTIFACT_TAMPERED"],
+    [{ showResources: [imported] }, "RESOURCE_NOT_IN_CANARY"], [{ showResources: [moved] }, "RESOURCE_NOT_IN_CANARY"], [{ showResources: [forgotten] }, "RESOURCE_NOT_IN_CANARY"],
+  ] as const) {
     behave({ ...extras, ...edit, applyAdvance: true });
-    refused(await run(w, s, approvals), "ARTIFACT_TAMPERED");
+    refused(await run(w, s, approvals), code);
     assert.equal(applyCalls().length, 0);
   }
   behave({ ...extras, applyAdvance: true });

@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import { OPERATIONS } from "../src/operations/registry.js";
@@ -23,7 +25,8 @@ const EXEMPT_COMMANDS: Readonly<Record<string, string>> = {
 const EXEMPT_SCRIPTS: Readonly<Record<string, string>> = {
   operator: "alias of the ./alz dispatcher",
   test: "developer test run", "test:quiet": "developer test runner with full logs", "test:node": "developer test run", "test:ui": "developer test run",
-  build: "developer build", "build:ui": "developer build", check: "developer type-check and build",
+  build: "developer build", "build:ui": "developer build", "build:runtime": "developer build step: the compile alone, without the completion marker",
+  "build:complete": "developer build step: writes the dist/ completion marker ./alz checks", check: "developer type-check and build",
   verify: "release-wide developer gate (the ./alz verify entry covers operator verification)",
   "ci:actions-pinned": "CI workflow pin check", "deps:review": "developer install-script listing",
   "docs:ops": "developer generator for the operations table in docs/operator-console.md",
@@ -212,5 +215,125 @@ test("the broker allowlist and the driver exclusion hold", () => {
     for (const file of walk(directory).filter((name) => /\.tsx?$/.test(name))) {
       assert.doesNotMatch(readFileSync(file, "utf8"), /from\s+["'][^"']*teardown\/driver|from\s+["'][^"']*teardown-driver/, file);
     }
+  }
+});
+
+/**
+ * The build scripts' completion-marker contract, run with the real package.json scripts against a temporary checkout copy with
+ * fake tsc, vite, tsx and git on PATH, so nothing real is built and the result does not depend on where the temp folder is.
+ */
+function scriptsRoot(label: string): { root: string; bin: string; npm: (script: string) => ReturnType<typeof spawnSync> } {
+  const root = mkdtempSync(join(tmpdir(), "alz-build-scripts-" + label + "-"));
+  const pkg = JSON.parse(readFileSync("package.json", "utf8")) as { scripts: Record<string, string> };
+  const scripts = Object.fromEntries(["build", "build:runtime", "build:complete", "build:ui"].map((name) => [name, pkg.scripts[name]]));
+  writeFileSync(join(root, "package.json"), JSON.stringify({ name: "fake", version: "0.0.0", scripts }));
+  const bin = join(root, "fake-bin");
+  mkdirSync(bin, { recursive: true });
+  const tool = (name: string, body: string) => { writeFileSync(join(bin, name), "#!/bin/sh\n" + body + "\n"); chmodSync(join(bin, name), 0o755); };
+  tool("git", 'echo "${FAKE_COMMIT:-c0ffee}"');
+  tool("tsc", "mkdir -p dist/cli; echo compiled > dist/cli/operator.js; exit 0");
+  tool("vite", "mkdir -p dist/operator-ui; echo ui > dist/operator-ui/index.html; exit 0");
+  tool("tsx", "exit 0");
+  // The fake bin comes first, so its tools shadow the real ones; npm itself comes from this test's own PATH.
+  const env = { ...process.env, PATH: bin + ":" + (process.env.PATH ?? ""), HOME: root };
+  return { root, bin, npm: (script) => spawnSync("npm", ["run", script], { cwd: root, encoding: "utf8", env }) };
+}
+const markerOf = (root: string): unknown => existsSync(join(root, "dist", ".alz-build-complete")) ? JSON.parse(readFileSync(join(root, "dist", ".alz-build-complete"), "utf8")) : undefined;
+
+test("npm run build removes any old completion marker before compiling and writes one only after tsc succeeds; a failing compile leaves none", () => {
+  const { root, bin, npm } = scriptsRoot("build");
+  try {
+    mkdirSync(join(root, "dist"), { recursive: true });
+    writeFileSync(join(root, "dist", ".alz-build-complete"), JSON.stringify({ schemaVersion: 1, sourceCommit: "stale" }) + "\n");
+    writeFileSync(join(bin, "tsc"), "#!/bin/sh\nmkdir -p dist; echo partial > dist/partial.js; exit 2\n");
+    const failed = npm("build");
+    assert.notEqual(failed.status, 0, failed.stdout + failed.stderr);
+    assert.ok(existsSync(join(root, "dist", "partial.js")), "the failing compile still emitted");
+    assert.equal(markerOf(root), undefined, "the stale marker is gone and no new one was written");
+    writeFileSync(join(bin, "tsc"), "#!/bin/sh\nexit 0\n");
+    const ok = npm("build");
+    assert.equal(ok.status, 0, ok.stdout + ok.stderr);
+    assert.deepEqual(markerOf(root), { schemaVersion: 1, sourceCommit: "c0ffee" }, "the marker names the checkout's commit (the fake git's), with no timestamp");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("npm run build:ui keeps a current completion marker across the UI build, restores it only after vite and prerender succeed, and a failing UI build leaves none", () => {
+  const { root, bin, npm } = scriptsRoot("ui");
+  try {
+    assert.equal(npm("build").status, 0);
+    assert.deepEqual(markerOf(root), { schemaVersion: 1, sourceCommit: "c0ffee" });
+    // build, then build:ui: the marker is kept, byte for byte.
+    const before = readFileSync(join(root, "dist", ".alz-build-complete"));
+    const ui = npm("build:ui");
+    assert.equal(ui.status, 0, ui.stdout + ui.stderr);
+    assert.deepEqual(readFileSync(join(root, "dist", ".alz-build-complete")), before, "the same marker is back after the UI build");
+    assert.ok(!existsSync(join(root, "dist", ".alz-build-ui.keep")), "the UI build's note to itself is gone");
+    // build:ui with no marker (the Docker stage runs check before build) writes none.
+    rmSync(join(root, "dist", ".alz-build-complete"));
+    assert.equal(npm("build:ui").status, 0);
+    assert.equal(markerOf(root), undefined);
+    // A marker for another commit than the checkout's is not kept: the UI build cannot vouch for a stale runtime.
+    writeFileSync(join(root, "dist", ".alz-build-complete"), JSON.stringify({ schemaVersion: 1, sourceCommit: "older" }) + "\n");
+    assert.equal(npm("build:ui").status, 0);
+    assert.equal(markerOf(root), undefined, "a stale marker is dropped, not restored");
+    // A failing vite after a good build leaves no marker, and a failing prerender leaves none either.
+    assert.equal(npm("build").status, 0);
+    writeFileSync(join(bin, "vite"), "#!/bin/sh\nexit 3\n");
+    assert.notEqual(npm("build:ui").status, 0);
+    assert.equal(markerOf(root), undefined, "a failing vite leaves no marker");
+    assert.equal(npm("build").status, 0);
+    writeFileSync(join(bin, "vite"), "#!/bin/sh\nexit 0\n");
+    writeFileSync(join(bin, "tsx"), "#!/bin/sh\nexit 4\n");
+    assert.notEqual(npm("build:ui").status, 0);
+    assert.equal(markerOf(root), undefined, "a failing prerender leaves no marker");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a failed UI build's leftover note never revives a marker and npm run build removes it; with no readable HEAD, build:ui keeps any well-formed marker, and with one it drops an unknown marker", () => {
+  const { root, bin, npm } = scriptsRoot("keep");
+  const keep = join(root, "dist", ".alz-build-ui.keep");
+  try {
+    assert.equal(npm("build").status, 0);
+    // A failing vite leaves the UI build's note behind, with no marker.
+    writeFileSync(join(bin, "vite"), "#!/bin/sh\nexit 3\n");
+    assert.notEqual(npm("build:ui").status, 0);
+    assert.equal(markerOf(root), undefined);
+    assert.equal(readFileSync(keep, "utf8"), "c0ffee", "the failed UI build left its note");
+    // The next UI build overwrites the note before reading it, so the leftover never brings a marker back.
+    writeFileSync(join(bin, "vite"), "#!/bin/sh\nexit 0\n");
+    assert.equal(npm("build:ui").status, 0);
+    assert.equal(markerOf(root), undefined, "a leftover note does not revive a marker");
+    assert.ok(!existsSync(keep));
+    // npm run build removes a leftover note too, so a dist/ staged after a good build never carries one.
+    writeFileSync(join(bin, "vite"), "#!/bin/sh\nexit 3\n");
+    assert.equal(npm("build").status, 0);
+    assert.notEqual(npm("build:ui").status, 0);
+    assert.ok(existsSync(keep));
+    writeFileSync(join(bin, "vite"), "#!/bin/sh\nexit 0\n");
+    assert.equal(npm("build").status, 0);
+    assert.ok(!existsSync(keep), "npm run build removes the failed UI build's note");
+    assert.deepEqual(markerOf(root), { schemaVersion: 1, sourceCommit: "c0ffee" });
+    // With HEAD known, a marker that says "unknown" is not a build of this commit: dropped (the launcher refuses it too).
+    writeFileSync(join(root, "dist", ".alz-build-complete"), JSON.stringify({ schemaVersion: 1, sourceCommit: "unknown" }) + "\n");
+    assert.equal(npm("build:ui").status, 0);
+    assert.equal(markerOf(root), undefined, "an unknown marker is dropped when HEAD is known");
+    // With no readable HEAD (no checkout, as in the Docker build stage), any well-formed marker is kept as it was.
+    writeFileSync(join(bin, "git"), "#!/bin/sh\nexit 128\n");
+    for (const commit of ["older", "unknown"]) {
+      writeFileSync(join(root, "dist", ".alz-build-complete"), JSON.stringify({ schemaVersion: 1, sourceCommit: commit }) + "\n");
+      assert.equal(npm("build:ui").status, 0);
+      assert.deepEqual(markerOf(root), { schemaVersion: 1, sourceCommit: commit }, commit + ": kept when HEAD is unknown");
+    }
+    rmSync(join(root, "dist", ".alz-build-complete"));
+    assert.equal(npm("build:ui").status, 0);
+    assert.equal(markerOf(root), undefined, "with no marker, none is written");
+    assert.equal(npm("build").status, 0);
+    assert.deepEqual(markerOf(root), { schemaVersion: 1, sourceCommit: "unknown" }, "with no readable HEAD, the build's own marker says unknown");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });

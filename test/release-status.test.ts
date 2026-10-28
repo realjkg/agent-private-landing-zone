@@ -91,6 +91,50 @@ test("OUT_OF_SCOPE only for a gate the owner's scope excludes, and the scope can
   assert.ok(scopeProblems({ ...clone(shippedScope), outOfScope: [{ gate: "lifecycle:upgrade", reason: "" }] }).some((x) => x.includes("why")));
 });
 
+test("the owner's decision of 2026-10-28 drops the brownfield preview gates: each is excluded with its reason and OUT_OF_SCOPE in the status, and listing one as in scope again is refused", () => {
+  const journeys: RowReport[] = [];
+  const dropped = {
+    "preview:terraform-aws-brownfield": /E1 makes APPLY seals create-only/,
+    "preview:terraform-azure-brownfield": /E1 makes APPLY seals create-only/,
+    "preview:cdk-aws-brownfield": /E1 makes APPLY seals create-only/,
+    "preview:bicep-azure-brownfield": /E1 makes APPLY seals create-only/,
+    "preview:terraform-gcp-brownfield": /GCP brownfield preview is dropped from this release.*GCP Terraform ACT and GCP API-native ACT are in scope for this DEV release/,
+  };
+  const excludedGate = (gate: string) => shippedStatus.gates.find((x) => x.gate === gate)!;
+  const template = excludedGate("preview:opentofu-aws-brownfield");
+  for (const [gate, reason] of Object.entries(dropped)) {
+    const exclusion = shippedScope.outOfScope.find((x) => x.gate === gate);
+    assert.ok(exclusion, gate);
+    assert.match(exclusion.reason, /owner decision of 2026-10-28/, gate);
+    assert.match(exclusion.reason, reason, gate);
+    assert.deepEqual(excludedGate(gate), { ...template, gate }, gate + ": the same fields as the existing exclusions");
+    assert.ok(statusProblems(withEntry(gate, { status: "BLOCKED", nextAction: "Run the brownfield preview." }), { scope: shippedScope, journeys })
+      .some((x) => x.includes(gate) && x.includes("excludes this gate")), gate);
+  }
+});
+
+test("the owner's decision of 2026-10-28 moves the six pillar gates to v1.1: each is excluded with its reason and OUT_OF_SCOPE in the status, listing one as in scope again is refused, and gcp-provider stays in scope", () => {
+  const journeys: RowReport[] = [];
+  const pillars = ["pillar:operational-excellence", "pillar:security", "pillar:reliability", "pillar:performance", "pillar:cost", "pillar:sustainability"];
+  const excludedGate = (gate: string) => shippedStatus.gates.find((x) => x.gate === gate)!;
+  const template = excludedGate("preview:opentofu-aws-brownfield");
+  for (const gate of pillars) {
+    const exclusion = shippedScope.outOfScope.find((x) => x.gate === gate);
+    assert.ok(exclusion, gate);
+    assert.equal(exclusion.reason, "Moved to v1.1 by the owner on 2026-10-28: requires a deployed greenfield landing zone (#39).", gate);
+    assert.deepEqual(excludedGate(gate), { ...template, gate, invalidatedBy: ["the owner returns the gate to the release scope"] },
+      gate + ": the same fields as the existing exclusions, with a gate (not a path) returning to the scope");
+    assert.ok(statusProblems(withEntry(gate, { status: "BLOCKED", nextAction: "Measure this pillar on a deployed environment." }), { scope: shippedScope, journeys })
+      .some((x) => x.includes(gate) && x.includes("excludes this gate")), gate);
+  }
+  assert.ok(!shippedScope.outOfScope.some((x) => x.gate === "gcp-provider"), "gcp-provider stays required: GCP Terraform and GCP API-native ACT are in scope (#39, 6481421924)");
+  assert.notEqual(excludedGate("gcp-provider").status, "OUT_OF_SCOPE");
+  assert.ok(statusProblems(withEntry("gcp-provider", { status: "OUT_OF_SCOPE" }), { scope: shippedScope, journeys })
+    .some((x) => x.includes("gcp-provider") && x.includes("needs the owner's scope")));
+  assert.equal(shippedStatus.gates.filter((x) => x.status !== "OUT_OF_SCOPE").length, 25, "in-scope gates after the decision");
+  assert.match(renderReleaseStatus(shippedStatus, shippedScope), /0 of 25 in-scope gates pass/);
+});
+
 test("the scope must name the owner's decision and exactly the platforms and paths the admission gates define", () => {
   assert.deepEqual(scopeProblems(shippedScope), []);
   for (const change of [
@@ -149,6 +193,13 @@ test("the shipped work graph checks, its page is current, and what runs next is 
     assert.equal(runnable.has(node.id), ready, node.id + " runs exactly when it is open and its dependencies are DONE");
   }
   assert.ok(!runnable.has("guided-journey-ui"), "a held task never runs");
+  // The six ACT-DEV execution paths (#39 6443352284) are separate capabilities, each with its own acceptance evidence.
+  const paths = graph.nodes.filter((n) => n.id.startsWith("path-"));
+  assert.deepEqual(paths.map((n) => n.id).sort(), ["path-aws-cdk-cloudformation", "path-aws-terraform", "path-azure-bicep-arm",
+    "path-azure-terraform", "path-gcp-api-native", "path-gcp-terraform"]);
+  assert.equal(new Set(paths.map((n) => n.acceptance)).size, paths.length, "no path shares another's acceptance evidence");
+  for (const n of paths) assert.ok(n.gates.every((g) => g.startsWith("act:")) && n.gates.length <= 1, n.id + " advances at most its own ACT gate");
+  assert.match(view.workGraph ?? "", /## Execution paths\n\n\*\*Paths completed:\*\* \d+ of 6\./);
   assert.ok(!runnable.has("candidate-freeze"), "the freeze waits on the integrated synthetic matrix");
 });
 
@@ -163,6 +214,8 @@ test("the work graph refuses a cycle, an unknown dependency or gate, a DONE task
     ["short sha", (g) => { g.nodes.find((x) => x.id === "release-gate-matrix")!.merges = ["6b4cc53"]; }, /full commit SHAs/],
     ["DONE before dependency", (g) => { const n = g.nodes.find((x) => x.id === "candidate-freeze")!; n.status = "DONE"; n.merges = ["a".repeat(40)]; delete n.next; }, /DONE before its dependency/],
     ["blocked without reason", (g) => { delete g.nodes.find((x) => x.id === "live-qualification")!.blockedBy; }, /needs blockedBy/],
+    ["no acceptance evidence", (g) => { delete (g.nodes.find((x) => x.id === "candidate-freeze") as Partial<WorkNode>).acceptance; }, /acceptance must name the evidence/],
+    ["blank acceptance evidence on a DONE task", (g) => { g.nodes.find((x) => x.id === "release-gate-matrix")!.acceptance = " "; }, /acceptance must name the evidence/],
     ["no next action", (g) => { delete g.nodes.find((x) => x.id === "candidate-freeze")!.next; }, /next must say/],
     ["duplicate", (g) => { g.nodes.push({ ...(g.nodes[0] as WorkNode) }); }, /listed twice/],
     ["unknown field", (g) => { (g.nodes[0] as Record<string, unknown>).approvedBy = "agent"; }, /unknown field/],
@@ -178,7 +231,7 @@ test("the work graph refuses a cycle, an unknown dependency or gate, a DONE task
 // The scheduler's decision step (src/release/scheduler.ts), on a small graph.
 const sha = (c: string) => c.repeat(40);
 const node = (id: string, change: Partial<WorkNode> = {}): WorkNode =>
-  ({ id, title: "Task " + id, owner: "LANE", status: "QUEUED", dependsOn: [], gates: [], next: "Do the task " + id, ...change });
+  ({ id, title: "Task " + id, owner: "LANE", status: "QUEUED", dependsOn: [], gates: [], acceptance: "Evidence for " + id, next: "Do the task " + id, ...change });
 const facts = (pr: number, change: Partial<PrFacts> = {}): PrFacts => ({
   pr, head: sha("a"), open: true, merged: false, inScope: true, checksGreen: true, checksFailed: false, qaPassed: true,
   verdict: { result: "NO_BLOCKING_ISSUES", head: sha("a"), commentId: 1 }, laterBlocking: false, compatibleWithMain: true,

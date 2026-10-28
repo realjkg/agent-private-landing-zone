@@ -1,9 +1,10 @@
+import { randomBytes } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { mapTerraformActions } from "../../iac/terraform-plan.js";
 import {
-  INIT_ARGV, LARGE_OUTPUT_BYTES, PREVIEW_PLAN_ARGV, SHOW_ARGV, STATE_PULL_ARGV, VERSION_ARGV, WORKSPACE_SHOW_ARGV, assertModulesAreLocal,
+  LARGE_OUTPUT_BYTES, PREVIEW_PLAN_ARGV, SHOW_ARGV, STATE_PULL_ARGV, VERSION_ARGV, WORKSPACE_SHOW_ARGV, assertModulesAreLocal,
   createTerraformAdapter, isAllowedArgv, workspaceSelectArgv,
 } from "../../teardown/driver/adapters/terraform.js";
 import { removeTree } from "../../teardown/driver/cleanup.js";
@@ -14,12 +15,15 @@ import { MUTATION_IDENTITY_VARIABLE, ownsIdentityVariable } from "../../tools/id
 import { refusedVariables, runBoundedProcess, runStoppableProcess, type StoppableProcessOptions, type StoppableResult } from "../../tools/process.js";
 import { TERRAFORM_APPLY_PROFILE, type ProcessProfile } from "../../tools/profiles.js";
 import { sha256 } from "../../util/sha256.js";
-import { assertBackendBlock, type BackendBlockRule } from "../backend-block.js";
+import { assertNoBackendOverrideOrState, writeBackendOverride, type BackendType } from "../backend-pin.js";
 import { stripInvisible } from "../constants.js";
 import { checkedOutput, codeOf, stop, withoutIdentities } from "../engine.js";
 import type { EngineApplyRun, EngineCleanupRun, EngineContext, EngineSpec } from "../engine-spec.js";
-import type { ProviderBlock, ProviderSpec } from "../provider.js";
+import type { ProviderBlock, ProviderSpec, ProviderUse } from "../provider.js";
 import { isRecord } from "../providers/shared.js";
+import { assertCanary, type CanaryEntry } from "../canary.js";
+import { assertNoRefusedPlanConstructs, assertNoRefusedSourceConstructs } from "../terraform-constructs.js";
+import { LockFileError, REVIEWED_PROVIDER_VERSIONS, lockedProviders, unofficialProviderHash, unreviewedProviderVersion, type LockedProvider } from "../lockfile.js";
 import {
   APPLY_ADAPTER, APPLY_ARGV, APPLY_BACKEND_CONFIG_FILE, APPLY_INIT_ARGV, CLEANUP_ADAPTER, CLEANUP_APPLY_ARGV, CLEANUP_PLAN_FILE, CLEANUP_SHOW_ARGV, RECOVERY_FILES,
   classifyApply, cleanupPlanArgv, isAllowedApplyArgv, isAllowedCleanupArgv, parseStateSerial,
@@ -40,11 +44,15 @@ type StepIdentity = "DISCOVERY" | "STATE" | "STATE_WRITE" | "APPLY" | null;
 
 /**
  * What may be rendered into the seal-time backend file when the contract opts in: an allowlist of the STATE_WRITE variables the provider
- * specs' `backendConfig` reads (the principal's client id or role ARN, tenant, subscription, region, and the token file PATH). Any other
+ * specs' `backendConfig` reads (the principal's client id, role ARN or service account email, tenant, subscription, and the token or
+ * credential configuration file PATH). Any other
  * variable, including one that holds a secret, never reaches the renderer, and a token file's content is never read. The file is rendered
  * by this process and never handed to a child: the seal environment below still holds no STATE_WRITE or APPLY variable.
  */
-const STATE_WRITE_SETTINGS = new Set(["ARM_CLIENT_ID", "ARM_TENANT_ID", "ARM_SUBSCRIPTION_ID", "ARM_OIDC_TOKEN_FILE", "AWS_ROLE_ARN", "AWS_WEB_IDENTITY_TOKEN_FILE"]);
+const STATE_WRITE_SETTINGS = new Set([
+  "ARM_CLIENT_ID", "ARM_TENANT_ID", "ARM_SUBSCRIPTION_ID", "ARM_OIDC_TOKEN_FILE", "AWS_ROLE_ARN", "AWS_WEB_IDENTITY_TOKEN_FILE",
+  "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_IMPERSONATE_SERVICE_ACCOUNT",
+]);
 const nonSecretStateWrite = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => Object.fromEntries(
   Object.entries(env).filter(([key]) => ownsIdentityVariable(key, "STATE_WRITE") && STATE_WRITE_SETTINGS.has(key.slice("ALZ_STATE_WRITE_".length))));
 
@@ -60,8 +68,12 @@ type Session = {
   stoppable(args: readonly string[], identity: StepIdentity, profile: ProcessProfile, control: Pick<StoppableProcessOptions, "stopWhen" | "pollMs" | "graceMs" | "forwardSignals" | "onStop">): Promise<StoppableResult>;
   /** Identity variables the runner would refuse to hand this step, so a step that cannot be undone is never started with a partial identity. */
   refused(identity: StepIdentity, profile: ProcessProfile): string[];
-  /** The files, the lock file and the module sources, all against the manifest. */
+  /** The files, the lock file and the module sources, all against the manifest (and, once written, the product's backend override). */
   assertBound(): void;
+  /** Writes the product-owned backend override into the work copy and binds it: from then on `assertBound` expects it, byte for byte. */
+  pinBackend(type: BackendType): void;
+  /** Removes this session's product CLI configuration file (each session has its own, so closing one never touches another's). */
+  close(): void;
 };
 
 type SessionInput = Pick<EngineContext, "scratchDir" | "env" | "toolDirs" | "manifest"> & {
@@ -70,31 +82,75 @@ type SessionInput = Pick<EngineContext, "scratchDir" | "env" | "toolDirs" | "man
 };
 
 /** The one way the pilot reaches Terraform: an allowlisted argument list, one identity (or none), the runner's own limits, and the project checked against the manifest after every process. */
+/**
+ * The product's own Terraform CLI configuration (review of #327, round 6). With no CLI configuration Terraform also installs
+ * providers from implicit local mirrors, `terraform.d/plugins` in the working directory among them, which is the project copy: a
+ * project could ship its own `hashicorp/aws 6.68.0` package, pass every version check, and run it with DISCOVERY's environment at
+ * plan and APPLY's at apply. An explicit `provider_installation` block turns every implicit mirror off; only the official registry
+ * is consulted, and only for hashicorp providers (each one still judged against the cloud path's allowlist after init). No
+ * plugin cache, no dev_overrides, no credentials, no checkpoint call. Written by the product into its private scratch directory,
+ * outside the project copy, and set for every step (`fixedEnvironment`, applied after anything injected, so neither the project
+ * nor an identity variable can point elsewhere).
+ */
+export const PRODUCT_CLI_CONFIG = [
+  "disable_checkpoint = true",
+  "provider_installation {",
+  "  direct {",
+  '    include = ["registry.terraform.io/hashicorp/*"]',
+  "  }",
+  "}",
+  "",
+].join("\n");
+/** The file name's prefix; each session adds a random part, so a second session in the same scratch directory has its own. */
+export const PRODUCT_CLI_CONFIG_PREFIX = "alz-terraform-cli-";
+
 function openSession(input: SessionInput): Session {
   const work = join(input.scratchDir, "work");
+  const cliConfig = join(input.scratchDir, PRODUCT_CLI_CONFIG_PREFIX + randomBytes(8).toString("hex") + ".rc");
+  writeFileSync(cliConfig, PRODUCT_CLI_CONFIG, { mode: 0o600, flag: "wx" });
+  // Before every step: the file is still exactly the product's (a missing one would let Terraform fall back to its defaults).
+  const assertCliConfig = (): void => {
+    let text: string | undefined;
+    try { text = lstatSync(cliConfig).isFile() ? readFileSync(cliConfig, "utf8") : undefined; } catch { text = undefined; }
+    if (text !== PRODUCT_CLI_CONFIG) stop("CLI_CONFIG_NOT_PRODUCT");
+  };
+  const productConfigured = (profile: ProcessProfile): ProcessProfile => ({
+    ...profile, fixedEnvironment: { ...profile.fixedEnvironment, TF_CLI_CONFIG_FILE: cliConfig, TF_PLUGIN_CACHE_DIR: "" },
+  });
   const options = (identity: StepIdentity, profile: ProcessProfile) => ({
-    profile, env: identity === null ? withoutIdentities(input.env) : input.env, toolDirs: input.toolDirs,
+    profile: productConfigured(profile), env: identity === null ? withoutIdentities(input.env) : input.env, toolDirs: input.toolDirs,
     identity: identity ?? "DISCOVERY", root: input.scratchDir, suppressDetail: true,
   });
   const guard = (args: readonly string[]): void => { if (!input.isAllowed(args)) stop("ARGV_NOT_ALLOWED"); };
+  let bound = input.manifest;
   return {
     work,
     step(args, identity, large = false) {
       guard(args);
+      assertCliConfig();
       const profile = large ? { ...input.profile, maxOutputBytes: LARGE_OUTPUT_BYTES } : input.profile;
       return checkedOutput(runBoundedProcess("terraform_plan", "terraform", [...args], work, options(identity, profile)));
     },
     stoppable(args, identity, profile, control) {
       guard(args);
+      assertCliConfig();
       return runStoppableProcess("terraform_plan", "terraform", [...args], work, { ...options(identity, profile), ...control });
     },
     refused(identity, profile) {
       return refusedVariables(options(identity, profile));
     },
     assertBound() {
-      const difference = projectDifference(work, input.manifest);
+      const difference = projectDifference(work, bound);
       if (difference) stop(difference);
       assertModulesAreLocal(work);
+    },
+    pinBackend(type) {
+      if (bound !== input.manifest) return stop("BACKEND_ALREADY_PINNED");
+      const entry = writeBackendOverride(work, type);
+      bound = { ...input.manifest, files: [...input.manifest.files, entry] };
+    },
+    close() {
+      rmSync(cliConfig, { force: true });
     },
   };
 }
@@ -106,24 +162,79 @@ type WorkspaceInput = {
   initArgv: readonly string[];
   /** The identity that owns the backend: STATE to read for a preview, STATE_WRITE to write for an apply. */
   stateIdentity: "STATE" | "STATE_WRITE";
-  /** The provider's rule for the project's own backend block, judged before init reads it (`ProviderSpec.backendBlock`). */
-  backendBlock?: BackendBlockRule;
-  /** Runs between the version check and init (the apply writes its backend configuration here). */
+  /** The backend type the product override pins (`ProviderSpec.backendType`). Every init in the pilot runs with it. */
+  backendType: BackendType;
+  /** The registry sources this cloud path may select at init (`ProviderSpec.selectableProviders`), judged after init. */
+  selectableProviders: readonly string[];
+  /** Runs between the version check and init (writes the product's `-backend-config` file). */
   beforeInit?: () => void;
   afterInit?: () => void;
 };
 
 /**
  * The one init and workspace sequence: a writable copy of the snapshot that
- * must equal the manifest, the pinned engine version, backend initialization,
- * and the target's workspace. Locking stays on: there is no -lock flag in any
- * argument list. Nothing here changes state.
+ * must equal the manifest, the backend pin (docs/act-pilot-backend-pinning.md),
+ * the pinned engine version, backend initialization, and the target's
+ * workspace. Locking stays on: there is no -lock flag in any argument list.
+ * Nothing here changes state.
  */
+/**
+ * Refuses a bound lock file that pins hashicorp/aws, hashicorp/azurerm or hashicorp/google at any version but the reviewed one
+ * (`PROVIDER_VERSION_NOT_REVIEWED`, ../lockfile.ts). A lock with no provider block (a built-in-only project) has nothing to judge;
+ * one this reader cannot parse is refused. With no lock at all, init (-lockfile=readonly) installs no provider it does not pin.
+ */
+function assertReviewedProviderVersions(work: string): void {
+  let text: string;
+  try { text = readFileSync(join(work, ".terraform.lock.hcl"), "utf8"); } catch { return; }
+  let providers: LockedProvider[];
+  try { providers = lockedProviders(text); } catch (error) {
+    if (error instanceof LockFileError && error.code === "LOCK_FILE_EMPTY") return;
+    return stop("LOCK_FILE_UNREADABLE");
+  }
+  if (unreviewedProviderVersion(providers)) stop("PROVIDER_VERSION_NOT_REVIEWED");
+  let unofficial: unknown;
+  try { unofficial = unofficialProviderHash(text); } catch { return stop("LOCK_FILE_UNREADABLE"); }
+  if (unofficial) stop("PROVIDER_HASH_NOT_OFFICIAL");
+}
+
+/**
+ * The authoritative provider check (review of #327, round 5): after `init -lockfile=readonly` and before any plan, `terraform
+ * version -json` reports `provider_selections`, the providers init selected for this working directory, whatever the lock file's
+ * layout (an indented or CRLF block the lock reader skips is still selected here). Every selected source must be one this cloud
+ * path may use (`ProviderSpec.selectableProviders`), by exact registry source and host, else `PROVIDER_NOT_ADMITTED`; hashicorp/aws,
+ * hashicorp/azurerm and hashicorp/google must be exactly the reviewed versions, else `PROVIDER_VERSION_NOT_REVIEWED`. Missing or malformed
+ * selections are `PROVIDER_SELECTIONS_UNREADABLE`. A built-in-only project selects nothing (`{}`), which passes.
+ */
+function assertProviderSelections(session: Session, selectable: readonly string[]): void {
+  let selections: unknown;
+  try { selections = (JSON.parse(session.step(VERSION_ARGV, null)) as { provider_selections?: unknown }).provider_selections; } catch (error) {
+    if (codeOf(error) !== "UNEXPECTED") throw error;
+    return stop("PROVIDER_SELECTIONS_UNREADABLE");
+  }
+  if (!isPlainRecord(selections)) return stop("PROVIDER_SELECTIONS_UNREADABLE");
+  for (const [source, version] of Object.entries(selections)) {
+    if (typeof version !== "string") return stop("PROVIDER_SELECTIONS_UNREADABLE");
+    if (!selectable.includes(source)) stop("PROVIDER_NOT_ADMITTED");
+    const reviewed = REVIEWED_PROVIDER_VERSIONS[source];
+    if (reviewed !== undefined && version !== reviewed) stop("PROVIDER_VERSION_NOT_REVIEWED");
+  }
+}
+
 function prepareWorkspace(session: Session, input: WorkspaceInput): void {
   const copyProblem = copyTree(input.snapshotPath, session.work);
   if (copyProblem) stop(copyProblem);
-  // init builds .terraform itself; one that arrived with the snapshot could hold modules or providers nobody reviewed.
-  if (existsSync(join(session.work, ".terraform"))) stop("PRE_EXISTING_TERRAFORM_DIRECTORY");
+  // By name, before anything reads the copy: no other override file (it could outrank ours) and no saved state or data
+  // directory (init could reuse or migrate it). The data directory init builds is therefore always fresh and empty.
+  assertNoBackendOverrideOrState(session.work);
+  session.assertBound();
+  // No provisioner or ephemeral block in any Terraform file: `show -json` never lists an ephemeral resource or a `removed`
+  // block's provisioner, and a plan or an apply would run them (../terraform-constructs.ts).
+  assertNoRefusedSourceConstructs(session.work);
+  // The aws, azurerm and google versions the bound lock pins are the ones the denied-type lists were reviewed against (review of #327,
+  // round 4). Init runs with -lockfile=readonly, so this lock is exactly what it installs; at seal, apply and cleanup alike.
+  assertReviewedProviderVersions(session.work);
+  // The project's own backend, cloud or state_store block is replaced: init builds only this type, with only the product's settings.
+  session.pinBackend(input.backendType);
   session.assertBound();
 
   let reported: unknown;
@@ -133,16 +244,20 @@ function prepareWorkspace(session: Session, input: WorkspaceInput): void {
   }
   if (reported !== input.engineVersion) stop("ENGINE_VERSION_MISMATCH");
 
-  if (input.backendBlock) assertBackendBlock(session.work, input.backendBlock);
   input.beforeInit?.();
   try { session.step(input.initArgv, input.stateIdentity); } finally { input.afterInit?.(); }
   session.assertBound();
+  // What init actually selected, before any plan runs provider code (review of #327, round 5).
+  assertProviderSelections(session, input.selectableProviders);
   if (input.target.workspace !== "default") session.step(workspaceSelectArgv(input.target.workspace), input.stateIdentity);
   if (session.step(WORKSPACE_SHOW_ARGV, input.stateIdentity).trim() !== input.target.workspace) stop("WORKSPACE_MISMATCH");
 }
 
-/** The backend binding: the backend init saved must be the contract's, so the project's own backend block cannot aim state somewhere else. */
-function assertBackendInContract(work: string, pinned: PilotTarget, spec: ProviderSpec): void {
+/**
+ * The backend binding: the backend init saved must be the contract's, so the project's own backend block cannot aim state somewhere
+ * else, and any identity setting it saved must be the STATE_WRITE identity's own in `env`, the environment init's configuration came from.
+ */
+function assertBackendInContract(work: string, pinned: PilotTarget, spec: ProviderSpec, env: NodeJS.ProcessEnv): void {
   let saved: unknown;
   try {
     const file = join(work, ".terraform", "terraform.tfstate");
@@ -150,7 +265,7 @@ function assertBackendInContract(work: string, pinned: PilotTarget, spec: Provid
     saved = JSON.parse(readFileSync(file, "utf8"));
   } catch { return stop("BACKEND_UNREADABLE"); }
   const backend = (saved as { backend?: unknown } | null)?.backend;
-  if (!spec.savedBackendMatches(isRecord(backend) ? backend : {}, pinned)) stop("BACKEND_NOT_IN_CONTRACT");
+  if (!spec.savedBackendMatches(isRecord(backend) ? backend : {}, pinned, env)) stop("BACKEND_NOT_IN_CONTRACT");
 }
 
 // --- the change list -----------------------------------------------------------------------------------------
@@ -162,13 +277,112 @@ const APPLY_PLAN_FILE = "alz-apply.tfplan";
 
 type Shown = {
   format_version?: unknown; errored?: unknown;
-  resource_changes?: { address?: string; type?: string; mode?: unknown; previous_address?: unknown; change?: { actions?: string[]; importing?: unknown; after?: unknown; after_unknown?: unknown } }[];
+  resource_changes?: { address?: string; type?: string; mode?: unknown; provider_name?: unknown; previous_address?: unknown; change?: { actions?: string[]; importing?: unknown; after?: unknown; after_unknown?: unknown } }[];
   output_changes?: Record<string, { actions?: string[] }>;
-  configuration?: { provider_config?: Record<string, ProviderBlock> };
+  configuration?: { provider_config?: Record<string, ProviderBlock>; root_module?: unknown };
+  prior_state?: { values?: { root_module?: unknown } };
+  planned_values?: { root_module?: unknown };
 };
+
+/** Module nesting the walker follows. Terraform has no practical nesting this deep; past it the plan is refused, never read partially. */
+const MAX_MODULE_DEPTH = 64;
+
+/**
+ * Every resource and data source the plan names, each with the provider that serves it (`ProviderUse`), for the provider half
+ * of the contract binding. Four places are read, because none alone is complete: the configuration tree (every module through
+ * `module_calls`; a data source read at plan time appears here even when its read fails and nothing else mentions it), the
+ * changes, the prior state and the planned values (both with `child_modules`). A `provider_config_key` resolves through
+ * `provider_config`; a key with no block is named by its last segment (`module.net:aws` is `aws`), the way a block without
+ * `full_name` is named. Fail closed: a tree nested past `MAX_MODULE_DEPTH` is `PROVIDER_PLAN_TOO_DEEP`, and a tree that is
+ * present but not the shape `show -json` documents (a module, a call, a resource or a changes entry that is not an object;
+ * `resources`, `child_modules` or `resource_changes` that is not a list; `module_calls` that is not an object) is
+ * `PROVIDER_PLAN_UNREADABLE`, because a use that could not be read could be one of the built-in provider. A tree that is
+ * absent is simply absent. Addresses and types are read as text only. A configured use carries its expressions, a change its planned
+ * values and which are unknown, a planned use its values, and a data source in the prior state its read values, for the provider judge
+ * in process; nothing from them is recorded.
+ */
+function providerUsesOf(document: Shown): ProviderUse[] {
+  const UNREADABLE = "PROVIDER_PLAN_UNREADABLE";
+  const blocks = document.configuration?.provider_config ?? {};
+  const byKey = (key: unknown): ProviderUse["provider"] => {
+    if (typeof key !== "string") return {};
+    const block = blocks[key];
+    if (isPlainRecord(block)) return { name: typeof block.name === "string" ? block.name : undefined, full_name: typeof block.full_name === "string" ? block.full_name : undefined };
+    return { name: key.slice(key.lastIndexOf(":") + 1).split(".")[0] };
+  };
+  const uses: ProviderUse[] = [];
+  type Read = "CONFIGURATION" | "CHANGES" | "PRIOR" | "PLANNED";
+  const add = (found: unknown, provider: (entry: Record<string, unknown>) => ProviderUse["provider"], read: Read): void => {
+    if (!isPlainRecord(found)) return stop(UNREADABLE);
+    const mode = typeof found.mode === "string" ? found.mode : "";
+    uses.push({
+      address: stripInvisible(typeof found.address === "string" ? found.address : ""), mode,
+      type: stripInvisible(typeof found.type === "string" ? found.type : ""), provider: provider(found),
+      // For the provider judge only, in process: a configured use's expressions (absent ones read as none); a change's planned values
+      // (`after`) and which of them are unknown until apply (`after_unknown`); a planned use's values; and a data source's read values.
+      ...(read === "CONFIGURATION" ? { expressions: isPlainRecord(found.expressions) ? found.expressions : {} } : {}),
+      ...(read === "CHANGES" && isPlainRecord(found.change) && isPlainRecord(found.change.after) ? { values: found.change.after } : {}),
+      ...(read === "CHANGES" && isPlainRecord(found.change) && isPlainRecord(found.change.after_unknown) ? { unknown: found.change.after_unknown } : {}),
+      ...((read === "PLANNED" || (read === "PRIOR" && mode === "data")) && isPlainRecord(found.values) ? { values: found.values } : {}),
+    });
+  };
+  /** A list that is present must be a list; an object that is present must be an object. Absent is an empty list or object. */
+  const listOf = (value: unknown): unknown[] => value === undefined ? [] : Array.isArray(value) ? value : stop(UNREADABLE);
+  const recordOf = (value: unknown): Record<string, unknown> => value === undefined ? {} : isPlainRecord(value) ? value : stop(UNREADABLE);
+  const byName = (entry: Record<string, unknown>): ProviderUse["provider"] => ({ full_name: typeof entry.provider_name === "string" ? entry.provider_name : undefined });
+  const configured = (module: unknown, depth: number): void => {
+    if (module === undefined) return;
+    if (!isPlainRecord(module)) return stop(UNREADABLE);
+    if (depth > MAX_MODULE_DEPTH) return stop("PROVIDER_PLAN_TOO_DEEP");
+    for (const found of listOf(module.resources)) add(found, (entry) => byKey(entry.provider_config_key), "CONFIGURATION");
+    for (const call of Object.values(recordOf(module.module_calls))) configured(recordOf(call).module, depth + 1);
+  };
+  const valued = (module: unknown, depth: number, read: "PRIOR" | "PLANNED"): void => {
+    if (module === undefined) return;
+    if (!isPlainRecord(module)) return stop(UNREADABLE);
+    if (depth > MAX_MODULE_DEPTH) return stop("PROVIDER_PLAN_TOO_DEEP");
+    for (const found of listOf(module.resources)) add(found, byName, read);
+    for (const child of listOf(module.child_modules)) valued(child, depth + 1, read);
+  };
+  configured(document.configuration?.root_module, 0);
+  for (const found of listOf(document.resource_changes)) add(found, byName, "CHANGES");
+  valued(document.prior_state?.values?.root_module, 0, "PRIOR");
+  valued(document.planned_values?.root_module, 0, "PLANNED");
+  return uses;
+}
 
 /** What the provider half of the contract binding is judged against: the contract's target and provider, and the environment that holds the APPLY role (sealing hides it from its children, not from this check). */
 type Judge = Pick<EngineContext, "pinned" | "spec" | "env">;
+
+/** A Terraform resource type as the provider schema names it: `<provider>_<name>`, lowercase letters, digits and underscores. Never a wildcard. */
+const TERRAFORM_TYPE = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$/;
+const DATA_ADDRESS = /(^|\.)data\./;
+const sameActions = (actions: unknown, expected: readonly string[]): boolean =>
+  Array.isArray(actions) && actions.length === expected.length && actions.every((action, index) => action === expected[index]);
+
+/**
+ * The canary allowlist on the plan itself (owner decision E1, ../canary.ts): every managed `resource_changes` entry must be exactly
+ * `["create"]` (not an import, not a move) of a listed type, and the managed entries must number exactly the listed count per type.
+ * A data source is read at plan time and creates nothing: its entry may be `["read"]` or `["no-op"]` and nothing else, and which data
+ * sources may be read at all stays the provider's reviewed list (`ProviderSpec.assertProviderConfig`, judged before this).
+ */
+function assertPlanInCanary(document: Shown, pinned: PilotTarget): void {
+  const entries: CanaryEntry[] = [];
+  for (const [index, found] of (Array.isArray(document.resource_changes) ? document.resource_changes : []).entries()) {
+    const address = stripInvisible(typeof found?.address === "string" ? found.address : "terraform:unknown:" + index);
+    const type = stripInvisible(typeof found?.type === "string" ? found.type : "unknown");
+    const actions: unknown = found?.change?.actions;
+    const shown = Array.isArray(actions) ? JSON.stringify(actions) : "[unreadable actions]";
+    if (found?.mode === "data" || (found?.mode === undefined && DATA_ADDRESS.test(address))) {
+      if (!sameActions(actions, ["read"]) && !sameActions(actions, ["no-op"])) entries.push({ address, type, action: shown, creates: false });
+      continue;
+    }
+    const moved = typeof found?.previous_address === "string" && found.previous_address !== "";
+    const creates = sameActions(actions, ["create"]) && !found?.change?.importing && !moved;
+    entries.push({ address, type, action: found?.change?.importing ? "import " + shown : moved ? "move " + shown : shown, creates });
+  }
+  assertCanary(pinned.canary, entries, "plan");
+}
 
 /**
  * The one extraction of the redacted change list (address, type, action, and
@@ -177,11 +391,16 @@ type Judge = Pick<EngineContext, "pinned" | "spec" | "env">;
  * again from the decrypted plan to prove the record describes it. It also
  * enforces the provider half of the contract binding.
  */
-function changesOf(shown: string, judge: Judge): PlanChange[] {
+function changesOf(shown: string, judge: Judge, purpose: "APPLY" | "CLEANUP"): PlanChange[] {
   let document: Shown;
   try { document = JSON.parse(shown); } catch { return stop("PLAN_JSON_INVALID"); }
   if (typeof document?.format_version !== "string" || document.errored === true) return stop("PLAN_JSON_UNUSABLE");
-  judge.spec.assertProviderConfig(Object.values(document.configuration?.provider_config ?? {}), judge.pinned, judge.env);
+  // The walker refuses a tree too deep or malformed first; then no provisioner, action or ephemeral resource (../terraform-constructs.ts); then the provider judge.
+  const uses = providerUsesOf(document);
+  assertNoRefusedPlanConstructs(document);
+  judge.spec.assertProviderConfig(Object.values(document.configuration?.provider_config ?? {}), judge.pinned, judge.env, uses);
+  // Then, for an APPLY (the seal, the qualification plan, and the apply's re-derivation), the canary allowlist. A cleanup's destroy plan keeps its own rules.
+  if (purpose === "APPLY") assertPlanInCanary(document, judge.pinned);
   const resources = (Array.isArray(document.resource_changes) ? document.resource_changes : []).map((found, index): PlanChange => {
     const actions = found?.change?.actions ?? [];
     const previous = found?.previous_address;
@@ -199,7 +418,7 @@ function changesOf(shown: string, judge: Judge): PlanChange[] {
 }
 
 /** The pinned `show` of the plan file at `../alz-preview.tfplan`, in an initialized work directory, with no identity at all. */
-const readChanges = (session: Session, judge: Judge): PlanChange[] => changesOf(session.step(SHOW_ARGV, null, true), judge);
+const readChanges = (session: Session, judge: Judge): PlanChange[] => changesOf(session.step(SHOW_ARGV, null, true), judge, "APPLY");
 
 /**
  * The deletion unit, verified in the plan (src/apply/unit.ts): every resource the plan creates and whose type carries
@@ -231,10 +450,10 @@ function unitOfPlan(shown: string, judge: Judge, unit: PilotUnit): SealedUnit {
 const isPlainRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
 /** Sealing and re-deriving run the preview adapter's argument lists under the apply path's restricted profile: no CLI configuration file, no plugin cache. */
-const sealSession = (input: Pick<EngineContext, "scratchDir" | "env" | "toolDirs" | "manifest">, embedStateWrite = false): Session => openSession({
+const sealSession = (input: Pick<EngineContext, "scratchDir" | "env" | "toolDirs" | "manifest">): Session => openSession({
   scratchDir: input.scratchDir, env: sealEnvironment(input.env), toolDirs: input.toolDirs, manifest: input.manifest,
-  // The one extra shape, and only when the contract opts in: init with the partial backend file (`APPLY_INIT_ARGV`). Every other list is the preview adapter's.
-  isAllowed: (args) => isAllowedArgv("TERRAFORM", "terraform", args) || (embedStateWrite && sameArgv(args, APPLY_INIT_ARGV)),
+  // The one extra shape: init with the product's backend file (`APPLY_INIT_ARGV`), since the pinned backend has no settings of its own. Every other list is the preview adapter's.
+  isAllowed: (args) => isAllowedArgv("TERRAFORM", "terraform", args) || sameArgv(args, APPLY_INIT_ARGV),
   profile: TERRAFORM_APPLY_PROFILE,
 });
 const sameArgv = (a: readonly string[], b: readonly string[]): boolean => a.length === b.length && a.every((arg, index) => arg === b[index]);
@@ -253,6 +472,7 @@ function rederiveChanges(input: EngineContext & { artifact: Buffer }): PlanChang
     return readChanges(session, input);
   } finally {
     rmSync(planFile, { force: true });
+    session.close();
   }
 }
 
@@ -284,11 +504,11 @@ function openApply(input: EngineContext & { target: ResolvedTarget; engineVersio
     // the APPLY identity, because an apply cannot be undone.
     prepare(snapshotPath) {
       prepareWorkspace(session, {
-        snapshotPath, engineVersion: input.engineVersion, target: input.target, initArgv: APPLY_INIT_ARGV, stateIdentity: "STATE_WRITE", backendBlock: spec.backendBlock,
+        snapshotPath, engineVersion: input.engineVersion, target: input.target, initArgv: APPLY_INIT_ARGV, stateIdentity: "STATE_WRITE", backendType: spec.backendType, selectableProviders: spec.selectableProviders,
         beforeInit: () => writeFileSync(backendConfigPath, spec.backendConfig(env, pinned), { mode: 0o600, flag: "wx" }),
         afterInit: () => rmSync(backendConfigPath, { force: true }),
       });
-      assertBackendInContract(session.work, pinned, spec);
+      assertBackendInContract(session.work, pinned, spec, env);
       serialBefore = parseStateSerial(session.step(STATE_PULL_ARGV, "STATE", true)) ?? stop("STATE_SERIAL_UNREADABLE");
       if (session.refused("APPLY", APPLY_PROFILE).length > 0) stop("ENVIRONMENT_REFUSED");
     },
@@ -351,11 +571,11 @@ function openCleanup(input: EngineContext & { target: ResolvedTarget; engineVers
   return {
     prepare(snapshotPath) {
       prepareWorkspace(session, {
-        snapshotPath, engineVersion: input.engineVersion, target: input.target, initArgv: APPLY_INIT_ARGV, stateIdentity: "STATE_WRITE", backendBlock: spec.backendBlock,
+        snapshotPath, engineVersion: input.engineVersion, target: input.target, initArgv: APPLY_INIT_ARGV, stateIdentity: "STATE_WRITE", backendType: spec.backendType, selectableProviders: spec.selectableProviders,
         beforeInit: () => writeFileSync(backendConfigPath, spec.backendConfig(env, pinned), { mode: 0o600, flag: "wx" }),
         afterInit: () => rmSync(backendConfigPath, { force: true }),
       });
-      assertBackendInContract(session.work, pinned, spec);
+      assertBackendInContract(session.work, pinned, spec, env);
       serialBefore = parseStateSerial(session.step(STATE_PULL_ARGV, "STATE", true)) ?? stop("STATE_SERIAL_UNREADABLE");
       if (session.refused("APPLY", APPLY_PROFILE).length > 0) stop("ENVIRONMENT_REFUSED");
     },
@@ -370,7 +590,7 @@ function openCleanup(input: EngineContext & { target: ResolvedTarget; engineVers
       planned = true;
       // The same redacted extraction as sealing, with the same provider-config judgment; the plan file stays for `execute`.
       const shown = session.step(CLEANUP_SHOW_ARGV, null, true);
-      return changesOf(shown, input);
+      return changesOf(shown, input, "CLEANUP");
     },
     async execute(control) {
       if (!planned || !existsSync(planPath)) return stop("ENGINE_NOT_PREPARED");
@@ -394,7 +614,8 @@ export const TERRAFORM: EngineSpec = {
   executables: ["terraform"],
   embedsStateWrite: true,
   mutation: "TERRAFORM_APPLY_OF_SEALED_PLAN",
-  providers: ["AZURE", "AWS"],
+  providers: ["AZURE", "AWS", "GCP"],
+  canaryTypeOk: (value) => value.length <= 128 && TERRAFORM_TYPE.test(value),
   notices: {
     sealHeading: "SEAL A PREVIEW (this plans against the target and changes no infrastructure; the plan is kept encrypted)",
     sealReads: "  reads           state with the STATE identity, then plans with the DISCOVERY identity",
@@ -432,31 +653,29 @@ export const TERRAFORM: EngineSpec = {
     const planFile = join(input.scratchDir, SEAL_PLAN_FILE);
     const embed = input.embedStateWrite === true;
     const backendConfigPath = join(input.scratchDir, APPLY_BACKEND_CONFIG_FILE);
-    const session = sealSession(input, embed);
+    const session = sealSession(input);
     try {
       prepareWorkspace(session, {
         snapshotPath: input.snapshotPath, engineVersion: input.engineVersion, target: input.target,
-        stateIdentity: "STATE", backendBlock: input.spec.backendBlock,
-        // Opt-in: init with STATE_WRITE's non-secret backend settings (written 0600, removed as soon as init ends), so the plan embeds them.
-        ...(embed
-          ? {
-            initArgv: APPLY_INIT_ARGV,
-            beforeInit: () => writeFileSync(backendConfigPath, input.spec.backendConfig(nonSecretStateWrite(input.env), input.pinned), { mode: 0o600, flag: "wx" }),
-            afterInit: () => rmSync(backendConfigPath, { force: true }),
-          }
-          : { initArgv: INIT_ARGV }),
+        stateIdentity: "STATE", backendType: input.spec.backendType, selectableProviders: input.spec.selectableProviders, initArgv: APPLY_INIT_ARGV,
+        // The contract's backend location (written 0600, removed as soon as init ends), and on opt-in STATE_WRITE's non-secret settings too, so the plan embeds them.
+        beforeInit: () => writeFileSync(backendConfigPath, embed
+          ? input.spec.backendConfig(nonSecretStateWrite(input.env), input.pinned)
+          : input.spec.backendLocation(input.pinned), { mode: 0o600, flag: "wx" }),
+        afterInit: () => rmSync(backendConfigPath, { force: true }),
       });
       // The plan embeds the backend this init saved (docs/act-pilot-simulation.md), so it is judged here as well as at apply.
-      assertBackendInContract(session.work, input.pinned, input.spec);
+      assertBackendInContract(session.work, input.pinned, input.spec, nonSecretStateWrite(input.env));
       session.assertBound();
       session.step(PREVIEW_PLAN_ARGV, "DISCOVERY");
       session.assertBound();
       const shown = session.step(SHOW_ARGV, null, true);
-      return { artifact: readFileSync(planFile), changes: changesOf(shown, input), unit: unitOfPlan(shown, input, input.unit) };
+      return { artifact: readFileSync(planFile), changes: changesOf(shown, input, "APPLY"), unit: unitOfPlan(shown, input, input.unit) };
     } finally {
       rmSync(planFile, { force: true });
       rmSync(backendConfigPath, { force: true });
       removeTree(session.work);
+      session.close();
     }
   },
   openApply,

@@ -89,6 +89,12 @@ export const COPY = {
   sealManifestLabel: "Project fingerprint file",
   sealManifestHelp: "The file that fingerprints the project so it cannot change after you prepare it.",
   egManifest: "/home/you/pilot/project-fingerprint.json",
+  sealRequesterLabel: "Your requester name",
+  sealRequesterHelp: "The name the owner listed for you. It becomes part of the change ID that every approver signs. In production, the person who requests a change cannot also approve it.",
+  egRequester: "carol",
+  sealKeyLabel: "Your requester key file",
+  sealKeyHelp: "Your private key file on this computer, the same kind an approver uses. It signs this request; it is never uploaded or shown and must be readable only by you.",
+  reviewRequestedBy: "Requested by",
   sealRun: "Prepare the change",
   sealRunning: "Preparing the change. This can take a few minutes; keep this page open.",
   sealDone: "The change is prepared.",
@@ -176,6 +182,11 @@ export const COPY = {
   proposeKept: "Kept",
   proposeRisks: "Before anyone approves, read these",
   proposeApprovalsNeeded: "Approvals needed for this cleanup",
+  proposeRequestedBy: "Cleanup requested by",
+  proposeRequesterLabel: "Your requester name",
+  proposeRequesterHelp: "The name the owner listed for you. It becomes part of the proposal ID that every approver signs. In production, the person who requests a cleanup cannot also approve it, and two other people must approve.",
+  proposeKeyLabel: "Your requester key file",
+  proposeKeyHelp: "Your private key file on this computer, the same kind an approver uses. It signs this cleanup request; it is never uploaded or shown and must be readable only by you.",
   proposeSend: "Send the proposal file to each approver. It holds names and identifiers only, no secrets.",
   proposeAsk: "Ask each approver to open the console on their own computer, choose \"I am an approver\" and \"A cleanup\", and sign. They send you back an approval file.",
   cleanupApprovalsLabel: "Cleanup approval files (one location per line)",
@@ -192,7 +203,9 @@ export const COPY = {
   verifyRun: "Check that everything is gone",
   verifyRerun: "Check again",
   verifyRunning: "Looking at the cloud for anything left. This reads and changes nothing.",
-  verifyComplete: "Everything on the list is confirmed gone, and everything kept is still there.",
+  verifyKeptNotChecked: "Kept items were left in place and were not checked.",
+  verifyRetirementTail: "Retiring the environment itself is a separate, reviewed action by the pilot owner, and it is still outstanding.",
+  proposeWillDelete: "If approved, everything on the delete list above will be deleted, and nothing else.",
   verifyIncomplete: "Not finished yet. Nothing is reported as complete until every listed thing is confirmed gone.",
   verifyKnownConfirmed: "Everything on the list is confirmed gone, but this change carried no cleanup marker, so nothing outside its records could be searched for. This is not complete.",
   verifyNextLabel: "What to do now:",
@@ -214,11 +227,82 @@ export function ownershipWord(ownership: string): string {
     case "REPLACED_PRE_EXISTING": return "replaced something that existed before";
     case "IMPORTED": return "brought under management, not created";
     case "NOT_IN_PLAN": return "not part of this change";
+    case "TYPE_UNREVIEWED": return "created by this change, but of a kind not yet reviewed as safe to remove alone (or a setting on something that stays), so it is left for you to remove or keep by hand";
     case "PROTECTED_BACKEND": return "the storage the pilot itself runs on";
-    case "PROTECTED_IDENTITY": return "a pilot sign-in or trust";
-    case "CONTAINS_OTHERS": return "a group holding things this change did not create";
+    case "PROTECTED_IDENTITY": return "an identity or access object (a role, a role or policy assignment, a role or policy definition, a managed identity, a sign-in trust, an exemption or a lock)";
+    case "PROTECTED_DEPLOYMENT": return "deployment history";
+    case "RETAINED_GROUP": return "a resource group, kept whole (a pilot cleanup removes only approved things inside it)";
+    case "CANARY_RETAINED": return "a no-cost marker the owner's pilot rules keep on purpose (it keeps the stack from being emptied)";
+    case "CONTAINS_OTHERS": return "a container that holds or serves other things (a subscription, management group or provider registration, or a deployment that creates a whole set of other resources)";
     default: return "unknown";
   }
+}
+/** Who keeps a thing the cleanup leaves, in words. */
+export function retentionOwnerWord(owner: string): string {
+  switch (owner) {
+    case "PILOT_OWNER": return "kept by the pilot owner";
+    case "ENVIRONMENT_OWNER": return "kept by the environment's owner";
+    default: return "kept by an unknown owner";
+  }
+}
+/** Why a check could not decide, in words: the record's reason code, never shown raw. */
+export function reasonWord(reason: string): string {
+  switch (reason) {
+    case "ACCESS_DENIED": return "the discovery sign-in was not allowed to read it";
+    case "CREDENTIALS": return "the discovery sign-in could not sign in";
+    case "THROTTLED": return "the cloud asked us to slow down; check again later";
+    case "TYPE_NOT_SUPPORTED": return "the cloud's read service does not know this kind of thing";
+    case "CLI_ERROR": case "HTTP_ERROR": case "UNEXPECTED_RESPONSE": return "the read failed or answered in an unexpected way";
+    case "CLI_NOT_RUN": case "HOST_REFUSED": case "READER_CLOSED": return "the read could not be sent";
+    case "NOT_INDEPENDENTLY_CHECKABLE": case "NO_CLOUD_CONTROL_MAPPING": return "it cannot be checked on its own; only the thing it belongs to can be";
+    case "DATA_BEARING_READ_EXCLUDED": return "reading it would return its data or secret contents, which discovery never reads, so its deletion cannot be confirmed here";
+    case "NO_IDENTIFIER_IN_STATE": return "the project's records hold no identifier for it";
+    case "NOT_AN_ARM_RESOURCE_ID": return "its identifier is not one the cloud can be asked about";
+    case "OUTSIDE_TARGET_SUBSCRIPTION": return "it is outside the subscription this pilot works in";
+    default: return "the check gave no usable answer";
+  }
+}
+
+/** The distinct ownership classes present in a kept list, each in words with who keeps it, in list order. */
+function keptClassWords(kept: readonly { ownership: string; retainedBy: string }[]): string[] {
+  const seen = new Set<string>();
+  const words: string[] = [];
+  for (const item of kept) {
+    const key = item.ownership + "|" + item.retainedBy;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    words.push(ownershipWord(item.ownership) + " (" + retentionOwnerWord(item.retainedBy) + ")");
+  }
+  return words;
+}
+/**
+ * The note under a cleanup proposal, built from this proposal's own lists: what the delete list will do if approved, and which
+ * kinds of thing this proposal keeps, with their owner. It promises nothing about kinds that are not in the records.
+ */
+export function retainedNoteFor(cleanup: { deletes: readonly unknown[]; excluded: readonly { ownership: string; retainedBy: string }[] }): string {
+  const head = cleanup.deletes.length === 0 ? "Nothing is on the delete list, so an approval would delete nothing." : COPY.proposeWillDelete;
+  const kept = keptClassWords(cleanup.excluded);
+  const tail = kept.length === 0 ? "Nothing else from this change's records is kept." : "Kept, and never on that list: " + kept.join("; ") + ".";
+  return head + " " + tail + " Retiring the environment itself is a separate, reviewed decision for the pilot owner.";
+}
+/** A kept leftover row's ownership class, from the record's reason (`CLASS: sentence`), and its owner. */
+const keptClassOf = (item: { reason?: string; owner?: string }): { ownership: string; retainedBy: string } => ({ ownership: /^([A-Z][A-Z_]+): /.exec(item.reason ?? "")?.[1] ?? "UNKNOWN", retainedBy: item.owner ?? "UNKNOWN" });
+/**
+ * The headline of a COMPLETE leftover check, from the record: how many listed things are confirmed gone, whether an approved
+ * cleanup ran at all (a record with no cleanup evidence means none did), and that kept things were left in place and not checked.
+ */
+export function completeHeadlineFor(leftovers: { resources: readonly { disposition: string }[]; cleanupEvidenceSha256?: string | null }): string {
+  const gone = leftovers.resources.filter((item) => item.disposition === "CONFIRMED_DELETED").length;
+  const head = gone === 0 ? "Nothing was on the delete list, so nothing was deleted."
+    : leftovers.cleanupEvidenceSha256 === null ? "No cleanup ran; the " + gone + " listed thing(s) are confirmed gone anyway."
+    : "Approved things deleted: " + gone + " listed thing(s) confirmed gone.";
+  return head + " " + COPY.verifyKeptNotChecked;
+}
+/** The retirement line of a COMPLETE leftover check: which kinds this record kept, with their owner, and that the environment is not retired. */
+export function retirementOutstandingFor(leftovers: { resources: readonly { disposition: string; reason?: string; owner?: string }[] }): string {
+  const kept = keptClassWords(leftovers.resources.filter((item) => item.disposition === "INTENTIONALLY_RETAINED").map(keptClassOf));
+  const body = kept.length === 0 ? "Nothing from this change's records was kept." : "Kept and left in place, not checked: " + kept.join("; ") + ".";
+  return "The environment itself is not retired. " + body + " " + COPY.verifyRetirementTail;
 }
 /** What the independent check found, in words. */
 export function verificationWord(result: string): string {
@@ -238,7 +322,7 @@ export function dispositionWord(disposition: string): string {
     case "INTENTIONALLY_RETAINED": return "Kept on purpose";
     case "STILL_PRESENT": return "Still there";
     case "DELETION_PENDING": return "Removal pending";
-    default: return "Unknown";
+    default: return "Unresolved: not confirmed gone";
   }
 }
 /** The origin words for a thing the check looked at. */
@@ -247,8 +331,8 @@ export const originWord = (origin: string): string => origin === "IN_PLAN" ? "na
 /** The commands for the cleanup half of the command-line path, in order; shown after the apply commands. */
 export const CLEANUP_CLI_COMMANDS: readonly { who: string; what: string; command: string }[] = [
   { who: "Operator", what: "Look at what the change created", command: "./alz apply observe --sealed LOCKED_CHANGE" },
-  { who: "Operator", what: "Write the cleanup proposal", command: "./alz apply propose-cleanup --sealed LOCKED_CHANGE" },
-  { who: "Each approver", what: "Review and sign the cleanup (on their own computer)", command: "./alz apply approve --bundle PROPOSAL.json --key APPROVER_KEY.pem --approver NAME" },
+  { who: "Operator (the cleanup requester)", what: "Write the cleanup proposal, signed with the requester's key", command: "./alz apply propose-cleanup --sealed LOCKED_CHANGE --requester NAME --key REQUESTER_KEY.pem" },
+  { who: "Each approver (in production, two people other than the requester)", what: "Review and sign the cleanup (on their own computer)", command: "./alz apply approve --bundle PROPOSAL.json --key APPROVER_KEY.pem --approver NAME" },
   { who: "Operator", what: "Remove exactly the listed things", command: "./alz apply cleanup --proposal PROPOSAL.json --request REQUEST.json --manifest MANIFEST.json --sealed LOCKED_CHANGE --approval APPROVAL.json" },
   { who: "Anyone", what: "Check that everything is gone", command: "./alz apply verify-cleanup --proposal PROPOSAL.json" },
 ];
@@ -345,7 +429,12 @@ export const CODE_COPY: Readonly<Record<string, Reason>> = {
   AWS_ACCOUNT_NOT_VERIFIED: { why: "The DEV account, its enrollment, or its AWS connection could not be confirmed.", next: "Ask your AWS administrator to check the saved connection, Workloads enrollment and account status. Then check again." },
   // the driver's refusals
   ACT_DISABLED: { why: "The pilot is switched off. It only works while the owner's pilot rules are switched on and approved.", next: "Ask the pilot owner to switch on and approve the pilot rules. You cannot do this from here." },
-  CONTRACT_INVALID: { why: "The pilot rules file has a mistake, or it was changed after the owner approved it.", next: "Ask the pilot owner to fix it and approve it again. Nothing was changed." },
+  CONTRACT_INVALID: { why: "The pilot rules file has a mistake.", next: "Ask the pilot owner to fix it in a reviewed change. Nothing was changed." },
+  ACT_NOT_AUTHORIZED: { why: "The owner's reviewed pilot rules do not allow this kind of change in this environment.", next: "Ask the pilot owner whether to allow it. Only their reviewed change to the rules can. Nothing was changed." },
+  CANARY_ALLOWLIST_MISSING: { why: "The owner's pilot rules allow changes in this environment but do not list the exact resources a change may create there.", next: "Ask the pilot owner to add the list of resource types and counts to the reviewed pilot rules. Nothing was changed." },
+  RESOURCE_NOT_IN_CANARY: { why: "The plan would do more than create exactly the resources the owner's pilot rules list: an extra or missing resource, a wrong count, or a change to something that already exists.", next: "Read the reason shown, change the project so it creates exactly the listed resources and nothing else, then prepare a new preview. Nothing was changed." },
+  ACT_AUTHORIZATION_CHANGED: { why: "The owner's pilot rules changed after this change was prepared and approved, so the approvals no longer cover it.", next: "Prepare the change again under the current rules and collect new approvals. Nothing was used up." },
+  NOT_IMPLEMENTED: { why: "The pilot rules name a cloud and tool combination that this version cannot run yet.", next: "Ask the pilot owner which supported combination to use. Nothing was changed." },
   IDENTITY_TARGET_MISMATCH: { why: "One of the separate sign-ins points at a different account than the pilot rules name for this environment.", next: "Correct that sign-in's account in the terminal where you started the console, restart the console, then run the readiness check again." },
   KILL_SWITCH_ACTIVE: { why: "The emergency stop is on, so every change is blocked.", next: "Only the pilot owner turns it off. Ask them, and do not remove the stop file yourself." },
   KILL_SWITCH_AFTER_APPROVALS: { why: "The emergency stop was turned on just as the change was about to start. Nothing was changed, but the approvals were used up.", next: "Wait until the owner says the stop is off, then collect new approvals for the same prepared change." },
@@ -359,6 +448,13 @@ export const CODE_COPY: Readonly<Record<string, Reason>> = {
   PREVIEW_EVIDENCE_SYNTHETIC: { why: "The preview evidence is recorded as synthetic: at least one condition failed, or it was not attested. It never passes the release check.", next: "Read the reasons in the evidence. Seal the preview with the approved, checked build tool against the real account from the release commit, then record it again." },
   GATE_UNKNOWN: { why: "The release check named is not a preview check. Nothing was written.", next: "Use one of the preview checks listed in the release status." },
   SCENARIO_MISMATCH: { why: "The release check is about another cloud or build tool than this prepared change. Evidence of one never stands for another. Nothing was written.", next: "Record this change against its own release check, or seal a change of the kind the check is about." },
+  RECOVERY_RECORD_UNAVAILABLE: { why: "One of the two prepared changes named has no finished run on record, so there is nothing recorded to make a recovery record from. Nothing was written.", next: "Name the prepared change whose run was interrupted and the later one that finished; both must have run and been recorded." },
+  RECOVERY_NOT_INTERRUPTED: { why: "The first run named was not interrupted; it finished on its own. A recovery record is about a run that stopped part way and was reviewed from its records. Nothing was written.", next: "Name the prepared change whose run stopped part way as the first one." },
+  RECOVERY_RESUME_MISMATCH: { why: "The later run named is not a fresh continuation of the interrupted one: it is the same prepared change, it ran against another account or environment, or it did not finish. Nothing was written.", next: "Name the new prepared change that was sealed, approved and finished after the interruption, for the same account and environment." },
+  RECOVERY_APPROVAL_REUSED: { why: "The later run used an approval given before the interruption ended, or fewer approvals than required. A continuation after an interruption needs fresh approvals. Nothing was written.", next: "A recovery record cannot be made from these runs. Tell the pilot owner; a continuation must be approved anew." },
+  RECOVERY_ATTESTATION_MISMATCH: { why: "What was typed is not the attestation shown. Nothing was written.", next: "Type the attestation exactly as shown, only if both runs reached the real account." },
+  RECOVERY_RECORD_EXISTS: { why: "A recovery record for this interrupted change is already written. It is never overwritten.", next: "Review the existing record; keep it with the release candidate." },
+  RECOVERY_EVIDENCE_RECORDED: { why: "The recovery record is written.", next: "Review it, keep it with the release candidate, and list it in the release admission file." },
   CONTRACT_MISMATCH: { why: "The prepared change was sealed under other pilot settings than the ones in force now. Nothing was written.", next: "Seal the change again under the current settings, then record it." },
   CHANGES_UNAUTHORIZED: { why: "The prepared change would remove or replace something, or holds a change the release check cannot review. A release check is about a preview that creates, updates or adopts only. Nothing was written.", next: "Ask the pilot owner to review that change on its own. Record a prepared change that only creates, updates or adopts." },
   SOURCE_UNVERIFIED: { why: "This copy of the app has changes that are not saved in its history, or its version cannot be read, so a record could not say which version ran. Nothing ran or was used up.", next: "Save (commit) or remove the local changes, or use the packaged app, then try again." },
@@ -375,6 +471,12 @@ export const CODE_COPY: Readonly<Record<string, Reason>> = {
   APPROVAL_REPLAYED: { why: "An approval was already used once. Each one works one time only.", next: "Ask for a fresh approval." },
   APPROVAL_MISBOUND: { why: "An approval was signed for a different change, environment or place.", next: "Ask the approver to review this change and sign it again." },
   SAME_APPROVER_TWICE: { why: "The same approver was added twice. Two different people are needed.", next: "Add an approval from a second person." },
+  APPROVER_IS_REQUESTER: { why: "This approval comes from the person who requested the change or the cleanup (their name or their key). In production the requester and the approvers must be different people.", next: "Ask another person on the owner's list to approve. In DEV and QA the requester may approve." },
+  REQUESTER_NOT_ALLOWED: { why: "The requester name is not on the owner's list for this environment, so the request cannot be signed.", next: "Use a name the owner listed for this environment, or ask the owner to add you for it. Nothing ran." },
+  REQUESTER_KEY_MISMATCH: { why: "The key file is not the key the owner listed for that requester name.", next: "Use your own key file, the one whose public half the owner listed for you. Nothing ran." },
+  REQUESTER_SIGNATURE_MISSING: { why: "This prepared change or cleanup proposal carries no requester signature, so nobody is on record as having asked for it.", next: "Prepare the change, or write the cleanup proposal, again with your requester name and key file. Nothing was used up." },
+  REQUESTER_SIGNATURE_UNVERIFIED: { why: "The requester signature on this prepared change or cleanup proposal could not be checked against the owner's list. A change's signature never counts for a cleanup, and a cleanup's never counts for a change.", next: "Prepare the change, or write the cleanup proposal, again with your own listed key. Nothing was used up." },
+  REQUESTER_MISBOUND: { why: "The requester signature belongs to a different change, cleanup, environment or requester than this one.", next: "Prepare the change, or write the cleanup proposal, again; a signature is never moved. Nothing was used up." },
   ARTIFACT_ALREADY_APPLIED: { why: "This exact change was already applied, or an earlier try stopped part way. A change can only run once.", next: "Do not retry. If you need another change, prepare a new one. If an earlier try failed, the pilot owner must review it first." },
   ENGINE_NOT_QUALIFIED: { why: "The deployment tool has not passed its one-time check on this computer, or that check is out of date.", next: "A person runs the one-time check in a terminal against DEV (see the walkthrough, \"Before your first change\"), then try again. It is not done in this wizard." },
   PROMOTION_EVIDENCE_MISSING: { why: "This release has not succeeded in the earlier environment yet. QA needs DEV first, and production needs QA first.", next: "Finish the earlier environment with this same release, then come back." },
@@ -392,11 +494,25 @@ export const CODE_COPY: Readonly<Record<string, Reason>> = {
   PROPOSAL_SCOPE_MISMATCH: { why: "Removing the listed things would also touch something not on the list, or something on the list is no longer there. Nothing was removed and no approval was used.", next: "Look at what was created again, write a new proposal, and collect new cleanup approvals." },
   PROPOSAL_ALREADY_EXECUTED: { why: "This cleanup proposal was already run once, or an earlier try stopped part way. A proposal runs once only.", next: "Check that everything is gone. If something is left, a new proposal is needed after the pilot owner has reviewed." },
   CLEANUP_NOT_SUPPORTED: { why: "The build tool this pilot uses has no cleanup step yet.", next: "Ask the pilot owner; removing what this tool made needs its own decision." },
+  CLEANUP_WOULD_EMPTY_STACK: { why: "Removing everything on the list would leave the stack with nothing in it, which the cloud does not allow. A cleanup never removes the stack itself. Nothing was removed and no approval was used.", next: "The last things in a stack go with the stack. Retiring the stack is the pilot owner's separate, reviewed decision; ask them." },
+  CLEANUP_RETAIN_POLICY: { why: "Something on the list is set to be kept even when it is taken out of the stack, so removing it this way would leave it behind unrecorded. Nothing was removed and no approval was used.", next: "Ask the pilot owner to decide about that thing by hand; the rest can be proposed again without it." },
+  CLEANUP_DEPENDENT_REFERENCED: { why: "Something that stays in the stack still depends on something on the list, so removing the list would break or take along a thing nobody approved. Nothing was removed and no approval was used.", next: "Look at what was created again and write a new proposal that includes or leaves out the dependent thing." },
   OBSERVED: { why: "The console looked at each thing the change left behind.", next: "Read the list, then write the cleanup proposal if everything is as expected." },
   CLEANUP_PROPOSED: { why: "The cleanup proposal is written.", next: "Send it to the approvers, collect their cleanup approval files, then remove the listed things." },
   CLEANED_UP: { why: "The removal finished.", next: "Check that everything is gone." },
-  CLEANUP_COMPLETE: { why: "Everything on the list is confirmed gone.", next: "Nothing further for this change." },
+  CLEANUP_COMPLETE: { why: "Everything on the list is confirmed gone; kept items were left in place and were not checked.", next: "Nothing further for this change's listed resources. The environment itself is not retired; that is the pilot owner's separate, reviewed action." },
   CLEANUP_INCOMPLETE: { why: "Something on the list is not confirmed gone yet.", next: "Follow the next step shown with the list." },
+  WORKSPACE_REMOVED: { why: "This change's working files on this computer were removed; its records were kept.", next: "Nothing further. The removal record sits with the change's records." },
+  REMOVAL_NOT_AUTHORIZED: { why: "Removing this change's working files is not allowed right now (for example, the stop switch is on).", next: "Ask the pilot owner, then try again." },
+  REMOVAL_RUN_IN_PROGRESS: { why: "A change or a cleanup is still running, and its working files may be in use.", next: "Wait for it to end, then try again." },
+  REMOVAL_PATH_REFUSED: { why: "A working file is a link or is outside the folders this product owns, so nothing was removed.", next: "Ask the pilot owner to look at the path shown." },
+  REMOVAL_RECORD_INVALID: { why: "The record of an earlier removal cannot be read, so nothing was removed.", next: "Ask the pilot owner to look at the removal record." },
+  REMOVAL_FAILED: { why: "The removal stopped part-way; the record says what is left, and the approvals are used up.", next: "Get new approvals for the same proposal and run the removal again; it picks up where it stopped." },
+  WORKSPACE_REMOVAL_PROPOSED: { why: "The list of this change's working files to remove is ready; nothing is removed yet.", next: "Ask the approvers to approve the removal, then run it." },
+  REMOVAL_SCOPE_CHANGED: { why: "What would be removed changed after it was shown, so nothing was removed and no approval was used.", next: "Run the removal again to see the current list." },
+  REMOVAL_STOPPED: { why: "The stop switch was turned on during the removal; the record says what is left, and the approvals are used up.", next: "When the pilot owner clears the stop switch, get new approvals for the same proposal and run it again." },
+  REMOVAL_PATH_CHANGED: { why: "A working file changed into a link or moved during the removal, so it was left alone; the approvals are used up.", next: "Ask the pilot owner to look at the path the record names." },
+  REMOVAL_RECORD_CHANGED: { why: "The removal record changed while the removal was being prepared, so nothing was removed; the approvals are used up.", next: "Ask the pilot owner to look at the removal record." },
   CLEANUP_KNOWN_CONFIRMED: { why: "Everything on the list is confirmed gone, but the change carried no cleanup marker, so things outside its records could not be searched for.", next: "Ask the pilot owner to confirm by hand that nothing else of this change remains, or apply with the cleanup marker so the search can run." },
   // the command line's own errors, as the wizard reaches them
   APPLY_FLAG_UNKNOWN: { why: "The wizard sent something the command did not understand. This should not happen.", next: "Reload the page and try again. If it repeats, tell the pilot owner." },
@@ -425,8 +541,12 @@ export const CODE_COPY: Readonly<Record<string, Reason>> = {
   PROJECT_ENGINE_MISMATCH: { why: "This folder is not the kind of project the pilot rules use, for example a CDK folder where Terraform is expected.", next: "Choose the folder for the build tool the pilot rules name. The console never switches tools for you." },
   PROJECT_NOT_CLEAN: { why: "The project folder still holds files from an earlier local run.", next: "Remove the .terraform folder from the project, then try again." },
   PROJECT_SNAPSHOT_REFUSED: { why: "The project folder holds something that cannot be fingerprinted safely, such as a link, a saved cloud record or a very large file.", next: "Remove what the Details name from the project folder, then try again." },
+  TERRAFORM_LOCAL_PLUGIN_DIR_REFUSED: { why: "The project folder contains its own provider files or Terraform settings (terraform.d, .terraform, .terraformrc or terraform.rc). Providers are installed only from the official registry.", next: "Remove the folder or file named in Details, then try again." },
   LOCK_FILE_MISSING: { why: "The project has no .terraform.lock.hcl file, which pins the exact provider versions.", next: "Run terraform init once in the project, review the file it writes, keep it with the project, and try again." },
   LOCK_FILE_UNREADABLE: { why: "The project's .terraform.lock.hcl file cannot be read.", next: "Run terraform init again to rewrite it, review it, and try again." },
+  PROVIDER_NOT_ADMITTED: { why: "The project's lock file names a provider, or a registry, that this pilot does not allow for the chosen cloud.", next: "Remove that provider from the project, or ask the owner: allowing it needs a reviewed decision." },
+  PROVIDER_HASH_NOT_OFFICIAL: { why: "The project's lock file does not carry the provider maker's published package fingerprints for the reviewed version.", next: "Run terraform init against the official registry to rewrite the lock file, review it, and try again." },
+  PROVIDER_VERSION_NOT_REVIEWED: { why: "The project's lock file pins a cloud provider version the pilot's safety review has not covered.", next: "Lock the reviewed version named in Details, or ask the owner: a new version needs a new review first." },
   ENGINE_VERSION_REQUIRED: { why: "The console needs the version of the AWS CLI on this computer, and no earlier check recorded it.", next: "Enter the version in the box that appeared, then try again." },
   TOOL_UNAVAILABLE: { why: "A tool this change needs is not installed in the approved place on this computer.", next: "Install it with ./alz deps, or ask the owner about the other supported way. A different tool needs its own approved rules and approvals." },
   MANIFEST_INVALID: { why: "The project fingerprint file is not valid, or was never finalized.", next: "Choose the right file or ask whoever made it to create it again." },
@@ -445,6 +565,8 @@ export const CODE_COPY: Readonly<Record<string, Reason>> = {
   PILOT_NO_SUCH_QUESTION: { why: "That question is not waiting any more.", next: "Look at the screen for the current question." },
   PILOT_NOTHING_TO_CANCEL: { why: "No question is waiting, so there is nothing to cancel.", next: "Wait for the step to finish." },
   PILOT_FAILED: { why: "The console could not complete that request. Nothing was run.", next: "Try again. If it repeats, tell the pilot owner." },
+  PILOT_PATHS_UNAVAILABLE: { why: "The release records that list the deployment paths cannot be read on this computer.", next: "The pilot steps still work. Check that the console runs from a complete copy of the product, then reload this page." },
+  PILOT_PATHS_UNREADABLE: { why: "The list of deployment paths came back in a form this page cannot read.", next: "The pilot steps still work. Reload this page; if it stays, tell the pilot owner." },
   PILOT_UNREACHABLE: { why: "This page cannot reach the console.", next: "Make sure the console is still running in its terminal, then reload this page." },
   LOCAL_HOST_ONLY: { why: "The console only answers on this computer's own address.", next: "Open the address the console printed, exactly as printed." },
   NOT_FOUND: { why: "The console does not know that request.", next: "Reload the page and try again." },
@@ -481,8 +603,11 @@ export function describeCheck(item: PreflightCheck, environment: PilotEnvironmen
   if (name.startsWith("contract shape")) {
     return { known: true, label: "The pilot rules file is complete and well formed", wrong: "The pilot rules file is missing, unreadable, or has a mistake.", fix: "Ask the pilot owner to correct the pilot rules file, then check again." };
   }
-  if (name.startsWith("pilot contract pinned and enabled")) {
-    return { known: true, label: "The pilot is switched on and approved by the owner", wrong: "The pilot is switched off, or the rules file was changed after the owner approved it. This is the normal state until the owner switches the pilot on.", fix: "Ask the pilot owner to review the rules and switch the pilot on. Nothing you do here can switch it on." };
+  if (name.startsWith("pilot contract enabled and authorizes APPLY")) {
+    return { known: true, label: "The owner's reviewed rules allow changes in " + environment, wrong: "The pilot is switched off, or the owner's reviewed rules do not allow changes in " + environment + ". This is the normal state until the owner allows it.", fix: "Ask the pilot owner to review the rules and allow this environment. Nothing you do here can allow it." };
+  }
+  if (name.startsWith("financial controls")) {
+    return { known: true, informational: true, label: "Spending limits are not checked here: the owner confirms the budget alert or cost limit separately", wrong: "", fix: "" };
   }
   if (name.startsWith("identities configured")) {
     return { known: true, label: "Each separate sign-in is set up on its own", wrong: "A sign-in is missing, two are the same, or one could fall back to your own account.", fix: "In the terminal where you started the console, set the missing sign-in details (the walkthrough lists them), restart the console, and check again." };
@@ -586,7 +711,7 @@ export const changeNotes = (change: PlanChange): string[] => [
 export const CLI_COMMANDS: readonly { who: string; what: string; command: string }[] = [
   { who: "Operator", what: "Check this computer is ready", command: "./alz apply preflight --environment DEV" },
   { who: "Operator", what: "Get the files ready from your project folder", command: "./alz apply prepare --environment DEV --project PROJECT_FOLDER" },
-  { who: "Operator", what: "Prepare the change and lock it", command: "./alz apply seal --request REQUEST.json --manifest MANIFEST.json" },
+  { who: "Operator (the requester)", what: "Prepare the change and lock it, signed with the requester's key", command: "./alz apply seal --request REQUEST.json --manifest MANIFEST.json --requester NAME --key REQUESTER_KEY.pem" },
   { who: "Each approver", what: "Review and sign (on their own computer)", command: "./alz apply approve --bundle REVIEW_FILE.json --key APPROVER_KEY.pem --approver NAME" },
   { who: "Operator", what: "Apply the locked change", command: "./alz apply apply --request REQUEST.json --manifest MANIFEST.json --sealed LOCKED_CHANGE --approval APPROVAL.json" },
   { who: "Anyone", what: "Look at the status afterward", command: "./alz apply status --sealed LOCKED_CHANGE" },
