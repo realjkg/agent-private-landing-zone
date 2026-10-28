@@ -45,7 +45,7 @@
     },
     {
       "gate": "preview:cloudformation-aws-existing",
-      "reason": "Existing CloudFormation stacks are not one of the six paths of the narrow ACT-DEV release (owner rebaseline 6443352284: AWS Terraform, AWS CDK / CloudFormation, Azure Terraform, Azure Bicep / ARM, GCP Terraform, GCP API-native); the AWS CDK / CloudFormation path is qualified through its own preview gate. Kept excluded pending the owner's confirmation."
+      "reason": "Existing CloudFormation stacks are not one of the six paths of the narrow ACT-DEV release (owner rebaseline 6443352284: AWS Terraform, AWS CDK / CloudFormation, Azure Terraform, Azure Bicep / ARM, GCP Terraform, GCP API-native); AWS CDK / CloudFormation path acceptance is through act:aws-cdk, and its brownfield preview gate (preview:cdk-aws-brownfield) was dropped by the owner on 2026-10-28 (#39 6480066863). Kept excluded pending the owner's confirmation."
     },
     {
       "gate": "preview:ansible-existing-hosts",
@@ -54,6 +54,26 @@
     {
       "gate": "preview:crossplane-local-render",
       "reason": "Crossplane is not one of the six paths of the narrow ACT-DEV release (owner rebaseline 6443352284: AWS Terraform, AWS CDK / CloudFormation, Azure Terraform, Azure Bicep / ARM, GCP Terraform, GCP API-native)."
+    },
+    {
+      "gate": "preview:terraform-aws-brownfield",
+      "reason": "Brownfield preview is dropped from this release (owner decision of 2026-10-28, #39 6480066863): owner decision E1 makes APPLY seals create-only, so a brownfield plan, one that updates or adopts a pre-existing resource, is refused at seal (RESOURCE_NOT_IN_CANARY) and ./alz apply preview-evidence cannot produce this gate's evidence. The producer is unchanged."
+    },
+    {
+      "gate": "preview:terraform-azure-brownfield",
+      "reason": "Brownfield preview is dropped from this release (owner decision of 2026-10-28, #39 6480066863): owner decision E1 makes APPLY seals create-only, so a brownfield plan, one that updates or adopts a pre-existing resource, is refused at seal (RESOURCE_NOT_IN_CANARY) and ./alz apply preview-evidence cannot produce this gate's evidence. The producer is unchanged."
+    },
+    {
+      "gate": "preview:cdk-aws-brownfield",
+      "reason": "Brownfield preview is dropped from this release (owner decision of 2026-10-28, #39 6480066863): owner decision E1 makes APPLY seals create-only, so a brownfield plan, one that updates or adopts a pre-existing resource, is refused at seal (RESOURCE_NOT_IN_CANARY) and ./alz apply preview-evidence cannot produce this gate's evidence. The producer is unchanged."
+    },
+    {
+      "gate": "preview:bicep-azure-brownfield",
+      "reason": "Brownfield preview is dropped from this release (owner decision of 2026-10-28, #39 6480066863): owner decision E1 makes APPLY seals create-only, so a brownfield plan, one that updates or adopts a pre-existing resource, is refused at seal (RESOURCE_NOT_IN_CANARY) and ./alz apply preview-evidence cannot produce this gate's evidence. The producer is unchanged."
+    },
+    {
+      "gate": "preview:terraform-gcp-brownfield",
+      "reason": "GCP is out of this release (owner decision of 2026-10-28, #39 6480066863): no GCP contract can seal a plan, so no producer can run this gate. The ./alz apply preview-evidence producer is unchanged."
     }
   ]
 }

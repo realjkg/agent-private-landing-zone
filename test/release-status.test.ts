@@ -91,6 +91,28 @@ test("OUT_OF_SCOPE only for a gate the owner's scope excludes, and the scope can
   assert.ok(scopeProblems({ ...clone(shippedScope), outOfScope: [{ gate: "lifecycle:upgrade", reason: "" }] }).some((x) => x.includes("why")));
 });
 
+test("the owner's decision of 2026-10-28 drops the brownfield preview gates: each is excluded with its reason and OUT_OF_SCOPE in the status, and listing one as in scope again is refused", () => {
+  const journeys: RowReport[] = [];
+  const dropped = {
+    "preview:terraform-aws-brownfield": /E1 makes APPLY seals create-only/,
+    "preview:terraform-azure-brownfield": /E1 makes APPLY seals create-only/,
+    "preview:cdk-aws-brownfield": /E1 makes APPLY seals create-only/,
+    "preview:bicep-azure-brownfield": /E1 makes APPLY seals create-only/,
+    "preview:terraform-gcp-brownfield": /GCP is out of this release/,
+  };
+  const excludedGate = (gate: string) => shippedStatus.gates.find((x) => x.gate === gate)!;
+  const template = excludedGate("preview:opentofu-aws-brownfield");
+  for (const [gate, reason] of Object.entries(dropped)) {
+    const exclusion = shippedScope.outOfScope.find((x) => x.gate === gate);
+    assert.ok(exclusion, gate);
+    assert.match(exclusion.reason, /owner decision of 2026-10-28/, gate);
+    assert.match(exclusion.reason, reason, gate);
+    assert.deepEqual(excludedGate(gate), { ...template, gate }, gate + ": the same fields as the existing exclusions");
+    assert.ok(statusProblems(withEntry(gate, { status: "BLOCKED", nextAction: "Run the brownfield preview." }), { scope: shippedScope, journeys })
+      .some((x) => x.includes(gate) && x.includes("excludes this gate")), gate);
+  }
+});
+
 test("the scope must name the owner's decision and exactly the platforms and paths the admission gates define", () => {
   assert.deepEqual(scopeProblems(shippedScope), []);
   for (const change of [

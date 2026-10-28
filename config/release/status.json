@@ -102,15 +102,14 @@
       "gate": "preview:terraform-aws-brownfield",
       "candidate": null,
       "owner": "OWNER",
-      "status": "BLOCKED",
+      "status": "OUT_OF_SCOPE",
       "evidenceMode": null,
       "evidenceRefs": [],
-      "testedScope": "Exact provider and IaC scenario with real tool output and no infrastructure mutation.",
+      "testedScope": "Not tested for this release; excluded by the owner's scope decision.",
       "invalidatedBy": [
-        "the candidate commit changes",
-        "the engine pin or the provider adapter changes"
+        "the owner adds the path to the release scope"
       ],
-      "nextAction": "Waits on the AWS provider gate's sandbox; then run this preview scenario on the candidate."
+      "nextAction": ""
     },
     {
       "gate": "preview:pulumi-azure-greenfield",
@@ -142,15 +141,14 @@
       "gate": "preview:bicep-azure-brownfield",
       "candidate": null,
       "owner": "OWNER",
-      "status": "BLOCKED",
+      "status": "OUT_OF_SCOPE",
       "evidenceMode": null,
       "evidenceRefs": [],
-      "testedScope": "Real Bicep what-if output against the Azure brownfield sandbox, with no deployment and no infrastructure change, produced from the candidate commit and bound to the candidate commit, the pinned programs and the what-if bytes.",
+      "testedScope": "Not tested for this release; excluded by the owner's scope decision.",
       "invalidatedBy": [
-        "the candidate commit changes",
-        "the Bicep or Azure CLI version or the Bicep path's engine changes"
+        "the owner adds the path to the release scope"
       ],
-      "nextAction": "Back in scope by the owner's rebaseline of the narrow ACT-DEV release (#39, 6443352284: Azure Bicep / ARM is path 4). The check-only pins are on main (config/tool-pins.json: azureCli 2.91.0 and bicep 0.47.16, #309), and so is the deployment-stack engine (src/apply/engines/bicep.ts, #316), which owner decision E2 (#39) admits as the BICEP engine for DEV only, so ./alz apply preview-evidence can write this gate's evidence at seal (the what-if runs as APPLY; bootstrap/azure grants APPLY the pilot group's Bicep stack role with bicep_deployment_stacks). Then it waits on the azure-provider gate's sandbox, and closes only when a run from the candidate commit with the pinned programs writes LIVE evidence that the admission review accepts. Synthetic evidence is labeled SYNTHETIC and is refused by the gate."
+      "nextAction": ""
     },
     {
       "gate": "preview:cloudformation-aws-existing",
@@ -169,15 +167,14 @@
       "gate": "preview:cdk-aws-brownfield",
       "candidate": null,
       "owner": "OWNER",
-      "status": "BLOCKED",
+      "status": "OUT_OF_SCOPE",
       "evidenceMode": null,
       "evidenceRefs": [],
-      "testedScope": "Exact provider and IaC scenario with real tool output and no infrastructure mutation.",
+      "testedScope": "Not tested for this release; excluded by the owner's scope decision.",
       "invalidatedBy": [
-        "the candidate commit changes",
-        "the engine pin or the provider adapter changes"
+        "the owner adds the path to the release scope"
       ],
-      "nextAction": "Waits on the AWS provider gate's sandbox; then run this preview scenario on the candidate."
+      "nextAction": ""
     },
     {
       "gate": "preview:ansible-existing-hosts",
@@ -209,15 +206,14 @@
       "gate": "preview:terraform-azure-brownfield",
       "candidate": null,
       "owner": "OWNER",
-      "status": "BLOCKED",
+      "status": "OUT_OF_SCOPE",
       "evidenceMode": null,
       "evidenceRefs": [],
-      "testedScope": "Real Terraform plan output against the Azure brownfield sandbox, with no infrastructure applied, produced by ./alz apply preview-evidence from a sealed preview and bound to the candidate commit, the pinned engine program and the plan bytes.",
+      "testedScope": "Not tested for this release; excluded by the owner's scope decision.",
       "invalidatedBy": [
-        "the candidate commit changes",
-        "the Terraform pin or the Azure provider adapter changes"
+        "the owner adds the path to the release scope"
       ],
-      "nextAction": "The scenario (src/qualification/phase-e.ts terraform-azure-brownfield) and its producer (./alz apply preview-evidence --gate preview:terraform-azure-brownfield) exist and are qualified synthetically; the gate closes only when the producer, run from the candidate commit with the pinned, qualified Terraform against the Azure sandbox (it waits on the azure-provider gate's sandbox), writes LIVE evidence that the admission review accepts. Synthetic evidence from a fake engine is labeled SYNTHETIC and is refused by the gate."
+      "nextAction": ""
     },
     {
       "gate": "preview:pulumi-aws-greenfield",
@@ -262,15 +258,14 @@
       "gate": "preview:terraform-gcp-brownfield",
       "candidate": null,
       "owner": "OWNER",
-      "status": "BLOCKED",
+      "status": "OUT_OF_SCOPE",
       "evidenceMode": null,
       "evidenceRefs": [],
-      "testedScope": "Real Terraform plan output against the GCP brownfield sandbox, with no infrastructure applied, produced by ./alz apply preview-evidence from a sealed preview and bound to the candidate commit, the pinned engine program and the plan bytes.",
+      "testedScope": "Not tested for this release; excluded by the owner's scope decision.",
       "invalidatedBy": [
-        "the candidate commit changes",
-        "the Terraform pin or the GCP provider spec changes"
+        "the owner adds the path to the release scope"
       ],
-      "nextAction": "Waits on GCP admission (no GCP contract can seal a plan yet, so ./alz apply preview-evidence refuses this gate for any AWS or Azure plan) and on the gcp-provider gate's sandbox. Then the producer, run from the candidate commit with the pinned, qualified Terraform against the GCP sandbox, writes LIVE evidence that the admission review accepts. Synthetic evidence is labeled SYNTHETIC and is refused by the gate."
+      "nextAction": ""
     },
     {
       "gate": "isolated-recovery",

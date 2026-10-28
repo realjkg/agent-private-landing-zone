@@ -111,9 +111,16 @@ test("every release gate is mapped, read as data without the registry; gates wit
   assert.equal(mode("aws-provider"), "AUTO");
   assert.equal(mode("azure-provider"), "AUTO");
   // GCP's gates are required before GCP is admitted: reported, never planned as AUTO or GUIDED, and never Azure's stage by default.
+  // The owner's scope of 2026-10-28 (#39 6480066863) excludes the GCP preview gate, so the shipped plan reports it OUT_OF_SCOPE; with no
+  // exclusion it is still NO_PRODUCER, not GUIDED.
+  assert.equal(mode("gcp-provider"), "NO_PRODUCER");
+  assert.match(plan.find((gate) => gate.id === "gcp-provider")!.note, /not an admitted provider/);
+  assert.ok(outOfScope.has("preview:terraform-gcp-brownfield"));
+  assert.equal(mode("preview:terraform-gcp-brownfield"), "OUT_OF_SCOPE");
   for (const id of ["gcp-provider", "preview:terraform-gcp-brownfield"]) {
-    assert.equal(mode(id), "NO_PRODUCER", id);
-    assert.match(plan.find((gate) => gate.id === id)!.note, /not an admitted provider/, id);
+    const unscoped = gatePlan([id], new Set())[0];
+    assert.equal(unscoped.mode, "NO_PRODUCER", id);
+    assert.match(unscoped.note, /not an admitted provider/, id);
   }
   assert.equal(gatePlan(["other-provider"], new Set())[0].mode, "NO_PRODUCER");
   assert.equal(mode("private-model-runtime"), "OWNER");
@@ -124,17 +131,39 @@ test("every release gate is mapped, read as data without the registry; gates wit
   assert.equal(gatePlan(["future-gate"], new Set())[0].mode, "NO_PRODUCER", "an unknown gate id fails closed");
 });
 
-test("the Bicep gates are in scope and admitted in code: the preview gate is produced at seal (GUIDED S5) and act:azure-bicep is a guided DEV stage, for the authorized path only", () => {
+const DROPPED_BROWNFIELD = [
+  "preview:terraform-aws-brownfield", "preview:terraform-azure-brownfield", "preview:cdk-aws-brownfield", "preview:bicep-azure-brownfield", "preview:terraform-gcp-brownfield",
+];
+
+test("the owner dropped the brownfield preview gates from this release (2026-10-28): the runner reports each OUT_OF_SCOPE and plans no stage for it, and the in-scope preview producer mapping is unchanged", () => {
   const { ids, outOfScope } = releaseGates(".");
-  assert.ok(ids.includes("preview:bicep-azure-brownfield") && !outOfScope.has("preview:bicep-azure-brownfield"), "back in scope (owner rebaseline 6443352284)");
-  assert.equal(gateModeOf("preview:bicep-azure-brownfield"), "LIVE_PREVIEW");
-  const bicep = gatePlan(ids, outOfScope).find((gate) => gate.id === "preview:bicep-azure-brownfield")!;
-  assert.deepEqual([bicep.mode, bicep.slice], ["GUIDED", "S5"]);
-  assert.match(bicep.note, /only for the authorized path/);
+  const plan = gatePlan(ids, outOfScope);
+  for (const id of DROPPED_BROWNFIELD) {
+    assert.ok(ids.includes(id), id + " is still a registry gate");
+    assert.ok(outOfScope.has(id), id + " is excluded by config/release/scope.json");
+    assert.equal(gateModeOf(id), "LIVE_PREVIEW", id);
+    const entry = plan.find((gate) => gate.id === id)!;
+    assert.equal(entry.mode, "OUT_OF_SCOPE", id);
+    assert.equal(entry.slice, undefined, id);
+    assert.match(entry.note, /owner's release scope/, id);
+  }
+  // No preview gate is in this release's scope any more.
+  assert.deepEqual(ids.filter((id) => id.startsWith("preview:") && !outOfScope.has(id)), []);
+  // The producer mapping itself is unchanged: were the owner to bring a preview gate back into scope, it is produced at seal (GUIDED S5)
+  // for the authorized path only, and the GCP one still has no producer until GCP is admitted.
+  for (const id of ["preview:terraform-aws-brownfield", "preview:terraform-azure-brownfield", "preview:cdk-aws-brownfield", "preview:bicep-azure-brownfield"]) {
+    const inScope = gatePlan([id], new Set())[0];
+    assert.deepEqual([inScope.mode, inScope.slice], ["GUIDED", "S5"], id);
+    assert.match(inScope.note, /only for the authorized path/, id);
+  }
+  assert.equal(gatePlan(["preview:terraform-gcp-brownfield"], new Set())[0].mode, "NO_PRODUCER");
+});
+
+test("the Bicep ACT gate is in scope and admitted in code: act:azure-bicep is a guided DEV stage, for the authorized path only", () => {
+  const { ids, outOfScope } = releaseGates(".");
   assert.ok(ids.includes("act:azure-bicep") && !outOfScope.has("act:azure-bicep"));
   assert.equal(gateModeOf("act:azure-bicep"), "LIVE_ACT");
   const act = gatePlan(ids, outOfScope).find((gate) => gate.id === "act:azure-bicep")!;
   assert.deepEqual([act.mode, act.slice], ["GUIDED", "S5"]);
-  // The other Azure preview gate keeps its producer.
-  assert.equal(gatePlan(ids, outOfScope).find((gate) => gate.id === "preview:terraform-azure-brownfield")!.mode, "GUIDED");
+  assert.match(act.note, /only for the authorized path/);
 });

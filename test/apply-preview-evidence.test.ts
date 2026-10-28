@@ -14,6 +14,7 @@ import { targetString } from "../src/cli/teardown-driver.js";
 import { openNonceStore } from "../src/apply/nonces.js";
 import { PREVIEW_GATE_ACTIONS, previewGateScenarioOf, unauthorizedPreviewActions } from "../src/qualification/preview-gate.js";
 import { PREVIEW_GATE_SCENARIOS, PRODUCTION_RELEASE_GATES, previewScenarioOf, reviewProductionRelease, type ReleaseGateSubmission } from "../src/qualification/release-admission.js";
+import { loadReleaseScope } from "../src/release/status.js";
 import { removeTree } from "../src/teardown/driver/cleanup.js";
 import {
   CANARIES, NOW, POLICY, SOURCE_COMMIT, behave as behaveIn, callsOf, contractJson, identityEnv, installFakeTerraform, targetOf, testFixtureForgeQualificationEvidence,
@@ -96,10 +97,12 @@ async function seal(w: World, behavior: Behavior = GREENFIELD): Promise<Sealed> 
 }
 /**
  * Owner decision E1: a contract that authorizes APPLY seals creates only, and every seal is admitted as APPLY, so no brownfield plan can
- * be sealed: the seal refuses it with RESOURCE_NOT_IN_CANARY. The brownfield preview gates are unsatisfiable until the owner decides
- * (drop them from this release, or approve a separate non-appliable preview seal). The producer's own logic is still checked below on
- * the record a brownfield seal would have made: a greenfield seal's record with one update of a pre-existing resource added (a test
- * record, never sealed, so the CLI cannot read it from the vault; its checks go through the builder the CLI calls).
+ * be sealed: the seal refuses it with RESOURCE_NOT_IN_CANARY. So the owner dropped the brownfield preview gates from this release
+ * (owner decision of 2026-10-28, #39 6480066863): config/release/scope.json excludes them and the admission review, under that scope,
+ * reports them OUT_OF_SCOPE and refuses a record for one (RELEASE_RECORD_FOR_OUT_OF_SCOPE_GATE). The producer is unchanged, and its own
+ * logic is still checked below on the record a brownfield seal would have made: a greenfield seal's record with one update of a
+ * pre-existing resource added (a test record, never sealed, so the CLI cannot read it from the vault; its checks go through the builder
+ * the CLI calls).
  */
 async function brownfieldRefused(w: World, behavior: Behavior = BROWNFIELD, said: RegExp = /azurerm_virtual_network\.existing \(azurerm_virtual_network\): the plan would \["update"\] it/): Promise<void> {
   behave(behavior);
@@ -200,6 +203,13 @@ test("preview-evidence writes LIVE evidence only from a qualified sealed preview
   assert.deepEqual(record, { id: GATE, mode: "LIVE_PREVIEW", sourceCommit: SOURCE_COMMIT, targetHardwareId: HOST, evidencePath: path, evidenceSha256: sha256(text) });
   const reviewed = await admit(w, path, record);
   assert.deepEqual([reviewed.status, reviewed.blockers], ["EVIDENCE_PRESENT", []], "the producer's output is what the LIVE_PREVIEW gate accepts");
+  // Owner decision of 2026-10-28: under the shipped release scope this gate is out of scope, so the same record is refused, not counted.
+  const scoped = await reviewProductionRelease({
+    manifest: { schemaVersion: 1, sourceCommit: SOURCE_COMMIT, operatingMode: "PREVIEW_OPERATE", infrastructureAct: "DISABLED", records: [{ ...record, evidencePath: relative(root, path) }] },
+    root, expectedCommit: SOURCE_COMMIT, outOfScope: loadReleaseScope(process.cwd()).outOfScope.map((x) => x.gate),
+  });
+  assert.equal(scoped.gates.find((gate) => gate.id === GATE)?.status, "OUT_OF_SCOPE");
+  assert.ok(scoped.blockers.includes("RELEASE_RECORD_FOR_OUT_OF_SCOPE_GATE:" + GATE), scoped.blockers.join(", "));
   // The same document never qualifies another gate: the CDK gate, the AWS Terraform gate, or a gate of another commit.
   for (const other of ["preview:cdk-aws-brownfield", "preview:terraform-aws-brownfield"]) {
     const wrong = await admit(w, path, { ...record, id: other });

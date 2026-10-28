@@ -44,7 +44,7 @@ The apply path already separates generic modules from per-provider and per-engin
 | DEV prerequisites | `bootstrap/aws` with `engine = "TERRAFORM"` (OIDC provider, four web-identity roles, versioned S3 bucket with `use_lockfile`, budget); #293 changes DISCOVERY scope, so bootstrap after it merges. Pins: Terraform 1.16.4 (`config/tool-pins.json`); AWS CLI 2.38.6 is pinned but not used by this path. DEV-only exception: on `main` (ACT-DEV-1) |
 | Authorization | Contract names `provider: AWS`, `engine: TERRAFORM`, `targets.DEV.{accountId, region, backend, workspace}`, `enabledEnvironments: ["DEV"]`, operations apply, cleanup, remove. Identities DISCOVERY, STATE, STATE_WRITE, APPLY, all distinct; qualification attests STATE_WRITE and APPLY from CloudTrail. Requester signs the sealed request; `requiredApprovals.DEV` at least 1; cleanup has its own approval |
 | Failing tests | No path-specific failure in `npm run test:quiet`; one timing-dependent console test ("Test run"). Opt-in: `test/apply-emulated-aws.test.ts` (real Terraform + moto) passed 2026-10-27 (#279), before #297; re-run owed (A1). Matrix row `AWS TERRAFORM`: prepare, preview, approve, execute, observe, cleanup and the four proofs SYNTHETIC_PASS; live BLOCKED |
-| Authentic acceptance evidence | `act:aws-terraform` (LIVE_ACT, `./alz apply record-live`), `aws-provider` (LIVE_PROVIDER), `preview:terraform-aws-brownfield` (LIVE_PREVIEW), `act-run-recovery` (ACT_RECOVERY, first live path). All exist in `status.json`; none has evidence |
+| Authentic acceptance evidence | `act:aws-terraform` (LIVE_ACT, `./alz apply record-live`), `aws-provider` (LIVE_PROVIDER), `act-run-recovery` (ACT_RECOVERY, first live path). All exist in `status.json`; none has evidence. `preview:terraform-aws-brownfield` (LIVE_PREVIEW) was dropped by the owner on 2026-10-28 (#39, 6480066863): OUT_OF_SCOPE, because E1 makes APPLY seals create-only |
 
 ## Path 2: AWS CDK / CloudFormation
 
@@ -56,7 +56,7 @@ The apply path already separates generic modules from per-provider and per-engin
 | DEV prerequisites | `bootstrap/aws` with `engine = "CDK"` (three roles: DISCOVERY, CHANGESET, APPLY; no bucket; `cdk_stack_name`). AWS CLI 2.38.6 pin (#288); `prepare --aws-cli-version` until qualified. Without a DEV-only exception, three AWS accounts (DEV, QA, PROD) and two PROD approvers |
 | Authorization | Contract names `provider: AWS`, `engine: CDK`, `targets.<ENV>.{accountId, region, backend = stack name}`. Identity separation: CHANGESET creates, APPLY executes, DISCOVERY reads; qualification attests CHANGESET and APPLY. Change-set capabilities limited to `CAPABILITY_IAM`/`NAMED_IAM`; transforms, macros, custom resources and nested stacks refused at seal |
 | Failing tests | No path-specific failure in `npm run test:quiet`. No opt-in emulated test. Matrix row `AWS CDK`: all six steps and four proofs SYNTHETIC_PASS; live BLOCKED (after AWS Terraform) |
-| Authentic acceptance evidence | `act:aws-cdk` (LIVE_ACT, status NOT_RUN, owner ENGINEERING), `preview:cdk-aws-brownfield` (LIVE_PREVIEW), `aws-provider`. `preview:cloudformation-aws-existing` is OUT_OF_SCOPE in `scope.json` and is not needed: CDK is qualified through its own preview gate |
+| Authentic acceptance evidence | `act:aws-cdk` (LIVE_ACT, status NOT_RUN, owner ENGINEERING), `aws-provider`. `preview:cdk-aws-brownfield` (LIVE_PREVIEW) was dropped by the owner on 2026-10-28 (#39, 6480066863): OUT_OF_SCOPE, because E1 makes APPLY seals create-only. `preview:cloudformation-aws-existing` is OUT_OF_SCOPE in `scope.json` too |
 
 ## Path 3: Azure Terraform
 
@@ -68,7 +68,7 @@ The apply path already separates generic modules from per-provider and per-engin
 | DEV prerequisites | `bootstrap/azure` requires exactly three distinct subscriptions (`variables.tf`; DEV, QA, PROD hard-coded in `providers.tf`, `environments.tf`, `identities.tf`): Z3 adds a DEV-only mode. Four federated app registrations; state accounts with keys and SAS disabled. Pins: Terraform 1.16.4 only; no `az` pin (the path runs no `az`). DEV-only exception: #298 |
 | Authorization | Contract names `provider: AZURE`, `engine: TERRAFORM`, `targets.DEV.{tenantId, subscriptionId, backend "<account>/<container>/<key>", workspace}`, `enabledEnvironments: ["DEV"]`. Same four identities; one client per identity across subscriptions (`principalPerEnvironment: false`), attested from sign-in and storage logs. Z4: DISCOVERY Reader not yet reviewed against "control-plane metadata only" |
 | Failing tests | No path-specific failure in `npm run test:quiet`. Opt-in: `test/apply-emulated.test.ts` (real Terraform + Azurite) passed 2026-10-27 with SAS and access keys; Entra-only will refuse those, so the G1b harness (drafted, no PR) adds a test-only SAS allowance. Matrix row `AZURE TERRAFORM`: all steps and proofs SYNTHETIC_PASS; live BLOCKED |
-| Authentic acceptance evidence | `act:azure-terraform` (LIVE_ACT), `azure-provider` (LIVE_PROVIDER), `preview:terraform-azure-brownfield` (LIVE_PREVIEW; producer `./alz apply preview-evidence` exists). All exist; none has evidence |
+| Authentic acceptance evidence | `act:azure-terraform` (LIVE_ACT), `azure-provider` (LIVE_PROVIDER), All exist; none has evidence. `preview:terraform-azure-brownfield` (LIVE_PREVIEW; producer `./alz apply preview-evidence` exists, unchanged) was dropped by the owner on 2026-10-28 (#39, 6480066863): OUT_OF_SCOPE, because E1 makes APPLY seals create-only |
 
 ## Path 4: Azure Bicep / ARM
 
@@ -80,7 +80,7 @@ The apply path already separates generic modules from per-provider and per-engin
 | DEV prerequisites | `bootstrap/azure` with `bicep_deployment_stacks = true` (DEV only): a custom role at the pilot resource group, assigned to APPLY only, whose one new effective action beside Contributor is `manageDenySetting`; DISCOVERY keeps Reader |
 | Authorization | Contract names `provider: AZURE`, `engine: BICEP`, `enabledEnvironments: ["DEV"]`, `tenantId`, `subscriptionId`, `resourceGroup`, `location`, the stack name (`backend`) and the `canary` allowlist (`config/act-pilot-contract.azure-bicep-dev.example.json`). Tenant, subscription, group, location and canary join the target hash. Deny settings and `actionOnUnmanage` are fixed by the engine, never by the template |
 | Failing tests | None. SYNTHETIC: `test/apply-bicep.test.ts`, `test/apply-bicep-admission.test.ts`, `test/act-dev1-bicep-canary.test.ts`. Matrix row `AZURE BICEP`: steps BLOCKED on a console journey test, proofs SYNTHETIC_PASS, live BLOCKED on G2 |
-| Authentic acceptance evidence | `act:azure-bicep` (LIVE_ACT, in `ACT_RELEASE_PATHS` and `scope.json`, BLOCKED), `preview:bicep-azure-brownfield` (LIVE_PREVIEW, in scope), `azure-provider` (shared). None has evidence |
+| Authentic acceptance evidence | `act:azure-bicep` (LIVE_ACT, in `ACT_RELEASE_PATHS` and `scope.json`, BLOCKED), `azure-provider` (shared). None has evidence. `preview:bicep-azure-brownfield` (LIVE_PREVIEW) was dropped by the owner on 2026-10-28 (#39, 6480066863): OUT_OF_SCOPE, because E1 makes APPLY seals create-only |
 
 ## Path 5: GCP Terraform
 
@@ -92,7 +92,7 @@ The apply path already separates generic modules from per-provider and per-engin
 | DEV prerequisites | `bootstrap/gcp` (none exists): WIF pool and provider, four service accounts, versioned state bucket, budget, `iam.disableServiceAccountKeyCreation`. Pins: Terraform 1.16.4; `gcloud` only if the read-only evidence runner uses it. DEV-only exception: O1 is answered (6443352284: GCP Terraform DEV is in the DEV pilot scope, full gates), but `contract.ts` still refuses it; P1, P2 and P4 are adopted as fail-closed defaults. Owner items for the bootstrap: P3 (lock-version retention) and P5 (Data Access audit logs, may incur cost) |
 | Authorization | Contract names `provider: GCP`, `engine: TERRAFORM`, `projectId`, `region`, `backend "<bucket>/<prefix>"`, environment, operations. Identities: four WIF principals, each impersonating its own service account (the SA email is the attested principal); no key files; `google-beta` refused |
 | Failing tests | None (no tests in the repository). Matrix row `GCP TERRAFORM`: all NOT_IMPLEMENTED |
-| Authentic acceptance evidence | **Missing gates:** `act:gcp-terraform`, `gcp-provider` (LIVE_PROVIDER), `preview:terraform-gcp-brownfield` (`PROVIDERS` in `preview-gate.ts` is AWS and Azure) |
+| Authentic acceptance evidence | **Missing gates:** `act:gcp-terraform`, `gcp-provider` (LIVE_PROVIDER). `preview:terraform-gcp-brownfield` was dropped by the owner on 2026-10-28 (#39, 6480066863): OUT_OF_SCOPE, because GCP is out of this release |
 
 ## Path 6: GCP API-native provisioning
 

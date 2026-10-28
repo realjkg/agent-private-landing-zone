@@ -73,18 +73,20 @@ Anything else (a modify, a remove, another resource) means the wrong stack or a 
 
 The governed cleanup removes resources from the stack's template. It never deletes a stack, and it refuses to empty one (`CLEANUP_WOULD_EMPTY_STACK`, `removalTemplateOf` in `src/apply/engines/cdk.ts`). The sentinel is what makes the log group removable. A proposal that also named the sentinel would empty the stack and is refused.
 
-What a run ends with **on today's code**, shown end to end by `test/act-dev1-cdk-canary.test.ts`:
+What a run ends with, shown end to end by `test/act-dev1-cdk-canary.test.ts` (SYNTHETIC, fake `aws`). The reviewed contract's DEV canary allowlist is the example contract's (`config/act-pilot-contract.aws-cdk-dev.example.json`): 1 `AWS::Logs::LogGroup` and 1 `AWS::CloudFormation::WaitConditionHandle` with `"retain": true`. The owner confirmed this retained sentinel on 2026-10-28 (#39, 6480066863).
 
 | Step | Result |
 | --- | --- |
-| Cleanup proposal | Deletes `ActDev1` only. Holds `RetainedSentinel` as `TYPE_UNREVIEWED`, kept by `ENVIRONMENT_OWNER`: `AWS::CloudFormation::WaitConditionHandle` is not on the reviewed leaf allowlist. |
+| Cleanup proposal | Deletes `ActDev1` only. Keeps `RetainedSentinel` as `CANARY_RETAINED`, retained by `PILOT_OWNER`, because the contract declares it `retain: true`. |
 | Cleanup | Removes the log group through one removal change set. The stack and the sentinel stay. |
-| Leftover check | The log group is `CONFIRMED_DELETED` by independent read. The sentinel is `INTENTIONALLY_RETAINED` with basis `UNREVIEWED_TYPE`. The disposition is **`INCOMPLETE`**. |
-| Lifecycle report | Resource cleanup is **`INCOMPLETE`**, and `passed` is **`false`**. The sentinel is counted as held for a person's decision. |
+| Leftover check | The log group is `CONFIRMED_DELETED` by independent read. The sentinel is `INTENTIONALLY_RETAINED` on the basis `RETENTION_DECISION`. The disposition is **`COMPLETE`**. |
+| Lifecycle report | Resource cleanup is **`COMPLETED`**, and `passed` is **`true`**. The report shows the retained sentinel (`CANARY_RETAINED: 1`, owner `PILOT_OWNER`). |
 
-So the log group is removed and independently verified; the no-cost sentinel and the stack are retained. The CDK path's report cannot pass until a reviewed retention rule exists.
+So the log group is removed and independently verified, and the no-cost sentinel and the stack are kept by the owner's reviewed retention decision.
 
-**Follow-up (E1, lane L1):** let the reviewed contract declare this sentinel as an intentional retention, so it is classified `RETENTION_DECISION` instead of `UNREVIEWED_TYPE`. Until then, a person keeps or retires the sentinel and the stack by hand; that is the owner's separate decision, outside the pilot.
+Without `retain` on the sentinel's allowlist entry, the same run keeps it as `TYPE_UNREVIEWED` (owner `ENVIRONMENT_OWNER`, basis `UNREVIEWED_TYPE`): `AWS::CloudFormation::WaitConditionHandle` is not on the reviewed leaf allowlist. The leftover check is then **`INCOMPLETE`**, and the lifecycle report does not pass. The test covers both cases.
+
+Retiring the stack and the sentinel is still the owner's separate decision, outside the pilot: the pilot has no stack-delete authority.
 
 ## Tests
 
@@ -95,7 +97,7 @@ So the log group is removed and independently verified; the no-cost sentinel and
 - the cleanup rule through the real `removalTemplateOf`: the log group is removable, and only the sentinel remains;
 - the whole governed lifecycle of the committed `cdk.out` through the real driver and CDK engine with the fake `aws` of the CDK unit tests:
   - seal: exactly two creates;
-  - then apply, observe, proposal, cleanup, the leftover check and the lifecycle report, with the outcomes in the table above.
+  - then apply, observe, proposal, cleanup, the leftover check and the lifecycle report, with the outcomes in the table above, both with and without `retain`.
 
 With `ALZ_CDK_CANARY_SYNTH=1`, after `npm ci` here, it also:
 
