@@ -171,7 +171,16 @@ export const AWS_DENIED_TYPES: ReadonlySet<string> = new Set([
   // same way. All five are in hashicorp/aws 6.68.0's schema (checked 2026-10-28). The CDK engine is separate and has its own judge.
   "aws_cloudformation_stack", "aws_cloudformation_stack_set", "aws_cloudformation_stack_set_instance", "aws_cloudformation_stack_instances",
   "aws_servicecatalog_provisioned_product",
+  // Round 3 B1 (review of #327, a sweep of the full pinned schema): an Image Builder image runs its build and test components on
+  // an instance at apply; a SageMaker training, hyperparameter tuning or labeling job runs the job's code (or workers) at apply.
+  "aws_imagebuilder_image", "aws_sagemaker_training_job", "aws_sagemaker_hyper_parameter_tuning_job", "aws_sagemaker_labeling_job",
 ]);
+/**
+ * The schema `AWS_DENIED_TYPES` (with the stack container families) was reviewed against, in full: hashicorp/aws 6.68.0.
+ * test/apply-data-sources.test.ts fails ("re-review the denied types against the new schema") when the version the repository's
+ * evidence records, or any aws version constraint it commits, changes.
+ */
+export const AWS_DENIED_TYPES_REVIEWED_AGAINST = "hashicorp/aws 6.68.0";
 /**
  * Every use's provider is an allowed one, no managed use is of a denied type (`AWS_DENIED_TYPES`), and a use whose provider the plan
  * does not name is refused (review N2 of #320: a resource

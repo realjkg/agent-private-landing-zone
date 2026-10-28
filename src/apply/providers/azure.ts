@@ -163,7 +163,19 @@ export const AZURE_DENIED_TYPES: ReadonlySet<string> = new Set([
   // in other subscriptions, none of it in the change list. All four are in hashicorp/azurerm 4.81.0's schema (checked 2026-10-28).
   "azurerm_resource_group_template_deployment", "azurerm_subscription_template_deployment", "azurerm_management_group_template_deployment",
   "azurerm_tenant_template_deployment",
+  // Round 3 B1 (review of #327, a sweep of the full pinned schema): a managed application and a blueprint assignment deploy a
+  // template; a policy remediation deploys the assigned policies' deployIfNotExists templates; a Kubernetes or Arc Kubernetes
+  // cluster extension installs and runs software in the cluster; a Kusto script runs a script against the database.
+  "azurerm_managed_application", "azurerm_blueprint_assignment", "azurerm_resource_policy_remediation", "azurerm_resource_group_policy_remediation",
+  "azurerm_subscription_policy_remediation", "azurerm_management_group_policy_remediation", "azurerm_kubernetes_cluster_extension",
+  "azurerm_arc_kubernetes_cluster_extension", "azurerm_kusto_script",
 ]);
+/**
+ * The schema `AZURE_DENIED_TYPES` was reviewed against, in full: hashicorp/azurerm 4.81.0. test/apply-data-sources.test.ts fails
+ * ("re-review the denied types against the new schema") when the version the repository's evidence records, or any azurerm
+ * version constraint it commits, changes.
+ */
+export const AZURE_DENIED_TYPES_REVIEWED_AGAINST = "hashicorp/azurerm 4.81.0";
 const BUILTIN_ALLOWED_TYPE = "terraform_data";
 const BUILTIN_TYPE = /^terraform_/;
 /** A use's provider: its full name, or from its local name alone the built-in provider for `terraform` and a hashicorp one otherwise. */

@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
+import { readdirSync, readFileSync } from "node:fs";
 import test from "node:test";
 
 import { codeOf } from "../src/apply/engine.js";
 import type { ProviderBlock, ProviderUse } from "../src/apply/provider.js";
-import { AWS, AWS_DATA_SOURCES, AWS_DENIED_TYPES } from "../src/apply/providers/aws.js";
-import { AZURE, AZURE_DATA_SOURCES, AZURE_DENIED_TYPES } from "../src/apply/providers/azure.js";
+import { AWS, AWS_DATA_SOURCES, AWS_DENIED_TYPES, AWS_DENIED_TYPES_REVIEWED_AGAINST } from "../src/apply/providers/aws.js";
+import { AZURE, AZURE_DATA_SOURCES, AZURE_DENIED_TYPES, AZURE_DENIED_TYPES_REVIEWED_AGAINST } from "../src/apply/providers/azure.js";
 import { AWS_DEV_TARGET, AWS_REGION, DEV_TARGET, TENANT, awsIdentityEnv, awsRoleArn, identityEnv } from "./helpers/apply-fixtures.js";
 
 // Review of #320 (6451892239), N1, N2, N3 and N7. SYNTHETIC: the specs' functions are driven with the `show -json` and saved-backend
@@ -149,8 +150,10 @@ test("N1 and round 2 B1 (review of #327): a managed type that runs code or deplo
   const azurerm = { name: "azurerm", full_name: "registry.terraform.io/hashicorp/azurerm" };
   const azureJudge = (uses: ProviderUse[]) => codeFrom(() => AZURE.assertProviderConfig([], AZURE_PINNED, identityEnv("DEV"), uses));
   assert.deepEqual([...AZURE_DENIED_TYPES].sort(), [
-    "azurerm_arc_machine_extension", "azurerm_management_group_template_deployment", "azurerm_resource_deployment_script_azure_cli",
-    "azurerm_resource_deployment_script_azure_power_shell", "azurerm_resource_group_template_deployment", "azurerm_stack_hci_extension",
+    "azurerm_arc_kubernetes_cluster_extension", "azurerm_arc_machine_extension", "azurerm_blueprint_assignment", "azurerm_kubernetes_cluster_extension", "azurerm_kusto_script",
+    "azurerm_managed_application", "azurerm_management_group_policy_remediation", "azurerm_management_group_template_deployment",
+    "azurerm_resource_deployment_script_azure_cli", "azurerm_resource_deployment_script_azure_power_shell", "azurerm_resource_group_policy_remediation",
+    "azurerm_resource_group_template_deployment", "azurerm_resource_policy_remediation", "azurerm_stack_hci_extension", "azurerm_subscription_policy_remediation",
     "azurerm_subscription_template_deployment", "azurerm_tenant_template_deployment", "azurerm_virtual_machine_extension", "azurerm_virtual_machine_run_command",
     "azurerm_virtual_machine_scale_set_extension",
   ]);
@@ -160,8 +163,9 @@ test("N1 and round 2 B1 (review of #327): a managed type that runs code or deplo
   }
   assert.equal(azureJudge([managed("azurerm_virtual_machine", azurerm), managed("azurerm_kubernetes_cluster", azurerm)]), "OK", "the machines themselves are resources");
   assert.deepEqual([...AWS_DENIED_TYPES].sort(), [
-    "aws_cloudformation_stack", "aws_cloudformation_stack_instances", "aws_cloudformation_stack_set", "aws_cloudformation_stack_set_instance", "aws_lambda_invocation",
-    "aws_servicecatalog_provisioned_product", "aws_ssm_association",
+    "aws_cloudformation_stack", "aws_cloudformation_stack_instances", "aws_cloudformation_stack_set", "aws_cloudformation_stack_set_instance", "aws_imagebuilder_image",
+    "aws_lambda_invocation", "aws_sagemaker_hyper_parameter_tuning_job", "aws_sagemaker_labeling_job", "aws_sagemaker_training_job", "aws_servicecatalog_provisioned_product",
+    "aws_ssm_association",
   ]);
   for (const type of AWS_DENIED_TYPES) {
     assert.equal(awsJudge([managed(type, aws)]), "PROVIDER_TYPE_NOT_ALLOWED", type);
@@ -192,4 +196,57 @@ test("round 2 B1 (review of #327): one row per template deployment, whatever the
   // Ordinary resources stay resources.
   assert.equal(awsJudge([managed("aws_cloudwatch_log_group", aws), managed("aws_s3_bucket", aws)]), "OK");
   assert.equal(azureJudge([managed("azurerm_resource_group", azurerm), managed("azurerm_virtual_network", azurerm)]), "OK");
+});
+
+test("round 3 B1 (review of #327): one row per type the full-schema sweep found, deploying a template or running code at apply", () => {
+  const azurerm = { name: "azurerm", full_name: "registry.terraform.io/hashicorp/azurerm" };
+  const azureJudge = (uses: ProviderUse[]) => codeFrom(() => AZURE.assertProviderConfig([], AZURE_PINNED, identityEnv("DEV"), uses));
+  for (const type of ["azurerm_managed_application", "azurerm_blueprint_assignment", "azurerm_resource_policy_remediation", "azurerm_resource_group_policy_remediation",
+    "azurerm_subscription_policy_remediation", "azurerm_management_group_policy_remediation", "azurerm_kubernetes_cluster_extension",
+    "azurerm_arc_kubernetes_cluster_extension", "azurerm_kusto_script"]) assert.equal(azureJudge([managed(type, azurerm)]), "PROVIDER_TYPE_NOT_ALLOWED", type);
+  for (const type of ["aws_imagebuilder_image", "aws_sagemaker_training_job", "aws_sagemaker_hyper_parameter_tuning_job", "aws_sagemaker_labeling_job"]) {
+    assert.equal(awsJudge([managed(type, aws)]), "PROVIDER_TYPE_NOT_ALLOWED", type);
+  }
+  // Their reviewed neighbors stay resources.
+  assert.equal(azureJudge([managed("azurerm_kubernetes_cluster", azurerm), managed("azurerm_kusto_database", azurerm), managed("azurerm_policy_definition", azurerm)]), "OK");
+  assert.equal(awsJudge([managed("aws_imagebuilder_image_recipe", aws), managed("aws_sagemaker_model", aws)]), "OK");
+});
+
+test("the denied types were reviewed against the full pinned schemas; a change of either pin fails until they are reviewed again", () => {
+  const STALE = "re-review the denied types against the new schema";
+  assert.equal(AWS_DENIED_TYPES_REVIEWED_AGAINST, "hashicorp/aws 6.68.0", STALE);
+  assert.equal(AZURE_DENIED_TYPES_REVIEWED_AGAINST, "hashicorp/azurerm 4.81.0", STALE);
+  const root = new URL("../", import.meta.url);
+  const read = (path: string): string => readFileSync(new URL(path, root), "utf8");
+  // The provider versions the repository's real-tool evidence was captured with (test/fixtures/live/MANIFEST.json) are the reviewed ones.
+  const manifest = read("test/fixtures/live/MANIFEST.json");
+  for (const [name, reviewed] of [["aws", AWS_DENIED_TYPES_REVIEWED_AGAINST], ["azurerm", AZURE_DENIED_TYPES_REVIEWED_AGAINST]] as const) {
+    const recorded = new Set([...manifest.matchAll(new RegExp("hashicorp/" + name + " (\\d+\\.\\d+\\.\\d+)", "g"))].map((m) => "hashicorp/" + name + " " + m[1]));
+    assert.deepEqual([...recorded], [reviewed], name + ": the evidence names another version; " + STALE);
+  }
+  // Every version constraint the repository commits for either provider, in Terraform files and in generated configuration, is the
+  // one recorded with the review. A widened or moved constraint admits another schema.
+  const found: string[] = [];
+  const walk = (dir: string): void => {
+    for (const entry of readdirSync(new URL(dir, root), { withFileTypes: true })) {
+      const path = dir + entry.name;
+      if (entry.isDirectory()) { if (!entry.name.startsWith(".") && entry.name !== "node_modules") walk(path + "/"); continue; }
+      if (!/\.(tf|ts)$/.test(entry.name)) continue;
+      const lines = read(path).split("\n");
+      lines.forEach((line, index) => {
+        const provider = /source\s*=\s*\\?"hashicorp\/(aws|azurerm)\\?"/.exec(line)?.[1];
+        const version = provider ? /version\s*=\s*\\?"([^"\\]+)\\?"/.exec(lines.slice(index + 1, index + 3).join("\n"))?.[1] : undefined;
+        if (provider) found.push(path + " " + provider + " " + (version ?? "UNCONSTRAINED"));
+      });
+    }
+  };
+  for (const dir of ["bootstrap/", "qualification/", "src/", "config/"]) walk(dir);
+  assert.deepEqual(found.sort(), [
+    "bootstrap/aws/versions.tf aws >= 5.0, < 7.0",
+    "bootstrap/azure/modules/environment/versions.tf azurerm ~> 4.0",
+    "bootstrap/azure/versions.tf azurerm ~> 4.0",
+    "qualification/aws/act-dev1-canary/main.tf aws >= 5.0.0, < 7.0.0",
+    "src/build/azure-terraform.ts azurerm >= 4.0, < 5.0",
+    "src/qualification/aws-terraform-agent.ts aws >= 5.0, < 7.0",
+  ], "a provider version constraint changed; " + STALE);
 });
