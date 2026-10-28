@@ -20,13 +20,13 @@ The engine passes no parameter values, so each parameter has a default. Edit `ma
 | Value | Rule |
 | --- | --- |
 | `name` (parameter) | `vnet-alz-act-dev-1-<name>`. Use a new name for each run. EXAMPLE default: `vnet-alz-act-dev-1-canary-01`. |
-| `location` (parameter) | Defaults to the pilot resource group's region. Leave it. |
+| `location` (parameter) | Defaults to the pilot resource group's region. Leave it. The reviewed contract's target names that region as `location` (the operator supplies it, for example `eastus2`); the seal and the apply refuse unless the group is in it and the what-if places the network there (`LOCATION_NOT_IN_CONTRACT`). |
 | `owner` tag | The approved owner tag. EXAMPLE value: `REPLACE-WITH-APPROVED-OWNER`. |
 | `alz-build`, `alz-managed-by`, `alz-unit` tags | The values `./alz apply prepare` prints. The engine refuses a created resource without them (`UNIT_TAG_MISSING`). |
 
 The tags are written as literal strings in `main.bicep`, not passed as parameters: the engine refuses tags or address prefixes that compile to an ARM expression (`TEMPLATE_VALUE_NOT_LITERAL`), so what is deployed is exactly the sealed text.
 
-The subscription, the resource group and the stack name come from the reviewed contract's target.
+The subscription, the resource group, the location and the stack name come from the reviewed contract's target (`config/act-pilot-contract.azure-bicep-dev.example.json`).
 
 ## Expected preview
 

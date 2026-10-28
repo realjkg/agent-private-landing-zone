@@ -120,13 +120,6 @@ resource "azurerm_role_definition" "bicep_stack_apply" {
   }
 
   assignable_scopes = [azurerm_resource_group.apply[0].id]
-
-  lifecycle {
-    precondition {
-      condition     = var.settings.apply_resource_group_name != null
-      error_message = "The Bicep stack role needs the pilot resource group; it is never defined at subscription scope."
-    }
-  }
 }
 
 resource "azurerm_role_assignment" "bicep_stack_apply" {

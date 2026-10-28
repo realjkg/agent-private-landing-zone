@@ -128,7 +128,7 @@ test("the spec: two identities, three adapters with their own argument digests, 
   assert.equal(new Set(digests).size, 3);
   assert.ok([BICEP.previewAdapter(), BICEP.applyAdapter, BICEP.cleanupAdapter!].every((adapter) => adapter.engine === "BICEP"));
   assert.equal(engineSpec("BICEP"), BICEP, "registered; the contract admits it for DEV only (test/apply-bicep-admission.test.ts)");
-  assert.deepEqual(BICEP.target!.locationFields, ["resourceGroup"], "the resource group joins the run's target hash");
+  assert.deepEqual(BICEP.target!.locationFields, ["resourceGroup", "location"], "the resource group and the location join the run's target hash");
   assert.equal(BICEP.target!.fields.resourceGroup(RESOURCE_GROUP), true);
   assert.equal(BICEP.target!.fields.resourceGroup("bad/group"), false);
   assert.equal(PIN, loadToolPins().bicep.version);
@@ -599,4 +599,63 @@ test("E1 for Bicep: an apply re-judges the sealed template and the what-if again
   } finally { run.removeSecrets(); snapshot.remove(); }
   assert.ok(!azCalls().some((call) => sub(call) === "stack group create"));
   assert.equal(stateOf(toolDir).stack, null);
+});
+
+// --- review of #332, B1: the location is bound ----------------------------------------------------------------------------
+
+const located = (location: unknown, defaultValue?: string) => {
+  const template = JSON.parse(vnetTemplate());
+  template.resources[0].location = location;
+  if (defaultValue !== undefined) template.parameters.location.defaultValue = defaultValue;
+  return JSON.stringify(template);
+};
+
+test("B1: the seal refuses a network placed outside the contract's location, a literal or a parameter default, and a group in another region", () => {
+  for (const [label, template, behavior] of [
+    ["a literal westeurope", located("westeurope"), {}],
+    ["a location default of westeurope", located("[parameters('location')]", "westeurope"), {}],
+    ["a location default of chinaeast2", located("[parameters('location')]", "chinaeast2"), {}],
+    ["a group in another region", undefined, { groupLocation: "westeurope" }],
+    ["a group in another region, as ARM prints it", undefined, { groupLocation: "West Europe" }],
+  ] as const) {
+    const w = world(behavior, template);
+    assert.throws(() => seal(w), refusedWith("LOCATION_NOT_IN_CONTRACT"), label);
+    assert.ok(!azCalls().some((call) => call.args[0] === "stack" && call.args[2] !== "show"), label);
+    assert.equal(stateOf(toolDir).stack, null, label);
+  }
+  // The contract's location, written literally or as ARM prints the group's region, seals.
+  assert.deepEqual(seal(world({}, located("eastus2"))).changes.map((c) => c.action), ["CREATE"]);
+  assert.deepEqual(seal(world({ groupLocation: "East US 2" })).changes.map((c) => c.action), ["CREATE"]);
+  // The sealed record names the location, and a record for another location is not this target's.
+  const w = world();
+  const record = JSON.parse(seal(w).artifact.toString("utf8"));
+  assert.equal(record.location, "eastus2");
+  assert.equal(BICEP.target!.fields.location!("eastus2"), true);
+  for (const bad of ["East US 2", "east-us", "", "a", "eastus2;x", 7]) assert.equal(BICEP.target!.fields.location!(bad), false, String(bad));
+  assert.deepEqual(BICEP.target!.locationFields, ["resourceGroup", "location"]);
+});
+
+test("B1: the apply refuses again when the group moved region after the seal, or the target names another location, before any create", async () => {
+  const w = world();
+  const sealed = seal(w);
+  patch(toolDir, { groupLocation: "westeurope" });
+  await assert.rejects(apply(w, sealed.artifact), refusedWith("LOCATION_NOT_IN_CONTRACT"));
+  // The same sealed plan under a target that names another location: refused at prepare (the group is not there) and, were the
+  // group there, by the sealed record, which names the location it was sealed for.
+  const v = world();
+  const plan = seal(v);
+  const moved = () => ({ ...input(v), pinned: { ...TARGET, location: "westeurope" } as never });
+  const snapshot = createImmutableSnapshot(v.project.projectRoot, v.project.manifest, fresh("snapshot"));
+  const run = BICEP.openApply(moved());
+  try {
+    assert.throws(() => run.prepare(snapshot.path), refusedWith("LOCATION_NOT_IN_CONTRACT"));
+  } finally { run.removeSecrets(); snapshot.remove(); }
+  patch(toolDir, { groupLocation: "westeurope" });
+  const snapshot2 = createImmutableSnapshot(v.project.projectRoot, v.project.manifest, fresh("snapshot"));
+  const run2 = BICEP.openApply(moved());
+  try {
+    run2.prepare(snapshot2.path);
+    assert.throws(() => run2.rederive(plan.artifact), refusedWith("ARTIFACT_TAMPERED"));
+  } finally { run2.removeSecrets(); snapshot2.remove(); }
+  assert.ok(!azCalls().some((call) => sub(call) === "stack group create"));
 });

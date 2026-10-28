@@ -888,6 +888,7 @@ test("canary: every shipped example contract names its path's canary allowlist o
   const expected: Record<string, { type: string; count: number }[]> = {
     "act-pilot-contract.example.json": [{ type: "azurerm_virtual_network", count: 1 }],
     "act-pilot-contract.azure-dev.example.json": [{ type: "azurerm_virtual_network", count: 1 }],
+    "act-pilot-contract.azure-bicep-dev.example.json": [{ type: "Microsoft.Network/virtualNetworks", count: 1 }],
     "act-pilot-contract.aws.example.json": [{ type: "aws_cloudwatch_log_group", count: 1 }],
     "act-pilot-contract.aws-dev.example.json": [{ type: "aws_cloudwatch_log_group", count: 1 }],
     "act-pilot-contract.aws-cdk.example.json": [{ type: "AWS::Logs::LogGroup", count: 1 }, { type: "AWS::CloudFormation::WaitConditionHandle", count: 1, retain: true }],

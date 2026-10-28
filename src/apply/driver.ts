@@ -350,7 +350,7 @@ async function keepRecoveryFiles(files: RecoveryFile[], artifactSha256: string):
  * a CloudFormation physical id for the types the independent reader knows).
  */
 async function keepBlueprint(run: { stateDocument?(): StateDocument | undefined }, sealed: Pick<SealedPlan, "changes" | "unit">, evidence: ApplyEvidence, evidenceDir: string, now: Date,
-  place: { account: string; region: string | undefined; stack: string }): Promise<void> {
+  place: { account: string; region: string | undefined; stack: string; resourceGroup?: string }): Promise<void> {
   try {
     const state = run.stateDocument?.();
     if (state === undefined) return;
@@ -574,7 +574,8 @@ export async function runApply(request: ApplyRequest, deps: ApplyDeps): Promise<
     // The blueprint of what the run left: addresses and cloud identifiers from the engine's own state, read as STATE and
     // dropped. It is the observe and cleanup steps' starting point (docs/observe-and-cleanup.md). A state that cannot be
     // read leaves no blueprint, and a later cleanup is then refused for want of one, never guessed.
-    await keepBlueprint(run, sealed, evidence, evidenceDir, now(), { account: sealed.target.account, region: (contract.targets[sealed.environment] as { region?: string } | undefined)?.region, stack: sealed.target.backend });
+    const pinnedTarget = contract.targets[sealed.environment] as { region?: string; resourceGroup?: string } | undefined;
+    await keepBlueprint(run, sealed, evidence, evidenceDir, now(), { account: sealed.target.account, region: pinnedTarget?.region, stack: sealed.target.backend, resourceGroup: pinnedTarget?.resourceGroup });
     if (outcome === "SUCCEEDED") return written;
     if ("stale" in end) {
       return { ok: false, code: "PLAN_STALE", outcome, message: "The saved plan is stale: state changed after it was sealed. Nothing was applied. Seal a new preview and obtain new approvals." };

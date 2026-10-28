@@ -394,3 +394,24 @@ run "bicep_refuses_dev_without_a_pilot_group" {
   # back to the subscription.
   expect_failures = [var.environments]
 }
+
+# The module's own pilot-group rule (review of #332, N5): asked for the Bicep stack role without a pilot resource group, the
+# environment module refuses, so the role can never be defined or assigned at subscription scope, whatever the caller passes.
+run "bicep_role_refuses_a_missing_pilot_group_in_the_module" {
+  command = plan
+  module {
+    source = "./modules/environment"
+  }
+  providers = {
+    azurerm = azurerm.dev
+  }
+  variables {
+    settings         = { subscription_id = "00000000-0000-0000-0000-000000000001", state_resource_group_name = "rg-state-dev", state_storage_account_name = "examplestatedev", state_container_name = "tfstate" }
+    principal_ids    = { DISCOVERY = "11111111-0000-4000-8000-00000000d15c", STATE = "11111111-0000-4000-8000-000000057a7e", STATE_WRITE = "11111111-0000-4000-8000-0000057a7e33", APPLY = "11111111-0000-4000-8000-0000000a9971" }
+    retention_days   = 30
+    replication      = "ZRS"
+    tags             = {}
+    bicep_stack_role = true
+  }
+  expect_failures = [var.bicep_stack_role]
+}

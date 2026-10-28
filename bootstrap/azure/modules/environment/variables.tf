@@ -53,4 +53,9 @@ variable "bicep_stack_role" {
   description = "Define the pilot group's Bicep stack role and assign it to APPLY (Azure Bicep, DEV only)."
   type        = bool
   default     = false
+
+  validation {
+    condition     = !var.bicep_stack_role || try(trimspace(var.settings.apply_resource_group_name) != "", false)
+    error_message = "The Bicep stack role needs the pilot resource group; it is never defined or assigned at subscription scope."
+  }
 }

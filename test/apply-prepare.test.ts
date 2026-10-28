@@ -173,7 +173,7 @@ test("a missing engine tool explains the supported alternative for that provider
 test("Azure Bicep is the Azure secondary path: main.bicep is the project, no lock file and no providers, and the engine version is the tested az pin until it is qualified", async () => {
   const bicep = (kill: string) => ({
     ...contractJson(kill, { policyVersion: POLICY }), engine: "BICEP", enabledEnvironments: ["DEV"], requiredApprovals: { DEV: 1 }, authorize: { DEV: ["APPLY", "CLEANUP"] },
-    targets: { DEV: { tenantId: "11111111-1111-4111-8111-111111111111", subscriptionId: targetOf("DEV").account, backend: "alz-pilot-stack", workspace: "default", resourceGroup: "alz-pilot-dev" } },
+    targets: { DEV: { tenantId: "11111111-1111-4111-8111-111111111111", subscriptionId: targetOf("DEV").account, backend: "alz-pilot-stack", workspace: "default", resourceGroup: "alz-pilot-dev", location: "eastus2" } },
   });
   const s = setup(bicep, "none");
   for (const name of ["az", "bicep"]) writeFileSync(join(s.toolDir, name), "#!/bin/sh\nexit 9\n", { mode: 0o755 });

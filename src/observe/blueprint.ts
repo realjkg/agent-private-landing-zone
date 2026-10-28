@@ -248,9 +248,21 @@ export function blueprintFromCloudFormationResources(resourcesJson: string, plan
 
 /** The ARM type of a deployment stack: the unit's container for the Bicep engine. */
 export const DEPLOYMENT_STACK_TYPE = "Microsoft.Resources/deploymentStacks";
-/** A deployment stack's id in one subscription, any resource group, by the stack's own name (compared case-insensitively, as ARM does). */
-export const deploymentStackIdPattern = (subscriptionId: string, stack: string): RegExp =>
-  new RegExp("^/subscriptions/" + subscriptionId.replace(/[^0-9a-fA-F-]/g, "") + "/resourceGroups/[A-Za-z0-9._()-]{1,90}/providers/Microsoft\\.Resources/deploymentStacks/" + stack.replace(/[^A-Za-z0-9._-]/g, "").replace(/\./g, "\\.") + "$", "i");
+/**
+ * Whether `id` is exactly the pinned deployment stack: a resource-group-scoped `Microsoft.Resources/deploymentStacks` id in the
+ * pinned subscription, with the pinned stack name and, when given, in the pinned resource group. Parsed with the ARM id parser and
+ * compared case-insensitively, as ARM compares ids; no pattern is built from data (review of #332, B2 and N4).
+ */
+export function isPinnedDeploymentStackId(id: unknown, pinned: { subscription: string; stack: string; resourceGroup?: string }): boolean {
+  if (typeof id !== "string") return false;
+  const parsed = parseArmId(id);
+  const segments = id.split("/");
+  const same = (a: string | undefined, b: string): boolean => a !== undefined && a.toLowerCase() === b.toLowerCase();
+  return parsed !== undefined && segments.length === 9 && parsed.pairs.length === 1 &&
+    same(parsed.pairs[0]!.namespace, "Microsoft.Resources") && same(parsed.pairs[0]!.typePath, "deploymentStacks") &&
+    same(parsed.subscription, pinned.subscription) && parsed.resourceGroup !== undefined &&
+    (pinned.resourceGroup === undefined || same(parsed.resourceGroup, pinned.resourceGroup)) && same(segments[8], pinned.stack);
+}
 
 /**
  * The same blueprint from an Azure deployment stack (the Bicep engine, src/apply/engines/bicep.ts): the stack's managed resources,
@@ -259,7 +271,7 @@ export const deploymentStackIdPattern = (subscriptionId: string, stack: string):
  * type as the type and its id as the identifier. The stack itself is the unit's container when it is the pinned stack in the
  * pinned subscription. An id that does not parse in full is skipped, so it is never an entry the cleanup could name.
  */
-export function blueprintFromDeploymentStackResources(json: string, planned: readonly PlannedChange[], place: { account: string; stack?: string }): Blueprint {
+export function blueprintFromDeploymentStackResources(json: string, planned: readonly PlannedChange[], place: { account: string; stack?: string; resourceGroup?: string }): Blueprint {
   const body = parseState(json);
   if (!Array.isArray(body.managed) || !body.managed.every((id) => typeof id === "string")) throw new Error("STATE_JSON_INVALID: not a deployment stack resource list");
   const plannedByLower = new Map(planned.filter((change) => change.type !== "output").map((change) => [change.address.toLowerCase(), change.address]));
@@ -274,7 +286,7 @@ export function blueprintFromDeploymentStackResources(json: string, planned: rea
   const leaving = new Set(planned.filter((change) => change.type !== "output" && LEAVES_RESOURCE.has(change.action)).map((change) => change.address));
   const built = blueprintOf(instances(), planned);
   const stackId = typeof body.stackId === "string" ? body.stackId : undefined;
-  const container = stackId !== undefined && place.stack !== undefined && deploymentStackIdPattern(place.account, place.stack).test(stackId)
+  const container = stackId !== undefined && place.stack !== undefined && isPinnedDeploymentStackId(stackId, { subscription: place.account, stack: place.stack, resourceGroup: place.resourceGroup })
     ? { type: DEPLOYMENT_STACK_TYPE, identifier: stackId } : undefined;
   return { entries: built.entries, missing: [...leaving].filter((address) => !built.entries.some((entry) => entry.address === address)).sort(), ...(container ? { container } : {}) };
 }

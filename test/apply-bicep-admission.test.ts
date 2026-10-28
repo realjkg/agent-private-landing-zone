@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -15,6 +15,7 @@ import { loadRunRecords, observeRun, verifyProposalLeftovers, type ObserveDeps }
 import { openNonceStore } from "../src/apply/nonces.js";
 import { providerSpec } from "../src/apply/provider.js";
 import { readBlueprintRecord } from "../src/apply/run-records.js";
+import { isPinnedDeploymentStackId } from "../src/observe/blueprint.js";
 import { loadSealedPlan } from "../src/apply/seal.js";
 import type { PilotContract, SignedApproval } from "../src/apply/types.js";
 import { pilotUnitOf } from "../src/apply/unit.js";
@@ -24,7 +25,7 @@ import { canonicalJson } from "../src/teardown/manifest.js";
 import { sha256 } from "../src/util/sha256.js";
 import { ARM_ACCESS_TOKEN_CANARY, CANARIES, NOW, POLICY, REQUESTER, SOURCE_COMMIT, approvalFor, approvers, fakeArmHttp, human, keys, writeReviewedContract } from "./helpers/apply-fixtures.js";
 import {
-  APPLY_TOKEN_CANARY, ARM_FEDERATED_TOKEN_CANARY, AZ_VERSION, CANARY, CLIENTS, FAKE_AZ_SHA256, RESOLVED, RESOURCE_GROUP, STACK_NAME, SUBSCRIPTION_ID, TEMPLATE_CANARY, TENANT_ID, VNET_ID,
+  APPLY_TOKEN_CANARY, ARM_FEDERATED_TOKEN_CANARY, AZ_VERSION, CANARY, CLIENTS, LOCATION, FAKE_AZ_SHA256, RESOLVED, RESOURCE_GROUP, STACK_NAME, SUBSCRIPTION_ID, TEMPLATE_CANARY, TENANT_ID, VNET_ID,
   behave, callsOf, identityEnv, installFakes, patch, stateOf, vnetTemplate, writeBicepProject,
 } from "./helpers/bicep-fixtures.js";
 
@@ -45,7 +46,7 @@ const STACK_ID = "/subscriptions/" + SUBSCRIPTION_ID + "/resourceGroups/" + RESO
 
 const bicepContract = (over: Record<string, unknown> = {}) => ({
   schemaVersion: 1, enabled: true, provider: "AZURE", engine: "BICEP", enabledEnvironments: ["DEV"],
-  targets: { DEV: { tenantId: TENANT_ID, subscriptionId: SUBSCRIPTION_ID, backend: STACK_NAME, workspace: "default", resourceGroup: RESOURCE_GROUP, canary: CANARY } },
+  targets: { DEV: { tenantId: TENANT_ID, subscriptionId: SUBSCRIPTION_ID, backend: STACK_NAME, workspace: "default", resourceGroup: RESOURCE_GROUP, location: LOCATION, canary: CANARY } },
   requiredApprovals: { DEV: 1 }, maxApprovalAgeMinutes: 60, approvers, killSwitchPath: KILL, authorize: { DEV: ["APPLY", "CLEANUP"] }, ...over,
 });
 const contractAt = (contract: unknown): string => { const path = join(fresh("contract"), "act-pilot-contract.json"); writeReviewedContract(path, contract); return path; };
@@ -63,7 +64,7 @@ test("BICEP is a registered engine admitted with Azure for DEV only: the DEV-onl
   assert.deepEqual(authorized.authorization.entry, { provider: "AZURE", engine: "BICEP", environment: "DEV", account: SUBSCRIPTION_ID, operations: ["APPLY", "CLEANUP"] });
   const threeStage = bicepContract({
     enabledEnvironments: undefined, requiredApprovals: { DEV: 1, QA: 1, PROD: 2 },
-    targets: Object.fromEntries((["DEV", "QA", "PROD"] as const).map((env, i) => [env, { tenantId: TENANT_ID, subscriptionId: SUBSCRIPTION_ID.replace(/^2/, String(i + 3)), backend: STACK_NAME, workspace: "default", resourceGroup: RESOURCE_GROUP }])),
+    targets: Object.fromEntries((["DEV", "QA", "PROD"] as const).map((env, i) => [env, { tenantId: TENANT_ID, subscriptionId: SUBSCRIPTION_ID.replace(/^2/, String(i + 3)), backend: STACK_NAME, workspace: "default", resourceGroup: RESOURCE_GROUP, location: LOCATION }])),
   });
   assert.match(reason(threeStage), /^enabledEnvironments: AZURE BICEP \(path 4\) is admitted for DEV only/);
   // Wrong provider: BICEP is Azure's only (AWS is a provider the pilot has; GCP is not one yet).
@@ -72,7 +73,7 @@ test("BICEP is a registered engine admitted with Azure for DEV only: the DEV-onl
   // QA or PROD under the DEV-only scope is not a contract either.
   assert.notEqual(reason(bicepContract({ enabledEnvironments: ["QA"] })), "OK");
   assert.notEqual(reason(bicepContract({ enabledEnvironments: ["DEV", "QA"] })), "OK");
-  const target = (over: Record<string, unknown>) => bicepContract({ targets: { DEV: { tenantId: TENANT_ID, subscriptionId: SUBSCRIPTION_ID, backend: STACK_NAME, workspace: "default", resourceGroup: RESOURCE_GROUP, ...over } } });
+  const target = (over: Record<string, unknown>) => bicepContract({ targets: { DEV: { tenantId: TENANT_ID, subscriptionId: SUBSCRIPTION_ID, backend: STACK_NAME, workspace: "default", resourceGroup: RESOURCE_GROUP, location: LOCATION, ...over } } });
   for (const [label, over] of [["no group", { resourceGroup: undefined }], ["group with a slash", { resourceGroup: "a/b" }], ["option-like stack", { backend: "--debug" }], ["@ stack", { backend: "@x" }], ["workspace", { workspace: "other" }]] as const) {
     assert.notEqual(reason(target(over)), "OK", label);
   }
@@ -158,6 +159,9 @@ test("Azure Bicep journey (SYNTHETIC): seal (what-if as APPLY), apply (one deplo
   assert.ok(applied.ok, JSON.stringify(applied));
   assert.equal(applied.evidence.outcome, "SUCCEEDED");
   assert.equal(applied.evidence.authority.mutation, "AZURE_DEPLOYMENT_STACK_CREATE_OF_SEALED_TEMPLATE");
+  // The evidence names the product commit that sealed and ran the plan.
+  assert.equal(s.sealed.sourceCommit, SOURCE_COMMIT);
+  assert.equal(applied.evidence.sourceCommit, SOURCE_COMMIT);
   assert.deepEqual(stateOf(toolDir).stack?.resources, [VNET_ID]);
   const creates = callsOf(toolDir).filter((call) => call.args.slice(0, 3).join(" ") === "stack group create");
   assert.equal(creates.length, 1);
@@ -234,7 +238,7 @@ test("Azure Bicep refusals (SYNTHETIC): a three-stage contract seals nothing; a 
   assert.ok(applied.ok, JSON.stringify(applied));
   assert.ok((await observeRun(s.sealed.artifactSha256, w.observe())).ok);
   // The owner's committed contract now points the same stack name at another group: no cleanup can be proposed for this run, and the stack stays.
-  writeReviewedContract(w.contractPath, bicepContract({ targets: { DEV: { tenantId: TENANT_ID, subscriptionId: SUBSCRIPTION_ID, backend: STACK_NAME, workspace: "default", resourceGroup: "alz-pilot-other" } } }));
+  writeReviewedContract(w.contractPath, bicepContract({ targets: { DEV: { tenantId: TENANT_ID, subscriptionId: SUBSCRIPTION_ID, backend: STACK_NAME, workspace: "default", resourceGroup: "alz-pilot-other", location: LOCATION } } }));
   const records = await loadRunRecords(s.sealed.artifactSha256, w.evidenceDir);
   assert.ok(records.ok);
   const moved = buildCleanupProposal({
@@ -330,11 +334,51 @@ test("Azure Bicep canary allowlist through the driver (SYNTHETIC): a contract wh
     ["none", undefined, "CANARY_ALLOWLIST_MISSING"],
   ] as const) {
     const w = world();
-    writeReviewedContract(w.contractPath, bicepContract({ targets: { DEV: { tenantId: TENANT_ID, subscriptionId: SUBSCRIPTION_ID, backend: STACK_NAME, workspace: "default", resourceGroup: RESOURCE_GROUP, ...(canary ? { canary } : {}) } } }));
+    writeReviewedContract(w.contractPath, bicepContract({ targets: { DEV: { tenantId: TENANT_ID, subscriptionId: SUBSCRIPTION_ID, backend: STACK_NAME, workspace: "default", resourceGroup: RESOURCE_GROUP, location: LOCATION, ...(canary ? { canary } : {}) } } }));
     const refused = await sealWith(w);
     assert.equal((refused as { code?: string }).code, code, label + ": " + JSON.stringify(refused));
     assert.ok(!callsOf(toolDir).some((call) => azSub(call) === "deployment group what-if" || azSub(call) === "stack group create"), label);
   }
   // A wildcard or pattern is not a canary type.
-  assert.notEqual(reason(bicepContract({ targets: { DEV: { tenantId: TENANT_ID, subscriptionId: SUBSCRIPTION_ID, backend: STACK_NAME, workspace: "default", resourceGroup: RESOURCE_GROUP, canary: { resources: [{ type: "Microsoft.Network/*", count: 1 }] } } } })), "OK");
+  assert.notEqual(reason(bicepContract({ targets: { DEV: { tenantId: TENANT_ID, subscriptionId: SUBSCRIPTION_ID, backend: STACK_NAME, workspace: "default", resourceGroup: RESOURCE_GROUP, location: LOCATION, canary: { resources: [{ type: "Microsoft.Network/*", count: 1 }] } } } })), "OK");
+});
+
+// --- review of #332: location (B1) and the stack container (B2, N4) --------------------------------------------------------
+
+test("B1 (SYNTHETIC): the location is a target field in the target hash, and a plan placed elsewhere is never sealed or applied", async () => {
+  const target = (over: Record<string, unknown>) => bicepContract({ targets: { DEV: { tenantId: TENANT_ID, subscriptionId: SUBSCRIPTION_ID, backend: STACK_NAME, workspace: "default", resourceGroup: RESOURCE_GROUP, location: LOCATION, canary: CANARY, ...over } } });
+  const hashOf = (over: Record<string, unknown>) => pilotTargetSha256(loadPilotContract(contractAt(target(over))) as PilotContract, "DEV")!;
+  assert.notEqual(hashOf({}), hashOf({ location: "westeurope" }), "a changed location is a target change");
+  assert.equal(targetMoved(hashOf({}), loadPilotContract(contractAt(target({ location: "westeurope" }))) as PilotContract, "DEV")?.code, "TARGET_NOT_IN_CONTRACT");
+  const { location: _omitted, ...noLocation } = (target({}).targets as { DEV: Record<string, unknown> }).DEV;
+  assert.match(reason(bicepContract({ targets: { DEV: noLocation } })), /targets\.DEV\.location: missing/);
+  for (const bad of ["East US 2", "west-europe", "*"]) assert.match(reason(target({ location: bad })), /targets\.DEV\.location: invalid/, bad);
+  // The reviewer's driver repro: a location default of westeurope against a group in eastus2 is refused at seal; nothing is applied.
+  const w = world();
+  const template = JSON.parse(readFileSync(join(w.project.projectRoot, "main.bicep"), "utf8"));
+  template.parameters.location.defaultValue = "westeurope";
+  const moved = { ...w, project: writeBicepProject(fresh("project"), JSON.stringify(template)) };
+  const refused = await sealWith(moved);
+  assert.equal((refused as { code?: string }).code, "ARTIFACT_INVALID", JSON.stringify(refused));
+  assert.match((refused as { message: string }).message, /LOCATION_NOT_IN_CONTRACT/);
+  assert.ok(!callsOf(toolDir).some((call) => azSub(call) === "stack group create"));
+  assert.equal(stateOf(toolDir).stack, null);
+});
+
+test("B2/N4: the deployment stack container is the pinned stack only: parsed, not matched by a pattern, in the pinned subscription and group", () => {
+  const id = (sub: string, group: string, ns: string, type: string, name: string) => "/subscriptions/" + sub + "/resourceGroups/" + group + "/providers/" + ns + "/" + type + "/" + name;
+  const pinned = { subscription: SUBSCRIPTION_ID, stack: STACK_NAME, resourceGroup: RESOURCE_GROUP };
+  assert.equal(isPinnedDeploymentStackId(STACK_ID, pinned), true);
+  assert.equal(isPinnedDeploymentStackId(STACK_ID.toUpperCase().replace("/SUBSCRIPTIONS/", "/subscriptions/"), pinned), true, "ARM compares ids case-insensitively");
+  for (const [label, value] of [
+    ["another group", id(SUBSCRIPTION_ID, "alz-pilot-other", "Microsoft.Resources", "deploymentStacks", STACK_NAME)],
+    ["another subscription", id("33333333-3333-4333-8333-333333333333", RESOURCE_GROUP, "Microsoft.Resources", "deploymentStacks", STACK_NAME)],
+    ["another stack", id(SUBSCRIPTION_ID, RESOURCE_GROUP, "Microsoft.Resources", "deploymentStacks", "other")],
+    ["a name a pattern would match", id(SUBSCRIPTION_ID, RESOURCE_GROUP, "Microsoft.Resources", "deploymentStacks", STACK_NAME.replace("-", "."))],
+    ["a deployment, not a stack", id(SUBSCRIPTION_ID, RESOURCE_GROUP, "Microsoft.Resources", "deployments", STACK_NAME)],
+    ["a child of the stack", STACK_ID + "/snapshots/x"],
+    ["a subscription-scoped stack", "/subscriptions/" + SUBSCRIPTION_ID + "/providers/Microsoft.Resources/deploymentStacks/" + STACK_NAME],
+    ["not an id", "deploymentStacks/" + STACK_NAME],
+  ] as const) assert.equal(isPinnedDeploymentStackId(value, pinned), false, label);
+  assert.equal(isPinnedDeploymentStackId(id(SUBSCRIPTION_ID, "alz-pilot-other", "Microsoft.Resources", "deploymentStacks", STACK_NAME), { subscription: SUBSCRIPTION_ID, stack: STACK_NAME }), true, "the record check, which has no group, binds subscription and stack");
 });

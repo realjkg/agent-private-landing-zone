@@ -3,7 +3,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { encryptEvidence, ensureEvidenceKey, readEncryptedEvidence } from "../evidence/vault.js";
-import { DEPLOYMENT_STACK_TYPE, deploymentStackIdPattern, type Blueprint, type BlueprintEntry } from "../observe/blueprint.js";
+import { DEPLOYMENT_STACK_TYPE, isPinnedDeploymentStackId, type Blueprint, type BlueprintEntry } from "../observe/blueprint.js";
 import { isPolicyLinkType, policyLinkOk } from "../observe/run-created-policies.js";
 import type { ObserveReport } from "../observe/verify.js";
 import { VERIFIERS, type VerifierId } from "../observe/verify.js";
@@ -170,11 +170,13 @@ export function blueprintRecordProblems(value: unknown): string[] {
   const target = value.target as ResolvedTarget;
   const stackArn = value.source === "CLOUDFORMATION_STACK_RESOURCES" && targetOk(target) && /^[0-9]{12}$/.test(target.account) && /^[A-Za-z][A-Za-z0-9-]{0,127}$/.test(target.backend)
     ? new RegExp("^arn:aws:cloudformation:[a-z0-9-]{1,32}:" + target.account + ":stack/" + target.backend + "/[0-9a-f-]{36}$") : undefined;
-  // An Azure deployment stack (the Bicep engine): the pinned stack by name, in the target's subscription.
-  const stackId = value.source === "AZURE_DEPLOYMENT_STACK_RESOURCES" && targetOk(target) ? deploymentStackIdPattern(target.account, target.backend) : undefined;
+  // An Azure deployment stack (the Bicep engine): the pinned stack by name, in the target's subscription (the record's target names no
+  // group; the blueprint was built only for the contract's group, and the cleanup's target hash binds it).
+  const stackOk = value.source === "AZURE_DEPLOYMENT_STACK_RESOURCES" && targetOk(target)
+    ? (id: string) => isPinnedDeploymentStackId(id, { subscription: target.account, stack: target.backend }) : undefined;
   const containerOk = (value: unknown): boolean => isRecord(value) && Object.keys(value).sort().join() === "identifier,type" && typeof value.identifier === "string" &&
     ((value.type === "AWS::CloudFormation::Stack" && stackArn !== undefined && stackArn.test(value.identifier)) ||
-      (value.type === DEPLOYMENT_STACK_TYPE && stackId !== undefined && stackId.test(value.identifier)));
+      (value.type === DEPLOYMENT_STACK_TYPE && stackOk !== undefined && stackOk(value.identifier)));
   if (!isRecord(blueprint) || !["entries,missing", "container,entries,missing"].includes(Object.keys(blueprint).sort().join()) || !Array.isArray(blueprint.entries) || !blueprint.entries.every(entryOk) ||
     !Array.isArray(blueprint.missing) || !blueprint.missing.every((x) => typeof x === "string") || (blueprint.container !== undefined && !containerOk(blueprint.container))) {
     problems.push("blueprint record.blueprint: entries must carry address, type, arn, id and origin only, and a container only from a CloudFormation read (or, for the Bicep engine, a deployment stack read), of the stack type, with the pinned stack's own id");

@@ -28,7 +28,9 @@ export const CLIENTS = { DISCOVERY: "aaaaaaaa-0000-4000-8000-00000000d15c", APPL
 
 /** The canary allowlist (owner decision E1) every Bicep target here names: exactly the one virtual network the workload creates. */
 export const CANARY: PilotCanary = { resources: [{ type: "Microsoft.Network/virtualNetworks", count: 1 }] };
-export const TARGET: BicepTarget & { canary: PilotCanary } = { tenantId: TENANT_ID, subscriptionId: SUBSCRIPTION_ID, backend: STACK_NAME, workspace: "default", resourceGroup: RESOURCE_GROUP, canary: CANARY };
+/** The region the fake pilot group is in, and the contract's bound location (owner decision E2). */
+export const LOCATION = "eastus2";
+export const TARGET: BicepTarget & { canary: PilotCanary } = { tenantId: TENANT_ID, subscriptionId: SUBSCRIPTION_ID, backend: STACK_NAME, workspace: "default", resourceGroup: RESOURCE_GROUP, location: LOCATION, canary: CANARY };
 export const RESOLVED: ResolvedTarget = { account: SUBSCRIPTION_ID, backend: STACK_NAME, workspace: "default" };
 export const UNIT: PilotUnit = {
   unitId: "alz-unit-0123456789abcdef", buildId: "alz-pilot-dev-0123456789ab",
@@ -50,6 +52,8 @@ export type AzBehavior = {
   /** States the stack reports after a create, one per look (the last repeats). */
   pollStates?: string[];
   createFail?: boolean; deleteFail?: boolean;
+  /** The region `az group show` reports for the pilot group (default eastus2), as ARM may print it. */
+  groupLocation?: string;
   /** The delete fails the way an az transport error does: exit 1 with no ARM error code, and the stack left as it was. */
   deleteLost?: boolean;
   /** The create (or delete) reaches ARM, then az hangs for this long (a timeout kills it) or prints this many bytes (the output cap). */
@@ -81,6 +85,14 @@ const cmd = args.slice(0, 3).join(" ");
 const rg = "/subscriptions/" + ${JSON.stringify(SUBSCRIPTION_ID)} + "/resourceGroups/" + ${JSON.stringify(RESOURCE_GROUP)};
 const vnetId = (name) => rg + "/providers/Microsoft.Network/virtualNetworks/" + name;
 const resourcesOf = (text) => { const t = JSON.parse(text); return (Array.isArray(t.resources) ? t.resources : Object.values(t.resources || {})); };
+// The location ARM evaluates for a resource (the what-if's after.location): a literal, or [parameters('location')] with its default,
+// where [resourceGroup().location] is the group's region. Anything else stays unevaluated, which the engine refuses.
+const locationOf = (text, value) => {
+  const t = JSON.parse(text);
+  const resolve = (v) => v === "[resourceGroup().location]" ? (b.groupLocation || "eastus2") : v;
+  if (value === "[parameters('location')]") return resolve(((t.parameters || {}).location || {}).defaultValue);
+  return resolve(value);
+};
 if (args[0] === "version") { out({ "azure-cli": b.version, "azure-cli-core": b.version, extensions: {} }); process.exit(0); }
 if (args[0] === "login") {
   if (b.loginFail) fail("AADSTS70021: No matching federated identity record found.");
@@ -97,7 +109,7 @@ if (cmd === "account show --subscription") {
 }
 if (args[0] === "group" && args[1] === "show") {
   if (b.groupMissing) fail("(ResourceGroupNotFound) Resource group '" + arg("--name") + "' could not be found.", 3);
-  out({ id: rg, name: arg("--name"), location: "eastus2", properties: { provisioningState: "Succeeded" } });
+  out({ id: rg, name: arg("--name"), location: b.groupLocation || "eastus2", properties: { provisioningState: "Succeeded" } });
   process.exit(0);
 }
 const stackView = () => ({
@@ -139,7 +151,7 @@ if (cmd === "deployment group what-if") {
     const exists = managed.includes(id) || (b.preexisting || []).includes(resource.name);
     const same = managed.includes(id) && s.stack.template === text;
     changes.push({ resourceId: id, changeType: b.whatIfUnsupported ? "Unsupported" : !exists ? "Create" : same ? "NoChange" : "Modify",
-      after: { type: resource.type, name: resource.name, tags: resource.tags, properties: { secret: ${JSON.stringify(TEMPLATE_CANARY)} } } });
+      after: { type: resource.type, name: resource.name, location: locationOf(text, resource.location), tags: resource.tags, properties: { secret: ${JSON.stringify(TEMPLATE_CANARY)} } } });
   }
   for (const id of managed) if (!declared.has(id)) changes.push({ resourceId: id, changeType: "Ignore" });
   if (b.whatIfForeignChange) changes.push({ resourceId: "/subscriptions/" + ${JSON.stringify(SUBSCRIPTION_ID)} + "/resourceGroups/other-rg/providers/Microsoft.Network/virtualNetworks/x", changeType: "Create", after: { tags: {} } });

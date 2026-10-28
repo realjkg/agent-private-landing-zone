@@ -34,7 +34,7 @@ Which identity runs each step (the engine's allowlist, `isAllowedBicepArgv`, enf
 |---|---|---|---|
 | Seal | `az login`, `az account show`, `az group show`, `az stack group show` | `az login`, `az account show`, **`az deployment group what-if`** | `az version`, `bicep --version`, `bicep build` |
 | Qualify | `az login`, `az account show`, `az group show`, `az stack group show` | `az login`, `az account show`, `az stack group show` | `az version`, `bicep --version`, `bicep build` |
-| Apply | `az login`, `az account show`, `az stack group show` (the ownership and blueprint reads after the run) | `az login`, `az account show`, `az stack group show`, **`az deployment group what-if`** (re-derivation), `az stack group create` | `az version`, `bicep --version`, `bicep build` |
+| Apply | `az login`, `az account show`, `az group show`, `az stack group show` (the ownership and blueprint reads after the run) | `az login`, `az account show`, `az stack group show`, **`az deployment group what-if`** (re-derivation), `az stack group create` | `az version`, `bicep --version`, `bicep build` |
 | Cleanup | `az login`, `az account show` | `az login`, `az account show`, `az stack group show`, `az stack group delete` | `az version`, `bicep --version` |
 | Observe, leftovers | the independent ARM REST read-back (no az process) | none | none |
 
@@ -96,7 +96,7 @@ The contract names `provider: AZURE` and `engine: BICEP`. Each environment's tar
 - `resourceGroup`: the existing pilot resource group (#304) that the stack is scoped to. It is an engine target field (`EngineSpec.target.fields`) and a location field (`EngineSpec.target.locationFields`), so it joins the run's target hash (`pilotTargetSha256`) with the tenant, the subscription, the stack name and the canary allowlist, and a cleanup refuses a contract that moved the stack to another group.
 - `canary` (owner decision E1): exactly `{ "resources": [{ "type": "Microsoft.Network/virtualNetworks", "count": 1 }] }` for the committed canary (`qualification/azure/act-dev1-bicep-canary`). A target with no `canary` cannot be authorized for APPLY (`CANARY_ALLOWLIST_MISSING`).
 
-There is no location field: the stack create names no location (az's `stack group create` at resource-group scope places the stack in the group), and the virtual network's region comes from the sealed template (the committed canary defaults it to the group's region). The template, and so the location expression, is bound by its hash.
+- `location`: the Azure region the run deploys to, as ARM's programmatic name (`eastus2`, `westeurope`: lowercase letters and digits). It is a target field and a location field, so it joins the target hash, and the sealed record names it. The seal and the apply each refuse with `LOCATION_NOT_IN_CONTRACT` unless the existing group's `location` (`az group show`, read as DISCOVERY) is this region and every resource the what-if creates or changes has this region as its `after.location` (as ARM evaluated it, so a literal, a parameter default or `[resourceGroup().location]` are all judged by where the resource would actually go). At the apply that refusal is `TARGET_NOT_IN_CONTRACT`, before any approval is consumed (review of #332, B1).
 
 ## Plan (seal)
 
@@ -115,7 +115,7 @@ There is no location field: the stack create names no location (az's `stack grou
    Any other type is `RESOURCE_TYPE_NOT_ALLOWED`, and any other shape is `TEMPLATE_SHAPE_NOT_ALLOWED`. A `Microsoft.Resources/resourceGroups` resource is refused like any other type: the run must not create a group.
 
    The compiled template's resources must also be exactly the target's canary allowlist (owner decision E1, `src/apply/canary.ts`), each by its type exactly as written: another type, another count, or no allowlist is refused (`RESOURCE_NOT_IN_CANARY`, `CANARY_ALLOWLIST_MISSING`) before any az call. Both checks hold; neither replaces the other.
-5. **Sign both identities in** and **check the resource group** as DISCOVERY (`az group show`). It must already exist (otherwise `RESOURCE_GROUP_NOT_FOUND`). The engine never creates it.
+5. **Sign both identities in** and **check the resource group** as DISCOVERY (`az group show`). It must already exist (otherwise `RESOURCE_GROUP_NOT_FOUND`) and be in the contract's `location` (otherwise `LOCATION_NOT_IN_CONTRACT`). The engine never creates it.
 6. **Read the stack** as DISCOVERY (`az stack group show`). If the stack exists, it must be in a final state, carry the deny settings below, and carry exactly the deletion unit's three tags, keys and values (a cleanup, which is given no unit, requires the three keys). Its fingerprint (id, state, last modification, deployment id, managed resources and deny settings) is bound into the seal.
 7. **Run the what-if** as APPLY (owner decision E2, option A; see [Why the seal-time preview runs as APPLY](#why-the-seal-time-preview-runs-as-apply)). This is the plan of record:
 
@@ -135,10 +135,11 @@ There is no location field: the stack create names no location (az's `stack grou
    - an id outside the contract's subscription and resource group (`WHATIF_NOT_IN_CONTRACT`);
    - a resource that already exists but that the stack does not manage (`RESOURCE_PREEXISTS`): the stack would adopt it, and cleanup would then delete something the run did not create;
    - a created or modified resource without exactly the unit's tags (`UNIT_TAG_MISSING`), read with `readBicepWhatIfTags`;
+   - a created or modified resource whose `after.location` is not the contract's `location` (`LOCATION_NOT_IN_CONTRACT`);
    - nothing to change (`NO_CHANGES_TO_APPLY`);
    - anything but creates of exactly the canary allowlist's types and counts (`RESOURCE_NOT_IN_CANARY`): an UPDATE or DELETE is refused, so a run against a stack that already manages the network cannot be sealed.
 9. **Seal the artifact.** The sealed artifact is canonical JSON. It holds the compiled template's exact text and binds:
-   - the tenant, subscription, resource group and stack name;
+   - the tenant, subscription, resource group, location and stack name;
    - the deny settings and the action on unmanage;
    - the template's SHA-256;
    - the change list's hash;
@@ -149,7 +150,7 @@ There is no location field: the stack create names no location (az's `stack grou
 
 ## Execute (apply)
 
-`prepare` copies and checks the snapshot again, checks both versions, signs both identities in, and reads the stack as APPLY.
+`prepare` copies and checks the snapshot again, checks both versions, signs both identities in, checks the group and its location again as DISCOVERY, and reads the stack as APPLY.
 
 `rederive(artifact)` refuses unless all of the following hold:
 
@@ -232,7 +233,7 @@ az stack group delete --name <stack> --resource-group <group> --action-on-unmana
 The engine is registered, for DEV only:
 
 - `BICEP` is an `EngineId` and is in `SPECS` (`src/apply/engine-spec.ts`); the evidence names its two `mutation` values (`AZURE_DEPLOYMENT_STACK_CREATE_OF_SEALED_TEMPLATE`, `AZURE_DEPLOYMENT_STACK_DELETE_OF_RUN_STACK`).
-- A contract may name `AZURE` with `BICEP` only under `"enabledEnvironments": ["DEV"]` (`DEV_ONLY_PATHS`, `src/apply/contract.ts`); a three-stage one is `CONTRACT_INVALID`, so no QA or PROD target can exist. `BICEP` with another provider is `CONTRACT_INVALID`. Each target adds `resourceGroup`, which joins the run's target hash.
+- A contract may name `AZURE` with `BICEP` only under `"enabledEnvironments": ["DEV"]` (`DEV_ONLY_PATHS`, `src/apply/contract.ts`); a three-stage one is `CONTRACT_INVALID`, so no QA or PROD target can exist. `BICEP` with another provider is `CONTRACT_INVALID`. Each target adds `resourceGroup` and `location`, which join the run's target hash.
 - The driver's blueprint hook reads the stack's id and managed resources as DISCOVERY after the run (`stateDocument`, source `AZURE_DEPLOYMENT_STACK_RESOURCES`); each managed resource is its own address, by ARM id, and the stack is the unit's container. The cleanup proposal names resources by their ARM ids, and the cleanup deletes the whole stack.
 - `test/apply-bicep-admission.test.ts` drives the path through the driver (contract, requester signature, approvals, ledger and replay, kill switch, the canary allowlist, the template binding, evidence, observe, proposal, cleanup with the deny settings on, leftovers) with the fake `az` and `bicep` and a scripted ARM. SYNTHETIC: it is not emulation and not provider qualification.
 - The release gate `act:azure-bicep` is in `ACT_RELEASE_PATHS` and `config/release/scope.json`, BLOCKED until live evidence exists.

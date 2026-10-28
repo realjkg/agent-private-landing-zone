@@ -63,8 +63,17 @@ export const DENY_SETTINGS_MODE = "denyWriteAndDelete";
 const ACTION_ON_UNMANAGE = "deleteResources";
 const UNIT_TAG_KEYS: readonly string[] = ["alz-build", "alz-managed-by", "alz-unit"];
 
-/** A target of this engine: the provider's tenant and subscription, the stack name as `backend`, and the existing pilot resource group. */
-export type BicepTarget = AzureTarget & { resourceGroup: string };
+/**
+ * A target of this engine: the provider's tenant and subscription, the stack name as `backend`, the existing pilot resource group,
+ * and the Azure region the run deploys to (owner decision E2: location is bound). The group must be in that region, and every
+ * resource the what-if creates or changes must be placed there.
+ */
+export type BicepTarget = AzureTarget & { resourceGroup: string; location: string };
+
+/** An Azure region's programmatic name as ARM reports it (`eastus2`, `westeurope`): lowercase letters and digits only, no spaces. */
+export const AZURE_LOCATION = /^[a-z][a-z0-9]{2,39}$/;
+/** A location as ARM may print it (`East US 2`, `eastus2`), normalized to the programmatic name for comparison. */
+const regionOf = (value: unknown): string => (typeof value === "string" ? value.replace(/\s+/g, "").toLowerCase() : "");
 
 // --- the argument lists ---------------------------------------------------------------------------------
 
@@ -466,6 +475,8 @@ function whatIf(session: Session, pinned: BicepTarget, managed: readonly string[
     seen.add(id.toLowerCase());
     const action = ACTIONS[change.changeType];
     if (change.changeType !== "Create" && !ours.has(id.toLowerCase())) stop("RESOURCE_PREEXISTS");
+    // Every resource the what-if places is in the contract's location (owner decision E2): `after.location` as ARM evaluated it.
+    if (action !== null && action !== "DELETE" && !(isRecord(change.after) && regionOf(change.after.location) === pinned.location)) stop("LOCATION_NOT_IN_CONTRACT");
     if (change.changeType === "Create") {
       const tags = planned.get(change.resourceId);
       if (tags?.kind !== "TAGGED" || !carriesUnit(tags.tags, unit)) stop("UNIT_TAG_MISSING");
@@ -490,18 +501,18 @@ function writeTemplate(session: Session, text: string): void {
 
 /** The artifact bytes: the compiled template's exact text and everything the approvers saw, by value or by hash. */
 type SealedRecord = {
-  schemaVersion: 1; kind: "AZURE_DEPLOYMENT_STACK"; tenantId: string; subscriptionId: string; resourceGroup: string; stackName: string;
+  schemaVersion: 1; kind: "AZURE_DEPLOYMENT_STACK"; tenantId: string; subscriptionId: string; resourceGroup: string; location: string; stackName: string;
   denySettingsMode: typeof DENY_SETTINGS_MODE; actionOnUnmanage: typeof ACTION_ON_UNMANAGE; tags: string[];
   template: string; templateSha256: string; changeListSha256: string; stackSha256: string;
 };
-const RECORD_KEYS = ["schemaVersion", "kind", "tenantId", "subscriptionId", "resourceGroup", "stackName", "denySettingsMode", "actionOnUnmanage", "tags", "template", "templateSha256", "changeListSha256", "stackSha256"];
+const RECORD_KEYS = ["schemaVersion", "kind", "tenantId", "subscriptionId", "resourceGroup", "location", "stackName", "denySettingsMode", "actionOnUnmanage", "tags", "template", "templateSha256", "changeListSha256", "stackSha256"];
 const HEX = /^[0-9a-f]{64}$/;
 
 function parseRecord(artifact: Buffer, pinned: BicepTarget): SealedRecord {
   const value = parse(artifact.toString("utf8"), "ARTIFACT_TAMPERED");
   const record = value as SealedRecord;
   if (!isRecord(value) || Object.keys(value).sort().join() !== [...RECORD_KEYS].sort().join() || record.schemaVersion !== 1 || record.kind !== "AZURE_DEPLOYMENT_STACK" ||
-    record.tenantId !== pinned.tenantId || record.subscriptionId !== pinned.subscriptionId || record.resourceGroup !== pinned.resourceGroup || record.stackName !== pinned.backend ||
+    record.tenantId !== pinned.tenantId || record.subscriptionId !== pinned.subscriptionId || record.resourceGroup !== pinned.resourceGroup || record.location !== pinned.location || record.stackName !== pinned.backend ||
     record.denySettingsMode !== DENY_SETTINGS_MODE || record.actionOnUnmanage !== ACTION_ON_UNMANAGE ||
     !Array.isArray(record.tags) || record.tags.length !== UNIT_TAG_KEYS.length || !record.tags.every((tag) => typeof tag === "string" && TAG_VALUE.test(tag)) || new Set(record.tags.map((tag) => tag.split("=")[0])).size !== UNIT_TAG_KEYS.length ||
     typeof record.template !== "string" || ![record.templateSha256, record.changeListSha256, record.stackSha256].every((h) => typeof h === "string" && HEX.test(h)) ||
@@ -520,9 +531,22 @@ function tagArgsOf(unit: PilotUnit): string[] {
 const unitOfTags = (tags: readonly string[]): Record<string, string> => Object.fromEntries(tags.map((tag) => [tag.split("=")[0], tag.slice(tag.indexOf("=") + 1)]));
 const targetOf = (pinned: unknown): BicepTarget => {
   const target = pinned as BicepTarget;
-  if (!isRecord(pinned) || !GUID.test(String(target.tenantId)) || !GUID.test(String(target.subscriptionId)) || !AZURE_NAME.test(String(target.backend)) || !AZURE_NAME.test(String(target.resourceGroup))) return stop("TARGET_INVALID");
+  if (!isRecord(pinned) || !GUID.test(String(target.tenantId)) || !GUID.test(String(target.subscriptionId)) || !AZURE_NAME.test(String(target.backend)) || !AZURE_NAME.test(String(target.resourceGroup)) || !AZURE_LOCATION.test(String(target.location))) return stop("TARGET_INVALID");
   return target;
 };
+
+/**
+ * The existing pilot resource group, read as DISCOVERY: it must exist (the engine never creates it) and be in the contract's
+ * location (UNVERIFIED (A2): the not-found text; `location` as az prints the group).
+ */
+function assertGroupInContract(session: Session, pinned: BicepTarget): void {
+  const group = session.run("DISCOVERY", ["group", "show", "--name", pinned.resourceGroup, "--subscription", pinned.subscriptionId, "--output", "json"]);
+  assertUsable(group);
+  if (!group.ok) stop(/ResourceGroupNotFound|could not be found/i.test(group.stderr) ? "RESOURCE_GROUP_NOT_FOUND" : "RESOURCE_GROUP_UNREADABLE");
+  const found = parse(group.stdout, "RESOURCE_GROUP_UNREADABLE");
+  if (!isRecord(found)) return stop("RESOURCE_GROUP_UNREADABLE");
+  if (regionOf(found.location) !== pinned.location) stop("LOCATION_NOT_IN_CONTRACT");
+}
 
 // --- sealing -----------------------------------------------------------------------------------------------------
 
@@ -542,10 +566,8 @@ function plan(input: EngineContext & { snapshotPath: string; engineVersion: stri
     // The template is exactly the canary allowlist before any az call.
     assertTemplateInCanary(template, input.pinned);
     session.signIn();
-    // The group is the bootstrap's (#304): it must exist, and the engine never creates it (UNVERIFIED (A2): the not-found text).
-    const group = session.run("DISCOVERY", ["group", "show", "--name", pinned.resourceGroup, "--subscription", pinned.subscriptionId, "--output", "json"]);
-    assertUsable(group);
-    if (!group.ok) stop(/ResourceGroupNotFound|could not be found/i.test(group.stderr) ? "RESOURCE_GROUP_NOT_FOUND" : "RESOURCE_GROUP_UNREADABLE");
+    // The group is the bootstrap's (#304): it must exist, in the contract's location, and the engine never creates it.
+    assertGroupInContract(session, pinned);
     const stack = readStack(session, "DISCOVERY", pinned);
     if (stack !== undefined) assertStackUsable(stack, input.unit.tags);
     writeTemplate(session, template);
@@ -554,7 +576,7 @@ function plan(input: EngineContext & { snapshotPath: string; engineVersion: stri
     assertWhatIfInCanary(changes, input.pinned);
     const record: SealedRecord = {
       schemaVersion: 1, kind: "AZURE_DEPLOYMENT_STACK", tenantId: pinned.tenantId, subscriptionId: pinned.subscriptionId, resourceGroup: pinned.resourceGroup,
-      stackName: pinned.backend, denySettingsMode: DENY_SETTINGS_MODE, actionOnUnmanage: ACTION_ON_UNMANAGE, tags, template, templateSha256: sha256(template),
+      location: pinned.location, stackName: pinned.backend, denySettingsMode: DENY_SETTINGS_MODE, actionOnUnmanage: ACTION_ON_UNMANAGE, tags, template, templateSha256: sha256(template),
       changeListSha256: sha256(canonicalJson(changes)), stackSha256: stack?.fingerprint ?? ABSENT_FINGERPRINT,
     };
     // A virtual network takes tags, so nothing created is untagged.
@@ -575,7 +597,7 @@ function qualify(input: EngineContext & { snapshotPath: string; engineVersion: s
     checkTemplate(template);
     assertTemplateInCanary(template, input.pinned);
     session.signIn();
-    checkedOutput(session.run("DISCOVERY", ["group", "show", "--name", pinned.resourceGroup, "--subscription", pinned.subscriptionId, "--output", "json"]));
+    assertGroupInContract(session, pinned);
     for (const who of ["DISCOVERY", "APPLY"] as const) readStack(session, who, pinned);
   } finally {
     session.removeSecrets();
@@ -636,6 +658,8 @@ function openApply(input: EngineRunInput): BicepApplyRun {
     prepare(snapshotPath) {
       prepareWork(session, snapshotPath, input.engineVersion);
       session.signIn();
+      // Still the contract's group, in the contract's location.
+      assertGroupInContract(session, pinned);
       before = stackNow();
     },
     rederive(artifact) {
@@ -833,15 +857,19 @@ export const BICEP: BicepEngineSpec = {
     workspaceOk: (value) => value === "default",
     // The same stack name in each subscription is the usual case; the subscription already differs.
     backendMayRepeat: true,
-    fields: { resourceGroup: (value) => typeof value === "string" && AZURE_NAME.test(value) },
-    // Where the stack is: a cleanup in another group would find another group's stack of the same name.
-    locationFields: ["resourceGroup"],
+    fields: {
+      resourceGroup: (value) => typeof value === "string" && AZURE_NAME.test(value),
+      location: (value) => typeof value === "string" && AZURE_LOCATION.test(value),
+    },
+    // Where the stack and its resources are (owner decision E2): a cleanup in another group would find another group's stack of the
+    // same name, and a run under another location is another target.
+    locationFields: ["resourceGroup", "location"],
   },
   // An exact ARM resource type for the canary allowlist (owner decision E1); the template check still allows only a virtual network.
   canaryTypeOk: (value) => value.length <= 256 && ARM_TYPE.test(value),
   notices: {
     sealHeading: "SEAL A DEPLOYMENT STACK PLAN (this compiles main.bicep and runs a what-if; nothing is created, changed or deleted)",
-    sealReads: "  reads           the resource group and the stack with the DISCOVERY identity; runs the what-if with the APPLY identity",
+    sealReads: "  reads           the resource group (it must be in the contract's location) and the stack with the DISCOVERY identity; runs the what-if with the APPLY identity",
     qualifyHeading: "QUALIFY THE BICEP ADAPTERS (needs the real az and bicep; against DEV it signs both identities in and reads the group and the stack, and creates nothing)",
     qualifyReads: "  runs            az account show, az group show and az stack group show as DISCOVERY and APPLY",
     attestation: (_provider, discovery, apply) => [
