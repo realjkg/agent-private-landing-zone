@@ -1,4 +1,4 @@
-import { forwardRef, useState } from "react";
+import { forwardRef, useEffect, useState } from "react";
 
 import type { DeploymentPath, EnvironmentDecision, PathParty, PathsReport } from "./pilot-api";
 import { badgeOf, checkedTime, environmentReady, firstSentence, orderByReadiness, orderEnvironments, tierOf } from "./readiness-order";
@@ -6,6 +6,28 @@ import { badgeOf, checkedTime, environmentReady, firstSentence, orderByReadiness
 // The "Deployment paths" panel (owner decision E5): every cloud and build path, readiest first, from the release records and the
 // readiness checks already run. Read-only: a row only opens to show what that path still needs. It has no button that starts,
 // selects or enables anything; the path in the owner's reviewed rules stays the only one that can run, through the steps below.
+
+/** How often an open Pilot view re-reads the paths: often enough that a stop or a rules change shows without a reload. */
+export const PATHS_REFRESH_MS = 15_000;
+
+/**
+ * Re-reads the paths while `enabled`: when the window regains focus or the page becomes visible again, and every
+ * PATHS_REFRESH_MS while it is visible. Read-only; it only calls `load`.
+ */
+export function usePathsRefresh(load: () => void, enabled: boolean, intervalMs: number | null = PATHS_REFRESH_MS): void {
+  useEffect(() => {
+    if (!enabled) return undefined;
+    const back = () => { if (!document.hidden) load(); };
+    window.addEventListener("focus", back);
+    document.addEventListener("visibilitychange", back);
+    const timer = intervalMs === null ? undefined : setInterval(() => { if (!document.hidden) load(); }, intervalMs);
+    return () => {
+      window.removeEventListener("focus", back);
+      document.removeEventListener("visibilitychange", back);
+      if (timer !== undefined) clearInterval(timer);
+    };
+  }, [load, enabled, intervalMs]);
+}
 
 export type PathsLoad = { status: "loading" } | { status: "error" } | { status: "ready"; report: PathsReport };
 

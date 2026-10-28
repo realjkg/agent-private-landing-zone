@@ -110,7 +110,7 @@ test("a row shows the first sentence of its first blocker", () => {
 test("a path waiting on another path's owner-run live step is still tier 2; a path with unreadable records is tier 3 and says readiness unknown", () => {
   const sequenced = path("AZURE", "TERRAFORM", { blockers: [{ party: "SEQUENCED", source: "JOURNEY", text: "AWS Terraform goes live first." }, owner("Run it.")] });
   assert.equal(tierOf(sequenced).tier, 2);
-  assert.equal(badgeOf(sequenced), "Waiting on owner inputs");
+  assert.equal(badgeOf(sequenced), "Waiting on another path to go live first");
   const unknown = path("AWS", "TERRAFORM", { blockers: [{ party: "UNKNOWN", source: "GATE", text: "Readiness unknown: the release status record cannot be read." }, owner("x")] });
   assert.equal(tierOf(unknown).tier, 3);
   assert.equal(badgeOf(unknown), "Readiness unknown");
@@ -123,4 +123,13 @@ test("a READY environment carries the time of the check that made it ready; othe
   assert.match(checkedTime("2026-10-28T10:05:00.000Z"), /\d{1,2}:\d{2}/);
   assert.equal(checkedTime("not a time"), "");
   assert.equal(checkedTime(null), "");
+});
+
+test("a partial path waiting on another path's live run says so in its badge, not 'owner inputs' (review of #334 round 2, N3)", () => {
+  const sequenced = path("AZURE", "TERRAFORM", { blockers: [{ party: "SEQUENCED", source: "JOURNEY", text: "AWS Terraform goes live first." }, owner("Run it.")] });
+  assert.equal(badgeOf(sequenced), "Waiting on another path to go live first");
+  assert.equal(badgeOf(path("AWS", "TERRAFORM")), "Waiting on owner inputs");
+  // The words never lift a row out of its tier: a SEQUENCED blocker beside an engineering one is still tier 3 and says so.
+  const blocked = path("AWS", "CDK", { blockers: [{ party: "SEQUENCED", source: "JOURNEY", text: "x" }, { party: "ENGINEERING", source: "GATE", text: "y" }] });
+  assert.equal(badgeOf(blocked), "Blocked: engineering or qualification");
 });

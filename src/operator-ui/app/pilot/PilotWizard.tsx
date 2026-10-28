@@ -4,7 +4,7 @@ import type { ExperienceLevel } from "../../experience-level.js";
 import { PilotDialog } from "./PilotDialog";
 import { ActDev1Setup } from "./ActDev1Setup";
 import CleanupStep, { CleanupList } from "./CleanupStep";
-import { DeploymentPaths, type PathsLoad } from "./DeploymentPaths";
+import { DeploymentPaths, usePathsRefresh, type PathsLoad } from "./DeploymentPaths";
 import { checkedTime, orderEnvironments } from "./readiness-order";
 import {
   answerDialog, cancelDialog, choosePath, fetchPilotPaths, fetchPilotState, forgetPilotToken, loadCleanupReview, loadReview, startApply, startApprove, startPreflight, startPrepare, startSeal, setPilotToken, startOver,
@@ -289,6 +289,9 @@ export default function PilotWizard(props: PilotWizardProps) {
     setPathsLoad(reply.ok ? { status: "ready", report: reply.body } : { status: "error" });
   }, []);
   useEffect(() => { if (unlocked) void loadPaths(); }, [unlocked, loadPaths]);
+  // An open page follows the records without a reload: a kill switch or a rules change shows on return or within the interval.
+  const reloadPaths = useCallback(() => { void loadPaths(); }, [loadPaths]);
+  usePathsRefresh(reloadPaths, unlocked);
 
   // Poll only while something is running or waiting for the person.
   useEffect(() => {

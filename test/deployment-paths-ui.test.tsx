@@ -1,9 +1,9 @@
 // @vitest-environment happy-dom
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import { DeploymentContext } from "../src/operator-ui/app/components/DeploymentContext";
-import { DeploymentPaths } from "../src/operator-ui/app/pilot/DeploymentPaths";
+import { DeploymentPaths, PATHS_REFRESH_MS } from "../src/operator-ui/app/pilot/DeploymentPaths";
 import PilotWizard from "../src/operator-ui/app/pilot/PilotWizard";
 import { forgetPilotToken, setPilotToken, type DeploymentPath, type EnvironmentDecision, type PathsReport } from "../src/operator-ui/app/pilot/pilot-api";
 import { COPY, STEP_TITLES } from "../src/operator-ui/app/pilot/pilot-copy";
@@ -206,6 +206,79 @@ test("with the emergency stop on, the panel says so and shows nothing as ready",
   const { container } = render(<DeploymentPaths load={{ status: "ready", report: stopped }} />);
   expect(container.querySelector(".paths-stop")?.textContent).toContain("The emergency stop is on");
   expect([...container.querySelectorAll(".paths-badge")].map((b) => b.textContent)).not.toContain("Ready");
+});
+
+test("a SEQUENCED row has its own badge (review of #334 round 2, N3)", () => {
+  const sequenced = report();
+  sequenced.paths = sequenced.paths.map((p) => p.cloud === "AWS" && p.engine === "TERRAFORM"
+    ? { ...p, blockers: [{ party: "SEQUENCED", source: "JOURNEY", text: "Azure Terraform goes live first. Then more." }, ...p.blockers] } : p);
+  const { container } = render(<DeploymentPaths load={{ status: "ready", report: sequenced }} />);
+  expect(container.querySelector('[data-path="AWS/TERRAFORM"] .paths-badge')?.textContent).toBe("Waiting on another path to go live first");
+  expect(container.querySelector('[data-path="AWS/TERRAFORM"] .paths-reason')?.textContent).toBe("Waits on another path going live first: Azure Terraform goes live first.");
+});
+
+describe("an open page follows the records without a reload (review of #334 round 2, N2)", () => {
+  const stoppedReport = (): PathsReport => {
+    const stopped = report([decision("DEV"), decision("QA"), decision("PROD")]);
+    stopped.contract = { state: "ENABLED", provider: "AZURE", engine: "TERRAFORM", contractSha256: "c".repeat(64), killSwitch: true };
+    return stopped;
+  };
+  const badges = () => [...document.querySelectorAll('[data-testid="deployment-paths"] .paths-badge')].map((b) => b.textContent);
+
+  test("when the window regains focus, the panel re-reads the paths: a kill switch engaged meanwhile replaces Ready", async () => {
+    const fake: Fake = { run: null, pathsReplies: [{ status: 200, body: report() }] };
+    const calls = await unlockWizard({ status: 200, body: stoppedReport() }, fake);
+    await waitFor(() => expect(badges()).toContain("Ready"));
+    const before = calls.filter((c) => c.url === "/pilot/paths").length;
+    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    await waitFor(() => expect(document.querySelector(".paths-stop")?.textContent).toContain("The emergency stop is on"));
+    expect(badges()).not.toContain("Ready");
+    expect(calls.filter((c) => c.url === "/pilot/paths").length).toBe(before + 1);
+    expect(calls.filter((c) => c.url === "/pilot/paths").every((c) => c.method === "GET")).toBe(true);
+  });
+
+  test("when the page becomes visible again it re-reads; while it is hidden the interval does not", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      const fake: Fake = { run: null, pathsReplies: [{ status: 200, body: report() }] };
+      const calls = await unlockWizard({ status: 200, body: stoppedReport() }, fake);
+      await waitFor(() => expect(badges()).toContain("Ready"));
+      const count = () => calls.filter((c) => c.url === "/pilot/paths").length;
+      const before = count();
+      const hidden = vi.spyOn(document, "hidden", "get").mockReturnValue(true);
+      await act(async () => { vi.advanceTimersByTime(PATHS_REFRESH_MS); });
+      expect(count()).toBe(before);
+      hidden.mockReturnValue(false);
+      await act(async () => { document.dispatchEvent(new Event("visibilitychange")); });
+      await waitFor(() => expect(count()).toBe(before + 1));
+      await waitFor(() => expect(badges()).not.toContain("Ready"));
+    } finally { vi.useRealTimers(); }
+  });
+
+  test("while the Pilot view is open and visible, the paths are re-read on the interval", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      const fake: Fake = { run: null, pathsReplies: [{ status: 200, body: report() }] };
+      const calls = await unlockWizard({ status: 200, body: stoppedReport() }, fake);
+      await waitFor(() => expect(badges()).toContain("Ready"));
+      const before = calls.filter((c) => c.url === "/pilot/paths").length;
+      await act(async () => { vi.advanceTimersByTime(PATHS_REFRESH_MS); });
+      await waitFor(() => expect(calls.filter((c) => c.url === "/pilot/paths").length).toBe(before + 1));
+      await waitFor(() => expect(badges()).not.toContain("Ready"));
+    } finally { vi.useRealTimers(); }
+  });
+
+  test("the planning view re-reads on focus too, and keeps its order in step", async () => {
+    setPilotToken(TOKEN);
+    const fake: Fake = { run: null, pathsReplies: [{ status: 200, body: report([decision("DEV"), decision("QA", { ready: true }), decision("PROD")]) }] };
+    const calls = install({ status: 200, body: report([decision("DEV"), decision("QA"), decision("PROD", { ready: true })]) }, fake);
+    render(<DeploymentContext />);
+    const stage = screen.getByRole("combobox", { name: "Environment" }) as HTMLSelectElement;
+    await waitFor(() => expect([...stage.options].map((o) => o.value)).toEqual(["staging", "development", "production"]));
+    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    await waitFor(() => expect([...stage.options].map((o) => o.value)).toEqual(["production", "development", "staging"]));
+    expect(calls.filter((c) => c.url === "/pilot/paths").length).toBe(2);
+  });
 });
 
 describe("the planning view (DeploymentContext)", () => {
