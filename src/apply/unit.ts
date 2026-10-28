@@ -1,5 +1,6 @@
 import { ALZ_TAG_KEYS, deletionUnitId, provenanceTags } from "../teardown/unit.js";
 import type { ResolvedTarget } from "../teardown/driver/types.js";
+import type { BackendType } from "./backend-pin.js";
 import type { ApplyEnvironment, ProviderId } from "./types.js";
 
 /**
@@ -12,13 +13,14 @@ import type { ApplyEnvironment, ProviderId } from "./types.js";
  * still comes from the records (the sealed plan, the blueprint and the observation).
  *
  * The tags are not written into the operator's project by the product. The operator's own provider configuration
- * declares them (AWS: `default_tags` in the provider block; Azure: `tags` on each resource), `prepare` tells the
+ * declares them (AWS: `default_tags` in the provider block; Azure: `tags` on each resource; GCP: `default_labels` in the google
+ * provider block), `prepare` tells the
  * operator the exact values, `seal` verifies in the plan that every created, taggable resource carries them and
  * refuses a missing or foreign tag, and the sealed artifact binds the unit so the approvers see it.
  */
 export type PilotUnit = { unitId: string; buildId: string; tags: Readonly<Record<string, string>> };
 
-const BACKEND_KIND: Readonly<Record<ProviderId, "s3" | "azurerm">> = { AWS: "s3", AZURE: "azurerm" };
+const BACKEND_KIND: Readonly<Record<ProviderId, BackendType>> = { AWS: "s3", AZURE: "azurerm", GCP: "gcs" };
 
 /** The unit of one environment's state container under one reviewed contract. Deterministic: the same inputs name the same unit. */
 export function pilotUnitOf(input: { provider: ProviderId; contractSha256: string; environment: ApplyEnvironment; target: ResolvedTarget }): PilotUnit {

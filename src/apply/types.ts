@@ -2,6 +2,7 @@ import type { ResolvedTarget } from "../teardown/driver/types.js";
 import type { ExecutionIdentity } from "../tools/identity.js";
 import type { AwsTarget } from "./providers/aws.js";
 import type { AzureTarget } from "./providers/azure.js";
+import type { GcpTarget } from "./providers/gcp.js";
 
 /**
  * The pilot apply contract (docs/act-pilot-plan.md).
@@ -37,7 +38,7 @@ export type ApplyIdentity = ExecutionIdentity;
 export type EngineId = "TERRAFORM" | "CDK" | "BICEP";
 
 /** The providers the pilot has a spec for (src/apply/provider.ts). The contract's `provider` selects one; anything else is not a contract. */
-export type ProviderId = "AZURE" | "AWS";
+export type ProviderId = "AZURE" | "AWS" | "GCP";
 
 /**
  * The canary allowlist (owner decision E1, docs/act-pilot-apply.md, "Canary allowlist"): the exact resource types an APPLY in this
@@ -47,7 +48,7 @@ export type ProviderId = "AZURE" | "AWS";
 export type PilotCanary = { resources: { type: string; count: number; retain?: true }[] };
 
 /** One environment's exact target, in the shape the contract's provider defines, with its optional canary allowlist. Real values come from the owner; tests use explicit fixtures. */
-export type PilotTarget = (AzureTarget | AwsTarget) & { canary?: PilotCanary };
+export type PilotTarget = (AzureTarget | AwsTarget | GcpTarget) & { canary?: PilotCanary };
 
 /** What ACT can be authorized for: an apply, a cleanup of what a run created, or a removal of what the product generated. */
 export type ActOperation = "APPLY" | "CLEANUP" | "REMOVE";

@@ -5,6 +5,7 @@
  */
 import { AWS_DENIED_TYPES_REVIEWED_AGAINST } from "./providers/aws.js";
 import { AZURE_DENIED_TYPES_REVIEWED_AGAINST } from "./providers/azure.js";
+import { GCP_DENIED_TYPES_REVIEWED_AGAINST } from "./providers/gcp.js";
 
 export type LockedProvider = { source: string; version: string };
 
@@ -48,9 +49,9 @@ export function lockedProviders(text: string): LockedProvider[] {
 
 /**
  * The provider versions the pilot's denied-type lists were reviewed against, in full (review of #327, round 4): read from the
- * one source of truth beside each list (`AWS_DENIED_TYPES_REVIEWED_AGAINST`, `AZURE_DENIED_TYPES_REVIEWED_AGAINST`). A newer
- * schema can add a type that deploys a template or runs code at apply, which the lists would not name, so a lock file that pins
- * either provider at any other version is refused (`PROVIDER_VERSION_NOT_REVIEWED`). Bumping a provider means re-reviewing the
+ * one source of truth beside each list (`AWS_DENIED_TYPES_REVIEWED_AGAINST`, `AZURE_DENIED_TYPES_REVIEWED_AGAINST`,
+ * `GCP_DENIED_TYPES_REVIEWED_AGAINST`). A newer schema can add a type that deploys a template or runs code at apply, which the lists
+ * would not name, so a lock file that pins any of these providers at any other version is refused (`PROVIDER_VERSION_NOT_REVIEWED`). Bumping a provider means re-reviewing the
  * denied types against the new schema and changing the constant, in a reviewed commit. Other providers are not judged here.
  */
 const reviewedVersionOf = (reviewed: string): [string, string] => {
@@ -59,10 +60,10 @@ const reviewedVersionOf = (reviewed: string): [string, string] => {
   return ["registry.terraform.io/hashicorp/" + match[1], match[2]];
 };
 export const REVIEWED_PROVIDER_VERSIONS: Readonly<Record<string, string>> = Object.freeze(Object.fromEntries(
-  [AWS_DENIED_TYPES_REVIEWED_AGAINST, AZURE_DENIED_TYPES_REVIEWED_AGAINST].map(reviewedVersionOf),
+  [AWS_DENIED_TYPES_REVIEWED_AGAINST, AZURE_DENIED_TYPES_REVIEWED_AGAINST, GCP_DENIED_TYPES_REVIEWED_AGAINST].map(reviewedVersionOf),
 ));
 
-/** The first locked aws or azurerm provider whose version is not the reviewed one, or undefined. */
+/** The first locked aws, azurerm or google provider whose version is not the reviewed one, or undefined. */
 export function unreviewedProviderVersion(providers: readonly LockedProvider[]): { source: string; locked: string; reviewed: string } | undefined {
   for (const { source, version } of providers) {
     const reviewed = REVIEWED_PROVIDER_VERSIONS[source];
@@ -106,6 +107,18 @@ export const OFFICIAL_PROVIDER_HASHES: Readonly<Record<string, ReadonlySet<strin
     "zh:79a8d17fefe647040fcb9ee8821a4f09f395427c4fd49493489b9a93a9a1038e", "zh:705e075fb5ffc4bf66fd7cbabf1a65007a41621e80030a2c158a4c83b6046216",
     "zh:facf68ea5bf0f2b8ba720e7fba5f86492e1d4c591100460bb91c3f79f391f4b6", "zh:8cc3f900b3774c0ae37ae42365c4579a199cf9e5edf88e476fdf5ab1048f84ea",
     "zh:169d619ae202c4145e02fb706fb7c3679445ab3e3ff722edbf89597517a8c92e",
+  ]),
+  // Provenance, 2026-10-28: hashicorp/google 8.9.0, released 2026-10-27; its SHA256SUMS (both .sig and .72D7468F.sig) carry a good
+  // signature made 2026-10-27 by the same HashiCorp key (C874 011F 0AB4 0511 0D02 1055 3436 5D94 72D7 468F). Eleven platform zips.
+  "registry.terraform.io/hashicorp/google 8.9.0": new Set([
+    "h1:1REt6EKYmjtrLK5PC/AHGZ2FFaHs0EMsvLOyv2eADeA=", // linux_amd64
+    "h1:EcUkiM2dD/TtxkpcH/2BtPFp8oHIiU4x6R/Dn43sS3Y=", // darwin_arm64
+    "zh:feeaffe1edb8ac1f3c0f431f11d21ef31c6b797762d8428e3c18a67ac641cf49", "zh:8650863d8148062f6e22df62c331927e134ae9f83af556d265b17bcbd7b1ab51",
+    "zh:9ee9965d085f86263842f281257efc8394998c937c4c49eda649a61f26544813", "zh:22cbb6c7ba3d3a91bbd63db158d65a594d1dab04d53fb37fffb3de9e28fccbc8",
+    "zh:3fe9bc4bcd8d6cdb277ad074ca71fd76d408b007aed915137807062e6b78bc59", "zh:5aa53cec75d0e2fc494b3a8ee53f74fece6bc2652bdb9b75e1bdc62a2a43b6f7",
+    "zh:f0afcbd33aaea01f6a62e7ced7ad5b31c86d5a7016da1965db1fcb2d7b926556", "zh:46cd3c139d1d24607f0310e01353f1c40cce69d30328b0339768dad428a81d5a",
+    "zh:e2adf06a292d50dc58f52d2ba059f2361f1642dad3054ea839ab2e4763cceb8d", "zh:cc80028bd30af6182f29f0148e9469a9a49254c0f378caeb3d9fba050543c11a",
+    "zh:204c800cca7419c69aa219c5584029432e2add15a7159101fb259028d5db5684",
   ]),
 });
 

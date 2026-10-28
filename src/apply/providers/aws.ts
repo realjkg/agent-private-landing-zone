@@ -45,9 +45,10 @@ function backendOk(value: string): boolean {
 /**
  * Anything that lets a child reach AWS other than through its own web-identity role: static keys, a session
  * token, a shared profile or config file, container credentials, or the instance metadata service (which the
- * runner also switches off for every apply child).
+ * runner also switches off for every apply child); and another cloud's credentials (Azure, and Google: the Terraform apply profile
+ * can inject Google variables since GCP was admitted, so an AWS identity carrying one is refused here by name).
  */
-const FALLBACK_VARIABLE = /^(AWS_(ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN|SECURITY_TOKEN|PROFILE|DEFAULT_PROFILE|SHARED_CREDENTIALS_FILE|CONFIG_FILE|CONTAINER_.*|EC2_METADATA.*)|ARM_.*|AZURE_.*)$/;
+const FALLBACK_VARIABLE = /^(AWS_(ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN|SECURITY_TOKEN|PROFILE|DEFAULT_PROFILE|SHARED_CREDENTIALS_FILE|CONFIG_FILE|CONTAINER_.*|EC2_METADATA.*)|ARM_.*|AZURE_.*|GOOGLE_.*|GCLOUD_.*|CLOUDSDK_.*|GCE_.*)$/;
 
 /** The shared refusals, and a token file that is not an absolute path: a relative one means the runner's directory to the check and the work directory to the child. */
 function ambient(env: NodeJS.ProcessEnv) {

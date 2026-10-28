@@ -3,16 +3,15 @@ import { checkCredentialConfiguration, projectOfServiceAccount, readTokenFile } 
 import { identityVariables } from "../tools/identity.js";
 import { ALZ_TAG_KEYS } from "../teardown/unit.js";
 import type { BlueprintEntry } from "./blueprint.js";
-import type { ResourceCheck, ResourceReader } from "./verify.js";
+import type { ResourceCheck, ResourceReader, VerifierId } from "./verify.js";
 
 /**
  * The GCP reader (docs/observe-and-cleanup.md; the GCP release-path PLAN, section 4, owner approval 6433121154 on issue #39):
  * Google's REST APIs, read in process, as the DISCOVERY identity. No `gcloud` runs, so no credential ever reaches a process
  * argument list, a child environment, a log or an evidence digest. It is the Azure reader's pattern (src/observe/azure-rest.ts).
  *
- * NOT YET WIRED. `VerifierId` (src/observe/verify.ts), `openReader` (src/apply/observe.ts) and the run records name the AWS and
- * Azure readers only, and GCP is not an admitted provider (src/apply/providers/gcp.ts). The reader is typed `GcpResourceReader`
- * so the wiring is `VerifierId` gaining "GCP_REST" and `openReader` gaining a GCP branch, with no change here.
+ * Wired: `VerifierId` (src/observe/verify.ts) names "GCP_REST", and `openReader` (src/apply/observe.ts) opens this reader for a
+ * GCP contract's target project.
  *
  * Credential handling, as the provider spec admits it: DISCOVERY's credential configuration
  * (`ALZ_DISCOVERY_GOOGLE_APPLICATION_CREDENTIALS`) must pass the same check the spec runs (src/tools/gcp-credentials.ts, shared
@@ -38,8 +37,8 @@ export type GcpResponse = { status: number; body: string };
 /** The HTTP client the reader uses. Production: `fetch`. Tests inject a scripted one. */
 export type GcpHttp = (request: GcpRequest) => Promise<GcpResponse>;
 
-/** The verifier id this reader reports. `VerifierId` gains it when GCP is wired. */
-export const GCP_VERIFIER = "GCP_REST";
+/** The verifier id this reader reports. */
+export const GCP_VERIFIER = "GCP_REST" satisfies VerifierId;
 export type GcpResourceReader = Omit<ResourceReader, "verifier"> & { verifier: typeof GCP_VERIFIER };
 
 const STS_TOKEN_URL = "https://sts.googleapis.com/v1/token";

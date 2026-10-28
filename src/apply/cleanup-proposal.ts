@@ -14,7 +14,7 @@ import { isResourceAddress } from "./terraform.js";
 import type { AwsTarget } from "./providers/aws.js";
 import type { AzureTarget } from "./providers/azure.js";
 import type { GcpTarget } from "./providers/gcp.js";
-import { gcpProtectionOf } from "./cleanup-gcp.js";
+import { GCP_MATERIAL_RISKS, gcpProtectionOf } from "./cleanup-gcp.js";
 import { armPathSafe, isArmGroupId, isArmRegistrationId, isArmResourceId, isArmScopeId, parseArmId, type ArmType } from "../observe/azure-rest.js";
 import { awsContainerFamilyOf } from "../observe/aws-containers.js";
 import { awsLeafConditionProblem, awsLeafEntryOf, awsParentIdOf, isAwsLeafType, isWellFormedResourceType } from "../observe/aws-leaf-types.js";
@@ -197,6 +197,8 @@ export const MATERIAL_RISKS: Readonly<Record<string, string>> = {
   ...Object.fromEntries(AZURE_RUN_CREATED_POLICY_TYPES.filter((entry) => entry.armType === "policyAssignments").map((entry) => [entry.type,
     "stops the policy at its scope at once: deny effects lift and audits stop; a system-assigned identity the assignment holds is deleted with it, and role assignments made for that identity are kept and left orphaned"])),
   // The same risks by CloudFormation type, for the CDK engine's logical ids.
+  // GCP (src/apply/cleanup-gcp.ts): only google_pubsub_topic is a reviewed leaf today; the rest name what a later review would weigh.
+  ...GCP_MATERIAL_RISKS,
   "AWS::S3::Bucket": "deletes stored objects, which cannot be recovered (CloudFormation refuses to delete a bucket that still holds objects)",
   "AWS::Logs::LogGroup": "deletes retained log data, which cannot be recovered",
   "AWS::KMS::Key": "schedules the key for deletion (a waiting period of at least seven days); after it, anything encrypted under the key becomes unreadable, including data in resources outside the state and resources this cleanup keeps",
@@ -360,7 +362,7 @@ const IAM_ARN = /^arn:aws(?:-[a-z]+)*:iam::/;
 export { isAwsContainerType } from "../observe/aws-containers.js";
 
 /** Why a run-created resource of an unreviewed type is kept, naming its type; under the 512-character limit of a proposal's reason. */
-export const unreviewedTypeReason = (type: string): string => "its type (" + stripInvisible(type).slice(0, 128) + ") is not on the reviewed leaf allowlist (src/observe/aws-leaf-types.ts), so the cleanup cannot tell what deleting it would take with it; it is left in place for the environment's owner to delete or keep by hand, and the type joins the allowlist only by review";
+export const unreviewedTypeReason = (type: string, provider: ProviderId = "AWS"): string => "its type (" + stripInvisible(type).slice(0, 128) + ") is not on the reviewed leaf allowlist (" + (provider === "GCP" ? "src/apply/cleanup-gcp.ts" : "src/observe/aws-leaf-types.ts") + "), so the cleanup cannot tell what deleting it would take with it; it is left in place for the environment's owner to delete or keep by hand, and the type joins the allowlist only by review";
 
 /** Why an attachment or setting whose parent this proposal does not delete is held; under the 512-character limit of a proposal's reason. */
 export const parentKeptReason = (type: string): string => "it is an attachment or setting (" + stripInvisible(type).slice(0, 128) + ") that modifies another resource, and this proposal does not delete that resource with it; a planned create can overwrite what the resource already had, so deleting it would change a resource the cleanup keeps. It is left in place for the environment's owner to remove or keep by hand";
@@ -505,7 +507,8 @@ export function buildCleanupProposal(input: ProposalInput): { ok: true; proposal
   for (const entry of record.blueprint.entries) {
     // The identifier the independent verifier uses for this type (the one it will be asked about again after the cleanup), else whatever the state had.
     const mapping = cloudControlMappingOf(entry.type);
-    const identifier = contract.provider === "AZURE" ? entry.id : mapping ? (mapping.identifier === "arn" ? entry.arn : entry.id) ?? entry.arn ?? entry.id : entry.arn ?? entry.id;
+    // Azure and GCP read by the provider's own id (an ARM id, a Google resource name); AWS by what Cloud Control maps.
+    const identifier = contract.provider === "AZURE" || contract.provider === "GCP" ? entry.id : mapping ? (mapping.identifier === "arn" ? entry.arn : entry.id) ?? entry.arn ?? entry.id : entry.arn ?? entry.id;
     const base = { address: entry.address, type: entry.type, identifier };
     if (!isCleanupAddress(contract.engine, entry.address) || HAS_INVISIBLE.test(entry.address) || HAS_INVISIBLE.test(entry.type)) {
       return refuse("OWNERSHIP_AMBIGUOUS", "A resource address in the state is not one the cleanup can name exactly. A person reviews it by hand; no cleanup proposal is made.");
@@ -539,14 +542,15 @@ export function buildCleanupProposal(input: ProposalInput): { ok: true; proposal
       continue;
     }
     // Created by this run, but of a type nobody reviewed as a leaf: kept and named, never deleted; the rest of the run is still cleaned up.
-    if (protection === "TYPE_UNREVIEWED") { keep("TYPE_UNREVIEWED", awsLeafConditionProblem(entry) ?? unreviewedTypeReason(entry.type)); continue; }
+    if (protection === "TYPE_UNREVIEWED") { keep("TYPE_UNREVIEWED", (contract.provider === "AWS" ? awsLeafConditionProblem(entry) : undefined) ?? unreviewedTypeReason(entry.type, contract.provider)); continue; }
     const seen: ObservedResource | undefined = observed.get(entry.address);
     if (seen === undefined || seen.result === "NOT_YET_OBSERVABLE" || seen.result === "DIFFERENT_FROM_DESIRED") {
       return refuse("OBSERVATION_INCONCLUSIVE", "The observation could not decide about " + entry.address + " (" + (seen?.reason ?? "not observed") + "). Observe this run again before proposing a cleanup.");
     }
     // A type the reader cannot address (no Cloud Control mapping; an Azure id that is not an ARM resource id) is named, not refused; a denied or failed read is refused.
     // On Azure an entry with no id cannot be classified at all (a container, a scope, a backend?), so it is refused rather than proposed.
-    const accepted = contract.provider === "AZURE" ? ["NOT_AN_ARM_RESOURCE_ID"] : ["NO_CLOUD_CONTROL_MAPPING", "DATA_BEARING_READ_EXCLUDED", "NO_IDENTIFIER_IN_STATE", "NOT_INDEPENDENTLY_CHECKABLE"];
+    // GCP accepts none: its one reviewed leaf has a read mapping, so an unread one (no name, another project, an unmapped type) is refused.
+    const accepted = contract.provider === "AZURE" ? ["NOT_AN_ARM_RESOURCE_ID"] : contract.provider === "GCP" ? [] : ["NO_CLOUD_CONTROL_MAPPING", "DATA_BEARING_READ_EXCLUDED", "NO_IDENTIFIER_IN_STATE", "NOT_INDEPENDENTLY_CHECKABLE"];
     if (seen.result === "UNVERIFIABLE" && !accepted.includes(seen.reason ?? "")) {
       return refuse("OBSERVATION_INCONCLUSIVE", "The observation was refused for " + entry.address + " (" + seen.reason + "). Fix the DISCOVERY identity's access and observe again.");
     }
@@ -669,7 +673,7 @@ export function proposalProblems(value: unknown): string[] {
   if (typeof value.requesterId !== "string" || !REQUESTER_ID.test(value.requesterId)) problems.push("proposal.requesterId: not an allowlist id");
   if (!wellFormedRequest(value.request)) problems.push("proposal.request: the requester's signature is missing or malformed");
   if (![value.proposalSha256, value.artifactSha256, value.applyEvidenceSha256, value.blueprintSha256, value.observationSha256, value.contractSha256, value.authorizingContractSha256, value.authorizationSha256, value.targetSha256].every(hashText)) problems.push("proposal: a hash is not a SHA-256 digest");
-  if (!["AWS", "AZURE"].includes(value.provider as string) || !["TERRAFORM", "CDK", "BICEP"].includes(value.engine as string)) problems.push("proposal: provider or engine is unknown");
+  if (!["AWS", "AZURE", "GCP"].includes(value.provider as string) || !["TERRAFORM", "CDK", "BICEP"].includes(value.engine as string)) problems.push("proposal: provider or engine is unknown");
   if (!ENVIRONMENTS.includes(value.environment as ApplyEnvironment) || !PILOT_CHANNELS.includes(value.channel as PilotChannel)) problems.push("proposal: environment or channel is unknown");
   const target = value.target;
   if (!isRecord(target) || Object.keys(target).sort().join() !== "account,backend,workspace" || !["account", "backend", "workspace"].every((key) => text(target[key]))) problems.push("proposal.target: malformed");
@@ -766,6 +770,7 @@ export function protectedDeletionIn(planned: readonly PlanChange[], entries: rea
     if (protection === "TYPE_UNREVIEWED") return "The destroy plan would " + change.action.toLowerCase() + " " + stripInvisible(change.address) + ", whose type (" + stripInvisible(change.type) + ") is not on the reviewed leaf allowlist, so what deleting it would take with it is unknown and a pilot cleanup never deletes it, directly or as a dependent (TYPE_UNREVIEWED).";
     const what = protection === "RETAINED_GROUP" ? "a resource group" : protection === "PROTECTED_IDENTITY" ? "an identity or authorization object" : protection === "PROTECTED_DEPLOYMENT" ? "deployment history"
       : protection === "PROTECTED_BACKEND" ? "the state backend" : contract.provider === "AWS" ? "a stack container (" + (awsContainerFamilyOf(entry.type)?.what ?? "a type that deploys a CloudFormation stack") + ") holding resources the state does not list"
+      : contract.provider === "GCP" ? "a container (a project, folder or organization, an API enablement, or a deployment that tears down what its template created)"
       : "a subscription, management group, provider scope or registration";
     return "The destroy plan would " + change.action.toLowerCase() + " " + stripInvisible(change.address) + ", " + what + ", which a pilot cleanup never deletes, directly or as a dependent (" + protection + ").";
   }

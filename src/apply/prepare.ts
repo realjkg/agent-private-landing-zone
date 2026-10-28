@@ -37,6 +37,7 @@ const AWS_CLI_VERSION = /^\d+\.\d+\.\d+$/;
 const PATHS: Readonly<Record<ProviderId, { primary: EngineId; secondary: EngineId | null; secondaryGap: string }>> = {
   AWS: { primary: "TERRAFORM", secondary: "CDK", secondaryGap: "" },
   AZURE: { primary: "TERRAFORM", secondary: "BICEP", secondaryGap: "" },
+  GCP: { primary: "TERRAFORM", secondary: null, secondaryGap: "The GCP API-native path is planned and is not supported for apply yet." },
 };
 
 export type PrepareCode =

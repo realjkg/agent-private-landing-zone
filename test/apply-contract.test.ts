@@ -157,7 +157,7 @@ test("the DEV-only rule is the same for AWS CDK: its own target shape, DEV only"
 });
 
 test("planned paths are named and refused NOT_IMPLEMENTED until their lane lands; unknown ones stay CONTRACT_INVALID", () => {
-  for (const [provider, engine] of [["GCP", "TERRAFORM"], ["GCP", "GCP_API"]]) {
+  for (const [provider, engine] of [["GCP", "GCP_API"]]) {
     disabled(write({ ...fixtureContract(), provider, engine }), /planned path that is not implemented/, "NOT_IMPLEMENTED");
     disabled(write({ ...azureDevOnly(), provider, engine }), /not implemented/, "NOT_IMPLEMENTED");
   }
@@ -167,6 +167,9 @@ test("planned paths are named and refused NOT_IMPLEMENTED until their lane lands
   // Azure Bicep (path 4) is admitted for DEV only (owner decision E2): a three-stage contract is not a contract, and its target names the resource group.
   disabled(write({ ...fixtureContract(), engine: "BICEP" }), /enabledEnvironments: AZURE BICEP \(path 4\) is admitted for DEV only/, "CONTRACT_INVALID");
   disabled(write({ ...azureDevOnly(), engine: "BICEP" }), /targets\.DEV\.resourceGroup: missing/, "CONTRACT_INVALID");
+  // GCP Terraform (path 5) is admitted for DEV only (owner decision 6481421924): a three-stage contract, or one with another provider's target shape, is not a contract.
+  disabled(write({ ...fixtureContract(), provider: "GCP", engine: "TERRAFORM" }), /enabledEnvironments: GCP TERRAFORM \(path 5\) is admitted for DEV only/, "CONTRACT_INVALID");
+  disabled(write({ ...azureDevOnly(), provider: "GCP", engine: "TERRAFORM" }), /targets\.DEV\./, "CONTRACT_INVALID");
 });
 
 test("a flag in the environment alone never enables ACT", () => {

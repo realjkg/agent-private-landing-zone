@@ -14,9 +14,9 @@ import { PHASE_E_SCENARIOS } from "./phase-e.js";
  * qualifies the CDK gate, an AWS preview never the Azure one, a greenfield plan never a brownfield gate.
  */
 /**
- * `provider` may also be "GCP", which is a release gate before it is an admitted provider (path 5; owner approval 6433121154 on issue
- * #39): its scenario is a requirement that no evidence can meet until a GCP contract can seal a plan (`buildPreviewGateEvidence`
- * refuses any other provider's plan as SCENARIO_MISMATCH).
+ * `provider` may also be "GCP" (path 5; owner approval 6433121154 on issue #39): GCP Terraform is admitted in code for DEV only, so a
+ * GCP contract can seal a plan this gate's evidence is made from (`buildPreviewGateEvidence` refuses any other provider's plan as
+ * SCENARIO_MISMATCH). It is not a Phase E scenario: Phase E has no GCP discovery yet (PLAN S5).
  */
 export type PreviewGateScenario = { provider: ProviderId | "GCP"; engine: string; estate: "brownfield" | "greenfield" };
 const ESTATES: readonly PreviewGateScenario["estate"][] = ["brownfield", "greenfield"];
