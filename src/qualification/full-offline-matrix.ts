@@ -242,15 +242,17 @@ export async function runOfflineCoverage(input: {
     cases.filter((c) => c.expected === expected).length;
   const tallyRows = (status: OfflineGateRow["status"]) =>
     rows.filter((r) => r.status === status).length;
-  const passed = cases.length === 78 && positives.length === 24 &&
+  // The Terraform adapter also advertises GCP (its Phase E scenario, act:gcp-terraform): three GCP cases, PLAN_REQUIRED here
+  // like every advertised non-AWS/Azure target, never invoked by this AWS/Azure offline matrix.
+  const passed = cases.length === 81 && positives.length === 24 &&
     tally("DENY_UNKNOWN") === 13 && tally("DENY_GREENFIELD") === 2 &&
-    tally("NOT_APPLICABLE") === 9 && tally("PLAN_REQUIRED") === 30 &&
-    executedCases.length === 39 && excludedCases.length === 39 &&
-    rows.length === 645 &&
+    tally("NOT_APPLICABLE") === 9 && tally("PLAN_REQUIRED") === 33 &&
+    executedCases.length === 39 && excludedCases.length === 42 &&
+    rows.length === 648 &&
     applicableFaults === 252 && faultNotApplicable === 12 &&
     tallyRows("VERIFIED_OFFLINE") === 498 &&
     tallyRows("NOT_APPLICABLE") === 21 &&
-    tallyRows("NOT_RUN") === 96 && tallyRows("PLAN_REQUIRED") === 30 &&
+    tallyRows("NOT_RUN") === 96 && tallyRows("PLAN_REQUIRED") === 33 &&
     tallyRows("FAILED") === 0 &&
     new Set(rows.map((r) => r.id)).size === rows.length;
   const body = {
