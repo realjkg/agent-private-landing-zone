@@ -360,8 +360,11 @@ test("AWS Terraform cleanup: approve under the cleanup domain, destroy exactly t
   assert.deepEqual(result.evidence.adapter, { adapterVersion: CLEANUP_ADAPTER.adapterVersion, argvDigest: CLEANUP_ADAPTER.argvDigest });
   assert.deepEqual(cleanupEvidenceProblems(result.evidence), []);
   const steps = calls().slice(before);
-  assert.deepEqual(steps.map((c) => c.args[0]), ["version", "init", "workspace", "state", "plan", "show", "apply", "state"]);
+  assert.deepEqual(steps.map((c) => c.args[0]), ["version", "init", "version", "workspace", "state", "plan", "show", "apply", "state"]);
   const roleOf = (index: number) => steps[index].env.AWS_ROLE_ARN;
+  // The post-init read of what init selected (review of #327, round 5) holds no identity; the steps below are the run's own.
+  assert.deepEqual([steps[2].args, roleOf(2)], [["version", "-json"], undefined]);
+  steps.splice(2, 1);
   assert.equal(roleOf(1), awsRoleArn("STATE_WRITE", "DEV"), "init as STATE_WRITE, as an apply");
   assert.equal(roleOf(3), awsRoleArn("STATE", "DEV"));
   assert.equal(roleOf(4), awsRoleArn("DISCOVERY", "DEV"), "the destroy plan reads providers as DISCOVERY");

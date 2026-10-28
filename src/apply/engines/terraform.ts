@@ -21,7 +21,7 @@ import type { EngineApplyRun, EngineCleanupRun, EngineContext, EngineSpec } from
 import type { ProviderBlock, ProviderSpec, ProviderUse } from "../provider.js";
 import { isRecord } from "../providers/shared.js";
 import { assertNoRefusedPlanConstructs, assertNoRefusedSourceConstructs } from "../terraform-constructs.js";
-import { LockFileError, lockedProviders, unreviewedProviderVersion, type LockedProvider } from "../lockfile.js";
+import { LockFileError, REVIEWED_PROVIDER_VERSIONS, lockedProviders, unreviewedProviderVersion, type LockedProvider } from "../lockfile.js";
 import {
   APPLY_ADAPTER, APPLY_ARGV, APPLY_BACKEND_CONFIG_FILE, APPLY_INIT_ARGV, CLEANUP_ADAPTER, CLEANUP_APPLY_ARGV, CLEANUP_PLAN_FILE, CLEANUP_SHOW_ARGV, RECOVERY_FILES,
   classifyApply, cleanupPlanArgv, isAllowedApplyArgv, isAllowedCleanupArgv, parseStateSerial,
@@ -118,6 +118,8 @@ type WorkspaceInput = {
   stateIdentity: "STATE" | "STATE_WRITE";
   /** The backend type the product override pins (`ProviderSpec.backendType`). Every init in the pilot runs with it. */
   backendType: BackendType;
+  /** The registry sources this cloud path may select at init (`ProviderSpec.selectableProviders`), judged after init. */
+  selectableProviders: readonly string[];
   /** Runs between the version check and init (writes the product's `-backend-config` file). */
   beforeInit?: () => void;
   afterInit?: () => void;
@@ -144,6 +146,29 @@ function assertReviewedProviderVersions(work: string): void {
     return stop("LOCK_FILE_UNREADABLE");
   }
   if (unreviewedProviderVersion(providers)) stop("PROVIDER_VERSION_NOT_REVIEWED");
+}
+
+/**
+ * The authoritative provider check (review of #327, round 5): after `init -lockfile=readonly` and before any plan, `terraform
+ * version -json` reports `provider_selections`, the providers init selected for this working directory, whatever the lock file's
+ * layout (an indented or CRLF block the lock reader skips is still selected here). Every selected source must be one this cloud
+ * path may use (`ProviderSpec.selectableProviders`), by exact registry source and host, else `PROVIDER_NOT_ADMITTED`; hashicorp/aws
+ * and hashicorp/azurerm must be exactly the reviewed versions, else `PROVIDER_VERSION_NOT_REVIEWED`. Missing or malformed
+ * selections are `PROVIDER_SELECTIONS_UNREADABLE`. A built-in-only project selects nothing (`{}`), which passes.
+ */
+function assertProviderSelections(session: Session, selectable: readonly string[]): void {
+  let selections: unknown;
+  try { selections = (JSON.parse(session.step(VERSION_ARGV, null)) as { provider_selections?: unknown }).provider_selections; } catch (error) {
+    if (codeOf(error) !== "UNEXPECTED") throw error;
+    return stop("PROVIDER_SELECTIONS_UNREADABLE");
+  }
+  if (!isPlainRecord(selections)) return stop("PROVIDER_SELECTIONS_UNREADABLE");
+  for (const [source, version] of Object.entries(selections)) {
+    if (typeof version !== "string") return stop("PROVIDER_SELECTIONS_UNREADABLE");
+    if (!selectable.includes(source)) stop("PROVIDER_NOT_ADMITTED");
+    const reviewed = REVIEWED_PROVIDER_VERSIONS[source];
+    if (reviewed !== undefined && version !== reviewed) stop("PROVIDER_VERSION_NOT_REVIEWED");
+  }
 }
 
 function prepareWorkspace(session: Session, input: WorkspaceInput): void {
@@ -173,6 +198,8 @@ function prepareWorkspace(session: Session, input: WorkspaceInput): void {
   input.beforeInit?.();
   try { session.step(input.initArgv, input.stateIdentity); } finally { input.afterInit?.(); }
   session.assertBound();
+  // What init actually selected, before any plan runs provider code (review of #327, round 5).
+  assertProviderSelections(session, input.selectableProviders);
   if (input.target.workspace !== "default") session.step(workspaceSelectArgv(input.target.workspace), input.stateIdentity);
   if (session.step(WORKSPACE_SHOW_ARGV, input.stateIdentity).trim() !== input.target.workspace) stop("WORKSPACE_MISMATCH");
 }
@@ -385,7 +412,7 @@ function openApply(input: EngineContext & { target: ResolvedTarget; engineVersio
     // the APPLY identity, because an apply cannot be undone.
     prepare(snapshotPath) {
       prepareWorkspace(session, {
-        snapshotPath, engineVersion: input.engineVersion, target: input.target, initArgv: APPLY_INIT_ARGV, stateIdentity: "STATE_WRITE", backendType: spec.backendType,
+        snapshotPath, engineVersion: input.engineVersion, target: input.target, initArgv: APPLY_INIT_ARGV, stateIdentity: "STATE_WRITE", backendType: spec.backendType, selectableProviders: spec.selectableProviders,
         beforeInit: () => writeFileSync(backendConfigPath, spec.backendConfig(env, pinned), { mode: 0o600, flag: "wx" }),
         afterInit: () => rmSync(backendConfigPath, { force: true }),
       });
@@ -452,7 +479,7 @@ function openCleanup(input: EngineContext & { target: ResolvedTarget; engineVers
   return {
     prepare(snapshotPath) {
       prepareWorkspace(session, {
-        snapshotPath, engineVersion: input.engineVersion, target: input.target, initArgv: APPLY_INIT_ARGV, stateIdentity: "STATE_WRITE", backendType: spec.backendType,
+        snapshotPath, engineVersion: input.engineVersion, target: input.target, initArgv: APPLY_INIT_ARGV, stateIdentity: "STATE_WRITE", backendType: spec.backendType, selectableProviders: spec.selectableProviders,
         beforeInit: () => writeFileSync(backendConfigPath, spec.backendConfig(env, pinned), { mode: 0o600, flag: "wx" }),
         afterInit: () => rmSync(backendConfigPath, { force: true }),
       });
@@ -537,7 +564,7 @@ export const TERRAFORM: EngineSpec = {
     try {
       prepareWorkspace(session, {
         snapshotPath: input.snapshotPath, engineVersion: input.engineVersion, target: input.target,
-        stateIdentity: "STATE", backendType: input.spec.backendType, initArgv: APPLY_INIT_ARGV,
+        stateIdentity: "STATE", backendType: input.spec.backendType, selectableProviders: input.spec.selectableProviders, initArgv: APPLY_INIT_ARGV,
         // The contract's backend location (written 0600, removed as soon as init ends), and on opt-in STATE_WRITE's non-secret settings too, so the plan embeds them.
         beforeInit: () => writeFileSync(backendConfigPath, embed
           ? input.spec.backendConfig(nonSecretStateWrite(input.env), input.pinned)

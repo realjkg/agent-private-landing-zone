@@ -95,6 +95,8 @@ test("sealing runs the pinned init/workspace/plan/show sequence, with STATE for 
       ["version", "-json"],
       // The pinned backend has no settings of its own: the seal's init reads the contract's location from the product's backend file.
       ["init", "-input=false", "-no-color", "-lockfile=readonly", "-backend-config=../alz-backend.tfbackend"],
+      // What init selected, judged before any plan (review of #327, round 5).
+      ["version", "-json"],
       ["workspace", "select", "pilot"],
       ["workspace", "show"],
       ["plan", "-input=false", "-no-color", "-out=../alz-preview.tfplan"],

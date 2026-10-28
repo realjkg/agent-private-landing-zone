@@ -18,6 +18,7 @@ import type { ApplyEnvironment, SignedApproval } from "../src/apply/types.js";
 import { removeTree } from "../src/teardown/driver/cleanup.js";
 import type { ResolvedTarget } from "../src/teardown/driver/types.js";
 import {
+  escapeRegExp,
   NOW, POLICY, REQUESTER, SOURCE_COMMIT, approvalFor, awsContractJson, awsIdentityEnv, awsTargetOf, behave as behaveIn, callsOf, contractJson, human,
   identityEnv, installFakeTerraform, targetOf, testFixtureForgeQualificationEvidence, writeProject, writeReviewedContract, type Behavior,
 } from "./helpers/apply-fixtures.js";
@@ -371,7 +372,7 @@ for (const provider of PROVIDERS) {
       const refusedSeal = await h.sealWith(h.project());
       assert.equal(refusedSeal.ok, false, label);
       assert.equal((refusedSeal as { code: string }).code, "ARTIFACT_INVALID", label);
-      assert.match((refusedSeal as { message: string }).message, new RegExp(code), label);
+      assert.match((refusedSeal as { message: string }).message, new RegExp(escapeRegExp(code)), label);
       assert.deepEqual(readdirSync(h.dirs.scratch), [], "no scratch directory survives: " + label);
 
       // Sealed clean; the apply re-derives the change list from the plan bytes and meets the construct there.
@@ -384,7 +385,7 @@ for (const provider of PROVIDERS) {
       const before = h.applies();
       const result = await h.applyWith(p, sealed.path, approvals);
       assert.equal(result.ok, false, label);
-      assert.match((result as { message: string }).message, new RegExp(code), label);
+      assert.match((result as { message: string }).message, new RegExp(escapeRegExp(code)), label);
       // Round 2 N2 (review of #327): the judge's own refusal surfaces, not a generic "could not start".
       assert.equal((result as { code: string }).code, "ARTIFACT_INVALID", label);
       assert.match((result as { message: string }).message, /Terraform construct the pilot refuses/, label);
@@ -410,7 +411,7 @@ for (const provider of PROVIDERS) {
       const initsBefore = callsOf(toolDir).filter((c) => c.args[0] === "init").length;
       const refusedSeal = await h.sealWith(h.project(extra, mainTf));
       assert.equal(refusedSeal.ok, false, label);
-      assert.match((refusedSeal as { message: string }).message, new RegExp(code), label);
+      assert.match((refusedSeal as { message: string }).message, new RegExp(escapeRegExp(code)), label);
       // N3: the operator is told what the lexical rule matched, and how to fix a repeated key.
       if (code === PROVISIONER_WORD_IN_SOURCE || code === EPHEMERAL_WORD_IN_SOURCE) assert.match((refusedSeal as { message: string }).message, /may be in a comment or a string/, label);
       if (code === CONSTRUCTS_DUPLICATE_KEY) assert.match((refusedSeal as { message: string }).message, /repeats a key/, label);
@@ -447,7 +448,7 @@ test("AZURE (RB2): a module-nested use of an unreviewed or lookalike provider st
 
 /**
  * Real `terraform init` lock-file syntax (Terraform 1.16.4, offline mirror, 2026-10-27): the reviewed hashicorp/aws 6.68.0 and
- * hashicorp/azurerm 4.81.0 entries as init wrote them, and hashicorp/null 3.2.4. `lockWith` swaps a version in place.
+ * hashicorp/azurerm 4.81.0 entries as init wrote them, and hashicorp/null 3.2.4. `sealLockWith` swaps a version in place.
  */
 const REAL_LOCK_SEAL = [
   '# This file is maintained automatically by "terraform init".', "# Manual edits may be lost in future updates.", "",
@@ -458,7 +459,7 @@ const REAL_LOCK_SEAL = [
   'provider "registry.terraform.io/hashicorp/null" {', '  version     = "3.2.4"', "}", "",
 ].join("\n");
 const sealLockWith = (source: "aws" | "azurerm" | "null", version: string): string =>
-  REAL_LOCK_SEAL.replace(new RegExp('(provider "registry\\.terraform\\.io/hashicorp/' + source + '" \\{\\n  version     = ")[^"]+"'), "$1" + version + '"');
+  REAL_LOCK_SEAL.replace(new RegExp("(" + escapeRegExp('provider "registry.terraform.io/hashicorp/' + source + '" {\n  version     = "') + ')[^"]+"'), "$1" + version + '"');
 
 for (const provider of PROVIDERS) {
   test(provider.name + ": the seal refuses a bound lock that pins aws or azurerm at a version the denied types were not reviewed against, before init (review of #327, round 4)", async () => {
@@ -487,3 +488,36 @@ test("at apply and cleanup the same refusal surfaces by the judge's code and the
   assert.equal(judged?.refusal, "ARTIFACT_INVALID");
   assert.match(judged!.message, /\(PROVIDER_VERSION_NOT_REVIEWED\)\. The lock file pins a provider version the denied-type lists were not reviewed against \(reviewed: registry\.terraform\.io\/hashicorp\/aws 6\.68\.0, registry\.terraform\.io\/hashicorp\/azurerm 4\.81\.0\)/);
 });
+
+for (const provider of PROVIDERS) {
+  test(provider.name + ": after init, what Terraform actually selected is judged before any plan: a foreign or unadmitted source, an unreviewed version, or unreadable selections stop the seal (review of #327, round 5)", async () => {
+    const own = provider.name === "AWS" ? "registry.terraform.io/hashicorp/aws" : "registry.terraform.io/hashicorp/azurerm";
+    const reviewed = provider.name === "AWS" ? "6.68.0" : "4.81.0";
+    for (const [label, selections, code] of [
+      ["the cloud's provider at an unreviewed version", { [own]: provider.name === "AWS" ? "6.70.0" : "4.82.0" }, "PROVIDER_VERSION_NOT_REVIEWED"],
+      ["the same provider from an OpenTofu registry host", { ["registry.opentofu.org/hashicorp/" + own.split("/").pop()]: reviewed }, "PROVIDER_NOT_ADMITTED"],
+      ["an aliased source in another namespace", { ["registry.terraform.io/attacker/" + own.split("/").pop()]: reviewed }, "PROVIDER_NOT_ADMITTED"],
+      ["the other cloud", { [provider.name === "AWS" ? "registry.terraform.io/hashicorp/azurerm" : "registry.terraform.io/hashicorp/aws"]: provider.name === "AWS" ? "4.81.0" : "6.68.0" }, "PROVIDER_NOT_ADMITTED"],
+      ["azapi", { "registry.terraform.io/azure/azapi": "2.7.0" }, "PROVIDER_NOT_ADMITTED"],
+      ["selections missing", null, "PROVIDER_SELECTIONS_UNREADABLE"],
+      ["selections not an object", "aws", "PROVIDER_SELECTIONS_UNREADABLE"],
+      ["a version that is not text", { [own]: 6 }, "PROVIDER_SELECTIONS_UNREADABLE"],
+    ] as const) {
+      const h = harness(provider);
+      h.behave({ providerSelections: selections as never });
+      const before = h.plans();
+      const refusedSeal = await h.sealWith(h.project());
+      assert.equal(refusedSeal.ok, false, label);
+      assert.match((refusedSeal as { message: string }).message, new RegExp("\\(" + escapeRegExp(code) + "\\)"), label);
+      assert.equal(h.plans(), before, "no plan ran: " + label);
+      assert.deepEqual(readdirSync(h.dirs.scratch), [], "no scratch directory survives: " + label);
+    }
+    // Admitted: nothing selected (a built-in-only project, as the emulated runs), the cloud's provider at the reviewed version, and a no-cloud one.
+    for (const selections of [{}, { [own]: reviewed, "registry.terraform.io/hashicorp/random": "3.7.2" }]) {
+      const h = harness(provider);
+      h.behave({ providerSelections: selections });
+      const sealed = await h.sealWith(h.project());
+      assert.ok(sealed.ok, JSON.stringify(sealed));
+    }
+  });
+}

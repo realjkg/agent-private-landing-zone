@@ -74,6 +74,12 @@ export type ProviderSpec = {
    * everything the plan names, with its provider). `env` holds the APPLY identity.
    */
   assertProviderConfig(blocks: readonly ProviderBlock[], target: PilotTarget, env: NodeJS.ProcessEnv, uses: readonly ProviderUse[]): void;
+  /**
+   * The registry sources a project of this cloud path may select at init (review of #327, round 5): read after `init` from
+   * `terraform version -json` `provider_selections`, before any plan runs provider code. Any other source (another cloud, a provider
+   * this release does not admit, another registry host such as registry.opentofu.org) is refused (`PROVIDER_NOT_ADMITTED`).
+   */
+  selectableProviders: readonly string[];
   /** The plan attributes that hold a resource's tags, most complete first (AWS: `tags_all`, then `tags`; Azure: `tags`). A created resource with none of them is untaggable. */
   tagAttributes: readonly string[];
 };

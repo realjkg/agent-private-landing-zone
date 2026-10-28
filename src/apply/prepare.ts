@@ -40,7 +40,7 @@ const PATHS: Readonly<Record<ProviderId, { primary: EngineId; secondary: EngineI
 export type PrepareCode =
   | "CONTRACT_DISABLED" | "KILL_SWITCH_ACTIVE" | "POLICY_VERSION_MISSING" | "ENVIRONMENT_INVALID" | "TARGET_NOT_IN_CONTRACT"
   | "PROJECT_INVALID" | "PROJECT_ENGINE_MISMATCH" | "PROJECT_NOT_CLEAN" | "PROJECT_SNAPSHOT_REFUSED"
-  | "LOCK_FILE_MISSING" | "LOCK_FILE_UNREADABLE" | "PROVIDER_VERSION_NOT_REVIEWED" | "ENGINE_VERSION_REQUIRED" | "TOOL_UNAVAILABLE" | "MANIFEST_INVALID"
+  | "LOCK_FILE_MISSING" | "LOCK_FILE_UNREADABLE" | "PROVIDER_VERSION_NOT_REVIEWED" | "PROVIDER_NOT_ADMITTED" | "ENGINE_VERSION_REQUIRED" | "TOOL_UNAVAILABLE" | "MANIFEST_INVALID"
   | "INPUT_UNSET" | "MODULE_REMOTE" | "MODULE_OUTSIDE_PROJECT" | "TERRAFORM_CONFIG_UNREADABLE";
 
 /** Who has to act to clear a refusal: the owner, the operator at this screen, or a missing local tool. */
@@ -238,6 +238,12 @@ export async function prepareApply(input: PrepareInput, deps: PrepareDeps = {}):
       return refuse("LOCK_FILE_UNREADABLE", "OPERATOR", error instanceof LockFileError ? error.message : "The lock file cannot be read.");
     }
     // The aws and azurerm versions are the ones the denied-type lists were reviewed against (review of #327, round 4).
+    // Every locked source is one this cloud path may select (review of #327, round 5): the engine judges what init selects again.
+    const foreign = providers.find((provider) => !spec.selectableProviders.includes(provider.source));
+    if (foreign) {
+      return refuse("PROVIDER_NOT_ADMITTED", "OPERATOR", "The lock file pins " + foreign.source + ", which this pilot does not admit for " + spec.id +
+        ". Only these provider sources are allowed: " + spec.selectableProviders.join(", ") + ".");
+    }
     const unreviewed = unreviewedProviderVersion(providers);
     if (unreviewed) return refuse("PROVIDER_VERSION_NOT_REVIEWED", "OPERATOR", unreviewedVersionMessage(unreviewed));
   }

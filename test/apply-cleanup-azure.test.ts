@@ -23,6 +23,7 @@ import { removeTree } from "../src/teardown/driver/cleanup.js";
 import { canonicalJson } from "../src/teardown/manifest.js";
 import { sha256 } from "../src/util/sha256.js";
 import {
+  escapeRegExp,
   ARM_ACCESS_TOKEN_CANARY, ARM_FEDERATED_TOKEN_CANARY, CANARIES, DEV_TARGET, NOW, POLICY, SOURCE_COMMIT, STATE_CANARY, approvalFor, azureStateResource, behave as behaveIn, callsOf, contractJson,
   fakeArmHttp, human, identityEnv, installFakeTerraform, keys, targetOf, testFixtureForgeQualificationEvidence, writeReviewedContract, writeProject, type ArmBehavior, type Behavior,
   REQUESTER, reHashedProposal,
@@ -183,7 +184,7 @@ async function destroyPlanRefused(w: World, run: Awaited<ReturnType<typeof propo
     return taken;
   }
   refused(taken, "TARGET_NOT_IN_CONTRACT");
-  assert.match((taken as { message: string }).message, new RegExp("\\(" + judgeCodeOf(type)! + "\\)\\. Nothing was destroyed and no approval was consumed"), address + ": the plan judge refuses the destroy plan first, by its own code");
+  assert.match((taken as { message: string }).message, new RegExp("\\(" + escapeRegExp(judgeCodeOf(type)!) + "\\)\\. Nothing was destroyed and no approval was consumed"), address + ": the plan judge refuses the destroy plan first, by its own code");
   const policy = protectedDeletionIn([{ address, type, action: "DELETE" }], run.records.blueprint.blueprint.entries, loadPilotContract(fixtureContractPath) as PilotContract, w.deps.env!,
     { account: run.proposal.target.account, addresses: new Set(run.proposal.deletes.map((d) => d.address)) });
   assert.ok(policy, address + ": the policy check refuses it too");
@@ -508,7 +509,7 @@ test("Azure resource groups are never deleted: a group this run created, through
   // anything is consumed, and the refusal names the policy, not just the extra address; the same for a group known only by its id.
   for (const [address, type] of [["azurerm_resource_group.pilot", "azurerm_resource_group"], ["azapi_resource.rg", "azapi_resource"]] as const) {
     await destroyPlanRefused(w, run, [approval], creates, state, address, type,
-      new RegExp("would delete " + address.replace(".", "\\.") + ", a resource group, which a pilot cleanup never deletes, directly or as a dependent \\(RETAINED_GROUP\\).*Nothing was destroyed and no approval was consumed"));
+      new RegExp("would delete " + escapeRegExp(address) + ", a resource group, which a pilot cleanup never deletes, directly or as a dependent \\(RETAINED_GROUP\\).*Nothing was destroyed and no approval was consumed"));
     assert.equal(destroyPlans().length, 1, address + ": the destroy was planned and stopped there");
     assert.equal(applyCalls().length, 0, address + ": no destroy was applied");
   }
@@ -708,7 +709,7 @@ test("Azure identity, authorization and deployment-history objects are never del
     ["azurerm_management_lock.appeared", "azurerm_management_lock", "an identity or authorization object", "PROTECTED_IDENTITY"],
   ] as const) {
     await destroyPlanRefused(w, run, [approval], creates, state, address, type,
-      new RegExp("would delete " + address.replace(".", "\\.") + ", " + what + ", which a pilot cleanup never deletes, directly or as a dependent \\(" + cls + "\\)"));
+      new RegExp("would delete " + escapeRegExp(address) + ", " + what + ", which a pilot cleanup never deletes, directly or as a dependent \\(" + cls + "\\)"));
     assert.deepEqual([destroyPlans().length, applyCalls().length], [1, 0], address + ": planned, then stopped; no destroy was applied");
   }
   assert.deepEqual(readdirSync(w.dirs.evidence).filter((n) => n.endsWith(CLEANUP_SUFFIX)), []);
@@ -913,7 +914,7 @@ test("ARM ids are classified by position (review 6410149770, B3): an authorizati
   // A destroy plan that would take one along stops before any approval is consumed.
   for (const [address, cls] of [["azapi_resource.role_in_providers", "PROTECTED_IDENTITY"], ["azapi_resource.lock_on_providers", "PROTECTED_IDENTITY"], ["azapi_resource.deploy_in_providers", "PROTECTED_DEPLOYMENT"], ["azurerm_resource_group.providers", "RETAINED_GROUP"]] as const) {
     await destroyPlanRefused(w, run, [approval], creates, state, address, address.split(".")[0]!,
-      new RegExp("would delete " + address.replace(".", "\\.") + ", .*never deletes, directly or as a dependent \\(" + cls + "\\)"));
+      new RegExp("would delete " + escapeRegExp(address) + ", .*never deletes, directly or as a dependent \\(" + cls + "\\)"));
     assert.deepEqual([destroyPlans().length, applyCalls().length], [1, 0], address);
   }
   // A forged proposal naming one never executes.

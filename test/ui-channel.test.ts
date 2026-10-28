@@ -20,7 +20,7 @@ import type { ResolvedTarget } from "../src/teardown/driver/types.js";
 import { SOURCE_COMMIT,
   AWS_DEV_TARGET, ENGINE_VERSION, NOW, POLICY, awsContractJson, awsIdentityEnv, awsReadCallsOf, awsRoleArn, awsTargetOf, behave as behaveIn, behaveAwsReads, callsOf, contractJson, identityEnv,
   installFakeAwsReads, installFakeTerraform, keys, stateResource, targetOf, testFixtureForgeQualificationEvidence,
-  writeReviewedContract, writeProject, type Behavior, type Project,
+  AWS_LOCK, writeReviewedContract, writeProject, type Behavior, type Project,
   ARM_ACCESS_TOKEN_CANARY, ARM_FEDERATED_TOKEN_CANARY, DEV_TARGET, azureStateResource, fakeArmHttp,
   REQUESTER,
   requesterArgs,
@@ -894,7 +894,8 @@ async function consoleJourney(cloud: Cloud, sourceCommit = SOURCE_COMMIT) {
   const { port } = await serve(w);
   await choose(port);
   const target = cloud === "AWS" ? awsTargetOf("DEV") : targetOf("DEV");
-  const project = writeProject(fresh("project"), target, cloud === "AWS" ? 'resource "aws_s3_bucket" "pilot" {}\n' : undefined);
+  // Each cloud path locks its own provider at the reviewed version (review of #327, rounds 4 and 5).
+  const project = writeProject(fresh("project"), target, cloud === "AWS" ? 'resource "aws_s3_bucket" "pilot" {}\n' : undefined, cloud === "AWS" ? AWS_LOCK : undefined);
   return { w, port, target, project };
 }
 
@@ -1165,6 +1166,9 @@ test("AWS Terraform in the console: observe what the apply created, propose and 
   assert.deepEqual(evidence.authority, { infrastructureAct: "PILOT_ENABLED", mutation: "TERRAFORM_DESTROY_OF_APPROVED_PROPOSAL", executedAs: "APPLY", agentInitiated: false });
   assert.equal(evidence.artifactSha256, sealed.artifactSha256);
   const steps = engineCalls().slice(before);
+  // The post-init read of what init selected (review of #327, round 5); the steps after it are the cleanup's own.
+  assert.deepEqual(steps[2], ["version", "-json"]);
+  steps.splice(2, 1);
   assert.deepEqual(steps.map((args) => args[0]), ["version", "init", "workspace", "state", "plan", "show", "apply", "state"]);
   assert.deepEqual(steps[4].filter((arg) => arg.startsWith("-target=")), ["-target=aws_cloudwatch_log_group.canary", "-target=aws_s3_bucket.logs"], "the destroy targets exactly the approved list");
 

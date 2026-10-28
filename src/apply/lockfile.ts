@@ -17,10 +17,21 @@ export class LockFileError extends Error {
   }
 }
 
-/** Every provider block, sorted by source. A block without exactly one well-formed version is refused. */
+/**
+ * Every provider block, sorted by source. A block without exactly one well-formed version is refused. Strict, so it can never
+ * read less than Terraform does (review of #327, round 5): a carriage return anywhere, and the word `provider` anywhere outside
+ * the blocks it read (an indented or otherwise unrecognized block, a lock that mentions a provider but parses to none), are
+ * refused as unreadable. The engine's check after init (`provider_selections`) is the authoritative one; this is the early error.
+ */
 export function lockedProviders(text: string): LockedProvider[] {
+  if (text.includes("\r")) throw new LockFileError("LOCK_FILE_UNREADABLE", "The lock file has carriage returns (CRLF line endings), which this app does not read. Rewrite it with terraform init and LF line endings.");
   const found: LockedProvider[] = [];
-  const blocks = text.matchAll(/^provider\s+"([^"\n]+)"\s*\{\n([\s\S]*?)^\}/gm);
+  const blocks = [...text.matchAll(/^provider\s+"([^"\n]+)"\s*\{\n([\s\S]*?)^\}/gm)];
+  let rest = text;
+  for (const block of blocks.slice().reverse()) rest = rest.slice(0, block.index) + rest.slice(block.index + block[0].length);
+  if (/provider/i.test(rest)) {
+    throw new LockFileError("LOCK_FILE_UNREADABLE", "The lock file names a provider in a form this app does not read (an indented or unrecognized block). Rewrite it with terraform init.");
+  }
   for (const [, source, body] of blocks) {
     const versions = [...body.matchAll(/^\s*version\s*=\s*"([^"\n]*)"\s*$/gm)].map((match) => match[1]);
     if (!SOURCE.test(source) || versions.length !== 1 || !VERSION.test(versions[0])) {

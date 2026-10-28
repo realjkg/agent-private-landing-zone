@@ -323,7 +323,7 @@ describe("emulated backend simulation: real Terraform, Azurite, built-in resourc
 
   // --- fixtures ---------------------------------------------------------------------------------
 
-  const LOCK = "# This file is maintained automatically by \"terraform init\".\n# The pilot fixture uses only the built-in terraform provider.\n";
+  const LOCK = "# This file is maintained automatically by \"terraform init\".\n# The pilot fixture locks nothing: it uses only the built-in terraform_data type.\n";
   /** The pinned project: an azurerm backend naming the contract's storage account, container and key, and one built-in resource. It carries no credential and no endpoint: the harness supplies the emulator's. */
   function project(input: string, extra = "") {
     const projectRoot = fresh("project");

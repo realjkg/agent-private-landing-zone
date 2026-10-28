@@ -78,6 +78,7 @@ export function planJudgeRefusal(code: string): { refusal: "TARGET_NOT_IN_CONTRA
   const said = (refusal: "TARGET_NOT_IN_CONTRACT" | "ARTIFACT_INVALID", why: string) => ({ refusal, message: why + " (" + code + ")." + sourceRuleHint(code) });
   if (code === "PROVIDER_NOT_ADMITTED") return said("TARGET_NOT_IN_CONTRACT", "The plan uses a provider this release does not admit (azure/azapi or hashicorp/azuread)");
   if (code === "PROVIDER_TYPE_NOT_ALLOWED") return said("TARGET_NOT_IN_CONTRACT", "The plan uses a resource type that runs code or deploys a template instead of holding a resource, which the pilot refuses");
+  if (code === "PROVIDER_SELECTIONS_UNREADABLE") return said("ARTIFACT_INVALID", "Terraform's provider selections after init could not be read, so what the plan would run is unknown");
   if (code === PROVIDER_VERSION_NOT_REVIEWED) return said("ARTIFACT_INVALID", "The lock file pins a provider version the pilot's denied-type lists were not reviewed against");
   if ([PROVISIONER_NOT_ALLOWED, ACTION_NOT_ALLOWED, EPHEMERAL_NOT_ALLOWED, PROVISIONER_WORD_IN_SOURCE, EPHEMERAL_WORD_IN_SOURCE, CONSTRUCTS_DUPLICATE_KEY, CONSTRUCTS_UNREADABLE, CONSTRUCTS_TOO_DEEP].includes(code)) {
     return said("ARTIFACT_INVALID", "The project uses a Terraform construct the pilot refuses (a provisioner, an action, an ephemeral resource, or a .tf.json file it cannot read exactly)");

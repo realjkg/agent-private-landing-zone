@@ -31,7 +31,11 @@ export const CANARIES = [PLAN_CANARY, VALUE_CANARY, STATE_CANARY, OUTPUT_CANARY]
 
 export const sha = (value: string | Buffer): string => createHash("sha256").update(value).digest("hex");
 export const H = (char: string): string => char.repeat(64);
+/** Text as a literal inside a RegExp: every metacharacter escaped (CodeQL js/incomplete-sanitization, review of #327, round 5). */
+export const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
 export const LOCK = '# lock\nprovider "registry.terraform.io/hashicorp/azurerm" {\n  version = "4.81.0"\n}\n';
+/** An AWS project's lock: hashicorp/aws at the reviewed version. */
+export const AWS_LOCK = '# lock\nprovider "registry.terraform.io/hashicorp/aws" {\n  version = "6.68.0"\n}\n';
 export const TENANT = "11111111-1111-4111-8111-111111111111";
 export const DEV_TARGET: ResolvedTarget = { account: "22222222-2222-4222-8222-222222222222", backend: "fixturedevstore/tfstate/dev.tfstate", workspace: "default" };
 export const QA_TARGET: ResolvedTarget = { account: "44444444-4444-4444-8444-444444444444", backend: "fixtureqastore/tfstate/qa.tfstate", workspace: "default" };
@@ -58,6 +62,8 @@ export const ENGINE_VERSION = "1.9.5";
 /** Behaviors are read from behavior.json beside the executable, so each test chooses how the engine acts. */
 export type Behavior = {
   version?: string; workspace?: string; failOn?: string; planSalt?: string;
+  /** `terraform version -json` `provider_selections` (default {}); null omits the key. */
+  providerSelections?: Record<string, unknown> | string | null;
   initWrites?: Array<{ path: string; content: string }>;
   applyExit?: number; applyStderr?: string; applyAdvance?: boolean; applyKill?: boolean;
   /** Creates this file as soon as the named subcommand starts (a kill switch appearing mid-run). */
@@ -125,7 +131,12 @@ const named = (r) => {
 if (b.touchKillOn === cmd) fs.writeFileSync(b.killPath, "stop");
 if (b.signalParentOn && b.signalParentOn.cmd === cmd) process.kill(process.ppid, b.signalParentOn.signal);
 if (b.failOn === cmd) { log({}); process.stderr.write(b.failStderr || "boom ${VALUE_CANARY}"); process.exit(1); }
-if (cmd === "version") { log({}); process.stdout.write(JSON.stringify({ terraform_version: b.version })); }
+if (cmd === "version") {
+  log({});
+  // provider_selections as real Terraform reports it after init: {} for a built-in-only project unless the behavior names some; null omits it.
+  const selections = b.providerSelections === undefined ? {} : b.providerSelections;
+  process.stdout.write(JSON.stringify({ terraform_version: b.version, ...(selections === null ? {} : { provider_selections: selections }) }));
+}
 else if (cmd === "init") {
   fs.mkdirSync(".terraform", { recursive: true });
   // Like the real init: a setting the -backend-config file sets is saved with its value; the backend's Entra ID switch is otherwise null.

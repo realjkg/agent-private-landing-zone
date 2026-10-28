@@ -266,6 +266,8 @@ export const AWS: ProviderSpec = {
   backendType: "s3",
   backendLocation: (target) => backendLocation(target as AwsTarget),
   filledAtApply: ["assume_role_with_web_identity"],
+  // What init may select (review of #327, round 5): the allowed providers, by exact registry source. The built-in provider is never selected.
+  selectableProviders: ALLOWED_PROVIDERS.filter((source) => source !== BUILTIN_PROVIDER),
   tagAttributes: ["tags_all", "tags"],
   assertProviderConfig: (blocks, target, env, uses) => assertProviderConfig(blocks, target as AwsTarget, env, uses),
 };

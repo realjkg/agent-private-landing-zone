@@ -150,6 +150,8 @@ test("a DEV apply runs the pinned steps with the right identity at each step and
   assert.deepEqual(steps.map((c) => c.args), [
     ["version", "-json"],
     [...APPLY_INIT_ARGV],
+    // What init selected, judged before any plan or apply (review of #327, round 5).
+    ["version", "-json"],
     ["workspace", "show"],
     ["state", "pull"],
     ["show", "-json", "../alz-preview.tfplan"],
@@ -159,6 +161,10 @@ test("a DEV apply runs the pinned steps with the right identity at each step and
     ["state", "pull"],
   ]);
   const clientOf = (c: Call) => c.env.ARM_CLIENT_ID;
+  // The post-init read of what init selected (review of #327, round 5) holds no identity; the steps below are the run's own.
+  assert.deepEqual([steps[2].args, clientOf(steps[2])], [["version", "-json"], undefined]);
+  assert.ok(!Object.keys(steps[2].env).some((name) => /^(ARM_|AZURE_)/.test(name)), "no credential reaches the selection read");
+  steps.splice(2, 1);
   assert.equal(clientOf(steps[0]), undefined, "version needs no credentials");
   assert.equal(clientOf(steps[1]), "statewrite-client-3", "init and workspace use STATE_WRITE");
   assert.equal(clientOf(steps[2]), "statewrite-client-3");
