@@ -9,7 +9,7 @@ import test from "node:test";
 import { codeOf } from "../src/apply/engine.js";
 import { checkApplyIdentities, verifyIdentityTargets } from "../src/apply/identities.js";
 import { PROVIDER_IDS, providerSpec, type ProviderBlock, type ProviderSpec, type ProviderUse } from "../src/apply/provider.js";
-import { GCP, GCP_IDENTITY_VARIABLES, backendBucketForms, checkCredentialConfiguration, gcpParentOk, namesBackendBucket, type GcpTarget } from "../src/apply/providers/gcp.js";
+import { GCP, GCP_DATA_SOURCES, GCP_DENIED_TYPES, GCP_DENIED_TYPES_REVIEWED_AGAINST, GCP_IDENTITY_VARIABLES, backendBucketForms, checkCredentialConfiguration, gcpParentOk, namesBackendBucket, type GcpTarget } from "../src/apply/providers/gcp.js";
 import { APPLY_IDENTITIES, type PilotContract, type PilotTarget } from "../src/apply/types.js";
 import { TOKEN_FILE } from "../src/apply/constants.js";
 import { CREDENTIAL_FILE, readTokenFile } from "../src/tools/gcp-credentials.js";
@@ -69,9 +69,9 @@ const codeFrom = (run: () => unknown): string => {
 
 // --- admission and the target shape ---------------------------------------------------------------
 
-test("GCP is not admitted until the authorization lane registers it: no provider id, no spec, and a contract naming it is not a contract", () => {
-  assert.equal(PROVIDER_IDS.includes("GCP" as never), false);
-  assert.equal(providerSpec("GCP"), undefined);
+test("GCP is a registered provider id whose spec is this one (admission rules: test/apply-gcp-admission.test.ts)", () => {
+  assert.equal(PROVIDER_IDS.includes("GCP"), true);
+  assert.equal(providerSpec("GCP"), GCP);
   assert.equal(GCP.id, "GCP");
 });
 
@@ -347,6 +347,9 @@ test("review N2 and the STATE_WRITE binding: the saved gcs backend is an allowli
   ] as const) {
     assert.equal(GCP.savedBackendMatches(saved({ ...own, ...change }), target(DEV), writer), false, label);
   }
+  // Review N5 of #320: bucket and prefix are compared on their own, never joined.
+  assert.equal(GCP.savedBackendMatches(saved({ ...own, bucket: "alz-pilot-dev-state/pilot", prefix: "dev" }), target(DEV), writer), false, "the slash moved into the bucket");
+  assert.equal(GCP.savedBackendMatches(saved({ ...own, prefix: ["pilot", "dev"] }), target(DEV), writer), false, "a prefix that is not a string");
   const noWriter = { ...writer };
   delete noWriter.ALZ_STATE_WRITE_GOOGLE_APPLICATION_CREDENTIALS;
   delete noWriter.ALZ_STATE_WRITE_GOOGLE_IMPERSONATE_SERVICE_ACCOUNT;
@@ -393,12 +396,13 @@ test("review N4: a use whose provider the plan does not name is refused, whereve
   assert.equal(judge([GOOGLE()], [use("google_pubsub_topic", { name: "google" })]), "OK", "named by its local name only (a configuration key with no block)");
 });
 
-test("review N3: data sources that mint a token or read a secret are refused in any module and whatever the mode says; the managed secret version is not a data source", () => {
+test("review N3 of #305, an allowlist since review N1 of #320: only the reviewed data sources are read; token and secret readers and every other data source are refused in any module and whatever the mode says; managed resources are not data sources", () => {
   const google = { name: "google", full_name: "registry.terraform.io/hashicorp/google" };
   for (const type of [
     "google_client_config", "google_service_account_access_token", "google_service_account_id_token", "google_service_account_jwt",
     "google_secret_manager_secret_version", "google_secret_manager_secret_version_access", "google_secret_manager_regional_secret_version",
     "google_secret_manager_regional_secret_version_access", "google_kms_secret", "google_kms_secret_asymmetric",
+    "google_storage_object_signed_url", "google_storage_bucket_object_content", "google_container_cluster", "google_service_account", "google_storage_bucket",
   ]) {
     assert.equal(judge([GOOGLE()], [use(type, google, "data")]), "PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT", type);
     assert.equal(judge([GOOGLE()], [{ address: "module.app.data." + type + ".x", mode: "managed", type, provider: google }]), "PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT", type + " under a data address");
@@ -406,9 +410,53 @@ test("review N3: data sources that mint a token or read a secret are refused in 
   }
   // A resource holds only what the project configures; a data source of an ordinary type is not judged by this rule.
   assert.equal(judge([GOOGLE()], [use("google_secret_manager_secret_version", google)]), "OK");
-  assert.equal(judge([GOOGLE()], [use("google_project", google, "data"), use("google_service_account", google, "data")]), "OK");
+  // Each reviewed data source passes when the configuration names the contract's project as a constant (review N3 of #323, below).
+  const projectAttribute = { google_project: "project_id", google_pubsub_topic: "project" } as const;
+  for (const type of GCP_DATA_SOURCES) {
+    const configured: ProviderUse = { ...use(type, google, "data"), expressions: { [projectAttribute[type as keyof typeof projectAttribute]]: { constant_value: DEV.projectId } } };
+    assert.equal(judge([GOOGLE()], [configured]), "OK", type);
+  }
+  assert.equal(judge([GOOGLE()], [use("terraform_remote_state", { name: "terraform" }, "data")]), "PROVIDER_BUILTIN_TYPE_NOT_IN_CONTRACT", "the built-in remote state, by its local name");
+  assert.equal(judge([GOOGLE()], [use("http", { full_name: "registry.terraform.io/hashicorp/http" }, "data")]), "PROVIDER_CONFIG_NOT_IN_CONTRACT", "another provider's data source");
   // A refused data source names no value: the code is all the driver reports (TARGET_NOT_IN_CONTRACT, nothing spent).
   assert.match("PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT", /_NOT_IN_CONTRACT$/);
+});
+
+test("review N3 of #323: google_project and google_pubsub_topic data sources must name the contract's project as a constant; another project, the provider's default, an expression or an unconfigured read is refused", () => {
+  const google = { name: "google", full_name: "registry.terraform.io/hashicorp/google" };
+  for (const [type, attribute] of [["google_project", "project_id"], ["google_pubsub_topic", "project"]] as const) {
+    const configured = (expression: unknown): ProviderUse => ({ ...use(type, google, "data"), expressions: expression === undefined ? {} : { [attribute]: expression } });
+    const read = (value: unknown): ProviderUse => ({ ...use(type, google, "data"), values: { [attribute]: value } });
+    const own = configured({ constant_value: DEV.projectId });
+    assert.equal(judge([GOOGLE()], [own]), "OK", type + ": the contract's project");
+    assert.equal(judge([GOOGLE()], [own, read(DEV.projectId)]), "OK", type + ": and the value it read is the contract's project");
+    assert.equal(judge([GOOGLE()], [configured({ constant_value: QA.projectId })]), "PROVIDER_ACCOUNT_NOT_IN_CONTRACT", type + ": another project");
+    assert.equal(judge([GOOGLE()], [configured({ constant_value: DEV.projectId.toUpperCase() })]), "PROVIDER_ACCOUNT_NOT_IN_CONTRACT", type + ": another spelling");
+    assert.equal(judge([GOOGLE()], [own, read(QA.projectId)]), "PROVIDER_ACCOUNT_NOT_IN_CONTRACT", type + ": a read value of another project");
+    assert.equal(judge([GOOGLE()], [configured(undefined)]), "PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT", type + ": unstated (the provider's default project)");
+    assert.equal(judge([GOOGLE()], [configured({ references: ["var.project"] })]), "PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT", type + ": an expression");
+    assert.equal(judge([GOOGLE()], [configured({ constant_value: DEV.projectId, references: ["var.x"] })]), "PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT", type + ": not a plain constant");
+    assert.equal(judge([GOOGLE()], [configured({ constant_value: 42 })]), "PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT", type + ": not text");
+    assert.equal(judge([GOOGLE()], [use(type, google, "data")]), "PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT", type + ": a read the configuration does not show");
+    assert.equal(judge([GOOGLE()], [read(DEV.projectId)]), "PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT", type + ": a read value alone");
+  }
+});
+
+test("GCP_DENIED_TYPES: types that run code or deploy a template at apply are refused as managed uses, each in the pinned hashicorp/google 8.9.0 schema", () => {
+  const google = { name: "google", full_name: "registry.terraform.io/hashicorp/google" };
+  for (const type of [
+    "google_deployment_manager_deployment", "google_config_deployment", "google_cloudfunctions_function", "google_cloudfunctions2_function",
+    "google_cloud_run_v2_job", "google_cloudbuild_trigger", "google_composer_environment", "google_dataflow_job", "google_dataflow_flex_template_job",
+    "google_dataproc_job", "google_bigquery_job", "google_os_config_patch_deployment", "google_gke_hub_feature",
+  ]) {
+    assert.ok(GCP_DENIED_TYPES.has(type), type);
+    assert.equal(judge([GOOGLE()], [use(type, google)]), "PROVIDER_TYPE_NOT_ALLOWED", type);
+    assert.equal(judge([GOOGLE()], [{ address: "module.app." + type + ".x", mode: "managed", type, provider: google }]), "PROVIDER_TYPE_NOT_ALLOWED", type + " in a module");
+  }
+  assert.equal(GCP_DENIED_TYPES_REVIEWED_AGAINST, "hashicorp/google 8.9.0", "re-review the denied types against the new schema when the reviewed version changes");
+  for (const type of GCP_DENIED_TYPES) assert.match(type, /^google_[a-z0-9_]+$/, type);
+  // The canary's own type and ordinary resources are not denied.
+  for (const type of ["google_pubsub_topic", "google_storage_bucket", "google_cloud_run_v2_service"]) assert.equal(judge([GOOGLE()], [use(type, google)]), "OK", type);
 });
 
 test("provider config: credentials, tokens, impersonation, scopes, endpoints, universe and billing overrides are refused as constants and as expressions; default_labels must be set", () => {

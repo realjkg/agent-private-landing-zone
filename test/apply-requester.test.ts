@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { REQUESTER_MAY_APPROVE, signApproval, signRequest, verifyApprovalSet, verifyRequestSignature } from "../src/apply/approval.js";
+import { REQUESTER_MAY_APPROVE, requesterRefusal, signApproval, signRequest, verifyApprovalSet, verifyRequestSignature } from "../src/apply/approval.js";
 import { canonicalPublicKey } from "../src/apply/contract.js";
 import { runApply, sealPreview, type ApplyDeps, type ApplyRequest } from "../src/apply/driver.js";
 import { openNonceStore } from "../src/apply/nonces.js";
@@ -356,4 +356,19 @@ test("./alz apply approve shows who requested, and for a PROD bundle refuses the
   const dev = await seal(w, "DEV", { requesterId: "alice", privateKeyPem: keys.alice.priv }) as Sealed;
   const devSelf = await cli(w, ["approve", "--bundle", json(reviewBundleOf(dev.sealed), "dev-bundle"), "--key", keyFile("alice"), "--approver", "alice"], ["APPROVE DEV " + dev.sealed.artifactSha256.slice(0, 12)]);
   assert.equal(devSelf.code, 0, devSelf.stderr);
+});
+
+test("#321 review N1: an allowlist entry whose environments are not a list allows no environment, at signing and at verification, and never throws", () => {
+  const broken = { approvers: [{ id: "dana", publicKeyPem: keys.dana.pub }] } as unknown as PilotContract;
+  const refusal = requesterRefusal(broken, "DEV", "dana", keys.dana.priv);
+  assert.equal(refusal?.code, "REQUESTER_NOT_ALLOWED");
+  const statement: RequestStatement = { schemaVersion: 1, requesterId: "dana", artifactSha256: "a".repeat(64), environment: "DEV", nonce: "0".repeat(32) };
+  const request = signRequest(statement, keys.dana.priv, "REQUEST");
+  const verdict = verifyRequestSignature({ request, artifactSha256: statement.artifactSha256, environment: "DEV", requesterId: "dana", contract: broken });
+  assert.equal(verdict.ok, false);
+  assert.equal((verdict as { code?: string }).code, "REQUESTER_NOT_ALLOWED");
+  for (const environments of ["DEV", { DEV: true }, null]) {
+    const odd = { approvers: [{ id: "dana", publicKeyPem: keys.dana.pub, environments }] } as unknown as PilotContract;
+    assert.equal(requesterRefusal(odd, "DEV", "dana", keys.dana.priv)?.code, "REQUESTER_NOT_ALLOWED", JSON.stringify(environments));
+  }
 });

@@ -319,6 +319,10 @@ test("SYNTHETIC: forged plans, a disallowed kind or field, a wrong project and f
   const resealed = await sealGcpApiPlan({ request: request(), requester: { requesterId: "carol", privateKeyPem: keys.mallory.priv } }, deps);
   assert.deepEqual(resealed, { ok: false, code: "REQUESTER_KEY_MISMATCH" });
 
+  // #321 review N2: the engine's seal judges the requester's environments too. carol is allowlisted for DEV only.
+  const google0 = google.sent.length;
+  assert.deepEqual(await sealGcpApiPlan({ request: request(), requester: { requesterId: "carol", privateKeyPem: keys.carol.priv } }, { ...deps, target: target({ environment: "QA" }) }), { ok: false, code: "REQUESTER_NOT_ALLOWED" });
+  assert.equal(google.sent.length, google0, "refused before anything is sent");
   const sealCode = async (req: unknown, t: GcpApiTarget = target()) => { const r = await sealGcpApiPlan({ request: req, requester: REQUESTER }, { ...deps, target: t }); return r.ok ? "SEALED" : r.code; };
   assert.equal(await sealCode(request({ kind: "COMPUTE_INSTANCE" })), "KIND_NOT_ALLOWED");
   assert.equal(await sealCode(request({ messageStoragePolicy: {} })), "FIELD_NOT_ALLOWED");

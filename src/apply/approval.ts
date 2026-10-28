@@ -89,9 +89,8 @@ export function signRequest(statement: RequestStatement, privateKeyPem: string, 
 
 /**
  * The key half of the requester check: the id is on the contract's allowlist and the key handed in is that entry's own.
- * Undefined when both hold. It does not judge the environment: seal, propose-cleanup and propose-removal call `requesterRefusal`,
- * which does. The GCP_API engine (not admitted) still calls this half when it signs; its request is judged for the environment
- * where it is verified (`verifyRequestSignature`), and passing the environment at its signing is the admission lane's change.
+ * Undefined when both hold. It does not judge the environment: seal, propose-cleanup, propose-removal and the GCP_API engine's
+ * seal call `requesterRefusal`, which does.
  */
 export function requesterKeyRefusal(contract: PilotContract, requesterId: string, privateKeyPem: string): { ok: false; code: "REQUESTER_NOT_ALLOWED" | "REQUESTER_KEY_MISMATCH"; message: string } | undefined {
   const entry = contract.approvers.find((a) => a.id === requesterId);
@@ -117,7 +116,8 @@ export function requesterRefusal(contract: PilotContract, environment: ApplyEnvi
   const keyRefusal = requesterKeyRefusal(contract, requesterId, privateKeyPem);
   if (keyRefusal) return keyRefusal;
   const entry = contract.approvers.find((a) => a.id === requesterId) as ApproverEntry;
-  if (!entry.environments.includes(environment)) return { ok: false, code: "REQUESTER_NOT_ALLOWED", message: requesterEnvironmentMessage(requesterId, environment) + " Nothing ran." };
+  // An entry that does not list environments (a contract the validator would refuse) allows none (#321 review N1).
+  if (!Array.isArray(entry.environments) || !entry.environments.includes(environment)) return { ok: false, code: "REQUESTER_NOT_ALLOWED", message: requesterEnvironmentMessage(requesterId, environment) + " Nothing ran." };
   return undefined;
 }
 
@@ -167,7 +167,7 @@ export function verifyRequestSignature(input: { request: unknown; artifactSha256
   if (s.artifactSha256 !== input.artifactSha256 || s.environment !== input.environment || s.requesterId !== input.requesterId) {
     return refuse("REQUESTER_MISBOUND", "The requester signature names another artifact, environment or requester than this " + what + ".");
   }
-  if (!entry.environments.includes(input.environment)) return refuse("REQUESTER_NOT_ALLOWED", requesterEnvironmentMessage(s.requesterId, input.environment));
+  if (!Array.isArray(entry.environments) || !entry.environments.includes(input.environment)) return refuse("REQUESTER_NOT_ALLOWED", requesterEnvironmentMessage(s.requesterId, input.environment));
   return { ok: true, requesterId: s.requesterId, publicKeyCanonical: canonicalPublicKey(entry.publicKeyPem) };
 }
 

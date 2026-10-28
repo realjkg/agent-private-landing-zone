@@ -171,7 +171,7 @@ test("a stale plan is PLAN_STALE only when state did not move, and the classific
   assert.deepEqual(classifyApply({ exitCode: 1, stderr: "some other failure", serialBefore: "7", serialAfter: "7" }), { outcome: "PARTIAL_REQUIRES_REVIEW" });
 });
 
-test("the apply profile drops provider-installation overrides, AZURE_* (az CLI / SDK fallback) static AWS credentials, the AWS endpoint, CA bundle and default region and nothing else; the preview profile is untouched", () => {
+test("the apply profile drops provider-installation overrides, AZURE_* (az CLI / SDK fallback) static AWS credentials, the AWS endpoint, CA bundle and default region and nothing else, adds only the four Google identity variables, and switches both metadata services off; the preview profile is untouched", () => {
   const removed = PROFILES.terraform.injectable.filter((name) => !TERRAFORM_APPLY_PROFILE.injectable.includes(name)).sort();
   assert.deepEqual(removed.filter((name) => !name.startsWith("AZURE_")), [
     "AWS_ACCESS_KEY_ID", "AWS_CA_BUNDLE", "AWS_CONFIG_FILE", "AWS_DEFAULT_REGION", "AWS_EC2_METADATA_DISABLED", "AWS_ENDPOINT_URL", "AWS_PROFILE", "AWS_SECRET_ACCESS_KEY",
@@ -181,7 +181,17 @@ test("the apply profile drops provider-installation overrides, AZURE_* (az CLI /
   assert.ok(removed.includes("AZURE_CONFIG_DIR") && TERRAFORM_APPLY_PROFILE.injectable.every((name) => !name.startsWith("AZURE_")));
   assert.ok(TERRAFORM_APPLY_PROFILE.injectable.includes("ARM_OIDC_TOKEN_FILE"));
   for (const name of ["AWS_ROLE_ARN", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_REGION"]) assert.ok(TERRAFORM_APPLY_PROFILE.injectable.includes(name), name);
-  assert.deepEqual(TERRAFORM_APPLY_PROFILE.fixedEnvironment, { AWS_EC2_METADATA_DISABLED: "true", TF_DATA_DIR: ".terraform" }, "the instance metadata fallback is off and the data directory is init's own for every apply child");
+  // GCP (review N1 of #323): the four Google identity variables are added to the apply profile only, and no other Google variable anywhere.
+  const google = /^(GOOGLE|GCLOUD|CLOUDSDK|GCE)_/;
+  assert.deepEqual(TERRAFORM_APPLY_PROFILE.injectable.filter((name) => !PROFILES.terraform.injectable.includes(name)).sort(),
+    ["GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_IMPERSONATE_SERVICE_ACCOUNT", "GOOGLE_PROJECT", "GOOGLE_REGION"], "the only additions are the Google identity variables");
+  for (const [name, profile] of Object.entries(PROFILES)) assert.deepEqual(profile.injectable.filter((variable) => google.test(variable)), [], name + " takes no Google variable");
+  assert.deepEqual(TERRAFORM_APPLY_PROFILE.fixedEnvironment, {
+    AWS_EC2_METADATA_DISABLED: "true", TF_DATA_DIR: ".terraform", GCE_METADATA_HOST: "metadata.invalid", GCE_METADATA_IP: "metadata.invalid", NO_GCE_CHECK: "True",
+  }, "the AWS and Google instance metadata fallbacks are off and the data directory is init's own for every apply child");
+  // Review N2 of #323: the metadata host is a reserved name that never resolves (RFC 6761 .invalid), never a loopback or routable address.
+  assert.match(TERRAFORM_APPLY_PROFILE.fixedEnvironment!.GCE_METADATA_HOST, /\.invalid$/);
+  assert.doesNotMatch(TERRAFORM_APPLY_PROFILE.fixedEnvironment!.GCE_METADATA_HOST, /^(127\.|localhost|\[?::1|0\.0\.0\.0|169\.254\.)|:\d+$/);
   assert.equal(PROFILES.terraform.fixedEnvironment, undefined);
   assert.deepEqual({ ...TERRAFORM_APPLY_PROFILE, injectable: [], fixedEnvironment: undefined }, { ...PROFILES.terraform, injectable: [], fixedEnvironment: undefined });
   assert.ok(PROFILES.terraform.injectable.includes("TF_CLI_CONFIG_FILE"), "the preview adapter keeps its reviewed profile");

@@ -151,6 +151,14 @@ describe("Azure state auth is Entra ID only: the backend init saved (the plan em
     assert.equal(AZURE.savedBackendMatches(SAVED({ client_id: "operator-client" }), PINNED, { ...noWriter, ARM_CLIENT_ID: "operator-client" }), false, "the operator's client id");
   });
 
+  it("compares the storage account, container and key each on its own, never joined (review N5 of #320)", () => {
+    const deep = { ...PINNED, backend: ACCOUNT + "/" + CONTAINER + "/env/dev.tfstate" };
+    const at = (account: string, container: string, key: string) => AZURE.savedBackendMatches(SAVED({ storage_account_name: account, container_name: container, key }), deep, WRITER_ENV);
+    assert.equal(at(ACCOUNT, CONTAINER, "env/dev.tfstate"), true, "control");
+    assert.equal(at(ACCOUNT, CONTAINER + "/env", "dev.tfstate"), false, "the slash moved into the container");
+    assert.equal(at(ACCOUNT + "/" + CONTAINER, "env", "dev.tfstate"), false, "the slash moved into the account");
+  });
+
   it("still binds the contract's location and the azurerm type", () => {
     assert.equal(AZURE.savedBackendMatches(SAVED({ storage_account_name: "attackerstore" }), PINNED, WRITER_ENV), false);
     assert.equal(AZURE.savedBackendMatches({ ...SAVED(), type: "s3" }, PINNED, WRITER_ENV), false);

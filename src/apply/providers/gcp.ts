@@ -10,10 +10,10 @@ import { KEY_SEGMENT, ambientRefusal, isRecord, pickIdentityValue } from "./shar
  * (docs/act-pilot-gcp-terraform-g0.md; the GCP release-path PLAN, owner approval 6433121154 on issue #39). Nothing
  * outside this file names a GCP field, variable or backend type.
  *
- * NOT YET ADMITTED. `ProviderId`, `PilotTarget` and the `SPECS` table (src/apply/types.ts, src/apply/provider.ts) and the
- * contract's provider enum (src/apply/contract.ts) belong to the authorization lane. Until that lane adds "GCP", a contract
- * naming GCP is refused at admission and nothing here is reachable from the driver. The spec is typed as `GcpProviderSpec`
- * so it can be registered unchanged once `BackendType` (src/apply/backend-pin.ts) also names "gcs".
+ * ADMITTED IN CODE, DEV ONLY (owner decision 6481421924 on issue #39). "GCP" is a `ProviderId`, this spec is in the `SPECS` table
+ * (src/apply/provider.ts), and the contract admits GCP with the Terraform engine under the DEV-only scope only (src/apply/contract.ts,
+ * `DEV_ONLY_PATHS`). An APPLY still needs the owner's reviewed contract with an `authorize` entry and a canary allowlist, and the
+ * repository ships none, so ACT stays DISABLED.
  *
  * Self-contained by design: the identity collapse checks for the two GCP principal variables and the built-in provider rule
  * live here rather than in the shared modules (src/tools/identity.ts, providers/aws.ts), so this slice changes nothing the
@@ -50,11 +50,8 @@ export type GcpTarget = {
   parent?: string;
 };
 
-/**
- * The spec's shape until "GCP" is a `ProviderId` (the authorization lane). Every member is the `ProviderSpec` one, so
- * registering it is `SPECS = { AZURE, AWS, GCP }` with no change here.
- */
-export type GcpProviderSpec = Omit<ProviderSpec, "id" | "backendType"> & { id: "GCP"; backendType: "gcs" };
+/** The spec's own type: `ProviderSpec` with its id and backend type fixed. */
+export type GcpProviderSpec = ProviderSpec & { id: "GCP"; backendType: "gcs" };
 
 const PROJECT_ID = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
 const REGION = /^[a-z]+-[a-z]+[0-9]{1,2}$/;
@@ -202,11 +199,12 @@ const SAVED_SETTINGS: ReadonlySet<string> = new Set(["bucket", "prefix", CREDENT
  */
 function savedBackendMatches(backend: Record<string, unknown>, target: GcpTarget, env: NodeJS.ProcessEnv): boolean {
   const config = isRecord(backend.config) ? backend.config : {};
-  const parts = [config.bucket, config.prefix];
+  const [bucket, ...prefix] = target.backend.split("/");
   const stateWrite = identityVariables(env, "STATE_WRITE");
   const unsetOr = (name: string, variable: string, ok: RegExp): boolean =>
     config[name] === undefined || config[name] === null || (typeof config[name] === "string" && ok.test(config[name] as string) && stateWrite.get(variable) === config[name]);
-  return backend.type === "gcs" && parts.every((part) => typeof part === "string") && parts.join("/") === target.backend &&
+  // Each part on its own (review N5 of #320): a bucket and prefix joined differently cannot name the same "<bucket>/<prefix>".
+  return backend.type === "gcs" && config.bucket === bucket && config.prefix === prefix.join("/") &&
     unsetOr(CREDENTIALS_SETTING, CREDENTIALS, TOKEN_FILE) && unsetOr(IMPERSONATE_SETTING, IMPERSONATE, SERVICE_ACCOUNT) &&
     Object.entries(config).every(([name, value]) => SAVED_SETTINGS.has(name) || value === null);
 }
@@ -234,40 +232,114 @@ function assertBuiltinUses(uses: readonly ProviderUse[]): void {
   }
 }
 
+/** A provider's id: its full name, or from its local name alone the built-in provider for `terraform` and a hashicorp one otherwise. */
 const providerIdOf = (provider: Pick<ProviderBlock, "name" | "full_name">): string | undefined =>
-  provider.full_name ?? (provider.name !== undefined ? HASHICORP + provider.name : undefined);
+  provider.full_name ?? (provider.name === "terraform" ? BUILTIN_PROVIDER : provider.name !== undefined ? HASHICORP + provider.name : undefined);
 const isSet = (expression: unknown): boolean => expression !== undefined && !(isRecord(expression) && expression.constant_value === null);
 
 /**
- * Data sources that mint a token or read a secret into the plan (review N3 of #305): the running identity's own OAuth access token
- * (`google_client_config`), a token, ID token or signed JWT minted for a service account, a Secret Manager secret's payload, and
- * KMS-decrypted plaintext. A data source is read at plan time, so its result sits in the sealed plan every approver handles and,
- * after the apply, in the state. Refused unless the plan names the use as a managed resource outside any `data.` address (a secret
- * version is also a resource, which holds only what the project itself configures), so a use whose mode is unsaid is refused too.
- * UNVERIFIED: the type names are from memory, as the rest of this file; checked against the provider's documentation before live use.
+ * The reviewed data sources a GCP pilot project may read (review N3 of #305, made an allowlist by review N1 of #320): the project
+ * (metadata) and the canary's own type. A data source is read at plan time, as the identity that plans, so its result sits in the
+ * sealed plan every approver handles and, after the apply, in the state: any other one, of any provider, is refused
+ * (PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT). That keeps out the running identity's OAuth access token (`google_client_config`), tokens,
+ * ID tokens and signed JWTs minted for a service account, Secret Manager payloads, KMS-decrypted plaintext, signed URLs
+ * (`google_storage_object_signed_url`), object contents (`google_storage_bucket_object_content`), cluster credentials
+ * (`google_container_cluster`) and Terraform's `terraform_remote_state`. A type joins the list by review. The refusal keeps the
+ * result out of the sealed plan; it cannot undo the read, which DISCOVERY's IAM bounds. A use whose mode is unsaid is judged as a
+ * data source. Both types are in hashicorp/google 8.9.0's schema (checked 2026-10-28).
  */
-const SECRET_DATA_SOURCES: ReadonlySet<string> = new Set([
-  "google_client_config", "google_service_account_access_token", "google_service_account_id_token", "google_service_account_jwt",
-  "google_secret_manager_secret_version", "google_secret_manager_secret_version_access",
-  "google_secret_manager_regional_secret_version", "google_secret_manager_regional_secret_version_access",
-  "google_kms_secret", "google_kms_secret_asymmetric",
-]);
+export const GCP_DATA_SOURCES: ReadonlySet<string> = new Set(["google_project", "google_pubsub_topic"]);
 const DATA_ADDRESS = /(^|\.)data\./;
+const isDataUse = (use: ProviderUse): boolean => use.mode !== "managed" || DATA_ADDRESS.test(use.address);
+
+/**
+ * The attribute that names the project each reviewed data source reads (review N3 of #323): `google_project` reads any project
+ * DISCOVERY can see (labels, number, billing account id), and `google_pubsub_topic` a topic in any project. Each must name the
+ * contract's project as a constant in the configuration, so an omitted project (the provider's default) or an expression is refused
+ * (PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT), and a constant or a read value naming another project is refused
+ * (PROVIDER_ACCOUNT_NOT_IN_CONTRACT). The read happened at plan time; the refusal keeps its result out of the sealed plan.
+ */
+const DATA_SOURCE_PROJECT: Readonly<Record<string, string>> = { google_project: "project_id", google_pubsub_topic: "project" };
+
+function assertDataSourceProjects(uses: readonly ProviderUse[], target: GcpTarget): void {
+  const configured = new Set<string>();
+  for (const use of uses) {
+    const attribute = Object.hasOwn(DATA_SOURCE_PROJECT, use.type) ? DATA_SOURCE_PROJECT[use.type] : undefined;
+    if (attribute === undefined || !isDataUse(use)) continue;
+    if (use.expressions !== undefined) {
+      configured.add(use.type);
+      const expression = use.expressions[attribute];
+      const constant = isRecord(expression) && Object.keys(expression).length === 1 ? expression.constant_value : undefined;
+      if (typeof constant !== "string") stop("PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT");
+      if (constant !== target.projectId) stop("PROVIDER_ACCOUNT_NOT_IN_CONTRACT");
+    }
+    const read = use.values?.[attribute];
+    if (typeof read === "string" && read !== target.projectId) stop("PROVIDER_ACCOUNT_NOT_IN_CONTRACT");
+  }
+  // A read the configuration tree does not show could not be judged: refused, never assumed to be the contract's project.
+  for (const use of uses) {
+    if (Object.hasOwn(DATA_SOURCE_PROJECT, use.type) && isDataUse(use) && !configured.has(use.type)) stop("PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT");
+  }
+}
+
+/**
+ * Types of the google provider that run code, or deploy a template or another tool's configuration, at apply or on their own
+ * schedule, instead of holding a resource (the same reason the AWS and Azure lists exist, review of #327, N1 and rounds 2 and 3, and
+ * the reason Terraform actions and provisioners are refused): one plan row would hide what runs, as whom and where. A managed use is
+ * refused (`PROVIDER_TYPE_NOT_ALLOWED`); a data source of one is already outside `GCP_DATA_SOURCES`. Each is in hashicorp/google
+ * 8.9.0's schema (a sweep of the full pinned schema, 1392 resource types, checked 2026-10-28). The canary allowlist already refuses
+ * any type it does not name; this list is defense in depth so a later allowlist can never name one of these.
+ */
+export const GCP_DENIED_TYPES: ReadonlySet<string> = new Set([
+  // Template and IaC deployments: Deployment Manager deploys a template, Infrastructure Manager runs a Terraform configuration.
+  "google_deployment_manager_deployment", "google_config_deployment",
+  // Builds at apply: a function or an App Engine version builds the source with Cloud Build when it is deployed; an App Hosting build
+  // runs a build; a Cloud Build trigger runs arbitrary build steps as a Cloud Build service account whenever its event fires.
+  "google_cloudfunctions_function", "google_cloudfunctions2_function", "google_app_engine_standard_app_version", "google_app_engine_flexible_app_version",
+  "google_firebase_app_hosting_build", "google_cloudbuild_trigger",
+  // Jobs that run code at apply: a Cloud Run job starts an execution when `start_execution_token` or `run_execution_token` is set; a
+  // Dataflow job or flex template launches a pipeline; a Dataproc job, batch or GDC Spark application submits Spark or Hadoop code; a
+  // BigQuery job runs a query, load, copy or extract; a Vertex AI custom or pipeline job runs training code; a Colab notebook
+  // execution runs a notebook; a Dataplex task runs Spark code; a Healthcare pipeline job runs a pipeline; a Cloud SQL provision script
+  // runs SQL against an instance; a Storage batch operations job rewrites or deletes objects in bulk.
+  "google_cloud_run_v2_job", "google_dataflow_job", "google_dataflow_flex_template_job", "google_dataproc_job", "google_dataproc_batch",
+  "google_dataproc_gdc_spark_application", "google_bigquery_job", "google_vertex_ai_custom_job", "google_vertex_ai_pipeline_job",
+  "google_colab_notebook_execution", "google_dataplex_task", "google_healthcare_pipeline_job", "google_sql_provision_script", "google_storage_batch_operations_job",
+  // Code on a schedule: Composer runs Airflow and its DAGs; a scheduled query (a BigQuery data transfer configuration) runs SQL as a
+  // service account; a Colab schedule runs notebooks; a Data Pipelines pipeline launches Dataflow jobs.
+  "google_composer_environment", "google_bigquery_data_transfer_config", "google_colab_schedule", "google_data_pipeline_pipeline",
+  // Commands on machines and clusters: OS Config patch deployments (with pre- and post-patch scripts), OS policy assignments and policy
+  // orchestrators run commands on VMs; VM extension policies install extensions on VMs; a GKE Hub feature or feature membership
+  // installs and runs software (Config Sync, Policy Controller, service mesh) in clusters.
+  "google_os_config_patch_deployment", "google_os_config_os_policy_assignment", "google_os_config_v2_policy_orchestrator",
+  "google_os_config_v2_policy_orchestrator_for_folder", "google_os_config_v2_policy_orchestrator_for_organization",
+  "google_compute_global_vm_extension_policy", "google_compute_zone_vm_extension_policy", "google_gke_hub_feature", "google_gke_hub_feature_membership",
+]);
+/**
+ * The schema `GCP_DENIED_TYPES` and `GCP_DATA_SOURCES` were reviewed against, in full: hashicorp/google 8.9.0 (released 2026-10-27).
+ * test/apply-gcp-admission.test.ts fails ("re-review the denied types against the new schema") when it changes, and a lock or an
+ * init that selects any other google version is refused (`PROVIDER_VERSION_NOT_REVIEWED`, src/apply/lockfile.ts).
+ */
+export const GCP_DENIED_TYPES_REVIEWED_AGAINST = "hashicorp/google 8.9.0";
 
 /**
  * The provider half of the contract binding. Only the allowed providers may appear, in a provider block or as the provider
  * of anything the plan names, and a use whose provider the plan does not name is refused (review N4 of #305); of the built-in
- * provider only `terraform_data` resources; and no data source of `SECRET_DATA_SOURCES` (PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT). In
- * a google block no attribute of `DENIED_ATTRIBUTE` is set, `default_labels` is set (the unit labels come from it), and a constant
- * `project` is the contract's. An expression for the project is not judged; the runbook says so. `region` and `zone` are not judged.
+ * provider only `terraform_data` resources; no managed use of a denied type (`GCP_DENIED_TYPES`, PROVIDER_TYPE_NOT_ALLOWED); only the
+ * reviewed data sources (`GCP_DATA_SOURCES`, PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT), each naming the contract's project
+ * (`assertDataSourceProjects`). In a google block no attribute of `DENIED_ATTRIBUTE` is set, `default_labels` is set (the unit labels
+ * come from it), and a constant `project` is the contract's. An expression for the provider's project is not judged; the runbook says
+ * so. `region` and `zone` are not judged.
  */
 function assertProviderConfig(blocks: readonly ProviderBlock[], target: GcpTarget, uses: readonly ProviderUse[]): void {
   assertBuiltinUses(uses);
   for (const use of uses) {
     const id = providerIdOf(use.provider);
     if (id === undefined || !ALLOWED_PROVIDERS.includes(id)) stop("PROVIDER_CONFIG_NOT_IN_CONTRACT");
-    if (SECRET_DATA_SOURCES.has(use.type) && (use.mode !== "managed" || DATA_ADDRESS.test(use.address))) stop("PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT");
+    if (!isDataUse(use) && GCP_DENIED_TYPES.has(use.type)) stop("PROVIDER_TYPE_NOT_ALLOWED");
+    if (id !== BUILTIN_PROVIDER && isDataUse(use) && !GCP_DATA_SOURCES.has(use.type)) stop("PROVIDER_DATA_SOURCE_NOT_IN_CONTRACT");
   }
+  assertDataSourceProjects(uses, target);
   for (const provider of blocks) {
     const id = providerIdOf(provider ?? {});
     if (id === undefined || !ALLOWED_PROVIDERS.includes(id)) stop("PROVIDER_CONFIG_NOT_IN_CONTRACT");
@@ -308,6 +380,8 @@ const asGcp = (target: unknown): GcpTarget => target as GcpTarget;
 export const GCP: GcpProviderSpec = {
   id: "GCP",
   accountFields: { projectId: (v) => PROJECT_ID.test(v), region: (v) => REGION.test(v) },
+  // The optional organization or folder DISCOVERY's readiness check names; when stated it is in the run's target hash.
+  optionalTargetFields: { parent: (v) => PARENT.test(v) },
   backendOk,
   account: (target) => asGcp(target).projectId,
   accountNoun: "project",
@@ -335,5 +409,5 @@ export const GCP: GcpProviderSpec = {
   assertProviderConfig: (blocks, target, _env, uses) => assertProviderConfig(blocks, asGcp(target), uses),
 };
 
-/** Whether a contract target's optional `parent` is well formed. For the authorization lane's contract validator. */
+/** Whether a contract target's optional `parent` is well formed (the contract validator uses `optionalTargetFields`). */
 export const gcpParentOk = (value: string): boolean => PARENT.test(value);

@@ -40,15 +40,13 @@ export function gateModeOf(id: string): GateMode {
 const NO_PRODUCER_PLAN = "A new PLAN names this gate's producer (delegated decision 4); the runner writes nothing for it.";
 
 /**
- * Gates whose path is not admitted yet, so no producer can run them and the runner reports them and writes nothing, whatever
- * their mode would otherwise plan. GCP's gates are required before GCP is an admitted provider (path 5; owner approval
- * 6433121154 on issue #39). Azure Bicep (path 4) is admitted in code for DEV only (owner decision E2), so its preview gate is
- * produced at seal like any other admitted path's and is not listed here.
+ * Gates no producer can run yet, so the runner reports them and writes nothing, whatever their mode would otherwise plan. Azure
+ * Bicep (path 4, owner decision E2) and GCP Terraform (path 5, owner decision 6481421924 on issue #39) are admitted in code for DEV
+ * only, so their preview gates are produced at seal like any other admitted path's and are not listed here. The live read-only GCP
+ * inventory (`gcp-provider`) has no runner stage yet.
  */
-const GCP_NOT_ADMITTED = "GCP is not an admitted provider yet, so no producer can run this gate. ";
 const NOT_ADMITTED: Readonly<Record<string, string>> = {
-  "gcp-provider": GCP_NOT_ADMITTED,
-  "preview:terraform-gcp-brownfield": GCP_NOT_ADMITTED,
+  "gcp-provider": "The runner has no read-only GCP inventory stage yet, so no producer can run this gate. ",
 };
 
 function planFor(id: string): GatePlan {

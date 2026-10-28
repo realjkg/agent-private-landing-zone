@@ -44,11 +44,15 @@ type StepIdentity = "DISCOVERY" | "STATE" | "STATE_WRITE" | "APPLY" | null;
 
 /**
  * What may be rendered into the seal-time backend file when the contract opts in: an allowlist of the STATE_WRITE variables the provider
- * specs' `backendConfig` reads (the principal's client id or role ARN, tenant, subscription, region, and the token file PATH). Any other
+ * specs' `backendConfig` reads (the principal's client id, role ARN or service account email, tenant, subscription, and the token or
+ * credential configuration file PATH). Any other
  * variable, including one that holds a secret, never reaches the renderer, and a token file's content is never read. The file is rendered
  * by this process and never handed to a child: the seal environment below still holds no STATE_WRITE or APPLY variable.
  */
-const STATE_WRITE_SETTINGS = new Set(["ARM_CLIENT_ID", "ARM_TENANT_ID", "ARM_SUBSCRIPTION_ID", "ARM_OIDC_TOKEN_FILE", "AWS_ROLE_ARN", "AWS_WEB_IDENTITY_TOKEN_FILE"]);
+const STATE_WRITE_SETTINGS = new Set([
+  "ARM_CLIENT_ID", "ARM_TENANT_ID", "ARM_SUBSCRIPTION_ID", "ARM_OIDC_TOKEN_FILE", "AWS_ROLE_ARN", "AWS_WEB_IDENTITY_TOKEN_FILE",
+  "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_IMPERSONATE_SERVICE_ACCOUNT",
+]);
 const nonSecretStateWrite = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => Object.fromEntries(
   Object.entries(env).filter(([key]) => ownsIdentityVariable(key, "STATE_WRITE") && STATE_WRITE_SETTINGS.has(key.slice("ALZ_STATE_WRITE_".length))));
 
@@ -175,7 +179,7 @@ type WorkspaceInput = {
  * Nothing here changes state.
  */
 /**
- * Refuses a bound lock file that pins hashicorp/aws or hashicorp/azurerm at any version but the reviewed one
+ * Refuses a bound lock file that pins hashicorp/aws, hashicorp/azurerm or hashicorp/google at any version but the reviewed one
  * (`PROVIDER_VERSION_NOT_REVIEWED`, ../lockfile.ts). A lock with no provider block (a built-in-only project) has nothing to judge;
  * one this reader cannot parse is refused. With no lock at all, init (-lockfile=readonly) installs no provider it does not pin.
  */
@@ -197,8 +201,8 @@ function assertReviewedProviderVersions(work: string): void {
  * The authoritative provider check (review of #327, round 5): after `init -lockfile=readonly` and before any plan, `terraform
  * version -json` reports `provider_selections`, the providers init selected for this working directory, whatever the lock file's
  * layout (an indented or CRLF block the lock reader skips is still selected here). Every selected source must be one this cloud
- * path may use (`ProviderSpec.selectableProviders`), by exact registry source and host, else `PROVIDER_NOT_ADMITTED`; hashicorp/aws
- * and hashicorp/azurerm must be exactly the reviewed versions, else `PROVIDER_VERSION_NOT_REVIEWED`. Missing or malformed
+ * path may use (`ProviderSpec.selectableProviders`), by exact registry source and host, else `PROVIDER_NOT_ADMITTED`; hashicorp/aws,
+ * hashicorp/azurerm and hashicorp/google must be exactly the reviewed versions, else `PROVIDER_VERSION_NOT_REVIEWED`. Missing or malformed
  * selections are `PROVIDER_SELECTIONS_UNREADABLE`. A built-in-only project selects nothing (`{}`), which passes.
  */
 function assertProviderSelections(session: Session, selectable: readonly string[]): void {
@@ -226,7 +230,7 @@ function prepareWorkspace(session: Session, input: WorkspaceInput): void {
   // No provisioner or ephemeral block in any Terraform file: `show -json` never lists an ephemeral resource or a `removed`
   // block's provisioner, and a plan or an apply would run them (../terraform-constructs.ts).
   assertNoRefusedSourceConstructs(session.work);
-  // The aws and azurerm versions the bound lock pins are the ones the denied-type lists were reviewed against (review of #327,
+  // The aws, azurerm and google versions the bound lock pins are the ones the denied-type lists were reviewed against (review of #327,
   // round 4). Init runs with -lockfile=readonly, so this lock is exactly what it installs; at seal, apply and cleanup alike.
   assertReviewedProviderVersions(session.work);
   // The project's own backend, cloud or state_store block is replaced: init builds only this type, with only the product's settings.
@@ -293,7 +297,8 @@ const MAX_MODULE_DEPTH = 64;
  * present but not the shape `show -json` documents (a module, a call, a resource or a changes entry that is not an object;
  * `resources`, `child_modules` or `resource_changes` that is not a list; `module_calls` that is not an object) is
  * `PROVIDER_PLAN_UNREADABLE`, because a use that could not be read could be one of the built-in provider. A tree that is
- * absent is simply absent. Addresses and types are read as text only; no value leaves this function.
+ * absent is simply absent. Addresses and types are read as text only. A configured use carries its expressions and a data source read
+ * from the state or planned values its values, for the provider judge in process; nothing from them is recorded.
  */
 function providerUsesOf(document: Shown): ProviderUse[] {
   const UNREADABLE = "PROVIDER_PLAN_UNREADABLE";
@@ -305,11 +310,16 @@ function providerUsesOf(document: Shown): ProviderUse[] {
     return { name: key.slice(key.lastIndexOf(":") + 1).split(".")[0] };
   };
   const uses: ProviderUse[] = [];
-  const add = (found: unknown, provider: (entry: Record<string, unknown>) => ProviderUse["provider"]): void => {
+  type Read = "CONFIGURATION" | "CHANGES" | "VALUES";
+  const add = (found: unknown, provider: (entry: Record<string, unknown>) => ProviderUse["provider"], read: Read): void => {
     if (!isPlainRecord(found)) return stop(UNREADABLE);
+    const mode = typeof found.mode === "string" ? found.mode : "";
     uses.push({
-      address: stripInvisible(typeof found.address === "string" ? found.address : ""), mode: typeof found.mode === "string" ? found.mode : "",
+      address: stripInvisible(typeof found.address === "string" ? found.address : ""), mode,
       type: stripInvisible(typeof found.type === "string" ? found.type : ""), provider: provider(found),
+      // For the provider judge only, in process: a configured use's expressions (absent ones read as none) and a data source's read values.
+      ...(read === "CONFIGURATION" ? { expressions: isPlainRecord(found.expressions) ? found.expressions : {} } : {}),
+      ...(read === "VALUES" && mode === "data" && isPlainRecord(found.values) ? { values: found.values } : {}),
     });
   };
   /** A list that is present must be a list; an object that is present must be an object. Absent is an empty list or object. */
@@ -320,18 +330,18 @@ function providerUsesOf(document: Shown): ProviderUse[] {
     if (module === undefined) return;
     if (!isPlainRecord(module)) return stop(UNREADABLE);
     if (depth > MAX_MODULE_DEPTH) return stop("PROVIDER_PLAN_TOO_DEEP");
-    for (const found of listOf(module.resources)) add(found, (entry) => byKey(entry.provider_config_key));
+    for (const found of listOf(module.resources)) add(found, (entry) => byKey(entry.provider_config_key), "CONFIGURATION");
     for (const call of Object.values(recordOf(module.module_calls))) configured(recordOf(call).module, depth + 1);
   };
   const valued = (module: unknown, depth: number): void => {
     if (module === undefined) return;
     if (!isPlainRecord(module)) return stop(UNREADABLE);
     if (depth > MAX_MODULE_DEPTH) return stop("PROVIDER_PLAN_TOO_DEEP");
-    for (const found of listOf(module.resources)) add(found, byName);
+    for (const found of listOf(module.resources)) add(found, byName, "VALUES");
     for (const child of listOf(module.child_modules)) valued(child, depth + 1);
   };
   configured(document.configuration?.root_module, 0);
-  for (const found of listOf(document.resource_changes)) add(found, byName);
+  for (const found of listOf(document.resource_changes)) add(found, byName, "CHANGES");
   valued(document.prior_state?.values?.root_module, 0);
   valued(document.planned_values?.root_module, 0);
   return uses;
@@ -600,7 +610,7 @@ export const TERRAFORM: EngineSpec = {
   executables: ["terraform"],
   embedsStateWrite: true,
   mutation: "TERRAFORM_APPLY_OF_SEALED_PLAN",
-  providers: ["AZURE", "AWS"],
+  providers: ["AZURE", "AWS", "GCP"],
   canaryTypeOk: (value) => value.length <= 128 && TERRAFORM_TYPE.test(value),
   notices: {
     sealHeading: "SEAL A PREVIEW (this plans against the target and changes no infrastructure; the plan is kept encrypted)",

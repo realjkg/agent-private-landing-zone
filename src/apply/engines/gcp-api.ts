@@ -8,7 +8,7 @@ import { checkCredentialConfiguration, readTokenFile } from "../../tools/gcp-cre
 import { identityVariables, type ExecutionIdentity } from "../../tools/identity.js";
 import { sha256 } from "../../util/sha256.js";
 import { GCP } from "../providers/gcp.js";
-import { requesterKeyRefusal, signRequest, verifyRequestSignature } from "../approval.js";
+import { requesterRefusal, signRequest, verifyRequestSignature } from "../approval.js";
 import { HASH, TOKEN_FILE } from "../constants.js";
 import type { ApplyEnvironment, ApproverEntry, PilotContract, SealedRequest } from "../types.js";
 
@@ -155,8 +155,9 @@ export async function sealGcpApiPlan(input: { request: unknown; requester: { req
   Promise<Ok<{ sealed: SealedGcpApiPlan }> | GcpApiRefusal> {
   const checked = checkRequest(input.request, deps.target);
   if (!checked.ok) return checked;
-  const keyRefusal = requesterKeyRefusal(allowlistOf(deps.target), input.requester.requesterId, input.requester.privateKeyPem);
-  if (keyRefusal) return refuse(keyRefusal.code);
+  // The same check as every seal (#321 review N2): on the allowlist, allowed for this environment, and the entry's own key.
+  const requesterRefused = requesterRefusal(allowlistOf(deps.target), deps.target.environment, input.requester.requesterId, input.requester.privateKeyPem);
+  if (requesterRefused) return refuse(requesterRefused.code);
   const calls = callsOf(checked.request);
   const read = await readTopic(calls.readBack.url, deps);
   if (!read.ok) return read;

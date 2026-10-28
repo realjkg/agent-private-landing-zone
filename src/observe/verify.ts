@@ -90,9 +90,9 @@ export type ObserveReport = {
   verifier: VerifierId;
 };
 
-/** Which independent read API answered: AWS Cloud Control through the aws CLI, or Azure Resource Manager through its REST API. */
-export type VerifierId = "AWS_CLOUD_CONTROL" | "AZURE_RESOURCE_MANAGER";
-export const VERIFIERS: readonly VerifierId[] = ["AWS_CLOUD_CONTROL", "AZURE_RESOURCE_MANAGER"];
+/** Which independent read API answered: AWS Cloud Control through the aws CLI, or Azure Resource Manager or Google's REST APIs in process. */
+export type VerifierId = "AWS_CLOUD_CONTROL" | "AZURE_RESOURCE_MANAGER" | "GCP_REST";
+export const VERIFIERS: readonly VerifierId[] = ["AWS_CLOUD_CONTROL", "AZURE_RESOURCE_MANAGER", "GCP_REST"];
 
 /**
  * One cloud's independent reader: existence of one blueprint entry, and the identifiers carrying this run's unit tag.

@@ -16,7 +16,7 @@ The GCP release-path PLAN (owner approval 6433121154 on issue #39) and the G0 pa
 - it never enables ACT;
 - the contract stays `enabled: false`, with no `authorize` entry (the contract's `authorize` entry is the ACT switch; there is no pin).
 
-GCP is not yet an admitted provider: until the authorization lane adds it, a contract naming GCP is refused.
+GCP Terraform is admitted in code for DEV only (owner decision 6481421924 on issue #39): a GCP contract must state `"enabledEnvironments": ["DEV"]`, and only the owner's reviewed contract with an `authorize` entry enables ACT for it. The repository ships none.
 
 ## What it creates
 
@@ -134,7 +134,7 @@ The runner's OIDC token for that identity must be written to the `token_files` p
 - `ALZ_<IDENTITY>_GOOGLE_APPLICATION_CREDENTIALS`: that file's absolute path;
 - `ALZ_<IDENTITY>_GOOGLE_IMPERSONATE_SERVICE_ACCOUNT`, `ALZ_<IDENTITY>_GOOGLE_PROJECT` and `ALZ_<IDENTITY>_GOOGLE_REGION`: from `terraform output -json identity_variables`.
 
-Set no other `GOOGLE_*`, `GCLOUD_*`, `CLOUDSDK_*` or `GCE_*` variable, and never `STORAGE_EMULATOR_HOST`. The G0 package forbids them, and the S1 provider spec (`src/apply/providers/gcp.ts`, #305) refuses each of them by name. GCP is not yet an admitted provider, so the spec runs once the authorization lane admits it.
+Set no other `GOOGLE_*`, `GCLOUD_*`, `CLOUDSDK_*` or `GCE_*` variable, and never `STORAGE_EMULATOR_HOST`. The G0 package forbids them, and the S1 provider spec (`src/apply/providers/gcp.ts`, #305) refuses each of them by name. The spec runs for every GCP contract, which is admitted for DEV only.
 
 ## Step 4: Fill the configuration
 

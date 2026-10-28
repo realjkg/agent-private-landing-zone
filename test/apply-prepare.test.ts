@@ -10,6 +10,7 @@ import { loadToolPins } from "../src/deps/pins.js";
 import { lockedProviders, LockFileError, OFFICIAL_PROVIDER_HASHES, REVIEWED_PROVIDER_VERSIONS, unreviewedProviderVersion } from "../src/apply/lockfile.js";
 import { AWS_DENIED_TYPES_REVIEWED_AGAINST } from "../src/apply/providers/aws.js";
 import { AZURE_DENIED_TYPES_REVIEWED_AGAINST } from "../src/apply/providers/azure.js";
+import { GCP_DENIED_TYPES_REVIEWED_AGAINST } from "../src/apply/providers/gcp.js";
 import {
   preparationIsCurrent, preparationUnitHash, prepareApply, PREPARATION_LABEL, TERRAFORM_LOCK_FILE, writePreparation,
   type PrepareDeps, type PrepareRefusal, type Prepared,
@@ -288,9 +289,12 @@ const REAL_LOCK = [
 
 test("a lock that pins aws or azurerm at any version but the one the denied types were reviewed against is refused at prepare, naming both versions (review of #327, round 4)", async () => {
   // One source of truth: the reviewed versions are read from the constants beside the denied-type lists.
-  assert.deepEqual(REVIEWED_PROVIDER_VERSIONS, { "registry.terraform.io/hashicorp/aws": "6.68.0", "registry.terraform.io/hashicorp/azurerm": "4.81.0" });
+  assert.deepEqual(REVIEWED_PROVIDER_VERSIONS, {
+    "registry.terraform.io/hashicorp/aws": "6.68.0", "registry.terraform.io/hashicorp/azurerm": "4.81.0", "registry.terraform.io/hashicorp/google": "8.9.0",
+  });
   assert.equal(AWS_DENIED_TYPES_REVIEWED_AGAINST, "hashicorp/aws 6.68.0");
   assert.equal(AZURE_DENIED_TYPES_REVIEWED_AGAINST, "hashicorp/azurerm 4.81.0");
+  assert.equal(GCP_DENIED_TYPES_REVIEWED_AGAINST, "hashicorp/google 8.9.0");
   // Each cloud path locks its own provider (an AWS project locking azurerm is refused as not admitted, below).
   const awsLock = REAL_LOCK.replace(/\nprovider "registry\.terraform\.io\/hashicorp\/azurerm" \{[\s\S]*?\n\}\n/, "\n");
   const azureLock = REAL_LOCK.replace(/\nprovider "registry\.terraform\.io\/hashicorp\/aws" \{[\s\S]*?\n\}\n/, "\n");

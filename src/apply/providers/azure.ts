@@ -30,11 +30,12 @@ function backendOk(value: string): boolean {
 /**
  * Anything that lets a child fall back to the az CLI, a managed identity, a
  * certificate or an Azure SDK default instead of the identity's own OIDC token
- * file, or to another cloud's credentials (`AWS_*`). The recommended setup is `ARM_*` with `ARM_USE_OIDC` and
+ * file, or to another cloud's credentials (`AWS_*`, and `GOOGLE_*`, `GCLOUD_*`, `CLOUDSDK_*`, `GCE_*`, which the Terraform apply
+ * profile can inject since GCP was admitted). The recommended setup is `ARM_*` with `ARM_USE_OIDC` and
  * `ARM_OIDC_TOKEN_FILE`, but that is not enforced: a per-identity `ARM_CLIENT_SECRET` is still injectable on the shared
  * Terraform profiles and is accepted as that identity's own explicit credential (docs/act-pilot-apply.md, Azure).
  */
-const FALLBACK_VARIABLE = /^(AZURE_.*|ARM_USE_(?!OIDC$).*|ARM_MSI_.*|ARM_CLIENT_CERTIFICATE.*|AWS_.*)$/;
+const FALLBACK_VARIABLE = /^(AZURE_.*|ARM_USE_(?!OIDC$).*|ARM_MSI_.*|ARM_CLIENT_CERTIFICATE.*|AWS_.*|GOOGLE_.*|GCLOUD_.*|CLOUDSDK_.*|GCE_.*)$/;
 
 const ambient = (env: NodeJS.ProcessEnv) => ambientRefusal(env, {
   fallback: FALLBACK_VARIABLE, ambient: /^(AZURE|ARM)_/, fallbackTo: "the az CLI, ambient or another cloud's credentials",
@@ -101,12 +102,13 @@ const SAVED_SETTINGS = new Set(["storage_account_name", "container_name", "key",
  */
 function savedBackendMatches(backend: Record<string, unknown>, target: AzureTarget, env: NodeJS.ProcessEnv): boolean {
   const config = isRecord(backend.config) ? backend.config : {};
-  const parts = [config.storage_account_name, config.container_name, config.key];
+  const [account, container, ...key] = target.backend.split("/");
   const unsetOr = (name: string, ok: (value: string) => boolean): boolean =>
     config[name] === undefined || config[name] === null || (typeof config[name] === "string" && ok(config[name] as string));
   const stateWrite = identityVariables(env, "STATE_WRITE");
   const isStateWrite = (name: string) => (v: string): boolean => stateWrite.get(name) === v;
-  return backend.type === "azurerm" && parts.every((part) => typeof part === "string") && parts.join("/") === target.backend &&
+  // Each part on its own (review N5 of #320): parts joined differently cannot name the same "<account>/<container>/<key>".
+  return backend.type === "azurerm" && config.storage_account_name === account && config.container_name === container && config.key === key.join("/") &&
     config.use_azuread_auth === true && (config.use_oidc === undefined || config.use_oidc === null || config.use_oidc === true) &&
     unsetOr("tenant_id", (v) => GUID.test(v) && v.toLowerCase() === target.tenantId.toLowerCase()) &&
     unsetOr("subscription_id", (v) => GUID.test(v) && v.toLowerCase() === target.subscriptionId.toLowerCase()) &&

@@ -128,7 +128,7 @@ It runs the real Terraform engine against fake-gcs-server on loopback, using the
 
 Every proxy variable points at a closed local port. `STORAGE_EMULATOR_HOST` is set only in the engine children the test starts.
 
-**It does not run through the driver yet.** GCP is not an admitted provider, so seal, approve, apply, the ledger and the kill switch cannot run a GCP contract. That journey, S6b, follows admission in the shape of `test/apply-emulated.test.ts`. It is the remaining half of the GCP G1b gate.
+**It does not run through the driver against the emulator yet.** GCP Terraform is now admitted in code for DEV only, and `test/apply-gcp-admission.test.ts` drives seal, apply, observe, propose, clean up and the leftover check for a GCP contract against the fake engine and a scripted Google (SYNTHETIC). The driver-level run against the real binary and fake-gcs-server, S6b, in the shape of `test/apply-emulated.test.ts`, is still to be built. It is the remaining half of the GCP G1b gate.
 
 Run on 2026-10-27 with Terraform 1.16.4 (the binary above) and the fake-gcs-server v1.53.1 local build above (sha256 `dca268fc…`). It passed 4 of 4, three runs in a row:
 

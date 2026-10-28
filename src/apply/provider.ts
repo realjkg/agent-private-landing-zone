@@ -1,5 +1,6 @@
 import { AWS } from "./providers/aws.js";
 import { AZURE } from "./providers/azure.js";
+import { GCP } from "./providers/gcp.js";
 import type { BackendType } from "./backend-pin.js";
 import type { PilotContract, PilotTarget, ProviderId } from "./types.js";
 
@@ -11,7 +12,7 @@ import type { PilotContract, PilotTarget, ProviderId } from "./types.js";
  * it. A contract naming a provider with no spec here is not a contract.
  */
 
-/** The target fields that identify the cloud account and place (AZURE: tenant and subscription; AWS: account and region). The same fields bind qualification evidence to the DEV target. */
+/** The target fields that identify the cloud account and place (AZURE: tenant and subscription; AWS: account and region; GCP: project and region). The same fields bind qualification evidence to the DEV target. */
 type AccountFields = Readonly<Record<string, string>>;
 
 /** A provider block from `terraform show -json` `configuration.provider_config`. */
@@ -21,7 +22,16 @@ export type ProviderBlock = { name?: string; full_name?: string; expressions?: R
  * configuration tree (every module; the only place a data source read at plan time is sure to appear), the changes, the
  * prior state and the planned values. `mode` is `managed` or `data` as Terraform reports it (empty when it did not).
  */
-export type ProviderUse = { address: string; mode: string; type: string; provider: Pick<ProviderBlock, "name" | "full_name"> };
+export type ProviderUse = {
+  address: string; mode: string; type: string; provider: Pick<ProviderBlock, "name" | "full_name">;
+  /**
+   * The configuration's expressions for this use, present only on a use read from the configuration tree, and the values a data
+   * source read, present only on a data-mode use read from the prior state or the planned values. Read in process by the provider
+   * judge (GCP: the project a `google_project` data source names, review N3 of #323) and never recorded.
+   */
+  expressions?: Readonly<Record<string, unknown>>;
+  values?: Readonly<Record<string, unknown>>;
+};
 
 /** A refusal the identity checks raise; the driver maps it to the apply refusal of the same code. */
 export type IdentityRefusal = { ok: false; code: "IDENTITY_NOT_CONFIGURED" | "IDENTITY_COLLAPSED"; message: string };
@@ -30,6 +40,12 @@ export type ProviderSpec = {
   id: ProviderId;
   /** Target shape: a validator per account field, in the order the contract lists them. `backend` and `workspace` are every provider's. */
   accountFields: Readonly<Record<string, (value: string) => boolean>>;
+  /**
+   * Optional target fields of this provider, each judged by its validator when the contract states it (GCP: `parent`, the
+   * organization or folder DISCOVERY's readiness check names; it carries no authority). When stated, part of the reviewed contract
+   * and of the run's target hash (`pilotTargetSha256`), as an engine's location fields are. Absent: none (AWS, Azure).
+   */
+  optionalTargetFields?: Readonly<Record<string, (value: string) => boolean>>;
   /** Whether a backend string, as the contract writes it, is well formed. */
   backendOk(value: string): boolean;
   /** What `ResolvedTarget.account` carries for a target, and what to call it in a message. */
@@ -84,7 +100,7 @@ export type ProviderSpec = {
   tagAttributes: readonly string[];
 };
 
-const SPECS: Readonly<Record<ProviderId, ProviderSpec>> = { AZURE, AWS };
+const SPECS: Readonly<Record<ProviderId, ProviderSpec>> = { AZURE, AWS, GCP };
 
 /** The spec for a contract's `provider`, or undefined for anything that is not an implemented provider id. */
 export const providerSpec = (id: unknown): ProviderSpec | undefined =>

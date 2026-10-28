@@ -110,18 +110,18 @@ test("every release gate is mapped, read as data without the registry; gates wit
   assert.equal(mode("platform:linux-x64"), "OWNER", "the merged lifecycle runner produces the platform gates on each host");
   assert.equal(mode("aws-provider"), "AUTO");
   assert.equal(mode("azure-provider"), "AUTO");
-  // GCP's gates are required before GCP is admitted: reported, never planned as AUTO or GUIDED, and never Azure's stage by default.
-  // The owner's scope of 2026-10-28 (#39 6480066863) excludes the GCP preview gate, so the shipped plan reports it OUT_OF_SCOPE; with no
-  // exclusion it is still NO_PRODUCER, not GUIDED.
+  // GCP Terraform is admitted in code for DEV only (owner decision 6481421924), but the live read-only GCP inventory has no runner stage:
+  // gcp-provider is reported NO_PRODUCER, never planned as AUTO, and never Azure's stage by default. The owner's scope of 2026-10-28
+  // (#39 6480066863) excludes the GCP preview gate, so the shipped plan reports it OUT_OF_SCOPE; with no exclusion it is produced at seal
+  // like any admitted path's preview gate (GUIDED S5), for the authorized path only.
   assert.equal(mode("gcp-provider"), "NO_PRODUCER");
-  assert.match(plan.find((gate) => gate.id === "gcp-provider")!.note, /not an admitted provider/);
+  assert.match(plan.find((gate) => gate.id === "gcp-provider")!.note, /no read-only GCP inventory stage/);
+  assert.equal(gatePlan(["gcp-provider"], new Set())[0].mode, "NO_PRODUCER");
   assert.ok(outOfScope.has("preview:terraform-gcp-brownfield"));
   assert.equal(mode("preview:terraform-gcp-brownfield"), "OUT_OF_SCOPE");
-  for (const id of ["gcp-provider", "preview:terraform-gcp-brownfield"]) {
-    const unscoped = gatePlan([id], new Set())[0];
-    assert.equal(unscoped.mode, "NO_PRODUCER", id);
-    assert.match(unscoped.note, /not an admitted provider/, id);
-  }
+  const unscopedGcpPreview = gatePlan(["preview:terraform-gcp-brownfield"], new Set())[0];
+  assert.deepEqual([unscopedGcpPreview.mode, unscopedGcpPreview.slice], ["GUIDED", "S5"]);
+  assert.match(unscopedGcpPreview.note, /only for the authorized path/);
   assert.equal(gatePlan(["other-provider"], new Set())[0].mode, "NO_PRODUCER");
   assert.equal(mode("private-model-runtime"), "OWNER");
   assert.equal(mode("act:aws-terraform"), "GUIDED");
@@ -150,13 +150,12 @@ test("the owner dropped the brownfield preview gates from this release (2026-10-
   // No preview gate is in this release's scope any more.
   assert.deepEqual(ids.filter((id) => id.startsWith("preview:") && !outOfScope.has(id)), []);
   // The producer mapping itself is unchanged: were the owner to bring a preview gate back into scope, it is produced at seal (GUIDED S5)
-  // for the authorized path only, and the GCP one still has no producer until GCP is admitted.
-  for (const id of ["preview:terraform-aws-brownfield", "preview:terraform-azure-brownfield", "preview:cdk-aws-brownfield", "preview:bicep-azure-brownfield"]) {
+  // for the authorized path only; GCP Terraform's too, now that it is admitted in code for DEV only (owner decision 6481421924).
+  for (const id of DROPPED_BROWNFIELD) {
     const inScope = gatePlan([id], new Set())[0];
     assert.deepEqual([inScope.mode, inScope.slice], ["GUIDED", "S5"], id);
     assert.match(inScope.note, /only for the authorized path/, id);
   }
-  assert.equal(gatePlan(["preview:terraform-gcp-brownfield"], new Set())[0].mode, "NO_PRODUCER");
 });
 
 test("the Bicep ACT gate is in scope and admitted in code: act:azure-bicep is a guided DEV stage, for the authorized path only", () => {
@@ -187,7 +186,7 @@ test("the owner moved the six pillar gates to v1.1 (2026-10-28): the runner repo
     assert.equal(gatePlan([id], new Set())[0].mode, "NO_PRODUCER", id);
   }
   assert.deepEqual(ids.filter((id) => id.startsWith("pillar:") && !outOfScope.has(id)), [], "no pillar gate is in this release's scope");
-  // GCP stays in scope to support greenfield: its provider gate is not excluded and is still reported NO_PRODUCER until GCP is admitted.
+  // GCP stays in scope: its provider gate is not excluded and is reported NO_PRODUCER until the runner has a read-only GCP inventory stage.
   assert.ok(!outOfScope.has("gcp-provider"));
   assert.equal(plan.find((gate) => gate.id === "gcp-provider")!.mode, "NO_PRODUCER");
 });
