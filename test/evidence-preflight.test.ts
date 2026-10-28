@@ -104,7 +104,7 @@ test("every release gate is mapped, read as data without the registry; gates wit
   for (const gate of PRODUCTION_RELEASE_GATES) assert.equal(gateModeOf(gate.id), gate.mode, gate.id);
   const plan = gatePlan(ids, outOfScope);
   const mode = (id: string) => plan.find((gate) => gate.id === id)?.mode;
-  for (const id of ["arm64-final-image", "isolated-recovery", "security-review:independent", "pillar:security", "lifecycle:clean-install", "lifecycle:upgrade", "lifecycle:rollback", "lifecycle:configuration-migration", "source-ci", "release-archive"]) {
+  for (const id of ["arm64-final-image", "isolated-recovery", "security-review:independent", "lifecycle:clean-install", "lifecycle:upgrade", "lifecycle:rollback", "lifecycle:configuration-migration", "source-ci", "release-archive"]) {
     assert.equal(mode(id), "NO_PRODUCER", id);
   }
   assert.equal(mode("platform:linux-x64"), "OWNER", "the merged lifecycle runner produces the platform gates on each host");
@@ -166,4 +166,28 @@ test("the Bicep ACT gate is in scope and admitted in code: act:azure-bicep is a 
   const act = gatePlan(ids, outOfScope).find((gate) => gate.id === "act:azure-bicep")!;
   assert.deepEqual([act.mode, act.slice], ["GUIDED", "S5"]);
   assert.match(act.note, /only for the authorized path/);
+});
+
+const PILLARS = [
+  "pillar:operational-excellence", "pillar:security", "pillar:reliability", "pillar:performance", "pillar:cost", "pillar:sustainability",
+];
+
+test("the owner moved the six pillar gates to v1.1 (2026-10-28): the runner reports each OUT_OF_SCOPE and plans no stage for it; with no exclusion each is still NO_PRODUCER", () => {
+  const { ids, outOfScope } = releaseGates(".");
+  const plan = gatePlan(ids, outOfScope);
+  for (const id of PILLARS) {
+    assert.ok(ids.includes(id), id + " is still a registry gate");
+    assert.ok(outOfScope.has(id), id + " is excluded by config/release/scope.json");
+    assert.equal(gateModeOf(id), "LIVE_METRIC", id);
+    const entry = plan.find((gate) => gate.id === id)!;
+    assert.equal(entry.mode, "OUT_OF_SCOPE", id);
+    assert.equal(entry.slice, undefined, id);
+    assert.match(entry.note, /owner's release scope/, id);
+    // The mapping itself is unchanged: were the owner to bring a pillar gate back into scope, it has no producer yet.
+    assert.equal(gatePlan([id], new Set())[0].mode, "NO_PRODUCER", id);
+  }
+  assert.deepEqual(ids.filter((id) => id.startsWith("pillar:") && !outOfScope.has(id)), [], "no pillar gate is in this release's scope");
+  // GCP stays in scope to support greenfield: its provider gate is not excluded and is still reported NO_PRODUCER until GCP is admitted.
+  assert.ok(!outOfScope.has("gcp-provider"));
+  assert.equal(plan.find((gate) => gate.id === "gcp-provider")!.mode, "NO_PRODUCER");
 });

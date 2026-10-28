@@ -585,3 +585,31 @@ test("the shipped scope drops the brownfield preview gates (owner decision of 20
     }
   } finally { h.cleanup(); }
 });
+
+test("the shipped scope moves the six pillar gates to v1.1 (owner decision of 2026-10-28): each is OUT_OF_SCOPE, a record for one is refused, and gcp-provider still blocks", async () => {
+  const pillars = ["pillar:operational-excellence", "pillar:security", "pillar:reliability", "pillar:performance", "pillar:cost", "pillar:sustainability"];
+  // As ./alz qualify admission passes it (src/cli/release-admission.ts).
+  const outOfScope = loadReleaseScope(process.cwd()).outOfScope.map((x) => x.gate);
+  for (const id of pillars) assert.ok(outOfScope.includes(id), id);
+  assert.ok(!outOfScope.includes("gcp-provider"), "GCP stays in scope to support greenfield");
+  const h = harness();
+  try {
+    const empty = await reviewProductionRelease({ manifest: input([]), expectedCommit: commit, root: h.root, outOfScope });
+    for (const id of pillars) {
+      assert.deepEqual([empty.gates.find((g) => g.id === id)?.status, empty.gates.find((g) => g.id === id)?.blockers], ["OUT_OF_SCOPE", []], id);
+      assert.ok(!empty.blockers.some((m) => m.includes(id)), id + " no longer blocks the release");
+    }
+    assert.equal(empty.gates.find((g) => g.id === "gcp-provider")?.status, "BLOCKED", "gcp-provider stays in scope and unmet");
+    assert.equal(empty.readyForIndependentReleaseReview, false);
+    // Without the exclusion each pillar gate is still required and blocks: its LIVE_METRIC check is unchanged.
+    const unscoped = await reviewProductionRelease({ manifest: input([]), expectedCommit: commit, root: h.root });
+    for (const id of pillars) assert.equal(unscoped.gates.find((g) => g.id === id)?.status, "BLOCKED", id);
+    for (const id of pillars) {
+      const evidenced = await reviewProductionRelease({
+        manifest: input([h.attach(id, "LIVE_METRIC", generic(id, "LIVE_METRIC"))]), expectedCommit: commit, root: h.root, outOfScope,
+      });
+      assert.ok(evidenced.blockers.includes("RELEASE_RECORD_FOR_OUT_OF_SCOPE_GATE:" + id), id);
+      assert.equal(evidenced.gates.find((g) => g.id === id)?.status, "OUT_OF_SCOPE", id);
+    }
+  } finally { h.cleanup(); }
+});

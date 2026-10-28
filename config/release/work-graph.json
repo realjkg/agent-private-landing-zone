@@ -37,7 +37,7 @@
         "act:aws-cdk"
       ],
       "blockedBy": "C1: the DEV-only contract scope refuses CDK (src/apply/contract.ts validate), so without it the path needs three AWS accounts; C2: every AWS/CloudFormation fact in src/apply/engines/cdk.ts is UNVERIFIED (only a fake aws ran) and no emulated harness exists; then the owner's C3",
-      "acceptance": "Authentic, owner-run: bootstrap/aws with engine = \"CDK\", real-engine CDK qualification, one supervised DEV apply of the sealed change set for the minimal workload (one pre-synthesized stack holding the path 1 canary log group), cleanup, and `./alz apply record-live` evidence for gate act:aws-cdk, plus preview:cdk-aws-brownfield. Separate from the Terraform paths: one never implies the other.",
+      "acceptance": "Authentic, owner-run: bootstrap/aws with engine = \"CDK\", real-engine CDK qualification, one supervised DEV apply of the sealed change set for the minimal workload (one pre-synthesized stack holding the path 1 canary log group), cleanup, and `./alz apply record-live` evidence for gate act:aws-cdk. Separate from the Terraform paths: one never implies the other.",
       "next": "C2: the emulated CDK/CloudFormation harness lane (real AWS CLI against local moto CloudFormation) verifies the UNVERIFIED facts and updates docs/act-pilot-apply.md (\"CDK\"). C1: DEV-only scope for CDK lands in shared-authorization. Remove (PR B) covers cdk.out copies and change-set files (docs/act-dev-paths.md; coordinator defaults 6443800275)."
     },
     {
@@ -76,7 +76,7 @@
       ],
       "gates": [],
       "blockedBy": "NOT STARTED: only the read-only what-if and the teardown tag reader exist. Missing: BICEP engine spec (B1, deployment-stack engine), az and bicep pins and bootstrap identities (B2), classifier, address and console parity (B3), a recorded-output check of deployment-stack behavior (B4), the act:azure-bicep gate, and the owner's B0 choices (deployment-stack deny settings, DEV-only contract exception for Bicep)",
-      "acceptance": "Authentic, owner-run: one supervised DEV apply of the sealed ARM template as a deployment stack scoped to the pilot resource group (`az stack group create`) for the minimal workload (one empty tagged virtual network in the pilot resource group that the bootstrap/azure DEV mode creates (#304); the run creates no resource group and resource provider registration stays a bootstrap prerequisite), cleanup by stack update scoped to the run's resources, and evidence for the new gate act:azure-bicep plus preview:bicep-azure-brownfield back in scope. The gates are added only by this path's reviewed PRs.",
+      "acceptance": "Authentic, owner-run: one supervised DEV apply of the sealed ARM template as a deployment stack scoped to the pilot resource group (`az stack group create`) for the minimal workload (one empty tagged virtual network in the pilot resource group that the bootstrap/azure DEV mode creates (#304); the run creates no resource group and resource provider registration stays a bootstrap prerequisite), cleanup by stack update scoped to the run's resources, and evidence for the gate act:azure-bicep. The gates are added only by this path's reviewed PRs.",
       "next": "B1: the Bicep lane builds src/apply/engines/bicep.ts (seal what-if and template bytes, apply a deployment stack scoped to the pilot resource group, state from managed resources, cleanup by stack update, never a stack delete) after shared-authorization (X1); B2 (az and bicep pins, bootstrap identities) after the owner's B0; B3 and B4 after B1 (docs/act-dev-paths.md; coordinator defaults 6443800275 and 6444382695)."
     },
     {
@@ -91,7 +91,7 @@
       ],
       "gates": [],
       "blockedBy": "NOT STARTED in code: S1 to S7 are unbuilt (no GCP provider spec, no gcs rule in backend pinning, no reader, classifier, gates, emulated G1b or console parity), no bootstrap/gcp, and contract.ts still refuses GCP DEV-only scope; P3 and P5 stay owner bootstrap items",
-      "acceptance": "Authentic, owner-run under the full gates: bootstrap/gcp with WIF and four impersonated service accounts, one supervised DEV apply of one labeled Pub/Sub topic, cleanup, and evidence for the new gates act:gcp-terraform, gcp-provider and preview:terraform-gcp-brownfield. The gates are added only by this path's reviewed PRs.",
+      "acceptance": "Authentic, owner-run under the full gates: bootstrap/gcp with WIF and four impersonated service accounts, one supervised DEV apply of one labeled Pub/Sub topic, cleanup, and evidence for the new gates act:gcp-terraform and gcp-provider. The gates are added only by this path's reviewed PRs.",
       "next": "G1: the GCP Terraform S1 lane builds the provider spec and identities (src/apply/providers/gcp.ts), after #297 adds a gcs backend rule; then G2 bootstrap/gcp (offline-validated) and G3 (S3 to S7). P1, P2 and P4 are fail-closed defaults (docs/act-dev-paths.md; coordinator defaults 6443800275)."
     },
     {
