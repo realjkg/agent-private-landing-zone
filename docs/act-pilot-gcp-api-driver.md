@@ -16,7 +16,7 @@ Each decision has a number (D1 to D20), the decision, why, and what was rejected
 
 A short table of every decision and its mark is at the end ("Decision index").
 
-Where a fact about a Google API is relied on and has not been checked against Google's published reference, it is marked **UNVERIFIED (Gn)** and listed under "Facts to verify before G2 merges". Nothing is checked by a live call; the owner's DEV run is the only live evidence.
+Where a fact about a Google API is relied on and has not been checked against Google's published reference, it is marked **UNVERIFIED (GFn)** and listed under "Facts to verify before G2 merges". The labels GF1 to GF11 name Google API facts; G1 and G2 elsewhere name lanes. Nothing is checked by a live call; the owner's DEV run is the only live evidence.
 
 ## 1. Where the engine stands today
 
@@ -242,7 +242,7 @@ Moving any of these is a target move. Every field is preserved through apply, ob
 1. **At seal**, in `plan`: anything listed, or an incomplete listing, refuses the seal (`UNIT_NOT_EMPTY` or `UNIT_LISTING_INCOMPLETE`). The earlier run is cleaned up first.
 2. **At apply**, in the async `prepare` (D5), before any approval is consumed: the unit sweep runs again, and the apply is refused (`UNIT_NOT_EMPTY`, `UNIT_LISTING_INCOMPLETE`, with nothing consumed) if it lists any topic of the unit or is incomplete. The sealed topic itself must also read absent by its own `GET`. So two plans sealed back to back cannot both be applied once the first one's topic is indexed: the second apply sees it and stops.
 
-**Residual, stated plainly.** Cloud Asset Inventory is eventually consistent (minutes; UNVERIFIED G5). Neither check sees a topic created inside the indexing window, so two applies run within that window (two sealed plans applied back to back, or concurrently) can **both create a topic, and two canary topics of one target can briefly coexist**. The record does not claim otherwise. What bounds it:
+**Residual, stated plainly.** Cloud Asset Inventory is eventually consistent (minutes; UNVERIFIED GF5). Neither check sees a topic created inside the indexing window, so two applies run within that window (two sealed plans applied back to back, or concurrently) can **both create a topic, and two canary topics of one target can briefly coexist**. The record does not claim otherwise. What bounds it:
 
 - each topic has its run-unique name and its own run records, so each is owned by exactly one run and cleaned up by that run's own proposal;
 - each run's observation sweeps the unit and lists the other run's topic as `unexpected`, so its verdict is `FAILED` and the overlap is visible in evidence. **This holds only once the other topic is indexed** by Cloud Asset: an observation inside the indexing window does not see it either, and the overlap shows up only in an observation made after indexing (review note N-A, 6481933897);
@@ -270,7 +270,7 @@ Closing the window fully would need a target-wide lock in the driver's ledger (a
 
 There is no fallback: the owner rejected sending no policy (6483366237), so D14 and D16 always compare the sealed storage policy.
 
-UNVERIFIED (G4): that `topics.create` accepts the field on `PUT` with no `updateMask`, and that `topics.get` returns it as sent.
+UNVERIFIED (GF4): that `topics.create` accepts the field on `PUT` with no `updateMask`, and that `topics.get` returns it as sent.
 
 ### D12. Identities and grants [OWNER: ACCEPTED, 6483366237]
 
@@ -292,17 +292,17 @@ UNVERIFIED (G4): that `topics.create` accepts the field on `PUT` with no `update
 **Checklist G1 verifies before bootstrap** (against Google's published IAM permissions reference, the custom-role supported-permissions list and the API discovery documents, with no live call). The results go into G1's `bootstrap/gcp` review:
 
 1. [ ] `pubsub.topics.get` is the only permission `topics.get` needs, and it is supported in custom roles.
-2. [ ] `pubsub.topics.create` alone permits `topics.create` with `labels` and `messageStoragePolicy`, and no other permission is needed for those fields (G4).
+2. [ ] `pubsub.topics.create` alone permits `topics.create` with `labels` and `messageStoragePolicy`, and no other permission is needed for those fields (GF4, GF9).
 3. [ ] `pubsub.topics.delete` alone permits `topics.delete`.
-4. [ ] `cloudasset.assets.searchAllResources` at project scope is the only permission `searchAllResources` needs, and it is supported in custom roles at project level.
-5. [ ] (Subject to G7.) No custom role holds `pubsub.topics.publish`, `pubsub.topics.update`, `pubsub.topics.setIamPolicy`, any `pubsub.subscriptions.*`, any `*.setIamPolicy`, any `serviceusage.*`, or `iam.serviceAccounts.getAccessToken` beyond the existing `roles/iam.workloadIdentityUser` binding.
+4. [ ] `cloudasset.assets.searchAllResources` at project scope is the only permission `searchAllResources` needs, and it is supported in custom roles at project level (GF10).
+5. [ ] (Subject to GF7.) No custom role holds `pubsub.topics.publish`, `pubsub.topics.update`, `pubsub.topics.setIamPolicy`, any `pubsub.subscriptions.*`, any `*.setIamPolicy`, any `serviceusage.*`, or `iam.serviceAccounts.getAccessToken` beyond the existing `roles/iam.workloadIdentityUser` binding.
 6. [ ] The APIs the path calls (`pubsub`, `sts`, `iamcredentials`, `cloudasset`) are enabled by the owner's bootstrap, and no runtime identity can enable a service.
-7. [ ] The token scopes: the scope the STS exchange requests (the engine sends `cloud-platform`; G8); `pubsub` for Pub/Sub `get`, `create` and `delete` (G2); the narrowest scope Cloud Asset `searchAllResources` accepts (G3).
+7. [ ] The token scopes: the scope the STS exchange requests (the engine sends `cloud-platform`; GF8); `pubsub` for Pub/Sub `get`, `create` and `delete` (GF2); the narrowest scope Cloud Asset `searchAllResources` accepts (GF3).
 8. [ ] `bootstrap/gcp`'s contract-target output for GCP_API matches D9's shape (`projectId`, `region`, optional `parent`, `backend`, `workspace`, `topicPrefix`, `canary`).
 
 **Why the addition.** The independent observation's verdict depends on the unit sweep. Without it, `listTagged` fails, the inventory is `INCOMPLETE`, and the verdict can never be better than `INCONCLUSIVE`: the observe step could not pass. D10's one-open-run check needs the same read. Path 5's DISCOVERY already holds this permission, so the two GCP paths' DISCOVERY grants become alike.
 
-**Token scopes.** See D15. The DISCOVERY token used for Pub/Sub reads carries the `pubsub` scope, as #303's engine already does, because Pub/Sub does not accept `cloud-platform.read-only` (UNVERIFIED G2, but already the basis of #303). So DISCOVERY's read-only property rests on IAM, not on the OAuth scope.
+**Token scopes.** See D15. The DISCOVERY token used for Pub/Sub reads carries the `pubsub` scope, as #303's engine already does, because Pub/Sub does not accept `cloud-platform.read-only` (UNVERIFIED GF2, but already the basis of #303). So DISCOVERY's read-only property rests on IAM, not on the OAuth scope.
 
 **Why [OWNER].** Both are IAM or credential capability changes, which only the owner makes, and the bootstrap is the owner's to run. **Accepted** (6483366237), with the constraints above. The bootstrap edit and the checklist belong to G1's `bootstrap/gcp` review, with its outputs' contract-target template updated to D9's shape. This record changes no IAM.
 
@@ -384,8 +384,11 @@ Nothing is retried anywhere.
 **Runs that did not succeed: no product cleanup today.** `buildCleanupProposal` refuses any run whose apply did not end `SUCCEEDED` (`OWNERSHIP_AMBIGUOUS`, `src/apply/cleanup-proposal.ts`), and `runCleanup` refuses one too (`RUN_RECORD_MISSING`). So a topic left by a `PARTIAL_REQUIRES_REVIEW` run (a storage-policy or label mismatch, a 409, or an uncertain create that landed) **cannot be removed by the product's cleanup.** It also keeps D10's unit sweep non-empty, so every later seal and apply under the target is refused (`UNIT_NOT_EMPTY`) until it is gone.
 
 - **Who resolves it:** the owner, or a person the owner names as cleanup owner (an owner input of 6481421924). Never an agent.
-- **How:** the person runs `./alz apply observe` and reviews the run's records and the topic. If it is to go, they delete that one topic by hand in the DEV project, with their own credentials outside the product's runtime identities, by its exact sealed name only. Then they run `./alz apply verify-cleanup` to read its absence independently under DISCOVERY.
-- **Evidence:** the hand deletion is recorded as **MANUAL**, a person's action, with who did it, when, and the exact name. It is never presented as product cleanup, never carries a `CleanupEvidence` record or a `cleanupMutation`, and never counts toward the cleanup step of `act:gcp-gcp_api`. Only the independent DISCOVERY read is evidence of absence.
+- **How:** the person reviews the run's records and the topic. If it is to go, they delete that one topic by hand in the DEV project, with their own credentials outside the product's runtime identities, by its exact sealed name only. Then they check its absence:
+  - **The run left a blueprint:** they run `./alz apply observe --sealed SEALED_PLAN` again. `observe` accepts any finished run that left a blueprint, whatever its outcome (`observeRun`, `src/apply/observe.ts`), and the observation record is rewritten with the newest reading (`writeObservationRecord`, `src/apply/run-records.ts`). The DISCOVERY read is then the independent absence check.
+  - **The run left no blueprint:** `observe` refuses with `RUN_RECORD_MISSING`, so the absence check is the person's own read of the exact topic name, labeled MANUAL.
+  - `./alz apply verify-cleanup` is **not** used here: it needs `--proposal`, and such a run never has a cleanup proposal.
+- **Evidence:** the hand deletion is recorded as **MANUAL**, a person's action, with who did it, when, and the exact name. The MANUAL note is recorded on the #39 coordination ledger, and in the GCP evidence checklist (`docs/act-pilot-gcp-evidence.md`) once that document exists. No product record type is created for it. It is never presented as product cleanup, never carries a `CleanupEvidence` record or a `cleanupMutation`, and never counts toward the cleanup step of `act:gcp-gcp_api`. Only the independent DISCOVERY read is evidence of absence.
 
 **OPEN (not designed here).** A product cleanup path for runs that did not succeed would be a driver change to `buildCleanupProposal` and `runCleanup`. It changes deletion authority, so it needs its own owner decision under D16 before anyone designs it.
 
@@ -400,7 +403,7 @@ Nothing is retried anywhere.
 
 The reader therefore mints one token per host it reads:
 - `pubsub` for `pubsub.googleapis.com`;
-- for `cloudasset.googleapis.com`, `cloud-platform.read-only` if Cloud Asset accepts it, otherwise `cloud-platform` (UNVERIFIED G3).
+- for `cloudasset.googleapis.com`, `cloud-platform.read-only` if Cloud Asset accepts it, otherwise `cloud-platform` (UNVERIFIED GF3).
 
 Each token is used only on its own host. The change belongs to G1, after INT-1a merges, because path 5 needs it too; if INT-1a's reviewed diff already changes the scope, it stays with INT-1a (coordinator default, #39 6481739345). It is part of D12's owner decision, because it is a token scope change.
 
@@ -515,7 +518,7 @@ With the row named `NATIVE_API` and the engine `GCP_API`, the row would never fi
 - the engine posts JSON with camelCase fields;
 - the reader posts form-encoded snake_case fields.
 
-At most one of them is what Google documents for `sts.googleapis.com/v1/token` (UNVERIFIED G1).
+At most one of them is what Google documents for `sts.googleapis.com/v1/token` (UNVERIFIED GF1).
 
 **Decision.** One exchange function, used by both, in the shared `src/tools/gcp-credentials.ts` (the serialized integrator's file) (which already holds `checkCredentialConfiguration` and `readTokenFile` for both). The scope and lifetime stay parameters. Before G2 merges, its request shape is checked against Google's published STS and IAM Credentials references. The owner's live DEV run is what proves it.
 
@@ -610,19 +613,19 @@ All of these are SYNTHETIC: a fake for STS, IAM Credentials, Pub/Sub and Cloud A
 
 Each one is checked against Google's published API reference or discovery document, with no live call, and the result is recorded in G2's PR:
 
-- **G1:** the request format of `sts.googleapis.com/v1/token`, JSON or form-encoded (D20).
-- **G2:** the OAuth scopes `pubsub.projects.topics.get`, `.create` and `.delete` accept (D12, D15).
-- **G3:** the scopes `cloudasset.searchAllResources` accepts, and its query syntax for labels (D15).
-- **G4:** that `topics.create` takes `messageStoragePolicy` on `PUT` and `topics.get` returns it as sent (D11).
-- **G5:** Cloud Asset Inventory's indexing delay (D10).
-- **G6:** the status and error code of a duplicate `topics.create` (409 `ALREADY_EXISTS`) and of a `DELETE` of an absent topic (404) (D14, D16).
-- **G7:** whether any call on this path, Cloud Asset `searchAllResources` most likely, needs a quota project or `serviceusage.services.use` when made by the impersonated service account. **It may conflict with D12 checklist item 5**, which forbids every `serviceusage.*` permission. If it is needed, the conflict goes back to the owner before bootstrap; it is not resolved by widening a grant silently.
-- **G8:** the scope the STS token exchange must request, and whether `cloud-platform` there is required (D12 item 7, D20).
-- **G9:** that `pubsub.topics.create` alone covers a create carrying `messageStoragePolicy` (D12 item 2; with G4).
-- **G10:** that `cloudasset.assets.searchAllResources` is supported in custom roles at project level (D12 item 4).
-- **G11:** that `roles/iam.workloadIdentityUser` carries `iam.serviceAccounts.getAccessToken` for federated principals, so no Token Creator role is needed (D12 items 5 and 7).
+- **GF1:** the request format of `sts.googleapis.com/v1/token`, JSON or form-encoded (D20).
+- **GF2:** the OAuth scopes `pubsub.projects.topics.get`, `.create` and `.delete` accept (D12, D15).
+- **GF3:** the scopes `cloudasset.searchAllResources` accepts, and its query syntax for labels (D15).
+- **GF4:** that `topics.create` takes `messageStoragePolicy` on `PUT` and `topics.get` returns it as sent (D11).
+- **GF5:** Cloud Asset Inventory's indexing delay (D10).
+- **GF6:** the status and error code of a duplicate `topics.create` (409 `ALREADY_EXISTS`) and of a `DELETE` of an absent topic (404) (D14, D16).
+- **GF7:** whether any call on this path, Cloud Asset `searchAllResources` most likely, needs a quota project or `serviceusage.services.use` when made by the impersonated service account. **It may conflict with D12 checklist item 5**, which forbids every `serviceusage.*` permission. If it is needed, the conflict goes back to the owner before bootstrap; it is not resolved by widening a grant silently.
+- **GF8:** the scope the STS token exchange must request, and whether `cloud-platform` there is required (D12 item 7, D20).
+- **GF9:** that `pubsub.topics.create` alone covers a create carrying `messageStoragePolicy` (D12 item 2; with GF4).
+- **GF10:** that `cloudasset.assets.searchAllResources` is supported in custom roles at project level (D12 item 4).
+- **GF11:** that `roles/iam.workloadIdentityUser` carries `iam.serviceAccounts.getAccessToken` for federated principals, so no Token Creator role is needed (D12 items 5 and 7).
 
-G7 to G11 are checked by G1 before bootstrap, and all of G1 to G11 before G2 merges.
+GF7 to GF11 are checked by lane G1 before bootstrap, and all of GF1 to GF11 before lane G2 merges.
 
 ## Decision index
 
