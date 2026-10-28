@@ -6,6 +6,7 @@
  * some by the other. No other attribute value is ever copied out, so the blueprint can go into reviewable evidence.
  */
 
+import { parseArmId } from "./arm-id.js";
 import { isAwsContainerType } from "./aws-containers.js";
 import { policyLinkOf, type PolicyLink } from "./run-created-policies.js";
 
@@ -242,5 +243,38 @@ export function blueprintFromCloudFormationResources(resourcesJson: string, plan
   }
   const leaving = new Set(planned.filter((change) => LEAVES_IN_STACK.has(change.action)).map((change) => change.address));
   const built = blueprintOf(instances(), planned);
+  return { entries: built.entries, missing: [...leaving].filter((address) => !built.entries.some((entry) => entry.address === address)).sort(), ...(container ? { container } : {}) };
+}
+
+/** The ARM type of a deployment stack: the unit's container for the Bicep engine. */
+export const DEPLOYMENT_STACK_TYPE = "Microsoft.Resources/deploymentStacks";
+/** A deployment stack's id in one subscription, any resource group, by the stack's own name (compared case-insensitively, as ARM does). */
+export const deploymentStackIdPattern = (subscriptionId: string, stack: string): RegExp =>
+  new RegExp("^/subscriptions/" + subscriptionId.replace(/[^0-9a-fA-F-]/g, "") + "/resourceGroups/[A-Za-z0-9._()-]{1,90}/providers/Microsoft\\.Resources/deploymentStacks/" + stack.replace(/[^A-Za-z0-9._-]/g, "").replace(/\./g, "\\.") + "$", "i");
+
+/**
+ * The same blueprint from an Azure deployment stack (the Bicep engine, src/apply/engines/bicep.ts): the stack's managed resources,
+ * read as DISCOVERY after the run, as `{ "stackId": <id>, "managed": [<ARM id>, ...] }`. Each managed resource is its own address
+ * (the sealed change list names resources by ARM id), matched to the plan case-insensitively as ARM compares ids, with its ARM
+ * type as the type and its id as the identifier. The stack itself is the unit's container when it is the pinned stack in the
+ * pinned subscription. An id that does not parse in full is skipped, so it is never an entry the cleanup could name.
+ */
+export function blueprintFromDeploymentStackResources(json: string, planned: readonly PlannedChange[], place: { account: string; stack?: string }): Blueprint {
+  const body = parseState(json);
+  if (!Array.isArray(body.managed) || !body.managed.every((id) => typeof id === "string")) throw new Error("STATE_JSON_INVALID: not a deployment stack resource list");
+  const plannedByLower = new Map(planned.filter((change) => change.type !== "output").map((change) => [change.address.toLowerCase(), change.address]));
+  function* instances(): Generator<Instance> {
+    for (const id of body.managed as string[]) {
+      const parsed = parseArmId(id);
+      const pair = parsed?.pairs.at(-1);
+      if (parsed === undefined || pair === undefined || pair.typePath === "") continue;
+      yield { address: plannedByLower.get(id.toLowerCase()) ?? id, type: pair.namespace + "/" + pair.typePath, values: { id } };
+    }
+  }
+  const leaving = new Set(planned.filter((change) => change.type !== "output" && LEAVES_RESOURCE.has(change.action)).map((change) => change.address));
+  const built = blueprintOf(instances(), planned);
+  const stackId = typeof body.stackId === "string" ? body.stackId : undefined;
+  const container = stackId !== undefined && place.stack !== undefined && deploymentStackIdPattern(place.account, place.stack).test(stackId)
+    ? { type: DEPLOYMENT_STACK_TYPE, identifier: stackId } : undefined;
   return { entries: built.entries, missing: [...leaving].filter((address) => !built.entries.some((entry) => entry.address === address)).sort(), ...(container ? { container } : {}) };
 }

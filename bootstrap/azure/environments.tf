@@ -22,6 +22,8 @@ module "environment_dev" {
   tags           = var.tags
 
   state_allowed_ip_ranges = var.state_allowed_ip_ranges
+  # Azure Bicep is DEV only (owner decision E2): only the DEV module ever defines the stack role.
+  bicep_stack_role = var.bicep_deployment_stacks
 }
 
 module "environment_qa" {

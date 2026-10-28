@@ -36,14 +36,14 @@ Supplied by the owner and listed in `docs/act-pilot-apply.md` ("What the owner s
 
 ### DEV-only scope
 
-A DEV-only contract carries exactly `"enabledEnvironments": ["DEV"]`, only `targets.DEV` and `requiredApprovals.DEV`, at least one approver allowed for DEV, and an `authorize` entry for DEV only. QA and PROD are refused, not guessed. Since the six-path rebaseline (the owner's decision, issue #39, comment 6443352284: an ACT-DEV release for all six paths; and the coordinator's default under it, comment 6443800275, which the owner may override: the DEV-only scope implemented once for each), one rule covers every path the product implements; a planned path is named and refused `NOT_IMPLEMENTED` until its lane lands.
+A DEV-only contract carries exactly `"enabledEnvironments": ["DEV"]`, only `targets.DEV` and `requiredApprovals.DEV`, at least one approver allowed for DEV, and an `authorize` entry for DEV only. QA and PROD are refused, not guessed. Since the six-path rebaseline (the owner's decision, issue #39, comment 6443352284: an ACT-DEV release for all six paths; and the coordinator's default under it, comment 6443800275, which the owner may override: the DEV-only scope implemented once for each), one rule covers every path the product implements; a planned path is named and refused `NOT_IMPLEMENTED` until its lane lands. A path admitted after the rebaseline (Azure Bicep so far, owner decision E2) is admitted for DEV only: its contract must state the DEV-only scope, and the three-stage contract is refused `CONTRACT_INVALID`.
 
 | Provider and engine | DEV-only scope | Owner decision | Target |
 |---|---|---|---|
 | AWS Terraform | allowed (ACT-DEV-1) | 2026-10-23 (`docs/act-dev-1.md`) | one DEV member account and its versioned S3 state backend |
 | Azure Terraform | allowed | 2026-10-27, issue #39, comment 6442856302 (#298, folded into the single rule) | one DEV subscription in its tenant and its `azurerm` state backend (storage account, container, key) |
 | AWS CDK | allowed | coordinator default under the owner's six-path rebaseline (issue #39, comment 6443800275, applying 6443352284 under "no deadlock on progress"); the owner may override it | one DEV member account and its CloudFormation stack |
-| Azure Bicep | `NOT_IMPLEMENTED` until path 4 lands | the same coordinator default | none yet |
+| Azure Bicep | required: admitted in code for DEV only (owner decision E2, #39); a three-stage Azure Bicep contract is `CONTRACT_INVALID` | the owner's E2 decision (2026-10-28, #39 6467476073): DEV only, deployment-stack deny settings kept, a narrowly scoped custom role at the pilot resource group | one DEV subscription in its tenant, the existing pilot resource group (`resourceGroup`) and one deployment stack (`backend` is the stack name) |
 | GCP Terraform | `NOT_IMPLEMENTED` until path 5 lands | the same coordinator default | none yet |
 | GCP API-native | `NOT_IMPLEMENTED` until path 6 lands | the same coordinator default | none yet |
 

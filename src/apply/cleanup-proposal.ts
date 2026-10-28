@@ -15,7 +15,7 @@ import type { AwsTarget } from "./providers/aws.js";
 import type { AzureTarget } from "./providers/azure.js";
 import type { GcpTarget } from "./providers/gcp.js";
 import { gcpProtectionOf } from "./cleanup-gcp.js";
-import { armPathSafe, isArmGroupId, isArmRegistrationId, isArmScopeId, parseArmId, type ArmType } from "../observe/azure-rest.js";
+import { armPathSafe, isArmGroupId, isArmRegistrationId, isArmResourceId, isArmScopeId, parseArmId, type ArmType } from "../observe/azure-rest.js";
 import { awsContainerFamilyOf } from "../observe/aws-containers.js";
 import { awsLeafConditionProblem, awsLeafEntryOf, awsParentIdOf, isAwsLeafType, isWellFormedResourceType } from "../observe/aws-leaf-types.js";
 import { AWS_PRINCIPAL_TYPES, AWS_RUN_CREATED_POLICY_TYPES, AZURE_RUN_CREATED_POLICY_TYPES, CUSTOMER_POLICY_ARN, awsPolicyEntryOf, azurePolicyProblem, type PolicyLink } from "../observe/run-created-policies.js";
@@ -643,7 +643,10 @@ export function buildCleanupProposal(input: ProposalInput): { ok: true; proposal
 /** A CloudFormation logical id, the CDK engine's address. */
 const LOGICAL_ID = /^[A-Za-z0-9]{1,255}$/;
 /** The address shape a cleanup can name exactly, by engine: a Terraform resource address, or a CloudFormation logical id. */
-export const isCleanupAddress = (engine: EngineId, value: unknown): value is string => engine === "CDK" ? typeof value === "string" && LOGICAL_ID.test(value) : isResourceAddress(value);
+/** The address a cleanup names for each engine: a CDK logical id, a Bicep (deployment stack) resource's full ARM id, or a Terraform resource address. */
+export const isCleanupAddress = (engine: EngineId, value: unknown): value is string => engine === "CDK" ? typeof value === "string" && LOGICAL_ID.test(value)
+  : engine === "BICEP" ? typeof value === "string" && value.length <= 512 && isArmResourceId(value)
+  : isResourceAddress(value);
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const text = (value: unknown, max = 512): value is string => typeof value === "string" && value.length > 0 && value.length <= max && !HAS_INVISIBLE.test(value);
@@ -666,7 +669,7 @@ export function proposalProblems(value: unknown): string[] {
   if (typeof value.requesterId !== "string" || !REQUESTER_ID.test(value.requesterId)) problems.push("proposal.requesterId: not an allowlist id");
   if (!wellFormedRequest(value.request)) problems.push("proposal.request: the requester's signature is missing or malformed");
   if (![value.proposalSha256, value.artifactSha256, value.applyEvidenceSha256, value.blueprintSha256, value.observationSha256, value.contractSha256, value.authorizingContractSha256, value.authorizationSha256, value.targetSha256].every(hashText)) problems.push("proposal: a hash is not a SHA-256 digest");
-  if (!["AWS", "AZURE"].includes(value.provider as string) || !["TERRAFORM", "CDK"].includes(value.engine as string)) problems.push("proposal: provider or engine is unknown");
+  if (!["AWS", "AZURE"].includes(value.provider as string) || !["TERRAFORM", "CDK", "BICEP"].includes(value.engine as string)) problems.push("proposal: provider or engine is unknown");
   if (!ENVIRONMENTS.includes(value.environment as ApplyEnvironment) || !PILOT_CHANNELS.includes(value.channel as PilotChannel)) problems.push("proposal: environment or channel is unknown");
   const target = value.target;
   if (!isRecord(target) || Object.keys(target).sort().join() !== "account,backend,workspace" || !["account", "backend", "workspace"].every((key) => text(target[key]))) problems.push("proposal.target: malformed");
@@ -675,8 +678,9 @@ export function proposalProblems(value: unknown): string[] {
   }
   if (value.unitId !== null && !(typeof value.unitId === "string" && /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(value.unitId))) problems.push("proposal.unitId: not a tag-safe unit id or null");
   const deletes = value.deletes;
-  // The address shape is the engine's: a Terraform resource address, or a CloudFormation logical id for the CDK engine (an unknown engine was refused above).
-  const engine: EngineId = value.engine === "CDK" ? "CDK" : "TERRAFORM";
+  // The address shape is the engine's: a Terraform resource address, a CloudFormation logical id for the CDK engine, or an ARM id for the
+  // Bicep engine (an unknown engine was refused above).
+  const engine: EngineId = value.engine === "CDK" ? "CDK" : value.engine === "BICEP" ? "BICEP" : "TERRAFORM";
   if (!Array.isArray(deletes) || !deletes.every((x) => isRecord(x) && Object.keys(x).every((key) => ["address", "type", "identifier", "ownership", "observed", "risk"].includes(key)) &&
     isCleanupAddress(engine, x.address) && text(x.type, 128) && idText(x.identifier) && x.ownership === "RUN_CREATED" && (x.observed === "VERIFIED" || x.observed === "UNVERIFIABLE") &&
     (x.risk === undefined || text(x.risk)))) problems.push("proposal.deletes: each needs a resource address, type, identifier, RUN_CREATED ownership and an observation");

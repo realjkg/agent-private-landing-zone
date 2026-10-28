@@ -3,7 +3,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { encryptEvidence, ensureEvidenceKey, readEncryptedEvidence } from "../evidence/vault.js";
-import type { Blueprint, BlueprintEntry } from "../observe/blueprint.js";
+import { DEPLOYMENT_STACK_TYPE, deploymentStackIdPattern, type Blueprint, type BlueprintEntry } from "../observe/blueprint.js";
 import { isPolicyLinkType, policyLinkOk } from "../observe/run-created-policies.js";
 import type { ObserveReport } from "../observe/verify.js";
 import { VERIFIERS, type VerifierId } from "../observe/verify.js";
@@ -43,8 +43,8 @@ export type BlueprintRecord = {
   contractSha256: string;
   /** How the apply ended; a blueprint after anything but SUCCEEDED is for review, never for a cleanup proposal. */
   outcome: ApplyOutcome;
-  /** Where the identifiers came from: Terraform's state read as STATE, or CloudFormation's stack resources (logical to physical ids) read as DISCOVERY. */
-  source: "TERRAFORM_STATE_PULL" | "CLOUDFORMATION_STACK_RESOURCES";
+  /** Where the identifiers came from: Terraform's state read as STATE, CloudFormation's stack resources (logical to physical ids) read as DISCOVERY, or an Azure deployment stack's managed resources (ARM ids) read as DISCOVERY. */
+  source: "TERRAFORM_STATE_PULL" | "CLOUDFORMATION_STACK_RESOURCES" | "AZURE_DEPLOYMENT_STACK_RESOURCES";
   blueprint: Blueprint;
   /** The deletion unit the sealed plan stamped on what it created (src/apply/unit.ts), or null when the engine seals none. The observation sweeps by it. */
   unitId: string | null;
@@ -162,7 +162,7 @@ export function blueprintRecordProblems(value: unknown): string[] {
   if (!ENVIRONMENTS.includes(value.environment as string) || !targetOk(value.target)) problems.push("blueprint record: environment or target is malformed");
   if (typeof value.sourceCommit !== "string" || !COMMIT.test(value.sourceCommit)) problems.push("blueprint record: sourceCommit is not a commit id");
   if (!["SUCCEEDED", "FAILED_NO_CHANGE", "PARTIAL_REQUIRES_REVIEW", "KILLED"].includes(value.outcome as string)) problems.push("blueprint record: outcome is unknown");
-  if (!["TERRAFORM_STATE_PULL", "CLOUDFORMATION_STACK_RESOURCES"].includes(value.source as string) || !isoText(value.readAt)) problems.push("blueprint record: source or readAt is malformed");
+  if (!["TERRAFORM_STATE_PULL", "CLOUDFORMATION_STACK_RESOURCES", "AZURE_DEPLOYMENT_STACK_RESOURCES"].includes(value.source as string) || !isoText(value.readAt)) problems.push("blueprint record: source or readAt is malformed");
   if (value.unitId !== null && !(typeof value.unitId === "string" && /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(value.unitId))) problems.push("blueprint record: unitId is not a tag-safe unit id or null");
   const blueprint = value.blueprint;
   // The container is accepted only from a CloudFormation read, for the stack type, with the pinned stack's own ARN shape (its account and the
@@ -170,11 +170,14 @@ export function blueprintRecordProblems(value: unknown): string[] {
   const target = value.target as ResolvedTarget;
   const stackArn = value.source === "CLOUDFORMATION_STACK_RESOURCES" && targetOk(target) && /^[0-9]{12}$/.test(target.account) && /^[A-Za-z][A-Za-z0-9-]{0,127}$/.test(target.backend)
     ? new RegExp("^arn:aws:cloudformation:[a-z0-9-]{1,32}:" + target.account + ":stack/" + target.backend + "/[0-9a-f-]{36}$") : undefined;
-  const containerOk = (value: unknown): boolean => isRecord(value) && Object.keys(value).sort().join() === "identifier,type" && value.type === "AWS::CloudFormation::Stack" &&
-    typeof value.identifier === "string" && stackArn !== undefined && stackArn.test(value.identifier);
+  // An Azure deployment stack (the Bicep engine): the pinned stack by name, in the target's subscription.
+  const stackId = value.source === "AZURE_DEPLOYMENT_STACK_RESOURCES" && targetOk(target) ? deploymentStackIdPattern(target.account, target.backend) : undefined;
+  const containerOk = (value: unknown): boolean => isRecord(value) && Object.keys(value).sort().join() === "identifier,type" && typeof value.identifier === "string" &&
+    ((value.type === "AWS::CloudFormation::Stack" && stackArn !== undefined && stackArn.test(value.identifier)) ||
+      (value.type === DEPLOYMENT_STACK_TYPE && stackId !== undefined && stackId.test(value.identifier)));
   if (!isRecord(blueprint) || !["entries,missing", "container,entries,missing"].includes(Object.keys(blueprint).sort().join()) || !Array.isArray(blueprint.entries) || !blueprint.entries.every(entryOk) ||
     !Array.isArray(blueprint.missing) || !blueprint.missing.every((x) => typeof x === "string") || (blueprint.container !== undefined && !containerOk(blueprint.container))) {
-    problems.push("blueprint record.blueprint: entries must carry address, type, arn, id and origin only, and a container only from a CloudFormation read, of the stack type, with the pinned stack's own id");
+    problems.push("blueprint record.blueprint: entries must carry address, type, arn, id and origin only, and a container only from a CloudFormation read (or, for the Bicep engine, a deployment stack read), of the stack type, with the pinned stack's own id");
   }
   return problems;
 }

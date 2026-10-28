@@ -48,3 +48,9 @@ variable "state_allowed_ip_ranges" {
   description = "Public IPs or CIDRs of the pilot runner's egress; the state account denies everything else."
   type        = list(string)
 }
+
+variable "bicep_stack_role" {
+  description = "Define the pilot group's Bicep stack role and assign it to APPLY (Azure Bicep, DEV only)."
+  type        = bool
+  default     = false
+}

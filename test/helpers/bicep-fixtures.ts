@@ -2,6 +2,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync }
 import { join } from "node:path";
 
 import type { BicepTarget } from "../../src/apply/engines/bicep.js";
+import type { PilotCanary } from "../../src/apply/types.js";
 import type { PilotUnit } from "../../src/apply/unit.js";
 import type { ResolvedTarget } from "../../src/teardown/driver/types.js";
 import { buildManifest, type ArtifactManifest } from "../../src/teardown/manifest.js";
@@ -25,7 +26,9 @@ export const APPLY_TOKEN_CANARY = "eyJ.CANARY_APPLY_FEDERATED_TOKEN_b3";
 export { ARM_FEDERATED_TOKEN_CANARY };
 export const CLIENTS = { DISCOVERY: "aaaaaaaa-0000-4000-8000-00000000d15c", APPLY: "bbbbbbbb-0000-4000-8000-0000000a9971" } as const;
 
-export const TARGET: BicepTarget = { tenantId: TENANT_ID, subscriptionId: SUBSCRIPTION_ID, backend: STACK_NAME, workspace: "default", resourceGroup: RESOURCE_GROUP };
+/** The canary allowlist (owner decision E1) every Bicep target here names: exactly the one virtual network the workload creates. */
+export const CANARY: PilotCanary = { resources: [{ type: "Microsoft.Network/virtualNetworks", count: 1 }] };
+export const TARGET: BicepTarget & { canary: PilotCanary } = { tenantId: TENANT_ID, subscriptionId: SUBSCRIPTION_ID, backend: STACK_NAME, workspace: "default", resourceGroup: RESOURCE_GROUP, canary: CANARY };
 export const RESOLVED: ResolvedTarget = { account: SUBSCRIPTION_ID, backend: STACK_NAME, workspace: "default" };
 export const UNIT: PilotUnit = {
   unitId: "alz-unit-0123456789abcdef", buildId: "alz-pilot-dev-0123456789ab",
@@ -47,6 +50,8 @@ export type AzBehavior = {
   /** States the stack reports after a create, one per look (the last repeats). */
   pollStates?: string[];
   createFail?: boolean; deleteFail?: boolean;
+  /** The delete fails the way an az transport error does: exit 1 with no ARM error code, and the stack left as it was. */
+  deleteLost?: boolean;
   /** The create (or delete) reaches ARM, then az hangs for this long (a timeout kills it) or prints this many bytes (the output cap). */
   createSleepMs?: number; createOutputBytes?: number; deleteSleepMs?: number; deleteOutputBytes?: number;
   /** The create reaches ARM but az exits 1 (a lost response); the stack shows only after this many reads. */
@@ -160,6 +165,7 @@ if (cmd === "stack group create") {
 }
 if (cmd === "stack group delete") {
   if (b.deleteFail) fail("(DeploymentStackDeleteFailed) refused");
+  if (b.deleteLost) fail("Connection was closed before we received a valid response", 1);
   if (!s.stack) fail("DeploymentStack not found", 3);
   if (b.deleteOutputBytes) { process.stdout.write("x".repeat(b.deleteOutputBytes)); process.exit(1); }
   s.stack = null; s.deleted = true; save();

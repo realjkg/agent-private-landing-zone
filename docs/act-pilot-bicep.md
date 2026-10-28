@@ -1,8 +1,10 @@
 # ACT pilot: the Azure Bicep / ARM engine (path 4)
 
-Status: **design and engine spec. ACT stays DISABLED.** Nothing in this note enables infrastructure mutation, and no run on Azure has happened. There is no emulator for Azure Resource Manager, so every Azure fact below is either checked against the vendor's own source (the az CLI 2.91.0 wheel) or marked UNVERIFIED. Live verification is the owner-supervised **G2** DEV run.
+Status: **engine admitted in code for DEV only (owner decision E2). ACT stays DISABLED.** The `BICEP` engine is registered and a contract may name Azure with it under the DEV-only scope; admission still needs the owner's reviewed contract with an `authorize` entry, and the repository ships none. Nothing in this note enables infrastructure mutation, and no run on Azure has happened.
 
-**Path 4 cannot run on the `bootstrap/azure` that is on main today.** Its two identities need two actions that the merged bootstrap does not grant. See [Prerequisites not yet on main](#prerequisites-not-yet-on-main-owner-decision-required).
+**Registration is not readiness.** There is no emulator for Azure Resource Manager, so this path has no emulated qualification and none is claimed: every test of it is SYNTHETIC (a fake `az` and `bicep`), and every Azure fact below is either checked against the vendor's own source (the az CLI 2.91.0 wheel, Microsoft's published operation and role lists) or marked UNVERIFIED. Live qualification is the owner-supervised **G2** DEV run, and it needs the owner's authorization.
+
+The owner's E2 decision (issue #39, coordinator PLAN 6467476073, option A) sets the identities: the seal-time what-if runs as **APPLY**, with the human approvals still between that preview and the stack create; DISCOVERY stays read-only; and `manageDenySetting` goes to APPLY only, through a custom role scoped to the dedicated pilot resource group. `bootstrap/azure` implements it behind `bicep_deployment_stacks` (see [Identities and roles](#identities-and-roles)).
 
 This note covers path 4 of the narrow ACT-DEV release (`docs/act-dev-paths.md`; owner decision on issue #39, comment 6443352284). It follows the coordinator's defaults (comment 6443800275) and the shared Azure workload that the coordinator set for paths 3 and 4.
 
@@ -24,12 +26,47 @@ az 2.91.0 has `az stack-whatif group create`, but it **creates a persistent what
 
 ## Identities
 
-The engine uses two principals. Their variables have the same form as the Azure Terraform identities' (`ALZ_<IDENTITY>_ARM_CLIENT_ID`, `_ARM_TENANT_ID`, `_ARM_SUBSCRIPTION_ID`, `_ARM_USE_OIDC=true`, `_ARM_OIDC_TOKEN_FILE`), so the Azure provider spec's variable checks (`src/apply/providers/azure.ts`) and `checkApplyIdentities` read them as they are. **Their Azure roles are not the bootstrap's.** The roles that `bootstrap/azure` grants on main (DISCOVERY Reader, APPLY Contributor) do not cover this engine. The table below is what the engine needs; [Prerequisites not yet on main](#prerequisites-not-yet-on-main-owner-decision-required) states the gap and the change it needs.
+The engine uses two principals. Their variables have the same form as the Azure Terraform identities' (`ALZ_<IDENTITY>_ARM_CLIENT_ID`, `_ARM_TENANT_ID`, `_ARM_SUBSCRIPTION_ID`, `_ARM_USE_OIDC=true`, `_ARM_OIDC_TOKEN_FILE`), so the Azure provider spec's variable checks (`src/apply/providers/azure.ts`) and `checkApplyIdentities` read them as they are.
 
-| Identity | Does | Azure permissions the engine needs (not granted on main; see the prerequisites) |
+Which identity runs each step (the engine's allowlist, `isAllowedBicepArgv`, enforces it; each adapter's argv digest is taken over these lists with their identities, so the qualified digests change with this table and the argument shapes do not):
+
+| Step | DISCOVERY | APPLY | No identity |
+|---|---|---|---|
+| Seal | `az login`, `az account show`, `az group show`, `az stack group show` | `az login`, `az account show`, **`az deployment group what-if`** | `az version`, `bicep --version`, `bicep build` |
+| Qualify | `az login`, `az account show`, `az group show`, `az stack group show` | `az login`, `az account show`, `az stack group show` | `az version`, `bicep --version`, `bicep build` |
+| Apply | `az login`, `az account show`, `az stack group show` (the ownership and blueprint reads after the run) | `az login`, `az account show`, `az stack group show`, **`az deployment group what-if`** (re-derivation), `az stack group create` | `az version`, `bicep --version`, `bicep build` |
+| Cleanup | `az login`, `az account show` | `az login`, `az account show`, `az stack group show`, `az stack group delete` | `az version`, `bicep --version` |
+| Observe, leftovers | the independent ARM REST read-back (no az process) | none | none |
+
+### Why the seal-time preview runs as APPLY
+
+Azure Bicep is the one engine whose seal-time preview runs as APPLY, as the CDK engine's change set is created by its own CHANGESET identity rather than by DISCOVERY (`docs/act-pilot-apply.md`, "CDK"). ARM authorizes the deployment what-if (a POST to `.../deployments/<name>/whatIf`) as `Microsoft.Resources/deployments/whatIf/action`, and Microsoft documents what-if as needing the same permissions as a deployment. Giving that action to DISCOVERY would make it more than a reader. Under the owner's option A, DISCOVERY keeps Reader and gains nothing, and the what-if runs as APPLY, which holds the deployment rights anyway.
+
+This does not move the approval boundary. The what-if persists no deployment and creates, changes or deletes nothing (UNVERIFIED (A1) for ARM's behavior). The seal ends after it. Nothing is created until a person runs the apply with the required approvals, which the ledger consumes once, and the apply runs the what-if again as APPLY and refuses a plan whose change list moved (`PLAN_STALE`). The stack create and delete run as APPLY only, and nothing in a seal can reach them: the allowlist admits `stack group create` for the apply adapter alone and `stack group delete` for the cleanup adapter alone.
+
+## Identities and roles
+
+| Identity | Azure roles (`bootstrap/azure` with `bicep_deployment_stacks = true`, DEV only) | Effective permissions at the pilot resource group |
 |---|---|---|
-| DISCOVERY | `az account show`, `az group show`, the what-if, `az stack group show`; the independent read-back | Reader on the pilot resource group, plus `Microsoft.Resources/deployments/whatIf/action` on it |
-| APPLY | `az account show`, `az stack group create`, `az stack group show`, `az stack group delete` | On the pilot resource group only: `Microsoft.Resources/deploymentStacks/*`, `Microsoft.Resources/deploymentStacks/manageDenySetting/action`, `Microsoft.Resources/deployments/*`, `Microsoft.Network/virtualNetworks/*` |
+| DISCOVERY | Reader on the pilot resource group (unchanged) | `*/read` only: no what-if, deployment, stack write or deny-setting action |
+| APPLY | Contributor on the pilot resource group (unchanged, the Azure Terraform path's), plus the custom role `alz-pilot-bicep-stack-apply-<group>`, defined, assignable and assigned at the pilot resource group only | Contributor's (`*` minus its NotActions) plus `Microsoft.Resources/deploymentStacks/manageDenySetting/action`. Contributor still excludes every `Microsoft.Authorization/*/Write` and `*/Delete`, so APPLY cannot assign roles or write deny assignments of its own; ARM creates the stack's deny assignment on the stack's behalf. |
+
+The custom role lists exactly the operations the engine's az calls need, and nothing else (no wildcard, no `Microsoft.Authorization` action, no data action, nothing at subscription scope). `bootstrap/azure/tests/environments.tftest.hcl` checks the list, the scopes and the assignee offline with mocked providers. Each name was checked against Microsoft's published resource-provider operations (the `MicrosoftDocs/azure-docs` sources of learn.microsoft.com, `articles/role-based-access-control/permissions/management-and-governance.md` and `.../networking.md`, ms.date 07/01/2026, read on 2026-10-28):
+
+| Operation | Why the engine needs it | Source |
+|---|---|---|
+| `Microsoft.Resources/deployments/whatIf/action` | `az deployment group what-if` (seal, apply) | management-and-governance: "Predicts template deployment changes." |
+| `Microsoft.Resources/deployments/validate/action` | the what-if's and the stack's template validation | management-and-governance: "Validates a deployment." |
+| `Microsoft.Resources/deployments/write` | the deployment the stack creates in the group | management-and-governance: "Creates or updates an deployment." |
+| `Microsoft.Resources/deployments/read` | reading that deployment | management-and-governance: "Gets or lists deployments." |
+| `Microsoft.Resources/deploymentStacks/read` | `az stack group show` | management-and-governance: "Gets or lists deployment stacks" |
+| `Microsoft.Resources/deploymentStacks/validate/action` | `az stack group create` validates first (`begin_validate_stack_at_resource_group`, az 2.91.0 `custom.py`) | management-and-governance: "Validates a deployment stack." |
+| `Microsoft.Resources/deploymentStacks/write` | `az stack group create` | management-and-governance: "Creates or updates a deployment stack" |
+| `Microsoft.Resources/deploymentStacks/delete` | `az stack group delete` | management-and-governance: "Deletes a deployment stack" |
+| `Microsoft.Resources/deploymentStacks/manageDenySetting/action` | `--deny-settings-mode denyWriteAndDelete` | management-and-governance: "Manage the denySettings property of a deployment stack."; built-in-roles/privileged.md lists it in Contributor's NotActions |
+| `Microsoft.Network/virtualNetworks/read`, `/write`, `/delete` | the stack creates and deletes the one virtual network | networking: "Get the virtual network definition", "Creates a virtual network or updates an existing virtual network", "Deletes a virtual network" |
+
+**Choice (smallest safe change).** APPLY keeps Contributor, because the same APPLY identity serves the Azure Terraform path in the same bootstrap. The custom role is added beside it, so the only action APPLY gains is `manageDenySetting`, at the pilot group only. The role still lists the full Bicep set, so the reviewed record of what the engine needs is in one place. UNVERIFIED (P1): that this set is sufficient for ARM (for example, whether polling a stack's deployment needs `deployments/operationstatuses/read`, which Contributor holds anyway), checked at G2.
 
 STATE, STATE_WRITE and CHANGESET are not used. As for CDK, `checkApplyIdentities` refuses a run that has any of them configured.
 
@@ -48,27 +85,7 @@ az login --service-principal --username <ARM_CLIENT_ID> --tenant <ARM_TENANT_ID>
 - **Sign-in checks.** `az account show` must report the contract's tenant and subscription, and the identity's own client id as a service principal (otherwise `ACCOUNT_NOT_IN_CONTRACT`). DISCOVERY and APPLY must report different client ids (otherwise `IDENTITY_COLLAPSED`).
 - **Clean-up.** `removeSecrets()` deletes the directories, which hold az's token cache.
 
-The `@` expansion applies to every az argument, and not only at its start: az splits each argument on its first `=` and reads the part after it as a file when it starts with `@`, so `key=@/path` (the shape of a `--tags` value) is a file read too. Each argument list is therefore matched exactly against an allowlist (`isAllowedBicepArgv`) before it runs. No argument may contain `@`, or be one az would expand (`@x` or `key=@x`), except the login's own token slot, which must be `@` followed by an absolute token-file path.
-
-## Prerequisites not yet on main (owner decision required)
-
-`bootstrap/azure` DEV-only mode, as merged, gives DISCOVERY **Reader** and APPLY **Contributor** on the pilot resource group (`bootstrap/azure/modules/environment/main.tf`; `docs/act-pilot-azure-terraform-g0.md`). Neither covers this engine, so **path 4 cannot run on the current bootstrap**:
-
-- **APPLY cannot create the stack.** The built-in Contributor role lists `Microsoft.Resources/deploymentStacks/manageDenySetting/action` among its NotActions, and Microsoft's deployment-stacks documentation says creating a stack's deny assignment needs that action. So `az stack group create --deny-settings-mode denyWriteAndDelete` fails for APPLY as bootstrapped. The engine does not fall back to `none`: deny settings are never off.
-- **DISCOVERY cannot run the plan of record.** Reader is `*/read` only and does not include `Microsoft.Resources/deployments/whatIf/action`, which seal step 7 runs as DISCOVERY. Microsoft's template-permissions page says what-if has the same permission requirements as a deployment. How far `--validation-level ProviderNoRbac` relaxes that is unverified.
-
-**Proposed change (the narrowest):** one custom role per identity, assigned **at the pilot resource group only, in DEV only**, that adds exactly one action to what the bootstrap grants today:
-
-| Identity | Keeps | Adds (UNVERIFIED action names, checked at G2) |
-|---|---|---|
-| APPLY | Contributor on the pilot resource group | `Microsoft.Resources/deploymentStacks/manageDenySetting/action` |
-| DISCOVERY | Reader on the pilot resource group | `Microsoft.Resources/deployments/whatIf/action` |
-
-Nothing is added at subscription scope, in QA or PROD, or for any other identity. If G2 shows the what-if needs more under `ProviderNoRbac`, that is a new finding for the owner, not a silent widening.
-
-- **Status:** a permission expansion, so it needs an **owner decision**. The coordinator has put the question to the owner. No PR in this lane changes `bootstrap/azure` roles.
-- **Owner:** the owner's decision, then the `bootstrap/azure` lane implements it.
-- **Until then:** path 4's G0 and G2 cannot start. The engine and its tests (#316) are synthetic and do not depend on it.
+The `@` expansion applies to every az argument, in exactly two places: az splits each argument on its first `=`, and reads as a file the part after that `=`, or the whole argument when it has no `=`, when that part starts with `@` and something follows it (`_expand_file_prefixed_files`, azure-cli-core 2.91.0). So both `@/path` and `key=@/path` (the shape of a `--tags` value) are file reads, and `@-` reads standard input; an `@` anywhere else (`a@b`, `key=a@b`) is left as written. Each argument list is therefore matched exactly against an allowlist (`isAllowedBicepArgv`) before it runs, and the allowlist is stricter than az: no argument may contain `@` at all, except the login's own token slot, which must be `@` followed by an absolute token-file path.
 
 ## Contract target
 
@@ -76,7 +93,10 @@ The contract names `provider: AZURE` and `engine: BICEP`. Each environment's tar
 
 - `backend`: the deployment stack's name (`^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,88}[A-Za-z0-9_-])?$`: a letter or digit first, so a value never reads as an option, and no trailing `.`). The same name may repeat across environments, because the subscription already differs.
 - `workspace`: `default`.
-- `resourceGroup`: the existing pilot resource group (#304) that the stack is scoped to.
+- `resourceGroup`: the existing pilot resource group (#304) that the stack is scoped to. It is an engine target field (`EngineSpec.target.fields`) and a location field (`EngineSpec.target.locationFields`), so it joins the run's target hash (`pilotTargetSha256`) with the tenant, the subscription, the stack name and the canary allowlist, and a cleanup refuses a contract that moved the stack to another group.
+- `canary` (owner decision E1): exactly `{ "resources": [{ "type": "Microsoft.Network/virtualNetworks", "count": 1 }] }` for the committed canary (`qualification/azure/act-dev1-bicep-canary`). A target with no `canary` cannot be authorized for APPLY (`CANARY_ALLOWLIST_MISSING`).
+
+There is no location field: the stack create names no location (az's `stack group create` at resource-group scope places the stack in the group), and the virtual network's region comes from the sealed template (the committed canary defaults it to the group's region). The template, and so the location expression, is bound by its hash.
 
 ## Plan (seal)
 
@@ -88,13 +108,16 @@ The contract names `provider: AZURE` and `engine: BICEP`. Each environment's tar
    - there must be exactly one resource, of type `Microsoft.Network/virtualNetworks`, holding only `type`, `apiVersion`, `name`, `location`, `tags` and `properties`;
    - its properties must be only `addressSpace.addressPrefixes`: the network is empty, so no subnet (and so no delegation), no peering and no `ddosProtectionPlan`;
    - the template may hold only `$schema`, `languageVersion`, `contentVersion`, `metadata`, `parameters`, `variables` and `resources`: no `outputs` and no user `functions`;
-   - no `list*` function call (`listKeys` and the like) appears anywhere in the template;
+   - no `list*` function call (`listKeys` and the like) appears in any key or string value of the parsed template (judged after parsing, so a JSON escape such as `\u006cistKeys(` cannot hide one);
+   - each address prefix is a literal CIDR block and the tags, keys and values, are literal strings: no ARM expression (`[...]`), so what is deployed is exactly the sealed text (`TEMPLATE_VALUE_NOT_LITERAL`); a project that passes its tags as a parameter is refused;
    - there may be no module (`Microsoft.Resources/deployments`), no `existing` resource and no extension resource (`scope`).
 
    Any other type is `RESOURCE_TYPE_NOT_ALLOWED`, and any other shape is `TEMPLATE_SHAPE_NOT_ALLOWED`. A `Microsoft.Resources/resourceGroups` resource is refused like any other type: the run must not create a group.
-5. **Check the resource group** as DISCOVERY (`az group show`). It must already exist (otherwise `RESOURCE_GROUP_NOT_FOUND`). The engine never creates it.
+
+   The compiled template's resources must also be exactly the target's canary allowlist (owner decision E1, `src/apply/canary.ts`), each by its type exactly as written: another type, another count, or no allowlist is refused (`RESOURCE_NOT_IN_CANARY`, `CANARY_ALLOWLIST_MISSING`) before any az call. Both checks hold; neither replaces the other.
+5. **Sign both identities in** and **check the resource group** as DISCOVERY (`az group show`). It must already exist (otherwise `RESOURCE_GROUP_NOT_FOUND`). The engine never creates it.
 6. **Read the stack** as DISCOVERY (`az stack group show`). If the stack exists, it must be in a final state, carry the deny settings below, and carry exactly the deletion unit's three tags, keys and values (a cleanup, which is given no unit, requires the three keys). Its fingerprint (id, state, last modification, deployment id, managed resources and deny settings) is bound into the seal.
-7. **Run the what-if** as DISCOVERY. This is the plan of record:
+7. **Run the what-if** as APPLY (owner decision E2, option A; see [Why the seal-time preview runs as APPLY](#why-the-seal-time-preview-runs-as-apply)). This is the plan of record:
 
    ```text
    az deployment group what-if --resource-group <group> --template-file <compiled>
@@ -102,7 +125,7 @@ The contract names `provider: AZURE` and `engine: BICEP`. Each environment's tar
      --no-pretty-print --no-prompt true --subscription <sub> --output json
    ```
 
-   - `ProviderNoRbac`, as in the existing preview, checks the template with the provider but not the caller's write permissions, so the read-only DISCOVERY identity can run it.
+   - `ProviderNoRbac`, as in the existing preview, checks the template with the provider but not the caller's write permissions. It does not remove the need for `Microsoft.Resources/deployments/whatIf/action` itself, which is why the what-if runs as APPLY.
    - Each change becomes one line of the change list (ARM id, type, action): `Create` is CREATE; `Modify` and `Deploy` are UPDATE; `Delete` is DELETE.
    - `NoChange` and `Ignore` are not changes.
    - `Unsupported`, or any other change type, refuses the seal (`WHATIF_UNSUPPORTED_CHANGE`).
@@ -112,7 +135,8 @@ The contract names `provider: AZURE` and `engine: BICEP`. Each environment's tar
    - an id outside the contract's subscription and resource group (`WHATIF_NOT_IN_CONTRACT`);
    - a resource that already exists but that the stack does not manage (`RESOURCE_PREEXISTS`): the stack would adopt it, and cleanup would then delete something the run did not create;
    - a created or modified resource without exactly the unit's tags (`UNIT_TAG_MISSING`), read with `readBicepWhatIfTags`;
-   - nothing to change (`NO_CHANGES_TO_APPLY`).
+   - nothing to change (`NO_CHANGES_TO_APPLY`);
+   - anything but creates of exactly the canary allowlist's types and counts (`RESOURCE_NOT_IN_CANARY`): an UPDATE or DELETE is refused, so a run against a stack that already manages the network cannot be sealed.
 9. **Seal the artifact.** The sealed artifact is canonical JSON. It holds the compiled template's exact text and binds:
    - the tenant, subscription, resource group and stack name;
    - the deny settings and the action on unmanage;
@@ -132,8 +156,8 @@ The contract names `provider: AZURE` and `engine: BICEP`. Each environment's tar
 - the artifact parses with exactly the record's keys and the contract's values (otherwise `ARTIFACT_TAMPERED`);
 - the template text hashes to the sealed hash (otherwise `ARTIFACT_TAMPERED`);
 - compiling the snapshot again with the pinned bicep gives the sealed template byte for byte (otherwise `ARTIFACT_TAMPERED`). This is the refusal of any template change after the seal;
-- the template passes the checks of seal step 4 again;
-- a new what-if as DISCOVERY gives the sealed change list (otherwise `PLAN_STALE`);
+- the template passes the checks of seal step 4 again, the canary allowlist included;
+- a new what-if as APPLY gives the sealed change list (otherwise `PLAN_STALE`), and that list is again exactly the canary allowlist's creates;
 - the stack's fingerprint is the sealed one (otherwise `PLAN_STALE`). The first apply moves the stack, so a second apply of the same artifact refuses here, even before the ledger's `ARTIFACT_ALREADY_APPLIED`.
 
 `execute(artifact)` checks the kill switch, then the record and the stack fingerprint once more. It writes the sealed template to a private file and runs, as APPLY:
@@ -158,7 +182,7 @@ az stack group create --name <stack> --resource-group <group> --template-file <s
 | Outcome | When |
 |---|---|
 | SUCCEEDED | The create exited 0, the stack moved (new deployment id or last-modified time), its state is `succeeded`, it lists no failed resources, and it reports the sealed deny settings. All five must hold. |
-| FAILED_NO_CHANGE | Positive evidence only: az ran to completion and gave a definite non-zero exit, and at least three reads over the poll window show the stack unmoved. A create with no exit code (a timeout, the output cap or a spawn error) may have reached ARM, so it is never this outcome. |
+| FAILED_NO_CHANGE | Positive evidence only: az ran to completion and gave a definite non-zero exit, and at least three reads over the poll window show the stack unmoved. Definite means a refusal ARM itself returned, printed by az as `(<Code>) <message>`; an az transport error that exits 1 (a closed connection, a timeout) may follow a request that reached ARM, so it is not definite (UNVERIFIED (A3): az's error format). A create with no exit code (a timeout, the output cap or a spawn error) may have reached ARM, so it is never this outcome. |
 | KILLED | A stop arrived. |
 | PARTIAL_REQUIRES_REVIEW | Everything else. |
 
@@ -200,23 +224,20 @@ az stack group delete --name <stack> --resource-group <group> --action-on-unmana
 - **Last check.** Just before the call, the engine checks once more that the stack fingerprint is unchanged.
 - **The group stays.** `deleteResources` deletes managed resources and detaches resource groups (`_prepare_stacks_action_on_unmanage` in az 2.91.0). The stack manages no group, so the pilot resource group is never deleted.
 - **Stopping.** az 2.91.0 offers no `--no-wait` for a delete, so the call runs as a stoppable process. A stop ends the local call (KILLED), and Azure may still finish the delete.
-- **Outcome.** `settle` returns SUCCEEDED only when the delete exited 0 with nothing cut off and the stack is gone. It returns FAILED_NO_CHANGE only after a definite non-zero exit and at least three reads over the poll window that show the stack unchanged. A delete stopped by the kill switch or the time limit is KILLED, and any other result is PARTIAL_REQUIRES_REVIEW. A person then confirms each id is gone with the independent read-back.
+- **Outcome.** `settle` returns SUCCEEDED only when the delete exited 0 with nothing cut off and the stack is gone. It returns FAILED_NO_CHANGE only after a definite non-zero exit (an ARM refusal, as for the create) and at least three reads over the poll window that show the stack unchanged. A delete stopped by the kill switch or the time limit is KILLED, and any other result is PARTIAL_REQUIRES_REVIEW. A person then confirms each id is gone with the independent read-back.
 - **Order with the bootstrap teardown.** The stack cleanup (or `az stack group delete`) must run **before** the bootstrap teardown removes the pilot resource group. A stack left behind keeps its `denyWriteAndDelete` assignment on its resources, applied to child scopes, and that blocks the group's deletion.
 
-## Engine-id admission (not in this lane)
+## Engine-id admission (owner decision E2)
 
-The engine is written against `EngineSpec`, but it is **not registered**. Registering it needs:
+The engine is registered, for DEV only:
 
-- the `BICEP` engine id in `EngineId`;
-- the two evidence `mutation` values;
-- the `BICEP` manifest engine;
-- the contract's DEV-only scope for Azure Bicep.
+- `BICEP` is an `EngineId` and is in `SPECS` (`src/apply/engine-spec.ts`); the evidence names its two `mutation` values (`AZURE_DEPLOYMENT_STACK_CREATE_OF_SEALED_TEMPLATE`, `AZURE_DEPLOYMENT_STACK_DELETE_OF_RUN_STACK`).
+- A contract may name `AZURE` with `BICEP` only under `"enabledEnvironments": ["DEV"]` (`DEV_ONLY_PATHS`, `src/apply/contract.ts`); a three-stage one is `CONTRACT_INVALID`, so no QA or PROD target can exist. `BICEP` with another provider is `CONTRACT_INVALID`. Each target adds `resourceGroup`, which joins the run's target hash.
+- The driver's blueprint hook reads the stack's id and managed resources as DISCOVERY after the run (`stateDocument`, source `AZURE_DEPLOYMENT_STACK_RESOURCES`); each managed resource is its own address, by ARM id, and the stack is the unit's container. The cleanup proposal names resources by their ARM ids, and the cleanup deletes the whole stack.
+- `test/apply-bicep-admission.test.ts` drives the path through the driver (contract, requester signature, approvals, ledger and replay, kill switch, the canary allowlist, the template binding, evidence, observe, proposal, cleanup with the deny settings on, leftovers) with the fake `az` and `bicep` and a scripted ARM. SYNTHETIC: it is not emulation and not provider qualification.
+- The release gate `act:azure-bicep` is in `ACT_RELEASE_PATHS` and `config/release/scope.json`, BLOCKED until live evidence exists.
 
-These belong to the authorization lane (`src/apply/types.ts`, `src/apply/contract.ts`). Until they land:
-
-- `BICEP` is exported with its own narrow type. Registering it is one entry in `SPECS` (`src/apply/engine-spec.ts`).
-- Its tests (`test/apply-bicep.test.ts`, added in #316) drive the engine's steps directly with a fake `az` and `bicep`. They do not go through the driver, so the ledger, approvals, requester signature and evidence are not yet exercised for this engine. These shared modules are unchanged and are tested for the other engines.
-- The blueprint (`src/observe/blueprint.ts`) and the cleanup proposal's address form (`src/apply/cleanup-proposal.ts`, ARM ids) are wired when the engine is registered.
+The static production contract's pilot combinations (`src/qualification/production-contract.ts`) do not list Azure Bicep, so a release under a pilot contract for it is refused until the owner adds it.
 
 ## Assumptions to verify at G2
 
@@ -226,7 +247,7 @@ These belong to the authorization lane (`src/apply/types.ts`, `src/apply/contrac
 - UNVERIFIED (A4): that Bicep's output for a resource-group file with one virtual network has the shape described in seal step 4. bicep 0.47.16 was not run here, and the tests use a hand-written template of that shape.
 - D1 above.
 - UNVERIFIED (A5): that an unregistered `Microsoft.Network` or `Microsoft.Resources` namespace fails the what-if, so the seal is refused.
-- UNVERIFIED (P1): the action names in [Prerequisites not yet on main](#prerequisites-not-yet-on-main-owner-decision-required), that Contributor's NotActions block the stack's deny assignment, and which permissions the what-if needs under `ProviderNoRbac`.
+- UNVERIFIED (P1): that the custom role's operations ([Identities and roles](#identities-and-roles)) are sufficient for ARM, and which permissions the what-if needs under `ProviderNoRbac`. The names themselves are Microsoft's published operation names.
 
 ## Tool pins
 

@@ -139,3 +139,14 @@ variable "state_allowed_ip_ranges" {
     error_message = "List at least one runner egress IP or CIDR; the state accounts deny all other networks."
   }
 }
+
+variable "bicep_deployment_stacks" {
+  description = "Enable the Azure Bicep path (DEV only, owner decision E2): a custom role at the DEV pilot resource group, assigned to APPLY only, with exactly the deployment what-if, deployment stack (including manageDenySetting) and virtual network operations the engine runs. Needs the DEV-only mode and a DEV apply_resource_group_name. DISCOVERY keeps Reader."
+  type        = bool
+  default     = false
+
+  validation {
+    condition     = !var.bicep_deployment_stacks || (toset(var.enabled_environments) == toset(["DEV"]) && try(trimspace(var.environments.DEV.apply_resource_group_name) != "", false))
+    error_message = "bicep_deployment_stacks needs enabled_environments [\"DEV\"] and a DEV apply_resource_group_name: the Bicep path is DEV only and its role is never at subscription scope."
+  }
+}
