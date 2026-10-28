@@ -97,4 +97,4 @@ export const PROVIDER_IDS: readonly ProviderId[] = Object.keys(SPECS) as Provide
 
 /** A target's account fields: the values qualification evidence records and apply compares. */
 export const accountFieldsOf = (spec: ProviderSpec, target: PilotTarget): AccountFields =>
-  Object.fromEntries(Object.keys(spec.accountFields).map((key) => [key, (target as AccountFields)[key]]));
+  Object.fromEntries(Object.keys(spec.accountFields).map((key) => [key, (target as unknown as AccountFields)[key]]));

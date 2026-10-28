@@ -17,6 +17,7 @@ import {
   requirePromotionEvidence, targetForEnvironment, verifyApplyQualification, type Authorization, type Refusal,
 } from "./contract.js";
 import { COMMIT } from "./constants.js";
+import { canaryRefusal } from "./canary.js";
 import { codeOf, leftBehindOf } from "./engine.js";
 import { planJudgeRefusal } from "./terraform-constructs.js";
 import { acceptsManifest, engineOf, type EngineCleanupRun, type EngineSpec, type RecoveryFile, type StateDocument } from "./engine-spec.js";
@@ -287,6 +288,8 @@ async function planAgainstTarget(request: SealRequest, deps: SealDeps, kind: "se
     }
     return { ok: true, engine };
   } catch (error) {
+    const canary = canaryRefusal(error, kind === "qualify" ? "Nothing was qualified." : "Nothing was sealed.");
+    if (canary) return refuse(canary.code, canary.message);
     return refuse("ARTIFACT_INVALID", kind === "qualify"
       ? "The qualification run failed (" + codeOf(error) + "). Engine output is withheld because it can hold secrets."
       : "The plan could not be sealed. Engine output is withheld because plan and state output can hold secrets.");
@@ -481,6 +484,9 @@ export async function runApply(request: ApplyRequest, deps: ApplyDeps): Promise<
           ? "The sealed plan is stale: what it was sealed against has changed. Nothing was applied and no approval was consumed. Seal a new preview and obtain new approvals."
           : "What the sealed plan names is not what the engine finds. Nothing was applied and no approval was consumed. Seal and approve a new plan.");
       }
+      // The canary allowlist, judged again on the plan about to run (owner decision E1).
+      const canary = canaryRefusal(error, "Nothing was applied and no approval was consumed.");
+      if (canary) return refuse(canary.code, canary.message);
       // The plan judge's own refusal, by its code and reason (review of #327, round 2, N2).
       const judged = planJudgeRefusal(code);
       if (judged) return refuse(judged.refusal, judged.message + " Nothing was applied and no approval was consumed. Engine output is withheld.");

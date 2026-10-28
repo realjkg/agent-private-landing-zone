@@ -310,9 +310,16 @@ describe("CDK emulated simulation: the real pinned AWS CLI against moto CloudFor
   });
 
   type World = { deps: ApplyDeps; contractPath: string; evidence: string; scratch: string };
+  /** Owner decision E1: the contract names, as every target's canary allowlist, exactly the resources the workload creates (`WORKLOAD_CANARY` by default). */
+  const withAllowlist = (resources: unknown[]) => {
+    const contract = cdkContractJson(KILL) as { targets: Record<string, Record<string, unknown>> };
+    for (const t of Object.values(contract.targets)) t.canary = { resources };
+    return contract;
+  };
+  const WORKLOAD_CANARY = [{ type: "AWS::Logs::LogGroup", count: 1 }, { type: "AWS::Events::Rule", count: 1 }];
   function world(): World {
     const contractPath = join(fresh("contract"), "act-pilot-contract.json");
-    writeReviewedContract(contractPath, cdkContractJson(KILL));
+    writeReviewedContract(contractPath, withAllowlist(WORKLOAD_CANARY));
     const evidence = fresh("evidence"), scratch = fresh("scratch");
     return {
       contractPath, evidence, scratch,
@@ -430,7 +437,7 @@ describe("CDK emulated simulation: the real pinned AWS CLI against moto CloudFor
     assert.deepEqual((await cloud()).changeSets.map((c) => c.execution), ["EXECUTE_COMPLETE"]);
   });
 
-  it("refuses stale plans: a change set someone else executed, and a stack that moved after an update was sealed; an unchanged assembly is NO_CHANGES_TO_APPLY", async () => {
+  it("refuses stale plans: a change set someone else executed; an update of the stack is never sealed under the canary allowlist (owner decision E1); an unchanged assembly is NO_CHANGES_TO_APPLY", async () => {
     const w = world();
     // (a) The sealed change set was executed out of band: CloudFormation reports it EXECUTE_COMPLETE, so it is no longer the approved, executable one.
     const used = await sealed(w);
@@ -438,27 +445,34 @@ describe("CDK emulated simulation: the real pinned AWS CLI against moto CloudFor
     const usedResult = await run(w, used);
     assert.equal(usedResult.ok, false);
     assert.equal((usedResult as { code: string }).code, "PLAN_STALE", JSON.stringify(usedResult));
-    // (b) CreateChangeSet cannot turn termination protection on, so an update is refused until a person does; then two updates are sealed and the later one runs first.
-    const { result: unprotected } = await seal(w, { ...WORKLOAD, [SECOND]: { Type: "AWS::Logs::LogGroup", Properties: { RetentionInDays: 1 } } });
+    // (b) Owner decision E1: an update of the stack is never sealed. Under the run's allowlist, a template that adds a log group is refused before any change set exists.
+    const withSecond = { ...WORKLOAD, [SECOND]: { Type: "AWS::Logs::LogGroup", Properties: { RetentionInDays: 1 } } };
+    const { result: wider } = await seal(w, withSecond);
+    assert.equal(wider.ok, false);
+    assert.equal((wider as { code: string }).code, "RESOURCE_NOT_IN_CANARY", JSON.stringify(wider));
+    assert.match((wider as { message: string }).message, /AWS::Logs::LogGroup: the template creates 2, the canary allowlist names exactly 1/);
+    assert.equal((await cloud()).changeSets.length, 1, "the refused update created no change set");
+    // Even an allowlist that names all three: CreateChangeSet cannot turn termination protection on, so the update is refused until a person does;
+    // then CloudFormation's change set adds one log group where the allowlist names two, and the seal is refused with nothing executed.
+    writeReviewedContract(w.contractPath, withAllowlist([{ type: "AWS::Logs::LogGroup", count: 2 }, { type: "AWS::Events::Rule", count: 1 }]));
+    const { result: unprotected } = await seal(w, withSecond);
     assert.equal(unprotected.ok, false);
     assert.match((unprotected as { message: string }).message, /TERMINATION_PROTECTION_OFF/);
     assert.equal((await cloud()).changeSets.length, 1, "the refused update created no change set");
     protect();
     assert.deepEqual((await cloud()).stacks.map((stack) => stack.protection), [true]);
-    const older = await sealed(w, { ...WORKLOAD, [SECOND]: { Type: "AWS::Logs::LogGroup", Properties: { RetentionInDays: 1 } } });
-    const newer = await sealed(w, { ...WORKLOAD, [SECOND]: { Type: "AWS::Logs::LogGroup", Properties: { RetentionInDays: 3 } } });
-    assert.equal(recordOf(older).changeSetType, "UPDATE");
-    assert.deepEqual(older.sealed.changes, [{ address: SECOND, type: "AWS::Logs::LogGroup", action: "CREATE" }]);
-    const applied = await run(w, newer);
-    assert.ok(applied.ok, JSON.stringify(applied));
     const before = await cloud();
-    const stale = await run(w, older, "bob");
-    assert.equal(stale.ok, false);
-    assert.equal((stale as { code: string }).code, "PLAN_STALE", JSON.stringify(stale));
-    assert.deepEqual(await cloud(), before, "nothing was executed");
-    noSecrets(stale);
-    // (c) The same assembly again: the waiter exits non-zero on a FAILED change set, and the reason says there is nothing to change.
-    const { result: same } = await seal(w, { ...WORKLOAD, [SECOND]: { Type: "AWS::Logs::LogGroup", Properties: { RetentionInDays: 3 } } });
+    const { result: update } = await seal(w, withSecond);
+    assert.equal(update.ok, false);
+    assert.equal((update as { code: string }).code, "RESOURCE_NOT_IN_CANARY", JSON.stringify(update));
+    assert.match((update as { message: string }).message, /AWS::Logs::LogGroup: the change set creates 1, the canary allowlist names exactly 2/);
+    const after = await cloud();
+    assert.deepEqual(after.stacks, before.stacks, "nothing was executed");
+    assert.deepEqual(after.groups, before.groups);
+    noSecrets(update);
+    // (c) The same assembly again, under the run's allowlist: the waiter exits non-zero on a FAILED change set, and the reason says there is nothing to change.
+    writeReviewedContract(w.contractPath, withAllowlist(WORKLOAD_CANARY));
+    const { result: same } = await seal(w);
     assert.equal(same.ok, false);
     assert.match((same as { message: string }).message, /NO_CHANGES_TO_APPLY/);
     onlyEmulated([HOSTS[0], HOSTS[1]]);

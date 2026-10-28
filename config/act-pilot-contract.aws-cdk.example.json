@@ -11,21 +11,24 @@
       "region": "us-east-1",
       "backend": "ExamplePilotStack",
       "workspace": "default",
-      "capabilities": []
+      "capabilities": [],
+      "canary": { "resources": [{ "type": "AWS::Logs::LogGroup", "count": 1 }, { "type": "AWS::CloudFormation::WaitConditionHandle", "count": 1, "retain": true }] }
     },
     "QA": {
       "accountId": "222222222222",
       "region": "us-east-1",
       "backend": "ExamplePilotStack",
       "workspace": "default",
-      "capabilities": []
+      "capabilities": [],
+      "canary": { "resources": [{ "type": "AWS::Logs::LogGroup", "count": 1 }, { "type": "AWS::CloudFormation::WaitConditionHandle", "count": 1, "retain": true }] }
     },
     "PROD": {
       "accountId": "333333333333",
       "region": "us-east-1",
       "backend": "ExamplePilotStack",
       "workspace": "default",
-      "capabilities": []
+      "capabilities": [],
+      "canary": { "resources": [{ "type": "AWS::Logs::LogGroup", "count": 1 }, { "type": "AWS::CloudFormation::WaitConditionHandle", "count": 1, "retain": true }] }
     }
   },
   "requiredApprovals": { "DEV": 1, "QA": 1, "PROD": 2 },

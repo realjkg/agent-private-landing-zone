@@ -133,6 +133,12 @@ export type EngineSpec = {
     fields: Readonly<Record<string, (value: unknown) => boolean>>;
   };
   notices: EngineNotices;
+  /**
+   * Whether a value is one exact resource type in this engine's own naming, for the target's canary allowlist (owner decision
+   * E1, `PilotCanary`; docs/act-pilot-apply.md, "Canary allowlist"): a pattern of plain names, so a wildcard or a pattern is never
+   * a type. Absent: the engine takes no canary allowlist yet, so a contract naming one is refused and no APPLY is authorized for it.
+   */
+  canaryTypeOk?(value: string): boolean;
   /** Whether the engine has a state backend whose settings the plan can embed, so a contract may set `embedStateWrite`. Absent: it has none (CDK). */
   embedsStateWrite?: boolean;
   /** The manifest mode sealing and applying accept; the manifest's engine must be this spec's. */

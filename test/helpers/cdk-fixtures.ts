@@ -55,6 +55,10 @@ export type AwsBehavior = {
   badChange?: "unreadable" | "action"; describeGarbage?: boolean;
   /** The PilotTopic Modify's `Replacement` value instead of "True"; null leaves the field out. */
   modifyReplacement?: string | null;
+  /** Raw change rows describe-change-set appends to whatever list it reports (a Dynamic, an Import or a Remove of some resource). */
+  changeExtra?: unknown[];
+  /** The fixed change list modifies the existing PilotTopic (Replacement per `modifyReplacement`) instead of adding it; the canary allowlist refuses a Modify. */
+  topicModify?: boolean;
   /** describe-stacks prints more than the runner keeps. */
   bigOutput?: boolean;
   /** describe-change-set reports these capabilities whatever was passed, or exactly this value for the key (a malformed answer). */
@@ -234,14 +238,21 @@ else if (cmd === "describe-change-set") {
     if (b.extraChange) rows.push({ Type: "Resource", ResourceChange: { Action: "Remove", LogicalResourceId: "ExtraQueue", ResourceType: "AWS::SQS::Queue" } });
     return rows;
   };
-  const changes = b.noChanges ? [] : b.changesAllAdd && !a.stackTemplate ? Object.entries(a.changeSet.template.Resources || {}).map(([logical, resource]) => ({ Type: "Resource", ResourceChange: { Action: "Add", LogicalResourceId: logical, ResourceType: resource.Type } }))
+  // A CREATE change set adds every resource of its template, as CloudFormation's does (unless a test asks for the fixed list's Modify).
+  const allAdd = () => Object.entries(a.changeSet.template.Resources || {}).map(([logical, resource]) => ({ Type: "Resource", ResourceChange: { Action: "Add", LogicalResourceId: logical, ResourceType: resource.Type } }));
+  const listed = b.noChanges ? [] : b.changesAllAdd && !a.stackTemplate ? allAdd()
     : b.diffChanges && a.stackTemplate && a.type === "UPDATE" ? diffed() : [
+    ...(a.type === "CREATE" && !b.topicModify ? allAdd() : [
     { Type: "Resource", ResourceChange: { Action: "Add", LogicalResourceId: "PilotBucket", ResourceType: "AWS::S3::Bucket" } },
-    { Type: "Resource", ResourceChange: { Action: "Modify", LogicalResourceId: "PilotTopic", ResourceType: "AWS::SNS::Topic", ...(b.modifyReplacement === null ? {} : { Replacement: b.modifyReplacement === undefined ? "True" : b.modifyReplacement }) } },
+    // The topic is an Add (the fixture contracts' canary allowlist, CANARY_CDK), unless a test asks for a Modify of an existing one.
+    b.topicModify ? { Type: "Resource", ResourceChange: { Action: "Modify", LogicalResourceId: "PilotTopic", ResourceType: "AWS::SNS::Topic", ...(b.modifyReplacement === null ? {} : { Replacement: b.modifyReplacement === undefined ? "True" : b.modifyReplacement }) } }
+      : { Type: "Resource", ResourceChange: { Action: "Add", LogicalResourceId: "PilotTopic", ResourceType: "AWS::SNS::Topic" } },
+    ]),
     ...(b.extraChange ? [{ Type: "Resource", ResourceChange: { Action: "Remove", LogicalResourceId: "ExtraQueue", ResourceType: "AWS::SQS::Queue" } }] : []),
     ...(b.badChange === "unreadable" ? [{ Type: "Hook" }] : []),
     ...(b.badChange === "action" ? [{ Type: "Resource", ResourceChange: { Action: "Teleport", LogicalResourceId: "Odd", ResourceType: "AWS::SQS::Queue" } }] : []),
   ];
+  const changes = [...listed, ...(b.changeExtra || [])];
   // What the change set reports about its execution follows the stack the fake last described.
   const execution = !a.executing ? "AVAILABLE" : /ROLLBACK|FAILED/.test(a.stack.status) ? "EXECUTE_FAILED" : /_COMPLETE$/.test(a.stack.status) ? "EXECUTE_COMPLETE" : "EXECUTE_IN_PROGRESS";
   // As the real AWS CLI v2 prints it (2.38.6, docs/act-pilot-simulation-cdk.md): it follows the change list's pages itself and prints each of the
@@ -343,13 +354,16 @@ export const cdkIdentityEnv = (environment: ApplyEnvironment): NodeJS.ProcessEnv
 
 // --- the contract ---------------------------------------------------------------------------------
 
+/** The CDK fixture contract's canary allowlist (owner decision E1): exactly the fixture template's two resources, each created once. */
+export const CANARY_CDK = { resources: [{ type: "AWS::S3::Bucket", count: 1 }, { type: "AWS::SNS::Topic", count: 1 }] };
+
 /** A CDK contract: the AWS provider, the same stack name in every account, and the capabilities each environment may use. */
 export const cdkContractJson = (killPath: string, capabilities: string[] = [], over: Record<string, unknown> = {}) => {
   const base = awsContractJson(killPath);
   return {
     ...base, engine: "CDK",
     targets: Object.fromEntries((["DEV", "QA", "PROD"] as const).map((e) => [e, {
-      accountId: awsTargetOf(e).account, region: AWS_REGION, backend: STACK, workspace: "default", capabilities,
+      accountId: awsTargetOf(e).account, region: AWS_REGION, backend: STACK, workspace: "default", capabilities, canary: CANARY_CDK,
     }])),
     ...over,
   };
@@ -424,6 +438,24 @@ export function writeAssembly(root: string, target: ResolvedTarget, options: Ass
     engine: "CDK", mode: "PROJECT", target, unitHash: H("1"), files: captureProjectFiles(root), policyVersion: POLICY, ...resolved,
   });
   return { projectRoot: root, manifest, resolved };
+}
+
+/**
+ * The canary allowlist of an assembly (owner decision E1): every resource its one stack's template declares, counted by type. Undefined
+ * when the assembly has no single readable stack template (a test of that refusal); the engine refuses such an assembly first anyway.
+ */
+export function templateCanaryOf(projectRoot: string): { resources: { type: string; count: number }[] } | undefined {
+  try {
+    const manifest = JSON.parse(readFileSync(join(projectRoot, "manifest.json"), "utf8")) as { artifacts: Record<string, { type?: string; properties?: { templateFile?: string } }> };
+    const stacks = Object.values(manifest.artifacts).filter((artifact) => artifact.type === "aws:cloudformation:stack");
+    if (stacks.length !== 1 || typeof stacks[0].properties?.templateFile !== "string") return undefined;
+    const template = JSON.parse(readFileSync(join(projectRoot, stacks[0].properties.templateFile), "utf8")) as { Resources?: Record<string, { Type?: unknown }> };
+    const counts = new Map<string, number>();
+    for (const resource of Object.values(template.Resources ?? {})) counts.set(String(resource?.Type), (counts.get(String(resource?.Type)) ?? 0) + 1);
+    return counts.size === 0 ? undefined : { resources: [...counts].map(([type, count]) => ({ type, count })) };
+  } catch {
+    return undefined;
+  }
 }
 
 // --- qualification ---------------------------------------------------------------------------------

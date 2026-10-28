@@ -57,9 +57,13 @@ import { EXECUTION_IDENTITIES, identityVariables } from "../tools/identity.js";
  * report COMPLETE while one remains. The same class holds an allowlisted attachment or setting whose parent this proposal does not
  * delete (design review 6434540427, B3), with its own reason (`parentKeptReason`).
  */
-export type Ownership = "RUN_CREATED" | "PRE_EXISTING" | "REPLACED_PRE_EXISTING" | "IMPORTED" | "NOT_IN_PLAN" | "TYPE_UNREVIEWED" | "PROTECTED_BACKEND" | "PROTECTED_IDENTITY" | "PROTECTED_DEPLOYMENT" | "RETAINED_GROUP" | "CONTAINS_OTHERS";
-/** The ownership classes a pilot cleanup never deletes, whoever created the resource and whatever the plan said. */
-export const PROTECTED_OWNERSHIPS: readonly Ownership[] = ["PROTECTED_BACKEND", "PROTECTED_IDENTITY", "PROTECTED_DEPLOYMENT", "RETAINED_GROUP", "CONTAINS_OTHERS"];
+export type Ownership = "RUN_CREATED" | "PRE_EXISTING" | "REPLACED_PRE_EXISTING" | "IMPORTED" | "NOT_IN_PLAN" | "TYPE_UNREVIEWED" | "PROTECTED_BACKEND" | "PROTECTED_IDENTITY" | "PROTECTED_DEPLOYMENT" | "RETAINED_GROUP" | "CONTAINS_OTHERS" | "CANARY_RETAINED";
+/**
+ * The ownership classes a pilot cleanup never deletes, whoever created the resource and whatever the plan said. CANARY_RETAINED (owner
+ * decision E1): a run-created resource of a type the reviewed contract's canary allowlist marks `retain: true`, within its count; kept
+ * by the pilot owner as an intentional retention (the leftover check records it as RETENTION_DECISION, never as an unreviewed type).
+ */
+export const PROTECTED_OWNERSHIPS: readonly Ownership[] = ["PROTECTED_BACKEND", "PROTECTED_IDENTITY", "PROTECTED_DEPLOYMENT", "RETAINED_GROUP", "CONTAINS_OTHERS", "CANARY_RETAINED"];
 /**
  * Who keeps a resource the cleanup leaves: the pilot owner (a policy decision: the backend, identities and grants, deployment
  * history, resource groups, subscriptions and management groups; environment retirement is the owner's separate, reviewed
@@ -76,6 +80,7 @@ export const PROTECTION_REASONS: Readonly<Record<Exclude<Ownership, "RUN_CREATED
   PROTECTED_DEPLOYMENT: "deployment history (Microsoft.Resources/deployments) records what was deployed and is never deleted by a cleanup",
   RETAINED_GROUP: "a resource group is never deleted by a pilot cleanup, whatever it holds; the pilot owner retains it, and its deletion is a separate, reviewed action (environment retirement, outstanding)",
   // Under 512 characters: a proposal's reason text has that limit.
+  CANARY_RETAINED: "the reviewed contract's canary allowlist names this type with retain: true: a no-cost, inert sentinel the run created and the cleanup intentionally keeps (it keeps the stack from being emptied); the pilot owner retains it until the environment is retired",
   CONTAINS_OTHERS: "a container is never deleted by a cleanup: on Azure a subscription or management group holds other deployments, and a provider or feature registration is a setting others rely on; on AWS anything that deploys a CloudFormation stack or a provisioned product (Service Catalog, SAR, SageMaker, Proton, Beanstalk, SSM Quick Setup, DataZone, Control Tower) is kept: deleting it deletes all the stack holds, identities among it, unlisted in the state; a custom resource runs its own code on removal",
 };
 
@@ -494,6 +499,9 @@ export function buildCleanupProposal(input: ProposalInput): { ok: true; proposal
   const risks = new Set<string>();
   const backendGroups = contract.provider === "AZURE" ? azureBackendGroups(record.blueprint.entries, azureBackendAccounts(contract)) : new Set<string>();
   const pilotRoles = pilotRoleNames(input.env);
+  // The canary allowlist's retained sentinels (owner decision E1), by type and count, for this run's environment.
+  const retainable = new Map((contract.targets[evidence.environment]?.canary?.resources ?? []).filter((r) => r.retain === true).map((r) => [r.type, r.count]));
+  const retainedSoFar = new Map<string, number>();
   for (const entry of record.blueprint.entries) {
     // The identifier the independent verifier uses for this type (the one it will be asked about again after the cleanup), else whatever the state had.
     const mapping = cloudControlMappingOf(entry.type);
@@ -519,6 +527,17 @@ export function buildCleanupProposal(input: ProposalInput): { ok: true; proposal
     if (change.importing) { keep("IMPORTED", "the plan imported an existing resource; it was not created by this run"); continue; }
     if (change.action === "REPLACE" || change.action === "REPLACE_CONDITIONAL") { keep("REPLACED_PRE_EXISTING", "the plan replaced a resource that existed before this run"); continue; }
     if (change.action !== "CREATE") { keep("PRE_EXISTING", "the plan left or changed a resource that existed before this run (" + change.action + ")"); continue; }
+    // Created by this run, and a sentinel the reviewed contract retains: kept as an intentional retention, within the declared count only.
+    const retainCount = retainable.get(entry.type);
+    if (retainCount !== undefined) {
+      const n = (retainedSoFar.get(entry.type) ?? 0) + 1;
+      retainedSoFar.set(entry.type, n);
+      if (n > retainCount) {
+        return refuse("OWNERSHIP_AMBIGUOUS", "The run created more " + entry.type + " than the contract's canary allowlist retains (" + retainCount + "). A person reviews them by hand; no cleanup proposal is made.");
+      }
+      keep("CANARY_RETAINED", PROTECTION_REASONS.CANARY_RETAINED);
+      continue;
+    }
     // Created by this run, but of a type nobody reviewed as a leaf: kept and named, never deleted; the rest of the run is still cleaned up.
     if (protection === "TYPE_UNREVIEWED") { keep("TYPE_UNREVIEWED", awsLeafConditionProblem(entry) ?? unreviewedTypeReason(entry.type)); continue; }
     const seen: ObservedResource | undefined = observed.get(entry.address);
@@ -598,6 +617,10 @@ export function buildCleanupProposal(input: ProposalInput): { ok: true; proposal
   }
   if (excluded.some((x) => PROTECTED_OWNERSHIPS.includes(x.ownership))) {
     risks.add("protected objects (resource groups, identities and grants, deployment history, the state backend) are intentionally retained and never on this list; retiring the environment itself is a separate, reviewed action and stays outstanding after this cleanup");
+  }
+  // Owner decision E1: the protected objects above include a retained canary sentinel only by name here, so say so where one is kept.
+  if (excluded.some((x) => x.ownership === "CANARY_RETAINED")) {
+    risks.add("the no-cost sentinel the reviewed contract's canary allowlist marks retain: true is intentionally kept by the pilot owner and never on this list, so the cleanup never empties the stack; it is removed only when the environment is retired");
   }
   const required = contract.requiredApprovals[evidence.environment];
   if (required === undefined) return refuse("TARGET_NOT_IN_CONTRACT", "The pilot contract does not enable " + evidence.environment + ".");

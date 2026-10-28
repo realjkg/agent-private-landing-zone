@@ -10,19 +10,22 @@
       "tenantId": "aaaabbbb-0000-cccc-1111-dddd2222eeee",
       "subscriptionId": "00001111-aaaa-2222-bbbb-3333cccc4444",
       "backend": "examplefakedevstate/tfstate/dev.tfstate",
-      "workspace": "default"
+      "workspace": "default",
+      "canary": { "resources": [{ "type": "azurerm_virtual_network", "count": 1 }] }
     },
     "QA": {
       "tenantId": "aaaabbbb-0000-cccc-1111-dddd2222eeee",
       "subscriptionId": "11112222-bbbb-3333-cccc-4444dddd5555",
       "backend": "examplefakeqastate/tfstate/qa.tfstate",
-      "workspace": "default"
+      "workspace": "default",
+      "canary": { "resources": [{ "type": "azurerm_virtual_network", "count": 1 }] }
     },
     "PROD": {
       "tenantId": "aaaabbbb-0000-cccc-1111-dddd2222eeee",
       "subscriptionId": "22223333-cccc-4444-dddd-5555eeee6666",
       "backend": "examplefakeprodstate/tfstate/prod.tfstate",
-      "workspace": "default"
+      "workspace": "default",
+      "canary": { "resources": [{ "type": "azurerm_virtual_network", "count": 1 }] }
     }
   },
   "requiredApprovals": { "DEV": 1, "QA": 1, "PROD": 2 },

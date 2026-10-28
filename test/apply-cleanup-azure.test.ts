@@ -24,7 +24,7 @@ import { canonicalJson } from "../src/teardown/manifest.js";
 import { sha256 } from "../src/util/sha256.js";
 import {
   escapeRegExp,
-  ARM_ACCESS_TOKEN_CANARY, ARM_FEDERATED_TOKEN_CANARY, CANARIES, DEV_TARGET, NOW, POLICY, SOURCE_COMMIT, STATE_CANARY, approvalFor, azureStateResource, behave as behaveIn, callsOf, contractJson,
+  ARM_ACCESS_TOKEN_CANARY, ARM_FEDERATED_TOKEN_CANARY, CANARIES, DEV_TARGET, NOW, POLICY, SOURCE_COMMIT, STATE_CANARY, approvalFor, azureStateResource, behave as behaveIn, callsOf, canaryFor, contractJson, withCanary,
   fakeArmHttp, human, identityEnv, installFakeTerraform, keys, targetOf, testFixtureForgeQualificationEvidence, writeReviewedContract, writeProject, type ArmBehavior, type Behavior,
   REQUESTER, reHashedProposal,
 } from "./helpers/apply-fixtures.js";
@@ -65,11 +65,16 @@ const CREATES = [
   { address: "azurerm_key_vault_secret.canary", type: "azurerm_key_vault_secret", change: { actions: ["create"], before: null, after: { value: "CANARY_SECRET_VALUE" } } },
   // Created by this run and still never proposed: the state container of the backend the pilot itself runs on.
   change("azurerm_storage_container.state", "azurerm_storage_container", ["create"]),
-  // Pre-existing (the plan updates them), shared, or imported: not this run's to delete.
-  change("azurerm_storage_account.state", "azurerm_storage_account", ["update"]),
-  change("azurerm_resource_group.state", "azurerm_resource_group", ["update"]),
-  change("azurerm_subscription_policy_assignment.shared", "azurerm_subscription_policy_assignment", ["update"]),
-  change("azurerm_key_vault.reused", "azurerm_key_vault", ["no-op"], { importing: { id: REUSED_VAULT } }),
+  // The pre-existing, shared and imported resources (the state account and its group, a shared policy assignment, a reused vault) are in the
+  // state only: a plan that updates or imports them is never sealed (owner decision E1, RESOURCE_NOT_IN_CANARY), so they reach the cleanup as
+  // resources the plan never named. `LEGACY_CHANGES` checks how a change list that names them is still classified.
+];
+/** An update or an import in a change list (a record sealed before the canary allowlist): never this run's to delete. */
+const LEGACY_CHANGES = [
+  { address: "azurerm_storage_account.state", type: "azurerm_storage_account", action: "UPDATE" },
+  { address: "azurerm_resource_group.state", type: "azurerm_resource_group", action: "UPDATE" },
+  { address: "azurerm_subscription_policy_assignment.shared", type: "azurerm_subscription_policy_assignment", action: "UPDATE" },
+  { address: "azurerm_key_vault.reused", type: "azurerm_key_vault", action: "SAME", importing: true as const },
 ];
 const STATE = [
   azureStateResource("azurerm_resource_group", "pilot", RG), azureStateResource("azurerm_log_analytics_workspace", "pilot", LAW), azureStateResource("azurerm_key_vault_secret", "canary", SECRET),
@@ -84,9 +89,28 @@ const TAGGED = [RG, LAW];
 const CLOUD: ArmBehavior = { existing: EXISTING, tagged: TAGGED };
 /** What stays after a cleanup: everything the proposal keeps, the run's own resource group among them (a pilot cleanup never deletes a group). */
 const RETAINED = [RG, STATE_ACCOUNT, RG_STATE, OLD_ROLE, POLICY_ASSIGNMENT, REUSED_VAULT, UNRELATED_VNET];
-const fixtureContractPath = (() => { const path = join(fresh("contract"), "act-pilot-contract.json"); writeReviewedContract(path, contractJson(KILL)); return path; })();
-const UNIT = pilotUnitOf({ provider: "AZURE", contractSha256: pilotContractSha256(loadPilotContract(fixtureContractPath) as PilotContract), environment: "DEV", target: targetOf("DEV") });
-const behave = (behavior: Behavior = {}) => behaveIn(toolDir, KILL, { applyAdvance: true, showOnlyConfigured: true, showResources: CREATES, stateResources: STATE, unitTags: { ...UNIT.tags }, unitTagAttribute: "tags", ...behavior });
+/**
+ * The run's contract names, as its canary allowlist (owner decision E1), exactly what the plan the fake shows creates; a scenario that plans
+ * other creates gets its own contract (`behave` with `showResources` rewrites the current world's), and with it its own deletion unit.
+ */
+const contractFor = (creates: readonly unknown[]) => withCanary(contractJson(KILL), canaryFor(creates));
+const unitOf = (contract: unknown) => {
+  const path = join(fresh("contract"), "act-pilot-contract.json");
+  writeReviewedContract(path, contract);
+  return pilotUnitOf({ provider: "AZURE", contractSha256: pilotContractSha256(loadPilotContract(path) as PilotContract), environment: "DEV", target: targetOf("DEV") });
+};
+let UNIT = unitOf(contractFor(CREATES));
+/** The default run's contract, for the checks that read one without a run. */
+const fixtureContractPath = (() => { const path = join(fresh("contract"), "act-pilot-contract.json"); writeReviewedContract(path, contractFor(CREATES)); return path; })();
+let current: World | undefined;
+const behave = (behavior: Behavior = {}) => {
+  if (current && behavior.showResources !== undefined) {
+    current.contract = contractFor(behavior.showResources);
+    writeReviewedContract(current.contractPath, current.contract);
+    UNIT = unitOf(current.contract);
+  }
+  behaveIn(toolDir, KILL, { applyAdvance: true, showOnlyConfigured: true, showResources: CREATES, stateResources: STATE, unitTags: { ...UNIT.tags }, unitTagAttribute: "tags", ...behavior });
+};
 const calls = () => callsOf(toolDir);
 const applyCalls = () => calls().filter((c) => c.args[0] === "apply");
 const destroyPlans = () => calls().filter((c) => c.args[0] === "plan" && c.args[1] === "-destroy");
@@ -97,20 +121,22 @@ const tokenFile = join(fresh("token"), "discovery-oidc-token");
 writeFileSync(tokenFile, ARM_FEDERATED_TOKEN_CANARY + "\n", { mode: 0o600 });
 const env = (): NodeJS.ProcessEnv => ({ ...identityEnv("DEV"), ALZ_DISCOVERY_ARM_OIDC_TOKEN_FILE: tokenFile });
 
-type World = { deps: ApplyDeps; dirs: { scratch: string; evidence: string; nonces: string }; contractPath: string; arm: ReturnType<typeof fakeArmHttp> };
+type World = { deps: ApplyDeps; dirs: { scratch: string; evidence: string; nonces: string }; contractPath: string; contract: unknown; arm: ReturnType<typeof fakeArmHttp> };
 let vaultDir = "";
 test.before(async () => {
   vaultDir = fresh("qualification");
   await testFixtureForgeQualificationEvidence(vaultDir);
 });
 function world(cloudBehavior: ArmBehavior = CLOUD): World {
-  behave();
   const dirs = { scratch: fresh("scratch"), evidence: fresh("evidence"), nonces: fresh("nonces") };
   const contractPath = join(fresh("contract"), "act-pilot-contract.json");
-  writeReviewedContract(contractPath, contractJson(KILL));
+  const contract = contractFor(CREATES);
+  writeReviewedContract(contractPath, contract);
+  UNIT = unitOf(contract);
+  behave();
   const arm = fakeArmHttp(cloudBehavior);
-  return {
-    dirs, contractPath, arm,
+  return current = {
+    dirs, contractPath, contract, arm,
     deps: {
       sourceCommit: SOURCE_COMMIT, contractPath, qualificationDir: vaultDir, evidenceDir: dirs.evidence, nonces: openNonceStore(dirs.nonces),
       env: env(), now: () => NOW, scratchParent: dirs.scratch, toolDirs: [toolDir], killPollMs: 40, killGraceMs: 400, arm: arm.http,
@@ -142,7 +168,7 @@ async function applied(w: World) {
   return { s, evidence: result.evidence };
 }
 const build = (w: World, s: Sealed, records: Awaited<ReturnType<typeof loadRunRecords>> & { ok: true }) => buildCleanupProposal({ requesterId: REQUESTER.requesterId,
-  ...records, changes: s.sealed.changes, channel: "CLI", contract: contractJson(KILL) as never, engineVersion: s.sealed.engineVersion, env: w.deps.env!, now: new Date(NOW.getTime() + 120_000),
+  ...records, changes: s.sealed.changes, channel: "CLI", contract: w.contract as never, engineVersion: s.sealed.engineVersion, env: w.deps.env!, now: new Date(NOW.getTime() + 120_000),
 });
 async function proposed(w: World) {
   const run = await applied(w);
@@ -217,10 +243,11 @@ test("Azure Terraform observe: after a successful apply the driver records the b
   const blueprint = await readBlueprintRecord(s.sealed.artifactSha256, sha256(canonicalJson(evidence as never)), w.dirs.evidence);
   assert.ok(blueprint);
   assert.deepEqual(sorted(blueprint.blueprint.entries.map((e) => [e.address, e.origin, e.id, e.arn])), sorted([
-    ["azuread_application.pilot", "NOT_IN_PLAN", APP, null], ["azurerm_key_vault.reused", "IN_PLAN", REUSED_VAULT, null], ["azurerm_key_vault_secret.canary", "IN_PLAN", SECRET, null],
-    ["azurerm_log_analytics_workspace.pilot", "IN_PLAN", LAW, null], ["azurerm_resource_group.pilot", "IN_PLAN", RG, null], ["azurerm_resource_group.state", "IN_PLAN", RG_STATE, null],
-    ["azurerm_role_assignment.old", "NOT_IN_PLAN", OLD_ROLE, null], ["azurerm_storage_account.state", "IN_PLAN", STATE_ACCOUNT, null], ["azurerm_storage_container.state", "IN_PLAN", STATE_CONTAINER, null],
-    ["azurerm_subscription_policy_assignment.shared", "IN_PLAN", POLICY_ASSIGNMENT, null], ["azurerm_virtual_network.unrelated", "NOT_IN_PLAN", UNRELATED_VNET, null],
+    // The pre-existing, shared and imported resources are in the state, never in the plan (owner decision E1).
+    ["azuread_application.pilot", "NOT_IN_PLAN", APP, null], ["azurerm_key_vault.reused", "NOT_IN_PLAN", REUSED_VAULT, null], ["azurerm_key_vault_secret.canary", "IN_PLAN", SECRET, null],
+    ["azurerm_log_analytics_workspace.pilot", "IN_PLAN", LAW, null], ["azurerm_resource_group.pilot", "IN_PLAN", RG, null], ["azurerm_resource_group.state", "NOT_IN_PLAN", RG_STATE, null],
+    ["azurerm_role_assignment.old", "NOT_IN_PLAN", OLD_ROLE, null], ["azurerm_storage_account.state", "NOT_IN_PLAN", STATE_ACCOUNT, null], ["azurerm_storage_container.state", "IN_PLAN", STATE_CONTAINER, null],
+    ["azurerm_subscription_policy_assignment.shared", "NOT_IN_PLAN", POLICY_ASSIGNMENT, null], ["azurerm_virtual_network.unrelated", "NOT_IN_PLAN", UNRELATED_VNET, null],
   ]));
   const raw = JSON.stringify(await readEncryptedEvidence(join(w.dirs.evidence, s.sealed.artifactSha256 + BLUEPRINT_SUFFIX)));
   for (const canary of [...CANARIES, STATE_CANARY]) assert.ok(!raw.includes(canary), "a state value reached the blueprint: " + canary);
@@ -397,8 +424,8 @@ test("the Azure reader sends nothing to a foreign host, a plaintext or login-hos
 const withoutSecret = <T extends { address?: string; type?: string }>(items: readonly T[]): T[] => items.filter((item) => !(item.address ?? item.type ?? "").includes("key_vault_secret"));
 /** The exclusions the fixture always produces: everything this run did not create, or must never delete. */
 const PROTECTED_EXCLUSIONS: [string, string][] = [
-  ["azuread_application.pilot", "PROTECTED_IDENTITY"], ["azurerm_key_vault.reused", "IMPORTED"], ["azurerm_resource_group.pilot", "RETAINED_GROUP"], ["azurerm_resource_group.state", "PROTECTED_BACKEND"], ["azurerm_role_assignment.old", "PROTECTED_IDENTITY"],
-  // The shared policy assignment the plan only updated is kept as an authorization object, not merely as pre-existing: the protection is judged first (review 6409512569, B2).
+  ["azuread_application.pilot", "PROTECTED_IDENTITY"], ["azurerm_key_vault.reused", "NOT_IN_PLAN"], ["azurerm_resource_group.pilot", "RETAINED_GROUP"], ["azurerm_resource_group.state", "PROTECTED_BACKEND"], ["azurerm_role_assignment.old", "PROTECTED_IDENTITY"],
+  // The shared policy assignment is kept as an authorization object, not merely as pre-existing: the protection is judged first (review 6409512569, B2).
   ["azurerm_storage_account.state", "PROTECTED_BACKEND"], ["azurerm_storage_container.state", "PROTECTED_BACKEND"], ["azurerm_subscription_policy_assignment.shared", "PROTECTED_IDENTITY"], ["azurerm_virtual_network.unrelated", "NOT_IN_PLAN"],
 ];
 /** Who keeps each kept resource: the pilot owner for a protected class, the environment's owner for a resource this run did not create. */
@@ -420,6 +447,17 @@ test("Azure Terraform cleanup: the proposal keeps the resource group this run cr
   assert.ok(run.proposal.risks.some((r) => /intentionally retained.*retiring the environment.*separate, reviewed action.*outstanding/.test(r)), "the approvers read that protected objects stay and the environment is not retired");
   assert.equal(run.proposal.unitId, UNIT.unitId);
   noTokenIn(w, run.proposal, run.observation.record);
+  // A change list that also names updates (a record sealed before the canary allowlist) still keeps each resource, and the shared policy
+  // assignment still as an authorization object: the protection is judged first (review 6409512569, B2). The vault the record says was
+  // imported is still a resource the blueprint found outside the plan, so it stays NOT_IN_PLAN.
+  const legacy = buildCleanupProposal({ requesterId: REQUESTER.requesterId, ...run.records, changes: [...run.s.sealed.changes, ...LEGACY_CHANGES], channel: "CLI",
+    contract: w.contract as never, engineVersion: run.s.sealed.engineVersion, env: w.deps.env!, now: new Date(NOW.getTime() + 120_000) });
+  assert.ok(legacy.ok, JSON.stringify(legacy));
+  assert.deepEqual(sorted(legacy.proposal.excluded.filter((x) => LEGACY_CHANGES.some((c) => c.address === x.address)).map((x) => [x.address, x.ownership])), sorted([
+    ["azurerm_key_vault.reused", "NOT_IN_PLAN"], ["azurerm_resource_group.state", "PROTECTED_BACKEND"], ["azurerm_storage_account.state", "PROTECTED_BACKEND"],
+    ["azurerm_subscription_policy_assignment.shared", "PROTECTED_IDENTITY"],
+  ]));
+  assert.deepEqual(legacy.proposal.deletes.map((d) => d.address), run.proposal.deletes.map((d) => d.address), "nothing an update or an import names is ever proposed");
 
   const result = await cleanup(w, run);
   assert.ok(result.ok, JSON.stringify(result));
@@ -1172,7 +1210,7 @@ test("provider and feature registrations a run made are kept, never proposed (re
 test("R1 (Azure): a tenant move refuses the cleanup at propose and at the gate, nothing consumed; the run's full target is bound", async () => {
   const w = world();
   const run = await proposed(w);
-  const base = contractJson(KILL) as { targets: Record<string, Record<string, unknown>> };
+  const base = w.contract as { targets: Record<string, Record<string, unknown>> };
   const authorizeOnlyCleanup = { DEV: ["CLEANUP"], QA: ["APPLY", "CLEANUP"], PROD: ["APPLY", "CLEANUP"] };
   const moved = { ...base, authorize: authorizeOnlyCleanup, targets: { ...base.targets, DEV: { ...base.targets.DEV, tenantId: "99999999-9999-4999-8999-999999999999" } } };
   assert.equal(run.proposal.targetSha256, pilotTargetSha256(base as never, "DEV"));

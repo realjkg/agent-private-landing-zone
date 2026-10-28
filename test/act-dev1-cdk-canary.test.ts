@@ -150,7 +150,11 @@ test("cleanup may remove the log group: the removal template keeps only the sent
   }
 });
 
-test("the committed cdk.out through the whole governed lifecycle (fake aws): two creates; cleanup removes the log group, confirmed gone; the sentinel is held TYPE_UNREVIEWED, so leftovers are INCOMPLETE and the report does not pass", async () => {
+// Owner decision E1: with the example contract's allowlist (the sentinel with retain: true) the sentinel is an intentional retention and the
+// report passes; with the same allowlist minus `retain` the behavior #329 recorded stays: an unreviewed type, INCOMPLETE, not passed.
+for (const retain of [true, false]) test(retain
+  ? "the committed cdk.out through the whole governed lifecycle (fake aws): two creates; cleanup removes the log group, confirmed gone; the sentinel the example contract's canary allowlist retains is kept as CANARY_RETAINED, so leftovers are COMPLETE and the report passes"
+  : "the committed cdk.out through the whole governed lifecycle (fake aws): two creates; cleanup removes the log group, confirmed gone; without retain the sentinel is held TYPE_UNREVIEWED, so leftovers are INCOMPLETE and the report does not pass", async () => {
   const root = mkdtempSync(join(tmpdir(), "alz-cdk-canary-"));
   const toolDir = mkdtempSync(join(tmpdir(), "alz-cdk-canary-tools-"));
   const previous = { cwd: process.cwd(), key: process.env.AGENTIC_EVIDENCE_KEY };
@@ -167,7 +171,10 @@ test("the committed cdk.out through the whole governed lifecycle (fake aws): two
     await forgeCdkQualification(vault, undefined, { backend: EXAMPLE_STACK });
     // The contract's DEV backend is the canary's stack name; the fixture's fake account and region.
     const base = cdkContractJson(kill);
-    const contractJson = { ...base, targets: Object.fromEntries(Object.entries<any>(base.targets).map(([env, t]) => [env, { ...t, backend: EXAMPLE_STACK }])) };
+    // Owner decision E1: the canary allowlist is the example contract's (the log group, and the sentinel with retain: true).
+    const example = (JSON.parse(readFileSync(join(ROOT, "config", "act-pilot-contract.aws-cdk-dev.example.json"), "utf8")) as { targets: { DEV: { canary: { resources: Record<string, unknown>[] } } } }).targets.DEV.canary;
+    const exampleCanary = retain ? example : { resources: example.resources.map(({ retain: _retain, ...entry }) => entry) };
+    const contractJson = { ...base, targets: Object.fromEntries(Object.entries<any>(base.targets).map(([env, t]) => [env, { ...t, backend: EXAMPLE_STACK, canary: exampleCanary }])) };
     const contractPath = join(dir("contract"), "act-pilot-contract.json");
     writeReviewedContract(contractPath, contractJson);
     const project = dir("cdk.out");
@@ -203,14 +210,14 @@ test("the committed cdk.out through the whole governed lifecycle (fake aws): two
     // The sentinel has no Cloud Control read mapping, so the observation is PARTIAL (which the lifecycle report counts as an observe PASS).
     assert.equal(observed.record.verdict, "PARTIAL");
 
-    // The proposal, as the CLI builds it: the log group is deleted; the sentinel is held TYPE_UNREVIEWED (not on the reviewed leaf allowlist).
+    // The proposal, as the CLI builds it: the log group is deleted; the sentinel is kept, as the contract's retained canary sentinel or, without retain, as an unreviewed type.
     const records = await loadRunRecords(sealedResult.sealed.artifactSha256, evidenceDir);
     assert.ok(records.ok, JSON.stringify(records));
     const contract = loadPilotContract(contractPath) as PilotContract;
     const built = buildCleanupProposal({ requesterId: REQUESTER.requesterId, ...records, changes: sealedResult.sealed.changes, channel: "CLI", contract, engineVersion: AWS_CLI_VERSION, env: cdkIdentityEnv("DEV"), now: new Date(NOW.getTime() + 120_000) });
     assert.ok(built.ok, JSON.stringify(built));
     assert.deepEqual(built.proposal.deletes.map((d) => [d.address, d.type]), [["ActDev1", "AWS::Logs::LogGroup"]]);
-    assert.deepEqual(built.proposal.excluded.map((x) => [x.address, x.type, x.ownership, x.retainedBy]), [["RetainedSentinel", "AWS::CloudFormation::WaitConditionHandle", "TYPE_UNREVIEWED", "ENVIRONMENT_OWNER"]]);
+    assert.deepEqual(built.proposal.excluded.map((x) => [x.address, x.type, x.ownership, x.retainedBy]), [["RetainedSentinel", "AWS::CloudFormation::WaitConditionHandle", retain ? "CANARY_RETAINED" : "TYPE_UNREVIEWED", retain ? "PILOT_OWNER" : "ENVIRONMENT_OWNER"]]);
     const proposal = signCleanupProposal(built.proposal, REQUESTER.privateKeyPem);
 
     // The cleanup removes exactly the log group through the removal change set; the stack and the sentinel stay.
@@ -223,25 +230,26 @@ test("the committed cdk.out through the whole governed lifecycle (fake aws): two
     assert.equal(cleaned.evidence.outcome, "SUCCEEDED");
     assert.deepEqual(cleaned.evidence.deletes, ["ActDev1"]);
 
-    // The independent leftover check on today's code: the log group CONFIRMED_DELETED, the sentinel retained as an unreviewed type, so INCOMPLETE.
+    // The independent leftover check: the log group CONFIRMED_DELETED; the sentinel retained by the owner's decision (COMPLETE) or held as an unreviewed type (INCOMPLETE).
     const leftovers = await verifyProposalLeftovers(proposal, observeDeps);
     assert.ok(leftovers.ok, JSON.stringify(leftovers));
     assert.deepEqual(leftovers.record.resources.map((r) => [r.address, r.disposition, r.basis]), [
       ["ActDev1", "CONFIRMED_DELETED", "CLOUD_CONTROL_ABSENT"],
-      ["RetainedSentinel", "INTENTIONALLY_RETAINED", "UNREVIEWED_TYPE"],
+      ["RetainedSentinel", "INTENTIONALLY_RETAINED", retain ? "RETENTION_DECISION" : "UNREVIEWED_TYPE"],
     ]);
-    assert.equal(leftovers.record.disposition, "INCOMPLETE");
+    assert.equal(leftovers.record.disposition, retain ? "COMPLETE" : "INCOMPLETE");
 
-    // The lifecycle report: resource cleanup INCOMPLETE and not passed, with the sentinel counted as held for a person's decision.
+    // The lifecycle report passes only with the retention declared, and shows the sentinel either way.
     const report = buildLifecycleReport({
       gateId: "act:aws-cdk", provider: "AWS", engine: "CDK", applyEvidence: applied.evidence, observation: observed.record, proposal, cleanup: cleaned.evidence,
       leftovers: leftovers.record, live: undefined, now: new Date(NOW.getTime() + 300_000),
     });
     assert.equal(report.stages.cleanup.status, "PASS");
-    assert.equal(report.stages.leftovers.status, "INCONCLUSIVE");
-    assert.equal(report.acceptance.resourceCleanup, "INCOMPLETE");
-    assert.deepEqual(report.acceptance.retained.byOwnership, { TYPE_UNREVIEWED: 1 });
-    assert.equal(report.passed, false);
+    assert.equal(report.stages.leftovers.status, retain ? "PASS" : "INCONCLUSIVE");
+    assert.equal(report.acceptance.resourceCleanup, retain ? "COMPLETED" : "INCOMPLETE");
+    assert.deepEqual(report.acceptance.retained.byOwnership, retain ? { CANARY_RETAINED: 1 } : { TYPE_UNREVIEWED: 1 });
+    assert.deepEqual(report.acceptance.retained.byOwner, retain ? { PILOT_OWNER: 1 } : { ENVIRONMENT_OWNER: 1 });
+    assert.equal(report.passed, retain, JSON.stringify(report.stages));
     assert.deepEqual(lifecycleReportProblems(report), []);
   } finally {
     process.chdir(previous.cwd);

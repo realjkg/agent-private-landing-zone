@@ -27,8 +27,7 @@ import { SOURCE_COMMIT,
   behave as behaveIn, callsOf, human, installFakeTerraform, keys, sha, testFixtureForgeQualificationEvidence, writeReviewedContract, writeProject,
   approvalFor as approval, type Behavior, type Call, type Project,
   REQUESTER,
-  requesterArgs,
-} from "./helpers/apply-fixtures.js";
+  requesterArgs, CANARY_AWS, withPlannedCanary } from "./helpers/apply-fixtures.js";
 
 // docs/act-pilot-apply.md, "Providers". The AWS spec mirrors the Azure denial matrix. The engine is a fake executable, so
 // these tests pin logic, NOT real-engine behavior or real AWS behavior. Explicit fixtures only: every account id, bucket and role is fake.
@@ -130,7 +129,7 @@ test("an AWS contract loads; DEV, QA and PROD differ pairwise in account and bac
   const good = loaded(awsContractJson(KILL)) as PilotContract;
   assert.equal(good.enabled, true);
   assert.equal(good.provider, "AWS");
-  assert.deepEqual(good.targets.PROD, { accountId: "333333333333", region: AWS_REGION, backend: AWS_PROD_TARGET.backend, workspace: "default" });
+  assert.deepEqual(good.targets.PROD, { accountId: "333333333333", region: AWS_REGION, backend: AWS_PROD_TARGET.backend, workspace: "default", canary: CANARY_AWS });
   assert.deepEqual(good.requiredApprovals, { DEV: 1, QA: 1, PROD: 2 });
   const reason = (contract: unknown): string => { const l = loaded(contract); assert.equal(l.enabled, false); return (l as { reason: string }).reason; };
   assert.match(reason(editTargets((t) => { t.QA.accountId = t.DEV.accountId; })), /DEV and QA share an account/);
@@ -306,6 +305,8 @@ const SHARED_TF = 'resource "aws_s3_bucket" "pilot" {}\n';
 
 async function seal(w: World, environment: ApplyEnvironment, mainTf = SHARED_TF) {
   const target = awsTargetOf(environment);
+  // Owner decision E1: the contract's canary allowlist names exactly what the plan the fake shows creates.
+  withPlannedCanary(w.contractPath, toolDir);
   const p = writeProject(fresh("project"), target, mainTf);
   const result = await sealPreview({ invocation: human(target), environment, target, manifest: p.manifest, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved, requester: REQUESTER }, forEnv(w, environment));
   assert.ok(result.ok, JSON.stringify(result));
@@ -533,7 +534,9 @@ test("a provider block that names another account, role, credential, file, desti
   }
   for (const [label, showProviderConfig] of fine) {
     const w = world();
-    behave({ showProviderConfig, applyAdvance: true });
+    // A plan with no aws block plans no aws resource: it creates one random_id instead, so it has something its allowlist names.
+    const created = showProviderConfig.aws ? {} : { showResources: [{ address: "random_id.suffix", type: "random_id", change: { actions: ["create"], before: null, after: {} } }] };
+    behave({ showProviderConfig, ...created, applyAdvance: true });
     const s = await seal(w, "DEV");
     assert.ok((await run(w, s, approvalsFor(s))).ok, label);
   }
@@ -700,7 +703,8 @@ test("the built-in provider walker fails closed (#279 review B1, N1): a tree nes
     { showDocumentExtra: { prior_state: { values: valuesAt(64, resource("terraform_data", "managed")) }, planned_values: valuesAt(64, resource("terraform_data", "managed")) } },
   ]) {
     const w = world();
-    behave({ showProviderConfig: BUILTIN, ...behavior, applyAdvance: true });
+    // The plan creates the module's terraform_data (owner decision E1: a plan that creates nothing has no allowlist to match).
+    behave({ showProviderConfig: BUILTIN, ...behavior, showResources: [{ address: "module.deep.terraform_data.x", mode: "managed", type: "terraform_data", provider_name: BUILTIN_NAME, change: { actions: ["create"], before: null, after: {} } }], applyAdvance: true });
     const s = await seal(w, "DEV");
     assert.ok((await run(w, s, approvalsFor(s))).ok, JSON.stringify(behavior).slice(0, 120));
   }
@@ -921,4 +925,26 @@ test("./alz apply qualify, seal, approve and apply work for an AWS contract with
     assert.equal(applied.code, 0, environment + " " + applied.stderr);
   }
   assert.equal(applyCalls().length, 3);
+});
+
+test("canary (AWS Terraform, owner decision E1): an IAM role beside the allowlisted log group, a second log group, or an update of an existing one is RESOURCE_NOT_IN_CANARY at seal; a contract that authorizes APPLY with no allowlist is CANARY_ALLOWLIST_MISSING", async () => {
+  const create = (address: string) => ({ address, type: address.split(".")[0], change: { actions: ["create"], before: null, after: {} } });
+  for (const [label, behavior, said] of [
+    ["an IAM role", { showResources: [create("aws_iam_role.app")] }, /aws_iam_role\.app: type aws_iam_role is not in the canary allowlist/],
+    ["a second log group", { showResources: [create("aws_cloudwatch_log_group.second")] }, /aws_cloudwatch_log_group: the plan creates 2, the canary allowlist names exactly 1/],
+    ["an update of an existing log group", { showUpdate: true }, /aws_cloudwatch_log_group\.existing \(aws_cloudwatch_log_group\): the plan would \["update"\] it/],
+  ] as const) {
+    const w = world();
+    behave(behavior as Behavior);
+    const refusal = await sealRefusal(w, "DEV");
+    refused(refusal as never, "RESOURCE_NOT_IN_CANARY");
+    assert.match((refusal as { message: string }).message, said, label);
+  }
+  const contract = awsContractJson(KILL) as { targets: Record<string, Record<string, unknown>> };
+  delete contract.targets.DEV.canary;
+  const w = world(contract);
+  behave({});
+  const missing = await sealRefusal(w, "DEV");
+  refused(missing as never, "CANARY_ALLOWLIST_MISSING");
+  assert.equal(callsOf(toolDir).length, 0, "no engine step ran");
 });

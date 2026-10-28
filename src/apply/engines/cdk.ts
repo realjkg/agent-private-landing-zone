@@ -15,11 +15,12 @@ import type { ToolResult } from "../../tools/types.js";
 import { sha256 } from "../../util/sha256.js";
 import { isAwsIdentityType } from "../cleanup-proposal.js";
 import { stripInvisible } from "../constants.js";
+import { assertCanary } from "../canary.js";
 import { assertUsable, checkedOutput, markLeftBehind, stop, withoutIdentities } from "../engine.js";
 import type { ApplyEnd, EngineApplyRun, EngineCleanupRun, EngineContext, EngineRunInput, EngineSpec, StateDocument, StopControl } from "../engine-spec.js";
 import type { AwsTarget } from "../providers/aws.js";
 import { isRecord } from "../providers/shared.js";
-import type { PlanChange, SealedUnit } from "../types.js";
+import type { PilotTarget, PlanChange, SealedUnit } from "../types.js";
 import type { PilotUnit } from "../unit.js";
 
 /**
@@ -226,6 +227,8 @@ type Assembly = {
   canonicalSha256: string;
   /** The template has an IAM resource, the only reason to pass an IAM capability. */
   needsIam: boolean;
+  /** Every resource the template declares, by logical id and type, for the canary allowlist (`assertTemplateInCanary`). */
+  resources: { address: string; type: string }[];
 };
 
 function readFileIn(work: string, relative: unknown, max: number, code: string): Buffer {
@@ -319,11 +322,37 @@ function readAssembly(work: string, pinned: AwsTarget): Assembly {
   const template = isRecord(parsed) ? parsed : stop("TEMPLATE_UNREADABLE");
   if (hasDuplicateKey(text)) stop("TEMPLATE_DUPLICATE_KEY");
   if (template.Transform !== undefined) stop("ASSEMBLY_TRANSFORM");
-  const types = Object.values(isRecord(template.Resources) ? template.Resources : {}).map((resource) => (isRecord(resource) ? String(resource.Type) : ""));
+  const resources = Object.entries(isRecord(template.Resources) ? template.Resources : {})
+    .map(([address, resource]) => ({ address: stripInvisible(address), type: isRecord(resource) && typeof resource.Type === "string" ? stripInvisible(resource.Type) : "" }));
+  const types = resources.map((resource) => resource.type);
   if (types.some(isStackType)) stop("ASSEMBLY_NESTED_STACK");
   if (types.some(isCustomResourceType)) stop("ASSEMBLY_CUSTOM_RESOURCE");
   walkTemplate(template);
-  return { stackName, templateFile, templateSha256: sha256(bytes), canonicalSha256: sha256(canonicalJson(template)), needsIam: types.some((type) => type.startsWith("AWS::IAM::")) };
+  return { stackName, templateFile, templateSha256: sha256(bytes), canonicalSha256: sha256(canonicalJson(template)), needsIam: types.some((type) => type.startsWith("AWS::IAM::")), resources };
+}
+
+/** A CloudFormation resource type as the registry names it, `AWS::Service::Resource`: three plain names, never a wildcard. `Custom::` types have two and never match. */
+const CLOUDFORMATION_TYPE = /^[A-Z][A-Za-z0-9]{1,63}::[A-Z][A-Za-z0-9]{1,63}::[A-Z][A-Za-z0-9]{1,63}$/;
+
+/**
+ * The canary allowlist on the synthesized template (owner decision E1, ../canary.ts): its `Resources` are exactly the listed types
+ * and counts. Nothing is stripped first: `readAssembly` keeps every resource the template declares, so an `AWS::CDK::Metadata`
+ * resource (the CDK's version reporting) is judged like any other and refused unless the allowlist names it. Judged before any
+ * change set exists.
+ */
+function assertTemplateInCanary(assembly: Assembly, pinned: PilotTarget): void {
+  assertCanary(pinned.canary, assembly.resources.map((resource) => ({ ...resource, action: "declare", creates: true })), "template");
+}
+
+/**
+ * The canary allowlist on the change set CloudFormation made (owner decision E1): every change is an `Add` (CREATE, not an import)
+ * of a listed type, matching the listed counts. A Modify (UPDATE, REPLACE, REPLACE_CONDITIONAL or UNKNOWN), a Remove, a Dynamic
+ * or an Import is refused; an action this reader does not know was already refused by `changeOf` (CHANGE_ACTION_UNKNOWN).
+ */
+function assertChangeSetInCanary(changes: readonly PlanChange[], pinned: PilotTarget): void {
+  assertCanary(pinned.canary, changes.map((change) => ({
+    address: change.address, type: change.type, action: change.action.toLowerCase(), creates: change.action === "CREATE" && change.importing !== true,
+  })), "change set");
 }
 
 // --- what CloudFormation reports ---------------------------------------------------------------------------
@@ -498,6 +527,8 @@ function plan(input: EngineContext & { snapshotPath: string; engineVersion: stri
     // The runner would drop a variable it refuses and run with the rest; a change set is never created that way.
     if (session.refused("DISCOVERY").length > 0 || session.refused("CHANGESET").length > 0) stop("ENVIRONMENT_REFUSED");
     const assembly = readAssembly(session.work, pinned);
+    // The template is exactly the canary allowlist before any change set exists.
+    assertTemplateInCanary(assembly, pinned);
     const { region } = pinned;
     const stack = readStack(session, "DISCOVERY", assembly.stackName, region);
     let type: "CREATE" | "UPDATE" = "CREATE";
@@ -533,6 +564,8 @@ function plan(input: EngineContext & { snapshotPath: string; engineVersion: stri
     if (view.id !== changeSetId || view.stackId !== stackId || view.stackName !== assembly.stackName) stop("CHANGE_SET_MISMATCH");
     if (view.status !== "CREATE_COMPLETE" || view.execution !== "AVAILABLE") stop("CHANGE_SET_NOT_CREATED");
     if (view.changes.length === 0) stop("NO_CHANGES_TO_APPLY");
+    // What CloudFormation would do is exactly the canary allowlist's creates. A refusal here leaves the change set unexecuted for a person to clear, as any seal refusal after its creation does.
+    assertChangeSetInCanary(view.changes, pinned);
     // CloudFormation reports no capability that was not passed.
     if (view.capabilities.some((capability) => !capabilities.includes(capability))) stop("CAPABILITY_NOT_IN_CONTRACT");
     if (changeSetTemplateSha256(session, changeSetId, region) !== assembly.canonicalSha256) stop("CHANGE_SET_TEMPLATE_MISMATCH");
@@ -564,7 +597,7 @@ function qualify(input: EngineContext & { snapshotPath: string; engineVersion: s
   const session = openSession(input);
   try {
     prepareWork(session, input.snapshotPath, input.engineVersion);
-    readAssembly(session.work, pinned);
+    assertTemplateInCanary(readAssembly(session.work, pinned), pinned);
     for (const who of ["DISCOVERY", "CHANGESET", "APPLY"] as const) readStack(session, who, pinned.backend, pinned.region);
     if (session.refused("CHANGESET").length > 0 || session.refused("APPLY").length > 0) stop("ENVIRONMENT_REFUSED");
   } finally {
@@ -698,6 +731,9 @@ function openApply(input: EngineRunInput): EngineApplyRun {
       if (before!.id !== found.record.stackId) stop("ARTIFACT_TAMPERED");
       // The stack is as it was when the change set was made: not changed since, and not given another role, topic or rollback setting.
       if (before!.fingerprint !== found.record.stackSha256) stop("PLAN_STALE");
+      // The canary allowlist again, on what is about to run: the assembly's template and the change set CloudFormation holds now.
+      assertTemplateInCanary(assembly, pinned);
+      assertChangeSetInCanary(found.changes, pinned);
       sealed = found.record;
       return found.changes;
     },
@@ -929,6 +965,7 @@ export const CDK: EngineSpec = {
   executables: [EXECUTABLE],
   mutation: "CLOUDFORMATION_EXECUTE_OF_SEALED_CHANGE_SET",
   providers: ["AWS"],
+  canaryTypeOk: (value) => CLOUDFORMATION_TYPE.test(value),
   target: {
     backendOk: (value) => STACK_NAME.test(value),
     workspaceOk: (value) => value === "default",

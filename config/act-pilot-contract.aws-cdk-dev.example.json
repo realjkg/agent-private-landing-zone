@@ -12,7 +12,8 @@
       "region": "us-east-2",
       "backend": "REPLACE-WITH-STACK-NAME",
       "workspace": "default",
-      "capabilities": []
+      "capabilities": [],
+      "canary": { "resources": [{ "type": "AWS::Logs::LogGroup", "count": 1 }, { "type": "AWS::CloudFormation::WaitConditionHandle", "count": 1, "retain": true }] }
     }
   },
   "requiredApprovals": {

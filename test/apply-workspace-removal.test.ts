@@ -18,8 +18,7 @@ import { runApplyCommand, type ApplyCliDeps } from "../src/cli/apply.js";
 import { targetString } from "../src/cli/teardown-driver.js";
 import { removeTree } from "../src/teardown/driver/cleanup.js";
 import {
-  NOW, POLICY, REQUESTER, SOURCE_COMMIT, awsContractJson, awsIdentityEnv, awsTargetOf, behave as behaveIn, behaveAwsReads, installFakeAwsReads, installFakeTerraform, keys, requesterArgs, stateResource, testFixtureForgeQualificationEvidence, writeReviewedContract, writeProject, type Project,
-} from "./helpers/apply-fixtures.js";
+  NOW, POLICY, REQUESTER, SOURCE_COMMIT, awsContractJson, awsIdentityEnv, awsTargetOf, behave as behaveIn, behaveAwsReads, installFakeAwsReads, installFakeTerraform, keys, requesterArgs, stateResource, testFixtureForgeQualificationEvidence, writeReviewedContract, writeProject, type Project, withCanary } from "./helpers/apply-fixtures.js";
 
 // Removing a run's generated working files (owner decision 6443062568 "Unpin the ACT decision", item 2 (b), #39): through the same
 // proposal, requester signature, approval quorum and kill-switch path as a cleanup. The removal deletes only what a fresh plan of the
@@ -297,7 +296,8 @@ test("at the terminal: propose-removal, approve (APPROVE REMOVAL, cleanup domain
     showProviderConfig: { aws: { name: "aws", full_name: "registry.terraform.io/hashicorp/aws", expressions: { region: { references: ["var.region"] } } } }, stateResources: [stateResource("aws_s3_bucket", "logs", BUCKET, "arn:aws:s3:::" + BUCKET)] });
   behaveAwsReads(awsToolDir, { existing: [BUCKET], tagged: [] });
   const contractPath = join(fresh("contract"), "act-pilot-contract.json");
-  writeReviewedContract(contractPath, awsContractJson(KILL, WITH_REMOVE));
+  // Owner decision E1: the contract names exactly the one bucket the plan creates.
+  writeReviewedContract(contractPath, withCanary(awsContractJson(KILL, WITH_REMOVE), { resources: [{ type: "aws_s3_bucket", count: 1 }] }));
   const vault = fresh("vault");
   await testFixtureForgeQualificationEvidence(vault, undefined, "AWS");
   const [scratch, evidenceDir, preparationDir, proposalsDir] = [fresh("scratch"), fresh("evidence"), fresh("pilot"), fresh("proposals")];

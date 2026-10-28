@@ -91,6 +91,8 @@ export type Behavior = {
   applyWrites?: Array<{ path: string; content: string }>;
   /** `show` reports one more resource than the plan the seal listed. */
   showExtra?: boolean;
+  /** `show` adds an update of an existing resource of the configured cloud beside the default create (which the canary allowlist refuses at seal and at apply). */
+  showUpdate?: boolean;
   /** `show` lists only `showResources`, without the two default azurerm resources. */
   showOnlyConfigured?: boolean;
   /** Raw `resource_changes` entries (imports, moves, forgets, hostile addresses), `output_changes` and `configuration.provider_config` that `show` adds. */
@@ -202,12 +204,15 @@ else if (cmd === "show") {
     resource_changes: [
       // The two default changes are of the configured cloud: azurerm when the configuration names it (or is the default), aws when it
       // names aws and not azurerm, and none when it names neither (a plan of providers that reach no cloud).
+      // The default change is one create of the configured cloud (the fixture contracts' canary allowlist, CANARY_AZURE and CANARY_AWS): azurerm when the
+      // configuration names it (or is the default), aws when it names aws and not azurerm, and none when it names neither (a plan of providers that reach
+      // no cloud). An update of an existing resource is added only on request (showUpdate), and an apply refuses it (RESOURCE_NOT_IN_CANARY).
       ...(b.showOnlyConfigured || (b.showProviderConfig && !b.showProviderConfig.aws && !b.showProviderConfig.azurerm) ? [] : b.showProviderConfig && b.showProviderConfig.aws && !b.showProviderConfig.azurerm ? [
         { address: "aws_cloudwatch_log_group.pilot", type: "aws_cloudwatch_log_group", change: { actions: ["create"], before: null, after: { name: "${VALUE_CANARY}" } } },
-        { address: "aws_cloudwatch_log_group.existing", type: "aws_cloudwatch_log_group", change: { actions: ["update"], before: {}, after: {} } },
+        ...(b.showUpdate ? [{ address: "aws_cloudwatch_log_group.existing", type: "aws_cloudwatch_log_group", change: { actions: ["update"], before: {}, after: {} } }] : []),
       ] : [
         { address: "azurerm_resource_group.pilot", type: "azurerm_resource_group", change: { actions: ["create"], before: null, after: { properties: { k: "${VALUE_CANARY}" } } } },
-        { address: "azurerm_log_analytics_workspace.pilot", type: "azurerm_log_analytics_workspace", change: { actions: ["update"], before: {}, after: {} } },
+        ...(b.showUpdate ? [{ address: "azurerm_log_analytics_workspace.pilot", type: "azurerm_log_analytics_workspace", change: { actions: ["update"], before: {}, after: {} } }] : []),
       ]),
       ...(b.showExtra ? [{ address: "azurerm_key_vault.extra", type: "azurerm_key_vault", change: { actions: ["delete"], before: {}, after: null } }] : []),
       ...(b.showResources || []).map((r) => (b.unitTags && r && r.change && (r.change.actions || []).includes("create"))
@@ -252,6 +257,26 @@ else { log({ unexpected: true }); process.exit(2); }
 export function installFakeTerraform(toolDir: string): void {
   writeFileSync(join(toolDir, "terraform"), FAKE, { mode: 0o755 });
   chmodSync(join(toolDir, "terraform"), 0o755);
+}
+
+/**
+ * The managed creates the fake's `show` lists for the behavior now in `toolDir` (the same rule as the fake: the configured cloud's default
+ * create, then `showResources`), as a canary allowlist, or undefined when the plan creates nothing.
+ */
+export function plannedCanaryOf(toolDir: string): { resources: { type: string; count: number }[] } | undefined {
+  const b = JSON.parse(readFileSync(join(toolDir, "behavior.json"), "utf8")) as Behavior;
+  const config = b.showProviderConfig as Record<string, unknown> | undefined;
+  const defaults = b.showOnlyConfigured || (config && !config.aws && !config.azurerm) ? []
+    : config && config.aws && !config.azurerm ? [{ address: "aws_cloudwatch_log_group.pilot", type: "aws_cloudwatch_log_group", change: { actions: ["create"] } }]
+    : [{ address: "azurerm_resource_group.pilot", type: "azurerm_resource_group", change: { actions: ["create"] } }];
+  const canary = canaryFor([...defaults, ...(b.showResources ?? [])]);
+  return canary.resources.length > 0 ? canary : undefined;
+}
+/** Rewrites the reviewed contract so every target's canary allowlist is what the fake's plan creates now (`plannedCanaryOf`); unchanged when it creates nothing. */
+export function withPlannedCanary(contractPath: string, toolDir: string): void {
+  const canary = plannedCanaryOf(toolDir);
+  if (!canary) return;
+  writeReviewedContract(contractPath, withCanary(JSON.parse(readFileSync(contractPath, "utf8")) as { targets: Record<string, unknown> }, canary));
 }
 
 export function behave(toolDir: string, killPath: string, behavior: Behavior = {}): void {
@@ -462,12 +487,38 @@ export const approvers = [
   { id: "dana", publicKeyPem: keys.dana.pub, environments: ["DEV", "QA", "PROD"] },
 ];
 
+/**
+ * The fixture contracts' canary allowlists (owner decision E1): exactly what the fake engine's default plan creates, one resource of the
+ * configured cloud. A test whose plan creates something else names its own allowlist (`withCanary`).
+ */
+export const CANARY_AZURE = { resources: [{ type: "azurerm_resource_group", count: 1 }] };
+export const CANARY_AWS = { resources: [{ type: "aws_cloudwatch_log_group", count: 1 }] };
+/** The same contract with `canary` as every target's allowlist. */
+export const withCanary = <T extends { targets: Record<string, unknown> }>(contract: T, canary: unknown): T => ({
+  ...contract, targets: Object.fromEntries(Object.entries(contract.targets).map(([env, target]) => [env, { ...(target as object), canary }])),
+});
+
+/**
+ * The canary allowlist of a scenario's plan: the managed `resource_changes` entries whose actions are exactly ["create"], counted
+ * by type. Anything else in the plan (an update, a replace, a delete, an import) is not counted, so the seal still refuses it.
+ */
+export function canaryFor(changes: readonly unknown[]): { resources: { type: string; count: number }[] } {
+  const counts = new Map<string, number>();
+  for (const change of changes as { address?: string; type?: string; mode?: string; change?: { actions?: unknown } }[]) {
+    const data = change.mode === "data" || /(^|\.)data\./.test(String(change.address ?? ""));
+    const actions = change.change?.actions;
+    if (data || !Array.isArray(actions) || actions.length !== 1 || actions[0] !== "create" || typeof change.type !== "string") continue;
+    counts.set(change.type, (counts.get(change.type) ?? 0) + 1);
+  }
+  return { resources: [...counts].map(([type, count]) => ({ type, count })) };
+}
+
 export const contractJson = (killPath: string, over: Record<string, unknown> = {}) => ({
   schemaVersion: 1, enabled: true, provider: "AZURE", engine: "TERRAFORM",
   targets: {
-    DEV: { tenantId: TENANT, subscriptionId: DEV_TARGET.account, backend: DEV_TARGET.backend, workspace: "default" },
-    QA: { tenantId: TENANT, subscriptionId: QA_TARGET.account, backend: QA_TARGET.backend, workspace: "default" },
-    PROD: { tenantId: TENANT, subscriptionId: PROD_TARGET.account, backend: PROD_TARGET.backend, workspace: "default" },
+    DEV: { tenantId: TENANT, subscriptionId: DEV_TARGET.account, backend: DEV_TARGET.backend, workspace: "default", canary: CANARY_AZURE },
+    QA: { tenantId: TENANT, subscriptionId: QA_TARGET.account, backend: QA_TARGET.backend, workspace: "default", canary: CANARY_AZURE },
+    PROD: { tenantId: TENANT, subscriptionId: PROD_TARGET.account, backend: PROD_TARGET.backend, workspace: "default", canary: CANARY_AZURE },
   },
   requiredApprovals: { DEV: 1, QA: 1, PROD: 2 }, maxApprovalAgeMinutes: 60, approvers, killSwitchPath: killPath, authorize: AUTHORIZE_ALL, ...over,
 });
@@ -481,7 +532,7 @@ export function writeReviewedContract(contractPath: string, contract: unknown): 
 
 export const awsContractJson = (killPath: string, over: Record<string, unknown> = {}) => ({
   ...contractJson(killPath), provider: "AWS",
-  targets: Object.fromEntries((["DEV", "QA", "PROD"] as const).map((e) => [e, { accountId: awsTargetOf(e).account, region: AWS_REGION, backend: awsTargetOf(e).backend, workspace: "default" }])),
+  targets: Object.fromEntries((["DEV", "QA", "PROD"] as const).map((e) => [e, { accountId: awsTargetOf(e).account, region: AWS_REGION, backend: awsTargetOf(e).backend, workspace: "default", canary: CANARY_AWS }])),
   ...over,
 });
 

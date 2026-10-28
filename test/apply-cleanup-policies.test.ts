@@ -20,8 +20,7 @@ import { AWS_PRINCIPAL_TYPES, AWS_RUN_CREATED_POLICY_TYPES, AZURE_RUN_CREATED_PO
 import { removeTree } from "../src/teardown/driver/cleanup.js";
 import {
   NOW, POLICY, SOURCE_COMMIT, approvalFor, awsContractJson, awsIdentityEnv, awsRoleArn, awsTargetOf, behave as behaveIn, behaveAwsReads, callsOf, human, installFakeAwsReads, installFakeTerraform,
-  keys, stateResource, testFixtureForgeQualificationEvidence, writeReviewedContract, writeProject, REQUESTER, reHashedProposal, type Behavior,
-} from "./helpers/apply-fixtures.js";
+  keys, stateResource, testFixtureForgeQualificationEvidence, writeReviewedContract, writeProject, REQUESTER, reHashedProposal, type Behavior, canaryFor, withCanary } from "./helpers/apply-fixtures.js";
 
 // Run-created policies on AWS (owner decision "Unpin the ACT decision", item 2 (c), #39; src/observe/run-created-policies.ts): a
 // customer-managed policy, an inline policy and an attachment the run created are deleted through the same proposal, approvals and
@@ -85,7 +84,9 @@ const DELETED = ["aws_cloudwatch_log_group.canary", "aws_iam_policy.app", "aws_i
 const HELD = ["aws_iam_policy.pilot_extra", "aws_iam_policy.shared", "aws_iam_role.apply", "aws_iam_role.app", "aws_iam_role_policy_attachment.aws_managed",
   "aws_iam_role_policy_attachment.pilot", "aws_iam_role_policy_attachment.preexisting", "aws_iam_user_policy.old_user"];
 
-const fixtureContractPath = (() => { const path = join(fresh("contract"), "act-pilot-contract.json"); writeReviewedContract(path, awsContractJson(KILL)); return path; })();
+/** Owner decision E1: the run's contract names, as its canary allowlist, exactly what the plan creates. */
+const RUN_CONTRACT = withCanary(awsContractJson(KILL), canaryFor(CREATES));
+const fixtureContractPath = (() => { const path = join(fresh("contract"), "act-pilot-contract.json"); writeReviewedContract(path, RUN_CONTRACT); return path; })();
 const CONTRACT = loadPilotContract(fixtureContractPath) as PilotContract;
 const UNIT = pilotUnitOf({ provider: "AWS", contractSha256: pilotContractSha256(CONTRACT), environment: "DEV", target: awsTargetOf("DEV") });
 const behave = (behavior: Behavior = {}) => behaveIn(toolDir, KILL, {
@@ -106,7 +107,7 @@ function world(): World {
   cloud();
   const dirs = { scratch: fresh("scratch"), evidence: fresh("evidence"), nonces: fresh("nonces") };
   const contractPath = join(fresh("contract"), "act-pilot-contract.json");
-  writeReviewedContract(contractPath, awsContractJson(KILL));
+  writeReviewedContract(contractPath, RUN_CONTRACT);
   return {
     dirs, contractPath,
     deps: {
@@ -132,7 +133,7 @@ async function proposed(w: World, env: NodeJS.ProcessEnv = w.deps.env!) {
   assert.ok(observation.ok, JSON.stringify(observation));
   const records = await loadRunRecords(s.sealed.artifactSha256, w.dirs.evidence);
   assert.ok(records.ok, JSON.stringify(records));
-  const built = buildCleanupProposal({ requesterId: REQUESTER.requesterId, ...records, changes: s.sealed.changes, channel: "CLI", contract: { ...(JSON.parse(JSON.stringify(awsContractJson(KILL))) as object), enabled: true } as never,
+  const built = buildCleanupProposal({ requesterId: REQUESTER.requesterId, ...records, changes: s.sealed.changes, channel: "CLI", contract: { ...(JSON.parse(JSON.stringify(RUN_CONTRACT)) as object), enabled: true } as never,
     engineVersion: s.sealed.engineVersion, env, now: new Date(NOW.getTime() + 120_000) });
   assert.ok(built.ok, JSON.stringify(built));
   return { s, records, proposal: signCleanupProposal(built.proposal, REQUESTER.privateKeyPem) };
