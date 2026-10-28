@@ -15,6 +15,15 @@ const PY_SOURCE = /^scripts\/[^/]+\.py$/;
 const SOURCE = /^src\/.+\.(?:ts|tsx|js|mjs)$/;
 const QA_SELF_TEST = "test/qa-affected.test.mjs";
 const MAX_AFFECTED_TESTS = 45;
+// Exit codes: 0 passed (or nothing to run), 1 coverage gap or failed check, 3 over the cap with no other gap and the
+// full-suite route not requested. With --full-suite-over-cap (the CI route) an over-cap-only plan runs the full suite,
+// and its result is the gate; a coverage gap still fails before anything runs.
+export const EXIT_OVER_CAP = 3;
+const OVER_CAP_GAP = /^Affected test count \d+ exceeds \d+/;
+export const FULL_SUITE = ["npm", ["test"]];
+class QaExit extends Error {
+  constructor(message, code) { super(message); this.exitCode = code; }
+}
 const RUNTIME_FRAMEWORK_IMPORT = /from\s+["']@langchain\//;
 // Inventory guards scan the filesystem (src/cli, ./alz, package.json scripts,
 // generated docs) instead of importing what they check, so the import closure
@@ -321,7 +330,8 @@ export function planChanged(changedPaths, files) {
     // Unknown executable or deployment configuration: do not silently pass.
     gaps.push(path + " has no QA ownership rule.");
   }
-  if (selected.size + pythonTests.size > MAX_AFFECTED_TESTS) {
+  const overCap = selected.size + pythonTests.size > MAX_AFFECTED_TESTS;
+  if (overCap) {
     gaps.push("Affected test count " + (selected.size + pythonTests.size) + " exceeds " + MAX_AFFECTED_TESTS +
       ". Split the change or qualify it through an explicit release gate.");
   }
@@ -339,7 +349,7 @@ export function planChanged(changedPaths, files) {
     buildUi = true;
   }
   return {
-    changed, nodeTests, uiTests, jsTests, pythonTests: uniq([...pythonTests]),
+    changed, overCap, coverageGaps: coverageGapsOf(gaps), nodeTests, uiTests, jsTests, pythonTests: uniq([...pythonTests]),
     pythonChanged: uniq([...pythonChanged]), pythonEntrypoints: uniq([...pythonEntrypoints]),
     gaps, notes, buildUi, pinCheck,
     pluginCheck, configCheck,
@@ -351,6 +361,13 @@ export function planChanged(changedPaths, files) {
       changed.some(p => SOURCE.test(p))),
     testCount: tests.length + pythonTests.size,
   };
+}
+// Every gap except the over-cap notice. The cap notice stays in `gaps` so older readers (scripts/premerge.sh) keep working.
+export function coverageGapsOf(gaps) { return gaps.filter(g => !OVER_CAP_GAP.test(g)); }
+// The route a plan takes: "blocked" on any coverage gap, "over-cap" when only the cap is exceeded, else "affected".
+export function routeOf(plan) {
+  if (coverageGapsOf(plan.gaps ?? []).length) return "blocked";
+  return (plan.gaps ?? []).some(g => OVER_CAP_GAP.test(g)) ? "over-cap" : "affected";
 }
 function git(args) {
   const r = spawnSync("git", args, {encoding: "utf8"});
@@ -388,8 +405,12 @@ function writeTsconfig(name, base, files) {
   }, null, 2) + "\n");
   return path;
 }
-function execute(plan) {
-  if (plan.gaps.length) throw Error("QA coverage gaps:\n" + plan.gaps.join("\n"));
+function execute(plan, fullSuiteOverCap) {
+  const route = routeOf(plan);
+  if (route === "blocked") throw Error("QA coverage gaps:\n" + plan.gaps.join("\n"));
+  if (route === "over-cap" && !fullSuiteOverCap) throw new QaExit("QA_OVER_CAP: " + plan.gaps.join("\n") +
+    "\nNo coverage gap. Rerun with --full-suite-over-cap to qualify the change through the full suite.", EXIT_OVER_CAP);
+  const fullSuite = route === "over-cap";
   if (!plan.testCount && !plan.pinCheck) return console.log("QA: documentation-only; no tests needed.");
   mkdirSync(".runs/qa", {recursive: true});
   if (plan.pinCheck) runCmd("npm", ["run", "ci:actions-pinned"]);
@@ -404,23 +425,32 @@ function execute(plan) {
   const uiConfig = writeTsconfig("ui-affected", "tsconfig.ui.json", uiInputs);
   if (nodeConfig) runCmd("./node_modules/.bin/tsc", ["-p", nodeConfig]);
   if (uiConfig) runCmd("./node_modules/.bin/tsc", ["-p", uiConfig]);
-  if (plan.buildUi) runCmd("npm", ["run", "build:ui"]);
-  if (plan.nodeTests.length) runCmd("./node_modules/.bin/tsx", ["--test", ...plan.nodeTests]);
-  if (plan.uiTests.length) runCmd("./node_modules/.bin/vitest", ["run", ...plan.uiTests]);
+  if (fullSuite) {
+    // The full suite (UI build, every node test, every UI test) replaces only the selected node and UI tests; the pin,
+    // type, .mjs, Python and plugin checks the plan selected still run.
+    console.log("QA: over cap: running the full suite as the release gate (" + FULL_SUITE[0] + " " + FULL_SUITE[1].join(" ") + ")");
+    runCmd(...FULL_SUITE);
+  } else {
+    if (plan.buildUi) runCmd("npm", ["run", "build:ui"]);
+    if (plan.nodeTests.length) runCmd("./node_modules/.bin/tsx", ["--test", ...plan.nodeTests]);
+    if (plan.uiTests.length) runCmd("./node_modules/.bin/vitest", ["run", ...plan.uiTests]);
+  }
   if (plan.jsTests.length) runCmd("node", ["--test", ...plan.jsTests]);
   if (plan.pythonChanged?.length) runCmd("python3", ["-m", "py_compile", ...plan.pythonChanged]);
   for (const testPath of plan.pythonTests ?? []) runCmd("python3", [testPath]);
   for (const entrypoint of plan.pythonEntrypoints ?? []) runCmd("python3", [entrypoint]);
   if (plan.pluginCheck) runCmd("npm", ["run", "plugins:check"]);
-  console.log("QA: passed " + plan.testCount + " affected test files.");
+  console.log(fullSuite ? "QA: over cap: the full suite passed as the release gate (" + plan.testCount + " affected test files)."
+    : "QA: passed " + plan.testCount + " affected test files.");
 }
 function main() {
   const mode = process.argv[2] ?? "plan";
+  const fullSuiteOverCap = process.argv.includes("--full-suite-over-cap");
   if (mode === "run") {
     const file = arg("--plan", ".runs/qa/plan.json");
-    return execute(JSON.parse(readFileSync(file, "utf8")));
+    return execute(JSON.parse(readFileSync(file, "utf8")), fullSuiteOverCap);
   }
-  if (mode !== "plan" && mode !== "local") throw Error("Usage: qa-affected.mjs plan|local [--base SHA] [--head SHA] [--out FILE]");
+  if (mode !== "plan" && mode !== "local") throw Error("Usage: qa-affected.mjs plan|local|run [--base SHA] [--head SHA] [--out FILE] [--plan FILE] [--full-suite-over-cap]");
   const base = arg("--base", process.env.QA_BASE ?? "origin/main");
   const head = arg("--head", process.env.QA_HEAD ?? "");
   // Local edits are based on the common ancestor, not the moving main tip.
@@ -447,11 +477,18 @@ function main() {
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY,
     "### Affected QA\n\nChanged paths: " + changed.length + "; test files: " + plan.testCount +
     "\n\n" + plan.nodeTests.concat(plan.uiTests, plan.jsTests, plan.pythonTests).map(p => "- " + p).join("\n") + "\n");
+  const route = routeOf(plan);
+  const fullSuite = route === "over-cap" && fullSuiteOverCap;
+  if (fullSuite) console.log("QA route: over cap: the full suite runs as the release gate.");
+  if (process.env.GITHUB_STEP_SUMMARY && fullSuite) appendFileSync(process.env.GITHUB_STEP_SUMMARY,
+    "\n**Route: over cap: running the full suite as the release gate.**\n");
   if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT,
-    "needs_deps=" + String(plan.needsDeps) + "\n");
-  if (plan.gaps.length) throw Error("QA requires focused coverage:\n" + plan.gaps.join("\n"));
-  if (mode === "local") return execute(plan);
+    "needs_deps=" + String(plan.needsDeps || fullSuite) + "\nroute=" + (fullSuite ? "full-suite" : route) + "\n");
+  if (route === "blocked") throw Error("QA requires focused coverage:\n" + plan.gaps.join("\n"));
+  if (route === "over-cap" && !fullSuiteOverCap) throw new QaExit("QA_OVER_CAP: " + plan.gaps.join("\n") +
+    "\nNo coverage gap. Rerun with --full-suite-over-cap to qualify the change through the full suite.", EXIT_OVER_CAP);
+  if (mode === "local") return execute(plan, fullSuiteOverCap);
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  try { main(); } catch (err) { console.error(err.message); process.exitCode = 1; }
+  try { main(); } catch (err) { console.error(err.message); process.exitCode = err instanceof QaExit ? err.exitCode : 1; }
 }

@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { readdirSync, readFileSync } from "node:fs";
-import { diffCommand, FIXTURE_OWNERS, importsOf, planChanged, SOURCE_SCAN_GUARDS, TEMPLATE_OWNERS, UNIMPORTABLE_OWNERS } from "../scripts/qa-affected.mjs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { diffCommand, EXIT_OVER_CAP, FIXTURE_OWNERS, importsOf, planChanged, routeOf, SOURCE_SCAN_GUARDS, TEMPLATE_OWNERS, UNIMPORTABLE_OWNERS } from "../scripts/qa-affected.mjs";
 
 function fixture() {
   return new Map([
@@ -427,4 +430,93 @@ test("the construct judge's real Terraform fixtures are owned by its focused tes
   const plan = planChanged([manifest], new Map([...files, [manifestOwner, ""], [manifest, "{}"]]));
   assert.deepEqual(plan.gaps, []);
   assert.ok(plan.nodeTests.includes(manifestOwner));
+});
+
+// Over the cap (owner decision, E4): the selection is too large to be a focused check, so the full suite for that exact
+// head is the gate. Only the cap gets this route; a coverage gap still fails before anything runs.
+function overCapFixture(extraTests = 0) {
+  const files = fixture();
+  for (let i = 0; i < 46 + extraTests; i++) files.set("test/many-" + String(i).padStart(2, "0") + ".test.ts", "test()");
+  return files;
+}
+const manyTests = (files) => [...files.keys()].filter(p => p.startsWith("test/many-"));
+test("over the cap with no other gap takes the full-suite route, kept in gaps for older readers", () => {
+  const files = overCapFixture();
+  const plan = planChanged(manyTests(files), files);
+  assert.equal(plan.overCap, true);
+  assert.deepEqual(plan.coverageGaps, []);
+  assert.equal(plan.gaps.length, 1);
+  assert.match(plan.gaps[0], /^Affected test count 46 exceeds 45\./);
+  assert.equal(routeOf(plan), "over-cap");
+});
+test("a coverage gap plus the cap is blocked: the full suite never hides a gap", () => {
+  const files = overCapFixture();
+  files.set("src/agent/orphan.ts", "export const orphan = true;");
+  const plan = planChanged([...manyTests(files), "src/agent/orphan.ts"], files);
+  assert.equal(plan.overCap, true);
+  assert.equal(plan.coverageGaps.length, 1);
+  assert.match(plan.coverageGaps[0], /orphan\.ts has no importing test/);
+  assert.equal(routeOf(plan), "blocked");
+});
+test("under the cap the route and the selection are unchanged", () => {
+  const plan = planChanged(["src/agent/core.ts"], fixture());
+  assert.equal(plan.overCap, false);
+  assert.deepEqual(plan.coverageGaps, []);
+  assert.equal(routeOf(plan), "affected");
+  assert.deepEqual(plan.nodeTests, ["test/agent-core.test.ts", "test/apply-boundary.test.ts"]);
+  const gap = planChanged(["src/agent/orphan.ts"], new Map([...fixture(), ["src/agent/orphan.ts", "x"]]));
+  assert.equal(routeOf(gap), "blocked");
+});
+
+// The `run` mode executed against a written plan, with a stub `npm` on PATH that stands in for the full suite
+// (SYNTHETIC: it records its arguments and exits with STUB_NPM_EXIT). Nothing real is installed or tested by the stub.
+const SCRIPT = resolve("scripts/qa-affected.mjs");
+function runPlan(plan, args, npmExit = 0) {
+  const dir = mkdtempSync(join(tmpdir(), "qa-route-"));
+  try {
+    const bin = join(dir, "bin");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "npm"), "#!/bin/sh\necho \"$@\" >> \"$STUB_NPM_LOG\"\nexit \"$STUB_NPM_EXIT\"\n");
+    chmodSync(join(bin, "npm"), 0o755);
+    writeFileSync(join(dir, "plan.json"), JSON.stringify(plan));
+    const log = join(dir, "npm.log");
+    writeFileSync(log, "");
+    const r = spawnSync(process.execPath, [SCRIPT, "run", "--plan", "plan.json", ...args], { cwd: dir, encoding: "utf8",
+      env: { ...process.env, PATH: bin + ":" + process.env.PATH, STUB_NPM_LOG: log, STUB_NPM_EXIT: String(npmExit),
+        GITHUB_OUTPUT: "", GITHUB_STEP_SUMMARY: "" } });
+    return { status: r.status, out: r.stdout + r.stderr, npm: readFileSync(log, "utf8") };
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+}
+function overCapPlan(extraGaps = []) {
+  const files = overCapFixture();
+  const plan = planChanged(manyTests(files), files);
+  plan.gaps.unshift(...extraGaps);
+  return plan;
+}
+test("run: over cap only, without the full-suite route, exits 3 and runs nothing", () => {
+  const r = runPlan(overCapPlan(), []);
+  assert.equal(r.status, EXIT_OVER_CAP);
+  assert.match(r.out, /QA_OVER_CAP: Affected test count 46 exceeds 45/);
+  assert.equal(r.npm, "");
+});
+test("run: over cap only, with the full-suite route, passes only when the full suite passes", () => {
+  const pass = runPlan(overCapPlan(), ["--full-suite-over-cap"], 0);
+  assert.equal(pass.status, 0, pass.out);
+  assert.match(pass.out, /over cap: running the full suite as the release gate \(npm test\)/);
+  assert.equal(pass.npm, "test\n");
+  const fail = runPlan(overCapPlan(), ["--full-suite-over-cap"], 1);
+  assert.equal(fail.status, 1);
+  assert.match(fail.out, /QA failed: npm test/);
+});
+test("run: a coverage gap plus the cap fails with exit 1 before the full suite runs", () => {
+  const r = runPlan(overCapPlan(["src/agent/orphan.ts has no importing test. Add a focused test."]), ["--full-suite-over-cap"]);
+  assert.equal(r.status, 1);
+  assert.match(r.out, /QA coverage gaps/);
+  assert.equal(r.npm, "");
+});
+test("the required check routes an over-cap-only plan to the full suite and names that route in the job log", () => {
+  const wf = readFileSync(".github/workflows/pr-validation.yml", "utf8");
+  assert.match(wf, /qa-affected\.mjs plan --base "\$QA_BASE" --head "\$QA_HEAD" --full-suite-over-cap/);
+  assert.match(wf, /name: "Over cap: running the full suite as the release gate"\n\s+if: steps\.scope\.outputs\.route == 'full-suite'\n\s+run: node scripts\/qa-affected\.mjs run --plan \.runs\/qa\/plan\.json --full-suite-over-cap/);
+  assert.match(wf, /name: Run affected QA\n\s+if: steps\.scope\.outputs\.route != 'full-suite'\n\s+run: node scripts\/qa-affected\.mjs run --plan \.runs\/qa\/plan\.json\n/);
 });
