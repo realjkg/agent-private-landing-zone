@@ -49,6 +49,12 @@ class ACTDev1Synthetic(unittest.TestCase):
         self.assertIn('backend "s3"',hcl)
         self.assertIn('retention_in_days = 30',hcl)
         self.assertNotIn('resource "aws_iam_',hcl)
+        # The deletion unit's three tags come from the operator's unit_tags (the values ./alz apply prepare prints), merged into the
+        # log group's tags, so the Terraform engine's seal-time unit check (UNIT_TAG_MISSING) passes (test/act-dev1-terraform-unit-tags.test.ts).
+        self.assertIn('variable "unit_tags"',hcl)
+        self.assertIn('}, var.unit_tags)',hcl)
+        example=json.loads((ROOT/"qualification/aws/act-dev1-canary/terraform.tfvars.example.json").read_text())
+        self.assertEqual(sorted(example["unit_tags"]),["alz-build","alz-managed-by","alz-unit"])
         # Review of #327, round 4: the provider is pinned to the version the pilot's denied types were reviewed against, and the
         # committed lock pins exactly that version, with hashes for the owner's platforms (linux_amd64 and darwin_arm64).
         self.assertIn('version = "= 6.68.0"',hcl)

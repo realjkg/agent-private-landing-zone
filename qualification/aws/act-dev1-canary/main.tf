@@ -33,6 +33,14 @@ variable "owner" {
   }
 }
 
+variable "unit_tags" {
+  type = map(string)
+  validation {
+    condition     = join(",", sort(keys(var.unit_tags))) == "alz-build,alz-managed-by,alz-unit"
+    error_message = "Provide exactly the three unit tags that ./alz apply prepare prints: alz-build, alz-managed-by and alz-unit."
+  }
+}
+
 provider "aws" {
   region = var.region
 }
@@ -41,10 +49,10 @@ resource "aws_cloudwatch_log_group" "act_dev1" {
   name              = var.canary_name
   retention_in_days = 30
 
-  tags = {
+  tags = merge({
     environment = "DEV"
     managed-by  = "sovereign-alz"
     purpose     = "act-dev-1"
     owner       = var.owner
-  }
+  }, var.unit_tags)
 }

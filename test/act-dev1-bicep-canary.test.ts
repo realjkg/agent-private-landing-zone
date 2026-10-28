@@ -1,12 +1,17 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { codeOf } from "../src/apply/engine.js";
-import { ALLOWED_RESOURCE_TYPE, BICEP_ENTRY, RESOURCE_GROUP_TEMPLATE_SCHEMA, checkTemplate, pinnedBicepVersion } from "../src/apply/engines/bicep.js";
+import { ALLOWED_RESOURCE_TYPE, BICEP, BICEP_ENTRY, RESOURCE_GROUP_TEMPLATE_SCHEMA, checkTemplate, pinnedBicepVersion } from "../src/apply/engines/bicep.js";
+import { AZURE } from "../src/apply/providers/azure.js";
+import { removeTree } from "../src/teardown/driver/cleanup.js";
+import { createImmutableSnapshot } from "../src/teardown/snapshot.js";
+import { AZ_VERSION, RESOLVED, RESOURCE_GROUP, SUBSCRIPTION_ID, TARGET, UNIT, behave, identityEnv, installFakes, writeBicepProject } from "./helpers/bicep-fixtures.js";
 
 // The committed ACT-DEV-1 Azure Bicep canary (qualification/azure/act-dev1-bicep-canary). SYNTHETIC and offline: the committed
 // compiled template is judged by the Bicep engine's own seal-time check (checkTemplate). The opt-in run recompiles main.bicep with
@@ -71,12 +76,66 @@ test("main.bicep declares the one resource and no module, existing resource, out
   assert.doesNotMatch(source, /'\s+existing\s*=|subnets|\blist[A-Za-z]*\(/);
 });
 
-const BICEP = process.env.ALZ_BICEP;
-test("recompiling main.bicep with the pinned bicep yields the committed main.json byte for byte (opt-in)", { skip: BICEP ? false : "set ALZ_BICEP to the pinned bicep program" }, () => {
-  const version = spawnSync(BICEP!, ["--version"], { encoding: "utf8", env: { ...process.env, DOTNET_CLI_TELEMETRY_OPTOUT: "1" } });
+/**
+ * The compiled template with the operator's parameter values put in, the way ARM evaluates it for the what-if: `name`, `location` and
+ * `tags`, where tags is `union(createObject(<the four tags>), parameters('unitTags'))` (asserted verbatim above), so the four tags
+ * followed by the unit tags. Everything else is the committed bytes' content.
+ */
+function evaluated(values: { name: string; location: string; owner: string; unitTags: Record<string, string> }): string {
+  const template = JSON.parse(compiled());
+  const [vnet] = template.resources;
+  assert.equal(vnet.tags, "[union(createObject('environment', 'DEV', 'managed-by', 'sovereign-alz', 'purpose', 'act-dev-1', 'owner', parameters('owner')), parameters('unitTags'))]");
+  template.resources[0] = { ...vnet, name: values.name, location: values.location,
+    tags: { environment: "DEV", "managed-by": "sovereign-alz", purpose: "act-dev-1", owner: values.owner, ...values.unitTags } };
+  return JSON.stringify(template, null, 2) + "\n";
+}
+
+/** Seals `template` through the Bicep engine's own plan step with the FAKE `az` and `bicep` of the Bicep unit tests (identity compiler). */
+function sealThroughEngine(template: string) {
+  const root = mkdtempSync(join(tmpdir(), "alz-bicep-canary-"));
+  try {
+    const dir = (name: string): string => { const path = join(root, name); mkdirSync(path, { recursive: true }); return path; };
+    const toolDir = dir("bin");
+    installFakes(toolDir);
+    behave(toolDir, pinnedBicepVersion(), { killPath: join(root, "KILL") });
+    const project = writeBicepProject(dir("project"), template);
+    const snapshot = createImmutableSnapshot(project.projectRoot, project.manifest, dir("snapshot"));
+    try {
+      return BICEP.plan({
+        scratchDir: dir("scratch"), env: identityEnv(dir("tokens")), toolDirs: [toolDir], manifest: project.manifest, pinned: TARGET, spec: AZURE,
+        target: RESOLVED, engineVersion: AZ_VERSION, snapshotPath: snapshot.path, unit: UNIT,
+      });
+    } finally {
+      snapshot.remove();
+    }
+  } finally {
+    removeTree(root);
+  }
+}
+
+test("with prepare's unit tags in unitTags, the seal-time unit check passes: exactly one create, unit sealed, nothing untagged", () => {
+  const name = "vnet-alz-act-dev-1-canary-01";
+  const sealed = sealThroughEngine(evaluated({ name, location: "eastus2", owner: "qa", unitTags: { ...UNIT.tags } }));
+  const id = "/subscriptions/" + SUBSCRIPTION_ID + "/resourceGroups/" + RESOURCE_GROUP + "/providers/Microsoft.Network/virtualNetworks/" + name;
+  assert.deepEqual(sealed.changes, [{ address: id, type: ALLOWED_RESOURCE_TYPE, action: "CREATE" }]);
+  assert.deepEqual(sealed.unit, { unitId: UNIT.unitId, tags: { ...UNIT.tags }, untagged: [] });
+});
+
+test("with the committed placeholder unitTags, or none, the same seal is refused UNIT_TAG_MISSING", () => {
+  const defaults = JSON.parse(compiled()).parameters.unitTags.defaultValue as Record<string, string>;
+  for (const unitTags of [defaults, {}]) {
+    let code = "";
+    try { sealThroughEngine(evaluated({ name: "vnet-alz-act-dev-1-canary-01", location: "eastus2", owner: "qa", unitTags })); } catch (error) { code = codeOf(error); }
+    assert.equal(code, "UNIT_TAG_MISSING", JSON.stringify(unitTags));
+  }
+});
+
+const BICEP_PROGRAM = process.env.ALZ_BICEP;
+test("recompiling main.bicep with the pinned bicep yields the committed main.json byte for byte (opt-in)", { skip: BICEP_PROGRAM ? false : "set ALZ_BICEP to the pinned bicep program" }, () => {
+  const version = spawnSync(BICEP_PROGRAM!, ["--version"], { encoding: "utf8", env: { ...process.env, DOTNET_CLI_TELEMETRY_OPTOUT: "1" } });
   assert.equal(/^Bicep CLI version (\d+\.\d+\.\d+)(?:\s|$)/.exec(version.stdout.trim())?.[1], pinnedBicepVersion());
   // The engine's own compile step: `bicep build main.bicep --stdout --no-restore` in the project folder.
-  const build = spawnSync(BICEP!, ["build", BICEP_ENTRY, "--stdout", "--no-restore"], { cwd: DIR, encoding: "utf8", env: { ...process.env, DOTNET_CLI_TELEMETRY_OPTOUT: "1" } });
+  const build = spawnSync(BICEP_PROGRAM!, ["build", BICEP_ENTRY, "--stdout", "--no-restore"], { cwd: DIR, encoding: "utf8", env: { ...process.env, DOTNET_CLI_TELEMETRY_OPTOUT: "1" } });
   assert.equal(build.status, 0, build.stderr);
   assert.equal(build.stdout, compiled());
 });

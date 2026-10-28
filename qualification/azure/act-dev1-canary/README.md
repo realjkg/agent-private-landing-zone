@@ -43,3 +43,5 @@ The governed cleanup removes the virtual network, the only resource the run crea
 ## Tests
 
 `test/act-dev1-azure-canary.test.ts` (SYNTHETIC): one resource block, the pin, the provider settings, the single lock entry with the official hashes, and the same lock and input readers `./alz apply prepare` uses. With `ALZ_CANARY_TERRAFORM` (the pinned Terraform) and `TF_CLI_CONFIG_FILE` (an offline azurerm 4.81.0 mirror), it also runs `fmt -check`, `init -backend=false -lockfile=readonly` and `validate`.
+
+`test/act-dev1-terraform-unit-tags.test.ts` (SYNTHETIC) seals this canary, and the AWS Terraform canary, through the real driver and Terraform engine with the fake `terraform`. It uses the unit tags exactly as prepare derives them. The seal-time unit check passes with exactly one create. Without `unit_tags`, the same seal is refused with `UNIT_TAG_MISSING`.

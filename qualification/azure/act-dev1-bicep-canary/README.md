@@ -41,4 +41,4 @@ Cleanup is whole-stack only (`docs/act-pilot-bicep.md`, "Cleanup"): `az stack gr
 
 ## Tests
 
-`test/act-dev1-bicep-canary.test.ts` (SYNTHETIC): the compiled template passes the engine's own `checkTemplate`, and the same check refuses a subnet, a second resource or another type. With `ALZ_BICEP` naming the pinned Bicep, it also recompiles `main.bicep` and requires the committed `main.json` byte for byte.
+`test/act-dev1-bicep-canary.test.ts` (SYNTHETIC): the compiled template passes the engine's own `checkTemplate`, and the same check refuses a subnet, a second resource or another type. With `ALZ_BICEP` naming the pinned Bicep, it also recompiles `main.bicep` and requires the committed `main.json` byte for byte. The test also seals the template through the Bicep engine's plan step with the fake `az` and `bicep`. The test puts the operator's values in the way ARM would, and the unit check passes with prepare's unit tags. With the committed placeholder `unitTags`, the seal is refused with `UNIT_TAG_MISSING`.
