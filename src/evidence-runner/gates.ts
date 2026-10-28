@@ -42,14 +42,13 @@ const NO_PRODUCER_PLAN = "A new PLAN names this gate's producer (delegated decis
 /**
  * Gates whose path is not admitted yet, so no producer can run them and the runner reports them and writes nothing, whatever
  * their mode would otherwise plan. GCP's gates are required before GCP is an admitted provider (path 5; owner approval
- * 6433121154 on issue #39). The Bicep preview gate is back in scope (path 4; owner rebaseline 6443352284), but no contract can
- * name the BICEP engine until its id is admitted, so it is never planned as the GUIDED S5 stage of the authorized path.
+ * 6433121154 on issue #39). Azure Bicep (path 4) is admitted in code for DEV only (owner decision E2), so its preview gate is
+ * produced at seal like any other admitted path's and is not listed here.
  */
 const GCP_NOT_ADMITTED = "GCP is not an admitted provider yet, so no producer can run this gate. ";
 const NOT_ADMITTED: Readonly<Record<string, string>> = {
   "gcp-provider": GCP_NOT_ADMITTED,
   "preview:terraform-gcp-brownfield": GCP_NOT_ADMITTED,
-  "preview:bicep-azure-brownfield": "The BICEP engine is not an admitted engine yet (path 4), so no producer can run this gate. ",
 };
 
 function planFor(id: string): GatePlan {

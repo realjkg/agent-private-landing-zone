@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.47.16.16243",
-      "templateHash": "15082743572145321313"
+      "templateHash": "15718978022094814137"
     }
   },
   "parameters": {
@@ -24,24 +24,6 @@
       "metadata": {
         "description": "The region. Defaults to the existing pilot resource group's region."
       }
-    },
-    "owner": {
-      "type": "string",
-      "defaultValue": "REPLACE-WITH-APPROVED-OWNER",
-      "metadata": {
-        "description": "The approved owner tag."
-      }
-    },
-    "unitTags": {
-      "type": "object",
-      "defaultValue": {
-        "alz-build": "REPLACE-WITH-PREPARE-OUTPUT",
-        "alz-managed-by": "REPLACE-WITH-PREPARE-OUTPUT",
-        "alz-unit": "REPLACE-WITH-PREPARE-OUTPUT"
-      },
-      "metadata": {
-        "description": "Exactly the three unit tags that ./alz apply prepare prints: alz-build, alz-managed-by and alz-unit."
-      }
     }
   },
   "resources": [
@@ -50,7 +32,15 @@
       "apiVersion": "2024-05-01",
       "name": "[parameters('name')]",
       "location": "[parameters('location')]",
-      "tags": "[union(createObject('environment', 'DEV', 'managed-by', 'sovereign-alz', 'purpose', 'act-dev-1', 'owner', parameters('owner')), parameters('unitTags'))]",
+      "tags": {
+        "environment": "DEV",
+        "managed-by": "sovereign-alz",
+        "purpose": "act-dev-1",
+        "owner": "REPLACE-WITH-APPROVED-OWNER",
+        "alz-build": "REPLACE-WITH-PREPARE-OUTPUT",
+        "alz-managed-by": "REPLACE-WITH-PREPARE-OUTPUT",
+        "alz-unit": "REPLACE-WITH-PREPARE-OUTPUT"
+      },
       "properties": {
         "addressSpace": {
           "addressPrefixes": [

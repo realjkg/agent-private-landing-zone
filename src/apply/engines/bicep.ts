@@ -15,25 +15,32 @@ import { interceptStopSignals, runBoundedProcess, runStoppableProcess, type Stop
 import { PROFILES, type ProcessProfile } from "../../tools/profiles.js";
 import type { ToolName, ToolResult } from "../../tools/types.js";
 import { sha256 } from "../../util/sha256.js";
+import { assertCanary } from "../canary.js";
 import { SAFE_VALUE, TOKEN_FILE, stripInvisible } from "../constants.js";
 import { assertUsable, checkedOutput, stop, withoutIdentities } from "../engine.js";
 import type { ApplyEnd, EngineApplyRun, EngineCleanupRun, EngineContext, EngineRunInput, EngineSpec, StopControl } from "../engine-spec.js";
 import type { AzureTarget } from "../providers/azure.js";
 import { isRecord } from "../providers/shared.js";
-import type { PlanChange, SealedUnit } from "../types.js";
+import type { PilotTarget, PlanChange, SealedUnit } from "../types.js";
 import type { PilotUnit } from "../unit.js";
 
 /**
  * The Azure Bicep / ARM engine spec (docs/act-pilot-bicep.md, path 4 of the narrow ACT-DEV release): one empty, tagged virtual
  * network, compiled from the project's `main.bicep` by the pinned bicep and deployed into the EXISTING pilot resource group (#304)
  * as one resource-group deployment stack with deny settings on. The run never creates, adopts or deletes a resource group, and
- * never registers a provider. Sealing compiles, checks the ARM JSON against the workload's allowlist and runs a deployment
- * what-if as DISCOVERY (the plan of record); the artifact holds the compiled template's exact text. The apply creates the stack
- * from those bytes only, as APPLY. A cleanup deletes the whole stack with `deleteResources`, which leaves the group in place.
- * Codes only: engine output (what-if payloads, stack errors) can quote template values.
+ * never registers a provider. Sealing compiles, checks the ARM JSON against the workload's allowlist and the target's canary
+ * allowlist (owner decision E1), and runs an ordinary ARM deployment what-if as APPLY (the plan of record; owner decision E2,
+ * option A: ARM's what-if needs `Microsoft.Resources/deployments/whatIf/action`, which DISCOVERY, kept read-only, does not hold).
+ * The what-if creates nothing, and the approvals still stand between it and the stack create. The artifact holds the compiled
+ * template's exact text. The apply creates the stack from those bytes only, as APPLY. A cleanup deletes the whole stack with
+ * `deleteResources`, which leaves the group in place. Codes only: engine output (what-if payloads, stack errors) can quote
+ * template values.
  *
- * NOT REGISTERED. `EngineId`, the evidence `mutation` values and the contract's scope for Azure Bicep belong to the authorization
- * lane (src/apply/types.ts, src/apply/contract.ts); until they name BICEP this spec is exported on its own and is not in `SPECS`.
+ * ADMITTED IN CODE, DEV ONLY (owner decision E2). `EngineId` names BICEP, this spec is in `SPECS` (src/apply/engine-spec.ts), the
+ * evidence names its two `mutation` values, and the contract admits Azure with this engine under the DEV-only scope
+ * (src/apply/contract.ts). Admission still needs the owner's reviewed contract with an `authorize` entry, and the repository ships
+ * none, so ACT stays DISABLED. Registration is not readiness: the identities' roles are the owner's bootstrap (bootstrap/azure,
+ * docs/act-pilot-bicep.md), and nothing here has run against ARM.
  *
  * Every az argument below was checked against the azure-cli 2.91.0 source (the resource and profile modules, azure-cli-core).
  * What ARM answers is UNVERIFIED (A1 to A4 in the design note): there is no ARM emulator, and no Azure call has been made. The
@@ -56,8 +63,17 @@ export const DENY_SETTINGS_MODE = "denyWriteAndDelete";
 const ACTION_ON_UNMANAGE = "deleteResources";
 const UNIT_TAG_KEYS: readonly string[] = ["alz-build", "alz-managed-by", "alz-unit"];
 
-/** A target of this engine: the provider's tenant and subscription, the stack name as `backend`, and the existing pilot resource group. */
-export type BicepTarget = AzureTarget & { resourceGroup: string };
+/**
+ * A target of this engine: the provider's tenant and subscription, the stack name as `backend`, the existing pilot resource group,
+ * and the Azure region the run deploys to (owner decision E2: location is bound). The group must be in that region, and every
+ * resource the what-if creates or changes must be placed there.
+ */
+export type BicepTarget = AzureTarget & { resourceGroup: string; location: string };
+
+/** An Azure region's programmatic name as ARM reports it (`eastus2`, `westeurope`): lowercase letters and digits only, no spaces. */
+export const AZURE_LOCATION = /^[a-z][a-z0-9]{2,39}$/;
+/** A location as ARM may print it (`East US 2`, `eastus2`), normalized to the programmatic name for comparison. */
+const regionOf = (value: unknown): string => (typeof value === "string" ? value.replace(/\s+/g, "").toLowerCase() : "");
 
 // --- the argument lists ---------------------------------------------------------------------------------
 
@@ -123,8 +139,9 @@ const ENTRIES: readonly Entry[] = [
     { exe: AZ, who, shape: STACK_SHOW, adapters: ALL },
   ]),
   { exe: AZ, who: "DISCOVERY", shape: GROUP_SHOW, adapters: ["preview", "apply"] },
-  // UNVERIFIED (A1): the plan of record, re-run at apply to find a plan its state has outgrown.
-  { exe: AZ, who: "DISCOVERY", shape: WHAT_IF, adapters: ["preview", "apply"] },
+  // UNVERIFIED (A1): the plan of record, re-run at apply to find a plan its state has outgrown. As APPLY only (owner decision E2,
+  // option A): DISCOVERY holds no whatIf, deployment or deny-setting authority.
+  { exe: AZ, who: "APPLY", shape: WHAT_IF, adapters: ["preview", "apply"] },
   { exe: AZ, who: "APPLY", shape: STACK_CREATE, adapters: ["apply"] },
   { exe: AZ, who: "APPLY", shape: STACK_DELETE, adapters: ["cleanup"] },
 ];
@@ -292,20 +309,40 @@ const TEMPLATE_KEYS = new Set(["$schema", "languageVersion", "contentVersion", "
 const RESOURCE_KEYS = new Set(["type", "apiVersion", "name", "location", "tags", "properties"]);
 /** An ARM `list*` function (listKeys, listSecrets, listAccountSas, ...): it reads secrets of other resources at deploy time. */
 const LIST_FUNCTION = /\blist[A-Za-z0-9]*\s*\(/i;
+/**
+ * Whether any key or string value anywhere in the parsed template calls a `list*` function. Judged on the parsed values, not the raw
+ * text (#39 6450296103, follow-up 2): JSON escapes (`\u006cistKeys(`) hide a call from a text scan and unescape when ARM parses it.
+ * Past a depth no Bicep output reaches, the scan fails closed.
+ */
+function callsListFunction(value: unknown, depth = 0): boolean {
+  if (depth > 64) return true;
+  if (typeof value === "string") return LIST_FUNCTION.test(value);
+  if (Array.isArray(value)) return value.some((item) => callsListFunction(item, depth + 1));
+  if (isRecord(value)) return Object.entries(value).some(([key, item]) => LIST_FUNCTION.test(key) || callsListFunction(item, depth + 1));
+  return false;
+}
+/**
+ * A literal string ARM uses as written: not an expression, which ARM evaluates when the whole string is in brackets (`[...]`), and
+ * not the `[[` escape either, so the value deployed is exactly the text sealed (#39 6450296103, follow-up 3).
+ */
+const literal = (value: unknown): value is string => typeof value === "string" && !value.startsWith("[");
+/** An address prefix: a literal IPv4 or IPv6 CIDR block (UNVERIFIED (A4): the only shape Bicep emits for a literal prefix). */
+const ADDRESS_PREFIX = /^(?:[0-9]{1,3}(?:\.[0-9]{1,3}){3}|[0-9A-Fa-f:]{2,39})\/[0-9]{1,3}$/;
 
 /**
  * The refusals that keep the template to the minimal workload, one empty virtual network (UNVERIFIED (A4): Bicep's output shape;
  * coordinator decision 6444382695). Exactly the resource-group deployment schema; exactly one resource, of type
  * `Microsoft.Network/virtualNetworks`; its properties only `addressSpace.addressPrefixes`, so no subnet (and no delegation), no
  * peering and no `ddosProtectionPlan`; no module, existing, extension, child or copied resource; no outputs or functions; and no
- * `list*` call anywhere. A resource group is refused like any other type: the run never creates one. Reads text; runs nothing.
+ * `list*` call in any parsed key or value; and literal address prefixes and tags (no ARM expression). A resource group is refused
+ * like any other type: the run never creates one. Reads text; runs nothing.
  */
 export function checkTemplate(text: string): void {
   const template = parse(text, "TEMPLATE_UNREADABLE");
   if (!isRecord(template)) return stop("TEMPLATE_UNREADABLE");
   if (template.$schema !== RESOURCE_GROUP_TEMPLATE_SCHEMA) stop("TEMPLATE_SHAPE_NOT_ALLOWED");
   if (Object.keys(template).some((key) => !TEMPLATE_KEYS.has(key))) stop("TEMPLATE_SHAPE_NOT_ALLOWED");
-  if (LIST_FUNCTION.test(text)) stop("TEMPLATE_SHAPE_NOT_ALLOWED");
+  if (callsListFunction(template)) stop("TEMPLATE_SHAPE_NOT_ALLOWED");
   const resources = Array.isArray(template.resources) ? template.resources : isRecord(template.resources) ? Object.values(template.resources) : stop("TEMPLATE_SHAPE_NOT_ALLOWED");
   if (resources.length === 0) stop("NO_CHANGES_TO_APPLY");
   for (const resource of resources) {
@@ -320,6 +357,32 @@ export function checkTemplate(text: string): void {
   if (!isRecord(properties) || Object.keys(properties).join() !== "addressSpace" || !isRecord(space) || Object.keys(space).join() !== "addressPrefixes" || !Array.isArray(space.addressPrefixes)) {
     stop("TEMPLATE_SHAPE_NOT_ALLOWED");
   }
+  // Literal values only where the sealed text must be what is deployed: each address prefix, and the tags (keys and values), which carry the unit.
+  const prefixes = (space as { addressPrefixes: unknown[] }).addressPrefixes;
+  if (prefixes.length === 0 || !prefixes.every((prefix) => literal(prefix) && ADDRESS_PREFIX.test(prefix))) stop("TEMPLATE_VALUE_NOT_LITERAL");
+  if (vnet.tags !== undefined && !(isRecord(vnet.tags) && Object.entries(vnet.tags).every(([key, value]) => literal(key) && literal(value)))) stop("TEMPLATE_VALUE_NOT_LITERAL");
+}
+
+/** An ARM resource type as a provider namespace names it, `Namespace.Name/type[/child]`: plain names only, never a wildcard. */
+const ARM_TYPE = /^[A-Z][A-Za-z0-9]{0,62}(?:\.[A-Z][A-Za-z0-9]{0,62}){1,3}(?:\/[A-Za-z][A-Za-z0-9]{0,62}){1,4}$/;
+
+/**
+ * The canary allowlist on the compiled template (owner decision E1, ../canary.ts): its resources are exactly the listed types and
+ * counts, each by its type exactly as the template writes it. Judged before any az call at seal and qualification, and again when
+ * an apply re-derives the plan. `checkTemplate` still holds the template to one empty virtual network on its own.
+ */
+function assertTemplateInCanary(text: string, pinned: PilotTarget): void {
+  const template = parse(text, "TEMPLATE_UNREADABLE") as { resources?: unknown };
+  const resources = Array.isArray(template.resources) ? template.resources : isRecord(template.resources) ? Object.values(template.resources) : [];
+  assertCanary(pinned.canary, resources.map((resource, index) => {
+    const r = isRecord(resource) ? resource : {};
+    return { address: typeof r.name === "string" ? r.name : "resources[" + index + "]", type: typeof r.type === "string" ? r.type : "", action: "declare", creates: true };
+  }), "template");
+}
+
+/** The canary allowlist on the what-if's change list (owner decision E1): every change a CREATE of a listed type, in the listed counts. */
+function assertWhatIfInCanary(changes: readonly PlanChange[], pinned: PilotTarget): void {
+  assertCanary(pinned.canary, changes.map((change) => ({ address: change.address, type: change.type, action: change.action.toLowerCase(), creates: change.action === "CREATE" })), "what-if");
 }
 
 // --- what ARM reports ------------------------------------------------------------------------------------------
@@ -389,7 +452,9 @@ const carriesUnit = (tags: unknown, unit: Readonly<Record<string, string>>): boo
  * unit's tags, an unsupported change, and an empty list.
  */
 function whatIf(session: Session, pinned: BicepTarget, managed: readonly string[], unit: Readonly<Record<string, string>>): PlanChange[] {
-  const document = parse(session.ok("DISCOVERY", [
+  // As APPLY (owner decision E2, option A): the what-if is a POST ARM authorizes as `deployments/whatIf/action`, which only APPLY's
+  // resource-group role holds. It persists no deployment and creates nothing; the approvals are consumed only at the apply.
+  const document = parse(session.ok("APPLY", [
     "deployment", "group", "what-if", "--resource-group", pinned.resourceGroup, "--template-file", session.templatePath, "--result-format", "FullResourcePayloads",
     "--validation-level", "ProviderNoRbac", "--no-pretty-print", "--no-prompt", "true", "--subscription", pinned.subscriptionId, "--output", "json",
   ]), "WHATIF_UNREADABLE");
@@ -410,6 +475,8 @@ function whatIf(session: Session, pinned: BicepTarget, managed: readonly string[
     seen.add(id.toLowerCase());
     const action = ACTIONS[change.changeType];
     if (change.changeType !== "Create" && !ours.has(id.toLowerCase())) stop("RESOURCE_PREEXISTS");
+    // Every resource the what-if places is in the contract's location (owner decision E2): `after.location` as ARM evaluated it.
+    if (action !== null && action !== "DELETE" && !(isRecord(change.after) && regionOf(change.after.location) === pinned.location)) stop("LOCATION_NOT_IN_CONTRACT");
     if (change.changeType === "Create") {
       const tags = planned.get(change.resourceId);
       if (tags?.kind !== "TAGGED" || !carriesUnit(tags.tags, unit)) stop("UNIT_TAG_MISSING");
@@ -434,18 +501,18 @@ function writeTemplate(session: Session, text: string): void {
 
 /** The artifact bytes: the compiled template's exact text and everything the approvers saw, by value or by hash. */
 type SealedRecord = {
-  schemaVersion: 1; kind: "AZURE_DEPLOYMENT_STACK"; tenantId: string; subscriptionId: string; resourceGroup: string; stackName: string;
+  schemaVersion: 1; kind: "AZURE_DEPLOYMENT_STACK"; tenantId: string; subscriptionId: string; resourceGroup: string; location: string; stackName: string;
   denySettingsMode: typeof DENY_SETTINGS_MODE; actionOnUnmanage: typeof ACTION_ON_UNMANAGE; tags: string[];
   template: string; templateSha256: string; changeListSha256: string; stackSha256: string;
 };
-const RECORD_KEYS = ["schemaVersion", "kind", "tenantId", "subscriptionId", "resourceGroup", "stackName", "denySettingsMode", "actionOnUnmanage", "tags", "template", "templateSha256", "changeListSha256", "stackSha256"];
+const RECORD_KEYS = ["schemaVersion", "kind", "tenantId", "subscriptionId", "resourceGroup", "location", "stackName", "denySettingsMode", "actionOnUnmanage", "tags", "template", "templateSha256", "changeListSha256", "stackSha256"];
 const HEX = /^[0-9a-f]{64}$/;
 
 function parseRecord(artifact: Buffer, pinned: BicepTarget): SealedRecord {
   const value = parse(artifact.toString("utf8"), "ARTIFACT_TAMPERED");
   const record = value as SealedRecord;
   if (!isRecord(value) || Object.keys(value).sort().join() !== [...RECORD_KEYS].sort().join() || record.schemaVersion !== 1 || record.kind !== "AZURE_DEPLOYMENT_STACK" ||
-    record.tenantId !== pinned.tenantId || record.subscriptionId !== pinned.subscriptionId || record.resourceGroup !== pinned.resourceGroup || record.stackName !== pinned.backend ||
+    record.tenantId !== pinned.tenantId || record.subscriptionId !== pinned.subscriptionId || record.resourceGroup !== pinned.resourceGroup || record.location !== pinned.location || record.stackName !== pinned.backend ||
     record.denySettingsMode !== DENY_SETTINGS_MODE || record.actionOnUnmanage !== ACTION_ON_UNMANAGE ||
     !Array.isArray(record.tags) || record.tags.length !== UNIT_TAG_KEYS.length || !record.tags.every((tag) => typeof tag === "string" && TAG_VALUE.test(tag)) || new Set(record.tags.map((tag) => tag.split("=")[0])).size !== UNIT_TAG_KEYS.length ||
     typeof record.template !== "string" || ![record.templateSha256, record.changeListSha256, record.stackSha256].every((h) => typeof h === "string" && HEX.test(h)) ||
@@ -464,15 +531,29 @@ function tagArgsOf(unit: PilotUnit): string[] {
 const unitOfTags = (tags: readonly string[]): Record<string, string> => Object.fromEntries(tags.map((tag) => [tag.split("=")[0], tag.slice(tag.indexOf("=") + 1)]));
 const targetOf = (pinned: unknown): BicepTarget => {
   const target = pinned as BicepTarget;
-  if (!isRecord(pinned) || !GUID.test(String(target.tenantId)) || !GUID.test(String(target.subscriptionId)) || !AZURE_NAME.test(String(target.backend)) || !AZURE_NAME.test(String(target.resourceGroup))) return stop("TARGET_INVALID");
+  if (!isRecord(pinned) || !GUID.test(String(target.tenantId)) || !GUID.test(String(target.subscriptionId)) || !AZURE_NAME.test(String(target.backend)) || !AZURE_NAME.test(String(target.resourceGroup)) || !AZURE_LOCATION.test(String(target.location))) return stop("TARGET_INVALID");
   return target;
 };
+
+/**
+ * The existing pilot resource group, read as DISCOVERY: it must exist (the engine never creates it) and be in the contract's
+ * location (UNVERIFIED (A2): the not-found text; `location` as az prints the group).
+ */
+function assertGroupInContract(session: Session, pinned: BicepTarget): void {
+  const group = session.run("DISCOVERY", ["group", "show", "--name", pinned.resourceGroup, "--subscription", pinned.subscriptionId, "--output", "json"]);
+  assertUsable(group);
+  if (!group.ok) stop(/ResourceGroupNotFound|could not be found/i.test(group.stderr) ? "RESOURCE_GROUP_NOT_FOUND" : "RESOURCE_GROUP_UNREADABLE");
+  const found = parse(group.stdout, "RESOURCE_GROUP_UNREADABLE");
+  if (!isRecord(found)) return stop("RESOURCE_GROUP_UNREADABLE");
+  if (regionOf(found.location) !== pinned.location) stop("LOCATION_NOT_IN_CONTRACT");
+}
 
 // --- sealing -----------------------------------------------------------------------------------------------------
 
 /**
- * Compiles, checks the template, requires the existing pilot resource group, reads the stack, and runs the what-if as DISCOVERY.
- * Creates nothing: the deployment what-if persists no object, and nothing runs as APPLY.
+ * Compiles, checks the template against the workload's shape and the canary allowlist, requires the existing pilot resource group
+ * and reads the stack (as DISCOVERY), and runs the what-if as APPLY (owner decision E2, option A). Creates nothing: the deployment
+ * what-if persists no object, and no stack create or delete runs at seal.
  */
 function plan(input: EngineContext & { snapshotPath: string; engineVersion: string; unit: PilotUnit }): { artifact: Buffer; changes: PlanChange[]; unit: SealedUnit } {
   const pinned = targetOf(input.pinned);
@@ -482,18 +563,20 @@ function plan(input: EngineContext & { snapshotPath: string; engineVersion: stri
     const tags = tagArgsOf(input.unit);
     const template = compile(session);
     checkTemplate(template);
+    // The template is exactly the canary allowlist before any az call.
+    assertTemplateInCanary(template, input.pinned);
     session.signIn();
-    // The group is the bootstrap's (#304): it must exist, and the engine never creates it (UNVERIFIED (A2): the not-found text).
-    const group = session.run("DISCOVERY", ["group", "show", "--name", pinned.resourceGroup, "--subscription", pinned.subscriptionId, "--output", "json"]);
-    assertUsable(group);
-    if (!group.ok) stop(/ResourceGroupNotFound|could not be found/i.test(group.stderr) ? "RESOURCE_GROUP_NOT_FOUND" : "RESOURCE_GROUP_UNREADABLE");
+    // The group is the bootstrap's (#304): it must exist, in the contract's location, and the engine never creates it.
+    assertGroupInContract(session, pinned);
     const stack = readStack(session, "DISCOVERY", pinned);
     if (stack !== undefined) assertStackUsable(stack, input.unit.tags);
     writeTemplate(session, template);
     const changes = whatIf(session, pinned, stack?.managed ?? [], input.unit.tags);
+    // What ARM would do is exactly the canary allowlist's creates.
+    assertWhatIfInCanary(changes, input.pinned);
     const record: SealedRecord = {
       schemaVersion: 1, kind: "AZURE_DEPLOYMENT_STACK", tenantId: pinned.tenantId, subscriptionId: pinned.subscriptionId, resourceGroup: pinned.resourceGroup,
-      stackName: pinned.backend, denySettingsMode: DENY_SETTINGS_MODE, actionOnUnmanage: ACTION_ON_UNMANAGE, tags, template, templateSha256: sha256(template),
+      location: pinned.location, stackName: pinned.backend, denySettingsMode: DENY_SETTINGS_MODE, actionOnUnmanage: ACTION_ON_UNMANAGE, tags, template, templateSha256: sha256(template),
       changeListSha256: sha256(canonicalJson(changes)), stackSha256: stack?.fingerprint ?? ABSENT_FINGERPRINT,
     };
     // A virtual network takes tags, so nothing created is untagged.
@@ -510,9 +593,11 @@ function qualify(input: EngineContext & { snapshotPath: string; engineVersion: s
   const session = openSession(input, undefined);
   try {
     prepareWork(session, input.snapshotPath, input.engineVersion);
-    checkTemplate(compile(session));
+    const template = compile(session);
+    checkTemplate(template);
+    assertTemplateInCanary(template, input.pinned);
     session.signIn();
-    checkedOutput(session.run("DISCOVERY", ["group", "show", "--name", pinned.resourceGroup, "--subscription", pinned.subscriptionId, "--output", "json"]));
+    assertGroupInContract(session, pinned);
     for (const who of ["DISCOVERY", "APPLY"] as const) readStack(session, who, pinned);
   } finally {
     session.removeSecrets();
@@ -532,9 +617,22 @@ const MAX_UNREADABLE_POLLS = 3;
  * unmoved. A stack can appear after a lost response, so one read is not enough.
  */
 const UNMOVED_READS_FOR_NO_CHANGE = 3;
-/** az gave a definite answer: it ran to completion (an exit code, nothing cut off, no refused environment). */
-const definite = (result: Pick<ToolResult, "exitCode" | "truncated" | "refusedEnvironment">): boolean =>
+/** az ran to completion: an exit code, nothing cut off, no refused environment. */
+const completed = (result: Pick<ToolResult, "exitCode" | "truncated" | "refusedEnvironment">): boolean =>
   typeof result.exitCode === "number" && result.truncated !== true && !(result.refusedEnvironment?.length);
+/**
+ * An error ARM itself returned, as az prints a service error: `(<Code>) <message>`, optionally after `ERROR: `. A transport error
+ * (a closed connection, a timeout, a DNS or TLS failure) prints no ARM code, and the request may still have reached ARM.
+ * UNVERIFIED (A3): az's error format for every ARM refusal. A refusal az prints any other way is not definite, which only ever
+ * gives PARTIAL_REQUIRES_REVIEW instead of FAILED_NO_CHANGE (fails closed).
+ */
+const ARM_ERROR = /^(?:ERROR: )?\([A-Za-z][A-Za-z0-9.]{2,100}\) /m;
+/**
+ * az gave a definite answer (#39 6450296103, follow-up 1): it ran to completion, and a non-zero exit is a refusal ARM itself
+ * returned, never an az transport error that exits 1 after the request may have reached ARM.
+ */
+const definite = (result: Pick<ToolResult, "exitCode" | "truncated" | "refusedEnvironment" | "stderr">): boolean =>
+  completed(result) && (result.exitCode === 0 || ARM_ERROR.test(result.stderr ?? ""));
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => { setTimeout(resolve, ms); });
 const outcomeResult = (over: Partial<StoppableResult>): StoppableResult => ({ tool: "azure_deployment_stack", ok: false, exitCode: null, stdout: "", stderr: "", durationMs: 0, stopped: false, ...over });
 
@@ -560,6 +658,8 @@ function openApply(input: EngineRunInput): BicepApplyRun {
     prepare(snapshotPath) {
       prepareWork(session, snapshotPath, input.engineVersion);
       session.signIn();
+      // Still the contract's group, in the contract's location.
+      assertGroupInContract(session, pinned);
       before = stackNow();
     },
     rederive(artifact) {
@@ -568,12 +668,15 @@ function openApply(input: EngineRunInput): BicepApplyRun {
       // The project, compiled again by the pinned bicep, is exactly the sealed template: any change after the seal is refused.
       if (compile(session) !== record.template) stop("ARTIFACT_TAMPERED");
       checkTemplate(record.template);
+      // The canary allowlist again, on what is about to run: the sealed template and the what-if ARM gives now.
+      assertTemplateInCanary(record.template, input.pinned);
       if (before !== "ABSENT") assertStackUsable(before, unitOfTags(record.tags));
       // The stack is as it was when the plan was sealed; a stack an earlier apply moved (this artifact's own, too) is refused here.
       if (fingerprintOf(before) !== record.stackSha256) stop("PLAN_STALE");
       writeTemplate(session, record.template);
       const changes = whatIf(session, pinned, before === "ABSENT" ? [] : before.managed, unitOfTags(record.tags));
       if (sha256(canonicalJson(changes)) !== record.changeListSha256) stop("PLAN_STALE");
+      assertWhatIfInCanary(changes, input.pinned);
       sealed = record;
       return changes;
     },
@@ -644,6 +747,15 @@ function openApply(input: EngineRunInput): BicepApplyRun {
         session.signIn();
         const view = readStack(session, "DISCOVERY", pinned);
         return view?.managed;
+      } catch { return undefined; } finally { session.removeSecrets(); }
+    },
+    // The driver's blueprint hook (src/apply/driver.ts `keepBlueprint`): the stack's id and managed resources, read once as DISCOVERY
+    // after the run, ARM ids only. Never thrown: a stack that cannot be read leaves no blueprint, and the cleanup step says so.
+    stateDocument() {
+      try {
+        session.signIn();
+        const view = readStack(session, "DISCOVERY", pinned);
+        return view === undefined ? undefined : { source: "AZURE_DEPLOYMENT_STACK_RESOURCES" as const, document: JSON.stringify({ stackId: view.id, managed: view.managed }) };
       } catch { return undefined; } finally { session.removeSecrets(); }
     },
   };
@@ -725,8 +837,8 @@ const adapter = (kind: Adapter): AdapterDescriptor => ({
 });
 
 /**
- * The spec's own type until the authorization lane admits the engine id: `EngineSpec` with the id and the two evidence `mutation`
- * values this engine will add (src/apply/types.ts), and an apply run that also reads the stack's managed resources.
+ * The spec's own type: `EngineSpec` with the BICEP id and its two evidence `mutation` values (src/apply/types.ts), and an apply run
+ * that also reads the stack's managed resources.
  */
 export type BicepEngineSpec = Omit<EngineSpec, "id" | "mutation" | "cleanupMutation" | "openApply"> & {
   id: "BICEP";
@@ -745,16 +857,24 @@ export const BICEP: BicepEngineSpec = {
     workspaceOk: (value) => value === "default",
     // The same stack name in each subscription is the usual case; the subscription already differs.
     backendMayRepeat: true,
-    fields: { resourceGroup: (value) => typeof value === "string" && AZURE_NAME.test(value) },
+    fields: {
+      resourceGroup: (value) => typeof value === "string" && AZURE_NAME.test(value),
+      location: (value) => typeof value === "string" && AZURE_LOCATION.test(value),
+    },
+    // Where the stack and its resources are (owner decision E2): a cleanup in another group would find another group's stack of the
+    // same name, and a run under another location is another target.
+    locationFields: ["resourceGroup", "location"],
   },
+  // An exact ARM resource type for the canary allowlist (owner decision E1); the template check still allows only a virtual network.
+  canaryTypeOk: (value) => value.length <= 256 && ARM_TYPE.test(value),
   notices: {
     sealHeading: "SEAL A DEPLOYMENT STACK PLAN (this compiles main.bicep and runs a what-if; nothing is created, changed or deleted)",
-    sealReads: "  reads           the resource group, the stack and the what-if with the DISCOVERY identity",
+    sealReads: "  reads           the resource group (it must be in the contract's location) and the stack with the DISCOVERY identity; runs the what-if with the APPLY identity",
     qualifyHeading: "QUALIFY THE BICEP ADAPTERS (needs the real az and bicep; against DEV it signs both identities in and reads the group and the stack, and creates nothing)",
     qualifyReads: "  runs            az account show, az group show and az stack group show as DISCOVERY and APPLY",
     attestation: (_provider, discovery, apply) => [
-      "  what-if and reads were by     DISCOVERY  " + discovery,
-      "  stack create and delete by    APPLY      " + apply,
+      "  reads were by                 DISCOVERY  " + discovery,
+      "  what-if, stack create, delete APPLY      " + apply,
       "This run only read. That DISCOVERY cannot write and APPLY reaches only the pilot resource group is shown by the role assignments and the Azure activity log, not by this run.",
       "Only if they show that, type (anything else writes nothing):",
     ],

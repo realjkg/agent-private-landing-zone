@@ -150,7 +150,7 @@
         "the candidate commit changes",
         "the Bicep or Azure CLI version or the Bicep path's engine changes"
       ],
-      "nextAction": "Back in scope by the owner's rebaseline of the narrow ACT-DEV release (#39, 6443352284: Azure Bicep / ARM is path 4). Waits on three pieces that are not on main: the check-only az and bicep pins (#309), the BICEP deployment-stack engine (#316), and the BICEP engine id with its admission (after #313); until then no contract can name the engine, so the evidence runner reports this gate as NO_PRODUCER. Then it waits on the azure-provider gate's sandbox, and closes only when a run from the candidate commit with the pinned programs writes LIVE evidence that the admission review accepts. Synthetic evidence is labeled SYNTHETIC and is refused by the gate."
+      "nextAction": "Back in scope by the owner's rebaseline of the narrow ACT-DEV release (#39, 6443352284: Azure Bicep / ARM is path 4). The check-only pins are on main (config/tool-pins.json: azureCli 2.91.0 and bicep 0.47.16, #309), and so is the deployment-stack engine (src/apply/engines/bicep.ts, #316), which owner decision E2 (#39) admits as the BICEP engine for DEV only, so ./alz apply preview-evidence can write this gate's evidence at seal (the what-if runs as APPLY; bootstrap/azure grants APPLY the pilot group's Bicep stack role with bicep_deployment_stacks). Then it waits on the azure-provider gate's sandbox, and closes only when a run from the candidate commit with the pinned programs writes LIVE evidence that the admission review accepts. Synthetic evidence is labeled SYNTHETIC and is refused by the gate."
     },
     {
       "gate": "preview:cloudformation-aws-existing",
@@ -491,6 +491,25 @@
         "src/apply or the CDK pin changes"
       ],
       "nextAction": "The AWS CDK row is implemented end to end in the console with synthetic tests (stack tags carry the unit; CloudFormation's resource list is the blueprint; Cloud Control reads by CloudFormation type; cleanup is a removal change set that never deletes the stack). Qualify the three adapters on the real DEV account, then run the supervised DEV lifecycle."
+    },
+    {
+      "gate": "act:azure-bicep",
+      "candidate": null,
+      "owner": "OWNER",
+      "status": "BLOCKED",
+      "evidenceMode": "SYNTHETIC",
+      "evidenceRefs": [
+        "test/apply-bicep.test.ts (fake az and bicep: seal, apply, cleanup and the follow-ups of #39 6450296103)",
+        "test/apply-bicep-admission.test.ts (the BICEP engine admitted for DEV only: contract, seal with the what-if as APPLY, approvals, ledger and replay, kill switch, canary allowlist, template binding, apply, blueprint, observe, cleanup proposal and stack delete with deny settings on, through the driver; SYNTHETIC)",
+        "bootstrap/azure/tests/environments.tftest.hcl (the pilot group's Bicep stack role: exact actions, group scope, APPLY only; offline, mocked providers)"
+      ],
+      "testedScope": "Full lifecycle on the real Azure DEV subscription through a deployment stack in the existing pilot resource group: prepare, preview (what-if), approve, execute, observe and cleanup (stack delete with deleteResources).",
+      "invalidatedBy": [
+        "the candidate commit changes",
+        "the pilot contract or its authorize entry changes",
+        "src/apply or the az or bicep pin changes"
+      ],
+      "nextAction": "Admitted in code for DEV only (owner decision E2, #39); the engine, the canary allowlist, its blueprint, observation and cleanup pass synthetically (SYNTHETIC: fake az and bicep; there is no ARM emulator, so no emulated run exists). Registration is not readiness. Under option A the seal-time what-if runs as APPLY, DISCOVERY keeps Reader, and bootstrap/azure (bicep_deployment_stacks, DEV only) adds a custom role at the pilot resource group, assigned to APPLY only, whose one new effective action beside Contributor is manageDenySetting. The owner runs that bootstrap, then fills a DEV-only Azure Bicep contract from config/act-pilot-contract.azure-bicep-dev.example.json (with resourceGroup, location and canary) until ./alz apply contract-check --file reports COMPLETE, commits it with its authorize entry in one reviewed change, has a person run ./alz apply qualify against the real az and bicep, and supervises one DEV apply recorded with ./alz apply record-live. Every ARM behavior the engine relies on is UNVERIFIED (A1 to A4, docs/act-pilot-bicep.md) until then."
     },
     {
       "gate": "act-run-recovery",

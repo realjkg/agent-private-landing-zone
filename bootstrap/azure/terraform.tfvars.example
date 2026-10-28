@@ -60,3 +60,7 @@ oidc_subjects = {
 
 # Public egress IPs or CIDRs of the pilot runner. The state accounts deny every other network.
 state_allowed_ip_ranges = ["203.0.113.10"]
+
+# Azure Bicep path (DEV only, owner decision E2; docs/act-pilot-bicep.md). Needs enabled_environments = ["DEV"] and a DEV
+# apply_resource_group_name. Adds one custom role at the DEV pilot group, assigned to APPLY only. Off by default.
+# bicep_deployment_stacks = true

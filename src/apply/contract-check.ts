@@ -179,6 +179,10 @@ export function checkDraftContract(raw: unknown, examples: ReturnType<typeof shi
     }
     add("targets." + env + ".backend", "the " + env + " state backend the owner provisioned, written as the contract's backend string (versioning on; one per environment)", target.backend, "backend");
     add("targets." + env + ".workspace", "the " + env + " workspace", target.workspace, "workspace");
+    // The engine's location fields (Azure Bicep: the existing pilot resource group and its region), which join the target hash.
+    for (const field of engineOf?.target?.locationFields ?? []) {
+      add("targets." + env + "." + field, "the " + env + " target's " + field + " (where the " + env + " run's resources are; part of the target the run is bound to)", target[field]);
+    }
     add("requiredApprovals." + env, "how many distinct verified approvals a " + env + " apply needs" + (env === "PROD" ? " (at least 2: the second production approver)" : ""), approvals[env]);
   }
   add("maxApprovalAgeMinutes", "how long a signed approval stays usable, in minutes", raw.maxApprovalAgeMinutes);

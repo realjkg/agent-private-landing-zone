@@ -16,7 +16,7 @@ Each execution path is its own capability, with its own contract scope, qualific
 | AWS Terraform | `src/apply/engines/terraform.ts`, `src/apply/providers/aws.ts` | `act:aws-terraform` |
 | AWS CDK / CloudFormation | `src/apply/engines/cdk.ts`, `src/apply/providers/aws.ts` | `act:aws-cdk` |
 | Azure Terraform | `src/apply/engines/terraform.ts`, `src/apply/providers/azure.ts` | `act:azure-terraform` |
-| Azure Bicep / ARM | none yet | none yet |
+| Azure Bicep / ARM (DEV only) | `src/apply/engines/bicep.ts`, `src/apply/providers/azure.ts` | `act:azure-bicep` |
 | GCP Terraform | PLAN and G0 docs only (`docs/act-pilot-gcp-terraform-g0.md`) | none yet |
 | GCP API-native | none yet | none yet |
 

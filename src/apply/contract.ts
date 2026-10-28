@@ -11,7 +11,7 @@ import { canonicalJson } from "../teardown/manifest.js";
 import { sha256 } from "../util/sha256.js";
 import { RETAINABLE_CANARY_TYPES } from "./canary.js";
 import { ENVIRONMENTS, HASH } from "./constants.js";
-import { ENGINE_IDS, engineSpec, type EngineSpec } from "./engine-spec.js";
+import { ENGINE_IDS, engineOf, engineSpec, type EngineSpec } from "./engine-spec.js";
 import { applyEvidenceProblems, qualificationEvidenceProblems, type QualificationEvidence } from "./evidence.js";
 import { accountFieldsOf, PROVIDER_IDS, providerSpec, specOf, type ProviderSpec } from "./provider.js";
 import { ACT_OPERATIONS, type ActOperation } from "./types.js";
@@ -177,9 +177,17 @@ function authorizeOf(value: unknown, active: readonly ApplyEnvironment[]): Pilot
 
 /** A path that exists only as an admission-level id until its lane lands (six-path baseline, #39): refused NOT_IMPLEMENTED. */
 const PLANNED_PATHS: readonly { provider: string; engine: string; path: string }[] = [
-  { provider: "AZURE", engine: "BICEP", path: "path 4" },
   { provider: "GCP", engine: "TERRAFORM", path: "path 5" },
   { provider: "GCP", engine: "GCP_API", path: "path 6" },
+];
+
+/**
+ * The paths admitted for DEV only (six-path baseline and owner decision E2, #39): a contract for one of them must state the
+ * DEV-only scope (`enabledEnvironments: ["DEV"]`). The three-stage contract stays the AWS and Azure Terraform and AWS CDK paths'
+ * own; nothing here lets one of these reach QA or PROD.
+ */
+const DEV_ONLY_PATHS: readonly { provider: string; engine: string; path: string }[] = [
+  { provider: "AZURE", engine: "BICEP", path: "path 4" },
 ];
 class NotImplemented extends Invalid {}
 
@@ -200,6 +208,9 @@ function validate(raw: unknown): PilotContract {
   if (scoped !== undefined && (!Array.isArray(scoped) || scoped.length !== 1 || scoped[0] !== "DEV")) {
     bad("enabledEnvironments: only the explicit DEV-only pilot is supported; omit for the legacy three-stage contract");
   }
+  // A path admitted for DEV only (owner decision E2 for Azure Bicep) must state the DEV-only scope: QA and PROD are refused, never guessed.
+  const devOnly = DEV_ONLY_PATHS.find((p) => p.provider === spec.id && p.engine === engine.id);
+  if (devOnly && scoped === undefined) bad("enabledEnvironments: " + devOnly.provider + " " + devOnly.engine + " (" + devOnly.path + ") is admitted for DEV only; state enabledEnvironments [\"DEV\"]");
   const active: ApplyEnvironment[] = scoped === undefined ? [...ENVIRONMENTS] : ["DEV"];
   const targets = object(r.targets, "targets", active);
   const approvals = object(r.requiredApprovals, "requiredApprovals", active);
@@ -316,17 +327,21 @@ export type Authorization = { operation: ActOperation; contractSha256: string; a
 
 /**
  * The canonical hash of one environment's full target (review of #313, R1): provider, every account field (account or
- * subscription, tenant, region, project), backend, workspace and, when the target names one, its canary allowlist (owner
- * decision E1), so changing the allowlist is a target change. Sealed into the plan and recorded in the apply evidence, so a
- * cleanup or removal runs only where the run ran, under the allowlist it ran under, even when it is authorized by a later
- * contract. Undefined when the contract has no target for the environment.
+ * subscription, tenant, region, project), the engine's location fields (Bicep: `resourceGroup`, where its deployment stack
+ * is), backend, workspace and, when the target names one, its canary allowlist (owner decision E1), so changing the allowlist
+ * is a target change. Sealed into the plan and recorded in the apply evidence, so a cleanup or removal runs only where the run
+ * ran, under the allowlist it ran under, even when it is authorized by a later contract. Undefined when the contract has no
+ * target for the environment.
  */
 export function pilotTargetSha256(contract: PilotContract, env: ApplyEnvironment): string | undefined {
   const target = Object.hasOwn(contract.targets, env) ? contract.targets[env] : undefined;
   if (!target) return undefined;
   const account = Object.fromEntries(Object.entries(accountFieldsOf(specOf(contract), target)).map(([key, value]) => [key, canonicalGuid(value)]));
+  // An engine with no location fields (Terraform, CDK) adds nothing, so its targets hash as they always did.
+  const located = (engineOf(contract).target?.locationFields ?? []).map((name) => [name, (target as unknown as Record<string, unknown>)[name]]);
   return sha256(canonicalJson({
-    provider: contract.provider, ...account, backend: target.backend, workspace: target.workspace, ...(target.canary !== undefined ? { canary: target.canary } : {}),
+    provider: contract.provider, ...account, ...Object.fromEntries(located), backend: target.backend, workspace: target.workspace,
+    ...(target.canary !== undefined ? { canary: target.canary } : {}),
   } as never));
 }
 

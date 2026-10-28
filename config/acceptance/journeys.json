@@ -1247,55 +1247,202 @@
       "path": "BICEP",
       "steps": {
         "prepare": {
-          "status": "NOT_IMPLEMENTED",
-          "missing": "No Bicep engine is registered for apply (src/apply/engine-spec.ts); Bicep exists only as a what-if reader for teardown review."
+          "status": "BLOCKED",
+          "blockedBy": "No console (ui) test drives the Azure Bicep journey through the real pilot router yet, so no step can be SYNTHETIC_PASS (src/release/acceptance.ts). The driver-level journey passes SYNTHETIC with a fake az and bicep (test/apply-bicep-admission.test.ts); there is no ARM emulator.",
+          "code": [
+            "src/apply/prepare.ts"
+          ],
+          "tests": {
+            "positive": [
+              {
+                "file": "test/apply-prepare.test.ts",
+                "title": "Azure Bicep is the Azure secondary path: main.bicep is the project, no lock file and no providers, and the engine version is the tested az pin until it is qualified"
+              }
+            ]
+          }
         },
         "preview": {
-          "status": "NOT_IMPLEMENTED",
-          "missing": "No Bicep engine is registered for apply (src/apply/engine-spec.ts); Bicep exists only as a what-if reader for teardown review."
+          "status": "BLOCKED",
+          "blockedBy": "No console (ui) test drives the Azure Bicep journey through the real pilot router yet, so no step can be SYNTHETIC_PASS (src/release/acceptance.ts). The driver-level journey passes SYNTHETIC with a fake az and bicep (test/apply-bicep-admission.test.ts); there is no ARM emulator.",
+          "code": [
+            "src/apply/engines/bicep.ts",
+            "src/apply/seal.ts"
+          ],
+          "tests": {
+            "positive": [
+              {
+                "file": "test/apply-bicep-admission.test.ts",
+                "title": "Azure Bicep journey (SYNTHETIC): seal (what-if as APPLY), apply (one deployment stack as APPLY), the blueprint from the stack's managed resources, observe, propose the VNet, delete the whole stack, verify leftovers"
+              }
+            ],
+            "denied": [
+              {
+                "file": "test/apply-bicep-admission.test.ts",
+                "title": "Azure Bicep scope (SYNTHETIC): QA, PROD, another provider and another target are refused before any az call"
+              },
+              {
+                "file": "test/apply-bicep-admission.test.ts",
+                "title": "Azure Bicep canary allowlist through the driver (SYNTHETIC): a contract whose canary is not exactly the one network, or that names none, seals nothing"
+              },
+              {
+                "file": "test/apply-bicep-admission.test.ts",
+                "title": "B1 (SYNTHETIC): the location is a target field in the target hash, and a plan placed elsewhere is never sealed or applied"
+              }
+            ]
+          }
         },
         "approve": {
-          "status": "NOT_IMPLEMENTED",
-          "missing": "No Bicep engine is registered for apply (src/apply/engine-spec.ts); Bicep exists only as a what-if reader for teardown review."
+          "status": "BLOCKED",
+          "blockedBy": "No console (ui) test drives the Azure Bicep journey through the real pilot router yet, so no step can be SYNTHETIC_PASS (src/release/acceptance.ts). The driver-level journey passes SYNTHETIC with a fake az and bicep (test/apply-bicep-admission.test.ts); there is no ARM emulator.",
+          "code": [
+            "src/apply/approval.ts"
+          ],
+          "tests": {
+            "positive": [
+              {
+                "file": "test/apply-bicep-admission.test.ts",
+                "title": "Azure Bicep journey (SYNTHETIC): seal (what-if as APPLY), apply (one deployment stack as APPLY), the blueprint from the stack's managed resources, observe, propose the VNet, delete the whole stack, verify leftovers"
+              }
+            ],
+            "denied": [
+              {
+                "file": "test/apply-bicep-admission.test.ts",
+                "title": "Azure Bicep ledger and kill switch (SYNTHETIC): an approval is used once, an applied plan never runs again, and the kill switch refuses seal and apply before any az call"
+              }
+            ]
+          }
         },
         "execute": {
-          "status": "NOT_IMPLEMENTED",
-          "missing": "No Bicep engine is registered for apply (src/apply/engine-spec.ts); Bicep exists only as a what-if reader for teardown review."
+          "status": "BLOCKED",
+          "blockedBy": "No console (ui) test drives the Azure Bicep journey through the real pilot router yet, so no step can be SYNTHETIC_PASS (src/release/acceptance.ts). The driver-level journey passes SYNTHETIC with a fake az and bicep (test/apply-bicep-admission.test.ts); there is no ARM emulator.",
+          "code": [
+            "src/apply/engines/bicep.ts",
+            "src/apply/driver.ts"
+          ],
+          "tests": {
+            "positive": [
+              {
+                "file": "test/apply-bicep-admission.test.ts",
+                "title": "Azure Bicep journey (SYNTHETIC): seal (what-if as APPLY), apply (one deployment stack as APPLY), the blueprint from the stack's managed resources, observe, propose the VNet, delete the whole stack, verify leftovers"
+              }
+            ],
+            "denied": [
+              {
+                "file": "test/apply-bicep-admission.test.ts",
+                "title": "Azure Bicep template binding (SYNTHETIC): the apply runs only the compiled template the approvers saw; a changed project or compiler output is refused before the create"
+              },
+              {
+                "file": "test/apply-bicep-admission.test.ts",
+                "title": "Azure Bicep ledger and kill switch (SYNTHETIC): an approval is used once, an applied plan never runs again, and the kill switch refuses seal and apply before any az call"
+              }
+            ]
+          }
         },
         "observe": {
-          "status": "NOT_IMPLEMENTED",
-          "missing": "No Bicep engine is registered for apply (src/apply/engine-spec.ts); Bicep exists only as a what-if reader for teardown review."
+          "status": "BLOCKED",
+          "blockedBy": "No console (ui) test drives the Azure Bicep journey through the real pilot router yet, so no step can be SYNTHETIC_PASS (src/release/acceptance.ts). The driver-level journey passes SYNTHETIC with a fake az and bicep (test/apply-bicep-admission.test.ts); there is no ARM emulator.",
+          "code": [
+            "src/apply/observe.ts",
+            "src/observe/azure-rest.ts"
+          ],
+          "tests": {
+            "positive": [
+              {
+                "file": "test/apply-bicep-admission.test.ts",
+                "title": "Azure Bicep journey (SYNTHETIC): seal (what-if as APPLY), apply (one deployment stack as APPLY), the blueprint from the stack's managed resources, observe, propose the VNet, delete the whole stack, verify leftovers"
+              }
+            ]
+          }
         },
         "cleanup": {
-          "status": "NOT_IMPLEMENTED",
-          "missing": "No Bicep engine is registered for apply (src/apply/engine-spec.ts); Bicep exists only as a what-if reader for teardown review."
+          "status": "BLOCKED",
+          "blockedBy": "No console (ui) test drives the Azure Bicep journey through the real pilot router yet, so no step can be SYNTHETIC_PASS (src/release/acceptance.ts). The driver-level journey passes SYNTHETIC with a fake az and bicep (test/apply-bicep-admission.test.ts); there is no ARM emulator.",
+          "code": [
+            "src/apply/cleanup-proposal.ts",
+            "src/apply/engines/bicep.ts"
+          ],
+          "tests": {
+            "positive": [
+              {
+                "file": "test/apply-bicep-admission.test.ts",
+                "title": "Azure Bicep journey (SYNTHETIC): seal (what-if as APPLY), apply (one deployment stack as APPLY), the blueprint from the stack's managed resources, observe, propose the VNet, delete the whole stack, verify leftovers"
+              }
+            ],
+            "denied": [
+              {
+                "file": "test/apply-bicep-admission.test.ts",
+                "title": "Azure Bicep refusals (SYNTHETIC): a three-stage contract seals nothing; a contract that moved the stack's group refuses the cleanup proposal, and nothing is deleted"
+              }
+            ]
+          }
         }
       },
       "proofs": {
         "blueprint": {
-          "status": "NOT_IMPLEMENTED",
-          "missing": "No record maps each desired resource (engine address) to the cloud resource ID that was created."
+          "status": "SYNTHETIC_PASS",
+          "code": [
+            "src/observe/blueprint.ts",
+            "src/apply/run-records.ts",
+            "src/apply/driver.ts"
+          ],
+          "tests": [
+            {
+              "file": "test/apply-bicep-admission.test.ts",
+              "title": "Azure Bicep journey (SYNTHETIC): seal (what-if as APPLY), apply (one deployment stack as APPLY), the blueprint from the stack's managed resources, observe, propose the VNet, delete the whole stack, verify leftovers"
+            }
+          ]
         },
         "independentVerification": {
-          "status": "NOT_IMPLEMENTED",
-          "missing": "No read-only check, separate from the engine, confirms after an apply that the resources exist as planned."
+          "status": "SYNTHETIC_PASS",
+          "code": [
+            "src/observe/verify.ts",
+            "src/observe/azure-rest.ts",
+            "src/apply/observe.ts"
+          ],
+          "tests": [
+            {
+              "file": "test/apply-bicep-admission.test.ts",
+              "title": "Azure Bicep journey (SYNTHETIC): seal (what-if as APPLY), apply (one deployment stack as APPLY), the blueprint from the stack's managed resources, observe, propose the VNet, delete the whole stack, verify leftovers"
+            }
+          ]
         },
         "cleanupDisposition": {
-          "status": "NOT_IMPLEMENTED",
-          "missing": "No per-resource disposition (deleted, or retained with an owner and reason) is recorded after a journey."
+          "status": "SYNTHETIC_PASS",
+          "code": [
+            "src/observe/disposition.ts",
+            "src/apply/leftovers.ts",
+            "src/apply/run-records.ts"
+          ],
+          "tests": [
+            {
+              "file": "test/apply-bicep-admission.test.ts",
+              "title": "Azure Bicep journey (SYNTHETIC): seal (what-if as APPLY), apply (one deployment stack as APPLY), the blueprint from the stack's managed resources, observe, propose the VNet, delete the whole stack, verify leftovers"
+            }
+          ]
         },
         "sourceBoundEvidence": {
-          "status": "NOT_IMPLEMENTED",
+          "status": "SYNTHETIC_PASS",
           "code": [
-            "src/apply/types.ts",
+            "src/util/source-commit.ts",
+            "src/apply/seal.ts",
+            "src/apply/driver.ts",
             "src/apply/evidence.ts"
           ],
-          "missing": "This path has no apply whose evidence is shown to name the product commit that sealed and ran it."
+          "tests": [
+            {
+              "file": "test/apply-bicep-admission.test.ts",
+              "title": "Azure Bicep journey (SYNTHETIC): seal (what-if as APPLY), apply (one deployment stack as APPLY), the blueprint from the stack's managed resources, observe, propose the VNet, delete the whole stack, verify leftovers"
+            },
+            {
+              "file": "test/source-commit.test.ts",
+              "title": "a clean checkout names its HEAD commit, and the image stamp cannot override it"
+            }
+          ]
         }
       },
       "live": {
-        "status": "NOT_IMPLEMENTED",
-        "missing": "Nothing to qualify until the Bicep path exists in the product."
+        "status": "BLOCKED",
+        "blockedBy": "The owner-authorized G2 DEV run (docs/act-pilot-bicep.md): bootstrap/azure with bicep_deployment_stacks, a reviewed DEV-only Azure Bicep contract with its authorize entry, tenant, subscription, resource group, location and canary, a person qualifying the real az and bicep, and one supervised DEV apply recorded with ./alz apply record-live. Registration is not readiness; there is no ARM emulator."
       }
     },
     {

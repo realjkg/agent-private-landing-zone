@@ -11,7 +11,7 @@ import { ALLOWED_RESOURCE_TYPE, BICEP, BICEP_ENTRY, RESOURCE_GROUP_TEMPLATE_SCHE
 import { AZURE } from "../src/apply/providers/azure.js";
 import { removeTree } from "../src/teardown/driver/cleanup.js";
 import { createImmutableSnapshot } from "../src/teardown/snapshot.js";
-import { AZ_VERSION, RESOLVED, RESOURCE_GROUP, SUBSCRIPTION_ID, TARGET, UNIT, behave, identityEnv, installFakes, writeBicepProject } from "./helpers/bicep-fixtures.js";
+import { AZ_VERSION, CANARY, RESOLVED, RESOURCE_GROUP, SUBSCRIPTION_ID, TARGET, UNIT, behave, identityEnv, installFakes, writeBicepProject } from "./helpers/bicep-fixtures.js";
 
 // The committed ACT-DEV-1 Azure Bicep canary (qualification/azure/act-dev1-bicep-canary). SYNTHETIC and offline: the committed
 // compiled template is judged by the Bicep engine's own seal-time check (checkTemplate). The opt-in run recompiles main.bicep with
@@ -41,15 +41,30 @@ test("the compiled canary is exactly one empty virtual network with the AWS cana
   assert.equal(vnet.name, "[parameters('name')]");
   assert.equal(vnet.location, "[parameters('location')]");
   assert.deepEqual(vnet.properties, { addressSpace: { addressPrefixes: ["10.250.0.0/24"] } });
-  assert.equal(vnet.tags, "[union(createObject('environment', 'DEV', 'managed-by', 'sovereign-alz', 'purpose', 'act-dev-1', 'owner', parameters('owner')), parameters('unitTags'))]");
-  // The engine passes no parameter values, so each parameter has a default. Name, owner and unit tags are EXAMPLE values the
-  // operator replaces; location follows the existing pilot resource group.
-  assert.deepEqual(Object.keys(template.parameters), ["name", "location", "owner", "unitTags"]);
+  // The tags are literal strings, never an ARM expression (the engine refuses one, TEMPLATE_VALUE_NOT_LITERAL): the four tags of the
+  // AWS canaries' scheme, then the three unit tags. Owner and unit tags are EXAMPLE values the operator replaces in main.bicep.
+  assert.deepEqual(vnet.tags, {
+    environment: "DEV", "managed-by": "sovereign-alz", purpose: "act-dev-1", owner: "REPLACE-WITH-APPROVED-OWNER",
+    "alz-build": "REPLACE-WITH-PREPARE-OUTPUT", "alz-managed-by": "REPLACE-WITH-PREPARE-OUTPUT", "alz-unit": "REPLACE-WITH-PREPARE-OUTPUT",
+  });
+  // The engine passes no parameter values, so each parameter has a default. Name is an EXAMPLE value the operator replaces;
+  // location follows the existing pilot resource group.
+  assert.deepEqual(Object.keys(template.parameters), ["name", "location"]);
   for (const [name, parameter] of Object.entries<any>(template.parameters)) assert.ok(Object.hasOwn(parameter, "defaultValue"), name);
   assert.equal(template.parameters.location.defaultValue, "[resourceGroup().location]");
   assert.match(template.parameters.name.defaultValue, /^vnet-alz-act-dev-1-/);
-  assert.equal(template.parameters.owner.defaultValue, "REPLACE-WITH-APPROVED-OWNER");
-  assert.deepEqual(Object.keys(template.parameters.unitTags.defaultValue).sort(), ["alz-build", "alz-managed-by", "alz-unit"]);
+});
+
+test("the compiled canary is exactly the canary allowlist an Azure Bicep contract names: one Microsoft.Network/virtualNetworks", () => {
+  const [vnet] = JSON.parse(compiled()).resources;
+  assert.equal(BICEP.canaryTypeOk!(vnet.type), true);
+  assert.deepEqual(CANARY.resources, [{ type: vnet.type, count: 1 }]);
+});
+
+test("tags written as an ARM expression (the canary's earlier union of parameters) are refused TEMPLATE_VALUE_NOT_LITERAL", () => {
+  const template = JSON.parse(compiled());
+  template.resources[0].tags = "[union(createObject('environment', 'DEV'), parameters('unitTags'))]";
+  assert.equal(refusal(JSON.stringify(template)), "TEMPLATE_VALUE_NOT_LITERAL");
 });
 
 test("the same check refuses a subnet, a second resource or another type, so the acceptance above is not vacuous", () => {
@@ -77,16 +92,16 @@ test("main.bicep declares the one resource and no module, existing resource, out
 });
 
 /**
- * The compiled template with the operator's parameter values put in, the way ARM evaluates it for the what-if: `name`, `location` and
- * `tags`, where tags is `union(createObject(<the four tags>), parameters('unitTags'))` (asserted verbatim above), so the four tags
- * followed by the unit tags. Everything else is the committed bytes' content.
+ * The compiled template with the operator's values put in: `name` and `location` the way ARM evaluates the parameters for the
+ * what-if, and the owner and unit tags as the operator writes them, literally, into main.bicep (the committed tag keys, asserted
+ * above). Everything else is the committed bytes' content.
  */
 function evaluated(values: { name: string; location: string; owner: string; unitTags: Record<string, string> }): string {
   const template = JSON.parse(compiled());
   const [vnet] = template.resources;
-  assert.equal(vnet.tags, "[union(createObject('environment', 'DEV', 'managed-by', 'sovereign-alz', 'purpose', 'act-dev-1', 'owner', parameters('owner')), parameters('unitTags'))]");
-  template.resources[0] = { ...vnet, name: values.name, location: values.location,
-    tags: { environment: "DEV", "managed-by": "sovereign-alz", purpose: "act-dev-1", owner: values.owner, ...values.unitTags } };
+  const committed = { ...vnet.tags };
+  for (const key of ["alz-build", "alz-managed-by", "alz-unit"]) delete committed[key];
+  template.resources[0] = { ...vnet, name: values.name, location: values.location, tags: { ...committed, owner: values.owner, ...values.unitTags } };
   return JSON.stringify(template, null, 2) + "\n";
 }
 
@@ -113,7 +128,7 @@ function sealThroughEngine(template: string) {
   }
 }
 
-test("with prepare's unit tags in unitTags, the seal-time unit check passes: exactly one create, unit sealed, nothing untagged", () => {
+test("with prepare's unit tags written in, the seal-time unit check and the canary allowlist pass: exactly one create, unit sealed, nothing untagged", () => {
   const name = "vnet-alz-act-dev-1-canary-01";
   const sealed = sealThroughEngine(evaluated({ name, location: "eastus2", owner: "qa", unitTags: { ...UNIT.tags } }));
   const id = "/subscriptions/" + SUBSCRIPTION_ID + "/resourceGroups/" + RESOURCE_GROUP + "/providers/Microsoft.Network/virtualNetworks/" + name;
@@ -121,8 +136,9 @@ test("with prepare's unit tags in unitTags, the seal-time unit check passes: exa
   assert.deepEqual(sealed.unit, { unitId: UNIT.unitId, tags: { ...UNIT.tags }, untagged: [] });
 });
 
-test("with the committed placeholder unitTags, or none, the same seal is refused UNIT_TAG_MISSING", () => {
-  const defaults = JSON.parse(compiled()).parameters.unitTags.defaultValue as Record<string, string>;
+test("with the committed placeholder unit tags, or none, the same seal is refused UNIT_TAG_MISSING", () => {
+  const tags = JSON.parse(compiled()).resources[0].tags as Record<string, string>;
+  const defaults = { "alz-build": tags["alz-build"]!, "alz-managed-by": tags["alz-managed-by"]!, "alz-unit": tags["alz-unit"]! };
   for (const unitTags of [defaults, {}]) {
     let code = "";
     try { sealThroughEngine(evaluated({ name: "vnet-alz-act-dev-1-canary-01", location: "eastus2", owner: "qa", unitTags })); } catch (error) { code = codeOf(error); }

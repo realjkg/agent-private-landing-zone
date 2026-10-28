@@ -1,6 +1,7 @@
 import type { AdapterDescriptor, ResolvedTarget } from "../teardown/driver/types.js";
 import type { ArtifactManifest } from "../teardown/manifest.js";
 import type { StoppableProcessOptions, StoppableResult } from "../tools/process.js";
+import { BICEP } from "./engines/bicep.js";
 import { CDK } from "./engines/cdk.js";
 import { TERRAFORM } from "./engines/terraform.js";
 import type { ProviderSpec } from "./provider.js";
@@ -47,7 +48,7 @@ export type EnginePlanInput = EngineRunInput & {
  * state (`terraform state pull`, read as STATE), or CloudFormation's logical-to-physical mapping of the stack
  * (`describe-stack-resources`, read as DISCOVERY). The driver maps either to identifiers and drops the document.
  */
-export type StateDocument = { source: "TERRAFORM_STATE_PULL" | "CLOUDFORMATION_STACK_RESOURCES"; document: string };
+export type StateDocument = { source: "TERRAFORM_STATE_PULL" | "CLOUDFORMATION_STACK_RESOURCES" | "AZURE_DEPLOYMENT_STACK_RESOURCES"; document: string };
 
 /** How an apply ended: an outcome, or a plan its state has outgrown (nothing applied). */
 export type ApplyEnd = { outcome: ApplyOutcome } | { stale: true };
@@ -131,6 +132,12 @@ export type EngineSpec = {
     workspaceOk(value: string): boolean;
     backendMayRepeat: boolean;
     fields: Readonly<Record<string, (value: unknown) => boolean>>;
+    /**
+     * The `fields` that say where the run's resources are (Bicep: the resource group its stack lives in), so they join the run's
+     * target hash (`pilotTargetSha256`) and a cleanup or removal refuses a contract that moved them. Absent: none (CDK's
+     * `capabilities` limit what a change set may do, not where it is).
+     */
+    locationFields?: readonly string[];
   };
   notices: EngineNotices;
   /**
@@ -175,7 +182,7 @@ export type EngineSpec = {
   recoveryFileNames: readonly string[];
 };
 
-const SPECS: Readonly<Record<EngineId, EngineSpec>> = { TERRAFORM, CDK };
+const SPECS: Readonly<Record<EngineId, EngineSpec>> = { TERRAFORM, CDK, BICEP };
 
 /** The spec for a contract's `engine`, or undefined for anything that is not an implemented engine id. */
 export const engineSpec = (id: unknown): EngineSpec | undefined =>

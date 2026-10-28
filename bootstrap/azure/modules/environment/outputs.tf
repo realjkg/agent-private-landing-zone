@@ -22,5 +22,15 @@ output "controls" {
       DISCOVERY   = azurerm_role_assignment.discovery.role_definition_name
       APPLY       = azurerm_role_assignment.apply.role_definition_name
     }
+    # The Bicep path's custom role (owner decision E2): where it is defined, where it may be assigned, where it is assigned, and
+    # exactly its actions. Empty when the Bicep path is off.
+    bicep_stack_role = [for i, d in azurerm_role_definition.bicep_stack_apply : {
+      scope             = d.scope
+      assignable_scopes = d.assignable_scopes
+      actions           = d.permissions[0].actions
+      not_actions       = d.permissions[0].not_actions
+      assigned_scope    = azurerm_role_assignment.bicep_stack_apply[i].scope
+      assigned_to       = azurerm_role_assignment.bicep_stack_apply[i].principal_id
+    }]
   }
 }

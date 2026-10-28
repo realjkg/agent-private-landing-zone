@@ -165,7 +165,35 @@ test("a missing engine tool explains the supported alternative for that provider
   mkdirSync(project);
   writeProject(project, targetOf("DEV"));
   const azureRefusal = refused(await prepareApply({ environment: "DEV", projectRoot: project }, azure.deps), "TOOL_UNAVAILABLE", "TOOL");
-  assert.match(azureRefusal.alternative ?? "", /Bicep .* not supported for apply yet/);
+  // Azure Bicep is admitted for DEV only (the admission-wiring lane, #39): the other supported Azure way, with its own contract.
+  assert.match(azureRefusal.alternative ?? "", /commit a contract for BICEP/);
+  assert.match(azureRefusal.alternative ?? "", /own reviewed contract, its own preview and its own approvals/);
+});
+
+test("Azure Bicep is the Azure secondary path: main.bicep is the project, no lock file and no providers, and the engine version is the tested az pin until it is qualified", async () => {
+  const bicep = (kill: string) => ({
+    ...contractJson(kill, { policyVersion: POLICY }), engine: "BICEP", enabledEnvironments: ["DEV"], requiredApprovals: { DEV: 1 }, authorize: { DEV: ["APPLY", "CLEANUP"] },
+    targets: { DEV: { tenantId: "11111111-1111-4111-8111-111111111111", subscriptionId: targetOf("DEV").account, backend: "alz-pilot-stack", workspace: "default", resourceGroup: "alz-pilot-dev", location: "eastus2" } },
+  });
+  const s = setup(bicep, "none");
+  for (const name of ["az", "bicep"]) writeFileSync(join(s.toolDir, name), "#!/bin/sh\nexit 9\n", { mode: 0o755 });
+  const project = join(s.dir, "bicep-project");
+  mkdirSync(project);
+  writeFileSync(join(project, "main.bicep"), "resource vnet 'Microsoft.Network/virtualNetworks@2024-05-01' = {}\n");
+  const prepared = ok(await prepareApply({ environment: "DEV", projectRoot: project }, s.deps));
+  assert.equal(prepared.summary.engine, "BICEP");
+  assert.equal(prepared.summary.path, "SECONDARY");
+  assert.equal(prepared.summary.engineVersion, loadToolPins().azureCli.version);
+  assert.equal(prepared.summary.engineVersionSource, "TESTED_PIN");
+  assert.deepEqual(prepared.request.resolved.providers, []);
+  assert.equal(prepared.request.resolved.lockFileSha256, undefined);
+  assert.equal(prepared.manifest.engine, "BICEP");
+  assert.equal(prepared.next.step, "qualify");
+  // A folder with no main.bicep is not this engine's project.
+  const empty = join(s.dir, "not-bicep");
+  mkdirSync(empty);
+  writeFileSync(join(empty, "main.tf"), "");
+  assert.match(refused(await prepareApply({ environment: "DEV", projectRoot: empty }, s.deps), "PROJECT_ENGINE_MISMATCH", "OPERATOR").message, /no main\.bicep/);
 });
 
 test("projects that do not match the engine, are not clean, or cannot be fingerprinted are refused, never patched up", async () => {

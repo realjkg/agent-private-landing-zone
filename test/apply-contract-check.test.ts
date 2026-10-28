@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { randomBytes } from "node:crypto";
+import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { inspectPilotContract } from "../src/apply/contract.js";
 import { checkDraftContract, contractCheckLines, shippedExampleValues, type ContractCheckReport } from "../src/apply/contract-check.js";
 import { runApplyCommand, type ApplyCliDeps } from "../src/cli/apply.js";
 import { keys } from "./helpers/apply-fixtures.js";
@@ -357,4 +358,21 @@ test("the command enables nothing: the repository still ships no contract and no
   assert.equal(readFileSync(path, "utf8"), before);
   assert.equal(existsSync(join(ROOT, "config", "act-pilot-contract.json")), false, "the check never writes the contract");
   assert.equal(existsSync(join(ROOT, "config", "act-pilot-contract.sha256")), false, "the retired pin is never recreated");
+});
+
+test("the Azure Bicep DEV example (owner decision E2) names every owner input, its resource group and location included, and a filled copy loads for Azure Bicep DEV", () => {
+  const example = JSON.parse(readFileSync(join(ROOT, "config", "act-pilot-contract.azure-bicep-dev.example.json"), "utf8")) as Record<string, unknown>;
+  const report = checkDraftContract(example);
+  assert.deepEqual([report.provider, report.engine, report.enabledAsWritten, report.scope], ["AZURE", "BICEP", false, ["DEV"]]);
+  assert.equal(report.complete, false);
+  for (const field of ["policyVersion", "targets.DEV.tenantId", "targets.DEV.subscriptionId", "targets.DEV.resourceGroup", "targets.DEV.location", "approvers[0].id", "approvers[0].publicKeyPem"]) {
+    assert.ok(notReady(report).includes(field), field + " is the owner's input");
+  }
+  // Filled with explicit fake values, it is an Azure Bicep DEV contract whose target binds the group and the location.
+  const filled = JSON.parse(JSON.stringify(example)) as { enabled: boolean; policyVersion: string; targets: { DEV: Record<string, unknown> }; approvers: { id: string; publicKeyPem: string }[] };
+  Object.assign(filled, { enabled: true, policyVersion: "policy-2026-10" });
+  Object.assign(filled.targets.DEV, { tenantId: "11111111-1111-4111-8111-111111111111", subscriptionId: "22222222-2222-4222-8222-222222222222", resourceGroup: "alz-pilot-dev", location: "eastus2" });
+  filled.approvers = [{ ...filled.approvers[0]!, id: "owner", publicKeyPem: generateKeyPairSync("ed25519").publicKey.export({ type: "spki", format: "pem" }).toString() }];
+  const loaded = inspectPilotContract(filled);
+  assert.ok(loaded.ok, loaded.ok ? "" : loaded.reason);
 });

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { codeOf } from "../src/apply/engine.js";
+import { codeOf, reasonOf } from "../src/apply/engine.js";
 import { engineSpec } from "../src/apply/engine-spec.js";
 import { AZURE_NAME, AZ_STACK_PROFILE, BICEP, DENY_SETTINGS_MODE, RESOURCE_GROUP_TEMPLATE_SCHEMA, azWouldExpandFile, checkTemplate, isAllowedBicepArgv, pinnedBicepVersion } from "../src/apply/engines/bicep.js";
 import { AZURE } from "../src/apply/providers/azure.js";
@@ -17,9 +17,9 @@ import {
   behave, callsOf, identityEnv, installFakes, patch, stateOf, vnetTemplate, writeBicepProject, type AzBehavior,
 } from "./helpers/bicep-fixtures.js";
 
-// SYNTHETIC. The path 4 engine (docs/act-pilot-bicep.md) driven step by step with a fake `az` and `bicep`. The engine is not
-// registered until the authorization lane admits the BICEP engine id, so these tests call its steps directly; the driver, ledger,
-// approvals and evidence around them are the shared modules, tested for the other engines. Nothing here is provider qualification.
+// SYNTHETIC. The path 4 engine (docs/act-pilot-bicep.md) driven step by step with a fake `az` and `bicep`. These tests call its
+// steps directly; test/apply-bicep-admission.test.ts drives the same engine through the driver, ledger, approvals and evidence.
+// Nothing here is provider qualification.
 
 const root = mkdtempSync(join(tmpdir(), "alz-bicep-"));
 test.after(() => rmSync(root, { recursive: true, force: true }));
@@ -106,9 +106,20 @@ test("the allowlist admits exactly the engine's own az and bicep lists, each for
   assert.equal(isAllowedBicepArgv("bicep", null, ["build", "main.bicep", "--stdout"]), false, "a build always skips module restore");
   assert.equal(isAllowedBicepArgv("bicep", "APPLY", ["build", "main.bicep", "--stdout", "--no-restore"]), false, "the compiler gets no identity");
   assert.equal(AZ_STACK_PROFILE.injectable.join(), "AZURE_CONFIG_DIR", "az receives only its private sign-in directory");
+  // Owner decision E2, option A: the ARM what-if is APPLY's alone, at seal and at the apply's re-derivation; DISCOVERY has no
+  // whatIf, deployment or deny-setting call at all, for any adapter.
+  const whatIf = ["deployment", "group", "what-if", "--resource-group", RESOURCE_GROUP, "--template-file", "/scratch/template/alz-template.json", "--result-format", "FullResourcePayloads",
+    "--validation-level", "ProviderNoRbac", "--no-pretty-print", "--no-prompt", "true", "--subscription", SUBSCRIPTION_ID, "--output", "json"];
+  assert.equal(isAllowedBicepArgv("az", "APPLY", whatIf, "preview"), true);
+  assert.equal(isAllowedBicepArgv("az", "APPLY", whatIf, "apply"), true);
+  assert.equal(isAllowedBicepArgv("az", "APPLY", whatIf, "cleanup"), false, "a cleanup runs no what-if");
+  for (const adapter of ["preview", "apply", "cleanup", undefined] as const) {
+    assert.equal(isAllowedBicepArgv("az", "DISCOVERY", whatIf, adapter), false, "DISCOVERY never runs the what-if (" + adapter + ")");
+    for (const args of [create, del]) assert.equal(isAllowedBicepArgv("az", "DISCOVERY", args, adapter), false, "DISCOVERY never creates or deletes a stack (" + adapter + ")");
+  }
 });
 
-test("the spec: two identities, three adapters with their own argument digests, never registered until the engine id is admitted", () => {
+test("the spec: two identities, three adapters with their own argument digests, registered as the BICEP engine (admitted for DEV only)", () => {
   assert.equal(BICEP.id, "BICEP");
   assert.deepEqual([...BICEP.identities], ["DISCOVERY", "APPLY"]);
   assert.deepEqual([...BICEP.attests], ["DISCOVERY", "APPLY"]);
@@ -116,7 +127,8 @@ test("the spec: two identities, three adapters with their own argument digests, 
   const digests = [BICEP.previewAdapter(), BICEP.applyAdapter, BICEP.cleanupAdapter!].map((adapter) => adapter.argvDigest);
   assert.equal(new Set(digests).size, 3);
   assert.ok([BICEP.previewAdapter(), BICEP.applyAdapter, BICEP.cleanupAdapter!].every((adapter) => adapter.engine === "BICEP"));
-  assert.equal(engineSpec("BICEP"), undefined, "a contract naming BICEP is still not a contract (ACT stays DISABLED for this path)");
+  assert.equal(engineSpec("BICEP"), BICEP, "registered; the contract admits it for DEV only (test/apply-bicep-admission.test.ts)");
+  assert.deepEqual(BICEP.target!.locationFields, ["resourceGroup", "location"], "the resource group and the location join the run's target hash");
   assert.equal(BICEP.target!.fields.resourceGroup(RESOURCE_GROUP), true);
   assert.equal(BICEP.target!.fields.resourceGroup("bad/group"), false);
   assert.equal(PIN, loadToolPins().bicep.version);
@@ -124,7 +136,7 @@ test("the spec: two identities, three adapters with their own argument digests, 
 
 // --- sealing --------------------------------------------------------------------------------------------------------
 
-test("seal: compiles with the pinned bicep, runs the what-if as DISCOVERY, creates nothing, and binds the exact template", () => {
+test("seal: compiles with the pinned bicep, runs the what-if as APPLY (owner decision E2, option A), creates nothing, and binds the exact template", () => {
   const w = world();
   const sealed = seal(w);
   assert.deepEqual(sealed.changes, [{ address: VNET_ID, type: "Microsoft.Network/virtualNetworks", action: "CREATE" }]);
@@ -137,7 +149,8 @@ test("seal: compiles with the pinned bicep, runs the what-if as DISCOVERY, creat
   assert.deepEqual([record.resourceGroup, record.stackName], [RESOURCE_GROUP, STACK_NAME]);
   const az = azCalls();
   assert.ok(!az.some((call) => call.args[0] === "stack" && call.args[2] !== "show"), "no stack is created or deleted while sealing");
-  assert.equal(az.find((call) => sub(call) === "deployment group what-if")?.who, "DISCOVERY");
+  assert.deepEqual(az.filter((call) => sub(call) === "deployment group what-if").map((call) => call.who), ["APPLY"], "the what-if runs once, as APPLY");
+  assert.deepEqual([...new Set(az.filter((call) => sub(call) === "group show" || sub(call) === "stack group show").map((call) => call.who))], ["DISCOVERY"], "the reads stay DISCOVERY's");
   assert.ok(az.filter((call) => call.args[0] !== "version" && call.args[0] !== "login").every((call) => call.args.includes("--subscription")));
   assert.ok(!az.some((call) => call.unexpected));
   assert.equal(stateOf(toolDir).stack, null);
@@ -481,3 +494,168 @@ test("N3: an existing stack must carry exactly the unit's tags, keys and values,
   assert.throws(() => seal(next), refusedWith("STACK_TAGS_UNKNOWN"), "an extra key");
 });
 
+
+// --- the registration follow-ups of #39 6450296103 --------------------------------------------------------------------
+
+test("follow-up 1: only a refusal ARM itself returned is definite; an az transport error that exits 1 is PARTIAL_REQUIRES_REVIEW, never FAILED_NO_CHANGE, for the create and for the delete", async () => {
+  // The create reaches ARM but az reports a closed connection and exits 1; the stack shows only long after the reads end.
+  const w = world({ createLostAppearAfter: 1000 });
+  const lost = await apply(w, seal(w).artifact);
+  assert.equal(lost.result.exitCode, 1);
+  assert.deepEqual(lost.end, { outcome: "PARTIAL_REQUIRES_REVIEW" }, "no ARM error code: the request may have reached ARM");
+  // The control: an ARM refusal, printed as `(<Code>) <message>`, is definite.
+  const v = world({ createFail: true });
+  assert.deepEqual((await apply(v, seal(v).artifact)).end, { outcome: "FAILED_NO_CHANGE" });
+  // The delete: the same rule.
+  const d = world();
+  const sealed = seal(d);
+  assert.deepEqual((await apply(d, sealed.artifact)).end, { outcome: "SUCCEEDED" });
+  patch(toolDir, { deleteLost: true });
+  assert.deepEqual((await cleanup(d, [VNET_ID])).end, { outcome: "PARTIAL_REQUIRES_REVIEW" }, "a transport error on the delete is never a confirmed no-change");
+  assert.notEqual(stateOf(toolDir).stack, null, "the fake left the stack, as an unconfirmed delete may");
+});
+
+test("follow-up 2: a list* call is found in any parsed key or string value, also behind a JSON escape a text scan cannot see", () => {
+  const vnet = (over: Record<string, unknown>) => vnetTemplate({ resources: [{ type: "Microsoft.Network/virtualNetworks", apiVersion: "2024-05-01", name: VNET, location: "eastus2", tags: UNIT.tags, properties: { addressSpace: { addressPrefixes: ["10.250.0.0/24"] } }, ...over }] });
+  const escaped = vnetTemplate().replace('"note": "' + TEMPLATE_CANARY + '"', '"note": "[\\u006cistKeys(resourceId(\'Microsoft.Storage/storageAccounts\', \'x\'), \'2023-01-01\').keys[0].value]"');
+  assert.notEqual(escaped, vnetTemplate(), "the fixture holds the escaped call");
+  assert.ok(!/\blist[A-Za-z0-9]*\s*\(/i.test(escaped), "a scan of the raw text does not see it");
+  assert.throws(() => checkTemplate(escaped), refusedWith("TEMPLATE_SHAPE_NOT_ALLOWED"));
+  assert.throws(() => checkTemplate(vnet({ name: "[listSecrets('x', '2023-01-01').value]" })), refusedWith("TEMPLATE_SHAPE_NOT_ALLOWED"));
+  const keyed = JSON.parse(vnetTemplate());
+  keyed.variables = { "[listKeys('a','b')]": "x" };
+  assert.throws(() => checkTemplate(JSON.stringify(keyed)), refusedWith("TEMPLATE_SHAPE_NOT_ALLOWED"), "in a key too");
+  assert.doesNotThrow(() => checkTemplate(vnetTemplate()), "control");
+});
+
+test("follow-up 3: address prefixes and tags must be literal strings, never an ARM expression", () => {
+  const vnet = (tags: unknown, prefixes: unknown[]) => vnetTemplate({ resources: [{ type: "Microsoft.Network/virtualNetworks", apiVersion: "2024-05-01", name: VNET, location: "eastus2", tags, properties: { addressSpace: { addressPrefixes: prefixes } } }] });
+  assert.doesNotThrow(() => checkTemplate(vnet(UNIT.tags, ["10.250.0.0/24", "fd00:250::/64"])));
+  for (const [label, tags, prefixes] of [
+    ["tags from a parameter", "[parameters('tags')]", ["10.250.0.0/24"]],
+    ["a tag value expression", { ...UNIT.tags, "alz-unit": "[parameters('unit')]" }, ["10.250.0.0/24"]],
+    ["an escaped literal bracket", { ...UNIT.tags, owner: "[[team]" }, ["10.250.0.0/24"]],
+    ["a tag key expression", { ...UNIT.tags, "[variables('k')]": "v" }, ["10.250.0.0/24"]],
+    ["a non-string tag value", { ...UNIT.tags, n: 1 }, ["10.250.0.0/24"]],
+    ["a prefix expression", UNIT.tags, ["[variables('prefix')]"]],
+    ["a prefix that is not a CIDR block", UNIT.tags, ["10.250.0.0"]],
+    ["a non-string prefix", UNIT.tags, [10]],
+    ["no prefix", UNIT.tags, []],
+  ] as const) {
+    assert.throws(() => checkTemplate(vnet(tags, [...prefixes])), refusedWith("TEMPLATE_VALUE_NOT_LITERAL"), label);
+  }
+});
+
+// --- owner decision E2 (option A) and the E1 canary allowlist ---------------------------------------------------------
+
+test("E2: DISCOVERY never runs the what-if; across seal, apply, cleanup and qualify every what-if is APPLY's, and DISCOVERY only signs in and reads", async () => {
+  const w = world();
+  const sealed = seal(w);
+  assert.deepEqual((await apply(w, sealed.artifact)).end, { outcome: "SUCCEEDED" });
+  assert.deepEqual((await cleanup(w, [VNET_ID])).end, { outcome: "SUCCEEDED" });
+  withSnapshot(w, (snapshotPath) => BICEP.qualify!({ ...input(w), snapshotPath, unit: UNIT }));
+  const all = azCalls();
+  // One at the seal and one when the apply re-derives the plan; none at the cleanup or the qualification.
+  assert.deepEqual(all.filter((call) => sub(call) === "deployment group what-if").map((call) => call.who), ["APPLY", "APPLY"]);
+  const discovery = all.filter((call) => call.who === "DISCOVERY").map((call) => call.args[0] === "login" ? "login" : sub(call));
+  assert.ok(discovery.length > 0);
+  assert.deepEqual([...new Set(discovery)].sort(), ["account show --subscription", "group show --name", "login", "stack group show"].sort(), "DISCOVERY signs in and reads only");
+  assert.ok(!all.some((call) => call.who === "DISCOVERY" && (call.args[0] === "deployment" || call.args.some((arg) => /deny/i.test(arg)))), "no deployment or deny-setting call as DISCOVERY");
+});
+
+const withCanary = (w: World, canary: unknown) => ({ ...input(w), pinned: { ...TARGET, canary } as never });
+
+test("E1 for Bicep: the compiled template and the what-if must be exactly the canary allowlist, create only; anything else is refused before a stack exists", async () => {
+  for (const [label, canary, code] of [
+    ["another count", { resources: [{ type: "Microsoft.Network/virtualNetworks", count: 2 }] }, "RESOURCE_NOT_IN_CANARY"],
+    ["another type", { resources: [{ type: "Microsoft.Network/publicIPAddresses", count: 1 }] }, "RESOURCE_NOT_IN_CANARY"],
+    ["the type in another case", { resources: [{ type: "microsoft.network/virtualnetworks", count: 1 }] }, "RESOURCE_NOT_IN_CANARY"],
+    ["an extra type", { resources: [{ type: "Microsoft.Network/virtualNetworks", count: 1 }, { type: "Microsoft.Network/networkSecurityGroups", count: 1 }] }, "RESOURCE_NOT_IN_CANARY"],
+    ["no allowlist", undefined, "CANARY_ALLOWLIST_MISSING"],
+  ] as const) {
+    const w = world();
+    assert.throws(() => withSnapshot(w, (snapshotPath) => BICEP.plan({ ...withCanary(w, canary), snapshotPath, unit: UNIT })), refusedWith(code), label);
+    // Judged on the compiled template before any sign-in or what-if.
+    assert.ok(!azCalls().some((call) => call.args[0] === "login" || sub(call) === "deployment group what-if"), label);
+    assert.throws(() => withSnapshot(w, (snapshotPath) => BICEP.qualify!({ ...withCanary(w, canary), snapshotPath, unit: UNIT })), refusedWith(code), "qualify: " + label);
+    assert.equal(stateOf(toolDir).stack, null);
+  }
+  // The what-if is create only: once the stack holds the network, a changed address space is a Modify (UPDATE), which the canary refuses.
+  const w = world();
+  assert.deepEqual((await apply(w, seal(w).artifact)).end, { outcome: "SUCCEEDED" });
+  const changed: World = { project: writeBicepProject(fresh("project"), vnetTemplate({ addressPrefix: "10.251.0.0/24" })), env: w.env };
+  assert.throws(() => seal(changed), (error: unknown) => codeOf(error) === "RESOURCE_NOT_IN_CANARY" && /would update it; the canary allows create only/.test(reasonOf(error) ?? ""));
+  assert.equal(azCalls().filter((call) => sub(call) === "stack group create").length, 1, "only the first apply created");
+});
+
+test("E1 for Bicep: an apply re-judges the sealed template and the what-if against the allowlist it runs under, before the create", async () => {
+  const w = world();
+  const sealed = seal(w);
+  const snapshot = createImmutableSnapshot(w.project.projectRoot, w.project.manifest, fresh("snapshot"));
+  const run = BICEP.openApply(withCanary(w, { resources: [{ type: "Microsoft.Network/virtualNetworks", count: 2 }] }));
+  try {
+    run.prepare(snapshot.path);
+    assert.throws(() => run.rederive(sealed.artifact), refusedWith("RESOURCE_NOT_IN_CANARY"));
+  } finally { run.removeSecrets(); snapshot.remove(); }
+  assert.ok(!azCalls().some((call) => sub(call) === "stack group create"));
+  assert.equal(stateOf(toolDir).stack, null);
+});
+
+// --- review of #332, B1: the location is bound ----------------------------------------------------------------------------
+
+const located = (location: unknown, defaultValue?: string) => {
+  const template = JSON.parse(vnetTemplate());
+  template.resources[0].location = location;
+  if (defaultValue !== undefined) template.parameters.location.defaultValue = defaultValue;
+  return JSON.stringify(template);
+};
+
+test("B1: the seal refuses a network placed outside the contract's location, a literal or a parameter default, and a group in another region", () => {
+  for (const [label, template, behavior] of [
+    ["a literal westeurope", located("westeurope"), {}],
+    ["a location default of westeurope", located("[parameters('location')]", "westeurope"), {}],
+    ["a location default of chinaeast2", located("[parameters('location')]", "chinaeast2"), {}],
+    ["a group in another region", undefined, { groupLocation: "westeurope" }],
+    ["a group in another region, as ARM prints it", undefined, { groupLocation: "West Europe" }],
+  ] as const) {
+    const w = world(behavior, template);
+    assert.throws(() => seal(w), refusedWith("LOCATION_NOT_IN_CONTRACT"), label);
+    assert.ok(!azCalls().some((call) => call.args[0] === "stack" && call.args[2] !== "show"), label);
+    assert.equal(stateOf(toolDir).stack, null, label);
+  }
+  // The contract's location, written literally or as ARM prints the group's region, seals.
+  assert.deepEqual(seal(world({}, located("eastus2"))).changes.map((c) => c.action), ["CREATE"]);
+  assert.deepEqual(seal(world({ groupLocation: "East US 2" })).changes.map((c) => c.action), ["CREATE"]);
+  // The sealed record names the location, and a record for another location is not this target's.
+  const w = world();
+  const record = JSON.parse(seal(w).artifact.toString("utf8"));
+  assert.equal(record.location, "eastus2");
+  assert.equal(BICEP.target!.fields.location!("eastus2"), true);
+  for (const bad of ["East US 2", "east-us", "", "a", "eastus2;x", 7]) assert.equal(BICEP.target!.fields.location!(bad), false, String(bad));
+  assert.deepEqual(BICEP.target!.locationFields, ["resourceGroup", "location"]);
+});
+
+test("B1: the apply refuses again when the group moved region after the seal, or the target names another location, before any create", async () => {
+  const w = world();
+  const sealed = seal(w);
+  patch(toolDir, { groupLocation: "westeurope" });
+  await assert.rejects(apply(w, sealed.artifact), refusedWith("LOCATION_NOT_IN_CONTRACT"));
+  // The same sealed plan under a target that names another location: refused at prepare (the group is not there) and, were the
+  // group there, by the sealed record, which names the location it was sealed for.
+  const v = world();
+  const plan = seal(v);
+  const moved = () => ({ ...input(v), pinned: { ...TARGET, location: "westeurope" } as never });
+  const snapshot = createImmutableSnapshot(v.project.projectRoot, v.project.manifest, fresh("snapshot"));
+  const run = BICEP.openApply(moved());
+  try {
+    assert.throws(() => run.prepare(snapshot.path), refusedWith("LOCATION_NOT_IN_CONTRACT"));
+  } finally { run.removeSecrets(); snapshot.remove(); }
+  patch(toolDir, { groupLocation: "westeurope" });
+  const snapshot2 = createImmutableSnapshot(v.project.projectRoot, v.project.manifest, fresh("snapshot"));
+  const run2 = BICEP.openApply(moved());
+  try {
+    run2.prepare(snapshot2.path);
+    assert.throws(() => run2.rederive(plan.artifact), refusedWith("ARTIFACT_TAMPERED"));
+  } finally { run2.removeSecrets(); snapshot2.remove(); }
+  assert.ok(!azCalls().some((call) => sub(call) === "stack group create"));
+});

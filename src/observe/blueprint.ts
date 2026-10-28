@@ -6,6 +6,7 @@
  * some by the other. No other attribute value is ever copied out, so the blueprint can go into reviewable evidence.
  */
 
+import { parseArmId } from "./arm-id.js";
 import { isAwsContainerType } from "./aws-containers.js";
 import { policyLinkOf, type PolicyLink } from "./run-created-policies.js";
 
@@ -242,5 +243,50 @@ export function blueprintFromCloudFormationResources(resourcesJson: string, plan
   }
   const leaving = new Set(planned.filter((change) => LEAVES_IN_STACK.has(change.action)).map((change) => change.address));
   const built = blueprintOf(instances(), planned);
+  return { entries: built.entries, missing: [...leaving].filter((address) => !built.entries.some((entry) => entry.address === address)).sort(), ...(container ? { container } : {}) };
+}
+
+/** The ARM type of a deployment stack: the unit's container for the Bicep engine. */
+export const DEPLOYMENT_STACK_TYPE = "Microsoft.Resources/deploymentStacks";
+/**
+ * Whether `id` is exactly the pinned deployment stack: a resource-group-scoped `Microsoft.Resources/deploymentStacks` id in the
+ * pinned subscription, with the pinned stack name and, when given, in the pinned resource group. Parsed with the ARM id parser and
+ * compared case-insensitively, as ARM compares ids; no pattern is built from data (review of #332, B2 and N4).
+ */
+export function isPinnedDeploymentStackId(id: unknown, pinned: { subscription: string; stack: string; resourceGroup?: string }): boolean {
+  if (typeof id !== "string") return false;
+  const parsed = parseArmId(id);
+  const segments = id.split("/");
+  const same = (a: string | undefined, b: string): boolean => a !== undefined && a.toLowerCase() === b.toLowerCase();
+  return parsed !== undefined && segments.length === 9 && parsed.pairs.length === 1 &&
+    same(parsed.pairs[0]!.namespace, "Microsoft.Resources") && same(parsed.pairs[0]!.typePath, "deploymentStacks") &&
+    same(parsed.subscription, pinned.subscription) && parsed.resourceGroup !== undefined &&
+    (pinned.resourceGroup === undefined || same(parsed.resourceGroup, pinned.resourceGroup)) && same(segments[8], pinned.stack);
+}
+
+/**
+ * The same blueprint from an Azure deployment stack (the Bicep engine, src/apply/engines/bicep.ts): the stack's managed resources,
+ * read as DISCOVERY after the run, as `{ "stackId": <id>, "managed": [<ARM id>, ...] }`. Each managed resource is its own address
+ * (the sealed change list names resources by ARM id), matched to the plan case-insensitively as ARM compares ids, with its ARM
+ * type as the type and its id as the identifier. The stack itself is the unit's container when it is the pinned stack in the
+ * pinned subscription. An id that does not parse in full is skipped, so it is never an entry the cleanup could name.
+ */
+export function blueprintFromDeploymentStackResources(json: string, planned: readonly PlannedChange[], place: { account: string; stack?: string; resourceGroup?: string }): Blueprint {
+  const body = parseState(json);
+  if (!Array.isArray(body.managed) || !body.managed.every((id) => typeof id === "string")) throw new Error("STATE_JSON_INVALID: not a deployment stack resource list");
+  const plannedByLower = new Map(planned.filter((change) => change.type !== "output").map((change) => [change.address.toLowerCase(), change.address]));
+  function* instances(): Generator<Instance> {
+    for (const id of body.managed as string[]) {
+      const parsed = parseArmId(id);
+      const pair = parsed?.pairs.at(-1);
+      if (parsed === undefined || pair === undefined || pair.typePath === "") continue;
+      yield { address: plannedByLower.get(id.toLowerCase()) ?? id, type: pair.namespace + "/" + pair.typePath, values: { id } };
+    }
+  }
+  const leaving = new Set(planned.filter((change) => change.type !== "output" && LEAVES_RESOURCE.has(change.action)).map((change) => change.address));
+  const built = blueprintOf(instances(), planned);
+  const stackId = typeof body.stackId === "string" ? body.stackId : undefined;
+  const container = stackId !== undefined && place.stack !== undefined && isPinnedDeploymentStackId(stackId, { subscription: place.account, stack: place.stack, resourceGroup: place.resourceGroup })
+    ? { type: DEPLOYMENT_STACK_TYPE, identifier: stackId } : undefined;
   return { entries: built.entries, missing: [...leaving].filter((address) => !built.entries.some((entry) => entry.address === address)).sort(), ...(container ? { container } : {}) };
 }

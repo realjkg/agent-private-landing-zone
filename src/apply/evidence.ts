@@ -57,7 +57,7 @@ const SHAPE: Shape = {
   exitCode,
   startedAt: iso,
   finishedAt: iso,
-  authority: { infrastructureAct: oneOf("PILOT_ENABLED"), mutation: oneOf("TERRAFORM_APPLY_OF_SEALED_PLAN", "CLOUDFORMATION_EXECUTE_OF_SEALED_CHANGE_SET"), agentInitiated: oneOf(false) },
+  authority: { infrastructureAct: oneOf("PILOT_ENABLED"), mutation: oneOf("TERRAFORM_APPLY_OF_SEALED_PLAN", "CLOUDFORMATION_EXECUTE_OF_SEALED_CHANGE_SET", "AZURE_DEPLOYMENT_STACK_CREATE_OF_SEALED_TEMPLATE"), agentInitiated: oneOf(false) },
   // Files the engine left for a person to recover from (errored.tfstate, crash.log), encrypted in the vault: how many, and the hash of the encrypted record. Never their contents.
   recovery: optional({ files: count, sha256: hash }),
 };
@@ -121,7 +121,7 @@ const CLEANUP_SHAPE: Shape = {
   exitCode,
   startedAt: iso,
   finishedAt: iso,
-  authority: { infrastructureAct: oneOf("PILOT_ENABLED"), mutation: oneOf("TERRAFORM_DESTROY_OF_APPROVED_PROPOSAL", "CLOUDFORMATION_EXECUTE_OF_REMOVAL_CHANGE_SET"), executedAs: oneOf("APPLY"), agentInitiated: oneOf(false) },
+  authority: { infrastructureAct: oneOf("PILOT_ENABLED"), mutation: oneOf("TERRAFORM_DESTROY_OF_APPROVED_PROPOSAL", "CLOUDFORMATION_EXECUTE_OF_REMOVAL_CHANGE_SET", "AZURE_DEPLOYMENT_STACK_DELETE_OF_RUN_STACK"), executedAs: oneOf("APPLY"), agentInitiated: oneOf(false) },
   recovery: optional({ files: count, sha256: hash }),
 };
 
