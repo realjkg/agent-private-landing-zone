@@ -152,7 +152,7 @@ test("a job environment that reaches the hook is made visible: the owner's canar
     // bash expands BASH_ENV and sources the result before the first line: the code runs (the marker appears), then the leak is reported.
     [{ BASH_ENV: "$(touch " + marker + ")" }, "BASH_ENV"],
     [{ ALZ_HOOK_ENV_CANARY: "instance-1", "BASH_FUNC_unset%%": "() { exit 0; }", "BASH_FUNC_exit%%": "() { builtin exit 0; }" }, "canary with function overrides"],
-    [{ ALZ_HOOK_ENV_CANARY: "instance-1", "__BASH_FUNC<unset>%%": "() { builtin exit 0; }", "__BASH_FUNC<exit>%%": "() { builtin exit 0; }" }, "canary with Apple bash 3.2 function overrides"],
+    [{ ALZ_HOOK_ENV_CANARY: "instance-1", "__BASH_FUNC<unset>%%": "() { builtin exit 0; }", "__BASH_FUNC<exit>%%": "() { builtin exit 0; }" }, "canary with angle-format function overrides"],
   ] as const) {
     rmSync(marker, { force: true });
     const result = run(at, jobEnv(at, over as Record<string, string>));
@@ -165,10 +165,15 @@ test("a job environment that reaches the hook is made visible: the owner's canar
 
 // --- exported-function formats: which one this host's bash imports (positive control, review N1 of #346) ---------------------
 
-/** GNU bash (4.3 and later, and upstream 3.2.54+) exports a function as BASH_FUNC_<name>%%; Apple's patched /bin/bash 3.2 as __BASH_FUNC<<name>>%%. */
+/**
+ * Two exported-function formats are sent. `gnu` (BASH_FUNC_<name>%%) is upstream bash's since the Shellshock fixes (4.3 and later,
+ * and 3.2.54 and later). The macOS CI control (run 40809742276, macOS 15.7.9) showed that Apple's /bin/bash 3.2.57 imports this
+ * format. `angle` (__BASH_FUNC<<name>>%%) is a variant that was expected for Apple's bash; that bash does not import it. It is
+ * still sent, so that any bash that does import it is covered too, and the control names which formats are live.
+ */
 const FUNCTION_FORMATS = {
   gnu: (name: string): string => "BASH_FUNC_" + name + "%%",
-  apple: (name: string): string => "__BASH_FUNC<" + name + ">%%",
+  angle: (name: string): string => "__BASH_FUNC<" + name + ">%%",
 } as const;
 type FunctionFormat = keyof typeof FUNCTION_FORMATS;
 const BASH_VERSION = spawnSync(BASH, ["-c", "echo \"$BASH_VERSION\""], { env: { PATH: "/usr/bin:/bin" }, encoding: "utf8" }).stdout.trim();
@@ -186,7 +191,8 @@ test("positive control: the bash the hook tests use really imports exported func
   // Printed so the CI log records which formats were live on that host (docs/act-pilot-identity-delivery.md, section 11, step 7).
   t.diagnostic(formatsLine());
   process.stdout.write(formatsLine() + "\n");
-  if (process.platform === "darwin" && BASH_MAJOR === 3) assert.ok(LIVE_FORMATS.includes("apple"), "Apple's /bin/bash 3.2 must import __BASH_FUNC<name>%%: " + formatsLine());
+  // Apple's /bin/bash 3.2.57 imports the GNU format (observed on macOS 15.7.9 in the macOS CI run 40809742276), as GNU bash does.
+  if (process.platform === "darwin" && BASH_MAJOR === 3) assert.ok(LIVE_FORMATS.includes("gnu"), "Apple's /bin/bash 3.2 imports BASH_FUNC_name%%: " + formatsLine());
   if (process.platform === "linux") assert.ok(LIVE_FORMATS.includes("gnu"), "GNU bash must import BASH_FUNC_name%%: " + formatsLine());
   assert.ok(LIVE_FORMATS.length > 0, "with no live format, the override cases below would prove nothing: " + formatsLine());
   // A live format really replaces a builtin in a plain script: the attack the hook is built to withstand is real on this host.
@@ -202,8 +208,8 @@ test("exported functions cannot hijack the hook: it calls no builtin by name, an
   t.diagnostic("override cases are live for: " + LIVE_FORMATS.join(", "));
   const branch = install({ ...dispatch, ref: "refs/heads/feature" });
   for (const name of ["unset", "exit", "set", "printf", "read", "refuse", "[", "test", "env", "find", "false", "command", "builtin", "true"]) {
-    // GNU bash's export format, then Apple bash 3.2's (`__BASH_FUNC<name>%%`); each bash ignores the other's.
-    for (const variable of [FUNCTION_FORMATS.gnu(name), FUNCTION_FORMATS.apple(name)]) {
+    // Both formats: the GNU one, live on Linux and on Apple's /bin/bash 3.2, and the angle variant, live on neither.
+    for (const variable of [FUNCTION_FORMATS.gnu(name), FUNCTION_FORMATS.angle(name)]) {
       const result = run(branch, jobEnv(branch, { [variable]: "() { builtin exit 0; }" }));
       assert.equal(result.status, 1, variable + ": " + result.stdout + result.stderr);
       assert.match(result.stderr, /ALZ_IDENTITY_RUNNER_REFUSED: the event payload is not a dispatch/, variable);
