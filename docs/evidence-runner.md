@@ -23,7 +23,7 @@ The PLAN is on the coordination ledger (issue #39, 6433527942). It follows the o
 | `azure-readonly` | S3 | Verifies the tenant and subscription, then runs `./alz qualify provider-azure` | Default run |
 | `gcp-readonly` | S4 | Verifies the project, then stops `NO_PRODUCER`: no read-only GCP inventory producer exists on main | Default run |
 | `act:<path>` | S5 | Guided: `./alz apply` contract-check → identity-check `--phase delivered` → prepare → qualify → preflight → seal → approve → apply → observe | Only with `--stage` |
-| `cleanup:<path>` | S5 | Guided: contract-check → identity-check → preflight (again, now) → observe → propose-cleanup → approve → cleanup → verify-cleanup → report → record-live | Only with `--stage` |
+| `cleanup:<path>` | S5 | Guided: contract-check → identity-check → the kill switch (again, now) → observe → propose-cleanup → approve → cleanup → verify-cleanup → report → record-live | Only with `--stage` |
 | `recovery` | S5 | Guided: `./alz apply record-recovery` for an interrupted and a resumed sealed plan | Only with `--stage` |
 | `summary` | S6 | Indexes the evidence, runs `./alz qualify admission` (read-only), and prints every gate with how a missing one is produced | Default run |
 
@@ -112,15 +112,19 @@ Delegated decision 2 (#39, 6433391052) allows the operator's own CLI login (`aws
   - **Azure.** `az` signs in only from `ALZ_DISCOVERY_AZURE_CONFIG_DIR`; it ignores `ARM_*`. That folder must:
     - be your dedicated folder, signed in as the federated DISCOVERY service principal (`az login --service-principal --federated-token …` into it);
     - be owned by you, mode `0700`, not a link, and its own real path;
+    - hold no symbolic link anywhere inside it (every entry is checked with `lstat`, down to a bounded depth), because az reads its sign-in from several files there, and a link could point it at another folder such as your own `~/.azure`;
     - sit outside your home folder and outside the checkout, so it can never be your own `~/.azure`.
 
     The runner reads only that folder's `azureProfile.json`, which lists subscriptions and holds no token (az keeps tokens in `msal_token_cache.*`, which is never opened). The default subscription and its tenant must be the expected ones, and the signed-in principal must be a service principal, never a user.
+    - Every subscription's `isDefault` must be a real `true` or `false`, so the runner and az cannot pick different defaults.
+    - When `ALZ_DISCOVERY_ARM_CLIENT_ID` is set, the principal's client id in that profile must equal it. This is a consistency check of the folder's own file, not proof: only the token's `appid` claim, which the runner never reads, would prove which principal signed in.
 
     **Why the runner does not create and sign in to a fresh folder itself:** doing so would mean reading the delivered token and handing it to `az` as an argument. The runner never reads or forwards a credential.
   - **GCP.** `ALZ_DISCOVERY_GOOGLE_PROJECT` and `ALZ_DISCOVERY_GOOGLE_REGION`.
   - **Token files.** Each token or credential-configuration file is checked with `lstat` only: absolute, a regular file of this user, mode `0600` or tighter, not a link. It is never opened.
   - **Wrong account.** A wrong account, tenant, subscription, project or region refuses the run before anything is written (`WRONG_ACCOUNT`).
 - **After the run, the producer's own observation.** The provider qualification document records `observedIdentity`: the account, or the tenant and subscription, its own discovery read (`sts get-caller-identity`, `az account show`). The stage takes the document as evidence only when that observation is the expected one.
+  - It also records the principal: the AWS role the caller assumed, or the Azure service principal's client id. That principal must match the configured DISCOVERY role, and `ALZ_DISCOVERY_ARM_CLIENT_ID` where one is set (`PRINCIPAL_MISMATCH`, `PRINCIPAL_NOT_OBSERVED`). This is a consistency check, not proof of which principal signed in.
   - A different one gives FAIL `WRONG_ACCOUNT`.
   - A missing one gives FAIL `IDENTITY_NOT_OBSERVED`.
   - Either way the document is kept for you to read, and is not evidence.
@@ -191,7 +195,10 @@ Before the first child, the runner checks four things. Each child checks them ag
   - `3`: spent.
 - These steps can change the account, consume approvals or write a one-time record: **seal, apply, cleanup, record-live and record-recovery**. Once one has started, the runner never starts it again, whatever its result. A rerun stops with `EVIDENCE_STEP_NOT_REPEATED`. Continue by hand, as `docs/act-pilot-apply.md` "When an apply fails" says, or start a new run folder.
 - Any other step that did not pass runs again on the next run, and steps that passed are reused.
-- **The read-only gates are never reused.** `contract-check`, `identity-check --phase delivered` and `preflight` run again on every invocation of an `act:` or `cleanup:` stage, so a resumed stage is gated on the contract, the delivered tokens and readiness as they are now. The cleanup stage starts with them too.
+- **The read-only gates are never reused.** `contract-check`, `identity-check --phase delivered` and `preflight` run again on every invocation of an `act:` stage, so a resumed stage is gated on the contract, the delivered tokens and readiness as they are now.
+- **The cleanup stage re-checks only what cleanup requires.** It runs `contract-check`, `identity-check --phase delivered` and the contract's kill switch (read in this process, as the product reads it: on when its file exists or cannot be read) again on every invocation.
+  - It does **not** run `./alz apply preflight`. That command reports apply readiness, which needs an engine qualification under 30 days old and an unchanged engine binary. `./alz apply cleanup` requires neither: it checks the contract's CLEANUP authorization, the identities, the delivered tokens, the targets and the kill switch (`checkEngineAndIdentities` with kind `cleanup`, `src/apply/driver.ts`).
+  - So a cleanup weeks after the apply still runs. Everything cleanup itself refuses still stops the stage.
 - **Ctrl-C at an `./alz apply` prompt** stops both that command and the runner, because the signal goes to the whole foreground group.
   - The product's own prompt answers nothing, so the step ends without acting.
   - The runner's journal keeps the step as started and never finished (`INTERRUPTED`).

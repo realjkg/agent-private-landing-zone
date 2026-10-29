@@ -154,7 +154,8 @@ test("cleanup:aws-terraform needs the act stage done, then runs the cleanup sequ
   const answers = scriptedTerminal([join(root, ".runs/keys/requester.pem"), ".runs/approvals/cleanup-1.json", ""]);
   const cleanup = actDeps(root, applyScript(), answers);
   assert.equal(await runEvidenceCommand(["run", "--synthetic", "--stage", "cleanup:aws-terraform"], cleanup.deps), 0, cleanup.deps.lines.join("\n"));
-  assert.deepEqual(cleanup.spawn.calls.map(sub), [...GATES, "apply observe", "apply propose-cleanup", "apply cleanup", "apply verify-cleanup", "apply report", "apply record-live"]);
+  assert.deepEqual(cleanup.spawn.calls.map(sub), ["apply contract-check", "apply identity-check", "apply observe", "apply propose-cleanup", "apply cleanup", "apply verify-cleanup", "apply report", "apply record-live"],
+    "the cleanup re-checks what cleanup requires (contract, delivered identities, kill switch in process), never apply readiness");
   const args = Object.fromEntries(cleanup.spawn.calls.map((call) => [sub(call), call.args.slice(2)]));
   assert.deepEqual(args["apply cleanup"], ["--proposal", ".runs/apply/cleanup/" + PROPOSAL12 + ".cleanup-proposal.json", "--request", ".runs/pilot/DEV/request-aaaaaaaaaaaaaaaa.json",
     "--manifest", ".runs/pilot/DEV/manifest-aaaaaaaaaaaaaaaa.json", "--sealed", ".runs/apply/evidence/" + ARTIFACT + ".sealed", "--approval", ".runs/approvals/cleanup-1.json"]);
@@ -206,4 +207,48 @@ test("on resume the read-only gates run again: identities that are no longer del
   assert.deepEqual(later.answers.asked, [], "no approval is asked for while the identities are not delivered");
   const identity = journalOf(root).filter((line) => line.step === "identity-check" && line.event === "finish").map((line) => line.outcome);
   assert.deepEqual(identity, ["PASS", "BLOCKED"], "each invocation journals its own identity check");
+});
+
+test("N6: the cleanup stage never runs apply preflight, so a qualification older than 30 days does not keep resources in the account; cleanup's own refusals still stop it", async () => {
+  const root = actRoot();
+  assert.equal(await runEvidenceCommand(["run", "--synthetic", "--stage", "act:aws-terraform"], actDeps(root, applyScript()).deps), 0);
+  // Weeks later: apply preflight would now report the qualification stale (exit 2). The cleanup does not ask it.
+  const key = join(root, ".runs/keys/requester.pem");
+  const stale = actDeps(root, applyScript({ "apply preflight": 2 }), scriptedTerminal([key, ".runs/approvals/cleanup-1.json", ""]));
+  assert.equal(await runEvidenceCommand(["run", "--synthetic", "--stage", "cleanup:aws-terraform"], stale.deps), 0, stale.deps.lines.join("\n"));
+  assert.ok(!stale.spawn.calls.some((call) => sub(call) === "apply preflight"), "apply readiness is not a cleanup gate");
+  assert.ok(stale.spawn.calls.some((call) => sub(call) === "apply cleanup"));
+  // When ./alz apply cleanup itself refuses (exit 2, nothing spent), the stage stops there and journals it.
+  const other = actRoot();
+  assert.equal(await runEvidenceCommand(["run", "--synthetic", "--stage", "act:aws-terraform"], actDeps(other, applyScript()).deps), 0);
+  const refused = actDeps(other, applyScript({ "apply cleanup": 2 }), scriptedTerminal([join(other, ".runs/keys/requester.pem"), ".runs/approvals/cleanup-1.json", ""]));
+  assert.equal(await runEvidenceCommand(["run", "--synthetic", "--stage", "cleanup:aws-terraform"], refused.deps), 2);
+  assert.equal(sub(refused.spawn.calls.at(-1)!), "apply cleanup");
+  assert.match(refused.deps.lines.join("\n"), /cleanup:aws-terraform: CHILD_REFUSED/);
+  // Delivered identities that are gone also stop it, as cleanup itself would refuse them.
+  const third = actRoot();
+  assert.equal(await runEvidenceCommand(["run", "--synthetic", "--stage", "act:aws-terraform"], actDeps(third, applyScript()).deps), 0);
+  const undelivered = actDeps(third, applyScript({ "apply identity-check": 2 }));
+  assert.equal(await runEvidenceCommand(["run", "--synthetic", "--stage", "cleanup:aws-terraform"], undelivered.deps), 2);
+  assert.deepEqual(undelivered.spawn.calls.map(sub), ["apply contract-check", "apply identity-check"]);
+});
+
+test("N6: the kill switch stops the cleanup stage before anything is observed, proposed or asked; an unreadable switch counts as on", async () => {
+  for (const contract of [AWS_CONTRACT, { ...AWS_CONTRACT, killSwitchPath: undefined }]) {
+    const root = actRoot(contract);
+    if (contract.killSwitchPath) {
+      assert.equal(await runEvidenceCommand(["run", "--synthetic", "--stage", "act:aws-terraform"], actDeps(root, applyScript()).deps), 0);
+      write(root, ".runs/apply/KILL", "");
+    } else {
+      // No readable switch: write the act stage's records with a contract that has one, then remove it from the contract.
+      writeFileSync(join(root, "config/act-pilot-contract.json"), JSON.stringify(AWS_CONTRACT));
+      assert.equal(await runEvidenceCommand(["run", "--synthetic", "--stage", "act:aws-terraform"], actDeps(root, applyScript()).deps), 0);
+      writeFileSync(join(root, "config/act-pilot-contract.json"), JSON.stringify({ ...AWS_CONTRACT, killSwitchPath: undefined }));
+    }
+    const stopped = actDeps(root, applyScript());
+    assert.equal(await runEvidenceCommand(["run", "--synthetic", "--stage", "cleanup:aws-terraform"], stopped.deps), 2);
+    assert.deepEqual(stopped.spawn.calls.map(sub), ["apply contract-check", "apply identity-check"]);
+    assert.deepEqual(stopped.answers.asked, []);
+    assert.match(stopped.deps.lines.join("\n"), /cleanup:aws-terraform: KILL_SWITCH_ON/);
+  }
 });

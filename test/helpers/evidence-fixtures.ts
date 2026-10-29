@@ -118,7 +118,8 @@ export const OPERATOR_SESSION: Readonly<Record<string, string>> = Object.fromEnt
 ].map((name) => [name, CANARY]));
 
 // The guided stages' fakes (SYNTHETIC): an AWS Terraform contract shape, the act targets and a scripted `./alz apply`.
-export const AWS_CONTRACT = { schemaVersion: 1, enabled: true, provider: "AWS", engine: "TERRAFORM", authorize: { DEV: ["APPLY", "CLEANUP"] } };
+/** Its kill switch file (relative to the repository root, as the product reads it) does not exist: the switch is off. */
+export const AWS_CONTRACT = { schemaVersion: 1, enabled: true, provider: "AWS", engine: "TERRAFORM", authorize: { DEV: ["APPLY", "CLEANUP"] }, killSwitchPath: ".runs/apply/KILL" };
 export const ACT = { repository: "owner/repo", paths: { "aws-terraform": { project: "/srv/canary/aws", requesterId: "owner" } } };
 export const ARTIFACT = "a".repeat(64);
 export const MUTATION_ENV = {

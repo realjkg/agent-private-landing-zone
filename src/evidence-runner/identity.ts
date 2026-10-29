@@ -1,4 +1,4 @@
-import { lstatSync, readFileSync, realpathSync } from "node:fs";
+import { lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, sep } from "node:path";
 
@@ -79,6 +79,32 @@ export function azureConfigDirProblem(path: string, options: { uid?: number; rea
     try { baseReal = realpathSync(base); } catch { /* compare as given */ }
     if (within(baseReal, real)) return "is inside " + name + "; it must be a dedicated folder elsewhere, never your own ~/.azure";
   }
+  const link = linkInside(real);
+  if (link) return "holds " + link + " (review N7 on #349): a link could point az at another folder's sign-in, such as your own ~/.azure";
+  return undefined;
+}
+
+/**
+ * The first symbolic link (or an entry that cannot be read) anywhere inside `dir`, as a path relative to it, or undefined. az
+ * reads its sign-in from several files in the folder (azureProfile.json, msal_token_cache.*, service_principal_entries.*,
+ * clouds.config and more), so every entry is checked with `lstat`, down to a bounded depth and count. Nothing is opened. A
+ * folder too large or too deep to check is refused, never assumed clean.
+ */
+function linkInside(dir: string, depth = 0, budget = { entries: 5000 }): string | undefined {
+  let names: string[];
+  try { names = readdirSync(dir); } catch { return "an unreadable folder"; }
+  for (const name of names) {
+    if ((budget.entries -= 1) < 0) return "more entries than the runner checks (5000)";
+    const path = join(dir, name);
+    let stat;
+    try { stat = lstatSync(path); } catch { return name + " (unreadable)"; }
+    if (stat.isSymbolicLink()) return "a symbolic link, " + name;
+    if (stat.isDirectory()) {
+      if (depth >= 6) return "folders nested deeper than the runner checks, under " + name;
+      const inner = linkInside(path, depth + 1, budget);
+      if (inner) return inner.startsWith("a symbolic link, ") ? "a symbolic link, " + name + "/" + inner.slice("a symbolic link, ".length) : inner;
+    }
+  }
   return undefined;
 }
 
@@ -86,7 +112,7 @@ export function azureConfigDirProblem(path: string, options: { uid?: number; rea
  * The default subscription az will use from `<dir>/azureProfile.json`: its id, its tenant and the signed-in principal's type.
  * That file lists subscriptions and holds no token. Anything unreadable or ambiguous is refused, never guessed.
  */
-export function azureDefaultAccount(dir: string): { ok: true; tenantId: string; subscriptionId: string; principalType: string } | { ok: false; detail: string } {
+export function azureDefaultAccount(dir: string): { ok: true; tenantId: string; subscriptionId: string; principalType: string; principalName: string } | { ok: false; detail: string } {
   const file = join(dir, "azureProfile.json");
   let text: string;
   try {
@@ -97,15 +123,21 @@ export function azureDefaultAccount(dir: string): { ok: true; tenantId: string; 
   let parsed: unknown;
   try { parsed = JSON.parse(text); } catch { return { ok: false, detail: "azureProfile.json in ALZ_DISCOVERY_AZURE_CONFIG_DIR is not JSON" }; }
   const subscriptions = typeof parsed === "object" && parsed !== null && Array.isArray((parsed as { subscriptions?: unknown }).subscriptions) ? (parsed as { subscriptions: unknown[] }).subscriptions : [];
-  const defaults = subscriptions.filter((item): item is Record<string, unknown> => typeof item === "object" && item !== null && (item as Record<string, unknown>).isDefault === true);
+  // az decides the default by Python truthiness, so anything but a real boolean could make the runner and az disagree (review N8).
+  if (subscriptions.some((item) => typeof item !== "object" || item === null || typeof (item as Record<string, unknown>).isDefault !== "boolean")) {
+    return { ok: false, detail: "azureProfile.json in ALZ_DISCOVERY_AZURE_CONFIG_DIR has a subscription whose isDefault is not true or false" };
+  }
+  const defaults = subscriptions.filter((item): item is Record<string, unknown> => (item as Record<string, unknown>).isDefault === true);
   if (defaults.length !== 1) return { ok: false, detail: "azureProfile.json in ALZ_DISCOVERY_AZURE_CONFIG_DIR names " + defaults.length + " default subscriptions; exactly one is needed" };
   const chosen = defaults[0];
   const subscriptionId = typeof chosen.id === "string" ? chosen.id.toLowerCase() : "";
   const tenantId = typeof chosen.tenantId === "string" ? chosen.tenantId.toLowerCase() : "";
   const user = typeof chosen.user === "object" && chosen.user !== null ? chosen.user as Record<string, unknown> : {};
   const principalType = typeof user.type === "string" ? user.type : "";
+  // For a service principal, az records its application (client) id as the user name.
+  const principalName = typeof user.name === "string" ? user.name.toLowerCase() : "";
   if (!GUID.test(subscriptionId) || !GUID.test(tenantId)) return { ok: false, detail: "the default subscription in azureProfile.json has no well-formed id or tenant" };
-  return { ok: true, tenantId, subscriptionId, principalType };
+  return { ok: true, tenantId, subscriptionId, principalType, principalName };
 }
 
 export type ProbeOptions = { uid?: number; realHome?: string; root?: string };
@@ -145,6 +177,12 @@ export function federatedProbe(env: NodeJS.ProcessEnv, options: ProbeOptions = {
       if (!account.ok) return { status: "MISSING", detail: account.detail + "." };
       if (account.principalType !== "servicePrincipal") {
         return { status: "REFUSED", detail: "ALZ_DISCOVERY_AZURE_CONFIG_DIR is signed in as a " + (account.principalType || "principal of unknown type") + ", not the federated service principal; the runner never uses a person's own login." };
+      }
+      // A consistency check, not proof (review N9): the folder's own profile names the client id; only the token's appid claim,
+      // which the runner never reads, would prove which principal signed in.
+      const clientId = variables.get("ARM_CLIENT_ID")?.toLowerCase();
+      if (clientId !== undefined && account.principalName !== clientId) {
+        return { status: "REFUSED", detail: "ALZ_DISCOVERY_AZURE_CONFIG_DIR is signed in as client " + (account.principalName || "unknown") + ", not ALZ_DISCOVERY_ARM_CLIENT_ID " + clientId + " (a consistency check of the folder's own profile)." };
       }
       return { status: "OBSERVED", kind: "FEDERATED", tenantId: account.tenantId, subscriptionId: account.subscriptionId };
     }

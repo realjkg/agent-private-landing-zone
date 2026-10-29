@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { lstatSync, readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 
 import { mutationIdentityVariables } from "../tools/identity.js";
 import type { SourceCommit } from "../util/source-commit.js";
@@ -105,6 +105,23 @@ export function contractScope(root: string): ContractScope {
       dev: Array.isArray(dev) ? dev.filter((item): item is string => typeof item === "string") : [],
     };
   } catch { return { state: "EMPTY" }; }
+}
+
+/**
+ * Whether the committed contract's kill switch is on, read as the product reads it (`isKillSwitchActive` in src/apply/contract.ts,
+ * not imported): the file at `killSwitchPath` (relative to the repository root) exists, or its state cannot be determined. A
+ * contract with no readable `killSwitchPath` counts as on. Reads with `lstat` only.
+ */
+export function killSwitchOn(root: string): boolean {
+  let path: unknown;
+  try { path = (JSON.parse(readFileSync(join(root, CONTRACT_PATH), "utf8")) as { killSwitchPath?: unknown }).killSwitchPath; } catch { return true; }
+  if (typeof path !== "string" || path === "" || path.includes("\u0000")) return true;
+  try {
+    lstatSync(resolve(root, path));
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException)?.code !== "ENOENT";
+  }
 }
 
 /** Whether the committed contract says enabled and carries a non-empty `authorize` (shape only). */

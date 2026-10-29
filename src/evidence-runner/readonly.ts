@@ -1,6 +1,7 @@
 import { lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { identityVariables } from "../tools/identity.js";
 import type { JournalDocument } from "./journal.js";
 import { runChild, sha256File, stageFolder, step, type StageContext, type StepResult } from "./steps.js";
 import { READONLY_STAGE_OF, type Provider, type StageId } from "./types.js";
@@ -39,7 +40,7 @@ const PRODUCER: Readonly<Record<"aws" | "azure", { cloud: string; output: string
  * one. Checked after the run and before the document is taken as evidence (review B1 on #349): the identity check before the
  * run proves what the tool was pointed at; this proves where it actually read. Unobserved is never a match.
  */
-function observedMatches(value: Record<string, unknown>, provider: "aws" | "azure", config: StageContext["config"]): { ok: true } | { ok: false; code: string; detail: string } {
+function observedMatches(value: Record<string, unknown>, provider: "aws" | "azure", config: StageContext["config"], env: NodeJS.ProcessEnv): { ok: true } | { ok: false; code: string; detail: string } {
   const observed = typeof value.observedIdentity === "object" && value.observedIdentity !== null ? value.observedIdentity as Record<string, unknown> : {};
   const expected: [string, string][] = provider === "aws" ? [["accountId", config.aws!.expectedAccountId]]
     : [["tenantId", config.azure!.expectedTenantId], ["subscriptionId", config.azure!.expectedSubscriptionId]];
@@ -47,6 +48,17 @@ function observedMatches(value: Record<string, unknown>, provider: "aws" | "azur
   if (missing.length > 0) return { ok: false, code: "IDENTITY_NOT_OBSERVED", detail: "the producer's document records no observed " + missing.join(" or ") + ", so where it read cannot be confirmed" };
   const wrong = expected.filter(([key, want]) => observed[key] !== want).map(([key, want]) => key + " " + String(observed[key]) + " (expected " + want + ")");
   if (wrong.length > 0) return { ok: false, code: "WRONG_ACCOUNT", detail: "the producer read the wrong " + wrong.join(" and ") };
+  // The principal, as a consistency check (review N9 on #349), not proof: the AWS role the caller assumed against the configured
+  // DISCOVERY role, and the Azure client id against ALZ_DISCOVERY_ARM_CLIENT_ID where one is configured.
+  const variables = identityVariables(env, "DISCOVERY");
+  const principal: [string, string | undefined][] = provider === "aws"
+    ? [["roleName", variables.get("AWS_ROLE_ARN")?.split("/").pop()]]
+    : [["clientId", variables.get("ARM_CLIENT_ID")?.toLowerCase()]];
+  for (const [key, want] of principal) {
+    if (want === undefined) continue;
+    if (typeof observed[key] !== "string") return { ok: false, code: "PRINCIPAL_NOT_OBSERVED", detail: "the producer's document records no observed " + key + " to check against the configured " + want };
+    if (observed[key] !== want) return { ok: false, code: "PRINCIPAL_MISMATCH", detail: "the producer signed in as " + key + " " + String(observed[key]) + ", not the configured " + want + " (a consistency check)" };
+  }
   return { ok: true };
 }
 
@@ -85,7 +97,7 @@ export async function readonlyStage(ctx: StageContext, provider: Provider): Prom
     const documents: JournalDocument[] = [{ name: "provider-" + provider, path: output, sha256: sha256File(file) }];
     const verdict = producerVerdict(file, producer.cloud, ctx.config.candidateCommit);
     if (result.outcome === "PASS" && verdict.ready) {
-      const where = observedMatches(verdict.value!, provider, ctx.config);
+      const where = observedMatches(verdict.value!, provider, ctx.config, ctx.env);
       if (!where.ok) return { outcome: "FAIL", code: where.code, exitCode: result.exitCode, documents, detail: "./alz qualify provider-" + provider + ": " + where.detail + "; the document is kept but is not evidence." };
       return { ...result, documents, detail: "./alz qualify provider-" + provider + ": " + verdict.detail + ", in the expected account." };
     }
