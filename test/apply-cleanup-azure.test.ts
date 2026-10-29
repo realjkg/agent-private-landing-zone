@@ -299,12 +299,19 @@ test("Azure observe binds the location (owner decision of 2026-10-28): a resourc
   assert.deepEqual(results.get("azurerm_log_analytics_workspace.pilot"), ["DIFFERENT_FROM_DESIRED", "LOCATION_NOT_IN_CONTRACT"]);
   assert.deepEqual(results.get("azurerm_resource_group.pilot"), ["VERIFIED", undefined], "every other resource is where the contract places it");
   noTokenIn(w, misplaced.record, misplaced.report);
-  assert.ok(!JSON.stringify(misplaced.record).includes("eastus\""), "the location read is compared, never recorded");
+  // The location read is recorded for the misplaced resource only, as a programmatic name, so a governed remediation can bind it
+  // (owner decision 6486426552, item 2); no other resource carries one, and nothing else of the answer is kept.
+  assert.deepEqual(misplaced.record.resources.filter((r) => r.observedLocation !== undefined).map((r) => [r.address, r.observedLocation]), [["azurerm_log_analytics_workspace.pilot", "eastus"]]);
+  assert.equal(JSON.stringify(misplaced.record).split("eastus\"").length - 1, 1, "the location appears once, on the misplaced resource");
+  assert.ok(!JSON.stringify(misplaced.record).includes("CANARY_CLOUD_PROPERTY_c5"), "no other property of the answer is recorded");
   const records = await loadRunRecords(s.sealed.artifactSha256, w.dirs.evidence);
   assert.ok(records.ok, JSON.stringify(records));
   const built = build(w, s, records);
-  refused(built, "OBSERVATION_INCONCLUSIVE");
-  assert.match((built as { message: string }).message, /azurerm_log_analytics_workspace\.pilot \(LOCATION_NOT_IN_CONTRACT\)/);
+  // Still no cleanup proposed from it; the refusal now names the mismatch and the governed path, never "observe again" (#343 review 6485615510, N2).
+  refused(built, "LOCATION_MISMATCH");
+  assert.match((built as { message: string }).message, /azurerm_log_analytics_workspace\.pilot in eastus, not the location the contract authorizes/);
+  assert.match((built as { message: string }).message, /propose-remediation/);
+  assert.doesNotMatch((built as { message: string }).message, /Observe this run again/);
   assert.equal(applyCalls().length, 1, "only the run's own apply ran");
 });
 

@@ -3,6 +3,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { encryptEvidence, ensureEvidenceKey, readEncryptedEvidence } from "../evidence/vault.js";
+import { AZURE_LOCATION } from "../observe/arm-id.js";
 import { DEPLOYMENT_STACK_TYPE, isPinnedDeploymentStackId, type Blueprint, type BlueprintEntry } from "../observe/blueprint.js";
 import { isPolicyLinkType, policyLinkOk } from "../observe/run-created-policies.js";
 import type { ObserveReport } from "../observe/verify.js";
@@ -64,6 +65,13 @@ export type ObservedResource = {
   result: VerificationResult;
   /** Why the result is not VERIFIED: an error class or a fixed reason, never the cloud's message. */
   reason?: string;
+  /**
+   * Only with DIFFERENT_FROM_DESIRED and LOCATION_NOT_IN_CONTRACT (Azure): where the resource was found, as ARM's programmatic name.
+   * It is the one cloud property a record carries, so a governed location remediation can bind it (owner decision 6486426552, item 2).
+   */
+  observedLocation?: string;
+  /** Only beside `observedLocation`: the resource's creation identity (ARM `properties.resourceGuid`, lowercased), so a remediation can tell it from a re-created one. */
+  observedResourceGuid?: string;
 };
 
 export type ObservationRecord = {
@@ -186,9 +194,12 @@ export function blueprintRecordProblems(value: unknown): string[] {
 
 const RESULTS: readonly VerificationResult[] = ["VERIFIED", "DIFFERENT_FROM_DESIRED", "MISSING", "NOT_YET_OBSERVABLE", "UNVERIFIABLE"];
 function observedOk(value: unknown): value is ObservedResource {
-  return isRecord(value) && Object.keys(value).every((key) => ["address", "type", "identifier", "origin", "result", "reason"].includes(key)) &&
+  return isRecord(value) && Object.keys(value).every((key) => ["address", "type", "identifier", "origin", "result", "reason", "observedLocation", "observedResourceGuid"].includes(key)) &&
     typeof value.address === "string" && typeof value.type === "string" && idText(value.identifier) && (value.origin === "IN_PLAN" || value.origin === "NOT_IN_PLAN") &&
-    RESULTS.includes(value.result as VerificationResult) && (value.reason === undefined || (typeof value.reason === "string" && /^[A-Z_]{1,64}$/.test(value.reason)));
+    RESULTS.includes(value.result as VerificationResult) && (value.reason === undefined || (typeof value.reason === "string" && /^[A-Z_]{1,64}$/.test(value.reason))) &&
+    // A location is recorded only for a resource found outside the contract's, as a programmatic name; nowhere else.
+    (value.observedLocation === undefined || (value.result === "DIFFERENT_FROM_DESIRED" && value.reason === "LOCATION_NOT_IN_CONTRACT" && typeof value.observedLocation === "string" && AZURE_LOCATION.test(value.observedLocation))) &&
+    (value.observedResourceGuid === undefined || (value.observedLocation !== undefined && typeof value.observedResourceGuid === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value.observedResourceGuid)));
 }
 
 /** Every reason this is not an observation record. Empty means it is. */
