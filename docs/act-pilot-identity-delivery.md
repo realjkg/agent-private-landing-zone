@@ -265,7 +265,7 @@ Labels:
    - **Overrides.** Give both jobs a job-level `env:` that sets all of these. `<N>` is the instance number.
      - `ALZ_HOOK_ENV_CANARY: instance-<N>`: the canary;
      - `BASH_ENV: '$(touch /tmp/alz-hook-env-reached-<N>)'`: an observable marker that needs no file;
-     - `BASH_FUNC_unset%%: '() { builtin exit 0; }'` and `BASH_FUNC_exit%%: '() { builtin exit 0; }'` (GNU bash's format), plus `'__BASH_FUNC<unset>%%': '() { builtin exit 0; }'` and `'__BASH_FUNC<exit>%%': '() { builtin exit 0; }'` (Apple bash 3.2's format): these would make an exposed hook exit 0 if they were honored;
+     - `BASH_FUNC_unset%%: '() { builtin exit 0; }'` and `BASH_FUNC_exit%%: '() { builtin exit 0; }'` (GNU bash's format), plus `'__BASH_FUNC<unset>%%': '() { builtin exit 0; }'` and `'__BASH_FUNC<exit>%%': '() { builtin exit 0; }'` (Apple bash 3.2's format): these would make an exposed hook exit 0 if they were honored; on Apple's `/bin/bash` 3.2 the effective format is `__BASH_FUNC<name>%%`, which the positive control in `test/act-identity-runner-hook.test.ts` asserts on macOS in `.github/workflows/act-identity-macos.yml`; its log line `ALZ_FUNCTION_FORMATS` names the formats that bash imports. GNU bash imports `BASH_FUNC_<name>%%`, asserted on Linux. Both are set so the probe covers whichever bash the runner uses;
      - `SHELLOPTS: xtrace` and `PS4: '$(touch /tmp/alz-hook-env-reached-<N>)'`;
      - `GITHUB_EVENT_NAME: workflow_dispatch`, `GITHUB_REF: refs/heads/main`, `GITHUB_WORKFLOW_REF: realjkg/agent-private-landing-zone/.github/workflows/act-identity-delivery.yml@refs/heads/main`, `GITHUB_EVENT_PATH: /tmp/forged.json`;
      - `NODE_OPTIONS: --require=/tmp/forged.js`.

@@ -163,11 +163,47 @@ test("a job environment that reaches the hook is made visible: the owner's canar
   }
 });
 
-test("exported functions cannot hijack the hook: it calls no builtin by name, and Node, the last command, decides (review round 2)", () => {
+// --- exported-function formats: which one this host's bash imports (positive control, review N1 of #346) ---------------------
+
+/** GNU bash (4.3 and later, and upstream 3.2.54+) exports a function as BASH_FUNC_<name>%%; Apple's patched /bin/bash 3.2 as __BASH_FUNC<<name>>%%. */
+const FUNCTION_FORMATS = {
+  gnu: (name: string): string => "BASH_FUNC_" + name + "%%",
+  apple: (name: string): string => "__BASH_FUNC<" + name + ">%%",
+} as const;
+type FunctionFormat = keyof typeof FUNCTION_FORMATS;
+const BASH_VERSION = spawnSync(BASH, ["-c", "echo \"$BASH_VERSION\""], { env: { PATH: "/usr/bin:/bin" }, encoding: "utf8" }).stdout.trim();
+const BASH_MAJOR = Number(BASH_VERSION.split(".")[0]);
+/** Whether BASH imports a harmless, test-only function exported in this format: the function runs only if it was imported. */
+const importsFormat = (format: FunctionFormat): boolean =>
+  spawnSync(BASH, ["-c", "alz_probe_fn"], { env: { PATH: "/usr/bin:/bin", [FUNCTION_FORMATS[format]("alz_probe_fn")]: "() { echo ALZ_PROBE_IMPORTED; }" }, encoding: "utf8" })
+    .stdout.includes("ALZ_PROBE_IMPORTED");
+const LIVE_FORMATS = (Object.keys(FUNCTION_FORMATS) as FunctionFormat[]).filter(importsFormat);
+const formatsLine = (): string => "ALZ_FUNCTION_FORMATS: " + BASH + " " + BASH_VERSION + " on " + process.platform + " imports " +
+  (LIVE_FORMATS.length > 0 ? LIVE_FORMATS.join(" and ") : "no") + " exported-function format(s); not imported: " +
+  ((Object.keys(FUNCTION_FORMATS) as FunctionFormat[]).filter((f) => !LIVE_FORMATS.includes(f)).join(", ") || "none") + ".";
+
+test("positive control: the bash the hook tests use really imports exported functions, in the format its platform uses", (t) => {
+  // Printed so the CI log records which formats were live on that host (docs/act-pilot-identity-delivery.md, section 11, step 7).
+  t.diagnostic(formatsLine());
+  process.stdout.write(formatsLine() + "\n");
+  if (process.platform === "darwin" && BASH_MAJOR === 3) assert.ok(LIVE_FORMATS.includes("apple"), "Apple's /bin/bash 3.2 must import __BASH_FUNC<name>%%: " + formatsLine());
+  if (process.platform === "linux") assert.ok(LIVE_FORMATS.includes("gnu"), "GNU bash must import BASH_FUNC_name%%: " + formatsLine());
+  assert.ok(LIVE_FORMATS.length > 0, "with no live format, the override cases below would prove nothing: " + formatsLine());
+  // A live format really replaces a builtin in a plain script: the attack the hook is built to withstand is real on this host.
+  for (const format of LIVE_FORMATS) {
+    const plain = spawnSync(BASH, ["-c", "unset ALZ_X; echo after"], { env: { PATH: "/usr/bin:/bin", [FUNCTION_FORMATS[format]("unset")]: "() { echo ALZ_UNSET_HIJACKED; }" }, encoding: "utf8" });
+    assert.match(plain.stdout, /ALZ_UNSET_HIJACKED/, format + " overrides a builtin in a plain script");
+  }
+});
+
+test("exported functions cannot hijack the hook: it calls no builtin by name, and Node, the last command, decides (review round 2)", (t) => {
+  // Meaningful only for the formats the positive control shows are imported here; both are sent, and the live ones are named.
+  assert.ok(LIVE_FORMATS.length > 0, formatsLine());
+  t.diagnostic("override cases are live for: " + LIVE_FORMATS.join(", "));
   const branch = install({ ...dispatch, ref: "refs/heads/feature" });
   for (const name of ["unset", "exit", "set", "printf", "read", "refuse", "[", "test", "env", "find", "false", "command", "builtin", "true"]) {
     // GNU bash's export format, then Apple bash 3.2's (`__BASH_FUNC<name>%%`); each bash ignores the other's.
-    for (const variable of ["BASH_FUNC_" + name + "%%", "__BASH_FUNC<" + name + ">%%"]) {
+    for (const variable of [FUNCTION_FORMATS.gnu(name), FUNCTION_FORMATS.apple(name)]) {
       const result = run(branch, jobEnv(branch, { [variable]: "() { builtin exit 0; }" }));
       assert.equal(result.status, 1, variable + ": " + result.stdout + result.stderr);
       assert.match(result.stderr, /ALZ_IDENTITY_RUNNER_REFUSED: the event payload is not a dispatch/, variable);
