@@ -72,4 +72,11 @@ jobs:
       - name: Field package staging tests (SYNTHETIC macOS)
         env:
           ALZ_STAGE_SHELL: /bin/bash
-        run: npx tsx --test --test-name-pattern "^staging" test/release-package-exclusions.test.ts
+        # A failure is also written as annotations, which the checks API shows without the job log.
+        run: |
+          if ! npx tsx --test --test-name-pattern "^staging" test/release-package-exclusions.test.ts > staging.log 2>&1; then
+            cat staging.log
+            grep -E "^not ok|^✖|AssertionError|release-stage:|Error:" staging.log | head -n 20 | sed 's/^/::error::/'
+            exit 1
+          fi
+          cat staging.log

@@ -69,7 +69,8 @@ cp -R -- dist "$STAGE_ABS/dist"
 cp -R -- policy "$STAGE_ABS/policy"
 cp -R -- config "$STAGE_ABS/config"
 cp -- package.json package-lock.json alz sbom.cdx.json "$STAGE_ABS/"
-chmod +x -- "$STAGE_ABS/alz"
+# BSD chmod reads operands after the mode, so it would take "--" for a file name; the path is absolute, so none is needed.
+chmod +x "$STAGE_ABS/alz"
 
 # The owner's files: removed from the stage only, each one named. Names are read NUL-separated from inside the staged config/
 # folder, so no character in a name or in STAGE can split a name or point the removal anywhere else; a path that does not

@@ -350,9 +350,11 @@ test("the stage script stays portable to Apple's bash 3.2 and BSD tools, and the
     [/\brealpath\b/, "realpath (no -m on BSD)"], [/readlink -f/, "readlink -f"], [/\bmapfile\b|\breadarray\b/, "mapfile (bash 4)"],
     [/declare -A|local -A/, "associative arrays (bash 4)"], [/\$\{[A-Za-z_]+(?:,,|\^\^)\}/, "case conversion (bash 4)"], [/\|&|&>>/, "bash 4 redirections"],
     [/--sort|--mtime|-printf|sed -i|cp -a|stat -c|--null|xargs -r/, "GNU-only flags"],
+    // GNU tools take "--" anywhere; BSD chmod, chown and chgrp read operands after the mode or owner, so "--" there is a file name.
+    [/\b(?:chmod|chown|chgrp)\s+\S+\s+--(?:\s|$)/, "an option terminator after a BSD mode or owner"],
   ] as const) assert.doesNotMatch(script, pattern, what);
   const mac = readFileSync(join(repository, ".github/workflows/act-identity-macos.yml"), "utf8");
-  assert.match(mac, /ALZ_STAGE_SHELL: \/bin\/bash\n\s+run: npx tsx --test --test-name-pattern "\^staging" test\/release-package-exclusions\.test\.ts$/m);
+  assert.match(mac, /ALZ_STAGE_SHELL: \/bin\/bash\n[\s\S]*?npx tsx --test --test-name-pattern "\^staging" test\/release-package-exclusions\.test\.ts/);
   for (const path of ["scripts/release-stage.sh", "test/release-package-exclusions.test.ts"]) assert.ok(mac.includes("      - " + path + "\n"), path + " starts the macOS job");
 });
 
