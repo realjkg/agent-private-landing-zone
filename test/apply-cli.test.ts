@@ -739,9 +739,11 @@ test("status reports AUTHORIZED, READY and APPROVED from the one decision view, 
   assert.equal(enabled.ready?.environment, "DEV");
   assert.deepEqual(enabled.approved.map((a) => a.requiredApprovals), [1, 1, 2]);
   assert.match((await cli(w, ["status", "--environment", "STAGE"], [])).stderr, /APPLY_ARGUMENT_INVALID/);
-  // With no overrides the repository's own contract decides: it ships with none, so ACT is disabled.
-  const shipped = await cli(w, ["status"], [], { contractPath: undefined });
-  assert.equal((JSON.parse(shipped.stdout) as { act: string }).act, "DISABLED");
+  // With no contract at all ACT is disabled. Judged on an isolated empty root, never the live checkout, which may hold the
+  // owner's reviewed contract; the field package's exclusion of it is test/release-package-exclusions.test.ts.
+  const none = JSON.parse((await cli(w, ["status"], [], { contractPath: join(mkdtempSync(join(root, "no-contract-")), "act-pilot-contract.json") })).stdout) as Status;
+  assert.equal(none.act, "DISABLED");
+  assert.equal(none.contract.code, "ACT_DISABLED");
 
   const s = await sealed(w, "DEV");
   const idle = JSON.parse((await cli(w, ["status", "--sealed", s.path], [])).stdout) as Status & { artifact: { artifactSha256: string; applied: boolean; environment: string } };
