@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { gzipSync } from "node:zlib";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -13,6 +14,7 @@ import {
 import { createReleaseManifest } from "../src/release/manifest.js";
 import { REQUIRED_ROWS } from "../src/release/acceptance.js";
 import { PRODUCTION_RELEASE_GATES } from "../src/qualification/release-admission.js";
+import { promptPolicyHash } from "../src/security/prompt-governance.js";
 import { sha256 } from "../src/util/sha256.js";
 
 // The field package manifest generator (docs/field-package.md). SYNTHETIC: every artifact, scan, model record and gate
@@ -95,51 +97,124 @@ test("a platform is supported only when its gate passed for this commit on LIVE 
   assert.deepEqual(build({}, withGate("platform:linux-x64", pass)).supportedPlatforms, ["linux-x64"]);
 });
 
-test("a model digest is listed as verified only when it is the committed pin and ./alz models verify shows it installed and qualified", () => {
+/** A `./alz models verify --production` run of COMMIT on the target host, as the command writes it, passed in every part. */
+function verifyRun(pins: Map<string, string | null>, change: Record<string, unknown> = {}, recordChange: Record<string, unknown> = {}) {
+  return {
+    generatedAt: "2026-10-29T00:00:00.000Z", ollamaBaseUrl: "http://127.0.0.1:11435", policyVersion: "fixture", policyHash: promptPolicyHash(),
+    records: [...pins].map(([model, pin]) => ({ model, role: "reasoning", required: true, digest: "sha256:" + (pin ?? "f".repeat(64)), pinnedDigest: pin,
+      digestCheck: "PINNED", policyHash: promptPolicyHash(), passed: true, checks: [], ...recordChange })),
+    stackChecks: [{ name: "default stack", passed: true }],
+    production: { context: { sourceCommit: COMMIT, host: { targetHardwareId: "mbp-01" } }, session: { mutationObserved: false }, checks: [{ name: "restart", passed: true }], passed: true },
+    passed: true,
+    ...change,
+  };
+}
+
+test("a model digest is VERIFIED only from a passed --production run of this commit, under this policy, with no synthetic marker, showing the committed pin", () => {
   const D = "e".repeat(64);
-  const pins = { models: ["qwen3:4b", "mistral-nemo:12b"], digests: new Map<string, string | null>([["qwen3:4b", D], ["mistral-nemo:12b", null]]) };
-  const evidence = (records: unknown[]) => ({ modelsEvidence: file("verify.json", { records }) });
-  const status = (m: ReturnType<typeof build>, model: string) => m.models.entries.find((x) => x.model === model)!.status;
-  const ok = { model: "qwen3:4b", digest: "sha256:" + D, digestCheck: "PINNED", passed: true };
-  const verified = build(evidence([ok, { model: "mistral-nemo:12b", digest: "f".repeat(64), digestCheck: "PINNED", passed: true }]), { modelPins: pins });
-  assert.equal(status(verified, "qwen3:4b"), "VERIFIED");
-  assert.equal(status(verified, "mistral-nemo:12b"), "MODEL_DIGEST_UNPINNED", "an unpinned model's observed digest is never listed");
+  const digests = new Map<string, string | null>([["qwen3:4b", D], ["mistral-nemo:12b", null]]);
+  const pins = { models: ["qwen3:4b", "mistral-nemo:12b"], digests };
+  const status = (run: unknown) => {
+    const m = build({ modelsEvidence: file("verify.json", run) }, { modelPins: pins });
+    return m.models.entries.find((x) => x.model === "qwen3:4b")!.status;
+  };
+  const verified = build({ modelsEvidence: file("verify.json", verifyRun(digests)) }, { modelPins: pins });
+  assert.equal(verified.models.entries.find((x) => x.model === "qwen3:4b")!.status, "VERIFIED");
+  assert.equal(verified.models.entries.find((x) => x.model === "mistral-nemo:12b")!.status, "MODEL_DIGEST_UNPINNED", "an unpinned model's observed digest is never listed");
   assert.equal(verified.models.entries.find((x) => x.model === "mistral-nemo:12b")!.pinnedDigest, null);
   assert.equal(verified.models.evidence.status, "PRESENT");
-  assert.equal(status(build({}, { modelPins: pins }), "qwen3:4b"), "NOT_VERIFIED");
-  assert.equal(status(build(evidence([{ ...ok, digest: "f".repeat(64) }]), { modelPins: pins }), "qwen3:4b"), "MODEL_DIGEST_MISMATCH");
-  assert.equal(status(build(evidence([{ ...ok, digestCheck: "MODEL_DIGEST_UNPINNED" }]), { modelPins: pins }), "qwen3:4b"), "MODEL_DIGEST_MISMATCH");
-  assert.equal(status(build(evidence([{ ...ok, passed: false }]), { modelPins: pins }), "qwen3:4b"), "NOT_VERIFIED");
+  assert.equal(build({}, { modelPins: pins }).models.entries[0].status, "NOT_VERIFIED");
+
+  // Each forgery the review tried, and each condition alone, is refused.
+  const ok = verifyRun(digests);
+  const forged: [string, unknown][] = [
+    ["records only (the review's minimal record)", { records: ok.records }],
+    ["top-level fixture", verifyRun(digests, { fixture: true })],
+    ["top-level SYNTHETIC evidence mode", verifyRun(digests, { evidenceMode: "SYNTHETIC" })],
+    ["a record marked fixture", verifyRun(digests, {}, { fixture: true })],
+    ["a record labeled SYNTHETIC", verifyRun(digests, {}, { label: "SYNTHETIC" })],
+    ["the run as a whole failed", verifyRun(digests, { passed: false })],
+    ["another prompt policy", verifyRun(digests, { policyHash: "0".repeat(64) })],
+    ["a record under another prompt policy", verifyRun(digests, {}, { policyHash: "0".repeat(64) })],
+    ["not a --production run", verifyRun(digests, { production: undefined })],
+    ["another commit", verifyRun(digests, { production: { ...ok.production, context: { ...ok.production.context, sourceCommit: OTHER } } })],
+    ["production failed", verifyRun(digests, { production: { ...ok.production, passed: false } })],
+    ["a production check failed", verifyRun(digests, { production: { ...ok.production, checks: [{ name: "restart", passed: false }] } })],
+    ["a mutation observed", verifyRun(digests, { production: { ...ok.production, session: { mutationObserved: true } } })],
+    ["a stack check failed", verifyRun(digests, { stackChecks: [{ name: "default stack", passed: false }] })],
+    ["the model's qualification failed", verifyRun(digests, {}, { passed: false })],
+  ];
+  for (const [label, run] of forged) assert.equal(status(run), "NOT_VERIFIED", label);
+  assert.equal(status(verifyRun(digests, {}, { digest: "sha256:" + "f".repeat(64) })), "MODEL_DIGEST_MISMATCH", "another digest installed");
+  assert.equal(status(verifyRun(digests, {}, { digestCheck: "MODEL_DIGEST_UNPINNED" })), "MODEL_DIGEST_MISMATCH", "the run saw no pin");
+  assert.equal(status(verifyRun(digests, {}, { pinnedDigest: "f".repeat(64) })), "MODEL_DIGEST_MISMATCH", "the run checked against another pin");
   refusal(() => build({ modelsEvidence: file("verify.json", { nothing: true }) }), "FIELD_MODELS_EVIDENCE_INVALID");
 });
 
-function releaseManifest(commit: string, sbomBytes: Buffer, paths: string[] = ["dist/cli/operator.js"]) {
-  return createReleaseManifest({
-    productVersion: "0.1.0", sourceCommit: commit, sbomPath: "sbom.cdx.json", sbomSha256: sha256(sbomBytes),
-    files: [...paths.map((path) => ({ path, sha256: "0".repeat(64) })), { path: "sbom.cdx.json", sha256: sha256(sbomBytes) }],
-  });
+/** A gzip ustar archive of the given files, as tar writes one (a ./ prefix on each name). */
+function tarGz(entries: [string, Buffer][], type = "0"): Buffer {
+  const blocks: Buffer[] = [];
+  for (const [name, body] of entries) {
+    const header = Buffer.alloc(512);
+    header.write("./" + name, 0, 100, "utf8");
+    header.write("0000644\0", 100); header.write("0000000\0", 108); header.write("0000000\0", 116);
+    header.write(body.length.toString(8).padStart(11, "0") + "\0", 124); header.write("00000000000\0", 136);
+    header.write(type, 156); header.write("ustar\0", 257); header.write("00", 263);
+    header.fill(" ", 148, 156);
+    header.write(header.reduce((sum, byte) => sum + byte, 0).toString(8).padStart(6, "0") + "\0 ", 148);
+    blocks.push(header, body, Buffer.alloc((512 - (body.length % 512)) % 512));
+  }
+  return gzipSync(Buffer.concat([...blocks, Buffer.alloc(1024)]));
 }
 
-test("artifact digests come only from the files given, cross-checked against each other and the commit", () => {
-  const sbomBytes = Buffer.from(JSON.stringify({ bomFormat: "CycloneDX", specVersion: "1.5", components: [{}, {}, {}] }));
-  const sbom = { file: "sbom.cdx.json", bytes: sbomBytes };
-  const archive = { file: "agent-private-landing-zone.tar.gz", bytes: Buffer.from("synthetic archive bytes") };
-  const checksum = (hex: string) => ({ file: "agent-private-landing-zone.tar.gz.sha256", text: hex + "  .runs/release/agent-private-landing-zone.tar.gz\n" });
+/** A package of two files with its SBOM and the release manifest that binds them to `commit`. */
+function packageFor(commit: string) {
+  const sbom = Buffer.from(JSON.stringify({ bomFormat: "CycloneDX", specVersion: "1.5", components: [{}, {}, {}] }));
+  const operator = Buffer.from("console.log('operator');\n");
+  const manifest = Buffer.from(JSON.stringify(createReleaseManifest({
+    productVersion: "0.1.0", sourceCommit: commit, sbomPath: "sbom.cdx.json", sbomSha256: sha256(sbom),
+    files: [{ path: "dist/cli/operator.js", sha256: sha256(operator) }, { path: "sbom.cdx.json", sha256: sha256(sbom) }],
+  }), null, 2) + "\n");
+  const files: [string, Buffer][] = [["dist/cli/operator.js", operator], ["release-manifest.json", manifest], ["sbom.cdx.json", sbom]];
+  return { sbom, manifest, files, archive: tarGz(files) };
+}
+const archiveInput = (bytes: Buffer) => ({ file: "agent-private-landing-zone.tar.gz", bytes });
+const checksumOf = (bytes: Buffer, hex = sha256(bytes)) => ({ file: "agent-private-landing-zone.tar.gz.sha256", text: hex + "  .runs/release/agent-private-landing-zone.tar.gz\n" });
 
-  const m = build({ archive, archiveSha256File: checksum(sha256(archive.bytes)), sbom, releaseManifest: file("release-manifest.json", releaseManifest(COMMIT, sbomBytes)) });
-  assert.deepEqual(m.artifacts.archive, { status: "PRESENT", file: archive.file, sha256: sha256(archive.bytes) });
-  assert.equal(m.artifacts.sbom.status === "PRESENT" && m.artifacts.sbom.sha256, sha256(sbomBytes));
+test("artifact digests come only from the files given, and the archive is bound file by file to the release manifest of this commit", () => {
+  const p = packageFor(COMMIT);
+  const inputs = { archive: archiveInput(p.archive), archiveSha256File: checksumOf(p.archive), sbom: { file: "sbom.cdx.json", bytes: p.sbom }, releaseManifest: { file: "release-manifest.json", bytes: p.manifest } };
+  const m = build(inputs);
+  assert.deepEqual(m.artifacts.archive, { status: "PRESENT", file: "agent-private-landing-zone.tar.gz", sha256: sha256(p.archive) });
+  assert.equal(m.artifacts.sbom.status === "PRESENT" && m.artifacts.sbom.sha256, sha256(p.sbom));
   assert.equal(m.artifacts.releaseManifest.status, "PRESENT");
   assert.equal(m.artifacts.runtimeImage.status, "PENDING");
   assert.equal(m.exclusionCheck.status, "PASS");
+  assert.match(m.exclusionCheck.scope, /every file in the archive/);
   assert.deepEqual(m.scans.sbom, { status: "PRESENT", format: "CycloneDX", specVersion: "1.5", components: 3 });
 
-  refusal(() => build({ archive, archiveSha256File: checksum("1".repeat(64)) }), "FIELD_ARCHIVE_CHECKSUM_MISMATCH");
-  refusal(() => build({ archiveSha256File: checksum(sha256(archive.bytes)) }), "FIELD_ARCHIVE_MISSING");
-  refusal(() => build({ releaseManifest: file("release-manifest.json", releaseManifest(OTHER, sbomBytes)) }), "FIELD_RELEASE_MANIFEST_COMMIT_MISMATCH");
-  refusal(() => build({ releaseManifest: file("release-manifest.json", { ...releaseManifest(COMMIT, sbomBytes), contract: { id: "x", version: "1", operatingMode: "PREVIEW_OPERATE", actEnabled: true } }) }), "FIELD_RELEASE_MANIFEST_INVALID");
-  refusal(() => build({ releaseManifest: file("release-manifest.json", releaseManifest(COMMIT, sbomBytes, ["config/act-pilot-contract.json"])) }), "FIELD_PACKAGE_EXCLUDED_CONTENT");
-  refusal(() => build({ sbom: file("sbom.cdx.json", { bomFormat: "CycloneDX", components: [] }), releaseManifest: file("release-manifest.json", releaseManifest(COMMIT, sbomBytes)) }), "FIELD_SBOM_MISMATCH");
+  // The review's probe: an unrelated archive with its own checksum, beside this commit's manifest and SBOM.
+  const unrelated = tarGz([["notes.txt", Buffer.from("another build")]]);
+  refusal(() => build({ ...inputs, archive: archiveInput(unrelated), archiveSha256File: checksumOf(unrelated) }), "FIELD_ARCHIVE_MANIFEST_MISMATCH");
+  // Another commit's package, given with this commit's manifest.
+  const other = packageFor(OTHER);
+  refusal(() => build({ ...inputs, archive: archiveInput(other.archive), archiveSha256File: checksumOf(other.archive) }), "FIELD_ARCHIVE_MANIFEST_MISMATCH");
+  // An archive alone is not bound to any commit.
+  refusal(() => build({ archive: archiveInput(p.archive) }), "FIELD_ARCHIVE_UNBOUND");
+  // A file added to, changed in or missing from the archive.
+  refusal(() => build({ ...inputs, archiveSha256File: undefined, archive: archiveInput(tarGz([...p.files, ["config/act-pilot-contract.json", Buffer.from("{}")]])) }), "FIELD_ARCHIVE_UNLISTED_FILE");
+  refusal(() => build({ ...inputs, archiveSha256File: undefined, archive: archiveInput(tarGz(p.files.map(([n, b]) => [n, n === "dist/cli/operator.js" ? Buffer.from("changed") : b]))) }), "FIELD_ARCHIVE_CONTENT_MISMATCH");
+  refusal(() => build({ ...inputs, archiveSha256File: undefined, archive: archiveInput(tarGz(p.files.filter(([n]) => n !== "dist/cli/operator.js"))) }), "FIELD_ARCHIVE_CONTENT_MISMATCH");
+  refusal(() => build({ ...inputs, archiveSha256File: undefined, archive: archiveInput(tarGz([["link", Buffer.alloc(0)]], "2")) }), "FIELD_ARCHIVE_UNREADABLE");
+  refusal(() => build({ ...inputs, archiveSha256File: undefined, archive: archiveInput(Buffer.from("not an archive")) }), "FIELD_ARCHIVE_UNREADABLE");
+
+  refusal(() => build({ ...inputs, archiveSha256File: checksumOf(p.archive, "1".repeat(64)) }), "FIELD_ARCHIVE_CHECKSUM_MISMATCH");
+  refusal(() => build({ archiveSha256File: checksumOf(p.archive) }), "FIELD_ARCHIVE_MISSING");
+  refusal(() => build({ releaseManifest: { file: "release-manifest.json", bytes: packageFor(OTHER).manifest } }), "FIELD_RELEASE_MANIFEST_COMMIT_MISMATCH");
+  const parsed = JSON.parse(p.manifest.toString("utf8"));
+  refusal(() => build({ releaseManifest: file("release-manifest.json", { ...parsed, contract: { ...parsed.contract, actEnabled: true } }) }), "FIELD_RELEASE_MANIFEST_INVALID");
+  refusal(() => build({ releaseManifest: file("release-manifest.json", { ...parsed, files: [...parsed.files, { path: "config/act-pilot-contract.json", sha256: "0".repeat(64) }] }) }), "FIELD_PACKAGE_EXCLUDED_CONTENT");
+  refusal(() => build({ sbom: file("sbom.cdx.json", { bomFormat: "CycloneDX", components: [] }), releaseManifest: inputs.releaseManifest }), "FIELD_SBOM_MISMATCH");
   refusal(() => build({ sbom: file("sbom.cdx.json", { bomFormat: "SPDX" }) }), "FIELD_SBOM_INVALID");
   refusal(() => build({ sourceCommit: "60f017e" }), "FIELD_SOURCE_COMMIT_INVALID");
 });

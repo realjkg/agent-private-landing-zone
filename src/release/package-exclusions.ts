@@ -1,5 +1,6 @@
 import { lstat, readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { gunzipSync } from "node:zlib";
 
 /**
  * The field package exclusion guard (owner decision 2026-10-29, "Close ACT enablement blockers", item 4; docs/field-package.md).
@@ -24,21 +25,21 @@ export type ExclusionFinding = { path: string; code: ExclusionCode; reason: stri
 /** What the guard refuses, one line per code, in the words docs/field-package.md and field-package.json use. */
 export const EXCLUSION_RULES: Readonly<Record<ExclusionCode, string>> = {
   PILOT_CONTRACT: "the owner's pilot contract (config/act-pilot-contract.json), a draft of it or any other act-pilot-contract* file but the disabled *.example.json shapes, enabled or not",
-  ENABLED_CONTRACT: "any contract-shaped JSON that is enabled or carries an authorize entry",
+  ENABLED_CONTRACT: "a pilot contract that is enabled or carries an authorize entry, under any name (JSON with a BOM, UTF-16 or wrapped, YAML, one gzip or base64 layer)",
   OWNER_CONFIGURATION: "the owner's own runner configuration (config/evidence-runner.json), which names customer targets",
-  TOKEN: "token files and token values: JWTs, GitHub tokens, AWS access key ids, .env, .npmrc and .netrc files",
+  TOKEN: "token files and token values: JWTs, GitHub tokens, AWS access key ids and secret keys, Azure storage keys, connection strings and SAS URLs, .env, .npmrc and .netrc files",
   PRIVATE_KEY: "private keys: PEM, OpenSSH, PKCS#8/PKCS#12, Java keystores, PuTTY and id_* key files",
-  CLOUD_CREDENTIALS: "cloud CLI credential folders (.aws, .azure, gcloud)",
+  CLOUD_CREDENTIALS: "cloud credentials: an AWS shared-credentials file under any name, a service-account key file, and the .aws, .azure and gcloud folders",
   RUNNER_REGISTRATION: "self-hosted runner registration files (.runner, .credentials*, .service, svc.sh, actions-runner/)",
   SERVICE_UNIT: "service definitions that would run something unattended (launchd .plist, systemd .service/.timer/.socket units)",
-  TERRAFORM_STATE: "Terraform state (*.tfstate*, terraform.tfstate.d/, lock info)",
+  TERRAFORM_STATE: "Terraform state, by name (*.tfstate*, terraform.tfstate.d/, lock info) or by content (terraform_version, lineage, serial)",
   TERRAFORM_WORKDIR: "Terraform working folders (.terraform/)",
   TERRAFORM_VARIABLES: "Terraform variable files with real values (*.tfvars, *.tfvars.json; the .example files are allowed)",
-  SAVED_PLAN: "saved plans (*.tfplan, tfplan, plan.out, *.plan)",
+  SAVED_PLAN: "saved plans, by name (*.tfplan, *.tfplan.json, tfplan, plan.out, *.plan) or by content (a zip of plan entries, a JSON plan)",
   RUN_EVIDENCE: "anything under .runs/ (evidence, sealed plans, ledgers, journals, qualification records)",
   PILOT_EVIDENCE: "pilot evidence and proposals outside .runs/ (*.evidence, *.cleanup-proposal.json, *.removal-proposal.json, consumed-nonces.jsonl)",
-  SEALED_PLAN: "a sealed pilot plan, by its content",
-  SIGNED_APPROVAL: "a signed pilot approval, by its content",
+  SEALED_PLAN: "a sealed pilot plan, by its content, under any name",
+  SIGNED_APPROVAL: "a signed pilot approval, by its content, under any name",
   DELIVERED_IDENTITY: "delivered identity files and the runner hook installation (.alz-identity/, .alz-runner-hook/)",
   NOT_A_REGULAR_FILE: "symbolic links and other non-regular entries, which the release manifest cannot check",
   UNREADABLE: "a file the guard cannot read, which it therefore cannot clear",
@@ -71,7 +72,7 @@ export function pathExclusions(path: string): ExclusionFinding[] {
   if (names.includes(".alz-identity") || names.includes(".alz-runner-hook")) add("DELIVERED_IDENTITY");
   if (dirs.includes(".terraform") || base === ".terraform") add("TERRAFORM_WORKDIR");
   if (/\.tfstate(\.|$)/.test(base) || names.includes("terraform.tfstate.d") || base === ".terraform.tfstate.lock.info") add("TERRAFORM_STATE");
-  if (base.endsWith(".tfplan") || base === "tfplan" || base === "plan.out" || base.endsWith(".plan")) add("SAVED_PLAN");
+  if (base.endsWith(".tfplan") || base.endsWith(".tfplan.json") || base === "tfplan" || base === "plan.out" || base.endsWith(".plan")) add("SAVED_PLAN");
   if (base.endsWith(".tfvars") || base.endsWith(".tfvars.json")) add("TERRAFORM_VARIABLES");
   if (base.endsWith(".evidence") || base.endsWith(".cleanup-proposal.json") || base.endsWith(".removal-proposal.json") || base === "consumed-nonces.jsonl") add("PILOT_EVIDENCE");
   if (RUNNER_FILES.has(base) || base.startsWith(".credentials") || names.includes("actions-runner")) add("RUNNER_REGISTRATION");
@@ -82,37 +83,158 @@ export function pathExclusions(path: string): ExclusionFinding[] {
   return out;
 }
 
-/** A PEM private key with a body (base64 or an encrypted header), also inside a JSON string; never a pattern that only names one. */
-const PEM_PRIVATE_KEY = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(?:\r?\n|\\(?:r\\)?n)(?:Proc-Type:|[A-Za-z0-9+/]{40})/;
+/** A PEM private key with a body (base64 or an encrypted header), also inside a JSON string (escaped once or twice); never a pattern that only names one. */
+const PEM_PRIVATE_KEY = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(?:\r?\n|\\{1,2}(?:r\\{1,2})?n)(?:Proc-Type:|[A-Za-z0-9+/]{40})/;
 const PUTTY_KEY = /PuTTY-User-Key-File-\d+:/;
-/** A signed JWT: two base64url JSON segments (`eyJ` is `{"`) and a signature. */
-const JWT = /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{20,}/;
-const GITHUB_TOKEN = /\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{60,})/;
-const AWS_ACCESS_KEY_ID = /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/;
+const KUBE_CLIENT_KEY = /client-key-data:\s*[A-Za-z0-9+/]{40}/;
+/** A signed JWT: two base64url JSON segments (`eyJ` is `{"`) and a signature. Unanchored, so a token glued to a word is found. */
+const JWT = /eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{20,}/;
+const GITHUB_TOKEN = /(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{60,})/;
+const AWS_ACCESS_KEY_ID = /(?:AKIA|ASIA)[0-9A-Z]{16}(?![0-9A-Z])/;
+/** An AWS secret access key by its own key name (INI, environment, JSON or the STS SecretAccessKey field) and a 40-character value. */
+const AWS_SECRET = /(?:aws_?secret_?access_?key|SecretAccessKey)["']?\s*[:=]\s*["']?[A-Za-z0-9/+]{40}(?![A-Za-z0-9/+])/i;
+const INI_SECTION = /^\s*\[[^\]\r\n]+\]\s*$/m;
+const AWS_INI_KEY = /^\s*aws_(?:access_key_id|secret_access_key|session_token)\s*=\s*\S/im;
+const AZURE_ACCOUNT_KEY = /AccountKey=[A-Za-z0-9+/]{20,}={0,2}/;
+const AZURE_SAS_STRING = /SharedAccessSignature=[^;\s"']*sig=/i;
+const SAS_SIG = /[?&]sig=[A-Za-z0-9%+/=]{16,}/g;
+
+/** An Azure SAS URL: a `sig=` signature in the same query as a `sv=` version or `se=` expiry. */
+function sasUrl(text: string): boolean {
+  for (const match of text.matchAll(SAS_SIG)) {
+    const at = match.index ?? 0;
+    const from = Math.max(0, at - 2048);
+    const query = text.slice(from, at + match[0].length + 2048);
+    const local = at - from;
+    const begin = query.slice(0, local).search(/[^\s"'<>]*$/);
+    const finish = query.slice(local).search(/[\s"'<>]/);
+    const url = query.slice(begin, finish < 0 ? undefined : local + finish);
+    if (/[?&](?:sv|se)=/.test(url)) return true;
+  }
+  return false;
+}
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const has = (value: Record<string, unknown>, ...keys: string[]) => keys.every((key) => Object.hasOwn(value, key));
+const ENVIRONMENT_KEYS = new Set(["DEV", "QA", "PROD"]);
+/** A contract's `authorize` entry: environments mapped to the operations ACT may run there. */
+const authorizes = (value: unknown): boolean => isRecord(value) &&
+  Object.entries(value).some(([key, ops]) => ENVIRONMENT_KEYS.has(key.toUpperCase()) && (Array.isArray(ops) ? ops.length > 0 : typeof ops === "string"));
 
-/** The findings for one file's bytes. JSON is also judged by shape: an enabled contract, a sealed plan or a signed approval. */
+/** What one parsed JSON value is, by shape, at any depth up to four (so a wrapper array or object does not hide it). */
+function shapeFindings(path: string, root: unknown): ExclusionFinding[] {
+  const out: ExclusionFinding[] = [];
+  const add = (code: ExclusionCode, reason?: string) => { if (!out.some((x) => x.code === code)) out.push(finding(path, code, reason)); };
+  let budget = 20_000;
+  const visit = (value: unknown, depth: number): void => {
+    if (budget-- <= 0 || depth > 4) return;
+    if (Array.isArray(value)) { for (const item of value) visit(item, depth + 1); return; }
+    if (!isRecord(value)) return;
+    const contractLike = (has(value, "provider", "engine") && (has(value, "targets") || has(value, "killSwitchPath"))) || has(value, "authorize");
+    if (contractLike && (value.enabled === true || authorizes(value.authorize))) add("ENABLED_CONTRACT", "a pilot contract that is enabled or carries an authorize entry");
+    if (value.type === "service_account" && has(value, "private_key")) add("CLOUD_CREDENTIALS", "a cloud service account key file");
+    if (has(value, "artifactSha256", "planSha256", "manifestHash")) add("SEALED_PLAN");
+    if (has(value, "artifactSha256", "approverId", "nonce")) add("SIGNED_APPROVAL");
+    if (has(value, "terraform_version", "lineage", "serial")) add("TERRAFORM_STATE", "Terraform state, by its content (terraform_version, lineage, serial)");
+    if (has(value, "format_version", "terraform_version") && (has(value, "resource_changes") || has(value, "planned_values"))) add("SAVED_PLAN", "a Terraform plan in JSON form, by its content");
+    for (const child of Object.values(value)) if (typeof child === "object" && child !== null) visit(child, depth + 1);
+  };
+  visit(root, 0);
+  return out;
+}
+
+/** Source and bundle files, whose object literals read like YAML lines; they are judged by every other rule, not this one. */
+const CODE_FILE = /\.(?:[cm]?js|tsx?|jsx|map|css|html?)$/i;
+/** A YAML pilot contract: an `authorize` mapping that names an environment, or an enabled provider and engine pair. */
+function yamlContract(text: string): boolean {
+  if (/^\s*authorize:\s*(?:\{[^}\n]*\b(?:DEV|QA|PROD)\b|\r?\n\s+(?:DEV|QA|PROD)\s*:)/im.test(text)) return true;
+  return /^\s*enabled:\s*true\s*$/im.test(text) && /^\s*provider:\s*["']?(?:AWS|AZURE|GCP)\b/im.test(text) && /^\s*engine:\s*\S/im.test(text);
+}
+
+const ZIP_LOCAL = 0x04034b50;
+const ZIP_CENTRAL = 0x02014b50;
+const ZIP_END = 0x06054b50;
+/** The entry names of a zip archive, read from its central directory without extracting anything; undefined when unreadable. */
+export function zipEntryNames(bytes: Buffer): string[] | undefined {
+  const min = Math.max(0, bytes.length - 22 - 0xffff);
+  for (let at = bytes.length - 22; at >= min; at--) {
+    if (bytes.readUInt32LE(at) !== ZIP_END) continue;
+    const count = bytes.readUInt16LE(at + 10);
+    let offset = bytes.readUInt32LE(at + 16);
+    const names: string[] = [];
+    for (let i = 0; i < count; i++) {
+      if (offset + 46 > bytes.length || bytes.readUInt32LE(offset) !== ZIP_CENTRAL) return undefined;
+      const nameLength = bytes.readUInt16LE(offset + 28);
+      const extra = bytes.readUInt16LE(offset + 30);
+      const comment = bytes.readUInt16LE(offset + 32);
+      if (offset + 46 + nameLength > bytes.length) return undefined;
+      names.push(bytes.subarray(offset + 46, offset + 46 + nameLength).toString("utf8"));
+      offset += 46 + nameLength + extra + comment;
+    }
+    return names;
+  }
+  return undefined;
+}
+const PLAN_ENTRY = /^(?:tfplan|tfstate|tfstate-prev|tfconfig\/.*)$/;
+
+/** The text forms of a file worth matching: as read, UTF-16 decoded, one gzip layer, and one base64 layer. Each is cheap to skip. */
+function views(bytes: Buffer): string[] {
+  const out: string[] = [];
+  const addText = (buffer: Buffer) => {
+    if (buffer.length >= 2 && buffer[0] === 0xff && buffer[1] === 0xfe) { out.push(new TextDecoder("utf-16le").decode(buffer.subarray(2))); return; }
+    if (buffer.length >= 2 && buffer[0] === 0xfe && buffer[1] === 0xff) { out.push(new TextDecoder("utf-16be").decode(buffer.subarray(2))); return; }
+    const sample = buffer.subarray(0, 4096);
+    const nul = sample.reduce((n, byte) => n + (byte === 0 ? 1 : 0), 0);
+    if (sample.length >= 8 && nul * 3 >= sample.length) out.push(new TextDecoder(sample[0] === 0 ? "utf-16be" : "utf-16le").decode(buffer));
+    const text = buffer.toString("utf8");
+    out.push(text.charCodeAt(0) === 0xfeff ? text.slice(1) : text);
+  };
+  const gunzip = (buffer: Buffer): Buffer | undefined => {
+    if (buffer.length < 2 || buffer[0] !== 0x1f || buffer[1] !== 0x8b) return undefined;
+    try { return gunzipSync(buffer, { maxOutputLength: 64 * 1024 * 1024 }); } catch { return undefined; }
+  };
+  addText(bytes);
+  const unzipped = gunzip(bytes);
+  if (unzipped) addText(unzipped);
+  const compact = bytes.length <= 16 * 1024 * 1024 ? bytes.toString("latin1").replace(/\s+/g, "") : "";
+  if (compact.length >= 24 && /^[A-Za-z0-9+/_-]+={0,2}$/.test(compact)) {
+    const decoded = Buffer.from(compact, compact.includes("-") || compact.includes("_") ? "base64url" : "base64");
+    addText(decoded);
+    const inner = gunzip(decoded);
+    if (inner) addText(inner);
+  }
+  return out;
+}
+
+/**
+ * The findings for one file's bytes, under any name. Secrets are matched by their own patterns; JSON (any extension, BOM or
+ * UTF-16, one gzip or base64 layer, nested in arrays or objects) is judged by shape: an enabled contract, a sealed plan, a signed
+ * approval, Terraform state or a JSON plan. A zip is judged by its directory: one holding a Terraform plan's entries is a saved
+ * plan, and a zip whose directory cannot be read fails closed.
+ */
 export function contentExclusions(path: string, bytes: Buffer): ExclusionFinding[] {
   const out: ExclusionFinding[] = [];
-  const text = bytes.toString("latin1");
-  if (PEM_PRIVATE_KEY.test(text) || PUTTY_KEY.test(text)) out.push(finding(path, "PRIVATE_KEY", "the file holds a private key"));
-  if (JWT.test(text)) out.push(finding(path, "TOKEN", "the file holds a JWT"));
-  else if (GITHUB_TOKEN.test(text)) out.push(finding(path, "TOKEN", "the file holds a GitHub token"));
-  else if (AWS_ACCESS_KEY_ID.test(text)) out.push(finding(path, "TOKEN", "the file holds an AWS access key id"));
-  if (lower(path).endsWith(".json")) {
-    let value: unknown;
-    try { value = JSON.parse(bytes.toString("utf8")); } catch { value = undefined; }
-    if (isRecord(value)) {
-      if (has(value, "provider", "engine", "targets", "approvers", "killSwitchPath")) {
-        const authorize = value.authorize;
-        const authorizes = authorize !== undefined && !(isRecord(authorize) && Object.keys(authorize).length === 0);
-        if (value.enabled !== false || authorizes) out.push(finding(path, "ENABLED_CONTRACT", "a pilot contract that is enabled or carries an authorize entry"));
-      }
-      if (has(value, "artifactSha256", "planSha256", "manifestHash")) out.push(finding(path, "SEALED_PLAN"));
-      const statement = isRecord(value.statement) ? value.statement : value;
-      if (has(statement, "artifactSha256", "approverId", "nonce")) out.push(finding(path, "SIGNED_APPROVAL"));
+  const add = (code: ExclusionCode, reason: string) => { if (!out.some((x) => x.code === code && x.reason === reason)) out.push(finding(path, code, reason)); };
+  if (bytes.length >= 4 && bytes.readUInt32LE(0) === ZIP_LOCAL) {
+    const names = zipEntryNames(bytes);
+    if (names === undefined) add("UNREADABLE", "a zip archive whose directory cannot be read");
+    else if (names.some((name) => PLAN_ENTRY.test(name))) add("SAVED_PLAN", "a saved Terraform plan (a zip holding tfplan, tfstate or tfconfig entries)");
+  }
+  for (const text of views(bytes)) {
+    if (PEM_PRIVATE_KEY.test(text) || PUTTY_KEY.test(text) || KUBE_CLIENT_KEY.test(text)) add("PRIVATE_KEY", "the file holds a private key");
+    if (JWT.test(text)) add("TOKEN", "the file holds a JWT");
+    if (GITHUB_TOKEN.test(text)) add("TOKEN", "the file holds a GitHub token");
+    if (AWS_ACCESS_KEY_ID.test(text)) add("TOKEN", "the file holds an AWS access key id");
+    if (AWS_SECRET.test(text)) add("TOKEN", "the file holds an AWS secret access key");
+    if (INI_SECTION.test(text) && AWS_INI_KEY.test(text)) add("CLOUD_CREDENTIALS", "an AWS shared credentials file");
+    if (AZURE_ACCOUNT_KEY.test(text) || AZURE_SAS_STRING.test(text)) add("TOKEN", "the file holds an Azure storage key or connection string");
+    if (sasUrl(text)) add("TOKEN", "the file holds an Azure shared access signature URL");
+    if (!CODE_FILE.test(path) && yamlContract(text)) add("ENABLED_CONTRACT", "a pilot contract in YAML form that is enabled or carries an authorize entry");
+    const trimmed = text.trimStart();
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+      let value: unknown;
+      try { value = JSON.parse(trimmed); } catch { value = undefined; }
+      for (const found of shapeFindings(path, value)) add(found.code, found.reason);
     }
   }
   return out;

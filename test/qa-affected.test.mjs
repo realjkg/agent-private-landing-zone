@@ -4,7 +4,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, w
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { CANARY_OWNERS, TERRAFORM_CANARY_UNIT_TEST, diffCommand, EXIT_OVER_CAP, FIXTURE_OWNERS, importsOf, planChanged, routeOf, SOURCE_SCAN_GUARDS, TEMPLATE_OWNERS, UNIMPORTABLE_OWNERS } from "../scripts/qa-affected.mjs";
+import { CANARY_OWNERS, TERRAFORM_CANARY_UNIT_TEST, diffCommand, EXIT_OVER_CAP, FIXTURE_OWNERS, importsOf, PACKAGE_OWNERS, planChanged, routeOf, SOURCE_SCAN_GUARDS, TEMPLATE_OWNERS, UNIMPORTABLE_OWNERS } from "../scripts/qa-affected.mjs";
 
 function fixture() {
   return new Map([
@@ -620,4 +620,18 @@ test("run refuses the full-suite route unless the plan is structurally over the 
   assert.match(r2.out, /QA_FULL_SUITE_REFUSED/);
   assert.doesNotMatch(r2.out, /documentation-only/);
   assert.equal(r2.npm, "");
+});
+
+test("the field package's staging, image and generator files select the package tests, beside their other owners", () => {
+  const files = fixture();
+  for (const [path, owners] of Object.entries(PACKAGE_OWNERS)) {
+    files.set(path, "x");
+    for (const owner of owners) files.set(owner, "test()");
+    const plan = planChanged([path], files);
+    for (const owner of owners) assert.ok(plan.nodeTests.includes(owner), path + " selects " + owner);
+    for (const owner of owners) assert.ok(readdirSync("test").includes(owner.slice("test/".length)), owner + " exists");
+  }
+  // The image files keep their existing owners too.
+  files.set("test/container-security.test.ts", "test()");
+  assert.ok(planChanged(["Dockerfile"], files).nodeTests.includes("test/container-security.test.ts"));
 });

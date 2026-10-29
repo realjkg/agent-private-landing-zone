@@ -1,7 +1,9 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { gunzipSync } from "node:zlib";
 
 import { loadModelDigestPins, normalizeDigest, type ModelDigestPins } from "../models/digest-pins.js";
+import { promptPolicyHash } from "../security/prompt-governance.js";
 import { pilotCombinationListed } from "../qualification/production-contract.js";
 import { actGateId, RELEASE_PLATFORMS } from "../qualification/release-admission.js";
 import { sha256 } from "../util/sha256.js";
@@ -190,24 +192,60 @@ function auditSummary(input: { file: string; bytes: Buffer }): FieldPackageManif
   return { status: "RESULTS", file: input.file, sha256: sha256(input.bytes), vulnerabilities };
 }
 
-function modelEntries(pins: ModelDigestPins, evidence: unknown): ModelEntry[] {
+/** A marker that a record was made by a fixture, a simulation or a synthetic run, anywhere in the object or its records. */
+const syntheticMarker = (value: Record<string, unknown>): boolean =>
+  value.fixture === true || value.mock === true || value.simulation === true ||
+  value.evidenceMode === "SYNTHETIC" || value.label === "SYNTHETIC" || value.mode === "OFFLINE_FIXTURE_ONLY";
+
+/**
+ * Why a `./alz models verify --production` run cannot vouch for any model of this commit, or undefined when it can. The run must
+ * be the production qualification on the target host (the same shape the release admission review's private-model gate
+ * requires: production context, session, checks and stack checks all passed), bound to this commit, made under the prompt
+ * policy this commit ships, passed as a whole, and carry no fixture or synthetic marker. `./alz models verify` writes no LIVE
+ * label of its own: a production run on the target host with no synthetic marker is the strongest claim its output can make.
+ */
+export function modelRunProblem(evidence: unknown, commit: string): string | undefined {
+  if (!isRecord(evidence) || !Array.isArray(evidence.records)) return "not ./alz models verify output";
+  if (syntheticMarker(evidence) || evidence.records.some((r) => isRecord(r) && syntheticMarker(r))) return "it is marked as a fixture or synthetic run";
+  if (evidence.passed !== true) return "the run as a whole did not pass";
+  if (evidence.policyHash !== promptPolicyHash()) return "it was made under another prompt policy than this commit ships";
+  const production = evidence.production;
+  if (!isRecord(production) || !isRecord(production.context)) return "it is not a --production run, so it names no commit or target host";
+  if (production.context.sourceCommit !== commit) return "it was made from another commit";
+  if (production.passed !== true || !isRecord(production.session) || production.session.mutationObserved !== false ||
+      !Array.isArray(production.checks) || production.checks.length === 0 || !production.checks.every((x) => isRecord(x) && x.passed === true)) {
+    return "its production qualification did not pass";
+  }
+  const stack = evidence.stackChecks;
+  if (!Array.isArray(stack) || stack.length === 0 || !stack.every((x) => isRecord(x) && x.passed === true)) return "its default-stack checks did not pass";
+  return undefined;
+}
+
+function modelEntries(pins: ModelDigestPins, evidence: unknown, commit: string): ModelEntry[] {
   const records = isRecord(evidence) && Array.isArray(evidence.records) ? evidence.records.filter(isRecord) : [];
+  const runProblem = evidence === undefined ? undefined : modelRunProblem(evidence, commit);
   return pins.models.map((model): ModelEntry => {
     const pinned = pins.digests.get(model) ?? null;
     if (pinned === null) {
       return { model, pinnedDigest: null, status: "MODEL_DIGEST_UNPINNED", reason: "config/tool-pins.json records no digest for this model (owner input); no digest is listed or guessed." };
     }
-    const record = records.find((r) => r.model === model);
-    if (record === undefined) {
+    if (evidence === undefined) {
       return { model, pinnedDigest: pinned, status: "NOT_VERIFIED", reason: "No ./alz models verify record for this model was given." };
     }
-    if (normalizeDigest(record.digest) !== pinned || record.digestCheck !== "PINNED") {
-      return { model, pinnedDigest: pinned, status: "MODEL_DIGEST_MISMATCH", reason: "The ./alz models verify record does not show the pinned digest installed." };
+    if (runProblem !== undefined) {
+      return { model, pinnedDigest: pinned, status: "NOT_VERIFIED", reason: "The ./alz models verify run cannot vouch for this commit: " + runProblem + "." };
     }
-    if (record.passed !== true) {
-      return { model, pinnedDigest: pinned, status: "NOT_VERIFIED", reason: "The pinned digest is installed, but its ./alz models verify qualification did not pass." };
+    const record = records.find((r) => r.model === model);
+    if (record === undefined) {
+      return { model, pinnedDigest: pinned, status: "NOT_VERIFIED", reason: "The ./alz models verify run has no record for this model." };
     }
-    return { model, pinnedDigest: pinned, status: "VERIFIED", reason: "The ./alz models verify record shows the pinned digest installed and qualified." };
+    if (normalizeDigest(record.digest) !== pinned || record.digestCheck !== "PINNED" || normalizeDigest(record.pinnedDigest) !== pinned) {
+      return { model, pinnedDigest: pinned, status: "MODEL_DIGEST_MISMATCH", reason: "The ./alz models verify record does not show the committed pin installed." };
+    }
+    if (record.passed !== true || record.policyHash !== promptPolicyHash()) {
+      return { model, pinnedDigest: pinned, status: "NOT_VERIFIED", reason: "The pinned digest is installed, but its qualification did not pass under this commit's prompt policy." };
+    }
+    return { model, pinnedDigest: pinned, status: "VERIFIED", reason: "A passed ./alz models verify --production run of this commit shows the pinned digest installed and qualified." };
   });
 }
 
@@ -250,6 +288,25 @@ export function buildFieldPackage(inputs: FieldPackageInputs, facts: RepositoryF
     if (manifest.sourceCommit !== commit) refuse("FIELD_RELEASE_MANIFEST_COMMIT_MISMATCH", "the release manifest names " + manifest.sourceCommit + ", not " + commit);
     const excluded = manifest.files.flatMap((file) => pathExclusions(file.path));
     if (excluded.length > 0) refuse("FIELD_PACKAGE_EXCLUDED_CONTENT", describeFindings(excluded).join("; "));
+  }
+  // The archive is bound to the commit through the release manifest it carries: that manifest must be byte for byte the one
+  // given (which names this commit), every file it lists must be in the archive with its hash, and nothing else may be.
+  if (archive) {
+    if (!inputs.releaseManifest || !manifest) refuse("FIELD_ARCHIVE_UNBOUND", "an archive needs --release-manifest, which binds it to the commit");
+    let entries: Map<string, Buffer>;
+    try { entries = tarFiles(inputs.archive!.bytes); } catch (error) {
+      return refuse("FIELD_ARCHIVE_UNREADABLE", inputs.archive!.file + " is not a readable gzip tar archive (" + (error instanceof Error ? error.message : "unreadable") + ")");
+    }
+    const inside = entries.get("release-manifest.json");
+    if (!inside || !inside.equals(inputs.releaseManifest!.bytes)) refuse("FIELD_ARCHIVE_MANIFEST_MISMATCH", "the archive's release-manifest.json is not the release manifest given for " + commit);
+    const listed = new Map(manifest!.files.map((file) => [file.path, file.sha256]));
+    for (const [path, bytes] of entries) {
+      if (path === "release-manifest.json") continue;
+      const expected = listed.get(path);
+      if (expected === undefined) refuse("FIELD_ARCHIVE_UNLISTED_FILE", "the archive holds " + path + ", which its release manifest does not list");
+      if (sha256(bytes) !== expected) refuse("FIELD_ARCHIVE_CONTENT_MISMATCH", "the archive's " + path + " is not the file its release manifest hashes");
+    }
+    for (const path of listed.keys()) if (!entries.has(path)) refuse("FIELD_ARCHIVE_CONTENT_MISMATCH", "the archive lacks " + path + ", which its release manifest lists");
   }
   const sbom = inputs.sbom ? digestOf(inputs.sbom) : undefined;
   if (sbom && manifest && manifest.sbom.sha256 !== sbom.sha256) refuse("FIELD_SBOM_MISMATCH", "the SBOM's SHA-256 is not the one the release manifest binds");
@@ -318,7 +375,7 @@ export function buildFieldPackage(inputs: FieldPackageInputs, facts: RepositoryF
       runtimeImage: pending("The ARM64 runtime image digest comes from the arm64-final-image gate (status " + (gate("arm64-final-image")?.status ?? "NO_GATE") + "); it is not read from a file here."),
     },
     exclusionCheck: manifest
-      ? { status: "PASS", scope: "every file the release manifest names, by name; the archive build also checks every file's content (src/cli/release-package.ts)", refused: Object.entries(EXCLUSION_RULES).map(([code, rule]) => ({ code: code as ExclusionCode, rule })) }
+      ? { status: "PASS", scope: archive ? "every file in the archive, bound file by file to its release manifest, by name; the build checked every file's content (src/cli/release-package.ts)" : "every file the release manifest names, by name; the build checked every file's content (src/cli/release-package.ts)", refused: Object.entries(EXCLUSION_RULES).map(([code, rule]) => ({ code: code as ExclusionCode, rule })) }
       : { status: "PENDING", scope: "no release manifest was given", refused: Object.entries(EXCLUSION_RULES).map(([code, rule]) => ({ code: code as ExclusionCode, rule })) },
     dependencyLocks: facts.locks.map((lock) => lock.file.endsWith(".terraform.lock.hcl")
       ? { file: lock.file, sha256: sha256(lock.bytes), kind: "terraform" as const, providers: lockProviders(lock.bytes.toString("utf8")) }
@@ -334,7 +391,7 @@ export function buildFieldPackage(inputs: FieldPackageInputs, facts: RepositoryF
     models: {
       runtime: { tool: "ollama", pinnedVersion: toolVersion(isRecord(raw.tools) ? raw.tools.ollama : undefined), gate: "private-model-runtime", gateStatus: modelGate?.status ?? "NO_GATE" },
       evidence: inputs.modelsEvidence ? digestOf(inputs.modelsEvidence) : notRun("No ./alz models verify output was given."),
-      entries: modelEntries(facts.modelPins, modelsEvidence),
+      entries: modelEntries(facts.modelPins, modelsEvidence, commit),
     },
     paths,
     knownLimitations: facts.status.gates
@@ -345,6 +402,40 @@ export function buildFieldPackage(inputs: FieldPackageInputs, facts: RepositoryF
     boundaries: { financial: FINANCIAL, customerData: CUSTOMER_DATA },
     notPackaged: Object.entries(EXCLUSION_RULES).map(([code, rule]) => ({ code: code as ExclusionCode, rule })),
   };
+}
+
+/**
+ * The regular files of a gzip tar archive (ustar, GNU long names, pax paths), by normalized path, read in memory without
+ * extracting anything. A link or any other entry type that is not a directory is refused, as the package guard refuses it.
+ */
+export function tarFiles(gz: Buffer): Map<string, Buffer> {
+  const tar = gunzipSync(gz, { maxOutputLength: 1024 * 1024 * 1024 });
+  const files = new Map<string, Buffer>();
+  const text = (from: number, length: number) => { const raw = tar.subarray(from, from + length); const end = raw.indexOf(0); return raw.subarray(0, end < 0 ? raw.length : end).toString("utf8"); };
+  let offset = 0;
+  let longName: string | undefined;
+  while (offset + 512 <= tar.length) {
+    const header = tar.subarray(offset, offset + 512);
+    if (header.every((byte) => byte === 0)) break;
+    const size = parseInt(text(offset + 124, 12).trim() || "0", 8);
+    if (!Number.isFinite(size) || size < 0) throw new Error("bad entry size");
+    const type = String.fromCharCode(header[156] || 48);
+    const body = tar.subarray(offset + 512, offset + 512 + size);
+    if (body.length !== size) throw new Error("truncated entry");
+    const prefix = text(offset + 345, 155);
+    let name = longName ?? (prefix ? prefix + "/" : "") + text(offset, 100);
+    longName = undefined;
+    offset += 512 + Math.ceil(size / 512) * 512;
+    if (type === "L") { longName = body.toString("utf8").replace(/\0+$/, ""); continue; }
+    if (type === "x") { const path = /(?:^|\n)\d+ path=([^\n]*)\n/.exec(body.toString("utf8")); if (path) longName = path[1]; continue; }
+    if (type === "g") continue;
+    name = name.replace(/^(?:\.\/)+/, "").replace(/\/$/, "");
+    if (type === "5") continue;
+    if (type !== "0" && type !== "\0" && type !== "7") throw new Error("entry " + name + " is not a regular file");
+    if (name === "" || name.split("/").includes("..")) throw new Error("unsafe entry name");
+    files.set(name, Buffer.from(body));
+  }
+  return files;
 }
 
 /** The dependency lock files the package's canaries and runtime are built from: the root npm lock and every canary lock. */

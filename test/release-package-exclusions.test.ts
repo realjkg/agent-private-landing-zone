@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
+import { gzipSync } from "node:zlib";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { loadPilotContract } from "../src/apply/contract.js";
+import { tarFiles } from "../src/release/field-package.js";
 import { sha256 } from "../src/util/sha256.js";
 import {
   contentExclusions, EXCLUSION_CODES, EXCLUSION_RULES, pathExclusions, scanPackageRoot, type ExclusionCode,
@@ -26,6 +29,25 @@ const enabledContract = (extra: Record<string, unknown> = {}) => JSON.stringify(
   approvers: [], killSwitchPath: ".runs/apply/KILL", ...extra,
 });
 const codes = (findings: { code: ExclusionCode }[]) => [...new Set(findings.map((x) => x.code))].sort();
+const base40 = () => "wJalrXUtnFEMI/K7MDENG/" + "bPxRfiCYEXAMPLEKEY"; // 40 characters, the AWS secret key length
+/** A stored (uncompressed) zip with the given entry names, written the way zip tools write one: local headers, directory, end record. */
+function zip(names: string[]): Buffer {
+  const locals: Buffer[] = [];
+  const central: Buffer[] = [];
+  let offset = 0;
+  for (const name of names) {
+    const body = Buffer.from("x");
+    const nameBytes = Buffer.from(name);
+    const local = Buffer.alloc(30); local.writeUInt32LE(0x04034b50, 0); local.writeUInt32LE(1, 18); local.writeUInt32LE(1, 22); local.writeUInt16LE(nameBytes.length, 26);
+    const entry = Buffer.alloc(46); entry.writeUInt32LE(0x02014b50, 0); entry.writeUInt32LE(1, 20); entry.writeUInt32LE(1, 24); entry.writeUInt16LE(nameBytes.length, 28); entry.writeUInt32LE(offset, 42);
+    locals.push(local, nameBytes, body); central.push(entry, nameBytes);
+    offset += 30 + nameBytes.length + 1;
+  }
+  const directory = Buffer.concat(central);
+  const end = Buffer.alloc(22); end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(names.length, 8); end.writeUInt16LE(names.length, 10);
+  end.writeUInt32LE(directory.length, 12); end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...locals, directory, end]);
+}
 
 /** The planted files, one per owner-listed exclusion, each with the code the guard must give it. */
 const PLANTED: readonly { path: string; body: () => string | Buffer; code: ExclusionCode }[] = [
@@ -70,6 +92,39 @@ const PLANTED: readonly { path: string; body: () => string | Buffer; code: Exclu
   { path: "dist/sealed.json", body: () => JSON.stringify({ schemaVersion: 2, artifactSha256: "a".repeat(64), planSha256: "b".repeat(64), manifestHash: "c".repeat(64) }), code: "SEALED_PLAN" },
   { path: "dist/approval.json", body: () => JSON.stringify({ statement: { schemaVersion: 1, artifactSha256: "a".repeat(64), approverId: "owner", nonce: "n".repeat(32) }, signatureBase64: "x" }), code: "SIGNED_APPROVAL" },
   { path: ".alz-identity/aws-terraform/APPLY.json", body: () => "{}\n", code: "DELIVERED_IDENTITY" },
+  // B2: credentials and state by content, under any name.
+  { path: "dist/aws-secret.txt", body: () => "aws_secret_access_key = " + base40() + "\n", code: "TOKEN" },
+  { path: "dist/sts.json", body: () => JSON.stringify({ Credentials: { SecretAccessKey: base40() } }), code: "TOKEN" },
+  { path: "dist/credentials", body: () => "[default]\naws_access_key_id = x\naws_secret_access_key = y\n", code: "CLOUD_CREDENTIALS" },
+  { path: "dist/shared", body: () => "[pilot]\nregion = us-east-2\naws_session_token = z\n", code: "CLOUD_CREDENTIALS" },
+  { path: "dist/azure.txt", body: () => "DefaultEndpointsProtocol=https;AccountName=a;AccountKey=" + "Q".repeat(86) + "==;EndpointSuffix=core.windows.net", code: "TOKEN" },
+  { path: "dist/azure-sas-string.txt", body: () => "BlobEndpoint=https://a.blob.core.windows.net/;SharedAccessSignature=sv=2022-11-02&sig=" + "x".repeat(20), code: "TOKEN" },
+  { path: "dist/sas.txt", body: () => "see https://a.blob.core.windows.net/c?sv=2022-11-02&se=2030-01-01&sp=r&sig=" + "abcdEFGH1234abcd%2B%3D", code: "TOKEN" },
+  { path: "dist/sas-expiry-first.txt", body: () => "https://a.blob.core.windows.net/c?sig=" + "abcdEFGH1234abcd%3D" + "&se=2030-01-01", code: "TOKEN" },
+  { path: "work/state.json", body: () => JSON.stringify({ version: 4, terraform_version: "1.16.4", serial: 3, lineage: "l", resources: [] }), code: "TERRAFORM_STATE" },
+  { path: "work/snapshot", body: () => JSON.stringify({ version: 4, terraform_version: "1.16.4", serial: 3, lineage: "l" }), code: "TERRAFORM_STATE" },
+  { path: "work/plan.bin", body: () => zip(["tfplan", "tfstate", "tfconfig/m-/main.tf"]), code: "SAVED_PLAN" },
+  { path: "work/saved.zip", body: () => zip(["tfstate-prev", "tfconfig/main.tf"]), code: "SAVED_PLAN" },
+  { path: "work/broken.zip", body: () => Buffer.concat([Buffer.from("PK\x03\x04", "latin1"), Buffer.from("tfplan")]), code: "UNREADABLE" },
+  { path: "work/dev.tfplan.json", body: () => "{}", code: "SAVED_PLAN" },
+  { path: "work/show.txt", body: () => JSON.stringify({ format_version: "1.2", terraform_version: "1.16.4", resource_changes: [] }), code: "SAVED_PLAN" },
+  { path: "dist/sealed.dat", body: () => JSON.stringify({ artifactSha256: "a".repeat(64), planSha256: "b".repeat(64), manifestHash: "c".repeat(64) }), code: "SEALED_PLAN" },
+  { path: "dist/approval.txt", body: () => JSON.stringify({ statement: { artifactSha256: "a".repeat(64), approverId: "o", nonce: "n" } }), code: "SIGNED_APPROVAL" },
+  { path: "dist/sa-escaped.json", body: () => JSON.stringify({ type: "service_account", private_key: "-----BEGIN PRIVATE KEY-----\\nMIIE" + "A".repeat(60) + "\\n-----END PRIVATE KEY-----\\n" }), code: "CLOUD_CREDENTIALS" },
+  // N2: an enabled contract under any name and in any of the cheap encodings, and tokens glued to a word.
+  { path: "config/pilot.yaml", body: () => "enabled: true\nauthorize:\n  DEV: [APPLY]\n", code: "ENABLED_CONTRACT" },
+  { path: "config/pilot.yml", body: () => "provider: AWS\nengine: TERRAFORM\nenabled: true\n", code: "ENABLED_CONTRACT" },
+  { path: "config/pilot.json.gz", body: () => gzipSync(Buffer.from(enabledContract())), code: "ENABLED_CONTRACT" },
+  { path: "config/pilot.b64", body: () => Buffer.from(enabledContract()).toString("base64"), code: "ENABLED_CONTRACT" },
+  { path: "config/pilot.b64gz", body: () => gzipSync(Buffer.from(enabledContract())).toString("base64"), code: "ENABLED_CONTRACT" },
+  { path: "config/pilot-utf16.json", body: () => Buffer.from("\ufeff" + enabledContract(), "utf16le"), code: "ENABLED_CONTRACT" },
+  { path: "config/pilot-bom.json", body: () => "\ufeff" + enabledContract(), code: "ENABLED_CONTRACT" },
+  { path: "config/pilot-array.json", body: () => "[" + enabledContract() + "]", code: "ENABLED_CONTRACT" },
+  { path: "config/pilot-wrapped.json", body: () => JSON.stringify({ pilots: { dev: JSON.parse(enabledContract()) } }), code: "ENABLED_CONTRACT" },
+  { path: "config/pilot-no-approvers.json", body: () => JSON.stringify({ enabled: true, provider: "AWS", engine: "TERRAFORM", targets: {} }), code: "ENABLED_CONTRACT" },
+  { path: "config/authorize-only.json", body: () => JSON.stringify({ authorize: { DEV: ["APPLY"] } }), code: "ENABLED_CONTRACT" },
+  { path: "dist/glued.txt", body: () => "x" + jwt(), code: "TOKEN" },
+  { path: "dist/glued-gh.txt", body: () => "token_ghp_" + "A1b2C3d4".repeat(5), code: "TOKEN" },
 ];
 
 test("every owner-listed exclusion has a rule, and every planted file is refused with its own code", () => {
@@ -96,35 +151,136 @@ test("the shipped content's own names and patterns are not mistaken for secrets"
   for (const name of readdirSync(join(repository, "config")).filter((n) => n.startsWith("act-pilot-contract.") && n.endsWith(".example.json"))) {
     assert.deepEqual(contentExclusions("config/" + name, readFileSync(join(repository, "config", name))), [], name);
   }
+  // Lockfile integrity hashes, provider lock hashes, an SBOM's hashes and the repository's own configuration are not secrets.
+  const realFiles = ["package-lock.json", ...readdirSync(join(repository, "config"), { recursive: true }).map((n) => "config/" + String(n)),
+    ...readdirSync(join(repository, "policy"), { recursive: true }).map((n) => "policy/" + String(n))]
+    .filter((path) => statSync(join(repository, path)).isFile());
+  const qualification = join(repository, "qualification");
+  if (existsSync(qualification)) {
+    realFiles.push(...readdirSync(qualification, { recursive: true }).map((n) => "qualification/" + String(n))
+      .filter((path) => /(?:\.terraform\.lock\.hcl|package-lock\.json|\.example\.json)$/.test(path)));
+  }
+  for (const path of realFiles) assert.deepEqual(contentExclusions(path, readFileSync(join(repository, path))), [], path);
+  const sbom = { bomFormat: "CycloneDX", specVersion: "1.5", components: [{ name: "zod", hashes: [{ alg: "SHA-512", content: "a".repeat(128) }],
+    externalReferences: [{ type: "distribution", url: "https://registry.npmjs.org/zod/-/zod-3.0.0.tgz", hashes: [{ alg: "SHA-512", content: "b".repeat(128) }] }] }] };
+  assert.deepEqual(contentExclusions("sbom.cdx.json", Buffer.from(JSON.stringify(sbom))), []);
+  const hcl = 'provider "registry.terraform.io/hashicorp/aws" {\n  version = "6.68.0"\n  hashes = [\n    "h1:' + "Q".repeat(43) + '=",\n    "zh:' + "a".repeat(64) + '",\n  ]\n}\n';
+  assert.deepEqual(contentExclusions("qualification/x/.terraform.lock.hcl", Buffer.from(hcl)), []);
+  // A zip that is not a plan, code that only names the keys, and YAML-like object literals in a bundle are not refused.
+  assert.deepEqual(contentExclusions("dist/assets.zip", zip(["index.html", "app.js"])), []);
+  assert.deepEqual(contentExclusions("dist/env.js", Buffer.from('const refused = ["AWS_SECRET_ACCESS_KEY", "aws_secret_access_key", "AccountKey", "sig"];\n')), []);
+  assert.deepEqual(contentExclusions("dist/ui.js", Buffer.from("const c = {\n  provider: \"AWS\",\n  engine: \"TERRAFORM\",\n  enabled: true,\n};\n")), []);
+  assert.deepEqual(contentExclusions("dist/url.txt", Buffer.from("https://example.com/?sig=" + "a".repeat(20) + "&page=2")), [], "a sig parameter without a SAS version or expiry");
   // A two-part JWT without a signature, or a public key, is not refused by content.
   const pub = generateKeyPairSync("ed25519").publicKey.export({ type: "spki", format: "pem" }).toString();
   assert.deepEqual(contentExclusions("dist/pub.txt", Buffer.from(pub)), []);
 });
 
-function stage(): string {
-  const root = mkdtempSync(join(tmpdir(), "alz-pkg-"));
-  // What supply-chain.yml stages: dist (here the sources it compiles from), policy, config, package.json, package-lock.json, alz.
+/** A checkout as CI builds it (dist stands in from src), holding the owner's committed contract and local runner configuration. */
+function checkout(): string {
+  const root = mkdtempSync(join(tmpdir(), "alz-pkg-src-"));
   cpSync(join(repository, "src"), join(root, "dist"), { recursive: true });
   cpSync(join(repository, "policy"), join(root, "policy"), { recursive: true });
   cpSync(join(repository, "config"), join(root, "config"), { recursive: true });
   for (const file of ["package.json", "package-lock.json", "alz"]) cpSync(join(repository, file), join(root, file));
   writeFileSync(join(root, "sbom.cdx.json"), JSON.stringify({ bomFormat: "CycloneDX", specVersion: "1.5", components: [] }) + "\n");
-  // A checkout may hold the owner's local files; a stage made from it must not.
-  for (const local of ["config/act-pilot-contract.json", "config/act-pilot-contract.sha256", "config/evidence-runner.json"]) rmSync(join(root, local), { force: true });
+  writeFileSync(join(root, "config", "act-pilot-contract.json"), enabledContract({ authorize: { DEV: ["APPLY", "CLEANUP"] } }));
+  writeFileSync(join(root, "config", "act-pilot-contract.aws-dev.draft.json"), enabledContract());
+  writeFileSync(join(root, "config", "evidence-runner.json"), "{}\n");
   return root;
 }
 
-test("the staged package content of this repository passes the guard", async () => {
-  const root = stage();
+/** Stages exactly as supply-chain.yml does: scripts/release-stage.sh, run from the checkout's root. */
+function stage(source = checkout()): { root: string; stdout: string; source: string } {
+  const root = join(mkdtempSync(join(tmpdir(), "alz-pkg-")), "stage");
+  const run = spawnSync("bash", [join(repository, "scripts/release-stage.sh"), root], { cwd: source, encoding: "utf8", timeout: 60000 });
+  assert.equal(run.status, 0, run.stderr);
+  return { root, stdout: run.stdout, source };
+}
+const cleanup = (...dirs: string[]) => { for (const dir of dirs) rmSync(dir, { recursive: true, force: true }); };
+
+test("supply-chain.yml stages through the one staging script, and the staging the tests use is that script", () => {
+  const workflow = readFileSync(join(repository, ".github/workflows/supply-chain.yml"), "utf8");
+  assert.match(workflow, /^\s*scripts\/release-stage\.sh "\$STAGE"$/m);
+  assert.doesNotMatch(workflow, /cp -R config/, "config/ is never copied wholesale outside the staging script");
+});
+
+test("a checkout at the owner's authorization commit still packages: the stage, the manifest and the archive carry no contract, and ACT reads DISABLED there", async () => {
+  const { root, stdout, source } = stage();
   try {
+    assert.match(stdout, /left out the owner's config\/act-pilot-contract\.json/);
+    assert.match(stdout, /left out the owner's config\/act-pilot-contract\.aws-dev\.draft\.json/);
+    assert.match(stdout, /left out the owner's config\/evidence-runner\.json/);
+    assert.ok(existsSync(join(source, "config", "act-pilot-contract.json")), "the checkout keeps the owner's contract");
+    for (const owned of ["act-pilot-contract.json", "act-pilot-contract.aws-dev.draft.json", "evidence-runner.json"]) assert.equal(existsSync(join(root, "config", owned)), false, owned);
+    assert.ok(readdirSync(join(root, "config")).some((name) => name.endsWith(".example.json")), "the disabled examples ship");
     assert.deepEqual(await scanPackageRoot(root), []);
+    // In the package, ACT reads DISABLED: there is no contract, which the product reports as ACT_DISABLED.
+    const loaded = loadPilotContract(join(root, "config", "act-pilot-contract.json"));
+    assert.equal(loaded.enabled, false);
+    assert.equal((loaded as { code: string }).code, "ACT_DISABLED");
+
+    const built = spawnSync(tsx, [cli, "--root", root, "--version", "1.0.0", "--source-commit", "a".repeat(40)], { cwd: repository, encoding: "utf8", timeout: 60000 });
+    assert.equal(built.status, 0, built.stderr || built.stdout);
+    const manifest = JSON.parse(readFileSync(join(root, "release-manifest.json"), "utf8")) as { files: { path: string }[] };
+    assert.ok(!manifest.files.some((file) => /act-pilot-contract(?!.*\.example\.json$)|evidence-runner\.json$/.test(file.path)));
+    // The archive, made as supply-chain.yml makes it.
+    const archive = join(dirname(root), "package.tar.gz");
+    const tar = spawnSync("bash", ["-c", 'tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -C "$1" -cf - . | gzip -n > "$2"', "tar", root, archive], { encoding: "utf8" });
+    assert.equal(tar.status, 0, tar.stderr);
+    const entries = [...tarFiles(readFileSync(archive)).keys()];
+    assert.ok(entries.includes("release-manifest.json") && entries.includes("config/tool-pins.json"));
+    assert.ok(!entries.some((path) => /^config\/(?:act-pilot-contract(?!.*\.example\.json$)|evidence-runner\.json$)/.test(path)), entries.filter((p) => p.startsWith("config/")).join(" "));
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    cleanup(dirname(root), source);
   }
 });
 
+test("staging refuses a folder that is not empty and a checkout that is not built", () => {
+  const source = checkout();
+  const busy = mkdtempSync(join(tmpdir(), "alz-pkg-busy-"));
+  try {
+    writeFileSync(join(busy, "left.txt"), "x");
+    const full = spawnSync("bash", [join(repository, "scripts/release-stage.sh"), busy], { cwd: source, encoding: "utf8" });
+    assert.notEqual(full.status, 0);
+    assert.match(full.stderr, /is not empty/);
+    rmSync(join(source, "dist"), { recursive: true });
+    const unbuilt = spawnSync("bash", [join(repository, "scripts/release-stage.sh"), join(busy, "s")], { cwd: source, encoding: "utf8" });
+    assert.notEqual(unbuilt.status, 0);
+    assert.match(unbuilt.stderr, /dist is missing/);
+  } finally {
+    cleanup(source, busy);
+  }
+});
+
+/** Docker's .dockerignore rule: the last pattern that matches a path, or one of its parent folders, decides; `!` keeps. */
+function dockerIgnored(patterns: string[], path: string): boolean {
+  let ignored = false;
+  for (const raw of patterns) {
+    const keep = raw.startsWith("!");
+    const pattern = (keep ? raw.slice(1) : raw).replace(/^\/+/, "").replace(/\/+$/, "");
+    const source = "^" + pattern.split("**").map((part) => part.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]")).join(".*") + "(?:/.*)?$";
+    if (new RegExp(source).test(path)) ignored = !keep;
+  }
+  return ignored;
+}
+
+test("the runtime image cannot hold the owner's files: .dockerignore keeps them out of the context, and config/ is the only config source", () => {
+  const patterns = readFileSync(join(repository, ".dockerignore"), "utf8").split("\n").map((line) => line.trim()).filter((line) => line !== "" && !line.startsWith("#"));
+  for (const owned of ["config/act-pilot-contract.json", "config/act-pilot-contract.sha256", "config/act-pilot-contract.aws-dev.draft.json", "config/evidence-runner.json"]) {
+    assert.ok(dockerIgnored(patterns, owned), owned + " is kept out of the image");
+  }
+  // Every committed configuration file still reaches the image.
+  for (const name of readdirSync(join(repository, "config"), { recursive: true }).map(String)) {
+    if (statSync(join(repository, "config", name)).isFile()) assert.equal(dockerIgnored(patterns, "config/" + name), false, "config/" + name);
+  }
+  const dockerfile = readFileSync(join(repository, "Dockerfile"), "utf8");
+  const runtime = dockerfile.slice(dockerfile.lastIndexOf("FROM "));
+  assert.match(runtime, /release-package\.js \\\n\s*--root \/app/, "the image build runs the guard on /app");
+});
+
 test("planted files in a staged package are each found, by path, code and order; a link fails closed; only the root node_modules is skipped", async () => {
-  const root = stage();
+  const { root, source } = stage();
   try {
     for (const planted of PLANTED) {
       mkdirSync(dirname(join(root, planted.path)), { recursive: true });
@@ -147,7 +303,7 @@ test("planted files in a staged package are each found, by path, code and order;
     assert.deepEqual(findings, sorted);
     assert.deepEqual(await scanPackageRoot(root), findings, "the same root gives the same findings");
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    cleanup(dirname(root), source);
   }
 });
 
@@ -195,10 +351,10 @@ test("release-package --verify refuses a manifest that names excluded content, e
   }
 });
 
-test("the package installs no runner service or launch agent: the staged and image file sets, and the shipped sources, carry none", () => {
-  // supply-chain.yml stages exactly these, so scripts/ (the identity runner hook) and bootstrap/ are never in the archive.
-  const workflow = readFileSync(join(repository, ".github/workflows/supply-chain.yml"), "utf8");
-  const staged = [...workflow.matchAll(/^\s*cp (?:-R )?(.+?) "\$STAGE(?:\/[a-z]+)?\/?"$/gm)].flatMap((m) => m[1].split(/\s+/)).sort();
+test("the package installs no runner service or launch agent: the staged and image file sets, and the shipped sources, configuration and policy, carry none", () => {
+  // The staging script copies exactly these, so scripts/ (the identity runner hook) and bootstrap/ are never in the archive.
+  const script = readFileSync(join(repository, "scripts/release-stage.sh"), "utf8");
+  const staged = [...script.matchAll(/^\s*cp (?:-R )?(.+?) "\$STAGE(?:\/[a-z]+)?\/?"$/gm)].flatMap((m) => m[1].split(/\s+/)).sort();
   assert.deepEqual(staged, ["alz", "config", "dist", "package-lock.json", "package.json", "policy", "sbom.cdx.json"]);
   // The runtime image copies the same kind of content, and nothing that registers or starts a runner.
   const dockerfile = readFileSync(join(repository, "Dockerfile"), "utf8");
@@ -219,6 +375,8 @@ test("the package installs no runner service or launch agent: the staged and ima
     }
   };
   walk("src");
+  walk("config");
+  walk("policy");
   if (SERVICE.test(readFileSync(join(repository, "alz"), "utf8"))) offenders.push("alz");
   assert.deepEqual(offenders, []);
 });

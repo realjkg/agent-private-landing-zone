@@ -71,6 +71,8 @@ RUN apk upgrade --no-cache && apk add --no-cache libstdc++
 COPY package.json package-lock.json ./
 COPY --from=runtime-deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
+# .dockerignore keeps the owner's contract and runner configuration out of the context, so config/ here never holds them;
+# release-package below refuses the build if anything excluded reached the image (docs/field-package.md).
 COPY config/ ./config/
 COPY policy/ ./policy/
 

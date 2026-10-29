@@ -49,6 +49,17 @@ export const TEMPLATE_OWNERS = {
   "bootstrap/config.gcp.template.json": ["test/apply-contract.test.ts"],
 };
 
+// The field package's staging and image definitions, and the generator's entry script, are read or run by the package tests,
+// never imported: a change to any of them selects those tests, in addition to any other rule that owns the path.
+export const PACKAGE_OWNERS = {
+  "Dockerfile": ["test/release-package-exclusions.test.ts"],
+  ".dockerignore": ["test/release-package-exclusions.test.ts"],
+  "alz": ["test/release-package-exclusions.test.ts"],
+  ".github/workflows/supply-chain.yml": ["test/release-package-exclusions.test.ts"],
+  "scripts/release-stage.sh": ["test/release-package-exclusions.test.ts"],
+  "scripts/field-package.ts": ["test/release-package-field-manifest.test.ts"],
+};
+
 // Fixtures a test reads from disk (not imported), so the import closure never selects their owner.
 export const FIXTURE_OWNERS = {
   "test/fixtures/backend-pin/cases.json": ["test/apply-backend-pin-real.test.ts"],
@@ -191,6 +202,7 @@ export function planChanged(changedPaths, files) {
   const cited = acceptanceCited(files);
   for (const path of changed) {
     if (Object.hasOwn(TEMPLATE_OWNERS, path)) addExisting(selected, files, TEMPLATE_OWNERS[path]);
+    if (Object.hasOwn(PACKAGE_OWNERS, path)) addExisting(selected, files, PACKAGE_OWNERS[path]);
     if (INVENTORY_INPUT.test(path)) addExisting(selected, files, INVENTORY_GUARDS);
     if (cited.has(path)) addExisting(selected, files, [ACCEPTANCE_TEST]);
     if (RELEASE_STATUS_INPUT.test(path)) {

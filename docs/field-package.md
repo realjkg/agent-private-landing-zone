@@ -15,33 +15,66 @@ This page is the operator's guide to that package. It links to the runbooks inst
 
 The archive holds exactly `dist/`, `policy/`, `config/`, `package.json`, `package-lock.json`, `alz`, `sbom.cdx.json`, `release-manifest.json` and `brand-provenance.json`. The runtime image holds the same content and its production `node_modules`. Neither holds `scripts/`, `bootstrap/`, `qualification/` or the identity runner hook.
 
-**The exclusion guard** (`src/release/package-exclusions.ts`) fails closed. It runs inside `src/cli/release-package.ts`, so it runs wherever a package is built:
+**The owner's files are left out at staging.** The checkout at the owner's authorization commit holds the reviewed contract, and an owner's machine may hold `config/evidence-runner.json`. Neither ever enters a package:
 
-- **At build** (`release-package --root STAGE --version V --source-commit SHA`, which `supply-chain.yml` and the `Dockerfile` already run): it walks every entry of the package and refuses before anything is hashed. A refusal names each finding and writes no manifest.
-- **At verify** (`release-package --root DIR --verify`, run by the clean-install smoke, the image build and `./alz qualify verify-package`): it refuses a manifest that names an excluded file, even when every hash matches.
+- **The archive.** `scripts/release-stage.sh` is the one staging definition: `supply-chain.yml` runs it, and the tests run it. It copies `config/` into the stage, then removes from the stage only, naming each file:
+  - `config/act-pilot-contract*`, except the disabled `*.example.json` shapes. This covers the contract, its drafts and the retired pin.
+  - `config/evidence-runner.json`.
+- **The runtime image.** `.dockerignore` keeps the same files out of the build context, so `COPY config/` cannot carry them and no image layer ever holds them.
+
+So a build from the authorization commit still packages, and the package still carries no contract. The product in the package reads no contract file and reports `ACT_DISABLED`. The operator supplies their reviewed contract in their own install (section 6).
+
+**The exclusion guard** (`src/release/package-exclusions.ts`) is the fail-closed backstop for anything else. It runs inside `src/cli/release-package.ts`, so it runs wherever a package is built:
+
+- **At build** (`release-package --root STAGE --version V --source-commit SHA`, which `supply-chain.yml` and the `Dockerfile` already run): it walks every entry of the package, by name and by content, and refuses before anything is hashed. A refusal names each finding and writes no manifest.
+- **At verify** (`release-package --root DIR --verify`, run by the clean-install smoke, the image build and `./alz qualify verify-package`):
+  - It checks names only, and only the files the release manifest lists. It refuses a manifest that names an excluded file, even when every hash matches.
+  - A file dropped into an installed package after the build is not in the manifest, so `--verify` does not see it.
+  - Its existing line "✓ ACT remains disabled" (older than this guard) means the manifest's contract block says `actEnabled: false`. It does not mean the folder holds no contract file.
+  - The binding of a whole archive to its manifest, unlisted files included, is checked by the field package generator (section 3).
 - **What it does:** it reads names and bytes only. It never removes, rewrites or redacts anything. A person removes the file and builds again.
 
-| Never packaged | Guard code |
-| --- | --- |
-| The owner's pilot contract `config/act-pilot-contract.json` (enabled or not), a draft of it, the retired pin, or any other `act-pilot-contract*` file except the disabled `*.example.json` shapes | `PILOT_CONTRACT` |
-| Any contract-shaped JSON that is enabled or carries an `authorize` entry | `ENABLED_CONTRACT` |
-| The owner's runner configuration `config/evidence-runner.json`, which names customer targets | `OWNER_CONFIGURATION` |
-| Tokens: JWTs (delivered `<IDENTITY>.jwt` files included), GitHub tokens, AWS access key ids, `.env`, `.npmrc`, `.netrc` | `TOKEN` |
-| Private keys: PEM, OpenSSH, PKCS#8/#12, Java keystores, PuTTY, `id_*` | `PRIVATE_KEY` |
-| Cloud CLI credential folders (`.aws`, `.azure`, `gcloud`) | `CLOUD_CREDENTIALS` |
-| Runner registration (`.runner`, `.credentials*`, `.service`, `svc.sh`, `actions-runner/`) | `RUNNER_REGISTRATION` |
-| Service units: launchd `.plist`, systemd `.service`, `.timer` and `.socket`, `LaunchAgents/`, `LaunchDaemons/` | `SERVICE_UNIT` |
-| Terraform state, working folders, real `*.tfvars`, saved plans (`*.tfplan`, `tfplan`, `plan.out`, `*.plan`) | `TERRAFORM_STATE`, `TERRAFORM_WORKDIR`, `TERRAFORM_VARIABLES`, `SAVED_PLAN` |
-| Anything under `.runs/`: evidence, sealed plans, ledgers, journals, qualification records | `RUN_EVIDENCE` |
-| Pilot evidence and proposals elsewhere; sealed plans and signed approvals, recognized by content | `PILOT_EVIDENCE`, `SEALED_PLAN`, `SIGNED_APPROVAL` |
-| Delivered identities and the runner hook installation (`.alz-identity/`, `.alz-runner-hook/`) | `DELIVERED_IDENTITY` |
-| A symbolic link or other non-regular entry, or a file the guard cannot read | `NOT_A_REGULAR_FILE`, `UNREADABLE` |
+| Never packaged | Detected by | Guard code |
+| --- | --- | --- |
+| The owner's pilot contract `config/act-pilot-contract.json` (enabled or not), a draft of it, the retired pin, or any other `act-pilot-contract*` file except the disabled `*.example.json` shapes | name | `PILOT_CONTRACT` |
+| A pilot contract that is enabled or carries an `authorize` entry, under any name: JSON (with a BOM, UTF-16, nested in an array or object), YAML, or one gzip or base64 layer of either | content | `ENABLED_CONTRACT` |
+| The owner's runner configuration `config/evidence-runner.json`, which names customer targets | name | `OWNER_CONFIGURATION` |
+| Tokens and keys in any file: JWTs (delivered `<IDENTITY>.jwt` files included), GitHub tokens, AWS access key ids, AWS secret access keys (by their key name and a 40-character value), Azure storage keys and connection strings (`AccountKey=`, `SharedAccessSignature=`), and Azure SAS URLs (`sig=` with `sv=` or `se=`); `.env`, `.npmrc` and `.netrc` files by name | content and name | `TOKEN` |
+| Private keys: PEM (also escaped inside JSON), OpenSSH, PKCS#8/#12, Java keystores, PuTTY, kubeconfig client keys, `id_*` | content and name | `PRIVATE_KEY` |
+| Cloud credentials: an AWS shared-credentials file under any name (an INI section with `aws_*` keys), a cloud service-account key file, and the `.aws`, `.azure` and `gcloud` folders | content and name | `CLOUD_CREDENTIALS` |
+| Runner registration (`.runner`, `.credentials*`, `.service`, `svc.sh`, `actions-runner/`) | name | `RUNNER_REGISTRATION` |
+| Service units: launchd `.plist`, systemd `.service`, `.timer` and `.socket`, `LaunchAgents/`, `LaunchDaemons/` | name | `SERVICE_UNIT` |
+| Terraform state, by name (`*.tfstate*`, `terraform.tfstate.d/`) and by content (`terraform_version`, `lineage` and `serial`); working folders; real `*.tfvars` | content and name | `TERRAFORM_STATE`, `TERRAFORM_WORKDIR`, `TERRAFORM_VARIABLES` |
+| Saved plans: by name (`*.tfplan`, `*.tfplan.json`, `tfplan`, `plan.out`, `*.plan`); a zip under any name whose directory holds `tfplan`, `tfstate` or `tfconfig/` entries (a zip whose directory cannot be read fails closed); a JSON plan by content | content and name | `SAVED_PLAN` |
+| Anything under `.runs/`: evidence, sealed plans, ledgers, journals, qualification records | name | `RUN_EVIDENCE` |
+| Pilot evidence and proposals elsewhere | name | `PILOT_EVIDENCE` |
+| Sealed plans and signed approvals, under any name | content | `SEALED_PLAN`, `SIGNED_APPROVAL` |
+| Delivered identities and the runner hook installation (`.alz-identity/`, `.alz-runner-hook/`) | name | `DELIVERED_IDENTITY` |
+| A symbolic link or other non-regular entry, or a file the guard cannot read | type | `NOT_A_REGULAR_FILE`, `UNREADABLE` |
 
 **Exceptions:**
 - **Examples are allowed.** The disabled example contracts (`config/act-pilot-contract.*.example.json`), `*.tfvars.example*` and `.env.example` are allowed.
-- **The root `node_modules` is not walked.** It holds the installed dependencies, which the SBOM and the audit cover.
+- **The root `node_modules` is not walked.** It holds the installed dependencies, which the SBOM and the audit cover. Nothing else is skipped.
+- **One rule is limited to non-code files.** The YAML contract rule does not read JavaScript, TypeScript, CSS or HTML files, whose object literals read like YAML. Every other rule reads them.
 
-**Tests (SYNTHETIC):** `test/release-package-exclusions.test.ts` plants one file per row and checks it is refused by path and code. It also covers a planted file through the CLI at build and at verify, and confirms that this repository's own staged content passes.
+**Known limitations (not detected):**
+- more than one layer of encoding (for example base64 of base64), encrypted or password-protected archives, and archive formats other than zip inside the package;
+- contracts nested more than four levels deep in JSON;
+- identifiers that are not secrets (account, subscription or project ids, resource names) in a file that is not pilot evidence by name or shape;
+- secrets in a format none of the rules above names.
+
+**What the guard is for.** It is a backstop, not a scanner of the customer's data. Staging, which never copies `.runs/` or anything outside the listed folders, is the first control.
+
+**Tests (SYNTHETIC):** `test/release-package-exclusions.test.ts` covers:
+- **Planted files:** one file per rule and encoding, each refused by path and code.
+- **Through the CLI:** a planted file at build and at verify.
+- **Owner files at staging:**
+  - It stages a checkout exactly as `supply-chain.yml` does, with the owner's committed contract, a draft and `config/evidence-runner.json` present.
+  - The package builds.
+  - The stage, the manifest and the archive hold none of them.
+  - The contract then reads `ACT_DISABLED`.
+- **The image:** `.dockerignore` keeps the same files out of the image's context, and every committed `config/` file still reaches it.
+- **False positives:** the real lockfiles, Terraform provider locks, configuration, policy, an SBOM and code that only names the keys are not refused.
 
 ## 3. The field package manifest: `field-package.json`
 
@@ -57,6 +90,7 @@ npx tsx scripts/field-package.ts --source-commit <accepted SHA> --out <folder> \
 The inputs are the files `supply-chain.yml` uploads as its `agent-private-landing-zone-supply-chain` artifact. The generator writes `field-package.json` and its rendering, `field-package.md`, into `<folder>`. It refuses, and writes nothing, in these cases:
 - the checkout is not exactly that commit, or has uncommitted changes;
 - the release manifest names another commit, fails its own validation or lists an excluded file;
+- the archive is given without its release manifest, is not that manifest's package file for file, or holds a link;
 - the SBOM or the archive checksum contradicts another input;
 - the journey matrix does not check.
 
@@ -65,19 +99,19 @@ The inputs are the files `supply-chain.yml` uploads as its `agent-private-landin
 | Field | Source | When it is not proven |
 | --- | --- | --- |
 | `source.commit` | The checkout's HEAD, which must equal `--source-commit` | Refused |
-| `artifacts.archive`, `releaseManifest`, `sbom` | The SHA-256 of the files given, cross-checked | `PENDING` |
+| `artifacts.archive`, `releaseManifest`, `sbom` | The SHA-256 of the files given. The archive needs `--release-manifest`, and is bound to it file by file: its `release-manifest.json` must be byte for byte the manifest given (which must name this commit), every file the manifest lists must be in the archive with its hash, and the archive may hold nothing else. The SBOM must be the one the manifest binds | `PENDING`; refused when unbound or contradicted |
 | `artifacts.runtimeImage` | Not read here; the `arm64-final-image` gate owns it | `PENDING` |
-| `exclusionCheck` | The guard applied to the release manifest's file list | `PENDING` without a manifest |
+| `exclusionCheck` | The guard applied to the release manifest's file list and, with an archive, to every archive entry through that binding | `PENDING` without a manifest |
 | `dependencyLocks` | `package-lock.json`, and every canary's `.terraform.lock.hcl` and `package-lock.json` under `qualification/`, with provider versions read from the lock | Always present |
 | `toolPins` | `config/tool-pins.json` (Terraform, Ollama, AWS CLI, Azure CLI, Bicep, Node) | Always present |
 | `scans.sbom`, `scans.trivy`, `scans.npmAudit` | CycloneDX, Trivy JSON and `npm audit --json` output, summarized by severity | `NOT_RUN` |
 | `platforms`, `supportedPlatforms` | `platform:*` in `config/release/status.json`. A platform is supported only when its gate is `PASS` on LIVE evidence for this commit | `NOT_QUALIFIED` |
-| `models` | The committed pins in `config/tool-pins.json` and a `./alz models verify` record showing that exact digest installed and qualified | `MODEL_DIGEST_UNPINNED`, `NOT_VERIFIED` or `MODEL_DIGEST_MISMATCH` |
+| `models` | The committed pins in `config/tool-pins.json` and one `./alz models verify --production` run. A model is `VERIFIED` only when that run passed as a whole and in every production and stack check, was made from this commit (`production.context.sourceCommit`) under the prompt policy this commit ships (`policyHash`), carries no fixture or synthetic marker, and its record shows the committed pin installed and qualified. `models verify` writes no LIVE label of its own, so a production run on the target host is the strongest claim its output can make | `MODEL_DIGEST_UNPINNED`, `NOT_VERIFIED` or `MODEL_DIGEST_MISMATCH` |
 | `paths` (six-path matrix) | The provider and engine pairs the accepted ProductionDeploymentContract admits (`src/qualification/production-contract.ts`), the journey rows (`config/acceptance/journeys.json`, checked by `src/release/acceptance.ts`) and the `act:*` gates. A path is `LIVE_QUALIFIED` only when its gate is `PASS` on LIVE evidence for this commit and its journey row is `LIVE_PASS` | `NOT_QUALIFIED`, or `NOT_AVAILABLE` when the product does not admit the path |
 | `knownLimitations`, `outOfScope`, `followUps` | Every in-scope gate that has not passed, the owner's scope exclusions, and every work-graph node that is not DONE | Always present |
 | `act` | `DISABLED` by default, with no packaged contract | Always |
 
-**Today** (`main` at `60f017e`, SYNTHETIC; the generator was run on this repository with no artifact inputs):
+**Today** (`main` at `91b11f2`, SYNTHETIC; the generator was run on this repository with no artifact inputs):
 
 - **Artifacts:** archive, release manifest, SBOM and image are `PENDING`, because no candidate is frozen and no supply-chain run has been cited. Every scan is `NOT_RUN`.
 - **Platforms:** none supported. `linux-x64` is `NOT_RUN`; the other five are `BLOCKED`.
@@ -150,7 +184,10 @@ Details:
 - the step-by-step checklist, [`docs/act-dev-enablement.md`](act-dev-enablement.md);
 - the plan's gates, [`docs/act-pilot-plan.md`](act-pilot-plan.md).
 
-**The committed contract never travels in a field package.** The exclusion guard refuses it.
+**The committed contract never travels in a field package.**
+- The staging script and `.dockerignore` leave it out (section 2), and the exclusion guard refuses it if it gets in anyway.
+- An archive or image therefore always installs with ACT DISABLED.
+- The operator supplies the reviewed contract in their own install. That install is the owner's checkout at the reviewed commit, where every command that seals, proposes or runs a change refuses a contract that differs from the committed file ([`docs/act-pilot-apply.md`](act-pilot-apply.md), "The contract is the authorization").
 
 ## 7. Approval
 
@@ -236,5 +273,5 @@ Before removing anything, keep or redact the evidence you need under `.runs/` (s
   - the pinned tool downloads of `./alz deps`;
   - any monitoring export the operator configures ([`docs/observability.md`](observability.md)).
 - **What evidence holds.** Identifiers and hashes, not credentials. It can still carry account, subscription and project ids, tenant ids, regions, resource names and approver ids.
-- **Before sharing evidence outside the customer's organization,** redact it, and never share token files, keys, state, plans or `config/act-pilot-contract.json`. The exclusion guard keeps all of these out of the package, but it does not redact what an operator shares by hand.
+- **Before sharing evidence outside the customer's organization,** redact it, and never share token files, keys, state, plans or `config/act-pilot-contract.json`. Staging and the exclusion guard keep these out of the package within the limits in section 2. They do not redact what an operator shares by hand.
 - **Retention is the operator's.** The package ships no evidence. Removing a run's working files keeps its evidence (section 9).
