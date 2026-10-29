@@ -180,6 +180,10 @@ test("preview-evidence writes LIVE evidence only from a qualified sealed preview
   assert.ok(s.sealed.changes.some((c) => c.action !== "CREATE" && c.type !== "output"), "the plan touches a pre-existing resource: brownfield");
   const built = buildPreviewGateEvidence({ sealed: s.sealed, gateId: GATE, sourceCommit: SOURCE_COMMIT, targetHardwareId: HOST, engineProgramSha256Now: s.sealed.provenance.engineBinarySha256, contract: w.contract, attestedBy: "operator.fixture", now: NOW });
   assert.ok(built.ok);
+  // Another contract than the reviewed one in this checkout writes nothing, and the message speaks of no pin (#354 N2).
+  const otherContract = buildPreviewGateEvidence({ sealed: { ...s.sealed, contractSha256: "9".repeat(64) }, gateId: GATE, sourceCommit: SOURCE_COMMIT, targetHardwareId: HOST, engineProgramSha256Now: s.sealed.provenance.engineBinarySha256, contract: w.contract, attestedBy: "operator.fixture", now: NOW });
+  assert.ok(!otherContract.ok && otherContract.code === "CONTRACT_MISMATCH");
+  assert.equal(otherContract.message, "The sealed plan was made under another pilot contract than the reviewed contract in this checkout. Nothing was written.");
   const evidence = built.evidence;
   const { written: path, record } = written(w, evidence);
   assert.equal(evidence.label, "LIVE");

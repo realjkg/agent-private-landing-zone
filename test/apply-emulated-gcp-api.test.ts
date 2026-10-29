@@ -318,6 +318,77 @@ describe("EMULATED: GCP API-native through the real driver over a loopback Googl
     assert.equal(emulator.topics.size, 0);
   });
 
+  test("#358 review N2 through the real driver: until Cloud Asset lists the run's own topic, observe is INCONCLUSIVE (inventory INCOMPLETE), never VERIFIED; once it is listed, VERIFIED", async () => {
+    emulator.topics.clear();
+    const w = world();
+    const s = await seal(w);
+    const applied = await apply(w, s);
+    assert.ok(applied.ok, JSON.stringify(applied));
+    // GF5's window, or a query that matches nothing: the topic exists and reads present, but the sweep does not list it.
+    emulator.behave({ unindexed: [nameOf(s)] });
+    let early;
+    try { early = await observeRun(s.sealed.artifactSha256, w.observe()); } finally { emulator.behave({}); }
+    assert.ok(early.ok, JSON.stringify(early));
+    assert.deepEqual([early.record.verdict, early.record.inventory, early.record.unexpected], ["INCONCLUSIVE", "INCOMPLETE", []]);
+    assert.deepEqual(early.report.sweepNotListing, [nameOf(s)]);
+    assert.equal(early.record.resources[0].result, "VERIFIED", "the topic's own read is still positive");
+    // Indexed: observe again (a new record), and the control holds.
+    const later = await observeRun(s.sealed.artifactSha256, w.observe(300_000));
+    assert.ok(later.ok, JSON.stringify(later));
+    assert.deepEqual([later.record.verdict, later.record.inventory, later.report.sweepNotListing], ["VERIFIED", "COMPLETE", undefined]);
+    emulator.topics.clear();
+  });
+
+  test("#358 review N3, D14 through the real driver: a definite refusal of the PUT with the topic absent on every read is FAILED_NO_CHANGE; the plan is spent, nothing was created, and no cleanup is proposed", async () => {
+    emulator.topics.clear();
+    const w = world();
+    const s = await seal(w);
+    emulator.behave({ put: { status: 403 } });
+    let refused;
+    try { refused = await apply(w, s); } finally { emulator.behave({}); }
+    assert.ok(!refused.ok && refused.code === "APPLY_FAILED" && refused.outcome === "FAILED_NO_CHANGE", JSON.stringify(refused));
+    assert.equal(emulator.topics.size, 0);
+    assert.equal(emulator.log().filter((e) => e.method === "PUT" && e.path === "/v1/" + nameOf(s)).length, 1, "the PUT was sent once, never retried");
+    const evidence = await readAppliedEvidence(s.sealed.artifactSha256, w.deps.evidenceDir!);
+    assert.ok(evidence);
+    assert.deepEqual([evidence.outcome, evidence.authority.mutation, evidence.verifiedProperty], ["FAILED_NO_CHANGE", "GCP_PUBSUB_TOPIC_CREATE_OF_SEALED_REQUEST", undefined]);
+    // The ledger holds the artifact: the same plan never applies again, even with new approvals.
+    const again = await apply(w, s, [approvalFor(s.sealed, "bob")]);
+    assert.ok(!again.ok);
+    assert.equal(emulator.log().filter((e) => e.method === "PUT" && e.path === "/v1/" + nameOf(s)).length, 1);
+    // A new seal is a new name, and it applies.
+    const next = await seal(w);
+    assert.notEqual(topicIdOf(next), topicIdOf(s));
+    const applied = await apply(w, next);
+    assert.ok(applied.ok && applied.evidence.outcome === "SUCCEEDED", JSON.stringify(applied));
+    emulator.topics.clear();
+  });
+
+  test("#358 review N3, D16 through the real driver: a DELETE answered 404 (the topic gone when it arrived) is SUCCEEDED with deletedByRun false, never claimed as this run's deletion", async () => {
+    emulator.topics.clear();
+    const w = world();
+    const s = await seal(w);
+    const applied = await apply(w, s);
+    assert.ok(applied.ok, JSON.stringify(applied));
+    assert.ok((await observeRun(s.sealed.artifactSha256, w.observe())).ok);
+    const built = await propose(w, s);
+    assert.ok(built.ok, JSON.stringify(built));
+    const proposal = signCleanupProposal(built.proposal, REQUESTER.privateKeyPem);
+    // The topic is removed between cleanup's read (present and unchanged) and its DELETE, which then answers 404.
+    emulator.behave({ delete: { status: 404, remove: true } });
+    let cleaned;
+    try { cleaned = await cleanup(w, s, proposal, [cleanupApproval(proposal, "alice")]); } finally { emulator.behave({}); }
+    assert.ok(cleaned.ok, JSON.stringify(cleaned));
+    assert.equal(cleaned.evidence.authority.mutation, "GCP_PUBSUB_TOPIC_DELETE_OF_RUN_TOPIC");
+    assert.equal(cleaned.evidence.deletedByRun, false, "a 404 never supports \"this run deleted it\"");
+    assert.equal(emulator.log().filter((e) => e.method === "DELETE" && e.path === "/v1/" + nameOf(s)).length, 1);
+    assert.equal(emulator.topics.size, 0);
+    // The independent check still confirms the absence.
+    const leftovers = await verifyProposalLeftovers(proposal, w.observe(600_000));
+    assert.ok(leftovers.ok, JSON.stringify(leftovers));
+    assert.deepEqual(leftovers.record.resources.map((r) => r.disposition), ["CONFIRMED_DELETED"]);
+  });
+
   test("a run that did not succeed: no product cleanup, later seals refused, a hand deletion, then observe again reports the expected absence", async () => {
     emulator.topics.clear();
     const w = world();

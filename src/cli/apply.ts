@@ -599,7 +599,11 @@ const observeCommand: Command = async (flags, _terminal, deps, out) => {
   const { record } = result;
   out.say(JSON.stringify({ label: "SYNTHETIC_UNLESS_ATTESTED_LIVE", verdict: record.verdict, inventory: record.inventory, observedAt: record.observedAt, resources: record.resources,
     missingFromState: record.missingFromState, unexpected: record.unexpected, verifierBinarySha256: record.verifierBinarySha256 }, null, 2) + "\n");
-  out.report({ code: "OBSERVED", message: "Observed " + record.resources.length + " resource(s): " + record.verdict + ".", data: record });
+  // The GCP sweep's positive control (#358 review N2): say why the inventory is incomplete, so a person observes again rather than guessing.
+  const notListed = result.report.sweepNotListing ?? [];
+  const control = notListed.length === 0 ? "" : " The unit sweep did not list the run's own resource (" + notListed.join(", ") +
+    "), so it cannot show that nothing else carries the run's labels. Cloud Asset indexes new resources with a delay: observe again in a few minutes. If it is still not listed, the sweep query matches nothing; record that and do not count a clean sweep as evidence.";
+  out.report({ code: "OBSERVED", message: "Observed " + record.resources.length + " resource(s): " + record.verdict + "." + control, data: record });
   return EXIT.PASS;
 };
 

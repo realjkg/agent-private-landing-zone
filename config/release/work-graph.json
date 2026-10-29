@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updated": "2026-10-27",
+  "updated": "2026-10-29",
   "nodes": [
     {
       "id": "path-aws-terraform",
@@ -112,23 +112,35 @@
       "id": "shared-authorization",
       "title": "Shared: one reviewed authorization contract (default deny, per provider, engine, account, environment and operation)",
       "owner": "LANE",
-      "status": "IN_PROGRESS",
+      "status": "DONE",
       "dependsOn": [],
       "gates": [],
       "branch": "act-policy-file",
-      "acceptance": "One reviewed PR evolving the existing contract (no separate manually synchronized file): default deny, policy digest bound into the sealed plan, approvals, release admission and execution evidence, Terraform and CDK authorized separately, migration tests showing no existing check is weakened, and the old pin path deleted only after equivalent enforcement passes.",
-      "next": "Finish the ACT-policy lane (check-in 6443140604) under the consolidation rule of 6443232624, then independent review."
+      "acceptance": "One reviewed PR evolving the existing contract (no separate manually synchronized file): default deny, policy digest bound into the sealed plan, approvals, release admission and execution evidence, Terraform and CDK authorized separately, migration tests showing no existing check is weakened, and the old pin path deleted only after equivalent enforcement passes. Delivered by #313 (merge d739f94): the contract's authorize entry is the switch, its hash and the authorizing entry's hash are bound into every sealed plan, approval, proposal, evidence record and release admission, and the pin path is deleted.",
+      "prs": [
+        313
+      ],
+      "merges": [
+        "d739f9424f89e366d27dc42cfc6acce76cd79764"
+      ]
     },
     {
       "id": "authorization-pin-prep-fallback",
-      "title": "Shared: read-only pin-preparation helper (temporary compatibility path)",
+      "title": "Shared: read-only pin-preparation helper (temporary compatibility path; superseded by #313, never merged)",
       "owner": "LANE",
-      "status": "IN_PROGRESS",
-      "dependsOn": [],
+      "status": "DONE",
+      "dependsOn": [
+        "shared-authorization"
+      ],
       "gates": [],
       "branch": "pin-prep-helper",
-      "acceptance": "test/apply-pin-prep.test.ts: `./alz apply pin` computes and verifies the pin for the reviewed contract and prints the commit step; it never writes the pin, and the console gains no pin route.",
-      "next": "Open the PR (check-in 6443178182); whichever of this and shared-authorization lands second removes or migrates the helper."
+      "prs": [
+        313
+      ],
+      "merges": [
+        "d739f9424f89e366d27dc42cfc6acce76cd79764"
+      ],
+      "acceptance": "Superseded, not delivered: #313 (merge d739f94) made the reviewed contract's authorize entry the ACT switch and removed the hash pin and `./alz apply pin` with no fallback, so this helper (branch pin-prep-helper) was never merged. Evidence that nothing of it remains: test/apply-cli.test.ts \"the retired pin subcommand is gone: there is no hash file to prepare, the contract's authorize entry is the switch\" and test/apply-contract.test.ts \"the repository ships no contract and no pin file: ACT is disabled and no product code reads or writes a pin or the contract\"."
     },
     {
       "id": "shared-approvals",

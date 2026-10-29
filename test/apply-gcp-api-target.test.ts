@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { isDevOnlyPath, parsePilotContract, pilotTargetSha256, targetSha256Of } from "../src/apply/contract.js";
+import { engineSpec } from "../src/apply/engine-spec.js";
 import { GCP_API_BACKEND_SENTINEL, GCP_API_TARGET, PARENT_LABEL, TOPIC_PREFIX } from "../src/apply/gcp-api-target.js";
 import { GCP } from "../src/apply/providers/gcp.js";
 import type { PilotTarget } from "../src/apply/types.js";
@@ -118,4 +119,21 @@ test("D9 and INT-2: GCP API-native is DEV only, loads with its own target shape,
   assert.equal(asApiTarget.enabled, false);
   const combinations = PRODUCTION_DEPLOYMENT_CONTRACT.spec.release.actPilot.combinations as readonly { provider: string; engine: string; mutation: string }[];
   assert.deepEqual(combinations.filter((c) => c.provider === "GCP").map((c) => [c.engine, c.mutation]), [["TERRAFORM", "TERRAFORM_APPLY_OF_SEALED_PLAN"], ["GCP_API", "GCP_PUBSUB_TOPIC_CREATE_OF_SEALED_REQUEST"]]);
+});
+
+test("#358 review N4: a GCP_API canary allows exactly one google_pubsub_topic, refused at contract load otherwise; GCP Terraform keeps the general bound", () => {
+  const load = (engine: "GCP_API" | "TERRAFORM", count: unknown) => parsePilotContract(JSON.stringify(engine === "GCP_API"
+    ? { ...shared, ...devOnly, provider: "GCP", engine, targets: { DEV: apiTarget({ canary: { resources: [{ type: "google_pubsub_topic", count }] } }) } }
+    : { ...shared, ...devOnly, provider: "GCP", engine, embedStateWrite: true, targets: { DEV: { projectId: "alz-pilot-dev", region: "europe-west4", backend: "alz-pilot-dev-state/pilot/dev", workspace: "default", canary: { resources: [{ type: "google_pubsub_topic", count }] } } } }));
+  assert.equal(load("GCP_API", 1).enabled, true);
+  for (const count of [2, 10, 10_000]) {
+    const refused = load("GCP_API", count);
+    assert.equal(refused.enabled, false, String(count));
+    assert.equal((refused as { code: string }).code, "CONTRACT_INVALID");
+    assert.match((refused as { reason: string }).reason, /targets\.DEV\.canary\.resources\[0\]\.count: the GCP_API engine creates at most 1 google_pubsub_topic per run, so its canary allows exactly 1/);
+  }
+  for (const count of [0, -1, 1.5, "1"]) assert.equal(load("GCP_API", count).enabled, false, String(count));
+  assert.equal(load("TERRAFORM", 2).enabled, true, "GCP Terraform is unchanged: the general bound applies");
+  assert.equal(engineSpec("GCP_API")?.canaryCountMax, 1);
+  for (const id of ["TERRAFORM", "CDK", "BICEP"] as const) assert.equal(engineSpec(id)?.canaryCountMax, undefined, id);
 });

@@ -129,7 +129,12 @@ function canaryOf(value: unknown, path: string, engine: EngineSpec): PilotCanary
       // `retain: true` keeps the type at CLEANUP; only a reviewed, no-cost, inert sentinel type may carry it (`RETAINABLE_CANARY_TYPES`).
       if (entry.retain !== undefined && entry.retain !== true) bad(p + ".retain: expected true when present");
       if (entry.retain === true && !RETAINABLE_CANARY_TYPES.has(type)) bad(p + ".retain: " + type + " is not a reviewed sentinel type a cleanup may keep (" + [...RETAINABLE_CANARY_TYPES].join(", ") + ")");
-      return { type, count: integer(entry.count, p + ".count", 1, MAX_CANARY_COUNT), ...(entry.retain === true ? { retain: true as const } : {}) };
+      const count = integer(entry.count, p + ".count", 1, MAX_CANARY_COUNT);
+      // An engine that creates fewer resources per run than the general bound states its own (GCP_API: exactly one topic, D8).
+      if (engine.canaryCountMax !== undefined && count > engine.canaryCountMax) {
+        bad(p + ".count: the " + engine.id + " engine creates at most " + engine.canaryCountMax + " " + type + " per run, so its canary allows exactly " + engine.canaryCountMax);
+      }
+      return { type, count, ...(entry.retain === true ? { retain: true as const } : {}) };
     }),
   };
 }

@@ -440,7 +440,7 @@ export type GcpApiCleanupRun = EngineCleanupRun & {
   deletedByRun(): boolean | undefined;
 };
 
-const TOOL = "gcp_pubsub_topic" as unknown as ToolName;
+const TOOL: ToolName = "gcp_pubsub_topic";
 const outcomeResult = (over: Partial<StoppableResult>): StoppableResult => ({ tool: TOOL, ok: false, exitCode: null, stdout: "", stderr: "", durationMs: 0, stopped: false, ...over });
 const notStarted = (what: string): StoppableResult => outcomeResult({ stopped: true, notStarted: true, stderr: "Stopped before the " + what + " was sent." });
 /** The exit code the evidence records for one call: 0 for 200, 1 for any other answer, null for no answer. */
@@ -715,6 +715,8 @@ export function gcpApiEngine(given: GcpApiOptions = {}): GcpApiEngineSpec {
     target: GCP_API_TARGET,
     // D8: exactly the one reviewed GCP type, never a pattern.
     canaryTypeOk: (value) => value === TOPIC_TYPE,
+    // D8 and #358 review N4: one topic per run, so the canary's count is exactly 1, refused at contract load otherwise.
+    canaryCountMax: 1,
     notices: {
       sealHeading: "SEAL A PUB/SUB TOPIC PLAN (this reads Pub/Sub and Cloud Asset; nothing is created, changed or deleted)",
       sealReads: "  reads           the sealed topic (it must be absent) and the unit's labeled resources (there must be none) with the DISCOVERY identity\n" +

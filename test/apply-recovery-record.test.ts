@@ -238,6 +238,9 @@ test("record-recovery refuses by name, before any phrase is asked for and writin
     assert.equal(built.ok, false, label);
     assert.equal((built as { code: string }).code, code, label);
     assert.match((built as { message: string }).message, /Nothing was written\.$/, label);
+    // No hash pin exists any more (#354 N2): a message never speaks of a pinned contract.
+    assert.doesNotMatch((built as { message: string }).message, /pinned/, label);
+    if (code === "CONTRACT_MISMATCH") assert.match((built as { message: string }).message, /than the reviewed contract in this checkout/, label);
   }
   // A wrong phrase writes nothing; a malformed host is an input error; the flag set is closed.
   const wrong = await produce(w, first, second, ["RECOVERY LIVE DEV"]);
