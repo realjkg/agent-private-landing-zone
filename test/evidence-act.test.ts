@@ -176,12 +176,19 @@ test("a child of a guided stage reads the person's own terminal: the production 
   assert.deepEqual([child.dev, child.ino], [parent.dev, parent.ino], "the child's stdin is the runner's own (the person's terminal), not a new pipe");
 });
 
-test("GCP API-native is NOT_AVAILABLE; recovery asks for both sealed plans and runs record-recovery once", async () => {
+test("GCP API-native is guided behind the same gates as every path (INT-2); recovery asks for both sealed plans and runs record-recovery once", async () => {
+  // Its contract committed but no act.paths entry: blocked on the owner's input, never NOT_AVAILABLE, and nothing runs.
   const gcpApi = actRoot({ ...AWS_CONTRACT, provider: "GCP", engine: "GCP_API" });
-  const notAvailable = actDeps(gcpApi, applyScript());
-  assert.equal(await runEvidenceCommand(["run", "--synthetic", "--stage", "act:gcp-api"], notAvailable.deps), 2);
-  assert.match(notAvailable.deps.lines.join("\n"), /NOT_AVAILABLE — GCP API-native is not admitted for release/);
-  assert.deepEqual(notAvailable.spawn.calls, []);
+  const noTarget = actDeps(gcpApi, applyScript());
+  assert.equal(await runEvidenceCommand(["run", "--synthetic", "--stage", "act:gcp-api"], noTarget.deps), 2);
+  assert.match(noTarget.deps.lines.join("\n"), /OWNER_INPUT_ACT_TARGETS/);
+  assert.doesNotMatch(noTarget.deps.lines.join("\n"), /NOT_AVAILABLE/);
+  assert.deepEqual(noTarget.spawn.calls, []);
+  // Another path's contract (AWS Terraform) never runs it: the committed contract must name GCP GCP_API.
+  const otherContract = actDeps(actRoot(), applyScript());
+  assert.equal(await runEvidenceCommand(["run", "--synthetic", "--stage", "act:gcp-api"], otherContract.deps), 2);
+  assert.match(otherContract.deps.lines.join("\n"), /CONTRACT_NOT_FOR_PATH/);
+  assert.deepEqual(otherContract.spawn.calls, []);
   const root = actRoot();
   write(root, ".runs/apply/evidence/one.sealed");
   write(root, ".runs/apply/evidence/two.sealed");

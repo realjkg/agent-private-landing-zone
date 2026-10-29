@@ -241,8 +241,7 @@ export const PRODUCTION_DEPLOYMENT_CONTRACT = {
           },
           // Owner decision 6483993252 on #39 (code and review only): the two paths admitted for DEV only in code
           // (Azure Bicep, E2; GCP Terraform, #339). Each names its own engine's mutation. The contract validator keeps
-          // both DEV-only (enabledEnvironments ["DEV"]). GCP / GCP_API is not listed: it is added only by its own
-          // integration step (INT-2).
+          // both DEV-only (enabledEnvironments ["DEV"]). GCP / GCP_API follows below, added by its own integration step (INT-2).
           {
             provider: "AZURE",
             engine: "BICEP",
@@ -254,6 +253,16 @@ export const PRODUCTION_DEPLOYMENT_CONTRACT = {
             engine: "TERRAFORM",
             mutation:
               "TERRAFORM_APPLY_OF_SEALED_PLAN",
+          },
+          // Owner decision 6483993252 on #39: GCP / GCP_API (path 6) through INT-2 only, once its engine integration, release
+          // gate, journey, lifecycle reporting and evidence validation are implemented and independently reviewed. DEV only
+          // (the contract validator requires enabledEnvironments ["DEV"]). Its own mutation: one sealed Pub/Sub topic create,
+          // never GCP Terraform's.
+          {
+            provider: "GCP",
+            engine: "GCP_API",
+            mutation:
+              "GCP_PUBSUB_TOPIC_CREATE_OF_SEALED_REQUEST",
           },
         ],
       },

@@ -27,10 +27,16 @@ test("Phase E covers each engine and provider pair at most once, every implement
     8,
     "every implemented adapter has a lane",
   );
-  // The release paths (config/release/scope.json; src/qualification/release-admission.ts ACT_RELEASE_PATHS) each
-  // have a brownfield preview scenario of their own: the Azure Terraform path is not covered by the AWS one.
+  // The release paths (config/release/scope.json; src/qualification/release-admission.ts ACT_RELEASE_PATHS) that generate IaC
+  // each have a brownfield preview scenario of their own: the Azure Terraform path is not covered by the AWS one. GCP API-native
+  // (act:gcp-gcp_api, INT-2) generates no IaC: its request is the fixed request.json and its one change is a new topic (never a
+  // brownfield estate), so it has no Phase E scenario and no preview:* gate; its seal is covered by test/apply-emulated-gcp-api.test.ts.
   const ENGINE_NAMES: Record<string, string> = { TERRAFORM: "TERRAFORM", CDK: "AWS_CDK", BICEP: "BICEP" };
-  for (const path of ACT_RELEASE_PATHS) {
+  const NO_IAC = new Set(["GCP_API"]);
+  assert.deepEqual(ACT_RELEASE_PATHS.filter((path) => NO_IAC.has(path.engine)).map((path) => path.provider + " " + path.engine), ["GCP GCP_API"]);
+  assert.ok(!PHASE_E_SCENARIOS.some((item) => (item.engine as string) === "GCP_API"), "GCP_API is not an IaC adapter");
+  assert.ok(!PRODUCTION_RELEASE_GATES.some((gate) => gate.id.startsWith("preview:") && gate.id.includes("api")), "no preview gate names GCP API-native");
+  for (const path of ACT_RELEASE_PATHS.filter((item) => !NO_IAC.has(item.engine))) {
     const scenario = PHASE_E_SCENARIOS.find(
       (item) => item.provider === path.provider && item.engine === ENGINE_NAMES[path.engine],
     );

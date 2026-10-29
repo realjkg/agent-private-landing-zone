@@ -172,11 +172,12 @@ export function createHandler(trust: TrustedSubjects, roles: Roles) {
       if (!allowed(who.sa, "cloudasset.assets.searchAllResources")) return answer(json(403, { error: { code: 403, status: "PERMISSION_DENIED" } }));
       if (method !== "GET" || !/^\/v1\/projects\/[a-z][a-z0-9-]{4,28}[a-z0-9]:searchAllResources$/.test(path)) return answer(json(404, { error: { code: 404 } }));
       if (behavior.asset?.status !== undefined) return answer(json(behavior.asset.status, { error: { code: behavior.asset.status } }));
-      const m = /^labels\.([a-z0-9_-]+)=([a-z0-9_-]+)$/.exec(new URLSearchParams(search).get("query") ?? "");
+      // `labels.<key>:<value>` is a token match, as Cloud Asset documents it (GF3): every token of the asked value is a token of the label.
+      const m = /^labels\.([a-z0-9_-]+):([a-z0-9_-]+)$/.exec(new URLSearchParams(search).get("query") ?? "");
       if (!m) return answer(json(400, { error: { code: 400 } }));
       const project = path.slice("/v1/".length, path.indexOf(":"));
-      const results = [...topics.values()].filter((t) => t.name.startsWith(project + "/") && t.labels[m[1]] === m[2] && !(behavior.unindexed ?? []).includes(t.name))
-        .map((t) => ({ name: "//pubsub.googleapis.com/" + t.name, assetType: "pubsub.googleapis.com/Topic" }));
+      const results = [...topics.values()].filter((t) => t.name.startsWith(project + "/") && tokenMatch(t.labels[m[1]], m[2]) && !(behavior.unindexed ?? []).includes(t.name))
+        .map((t) => ({ name: "//pubsub.googleapis.com/" + t.name, assetType: "pubsub.googleapis.com/Topic", labels: { ...t.labels } }));
       return answer(json(200, { results, ...(behavior.asset?.incomplete ? { nextPageToken: "!not a token!" } : {}) }));
     }
     entry.refused = true;
@@ -210,6 +211,13 @@ export function inMemoryEmulator(trust: TrustedSubjects, roles: Roles): Omit<Gcp
     return handled === "DROP" ? { status: 0, body: "" } : handled;
   };
   return { http: seam, sent, log: core.log, topics: core.topics, behave: core.behave, deleteByHand: (name) => core.topics.delete(name) };
+}
+
+/** Cloud Asset's token match on a label value (GF3), as the emulator models it: split on anything but letters and digits. */
+export function tokenMatch(label: string | undefined, asked: string): boolean {
+  if (label === undefined) return false;
+  const tokens = new Set(label.split(/[^a-z0-9]+/).filter(Boolean));
+  return asked.split(/[^a-z0-9]+/).filter(Boolean).every((t) => tokens.has(t));
 }
 
 const lower = (headers: Readonly<Record<string, string>>): Record<string, string> => Object.fromEntries(Object.entries(headers).map(([k, v]) => [k.toLowerCase(), v]));

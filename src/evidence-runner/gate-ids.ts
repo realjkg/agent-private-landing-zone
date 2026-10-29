@@ -13,6 +13,6 @@ export const RELEASE_GATE_IDS: readonly string[] = [
   "isolated-recovery",
   "lifecycle:clean-install", "lifecycle:upgrade", "lifecycle:rollback", "lifecycle:uninstall", "lifecycle:configuration-migration",
   "platform:darwin-arm64", "platform:darwin-x64", "platform:linux-x64", "platform:linux-arm64", "platform:win32-arm64", "platform:win32-x64",
-  "act:aws-terraform", "act:azure-terraform", "act:aws-cdk", "act:azure-bicep", "act:gcp-terraform", "act-run-recovery", "security-review:independent",
+  "act:aws-terraform", "act:azure-terraform", "act:aws-cdk", "act:azure-bicep", "act:gcp-terraform", "act:gcp-gcp_api", "act-run-recovery", "security-review:independent",
   "pillar:operational-excellence", "pillar:security", "pillar:reliability", "pillar:performance", "pillar:cost", "pillar:sustainability",
 ];

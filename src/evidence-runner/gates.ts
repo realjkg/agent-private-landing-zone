@@ -50,6 +50,7 @@ const NOT_ADMITTED: Readonly<Record<string, string>> = {
 
 const ACT_STAGE_OF: Readonly<Record<string, string>> = {
   "act:aws-terraform": "aws-terraform", "act:aws-cdk": "aws-cdk", "act:azure-terraform": "azure-terraform", "act:azure-bicep": "azure-bicep", "act:gcp-terraform": "gcp-terraform",
+  "act:gcp-gcp_api": "gcp-api",
 };
 
 function planFor(id: string): GatePlan {

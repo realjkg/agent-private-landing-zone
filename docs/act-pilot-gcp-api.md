@@ -2,7 +2,7 @@
 
 Status: engineering only. **ACT = DISABLED.** The repository ships no pilot contract: the contract's `authorize` entry is the switch, and there is no pin. Nothing in this path has run against Google Cloud. All evidence is **SYNTHETIC** or **EMULATED**.
 
-The engine is **not registered**. `GCP_API` is not in `SPECS` (`src/apply/engine-spec.ts`), and it stays in `PLANNED_PATHS` (`src/apply/contract.ts`). So admission refuses a contract that names it, with `NOT_IMPLEMENTED`, and nothing in the product can reach the spec. Registering it is INT-2's change ("What INT-2 must add" below).
+The engine is **registered and admitted for DEV only** (INT-2, owner decision 6483993252 on #39). `GCP_API` is in `SPECS` (`src/apply/engine-spec.ts`) and in `DEV_ONLY_PATHS` (`src/apply/contract.ts`), GCP / GCP_API is a pilot combination with its own mutation, and its release gate is `act:gcp-gcp_api`, BLOCKED until the owner's live run. Registration is not readiness, and ACT stays DISABLED until the owner's reviewed contract authorizes it ("What INT-2 added" below).
 
 - **Design:** `docs/act-pilot-gcp-api-driver.md` (D1 to D20). The owner accepted D4, D9, D11, D12 and D16 on #39 (6483366237).
 - **Code:** `src/apply/engines/gcp-api.ts` (lane G2). The shared prerequisites came from INT-5 (#356):
@@ -29,7 +29,7 @@ The engine owns:
 
 - the typed request check;
 - the derived REST calls;
-- the network gate;
+- the network gate: its three Google hosts (STS, IAM Credentials, Pub/Sub) over https only, the sealed topic URL only, and one method per sender (a read sends only `GET`, the create only `PUT`, the delete only `DELETE`; `PATCH`, `POST` to Pub/Sub, or a method another sender owns is refused; #357 review N2);
 - the workload identity federation token exchange, through the shared one (D20);
 - its own reads of the run's topic.
 
@@ -114,7 +114,7 @@ A plan renamed consistently to another suffix derives its own change list. The d
    - the review bundle shows the full topic name and the unit's tags;
    - the seal notice states the exact URL form, `https://pubsub.googleapis.com/v1/projects/<project>/topics/<that topic>`, and the storage-policy property.
 
-   The literal artifact bytes are not in the review bundle (see "What INT-2 must add").
+   The literal artifact bytes are not in the review bundle (see "What INT-2 added", optional items).
 
 **What the preview does not prove:**
 
@@ -229,7 +229,7 @@ The production client is `fetch` with `redirect: "error"`. Each request is bound
 |---|---|
 | Stopped before `execute` started, `APPROVALS_SPENT`, or `KILL_SWITCH_AFTER_APPROVALS` | The driver gives the reservation back. The same sealed plan, with the same name, applies with new approvals. |
 | `FAILED_NO_CHANGE` or `PARTIAL_REQUIRES_REVIEW` | A new seal, so a new name. |
-| A process killed after the `PUT` | Never resumed. The same plan's sweep or its own `GET` refuses it (`UNIT_NOT_EMPTY` or `PLAN_STALE`). `./alz apply record-recovery` (INT-2 wiring) records it. |
+| A process killed after the `PUT` | Never resumed. The same plan's sweep or its own `GET` refuses it (`UNIT_NOT_EMPTY` or `PLAN_STALE`). `./alz apply record-recovery` records it (generic through `engineOf`). |
 
 ### Runs that did not succeed
 
@@ -353,7 +353,7 @@ Checked on 2026-10-29 against Google's published discovery documents, protos, cl
 | **GF1** STS request format | UNVERIFIED-OWNER-LIVE | The STS discovery `sts.token` describes a JSON body of camelCase fields. Google's Node.js auth library sends a form with snake_case names, and so does the shared exchange. **Live:** a rejection is HTTP 400 at STS, reported as `CREDENTIALS_STS_HTTP_400` before any resource is read. The owner treats it as GF1 and widens no grant. |
 | **GF2** Pub/Sub scopes | VERIFIED | Pub/Sub discovery, `projects.topics.create` (`PUT v1/{+name}`), `.get` and `.delete`: `"scopes": ["https://www.googleapis.com/auth/cloud-platform", "https://www.googleapis.com/auth/pubsub"]`. `cloud-platform.read-only` is not listed. The engine requests `pubsub`. |
 | **GF3** Cloud Asset scope | VERIFIED | Cloud Asset discovery, `searchAllResources` (`GET v1/{+scope}:searchAllResources`): `"scopes": ["https://www.googleapis.com/auth/cloud-platform"]`. The reader requests exactly that. |
-| **GF3** label query syntax | UNVERIFIED-OWNER-LIVE | The `query` description documents labels as `labels.env:prod` ("have a label `env` and its value is `prod`") and `labels.env:*`. The `=` form is shown only for `name=Important`. The reader (G1's `src/observe/gcp-rest.ts`, not changed here) sends `labels.alz-unit=<unit>`. **Live:** if Google refuses the form (400) or matches differently, the listing fails. The seal is refused `UNIT_LISTING_INCOMPLETE`, and observations read `INCONCLUSIVE`. Nothing is created. The fix is the reader's query string, a reviewed change; no grant is widened. |
+| **GF3** label query syntax | FIXED IN CODE (INT-2); the live run confirms | The `query` description documents labels as `labels.env:prod` ("have a label `env` and its value is `prod`") and `labels.env:*`. The `=` form is shown only for `name=Important`. The reader (`src/observe/gcp-rest.ts`) now sends the documented form, `labels.alz-unit:<unit>`. `:` matches tokens, not whole values, so the reader also checks each result's own `labels`: a result whose `alz-unit` label is exactly the unit is listed, one with another value is left out, and one that reports no labels makes the listing incomplete, never "nothing here" (`test/observe-gcp.test.ts`, "GF3"). This also fixes path 5, which shares the reader. **Live:** the owner's first run confirms the syntax. If Google refuses it (400), the listing fails, the seal is refused `UNIT_LISTING_INCOMPLETE`, and observations read `INCONCLUSIVE`. Nothing is created, and no grant is widened. |
 | **GF4** `messageStoragePolicy` on create | VERIFIED for the shape | Pub/Sub discovery: `create` request and response `{"$ref": "Topic"}`. `Topic.messageStoragePolicy`: "Optional. Policy constraining the set of Google Cloud Platform regions where messages published to the topic may be stored. If not present, then no constraints are in effect." `MessageStoragePolicy.allowedPersistenceRegions`: "A list of IDs of Google Cloud regions where messages that are published to the topic may be persisted in storage." `get` returns `Topic`. |
 | **GF4** read back as sent | UNVERIFIED-OWNER-LIVE | No source says the service returns the list exactly as sent; an organization policy could change it. **Live:** any other value is never `SUCCEEDED`. It is `PARTIAL_REQUIRES_REVIEW`, with no product cleanup, and the person resolves it by hand. |
 | **GF5** Cloud Asset indexing delay | UNVERIFIED-OWNER-LIVE | No source gives it. **Live:** shown only by timing; the residual above is stated, and no product claim depends on it. |
@@ -370,43 +370,22 @@ Checked on 2026-10-29 against Google's published discovery documents, protos, cl
 | Evidence | Mode | Where |
 |---|---|---|
 | The spec's facts, D1 (closure list, preimage, a changed or missing file), D7 (request, artifact, every tampering), D4, D8, D9, D10 (both sweeps, back-to-back plans, the indexing-window residual), every D14 row with one `PUT`, the kill switch twice, `APPROVALS_SPENT`, the process killed after the `PUT`, D16 (every refusal and every row with one `DELETE`), D12 (identities, collapse, scopes, custom roles), D15 (`GCP_REST`: `VERIFIED`, and `FAILED` for another policy), D19, D20, the network gate, no file written, no token leaked | SYNTHETIC | `test/apply-gcp-api.test.ts`, with the in-memory emulator |
-| Seal through the driver's `sealPlan` (vault, requester signature, review bundle with the full name), approvals and the nonce store, apply, observation through `GCP_REST`, the cleanup classifier and checks, cleanup with `deletedByRun: true`, independent verified absence, approval reuse refused, the kill switch file, the run that did not succeed (`OWNERSHIP_AMBIGUOUS`, `UNIT_NOT_EMPTY`, the hand deletion, observe again `FAILED`), and admission still `NOT_IMPLEMENTED` | EMULATED | `test/apply-emulated-gcp-api.test.ts`, over loopback HTTP |
+| The whole path through the real driver with a reviewed contract the product loads: `sealPreview`, `runApply` (evidence with this path's mutation and the verified storage policy, the `GCP_API_TOPIC` blueprint), `observeRun` through `GCP_REST`, `buildCleanupProposal` and `signCleanupProposal`, `runCleanup` (`deletedByRun: true`), `verifyProposalLeftovers`; the ledger and approval reuse refused; the kill switch after consumption; a signal during APPLY's token exchange (#357 review N1, apply and cleanup); the run that did not succeed (`OWNERSHIP_AMBIGUOUS`, `UNIT_NOT_EMPTY`, the hand deletion, observe again `FAILED`) | EMULATED | `test/apply-emulated-gcp-api.test.ts`, over loopback HTTP |
 | Live STS exchange, impersonation, which principal Google sees, real Pub/Sub and Cloud Asset answers, GF1 and GF3 to GF11 where UNVERIFIED-OWNER-LIVE | **not run** | the owner's supervised DEV run (`docs/act-pilot-gcp-evidence.md`) |
 
-In the EMULATED test, `runApply`, `runCleanup` and `observeRun` cannot load a GCP_API contract until INT-2. So it calls the spec's steps in their order, and builds in memory the evidence and records they would write. Those are marked TEST FIXTURE where they happen.
+The EMULATED test runs the registered spec through the real driver; only the spec's HTTP client is the emulator's, and its qualification evidence is forged for the emulator (no person attests an emulator run). No step of the driver is re-implemented in the test.
 
-## What INT-2 must add (not in this lane)
+## What INT-2 added
 
-**Registration:**
+- **Registration:** `GCP_API` in `EngineId` and `SPECS`, valid with GCP only; out of `PLANNED_PATHS` (now empty) and in `DEV_ONLY_PATHS`; the GCP/GCP_API admission combination with `GCP_PUBSUB_TOPIC_CREATE_OF_SEALED_REQUEST`; the release gate `act:gcp-gcp_api` (BLOCKED), its scope and status rows and its journey row; the registration assertion in `test/apply-gcp-api.test.ts` flipped.
+- **Evidence:** `ApplyEvidence.authority.mutation` gains `GCP_PUBSUB_TOPIC_CREATE_OF_SEALED_REQUEST` and `CleanupEvidence.authority.mutation` gains `GCP_PUBSUB_TOPIC_DELETE_OF_RUN_TOPIC`; `CleanupEvidence.deletedByRun` comes from the run's `deletedByRun()`; a SUCCEEDED apply's evidence names `verifiedProperty` `messageStoragePolicy.allowedPersistenceRegions` with its sealed value (D11), and only when `settle` read it back as sealed.
+- **Blueprint:** `StateDocument.source` gains `GCP_API_TOPIC`, and `keepBlueprint` maps it with `blueprintFromGcpApiTopic` and the place `{ project }`.
+- **The run's unit:** the seal's `pilotUnitOf` names the engine, and the driver passes the sealed plan's `unit` into `openApply` and `openCleanup` (seal, qualify, apply and cleanup).
+- **Through `engineOf`:** `buildCleanupProposal` (`targetMoved`), `record-recovery`, `record-live` and the lifecycle report reach the spec generically; `gcpBackendBuckets` returns no bucket for GCP_API (D9); the lifecycle report accepts GCP_API only under `act:gcp-gcp_api`.
+- **#357 review follow-ups:** N1, the driver's interrupt stops an in-process engine at its stop points (`APPROVALS_SPENT`, nothing sent); N2, each sender is bound to one method (GET reads, PUT creates, DELETE deletes); N3, the EMULATED test runs the real driver; N4, D14's table names 401.
+- **GF3:** the reader sends `labels.alz-unit:<unit>` with an exact client-side label check (above).
 
-- `GCP_API` in `EngineId`, `ENGINE_IDS` and `SPECS`, valid with GCP only;
-- out of `PLANNED_PATHS`; it is already in `DEV_ONLY_PATHS`;
-- the GCP/GCP_API admission combination;
-- `act:gcp-gcp_api`, its scope and status rows, and its journey;
-- flip the "no engine spec exists for GCP_API" assertion in `test/apply-gcp-api.test.ts`.
-
-**Evidence enums:**
-
-- `ApplyEvidence.authority.mutation` gains `GCP_PUBSUB_TOPIC_CREATE_OF_SEALED_REQUEST`;
-- `CleanupEvidence.authority.mutation` gains `GCP_PUBSUB_TOPIC_DELETE_OF_RUN_TOPIC`;
-- `CleanupEvidence` records `deletedByRun` from the cleanup run's `deletedByRun()`;
-- the evidence names the verified property `messageStoragePolicy.allowedPersistenceRegions` and its sealed value.
-
-**Blueprint:** `StateDocument.source` gains `GCP_API_TOPIC`, and `keepBlueprint` gains its branch to `blueprintFromGcpApiTopic`, with the place `{ project }`.
-
-**The run's unit:** the driver passes the sealed plan's `unit` into `openApply` and `openCleanup`.
-
-- The spec refuses `UNIT_NOT_GIVEN` without it.
-- The second sweep and the exact label check need it.
-- `runApply` and `runCleanup` both hold the sealed plan.
-- The seal's `pilotUnitOf` call must name the engine, so the GCP_API unit is used.
-
-**Through `engineOf`:**
-
-- `buildCleanupProposal` (`targetMoved`), `record-recovery` and `record-live` reach the spec through `engineOf`.
-- `gcpBackendBuckets` must return no bucket for the `GCP_API_NO_STATE` sentinel (D9).
-
-**Optional:**
+**Optional, not done (left for a later change):**
 
 - a `ToolName` for the engine's result (it uses `gcp_pubsub_topic` by cast);
 - the three cleanup codes as their own `ApplyRefusalCode` entries;

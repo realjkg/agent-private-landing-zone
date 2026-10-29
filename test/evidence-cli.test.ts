@@ -162,7 +162,8 @@ test("act, cleanup and recovery run only when named, and refuse while no committ
     const other = fixtureDeps(fixtureRoot());
     writeConfig(other.root, validConfig());
     await runEvidenceCommand(["run", "--synthetic", "--stage", stage], other);
-    assert.match(other.lines.join("\n"), stage === "recovery" ? /recovery: ACT_DISABLED/ : /act:gcp-api: NOT_AVAILABLE — GCP API-native is not admitted for release/);
+    // GCP API-native is refused like every path while no committed contract authorizes it (INT-2), never as NOT_AVAILABLE.
+    assert.match(other.lines.join("\n"), stage === "recovery" ? /recovery: ACT_DISABLED/ : /act:gcp-api: ACT_DISABLED/);
   }
 });
 

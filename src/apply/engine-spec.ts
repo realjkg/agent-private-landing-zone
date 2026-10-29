@@ -3,6 +3,7 @@ import type { ArtifactManifest } from "../teardown/manifest.js";
 import type { StoppableProcessOptions, StoppableResult } from "../tools/process.js";
 import { BICEP } from "./engines/bicep.js";
 import { CDK } from "./engines/cdk.js";
+import { GCP_API } from "./engines/gcp-api.js";
 import { TERRAFORM } from "./engines/terraform.js";
 import type { ProviderSpec } from "./provider.js";
 import type { ApplyEvidence, ApplyIdentity, ApplyOutcome, CleanupEvidence, EngineId, PilotContract, PilotTarget, PlanChange, ProviderId, SealedUnit } from "./types.js";
@@ -36,6 +37,12 @@ export type EngineRunInput = EngineContext & {
   /** Cleanup only, CDK: the id (ARN) of the stack the run created, from its blueprint; the cleanup refuses any other stack. */
   runStackId?: string;
 };
+/**
+ * What an apply or cleanup run is opened with: the run input and the sealed plan's unit (`SealedPlan.unit`), which the driver passes
+ * to every run. GCP API-native sweeps the unit and checks the topic's labels against it (D10, D16), and refuses UNIT_NOT_GIVEN
+ * without it; the other engines ignore it.
+ */
+export type EngineOpenInput = EngineRunInput & { unit?: SealedUnit };
 /** A read-only snapshot of the project the manifest describes is what sealing starts from. */
 export type EnginePlanInput = EngineRunInput & {
   snapshotPath: string;
@@ -48,7 +55,7 @@ export type EnginePlanInput = EngineRunInput & {
  * state (`terraform state pull`, read as STATE), or CloudFormation's logical-to-physical mapping of the stack
  * (`describe-stack-resources`, read as DISCOVERY). The driver maps either to identifiers and drops the document.
  */
-export type StateDocument = { source: "TERRAFORM_STATE_PULL" | "CLOUDFORMATION_STACK_RESOURCES" | "AZURE_DEPLOYMENT_STACK_RESOURCES"; document: string };
+export type StateDocument = { source: "TERRAFORM_STATE_PULL" | "CLOUDFORMATION_STACK_RESOURCES" | "AZURE_DEPLOYMENT_STACK_RESOURCES" | "GCP_API_TOPIC"; document: string };
 
 /** How an apply ended: an outcome, or a plan its state has outgrown (nothing applied). */
 export type ApplyEnd = { outcome: ApplyOutcome } | { stale: true };
@@ -92,6 +99,11 @@ export type EngineApplyRun = {
    * (src/observe/blueprint.ts) and drop. Undefined when it cannot be read; never thrown, never logged.
    */
   stateDocument?(): MaybePromise<StateDocument | undefined>;
+  /**
+   * The one property the engine set and read back exactly as sealed, with its sealed value (GCP API-native, D11:
+   * `messageStoragePolicy.allowedPersistenceRegions`). Recorded in the evidence of a SUCCEEDED run. Absent: the engine verifies none.
+   */
+  verifiedProperty?(): { name: string; value: readonly string[] } | undefined;
 };
 
 /**
@@ -104,6 +116,8 @@ export type EngineCleanupRun = {
   prepare(snapshotPath: string): MaybePromise<void>;
   /** Plans the destroy of exactly `addresses` and returns the change list of that plan. Throws (or rejects with) a code. */
   planDestroy(addresses: readonly string[]): MaybePromise<PlanChange[]>;
+  /** Whether this run's own delete removed the resource (GCP API-native, D16): false when it was already absent, undefined when not known. */
+  deletedByRun?(): boolean | undefined;
   /** Runs the destroy plan `planDestroy` made. Resolves once the engine existed; a throw means it never did. */
   execute(control: StopControl): Promise<StoppableResult>;
   settle(applied: StoppableResult): MaybePromise<ApplyEnd>;
@@ -181,9 +195,9 @@ export type EngineSpec = {
    * engine's own read-only steps. Throws (or rejects with) a code. CDK: version and describe-stacks as each identity, no change set.
    */
   qualify?(input: EnginePlanInput): MaybePromise<void>;
-  openApply(input: EngineRunInput): EngineApplyRun;
+  openApply(input: EngineOpenInput): EngineApplyRun;
   /** The cleanup run for this engine, present only with `cleanupAdapter`. */
-  openCleanup?(input: EngineRunInput): EngineCleanupRun;
+  openCleanup?(input: EngineOpenInput): EngineCleanupRun;
   /** What the evidence says a cleanup did (`CleanupEvidence.authority.mutation`), present only with `cleanupAdapter`. */
   cleanupMutation?: CleanupEvidence["authority"]["mutation"];
   /** What a person is told for each way an apply can end unsuccessfully, and when recovery material could not be kept. */
@@ -213,11 +227,11 @@ export type SyncEngineCleanupRun = Omit<EngineCleanupRun, "prepare" | "planDestr
 export type SyncEngineSpec = Omit<EngineSpec, "plan" | "qualify" | "openApply" | "openCleanup"> & {
   plan(input: EnginePlanInput): EnginePlan;
   qualify?(input: EnginePlanInput): void;
-  openApply(input: EngineRunInput): SyncEngineApplyRun;
-  openCleanup?(input: EngineRunInput): SyncEngineCleanupRun;
+  openApply(input: EngineOpenInput): SyncEngineApplyRun;
+  openCleanup?(input: EngineOpenInput): SyncEngineCleanupRun;
 };
 
-const SPECS: Readonly<Record<EngineId, EngineSpec>> = { TERRAFORM, CDK, BICEP };
+const SPECS: Readonly<Record<EngineId, EngineSpec>> = { TERRAFORM, CDK, BICEP, GCP_API };
 
 /** The spec for a contract's `engine`, or undefined for anything that is not an implemented engine id. */
 export const engineSpec = (id: unknown): EngineSpec | undefined =>

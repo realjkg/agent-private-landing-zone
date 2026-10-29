@@ -44,7 +44,7 @@ export type BlueprintRecord = {
   /** How the apply ended; a blueprint after anything but SUCCEEDED is for review, never for a cleanup proposal. */
   outcome: ApplyOutcome;
   /** Where the identifiers came from: Terraform's state read as STATE, CloudFormation's stack resources (logical to physical ids) read as DISCOVERY, or an Azure deployment stack's managed resources (ARM ids) read as DISCOVERY. */
-  source: "TERRAFORM_STATE_PULL" | "CLOUDFORMATION_STACK_RESOURCES" | "AZURE_DEPLOYMENT_STACK_RESOURCES";
+  source: "TERRAFORM_STATE_PULL" | "CLOUDFORMATION_STACK_RESOURCES" | "AZURE_DEPLOYMENT_STACK_RESOURCES" | "GCP_API_TOPIC";
   blueprint: Blueprint;
   /** The deletion unit the sealed plan stamped on what it created (src/apply/unit.ts), or null when the engine seals none. The observation sweeps by it. */
   unitId: string | null;
@@ -162,7 +162,7 @@ export function blueprintRecordProblems(value: unknown): string[] {
   if (!ENVIRONMENTS.includes(value.environment as string) || !targetOk(value.target)) problems.push("blueprint record: environment or target is malformed");
   if (typeof value.sourceCommit !== "string" || !COMMIT.test(value.sourceCommit)) problems.push("blueprint record: sourceCommit is not a commit id");
   if (!["SUCCEEDED", "FAILED_NO_CHANGE", "PARTIAL_REQUIRES_REVIEW", "KILLED"].includes(value.outcome as string)) problems.push("blueprint record: outcome is unknown");
-  if (!["TERRAFORM_STATE_PULL", "CLOUDFORMATION_STACK_RESOURCES", "AZURE_DEPLOYMENT_STACK_RESOURCES"].includes(value.source as string) || !isoText(value.readAt)) problems.push("blueprint record: source or readAt is malformed");
+  if (!["TERRAFORM_STATE_PULL", "CLOUDFORMATION_STACK_RESOURCES", "AZURE_DEPLOYMENT_STACK_RESOURCES", "GCP_API_TOPIC"].includes(value.source as string) || !isoText(value.readAt)) problems.push("blueprint record: source or readAt is malformed");
   if (value.unitId !== null && !(typeof value.unitId === "string" && /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(value.unitId))) problems.push("blueprint record: unitId is not a tag-safe unit id or null");
   const blueprint = value.blueprint;
   // The container is accepted only from a CloudFormation read, for the stack type, with the pinned stack's own ARN shape (its account and the

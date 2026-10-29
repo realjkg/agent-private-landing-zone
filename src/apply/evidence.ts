@@ -29,6 +29,8 @@ const exitCode: Check = (v) => v === null || (typeof v === "number" && Number.is
 /** Shapes whose key may be absent. */
 const optionalShapes = new WeakSet<object>();
 const optional = <S extends { [key: string]: Shape }>(shape: S): S => { optionalShapes.add(shape); return shape; };
+/** A value check whose key may be absent. */
+const optionalCheck = (check: Check): Check => { const wrapped: Check = (v) => check(v); optionalShapes.add(wrapped); return wrapped; };
 const count: Check = (v) => typeof v === "number" && Number.isSafeInteger(v) && v > 0 && v <= 16;
 
 const nullableHash: Check = (v) => v === null || hash(v);
@@ -57,9 +59,11 @@ const SHAPE: Shape = {
   exitCode,
   startedAt: iso,
   finishedAt: iso,
-  authority: { infrastructureAct: oneOf("PILOT_ENABLED"), mutation: oneOf("TERRAFORM_APPLY_OF_SEALED_PLAN", "CLOUDFORMATION_EXECUTE_OF_SEALED_CHANGE_SET", "AZURE_DEPLOYMENT_STACK_CREATE_OF_SEALED_TEMPLATE"), agentInitiated: oneOf(false) },
+  authority: { infrastructureAct: oneOf("PILOT_ENABLED"), mutation: oneOf("TERRAFORM_APPLY_OF_SEALED_PLAN", "CLOUDFORMATION_EXECUTE_OF_SEALED_CHANGE_SET", "AZURE_DEPLOYMENT_STACK_CREATE_OF_SEALED_TEMPLATE", "GCP_PUBSUB_TOPIC_CREATE_OF_SEALED_REQUEST"), agentInitiated: oneOf(false) },
   // Files the engine left for a person to recover from (errored.tfstate, crash.log), encrypted in the vault: how many, and the hash of the encrypted record. Never their contents.
   recovery: optional({ files: count, sha256: hash }),
+  // GCP API-native (D11): the one property set and read back as sealed, by its exact name, with its sealed value (one region).
+  verifiedProperty: optional({ name: oneOf("messageStoragePolicy.allowedPersistenceRegions"), value: [text] }),
 };
 
 const RAW_KEY = /^(resource_changes|prior_state|planned_values|configuration|variables|outputs|before|after|state|values|plan|planFile|planJson|raw|stdout|stderr|output|credentials|secret|token)$/i;
@@ -81,7 +85,7 @@ function problemsOf(value: unknown, shape: Shape, path: string, out: string[]): 
     else problemsOf(record[key], shape[key], path + "." + key, out);
   }
   for (const key of Object.keys(shape)) {
-    if (!Object.hasOwn(record, key) && !(typeof shape[key] === "object" && optionalShapes.has(shape[key] as object))) out.push(path + "." + key + ": missing");
+    if (!Object.hasOwn(record, key) && !((typeof shape[key] === "object" || typeof shape[key] === "function") && optionalShapes.has(shape[key] as object))) out.push(path + "." + key + ": missing");
   }
 }
 
@@ -121,8 +125,10 @@ const CLEANUP_SHAPE: Shape = {
   exitCode,
   startedAt: iso,
   finishedAt: iso,
-  authority: { infrastructureAct: oneOf("PILOT_ENABLED"), mutation: oneOf("TERRAFORM_DESTROY_OF_APPROVED_PROPOSAL", "CLOUDFORMATION_EXECUTE_OF_REMOVAL_CHANGE_SET", "AZURE_DEPLOYMENT_STACK_DELETE_OF_RUN_STACK"), executedAs: oneOf("APPLY"), agentInitiated: oneOf(false) },
+  authority: { infrastructureAct: oneOf("PILOT_ENABLED"), mutation: oneOf("TERRAFORM_DESTROY_OF_APPROVED_PROPOSAL", "CLOUDFORMATION_EXECUTE_OF_REMOVAL_CHANGE_SET", "AZURE_DEPLOYMENT_STACK_DELETE_OF_RUN_STACK", "GCP_PUBSUB_TOPIC_DELETE_OF_RUN_TOPIC"), executedAs: oneOf("APPLY"), agentInitiated: oneOf(false) },
   recovery: optional({ files: count, sha256: hash }),
+  // GCP API-native (D16): whether this run's own DELETE removed the topic (false: it was already absent).
+  deletedByRun: optionalCheck((v) => typeof v === "boolean"),
 };
 
 /** Every reason this document is not cleanup evidence. Empty means it is. A cleanup records who approved it and what it was told to destroy. */
@@ -161,10 +167,14 @@ export type QualificationEvidence = { [accountField: string]: unknown } & {
   /** Besides the provider's account fields (the DEV account the qualification ran against; apply refuses any other): the DEV backend and workspace it ran against. */
   backend: string;
   workspace: string;
-  /** The two attested principals (`EngineSpec.attests`: STATE_WRITE and APPLY, or CHANGESET and APPLY for CDK; client ids, role ARNs) the operator attested from the cloud logs, trimmed and lowercase. */
+  /** The two attested principals (`EngineSpec.attests`: STATE_WRITE and APPLY, CHANGESET and APPLY for CDK, or DISCOVERY and APPLY for GCP_API; client ids, role ARNs, service account emails) the operator attested from the cloud logs, trimmed and lowercase. */
   stateWriteClientId: string;
   applyClientId: string;
-  /** SHA-256 of the engine binary that qualified (the aws CLI's for CDK); a different binary needs a new qualification. */
+  /**
+   * SHA-256 of the engine program that qualified: the terraform binary, the aws CLI for CDK, or for GCP_API, which runs in process,
+   * the hash of the engine's own module closure (`GCP_API_MODULE_FILES`, D1). The field keeps its published name; a different program
+   * or module needs a new qualification.
+   */
   terraformSha256: string;
   adapterVersion: string;
   argvDigest: string;

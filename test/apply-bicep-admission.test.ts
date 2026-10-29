@@ -85,10 +85,10 @@ test("BICEP is a registered engine admitted with Azure for DEV only: the DEV-onl
   assert.equal(moved?.code, "TARGET_NOT_IN_CONTRACT");
 });
 
-test("act:azure-bicep is a release path (an unmet requirement until live evidence exists); GCP's one path is Terraform", () => {
+test("act:azure-bicep is a release path (an unmet requirement until live evidence exists); GCP's two paths are Terraform and API-native, each its own gate", () => {
   assert.ok(ACT_RELEASE_PATHS.some((path) => path.provider === "AZURE" && path.engine === "BICEP"));
   assert.ok(ACT_RELEASE_PATHS.map(actGateId).includes("act:azure-bicep"));
-  assert.deepEqual(ACT_RELEASE_PATHS.filter((path) => path.provider === "GCP").map(actGateId), ["act:gcp-terraform"], "GCP API-native has no release path yet");
+  assert.deepEqual(ACT_RELEASE_PATHS.filter((path) => path.provider === "GCP").map(actGateId), ["act:gcp-terraform", "act:gcp-gcp_api"], "GCP API-native is its own release path (INT-2)");
 });
 
 // --- the journey -----------------------------------------------------------------------------------------------------------

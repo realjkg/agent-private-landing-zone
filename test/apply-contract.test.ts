@@ -158,11 +158,12 @@ test("the DEV-only rule is the same for AWS CDK: its own target shape, DEV only"
   disabled(write({ ...cdk, enabledEnvironments: ["DEV", "QA"] }), /enabledEnvironments/, "CONTRACT_INVALID");
 });
 
-test("planned paths are named and refused NOT_IMPLEMENTED until their lane lands; unknown ones stay CONTRACT_INVALID", () => {
-  for (const [provider, engine] of [["GCP", "GCP_API"]]) {
-    disabled(write({ ...fixtureContract(), provider, engine }), /planned path that is not implemented/, "NOT_IMPLEMENTED");
-    disabled(write({ ...azureDevOnly(), provider, engine }), /not implemented/, "NOT_IMPLEMENTED");
-  }
+test("no path is planned any more: GCP_API (path 6, INT-2) is judged as an admitted DEV-only path, never NOT_IMPLEMENTED; unknown ones stay CONTRACT_INVALID", () => {
+  // A three-stage contract, or one with another provider's target shape, is not a GCP_API contract (its own target shape: D4, D9).
+  disabled(write({ ...fixtureContract(), provider: "GCP", engine: "GCP_API" }), /enabledEnvironments: GCP GCP_API \(path 6\) is admitted for DEV only/, "CONTRACT_INVALID");
+  disabled(write({ ...azureDevOnly(), provider: "GCP", engine: "GCP_API", embedStateWrite: undefined }), /targets\.DEV\./, "CONTRACT_INVALID");
+  // A Terraform-style embedStateWrite is not a GCP_API field: the path keeps no state.
+  disabled(write({ ...azureDevOnly(), provider: "GCP", engine: "GCP_API" }), /embedStateWrite: valid only with an engine that has a state backend/, "CONTRACT_INVALID");
   for (const [provider, engine] of [["GCP", "CDK"], ["AWS", "BICEP"], ["GCP", "BICEP"], ["AZURE", "GCP_API"], ["OCI", "TERRAFORM"], ["gcp", "TERRAFORM"], ["AWS", "PULUMI"]]) {
     disabled(write({ ...fixtureContract(), provider, engine }), undefined, "CONTRACT_INVALID");
   }

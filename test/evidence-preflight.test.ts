@@ -184,7 +184,11 @@ test("every release gate is mapped, read as data without the registry; gates wit
     assert.deepEqual([entry.mode, entry.slice], ["GUIDED", "S5"], path);
     assert.match(entry.note, new RegExp("--stage act:" + path + ", then --stage cleanup:" + path), path);
   }
-  assert.equal(gatePlan(["act:gcp-gcp_api"], new Set())[0].mode, "NO_PRODUCER", "an ACT gate the runner has no stage for is never planned");
+  // GCP API-native (INT-2): its gate id is act:gcp-gcp_api and its runner stage act:gcp-api.
+  const native = plan.find((gate) => gate.id === "act:gcp-gcp_api")!;
+  assert.deepEqual([native.mode, native.slice], ["GUIDED", "S5"]);
+  assert.match(native.note, /--stage act:gcp-api, then --stage cleanup:gcp-api/);
+  assert.equal(gatePlan(["act:oracle-terraform"], new Set())[0].mode, "NO_PRODUCER", "an ACT gate the runner has no stage for is never planned");
   for (const id of outOfScope) assert.equal(mode(id), "OUT_OF_SCOPE", id);
   assert.equal(gateModeOf("future-gate"), "UNKNOWN");
   assert.equal(gatePlan(["future-gate"], new Set())[0].mode, "NO_PRODUCER", "an unknown gate id fails closed");

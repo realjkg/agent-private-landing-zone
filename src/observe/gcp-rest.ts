@@ -244,11 +244,17 @@ export function createDiscoveryGcpReader(options: DiscoveryGcpOptions): { reader
    * stray rather than silently matched. A page that is not an object whose `results` (when present) is an array of items with a
    * non-empty string `name` fails the listing, so a malformed answer never reads as "nothing here". A page token is followed
    * only with the same query; anything else ends the listing as incomplete.
+   *
+   * The query is `labels.alz-unit:<unit>`, the label syntax Cloud Asset documents (GF3; it sent `labels.k=v` before, which the
+   * documentation does not describe). `:` matches tokens, not whole values, so each result's own `labels` are checked here: a result
+   * whose `alz-unit` label is exactly the unit is listed; one whose label is another value (a token match only) is not this unit and is
+   * left out; a result that reports no labels cannot be judged, so the listing is incomplete, never "nothing here". The live run
+   * confirms the syntax (GF3).
    */
   const listTagged = async (unitId: string): Promise<{ identifiers: string[]; complete: boolean } | undefined> => {
     if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(unitId)) return undefined;
     const first = "https://" + ASSET_HOST + "/v1/projects/" + project + ":searchAllResources?" +
-      new URLSearchParams({ query: "labels." + ALZ_TAG_KEYS.unit + "=" + unitId, pageSize: "500" }).toString();
+      new URLSearchParams({ query: "labels." + ALZ_TAG_KEYS.unit + ":" + unitId, pageSize: "500" }).toString();
     const identifiers: string[] = [];
     let url = first;
     for (let page = 0; page < MAX_PAGES; page += 1) {
@@ -259,12 +265,17 @@ export function createDiscoveryGcpReader(options: DiscoveryGcpOptions): { reader
       if (typeof body !== "object" || body === null || Array.isArray(body)) return undefined;
       const { results, nextPageToken } = body as { results?: unknown; nextPageToken?: unknown };
       if (results !== undefined && !Array.isArray(results)) return undefined;
+      let judged = true;
       for (const item of (results as unknown[] | undefined) ?? []) {
-        const name = (item as { name?: unknown } | null)?.name;
+        const { name, labels } = (item ?? {}) as { name?: unknown; labels?: unknown };
         if (typeof name !== "string" || name === "") return undefined;
+        // The exact value, client side: `:` is a token match (GF3).
+        if (typeof labels !== "object" || labels === null || Array.isArray(labels) || !Object.hasOwn(labels, ALZ_TAG_KEYS.unit)) { judged = false; continue; }
+        if ((labels as Record<string, unknown>)[ALZ_TAG_KEYS.unit] !== unitId) continue;
         const resource = /^\/\/[a-z0-9-]+\.googleapis\.com\/(.+)$/.exec(name);
         identifiers.push(resource ? resource[1] : name);
       }
+      if (!judged) return { identifiers: identifiers.sort(), complete: false };
       if (nextPageToken === undefined || nextPageToken === null || nextPageToken === "") return { identifiers: identifiers.sort(), complete: true };
       if (typeof nextPageToken !== "string" || !/^[A-Za-z0-9._~+/=-]{1,4096}$/.test(nextPageToken)) return { identifiers: identifiers.sort(), complete: false };
       url = first + "&" + new URLSearchParams({ pageToken: nextPageToken }).toString();

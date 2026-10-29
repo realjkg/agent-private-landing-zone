@@ -2,6 +2,7 @@ import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync
 import { join, resolve } from "node:path";
 
 import { loadToolPins } from "../deps/pins.js";
+import { GCP_API_ENGINE_VERSION, REQUEST_FILE as GCP_API_REQUEST_FILE } from "./engines/gcp-api.js";
 import { buildManifest, canonicalJson, validateManifestForRequest, verifyManifest, type ArtifactManifest, type ManifestDependency, type ManifestInput } from "../teardown/manifest.js";
 import { engineActivation } from "../teardown/driver/qualification.js";
 import type { EngineAdapter } from "../teardown/driver/types.js";
@@ -37,7 +38,7 @@ const AWS_CLI_VERSION = /^\d+\.\d+\.\d+$/;
 const PATHS: Readonly<Record<ProviderId, { primary: EngineId; secondary: EngineId | null; secondaryGap: string }>> = {
   AWS: { primary: "TERRAFORM", secondary: "CDK", secondaryGap: "" },
   AZURE: { primary: "TERRAFORM", secondary: "BICEP", secondaryGap: "" },
-  GCP: { primary: "TERRAFORM", secondary: null, secondaryGap: "The GCP API-native path is planned and is not supported for apply yet." },
+  GCP: { primary: "TERRAFORM", secondary: "GCP_API", secondaryGap: "" },
 };
 
 export type PrepareCode =
@@ -177,6 +178,11 @@ function checkProjectShape(engine: EngineId, root: string): PrepareRefusal | und
     }
     return undefined;
   }
+  if (engine === "GCP_API") {
+    // GCP API-native (D7): the project is the requester's request.json and nothing else; every other value is derived from the contract.
+    return names.length === 1 && names[0] === GCP_API_REQUEST_FILE ? undefined
+      : refuse("PROJECT_ENGINE_MISMATCH", "OPERATOR", "A GCP API-native project is one file, " + GCP_API_REQUEST_FILE + ", and nothing else. Choose the folder that holds only it.");
+  }
   if (engine === "BICEP") {
     // The engine compiles exactly main.bicep with the pinned bicep and no module restore; nothing else is an entry point.
     return names.includes(BICEP_ENTRY) ? undefined
@@ -291,7 +297,9 @@ export async function prepareApply(input: PrepareInput, deps: PrepareDeps = {}):
   } else {
     const pins = loadToolPins(deps.pinsPath);
     // Bicep's engine version is the az CLI's (src/apply/engines/bicep.ts checks it, and the pinned bicep, before anything runs).
-    engineVersion = engine.id === "TERRAFORM" ? pins.tools.terraform.version : engine.id === "BICEP" ? pins.azureCli.version : pins.awsCli.version;
+    // GCP API-native runs no program: its version is the engine's own request version (D7), the only one it accepts.
+    engineVersion = engine.id === "TERRAFORM" ? pins.tools.terraform.version : engine.id === "BICEP" ? pins.azureCli.version
+      : engine.id === "GCP_API" ? GCP_API_ENGINE_VERSION : pins.awsCli.version;
     engineVersionSource = "TESTED_PIN";
     if (engine.id === "CDK" && input.awsCliVersion !== undefined && input.awsCliVersion !== engineVersion) {
       return refuse("ENGINE_VERSION_REQUIRED", "OPERATOR", AWS_CLI_VERSION.test(input.awsCliVersion)
@@ -337,7 +345,7 @@ export async function prepareApply(input: PrepareInput, deps: PrepareDeps = {}):
       projectRoot, fileCount: files.length, providers, engineVersion, engineVersionSource, inputs: derived.shown,
       policyVersion: contract.policyVersion, unitHash, manifestHash: manifest.manifestHash,
       contractSha256: pilotContractSha256(contract),
-      unit: pilotUnitOf({ provider: spec.id, contractSha256: pilotContractSha256(contract), environment, target }),
+      unit: pilotUnitOf({ provider: spec.id, contractSha256: pilotContractSha256(contract), environment, target, engine: engine.id }),
     },
     request,
     manifest,
@@ -381,8 +389,9 @@ function deriveInputs(engine: EngineId, projectRoot: string, files: ArtifactMani
       return { refusal: refuse("INPUT_UNSET", "OPERATOR", "These Terraform variables have no value: " + unset.join(", ") +
         ". Give each a default, an entry in terraform.tfvars, or set ALZ_DISCOVERY_TF_VAR_<name> where the console runs. Values are never read or stored here.") };
     }
-  } else if (engine === "BICEP") {
+  } else if (engine === "BICEP" || engine === "GCP_API") {
     // Bicep: the stack is created from the compiled template with no parameters file, so every parameter takes its default; nothing passes another value.
+    // GCP API-native: the request has two fixed keys and no input (D7).
   } else {
     // CDK: the change set takes each template parameter's default; nothing passes another value.
     for (const file of readdirSync(projectRoot).filter((name) => name.endsWith(".template.json")).sort()) {

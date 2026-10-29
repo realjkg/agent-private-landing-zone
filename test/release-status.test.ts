@@ -131,10 +131,12 @@ test("the owner's decision of 2026-10-28 moves the six pillar gates to v1.1: eac
   assert.notEqual(excludedGate("gcp-provider").status, "OUT_OF_SCOPE");
   assert.ok(statusProblems(withEntry("gcp-provider", { status: "OUT_OF_SCOPE" }), { scope: shippedScope, journeys })
     .some((x) => x.includes("gcp-provider") && x.includes("needs the owner's scope")));
-  // 25 after the pillar decision, plus act:gcp-terraform (owner decision 6481421924: GCP Terraform ACT is in the DEV release).
-  assert.equal(shippedStatus.gates.filter((x) => x.status !== "OUT_OF_SCOPE").length, 26, "in-scope gates after the decisions");
+  // 25 after the pillar decision, plus act:gcp-terraform (owner decision 6481421924: GCP Terraform ACT is in the DEV release), plus
+  // act:gcp-gcp_api (owner decision 6483993252, INT-2: GCP API-native ACT is in the DEV release).
+  assert.equal(shippedStatus.gates.filter((x) => x.status !== "OUT_OF_SCOPE").length, 27, "in-scope gates after the decisions");
   assert.equal(excludedGate("act:gcp-terraform").status, "BLOCKED", "act:gcp-terraform is in scope and BLOCKED until live evidence exists");
-  assert.match(renderReleaseStatus(shippedStatus, shippedScope), /0 of 26 in-scope gates pass/);
+  assert.equal(excludedGate("act:gcp-gcp_api").status, "BLOCKED", "act:gcp-gcp_api is in scope and BLOCKED until live evidence exists");
+  assert.match(renderReleaseStatus(shippedStatus, shippedScope), /0 of 27 in-scope gates pass/);
 });
 
 test("the scope must name the owner's decision and exactly the platforms and paths the admission gates define", () => {
@@ -143,6 +145,7 @@ test("the scope must name the owner's decision and exactly the platforms and pat
     { decision: { by: "AGENT", ref: shippedScope.decision.ref, recorded: "2026-10-25" } },
     { platforms: shippedScope.platforms.filter((x) => x !== "win32-arm64") },
     { actPaths: [...shippedScope.actPaths, "act:gcp-terraform"] },
+    { actPaths: shippedScope.actPaths.filter((x) => x !== "act:gcp-gcp_api") },
     { candidate: "HEAD" },
     { manifest: "release/manifest.json" },
     { journey: "EXECUTE_ONLY" },
