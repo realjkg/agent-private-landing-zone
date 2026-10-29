@@ -15,7 +15,7 @@ import { openNonceStore } from "../src/apply/nonces.js";
 import { removeTree } from "../src/teardown/driver/cleanup.js";
 import { deliverSession } from "./helpers/token-delivery-fixtures.js";
 import {
-  AWS_DEV_TARGET, NOW, POLICY, SOURCE_COMMIT, STATE_CANARY, VALUE_CANARY, awsContractJson, awsIdentityEnv, awsReadCallsOf, awsRoleArn, awsTargetOf, behave as behaveIn, behaveAwsReads, callsOf,
+  AWS_DEV_TARGET, AWS_LOCK, NOW, POLICY, SOURCE_COMMIT, STATE_CANARY, VALUE_CANARY, awsContractJson, awsIdentityEnv, awsReadCallsOf, awsRoleArn, awsTargetOf, behave as behaveIn, behaveAwsReads, callsOf,
   installFakeAwsReads, installFakeTerraform, keys, stateResource, testFixtureForgeQualificationEvidence, writeReviewedContract, writeProject, type Behavior, type Project,
   requesterArgs, canaryFor, withCanary } from "./helpers/apply-fixtures.js";
 
@@ -83,11 +83,11 @@ const terminal = (answers: string[]): Terminal => {
   return { stdinIsTTY: true, stdoutIsTTY: true, out, asked, write: (text: string) => { out.push(text); }, ask: async (prompt, expectation) => { asked.push({ prompt, kind: expectation?.kind, phrase: expectation?.phrase }); return answers.shift() ?? ""; } };
 };
 type World = { deps: (term: Terminal, over?: Partial<ApplyCliDeps>) => ApplyCliDeps; contractPath: string; evidenceDir: string; acceptanceDir: string; reportsDir: string };
-async function world(): Promise<World> {
-  behave();
+async function world(contract: Record<string, unknown> = runContract(), unitTags: Record<string, string> = { ...UNIT.tags }): Promise<World> {
+  behave({ unitTags });
   behaveAwsReads(awsToolDir, { existing: EXISTING, tagged: TAGGED });
   const contractPath = join(fresh("contract"), "act-pilot-contract.json");
-  writeReviewedContract(contractPath, runContract());
+  writeReviewedContract(contractPath, contract);
   const vault = fresh("vault");
   await testFixtureForgeQualificationEvidence(vault, undefined, "AWS");
   const [scratch, evidenceDir, acceptanceDir, reportsDir, proposalsDir] = [fresh("scratch"), fresh("evidence"), fresh("acceptance"), fresh("reports"), fresh("proposals")];
@@ -113,6 +113,14 @@ async function cli(w: World, args: string[], answers: string[] = [], over: Parti
 const PHRASE = "RUN PROJECT CODE";
 /** Every Terraform contract binds STATE_WRITE (owner decision 6486426552), so seal and qualify ask for this phrase after the project-code one. */
 const EMBED = (environment: string): string => "EMBED STATE_WRITE " + environment;
+/** The three files `./alz apply prepare` names in its "Saved" block: the seal request, the apply request and the manifest. */
+const preparedFiles = (stdout: string) => {
+  const request = /\n {2}request {8}(\S+)/.exec(stdout)?.[1];
+  const applyRequest = /\n {2}apply request {2}(\S+)/.exec(stdout)?.[1];
+  const manifest = /\n {2}manifest {7}(\S+)/.exec(stdout)?.[1];
+  assert.ok(request && applyRequest && manifest && [request, applyRequest, manifest].every((path) => existsSync(path)), stdout);
+  return { request, applyRequest, manifest };
+};
 
 /** Seal, approve and apply one run at the terminal, as the apply tests do; returns the files the cleanup steps need. */
 async function appliedRun(w: World, mainTf = 'resource "aws_s3_bucket" "logs" {}\n') {
@@ -254,6 +262,82 @@ test("observe, propose-cleanup, approve of the proposal, cleanup and verify-clea
   const partial = await cli(w, ["report", "--sealed", run.sealedPlanPath]);
   assert.equal((partial.data as { passed: boolean }).passed, false);
   assert.ok((partial.data as { unresolved: string[] }).unresolved.includes("propose the cleanup"));
+});
+
+// The documented terminal journey (docs/act-dev-enablement.md, steps 11 to 14) with exactly the files `./alz apply prepare` wrote:
+// no request is written by hand at any step. Before FIX-1, `apply` and `cleanup` refused prepare's seal request (five keys) with
+// APPLY_INPUT_INVALID, so the journey could not be completed (review 6509207196 on #365). SYNTHETIC: fake engine and fake AWS reads.
+test("the terminal journey prepare, seal, approve, apply, observe, propose-cleanup, approve and cleanup runs on prepare's own files", async () => {
+  const contract = runContract({ policyVersion: POLICY });
+  const contractPath = join(fresh("journey-contract"), "act-pilot-contract.json");
+  writeReviewedContract(contractPath, contract);
+  const unit = pilotUnitOf({ provider: "AWS", contractSha256: pilotContractSha256(loadPilotContract(contractPath) as PilotContract), environment: "DEV", target: awsTargetOf("DEV") });
+  const w = await world(contract, { ...unit.tags });
+  const target = awsTargetOf("DEV");
+  const project = writeProject(fresh("project"), target, 'resource "aws_s3_bucket" "logs" {}\n', AWS_LOCK).projectRoot;
+  const outDir = fresh("prepared");
+  const prepared = await cli(w, ["prepare", "--environment", "DEV", "--project", project], [], { preparationDir: outDir });
+  assert.equal(prepared.code, 0, prepared.stdout + prepared.stderr);
+  const { request, applyRequest, manifest } = preparedFiles(prepared.stdout);
+  assert.match(prepared.stdout, /NEXT \.\/alz apply seal --request \S+ --manifest \S+ --requester ID --key REQUESTER_KEY\.pem\n/);
+
+  const sealed = await cli(w, ["seal", "--request", request, "--manifest", manifest, ...requesterArgs()], [targetString(target), PHRASE, EMBED("DEV")]);
+  assert.equal(sealed.code, 0, sealed.stderr);
+  const { sealedPlanPath, reviewBundlePath, artifactSha256 } = sealed.data as { sealedPlanPath: string; reviewBundlePath: string; artifactSha256: string };
+  const approved = await cli(w, ["approve", "--bundle", reviewBundlePath, "--key", keyFile("alice"), "--approver", "alice"], ["APPROVE DEV " + artifactSha256.slice(0, 12)]);
+  assert.equal(approved.code, 0, approved.stderr);
+  const approval = json(approved.data, "approval");
+  const phrase = "APPLY DEV " + artifactSha256.slice(0, 12) + " " + targetString(target);
+
+  // Negative: the seal request, or an apply request carrying any other key, is refused before anything is asked or consumed;
+  // the error names the apply request prepare wrote. Apply never ignores a key it does not take.
+  const sealRequest = JSON.parse(readFileSync(request, "utf8")) as Record<string, unknown>;
+  const prepApply = JSON.parse(readFileSync(applyRequest, "utf8")) as Record<string, unknown>;
+  for (const [label, file] of [["the seal request", request], ["an extra policyVersion", json({ ...prepApply, policyVersion: sealRequest.policyVersion }, "extra")],
+    ["an extra resolved", json({ ...prepApply, resolved: sealRequest.resolved }, "extra")], ["an unknown key", json({ ...prepApply, force: true }, "extra")]] as const) {
+    const refused = await cli(w, ["apply", "--request", file, "--manifest", manifest, "--sealed", sealedPlanPath, "--approval", approval], [phrase]);
+    assert.equal(refused.code, 1, label);
+    assert.match(refused.stderr, /APPLY_INPUT_INVALID: --request must be a JSON object with exactly environment, target, projectRoot.*apply-request-<tag>\.json/, label);
+    assert.deepEqual(refused.term.asked, [], label + ": nothing is asked");
+  }
+  // Negative: an apply request edited by hand to another target is shown as typed, and the driver refuses it against the sealed plan
+  // before any approval is consumed; the same approval still applies the real plan afterwards.
+  const otherTarget = { ...target, workspace: "other" };
+  const edited = json({ ...prepApply, target: otherTarget }, "edited");
+  const appliesBefore = applies();
+  const moved = await cli(w, ["apply", "--request", edited, "--manifest", manifest, "--sealed", sealedPlanPath, "--approval", approval],
+    ["APPLY DEV " + artifactSha256.slice(0, 12) + " " + targetString(otherTarget)]);
+  assert.equal(moved.code, 2, moved.stderr);
+  assert.match(moved.stderr, /TARGET_NOT_IN_CONTRACT/);
+  // An apply request edited to another project folder: the project files no longer match the sealed manifest.
+  const elsewhere = writeProject(fresh("other-project"), target, 'resource "aws_s3_bucket" "elsewhere" {}\n', AWS_LOCK).projectRoot;
+  const repointed = await cli(w, ["apply", "--request", json({ ...prepApply, projectRoot: elsewhere }, "edited"), "--manifest", manifest, "--sealed", sealedPlanPath, "--approval", approval], [phrase]);
+  assert.equal(repointed.code, 2, repointed.stderr);
+  assert.match(repointed.stderr, /^BLOCKED ARTIFACT_TAMPERED: The project no longer matches the manifest/);
+  assert.equal(applies(), appliesBefore, "nothing ran");
+
+  const applied = await cli(w, ["apply", "--request", applyRequest, "--manifest", manifest, "--sealed", sealedPlanPath, "--approval", approval],
+    ["APPLY DEV " + artifactSha256.slice(0, 12) + " " + targetString(target)]);
+  assert.equal(applied.code, 0, applied.stderr);
+  assert.equal((applied.data as { outcome: string }).outcome, "SUCCEEDED");
+
+  assert.equal((await cli(w, ["observe", "--sealed", sealedPlanPath])).code, 0);
+  const proposed = await cli(w, ["propose-cleanup", "--sealed", sealedPlanPath, ...requesterArgs()]);
+  assert.equal(proposed.code, 0, proposed.stderr);
+  const proposalPath = /Saved \(private to this account\): (\S+)/.exec(proposed.stdout)![1];
+  const shortId = (JSON.parse(readFileSync(proposalPath, "utf8")) as { proposalSha256: string }).proposalSha256.slice(0, 12);
+  const signed = await cli(w, ["approve", "--bundle", proposalPath, "--key", keyFile("alice"), "--approver", "alice"], ["APPROVE CLEANUP DEV " + shortId]);
+  assert.equal(signed.code, 0, signed.stderr);
+  const cleanupApproval = json(signed.data, "cleanup-approval");
+  const wrongRequest = await cli(w, ["cleanup", "--proposal", proposalPath, "--request", request, "--manifest", manifest, "--sealed", sealedPlanPath, "--approval", cleanupApproval],
+    ["CLEANUP DEV " + shortId + " " + targetString(target)]);
+  assert.equal(wrongRequest.code, 1);
+  assert.match(wrongRequest.stderr, /APPLY_INPUT_INVALID: .*apply-request-<tag>\.json/);
+  assert.deepEqual(wrongRequest.term.asked, [], "the seal request is refused before the cleanup phrase");
+  const removed = await cli(w, ["cleanup", "--proposal", proposalPath, "--request", applyRequest, "--manifest", manifest, "--sealed", sealedPlanPath, "--approval", cleanupApproval],
+    ["CLEANUP DEV " + shortId + " " + targetString(target)]);
+  assert.equal(removed.code, 0, removed.stderr);
+  assert.equal((removed.data as { outcome: string }).outcome, "SUCCEEDED");
 });
 
 test("a wrong phrase at the cleanup approval or the removal signs nothing and runs nothing; an apply approval, a tampered proposal and a second run are refused before any phrase", async () => {

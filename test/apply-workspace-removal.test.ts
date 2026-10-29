@@ -499,3 +499,14 @@ test("M24: a removal record whose decisions are missing, forged or malformed is 
     assert.deepEqual(readdirSync(join(l.where.preparationDir, "DEV")).sort(), before, label + ": nothing removed");
   }
 });
+
+test("the apply request prepare writes beside the seal request is one of the run's preparation files, and goes with them", async () => {
+  const l = layout();
+  writeFileSync(join(l.env, "apply-request-" + TAG + ".json"), "{\"name\":\"apply-request\"}\n");
+  writeFileSync(join(l.env, "apply-request-" + "f".repeat(16) + ".json"), "{}\n");
+  const p = proposal(l);
+  const result = await confirmAndRemove(input(l, p, [approve(p, "alice")]));
+  assert.ok(result.ok, JSON.stringify(result));
+  assert.ok(recordOf(l).removals[0]!.items.some((i) => i.kind === "PREPARATION_FILE" && i.path === join(l.env, "apply-request-" + TAG + ".json") && i.removed));
+  assert.deepEqual(readdirSync(l.env).sort(), ["apply-request-" + "f".repeat(16) + ".json", OTHER_RUN].sort(), "another run's apply request stays");
+});

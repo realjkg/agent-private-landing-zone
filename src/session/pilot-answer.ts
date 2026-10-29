@@ -239,14 +239,14 @@ const HANDOFF: Readonly<Record<HandoffKind, { code: string; lines: string[] }>> 
   ] },
   APPLY: { code: "PILOT_ACTION_HUMAN_ONLY", lines: [
     "Executing the change is a person's step through the governed driver. The model never starts an apply.",
-    "At the terminal: ./alz apply apply --request REQUEST.json --manifest MANIFEST.json --sealed SEALED_PLAN --approval APPROVAL.json",
+    "At the terminal: ./alz apply apply --request APPLY_REQUEST.json --manifest MANIFEST.json --sealed SEALED_PLAN --approval APPROVAL.json",
     "Or in the console's Pilot apply wizard, with the one-time session token printed in the terminal that started the console. A workflow runs wholly in one of the two.",
     "Ask me for \"status of run <id>\" afterward; I read the report your run leaves.",
   ] },
   CLEANUP: { code: "PILOT_ACTION_HUMAN_ONLY", lines: [
     "Cleanup is a person's step, from an approved proposal. The model never proposes, approves or runs it.",
     "1. ./alz apply propose-cleanup --sealed SEALED_PLAN --requester YOUR_ID --key YOUR_REQUESTER_KEY.pem",
-    "2. Approvers sign it; then: ./alz apply cleanup --proposal PROPOSAL.json --request REQUEST.json --manifest MANIFEST.json --sealed SEALED_PLAN --approval APPROVAL.json",
+    "2. Approvers sign it; then: ./alz apply cleanup --proposal PROPOSAL.json --request APPLY_REQUEST.json --manifest MANIFEST.json --sealed SEALED_PLAN --approval APPROVAL.json",
     "3. ./alz apply verify-cleanup --proposal PROPOSAL.json, then ask me \"what is left over\".",
   ] },
   CONTRACT: { code: "PILOT_AUTHORITY_OWNER_ONLY", lines: [

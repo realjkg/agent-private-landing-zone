@@ -170,7 +170,7 @@ Before the first child, the runner checks four things. Each child checks them ag
 | --- | --- | --- | --- |
 | contract-check | `./alz apply contract-check --file config/act-pilot-contract.json` | The committed contract is complete for this path | That anyone reviewed it (the commit's review does) |
 | identity-check | `./alz apply identity-check --path <path> --repository <OWNER/REPO> --phase delivered` | Every identity of the path has its own private, fresh token for its own environment and audience (HOST_LOCAL) | Cloud trust |
-| prepare | `./alz apply prepare --environment DEV --project <canary copy>` | The request and manifest bind this project and the contract's target | Anything about the cloud |
+| prepare | `./alz apply prepare --environment DEV --project <canary copy>` | The request and manifest bind this project and the contract's target. The runner keeps the seal request for qualify and seal, and the apply request for apply and cleanup | Anything about the cloud |
 | qualify | `./alz apply qualify --request … --manifest …` | The real engine and identity separation, which you attest from CloudTrail or the sign-in logs | Any apply |
 | preflight | `./alz apply preflight --environment DEV --contract config/act-pilot-contract.json` | Readiness, qualification included, and the kill switch is off | Budget or cost limits |
 | seal | `./alz apply seal … --requester <id> --key <key file>` | The exact plan, bound to this commit, contract and engine binary | Approval |

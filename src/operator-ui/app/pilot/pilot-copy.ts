@@ -333,7 +333,7 @@ export const CLEANUP_CLI_COMMANDS: readonly { who: string; what: string; command
   { who: "Operator", what: "Look at what the change created", command: "./alz apply observe --sealed LOCKED_CHANGE" },
   { who: "Operator (the cleanup requester)", what: "Write the cleanup proposal, signed with the requester's key", command: "./alz apply propose-cleanup --sealed LOCKED_CHANGE --requester NAME --key REQUESTER_KEY.pem" },
   { who: "Each approver (in production, two people other than the requester)", what: "Review and sign the cleanup (on their own computer)", command: "./alz apply approve --bundle PROPOSAL.json --key APPROVER_KEY.pem --approver NAME" },
-  { who: "Operator", what: "Remove exactly the listed things", command: "./alz apply cleanup --proposal PROPOSAL.json --request REQUEST.json --manifest MANIFEST.json --sealed LOCKED_CHANGE --approval APPROVAL.json" },
+  { who: "Operator", what: "Remove exactly the listed things", command: "./alz apply cleanup --proposal PROPOSAL.json --request APPLY_REQUEST.json --manifest MANIFEST.json --sealed LOCKED_CHANGE --approval APPROVAL.json" },
   { who: "Anyone", what: "Check that everything is gone", command: "./alz apply verify-cleanup --proposal PROPOSAL.json" },
 ];
 
@@ -718,7 +718,7 @@ export const CLI_COMMANDS: readonly { who: string; what: string; command: string
   { who: "Operator", what: "Get the files ready from your project folder", command: "./alz apply prepare --environment DEV --project PROJECT_FOLDER" },
   { who: "Operator (the requester)", what: "Prepare the change and lock it, signed with the requester's key", command: "./alz apply seal --request REQUEST.json --manifest MANIFEST.json --requester NAME --key REQUESTER_KEY.pem" },
   { who: "Each approver", what: "Review and sign (on their own computer)", command: "./alz apply approve --bundle REVIEW_FILE.json --key APPROVER_KEY.pem --approver NAME" },
-  { who: "Operator", what: "Apply the locked change", command: "./alz apply apply --request REQUEST.json --manifest MANIFEST.json --sealed LOCKED_CHANGE --approval APPROVAL.json" },
+  { who: "Operator", what: "Apply the locked change", command: "./alz apply apply --request APPLY_REQUEST.json --manifest MANIFEST.json --sealed LOCKED_CHANGE --approval APPROVAL.json" },
   { who: "Anyone", what: "Look at the status afterward", command: "./alz apply status --sealed LOCKED_CHANGE" },
 ];
 

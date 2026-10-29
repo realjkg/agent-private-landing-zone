@@ -928,14 +928,18 @@ test("prepare writes the request and manifest from the contract and project, and
   assert.match(run.stdout, /LOCAL_PREPARATION: local files, not qualification evidence/);
   assert.match(run.stdout, /account {9}\S+/);
   assert.match(run.stdout, /Known gaps:/);
-  const request = /request {3}(\S+)/.exec(run.stdout)?.[1];
-  const manifest = /manifest {2}(\S+)/.exec(run.stdout)?.[1];
+  const request = /\n {2}request {8}(\S+)/.exec(run.stdout)?.[1];
+  const manifest = /\n {2}manifest {7}(\S+)/.exec(run.stdout)?.[1];
   assert.ok(request && manifest && existsSync(request) && existsSync(manifest));
   assert.match(run.stdout, /NEXT \.\/alz apply seal --request \S+ --manifest \S+ --requester ID --key REQUESTER_KEY\.pem\n/,
     "the hint names the requester flags seal requires, as placeholders");
   assert.match(run.stdout, /input {11}location from terraform\.tfvars/);
   assert.doesNotMatch(run.stdout, /westeurope/, "a value is never printed");
-  assert.equal(readdirSync(join(outDir, "DEV")).length, 3);
+  assert.equal(readdirSync(join(outDir, "DEV")).length, 4, "the seal request, the apply request, the manifest and the record");
+  const applyRequest = /\n {2}apply request {2}(\S+)/.exec(run.stdout)?.[1];
+  assert.ok(applyRequest && existsSync(applyRequest));
+  assert.deepEqual(Object.keys(JSON.parse(readFileSync(applyRequest, "utf8"))).sort(), ["environment", "projectRoot", "target"]);
+  assert.match(run.stdout, /The request is for qualify and seal\. Apply and cleanup take the apply request/);
 
   const seal = await cli(w, ["seal", "--request", request, "--manifest", manifest, ...requesterArgs()], [targetString(target), PHRASE, EMBED("DEV")]);
   assert.equal(seal.code, 0, seal.stderr);
