@@ -17,7 +17,7 @@ import { isAwsIdentityType } from "../cleanup-proposal.js";
 import { stripInvisible } from "../constants.js";
 import { assertCanary } from "../canary.js";
 import { assertUsable, checkedOutput, markLeftBehind, stop, withoutIdentities } from "../engine.js";
-import type { ApplyEnd, EngineApplyRun, EngineCleanupRun, EngineContext, EngineRunInput, EngineSpec, StateDocument, StopControl } from "../engine-spec.js";
+import type { ApplyEnd, SyncEngineApplyRun, SyncEngineCleanupRun, EngineContext, EngineRunInput, SyncEngineSpec, StateDocument, StopControl } from "../engine-spec.js";
 import type { AwsTarget } from "../providers/aws.js";
 import { isRecord } from "../providers/shared.js";
 import type { PilotTarget, PlanChange, SealedUnit } from "../types.js";
@@ -699,7 +699,7 @@ function resourcesTouchedSince(session: Session, pinned: AwsTarget, before: Stac
   return events.StackEvents.some((event) => !isRecord(event) || (event.ResourceType !== "AWS::CloudFormation::Stack" && !(Date.parse(String(event.Timestamp)) <= since)));
 }
 
-function openApply(input: EngineRunInput): EngineApplyRun {
+function openApply(input: EngineRunInput): SyncEngineApplyRun {
   const pinned = input.pinned as AwsTarget;
   const { region } = pinned;
   const session = openSession({ ...input, adapter: "apply" });
@@ -854,7 +854,7 @@ export function removalTemplateOf(template: Record<string, unknown>, addresses: 
  * result is made a change set (CHANGESET) whose change list must be exactly a removal of those ids, and that change set is executed
  * (APPLY) and watched like an apply. The stack is never deleted, its tags are passed back unchanged, and nothing else is run.
  */
-function openCleanup(input: EngineRunInput): EngineCleanupRun {
+function openCleanup(input: EngineRunInput): SyncEngineCleanupRun {
   const pinned = input.pinned as AwsTarget;
   const { region } = pinned;
   const session = openSession({ ...input, adapter: "cleanup" });
@@ -960,7 +960,7 @@ const adapter = (kind: Adapter): AdapterDescriptor => ({
   engine: "CDK", adapterVersion: kind === "preview" ? PREVIEW_ADAPTER_VERSION : kind === "apply" ? APPLY_ADAPTER_VERSION : CLEANUP_ADAPTER_VERSION, argvDigest: digestOf(kind),
 });
 
-export const CDK: EngineSpec = {
+export const CDK: SyncEngineSpec = {
   id: "CDK",
   executables: [EXECUTABLE],
   mutation: "CLOUDFORMATION_EXECUTE_OF_SEALED_CHANGE_SET",

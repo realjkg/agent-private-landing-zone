@@ -18,7 +18,7 @@ import { sha256 } from "../../util/sha256.js";
 import { assertCanary } from "../canary.js";
 import { SAFE_VALUE, TOKEN_FILE, stripInvisible } from "../constants.js";
 import { assertUsable, checkedOutput, stop, withoutIdentities } from "../engine.js";
-import type { ApplyEnd, EngineApplyRun, EngineCleanupRun, EngineContext, EngineRunInput, EngineSpec, StopControl } from "../engine-spec.js";
+import type { ApplyEnd, SyncEngineApplyRun, SyncEngineCleanupRun, EngineContext, EngineRunInput, SyncEngineSpec, StopControl } from "../engine-spec.js";
 import type { AzureTarget } from "../providers/azure.js";
 import { isRecord } from "../providers/shared.js";
 import type { PilotTarget, PlanChange, SealedUnit } from "../types.js";
@@ -645,7 +645,7 @@ const movedFrom = (before: Seen, seen: Seen): boolean =>
 const look = (session: Session, who: "DISCOVERY" | "APPLY", pinned: BicepTarget): Seen => { try { return readStack(session, who, pinned) ?? "ABSENT"; } catch { return undefined; } };
 
 /** What the engine adds to an apply run: the stack's managed resources, read once as DISCOVERY after the run (the ownership record). */
-export type BicepApplyRun = EngineApplyRun & { managedResources(): string[] | undefined };
+export type BicepApplyRun = SyncEngineApplyRun & { managedResources(): string[] | undefined };
 
 function openApply(input: EngineRunInput): BicepApplyRun {
   const pinned = targetOf(input.pinned);
@@ -770,7 +770,7 @@ const MAX_CLEANUP_ADDRESSES = 200;
  * (`_prepare_stacks_action_on_unmanage`, az 2.91.0), so the pilot group is never deleted. Whole-stack only: the approved
  * addresses must be exactly the stack's managed resources, each a virtual network in the contract's group.
  */
-function openCleanup(input: EngineRunInput): EngineCleanupRun {
+function openCleanup(input: EngineRunInput): SyncEngineCleanupRun {
   const pinned = targetOf(input.pinned);
   const session = openSession(input, "cleanup");
   let before: StackView | undefined;
@@ -837,10 +837,10 @@ const adapter = (kind: Adapter): AdapterDescriptor => ({
 });
 
 /**
- * The spec's own type: `EngineSpec` with the BICEP id and its two evidence `mutation` values (src/apply/types.ts), and an apply run
+ * The spec's own type: `SyncEngineSpec` with the BICEP id and its two evidence `mutation` values (src/apply/types.ts), and an apply run
  * that also reads the stack's managed resources.
  */
-export type BicepEngineSpec = Omit<EngineSpec, "id" | "mutation" | "cleanupMutation" | "openApply"> & {
+export type BicepEngineSpec = Omit<SyncEngineSpec, "id" | "mutation" | "cleanupMutation" | "openApply"> & {
   id: "BICEP";
   mutation: "AZURE_DEPLOYMENT_STACK_CREATE_OF_SEALED_TEMPLATE";
   cleanupMutation: "AZURE_DEPLOYMENT_STACK_DELETE_OF_RUN_STACK";

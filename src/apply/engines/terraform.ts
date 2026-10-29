@@ -18,7 +18,7 @@ import { sha256 } from "../../util/sha256.js";
 import { assertNoBackendOverrideOrState, writeBackendOverride, type BackendType } from "../backend-pin.js";
 import { stripInvisible } from "../constants.js";
 import { checkedOutput, codeOf, stop, withoutIdentities } from "../engine.js";
-import type { EngineApplyRun, EngineCleanupRun, EngineContext, EngineSpec } from "../engine-spec.js";
+import type { SyncEngineApplyRun, SyncEngineCleanupRun, EngineContext, SyncEngineSpec } from "../engine-spec.js";
 import type { ProviderBlock, ProviderSpec, ProviderUse } from "../provider.js";
 import { isRecord } from "../providers/shared.js";
 import { assertCanary, type CanaryEntry } from "../canary.js";
@@ -492,7 +492,7 @@ function rederiveChanges(input: EngineContext & { artifact: Buffer }): PlanChang
  */
 const APPLY_PROFILE = { ...TERRAFORM_APPLY_PROFILE, timeoutMs: 30 * 60_000, maxOutputBytes: LARGE_OUTPUT_BYTES };
 
-function openApply(input: EngineContext & { target: ResolvedTarget; engineVersion: string }): EngineApplyRun {
+function openApply(input: EngineContext & { target: ResolvedTarget; engineVersion: string }): SyncEngineApplyRun {
   const { scratchDir, env, pinned, spec } = input;
   const session = openSession({
     scratchDir, env, toolDirs: input.toolDirs, manifest: input.manifest, isAllowed: (args) => isAllowedApplyArgv("terraform", args), profile: TERRAFORM_APPLY_PROFILE,
@@ -561,7 +561,7 @@ function recoveryFilesIn(work: string): { name: string; base64: string }[] {
  * applied as APPLY. The destroy plan is written by Terraform into the scratch directory and removed with it; nothing of
  * the project is changed. Every list is the cleanup adapter's own (`isAllowedCleanupArgv`).
  */
-function openCleanup(input: EngineContext & { target: ResolvedTarget; engineVersion: string }): EngineCleanupRun {
+function openCleanup(input: EngineContext & { target: ResolvedTarget; engineVersion: string }): SyncEngineCleanupRun {
   const { scratchDir, env, pinned, spec } = input;
   const session = openSession({
     scratchDir, env, toolDirs: input.toolDirs, manifest: input.manifest, isAllowed: (args) => isAllowedCleanupArgv("terraform", args), profile: TERRAFORM_APPLY_PROFILE,
@@ -614,7 +614,7 @@ function openCleanup(input: EngineContext & { target: ResolvedTarget; engineVers
   };
 }
 
-export const TERRAFORM: EngineSpec = {
+export const TERRAFORM: SyncEngineSpec = {
   id: "TERRAFORM",
   executables: ["terraform"],
   embedsStateWrite: true,

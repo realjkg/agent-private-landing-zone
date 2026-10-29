@@ -122,6 +122,17 @@ canonicalJson({ kind: "IN_PROCESS_MODULE", engine: "GCP_API",
 
 **Why.** It is the reviewer's recommendation (6453205218, item 5), widened to every step that must read before consumption. The order of the gates stays deterministic because every call is awaited where it stands.
 
+**Status: implemented (INT-4b).**
+- `EngineSpec.plan` and `qualify`, `EngineApplyRun.prepare` and `rederive`, and `EngineCleanupRun.prepare` and `planDestroy` return `MaybePromise<T>` (`src/apply/engine-spec.ts`).
+- `seal.ts` and `driver.ts` await each call where it stands.
+- The Terraform, CDK and Bicep engines are typed `SyncEngineSpec`: they return plain values, so their own tests call them unchanged.
+- `test/helpers/async-steps.ts` wraps an engine so each step yields, then resolves or rejects. The D5 tests in `test/apply-driver.test.ts` and `test/apply-cleanup-azure.test.ts` cover:
+  - a seal, apply, qualify and cleanup through promises;
+  - a rejection from each step, as the same refusal as a throw;
+  - a stop signal during each awaited apply and cleanup step, which stops the run with nothing consumed.
+
+  Each `await` is pinned: removing any one of them fails at least one test.
+
 **Interruption.** An await gives the signal handler a chance to run. In `runApply` the driver reads `interrupted` twice: once after the reservation and before `prepare`, and once after `rederive` and the change-list comparison, right before re-admission and consumption (after `yieldToSignals`). It does not read it between `prepare` and `rederive`. Because that second read follows every awaited read, an interrupt during an awaited `prepare` or `rederive` still stops the run with nothing consumed. `runCleanup` has the same two reads around `prepare` and `planDestroy`. A test covers it (section 5).
 
 ### D6. The cleanup hook: `stateDocument`, then the driver's own cleanup flow [REVIEWER, with D16 for the owner]

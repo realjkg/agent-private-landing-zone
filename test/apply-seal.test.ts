@@ -368,7 +368,7 @@ test("sealing and qualifying run under the restricted terraform profile: a CLI c
     for (const mode of ["seal", "qualify"] as const) {
       const f = fixture({ env: { ...ENV, [name]: "/tmp/evil-mirror.tfrc" } });
       try {
-        const result = mode === "seal" ? await sealPlan(f.input) : planWithoutStoring(f.input);
+        const result = mode === "seal" ? await sealPlan(f.input) : await planWithoutStoring(f.input);
         assert.ok(!result.ok, name + " " + mode);
         assert.match(result.message, /ENVIRONMENT_REFUSED/, name);
         for (const call of calls()) {
@@ -385,7 +385,7 @@ test("sealing and qualifying run under the restricted terraform profile: a CLI c
 test("a throwaway plan has its own result shape: a sealed record and no vault path, and nothing is stored", async () => {
   const f = fixture();
   try {
-    const result = planWithoutStoring(f.input);
+    const result = await planWithoutStoring(f.input);
     assert.ok(result.ok);
     assert.deepEqual(Object.keys(result).sort(), ["ok", "sealed"], "no path, not even an empty one");
     assert.equal(result.sealed.artifactSha256, computeArtifactSha256(result.sealed));
