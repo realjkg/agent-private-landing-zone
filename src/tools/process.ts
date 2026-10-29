@@ -1,6 +1,7 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { statSync } from "node:fs";
 import { relative, resolve, sep } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 
 import {
   emitDebugDiagnostic,
@@ -49,8 +50,9 @@ export type BoundedProcessOptions = {
 /**
  * A child that can be stopped while it runs. `stopWhen` is polled; true (or the
  * profile's time limit, or a SIGINT/SIGTERM sent to this process when
- * `forwardSignals` is set) sends the child SIGINT, its graceful stop, and
- * SIGKILL to its process group after `graceMs`. `stopped` is set once a stop
+ * `forwardSignals` is set) sends the child SIGINT, its graceful stop (held
+ * until `holdInterruptUntil` matches, when set), and SIGKILL to its process
+ * group `graceMs` after the request. `stopped` is set once a stop
  * was requested, whatever exit code the child then reports.
  */
 export type StoppableProcessOptions = BoundedProcessOptions & {
@@ -60,6 +62,12 @@ export type StoppableProcessOptions = BoundedProcessOptions & {
   forwardSignals?: boolean;
   /** Runs once, as soon as a stop is requested (kill switch, time limit or signal), before the grace period. A caller removes plaintext it no longer needs. */
   onStop?: () => void;
+  /**
+   * When set, the graceful stop (SIGINT) is held until a line of the child's stdout matches, for an engine that silently
+   * drops an interrupt received before it can act on one (Terraform before its apply walk starts). The SIGKILL after
+   * `graceMs` still counts from the stop request, whether or not the SIGINT was sent yet, so the bound is unchanged.
+   */
+  holdInterruptUntil?: RegExp;
 };
 
 /**
@@ -68,6 +76,9 @@ export type StoppableProcessOptions = BoundedProcessOptions & {
  * group, so none of them reaches it on its own; they are intercepted here.
  */
 export const STOP_SIGNALS: readonly NodeJS.Signals[] = ["SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT"];
+
+/** The longest unfinished stdout line kept while a held stop waits for its readiness line. */
+const READINESS_LINE_LIMIT = 4096;
 
 let interceptors = 0;
 /**
@@ -308,13 +319,33 @@ export function runStoppableProcess(
         if (group && child.pid !== undefined) process.kill(-child.pid, signal); else child.kill(signal);
       } catch { /* already gone */ }
     };
+    // Whether the child can act on SIGINT now; until then a requested stop waits for `holdInterruptUntil` to match.
+    let interruptible = options.holdInterruptUntil === undefined;
     const requestStop = (): void => {
       if (stopped || finished) return;
       stopped = true;
       try { options.onStop?.(); } catch { /* a failing remover must not keep the engine from being told to stop */ }
-      kill("SIGINT", false);
+      if (interruptible) kill("SIGINT", false);
       hardKill = setTimeout(() => kill("SIGKILL", true), options.graceMs ?? 60_000);
     };
+    if (options.holdInterruptUntil !== undefined) {
+      const ready = options.holdInterruptUntil;
+      const decoder = new StringDecoder("utf8");
+      let partial = "";
+      const watch = (data: Buffer): void => {
+        if (interruptible) return;
+        const lines = (partial + decoder.write(data)).split("\n");
+        // The unfinished last line is kept for the next chunk, bounded: a readiness line is short.
+        partial = (lines.pop() ?? "").slice(-READINESS_LINE_LIMIT);
+        if (!lines.some((line) => ready.test(line))) return;
+        interruptible = true;
+        partial = "";
+        child.stdout?.off("data", watch);
+        // A stop that was held is delivered now, exactly once.
+        if (stopped && !finished) kill("SIGINT", false);
+      };
+      child.stdout?.on("data", watch);
+    }
     const keep = (which: "out" | "err") => (data: Buffer): void => {
       // One byte past the cap is enough for `cap` to see the output was cut.
       const room = profile.maxOutputBytes + 1 - kept[which];

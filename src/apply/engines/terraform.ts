@@ -65,7 +65,7 @@ type Session = {
   /** Runs one allowlisted step and returns its stdout. Any refusal, truncation or non-zero exit stops with a code. */
   step(args: readonly string[], identity: StepIdentity, large?: boolean): string;
   /** A step that can be stopped while it runs. Returns the raw result; the caller classifies it. */
-  stoppable(args: readonly string[], identity: StepIdentity, profile: ProcessProfile, control: Pick<StoppableProcessOptions, "stopWhen" | "pollMs" | "graceMs" | "forwardSignals" | "onStop">): Promise<StoppableResult>;
+  stoppable(args: readonly string[], identity: StepIdentity, profile: ProcessProfile, control: Pick<StoppableProcessOptions, "stopWhen" | "pollMs" | "graceMs" | "forwardSignals" | "onStop" | "holdInterruptUntil">): Promise<StoppableResult>;
   /** Identity variables the runner would refuse to hand this step, so a step that cannot be undone is never started with a partial identity. */
   refused(identity: StepIdentity, profile: ProcessProfile): string[];
   /** The files, the lock file and the module sources, all against the manifest (and, once written, the product's backend override). */
@@ -492,6 +492,20 @@ function rederiveChanges(input: EngineContext & { artifact: Buffer }): PlanChang
  */
 const APPLY_PROFILE = { ...TERRAFORM_APPLY_PROFILE, timeoutMs: 30 * 60_000, maxOutputBytes: LARGE_OUTPUT_BYTES };
 
+/**
+ * A line Terraform prints only from inside its apply walk: the first hook line of a resource operation, such as
+ * `terraform_data.pilot: Creating...` or `aws_s3_bucket.b: Destroying... [id=x]` (`-no-color`, so no escape codes). A
+ * diagnostic's boxed lines (`│ Warning: ...`) never count.
+ *
+ * Terraform loses a SIGINT that arrives after it has taken the state lock but before its apply walk starts. Its local
+ * backend then calls `Context.Stop` while no walk is running, which does nothing ("Stop called" with no "run context
+ * exists, stopping" in its trace log), and the walk that starts next resets the stop and applies every change. A
+ * second SIGINT is no remedy: Terraform takes it as "exit immediately", without waiting for in-flight operations.
+ * So the apply's graceful stop is held until this line shows the walk is running, where one SIGINT is honored.
+ * Until then nothing has changed, and the SIGKILL after the grace period still counts from the stop request.
+ */
+export const TERRAFORM_WALK_STARTED = /^[^\s│╷╵].*: [A-Z][a-z]+(?: [a-z]+)*\.\.\.(?: \[.*\])?$/;
+
 function openApply(input: EngineContext & { target: ResolvedTarget; engineVersion: string }): SyncEngineApplyRun {
   const { scratchDir, env, pinned, spec } = input;
   const session = openSession({
@@ -522,7 +536,7 @@ function openApply(input: EngineContext & { target: ResolvedTarget; engineVersio
     async execute(artifact, control) {
       writeFileSync(planPath, artifact, { mode: 0o600, flag: "wx" });
       // The plaintext plan goes the moment a stop is asked for, not after the grace period.
-      const applied = await session.stoppable(APPLY_ARGV, "APPLY", APPLY_PROFILE, { ...control, forwardSignals: true, onStop: removeSecrets });
+      const applied = await session.stoppable(APPLY_ARGV, "APPLY", APPLY_PROFILE, { ...control, forwardSignals: true, onStop: removeSecrets, holdInterruptUntil: TERRAFORM_WALK_STARTED });
       rmSync(planPath, { force: true });
       return applied;
     },
@@ -599,7 +613,7 @@ function openCleanup(input: EngineContext & { target: ResolvedTarget; engineVers
     },
     async execute(control) {
       if (!planned || !existsSync(planPath)) return stop("ENGINE_NOT_PREPARED");
-      const applied = await session.stoppable(CLEANUP_APPLY_ARGV, "APPLY", APPLY_PROFILE, { ...control, forwardSignals: true, onStop: removeSecrets });
+      const applied = await session.stoppable(CLEANUP_APPLY_ARGV, "APPLY", APPLY_PROFILE, { ...control, forwardSignals: true, onStop: removeSecrets, holdInterruptUntil: TERRAFORM_WALK_STARTED });
       rmSync(planPath, { force: true });
       return applied;
     },

@@ -487,6 +487,69 @@ test("an engine that ignores SIGINT is killed after the grace period", async () 
   clean(w);
 });
 
+test("a stop requested before Terraform's apply walk starts is held until the walk runs, so its one SIGINT is honored and the lock is released (regression: a lost interrupt)", async () => {
+  // Terraform 1.16 drops a SIGINT that lands after it takes the state lock and before its walk starts, then applies everything; the
+  // grace period's SIGKILL then left the lock held. The fake models that window. The order is fixed by signals, not by timing.
+  const w = world();
+  const s = await seal(w, "DEV");
+  const lockPath = join(fresh("lock"), "state.tflock");
+  const held = await startHeldApply(w, s, [approval(s.sealed, "alice")], { lostStopBeforeWalk: { lockPath } });
+  const engine = applyCalls()[0];
+  assert.ok(existsSync(lockPath), "the engine holds the lock and has not started its walk");
+  writeFileSync(KILL, "stop");
+  // The stop request removes the plaintext plan first; once it is gone, any SIGINT of that request has been sent.
+  await until(() => !existsSync(engine.planPath!), "the stop request");
+  process.kill(engine.pid!, "SIGUSR2"); // the walk starts: after any SIGINT already sent, by signal order
+  const result = await held.running;
+  assert.equal((result as { outcome?: string }).outcome, "KILLED");
+  assert.deepEqual(signalsOf(toolDir), ["SIGINT"], "no SIGINT reached the engine before its walk, and one did after it");
+  assert.ok(!existsSync(lockPath), "the graceful stop released the lock");
+  assert.equal((await readEncryptedEvidence<ApplyEvidence>(ledgerOf(w, s))).exitCode, 1, "a graceful exit, not the final kill");
+  rmSync(KILL);
+  clean(w);
+});
+
+test("a held stop still ends in SIGKILL at the grace period when the engine never starts its walk", async () => {
+  const w = world();
+  const s = await seal(w, "DEV");
+  const lockPath = join(fresh("lock"), "state.tflock");
+  const held = await startHeldApply(w, s, [approval(s.sealed, "alice")], { lostStopBeforeWalk: { lockPath } });
+  const started = Date.now();
+  writeFileSync(KILL, "stop");
+  const result = await held.running;
+  assert.equal((result as { outcome?: string }).outcome, "KILLED");
+  assert.ok(Date.now() - started >= 300, "the grace period was given");
+  assert.ok(Date.now() - started < 10_000, "the bound counts from the stop request");
+  assert.deepEqual(signalsOf(toolDir), [], "no SIGINT was sent where the engine would drop it");
+  assert.equal((await readEncryptedEvidence<ApplyEvidence>(ledgerOf(w, s))).exitCode, null, "ended by the final kill");
+  rmSync(KILL);
+  clean(w);
+});
+
+test("the runner holds a requested SIGINT until a stdout line matches, across chunk boundaries, and sends it once", async () => {
+  const dir = fresh("runner");
+  const record = join(dir, "signals");
+  // The readiness line arrives split in two writes, after the stop was requested (the sentinel file appears).
+  const script = [
+    "const fs = require('fs');",
+    `process.on('SIGINT', () => { fs.appendFileSync(${JSON.stringify(record)}, 'SIGINT\\n'); process.exit(3); });`,
+    `const go = () => { if (!fs.existsSync(${JSON.stringify(join(dir, "go"))})) return setTimeout(go, 10);`,
+    "  process.stdout.write('noise: Not yet'); process.stdout.write('\\nx[\"a b\"]: Crea'); setTimeout(() => process.stdout.write('ting...\\n'), 30); };",
+    "go(); setInterval(() => {}, 1000);",
+  ].join("\n");
+  let stop = false;
+  const running = runStoppableProcess("terraform_plan", "node", ["-e", script], dir, {
+    profile: TERRAFORM_APPLY_PROFILE, env: {}, toolDirs: [join(process.execPath, "..")], stopWhen: () => stop, pollMs: 10, graceMs: 10_000,
+    holdInterruptUntil: /^\S.*: [A-Z][a-z]+\.\.\.$/,
+    onStop: () => writeFileSync(join(dir, "go"), "x"),
+  });
+  stop = true;
+  const result = await running;
+  assert.equal(result.stopped, true);
+  assert.equal(result.exitCode, 3, "the child ended on the SIGINT, not on the final kill");
+  assert.equal(readFileSync(record, "utf8"), "SIGINT\n", "exactly one SIGINT");
+});
+
 const alive = (pid: number): boolean => { try { process.kill(pid, 0); return true; } catch { return false; } };
 
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT"] as const) {
