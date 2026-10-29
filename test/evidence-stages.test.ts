@@ -144,7 +144,7 @@ function providerScript(cloud: "AWS" | "AZURE", options: { ready?: boolean; exit
         discovery: { classification: "BROWNFIELD", controlPlane: "x", resourceCount: 1, evidenceKeys: ["k"], evidenceSources: ["aws-cli"], snapshotSha256: "e".repeat(64) },
         validation: { passed: true, tools: ["t"] }, preview: { tool: "p", commandClass: "AWS_CHANGE_SET_PREVIEW", durationMs: 1, outputSha256: "f".repeat(64) },
         actEnabled: false, blockers: options.ready === false ? ["blocked by the fake"] : [],
-        observedIdentity: options.observed ?? (cloud === "AWS" ? { accountId: ACCOUNT } : { tenantId: TENANT, subscriptionId: SUBSCRIPTION }),
+        observedIdentity: options.observed ?? (cloud === "AWS" ? { accountId: ACCOUNT, roleName: "alz-discovery" } : { tenantId: TENANT, subscriptionId: SUBSCRIPTION }),
       }));
     }
     return { exitCode: options.exitCode ?? (options.ready === false ? 1 : 0), signal: null };
@@ -250,7 +250,7 @@ test("end to end with a real child: the production spawner starts ./alz with the
     "let stdin = 'unknown'; try { stdin = fs.fstatSync(0).isCharacterDevice() ? 'char' : 'other'; } catch { stdin = 'none'; }\n" +
     "fs.writeFileSync(" + JSON.stringify(seen) + ", JSON.stringify({ args, env: process.env, stdin }));\n" +
     "fs.mkdirSync(path.dirname(out), { recursive: true });\n" +
-    "fs.writeFileSync(out, JSON.stringify({ schemaVersion: 1, sourceCommit: args[args.indexOf('--source-commit') + 1], provider: 'AWS', ready: true, actEnabled: false, blockers: [], observedIdentity: { accountId: '" + ACCOUNT + "' } }));\n" +
+    "fs.writeFileSync(out, JSON.stringify({ schemaVersion: 1, sourceCommit: args[args.indexOf('--source-commit') + 1], provider: 'AWS', ready: true, actEnabled: false, blockers: [], observedIdentity: { accountId: '" + ACCOUNT + "', roleName: 'alz-discovery' } }));\n" +
     "console.log('producer output that goes to the log');\n", { mode: 0o755 });
   const env = { ...OPERATOR_SESSION, ...federatedEnv(folder()), PATH: process.env.PATH ?? "/usr/bin" };
   const deps = fixtureDeps(root, { env, probe: probeOf(env), spawn: spawnChild });
@@ -357,4 +357,72 @@ test("N1: a static secret under the identity channel is refused in any letter ca
     "ALZ_APPLY_AWS_ROLE_SESSION_NAME", "ALZ_DISCOVERY_TF_VAR_region", "ALZ_TOOL_DIRS"]) {
     assert.equal(childEnvironment({ [name]: "/some/reference", PATH: "/usr/bin" }, { home: "/h" }).ok, true, name + " is a reference and is forwarded");
   }
+});
+
+// Round 2 notes on #349 (N7, N8, N9).
+
+test("N7: a symbolic link anywhere inside az's configuration folder refuses it, whatever it points at", async () => {
+  const dir = folder();
+  const env = federatedEnv(dir);
+  const config_ = env.ALZ_DISCOVERY_AZURE_CONFIG_DIR!;
+  const operator = folder();
+  writeFileSync(join(operator, "msal_token_cache.json"), CANARY);
+  const status = async () => { const o = await probeOf(env)("azure", config()); return o.status === "OBSERVED" ? "OBSERVED" : o.status + ": " + (o as { detail: string }).detail; };
+  assert.equal(await status(), "OBSERVED");
+  // The token cache replaced by a link into another folder (the operator's own ~/.azure in the reviewer's probe).
+  const cache = join(config_, "msal_token_cache.json");
+  fs.rmSync(cache);
+  symlinkSync(join(operator, "msal_token_cache.json"), cache);
+  assert.match(await status(), /^REFUSED: .*holds a symbolic link, msal_token_cache\.json/);
+  fs.rmSync(cache);
+  // A link deeper inside, and a linked sub-folder.
+  mkdirSync(join(config_, "cliextensions", "x"), { recursive: true });
+  symlinkSync(operator, join(config_, "cliextensions", "x", "linked"));
+  assert.match(await status(), /^REFUSED: .*a symbolic link, cliextensions\/x\/linked/);
+  fs.rmSync(join(config_, "cliextensions"), { recursive: true });
+  symlinkSync(join(operator, "missing.json"), join(config_, "service_principal_entries.json"));
+  assert.match(await status(), /^REFUSED: .*a symbolic link, service_principal_entries\.json/, "a dangling link too");
+  fs.rmSync(join(config_, "service_principal_entries.json"));
+  assert.equal(await status(), "OBSERVED");
+});
+
+test("N8: a subscription whose isDefault is not a real boolean refuses the folder, so the runner and az cannot disagree on the default", async () => {
+  const dir = folder();
+  const env = federatedEnv(dir);
+  const file = join(env.ALZ_DISCOVERY_AZURE_CONFIG_DIR!, "azureProfile.json");
+  const profile = JSON.parse(readFileSync(file, "utf8").replace(/^\uFEFF/, "")) as { subscriptions: Record<string, unknown>[] };
+  profile.subscriptions[1].isDefault = "true";
+  writeFileSync(file, JSON.stringify(profile));
+  const observed = await probeOf(env)("azure", config());
+  assert.equal(observed.status, "MISSING");
+  assert.match((observed as { detail: string }).detail, /isDefault is not true or false/);
+});
+
+test("N9: the principal is a consistency check, before and after the run: the folder's client id and the producer's observed role or client id must match what is configured", async () => {
+  const dir = folder();
+  const env = { ...federatedEnv(dir), PATH: "/usr/bin" };
+  // Before: the folder's own profile names client cccccccc-…; a different configured client id refuses it.
+  const other = { ...env, ALZ_DISCOVERY_ARM_CLIENT_ID: "dddddddd-dddd-4ddd-8ddd-dddddddddddd" };
+  const refused = await probeOf(other)("azure", config());
+  assert.equal(refused.status, "REFUSED");
+  assert.match((refused as { detail: string }).detail, /signed in as client cccccccc-dddd-4eee-8fff-000000000000, not ALZ_DISCOVERY_ARM_CLIENT_ID dddddddd-dddd-4ddd-8ddd-dddddddddddd \(a consistency check/);
+  const same = { ...env, ALZ_DISCOVERY_ARM_CLIENT_ID: "CCCCCCCC-DDDD-4EEE-8FFF-000000000000" };
+  assert.equal((await probeOf(same)("azure", config())).status, "OBSERVED", "compared without regard to case");
+  // After: the producer's observed principal.
+  const run = async (stage: "aws-readonly" | "azure-readonly", runEnv: NodeJS.ProcessEnv, observed: Record<string, string>) => {
+    const root = fixtureRoot();
+    writeConfig(root, validConfig(stage === "aws-readonly" ? { azure: undefined } : { aws: undefined }));
+    const cloud = stage === "aws-readonly" ? "AWS" : "AZURE";
+    const deps = fixtureDeps(root, { env: runEnv, probe: probeOf(runEnv), spawn: fakeSpawner({ ["qualify provider-" + cloud.toLowerCase()]: providerScript(cloud, { observed }) }) });
+    await runEvidenceCommand(["run", "--synthetic", "--stage", stage], deps);
+    const step = readJournal(join(root, ".runs/evidence/synthetic", C12, "journal.jsonl")).find((line) => line.step === "provider-qualification" && line.event === "finish")!;
+    return step.outcome + " " + (step.code ?? "");
+  };
+  assert.equal(await run("aws-readonly", env, { accountId: ACCOUNT, roleName: "alz-discovery" }), "PASS CHILD_PASSED");
+  assert.equal(await run("aws-readonly", env, { accountId: ACCOUNT, roleName: "operator-admin" }), "FAIL PRINCIPAL_MISMATCH");
+  assert.equal(await run("aws-readonly", env, { accountId: ACCOUNT }), "FAIL PRINCIPAL_NOT_OBSERVED");
+  const ids = { tenantId: TENANT, subscriptionId: SUBSCRIPTION };
+  assert.equal(await run("azure-readonly", env, ids), "PASS CHILD_PASSED", "no client id configured: nothing to compare");
+  assert.equal(await run("azure-readonly", same, { ...ids, clientId: "cccccccc-dddd-4eee-8fff-000000000000" }), "PASS CHILD_PASSED");
+  assert.equal(await run("azure-readonly", same, { ...ids, clientId: "eeeeeeee-dddd-4eee-8fff-000000000000" }), "FAIL PRINCIPAL_MISMATCH");
 });

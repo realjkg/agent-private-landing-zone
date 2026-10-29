@@ -3,7 +3,7 @@ import { basename, join, resolve } from "node:path";
 
 import { insideRoot } from "./config.js";
 import type { JournalDocument } from "./journal.js";
-import { contractEnablesPath, contractScope } from "./preflight.js";
+import { contractEnablesPath, contractScope, killSwitchOn } from "./preflight.js";
 import type { StageResult } from "./readonly.js";
 import { CONTRACT_PATH } from "./source.js";
 import { assertRealFolder, ensureRealFolder } from "./safe-write.js";
@@ -19,8 +19,8 @@ import { ACT_PATH_NOT_AVAILABLE, type ActPathId, type StageId } from "./types.js
  * not pass. A step that can change the account, consume approvals or write a one-time record is never started twice.
  *
  * `act:<path>`: contract-check, identity-check --phase delivered, prepare, qualify, preflight, seal, approve, apply, observe.
- * `cleanup:<path>`: contract-check, identity-check, preflight, observe, propose-cleanup, approve (cleanup), cleanup, verify-cleanup,
- * report, record-live. The live record
+ * `cleanup:<path>`: contract-check, identity-check, the kill switch, observe, propose-cleanup, approve (cleanup), cleanup,
+ * verify-cleanup, report, record-live. The live record
  * comes last because it is written into config/acceptance/evidence, which would make the checkout dirty for every later step;
  * the runner moves it, byte for byte, into the stage's folder under .runs/evidence so the checkout stays clean.
  * `recovery`: record-recovery for an interrupted and a resumed sealed plan the person names.
@@ -211,10 +211,18 @@ export async function cleanupStage(ctx: StageContext, path: ActPathId): Promise<
   const sealed = documentPath(ctx, actStageId, "seal", "sealed-plan")!;
   const proposal = () => documentPath(ctx, stage, "propose-cleanup", "cleanup-proposal")!;
   const steps: GuidedStep[] = [
-    // The same read-only gates as the act stage, again now: the contract, the delivered identities and readiness.
+    // Again now, only what the cleanup itself requires (review N6 on #349): the contract, the delivered identities and the kill
+    // switch. Not `./alz apply preflight`: that reports apply readiness, which needs an engine qualification under 30 days old
+    // and an unchanged engine binary, and `./alz apply cleanup` requires neither (src/apply/driver.ts, checkEngineAndIdentities
+    // with kind "cleanup" checks identities, delivered tokens and targets, no qualification). Gating cleanup on it could leave
+    // resources in the account that the product would clean up.
     { name: "contract-check", fresh: true, run: () => runChild(ctx, stage, { args: ["apply", "contract-check", "--file", CONTRACT_PATH], io: "TERMINAL" }) },
     { name: "identity-check", fresh: true, run: () => runChild(ctx, stage, { args: ["apply", "identity-check", "--path", path, "--repository", ctx.config.act!.repository, "--phase", "delivered"], io: "TERMINAL", collectors: [WRITES.identity(path)] }) },
-    { name: "preflight", fresh: true, run: () => runChild(ctx, stage, { args: ["apply", "preflight", "--environment", ENV, "--contract", CONTRACT_PATH], io: "TERMINAL" }) },
+    {
+      name: "kill-switch", fresh: true, run: async () => killSwitchOn(ctx.root)
+        ? { outcome: "BLOCKED", code: "KILL_SWITCH_ON", detail: "The contract's kill switch is on (its file exists, or its state cannot be read). Only the owner removes it; nothing was proposed or run." }
+        : { outcome: "PASS", code: "KILL_SWITCH_OFF", detail: "The contract's kill switch is off." },
+    },
     { name: "observe", run: () => runChild(ctx, stage, { args: ["apply", "observe", "--sealed", sealed], io: "TERMINAL" }) },
     {
       name: "propose-cleanup", ask: ["Cleanup requester key file for " + target.requesterId],
