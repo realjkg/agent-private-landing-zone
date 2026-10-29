@@ -26,6 +26,11 @@ import {
   type ReleaseFileEvidence,
   type PreviewOperateReleaseManifest,
 } from "../release/manifest.js";
+import {
+  describeFindings,
+  pathExclusions,
+  scanPackageRoot,
+} from "../release/package-exclusions.js";
 
 function readArg(
   name: string,
@@ -134,6 +139,13 @@ async function verify(
       root,
       manifest,
     );
+  // The field package exclusion guard, by name, on the files the manifest names (docs/field-package.md).
+  blockers.push(
+    ...describeFindings(
+      (Array.isArray(manifest.files) ? manifest.files : [])
+        .flatMap((file) => pathExclusions(String(file.path))),
+    ).map((line) => "Release package contains excluded content: " + line),
+  );
 
   if (
     blockers.length > 0
@@ -186,6 +198,18 @@ async function generate(
     await chmod(brandDestination, 0o644);
   } finally {
     await rm(tempBrandPath, { force: true });
+  }
+
+  // Fail closed before anything is hashed: the field package never carries a contract, a token, a key, runner
+  // registration, Terraform state, a saved plan or pilot evidence (src/release/package-exclusions.ts).
+  const excluded =
+    await scanPackageRoot(root);
+
+  if (excluded.length > 0) {
+    throw new Error(
+      "RELEASE_PACKAGE_EXCLUDED_CONTENT: " +
+        describeFindings(excluded).join("; "),
+    );
   }
 
   const files =
