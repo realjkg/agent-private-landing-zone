@@ -981,11 +981,12 @@ export const CDK: SyncEngineSpec = {
     sealReads: "  reads           the stack with the DISCOVERY identity, then creates and describes the change set with the CHANGESET identity",
     qualifyHeading: "QUALIFY THE CDK ADAPTERS (needs the real AWS CLI; against DEV it runs the version check and describe-stacks as each identity, and creates and executes nothing)",
     qualifyReads: "  runs            describe-stacks as DISCOVERY, CHANGESET and APPLY",
+    // What qualify's own logs can show (#365 review 6510401916, N14): describe-stacks only, so no change set creation or execution is attested here.
     attestation: (_provider, changeSet, apply) => [
-      "  change set creation was by   CHANGESET  " + changeSet,
-      "  stack execution is by        APPLY      " + apply,
-      "This run only described stacks. That CHANGESET cannot execute and APPLY cannot create a change set is shown by the roles' IAM policies and the cloud's logs, not by this run.",
-      "Only if they show that, and the APPLY client never created a change set and the CHANGESET client never executed one, type (anything else writes nothing):",
+      "  this run's calls     describe-stacks only, as DISCOVERY, CHANGESET  " + changeSet + "  and APPLY  " + apply,
+      "  no change set        was created or executed by any role in this run",
+      "That CHANGESET cannot execute and APPLY cannot create a change set is shown by the roles' IAM policies, not by this run. Who creates and who executes a change set is first observable at the seal and the first supervised DEV apply.",
+      "Only if the logs show only those reads, and the IAM policies show that separation, type (anything else writes nothing):",
     ],
     applyNote: "It executes exactly the sealed change set, never a new one, with the APPLY identity. It never deletes a stack or a change set.",
     cleanupNote: "It removes exactly the approved logical ids from the sealed template through one UPDATE change set, created by CHANGESET and executed by APPLY. The stack itself is never deleted; retiring it is the owner's separate decision.",

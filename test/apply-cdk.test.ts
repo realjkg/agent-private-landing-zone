@@ -1020,7 +1020,8 @@ test("./alz apply works for the engine the reviewed contract names, with no engi
   const qualified = await cli(["qualify", "--request", request, "--manifest", manifest], [targetString(target), attest]);
   assert.equal(qualified.code, 0, qualified.err);
   assert.match(qualified.out, /THIS RUNS NO PROJECT CODE/);
-  assert.match(qualified.out, /change set creation was by\s+CHANGESET/);
+  assert.match(qualified.out, /describe-stacks only, as DISCOVERY, CHANGESET/);
+  assert.doesNotMatch(qualified.out, /change set creation was by/, "qualify creates no change set, so it never asks the person to attest one");
   assert.doesNotMatch(asked.join("\n"), /code>/);
   assert.deepEqual((await loadQualificationRecords(AWS, vault)).map((r) => r.engine), ["CDK", "CDK", "CDK"], "preview, apply and cleanup adapters");
   assert.deepEqual([...new Set(subcommandsOf(calls()))].sort(), ["--version", "describe-stacks"], "qualifying created nothing");

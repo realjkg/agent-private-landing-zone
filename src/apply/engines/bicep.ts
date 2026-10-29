@@ -871,12 +871,13 @@ export const BICEP: BicepEngineSpec = {
     sealHeading: "SEAL A DEPLOYMENT STACK PLAN (this compiles main.bicep and runs a what-if; nothing is created, changed or deleted)",
     sealReads: "  reads           the resource group (it must be in the contract's location) and the stack with the DISCOVERY identity; runs the what-if with the APPLY identity",
     qualifyHeading: "QUALIFY THE BICEP ADAPTERS (needs the real az and bicep; against DEV it signs both identities in and reads the group and the stack, and creates nothing)",
-    qualifyReads: "  runs            az account show, az group show and az stack group show as DISCOVERY and APPLY",
+    qualifyReads: "  runs            az login and az account show as DISCOVERY and APPLY, az group show as DISCOVERY, and az stack group show as DISCOVERY and APPLY",
+    // What qualify's own logs can show (#365 review 6510401916, N14): sign-ins and reads only, so no what-if, create or delete is attested here.
     attestation: (_provider, discovery, apply) => [
-      "  reads were by                 DISCOVERY  " + discovery,
-      "  what-if, stack create, delete APPLY      " + apply,
-      "This run only read. That DISCOVERY cannot write and APPLY reaches only the pilot resource group is shown by the role assignments and the Azure activity log, not by this run.",
-      "Only if they show that, type (anything else writes nothing):",
+      "  this run's calls     sign-in and reads only: DISCOVERY  " + discovery + "  read the group and the stack, APPLY  " + apply + "  read the stack",
+      "  no what-if, stack create or delete ran in this run",
+      "That DISCOVERY cannot write and that APPLY (which runs the what-if, the stack create and the delete at seal, apply and cleanup) reaches only the pilot resource group is shown by the role assignments, not by this run.",
+      "Only if the sign-in logs show both sign-ins, the Azure activity log shows no write by either in this run, and the role assignments show that, type (anything else writes nothing):",
     ],
     applyNote: "It creates or updates exactly one deployment stack from the sealed template, with deny settings on, as APPLY. It never creates or deletes a resource group.",
     cleanupNote: "It deletes the whole deployment stack with deleteResources, as APPLY: the stack's managed resources are deleted, and the pilot resource group is left in place.",
