@@ -17,7 +17,7 @@ import type { EngineSpec } from "./engine-spec.js";
 export const GCP_API_BACKEND_SENTINEL = "GCP_API_NO_STATE";
 export const GCP_API_WORKSPACE = "default";
 export const TOPIC_PREFIX = /^alz-[a-z0-9-]{1,40}-$/;
-/** A run's full topic id: the `alz-` topic rule of the engine (src/apply/engines/gcp-api.ts `TOPIC_ID`), which every prefix plus suffix meets. */
+/** A run's full topic id: the `alz-` topic rule, which every prefix plus suffix meets. The one copy in src/apply; the engine imports it. */
 export const TOPIC_ID = /^alz-[a-z0-9-]{1,59}[a-z0-9]$/;
 /** How `parent` is shown wherever this path shows it (preview, evidence, reports): the path never reads Resource Manager (D9). */
 export const PARENT_LABEL = "owner-declared, not observed";

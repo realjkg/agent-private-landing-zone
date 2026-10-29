@@ -65,6 +65,15 @@ Each row names the command, what the owner must see, and what gets kept. "Kept" 
 
 The observation's unit sweep reads Cloud Asset Inventory, which indexes new resources with a delay (minutes; GF5, unverified). Right after an apply, the sweep may not list the new topic yet. That is not a failure: a resource the state names that the sweep does not yet list is not a stray. A listing that fails or stops part-way, though, makes the verdict `INCONCLUSIVE`. Rerun `./alz apply observe --sealed <SEALED_PLAN>` after a few minutes. Never record `PASS` by hand.
 
+### If the observation reports `CREDENTIALS`: check GF1 first
+
+The independent observation (`./alz apply observe`) gets DISCOVERY's token through the product's own token exchange (`src/tools/gcp-credentials.ts`, D20), not through Terraform's.
+- The exchange is form-encoded, with snake_case names, as Google's auth libraries send it. Whether Google's security token service accepts that form is **GF1, still open**.
+- A live rejection of the encoding answers HTTP 400. The product reports a 400 or 401 from the exchange as `CREDENTIALS`, the same class as a misconfigured identity.
+- So on the first live run, a `CREDENTIALS` reading before any resource is read is **first the open GF1 question**, not proof of a bad identity. Record it, and do not change grants or the identity to make it pass.
+- The refusal carries only its class. The HTTP status and the response body are never shown, because a response can quote a token.
+- Engineering settles GF1 from that evidence: the encoding, not the identity, is what changes.
+
 ### Manual resolution (review note N-3 of the API record)
 
 If the governed cleanup cannot run and a person deletes the topic by hand, a rerun of `./alz apply observe --sealed <SEALED_PLAN>` reports the topic `MISSING` and the observation `FAILED`. **That is the expected result for an absent topic**, not a new fault (EMULATED: `test/apply-emulated-gcp.test.ts`, "a hand-deleted topic observes as FAILED"). Record three things: the manual deletion, who made it, and the Cloud Audit Logs entry for the `DELETE`. A manual deletion is not a product cleanup. E8 stays open until a governed cleanup is recorded, or the owner records the exception.
@@ -83,5 +92,6 @@ There is no checklist for path 6 yet, and the owner cannot collect its evidence.
 - the topic prefix and a run-unique name drawn at seal (D4, D10);
 - the storage policy sealed and read back (D11);
 - exact-resource cleanup (D16).
+- the same token exchange as the observation, so a first-run `CREDENTIALS` refusal is GF1 first (see path 5's "If the observation reports `CREDENTIALS`").
 
 Engineering fills in this section before the owner runs path 6 acceptance. Until then, nothing here applies to path 6.

@@ -73,7 +73,8 @@ test("D20: the impersonation sends nothing for a malformed service account, life
   ]) {
     const google = scripted({ status: 200, body: JSON.stringify({ accessToken: ACCESS }) });
     const result = await impersonateServiceAccount(google.send, { federatedToken: FEDERATED, ...input });
-    assert.equal(result.ok, false, JSON.stringify(input));
+    // An accurate refusal (#356 review N2): the input was refused, not a host; nothing was sent, so there is no status.
+    assert.deepEqual(result, { ok: false, step: "IMPERSONATE", status: 0, hostRefused: false, malformed: false, invalidInput: true }, JSON.stringify(input));
     assert.equal(google.sent.length, 0, "nothing was sent");
   }
 });

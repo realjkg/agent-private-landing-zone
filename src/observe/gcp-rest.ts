@@ -138,7 +138,7 @@ export type DiscoveryGcpOptions = {
 
 /** The reader's class for a failed impersonation: the same classes it always gave. */
 const readerFailure = (failure: GcpTokenFailure): { failed: GcpErrorClass } =>
-  ({ failed: failure.malformed ? "UNEXPECTED_RESPONSE" : failure.status === 0 ? "HOST_REFUSED" : classOf(failure.status) });
+  ({ failed: failure.invalidInput ? "CREDENTIALS" : failure.malformed ? "UNEXPECTED_RESPONSE" : failure.status === 0 ? "HOST_REFUSED" : classOf(failure.status) });
 
 /** The GCP reader bound to DISCOVERY. `close` drops the tokens; call it when the observation is done. */
 export function createDiscoveryGcpReader(options: DiscoveryGcpOptions): { reader: GcpResourceReader; close(): void } {

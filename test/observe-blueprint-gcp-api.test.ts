@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { blueprintFromGcpApiTopic, GCP_API_TOPIC_ID, GCP_API_TOPIC_TYPE } from "../src/observe/blueprint.js";
 import { TOPIC_ID } from "../src/apply/gcp-api-target.js";
+import { TOPIC_ID as ENGINE_TOPIC_ID } from "../src/apply/engines/gcp-api.js";
 
 // SYNTHETIC. The GCP API-native blueprint mapper (docs/act-pilot-gcp-api-driver.md D6): one run, one topic, one entry.
 
@@ -39,4 +40,6 @@ test("D6: a read-back that is not a topic document is refused, and the refusal n
 test("D6: the mapper's topic id rule is the target module's, character for character (the observe side cannot import the apply path)", () => {
   assert.equal(GCP_API_TOPIC_ID.source, TOPIC_ID.source);
   assert.equal(GCP_API_TOPIC_ID.flags, TOPIC_ID.flags);
+  // The engine has no copy of its own (#356 review N1): it imports the target module's.
+  assert.equal(ENGINE_TOPIC_ID, TOPIC_ID);
 });

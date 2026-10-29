@@ -582,6 +582,13 @@ At most one of them is what Google documents for `sts.googleapis.com/v1/token` (
 - `https://docs.cloud.google.com/iam/docs/reference/sts/rest/v1/TopLevel/token` could not be read from the session: the host is outside its network allowlist.
 - GF1 is therefore narrowed but not closed: only the owner's live run shows what Google accepts.
 
+**How a live rejection shows (#356 review N3).**
+- If Google rejects the form, the exchange answers HTTP 400.
+- Both callers report a 400 from the exchange as `CREDENTIALS`, the same class as a misconfigured identity. The engine reports 400, 401 and 403 that way; the reader reports 400 and 401.
+- The owner treats a first-run `CREDENTIALS` refusal before any resource is read as the open GF1 question, not as a bad identity, and widens no grant (`docs/act-pilot-gcp-evidence.md`).
+- The refusal carries the class only. The HTTP status and the response body are never shown. Adding the status would change the shape of every engine and reader refusal, so it is left to G2, which owns those shapes.
+- A request the exchange refuses before sending (a malformed service account, lifetime or scope list) is `invalidInput`. It is never reported as a refused host.
+
 **Decision.** One exchange function, used by both, in the shared `src/tools/gcp-credentials.ts` (the serialized integrator's file) (which already holds `checkCredentialConfiguration` and `readTokenFile` for both). The scope and lifetime stay parameters. Before G2 merges, its request shape is checked against Google's published STS and IAM Credentials references. The owner's live DEV run is what proves it.
 
 ## 4. Lane order

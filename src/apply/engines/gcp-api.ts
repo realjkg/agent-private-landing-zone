@@ -8,6 +8,7 @@ import { checkCredentialConfiguration, exchangeSubjectToken, impersonateServiceA
 import { identityVariables, type ExecutionIdentity } from "../../tools/identity.js";
 import { sha256 } from "../../util/sha256.js";
 import { GCP } from "../providers/gcp.js";
+import { TOPIC_ID } from "../gcp-api-target.js";
 import { requesterRefusal, signRequest, verifyRequestSignature } from "../approval.js";
 import { HASH, TOKEN_FILE } from "../constants.js";
 import type { ApplyEnvironment, ApproverEntry, PilotContract, SealedRequest } from "../types.js";
@@ -50,7 +51,8 @@ const TOKEN_LIFETIME = "300s";
 /** A GCP project id. */
 export const PROJECT_ID = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
 /** A run-created topic id: the `alz-` prefix and Pub/Sub's safe subset, so no id needs escaping in a URL path. */
-export const TOPIC_ID = /^alz-[a-z0-9-]{1,59}[a-z0-9]$/;
+// The one topic id rule of path 6 (src/apply/gcp-api-target.ts); re-exported so existing imports keep working.
+export { TOPIC_ID };
 const LABEL_VALUE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 const UNIT_ID = /^alzu-[0-9a-f]{20}$/;
 const SERVICE_ACCOUNT = /^([a-z][a-z0-9-]{4,28}[a-z0-9])@([a-z][a-z0-9-]{4,28}[a-z0-9])\.iam\.gserviceaccount\.com$/;
@@ -256,6 +258,8 @@ async function bearerFor(identity: "APPLY" | "DISCOVERY", deps: Pick<GcpApiDeps,
 
 /** This engine's refusal for a failed token step: the same classes it always gave. */
 function tokenRefusal(failure: GcpTokenFailure): GcpApiRefusal {
+  // The identity check above already refuses a malformed service account; the exchange's own input check is the second line.
+  if (failure.invalidInput) return refuse("IDENTITY_NOT_CONFIGURED");
   if (failure.malformed) return refuse("UNEXPECTED_RESPONSE");
   if (failure.status === 0) return refuse(failure.hostRefused ? "HOST_REFUSED" : "HTTP_ERROR");
   return refuse(failure.status === 400 || failure.status === 401 || failure.status === 403 ? "CREDENTIALS" : "HTTP_ERROR");

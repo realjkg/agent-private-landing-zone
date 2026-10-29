@@ -139,7 +139,11 @@ export type GcpTokenSender = (request: GcpTokenRequest) => Promise<GcpTokenRespo
  * A failed step: the status the service answered (0: not sent or no answer), whether the caller's gate refused the request before
  * it existed, and whether a 200 answer carried no usable token. Never the answer's body, which can quote a token.
  */
-export type GcpTokenFailure = { ok: false; step: "EXCHANGE" | "IMPERSONATE"; status: number; hostRefused: boolean; malformed: boolean };
+export type GcpTokenFailure = {
+  ok: false; step: "EXCHANGE" | "IMPERSONATE"; status: number; hostRefused: boolean; malformed: boolean;
+  /** The caller's input was refused before any request existed (a malformed service account, lifetime or scope list): nothing was sent. */
+  invalidInput?: true;
+};
 export type GcpTokenResult = { ok: true; token: string } | GcpTokenFailure;
 
 const EXCHANGE_GRANT = "urn:ietf:params:oauth:grant-type:token-exchange";
@@ -173,7 +177,7 @@ export async function exchangeSubjectToken(send: GcpTokenSender, input: { audien
 /** Uses a federated token once to get the identity's service account's access token, with exactly the caller's scopes and lifetime. */
 export async function impersonateServiceAccount(send: GcpTokenSender, input: { federatedToken: string; serviceAccount: string; scopes: readonly string[]; lifetime: string }): Promise<GcpTokenResult> {
   if (!SERVICE_ACCOUNT.test(input.serviceAccount) || !/^[0-9]{1,5}s$/.test(input.lifetime) || input.scopes.length === 0) {
-    return { ok: false, step: "IMPERSONATE", status: 0, hostRefused: true, malformed: false };
+    return { ok: false, step: "IMPERSONATE", status: 0, hostRefused: false, malformed: false, invalidInput: true };
   }
   const response = await send({
     method: "POST", url: generateAccessTokenUrl(input.serviceAccount),
