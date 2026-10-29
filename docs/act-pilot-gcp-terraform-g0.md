@@ -116,7 +116,7 @@ An access token is never part of the backend configuration. The spike shows Terr
 | Saved-backend check | `type` is `gcs`, and `bucket`/`prefix` equals the contract's |
 | Backend-block rule | the project's block is `backend "gcs"` with `bucket` and `prefix` only. `credentials`, `access_token`, `impersonate_service_account*`, `encryption_key`, `kms_encryption_key` and `storage_custom_endpoint` are refused (`BACKEND_BLOCK_NOT_IN_CONTRACT`), as are a `cloud` block and another backend type |
 
-`-lock=false` and `force-unlock` stay outside the pilot.
+The product never runs `-lock=false` or `force-unlock`. Only the owner runs `terraform force-unlock <LOCK_ID>`, by hand, as STATE_WRITE (`docs/act-pilot-apply.md`, "Recovering a state lock left by a SIGKILL").
 
 With versioning on, the lock object also leaves noncurrent versions: the spike saw three after two applies. **PROPOSAL** P3: the bootstrap's noncurrent-version lifecycle rule also removes noncurrent `*.tflock` versions after a few days. It must never match `*.tfstate`.
 

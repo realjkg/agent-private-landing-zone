@@ -85,7 +85,7 @@ All with Terraform 1.16.4, the `gcs` backend and fake-gcs-server v1.53.1. Exit c
   - exit 137;
   - the lock object stayed;
   - the next `plan` exited 1 with `Error: Error acquiring the state lock`;
-  - `terraform force-unlock -force <id>` cleared it (an emulator-side recovery; the pilot never uses it).
+  - `terraform force-unlock -force <id>` cleared it (an emulator-side recovery; the product never runs `force-unlock`, and the owner's procedure never uses `-force`).
 - Neither stop produced `errored.tfstate` or `crash.log`.
 
 **F. The plan embeds the backend.** The plan file (a zip of `tfconfig`, `tfplan`, `tfstate`, `tfstate-prev`) embeds the bucket name in `tfplan`. It does not embed the emulator address, which came from the environment. Applying that plan with `STORAGE_EMULATOR_HOST` unset exited 1 with the same "could not find default credentials" error. Consequences:
