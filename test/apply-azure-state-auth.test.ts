@@ -17,6 +17,7 @@ import { createPrivateDirectory } from "../src/tools/private-workdir.js";
 import { PROFILES, TERRAFORM_APPLY_PROFILE } from "../src/tools/profiles.js";
 import {
   DEV_TARGET, ENGINE_VERSION, H, NOW, POLICY, REQUESTER, SOURCE_COMMIT, TENANT, behave, callsOf, identityEnv, installFakeTerraform, writeProject,
+  AZURE_LOCATION_FIXTURE,
 } from "./helpers/apply-fixtures.js";
 
 /**
@@ -27,7 +28,7 @@ import {
  * Default CI, fake engine. The real engine's behavior is in the opt-in test/apply-emulated.test.ts (SYNTHETIC/EMULATED).
  */
 
-const PINNED = { tenantId: TENANT, subscriptionId: DEV_TARGET.account, backend: DEV_TARGET.backend, workspace: "default", canary: { resources: [{ type: "azurerm_resource_group", count: 1 }] } };
+const PINNED = { tenantId: TENANT, subscriptionId: DEV_TARGET.account, backend: DEV_TARGET.backend, workspace: "default", location: AZURE_LOCATION_FIXTURE, canary: { resources: [{ type: "azurerm_resource_group", count: 1 }] } };
 /** The environment init's backend configuration was written from: STATE_WRITE is `statewrite-client-3` with `/run/fixture/statewrite-oidc-token`. */
 const WRITER_ENV = identityEnv("DEV");
 const [ACCOUNT, CONTAINER, ...KEY] = DEV_TARGET.backend.split("/");

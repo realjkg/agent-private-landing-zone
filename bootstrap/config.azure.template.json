@@ -3,9 +3,9 @@
   "provider": "AZURE",
   "engine": "TERRAFORM",
   "contractTargets": {
-    "DEV": { "tenantId": "00000000-0000-0000-0000-000000000000", "subscriptionId": "00000000-0000-0000-0000-000000000001", "backend": "examplealzstatedev/tfstate/dev.tfstate", "workspace": "default" },
-    "QA": { "tenantId": "00000000-0000-0000-0000-000000000000", "subscriptionId": "00000000-0000-0000-0000-000000000002", "backend": "examplealzstateqa/tfstate/qa.tfstate", "workspace": "default" },
-    "PROD": { "tenantId": "00000000-0000-0000-0000-000000000000", "subscriptionId": "00000000-0000-0000-0000-000000000003", "backend": "examplealzstateprod/tfstate/prod.tfstate", "workspace": "default" }
+    "DEV": { "tenantId": "00000000-0000-0000-0000-000000000000", "subscriptionId": "00000000-0000-0000-0000-000000000001", "backend": "examplealzstatedev/tfstate/dev.tfstate", "workspace": "default", "location": "eastus2" },
+    "QA": { "tenantId": "00000000-0000-0000-0000-000000000000", "subscriptionId": "00000000-0000-0000-0000-000000000002", "backend": "examplealzstateqa/tfstate/qa.tfstate", "workspace": "default", "location": "eastus2" },
+    "PROD": { "tenantId": "00000000-0000-0000-0000-000000000000", "subscriptionId": "00000000-0000-0000-0000-000000000003", "backend": "examplealzstateprod/tfstate/prod.tfstate", "workspace": "default", "location": "eastus2" }
   },
   "identityVariables": {
     "perIdentity": ["ALZ_<IDENTITY>_ARM_CLIENT_ID", "ALZ_<IDENTITY>_ARM_TENANT_ID", "ALZ_<IDENTITY>_ARM_SUBSCRIPTION_ID", "ALZ_<IDENTITY>_ARM_USE_OIDC=true", "ALZ_<IDENTITY>_ARM_OIDC_TOKEN_FILE"],

@@ -377,12 +377,15 @@ export type ArmBehavior = {
   unknownTypes?: string[];
   /** Resource types (namespace/type) the provider offers only in preview API versions. */
   previewOnlyTypes?: string[];
+  /** The location a resource's answer names, by id; null names none. Any other resource is at the client's default location. */
+  locations?: Record<string, string | null>;
 };
 export type ArmCall = { method: string; url: string; headers: Record<string, string>; body?: string };
 /** The federated token the fake identity carries, and the access token the fake endpoint issues: canaries that must never appear in a record. */
 export const ARM_FEDERATED_TOKEN_CANARY = "CANARY_FEDERATED_TOKEN_f3d3r4t3d";
 export const ARM_ACCESS_TOKEN_CANARY = "CANARY_ACCESS_TOKEN_4cc355";
-export function fakeArmHttp(behavior: ArmBehavior = {}): { http: (request: ArmCall) => Promise<{ status: number; body: string }>; calls: ArmCall[]; behave(next: ArmBehavior): void } {
+/** `defaultLocation`: where a resource is when the behavior does not say (kept across `behave`); null names none. */
+export function fakeArmHttp(behavior: ArmBehavior = {}, options: { defaultLocation?: string | null } = {}): { http: (request: ArmCall) => Promise<{ status: number; body: string }>; calls: ArmCall[]; behave(next: ArmBehavior): void } {
   const calls: ArmCall[] = [];
   let b = behavior;
   // The resource's own type is its last `/providers/` pair (an extension resource sits under a tracked one), as the real provider reports it; parsed by position like the product, so a group or an account named `providers` is a name.
@@ -424,7 +427,11 @@ export function fakeArmHttp(behavior: ArmBehavior = {}): { http: (request: ArmCa
     const failing = Object.entries(b.fail ?? {}).find(([id]) => id.toLowerCase() === lower);
     if (failing) return { status: failing[1], body: JSON.stringify({ error: { code: "CANARY_CLOUD_ERROR_c6", message: "CANARY_CLOUD_ERROR_c6" } }) };
     const found = (b.existing ?? []).find((id) => id.toLowerCase() === lower);
-    if (found) return { status: 200, body: JSON.stringify({ id: found, name: found.split("/").pop(), type: typeOf(found), properties: { secret: "CANARY_CLOUD_PROPERTY_c5" } }) };
+    if (found) {
+      const named = Object.entries(b.locations ?? {}).find(([id]) => id.toLowerCase() === lower);
+      const location = named === undefined ? (options.defaultLocation === undefined ? ARM_DEFAULT_LOCATION : options.defaultLocation) : named[1];
+      return { status: 200, body: JSON.stringify({ id: found, name: found.split("/").pop(), type: typeOf(found), ...(location === null ? {} : { location }), properties: { secret: "CANARY_CLOUD_PROPERTY_c5" } }) };
+    }
     return { status: 404, body: JSON.stringify({ error: { code: "ResourceNotFound", message: "not found" } }) };
   };
   return { http, calls, behave: (next) => { b = next; calls.length = 0; } };
@@ -492,6 +499,13 @@ export const approvers = [
  * configured cloud. A test whose plan creates something else names its own allowlist (`withCanary`).
  */
 export const CANARY_AZURE = { resources: [{ type: "azurerm_resource_group", count: 1 }] };
+/**
+ * The Azure Terraform fixtures' authorized location (owner decision of 2026-10-28: an Azure target names where its resources are
+ * placed), the region the fixtures' plans already place their resources in.
+ */
+export const AZURE_LOCATION_FIXTURE = "westeurope";
+/** Where the scripted ARM client says a resource is when a scenario does not say: the Bicep fixtures' location (bicep-fixtures.ts). */
+export const ARM_DEFAULT_LOCATION = "eastus2";
 export const CANARY_AWS = { resources: [{ type: "aws_cloudwatch_log_group", count: 1 }] };
 /** The same contract with `canary` as every target's allowlist. */
 export const withCanary = <T extends { targets: Record<string, unknown> }>(contract: T, canary: unknown): T => ({
@@ -516,9 +530,9 @@ export function canaryFor(changes: readonly unknown[]): { resources: { type: str
 export const contractJson = (killPath: string, over: Record<string, unknown> = {}) => ({
   schemaVersion: 1, enabled: true, provider: "AZURE", engine: "TERRAFORM",
   targets: {
-    DEV: { tenantId: TENANT, subscriptionId: DEV_TARGET.account, backend: DEV_TARGET.backend, workspace: "default", canary: CANARY_AZURE },
-    QA: { tenantId: TENANT, subscriptionId: QA_TARGET.account, backend: QA_TARGET.backend, workspace: "default", canary: CANARY_AZURE },
-    PROD: { tenantId: TENANT, subscriptionId: PROD_TARGET.account, backend: PROD_TARGET.backend, workspace: "default", canary: CANARY_AZURE },
+    DEV: { tenantId: TENANT, subscriptionId: DEV_TARGET.account, backend: DEV_TARGET.backend, workspace: "default", location: AZURE_LOCATION_FIXTURE, canary: CANARY_AZURE },
+    QA: { tenantId: TENANT, subscriptionId: QA_TARGET.account, backend: QA_TARGET.backend, workspace: "default", location: AZURE_LOCATION_FIXTURE, canary: CANARY_AZURE },
+    PROD: { tenantId: TENANT, subscriptionId: PROD_TARGET.account, backend: PROD_TARGET.backend, workspace: "default", location: AZURE_LOCATION_FIXTURE, canary: CANARY_AZURE },
   },
   requiredApprovals: { DEV: 1, QA: 1, PROD: 2 }, maxApprovalAgeMinutes: 60, approvers, killSwitchPath: killPath, authorize: AUTHORIZE_ALL, ...over,
 });

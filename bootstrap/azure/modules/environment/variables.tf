@@ -6,6 +6,13 @@ variable "settings" {
     state_container_name       = string
     apply_resource_group_name  = optional(string)
   })
+
+  # APPLY's custom role and DISCOVERY's Reader live on the pilot resource group, never on the subscription (owner decision of
+  # 2026-10-28: no subscription-wide Contributor, and no subscription-wide replacement either).
+  validation {
+    condition     = try(trimspace(var.settings.apply_resource_group_name) != "", false)
+    error_message = "Every environment needs apply_resource_group_name (a non-empty name): APPLY and DISCOVERY are scoped to that pilot resource group, never to the subscription."
+  }
 }
 
 variable "principal_ids" {
