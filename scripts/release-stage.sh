@@ -17,6 +17,22 @@ if [[ -z "$STAGE" ]]; then
   echo "usage: scripts/release-stage.sh STAGE_DIR" >&2
   exit 2
 fi
+# Refuse a stage the copy would land in, before anything is copied: the checkout itself, or a folder inside one of the copied
+# sources (cp would copy a folder into itself and leave a partial copy in the checkout).
+ROOT="$(pwd -P)"
+TARGET="$(realpath -m -- "$STAGE")"
+if [[ "$TARGET" == "$ROOT" ]]; then
+  echo "release-stage: refusing to stage into the checkout itself" >&2
+  exit 1
+fi
+for source in dist policy config; do
+  source_abs="$(realpath -m -- "$source")"
+  if [[ "$TARGET" == "$source_abs" || "$TARGET/" == "$source_abs"/* ]]; then
+    echo "release-stage: refusing to stage inside $source/, which is copied into the stage" >&2
+    exit 1
+  fi
+done
+
 if [[ -e "$STAGE" ]] && [[ -n "$(ls -A -- "$STAGE")" ]]; then
   echo "release-stage: $STAGE is not empty; stage into a new folder" >&2
   exit 1
@@ -40,8 +56,15 @@ chmod +x -- "$STAGE_ABS/alz"
 # The owner's files: removed from the stage only, each one named. Names are read NUL-separated from inside the staged config/
 # folder, so no character in a name or in STAGE can split a name or point the removal anywhere else; a path that does not
 # resolve inside the stage is refused, never removed.
-# The list is read completely before anything is removed.
-mapfile -d '' -t owned_files < <(cd -- "$STAGE_ABS/config" && find . \( \( -name 'act-pilot-contract*' ! -name '*.example.json' \) -o -path './evidence-runner.json' \) -prune -print0)
+# The list is read completely before anything is removed, and a find that fails stops the script (a process substitution
+# would hide its exit status, so the list goes through a private temporary file).
+owned_list="$(mktemp)"
+trap 'rm -f -- "$owned_list"' EXIT
+if ! (cd -- "$STAGE_ABS/config" && find . \( \( -name 'act-pilot-contract*' ! -name '*.example.json' \) -o -path './evidence-runner.json' \) -prune -print0) > "$owned_list"; then
+  echo "release-stage: could not list the staged config/ folder; the stage is incomplete" >&2
+  exit 1
+fi
+mapfile -d '' -t owned_files < "$owned_list"
 for owned in "${owned_files[@]}"; do
   relative="${owned#./}"
   target="$STAGE_ABS/config/$relative"

@@ -20,6 +20,8 @@ The archive holds exactly `dist/`, `policy/`, `config/`, `package.json`, `packag
 - **The archive.** `scripts/release-stage.sh` is the one staging definition: `supply-chain.yml` runs it, and the tests run it. It copies `config/` into the stage, then removes from the stage only, naming each file:
   - `config/act-pilot-contract*`, except the disabled `*.example.json` shapes. This covers the contract, its drafts and the retired pin.
   - `config/evidence-runner.json`.
+
+  Before it copies anything, it refuses a stage that is the checkout itself or lies inside `dist/`, `policy/` or `config/`, so no partial copy is left behind. It stops if listing the staged `config/` folder fails.
 - **The runtime image.** `.dockerignore` keeps the same files out of the build context, so `COPY config/` cannot carry them and no image layer ever holds them.
 
 So a build from the authorization commit still packages, and the package still carries no contract. The product in the package reads no contract file and reports `ACT_DISABLED`. The operator supplies their reviewed contract in their own install (section 6).
@@ -39,14 +41,14 @@ So a build from the authorization commit still packages, and the package still c
 | The owner's pilot contract `config/act-pilot-contract.json` (enabled or not), a draft of it, the retired pin, or any other `act-pilot-contract*` file except the disabled `*.example.json` shapes | name | `PILOT_CONTRACT` |
 | A pilot contract that is enabled or carries an `authorize` entry, under any name: JSON (with a BOM, UTF-16, nested in an array or object), YAML, or one gzip or base64 layer of either | content | `ENABLED_CONTRACT` |
 | The owner's runner configuration `config/evidence-runner.json`, which names customer targets | name | `OWNER_CONFIGURATION` |
-| Tokens and keys in any file: JWTs (delivered `<IDENTITY>.jwt` files included), GitHub tokens, AWS access key ids, AWS secret access keys (by a key name such as `aws_secret_access_key`, `AWS_SECRET_KEY`, `SECRET_ACCESS_KEY` or `SecretAccessKey` and a 40-character value), Azure storage keys and connection strings (`AccountKey=`, `SharedAccessSignature=`), and Azure SAS URLs (`sig=` with another SAS field such as `sv=`, `se=` or `sp=`, or on a `*.core.windows.net` host); `.env`, `.npmrc` and `.netrc` files by name | content and name | `TOKEN` |
+| Tokens and keys in any file: JWTs (delivered `<IDENTITY>.jwt` files included), GitHub tokens, AWS access key ids, AWS secret access keys (by a key name such as `aws_secret_access_key`, `AWS_SECRET_KEY`, `SECRET_ACCESS_KEY` or `SecretAccessKey` and a 40-character value), Azure storage keys and connection strings (`AccountKey=`, `SharedAccessSignature=`), and Azure SAS URLs (`sig=` with another SAS field such as `sv=`, `se=` or `sp=`, or on a `*.core.windows.net` host, also when HTML-escaped as `&amp;`); `.env`, `.npmrc` and `.netrc` files by name | content and name | `TOKEN` |
 | Private keys: PEM (also escaped inside JSON), OpenSSH, PKCS#8/#12, Java keystores, PuTTY, kubeconfig client keys, `id_*` | content and name | `PRIVATE_KEY` |
 | Cloud credentials: an AWS shared-credentials file under any name (an INI section with `aws_*` keys), a cloud service-account key file, and the `.aws`, `.azure` and `gcloud` folders | content and name | `CLOUD_CREDENTIALS` |
 | Runner registration (`.runner`, `.credentials*`, `.service`, `svc.sh`, `actions-runner/`) | name | `RUNNER_REGISTRATION` |
 | Service units: launchd `.plist`, systemd `.service`, `.timer` and `.socket`, `LaunchAgents/`, `LaunchDaemons/` | name | `SERVICE_UNIT` |
 | Terraform state, by name (`*.tfstate*`, `terraform.tfstate.d/`) and by content (`terraform_version`, `lineage` and `serial`); working folders; real `*.tfvars` | content and name | `TERRAFORM_STATE`, `TERRAFORM_WORKDIR`, `TERRAFORM_VARIABLES` |
 | Saved plans: by name (`*.tfplan`, `*.tfplan.json`, `tfplan`, `plan.out`, `*.plan`); a zip under any name whose directory holds `tfplan`, `tfstate` or `tfconfig/` entries; a JSON plan by content | content and name | `SAVED_PLAN` |
-| Inside a zip that starts at the file's first byte: every stored or deflated entry is inflated in memory and judged by these same rules, by its name and content, one level deep. A zip whose directory cannot be read, or an entry in another compression method, fails closed | content | the entry's own code, or `UNREADABLE` |
+| Inside a zip that starts at the file's first byte: each stored or deflated entry is inflated in memory, one at a time and released before the next, and judged by these same rules, by its name and content, one level deep. One entry may inflate to 64 MB, and all entries of one zip to 256 MB together (`ZIP_INFLATE_BUDGET`). These fail closed: a damaged directory; two directory records that point at one entry; an encrypted entry, stored or deflated; an entry in another compression method or one that cannot be inflated; and a zip past either limit, where the rest of that zip is not read | content | the entry's own code, or `UNREADABLE` |
 | Anything under `.runs/`: evidence, sealed plans, ledgers, journals, qualification records | name | `RUN_EVIDENCE` |
 | Pilot evidence and proposals elsewhere | name | `PILOT_EVIDENCE` |
 | Sealed plans and signed approvals, under any name | content | `SEALED_PLAN`, `SIGNED_APPROVAL` |
@@ -60,7 +62,7 @@ So a build from the authorization commit still packages, and the package still c
 
 **Known limitations (not detected):**
 - **More than one encoding layer:** base64 of base64, gzip of base64, gzip of gzip, and base64 embedded in a JSON value. One gzip or base64 layer of the whole file, and base64 of gzip, are decoded.
-- **Archives beyond one zip level:** a zip inside a zip, tar or tgz; a zip with bytes before it (for example a self-extracting archive); encrypted or password-protected zips (an entry that cannot be inflated fails closed); and archive formats other than zip.
+- **Archives beyond one zip level:** a zip inside a zip, tar or tgz; a zip with bytes before it (for example a self-extracting archive); and archive formats other than zip. (An encrypted zip entry is not inspected; it is refused as `UNREADABLE`, above.)
 - **Contract forms the rules do not parse:** YAML with quoted keys or a JSON flow mapping; a contract written as a literal inside a JavaScript, TypeScript, CSS or HTML file (the YAML rule skips code files, and the JSON rules read whole-file JSON); JSON nested more than four levels deep.
 - **Weak shapes:** a SAS URL whose only SAS field is `sig=` on a host other than `*.core.windows.net`; secrets in a format none of the rules above names.
 - **Identifiers that are not secrets:** account, subscription or project ids and resource names in a file that is not pilot evidence by name or shape.
