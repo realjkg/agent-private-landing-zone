@@ -131,8 +131,10 @@ test("the owner's decision of 2026-10-28 moves the six pillar gates to v1.1: eac
   assert.notEqual(excludedGate("gcp-provider").status, "OUT_OF_SCOPE");
   assert.ok(statusProblems(withEntry("gcp-provider", { status: "OUT_OF_SCOPE" }), { scope: shippedScope, journeys })
     .some((x) => x.includes("gcp-provider") && x.includes("needs the owner's scope")));
-  assert.equal(shippedStatus.gates.filter((x) => x.status !== "OUT_OF_SCOPE").length, 25, "in-scope gates after the decision");
-  assert.match(renderReleaseStatus(shippedStatus, shippedScope), /0 of 25 in-scope gates pass/);
+  // 25 after the pillar decision, plus act:gcp-terraform (owner decision 6481421924: GCP Terraform ACT is in the DEV release).
+  assert.equal(shippedStatus.gates.filter((x) => x.status !== "OUT_OF_SCOPE").length, 26, "in-scope gates after the decisions");
+  assert.equal(excludedGate("act:gcp-terraform").status, "BLOCKED", "act:gcp-terraform is in scope and BLOCKED until live evidence exists");
+  assert.match(renderReleaseStatus(shippedStatus, shippedScope), /0 of 26 in-scope gates pass/);
 });
 
 test("the scope must name the owner's decision and exactly the platforms and paths the admission gates define", () => {

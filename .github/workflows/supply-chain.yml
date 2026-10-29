@@ -142,6 +142,9 @@ jobs:
             .runs/release/stage/release-manifest.json
             .runs/release/agent-private-landing-zone.tar.gz
             .runs/release/agent-private-landing-zone.tar.gz.sha256
+          # .runs is a hidden path, which upload-artifact leaves out unless told to keep it. The artifact keeps these relative
+          # paths, and the release-archive gate reads them there (CI_ARTIFACT_PATHS in src/qualification/ci-gate.ts).
+          include-hidden-files: true
           if-no-files-found: warn
           retention-days: 30
 

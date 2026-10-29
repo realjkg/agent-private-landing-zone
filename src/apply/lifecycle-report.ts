@@ -1,3 +1,4 @@
+import { ACT_RELEASE_PATHS } from "../qualification/release-admission.js";
 import { canonicalJson } from "../teardown/manifest.js";
 import type { ResolvedTarget } from "../teardown/driver/types.js";
 import { sha256 } from "../util/sha256.js";
@@ -220,7 +221,8 @@ export function lifecycleReportProblems(value: unknown, expected: { sourceCommit
   if (problems.length > 0) return problems;
   if (value.schemaVersion !== 1 || value.reportKind !== "ACT_LIFECYCLE" || value.gateVersion !== LIFECYCLE_REPORT_VERSION) problems.push("report: not a schemaVersion 1 ACT_LIFECYCLE report of gate version " + LIFECYCLE_REPORT_VERSION);
   if (typeof value.gateId !== "string" || !/^act:[a-z]+-[a-z]+$/.test(value.gateId)) problems.push("report.gateId: not an ACT gate id");
-  if (!["AWS", "AZURE"].includes(value.provider as string) || !["TERRAFORM", "CDK", "BICEP"].includes(value.engine as string) || value.scenario !== "pilot-apply-observe-cleanup") problems.push("report: provider, engine or scenario is unknown");
+  // A report is for one of the release's ACT paths (ACT_RELEASE_PATHS, the source of the act:* gates): a provider and engine without a path, such as GCP_API before its own path exists, has no gate to report on.
+  if (!ACT_RELEASE_PATHS.some((path) => path.provider === value.provider && path.engine === value.engine) || value.scenario !== "pilot-apply-observe-cleanup") problems.push("report: provider, engine or scenario is unknown");
   if (value.gateId === "act:" + String(value.provider).toLowerCase() + "-" + String(value.engine).toLowerCase() === false) problems.push("report.gateId: does not name the report's provider and engine");
   if (value.mode !== "SYNTHETIC" && value.mode !== "MIXED" && value.mode !== "LIVE") problems.push("report.mode: SYNTHETIC, MIXED or LIVE");
   if (typeof value.sourceCommit !== "string" || !COMMIT.test(value.sourceCommit)) problems.push("report.sourceCommit: not a commit id");

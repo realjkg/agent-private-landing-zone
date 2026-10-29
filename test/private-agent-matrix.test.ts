@@ -9,13 +9,14 @@ import {
   type MatrixRunnerDeps,
 } from "../src/qualification/private-agent-matrix.js";
 
-test("all nine existing ALZ scenarios converge through direct and conversational fixture paths", async () => {
+test("all ten existing ALZ scenarios, GCP Terraform's among them, converge through direct and conversational fixture paths", async () => {
   const report = await runPrivateAgentMatrix({
     sourceCommit: "a".repeat(40),
     mode: "OFFLINE_FIXTURE",
   });
-  assert.equal(report.scenarioCount, 9);
-  assert.equal(new Set(report.results.map((r) => r.id)).size, 9);
+  assert.equal(report.scenarioCount, 10);
+  assert.equal(new Set(report.results.map((r) => r.id)).size, 10);
+  assert.ok(report.results.some((r) => r.id === "terraform-gcp-brownfield"));
   assert.equal(report.passed, true, JSON.stringify(report.results.map((r) => ({id:r.id,d:r.direct.status,c:r.conversational.status,dh:r.direct.designHash,ch:r.conversational.designHash,reason:r.direct.errorCode ?? r.conversational.errorCode}))));
   assert.equal(report.agentAuthoredIacQualified, false);
   assert.equal(report.infrastructureAct, "DISABLED");

@@ -62,8 +62,8 @@ test("unknown or malformed data is never READY", () => {
 });
 
 test("ties keep a stable order: cloud (AWS, Azure, GCP), then engine (Terraform first), then the order given", () => {
-  const given = [path("GCP", "NATIVE_API", { inRelease: false }), path("AZURE", "BICEP"), path("GCP", "TERRAFORM", { inRelease: false }), path("AWS", "CDK"), path("AZURE", "TERRAFORM"), path("AWS", "TERRAFORM")];
-  assert.deepEqual(keys(orderByReadiness(given)), ["AWS/TERRAFORM", "AWS/CDK", "AZURE/TERRAFORM", "AZURE/BICEP", "GCP/TERRAFORM", "GCP/NATIVE_API"]);
+  const given = [path("GCP", "GCP_API", { inRelease: false }), path("AZURE", "BICEP"), path("GCP", "TERRAFORM", { inRelease: false }), path("AWS", "CDK"), path("AZURE", "TERRAFORM"), path("AWS", "TERRAFORM")];
+  assert.deepEqual(keys(orderByReadiness(given)), ["AWS/TERRAFORM", "AWS/CDK", "AZURE/TERRAFORM", "AZURE/BICEP", "GCP/TERRAFORM", "GCP/GCP_API"]);
   assert.deepEqual(keys(orderByReadiness([...given].reverse())), keys(orderByReadiness(given)), "the result does not depend on the order given");
   const twins = [path("AWS", "TERRAFORM", { label: "first" }), path("AWS", "TERRAFORM", { label: "second" })];
   assert.deepEqual(orderByReadiness(twins).map((p) => p.label), ["first", "second"]);
@@ -76,10 +76,11 @@ test("the release records' shape today: Azure Terraform READY in DEV goes first;
     path("AWS", "CDK", { blockers: [owner("live"), { party: "ENGINEERING", source: "GATE", text: "qualify" }] }),
     path("AZURE", "TERRAFORM", { blockers: [owner("live"), owner("gate")], isContractPath: true, decisions: [decision("DEV"), decision("QA", { ready: null })] }),
     path("AZURE", "BICEP", { implemented: false, journeyStatus: "BLOCKED", blockers: [{ party: "ENGINEERING", source: "JOURNEY", text: "ui" }] }),
-    path("GCP", "TERRAFORM", { inRelease: false, journeyStatus: "NOT_IMPLEMENTED" }),
-    path("GCP", "NATIVE_API", { inRelease: false, journeyStatus: "NOT_IMPLEMENTED" }),
+    // GCP Terraform is a release path (act:gcp-terraform), partial like Bicep: it ties with Bicep's tier and sorts after it as GCP.
+    path("GCP", "TERRAFORM", { implemented: false, journeyStatus: "BLOCKED", blockers: [{ party: "ENGINEERING", source: "JOURNEY", text: "ui" }, owner("live")] }),
+    path("GCP", "GCP_API", { inRelease: false, journeyStatus: "NOT_IMPLEMENTED" }),
   ];
-  assert.deepEqual(keys(orderByReadiness(paths)), ["AZURE/TERRAFORM", "AWS/TERRAFORM", "AWS/CDK", "AZURE/BICEP", "GCP/TERRAFORM", "GCP/NATIVE_API"]);
+  assert.deepEqual(keys(orderByReadiness(paths)), ["AZURE/TERRAFORM", "AWS/TERRAFORM", "AWS/CDK", "AZURE/BICEP", "GCP/TERRAFORM", "GCP/GCP_API"]);
 });
 
 test("environments: READY first, then enabled by fewest unmet items (not checked last), then the ones the contract does not enable", () => {

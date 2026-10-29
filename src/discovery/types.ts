@@ -1,6 +1,6 @@
 import type { Emitter } from "../observability/bus.js";
 
-export type Provider = "AWS" | "AZURE";
+export type Provider = "AWS" | "AZURE" | "GCP";
 
 export type EnvironmentClassification =
   | "BROWNFIELD"

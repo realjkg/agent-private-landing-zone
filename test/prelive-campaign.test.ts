@@ -38,15 +38,16 @@ test("strict matrix CLI parsing never drops the first unexpected argument", () =
 
 test("pre-live campaign runs every existing scenario and all applicable faults", async () => {
   const campaign = await runPreliveCampaign({ sourceCommit: "a".repeat(40) });
-  assert.equal(campaign.scenarioCount, 9);
-  assert.equal(campaign.results.length, 9);
-  assert.equal(new Set(campaign.results.map((r) => r.id)).size, 9);
-  assert.equal(campaign.alternativeProviderChecks, 9);
+  // Ten Phase E scenarios: the nine AWS/Azure ones and GCP Terraform's (terraform-gcp-brownfield, act:gcp-terraform).
+  assert.equal(campaign.scenarioCount, 10);
+  assert.equal(campaign.results.length, 10);
+  assert.equal(new Set(campaign.results.map((r) => r.id)).size, 10);
+  assert.equal(campaign.alternativeProviderChecks, 10);
   assert.equal(campaign.incompatibleProviderChecks, 0);
   assert.equal(campaign.excludedIncompatiblePairs, 3);
-  assert.equal(campaign.expectedNonApplicablePairs, 9);
-  assert.equal(campaign.totalChaosFaults, 9 * 11);
-  assert.equal(campaign.applicableChaosFaults + campaign.notApplicableChaosFaults, 99);
+  assert.equal(campaign.expectedNonApplicablePairs, 10);
+  assert.equal(campaign.totalChaosFaults, 10 * 11);
+  assert.equal(campaign.applicableChaosFaults + campaign.notApplicableChaosFaults, 110);
   assert.equal(campaign.notApplicableChaosFaults, 5);
   assert.equal(campaign.outcome, "PRELIVE_OFFLINE_COMPLETE",
     JSON.stringify(campaign.results.filter((item) =>
@@ -77,12 +78,12 @@ test("pre-live campaign runs every existing scenario and all applicable faults",
   }
   const infrastructureAsCodeState = campaign.results.filter((item) =>
     ["TERRAFORM", "OPENTOFU", "PULUMI"].includes(item.adapter));
-  // Terraform on AWS and on Azure, OpenTofu and Pulumi: the engines that keep state, each of whose scenarios must contain a missing state.
-  assert.equal(infrastructureAsCodeState.length, 4);
+  // Terraform on AWS, Azure and GCP, OpenTofu and Pulumi: the engines that keep state, each of whose scenarios must contain a missing state.
+  assert.equal(infrastructureAsCodeState.length, 5);
   assert.ok(infrastructureAsCodeState.every((item) =>
     item.faultResults.find((f) => f.fault === "MISSING_IAC_STATE")?.outcome === "CONTAINED"));
   assert.equal(campaign.results.filter((item) =>
-    item.alternateProvider.result === "NOT_APPLICABLE").length, 9);
+    item.alternateProvider.result === "NOT_APPLICABLE").length, 10);
 });
 
 test("unsafe simulated mutation must be observed and cannot be called clean", async () => {

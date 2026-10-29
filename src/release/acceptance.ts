@@ -16,11 +16,15 @@ export const STEP_STATUSES = ["NOT_IMPLEMENTED", "BLOCKED", "SYNTHETIC_PASS", "L
 export type StepStatus = typeof STEP_STATUSES[number];
 export const ROW_PROOFS = ["blueprint", "independentVerification", "cleanupDisposition", "sourceBoundEvidence"] as const;
 export type RowProof = typeof ROW_PROOFS[number];
-/** The six rows, in order: every cloud with its Terraform path and its native path. */
+/**
+ * The six rows, in order: every cloud with its Terraform path and its native path. A row's `path` is the engine id the release
+ * paths, the contract and the live record use (`row.path === engine`), so GCP's native path is GCP_API (decision D18,
+ * docs/act-pilot-gcp-api-driver.md); "API-native" is only its display word.
+ */
 export const REQUIRED_ROWS: readonly { cloud: string; path: string }[] = [
   { cloud: "AWS", path: "TERRAFORM" }, { cloud: "AWS", path: "CDK" },
   { cloud: "AZURE", path: "TERRAFORM" }, { cloud: "AZURE", path: "BICEP" },
-  { cloud: "GCP", path: "TERRAFORM" }, { cloud: "GCP", path: "NATIVE_API" },
+  { cloud: "GCP", path: "TERRAFORM" }, { cloud: "GCP", path: "GCP_API" },
 ];
 const TEST_KINDS = ["ui", "positive", "denied", "interrupted", "recovery"] as const;
 /** What a step needs besides its own tests before it can pass. */
