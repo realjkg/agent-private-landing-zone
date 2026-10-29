@@ -126,8 +126,9 @@ export type EngineCleanupRun = {
   /**
    * The engine's state as it stands now, read-only, for identifiers only (a location remediation checks that the address it deletes
    * still maps to exactly the resource id it was approved for). Optional: an engine without it cannot run a location remediation.
+   * May return a promise (D5): the driver awaits it.
    */
-  stateDocument?(): StateDocument | undefined;
+  stateDocument?(): MaybePromise<StateDocument | undefined>;
 };
 
 /** What the CLI tells a person before each step; the engine's own steps and identities are what they are told about. */

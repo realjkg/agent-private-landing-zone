@@ -859,7 +859,7 @@ export async function runCleanup(request: CleanupRequest, deps: ApplyDeps): Prom
     // was made from still maps the address to exactly the approved resource id, and the cloud, read again as DISCOVERY, still shows that
     // network, tagged with this run's unit, in the same wrong location, with nothing else tagged. Anything else stops here.
     if (remediation) {
-      const stateNow = remediationStateProblem(run, sealed.changes, blueprint);
+      const stateNow = await remediationStateProblem(run, sealed.changes, blueprint);
       if (stateNow) return refuse("REMEDIATION_RECHECK_FAILED", stateNow + " Nothing was deleted and no approval was consumed. Observe the run again; if the network still needs removing, propose and approve a new remediation.");
       const recheck = await recheckLocationRemediation(proposal, blueprint, observation, {
         contractPath: deps.contractPath, evidenceDir, env, toolDirs: deps.toolDirs, scratchParent: deps.scratchParent, now: deps.now, arm: deps.arm,
@@ -947,10 +947,11 @@ export async function runCleanup(request: CleanupRequest, deps: ApplyDeps): Prom
  * addresses to resource ids exactly as the blueprint the proposal binds did, so the targeted destroy deletes the approved resource id
  * and nothing named the same. The state document is dropped here.
  */
-function remediationStateProblem(run: EngineCleanupRun, changes: readonly PlanChange[], blueprint: BlueprintRecord): string | undefined {
+async function remediationStateProblem(run: EngineCleanupRun, changes: readonly PlanChange[], blueprint: BlueprintRecord): Promise<string | undefined> {
   let current: string | undefined;
   try {
-    const state = run.stateDocument?.();
+    // Awaited (D5, review of #348): an engine whose read returns a promise is judged on what it read, never refused as unread.
+    const state = await run.stateDocument?.();
     if (state?.source === "TERRAFORM_STATE_PULL") current = canonicalJson(blueprintFromTerraformStatePull(state.document, changes) as never);
   } catch { current = undefined; }
   if (current === undefined) return "The engine's state could not be read again before deletion, so the network's resource id could not be confirmed.";

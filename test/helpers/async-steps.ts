@@ -7,7 +7,7 @@ import type { EngineApplyRun, EngineCleanupRun, EngineSpec } from "../../src/app
  * place for `body` only and restored afterward, whatever happens. Nothing in src/ can reach this.
  */
 export type AsyncStep = "plan" | "qualify" | "prepare" | "rederive" | "execute" | "settle" | "recoveryFiles" | "stateDocument"
-  | "cleanupPrepare" | "planDestroy" | "cleanupExecute" | "cleanupSettle" | "cleanupRecoveryFiles";
+  | "cleanupPrepare" | "planDestroy" | "cleanupExecute" | "cleanupSettle" | "cleanupRecoveryFiles" | "cleanupStateDocument";
 export type AsyncHooks = Partial<Record<AsyncStep, () => void | Promise<void>>>;
 
 const yieldOnce = (): Promise<void> => new Promise((done) => setImmediate(done));
@@ -52,6 +52,7 @@ export async function withAsyncSteps<T>(engine: EngineSpec, hooks: AsyncHooks, b
         execute: (control) => step("cleanupExecute", () => run.execute(control)),
         settle: (applied) => step("cleanupSettle", () => run.settle(applied)),
         recoveryFiles: () => step("cleanupRecoveryFiles", () => run.recoveryFiles()),
+        ...(run.stateDocument ? { stateDocument: () => step("cleanupStateDocument", () => run.stateDocument!()) } : {}),
       };
       return wrapped;
     };
