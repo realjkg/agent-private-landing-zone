@@ -490,3 +490,15 @@ test("at the terminal (SYNTHETIC): propose-remediation writes the remediation an
   assert.equal(verified.code, 0, verified.stderr);
   assert.equal((verified.data as { disposition: string }).disposition, "COMPLETE");
 });
+
+test("the location remediation and its LOCATION_MISMATCH refusal are Azure's only: another provider's misplaced resource keeps its own refusal, and gets no remediation", async () => {
+  const w = world();
+  const run = await applied(w);
+  const base = inputOf(w, run);
+  const gcp = { ...base.contract, provider: "GCP" } as PilotContract;
+  const ordinary = buildCleanupProposal({ ...base, contract: gcp });
+  assert.equal(ordinary.ok, false);
+  assert.notEqual((ordinary as { code: string }).code, "LOCATION_MISMATCH");
+  assert.doesNotMatch((ordinary as { message: string }).message, /propose-remediation/);
+  refused(buildLocationRemediationProposal({ ...base, contract: gcp }), "REMEDIATION_NOT_ELIGIBLE", "GCP");
+});

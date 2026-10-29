@@ -573,8 +573,10 @@ export function buildCleanupProposal(input: ProposalInput): { ok: true; proposal
     // Created by this run, but of a type nobody reviewed as a leaf: kept and named, never deleted; the rest of the run is still cleaned up.
     if (protection === "TYPE_UNREVIEWED") { keep("TYPE_UNREVIEWED", (contract.provider === "AWS" ? awsLeafConditionProblem(entry) : undefined) ?? unreviewedTypeReason(entry.type, contract.provider)); continue; }
     const seen: ObservedResource | undefined = observed.get(entry.address);
-    // Found outside the contract's location (#343): observing again never changes where it is, so say what does (review 6485615510, N2).
-    if (seen?.result === "DIFFERENT_FROM_DESIRED" && seen.reason === "LOCATION_NOT_IN_CONTRACT") {
+    // Found outside the contract's location on Azure (#343): observing again never changes where it is, so say what does (review 6485615510, N2).
+    // Azure only: the location remediation is an Azure Terraform path; another provider's misplaced resource (a GCP topic stored elsewhere)
+    // keeps its own refusal until its own owner decision (docs/act-pilot-gcp-api-driver.md).
+    if (contract.provider === "AZURE" && seen?.result === "DIFFERENT_FROM_DESIRED" && seen.reason === "LOCATION_NOT_IN_CONTRACT") {
       return refuse("LOCATION_MISMATCH", "The observation found " + stripInvisible(entry.address) + " in " + (seen.observedLocation ?? "a location it could not name") +
         ", not the location the contract authorizes, so this run's observation is FAILED and no ordinary cleanup is proposed. Observing again does not move it. " +
         "If this run created exactly that one virtual network, a person may propose the governed location remediation (./alz apply propose-remediation --sealed SEALED_PLAN " +
