@@ -9,6 +9,7 @@
 !.github/workflows/container-release.yml
 !.github/workflows/container-hardening.yml
 !.github/workflows/act-identity-delivery.yml
+!.github/workflows/act-identity-macos.yml
 node_modules
 dist
 coverage
