@@ -292,6 +292,7 @@ The run folder stays `<evidenceDir>/<candidate12>` across checkouts, so one jour
 
 - `act:<path>` PASS `APPLIED_AND_OBSERVED`.
 - `cleanup:<path>` PASS `CLEANED_AND_RECORDED`, with the live record under `<run>/cleanup-<path>/`.
+  - For `gcp-terraform` and `gcp-api` this also needs the lifecycle report's leftovers stage to be `PASS` (#359 review N1). An unproven "no strays" result is `BLOCKED` with `LEFTOVERS_NOT_PROVEN`, and so is an incomplete leftover check or an unreadable report. That result means no observation of the run showed the Cloud Asset sweep listing the run's own topic. In both cases the live record is still kept, and the stage is never shown as a pass. AWS and Azure paths are unchanged.
 - The journal lists every step's exit code and every document's path and hash.
 
 The pilot's denial, replay and interruption checks are in each checklist. The runner does not run them.

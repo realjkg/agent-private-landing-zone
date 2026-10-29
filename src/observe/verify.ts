@@ -112,6 +112,13 @@ export type ObserveReport = {
    * Cloud Asset's indexing delay (GF5): observe again after a few minutes.
    */
   sweepNotListing?: string[];
+  /**
+   * Whether this observation passed the sweep's positive control (GCP_REST only; absent for the other clouds): PASSED when a complete
+   * sweep listed every run-created resource of a control type that its own read shows present, and there was at least one such
+   * resource; NOT_PASSED otherwise (not listed, the listing failed, or nothing present to control with). Only a PASSED observation
+   * shows that the sweep's query matches anything, so only after one does a later empty sweep prove "no strays" (#359 review N1).
+   */
+  sweepControl?: "PASSED" | "NOT_PASSED";
 };
 
 /**
@@ -246,13 +253,17 @@ export async function observeBlueprint(blueprint: Blueprint, input: { unitId: st
       .map((check) => check.identifier!).sort()
     : [];
   const inventory = listed === null ? "NOT_AVAILABLE" : listed.complete && sweepNotListing.length === 0 ? "COMPLETE" : "INCOMPLETE";
+  const controlled = checks.some((check) => check.existence === "PRESENT" && GCP_SWEEP_CONTROL_TYPES.has(check.type) && check.identifier !== null &&
+    blueprint.entries.some((entry) => entry.address === check.address && entry.origin === "IN_PLAN"));
+  const sweepControl = reader.verifier !== "GCP_REST" ? undefined : tagged?.complete === true && controlled && sweepNotListing.length === 0 ? "PASSED" as const : "NOT_PASSED" as const;
   const unexpected = listed?.unexpected ?? [];
   const has = (existence: Existence) => checks.some((check) => check.existence === existence);
   const verdict: ObserveVerdict =
     has("ABSENT") || checks.some((check) => check.misplaced === true) || blueprint.missing.length > 0 || unexpected.length > 0 ? "FAILED"
     : has("UNKNOWN") || inventory === "INCOMPLETE" || blueprint.entries.length === 0 ? "INCONCLUSIVE"
     : has("NOT_CHECKABLE") || inventory === "NOT_AVAILABLE" ? "PARTIAL" : "VERIFIED";
-  return { verdict, checks, missingFromState: [...blueprint.missing], unexpected, inventory, verifier: reader.verifier, ...(sweepNotListing.length > 0 ? { sweepNotListing } : {}) };
+  return { verdict, checks, missingFromState: [...blueprint.missing], unexpected, inventory, verifier: reader.verifier, ...(sweepNotListing.length > 0 ? { sweepNotListing } : {}),
+    ...(sweepControl ? { sweepControl } : {}) };
 }
 
 /**

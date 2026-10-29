@@ -476,6 +476,8 @@ test("GCP Terraform journey (SYNTHETIC): seal, apply, observe through Google's R
   assert.equal(leftovers.record.verifier, "GCP_REST");
   const topic = leftovers.record.resources.find((r) => r.address === "google_pubsub_topic.unit")!;
   assert.deepEqual([topic.disposition, topic.basis], ["CONFIRMED_DELETED", "GCP_REST_ABSENT"]);
+  // #359 review N1: the run's observation passed the sweep's positive control (the sweep listed its topic), so "no strays" is PROVEN.
+  assert.deepEqual([leftovers.record.strays, leftovers.record.disposition], ["PROVEN", "COMPLETE"]);
   noSecretIn("leftovers", leftovers.record);
 });
 

@@ -878,9 +878,10 @@ const verifyCleanupCommand: Command = async (flags, _terminal, deps, out) => {
   const result = await verifyProposalLeftovers(opened.proposal, observeDeps(deps));
   if (!result.ok) return blocked(result, out);
   const { record } = result;
-  out.say(JSON.stringify({ label: "SYNTHETIC_UNLESS_ATTESTED_LIVE", disposition: record.disposition, sweep: record.sweep, cleanupRan: result.cleanupRan, nextAction: record.nextAction,
+  out.say(JSON.stringify({ label: "SYNTHETIC_UNLESS_ATTESTED_LIVE", disposition: record.disposition, sweep: record.sweep, ...(record.strays ? { strays: record.strays } : {}), cleanupRan: result.cleanupRan, nextAction: record.nextAction,
     resources: record.resources, observedAt: record.observedAt }, null, 2) + "\n");
-  out.report({ code: record.disposition === "COMPLETE" ? "CLEANUP_COMPLETE" : record.disposition === "KNOWN_ADDRESSES_CONFIRMED" ? "CLEANUP_KNOWN_CONFIRMED" : "CLEANUP_INCOMPLETE", message: record.nextAction, data: record });
+  out.report({ code: record.disposition === "COMPLETE" ? "CLEANUP_COMPLETE" : record.disposition === "KNOWN_ADDRESSES_CONFIRMED" ? "CLEANUP_KNOWN_CONFIRMED"
+    : record.strays === "UNPROVEN" && record.resources.every((r) => r.disposition === "CONFIRMED_DELETED" || r.disposition === "INTENTIONALLY_RETAINED") ? "CLEANUP_STRAYS_UNPROVEN" : "CLEANUP_INCOMPLETE", message: record.nextAction, data: record });
   return EXIT.PASS;
 };
 

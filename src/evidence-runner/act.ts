@@ -8,7 +8,7 @@ import type { StageResult } from "./readonly.js";
 import { CONTRACT_PATH } from "./source.js";
 import { assertRealFolder, ensureRealFolder } from "./safe-write.js";
 import { documentOf, freshStep, runChild, sha256File, stageFolder, step, type Collector, type StageContext, type StepResult } from "./steps.js";
-import { ACT_PATH_NOT_AVAILABLE, type ActPathId, type StageId } from "./types.js";
+import { ACT_PATH_NOT_AVAILABLE, ACT_PATH_SPEC, type ActPathId, type StageId } from "./types.js";
 
 /**
  * The guided stages S5 (docs/evidence-runner.md, "The owner run sheet"). The runner sequences the existing `./alz apply`
@@ -240,7 +240,27 @@ export async function cleanupStage(ctx: StageContext, path: ActPathId): Promise<
   ];
   const failed = await runSteps(ctx, stage, steps);
   if (failed) return stop(failed);
+  // A GCP path's cleanup counts only when the lifecycle report's leftovers stage passed (#359 review N1): verify-cleanup exits 0 for an
+  // INCOMPLETE record too, and a GCP record whose "no strays" is UNPROVEN (no observation showed the sweep listing the run's own topic)
+  // is INCOMPLETE. It is never shown as PASS. The other clouds' paths are unchanged.
+  if (ACT_PATH_SPEC[path].provider === "GCP") {
+    const leftovers = leftoversStageOf(ctx, documentPath(ctx, stage, "report", "lifecycle-report"));
+    if (leftovers !== "PASS") {
+      return blocked("LEFTOVERS_NOT_PROVEN", "Cleanup ran and the live record is kept, but the lifecycle report's leftovers stage is " + leftovers +
+        ", not PASS: \"nothing else carries the run's labels\" is not shown (an unproven sweep, or an incomplete leftover check). Read ./alz apply verify-cleanup's nextAction; this is not a clean cleanup result.");
+    }
+  }
   return { outcome: "PASS", code: "CLEANED_AND_RECORDED", detail: "Cleanup ran and was verified, the lifecycle report was written, and the live record is kept with this run." };
+}
+
+/** The leftovers stage's status in the lifecycle report the runner kept, or UNREADABLE: a report it cannot read never counts as PASS. */
+function leftoversStageOf(ctx: StageContext, relative: string | undefined): string {
+  if (relative === undefined) return "UNREADABLE";
+  try {
+    const report = JSON.parse(readFileSync(join(ctx.root, relative), "utf8")) as { stages?: { leftovers?: { status?: unknown } } };
+    const status = report.stages?.leftovers?.status;
+    return typeof status === "string" && /^[A-Z_]{1,32}$/.test(status) ? status : "UNREADABLE";
+  } catch { return "UNREADABLE"; }
 }
 
 /**
