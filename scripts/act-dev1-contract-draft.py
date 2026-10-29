@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Prepare a disabled, DEV-only AWS ACT contract draft from read-only cloud evidence."""
+"""Prepare a disabled, DEV-only AWS ACT contract draft from read-only cloud evidence.
+
+The draft binds STATE_WRITE for the state backend (embedStateWrite true, required for every Terraform contract since owner
+decision 6486426552), names the committed one-resource canary as the target's allowlist, and carries no authorize entry: ACT
+stays disabled until the owner adds one by hand in a reviewed commit of the contract (docs/act-pilot-apply.md)."""
 import argparse
 import json
 from pathlib import Path
@@ -48,10 +52,11 @@ def draft(account,bootstrap,*,owner_public_key,approver_id,state_key="pilot/dev.
         deny("KILL_SWITCH_PATH_INVALID")
     return {"schemaVersion":1,"enabled":False,"provider":"AWS","engine":"TERRAFORM",
             "enabledEnvironments":["DEV"],
-            "targets":{"DEV":{"accountId":member,"region":"us-east-2","backend":bucket+"/"+state_key,"workspace":"default"}},
+            "targets":{"DEV":{"accountId":member,"region":"us-east-2","backend":bucket+"/"+state_key,"workspace":"default",
+                              "canary":{"resources":[{"type":"aws_cloudwatch_log_group","count":1}]}}},
             "requiredApprovals":{"DEV":1},"maxApprovalAgeMinutes":30,
             "approvers":[{"id":approver_id,"publicKeyPem":owner_public_key,"environments":["DEV"]}],
-            "killSwitchPath":kill_switch,"embedStateWrite":False}
+            "killSwitchPath":kill_switch,"embedStateWrite":True}
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
@@ -70,7 +75,7 @@ def main():
         dest=Path(args.output);dest.parent.mkdir(parents=True,exist_ok=True)
         dest.write_text(json.dumps(contract,indent=2)+"\n")
         dest.chmod(0o600)
-        print("DEV-only contract DRAFT generated:",dest,"| enabled false | pin untouched | no cloud writes")
+        print("DEV-only contract DRAFT generated:",dest,"| enabled false | no authorize entry, so ACT stays disabled | no cloud writes")
         return 0
     except (ContractRefusal,ValueError,OSError) as error:
         print("DEV contract draft BLOCKED:",str(error) if isinstance(error,ContractRefusal) else type(error).__name__,file=sys.stderr)

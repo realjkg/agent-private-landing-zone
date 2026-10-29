@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import type { ExperienceLevel } from "../../experience-level.js";
 import { PilotDialog } from "./PilotDialog";
@@ -313,7 +313,9 @@ export default function PilotWizard(props: PilotWizardProps) {
   // open: the dialog holds focus (PilotDialog), and a step or unlock change that lands in the same commit as, or after, the
   // dialog must not pull focus out of the modal. Read through a ref so closing the dialog does not re-run this effect either.
   useEffect(() => { if (!dialogOpen.current) headingRef.current?.focus(); }, [step, unlocked]);
-  useEffect(() => {
+  // A layout effect, so the page behind turns inert in the same commit that shows the dialog: there is no moment in which the modal
+  // is on screen while the page behind it still takes focus or clicks (a passive effect ran after the dialog appeared).
+  useLayoutEffect(() => {
     for (const element of [contentRef.current, pathsRef.current]) {
       if (!element) continue;
       if (dialog) { element.setAttribute("inert", ""); element.setAttribute("aria-hidden", "true"); }

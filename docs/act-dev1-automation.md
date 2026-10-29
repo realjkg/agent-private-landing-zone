@@ -98,7 +98,15 @@ The bindings contain role ARNs, token *paths* and target region; never JWTs or a
 
 ### D5–D7: DEV-only contract, qualification, sealed canary
 
-Use `config/act-pilot-contract.aws-dev.example.json` only as an intentionally disabled example. Populate a genuine dedicated DEV target, reviewed DEV approver public key, a short approval age and owner-controlled kill switch. The file and its committed pin are authority-bearing. `enabledEnvironments: ["DEV"]` works only for AWS/TERRAFORM. The shipped pin remains empty.
+Use `config/act-pilot-contract.aws-dev.example.json` only as an intentionally disabled example. Populate a genuine dedicated DEV target, a reviewed DEV approver public key, a short approval age and an owner-controlled kill switch. Keep `"embedStateWrite": true`: every Terraform contract must bind STATE_WRITE for the state backend (owner decision 6486426552), and a contract without it does not load.
+
+**How ACT is authorized.** The contract file is the authority. There is no hash pin any more (owner decisions of 2026-10-27, issue #39).
+- The contract's `authorize` entry names, per environment, the operations ACT may run: for this path `"authorize": {"DEV": ["APPLY", "CLEANUP"]}`.
+- An absent or empty `authorize` keeps ACT disabled. So does `enabled: false`.
+- The owner writes `authorize` by hand. It takes effect only in the owner's reviewed commit of `config/act-pilot-contract.json`. No product code, flag, environment variable or agent writes it.
+- The product derives the contract's hash and the authorizing entry's hash and binds both into every sealed plan, approval, cleanup proposal and evidence record. It re-checks them before anything is consumed.
+- Emptying `authorize`, or creating the kill switch file, stops ACT.
+- The repository ships no contract.
 
 ```bash
 ./alz apply preflight --environment DEV
@@ -115,7 +123,13 @@ python3 scripts/act-dev1-contract-draft.py \\
   --output .runs/act-dev1/contract.draft.json
 ```
 
-This never enables or pins ACT and cannot replace an owner's review of the actual Ed25519 public key or issuance path. The operator must copy, inspect, explicitly enable, and pin the reviewed source only after source-bound acceptance. QA/PROD are never synthesized.
+The draft has `enabled: false`, `embedStateWrite: true`, the committed canary (one `aws_cloudwatch_log_group`) as the target's canary allowlist, and **no `authorize` entry**. It never enables ACT, and it cannot replace the owner's review of the actual Ed25519 public key or its issuance path. QA and PROD are never synthesized.
+
+To enable the DEV pilot, the owner:
+1. copies the draft to `config/act-pilot-contract.json` and inspects it;
+2. adds the reviewed `policyVersion`;
+3. runs `./alz apply contract-check --file config/act-pilot-contract.json` until it reports COMPLETE;
+4. sets `enabled: true` and adds `authorize`, in one reviewed commit, only after source-bound acceptance.
 
 The one-resource canary source is `qualification/aws/act-dev1-canary/main.tf`; its only managed resource is a 30-day CloudWatch log group. The owner selects and pins the provider lockfile and captures `terraform show -json` output from a separately reviewed, authentic plan. The optional offline structural gate checks exactly one CREATE, required tags, 30-day retention, target region, and no drift or outputs:
 
