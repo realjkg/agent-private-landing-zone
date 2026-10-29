@@ -69,8 +69,11 @@ function fakeGoogle() {
     sent.push(req);
     const url = new URL(req.url);
     if (url.hostname === "sts.googleapis.com") {
-      const body = JSON.parse(req.body ?? "{}");
-      return Object.values(OIDC).includes(body.subjectToken) && body.audience === AUDIENCE ? { status: 200, body: JSON.stringify({ access_token: FEDERATED }) } : { status: 400, body: "{}" };
+      // The shared exchange (src/tools/gcp-credentials.ts, D20) posts form-encoded RFC 8693 names, as Google's own auth libraries do.
+      const form = new URLSearchParams(req.body ?? "");
+      const ok = req.headers["content-type"] === "application/x-www-form-urlencoded" && form.get("grant_type") === "urn:ietf:params:oauth:grant-type:token-exchange" &&
+        Object.values(OIDC).includes(form.get("subject_token") as never) && form.get("audience") === AUDIENCE && req.headers.authorization === undefined;
+      return ok ? { status: 200, body: JSON.stringify({ access_token: FEDERATED }) } : { status: 400, body: "{}" };
     }
     if (url.hostname === "iamcredentials.googleapis.com") {
       if (req.headers.authorization !== "Bearer " + FEDERATED) return { status: 401, body: "{}" };

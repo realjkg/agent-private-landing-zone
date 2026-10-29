@@ -90,7 +90,7 @@ const CONTROL_HOST = "control.alz-sim.invalid";
 /** Terraform's own version check is attempted on every run and refused by the proxy; nothing else may be contacted. */
 const VERSION_CHECK_HOST = "checkpoint-api.hashicorp.com:443";
 
-type Logged = { object?: string; host?: string; method?: string; path?: string; sa?: string | null; scope?: string | null; connect?: string; impersonate?: string; requestedScope?: string[]; stsScope?: string; subjectOf?: string | null; renewed?: boolean; refused?: boolean; createBody?: Record<string, unknown> };
+type Logged = { connError?: string; code?: string; object?: string; host?: string; method?: string; path?: string; sa?: string | null; scope?: string | null; connect?: string; impersonate?: string; requestedScope?: string[]; stsScope?: string; subjectOf?: string | null; renewed?: boolean; refused?: boolean; createBody?: Record<string, unknown> };
 type Topic = { name: string; labels: Record<string, string>; messageStoragePolicy?: { allowedPersistenceRegions: string[] } };
 
 const freePort = (): Promise<number> => new Promise((done, fail) => {
@@ -197,12 +197,13 @@ function handle(req, res, body) {
   }
   if (host === "storage.googleapis.com") {
     record({ ...entry, object: url.searchParams.get("name") || decodeURIComponent(url.pathname.replace(/^.*\/o\//, "")) });
-    const upstream = http.request({ host: "127.0.0.1", port: Number(gcsPort), method: req.method, path: req.url, headers: { ...req.headers, host: "storage.googleapis.com" } }, (up) => {
+    // A fresh connection per request (agent: false), as below: a pooled keep-alive socket fake-gcs-server already closed is never reused.
+    const upstream = http.request({ agent: false, host: "127.0.0.1", port: Number(gcsPort), method: req.method, path: req.url, headers: { ...req.headers, host: "storage.googleapis.com" } }, (up) => {
       const headers = { ...up.headers };
       if (headers.location) headers.location = String(headers.location).replace(/^http:\/\/[^/]+/, "https://storage.googleapis.com");
       res.writeHead(up.statusCode, headers); up.pipe(res);
     });
-    upstream.on("error", () => send(res, 502, ""));
+    upstream.on("error", (error) => { record({ connError: "storage-upstream", code: error.code || "UNKNOWN" }); send(res, 502, ""); });
     upstream.end(body);
     return;
   }
@@ -212,18 +213,21 @@ function handle(req, res, body) {
 const api = https.createServer({ key: fs.readFileSync(keyFile), cert: fs.readFileSync(certFile) }, (req, res) => {
   const chunks = []; req.on("data", (c) => chunks.push(c)); req.on("end", () => { try { handle(req, res, Buffer.concat(chunks)); } catch { send(res, 500, ""); } });
 });
+// Every connection-level error the emulator sees is logged by code (never a body), so a failure names its cause.
+api.on("tlsClientError", (error) => record({ connError: "api-tls", code: error.code || "UNKNOWN" }));
+api.on("clientError", (error, socket) => { record({ connError: "api", code: error.code || "UNKNOWN" }); socket.destroy(); });
 api.listen(0, "127.0.0.1", () => {
   const apiPort = api.address().port;
   const proxy = http.createServer((_q, r) => { r.writeHead(403); r.end(); });
   proxy.on("connect", (req, client, head) => {
-    client.on("error", () => client.destroy());
+    client.on("error", (error) => { record({ connError: "proxy-client", code: error.code || "UNKNOWN" }); client.destroy(); });
     record({ connect: req.url });
     const [name, port] = req.url.split(":");
     if (port !== "443" || !HOSTS.includes(name)) { client.end("HTTP/1.1 403 Forbidden\r\n\r\n"); return; }
     const up = net.connect(apiPort, "127.0.0.1", () => { client.write("HTTP/1.1 200 Connection Established\r\n\r\n"); if (head.length) up.write(head); up.pipe(client); client.pipe(up); });
-    up.on("error", () => client.destroy()); client.on("close", () => up.destroy());
+    up.on("error", (error) => { record({ connError: "proxy-upstream", code: error.code || "UNKNOWN" }); client.destroy(); }); client.on("close", () => up.destroy());
   });
-  proxy.on("clientError", (_e, s) => s.destroy());
+  proxy.on("clientError", (error, s) => { record({ connError: "proxy", code: error.code || "UNKNOWN" }); s.destroy(); });
   proxy.listen(0, "127.0.0.1", () => process.stdout.write(proxy.address().port + " " + apiPort + "\n"));
 });
 `;
@@ -254,12 +258,15 @@ async function startEmulator(dir: string, trust: Record<string, string>): Promis
     helper.once("exit", () => fail(new Error("the emulator helper exited")));
   });
   const gcsCall: Emulator["gcs"] = (method, path, body, contentType = "application/json") => new Promise((done, fail) => {
-    const request = http.request({ host: "127.0.0.1", port: gcsPort, method, path, headers: { host: "storage.googleapis.com", "content-type": contentType, "content-length": String(Buffer.byteLength(body ?? "")) } }, (response) => {
+    // A fresh connection per call (agent: false). Node's default agent keeps sockets alive, and a server closes an idle one after its
+    // keep-alive timeout (Node: 5 s); a call made after a long engine step could reuse a socket the server was closing, which failed
+    // as "socket hang up" (ECONNRESET), intermittently. No pool, so no reuse and no race.
+    const request = http.request({ agent: false, host: "127.0.0.1", port: gcsPort, method, path, headers: { host: "storage.googleapis.com", "content-type": contentType, "content-length": String(Buffer.byteLength(body ?? "")) } }, (response) => {
       const chunks: Buffer[] = [];
       response.on("data", (c: Buffer) => chunks.push(c));
       response.on("end", () => done({ status: response.statusCode ?? 0, body: Buffer.concat(chunks).toString("utf8") }));
     });
-    request.on("error", fail);
+    request.on("error", (error: NodeJS.ErrnoException) => fail(new Error("emulator storage call " + method + " " + path + " failed: " + (error.code ?? error.message))));
     request.end(body);
   });
   for (let i = 0; i < 100; i += 1) {
@@ -267,13 +274,13 @@ async function startEmulator(dir: string, trust: Record<string, string>): Promis
     await new Promise((r) => setTimeout(r, 100));
   }
   const call: Emulator["call"] = (host, method, path, headers = {}, body) => new Promise((done, fail) => {
-    const request = https.request({ host: "127.0.0.1", port: apiPort, servername: host, ca, method, path,
+    const request = https.request({ agent: false, host: "127.0.0.1", port: apiPort, servername: host, ca, method, path,
       headers: { ...headers, host, "content-length": String(Buffer.byteLength(body ?? "")) } }, (response) => {
       const chunks: Buffer[] = [];
       response.on("data", (c: Buffer) => chunks.push(c));
       response.on("end", () => done({ status: response.statusCode ?? 0, body: Buffer.concat(chunks).toString("utf8") }));
     });
-    request.on("error", fail);
+    request.on("error", (error: NodeJS.ErrnoException) => fail(new Error("emulator call " + host + " " + method + " " + path + " failed: " + (error.code ?? error.message))));
     request.end(body);
   });
   return {

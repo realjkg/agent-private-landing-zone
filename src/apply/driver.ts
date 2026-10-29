@@ -356,10 +356,11 @@ async function keepRecoveryFiles(files: RecoveryFile[], artifactSha256: string):
  * a refusal later, not a failed apply now. `place` is the account and region the identifiers are in (an ARN is derived from
  * a CloudFormation physical id for the types the independent reader knows).
  */
-async function keepBlueprint(run: { stateDocument?(): StateDocument | undefined }, sealed: Pick<SealedPlan, "changes" | "unit">, evidence: ApplyEvidence, evidenceDir: string, now: Date,
+async function keepBlueprint(run: { stateDocument?(): StateDocument | undefined | Promise<StateDocument | undefined> }, sealed: Pick<SealedPlan, "changes" | "unit">, evidence: ApplyEvidence, evidenceDir: string, now: Date,
   place: { account: string; region: string | undefined; stack: string; resourceGroup?: string }): Promise<void> {
   try {
-    const state = run.stateDocument?.();
+    // Awaited where it stands (#355 N3): an engine may read the document over the network after `settle`.
+    const state = await run.stateDocument?.();
     if (state === undefined) return;
     const blueprint = state.source === "CLOUDFORMATION_STACK_RESOURCES" ? blueprintFromCloudFormationResources(state.document, sealed.changes, place)
       : state.source === "AZURE_DEPLOYMENT_STACK_RESOURCES" ? blueprintFromDeploymentStackResources(state.document, sealed.changes, place)
@@ -554,7 +555,7 @@ export async function runApply(request: ApplyRequest, deps: ApplyDeps): Promise<
     }
     const end = await run.settle(applied);
     const outcome: ApplyOutcome = "stale" in end ? "FAILED_NO_CHANGE" : end.outcome;
-    const kept = outcome === "SUCCEEDED" ? {} : await keepRecoveryFiles(run.recoveryFiles(), sealed.artifactSha256);
+    const kept = outcome === "SUCCEEDED" ? {} : await keepRecoveryFiles(await run.recoveryFiles(), sealed.artifactSha256);
 
     // 15. Evidence replaces the reservation, whatever the outcome.
     const evidence: ApplyEvidence = {
@@ -857,7 +858,7 @@ export async function runCleanup(request: CleanupRequest, deps: ApplyDeps): Prom
     }
     const end = await run.settle(destroyed);
     const outcome: ApplyOutcome = "stale" in end ? "FAILED_NO_CHANGE" : end.outcome;
-    const kept = outcome === "SUCCEEDED" ? {} : await keepCleanupRecoveryFiles(run.recoveryFiles(), proposal.proposalSha256);
+    const kept = outcome === "SUCCEEDED" ? {} : await keepCleanupRecoveryFiles(await run.recoveryFiles(), proposal.proposalSha256);
     const evidence: CleanupEvidence = {
       schemaVersion: 1, kind: "CLEANUP", environment: proposal.environment, target: { ...proposal.target }, proposalSha256: proposal.proposalSha256, artifactSha256: proposal.artifactSha256,
       applyEvidenceSha256: proposal.applyEvidenceSha256, contractSha256: proposal.contractSha256,

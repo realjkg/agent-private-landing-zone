@@ -99,6 +99,8 @@ export const FIXTURE_OWNERS = {
 // entry here. Without this, a governed -destroy builder added under src/apply merged with the destroy-literal scan red.
 export const SOURCE_SCAN_GUARDS = {
   "test/apply-boundary.test.ts": ["src/"],
+  // D20: one GCP token exchange; the guard fails if any other source file builds one.
+  "test/gcp-token-exchange.test.ts": ["src/"],
   // No product code names the retired pin file or writes the pilot contract (the contract is the ACT authorization).
   "test/apply-contract.test.ts": ["src/"],
   "test/policy-path.test.ts": ["src/"],

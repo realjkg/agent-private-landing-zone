@@ -12,12 +12,14 @@ import type { IaCEngine } from "../build/types.js";
  * never part of it, because live state is not expected to match a hash taken
  * when the infrastructure was built.
  */
-export type ManifestEngine = Extract<IaCEngine, "TERRAFORM" | "OPENTOFU" | "PULUMI" | "BICEP"> | "CDK";
+export type ManifestEngine = Extract<IaCEngine, "TERRAFORM" | "OPENTOFU" | "PULUMI" | "BICEP"> | "CDK" | "GCP_API";
 /**
- * CDK and BICEP are the pilot apply path's alone (a pre-synthesized cloud assembly; Bicep files compiled by the pinned bicep), and
- * neither has a lock file; the destroy-preview driver takes neither (`DRIVER_ENGINES`).
+ * CDK, BICEP and GCP_API are the pilot apply path's alone (a pre-synthesized cloud assembly; Bicep files compiled by the pinned bicep;
+ * GCP API-native's typed request, docs/act-pilot-gcp-api-driver.md D7 and D17), and none has a lock file; the destroy-preview driver
+ * takes none of them (`DRIVER_ENGINES`). A GCP_API manifest is accepted here so the path's own lane can seal one; no engine for it is
+ * registered until that lane lands, so nothing seals or applies one yet.
  */
-export const MANIFEST_ENGINES: readonly ManifestEngine[] = ["TERRAFORM", "OPENTOFU", "PULUMI", "CDK", "BICEP"];
+export const MANIFEST_ENGINES: readonly ManifestEngine[] = ["TERRAFORM", "OPENTOFU", "PULUMI", "CDK", "BICEP", "GCP_API"];
 
 /** PROJECT: the project's own files run. STATE_DERIVED: a Pulumi destroy preview that reads state and runs no project. */
 export type InputMode = "PROJECT" | "STATE_DERIVED";
@@ -116,7 +118,7 @@ function validateBody(body: ManifestBody): ManifestBody {
   if (body.mode === "PROJECT") {
     require(body.files.length > 0, "PROJECT_FILES_REQUIRED");
     require(body.executionManifestSha256 === undefined, "PROJECT_HAS_EXECUTION_MANIFEST");
-    if (body.engine !== "PULUMI" && body.engine !== "CDK" && body.engine !== "BICEP") {
+    if (body.engine !== "PULUMI" && body.engine !== "CDK" && body.engine !== "BICEP" && body.engine !== "GCP_API") {
       require(body.lockFileSha256 !== undefined && HASH.test(body.lockFileSha256), "LOCK_FILE_REQUIRED");
     }
   } else {

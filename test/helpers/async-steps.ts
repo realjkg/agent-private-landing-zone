@@ -6,7 +6,8 @@ import type { EngineApplyRun, EngineCleanupRun, EngineSpec } from "../../src/app
  * queued can run), then calls the hook for that step, logs it, and runs the engine's own step. The engine object is patched in
  * place for `body` only and restored afterward, whatever happens. Nothing in src/ can reach this.
  */
-export type AsyncStep = "plan" | "qualify" | "prepare" | "rederive" | "execute" | "cleanupPrepare" | "planDestroy" | "cleanupExecute";
+export type AsyncStep = "plan" | "qualify" | "prepare" | "rederive" | "execute" | "settle" | "recoveryFiles" | "stateDocument"
+  | "cleanupPrepare" | "planDestroy" | "cleanupExecute" | "cleanupSettle" | "cleanupRecoveryFiles";
 export type AsyncHooks = Partial<Record<AsyncStep, () => void | Promise<void>>>;
 
 const yieldOnce = (): Promise<void> => new Promise((done) => setImmediate(done));
@@ -34,6 +35,9 @@ export async function withAsyncSteps<T>(engine: EngineSpec, hooks: AsyncHooks, b
       prepare: (snapshotPath) => step("prepare", () => run.prepare(snapshotPath)),
       rederive: (artifact) => step("rederive", () => run.rederive(artifact)),
       execute: (artifact, control) => step("execute", () => run.execute(artifact, control)),
+      settle: (applied) => step("settle", () => run.settle(applied)),
+      recoveryFiles: () => step("recoveryFiles", () => run.recoveryFiles()),
+      ...(run.stateDocument ? { stateDocument: () => step("stateDocument", () => run.stateDocument!()) } : {}),
     };
     return wrapped;
   };
@@ -46,6 +50,8 @@ export async function withAsyncSteps<T>(engine: EngineSpec, hooks: AsyncHooks, b
         prepare: (snapshotPath) => step("cleanupPrepare", () => run.prepare(snapshotPath)),
         planDestroy: (addresses) => step("planDestroy", () => run.planDestroy(addresses)),
         execute: (control) => step("cleanupExecute", () => run.execute(control)),
+        settle: (applied) => step("cleanupSettle", () => run.settle(applied)),
+        recoveryFiles: () => step("cleanupRecoveryFiles", () => run.recoveryFiles()),
       };
       return wrapped;
     };

@@ -1,5 +1,6 @@
 import { ALZ_TAG_KEYS, deletionUnitId, provenanceTags } from "../teardown/unit.js";
 import type { ResolvedTarget } from "../teardown/driver/types.js";
+import type { DeletionUnitStateRef } from "../teardown/types.js";
 import type { BackendType } from "./backend-pin.js";
 import type { ApplyEnvironment, ProviderId } from "./types.js";
 
@@ -22,10 +23,21 @@ export type PilotUnit = { unitId: string; buildId: string; tags: Readonly<Record
 
 const BACKEND_KIND: Readonly<Record<ProviderId, BackendType>> = { AWS: "s3", AZURE: "azurerm", GCP: "gcs" };
 
-/** The unit of one environment's state container under one reviewed contract. Deterministic: the same inputs name the same unit. */
-export function pilotUnitOf(input: { provider: ProviderId; contractSha256: string; environment: ApplyEnvironment; target: ResolvedTarget }): PilotUnit {
+/**
+ * The unit of one environment's state container under one reviewed contract. Deterministic: the same inputs name the same unit.
+ *
+ * `engine` matters only for GCP API-native (docs/act-pilot-gcp-api-driver.md D10): with no state file, its unit is the target's
+ * topic namespace, a state reference of engine `GCP_API` and backend kind `pubsub`. Every other engine (Terraform, CDK, Bicep)
+ * keeps the one reference it always had (engine `TERRAFORM` and the provider's backend kind), so its unit id and its `alz-unit`
+ * tag do not change whether or not the caller names the engine (test/apply-unit.test.ts pins them).
+ */
+export function pilotUnitOf(input: { provider: ProviderId; contractSha256: string; environment: ApplyEnvironment; target: ResolvedTarget; engine?: string }): PilotUnit {
   const buildId = "alz-pilot-" + input.environment.toLowerCase() + "-" + input.contractSha256.slice(0, 12);
-  const unitId = deletionUnitId(buildId, { engine: "TERRAFORM", backend: BACKEND_KIND[input.provider], location: input.target.backend, workspace: input.target.workspace });
+  if (input.engine === "GCP_API" && input.provider !== "GCP") throw new Error("PILOT_UNIT_ENGINE_PROVIDER_MISMATCH");
+  const stateRef: DeletionUnitStateRef = input.engine === "GCP_API"
+    ? { engine: "GCP_API", backend: "pubsub", location: input.target.backend, workspace: input.target.workspace }
+    : { engine: "TERRAFORM", backend: BACKEND_KIND[input.provider], location: input.target.backend, workspace: input.target.workspace };
+  const unitId = deletionUnitId(buildId, stateRef);
   return { unitId, buildId, tags: provenanceTags({ unitId, buildId }) };
 }
 

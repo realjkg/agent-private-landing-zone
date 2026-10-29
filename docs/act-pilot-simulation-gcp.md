@@ -170,6 +170,12 @@ The driver reaches all of it only through the operator's network settings, `ALZ_
 
 **What it does not prove:** IAM and custom roles; which permission each call needs (GF7 to GF11); whether Google accepts the scopes and request shapes (GF1 to GF3, GF8); organization policy on storage locations; Cloud Asset's indexing delay; real latency and errors. The emulator is not Google. Only the owner's supervised DEV run is live evidence.
 
+**Harness defect fixed (test code only, INT-5).** The judge test failed intermittently with "socket hang up" (`ECONNRESET` on a TLS socket). The run of 2026-10-29 on `main` `91b11f2` failed once in 3.
+- **Cause:** Node 26's default agents keep sockets alive, and the emulator's server closes an idle socket after its keep-alive timeout of 5 seconds. A test call made after a long Terraform step could reuse a socket the server was closing.
+- **Fix:** the test's own clients, and the emulator's upstream to fake-gcs-server, now open a fresh connection per call (`agent: false`), the same fix the Azure harness has. There is no pool, so there is no reuse and no race.
+- **Logging:** the emulator now records every connection-level error by code. A test call that fails names its host, method and path.
+- No retry was added and no timeout was raised. 20 consecutive runs passed after the fix.
+
 ## What this spike did not do
 
 - It did not run the driver (`src/apply`). There is no GCP provider spec yet, so this was raw `terraform` only.
