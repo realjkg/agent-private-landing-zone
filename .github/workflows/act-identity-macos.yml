@@ -16,6 +16,8 @@ on:
       - test/act-identity-delivery-workflow.test.ts
       - test/apply-token-delivery.test.ts
       - test/helpers/token-delivery-fixtures.ts
+      - scripts/release-stage.sh
+      - test/release-package-exclusions.test.ts
   workflow_dispatch:
 
 permissions: {}
@@ -64,3 +66,17 @@ jobs:
 
       - name: Hook, delivery workflow and token delivery tests (SYNTHETIC macOS)
         run: npx tsx --test test/act-identity-runner-hook.test.ts test/act-identity-delivery-workflow.test.ts test/apply-token-delivery.test.ts
+
+      # The field package staging script (docs/field-package.md) runs on the owner's Mac too: its staging tests, under Apple's
+      # /bin/bash 3.2 and the BSD userland. Same job, same authority (none). SYNTHETIC.
+      - name: Field package staging tests (SYNTHETIC macOS)
+        env:
+          ALZ_STAGE_SHELL: /bin/bash
+        # A failure is also written as annotations, which the checks API shows without the job log.
+        run: |
+          if ! npx tsx --test --test-name-pattern "^staging" test/release-package-exclusions.test.ts > staging.log 2>&1; then
+            cat staging.log
+            grep -E "^not ok|^✖|AssertionError|release-stage:|Error:" staging.log | head -n 20 | sed 's/^/::error::/'
+            exit 1
+          fi
+          cat staging.log

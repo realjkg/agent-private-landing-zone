@@ -22,8 +22,10 @@ function files(dir: string): string[] {
 const written = (root: string) => files(join(root, ".runs")).map((file) => relative(root, file)).sort();
 
 test("arguments: only the configuration path, one stage and two switches; nothing pre-answers or forces", () => {
-  assert.deepEqual(parseEvidenceArgs(["run", "--dry-run", "--synthetic", "--stage", "act"]), { sub: "run", options: { configPath: "config/evidence-runner.json", dryRun: true, synthetic: true, stage: "act" } });
-  for (const argv of [["run", "--yes"], ["run", "--force"], ["run", "--label", "LIVE"], ["run", "--stage", "everything"], ["status", "--dry-run"], ["init", "--stage", "act"], ["apply"], [], ["run", "--config"], ["run", "--dry-run", "--dry-run"]]) {
+  assert.deepEqual(parseEvidenceArgs(["run", "--dry-run", "--synthetic", "--stage", "act:aws-terraform"]), { sub: "run", options: { configPath: "config/evidence-runner.json", dryRun: true, synthetic: true, stage: "act:aws-terraform" } });
+  assert.deepEqual(parseEvidenceArgs(["run", "--stage", "cleanup:azure-bicep"]), { sub: "run", options: { configPath: "config/evidence-runner.json", dryRun: false, synthetic: false, stage: "cleanup:azure-bicep" } });
+  for (const argv of [["run", "--yes"], ["run", "--force"], ["run", "--label", "LIVE"], ["run", "--stage", "everything"], ["run", "--stage", "act"], ["run", "--stage", "act:aws-everything"], ["run", "--approve"],
+    ["run", "--answer", "APPLY"], ["status", "--dry-run"], ["init", "--stage", "act:aws-terraform"], ["apply"], [], ["run", "--config"], ["run", "--dry-run", "--dry-run"]]) {
     assert.ok("error" in parseEvidenceArgs(argv), argv.join(" "));
   }
 });
@@ -79,26 +81,29 @@ test("a blocked preflight writes nothing and asks for no attestation", async () 
   assert.deepEqual(written(root), []);
 });
 
-test("a synthetic run journals preflight, reports every later stage NOT_BUILT or SKIPPED, and stamps fixture: true", async () => {
+test("a synthetic run journals preflight and stops at the first stage whose producer refuses, and stamps fixture: true", async () => {
   const root = fixtureRoot();
   writeConfig(root, validConfig());
   const deps = fixtureDeps(root);
-  assert.equal(await runEvidenceCommand(["run", "--synthetic"], deps), 2, "BLOCKED: the provider stages are not built yet");
+  assert.equal(await runEvidenceCommand(["run", "--synthetic"], deps), 2, "BLOCKED: the (fake) AWS producer refused");
   const dir = join(root, ".runs/evidence/synthetic", C12);
-  assert.deepEqual(written(root), [".runs/evidence/synthetic/" + C12 + "/journal.jsonl", ".runs/evidence/synthetic/" + C12 + "/preflight.json"], "the lock is released");
+  const listed = written(root);
+  assert.ok(listed.includes(".runs/evidence/synthetic/" + C12 + "/journal.jsonl") && listed.includes(".runs/evidence/synthetic/" + C12 + "/aws-readonly/stage.json"));
+  assert.ok(!listed.some((file) => file.endsWith("run.lock")), "the lock is released");
+  assert.ok(!listed.some((file) => file.includes("azure-readonly")), "a refusal stops the run: the next stage never started");
   const preflight = JSON.parse(readFileSync(join(dir, "preflight.json"), "utf8")) as Record<string, unknown>;
   assert.equal(preflight.label, "SYNTHETIC");
   assert.equal(preflight.fixture, true);
   assert.equal(statSync(join(dir, "preflight.json")).mode & 0o777, 0o600);
-  const finished = readJournal(join(dir, "journal.jsonl")).filter((line) => line.event === "finish").map((line) => line.stage + "=" + line.outcome + ":" + (line.code ?? ""));
-  assert.deepEqual(finished, ["preflight=PASS:", "aws-readonly=BLOCKED:NOT_BUILT", "azure-readonly=BLOCKED:NOT_BUILT", "gcp-readonly=SKIPPED:GCP_HELD", "act=SKIPPED:SKIPPED_ACT_DISABLED", "summary=BLOCKED:NOT_BUILT"]);
+  const finished = readJournal(join(dir, "journal.jsonl")).filter((line) => line.event === "finish").map((line) => line.stage + "/" + line.step + "=" + line.outcome + ":" + (line.code ?? ""));
+  assert.deepEqual(finished, ["preflight/preflight=PASS:", "aws-readonly/identity=PASS:VERIFIED", "aws-readonly/provider-qualification=BLOCKED:CHILD_REFUSED", "aws-readonly/aws-readonly=BLOCKED:CHILD_REFUSED"]);
   assert.ok(readJournal(join(dir, "journal.jsonl")).every((line) => line.label === "SYNTHETIC"));
   for (const file of files(join(root, ".runs"))) assert.ok(!readFileSync(file, "utf8").includes(CANARY), "no credential value reaches " + file);
   // Status reads the same journal.
   const status = fixtureDeps(root);
   assert.equal(await runEvidenceCommand(["status", "--synthetic"], status), 0);
-  assert.match(status.lines.join("\n"), /aws-readonly\s+BLOCKED NOT_BUILT/);
-  assert.match(status.lines.join("\n"), /Next: aws-readonly \(slice S2, not built yet\)/);
+  assert.match(status.lines.join("\n"), /aws-readonly\s+BLOCKED CHILD_REFUSED/);
+  assert.match(status.lines.join("\n"), /Next: aws-readonly \(slice S2\)/);
 });
 
 test("LIVE only from the exact typed phrase at an interactive terminal", async () => {
@@ -123,7 +128,7 @@ test("LIVE only from the exact typed phrase at an interactive terminal", async (
   assert.equal(preflight.label, "LIVE");
   assert.equal("fixture" in preflight, false);
   assert.ok(readJournal(join(dir, "journal.jsonl")).every((line) => line.label === "LIVE"));
-  assert.equal(live.code, 2, "LIVE preflight still produces no gate evidence in this slice");
+  assert.equal(live.code, 2, "the (fake) producer refused, so the LIVE run produced no gate evidence");
 });
 
 test("a rerun with another configuration or label refuses the journal; a lock held by a live run refuses the run", async () => {
@@ -140,22 +145,29 @@ test("a rerun with another configuration or label refuses the journal; a lock he
   assert.match(busy.lines.join("\n"), /EVIDENCE_RUN_IN_PROGRESS/);
 });
 
-test("cleanup and recovery run only when named, and report ACT disabled while no committed contract authorizes it", async () => {
+test("act, cleanup and recovery run only when named, and refuse while no committed contract authorizes the path", async () => {
   const root = fixtureRoot();
   writeConfig(root, validConfig());
   const deps = fixtureDeps(root);
-  await runEvidenceCommand(["run", "--synthetic", "--stage", "cleanup"], deps);
+  await runEvidenceCommand(["run", "--synthetic", "--stage", "cleanup:aws-terraform"], deps);
   const stages = readJournal(join(root, ".runs/evidence/synthetic", C12, "journal.jsonl")).filter((line) => line.event === "finish").map((line) => line.stage + ":" + line.code);
-  assert.deepEqual(stages, ["preflight:undefined", "cleanup:SKIPPED_ACT_DISABLED"]);
+  assert.deepEqual(stages, ["preflight:undefined", "cleanup:aws-terraform:ACT_DISABLED"]);
+  assert.deepEqual((deps.spawn as unknown as { calls: unknown[] }).calls, [], "no child was started");
   const pinned = fixtureRoot(AUTHORIZING_CONTRACT);
   writeConfig(pinned, validConfig());
   const guided = fixtureDeps(pinned);
-  await runEvidenceCommand(["run", "--synthetic", "--stage", "act"], guided);
-  assert.match(guided.lines.join("\n"), /act: NOT_BUILT — Slice S5/);
+  await runEvidenceCommand(["run", "--synthetic", "--stage", "act:aws-terraform"], guided);
+  assert.match(guided.lines.join("\n"), /act:aws-terraform: CONTRACT_NOT_FOR_PATH/, "an authorize entry for another provider and engine never enables this path");
+  for (const stage of ["recovery", "act:gcp-api"]) {
+    const other = fixtureDeps(fixtureRoot());
+    writeConfig(other.root, validConfig());
+    await runEvidenceCommand(["run", "--synthetic", "--stage", stage], other);
+    assert.match(other.lines.join("\n"), stage === "recovery" ? /recovery: ACT_DISABLED/ : /act:gcp-api: NOT_AVAILABLE — GCP API-native is not admitted for release/);
+  }
 });
 
 test("a run that produced no evidence is BLOCKED: every --stage with no authorizing contract and no provider configured exits 2", async () => {
-  for (const stage of ["preflight", "aws-readonly", "azure-readonly", "gcp-readonly", "act", "recovery", "cleanup", "summary"]) {
+  for (const stage of ["preflight", "aws-readonly", "azure-readonly", "gcp-readonly", "act:aws-terraform", "act:gcp-api", "recovery", "cleanup:azure-bicep", "summary"]) {
     for (const label of ["LIVE", "SYNTHETIC"] as const) {
       const root = fixtureRoot();
       writeConfig(root, validConfig({ aws: undefined, azure: undefined }));

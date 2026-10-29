@@ -2,45 +2,84 @@
  * The owner's local live-evidence runner, `./alz evidence` (docs/evidence-runner.md).
  *
  * The runner orchestrates the existing evidence producers on the owner's own machine. It never produces evidence a
- * producer did not write, never declares a LIVE label (the person types it), never initiates an apply, and never reads,
- * stores or forwards a credential. Slice S1 is the skeleton: configuration, journal, preflight, status and dry run. Every
- * later stage reports NOT_BUILT with the slice that adds it, so this slice can never claim evidence it did not produce.
+ * producer did not write, never declares a LIVE label (the person types it), never initiates an apply on its own, and never
+ * reads, stores or forwards a credential. Every producer runs as a child process (`./alz qualify …`, `./alz apply …`); the
+ * runner sequences them, journals each step's exit code and the documents it wrote, and stops at the first refusal.
  */
 
-/** The stages of one run, in order. */
-export const STAGES = ["preflight", "aws-readonly", "azure-readonly", "gcp-readonly", "act", "recovery", "cleanup", "summary"] as const;
-export type StageId = (typeof STAGES)[number];
+/** The six DEV ACT release paths (the D4 delivery paths, src/apply/token-delivery.ts `DELIVERY_PATHS`), in release order. */
+export const ACT_PATHS = ["aws-terraform", "aws-cdk", "azure-terraform", "azure-bicep", "gcp-terraform", "gcp-api"] as const;
+export type ActPathId = (typeof ACT_PATHS)[number];
 
-/** The stages `run` selects without `--stage`. Recovery and cleanup run only when named, cleanup never as part of a whole run. */
-export const DEFAULT_STAGES: readonly StageId[] = ["preflight", "aws-readonly", "azure-readonly", "gcp-readonly", "act", "summary"];
-
-/** The PLAN slice that builds each stage (the PLAN on issue #39). Preflight is this slice. */
-export const STAGE_SLICE: Readonly<Record<StageId, string>> = {
-  preflight: "S1",
-  "aws-readonly": "S2",
-  "azure-readonly": "S3",
-  "gcp-readonly": "S4",
-  act: "S5",
-  recovery: "S5",
-  cleanup: "S5",
-  summary: "S6",
+/** What each ACT path is in the product: its provider and engine as the pilot contract names them. */
+export const ACT_PATH_SPEC: Readonly<Record<ActPathId, { provider: "AWS" | "AZURE" | "GCP"; engine: string }>> = {
+  "aws-terraform": { provider: "AWS", engine: "TERRAFORM" },
+  "aws-cdk": { provider: "AWS", engine: "CDK" },
+  "azure-terraform": { provider: "AZURE", engine: "TERRAFORM" },
+  "azure-bicep": { provider: "AZURE", engine: "BICEP" },
+  "gcp-terraform": { provider: "GCP", engine: "TERRAFORM" },
+  "gcp-api": { provider: "GCP", engine: "GCP_API" },
 };
 
-/** The stages this build implements. Anything else reports NOT_BUILT. */
-export const BUILT_STAGES: ReadonlySet<StageId> = new Set<StageId>(["preflight"]);
+/**
+ * Paths the runner cannot run, with the reason it prints. GCP API-native has an engine module but no release gate and no
+ * admission (`ACT_RELEASE_PATHS` in src/qualification/release-admission.ts lists five paths): its gate is added by its own
+ * integration step after the owner's G2 run and INT-2, not by this runner.
+ */
+export const ACT_PATH_NOT_AVAILABLE: Readonly<Partial<Record<ActPathId, string>>> = {
+  "gcp-api": "GCP API-native is not admitted for release: it has no act:* gate in the registry and no admission row yet (G2 and INT-2 pending), so no run of it could become release evidence.",
+};
+
+export type ActStageId = `act:${ActPathId}` | `cleanup:${ActPathId}`;
+
+export type StageId = "preflight" | "aws-readonly" | "azure-readonly" | "gcp-readonly" | ActStageId | "recovery" | "summary";
+/** The stages of one run, in order. */
+export const STAGES: readonly StageId[] = [
+  "preflight", "aws-readonly", "azure-readonly", "gcp-readonly",
+  ...ACT_PATHS.map((path): StageId => `act:${path}`),
+  ...ACT_PATHS.map((path): StageId => `cleanup:${path}`),
+  "recovery", "summary",
+];
+
+/** The read-only stages: they run beside no mutation identity. */
+export const READONLY_STAGES: readonly StageId[] = ["aws-readonly", "azure-readonly", "gcp-readonly"];
+
+/**
+ * The stages `run` selects without `--stage`: the read-only stages and the summary. An ACT, cleanup or recovery stage runs
+ * only when named, because it needs the mutation identities the read-only stages refuse to run beside, and a person typing
+ * every phrase.
+ */
+export const DEFAULT_STAGES: readonly StageId[] = ["preflight", "aws-readonly", "azure-readonly", "gcp-readonly", "summary"];
+
+/** The PLAN slice that built each stage (the PLAN on issue #39). */
+export function stageSlice(stage: StageId): string {
+  if (stage === "preflight") return "S1";
+  if (stage === "aws-readonly") return "S2";
+  if (stage === "azure-readonly") return "S3";
+  if (stage === "gcp-readonly") return "S4";
+  if (stage === "summary") return "S6";
+  return "S5";
+}
+
+export const isActStage = (stage: StageId): stage is `act:${ActPathId}` => stage.startsWith("act:");
+export const isCleanupStage = (stage: StageId): stage is `cleanup:${ActPathId}` => stage.startsWith("cleanup:");
+export const pathOfStage = (stage: `act:${ActPathId}` | `cleanup:${ActPathId}`): ActPathId => stage.slice(stage.indexOf(":") + 1) as ActPathId;
+/** Stages that run `./alz apply` children at the person's terminal. */
+export const isGuidedStage = (stage: StageId): boolean => isActStage(stage) || isCleanupStage(stage) || stage === "recovery";
 
 /** A run's label. LIVE only after the person types the attestation at a terminal; never from a flag or a file. */
 export type RunLabel = "SYNTHETIC" | "LIVE";
 
 /**
- * PASS: the step did what it is for. BLOCKED: something outside the runner is missing (an owner input, a slice not
- * built yet, a refused identity). FAIL: the step ran and failed. SKIPPED: the step does not apply to this run (a provider
- * the configuration does not name, the ACT stage while ACT is disabled).
+ * PASS: the step did what it is for. BLOCKED: something outside the runner is missing or refused (an owner input, an
+ * identity, a refusal by a producer before any action). FAIL: the step ran and failed. SKIPPED: the step does not apply to
+ * this run (a provider the configuration does not name).
  */
 export type StepOutcome = "PASS" | "BLOCKED" | "FAIL" | "SKIPPED";
 
 /** Exit codes: 0 every selected stage produced its evidence, 2 something was BLOCKED or refused, 1 an error. */
 export const EXIT = { OK: 0, ERROR: 1, BLOCKED: 2 } as const;
 
-export type Provider = "aws" | "azure";
-export const PROVIDERS: readonly Provider[] = ["aws", "azure"];
+export type Provider = "aws" | "azure" | "gcp";
+export const PROVIDERS: readonly Provider[] = ["aws", "azure", "gcp"];
+export const READONLY_STAGE_OF: Readonly<Record<Provider, StageId>> = { aws: "aws-readonly", azure: "azure-readonly", gcp: "gcp-readonly" };

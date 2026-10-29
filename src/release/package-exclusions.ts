@@ -97,7 +97,8 @@ const INI_SECTION = /^\s*\[[^\]\r\n]+\]\s*$/m;
 const AWS_INI_KEY = /^\s*aws_(?:access_key_id|secret_access_key|session_token)\s*=\s*\S/im;
 const AZURE_ACCOUNT_KEY = /AccountKey=[A-Za-z0-9+/]{20,}={0,2}/;
 const AZURE_SAS_STRING = /SharedAccessSignature=[^;\s"']*sig=/i;
-const SAS_SIG = /[?&]sig=[A-Za-z0-9%+/=]{16,}/g;
+/** `sig=` after `?` or `&`, also HTML-escaped as `&amp;` (a SAS URL pasted into a page or an XML file). */
+const SAS_SIG = /(?:[?&]|&amp;)sig=[A-Za-z0-9%+/=]{16,}/g;
 
 /** An Azure SAS URL: a `sig=` signature with another SAS field (`sv=`, `se=`, `sp=` and the rest) or on an Azure storage host. */
 function sasUrl(text: string): boolean {
@@ -109,7 +110,7 @@ function sasUrl(text: string): boolean {
     const begin = query.slice(0, local).search(/[^\s"'<>]*$/);
     const finish = query.slice(local).search(/[\s"'<>]/);
     const url = query.slice(begin, finish < 0 ? undefined : local + finish);
-    if (/[?&](?:sv|se|sp|sr|srt|ss|st|spr|skoid|sktid)=/.test(url) || /\.core\.windows\.net[/:?]/i.test(url)) return true;
+    if (/(?:[?&]|&amp;)(?:sv|se|sp|sr|srt|ss|st|spr|skoid|sktid)=/.test(url) || /\.core\.windows\.net[/:?]/i.test(url)) return true;
   }
   return false;
 }
@@ -155,99 +156,201 @@ function yamlContract(text: string): boolean {
 const ZIP_LOCAL = 0x04034b50;
 const ZIP_CENTRAL = 0x02014b50;
 const ZIP_END = 0x06054b50;
+/** One central-directory record: where its entry is and how it is stored. Nothing is inflated here. */
+export type ZipRecord = { name: string; method: number; encrypted: boolean; compressed: number; declared: number; data: number; mismatch: boolean };
+/** The most bytes all entries of one zip may inflate to, together; past it the zip fails closed. One entry may inflate to 64 MB. */
+export const ZIP_INFLATE_BUDGET = 256 * 1024 * 1024;
+const ZIP_ENTRY_LIMIT = 64 * 1024 * 1024;
+
 /**
- * The entries of a zip archive, read from its central directory without extracting anything to disk: each name, and its bytes
- * when it is stored or deflated (inflated in memory, bounded). Undefined when the directory cannot be read.
+ * The central directory of a zip archive, read without inflating anything: each record's name, method, encryption flag, sizes
+ * and the offset of its data. A string naming why it cannot be read: a damaged directory, or two records that point at one
+ * local entry (which would make one entry count many times).
  */
-export function zipEntries(bytes: Buffer): { name: string; data?: Buffer }[] | undefined {
+export function zipDirectory(bytes: Buffer): ZipRecord[] | string {
   const min = Math.max(0, bytes.length - 22 - 0xffff);
   for (let at = bytes.length - 22; at >= min; at--) {
     if (bytes.readUInt32LE(at) !== ZIP_END) continue;
     const count = bytes.readUInt16LE(at + 10);
     let offset = bytes.readUInt32LE(at + 16);
-    const entries: { name: string; data?: Buffer }[] = [];
+    const records: ZipRecord[] = [];
+    const locals = new Set<number>();
     for (let i = 0; i < count; i++) {
-      if (offset + 46 > bytes.length || bytes.readUInt32LE(offset) !== ZIP_CENTRAL) return undefined;
+      if (offset + 46 > bytes.length || bytes.readUInt32LE(offset) !== ZIP_CENTRAL) return "its directory cannot be read";
+      const flags = bytes.readUInt16LE(offset + 8);
       const method = bytes.readUInt16LE(offset + 10);
       const compressed = bytes.readUInt32LE(offset + 20);
+      const declared = bytes.readUInt32LE(offset + 24);
       const nameLength = bytes.readUInt16LE(offset + 28);
       const extra = bytes.readUInt16LE(offset + 30);
       const comment = bytes.readUInt16LE(offset + 32);
       const local = bytes.readUInt32LE(offset + 42);
-      if (offset + 46 + nameLength > bytes.length) return undefined;
+      if (offset + 46 + nameLength > bytes.length) return "its directory cannot be read";
+      if (locals.has(local)) return "two directory records point at one entry";
+      locals.add(local);
       const name = bytes.subarray(offset + 46, offset + 46 + nameLength).toString("utf8");
-      let data: Buffer | undefined;
+      let data = -1;
+      let mismatch = false;
       if (local + 30 <= bytes.length && bytes.readUInt32LE(local) === ZIP_LOCAL) {
-        const start = local + 30 + bytes.readUInt16LE(local + 26) + bytes.readUInt16LE(local + 28);
-        const raw = start + compressed <= bytes.length ? bytes.subarray(start, start + compressed) : undefined;
-        try {
-          if (raw && method === 0) data = Buffer.from(raw);
-          else if (raw && method === 8) data = inflateRawSync(raw, { maxOutputLength: 64 * 1024 * 1024 });
-        } catch { data = undefined; }
+        const localNameLength = bytes.readUInt16LE(local + 26);
+        data = local + 30 + localNameLength + bytes.readUInt16LE(local + 28);
+        if (data + compressed > bytes.length) data = -1;
+        // Unzip tools follow the local header; the guard reads the directory. Any disagreement could show a tool one thing and
+        // the guard another, so it is refused. Sizes are compared unless a data descriptor (flag bit 3) carries them instead.
+        const localFlags = bytes.readUInt16LE(local + 6);
+        const localName = local + 30 + localNameLength <= bytes.length ? bytes.subarray(local + 30, local + 30 + localNameLength).toString("utf8") : undefined;
+        const descriptor = ((flags | localFlags) & 0x8) !== 0;
+        mismatch = localFlags !== flags || bytes.readUInt16LE(local + 8) !== method || localName !== name ||
+          (!descriptor && (bytes.readUInt32LE(local + 18) !== compressed || bytes.readUInt32LE(local + 22) !== declared));
       }
-      entries.push({ name, data: name.endsWith("/") ? Buffer.alloc(0) : data });
+      records.push({ name, method, encrypted: (flags & 1) === 1, compressed, declared, data, mismatch });
       offset += 46 + nameLength + extra + comment;
     }
-    return entries;
+    return records;
   }
-  return undefined;
+  return "its directory cannot be read";
 }
+
+/**
+ * One entry's bytes, inflated in memory within `limit` bytes, or the reason it cannot be judged: encrypted (stored or not), a
+ * method other than stored or deflated, damaged, or larger than the limit. The caller judges it and lets it go.
+ */
+export function readZipEntry(bytes: Buffer, record: ZipRecord, limit: number): Buffer | { problem: string; overBudget?: true } {
+  if (record.name.endsWith("/")) return Buffer.alloc(0);
+  if (record.encrypted) return { problem: "an encrypted zip entry, which cannot be judged: " + record.name };
+  if (record.mismatch) return { problem: "a zip entry whose local header disagrees with its directory record: " + record.name };
+  if (record.data < 0) return { problem: "a zip entry that cannot be read: " + record.name };
+  const cap = Math.min(limit, ZIP_ENTRY_LIMIT);
+  if (record.declared > cap) return { problem: "a zip entry larger than the inflation budget: " + record.name, overBudget: true };
+  const raw = bytes.subarray(record.data, record.data + record.compressed);
+  if (record.method === 0) return raw.length > cap ? { problem: "a zip entry larger than the inflation budget: " + record.name, overBudget: true } : raw;
+  if (record.method !== 8) return { problem: "a zip entry compressed with a method the guard cannot read: " + record.name };
+  try {
+    return inflateRawSync(raw, { maxOutputLength: cap });
+  } catch (error) {
+    return (error as NodeJS.ErrnoException)?.code === "ERR_BUFFER_TOO_LARGE"
+      ? { problem: "a zip entry larger than the inflation budget: " + record.name, overBudget: true }
+      : { problem: "a zip entry that cannot be inflated: " + record.name };
+  }
+}
+
 /** The entry names of a zip archive, or undefined when its directory cannot be read. */
-export const zipEntryNames = (bytes: Buffer): string[] | undefined => zipEntries(bytes)?.map((entry) => entry.name);
+export const zipEntryNames = (bytes: Buffer): string[] | undefined => {
+  const directory = zipDirectory(bytes);
+  return typeof directory === "string" ? undefined : directory.map((record) => record.name);
+};
 const PLAN_ENTRY = /^(?:tfplan|tfstate|tfstate-prev|tfconfig\/.*)$/;
 
-/** The text forms of a file worth matching: as read, UTF-16 decoded, one gzip layer, and one base64 layer. Each is cheap to skip. */
-function views(bytes: Buffer): string[] {
-  const out: string[] = [];
+const GZIP_LAYER_LIMIT = 64 * 1024 * 1024;
+const BASE64_DECODE_LIMIT = 16 * 1024 * 1024;
+/** True when every byte is base64 or base64url text or white space, and there are at least 24 of them: a decodable candidate. */
+function base64Shaped(bytes: Buffer): boolean {
+  let significant = 0;
+  for (const byte of bytes) {
+    if (byte === 0x20 || byte === 0x09 || byte === 0x0a || byte === 0x0d) continue;
+    const ok = (byte >= 0x41 && byte <= 0x5a) || (byte >= 0x61 && byte <= 0x7a) || (byte >= 0x30 && byte <= 0x39) ||
+      byte === 0x2b || byte === 0x2f || byte === 0x5f || byte === 0x2d || byte === 0x3d;
+    if (!ok) return false;
+    significant++;
+  }
+  return significant >= 24;
+}
+
+/**
+ * The text forms of a file worth matching: as read, UTF-16 decoded, one gzip layer, and one base64 layer (and gzip inside it).
+ * A layer the guard cannot read is a problem, never a pass: a gzip that is truncated, damaged or larger than its limit (64 MB,
+ * and never more than `limit`, what is left of an enclosing zip's budget), and a base64 file larger than the decode limit.
+ */
+function views(bytes: Buffer, limit: number): { texts: string[]; problems: string[]; inflated: number } {
+  const texts: string[] = [];
+  const problems: string[] = [];
+  let inflated = 0;
   const addText = (buffer: Buffer) => {
-    if (buffer.length >= 2 && buffer[0] === 0xff && buffer[1] === 0xfe) { out.push(new TextDecoder("utf-16le").decode(buffer.subarray(2))); return; }
-    if (buffer.length >= 2 && buffer[0] === 0xfe && buffer[1] === 0xff) { out.push(new TextDecoder("utf-16be").decode(buffer.subarray(2))); return; }
+    if (buffer.length >= 2 && buffer[0] === 0xff && buffer[1] === 0xfe) { texts.push(new TextDecoder("utf-16le").decode(buffer.subarray(2))); return; }
+    if (buffer.length >= 2 && buffer[0] === 0xfe && buffer[1] === 0xff) { texts.push(new TextDecoder("utf-16be").decode(buffer.subarray(2))); return; }
     const sample = buffer.subarray(0, 4096);
     const nul = sample.reduce((n, byte) => n + (byte === 0 ? 1 : 0), 0);
-    if (sample.length >= 8 && nul * 3 >= sample.length) out.push(new TextDecoder(sample[0] === 0 ? "utf-16be" : "utf-16le").decode(buffer));
+    if (sample.length >= 8 && nul * 3 >= sample.length) texts.push(new TextDecoder(sample[0] === 0 ? "utf-16be" : "utf-16le").decode(buffer));
     const text = buffer.toString("utf8");
-    out.push(text.charCodeAt(0) === 0xfeff ? text.slice(1) : text);
+    texts.push(text.charCodeAt(0) === 0xfeff ? text.slice(1) : text);
   };
-  const gunzip = (buffer: Buffer): Buffer | undefined => {
+  const gunzip = (buffer: Buffer, what: string): Buffer | undefined => {
     if (buffer.length < 2 || buffer[0] !== 0x1f || buffer[1] !== 0x8b) return undefined;
-    try { return gunzipSync(buffer, { maxOutputLength: 64 * 1024 * 1024 }); } catch { return undefined; }
+    const cap = Math.max(0, Math.min(GZIP_LAYER_LIMIT, limit - inflated));
+    try {
+      const out = gunzipSync(buffer, { maxOutputLength: Math.max(1, cap) });
+      if (out.length > cap) throw Object.assign(new RangeError("over"), { code: "ERR_BUFFER_TOO_LARGE" });
+      inflated += out.length;
+      return out;
+    } catch (error) {
+      problems.push((error as NodeJS.ErrnoException)?.code === "ERR_BUFFER_TOO_LARGE"
+        ? what + " gzip layer larger than the inflation limit, which cannot be judged"
+        : what + " gzip layer that is truncated or cannot be read");
+      return undefined;
+    }
   };
   addText(bytes);
-  const unzipped = gunzip(bytes);
+  const unzipped = gunzip(bytes, "a");
   if (unzipped) addText(unzipped);
-  const compact = bytes.length <= 16 * 1024 * 1024 ? bytes.toString("latin1").replace(/\s+/g, "") : "";
-  if (compact.length >= 24 && /^[A-Za-z0-9+/_-]+={0,2}$/.test(compact)) {
-    const decoded = Buffer.from(compact, compact.includes("-") || compact.includes("_") ? "base64url" : "base64");
-    addText(decoded);
-    const inner = gunzip(decoded);
-    if (inner) addText(inner);
+  if (base64Shaped(bytes)) {
+    if (bytes.length > BASE64_DECODE_LIMIT) problems.push("a base64 file larger than the decode limit, which cannot be judged");
+    else {
+      const compact = bytes.toString("latin1").replace(/\s+/g, "");
+      if (/^[A-Za-z0-9+/_-]+={0,2}$/.test(compact)) {
+        const decoded = Buffer.from(compact, compact.includes("-") || compact.includes("_") ? "base64url" : "base64");
+        addText(decoded);
+        const inner = gunzip(decoded, "a base64-wrapped");
+        if (inner) addText(inner);
+      }
+    }
   }
-  return out;
+  return { texts, problems, inflated };
 }
 
 /**
  * The findings for one file's bytes, under any name. Secrets are matched by their own patterns; JSON (any extension, BOM or
  * UTF-16, one gzip or base64 layer, nested in arrays or objects) is judged by shape: an enabled contract, a sealed plan, a signed
- * approval, Terraform state or a JSON plan. A zip is judged by its directory: one holding a Terraform plan's entries is a saved
- * plan, and a zip whose directory cannot be read fails closed.
+ * approval, Terraform state or a JSON plan. A zip is judged by its directory (one holding a Terraform plan's entries is a saved
+ * plan) and by each entry, inflated one at a time within ZIP_INFLATE_BUDGET; a damaged directory, an encrypted or unreadable
+ * entry, or a zip past the budget fails closed.
  */
-export function contentExclusions(path: string, bytes: Buffer, depth = 0): ExclusionFinding[] {
+export function contentExclusions(path: string, bytes: Buffer, depth = 0, budget = ZIP_INFLATE_BUDGET): ExclusionFinding[] {
+  return judge(path, bytes, depth, budget).findings;
+}
+
+/** The findings for one file's bytes, and how many bytes judging it inflated (zip entries and gzip layers), within `budget`. */
+function judge(path: string, bytes: Buffer, depth: number, budget: number): { findings: ExclusionFinding[]; used: number } {
   const out: ExclusionFinding[] = [];
+  let used = 0;
   const add = (code: ExclusionCode, reason: string) => { if (!out.some((x) => x.code === code && x.reason === reason)) out.push(finding(path, code, reason)); };
   if (bytes.length >= 4 && bytes.readUInt32LE(0) === ZIP_LOCAL) {
-    const entries = zipEntries(bytes);
-    if (entries === undefined) add("UNREADABLE", "a zip archive whose directory cannot be read");
+    const directory = zipDirectory(bytes);
+    if (typeof directory === "string") add("UNREADABLE", "a zip archive: " + directory);
     else {
-      if (entries.some((entry) => PLAN_ENTRY.test(entry.name))) add("SAVED_PLAN", "a saved Terraform plan (a zip holding tfplan, tfstate or tfconfig entries)");
-      // One level in: each stored or deflated entry is judged by name and content, as a file of the package would be.
-      for (const entry of entries) {
+      if (directory.some((record) => PLAN_ENTRY.test(record.name))) add("SAVED_PLAN", "a saved Terraform plan (a zip holding tfplan, tfstate or tfconfig entries)");
+      // One level in: each entry is inflated in memory within what is left of the zip's budget, judged by name and content as a
+      // file of the package would be, and let go before the next. Past the budget the zip fails closed and the rest is not read.
+      let remaining = budget;
+      for (const record of directory) {
         if (depth > 0) break;
-        if (entry.data === undefined) { add("UNREADABLE", "a zip entry that cannot be read in memory: " + entry.name); continue; }
-        for (const found of [...pathExclusions(entry.name), ...contentExclusions(entry.name, entry.data, depth + 1)]) add(found.code, "inside the zip, " + entry.name + ": " + found.reason);
+        const entry = readZipEntry(bytes, record, remaining);
+        if (!Buffer.isBuffer(entry)) {
+          add("UNREADABLE", entry.problem);
+          if (entry.overBudget) break;
+          continue;
+        }
+        remaining -= entry.length;
+        const inner = judge(record.name, entry, depth + 1, remaining);
+        remaining -= inner.used;
+        for (const found of [...pathExclusions(record.name), ...inner.findings]) add(found.code, "inside the zip, " + record.name + ": " + found.reason);
       }
+      used += budget - remaining;
     }
   }
-  for (const text of views(bytes)) {
+  const view = views(bytes, budget - used);
+  used += view.inflated;
+  for (const problem of view.problems) add("UNREADABLE", problem);
+  for (const text of view.texts) {
     if (PEM_PRIVATE_KEY.test(text) || PUTTY_KEY.test(text) || KUBE_CLIENT_KEY.test(text)) add("PRIVATE_KEY", "the file holds a private key");
     if (JWT.test(text)) add("TOKEN", "the file holds a JWT");
     if (GITHUB_TOKEN.test(text)) add("TOKEN", "the file holds a GitHub token");
@@ -265,7 +368,7 @@ export function contentExclusions(path: string, bytes: Buffer, depth = 0): Exclu
       for (const found of shapeFindings(path, value)) add(found.code, found.reason);
     }
   }
-  return out;
+  return { findings: out, used };
 }
 
 /**

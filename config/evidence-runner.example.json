@@ -12,5 +12,15 @@
     "expectedTenantId": "REPLACE-WITH-THE-TENANT-GUID",
     "expectedSubscriptionId": "REPLACE-WITH-THE-SUBSCRIPTION-GUID",
     "location": "REPLACE-WITH-THE-LOCATION"
+  },
+  "gcp": {
+    "expectedProjectId": "REPLACE-WITH-THE-PROJECT-ID",
+    "region": "REPLACE-WITH-THE-REGION"
+  },
+  "act": {
+    "repository": "REPLACE-WITH-OWNER/REPO",
+    "paths": {
+      "aws-terraform": { "project": "/REPLACE-WITH-THE-ABSOLUTE-PATH-OF-YOUR-CANARY-COPY", "requesterId": "REPLACE-WITH-THE-REQUESTER-ID" }
+    }
   }
 }

@@ -174,15 +174,16 @@ export const evidenceOperations: readonly OperationSpec[] = [
       command: "npx tsx src/cli/qualify-aws-terraform-agent.ts --live-models " + flag, ...(env.length ? { env } : {}),
     },
   })),
-  // The owner's local live-evidence runner (docs/evidence-runner.md). Always a handoff: it reads the person's own
-  // cloud logins and asks for a typed attestation, so the console only shows the command.
+  // The owner's local live-evidence runner (docs/evidence-runner.md). Always a handoff: it asks for a typed attestation,
+  // runs producers under the person's federated identities and, in its guided stages, runs ./alz apply at the person's own
+  // terminal, so the console only shows the command.
   ...[
     { sub: "init", title: "Evidence runner: create the configuration",
       summary: "Copies the example evidence-runner configuration for the owner to fill in with identifiers only; never overwrites.",
       evidenceBasis: "WRITES config/evidence-runner.json FROM THE EXAMPLE — NO CLOUD, NO CREDENTIALS" },
     { sub: "run", title: "Evidence runner: run the release evidence stages",
-      summary: "Checks the candidate, identities and owner inputs, then runs the evidence stages that are built, journaled and resumable.",
-      evidenceBasis: "PREFLIGHT ONLY IN THIS BUILD — LIVE ONLY AFTER A TYPED ATTESTATION, OTHERWISE SYNTHETIC — ACT DISABLED — WRITES UNDER .runs/evidence" },
+      summary: "Checks the candidate, identities and owner inputs, then runs the read-only, guided ACT and summary stages, journaled and resumable.",
+      evidenceBasis: "LIVE ONLY AFTER A TYPED ATTESTATION, OTHERWISE SYNTHETIC — ACT ONLY UNDER THE OWNER'S COMMITTED CONTRACT, EVERY PHRASE TYPED BY YOU — WRITES UNDER .runs/evidence" },
     { sub: "status", title: "Evidence runner: where the run stands",
       summary: "Shows the journal, the next stage, the owner inputs still missing and how each release gate is produced.",
       evidenceBasis: "READS THE LOCAL JOURNAL AND CONFIGURATION — NO CLOUD" },
@@ -190,7 +191,7 @@ export const evidenceOperations: readonly OperationSpec[] = [
     id: "evidence-" + sub, title, summary, family: "evidence", safety: "HANDOFF", inputs: [], evidenceBasis,
     cli: "./alz evidence " + sub, cliScript: "src/cli/evidence.ts", command: { group: "evidence", sub },
     handoff: {
-      reason: "The owner runs this in their own terminal: it reads the person's own cloud logins and asks for a typed attestation, which the console never handles.",
+      reason: "The owner runs this in their own terminal: it asks for a typed attestation and its guided stages run ./alz apply prompts the person answers, which the console never handles.",
       command: "./alz evidence " + sub,
     },
   })),
