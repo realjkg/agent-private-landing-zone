@@ -193,7 +193,8 @@ describe("the wizard's environment step", () => {
 
   test("without the paths data, today's order stays, every environment can be chosen, and the panel says it could not load", async () => {
     await unlockWizard({ status: 503, body: { error: "PILOT_PATHS_UNAVAILABLE", message: "no" } });
-    expect((await screen.findByTestId("deployment-paths")).textContent).toContain("could not be loaded");
+    // The panel exists before its load settles: wait for its text, never read it once (#361 review N4).
+    await waitFor(() => expect(screen.getByTestId("deployment-paths").textContent).toContain("could not be loaded"));
     fireEvent.click(screen.getByRole("button", { name: COPY.pathContinue }));
     const select = await screen.findByLabelText(COPY.readyEnvironment) as HTMLSelectElement;
     expect([...select.options].map((o) => [o.value, o.disabled])).toEqual([["DEV", false], ["QA", false], ["PROD", false]]);
@@ -202,7 +203,8 @@ describe("the wizard's environment step", () => {
 
   test("a reply in another shape is unavailable, never readiness", async () => {
     await unlockWizard({ status: 200, body: { label: "RELEASE_RECORDS", contract: { state: "ENABLED" }, environments: [{ environment: "DEV", authorized: "yes" }], paths: [] } });
-    expect((await screen.findByTestId("deployment-paths")).textContent).toContain("could not be loaded");
+    // The panel exists before its load settles: wait for its text, never read it once (#361 review N4).
+    await waitFor(() => expect(screen.getByTestId("deployment-paths").textContent).toContain("could not be loaded"));
   });
 });
 

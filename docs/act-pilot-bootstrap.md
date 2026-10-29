@@ -304,20 +304,18 @@ Compare `iss`, `sub` and `aud` with the trust: `az ad app federated-credential l
 
 **Bucket policy lockout (AWS).** The policy denies everyone but its list. If you omitted the administrator role, sign in as the account's root user and run `aws s3api delete-bucket-policy --bucket examplefake-dev-state`, then add the role to `state_admin_principal_arns` and re-apply.
 
-**State lock stuck.** First make sure no apply is running and read `./alz apply status`; after `KILLED` or `PARTIAL_REQUIRES_REVIEW` review state and resources before touching the lock (apply runbook). Then, as an administrator:
+**State lock stuck.** Follow "Recovering a state lock left by a SIGKILL" in `docs/act-pilot-apply.md`. That procedure confirms that no Terraform process holds the lock, identifies the exact lock id, runs as the STATE_WRITE identity (never APPLY), and only then runs `terraform force-unlock <LOCK_ID>`; it ends by recording the recovery with `./alz apply record-recovery`. The commands below only read the lock to identify it:
 
 ```bash
 # AWS: the lock is an object next to the state object.
 aws s3api get-object --bucket examplefake-dev-state --key pilot/dev.tfstate.tflock /dev/stdout   # who and when
-aws s3api delete-object --bucket examplefake-dev-state --key pilot/dev.tfstate.tflock
 
-# Azure: the lock is a lease on the state blob. Break it with a temporary data role for yourself on that container only.
+# Azure: the lock is a lease on the state blob, with the lock info (terraformlockid) in its metadata.
 az storage blob show --account-name examplealzstatedev --container-name tfstate --name dev.tfstate \
-  --auth-mode login --query properties.lease
-az storage blob lease break --account-name examplealzstatedev --container-name tfstate --blob-name dev.tfstate --auth-mode login
+  --auth-mode login --query "{lease: properties.lease, metadata: metadata}"
 ```
 
-Remove your temporary role assignment afterward. The pilot never uses `-lock=false` or force-unlock.
+The product never runs `-lock=false` or `force-unlock`. The owner removes a lock only by hand, through that procedure.
 
 ## Teardown
 

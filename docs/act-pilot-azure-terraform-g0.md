@@ -97,7 +97,7 @@ This is the same driver, outcomes and ledger as for AWS: see `docs/act-pilot-aws
 
 Azure specifics:
 
-- **State lock.** The lock is a lease on the state blob. `FAILED_NO_CHANGE` is only a lock refusal with the serial unmoved. A lease left behind by a `KILLED` run is broken by hand, after review, with a temporary data role on that one container (`docs/act-pilot-bootstrap.md`, "State lock stuck"). The pilot never uses `-lock=false` or `force-unlock`.
+- **State lock.** The lock is a lease on the state blob. `FAILED_NO_CHANGE` is only a lock refusal with the serial unmoved. A lease left behind by a `KILLED` run is released by hand, after review, as STATE_WRITE (never APPLY) with `terraform force-unlock <LOCK_ID>` (`docs/act-pilot-apply.md`, "Recovering a state lock left by a SIGKILL"). The product never uses `-lock=false` or `force-unlock`.
 - **Recovery reads.** The owner reads the state as an administrator, outside the pilot's identities, along with the resources, the activity log and the sign-in logs.
 - **Reversal.** Reversal is the governed cleanup (`observe`, `propose-cleanup`, `approve`, `cleanup`, `verify-cleanup`). It reads Azure Resource Manager in process as DISCOVERY (`src/observe/azure-rest.ts`). It never deletes the backend storage account, a resource group, deployment history, or anything under `Microsoft.Authorization` or `Microsoft.ManagedIdentity`.
 

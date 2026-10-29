@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -36,7 +36,7 @@ import {
   AWS_DEV_TARGET, AWS_REGION, CANARIES, canaryFor, withCanary, NOW, POLICY, SOURCE_COMMIT, STATE_CANARY, VALUE_CANARY, awsContractJson, awsIdentityEnv, awsReadCallsOf, awsRoleArn, awsTargetOf,
   approvalFor, behave as behaveIn, behaveAwsReads, callsOf, human, installFakeAwsReads, installFakeTerraform, keys, stateResource, testFixtureForgeQualificationEvidence,
   writeReviewedContract, writeProject, type AwsReadBehavior, type Behavior,
-  REQUESTER, reHashedProposal,
+  REQUESTER, reHashedProposal, signalsOf,
 } from "./helpers/apply-fixtures.js";
 
 // The AWS Terraform observe and cleanup steps (docs/observe-and-cleanup.md, docs/act-pilot-plan.md "Cleanup of pilot-created
@@ -592,6 +592,33 @@ test("a kill switch during the cleanup stops the engine, records KILLED, and the
   rmSync(KILL, { force: true });
   behave();
   assert.ok((await cleanup(w2, run2, [approval])).ok, "the same approval works once the owner removes the switch");
+});
+
+test("#361 review N2: the cleanup's destroy apply holds a stop requested before Terraform's walk starts until the walk runs, so its one SIGINT is honored and the lock is released (fails if the cleanup wiring of holdInterruptUntil is removed)", async () => {
+  const w = world();
+  const run = await proposed(w);
+  const lockPath = join(fresh("lock"), "state.tflock");
+  const release = join(root, "never-" + (counter += 1));
+  behave({ applyWaitFor: release, lostStopBeforeWalk: { lockPath } });
+  const running = cleanup(w, run);
+  const deadline = Date.now() + 15_000;
+  const waitFor = async (condition: () => boolean, what: string) => {
+    while (!condition()) { if (Date.now() > deadline) throw new Error("timed out waiting for " + what); await new Promise((done) => setTimeout(done, 20)); }
+  };
+  await waitFor(() => applyCalls().some((c) => c.pid !== undefined) && existsSync(lockPath), "the destroy apply to hold the lock");
+  const engine = applyCalls().find((c) => c.pid !== undefined)!;
+  writeFileSync(KILL, "stop");
+  try {
+    // The stop request removes the plaintext plan first; once it is gone, any SIGINT of that request has been sent.
+    await waitFor(() => !existsSync(engine.planPath!), "the stop request");
+    process.kill(engine.pid!, "SIGUSR2"); // the walk starts: after any SIGINT already sent, by signal order
+    const killed = await running;
+    refused(killed, "APPLY_FAILED");
+    assert.equal((killed as { outcome?: string }).outcome, "KILLED");
+    assert.deepEqual(signalsOf(toolDir), ["SIGINT"], "no SIGINT reached the destroy before its walk (none was lost), and one did after it");
+    assert.ok(!existsSync(lockPath), "the graceful stop released the lock");
+    assert.equal((await readCleanupEvidence(run.proposal.proposalSha256, w.dirs.evidence))?.exitCode, 1, "a graceful exit, not the final kill");
+  } finally { rmSync(KILL, { force: true }); }
 });
 
 test("a restart or reconnect never executes a proposal twice: a held reservation refuses, verification is repeatable, and a lost response is reconciled from the ledger", async () => {

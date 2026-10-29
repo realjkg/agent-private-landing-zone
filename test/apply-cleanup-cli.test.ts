@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -290,14 +290,29 @@ test("a wrong phrase at the cleanup approval or the removal signs nothing and ru
   assert.deepEqual([destroys(), applies()], [d0 + 1, a0 + 1], "a proposal runs once");
   // Every cleanup command needs a terminal, like the apply commands. What the reports folder holds before (the observation summary an
   // earlier observe at the terminal wrote) is exactly what it holds after: nothing is written or rewritten without a terminal.
-  const reportsBefore = readdirSync(w.reportsDir).sort().map((name) => [name, readFileSync(join(w.reportsDir, name), "utf8")]);
+  // Names, bytes, inode and modification time (#362 review N3): a rewrite with identical bytes (the test clock is fixed) is caught too.
+  const reportsNow = () => readdirSync(w.reportsDir).sort().map((name) => {
+    const stat = lstatSync(join(w.reportsDir, name));
+    return [name, readFileSync(join(w.reportsDir, name), "utf8"), stat.ino, stat.mtimeMs];
+  });
+  const reportsBefore = reportsNow();
+  assert.ok(reportsBefore.length > 0, "the earlier observe at the terminal left its summary");
   for (const args of [["observe", "--sealed", run.sealedPlanPath], ["propose-cleanup", "--sealed", run.sealedPlanPath, ...requesterArgs()], ["verify-cleanup", "--proposal", proposalPath], ["report", "--sealed", run.sealedPlanPath]]) {
     const noTerminal = await cli(w, args, [], { terminal: { ...terminal([]), stdinIsTTY: false, stdoutIsTTY: false } });
     assert.equal(noTerminal.code, 1, args[0]);
     assert.match(noTerminal.stderr, /HUMAN_TERMINAL_REQUIRED/);
   }
-  assert.deepEqual(readdirSync(w.reportsDir).sort().map((name) => [name, readFileSync(join(w.reportsDir, name), "utf8")]), reportsBefore, "no report was written without a terminal");
+  assert.deepEqual(reportsNow(), reportsBefore, "no report was written or rewritten without a terminal");
   assert.ok(!readdirSync(w.reportsDir).some((name) => name.includes("-lifecycle")), "no lifecycle report was written without a terminal");
+  // #362 review N2: a symbolic link at the report's name is refused, and nothing is written through it.
+  const outside = join(w.reportsDir, "..", "outside-" + run.artifactSha256.slice(0, 6) + ".json");
+  writeFileSync(outside, "untouched\n");
+  symlinkSync(outside, join(w.reportsDir, run.artifactSha256.slice(0, 12) + "-lifecycle.json"));
+  const linked = await cli(w, ["report", "--sealed", run.sealedPlanPath]);
+  assert.equal(linked.code, 1, linked.stderr);
+  assert.match(linked.stderr, /^PRIVATE_FILE_REFUSED: [0-9a-f]{12}-lifecycle\.json is not a regular file/);
+  assert.equal(readFileSync(outside, "utf8"), "untouched\n");
+  assert.ok(!readdirSync(w.reportsDir).some((name) => name.includes(".tmp-")), "no temporary file is left");
 });
 
 test("the lifecycle report validator refuses a declared pass, a live claim without the owner's attestation, a completion over pending leftovers, and an unknown schema", async () => {

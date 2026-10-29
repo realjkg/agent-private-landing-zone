@@ -1,5 +1,6 @@
 import { createPrivateKey, randomBytes } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { PrivateFileError, writePrivateFileAtomic } from "../tools/private-file.js";
 import { tmpdir, userInfo } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -175,6 +176,16 @@ type ResolvedTarget = SealedPlan["target"];
 
 class CliError extends Error {}
 const fail = (code: string, detail = ""): never => { throw new CliError(code + (detail ? ": " + detail : "")); };
+/**
+ * Writes a private document (0600) atomically and never through a link (#362 review N2): the review bundle, a cleanup or removal
+ * proposal, the lifecycle report and the observation summary. A link or non-file at the target name refuses the command.
+ */
+const privateWrite = (path: string, text: string): void => {
+  try { writePrivateFileAtomic(path, text); } catch (error) {
+    if (error instanceof PrivateFileError) fail("PRIVATE_FILE_REFUSED", error.message);
+    throw error;
+  }
+};
 const printable = (text: string): string => stripInvisible(text).replace(CONTROL, "?");
 
 /** Each flag once (the repeated ones any number of times); anything else is refused, whatever it is called. */
@@ -385,7 +396,7 @@ const sealCommand: Command = async (flags, terminal, deps, out) => {
   const { sealed } = result;
   // The bundle approvers review. It holds no secret, so it can leave the operator's machine; the sealed plan itself cannot.
   const reviewBundlePath = result.path + ".review.json";
-  writeFileSync(reviewBundlePath, JSON.stringify(reviewBundleOf(sealed), null, 2) + "\n", { mode: 0o600 });
+  privateWrite(reviewBundlePath, JSON.stringify(reviewBundleOf(sealed), null, 2) + "\n");
   out.say(JSON.stringify({
     artifactSha256: sealed.artifactSha256, environment: sealed.environment, target: sealed.target, releaseIdentity: sealed.releaseIdentity,
     manifestHash: sealed.manifestHash, sourceCommit: sealed.sourceCommit, engineVersion: sealed.engineVersion, provenance: sealed.provenance,
@@ -617,7 +628,7 @@ const observeCommand: Command = async (flags, _terminal, deps, out) => {
     schemaVersion: 1, kind: "OBSERVATION_SUMMARY", label: "SYNTHETIC_UNLESS_ATTESTED_LIVE", artifactSha256: record.artifactSha256, verifier: record.verifier, verdict: record.verdict,
     inventory: record.inventory, sweepNotListing: [...notListed], ...(record.sweepControlPassedAt !== undefined ? { sweepControlPassedAt: record.sweepControlPassedAt } : {}), observedAt: record.observedAt,
   };
-  writeFileSync(join(dir, record.artifactSha256.slice(0, 12) + "-observation.json"), JSON.stringify(summary, null, 2) + "\n", { mode: 0o600 });
+  privateWrite(join(dir, record.artifactSha256.slice(0, 12) + "-observation.json"), JSON.stringify(summary, null, 2) + "\n");
   out.report({ code: "OBSERVED", message: "Observed " + record.resources.length + " resource(s): " + record.verdict + "." + control, data: record });
   return EXIT.PASS;
 };
@@ -672,7 +683,7 @@ const proposeCommand = (kind: CleanupProposal["kind"]): Command => async (flags,
   const proposal = signCleanupProposal(built.proposal, requesterKey);
   const path = proposalPath(deps, proposal);
   mkdirSync(join(path, ".."), { recursive: true, mode: 0o700 });
-  writeFileSync(path, JSON.stringify(proposal, null, 2) + "\n", { mode: 0o600 });
+  privateWrite(path, JSON.stringify(proposal, null, 2) + "\n");
   out.say(["", kind === "LOCATION_REMEDIATION" ? "LOCATION REMEDIATION PROPOSED (nothing is deleted until it is approved and run; nothing is ever moved or created again)" : "CLEANUP PROPOSED (nothing is deleted until it is approved and run)", ...proposalLines(proposal), targetFieldsLine(contract, proposal.environment), "", "Saved (private to this account): " + path,
     "Next: each approver runs ./alz apply approve --bundle " + path + " --key THEIR_KEY.pem --approver THEIR_ID" +
       (REQUESTER_MAY_APPROVE[proposal.environment] === true ? "" : " (" + proposal.authorization.requiredApprovals + " distinct approvers, none of them the requester " + proposal.requesterId + ")") + "; then ./alz apply cleanup --proposal " + path + " ...", ""].join("\n"));
@@ -791,7 +802,7 @@ const proposeRemovalCommand: Command = async (flags, _terminal, deps, out) => {
   const proposal = signRemovalProposal(built.proposal, requesterKey);
   const path = removalPath(deps, proposal);
   mkdirSync(join(path, ".."), { recursive: true, mode: 0o700 });
-  writeFileSync(path, JSON.stringify(proposal, null, 2) + "\n", { mode: 0o600 });
+  privateWrite(path, JSON.stringify(proposal, null, 2) + "\n");
   out.say(["", "REMOVAL PROPOSED (nothing is removed until it is approved and run)", ...removalLines(proposal), "", "Saved (private to this account): " + path,
     "Next: each approver runs ./alz apply approve --bundle " + path + " --key THEIR_KEY.pem --approver THEIR_ID" +
       (REQUESTER_MAY_APPROVE[proposal.environment] === true ? "" : " (" + proposal.authorization.requiredApprovals + " distinct approvers, none of them the requester " + proposal.requesterId + ")") +
@@ -937,7 +948,7 @@ const reportCommand: Command = async (flags, _terminal, deps, out) => {
   const dir = deps.reportsDir ?? join(repoPaths().root, ".runs", "apply", "reports");
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const path = join(dir, sealed.artifactSha256.slice(0, 12) + "-lifecycle" + (proposal ? "-" + proposal.proposalSha256.slice(0, 12) : "") + ".json");
-  writeFileSync(path, JSON.stringify(report, null, 2) + "\n", { mode: 0o600 });
+  privateWrite(path, JSON.stringify(report, null, 2) + "\n");
   out.say(JSON.stringify({ written: path, mode: report.mode, passed: report.passed, stages: report.stages, unresolved: report.unresolved }, null, 2) + "\n");
   out.report({ code: report.passed ? "LIFECYCLE_REPORTED_PASS" : "LIFECYCLE_REPORTED_OPEN", message: report.passed ? "Every stage passed (" + report.mode + ")." : "Unresolved: " + report.unresolved.join("; "), data: { path, report } });
   return EXIT.PASS;
