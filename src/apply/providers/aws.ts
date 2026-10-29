@@ -98,12 +98,12 @@ const ROLE_SETTINGS: ReadonlySet<string> = new Set(["role_arn", "web_identity_to
  * version's attribute is refused). `assume_role_with_web_identity`, when saved, holds exactly STATE_WRITE's own `AWS_ROLE_ARN` and
  * `AWS_WEB_IDENTITY_TOKEN_FILE` in `env` (the environment init's configuration was written from), and nothing else with a value.
  */
-function savedBackendMatches(backend: Record<string, unknown>, target: AwsTarget, env: NodeJS.ProcessEnv): boolean {
+function savedBackendMatches(backend: Record<string, unknown>, target: AwsTarget, env: NodeJS.ProcessEnv, requireStateWrite = false): boolean {
   const config = isRecord(backend.config) ? backend.config : {};
   const [bucket, ...key] = target.backend.split("/");
   const stateWrite = identityVariables(env, "STATE_WRITE");
   const role = config.assume_role_with_web_identity;
-  const roleOk = role === undefined || role === null || (isRecord(role) &&
+  const roleOk = (!requireStateWrite && (role === undefined || role === null)) || (isRecord(role) &&
     role.role_arn === stateWrite.get("AWS_ROLE_ARN") && ROLE_ARN.test(String(role.role_arn)) &&
     role.web_identity_token_file === stateWrite.get("AWS_WEB_IDENTITY_TOKEN_FILE") && TOKEN_FILE.test(String(role.web_identity_token_file)) &&
     Object.entries(role).every(([name, value]) => ROLE_SETTINGS.has(name) || value === null));
@@ -262,7 +262,7 @@ export const AWS: ProviderSpec = {
   },
   ambientRefusal: ambient,
   backendConfig: (env, target) => backendConfig(env, target as AwsTarget),
-  savedBackendMatches: (saved, target, env) => savedBackendMatches(saved, target as AwsTarget, env),
+  savedBackendMatches: (saved, target, env, requireStateWrite) => savedBackendMatches(saved, target as AwsTarget, env, requireStateWrite),
   // The product override pins the s3 backend; the plan embeds what the seal-time init saved from the product's own backend file.
   backendType: "s3",
   backendLocation: (target) => backendLocation(target as AwsTarget),

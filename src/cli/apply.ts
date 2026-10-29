@@ -161,7 +161,7 @@ const SUBCOMMANDS: Readonly<Record<string, Flags>> = {
 const MAX_INPUT_BYTES = 8 * 1024 * 1024;
 const CONTROL = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
 const CODE_PHRASE = "RUN PROJECT CODE";
-/** What the person types when the contract opts in to embedding STATE_WRITE in the plan: one phrase per environment, no flag skips it. */
+/** What the person types when the contract binds STATE_WRITE in the plan (every Terraform contract): one phrase per environment, no flag skips it. */
 const embedPhrase = (environment: string): string => "EMBED STATE_WRITE " + environment;
 const REQUEST_KEYS: Readonly<Record<string, readonly string[]>> = {
   seal: ["environment", "target", "projectRoot", "policyVersion", "resolved"],
@@ -339,16 +339,17 @@ async function confirmProjectCode(
     terminal.write("\nType " + CODE_PHRASE + " to allow it (anything else stops here):\n\n");
     await confirm(terminal, CODE_PHRASE, "code> ", "PROJECT_CODE_CONFIRMATION_MISMATCH", "RUN_PROJECT_CODE");
   }
-  // The contract's opt-in (`embedStateWrite`): the seal step itself carries the state writer's settings, so a person says so before any engine runs.
+  // The contract's STATE_WRITE binding (`embedStateWrite`, required for every Terraform contract since owner decision 6486426552): the seal
+  // step itself carries the state writer's settings, so a person says so before any engine runs.
   const contract = contractFor(deps);
   if (!("reason" in contract) && contract.embedStateWrite === true) {
     const phrase = embedPhrase(file.environment);
     terminal.write([
-      "", "WARNING: this contract sets embedStateWrite. The seal step now carries the STATE_WRITE principal's non-secret backend settings",
-      "(client id or role ARN, tenant, and the token file PATH; never a secret or the token itself).",
-      "  - The sealed plan and the seal-time state read name the state writer.",
+      "", "WARNING: this contract binds STATE_WRITE (embedStateWrite). The seal step now carries the STATE_WRITE principal's backend identity settings",
+      "(client id or role ARN, tenant, and the token or credential file PATH; never a credential value or the token itself).",
+      "  - The sealed plan and the seal-time state read name the state writer, so the apply locks, reads and writes the state as STATE_WRITE, never APPLY.",
       "  - Sealing becomes write-capable at the backend.",
-      "  - The plan stays secret-bearing and encrypted.",
+      "  - The plan can hold sensitive values and stays encrypted.",
       "  - Authentication is SIMULATED: whether Terraform really authenticates state access as STATE_WRITE is unverified until a real-backend run.",
       "Type this line exactly to continue (anything else stops here):", "  " + phrase, "",
     ].join("\n"));

@@ -4,6 +4,7 @@
   "enabled": false,
   "provider": "AZURE",
   "engine": "TERRAFORM",
+  "embedStateWrite": true,
   "policyVersion": "REPLACE-WITH-REVIEWED-POLICY-VERSION",
   "targets": {
     "DEV": {

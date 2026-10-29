@@ -359,7 +359,8 @@ export const CANARY_CDK = { resources: [{ type: "AWS::S3::Bucket", count: 1 }, {
 
 /** A CDK contract: the AWS provider, the same stack name in every account, and the capabilities each environment may use. */
 export const cdkContractJson = (killPath: string, capabilities: string[] = [], over: Record<string, unknown> = {}) => {
-  const base = awsContractJson(killPath);
+  // CDK has no state backend, so it carries no embedStateWrite (the Terraform fixture's is dropped).
+  const { embedStateWrite: _terraformOnly, ...base } = awsContractJson(killPath);
   return {
     ...base, engine: "CDK",
     targets: Object.fromEntries((["DEV", "QA", "PROD"] as const).map((e) => [e, {

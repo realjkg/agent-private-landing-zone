@@ -86,17 +86,44 @@ No defect was found in `src/apply` by the backend-pinning rerun: argv, init flag
 
 The SAS allowance stays in `test/apply-emulated.test.ts` only. Its last guard test fails if any other file names the harness or the emulator's settings.
 
+## The STATE_WRITE binding under an emulated Entra ID (owner decision 6486426552)
+
+**EMULATED, no cloud reached.** One scenario in `test/apply-emulated.test.ts` runs a second emulator in an Entra mode. This mode is test-only, and the guard test keeps it in that file. It has three parts:
+
+- **Azurite** runs with `--oauth basic`. It accepts a bearer token only if the issuer is `https://sts.windows.net/...`, the audience is Azure Storage and the token is in its lifetime. It does not check the signature.
+- **The metadata host** also serves Entra ID's token endpoint, `/{tenant}/oauth2/v2.0/token`. It answers with an unsigned token that names the requesting client as `appid`.
+- **A TLS front on the blob host** records whose token each state request carries, then passes the request to Azurite unchanged.
+
+The harness that installs `terraform` carries only `ARM_METADATA_HOSTNAME`: no SAS and no key.
+
+Results with the real Terraform 1.16.4, the real driver and a contract that binds STATE_WRITE:
+
+- **The seal.** Every token request and every state request was STATE_WRITE's client.
+- **The decrypted plan.** It names STATE_WRITE's client id and token file path. It holds nothing of APPLY's: no assertion, no access token and no secret, compressed or not. The sealed record holds none of them either.
+- **Renewal.** STATE_WRITE's token file was rewritten after the seal, and the apply then ran from the unchanged sealed plan.
+  - Every token request of the apply was STATE_WRITE's client, using the renewed assertion, never a client secret.
+  - Every state request carried STATE_WRITE's token: reads, the state write, and the lease acquire and release.
+  - APPLY's client and APPLY's token file never appeared.
+  - The state landed.
+  - No other host was contacted.
+
+**Finding: a client secret overrides the binding.** In a direct run against the same emulator, the apply process carried `ARM_CLIENT_SECRET`. Terraform 1.16.4's azurerm backend then asked for the state token as STATE_WRITE's client id (from the plan) with that secret (from the environment), ahead of the plan's OIDC settings. With the product's identity variables, that secret would be APPLY's.
+
+Fix: `ARM_CLIENT_SECRET` on any Azure identity is now refused by name before any engine step (`IDENTITY_NOT_CONFIGURED`; `test/apply-driver.test.ts`, the identity gate). Bicep already refused it. Every Azure identity uses its OIDC token file only.
+
+**Still not proven here:** Entra ID's real checks of a federated credential (issuer, subject, audience), token signatures, real RBAC, and Azure's effective denial of APPLY on the state. That denial is not achievable with the mechanisms `bootstrap/azure` can use (`docs/act-pilot-bootstrap.md`, "APPLY and the state"). Azure Terraform stays BLOCKED.
+
 ## What it proves, and what it does not
 
 Proves, for Terraform 1.16.4 and the azurerm **backend** only: the allowlisted argument lists run; the stale-plan and lock-refusal text matches in `classifyApply` match the real engine's first `Error:` line; `terraform show -json` has the shape `engines/terraform.ts` reads; a graceful stop releases the lease; the driver's ordering, ledger and evidence work with a real process.
 
 Does **not** prove:
 
-- **Entra ID or OIDC.** Azurite does not emulate them. Token exchange, `client_id` / `tenant_id` handling and which principal Azure sees were not exercised. The OIDC token file was a dummy file.
+- **Real Entra ID or OIDC.** Azurite does not emulate them. The SAS scenarios do not exercise a token exchange. The Entra scenario above uses an emulated token endpoint, with unsigned tokens and no federated-credential checks, so only the backend's own choice of client, token file and token is shown.
 - **The azurerm provider.** The registry is blocked; no azurerm resource was planned or applied. Provider-block checks (`subscription_id`, `tenant_id`) were not exercised against a real provider.
 - **Real Azure RBAC**, role scoping, blob versioning or soft delete.
 - **Real latency, throttling or retry behavior** of Azure Storage.
-- **Identity separation between STATE_WRITE and APPLY.** Findings (a) and (b) show why the current design may not achieve it; only a real-Azure run can settle it.
+- **Identity separation between STATE_WRITE and APPLY on real Azure.** Findings (a) and (b) are why the plan must bind STATE_WRITE. The Entra scenario shows the backend then uses STATE_WRITE in emulation. Only a real-Azure run can settle it against real RBAC.
 
 ## Empirical answers
 

@@ -118,7 +118,8 @@ test("ACT-DEV-1 accepts only an explicit AWS Terraform DEV pilot without fictiti
   // The DEV-only scope is one rule for every implemented path (test/apply-contract.test.ts), but each path keeps its own target
   // shape: an AWS Terraform DEV target is neither an Azure target nor a CDK one.
   for (const combination of [{ provider: "AZURE", engine: "TERRAFORM" }, { provider: "AWS", engine: "CDK" }]) {
-    const changed = loaded({ ...devOnly, ...combination });
+    // CDK has no state backend, so the Terraform binding is dropped and the target shape is what is judged.
+    const changed = loaded({ ...devOnly, ...combination, ...(combination.engine === "CDK" ? { embedStateWrite: undefined } : {}) });
     assert.equal(changed.enabled, false, JSON.stringify(combination));
     assert.match((changed as { reason: string }).reason, /targets\.DEV/);
   }
@@ -788,7 +789,10 @@ test("the backend is pinned: whatever backend, cloud or state_store block the pr
     assert.deepEqual(inits[0].args, [...APPLY_INIT_ARGV], "every init reads the product's backend file");
     assert.equal(inits[0].backendOverride, 'terraform {\n  backend "s3" {}\n}\n', "the fake engine sees the product override");
     assert.equal(inits[0].workEntries?.filter((name) => /override\.tf(\.json)?$/i.test(name)).join(), BACKEND_OVERRIDE_FILE, "exactly one override file");
-    assert.equal(inits[0].backendConfig, AWS.backendLocation(AWS_DEV_TARGET_PINNED), "the seal's settings are the contract's location and nothing of the project's");
+    // The seal's settings are the contract's location and STATE_WRITE's binding (owner decision 6486426552), and nothing of the project's.
+    assert.ok(inits[0].backendConfig?.startsWith(AWS.backendLocation(AWS_DEV_TARGET_PINNED)), "the seal's settings start with the contract's location");
+    assert.match(inits[0].backendConfig ?? "", /assume_role_with_web_identity = \{\n  role_arn = "arn:aws:iam::111111111111:role\/[^"]+"\n  web_identity_token_file = "[^"]+"\n\}\n$/, "and end with STATE_WRITE's role and token file path, nothing of the project's");
+    assert.ok(inits[0].backendConfig?.includes(awsRoleArn("STATE_WRITE", "DEV")), "the role is STATE_WRITE's");
     assert.ok(calls().every((c) => c.env.TF_DATA_DIR === ".terraform"), "every step uses init's own fresh data directory");
     behave({ applyAdvance: true });
     assert.ok((await run(w, s, approvalsFor(s))).ok);
@@ -946,7 +950,7 @@ test("./alz apply qualify, seal, approve and apply work for an AWS contract with
   const requestFor = (p: Project, environment: ApplyEnvironment) => json({ environment, target: awsTargetOf(environment), projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved });
   const dev = writeProject(fresh("project"), AWS_DEV_TARGET, SHARED_TF);
   const devArgs = (sub: string) => [sub, "--request", requestFor(dev, "DEV"), "--manifest", json(dev.manifest)];
-  const typed = [targetString(AWS_DEV_TARGET), "RUN PROJECT CODE"];
+  const typed = [targetString(AWS_DEV_TARGET), "RUN PROJECT CODE", "EMBED STATE_WRITE DEV"];
 
   // Qualify: the person attests from the CloudTrail logs, typing the two role ARNs.
   const attest = "SEPARATED " + awsRoleArn("STATE_WRITE", "DEV") + " " + awsRoleArn("APPLY", "DEV");
@@ -965,7 +969,7 @@ test("./alz apply qualify, seal, approve and apply work for an AWS contract with
   for (const environment of ["DEV", "QA", "PROD"] as const) {
     const target = awsTargetOf(environment);
     const p = writeProject(fresh("project"), target, SHARED_TF);
-    const sealed = await cli(["seal", "--request", requestFor(p, environment), "--manifest", json(p.manifest), ...requesterArgs()], [targetString(target), "RUN PROJECT CODE"], environment);
+    const sealed = await cli(["seal", "--request", requestFor(p, environment), "--manifest", json(p.manifest), ...requesterArgs()], [targetString(target), "RUN PROJECT CODE", "EMBED STATE_WRITE " + environment], environment);
     assert.equal(sealed.code, 0, sealed.stderr);
     const result = JSON.parse(sealed.stdout) as { artifactSha256: string; sealedPlanPath: string; reviewBundlePath: string };
     const signers = environment === "PROD" ? ["alice", "bob"] as const : ["alice"] as const;

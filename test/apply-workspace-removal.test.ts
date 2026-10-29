@@ -316,7 +316,7 @@ test("at the terminal: propose-removal, approve (APPROVE REMOVAL, cleanup domain
   const project: Project = writeProject(fresh("project"), target, 'resource "aws_s3_bucket" "logs" {}\n');
   const request = json({ environment: "DEV", target, projectRoot: project.projectRoot, policyVersion: POLICY, resolved: project.resolved }, "request");
   const manifest = json(project.manifest, "manifest");
-  const sealed = await cli(["seal", "--request", request, "--manifest", manifest, ...requesterArgs()], [targetString(target), "RUN PROJECT CODE"]);
+  const sealed = await cli(["seal", "--request", request, "--manifest", manifest, ...requesterArgs()], [targetString(target), "RUN PROJECT CODE", "EMBED STATE_WRITE DEV"]);
   assert.equal(sealed.code, 0, sealed.stderr);
   const { sealedPlanPath, reviewBundlePath, artifactSha256 } = sealed.data as { sealedPlanPath: string; reviewBundlePath: string; artifactSha256: string };
   const approved = await cli(["approve", "--bundle", reviewBundlePath, "--key", keyFile("alice"), "--approver", "alice"], ["APPROVE DEV " + artifactSha256.slice(0, 12)]);

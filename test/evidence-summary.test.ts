@@ -132,7 +132,7 @@ import { cdkContractJson } from "./helpers/cdk-fixtures.js";
 type AdmittedPath = { path: string; commit: string; text: string; contract: PilotContract };
 
 function admittedPaths(kill: string): AdmittedPath[] {
-  const gcp = { schemaVersion: 1, enabled: true, provider: "GCP", engine: "TERRAFORM", enabledEnvironments: ["DEV"],
+  const gcp = { schemaVersion: 1, enabled: true, provider: "GCP", engine: "TERRAFORM", embedStateWrite: true, enabledEnvironments: ["DEV"],
     targets: { DEV: { projectId: "alz-pilot-dev", region: "europe-west4", backend: "alz-pilot-dev-state/pilot/dev", workspace: "default", canary: { resources: [{ type: "google_pubsub_topic", count: 1 }] } } },
     requiredApprovals: { DEV: 1 }, maxApprovalAgeMinutes: 60, approvers, killSwitchPath: kill, authorize: { DEV: ["APPLY", "CLEANUP"] } };
   const bicep = { schemaVersion: 1, enabled: true, provider: "AZURE", engine: "BICEP", enabledEnvironments: ["DEV"],

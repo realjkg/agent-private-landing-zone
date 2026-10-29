@@ -60,6 +60,8 @@ const fixtureContract = (): PilotContract => ({
   ],
   killSwitchPath: KILL,
   authorize: { DEV: ["APPLY", "CLEANUP"], QA: ["APPLY"], PROD: ["APPLY"] },
+  // Required for every Terraform contract (owner decision 6486426552).
+  embedStateWrite: true,
 });
 
 let counter = 0;
@@ -147,7 +149,7 @@ test("a DEV-only contract cannot name QA or PROD, and QA and PROD still need the
 
 test("the DEV-only rule is the same for AWS CDK: its own target shape, DEV only", () => {
   const cdk = {
-    ...azureDevOnly(), provider: "AWS", engine: "CDK",
+    ...azureDevOnly(), provider: "AWS", engine: "CDK", embedStateWrite: undefined,
     targets: { DEV: { accountId: "123456789012", region: "us-east-2", backend: "alz-pilot-stack", workspace: "default", capabilities: [] } },
   };
   const loaded = load(write(cdk));
@@ -165,8 +167,8 @@ test("planned paths are named and refused NOT_IMPLEMENTED until their lane lands
     disabled(write({ ...fixtureContract(), provider, engine }), undefined, "CONTRACT_INVALID");
   }
   // Azure Bicep (path 4) is admitted for DEV only (owner decision E2): a three-stage contract is not a contract, and its target names the resource group.
-  disabled(write({ ...fixtureContract(), engine: "BICEP" }), /enabledEnvironments: AZURE BICEP \(path 4\) is admitted for DEV only/, "CONTRACT_INVALID");
-  disabled(write({ ...azureDevOnly(), engine: "BICEP" }), /targets\.DEV\.resourceGroup: missing/, "CONTRACT_INVALID");
+  disabled(write({ ...fixtureContract(), engine: "BICEP", embedStateWrite: undefined }), /enabledEnvironments: AZURE BICEP \(path 4\) is admitted for DEV only/, "CONTRACT_INVALID");
+  disabled(write({ ...azureDevOnly(), engine: "BICEP", embedStateWrite: undefined }), /targets\.DEV\.resourceGroup: missing/, "CONTRACT_INVALID");
   // GCP Terraform (path 5) is admitted for DEV only (owner decision 6481421924): a three-stage contract, or one with another provider's target shape, is not a contract.
   disabled(write({ ...fixtureContract(), provider: "GCP", engine: "TERRAFORM" }), /enabledEnvironments: GCP TERRAFORM \(path 5\) is admitted for DEV only/, "CONTRACT_INVALID");
   disabled(write({ ...azureDevOnly(), provider: "GCP", engine: "TERRAFORM" }), /targets\.DEV\./, "CONTRACT_INVALID");

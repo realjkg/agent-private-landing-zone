@@ -155,14 +155,27 @@ else if (cmd === "init") {
   fs.mkdirSync(".terraform", { recursive: true });
   // Like the real init: a setting the -backend-config file sets is saved with its value; the backend's Entra ID switch is otherwise null.
   const entra = /^use_azuread_auth = true$/m.test(backend() || "") ? true : null;
+  // Like the real init, the STATE_WRITE settings the -backend-config file sets are saved with their values (the plan embeds them).
+  const lines = (backend() || "").split("\\n").map((line) => line.trim());
+  const val = (name) => { const line = lines.find((x) => x.startsWith(name + " = ")); if (!line) return undefined; const v = line.slice(name.length + 3); return v === "true" ? true : v === "false" ? false : v.replace(/^"|"$/g, ""); };
+  const azureIdentity = Object.fromEntries(["use_oidc", "client_id", "tenant_id", "subscription_id", "oidc_token_file_path"].map((n) => [n, val(n)]).filter(([, v]) => v !== undefined));
+  const awsRole = val("role_arn") === undefined ? {} : { assume_role_with_web_identity: { role_arn: val("role_arn"), web_identity_token_file: val("web_identity_token_file") } };
+  // A behavior's own savedBackend says what init saved; a setting it leaves null that the -backend-config file sets is saved with that
+  // value, as the real init does (an explicit non-null value, such as another identity's, is kept as the scenario states it).
+  if (b.savedBackend && b.savedBackend.config) {
+    for (const name of ["credentials", "impersonate_service_account", "use_oidc", "client_id", "tenant_id", "subscription_id", "oidc_token_file_path"]) {
+      if (b.savedBackend.config[name] === null && val(name) !== undefined) b.savedBackend.config[name] = val(name);
+    }
+    if (b.savedBackend.config.assume_role_with_web_identity === null && awsRole.assume_role_with_web_identity) b.savedBackend.config.assume_role_with_web_identity = awsRole.assume_role_with_web_identity;
+  }
   if (b.savedBackend !== null) {
     const def = (${JSON.stringify({ [DEV_TARGET.account]: DEV_TARGET.backend, [QA_TARGET.account]: QA_TARGET.backend, [PROD_TARGET.account]: PROD_TARGET.backend })})[process.env.ARM_SUBSCRIPTION_ID];
     const [account, container, ...key] = (def || "").split("/");
     // The S3 backend of the account the role ARN names, with the region and native locking the partial configuration sets.
     const [bucket, ...s3key] = ((${JSON.stringify(Object.fromEntries([AWS_DEV_TARGET, AWS_QA_TARGET, AWS_PROD_TARGET].map((t) => [t.account, t.backend])))})[(process.env.AWS_ROLE_ARN || "").split(":")[4]] || "").split("/");
     const backend = b.savedBackend || (process.env.AWS_ROLE_ARN
-      ? { type: "s3", config: { bucket, key: s3key.join("/"), region: process.env.AWS_REGION, use_lockfile: true } }
-      : { type: "azurerm", config: { storage_account_name: account, container_name: container, key: key.join("/"), use_azuread_auth: entra } });
+      ? { type: "s3", config: { bucket, key: s3key.join("/"), region: process.env.AWS_REGION, use_lockfile: true, ...awsRole } }
+      : { type: "azurerm", config: { storage_account_name: account, container_name: container, key: key.join("/"), use_azuread_auth: entra, ...azureIdentity } });
     fs.writeFileSync(path.join(".terraform", "terraform.tfstate"), JSON.stringify({ version: 3, backend }));
   }
   for (const w of b.initWrites || []) { fs.mkdirSync(path.dirname(w.path), { recursive: true }); fs.writeFileSync(w.path, w.content); }
@@ -460,11 +473,12 @@ export const identityEnv = (environment: ApplyEnvironment): NodeJS.ProcessEnv =>
   });
   return {
     HOME: "/home/operator", ARM_CLIENT_SECRET: "operator-ambient-secret", AZURE_CLIENT_SECRET: "operator-azure-secret",
-    ALZ_DISCOVERY_ARM_CLIENT_ID: "discovery-client-1", ALZ_DISCOVERY_ARM_CLIENT_SECRET: "discovery-secret-aaaa", ...place("DISCOVERY"),
-    ALZ_STATE_ARM_CLIENT_ID: "state-client-2", ALZ_STATE_ARM_CLIENT_SECRET: "state-secret-bbbb", ...place("STATE"),
-    ALZ_STATE_WRITE_ARM_CLIENT_ID: "statewrite-client-3", ALZ_STATE_WRITE_ARM_CLIENT_SECRET: "statewrite-secret-cccc", ...place("STATE_WRITE"),
+    // Each identity is its own client with its own OIDC token file; no client secret (refused by name: owner decision 6486426552).
+    ALZ_DISCOVERY_ARM_CLIENT_ID: "discovery-client-1", ALZ_DISCOVERY_ARM_OIDC_TOKEN_FILE: "/run/fixture/discovery-oidc-token", ...place("DISCOVERY"),
+    ALZ_STATE_ARM_CLIENT_ID: "state-client-2", ALZ_STATE_ARM_OIDC_TOKEN_FILE: "/run/fixture/state-oidc-token", ...place("STATE"),
+    ALZ_STATE_WRITE_ARM_CLIENT_ID: "statewrite-client-3", ...place("STATE_WRITE"),
     ALZ_STATE_WRITE_ARM_OIDC_TOKEN_FILE: "/run/fixture/statewrite-oidc-token",
-    ALZ_APPLY_ARM_CLIENT_ID: "apply-client-4", ALZ_APPLY_ARM_CLIENT_SECRET: "apply-secret-dddd", ...place("APPLY"),
+    ALZ_APPLY_ARM_CLIENT_ID: "apply-client-4", ALZ_APPLY_ARM_OIDC_TOKEN_FILE: "/run/fixture/apply-oidc-token", ...place("APPLY"),
   } as NodeJS.ProcessEnv;
 };
 export const ENV = identityEnv("DEV");
@@ -534,7 +548,9 @@ export const contractJson = (killPath: string, over: Record<string, unknown> = {
     QA: { tenantId: TENANT, subscriptionId: QA_TARGET.account, backend: QA_TARGET.backend, workspace: "default", location: AZURE_LOCATION_FIXTURE, canary: CANARY_AZURE },
     PROD: { tenantId: TENANT, subscriptionId: PROD_TARGET.account, backend: PROD_TARGET.backend, workspace: "default", location: AZURE_LOCATION_FIXTURE, canary: CANARY_AZURE },
   },
-  requiredApprovals: { DEV: 1, QA: 1, PROD: 2 }, maxApprovalAgeMinutes: 60, approvers, killSwitchPath: killPath, authorize: AUTHORIZE_ALL, ...over,
+  requiredApprovals: { DEV: 1, QA: 1, PROD: 2 }, maxApprovalAgeMinutes: 60, approvers, killSwitchPath: killPath, authorize: AUTHORIZE_ALL,
+  // Required for every Terraform contract (owner decision 6486426552): the plan names STATE_WRITE for the state backend.
+  embedStateWrite: true, ...over,
 });
 
 /** The fixtures' default-deny authorization: APPLY and CLEANUP in every environment. A test that needs less says so. */

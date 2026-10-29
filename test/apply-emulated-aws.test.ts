@@ -21,6 +21,7 @@ import { ADAPTER_VERSION, terraformArgvDigest } from "../src/teardown/driver/ada
 import { removeTree } from "../src/teardown/driver/cleanup.js";
 import { buildManifest } from "../src/teardown/manifest.js";
 import { captureProjectFiles } from "../src/teardown/snapshot.js";
+import { zipEntries } from "./helpers/plan-zip.js";
 import {
   AWS_DEV_TARGET, AWS_REGION, NOW, POLICY, REQUESTER, SOURCE_COMMIT, approvalFor, awsContractJson, awsIdentityEnv, awsRoleArn, human, sha, writeReviewedContract, withCanary } from "./helpers/apply-fixtures.js";
 
@@ -68,6 +69,8 @@ const TOKEN_CANARY = "emulated-not-a-real-token-CANARY_WEB_IDENTITY";
 type Emulator = {
   proxyUrl: string; caFile: string; connects(): string[];
   s3(method: string, path: string, headers?: Record<string, string>, body?: string): Promise<{ status: number; headers: http.IncomingHttpHeaders; body: string }>;
+  /** moto's own API (`/moto-api/...`): its request recorder and its model data, read directly, never through the proxy. */
+  api(method: string, path: string): Promise<string>;
   stop(): Promise<void>;
 };
 
@@ -132,8 +135,18 @@ async function startEmulator(dir: string): Promise<Emulator> {
     request.end(body);
   });
 
+  const api: Emulator["api"] = (method, path) => new Promise((resolve, reject) => {
+    const request = https.request({ host: "127.0.0.1", port: motoPort, servername: BUCKET_HOST, ca, method, path, headers: { host: "127.0.0.1:" + motoPort, "content-length": "0" } }, (response) => {
+      const chunks: Buffer[] = [];
+      response.on("data", (chunk: Buffer) => chunks.push(chunk));
+      response.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    });
+    request.on("error", reject);
+    request.end();
+  });
+
   return {
-    proxyUrl: `http://127.0.0.1:${proxyPort}`, caFile: cert, s3,
+    proxyUrl: `http://127.0.0.1:${proxyPort}`, caFile: cert, s3, api,
     connects: () => (existsSync(connectsLog) ? readFileSync(connectsLog, "utf8").split("\n").filter(Boolean) : []),
     async stop() { moto.kill("SIGKILL"); helper.kill("SIGKILL"); },
   };
@@ -362,6 +375,63 @@ describe("AWS emulated backend simulation: real Terraform, moto S3 with use_lock
     assert.ok(contacted.includes(BUCKET_HOST + ":443") && contacted.includes(STS_HOST + ":443"), "state and credentials went through the emulated hosts: " + contacted.join(" "));
     // Terraform's own version check (checkpoint-api.hashicorp.com) is attempted on every run; the proxy refuses it. Nothing else is reachable.
     assert.deepEqual(contacted.filter((c) => !EMULATED_HOSTS.includes(c) && c !== VERSION_CHECK_HOST), [], "no host other than the emulator was ever contacted");
+  });
+
+  it("binds STATE_WRITE (owner decision 6486426552): every state and lock request of the apply is STATE_WRITE's, APPLY never reaches the bucket, a renewed token file is used without resealing, and the plan holds only identity references, no token", async () => {
+    // Each identity's token file holds its own dummy value (all carry the canary, so nothing may ever print one), and the
+    // web identity role each assumes is told apart from moto's own record of the credentials it issued.
+    const tokenFile = (identity: string): string => env["ALZ_" + identity + "_AWS_WEB_IDENTITY_TOKEN_FILE"] as string;
+    const token = (identity: string, version: number): string => TOKEN_CANARY + "-" + identity.toLowerCase() + "-v" + version;
+    for (const identity of ["DISCOVERY", "STATE", "STATE_WRITE", "APPLY"]) writeFileSync(tokenFile(identity), token(identity, 1) + "\n", { mode: 0o600 });
+    try {
+      const s = await seal("state-write-bound");
+      // The decrypted plan: every file of Terraform's plan archive is read. It names STATE_WRITE's role and token FILE, never a token, never APPLY's.
+      const files = zipEntries(s.loaded.planBytes);
+      const plan = Buffer.concat([...files.values()]).toString("latin1");
+      assert.ok(plan.includes(awsRoleArn("STATE_WRITE", "DEV")), "the plan's backend names STATE_WRITE's role");
+      assert.ok(plan.includes(tokenFile("STATE_WRITE")), "and STATE_WRITE's token file path, a reference");
+      assert.ok(!plan.includes(awsRoleArn("APPLY", "DEV")) && !plan.includes(tokenFile("APPLY")), "nothing of APPLY's");
+      for (const identity of ["DISCOVERY", "STATE", "STATE_WRITE", "APPLY"]) {
+        for (const version of [1, 2]) assert.ok(!plan.includes(token(identity, version)), "no token value in the plan: " + identity);
+      }
+      assert.ok(!plan.includes(TOKEN_CANARY) && !s.loaded.planBytes.includes(TOKEN_CANARY), "no token at all, compressed or not");
+      // Renewal: the token files are rewritten after the seal, as a delivery would refresh them. The sealed plan is unchanged.
+      for (const identity of ["STATE_WRITE", "APPLY"]) writeFileSync(tokenFile(identity), token(identity, 2) + "\n", { mode: 0o600 });
+      await emulator.api("POST", "/moto-api/recorder/clear-recording");
+      await emulator.api("POST", "/moto-api/recorder/start-recording");
+      const result = await run(s);
+      await emulator.api("POST", "/moto-api/recorder/stop-recording");
+      assert.ok(result.ok, JSON.stringify(result));
+      noSecrets(result);
+      type Recorded = { method: string; url: string; headers: Record<string, string>; body?: string; body_encoded?: boolean };
+      const recorded = (await emulator.api("GET", "/moto-api/recorder/download-recording")).split("\n").filter(Boolean).map((line) => JSON.parse(line) as Recorded);
+      const issued = (JSON.parse(await emulator.api("GET", "/moto-api/data.json")) as { sts?: { AssumedRole?: { access_key_id: string; role_arn: string }[] } }).sts?.AssumedRole ?? [];
+      const roleOf = (request: Recorded): string | undefined => {
+        const key = /Credential=([A-Z0-9]+)\//.exec(request.headers.Authorization ?? request.headers.authorization ?? "")?.[1];
+        return issued.find((x) => x.access_key_id === key)?.role_arn;
+      };
+      const header = (request: Recorded, name: string): string => request.headers[name] ?? request.headers[name.toLowerCase()] ?? "";
+      const bucket = recorded.filter((r) => header(r, "Host").startsWith(BUCKET_HOST));
+      assert.ok(bucket.length > 0, "the apply reached the state bucket");
+      const roles = new Set(bucket.map(roleOf));
+      assert.ok(!roles.has(undefined), "every bucket request was signed with credentials moto issued to a web identity role");
+      assert.ok(!roles.has(awsRoleArn("APPLY", "DEV")), "APPLY never reached the state bucket: " + JSON.stringify([...roles]));
+      assert.ok([...roles].every((role) => role === awsRoleArn("STATE_WRITE", "DEV") || role === awsRoleArn("STATE", "DEV")), "only STATE_WRITE, and STATE's read: " + JSON.stringify([...roles]));
+      const keyOf = (request: Recorded): string => new URL(request.url, "https://" + BUCKET_HOST).pathname.slice(1);
+      const writes = bucket.filter((r) => r.method !== "GET" && r.method !== "HEAD");
+      const lockOps = bucket.filter((r) => keyOf(r) === LOCK_KEY);
+      assert.ok(writes.some((r) => keyOf(r) === STATE_KEY) && lockOps.some((r) => r.method === "PUT") && lockOps.some((r) => r.method === "DELETE"), "the apply wrote the state and took and released the lock: " + JSON.stringify(writes.map((r) => [r.method, keyOf(r)])));
+      assert.ok([...writes, ...lockOps].every((r) => roleOf(r) === awsRoleArn("STATE_WRITE", "DEV")), "every state write and every lock operation is STATE_WRITE's");
+      // The STATE_WRITE role was assumed with the renewed token, never the one current at seal time.
+      const assumes = recorded.filter((r) => header(r, "Host").startsWith(STS_HOST)).map((r) => new URLSearchParams(r.body_encoded === true ? Buffer.from(r.body ?? "", "base64").toString("utf8") : r.body ?? ""))
+        .filter((form) => form.get("Action") === "AssumeRoleWithWebIdentity");
+      const stateWrite = assumes.filter((form) => form.get("RoleArn") === awsRoleArn("STATE_WRITE", "DEV"));
+      assert.ok(stateWrite.length > 0 && stateWrite.every((form) => (form.get("WebIdentityToken") ?? "").trim() === token("STATE_WRITE", 2)), "STATE_WRITE assumed its role with the renewed token");
+      assert.ok(!assumes.some((form) => (form.get("WebIdentityToken") ?? "").trim().endsWith("-v1")), "no request used a token from before the renewal");
+      assert.deepEqual((await stateObject()).inputs, ["state-write-bound"]);
+    } finally {
+      for (const identity of ["DISCOVERY", "STATE", "STATE_WRITE", "APPLY"]) writeFileSync(tokenFile(identity), TOKEN_CANARY + "\n", { mode: 0o600 });
+    }
   });
 
   it("refuses a second apply of the same artifact, with a fresh approval", async () => {

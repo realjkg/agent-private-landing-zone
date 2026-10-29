@@ -60,6 +60,19 @@ resource "azurerm_resource_group" "apply" {
   tags     = var.tags
 }
 
+# APPLY and the state (owner decision 6486426552, issue #39): APPLY has no role on the state resource group, account or container,
+# no data action anywhere, and the account takes no shared key or SAS, so APPLY's only path to the state would be a grant it does not
+# hold. That is denial by ABSENCE of a grant. The owner also asked for an EFFECTIVE (explicit) denial, and this configuration has none,
+# because no mechanism it can use provides one for blob data actions:
+# - Azure RBAC deny assignments cannot be created by a customer directly; Azure creates them only for managed applications and for
+#   deployment stacks. Whether a stack's deny settings cover blob DATA actions is unverified offline; this file claims nothing it
+#   cannot show.
+# - An ABAC condition narrows only the role assignment that carries it, so it cannot deny APPLY anything APPLY is granted elsewhere.
+# - Network rules and private endpoints tell networks apart, not identities: APPLY runs on the same host as STATE_WRITE.
+# - ADLS Gen2 ACLs are consulted only after RBAC has not granted access, so they cannot override a later RBAC grant.
+# Azure Terraform therefore stays BLOCKED on this item (config/release/status.json, act:azure-terraform). The binding itself (the plan
+# names STATE_WRITE for the backend, and no identity may carry a client secret) is in src/apply and is not a substitute for a denial.
+
 # STATE: read on the state container only.
 resource "azurerm_role_assignment" "state" {
   scope                = azurerm_storage_container.state.resource_manager_id

@@ -111,6 +111,8 @@ async function cli(w: World, args: string[], answers: string[] = [], over: Parti
   return { code, stdout: stdout.join(""), stderr: stderr.join(""), term, data };
 }
 const PHRASE = "RUN PROJECT CODE";
+/** Every Terraform contract binds STATE_WRITE (owner decision 6486426552), so seal and qualify ask for this phrase after the project-code one. */
+const EMBED = (environment: string): string => "EMBED STATE_WRITE " + environment;
 
 /** Seal, approve and apply one run at the terminal, as the apply tests do; returns the files the cleanup steps need. */
 async function appliedRun(w: World, mainTf = 'resource "aws_s3_bucket" "logs" {}\n') {
@@ -118,7 +120,7 @@ async function appliedRun(w: World, mainTf = 'resource "aws_s3_bucket" "logs" {}
   const project: Project = writeProject(fresh("project"), target, mainTf);
   const request = json({ environment: "DEV", target, projectRoot: project.projectRoot, policyVersion: POLICY, resolved: project.resolved }, "request");
   const manifest = json(project.manifest, "manifest");
-  const sealed = await cli(w, ["seal", "--request", request, "--manifest", manifest, ...requesterArgs()], [targetString(target), PHRASE]);
+  const sealed = await cli(w, ["seal", "--request", request, "--manifest", manifest, ...requesterArgs()], [targetString(target), PHRASE, EMBED("DEV")]);
   assert.equal(sealed.code, 0, sealed.stderr);
   const { sealedPlanPath, reviewBundlePath, artifactSha256 } = sealed.data as { sealedPlanPath: string; reviewBundlePath: string; artifactSha256: string };
   const approved = await cli(w, ["approve", "--bundle", reviewBundlePath, "--key", keyFile("alice"), "--approver", "alice"], ["APPROVE DEV " + artifactSha256.slice(0, 12)]);

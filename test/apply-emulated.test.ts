@@ -32,6 +32,7 @@ import { removeTree } from "../src/teardown/driver/cleanup.js";
 import {
   DEV_TARGET, ENGINE_VERSION, H, NOW, POLICY, QA_TARGET, REQUESTER, SOURCE_COMMIT, TENANT, approvalFor, behave as behaveFake, callsOf, contractJson, human, identityEnv,
   installFakeTerraform, sha, writeReviewedContract, writeProject, withCanary, CANARY_AZURE, AZURE_LOCATION_FIXTURE } from "./helpers/apply-fixtures.js";
+import { zipEntries } from "./helpers/plan-zip.js";
 import { AZURE } from "../src/apply/providers/azure.js";
 
 /**
@@ -46,12 +47,13 @@ import { AZURE } from "../src/apply/providers/azure.js";
  * cloud resource: every connection is routed by a local proxy to a loopback
  * emulator, and any other host is refused.
  *
- * What this does NOT exercise: Entra ID and OIDC (Azurite cannot emulate them;
- * state access here is a SAS token signed with Azurite's published development
+ * What this does NOT exercise: real Entra ID and OIDC (Azurite cannot emulate them;
+ * state access in most scenarios is a SAS token signed with Azurite's published development
  * key, which is not a secret, supplied only by the TEST-ONLY AZURITE SAS HARNESS
- * below; Entra ID state auth is proven only in the supervised DEV qualification), the azurerm provider (the registry is not
+ * below; one scenario uses the TEST-ONLY ENTRA EMULATION, unsigned bearer tokens from an emulated token endpoint, to attribute
+ * each state request to a client), the azurerm provider (the registry is not
  * reachable and no resource is declared), real Azure RBAC, real latency or
- * throttling. Whether the STATE_WRITE and APPLY identities stay separate is
+ * throttling. Whether the STATE_WRITE and APPLY identities stay separate on real Azure is
  * therefore still unproven; see "What this does not prove" in the doc.
  *
  * DEV MODE ONLY setup (never an operator step; operators use ./alz):
@@ -90,6 +92,8 @@ function containerSas(permissions = "racwdl"): string {
 
 type Emulator = {
   proxyUrl: string; caFile: string; connects(): string[];
+  /** ENTRA mode only: the token endpoint's and the blob front's log, one record per request (whose token, which operation). */
+  requests(): EntraRecord[]; clearRequests(): void;
   blob(method: string, path: string, headers?: Record<string, string>, body?: string): Promise<{ status: number; headers: http.IncomingHttpHeaders; body: string }>;
   stop(): Promise<void>;
 };
@@ -113,8 +117,18 @@ async function waitForPort(port: number, limitMs = 30_000): Promise<void> {
   }
 }
 
-/** Azurite over TLS, a metadata endpoint that names it as the storage suffix, and a CONNECT proxy that sends only those two hosts to loopback. */
-async function startEmulator(dir: string): Promise<Emulator> {
+type EntraRecord =
+  | { kind: "token"; tenant: string; clientId: string | null; assertion: string | null; secret: boolean; scope: string | null; issued: string }
+  | { kind: "blob"; method: string; url: string; appid: string | null; scheme: string | null; lease: string | null };
+
+/**
+ * Azurite over TLS, a metadata endpoint that names it as the storage suffix, and a CONNECT proxy that sends only those two hosts to loopback.
+ * ENTRA mode (TEST-ONLY ENTRA EMULATION) adds what the SAS harness cannot show, whose identity reaches the state: Azurite checks bearer
+ * tokens (`--oauth basic`: issuer, audience and lifetime, not the signature), the metadata host also answers Entra ID's token endpoint
+ * with an unsigned token naming the requesting client as `appid`, and the blob host is fronted by a TLS terminator that logs whose token
+ * each request carries before passing it on unchanged.
+ */
+async function startEmulator(dir: string, mode: "sas" | "entra" = "sas"): Promise<Emulator> {
   const key = join(dir, "key.pem"), cert = join(dir, "cert.pem");
   execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "2", "-keyout", key, "-out", cert, "-subj", "/CN=alz-sim.test",
     "-addext", `subjectAltName=DNS:alz-sim.test,DNS:${BLOB_HOST}`], { stdio: "ignore" });
@@ -124,14 +138,14 @@ async function startEmulator(dir: string): Promise<Emulator> {
   mkdirSync(join(dir, "azurite"), { recursive: true });
   const azurite: ChildProcess = spawn(AZURITE as string, [
     "--silent", "--disableTelemetry", "--location", join(dir, "azurite"), "--blobHost", "127.0.0.1", "--blobPort", String(blobPort),
-    "--cert", cert, "--key", key, "--skipApiVersionCheck",
+    "--cert", cert, "--key", key, "--skipApiVersionCheck", ...(mode === "entra" ? ["--oauth", "basic"] : []),
   ], { stdio: "ignore", env: { PATH: process.env.PATH ?? "", HOME: dir } });
   await waitForPort(blobPort);
 
   // The driver blocks this process while Terraform runs (synchronous spawns), so the metadata endpoint and the proxy live in a helper process.
-  const helperPath = join(dir, "helper.cjs"), connectsLog = join(dir, "connects.log");
+  const helperPath = join(dir, "helper.cjs"), connectsLog = join(dir, "connects.log"), requestsLog = join(dir, "requests.log");
   writeFileSync(helperPath, HELPER);
-  const helper: ChildProcess = spawn(process.execPath, [helperPath, key, cert, String(blobPort), BLOB_HOST, METADATA_HOST, connectsLog], { stdio: ["ignore", "pipe", "inherit"] });
+  const helper: ChildProcess = spawn(process.execPath, [helperPath, key, cert, String(blobPort), BLOB_HOST, METADATA_HOST, connectsLog, mode, requestsLog], { stdio: ["ignore", "pipe", "inherit"] });
   const proxyPort = await new Promise<number>((resolve, reject) => {
     helper.once("error", reject);
     helper.stdout?.once("data", (chunk: Buffer) => resolve(Number(chunk.toString().trim())));
@@ -155,13 +169,16 @@ async function startEmulator(dir: string): Promise<Emulator> {
   return {
     proxyUrl: `http://127.0.0.1:${proxyPort}`, caFile: cert, blob,
     connects: () => (existsSync(connectsLog) ? readFileSync(connectsLog, "utf8").split("\n").filter(Boolean) : []),
+    requests: () => (existsSync(requestsLog) ? readFileSync(requestsLog, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line) as EntraRecord) : []),
+    clearRequests: () => writeFileSync(requestsLog, ""),
     async stop() { azurite.kill("SIGKILL"); helper.kill("SIGKILL"); },
   };
 }
 
 const HELPER = `
 const https = require("node:https"), http = require("node:http"), net = require("node:net"), fs = require("node:fs");
-const [key, cert, blobPort, blobHost, metadataHost, log] = process.argv.slice(2);
+const [key, cert, blobPort, blobHost, metadataHost, log, mode, requestsLog] = process.argv.slice(2);
+const entra = mode === "entra";
 const tls = { key: fs.readFileSync(key), cert: fs.readFileSync(cert) };
 const root = "https://" + metadataHost + "/";
 const metadata = JSON.stringify({
@@ -169,11 +186,46 @@ const metadata = JSON.stringify({
   graphAudience: root, graph: root, microsoftGraphResourceId: root, resourceManager: root, batch: root, media: root,
   suffixes: { storage: "alz-sim.test", keyVaultDns: "vault.alz-sim.test" },
 });
+const record = (entry) => fs.appendFileSync(requestsLog, JSON.stringify(entry) + "\\n");
+const segment = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");
+let issuedCount = 0;
 const meta = https.createServer(tls, (req, res) => {
-  if (req.url.startsWith("/metadata/endpoints")) { res.writeHead(200, { "content-type": "application/json" }); res.end(metadata); } else { res.writeHead(404); res.end("{}"); }
+  const chunks = [];
+  req.on("data", (chunk) => chunks.push(chunk));
+  req.on("end", () => {
+    if (req.url.startsWith("/metadata/endpoints")) { res.writeHead(200, { "content-type": "application/json" }); res.end(metadata); return; }
+    // ENTRA mode: Entra ID's token endpoint (the backend asks {loginEndpoint}/{tenant}/oauth2/v2.0/token). Its unsigned token names the
+    // client that asked as appid, so the blob front can attribute each state request; Azurite's basic check never verifies a signature.
+    const token = /^\\/+([^/]+)\\/oauth2\\/v2\\.0\\/token$/.exec(req.url);
+    if (entra && req.method === "POST" && token) {
+      const form = new URLSearchParams(Buffer.concat(chunks).toString("utf8"));
+      const now = Math.floor(Date.now() / 1000);
+      const issued = segment({ alg: "none", typ: "JWT" }) + "." + segment({
+        aud: "https://storage.azure.com", iss: "https://sts.windows.net/" + token[1] + "/", nbf: now - 60, iat: now - 60, exp: now + 3600,
+        appid: form.get("client_id"), tid: token[1], oid: form.get("client_id"), jti: "alz-sim-" + ++issuedCount,
+      }) + ".";
+      record({ kind: "token", tenant: token[1], clientId: form.get("client_id"), assertion: form.get("client_assertion"), secret: form.has("client_secret"), scope: form.get("scope"), issued });
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ token_type: "Bearer", expires_in: 3600, ext_expires_in: 3600, access_token: issued }));
+      return;
+    }
+    res.writeHead(404); res.end("{}");
+  });
 });
-meta.listen(0, "127.0.0.1", () => {
-  const routes = { [metadataHost]: meta.address().port, [blobHost + ":443"]: Number(blobPort) };
+// ENTRA mode: the blob host's front. It reads whose token a request carries and passes the request on to Azurite unchanged.
+const front = https.createServer(tls, (req, res) => {
+  const authorization = req.headers.authorization || "";
+  let appid = null;
+  if (authorization.startsWith("Bearer ")) { try { appid = JSON.parse(Buffer.from(authorization.slice(7).split(".")[1], "base64url").toString("utf8")).appid ?? null; } catch {} }
+  record({ kind: "blob", method: req.method, url: req.url, appid, scheme: authorization.split(" ")[0] || null, lease: req.headers["x-ms-lease-action"] || null });
+  const upstream = https.request({ agent: false, host: "127.0.0.1", port: Number(blobPort), servername: blobHost, ca: tls.cert, method: req.method, path: req.url, headers: req.headers }, (response) => {
+    res.writeHead(response.statusCode, response.headers); response.pipe(res);
+  });
+  upstream.on("error", () => res.destroy());
+  req.pipe(upstream);
+});
+meta.listen(0, "127.0.0.1", () => front.listen(0, "127.0.0.1", () => {
+  const routes = { [metadataHost]: meta.address().port, [blobHost + ":443"]: entra ? front.address().port : Number(blobPort) };
   const proxy = http.createServer((_req, res) => { res.writeHead(403); res.end(); });
   proxy.on("connect", (req, client, head) => {
     // A client reset at any moment (a refused host hanging up, a canceled request) must never end the helper: no CONNECT is ever unhandled.
@@ -191,7 +243,7 @@ meta.listen(0, "127.0.0.1", () => {
   });
   proxy.on("clientError", (_error, socket) => socket.destroy());
   proxy.listen(0, "127.0.0.1", () => process.stdout.write(String(proxy.address().port) + "\\n"));
-});
+}));
 `;
 
 /**
@@ -210,6 +262,24 @@ function installAzuriteSasHarness(toolDir: string, realTerraform: string, sas: s
     "#!/bin/sh",
     "# ALZ TEST-ONLY AZURITE SAS HARNESS (test/apply-emulated.test.ts). Never shipped and never an operator step.",
     "ARM_SAS_TOKEN=" + quote(sas) + "; export ARM_SAS_TOKEN",
+    "ARM_METADATA_HOSTNAME=" + quote(METADATA_HOST) + "; export ARM_METADATA_HOSTNAME",
+    "exec " + quote(realTerraform) + ' "$@"',
+    "",
+  ].join("\n"), { mode: 0o700 });
+  return wrapper;
+}
+
+/**
+ * TEST-ONLY ENTRA EMULATION HARNESS. The same kind of wrapper as the SAS harness, carrying only the custom metadata host, so Terraform's
+ * azurerm backend asks the emulated Entra ID for its token and Azurite for the state: no SAS, no key. Like the SAS harness, it exists only
+ * in this file and in a temporary directory, and nothing in src/ can reach it.
+ */
+function installEntraEmulationHarness(toolDir: string, realTerraform: string): string {
+  const quote = (value: string): string => "'" + value.replace(/'/g, "'\\''") + "'";
+  const wrapper = join(toolDir, "terraform");
+  writeFileSync(wrapper, [
+    "#!/bin/sh",
+    "# ALZ TEST-ONLY ENTRA EMULATION HARNESS (test/apply-emulated.test.ts). Never shipped and never an operator step.",
     "ARM_METADATA_HOSTNAME=" + quote(METADATA_HOST) + "; export ARM_METADATA_HOSTNAME",
     "exec " + quote(realTerraform) + ' "$@"',
     "",
@@ -256,6 +326,22 @@ describe("emulated backend simulation: real Terraform, Azurite, built-in resourc
    * creates (the pilot resource, plus the kill test's slow ones), and each seal writes that allowlist before it plans.
    */
   const withTerraformDataCanary = (count: number) => withCanary(baseContract, { resources: [{ type: "terraform_data", count }] });
+  /**
+   * TEST FIXTURE: the qualification attestation is forged here because no person can attest an emulator run. It records the REAL
+   * binary hash and version. It is not evidence of identity separation and must never be copied into production code.
+   */
+  async function attest(dir: string, terraformSha256: string): Promise<void> {
+    const attested = (adapterVersion: string, argvDigest: string) => ({
+      schemaVersion: 1 as const, engine: "TERRAFORM" as const, realEngine: true as const, backendIdentitySeparated: true as const,
+      tenantId: TENANT, subscriptionId: DEV_TARGET.account, backend: BACKEND, workspace: "default",
+      stateWriteClientId: "statewrite-client-3", applyClientId: "apply-client-4", terraformSha256,
+      adapterVersion, argvDigest, engineVersion, qualifiedAt: "2026-10-11T00:00:00.000Z",
+    });
+    for (const [version, digest] of [[APPLY_ADAPTER.adapterVersion, APPLY_ADAPTER.argvDigest], [ADAPTER_VERSION, terraformArgvDigest("TERRAFORM")]]) {
+      const written = await writeQualificationEvidence(attested(version, digest), AZURE, dir);
+      assert.ok(written.ok, JSON.stringify(written));
+    }
+  }
 
   before(async () => {
     process.env.AGENTIC_EVIDENCE_KEY = randomBytes(32).toString("base64");
@@ -291,19 +377,8 @@ describe("emulated backend simulation: real Terraform, Azurite, built-in resourc
     baseContract = contract;
     writeReviewedContract(contractPath, withTerraformDataCanary(1));
 
-    // TEST FIXTURE: the qualification attestation is forged here because no person can attest an emulator run. It records the REAL
-    // binary hash and version. It is not evidence of identity separation and must never be copied into production code.
     vault = fresh("qualification");
-    const attested = (adapterVersion: string, argvDigest: string) => ({
-      schemaVersion: 1 as const, engine: "TERRAFORM" as const, realEngine: true as const, backendIdentitySeparated: true as const,
-      tenantId: TENANT, subscriptionId: DEV_TARGET.account, backend: BACKEND, workspace: "default",
-      stateWriteClientId: "statewrite-client-3", applyClientId: "apply-client-4", terraformSha256: binarySha,
-      adapterVersion, argvDigest, engineVersion, qualifiedAt: "2026-10-11T00:00:00.000Z",
-    });
-    for (const [version, digest] of [[APPLY_ADAPTER.adapterVersion, APPLY_ADAPTER.argvDigest], [ADAPTER_VERSION, terraformArgvDigest("TERRAFORM")]]) {
-      const written = await writeQualificationEvidence(attested(version, digest), AZURE, vault);
-      assert.ok(written.ok, JSON.stringify(written));
-    }
+    await attest(vault, binarySha);
 
     evidence = fresh("evidence"); nonces = fresh("nonces"); scratch = fresh("scratch");
     // Terraform reads the OIDC token file at init when use_oidc is set, even though state access here uses the SAS token, so the file must exist.
@@ -560,6 +635,85 @@ describe("emulated backend simulation: real Terraform, Azurite, built-in resourc
     assert.ok(after.inputs.length < before.inputs.length + SLOW_COUNT + 1, "interrupted part-way: not every planned value was created");
   });
 
+  it("binds STATE_WRITE (owner decision 6486426552): under emulated Entra ID, every token, state and lease request of the apply is STATE_WRITE's, APPLY never reaches the account, a renewed token file is used without resealing, and the plan holds only identity references", async () => {
+    // A second emulator in ENTRA mode: bearer tokens from an emulated token endpoint, attributed per request by the blob front.
+    const entra = await startEmulator(fresh("entra-emulator"), "entra");
+    try {
+      assert.equal(await createContainer(entra), 201);
+      const tools = fresh("entra-tools");
+      const harnessSha = createHash("sha256").update(readFileSync(installEntraEmulationHarness(tools, TERRAFORM as string))).digest("hex");
+      const qualification = fresh("entra-qualification");
+      await attest(qualification, harnessSha);
+      // Each identity's federated token file holds its own dummy assertion, so a token request names whose file it read.
+      const oidc = fresh("entra-oidc");
+      const tokenFile = join(oidc, "statewrite-token"), applyTokenFile = join(oidc, "apply-token");
+      const assertion = (version: number): string => "ALZ-SIM-STATE-WRITE-ASSERTION-v" + version;
+      writeFileSync(tokenFile, assertion(1) + "\n", { mode: 0o600 });
+      writeFileSync(applyTokenFile, "ALZ-SIM-APPLY-ASSERTION\n", { mode: 0o600 });
+      const entraDeps: ApplyDeps = {
+        ...deps, qualificationDir: qualification, toolDirs: [tools, "/usr/bin", "/bin"],
+        env: {
+          ...env, ALZ_STATE_WRITE_ARM_OIDC_TOKEN_FILE: tokenFile, ALZ_APPLY_ARM_OIDC_TOKEN_FILE: applyTokenFile,
+          ALZ_NETWORK_HTTPS_PROXY: entra.proxyUrl, ALZ_NETWORK_SSL_CERT_FILE: entra.caFile,
+        },
+      };
+      const p = project("entra-bound");
+      writeReviewedContract(contractPath, withTerraformDataCanary(1));
+      const sealedResult = await sealPreview({
+        invocation: human(DEV_TARGET_EMULATED), environment: "DEV", target: DEV_TARGET_EMULATED, manifest: p.manifest, projectRoot: p.projectRoot,
+        policyVersion: POLICY, resolved: p.resolved, requester: REQUESTER,
+      }, entraDeps);
+      assert.ok(sealedResult.ok, JSON.stringify(sealedResult));
+      const loaded = await loadSealedPlan(sealedResult.path);
+      assert.ok(loaded.ok);
+      const atSeal = entra.requests();
+      assert.ok(atSeal.some((r) => r.kind === "token") && atSeal.some((r) => r.kind === "blob"), "the seal reached the emulated Entra ID and the state");
+      assert.ok(atSeal.every((r) => (r.kind === "token" ? r.clientId : r.appid) === "statewrite-client-3"), "the seal's backend is STATE_WRITE's: " + JSON.stringify(atSeal.map((r) => r.kind === "token" ? r.clientId : r.appid)));
+
+      // The decrypted plan: every file of Terraform's plan archive is read. It names STATE_WRITE's client and token FILE, never a token.
+      const plan = Buffer.concat([...zipEntries(loaded.planBytes).values()]).toString("latin1");
+      const sealedJson = JSON.stringify(loaded.sealed);
+      assert.ok(plan.includes("statewrite-client-3") && plan.includes(tokenFile), "the plan's backend names STATE_WRITE's client and token file path");
+      assert.ok(!plan.includes("apply-client-4") && !plan.includes(applyTokenFile), "nothing of APPLY's");
+      const issued = atSeal.flatMap((r) => (r.kind === "token" ? [r.issued] : []));
+      for (const text of [plan, sealedJson, loaded.planBytes.toString("latin1")]) {
+        for (const value of [assertion(1), assertion(2), "ALZ-SIM-STATE-WRITE-ASSERTION", "ALZ-SIM-APPLY-ASSERTION", ...issued]) {
+          assert.ok(!text.includes(value), "no assertion, access token or secret in the plan or the sealed record: " + value.slice(0, 24));
+        }
+      }
+
+      // Renewal: the token file is rewritten after the seal, as a delivery would refresh it. The sealed plan is unchanged.
+      writeFileSync(tokenFile, assertion(2) + "\n", { mode: 0o600 });
+      entra.clearRequests();
+      const result = await runApply({
+        invocation: human(DEV_TARGET_EMULATED), environment: "DEV", target: { ...DEV_TARGET_EMULATED }, sealedPlan: { sealed: loaded.sealed, planBytes: loaded.planBytes },
+        manifest: p.manifest, projectRoot: p.projectRoot, approvals: [approvalFor(loaded.sealed, "alice")],
+      }, entraDeps);
+      assert.ok(result.ok, JSON.stringify(result));
+      noSecrets(result);
+      const seen = entra.requests();
+      const tokens = seen.flatMap((r) => (r.kind === "token" ? [r] : []));
+      const blobs = seen.flatMap((r) => (r.kind === "blob" ? [r] : []));
+      assert.ok(tokens.length > 0, "the apply asked the emulated Entra ID for a token");
+      assert.ok(tokens.every((t) => t.clientId === "statewrite-client-3" && !t.secret && (t.assertion ?? "").trim() === assertion(2) && t.scope === "https://storage.azure.com/.default"),
+        "every token was STATE_WRITE's, from its renewed federated assertion, never a client secret: " + JSON.stringify(tokens.map((t) => [t.clientId, t.secret, (t.assertion ?? "").slice(-3)])));
+      assert.ok(blobs.length > 0 && blobs.every((b) => b.scheme === "Bearer" && b.appid === "statewrite-client-3"), "every state request carried STATE_WRITE's token: " + JSON.stringify([...new Set(blobs.map((b) => b.appid))]));
+      const statePath = "/" + CONTAINER + "/" + STATE_KEY;
+      const writes = blobs.filter((b) => b.method === "PUT" && b.url === statePath);
+      const leases = blobs.filter((b) => b.url.startsWith(statePath + "?comp=lease"));
+      assert.ok(writes.length > 0, "the apply wrote the state");
+      assert.ok(leases.some((b) => b.lease === "acquire") && leases.some((b) => b.lease === "release"), "the apply took and released the state lease: " + JSON.stringify(leases.map((b) => b.lease)));
+      assert.ok(!seen.some((r) => (r.kind === "token" ? r.clientId === "apply-client-4" || (r.assertion ?? "").includes("APPLY") : r.appid === "apply-client-4")), "APPLY never asked for a storage token and never reached the account");
+      const landed = await entra.blob("GET", `${statePath}?${containerSas()}`);
+      assert.equal(landed.status, 200, landed.body);
+      const state = JSON.parse(landed.body) as { resources: { type: string; instances: { attributes: { input: { value: unknown } | null } }[] }[] };
+      assert.deepEqual(state.resources.filter((r) => r.type === "terraform_data").flatMap((r) => r.instances.map((i) => i.attributes.input?.value)), ["entra-bound"]);
+      assert.deepEqual(entra.connects().filter((c) => c !== METADATA_HOST && c !== BLOB_HOST + ":443" && c !== "checkpoint-api.hashicorp.com:443"), [], "no host other than the emulator was ever contacted");
+    } finally {
+      await entra.stop();
+    }
+  });
+
   // --- emulator-only credentials never enter a production path, against the real engine -----------------
 
   const emulatorHosts = () => emulator.connects().filter((c) => c === METADATA_HOST || c === BLOB_HOST + ":443").length;
@@ -746,6 +900,8 @@ describe("emulator-only credentials never enter a production path (default CI; n
         pinned, spec: AZURE, contractSha256: H("9"), sourceCommit: SOURCE_COMMIT,
         provenance: { engineBinarySha256: H("e"), qualification: { state: "UNQUALIFIED", reason: "Fixture: no qualification evidence." } },
         requester: REQUESTER, now: () => NOW, unit: pilotUnitOf({ provider: "AZURE", contractSha256: H("9"), environment: "DEV", target }),
+        // Every Terraform contract binds STATE_WRITE (owner decision 6486426552).
+        embedStateWrite: true,
       });
     } finally { snapshot.remove(); scratch.remove(); }
   }
@@ -781,7 +937,7 @@ describe("emulator-only credentials never enter a production path (default CI; n
     const self = fileURLToPath(import.meta.url);
     const source = readFileSync(self, "utf8");
     assert.ok(!/^export /m.test(source), "this file exports nothing, so nothing can import the harness");
-    const markers = ["installAzuriteSasHarness", "AZURITE SAS HARNESS", "ALZ_SIM_AZURITE", "alz-sim.test", DEV_KEY];
+    const markers = ["installAzuriteSasHarness", "AZURITE SAS HARNESS", "installEntraEmulationHarness", "ENTRA EMULATION HARNESS", "ALZ_SIM_AZURITE", "alz-sim.test", DEV_KEY];
     const hits: string[] = [];
     const walk = (dir: string): void => {
       for (const name of readdirSync(dir)) {

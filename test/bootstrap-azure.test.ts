@@ -125,6 +125,35 @@ test("APPLY holds narrowly scoped custom roles at the pilot resource group, neve
   assert.match(module, /apply_scope = azurerm_resource_group\.apply\[0\]\.id/);
 });
 
+test("APPLY and the state (owner decision 6486426552): denied by absence of any grant, no explicit deny exists, and Azure Terraform stays BLOCKED on it", () => {
+  const module = read("modules/environment/main.tf");
+  // Absence of grant: APPLY's only assignments are its two custom roles at the pilot resource group (checked above); none names a
+  // state scope, no role definition carries a data action, and the account takes neither a shared key nor a SAS.
+  const assignments = [...module.matchAll(/resource "azurerm_role_assignment" "([a-z_]+)" \{/g)].map((m) => m[1]);
+  const toApply = assignments.filter((name) => /principal_ids\["APPLY"\]/.test(block(module, 'resource "azurerm_role_assignment" "' + name + '" {')));
+  assert.deepEqual(toApply, ["apply", "bicep_stack_apply"]);
+  for (const name of toApply) {
+    const assignment = block(module, 'resource "azurerm_role_assignment" "' + name + '" {');
+    assert.doesNotMatch(assignment, /azurerm_(storage_container|storage_account|resource_group)\.state\b/, name + ": no state scope");
+  }
+  for (const name of ["state", "state_write"]) {
+    assert.doesNotMatch(block(module, 'resource "azurerm_role_assignment" "' + name + '" {'), /principal_ids\["APPLY"\]/, name);
+  }
+  assert.doesNotMatch(module, /data_actions/, "no role definition grants a data action");
+  const account = block(module, 'resource "azurerm_storage_account" "state" {');
+  assert.match(account, /shared_access_key_enabled\s+=\s+false/);
+  assert.match(account, /default_to_oauth_authentication\s+=\s+true/);
+  // No explicit deny: the module says so and why, and claims no deny assignment it cannot create or show.
+  assert.match(module, /EFFECTIVE \(explicit\) denial, and this configuration has none/);
+  assert.doesNotMatch(module, /azurerm_[a-z_]*deny|deny_assignment/i, "no deny assignment is claimed");
+  // So the release row stays BLOCKED, and says this is one of the reasons. Adding a real deny means changing both.
+  const status = JSON.parse(readFileSync(join(ROOT, "config", "release", "status.json"), "utf8")) as { gates: { gate: string; status: string; nextAction: string }[] };
+  const row = status.gates.find((g) => g.gate === "act:azure-terraform");
+  assert.ok(row);
+  assert.equal(row.status, "BLOCKED");
+  assert.match(row.nextAction, /no explicit deny of APPLY on the state/);
+});
+
 const TERRAFORM = process.env.ALZ_BOOTSTRAP_TERRAFORM;
 test("opt-in: terraform init, validate and test pass offline (mocked providers)", { skip: TERRAFORM ? false : "set ALZ_BOOTSTRAP_TERRAFORM to a Terraform binary and TF_CLI_CONFIG_FILE to an offline provider mirror" }, () => {
   const work = mkdtempSync(join(tmpdir(), "alz-bootstrap-azure-"));

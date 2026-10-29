@@ -50,12 +50,14 @@ test("a qualified machine is ready for both clouds, with nothing next and no res
   }
 });
 
-test("the STATE_WRITE embedding item is Terraform's only: a Terraform contract lists it (yes or no), a CDK contract never does, and nothing else differs in what is judged", async () => {
+test("the STATE_WRITE embedding item is Terraform's only: a Terraform contract lists it (yes, the binding is required), one without the binding is INVALID, a CDK contract never lists it, and nothing else differs in what is judged", async () => {
   const embed = (report: ReadinessReport) => report.checks.filter((c) => c.check.startsWith("plan will embed STATE_WRITE settings"));
   const terraform = await assessReadiness((await world((k) => awsContractJson(k), "AWS")).input);
-  assert.deepEqual(embed(terraform).map((c) => [c.check, c.state]), [["plan will embed STATE_WRITE settings: no", "READY"]]);
-  const optedIn = await assessReadiness((await world((k) => awsContractJson(k, { embedStateWrite: true }), "AWS")).input);
-  assert.deepEqual(embed(optedIn).map((c) => c.check), ["plan will embed STATE_WRITE settings: yes"]);
+  assert.deepEqual(embed(terraform).map((c) => [c.check, c.state]), [["plan will embed STATE_WRITE settings: yes", "READY"]]);
+  // Without the binding (owner decision 6486426552) the contract itself is INVALID, so nothing about the plan is judged as ready.
+  const unbound = await assessReadiness((await world((k) => awsContractJson(k, { embedStateWrite: false }), "AWS")).input);
+  assert.deepEqual(unbound.checks.map((c) => c.state), ["INVALID"]);
+  assert.equal(unbound.ready, false);
   const cdk = await world((k) => cdkContractJson(k), false);
   const report = await assessReadiness({ ...cdk.input, env: cdkIdentityEnv("DEV") });
   assert.deepEqual(embed(report), [], "the CDK engine has no state backend and no STATE_WRITE identity, so the item is not shown");

@@ -23,8 +23,9 @@ import { SOURCE_COMMIT,
 } from "./helpers/apply-fixtures.js";
 import { cdkContractJson } from "./helpers/cdk-fixtures.js";
 
-// The opt-in `embedStateWrite` contract field (docs/act-pilot-apply.md, "Embedding STATE_WRITE in the plan"). The engine is a fake
-// executable: these tests pin this program's logic, NOT what a real Terraform or backend does with the embedded settings (unverified).
+// The `embedStateWrite` contract field (docs/act-pilot-apply.md, "Binding STATE_WRITE in the plan"): required true for every Terraform
+// contract since owner decision 6486426552 (it was an opt-in before). The engine is a fake executable: these tests pin this program's
+// logic, NOT what a real Terraform or backend does with the embedded settings (the emulated tests show that per backend).
 
 const root = mkdtempSync(join(tmpdir(), "alz-embed-"));
 const toolDir = mkdtempSync(join(tmpdir(), "alz-embed-tools-"));
@@ -88,28 +89,22 @@ const reasonOf = (contract: unknown): string => {
 
 // --- the contract field ---------------------------------------------------------------------------
 
-test("the field is optional and default off: absent and false behave the same, the examples stay valid and shipped pin stays empty, true is a different contract", () => {
-  const hashOf = (over: Record<string, unknown>) => {
-    const w = world(contractJson(KILL, over));
-    const l = loadedContract(w) as PilotContract;
-    assert.equal(l.enabled, true, JSON.stringify(l));
-    return { hash: pilotContractSha256(l), contract: l };
-  };
-  const absent = hashOf({});
-  const off = hashOf({ embedStateWrite: false });
-  const on = hashOf({ embedStateWrite: true });
-  assert.ok(!("embedStateWrite" in absent.contract), "absent stays absent, so a contract that never mentions it hashes as it always did");
-  assert.equal(off.contract.embedStateWrite, false);
-  assert.notEqual(on.hash, off.hash);
-  assert.equal(on.contract.embedStateWrite, true);
-  assert.notEqual(on.hash, absent.hash, "the contract hash binds the choice");
-  for (const bad of ["true", 1, null, "yes", [], {}]) assert.match(reasonOf(contractJson(KILL, { embedStateWrite: bad })), /embedStateWrite: expected true or false/);
-  // AWS with Terraform may opt in too.
-  assert.equal((loadPilotContract(...(() => { const w = world(awsContractJson(KILL, { embedStateWrite: true }), "AWS"); return [w.contractPath] as const; })()) as PilotContract).embedStateWrite, true);
-  // The shipped examples do not mention it (so they stay valid and unchanged), and the repository ships no contract and no pin.
-  for (const name of ["act-pilot-contract.example.json", "act-pilot-contract.aws.example.json", "act-pilot-contract.aws-cdk.example.json"]) {
-    assert.ok(!readFileSync(fileURLToPath(new URL("../config/" + name, import.meta.url)), "utf8").includes("embedStateWrite"), name);
+test("the field is required true for Terraform (owner decision 6486426552): absent and false are refused at load, true loads and is bound by the contract hash; the Terraform examples state it; no contract is shipped", () => {
+  const w = world(contractJson(KILL));
+  const on = loadedContract(w) as PilotContract;
+  assert.equal(on.enabled, true, JSON.stringify(on));
+  assert.equal(on.embedStateWrite, true);
+  const { embedStateWrite: _dropped, ...absent } = contractJson(KILL);
+  for (const [label, raw] of [["absent", absent], ["false", contractJson(KILL, { embedStateWrite: false })], ["AWS absent", (({ embedStateWrite: _d, ...rest }) => rest)(awsContractJson(KILL))]] as const) {
+    assert.match(reasonOf(raw), /^embedStateWrite: (AZURE|AWS) TERRAFORM requires embedStateWrite true/, label);
   }
+  for (const bad of ["true", 1, null, "yes", [], {}]) assert.match(reasonOf(contractJson(KILL, { embedStateWrite: bad })), /embedStateWrite: expected true or false/);
+  assert.equal((loadPilotContract(...(() => { const aws = world(awsContractJson(KILL), "AWS"); return [aws.contractPath] as const; })()) as PilotContract).embedStateWrite, true);
+  // The Terraform examples state the binding; the CDK example, which has no state backend, does not. The repository ships no contract and no pin.
+  for (const name of ["act-pilot-contract.example.json", "act-pilot-contract.aws.example.json", "act-pilot-contract.aws-dev.example.json", "act-pilot-contract.azure-dev.example.json"]) {
+    assert.match(readFileSync(fileURLToPath(new URL("../config/" + name, import.meta.url)), "utf8"), /"embedStateWrite": true/, name);
+  }
+  assert.ok(!readFileSync(fileURLToPath(new URL("../config/act-pilot-contract.aws-cdk.example.json", import.meta.url)), "utf8").includes("embedStateWrite"));
   assert.equal(existsSync(fileURLToPath(new URL("../config/act-pilot-contract.json", import.meta.url))), false, "no contract is shipped");
   assert.equal(existsSync(fileURLToPath(new URL("../config/act-pilot-contract.sha256", import.meta.url))), false, "the retired pin is gone");
 });
@@ -118,20 +113,17 @@ test("true with the CDK engine is an invalid contract", () => {
   assert.match(reasonOf({ ...cdkContractJson(KILL), embedStateWrite: true }), /embedStateWrite: valid only with an engine that has a state backend \(TERRAFORM\); CDK has none/);
 });
 
-// --- default off: unchanged -------------------------------------------------------------------------
+// --- without the binding: refused before any engine runs ------------------------------------------
 
-test("default off: the seal init reads the contract's backend location and the Entra ID switch only (the pinned backend has no settings of its own), never STATE_WRITE settings", async () => {
-  const [account, container, ...key] = DEV_TARGET.backend.split("/");
-  for (const over of [{}, { embedStateWrite: false }]) {
-    const w = world(contractJson(KILL, over));
+test("without the binding (absent or false) a seal is refused before any engine runs: the old default no longer seals", async () => {
+  const { embedStateWrite: _dropped, ...absent } = contractJson(KILL);
+  for (const raw of [absent, contractJson(KILL, { embedStateWrite: false })]) {
+    const w = world(raw);
+    const before = calls().length;
     const { result } = await seal(w);
-    assert.ok(result.ok, JSON.stringify(result));
-    const inits = initCalls();
-    assert.equal(inits.length, 1);
-    assert.deepEqual(inits[0].args, [...APPLY_INIT_ARGV]);
-    assert.equal(inits[0].backendConfig, `storage_account_name = "${account}"\ncontainer_name = "${container}"\nkey = "${key.join("/")}"\nuse_azuread_auth = true\n`);
-    assert.equal(inits[0].backendOverride, 'terraform {\n  backend "azurerm" {}\n}\n', "Azure is pinned the same way, with type azurerm");
-    assert.ok(calls().filter((c) => c.args[0] !== "init").every((c) => c.backendFileExists === false), "the backend file is gone right after init");
+    assert.equal(result.ok, false, JSON.stringify(result));
+    assert.match(JSON.stringify(result), /embedStateWrite: AZURE TERRAFORM requires embedStateWrite true/);
+    assert.equal(calls().length, before, "no engine step ran");
   }
 });
 
@@ -202,23 +194,23 @@ test("on: a STATE_WRITE value the backend file cannot hold safely stops the seal
 
 // --- sealed plans bind the choice -------------------------------------------------------------------
 
-test("a plan sealed with embed=false is refused under embed=true and the reverse, before any engine step", async () => {
-  for (const [sealedWith, appliedUnder] of [[false, true], [true, false]] as const) {
-    const w = world(contractJson(KILL, { embedStateWrite: sealedWith }));
+test("a plan sealed under the binding is refused, before any engine step, once the contract drops it (absent or false)", async () => {
+  const { embedStateWrite: _dropped, ...absent } = contractJson(KILL);
+  for (const appliedUnder of [absent, contractJson(KILL, { embedStateWrite: false })]) {
+    const w = world(contractJson(KILL));
     const { result, project, target } = await seal(w);
     assert.ok(result.ok, JSON.stringify(result));
     const loaded = await loadSealedPlan(result.path);
     assert.ok(loaded.ok);
     const sealedPlan = { sealed: loaded.sealed, planBytes: loaded.planBytes };
-    writeReviewedContract(w.contractPath, contractJson(KILL, { embedStateWrite: appliedUnder }));
+    writeReviewedContract(w.contractPath, appliedUnder);
     const before = calls().length;
     const refused = await runApply({
       invocation: human(target), environment: "DEV", target: { ...target }, sealedPlan, manifest: project.manifest, projectRoot: project.projectRoot,
       approvals: [approval(result.sealed, "alice")],
     }, w.deps);
     assert.equal(refused.ok, false);
-    assert.equal((refused as unknown as { code: string }).code, "ARTIFACT_INVALID");
-    assert.match((refused as unknown as { message: string }).message, /another pilot contract/);
+    assert.match(JSON.stringify(refused), /embedStateWrite: AZURE TERRAFORM requires embedStateWrite true/);
     assert.equal(calls().length, before, "no engine step ran");
     assert.equal(calls().filter((c) => c.args[0] === "apply").length, 0);
   }
@@ -252,17 +244,17 @@ const request = (kind: "seal" | "qualify") => {
 };
 
 for (const kind of ["seal", "qualify"] as const) {
-  test(`${kind} with embed=true warns in plain language and needs the exact phrase; a wrong or missing phrase runs no engine and seals nothing`, async () => {
+  test(`${kind} under the STATE_WRITE binding warns in plain language and needs the exact phrase; a wrong or missing phrase runs no engine and seals nothing`, async () => {
     const answers = (phrase?: string) => [targetString(DEV_TARGET), RUN_CODE, ...(phrase === undefined ? [] : [phrase])];
     for (const wrong of [undefined, "", "yes", "embed state_write dev", "EMBED STATE_WRITE QA", PHRASE + " ", RUN_CODE]) {
-      const w = world(contractJson(KILL, { embedStateWrite: true }));
+      const w = world(contractJson(KILL));
       const run = await cli(w, request(kind), answers(wrong));
       assert.equal(run.code, 1, JSON.stringify(wrong));
       assert.match(run.stderr, /EMBED_STATE_WRITE_CONFIRMATION_MISMATCH/);
       assert.deepEqual(calls(), [], "no engine ran");
       assert.ok(!run.stdout.includes("sealedPlanPath"));
       const shown = run.term.out.join("");
-      for (const part of [PHRASE, "non-secret backend settings", "name the state writer", "write-capable at the backend", "secret-bearing and", "SIMULATED"]) {
+      for (const part of [PHRASE, "binds STATE_WRITE", "backend identity settings", "never a credential value or the token itself", "name the state writer", "never APPLY", "write-capable at the backend", "stays encrypted", "SIMULATED"]) {
         assert.ok(shown.includes(part), part);
       }
       assert.ok(run.term.asked.includes("embed> "));
@@ -270,29 +262,38 @@ for (const kind of ["seal", "qualify"] as const) {
   });
 }
 
-test("seal with embed=true and the exact phrase runs the engine with the embedding init; no flag skips the prompt", async () => {
-  const w = world(contractJson(KILL, { embedStateWrite: true }));
+test("seal with the binding and the exact phrase runs the engine with the embedding init; no flag skips the prompt; without the binding nothing seals", async () => {
+  const w = world(contractJson(KILL));
   const run = await cli(w, request("seal"), [targetString(DEV_TARGET), RUN_CODE, PHRASE]);
   assert.equal(run.code, 0, run.stderr);
   assert.deepEqual(initCalls().map((c) => c.args), [[...APPLY_INIT_ARGV]]);
   const flagged = await cli(w, [...request("seal"), "--yes"], [targetString(DEV_TARGET), RUN_CODE, PHRASE]);
   assert.equal(flagged.code, 1, "an unknown flag is an error; there is none that skips the phrase");
-  // Default off: no phrase is asked.
-  const off = world(contractJson(KILL));
-  const plain = await cli(off, request("seal"), [targetString(DEV_TARGET), RUN_CODE]);
-  assert.equal(plain.code, 0, plain.stderr);
-  assert.ok(!plain.term.asked.includes("embed> ") && !plain.term.out.join("").includes("embedStateWrite"));
+  // Without the binding nothing seals, and the binding's phrase is never asked for a contract that does not load.
+  const { embedStateWrite: _dropped, ...absent } = contractJson(KILL);
+  const unbound = world(absent);
+  const before = calls().length;
+  const plain = await cli(unbound, request("seal"), [targetString(DEV_TARGET), RUN_CODE]);
+  assert.notEqual(plain.code, 0);
+  assert.match(plain.stderr, /CONTRACT_INVALID.*embedStateWrite: AZURE TERRAFORM requires embedStateWrite true/);
+  assert.ok(!plain.term.asked.includes("embed> "));
+  assert.equal(calls().length, before, "no engine ran");
 });
 
-test("preflight reports whether the plan will embed STATE_WRITE settings, informationally", async () => {
-  for (const [over, answer] of [[{}, "no"], [{ embedStateWrite: false }, "no"], [{ embedStateWrite: true }, "yes"]] as const) {
-    const w = world(contractJson(KILL, over));
-    const run = await cli(w, ["preflight", "--environment", "DEV"], []);
-    assert.equal(run.code, 0, run.stderr);
-    const report = JSON.parse(run.stdout) as { ready: boolean; checks: { check: string; ok: boolean }[] };
-    const line = report.checks.find((c) => c.check.startsWith("plan will embed STATE_WRITE settings"));
-    assert.equal(line?.check, "plan will embed STATE_WRITE settings: " + answer);
-    assert.equal(line?.ok, true);
-    assert.equal(report.ready, true);
+test("preflight reports that the plan will embed STATE_WRITE settings, and a contract without the binding is not ready", async () => {
+  const w = world(contractJson(KILL));
+  const run = await cli(w, ["preflight", "--environment", "DEV"], []);
+  assert.equal(run.code, 0, run.stderr);
+  const report = JSON.parse(run.stdout) as { ready: boolean; checks: { check: string; ok: boolean }[] };
+  const line = report.checks.find((c) => c.check.startsWith("plan will embed STATE_WRITE settings"));
+  assert.equal(line?.check, "plan will embed STATE_WRITE settings: yes");
+  assert.equal(line?.ok, true);
+  assert.equal(report.ready, true);
+  const { embedStateWrite: _dropped, ...absent } = contractJson(KILL);
+  for (const raw of [absent, contractJson(KILL, { embedStateWrite: false })]) {
+    const off = await cli(world(raw), ["preflight", "--environment", "DEV"], []);
+    const text = off.stdout + off.stderr;
+    assert.ok(!/"ready":\s*true/.test(text), "a contract without the binding is never ready");
+    assert.match(text, /embedStateWrite: AZURE TERRAFORM requires embedStateWrite true/);
   }
 });

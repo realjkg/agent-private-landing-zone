@@ -85,7 +85,7 @@ async function seal(w: World, salt: string): Promise<Sealed> {
   const target = targetOf("DEV");
   const project = writeProject(fresh("project"), target);
   const request = json({ environment: "DEV", target, projectRoot: project.projectRoot, policyVersion: POLICY, resolved: project.resolved }, "request");
-  const run = await cli(w, ["seal", "--request", request, "--manifest", json(project.manifest, "manifest"), ...requesterArgs()], [targetString(target), "RUN PROJECT CODE"]);
+  const run = await cli(w, ["seal", "--request", request, "--manifest", json(project.manifest, "manifest"), ...requesterArgs()], [targetString(target), "RUN PROJECT CODE", "EMBED STATE_WRITE DEV"]);
   assert.equal(run.code, 0, run.stderr);
   const { sealedPlanPath } = JSON.parse(run.stdout) as { sealedPlanPath: string };
   const loaded = await loadSealedPlan(sealedPlanPath);

@@ -84,9 +84,10 @@ export type PilotContract = {
    */
   policyVersion?: string;
   /**
-   * Opt-in, default off (absent or false is today's behavior, byte for byte). Terraform engine only. When true, the seal-time `init`
-   * embeds STATE_WRITE's non-secret backend settings, so the plan names the state writer (docs/act-pilot-apply.md, "Embedding STATE_WRITE
-   * in the plan"). It is part of the reviewed contract, so the sealed plan binds the choice through `contractSha256`.
+   * Required true for the Terraform engine (owner decision 6486426552: a Terraform contract without it fails to load), and refused for an
+   * engine with no state backend. The seal-time `init` embeds STATE_WRITE's non-secret backend settings, so the plan names the state
+   * writer (docs/act-pilot-apply.md, "Binding STATE_WRITE in the plan"). It is part of the reviewed contract, so the sealed plan binds it
+   * through `contractSha256`.
    */
   embedStateWrite?: boolean;
 };

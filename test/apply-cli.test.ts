@@ -109,12 +109,14 @@ const manifestFile = (p: Project) => json(p.manifest, "manifest");
 const sealArgs = (p: Project, target: ResolvedTarget, environment: string, extra: Record<string, unknown> = {}) =>
   ["seal", "--request", requestFile(p, target, environment, extra), "--manifest", manifestFile(p), ...requesterArgs()];
 const PHRASE = "RUN PROJECT CODE";
+/** Every Terraform contract binds STATE_WRITE (owner decision 6486426552), so seal and qualify ask for this phrase after the project-code one. */
+const EMBED = (environment: string): string => "EMBED STATE_WRITE " + environment;
 
 type Sealed = { project: Project; target: ResolvedTarget; environment: ApplyEnvironment; path: string; bundle: string; artifactSha256: string };
 async function sealed(w: World, environment: ApplyEnvironment): Promise<Sealed> {
   const target = targetOf(environment);
   const p = writeProject(fresh("project"), target);
-  const run = await cli(w, sealArgs(p, target, environment), [targetString(target), PHRASE], { env: identityEnv(environment) });
+  const run = await cli(w, sealArgs(p, target, environment), [targetString(target), PHRASE, EMBED(environment)], { env: identityEnv(environment) });
   assert.equal(run.code, 0, run.stderr);
   const result = JSON.parse(run.stdout) as { artifactSha256: string; sealedPlanPath: string; reviewBundlePath: string };
   return { project: p, target, environment, path: result.sealedPlanPath, bundle: result.reviewBundlePath, artifactSha256: result.artifactSha256 };
@@ -196,7 +198,7 @@ test("request files cannot carry the invocation, the manifest or approvals: the 
     for (const sub of ["seal", "qualify"]) {
       // qualify takes no requester: it stores no plan, so nothing is requested.
       const args = sealArgs(p, DEV_TARGET, "DEV", extra).slice(1);
-      const run = await cli(w, [sub, ...(sub === "qualify" ? args.slice(0, 4) : args)], [targetString(DEV_TARGET), PHRASE]);
+      const run = await cli(w, [sub, ...(sub === "qualify" ? args.slice(0, 4) : args)], [targetString(DEV_TARGET), PHRASE, EMBED("DEV")]);
       assert.equal(run.code, 1, sub + JSON.stringify(extra));
       assert.match(run.stderr, /APPLY_INPUT_INVALID/);
       assert.deepEqual(run.term.asked, [], "nothing was asked before the input was valid");
@@ -210,7 +212,7 @@ test("request files cannot carry the invocation, the manifest or approvals: the 
 test("seal shows the target, needs the exact target and the project code phrase, and prints the artifact and redacted changes", async () => {
   const w = await world();
   const p = writeProject(fresh("project"), DEV_TARGET);
-  const run = await cli(w, sealArgs(p, DEV_TARGET, "DEV"), [targetString(DEV_TARGET), PHRASE]);
+  const run = await cli(w, sealArgs(p, DEV_TARGET, "DEV"), [targetString(DEV_TARGET), PHRASE, EMBED("DEV")]);
   assert.equal(run.code, 0, run.stderr);
   const result = JSON.parse(run.stdout) as { artifactSha256: string; sealedPlanPath: string; environment: string; changes: { address: string; action: string }[] };
   assert.match(result.artifactSha256, /^[a-f0-9]{64}$/);
@@ -229,19 +231,19 @@ test("seal shows the target, needs the exact target and the project code phrase,
 test("seal stops on a wrong target, a wrong phrase, a disabled contract or a vault with no qualification, and runs no engine", async () => {
   const w = await world();
   const p = writeProject(fresh("project"), DEV_TARGET);
-  const wrongTarget = await cli(w, sealArgs(p, DEV_TARGET, "DEV"), [targetString(PROD_TARGET), PHRASE]);
+  const wrongTarget = await cli(w, sealArgs(p, DEV_TARGET, "DEV"), [targetString(PROD_TARGET), PHRASE, EMBED("PROD")]);
   assert.equal(wrongTarget.code, 1);
   assert.match(wrongTarget.stderr, /HUMAN_CONFIRMATION_MISMATCH/);
-  const wrongPhrase = await cli(w, sealArgs(p, DEV_TARGET, "DEV"), [targetString(DEV_TARGET), "yes"]);
+  const wrongPhrase = await cli(w, sealArgs(p, DEV_TARGET, "DEV"), [targetString(DEV_TARGET), "yes", EMBED("DEV")]);
   assert.equal(wrongPhrase.code, 1);
   assert.match(wrongPhrase.stderr, /PROJECT_CODE_CONFIRMATION_MISMATCH/);
   assert.deepEqual(engineCalls(), []);
   const off = await world(contractJson(KILL, { enabled: false }));
-  const disabled = await cli(off, sealArgs(p, DEV_TARGET, "DEV"), [targetString(DEV_TARGET), PHRASE]);
+  const disabled = await cli(off, sealArgs(p, DEV_TARGET, "DEV"), [targetString(DEV_TARGET), PHRASE, EMBED("DEV")]);
   assert.equal(disabled.code, 2);
   assert.match(disabled.stderr, /BLOCKED ACT_DISABLED/);
   const bare = await world(contractJson(KILL), false);
-  const unqualified = await cli(bare, sealArgs(p, DEV_TARGET, "DEV"), [targetString(DEV_TARGET), PHRASE]);
+  const unqualified = await cli(bare, sealArgs(p, DEV_TARGET, "DEV"), [targetString(DEV_TARGET), PHRASE, EMBED("DEV")]);
   assert.equal(unqualified.code, 2);
   assert.match(unqualified.stderr, /BLOCKED ENGINE_NOT_QUALIFIED/);
   assert.deepEqual(engineCalls(), []);
@@ -261,7 +263,7 @@ test("qualify runs the engine steps against DEV without applying, asks for the s
   const p = writeProject(fresh("project"), DEV_TARGET);
   const stored = sealedPlanFiles();
   assert.deepEqual(await loadQualificationRecords(AZURE, w.vault), []);
-  const run = await cli(w, qualifyArgs(p), [targetString(DEV_TARGET), PHRASE, attest()]);
+  const run = await cli(w, qualifyArgs(p), [targetString(DEV_TARGET), PHRASE, EMBED("DEV"), attest()]);
   assert.equal(run.code, 0, run.stderr);
   assert.equal(applyCalls().length, 0, "qualify applies nothing");
   assert.ok(engineCalls().some((args) => args.join(" ") === APPLY_INIT_ARGV.join(" ")), "the apply adapter's init ran");
@@ -288,24 +290,24 @@ test("qualify stops without evidence on a wrong confirmation or attestation, out
     assert.equal(run.stdout, "");
     assert.deepEqual(await loadQualificationRecords(AZURE, w.vault), [], "no evidence was written");
   };
-  await none(await cli(w, qualifyArgs(p), [targetString(PROD_TARGET), PHRASE, attest()]), 1, /HUMAN_CONFIRMATION_MISMATCH/);
-  await none(await cli(w, qualifyArgs(p), [targetString(DEV_TARGET), "yes", attest()]), 1, /PROJECT_CODE_CONFIRMATION_MISMATCH/);
+  await none(await cli(w, qualifyArgs(p), [targetString(PROD_TARGET), PHRASE, EMBED("PROD"), attest()]), 1, /HUMAN_CONFIRMATION_MISMATCH/);
+  await none(await cli(w, qualifyArgs(p), [targetString(DEV_TARGET), "yes", EMBED("DEV"), attest()]), 1, /PROJECT_CODE_CONFIRMATION_MISMATCH/);
   assert.deepEqual(engineCalls(), []);
   for (const typed of ["", "SEPARATED", "SEPARATED apply-client-4 statewrite-client-3", "SEPARATED statewrite-client-3", attest().toLowerCase(), "yes"]) {
-    await none(await cli(w, qualifyArgs(p), [targetString(DEV_TARGET), PHRASE, typed]), 1, /QUALIFICATION_ATTESTATION_MISMATCH/);
+    await none(await cli(w, qualifyArgs(p), [targetString(DEV_TARGET), PHRASE, EMBED("DEV"), typed]), 1, /QUALIFICATION_ATTESTATION_MISMATCH/);
     assert.equal(applyCalls().length, 0);
   }
   const prod = writeProject(fresh("project"), PROD_TARGET);
-  await none(await cli(w, qualifyArgs(prod, "PROD", PROD_TARGET), [targetString(PROD_TARGET), PHRASE, attest()], { env: identityEnv("PROD") }), 2, /BLOCKED ARTIFACT_INVALID/);
+  await none(await cli(w, qualifyArgs(prod, "PROD", PROD_TARGET), [targetString(PROD_TARGET), PHRASE, EMBED("PROD"), attest()], { env: identityEnv("PROD") }), 2, /BLOCKED ARTIFACT_INVALID/);
   const qa = writeProject(fresh("project"), QA_TARGET);
-  await none(await cli(w, qualifyArgs(qa, "QA", QA_TARGET), [targetString(QA_TARGET), PHRASE, attest()], { env: identityEnv("QA") }), 2, /BLOCKED ARTIFACT_INVALID/);
+  await none(await cli(w, qualifyArgs(qa, "QA", QA_TARGET), [targetString(QA_TARGET), PHRASE, EMBED("QA"), attest()], { env: identityEnv("QA") }), 2, /BLOCKED ARTIFACT_INVALID/);
   const off = await world(contractJson(KILL, { enabled: false }), false);
-  const disabled = await cli(off, qualifyArgs(p), [targetString(DEV_TARGET), PHRASE, attest()]);
+  const disabled = await cli(off, qualifyArgs(p), [targetString(DEV_TARGET), PHRASE, EMBED("DEV"), attest()]);
   assert.equal(disabled.code, 2);
   assert.match(disabled.stderr, /BLOCKED ACT_DISABLED/);
   behave({ failOn: "workspace", failStderr: "leak " + VALUE_CANARY });
-  await none(await cli(w, qualifyArgs(p), [targetString(DEV_TARGET), PHRASE, attest()]), 2, /BLOCKED ARTIFACT_INVALID/);
-  assert.ok(!(await cli(w, qualifyArgs(p), [targetString(DEV_TARGET), PHRASE, attest()])).stderr.includes(VALUE_CANARY));
+  await none(await cli(w, qualifyArgs(p), [targetString(DEV_TARGET), PHRASE, EMBED("DEV"), attest()]), 2, /BLOCKED ARTIFACT_INVALID/);
+  assert.ok(!(await cli(w, qualifyArgs(p), [targetString(DEV_TARGET), PHRASE, EMBED("DEV"), attest()])).stderr.includes(VALUE_CANARY));
 });
 
 // --- approve -----------------------------------------------------------------------------
@@ -690,7 +692,7 @@ test("an environment other than DEV, QA or PROD is refused as invalid input befo
   const w = await world();
   const p = writeProject(fresh("project"), QA_TARGET);
   for (const environment of ["STAGING", "qa", "", 7]) {
-    const run = await cli(w, sealArgs(p, QA_TARGET, environment as string), [targetString(QA_TARGET), PHRASE], { env: identityEnv("QA") });
+    const run = await cli(w, sealArgs(p, QA_TARGET, environment as string), [targetString(QA_TARGET), PHRASE, EMBED(environment as string)], { env: identityEnv("QA") });
     assert.equal(run.code, 1, String(environment));
     assert.match(run.stderr, /APPLY_INPUT_INVALID.*DEV, QA or PROD/);
     assert.equal(run.stdout, "");
@@ -788,7 +790,7 @@ test("approvers and the operator see a create and output changes, and no bidi or
   ] as const) {
     behave({ showResources: [entry] });
     const target = targetOf("DEV");
-    const refused = await cli(w, sealArgs(writeProject(fresh("project"), target), target, "DEV"), [targetString(target), PHRASE], { env: identityEnv("DEV") });
+    const refused = await cli(w, sealArgs(writeProject(fresh("project"), target), target, "DEV"), [targetString(target), PHRASE, EMBED("DEV")], { env: identityEnv("DEV") });
     assert.equal(refused.code, 2, refused.stdout);
     assert.match(refused.stderr + refused.stdout, /RESOURCE_NOT_IN_CANARY/);
     assert.match(refused.stderr + refused.stdout, said);
@@ -869,7 +871,7 @@ test("preflight does not say ready before qualification: no record is MISSING an
   assert.ok(report.checks.filter((c) => !c.check.startsWith("engine qualified") && !c.check.startsWith("identity separation") && !c.advisory).every((c) => c.state === "READY"));
   // What readiness reports is what seal does: the same machine cannot seal.
   const target = targetOf("DEV");
-  const sealing = await cli(w, sealArgs(writeProject(fresh("project"), target), target, "DEV"), [targetString(target), PHRASE]);
+  const sealing = await cli(w, sealArgs(writeProject(fresh("project"), target), target, "DEV"), [targetString(target), PHRASE, EMBED("DEV")]);
   assert.match(sealing.stderr, /ENGINE_NOT_QUALIFIED/);
 
   // Evidence that no longer matches this machine (another engine binary) is INVALID, not MISSING: apply would refuse it too.
@@ -935,7 +937,7 @@ test("prepare writes the request and manifest from the contract and project, and
   assert.doesNotMatch(run.stdout, /westeurope/, "a value is never printed");
   assert.equal(readdirSync(join(outDir, "DEV")).length, 3);
 
-  const seal = await cli(w, ["seal", "--request", request, "--manifest", manifest, ...requesterArgs()], [targetString(target), PHRASE]);
+  const seal = await cli(w, ["seal", "--request", request, "--manifest", manifest, ...requesterArgs()], [targetString(target), PHRASE, EMBED("DEV")]);
   assert.equal(seal.code, 0, seal.stderr);
   assert.match(JSON.parse(seal.stdout).artifactSha256, /^[0-9a-f]{64}$/);
 });
@@ -961,7 +963,7 @@ test("seal and apply stop before any question when the product commit is unknown
   const target = targetOf("DEV");
   const p = writeProject(fresh("project"), target);
   const before = engineCalls().length;
-  const unknown = await cli(w, sealArgs(p, target, "DEV"), [targetString(target), PHRASE], { sourceCommit: "not-a-commit" });
+  const unknown = await cli(w, sealArgs(p, target, "DEV"), [targetString(target), PHRASE, EMBED("DEV")], { sourceCommit: "not-a-commit" });
   assert.equal(unknown.code, 2);
   assert.match(unknown.stderr, /^BLOCKED SOURCE_UNVERIFIED/);
   assert.deepEqual(unknown.term.asked, [], "no phrase was asked");

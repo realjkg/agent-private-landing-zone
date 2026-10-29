@@ -8,7 +8,7 @@ import test from "node:test";
 
 import { authorizeContract, parsePilotContract, pilotContractSha256 } from "../src/apply/contract.js";
 import { APPLY_AUTHORITY } from "../src/apply/evidence.js";
-import { buildRecoveryEvidence } from "../src/apply/recovery-record.js";
+import { buildRecoveryEvidence, recoveryAdmissionRecordOf } from "../src/apply/recovery-record.js";
 import type { ApplyEvidence, PilotContract } from "../src/apply/types.js";
 import {
   actGateId, gitContractReader, reviewProductionRelease,
@@ -33,7 +33,7 @@ const hash = (value: string): string => createHash("sha256").update(value).diges
 const gcpContractJson = (over: Record<string, unknown> = {}) => ({
   schemaVersion: 1, enabled: true, provider: "GCP", engine: "TERRAFORM", enabledEnvironments: ["DEV"],
   targets: { DEV: { projectId: "alz-pilot-dev", region: "europe-west4", backend: "alz-pilot-dev-state/pilot/dev", workspace: "default", canary: { resources: [{ type: "google_pubsub_topic", count: 1 }] } } },
-  requiredApprovals: { DEV: 1 }, maxApprovalAgeMinutes: 60, approvers, killSwitchPath: KILL, authorize: { DEV: ["APPLY", "CLEANUP"] }, ...over,
+  requiredApprovals: { DEV: 1 }, maxApprovalAgeMinutes: 60, approvers, killSwitchPath: KILL, authorize: { DEV: ["APPLY", "CLEANUP"] }, embedStateWrite: true, ...over,
 });
 const bicepContractJson = (over: Record<string, unknown> = {}) => ({
   schemaVersion: 1, enabled: true, provider: "AZURE", engine: "BICEP", enabledEnvironments: ["DEV"],
@@ -253,6 +253,54 @@ test("a recovery record is bound to the declared path whose contract it names, a
   assert.equal(await status(allPaths(), { ...recovery, sourceCommit: CANDIDATE }), "BLOCKED", "the candidate is not the commit that carried the Bicep contract");
 });
 
+/** A recovery record for `p`'s DEV apply, as `./alz apply record-recovery` builds it, at `sourceCommit`. */
+const recoveryFor = (p: Path, sourceCommit: string) => {
+  const at = (minutes: number): string => new Date(Date.UTC(2026, 9, 29, 12, minutes)).toISOString();
+  const apply = (over: Partial<ApplyEvidence>): ApplyEvidence => ({
+    schemaVersion: 1, environment: "DEV", target: { account: "a", backend: "b", workspace: "default" }, artifactSha256: "5".repeat(64), manifestHash: "2".repeat(64), releaseIdentity: "3".repeat(64),
+    contractSha256: pilotContractSha256(p.contract), sourceCommit, approvals: [{ approverId: approvers[0]!.id, issuedAt: at(-30) }], adapter: { adapterVersion: "a", argvDigest: "4".repeat(64) },
+    toolVersions: { engine: "1.0" }, outcome: "SUCCEEDED", exitCode: 0, startedAt: at(-10), finishedAt: at(0), authority: APPLY_AUTHORITY, ...over,
+  });
+  const built = buildRecoveryEvidence({
+    interrupted: apply({ outcome: "KILLED", exitCode: null }), resumed: apply({ artifactSha256: "6".repeat(64), approvals: [{ approverId: approvers[0]!.id, issuedAt: at(15) }], startedAt: at(20), finishedAt: at(25) }),
+    contract: p.contract, sourceCommit, targetHardwareId: HARDWARE, attestedBy: "operator", now: new Date(Date.UTC(2026, 9, 29, 13)),
+  });
+  assert.ok(built.ok, JSON.stringify(built));
+  return built.evidence;
+};
+/** Writes the evidence bytes as the producer does and returns the producer's manifest entry for them. */
+const producerEntry = (evidence: object, candidateCommit?: string): ReleaseGateSubmission => {
+  const name = "recovery-" + (counter += 1) + ".json";
+  const bytes = JSON.stringify(evidence, null, 2) + "\n";
+  mkdirSync(join(root, "evidence"), { recursive: true });
+  writeFileSync(join(root, "evidence", name), bytes);
+  return recoveryAdmissionRecordOf(evidence as never, "evidence/" + name, bytes, candidateCommit);
+};
+
+test("#344 N1: the recovery producer's manifest entry names the candidate when a path's contract commit is not the candidate, and keeps the evidence commit in the single-path form", async () => {
+  // Multi-path: the Bicep recovery ran at the commit carrying the Bicep contract. The entry passed the candidate names it, and is admitted.
+  const bicep = byGate("act:azure-bicep");
+  const multi = recoveryFor(bicep, bicep.commit);
+  const named = producerEntry(multi, CANDIDATE);
+  assert.equal(named.sourceCommit, CANDIDATE);
+  assert.equal(await statusOf(manifestOf(allPaths(), [named]), "act-run-recovery"), "EVIDENCE_PRESENT");
+  // Without the candidate, the entry names the evidence's commit, which admission refuses for this candidate (fails closed).
+  const unnamed = producerEntry(multi);
+  assert.equal(unnamed.sourceCommit, bicep.commit);
+  assert.equal(await statusOf(manifestOf(allPaths(), [unnamed]), "act-run-recovery"), "BLOCKED");
+  // The evidence bytes and hash are the same either way; only the entry's index field differs.
+  assert.equal(named.evidenceSha256, producerEntry(multi).evidenceSha256);
+  // Single path: the apply ran at the candidate, so the entry is exactly what it was before (the evidence's commit) and is admitted.
+  const aws = byGate("act:aws-terraform");
+  const single = recoveryFor(aws, CANDIDATE);
+  const entry = producerEntry(single);
+  assert.equal(entry.sourceCommit, CANDIDATE);
+  assert.deepEqual(producerEntry(single, CANDIDATE).sourceCommit, entry.sourceCommit);
+  const scope = { provider: "AWS", engine: "TERRAFORM", contractSha256: pilotContractSha256(aws.contract) };
+  assert.equal(await statusOf(manifestOf({ actPilot: scope }, [entry]), "act-run-recovery", { pilotContract: aws.contract }), "EVIDENCE_PRESENT");
+  assert.throws(() => producerEntry(single, "HEAD"), /RECOVERY_CANDIDATE_COMMIT_INVALID/);
+});
+
 test("the multi-path form is exact: it is PILOT only, never beside actPilot, well formed, one entry per path, and the candidate's own enabled contract must be one of them", async () => {
   const gcp = byGate("act:gcp-terraform");
   const aws = byGate("act:aws-terraform");
@@ -308,6 +356,88 @@ test("the git contract reader reads a path's contract from its commit and names 
     assert.deepEqual(actBlockers(ok), []);
     const bad = await reviewProductionRelease({ manifest: manifest({ ...entry, contractCommit: withProduct }), root: repo, expectedCommit: candidate, contractAt: read });
     assert.deepEqual(actBlockers(bad), ["ACT_PILOT_CONTRACT_COMMIT_CHANGES_PRODUCT:act:gcp-terraform"]);
+  } finally { rmSync(repo, { recursive: true, force: true }); }
+});
+
+test("#344 N2: contract-commit provenance on temporary repositories: a tag id, a dangling object and an unrelated history are refused; a later contract commit on the candidate's line and a merge commit are accepted (SYNTHETIC)", async () => {
+  const repo = mkdtempSync(join(tmpdir(), "alz-release-provenance-"));
+  try {
+    const git = (...args: string[]) => execFileSync("git", ["-C", repo, "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", "-c", "user.email=fixture@example.invalid", "-c", "user.name=fixture", ...args], { encoding: "utf8" }).trim();
+    const commitAll = (message: string) => { git("add", "-A"); git("commit", "-q", "-m", message); return git("rev-parse", "HEAD"); };
+    git("init", "-q", "-b", "main");
+    mkdirSync(join(repo, "config"), { recursive: true });
+    mkdirSync(join(repo, "src"), { recursive: true });
+    writeFileSync(join(repo, "src", "product.ts"), "export const x = 1;\n");
+    const candidate = commitAll("candidate");
+    const gcp = byGate("act:gcp-terraform");
+    const bicep = byGate("act:azure-bicep");
+    writeFileSync(join(repo, CONTRACT_FILE), gcp.text);
+    const first = commitAll("GCP contract");
+    writeFileSync(join(repo, CONTRACT_FILE), bicep.text);
+    const second = commitAll("Bicep contract replaces it");
+    const read = gitContractReader(repo, candidate);
+    const provenance = async (commit: string) => { const r = await read(commit); return r.ok ? "OK" : r.provenance === true ? "PROVENANCE" : "UNREADABLE"; };
+    // The owner's line: each contract commit descends from the candidate. The second one's parent is the first, not the candidate.
+    assert.equal(await provenance(first), "OK");
+    assert.equal(await provenance(second), "OK");
+    const later = await read(second);
+    assert.ok(later.ok && later.contract.enabled === true && (later.contract as PilotContract).engine === "BICEP");
+    // A reviewed change that lands as a merge commit is accepted too.
+    git("checkout", "-q", "-b", "review", candidate);
+    mkdirSync(join(repo, "config"), { recursive: true });
+    writeFileSync(join(repo, CONTRACT_FILE), gcp.text);
+    commitAll("GCP contract on a review branch");
+    git("checkout", "-q", "main");
+    git("merge", "-q", "--no-ff", "-X", "theirs", "-m", "merge the reviewed contract", "review");
+    const merged = git("rev-parse", "HEAD");
+    assert.equal(await provenance(merged), "OK");
+    // An annotated tag on the right commit: its id is not the commit's.
+    git("tag", "-a", "-m", "contract", "contract-tag", first);
+    const tagId = git("rev-parse", "contract-tag");
+    assert.notEqual(tagId, first);
+    assert.equal(await provenance(tagId), "PROVENANCE");
+    // A dangling object: the right parent and tree, but on no branch or tag.
+    const dangling = git("commit-tree", git("rev-parse", first + "^{tree}"), "-p", candidate, "-m", "dangling");
+    assert.equal(await provenance(dangling), "PROVENANCE");
+    // An unrelated history: the same files, on its own branch, with no ancestor in common with the candidate.
+    git("checkout", "-q", "--orphan", "unrelated");
+    const orphan = commitAll("unrelated history");
+    git("checkout", "-q", "main");
+    assert.equal(await provenance(orphan), "PROVENANCE");
+    // A commit the store does not hold is unreadable, never guessed.
+    assert.equal(await provenance("f".repeat(40)), "UNREADABLE");
+    // Through the review, each refusal is a provenance blocker that names the gate.
+    const manifest = (commit: string) => ({ schemaVersion: 1, sourceCommit: candidate, operatingMode: "PREVIEW_OPERATE", infrastructureAct: "PILOT", records: [], actPilots: [{ ...entryOf(gcp), contractCommit: commit }] }) as unknown as ReleaseAdmissionInput;
+    for (const commit of [tagId, dangling, orphan]) {
+      const r = await reviewProductionRelease({ manifest: manifest(commit), root: repo, expectedCommit: candidate, contractAt: read });
+      assert.deepEqual(actBlockers(r), ["ACT_PILOT_CONTRACT_COMMIT_PROVENANCE:act:gcp-terraform"], commit);
+    }
+    assert.deepEqual(actBlockers(await reviewProductionRelease({ manifest: manifest(first), root: repo, expectedCommit: candidate, contractAt: read })), []);
+  } finally { rmSync(repo, { recursive: true, force: true }); }
+});
+
+test("#351 review N3: a contract commit counts as reachable only from a local branch or an origin branch; a stash, a tag, another remote's ref or a pull-request ref is not enough (SYNTHETIC)", async () => {
+  const repo = mkdtempSync(join(tmpdir(), "alz-release-reachability-"));
+  try {
+    const git = (...args: string[]) => execFileSync("git", ["-C", repo, "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", "-c", "user.email=fixture@example.invalid", "-c", "user.name=fixture", ...args], { encoding: "utf8" }).trim();
+    git("init", "-q", "-b", "main");
+    mkdirSync(join(repo, "config"), { recursive: true });
+    writeFileSync(join(repo, "README"), "candidate\n");
+    git("add", "-A"); git("commit", "-q", "-m", "candidate");
+    const candidate = git("rev-parse", "HEAD");
+    writeFileSync(join(repo, CONTRACT_FILE), byGate("act:gcp-terraform").text);
+    git("add", "-A");
+    const tree = git("write-tree");
+    git("reset", "-q", "--hard", candidate);
+    // Each commit carries the right tree and descends from the candidate; only the ref that holds it differs.
+    const commitOn = (ref: string, label: string): string => { const c = git("commit-tree", tree, "-p", candidate, "-m", label); git("update-ref", ref, c); return c; };
+    const read = gitContractReader(repo, candidate);
+    const provenance = async (commit: string) => { const r = await read(commit); return r.ok ? "OK" : r.provenance === true ? "PROVENANCE" : "UNREADABLE"; };
+    assert.equal(await provenance(commitOn("refs/heads/contract", "local branch")), "OK");
+    assert.equal(await provenance(commitOn("refs/remotes/origin/contract", "origin branch")), "OK");
+    for (const ref of ["refs/stash", "refs/tags/contract-only", "refs/remotes/fork/contract", "refs/pull/7/head", "refs/notes/contract", "refs/original/refs/heads/main"]) {
+      assert.equal(await provenance(commitOn(ref, "only " + ref)), "PROVENANCE", ref);
+    }
   } finally { rmSync(repo, { recursive: true, force: true }); }
 });
 

@@ -83,8 +83,10 @@ export type ProviderSpec = {
    * Whether the backend `init` saved (`.terraform/terraform.tfstate`) is the contract target's, and whether every identity
    * setting it saved is the STATE_WRITE identity's own value in `env` (the environment that init's backend configuration was
    * written from). Checked after the seal-time init, whose settings the plan embeds, and after the apply-time init.
+   * With `requireStateWrite` (every Terraform seal, apply and cleanup since owner decision 6486426552), the STATE_WRITE identity
+   * settings must also be present: an absent binding would leave the backend's credentials to the apply process, APPLY's.
    */
-  savedBackendMatches(saved: Record<string, unknown>, target: PilotTarget, env: NodeJS.ProcessEnv): boolean;
+  savedBackendMatches(saved: Record<string, unknown>, target: PilotTarget, env: NodeJS.ProcessEnv, requireStateWrite?: boolean): boolean;
   /**
    * The backend type the product-owned override file pins (src/apply/backend-pin.ts). The project's own backend block is never
    * read: the override replaces it, and every setting comes from `backendConfig` or `backendLocation`.

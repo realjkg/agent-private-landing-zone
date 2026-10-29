@@ -195,6 +195,12 @@ const DEV_ONLY_PATHS: readonly { provider: string; engine: string; path: string 
   { provider: "AZURE", engine: "BICEP", path: "path 4" },
   { provider: "GCP", engine: "TERRAFORM", path: "path 5" },
 ];
+/**
+ * Explicit STATE_WRITE backend binding (owner decision 6486426552 on #39, item 1; #345 review N1): every engine with a state backend
+ * (Terraform, on AWS, Azure and GCP) must set `embedStateWrite: true`. Without it the plan would leave the state backend's identity to
+ * the apply process, so `terraform apply <planfile>` would lock, read and write the state as APPLY. A contract that does not bind
+ * STATE_WRITE is refused at load, so no seal, qualification, apply or cleanup starts under it.
+ */
 class NotImplemented extends Invalid {}
 
 function validate(raw: unknown): PilotContract {
@@ -255,6 +261,9 @@ function validate(raw: unknown): PilotContract {
       if (!engine.target?.backendMayRepeat && left.backend.toLowerCase() === right.backend.toLowerCase()) bad("targets: " + a + " and " + b + " share a backend");
     }
   });
+  if (engine.embedsStateWrite === true && contract.embedStateWrite !== true) {
+    bad("embedStateWrite: " + spec.id + " " + engine.id + " requires embedStateWrite true, so the plan names STATE_WRITE for the state backend and an apply never locks, reads or writes the state as APPLY (owner decision 6486426552)");
+  }
   return contract;
 }
 

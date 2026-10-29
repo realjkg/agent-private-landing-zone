@@ -32,6 +32,7 @@ import { buildManifest, canonicalJson } from "../src/teardown/manifest.js";
 import { captureProjectFiles } from "../src/teardown/snapshot.js";
 import { sha256 } from "../src/util/sha256.js";
 import { NOW, POLICY, REQUESTER, SOURCE_COMMIT, approvalFor, approvers, human, keys, sha, writeReviewedContract } from "./helpers/apply-fixtures.js";
+import { zipEntries } from "./helpers/plan-zip.js";
 
 /**
  * OPT-IN SIMULATION, EMULATED (docs/act-pilot-simulation-gcp.md, "S6b"; lane G1). The GCP Terraform counterpart of
@@ -89,7 +90,7 @@ const CONTROL_HOST = "control.alz-sim.invalid";
 /** Terraform's own version check is attempted on every run and refused by the proxy; nothing else may be contacted. */
 const VERSION_CHECK_HOST = "checkpoint-api.hashicorp.com:443";
 
-type Logged = { object?: string; host?: string; method?: string; path?: string; sa?: string | null; scope?: string | null; connect?: string; impersonate?: string; requestedScope?: string[]; stsScope?: string; refused?: boolean; createBody?: Record<string, unknown> };
+type Logged = { object?: string; host?: string; method?: string; path?: string; sa?: string | null; scope?: string | null; connect?: string; impersonate?: string; requestedScope?: string[]; stsScope?: string; subjectOf?: string | null; renewed?: boolean; refused?: boolean; createBody?: Record<string, unknown> };
 type Topic = { name: string; labels: Record<string, string>; messageStoragePolicy?: { allowedPersistenceRegions: string[] } };
 
 const freePort = (): Promise<number> => new Promise((done, fail) => {
@@ -151,7 +152,8 @@ function handle(req, res, body) {
   if (host === "sts.googleapis.com" && req.method === "POST" && url.pathname === "/v1/token") {
     const form = new URLSearchParams(body.toString("utf8"));
     const subject = (form.get("subject_token") || "").trim();
-    record({ ...entry, stsScope: form.get("scope") });
+    // The subject is recorded by the identity the trust file maps it to and whether it is the renewed one, never by its value.
+    record({ ...entry, stsScope: form.get("scope"), subjectOf: Object.prototype.hasOwnProperty.call(trust, subject) && subject !== "audience" ? trust[subject] : null, renewed: subject.endsWith("-RENEWED") });
     if (!Object.prototype.hasOwnProperty.call(trust, subject) || form.get("audience") !== trust.audience) return send(res, 400, { error: "invalid_grant" });
     const token = "fed-" + crypto.randomBytes(12).toString("hex");
     tokens.set(token, { federated: trust[subject] });
@@ -298,8 +300,8 @@ describe("GCP Terraform through the real driver: real Terraform and google 8.9.0
   let unitLabels: Record<string, string> = {};
 
   /**
-   * The DEV contract. `embedStateWrite: true` is what keeps the state STATE_WRITE's on this path: without it, the plan leaves the gcs
-   * backend's `credentials` and `impersonate_service_account` to the apply process's environment, APPLY's (see the last test).
+   * The DEV contract. `embedStateWrite: true` is what keeps the state STATE_WRITE's on this path: without it, the plan would leave the gcs
+   * backend's `credentials` and `impersonate_service_account` to the apply process's environment, APPLY's, so the contract requires it (see the last test).
    */
   const contract = (embedStateWrite = true) => ({
     schemaVersion: 1, enabled: true, provider: "GCP", engine: "TERRAFORM", enabledEnvironments: ["DEV"],
@@ -332,6 +334,8 @@ describe("GCP Terraform through the real driver: real Terraform and google 8.9.0
       env["ALZ_" + identity + "_GOOGLE_PROJECT"] = PROJECT;
       env["ALZ_" + identity + "_GOOGLE_REGION"] = REGION;
       trust[subjectToken(identity)] = email(identity);
+      // The token a delivery would write after the seal (owner decision 6486426552, token renewal): the same identity, a new value.
+      trust[subjectToken(identity) + "-RENEWED"] = email(identity);
     }
     emulator = await startEmulator(fresh("emulator"), trust);
     const bucket = await emulator.gcs("POST", "/storage/v1/b?project=" + PROJECT, JSON.stringify({ name: BUCKET, versioning: { enabled: true } }));
@@ -504,6 +508,40 @@ describe("GCP Terraform through the real driver: real Terraform and google 8.9.0
     noSecrets(observed.record);
   });
 
+  it("binds STATE_WRITE (owner decision 6486426552): the plan holds STATE_WRITE's credential-file reference and service account, never a token; a renewed token file is used at apply without resealing; APPLY never reaches the state bucket", async () => {
+    const s = await seal("alz-act-dev-1-renew-01");
+    const plan = Buffer.concat([...zipEntries(s.loaded.planBytes).values()]).toString("latin1");
+    assert.ok(plan.includes(env.ALZ_STATE_WRITE_GOOGLE_APPLICATION_CREDENTIALS as string), "the plan names STATE_WRITE's credential configuration file, a reference");
+    assert.ok(plan.includes(email("STATE_WRITE")), "and STATE_WRITE's service account");
+    assert.ok(!plan.includes(email("APPLY")) && !plan.includes(env.ALZ_APPLY_GOOGLE_APPLICATION_CREDENTIALS as string), "nothing of APPLY's");
+    for (const identity of IDENTITIES) {
+      assert.ok(!plan.includes(subjectToken(identity)), "no subject token: " + identity);
+      assert.ok(!s.loaded.planBytes.includes(subjectToken(identity)), "no subject token in the compressed bytes: " + identity);
+    }
+    assert.ok(!/\b(fed|sa)-[0-9a-f]{24}\b/.test(plan), "no federated or service-account access token");
+    // Renewal: STATE_WRITE's token file is rewritten after the seal, as a delivery would refresh it. The credential configuration and the plan are unchanged.
+    const configuration = JSON.parse(readFileSync(env.ALZ_STATE_WRITE_GOOGLE_APPLICATION_CREDENTIALS as string, "utf8")) as { credential_source: { file: string } };
+    const tokenFile = configuration.credential_source.file;
+    writeFileSync(tokenFile, subjectToken("STATE_WRITE") + "-RENEWED\n", { mode: 0o600 });
+    try {
+      const before = emulator.log().length;
+      const result = await run(s);
+      assert.ok(result.ok, JSON.stringify(result));
+      noSecrets(result);
+      const during = emulator.log().slice(before);
+      const exchanges = during.filter((e) => e.host === "sts.googleapis.com" && e.subjectOf === email("STATE_WRITE"));
+      assert.ok(exchanges.length > 0 && exchanges.every((e) => e.renewed === true), "STATE_WRITE exchanged the renewed token, never the one current at seal");
+      const backend = during.filter((e) => e.host === "storage.googleapis.com" && e.sa !== null);
+      assert.ok(backend.length > 0, "the apply reached the state bucket");
+      assert.ok(backend.every((e) => e.sa === email("STATE_WRITE") || e.sa === email("STATE")), "only STATE_WRITE, and STATE's read: " + JSON.stringify([...new Set(backend.map((e) => e.sa))]));
+      const lockOrState = backend.filter((e) => e.method !== "GET" && e.method !== "HEAD");
+      assert.ok(lockOrState.length > 0 && lockOrState.every((e) => e.sa === email("STATE_WRITE")), "every state write and lock operation is STATE_WRITE's");
+      assert.ok(!during.some((e) => e.host === "storage.googleapis.com" && e.sa === email("APPLY")), "APPLY never reaches the state bucket");
+    } finally {
+      writeFileSync(tokenFile, subjectToken("STATE_WRITE") + "\n", { mode: 0o600 });
+    }
+  });
+
   it("refuses a second apply of the same artifact, with a fresh approval", async () => {
     const s = await seal("alz-act-dev-1-again-01");
     assert.ok((await run(s)).ok);
@@ -571,6 +609,10 @@ describe("GCP Terraform through the real driver: real Terraform and google 8.9.0
     assert.ok(cleaned.ok, JSON.stringify(cleaned));
     const deletes = emulator.log().slice(before).filter((e) => e.host === "pubsub.googleapis.com" && e.method === "DELETE");
     assert.deepEqual(deletes.map((e) => [e.path, e.sa]), [["/v1/" + topicName("alz-act-dev-1-cleanup-01"), email("APPLY")]], "the one topic, by APPLY");
+    // The cleanup's destroy plan carries the same STATE_WRITE binding (owner decision 6486426552): its state and lock work is STATE_WRITE's, never APPLY's.
+    const cleanupBackend = emulator.log().slice(before).filter((e) => e.host === "storage.googleapis.com" && e.sa !== null && e.method !== "GET" && e.method !== "HEAD");
+    assert.ok(cleanupBackend.length > 0 && cleanupBackend.every((e) => e.sa === email("STATE_WRITE")), "the cleanup's state writes and lock: " + JSON.stringify([...new Set(cleanupBackend.map((e) => e.sa))]));
+    assert.ok(!emulator.log().slice(before).some((e) => e.host === "storage.googleapis.com" && e.sa === email("APPLY")), "APPLY never reaches the state bucket during cleanup");
     assert.ok(!(await topics()).some((t) => t.name === topicName("alz-act-dev-1-cleanup-01")));
     const leftovers = await verifyProposalLeftovers(proposal, { ...observeDeps(), now: () => new Date(NOW.getTime() + 600_000) });
     assert.ok(leftovers.ok, JSON.stringify(leftovers));
@@ -605,16 +647,23 @@ describe("GCP Terraform through the real driver: real Terraform and google 8.9.0
     } finally { rmSync(KILL, { force: true }); }
   });
 
-  it("EMULATED finding for the owner's contract: without embedStateWrite the apply process's own identity, APPLY, locks, reads and writes the state; with it STATE_WRITE does", async () => {
-    useContract(contract(false));
+  it("EMULATED: a GCP contract without embedStateWrite true (absent or false) is refused at load (#345 review N1), so no seal starts and no request reaches the emulated state backend or Pub/Sub", async () => {
+    // Before the contract rule, this run showed the risk: without embedStateWrite the apply process's own identity, APPLY, locked,
+    // read and wrote the gcs state. The contract now refuses such a contract, so that apply can no longer be sealed.
+    const absent = (({ embedStateWrite: _dropped, ...rest }) => rest)(contract());
     try {
-      const s = await seal("alz-act-dev-1-noembed-01");
-      const before = emulator.log().length;
-      assert.ok((await run(s)).ok);
-      const backend = emulator.log().slice(before).filter((e) => e.host === "storage.googleapis.com" && e.method !== "GET");
-      assert.ok(backend.length > 0 && backend.every((e) => e.sa === email("APPLY")), "APPLY held the lock and wrote the state: " + JSON.stringify(backend.map((e) => [e.method, e.sa])));
-      // Live, bootstrap/gcp's deny policy refuses APPLY every Cloud Storage object permission, so such an apply could not lock the state:
-      // the owner's GCP contract sets embedStateWrite: true (docs/act-pilot-gcp-evidence.md), as the contract above does.
+      for (const raw of [contract(false), absent]) {
+        writeReviewedContract(contractPath, raw);
+        const off = loadPilotContract(contractPath);
+        assert.equal(off.enabled, false);
+        assert.match((off as { reason: string }).reason, /^embedStateWrite: GCP TERRAFORM requires embedStateWrite true/);
+        await emptyWorkspace();
+        const before = emulator.log().length;
+        const result = await sealPreview(sealRequest(canary("alz-act-dev-1-noembed-01")), deps);
+        assert.equal(result.ok, false);
+        assert.equal((result as { code: string }).code, "CONTRACT_INVALID");
+        assert.equal(emulator.log().length, before, "nothing reached the emulator");
+      }
     } finally {
       useContract(contract());
     }
