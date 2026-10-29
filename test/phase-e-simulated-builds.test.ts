@@ -31,6 +31,7 @@ test("Phase E covers each engine and provider pair at most once, every implement
   // each have a brownfield preview scenario of their own: the Azure Terraform path is not covered by the AWS one. GCP API-native
   // (act:gcp-gcp_api, INT-2) generates no IaC: its request is the fixed request.json and its one change is a new topic (never a
   // brownfield estate), so it has no Phase E scenario and no preview:* gate; its seal is covered by test/apply-emulated-gcp-api.test.ts.
+  // Owner exemption record and its replacement evidence: docs/act-pilot-gcp-api.md, "Phase E exemption" (#39 6508815426).
   const ENGINE_NAMES: Record<string, string> = { TERRAFORM: "TERRAFORM", CDK: "AWS_CDK", BICEP: "BICEP" };
   const NO_IAC = new Set(["GCP_API"]);
   assert.deepEqual(ACT_RELEASE_PATHS.filter((path) => NO_IAC.has(path.engine)).map((path) => path.provider + " " + path.engine), ["GCP GCP_API"]);

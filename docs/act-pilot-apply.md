@@ -500,11 +500,21 @@ The artifact is reserved in the ledger (an exclusive-create entry in state `RESE
 
 ### Recovering a state lock left by a SIGKILL (owner, by hand)
 
-A run that ends by SIGKILL (the grace period after a held or ignored stop, or the process killed outright) cannot release its state lock. The next seal then refuses with `Error acquiring the state lock`, which `apply` reports as `FAILED_NO_CHANGE` with the serial unmoved. **The product never removes a lock**: it never runs `force-unlock` or `-lock=false`, and no agent does. The owner removes it by hand, in this order:
+A run that ends by SIGKILL (the grace period after a held or ignored stop, or the process killed outright) cannot release its state lock. The next seal then refuses with `Error acquiring the state lock`, which `apply` reports as `FAILED_NO_CHANGE` with the serial unmoved. **The product never removes a lock**: it never runs `force-unlock` or `-lock=false`, and no agent does. The owner removes it by hand, in this order.
+
+**Prerequisites (owner direction, #39 6508815426).** All of these hold before step 5, and none of them is checked by the product:
+
+- The original Terraform process and any competing writer (another host, another person, a CI job) have stopped.
+- The exact backend, workspace and lock ID are verified (steps 1 and 3).
+- The available run and state evidence is preserved before unlocking: the `apply` command's own output and outcome, the ledger entry, any `errored.tfstate` or `crash.log` in the vault or the scratch directory, the lock record from step 3, and the current state object and its versions.
+- Who unlocks, and why, is recorded in the change record before the unlock, with the lock ID.
+- After the unlock, the state and the cloud resources are reconciled by a person before another approved operation is prepared (step 6).
+
+`force-unlock` removes the lock only. It does not change infrastructure, and it does not prove that the interrupted deployment recovered. `-lock=false` is never used to get past a recovery problem.
 
 1. **Confirm that no Terraform process holds the lock.**
    - On the execution host, `pgrep -fl terraform` lists no `terraform` process.
-   - `./alz apply status --sealed <INTERRUPTED_SEALED_PLAN>` shows the run finished (`KILLED` or `PARTIAL_REQUIRES_REVIEW`), not still reserved by a running apply.
+   - The run finished: the `apply` command itself returned and reported its outcome (`KILLED` or `PARTIAL_REQUIRES_REVIEW`), and `./alz apply report --sealed <INTERRUPTED_SEALED_PLAN>` reads its finished evidence. `./alz apply status --sealed` cannot tell you this: its `applied: true` is the same for a finished run and for an entry still `RESERVED`. If `report` refuses with `RUN_RECORD_MISSING`, the entry is still `RESERVED`; see "A run whose CLI process was killed" below.
    - The lock's own record names that run: its `Who` (user and host) and `Created` time match the interrupted apply's host and start time in its evidence.
    - If anything else might hold the lock (another host, another person), stop and find it first. A lock removed under a running apply corrupts the state.
 2. **Review the run before touching the lock.** For `KILLED` or `PARTIAL_REQUIRES_REVIEW`, review the state and the resources by hand first, as the table above says. A few resources may have changed (see "What holding the SIGINT means in practice").
@@ -519,11 +529,20 @@ A run that ends by SIGKILL (the grace period after a held or ignored stop, or th
      - Google: `GOOGLE_IMPERSONATE_SERVICE_ACCOUNT` set to STATE_WRITE's service account.
    - No APPLY, STATE or administrator variable may be set.
    - STATE_WRITE is the identity the bootstrap allows to delete the lock (`docs/act-pilot-bootstrap.md`), and APPLY is denied the state.
+   - **Azure:** the state storage account denies every network except the bootstrap's `state_allowed_ip_ranges`, so run the unlock from an address in that list, with Entra ID authentication (`--auth-mode login`, OIDC) as for every other state access. Never loosen the network rule (adding your own address included) or enable shared-key access to unlock. If no allowed address is available, stop: changing the allowlist is a bootstrap change for the owner's review, never a step of an unlock.
    - Work in a copy of the canary project that has the product's backend override (`terraform { backend "<s3|azurerm|gcs>" {} }`) and the contract's backend settings, outside the checkout.
 5. **Only after steps 1 to 4, remove exactly that lock:** `terraform force-unlock <LOCK_ID>`. It asks you to confirm and names the id: type `yes` only if it is the id from step 3. Never use `-force` to skip the question, never another id, and never `-lock=false`.
 6. **Record the recovery.** Seal a new preview (a new artifact, since the interrupted one is never applied again), get new approvals, and apply it. Then run `./alz apply record-recovery --sealed <INTERRUPTED_SEALED_PLAN> --resumed <RESUMED_SEALED_PLAN> --target-hardware-id <HOST>` ("Recording an interrupted apply's recovery", above).
-   - Add the lock id, who removed it and when to the change record.
+   - Before the new preview, reconcile the state and the cloud resources by hand (prerequisites, above).
+   - Add the lock id, who removed it, when and why to the change record.
    - The product records the two runs from its ledger; it does not record the unlock itself.
+
+**A run whose CLI process was killed is not recovered (#363 review N2).** `KILLED` is written by the `./alz apply` process when it stops Terraform, including with its own SIGKILL after the grace period, or when Terraform ends on a signal. If the `./alz apply` process itself dies after the engine started (SIGKILL to the CLI, a host crash or power loss, or an evidence write that fails), nothing replaces the reservation, and the ledger entry stays `RESERVED` (`src/apply/ledger.ts`). Then:
+
+- `./alz apply record-recovery` refuses it with `RECOVERY_RECORD_UNAVAILABLE`, because it reads only finished ledger evidence (`readAppliedEvidence`); `report` and `observe` find no finished evidence either.
+- The lock may still be removed by hand through steps 1 to 5 and the prerequisites, after a person's review of the state, the lock and the resources. That removal does not make the run recovered.
+- Such a run is **not** G5 stop-test evidence (`act-run-recovery`), and it is never relabeled as recovered or as `KILLED`. The G5 evidence needs a separate interrupted run that the ledger recorded as `KILLED` or `PARTIAL_REQUIRES_REVIEW`.
+- The reservation stays. Nothing makes the artifact applicable again, and while it exists the stale scratch sweep is skipped and `remove-workspace` refuses with `REMOVAL_RUN_IN_PROGRESS`. The product has no command that clears it.
 
 The table is Terraform's. For CDK the outcomes and their meaning are in "CDK" (`FAILED_NO_CHANGE`, `PARTIAL_REQUIRES_REVIEW` and `KILLED` close the artifact the same way; a change set that is no longer the sealed one is refused as `PLAN_STALE` or `ARTIFACT_TAMPERED` before any approval is consumed, which is exit 2, nothing spent), and there is no recovery file: the stack and its events in CloudFormation are the record, and a person reads them there.
 

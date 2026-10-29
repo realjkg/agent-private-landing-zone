@@ -365,6 +365,25 @@ Checked on 2026-10-29 against Google's published discovery documents, protos, cl
 | **GF10** `cloudasset.assets.searchAllResources` | VERIFIED that it is the permission; UNVERIFIED-OWNER-LIVE for custom roles | Cloud Asset discovery: "The caller must be granted the `cloudasset.assets.searchAllResources` permission on the desired scope, otherwise the request will be rejected." Whether a project-level custom role supports it is in the unreachable custom-roles reference. **Live:** shown at bootstrap, when the owner creates the role, before any run. |
 | **GF11** `roles/iam.workloadIdentityUser` suffices for access tokens | VERIFIED (functional) | `google-github-actions/auth` README: "To generate OAuth 2.0 access tokens or ID tokens, you _must_ provide a service account email, and the Workload Identity Pool must have `roles/iam.workloadIdentityUser` permissions on the target Google Cloud Service Account." Token Creator is named only for Domain-Wide Delegation: "you must grant the external identity ("principalSet") `roles/iam.serviceAccountTokenCreator` in addition to `roles/iam.workloadIdentityUser`. The default Workload Identity setup will only grant the latter role." The role's exact permission list was not read. **Live:** a refusal is `CREDENTIALS_IAM_CREDENTIALS_HTTP_403`, before any resource call. |
 
+## Phase E exemption (owner direction, #39 6508815426)
+
+The owner accepted one narrow exemption for this path on 2026-10-29. It is a record of which check does not apply, not a pass. Nothing here marks a gate PASS, and the release status does not change: `act:gcp-gcp_api` stays **BLOCKED** (`config/release/status.json`).
+
+**The only excluded check** is the per-ACT-path Phase E simulated-build and brownfield-preview scenario: `PHASE_E_SCENARIOS` and its `preview:*` release gate (the `NO_IAC` block of `test/phase-e-simulated-builds.test.ts`, lines 30 to 39; the owner cited lines 32 to 37 before this record's one-line cross-reference was added there). GCP_API generates no IaC. Its request is the fixed `request.json` and its one change is a new topic, never a brownfield estate, so there is no build to simulate and no preview to compare. That test asserts the exclusion: GCP_API is the only release path without IaC, no Phase E scenario names it, and no `preview:*` gate names it.
+
+**API-native replacement evidence** (all SYNTHETIC or EMULATED, never live):
+
+| What it covers | Test file |
+|---|---|
+| Typed-request validation: the request is exactly `{ schemaVersion: 1, kind: PUBSUB_TOPIC }` (D7), and the canary is one `google_pubsub_topic`, create only (D8) | `test/apply-gcp-api.test.ts` |
+| Exact artifact binding: the artifact is the canonical JSON of the three derived calls, and anything not byte-identical to what the contract, unit and sealed suffix derive is refused (D7, D11, D13, D4) | `test/apply-gcp-api.test.ts` |
+| Exact target binding: every target field joins the target hash, the target shape, DEV only, its own admission mutation (D9, D4) | `test/apply-gcp-api-target.test.ts`, and the D9 target refusals in `test/apply-gcp-api.test.ts` |
+| Driver positive and refusal tests: every apply and cleanup outcome row with exactly one `PUT` or `DELETE`, the kill switch, `APPROVALS_SPENT`, the process stopped after the `PUT`, cleanup refusals before consumption, identities and scopes, refusal shapes, the network gate (D10, D12, D14, D15, D16, D20) | `test/apply-gcp-api.test.ts` |
+| The observation's blueprint mapping of the run's topic (D6) | `test/observe-blueprint-gcp-api.test.ts` |
+| The emulated GCP API journey through the real driver: seal, approve, apply, observe, propose-cleanup, cleanup, verify-cleanup, with replay, reuse, kill switch, signal and failed-run cases | `test/apply-emulated-gcp-api.test.ts` |
+
+**Not exempt, and still required and BLOCKED:** the `act:gcp-gcp_api` release gate; human approval; the live, owner-supervised execution; independent topic observation and approved cleanup; recovery, identity, security and evidence requirements. The tests above are synthetic or emulated and never stand in for any of them (`AGENTS.md`).
+
 ## Evidence
 
 | Evidence | Mode | Where |
