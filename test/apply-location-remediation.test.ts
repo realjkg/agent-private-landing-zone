@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -80,7 +80,25 @@ const env = (): NodeJS.ProcessEnv => ({ ...identityEnv("DEV"), ALZ_DISCOVERY_ARM
 /** The run's network, found in the wrong location, tagged with the run's unit, and nothing else. */
 const MISPLACED: ArmBehavior = { existing: [VNET], tagged: [VNET], locations: { [VNET]: WRONG } };
 
-type World = { deps: ApplyDeps; dirs: { scratch: string; evidence: string; nonces: string }; contractPath: string; contract: unknown; arm: ReturnType<typeof fakeArmHttp> };
+/** The network's creation identity (ARM `properties.resourceGuid`) as the run created it; a scenario that re-creates the network changes it. */
+const GUID = "0b1c2d3e-4f50-4a61-8b72-9c8d7e6f5a40";
+const RECREATED = "7e6d5c4b-3a29-4180-9f7e-6d5c4b3a2918";
+/**
+ * The scripted ARM client, plus the one property this lane reads that it does not model: the network's `properties.resourceGuid`
+ * (`guid`, null for an answer that carries none). Every other answer is the shared fake's, unchanged.
+ */
+function armWithGuid(cloud: ArmBehavior, options: { defaultLocation?: string | null } = {}) {
+  const inner = fakeArmHttp(cloud, options);
+  const state = { guid: GUID as string | null };
+  const http: typeof inner.http = async (request) => {
+    const answer = await inner.http(request);
+    if (request.method !== "GET" || answer.status !== 200 || new URL(request.url).pathname.toLowerCase() !== VNET.toLowerCase() || state.guid === null) return answer;
+    const body = JSON.parse(answer.body) as { properties?: Record<string, unknown> };
+    return { ...answer, body: JSON.stringify({ ...body, properties: { ...body.properties, resourceGuid: state.guid } }) };
+  };
+  return { http, calls: inner.calls, behave: inner.behave, state };
+}
+type World = { deps: ApplyDeps; dirs: { scratch: string; evidence: string; nonces: string }; contractPath: string; contract: unknown; arm: ReturnType<typeof armWithGuid> };
 let vaultDir = "";
 test.before(async () => {
   vaultDir = fresh("qualification");
@@ -91,7 +109,7 @@ function world(cloud: ArmBehavior = MISPLACED, contract: unknown = runContract()
   const contractPath = join(fresh("contract"), "act-pilot-contract.json");
   writeReviewedContract(contractPath, contract);
   behave();
-  const arm = fakeArmHttp(cloud, { defaultLocation: AUTHORIZED });
+  const arm = armWithGuid(cloud, { defaultLocation: AUTHORIZED });
   return {
     dirs, contractPath, contract, arm,
     deps: {
@@ -150,7 +168,7 @@ test("location remediation (SYNTHETIC): a run's network found in the wrong locat
   // The mismatch is recorded as a verification failure, with where the network was found; the run's records are never rewritten.
   const recorded = run.observation.ok ? run.observation.record : assert.fail();
   assert.equal(recorded.verdict, "FAILED");
-  assert.deepEqual(recorded.resources, [{ address: ADDRESS, type: "azurerm_virtual_network", identifier: VNET, origin: "IN_PLAN", result: "DIFFERENT_FROM_DESIRED", reason: "LOCATION_NOT_IN_CONTRACT", observedLocation: WRONG }]);
+  assert.deepEqual(recorded.resources, [{ address: ADDRESS, type: "azurerm_virtual_network", identifier: VNET, origin: "IN_PLAN", result: "DIFFERENT_FROM_DESIRED", reason: "LOCATION_NOT_IN_CONTRACT", observedLocation: WRONG, observedResourceGuid: GUID }]);
   assert.equal(recorded.inventory, "COMPLETE");
 
   // Ordinary target binding is unchanged: no ordinary cleanup for a location mismatch, and the refusal no longer says to observe again (#343 N2).
@@ -164,11 +182,11 @@ test("location remediation (SYNTHETIC): a run's network found in the wrong locat
   // The remediation binds every fact the owner named, by hash.
   const proposal = proposed(w, run);
   assert.equal(proposal.kind, "LOCATION_REMEDIATION");
-  assert.deepEqual(proposal.deletes, [{ address: ADDRESS, type: "azurerm_virtual_network", identifier: VNET, ownership: "RUN_CREATED", observed: "VERIFIED" }]);
+  assert.deepEqual(proposal.deletes, [{ address: ADDRESS, type: "azurerm_virtual_network", identifier: VNET, ownership: "RUN_CREATED", observed: "DIFFERENT_FROM_DESIRED" }], "never labeled VERIFIED (review N4)");
   assert.deepEqual(proposal.excluded, []);
   assert.deepEqual(proposal.alreadyAbsent, []);
   assert.deepEqual(proposal.remediation, {
-    reason: "LOCATION_NOT_IN_CONTRACT", address: ADDRESS, type: "azurerm_virtual_network", resourceId: VNET, authorizedLocation: AUTHORIZED, observedLocation: WRONG,
+    reason: "LOCATION_NOT_IN_CONTRACT", address: ADDRESS, type: "azurerm_virtual_network", resourceId: VNET, resourceGuid: GUID, authorizedLocation: AUTHORIZED, observedLocation: WRONG,
     verificationFailure: { verdict: "FAILED", result: "DIFFERENT_FROM_DESIRED", observedAt: recorded.observedAt },
     ownership: { plannedAction: "CREATE", importing: false, stateOrigin: "IN_PLAN", unitId: UNIT.unitId, sweep: "COMPLETE" },
   });
@@ -254,7 +272,8 @@ test("location remediation eligibility: only a run that created exactly one netw
   notEligible({ observation: { ...obs, verdict: "VERIFIED", resources: [{ ...net, result: "VERIFIED", reason: undefined, observedLocation: undefined }] } }, "correctly located");
   notEligible({ observation: { ...obs, resources: [{ ...net, result: "NOT_YET_OBSERVABLE", reason: "THROTTLED", observedLocation: undefined }] } }, "undecided");
   notEligible({ observation: { ...obs, resources: [{ ...net, result: "MISSING", reason: undefined, observedLocation: undefined }] } }, "already gone");
-  notEligible({ observation: { ...obs, resources: [{ ...net, observedLocation: undefined }] } }, "location not recorded");
+  notEligible({ observation: { ...obs, resources: [{ ...net, observedLocation: undefined, observedResourceGuid: undefined }] } }, "location not recorded");
+  notEligible({ observation: { ...obs, resources: [{ ...net, observedResourceGuid: undefined }] } }, "creation identity not recorded");
   notEligible({ observation: { ...obs, resources: [{ ...net, observedLocation: AUTHORIZED }] } }, "recorded at the authorized location");
   notEligible({ observation: { ...obs, resources: [{ ...net, identifier: VNET.replace("vnet-alz", "vnet-other") }] } }, "another id observed");
   notEligible({ observation: { ...obs, unexpected: ["/subscriptions/" + SUB + "/resourceGroups/x/providers/Microsoft.Network/virtualNetworks/stray"] } }, "something else tagged");
@@ -297,6 +316,8 @@ test("the observation records a location only for a resource found elsewhere, an
   assert.notDeepEqual(observationRecordProblems({ ...obs, resources: [{ ...net, result: "VERIFIED", reason: undefined }] }), [], "a location beside VERIFIED");
   assert.notDeepEqual(observationRecordProblems({ ...obs, resources: [{ ...net, observedLocation: "East US 2" }] }), [], "a display name");
   assert.notDeepEqual(observationRecordProblems({ ...obs, resources: [{ ...net, reason: "ACCESS_DENIED" }] }), [], "a location under another reason");
+  assert.notDeepEqual(observationRecordProblems({ ...obs, resources: [{ ...net, observedLocation: undefined }] }), [], "a creation identity without a location");
+  assert.notDeepEqual(observationRecordProblems({ ...obs, resources: [{ ...net, observedResourceGuid: GUID.toUpperCase() }] }), [], "a creation identity not lowercased");
 
   const proposal = proposed(w, run);
   const { proposalSha256: _hash, request: _request, ...fields } = proposal;
@@ -307,6 +328,8 @@ test("the observation records a location only for a resource found elsewhere, an
   invalid(reHashedProposal({ ...fields, deletes: [...fields.deletes, { ...fields.deletes[0], address: "azurerm_virtual_network.other" }] } as never), "two deletions");
   invalid(reHashedProposal({ ...fields, remediation: { ...fields.remediation!, observedLocation: AUTHORIZED } } as never), "observed equals authorized");
   invalid(reHashedProposal({ ...fields, deletes: [{ ...fields.deletes[0], identifier: VNET.replace("vnet-alz", "vnet-other") }] } as never), "deletes another id than it names");
+  invalid(reHashedProposal({ ...fields, deletes: [{ ...fields.deletes[0], observed: "VERIFIED" }] } as never), "a misplaced network labeled VERIFIED");
+  invalid(reHashedProposal({ ...fields, remediation: { ...fields.remediation!, resourceGuid: "not-a-guid" } } as never), "a malformed creation identity");
   invalid(reHashedProposal({ ...fields, engine: "BICEP" } as never), "another engine");
   invalid(reHashedProposal({ ...fields, excluded: [{ address: "x.y", type: "x", identifier: null, ownership: "NOT_IN_PLAN", reason: "r", retainedBy: "ENVIRONMENT_OWNER" }] } as never), "kept entries");
   // An ordinary proposal's hash is what it always was: no remediation key, so nothing about its identity changed.
@@ -324,6 +347,7 @@ test("a remediation cannot be retargeted, relabeled, or replayed for another run
   for (const [label, forged] of [
     ["another resource id", reHashedProposal({ ...fields, deletes: [{ ...fields.deletes[0], identifier: OTHER }], remediation: { ...fields.remediation!, resourceId: OTHER } })],
     ["another observed location", reHashedProposal({ ...fields, remediation: { ...fields.remediation!, observedLocation: "northeurope" } })],
+    ["another creation identity", reHashedProposal({ ...fields, remediation: { ...fields.remediation!, resourceGuid: RECREATED } })],
     ["another authorized location", reHashedProposal({ ...fields, remediation: { ...fields.remediation!, authorizedLocation: "northeurope" } })],
     ["another address", reHashedProposal({ ...fields, deletes: [{ ...fields.deletes[0], address: "azurerm_virtual_network.other" }], remediation: { ...fields.remediation!, address: "azurerm_virtual_network.other" } })],
   ] as const) {
@@ -332,7 +356,10 @@ test("a remediation cannot be retargeted, relabeled, or replayed for another run
   }
   // Relabeled as an ordinary cleanup of the same run: it is derived by the ordinary rules, which refuse a location mismatch.
   const { remediation: _r, ...plain } = fields;
-  refused(await remediate(w, run, reHashedProposal({ ...plain, kind: "CLEANUP_PROPOSAL", risks: [] } as never)), "LOCATION_MISMATCH", "relabeled");
+  // As it stands, its deletion's DIFFERENT_FROM_DESIRED label belongs to a remediation only, so the schema refuses it first.
+  refused(await remediate(w, run, reHashedProposal({ ...plain, kind: "CLEANUP_PROPOSAL", risks: [] } as never)), "PROPOSAL_INVALID", "relabeled");
+  // Relabeled in full (the deletion called VERIFIED too), the ordinary rules derive it again and refuse the mismatch.
+  refused(await remediate(w, run, reHashedProposal({ ...plain, kind: "CLEANUP_PROPOSAL", risks: [], deletes: [{ ...plain.deletes[0], observed: "VERIFIED" }] } as never)), "LOCATION_MISMATCH", "relabeled in full");
   assert.equal(destroyPlans().length, 0, "nothing was planned");
   assert.equal(applyCalls().length, 1, "only the original apply ran");
 
@@ -360,26 +387,31 @@ test("the recheck immediately before deletion: a network that is gone, back at t
   const proposal = proposed(w, run);
   const approvals = [approval(proposal)];
   const other = "/subscriptions/" + SUB + "/resourceGroups/alz-pilot-dev/providers/Microsoft.Network/virtualNetworks/stray";
-  for (const [label, cloud, engine] of [
-    ["gone", { existing: [], tagged: [], fail: { [VNET]: 404 } }, {}],
-    ["moved back to the authorized location", { existing: [VNET], tagged: [VNET], locations: { [VNET]: AUTHORIZED } }, {}],
-    ["moved elsewhere", { existing: [VNET], tagged: [VNET], locations: { [VNET]: "northeurope" } }, {}],
-    ["no location in the answer", { existing: [VNET], tagged: [VNET], locations: { [VNET]: null } }, {}],
-    ["untagged", { existing: [VNET], tagged: [], locations: { [VNET]: WRONG } }, {}],
-    ["another resource tagged", { existing: [VNET, other], tagged: [VNET, other], locations: { [VNET]: WRONG } }, {}],
-    ["read denied", { existing: [VNET], tagged: [VNET], fail: { [VNET]: 403 } }, {}],
-    ["tag listing incomplete", { existing: [VNET], tagged: [VNET], pages: 99, locations: { [VNET]: WRONG } }, {}],
-    ["the state maps the address to another id", MISPLACED, { stateResources: [azureStateResource("azurerm_virtual_network", "pilot", other)] }],
-    ["the state no longer readable as the blueprint", MISPLACED, { stateResources: [...STATE, azureStateResource("azurerm_virtual_network", "extra", other)] }],
+  for (const [label, cloud, engine, guid, reason] of [
+    ["gone", { existing: [], tagged: [], fail: { [VNET]: 404 } }, {}, GUID, /the network is gone/],
+    ["deleted and created again under the same id, the run's tag copied", MISPLACED, {}, RECREATED, /creation identity \(resourceGuid\) is not the one the run created/],
+    ["an answer without a creation identity", MISPLACED, {}, null, /creation identity \(resourceGuid\) is not the one the run created/],
+    ["moved back to the authorized location", { existing: [VNET], tagged: [VNET], locations: { [VNET]: AUTHORIZED } }, {}, GUID, /now in the location the contract authorizes/],
+    ["moved elsewhere", { existing: [VNET], tagged: [VNET], locations: { [VNET]: "northeurope" } }, {}, GUID, new RegExp("now in northeurope, not " + WRONG + " as proposed")],
+    ["no location in the answer", { existing: [VNET], tagged: [VNET], locations: { [VNET]: null } }, {}, GUID, /could not be read \(LOCATION_UNREADABLE\)/],
+    ["untagged", { existing: [VNET], tagged: [], locations: { [VNET]: WRONG } }, {}, GUID, /no longer carries this run's deletion-unit tag/],
+    ["another resource tagged", { existing: [VNET, other], tagged: [VNET, other], locations: { [VNET]: WRONG } }, {}, GUID, /something else now carries this run's deletion-unit tag \(1\)/],
+    ["read denied", { existing: [VNET], tagged: [VNET], fail: { [VNET]: 403 } }, {}, GUID, /could not be read \(ACCESS_DENIED\)/],
+    ["tag listing incomplete", { existing: [VNET], tagged: [VNET], pages: 99, locations: { [VNET]: WRONG } }, {}, GUID, /sweep by this run's deletion unit could not be read in full/],
+    ["the state maps the address to another id", MISPLACED, { stateResources: [azureStateResource("azurerm_virtual_network", "pilot", other)] }, GUID, /no longer maps the network's address to exactly the resource id/],
+    ["the state no longer readable as the blueprint", MISPLACED, { stateResources: [...STATE, azureStateResource("azurerm_virtual_network", "extra", other)] }, GUID, /no longer maps the network's address to exactly the resource id/],
   ] as const) {
     w.arm.behave(cloud as ArmBehavior);
+    w.arm.state.guid = guid;
     behave(engine as Behavior);
     const result = await remediate(w, run, proposal, approvals);
     refused(result, "REMEDIATION_RECHECK_FAILED", label);
-    assert.match((result as { message: string }).message, /Nothing was deleted and no approval was consumed/, label);
-    if (label === "gone") assert.match((result as { message: string }).message, /the network is gone/);
+    const message = (result as { message: string }).message;
+    assert.match(message, /Nothing was deleted and no approval was consumed/, label);
+    assert.match(message, reason, label);
     assert.equal(calls().filter((c) => c.args[0] === "apply").length, 0, label + ": no apply ran");
   }
+  w.arm.state.guid = GUID;
   // The kill switch stops it first, as for any cleanup.
   w.arm.behave(MISPLACED);
   behave();
@@ -390,14 +422,17 @@ test("the recheck immediately before deletion: a network that is gone, back at t
   assert.ok(result.ok, JSON.stringify(result));
 });
 
-test("the reader reports where a misplaced network is, as a programmatic name, and nothing for one at the authorized location", async () => {
+test("the reader reports where a misplaced network is, as a programmatic name, with its creation identity, and nothing for one at the authorized location", async () => {
   const tenantEnv = { ALZ_DISCOVERY_ARM_CLIENT_ID: "discovery-client-1", ALZ_DISCOVERY_ARM_TENANT_ID: identityEnv("DEV").ALZ_DISCOVERY_ARM_TENANT_ID, ALZ_DISCOVERY_ARM_OIDC_TOKEN_FILE: tokenFile };
-  for (const [answer, expected] of [["East US 2", { misplaced: true, observedLocation: "eastus2" }], ["west europe", {}], ["not a location!", { misplaced: true }]] as const) {
-    const arm = fakeArmHttp({ existing: [VNET], locations: { [VNET]: answer } });
+  for (const [answer, expected] of [["East US 2", { misplaced: true, observedLocation: "eastus2", observedResourceGuid: GUID }], ["west europe", {}], ["not a location!", { misplaced: true, observedResourceGuid: GUID }]] as const) {
+    const arm = armWithGuid({ existing: [VNET], locations: { [VNET]: answer } });
+    arm.state.guid = GUID.toUpperCase();
     const { reader, close } = createDiscoveryArmReader({ env: tenantEnv, subscriptionId: SUB, location: AUTHORIZED, http: arm.http });
     try {
       const check = await reader.check({ address: ADDRESS, type: "azurerm_virtual_network", arn: null, id: VNET, origin: "IN_PLAN" });
-      assert.deepEqual({ misplaced: check.misplaced, observedLocation: check.observedLocation }, { misplaced: undefined, observedLocation: undefined, ...expected }, answer);
+      // The creation identity is kept only for a misplaced resource, lowercased; one at the authorized location keeps nothing.
+      assert.deepEqual({ misplaced: check.misplaced, observedLocation: check.observedLocation, observedResourceGuid: check.observedResourceGuid },
+        { misplaced: undefined, observedLocation: undefined, observedResourceGuid: undefined, ...expected }, answer);
     } finally { close(); }
   }
 });
@@ -501,4 +536,44 @@ test("the location remediation and its LOCATION_MISMATCH refusal are Azure's onl
   assert.notEqual((ordinary as { code: string }).code, "LOCATION_MISMATCH");
   assert.doesNotMatch((ordinary as { message: string }).message, /propose-remediation/);
   refused(buildLocationRemediationProposal({ ...base, contract: gcp }), "REMEDIATION_NOT_ELIGIBLE", "GCP");
+});
+
+test("a Bicep run found in the wrong location is LOCATION_MISMATCH with its own words: never pointed at propose-remediation, which is Azure Terraform only", async () => {
+  const w = world();
+  const run = await applied(w);
+  const base = inputOf(w, run);
+  // The same misplaced network as a Bicep run records it: the stack resource's address is its ARM id.
+  const bicep = { ...base.contract, engine: "BICEP" } as PilotContract;
+  const entry = base.blueprint.blueprint.entries[0];
+  const input: ProposalInput = {
+    ...base, contract: bicep, changes: [{ address: VNET, type: "Microsoft.Network/virtualNetworks", action: "CREATE" }],
+    blueprint: { ...base.blueprint, blueprint: { ...base.blueprint.blueprint, entries: [{ ...entry, address: VNET, type: "Microsoft.Network/virtualNetworks" }] } },
+    observation: { ...base.observation, resources: [{ ...base.observation.resources[0], address: VNET, type: "Microsoft.Network/virtualNetworks" }] },
+  };
+  const ordinary = buildCleanupProposal(input);
+  refused(ordinary, "LOCATION_MISMATCH", "Bicep");
+  const message = (ordinary as { message: string }).message;
+  assert.doesNotMatch(message, /propose-remediation/);
+  assert.match(message, /Azure Terraform path only, so for this BICEP run nothing in the product deletes it/);
+  assert.match(message, new RegExp("in " + WRONG + ", not the location the contract authorizes"));
+  refused(buildLocationRemediationProposal(input), "REMEDIATION_NOT_ELIGIBLE", "Bicep remediation");
+});
+
+test("propose-remediation refuses a run started in the console before the requester's key signs anything: the console has no remediation step", async () => {
+  const w = world();
+  const target = targetOf("DEV");
+  const project = writeProject(fresh("project"), target);
+  const sealed = await sealPreview({ invocation: human(target), environment: "DEV", target, channel: "UI", manifest: project.manifest, projectRoot: project.projectRoot, policyVersion: POLICY, resolved: project.resolved, requester: REQUESTER }, w.deps);
+  assert.ok(sealed.ok, JSON.stringify(sealed));
+  assert.equal(sealed.sealed.channel, "UI");
+  const proposalsDir = fresh("proposals");
+  const stderr: string[] = [];
+  const code = await runApplyCommand(["propose-remediation", "--sealed", sealed.path, ...requesterArgs()], {
+    sourceCommit: SOURCE_COMMIT, terminal: terminal([]), env: w.deps.env, now: () => NOW, contractPath: w.contractPath, evidenceDir: w.dirs.evidence, proposalsDir,
+    stdout: () => undefined, stderr: (t) => { stderr.push(t); },
+  });
+  assert.equal(code, 2);
+  assert.match(stderr.join(""), /BLOCKED REMEDIATION_NOT_ELIGIBLE: This run was started in the web console/);
+  assert.match(stderr.join(""), /No proposal was written and nothing was signed/);
+  assert.deepEqual(readdirSync(proposalsDir), [], "nothing was written");
 });

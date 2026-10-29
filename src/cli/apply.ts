@@ -626,6 +626,10 @@ const proposeCommand = (kind: CleanupProposal["kind"]): Command => async (flags,
   const opened = await openSealed(flags.sealed[0]);
   if (!("sealed" in opened)) return blocked(opened, out);
   const { sealed } = opened;
+  // A run started in the console finishes in the console, which has no remediation step: refused here, before the requester's key signs anything (review 6487424862, N6).
+  if (kind === "LOCATION_REMEDIATION" && sealed.channel === "UI") {
+    return blocked({ ok: false, code: "REMEDIATION_NOT_ELIGIBLE", message: "This run was started in the web console, and a run is finished in the channel it was started in. The console has no location remediation step, so this run cannot be remediated from the command line or the console: the pilot owner reviews it by hand. No proposal was written and nothing was signed." }, out);
+  }
   if (sealed.channel !== (deps.channel ?? "CLI")) return blocked({ ok: false, code: "CHANNEL_MISMATCH", message: channelMismatchMessage(sealed.channel) }, out);
   const contract = contractFor(deps);
   if ("reason" in contract) return blocked(contractRefusal(contract), out);

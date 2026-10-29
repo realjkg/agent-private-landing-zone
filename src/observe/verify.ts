@@ -84,6 +84,12 @@ export type ResourceCheck = {
    * 6486426552, item 2); never set for any other result, and absent when the answer's location does not normalize.
    */
   observedLocation?: string;
+  /**
+   * With `misplaced` on Azure: the resource's creation identity as its own answer gives it (`properties.resourceGuid`, a GUID ARM assigns
+   * at creation and never reuses), when the answer carries one. A resource deleted and created again under the same id has another, so a
+   * location remediation binds it and its recheck refuses any other (review 6487424862, N1).
+   */
+  observedResourceGuid?: string;
 };
 export type ObserveVerdict = "VERIFIED" | "PARTIAL" | "INCONCLUSIVE" | "FAILED";
 export type ObserveReport = {

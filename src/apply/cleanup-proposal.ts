@@ -90,8 +90,11 @@ export type ProposedDeletion = {
   type: string;
   identifier: string | null;
   ownership: "RUN_CREATED";
-  /** What the independent observation said: VERIFIED (present under its identifier) or UNVERIFIABLE (a setting or object the independent reader cannot read alone). */
-  observed: "VERIFIED" | "UNVERIFIABLE";
+  /**
+   * What the independent observation said: VERIFIED (present under its identifier), UNVERIFIABLE (a setting or object the independent
+   * reader cannot read alone), or, in a location remediation only, DIFFERENT_FROM_DESIRED (present, outside the contract's location).
+   */
+  observed: "VERIFIED" | "UNVERIFIABLE" | "DIFFERENT_FROM_DESIRED";
   /** A material risk of deleting this kind of resource, when the type is known to hold data or to have a deletion window. */
   risk?: string;
 };
@@ -110,6 +113,11 @@ export type LocationRemediation = {
   address: string;
   type: typeof REMEDIATION_TYPE;
   resourceId: string;
+  /**
+   * The network's creation identity (ARM `properties.resourceGuid`, lowercased) as the observation recorded it: a network deleted and
+   * created again under the same id, even with this run's tag copied, has another, and the recheck refuses it (review 6487424862, N1).
+   */
+  resourceGuid: string;
   /** The contract target's authorized location and where the observation found the network, both as ARM's programmatic name. */
   authorizedLocation: string;
   observedLocation: string;
@@ -577,10 +585,13 @@ export function buildCleanupProposal(input: ProposalInput): { ok: true; proposal
     // Azure only: the location remediation is an Azure Terraform path; another provider's misplaced resource (a GCP topic stored elsewhere)
     // keeps its own refusal until its own owner decision (docs/act-pilot-gcp-api-driver.md).
     if (contract.provider === "AZURE" && seen?.result === "DIFFERENT_FROM_DESIRED" && seen.reason === "LOCATION_NOT_IN_CONTRACT") {
-      return refuse("LOCATION_MISMATCH", "The observation found " + stripInvisible(entry.address) + " in " + (seen.observedLocation ?? "a location it could not name") +
-        ", not the location the contract authorizes, so this run's observation is FAILED and no ordinary cleanup is proposed. Observing again does not move it. " +
-        "If this run created exactly that one virtual network, a person may propose the governed location remediation (./alz apply propose-remediation --sealed SEALED_PLAN " +
-        "--requester YOUR_ID --key YOUR_REQUESTER_KEY.pem): it needs CLEANUP authorization and fresh approvals, and it deletes that network only, never moving or recreating it. Otherwise a person reviews the run by hand.");
+      const found = "The observation found " + stripInvisible(entry.address) + " in " + (seen.observedLocation ?? "a location it could not name") +
+        ", not the location the contract authorizes, so this run's observation is FAILED and no ordinary cleanup is proposed. Observing again does not move it. ";
+      // The governed remediation exists for Azure Terraform only (review 6487424862, N2): a Bicep run is never pointed at it.
+      return refuse("LOCATION_MISMATCH", found + (contract.engine === "TERRAFORM"
+        ? "If this run created exactly that one virtual network, a person may propose the governed location remediation (./alz apply propose-remediation --sealed SEALED_PLAN " +
+          "--requester YOUR_ID --key YOUR_REQUESTER_KEY.pem): it needs CLEANUP authorization and fresh approvals, and it deletes that network only, never moving or recreating it. Otherwise a person reviews the run by hand."
+        : "The location remediation exists for the Azure Terraform path only, so for this " + contract.engine + " run nothing in the product deletes it: the pilot owner reviews the deployment and its resources by hand."));
     }
     if (seen === undefined || seen.result === "NOT_YET_OBSERVABLE" || seen.result === "DIFFERENT_FROM_DESIRED") {
       return refuse("OBSERVATION_INCONCLUSIVE", "The observation could not decide about " + entry.address + " (" + (seen?.reason ?? "not observed") + "). Observe this run again before proposing a cleanup.");
@@ -750,6 +761,7 @@ export function buildLocationRemediationProposal(input: ProposalInput): { ok: tr
   }
   if (seen.result !== "DIFFERENT_FROM_DESIRED" || seen.reason !== "LOCATION_NOT_IN_CONTRACT") return no("the observation found the network " + seen.result + (seen.reason ? " (" + seen.reason + ")" : "") + ", not outside the contract's location.");
   if (seen.observedLocation === undefined || seen.observedLocation === authorizedLocation) return no("the observation did not record a location other than the contract's for the network.");
+  if (seen.observedResourceGuid === undefined) return no("the observation did not record the network's creation identity (resourceGuid), so a network created again under the same id could not be told apart.");
   const required = contract.requiredApprovals[evidence.environment];
   if (required === undefined) return refuse("TARGET_NOT_IN_CONTRACT", "The pilot contract does not enable " + evidence.environment + ".");
   // The same separate CLEANUP authorization as any cleanup, derived here; and the run's full target, location included, is still the contract's.
@@ -758,14 +770,14 @@ export function buildLocationRemediationProposal(input: ProposalInput): { ok: tr
   const moved = targetMoved(evidence.targetSha256, contract, evidence.environment);
   if (moved) return moved;
   const remediation: LocationRemediation = {
-    reason: "LOCATION_NOT_IN_CONTRACT", address: entry.address, type: REMEDIATION_TYPE, resourceId: id, authorizedLocation, observedLocation: seen.observedLocation,
+    reason: "LOCATION_NOT_IN_CONTRACT", address: entry.address, type: REMEDIATION_TYPE, resourceId: id, resourceGuid: seen.observedResourceGuid, authorizedLocation, observedLocation: seen.observedLocation,
     verificationFailure: { verdict: "FAILED", result: "DIFFERENT_FROM_DESIRED", observedAt: observation.observedAt },
     ownership: { plannedAction: "CREATE", importing: false, stateOrigin: "IN_PLAN", unitId: record.unitId, sweep: "COMPLETE" },
   };
   const risks = [
     "LOCATION MISMATCH: this run created the virtual network, and the independent observation found it in " + seen.observedLocation + ", not in " + authorizedLocation + ", the location the contract authorizes; the run's observation stays FAILED",
     "this remediation deletes only that network, by its exact address and resource id; it never corrects the region, moves the network or creates it again, and a correctly placed network needs a new reviewed seal, approval and apply",
-    "immediately before any approval is consumed, the network is read again as DISCOVERY: the same resource id, still carrying this run's deletion-unit tag, still in " + seen.observedLocation + ", nothing else tagged, and the state still mapping its address to that id; if anything changed, the remediation stops and nothing is deleted",
+    "immediately before any approval is consumed, the network is read again as DISCOVERY: the same resource id, with the same creation identity (resourceGuid), still carrying this run's deletion-unit tag, still in " + seen.observedLocation + ", nothing else tagged, and the state still mapping its address to that id; if anything changed, the remediation stops and nothing is deleted",
     "if anything outside the state still uses the network (a network interface in one of its subnets, for example), Azure refuses the delete and the remediation fails without deleting anything else",
   ].sort();
   const fields: ProposalFields = {
@@ -773,7 +785,7 @@ export function buildLocationRemediationProposal(input: ProposalInput): { ok: tr
     observationSha256: input.observationSha256, provider: contract.provider, engine: contract.engine, environment: evidence.environment, target: { ...evidence.target }, channel: input.channel,
     contractSha256: evidence.contractSha256, authorizingContractSha256: authorized.authorization.contractSha256, authorizationSha256: authorized.authorization.authorizationSha256, targetSha256: evidence.targetSha256,
     sourceCommit: evidence.sourceCommit, engineVersion: input.engineVersion, createdAt: input.now.toISOString(), unitId: record.unitId,
-    deletes: [{ address: entry.address, type: entry.type, identifier: id, ownership: "RUN_CREATED", observed: "VERIFIED" }], alreadyAbsent: [], excluded: [], risks,
+    deletes: [{ address: entry.address, type: entry.type, identifier: id, ownership: "RUN_CREATED", observed: "DIFFERENT_FROM_DESIRED" }], alreadyAbsent: [], excluded: [], risks,
     authorization: { subject: "CLEANUP", requiredApprovals: required, executesAs: "APPLY" }, requesterId: input.requesterId, request: null, remediation,
   };
   return { ok: true, proposal: { ...fields, proposalSha256: computeProposalSha256(fields) } };
@@ -828,7 +840,7 @@ export function proposalProblems(value: unknown): string[] {
   // Bicep engine (an unknown engine was refused above).
   const engine: EngineId = value.engine === "CDK" ? "CDK" : value.engine === "BICEP" ? "BICEP" : "TERRAFORM";
   if (!Array.isArray(deletes) || !deletes.every((x) => isRecord(x) && Object.keys(x).every((key) => ["address", "type", "identifier", "ownership", "observed", "risk"].includes(key)) &&
-    isCleanupAddress(engine, x.address) && text(x.type, 128) && idText(x.identifier) && x.ownership === "RUN_CREATED" && (x.observed === "VERIFIED" || x.observed === "UNVERIFIABLE") &&
+    isCleanupAddress(engine, x.address) && text(x.type, 128) && idText(x.identifier) && x.ownership === "RUN_CREATED" && (x.observed === "VERIFIED" || x.observed === "UNVERIFIABLE" || (x.observed === "DIFFERENT_FROM_DESIRED" && value.kind === "LOCATION_REMEDIATION")) &&
     (x.risk === undefined || text(x.risk)))) problems.push("proposal.deletes: each needs a resource address, type, identifier, RUN_CREATED ownership and an observation");
   else if (new Set(deletes.map((x) => x.address)).size !== deletes.length) problems.push("proposal.deletes: an address is listed twice");
   else if ([...deletes.map((x) => x.address)].some((address, index, all) => index > 0 && !(all[index - 1] < address))) problems.push("proposal.deletes: addresses must be in code-point order");
@@ -853,14 +865,15 @@ function remediationProblems(value: Record<string, unknown>): string[] {
   const r = value.remediation;
   const deletes = Array.isArray(value.deletes) ? value.deletes as Record<string, unknown>[] : [];
   const location = (x: unknown): boolean => typeof x === "string" && AZURE_LOCATION.test(x);
-  const ok = isRecord(r) && Object.keys(r).sort().join() === "address,authorizedLocation,observedLocation,ownership,reason,resourceId,type,verificationFailure" &&
+  const ok = isRecord(r) && Object.keys(r).sort().join() === "address,authorizedLocation,observedLocation,ownership,reason,resourceGuid,resourceId,type,verificationFailure" &&
+    typeof r.resourceGuid === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(r.resourceGuid) &&
     r.reason === "LOCATION_NOT_IN_CONTRACT" && r.type === REMEDIATION_TYPE && isResourceAddress(r.address) && typeof r.resourceId === "string" && r.resourceId.length <= 512 && isArmResourceId(r.resourceId) &&
     location(r.authorizedLocation) && location(r.observedLocation) && r.authorizedLocation !== r.observedLocation &&
     isRecord(r.verificationFailure) && Object.keys(r.verificationFailure).sort().join() === "observedAt,result,verdict" && r.verificationFailure.verdict === "FAILED" &&
     r.verificationFailure.result === "DIFFERENT_FROM_DESIRED" && text(r.verificationFailure.observedAt, 64) && !Number.isNaN(Date.parse(r.verificationFailure.observedAt as string)) &&
     isRecord(r.ownership) && Object.keys(r.ownership).sort().join() === "importing,plannedAction,stateOrigin,sweep,unitId" && r.ownership.plannedAction === "CREATE" && r.ownership.importing === false &&
     r.ownership.stateOrigin === "IN_PLAN" && r.ownership.sweep === "COMPLETE" && r.ownership.unitId === value.unitId && value.unitId !== null &&
-    value.provider === "AZURE" && value.engine === "TERRAFORM" && deletes.length === 1 && deletes[0].address === r.address && deletes[0].type === r.type && deletes[0].identifier === r.resourceId &&
+    value.provider === "AZURE" && value.engine === "TERRAFORM" && deletes.length === 1 && deletes[0].address === r.address && deletes[0].type === r.type && deletes[0].identifier === r.resourceId && deletes[0].observed === "DIFFERENT_FROM_DESIRED" &&
     Array.isArray(value.alreadyAbsent) && value.alreadyAbsent.length === 0 && Array.isArray(value.excluded) && value.excluded.length === 0;
   return ok ? [] : ["proposal.remediation: a location remediation names one Azure Terraform virtual network by address and exact resource id, the authorized and observed locations, the recorded failure and the ownership evidence, and deletes that network only"];
 }
@@ -893,7 +906,7 @@ export function proposalLines(proposal: CleanupProposal): string[] {
     ...(r === undefined ? [] : [
       "  KIND            LOCATION REMEDIATION (not an ordinary cleanup): deletes one network this run created in the wrong location; nothing is moved, corrected or created again",
       "  LOCATION        observed " + r.observedLocation + ", but the contract authorizes " + r.authorizedLocation + " (" + r.reason + "; the run's observation stays FAILED, recorded " + r.verificationFailure.observedAt + ")",
-      "  resource id     " + stripInvisible(r.resourceId),
+      "  resource id     " + stripInvisible(r.resourceId) + " (creation identity " + r.resourceGuid + ")",
       "  ownership       created by this run's sealed plan (CREATE, no import), held by its state at " + stripInvisible(r.address) + ", deletion unit " + r.ownership.unitId + " (sweep " + r.ownership.sweep + ")",
       "  bound to        run target " + proposal.targetSha256.slice(0, 12) + ", contract " + proposal.contractSha256.slice(0, 12) + ", observation " + proposal.observationSha256.slice(0, 12),
     ]),
@@ -901,7 +914,7 @@ export function proposalLines(proposal: CleanupProposal): string[] {
     "  executes as     the " + proposal.authorization.executesAs + " identity, bound to exactly the list below; " + proposal.authorization.requiredApprovals + " cleanup approval(s) required",
     "  deletes (" + proposal.deletes.length + ")",
     ...(proposal.deletes.length === 0 ? ["    (nothing: every resource this run created is already gone)"] : proposal.deletes.map((x) =>
-      "    " + stripInvisible(x.address) + " (" + stripInvisible(x.type) + ") " + show(x.identifier) + (x.observed === "UNVERIFIABLE" ? " [not independently checkable]" : "") + (x.risk ? " [risk: " + x.risk + "]" : ""))),
+      "    " + stripInvisible(x.address) + " (" + stripInvisible(x.type) + ") " + show(x.identifier) + (x.observed === "UNVERIFIABLE" ? " [not independently checkable]" : x.observed === "DIFFERENT_FROM_DESIRED" ? " [found outside the authorized location]" : "") + (x.risk ? " [risk: " + x.risk + "]" : ""))),
     ...(proposal.alreadyAbsent.length > 0 ? ["  already gone (" + proposal.alreadyAbsent.length + ")", ...proposal.alreadyAbsent.map((x) => "    " + stripInvisible(x.address) + " " + show(x.identifier))] : []),
     "  kept (" + proposal.excluded.length + ")",
     ...(proposal.excluded.length === 0 ? ["    (nothing else is in the state)"] : proposal.excluded.map((x) => "    " + stripInvisible(x.address) + " (" + stripInvisible(x.type) + ") " + x.ownership + ", kept by " + x.retainedBy + ": " + x.reason)),

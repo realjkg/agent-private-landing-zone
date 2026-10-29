@@ -99,7 +99,8 @@ export function observedResourcesOf(checks: readonly ResourceCheck[], blueprint:
   return checks.map((check) => ({
     address: check.address, type: check.type, identifier: check.identifier, origin: origins.get(check.address) ?? "NOT_IN_PLAN",
     ...(check.misplaced
-      ? { result: "DIFFERENT_FROM_DESIRED" as const, reason: "LOCATION_NOT_IN_CONTRACT", ...(check.observedLocation === undefined ? {} : { observedLocation: check.observedLocation }) }
+      ? { result: "DIFFERENT_FROM_DESIRED" as const, reason: "LOCATION_NOT_IN_CONTRACT", ...(check.observedLocation === undefined ? {} : { observedLocation: check.observedLocation }),
+        ...(check.observedLocation === undefined || check.observedResourceGuid === undefined ? {} : { observedResourceGuid: check.observedResourceGuid }) }
       : verificationOf(check.existence, check.reason)),
   }));
 }
@@ -181,7 +182,7 @@ export async function verifyProposalLeftovers(proposal: CleanupProposal, deps: O
  * A location remediation's recheck (owner decision 6486426552, item 2), which the cleanup driver runs immediately before the approvals
  * are consumed and the network is deleted. It reads the cloud again through the same read-only DISCOVERY reader the observation used,
  * bound to the contract's subscription and authorized location, and requires everything the proposal rests on to be unchanged: the
- * one network is still there under its exact resource id, still DIFFERENT_FROM_DESIRED in the same observed location (so it moved
+ * one network is still there under its exact resource id and creation identity (`resourceGuid`), still DIFFERENT_FROM_DESIRED in the same observed location (so it moved
  * neither back nor elsewhere), still carrying this run's deletion-unit tag, and a complete sweep by that tag finds nothing else. The
  * result is compared with the observation record in the observation's own words (`observedResourcesOf`). It writes nothing: the run's
  * records, its FAILED observation among them, stay as they are. Undefined means the recheck passed; anything else is the refusal.
@@ -208,6 +209,7 @@ export async function recheckLocationRemediation(proposal: CleanupProposal, blue
   if (check.existence === "ABSENT") return failed("the network is gone");
   if (check.existence !== "PRESENT") return failed("the network could not be read (" + (check.reason ?? check.existence) + ")");
   if (!check.misplaced) return failed("the network is now in the location the contract authorizes, so it is no longer misplaced");
+  if (check.observedResourceGuid !== remediation.resourceGuid) return failed("the network's creation identity (resourceGuid) is not the one the run created: it was deleted and created again, or the answer names none");
   if (check.observedLocation !== remediation.observedLocation) return failed("the network is now in " + (check.observedLocation ?? "a location it could not name") + ", not " + remediation.observedLocation + " as proposed");
   // The same words the observation recorded, for every resource: anything else that differs means the run is not as proposed.
   if (canonicalJson(observedResourcesOf(checks, blueprint) as never) !== canonicalJson(observation.resources as never)) return failed("what it found differs from the observation the proposal binds");
