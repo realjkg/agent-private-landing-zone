@@ -28,11 +28,31 @@ test("the committed example is refused until every placeholder is replaced", () 
   assert.match(problems(example).join("\n"), /REPLACE-WITH placeholders/);
 });
 
-test("unknown keys, a gcp block and credential-bearing keys are refused by name", () => {
+test("unknown keys and credential-bearing keys are refused by name, in every block", () => {
   assert.match(problems(validConfig({ awsProfile: "dev" })).join(), /config\.awsProfile: unknown key/);
   assert.match(problems(validConfig({ aws: { ...validConfig().aws as object, profile: "dev" } })).join(), /config\.aws\.profile: unknown key/);
   assert.match(problems(validConfig({ azure: { ...validConfig().azure as object, clientSecret: "x" } })).join(), /config\.azure\.clientSecret: unknown key/);
-  assert.match(problems(validConfig({ gcp: { expectedProjectId: "p" } })).join(), /GCP joins in slice S4/);
+  assert.match(problems(validConfig({ gcp: { expectedProjectId: "alz-dev-pilot", region: "europe-west1", credentialsFile: "/x.json" } })).join(), /config\.gcp\.credentialsFile: unknown key/);
+  assert.match(problems(validConfig({ act: { repository: "o/r", paths: {}, token: "x" } })).join(), /config\.act\.token: unknown key/);
+  assert.match(problems(validConfig({ act: { repository: "o/r", paths: { "aws-terraform": { project: "/p", requesterId: "a", keyFile: "/k.pem" } } } })).join(),
+    /config\.act\.paths\.aws-terraform\.keyFile: unknown key \(key files are asked for at the terminal, never stored\)/);
+});
+
+test("the gcp block names a project and region; the act block names a repository and, per known path, an absolute project folder and people's ids", () => {
+  const act = { repository: "realjkg/agent-private-landing-zone", paths: { "aws-terraform": { project: "/Users/owner/act-dev1-aws", requesterId: "owner@example", approverId: "approver-1" }, "gcp-terraform": { project: "/srv/canary/gcp", requesterId: "owner" } } };
+  const result = parseConfig(validConfig({ gcp: { expectedProjectId: "alz-dev-pilot", region: "europe-west1" }, act }));
+  assert.ok(result.ok, JSON.stringify(result));
+  assert.equal(result.config.gcp?.expectedProjectId, "alz-dev-pilot");
+  assert.equal(result.config.act?.paths["aws-terraform"]?.approverId, "approver-1");
+  const found = problems(validConfig({
+    gcp: { expectedProjectId: "Bad_Project", region: "mars" },
+    act: { repository: "no-slash", paths: { "aws-everything": { project: "/p", requesterId: "a" }, "aws-cdk": { project: "relative/dir", requesterId: "a b" }, "azure-bicep": { project: "/a/../b", requesterId: "x" } } },
+  }));
+  for (const expected of ["config.gcp.expectedProjectId:", "config.gcp.region:", "config.act.repository:", "config.act.paths.aws-everything: unknown path",
+    "config.act.paths.aws-cdk.project:", "config.act.paths.aws-cdk.requesterId:", "config.act.paths.azure-bicep.project:"]) {
+    assert.ok(found.some((problem) => problem.startsWith(expected)), expected + " in " + found.join(" | "));
+  }
+  assert.match(problems(validConfig({ act: { repository: "o/r", paths: { "aws-terraform": { project: "/p", requesterId: "AKIAABCDEFGHIJKLMNOP" } } } })).join(), /requesterId: looks like a credential/);
 });
 
 test("malformed identifiers are refused without echoing the value", () => {

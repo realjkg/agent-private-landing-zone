@@ -1,15 +1,24 @@
 import { copyFileSync, constants as fsConstants, existsSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join, relative } from "node:path";
 
 import type { SourceCommit } from "../util/source-commit.js";
+import { actStage, cleanupStage, recoveryStage } from "./act.js";
+import { spawnChild, type Spawner } from "./child.js";
 import { EXAMPLE_CONFIG_PATH, EvidencePathError, evidencePath, insideRoot, loadConfig, type EvidenceRunnerConfig } from "./config.js";
 import { assertRealFolder, ensureRealFolder, replaceNoFollow } from "./safe-write.js";
 import { ReleaseGatesError, gatePlan, releaseGates, type GatePlan, type GateRunnerMode } from "./gates.js";
-import { Journal, JournalError, acquireRunLock, readJournal, stepRecord } from "./journal.js";
-import { identityHash, ownerInputs, authorizationState, runPreflight, type IdentityProbe, type Preflight } from "./preflight.js";
-import { BUILT_STAGES, DEFAULT_STAGES, EXIT, STAGES, STAGE_SLICE, type RunLabel, type StageId, type StepOutcome } from "./types.js";
+import { Journal, JournalError, acquireRunLock, readJournal, stepRecord, type JournalLine } from "./journal.js";
+import { authorizationState, contractEnablesPath, contractScope, identityHash, ownerInputs, runPreflight, type IdentityProbe, type Preflight } from "./preflight.js";
+import { readonlyStage, type StageResult } from "./readonly.js";
+import { stageFolder, type StageContext } from "./steps.js";
+import { summaryStage } from "./summary.js";
+import {
+  ACT_PATH_NOT_AVAILABLE, DEFAULT_STAGES, EXIT, STAGES, isActStage, isCleanupStage, isGuidedStage, pathOfStage, stageSlice,
+  type RunLabel, type StageId, type StepOutcome,
+} from "./types.js";
 
-/** The terminal the person types the start attestation into. The runner only asks; it never answers for them. */
+/** The terminal the person types into. The runner only asks (the start attestation and file paths); it never answers for them. */
 export type Terminal = { stdinIsTTY: boolean; stdoutIsTTY: boolean; ask: (question: string) => Promise<string> };
 
 export type RunnerDeps = {
@@ -23,6 +32,12 @@ export type RunnerDeps = {
   source: () => SourceCommit;
   out: (line: string) => void;
   pidAlive?: (pid: number) => boolean;
+  /** Starts a producer. Production starts `./alz` (child.ts); tests pass a fake that records each request. */
+  spawn?: Spawner;
+  /** The files that differ between two commits (source.ts), for a guided stage at a path's contract commit. */
+  changedPaths?: (from: string, to: string) => string[] | undefined;
+  /** The real home folder, used only to name the default evidence key file's path for children. */
+  realHome?: string;
 };
 
 export type RunOptions = { configPath: string; stage?: StageId; dryRun: boolean; synthetic: boolean };
@@ -70,29 +85,35 @@ const shown = (root: string, path: string): string => relative(realpathSync(root
 
 type StagePlan = { stage: StageId; outcome: StepOutcome; code: string; detail: string };
 
-/** What each later stage will do in this build. Nothing here runs a provider tool or a child process. */
-function planStage(stage: StageId, config: EvidenceRunnerConfig, authorization: "EMPTY" | "PRESENT"): StagePlan {
-  const notBuilt = (detail: string): StagePlan => ({ stage, outcome: "BLOCKED", code: "NOT_BUILT", detail: "Slice " + STAGE_SLICE[stage] + " builds this stage. " + detail });
-  switch (stage) {
-    case "preflight":
-      return { stage, outcome: "PASS", code: "PREFLIGHT", detail: "Checked above." };
-    case "aws-readonly":
-      return config.aws ? notBuilt("It will verify the account, check the no-op stack read-only, and run the AWS provider qualification under the federated identity.")
-        : { stage, outcome: "SKIPPED", code: "NOT_CONFIGURED", detail: "No aws block in the configuration." };
-    case "azure-readonly":
-      return config.azure ? notBuilt("It will verify the tenant and subscription and run the Azure provider qualification under the federated identity.")
-        : { stage, outcome: "SKIPPED", code: "NOT_CONFIGURED", detail: "No azure block in the configuration." };
-    case "gcp-readonly":
-      return { stage, outcome: "SKIPPED", code: "GCP_HELD", detail: "GCP joins in slice S4, after the GCP lane's PLAN lands." };
-    case "act":
-    case "recovery":
-    case "cleanup":
-      return authorization === "EMPTY"
-        ? { stage, outcome: "SKIPPED", code: "SKIPPED_ACT_DISABLED", detail: "No committed contract authorizes ACT: ACT is disabled." }
-        : notBuilt("A person at this terminal will run each existing ./alz apply step and type every phrase.");
-    case "summary":
-      return notBuilt("It will index the evidence and run the release admission review.");
+/** What a stage would do, from what can be checked in advance. Nothing here runs a provider tool or a child process. */
+function planStage(stage: StageId, config: EvidenceRunnerConfig, preflight: Preflight, root: string): StagePlan {
+  const ready = (detail: string): StagePlan => ({ stage, outcome: "PASS", code: "READY", detail });
+  if (stage === "preflight") return { stage, outcome: "PASS", code: "PREFLIGHT", detail: "Checked above." };
+  if (stage === "aws-readonly" || stage === "azure-readonly" || stage === "gcp-readonly") {
+    const provider = stage === "aws-readonly" ? "aws" : stage === "azure-readonly" ? "azure" : "gcp";
+    const identity = preflight.identities.find((check) => check.provider === provider);
+    if (!identity || identity.code === "NOT_CONFIGURED") return { stage, outcome: "SKIPPED", code: "NOT_CONFIGURED", detail: "No " + provider + " block in the configuration." };
+    if (identity.status !== "PASS") return { stage, outcome: "BLOCKED", code: identity.code, detail: identity.detail };
+    if (provider === "gcp") return { stage, outcome: "BLOCKED", code: "NO_PRODUCER", detail: "The project is verified; no read-only GCP inventory producer exists on main, so the stage reads nothing and stops." };
+    return ready("Will run ./alz qualify provider-" + provider + " under the federated DISCOVERY identity, quietly, with its log in the run folder.");
   }
+  if (isActStage(stage) || isCleanupStage(stage)) {
+    const path = pathOfStage(stage);
+    const notAvailable = ACT_PATH_NOT_AVAILABLE[path];
+    if (notAvailable) return { stage, outcome: "BLOCKED", code: "NOT_AVAILABLE", detail: notAvailable };
+    const enabled = contractEnablesPath(contractScope(root), path, isActStage(stage) ? "APPLY" : "CLEANUP");
+    if (!enabled.ok) return { stage, outcome: "BLOCKED", code: enabled.code, detail: enabled.detail };
+    if (!config.act?.paths[path]) return { stage, outcome: "BLOCKED", code: "OWNER_INPUT_ACT_TARGETS", detail: "The configuration has no act.paths." + path + "." };
+    return ready(isActStage(stage)
+      ? "Will run ./alz apply contract-check, identity-check --phase delivered, prepare, qualify, preflight, seal, approve, apply and observe at your terminal; you answer every prompt."
+      : "After act:" + path + ": ./alz apply observe, propose-cleanup, approve, cleanup, verify-cleanup, report and record-live at your terminal; you answer every prompt.");
+  }
+  if (stage === "recovery") {
+    return authorizationState(root) === "EMPTY"
+      ? { stage, outcome: "BLOCKED", code: "ACT_DISABLED", detail: "No committed contract authorizes ACT." }
+      : ready("Will ask for the interrupted and the resumed sealed plans and run ./alz apply record-recovery at your terminal.");
+  }
+  return ready("Will index the evidence of this run and the owner-run producers, then run ./alz qualify admission (read-only) and print each gate.");
 }
 
 const mark = (status: string): string => status === "PASS" ? "ok     " : status === "BLOCKED" ? "BLOCKED" : status === "FAIL" ? "FAIL   " : status === "SKIPPED" ? "skipped" : "info   ";
@@ -125,7 +146,25 @@ async function attest(config: EvidenceRunnerConfig, options: RunOptions, deps: R
   return { refused: "EVIDENCE_ATTESTATION_REFUSED: the answer was neither phrase, so nothing was labeled or written." };
 }
 
-/** `./alz evidence run`: preflight, then each selected stage, journaled. In this build every stage after preflight reports what will build it. */
+async function runStage(ctx: StageContext, stage: StageId, plan: readonly GatePlan[]): Promise<StageResult> {
+  if (stage === "aws-readonly") return readonlyStage(ctx, "aws");
+  if (stage === "azure-readonly") return readonlyStage(ctx, "azure");
+  if (stage === "gcp-readonly") return readonlyStage(ctx, "gcp");
+  if (isActStage(stage)) return actStage(ctx, pathOfStage(stage));
+  if (isCleanupStage(stage)) return cleanupStage(ctx, pathOfStage(stage));
+  if (stage === "recovery") return recoveryStage(ctx);
+  return summaryStage(ctx, plan, (path, document) => writeRunnerDocument(path, ctx.label, document));
+}
+
+/** The finish lines of one stage's steps, for its stage document. Ids, outcomes, exit codes and document hashes only. */
+function stepsOf(lines: readonly JournalLine[], stage: StageId): Record<string, unknown>[] {
+  return lines.filter((line) => line.stage === stage && line.step !== stage && line.event === "finish").map((line) => ({
+    step: line.step, outcome: line.outcome, ...(line.code ? { code: line.code } : {}), ...(line.exitCode !== undefined ? { exitCode: line.exitCode } : {}),
+    at: line.at, documents: line.documents ?? [],
+  }));
+}
+
+/** `./alz evidence run`: preflight, then each selected stage, journaled and resumable. */
 export async function evidenceRun(options: RunOptions, deps: RunnerDeps): Promise<number> {
   const { out } = deps;
   const loaded = loadConfig(deps.root, options.configPath);
@@ -141,22 +180,29 @@ export async function evidenceRun(options: RunOptions, deps: RunnerDeps): Promis
     throw error;
   }
   const gates = gatePlan(release.ids, release.outOfScope);
-  out("Evidence runner — candidate " + config.candidateCommit.slice(0, 12) + " on " + config.targetHardwareId + (options.dryRun ? " (dry run)" : "") + ". ACT stays disabled.");
+  const stagesSelected = selectedStages(options);
+  out("Evidence runner — candidate " + config.candidateCommit.slice(0, 12) + " on " + config.targetHardwareId + (options.dryRun ? " (dry run)" : "") + ".");
   out("Preflight");
-  const preflight = await runPreflight({ root: deps.root, env: deps.env, config, source: deps.source(), probe: deps.probe });
+  const preflight = await runPreflight({ root: deps.root, env: deps.env, config, source: deps.source(), probe: deps.probe, stages: stagesSelected, changedPaths: deps.changedPaths });
   printPreflight(out, preflight);
-  const stages = selectedStages(options).map((stage) => planStage(stage, config, preflight.actScope));
+  const stages = stagesSelected.map((stage) => planStage(stage, config, preflight, deps.root));
   out("Gates: " + gateCounts(gates) + ".");
 
   if (options.dryRun) {
-    const file = join(dryRunDirectory(deps.root, config, options.synthetic), "dry-run.json");
-    writeRunnerDocument(file, options.synthetic ? "SYNTHETIC" : "UNLABELED", {
-      schemaVersion: 1, kind: "EVIDENCE_RUNNER_DRY_RUN", evidence: false, candidateCommit: config.candidateCommit, configSha256,
-      targetHardwareId: config.targetHardwareId, host: deps.host, at: deps.now().toISOString(), preflight, stages, gates,
-    });
-    out("Plan");
-    for (const stage of stages.slice(1)) out("  " + mark(stage.outcome) + "  " + stage.stage + ": " + stage.code + " — " + stage.detail);
-    out("Dry run: nothing ran and no evidence was written. Plan: " + shown(deps.root, file));
+    try {
+      const file = join(dryRunDirectory(deps.root, config, options.synthetic), "dry-run.json");
+      writeRunnerDocument(file, options.synthetic ? "SYNTHETIC" : "UNLABELED", {
+        schemaVersion: 1, kind: "EVIDENCE_RUNNER_DRY_RUN", evidence: false, candidateCommit: config.candidateCommit, configSha256,
+        targetHardwareId: config.targetHardwareId, host: deps.host, at: deps.now().toISOString(), preflight, stages, gates,
+      });
+      out("Plan");
+      for (const stage of stages.slice(1)) out("  " + mark(stage.outcome) + "  " + stage.stage + ": " + stage.code + " — " + stage.detail);
+      out("Dry run: nothing ran and no evidence was written. Plan: " + shown(deps.root, file));
+    } catch (error) {
+      // A refused write of the plan is a refusal like any other (review N2 on #292): its code, exit 2.
+      if (error instanceof EvidencePathError || error instanceof EvidenceWriteError) { out(error.code + ": " + error.message); return EXIT.BLOCKED; }
+      throw error;
+    }
     return preflight.blocked || stages.slice(1).some((stage) => stage.outcome !== "PASS") ? EXIT.BLOCKED : EXIT.OK;
   }
   if (preflight.blocked) {
@@ -180,23 +226,40 @@ export async function evidenceRun(options: RunOptions, deps: RunnerDeps): Promis
     // Preflight runs every time: the identities and the contract authorization are re-checked before any stage.
     journal.start("preflight", "preflight", at());
     writeRunnerDocument(join(dir, "preflight.json"), label, {
-      schemaVersion: 1, kind: "EVIDENCE_RUNNER_PREFLIGHT", sourceCommit: config.candidateCommit, configSha256, targetHardwareId: config.targetHardwareId,
+      schemaVersion: 1, kind: "EVIDENCE_RUNNER_PREFLIGHT", sourceCommit: config.candidateCommit, headCommit: preflight.headCommit, configSha256, targetHardwareId: config.targetHardwareId,
       host: deps.host, at: at(), checks: preflight.checks, identities: preflight.identities, ownerInputs: preflight.ownerInputs,
     });
     journal.finish("preflight", "preflight", "PASS", at());
+    const childHome = join(dir, "home");
+    ensureRealFolder(childHome);
+    const realRoot = realpathSync(deps.root);
+    const ctx: StageContext = {
+      root: realRoot, config, label, runDir: dir, runDirRel: relative(realRoot, dir).split("\\").join("/"), journal, preflight, env: deps.env, childHome,
+      realHome: deps.realHome ?? homedir(), spawn: deps.spawn ?? spawnChild, terminal: deps.terminal, at, out,
+    };
     out("Stages (" + label + ")");
-    // Exit 0 only when every requested stage produced its evidence. A stage that was skipped, held, not built yet or
-    // blocked produced nothing, so the run is BLOCKED; a preflight alone produces no evidence either.
+    // Exit 0 only when every requested stage produced its evidence. A stage that was skipped, refused or failed produced
+    // nothing, so the run is BLOCKED; a preflight alone produces no evidence either. The first stage that is refused or fails
+    // stops the run: later stages wait for the person to fix it and rerun (passed stages are not repeated).
     let produced = 0;
     let blocked = false;
-    for (const stage of stages.slice(1)) {
-      const previous = journal.record(stage.stage, stage.stage);
-      if (previous.status === "FINISHED" && previous.outcome === "PASS") { produced += 1; out("  ok       " + stage.stage + ": already produced in this run, skipped."); continue; }
-      journal.start(stage.stage, stage.stage, at());
-      journal.finish(stage.stage, stage.stage, stage.outcome, at(), stage.code);
-      out("  " + mark(stage.outcome) + "  " + stage.stage + ": " + stage.code + " — " + stage.detail);
-      if (stage.outcome === "PASS") produced += 1;
-      else blocked = true;
+    for (const stage of stagesSelected.slice(1)) {
+      const previous = journal.record(stage, stage);
+      if (previous.status === "FINISHED" && previous.outcome === "PASS") { produced += 1; out("  ok       " + stage + ": already produced in this run, skipped."); continue; }
+      out("Stage " + stage + (isGuidedStage(stage) ? " (guided: you answer every ./alz apply prompt yourself)" : ""));
+      journal.start(stage, stage, at());
+      const result = await runStage(ctx, stage, gates);
+      journal.finish(stage, stage, result.outcome, at(), result.code);
+      writeRunnerDocument(join(dir, stageFolder(stage), "stage.json"), label, {
+        schemaVersion: 1, kind: "EVIDENCE_RUNNER_STAGE", stage, outcome: result.outcome, code: result.code, detail: result.detail,
+        candidateCommit: config.candidateCommit, headCommit: preflight.headCommit, targetHardwareId: config.targetHardwareId, host: deps.host, at: at(),
+        identity: preflight.identities.find((check) => check.id === "identity:" + stage.replace("-readonly", "")) ?? null,
+        steps: stepsOf(journal.entries(), stage),
+      });
+      out("  " + mark(result.outcome) + "  " + stage + ": " + result.code + " — " + result.detail);
+      if (result.outcome === "PASS") { produced += 1; continue; }
+      blocked = true;
+      if (result.outcome !== "SKIPPED") break;
     }
     const done = !blocked && produced > 0;
     out((done ? "DONE" : produced === 0 ? "BLOCKED: no evidence was produced" : "BLOCKED") + ". Journal " + shown(deps.root, join(dir, "journal.jsonl")) +
@@ -235,11 +298,14 @@ export async function evidenceStatus(options: Pick<RunOptions, "configPath" | "s
   let next: StageId | undefined;
   for (const stage of STAGES) {
     const record = stepRecord(lines, stage, stage);
+    // A guided stage nobody ran is not listed: it runs only when named.
+    if (record.status === "NOT_RUN" && isGuidedStage(stage)) continue;
     const text = record.status === "NOT_RUN" ? "not run" : record.status === "INTERRUPTED" ? "INTERRUPTED (started, never finished)" : record.outcome + (record.code ? " " + record.code : "");
-    out("  " + stage.padEnd(15) + text);
+    const documents = lines.filter((line) => line.stage === stage && line.event === "finish" && line.documents).flatMap((line) => line.documents!).length;
+    out("  " + stage.padEnd(24) + text + (documents ? " (" + documents + " document(s))" : ""));
     if (!next && DEFAULT_STAGES.includes(stage) && !(record.status === "FINISHED" && (record.outcome === "PASS" || record.outcome === "SKIPPED"))) next = stage;
   }
-  out("  Next: " + (next ? next + " (slice " + STAGE_SLICE[next] + (BUILT_STAGES.has(next) ? ", built" : ", not built yet") + ")" : "nothing; every default stage is done"));
+  out("  Next: " + (next ? next + " (slice " + stageSlice(next) + ")" : "nothing in a default run; act, cleanup and recovery stages run when named (docs/evidence-runner.md, the owner run sheet)"));
   out("Owner inputs");
   for (const input of ownerInputs(config, authorizationState(deps.root))) out("  " + input.code + " — " + input.detail);
   out("Gates");

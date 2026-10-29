@@ -39,6 +39,9 @@ export const UNIMPORTABLE_OWNERS = {
   "src/cli/operator.ts": ["test/operations-parity.test.ts", "test/operator-cli.test.ts"],
   // The console launcher starts the server at module top level; the console tests read its text (loopback bind, session token, the ACT banner).
   "src/cli/operator-web.ts": ["test/ui-channel.test.ts"],
+  // The provider qualification producer runs at module top level; its focused test reads its text (it records the observed
+  // identity from the pure functions it imports, src/qualification/observed-identity.ts, which that test also covers).
+  "src/cli/provider-qualification.ts": ["test/provider-qualification-observed.test.ts"],
 };
 
 // Owner-facing templates no code imports: a focused test reads each from disk and checks what it tells the owner (that it

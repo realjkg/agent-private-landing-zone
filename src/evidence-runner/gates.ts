@@ -40,13 +40,16 @@ export function gateModeOf(id: string): GateMode {
 const NO_PRODUCER_PLAN = "A new PLAN names this gate's producer (delegated decision 4); the runner writes nothing for it.";
 
 /**
- * Gates no producer can run yet, so the runner reports them and writes nothing, whatever their mode would otherwise plan. Azure
- * Bicep (path 4, owner decision E2) and GCP Terraform (path 5, owner decision 6481421924 on issue #39) are admitted in code for DEV
- * only, so their preview gates are produced at seal like any other admitted path's and are not listed here. The live read-only GCP
- * inventory (`gcp-provider`) has no runner stage yet.
+ * Gates no producer can run yet, so the runner reports them and writes nothing, whatever their mode would otherwise plan. The
+ * gcp-readonly stage verifies the GCP project, but there is no read-only GCP inventory producer on main, so `gcp-provider` has
+ * none.
  */
 const NOT_ADMITTED: Readonly<Record<string, string>> = {
-  "gcp-provider": "The runner has no read-only GCP inventory stage yet, so no producer can run this gate. ",
+  "gcp-provider": "The gcp-readonly stage verifies the project, but no read-only GCP inventory producer exists on main, so nothing can produce this gate. ",
+};
+
+const ACT_STAGE_OF: Readonly<Record<string, string>> = {
+  "act:aws-terraform": "aws-terraform", "act:aws-cdk": "aws-cdk", "act:azure-terraform": "azure-terraform", "act:azure-bicep": "azure-bicep", "act:gcp-terraform": "gcp-terraform",
 };
 
 function planFor(id: string): GatePlan {
@@ -54,28 +57,28 @@ function planFor(id: string): GatePlan {
   const mode = gateModeOf(id);
   switch (mode) {
     case "CI":
-      return { id, mode: "NO_PRODUCER", note: "The producer is in open PR #274 and not on main yet. " + NO_PRODUCER_PLAN };
+      return { id, mode: "OWNER", slice: "S6", note: "Run ./alz qualify ci-evidence --gate " + id + " --run <run id> --artifacts <export dir> for the candidate's supply-chain run; the summary indexes .runs/release/ci/" + id + "-<candidate12>.json." };
     case "SECURITY_SCAN":
     case "ISOLATED_RECOVERY":
     case "INDEPENDENT_REVIEW":
     case "LIVE_METRIC":
       return { id, mode: "NO_PRODUCER", note: NO_PRODUCER_PLAN };
     case "PRIVATE_MODEL":
-      return { id, mode: "OWNER", note: "Run ./alz models verify --production on the target model host. In this build the runner has no model stage; a later slice may add one for the model host." };
+      return { id, mode: "OWNER", slice: "S6", note: "Run ./alz models verify --production on this host (targetHardwareId); the summary indexes the newest passing record under .runs/model-qualification." };
     case "LIVE_PROVIDER":
-      if (id === "aws-provider") return { id, mode: "AUTO", slice: "S2", note: "Needs the federated qualification identity and the owner's no-op stack; BLOCKED until both exist." };
+      if (id === "aws-provider") return { id, mode: "AUTO", slice: "S2", note: "aws-readonly: ./alz qualify provider-aws under the federated DISCOVERY identity, against the owner's no-op stack." };
       // Only the Azure gate is the S3 stage's; any other live-provider gate has no producer here, never Azure's by default.
       return id === "azure-provider"
-        ? { id, mode: "AUTO", slice: "S3", note: "Needs the federated qualification identity; BLOCKED until it exists." }
+        ? { id, mode: "AUTO", slice: "S3", note: "azure-readonly: ./alz qualify provider-azure under the federated DISCOVERY identity." }
         : { id, mode: "NO_PRODUCER", note: NO_PRODUCER_PLAN };
     case "LIVE_PREVIEW":
-      return { id, mode: "GUIDED", slice: "S5", note: "Produced at seal after the owner's reviewed authorization commit (owner input); only for the authorized path." };
+      return { id, mode: "GUIDED", note: "Produced by ./alz apply preview-evidence after a seal of the authorized path; the runner does not sequence it." };
     case "LIVE_ACT":
-      return id === "act:aws-cdk"
-        ? { id, mode: "GUIDED", slice: "S5", note: "CDK_CLEANUP_NOT_IMPLEMENTED until the CDK cleanup slices land; only for the authorized path." }
-        : { id, mode: "GUIDED", slice: "S5", note: "A person runs the DEV apply after the owner's authorization commit; only for the authorized path." };
+      return Object.hasOwn(ACT_STAGE_OF, id)
+        ? { id, mode: "GUIDED", slice: "S5", note: "--stage act:" + ACT_STAGE_OF[id] + ", then --stage cleanup:" + ACT_STAGE_OF[id] + " (which records it with ./alz apply record-live), at the commit carrying this path's reviewed contract; you type every phrase." }
+        : { id, mode: "NO_PRODUCER", note: "Unmapped ACT gate. " + NO_PRODUCER_PLAN };
     case "ACT_RECOVERY":
-      return { id, mode: "GUIDED", slice: "S5", note: "Optional recovery stage after the authorization commit (./alz apply record-recovery)." };
+      return { id, mode: "GUIDED", slice: "S5", note: "--stage recovery after a real interrupted apply and a new approved one (./alz apply record-recovery)." };
     case "LIFECYCLE":
       return id.startsWith("platform:")
         ? { id, mode: "OWNER", note: "The owner runs ./alz lifecycle on a disposable host of this platform; the runner does not ingest its report yet." }

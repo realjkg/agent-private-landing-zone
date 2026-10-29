@@ -25,10 +25,26 @@ test("start and finish lines record each step; a start without a finish reads as
   journal.start("aws-readonly", "aws-readonly", "t2");
   journal.finish("aws-readonly", "aws-readonly", "BLOCKED", "t3", "NOT_BUILT");
   const reopened = new Journal(file, identity);
-  assert.deepEqual(reopened.record("preflight", "preflight"), { status: "FINISHED", outcome: "PASS" });
-  assert.deepEqual(reopened.record("aws-readonly", "aws-readonly"), { status: "FINISHED", outcome: "BLOCKED", code: "NOT_BUILT" });
+  assert.deepEqual(reopened.record("preflight", "preflight"), { status: "FINISHED", outcome: "PASS", documents: [] });
+  assert.deepEqual(reopened.record("aws-readonly", "aws-readonly"), { status: "FINISHED", outcome: "BLOCKED", code: "NOT_BUILT", documents: [] });
   assert.equal(readJournal(file).length, 4);
   assert.equal(statSync(file).mode & 0o777, 0o600);
+});
+
+test("a finish line keeps the child's exit code and the documents its producer wrote; a malformed document entry is refused", () => {
+  const file = join(folder(), "journal.jsonl");
+  const journal = new Journal(file, identity);
+  const documents = [{ name: "sealed-plan", path: ".runs/apply/evidence/abc", sha256: "d".repeat(64) }];
+  journal.start("act:aws-terraform", "seal", "t0");
+  journal.finish("act:aws-terraform", "seal", "PASS", "t1", "CHILD_PASSED", { exitCode: 0, documents });
+  assert.deepEqual(new Journal(file, identity).record("act:aws-terraform", "seal"), { status: "FINISHED", outcome: "PASS", code: "CHILD_PASSED", documents });
+  assert.equal(readJournal(file)[1].exitCode, 0);
+  for (const bad of [[{ name: "x", path: "/etc/passwd", sha256: "d".repeat(64) }], [{ name: "x", path: "../x", sha256: "d".repeat(64) }], [{ name: "X", path: "a", sha256: "d".repeat(64) }],
+    [{ name: "x", path: "a", sha256: "short" }], [{ name: "x", path: "a", sha256: "d".repeat(64), extra: 1 }], "nope"]) {
+    const other = join(folder(), "journal.jsonl");
+    writeFileSync(other, JSON.stringify({ schemaVersion: 1, stage: "summary", step: "index", event: "finish", at: "t", pid: 1, outcome: "PASS", documents: bad, ...identity }) + "\n");
+    assert.throws(() => readJournal(other), refusal("EVIDENCE_JOURNAL_UNREADABLE"), JSON.stringify(bad));
+  }
 });
 
 test("a journal of another run is refused, naming what differs", () => {
