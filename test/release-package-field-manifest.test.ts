@@ -57,16 +57,18 @@ test("with no inputs, nothing is claimed: artifacts PENDING, scans NOT_RUN, no p
   assert.match(rendered, /\*\*ACT:\*\* DISABLED by default/);
 });
 
-test("the six-path matrix follows the journey rows, the production contract's pilot pairs and the act gates; GCP API-native is NOT_AVAILABLE", () => {
+test("the six-path matrix follows the journey rows, the production contract's pilot pairs and the act gates; GCP API-native is DEV_ONLY with its own gate (INT-2)", () => {
   const m = build();
   assert.deepEqual(m.paths.map((x) => x.provider + " " + x.engine), REQUIRED_ROWS.map((x) => x.cloud + " " + x.path));
   const by = (provider: string, engine: string) => m.paths.find((x) => x.provider === provider && x.engine === engine)!;
   const native = by("GCP", "GCP_API");
-  assert.equal(native.packageScope, "NOT_AVAILABLE");
-  assert.equal(native.liveQualification, "NOT_AVAILABLE");
-  assert.equal(native.capability.contractAdmission, "NOT_ADMITTED");
-  assert.deepEqual(native.actGate, { id: null, status: "NO_GATE" });
-  for (const row of m.paths.filter((x) => !(x.provider === "GCP" && x.engine === "GCP_API"))) {
+  assert.equal(native.packageScope, "DEV_ONLY");
+  assert.equal(native.liveQualification, "NOT_QUALIFIED");
+  assert.equal(native.capability.contractAdmission, "ADMITTED");
+  assert.equal(native.actGate.id, "act:gcp-gcp_api");
+  assert.equal(native.actGate.status, "BLOCKED");
+  assert.notEqual(native.actGate.id, by("GCP", "TERRAFORM").actGate.id, "never GCP Terraform's gate");
+  for (const row of m.paths) {
     assert.equal(row.capability.contractAdmission, "ADMITTED", row.title);
     assert.equal(row.packageScope, "DEV_ONLY", row.title);
   }
@@ -76,6 +78,8 @@ test("the six-path matrix follows the journey rows, the production contract's pi
   }
   assert.equal(contractAdmissionOf("ORACLE", "TERRAFORM"), "NOT_ADMITTED");
   assert.equal(contractAdmissionOf("AZURE", "CDK"), "NOT_ADMITTED");
+  assert.equal(contractAdmissionOf("AZURE", "GCP_API"), "NOT_ADMITTED");
+  assert.equal(contractAdmissionOf("AWS", "GCP_API"), "NOT_ADMITTED");
 });
 
 test("a path is live-qualified only with its act gate PASS for this commit on LIVE evidence and its journey row LIVE_PASS", () => {

@@ -154,7 +154,7 @@ canonicalJson({ kind: "IN_PROCESS_MODULE", engine: "GCP_API",
 - `blueprintFromGcpApiTopic` (`src/observe/blueprint.ts`) maps the read-back `{ name, labels }` to one entry. Labels are never copied.
 - A name in another project, a malformed name, or an id outside the `alz-` topic rule gives no entry, so the planned topic is `missing`. Tests: `test/observe-blueprint-gcp-api.test.ts`.
 - `stateDocument`, `settle` and `recoveryFiles` may now return a promise, and the driver awaits each one (#355 N3). An engine can therefore read the topic during or after `settle`.
-- The `GCP_API_TOPIC` source and its branch in `keepBlueprint` remain INT-2's.
+- The `GCP_API_TOPIC` source and its branch in `keepBlueprint` are in place (INT-2).
 
 ## 3. The rest of the design
 
@@ -240,7 +240,7 @@ Moving any of these is a target move. Every field is preserved through apply, ob
 - The topic to delete is not read from the current contract. It comes from the run's records: the sealed plan's change list (`google_pubsub_topic.<topicId>`) and the blueprint id, which `requireProposalDerivedFromRecords` rebuilds and compares by hash. The engine's `planDestroy` then checks that address against the pinned target, which matches the sealed one exactly (the hash check above).
 - So cleanup runs on the run's sealed target and sealed name. A run under an older target is cleaned up by restoring that target in a reviewed contract, or by a person by hand. Nothing silently follows a newer target.
 
-**Contract scope.** GCP_API joins `DEV_ONLY_PATHS`, so the contract must state `enabledEnvironments: ["DEV"]`, and it leaves `PLANNED_PATHS`. Both are INT-2's change, after G2 is reviewed.
+**Contract scope.** GCP_API is in `DEV_ONLY_PATHS`, so the contract must state `enabledEnvironments: ["DEV"]`, and it has left `PLANNED_PATHS` (INT-2).
 
 **For the cleanup classifier.** With GCP_API, the state-bucket list the classifier protects is empty (there is no state). The sentinel is never parsed as a bucket. This is INT's change to `gcpBackendBuckets` when the GCP provider lands.
 
@@ -396,14 +396,14 @@ Each of those can only fail as a definite refusal of the one `PUT`, which D14 re
 | 200 | present, the sealed name, the sealed labels and storage policy | `SUCCEEDED` |
 | 200 | anything else | `PARTIAL_REQUIRES_REVIEW` |
 | 409 `ALREADY_EXISTS` | anything | `PARTIAL_REQUIRES_REVIEW`. Never success, and never "no change" (the reviewer's rule; a run-unique 48-bit name should not exist, so a person looks) |
-| other definite 4xx (400, 403, 404, 429) | absent on every read | `FAILED_NO_CHANGE` |
+| other definite 4xx (400, 401, 403, 404, 429) | absent on every read | `FAILED_NO_CHANGE` |
 | other definite 4xx | present | `PARTIAL_REQUIRES_REVIEW` |
 | 5xx, or no answer | present with the sealed labels and policy | `SUCCEEDED` (the read is positive evidence the create landed) |
 | 5xx, or no answer | absent, or unreadable | `PARTIAL_REQUIRES_REVIEW`. A create may still land, so it is never `FAILED_NO_CHANGE` without a definite refusal |
 
 "Absent" in this table means the DISCOVERY `GET` answered 404 on every read. A read that fails (401, 403, 429, 5xx, no answer or an unexpected body) is unreadable, never absent, so it can only lead to `PARTIAL_REQUIRES_REVIEW`. "Present" with the wrong labels or the wrong storage policy is the "anything else" row, never `SUCCEEDED` (D11).
 
-There is no `KILLED` outcome: one short call has nothing to stop part way. A signal during the `PUT` is settled by the read-back like a lost answer.
+There is no `KILLED` outcome: one short call has nothing to stop part way. A signal during the `PUT` is settled by the read-back like a lost answer. A signal that arrives after the approvals are consumed but before the `PUT` (for example during APPLY's token exchange) stops the engine at its next stop point: nothing is sent, and the driver reports `APPROVALS_SPENT` (#357 review N1; the driver gives an in-process engine its interrupt through `stopWhen`).
 
 **Idempotency.** Each layer has one job:
 - The driver's ledger applies an artifact once.
@@ -599,10 +599,10 @@ At most one of them is what Google documents for `sts.googleapis.com/v1/token` (
 4. **G1**: the `gcp-rest` scope fix and storage-policy comparison (D15), and the `bootstrap/gcp` identity review with D12's checklist and contract-target template.
 5. **INT, the D5 interface change**, in its own PR. No engine behavior changes.
 6. **G2**, engine-local (`gcp-api.ts`, its tests and docs): the spec, not yet in `SPECS`. The blueprint mapper, the shared exchange and the unit change are INT's.
-   - **Status: implemented (lane G2).** The spec is `gcpApiEngine()` / `GCP_API` in `src/apply/engines/gcp-api.ts`, not registered. `docs/act-pilot-gcp-api.md` describes it, lists what INT-2 must add, and records the GF1 to GF11 results.
+   - **Status: implemented (lane G2), registered by INT-2.** The spec is `gcpApiEngine()` / `GCP_API` in `src/apply/engines/gcp-api.ts`. `docs/act-pilot-gcp-api.md` describes it, lists what INT-2 added, and records the GF1 to GF11 results.
    - Two placements follow from the interface. `EngineApplyRun.prepare` and `EngineCleanupRun.prepare` receive no artifact and no address. So the sealed topic's own `GET` runs in `rederive` (D14), and cleanup's label and policy read runs in `planDestroy` (D16). Both are awaited and come before consumption, with the same refusals.
-   - The runs take the sealed plan's `unit`, which INT-2 passes from the driver. Without it, they refuse `UNIT_NOT_GIVEN`.
-7. **INT-2**: `SPECS`, the ids and enums, the contract scope, `pilotUnitOf`, the evidence fields, the release path `act:gcp-gcp_api`; L7 adds its rows.
+   - The runs take the sealed plan's `unit`, which the driver passes (INT-2). Without it, they refuse `UNIT_NOT_GIVEN`.
+7. **INT-2** (done): `SPECS`, the ids and enums, the contract scope, the evidence fields, the release path `act:gcp-gcp_api` and its rows.
 8. The evidence checklist, then the owner's inputs and the owner's DEV run.
 
 This matches the coordinator's serialized order in 6483366237.
@@ -663,7 +663,7 @@ All of these are SYNTHETIC: a fake for STS, IAM Credentials, Pub/Sub and Cloud A
 - `ACT_RELEASE_PATHS` yields `act:gcp-gcp_api`.
 - `journeys.json` has a `GCP/GCP_API` row, and it joins its gate and live record.
 - `scope.json` `actPaths` still equals `ACT_RELEASE_PATHS`.
-- `test/apply-gcp-api.test.ts`'s "no engine spec exists for GCP_API" assertion flips in INT-2, and only there.
+- `test/apply-gcp-api.test.ts`'s registration assertion flipped in INT-2, and only there.
 
 **Selector.** `scripts/qa-affected.mjs` selects the new tests for `gcp-api.ts`, `gcp-rest.ts`, the blueprint mapper and `gcp-credentials.ts`. A fixture loaded from disk, such as the committed `request.json`, gets an explicit ownership rule.
 

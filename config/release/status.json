@@ -526,6 +526,25 @@
       "nextAction": "Admitted in code for DEV only (#339; owner decision 6481421924 on #39): the driver-level journey passes synthetically (SYNTHETIC: fake terraform and a fake Google REST API). Registration is not readiness. Release admission now lists GCP / TERRAFORM as a pilot combination (TERRAFORM_APPLY_OF_SEALED_PLAN; owner decision 6483993252, INT-1c), so a PILOT release can name a GCP Terraform contract: alone through actPilot, or beside the other paths through actPilots with the commit that carries its contract. #345 (G1) adds the committed canary, the driver-level emulated run, bootstrap/gcp and the evidence checklist docs/act-pilot-gcp-evidence.md. What remains is the owner's: provide the DEV project id, location, execution host and the workload identity federation pool, provider and service accounts per identity (never credentials); run bootstrap/gcp; fill a DEV-only GCP Terraform contract (project, region, gcs state backend, the google_pubsub_topic canary, public keys only) until ./alz apply contract-check --file reports COMPLETE; commit it with its authorize entry in one reviewed change; have a person run ./alz apply qualify against the real Terraform; supervise one DEV apply recorded with ./alz apply record-live; separately authorize the live cleanup of what it created. Owner decision 6486426552 (#39): every Terraform contract must set embedStateWrite true, so the sealed plan names STATE_WRITE for the state backend; a contract without it fails to load, and the binding is re-checked at seal, qualify, apply and cleanup before anything changes (INT-3). EMULATED: every state and lock request of a bound apply and cleanup is STATE_WRITE's, APPLY never reaches the bucket, and a renewed credential file is used without resealing (docs/act-pilot-simulation-gcp.md); unverified on real Google Cloud."
     },
     {
+      "gate": "act:gcp-gcp_api",
+      "candidate": null,
+      "owner": "OWNER",
+      "status": "BLOCKED",
+      "evidenceMode": "SYNTHETIC",
+      "evidenceRefs": [
+        "config/acceptance/journeys.json (GCP GCP_API: steps BLOCKED on a console journey test; every row proof SYNTHETIC_PASS; live BLOCKED)",
+        "test/apply-emulated-gcp-api.test.ts (the real driver: seal, approve, apply, observe, propose-cleanup, cleanup and verify-cleanup through sealPreview, runApply, observeRun, buildCleanupProposal, runCleanup and verifyProposalLeftovers, over a loopback Google; EMULATED)",
+        "test/apply-gcp-api.test.ts (the GCP_API spec's refusals, D1 to D20; SYNTHETIC)"
+      ],
+      "testedScope": "Full lifecycle on the real GCP DEV project through the API-native path: prepare, preview, approve, execute (one PUT of the sealed topic), observe and cleanup (one DELETE of the run's topic) of one labeled google_pubsub_topic.",
+      "invalidatedBy": [
+        "the candidate commit changes",
+        "the pilot contract or its authorize entry changes",
+        "src/apply, the GCP_API engine module closure (D1) or the shared token exchange changes"
+      ],
+      "nextAction": "Registered and admitted in code for DEV only by INT-2 (owner decision 6483993252 on #39): GCP / GCP_API is an actPilot combination with its own mutation (GCP_PUBSUB_TOPIC_CREATE_OF_SEALED_REQUEST), never GCP Terraform's. The real driver runs the path end to end over a loopback Google (EMULATED: test/apply-emulated-gcp-api.test.ts). Registration is not readiness, and this gate stays BLOCKED until live evidence exists. Engineering still owes a console (ui) journey test through the real pilot router. Facts GF1 (the token exchange's form encoding), the GF3 query syntax (labels.k:v, now sent, with an exact client-side check), GF4's read-back, GF5, GF6's duplicate create, GF7, GF9 and GF10's custom-role support are shown only by the owner's first live run, and each fails closed (docs/act-pilot-gcp-api.md). What remains is the owner's: the DEV project, region and topicPrefix (and parent, optionally); bootstrap/gcp's two identities (DISCOVERY and APPLY) with D12's custom roles; a DEV-only GCP_API contract (backend GCP_API_NO_STATE, workspace default, the one google_pubsub_topic canary, public keys only) until ./alz apply contract-check --file reports COMPLETE; commit it with its authorize entry in one reviewed change; have a person run ./alz apply qualify; supervise one DEV apply recorded with ./alz apply record-live; separately authorize the live cleanup of the run's topic."
+    },
+    {
       "gate": "act-run-recovery",
       "candidate": null,
       "owner": "OWNER",

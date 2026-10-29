@@ -336,7 +336,7 @@ test("every contract signal is covered by the runtime signal catalog", () => {
 
 // docs/act-pilot-plan.md. ACT is DISABLED globally; the one exception is the
 // pilot, which exists only through a valid, enabled pilot contract file.
-test("the pilot ACT setting lists exactly five explicit provider/engine pairs under an enabled contract, each with its own engine's mutation, and ACT stays disabled globally", () => {
+test("the pilot ACT setting lists exactly six explicit provider/engine pairs under an enabled contract, each with its own engine's mutation, and ACT stays disabled globally", () => {
   const release = PRODUCTION_DEPLOYMENT_CONTRACT.spec.release;
   assert.equal(release.actEnabled, false);
   assert.equal(PRODUCTION_DEPLOYMENT_CONTRACT.spec.infrastructureMutation, "DISABLED");
@@ -346,15 +346,16 @@ test("the pilot ACT setting lists exactly five explicit provider/engine pairs un
       { provider: "AZURE", engine: "TERRAFORM", mutation: "TERRAFORM_APPLY_OF_SEALED_PLAN" },
       { provider: "AWS", engine: "TERRAFORM", mutation: "TERRAFORM_APPLY_OF_SEALED_PLAN" },
       { provider: "AWS", engine: "CDK", mutation: "CLOUDFORMATION_EXECUTE_OF_SEALED_CHANGE_SET" },
-      // Owner decision 6483993252 (#39): the two DEV-only paths admitted in code. GCP / GCP_API is not listed (INT-2).
+      // Owner decision 6483993252 (#39): the DEV-only paths admitted in code, GCP / GCP_API last (INT-2).
       { provider: "AZURE", engine: "BICEP", mutation: "AZURE_DEPLOYMENT_STACK_CREATE_OF_SEALED_TEMPLATE" },
       { provider: "GCP", engine: "TERRAFORM", mutation: "TERRAFORM_APPLY_OF_SEALED_PLAN" },
+      { provider: "GCP", engine: "GCP_API", mutation: "GCP_PUBSUB_TOPIC_CREATE_OF_SEALED_REQUEST" },
     ],
   });
-  // Each pair stands alone; an unlisted pair, a wildcard, a cross-provider engine or GCP's API-native engine is not a pilot.
+  // Each pair stands alone; an unlisted pair, a wildcard or a cross-provider engine (GCP_API off GCP among them) is not a pilot.
   assert.ok(pilotCombinationListed("AZURE", "TERRAFORM") && pilotCombinationListed("AWS", "TERRAFORM") && pilotCombinationListed("AWS", "CDK"));
-  assert.ok(pilotCombinationListed("AZURE", "BICEP") && pilotCombinationListed("GCP", "TERRAFORM"));
-  for (const [p, e] of [["AZURE", "CDK"], ["*", "TERRAFORM"], ["AWS", "*"], ["GCP", "GCP_API"], ["GCP", "*"], ["*", "BICEP"], ["AWS", "BICEP"], ["GCP", "BICEP"], ["GCP", "CDK"], ["AWS", "PULUMI"], ["GCP", "NATIVE_API"], [undefined, undefined]]) {
+  assert.ok(pilotCombinationListed("AZURE", "BICEP") && pilotCombinationListed("GCP", "TERRAFORM") && pilotCombinationListed("GCP", "GCP_API"));
+  for (const [p, e] of [["AZURE", "CDK"], ["*", "TERRAFORM"], ["AWS", "*"], ["AWS", "GCP_API"], ["AZURE", "GCP_API"], ["*", "GCP_API"], ["GCP", "*"], ["*", "BICEP"], ["AWS", "BICEP"], ["GCP", "BICEP"], ["GCP", "CDK"], ["AWS", "PULUMI"], ["GCP", "NATIVE_API"], [undefined, undefined]]) {
     assert.equal(pilotCombinationListed(p, e), false, String(p) + "/" + String(e));
   }
   assert.doesNotThrow(() => assertProductionDeploymentContract());
@@ -370,9 +371,10 @@ test("mutation semantics are engine-specific: each listed pair names exactly its
   assert.equal(pilotMutationOf("AZURE", "BICEP"), "AZURE_DEPLOYMENT_STACK_CREATE_OF_SEALED_TEMPLATE");
   assert.notEqual(pilotMutationOf("AZURE", "BICEP"), pilotMutationOf("AZURE", "TERRAFORM"), "Bicep is not treated as Terraform");
   assert.equal(pilotMutationOf("GCP", "TERRAFORM"), "TERRAFORM_APPLY_OF_SEALED_PLAN");
-  // GCP_API has no engine spec yet and no listed pair: nothing lets it borrow GCP Terraform's mutation.
-  assert.equal(pilotMutationOf("GCP", "GCP_API"), undefined);
-  assert.equal(engineSpec("GCP_API"), undefined);
+  // GCP_API (INT-2) names its own engine's mutation, never GCP Terraform's.
+  assert.equal(pilotMutationOf("GCP", "GCP_API"), "GCP_PUBSUB_TOPIC_CREATE_OF_SEALED_REQUEST");
+  assert.equal(pilotMutationOf("GCP", "GCP_API"), engineSpec("GCP_API")?.mutation);
+  assert.notEqual(pilotMutationOf("GCP", "GCP_API"), pilotMutationOf("GCP", "TERRAFORM"), "GCP_API is not treated as GCP Terraform");
   assert.equal(pilotMutationOf("GCP", "*"), undefined);
 });
 
@@ -389,6 +391,10 @@ test("the production contract rejects a widened pilot scope or any global ACT en
   check((c) => { ((c.spec.release.actPilot as { combinations: Record<string, unknown>[] }).combinations[0]).engine = "PULUMI"; });
   check((c) => { (c.spec.release.actPilot as { combinations: unknown[] }).combinations.push({ provider: "AZURE", engine: "CDK", mutation: "X" }); });
   check((c) => { (c.spec.release.actPilot as { combinations: unknown[] }).combinations.push({ provider: "GCP", engine: "GCP_API", mutation: "TERRAFORM_APPLY_OF_SEALED_PLAN" }); });
+  // GCP_API is not GCP Terraform: its entry naming Terraform's mutation, or Terraform's entry naming GCP_API's, is a widened scope.
+  check((c) => { ((c.spec.release.actPilot as { combinations: Record<string, unknown>[] }).combinations[5]).mutation = "TERRAFORM_APPLY_OF_SEALED_PLAN"; });
+  check((c) => { ((c.spec.release.actPilot as { combinations: Record<string, unknown>[] }).combinations[4]).mutation = "GCP_PUBSUB_TOPIC_CREATE_OF_SEALED_REQUEST"; });
+  check((c) => { ((c.spec.release.actPilot as { combinations: Record<string, unknown>[] }).combinations[5]).provider = "AZURE"; });
   check((c) => { (c.spec.release.actPilot as { combinations: unknown[] }).combinations.push({ provider: "GCP", engine: "*", mutation: "TERRAFORM_APPLY_OF_SEALED_PLAN" }); });
   // Bicep is not Terraform: its entry naming Terraform's mutation is a widened scope.
   check((c) => { ((c.spec.release.actPilot as { combinations: Record<string, unknown>[] }).combinations[3]).mutation = "TERRAFORM_APPLY_OF_SEALED_PLAN"; });
@@ -408,5 +414,5 @@ test("the YAML contract states the same explicit pilot combinations and keeps AC
   for (const c of PRODUCTION_DEPLOYMENT_CONTRACT.spec.release.actPilot.combinations) {
     assert.ok(yaml.includes("- provider: " + c.provider + "\n          engine: " + c.engine + "\n          mutation: " + c.mutation), c.provider + c.engine);
   }
-  assert.equal((yaml.match(/- provider:/g) ?? []).length, 5);
+  assert.equal((yaml.match(/- provider:/g) ?? []).length, 6);
 });

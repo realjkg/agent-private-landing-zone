@@ -3,50 +3,41 @@ import { randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { after, before, describe, it } from "node:test";
+import { after, before, describe, test } from "node:test";
 
-import { consumeApprovals, signApproval, signRequest, verifyApprovalSet, verifyRequestSignature } from "../src/apply/approval.js";
-import { gcpProtectionOf } from "../src/apply/cleanup-gcp.js";
-import { buildCleanupProposal, protectedDeletionIn, type CleanupProposal } from "../src/apply/cleanup-proposal.js";
-import { isKillSwitchActive, loadPilotContract, pilotContractSha256, targetSha256Of } from "../src/apply/contract.js";
-import { cleanupScopeProblem } from "../src/apply/driver.js";
-import type { EngineSpec } from "../src/apply/engine-spec.js";
-import { gcpApiEngine, type GcpApiEngineSpec, type GcpApiUnit } from "../src/apply/engines/gcp-api.js";
-import { APPLY_AUTHORITY } from "../src/apply/evidence.js";
-import { GCP_API_BACKEND_SENTINEL, GCP_API_TARGET } from "../src/apply/gcp-api-target.js";
+import { signApproval } from "../src/apply/approval.js";
+import { buildCleanupProposal, signCleanupProposal, type CleanupProposal } from "../src/apply/cleanup-proposal.js";
+import { loadPilotContract, pilotContractSha256, writeQualificationEvidence } from "../src/apply/contract.js";
+import { runApply, runCleanup, sealPreview, type ApplyDeps } from "../src/apply/driver.js";
+import { engineOf, engineSpec } from "../src/apply/engine-spec.js";
+import { GCP_API, GCP_API_ENGINE_VERSION, gcpApiEngine, type GcpHttp } from "../src/apply/engines/gcp-api.js";
+import { GCP_API_BACKEND_SENTINEL } from "../src/apply/gcp-api-target.js";
 import { openNonceStore } from "../src/apply/nonces.js";
+import { loadRunRecords, observeRun, verifyProposalLeftovers, type ObserveDeps } from "../src/apply/observe.js";
 import { GCP } from "../src/apply/providers/gcp.js";
-import { recordSha256, verificationOf, type BlueprintRecord, type ObservationRecord } from "../src/apply/run-records.js";
-import { engineBinaryChange, loadSealedPlan, reviewBundleOf, sealPlan, verifyReviewBundle, verifySealedPlan, type LoadedPlan } from "../src/apply/seal.js";
-import type { ApplyEvidence, PilotContract, PlanChange, SignedApproval } from "../src/apply/types.js";
+import { readBlueprintRecord, verificationOf } from "../src/apply/run-records.js";
+import { readAppliedEvidence } from "../src/apply/live-record.js";
+import { loadSealedPlan } from "../src/apply/seal.js";
+import type { PilotContract, SignedApproval } from "../src/apply/types.js";
 import { pilotUnitOf } from "../src/apply/unit.js";
-import { blueprintFromGcpApiTopic } from "../src/observe/blueprint.js";
-import { createDiscoveryGcpReader } from "../src/observe/gcp-rest.js";
-import { observeBlueprint } from "../src/observe/verify.js";
 import type { ResolvedTarget } from "../src/teardown/driver/types.js";
 import { buildManifest, canonicalJson } from "../src/teardown/manifest.js";
-import { captureProjectFiles, createImmutableSnapshot } from "../src/teardown/snapshot.js";
-import { NOW, REQUESTER, SOURCE_COMMIT, approvalFor, approvers, keys, writeReviewedContract } from "./helpers/apply-fixtures.js";
+import { captureProjectFiles } from "../src/teardown/snapshot.js";
+import { sha256 } from "../src/util/sha256.js";
+import { NOW, REQUESTER, SOURCE_COMMIT, approvalFor, approvers, human, keys, writeReviewedContract } from "./helpers/apply-fixtures.js";
 import { startGcpApiEmulator, writeIdentities, type GcpApiEmulator } from "./helpers/gcp-api-emulator.js";
 
 /**
- * EMULATED (docs/act-pilot-gcp-api.md, "Evidence"; lane G2). Path 6, end to end, over a loopback Google: the GCP_API spec talks HTTP to
- * an emulator of STS, IAM Credentials, Pub/Sub and Cloud Asset (test/helpers/gcp-api-emulator.ts, the Google side of #345's emulator
- * with D12's custom roles), each request on a fresh connection (`agent: false`, as #356). No Google endpoint is contacted.
+ * EMULATED (docs/act-pilot-gcp-api.md, "Evidence"; INT-2, #357 review N3). Path 6, end to end, through the real driver over a loopback
+ * Google: `sealPreview`, `runApply`, `observeRun`, `buildCleanupProposal` and `signCleanupProposal`, `runCleanup` and
+ * `verifyProposalLeftovers`, with a reviewed GCP_API contract the product loads and authorizes itself. The registered GCP_API spec is the
+ * one the driver runs; only its HTTP client is the emulator's (test/helpers/gcp-api-emulator.ts: STS, IAM Credentials, Pub/Sub and
+ * Cloud Asset with D12's custom roles, each request on a fresh connection). No Google endpoint is contacted, and nothing here re-implements
+ * a driver step.
  *
- * What runs for real: the driver's sealing module (`sealPlan`: the artifact hash, the requester's signature, the encrypted vault,
- * `loadSealedPlan`), the review bundle and its verification, the module-hash check (`engineBinaryChange`), the requester and approval
- * verification and the once-only nonce store (`consumeApprovals`), the GCP reader (`GCP_REST`) and the observation verdict
- * (`observeBlueprint`), the blueprint mapper (`blueprintFromGcpApiTopic`), the GCP cleanup classifier and the driver's cleanup checks
- * (`gcpProtectionOf`, `protectedDeletionIn`, `cleanupScopeProblem`), the proposal builder's refusal of a run that did not succeed
- * (`buildCleanupProposal`), and the kill switch file (`isKillSwitchActive`).
- *
- * What does not, until INT-2 registers the spec: `runApply`, `runCleanup`, `observeRun`, `verifyProposalLeftovers`, `record-recovery`
- * and the CLI load the contract, and admission refuses a GCP_API contract (`NOT_IMPLEMENTED`, asserted below); `buildCleanupProposal`
- * for a SUCCEEDED run reaches the target hash through `engineOf`, which has no GCP_API spec either. So this test calls the spec's steps in
- * `runApply`'s and `runCleanup`'s order, and builds in memory the evidence and records those would write (TEST FIXTURE, marked where
- * it happens). It is never live provider qualification: IAM, scopes and request shapes Google accepts, Cloud Asset's indexing delay,
- * quotas and latency are not shown by an emulator (GF1 to GF11).
+ * The qualification evidence below is FORGED for the emulator (no person attests an emulator run), so the gates that read it run for real
+ * on it. This is never live provider qualification: IAM, scopes and request shapes Google accepts, Cloud Asset's indexing delay and label
+ * query syntax, quotas and latency are not shown by an emulator (GF1 to GF11). The repository ships no contract: ACT stays DISABLED.
  */
 
 const PROJECT = "examplefake-dev";
@@ -56,41 +47,58 @@ const AUDIENCE = "//iam.googleapis.com/projects/123456789012/locations/global/wo
 const TARGET: ResolvedTarget = { account: PROJECT, backend: GCP_API_BACKEND_SENTINEL, workspace: "default" };
 const POLICY = "2026-10-29.1";
 
-describe("EMULATED: GCP API-native over a loopback Google: seal, approve, apply, observe, propose-cleanup, cleanup, verify-cleanup", () => {
+describe("EMULATED: GCP API-native through the real driver over a loopback Google: seal, approve, apply, observe, propose-cleanup, cleanup, verify-cleanup", () => {
   const root = mkdtempSync(join(tmpdir(), "alz-gcp-api-em-"));
   const previousCwd = process.cwd();
   const previousKey = process.env.AGENTIC_EVIDENCE_KEY;
+  // The registered spec as it was, restored after: the driver runs `GCP_API` itself, with the emulator's HTTP client in it.
+  const registered = { ...GCP_API };
   let emulator: GcpApiEmulator;
-  let spec: GcpApiEngineSpec;
   let env: NodeJS.ProcessEnv;
   let email: (name: string) => string;
   let subjects: string[];
-  let contract: PilotContract;
+  let contractPath: string;
+  let vault: string;
   let killPath: string;
-  const nonces = openNonceStore(join(root, "nonces"));
-  const fresh = (name: string): string => { const dir = join(root, name + "-" + randomBytes(3).toString("hex")); mkdirSync(dir, { recursive: true }); return dir; };
+  /** What every request the engine and the reader send passes through first: a test can act at one request (the N1 interrupt). */
+  let onRequest: ((request: Parameters<GcpHttp>[0]) => void) | undefined;
+  const fresh = (name: string): string => { const dir = join(root, name + "-" + randomBytes(3).toString("hex")); mkdirSync(dir, { recursive: true, mode: 0o700 }); return dir; };
+  const http: GcpHttp = (request) => { onRequest?.(request); return emulator.http(request); };
 
   before(async () => {
     process.env.AGENTIC_EVIDENCE_KEY = randomBytes(32).toString("base64");
     process.chdir(root); // the vault writes sealed plans under ./.runs
     const ids = writeIdentities(fresh("identities"), PROJECT, AUDIENCE);
-    env = ids.env;
+    env = { ...ids.env };
+    for (const name of ["DISCOVERY", "APPLY"]) { env["ALZ_" + name + "_GOOGLE_PROJECT"] = PROJECT; env["ALZ_" + name + "_GOOGLE_REGION"] = REGION; }
     email = ids.email;
     subjects = Object.values(ids.subjectOf);
     emulator = await startGcpApiEmulator(ids.trust, {
       [email("DISCOVERY")]: ["pubsub.topics.get", "cloudasset.assets.searchAllResources"],
       [email("APPLY")]: ["pubsub.topics.create", "pubsub.topics.delete"],
     });
-    spec = gcpApiEngine({ http: emulator.http, settleDelayMs: 20 });
+    Object.assign(GCP_API, gcpApiEngine({ http, settleDelayMs: 20 }));
     killPath = join(root, "KILL");
-    contract = {
+    contractPath = join(fresh("contract"), "act-pilot-contract.json");
+    writeReviewedContract(contractPath, {
       schemaVersion: 1, enabled: true, provider: "GCP", engine: "GCP_API", enabledEnvironments: ["DEV"],
-      targets: { DEV: { projectId: PROJECT, region: REGION, parent: "folders/123456789", backend: GCP_API_BACKEND_SENTINEL, workspace: "default", topicPrefix: PREFIX, canary: { resources: [{ type: "google_pubsub_topic", count: 1 }] } } as never },
+      targets: { DEV: { projectId: PROJECT, region: REGION, parent: "folders/123456789", backend: GCP_API_BACKEND_SENTINEL, workspace: "default", topicPrefix: PREFIX, canary: { resources: [{ type: "google_pubsub_topic", count: 1 }] } } },
       requiredApprovals: { DEV: 1 }, maxApprovalAgeMinutes: 60, approvers, killSwitchPath: killPath, authorize: { DEV: ["APPLY", "CLEANUP"] },
-    } as unknown as PilotContract;
+    });
+    // FORGED qualification evidence for the emulator, one per adapter, bound to this module closure and these two service accounts.
+    vault = fresh("qualification");
+    for (const adapter of [GCP_API.previewAdapter(), GCP_API.applyAdapter, GCP_API.cleanupAdapter!]) {
+      const written = await writeQualificationEvidence({
+        schemaVersion: 1, engine: "GCP_API", realEngine: true, backendIdentitySeparated: true, projectId: PROJECT, region: REGION, backend: GCP_API_BACKEND_SENTINEL, workspace: "default",
+        stateWriteClientId: email("DISCOVERY"), applyClientId: email("APPLY"), terraformSha256: GCP_API.binarySha256(undefined, env)!, adapterVersion: adapter.adapterVersion, argvDigest: adapter.argvDigest,
+        engineVersion: GCP_API_ENGINE_VERSION, qualifiedAt: "2026-10-11T00:00:00.000Z",
+      } as never, GCP, vault);
+      assert.ok(written.ok, JSON.stringify(written));
+    }
   });
 
   after(async () => {
+    Object.assign(GCP_API, registered);
     await emulator?.close();
     process.chdir(previousCwd);
     if (previousKey === undefined) delete process.env.AGENTIC_EVIDENCE_KEY; else process.env.AGENTIC_EVIDENCE_KEY = previousKey;
@@ -99,299 +107,256 @@ describe("EMULATED: GCP API-native over a loopback Google: seal, approve, apply,
 
   // --- fixtures -------------------------------------------------------------------------------------------------------------
 
-  const contractSha256 = (): string => pilotContractSha256(contract);
-  const unit = () => pilotUnitOf({ provider: "GCP", contractSha256: contractSha256(), environment: "DEV", target: TARGET, engine: "GCP_API" });
+  type World = { deps: ApplyDeps; observe(at?: number): ObserveDeps };
+  function world(): World {
+    const evidenceDir = fresh("evidence");
+    const deps: ApplyDeps = {
+      sourceCommit: SOURCE_COMMIT, contractPath, qualificationDir: vault, evidenceDir, nonces: openNonceStore(fresh("nonces")), env, now: () => NOW,
+      scratchParent: fresh("scratch"), killPollMs: 40, killGraceMs: 400,
+    };
+    return { deps, observe: (at = 60_000) => ({ contractPath, evidenceDir, env, scratchParent: deps.scratchParent, now: () => new Date(NOW.getTime() + at), gcp: http }) };
+  }
+  const contract = (): PilotContract => loadPilotContract(contractPath) as PilotContract;
+  const unit = () => pilotUnitOf({ provider: "GCP", contractSha256: pilotContractSha256(contract()), environment: "DEV", target: TARGET, engine: "GCP_API" });
   function project() {
     const projectRoot = fresh("project");
     writeFileSync(join(projectRoot, "request.json"), JSON.stringify({ schemaVersion: 1, kind: "PUBSUB_TOPIC" }) + "\n");
-    const manifest = buildManifest({ engine: "GCP_API", mode: "PROJECT", target: TARGET, unitHash: "1".repeat(64), files: captureProjectFiles(projectRoot), policyVersion: POLICY, engineVersion: "gcp-api-1", providers: [], dependencies: [], inputs: [] } as never);
-    return { projectRoot, manifest };
+    const resolved = { engineVersion: GCP_API_ENGINE_VERSION, providers: [], dependencies: [], inputs: [] };
+    const manifest = buildManifest({ engine: "GCP_API", mode: "PROJECT", target: TARGET, unitHash: "1".repeat(64), files: captureProjectFiles(projectRoot), policyVersion: POLICY, ...resolved } as never);
+    return { projectRoot, manifest, resolved };
   }
-  type Project = ReturnType<typeof project>;
-  const snapshotOf = (p: Project) => createImmutableSnapshot(p.projectRoot, p.manifest, fresh("snapshots"));
-  const runInput = (p: Project, sealedUnit: GcpApiUnit) => ({ scratchDir: fresh("scratch"), env, manifest: p.manifest, pinned: contract.targets.DEV, spec: GCP, target: { ...TARGET }, engineVersion: "gcp-api-1", unit: sealedUnit });
+  const sealRequest = (p: ReturnType<typeof project>) => ({ invocation: human(TARGET), environment: "DEV" as const, target: { ...TARGET }, manifest: p.manifest, projectRoot: p.projectRoot, policyVersion: POLICY, resolved: p.resolved as never, requester: REQUESTER });
+  async function seal(w: World) {
+    const p = project();
+    const result = await sealPreview(sealRequest(p), w.deps);
+    assert.ok(result.ok, JSON.stringify(result));
+    const loaded = await loadSealedPlan(result.path);
+    assert.ok(loaded.ok);
+    return { sealed: result.sealed, project: p, loaded: { sealed: loaded.sealed, planBytes: loaded.planBytes } };
+  }
+  type Sealed = Awaited<ReturnType<typeof seal>>;
+  const apply = (w: World, s: Sealed, approvals: SignedApproval[] = [approvalFor(s.sealed, "alice")]) => runApply({
+    invocation: human(TARGET), environment: "DEV", target: { ...TARGET }, sealedPlan: s.loaded, manifest: s.project.manifest, projectRoot: s.project.projectRoot, approvals,
+  }, w.deps);
+  const cleanupApproval = (proposal: CleanupProposal, who: keyof typeof keys): SignedApproval => signApproval({
+    schemaVersion: 1, artifactSha256: proposal.proposalSha256, environment: proposal.environment, target: proposal.target, approverId: who,
+    issuedAt: new Date(NOW.getTime() - 5 * 60_000).toISOString(), expiresAt: new Date(NOW.getTime() + 25 * 60_000).toISOString(), nonce: randomBytes(16).toString("hex"),
+  }, keys[who].priv, "CLEANUP");
+  const cleanup = (w: World, s: Sealed, proposal: CleanupProposal, approvals: SignedApproval[]) => runCleanup({
+    invocation: human(TARGET), environment: "DEV", target: { ...TARGET }, proposal, sealedPlan: s.loaded, manifest: s.project.manifest, projectRoot: s.project.projectRoot, approvals,
+  }, w.deps);
+  async function propose(w: World, s: Sealed) {
+    const records = await loadRunRecords(s.sealed.artifactSha256, w.deps.evidenceDir!);
+    assert.ok(records.ok, JSON.stringify(records));
+    return buildCleanupProposal({ requesterId: REQUESTER.requesterId, ...records, changes: s.sealed.changes, channel: "CLI", contract: contract(), engineVersion: s.sealed.engineVersion, env, now: new Date(NOW.getTime() + 120_000) });
+  }
+  const topicIdOf = (s: Sealed): string => s.sealed.changes[0].address.slice("google_pubsub_topic.".length);
+  const nameOf = (s: Sealed): string => "projects/" + PROJECT + "/topics/" + topicIdOf(s);
   const noSecrets = (value: unknown): void => {
     const text = JSON.stringify(value, (_key, v) => (Buffer.isBuffer(v) ? v.toString("utf8") : v));
     for (const subject of subjects) assert.ok(!text.includes(subject), "a subject token leaked");
     assert.ok(!/\b(?:fed|sa)-[0-9a-f]{24}\b/.test(text), "an emulated access token leaked");
   };
 
-  /** The driver's sealing module with this spec: the plan stored encrypted, the requester's signature over the artifact hash. */
-  async function seal(p: Project = project()): Promise<{ p: Project; loaded: LoadedPlan }> {
-    const snapshot = snapshotOf(p);
-    try {
-      const result = await sealPlan({
-        engine: spec as unknown as EngineSpec, environment: "DEV", channel: "CLI", policyVersion: POLICY, contractSha256: contractSha256(), authorizationSha256: "a".repeat(64),
-        targetSha256: targetSha256Of(GCP, GCP_API_TARGET, contract.targets.DEV), sourceCommit: SOURCE_COMMIT,
-        provenance: { engineBinarySha256: spec.binarySha256(undefined, env)!, qualification: { state: "UNQUALIFIED", reason: "EMULATED: no person attests an emulator run" } },
-        requester: REQUESTER, now: () => NOW, scratchDir: fresh("seal"), env, manifest: p.manifest, pinned: contract.targets.DEV, spec: GCP, target: { ...TARGET },
-        engineVersion: "gcp-api-1", snapshotPath: snapshot.path, unit: unit(),
-      });
-      assert.ok(result.ok, JSON.stringify(result));
-      const loaded = await loadSealedPlan(result.path);
-      assert.ok(loaded.ok);
-      return { p, loaded: { sealed: loaded.sealed, planBytes: loaded.planBytes } };
-    } finally { snapshot.remove(); }
-  }
-  type Sealed = Awaited<ReturnType<typeof seal>>;
-  const sealedUnit = (s: Sealed): GcpApiUnit => ({ unitId: s.loaded.sealed.unit!.unitId, tags: s.loaded.sealed.unit!.tags });
-  const topicIdOf = (s: Sealed): string => s.loaded.sealed.changes[0].address.slice("google_pubsub_topic.".length);
-  const nameOf = (s: Sealed): string => "projects/" + PROJECT + "/topics/" + topicIdOf(s);
+  // --- registration and admission -----------------------------------------------------------------------------------------------
 
-  type Applied = { outcome: string; evidence: ApplyEvidence; blueprint: BlueprintRecord | undefined } | { refused: string; consumed: boolean };
-  /**
-   * `runApply`'s steps 5 to 15 with this spec (src/apply/driver.ts): the sealed plan verified, the module hash unchanged, the requester
-   * and the approvals verified, `prepare` and `rederive` with the change list compared, the approvals consumed, `execute` with the kill
-   * switch file as `stopWhen`, `settle`, then (TEST FIXTURE) the apply evidence and the blueprint record runApply would write.
-   */
-  async function apply(s: Sealed, approvals: SignedApproval[]): Promise<Applied> {
-    const verified = verifySealedPlan(s.loaded);
-    if (!verified.ok) return { refused: verified.code, consumed: false };
-    const changed = engineBinaryChange(verified.sealed, spec.binarySha256(undefined, env));
-    if (changed) return { refused: changed.code, consumed: false };
-    const requested = verifyRequestSignature({ request: verified.sealed.request, artifactSha256: verified.sealed.artifactSha256, environment: "DEV", requesterId: verified.sealed.requesterId, contract });
-    if (!requested.ok) return { refused: requested.code, consumed: false };
-    const verdict = verifyApprovalSet({ approvals, artifactSha256: verified.sealed.artifactSha256, environment: "DEV", target: verified.sealed.target, contract, now: NOW, nonces, requester: requested });
-    if (!verdict.ok) return { refused: verdict.code, consumed: false };
-    const snapshot = snapshotOf(s.p);
-    try {
-      const run = spec.openApply(runInput(s.p, sealedUnit(s)));
-      let derived: PlanChange[];
-      try {
-        await run.prepare(snapshot.path);
-        derived = await run.rederive(verified.planBytes);
-      } catch (error) { return { refused: (error as Error).message, consumed: false }; }
-      if (canonicalJson(derived) !== canonicalJson(verified.sealed.changes)) return { refused: "ARTIFACT_TAMPERED", consumed: false };
-      const consumed = consumeApprovals(nonces, approvals);
-      if (!consumed.ok) return { refused: consumed.code, consumed: false };
-      let ran;
-      try { ran = await run.execute(verified.planBytes, { stopWhen: () => isKillSwitchActive(contract) }); } catch (error) { return { refused: "APPROVALS_SPENT:" + (error as Error).message, consumed: true }; }
-      if (ran.notStarted) return { refused: "KILL_SWITCH_AFTER_APPROVALS", consumed: true };
-      const end = await run.settle(ran);
-      const outcome = "stale" in end ? "FAILED_NO_CHANGE" : end.outcome;
-      // TEST FIXTURE: the evidence runApply writes (step 15), with this spec's mutation value; INT-2 adds it to the enum.
-      const evidence = {
-        schemaVersion: 1, environment: "DEV", target: { ...TARGET }, artifactSha256: verified.sealed.artifactSha256, manifestHash: verified.sealed.manifestHash, releaseIdentity: verified.sealed.releaseIdentity,
-        contractSha256: verified.sealed.contractSha256, targetSha256: verified.sealed.targetSha256,
-        decisions: { authorized: { operation: "APPLY", contractSha256: contractSha256(), authorizationSha256: "a".repeat(64) }, ready: { engineBinarySha256: verified.sealed.provenance.engineBinarySha256, qualificationEvidenceHash: null }, execute: { requesterId: requested.requesterId, approverIds: verdict.approvers.map((a) => a.approverId) } },
-        sourceCommit: SOURCE_COMMIT, approvals: verdict.approvers, requester: { requesterId: requested.requesterId, nonce: verified.sealed.request!.statement.nonce },
-        adapter: { adapterVersion: spec.applyAdapter.adapterVersion, argvDigest: spec.applyAdapter.argvDigest }, toolVersions: { engine: "gcp-api-1" }, outcome, exitCode: ran.exitCode,
-        startedAt: NOW.toISOString(), finishedAt: new Date(NOW.getTime() + 1_000).toISOString(), authority: { ...APPLY_AUTHORITY, mutation: spec.mutation },
-      } as unknown as ApplyEvidence;
-      // TEST FIXTURE: the blueprint record keepBlueprint writes from the spec's stateDocument (INT-2 adds the GCP_API_TOPIC branch).
-      const state = await run.stateDocument();
-      const blueprint = state === undefined ? undefined : {
-        schemaVersion: 1, kind: "BLUEPRINT", artifactSha256: evidence.artifactSha256, applyEvidenceSha256: recordSha256(evidence), environment: "DEV", target: { ...TARGET }, sourceCommit: SOURCE_COMMIT,
-        contractSha256: evidence.contractSha256, outcome, source: state.source, blueprint: blueprintFromGcpApiTopic(state.document, verified.sealed.changes, { project: PROJECT }),
-        unitId: verified.sealed.unit?.unitId ?? null, readAt: NOW.toISOString(),
-      } as unknown as BlueprintRecord;
-      noSecrets([ran, end, state, evidence]);
-      return { outcome, evidence, blueprint };
-    } finally { snapshot.remove(); }
-  }
-
-  /** The GCP reader as `openReader` opens it for a GCP contract: DISCOVERY, the target project, the contract region for D11. */
-  async function withReader<T>(body: (reader: ReturnType<typeof createDiscoveryGcpReader>["reader"]) => Promise<T>): Promise<T> {
-    const opened = createDiscoveryGcpReader({ env, projectId: PROJECT, storagePolicyRegion: REGION, http: emulator.http });
-    try { return await body(opened.reader); } finally { opened.close(); }
-  }
-  /** `observeRun`'s verdict and (TEST FIXTURE) its record, through the real GCP_REST reader. */
-  async function observe(evidence: ApplyEvidence, blueprint: BlueprintRecord): Promise<ObservationRecord> {
-    const report = await withReader((reader) => observeBlueprint(blueprint.blueprint, { unitId: blueprint.unitId, reader }));
-    const origins = new Map(blueprint.blueprint.entries.map((entry) => [entry.address, entry.origin]));
-    return {
-      schemaVersion: 1, kind: "OBSERVATION", artifactSha256: evidence.artifactSha256, applyEvidenceSha256: recordSha256(evidence), blueprintSha256: recordSha256(blueprint), environment: "DEV", target: { ...TARGET },
-      sourceCommit: SOURCE_COMMIT, contractSha256: evidence.contractSha256, verifier: report.verifier, verifierBinarySha256: null, verdict: report.verdict,
-      resources: report.checks.map((check) => ({ address: check.address, type: check.type, identifier: check.identifier, origin: origins.get(check.address) ?? "NOT_IN_PLAN", ...(check.misplaced ? { result: "DIFFERENT_FROM_DESIRED" as const, reason: "LOCATION_NOT_IN_CONTRACT" } : verificationOf(check.existence, check.reason)) })),
-      missingFromState: [...report.missingFromState], unexpected: [...report.unexpected], inventory: report.inventory, observedAt: new Date(NOW.getTime() + 60_000).toISOString(),
-    } as ObservationRecord;
-  }
-  /** What a cleanup step needs of a proposal: its hash, its requester's signature, its target and its deletions. */
-  type Proposal = Pick<CleanupProposal, "proposalSha256" | "request" | "requesterId" | "target" | "deletes">;
-  /**
-   * `./alz apply propose-cleanup` on the run's records. The real `buildCleanupProposal` refuses a run that did not succeed before it
-   * reads anything else (asserted below). For a SUCCEEDED run it needs the contract's target hash through `engineOf`, which has no
-   * GCP_API spec until INT-2, so (TEST FIXTURE) the one deletion is derived here as the builder derives it: an IN_PLAN CREATE of the
-   * sealed change list, observed VERIFIED, of a type the real GCP classifier (`gcpProtectionOf`) passes as a reviewed leaf. The
-   * proposal hash is the fixture's own and is signed by the requester under the cleanup request domain, as `signCleanupProposal` signs.
-   */
-  function propose(s: Sealed, evidence: ApplyEvidence, blueprint: BlueprintRecord, observation: ObservationRecord): { ok: true; proposal: Proposal } | { ok: false; code: string } {
-    if (evidence.outcome !== "SUCCEEDED") {
-      const built = buildCleanupProposal({
-        applyEvidence: evidence, applyEvidenceSha256: recordSha256(evidence), blueprint, blueprintSha256: recordSha256(blueprint), observation, observationSha256: recordSha256(observation),
-        changes: s.loaded.sealed.changes, channel: "CLI", contract, engineVersion: "gcp-api-1", env, now: new Date(NOW.getTime() + 120_000), requesterId: REQUESTER.requesterId,
-      });
-      assert.equal(built.ok, false);
-      return built as { ok: false; code: string };
-    }
-    const created = new Map(s.loaded.sealed.changes.filter((c) => c.action === "CREATE").map((c) => [c.address, c]));
-    const verified = new Set(observation.resources.filter((r) => r.result === "VERIFIED").map((r) => r.address));
-    const deletes = blueprint.blueprint.entries
-      .filter((entry) => entry.origin === "IN_PLAN" && created.has(entry.address) && verified.has(entry.address) && gcpProtectionOf({ type: entry.type, id: entry.id }, []) === undefined)
-      .map((entry) => ({ address: entry.address, type: entry.type, identifier: entry.id, ownership: "RUN_CREATED" as const }));
-    const proposalSha256 = recordSha256({ kind: "TEST_FIXTURE_CLEANUP_PROPOSAL", artifactSha256: evidence.artifactSha256, blueprintSha256: recordSha256(blueprint), observationSha256: recordSha256(observation), deletes });
-    const request = signRequest({ schemaVersion: 1, requesterId: REQUESTER.requesterId, artifactSha256: proposalSha256, environment: "DEV", nonce: randomBytes(16).toString("hex") }, REQUESTER.privateKeyPem, "CLEANUP_REQUEST");
-    return { ok: true, proposal: { proposalSha256, request, requesterId: REQUESTER.requesterId, target: { ...TARGET }, deletes: deletes as unknown as CleanupProposal["deletes"] } };
-  }
-  const cleanupApproval = (proposal: Proposal, who: keyof typeof keys): SignedApproval => signApproval({
-    schemaVersion: 1, artifactSha256: proposal.proposalSha256, environment: "DEV", target: proposal.target, approverId: who,
-    issuedAt: new Date(NOW.getTime() - 5 * 60_000).toISOString(), expiresAt: new Date(NOW.getTime() + 25 * 60_000).toISOString(), nonce: randomBytes(16).toString("hex"),
-  }, keys[who].priv, "CLEANUP");
-
-  /** `runCleanup`'s steps with this spec: requester and CLEANUP approvals verified, `prepare`, `planDestroy`, the protection and scope checks, consumption, `execute`, `settle`. */
-  async function cleanup(s: Sealed, blueprint: BlueprintRecord, proposal: Proposal, approvals: SignedApproval[]) {
-    const requested = verifyRequestSignature({ request: proposal.request, artifactSha256: proposal.proposalSha256, environment: "DEV", requesterId: proposal.requesterId, contract, subject: "CLEANUP_REQUEST" });
-    assert.ok(requested.ok);
-    const verdict = verifyApprovalSet({ approvals, artifactSha256: proposal.proposalSha256, environment: "DEV", target: proposal.target, contract, now: NOW, nonces, subject: "CLEANUP", requester: requested });
-    if (!verdict.ok) return { refused: verdict.code };
-    const addresses = proposal.deletes.map((d) => d.address);
-    const snapshot = snapshotOf(s.p);
-    try {
-      const run = spec.openCleanup(runInput(s.p, sealedUnit(s)));
-      let planned: PlanChange[];
-      try {
-        await run.prepare(snapshot.path);
-        planned = await run.planDestroy(addresses);
-      } catch (error) { return { refused: (error as Error).message }; }
-      const protectedDeletion = protectedDeletionIn(planned, blueprint.blueprint.entries, contract, env, { account: PROJECT, addresses: new Set(addresses) });
-      if (protectedDeletion) return { refused: "PROPOSAL_SCOPE_MISMATCH" };
-      if (cleanupScopeProblem(planned, addresses)) return { refused: "PROPOSAL_SCOPE_MISMATCH" };
-      const consumed = consumeApprovals(nonces, approvals);
-      if (!consumed.ok) return { refused: consumed.code };
-      const ran = await run.execute({ stopWhen: () => isKillSwitchActive(contract) });
-      if (ran.notStarted) return { refused: "KILL_SWITCH_AFTER_APPROVALS" };
-      const end = await run.settle(ran);
-      return { outcome: "stale" in end ? "FAILED_NO_CHANGE" : end.outcome, deletedByRun: run.deletedByRun() };
-    } finally { snapshot.remove(); }
-  }
-  /** `./alz apply verify-cleanup`: the independent DISCOVERY read of the id and the unit sweep, never the APPLY call's answer. */
-  const leftovers = (blueprint: BlueprintRecord) => withReader(async (reader) => ({
-    checks: await Promise.all(blueprint.blueprint.entries.map((entry) => reader.check(entry))),
-    listed: await reader.listTagged(blueprint.unitId!),
-  }));
+  test("the reviewed GCP_API contract loads, DEV only, and the driver runs the registered GCP_API spec (never GCP Terraform)", () => {
+    const loaded = loadPilotContract(contractPath);
+    assert.ok(!("reason" in loaded), JSON.stringify(loaded));
+    assert.equal(engineOf(loaded as PilotContract), GCP_API);
+    assert.equal(engineSpec("GCP_API"), GCP_API);
+    assert.notEqual(engineSpec("TERRAFORM"), GCP_API);
+    assert.deepEqual((loaded as PilotContract).enabledEnvironments, ["DEV"]);
+  });
 
   // --- the path ---------------------------------------------------------------------------------------------------------------
 
-  it("admission still refuses a GCP_API contract: the spec is not registered (INT-2)", () => {
-    const path = join(fresh("contract"), "act-pilot-contract.json");
-    writeReviewedContract(path, contract);
-    const loaded = loadPilotContract(path);
-    assert.ok("reason" in loaded);
-    assert.match(String((loaded as { code?: string }).code ?? loaded.reason), /NOT_IMPLEMENTED|not implemented/i);
-  });
-
-  it("the whole path for one run, and the replay and reuse refusals", async () => {
+  test("the whole path for one run through the real driver, and the replay and reuse refusals", async () => {
     emulator.topics.clear();
-    // Seal: one CREATE of the full sealed name, the requester's signature, a review bundle that verifies.
-    const s = await seal();
-    const sealed = s.loaded.sealed;
-    assert.deepEqual(sealed.changes, [{ address: "google_pubsub_topic." + topicIdOf(s), type: "google_pubsub_topic", action: "CREATE" }]);
+    const w = world();
+    // Seal: one CREATE of the full sealed name under the engine's own unit (D10), the module hash sealed (D1).
+    const s = await seal(w);
+    assert.deepEqual(s.sealed.changes, [{ address: "google_pubsub_topic." + topicIdOf(s), type: "google_pubsub_topic", action: "CREATE" }]);
     assert.match(topicIdOf(s), /^alz-act-dev1-[0-9a-f]{12}$/);
-    const bundle = verifyReviewBundle(JSON.parse(JSON.stringify(reviewBundleOf(sealed))));
-    assert.ok(bundle.ok);
-    assert.equal(bundle.bundle.changes[0].address, "google_pubsub_topic." + topicIdOf(s), "D4: approvers see the full topic name");
-    assert.deepEqual(bundle.bundle.unit, { unitId: unit().unitId, tags: { ...unit().tags }, untagged: [] });
-    assert.equal(sealed.provenance.engineBinarySha256, spec.binarySha256(undefined, env), "D1: the module hash is sealed");
+    assert.equal(s.sealed.unit?.unitId, unit().unitId);
+    assert.notEqual(s.sealed.unit?.unitId, pilotUnitOf({ provider: "GCP", contractSha256: s.sealed.contractSha256, environment: "DEV", target: TARGET }).unitId, "not the Terraform path's unit");
+    assert.equal(s.sealed.provenance.engineBinarySha256, GCP_API.binarySha256(undefined, env), "D1: the module closure's hash is sealed");
+    assert.equal(s.sealed.provenance.qualification.state, "QUALIFIED");
     assert.equal(emulator.topics.size, 0, "a seal creates nothing");
-    noSecrets(sealed);
+    noSecrets(s.sealed);
 
-    // Approve and apply.
-    const approvals = [approvalFor(sealed, "alice")];
-    const applied = await apply(s, approvals);
-    assert.ok("outcome" in applied && applied.outcome === "SUCCEEDED", JSON.stringify(applied));
-    const topic = emulator.topics.get(nameOf(s));
-    assert.deepEqual(topic, { name: nameOf(s), labels: { ...unit().tags }, messageStoragePolicy: { allowedPersistenceRegions: [REGION] } }, "D11: the storage policy was set");
-    const putLog = emulator.log().filter((e) => e.method === "PUT");
-    assert.equal(putLog.length, 1);
-    assert.deepEqual(putLog[0].createBody, { labels: { ...unit().tags }, messageStoragePolicy: { allowedPersistenceRegions: [REGION] } });
-    assert.equal(putLog[0].sa, email("APPLY"));
+    // Apply: one PUT as APPLY, the evidence with this path's own mutation value and the verified storage policy (D11).
+    const approvals = [approvalFor(s.sealed, "alice")];
+    const applied = await apply(w, s, approvals);
+    assert.ok(applied.ok, JSON.stringify(applied));
+    assert.equal(applied.evidence.outcome, "SUCCEEDED");
+    assert.equal(applied.evidence.authority.mutation, "GCP_PUBSUB_TOPIC_CREATE_OF_SEALED_REQUEST");
+    assert.deepEqual(applied.evidence.verifiedProperty, { name: "messageStoragePolicy.allowedPersistenceRegions", value: [REGION] });
+    assert.equal(applied.evidence.decisions.ready.engineBinarySha256, GCP_API.binarySha256(undefined, env));
+    assert.match(String(applied.evidence.decisions.ready.qualificationEvidenceHash), /^[0-9a-f]{64}$/);
+    assert.deepEqual(emulator.topics.get(nameOf(s)), { name: nameOf(s), labels: { ...unit().tags }, messageStoragePolicy: { allowedPersistenceRegions: [REGION] } });
+    const puts = emulator.log().filter((e) => e.method === "PUT");
+    assert.deepEqual(puts.map((e) => [e.path, e.sa]), [["/v1/" + nameOf(s), email("APPLY")]]);
+    // The driver kept the blueprint from what settle read (D6), under the GCP_API_TOPIC source.
+    const blueprint = await readBlueprintRecord(s.sealed.artifactSha256, sha256(canonicalJson(applied.evidence as never)), w.deps.evidenceDir!);
+    assert.ok(blueprint);
+    assert.equal(blueprint.source, "GCP_API_TOPIC");
+    assert.equal(blueprint.unitId, unit().unitId);
+    // Source-bound: the seal, the apply evidence and the blueprint name the product commit that sealed and ran the plan.
+    assert.deepEqual([s.sealed.sourceCommit, applied.evidence.sourceCommit, blueprint.sourceCommit], [SOURCE_COMMIT, SOURCE_COMMIT, SOURCE_COMMIT]);
+    assert.deepEqual(blueprint.blueprint.entries.map((e) => [e.address, e.type, e.id, e.origin]), [[s.sealed.changes[0].address, "google_pubsub_topic", nameOf(s), "IN_PLAN"]]);
 
-    // Replay: the approvals cannot be reused, and the same artifact cannot create again.
-    assert.equal(consumeApprovals(nonces, approvals).ok, false, "approvals are single use");
-    const again = await apply(s, [approvalFor(sealed, "bob")]);
-    assert.deepEqual(again, { refused: "UNIT_NOT_EMPTY", consumed: false });
+    // Replay: the ledger refuses the same artifact, and the same approvals are spent.
+    const again = await apply(w, s, approvals);
+    assert.ok(!again.ok);
+    assert.equal(emulator.log().filter((e) => e.method === "PUT").length, 1, "never sent again");
 
-    // Observe through GCP_REST: VERIFIED.
-    assert.ok(applied.blueprint);
-    assert.deepEqual(applied.blueprint.blueprint.entries.map((e) => [e.address, e.id, e.origin]), [[sealed.changes[0].address, nameOf(s), "IN_PLAN"]]);
-    const observation = await observe(applied.evidence, applied.blueprint);
-    assert.equal(observation.verdict, "VERIFIED");
-    assert.equal(observation.verifier, "GCP_REST");
-    assert.equal(observation.inventory, "COMPLETE");
+    // Observe through GCP_REST as DISCOVERY: VERIFIED, the unit sweep complete.
+    const observation = await observeRun(s.sealed.artifactSha256, w.observe());
+    assert.ok(observation.ok, JSON.stringify(observation));
+    assert.equal(observation.record.verifier, "GCP_REST");
+    assert.equal(observation.record.verdict, "VERIFIED");
+    assert.equal(observation.record.sourceCommit, SOURCE_COMMIT);
+    assert.equal(observation.record.inventory, "COMPLETE");
+    assert.deepEqual(observation.record.unexpected, []);
 
-    // Propose the cleanup: exactly the run's topic.
-    const proposed = propose(s, applied.evidence, applied.blueprint, observation);
-    assert.ok(proposed.ok, JSON.stringify(proposed));
-    assert.deepEqual(proposed.proposal.deletes.map((d) => [d.address, d.identifier, d.ownership]), [[sealed.changes[0].address, nameOf(s), "RUN_CREATED"]]);
+    // Propose the cleanup: exactly the run's topic, by its full name.
+    const built = await propose(w, s);
+    assert.ok(built.ok, JSON.stringify(built));
+    const proposal = signCleanupProposal(built.proposal, REQUESTER.privateKeyPem);
+    assert.equal(proposal.engine, "GCP_API");
+    assert.deepEqual(proposal.deletes.map((d) => [d.address, d.identifier, d.observed]), [[s.sealed.changes[0].address, nameOf(s), "VERIFIED"]]);
+    noSecrets(proposal);
 
     // An apply approval is never a cleanup approval.
-    const wrongDomain = await cleanup(s, applied.blueprint, proposed.proposal, [approvalFor(sealed, "carol")]);
-    assert.ok("refused" in wrongDomain && typeof wrongDomain.refused === "string", JSON.stringify(wrongDomain));
+    const wrongDomain = await cleanup(w, s, proposal, [approvalFor(s.sealed, "carol")]);
+    assert.ok(!wrongDomain.ok);
     assert.equal(emulator.log().filter((e) => e.method === "DELETE").length, 0);
 
-    // Clean up: one DELETE, deleted by this run.
-    const cleanupApprovals = [cleanupApproval(proposed.proposal, "alice")];
-    const cleaned = await cleanup(s, applied.blueprint, proposed.proposal, cleanupApprovals);
-    assert.deepEqual(cleaned, { outcome: "SUCCEEDED", deletedByRun: true });
+    // Clean up: one DELETE as APPLY; the evidence names this path's cleanup mutation and that this run deleted the topic.
+    const cleanupApprovals = [cleanupApproval(proposal, "alice")];
+    const cleaned = await cleanup(w, s, proposal, cleanupApprovals);
+    assert.ok(cleaned.ok, JSON.stringify(cleaned));
+    assert.deepEqual(cleaned.evidence.deletes, [s.sealed.changes[0].address]);
+    assert.equal(cleaned.evidence.authority.mutation, "GCP_PUBSUB_TOPIC_DELETE_OF_RUN_TOPIC");
+    assert.equal(cleaned.evidence.deletedByRun, true);
     assert.equal(emulator.topics.size, 0);
-    const deleteLog = emulator.log().filter((e) => e.method === "DELETE");
-    assert.deepEqual(deleteLog.map((e) => [e.path, e.sa]), [["/v1/" + nameOf(s), email("APPLY")]]);
-    assert.deepEqual(await cleanup(s, applied.blueprint, proposed.proposal, cleanupApprovals), { refused: "APPROVAL_REPLAYED" }, "the cleanup approvals cannot be reused");
+    assert.deepEqual(emulator.log().filter((e) => e.method === "DELETE").map((e) => [e.path, e.sa]), [["/v1/" + nameOf(s), email("APPLY")]]);
+    const replayed = await cleanup(w, s, proposal, cleanupApprovals);
+    assert.ok(!replayed.ok, "the proposal runs once");
 
-    // Verify the cleanup independently: the id reads absent and the unit lists nothing, completely.
-    const left = await leftovers(applied.blueprint);
-    assert.deepEqual(left.checks.map((c) => c.existence), ["ABSENT"]);
-    assert.deepEqual(left.listed, { identifiers: [], complete: true });
-    noSecrets([applied, observation, proposed, cleaned, left]);
+    // Verify the cleanup independently, as DISCOVERY: the id reads absent and the unit lists nothing, completely.
+    const leftovers = await verifyProposalLeftovers(proposal, w.observe(600_000));
+    assert.ok(leftovers.ok, JSON.stringify(leftovers));
+    assert.equal(leftovers.record.verifier, "GCP_REST");
+    const topic = leftovers.record.resources.find((r) => r.address === s.sealed.changes[0].address)!;
+    assert.deepEqual([topic.disposition, topic.basis], ["CONFIRMED_DELETED", "GCP_REST_ABSENT"]);
+    noSecrets([applied, observation, cleaned, leftovers]);
     // Every request went to one of the four emulated Google hosts; DISCOVERY only read and APPLY only created and deleted.
     for (const e of emulator.log()) assert.ok(!e.refused, JSON.stringify(e));
     assert.ok(emulator.log().filter((e) => e.sa === email("DISCOVERY")).every((e) => e.method === "GET"));
     assert.ok(emulator.log().filter((e) => e.sa === email("APPLY")).every((e) => e.method === "PUT" || e.method === "DELETE"));
   });
 
-  it("the kill switch file stops the apply after the approvals are consumed and before the PUT; the same plan then applies with new approvals", async () => {
+  test("the kill switch, set after the approvals are consumed, stops the apply before the PUT; the same plan then applies with new approvals", async () => {
     emulator.topics.clear();
-    const s = await seal();
-    writeFileSync(killPath, "stop\n");
-    try {
-      assert.deepEqual(await apply(s, [approvalFor(s.loaded.sealed, "alice")]), { refused: "KILL_SWITCH_AFTER_APPROVALS", consumed: true });
-    } finally { rmSync(killPath, { force: true }); }
+    const w = world();
+    const s = await seal(w);
+    // The switch appears as APPLY's token is minted, inside execute: after consumption, before anything is sent to Pub/Sub.
+    onRequest = (request) => { if (request.url.includes(":generateAccessToken") && request.url.includes(email("APPLY"))) writeFileSync(killPath, "stop\n"); };
+    let killed;
+    try { killed = await apply(w, s); } finally { onRequest = undefined; rmSync(killPath, { force: true }); }
+    assert.ok(!killed.ok && killed.code === "KILL_SWITCH_AFTER_APPROVALS", JSON.stringify(killed));
     assert.equal(emulator.topics.size, 0);
-    const applied = await apply(s, [approvalFor(s.loaded.sealed, "bob")]);
-    assert.ok("outcome" in applied && applied.outcome === "SUCCEEDED");
+    assert.equal(emulator.log().filter((e) => e.method === "PUT" && e.path === "/v1/" + nameOf(s)).length, 0);
+    const applied = await apply(w, s, [approvalFor(s.sealed, "bob")]);
+    assert.ok(applied.ok && applied.evidence.outcome === "SUCCEEDED", JSON.stringify(applied));
     assert.deepEqual([...emulator.topics.keys()], [nameOf(s)], "the same sealed name (D4)");
     emulator.topics.clear();
   });
 
-  it("a run that did not succeed: no product cleanup, later seals refused, a hand deletion, then observe again reports the expected absence", async () => {
+  test("#357 review N1: a signal during APPLY's token exchange stops execute before the PUT (APPROVALS_SPENT); the same plan then applies with new approvals", async () => {
     emulator.topics.clear();
-    const s = await seal();
-    // The service stores another storage policy than sealed (D11): never SUCCEEDED.
+    const w = world();
+    const s = await seal(w);
+    // The interrupt arrives while APPLY's token is minted: the driver's handler records it, and the engine's next stop point sees it.
+    let signaled = 0;
+    onRequest = (request) => { if (request.url.includes(":generateAccessToken") && request.url.includes(email("APPLY")) && signaled === 0) { signaled += 1; process.emit("SIGINT", "SIGINT"); } };
+    let interrupted;
+    try { interrupted = await apply(w, s); } finally { onRequest = undefined; }
+    assert.equal(signaled, 1, "the signal was sent during the APPLY token exchange");
+    assert.ok(!interrupted.ok && interrupted.code === "APPROVALS_SPENT", JSON.stringify(interrupted));
+    assert.match(interrupted.message, /interrupted by a signal before the engine sent anything/);
+    assert.equal(emulator.log().filter((e) => e.method === "PUT" && e.path === "/v1/" + nameOf(s)).length, 0, "no PUT was sent");
+    assert.equal(emulator.topics.size, 0);
+    const applied = await apply(w, s, [approvalFor(s.sealed, "bob")]);
+    assert.ok(applied.ok && applied.evidence.outcome === "SUCCEEDED", JSON.stringify(applied));
+    emulator.topics.clear();
+  });
+
+  test("#357 review N1, cleanup: a signal during APPLY's token exchange stops the cleanup before the DELETE (APPROVALS_SPENT); the proposal then runs with new approvals", async () => {
+    emulator.topics.clear();
+    const w = world();
+    const s = await seal(w);
+    const applied = await apply(w, s);
+    assert.ok(applied.ok, JSON.stringify(applied));
+    assert.ok((await observeRun(s.sealed.artifactSha256, w.observe())).ok);
+    const built = await propose(w, s);
+    assert.ok(built.ok, JSON.stringify(built));
+    const proposal = signCleanupProposal(built.proposal, REQUESTER.privateKeyPem);
+    let signaled = 0;
+    onRequest = (request) => { if (request.url.includes(":generateAccessToken") && request.url.includes(email("APPLY")) && signaled === 0) { signaled += 1; process.emit("SIGINT", "SIGINT"); } };
+    let interrupted;
+    try { interrupted = await cleanup(w, s, proposal, [cleanupApproval(proposal, "alice")]); } finally { onRequest = undefined; }
+    assert.equal(signaled, 1);
+    assert.ok(!interrupted.ok && interrupted.code === "APPROVALS_SPENT", JSON.stringify(interrupted));
+    assert.match(interrupted.message, /interrupted by a signal before the engine sent anything/);
+    assert.equal(emulator.log().filter((e) => e.method === "DELETE" && e.path === "/v1/" + nameOf(s)).length, 0, "no DELETE was sent");
+    assert.deepEqual([...emulator.topics.keys()], [nameOf(s)]);
+    const cleaned = await cleanup(w, s, proposal, [cleanupApproval(proposal, "bob")]);
+    assert.ok(cleaned.ok && cleaned.evidence.deletedByRun === true, JSON.stringify(cleaned));
+    assert.equal(emulator.topics.size, 0);
+  });
+
+  test("a run that did not succeed: no product cleanup, later seals refused, a hand deletion, then observe again reports the expected absence", async () => {
+    emulator.topics.clear();
+    const w = world();
+    const s = await seal(w);
+    // The service stores another storage policy than sealed (D11): never SUCCEEDED, and no verified property in the evidence.
     emulator.behave({ createRegions: ["us-central1"] });
-    const applied = await apply(s, [approvalFor(s.loaded.sealed, "alice")]);
-    emulator.behave({});
-    assert.ok("outcome" in applied && applied.outcome === "PARTIAL_REQUIRES_REVIEW", JSON.stringify(applied));
-    assert.ok(applied.blueprint, "the blueprint is written from what settle read (D14)");
+    let applied;
+    try { applied = await apply(w, s); } finally { emulator.behave({}); }
+    assert.ok(!applied.ok && applied.code === "APPLY_FAILED" && applied.outcome === "PARTIAL_REQUIRES_REVIEW", JSON.stringify(applied));
+    assert.equal(emulator.log().filter((e) => e.method === "PUT" && e.path === "/v1/" + nameOf(s)).length, 1, "sent once, never again");
+    const evidence = await readAppliedEvidence(s.sealed.artifactSha256, w.deps.evidenceDir!);
+    assert.ok(evidence);
+    assert.equal(evidence.outcome, "PARTIAL_REQUIRES_REVIEW");
+    assert.equal(evidence.authority.mutation, "GCP_PUBSUB_TOPIC_CREATE_OF_SEALED_REQUEST");
+    assert.equal(evidence.verifiedProperty, undefined, "D11: a property is named only when it was read back as sealed");
+    const blueprint = await readBlueprintRecord(s.sealed.artifactSha256, sha256(canonicalJson(evidence as never)), w.deps.evidenceDir!);
+    assert.ok(blueprint, "the blueprint is written from what settle read (D14)");
     // observe: the reader sees the topic stored elsewhere: FAILED.
-    const first = await observe(applied.evidence, applied.blueprint);
-    assert.equal(first.verdict, "FAILED");
-    assert.equal(first.resources[0].result, "DIFFERENT_FROM_DESIRED");
+    const first = await observeRun(s.sealed.artifactSha256, w.observe());
+    assert.ok(first.ok, JSON.stringify(first));
+    assert.equal(first.record.verdict, "FAILED");
+    assert.equal(first.record.resources[0].result, "DIFFERENT_FROM_DESIRED");
     // No cleanup proposal for a run that did not succeed.
-    const proposed = propose(s, applied.evidence, applied.blueprint, first);
-    assert.deepEqual([proposed.ok, !proposed.ok && proposed.code], [false, "OWNERSHIP_AMBIGUOUS"]);
+    const proposed = await propose(w, s);
+    assert.ok(!proposed.ok && proposed.code === "OWNERSHIP_AMBIGUOUS", JSON.stringify(proposed));
     // Its topic keeps every later seal refused until a person resolves it.
-    await assert.rejects(seal(), /UNIT_NOT_EMPTY/);
+    const refused = await sealPreview(sealRequest(project()), w.deps);
+    assert.ok(!refused.ok && /UNIT_NOT_EMPTY/.test(refused.code + " " + refused.message), JSON.stringify(refused));
     // MANUAL: a person deletes the one topic by its exact sealed name, outside the product.
     assert.equal(emulator.deleteByHand(nameOf(s)), true);
     // observe again: the independent DISCOVERY read is the absence check. FAILED is the expected result: the planned topic is gone.
-    const second = await observe(applied.evidence, applied.blueprint);
-    assert.equal(second.verdict, "FAILED");
-    assert.deepEqual(second.resources.map((r) => [r.address, r.result]), [[s.loaded.sealed.changes[0].address, verificationOf("ABSENT", undefined).result]]);
-    assert.equal(second.inventory, "COMPLETE");
-    assert.deepEqual(second.unexpected, []);
+    const second = await observeRun(s.sealed.artifactSha256, w.observe(120_000));
+    assert.ok(second.ok, JSON.stringify(second));
+    assert.equal(second.record.verdict, "FAILED");
+    assert.deepEqual(second.record.resources.map((r) => [r.address, r.result]), [[s.sealed.changes[0].address, verificationOf("ABSENT", undefined).result]]);
+    assert.equal(second.record.inventory, "COMPLETE");
+    assert.deepEqual(second.record.unexpected, []);
     // Recovery is a new seal: a new name.
-    const next = await seal();
+    const next = await seal(w);
     assert.notEqual(topicIdOf(next), topicIdOf(s));
   });
 });
-

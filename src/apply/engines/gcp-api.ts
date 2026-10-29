@@ -33,10 +33,9 @@ type ResolvedTarget = EngineRunInput["target"];
  * the typed request check, the derived REST calls, the network gate, the workload identity federation token exchange (through
  * the one shared exchange, D20) and its own reads of the run's topic.
  *
- * NOT REGISTERED. `GCP_API` is not in `SPECS` (src/apply/engine-spec.ts) and stays in `PLANNED_PATHS` (src/apply/contract.ts), so a
- * contract naming it is refused `NOT_IMPLEMENTED` and nothing in the product reaches this spec. Registering it, the evidence enum
- * members it names (`mutation`, `cleanupMutation`), the `GCP_API_TOPIC` blueprint source and the release path are INT-2's. The tests
- * construct the spec directly (`gcpApiEngine`). ACT stays DISABLED.
+ * REGISTERED (INT-2) and admitted for DEV only: `GCP_API` is in `SPECS` (src/apply/engine-spec.ts) and `DEV_ONLY_PATHS`
+ * (src/apply/contract.ts), with its own evidence mutations, the `GCP_API_TOPIC` blueprint source and the release gate act:gcp-gcp_api.
+ * The engine's unit tests construct a spec directly (`gcpApiEngine`). ACT stays DISABLED until the owner's reviewed contract authorizes it.
  *
  * The workload: exactly one Pub/Sub topic, created once, with the run's unit labels and the contract region's storage policy. The
  * requester's whole request is `request.json`, `{ "schemaVersion": 1, "kind": "PUBSUB_TOPIC" }` (D7); every other value is derived
@@ -62,7 +61,7 @@ export const REQUEST_FILE = "request.json";
 export const GCP_API_KINDS = ["PUBSUB_TOPIC"] as const;
 /** The one resource type, in the product's reviewed GCP vocabulary (D8). */
 export const TOPIC_TYPE = "google_pubsub_topic";
-/** The evidence values D16 names; their enum members in src/apply/types.ts are INT-2's. */
+/** The evidence values D16 names (their members of the evidence enums in src/apply/types.ts). */
 export const GCP_API_MUTATION = "GCP_PUBSUB_TOPIC_CREATE_OF_SEALED_REQUEST" as const;
 export const GCP_API_CLEANUP_MUTATION = "GCP_PUBSUB_TOPIC_DELETE_OF_RUN_TOPIC" as const;
 /** The exact property D11 sets and reads back, named in the evidence. It is not a data-residency claim. */
@@ -175,15 +174,22 @@ const httpsOn = (url: string, host: string): boolean => {
  * DELETE goes to the run's one sealed topic URL and nothing else. `topic` is undefined before the run's topic is known: then only the
  * token POSTs pass.
  */
-export function allowedRequest(request: Pick<GcpHttpRequest, "method" | "url">, topic: string | undefined): boolean {
+export function allowedRequest(request: Pick<GcpHttpRequest, "method" | "url">, topic: string | undefined, pubsubMethod: PubsubMethod | undefined): boolean {
   if (request.method === "POST") return (request.url === STS_TOKEN_URL && httpsOn(request.url, STS_HOST)) || (httpsOn(request.url, IAM_CREDENTIALS_HOST) && IAM_URL.test(request.url));
-  return topic !== undefined && request.url === topic && httpsOn(request.url, PUBSUB_HOST);
+  // The one Pub/Sub method this sender exists for (#357 review N2): GET for DISCOVERY's reads, PUT for APPLY's create, DELETE for
+  // APPLY's delete. Any other method (PATCH, a POST to the topic, a PUT through a read sender) is refused before it exists.
+  return pubsubMethod !== undefined && request.method === pubsubMethod && topic !== undefined && request.url === topic && httpsOn(request.url, PUBSUB_HOST);
 }
+/** The Pub/Sub method a sender is for, each tied to one identity: GET is DISCOVERY's read, PUT and DELETE are APPLY's create and delete. */
+export type PubsubMethod = "GET" | "PUT" | "DELETE";
 
-/** A gated sender for one topic: every request is judged by `allowedRequest` before it exists. Status 0 means not sent or no answer. */
-function senderFor(topic: string | undefined, http: GcpHttp): GcpHttp {
+/**
+ * A gated sender for one topic and one purpose: every request is judged by `allowedRequest` before it exists, so a sender made for
+ * DISCOVERY's read can never PUT or DELETE, and APPLY's create sender can never DELETE. Status 0 means not sent or no answer.
+ */
+function senderFor(topic: string | undefined, http: GcpHttp, pubsubMethod: PubsubMethod | undefined): GcpHttp {
   return async (request) => {
-    if (!allowedRequest(request, topic)) return { status: 0, body: "HOST_REFUSED" };
+    if (!allowedRequest(request, topic, pubsubMethod)) return { status: 0, body: "HOST_REFUSED" };
     try { return await http(request); } catch { return { status: 0, body: "" }; }
   };
 }
@@ -372,7 +378,7 @@ export type TopicReading =
 
 /** The run's topic, read once under DISCOVERY through the gate. Only the name, the labels and the storage policy's regions are kept. */
 async function readTopic(url: string, projectId: string, env: NodeJS.ProcessEnv, http: GcpHttp): Promise<TopicReading> {
-  const send = senderFor(url, http);
+  const send = senderFor(url, http, "GET");
   let bearer: string;
   try { bearer = await bearerFor("DISCOVERY", env, projectId, send); } catch (error) { return { existence: "UNREADABLE", code: codeOf(error) }; }
   const response = await send({ method: "GET", url, headers: { authorization: "Bearer " + bearer, accept: "application/json" } });
@@ -417,9 +423,9 @@ const sleep = (ms: number): Promise<void> => new Promise((done) => { setTimeout(
 
 /* ------------------------------------------------------------------ the spec's runs */
 
-/** What a run of this engine is given: the driver's run input and the run's sealed unit (INT-2 passes `sealed.unit`; until then no run is reachable). */
+/** What a run of this engine is given: the driver's run input and the run's sealed unit (the driver passes `sealed.unit`). */
 export type GcpApiRunInput = EngineRunInput & { unit?: GcpApiUnit | SealedUnit };
-/** The blueprint document (D6): the topic's name and labels as the engine's DISCOVERY read-back saw them. Its source is INT-2's to add. */
+/** The blueprint document (D6): the topic's name and labels as the engine's DISCOVERY read-back saw them, under the `GCP_API_TOPIC` source. */
 export type GcpApiStateDocument = { source: "GCP_API_TOPIC"; document: string };
 export type GcpApiApplyRun = Omit<EngineApplyRun, "stateDocument"> & {
   stateDocument(): Promise<GcpApiStateDocument | undefined>;
@@ -428,7 +434,7 @@ export type GcpApiApplyRun = Omit<EngineApplyRun, "stateDocument"> & {
 };
 export type GcpApiCleanupRun = EngineCleanupRun & {
   /**
-   * Whether this run's DELETE removed the topic (D16, `deletedByRun`, a field of INT-2's `CleanupEvidence`): true only for a 200 and a
+   * Whether this run's DELETE removed the topic (D16, `deletedByRun`, recorded in `CleanupEvidence`): true only for a 200 and a
    * read-back absent, false for a 404 and a read-back absent ("already absent, not deleted by this run"), undefined otherwise.
    */
   deletedByRun(): boolean | undefined;
@@ -458,6 +464,7 @@ function openApplyWith(options: Required<GcpApiOptions>, input: GcpApiRunInput):
   let sealed: { bytes: Buffer; artifact: GcpApiArtifact } | undefined;
   let putStatus: number | undefined;
   let lastPresent: Extract<TopicReading, { existence: "PRESENT" }> | undefined;
+  let verified = false;
   const read = async (url: string): Promise<TopicReading> => {
     const reading = await readTopic(url, prepared!.target.projectId, input.env, options.http);
     if (reading.existence === "PRESENT") lastPresent = reading;
@@ -490,7 +497,7 @@ function openApplyWith(options: Required<GcpApiOptions>, input: GcpApiRunInput):
       if (!sealed.bytes.equals(artifact)) return stop("ARTIFACT_TAMPERED");
       if (control.stopWhen()) return notStarted("create");
       const create = sealed.artifact.create;
-      const send = senderFor(create.url, options.http);
+      const send = senderFor(create.url, options.http, "PUT");
       // A throw here means nothing was sent to Pub/Sub: the driver reports APPROVALS_SPENT, and nothing was created.
       const bearer = await bearerFor("APPLY", input.env, prepared.target.projectId, send);
       if (control.stopWhen()) return notStarted("create");
@@ -521,7 +528,10 @@ function openApplyWith(options: Required<GcpApiOptions>, input: GcpApiRunInput):
       for (let reads = 0; reads < options.settleReads; reads++) {
         if (reads > 0) await sleep(options.settleDelayMs);
         const reading = await read(url);
-        if (reading.existence === "PRESENT") return { outcome: matchesSealed(reading, labels, target.region) ? "SUCCEEDED" : "PARTIAL_REQUIRES_REVIEW" };
+        if (reading.existence === "PRESENT") {
+          verified = matchesSealed(reading, labels, target.region);
+          return { outcome: verified ? "SUCCEEDED" : "PARTIAL_REQUIRES_REVIEW" };
+        }
       }
       return { outcome: "PARTIAL_REQUIRES_REVIEW" };
     },
@@ -531,6 +541,8 @@ function openApplyWith(options: Required<GcpApiOptions>, input: GcpApiRunInput):
     // D6: what `settle` read, never a new read; labels as read, for the driver to map to one blueprint entry and drop.
     stateDocument: async () => lastPresent === undefined ? undefined : { source: "GCP_API_TOPIC", document: canonicalJson({ name: lastPresent.name, labels: lastPresent.labels ?? {} }) },
     createStatus: () => putStatus,
+    // D11: named for the evidence only after `settle` read the topic back with exactly the sealed storage policy (the driver records it for SUCCEEDED).
+    verifiedProperty: () => verified ? { name: STORAGE_POLICY_PROPERTY, value: [prepared!.target.region] } : undefined,
   };
 }
 
@@ -573,7 +585,7 @@ function openCleanupWith(options: Required<GcpApiOptions>, input: GcpApiRunInput
     async execute(control) {
       if (prepared === undefined || before === undefined) return stop("ENGINE_NOT_PREPARED");
       if (control.stopWhen()) return notStarted("delete");
-      const send = senderFor(before.url, options.http);
+      const send = senderFor(before.url, options.http, "DELETE");
       const bearer = await bearerFor("APPLY", input.env, prepared.target.projectId, send);
       if (control.stopWhen()) return notStarted("delete");
       // One DELETE of the exact sealed URL, never sent again.
@@ -624,7 +636,7 @@ async function qualifyWith(options: Required<GcpApiOptions>, input: EnginePlanIn
   readRequest(input.snapshotPath, input.manifest, input.engineVersion);
   const target = targetOf(input.pinned, input.target);
   const labels = unitLabels(input.unit);
-  const send = senderFor(undefined, options.http);
+  const send = senderFor(undefined, options.http, undefined);
   await bearerFor("DISCOVERY", input.env, target.projectId, send);
   await sweepUnit(labels[ALZ_TAG_KEYS.unit], target.projectId, input.env, options.http);
   await bearerFor("APPLY", input.env, target.projectId, send);
@@ -678,8 +690,8 @@ const adapterOf = (kind: keyof typeof ADAPTER_CALLS): AdapterDescriptor => ({
 
 /**
  * The spec's own type: `EngineSpec` with the GCP_API id, its two evidence `mutation` values (D16) and its runs, which take the run's
- * sealed unit and say what the engine read. INT-2 registers it (`EngineId`, `SPECS`, the enum members, the `GCP_API_TOPIC` source)
- * and passes `unit` from the sealed plan into `openApply` and `openCleanup`.
+ * sealed unit and say what the engine read. It is registered in `SPECS`, and the driver passes `unit` from the sealed plan into
+ * `openApply` and `openCleanup` (INT-2).
  */
 export type GcpApiEngineSpec = Omit<EngineSpec, "id" | "mutation" | "cleanupMutation" | "openApply" | "openCleanup" | "plan" | "qualify"> & {
   id: typeof GCP_API_ENGINE;
@@ -751,5 +763,5 @@ export function gcpApiEngine(given: GcpApiOptions = {}): GcpApiEngineSpec {
   };
 }
 
-/** The production spec: `fetch` with a per-request bound. Not registered (INT-2). */
+/** The production spec: `fetch` with a per-request bound. The one registered in `SPECS`. */
 export const GCP_API: GcpApiEngineSpec = gcpApiEngine();

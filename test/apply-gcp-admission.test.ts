@@ -99,7 +99,7 @@ const reason = (raw: unknown): string => { const r = inspectPilotContract(raw); 
 
 // --- the contract ----------------------------------------------------------------------------------------------------------
 
-test("GCP is admitted with Terraform for DEV only: the provider is registered, the DEV-only contract loads and authorizes, the three-stage contract and GCP_API stay refused", () => {
+test("GCP is admitted with Terraform for DEV only: the provider is registered, the DEV-only contract loads and authorizes, the three-stage contract is refused, and a Terraform contract with engine GCP_API is refused", () => {
   assert.ok(PROVIDER_IDS.includes("GCP"));
   assert.equal(providerSpec("GCP"), GCP);
   assert.equal(GCP.backendType, "gcs");
@@ -119,9 +119,11 @@ test("GCP is admitted with Terraform for DEV only: the provider is registered, t
   assert.match(reason(threeStage), /^enabledEnvironments: GCP TERRAFORM \(path 5\) is admitted for DEV only/);
   const off = loadPilotContract(contractAt(threeStage));
   assert.ok("reason" in off && off.code === "CONTRACT_INVALID");
-  // GCP API-native is still a planned path; GCP with CDK is not a combination at all.
+  // GCP API-native is its own path (INT-2), never this one: a Terraform contract (state backend, embedStateWrite) naming engine GCP_API is
+  // refused at load, never read as GCP Terraform. GCP with CDK or Bicep is not a combination at all.
   const api = loadPilotContract(contractAt(gcpContract({ engine: "GCP_API" })));
-  assert.ok("reason" in api && api.code === "NOT_IMPLEMENTED", JSON.stringify(api));
+  assert.ok("reason" in api && api.code === "CONTRACT_INVALID" && api.enabled === false, JSON.stringify(api));
+  assert.match(reason(gcpContract({ engine: "GCP_API" })), /GCP_API has none/);
   assert.match(reason(gcpContract({ engine: "CDK" })), /^engine: CDK is valid only with AWS/);
   assert.match(reason(gcpContract({ engine: "BICEP" })), /^engine: BICEP is valid only with AZURE/);
 });
@@ -310,7 +312,12 @@ function fakeGoogle(cloud: Cloud): GcpHttp {
       const policy = cloud.regions === undefined ? { messageStoragePolicy: { allowedPersistenceRegions: [REGION] } } : cloud.regions === null ? {} : { messageStoragePolicy: { allowedPersistenceRegions: cloud.regions } };
       return cloud.topics.has(name) ? { status: 200, body: JSON.stringify({ name, labels: {}, ...policy }) } : { status: 404, body: "{}" };
     }
-    if (request.method === "GET" && url.host === "cloudasset.googleapis.com") return { status: 200, body: JSON.stringify({ results: cloud.tagged.map((name) => ({ name })) }) };
+    if (request.method === "GET" && url.host === "cloudasset.googleapis.com") {
+      // Each tagged item carries the asked unit as its label (GF3: the query is a token match; the reader checks the exact value).
+      const asked = /^labels\.alz-unit:([a-z0-9-]+)$/.exec(url.searchParams.get("query") ?? "");
+      if (!asked) return { status: 400, body: "" };
+      return { status: 200, body: JSON.stringify({ results: cloud.tagged.map((name) => ({ name, labels: { "alz-unit": asked[1] } })) }) };
+    }
     return { status: 500, body: "" };
   };
 }

@@ -191,9 +191,12 @@ function handle(req, res, body) {
     record(entry);
     if (!who || !who.sa) return send(res, 401, { error: { code: 401 } });
     if (!scopes(who).includes("https://www.googleapis.com/auth/cloud-platform")) return send(res, 403, { error: { code: 403, status: "PERMISSION_DENIED" } });
-    const m = /^labels\.([a-z0-9_-]+)=([a-z0-9_-]+)$/.exec(url.searchParams.get("query") || "");
+    // labels.<key>:<value> is a token match (GF3): every token of the asked value is a token of the label; results carry their labels.
+    const m = /^labels\.([a-z0-9_-]+):([a-z0-9_-]+)$/.exec(url.searchParams.get("query") || "");
     if (!m) return send(res, 400, { error: { code: 400 } });
-    return send(res, 200, { results: [...topics.values()].filter((t) => t.labels[m[1]] === m[2]).map((t) => ({ name: "//pubsub.googleapis.com/" + t.name, assetType: "pubsub.googleapis.com/Topic" })) });
+    const tokens = (v) => String(v || "").split(/[^a-z0-9]+/).filter(Boolean);
+    const matches = (label) => label !== undefined && tokens(m[2]).every((t) => tokens(label).includes(t));
+    return send(res, 200, { results: [...topics.values()].filter((t) => matches(t.labels[m[1]])).map((t) => ({ name: "//pubsub.googleapis.com/" + t.name, assetType: "pubsub.googleapis.com/Topic", labels: t.labels })) });
   }
   if (host === "storage.googleapis.com") {
     record({ ...entry, object: url.searchParams.get("name") || decodeURIComponent(url.pathname.replace(/^.*\/o\//, "")) });

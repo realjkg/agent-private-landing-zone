@@ -35,7 +35,7 @@ export const APPLY_IDENTITIES = ["DISCOVERY", "STATE", "STATE_WRITE", "APPLY"] a
 export type ApplyIdentity = ExecutionIdentity;
 
 /** The engines the pilot has a spec for (src/apply/engine-spec.ts). The contract's `engine` selects one; anything else is not a contract. */
-export type EngineId = "TERRAFORM" | "CDK" | "BICEP";
+export type EngineId = "TERRAFORM" | "CDK" | "BICEP" | "GCP_API";
 
 /** The providers the pilot has a spec for (src/apply/provider.ts). The contract's `provider` selects one; anything else is not a contract. */
 export type ProviderId = "AZURE" | "AWS" | "GCP";
@@ -186,7 +186,10 @@ export type SealedPlan = {
  * not the program, so the observable check is the qualification evidence: it records the hash of the program it ran.
  */
 export type PreviewProvenance = {
-  /** SHA-256 of the engine program the preview ran (the aws CLI's for CDK). An apply with another program is refused. */
+  /**
+   * SHA-256 of the engine program the preview ran: the terraform binary, the aws CLI for CDK, or for GCP_API (no external program) the
+   * hash of the engine's own module closure (D1). An apply with another program or module is refused.
+   */
   engineBinarySha256: string;
   /** Whether real-engine qualification evidence covers this program, engine version and preview adapter for this target, or why not. */
   qualification: { state: "QUALIFIED"; evidenceHash: string; qualifiedAt: string } | { state: "UNQUALIFIED"; reason: string };
@@ -327,12 +330,20 @@ export type ApplyEvidence = {
   finishedAt: string;
   authority: {
     infrastructureAct: "PILOT_ENABLED";
-    /** What the engine did: Terraform applied the sealed plan, or CloudFormation executed the sealed change set. */
-    mutation: "TERRAFORM_APPLY_OF_SEALED_PLAN" | "CLOUDFORMATION_EXECUTE_OF_SEALED_CHANGE_SET" | "AZURE_DEPLOYMENT_STACK_CREATE_OF_SEALED_TEMPLATE";
+    /**
+     * What the engine did: Terraform applied the sealed plan, CloudFormation executed the sealed change set, an Azure deployment
+     * stack was created from the sealed template, or (GCP API-native, D16) the one sealed Pub/Sub topic create was sent.
+     */
+    mutation: "TERRAFORM_APPLY_OF_SEALED_PLAN" | "CLOUDFORMATION_EXECUTE_OF_SEALED_CHANGE_SET" | "AZURE_DEPLOYMENT_STACK_CREATE_OF_SEALED_TEMPLATE" | "GCP_PUBSUB_TOPIC_CREATE_OF_SEALED_REQUEST";
     agentInitiated: false;
   };
   /** Present when the engine left errored.tfstate or crash.log: kept encrypted in the vault, referenced here by count and hash only. */
   recovery?: { files: number; sha256: string };
+  /**
+   * GCP API-native (D11), SUCCEEDED runs only: the one property the engine set and read back as sealed, by name, with its sealed value
+   * (`messageStoragePolicy.allowedPersistenceRegions`, `[region]`). It names one Pub/Sub property; it is not a data-residency claim.
+   */
+  verifiedProperty?: { name: string; value: string[] };
 };
 
 export type ApplyResult =
@@ -371,12 +382,17 @@ export type CleanupEvidence = {
   finishedAt: string;
   authority: {
     infrastructureAct: "PILOT_ENABLED";
-    mutation: "TERRAFORM_DESTROY_OF_APPROVED_PROPOSAL" | "CLOUDFORMATION_EXECUTE_OF_REMOVAL_CHANGE_SET" | "AZURE_DEPLOYMENT_STACK_DELETE_OF_RUN_STACK";
+    mutation: "TERRAFORM_DESTROY_OF_APPROVED_PROPOSAL" | "CLOUDFORMATION_EXECUTE_OF_REMOVAL_CHANGE_SET" | "AZURE_DEPLOYMENT_STACK_DELETE_OF_RUN_STACK" | "GCP_PUBSUB_TOPIC_DELETE_OF_RUN_TOPIC";
     /** The identity that executed: the pilot's APPLY identity (owner decision, 2026-10-25), bound to `deletes`. */
     executedAs: "APPLY";
     agentInitiated: false;
   };
   recovery?: { files: number; sha256: string };
+  /**
+   * GCP API-native (D16): whether this run's own DELETE removed the topic. False means it was already absent (a 404 and an absent
+   * read-back): the cleanup SUCCEEDED, but this run did not delete it. Absent for the other engines.
+   */
+  deletedByRun?: boolean;
 };
 
 export type CleanupResult =

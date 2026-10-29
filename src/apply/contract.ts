@@ -181,10 +181,8 @@ function authorizeOf(value: unknown, active: readonly ApplyEnvironment[]): Pilot
   }));
 }
 
-/** A path that exists only as an admission-level id until its lane lands (six-path baseline, #39): refused NOT_IMPLEMENTED. */
-const PLANNED_PATHS: readonly { provider: string; engine: string; path: string }[] = [
-  { provider: "GCP", engine: "GCP_API", path: "path 6" },
-];
+/** A path that exists only as an admission-level id until its lane lands (six-path baseline, #39): refused NOT_IMPLEMENTED. None today: GCP API-native left it in INT-2. */
+const PLANNED_PATHS: readonly { provider: string; engine: string; path: string }[] = [];
 
 /**
  * The paths admitted for DEV only (six-path baseline, owner decision E2 for Azure Bicep, and owner decision 6481421924 for GCP
@@ -194,8 +192,8 @@ const PLANNED_PATHS: readonly { provider: string; engine: string; path: string }
 const DEV_ONLY_PATHS: readonly { provider: string; engine: string; path: string }[] = [
   { provider: "AZURE", engine: "BICEP", path: "path 4" },
   { provider: "GCP", engine: "TERRAFORM", path: "path 5" },
-  // GCP API-native is DEV only too (docs/act-pilot-gcp-api-driver.md D9). It stays in PLANNED_PATHS, which is checked first, until
-  // its engine spec lands; then a contract for it must state enabledEnvironments ["DEV"]. Release admission does not list it.
+  // GCP API-native is DEV only too (docs/act-pilot-gcp-api-driver.md D9; owner decision 6483993252, INT-2): a contract for it must
+  // state enabledEnvironments ["DEV"].
   { provider: "GCP", engine: "GCP_API", path: "path 6" },
 ];
 
@@ -370,8 +368,8 @@ export function pilotTargetSha256(contract: PilotContract, env: ApplyEnvironment
 
 /**
  * The target hash from its parts: the provider spec, the engine's target shape (its `locationFields`) and the target. One
- * implementation for every path, so an engine whose spec is not registered yet (GCP API-native, `GCP_API_TARGET`) is hashed by the
- * same rule its registered spec will use (docs/act-pilot-gcp-api-driver.md D9).
+ * implementation for every path, so a target shape can be hashed before its engine is registered (GCP API-native, `GCP_API_TARGET`,
+ * was) by the same rule its registered spec uses (docs/act-pilot-gcp-api-driver.md D9).
  */
 export function targetSha256Of(spec: ProviderSpec, engineTarget: EngineSpec["target"], target: PilotTarget): string {
   const account = Object.fromEntries(Object.entries(accountFieldsOf(spec, target)).map(([key, value]) => [key, canonicalGuid(value)]));
@@ -616,7 +614,7 @@ export async function verifyApplyQualification(
   expected: { adapterVersion: string; argvDigest: string; engineVersion: string },
   /**
    * The contract's DEV target (account fields, backend, workspace), the clock, and what this run would use: the
-   * engine binary's hash (`terraformSha256`, the aws CLI's for CDK) and the normalized client ids of the two attested principals (not compared for a QA or PROD run when each environment
+   * engine binary's hash (`terraformSha256`, the aws CLI's for CDK, the engine module closure's for GCP_API, D1) and the normalized client ids of the two attested principals (not compared for a QA or PROD run when each environment
    * brings its own principals, `ProviderSpec.principalPerEnvironment`). Evidence is for exactly these, at most 30 days old.
    */
   bound: { dev: PilotTarget; now: Date; terraformSha256: string | undefined; stateWriteClientId: string; applyClientId: string; principalsPerEnvironment?: boolean },

@@ -6,7 +6,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { authorizeContract, parsePilotContract, pilotContractSha256 } from "../src/apply/contract.js";
+import { authorizeContract, parsePilotContract, pilotContractSha256, pilotTargetSha256 } from "../src/apply/contract.js";
+import { GCP_API_BACKEND_SENTINEL } from "../src/apply/gcp-api-target.js";
 import { APPLY_AUTHORITY } from "../src/apply/evidence.js";
 import { buildRecoveryEvidence, recoveryAdmissionRecordOf } from "../src/apply/recovery-record.js";
 import type { ApplyEvidence, PilotContract } from "../src/apply/types.js";
@@ -35,13 +36,19 @@ const gcpContractJson = (over: Record<string, unknown> = {}) => ({
   targets: { DEV: { projectId: "alz-pilot-dev", region: "europe-west4", backend: "alz-pilot-dev-state/pilot/dev", workspace: "default", canary: { resources: [{ type: "google_pubsub_topic", count: 1 }] } } },
   requiredApprovals: { DEV: 1 }, maxApprovalAgeMinutes: 60, approvers, killSwitchPath: KILL, authorize: { DEV: ["APPLY", "CLEANUP"] }, embedStateWrite: true, ...over,
 });
+/** GCP API-native (path 6, DEV only; INT-2): its own target shape, the backend sentinel, a topic prefix, no state and no embedStateWrite. */
+const gcpApiContractJson = (over: Record<string, unknown> = {}) => ({
+  schemaVersion: 1, enabled: true, provider: "GCP", engine: "GCP_API", enabledEnvironments: ["DEV"],
+  targets: { DEV: { projectId: "alz-pilot-api-dev", region: "europe-west4", backend: GCP_API_BACKEND_SENTINEL, workspace: "default", topicPrefix: "alz-act-dev1-", canary: { resources: [{ type: "google_pubsub_topic", count: 1 }] } } },
+  requiredApprovals: { DEV: 1 }, maxApprovalAgeMinutes: 60, approvers, killSwitchPath: KILL, authorize: { DEV: ["APPLY", "CLEANUP"] }, ...over,
+});
 const bicepContractJson = (over: Record<string, unknown> = {}) => ({
   schemaVersion: 1, enabled: true, provider: "AZURE", engine: "BICEP", enabledEnvironments: ["DEV"],
   targets: { DEV: { tenantId: TENANT_ID, subscriptionId: SUBSCRIPTION_ID, backend: STACK_NAME, workspace: "default", resourceGroup: RESOURCE_GROUP, location: LOCATION, canary: BICEP_CANARY } },
   requiredApprovals: { DEV: 1 }, maxApprovalAgeMinutes: 60, approvers, killSwitchPath: KILL, authorize: { DEV: ["APPLY", "CLEANUP"] }, ...over,
 });
 
-/** The five admitted paths, each with its own reviewed contract text and the commit that carries it (differing from the candidate in the contract file only). */
+/** The six admitted paths, each with its own reviewed contract text and the commit that carries it (differing from the candidate in the contract file only). */
 type Path = { provider: string; engine: string; commit: string; text: string; contract: PilotContract };
 const pathOf = (raw: object, commit: string): Path => {
   const text = JSON.stringify(raw);
@@ -56,6 +63,7 @@ const PATHS: Path[] = [
   pathOf(cdkContractJson(KILL), "3".repeat(40)),
   pathOf(bicepContractJson(), "4".repeat(40)),
   pathOf(gcpContractJson(), "5".repeat(40)),
+  pathOf(gcpApiContractJson(), "e".repeat(40)),
 ];
 const byGate = (gate: string): Path => PATHS.find((p) => actGateId(p) === gate)!;
 const entryOf = (p: Path): ActPilotPath => ({ provider: p.provider, engine: p.engine, contractSha256: pilotContractSha256(p.contract), contractCommit: p.commit } as ActPilotPath);
@@ -95,14 +103,14 @@ const actBlockers = (r: { blockers: string[] }) => r.blockers.filter((b) => /^AC
 const statusOf = async (manifest: ReleaseAdmissionInput, gate: string, options?: Parameters<typeof review>[1]) => (await review(manifest, options)).gates.find((g) => g.id === gate)?.status;
 const allPaths = () => ({ actPilots: PATHS.map(entryOf) });
 
-test("one candidate, five admitted paths: each path's live record is admitted against its own contract, authorization and contract commit, and the report lists every bound path", async () => {
+test("one candidate, six admitted paths: each path's live record is admitted against its own contract, authorization and contract commit, and the report lists every bound path", async () => {
   const records = PATHS.map((p) => attach(actGateId(p), "LIVE_ACT", liveOf(p)));
   const result = await review(manifestOf(allPaths(), records));
   assert.deepEqual(actBlockers(result), []);
   assert.deepEqual(result.actPilots, PATHS.map(entryOf));
   assert.equal(result.actPilot, null);
   for (const p of PATHS) assert.equal(result.gates.find((g) => g.id === actGateId(p))?.status, "EVIDENCE_PRESENT", actGateId(p));
-  assert.deepEqual(PATHS.map((p) => actGateId(p)).sort(), ["act:aws-cdk", "act:aws-terraform", "act:azure-bicep", "act:azure-terraform", "act:gcp-terraform"]);
+  assert.deepEqual(PATHS.map((p) => actGateId(p)).sort(), ["act:aws-cdk", "act:aws-terraform", "act:azure-bicep", "act:azure-terraform", "act:gcp-gcp_api", "act:gcp-terraform"]);
   // ACT stays disabled globally, nothing is approved, and every other gate still needs its own evidence.
   assert.equal(result.infrastructureAct, "DISABLED");
   assert.equal(result.productionReleaseApproved, false);
@@ -200,8 +208,8 @@ test("synthetic, mocked, emulated, stale or substituted evidence never satisfies
   assert.equal(await status({ ...attach(gate, "LIVE_ACT", liveOf(bicep)), sourceCommit: bicep.commit }), "BLOCKED", "the manifest entry names another candidate");
 });
 
-test("QA and PROD are refused for the DEV-only paths (Azure Bicep, GCP Terraform): no authorization exists for them, and a contract that authorizes them does not load", async () => {
-  for (const gate of ["act:azure-bicep", "act:gcp-terraform"]) {
+test("QA and PROD are refused for the DEV-only paths (Azure Bicep, GCP Terraform, GCP API-native): no authorization exists for them, and a contract that authorizes them does not load", async () => {
+  for (const gate of ["act:azure-bicep", "act:gcp-terraform", "act:gcp-gcp_api"]) {
     const p = byGate(gate);
     assert.deepEqual(p.contract.enabledEnvironments, ["DEV"]);
     assert.equal(authOf(p.contract, "QA"), undefined);
@@ -214,19 +222,103 @@ test("QA and PROD are refused for the DEV-only paths (Azure Bicep, GCP Terraform
   const widened = [
     gcpContractJson({ enabledEnvironments: undefined }), gcpContractJson({ enabledEnvironments: ["DEV", "QA"] }), gcpContractJson({ authorize: { DEV: ["APPLY"], QA: ["APPLY"] } }),
     bicepContractJson({ enabledEnvironments: undefined }), bicepContractJson({ enabledEnvironments: ["PROD"] }),
+    gcpApiContractJson({ enabledEnvironments: undefined }), gcpApiContractJson({ enabledEnvironments: ["DEV", "PROD"] }), gcpApiContractJson({ authorize: { DEV: ["APPLY"], QA: ["APPLY"] } }),
   ];
   for (const raw of widened) assert.equal(parsePilotContract(JSON.stringify(raw)).enabled, false, JSON.stringify(raw).slice(0, 120));
 });
 
-test("GCP_API is not GCP Terraform and Bicep is not Terraform: GCP_API has no pilot path, and a record of one engine never fills another engine's gate", async () => {
+test("GCP_API is not GCP Terraform and Bicep is not Terraform: each engine is its own path, its own contract shape and its own gate, and a record of one engine never fills another engine's gate", async () => {
   const gcp = byGate("act:gcp-terraform");
-  const api = { ...entryOf(gcp), engine: "GCP_API" };
-  assert.deepEqual(actBlockers(await review(manifestOf({ actPilots: [api] }))), ["ACT_PILOT_COMBINATION_NOT_ALLOWED:act:gcp-gcp_api"]);
-  assert.equal(parsePilotContract(JSON.stringify(gcpContractJson({ engine: "GCP_API" }))).enabled, false, "a GCP_API contract does not load");
+  const api = byGate("act:gcp-gcp_api");
+  // Declaring a GCP Terraform contract as GCP_API (or the reverse) is a scope mismatch: the commit's contract names the other engine.
+  assert.deepEqual(actBlockers(await review(manifestOf({ actPilots: [{ ...entryOf(gcp), engine: "GCP_API" }] }))), ["ACT_PILOT_SCOPE_MISMATCH:act:gcp-gcp_api"]);
+  assert.deepEqual(actBlockers(await review(manifestOf({ actPilots: [{ ...entryOf(api), engine: "TERRAFORM" }] }))), ["ACT_PILOT_SCOPE_MISMATCH:act:gcp-terraform"]);
+  // A Terraform-shaped contract naming GCP_API does not load, and a GCP_API-shaped one naming TERRAFORM does not either.
+  assert.equal(parsePilotContract(JSON.stringify(gcpContractJson({ engine: "GCP_API" }))).enabled, false, "a Terraform contract (state backend, embedStateWrite) for GCP_API");
+  assert.equal(parsePilotContract(JSON.stringify(gcpApiContractJson({ engine: "TERRAFORM" }))).enabled, false, "a GCP_API contract (sentinel backend, topicPrefix) for TERRAFORM");
+  // Each gate admits only its own engine's record.
   assert.equal(await statusOf(manifestOf(allPaths(), [attach("act:gcp-terraform", "LIVE_ACT", liveOf(gcp, { engine: "GCP_API" }))]), "act:gcp-terraform"), "BLOCKED");
+  assert.equal(await statusOf(manifestOf(allPaths(), [attach("act:gcp-terraform", "LIVE_ACT", liveOf(api))]), "act:gcp-terraform"), "BLOCKED", "a GCP_API record on the GCP Terraform gate");
+  assert.equal(await statusOf(manifestOf(allPaths(), [attach("act:gcp-gcp_api", "LIVE_ACT", liveOf(gcp))]), "act:gcp-gcp_api"), "BLOCKED", "a GCP Terraform record on the GCP_API gate");
+  assert.equal(await statusOf(manifestOf(allPaths(), [attach("act:gcp-gcp_api", "LIVE_ACT", liveOf(api, { engine: "TERRAFORM" }))]), "act:gcp-gcp_api"), "BLOCKED");
+  assert.equal(await statusOf(manifestOf(allPaths(), [attach("act:gcp-gcp_api", "LIVE_ACT", liveOf(api))]), "act:gcp-gcp_api"), "EVIDENCE_PRESENT");
   const bicep = byGate("act:azure-bicep");
   assert.equal(await statusOf(manifestOf(allPaths(), [attach("act:azure-terraform", "LIVE_ACT", liveOf(bicep))]), "act:azure-terraform"), "BLOCKED", "a Bicep record on the Azure Terraform gate");
   assert.equal(await statusOf(manifestOf(allPaths(), [attach("act:azure-bicep", "LIVE_ACT", liveOf(byGate("act:azure-terraform")))]), "act:azure-bicep"), "BLOCKED", "a Terraform record on the Bicep gate");
+  // No wildcard: GCP_API with another provider is no combination.
+  for (const provider of ["AWS", "AZURE", "*"]) {
+    assert.deepEqual(actBlockers(await review(manifestOf({ actPilots: [{ ...entryOf(api), provider }] }))), ["ACT_PILOT_COMBINATION_NOT_ALLOWED:act:" + provider.toLowerCase() + "-gcp_api"], provider);
+  }
+});
+
+test("GCP API-native (act:gcp-gcp_api, INT-2): its own contract, authorization and commit only; a missing, disabled or unauthorized contract, a wrong binding, or synthetic or emulated evidence keeps it BLOCKED", async () => {
+  const api = byGate("act:gcp-gcp_api");
+  const gate = "act:gcp-gcp_api";
+  assert.deepEqual(api.contract.enabledEnvironments, ["DEV"]);
+  // Alone, at its own contract commit.
+  const alone = await review(manifestOf({ actPilots: [entryOf(api)] }, [attach(gate, "LIVE_ACT", liveOf(api))]));
+  assert.deepEqual(actBlockers(alone), []);
+  assert.equal(alone.gates.find((g) => g.id === gate)?.status, "EVIDENCE_PRESENT");
+  assert.equal(alone.infrastructureAct, "DISABLED");
+  assert.equal(alone.productionReleaseApproved, false);
+  // Missing, unreadable, disabled or authorizing nothing.
+  const one = async (contractAt: ContractReader | undefined) => actBlockers(await review(manifestOf({ actPilots: [entryOf(api)] }), { contractAt }));
+  assert.deepEqual(await one(undefined), ["ACT_PILOT_CONTRACT_SOURCE_UNAVAILABLE:" + gate]);
+  assert.deepEqual(await one(readerOf({ [api.commit]: { ok: false, reason: "gone" } })), ["ACT_PILOT_CONTRACT_COMMIT_UNREADABLE:" + gate]);
+  for (const raw of [gcpApiContractJson({ enabled: false }), gcpApiContractJson({ authorize: {} })]) {
+    const contract = parsePilotContract(JSON.stringify(raw));
+    assert.deepEqual(await one(readerOf({ [api.commit]: { ok: true, contract, changedPaths: [CONTRACT_FILE] } })), ["ACT_PILOT_CONTRACT_MISSING_OR_DISABLED:" + gate]);
+  }
+  assert.deepEqual(await one(readerOf({ [api.commit]: { ok: true, contract: api.contract, changedPaths: [CONTRACT_FILE, "src/apply/engines/gcp-api.ts"] } })), ["ACT_PILOT_CONTRACT_COMMIT_CHANGES_PRODUCT:" + gate]);
+  assert.deepEqual(actBlockers(await review(manifestOf({ actPilots: [{ ...entryOf(api), contractSha256: "0".repeat(64) }] }))), ["ACT_PILOT_SCOPE_MISMATCH:" + gate]);
+  // A record bound to another target, contract, authorization, environment, commit or engine, or one that is not live.
+  const moved = parsePilotContract(JSON.stringify(gcpApiContractJson({ targets: { DEV: { ...gcpApiContractJson().targets.DEV, topicPrefix: "alz-act-other-" } } }))) as PilotContract;
+  assert.notEqual(pilotTargetSha256(moved, "DEV"), pilotTargetSha256(api.contract, "DEV"), "the topic prefix is part of the target (D9)");
+  const status = (over: Record<string, unknown>) => statusOf(manifestOf(allPaths(), [attach(gate, "LIVE_ACT", liveOf(api, over))]), gate);
+  for (const [label, over] of [
+    ["another target's contract", { contractSha256: pilotContractSha256(moved), authorizationSha256: authOf(moved) }],
+    ["GCP Terraform's contract", { contractSha256: pilotContractSha256(byGate("act:gcp-terraform").contract), authorizationSha256: authOf(byGate("act:gcp-terraform").contract) }],
+    ["another authorization", { authorizationSha256: "3".repeat(64) }], ["no authorization", { authorizationSha256: undefined }],
+    ["QA", { environment: "QA" }], ["PROD", { environment: "PROD" }], ["the candidate's commit", { sourceCommit: CANDIDATE }], ["GCP Terraform's commit", { sourceCommit: byGate("act:gcp-terraform").commit }],
+    ["SYNTHETIC", { label: "SYNTHETIC" }], ["EMULATED", { label: "EMULATED" }], ["mock", { mock: true }], ["simulation", { simulation: true }],
+    ["not SUCCEEDED", { outcome: "PARTIAL_REQUIRES_REVIEW" }], ["unattested", { attestedBy: " " }], ["another provider", { cloud: "AZURE" }],
+  ] as const) assert.equal(await status(over as Record<string, unknown>), "BLOCKED", label);
+  // Not declared: its record binds nothing.
+  assert.equal(await statusOf(manifestOf({ actPilots: PATHS.filter((p) => p !== api).map(entryOf) }, [attach(gate, "LIVE_ACT", liveOf(api))]), gate), "BLOCKED");
+});
+
+test("adding GCP API-native changes nothing for the five other paths: their contract, authorization and target hashes are byte-identical to main's (d5767a3), and each is still admitted", async () => {
+  // Fixed approver keys and kill switch path, so each hash is a constant; the expected values were computed on d5767a3 (#357's merge).
+  const PEM = (b64: string) => "-----BEGIN PUBLIC KEY-----\n" + b64 + "\n-----END PUBLIC KEY-----\n";
+  const FIXED = [
+    { id: "alice", publicKeyPem: PEM("MCowBQYDK2VwAyEABsnBD3ZVwQAzuuTtBSYtZpYDKZ5Rgy76BWnz47jt8SU="), environments: ["DEV", "QA", "PROD"] },
+    { id: "bob", publicKeyPem: PEM("MCowBQYDK2VwAyEA1KIW2GnVgPUa3aIYwoOc/wIlvm80Sq2tg5mWhJmFf2s="), environments: ["DEV", "QA", "PROD"] },
+    { id: "carol", publicKeyPem: PEM("MCowBQYDK2VwAyEAfLsU6Fh/jbJLAOk+CO7rk5ukjUaDdEIc771BY7JCpx4="), environments: ["DEV"] },
+    { id: "dana", publicKeyPem: PEM("MCowBQYDK2VwAyEALAfhiH9sBHvBRnBCeHPd+rzC/MzmLRYcYlbqrttVnwo="), environments: ["DEV", "QA", "PROD"] },
+  ];
+  const PIN_KILL = "/var/lib/alz/pin/KILL";
+  const pinned: Record<string, [object, string, string, string]> = {
+    "act:aws-terraform": [awsContractJson(PIN_KILL), "d4f15b89006b98b7a227c8a25b3fd88ab7e89496f925e369785fa025a93633e1", "905322a89fcb6aa1aea79053fef6a82aef6c532b9f753281dddce04915615dce", "3423e5c344dace045af015778584928bc1394dec43adf915e4742bd7f1723398"],
+    "act:azure-terraform": [azureContractJson(PIN_KILL), "f59651b0c1c8fa9ddfc53273db5cd9b7db0e37565fd4055b3f439a145e0079cc", "466d468bdaac6e85bfa8250a8b42f628a89a42501dcbdb75304f54b105aa4ea0", "9a5c4e4227b14cd4fdb722ab8b79b11f7047ffa13fb600a96587996332eda64a"],
+    "act:aws-cdk": [cdkContractJson(PIN_KILL), "956bc07b0315ea1765f0dc44df2cc5fe27f90dca5cc288895249b3059522be4d", "89aaa63e709a291c0bd690607049607ee204ef358a995e038a697cddfc8d2c0f", "68e5f416b4ffc3a7851c3658f9f39c540e24f8f9c8f6a36d6d853f9d5a997383"],
+    "act:azure-bicep": [bicepContractJson({ killSwitchPath: PIN_KILL }), "766243065314757702f6202b6687efe572063bd6a33caa2edb4ad011d658d79f", "a1d073f586e6e6ad598764618edf62890cd133a223be511163087c9c4902db3e", "0c8f170cbce3f86df41ad073f2eaa21c0b63f82b21528eb0898ed5e445cad28f"],
+    "act:gcp-terraform": [gcpContractJson({ killSwitchPath: PIN_KILL }), "fb5cea296c59c4ae89223cc6102de55c1e8e7c1867072fe44a6a14085eac0a56", "c684c6b3a30f720b1552286de9529495958e0fa58ad8fa8e255fecc529c29a60", "18d4d0a6e6d59907e95999baa9f6f6ac9fc38f5a3b935cf940ca506095598907"],
+  };
+  for (const [gate, [raw, contractSha, authorizationSha, targetSha]] of Object.entries(pinned)) {
+    const contract = parsePilotContract(JSON.stringify({ ...raw, approvers: FIXED }));
+    assert.equal(contract.enabled, true, gate);
+    const loaded = contract as PilotContract;
+    assert.equal(actGateId(loaded), gate);
+    assert.equal(pilotContractSha256(loaded), contractSha, gate + " contract");
+    assert.equal(authOf(loaded), authorizationSha, gate + " authorization");
+    assert.equal(pilotTargetSha256(loaded, "DEV"), targetSha, gate + " target");
+  }
+  // And each of the five is admitted with its own record beside GCP API-native, exactly as in the five-path release.
+  const five = PATHS.filter((p) => p.engine !== "GCP_API");
+  const result = await review(manifestOf({ actPilots: five.map(entryOf) }, five.map((p) => attach(actGateId(p), "LIVE_ACT", liveOf(p)))));
+  assert.deepEqual(actBlockers(result), []);
+  for (const p of five) assert.equal(result.gates.find((g) => g.id === actGateId(p))?.status, "EVIDENCE_PRESENT", actGateId(p));
+  assert.equal(result.gates.find((g) => g.id === "act:gcp-gcp_api")?.status, "BLOCKED", "an undeclared path stays blocked without evidence");
 });
 
 test("a recovery record is bound to the declared path whose contract it names, at that contract's commit, with that contract's approval count", async () => {

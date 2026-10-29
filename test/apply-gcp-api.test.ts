@@ -32,11 +32,11 @@ import { inMemoryEmulator, writeIdentities, type Roles } from "./helpers/gcp-api
 /**
  * SYNTHETIC evidence only (docs/act-pilot-gcp-api.md, "Evidence"). The GCP_API engine spec (lane G2; docs/act-pilot-gcp-api-driver.md
  * D1 to D20) against an in-memory emulator of STS, IAM Credentials, Pub/Sub and Cloud Asset (test/helpers/gcp-api-emulator.ts). No
- * Google service, identity or network is used. The spec is constructed directly: it is not registered (INT-2), so the driver cannot
- * load a GCP_API contract yet. `inDriverOrder` and `cleanupInDriverOrder` call the spec's steps in exactly the order and with exactly
- * the refusal mapping of `runApply` and `runCleanup` (src/apply/driver.ts), so each test states what the driver would report; the
- * driver itself runs them once INT-2 registers the spec. test/apply-emulated-gcp-api.test.ts runs the same spec over loopback HTTP
- * through the driver's real seal, approval and observation modules.
+ * Google service, identity or network is used. These are the engine's unit cases: each spec is constructed directly with its own
+ * emulator, and `inDriverOrder` and `cleanupInDriverOrder` step it in `runApply`'s and `runCleanup`'s order and refusal mapping
+ * (src/apply/driver.ts) so a case can stop at one step. They are a harness for the engine, not evidence of the driver: the driver itself
+ * runs the registered spec end to end (seal, apply, observe, propose, cleanup, leftovers, the kill switch and the N1 interrupt) in
+ * test/apply-emulated-gcp-api.test.ts (INT-2, #357 review N3).
  */
 
 const ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -155,7 +155,7 @@ async function applied(w: World): Promise<Sealed> {
 
 /* ------------------------------------------------------------------ the spec's facts */
 
-test("SYNTHETIC: the spec is GCP_API on GCP, the shared target shape, two identities, one reviewed canary type, and not registered (INT-2)", () => {
+test("SYNTHETIC: the spec is GCP_API on GCP, the shared target shape, two identities, one reviewed canary type, and registered as exactly this spec (INT-2)", () => {
   const spec = gcpApiEngine();
   assert.equal(spec.id, "GCP_API");
   assert.deepEqual(spec.providers, ["GCP"]);
@@ -183,8 +183,9 @@ test("SYNTHETIC: the spec is GCP_API on GCP, the shared target shape, two identi
   assert.match(spec.notices.sealReads, new RegExp(PARENT_LABEL), "D9: parent is shown only as owner-declared, not observed");
   assert.match(spec.notices.applyNote, /not a data-residency claim/, "D11: no data-residency claim");
   assert.equal(STORAGE_POLICY_PROPERTY, "messageStoragePolicy.allowedPersistenceRegions");
-  // Not registered: the driver refuses a GCP_API contract until INT-2 (src/apply/contract.ts, PLANNED_PATHS).
-  assert.equal(engineSpec("GCP_API"), undefined);
+  // Registered by INT-2 (owner decision 6483993252): the driver loads exactly the production spec for a GCP_API contract.
+  assert.equal(engineSpec("GCP_API"), engineModule.GCP_API);
+  assert.notEqual(engineSpec("GCP_API"), engineSpec("TERRAFORM"), "GCP_API is never GCP Terraform");
 });
 
 test("SYNTHETIC: D19: the standalone functions, the engine's own ledger, signature and kill switch are gone; the module writes no file", () => {
@@ -654,7 +655,7 @@ test("SYNTHETIC: D12/D15: each token carries its host's scope; DISCOVERY only re
   const readOnly = await mint(w.ids.email("DISCOVERY"), "https://www.googleapis.com/auth/cloud-platform.read-only");
   assert.equal((await w.google.http({ method: "GET", url: sealed.url, headers: { authorization: "Bearer " + readOnly } })).status, 403);
   const pubsubOnly = await mint(w.ids.email("DISCOVERY"), PUBSUB_SCOPE);
-  assert.equal((await w.google.http({ method: "GET", url: "https://cloudasset.googleapis.com/v1/projects/" + PROJECT + ":searchAllResources?query=labels.alz-unit%3D" + sealed.unit.unitId, headers: { authorization: "Bearer " + pubsubOnly } })).status, 403);
+  assert.equal((await w.google.http({ method: "GET", url: "https://cloudasset.googleapis.com/v1/projects/" + PROJECT + ":searchAllResources?query=labels.alz-unit%3A" + sealed.unit.unitId, headers: { authorization: "Bearer " + pubsubOnly } })).status, 403);
 });
 
 test("SYNTHETIC: D15/D6/D11: the observation of record is GCP_REST on the blueprint the stateDocument gives: VERIFIED, and FAILED for another storage policy", async () => {
@@ -705,10 +706,14 @@ test("SYNTHETIC: D20: refusal shapes name the step and the HTTP status, never th
 
 test("SYNTHETIC: the network gate: only the three hosts over https, only the sealed topic URL, no lookalike, port, userinfo, query or redirect", async () => {
   const url = topicUrl(PROJECT, PREFIX + "0123456789ab");
-  assert.equal(allowedRequest({ method: "GET", url }, url), true);
-  assert.equal(allowedRequest({ method: "PUT", url }, url), true);
-  assert.equal(allowedRequest({ method: "POST", url: "https://sts.googleapis.com/v1/token" }, undefined), true);
-  assert.equal(allowedRequest({ method: "POST", url: "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/a-b-c-d-e@examplefake-dev.iam.gserviceaccount.com:generateAccessToken" }, undefined), true);
+  for (const method of ["GET", "PUT", "DELETE"] as const) assert.equal(allowedRequest({ method, url }, url, method), true, method);
+  assert.equal(allowedRequest({ method: "POST", url: "https://sts.googleapis.com/v1/token" }, undefined, undefined), true);
+  assert.equal(allowedRequest({ method: "POST", url: "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/a-b-c-d-e@examplefake-dev.iam.gserviceaccount.com:generateAccessToken" }, undefined, undefined), true);
+  // #357 review N2: each sender is for one Pub/Sub method, tied to its identity. PATCH and POST are never sent to the topic, a read
+  // sender (DISCOVERY) can never PUT or DELETE, and the create sender (APPLY) can never DELETE, nor the delete sender PUT.
+  for (const [method, sender] of [["PATCH", "PUT"], ["PATCH", "GET"], ["POST", "PUT"], ["POST", "DELETE"], ["PUT", "GET"], ["DELETE", "GET"], ["DELETE", "PUT"], ["PUT", "DELETE"], ["GET", undefined]] as const) {
+    assert.equal(allowedRequest({ method: method as never, url }, url, sender), false, method + " through a " + (sender ?? "token-only") + " sender");
+  }
   for (const [label, method, candidate, topic] of [
     ["another topic", "GET", topicUrl(PROJECT, PREFIX + "ffffffffffff"), url],
     ["no topic yet", "GET", url, undefined],
@@ -721,7 +726,7 @@ test("SYNTHETIC: the network gate: only the three hosts over https, only the sea
     ["Cloud Asset through the engine", "GET", "https://cloudasset.googleapis.com/v1/projects/" + PROJECT + ":searchAllResources", url],
     ["another STS path", "POST", "https://sts.googleapis.com/v1/introspect", url],
     ["a POST to Pub/Sub", "POST", url + ":publish", url],
-  ] as const) assert.equal(allowedRequest({ method, url: candidate }, topic), false, label);
+  ] as const) assert.equal(allowedRequest({ method, url: candidate }, topic, method === "POST" ? undefined : method), false, label);
   // fetch follows no redirect: a 302 is no answer.
   const http = await import("node:http");
   const server = http.createServer((_req, res) => { res.writeHead(302, { location: "http://127.0.0.1:1/" }); res.end(); });

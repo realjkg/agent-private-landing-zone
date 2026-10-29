@@ -22,13 +22,11 @@ export const ACT_PATH_SPEC: Readonly<Record<ActPathId, { provider: "AWS" | "AZUR
 };
 
 /**
- * Paths the runner cannot run, with the reason it prints. GCP API-native has an engine module but no release gate and no
- * admission (`ACT_RELEASE_PATHS` in src/qualification/release-admission.ts lists five paths): its gate is added by its own
- * integration step after the owner's G2 run and INT-2, not by this runner.
+ * Paths the runner cannot run, with the reason it prints. None today: GCP API-native has its release gate (act:gcp-gcp_api) and its
+ * admission row since INT-2, so it is guided like every other path, behind the same gates (the committed contract's provider, engine
+ * and authorize entry, the configuration's act.paths entry, and a person at the terminal).
  */
-export const ACT_PATH_NOT_AVAILABLE: Readonly<Partial<Record<ActPathId, string>>> = {
-  "gcp-api": "GCP API-native is not admitted for release: it has no act:* gate in the registry and no admission row yet (G2 and INT-2 pending), so no run of it could become release evidence.",
-};
+export const ACT_PATH_NOT_AVAILABLE: Readonly<Partial<Record<ActPathId, string>>> = {};
 
 export type ActStageId = `act:${ActPathId}` | `cleanup:${ActPathId}`;
 

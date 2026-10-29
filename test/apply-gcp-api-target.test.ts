@@ -99,13 +99,23 @@ test("D4: the GCP API-native target shape: the backend is exactly the sentinel, 
   assert.equal(PARENT_LABEL, "owner-declared, not observed");
 });
 
-test("D9: GCP API-native is DEV only, still refused as not implemented, and not a release admission combination", () => {
+test("D9 and INT-2: GCP API-native is DEV only, loads with its own target shape, and is admitted with its own mutation, never as GCP Terraform", () => {
   assert.equal(isDevOnlyPath("GCP", "GCP_API"), true);
   assert.equal(isDevOnlyPath("GCP", "TERRAFORM"), true);
   assert.equal(isDevOnlyPath("AWS", "TERRAFORM"), false);
   const contract = parsePilotContract(JSON.stringify({ ...shared, ...devOnly, provider: "GCP", engine: "GCP_API", targets: { DEV: apiTarget() } }));
-  assert.equal(contract.enabled, false);
-  assert.equal((contract as { code: string }).code, "NOT_IMPLEMENTED");
-  const combinations = PRODUCTION_DEPLOYMENT_CONTRACT.spec.release.actPilot.combinations as readonly { provider: string; engine: string }[];
-  assert.ok(!combinations.some((c) => c.engine === "GCP_API"), "INT-2 adds it, after G2");
+  assert.ok(contract.enabled, JSON.stringify(contract));
+  // Its target hash is the shared rule over the GCP_API shape: what targetSha256Of gives for the same target.
+  assert.equal(pilotTargetSha256(contract, "DEV"), targetSha256Of(GCP, GCP_API_TARGET, apiTarget()));
+  // DEV only: without the scope statement, or with a QA target, it does not load.
+  const unscoped = parsePilotContract(JSON.stringify({ ...shared, ...three, provider: "GCP", engine: "GCP_API", targets: { DEV: apiTarget(), QA: apiTarget({ projectId: "alz-pilot-qa" }), PROD: apiTarget({ projectId: "alz-pilot-prod" }) } }));
+  assert.equal(unscoped.enabled, false);
+  assert.match((unscoped as { reason: string }).reason, /admitted for DEV only/);
+  // A GCP Terraform target (a gcs backend, no topicPrefix) is not a GCP_API target, and the reverse.
+  const asTerraformTarget = parsePilotContract(JSON.stringify({ ...shared, ...devOnly, provider: "GCP", engine: "GCP_API", targets: { DEV: { projectId: "alz-pilot-dev", region: "europe-west4", backend: "alz-pilot-dev-state/pilot/dev", workspace: "default", canary: { resources: [{ type: "google_pubsub_topic", count: 1 }] } } } }));
+  assert.equal(asTerraformTarget.enabled, false);
+  const asApiTarget = parsePilotContract(JSON.stringify({ ...shared, ...devOnly, provider: "GCP", engine: "TERRAFORM", embedStateWrite: true, targets: { DEV: apiTarget() } }));
+  assert.equal(asApiTarget.enabled, false);
+  const combinations = PRODUCTION_DEPLOYMENT_CONTRACT.spec.release.actPilot.combinations as readonly { provider: string; engine: string; mutation: string }[];
+  assert.deepEqual(combinations.filter((c) => c.provider === "GCP").map((c) => [c.engine, c.mutation]), [["TERRAFORM", "TERRAFORM_APPLY_OF_SEALED_PLAN"], ["GCP_API", "GCP_PUBSUB_TOPIC_CREATE_OF_SEALED_REQUEST"]]);
 });

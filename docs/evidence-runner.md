@@ -27,7 +27,7 @@ The PLAN is on the coordination ledger (issue #39, 6433527942). It follows the o
 | `recovery` | S5 | Guided: `./alz apply record-recovery` for an interrupted and a resumed sealed plan | Only with `--stage` |
 | `summary` | S6 | Indexes the evidence, runs `./alz qualify admission` (read-only), and prints every gate with how a missing one is produced | Default run |
 
-The six paths are `aws-terraform`, `aws-cdk`, `azure-terraform`, `azure-bicep`, `gcp-terraform` and `gcp-api`. **`gcp-api` is `NOT_AVAILABLE`**: GCP API-native has an engine module, but no `act:*` gate in the registry and no admission row (G2 and INT-2 pending). So no run of it could become release evidence, and the runner refuses it by name.
+The six paths are `aws-terraform`, `aws-cdk`, `azure-terraform`, `azure-bicep`, `gcp-terraform` and `gcp-api`. Each is guided behind the same gates: the committed contract must name the path's provider and engine and authorize the operation, the configuration must name the path's project folder and requester, and a person answers every prompt. `gcp-api` (GCP API-native) produces the gate `act:gcp-gcp_api` since INT-2.
 
 ## Commands
 
@@ -286,7 +286,7 @@ The run folder stays `<evidenceDir>/<candidate12>` across checkouts, so one jour
 | `azure-terraform` | `qualification/azure/act-dev1-canary` | DISCOVERY, STATE, STATE_WRITE, APPLY | [`act-dev-enablement.md`](act-dev-enablement.md) "Azure Terraform DEV" |
 | `azure-bicep` | `qualification/azure/act-dev1-bicep-canary` | DISCOVERY, APPLY | [`act-pilot-bicep.md`](act-pilot-bicep.md) |
 | `gcp-terraform` | `qualification/gcp/act-dev1-canary` (set the project as its README says) | DISCOVERY, STATE, STATE_WRITE, APPLY | [`act-pilot-gcp-evidence.md`](act-pilot-gcp-evidence.md), E1 to E10 |
-| `gcp-api` | — | — | **NOT_AVAILABLE** (no gate, not admitted) |
+| `gcp-api` | `qualification/gcp/act-dev1-canary-api` (the one `request.json`) | DISCOVERY, APPLY | [`act-pilot-gcp-evidence.md`](act-pilot-gcp-evidence.md), F1 to F10 |
 
 **Expected per path:**
 

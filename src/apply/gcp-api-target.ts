@@ -2,8 +2,8 @@ import type { EngineSpec } from "./engine-spec.js";
 
 /**
  * The GCP API-native target shape (path 6; docs/act-pilot-gcp-api-driver.md D4 and D9, owner-accepted in 6483366237), shared so
- * the path's engine spec (lane G2) declares exactly this and nothing else. It is not registered as an engine here: a GCP_API
- * contract stays NOT_IMPLEMENTED until that lane lands (src/apply/contract.ts, PLANNED_PATHS).
+ * the path's engine spec (lane G2) declares exactly this and nothing else. The spec is registered (INT-2), and a GCP_API contract
+ * is admitted for DEV only (src/apply/contract.ts, DEV_ONLY_PATHS).
  *
  * A DEV target names the provider's account fields (`projectId`, `region`), optionally `parent` (the GCP provider's optional
  * field, owner-declared and never observed by this path), and:

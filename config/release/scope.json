@@ -20,7 +20,8 @@
     "act:azure-terraform",
     "act:aws-cdk",
     "act:azure-bicep",
-    "act:gcp-terraform"
+    "act:gcp-terraform",
+    "act:gcp-gcp_api"
   ],
   "journey": "FULL_LIFECYCLE",
   "outOfScope": [

@@ -2,7 +2,7 @@
 
 Status: **engineering checklist, ready before acceptance (owner decision 6481421924 on #39).** This page authorizes nothing. ACT stays DISABLED until the owner's reviewed contract has an `authorize` entry, and the repository ships no contract. Nothing on this page has run against Google Cloud. Every test it cites is SYNTHETIC or EMULATED, and none of them counts as live evidence.
 
-The owner decision asks engineering for "an exact evidence checklist and supported collection commands before the owner runs acceptance", for one Pub/Sub topic per path. This page is that checklist for **path 5, GCP Terraform** (gate `act:gcp-terraform`). **Path 6, GCP API-native**, is a placeholder at the end and is not available yet.
+The owner decision asks engineering for "an exact evidence checklist and supported collection commands before the owner runs acceptance", for one Pub/Sub topic per path. This page is that checklist for **path 5, GCP Terraform** (gate `act:gcp-terraform`) and **path 6, GCP API-native** (gate `act:gcp-gcp_api`, admitted for DEV only by INT-2).
 
 Every command below is a supported `./alz` command (`./alz apply --help` lists them). The general flow, the owner-only steps and the kill switch are in [`docs/act-dev-enablement.md`](act-dev-enablement.md). This page adds what is specific to GCP.
 
@@ -85,13 +85,59 @@ All of these are SYNTHETIC or EMULATED, and are listed so nobody mistakes them f
 - `test/apply-emulated-gcp.test.ts`: the real driver, the real Terraform and the real google 8.9.0 provider, against a loopback emulator of Google's endpoints. It proves the product's flow, the judge on the real plan shape and the state separation under `embedStateWrite`. It does not prove IAM, scopes or anything else about Google.
 - `bootstrap/gcp`'s `terraform test`: a mocked provider.
 
-## Path 6: GCP API-native (placeholder, NOT YET AVAILABLE)
+## Path 6: GCP API-native, DEV only
 
-There is no checklist for path 6 yet, and the owner cannot collect its evidence. The engine is not in `SPECS`, and the gate `act:gcp-gcp_api` does not exist. Lanes G2 and INT-2 add them, after the D5 interface change (`docs/act-pilot-gcp-api-driver.md`, section 4). The design decisions that will shape it:
-- two identities, DISCOVERY and APPLY (D12);
-- the topic prefix and a run-unique name drawn at seal (D4, D10);
-- the storage policy sealed and read back (D11);
-- exact-resource cleanup (D16).
-- the same token exchange as the observation, so a first-run `CREDENTIALS` refusal is GF1 first (see path 5's "If the observation reports `CREDENTIALS`").
+### What is being accepted
 
-Engineering fills in this section before the owner runs path 6 acceptance. Until then, nothing here applies to path 6.
+The same canary as path 5, made without Terraform: one labeled `google_pubsub_topic` in the DEV project, created by one `PUT` of an approved sealed request and deleted by one `DELETE` of an approved cleanup proposal. The engine runs in process (`src/apply/engines/gcp-api.ts`); there is no state, no external program and no state bucket. The project is the committed request [`qualification/gcp/act-dev1-canary-api/request.json`](../qualification/gcp/act-dev1-canary-api/request.json), exactly `{ "schemaVersion": 1, "kind": "PUBSUB_TOPIC" }` (D7). Every other value comes from the reviewed contract, the run's unit and the name suffix drawn once at seal (D4, D10). The design is `docs/act-pilot-gcp-api-driver.md` (D1 to D20) and the engine page is `docs/act-pilot-gcp-api.md`.
+
+The acceptance items are the same as path 5's, and F1 to F10 below map onto them.
+
+### Owner inputs (never posted on #39 as credentials)
+
+| Input | Where it goes |
+| --- | --- |
+| The DEV project id and one region | `targets.DEV.projectId` and `targets.DEV.region`. The region becomes the topic's `messageStoragePolicy.allowedPersistenceRegions` (D11). |
+| The topic namespace | `targets.DEV.topicPrefix`: `alz-`, then 1 to 40 of `a-z 0-9 -`, ending in `-` (D4). Each run's topic is the prefix plus 12 hex characters drawn at seal. |
+| The parent (optional) | `targets.DEV.parent`, owner-declared and never observed: the path never reads Resource Manager (D9). |
+| The execution host and its workload identity federation | `bootstrap/gcp` with `engine = "GCP_API"`: DISCOVERY and APPLY only, D12's custom roles, no state bucket. The eight `ALZ_DISCOVERY_GOOGLE_*` and `ALZ_APPLY_GOOGLE_*` variables on the host. |
+| Approvers and the requester | `approvers` and `requiredApprovals.DEV` in the contract, as for path 5. |
+
+### The contract
+
+Build it from the bootstrap outputs (`contract_target`, `GCP_API`):
+- `"provider": "GCP"`, `"engine": "GCP_API"` and `"enabledEnvironments": ["DEV"]`: path 6 is DEV only, and a contract for any other stage does not load.
+- `targets.DEV.backend` is exactly `GCP_API_NO_STATE` and `targets.DEV.workspace` exactly `default` (D9). **No `embedStateWrite`**: the path has no state, and a contract that sets it does not load.
+- `targets.DEV.canary` is exactly `{ "resources": [{ "type": "google_pubsub_topic", "count": 1 }] }` (D8).
+
+### Evidence, step by step
+
+The commands are path 5's, with the API request in place of the Terraform project. "Kept" has the same meaning. One channel per workflow.
+
+| # | Acceptance item | Command | The owner must see | Kept |
+| --- | --- | --- | --- | --- |
+| F1 | Authorization and canary scope | `./alz apply contract-check --file config/act-pilot-contract.json`, the reviewed authorization commit, then `./alz apply status --environment DEV` | COMPLETE; `"act": "PILOT_ENABLED"` with DEV AUTHORIZED for `GCP GCP_API` | the commit and its review; the status output |
+| F2 | Two identities, separate, aimed at the DEV project | `./alz apply preflight --environment DEV` | every item READY except qualification; exactly DISCOVERY and APPLY, no STATE or STATE_WRITE, no ambient Google variable | the preflight output |
+| F3 | Qualified identities | `./alz apply prepare --environment DEV --project <COPY of qualification/gcp/act-dev1-canary-api>`, then `./alz apply qualify --request <REQUEST.json> --manifest <MANIFEST.json>` | qualification signs both identities in and runs one Cloud Asset search as DISCOVERY; APPLY makes no Pub/Sub call. Before typing the attestation, check the Cloud Audit Logs: DISCOVERY only read, APPLY made nothing | the qualification evidence |
+| F4 | An exact plan | `./alz apply seal --request <REQUEST.json> --manifest <MANIFEST.json> --requester <ID> --key <REQUESTER_KEY.pem>` | the review bundle lists exactly **1 create**, `google_pubsub_topic.<topicPrefix><12 hex>`, and the unit's labels; the sealed topic read absent and the unit sweep complete and empty | the sealed plan and review bundle |
+| F5 | Human approval and execution | `./alz apply approve ...`, then `./alz apply apply --request <REQUEST.json> --manifest <MANIFEST.json> --sealed <SEALED_PLAN> --approval <APPROVAL.json>` | outcome `SUCCEEDED`; the evidence's mutation is `GCP_PUBSUB_TOPIC_CREATE_OF_SEALED_REQUEST` and it names `verifiedProperty` `messageStoragePolicy.allowedPersistenceRegions` = `[the contract's region]` | the apply evidence and the blueprint record (source `GCP_API_TOPIC`) |
+| F6 | Live record | `./alz apply record-live --sealed <SEALED_PLAN>` | `cloud: "GCP"`, `engine: "GCP_API"`, the same commit, contract and target hashes | `config/acceptance/evidence/gcp-gcp_api-execute-dev-<artifact>.json`, committed |
+| F7 | Independent observation | `./alz apply observe --sealed <SEALED_PLAN>` | verdict `VERIFIED`, verifier `GCP_REST`, inventory `COMPLETE`; the topic `VERIFIED` with the contract's storage policy | the observation record |
+| F8 | Verified cleanup | `./alz apply propose-cleanup ...`, `./alz apply approve ...`, `./alz apply cleanup ...`, `./alz apply verify-cleanup --proposal <PROPOSAL.json>` | the proposal deletes exactly the run's topic; the cleanup evidence's mutation is `GCP_PUBSUB_TOPIC_DELETE_OF_RUN_TOPIC` with `deletedByRun: true`; afterwards the topic is `CONFIRMED_DELETED` (basis `GCP_REST_ABSENT`) | the proposal, cleanup evidence and leftovers record |
+| F9 | Bound evidence | `./alz apply report --sealed <SEALED_PLAN> --proposal <PROPOSAL.json>`, then `./alz qualify admission --manifest <evidence-index-file>` | a report for gate `act:gcp-gcp_api` (never `act:gcp-terraform`) tying F4 to F8 together | the report and the admission output |
+| F10 | Denial, replay, interruption and recovery | path 5's E10, with this path's commands | `KILL_SWITCH_ACTIVE`; `ARTIFACT_ALREADY_APPLIED`; QA not READY | the outputs |
+
+The guided runner drives F1 to F9 with `./alz evidence run --stage act:gcp-api`, then `--stage cleanup:gcp-api` (`docs/evidence-runner.md`).
+
+### Facts only this run shows (GF1 to GF11)
+
+`docs/act-pilot-gcp-api.md` records each fact and what happens if it is wrong; every one fails closed. Record what the run shows for each:
+- **GF1**: the token exchange's form encoding. A `CREDENTIALS` refusal before any resource is read is GF1 first, as for path 5.
+- **GF3**: the unit sweep sends `labels.alz-unit:<unit>`, the label syntax Cloud Asset documents, and keeps only results whose `alz-unit` label is exactly the unit (`:` matches tokens). If Google refuses the query, the seal is refused `UNIT_LISTING_INCOMPLETE` and nothing is created; record the answer and do not change the query by hand.
+- **GF4 to GF6**: the read-back after the `PUT`, Cloud Asset's indexing delay, and the answers to a duplicate create (409) and to a `DELETE` of an absent topic (404).
+- **GF7 to GF11**: the custom roles and grants of D12, from the bootstrap and the Cloud Audit Logs.
+
+### What never counts as live evidence
+
+- `test/apply-gcp-api.test.ts`: the engine against an in-memory emulator (SYNTHETIC).
+- `test/apply-emulated-gcp-api.test.ts`: the real driver (seal, apply, observe, propose, cleanup, verify) against a loopback emulator of Google's four hosts (EMULATED). It proves the product's flow, not Google's behavior.

@@ -170,9 +170,10 @@ test("a refused or malformed token exchange is a class, never a token or Google'
 
 test("the unit sweep lists every page of Cloud Asset Inventory by resource name, follows a page token only with the same query, and fails closed on a malformed page", async () => {
   const unit = "alzu-0123456789abcdef0123";
+  const labels = { "alz-unit": unit };
   const pages = new Map<string, GcpResponse>([
     ["", { status: 200, body: JSON.stringify({ results: [{ name: "//pubsub.googleapis.com/" + TOPIC, labels: { "alz-unit": unit } }], nextPageToken: "page/2+=" }) }],
-    ["page/2+=", { status: 200, body: JSON.stringify({ results: [{ name: "//storage.googleapis.com/alz-stray-bucket" }, { name: "unexpected-form" }] }) }],
+    ["page/2+=", { status: 200, body: JSON.stringify({ results: [{ name: "//storage.googleapis.com/alz-stray-bucket", labels }, { name: "unexpected-form", labels }] }) }],
   ]);
   const { http, requests } = fake({ get: (url) => pages.get(url.searchParams.get("pageToken") ?? "") ?? { status: 500, body: "" } });
   const { reader } = createDiscoveryGcpReader({ env: identityEnv(), projectId: PROJECT, http });
@@ -181,7 +182,7 @@ test("the unit sweep lists every page of Cloud Asset Inventory by resource name,
   assert.equal(gets.length, 2);
   for (const url of gets) {
     assert.equal(url.origin + url.pathname, "https://cloudasset.googleapis.com/v1/projects/" + PROJECT + ":searchAllResources");
-    assert.equal(url.searchParams.get("query"), "labels.alz-unit=" + unit);
+    assert.equal(url.searchParams.get("query"), "labels.alz-unit:" + unit, "the documented label syntax (GF3)");
   }
   assert.equal(gets[1].searchParams.get("pageToken"), "page/2+=");
   assert.equal(await reader.listTagged("Not A Unit"), undefined);
@@ -201,9 +202,34 @@ test("the unit sweep lists every page of Cloud Asset Inventory by resource name,
   assert.equal(sent, 1, "and is never sent");
   assert.deepEqual(await listing(() => ({ status: 200, body: JSON.stringify({ results: [], nextPageToken: 42 }) })), { identifiers: [], complete: false });
   let calls = 0;
-  const endless = await listing(() => ({ status: 200, body: JSON.stringify({ results: [{ name: "//pubsub.googleapis.com/projects/" + PROJECT + "/topics/t" + ++calls }], nextPageToken: "more" }) }));
+  const endless = await listing(() => ({ status: 200, body: JSON.stringify({ results: [{ name: "//pubsub.googleapis.com/projects/" + PROJECT + "/topics/t" + ++calls, labels }], nextPageToken: "more" }) }));
   assert.equal(endless?.complete, false, "a listing past 50 pages is incomplete");
   assert.equal(calls, 50);
+});
+
+test("GF3: the unit sweep's label query matches tokens, so the reader keeps only results whose alz-unit label is exactly the unit, and a result without labels makes the listing incomplete", async () => {
+  const unit = "alzu-0123456789abcdef0123";
+  const listing = async (results: unknown[], nextPageToken?: string) => {
+    const { reader } = createDiscoveryGcpReader({ env: identityEnv(), projectId: PROJECT, http: fake({ get: () => ({ status: 200, body: JSON.stringify({ results, ...(nextPageToken ? { nextPageToken } : {}) }) }) }).http });
+    return reader.listTagged(unit);
+  };
+  const mine = { name: "//pubsub.googleapis.com/" + TOPIC, labels: { "alz-unit": unit, other: "x" } };
+  // A token match on another unit's value (its label shares every token of this unit's id, but is not it): left out.
+  const tokenOnly = { name: "//pubsub.googleapis.com/projects/" + PROJECT + "/topics/other", labels: { "alz-unit": unit + "-0123" } };
+  const otherKey = { name: "//pubsub.googleapis.com/projects/" + PROJECT + "/topics/other-key", labels: { owner: unit, "alz-unit": "alzu-ffffffffffffffffffff" } };
+  assert.deepEqual(await listing([mine, tokenOnly, otherKey]), { identifiers: [TOPIC], complete: true });
+  assert.deepEqual(await listing([tokenOnly]), { identifiers: [], complete: true }, "only token matches: nothing of this unit, and the answer is complete");
+  // A result the reader cannot judge: never "nothing here", and never read as this unit's.
+  for (const [label, item] of [
+    ["no labels", { name: "//storage.googleapis.com/alz-stray-bucket" }],
+    ["labels without the unit key", { name: "//storage.googleapis.com/alz-stray-bucket", labels: { owner: unit } }],
+    ["labels not an object", { name: "//storage.googleapis.com/alz-stray-bucket", labels: [unit] }],
+    ["labels null", { name: "//storage.googleapis.com/alz-stray-bucket", labels: null }],
+  ] as const) {
+    assert.deepEqual(await listing([mine, item]), { identifiers: [TOPIC], complete: false }, label);
+    assert.deepEqual(await listing([item], "more"), { identifiers: [], complete: false }, label + ": the listing stops incomplete, no further page");
+  }
+  assert.deepEqual(await listing([{ ...mine, labels: { "alz-unit": unit.toUpperCase() } }]), { identifiers: [], complete: true }, "the exact value, no case folding");
 });
 
 // --- D15 and D11 (lane G1) ---------------------------------------------------------------------------------------------------
@@ -236,7 +262,7 @@ function scopedGoogle(regions: unknown = ["europe-west4"]): { http: GcpHttp; req
     }
     if (url.host === "cloudasset.googleapis.com") {
       if (scope !== "https://www.googleapis.com/auth/cloud-platform") return { status: 403, body: "" };
-      return { status: 200, body: JSON.stringify({ results: [{ name: "//pubsub.googleapis.com/" + TOPIC }] }) };
+      return { status: 200, body: JSON.stringify({ results: [{ name: "//pubsub.googleapis.com/" + TOPIC, labels: { "alz-unit": new URL(request.url).searchParams.get("query")!.replace(/^labels\.alz-unit:/, "") } }] }) };
     }
     return { status: 500, body: "" };
   };

@@ -11,6 +11,7 @@ import { REQUESTER_MAY_APPROVE, signRequest } from "./approval.js";
 import { authorizeContract, targetMoved } from "./contract.js";
 import { REQUESTER_ID, wellFormedRequest } from "./seal.js";
 import { isResourceAddress } from "./terraform.js";
+import { TOPIC_ID } from "./gcp-api-target.js";
 import type { AwsTarget } from "./providers/aws.js";
 import type { AzureTarget } from "./providers/azure.js";
 import type { GcpTarget } from "./providers/gcp.js";
@@ -398,7 +399,12 @@ function protectionOf(entry: { type: string; id: string | null; arn: string | nu
 }
 
 /** Every environment's state bucket from the reviewed contract (a GCP target's backend is `<bucket>/<prefix>`): each is protected under every form (P4). */
-const gcpBackendBuckets = (contract: PilotContract): string[] => Object.values(contract.targets).map((target) => (target as unknown as GcpTarget).backend.split("/")[0]);
+/**
+ * The state buckets a GCP cleanup protects: each target's backend bucket. GCP API-native keeps no state, and its backend is the
+ * `GCP_API_NO_STATE` sentinel, which is never read as a bucket (D9): its list is empty.
+ */
+const gcpBackendBuckets = (contract: PilotContract): string[] => contract.engine === "GCP_API" ? []
+  : Object.values(contract.targets).map((target) => (target as unknown as GcpTarget).backend.split("/")[0]);
 
 /**
  * The pilot's own roles (DISCOVERY, STATE, STATE_WRITE, APPLY, CHANGESET), by lowercase name, from the identity variables in the
@@ -650,6 +656,8 @@ const LOGICAL_ID = /^[A-Za-z0-9]{1,255}$/;
 /** The address a cleanup names for each engine: a CDK logical id, a Bicep (deployment stack) resource's full ARM id, or a Terraform resource address. */
 export const isCleanupAddress = (engine: EngineId, value: unknown): value is string => engine === "CDK" ? typeof value === "string" && LOGICAL_ID.test(value)
   : engine === "BICEP" ? typeof value === "string" && value.length <= 512 && isArmResourceId(value)
+  // GCP API-native (D16): exactly the run's one topic address, `google_pubsub_topic.<topic id>`, never any other Terraform-shaped address.
+  : engine === "GCP_API" ? typeof value === "string" && value.startsWith("google_pubsub_topic.") && TOPIC_ID.test(value.slice("google_pubsub_topic.".length))
   : isResourceAddress(value);
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -673,7 +681,7 @@ export function proposalProblems(value: unknown): string[] {
   if (typeof value.requesterId !== "string" || !REQUESTER_ID.test(value.requesterId)) problems.push("proposal.requesterId: not an allowlist id");
   if (!wellFormedRequest(value.request)) problems.push("proposal.request: the requester's signature is missing or malformed");
   if (![value.proposalSha256, value.artifactSha256, value.applyEvidenceSha256, value.blueprintSha256, value.observationSha256, value.contractSha256, value.authorizingContractSha256, value.authorizationSha256, value.targetSha256].every(hashText)) problems.push("proposal: a hash is not a SHA-256 digest");
-  if (!["AWS", "AZURE", "GCP"].includes(value.provider as string) || !["TERRAFORM", "CDK", "BICEP"].includes(value.engine as string)) problems.push("proposal: provider or engine is unknown");
+  if (!["AWS", "AZURE", "GCP"].includes(value.provider as string) || !["TERRAFORM", "CDK", "BICEP", "GCP_API"].includes(value.engine as string)) problems.push("proposal: provider or engine is unknown");
   if (!ENVIRONMENTS.includes(value.environment as ApplyEnvironment) || !PILOT_CHANNELS.includes(value.channel as PilotChannel)) problems.push("proposal: environment or channel is unknown");
   const target = value.target;
   if (!isRecord(target) || Object.keys(target).sort().join() !== "account,backend,workspace" || !["account", "backend", "workspace"].every((key) => text(target[key]))) problems.push("proposal.target: malformed");
@@ -684,7 +692,7 @@ export function proposalProblems(value: unknown): string[] {
   const deletes = value.deletes;
   // The address shape is the engine's: a Terraform resource address, a CloudFormation logical id for the CDK engine, or an ARM id for the
   // Bicep engine (an unknown engine was refused above).
-  const engine: EngineId = value.engine === "CDK" ? "CDK" : value.engine === "BICEP" ? "BICEP" : "TERRAFORM";
+  const engine: EngineId = value.engine === "CDK" ? "CDK" : value.engine === "BICEP" ? "BICEP" : value.engine === "GCP_API" ? "GCP_API" : "TERRAFORM";
   if (!Array.isArray(deletes) || !deletes.every((x) => isRecord(x) && Object.keys(x).every((key) => ["address", "type", "identifier", "ownership", "observed", "risk"].includes(key)) &&
     isCleanupAddress(engine, x.address) && text(x.type, 128) && idText(x.identifier) && x.ownership === "RUN_CREATED" && (x.observed === "VERIFIED" || x.observed === "UNVERIFIABLE") &&
     (x.risk === undefined || text(x.risk)))) problems.push("proposal.deletes: each needs a resource address, type, identifier, RUN_CREATED ownership and an observation");

@@ -79,14 +79,15 @@ test("release gate registry covers actual AWS, Azure, Pulumi and production obli
 test("the GCP gates are unmet requirements: they block an empty release, and no AWS or Azure report ever stands in for them", async () => {
   assert.deepEqual(previewScenarioOf("preview:terraform-gcp-brownfield"), { provider: "GCP", engine: "TERRAFORM", estate: "brownfield" });
   // act:gcp-terraform is derived from ACT_RELEASE_PATHS now that GCP Terraform has its Phase E scenario (owner decision 6481421924);
-  // GCP API-native has no release path until its engine is admitted (act:gcp-gcp_api is a later integration step).
-  assert.deepEqual(ACT_RELEASE_PATHS.filter((path) => path.provider === "GCP"), [{ provider: "GCP", engine: "TERRAFORM" }]);
+  // act:gcp-gcp_api follows from INT-2 (owner decision 6483993252), and no other GCP act gate exists.
+  assert.deepEqual(ACT_RELEASE_PATHS.filter((path) => path.provider === "GCP"), [{ provider: "GCP", engine: "TERRAFORM" }, { provider: "GCP", engine: "GCP_API" }]);
   assert.ok(PRODUCTION_RELEASE_GATES.some((gate) => gate.id === "act:gcp-terraform" && gate.mode === "LIVE_ACT"));
-  assert.ok(!PRODUCTION_RELEASE_GATES.some((gate) => gate.id.startsWith("act:gcp-") && gate.id !== "act:gcp-terraform"));
+  assert.ok(PRODUCTION_RELEASE_GATES.some((gate) => gate.id === "act:gcp-gcp_api" && gate.mode === "LIVE_ACT"));
+  assert.deepEqual(PRODUCTION_RELEASE_GATES.filter((gate) => gate.id.startsWith("act:gcp-")).map((gate) => gate.id), ["act:gcp-terraform", "act:gcp-gcp_api"]);
   const h = harness();
   try {
     const empty = await reviewProductionRelease({ manifest: input([]), expectedCommit: commit, root: h.root });
-    for (const id of ["gcp-provider", "preview:terraform-gcp-brownfield", "act:gcp-terraform"]) {
+    for (const id of ["gcp-provider", "preview:terraform-gcp-brownfield", "act:gcp-terraform", "act:gcp-gcp_api"]) {
       assert.equal(empty.gates.find((g) => g.id === id)?.status, "BLOCKED", id);
       assert.ok(empty.blockers.some((m) => m.includes(id)), id);
     }
@@ -453,11 +454,11 @@ test("each listed provider/engine pair is admitted on its own; an unlisted pair 
     const scope = { provider, engine, contractSha256: pilotContractSha256(contract) };
     return actBlockers(await review(pilotInput(scope), contract));
   };
-  // AZURE / BICEP and GCP / TERRAFORM are listed by owner decision 6483993252 (#39); GCP / GCP_API is not (INT-2).
-  for (const [provider, engine] of [["AZURE", "TERRAFORM"], ["AWS", "TERRAFORM"], ["AWS", "CDK"], ["AZURE", "BICEP"], ["GCP", "TERRAFORM"]]) {
+  // AZURE / BICEP, GCP / TERRAFORM and GCP / GCP_API (INT-2) are listed by owner decision 6483993252 (#39).
+  for (const [provider, engine] of [["AZURE", "TERRAFORM"], ["AWS", "TERRAFORM"], ["AWS", "CDK"], ["AZURE", "BICEP"], ["GCP", "TERRAFORM"], ["GCP", "GCP_API"]]) {
     assert.deepEqual(await attempt(provider, engine), [], provider + "/" + engine);
   }
-  for (const [provider, engine] of [["AZURE", "CDK"], ["GCP", "GCP_API"], ["GCP", "BICEP"], ["AWS", "BICEP"], ["AWS", "PULUMI"], ["*", "*"], ["GCP", "*"]]) {
+  for (const [provider, engine] of [["AZURE", "CDK"], ["AZURE", "GCP_API"], ["AWS", "GCP_API"], ["GCP", "BICEP"], ["AWS", "BICEP"], ["AWS", "PULUMI"], ["*", "*"], ["GCP", "*"]]) {
     assert.deepEqual(await attempt(provider, engine), ["ACT_PILOT_COMBINATION_NOT_ALLOWED"], provider + "/" + engine);
   }
 });

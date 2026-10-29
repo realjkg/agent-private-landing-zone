@@ -8,7 +8,7 @@ import { forbiddenIdentityVariables } from "../tools/identity.js";
 import { writeEncryptedEvidence } from "../evidence/vault.js";
 import { interceptStopSignals } from "../tools/process.js";
 import { createPrivateDirectory } from "../tools/private-workdir.js";
-import { blueprintFromCloudFormationResources, blueprintFromDeploymentStackResources, blueprintFromTerraformStatePull } from "../observe/blueprint.js";
+import { blueprintFromCloudFormationResources, blueprintFromDeploymentStackResources, blueprintFromGcpApiTopic, blueprintFromTerraformStatePull } from "../observe/blueprint.js";
 import { consumeApprovals, requesterRefusal, verifyApprovalSet, verifyRequestSignature } from "./approval.js";
 import { buildCleanupProposal, computeProposalSha256, protectedDeletionIn, verifyCleanupProposal, type CleanupProposal } from "./cleanup-proposal.js";
 import { pilotUnitOf } from "./unit.js";
@@ -270,7 +270,8 @@ async function planAgainstTarget(request: SealRequest, deps: SealDeps, kind: "se
       channel: request.channel ?? "CLI", env: deps.env ?? process.env, policyVersion: request.policyVersion, engineVersion: manifest.engineVersion,
       pinned: admitted.contract.targets[request.environment]!, spec: admitted.spec, contractSha256: pilotContractSha256(admitted.contract), authorizationSha256: admitted.authorization.authorizationSha256, targetSha256: pilotTargetSha256(admitted.contract, request.environment)!, sourceCommit, provenance, toolDirs: deps.toolDirs, now: deps.now,
       embedStateWrite: admitted.contract.embedStateWrite === true,
-      unit: pilotUnitOf({ provider: admitted.contract.provider, contractSha256: pilotContractSha256(admitted.contract), environment: request.environment, target: request.target }),
+      // The engine is named so GCP API-native gets its own unit (D10); every other engine's unit is unchanged (test/apply-unit.test.ts).
+      unit: pilotUnitOf({ provider: admitted.contract.provider, contractSha256: pilotContractSha256(admitted.contract), environment: request.environment, target: request.target, engine: engine.id }),
       ...(kind === "seal" && request.requester ? { requester: { requesterId: request.requester.requesterId, privateKeyPem: request.requester.privateKeyPem } } : {}),
     };
     // An engine with its own qualification run (CDK: read-only steps, no change set) does that and nothing else.
@@ -284,7 +285,7 @@ async function planAgainstTarget(request: SealRequest, deps: SealDeps, kind: "se
     // The apply adapter's own surface, up to the point where only the apply itself is left. Nothing is applied.
     const run = engine.openApply({
       scratchDir: scratch.path, env: deps.env ?? process.env, toolDirs: deps.toolDirs, manifest, pinned: input.pinned, spec: admitted.spec,
-      target: request.target, engineVersion: manifest.engineVersion,
+      target: request.target, engineVersion: manifest.engineVersion, ...(throwaway.sealed.unit ? { unit: throwaway.sealed.unit } : {}),
     });
     const unregisterSecrets = registerCleanup(run.removeSecrets);
     try {
@@ -364,6 +365,8 @@ async function keepBlueprint(run: { stateDocument?(): StateDocument | undefined 
     if (state === undefined) return;
     const blueprint = state.source === "CLOUDFORMATION_STACK_RESOURCES" ? blueprintFromCloudFormationResources(state.document, sealed.changes, place)
       : state.source === "AZURE_DEPLOYMENT_STACK_RESOURCES" ? blueprintFromDeploymentStackResources(state.document, sealed.changes, place)
+      // GCP API-native (D6): the run's one topic as DISCOVERY read it back; the target's account is the project.
+      : state.source === "GCP_API_TOPIC" ? blueprintFromGcpApiTopic(state.document, sealed.changes, { project: place.account })
       : blueprintFromTerraformStatePull(state.document, sealed.changes);
     const record: BlueprintRecord = {
       schemaVersion: 1, kind: "BLUEPRINT", artifactSha256: evidence.artifactSha256, applyEvidenceSha256: sha256(canonicalJson(evidence as never)), environment: evidence.environment,
@@ -372,6 +375,19 @@ async function keepBlueprint(run: { stateDocument?(): StateDocument | undefined 
     };
     await writeBlueprintRecord(record, evidenceDir);
   } catch { /* the state could not be read or mapped: no blueprint, and the cleanup step says so */ }
+}
+
+/** Whether the cleanup run's own delete removed the resource (D16), when the engine knows; absent otherwise. */
+function deletedByRunOf(run: { deletedByRun?(): boolean | undefined }): Pick<CleanupEvidence, "deletedByRun"> {
+  const deleted = run.deletedByRun?.();
+  return typeof deleted === "boolean" ? { deletedByRun: deleted } : {};
+}
+
+/** The run's verified property for the evidence (D11): only for a SUCCEEDED run whose engine set and read back one property as sealed. */
+function verifiedPropertyOf(outcome: ApplyOutcome, run: { verifiedProperty?(): { name: string; value: readonly string[] } | undefined }): Pick<ApplyEvidence, "verifiedProperty"> {
+  if (outcome !== "SUCCEEDED") return {};
+  const property = run.verifiedProperty?.();
+  return property ? { verifiedProperty: { name: property.name, value: [...property.value] } } : {};
 }
 
 /**
@@ -466,6 +482,8 @@ export async function runApply(request: ApplyRequest, deps: ApplyDeps): Promise<
   const run = engine.openApply({
     scratchDir: scratch.path, env, toolDirs: deps.toolDirs, manifest, pinned: contract.targets[sealed.environment]!, spec,
     target: sealed.target, engineVersion: sealed.engineVersion,
+    // The sealed plan's own unit, never one derived again (GCP API-native sweeps it and checks the topic's labels against it).
+    ...(sealed.unit ? { unit: sealed.unit } : {}),
   });
   const unregisterSecrets = registerCleanup(run.removeSecrets);
   let snapshot: ImmutableSnapshot | undefined;
@@ -541,8 +559,11 @@ export async function runApply(request: ApplyRequest, deps: ApplyDeps): Promise<
       "Nothing was applied. The approvals are spent and the sealed plan was given back: obtain new approvals for it. Engine output is withheld.");
     const startedAt = now().toISOString();
     let applied: Awaited<ReturnType<typeof run.execute>>;
+    // An in-process engine (no external program: GCP API-native) also stops for a signal that arrived after consumption, at its own
+    // stop points before it sends anything (#357 review N1). A process engine gets the signal itself (forwarded by the runner).
+    const inProcess = engine.executables.length === 0;
     try {
-      applied = await run.execute(planBytes, { stopWhen: () => isKillSwitchActive(readmitted.contract), pollMs: deps.killPollMs, graceMs: deps.killGraceMs });
+      applied = await run.execute(planBytes, { stopWhen: () => isKillSwitchActive(readmitted.contract) || (inProcess && interrupted), pollMs: deps.killPollMs, graceMs: deps.killGraceMs });
     } catch (error) {
       // An engine's execute throws only before the engine can exist (`EngineApplyRun.execute`), so a throw means nothing ran.
       return unstarted(error);
@@ -550,6 +571,10 @@ export async function runApply(request: ApplyRequest, deps: ApplyDeps): Promise<
     engineStarted = true;
     if (applied.notStarted) {
       engineStarted = false;
+      if (inProcess && interrupted && !isKillSwitchActive(readmitted.contract)) {
+        return refuse("APPROVALS_SPENT", "The apply was interrupted by a signal before the engine sent anything. Nothing was applied. " +
+          "The approvals were consumed and the sealed plan was given back: obtain new approvals for it.");
+      }
       return refuse("KILL_SWITCH_AFTER_APPROVALS", "The kill switch became active as the apply was about to start. Nothing was applied. " +
         "The approvals were consumed: obtain new approvals for this sealed plan.");
     }
@@ -571,6 +596,8 @@ export async function runApply(request: ApplyRequest, deps: ApplyDeps): Promise<
       adapter: { adapterVersion: engine.applyAdapter.adapterVersion, argvDigest: engine.applyAdapter.argvDigest },
       toolVersions: { engine: sealed.engineVersion }, outcome, exitCode: applied.exitCode, startedAt, finishedAt: now().toISOString(),
       authority: { ...APPLY_AUTHORITY, mutation: engine.mutation }, ...(kept.recovery ? { recovery: kept.recovery } : {}),
+      // The one property the engine set and read back as sealed (GCP API-native, D11), named with its sealed value; SUCCEEDED only.
+      ...verifiedPropertyOf(outcome, run),
     };
     const lost = kept.lost ? engine.recoveryLostNote : "";
     let written: ApplyResult;
@@ -766,6 +793,8 @@ export async function runCleanup(request: CleanupRequest, deps: ApplyDeps): Prom
     scratchDir: scratch.path, env, toolDirs: deps.toolDirs, manifest, pinned: contract.targets[proposal.environment]!, spec, target: proposal.target, engineVersion: proposal.engineVersion,
     // CDK: the stack the run created, by its id (blueprint container), so a same-named stack is never cleaned up in its place.
     runStackId: blueprint.blueprint.container?.identifier,
+    // The run's sealed unit (GCP API-native checks the topic's labels against it before its one DELETE, D16).
+    ...(sealed.unit ? { unit: sealed.unit } : {}),
   });
   const unregisterSecrets = registerCleanup(run.removeSecrets);
   let snapshot: ImmutableSnapshot | undefined;
@@ -846,14 +875,18 @@ export async function runCleanup(request: CleanupRequest, deps: ApplyDeps): Prom
 
     const startedAt = now().toISOString();
     let destroyed: Awaited<ReturnType<typeof run.execute>>;
+    const inProcess = engine.executables.length === 0;
     try {
-      destroyed = await run.execute({ stopWhen: () => isKillSwitchActive(readmitted.contract), pollMs: deps.killPollMs, graceMs: deps.killGraceMs });
+      destroyed = await run.execute({ stopWhen: () => isKillSwitchActive(readmitted.contract) || (inProcess && interrupted), pollMs: deps.killPollMs, graceMs: deps.killGraceMs });
     } catch (error) {
       return refuse("APPROVALS_SPENT", "The cleanup could not start (" + codeOf(error) + ") after the approvals were consumed. Nothing was destroyed. The approvals are spent: propose and approve the cleanup again.");
     }
     engineStarted = true;
     if (destroyed.notStarted) {
       engineStarted = false;
+      if (inProcess && interrupted && !isKillSwitchActive(readmitted.contract)) {
+        return refuse("APPROVALS_SPENT", "The cleanup was interrupted by a signal before the engine sent anything. Nothing was destroyed. The approvals were consumed: approve the proposal again.");
+      }
       return refuse("KILL_SWITCH_AFTER_APPROVALS", "The kill switch became active as the cleanup was about to start. Nothing was destroyed. The approvals were consumed: approve the proposal again.");
     }
     const end = await run.settle(destroyed);
@@ -872,6 +905,8 @@ export async function runCleanup(request: CleanupRequest, deps: ApplyDeps): Prom
       adapter: { adapterVersion: engine.cleanupAdapter.adapterVersion, argvDigest: engine.cleanupAdapter.argvDigest }, toolVersions: { engine: proposal.engineVersion }, deletes: addresses,
       outcome, exitCode: destroyed.exitCode, startedAt, finishedAt: now().toISOString(),
       authority: { infrastructureAct: "PILOT_ENABLED", mutation: engine.cleanupMutation, executedAs: "APPLY", agentInitiated: false }, ...(kept.recovery ? { recovery: kept.recovery } : {}),
+      // Whether this run's own DELETE removed the resource (GCP API-native, D16): false when it was already absent. Absent for other engines.
+      ...deletedByRunOf(run),
     };
     const lost = kept.lost ? engine.recoveryLostNote : "";
     let written: CleanupResult;
