@@ -31,6 +31,7 @@ const codes = (findings: { code: ExclusionCode }[]) => [...new Set(findings.map(
 const PLANTED: readonly { path: string; body: () => string | Buffer; code: ExclusionCode }[] = [
   { path: "config/act-pilot-contract.json", body: () => enabledContract(), code: "PILOT_CONTRACT" },
   { path: "config/act-pilot-contract.sha256", body: () => "0".repeat(64) + "\n", code: "PILOT_CONTRACT" },
+  { path: "config/act-pilot-contract.aws-dev.draft.json", body: () => enabledContract({ enabled: false }), code: "PILOT_CONTRACT" },
   { path: "config/customer/aws-dev.json", body: () => enabledContract(), code: "ENABLED_CONTRACT" },
   { path: "config/customer/disabled-but-authorized.json", body: () => enabledContract({ enabled: false, authorize: { DEV: ["APPLY"] } }), code: "ENABLED_CONTRACT" },
   { path: "config/evidence-runner.json", body: () => "{}\n", code: "OWNER_CONFIGURATION" },

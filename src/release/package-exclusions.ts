@@ -23,7 +23,7 @@ export type ExclusionFinding = { path: string; code: ExclusionCode; reason: stri
 
 /** What the guard refuses, one line per code, in the words docs/field-package.md and field-package.json use. */
 export const EXCLUSION_RULES: Readonly<Record<ExclusionCode, string>> = {
-  PILOT_CONTRACT: "the owner's pilot contract (config/act-pilot-contract.json) or its retired pin, enabled or not",
+  PILOT_CONTRACT: "the owner's pilot contract (config/act-pilot-contract.json), a draft of it or any other act-pilot-contract* file but the disabled *.example.json shapes, enabled or not",
   ENABLED_CONTRACT: "any contract-shaped JSON that is enabled or carries an authorize entry",
   OWNER_CONFIGURATION: "the owner's own runner configuration (config/evidence-runner.json), which names customer targets",
   TOKEN: "token files and token values: JWTs, GitHub tokens, AWS access key ids, .env, .npmrc and .netrc files",
@@ -65,7 +65,7 @@ export function pathExclusions(path: string): ExclusionFinding[] {
   const add = (code: ExclusionCode) => { if (!out.some((x) => x.code === code)) out.push(finding(path, code)); };
   const normalized = names.join("/");
 
-  if (normalized === "config/act-pilot-contract.json" || normalized === "config/act-pilot-contract.sha256" || base === "act-pilot-contract.json") add("PILOT_CONTRACT");
+  if (base.startsWith("act-pilot-contract") && !base.endsWith(".example.json")) add("PILOT_CONTRACT");
   if (normalized === "config/evidence-runner.json") add("OWNER_CONFIGURATION");
   if (names.includes(".runs")) add("RUN_EVIDENCE");
   if (names.includes(".alz-identity") || names.includes(".alz-runner-hook")) add("DELIVERED_IDENTITY");

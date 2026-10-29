@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { runFieldPackage } from "../src/cli/field-package.js";
+import { runFieldPackage } from "../src/release/field-package-run.js";
 import {
   buildFieldPackage, contractAdmissionOf, FieldPackageRefusal, readRepositoryFacts, renderFieldPackage,
   type FieldPackageInputs, type RepositoryFacts,
@@ -53,17 +53,19 @@ test("with no inputs, nothing is claimed: artifacts PENDING, scans NOT_RUN, no p
   assert.match(rendered, /\*\*ACT:\*\* DISABLED by default/);
 });
 
-test("the six-path matrix follows the journey rows, the product's contract admission and the act gates; GCP API-native is NOT_AVAILABLE", () => {
+test("the six-path matrix follows the journey rows, the production contract's pilot pairs and the act gates; GCP API-native is NOT_AVAILABLE", () => {
   const m = build();
   assert.deepEqual(m.paths.map((x) => x.provider + " " + x.engine), REQUIRED_ROWS.map((x) => x.cloud + " " + x.path));
   const by = (provider: string, engine: string) => m.paths.find((x) => x.provider === provider && x.engine === engine)!;
   const native = by("GCP", "GCP_API");
   assert.equal(native.packageScope, "NOT_AVAILABLE");
   assert.equal(native.liveQualification, "NOT_AVAILABLE");
-  assert.equal(native.capability.contractAdmission, "NOT_IMPLEMENTED");
+  assert.equal(native.capability.contractAdmission, "NOT_ADMITTED");
   assert.deepEqual(native.actGate, { id: null, status: "NO_GATE" });
-  assert.equal(by("AZURE", "BICEP").capability.contractAdmission, "DEV_ONLY_REQUIRED");
-  assert.equal(by("GCP", "TERRAFORM").capability.contractAdmission, "DEV_ONLY_REQUIRED");
+  for (const row of m.paths.filter((x) => !(x.provider === "GCP" && x.engine === "GCP_API"))) {
+    assert.equal(row.capability.contractAdmission, "ADMITTED", row.title);
+    assert.equal(row.packageScope, "DEV_ONLY", row.title);
+  }
   for (const row of m.paths.filter((x) => x.packageScope === "DEV_ONLY")) {
     assert.ok(row.actGate.id !== null && PRODUCTION_RELEASE_GATES.some((g) => g.id === row.actGate.id), row.title + " names its release gate");
     assert.equal(row.liveQualification, "NOT_QUALIFIED");

@@ -1,19 +1,18 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
 
 import {
   buildFieldPackage, FieldPackageRefusal, readRepositoryFacts, renderFieldPackage,
   type FieldPackageInputs, type RepositoryFacts,
-} from "../release/field-package.js";
+} from "./field-package.js";
 import { resolveSourceCommit, type SourceCommit } from "../util/source-commit.js";
 
 /**
- * Field package manifest generator (docs/field-package.md). Offline and read-only: it reads the repository at --root and
+ * Field package manifest generator (docs/field-package.md), run by scripts/field-package.ts. Offline and read-only: it reads the repository at --root and
  * the files named on the command line, and writes field-package.json and field-package.md into --out. Every digest comes
  * from a file; a missing input is PENDING or NOT_RUN in the output, never a typed value.
  *
- *   npx tsx src/cli/field-package.ts --source-commit SHA --out DIR [--root DIR]
+ *   npx tsx scripts/field-package.ts --source-commit SHA --out DIR [--root DIR]
  *     [--archive agent-private-landing-zone.tar.gz] [--archive-sha256 agent-private-landing-zone.tar.gz.sha256]
  *     [--release-manifest release-manifest.json] [--sbom sbom.cdx.json] [--trivy trivy-results.json]
  *     [--npm-audit audit.json] [--models-evidence .runs/model-qualification/<run>.json]
@@ -84,8 +83,4 @@ export function runFieldPackage(argv: readonly string[], deps: FieldPackageDeps 
       : "FIELD_INPUT_UNREADABLE: " + (failure instanceof Error ? failure.message : "an input could not be read"));
     return 1;
   }
-}
-
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  process.exitCode = runFieldPackage(process.argv.slice(2));
 }

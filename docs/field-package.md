@@ -23,7 +23,7 @@ The archive holds exactly `dist/`, `policy/`, `config/`, `package.json`, `packag
 
 | Never packaged | Guard code |
 | --- | --- |
-| The owner's pilot contract `config/act-pilot-contract.json` (enabled or not) and the retired pin | `PILOT_CONTRACT` |
+| The owner's pilot contract `config/act-pilot-contract.json` (enabled or not), a draft of it, the retired pin, or any other `act-pilot-contract*` file except the disabled `*.example.json` shapes | `PILOT_CONTRACT` |
 | Any contract-shaped JSON that is enabled or carries an `authorize` entry | `ENABLED_CONTRACT` |
 | The owner's runner configuration `config/evidence-runner.json`, which names customer targets | `OWNER_CONFIGURATION` |
 | Tokens: JWTs (delivered `<IDENTITY>.jwt` files included), GitHub tokens, AWS access key ids, `.env`, `.npmrc`, `.netrc` | `TOKEN` |
@@ -48,7 +48,7 @@ The archive holds exactly `dist/`, `policy/`, `config/`, `package.json`, `packag
 An offline, read-only generator. Run it from a clean checkout at the accepted commit:
 
 ```sh
-npx tsx src/cli/field-package.ts --source-commit <accepted SHA> --out <folder> \
+npx tsx scripts/field-package.ts --source-commit <accepted SHA> --out <folder> \
   --archive agent-private-landing-zone.tar.gz --archive-sha256 agent-private-landing-zone.tar.gz.sha256 \
   --release-manifest release-manifest.json --sbom sbom.cdx.json --trivy trivy-results.json \
   [--npm-audit audit.json] [--models-evidence .runs/model-qualification/<run>.json]
@@ -73,7 +73,7 @@ The inputs are the files `supply-chain.yml` uploads as its `agent-private-landin
 | `scans.sbom`, `scans.trivy`, `scans.npmAudit` | CycloneDX, Trivy JSON and `npm audit --json` output, summarized by severity | `NOT_RUN` |
 | `platforms`, `supportedPlatforms` | `platform:*` in `config/release/status.json`. A platform is supported only when its gate is `PASS` on LIVE evidence for this commit | `NOT_QUALIFIED` |
 | `models` | The committed pins in `config/tool-pins.json` and a `./alz models verify` record showing that exact digest installed and qualified | `MODEL_DIGEST_UNPINNED`, `NOT_VERIFIED` or `MODEL_DIGEST_MISMATCH` |
-| `paths` (six-path matrix) | The product's own contract validation (`inspectPilotContract`), the journey rows (`config/acceptance/journeys.json`, checked by `src/release/acceptance.ts`) and the `act:*` gates. A path is `LIVE_QUALIFIED` only when its gate is `PASS` on LIVE evidence for this commit and its journey row is `LIVE_PASS` | `NOT_QUALIFIED`, or `NOT_AVAILABLE` when the product does not admit the path |
+| `paths` (six-path matrix) | The provider and engine pairs the accepted ProductionDeploymentContract admits (`src/qualification/production-contract.ts`), the journey rows (`config/acceptance/journeys.json`, checked by `src/release/acceptance.ts`) and the `act:*` gates. A path is `LIVE_QUALIFIED` only when its gate is `PASS` on LIVE evidence for this commit and its journey row is `LIVE_PASS` | `NOT_QUALIFIED`, or `NOT_AVAILABLE` when the product does not admit the path |
 | `knownLimitations`, `outOfScope`, `followUps` | Every in-scope gate that has not passed, the owner's scope exclusions, and every work-graph node that is not DONE | Always present |
 | `act` | `DISABLED` by default, with no packaged contract | Always |
 
@@ -87,12 +87,12 @@ The six-path matrix today:
 
 | # | Path | Package scope | Contract admission | ACT gate | Live qualification |
 | --- | --- | --- | --- | --- | --- |
-| 1 | AWS Terraform | DEV only | three-stage or DEV | `act:aws-terraform` BLOCKED | NOT_QUALIFIED |
-| 2 | AWS CDK / CloudFormation | DEV only | three-stage or DEV | `act:aws-cdk` NOT_RUN | NOT_QUALIFIED |
-| 3 | Azure Terraform | DEV only | three-stage or DEV | `act:azure-terraform` BLOCKED | NOT_QUALIFIED |
-| 4 | Azure Bicep / ARM | DEV only | DEV only required | `act:azure-bicep` BLOCKED | NOT_QUALIFIED |
-| 5 | GCP Terraform | DEV only | DEV only required | `act:gcp-terraform` BLOCKED | NOT_QUALIFIED |
-| 6 | GCP API-native | NOT_AVAILABLE | not implemented (refused) | none | NOT_AVAILABLE |
+| 1 | AWS Terraform | DEV only | admitted | `act:aws-terraform` BLOCKED | NOT_QUALIFIED |
+| 2 | AWS CDK / CloudFormation | DEV only | admitted | `act:aws-cdk` NOT_RUN | NOT_QUALIFIED |
+| 3 | Azure Terraform | DEV only | admitted | `act:azure-terraform` BLOCKED | NOT_QUALIFIED |
+| 4 | Azure Bicep / ARM | DEV only | admitted (the contract requires DEV only) | `act:azure-bicep` BLOCKED | NOT_QUALIFIED |
+| 5 | GCP Terraform | DEV only | admitted (the contract requires DEV only) | `act:gcp-terraform` BLOCKED | NOT_QUALIFIED |
+| 6 | GCP API-native | NOT_AVAILABLE | not admitted (planned; the contract refuses it as not implemented) | none | NOT_AVAILABLE |
 
 **Package scope DEV only:** this package offers every admitted path for one DEV target, even where the contract also allows the three-stage chain.
 
