@@ -136,8 +136,8 @@ export type DiscoveryGcpOptions = {
   http?: GcpHttp;
 };
 
-/** The reader's class for a failed impersonation: the same classes it always gave. */
-const readerFailure = (failure: GcpTokenFailure): { failed: GcpErrorClass } =>
+/** The reader's class for a failed impersonation: the same classes it always gave. Exported so its `invalidInput` line is pinned by a test (#356 round 2, Low). */
+export const readerFailure = (failure: GcpTokenFailure): { failed: GcpErrorClass } =>
   ({ failed: failure.invalidInput ? "CREDENTIALS" : failure.malformed ? "UNEXPECTED_RESPONSE" : failure.status === 0 ? "HOST_REFUSED" : classOf(failure.status) });
 
 /** The GCP reader bound to DISCOVERY. `close` drops the tokens; call it when the observation is done. */
