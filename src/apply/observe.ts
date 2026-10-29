@@ -1,7 +1,7 @@
 import { createDiscoveryAwsCli, verifierBinarySha256 } from "../observe/aws-cli.js";
 import { createDiscoveryArmReader, type ArmHttp } from "../observe/azure-rest.js";
 import { createDiscoveryGcpReader, type GcpHttp } from "../observe/gcp-rest.js";
-import { cloudControlReader, observeBlueprint, type AwsCli, type ObserveReport, type ResourceReader } from "../observe/verify.js";
+import { cloudControlReader, observeBlueprint, unexpectedOf, type AwsCli, type ObserveReport, type ResourceCheck, type ResourceReader } from "../observe/verify.js";
 import { canonicalJson } from "../teardown/manifest.js";
 import { sha256 } from "../util/sha256.js";
 import type { CleanupProposal } from "./cleanup-proposal.js";
@@ -89,6 +89,21 @@ export function openReader(deps: ObserveDeps, environment: ApplyEvidence["enviro
 
 export type ObservationOutcome = { ok: true; record: ObservationRecord; report: ObserveReport; blueprint: BlueprintRecord; applyEvidence: ApplyEvidence } | Refusal;
 
+/**
+ * Each check in the journey's words, as an observation records it. Present but not where the contract places it is
+ * DIFFERENT_FROM_DESIRED (LOCATION_NOT_IN_CONTRACT), never VERIFIED, with the location found when the answer named one.
+ * The observation and the location remediation's recheck both use this one mapping, so a recheck compares like with like.
+ */
+export function observedResourcesOf(checks: readonly ResourceCheck[], blueprint: BlueprintRecord): ObservedResource[] {
+  const origins = new Map(blueprint.blueprint.entries.map((entry) => [entry.address, entry.origin]));
+  return checks.map((check) => ({
+    address: check.address, type: check.type, identifier: check.identifier, origin: origins.get(check.address) ?? "NOT_IN_PLAN",
+    ...(check.misplaced
+      ? { result: "DIFFERENT_FROM_DESIRED" as const, reason: "LOCATION_NOT_IN_CONTRACT", ...(check.observedLocation === undefined ? {} : { observedLocation: check.observedLocation }) }
+      : verificationOf(check.existence, check.reason)),
+  }));
+}
+
 /** Observes one run: its blueprint's identifiers against the cloud, recorded under the artifact. */
 export async function observeRun(artifactSha256: string, deps: ObserveDeps): Promise<ObservationOutcome> {
   const applied = await readAppliedEvidence(artifactSha256, deps.evidenceDir);
@@ -108,12 +123,7 @@ export async function observeRun(artifactSha256: string, deps: ObserveDeps): Pro
   } finally {
     opened.close();
   }
-  const origins = new Map(blueprint.blueprint.entries.map((entry) => [entry.address, entry.origin]));
-  const resources: ObservedResource[] = report.checks.map((check) => ({
-    address: check.address, type: check.type, identifier: check.identifier, origin: origins.get(check.address) ?? "NOT_IN_PLAN",
-    // Present but not where the contract places it: different from what was planned, never VERIFIED.
-    ...(check.misplaced ? { result: "DIFFERENT_FROM_DESIRED" as const, reason: "LOCATION_NOT_IN_CONTRACT" } : verificationOf(check.existence, check.reason)),
-  }));
+  const resources = observedResourcesOf(report.checks, blueprint);
   const record: ObservationRecord = {
     schemaVersion: 1, kind: "OBSERVATION", artifactSha256, applyEvidenceSha256, blueprintSha256: recordSha256(blueprint), environment: applied.environment, target: { ...applied.target },
     sourceCommit: applied.sourceCommit, contractSha256: applied.contractSha256, verifier: report.verifier,
@@ -165,4 +175,45 @@ export async function verifyProposalLeftovers(proposal: CleanupProposal, deps: O
   const written = await writeLeftoversRecord(record, deps.evidenceDir);
   if (written !== "WRITTEN") return refuse("EVIDENCE_REJECTED", "The leftover check could not be recorded (" + written + ").");
   return { ok: true, record, cleanupRan: cleanup !== undefined };
+}
+
+/**
+ * A location remediation's recheck (owner decision 6486426552, item 2), which the cleanup driver runs immediately before the approvals
+ * are consumed and the network is deleted. It reads the cloud again through the same read-only DISCOVERY reader the observation used,
+ * bound to the contract's subscription and authorized location, and requires everything the proposal rests on to be unchanged: the
+ * one network is still there under its exact resource id, still DIFFERENT_FROM_DESIRED in the same observed location (so it moved
+ * neither back nor elsewhere), still carrying this run's deletion-unit tag, and a complete sweep by that tag finds nothing else. The
+ * result is compared with the observation record in the observation's own words (`observedResourcesOf`). It writes nothing: the run's
+ * records, its FAILED observation among them, stay as they are. Undefined means the recheck passed; anything else is the refusal.
+ */
+export async function recheckLocationRemediation(proposal: CleanupProposal, blueprint: BlueprintRecord, observation: ObservationRecord, deps: ObserveDeps): Promise<Refusal | undefined> {
+  const remediation = proposal.remediation;
+  const failed = (why: string): Refusal => refuse("REMEDIATION_RECHECK_FAILED", "The network was read again as DISCOVERY immediately before deletion, and " + why +
+    ". Nothing was deleted and no approval was consumed. Observe the run again; if the network still needs removing, propose and approve a new remediation, otherwise a person reviews it by hand.");
+  if (remediation === undefined || blueprint.unitId === null || blueprint.blueprint.entries.length !== 1) return failed("the proposal is not a location remediation of one tagged network");
+  const opened = openReader(deps, proposal.environment);
+  if (!opened.ok) return failed("the reader could not be opened (" + opened.code + ")");
+  const checks: ResourceCheck[] = [];
+  let listed: { identifiers: string[]; complete: boolean } | undefined;
+  try {
+    for (const entry of blueprint.blueprint.entries) checks.push(await opened.reader.check(entry));
+    listed = await opened.reader.listTagged(blueprint.unitId);
+  } catch {
+    return failed("the read did not complete");
+  } finally {
+    opened.close();
+  }
+  const [check] = checks;
+  if (check.identifier === null || check.identifier !== remediation.resourceId) return failed("the state's identifier is not the proposal's resource id");
+  if (check.existence === "ABSENT") return failed("the network is gone");
+  if (check.existence !== "PRESENT") return failed("the network could not be read (" + (check.reason ?? check.existence) + ")");
+  if (!check.misplaced) return failed("the network is now in the location the contract authorizes, so it is no longer misplaced");
+  if (check.observedLocation !== remediation.observedLocation) return failed("the network is now in " + (check.observedLocation ?? "a location it could not name") + ", not " + remediation.observedLocation + " as proposed");
+  // The same words the observation recorded, for every resource: anything else that differs means the run is not as proposed.
+  if (canonicalJson(observedResourcesOf(checks, blueprint) as never) !== canonicalJson(observation.resources as never)) return failed("what it found differs from the observation the proposal binds");
+  if (listed === undefined || !listed.complete) return failed("the sweep by this run's deletion unit could not be read in full");
+  if (!listed.identifiers.some((id) => id.toLowerCase() === remediation.resourceId.toLowerCase())) return failed("the network no longer carries this run's deletion-unit tag");
+  const unexpected = unexpectedOf(blueprint.blueprint, listed, opened.reader.verifier).unexpected;
+  if (unexpected.length > 0) return failed("something else now carries this run's deletion-unit tag (" + unexpected.length + ")");
+  return undefined;
 }

@@ -244,15 +244,17 @@ export function createDiscoveryArmReader(options: DiscoveryArmOptions): { reader
     try {
       const body = JSON.parse(response.body) as { id?: unknown; location?: unknown };
       // The facts ever read from the answer: that it names the resource that was asked about, and, when the contract binds a
-      // location, where the resource is. The location is compared in process and never recorded.
+      // location, where the resource is. The location is compared in process; it is kept only for a resource found elsewhere
+      // (`observedLocation`, the programmatic name), so a governed location remediation can bind and recheck it.
       if (typeof body.id === "string" && body.id.toLowerCase() === identifier.toLowerCase()) {
         if (location === undefined) return { ...base, identifier, existence: "PRESENT" };
         if (body.location === undefined || body.location === null) {
           return ARM_LOCATED_TYPES.has((type.namespace + "/" + type.typePath).toLowerCase())
             ? { ...base, identifier, existence: "UNKNOWN", reason: "LOCATION_UNREADABLE" } : { ...base, identifier, existence: "PRESENT" };
         }
-        return normalizeAzureLocation(body.location) === location
-          ? { ...base, identifier, existence: "PRESENT" } : { ...base, identifier, existence: "PRESENT", misplaced: true };
+        const found = normalizeAzureLocation(body.location);
+        return found === location
+          ? { ...base, identifier, existence: "PRESENT" } : { ...base, identifier, existence: "PRESENT", misplaced: true, ...(found === undefined ? {} : { observedLocation: found }) };
       }
     } catch { /* falls through */ }
     return { ...base, identifier, existence: "UNKNOWN", reason: "UNEXPECTED_RESPONSE" };

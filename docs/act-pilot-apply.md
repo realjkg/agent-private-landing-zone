@@ -242,7 +242,7 @@ State prerequisites (owner supplies): a storage account and container per enviro
 The owner decided on 2026-10-28 ("Azure Terraform location") that the workload's location is bound. The target's `location` is the authorized region, written as ARM's programmatic name (`eastus2`, `westeurope`: lowercase letters and digits; a display name such as `East US 2` is refused by the contract validator, so one target has one hash). When stated, it joins the run's target hash (`pilotTargetSha256`), so it is sealed into the plan, signed by every approval, recorded in the evidence, and a cleanup or removal under a contract that moved it is refused (`TARGET_NOT_IN_CONTRACT`). A target that names none hashes as it always did, and `./alz apply contract-check` lists it as an owner input (`targets.<ENV>.location`).
 
 - **Planned, at seal and again at the apply's re-derivation.** Every APPLY plan (the seal, the qualification plan, and the apply's own `show` of the decrypted plan) is judged from the plan's `terraform show -json`: the target must name its location, and every managed azurerm resource the plan places is checked by its resolved planned values, in `resource_changes[].change.after` and in `planned_values`, each normalized (`East US 2` is `eastus2`). A location the plan leaves unknown until apply (`after_unknown`), another location, an empty or malformed one, and a virtual network whose planned values carry none are refused with `LOCATION_NOT_IN_CONTRACT`: at the seal nothing is sealed, and at the apply it is `TARGET_NOT_IN_CONTRACT` before any approval is consumed. Nothing is inferred from a resource group: a data source's read values (a group's metadata among them) are never consulted, and the configuration's expressions are not judged, only the value the plan resolved. A cleanup's destroy plan places nothing and is not judged here.
-- **Observed, after the run.** The independent ARM reader is given the target's location (`src/apply/observe.ts`, `src/observe/azure-rest.ts`) and compares each resource's own `location` from its ARM answer, normalized, in process; the value is never recorded. A resource elsewhere is `DIFFERENT_FROM_DESIRED` with `LOCATION_NOT_IN_CONTRACT`, and the observation is `FAILED`, never `VERIFIED`; no cleanup is proposed from it (`OBSERVATION_INCONCLUSIVE`), so a person reviews it. A virtual network whose answer names no location is `UNKNOWN` (`LOCATION_UNREADABLE`). An Azure target with no location is refused by observation and the leftover check (`CONTRACT_INVALID`).
+- **Observed, after the run.** The independent ARM reader is given the target's location (`src/apply/observe.ts`, `src/observe/azure-rest.ts`) and compares each resource's own `location` from its ARM answer, normalized, in process. The location is recorded only for a resource found elsewhere (`observedLocation`, the programmatic name). A resource elsewhere is `DIFFERENT_FROM_DESIRED` with `LOCATION_NOT_IN_CONTRACT`, and the observation is `FAILED`, never `VERIFIED`. No ordinary cleanup is proposed from it (`LOCATION_MISMATCH`; observing again does not move it): a person reviews it, or proposes the governed location remediation (see "Location remediation" under "Cleanup"). A virtual network whose answer names no location is `UNKNOWN` (`LOCATION_UNREADABLE`). An Azure target with no location is refused by observation and the leftover check (`CONTRACT_INVALID`).
 - **Bicep.** The Bicep engine binds `location` as a location field and judges the group's region and every what-if `after.location` (`docs/act-pilot-bicep.md`); its observation now gets the same reader check.
 
 State authentication is Entra ID only:
@@ -496,6 +496,53 @@ Cleanup of what a pilot apply created is its own governed action under the same 
 The cleanup adapter (`src/apply/terraform.ts`, `CLEANUP_ADAPTER`) is qualified with the apply adapter by `./alz apply qualify`; its argument lists are the targeted destroy plan, its show and its apply, and the shared pinned version, init, workspace and state steps. `-target=` and `-destroy` appear nowhere else in the apply path (`test/apply-boundary.test.ts`, `test/teardown-driver-denials.test.ts`). The APPLY identity executes the destroy, bound to the approved list (owner decision 1); there is no CLEANUP role. Never deleted by a cleanup, directly or as a dependent: the state backend bucket or storage account and its settings, every identity and authorization object (on AWS anything in the IAM or identity service, `aws_iam_*`, `awscc_iam_*`, `aws_ssoadmin_*`, `AWS::IAM::*` and `AWS::SSO::*`, credentials included, the run's own among them, owner policy #39; on Azure everything under Microsoft.Authorization and Microsoft.ManagedIdentity; the one exception is a run-created policy that meets every condition of `src/observe/run-created-policies.ts`, owner decision "Unpin the ACT decision" item 2 (c), and principals are never part of it), deployment history (`Microsoft.Resources/deployments`), every Azure resource group (retained by the pilot owner; retiring the environment is a separate, reviewed action), on AWS anything that deploys a CloudFormation stack or a provisioned product, and anything the sealed plan did not create. On AWS a run-created resource is deleted only when its type is on the reviewed leaf allowlist (`src/observe/aws-leaf-types.ts`); any other type is kept and named (`TYPE_UNREVIEWED`, kept by the environment's owner), and the leftover check stays INCOMPLETE while one remains (`docs/observe-and-cleanup.md`).
 
 A cleanup that ends `PARTIAL_REQUIRES_REVIEW` or `KILLED` spends the proposal and its approvals, keeps `errored.tfstate` and `crash.log` in the vault as an apply does, and is followed by `verify-cleanup` (which reads and changes nothing) and a person's review; a new proposal needs a new observation and new approvals. The pilot apply tags nothing, so resources outside the engine's state are never searched for, and every record says `inventory: NOT_AVAILABLE`.
+
+### Location remediation (Azure Terraform)
+
+The owner decided (#39, coordinator record 6486426552, item 2) that a virtual network a run demonstrably created, but that the independent observation found in a location the contract does not authorize, has a governed path to deletion. It is a small extension of the cleanup above: a cleanup proposal of kind `LOCATION_REMEDIATION`. It is not an override flag and not a general destroy. Ordinary target binding is unchanged: the seal and the apply still refuse a plan that places anything elsewhere, an ordinary cleanup of such a run is still refused (`LOCATION_MISMATCH`), and an existing proposal cannot be redirected.
+
+| Command | Who | What it does |
+| --- | --- | --- |
+| `./alz apply propose-remediation --sealed SEALED_PLAN --requester ID --key REQUESTER_KEY.pem` | the requester | Builds the remediation from the run's records only (`buildLocationRemediationProposal`), or refuses with `REMEDIATION_NOT_ELIGIBLE`. Writes `.runs/apply/cleanup/<proposal12>.remediation-proposal.json`. No phrase. |
+| `./alz apply approve --bundle REMEDIATION.json --key KEY.pem --approver ID` | each approver | Shows the mismatch first (`LOCATION  observed <found>, but the contract authorizes <authorized>`), then the resource id, the ownership evidence and the bound hashes. Phrase: `APPROVE LOCATION REMEDIATION <ENV> <proposal12>`. |
+| `./alz apply cleanup --proposal REMEDIATION.json ...` | operator | The same `runCleanup` and every gate of a cleanup, plus the recheck below. Phrase: `REMEDIATE LOCATION <ENV> <proposal12> <target>`. |
+| `./alz apply verify-cleanup --proposal REMEDIATION.json` | anyone | Absence verified independently afterward, as for any cleanup. |
+
+**Eligible only when every condition holds.** Anything else is `REMEDIATION_NOT_ELIGIBLE`, and a person reviews by hand.
+- The contract is AZURE with TERRAFORM, and its target names a `location`.
+- The apply and its blueprint ended `SUCCEEDED`.
+- The sealed change list holds exactly one resource change: a `CREATE` of `azurerm_virtual_network`, with no import, no replacement and no moved address. It is create-only (owner decision E1), so the network did not exist before; Terraform refuses to create over an existing resource.
+- The state maps that address, and nothing else, to one ARM virtual network id, under a resource group in the run's subscription, read exactly as written. It is not a protected object. The contract's canary allowlist does not retain its type.
+- The run stamped a deletion unit.
+- The observation is the Azure reader's, `FAILED`, for that resource only: `DIFFERENT_FROM_DESIRED` with `LOCATION_NOT_IN_CONTRACT`, a recorded `observedLocation` other than the authorized one, nothing unexpected, nothing missing, and a `COMPLETE` sweep.
+- The contract committed now authorizes `CLEANUP`, and still states the run's exact target, location included.
+
+A pre-existing, imported, replaced, ambiguous, unobserved or changed resource is never eligible.
+
+**What it binds.** Everything is in the hash every approver signs:
+- the run: `artifactSha256` and `applyEvidenceSha256`;
+- the original approved target (`targetSha256`) and the contract the run ran under (`contractSha256`);
+- the observation record (`observationSha256`);
+- under `remediation`: the exact `resourceId`, its address and type, the `authorizedLocation` and `observedLocation`, the recorded failure (`verdict: FAILED`, `DIFFERENT_FROM_DESIRED`, `observedAt`), and the ownership evidence (`plannedAction: CREATE`, `importing: false`, `stateOrigin: IN_PLAN`, the unit id, `sweep: COMPLETE`).
+
+The proposal deletes that one network and lists nothing as kept or already gone. The kind is hashed, so a remediation is never read as an ordinary cleanup, nor the reverse. At the cleanup, the driver derives the proposal again with the builder of its own kind, so a re-signed edit (another id, address or location) is `PROPOSAL_INVALID`, a relabeled one is refused by the other builder, and another run's records never derive it.
+
+**Authorization.** The remediation requires the contract's existing `CLEANUP` entry for the environment. That entry is the operation that authorizes deleting infrastructure as APPLY, and it is separate from `APPLY`: a contract that authorizes only `APPLY` cannot remediate. `REMOVE` authorizes only the removal of a run's local working files. The proposal also needs its own requester signature (`CLEANUP_REQUEST`) and fresh approvals under the cleanup domain over its own hash, with the contract's quorum and requester rule. The approvals of the run's apply, or of any other proposal, never verify for it. A dedicated operation in `authorize` would be a contract schema change, and that is the owner's decision.
+
+**Recheck immediately before deletion.** This runs after the destroy plan is checked and before any approval is consumed (`REMEDIATION_RECHECK_FAILED`; nothing is deleted and nothing is consumed):
+- The engine's state, read again as STATE, still maps the address to exactly the approved resource id.
+- The network, read again as DISCOVERY (`recheckLocationRemediation`), is still there under that id, still in the same observed location (neither back at the authorized location nor elsewhere), and still carries this run's deletion-unit tag.
+- A complete sweep by that tag finds nothing else.
+- The result matches the bound observation.
+
+The delete is the cleanup's targeted destroy of that one address, planned as DISCOVERY and applied as APPLY. APPLY's custom role is scoped to the pilot resource group (`bootstrap/azure`), and a location does not move a resource out of its group, so a run-created network is in that group wherever it is placed. Nothing is deleted by name, prefix or tags alone.
+
+**What it never does.** It never corrects the region, moves the network or creates it again. A correctly placed network needs a new reviewed seal, approval and apply. The run's own records are never rewritten: its observation stays `FAILED`, and the remediation's cleanup evidence and leftover record are written beside it.
+
+**Limits.**
+- It is for the Azure Terraform path only. The console wizard has no remediation step, so a run started in the console cannot be remediated from the terminal; that run is reviewed by hand (one channel per workflow).
+- It does not block the first correctly located AWS canary.
+- All evidence for this path today is SYNTHETIC: `test/apply-location-remediation.test.ts` uses the fake engine and the scripted ARM client.
 
 ### Removing a run's working files
 

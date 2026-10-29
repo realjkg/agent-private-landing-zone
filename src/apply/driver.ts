@@ -10,7 +10,9 @@ import { interceptStopSignals } from "../tools/process.js";
 import { createPrivateDirectory } from "../tools/private-workdir.js";
 import { blueprintFromCloudFormationResources, blueprintFromDeploymentStackResources, blueprintFromTerraformStatePull } from "../observe/blueprint.js";
 import { consumeApprovals, requesterRefusal, verifyApprovalSet, verifyRequestSignature } from "./approval.js";
-import { buildCleanupProposal, computeProposalSha256, protectedDeletionIn, verifyCleanupProposal, type CleanupProposal } from "./cleanup-proposal.js";
+import { buildProposalOfKind, computeProposalSha256, protectedDeletionIn, verifyCleanupProposal, type CleanupProposal } from "./cleanup-proposal.js";
+import { recheckLocationRemediation } from "./observe.js";
+import type { ArmHttp } from "../observe/azure-rest.js";
 import { pilotUnitOf } from "./unit.js";
 import {
   DEFAULT_EVIDENCE_DIR, authorizationChanged, authorizeContract, pilotTargetSha256, targetMoved, contractRefusal, isKillSwitchActive, loadPilotContract, loadQualificationRecords, pilotContractSha256, repoPaths, requireNotApplied, requireNotExecuted,
@@ -27,7 +29,7 @@ import { checkDeliveredTokens, deliveryPathOf } from "./token-delivery.js";
 import { channelMismatchMessage } from "./channel.js";
 import { finalizeArtifact, finalizeCleanup, releaseReservation, reserveArtifact } from "./ledger.js";
 import { readAppliedEvidence } from "./live-record.js";
-import { readBlueprintRecord, readObservationRecord, recordSha256, writeBlueprintRecord, type BlueprintRecord } from "./run-records.js";
+import { readBlueprintRecord, readObservationRecord, recordSha256, writeBlueprintRecord, type BlueprintRecord, type ObservationRecord } from "./run-records.js";
 import { openNonceStore, type NonceStore } from "./nonces.js";
 import { specOf, type ProviderSpec } from "./provider.js";
 import { engineBinaryChange, planWithoutStoring, releaseIdentityOf, sealPlan, verifySealedPlan, type LoadedPlan, type SealResult } from "./seal.js";
@@ -67,6 +69,8 @@ export type ApplyDeps = {
    * id it seals, qualifies and applies nothing (`SOURCE_UNVERIFIED`), and it applies a plan only from the commit that sealed it.
    */
   sourceCommit?: string;
+  /** Test seam: the Azure reader's HTTP client for a location remediation's recheck (`recheckLocationRemediation`). Production uses fetch against the two Azure hosts. */
+  arm?: ArmHttp;
 };
 type SealDeps = Pick<ApplyDeps, "qualificationDir" | "contractPath" | "env" | "now" | "scratchParent" | "toolDirs" | "sourceCommit">;
 
@@ -626,11 +630,12 @@ const CLEANUP_PURPOSE = "cleanup-recovery";
  * and the reviewed contract (the same ownership classes and protections `buildCleanupProposal` applies, with the identities
  * configured now) and must hash to the proposal handed in. A list that names a resource this run did not create, a
  * protected backend or identity, or a resource of another run, or that leaves one out, is refused before anything is
- * reserved or consumed. A proposal's self-hash alone proves only that its own fields agree with each other.
+ * reserved or consumed. A proposal's self-hash alone proves only that its own fields agree with each other. A location remediation is
+ * derived again by its own builder (`buildProposalOfKind`, by the hashed kind), so neither kind is ever read as the other.
  */
 async function requireProposalDerivedFromRecords(
   proposal: CleanupProposal, applied: ApplyEvidence, changes: readonly PlanChange[], contract: PilotContract, env: NodeJS.ProcessEnv, evidenceDir: string,
-): Promise<Refusal | { ok: true; blueprint: BlueprintRecord }> {
+): Promise<Refusal | { ok: true; blueprint: BlueprintRecord; observation: ObservationRecord }> {
   const blueprint = await readBlueprintRecord(proposal.artifactSha256, proposal.applyEvidenceSha256, evidenceDir);
   if (!blueprint || recordSha256(blueprint) !== proposal.blueprintSha256) {
     return refuse("RUN_RECORD_MISSING", "The blueprint this proposal names is not the one recorded for this apply. Observe and propose the cleanup again; nothing was run.");
@@ -639,7 +644,7 @@ async function requireProposalDerivedFromRecords(
   if (!observation || recordSha256(observation) !== proposal.observationSha256) {
     return refuse("RUN_RECORD_MISSING", "The observation this proposal names is not the one recorded for this apply. Observe and propose the cleanup again; nothing was run.");
   }
-  const rebuilt = buildCleanupProposal({
+  const rebuilt = buildProposalOfKind(proposal.kind, {
     applyEvidence: applied, applyEvidenceSha256: proposal.applyEvidenceSha256, blueprint, blueprintSha256: proposal.blueprintSha256, observation, observationSha256: proposal.observationSha256,
     changes, channel: proposal.channel, contract, engineVersion: proposal.engineVersion, env, now: new Date(proposal.createdAt), requesterId: proposal.requesterId,
   });
@@ -650,7 +655,7 @@ async function requireProposalDerivedFromRecords(
     return refuse("PROPOSAL_INVALID", "The proposal's " + what + " is not what this run's records derive (the sealed plan, the blueprint and the observation): it was not made by " +
       "./alz apply propose-cleanup from these records, or the pinned identities changed since. Propose the cleanup again; nothing was run and no approval was consumed.");
   }
-  return { ok: true, blueprint };
+  return { ok: true, blueprint, observation };
 }
 
 /** What a CDK refusal says once CHANGESET has created the removal change set: it stays in CloudFormation, and no surface here deletes a change set. */
@@ -726,7 +731,8 @@ export async function runCleanup(request: CleanupRequest, deps: ApplyDeps): Prom
   // is bound in code to what this run created). A proposal that was edited and re-hashed cannot pass this.
   const derived = await requireProposalDerivedFromRecords(proposal, applied, sealed.changes, contract, env, evidenceDir);
   if (!derived.ok) return derived;
-  const { blueprint } = derived;
+  const { blueprint, observation } = derived;
+  const remediation = proposal.kind === "LOCATION_REMEDIATION";
   let manifest: ArtifactManifest;
   try { manifest = verifyManifest(request.manifest); } catch { return refuse("ARTIFACT_INVALID", "The manifest is not valid or not sealed."); }
   if (!acceptsManifest(engine, manifest) || manifest.manifestHash !== applied.manifestHash || !sameTarget(manifest.target, proposal.target) || manifest.engineVersion !== proposal.engineVersion) {
@@ -818,6 +824,17 @@ export async function runCleanup(request: CleanupRequest, deps: ApplyDeps): Prom
     // added, a resource it would leave, an update or a create means the state is not what the proposal was made from.
     const scope = cleanupScopeProblem(planned, addresses);
     if (scope) return refuse("PROPOSAL_SCOPE_MISMATCH", scope + " Nothing was destroyed and no approval was consumed. Observe the run again and propose a new cleanup." + leftBehind);
+    // A location remediation (owner decision 6486426552, item 2), immediately before the approvals are consumed: the state the destroy plan
+    // was made from still maps the address to exactly the approved resource id, and the cloud, read again as DISCOVERY, still shows that
+    // network, tagged with this run's unit, in the same wrong location, with nothing else tagged. Anything else stops here.
+    if (remediation) {
+      const stateNow = remediationStateProblem(run, sealed.changes, blueprint);
+      if (stateNow) return refuse("REMEDIATION_RECHECK_FAILED", stateNow + " Nothing was deleted and no approval was consumed. Observe the run again; if the network still needs removing, propose and approve a new remediation.");
+      const recheck = await recheckLocationRemediation(proposal, blueprint, observation, {
+        contractPath: deps.contractPath, evidenceDir, env, toolDirs: deps.toolDirs, scratchParent: deps.scratchParent, now: deps.now, arm: deps.arm,
+      });
+      if (recheck) return recheck;
+    }
     // The last thing before the approvals are consumed is the signal check: nothing is awaited between it and consumeApprovals,
     // so a stop signal that arrived during the blocking steps above (the engine) is read here and stops the cleanup.
     await yieldToSignals();
@@ -886,6 +903,22 @@ export async function runCleanup(request: CleanupRequest, deps: ApplyDeps): Prom
     try { snapshot?.remove(); } finally { removeTree(scratch.path); }
     if (holding && !engineStarted) await releaseReservation(proposal.proposalSha256, evidenceDir, "cleanup");
   }
+}
+
+/**
+ * Why the engine's state no longer backs a location remediation, or undefined: read now (read-only, identifiers only), it must map
+ * addresses to resource ids exactly as the blueprint the proposal binds did, so the targeted destroy deletes the approved resource id
+ * and nothing named the same. The state document is dropped here.
+ */
+function remediationStateProblem(run: EngineCleanupRun, changes: readonly PlanChange[], blueprint: BlueprintRecord): string | undefined {
+  let current: string | undefined;
+  try {
+    const state = run.stateDocument?.();
+    if (state?.source === "TERRAFORM_STATE_PULL") current = canonicalJson(blueprintFromTerraformStatePull(state.document, changes) as never);
+  } catch { current = undefined; }
+  if (current === undefined) return "The engine's state could not be read again before deletion, so the network's resource id could not be confirmed.";
+  return current === canonicalJson(blueprint.blueprint as never) ? undefined
+    : "The engine's state no longer maps the network's address to exactly the resource id the remediation was approved for.";
 }
 
 /** Why a destroy plan is not exactly the approved list: an empty sentence means it is. */
