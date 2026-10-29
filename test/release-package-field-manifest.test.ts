@@ -31,7 +31,10 @@ const withGate = (gate: string, change: Record<string, unknown>): Partial<Reposi
   ({ status: { ...facts.status, gates: facts.status.gates.map((x) => x.gate === gate ? { ...x, ...change } : x) } });
 
 test("with no inputs, nothing is claimed: artifacts PENDING, scans NOT_RUN, no platform, no model digest, no live path; ACT DISABLED", () => {
-  const m = build();
+  // The commit is no real candidate, so no gate in the repository's status can pass for it; the pins are those of a release
+  // whose owner has recorded no digest yet (config/tool-pins.json today), fixed here so a later pin does not change this test.
+  const unpinned = { models: facts.modelPins.models, digests: new Map(facts.modelPins.models.map((model) => [model, null] as [string, null])) };
+  const m = build({}, { modelPins: unpinned });
   assert.equal(m.kind, "SUPERVISED_DEV_ACT_PILOT");
   assert.match(m.statement, /not a production deployment product/);
   assert.deepEqual(m.act, { ...m.act, defaultInstallation: "DISABLED", packagedContract: "NONE" });
@@ -42,11 +45,10 @@ test("with no inputs, nothing is claimed: artifacts PENDING, scans NOT_RUN, no p
   assert.equal(m.models.evidence.status, "NOT_RUN");
   assert.deepEqual(m.supportedPlatforms, []);
   assert.ok(m.platforms.every((x) => !x.supported));
-  // The repository pins no model digest yet (config/tool-pins.json, owner input), so none is listed.
-  assert.ok(m.models.entries.every((x) => x.status === "MODEL_DIGEST_UNPINNED" && x.pinnedDigest === null), JSON.stringify(m.models.entries));
+  assert.ok(m.models.entries.length > 0 && m.models.entries.every((x) => x.status === "MODEL_DIGEST_UNPINNED" && x.pinnedDigest === null), JSON.stringify(m.models.entries));
   assert.ok(m.paths.every((x) => x.liveQualification !== "LIVE_QUALIFIED"));
   assert.equal(JSON.stringify(m).includes("generatedAt"), false);
-  assert.deepEqual(build(), m, "the same inputs give the same manifest");
+  assert.deepEqual(build({}, { modelPins: unpinned }), m, "the same inputs give the same manifest");
   const rendered = renderFieldPackage(m);
   assert.match(rendered, /Supported: \*\*none qualified yet\*\*/);
   assert.match(rendered, /MODEL_DIGEST_UNPINNED/);

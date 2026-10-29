@@ -80,6 +80,8 @@ export const SOURCE_SCAN_GUARDS = {
   // No product code names the retired pin file or writes the pilot contract (the contract is the ACT authorization).
   "test/apply-contract.test.ts": ["src/"],
   "test/policy-path.test.ts": ["src/"],
+  // The field package guard scans the staged content (src stands in for dist) and checks no shipped code installs a runner service.
+  "test/release-package-exclusions.test.ts": ["src/"],
   "test/teardown-adapter-terraform.test.ts": ["src/"],
   "test/teardown-driver-denials.test.ts": ["src/"],
   "test/teardown-driver-cli.test.ts": ["src/tools/", "src/operator-ui/", "src/agent/"],
