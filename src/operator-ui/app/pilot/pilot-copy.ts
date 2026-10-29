@@ -333,7 +333,7 @@ export const CLEANUP_CLI_COMMANDS: readonly { who: string; what: string; command
   { who: "Operator", what: "Look at what the change created", command: "./alz apply observe --sealed LOCKED_CHANGE" },
   { who: "Operator (the cleanup requester)", what: "Write the cleanup proposal, signed with the requester's key", command: "./alz apply propose-cleanup --sealed LOCKED_CHANGE --requester NAME --key REQUESTER_KEY.pem" },
   { who: "Each approver (in production, two people other than the requester)", what: "Review and sign the cleanup (on their own computer)", command: "./alz apply approve --bundle PROPOSAL.json --key APPROVER_KEY.pem --approver NAME" },
-  { who: "Operator", what: "Remove exactly the listed things", command: "./alz apply cleanup --proposal PROPOSAL.json --request REQUEST.json --manifest MANIFEST.json --sealed LOCKED_CHANGE --approval APPROVAL.json" },
+  { who: "Operator", what: "Remove exactly the listed things", command: "./alz apply cleanup --proposal PROPOSAL.json --request APPLY_REQUEST.json --manifest MANIFEST.json --sealed LOCKED_CHANGE --approval APPROVAL.json" },
   { who: "Anyone", what: "Check that everything is gone", command: "./alz apply verify-cleanup --proposal PROPOSAL.json" },
 ];
 
@@ -532,7 +532,7 @@ export const CODE_COPY: Readonly<Record<string, Reason>> = {
   QUALIFICATION_ATTESTATION_MISMATCH: { why: "What you typed did not match the phrase shown. Nothing was recorded.", next: "Try again, and use the Copy button so the phrase is exact." },
   APPLY_CONFIRMATION_MISMATCH: { why: "What you typed did not match the phrase shown. Nothing was signed or applied.", next: "Try again, and use the Copy button so the phrase is exact." },
   APPLY_UNEXPECTED_ERROR: { why: "Something unexpected stopped this step before it could say why.", next: "Do not assume it worked or that it did not. Tell the pilot owner, and check the Results before trying again." },
-  PRIVATE_FILE_REFUSED: { why: "A private file this step saves (a review bundle, a cleanup proposal, a report or an observation summary) could not be written safely: something other than a plain file, such as a link, is already at its name.", next: "Do not retry yet. Ask the pilot owner to look at that file's name in the .runs folder and remove whatever is there, then run the step again." },
+  PRIVATE_FILE_REFUSED: { why: "A private file this step saves (a review bundle, a cleanup proposal, a report or an observation summary) could not be saved safely. Something other than a plain file, such as a link, is already at its name; or the disk stopped taking the bytes; or the temporary copy was not a plain file of its own; or something else replaced the file just as it was saved. In the first three cases the old file was left as it was. In the last, the file at that name may not be the one this step wrote.", next: "Do not retry yet, and do not use that file. Ask the pilot owner to look at the file the Details name in the .runs folder, check the free disk space and any other program that writes there, and remove whatever should not be at that name, then run the step again." },
   // getting the files ready (./alz apply prepare)
   INPUT_UNSET: { why: "The project needs settings that have no value yet. The Details name them; their values are never asked for or shown here.", next: "Give each one a default or an entry in the project's settings file, or set it where the console runs, then get the files ready again." },
   MODULE_REMOTE: { why: "The project uses a building block (module) downloaded from outside the project, so its code is not fingerprinted and cannot be locked for review.", next: "Copy that module into the project folder and point to it with a ./ path, then get the files ready again." },
@@ -718,7 +718,7 @@ export const CLI_COMMANDS: readonly { who: string; what: string; command: string
   { who: "Operator", what: "Get the files ready from your project folder", command: "./alz apply prepare --environment DEV --project PROJECT_FOLDER" },
   { who: "Operator (the requester)", what: "Prepare the change and lock it, signed with the requester's key", command: "./alz apply seal --request REQUEST.json --manifest MANIFEST.json --requester NAME --key REQUESTER_KEY.pem" },
   { who: "Each approver", what: "Review and sign (on their own computer)", command: "./alz apply approve --bundle REVIEW_FILE.json --key APPROVER_KEY.pem --approver NAME" },
-  { who: "Operator", what: "Apply the locked change", command: "./alz apply apply --request REQUEST.json --manifest MANIFEST.json --sealed LOCKED_CHANGE --approval APPROVAL.json" },
+  { who: "Operator", what: "Apply the locked change", command: "./alz apply apply --request APPLY_REQUEST.json --manifest MANIFEST.json --sealed LOCKED_CHANGE --approval APPROVAL.json" },
   { who: "Anyone", what: "Look at the status afterward", command: "./alz apply status --sealed LOCKED_CHANGE" },
 ];
 

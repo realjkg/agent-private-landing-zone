@@ -12,7 +12,7 @@ import { AWS_DENIED_TYPES_REVIEWED_AGAINST } from "../src/apply/providers/aws.js
 import { AZURE_DENIED_TYPES_REVIEWED_AGAINST } from "../src/apply/providers/azure.js";
 import { GCP_DENIED_TYPES_REVIEWED_AGAINST } from "../src/apply/providers/gcp.js";
 import {
-  preparationIsCurrent, preparationUnitHash, prepareApply, PREPARATION_LABEL, TERRAFORM_LOCK_FILE, writePreparation,
+  applyRequestOf, preparationIsCurrent, preparationUnitHash, prepareApply, PREPARATION_LABEL, TERRAFORM_LOCK_FILE, writePreparation,
   type PrepareDeps, type PrepareRefusal, type Prepared,
 } from "../src/apply/prepare.js";
 import { LOCK_FILE } from "../src/teardown/driver/adapters/project-copy.js";
@@ -235,11 +235,16 @@ test("the files are private, named by the manifest hash, and written all or noth
   const out = join(s.dir, "out");
   const paths = writePreparation(prepared, out);
   const tag = prepared.manifest.manifestHash.slice(0, 16);
-  assert.deepEqual(readdirSync(join(out, "DEV")).sort(), ["manifest-" + tag + ".json", "preparation-" + tag + ".json", "request-" + tag + ".json"]);
+  assert.deepEqual(readdirSync(join(out, "DEV")).sort(), ["apply-request-" + tag + ".json", "manifest-" + tag + ".json", "preparation-" + tag + ".json", "request-" + tag + ".json"]);
   for (const path of Object.values(paths)) assert.equal(statSync(path).mode & 0o777, 0o600, path);
   assert.deepEqual(JSON.parse(readFileSync(paths.request, "utf8")), prepared.request);
+  // The apply request is the seal request's environment, target and project, and nothing else: apply and cleanup accept no other key.
+  const { environment, target, projectRoot } = prepared.request;
+  assert.deepEqual(JSON.parse(readFileSync(paths.applyRequest, "utf8")), { environment, target, projectRoot });
+  assert.deepEqual(applyRequestOf(prepared.request), { environment, target, projectRoot });
   assert.equal(verifyManifest(JSON.parse(readFileSync(paths.manifest, "utf8"))).manifestHash, prepared.manifest.manifestHash);
   const record = JSON.parse(readFileSync(paths.record, "utf8"));
+  assert.deepEqual([record.requestFile, record.applyRequestFile, record.manifestFile], [paths.request, paths.applyRequest, paths.manifest]);
   assert.equal(record.label, "LOCAL_PREPARATION");
   assert.equal(record.next.step, "qualify");
   assert.equal(writePreparation(prepared, out).request, paths.request, "preparing the same project again gives the same names");

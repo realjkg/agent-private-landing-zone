@@ -129,7 +129,7 @@ Run these in order. Steps marked "not `./alz`" use a vendor tool.
 12. **G2 qualification** on the execution host, DEV only. The qualifier watches CloudTrail (STS and S3 data events):
 
     ```bash
-    ./alz apply prepare --environment DEV --project <PROJECT_DIR>       # writes .runs/pilot/DEV/request-<id>.json and manifest-<id>.json
+    ./alz apply prepare --environment DEV --project <PROJECT_DIR>       # writes .runs/pilot/DEV/request-<id>.json, apply-request-<id>.json and manifest-<id>.json
     ./alz apply qualify --request <REQUEST.json> --manifest <MANIFEST.json>
     # type SEPARATED <STATE_WRITE role ARN> <APPLY role ARN> only if CloudTrail shows state access by STATE_WRITE,
     # provider access by APPLY, and no state access by APPLY
@@ -138,10 +138,12 @@ Run these in order. Steps marked "not `./alz`" use a vendor tool.
 
 13. **One supervised DEV apply**, in one channel (the terminal here; the console wizard runs the same steps):
 
+    `prepare` writes two request files. `<REQUEST.json>` is `request-<id>.json`, for `qualify` and `seal`. `<APPLY_REQUEST.json>` is `apply-request-<id>.json`, for `apply` and `cleanup`: the same environment, target and project, and nothing else. `apply` and `cleanup` refuse any other key with `APPLY_INPUT_INVALID` before anything is asked or consumed, so they refuse the seal request too. The sealed plan already binds the rest.
+
     ```bash
     ./alz apply seal --request <REQUEST.json> --manifest <MANIFEST.json> --requester <ID> --key <REQUESTER_KEY.pem>
     ./alz apply approve --bundle <REVIEW_BUNDLE.json> --key <APPROVER_KEY.pem> --approver <ID>   # each approver, own machine
-    ./alz apply apply --request <REQUEST.json> --manifest <MANIFEST.json> --sealed <SEALED_PLAN> --approval <APPROVAL.json>
+    ./alz apply apply --request <APPLY_REQUEST.json> --manifest <MANIFEST.json> --sealed <SEALED_PLAN> --approval <APPROVAL.json>
     ./alz apply status --sealed <SEALED_PLAN>
     ./alz apply record-live --sealed <SEALED_PLAN>                       # type LIVE DEV <12 chars>; commit the file it writes
     ```
@@ -152,7 +154,7 @@ Run these in order. Steps marked "not `./alz`" use a vendor tool.
     ./alz apply observe --sealed <SEALED_PLAN>
     ./alz apply propose-cleanup --sealed <SEALED_PLAN> --requester <ID> --key <REQUESTER_KEY.pem>
     ./alz apply approve --bundle <PROPOSAL.json> --key <APPROVER_KEY.pem> --approver <ID>          # APPROVE CLEANUP DEV ...
-    ./alz apply cleanup --proposal <PROPOSAL.json> --request <REQUEST.json> --manifest <MANIFEST.json> --sealed <SEALED_PLAN> --approval <CLEANUP_APPROVAL.json>
+    ./alz apply cleanup --proposal <PROPOSAL.json> --request <APPLY_REQUEST.json> --manifest <MANIFEST.json> --sealed <SEALED_PLAN> --approval <CLEANUP_APPROVAL.json>
     ./alz apply verify-cleanup --proposal <PROPOSAL.json>
     ./alz apply report --sealed <SEALED_PLAN> --proposal <PROPOSAL.json>
     ```
@@ -160,7 +162,8 @@ Run these in order. Steps marked "not `./alz`" use a vendor tool.
 15. **G3 and G5.** Run `./alz qualify admission --manifest <evidence-index-file>` after the live record. Record recovery with `./alz apply record-recovery --sealed <INTERRUPTED_SEALED_PLAN> --resumed <RESUMED_SEALED_PLAN> --target-hardware-id <HOST>` once a real interrupted run and a new approved run exist.
     - The interrupted run (G5) stops through the kill switch. Its SIGINT is held until Terraform's first resource line, so a few provider-configuration and locals operations, up to about the parallelism, can start before the stop lands.
     - A hung provider configuration keeps the stop held until the SIGKILL.
-    - If the run ended by SIGKILL and left the state lock, follow "Recovering a state lock left by a SIGKILL" in `docs/act-pilot-apply.md` (as STATE_WRITE, never APPLY) before sealing the new plan.
+    - If the run ended by SIGKILL and left the state lock, follow "Recovering a state lock left by a SIGKILL" in `docs/act-pilot-apply.md` (as STATE_WRITE, never APPLY), including its prerequisites, before sealing the new plan. `force-unlock` removes the lock only; it changes no infrastructure and proves no recovery.
+    - The G5 run must end with the ledger recording `KILLED` or `PARTIAL_REQUIRES_REVIEW`. If the `./alz apply` process itself was killed (not only Terraform), the ledger entry stays `RESERVED` and `record-recovery` refuses with `RECOVERY_RECORD_UNAVAILABLE`. That run is not recovered and is not G5 stop-test evidence; never relabel it as recovered. Review it, remove its lock by the same procedure if needed, and interrupt a new run for G5.
 
 ## Azure Terraform DEV
 
@@ -256,7 +259,7 @@ rm .runs/apply/KILL          # the owner removes it; the code never does
 
 A switch that cannot be read counts as on. The points where it is read, and what each outcome means, are in `docs/act-pilot-apply.md` ("Kill switch", "When an apply fails").
 
-**A running Terraform apply is not stopped at once.** The SIGINT is held until Terraform prints its first resource line (#361), so a few provider-configuration and locals operations can start before the stop lands, up to about Terraform's parallelism. A provider configuration that hangs keeps the stop held until the SIGKILL at 60 seconds, and a SIGKILL leaves the state lock held. Recover the lock by hand, as STATE_WRITE and never APPLY, with `terraform force-unlock <LOCK_ID>` only after confirming no Terraform process holds it. Then record the recovery with `./alz apply record-recovery` (`docs/act-pilot-apply.md`, "Recovering a state lock left by a SIGKILL").
+**A running Terraform apply is not stopped at once.** The SIGINT is held until Terraform prints its first resource line (#361), so a few provider-configuration and locals operations can start before the stop lands, up to about Terraform's parallelism. A provider configuration that hangs keeps the stop held until the SIGKILL at 60 seconds, and a SIGKILL leaves the state lock held. Recover the lock by hand, as STATE_WRITE and never APPLY, with `terraform force-unlock <LOCK_ID>` only after the procedure's prerequisites hold (no Terraform process or other writer holds it; backend, workspace and lock ID verified; evidence preserved; who and why recorded). Then record the recovery with `./alz apply record-recovery` (`docs/act-pilot-apply.md`, "Recovering a state lock left by a SIGKILL").
 
 ## Shortest path
 
