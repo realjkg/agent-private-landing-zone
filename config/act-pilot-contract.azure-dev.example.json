@@ -11,6 +11,7 @@
       "subscriptionId": "REPLACE-WITH-DEV-SUBSCRIPTION-ID",
       "backend": "examplefakedevstate/tfstate/dev.tfstate",
       "workspace": "default",
+      "location": "REPLACE-WITH-DEV-PILOT-GROUP-REGION",
       "canary": { "resources": [{ "type": "azurerm_virtual_network", "count": 1 }] }
     }
   },

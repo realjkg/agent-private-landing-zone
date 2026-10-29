@@ -30,11 +30,13 @@ output "contract_targets" {
       subscriptionId = var.environments[env].subscription_id
       backend        = "${var.environments[env].state_storage_account_name}/${local.environment_modules[env].container_name}/${lower(env)}.tfstate"
       workspace      = "default"
+      # The authorized location (owner decision of 2026-10-28): the pilot group's region, where the canary must be placed.
+      location = var.location
     }
   }
 }
 
 output "apply_scopes" {
-  description = "Where APPLY holds Contributor and DISCOVERY holds Reader, per enabled environment."
+  description = "The pilot resource group where APPLY holds its custom role (alz-pilot-apply-*) and DISCOVERY holds Reader, per enabled environment."
   value       = { for env in var.enabled_environments : env => local.environment_modules[env].apply_scope }
 }

@@ -2,9 +2,6 @@ import {
   sha256,
 } from "../../build/provenance.js";
 import type {
-  Provider,
-} from "../../discovery/types.js";
-import type {
   RecoveryArtifactKind,
 } from "../types.js";
 import type {
@@ -70,14 +67,8 @@ export function stableRecoveryJson(
 }
 
 function defaultScopeType(
-  provider: Provider,
+  provider: "AWS" | "AZURE",
 ): RecoveryScopeType {
-  // Recovery targets are AWS or Azure; a GCP scope type does not exist, so a GCP intent is refused, never mapped to Azure.
-  if (provider === "GCP") {
-    throw new Error(
-      "RECOVERY_PROFILE_INVALID: GCP has no recovery scope type; recovery targets are AWS or Azure.",
-    );
-  }
   return provider === "AWS"
     ? "AWS_ACCOUNT"
     : "AZURE_SUBSCRIPTION";
@@ -129,6 +120,13 @@ export function compileRecoveryTarget(
   context: RecoveryCompileContext,
   baseline: RecoverySecurityBaseline,
 ): CompiledRecoveryTarget {
+  // Recovery targets are AWS or Azure. A GCP scope type does not exist, so a GCP intent is refused before anything else, with or
+  // without an explicit context.scopeType: it is never compiled as an Azure (or any other) scope.
+  if (intent.provider !== "AWS" && intent.provider !== "AZURE") {
+    throw new Error(
+      "RECOVERY_PROFILE_INVALID: " + String(intent.provider) + " has no recovery scope type; recovery targets are AWS or Azure.",
+    );
+  }
   if (
     intent.compliancePacks?.some(
       (pack) =>

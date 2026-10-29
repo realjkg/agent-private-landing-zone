@@ -73,6 +73,11 @@ export type ResourceCheck = {
   reason?: string;
   /** PRESENT, and the cloud says the resource is scheduled for deletion (a KMS key in its waiting period): not gone, not a leftover a person must remove. */
   pendingDeletion?: true;
+  /**
+   * PRESENT, but not where the contract places it (Azure: its location is not the target's, owner decision of 2026-10-28): the
+   * resource is there and different from what was planned, so the observation is FAILED, never VERIFIED.
+   */
+  misplaced?: true;
 };
 export type ObserveVerdict = "VERIFIED" | "PARTIAL" | "INCONCLUSIVE" | "FAILED";
 export type ObserveReport = {
@@ -197,7 +202,8 @@ export async function unexpectedTagged(blueprint: Blueprint, unitId: string, reg
  * run carries no unit tag, so nothing outside the state can be looked for.
  * INCONCLUSIVE: a check could not decide (access, throttling, an incomplete listing), or the blueprint names no resources
  * so nothing was checked; nothing is known to be wrong.
- * FAILED: something planned is absent or missing from the state, or an unexpected resource carries the tag.
+ * FAILED: something planned is absent or missing from the state, present somewhere the contract does not place it (`misplaced`),
+ * or an unexpected resource carries the tag.
  */
 export async function observeBlueprint(blueprint: Blueprint, input: { unitId: string | null } & ReaderInput): Promise<ObserveReport> {
   const reader = readerOf(input);
@@ -208,7 +214,7 @@ export async function observeBlueprint(blueprint: Blueprint, input: { unitId: st
   const unexpected = listed?.unexpected ?? [];
   const has = (existence: Existence) => checks.some((check) => check.existence === existence);
   const verdict: ObserveVerdict =
-    has("ABSENT") || blueprint.missing.length > 0 || unexpected.length > 0 ? "FAILED"
+    has("ABSENT") || checks.some((check) => check.misplaced === true) || blueprint.missing.length > 0 || unexpected.length > 0 ? "FAILED"
     : has("UNKNOWN") || inventory === "INCOMPLETE" || blueprint.entries.length === 0 ? "INCONCLUSIVE"
     : has("NOT_CHECKABLE") || inventory === "NOT_AVAILABLE" ? "PARTIAL" : "VERIFIED";
   return { verdict, checks, missingFromState: [...blueprint.missing], unexpected, inventory, verifier: reader.verifier };

@@ -25,7 +25,7 @@ import { sha256 } from "../src/util/sha256.js";
 import {
   escapeRegExp,
   ARM_ACCESS_TOKEN_CANARY, ARM_FEDERATED_TOKEN_CANARY, CANARIES, DEV_TARGET, NOW, POLICY, SOURCE_COMMIT, STATE_CANARY, approvalFor, azureStateResource, behave as behaveIn, callsOf, canaryFor, contractJson, withCanary,
-  fakeArmHttp, human, identityEnv, installFakeTerraform, keys, targetOf, testFixtureForgeQualificationEvidence, writeReviewedContract, writeProject, type ArmBehavior, type Behavior,
+  AZURE_LOCATION_FIXTURE, fakeArmHttp, human, identityEnv, installFakeTerraform, keys, targetOf, testFixtureForgeQualificationEvidence, writeReviewedContract, writeProject, type ArmBehavior, type Behavior,
   REQUESTER, reHashedProposal,
 } from "./helpers/apply-fixtures.js";
 
@@ -134,7 +134,7 @@ function world(cloudBehavior: ArmBehavior = CLOUD): World {
   writeReviewedContract(contractPath, contract);
   UNIT = unitOf(contract);
   behave();
-  const arm = fakeArmHttp(cloudBehavior);
+  const arm = fakeArmHttp(cloudBehavior, { defaultLocation: AZURE_LOCATION_FIXTURE });
   return current = {
     dirs, contractPath, contract, arm,
     deps: {
@@ -279,6 +279,30 @@ test("Azure Terraform observe: after a successful apply the driver records the b
   assert.equal(listing.length, 2, "resources and resource groups are both listed by the unit tag");
   assert.ok(listing.every((c) => decodeURIComponent(c.url).includes("tagName eq 'alz-unit' and tagValue eq '" + UNIT.unitId + "'")));
   assert.equal(w.arm.calls.filter((c) => /\/resourceGroups\/[^/]+\/(resources|providers\/Microsoft\.Authorization)/.test(c.url)).length, 0, "no resource group's contents or grants are listed: nothing here decides a group's deletion");
+});
+
+test("Azure observe binds the location (owner decision of 2026-10-28): a resource found outside the contract target's location is DIFFERENT_FROM_DESIRED, the observation FAILED, and no cleanup is proposed from it; at the right location, however ARM spells it, it is VERIFIED (SYNTHETIC)", async () => {
+  const w = world();
+  const { s } = await applied(w);
+  cloud(w, { ...CLOUD, locations: { [LAW]: "West Europe" } });
+  const spelled = await observeRun(s.sealed.artifactSha256, observeDeps(w));
+  assert.ok(spelled.ok, JSON.stringify(spelled));
+  assert.deepEqual(spelled.record.resources.find((r) => r.address === "azurerm_log_analytics_workspace.pilot")?.result, "VERIFIED", "a display name of the contract's location is the contract's location");
+  cloud(w, { ...CLOUD, locations: { [LAW]: "eastus" } });
+  const misplaced = await observeRun(s.sealed.artifactSha256, observeDeps(w));
+  assert.ok(misplaced.ok, JSON.stringify(misplaced));
+  assert.equal(misplaced.record.verdict, "FAILED");
+  const results = new Map(misplaced.record.resources.map((r) => [r.address, [r.result, r.reason]]));
+  assert.deepEqual(results.get("azurerm_log_analytics_workspace.pilot"), ["DIFFERENT_FROM_DESIRED", "LOCATION_NOT_IN_CONTRACT"]);
+  assert.deepEqual(results.get("azurerm_resource_group.pilot"), ["VERIFIED", undefined], "every other resource is where the contract places it");
+  noTokenIn(w, misplaced.record, misplaced.report);
+  assert.ok(!JSON.stringify(misplaced.record).includes("eastus\""), "the location read is compared, never recorded");
+  const records = await loadRunRecords(s.sealed.artifactSha256, w.dirs.evidence);
+  assert.ok(records.ok, JSON.stringify(records));
+  const built = build(w, s, records);
+  refused(built, "OBSERVATION_INCONCLUSIVE");
+  assert.match((built as { message: string }).message, /azurerm_log_analytics_workspace\.pilot \(LOCATION_NOT_IN_CONTRACT\)/);
+  assert.equal(applyCalls().length, 1, "only the run's own apply ran");
 });
 
 test("Azure observe denied and interrupted: a refused token, a forbidden or throttled read, a paginated listing and a tagged resource outside the state never pass, and nothing but the class is recorded", async () => {

@@ -25,7 +25,7 @@ import { TERRAFORM_APPLY_PROFILE } from "../src/tools/profiles.js";
 import { assertProductCliConfig, SOURCE_COMMIT,
   CANARIES, DEV_TARGET, approvers, ENV, H, NOW, OPERATOR, OUTPUT_CANARY, PLAN_CANARY, POLICY, PROD_TARGET, QA_TARGET, STATE_CANARY, TENANT, VALUE_CANARY,
   approvalFor as approval, behave as behaveIn, callsOf, contractJson, human, identityEnv, installFakeTerraform, keys, testFixtureForgeQualificationEvidence, recordApplied, sha, signalsOf, targetOf, writeReviewedContract, writeProject, type Behavior, type Call, type Project,
-  REQUESTER, AUTHORIZE_ALL, decisionsFor,
+  REQUESTER, AUTHORIZE_ALL, decisionsFor, AZURE_LOCATION_FIXTURE, withCanary,
 } from "./helpers/apply-fixtures.js";
 
 // docs/act-pilot-plan.md. The engine is a fake executable, so these tests pin
@@ -1425,6 +1425,78 @@ test("an import, a move and a forget are never sealed or applied (owner decision
   }
   behave({ ...extras, applyAdvance: true });
   assert.ok((await run(w, s, approvals)).ok, "the approvals were never consumed");
+});
+
+// --- the Azure location binding (owner decision of 2026-10-28) -----------------------------------------------------------------
+
+const VNET_CANARY = { resources: [{ type: "azurerm_virtual_network", count: 1 }] };
+const AZURERM_SOURCE = "registry.terraform.io/hashicorp/azurerm";
+/** A plan that creates the canary's network: `after` and `after_unknown` as `show -json` prints them, and the same values in `planned_values`. */
+const vnetPlan = (after: Record<string, unknown>, unknown: Record<string, unknown> = {}, plannedValues: Record<string, unknown> = after): Behavior => ({
+  showOnlyConfigured: true, applyAdvance: true,
+  showResources: [{ address: "azurerm_virtual_network.pilot", mode: "managed", type: "azurerm_virtual_network", provider_name: AZURERM_SOURCE,
+    change: { actions: ["create"], before: null, after: { name: "vnet-alz-pilot-dev", address_space: ["10.250.0.0/24"], ...after }, after_unknown: unknown } }],
+  showDocumentExtra: { planned_values: { root_module: { resources: [{ address: "azurerm_virtual_network.pilot", mode: "managed", type: "azurerm_virtual_network", provider_name: AZURERM_SOURCE, values: plannedValues }] } } },
+});
+/** The fixture contract with the network as its canary and every target at `location`; null states no location. */
+const locatedContract = (location: string | null = AZURE_LOCATION_FIXTURE) => {
+  const contract = withCanary(contractJson(KILL), VNET_CANARY) as { targets: Record<string, Record<string, unknown>> };
+  for (const target of Object.values(contract.targets)) { if (location === null) delete target.location; else target.location = location; }
+  return contract;
+};
+const locationRefused = (result: unknown, code: string, label: string): void => {
+  assert.equal((result as { ok: boolean }).ok, false, label + ": " + JSON.stringify(result));
+  assert.equal((result as { code: string }).code, code, label + ": " + JSON.stringify(result));
+  assert.match((result as { message: string }).message, /\(LOCATION_NOT_IN_CONTRACT\)/, label);
+};
+
+test("Azure Terraform location (SYNTHETIC): the seal accepts a virtual network planned at the contract's location, however ARM spells it, and refuses one planned elsewhere, unknown until apply, empty or unstated, or a target with no location; a resource group's metadata is never the answer", async () => {
+  const w = world({}, locatedContract());
+  for (const location of ["westeurope", "West Europe"]) {
+    behave(vnetPlan({ location }));
+    const s = await seal(w, "DEV");
+    assert.deepEqual(s.sealed.changes.map((c) => [c.address, c.action]), [["azurerm_virtual_network.pilot", "CREATE"]], location);
+  }
+  for (const [label, behavior] of [
+    ["another region", vnetPlan({ location: "eastus2" })],
+    ["unknown until apply", vnetPlan({}, { location: true }, {})],
+    ["empty", vnetPlan({ location: "" })],
+    ["unstated", vnetPlan({}, {}, {})],
+    ["planned values elsewhere", vnetPlan({ location: "westeurope" }, {}, { location: "eastus2" })],
+  ] as const) {
+    behave(behavior);
+    locationRefused(await sealRefusal(w, "DEV"), "ARTIFACT_INVALID", label);
+  }
+  // The group the network sits in says the contract's region, but the network's own location is unknown: refused, never inferred.
+  behave({ ...vnetPlan({}, { location: true }, {}), showResources: [
+    { address: "data.azurerm_resource_group.pilot", mode: "data", type: "azurerm_resource_group", provider_name: AZURERM_SOURCE, change: { actions: ["read"], before: null, after: { location: AZURE_LOCATION_FIXTURE } } },
+    ...(vnetPlan({}, { location: true }, {}).showResources as unknown[]),
+  ] });
+  locationRefused(await sealRefusal(w, "DEV"), "ARTIFACT_INVALID", "inferred from the group");
+  // A contract whose Azure target names no location seals nothing, even for a network in the right place.
+  const unlocated = world({}, locatedContract(null));
+  behave(vnetPlan({ location: AZURE_LOCATION_FIXTURE }));
+  locationRefused(await sealRefusal(unlocated, "DEV"), "ARTIFACT_INVALID", "no location in the target");
+});
+
+test("Azure Terraform location (SYNTHETIC): the apply judges the re-derived plan again, so a plan that now places the network elsewhere or leaves it unknown is TARGET_NOT_IN_CONTRACT before any approval is consumed", async () => {
+  const w = world({}, locatedContract());
+  behave(vnetPlan({ location: AZURE_LOCATION_FIXTURE }));
+  const s = await seal(w, "DEV");
+  const approvals = [approval(s.sealed, "alice")];
+  for (const [label, behavior] of [
+    ["another region at apply", vnetPlan({ location: "eastus2" })],
+    ["unknown at apply", vnetPlan({ location: AZURE_LOCATION_FIXTURE }, { location: true })],
+    ["planned values elsewhere at apply", vnetPlan({ location: AZURE_LOCATION_FIXTURE }, {}, { location: "eastus2" })],
+  ] as const) {
+    behave(behavior);
+    locationRefused(await run(w, s, approvals), "TARGET_NOT_IN_CONTRACT", label);
+    assert.match((await run(w, s, approvals) as { message: string }).message, /no approval was consumed/, label);
+    assert.equal(applyCalls().length, 0, label + ": nothing was applied");
+  }
+  behave(vnetPlan({ location: AZURE_LOCATION_FIXTURE }));
+  const applied = await run(w, s, approvals);
+  assert.ok(applied.ok, "the approvals were never consumed: " + JSON.stringify(applied));
 });
 
 test("a failure after the approvals were consumed and before the engine starts is APPROVALS_SPENT: the approvals are gone, the artifact is given back", async () => {

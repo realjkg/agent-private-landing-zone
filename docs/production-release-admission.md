@@ -64,4 +64,28 @@ Do **not** repeat expensive CI, model downloads or live cloud qualifications on 
 
 ## Pilot-scoped ACT
 
-`infrastructureAct` is `DISABLED`, or `PILOT` for the internal pilot (`docs/act-pilot-apply.md`). `PILOT` requires an `actPilot` block, `{ "provider": "AZURE" or "AWS", "engine": "TERRAFORM" or "CDK", "contractSha256": "<sha256 of the canonical pilot contract>" }`, and a valid pilot contract with `enabled: true` at `config/act-pilot-contract.json`. The static production contract lists exactly three provider/engine pairs, each validated on its own: Azure with Terraform, AWS with Terraform, and AWS with CDK. Admission rejects a pilot contract naming any other pair (`ACT_PILOT_COMBINATION_NOT_ALLOWED`); nothing is inferred and there is no wildcard. It rejects `PILOT` without that contract or with a scope that does not match it, and rejects an enabled contract beside a release that does not declare `PILOT`. Any other value is rejected as before. The report still says `infrastructureAct: "DISABLED"` and `productionReleaseApproved: false`; it adds `actPilot` (the scope, or `null`). Every release gate still needs its own evidence.
+`infrastructureAct` is `DISABLED`, or `PILOT` for the internal pilot (`docs/act-pilot-apply.md`). The static production contract lists exactly five provider/engine pairs, each validated on its own and each with its own engine's mutation:
+
+| Provider | Engine | Mutation |
+| --- | --- | --- |
+| AZURE | TERRAFORM | `TERRAFORM_APPLY_OF_SEALED_PLAN` |
+| AWS | TERRAFORM | `TERRAFORM_APPLY_OF_SEALED_PLAN` |
+| AWS | CDK | `CLOUDFORMATION_EXECUTE_OF_SEALED_CHANGE_SET` |
+| AZURE | BICEP | `AZURE_DEPLOYMENT_STACK_CREATE_OF_SEALED_TEMPLATE` (DEV only; owner decision 6483993252) |
+| GCP | TERRAFORM | `TERRAFORM_APPLY_OF_SEALED_PLAN` (DEV only; owner decision 6483993252) |
+
+GCP / GCP_API is not listed; it is added only by its own integration step. Admission rejects a pilot contract naming any other pair (`ACT_PILOT_COMBINATION_NOT_ALLOWED`). Nothing is inferred and there is no wildcard. The DEV-only paths stay DEV only because their contracts must say `enabledEnvironments: ["DEV"]`, so no QA or PROD authorization exists for a live record to name.
+
+A `PILOT` release names its paths in one of two forms, never both (`ACT_PILOT_SCOPE_AMBIGUOUS`):
+
+- **One path, `actPilot`:** `{ "provider", "engine", "contractSha256" }`, bound to the valid, enabled pilot contract the candidate itself carries at `config/act-pilot-contract.json`. This is the form that existed before. It rejects `PILOT` without that contract or with a scope that does not match it (`ACT_PILOT_SCOPE_MISMATCH`).
+- **Several paths on one candidate, `actPilots`:** one entry per path, `{ "provider", "engine", "contractSha256", "contractCommit" }`. The product reads one committed contract per checkout, so each path's live apply runs at the commit that carries that path's reviewed contract. For each entry, admission:
+  - reads the contract file from `contractCommit` and judges it with the same loader;
+  - checks that the commit's tree differs from the candidate's in `config/act-pilot-contract.json` only (`ACT_PILOT_CONTRACT_COMMIT_CHANGES_PRODUCT`), so the code that ran is the candidate's;
+  - binds that path's live ACT record to its own contract hash, to that contract's APPLY authorization for the record's environment, and to `contractCommit` as the record's source commit.
+
+  Each path's evidence is judged by its own contract only. A record that names another path's contract, authorization or commit is refused, and so is a record for a path the release does not declare. The recovery record is bound to the declared path whose contract it names. The candidate's own enabled contract, when there is one, must be among the declared paths (`ACT_PILOT_SHIPPED_CONTRACT_NOT_DECLARED`).
+
+  Any failed entry is refused with a blocker that names its gate: missing or disabled (`ACT_PILOT_CONTRACT_MISSING_OR_DISABLED:<gate>`), not authorized, unreadable, mismatched, duplicated or not allowed. When any entry fails, no path is bound.
+
+Admission also rejects an enabled contract beside a release that does not declare `PILOT`, and an `actPilot` or `actPilots` field on such a release. Any other value is rejected as before. The report still says `infrastructureAct: "DISABLED"` and `productionReleaseApproved: false`. It adds `actPilot` (the single scope, or `null`) and `actPilots` (the verified paths, or `[]`). Every release gate still needs its own evidence.

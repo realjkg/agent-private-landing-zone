@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { identityVariables } from "../tools/identity.js";
 import { ALZ_TAG_KEYS } from "../teardown/unit.js";
 import type { BlueprintEntry } from "./blueprint.js";
-import { armTypeOf, isArmRegistrationId, parseArmId } from "./arm-id.js";
+import { armTypeOf, isArmRegistrationId, normalizeAzureLocation, parseArmId } from "./arm-id.js";
 import type { ResourceCheck, ResourceReader } from "./verify.js";
 
 /**
@@ -75,6 +75,12 @@ export type DiscoveryArmOptions = {
   env?: NodeJS.ProcessEnv;
   /** The subscription the contract's target names; every read is scoped to it. */
   subscriptionId: string;
+  /**
+   * The contract target's authorized location (ARM's programmatic name, `eastus2`), owner decision of 2026-10-28: when given, a
+   * resource the reader finds is placed there or it is reported `misplaced` (never VERIFIED), and a type that must carry a location
+   * (`ARM_LOCATED_TYPES`) whose answer names none is UNKNOWN. Read from the resource's own answer only, never from its group.
+   */
+  location?: string;
   http?: ArmHttp;
 };
 
@@ -137,12 +143,20 @@ export function sameListing(first: string, next: string): boolean {
  */
 export { armTypeOf, armTypePairsOf, isArmRegistrationId, parseArmId, type ArmType, type ParsedArmId } from "./arm-id.js";
 
+/**
+ * ARM types (namespace/type, lowercased) that always carry a location, so an answer that names none cannot show where the resource
+ * is: the canary workload of both Azure paths, the virtual network. Any other type is judged when its answer names a location.
+ */
+export const ARM_LOCATED_TYPES: ReadonlySet<string> = new Set(["microsoft.network/virtualnetworks"]);
+
 /** The Azure reader bound to DISCOVERY. `close` drops the tokens; call it when the observation is done. */
 export function createDiscoveryArmReader(options: DiscoveryArmOptions): { reader: ResourceReader; close(): void } {
   const http = options.http ?? fetchArmHttp;
   const env = options.env ?? process.env;
   if (!GUID.test(options.subscriptionId)) throw new Error("ARM_SUBSCRIPTION_INVALID");
   const subscription = options.subscriptionId.toLowerCase();
+  const location = options.location === undefined ? undefined : normalizeAzureLocation(options.location);
+  if (options.location !== undefined && location !== options.location) throw new Error("ARM_LOCATION_INVALID");
   let access: { token: string } | { failed: ArmErrorClass } | undefined;
   let closed = false;
   const apiVersions = new Map<string, Promise<string | undefined>>();
@@ -228,9 +242,18 @@ export function createDiscoveryArmReader(options: DiscoveryArmOptions): { reader
     if (response.status === 404) return { ...base, identifier, existence: "ABSENT" };
     if (response.status !== 200) return { ...base, identifier, existence: "UNKNOWN", reason: classOf(response.status) };
     try {
-      const body = JSON.parse(response.body) as { id?: unknown };
-      // The one fact ever read from the answer: that it names the resource that was asked about.
-      if (typeof body.id === "string" && body.id.toLowerCase() === identifier.toLowerCase()) return { ...base, identifier, existence: "PRESENT" };
+      const body = JSON.parse(response.body) as { id?: unknown; location?: unknown };
+      // The facts ever read from the answer: that it names the resource that was asked about, and, when the contract binds a
+      // location, where the resource is. The location is compared in process and never recorded.
+      if (typeof body.id === "string" && body.id.toLowerCase() === identifier.toLowerCase()) {
+        if (location === undefined) return { ...base, identifier, existence: "PRESENT" };
+        if (body.location === undefined || body.location === null) {
+          return ARM_LOCATED_TYPES.has((type.namespace + "/" + type.typePath).toLowerCase())
+            ? { ...base, identifier, existence: "UNKNOWN", reason: "LOCATION_UNREADABLE" } : { ...base, identifier, existence: "PRESENT" };
+        }
+        return normalizeAzureLocation(body.location) === location
+          ? { ...base, identifier, existence: "PRESENT" } : { ...base, identifier, existence: "PRESENT", misplaced: true };
+      }
     } catch { /* falls through */ }
     return { ...base, identifier, existence: "UNKNOWN", reason: "UNEXPECTED_RESPONSE" };
   };

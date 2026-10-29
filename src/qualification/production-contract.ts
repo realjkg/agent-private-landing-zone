@@ -239,6 +239,22 @@ export const PRODUCTION_DEPLOYMENT_CONTRACT = {
             mutation:
               "CLOUDFORMATION_EXECUTE_OF_SEALED_CHANGE_SET",
           },
+          // Owner decision 6483993252 on #39 (code and review only): the two paths admitted for DEV only in code
+          // (Azure Bicep, E2; GCP Terraform, #339). Each names its own engine's mutation. The contract validator keeps
+          // both DEV-only (enabledEnvironments ["DEV"]). GCP / GCP_API is not listed: it is added only by its own
+          // integration step (INT-2).
+          {
+            provider: "AZURE",
+            engine: "BICEP",
+            mutation:
+              "AZURE_DEPLOYMENT_STACK_CREATE_OF_SEALED_TEMPLATE",
+          },
+          {
+            provider: "GCP",
+            engine: "TERRAFORM",
+            mutation:
+              "TERRAFORM_APPLY_OF_SEALED_PLAN",
+          },
         ],
       },
     },
@@ -323,6 +339,16 @@ function pilotScopePinned(
       PRODUCTION_DEPLOYMENT_CONTRACT.spec.release.actPilot,
     )
   );
+}
+
+/** The mutation the static contract names for this exact provider/engine pair, or undefined for a pair it does not list. */
+export function pilotMutationOf(
+  provider: unknown,
+  engine: unknown,
+): string | undefined {
+  return PRODUCTION_DEPLOYMENT_CONTRACT.spec.release.actPilot.combinations.find(
+    (c) => c.provider === provider && c.engine === engine,
+  )?.mutation;
 }
 
 /** Whether the static contract lists this exact provider/engine pair. */
