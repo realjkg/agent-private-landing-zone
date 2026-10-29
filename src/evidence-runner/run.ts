@@ -243,6 +243,8 @@ export async function evidenceRun(options: RunOptions, deps: RunnerDeps): Promis
     // stops the run: later stages wait for the person to fix it and rerun (passed stages are not repeated).
     let produced = 0;
     let blocked = false;
+    // Evidence a stage that did not pass still kept: a cleanup BLOCKED after record-live keeps the live record (#360 review N2).
+    let kept: { stage: StageId; path: string } | undefined;
     for (const stage of stagesSelected.slice(1)) {
       const previous = journal.record(stage, stage);
       if (previous.status === "FINISHED" && previous.outcome === "PASS") { produced += 1; out("  ok       " + stage + ": already produced in this run, skipped."); continue; }
@@ -259,10 +261,14 @@ export async function evidenceRun(options: RunOptions, deps: RunnerDeps): Promis
       out("  " + mark(result.outcome) + "  " + stage + ": " + result.code + " — " + result.detail);
       if (result.outcome === "PASS") { produced += 1; continue; }
       blocked = true;
+      const live = stepsOf(journal.entries(), stage).filter((step) => step.outcome === "PASS").flatMap((step) => step.documents as { name: string; path: string }[])
+        .find((document) => document.name === "live-record");
+      if (live) kept = { stage, path: live.path };
       if (result.outcome !== "SKIPPED") break;
     }
     const done = !blocked && produced > 0;
-    out((done ? "DONE" : produced === 0 ? "BLOCKED: no evidence was produced" : "BLOCKED") + ". Journal " + shown(deps.root, join(dir, "journal.jsonl")) +
+    const keptNote = kept === undefined ? "" : ": " + kept.stage + " did not pass, but its live record was kept (" + kept.path + ")";
+    out((done ? "DONE" : produced === 0 && kept === undefined ? "BLOCKED: no evidence was produced" : "BLOCKED" + keptNote) + ". Journal " + shown(deps.root, join(dir, "journal.jsonl")) +
       "; ./alz evidence status shows where the run stands.");
     return done ? EXIT.OK : EXIT.BLOCKED;
   } catch (error) {

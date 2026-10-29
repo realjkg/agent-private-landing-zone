@@ -72,7 +72,7 @@ async function world(contract: unknown = contractJson(KILL), env: NodeJS.Process
     cli: {
       sourceCommit: SOURCE_COMMIT,
       env, now: () => NOW, operatorId: "operator.fixture", contractPath, qualificationDir: vault,
-      evidenceDir: fresh("evidence"), nonces: openNonceStore(fresh("nonces")), scratchParent, toolDirs: [toolDir],
+      evidenceDir: fresh("evidence"), nonces: openNonceStore(fresh("nonces")), scratchParent, toolDirs: [toolDir], reportsDir: fresh("reports"),
     },
   };
 }
@@ -894,7 +894,7 @@ async function consoleJourney(cloud: Cloud, sourceCommit = SOURCE_COMMIT) {
     contractPath, vault, approvals: fresh("approvals"),
     cli: {
       sourceCommit: SOURCE_COMMIT,
-      env: cloud === "AWS" ? awsIdentityEnv("DEV") : identityEnv("DEV"), now: () => NOW, operatorId: "operator.fixture", contractPath, qualificationDir: vault, evidenceDir: fresh("evidence"), nonces: openNonceStore(fresh("nonces")),
+      env: cloud === "AWS" ? awsIdentityEnv("DEV") : identityEnv("DEV"), now: () => NOW, operatorId: "operator.fixture", contractPath, qualificationDir: vault, evidenceDir: fresh("evidence"), nonces: openNonceStore(fresh("nonces")), reportsDir: fresh("reports"),
       scratchParent: fresh("scratch"), toolDirs: [toolDir], preparationDir: fresh("prepared"),
     },
   };
@@ -1436,7 +1436,7 @@ async function cdkConsoleJourney() {
     contractPath, vault, approvals: fresh("approvals"),
     cli: {
       sourceCommit: SOURCE_COMMIT, env: cdkIdentityEnv("DEV"), now: () => NOW, operatorId: "operator.fixture", contractPath, qualificationDir: vault,
-      evidenceDir: fresh("evidence"), nonces: openNonceStore(fresh("nonces")), scratchParent: fresh("scratch"), toolDirs: [cdkToolDir], preparationDir: fresh("prepared"), proposalsDir: fresh("proposals"),
+      evidenceDir: fresh("evidence"), nonces: openNonceStore(fresh("nonces")), scratchParent: fresh("scratch"), toolDirs: [cdkToolDir], preparationDir: fresh("prepared"), proposalsDir: fresh("proposals"), reportsDir: fresh("reports"),
     },
   };
   const { port } = await serve(w);

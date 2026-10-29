@@ -147,6 +147,12 @@ test("observe, propose-cleanup, approve of the proposal, cleanup and verify-clea
   assert.ok(awsReadCallsOf(awsToolDir).every((read) => read.env.AWS_ROLE_ARN === awsRoleArn("DISCOVERY", "DEV")));
   assert.ok(awsReadCallsOf(awsToolDir).some((read) => read.args[0] === "resourcegroupstaggingapi" && read.args.includes("Key=alz-unit,Values=" + UNIT.unitId)), "the sweep asked for this run's own unit tag");
   assert.deepEqual(observed.term.asked, [], "observing asks no phrase: it reads and changes nothing");
+  // #360 review N1: the plain summary the evidence runner reads, beside the reports: the verdict and why, never a resource's contents.
+  const summaryName = run.artifactSha256.slice(0, 12) + "-observation.json";
+  assert.deepEqual(readdirSync(w.reportsDir).filter((n) => n.endsWith("-observation.json")), [summaryName]);
+  const observationSummary = JSON.parse(readFileSync(join(w.reportsDir, summaryName), "utf8")) as Record<string, unknown>;
+  assert.deepEqual(Object.keys(observationSummary).sort(), ["artifactSha256", "inventory", "kind", "label", "observedAt", "schemaVersion", "sweepNotListing", "verdict", "verifier"]);
+  assert.deepEqual([observationSummary.kind, observationSummary.label, observationSummary.verdict, observationSummary.inventory, observationSummary.verifier, observationSummary.sweepNotListing], ["OBSERVATION_SUMMARY", "SYNTHETIC_UNLESS_ATTESTED_LIVE", "VERIFIED", "COMPLETE", "AWS_CLOUD_CONTROL", []]);
 
   const proposed = await cli(w, ["propose-cleanup", "--sealed", run.sealedPlanPath, ...requesterArgs()]);
   assert.equal(proposed.code, 0, proposed.stderr);
@@ -282,13 +288,16 @@ test("a wrong phrase at the cleanup approval or the removal signs nothing and ru
   assert.equal(again.code, 2);
   assert.match(again.stderr, /PROPOSAL_ALREADY_EXECUTED/);
   assert.deepEqual([destroys(), applies()], [d0 + 1, a0 + 1], "a proposal runs once");
-  // Every cleanup command needs a terminal, like the apply commands.
+  // Every cleanup command needs a terminal, like the apply commands. What the reports folder holds before (the observation summary an
+  // earlier observe at the terminal wrote) is exactly what it holds after: nothing is written or rewritten without a terminal.
+  const reportsBefore = readdirSync(w.reportsDir).sort().map((name) => [name, readFileSync(join(w.reportsDir, name), "utf8")]);
   for (const args of [["observe", "--sealed", run.sealedPlanPath], ["propose-cleanup", "--sealed", run.sealedPlanPath, ...requesterArgs()], ["verify-cleanup", "--proposal", proposalPath], ["report", "--sealed", run.sealedPlanPath]]) {
     const noTerminal = await cli(w, args, [], { terminal: { ...terminal([]), stdinIsTTY: false, stdoutIsTTY: false } });
     assert.equal(noTerminal.code, 1, args[0]);
     assert.match(noTerminal.stderr, /HUMAN_TERMINAL_REQUIRED/);
   }
-  assert.deepEqual(readdirSync(w.reportsDir), [], "no report was written without a terminal");
+  assert.deepEqual(readdirSync(w.reportsDir).sort().map((name) => [name, readFileSync(join(w.reportsDir, name), "utf8")]), reportsBefore, "no report was written without a terminal");
+  assert.ok(!readdirSync(w.reportsDir).some((name) => name.includes("-lifecycle")), "no lifecycle report was written without a terminal");
 });
 
 test("the lifecycle report validator refuses a declared pass, a live claim without the owner's attestation, a completion over pending leftovers, and an unknown schema", async () => {

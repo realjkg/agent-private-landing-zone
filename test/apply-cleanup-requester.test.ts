@@ -305,7 +305,7 @@ async function cli(w: World, environment: ApplyEnvironment, args: string[], answ
   const stderr: string[] = [];
   const term = terminal(answers);
   const code = await runApplyCommand(args, {
-    sourceCommit: SOURCE_COMMIT, terminal: term, env: awsIdentityEnv(environment), now: () => new Date(NOW.getTime() + 120_000), operatorId: "operator.fixture", contractPath: w.contractPath, qualificationDir: w.vault, evidenceDir: w.evidenceDir, nonces: w.nonces, scratchParent: w.scratch, toolDirs: [toolDir, awsToolDir], proposalsDir: w.proposalsDir,
+    sourceCommit: SOURCE_COMMIT, terminal: term, env: awsIdentityEnv(environment), now: () => new Date(NOW.getTime() + 120_000), operatorId: "operator.fixture", contractPath: w.contractPath, qualificationDir: w.vault, evidenceDir: w.evidenceDir, nonces: w.nonces, scratchParent: w.scratch, toolDirs: [toolDir, awsToolDir], proposalsDir: w.proposalsDir, reportsDir: join(w.scratch, "reports"),
     stdout: (t) => { stdout.push(t); }, stderr: (t) => { stderr.push(t); },
   });
   return { code, stdout: stdout.join(""), stderr: stderr.join(""), term };
