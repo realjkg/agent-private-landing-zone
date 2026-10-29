@@ -1,0 +1,66 @@
+name: ACT identity delivery on macOS (SYNTHETIC)
+
+# The owner's requirement (#39 6486426552, item 3): the identity runner hook and the delivery scripts are tested on the real
+# supported macOS shell and toolchain (Apple's /bin/bash 3.2 and BSD find, printf and env) before the owner installs or runs
+# anything on the MBP. This is SYNTHETIC macOS evidence on a GitHub-hosted machine: no token, no cloud, no runner of the owner's,
+# no secret and no environment. It never replaces the owner's MBP proof (docs/act-pilot-identity-delivery.md, section 11).
+
+on:
+  pull_request:
+    paths:
+      - scripts/act-identity-runner-hook.sh
+      - .github/workflows/act-identity-delivery.yml
+      - .github/workflows/act-identity-macos.yml
+      - src/apply/token-delivery.ts
+      - test/act-identity-runner-hook.test.ts
+      - test/act-identity-delivery-workflow.test.ts
+      - test/apply-token-delivery.test.ts
+      - test/helpers/token-delivery-fixtures.ts
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: act-identity-macos-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    name: Hook and delivery tests on macOS (Apple bash 3.2, BSD userland)
+    runs-on: macos-15
+    timeout-minutes: 30
+    permissions: {}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: "26"
+          cache: npm
+          cache-dependency-path: package-lock.json
+          package-manager-cache: false
+
+      - name: Record and check the platform
+        shell: /bin/bash -e {0}
+        run: |
+          # The record the evidence names: the OS, the shell the tests use, and the tools the hook calls.
+          sw_vers
+          uname -m
+          /bin/bash --version | head -n 1
+          echo "first bash on PATH: $(command -v bash)"
+          ls -l /bin/bash /usr/bin/find /usr/bin/printf /usr/bin/env /usr/bin/false
+          node --version
+          # The tests must run against Apple's bash 3.2 and BSD find, or this run proves nothing about the MBP.
+          /bin/bash -c '[ "${BASH_VERSINFO[0]}" = 3 ]' || { echo "/bin/bash is not Apple's bash 3.2" >&2; exit 1; }
+          if /usr/bin/find --version >/dev/null 2>&1; then echo "/usr/bin/find is GNU find, not BSD find" >&2; exit 1; fi
+          echo "BSD find confirmed (no --version)."
+
+      - name: Install
+        run: npm ci
+
+      - name: Hook, delivery workflow and token delivery tests (SYNTHETIC macOS)
+        run: npx tsx --test test/act-identity-runner-hook.test.ts test/act-identity-delivery-workflow.test.ts test/apply-token-delivery.test.ts

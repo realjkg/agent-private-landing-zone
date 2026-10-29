@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -13,7 +13,11 @@ import test from "node:test";
 const HOOK = "scripts/act-identity-runner-hook.sh";
 const REPO = "fixture-owner/fixture-repo";
 const WORKFLOW = ".github/workflows/act-identity-delivery.yml";
-const scratch = mkdtempSync(join(tmpdir(), "alz-runner-hook-"));
+// The real temporary directory: on macOS tmpdir() is under /var, a symbolic link to /private/var, and the hook refuses paths that
+// are not their own real path. /bin/bash, not the first bash on PATH: on macOS that is Apple's bash 3.2, which the MBP runner uses
+// (.github/workflows/act-identity-macos.yml runs these tests there), and on Linux it is the system bash.
+const scratch = mkdtempSync(join(realpathSync(tmpdir()), "alz-runner-hook-"));
+const BASH = "/bin/bash";
 test.after(() => rmSync(scratch, { recursive: true, force: true }));
 const dispatch = { ref: "refs/heads/main", workflow: WORKFLOW, repository: { full_name: REPO }, inputs: { path: "aws-terraform", hold_minutes: "30" } };
 
@@ -39,7 +43,7 @@ const jobEnv = (at: Install, over: Record<string, string> = {}): Record<string, 
   PATH: "/usr/bin:/bin", GITHUB_REPOSITORY: REPO, GITHUB_EVENT_NAME: "workflow_dispatch", GITHUB_REF: "refs/heads/main",
   GITHUB_WORKFLOW_REF: REPO + "/" + WORKFLOW + "@refs/heads/main", GITHUB_JOB: "deliver", GITHUB_EVENT_PATH: at.payload, ...over,
 });
-const run = (at: Install, env: Record<string, string>) => spawnSync("bash", [at.hook], { env, encoding: "utf8" });
+const run = (at: Install, env: Record<string, string>) => spawnSync(BASH, [at.hook], { env, encoding: "utf8" });
 const refused = (at: Install, env: Record<string, string>, reason: RegExp, label: string) => {
   const result = run(at, env);
   assert.equal(result.status, 1, label + ": " + result.stdout + result.stderr);
@@ -148,6 +152,7 @@ test("a job environment that reaches the hook is made visible: the owner's canar
     // bash expands BASH_ENV and sources the result before the first line: the code runs (the marker appears), then the leak is reported.
     [{ BASH_ENV: "$(touch " + marker + ")" }, "BASH_ENV"],
     [{ ALZ_HOOK_ENV_CANARY: "instance-1", "BASH_FUNC_unset%%": "() { exit 0; }", "BASH_FUNC_exit%%": "() { builtin exit 0; }" }, "canary with function overrides"],
+    [{ ALZ_HOOK_ENV_CANARY: "instance-1", "__BASH_FUNC<unset>%%": "() { builtin exit 0; }", "__BASH_FUNC<exit>%%": "() { builtin exit 0; }" }, "canary with Apple bash 3.2 function overrides"],
   ] as const) {
     rmSync(marker, { force: true });
     const result = run(at, jobEnv(at, over as Record<string, string>));
@@ -161,9 +166,12 @@ test("a job environment that reaches the hook is made visible: the owner's canar
 test("exported functions cannot hijack the hook: it calls no builtin by name, and Node, the last command, decides (review round 2)", () => {
   const branch = install({ ...dispatch, ref: "refs/heads/feature" });
   for (const name of ["unset", "exit", "set", "printf", "read", "refuse", "[", "test", "env", "find", "false", "command", "builtin", "true"]) {
-    const result = run(branch, jobEnv(branch, { ["BASH_FUNC_" + name + "%%"]: "() { builtin exit 0; }" }));
-    assert.equal(result.status, 1, name + ": " + result.stdout + result.stderr);
-    assert.match(result.stderr, /ALZ_IDENTITY_RUNNER_REFUSED: the event payload is not a dispatch/, name);
+    // GNU bash's export format, then Apple bash 3.2's (`__BASH_FUNC<name>%%`); each bash ignores the other's.
+    for (const variable of ["BASH_FUNC_" + name + "%%", "__BASH_FUNC<" + name + ">%%"]) {
+      const result = run(branch, jobEnv(branch, { [variable]: "() { builtin exit 0; }" }));
+      assert.equal(result.status, 1, variable + ": " + result.stdout + result.stderr);
+      assert.match(result.stderr, /ALZ_IDENTITY_RUNNER_REFUSED: the event payload is not a dispatch/, variable);
+    }
   }
   // And the admitted case still admits with them present: they change nothing either way.
   const good = install();
