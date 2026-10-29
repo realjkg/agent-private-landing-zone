@@ -70,8 +70,7 @@ export function openReader(deps: ObserveDeps, environment: ApplyEvidence["enviro
   }
   if (contract.provider === "GCP") {
     try {
-      // The contract region is handed over so the canary topic's storage policy is read back and compared (D11, R2 of G1).
-      const opened = createDiscoveryGcpReader({ env: deps.env, projectId: (target as GcpTarget).projectId, storagePolicyRegion: (target as GcpTarget).region, http: deps.gcp });
+      const opened = createDiscoveryGcpReader({ env: deps.env, projectId: (target as GcpTarget).projectId, http: deps.gcp });
       return { ok: true, reader: opened.reader, binarySha256: null, close: opened.close };
     } catch {
       return refuse("CONTRACT_INVALID", "The contract's GCP target does not name a project the reader can use. Nothing was run.");
@@ -103,7 +102,7 @@ export async function observeRun(artifactSha256: string, deps: ObserveDeps): Pro
   }
   const origins = new Map(blueprint.blueprint.entries.map((entry) => [entry.address, entry.origin]));
   const resources: ObservedResource[] = report.checks.map((check) => ({
-    address: check.address, type: check.type, identifier: check.identifier, origin: origins.get(check.address) ?? "NOT_IN_PLAN", ...verificationOf(check.existence, check.reason, check.differs),
+    address: check.address, type: check.type, identifier: check.identifier, origin: origins.get(check.address) ?? "NOT_IN_PLAN", ...verificationOf(check.existence, check.reason),
   }));
   const record: ObservationRecord = {
     schemaVersion: 1, kind: "OBSERVATION", artifactSha256, applyEvidenceSha256, blueprintSha256: recordSha256(blueprint), environment: applied.environment, target: { ...applied.target },

@@ -272,7 +272,7 @@ test("D15: the scope the reader used to request (cloud-platform.read-only) is wh
   assert.equal(await reader.listTagged("alzu-0123456789abcdef0123"), undefined);
 });
 
-test("D11 read-back: a topic's storage policy must be exactly the contract's region; another or a second region differs, a missing one is unknown, and without a region nothing is compared", async () => {
+test("D11 read-back: a topic's storage policy must be exactly the contract's region; another or a second region, or a missing one, is never PRESENT, and without a region nothing is compared", async () => {
   const checkWith = async (regions: unknown, storagePolicyRegion: string | null = "europe-west4") => {
     const { reader } = createDiscoveryGcpReader({ env: identityEnv(), projectId: PROJECT, ...(storagePolicyRegion === null ? {} : { storagePolicyRegion }), http: scopedGoogle(regions).http });
     return reader.check(entry(TOPIC));
@@ -281,14 +281,15 @@ test("D11 read-back: a topic's storage policy must be exactly the contract's reg
   assert.deepEqual(result, { address: "google_pubsub_topic.unit", type: "google_pubsub_topic", identifier: TOPIC, existence: "PRESENT" }, "only existence and the identifier are kept, never the policy");
   for (const [label, regions] of [["another region", ["us-central1"]], ["a second region", ["europe-west4", "us-central1"]], ["no region", []], ["another case", ["EUROPE-WEST4"]]] as const) {
     const differs = await checkWith(regions);
-    assert.deepEqual([differs.existence, differs.differs, differs.reason], ["PRESENT", "STORAGE_POLICY_MISMATCH", undefined], label);
+    // Fail closed: never PRESENT, so never VERIFIED (a FAILED verdict waits for #343's misplaced check; see the reader's header).
+    assert.deepEqual([differs.existence, differs.reason], ["UNKNOWN", "STORAGE_POLICY_MISMATCH"], label);
     assert.ok(!JSON.stringify(differs).includes("us-central1"), label + ": the value is never recorded");
   }
   for (const [label, regions] of [["no policy", null], ["regions not a list", "europe-west4"], ["a region that is not text", [4]]] as const) {
     const unknown = await checkWith(regions);
     assert.deepEqual([unknown.existence, unknown.reason], ["UNKNOWN", "STORAGE_POLICY_NOT_READ"], label);
   }
-  assert.equal((await checkWith(["us-central1"], null)).differs, undefined, "no region given: the policy is not read");
+  assert.equal((await checkWith(["us-central1"], null)).existence, "PRESENT", "no region given: the policy is not read");
   assert.throws(() => createDiscoveryGcpReader({ env: identityEnv(), projectId: PROJECT, storagePolicyRegion: "Europe West 4", http: scopedGoogle().http }), /GCP_REGION_INVALID/);
   // Only the topic type carries a storage policy: another entry type is never compared.
   const { reader } = createDiscoveryGcpReader({ env: identityEnv(), projectId: PROJECT, storagePolicyRegion: "europe-west4", http: scopedGoogle(["us-central1"]).http });

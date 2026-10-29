@@ -161,7 +161,7 @@ The driver reaches all of it only through the operator's network settings, `ALZ_
 | Apply | APPLY sent the one Pub/Sub `PUT`, with `messageStoragePolicy.allowedPersistenceRegions = [<contract region>]`. Only STATE_WRITE wrote state, the lock was released, and the evidence and blueprint named the source commit. The observation was `VERIFIED`: DISCOVERY used a `pubsub` token for Pub/Sub and a `cloud-platform` token for Cloud Asset, and only read. |
 | Replay | A second apply of the same artifact was refused (`ARTIFACT_ALREADY_APPLIED`). |
 | Judge on the real plan | Each of these sealed nothing: another region, CMEK, message retention, a tag binding, `deletion_policy = "ABANDON"`, no storage policy, and another project. |
-| Read-back | A topic whose storage policy was changed afterward observed `FAILED` (`DIFFERENT_FROM_DESIRED`, `STORAGE_POLICY_MISMATCH`), and no cleanup could be proposed. A hand-deleted topic observed `FAILED` (`MISSING`). |
+| Read-back | The reader, given the contract's region, read the real topic as `PRESENT`. After its storage policy was changed, it read `UNKNOWN` (`STORAGE_POLICY_MISMATCH`), never `PRESENT`. A hand-deleted topic observed `FAILED` (`MISSING`). Passing the region through `observe`, and making a mismatch `FAILED`, wait for AZ-1's `misplaced` check (#343). |
 | Cleanup | The proposal named exactly the topic. APPLY deleted it, and the leftovers check confirmed `CONFIRMED_DELETED` (`GCP_REST_ABSENT`). |
 | Held lock | Another holder's lock gave `FAILED_NO_CHANGE` and was left unchanged. |
 | Kill switch | `KILL_SWITCH_ACTIVE` before the engine ran, with nothing reserved. |
