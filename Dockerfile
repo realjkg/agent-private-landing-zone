@@ -25,6 +25,8 @@ ENV ALZ_SOURCE_COMMIT=$SOURCE_COMMIT
 
 COPY test/ ./test/
 COPY Dockerfile ./Dockerfile
+# test/release-package-exclusions.test.ts reads the context rules that keep the owner's contract out of the image. Test stage only.
+COPY .dockerignore ./.dockerignore
 COPY scripts/ ./scripts/
 COPY security/ ./security/
 COPY config/ ./config/
@@ -71,6 +73,8 @@ RUN apk upgrade --no-cache && apk add --no-cache libstdc++
 COPY package.json package-lock.json ./
 COPY --from=runtime-deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
+# .dockerignore keeps the owner's contract and runner configuration out of the context, so config/ here never holds them;
+# release-package below refuses the build if anything excluded reached the image (docs/field-package.md).
 COPY config/ ./config/
 COPY policy/ ./policy/
 

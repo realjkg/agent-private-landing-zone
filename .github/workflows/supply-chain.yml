@@ -83,12 +83,8 @@ jobs:
           set -euo pipefail
           STAGE=".runs/release/stage"
           rm -rf ".runs/release"
-          mkdir -p "$STAGE"
-          cp -R dist "$STAGE/dist"
-          cp -R policy "$STAGE/policy"
-          cp -R config "$STAGE/config"
-          cp package.json package-lock.json alz sbom.cdx.json "$STAGE/"
-          chmod +x "$STAGE/alz"
+          # One staging definition (docs/field-package.md): it leaves the owner's contract and runner configuration out.
+          scripts/release-stage.sh "$STAGE"
           VERSION="$(node -p "require('./package.json').version")"
           node dist/cli/release-package.js             --root "$STAGE"             --source-commit "$GITHUB_SHA"             --version "$VERSION"
           node dist/cli/release-package.js             --root "$STAGE"             --verify
