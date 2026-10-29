@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 
 import { runEvidenceCommand } from "../src/cli/evidence.js";
+import { observationSummaryOf } from "../src/evidence-runner/act.js";
 import { spawnChild, type ChildRequest } from "../src/evidence-runner/child.js";
 import { Journal, readJournal, type JournalIdentity } from "../src/evidence-runner/journal.js";
 import {
@@ -207,7 +208,7 @@ test("#360 review N1: on every path act:<path> is PASS only for a VERIFIED obser
     ["gcp-terraform", "GCP", "TERRAFORM"], ["gcp-api", "GCP", "GCP_API"],
   ] as const;
   const observe = (path: string, summary: Record<string, unknown> | undefined) => (request: ChildRequest) => {
-    write(request.cwd, ".runs/apply/reports/" + artifactOf(path).slice(0, 12) + "-observation.json", summary === undefined ? "not json" : JSON.stringify({ schemaVersion: 1, kind: "OBSERVATION_SUMMARY", ...summary }));
+    write(request.cwd, ".runs/apply/reports/" + artifactOf(path).slice(0, 12) + "-observation.json", summary === undefined ? "not json" : JSON.stringify({ schemaVersion: 1, kind: "OBSERVATION_SUMMARY", artifactSha256: artifactOf(path), ...summary }));
     return { exitCode: 0, signal: null };
   };
   const rootFor = (path: string, provider: string, engine: string) => {
@@ -246,6 +247,35 @@ test("#360 review N1: on every path act:<path> is PASS only for a VERIFIED obser
       assert.ok(!calls.includes("apply seal") && !calls.includes("apply apply") && !calls.includes("apply prepare"), path + " " + label + ": " + calls.join(", "));
     }
   }
+});
+
+test("#362 review N1: the observation summary must be this stage's artifact's: another artifact's VERIFIED summary, or one naming another artifact inside, is refused and the stage is BLOCKED", async () => {
+  const other = "f".repeat(64);
+  const cases: [string, (request: ChildRequest) => { exitCode: number; signal: null }][] = [
+    // The reviewer's probe: a VERIFIED summary for another artifact, under that artifact's own name.
+    ["another artifact's file", (request) => { write(request.cwd, ".runs/apply/reports/ffffffffffff-observation.json", JSON.stringify({ schemaVersion: 1, kind: "OBSERVATION_SUMMARY", artifactSha256: other, verdict: "VERIFIED", inventory: "COMPLETE", sweepNotListing: [] })); return { exitCode: 0, signal: null }; }],
+    // This artifact's file name, but the summary inside names another artifact.
+    ["another artifact inside", (request) => { write(request.cwd, ".runs/apply/reports/" + ARTIFACT.slice(0, 12) + "-observation.json", JSON.stringify({ schemaVersion: 1, kind: "OBSERVATION_SUMMARY", artifactSha256: other, verdict: "VERIFIED", inventory: "COMPLETE", sweepNotListing: [] })); return { exitCode: 0, signal: null }; }],
+    ["no artifact inside", (request) => { write(request.cwd, ".runs/apply/reports/" + ARTIFACT.slice(0, 12) + "-observation.json", JSON.stringify({ schemaVersion: 1, kind: "OBSERVATION_SUMMARY", verdict: "VERIFIED", inventory: "COMPLETE", sweepNotListing: [] })); return { exitCode: 0, signal: null }; }],
+  ];
+  for (const [label, observeChild] of cases) {
+    const root = actRoot();
+    const run = actDeps(root, applyScript({ "apply observe": observeChild }));
+    assert.equal(await runEvidenceCommand(["run", "--synthetic", "--stage", "act:aws-terraform"], run.deps), 2, label);
+    const out = run.deps.lines.join("\n");
+    assert.match(out, /OBSERVATION_NOT_VERIFIED[\s\S]*NOT_THIS_ARTIFACT, not VERIFIED: the observation summary is not this stage's/, label);
+    assert.doesNotMatch(out, /APPLIED_AND_OBSERVED/, label);
+  }
+  // A summary whose bytes no longer hash to what the journal recorded when the step collected it is refused too.
+  const root = fixtureRoot();
+  write(root, ".runs/apply/reports/" + ARTIFACT.slice(0, 12) + "-observation.json", JSON.stringify({ schemaVersion: 1, kind: "OBSERVATION_SUMMARY", artifactSha256: ARTIFACT, verdict: "VERIFIED", inventory: "COMPLETE", sweepNotListing: [] }));
+  const relative = ".runs/apply/reports/" + ARTIFACT.slice(0, 12) + "-observation.json";
+  const sealed = ".runs/apply/evidence/" + ARTIFACT + ".sealed";
+  const actual = createHash("sha256").update(readFileSync(join(root, relative))).digest("hex");
+  assert.equal(observationSummaryOf(root, { name: "observation-summary", path: relative, sha256: actual }, sealed).verdict, "VERIFIED");
+  assert.equal(observationSummaryOf(root, { name: "observation-summary", path: relative, sha256: "0".repeat(64) }, sealed).verdict, "NOT_THIS_ARTIFACT");
+  assert.equal(observationSummaryOf(root, { name: "observation-summary", path: relative, sha256: actual }, ".runs/apply/evidence/" + "e".repeat(64) + ".sealed").verdict, "NOT_THIS_ARTIFACT");
+  assert.equal(observationSummaryOf(root, { name: "observation-summary", path: relative, sha256: actual }, undefined).verdict, "UNREADABLE");
 });
 
 test("#360 review N2: a run whose cleanup is BLOCKED after the live record was kept says so on its last line, never \"no evidence was produced\"", async () => {

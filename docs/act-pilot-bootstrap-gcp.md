@@ -179,7 +179,7 @@ Then check the separation:
 
 - **The token exchange is refused** (`invalid_grant` or `unauthorized_client`). Compare the token's `iss`, `sub` and `aud` with the provider's issuer, attribute condition and allowed audiences. Fix the subject in the tfvars and re-apply. Never widen the condition to a wildcard: the validation refuses `*`.
 - **Impersonation is denied** (`iam.serviceAccounts.getAccessToken`). The `workloadIdentityUser` binding names a different subject than the token carries.
-- **A held lock.** The lock is the object `<prefix>/default.tflock`. The pilot never runs `force-unlock`. As the owner, after confirming no apply is running, delete that one object with your own credentials.
+- **A held lock.** The lock is the object `<prefix>/default.tflock`. The product never runs `force-unlock`. As the owner, follow "Recovering a state lock left by a SIGKILL" in `docs/act-pilot-apply.md`: confirm no Terraform process holds it, read its id from that object, then run `terraform force-unlock <LOCK_ID>` as STATE_WRITE, never APPLY.
 - **The deny policy rejects a permission name.** The names in `guardrails.tf` are from memory (UNVERIFIED). Check them against Google's list of permissions supported in deny policies, then correct the name. Do not remove the rule.
 
 ## Teardown

@@ -479,7 +479,11 @@ Create the file named by `killSwitchPath` (example: `.runs/apply/KILL`). A switc
 
 It is not read between `init`, `workspace` and the state reads (for CDK, between the steps before the execute). The same stop (SIGINT, then SIGKILL) happens at the 30 minute limit (for CDK, a stop at the 60 minute limit) and when this command receives SIGINT, SIGTERM, SIGHUP or SIGQUIT while the apply is held: the signal is intercepted, the engine is stopped gracefully and the evidence is written, so the CLI does not exit mid-run. A stopped apply ends as `KILLED` whatever exit code Terraform reports. A signal before the engine starts ends the run as `APPLY_FAILED` ("interrupted", exit 1) without consuming approvals; after they are consumed, any failure before the engine starts is `APPROVALS_SPENT` (exit 3). The owner removes the file; the code never does.
 
-**Why the SIGINT can wait for the apply walk.** Terraform 1.16 drops a SIGINT that arrives after it has taken the state lock and before its apply walk starts: its `Context.Stop` finds no running walk, and the walk that starts next applies every change. With one SIGINT and a bounded grace period, the SIGKILL then ended the run with the state lock still held (EMULATED evidence: `docs/act-pilot-simulation-aws.md`, "Kill-switch flake: root cause"). A second SIGINT is no remedy, because Terraform takes it as "exit immediately" without waiting for in-flight operations. So for `terraform apply` (and the cleanup apply) a stop that is requested before Terraform prints its first resource line (such as `terraform_data.pilot: Creating...`) is held until that line appears, and SIGINT is sent then. Nothing has changed before that line. The SIGKILL still comes at the end of the grace period counted from the request, whether or not the SIGINT was sent yet, so the bound is unchanged.
+**Why the SIGINT can wait for the apply walk.** Terraform 1.16 drops a SIGINT that arrives after it has taken the state lock and before its apply walk starts: its `Context.Stop` finds no running walk, and the walk that starts next applies every change. With one SIGINT and a bounded grace period, the SIGKILL then ended the run with the state lock still held (EMULATED evidence: `docs/act-pilot-simulation-aws.md`, "Kill-switch flake: root cause"). A second SIGINT is no remedy, because Terraform takes it as "exit immediately" without waiting for in-flight operations. So for `terraform apply` (and the cleanup apply) a stop that is requested before Terraform prints its first resource line (such as `terraform_data.pilot: Creating...`) is held until that line appears, and SIGINT is sent then. No resource has changed before that line. The SIGKILL still comes at the end of the grace period counted from the request, whether or not the SIGINT was sent yet, so the bound is unchanged.
+
+**What holding the SIGINT means in practice (#361 review N1).**
+- **A few operations can start before the stop lands.** Terraform's walk runs up to its parallelism (10 by default) in parallel, and its first nodes are provider configuration and locals, which print no resource line. So when the first resource line appears and the SIGINT is sent, a few such operations, up to about the parallelism, may already have started, and the first resources may already be in flight. Terraform's graceful stop lets in-flight operations finish and starts no new ones. Treat a `KILLED` run as one that may have changed a few resources, and review it as the table below says.
+- **A hung provider configuration keeps the stop held until SIGKILL.** If configuring a provider hangs (an endpoint that never answers, a credential exchange that never returns), no resource line ever appears, so the SIGINT is never sent. The run then ends at the grace period with SIGKILL, counted from the stop request, and Terraform cannot release the state lock. Recover the lock by hand ("Recovering a state lock left by a SIGKILL", below).
 
 ## When an apply fails
 
@@ -493,6 +497,33 @@ Engine output is withheld everywhere because it can hold secrets. Every outcome 
 | `KILLED` | Stopped mid-apply; the state lease may still be held | **Do not retry.** Review state, the lease and resources by hand. |
 
 The artifact is reserved in the ledger (an exclusive-create entry in state `RESERVED`) after the gates pass and before any engine step, and the evidence replaces the reservation when the run ends, so two runs holding different approval sets cannot both proceed. A reservation is given back only if the engine never started. If the process dies after the engine started (SIGKILL, power loss, an evidence write that fails), the entry stays `RESERVED`: `status` and every later apply report the artifact as already applied, and an owner reviews the state, the lease and the resources by hand, then seals a new preview. Nothing ever makes a reserved artifact applicable again.
+
+### Recovering a state lock left by a SIGKILL (owner, by hand)
+
+A run that ends by SIGKILL (the grace period after a held or ignored stop, or the process killed outright) cannot release its state lock. The next seal then refuses with `Error acquiring the state lock`, which `apply` reports as `FAILED_NO_CHANGE` with the serial unmoved. **The product never removes a lock**: it never runs `force-unlock` or `-lock=false`, and no agent does. The owner removes it by hand, in this order:
+
+1. **Confirm that no Terraform process holds the lock.**
+   - On the execution host, `pgrep -fl terraform` lists no `terraform` process.
+   - `./alz apply status --sealed <INTERRUPTED_SEALED_PLAN>` shows the run finished (`KILLED` or `PARTIAL_REQUIRES_REVIEW`), not still reserved by a running apply.
+   - The lock's own record names that run: its `Who` (user and host) and `Created` time match the interrupted apply's host and start time in its evidence.
+   - If anything else might hold the lock (another host, another person), stop and find it first. A lock removed under a running apply corrupts the state.
+2. **Review the run before touching the lock.** For `KILLED` or `PARTIAL_REQUIRES_REVIEW`, review the state and the resources by hand first, as the table above says. A few resources may have changed (see "What holding the SIGINT means in practice").
+3. **Identify the lock by its exact id.** Run the next `terraform plan` of the canary project as STATE_WRITE (step 4 sets it up). It fails with `Error acquiring the state lock` and prints a `Lock Info` block with an `ID`. Read the id from the backend too, and check that the two match:
+   - **S3:** the lock is the object next to the state object, `<key>.tflock`. It holds the lock info (`ID`, `Who`, `Created`): `aws s3api get-object --bucket <state bucket> --key <state key>.tflock /dev/stdout`.
+   - **azurerm:** the lock is a lease on the state blob. The lock info is in the blob's metadata (`terraformlockid`, base64 JSON with the `ID`): `az storage blob show --account-name <account> --container-name <container> --name <state blob> --auth-mode login --query "{lease: properties.lease, metadata: metadata}"`.
+   - **gcs:** the lock is the object `<prefix>/default.tflock`. It holds the lock info: `gcloud storage cat gs://<state bucket>/<prefix>/default.tflock`.
+4. **Use the STATE_WRITE identity only, never APPLY.**
+   - Run the commands in a shell where only the STATE_WRITE identity's credentials are set, through the provider's standard variables:
+     - AWS: STATE_WRITE's role through its web identity token file.
+     - Azure: STATE_WRITE's client with OIDC.
+     - Google: `GOOGLE_IMPERSONATE_SERVICE_ACCOUNT` set to STATE_WRITE's service account.
+   - No APPLY, STATE or administrator variable may be set.
+   - STATE_WRITE is the identity the bootstrap allows to delete the lock (`docs/act-pilot-bootstrap.md`), and APPLY is denied the state.
+   - Work in a copy of the canary project that has the product's backend override (`terraform { backend "<s3|azurerm|gcs>" {} }`) and the contract's backend settings, outside the checkout.
+5. **Only after steps 1 to 4, remove exactly that lock:** `terraform force-unlock <LOCK_ID>`. It asks you to confirm and names the id: type `yes` only if it is the id from step 3. Never use `-force` to skip the question, never another id, and never `-lock=false`.
+6. **Record the recovery.** Seal a new preview (a new artifact, since the interrupted one is never applied again), get new approvals, and apply it. Then run `./alz apply record-recovery --sealed <INTERRUPTED_SEALED_PLAN> --resumed <RESUMED_SEALED_PLAN> --target-hardware-id <HOST>` ("Recording an interrupted apply's recovery", above).
+   - Add the lock id, who removed it and when to the change record.
+   - The product records the two runs from its ledger; it does not record the unlock itself.
 
 The table is Terraform's. For CDK the outcomes and their meaning are in "CDK" (`FAILED_NO_CHANGE`, `PARTIAL_REQUIRES_REVIEW` and `KILLED` close the artifact the same way; a change set that is no longer the sealed one is refused as `PLAN_STALE` or `ARTIFACT_TAMPERED` before any approval is consumed, which is exit 2, nothing spent), and there is no recovery file: the stack and its events in CloudFormation are the record, and a person reads them there.
 
