@@ -71,6 +71,17 @@ export const PACKAGE_TREE_OWNERS = {
   "policy/": ["test/release-package-exclusions.test.ts"],
 };
 
+// Owner-facing documents and the inputs their doc test reads from disk. A docs-only edit is otherwise skipped, and the launcher,
+// the dispatcher, the example contract and the canary are read by text, never imported. Selected beside any other owner.
+export const BRIEF_TEST = "test/act-aws-terraform-execution-brief.test.ts";
+export const DOC_INPUT_OWNERS = {
+  "docs/act-aws-terraform-execution-brief.md": [BRIEF_TEST],
+  "alz": [BRIEF_TEST],
+  "src/cli/operator.ts": [BRIEF_TEST],
+  "config/act-pilot-contract.aws-dev.example.json": [BRIEF_TEST],
+  "qualification/aws/act-dev1-canary/main.tf": [BRIEF_TEST],
+};
+
 // Fixtures a test reads from disk (not imported), so the import closure never selects their owner.
 export const FIXTURE_OWNERS = {
   "test/fixtures/backend-pin/cases.json": ["test/apply-backend-pin-real.test.ts"],
@@ -218,6 +229,11 @@ export function planChanged(changedPaths, files) {
   for (const path of changed) {
     if (Object.hasOwn(TEMPLATE_OWNERS, path)) addExisting(selected, files, TEMPLATE_OWNERS[path]);
     if (Object.hasOwn(PACKAGE_OWNERS, path)) addExisting(selected, files, PACKAGE_OWNERS[path]);
+    if (Object.hasOwn(DOC_INPUT_OWNERS, path)) {
+      addExisting(selected, files, DOC_INPUT_OWNERS[path]);
+      // The document itself must keep its test; the shared inputs (the launcher, the dispatcher) have other owners as well.
+      if (path.startsWith("docs/")) for (const owner of DOC_INPUT_OWNERS[path]) if (!hasFile(files, owner)) gaps.push(path + " has no doc test owner (" + owner + ").");
+    }
     for (const [root, owners] of Object.entries(PACKAGE_TREE_OWNERS)) if (path.startsWith(root)) addExisting(selected, files, owners);
     if (INVENTORY_INPUT.test(path)) addExisting(selected, files, INVENTORY_GUARDS);
     if (cited.has(path)) addExisting(selected, files, [ACCEPTANCE_TEST]);

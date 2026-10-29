@@ -83,6 +83,37 @@ async function applySubcommands(): Promise<Set<string>> {
   return new Set(list.split(", "));
 }
 
+type UsageLine = { required: Set<string>; all: Set<string>; values: Map<string, string> };
+
+/**
+ * The usage `./alz apply` prints with the same refusal: per subcommand, the flags outside brackets (required), every flag, and
+ * each flag's documented value (a placeholder such as `APPLY_REQUEST.json`, or literal alternatives such as `delivered|cleaned`).
+ */
+async function applyUsage(): Promise<Map<string, UsageLine>> {
+  const text = await applyRefusal(["zz-not-a-subcommand"]);
+  const usage = new Map<string, UsageLine>();
+  for (const match of text.matchAll(/^ {2}\.\/alz apply ([a-z-]+) (.*)$/gm)) {
+    if (usage.has(match[1])) continue;
+    const line: UsageLine = { required: new Set(), all: new Set(), values: new Map() };
+    const words = match[2].split(/\s+/);
+    let depth = 0;
+    for (let index = 0; index < words.length; index += 1) {
+      const word = words[index];
+      const opened = word.startsWith("[");
+      const flag = word.replace(/^\[/, "");
+      if (flag.startsWith("--")) {
+        const name = flag.slice(2);
+        line.all.add(name);
+        if (depth === 0 && !opened) line.required.add(name);
+        if (!line.values.has(name)) line.values.set(name, (words[index + 1] ?? "").replace(/\]+$/, ""));
+      }
+      depth += (word.match(/\[/g) ?? []).length - (word.match(/\]/g) ?? []).length;
+    }
+    usage.set(match[1], line);
+  }
+  return usage;
+}
+
 async function applyFlags(sub: string): Promise<Set<string>> {
   const text = await applyRefusal([sub, "--zz-not-a-flag", "x"]);
   const list = /takes only --(.*?); there is no flag/.exec(text)?.[1];
@@ -115,6 +146,7 @@ test("every ./alz command and flag the brief names exists in the CLI", async () 
   assert.ok(commands.length > 20, "the brief names its commands");
   const top = topLevelCommands();
   const applySubs = await applySubcommands();
+  const usage = await applyUsage();
   const flagCache = new Map<string, Set<string>>();
   for (const words of commands) {
     const shown = "./alz " + words.join(" ");
@@ -126,6 +158,23 @@ test("every ./alz command and flag the brief names exists in the CLI", async () 
       assert.ok(applySubs.has(sub), shown + ": no such apply subcommand");
       if (!flagCache.has(sub)) flagCache.set(sub, await applyFlags(sub));
       for (const word of rest) if (word.startsWith("--")) assert.ok(flagCache.get(sub)!.has(word.slice(2)), shown + ": no flag " + word);
+      const line = usage.get(sub);
+      assert.ok(line, sub + " has a usage line");
+      // Every required flag is given (review N13).
+      // A bare name in prose (`./alz apply preflight`) refers to the command; a full invocation (one with any flag) must be runnable.
+      if (rest.some((word) => word.startsWith("--"))) {
+        for (const name of line.required) assert.ok(rest.includes("--" + name), shown + ": missing the required --" + name);
+      }
+      for (let index = 0; index < rest.length; index += 1) {
+        if (!rest[index].startsWith("--")) continue;
+        const name = rest[index].slice(2);
+        const value = rest[index + 1] ?? "";
+        const documented = line.values.get(name) ?? "";
+        // A fixed choice (`delivered|cleaned`, `DEV|QA|PROD`, the delivery paths) must be one of its values.
+        if (documented.includes("|") && !value.startsWith("<")) assert.ok(documented.split("|").includes(value), shown + ": --" + name + " " + value + " is not one of " + documented);
+        // The request file is the one this command takes: apply and cleanup take APPLY_REQUEST.json, qualify and seal REQUEST.json (#365 B1).
+        if (name === "request") assert.equal(value, "<" + documented + ">", shown + ": --request must be " + documented);
+      }
     } else if (command === "evidence") {
       const parsed = parseEvidenceArgs([sub, ...rest]);
       assert.ok(!("error" in parsed), shown + ": " + ("error" in parsed ? parsed.error : ""));
@@ -148,4 +197,23 @@ test("the command check refuses a command, a subcommand and a flag the CLI does 
   assert.deepEqual([...seal].sort(), ["key", "manifest", "request", "requester"]);
   assert.ok("error" in parseEvidenceArgs(["run", "--stage", "act:aws-terraform-typo"]));
   assert.ok(!("error" in parseEvidenceArgs(["run", "--stage", "cleanup:aws-terraform"])));
+});
+
+test("the usage the CLI prints agrees with the flags it enforces, so the required-flag check reads the real table", async () => {
+  const usage = await applyUsage();
+  const subs = await applySubcommands();
+  assert.deepEqual([...usage.keys()].sort(), [...subs].sort());
+  for (const sub of subs) {
+    const line = usage.get(sub)!;
+    assert.deepEqual([...line.all].sort(), [...await applyFlags(sub)].sort(), sub);
+    // With no flags at all, the parser names a missing flag that the usage also marks required. Only subcommands with a
+    // required flag are probed this way, so nothing runs.
+    if (line.required.size === 0) continue;
+    const text = await applyRefusal([sub]);
+    const missing = /APPLY_ARGUMENT_REQUIRED: --([a-z-]+)/.exec(text)?.[1];
+    assert.ok(missing && line.required.has(missing), sub + ": " + text);
+  }
+  assert.equal(usage.get("apply")!.values.get("request"), "APPLY_REQUEST.json");
+  assert.equal(usage.get("seal")!.values.get("request"), "REQUEST.json");
+  assert.deepEqual([...usage.get("status")!.required], []);
 });

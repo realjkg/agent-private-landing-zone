@@ -4,7 +4,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, w
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { CANARY_OWNERS, TERRAFORM_CANARY_UNIT_TEST, diffCommand, EXIT_OVER_CAP, FIXTURE_OWNERS, importsOf, PACKAGE_OWNERS, PACKAGE_TREE_OWNERS, planChanged, routeOf, SOURCE_SCAN_GUARDS, TEMPLATE_OWNERS, UNIMPORTABLE_OWNERS } from "../scripts/qa-affected.mjs";
+import { BRIEF_TEST, CANARY_OWNERS, DOC_INPUT_OWNERS, TERRAFORM_CANARY_UNIT_TEST, diffCommand, EXIT_OVER_CAP, FIXTURE_OWNERS, importsOf, PACKAGE_OWNERS, PACKAGE_TREE_OWNERS, planChanged, routeOf, SOURCE_SCAN_GUARDS, TEMPLATE_OWNERS, UNIMPORTABLE_OWNERS } from "../scripts/qa-affected.mjs";
 
 function fixture() {
   return new Map([
@@ -658,4 +658,23 @@ test("a change under the shipped config/ or policy/ tree selects the package tes
     const root = Object.keys(PACKAGE_TREE_OWNERS).find((r) => path.startsWith(r));
     for (const owner of PACKAGE_TREE_OWNERS[root]) assert.ok(planChanged([path], files).nodeTests.includes(owner), path + " selects " + owner);
   }
+});
+
+test("the execution brief and the inputs its doc test reads from disk select that test, even for a docs-only change; a missing owner is a gap", () => {
+  const files = fixture();
+  files.set(BRIEF_TEST, "test()");
+  assert.ok(readdirSync("test").includes(BRIEF_TEST.slice("test/".length)), BRIEF_TEST + " exists");
+  for (const path of ["docs/act-aws-terraform-execution-brief.md", "alz", "src/cli/operator.ts",
+    "config/act-pilot-contract.aws-dev.example.json", "qualification/aws/act-dev1-canary/main.tf"]) {
+    assert.deepEqual(DOC_INPUT_OWNERS[path], [BRIEF_TEST], path);
+    files.set(path, "x");
+    const plan = planChanged([path], files);
+    assert.ok(plan.nodeTests.includes(BRIEF_TEST), path + " selects " + BRIEF_TEST);
+  }
+  // Another document is still skipped: the rule names exact paths, not docs/.
+  files.set("docs/act-dev-1.md", "x");
+  assert.ok(!planChanged(["docs/act-dev-1.md"], files).nodeTests.includes(BRIEF_TEST));
+  // Without the test, the brief is a coverage gap rather than a silent skip.
+  files.delete(BRIEF_TEST);
+  assert.match(planChanged(["docs/act-aws-terraform-execution-brief.md"], files).gaps.join(" "), /no doc test owner/);
 });
