@@ -32,7 +32,7 @@ The existing security policy interface decides whether work is allowed. The exis
 
 Models may explain, compare, summarize and recommend. Models are never the source of authority.
 
-ACT = DISABLED is the repository default. The one owner-approved exception is the internal reference-build pilot, enabled only by a pinned pilot contract (`docs/act-pilot-plan.md`) and run only by a person, at the terminal or in the console's Pilot apply wizard, one channel per workflow (`docs/act-pilot-walkthrough.md`).
+ACT = DISABLED is the repository default. The one owner-approved exception is the internal reference-build pilot, enabled only by the owner's reviewed commit of the pilot contract and its `authorize` entry (`docs/act-pilot-plan.md`) and run only by a person, at the terminal or in the console's Pilot apply wizard, one channel per workflow (`docs/act-pilot-walkthrough.md`).
 
 ## Deterministic execution sequence
 

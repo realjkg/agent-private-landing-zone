@@ -229,7 +229,7 @@ Prove: dedicated DEV member account, real finance/budget authorization,
 separately owned bootstrap, four distinct valid identity subjects and
 effective STS roles, backend STATE_WRITE vs APPLY isolation (including
 embedded backend identity in sealed Terraform plan), state locking,
-reviewed/pinned DEV-only contract, signed exact artifact, replay/expiry
+reviewed, owner-committed DEV-only contract, signed exact artifact, replay/expiry
 and wrong-target denials, human action, kill switch, bounded resource,
 independent CloudTrail/state read-back and recovery/cleanup.
 **Never** run account creation, role provisioning, Terraform apply/destroy

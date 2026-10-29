@@ -9,7 +9,7 @@ The local Sovereign ALZ console is the primary workflow for an authorized admini
 3. **Prepare access.** A qualified account owner performs the separately protected AWS bootstrap ceremony for state, policy boundary and four distinct roles. Do not auto-assume or forge a sign-in.
 4. **Verify roles.** Existing scripts independently validate the four short-lived role subjects and successful AWS STS assumptions. The local setup screen cannot create tokens or grant an AWS permission.
 5. **Review exact changes.** The existing Pilot apply wizard shows additions, modifications and terminations, warns about destructive changes, explains that local policy checks and approvals still apply, and requires the normal source-bound proof. For ACT-DEV-1 the canary is CREATE-only.
-6. **Approve, apply, verify.** The *existing* Pilot UI channel owns the human prompts, signatures, contract pinning, policy evaluation, execution and evidence. The new setup panel **never** starts Terraform or invents a second apply route.
+6. **Approve, apply, verify.** The *existing* Pilot UI channel owns the human prompts, signatures, contract authorization (the owner-committed contract's `authorize` entry), policy evaluation, execution and evidence. The new setup panel **never** starts Terraform or invents a second apply route.
 
 ## Technical boundaries
 

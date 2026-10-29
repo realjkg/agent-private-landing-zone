@@ -2,6 +2,8 @@
 
 Status: written 2026-10-27 against `origin/main` at `0b0aa2b` (merge of #296) and the open PRs #287, #289, #293, #297 and #298, for the owner decision "rebaseline of the narrow ACT-DEV release" (issue #39, comment 6443352284). It is the input to the canonical work graph (`config/release/work-graph.json`, owned by the governance lane). This page enables nothing: ACT stays DISABLED, the repository ships no pilot contract (#313 retires the old `config/act-pilot-contract.sha256` pin; the contract's `authorize` entry is the switch), and no agent writes the contract, holds an approver key or initiates an apply.
 
+> Superseded in part: the contract-based authorization (#313) has since replaced the hash pin with no fallback; the contract's `authorize` entry is the ACT switch (`docs/act-pilot-apply.md`, "The contract is the authorization"). The pin mentions below record the state on 2026-10-27.
+
 Every status on this page is read from code, tests and config, not from chat. **No live evidence exists for any path.** SYNTHETIC means a fake engine or fake cloud CLI; EMULATED means a real engine against a local emulator. Neither is live provider qualification (`AGENTS.md`).
 
 ## Status lines

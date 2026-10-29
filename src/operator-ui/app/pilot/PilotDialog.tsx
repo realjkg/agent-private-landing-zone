@@ -7,8 +7,9 @@ import { COPY, describeMismatch, type DialogCopy } from "./pilot-copy";
  * filled in for the person. The button stays off until what was typed equals the phrase, and the box says in words how it
  * differs until then. The server compares the answer again, so this is help and not the gate.
  *
- * Keyboard and screen reader: the dialog is modal, focus moves to the box when it opens, Tab stays inside it, Escape
- * cancels, and focus returns to where it was. The page behind it is made inert while it is open (see PilotWizard).
+ * Keyboard and screen reader: the dialog is modal, focus moves to the box when it opens, Tab stays inside it, and Escape
+ * cancels. The page behind it is made inert while it is open, and focus goes back there when it closes (both in PilotWizard): the
+ * dialog hands `onClosed` the element that had focus when it opened, because it cannot move focus into a page that is still inert.
  */
 export function PilotDialog(props: {
   copy: DialogCopy;
@@ -16,6 +17,7 @@ export function PilotDialog(props: {
   busy: boolean;
   onSubmit: (typed: string) => void;
   onCancel: () => void;
+  onClosed: (opener: HTMLElement | null) => void;
 }) {
   const { copy, phrase } = props;
   const [typed, setTyped] = useState("");
@@ -27,10 +29,14 @@ export function PilotDialog(props: {
 
   // Focus moves into the dialog in the same commit that shows it (a layout effect, flushed before the browser paints and before any
   // passive effect of the page behind), so there is no moment in which the dialog is on screen with focus still behind it.
+  // On close, the element that had focus before is handed to the page, which restores focus once it is no longer inert. The callback
+  // is read through a ref, so the one it was given last is called.
+  const onClosed = useRef(props.onClosed);
+  onClosed.current = props.onClosed;
   useLayoutEffect(() => {
-    const before = document.activeElement as HTMLElement | null;
+    const before = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     inputRef.current?.focus();
-    return () => { before?.focus?.(); };
+    return () => { onClosed.current(before); };
   }, []);
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
