@@ -4,7 +4,9 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFi
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { PRODUCT_CLI_CONFIG } from "../src/apply/engines/terraform.js";
+import { PRODUCT_CLI_CONFIG, TERRAFORM } from "../src/apply/engines/terraform.js";
+import { signalNow, withAsyncSteps } from "./helpers/async-steps.js";
+import { stop } from "../src/apply/engine.js";
 
 import { consumeApprovals } from "../src/apply/approval.js";
 import type { NonceStore } from "../src/apply/nonces.js";
@@ -830,6 +832,99 @@ test("identity gate: a variable for an identity this system never reads, or a co
     refused(secret, "IDENTITY_NOT_CONFIGURED");
     assert.match((secret as { message: string }).message, new RegExp("ALZ_" + identity + "_ARM_CLIENT_SECRET"));
     assert.ok(!(secret as { message: string }).message.includes("x-" + identity.toLowerCase() + "-secret"), "names, never values");
+  }
+  assert.equal(applyCalls().length, 0);
+});
+
+// D5 (docs/act-pilot-gcp-api-driver.md): an engine's read steps may return promises. The fixture wraps the Terraform engine so
+// each step yields first and then resolves (or rejects) with the engine's own result; the driver must await each where it stands.
+test("D5: an engine whose plan, prepare and rederive return promises seals and applies through the driver, in the same order, with the same result", async () => {
+  const w = world();
+  await withAsyncSteps(TERRAFORM, {}, async (log) => {
+    const s = await seal(w, "DEV");
+    assert.deepEqual(log, ["plan"], "sealing awaited the plan");
+    const result = await runApply(requestFor(s, [approval(s.sealed, "alice")]), w.deps);
+    assert.ok(result.ok, JSON.stringify(result));
+    // Had rederive not been awaited, the driver would compare a promise with the sealed change list and refuse ARTIFACT_TAMPERED.
+    assert.deepEqual(log, ["plan", "prepare", "rederive", "execute"], "each step ran after the one before it had settled");
+    assert.equal(applyCalls().length, 1);
+  });
+});
+
+test("D5: a promise rejected by an awaited step is the same refusal as a throw: PLAN_STALE from rederive, a failed plan at seal, with nothing consumed", async () => {
+  const w = world();
+  const s = await seal(w, "DEV");
+  const approvals = [approval(s.sealed, "alice")];
+  await withAsyncSteps(TERRAFORM, { rederive: () => stop("PLAN_STALE") }, async (log) => {
+    refused(await runApply(requestFor(s, approvals), w.deps), "PLAN_STALE");
+    assert.deepEqual(log, ["prepare"], "the rejection came from rederive");
+  });
+  // A rejection from prepare is judged before rederive runs: here the backend the engine found is not the contract's.
+  await withAsyncSteps(TERRAFORM, { prepare: () => stop("BACKEND_NOT_IN_CONTRACT") }, async (log) => {
+    refused(await runApply(requestFor(s, approvals), w.deps), "TARGET_NOT_IN_CONTRACT");
+    assert.deepEqual(log, [], "nothing after the rejected prepare ran");
+  });
+  assert.equal(applyCalls().length, 0);
+  // Nothing was consumed: the same approval applies once the engine agrees.
+  const result = await runApply(requestFor(s, approvals), w.deps);
+  assert.ok(result.ok, JSON.stringify(result));
+  await withAsyncSteps(TERRAFORM, { plan: () => stop("SEAL_READ_FAILED") }, async () => {
+    const failed = await sealRefusal(w, "DEV");
+    assert.equal(failed.ok, false);
+    assert.equal((failed as { code: string }).code, "ARTIFACT_INVALID");
+    assert.match((failed as { message: string }).message, /SEAL_READ_FAILED/);
+  });
+});
+
+for (const step of ["prepare", "rederive"] as const) {
+  test("D5: a stop signal that arrives during an awaited " + step + " stops the apply before the approvals are consumed, and the same approval then applies once", async () => {
+    const w = world();
+    const s = await seal(w, "DEV");
+    const approvals = [approval(s.sealed, "alice")];
+    await withAsyncSteps(TERRAFORM, { [step]: () => signalNow() }, async (log) => {
+      const interrupted = await runApply(requestFor(s, approvals), w.deps);
+      refused(interrupted, "APPLY_FAILED");
+      assert.match((interrupted as { message: string }).message, /interrupted by a signal before the engine started/);
+      // The driver does not read the signal between prepare and rederive (D5); it reads it after both, before consumption.
+      assert.deepEqual(log, ["prepare", "rederive"]);
+    });
+    assert.equal(applyCalls().length, 0, "nothing was applied");
+    assert.equal(existsSync(join(w.dirs.evidence, s.sealed.artifactSha256 + ".apply.evidence")), false, "nothing was reserved or recorded");
+    const result = await runApply(requestFor(s, approvals), w.deps);
+    assert.ok(result.ok, JSON.stringify(result));
+    assert.equal(applyCalls().length, 1);
+    refused(await runApply(requestFor(s, [approval(s.sealed, "carol")]), w.deps), "ARTIFACT_ALREADY_APPLIED");
+  });
+}
+
+test("D5: an engine's own qualification run may return a promise: qualify awaits it, and its rejection is the qualification's refusal", async () => {
+  const w = world({ qualificationDir: fresh("empty-vault") });
+  const p = writeProject(fresh("project"), DEV_TARGET);
+  let finished = false;
+  const settles = async () => { await new Promise((done) => setImmediate(done)); finished = true; };
+  await withAsyncSteps(TERRAFORM, {}, async (log) => {
+    const result = await qualifyApply(qualifyRequest(p), w.deps);
+    assert.ok(result.ok, JSON.stringify(result));
+    assert.equal(finished, true, "qualify returned only after the engine's run settled");
+    assert.deepEqual(log, ["qualify"], "an engine with its own qualification run does that and nothing else");
+  }, { qualify: settles });
+  await withAsyncSteps(TERRAFORM, {}, async () => {
+    const failed = await qualifyApply(qualifyRequest(p), w.deps);
+    assert.equal(failed.ok, false);
+    assert.match((failed as { message: string }).message, /The qualification run failed \(QUALIFY_READ_FAILED\)/);
+  }, { qualify: async () => { await new Promise((done) => setImmediate(done)); stop("QUALIFY_READ_FAILED"); } });
+  assert.equal(TERRAFORM.qualify, undefined, "the fixture restored the engine");
+  // Terraform's own qualification is a throwaway seal, then the apply adapter's prepare: both awaited, and either rejection refuses it.
+  await withAsyncSteps(TERRAFORM, {}, async (log) => {
+    const result = await qualifyApply(qualifyRequest(p), w.deps);
+    assert.ok(result.ok, JSON.stringify(result));
+    assert.deepEqual(log, ["plan", "prepare"]);
+  });
+  for (const [hooks, step] of [[{ plan: () => stop("SEAL_READ_FAILED") }, "plan"], [{ prepare: () => stop("PREPARE_READ_FAILED") }, "prepare"]] as const) {
+    await withAsyncSteps(TERRAFORM, hooks, async () => {
+      const failed = await qualifyApply(qualifyRequest(p), w.deps);
+      assert.equal(failed.ok, false, step + ": " + JSON.stringify(failed));
+    });
   }
   assert.equal(applyCalls().length, 0);
 });

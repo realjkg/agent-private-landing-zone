@@ -56,15 +56,25 @@ export type ApplyEnd = { outcome: ApplyOutcome } | { stale: true };
 export type RecoveryFile = { name: string; base64: string };
 export type StopControl = Pick<StoppableProcessOptions, "stopWhen" | "pollMs" | "graceMs">;
 
+/**
+ * A step that reads the cloud before any approval is consumed may return a promise (docs/act-pilot-gcp-api-driver.md, D5): an
+ * engine that reads over HTTPS awaits its reads there, and the driver awaits every such call where it stands, so the order of
+ * the gates is unchanged. The Terraform, CDK and Bicep engines return plain values (`SyncEngineSpec`).
+ */
+export type MaybePromise<T> = T | Promise<T>;
+
+/** What `plan` returns: the bytes to seal, their redacted change list and the unit they create. */
+export type EnginePlan = { artifact: Buffer; changes: PlanChange[]; unit: SealedUnit | null };
+
 /** One apply (or the qualification run, which stops after `prepare`) in a scratch directory. */
 export type EngineApplyRun = {
   /** The engine ready to apply the project at `snapshotPath` as the contract's target; reads the state position the outcome is judged against. Applies nothing. */
-  prepare(snapshotPath: string): void;
+  prepare(snapshotPath: string): MaybePromise<void>;
   /**
-   * The change list of the sealed artifact's own bytes, derived again after `prepare`. A throw of PLAN_STALE (what the
-   * artifact names can no longer be applied) or ARTIFACT_TAMPERED (it is not what the engine finds) is that refusal.
+   * The change list of the sealed artifact's own bytes, derived again after `prepare`. A throw (or rejection) of PLAN_STALE (what
+   * the artifact names can no longer be applied) or ARTIFACT_TAMPERED (it is not what the engine finds) is that refusal.
    */
-  rederive(artifact: Buffer): PlanChange[];
+  rederive(artifact: Buffer): MaybePromise<PlanChange[]>;
   /**
    * Runs exactly the sealed bytes. Resolves once the engine existed; a throw means it never did, so once the engine may
    * exist (a process spawned, a call made) nothing here throws: whatever goes wrong afterward is a result `settle` judges.
@@ -90,9 +100,9 @@ export type EngineApplyRun = {
  * consumed; `execute` runs that plan file and nothing else.
  */
 export type EngineCleanupRun = {
-  prepare(snapshotPath: string): void;
-  /** Plans the destroy of exactly `addresses` and returns the change list of that plan. Throws a code. */
-  planDestroy(addresses: readonly string[]): PlanChange[];
+  prepare(snapshotPath: string): MaybePromise<void>;
+  /** Plans the destroy of exactly `addresses` and returns the change list of that plan. Throws (or rejects with) a code. */
+  planDestroy(addresses: readonly string[]): MaybePromise<PlanChange[]>;
   /** Runs the destroy plan `planDestroy` made. Resolves once the engine existed; a throw means it never did. */
   execute(control: StopControl): Promise<StoppableResult>;
   settle(applied: StoppableResult): ApplyEnd | Promise<ApplyEnd>;
@@ -164,12 +174,12 @@ export type EngineSpec = {
   /** SHA-256 of the engine binary a run would execute, or undefined; qualification evidence is for exactly one. */
   binarySha256(toolDirs: readonly string[] | undefined, env: NodeJS.ProcessEnv): string | undefined;
   /** Produces the artifact to seal from the request (bytes the apply runs verbatim) and its redacted change list. */
-  plan(input: EnginePlanInput): { artifact: Buffer; changes: PlanChange[]; unit: SealedUnit | null };
+  plan(input: EnginePlanInput): MaybePromise<EnginePlan>;
   /**
    * The qualification run, when it is not a throwaway seal followed by `openApply().prepare()` (Terraform): the
-   * engine's own read-only steps. Throws a code. CDK: version and describe-stacks as each identity, no change set.
+   * engine's own read-only steps. Throws (or rejects with) a code. CDK: version and describe-stacks as each identity, no change set.
    */
-  qualify?(input: EnginePlanInput): void;
+  qualify?(input: EnginePlanInput): MaybePromise<void>;
   openApply(input: EngineRunInput): EngineApplyRun;
   /** The cleanup run for this engine, present only with `cleanupAdapter`. */
   openCleanup?(input: EngineRunInput): EngineCleanupRun;
@@ -180,6 +190,27 @@ export type EngineSpec = {
   recoveryLostNote: string;
   /** File names the engine leaves in its working directory; scratch holding any is kept for review. */
   recoveryFileNames: readonly string[];
+};
+
+/** An apply run whose reads finish before each step returns (the Terraform, CDK and Bicep engines spawn processes synchronously). */
+export type SyncEngineApplyRun = Omit<EngineApplyRun, "prepare" | "rederive"> & {
+  prepare(snapshotPath: string): void;
+  rederive(artifact: Buffer): PlanChange[];
+};
+/** A cleanup run whose reads finish before each step returns. */
+export type SyncEngineCleanupRun = Omit<EngineCleanupRun, "prepare" | "planDestroy"> & {
+  prepare(snapshotPath: string): void;
+  planDestroy(addresses: readonly string[]): PlanChange[];
+};
+/**
+ * An engine whose steps return plain values. It is an `EngineSpec` (the driver awaits each step, and awaiting a value is the
+ * value), and its own tests call its steps directly, without awaiting.
+ */
+export type SyncEngineSpec = Omit<EngineSpec, "plan" | "qualify" | "openApply" | "openCleanup"> & {
+  plan(input: EnginePlanInput): EnginePlan;
+  qualify?(input: EnginePlanInput): void;
+  openApply(input: EngineRunInput): SyncEngineApplyRun;
+  openCleanup?(input: EngineRunInput): SyncEngineCleanupRun;
 };
 
 const SPECS: Readonly<Record<EngineId, EngineSpec>> = { TERRAFORM, CDK, BICEP };

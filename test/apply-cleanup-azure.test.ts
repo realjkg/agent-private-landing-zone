@@ -9,6 +9,9 @@ import { consumeApprovals, signApproval } from "../src/apply/approval.js";
 import { buildCleanupProposal, protectedDeletionIn, signCleanupProposal, verifyCleanupProposal, type CleanupProposal } from "../src/apply/cleanup-proposal.js";
 import { CLEANUP_SUFFIX, authorizeContract, loadPilotContract, pilotContractSha256, pilotTargetSha256, targetMoved } from "../src/apply/contract.js";
 import { AZURE_DENIED_TYPES } from "../src/apply/providers/azure.js";
+import { TERRAFORM } from "../src/apply/engines/terraform.js";
+import { stop } from "../src/apply/engine.js";
+import { signalNow, withAsyncSteps } from "./helpers/async-steps.js";
 import { cleanupScopeProblem, runApply, runCleanup, sealPreview, type ApplyDeps, type ApplyRequest } from "../src/apply/driver.js";
 import { readCleanupEvidence } from "../src/apply/ledger.js";
 import { loadRunRecords, observeRun, verifyProposalLeftovers, type ObserveDeps } from "../src/apply/observe.js";
@@ -1180,6 +1183,64 @@ test("Azure cleanup interrupted at the last check: a stop signal that arrives wh
   assert.equal(w.arm.calls.filter((c) => c.method === "GET").length, readsBefore);
   refused(await cleanup(w, run, [approval]), "PROPOSAL_ALREADY_EXECUTED");
 });
+
+// D5 (docs/act-pilot-gcp-api-driver.md): the cleanup's prepare and planDestroy may return promises, and the driver awaits each.
+test("D5: a cleanup whose prepare and planDestroy return promises runs through the driver in the same order and destroys exactly the approved list", async () => {
+  const w = world();
+  behave({ showResources: withoutSecret(CREATES), stateResources: withoutSecret(STATE as { type: string }[]) });
+  const run = await proposed(w);
+  const appliedBefore = applyCalls().length; // the run's own apply
+  await withAsyncSteps(TERRAFORM, {}, async (log) => {
+    const done = await cleanup(w, run);
+    assert.ok(done.ok, JSON.stringify(done));
+    // Had planDestroy not been awaited, the scope check would read a promise as the destroy plan and refuse the cleanup.
+    assert.deepEqual(log, ["cleanupPrepare", "planDestroy", "cleanupExecute"]);
+  });
+  assert.equal(applyCalls().length, appliedBefore + 1, "one destroy was applied");
+});
+
+test("D5: a rejected prepare or planDestroy is the same refusal as a throw, with nothing destroyed and no approval consumed", async () => {
+  const w = world();
+  behave({ showResources: withoutSecret(CREATES), stateResources: withoutSecret(STATE as { type: string }[]) });
+  const run = await proposed(w);
+  const appliedBefore = applyCalls().length; // the run's own apply
+  const approval = cleanupApproval(run.proposal, "alice");
+  await withAsyncSteps(TERRAFORM, { cleanupPrepare: () => stop("BACKEND_NOT_IN_CONTRACT") }, async (log) => {
+    refused(await cleanup(w, run, [approval]), "TARGET_NOT_IN_CONTRACT");
+    assert.deepEqual(log, [], "planDestroy never ran after the rejected prepare");
+  });
+  await withAsyncSteps(TERRAFORM, { planDestroy: () => stop("CLEANUP_READ_FAILED") }, async (log) => {
+    const failed = await cleanup(w, run, [approval]);
+    refused(failed, "APPLY_FAILED");
+    assert.match((failed as { message: string }).message, /could not plan the destroy \(CLEANUP_READ_FAILED\)/);
+    assert.deepEqual(log, ["cleanupPrepare"]);
+  });
+  assert.equal(applyCalls().length, appliedBefore, "nothing was destroyed");
+  assert.deepEqual(readdirSync(w.dirs.evidence).filter((n) => n.endsWith(CLEANUP_SUFFIX)), [], "nothing was recorded or reserved");
+  const done = await cleanup(w, run, [approval]);
+  assert.ok(done.ok, JSON.stringify(done));
+});
+
+for (const step of ["cleanupPrepare", "planDestroy"] as const) {
+  test("D5: a stop signal during an awaited " + step + " stops the cleanup before the approvals are consumed, and the same approval then runs once", async () => {
+    const w = world();
+    behave({ showResources: withoutSecret(CREATES), stateResources: withoutSecret(STATE as { type: string }[]) });
+    const run = await proposed(w);
+    const appliedBefore = applyCalls().length; // the run's own apply
+    const approval = cleanupApproval(run.proposal, "alice");
+    await withAsyncSteps(TERRAFORM, { [step]: () => signalNow() }, async (log) => {
+      const interrupted = await cleanup(w, run, [approval]);
+      refused(interrupted, "APPLY_FAILED");
+      assert.match((interrupted as { message: string }).message, /interrupted by a signal before the engine started/);
+      assert.deepEqual(log, ["cleanupPrepare", "planDestroy"], "the signal is read after both awaited reads, before consumption");
+    });
+    assert.equal(applyCalls().length, appliedBefore, "no destroy was applied");
+    assert.deepEqual(readdirSync(w.dirs.evidence).filter((n) => n.endsWith(CLEANUP_SUFFIX)), [], "nothing was recorded or reserved");
+    const done = await cleanup(w, run, [approval]);
+    assert.ok(done.ok, JSON.stringify(done));
+    refused(await cleanup(w, run, [approval]), "PROPOSAL_ALREADY_EXECUTED");
+  });
+}
 
 test("provider and feature registrations a run made are kept, never proposed (review 6410591513, NB-B), and so are managed HSM role assignments and definitions in every id form (review 6411080437, N1): the proposal still forms, the ordinary resources are cleaned up, and the kept objects are recorded intentionally retained by the pilot owner", async () => {
   const sub = "/subscriptions/" + SUB;

@@ -94,9 +94,10 @@ export type ThrowawayPlan = { ok: true; sealed: SealedPlan } | SealFailure;
 
 const HAS_INVISIBLE = new RegExp(INVISIBLE.source);
 
-function runSeal(input: SealInput): { sealed: SealedPlan; planBytes: Buffer } {
+async function runSeal(input: SealInput): Promise<{ sealed: SealedPlan; planBytes: Buffer }> {
   const { manifest } = input;
-  const { artifact: planBytes, changes, unit } = input.engine.plan(input);
+  // An engine may await its reads here (D5); a rejection is a throw, judged by `build` like any other.
+  const { artifact: planBytes, changes, unit } = await input.engine.plan(input);
   const fields: ArtifactFields = {
     planSha256: sha256(planBytes), manifestHash: manifest.manifestHash, releaseIdentity: releaseIdentityOf(manifest),
     environment: input.environment, target: { ...input.target }, channel: input.channel ?? "CLI", engineVersion: input.engineVersion,
@@ -115,9 +116,9 @@ function runSeal(input: SealInput): { sealed: SealedPlan; planBytes: Buffer } {
   return { sealed, planBytes };
 }
 
-function build(input: SealInput): { sealed: SealedPlan; planBytes: Buffer } | SealFailure {
+async function build(input: SealInput): Promise<{ sealed: SealedPlan; planBytes: Buffer } | SealFailure> {
   try {
-    return runSeal(input);
+    return await runSeal(input);
   } catch (error) {
     const canary = canaryRefusal(error, "Nothing was sealed.");
     if (canary) return { ok: false, ...canary };
@@ -131,7 +132,7 @@ function build(input: SealInput): { sealed: SealedPlan; planBytes: Buffer } | Se
 /** Plans the pinned project against the target, keeps the plan encrypted, and returns the record approvers sign. */
 export async function sealPlan(input: SealInput): Promise<SealResult> {
   if (!input.requester) return { ok: false, code: "ARTIFACT_INVALID", message: "A plan is sealed by a requester with an allowlisted key; none was given, so nothing was stored." };
-  const built = build(input);
+  const built = await build(input);
   if ("ok" in built) return built;
   const path = await writeEncryptedEvidence(SEAL_PURPOSE, built.sealed.artifactSha256, {
     sealed: built.sealed, planBase64: built.planBytes.toString("base64"),
@@ -140,8 +141,8 @@ export async function sealPlan(input: SealInput): Promise<SealResult> {
 }
 
 /** The same steps as `sealPlan` for a qualification run, which stores nothing. */
-export function planWithoutStoring(input: SealInput): ThrowawayPlan {
-  const built = build(input);
+export async function planWithoutStoring(input: SealInput): Promise<ThrowawayPlan> {
+  const built = await build(input);
   return "ok" in built ? built : { ok: true, sealed: built.sealed };
 }
 

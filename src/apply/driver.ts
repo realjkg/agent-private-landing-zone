@@ -275,11 +275,11 @@ async function planAgainstTarget(request: SealRequest, deps: SealDeps, kind: "se
     };
     // An engine with its own qualification run (CDK: read-only steps, no change set) does that and nothing else.
     if (kind === "qualify" && engine.qualify) {
-      engine.qualify(input);
+      await engine.qualify(input);
       return { ok: true, engine };
     }
     if (kind === "seal") return await sealPlan(input);
-    const throwaway = planWithoutStoring(input);
+    const throwaway = await planWithoutStoring(input);
     if (!throwaway.ok) return throwaway;
     // The apply adapter's own surface, up to the point where only the apply itself is left. Nothing is applied.
     const run = engine.openApply({
@@ -288,7 +288,7 @@ async function planAgainstTarget(request: SealRequest, deps: SealDeps, kind: "se
     });
     const unregisterSecrets = registerCleanup(run.removeSecrets);
     try {
-      run.prepare(snapshot.path);
+      await run.prepare(snapshot.path);
     } finally {
       unregisterSecrets();
       run.removeSecrets();
@@ -483,9 +483,10 @@ export async function runApply(request: ApplyRequest, deps: ApplyDeps): Promise<
     }
     let derived: PlanChange[];
     try {
-      run.prepare(snapshot.path);
+      // Each step is awaited where it stands (D5): an engine that reads the cloud does so here, before any approval is consumed.
+      await run.prepare(snapshot.path);
       // The change list the approvers read must describe this plan: derive it again from the decrypted bytes, as sealing did.
-      derived = run.rederive(planBytes);
+      derived = await run.rederive(planBytes);
     } catch (error) {
       const code = codeOf(error);
       // The sealed change set is no longer the one to run, or is not the one that was sealed: refused before any approval is consumed.
@@ -512,7 +513,7 @@ export async function runApply(request: ApplyRequest, deps: ApplyDeps): Promise<
     }
 
     // 12. Everything that can change while the engine is prepared is read again immediately before the approvals are
-    // consumed: a signal that arrived during the blocking steps, the contract and the ACT policy, the kill switch, the
+    // consumed: a signal that arrived during the blocking or awaited engine steps, the contract and the ACT policy, the kill switch, the
     // allowlist and each approval's expiry.
     await yieldToSignals();
     const late = interruptedBeforeEngine();
@@ -780,8 +781,8 @@ export async function runCleanup(request: CleanupRequest, deps: ApplyDeps): Prom
     }
     let planned: PlanChange[];
     try {
-      run.prepare(snapshot.path);
-      planned = run.planDestroy(addresses);
+      await run.prepare(snapshot.path);
+      planned = await run.planDestroy(addresses);
     } catch (error) {
       const code = codeOf(error);
       // A CDK refusal after CHANGESET created the removal change set leaves it in CloudFormation, whatever the code (review 6432294529, N1): said in every such refusal.
@@ -819,7 +820,7 @@ export async function runCleanup(request: CleanupRequest, deps: ApplyDeps): Prom
     const scope = cleanupScopeProblem(planned, addresses);
     if (scope) return refuse("PROPOSAL_SCOPE_MISMATCH", scope + " Nothing was destroyed and no approval was consumed. Observe the run again and propose a new cleanup." + leftBehind);
     // The last thing before the approvals are consumed is the signal check: nothing is awaited between it and consumeApprovals,
-    // so a stop signal that arrived during the blocking steps above (the engine) is read here and stops the cleanup.
+    // so a stop signal that arrived during the blocking or awaited engine steps above is read here and stops the cleanup.
     await yieldToSignals();
     const late = interruptedBeforeEngine();
     if (late) return late;
