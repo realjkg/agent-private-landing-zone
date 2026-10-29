@@ -291,7 +291,8 @@ export const AZURE: ProviderSpec = {
   backendType: "azurerm",
   backendLocation: (target) => backendLocation(target as AzureTarget),
   savedBackendMatches: (saved, target, env, requireStateWrite) => savedBackendMatches(saved, target as AzureTarget, env, requireStateWrite),
-  // Simulation finding (docs/act-pilot-simulation.md): the plan embeds the seal-time backend settings (now the product's backend file, under the azurerm pin); the rest is filled from the apply process's ARM_* variables.
+  // Simulation finding (docs/act-pilot-simulation.md): the plan embeds the seal-time backend settings (now the product's backend file, under the azurerm pin).
+  // Settings left null would be filled from the apply process's ARM_* variables; `embedStateWrite` (required) embeds STATE_WRITE's values for these, so they never are.
   filledAtApply: ["use_oidc", "client_id", "tenant_id", "subscription_id", "oidc_token_file_path"],
   // What init may select (review of #327, round 5): the allowed providers, by exact registry source. The built-in provider is never selected.
   selectableProviders: ALLOWED_PROVIDERS.filter((source) => source !== BUILTIN_PROVIDER),
