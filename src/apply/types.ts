@@ -273,6 +273,12 @@ export type ApplyRefusalCode =
   | "OWNERSHIP_AMBIGUOUS"
   /** The observation a proposal rests on could not decide for a resource this run created, or found something unexpected. Observe again. */
   | "OBSERVATION_INCONCLUSIVE"
+  /** The observation found a resource this run created outside the contract's location: FAILED, and no ordinary cleanup is proposed. A governed location remediation may be. */
+  | "LOCATION_MISMATCH"
+  /** A location remediation cannot be proposed for this run (another path, more than one resource, not created by the run, ambiguous or unobserved). Nothing was written. */
+  | "REMEDIATION_NOT_ELIGIBLE"
+  /** A location remediation's recheck, immediately before the approvals are consumed, did not find the network exactly as proposed. Nothing was deleted and no approval was consumed. */
+  | "REMEDIATION_RECHECK_FAILED"
   /** The cleanup proposal is malformed, or does not hash to its own identity. Nothing was consumed. */
   | "PROPOSAL_INVALID"
   /** The engine's destroy plan is not exactly the approved proposal's resource list (state or dependencies changed). Nothing was applied and no approval was consumed. */

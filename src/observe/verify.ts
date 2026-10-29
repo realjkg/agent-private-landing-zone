@@ -78,6 +78,18 @@ export type ResourceCheck = {
    * resource is there and different from what was planned, so the observation is FAILED, never VERIFIED.
    */
   misplaced?: true;
+  /**
+   * With `misplaced` on Azure: where the resource's own answer places it, as ARM's programmatic name (`eastus2`), when that answer
+   * names a well-formed location. Recorded so a governed location remediation can bind it and recheck it (owner decision
+   * 6486426552, item 2); never set for any other result, and absent when the answer's location does not normalize.
+   */
+  observedLocation?: string;
+  /**
+   * With `misplaced` on Azure: the resource's creation identity as its own answer gives it (`properties.resourceGuid`, a GUID ARM assigns
+   * at creation and never reuses), when the answer carries one. A resource deleted and created again under the same id has another, so a
+   * location remediation binds it and its recheck refuses any other (review 6487424862, N1).
+   */
+  observedResourceGuid?: string;
 };
 export type ObserveVerdict = "VERIFIED" | "PARTIAL" | "INCONCLUSIVE" | "FAILED";
 export type ObserveReport = {

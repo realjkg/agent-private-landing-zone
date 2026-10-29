@@ -242,17 +242,21 @@ export function createDiscoveryArmReader(options: DiscoveryArmOptions): { reader
     if (response.status === 404) return { ...base, identifier, existence: "ABSENT" };
     if (response.status !== 200) return { ...base, identifier, existence: "UNKNOWN", reason: classOf(response.status) };
     try {
-      const body = JSON.parse(response.body) as { id?: unknown; location?: unknown };
+      const body = JSON.parse(response.body) as { id?: unknown; location?: unknown; properties?: { resourceGuid?: unknown } | null };
       // The facts ever read from the answer: that it names the resource that was asked about, and, when the contract binds a
-      // location, where the resource is. The location is compared in process and never recorded.
+      // location, where the resource is. The location is compared in process; it is kept only for a resource found elsewhere
+      // (`observedLocation`, the programmatic name), so a governed location remediation can bind and recheck it.
       if (typeof body.id === "string" && body.id.toLowerCase() === identifier.toLowerCase()) {
         if (location === undefined) return { ...base, identifier, existence: "PRESENT" };
         if (body.location === undefined || body.location === null) {
           return ARM_LOCATED_TYPES.has((type.namespace + "/" + type.typePath).toLowerCase())
             ? { ...base, identifier, existence: "UNKNOWN", reason: "LOCATION_UNREADABLE" } : { ...base, identifier, existence: "PRESENT" };
         }
-        return normalizeAzureLocation(body.location) === location
-          ? { ...base, identifier, existence: "PRESENT" } : { ...base, identifier, existence: "PRESENT", misplaced: true };
+        const found = normalizeAzureLocation(body.location);
+        if (found === location) return { ...base, identifier, existence: "PRESENT" };
+        // Misplaced: where it is and, when the answer names one, its creation identity (lowercased), and nothing else of the answer.
+        const guid = typeof body.properties?.resourceGuid === "string" && GUID.test(body.properties.resourceGuid) ? body.properties.resourceGuid.toLowerCase() : undefined;
+        return { ...base, identifier, existence: "PRESENT", misplaced: true, ...(found === undefined ? {} : { observedLocation: found }), ...(guid === undefined ? {} : { observedResourceGuid: guid }) };
       }
     } catch { /* falls through */ }
     return { ...base, identifier, existence: "UNKNOWN", reason: "UNEXPECTED_RESPONSE" };

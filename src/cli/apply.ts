@@ -5,7 +5,7 @@ import { isAbsolute, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { REQUESTER_MAY_APPROVE, approverIsRequester, requesterPublicKey, requesterRefusal, signApproval, verifyRequestSignature } from "../apply/approval.js";
-import { buildCleanupProposal, proposalLines, signCleanupProposal, verifyCleanupProposal, type CleanupProposal } from "../apply/cleanup-proposal.js";
+import { buildProposalOfKind, proposalLines, signCleanupProposal, verifyCleanupProposal, type CleanupProposal } from "../apply/cleanup-proposal.js";
 import { buildLifecycleReport, lifecycleReportProblems } from "../apply/lifecycle-report.js";
 import { loadRunRecords, observeRun, verifyProposalLeftovers } from "../apply/observe.js";
 import { readLeftoversRecord, readObservationRecord } from "../apply/run-records.js";
@@ -72,6 +72,7 @@ const APPLY_USAGE = [
   "  ./alz apply preflight --environment DEV|QA|PROD [--contract CONTRACT.json]",
   "  ./alz apply observe --sealed SEALED_PLAN",
   "  ./alz apply propose-cleanup --sealed SEALED_PLAN --requester ID --key REQUESTER_KEY.pem",
+  "  ./alz apply propose-remediation --sealed SEALED_PLAN --requester ID --key REQUESTER_KEY.pem",
   "  ./alz apply cleanup --proposal PROPOSAL.json --request REQUEST.json --manifest MANIFEST.json --sealed SEALED_PLAN --approval APPROVAL.json [--approval APPROVAL.json ...]",
   "  ./alz apply verify-cleanup --proposal PROPOSAL.json",
   "  ./alz apply preview-evidence --sealed SEALED_PLAN --gate preview:terraform-azure-brownfield --target-hardware-id HOST",
@@ -150,6 +151,7 @@ const SUBCOMMANDS: Readonly<Record<string, Flags>> = {
   "record-recovery": { single: ["sealed", "resumed", "target-hardware-id"] },
   observe: { single: ["sealed"] },
   "propose-cleanup": { single: ["sealed", "requester", "key"] },
+  "propose-remediation": { single: ["sealed", "requester", "key"] },
   cleanup: { single: ["proposal", "request", "manifest", "sealed"], repeated: ["approval"] },
   "verify-cleanup": { single: ["proposal"] },
   "propose-removal": { single: ["sealed", "requester", "key"] },
@@ -478,7 +480,8 @@ const approveCommand: Command = async (flags, terminal, deps, out) => {
   if ("reason" in contract) return blocked(contractRefusal(contract), out);
   const raw = readInput(flags.bundle[0], "--bundle");
   // A cleanup proposal is approved by the same person, key and allowlist, under its own signature domain: the phrase, the review and the signature all say "cleanup".
-  if (isRecord(raw) && raw.kind === "CLEANUP_PROPOSAL") return approveCleanup(raw, approverId, privateKeyPem, contract, terminal, deps, out);
+  // A location remediation is a cleanup proposal of its own kind: the same approval, under the same domain, with the mismatch shown first.
+  if (isRecord(raw) && (raw.kind === "CLEANUP_PROPOSAL" || raw.kind === "LOCATION_REMEDIATION")) return approveCleanup(raw, approverId, privateKeyPem, contract, terminal, deps, out);
   // A removal of a run's working files goes through the same approval as a cleanup (owner decision 6443062568, item 2): same key, same allowlist, same domain.
   if (isRecord(raw) && raw.kind === "WORKSPACE_REMOVAL_PROPOSAL") return approveRemoval(raw, approverId, privateKeyPem, contract, terminal, deps, out);
   const opened = verifyReviewBundle(raw);
@@ -551,9 +554,12 @@ async function approveCleanup(raw: unknown, approverId: string, privateKeyPem: s
   }
   const now = (deps.now ?? (() => new Date()))();
   const expiresAt = new Date(now.getTime() + contract.maxApprovalAgeMinutes * 60_000);
-  const phrase = "APPROVE CLEANUP " + proposal.environment + " " + proposal.proposalSha256.slice(0, 12);
+  const remediation = proposal.kind === "LOCATION_REMEDIATION";
+  const phrase = (remediation ? "APPROVE LOCATION REMEDIATION " : "APPROVE CLEANUP ") + proposal.environment + " " + proposal.proposalSha256.slice(0, 12);
   terminal.write([
-    "", "APPROVE A CLEANUP OF EXACTLY THESE RESOURCES IN " + proposal.environment + " (your signature, valid until " + expiresAt.toISOString() + ", usable once, and never valid for an apply)",
+    "", remediation
+      ? "APPROVE A LOCATION REMEDIATION IN " + proposal.environment + ": THE DELETION OF ONE NETWORK THIS RUN CREATED IN THE WRONG LOCATION (your signature, valid until " + expiresAt.toISOString() + ", usable once, and never valid for an apply or another proposal)"
+      : "APPROVE A CLEANUP OF EXACTLY THESE RESOURCES IN " + proposal.environment + " (your signature, valid until " + expiresAt.toISOString() + ", usable once, and never valid for an apply)",
     "  target          " + targetString(proposal.target), targetFieldsLine(contract, proposal.environment), "  approver        " + approverId, "  product commit  " + proposal.sourceCommit,
     "  requester       " + requested.requesterId + " (signature verified against the allowlist)", ...proposalLines(proposal), "",
     "The proposal's hash was recomputed here and matches. Type " + phrase + " to sign (anything else stops here):", "",
@@ -609,14 +615,14 @@ const observeCommand: Command = async (flags, _terminal, deps, out) => {
 
 /** Where a proposal is saved for review and approval: a plain file of identifiers, private to the account, named by its hash. */
 const proposalPath = (deps: ApplyCliDeps, proposal: CleanupProposal): string =>
-  join(deps.proposalsDir ?? join(repoPaths().root, ".runs", "apply", "cleanup"), proposal.proposalSha256.slice(0, 12) + ".cleanup-proposal.json");
+  join(deps.proposalsDir ?? join(repoPaths().root, ".runs", "apply", "cleanup"), proposal.proposalSha256.slice(0, 12) + (proposal.kind === "LOCATION_REMEDIATION" ? ".remediation-proposal.json" : ".cleanup-proposal.json"));
 
 /**
  * Builds the reviewable proposal from the run's records, has its requester sign it, and writes it. Runs no engine and asks no
  * phrase: a proposal authorizes nothing by itself. The requester (owner decision 6440801434, item 1) is an allowlisted id with
  * that entry's own key, checked before anything is built or written; their id is hashed into the proposal every approver signs.
  */
-const proposeCleanupCommand: Command = async (flags, _terminal, deps, out) => {
+const proposeCommand = (kind: CleanupProposal["kind"]): Command => async (flags, _terminal, deps, out) => {
   const unverified = committedSource(deps, out);
   if (unverified !== undefined) return unverified;
   const requesterId = flags.requester[0];
@@ -625,6 +631,10 @@ const proposeCleanupCommand: Command = async (flags, _terminal, deps, out) => {
   const opened = await openSealed(flags.sealed[0]);
   if (!("sealed" in opened)) return blocked(opened, out);
   const { sealed } = opened;
+  // A run started in the console finishes in the console, which has no remediation step: refused here, before the requester's key signs anything (review 6487424862, N6).
+  if (kind === "LOCATION_REMEDIATION" && sealed.channel === "UI") {
+    return blocked({ ok: false, code: "REMEDIATION_NOT_ELIGIBLE", message: "This run was started in the web console, and a run is finished in the channel it was started in. The console has no location remediation step, so this run cannot be remediated from the command line or the console: the pilot owner reviews it by hand. No proposal was written and nothing was signed." }, out);
+  }
   if (sealed.channel !== (deps.channel ?? "CLI")) return blocked({ ok: false, code: "CHANNEL_MISMATCH", message: channelMismatchMessage(sealed.channel) }, out);
   const contract = contractFor(deps);
   if ("reason" in contract) return blocked(contractRefusal(contract), out);
@@ -635,7 +645,7 @@ const proposeCleanupCommand: Command = async (flags, _terminal, deps, out) => {
   if (!authorized.ok) return blocked({ ...authorized, message: authorized.message + " No proposal was written." }, out);
   const records = await loadRunRecords(sealed.artifactSha256, deps.evidenceDir ?? repoPaths().evidence);
   if (!records.ok) return blocked(records, out);
-  const built = buildCleanupProposal({
+  const built = buildProposalOfKind(kind, {
     applyEvidence: records.applyEvidence, applyEvidenceSha256: records.applyEvidenceSha256, blueprint: records.blueprint, blueprintSha256: records.blueprintSha256,
     observation: records.observation, observationSha256: records.observationSha256, changes: sealed.changes, channel: deps.channel ?? "CLI", contract,
     engineVersion: sealed.engineVersion, env: deps.env ?? process.env, now: (deps.now ?? (() => new Date()))(), requesterId,
@@ -645,12 +655,20 @@ const proposeCleanupCommand: Command = async (flags, _terminal, deps, out) => {
   const path = proposalPath(deps, proposal);
   mkdirSync(join(path, ".."), { recursive: true, mode: 0o700 });
   writeFileSync(path, JSON.stringify(proposal, null, 2) + "\n", { mode: 0o600 });
-  out.say(["", "CLEANUP PROPOSED (nothing is deleted until it is approved and run)", ...proposalLines(proposal), targetFieldsLine(contract, proposal.environment), "", "Saved (private to this account): " + path,
+  out.say(["", kind === "LOCATION_REMEDIATION" ? "LOCATION REMEDIATION PROPOSED (nothing is deleted until it is approved and run; nothing is ever moved or created again)" : "CLEANUP PROPOSED (nothing is deleted until it is approved and run)", ...proposalLines(proposal), targetFieldsLine(contract, proposal.environment), "", "Saved (private to this account): " + path,
     "Next: each approver runs ./alz apply approve --bundle " + path + " --key THEIR_KEY.pem --approver THEIR_ID" +
       (REQUESTER_MAY_APPROVE[proposal.environment] === true ? "" : " (" + proposal.authorization.requiredApprovals + " distinct approvers, none of them the requester " + proposal.requesterId + ")") + "; then ./alz apply cleanup --proposal " + path + " ...", ""].join("\n"));
-  out.report({ code: "CLEANUP_PROPOSED", message: "Proposed the deletion of " + proposal.deletes.length + " resource(s); " + proposal.excluded.length + " kept.", data: { path, proposal } });
+  if (kind === "LOCATION_REMEDIATION") {
+    out.report({ code: "REMEDIATION_PROPOSED", message: "Proposed the location remediation of " + proposal.deletes.length + " network: observed " + proposal.remediation!.observedLocation + ", authorized " + proposal.remediation!.authorizedLocation + ".", data: { path, proposal } });
+  } else {
+    out.report({ code: "CLEANUP_PROPOSED", message: "Proposed the deletion of " + proposal.deletes.length + " resource(s); " + proposal.excluded.length + " kept.", data: { path, proposal } });
+  }
   return EXIT.PASS;
 };
+/** Builds the reviewable cleanup proposal from the run's records. */
+const proposeCleanupCommand = proposeCommand("CLEANUP_PROPOSAL");
+/** Builds the governed location remediation (owner decision 6486426552, item 2) from the run's records, or says why the run is not eligible. */
+const proposeRemediationCommand = proposeCommand("LOCATION_REMEDIATION");
 
 /** The only place `runCleanup` is called. */
 const cleanupCommand: Command = async (flags, terminal, deps, out) => {
@@ -677,13 +695,17 @@ const cleanupCommand: Command = async (flags, terminal, deps, out) => {
           " is running. Nothing was consumed. Run from that commit, or propose and approve the cleanup again." }, out);
   }
   const who = operatorId(deps);
-  const phrase = "CLEANUP " + request.environment + " " + proposal.proposalSha256.slice(0, 12) + " " + targetString(request.target);
+  const remediation = proposal.kind === "LOCATION_REMEDIATION";
+  const phrase = (remediation ? "REMEDIATE LOCATION " : "CLEANUP ") + request.environment + " " + proposal.proposalSha256.slice(0, 12) + " " + targetString(request.target);
   terminal.write([
-    "", "REMOVE EXACTLY THE LISTED RESOURCES FROM " + request.environment + " (this deletes real infrastructure; there is no undo here)",
+    "", remediation
+      ? "DELETE THE ONE NETWORK THIS RUN CREATED IN THE WRONG LOCATION, IN " + request.environment + " (this deletes real infrastructure; there is no undo here, and nothing is moved or created again)"
+      : "REMOVE EXACTLY THE LISTED RESOURCES FROM " + request.environment + " (this deletes real infrastructure; there is no undo here)",
     "  account         " + request.target.account, "  backend         " + request.target.backend, "  workspace       " + request.target.workspace,
     "  product commit  " + proposal.sourceCommit, "  approvals       " + approvals.map((a) => printable(String(a.statement?.approverId))).join(", ") + " (the driver verifies each signature under the cleanup domain)",
     ...proposalLines(proposal), "",
     engineNotices(deps).cleanupNote ?? "The engine first plans the destroy of exactly this list and stops, before any approval is used, if the plan would touch anything else.",
+    ...(remediation ? ["Before any approval is used, the network is read again as DISCOVERY and the engine's state again: if it is gone, moved, untagged, or anything else changed, nothing is deleted."] : []),
     "Type this line exactly to remove them (anything else stops here):", "  " + phrase, "",
   ].join("\n"));
   await confirm(terminal, phrase, "cleanup> ", "APPLY_CONFIRMATION_MISMATCH", "CLEANUP");
@@ -691,7 +713,7 @@ const cleanupCommand: Command = async (flags, terminal, deps, out) => {
   const result = await runCleanup({
     invocation: { operatorId: who, interactiveSession: true, confirmedTarget: { ...request.target }, confirmedAt: now().toISOString() },
     environment: request.environment, target: request.target, channel: deps.channel ?? "CLI", proposal, sealedPlan, manifest, projectRoot: request.projectRoot, approvals,
-  }, { env: deps.env ?? process.env, now, evidenceDir: deps.evidenceDir, nonces: deps.nonces, ...driverPaths(deps, sourceCommit) });
+  }, { env: deps.env ?? process.env, now, evidenceDir: deps.evidenceDir, nonces: deps.nonces, arm: deps.observeArm, ...driverPaths(deps, sourceCommit) });
   if (!result.ok) return blocked(result, out);
   out.say(JSON.stringify(result.evidence, null, 2) + "\n");
   out.report({ code: "CLEANED_UP", message: "The cleanup ended " + result.evidence.outcome + ". Verify leftovers next.", data: result.evidence });
@@ -1321,7 +1343,7 @@ const identityCheckCommand: Command = async (flags, terminal, deps, out) => {
 const COMMANDS: Readonly<Record<string, Command>> = {
   qualify: qualifyCommand, seal: sealCommand, approve: approveCommand, apply: applyCommand, status: statusCommand, "contract-check": contractCheckCommand,
   preflight: preflightCommand, prepare: prepareCommand, "record-live": recordLiveCommand, "record-recovery": recordRecoveryCommand,
-  observe: observeCommand, "propose-cleanup": proposeCleanupCommand, cleanup: cleanupCommand, "verify-cleanup": verifyCleanupCommand, report: reportCommand, "preview-evidence": previewEvidenceCommand,
+  observe: observeCommand, "propose-cleanup": proposeCleanupCommand, "propose-remediation": proposeRemediationCommand, cleanup: cleanupCommand, "verify-cleanup": verifyCleanupCommand, report: reportCommand, "preview-evidence": previewEvidenceCommand,
   "propose-removal": proposeRemovalCommand, "remove-workspace": removeWorkspaceCommand, "identity-check": identityCheckCommand,
 };
 
@@ -1340,7 +1362,7 @@ function scratchHoldsRecovery(parent: string): boolean {
  * them first (docs/act-pilot-apply.md).
  */
 async function sweepUnlessHeld(sub: string, deps: ApplyCliDeps, out: Out): Promise<void> {
-  if (["status", "approve", "contract-check", "preflight", "prepare", "record-live", "record-recovery", "observe", "propose-cleanup", "verify-cleanup", "report", "preview-evidence", "propose-removal", "remove-workspace", "identity-check"].includes(sub)) return;
+  if (["status", "approve", "contract-check", "preflight", "prepare", "record-live", "record-recovery", "observe", "propose-cleanup", "propose-remediation", "verify-cleanup", "report", "preview-evidence", "propose-removal", "remove-workspace", "identity-check"].includes(sub)) return;
   const parent = deps.scratchParent ?? tmpdir();
   const held = scratchHoldsRecovery(parent) ? "a scratch directory holds errored.tfstate or crash.log"
     : await holdsReservation(deps.evidenceDir ?? repoPaths().evidence) ? "the apply ledger holds a reservation" : undefined;

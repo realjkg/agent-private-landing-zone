@@ -611,6 +611,11 @@ function openCleanup(input: EngineContext & { target: ResolvedTarget; engineVers
     },
     recoveryFiles: () => recoveryFilesIn(session.work),
     removeSecrets,
+    // The state as the STATE identity reads it now (the same pinned list `prepare` used). Held in memory by the caller for identifiers only.
+    stateDocument() {
+      if (serialBefore === undefined) return undefined;
+      try { return { source: "TERRAFORM_STATE_PULL", document: session.step(STATE_PULL_ARGV, "STATE", true) }; } catch { return undefined; }
+    },
   };
 }
 
