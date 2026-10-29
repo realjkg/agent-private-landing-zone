@@ -294,7 +294,7 @@ function nextStepForStages(report: Report): string {
   if (execute.status !== "PASS") return "A person reviews the failed apply before anything else: ./alz apply status --environment " + report.environment + " --sealed " + sealed;
   if (observe.status !== "PASS") return "./alz apply observe --sealed " + sealed + ", then ./alz apply report --sealed " + sealed;
   if (propose.status !== "PASS") return "./alz apply propose-cleanup --sealed " + sealed + " --requester YOUR_ID --key YOUR_REQUESTER_KEY.pem; approvers review and sign it";
-  if (cleanup.status !== "PASS") return "./alz apply cleanup --proposal PROPOSAL.json --request REQUEST.json --manifest MANIFEST.json --sealed " + sealed + " --approval APPROVAL.json (a person runs it)";
+  if (cleanup.status !== "PASS") return "./alz apply cleanup --proposal PROPOSAL.json --request APPLY_REQUEST.json --manifest MANIFEST.json --sealed " + sealed + " --approval APPROVAL.json (a person runs it)";
   if (leftovers.status !== "PASS") return "./alz apply verify-cleanup --proposal PROPOSAL.json, then ./alz apply report --sealed " + sealed + " --proposal PROPOSAL.json";
   return "Nothing more to run for this run. Retiring the environment stays a separate, reviewed owner action.";
 }

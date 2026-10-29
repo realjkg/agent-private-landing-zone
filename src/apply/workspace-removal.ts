@@ -32,7 +32,7 @@ import { PILOT_CHANNELS, type ApplyEnvironment, type PilotChannel, type PilotCon
  * proposal or the record says.
  *
  * What a run leaves locally, and what this removes:
- *  - REMOVED: the preparation files `prepare` wrote for the run's manifest (`.runs/pilot/<ENV>/request-<tag>.json`, `manifest-<tag>.json`,
+ *  - REMOVED: the preparation files `prepare` wrote for the run's manifest (`.runs/pilot/<ENV>/request-<tag>.json`, `apply-request-<tag>.json`, `manifest-<tag>.json`,
  *    `preparation-<tag>.json`, and any `.partial-<pid>` copy an interrupted write left), where `<tag>` is the first 16 hex digits of the
  *    sealed plan's manifest hash.
  *  - REMOVED: scratch directories the driver left behind after a crash or a SIGKILL (`alz-preview-*`, `alz-snapshot-*`, `alz-child-*` in
@@ -190,7 +190,7 @@ export function planWorkspaceRemoval(run: Pick<RemovalRun, "environment" | "mani
     const preparation = realRoot(join(where.preparationDir, run.environment));
     const tag = run.manifestHash.slice(0, 16);
     if (preparation !== undefined) {
-      const own = new RegExp("^(?:request|manifest|preparation)-" + tag + "\\.json(?:\\.partial-[0-9]+)?$");
+      const own = new RegExp("^(?:request|apply-request|manifest|preparation)-" + tag + "\\.json(?:\\.partial-[0-9]+)?$");
       for (const name of readdirSync(preparation).sort()) {
         if (!own.test(name)) continue;
         const path = join(preparation, name);

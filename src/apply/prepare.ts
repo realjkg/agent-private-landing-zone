@@ -80,6 +80,18 @@ export type SealRequestFile = {
   };
 };
 
+/**
+ * The request `./alz apply apply` and `./alz apply cleanup` take: exactly the environment, target and project of the seal request,
+ * copied from it and nothing else. Those commands accept no other key; the driver checks the environment and target against the
+ * sealed plan, and the manifest the plan was sealed against binds the project files and the resolved versions and inputs.
+ */
+export type ApplyRequestFile = Pick<SealRequestFile, "environment" | "target" | "projectRoot">;
+
+/** The apply request for a seal request: its three fields, never anything more. */
+export function applyRequestOf(request: SealRequestFile): ApplyRequestFile {
+  return { environment: request.environment, target: { account: request.target.account, backend: request.target.backend, workspace: request.target.workspace }, projectRoot: request.projectRoot };
+}
+
 /** Where one input's value comes from, for the review: a file in the project, a named environment variable, or a default. Never the value. */
 export type PreparedInput = { name: string; source: "TFVARS" | "ENVIRONMENT" | "DEFAULT"; from: string };
 
@@ -413,19 +425,25 @@ function deriveInputs(engine: EngineId, projectRoot: string, files: ArtifactMani
   return { inputs, shown };
 }
 
-/** Writes the request, manifest and preparation record, each named by the manifest hash, private and all-or-nothing. */
+/**
+ * Writes the seal request, the apply request (for `apply` and `cleanup`), the manifest and the preparation record, each named by
+ * the manifest hash, private and all-or-nothing.
+ */
 export function writePreparation(prepared: Prepared, outDir: string = join(repoPaths().root, ".runs", "pilot")):
-  { request: string; manifest: string; record: string } {
+  { request: string; applyRequest: string; manifest: string; record: string } {
   const dir = join(outDir, prepared.summary.environment);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const tag = prepared.manifest.manifestHash.slice(0, 16);
   const paths = {
     request: join(dir, "request-" + tag + ".json"),
+    applyRequest: join(dir, "apply-request-" + tag + ".json"),
     manifest: join(dir, "manifest-" + tag + ".json"),
     record: join(dir, "preparation-" + tag + ".json"),
   };
-  const record = { ...prepared.summary, requestFile: paths.request, manifestFile: paths.manifest, gaps: prepared.gaps, next: prepared.next };
-  const contents: Array<[string, unknown]> = [[paths.request, prepared.request], [paths.manifest, prepared.manifest], [paths.record, record]];
+  const record = { ...prepared.summary, requestFile: paths.request, applyRequestFile: paths.applyRequest, manifestFile: paths.manifest, gaps: prepared.gaps, next: prepared.next };
+  const contents: Array<[string, unknown]> = [
+    [paths.request, prepared.request], [paths.applyRequest, applyRequestOf(prepared.request)], [paths.manifest, prepared.manifest], [paths.record, record],
+  ];
   const staged: string[] = [];
   // Undo only what this call put in place: a file that was already there (same hash, same content) is kept.
   const placed: string[] = [];

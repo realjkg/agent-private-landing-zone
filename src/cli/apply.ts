@@ -65,7 +65,7 @@ const APPLY_USAGE = [
   "  ./alz apply qualify --request REQUEST.json --manifest MANIFEST.json",
   "  ./alz apply seal --request REQUEST.json --manifest MANIFEST.json --requester ID --key REQUESTER_KEY.pem",
   "  ./alz apply approve --bundle REVIEW_BUNDLE.json --key APPROVER_KEY.pem --approver ID",
-  "  ./alz apply apply --request REQUEST.json --manifest MANIFEST.json --sealed SEALED_PLAN --approval APPROVAL.json [--approval APPROVAL.json ...]",
+  "  ./alz apply apply --request APPLY_REQUEST.json --manifest MANIFEST.json --sealed SEALED_PLAN --approval APPROVAL.json [--approval APPROVAL.json ...]",
   "  ./alz apply status [--environment DEV|QA|PROD] [--sealed SEALED_PLAN]",
   "  ./alz apply contract-check --file DRAFT.json",
   "  ./alz apply record-live --sealed SEALED_PLAN",
@@ -74,7 +74,7 @@ const APPLY_USAGE = [
   "  ./alz apply observe --sealed SEALED_PLAN",
   "  ./alz apply propose-cleanup --sealed SEALED_PLAN --requester ID --key REQUESTER_KEY.pem",
   "  ./alz apply propose-remediation --sealed SEALED_PLAN --requester ID --key REQUESTER_KEY.pem",
-  "  ./alz apply cleanup --proposal PROPOSAL.json --request REQUEST.json --manifest MANIFEST.json --sealed SEALED_PLAN --approval APPROVAL.json [--approval APPROVAL.json ...]",
+  "  ./alz apply cleanup --proposal PROPOSAL.json --request APPLY_REQUEST.json --manifest MANIFEST.json --sealed SEALED_PLAN --approval APPROVAL.json [--approval APPROVAL.json ...]",
   "  ./alz apply verify-cleanup --proposal PROPOSAL.json",
   "  ./alz apply preview-evidence --sealed SEALED_PLAN --gate preview:terraform-azure-brownfield --target-hardware-id HOST",
   "  ./alz apply report --sealed SEALED_PLAN [--proposal PROPOSAL.json]",
@@ -84,6 +84,8 @@ const APPLY_USAGE = [
   "      A person at the terminal (or a person in the console wizard, which has its own session token). A workflow runs wholly in one of them. Identities come from the contract's engine: ALZ_DISCOVERY_*, ALZ_STATE_*, ALZ_STATE_WRITE_* and ALZ_APPLY_* (Terraform),",
   "      or ALZ_DISCOVERY_*, ALZ_CHANGESET_* and ALZ_APPLY_* (CDK). No flag names an engine; the reviewed contract does, and its authorize entry is the only switch.",
   "      Exit 0 done, 1 error (nothing spent), 2 BLOCKED (refused before any action), 3 SPENT (approvals consumed or an apply started; read the message before any retry).",
+  "      prepare writes both request files: REQUEST.json (request-<tag>.json) for qualify and seal, and APPLY_REQUEST.json (apply-request-<tag>.json),",
+  "      its environment, target and project only, for apply and cleanup.",
   "      No flag forces, skips, ignores, overrides or pre-answers anything.",
 ].join("\n");
 
@@ -235,7 +237,8 @@ function readRequest(sub: "seal" | "apply" | "cleanup", path: string): Record<st
   const keys = REQUEST_KEYS[sub];
   if (!isRecord(file) || Object.keys(file).some((key) => !keys.includes(key)) || keys.some((key) => !(key in file))) {
     fail("APPLY_INPUT_INVALID", "--request must be a JSON object with exactly " + keys.join(", ") +
-      "; the command supplies the invocation, the manifest and the approvals");
+      "; the command supplies the invocation, the manifest and the approvals" +
+      (sub === "seal" ? "" : ". ./alz apply prepare writes this file as apply-request-<tag>.json beside the seal request; the seal request (request-<tag>.json) is not accepted here"));
   }
   const request = file as Record<string, unknown>;
   if (!ENVIRONMENTS.includes(request.environment as ApplyEnvironment)) fail("APPLY_INPUT_INVALID", "request.environment must be DEV, QA or PROD");
@@ -1140,8 +1143,9 @@ const prepareCommand: Command = async (flags, terminal, deps, out) => {
     return EXIT.BLOCKED;
   }
   const written = writePreparation(result, deps.preparationDir);
-  out.say(preparationReview(result) + "\nSaved (private to this account):\n  request   " + written.request + "\n  manifest  " + written.manifest +
-    "\n  record    " + written.record + "\n\n" + (result.next.step === "blocked"
+  out.say(preparationReview(result) + "\nSaved (private to this account):\n  request        " + written.request + "\n  apply request  " + written.applyRequest +
+    "\n  manifest       " + written.manifest + "\n  record         " + written.record +
+    "\n  The request is for qualify and seal. Apply and cleanup take the apply request: the same environment, target and project, and nothing else.\n\n" + (result.next.step === "blocked"
       ? "NEXT BLOCKED (" + result.next.blocker.toLowerCase() + " prerequisite): " + result.next.reason + "\n"
       : "NEXT " + NEXT_COMMAND[result.next.step].command + " --request " + written.request + " --manifest " + written.manifest + NEXT_COMMAND[result.next.step].trailing + "\n  " + result.next.reason + "\n"));
   out.report({
