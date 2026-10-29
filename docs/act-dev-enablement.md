@@ -37,7 +37,7 @@ The owner decision does not set the order. `config/release/status.json` currentl
 | G1b re-run on the backend-pinned path | **MISSING** (A1 below) | `test/apply-emulated-aws.test.ts` passing on a `main` that contains backend pinning, recorded in `docs/act-pilot-simulation-aws.md` |
 | DISCOVERY control-plane scope | **IN PROGRESS** (#293, head `5772f2f`) | `bootstrap/aws/discovery.tf`, `bootstrap/aws/discovery-policy.json`; `test/discovery-scope.test.ts`. Changes what the DEV bootstrap creates, so the owner bootstraps after it merges |
 | Release status and G0 page are current | **MISSING** (A2 below) | `config/release/status.json` `act:aws-terraform` `nextAction` still says "Engineering still owes G1b"; `docs/act-pilot-aws-terraform-g0.md` (G1b row and checklist step 6) still says the AWS simulation does not exist |
-| Evidence runner | **DONE** for S1 (#291, `e4b80e9`; hardening #292, `39f6e26`) | `./alz evidence init`, `run --stage preflight`, `status`. Stages `aws-readonly` (S2, held on an owner decision) and `act` (S5) report `NOT_BUILT`. Not required for the authorization commit |
+| Evidence runner | **DONE** for S1 (#291, `e4b80e9`; hardening #292, `39f6e26`); **IN PROGRESS** for S2–S6 (lane EVR, branch `release/evr-s2-s6`) | `./alz evidence init`, `run`, `status`. S2–S6 add the read-only stages, the guided `act:<path>`, `cleanup:<path>` and `recovery` stages and the summary; the run sheet is in [`evidence-runner.md`](evidence-runner.md). Not required for the authorization commit |
 | G0 owner items: roles, host, scope, cleanup owner | **OWNER** | Written down by the owner; `docs/act-pilot-aws-terraform-g0.md`, "Approver roles" |
 | Bootstrap and federated identity | **OWNER** | `bootstrap/aws`; `docs/act-pilot-bootstrap.md`, Steps 2 to 6 |
 | Contract draft complete | **OWNER** | `./alz apply contract-check --file config/act-pilot-contract.json` exits 0 (COMPLETE) |
@@ -112,7 +112,7 @@ Run these in order. Steps marked "not `./alz`" use a vendor tool.
    ```
 
    Every item must be READY except qualification. Do not export `AWS_PROFILE`, `AWS_ACCESS_KEY_ID` or the other fallback variables on this host (`docs/act-pilot-apply.md`, "AWS").
-9. **Optional: the evidence runner's journal** (`./alz evidence init [--config FILE]`, then `./alz evidence run --stage preflight`, then `./alz evidence status`). It records the preflight and reports later stages `NOT_BUILT`. Not required for the pin.
+9. **Optional: the evidence runner** (`./alz evidence`). It sequences steps 12 to 15 for you, one path at a time, while you still type every phrase. It also runs the read-only provider qualification and the summary, and journals each step's exit code and the documents it wrote. The command sequence per path is the owner run sheet in [`evidence-runner.md`](evidence-runner.md). Not required for the authorization commit.
 10. **Wait for engineering:** backend pinning merged, A1 done, #293 merged. If #293 merges after step 4, plan and apply the bootstrap again so DISCOVERY gets the new scope.
 11. **Authorization commit.** This is the step that enables the pilot, and only the owner takes it. There is no hash to compute: the product derives the contract and entry hashes and binds them into every plan and approval.
 

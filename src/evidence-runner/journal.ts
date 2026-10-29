@@ -20,6 +20,11 @@ export type JournalIdentity = {
   /** SHA-256 of the expected account, tenant and subscription ids (never a credential). */
   identityHash: string;
 };
+/**
+ * A document a step's producer wrote, by its path relative to the repository and its SHA-256 at the time the step finished.
+ * The runner records where a producer put its output; it never writes a producer's document itself.
+ */
+export type JournalDocument = { name: string; path: string; sha256: string };
 export type JournalLine = JournalIdentity & {
   schemaVersion: 1;
   stage: StageId;
@@ -29,8 +34,14 @@ export type JournalLine = JournalIdentity & {
   pid: number;
   outcome?: StepOutcome;
   code?: string;
+  /** The child's exit code, for a step that ran a child process. */
+  exitCode?: number;
+  documents?: JournalDocument[];
 };
-export type StepRecord = { status: "NOT_RUN" } | { status: "FINISHED"; outcome: StepOutcome; code?: string } | { status: "INTERRUPTED"; pid: number };
+export type StepRecord =
+  | { status: "NOT_RUN" }
+  | { status: "FINISHED"; outcome: StepOutcome; code?: string; documents: JournalDocument[] }
+  | { status: "INTERRUPTED"; pid: number };
 
 export type JournalErrorCode = "EVIDENCE_JOURNAL_MISMATCH" | "EVIDENCE_JOURNAL_UNREADABLE" | "EVIDENCE_RUN_IN_PROGRESS" | "EVIDENCE_LOCK_UNREADABLE";
 export class JournalError extends Error {
@@ -42,6 +53,15 @@ const OUTCOMES: readonly StepOutcome[] = ["PASS", "BLOCKED", "FAIL", "SKIPPED"];
 const NEW_FOLDER = " Move the old run's folder aside to start a new one; a journal is never repaired or reused.";
 const sha64 = /^[0-9a-f]{64}$/;
 const sha40 = /^[0-9a-f]{40}$/;
+const DOCUMENT_NAME = /^[a-z][a-z0-9-]{0,63}$/;
+
+function documentsOk(value: unknown): boolean {
+  if (value === undefined) return true;
+  return Array.isArray(value) && value.every((item) => typeof item === "object" && item !== null && !Array.isArray(item) &&
+    Object.keys(item).length === 3 && typeof item.name === "string" && DOCUMENT_NAME.test(item.name) &&
+    typeof item.path === "string" && item.path !== "" && !item.path.startsWith("/") && !item.path.split("/").includes("..") &&
+    typeof item.sha256 === "string" && sha64.test(item.sha256));
+}
 
 function parseLine(text: string, index: number): JournalLine {
   const bad = (why: string): never => { throw new JournalError("EVIDENCE_JOURNAL_UNREADABLE", "Journal line " + (index + 1) + " " + why + "." + NEW_FOLDER); };
@@ -54,7 +74,8 @@ function parseLine(text: string, index: number): JournalLine {
     typeof line.sourceCommit === "string" && sha40.test(line.sourceCommit) && typeof line.configSha256 === "string" && sha64.test(line.configSha256) &&
     typeof line.identityHash === "string" && sha64.test(line.identityHash) && typeof line.targetHardwareId === "string" && line.targetHardwareId !== "" &&
     (line.label === "SYNTHETIC" || line.label === "LIVE") && typeof line.host === "string" && line.host !== "" &&
-    (line.event === "start" || OUTCOMES.includes(line.outcome as StepOutcome)) && (line.code === undefined || typeof line.code === "string");
+    (line.event === "start" || OUTCOMES.includes(line.outcome as StepOutcome)) && (line.code === undefined || typeof line.code === "string") &&
+    (line.exitCode === undefined || Number.isInteger(line.exitCode)) && documentsOk(line.documents);
   if (!ok) return bad("does not have the expected fields");
   return line as JournalLine;
 }
@@ -79,7 +100,8 @@ export function stepRecord(lines: readonly JournalLine[], stage: StageId, step: 
   let result: StepRecord = { status: "NOT_RUN" };
   for (const line of lines) {
     if (line.stage !== stage || line.step !== step) continue;
-    result = line.event === "start" ? { status: "INTERRUPTED", pid: line.pid } : { status: "FINISHED", outcome: line.outcome!, ...(line.code ? { code: line.code } : {}) };
+    result = line.event === "start" ? { status: "INTERRUPTED", pid: line.pid }
+      : { status: "FINISHED", outcome: line.outcome!, ...(line.code ? { code: line.code } : {}), documents: line.documents ?? [] };
   }
   return result;
 }
@@ -111,8 +133,12 @@ export class Journal {
     this.append({ schemaVersion: 1, stage, step, event: "start", at, pid, ...this.identity });
   }
 
-  finish(stage: StageId, step: string, outcome: StepOutcome, at: string, code?: string, pid = process.pid): void {
-    this.append({ schemaVersion: 1, stage, step, event: "finish", at, pid, outcome, ...(code ? { code } : {}), ...this.identity });
+  finish(stage: StageId, step: string, outcome: StepOutcome, at: string, code?: string, extra: { exitCode?: number; documents?: JournalDocument[] } = {}, pid = process.pid): void {
+    this.append({
+      schemaVersion: 1, stage, step, event: "finish", at, pid, outcome, ...(code ? { code } : {}),
+      ...(extra.exitCode !== undefined ? { exitCode: extra.exitCode } : {}), ...(extra.documents && extra.documents.length > 0 ? { documents: extra.documents } : {}),
+      ...this.identity,
+    });
   }
 
   record(stage: StageId, step: string): StepRecord { return stepRecord(this.lines, stage, step); }

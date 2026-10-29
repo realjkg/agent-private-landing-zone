@@ -4,17 +4,17 @@ import { createInterface } from "node:readline";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { DEFAULT_CONFIG_PATH } from "../evidence-runner/config.js";
-import { unbuiltProbe } from "../evidence-runner/preflight.js";
+import { federatedProbe } from "../evidence-runner/identity.js";
 import { evidenceInit, evidenceRun, evidenceStatus, type RunnerDeps, type RunOptions, type Terminal } from "../evidence-runner/run.js";
+import { changedPathsOf, gitReader, sourceCommitOf } from "../evidence-runner/source.js";
 import { EXIT, STAGES, type StageId } from "../evidence-runner/types.js";
-import { resolveSourceCommit } from "../util/source-commit.js";
 
 /**
  * `./alz evidence init | run | status` (docs/evidence-runner.md): the owner's local live-evidence runner.
  *
  * A HANDOFF in the operation catalog: the console shows the command and never runs it. No flag carries a credential,
- * pre-answers the attestation, forces or skips a check; the only inputs are the configuration path, one stage name and
- * the dry-run and synthetic switches.
+ * pre-answers the attestation or a product phrase, forces or skips a check; the only inputs are the configuration path, one
+ * stage name and the dry-run and synthetic switches.
  */
 const root = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 
@@ -68,9 +68,12 @@ function processTerminal(): Terminal {
 }
 
 export async function runEvidenceCommand(argv: readonly string[], overrides: Partial<RunnerDeps> = {}): Promise<number> {
+  const base = overrides.root ?? root;
+  const env = overrides.env ?? process.env;
+  const git = gitReader(base, env);
   const deps: RunnerDeps = {
-    root, env: process.env, terminal: processTerminal(), host: hostname(), now: () => new Date(), probe: unbuiltProbe,
-    source: () => resolveSourceCommit(overrides.root ?? root, overrides.env ?? process.env), out: (line) => console.log(line),
+    root, env: process.env, terminal: processTerminal(), host: hostname(), now: () => new Date(), probe: federatedProbe(env),
+    source: () => sourceCommitOf(base, git, env), changedPaths: (from, to) => changedPathsOf(git, from, to), out: (line) => console.log(line),
     ...overrides,
   };
   const parsed = parseEvidenceArgs(argv);
