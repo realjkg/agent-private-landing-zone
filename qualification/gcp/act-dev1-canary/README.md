@@ -40,7 +40,7 @@ Exactly **1 create**: `google_pubsub_topic.act_dev1`. Anything else means a chan
 
 ## Read-back to verify after apply
 
-`./alz apply observe --sealed SEALED_PLAN` reads the topic as DISCOVERY through Google's REST API (`GCP_REST`). It confirms that the topic exists by its exact name, and sweeps the project's resources for the unit label. The reader can also compare `messageStoragePolicy.allowedPersistenceRegions` with the contract's region (a mismatch is never `VERIFIED`). Wiring that comparison into `observe` waits for lane AZ-1's location check (#343). Until then, the owner reads the policy in E7 of the evidence checklist. This checks one Pub/Sub property. It is **not** a data-residency claim for the topic, the project or Google's processing.
+`./alz apply observe --sealed SEALED_PLAN` reads the topic as DISCOVERY through Google's REST API (`GCP_REST`). It confirms that the topic exists by its exact name, and that `messageStoragePolicy.allowedPersistenceRegions` is exactly `[<region>]`. If the policy names any other region, the observation fails (`DIFFERENT_FROM_DESIRED`, `LOCATION_NOT_IN_CONTRACT`). The observation also sweeps the project's resources for the unit label. This checks one Pub/Sub property. It is **not** a data-residency claim for the topic, the project or Google's processing.
 
 What the topic must show:
 

@@ -259,7 +259,7 @@ const PROVIDER_CONFIG = { google: { name: "google", full_name: GOOGLE, expressio
 /** What init saves for the gcs backend: the contract's bucket and prefix; the credential settings stay null (filled at apply from the APPLY env). */
 const SAVED = { type: "gcs", config: { bucket: BUCKET, prefix: "pilot/dev", credentials: null, impersonate_service_account: null, access_token: null, storage_custom_endpoint: null } };
 
-type Cloud = { topics: Set<string>; tagged: string[]; requests: GcpRequest[] };
+type Cloud = { topics: Set<string>; tagged: string[]; requests: GcpRequest[]; regions?: unknown };
 function fakeGoogle(cloud: Cloud): GcpHttp {
   return async (request) => {
     cloud.requests.push(request);
@@ -268,8 +268,8 @@ function fakeGoogle(cloud: Cloud): GcpHttp {
     if (request.method === "POST" && url.host === "iamcredentials.googleapis.com") return { status: 200, body: JSON.stringify({ accessToken: ACCESS_CANARY, expireTime: "2026-10-27T15:00:00Z" }) };
     if (request.method === "GET" && url.host === "pubsub.googleapis.com") {
       const name = url.pathname.replace(/^\/v1\//, "");
-      // The topic reports the storage policy it was created with (D11).
-      const policy = { messageStoragePolicy: { allowedPersistenceRegions: [REGION] } };
+      // The topic reports the storage policy it was created with (D11), unless a test says otherwise (null: none at all).
+      const policy = cloud.regions === undefined ? { messageStoragePolicy: { allowedPersistenceRegions: [REGION] } } : cloud.regions === null ? {} : { messageStoragePolicy: { allowedPersistenceRegions: cloud.regions } };
       return cloud.topics.has(name) ? { status: 200, body: JSON.stringify({ name, labels: {}, ...policy }) } : { status: 404, body: "{}" };
     }
     if (request.method === "GET" && url.host === "cloudasset.googleapis.com") return { status: 200, body: JSON.stringify({ results: cloud.tagged.map((name) => ({ name })) }) };
@@ -666,4 +666,28 @@ test("R1 and R2 of G1 through the seal and the apply: a topic with CMEK, a schem
   assert.equal((moved as { code: string }).code, "TARGET_NOT_IN_CONTRACT", JSON.stringify(moved));
   assert.match((moved as { message: string }).message, /LOCATION_NOT_IN_CONTRACT/);
   assert.ok(callsOf(fakeDir).every((c) => c.args[0] !== "apply"), "nothing applied");
+});
+
+test("D11 read-back (G1): observation compares the topic's storage policy with the contract's region; another region FAILS as DIFFERENT_FROM_DESIRED and no cleanup is proposed, a missing policy is not observable yet", async () => {
+  const w = world();
+  const s = await seal(w);
+  assert.ok((await apply(w, s)).ok);
+  const resultOf = async (regions: unknown) => {
+    w.cloud.regions = regions;
+    const observed = await observeRun(s.sealed.artifactSha256, w.observe());
+    assert.ok(observed.ok, JSON.stringify(observed));
+    const topic = observed.record.resources.find((r) => r.address === "google_pubsub_topic.unit")!;
+    return [observed.record.verdict, topic.result, topic.reason];
+  };
+  // PARTIAL overall only because this fixture's state also holds types the reader has no read for (named, never assumed).
+  assert.deepEqual(await resultOf(undefined), ["PARTIAL", "VERIFIED", undefined], "exactly the contract's region");
+  assert.deepEqual(await resultOf(["us-central1"]), ["FAILED", "DIFFERENT_FROM_DESIRED", "LOCATION_NOT_IN_CONTRACT"]);
+  assert.deepEqual(await resultOf([REGION, "us-central1"]), ["FAILED", "DIFFERENT_FROM_DESIRED", "LOCATION_NOT_IN_CONTRACT"], "a second region");
+  const records = await loadRunRecords(s.sealed.artifactSha256, w.evidenceDir);
+  assert.ok(records.ok);
+  const contract = loadPilotContract(w.contractPath) as PilotContract;
+  const built = buildCleanupProposal({ requesterId: REQUESTER.requesterId, ...records, changes: s.sealed.changes, channel: "CLI", contract, engineVersion: s.sealed.engineVersion, env: w.deps.env!, now: new Date(NOW.getTime() + 120_000) });
+  assert.equal(built.ok, false, "a run whose topic is stored elsewhere gets no product cleanup (D11)");
+  assert.equal((built as { code?: string }).code, "OBSERVATION_INCONCLUSIVE");
+  assert.deepEqual(await resultOf(null), ["INCONCLUSIVE", "NOT_YET_OBSERVABLE", "STORAGE_POLICY_NOT_READ"], "no policy in the answer is unknown, never assumed");
 });

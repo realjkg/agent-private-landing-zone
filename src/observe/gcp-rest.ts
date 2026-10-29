@@ -34,12 +34,10 @@ import type { ResourceCheck, ResourceReader, VerifierId } from "./verify.js";
  * the EMULATED run of test/apply-emulated-gcp.test.ts; what Google accepts is GF8, UNVERIFIED).
  *
  * D11 read-back (G1): for `google_pubsub_topic`, when the reader is given the contract's region (`storagePolicyRegion`), the
- * topic's `messageStoragePolicy.allowedPersistenceRegions` must be exactly that one region. Anything else is never PRESENT: a
- * different value is UNKNOWN with reason STORAGE_POLICY_MISMATCH, and a missing or unreadable one UNKNOWN with
- * STORAGE_POLICY_NOT_READ, so the observation can never be VERIFIED and no cleanup is proposed (fail closed). This names one Pub/Sub
- * property; it is not a data-residency claim. NOT YET WIRED: `openReader` (src/apply/observe.ts) does not pass the region, and a
- * mismatch is not yet a FAILED verdict. Both wait for lane AZ-1's `misplaced` check (#343), which owns src/apply/observe.ts and
- * src/observe/verify.ts; the follow-up passes the target's region there and reports a mismatch as `misplaced`.
+ * topic's `messageStoragePolicy.allowedPersistenceRegions` must be exactly that one region. `openReader` (src/apply/observe.ts)
+ * passes the contract target's region. A different value is PRESENT and `misplaced` (the shared check of #343): the observation
+ * FAILS and the resource is DIFFERENT_FROM_DESIRED, so no cleanup is proposed. A missing or unreadable policy is UNKNOWN
+ * (STORAGE_POLICY_NOT_READ), never assumed. This names one Pub/Sub property; it is not a data-residency claim.
  *
  * Requests: the two POSTs above, each to its one exact URL, and GETs over https to the read hosts only (`READ_HOSTS`). Nothing
  * else is sent: another host, scheme, port or userinfo, or a path the URL parser would rewrite, is refused before a request exists,
@@ -247,7 +245,7 @@ export function createDiscoveryGcpReader(options: DiscoveryGcpOptions): { reader
     const regions = typeof policy === "object" && policy !== null ? (policy as { allowedPersistenceRegions?: unknown }).allowedPersistenceRegions : undefined;
     if (!Array.isArray(regions) || !regions.every((item) => typeof item === "string")) return { ...base, identifier, existence: "UNKNOWN", reason: "STORAGE_POLICY_NOT_READ" };
     return regions.length === 1 && regions[0] === region ? { ...base, identifier, existence: "PRESENT" }
-      : { ...base, identifier, existence: "UNKNOWN", reason: "STORAGE_POLICY_MISMATCH" };
+      : { ...base, identifier, existence: "PRESENT", misplaced: true };
   };
 
   /**

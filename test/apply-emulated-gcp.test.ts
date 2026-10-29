@@ -24,7 +24,7 @@ import { APPLY_ADAPTER, CLEANUP_ADAPTER } from "../src/apply/terraform.js";
 import type { ApplyEvidence, ApplyResult, PilotContract, SignedApproval } from "../src/apply/types.js";
 import { pilotUnitOf } from "../src/apply/unit.js";
 import { readEncryptedEvidence } from "../src/evidence/vault.js";
-import { createDiscoveryGcpReader, type GcpHttp } from "../src/observe/gcp-rest.js";
+import type { GcpHttp } from "../src/observe/gcp-rest.js";
 import { ADAPTER_VERSION, terraformArgvDigest } from "../src/teardown/driver/adapters/terraform.js";
 import { removeTree } from "../src/teardown/driver/cleanup.js";
 import type { ResolvedTarget } from "../src/teardown/driver/types.js";
@@ -490,7 +490,7 @@ describe("GCP Terraform through the real driver: real Terraform and google 8.9.0
     const connects = emulator.log().filter((e) => e.connect).map((e) => e.connect as string);
     assert.deepEqual([...new Set(connects.filter((c) => !EMULATED_HOSTS.map((h) => h + ":443").includes(c) && c !== VERSION_CHECK_HOST))], [], "no other host was contacted");
 
-    // The independent observation, as DISCOVERY, through the reader's own requests: per-host tokens (D15).
+    // The independent observation, as DISCOVERY, through the reader's own requests: per-host tokens (D15) and the storage policy read back (D11).
     const observed = await observeRun(s.sealed.artifactSha256, observeDeps());
     assert.ok(observed.ok, JSON.stringify(observed));
     assert.equal(observed.record.verifier, "GCP_REST");
@@ -530,21 +530,20 @@ describe("GCP Terraform through the real driver: real Terraform and google 8.9.0
     assert.equal((await topics()).filter((t) => t.name.includes("refused")).length, 0, "nothing was created");
   });
 
-  it("the reader compares the storage policy (D11) on the real topic: another region is never PRESENT; a hand-deleted topic observes as FAILED (missing), the expected absence result", async () => {
+  it("observation reads the storage policy back: a topic stored elsewhere FAILS as DIFFERENT_FROM_DESIRED and gets no cleanup proposal; a hand-deleted topic observes as FAILED (missing), the expected absence result", async () => {
     const s = await seal("alz-act-dev-1-policy-01");
     assert.ok((await run(s)).ok);
     const name = topicName("alz-act-dev-1-policy-01");
-    const entry = { address: "google_pubsub_topic.act_dev1", type: "google_pubsub_topic", id: name, arn: null, origin: "IN_PLAN" as const };
-    // The reader itself, given the contract's region, against the topic the real provider created. Wiring the region through
-    // openReader, and a FAILED verdict for a mismatch, wait for AZ-1's misplaced check (#343); see src/observe/gcp-rest.ts.
-    const checkWithRegion = async () => {
-      const opened = createDiscoveryGcpReader({ env, projectId: PROJECT, storagePolicyRegion: REGION, http: viaEmulator });
-      try { return await opened.reader.check(entry); } finally { opened.close(); }
-    };
-    assert.deepEqual([(await checkWithRegion()).existence], ["PRESENT"], "the provider created it in the contract's region");
     await control("/topics/regions", { name, regions: ["us-central1"] });
-    const moved = await checkWithRegion();
-    assert.deepEqual([moved.existence, moved.reason], ["UNKNOWN", "STORAGE_POLICY_MISMATCH"]);
+    const moved = await observeRun(s.sealed.artifactSha256, observeDeps());
+    assert.ok(moved.ok);
+    assert.equal(moved.record.verdict, "FAILED");
+    assert.deepEqual(moved.record.resources.map((r) => [r.result, r.reason]), [["DIFFERENT_FROM_DESIRED", "LOCATION_NOT_IN_CONTRACT"]]);
+    const records = await loadRunRecords(s.sealed.artifactSha256, evidenceDir);
+    assert.ok(records.ok);
+    const built = buildCleanupProposal({ requesterId: REQUESTER.requesterId, ...records, changes: s.sealed.changes, channel: "CLI", contract: loadPilotContract(contractPath) as PilotContract, engineVersion: s.sealed.engineVersion, env, now: new Date(NOW.getTime() + 120_000) });
+    assert.equal(built.ok, false);
+    assert.equal((built as { code: string }).code, "OBSERVATION_INCONCLUSIVE");
     // Review note N-3 of the API record: a person deletes the topic by hand, and observing again reports it missing (FAILED).
     await control("/topics/delete", { name });
     const gone = await observeRun(s.sealed.artifactSha256, observeDeps());
