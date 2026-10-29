@@ -16,6 +16,8 @@ import { openNonceStore } from "../src/apply/nonces.js";
 import { loadRunRecords, observeRun, verifyProposalLeftovers, type ObserveDeps } from "../src/apply/observe.js";
 import { GCP } from "../src/apply/providers/gcp.js";
 import { readBlueprintRecord, verificationOf } from "../src/apply/run-records.js";
+import { readCleanupEvidence } from "../src/apply/ledger.js";
+import { buildLifecycleReport, lifecycleReportProblems } from "../src/apply/lifecycle-report.js";
 import { readAppliedEvidence } from "../src/apply/live-record.js";
 import { loadSealedPlan } from "../src/apply/seal.js";
 import type { PilotContract, SignedApproval } from "../src/apply/types.js";
@@ -217,6 +219,8 @@ describe("EMULATED: GCP API-native through the real driver over a loopback Googl
     assert.equal(observation.record.verifier, "GCP_REST");
     assert.equal(observation.record.verdict, "VERIFIED");
     assert.equal(observation.record.sourceCommit, SOURCE_COMMIT);
+    assert.equal(observation.report.sweepControl, "PASSED");
+    assert.equal(observation.record.sweepControlPassedAt, observation.record.observedAt, "the sweep listed the run's own topic: the control passed");
     assert.equal(observation.record.inventory, "COMPLETE");
     assert.deepEqual(observation.record.unexpected, []);
 
@@ -251,6 +255,8 @@ describe("EMULATED: GCP API-native through the real driver over a loopback Googl
     assert.equal(leftovers.record.verifier, "GCP_REST");
     const topic = leftovers.record.resources.find((r) => r.address === s.sealed.changes[0].address)!;
     assert.deepEqual([topic.disposition, topic.basis], ["CONFIRMED_DELETED", "GCP_REST_ABSENT"]);
+    // #359 review N1: an observation of this run passed the sweep's positive control, so "no strays" is PROVEN and the record is clean.
+    assert.deepEqual([leftovers.record.strays, leftovers.record.disposition, leftovers.record.sweep], ["PROVEN", "COMPLETE", "COMPLETE"]);
     noSecrets([applied, observation, cleaned, leftovers]);
     // Every request went to one of the four emulated Google hosts; DISCOVERY only read and APPLY only created and deleted.
     for (const e of emulator.log()) assert.ok(!e.refused, JSON.stringify(e));
@@ -336,6 +342,60 @@ describe("EMULATED: GCP API-native through the real driver over a loopback Googl
     const later = await observeRun(s.sealed.artifactSha256, w.observe(300_000));
     assert.ok(later.ok, JSON.stringify(later));
     assert.deepEqual([later.record.verdict, later.record.inventory, later.report.sweepNotListing], ["VERIFIED", "COMPLETE", undefined]);
+    emulator.topics.clear();
+  });
+
+  test("#359 review N1 through the real driver: when no observation of the run ever passed the sweep's positive control, verify-cleanup records \"no strays\" UNPROVEN, never COMPLETE, and the lifecycle report's leftovers stage is not PASS; a pass is carried forward", async () => {
+    emulator.topics.clear();
+    const w = world();
+    const s = await seal(w);
+    const applied = await apply(w, s);
+    assert.ok(applied.ok, JSON.stringify(applied));
+    // Cloud Asset never lists the topic (a query Google accepts but that matches nothing looks the same): every observation is INCONCLUSIVE.
+    emulator.behave({ unindexed: [nameOf(s)] });
+    let left;
+    let proposal: CleanupProposal;
+    try {
+      const observed = await observeRun(s.sealed.artifactSha256, w.observe());
+      assert.ok(observed.ok, JSON.stringify(observed));
+      assert.deepEqual([observed.record.verdict, observed.report.sweepControl, observed.record.sweepControlPassedAt], ["INCONCLUSIVE", "NOT_PASSED", null]);
+      // The coordinator's decision: cleanup does not wait for the sweep. The run's own verified topic is proposed and deleted.
+      const built = await propose(w, s);
+      assert.ok(built.ok, JSON.stringify(built));
+      proposal = signCleanupProposal(built.proposal, REQUESTER.privateKeyPem);
+      const cleaned = await cleanup(w, s, proposal, [cleanupApproval(proposal, "alice")]);
+      assert.ok(cleaned.ok && cleaned.evidence.deletedByRun === true, JSON.stringify(cleaned));
+      left = await verifyProposalLeftovers(proposal, w.observe(600_000));
+    } finally { emulator.behave({}); }
+    assert.ok(left.ok, JSON.stringify(left));
+    // Every proposed resource is confirmed gone and the sweep is complete and empty, but nothing shows the query matches: UNPROVEN.
+    assert.deepEqual(left.record.resources.map((r) => r.disposition), ["CONFIRMED_DELETED"]);
+    assert.deepEqual([left.record.strays, left.record.sweep, left.record.disposition], ["UNPROVEN", "COMPLETE", "INCOMPLETE"]);
+    assert.match(left.record.nextAction, /"no strays" is UNPROVEN/);
+    assert.match(left.record.nextAction, /not a clean leftovers result/);
+    // The lifecycle report never presents it as a pass.
+    const records = await loadRunRecords(s.sealed.artifactSha256, w.deps.evidenceDir!);
+    assert.ok(records.ok);
+    const report = buildLifecycleReport({
+      gateId: "act:gcp-gcp_api", provider: "GCP", engine: "GCP_API", applyEvidence: records.applyEvidence, observation: records.observation, proposal: proposal!,
+      cleanup: await readCleanupEvidence(proposal!.proposalSha256, w.deps.evidenceDir!), leftovers: left.record, live: undefined, now: new Date(NOW.getTime() + 700_000),
+    });
+    assert.equal(report.stages.leftovers.status, "INCONCLUSIVE");
+    assert.equal(report.passed, false);
+    assert.deepEqual(lifecycleReportProblems(report), []);
+
+    // A second run that passed the control once keeps the proof through a later observation that does not pass it.
+    emulator.topics.clear();
+    const t = await seal(w);
+    assert.ok((await apply(w, t)).ok);
+    const first = await observeRun(t.sealed.artifactSha256, w.observe());
+    assert.ok(first.ok && first.report.sweepControl === "PASSED");
+    emulator.behave({ unindexed: [nameOf(t)] });
+    let second;
+    try { second = await observeRun(t.sealed.artifactSha256, w.observe(120_000)); } finally { emulator.behave({}); }
+    assert.ok(second.ok);
+    assert.equal(second.report.sweepControl, "NOT_PASSED");
+    assert.equal(second.record.sweepControlPassedAt, first.record.observedAt, "the earlier pass is carried forward");
     emulator.topics.clear();
   });
 

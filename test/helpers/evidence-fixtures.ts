@@ -144,7 +144,7 @@ export function applyScript(overrides: Record<string, FakeChild | number> = {}, 
   const artifact = artifactOf(path);
   const a12 = artifact.slice(0, 12);
   const p12 = createHash("sha256").update("proposal " + path).digest("hex").slice(0, 12);
-  const [cloud, engine] = path === "aws-cdk" ? ["AWS", "CDK"] : path === "azure-bicep" ? ["AZURE", "BICEP"] : [path.split("-")[0].toUpperCase(), "TERRAFORM"];
+  const [cloud, engine] = path === "aws-cdk" ? ["AWS", "CDK"] : path === "azure-bicep" ? ["AZURE", "BICEP"] : path === "gcp-api" ? ["GCP", "GCP_API"] : [path.split("-")[0].toUpperCase(), "TERRAFORM"];
   return {
     "apply contract-check": 0,
     "apply identity-check": (request) => { write(request.cwd, ".runs/apply/identity-delivery/delivered-" + path + "-2026-10-29T00-00-00-000Z-" + randomBytes(4).toString("hex") + ".json"); return { exitCode: 0, signal: null }; },
@@ -162,7 +162,8 @@ export function applyScript(overrides: Record<string, FakeChild | number> = {}, 
     "apply propose-cleanup": (request) => { write(request.cwd, ".runs/apply/cleanup/" + p12 + ".cleanup-proposal.json"); return { exitCode: 0, signal: null }; },
     "apply cleanup": 0,
     "apply verify-cleanup": 0,
-    "apply report": (request) => { write(request.cwd, ".runs/apply/reports/" + a12 + "-lifecycle-" + p12 + ".json"); return { exitCode: 0, signal: null }; },
+    // A lifecycle report whose leftovers stage passed: what the runner reads for a GCP path's cleanup (#359 review N1).
+    "apply report": (request) => { write(request.cwd, ".runs/apply/reports/" + a12 + "-lifecycle-" + p12 + ".json", JSON.stringify({ reportKind: "ACT_LIFECYCLE", stages: { leftovers: { status: "PASS" } } })); return { exitCode: 0, signal: null }; },
     "apply record-live": (request) => {
       write(request.cwd, "config/acceptance/evidence/" + cloud.toLowerCase() + "-" + engine.toLowerCase() + "-execute-dev-" + a12 + ".json",
         JSON.stringify(options.live ?? { schemaVersion: 1, label: "LIVE", step: "execute", cloud, engine, sourceCommit: CONTRACT_COMMIT, contractSha256: "c".repeat(64) }));

@@ -95,6 +95,12 @@ export type ObservationRecord = {
   unexpected: string[];
   inventory: ObserveReport["inventory"];
   observedAt: string;
+  /**
+   * GCP_REST only (absent for the other clouds; #359 review N1): when an observation of this run first passed the sweep's positive
+   * control (`ObserveReport.sweepControl`), or null when none has. Carried forward from the run's earlier observation record, so a
+   * later observation (after a hand deletion, say) never erases the proof. A record written before this field existed reads as null.
+   */
+  sweepControlPassedAt?: string | null;
 };
 
 /** The disposition of one proposed resource after a cleanup, in the journey's words. */
@@ -134,6 +140,13 @@ export type LeftoversRecord = {
   disposition: "COMPLETE" | "KNOWN_ADDRESSES_CONFIRMED" | "INCOMPLETE";
   /** Resources outside the engine's state were looked for by the run's unit tag, or could not be (NOT_AVAILABLE). */
   sweep: "COMPLETE" | "INCOMPLETE" | "NOT_AVAILABLE";
+  /**
+   * GCP_REST only (absent for the other clouds; #359 review N1): whether this record's "nothing else carries the run's labels" is
+   * proven. PROVEN when an observation of this run passed the sweep's positive control (the sweep listed the run's own topic), so the
+   * query is shown to match; UNPROVEN otherwise, and then the record is never COMPLETE: an empty sweep may only mean the query matches
+   * nothing (GF3).
+   */
+  strays?: "PROVEN" | "UNPROVEN";
   /** What a person does next when the disposition is INCOMPLETE. */
   nextAction: string;
   observedAt: string;
@@ -208,7 +221,12 @@ export function observationRecordProblems(value: unknown): string[] {
   const problems: string[] = [];
   const keys = ["schemaVersion", "kind", "artifactSha256", "applyEvidenceSha256", "blueprintSha256", "environment", "target", "sourceCommit", "contractSha256", "verifier",
     "verifierBinarySha256", "verdict", "resources", "missingFromState", "unexpected", "inventory", "observedAt"];
-  for (const key of Object.keys(value)) if (!keys.includes(key)) problems.push("observation record." + key + (RAW_KEY.test(key) ? ": raw state or output field" : ": not part of the record"));
+  // GCP_REST only: the first time an observation of this run passed the sweep's positive control, or null (#359 review N1).
+  if (Object.hasOwn(value, "sweepControlPassedAt")) {
+    if (value.verifier !== "GCP_REST") problems.push("observation record.sweepControlPassedAt: GCP_REST only");
+    else if (value.sweepControlPassedAt !== null && !isoText(value.sweepControlPassedAt)) problems.push("observation record.sweepControlPassedAt: a time or null");
+  }
+  for (const key of Object.keys(value)) if (key !== "sweepControlPassedAt" && !keys.includes(key)) problems.push("observation record." + key + (RAW_KEY.test(key) ? ": raw state or output field" : ": not part of the record"));
   for (const key of keys) if (!Object.hasOwn(value, key)) problems.push("observation record." + key + ": missing");
   if (problems.length > 0) return problems;
   if (value.schemaVersion !== 1 || value.kind !== "OBSERVATION") problems.push("observation record: not a schemaVersion 1 OBSERVATION");
@@ -248,7 +266,11 @@ export function leftoversRecordProblems(value: unknown): string[] {
   const problems: string[] = [];
   const keys = ["schemaVersion", "kind", "proposalSha256", "artifactSha256", "applyEvidenceSha256", "cleanupEvidenceSha256", "environment", "target", "sourceCommit", "contractSha256",
     "verifier", "verifierBinarySha256", "resources", "disposition", "sweep", "nextAction", "observedAt"];
-  for (const key of Object.keys(value)) if (!keys.includes(key)) problems.push("leftovers record." + key + (RAW_KEY.test(key) ? ": raw state or output field" : ": not part of the record"));
+  // GCP_REST records say whether "no strays" is proven (#359 review N1); the other clouds' records never carry it.
+  if (value.verifier === "GCP_REST" && value.strays !== "PROVEN" && value.strays !== "UNPROVEN") problems.push("leftovers record.strays: a GCP_REST record says PROVEN or UNPROVEN");
+  if (value.verifier !== "GCP_REST" && Object.hasOwn(value, "strays")) problems.push("leftovers record.strays: GCP_REST only");
+  if (value.strays === "UNPROVEN" && value.disposition === "COMPLETE") problems.push("leftovers record: COMPLETE needs \"no strays\" proven; an unproven sweep is never a clean result");
+  for (const key of Object.keys(value)) if (key !== "strays" && !keys.includes(key)) problems.push("leftovers record." + key + (RAW_KEY.test(key) ? ": raw state or output field" : ": not part of the record"));
   for (const key of keys) if (!Object.hasOwn(value, key)) problems.push("leftovers record." + key + ": missing");
   if (problems.length > 0) return problems;
   if (value.schemaVersion !== 1 || value.kind !== "LEFTOVERS") problems.push("leftovers record: not a schemaVersion 1 LEFTOVERS");

@@ -125,11 +125,17 @@ export async function observeRun(artifactSha256: string, deps: ObserveDeps): Pro
     opened.close();
   }
   const resources = observedResourcesOf(report.checks, blueprint);
+  const observedAt = (deps.now ?? (() => new Date()))().toISOString();
+  // GCP_REST (#359 review N1): when an observation of this run first passed the sweep's positive control. An earlier record's proof is
+  // carried forward, so observing again (after a hand deletion, say) never erases it; a record of another blueprint proves nothing here.
+  const earlier = report.verifier === "GCP_REST" ? await readObservationRecord(artifactSha256, applyEvidenceSha256, deps.evidenceDir) : undefined;
+  const carried = earlier && earlier.blueprintSha256 === recordSha256(blueprint) && earlier.verifier === "GCP_REST" ? earlier.sweepControlPassedAt ?? null : null;
   const record: ObservationRecord = {
     schemaVersion: 1, kind: "OBSERVATION", artifactSha256, applyEvidenceSha256, blueprintSha256: recordSha256(blueprint), environment: applied.environment, target: { ...applied.target },
     sourceCommit: applied.sourceCommit, contractSha256: applied.contractSha256, verifier: report.verifier,
     verifierBinarySha256: opened.binarySha256, verdict: report.verdict, resources,
-    missingFromState: [...report.missingFromState], unexpected: [...report.unexpected], inventory: report.inventory, observedAt: (deps.now ?? (() => new Date()))().toISOString(),
+    missingFromState: [...report.missingFromState], unexpected: [...report.unexpected], inventory: report.inventory, observedAt,
+    ...(report.verifier === "GCP_REST" ? { sweepControlPassedAt: carried ?? (report.sweepControl === "PASSED" ? observedAt : null) } : {}),
   };
   const written = await writeObservationRecord(record, deps.evidenceDir);
   if (written !== "WRITTEN") return refuse("EVIDENCE_REJECTED", "The observation could not be recorded (" + written + ").");
@@ -164,9 +170,13 @@ export async function verifyProposalLeftovers(proposal: CleanupProposal, deps: O
   if (!blueprint || recordSha256(blueprint) !== proposal.blueprintSha256) return refuse("RUN_RECORD_MISSING", "The blueprint this proposal names is not the one recorded for this apply.");
   const knownIdentifiers = [...blueprint.blueprint.entries.flatMap((entry) => [entry.arn, entry.id]), blueprint.blueprint.container?.identifier ?? null].filter((x): x is string => x !== null);
   const cleanup = await readCleanupEvidence(proposal.proposalSha256, deps.evidenceDir);
+  // GCP_REST (#359 review N1): "no strays" is proven only if an observation of this run passed the sweep's positive control.
+  const observed = opened.reader.verifier === "GCP_REST" ? await readObservationRecord(proposal.artifactSha256, proposal.applyEvidenceSha256, deps.evidenceDir) : undefined;
+  const sweepProven = opened.reader.verifier !== "GCP_REST" ? undefined
+    : observed !== undefined && observed.blueprintSha256 === proposal.blueprintSha256 && typeof observed.sweepControlPassedAt === "string";
   let record: LeftoversRecord;
   try {
-    record = await verifyLeftovers({
+    record = await verifyLeftovers({ ...(sweepProven !== undefined ? { sweepProven } : {}),
       proposal, cleanup, cleanupEvidenceSha256: cleanup ? sha256(canonicalJson(cleanup as never)) : null, unitId: proposal.unitId, knownIdentifiers, reader: opened.reader,
       verifierBinarySha256: opened.binarySha256, now: (deps.now ?? (() => new Date()))(),
     });

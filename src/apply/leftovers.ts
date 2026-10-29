@@ -23,6 +23,11 @@ export type LeftoversInput = {
   unitId: string | null;
   /** Every identifier the blueprint record holds for this run's resources (ARNs and ids): what a tag listing may name without being a leftover. */
   knownIdentifiers: readonly string[];
+  /**
+   * GCP_REST only (#359 review N1): whether an observation of this run passed the sweep's positive control. Absent for the other
+   * clouds, whose records are unchanged. False: the record says strays UNPROVEN and is never COMPLETE.
+   */
+  sweepProven?: boolean;
   /** SHA-256 of the verifier program that ran (the aws CLI), or null when the reader runs in process (Azure) or in a test. */
   verifierBinarySha256: string | null;
   now: Date;
@@ -111,7 +116,10 @@ export async function verifyLeftovers(input: LeftoversInput): Promise<LeftoversR
   const known = resources.length > 0 && resources.every((x) => x.disposition === "CONFIRMED_DELETED" || x.disposition === "INTENTIONALLY_RETAINED");
   // COMPLETE needs both: every named resource settled, and a complete sweep by the run's unit tag that found nothing else.
   const unreviewed = resources.filter((x) => x.basis === "UNREVIEWED_TYPE");
-  const disposition: LeftoversRecord["disposition"] = !known || unreviewed.length > 0 ? "INCOMPLETE" : sweep === "COMPLETE" ? "COMPLETE" : sweep === "NOT_AVAILABLE" ? "KNOWN_ADDRESSES_CONFIRMED" : "INCOMPLETE";
+  // GCP_REST: an empty sweep proves "no strays" only after an observation showed the sweep listing the run's own topic (#359 review N1).
+  const strays: LeftoversRecord["strays"] = reader.verifier !== "GCP_REST" ? undefined : input.sweepProven === true ? "PROVEN" : "UNPROVEN";
+  const unproven = strays === "UNPROVEN" && known && unreviewed.length === 0 && sweep === "COMPLETE";
+  const disposition: LeftoversRecord["disposition"] = !known || unreviewed.length > 0 || unproven ? "INCOMPLETE" : sweep === "COMPLETE" ? "COMPLETE" : sweep === "NOT_AVAILABLE" ? "KNOWN_ADDRESSES_CONFIRMED" : "INCOMPLETE";
   const open = resources.filter((x) => x.disposition !== "CONFIRMED_DELETED" && x.disposition !== "INTENTIONALLY_RETAINED");
   const retained = resources.filter((x) => x.disposition === "INTENTIONALLY_RETAINED");
   // COMPLETE says only what the record shows: how many listed resources are confirmed gone, whether an approved cleanup ran at all, what was kept (left in
@@ -122,6 +130,8 @@ export async function verifyLeftovers(input: LeftoversInput): Promise<LeftoversR
       : "Approved resources deleted: every listed resource (" + gone + ") is confirmed gone and nothing else carries this run's tag.") +
       (retained.length > 0 ? " Protected or pre-existing objects intentionally retained (" + retained.length + ", kept by " + [...new Set(retained.map((x) => x.owner))].sort().join(" and ") + "); they were never on the list, were left in place and were not read." : "") +
       " Full environment retirement is a separate, reviewed action and remains outstanding; this record does not claim the environment retired."
+    : unproven
+      ? "Every proposed resource is confirmed gone and the sweep by the run's labels listed nothing, but \"no strays\" is UNPROVEN: no observation of this run ever showed the sweep listing the run's own topic, so an empty sweep may only mean the query matches nothing (GF3). This is not a clean leftovers result. Record it as a GF3 finding; a person confirms by hand (Cloud Asset or the console) that nothing else carries the run's labels."
     : disposition === "KNOWN_ADDRESSES_CONFIRMED"
       ? "Every proposed resource is confirmed gone, but resources outside the engine's state were not searched for: this run carries no deletion-unit tag, so the cleanup is not independently complete. A person confirms by hand that nothing else of this run remains, or the run is applied with its unit tag so the sweep can run."
     : open.some((x) => x.disposition === "DELETION_PENDING" && x.basis === "CLEANUP_NOT_FINISHED") ? (cleanup === undefined
@@ -138,5 +148,6 @@ export async function verifyLeftovers(input: LeftoversInput): Promise<LeftoversR
     schemaVersion: 1, kind: "LEFTOVERS", proposalSha256: proposal.proposalSha256, artifactSha256: proposal.artifactSha256, applyEvidenceSha256: proposal.applyEvidenceSha256,
     cleanupEvidenceSha256: input.cleanupEvidenceSha256, environment: proposal.environment, target: { ...proposal.target }, sourceCommit: proposal.sourceCommit, contractSha256: proposal.contractSha256,
     verifier: reader.verifier, verifierBinarySha256: input.verifierBinarySha256, resources, disposition, sweep, nextAction, observedAt: input.now.toISOString(),
+    ...(strays ? { strays } : {}),
   };
 }

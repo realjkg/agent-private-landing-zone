@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import type { ResourceReader } from "../src/observe/verify.js";
 
 import { consumeApprovals, signApproval } from "../src/apply/approval.js";
 import { MATERIAL_RISKS, PROTECTION_REASONS, buildCleanupProposal, computeProposalSha256, isAwsIdentityType, signCleanupProposal, proposalProblems, protectedDeletionIn, verifyCleanupProposal, type CleanupProposal } from "../src/apply/cleanup-proposal.js";
@@ -718,6 +719,45 @@ test("leftovers are COMPLETE only with a complete deletion-unit sweep, and a che
   const stray = await check(false, "unit-1", ["arn:aws:sqs:us-east-1:111111111111:stray"]);
   assert.equal(stray.disposition, "INCOMPLETE");
   assert.deepEqual(stray.resources.filter((r) => r.address === "(not in state)").map((r) => [r.identifier, r.disposition]), [["arn:aws:sqs:us-east-1:111111111111:stray", "STILL_PRESENT"]]);
+  // #359 review N1 is GCP_REST's alone: an AWS record carries no strays field, ignores sweepProven, and is COMPLETE exactly as before.
+  assert.equal(Object.hasOwn(complete, "strays"), false);
+  const ignored = await verifyLeftovers({
+    proposal, cleanup: undefined, cleanupEvidenceSha256: null, unitId: "unit-1", knownIdentifiers: [BUCKET, BUCKET_ARN], region: "us-east-1", aws: cloud(false), verifierBinarySha256: null, now: NOW, sweepProven: false,
+  });
+  assert.deepEqual([ignored.disposition, Object.hasOwn(ignored, "strays")], ["COMPLETE", false]);
+  assert.match(leftoversRecordProblems({ ...complete, strays: "PROVEN" }).join(), /strays: GCP_REST only/);
+});
+
+test("#359 review N1: a GCP_REST leftovers record says whether \"no strays\" is proven; UNPROVEN is never COMPLETE, and an observation record carries the control's first pass for GCP_REST only", async () => {
+  const run = await proposed(world());
+  const proposal: CleanupProposal = { ...run.proposal, deletes: [{ address: "google_pubsub_topic.unit", type: "google_pubsub_topic", identifier: "projects/p-dev/topics/t", ownership: "RUN_CREATED", observed: "VERIFIED" }] as never, alreadyAbsent: [], excluded: [] };
+  const reader: ResourceReader = {
+    verifier: "GCP_REST",
+    check: async (e) => ({ address: e.address, type: e.type, identifier: e.id, existence: "ABSENT" }),
+    listTagged: async () => ({ identifiers: [], complete: true }),
+  };
+  const gcp = (sweepProven: boolean | undefined) => verifyLeftovers({ proposal, cleanup: undefined, cleanupEvidenceSha256: null, unitId: "alzu-0123456789abcdef0123", knownIdentifiers: [], reader, verifierBinarySha256: null, now: NOW, ...(sweepProven === undefined ? {} : { sweepProven }) });
+  const proven = await gcp(true);
+  assert.deepEqual([proven.strays, proven.sweep, proven.disposition], ["PROVEN", "COMPLETE", "COMPLETE"]);
+  assert.deepEqual(leftoversRecordProblems(proven), []);
+  for (const unproven of [await gcp(false), await gcp(undefined)]) {
+    assert.deepEqual([unproven.strays, unproven.sweep, unproven.disposition], ["UNPROVEN", "COMPLETE", "INCOMPLETE"]);
+    assert.match(unproven.nextAction, /"no strays" is UNPROVEN/);
+    assert.deepEqual(leftoversRecordProblems(unproven), []);
+  }
+  // A forged record cannot claim completion over an unproven sweep, nor drop the field.
+  assert.match(leftoversRecordProblems({ ...proven, strays: "UNPROVEN" }).join(), /COMPLETE needs "no strays" proven/);
+  assert.match(leftoversRecordProblems((({ strays: _s, ...rest }) => rest)(proven)).join(), /a GCP_REST record says PROVEN or UNPROVEN/);
+  assert.match(leftoversRecordProblems({ ...proven, strays: "MAYBE" }).join(), /PROVEN or UNPROVEN/);
+  // The observation record's field: GCP_REST only, a time or null.
+  const observation = { schemaVersion: 1, kind: "OBSERVATION", artifactSha256: "a".repeat(64), applyEvidenceSha256: "b".repeat(64), blueprintSha256: "c".repeat(64), environment: "DEV",
+    target: { account: "p-dev", backend: "GCP_API_NO_STATE", workspace: "default" }, sourceCommit: "d".repeat(40), contractSha256: "e".repeat(64), verifier: "GCP_REST", verifierBinarySha256: null,
+    verdict: "VERIFIED", resources: [], missingFromState: [], unexpected: [], inventory: "COMPLETE", observedAt: NOW.toISOString() };
+  assert.deepEqual(observationRecordProblems(observation), [], "a record written before the field existed still reads (as never passed)");
+  assert.deepEqual(observationRecordProblems({ ...observation, sweepControlPassedAt: null }), []);
+  assert.deepEqual(observationRecordProblems({ ...observation, sweepControlPassedAt: NOW.toISOString() }), []);
+  assert.match(observationRecordProblems({ ...observation, sweepControlPassedAt: "yesterday" }).join(), /a time or null/);
+  assert.match(observationRecordProblems({ ...observation, verifier: "AWS_CLOUD_CONTROL", sweepControlPassedAt: null }).join(), /GCP_REST only/);
 });
 
 test("a data-bearing resource the run created (owner decision 6440801434, item 2) is proposed as UNVERIFIABLE with its own risk sentence, is never read, never borrows another resource's absence, and keeps the leftover record INCOMPLETE (review 6442107608, N3)", async () => {

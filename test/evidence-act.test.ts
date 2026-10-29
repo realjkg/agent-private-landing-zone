@@ -8,7 +8,7 @@ import { runEvidenceCommand } from "../src/cli/evidence.js";
 import { spawnChild, type ChildRequest } from "../src/evidence-runner/child.js";
 import { Journal, readJournal, type JournalIdentity } from "../src/evidence-runner/journal.js";
 import {
-  ACT, ARTIFACT, AWS_CONTRACT, CANARY, CANDIDATE, MUTATION_ENV, OPERATOR_SESSION, actRoot, applyScript, fakeSpawner, fixtureDeps, fixtureRoot, scriptedTerminal, validConfig,
+  ACT, ARTIFACT, AWS_CONTRACT, artifactOf, CANARY, CANDIDATE, MUTATION_ENV, OPERATOR_SESSION, actRoot, applyScript, fakeSpawner, fixtureDeps, fixtureRoot, scriptedTerminal, validConfig,
   write, writeConfig, type FakeChild,
 } from "./helpers/evidence-fixtures.js";
 
@@ -163,6 +163,42 @@ test("cleanup:aws-terraform needs the act stage done, then runs the cleanup sequ
   const record = journalOf(root).find((line) => line.step === "record-live" && line.event === "finish")!;
   assert.equal(record.documents?.[0].path, ".runs/evidence/synthetic/" + C12 + "/cleanup-aws-terraform/aws-terraform-execute-dev-aaaaaaaaaaaa.json");
   assert.match(readFileSync(join(root, record.documents![0].path), "utf8"), /"step":"execute"/);
+});
+
+test("#359 review N1, #360 review B1: on every path a cleanup stage is PASS only when the lifecycle report's leftovers stage passed; INCONCLUSIVE, NOT_RUN, FAIL or an unreadable report is BLOCKED LEFTOVERS_NOT_VERIFIED, never shown as a pass", async () => {
+  const PATHS = [
+    ["aws-terraform", "AWS", "TERRAFORM"], ["aws-cdk", "AWS", "CDK"], ["azure-terraform", "AZURE", "TERRAFORM"], ["azure-bicep", "AZURE", "BICEP"],
+    ["gcp-terraform", "GCP", "TERRAFORM"], ["gcp-api", "GCP", "GCP_API"],
+  ] as const;
+  const lifecycle = (path: string, status: string | undefined) => (request: ChildRequest) => {
+    const a12 = artifactOf(path).slice(0, 12);
+    const p12 = createHash("sha256").update("proposal " + path).digest("hex").slice(0, 12);
+    write(request.cwd, ".runs/apply/reports/" + a12 + "-lifecycle-" + p12 + ".json", status === undefined ? "not json" : JSON.stringify({ reportKind: "ACT_LIFECYCLE", stages: { leftovers: { status } } }));
+    return { exitCode: 0, signal: null };
+  };
+  const run = async (path: string, provider: string, engine: string, status: string | undefined) => {
+    const root = actRoot({ ...AWS_CONTRACT, provider, engine });
+    writeConfig(root, validConfig({ aws: undefined, azure: undefined, act: { repository: "owner/repo", paths: { [path]: { project: "/srv/canary/" + path, requesterId: "owner" } } } }));
+    assert.equal(await runEvidenceCommand(["run", "--synthetic", "--stage", "act:" + path], actDeps(root, applyScript({}, { path })).deps), 0, path);
+    const answers = scriptedTerminal([join(root, ".runs/keys/requester.pem"), ".runs/approvals/cleanup-1.json", ""]);
+    const cleanup = actDeps(root, applyScript({ "apply report": lifecycle(path, status) }, { path }), answers);
+    const code = await runEvidenceCommand(["run", "--synthetic", "--stage", "cleanup:" + path], cleanup.deps);
+    return { code, out: cleanup.deps.lines.join("\n"), calls: cleanup.spawn.calls.map(sub) };
+  };
+  for (const [path, provider, engine] of PATHS) {
+    const clean = await run(path, provider, engine, "PASS");
+    assert.equal(clean.code, 0, path + ": " + clean.out);
+    assert.match(clean.out, /CLEANED_AND_RECORDED/, path);
+    for (const status of ["INCONCLUSIVE", "NOT_RUN", "FAIL", undefined]) {
+      const label = path + " " + String(status);
+      const refused = await run(path, provider, engine, status);
+      assert.equal(refused.code, 2, label);
+      assert.match(refused.out, /LEFTOVERS_NOT_VERIFIED/, label);
+      assert.doesNotMatch(refused.out, /CLEANED_AND_RECORDED/, label);
+      assert.match(refused.out, provider === "GCP" ? /"no strays" is unproven/ : /the independent leftover check is not complete/, label);
+      assert.ok(refused.calls.includes("apply verify-cleanup") && refused.calls.includes("apply record-live"), label + ": the cleanup was verified and the live record kept");
+    }
+  }
 });
 
 test("a child of a guided stage reads the person's own terminal: the production spawner inherits stdin, it is never a pipe from the runner", async () => {
