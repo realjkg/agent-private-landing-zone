@@ -27,8 +27,13 @@
 # reaches this hook, that is a full bypass. The first check below makes a leak visible: a job environment carrying
 # ALZ_HOOK_ENV_CANARY, BASH_ENV or ENV is refused with ALZ_IDENTITY_HOOK_ENV_LEAK, and the owner's proof (section 11, step 7)
 # sets the canary on every instance. If that code ever appears, the runner must not be used (section 12).
+#
+# Portability (the MBP runs Apple's /bin/bash 3.2 and BSD userland unless the runner finds another bash first): the bash part uses
+# no counted regex repetition (BSD's limit is 255), no \d, \w or \s, and only an unquoted variable on the right of =~, in the C
+# locale; /usr/bin/find uses only POSIX -H, -prune, -perm -mode, -user, -o and -print; printf and env take no GNU-only flag.
 PATH=/usr/bin:/bin
 IFS=$' \t\n'
+LC_ALL=C
 
 if [[ -n "${ALZ_HOOK_ENV_CANARY+x}" || -n "${BASH_ENV+x}" || -n "${ENV+x}" ]]; then
   /usr/bin/printf '%s\n' "ALZ_IDENTITY_HOOK_ENV_LEAK: a job's environment reached the job-started hook (ALZ_HOOK_ENV_CANARY, BASH_ENV or ENV is set). The hook cannot protect this runner; do not use it for identity delivery (docs/act-pilot-identity-delivery.md, section 12)." >&2
@@ -46,21 +51,23 @@ else
     reason="act-identity-runner-hook.conf is not owner-only"
   else
     settings="$(< "$conf")"
-    if [[ $'\n'"$settings"$'\n' =~ $'\n'NODE=(/[A-Za-z0-9._/-]{1,400})$'\n' ]]; then node="${BASH_REMATCH[1]}"; fi
-    if [[ -z "$node" || ! -f "$node" || ! -x "$node" ]]; then
+    framed=$'\n'"$settings"$'\n'
+    node_line=$'\n''NODE=(/[A-Za-z0-9._/-]+)'$'\n'
+    if [[ $framed =~ $node_line ]]; then node="${BASH_REMATCH[1]}"; fi
+    if [[ -z "$node" || ${#node} -gt 400 || ! -f "$node" || ! -x "$node" ]]; then
       reason="act-identity-runner-hook.conf names no absolute NODE binary"
     elif [[ -n "$(/usr/bin/find -H "$node" -prune \( -perm -020 -o -perm -002 \) -print)" || -z "$(/usr/bin/find -H "$node" -prune \( -user 0 -o -user "$EUID" \) -print)" ]]; then
       reason="the NODE binary is writable by group or others, or owned by someone other than root or this user"
     fi
   fi
   if [[ -n "$reason" ]]; then
-    /usr/bin/printf 'ALZ_IDENTITY_RUNNER_REFUSED: %s. This runner runs only the identity delivery workflow, dispatched on main.\n' "$reason" >&2
+    /usr/bin/printf 'ALZ_IDENTITY_RUNNER_REFUSED: %s. This runner runs only the identity delivery workflow, dispatched on main (bash %s).\n' "$reason" "${BASH_VERSION:-unknown}" >&2
     /usr/bin/false
   else
     /usr/bin/env -i "$node" -e '
       "use strict";
       const fs = require("node:fs");
-      const [hook, conf, repository, eventName, ref, workflowRef, job, eventPath] = process.argv.slice(1);
+      const [hook, conf, repository, eventName, ref, workflowRef, job, eventPath, bashVersion] = process.argv.slice(1);
       const refuse = (reason) => { process.stderr.write("ALZ_IDENTITY_RUNNER_REFUSED: " + reason + ". This runner runs only the identity delivery workflow, dispatched on main.\n"); process.exit(1); };
       const WORKFLOW = ".github/workflows/act-identity-delivery.yml";
       const uid = process.getuid();
@@ -103,7 +110,7 @@ else
         !isObject(payload.repository) || payload.repository.full_name !== repo) {
         refuse("the event payload is not a dispatch of the identity delivery workflow on main");
       }
-      process.stdout.write("ALZ identity runner admitted " + WORKFLOW + " (job " + job + ").\n");
-    ' "$here" "$conf" "${GITHUB_REPOSITORY:-}" "${GITHUB_EVENT_NAME:-}" "${GITHUB_REF:-}" "${GITHUB_WORKFLOW_REF:-}" "${GITHUB_JOB:-}" "${GITHUB_EVENT_PATH:-}"
+      process.stdout.write("ALZ identity runner admitted " + WORKFLOW + " (job " + job + "; hook ran under bash " + bashVersion + ").\n");
+    ' "$here" "$conf" "${GITHUB_REPOSITORY:-}" "${GITHUB_EVENT_NAME:-}" "${GITHUB_REF:-}" "${GITHUB_WORKFLOW_REF:-}" "${GITHUB_JOB:-}" "${GITHUB_EVENT_PATH:-}" "${BASH_VERSION:-unknown}"
   fi
 fi

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -53,7 +53,7 @@ test("the delivery workflow's own jobs, dispatched on main in the owner's reposi
   for (const job of ["deliver", "cleanup"]) {
     const result = run(at, jobEnv(at, { GITHUB_JOB: job }));
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, new RegExp("admitted \\.github/workflows/act-identity-delivery\\.yml \\(job " + job + "\\)"));
+    assert.match(result.stdout, new RegExp("admitted \\.github/workflows/act-identity-delivery\\.yml \\(job " + job + "; hook ran under bash [0-9]+\\.[0-9]+"));
   }
   // GITHUB_EVENT_PATH may be absent: the hook reads the payload at its own fixed path.
   assert.equal(run(at, jobEnv(at, { GITHUB_EVENT_PATH: "" })).status, 0);
@@ -186,4 +186,46 @@ test("the configured Node binary must be owned by root or this user and not writ
   }
   const notExecutable = install(dispatch, "REPOSITORY=" + REPO + "\nRUNNER_WORK=/x/_work\nNODE=" + join(fakeDir, "absent") + "\n");
   refused(notExecutable, jobEnv(notExecutable, { GITHUB_EVENT_PATH: "" }), /names no absolute NODE binary/, "missing binary");
+});
+
+// --- portability to the MBP: Apple /bin/bash 3.2, the BSD regex library and BSD userland (review N1 of the D4-A follow-up) ---
+
+/** The hook's bash part: everything except the Node program inside `-e '...'`, which V8 runs. */
+function bashPart(): string {
+  const text = readFileSync(HOOK, "utf8");
+  const start = text.indexOf("-e '\n");
+  const end = text.indexOf("\n    ' \"$here\"");
+  assert.ok(start > 0 && end > start, "the Node program is delimited");
+  return text.slice(0, start) + text.slice(end);
+}
+
+test("the bash part uses only regex and tool features that BSD and Apple bash 3.2 share with GNU", () => {
+  const code = bashPart().split("\n").filter((line) => !/^\s*#/.test(line)).join("\n");
+  // BSD regcomp refuses a counted repetition over RE_DUP_MAX (255); none above that, and none at all in the =~ patterns.
+  for (const match of code.matchAll(/\{([0-9]+)(?:,([0-9]*))?\}/g)) {
+    for (const bound of [match[1], match[2]].filter((n) => n !== undefined && n !== "")) assert.ok(Number(bound) <= 255, "counted repetition " + match[0]);
+  }
+  assert.doesNotMatch(code, /\\[dwsDWSb<>]/, "no GNU regex shorthand classes or word boundaries");
+  const tests = [...code.matchAll(/=~\s*(\S+)/g)].map((m) => m[1]);
+  assert.ok(tests.length > 0);
+  for (const right of tests) assert.match(right, /^\$[A-Za-z_][A-Za-z0-9_]*$/, "the right of =~ is one unquoted variable: " + right);
+  assert.match(code, /^LC_ALL=C$/m, "bracket ranges are read in the C locale");
+  // Only POSIX find primaries, and printf and env without GNU-only flags.
+  for (const call of code.matchAll(/\/usr\/bin\/find ([^)]*)\)/g)) {
+    for (const flag of call[1].match(/(?:^|\s)-[A-Za-z]+/g) ?? []) assert.ok(["-H", "-prune", "-perm", "-o", "-user", "-print"].includes(flag.trim()), "find " + flag.trim());
+  }
+  for (const call of code.matchAll(/\/usr\/bin\/env( -[A-Za-z-]+)*/g)) assert.equal(call[0], "/usr/bin/env -i", "env takes -i only");
+  for (const call of code.matchAll(/\/usr\/bin\/printf (\S+)/g)) assert.doesNotMatch(call[1], /^-/, "printf takes no flag");
+  assert.doesNotMatch(code, /\b(?:readlink -f|realpath|stat -c|sed -r|grep -P|date -d)\b/, "no GNU-only command forms");
+});
+
+test("a NODE path is matched without a counted repetition and its length is checked separately", () => {
+  const long = "/" + "n".repeat(400);
+  const at = install(dispatch, "REPOSITORY=" + REPO + "\nRUNNER_WORK=/x/_work\nNODE=" + long + "\n");
+  refused(at, jobEnv(at, { GITHUB_EVENT_PATH: "" }), /names no absolute NODE binary/, "a 401-character NODE path");
+  // A configured path of ordinary length still works (the admitted cases above), and a refusal names the bash that ran the hook.
+  const open = install();
+  chmodSync(open.conf, 0o644);
+  const result = run(open, jobEnv(open));
+  assert.match(result.stderr, /\(bash [0-9]+\.[0-9]+/);
 });
