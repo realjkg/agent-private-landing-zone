@@ -43,7 +43,7 @@ import { ALZ_TAG_KEYS } from "../../teardown/unit.js";
 type StepIdentity = "DISCOVERY" | "STATE" | "STATE_WRITE" | "APPLY" | null;
 
 /**
- * What may be rendered into the seal-time backend file when the contract opts in: an allowlist of the STATE_WRITE variables the provider
+ * What may be rendered into the seal-time backend file (every Terraform contract binds STATE_WRITE): an allowlist of the STATE_WRITE variables the provider
  * specs' `backendConfig` reads (the principal's client id, role ARN or service account email, tenant, subscription, and the token or
  * credential configuration file PATH). Any other
  * variable, including one that holds a secret, never reaches the renderer, and a token file's content is never read. The file is rendered
@@ -656,9 +656,8 @@ export const TERRAFORM: EngineSpec = {
   // STATE_WRITE or APPLY, and `terraform show -json` is read only to extract the redacted change list.
   plan(input) {
     const planFile = join(input.scratchDir, SEAL_PLAN_FILE);
-    const embed = input.embedStateWrite === true;
     // The contract requires the binding (contract.ts); a seal without it is refused here too, before any engine runs.
-    if (!embed) return stop("STATE_WRITE_NOT_EMBEDDED");
+    if (input.embedStateWrite !== true) return stop("STATE_WRITE_NOT_EMBEDDED");
     const backendConfigPath = join(input.scratchDir, APPLY_BACKEND_CONFIG_FILE);
     const session = sealSession(input);
     try {
@@ -666,9 +665,7 @@ export const TERRAFORM: EngineSpec = {
         snapshotPath: input.snapshotPath, engineVersion: input.engineVersion, target: input.target,
         stateIdentity: "STATE", backendType: input.spec.backendType, selectableProviders: input.spec.selectableProviders, initArgv: APPLY_INIT_ARGV,
         // The contract's backend location (written 0600, removed as soon as init ends), and STATE_WRITE's non-secret settings too (required for Terraform), so the plan embeds them.
-        beforeInit: () => writeFileSync(backendConfigPath, embed
-          ? input.spec.backendConfig(nonSecretStateWrite(input.env), input.pinned)
-          : input.spec.backendLocation(input.pinned), { mode: 0o600, flag: "wx" }),
+        beforeInit: () => writeFileSync(backendConfigPath, input.spec.backendConfig(nonSecretStateWrite(input.env), input.pinned), { mode: 0o600, flag: "wx" }),
         afterInit: () => rmSync(backendConfigPath, { force: true }),
       });
       // The plan embeds the backend this init saved (docs/act-pilot-simulation.md), so it is judged here as well as at apply.

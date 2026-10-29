@@ -89,7 +89,7 @@ A `PILOT` release names its paths in one of two forms, never both (`ACT_PILOT_SC
   The contract commit's provenance is checked too, not only its content (#344 review N2):
   - its id must name the commit object itself, so a tag id is refused;
   - the candidate must be an ancestor of it, or the commit itself;
-  - it must be reachable from a branch or tag, so a dangling object is refused.
+  - it must be reachable from a local branch (`refs/heads/*`) or an `origin` branch (`refs/remotes/origin/*`). A dangling object, or a commit reachable only from a stash, a tag, a note or another remote, is refused. Reachability is not review: it only keeps out an object that never sat on a branch.
 
   The rule is "ancestor", not "parent". The owner commits a path's contract in its own reviewed change on top of the candidate. The next path's contract replaces it in a later change on the same line, and a reviewed change may land as a merge commit. The tree check still requires each of those commits to differ from the candidate in the contract file only.
 

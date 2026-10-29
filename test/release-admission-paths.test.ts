@@ -416,6 +416,31 @@ test("#344 N2: contract-commit provenance on temporary repositories: a tag id, a
   } finally { rmSync(repo, { recursive: true, force: true }); }
 });
 
+test("#351 review N3: a contract commit counts as reachable only from a local branch or an origin branch; a stash, a tag, another remote's ref or a pull-request ref is not enough (SYNTHETIC)", async () => {
+  const repo = mkdtempSync(join(tmpdir(), "alz-release-reachability-"));
+  try {
+    const git = (...args: string[]) => execFileSync("git", ["-C", repo, "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", "-c", "user.email=fixture@example.invalid", "-c", "user.name=fixture", ...args], { encoding: "utf8" }).trim();
+    git("init", "-q", "-b", "main");
+    mkdirSync(join(repo, "config"), { recursive: true });
+    writeFileSync(join(repo, "README"), "candidate\n");
+    git("add", "-A"); git("commit", "-q", "-m", "candidate");
+    const candidate = git("rev-parse", "HEAD");
+    writeFileSync(join(repo, CONTRACT_FILE), byGate("act:gcp-terraform").text);
+    git("add", "-A");
+    const tree = git("write-tree");
+    git("reset", "-q", "--hard", candidate);
+    // Each commit carries the right tree and descends from the candidate; only the ref that holds it differs.
+    const commitOn = (ref: string, label: string): string => { const c = git("commit-tree", tree, "-p", candidate, "-m", label); git("update-ref", ref, c); return c; };
+    const read = gitContractReader(repo, candidate);
+    const provenance = async (commit: string) => { const r = await read(commit); return r.ok ? "OK" : r.provenance === true ? "PROVENANCE" : "UNREADABLE"; };
+    assert.equal(await provenance(commitOn("refs/heads/contract", "local branch")), "OK");
+    assert.equal(await provenance(commitOn("refs/remotes/origin/contract", "origin branch")), "OK");
+    for (const ref of ["refs/stash", "refs/tags/contract-only", "refs/remotes/fork/contract", "refs/pull/7/head", "refs/notes/contract", "refs/original/refs/heads/main"]) {
+      assert.equal(await provenance(commitOn(ref, "only " + ref)), "PROVENANCE", ref);
+    }
+  } finally { rmSync(repo, { recursive: true, force: true }); }
+});
+
 test("the AWS Terraform, AWS CDK and Azure Terraform single-path releases are unchanged: each is admitted with its own contract, and its own live record is admitted", async () => {
   for (const gate of ["act:aws-terraform", "act:aws-cdk", "act:azure-terraform"]) {
     const p = byGate(gate);

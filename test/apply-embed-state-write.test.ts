@@ -23,7 +23,7 @@ import { SOURCE_COMMIT,
 } from "./helpers/apply-fixtures.js";
 import { cdkContractJson } from "./helpers/cdk-fixtures.js";
 
-// The `embedStateWrite` contract field (docs/act-pilot-apply.md, "Embedding STATE_WRITE in the plan"): required true for every Terraform
+// The `embedStateWrite` contract field (docs/act-pilot-apply.md, "Binding STATE_WRITE in the plan"): required true for every Terraform
 // contract since owner decision 6486426552 (it was an opt-in before). The engine is a fake executable: these tests pin this program's
 // logic, NOT what a real Terraform or backend does with the embedded settings (the emulated tests show that per backend).
 

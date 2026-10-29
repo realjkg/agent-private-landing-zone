@@ -415,8 +415,9 @@ async function reviewPilotPaths(claimed: unknown, shipped: PilotContract | undef
  *   reviewed change on top of the candidate, and the next path's contract replaces it in a later change on the same line (so its parent
  *   is the previous contract commit), and a reviewed change may land as a merge commit. The tree check above still requires every such
  *   commit to differ from the candidate in the contract file only;
- * - `commit` is reachable from a ref in the repository (`for-each-ref --contains`): a dangling object made with `commit-tree`, on no
- *   branch or tag, is not a reviewed commit.
+ * - `commit` is reachable from a branch: a local one (`refs/heads/*`) or one fetched from `origin` (`refs/remotes/origin/*`). A dangling
+ *   object made with `commit-tree`, or a commit reachable only from a stash, a tag, a note or another remote's ref, is refused (#351
+ *   review N3). Reachability is not review; it only keeps an object that never sat on a branch out.
  * An unrelated history fails the ancestor check. Each refusal is `provenance: true`, reported as ACT_PILOT_CONTRACT_COMMIT_PROVENANCE.
  */
 export function gitContractReader(root: string, candidate: string): ContractReader {
@@ -438,8 +439,8 @@ export function gitContractReader(root: string, candidate: string): ContractRead
       if (!succeeds("merge-base", "--is-ancestor", candidate, commit)) {
         return { ok: false, provenance: true, reason: "the candidate is not an ancestor of the contract commit" };
       }
-      if (git("for-each-ref", "--contains", commit, "--format=%(refname)").trim() === "") {
-        return { ok: false, provenance: true, reason: "the contract commit is on no branch or tag (a dangling object)" };
+      if (git("for-each-ref", "--contains", commit, "--format=%(refname)", "refs/heads/", "refs/remotes/origin/").trim() === "") {
+        return { ok: false, provenance: true, reason: "the contract commit is on no local or origin branch (a dangling object, or only a stash, tag or other ref)" };
       }
       const changedPaths = git("diff", "--no-renames", "--name-only", candidate, commit, "--").split("\n").filter((x) => x !== "");
       let source: string | undefined;
